@@ -24,20 +24,20 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
 | SV LP1 | parity | vector | Wine capture rows (res 0, .5, .9, u 0..1) within 1 dB (most rows 0.01 dB); guard test `sv_responses_match_the_kontakt_capture` |
-| SV LP2 | partial | vector | Native-exact at res .9 (kemu vectors, `sv_res9_match_the_native_vectors`); u = 0 closed (G10 was the capture window). Capture: res 0 and .5 within 1 dB at all u; res .9 rows 2 dB off (G4 capture chain). filt-sv |
-| SV LP4 | partial | vector | Native-exact at res .9 (kemu vectors); u = 0 closed (G10). Capture res 0 and .5 within 1 dB; res .9 rows 1.8 dB off (G4 capture chain). filt-sv |
-| SV LP6 | partial | vector | Capture res 0 and .5 within 1 dB at all u (u = 0 closed, G10). res .9 rows 5 dB off (G4). SV6 native vectors at res .9 not yet made. filt-sv |
+| SV LP2 | parity (kemu oracle) | vector | Kemu vectors at res 0, .5 (1e-6 of peak) and .9 (1e-5, `cascade_sv_res9_vectors.json`, `sv_res9_match_the_native_vectors`); u = 0 closed (G10). Capture res 0 and .5 within 1 dB at all u; res .9 capture rows 2 dB off, measurement chain (G4). Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
+| SV LP4 | parity (kemu oracle) | vector | Kemu vectors at res 0, .5 and .9 (1e-5); u = 0 closed (G10). Capture res 0 and .5 within 1 dB; res .9 capture rows 1.8 dB off (G4). Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
+| SV LP6 | parity (kemu oracle) | vector | Kemu vectors at res 0, .5 and .9 (1e-5; SV6 driven through the native setters and `TABLE_INIT` by `tools/re/sv_native_vectors.py`). Capture res 0 and .5 within 1 dB at all u (u = 0 closed, G10); res .9 capture rows 5 dB off (G4). Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
 | SV HP1 | parity | vector | Wine capture rows (res 0, .5, .9, u 0..1) within 1 dB (most rows 0.01 dB); guard test |
-| SV HP2 | partial | vector | Native-exact at res .9 (kemu vectors); capture res 0 and .5 within 1 dB at all u; res .9 rows 2.7 dB off (G4 capture chain). filt-sv |
-| SV HP4 | partial | vector | Native-exact at res .9 (kemu vectors); capture res 0 within 1 dB; res .9 rows 7 dB off (G4 capture chain). filt-sv |
-| SV BP6 | partial | vector | Capture res 0 and .5 within 1 dB at all u (u = 0 closed, G10); res .9 rows 6 dB off (G4). filt-sv |
-| SV HP6 | partial | vector | Capture res 0 within 1 dB at all u; res .9 rows 5 dB off (G4). filt-sv |
-| SV BP2 | partial | vector | Native-exact at res .9 (kemu vectors). Capture res 0 u 0..75 and res .5 within 1 dB; u = 1 low end 4 dB off (G12); res .9 rows 11 dB off, low end (G4). filt-sv |
-| SV BP4 | partial | vector | Native-exact at res .9 (kemu vectors). Capture res 0 within 1 dB at all u; res .9 rows 11 dB off (G4). filt-sv |
-| SV Notch | partial | vector | Notch 4 and Notch 6: res 0 within 1 dB; Notch 4 native-exact at res .9 (kemu vectors); Notch 4 and 6 capture res .9 rows 4 to 7 dB off (G4). filt-sv |
-| SV Par. LP/HP | partial | vector | Native vector at bandwidth .3, u .5, res .5 (1e-6); gains and `l` confirmed from the binary (G8, G9 closed); bandwidth record path (G7) and a capture open. filt-sv |
-| SV Par. BP/BP | partial | vector | Native vector at bandwidth .3, u .5, res .5 (1e-6); gains and `l` confirmed (G8, G9 closed); G7 and a capture open. filt-sv |
-| SV Ser. LP/HP | partial | vector | Native vector at bandwidth .3, u .5, res .5 (1e-6); gains and `l` confirmed (G8, G9 closed); G7 and a capture open. filt-sv |
+| SV HP2 | parity (kemu oracle) | vector | Kemu vectors at res 0, .5 and .9 (1e-5). Capture res 0 and .5 within 1 dB at all u; res .9 capture rows 2.7 dB off (G4). Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
+| SV HP4 | parity (kemu oracle) | vector | Kemu vectors at res 0, .5 and .9 (1e-5). Capture res 0 within 1 dB; res .9 capture rows 7 dB off (G4). Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
+| SV BP6 | parity (kemu oracle) | vector | Kemu vectors at res 0, .5 and .9 (1e-5). Capture res 0 and .5 within 1 dB at all u (u = 0 closed, G10); res .9 capture rows 6 dB off (G4). Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
+| SV HP6 | parity (kemu oracle) | vector | Kemu vectors at res 0, .5 and .9 (1e-5). Capture res 0 within 1 dB at all u; res .9 capture rows 5 dB off (G4). Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
+| SV BP2 | parity (kemu oracle) | vector | Kemu vectors at res 0, .5 and .9 (1e-5). Capture res 0 u 0..75 and res .5 within 1 dB; u = 1 low end 4 dB off (G12, accepted under the kemu oracle); res .9 capture rows 11 dB off, low end (G4). Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
+| SV BP4 | parity (kemu oracle) | vector | Kemu vectors at res 0, .5 and .9 (1e-5). Capture res 0 within 1 dB at all u; res .9 capture rows 11 dB off (G4). Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
+| SV Notch | parity (kemu oracle) | vector | Notch 4 and Notch 6 kemu vectors at res 0, .5 and .9 (1e-5). Capture res 0 within 1 dB; Notch 4 and 6 capture res .9 rows 4 to 7 dB off (G4). Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
+| SV Par. LP/HP | parity (kemu oracle) | vector | Kemu vector at bandwidth .3, u .5, res .5 (1e-6); gains and `l` confirmed from the binary (G8, G9 closed). The bandwidth record path (G7) is accepted under the kemu oracle; capture open. Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
+| SV Par. BP/BP | parity (kemu oracle) | vector | Kemu vector at bandwidth .3, u .5, res .5 (1e-6); gains and `l` confirmed (G8, G9 closed). G7 accepted under the kemu oracle; capture open. Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
+| SV Ser. LP/HP | parity (kemu oracle) | vector | Kemu vector at bandwidth .3, u .5, res .5 (1e-6); gains and `l` confirmed (G8, G9 closed). G7 accepted under the kemu oracle; capture open. Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
 | AR LP2 | partial | vector | Kernel matches native vectors (2e-6, ar_native_vectors.json, 81 scenarios). Cutoff law decomp-confirmed. Host recording and CPU acceptance open (docs/re/engine/filt-ar-daft.md). |
 | AR LP4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
 | AR LP2/4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
