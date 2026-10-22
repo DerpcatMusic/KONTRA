@@ -87,7 +87,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| Solid G-EQ | partial | vector + decomp | Spline tables and per-section topology from Wine-oracle fits (`docs/re/kontakt-bindings/solid-geq-fits.tsv`); decomp confirms knob storage and recompute path. Open: LF/HF shelf law (fit residual 0.2-1.1 dB), coefficient glide writer (20 ms unconfirmed), live bell/pass switches, bank 16 not applied. See `docs/re/engine/eq-kontakt.md` |
+| Solid G-EQ | partial | vector + decomp (LF shelf/bell and HF bell knob<=0.5 match native probe rows, `solid::tests::sections_match_native_probe_responses`; see `docs/re/engine/eq-kontakt.md` sec. 7) | Spline tables and per-section topology from Wine-oracle fits (`docs/re/kontakt-bindings/solid-geq-fits.tsv`); decomp confirms knob storage and recompute path. Open: LF/HF shelf law (fit residual 0.2-1.1 dB), coefficient glide writer (20 ms unconfirmed), live bell/pass switches, bank 16 not applied. See `docs/re/engine/eq-kontakt.md` |
 | Filters/EQ 1/2/3-band (legacy, kinds 22-24) | partial | vector | Band shape and serial cascade proved by oracle (rms 0.000 dB, `eq-topology.tsv`); kind 22 x3 multi-slot write not proven (measurement artefact) |
 | Pro EQ | n/a (not in Kontakt 8) | decomp + presets | No Pro EQ string in the Kontakt 8 decompile and no Pro EQ preset under `Filters/` (only `Filters/EQ` and `Filters/Solid G-EQ`) |
 | AET Filter | owned by filt-formant-effect | - | Effect type, not an EQ; see `docs/re/engine/filt-formant-effect.md` |
