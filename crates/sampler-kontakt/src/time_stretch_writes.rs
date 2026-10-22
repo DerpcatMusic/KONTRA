@@ -41,6 +41,37 @@ const TRANSIENT_SIZE: [f64; 11] = [
     100., 149., 220., 326., 482., 712., 1052., 1554., 2294., 3387., 5000.,
 ];
 
+/// Stored `timing_value` (cycle length in beats) for raw `SPEED_UNIT` 0..=21, on
+/// every kind (Kontakt 8, `tools/kontakt-oracle/tm_sweep.py --pars SPEED_UNIT`,
+/// raw 0..=25). `None` where the sweep left the timing fields at baseline (free).
+/// The values are 4 / k for k = 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32, 64, 256 (raw
+/// 5, 6, 7, 8, 9, 10, 12, 13, 15, 16, 17, 19, 21). Raw 22 sets `common_flag_16`, which
+/// has no consumer, so it is reported.
+const SPEED_UNIT_BEATS: [Option<f64>; 22] = [
+    None,
+    None,
+    None,
+    None,
+    None,
+    Some(4.),
+    Some(2.6666667),
+    Some(2.),
+    Some(1.3333334),
+    Some(1.),
+    Some(0.6666667),
+    None,
+    Some(0.5),
+    Some(0.33333334),
+    None,
+    Some(0.25),
+    Some(0.16666667),
+    Some(0.125),
+    Some(0.083333336),
+    Some(0.0625),
+    Some(0.041666668),
+    Some(0.015625),
+];
+
 /// Apply every measured write for `stretch`'s kind. `write` reads the raw value
 /// of a named engine parameter from the script. Returns the parameters that were
 /// written but have no stored field for this kind, so the caller can report them.
@@ -57,6 +88,15 @@ pub(crate) fn apply(
         // Same base-rate floor as the record path (TM2 and Pro).
         if !tm1 {
             stretch.speed = stretch.speed.max(0.01);
+        }
+    }
+    if let Some(raw) = write("ENGINE_PAR_SPEED_UNIT") {
+        stretch.sync_beats = usize::try_from(raw)
+            .ok()
+            .and_then(|i| SPEED_UNIT_BEATS.get(i).copied().flatten())
+            .map(|beats| beats as f32);
+        if raw == 22 {
+            unapplied.push("ENGINE_PAR_SPEED_UNIT");
         }
     }
     if let Some(raw) = write("ENGINE_PAR_SMOOTH") {
@@ -175,6 +215,22 @@ mod tests {
     }
 
     /// TM2 transient size follows the measured stored curve; TM1 and Pro have no such field.
+    /// Measured `SPEED_UNIT` table: raw 0..=4 and 11, 14 are free, raw 22 is reported.
+    #[test]
+    fn speed_unit_selects_the_measured_beat_cycle() {
+        let mut s = tm(ir::StretchKind::TimeMachine1);
+        for (raw, want) in [(5, Some(4.)), (6, Some(2.6666667)), (12, Some(0.5)), (21, Some(0.015625)), (0, None), (11, None)] {
+            let unapplied = apply(&mut s, |n| (n == "ENGINE_PAR_SPEED_UNIT").then_some(raw));
+            assert!(unapplied.is_empty(), "raw {raw} reported");
+            match want {
+                Some(w) => assert!(s.sync_beats.is_some_and(|b| (f64::from(b) - w).abs() < 1e-6), "raw {raw}"),
+                None => assert_eq!(s.sync_beats, None, "raw {raw}"),
+            }
+        }
+        let unapplied = apply(&mut s, |n| (n == "ENGINE_PAR_SPEED_UNIT").then_some(22));
+        assert_eq!(unapplied, vec!["ENGINE_PAR_SPEED_UNIT"]);
+    }
+
     #[test]
     fn transient_size_is_measured_on_tm2_only() {
         let mut tm2 = tm(ir::StretchKind::TimeMachine2);

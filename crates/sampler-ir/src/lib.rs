@@ -805,6 +805,10 @@ pub struct TimeStretch {
     pub keep_formants: bool,
     pub formant_shift: f32,
     pub env_order: f32,
+    /// Tempo-synced cycle length in beats (stored `timing_value`, set by the
+    /// `SPEED_UNIT` write). `None` when the timing is free. The synced speed law
+    /// itself is not modelled yet, so the engine ignores this.
+    pub sync_beats: Option<f32>,
 }
 impl TimeStretch {
     /// Neutral controls (authored defaults are not established).
@@ -821,6 +825,7 @@ impl TimeStretch {
             keep_formants: false,
             formant_shift: 0.,
             env_order: 0.25,
+            sync_beats: None,
         }
     }
     pub fn valid(self) -> bool {
