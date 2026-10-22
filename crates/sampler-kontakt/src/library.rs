@@ -3744,6 +3744,22 @@ mod zone_range_tests {
         assert_eq!(error, "high velocity 200 is outside 0..=127");
     }
 
+    /// The zone parameter block starts `sample_start`, `sample_end`, then
+    /// `sample_start_mod_range`, all i32 in source frames (public offsets 0, 4
+    /// and 8; the record's public block begins 15 bytes in). Kontakt's start
+    /// modulation adds an amount in frames and bounds it by this range in the
+    /// same unit (decompile 0x14084f380 and the zone getter at 0x140884db0),
+    /// so the range passes through unscaled. A -1 range is kept as no range
+    /// (`max(0)`), as the oracle diff compares it.
+    #[test]
+    fn start_modulation_range_is_source_frames_and_minus_one_is_no_range() {
+        let mut record = sampled([1, 127], [36, 81], 60);
+        record[23..27].copy_from_slice(&1234i32.to_le_bytes());
+        assert_eq!(read(&record).unwrap().start_mod, 1234);
+        record[23..27].copy_from_slice(&(-1i32).to_le_bytes());
+        assert_eq!(read(&record).unwrap().start_mod, 0);
+    }
+
     #[test]
     fn range_boundaries_at_the_edge_of_midi() {
         let unreachable = |v: [i16; 2]| read(&sampled(v, [36, 81], 60)).unwrap().unreachable.is_some();
