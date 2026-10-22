@@ -200,8 +200,8 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | AHDSR | partial | decompile (reader 0x140cffb40, converters 0x1407b85a0/85e0, constants from PE), recorded control table | Time and sustain laws fixed in lowering; control rate R, note-off and retrigger open |
 | DBD | partial | decompile (resolver 0x1409651b0 mode 2, prep 0x140ae5d70), disasm argument order | Prep law in engine (`Breakpoints::dbd`); converter identity and IR mapping still open |
 | Flexible envelope | partial | engine builders and loop/release laws; `docs/re/kontakt-flex-loop-jump.md` | Point, curve and release laws covered; retrigger and smoothing open |
-| Envelope follower | partial | decomp | Executable (`ModSource::Follower`), decompile law and binary constants, one-span audio delay; no native vector (`k-mod-external.md`) |
-| Glide | partial | decomp | Executable (`ModSource::Glide`), setup law from FUN_140cebba0; origin per plan, octave units unverified (`k-mod-external.md`) |
+| Envelope follower | partial | decomp | Executable (`ModSource::Follower`), decompile law and binary constants; previous-buffer timing confirmed by decompile ordering (`0140910000.c:4373` vs `:4783`); mono-vs-stereo input and ring-vs-state read open; no native vector (`k-mod-external.md`) |
+| Glide | partial | decomp | Executable (`ModSource::Glide`), setup law from FUN_140cebba0; interval source identified (record +0x458-+0x454, `0140970000.c:7753`), origin per plan, consumer units unproven (`k-mod-external.md`) |
 | External MIDI/performance sources | partial | none | 13 `ExternalSource` variants mapped (`modulation_objects.rs:84-96`); no per-source vectors (`k-mod-external.md`) |
 | Modulation routing (target, depth/polarity, shaping, smoothing) | partial | none | Depth sign/invert tested (`library.rs:6063`); negative lag and shape law unproven (`k-mod-external.md`) |
 | LFO | partial | decomp + vector | Native waves and Multi/Digital structure confirmed; fade cadence, fade init, synced fade, held-noise reset seed open. See `docs/re/engine/k-mod-lfo-step.md`. |

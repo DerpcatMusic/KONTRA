@@ -118,3 +118,20 @@ Unit: `k-mod-external`. Matrix rows: `docs/re/engine/PARITY_MATRIX.md`, "Modulat
   scale against this output is not verified, so pitch depth through a glide is not yet native-parity.
 - TODO(oracle): glide origin is per plan (instrument), not per Kontakt group, and does not check
   legato. Group and legato rules are unproved.
+
+## Decompile evidence, final pass (Kontakt 8, read as data)
+
+- Follower input (`FUN_140916350`, `0140910000.c`): the follower call
+  `FUN_140ae3de0(modulator, param_1[idx*16+6], n)` at line 4373 runs before the source render that
+  fills the same buffer (`FUN_1408e4110`, line ~4783). The buffer is a 4 KiB pool slot (`0x1000`
+  stride, 1024 floats) in the 16-pointer per-slot table built by `FUN_1407f31f0` (`01407f0000.c:2571`).
+  Ordering therefore confirms the one-span (previous-block) timing used by the engine. Still open:
+  whether the buffer is mono pre-pan source output (we feed the voice's stereo mean after gain), and
+  whether the native consumer reads the decimated ring cells or the last state.
+- Glide start (`0140970000.c:7741-7753`): a glide starts when bit 4 of the modulator flags (`+0xa4`)
+  is set; `FUN_140cebba0` gets `rec[0x458] - rec[0x454]` from a per-block record
+  (`+0x2d7f8` table, index = position / 128). This is the interval. Our origin is per plan, not this
+  record; record identity is unproven (`0x454`/`0x458` are written by several object types).
+- Glide consumer: `FUN_140ceb090` (ramp render) has no direct caller in the export; it is reached
+  through a virtual call. Its output units, and how a pitch route scales them, are unproven.
+- External sources and routing lag/shape: no getter or lag law located in this pass. Status stays partial.
