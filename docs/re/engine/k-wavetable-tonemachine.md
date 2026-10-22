@@ -163,3 +163,24 @@ factories. Confirmed so far:
 Not yet recovered: the Tone render kernel (grain or formant law), its grain
 size and overlap, the DC filter coefficients, and the wavetable quality,
 phase-randomness and inharmonic laws.
+
+
+## Final-lane update (phase forms and remaining rows)
+
+- Phase switch `0x140567aa0` (`0140560000.c:5389`) has these branches beyond
+  the original-byte set: sync 1–3 and 24–26 (`fmod((15a^3+1)·p, 1)`), bend P/M/MP
+  4–6 (cosine and arcsine laws with 1/π = `0x3ea2f983`), quantize 13
+  (`trunc(2^((1-a)·15+1))` steps, round, minus 1e-5, clamp at 0), exp 28
+  (`p^(9a+1)`), log 29 (`1-(1-p)^(9a+1)`), logexp 30 (exponent `18(0.5-a)+1` on
+  the log side, `18(a-0.5)+1` on the exp side). Constants are read from the PE
+  at their VAs (`0x14470bad0`=0.5, `0x14470bad4`=1.0, `0x144714a0c`=15,
+  `0x1447149fc`=9, `0x144714a14`=18, `0x1447148a0`=1e-5, `0x144714998`=2.0 as
+  double). Vectors: `tools/dsp/verify_wavetable_phase_libm.py` emulates the
+  switch with libm helpers as Python stubs, so the numbers are helper-substituted.
+- Amplitude forms 18 (Saturate), 19 (Fold), 20–23 (2/4/6/8 Blinds) and wrap 27
+  return identity in this leaf; their consumer is not located. Not admitted.
+- Modulation oscillator: callers of the phase switch in `0140cd0000.c` (e.g.
+  `0140cd5af0`, 1497 bytes) run a phase accumulator with FM/PM terms and a
+  2400-entry table read. This is the inharmonic/mod path. Not ported.
+- Quality: `$NI_WT_QUALITY_*` values LOFI 0, MEDIUM 1, HIGH 2, BEST 3 (`crates/sampler-ksp/src/builtins.rs`, v1 port). The readout kernel for each level is not recovered.
+- Phase randomness, live wavetable routes: no native law recovered yet.
