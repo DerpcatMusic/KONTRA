@@ -281,7 +281,7 @@ inside the stage virtuals is not read, so no Elastique stage is implemented.
 ## Status of the cores
 
 - TM2 core: implemented as `Scheduler::Pitch` in `crates/sampler-core/src/source/time_machine.rs`
-  (own design; tests on synthetic sines: unity passthrough with latency, marks on period boundaries,
+  (own design; tests on synthetic sines: unity passthrough (zero latency), marks on period boundaries,
   half-speed duration, octave-up pitch). It does not reproduce Kontakt's estimator or emit law. The
   emit call (7-argument call in `FUN_1419d1600`) is still unconfirmed.
 - Pro stage: the Pro synthesis variant (`0x1476a6f08`) has the same ratio setter at other offsets. The
