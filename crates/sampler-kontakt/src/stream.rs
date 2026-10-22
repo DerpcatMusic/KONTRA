@@ -706,8 +706,9 @@ pub struct StreamPolicy {
     /// Publish before heads are read. Runtime must enable cold-start holding.
     pub lazy: bool,
     /// Opt in to cold starts when optional attack preparation exceeds the shared
-    /// payload budget. Mandatory full sources are never made disk-streamed.
-    /// Source, metadata, cancellation and mandatory-residency failures propagate.
+    /// payload budget. Resident sources that do not fit the budget (smallest
+    /// first kept whole) stream from disk. Source, metadata and cancellation
+    /// failures propagate.
     pub allow_cold_fallback: bool,
     /// RAM-only: keep whole samples smallest first within this safe byte budget.
     pub resident_budget: Option<usize>,
@@ -1272,6 +1273,36 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>], pa
     }
 }
 
+/// Under cold fallback, a resident source is admitted whole only while the
+/// smallest resident sources still fit the shared head budget together. Larger
+/// ones stream from disk instead of failing the load. Unknown sizes stay resident.
+fn admit_resident_within_budget(
+    requirements: &[ir::AssetResidency],
+    frames: &[Option<usize>],
+    policy: &StreamPolicy,
+) -> Vec<ir::AssetResidency> {
+    let mut out = requirements.to_vec();
+    if !policy.allow_cold_fallback {
+        return out;
+    }
+    let mut order: Vec<(usize, usize)> = requirements
+        .iter()
+        .enumerate()
+        .filter(|&(i, r)| *r == ir::AssetResidency::Resident && frames[i].is_some())
+        .map(|(i, _)| (frames[i].unwrap_or(0).saturating_mul(size_of::<Frame>()), i))
+        .collect();
+    order.sort_unstable();
+    let mut held = 0usize;
+    for (bytes, i) in order {
+        if held.saturating_add(bytes) <= policy.head_budget {
+            held += bytes;
+        } else {
+            out[i] = ir::AssetResidency::Streamable;
+        }
+    }
+    out
+}
+
 /// A startup capacity failure, distinct from unreadable/missing source bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeadBudgetExceeded {
@@ -1649,12 +1680,16 @@ impl Streamer {
         canceled:&(dyn Fn()->bool+Sync),progress:&mut dyn FnMut(usize,usize))->Result<Opened,LoadError> {
         if sources.len()!=requirements.len() {return Err(LoadError::Invalid{path:"logical sources".into(),reason:"source requirement count mismatch".into()});}
         let mut wide=false;
+        let mut frames=Vec::with_capacity(sources.len());
         for (source,path) in &sources {
             if canceled(){return Err(LoadError::Canceled);}
-            if let Some(reader)=source.open_channels(READER_CACHE_BYTES/policy.decoders.clamp(1,8)/2).map_err(|e|LoadError::io(path,e))? {
+            let reader=source.open_channels(READER_CACHE_BYTES/policy.decoders.clamp(1,8)/2).map_err(|e|LoadError::io(path,e))?;
+            frames.push(reader.as_ref().map(SampleReader::frames).or(source.header().map(|h|h.1)));
+            if let Some(reader)=reader {
                 wide |= reader.original_channels().is_some_and(|n|n>2);
             }
         }
+        let requirements=&admit_resident_within_budget(requirements,&frames,policy)[..];
         if !wide {return Self::open_required_stereo(sources,requirements,rate,policy,probe,canceled,progress);}
         if policy.resident_budget.is_some() {return Err(LoadError::Invalid{path:"logical stream".into(),reason:"whole-source promotion requires resident logical producer".into()});}
         let mut logical=Vec::new();let mut assets=Vec::new();let mut registry=HashMap::new();let mut latency=Vec::new();let mut full=0u64;let mut max_packs=1usize;

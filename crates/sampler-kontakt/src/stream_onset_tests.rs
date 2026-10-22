@@ -161,3 +161,54 @@ fn actual_streamed_modulated_start_matches_resident_without_waiting_for_tail_pag
         assert_eq!(actual.stream_underruns(), 0);
     }
 }
+
+#[test]
+fn resident_source_over_head_budget_streams_under_cold_fallback() {
+    struct Source;
+    impl AssetSource for Source {
+        fn header(&self) -> Option<(u32, usize)> {
+            Some((48000, 2048))
+        }
+        fn open(&self) -> io::Result<SampleReader> {
+            Ok(SampleReader::custom(48000, 2048, |start, out| {
+                for (i, frame) in out.iter_mut().enumerate() {
+                    *frame = [(start + i) as f32 / 2048., -0.25];
+                }
+                Ok(())
+            }))
+        }
+    }
+    let mut ir = instrument(false, 0, true);
+    ir.assets[0].residency = ir::AssetResidency::Resident;
+    let options = crate::Options {
+        rate: 48000,
+        ..Default::default()
+    };
+    let policy = |allow_cold_fallback| StreamPolicy {
+        headroom: 0.,
+        max_step: 1.,
+        voices: 2,
+        decoders: 1,
+        head_budget: 8192,
+        slack: Duration::ZERO,
+        allow_cold_fallback,
+        ..Default::default()
+    };
+    // 2048 frames are 16 KiB, over the 8 KiB head budget: resident must stream.
+    let streamed = crate::stream_instrument(
+        ir.clone(),
+        vec![Arc::new(Source)],
+        vec!["numeric-fixture".into()],
+        &options,
+        &policy(true),
+    );
+    assert!(streamed.is_ok());
+    let strict = crate::stream_instrument(
+        ir,
+        vec![Arc::new(Source)],
+        vec!["numeric-fixture".into()],
+        &options,
+        &policy(false),
+    );
+    assert!(strict.is_err());
+}
