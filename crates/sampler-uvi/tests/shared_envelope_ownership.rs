@@ -173,14 +173,19 @@ fn promoted_constant_property_representation_keeps_its_separate_publication_law(
 }
 
 #[test]
-fn cached_non_plain_dahdsr_keeps_its_unproved_activation_boundary() {
+fn non_plain_dahdsr_output_translates_with_an_activation_ownership_warning() {
     let source = r#"<DAHDSR Name="Amp"/>"#;
     let pitch = r#"<SignalConnection Source="$Program/Amp" Destination="Pitch" Ratio="0.1"/>"#;
     let output = r#"<SignalConnection Source="$Program/Amp" Destination="Gain" Ratio="0.5"/>"#;
     for prefix in [pitch, ""] {
-        let reason = refused(&xml(source, prefix, "", output));
-        assert!(reason.contains("shared output source node"), "{reason}");
-        assert!(reason.ends_with("source activation ownership is unproved"), "{reason}");
+        let instrument = sampler_uvi::translate(&xml(source, prefix, "", output), Path::new(".")).unwrap().instrument;
+        instrument.validate().unwrap();
+        // The shared source is approximated per voice and owned by the routing keygroup.
+        let warnings: Vec<_> = instrument.unsupported.iter()
+            .filter(|item| item.value.contains("activation ownership is unproved"))
+            .collect();
+        assert_eq!(warnings.len(), 1, "{:?}", instrument.unsupported);
+        assert_eq!(warnings[0].reason, ir::Reason::UnknownLaw);
     }
 }
 
