@@ -249,6 +249,8 @@ pub(crate) mod ring_ramp;
 pub(crate) mod rotator;
 pub(crate) mod space;
 pub(crate) mod timemod;
+pub(crate) mod tpt_svf;
+pub(crate) mod db_limiter;
 pub(super) mod control;
 pub use ar::ArSettings;
 pub use filter::Settings as FilterSettings;

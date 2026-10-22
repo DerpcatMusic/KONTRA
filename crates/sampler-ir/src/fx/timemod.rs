@@ -73,10 +73,33 @@ pub struct Feedback {
     pub highpass: f64,
     /// Soft saturation in the loop (0 = off); unity small-signal gain.
     pub drive: f64,
+    /// Lowpass and highpass in series on the recirculated signal, before the matrix.
+    pub cut: Option<Cut>,
 }
 
 impl Feedback {
-    pub const OFF: Self = Self { matrix: [[0.; 2]; 2], source: 0, lowpass: 0., highpass: 0., drive: 0. };
+    pub const OFF: Self = Self { matrix: [[0.; 2]; 2], source: 0, lowpass: 0., highpass: 0., drive: 0., cut: None };
+}
+
+/// A highpass and a lowpass in series, in Hz; `None` bypasses a stage. Realised as TPT
+/// state-variable sections (sampler-core `dsp::tpt_svf`).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cut {
+    pub highpass_hz: Option<f32>,
+    pub lowpass_hz: Option<f32>,
+}
+
+/// Log sweep `lo (hi / lo)^v` over a 0..1 control. Kontakt Replika LOWCUT uses 10 Hz to 1 kHz
+/// (`10^(2v+1)`, decompile `141abe6a0`).
+pub fn log_sweep_hz(v: f32, lo: f32, hi: f32) -> f32 {
+    lo * (hi / lo).powf(v)
+}
+
+/// Linear sweep `lo + (hi - lo) v` over a 0..1 control. Kontakt Replika HIGHCUT uses 200 Hz to
+/// 20 kHz (`200 + 19800 v`, decompile `141abe820`).
+pub fn linear_sweep_hz(v: f32, lo: f32, hi: f32) -> f32 {
+    lo + (hi - lo) * v
 }
 
 /// A native Kontakt delay-line kernel that replaces the generic line
@@ -921,6 +944,9 @@ impl Config {
             }
             if !(0. ..=1.).contains(&l.feedback.lowpass) || !(0. ..1.).contains(&l.feedback.highpass) {
                 return Err("feedback filter");
+            }
+            if l.feedback.cut.is_some_and(|c| [c.highpass_hz, c.lowpass_hz].into_iter().flatten().any(|hz| !(hz.is_finite() && hz > 0.))) {
+                return Err("feedback cut");
             }
             if l.feedback.source >= l.tap_count {
                 return Err("feedback source");

@@ -38,6 +38,24 @@ fn wrap(l: Line, lfo: Lfo) -> Config {
     Config { address: None, line: Some(l), allpass: None, order: Order::LineThenAllpass, lfo, dry: 0., wet: 1. }
 }
 
+/// The in-loop cut filters only the recirculated signal: with a zero feedback matrix the output
+/// is bit-identical to the uncut line, and with feedback the repeats change.
+#[test]
+fn loop_cut_acts_only_through_the_feedback_matrix() {
+    use sampler_ir::fx::timemod::Cut;
+    let cut = Cut { highpass_hz: Some(300.), lowpass_hz: Some(2000.) };
+    let input = impulse(400, [1., 0.5]);
+    let run_with = |matrix: [[f64; 2]; 2], cut: Option<Cut>| {
+        let mut l = line(&[Tap::at(DelayTime::Frames(20))], 10.);
+        l.feedback = Feedback { matrix, cut, ..Feedback::OFF };
+        run(wrap(l, LFO_OFF), 48_000, 120., &input, 64).0
+    };
+    let zero = [[0.; 2]; 2];
+    assert_eq!(run_with(zero, None), run_with(zero, Some(cut)));
+    let fed_back = [[0.5, 0.], [0., 0.5]];
+    assert_ne!(run_with(fed_back, None), run_with(fed_back, Some(cut)));
+}
+
 #[test]
 fn integer_delay_impulse_and_feedback_repeats() {
     let (out, fault) = run(Config::delay(5, [[0.5, 0.], [0., 0.]], 0., 1.), 48_000, 120., &impulse(20, [1., 2.]), 64);
@@ -125,7 +143,7 @@ fn output_is_independent_of_block_partition() {
     l.voices = 3;
     l.voice_phase = 0.5;
     l.voice_spread = 0.8;
-    l.feedback = Feedback { matrix: [[0.3, 0.1], [0.1, 0.3]], source: 0, lowpass: 0.5, highpass: 0.1, drive: 0.5 };
+    l.feedback = Feedback { matrix: [[0.3, 0.1], [0.1, 0.3]], source: 0, lowpass: 0.5, highpass: 0.1, drive: 0.5, cut: None };
     let mut cfg = wrap(l, Lfo { shape: LfoShape::Triangle, rate: Rate::Hz(3.), phase: 0.1 });
     cfg.allpass = Some(Allpass { stages: 6, law: SweepLaw::Sweep { min_hz: 200., max_hz: 3000., depth: 1. }, feedback: 0.3 });
     cfg.dry = 0.5;
@@ -176,7 +194,7 @@ fn phaser_filter_matches_native_four_stage_impulse() {
 #[test]
 fn loops_stay_bounded_and_nonfinite_input_faults() {
     let mut l = line(&[Tap::at(DelayTime::Ms(3.))], 5.);
-    l.feedback = Feedback { matrix: [[0.9, 0.], [0., 0.9]], source: 0, lowpass: 0.7, highpass: 0.05, drive: 4. };
+    l.feedback = Feedback { matrix: [[0.9, 0.], [0., 0.9]], source: 0, lowpass: 0.7, highpass: 0.05, drive: 4., cut: None };
     let loud = vec![[50., -50.]; 500];
     let (out, fault) = run(wrap(l, LFO_OFF), 1000, 120., &loud, 64);
     assert!(!fault && out.iter().all(|f| f[0].abs() < 600. && f[1].abs() < 600.));

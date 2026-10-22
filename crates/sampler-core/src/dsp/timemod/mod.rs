@@ -9,6 +9,7 @@
 //! (Legacy Phaser audio 0x140aa3830, 0x1409619b0, speed getter 0x140a736a0;
 //! Phaser filter 0x1407c9a70). Interpolation, pan, saturation and the sweep
 //! law are generic.
+use super::tpt_svf::{Cut as LoopCut, CutState, State};
 use super::{Planar, ProcessorState, flush};
 use crate::Error;
 use sampler_ir::fx::timemod::{
@@ -127,7 +128,13 @@ pub(crate) struct TimeMod {
     oscillator: Oscillator,
     /// The voice bank (`Native::VoiceBank`).
     bank: Option<Box<voices::Bank>>,
+    /// In-loop cut (`Feedback::cut`) and the first of its [`CUT_FRAMES`] state frames.
+    cut: Option<LoopCut>,
+    cut_at: usize,
 }
+
+/// Slab frames for the in-loop cut: `[lowpass s0, lowpass s1, highpass s0, highpass s1]`, each `[L, R]`.
+const CUT_FRAMES: usize = 4;
 
 #[derive(Clone, Copy)]
 enum PhaseShape { Triangle, Saw, Square }
@@ -342,6 +349,8 @@ impl TimeMod {
         let tap_at = fb_at + 2;
         let lfo_used = cfg.line.is_some_and(|l| l.taps[..taps].iter().any(|t| t.depth_ms > 0.))
             || cfg.allpass.is_some_and(|a| !matches!(a.law, SweepLaw::Filter { .. }));
+        let cut = cfg.line.and_then(|l| l.feedback.cut).map(|c| LoopCut::new(c, rate as f32));
+        let cut_at = if bank.is_some() { cap } else { tap_at + if cfg.line.is_some() { MAX_TAPS } else { 0 } };
         Ok(Self {
             cfg,
             rate,
@@ -349,7 +358,9 @@ impl TimeMod {
             ap_at,
             fb_at,
             tap_at,
-            frames: if bank.is_some() { cap } else { tap_at + if cfg.line.is_some() { MAX_TAPS } else { 0 } },
+            frames: cut_at + if cut.is_some() { CUT_FRAMES } else { 0 },
+            cut,
+            cut_at,
             heads,
             taps,
             voices,
@@ -540,6 +551,10 @@ impl TimeMod {
         let any_beats = self.heads[..self.taps].iter().any(|h| matches!(h.time, DelayTime::Beats(_)));
 
         let (mut position, mut filled) = (state.delay_position as usize, state.delay_filled as usize);
+        // The cut's states live in the slab; the slab's stale contents are never read.
+        if self.cut.is_some() && filled == 0 {
+            slab[self.cut_at..self.cut_at + CUT_FRAMES].fill([0.; 2]);
+        }
         let mut finite = true;
         let [left, right] = block;
         let mut coefficient = [0f32; 2];
@@ -680,7 +695,19 @@ impl TimeMod {
                         }
                     }
                 }
-                // Recirculating path: loop filters, then saturation.
+                // Recirculating path: the in-loop cut, loop filters, then saturation.
+                if let Some(cut) = &self.cut {
+                    let at = self.cut_at;
+                    for c in 0..2 {
+                        let mut st: CutState = [
+                            State { s0: slab[at][c] as f32, s1: slab[at + 1][c] as f32 },
+                            State { s0: slab[at + 2][c] as f32, s1: slab[at + 3][c] as f32 },
+                        ];
+                        fed[c] = f64::from(cut.tick(&mut st, fed[c] as f32));
+                        (slab[at][c], slab[at + 1][c]) = (f64::from(st[0].s0), f64::from(st[0].s1));
+                        (slab[at + 2][c], slab[at + 3][c]) = (f64::from(st[1].s0), f64::from(st[1].s1));
+                    }
+                }
                 let fb = &line.feedback;
                 for c in 0..2 {
                     if fb.lowpass > 0. {
