@@ -15,6 +15,9 @@ saved-file loader only. Each step is one MIDI note (60 + step number) held for t
 is cut at each step's impulse onset.
 
 render.py runs the single Kontakt session (private PipeWire null sink). No other Kontakt or Wine process may run.
+
+Result of the first two renders (2026-10-22, Kontakt 8.13.1): no step moved the output. The committed capture is
+docs/re/engine/vectors/replika-init-reload-noop.tsv (INIT output), not a vector for the listed parameters.
 """
 import subprocess
 import sys
@@ -42,9 +45,9 @@ STEPS = [
     ("time_only", [("RDL_TIME", 500000)]),
     ("feedback_0", [("RDL_FEEDBACK", 0)]),
     ("saturation_max", [("RDL_SATURATION", 1000000)]),
-    ("pingpong_on", [("RDL_PINGPONG", 1000000)]),
     ("highcut_0", [("RDL_HIGHCUT", 0)]),
 ]
+# PINGPONG is not in the first render (one vector plus controls only); add a step when a second render is justified.
 VECTOR = "vector"
 
 
@@ -97,8 +100,10 @@ out:close()
 def make_midi(path: Path) -> None:
     ev = []
     for n in range(1, len(STEPS) + 1):
-        t, note = LEAD + (n - 1) * PERIOD, 59 + n
-        ev += [(t, bytes([0x90, note, 100])), (t + HOLD, bytes([0x80, note, 0]))]
+        # The reloaded instrument of step n sits on MIDI channel n (kt.load_instrument returned index 128*(n-1)
+        # in the first render), so step n's note goes out on channel n, not on channel 1.
+        t, note, ch = LEAD + (n - 1) * PERIOD, 59 + n, n - 1
+        ev += [(t, bytes([0x90 | ch, note, 100])), (t + HOLD, bytes([0x80 | ch, note, 0]))]
     trk, last = b"\x00\xff\x51\x03" + (500000).to_bytes(3, "big"), 0
     for t, m in sorted(ev, key=lambda e: e[0]):
         tick = round(t * 960)
