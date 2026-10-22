@@ -141,7 +141,7 @@ not read in this pass.
 | Stereo Modeller pseudo delay | implemented, tested | KONTRA_DSP_LAWS | matched (settled path) |
 | Stereo Modeller channel layouts, base reset, latency | missing | none | open |
 | Stereo Tune (0x70) | bus-scope stage lowered; core bit-exact to kemu | catalog reader schema, kemu vectors | partial (script writes, voice scope open) |
-| Surround Panner (0x1d v0x70) | diagnosed; no DSP | fx_other.tsv bindings | missing (matrix, pan law, LFE) |
+| Surround Panner (0x1d v0x70) | stereo out lowered (bus, static mix); multichannel/LFE NotModeled | fx_other.tsv bindings, kemu record path | static 2x2 `StereoMatrix`; LFE route, multichannel missing |
 | Instrument bus static pan | implemented on shared Pan/Balance stage, tested | kontakt-bus-pan.md | matched (static) |
 | Bus live pan slew | law confirmed (±20/sr, threshold), not wired | decomp `FUN_140824910`, `FUN_140823d70` | missing (control plumbing) |
 | Bus fader ramp (1/180, ratio 1.001/0.999) | law confirmed | decomp `FUN_140824910` | law confirmed; engine check pending |
@@ -152,7 +152,9 @@ not read in this pass.
 
 - `build-slot cargo test -p sampler-kontakt --lib unproved_spatial` passes.
   It checks that Stereo Tune and Surround Panner surface a named NotModeled
-  note and produce no processors.
+  note and produce no processors (voice scope).
+- `build-slot cargo test -p sampler-kontakt --lib surround` passes: the stereo-out lowering matches
+  every kemu fixture case in the subset at 1e-5, and the saved record lowers to one `StereoMatrix` on a bus.
 - Existing Stereo Modeller and bus-pan tests were not rerun in this pass.
 
 ## Next

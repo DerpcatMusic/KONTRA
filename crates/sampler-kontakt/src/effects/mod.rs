@@ -269,6 +269,8 @@ pub(crate) enum Params {
     TimeMod(timemod::Unit),
     /// `BParFXStereoTune` (version 0x10): split, drift, spread, mix (reader `0x140ac6120`, 16 bytes).
     StereoTune([f32; 4]),
+    /// `BParFXSurroundPanner` (version 0x70): parsed by `surround::read`, not lowered yet.
+    SurroundPanner(surround::Record),
     /// Linear gain.
     Gainer {
         gain: f32,
@@ -462,6 +464,7 @@ impl Slot {
                 invert: r.flag()?,
                 swap: r.flag()?,
             },
+            0x1d if self.version == 0x70 => Params::SurroundPanner(surround::read(&mut r)?),
             0x1d => Params::Saturation {
                 shape: r.f32()?,
                 mode: r.i32()? as f32,
@@ -898,8 +901,11 @@ pub(crate) fn chain_with(
             Some(Params::Distortion { mode, drive, damping }) => {
                 modelled = color::slot_distortion(&mut b, &site, &mut notes, *mode, *drive, *damping)
             }
-            // 0x1d is also the Surround Panner (version 0x70): not a shaper.
-            Some(Params::Saturation { .. }) if fx.version == 0x70 => modelled = false,
+            // Bus scope, stereo out: a fixed mix (surround.rs). Voice and group inserts are NotModeled.
+            Some(Params::SurroundPanner(rec)) if scope == Scope::Bus => {
+                modelled = surround::slot_surround_panner(&mut b, &site, rec)
+            }
+            Some(Params::SurroundPanner(_)) => modelled = false,
             Some(Params::Saturation { shape, mode }) => {
                 modelled = color::slot_saturation(&mut b, &site, &mut notes, *shape, *mode)
             }
@@ -1103,6 +1109,7 @@ pub(crate) mod color;
 pub(crate) mod mangling;
 pub(crate) mod ringmod;
 pub(crate) mod stereotune;
+pub(crate) mod surround;
 
 #[cfg(test)]
 mod test_support;
@@ -1829,7 +1836,7 @@ mod tests {
     }
 
 
-    /// Stereo Tune and Surround Panner have no proved law: each must surface a
+    /// Stereo Tune and Surround Panner on a voice have no proved law: each must surface a
     /// named diagnostic and pass audio through, never a silent or invented DSP.
     #[test]
     fn unproved_spatial_modules_are_named_and_pass_through() {
