@@ -1,13 +1,13 @@
-//! `on persistence_changed` that waits is scheduled for the runtime, but its
-//! `set_engine_par` writes are load-time engine state (Kontakt applies them at load).
+//! `on persistence_changed` that waits is scheduled for the runtime, but the
+//! `set_engine_par` writes it makes before its first wait are load-time engine state.
 #[test]
 fn scheduled_persistence_engine_writes_reach_init_writes() {
     let source = r#"
 on init
 end on
 on persistence_changed
-    wait(1)
     set_engine_par($ENGINE_PAR_GAIN1, 500000, 7, 5, -1)
+    wait(1)
 end on
 "#;
     let writes = sampler_ksp::init_engine_pars(
