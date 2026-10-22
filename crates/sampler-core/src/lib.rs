@@ -1320,7 +1320,8 @@ impl Runtime {
             plans.insert(Generation {
                 script_revision: 0,
                 native_cycle: 0,
-                native_seed: 0,
+                native_random: native_start::NativeRandom::new(0),
+                native_draw: 0,
                 request: 0,
                 allocation: allocation::AllocationState::new(&plan),
                 sequences: variation::SequenceState::new(&plan),
@@ -2037,10 +2038,12 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
             .native_start
             .is_empty()
         {
+            let rows = u64::from(self.plans.get(plan.0).unwrap().prepared.native_random_rows);
             let generation = self.plans.get_mut(plan.0).unwrap();
+            generation.native_draw = generation.native_random.below(rows) as u32;
             let state = self.performance_state.edit(performance);
             state.native_tick = generation.native_cycle;
-            state.native_seed = generation.native_seed;
+            state.native_draw = generation.native_draw;
             generation.native_cycle = generation.native_cycle.wrapping_add(1);
             self.performance_state.sync_metadata(performance);
         }

@@ -156,3 +156,14 @@ fn random_rows_match_their_own_ordinal_so_two_rows_joined_by_and_never_pass() {
     assert!(picks.iter().all(|p| !p.contains(&0)), "{picks:?}");
     assert!(picks.iter().any(|p| p == &[1]), "{picks:?}");
 }
+
+#[test]
+fn random_start_draws_follow_the_native_mt_stream() {
+    // One MT19937 draw per admitted note, seeded 5489 (reference stream), mapped
+    // onto rows 0..3 with Kontakt's random(0, 2) law. Picks computed from the
+    // MT19937 reference vector, not from this engine.
+    let mut rt = runtime(vec![vec![row(StartTest::Random, StartJoin::And)]; 3], None);
+    rt.reset_native_cycles(5489);
+    let picks: Vec<Vec<usize>> = (0..12).map(|i| selected(&mut rt, i)).collect();
+    assert_eq!(picks, [2, 0, 2, 2, 0, 2, 2, 0, 1, 0, 0, 1].map(|g| vec![g]));
+}
