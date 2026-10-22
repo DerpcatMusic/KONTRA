@@ -119,7 +119,7 @@ The "zones rejected by group selection" counts (Areia 1,122 zones; Dolce 7 1st V
 | Reals are 64-bit doubles; `real_to_int` outside i32 overflows (manual p.46) | S | saturating (`as i32`) | **mismatch**: Kontakt overflows, we saturate; rare |
 | Array read out of bounds | I (previous audit) | reads 0 / "" with a warning; writes dropped (`eval.rs:308-334`, `405-423`) | unknown (as audited) |
 | Real to text | not documented | shortest round trip with `.0` for integral values (`eval.rs:69-75`, a `ponytail` comment) | unknown; affects scripts that build text from reals |
-| String compare, `&` concat, `sh_left` etc. | S | native ops; only ASCII case rules for `find_group` (eq_ignore_ascii_case, `lower.rs:1655`) | unknown |
+| String compare, `&` concat, `sh_left` etc. | S | native ops; `find_group`/`get_group_idx` are exact, case-sensitive byte compares in Kontakt 8 (lookup helper, miss returns -1 with the "Group ... was not found" message), now matched in constant lowering, runtime `TextFind` and the init evaluator | match (E, decompile) |
 | `wait(t)` microseconds -> frames; `wait(0)` continues | S | `lower.rs:1608-1625`, `behavior.rs:1947` | match |
 | `wait_ticks(n)` | S (tempo-relative) | fixed 520 us per tick (`lower.rs:1612`), i.e. 120 BPM; real value 500000/960 = 520.83 us, tempo ignored | mismatch; 0 corpus uses (M) |
 | Callback continuation after note-off | not documented in the manual extract | `WaitLifetime::Gate` default (`behavior.rs:31-35`) | unknown |
