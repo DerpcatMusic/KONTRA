@@ -152,3 +152,30 @@ Steps 1 and 2 of the follow-up, settled from data and the decompile. No fix.
 Open: the mechanism that makes a `note_off` on a silent attack voice produce a sound about 20 ms
 later that peaks about 180 ms after that. The next probe should read the attack voice's envelope and
 gain state at `note_off` in KONTRA (`crates/sampler-ksp` event state), not the release gate.
+
+## Dolce Staccato burst: the mechanism is the cold-onset path; KONTRA never takes it (2026-10-22, sixth pass)
+
+Probed KONTRA's `render-kontakt` (notes 60/62/58/65, 1 s each at 0/3/6/9 s, velocity 100) with
+temporary eprintln probes (not committed; diff kept in scratch). Findings:
+
+- **Admission.** All 216 source admissions of the Staccato sample are `resident = true`, `runway = 0`
+  (`crates/sampler-core/src/stream.rs`, `check_source_ready`: a resident asset returns early). So no
+  voice ever takes the cold path.
+- **Note_off.** At frame 48128 (1.002 s) the key-60 family has 72 voices, all `held = false`,
+  `runway = 0`, envelope level 0.01376. The release starts from that ramp level, so there is no burst.
+- **Why Kontakt is exact 0.0.** The engine already has the cold-onset model. A cold voice
+  (`Cursor::cold`, `cold_hold`, `render_starved`) is silent while its window is not resident, and
+  `ownership.rs` releases a held voice with `release_onset`: release from sustain, and the clock
+  waits for the first complete window (`pending_start_runway` 1019 frames, about 21 ms at 48 kHz).
+  That is Kontakt's shape: exact silence during the hold, then a sustain-level burst about 20 ms
+  after note_off. The 1019-frame runway matches the measured 1.02 s onset.
+- **Conclusion.** The burst is produced by the existing cold-onset release path. KONTRA's offline
+  render treats the Dolce sample as resident, so the path never fires and the attack ramp plays
+  instead (about 0.0002). The gap is the residency/preload policy for this asset, not the
+  envelope, the curve law, or the release gate. Envelope law and the `ATK_CURVE` coefficient match
+  the documented converter (`docs/re/engine/k-mod-envelopes.md`).
+- **Still open.** What makes Kontakt's window non-resident during the hold and resident at
+  note_off (Kontakt's preload or stream policy for a sample at this start offset). The decompile
+  bucket for the stream/preload path is the next thing to read. No engine fix is made: a residency
+  policy change needs Kontakt evidence beyond this one oracle, and no vector test can be written
+  until that policy is known.
