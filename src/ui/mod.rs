@@ -534,6 +534,8 @@ struct EditorState {
     bodies: HashMap<usize, f64>,
     /// Where each sized part's stage is scrolled to (where it glides to).
     patch_y: HashMap<usize, f64>,
+    /// Each part's shown interface at its width, as last laid out: the part's natural stage height.
+    face_natural: HashMap<usize, f64>,
     /// Each preset's neighbors in its library folder, of which scan and shelf.
     neighbors: (
         std::sync::Weak<Vec<PathBuf>>,
@@ -1228,6 +1230,7 @@ fn build(
         resizing: None,
         bodies: HashMap::new(),
         patch_y: HashMap::new(),
+        face_natural: HashMap::new(),
         neighbors: Default::default(),
         started: Instant::now(),
         computer,

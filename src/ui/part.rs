@@ -430,7 +430,7 @@ pub(super) fn interaction(edit: &ir_view::Edit) -> sampler_core::WidgetInteracti
 }
 
 /// `slot`'s library interface, when its scripts declare one.
-fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<El> {
+fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<(El, f64)> {
     use crate::plugin::ui_activity::{Count, Phase};
     let activity = cx.p.shared.ui_activity.clone();
     let projection = activity.span(Phase::UiProjectionSync);
@@ -568,7 +568,13 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         .scene()
         .and_then(|s| s.surface(&format!("face-{slot}")))
         .map_or(f64::from(page.size.width), |s| s.frame.size.width);
-    let room = room_height(ui, slot);
+    // The page-tab bar sits in the stage's viewport above the page, so the page
+    // fills the room the bar leaves; the bar's height is as last laid out.
+    let tabs_h = ui
+        .scene()
+        .and_then(|s| s.surface(&format!("face-bar-{slot}")))
+        .map_or(0., |s| s.frame.size.height);
+    let room = (room_height(ui, slot) - tabs_h).max(0.);
     let scale = scale_to_fit(
         Size::new(avail, room),
         Size::new(
@@ -577,6 +583,24 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         ),
         cx.settings.view_scale,
     );
+    // The page at the width it has, whatever the room: the part's natural height.
+    // The room is the viewport's, which the bar and this page fill, so it cannot
+    // stand in for the page's own height without the part growing on every frame.
+    let native_shown = mode != crate::library::ViewMode::Kontra && face.native.is_some();
+    let authored = match face.native.as_ref() {
+        Some(native) if native_shown => native.authored(),
+        _ => Size::new(
+            f64::from(page.size.width),
+            f64::from(ir_view::height(&face.face, face.page)),
+        ),
+    };
+    let natural = tabs_h
+        + authored.height
+            * scale_to_fit(
+                Size::new(avail, 0.),
+                authored,
+                cx.settings.view_scale,
+            );
     // The core's values (scripts change them too); edits go back as widget edits.
     let shared = cx.p.shared.part(slot);
     face.assets.meter = shared.clone().map(|part| {
@@ -804,7 +828,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             }
         }
     }
-    Some(
+    Some((
         col![
             row(bar)
                 .id(format!("face-bar-{slot}"))
@@ -825,7 +849,8 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         .align(Align::Stretch)
         .w(Len::Pct(100.))
         .shrink(0),
-    )
+        natural,
+    ))
 }
 
 /// The empty rack.
@@ -1055,10 +1080,12 @@ pub fn header_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (inside::View, Optio
 /// The picked view's body: its interface, articulations, mapping, sound or info.
 pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize, view: inside::View) -> El {
     let content = if view == inside::View::Interface
-        && let Some(face) = interface(ui, cx, slot, None)
+        && let Some((face, natural)) = interface(ui, cx, slot, None)
     {
+        cx.state.face_natural.insert(slot, natural);
         face
     } else {
+        cx.state.face_natural.remove(&slot);
         // Every tab reaches the part's bottom edge, like the interface does; taller
         // content still grows the part and scrolls the rack.
         let room = room_height(ui, slot);
