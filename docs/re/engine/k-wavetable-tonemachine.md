@@ -64,7 +64,7 @@ path (`lower.rs`) sets the form-mode range to 0..33 and other values to 0..1.
 ### Behaviour and edge cases (repo-verified)
 
 - Cycle length is always 2048 frames. The source sample rate and mapped root do not set the fundamental (`source.rs`: 440 Hz × 2048 / output rate step).
-- Table must be complete 2048-frame cycles; otherwise `Table::new` returns `None` and playback is refused.
+- Table starts on a 2048-frame boundary and holds at least one cycle; `Table::new` floors to whole cycles and ignores a trailing partial cycle (v1 behaviour, Kontakt's partial-cycle rule not recovered). The loader (`load.rs`, `wavetable_cycles_admitted`) admits the same geometry; a misaligned start or a sub-cycle zone is dropped.
 - Phase stays inside one cycle across block seams.
 - Readout is 4-tap Hermite (`hermite`, v1 arithmetic) per cycle, then linear blend between the two cycles selected by `position`.
 - Key tracking must be on (`admitted` checks `key_tracking`); otherwise the group is reported, not played as a wavetable.

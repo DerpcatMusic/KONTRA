@@ -354,6 +354,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn view_name_reads_only_one_literal_name_requested_in_init() {
+        // Kontakt evaluates the name at the call; these forms are not resolved here and the
+        // host reports them instead of loading a view silently.
+        for (body, expected) in [
+            (r#"load_performance_view("A")"#, Some("A")),
+            (r#"load_performance_view("A" & "B")"#, None),
+            (r#"load_performance_view("A") load_performance_view("B")"#, None),
+        ] {
+            let source = format!("on init {body} end on");
+            assert_eq!(super::view_name(&source), expected, "{body}");
+        }
+        let note = r#"on note load_performance_view("A") end on"#;
+        assert_eq!(super::view_name(note), None);
+    }
+
+    #[test]
     fn imported_ui_fields_are_no_longer_reported_as_losses() {
         let bytes = br#"{"value":{"performanceView":{"controls":[
             {"index":1,"value":{"common":{"id":"Button"},"text":{"font":{"type":3,"custom":"Custom"},

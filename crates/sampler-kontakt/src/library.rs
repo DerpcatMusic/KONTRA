@@ -961,11 +961,27 @@ fn group_engine_write(writes: &[sampler_ksp::EnginePar], parameter: &str, group:
 
 /// The Beat Machine controls of a stored mode-4 record: `slice_float_1` is Slice Atk and
 /// `slice_float_2` Slice Rel (both milliseconds, in control order), `slice_flag_1` the flag.
-fn beat_slices_from_record(params: &ni_file::kontakt::objects::BParSrcMode) -> Option<ir::BeatSlices> {
+fn beat_slices_from_record(
+    params: &ni_file::kontakt::objects::BParSrcMode,
+) -> Option<ir::BeatSlices> {
     use ni_file::kontakt::objects::SourceValue as V;
-    let value = |name: &str| params.fields.iter().find(|f| f.name == name).map(|f| f.value);
-    match (value("slice_float_1")?, value("slice_float_2")?, value("slice_flag_1")?) {
-        (V::Float(attack_ms), V::Float(release_ms), V::Flag(flag)) => Some(ir::BeatSlices { attack_ms, release_ms, flag }),
+    let value = |name: &str| {
+        params
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.value)
+    };
+    match (
+        value("slice_float_1")?,
+        value("slice_float_2")?,
+        value("slice_flag_1")?,
+    ) {
+        (V::Float(attack_ms), V::Float(release_ms), V::Flag(flag)) => Some(ir::BeatSlices {
+            attack_ms,
+            release_ms,
+            flag,
+        }),
         _ => None,
     }
 }
@@ -1722,12 +1738,22 @@ impl Translation {
                     beat_slices = match group.source_params() {
                         Ok((params, _)) => beat_slices_from_record(&params),
                         Err(error) => {
-                            self.unsupported(&at, "beat machine source record", error, ir::Reason::Unknown);
+                            self.unsupported(
+                                &at,
+                                "beat machine source record",
+                                error,
+                                ir::Reason::Unknown,
+                            );
                             None
                         }
                     };
                     if beat_slices.is_none() {
-                        self.unsupported(&at, "beat machine slice controls missing", source.mode, not_modeled);
+                        self.unsupported(
+                            &at,
+                            "beat machine slice controls missing",
+                            source.mode,
+                            not_modeled,
+                        );
                     }
                 }
             }
@@ -7110,15 +7136,30 @@ mod time_machine_tests {
     #[test]
     fn beat_machine_slice_fields_map_to_atk_rel_and_flag() {
         use ni_file::kontakt::objects::{BParSrcMode, SourceField, SourceValue as V};
-        let field = |name: &'static str, value| SourceField { offset: 0, name, value };
-        let record = |fields: Vec<SourceField>| BParSrcMode { version: 0x106, mode: 4, fields, bytes: 0 };
+        let field = |name: &'static str, value| SourceField {
+            offset: 0,
+            name,
+            value,
+        };
+        let record = |fields: Vec<SourceField>| BParSrcMode {
+            version: 0x106,
+            mode: 4,
+            fields,
+            bytes: 0,
+        };
         let full = record(vec![
             field("slice_float_1", V::Float(32.0)),
             field("slice_float_2", V::Float(600.0)),
             field("slice_flag_1", V::Flag(true)),
         ]);
-        assert_eq!(beat_slices_from_record(&full), Some(ir::BeatSlices { attack_ms: 32.0, release_ms: 600.0, flag: true }));
-        assert_eq!(beat_slices_from_record(&record(vec![field("slice_float_1", V::Float(1.0))])), None);
+        let expected = ir::BeatSlices {
+            attack_ms: 32.0,
+            release_ms: 600.0,
+            flag: true,
+        };
+        assert_eq!(beat_slices_from_record(&full), Some(expected));
+        let partial = record(vec![field("slice_float_1", V::Float(1.0))]);
+        assert_eq!(beat_slices_from_record(&partial), None);
     }
 }
 

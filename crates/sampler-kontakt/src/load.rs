@@ -433,13 +433,13 @@ fn finish_sources_kept(
             && (wavetable || fit_keys(zone, group_tune, ratio, &mut report));
         if playable[index]
             && wavetable
-            && (zone.playback.start % 2048 != 0
-                || (zone.playback.end.unwrap_or(audio.frame_count() as u64) - zone.playback.start)
-                    % 2048
-                    != 0)
+            && !wavetable_cycles_admitted(
+                zone.playback.start,
+                zone.playback.end.unwrap_or(audio.frame_count() as u64),
+            )
         {
             report.push((
-                "wavetable requires complete 2048-frame cycles, zone dropped",
+                "wavetable requires a cycle-aligned start and one 2048-frame cycle, zone dropped",
                 "invalid cycle geometry".into(),
             ));
             playable[index] = false;
@@ -606,6 +606,13 @@ fn fit_keys(
         zone.keys = keys;
     }
     true
+}
+
+/// Engine wavetables read whole 2048-frame cycles from a cycle-aligned start and
+/// ignore a trailing partial cycle (`wavetable::Table::new`), so only the start
+/// and one full cycle are required here.
+fn wavetable_cycles_admitted(start: u64, end: u64) -> bool {
+    start % 2048 == 0 && end.checked_sub(start).is_some_and(|frames| frames >= 2048)
 }
 
 /// Fit authored sample positions to the decoded audio the way Kontakt
@@ -931,6 +938,16 @@ pub(crate) fn initialize_scripts_with_zones(
                         reason: ir::Reason::InvalidValue,
                     }),
                 }
+            } else if behavior.source.contains("load_performance_view") {
+                // Kontakt evaluates the file name at the call; only one literal name
+                // in on init is read here, so other forms leave the view empty.
+                views.push(ir::Unsupported {
+                    location: behavior.name.clone(),
+                    feature: "performance view".into(),
+                    value: "load_performance_view name is not one literal in on init; no view is read"
+                        .into(),
+                    reason: ir::Reason::NotModeled,
+                });
             }
             let mut environment = script_environment_with_zones(
                 behavior,
@@ -2068,6 +2085,17 @@ mod diagnostic_tests {
             }),
             "a successful projection must retain its UI gap in the instrument load report"
         );
+    }
+
+    #[test]
+    fn wavetable_admits_partial_trailing_cycle_but_not_misaligned_start() {
+        // corpus gap: zones whose length is not whole cycles were dropped here,
+        // while the engine's Table::new already floors to whole cycles.
+        assert!(wavetable_cycles_admitted(0, 3 * 2048 + 100));
+        assert!(wavetable_cycles_admitted(4096, 4096 + 2048));
+        assert!(!wavetable_cycles_admitted(64, 64 + 2 * 2048));
+        assert!(!wavetable_cycles_admitted(0, 100));
+        assert!(!wavetable_cycles_admitted(4096, 4096));
     }
 
     #[test]
