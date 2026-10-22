@@ -545,6 +545,7 @@ fn half_scale(lim: &mut DbLimiter, x: [f32; 2]) -> [f32; 2] {
     [y[0] * 2., y[1] * 2.]
 }
 
+mod deposit;
 mod design;
 mod mode1;
 mod read;
