@@ -11,7 +11,9 @@
 //! BFilterSimpleLP/HP/LPHP, BFilterDualSKF, BFilterBlueMonark, BFilterLadder_legacy,
 //! BFilterVowelA/B, BFilterVersatile.
 
+use super::{Lowering, Notes, Site, product};
 use sampler_ir::fx::filter::{Config, Fidelity, Gap, KontaktFx, Response, Topology, Variant};
+use sampler_ir::{Processor, Reason, SlotAddress};
 
 /// How a saved type is realised.
 enum Build {
@@ -275,6 +277,499 @@ mod tests {
                 panic!()
             };
             assert_eq!(i32::from(a.mode), id - 100);
+        }
+    }
+
+    use crate::effects::*;
+    use crate::effects::test_support::*;
+
+    /// The three KONTAKTFX record layouts decode to the core's knobs in native order.
+    #[test]
+    fn kontaktfx_filter_records_reach_their_cores() {
+        use sampler_ir::fx::filter::{KontaktFx, Variant};
+        let record = |kind: i32, head: &[u8], tail: usize, knobs: &[f32]| {
+            let mut public = head.to_vec();
+            public.extend(knobs.iter().flat_map(|v| v.to_le_bytes()));
+            public.extend((0..tail).flat_map(|_| kind.to_le_bytes()));
+            slot(0x18, public, 1.)
+        };
+        let k = |kind: i32, n: usize| (0..n).flat_map(|_| kind.to_le_bytes()).collect::<Vec<u8>>();
+        let simple = [k(120, 1), vec![1], k(120, 4)].concat();
+        let monark = [k(141, 2), 2i32.to_le_bytes().to_vec()].concat();
+        for (fx, expected) in [
+            (record(120, &simple, 0, &[0.7, 0.3]), KontaktFx::SimpleLpHp { lp: 0.7, hp: 0.3 }),
+            (record(130, &k(130, 3), 2, &[0.5, 0.25, 0.75, 0.125, 0.0]), KontaktFx::DualSkf([0.25, 0.125, 0.5, 0.75, 0.5])),
+            (
+                record(141, &monark, 3, &[0.5, 0.25, 2.5, 1.0, 0.0]),
+                KontaktFx::Monark { mode: 1, variant: 2, knobs: [0.5, 0.25, 0.5, 0.5, 1.0] },
+            ),
+        ] {
+            let built = chain(std::slice::from_ref(&fx), Scope::Voice);
+            assert!(
+                built.processors.iter().any(|p| matches!(p, sampler_ir::Processor::FilterBank(c) if c.variant == Variant::Kontakt(expected))),
+                "{expected:?}: {:?}",
+                built.processors
+            );
+        }
+    }
+
+    #[test]
+    fn ladder_and_daft_cutoff_routes_retain_the_authored_physical_slot() {
+        for kind in [33i32, 70, 71] {
+            let mut public = kind.to_le_bytes().to_vec();
+            if kind == 33 {
+                public.push(0);
+            }
+            public.extend(kind.to_le_bytes());
+            for value in [0.2f32, 0.5, 0.3] {
+                public.extend(value.to_le_bytes());
+            }
+            let slot = crate::effects::Slot {
+                slot: 5,
+                module: 0x18,
+                version: 0x92,
+                bypass: false,
+                output_gain: 1.,
+                dry_level: 0.,
+                output_set: false,
+                public,
+            };
+            for dynamic in [None, Some((7, -1))] {
+                let chain = crate::effects::chain_with(
+                    std::slice::from_ref(&slot),
+                    crate::effects::Scope::Voice,
+                    None,
+                    dynamic,
+                    (7, -1),
+                    &[],
+                );
+                let index = usize::from(dynamic.is_some());
+                assert_eq!(
+                    chain.filter_slots,
+                    vec![(5, index)],
+                    "native filter {kind} loses its addressed cutoff consumer"
+                );
+                assert!(matches!(
+                    chain.processors[index],
+                    sampler_ir::Processor::LadderLP4(_) | sampler_ir::Processor::Daft(_)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn native_ladder_lp4_import_preserves_signed_gain_and_record_version() {
+        let mut public = 33i32.to_le_bytes().to_vec();
+        public.push(0);
+        public.extend(33i32.to_le_bytes());
+        for value in [-0.25f32, 0.5, 0.3] {
+            public.extend(value.to_le_bytes());
+        }
+        let slot = crate::effects::Slot {
+            slot: 3,
+            module: 0x18,
+            version: 0x92,
+            bypass: false,
+            output_gain: 1.,
+            dry_level: 0.,
+            output_set: false,
+            public,
+        };
+        let chain = crate::effects::chain_with(
+            &[slot],
+            crate::effects::Scope::Voice,
+            None,
+            Some((7, -1)),
+            (7, -1),
+            &[],
+        );
+        assert!(only_law_notes(&chain.notes), "{:?}", chain.notes);
+        assert!(chain.processors.iter().any(|p| matches!(p,
+            sampler_ir::Processor::LadderLP4(d) if d.gain == -0.25
+                && d.cutoff == 0.5 && (d.resonance - 0.3).abs() < 1e-7
+                && d.record_version == 0x92)));
+    }
+
+    #[test]
+    fn morphology_ladder_lp1_record_selects_the_first_stage() {
+        // A saved v0x95 type-30 record: kind repeats, then gain 0, cutoff 1.0, resonance 0.
+        let hex = "1e000000001e0000001e0000001e000000001e00000000000000" .to_owned()
+            + "0000803f00000000";
+        let public: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let slot = crate::effects::Slot {
+            slot: 2,
+            module: 0x18,
+            version: 0x95,
+            bypass: false,
+            output_gain: 1.,
+            dry_level: 0.,
+            output_set: false,
+            public,
+        };
+        let chain = crate::effects::chain_with(&[slot], crate::effects::Scope::Voice, None, Some((7, -1)), (7, -1), &[]);
+        assert!(only_law_notes(&chain.notes), "{:?}", chain.notes);
+        assert!(chain.processors.iter().any(|p| matches!(p,
+            sampler_ir::Processor::LadderLP4(d) if d.taps == 1 && d.cutoff == 1.0
+                && d.resonance == 0.0 && d.record_version == 0x95)));
+    }
+
+    #[test]
+    fn adaptive_resonance_records_become_native_ar_modes() {
+        for (kind, mode) in [(100i32, 0u8), (106, 6), (108, 8)] {
+            let mut public = [kind.to_le_bytes(), kind.to_le_bytes()].concat();
+            for value in [0.5135f32, 0.25] {
+                public.extend(value.to_le_bytes());
+            }
+            let slot = crate::effects::Slot {
+                slot: 4,
+                module: 0x18,
+                version: 0x92,
+                bypass: false,
+                output_gain: 1.,
+                dry_level: 0.,
+                output_set: false,
+                public,
+            };
+            let chain = crate::effects::chain_with(&[slot], crate::effects::Scope::Voice, None, None, (7, -1), &[]);
+            assert!(chain.notes.is_empty(), "{:?}", chain.notes);
+            assert_eq!(chain.filter_slots, vec![(4, 0)]);
+            assert!(matches!(chain.processors[0],
+                sampler_ir::Processor::Ar(d) if d.mode == mode && d.cutoff == f64::from(0.5135f32)
+                    && d.resonance == 0.25));
+        }
+    }
+
+    #[test]
+    fn legacy_filters_keep_the_authored_slot_and_their_stored_knobs() {
+        // Saved types 2 (LP1) and 3 (HP1): the cascade core takes the stored knobs.
+        for (kind, cutoff, poles, response) in [
+            (2i32, 0.5996094f32, 1, sampler_ir::fx::filter::Response::LowPass),
+            (3, 0., 1, sampler_ir::fx::filter::Response::HighPass),
+        ] {
+            let mut payload = kind.to_le_bytes().repeat(2);
+            for value in [cutoff, 0.] {
+                payload.extend(value.to_le_bytes());
+            }
+            for scope in [Scope::Voice, Scope::Bus] {
+                let mut saved = slot(0x18, payload.clone(), 1.);
+                saved.slot = 5;
+                let out = chain(&[saved], scope);
+                assert!(
+                    !out.notes.iter().any(|(_, _, _, r)| *r == sampler_ir::Reason::NotModeled),
+                    "{kind}: {:?}",
+                    out.notes
+                );
+                assert_eq!(out.filter_slots, [(5, 0)]);
+                let sampler_ir::Processor::FilterBank(c) = out.processors[0] else {
+                    panic!("missing filter")
+                };
+                assert_eq!(c.topology, sampler_ir::fx::filter::Topology::Cascade);
+                assert_eq!((c.response, c.poles), (response, poles));
+                assert_eq!(c.cutoff, f64::from(cutoff));
+            }
+        }
+        let sampler_ir::Processor::FilterBank(c) = filter(2, 0.4, 0.7, &[]).unwrap().0[0] else {
+            panic!("missing filter")
+        };
+        assert_eq!((c.cutoff, c.resonance), (f64::from(0.4f32), f64::from(0.7f32)));
+    }
+
+    #[test]
+    fn sv_filters_are_native_cascade_classes() {
+        use sampler_ir::fx::filter::{Topology, Variant};
+        let sampler_ir::Processor::FilterBank(c) = filter(52, 0.293, 0.0, &[]).unwrap().0[0] else {
+            panic!()
+        };
+        assert_eq!((c.topology, c.variant, c.cutoff as f32), (Topology::Cascade, Variant::Sv, 0.293));
+        let sampler_ir::Processor::FilterBank(c) = filter(65, 0.5, 0.5, &[0.3]).unwrap().0[0] else {
+            panic!()
+        };
+        assert_eq!(c.variant, Variant::MultiSv { mode: 2, bandwidth: 0.3 });
+        // Legacy LP4 is a cascade-core class; type 1 is not a filter type.
+        assert!(filter(8, 0.5, 0.5, &[]).is_ok());
+        assert!(filter(1, 0.5, 0.5, &[]).is_err());
+    }
+
+    #[test]
+    fn formant_native_parallel_impulse_and_saved_sharp_size_mapping() {
+        use sampler_ir as ir;
+        for (talk, sharp, size, expected) in [
+            (0.0f32, 0.5, 0.5, 0.01663771558f32),
+            (0.0, 0.0, 1.0, 0.0361916923f32),
+        ] {
+            let mut payload = 90i32.to_le_bytes().repeat(2);
+            for value in [talk, sharp, size] { payload.extend(value.to_le_bytes()); }
+            let built = chain(&[slot(0x18, payload, 1.0)], Scope::Voice);
+            assert!(built.notes.is_empty(), "{:?}", built.notes);
+            let mut instrument = ir::Instrument::default();
+            instrument.assets.push(ir::Asset { residency: Default::default(), location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: Vec::new() });
+            instrument.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: built.processors, post_amplitude: vec![] });
+            let mut zone = ir::Zone::new(ir::AssetRef(0));
+            zone.keys = ir::KeyRange { low: 60, high: 60 };
+            zone.chain = Some(ir::ChainRef(0));
+            zone.velocity = ir::VelocityResponse::None;
+            instrument.zones.push(zone);
+            let mut samples = vec![[0.0; 2]; 64]; samples[0] = [1.0, -0.5];
+            let pcm = sampler_core::Pcm::new(48000, samples.into_boxed_slice()).unwrap();
+            let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, plan| Ok(plan)).unwrap();
+            let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+            let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
+            rt.trigger(sampler_core::Input { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.0).unwrap();
+            let mut output = [[0.0; 2]; 8]; rt.render(&mut output).unwrap();
+            assert!((output[0][0] - expected).abs() < 1e-7, "{:?} expected {expected}", output[0]);
+            assert!((output[0][1] + expected * 0.5).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn v1_formant_slot_is_an_executable_processor_in_both_scopes() {
+        let mut payload = 90i32.to_le_bytes().repeat(2);
+        for value in [0.25f32, 0.5, 0.5] {
+            payload.extend(value.to_le_bytes());
+        }
+        for scope in [Scope::Voice, Scope::Bus] {
+            let out = chain(&[slot(0x18, payload.clone(), 1.)], scope);
+            assert!(!out.processors.is_empty(), "v1 executes Formant I");
+            assert!(
+                !out.notes
+                    .iter()
+                    .any(|(_, _, _, reason)| *reason == sampler_ir::Reason::NotModeled)
+            );
+        }
+    }
+
+    #[test]
+    fn ladder_records_with_flag_bytes_parse_to_their_cutoff() {
+        // Conflux (v0x92): kind, flag, kind, then leading, cutoff, resonance.
+        // Morphology (v0x95): kind, flag, kind, kind, kind, flag, kind, floats.
+        let k = 33i32.to_le_bytes();
+        let floats: Vec<u8> = [0.0f32, 0.4, 0.25]
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect();
+        for layout in [&[&k[..], &[0], &k][..], &[&k, &[0], &k, &k, &k, &[0], &k]] {
+            let mut bytes = layout.concat();
+            bytes.extend(&floats);
+            let built = chain(&[slot(0x18, bytes, 1.0)], Scope::Voice);
+            let note = &built.notes[1].2;
+            assert_eq!(*note, "33 cutoff 0.4 resonance 0.25", "{:?}", built.notes);
+        }
+    }
+
+    #[test]
+    fn daft_filter_slot_keeps_its_normalized_controls() {
+        let mut bytes = Vec::new();
+        for _ in 0..2 {
+            bytes.extend(71i32.to_le_bytes());
+        }
+        for x in [0.25f32, 0.5, 0.75] {
+            bytes.extend(x.to_le_bytes());
+        }
+        let built = chain(&[slot(0x18, bytes, 1.0)], Scope::Voice);
+        let [sampler_ir::Processor::Daft(d), ..] = built.processors[..] else {
+            panic!("{:?} {:?}", built.processors, built.notes)
+        };
+        assert_eq!(
+            (d.gain, d.cutoff, d.resonance, d.highpass),
+            (0.25, 0.5, 0.75, true)
+        );
+    }
+}
+
+/// Report a filter that is configured but not fully proved, so a stand-in never passes silently.
+fn note_fidelity(notes: &mut Notes, kind: i32, mapped: &Mapped) {
+    if mapped.fidelity != sampler_ir::fx::filter::Fidelity::Exact {
+        notes.push((
+            "filter law".into(),
+            format!("{} ({:?}): {}", name(kind).unwrap_or("?"), mapped.fidelity, mapped.caveat),
+            sampler_ir::Reason::UnknownLaw,
+        ));
+    }
+}
+
+/// A Filter slot as IR processors, or why its type cannot be configured.
+fn filter(
+    kind: i32,
+    cutoff: f32,
+    resonance: f32,
+    extra: &[f32],
+) -> Result<(Vec<sampler_ir::Processor>, Mapped), Gap> {
+    let mapped = map(kind, cutoff, resonance, extra)?;
+    // The native kernels (Ladder, AR, Daft, Formant I) are admitted by their own arms, which
+    // check the record version, the leading Gain value and the knob ranges.
+    if !matches!(mapped.config.topology, Topology::Svf | Topology::FormantII | Topology::Cascade) {
+        return Err(Gap {
+            name: name(kind).unwrap_or("filter"),
+            reason: "the stored record does not meet the native kernel's admission",
+        });
+    }
+    let processors = mapped.config.processors(None)?;
+    Ok((processors, mapped))
+}
+
+
+/// Formant I (saved 90) and Formant II (saved 91, the second table of the same core).
+pub(super) fn slot_formant(
+    b: &mut Lowering,
+    s: &Site,
+    notes: &mut Notes,
+    kind: i32,
+    cutoff: f32,
+    resonance: f32,
+    extra: &[f32],
+) -> bool {
+    b.flush();
+    // Kontakt 8 Filter Reference: Formant I. FUN_1409a80a0 maps
+    // Talk/Sharp to core 0/2; FUN_140aeffe0 maps saved Size to core 1.
+    // Formant II is the same core on its second table.
+    let mut modelled = true;
+    let knobs = extra.first().map(|&size| [cutoff, resonance, size]);
+    if let Some(knobs) = knobs.filter(|v| v.iter().all(|x| x.is_finite() && (0.0..=1.0).contains(x))) {
+        // Formant II with script or modulation lanes takes the live path below on the
+        // second table; the static one keeps the filter-bank mapping and its fidelity.
+        if kind == 91 && s.dynamic.is_none() {
+            match filter(91, knobs[0], knobs[1], &knobs[2..]) {
+                Ok((processors, mapped)) => {
+                    b.out.processors.extend(processors);
+                    note_fidelity(notes, 91, &mapped);
+                    b.combined = s.gain;
+                }
+                Err(gap) => {
+                    notes.push((gap.name.into(), gap.reason.into(), Reason::NotModeled));
+                    modelled = false;
+                }
+            }
+        } else if let Some((group, generic)) = s.dynamic {
+            b.out.lane_slots.push((s.fx.slot, b.out.processors.len()));
+            b.out.processors.push(Processor::LiveFormant {
+                knobs,
+                second: kind == 91,
+                address: SlotAddress { group, slot: s.fx.slot as i32, generic },
+            });
+            b.combined = s.gain;
+        } else {
+            b.out.processors.push(Processor::Formant(knobs));
+            b.combined = s.gain;
+        }
+    } else {
+        notes.push((
+            "Formant parameters".into(),
+            "missing Size or outside normalized range".into(),
+            Reason::InvalidValue,
+        ));
+        modelled = false;
+    }
+    modelled
+}
+
+/// Ladder filters (saved 30..=41): the native Ladder rows. Gain is signed
+/// normalized (12 dB per unit); the native kernel retains the record-version cutoff clock.
+pub(super) fn slot_ladder(
+    b: &mut Lowering,
+    s: &Site,
+    notes: &mut Notes,
+    kind: i32,
+    cutoff: f32,
+    resonance: f32,
+    extra: &[f32],
+) -> bool {
+    // Kontakt 8 Filter Reference: Ladder filters. FUN_140cf4c80
+    // maps saved 30..=41 to the 12 rows in FUN_140b00b80.
+    let values = [extra[0], cutoff, resonance];
+    if values.iter().all(|v| v.is_finite())
+        && (-1.0..=1.0).contains(&values[0])
+        && values[1..].iter().all(|v| (0.0..=1.0).contains(v))
+    {
+        b.out.filter_slots.push((s.fx.slot, b.out.processors.len() + b.filters.len()));
+        let mapped = template(kind).expect("ladder rows are in the table");
+        let mut config = mapped.config;
+        config.drive = f64::from(values[0]);
+        config.cutoff = f64::from(values[1]);
+        config.resonance = f64::from(values[2]);
+        config.binding = Some(sampler_ir::fx::filter::Binding {
+            address: sampler_ir::SlotAddress {
+                group: s.physical.0,
+                slot: s.fx.slot as i32,
+                generic: s.physical.1,
+            },
+            record_version: s.fx.version,
+        });
+        b.filters.extend(config.processors(None).expect("ladder rows configure"));
+        note_fidelity(notes, kind, &mapped);
+        b.combined = product(s.gain, b.combined);
+        true
+    } else {
+        notes.push((
+            "Ladder LP4 parameters".into(),
+            "non-finite or outside native range".into(),
+            Reason::InvalidValue,
+        ));
+        false
+    }
+}
+
+/// Adaptive-resonance family: saved 100..=108 are modes 0..=8 of the native
+/// FilterDJ (docs/audit-2026-10-10/w15-ar-native.md). The kernel is checked against
+/// original-instruction vectors for all nine modes; host recording acceptance still
+/// requires calibrated paired captures.
+pub(super) fn slot_ar(b: &mut Lowering, s: &Site, notes: &mut Notes, kind: i32, cutoff: f32, resonance: f32) -> bool {
+    b.out.filter_slots.push((s.fx.slot, b.out.processors.len() + b.filters.len()));
+    let mapped = template(kind).expect("AR rows are in the table");
+    let mut config = mapped.config;
+    config.cutoff = f64::from(cutoff);
+    config.resonance = f64::from(resonance);
+    b.filters.extend(config.processors(None).expect("AR rows configure"));
+    note_fidelity(notes, kind, &mapped);
+    b.combined = product(s.gain, b.combined);
+    true
+}
+
+/// Daft (stored 70 low pass, 71 high pass): DSP_SYSTEM_INVENTORY "Daft parameter
+/// laws and scheduling". The leading value is the Gain control; modulation adds
+/// to the saved normalized knob.
+// ponytail: unverified - 70/71 as Daft rests on v1's stored-ID table.
+pub(super) fn slot_daft(b: &mut Lowering, s: &Site, notes: &mut Notes, kind: i32, cutoff: f32, resonance: f32, extra: &[f32]) -> bool {
+    b.out.filter_slots.push((s.fx.slot, b.out.processors.len() + b.filters.len()));
+    let mapped = template(kind).expect("Daft rows are in the table");
+    let mut config = mapped.config;
+    config.drive = f64::from(extra[0]).clamp(0.0, 1.0);
+    config.cutoff = f64::from(cutoff).clamp(0.0, 1.0);
+    config.resonance = f64::from(resonance).clamp(0.0, 1.0);
+    b.filters.extend(config.processors(None).expect("Daft rows configure"));
+    note_fidelity(notes, kind, &mapped);
+    b.combined = product(s.gain, b.combined);
+    true
+}
+
+/// Every other stored filter type, through the shared `map` table.
+pub(super) fn slot_filter(b: &mut Lowering, s: &Site, notes: &mut Notes, kind: i32, cutoff: f32, resonance: f32, extra: &[f32]) -> bool {
+    match filter(
+        kind,
+        cutoff,
+        resonance,
+        match kind {
+            63..=65 => &extra[..extra.len().min(1)],
+            19 | 120 | 130 | 140..=143 => extra,
+            _ => &[],
+        },
+    ) {
+        Ok((processors, mapped)) => {
+            b.out.filter_slots.push((s.fx.slot, b.out.processors.len() + b.filters.len()));
+            b.filters.extend(processors);
+            note_fidelity(notes, kind, &mapped);
+            b.combined = product(s.gain, b.combined);
+            true
+        }
+        Err(gap) => {
+            notes.push((
+                format!("filter type ({}: {})", gap.name, gap.reason),
+                format!("{kind} cutoff {cutoff} resonance {resonance}"),
+                Reason::NotModeled,
+            ));
+            false
         }
     }
 }

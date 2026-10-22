@@ -30,6 +30,8 @@ use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParame
 use super::super::hiir::{Hiir, HiirState};
 use super::super::Planar;
 use super::super::biquad::{self, Coefficients, Shape};
+use super::linear::Zdf;
+use super::shaper::{self, Knee};
 
 /// Frames between control evaluations (the engine's native-knob clock).
 const QUANTUM: usize = 32;
@@ -674,13 +676,24 @@ pub enum Sv {
     Multi { mode: u8, bandwidth: f32 },
 }
 
-/// `tan(pi f T)` by the truncated series of 0x140b04f60, in its order.
+/// `tan(pi f T)` by the truncated series of 0x140b04f60, in the binary's operation order
+/// (SV1 setter 0x140b05d80, SV4 0x140b05030, SV Multi helper 0x140b03b50). Constants are the
+/// PE image values: 12.987881, 3.2898684, 1, pi.
 fn sv_g(f: f32, t: f32) -> f32 {
-    let a = ((t * t) * 12.987_881) * (f * f) + 3.289_868_4;
-    let a = (a * f) * ((f * t) * t) + 1.0;
-    a * ((f * std::f32::consts::PI) * t)
+    let x = (((t * t) * 12.987_881) * f) * f + 3.289_868_4;
+    let y = (((x * f) * t) * f) * t + 1.0;
+    ((y * f) * std::f32::consts::PI) * t
 }
 
+/// The SV6 setters (0x140b05160) order the same series `x f f t t`.
+fn sv_g_six(f: f32, t: f32) -> f32 {
+    let x = (((t * t) * 12.987_881) * f) * f + 3.289_868_4;
+    let y = (((x * f) * f) * t) * t + 1.0;
+    ((y * f) * std::f32::consts::PI) * t
+}
+
+/// Hertz of a note on the native exponential table `2^(i/60 - 20)` (index `note 5 + 1381.88`,
+/// PE constants 5.0 and 1381.8816; the table is `ladder_kernel::exponential`).
 fn sv_hertz(note: f32) -> f32 {
     super::ladder_kernel::exponential(note * 5.0 + 1381.881_6).max(0.0)
 }
@@ -736,7 +749,7 @@ impl Sv {
                     _ => (1.482 - r.abs() * 0.494) * r,
                 };
                 out[..4].copy_from_slice(&[
-                    sv_g(sv_hertz(note), t),
+                    sv_g_six(sv_hertz(note), t),
                     r,
                     1.0 - s,
                     1600.0 - ((2.0 - n) * n) * 1576.0,
@@ -824,29 +837,6 @@ impl SvRamp {
     }
 }
 
-/// `clamp(v, +-2L)` stored as `c (1 - |c| w)`.
-#[inline(always)]
-fn sv_sat(v: f32, l2: f32, w: impl Fn(f32) -> f32) -> f32 {
-    let c = v.clamp(-l2, l2);
-    (1.0 - w(c.abs())) * c
-}
-
-/// One zero-delay stage in the SV2/MultiSV order. `s = [h, b, l]`; returns (hp, bp, lp).
-#[inline(always)]
-fn sv_stage(s: &mut [f32], x: f32, g: f32, k: f32, l: f32) -> (f32, f32, f32) {
-    let (l2, inv) = (l + l, 1.0 / l);
-    let a = k + g;
-    let gk = a * g;
-    let [h, b, lo] = [s[0], s[1], s[2]];
-    let hp = (x - ((((a + g) * b) + lo) + gk * h)) / (gk + 1.0);
-    let bp = (h + hp) * g + b;
-    let lp = (bp + b) * g + lo;
-    s[0] = hp;
-    s[1] = sv_sat(bp, l2, |c| (c * 0.25) * inv);
-    s[2] = sv_sat(lp, l2, |c| (c * 0.25) * inv);
-    (hp, bp, lp)
-}
-
 impl Cascade {
     /// The SV classes: their own ramp in place of the knob clock. State: cells `0..9` per
     /// channel (`[h, b, l]` per stage), the ramp from `RAMP`.
@@ -877,7 +867,7 @@ impl Cascade {
                 ramp = start;
                 let mut s: [f32; 9] = std::array::from_fn(|i| cells[i][ch] as f32);
                 let mut last_r = -1.0;
-                let mut sections = [(0f32, 0f32, 0f32); 2];
+                let mut sections = [Zdf::default(); 2];
                 for v in &mut block[ch][frames.clone()] {
                     for i in 0..8 {
                         ramp.cur[i] += ramp.step[i];
@@ -896,40 +886,27 @@ impl Cascade {
                             let [gin, g, r, l, gain] = [c[0], c[1], c[2], c[3], c[4]];
                             let l = if l > 1e-20 { l } else { 9.999_999_7e-21 };
                             let k = (1.0 - r) + (1.0 - r);
-                            let (hp, bp, lp) = sv_stage(&mut s[..3], x * gin, g, k, l);
+                            let [hp, bp, lp] = Zdf::new(g, k).tick_divided(g, &mut s[..3], x * gin, Knee::state_split(l));
                             let y = match mode { 0 => lp, 1 => bp + bp, _ => hp };
                             y * gain
                         }
                         Sv::Four { mode } | Sv::Six { mode } => {
                             let [g, r, gain, l] = [c[0], c[1], c[2], c[3]];
-                            let (l2, w) = (l + l, 0.25 / l);
                             let four = matches!(sv, Sv::Four { .. });
-                            let coefs = |k: f32| {
-                                let a = k + g;
-                                let gk = g * a;
-                                (g + a, gk, 1.0 / (gk + 1.0))
-                            };
                             if four {
                                 // SV4 re-derives its sections only when R moves (and per block).
                                 if r != last_r {
                                     let k2 = 1.0 - r * 0.666;
-                                    sections = [coefs((1.0 - r) + (1.0 - r)), coefs(k2 + k2)];
+                                    sections = [Zdf::new(g, (1.0 - r) + (1.0 - r)), Zdf::new(g, k2 + k2)];
                                     last_r = r;
                                 }
                             } else {
-                                sections = [coefs((1.0 - r) + (1.0 - r)); 2];
+                                sections = [Zdf::new(g, (1.0 - r) + (1.0 - r)); 2];
                             }
+                            let knee = Knee::state(l);
                             let mut x = x;
                             for j in 0..if four { 2 } else { 3 } {
-                                let (a2, gk, d) = sections[j.min(1)];
-                                let st = &mut s[3 * j..3 * j + 3];
-                                let [h, b, lo] = [st[0], st[1], st[2]];
-                                let hp = (x - (((b * a2) + lo) + h * gk)) * d;
-                                let bp = (hp + h) * g + b;
-                                let lp = (bp + b) * g + lo;
-                                st[0] = hp;
-                                st[1] = sv_sat(bp, l2, |c| c * w);
-                                st[2] = sv_sat(lp, l2, |c| c * w);
+                                let [hp, bp, lp] = sections[j.min(1)].tick(g, &mut s[3 * j..3 * j + 3], x, knee);
                                 x = match mode { 0 => lp, 1 => bp + bp, 2 => hp, _ => x - (bp + bp) };
                             }
                             x * gain
@@ -937,12 +914,12 @@ impl Cascade {
                         Sv::Multi { mode, .. } => {
                             let [g1, g2, r, l1, l2, spread, gain] = [c[0], c[1], c[2], c[3], c[4], c[5], c[6]];
                             let k = (1.0 - r) + (1.0 - r);
-                            let (hp, bp, lp) = sv_stage(&mut s[..3], x, g1, k, l1);
+                            let [hp, bp, lp] = Zdf::new(g1, k).tick_divided(g1, &mut s[..3], x, Knee::state_split(l1));
                             let bb1 = bp + bp;
                             let o1 = match mode { 0 => lp, 1 => bb1, _ => hp };
                             // Serial: (o1 - x) * 1 + x, in f32 as the native mixes it.
                             let x2 = if mode == 2 { (o1 - x) + x } else { x };
-                            let (hp2, bp2, lp2) = sv_stage(&mut s[3..6], x2, g2, k, l2);
+                            let [hp2, bp2, lp2] = Zdf::new(g2, k).tick_divided(g2, &mut s[3..6], x2, Knee::state_split(l2));
                             let bb2 = bp2 + bp2;
                             let y = match mode {
                                 0 => {
@@ -1134,7 +1111,7 @@ pub(crate) struct Xpander {
 #[inline(always)]
 fn xp_sat<const D: u8>(u: f32) -> f32 {
     match D {
-        0 => (((u * u) + 27.0) * u) / (((u * u) * 9.0) + 27.0),
+        0 => shaper::pade(u),
         1 => u.clamp(-1.0, 1.0),
         _ => {
             let t = (u * u) * f32::from_bits(0x3586_37be);
@@ -2343,6 +2320,122 @@ mod tests {
                 if !(err < 1e-6) {
                     failures.push(format!("{} {set} {input}: err {err}: {:?} vs {:?}", case["class"], &block[0][..3], &native[..3]));
                 }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Full resonance is the self-oscillating corner (measured +40..+54 dB peaks in
+    /// filter-laws.tsv): every SV class must stay finite and bounded there, at both cutoff
+    /// ends, under a +-4 square. The state clamp at +-2L is what keeps it so.
+    #[test]
+    fn sv_classes_stay_bounded_at_full_resonance() {
+        super::super::ladder_kernel::prepare();
+        const BLOCK: usize = super::super::super::BLOCK;
+        let classes = [
+            Sv::One { high: false },
+            Sv::Two { mode: 1 },
+            Sv::Four { mode: 3 },
+            Sv::Six { mode: 1 },
+            Sv::Multi { mode: 2, bandwidth: 1.0 },
+        ];
+        for sv in classes {
+            for cutoff in [0.0, 1.0] {
+                let unit = CascadeSettings {
+                    class: Legacy::Sv(sv),
+                    cutoff: Parameter::Constant(cutoff),
+                    resonance: Parameter::Constant(1.0),
+                }
+                .compile(48_000, &mut Vec::new());
+                let mut cells = vec![[0f64; 2]; CELLS];
+                let mut peak = 0f64;
+                for at in (0..48_000usize).step_by(BLOCK) {
+                    let mut block = [[0f64; BLOCK]; 2];
+                    for (i, v) in block[0].iter_mut().enumerate() {
+                        *v = if ((at + i) / 20) % 2 == 0 { 4.0 } else { -4.0 };
+                    }
+                    unit.process(&mut cells, &[], &mut block, BLOCK, at as u64, [0.0; 4]);
+                    peak = block[0].iter().fold(peak, |m, v| m.max(v.abs()));
+                }
+                assert!(peak.is_finite() && peak < 1e4, "{sv:?} cutoff {cutoff}: peak {peak}");
+            }
+        }
+    }
+
+    /// Kontakt's SV magnitude responses (Wine-oracle capture, `sv_response_vectors.tsv`: an
+    /// impulse through the effect, 48 kHz, 16384 bins, left channel, dB at ten probes). Every
+    /// row must reproduce within 1 dB, except the rows listed in `KNOWN_OPEN`, which are the
+    /// measured gaps of `docs/re/engine/filt-sv.md` (G4: res .9; G10: the LP-type and BP6 outputs
+    /// at u = 0; G12: BP2 skirt at u = 1).
+    #[test]
+    fn sv_responses_match_the_kontakt_capture() {
+        super::super::ladder_kernel::prepare();
+        const N: usize = 16384;
+        const BLOCK: usize = super::super::super::BLOCK;
+        const PROBES: [f64; 10] = [30., 60., 100., 200., 500., 1000., 2000., 5000., 10000., 15000.];
+        const KNOWN_OPEN: [&str; 6] = [
+            "SV_LP2 cutoff=0 res=0",
+            "SV_LP4 cutoff=0 res=0",
+            "SV_LP6 cutoff=0 res=0",
+            "SV_BP6 cutoff=0 res=0",
+            "SV_NOTCH6 cutoff=0 res=0",
+            "SV_BP2 cutoff=1000000 res=0",
+        ];
+        let mut failures = Vec::new();
+        for line in include_str!("sv_response_vectors.tsv").lines().skip(1) {
+            let mut cols = line.split('\t');
+            let name = cols.next().unwrap();
+            let words: Vec<&str> = name.split_whitespace().collect();
+            let knob = |w: &str| w.split('=').nth(1).unwrap().parse::<f64>().unwrap() / 1e6;
+            let sv = match words[0] {
+                "SV_LP1" => Sv::One { high: false },
+                "SV_HP1" => Sv::One { high: true },
+                "SV_BP2" => Sv::Two { mode: 1 },
+                "SV_LP4" => Sv::Four { mode: 0 },
+                "SV_BP4" => Sv::Four { mode: 1 },
+                "SV_HP4" => Sv::Four { mode: 2 },
+                "SV_NOTCH4" => Sv::Four { mode: 3 },
+                "SV_LP6" => Sv::Six { mode: 0 },
+                "SV_LP2" => Sv::Two { mode: 0 },
+                "SV_HP2" => Sv::Two { mode: 2 },
+                "SV_BP6" => Sv::Six { mode: 1 },
+                "SV_HP6" => Sv::Six { mode: 2 },
+                "SV_NOTCH6" => Sv::Six { mode: 3 },
+                other => panic!("no class for {other}"),
+            };
+            let (cutoff, res) = (knob(words[1]), knob(words[2]));
+            let unit = CascadeSettings {
+                class: Legacy::Sv(sv),
+                cutoff: Parameter::Constant(cutoff),
+                resonance: Parameter::Constant(res),
+            }
+            .compile(48_000, &mut Vec::new());
+            let mut cells = vec![[0f64; 2]; CELLS];
+            let mut h = Vec::with_capacity(N);
+            for at in (0..N).step_by(BLOCK) {
+                let mut block = [[0f64; BLOCK]; 2];
+                if at == 0 {
+                    block[0][0] = 1.0;
+                }
+                unit.process(&mut cells, &[], &mut block, BLOCK, at as u64, [0.0; 4]);
+                h.extend_from_slice(&block[0]);
+            }
+            let mut err = 0f64;
+            for (probe, native) in PROBES.iter().zip(cols) {
+                let native: f64 = native.parse().unwrap();
+                let w = std::f64::consts::TAU * probe / 48_000.0;
+                let (re, im) = h.iter().enumerate().fold((0.0, 0.0), |(re, im), (n, v)| {
+                    let a = w * n as f64;
+                    (re + v * a.cos(), im - v * a.sin())
+                });
+                let ours = 20.0 * re.hypot(im).log10();
+                if native > -60.0 {
+                    err = err.max((ours - native).abs());
+                }
+            }
+            let open = KNOWN_OPEN.contains(&name) || (res > 0.5 && words[0] != "SV_LP1" && words[0] != "SV_HP1");
+            if !open && err > 1.0 {
+                failures.push(format!("{name}: {err:.2} dB"));
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
