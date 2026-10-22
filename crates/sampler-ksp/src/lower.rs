@@ -1490,6 +1490,12 @@ impl Gen<'_, '_> {
                 self.cover(*builtin, Coverage::Native);
                 return Ok(());
             }
+            ExprKind::Builtin(Builtin::GetEngineParDispM, _) => {
+                // Native args: id, slot-or-output, generic, channel-search flag. It is legal in
+                // a single script; the slot and output-channel display paths are not modelled yet.
+                self.ignore(Builtin::GetEngineParDispM, "slot or output display is not modelled; text is empty");
+                return Ok(());
+            }
             ExprKind::Builtin(builtin, _) if e.ty == Ty::Str => {
                 self.ignore(*builtin, "text is not available at runtime; empty");
                 return Ok(());
@@ -3181,11 +3187,7 @@ impl Gen<'_, '_> {
     /// unsupported. A constant group index outside `-1..groups` is Kontakt's "Invalid group
     /// index!"; with no groups declared the index is not checked.
     fn engine_par_unsupported(&self, args: &[Arg]) -> bool {
-        self.engine_par_name(args).is_some_and(|name| {
-            name.starts_with("ENGINE_PAR_")
-                && sampler_core::engine_parameter_id(&name).is_none()
-                && crate::builtins::is_vendor_constant(&format!("${name}"))
-        })
+        self.engine_par_name(args).is_some_and(|name| crate::builtins::unsupported_engine_parameter(&name))
     }
     fn engine_par_rejection(&self, args: &[Arg], group_arg: usize) -> Option<&'static str> {
         if self.engine_par_unsupported(args) {
