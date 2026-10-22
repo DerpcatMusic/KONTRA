@@ -17,12 +17,12 @@ Gap table (Freak):
 
 | Gap | Impact | Action |
 |---|---|---|
-| Hilbert coefficient designer (0x141968890) not ported; 44.1/48/88.2/96 kHz use dumped tables, other rates use the nearest | Other sample rates are not bit-exact | Ceiling noted in `freak.rs` (`ponytail:`). Needs the decompiled designer. |
+| Hilbert designer ported (0x141968890 -> `dsp/color/hilbert.rs`): elliptic parameters 0x14199e860, four-lane Jacobi 0x14199fc50, four-lane reduction 0x1419a0210, in the decompiled order. 44.1 and 96 kHz tables bit-exact; 48 and 88.2 kHz within 4e-6 relative (one-ulp `log2` change moves 44.1 kHz by 3.6e-5, so the chain is ulp-sensitive; cause not isolated). Not ported: Payne-Hanek fallback 0x14199e9c0 for `\|x\| > 64 pi`, unreachable (designer arguments < 8). | Freak test tolerance 2e-5 absolute (was 1e-6) until the 48/88.2 kHz gap is closed. |
 | Saved field 17 has no row in the bindings TSV; code maps it to core 9 (STEREO) | Unverified mapping for one field | Verify against a native record dump when READY. |
 | Binding rows give laws as `identity` except BP_FREQ/CARRIER etc. where only the identity mapping is measured | Parameter scaling is taken as identity | Re-check against the core setters once the source is exported. |
 | `docs/architecture-v2/DSP_COVERAGE.md:173` lists Freak as "missing, unmeasured, 0 slots" | Stale | Update the coverage row once this doc is merged. |
 
-Freak is already covered by the shared engine. No DSP change is needed in this unit beyond the rate-designer gap.
+Freak is covered by the shared engine; the Hilbert designer is ported (see gap table).
 
 ## Ring Modulator (serialization id 0x64)
 
