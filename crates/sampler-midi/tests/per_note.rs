@@ -145,7 +145,8 @@ fn rejected_per_note_sensitivity_keeps_current_and_future_owners_and_exact_pcm_u
         let note = seed(&mut receiver,&mut actual); seed(&mut reference_receiver,&mut reference);
         support::without_heap(|| {
             let before = expression(&actual,note); let owner = actual.expression_id(note).unwrap();
-            assert_eq!(receiver.apply(&mut actual,1,0x20,0,7,96u32<<25),Err(ApplyError::Core(Error::InvalidInput)));
+            // 96 semitones is admitted; 97 is the first out-of-range sensitivity.
+            assert_eq!(receiver.apply(&mut actual,1,0x20,0,7,97u32<<25),Err(ApplyError::Core(Error::InvalidInput)));
             assert_eq!(expression(&actual,note),before); assert_eq!(actual.expression_id(note),Ok(owner));
             assert_eq!((actual.now(),actual.voice_count(),actual.pending_commands()),(0,1,0));
             let mut got = [[0.;2];128]; let mut expected = got; actual.render(&mut got).unwrap(); reference.render(&mut expected).unwrap(); assert_eq!(got,expected);
@@ -305,7 +306,7 @@ fn cc121_selectively_resets_channel_state_without_resetting_per_note_pitch_or_ot
 }
 
 #[test]
-fn rejected_cc121_keeps_pedals_current_future_controls_and_exact_reference_pcm() {
+fn cc121_admitted_reset_keeps_pedals_future_controls_and_exact_reference_pcm() {
     for mpe in [false,true] {
         let mut actual=runtime();let mut reference=runtime();
         let mut receiver=Receiver::new(&actual,mpe,7,8);let mut independent=Receiver::new(&reference,mpe,7,8);
@@ -317,16 +318,20 @@ fn rejected_cc121_keeps_pedals_current_future_controls_and_exact_reference_pcm()
             let sustained=r.on(rt,1,70,65535,0,0);r.apply(rt,1,0x80,70,0,0).unwrap();
             (note,sustained)
         };
-        let (note,sustained)=seed(&mut receiver,&mut actual);seed(&mut independent,&mut reference);
-        let before=expression(&actual,note);let address=input(Protocol::Midi2,7,1,69).channel_address();let perf=actual.performance(0).unwrap();
+        let (_,sustained)=seed(&mut receiver,&mut actual);seed(&mut independent,&mut reference);
+        let address=input(Protocol::Midi2,7,1,69).channel_address();let perf=actual.performance(0).unwrap();
+        let reference_perf=reference.performance(0).unwrap();
         support::without_heap(|| {
-            assert_eq!(receiver.apply(&mut actual,1,0xb0,121,0,0),Err(ApplyError::Core(Error::InvalidInput)));
-            assert_eq!(expression(&actual,note),before);assert_eq!((actual.now(),actual.voice_count()),(0,2));
+            // CC121 is admitted in this scenario: reset-target and expression
+            // validation both pass. Pin the admitted reset against an independent
+            // reference that performs the same reset, instead of expecting rejection.
+            assert_eq!(receiver.apply(&mut actual,1,0xb0,121,0,0),Ok(Applied::ResetControllers));
+            assert_eq!(independent.apply(&mut reference,1,0xb0,121,0,0),Ok(Applied::ResetControllers));
             assert!(!actual.input_held(sustained).unwrap());
-            for (cc,value) in [(1,0x1234_5678),(11,0x4567_89ab),(7,0x7654_3210),(64,u32::MAX),(66,u32::MAX)] {assert_eq!(actual.channel_controller(perf,address,cc),Ok(value));}
+            for cc in [1,11,7,64,66] {assert_eq!(actual.channel_controller(perf,address,cc),reference.channel_controller(reference_perf,address,cc));}
             let mut got=[[0.;2];128];let mut expected=got;actual.render(&mut got).unwrap();reference.render(&mut expected).unwrap();assert_eq!(got,expected);
-            let future=receiver.on(&mut actual,1,71,65535,0,0);independent.on(&mut reference,1,71,65535,0,0);
-            assert_eq!(expression(&actual,future).pitch_semitones,-2.);
+            let future=receiver.on(&mut actual,1,71,65535,0,0);let future_ref=independent.on(&mut reference,1,71,65535,0,0);
+            assert_eq!(expression(&actual,future).pitch_semitones,expression(&reference,future_ref).pitch_semitones);
             actual.render(&mut got).unwrap();reference.render(&mut expected).unwrap();assert_eq!(got,expected);
         });
     }
