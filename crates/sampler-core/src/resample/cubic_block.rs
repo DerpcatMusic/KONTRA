@@ -3,9 +3,13 @@ use crate::Frame;
 /// v1 voice.rs::mix_avx2 columns, adapted to v2's full f64 phase and coefficients.
 #[inline(always)]
 pub(crate) fn cubic_four(windows: [&[Frame]; 4], fractions: [f64; 4]) -> [Frame; 4] {
-    let taps: [[f64; 8]; 4] = std::array::from_fn(|tap| {
-        std::array::from_fn(|lane| f64::from(windows[lane / 2][tap + 1][lane % 2]))
-    });
+    // Plain loops: `array::from_fn` closures stay out of line in this hot path.
+    let mut taps = [[0.0_f64; 8]; 4];
+    for (tap, row) in taps.iter_mut().enumerate() {
+        for (lane, x) in row.iter_mut().enumerate() {
+            *x = f64::from(windows[lane / 2][tap + 1][lane % 2]);
+        }
+    }
     let [xm1, x0, x1, x2] = taps;
     let mut result = [0.0; 8];
     for lane in 0..8 {
@@ -16,7 +20,11 @@ pub(crate) fn cubic_four(windows: [&[Frame]; 4], fractions: [f64; 4]) -> [Frame;
         result[lane] = ((c3 * t + c2) * t + c1) * t + x0[lane];
     }
     let result = std::hint::black_box(result);
-    std::array::from_fn(|i| [result[2 * i] as f32, result[2 * i + 1] as f32])
+    let mut out = [[0.0_f32; 2]; 4];
+    for (i, frame) in out.iter_mut().enumerate() {
+        *frame = [result[2 * i] as f32, result[2 * i + 1] as f32];
+    }
+    out
 }
 
 #[cfg(test)]
