@@ -2322,11 +2322,6 @@ impl Translation {
         let unapplied = time_stretch_writes::apply(&mut stretch, |name| {
             group_engine_write(&self.engine, name, index as i32)
         });
-        for name in ["ENGINE_PAR_SPEED_UNIT"] {
-            if let Some(value) = group_engine_write(&self.engine, name, index as i32) {
-                self.unsupported(at, &format!("{name} write"), value, ir::Reason::UnknownLaw);
-            }
-        }
         for name in unapplied {
             if let Some(value) = group_engine_write(&self.engine, name, index as i32) {
                 self.unsupported(at, &format!("{name} write"), value, ir::Reason::NotModeled);
