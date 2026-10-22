@@ -666,7 +666,7 @@ impl Instrument {
             for &source in &recipe.sources {
                 if !sources.insert(source.0)
                     || (!matches!(self.modulators.get(source.0).map(|row|&row.source),Some(crate::ModulationSource::Controller(number))if *number<128)
-                        &&!matches!(self.modulators.get(source.0).map(|row|&row.source),Some(crate::ModulationSource::Constant|crate::ModulationSource::ConstantProperty{..}))) {
+                        &&!matches!(self.modulators.get(source.0).map(|row|&row.source),Some(crate::ModulationSource::Constant|crate::ModulationSource::ConstantProperty{..}|crate::ModulationSource::Script(_)|crate::ModulationSource::ScriptBipolar(_)))) {
                     return Err(invalid("global source roster requires distinct actual default-state controller sources"));
                 }
             }
