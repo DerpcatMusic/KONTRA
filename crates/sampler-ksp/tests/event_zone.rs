@@ -290,3 +290,21 @@ fn wrapped_negative_literal_is_an_invalid_alias_and_selectors_keep_zero_fallback
         );
     });
 }
+
+#[test]
+fn play_position_reports_microseconds_into_the_zone() {
+    // One voice at unit ratio: the cursor advances one frame per output frame.
+    let source = "on init declare $pos end on
+      on note
+        wait(20000)
+        $pos := get_event_par($EVENT_ID,$EVENT_PAR_PLAY_POS)
+      end on";
+    let mut rt = runtime(source, prepared(&[(73, 60)], 48000));
+    support::without_heap(|| {
+        rt.trigger(input(60), 60, 1.).unwrap();
+        rt.render(&mut [[0.; 2]; 9600]).unwrap();
+        // wait is in microseconds: 20 ms = 960 frames at 48 kHz; allow for block slack.
+        let pos = cell(&rt, 0);
+        assert!((19_000..=25_000).contains(&pos), "play position {pos} us");
+    });
+}
