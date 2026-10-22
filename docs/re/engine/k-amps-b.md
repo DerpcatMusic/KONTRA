@@ -72,6 +72,11 @@ Session 2026-10-22 (CPU-limited, decompile text only, no oracle or build runs):
 - Kernel prologue (confirmed): the 32-sample accumulator at `param_2+0xac010` is cleared, then each of the `*(param_1+0x124)` input lanes is added scaled by `1.0 / count` (`DAT_14470bad4` = 1.0). The stage chain after this loop is not yet read.
 - The constants generator (`tools/kontakt-oracle/gen_amp_consts.py`) was run against `re-binaries/Kontakt8.exe`. It emits 2612 scalars. The output is a cache artifact (`~/.cache/kontra-amps-b/jump_consts.rs`), not committed: 165 KB of globals with no consumer yet. Commit only the constants a read stage actually uses.
 - Still unread: stage order and per-stage tables (`0x140aac6f0` after the input sum), knob laws (`0x140a9bd30`, `0x140ab7e10`), Van51, Super Fast 100 and Reverb Delight. The Jump preset in `amp/jump.rs` is still the one-trace fit, not the kernel.
+- Reset `0x140a9bd30` (2902 B) clears the state, seeds the knob slots `0x44a4`, `0x44a8`, `0x44ac`, `0x44b4` with 0.5, and calls the coefficient law `0x140acc630` (1662 B) once per knob. It also calls `0x140abfbc0` (3276 B), `0x140ad0a40`, `0x140ad22f0`, `0x140ad2010`, `0x140ad10b0`, and fills a 4-tap table with `0x140a98da0`.
+- `0x140a98da0` (168 B) is the four-tap cubic weight set for offsets -2..1 at fractional position t. The constants are 0.5, 1.0, 1.5, 2.0 and 2.5, which is the Catmull-Rom (a = -0.5) basis.
+- Pair-table law: 2400 entries (`0x960`) at `0x14a6b2600`, read as `(intercept, slope)` at `+8k` and `+8k+4`. The index is the truncated scaled float; the value is `intercept + slope * frac`. Index < 0 gives 0.0. This is the same pair layout as `gen_amp_consts.py`, so the table can be dumped once from the PE image when it has a consumer.
+- Coefficient outputs of `0x140acc630` go to object offsets `0x45a0, 0x45a4, 0x45b0, 0x45b4, 0x45cc, 0x45d8, 0x45dc, 0x45e0, 0x45e4, 0x45e8` (the last is `1.0 / x`). Offsets `0x45c8..0x45e4` are clamped to 1.0.
+- Not yet read: the apply path `0x140ab7e10` (maps effect fields to the `0x44xx` knob slots), the stage objects' vtable entries, and the kernel stage order after the input sum.
 
 ## Implementation (Jump, shared amp chain)
 
