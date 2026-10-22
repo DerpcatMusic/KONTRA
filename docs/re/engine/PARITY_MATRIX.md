@@ -199,11 +199,14 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| AHDSR | partial | decompile (reader 0x140cffb40, converters 0x1407b85a0/85e0, constants from PE), recorded control table | Time and sustain laws fixed in lowering; control rate R, note-off and retrigger open |
-| DBD | partial | decompile (resolver 0x1409651b0 mode 2, prep 0x140ae5d70), disasm argument order | Prep law in engine (`Breakpoints::dbd`); converter identity and IR mapping still open |
-| Flexible envelope | partial | engine builders and loop/release laws; `docs/re/kontakt-flex-loop-jump.md` | Point, curve and release laws covered; retrigger and smoothing open |
+| AHDSR | partial | decompile: stage kernel 0x140ae40f0, prep 0x140ae46d0, retrigger 0x140ae5820, transition 0x140ae5e40; converters; recorded control table | Laws, retrigger, smoothing (none) and note-off rule proved. Blocked: control rate R is owner-supplied (writers of +0x14 are owner objects), note-off timing is the owner event scan, no native vector. See k-mod-envelopes.md "Final pass" |
+| DBD | partial | decompile: live prep 0x140ae4b50 (D law), static prep 0x140ae5d70, resolver 0x1409651b0 mode 2; disasm argument order | v0x12 lowered to the native three-point ramp (`dbd_breakpoints`), v0x10/0x11 diagnosed. Blocked: no native vector (DBD never decoded in the oracle) |
+| Flexible envelope | partial | decompile: setup 0x14094ce70, advance 0x140ae5450, process 0x140ae44e0; `docs/re/kontakt-flex-loop-jump.md` | Retrigger (restart at last point level) and smoothing (none) proved and encoded by lead points. Blocked: segment count uses owner R, no native vector |
 | Envelope follower | partial | decomp | Executable (`ModSource::Follower`), decompile law and binary constants; previous-buffer timing confirmed by decompile ordering (`0140910000.c:4373` vs `:4783`); mono-vs-stereo input and ring-vs-state read open; no native vector (`k-mod-external.md`) |
 | Glide | partial | decomp | Executable (`ModSource::Glide`), setup law from FUN_140cebba0; interval source identified (record +0x458-+0x454, `0140970000.c:7753`), origin per plan, consumer units unproven (`k-mod-external.md`) |
+||||||| parent of dd6b4d998 (docs(parity): envelope rows with decompile results and blockers)
+| Envelope follower | partial | decomp | Executable (`ModSource::Follower`), decompile law and binary constants, one-span audio delay; no native vector (`k-mod-external.md`) |
+| Glide | partial | decomp | Executable (`ModSource::Glide`), setup law from FUN_140cebba0; origin per plan, octave units unverified (`k-mod-external.md`) |
 | External MIDI/performance sources | partial | none | 13 `ExternalSource` variants mapped (`modulation_objects.rs:84-96`); no per-source vectors (`k-mod-external.md`) |
 | Modulation routing (target, depth/polarity, shaping, smoothing) | partial | none | Depth sign/invert tested (`library.rs:6063`); negative lag and shape law unproven (`k-mod-external.md`) |
 | LFO | partial | decomp + vector | Native waves, rectangle op order and held-noise LCG confirmed. Held reset is `GetTickCount`-seeded: law exact, live tick not reproducible. Open: fade init (writer of `+0xf4/+0xf8` not identified), synced fade. See `docs/re/engine/k-mod-lfo-step.md`. |
