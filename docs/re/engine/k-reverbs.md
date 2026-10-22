@@ -157,6 +157,11 @@ from code and constants), INFERRED, UNKNOWN.
 - Enum-to-division table NOT FOUND. The repo's 240·n/(f·m·bpm) is equivalent
   only if x·v = 4n/(fm) (INFERRED). Engine has no host bpm path here yet.
 
+### Raum feedback limiter: evidence for the next pass (2026-10-23)
+
+- Re-read of `0x141ae3ba0` (`0141ae0000.c:2905`, 842 bytes, the NI::DSP::Limiter above): the detector works in the log domain. Per sample it takes the larger of two peak followers (`+0xb4`/`+0xb8`), takes `logf` of it, scales by the constant at `_DAT_1479ab570`, and runs a one-pole on the running level at `+0xc8` with slopes `+0xcc`/`+0xd0` (selected by the flag at `+0xad`). Its gain is applied as `2^(u/60 − 20)` from the table built by `0x1404d14d0`, as above.
+- Still open: the constants (`_DAT_1479ab570`, `DAT_144f385a8`, `DAT_144fc40e0`, `DAT_145494e5c`, the masks at `DAT_144714ba0`/`DAT_144714b90`) and the function tail (after the smoother loop). They need `ReadFloats`. No native Raum feedback vector is recorded, so the ±2.5 clamp in `raum.rs` (feedback path) stays a documented deviation.
+
 ### Raum limiter: partly recovered, placement corrected
 - NI::DSP::Limiter (`0x141ae3ba0`) runs once per block on the outputs, not
   inside the feedback loop. CONFIRMED. Its output clamp is ±2.5 (CONFIRMED).
