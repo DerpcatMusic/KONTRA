@@ -24,6 +24,8 @@ fn u32le(reader: &mut impl Read) -> Option<u32> {
 }
 fn entry(dir: &Path, preset: &Path, paths: &[&Path]) -> PathBuf {
     let mut hash = std::hash::DefaultHasher::new();
+    // A header-parsing change must miss, not reuse entries from the old engine.
+    env!("KONTRA_IMPORT_HASH").hash(&mut hash);
     preset.as_os_str().as_encoded_bytes().hash(&mut hash);
     for path in paths {
         path.as_os_str().as_encoded_bytes().hash(&mut hash);
