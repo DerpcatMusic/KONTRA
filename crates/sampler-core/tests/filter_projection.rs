@@ -55,7 +55,7 @@ fn native() -> Processor {
         cutoff: Parameter::Constant(0.4),
         resonance: Parameter::Constant(0.2),
         gain: Parameter::Constant(0.),
-        record_version: 99,
+        cutoff_path: false,
         taps: 4,
         high_quality: false,
     }))

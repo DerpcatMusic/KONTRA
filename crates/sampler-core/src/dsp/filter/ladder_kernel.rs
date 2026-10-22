@@ -56,7 +56,7 @@ struct Controls {
     phase: u8,
     pending: bool,
     started: bool,
-    // bit0: version-derived instant cutoff; bit1: enabled target route;
+    // bit0: alternative cutoff path (flag 0x49); bit1: enabled target route;
     // bits2-5: output selector (zero retains the default LP4)
     modes: u8,
 }
@@ -194,13 +194,6 @@ fn morphology_compensation(q: f32, row: usize) -> f32 {
 }
 
 
-/// These readers enable the separate cutoff path whose native constructor
-/// and rate preparation leave its clock inverse zero. Other versions remain
-/// unknown; their ordinary cutoff clock is an explicitly diagnosed fallback.
-pub(crate) fn instant_cutoff(version: u16) -> bool {
-    matches!(version, 0x90..=0x92)
-}
-
 impl Ladder {
     /// Native output selector 1..=12, stored in spare bits without growing state.
     pub(crate) fn set_taps(&mut self, taps: u8) {
@@ -213,8 +206,10 @@ impl Ladder {
         if taps == 0 { 4 } else { taps }
     }
 
-    pub(crate) fn record_version(&mut self, version: u16) {
-        self.controls.modes = (self.controls.modes & !1) | u8::from(instant_cutoff(version));
+    /// Native alternative cutoff path (saved flag 0x49). Its lane has a zero
+    /// inverse, so each new cutoff target is reached on the next 32-frame tick.
+    pub(crate) fn set_cutoff_path(&mut self, on: bool) {
+        self.controls.modes = (self.controls.modes & !1) | u8::from(on);
     }
 
     /// Enabled native target routes write at every control tick, including
@@ -464,7 +459,7 @@ mod tests {
                 .zip(expected)
             {
                 let mut filter = Ladder::default();
-                filter.record_version(0x92);
+                filter.set_cutoff_path(true);
                 filter.set_taps(taps);
                 filter.tune([0.4997, resonance, 0.0], 48_000.0);
                 let sine: Vec<f32> = (0..24_000)
@@ -495,7 +490,7 @@ mod tests {
             let target = 10_f64.powf(6.0 / 20.0);
             for disable in [false, true] {
                 let mut filter = Ladder::default();
-                filter.record_version(0x92);
+                filter.set_cutoff_path(true);
                 filter.tune([1.0, 0.0, 0.0], rate);
                 filter.process(&mut [0.0; 17], &mut [0.0; 17]);
                 filter.tune([1.0, 0.0, 0.5], rate);
@@ -575,11 +570,11 @@ mod tests {
     #[test]
     fn native_ladder_legacy_cutoff_snap_retains_gain_resonance_clock() {
         prepare();
-        for version in [0x90, 0x91, 0x92, 0, 0x95] {
+        for cutoff_path in [true, false] {
             for rate in [32_000.0_f32, 44_100.0, 48_000.0, 96_000.0] {
                 let duration = ((rate * 0.002 / 32.0 + 0.5).floor() as usize).max(1) * 32;
                 let mut filter = Ladder::default();
-                filter.record_version(version);
+                filter.set_cutoff_path(cutoff_path);
                 filter.tune([0.25, 0.0, 0.0], rate);
                 let (mut l, mut r) = ([0.0; 9], [0.0; 9]);
                 filter.process(&mut l, &mut r);
@@ -594,7 +589,7 @@ mod tests {
                 assert_eq!(l, sl);
                 assert_eq!(r, sr);
                 let mut clock = Ladder::default();
-                clock.record_version(version);
+                clock.set_cutoff_path(cutoff_path);
                 clock.tune([0.25, 0.0, 0.0], rate);
                 clock.process(&mut [0.0; 9], &mut [0.0; 9]);
                 clock.tune([0.75, 0.5, 0.5], rate);
@@ -606,7 +601,7 @@ mod tests {
                         (((frame - 32) / 4 + 1) * 4).min(duration)
                     };
                     let fraction = elapsed as f64 / duration as f64;
-                    let cutoff_fraction = if matches!(version, 0x90..=0x92) && frame >= 32 {
+                    let cutoff_fraction = if cutoff_path && frame >= 32 {
                         1.0
                     } else {
                         fraction
@@ -628,17 +623,14 @@ mod tests {
                 // no positive-increment cap artifact is introduced or claimed.
                 clock.tune([0.1, 0.5, 0.5], rate);
                 clock.process(&mut [0.0; 1], &mut [0.0; 1]);
-                if matches!(version, 0x90..=0x92) {
+                if cutoff_path {
                     assert_eq!(clock.controls.current[1], 0.1);
                 }
                 clock.clear();
                 clock.process(&mut [0.0; 1], &mut [0.0; 1]);
                 assert_eq!(clock.controls.current, clock.controls.target);
                 assert_eq!(clock.controls.remaining, 0);
-                assert_eq!(
-                    clock.controls.modes & 1 != 0,
-                    matches!(version, 0x90..=0x92)
-                );
+                assert_eq!(clock.controls.modes & 1 != 0, cutoff_path);
             }
         }
     }

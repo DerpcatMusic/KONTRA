@@ -167,7 +167,6 @@ pub enum Fidelity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Binding {
     pub address: SlotAddress,
-    pub record_version: u16,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -191,6 +190,8 @@ pub struct Config {
     pub binding: Option<Binding>,
     /// Ladder HQ: the native 2x oversampled mode (saved flag, see `LadderLP4::high_quality`).
     pub high_quality: bool,
+    /// Ladder alternative cutoff path (saved flag 0x49, see `LadderLP4::cutoff_path`).
+    pub cutoff_path: bool,
 }
 
 /// A native filter that cannot be configured, and exactly why.
@@ -217,6 +218,7 @@ impl Config {
             variant: Variant::Default,
             binding: None,
             high_quality: false,
+            cutoff_path: false,
         }
     }
 
@@ -269,7 +271,7 @@ impl Config {
                     gain: self.drive,
                     cutoff: self.cutoff,
                     resonance: self.resonance,
-                    record_version: binding.map_or(0, |b| b.record_version),
+                    cutoff_path: self.cutoff_path,
                     taps,
                     high_quality: self.high_quality,
                 })])
