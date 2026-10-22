@@ -59,17 +59,28 @@ Both gaps are concentrated in Conflux.
 
 - Emitted by `effects/mod.rs` when a saved effect module is not modelled (NotModeled). The reason
   text comes from the `unproved()` tables in `color.rs`, `timemod.rs`, `dynamics.rs` and
-  `mangling.rs`.
-- The survey jsonl keeps only the count, not the effect name. Identifying the 39 instruments'
-  effects needs a per-instrument read. This pass did not run one (CPU rule: no library scans).
-- Candidate modules already marked unproved (none confirmed as present in Conflux or Areia):
-  Surround Panner, Stereo Tune, Rotator, Skreamer Deluxe, Chainsaw, amp/cabinet/pedal models,
-  Replika, Phasis, Flair, Vibrato Chorus, Supercharger GT, Beat Masher, Gater, Beat Slicer, Reverse
-  Grain, Transpose Stretch.
-- Identification command for a later window: the ignored census test
-  `crates/sampler-kontakt/tests/w6_conflux_intent.rs` (installed Conflux, via `kontakto-heavy`),
-  which records the `effect` detail for each unsupported entry. Or `fx_survey` with `FX_VALUES=1`
-  on the Conflux and Areia folders.
+  `mangling.rs`. A record with no table entry reports only its name, version and length.
+- Identified with `fx_survey` (`crates/sampler-kontakt/examples/fx_survey.rs`, now reads every
+  program of a `.nkm`; parse only, no sample loads), `FX_VALUES=1`, 2026-10-22:
+
+| Effect (module) | Instruments | Library | Doc / status |
+| --- | --- | --- | --- |
+| Replika (0x5a) | 18 programs | Conflux multis | `k-replika.md`: reader only, core loop not ported |
+| Flair (0x5c) | 9 | Conflux multis | `modfx-flair-phasis-vibrato.md`: not ported |
+| Supercharger (0x60) | 8 | Conflux multis | `dyn-compressors.md`: CompXT core unrecovered |
+| Vibrato Chorus (0x69) | 7 | Conflux multis | `modfx-flair-phasis-vibrato.md`: not ported |
+| Phasis (0x5b) | 5 | Conflux multis | `modfx-flair-phasis-vibrato.md`: not ported |
+| Wow / Flutter | 1 | Conflux multis | matrix row partial: per-sample kernel not located |
+| Rotator (0x22) | 1 | Areia Sound Design | `color.rs` unproved; the matrix row is partial (core ported) |
+| Convolution (0x16), version 0x70, length 121 | 2 | Areia Legacy Patches | no unproved reason; the 0x16 reader has no version gate and rejects this layout |
+
+- fx_survey: 36 of the 100 program items in the 50 Conflux multis carry an unmodelled effect; 3 Areia instruments do.
+- Each row needs its own core recovered from the decompile before anything can be ported with
+  native vectors. Nothing in this table can be closed by one small change. The smallest entry is
+  Convolution v0x70 (2 instruments): the 0x16 reader has no version gate, and the v0x70 layout is
+  not recovered, so the record is dropped.
+- Native-data tests cannot be written for any row yet: `kemu` drivers exist only for Choral and
+  Legacy Chorus/Flanger (`tools/re/kemu_timemod.py`); the rest need the core first.
 
 ## Open items (in order)
 
