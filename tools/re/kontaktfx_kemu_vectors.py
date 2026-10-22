@@ -21,6 +21,9 @@ Native layout (decompile, Kontakt 8):
 
 Knob order in the core: Dual SKF HP cutoff, HP resonance, LP cutoff, LP resonance, drive (stored
 2v - 1). Monark cutoff, resonance, input gain (3v + 1), modulation (2v - 1), feedback.
+
+Monark needs the vtable slot 6 reset (FUN_140afc300) after prepare: it seeds each mode's state. The
+stored BlueMonark mono cases for modes 1..3 match kemu with that call (1e-9 of peak).
 """
 
 import json
@@ -42,7 +45,7 @@ DUAL = {
 MONARK = {
     "name": "BlueMonark", "obj": 0x5490, "ctor": 0x1407F0ED0, "ctor_arg": 0, "core": 0x210,
     "set_type": 0x140AF0020, "setter": 0x140B05740, "prepare": 0x140AFCC40, "tick": 0x140B032F0,
-    "process": 0x140AFD9C0,
+    "process": 0x140AFD9C0, "reset": 0x140AFC300,
 }
 BLOCK = 32
 MONARK_MODE_CODE = {2: 0x24, 1: 0x25, 0: 0x26, 3: 0x27}  # FUN_140af0020 codes (LP1, LP2, LP4, BP)
@@ -75,6 +78,10 @@ def render(e, spec, *, rate, channels, mode, variant, schedule, left, right, tab
     for index, value in enumerate(first):
         complete(e, spec["setter"], core, index, f={2: value})
     complete(e, spec["prepare"], core, 0, BLOCK, f={1: float(rate)})
+    if "reset" in spec:
+        # vtable slot 6 (FUN_140afc300): seeds the per-mode state from DAT_144fcf3a8[mode]; without it
+        # modes 1..3 start from zero and differ from the native run at the first sample.
+        complete(e, spec["reset"], core)
     prev = list(first)
     out_left, out_right = [], []
     for block in range(len(left) // BLOCK):
@@ -134,9 +141,8 @@ def rel_error(got, want):
 def stereo_cases():
     """Stereo: independent L/R noise, steady and moving knobs (one knob set per 32-frame block).
 
-    Dual SKF at 44.1, 48 and 96 kHz. BlueMonark mode 0 (LP4) variant 0 at the same rates: the only
-    Monark mode and variant that reproduce the stored mono cases under kemu. Other modes and variants
-    are open (see the unit doc) and get no stereo vectors.
+    Dual SKF at 44.1, 48 and 96 kHz. BlueMonark mode 0 (LP4) variant 0 at the same rates, and
+    modes 1..3 (variant 0) at 48 kHz. Variants 1 and 2 are open (see the unit doc) and get no stereo vectors.
     """
     rng = random.Random(0x5EED)
     frames = 8 * BLOCK
@@ -153,6 +159,10 @@ def stereo_cases():
                         "schedule": schedule, "left": left, "right": right})
         for label, schedule in (("steady", mon_steady), ("moving", mon_moving)):
             out.append({"class": "BlueMonark", "mode": 0, "variant": 0, "rate": rate, "label": label,
+                        "schedule": schedule, "left": left, "right": right})
+    for mode in (1, 2, 3):
+        for label, schedule in (("steady", mon_steady), ("moving", mon_moving)):
+            out.append({"class": "BlueMonark", "mode": mode, "variant": 0, "rate": 48000, "label": label,
                         "schedule": schedule, "left": left, "right": right})
     return out
 

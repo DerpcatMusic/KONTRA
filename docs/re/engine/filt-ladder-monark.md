@@ -16,7 +16,7 @@ Saved type ids are measured (`docs/re/kontakt-bindings/filter-type-ids.tsv`). Ma
 | Ladder HP1 / HP2 / HP3 / HP4 | 34 / 35 / 36 / 37 | same, taps 5..8 | Partial |
 | Ladder BP2 / BP4 | 38 / 39 | same, taps 9..10 | Partial |
 | Ladder Peak / Notch | 40 / 41 | same, taps 11..12 | Partial |
-| Monark LP4 / LP2 / LP1 / BP | 142 / 141 / 140 / 143 | `kontaktfx.rs` (Monark) | LP4 variant 0 exact (kemu, mono and stereo); LP2, LP1, BP and variants 1/2 open |
+| Monark LP4 / LP2 / LP1 / BP | 142 / 141 / 140 / 143 | `kontaktfx.rs` (Monark) | Variant 0 exact in all four modes (kemu, mono; stereo 44.1/48/96 kHz for LP4, 48 kHz for the others); variants 1/2 open |
 | Pro-53 | 16 | `cascade.rs` `Variant::Pro52` (Chamberlin) | parity (kemu oracle), caveats in the Pro-53 section |
 
 Ladder taps follow the saved id: `taps = id - 29` (1..=12), internal selectors 22..33 map to
@@ -73,15 +73,21 @@ drive, 2 drive. Knob order in the core: cutoff, resonance, input gain, modulatio
   identical L and R inputs native channels 0 and 1 agree, and random L/R noise matches the Rust core
   for LP4 variant 0 (vectors in `kontaktfx_stereo_vectors.json`).
 
-### Monark open items (kemu does not reproduce them)
-- Modes LP2 (141, mode 1), LP1 (140, mode 2) and BP (143, mode 3), variant 0: under kemu the first
-  impulse samples are already off (mode 2 is about 470x the stored first sample), with a 0.03 to 0.05
-  relative error of peak. The mode-indexed tables (`DAT_149e6c7e0`, `DAT_149e706e0`) match the stored file in the PE image. Tried: setType before or after the setters and prepare, and
-  the setType/setter/prepare orders. None matched. The old generator's setup for non-LP4 modes is
-  unknown. Stored mono cases for these modes are kept unchanged and are NOT claimed.
+### Monark modes and open items
+- Per-mode state seed (confirmed, this pass): the Monark vtable slot 6 (`0x144f129a0 + 0x30`) is
+  `FUN_140afc300`. It seeds each channel's state from `DAT_144fcf3a8[mode]` (`T3A8` in the Rust core,
+  already applied there). The generator never called it, so modes 1..3 started from zero and missed
+  the stored cases by 0.03 to 0.05 of peak (near the impulse onset: 470x at sample 1). With the call
+  after prepare, kemu reproduces LP2 (mode 1), LP1 (mode 2) and BP (mode 3) variant 0 at 1e-9 of peak
+  (48 kHz, impulse and square) and LP4 is unchanged. The call order (before setters or after prepare)
+  does not change the output. Stereo vectors for modes 1..3 at 48 kHz are in `kontaktfx_stereo_vectors.json`.
+  Mode table `DAT_144fcf368` (23.2254, 8.5, 6, 6) is in .rdata and needs no init.
 - Variants 1 (noisy drive) and 2 (drive): kemu misses the stored cases by 1.4 to 1.6 of peak in
-  modes 0 and 2 (the other modes were not run with variants). Native variant setter not identified. Candidates tried: `FUN_140af0170` (0x44/0x45,
-  sets core+0x3c) and `FUN_140af0080` (0x4d to 0x54, `FUN_140b044f0`). None matched. Not claimed.
+  modes 0 and 2 (the stored variant cases are NOT reproduced; the Rust core passes them, so their
+  provenance is unverified). Tried, none changes the kemu output at all: `FUN_140af0170` (0x44/0x45,
+  `FUN_140b04810`, sets core+0x3c) and `FUN_140af0080` (0x4d..0x54, `FUN_140b044f0`). The Monark
+  process `FUN_140afd9c0` does not read core+0x3c, and the class has only one vtable (no per-variant
+  class). The variant field is therefore read somewhere not yet found. Not claimed.
 
 ### Pro-53 (saved 16)
 - Setter FUN_14095d940 (confirmed): note `100 v + 20`, index `5 note + 1381.88`, table value;
@@ -144,7 +150,7 @@ Rows marked confirmed were checked against the decompile and the binary's consta
 | Ladder HQ (2x) | shared Kaiser 2x, flag > 0.5 | confirmed (FUN_140b06180 factor, FUN_140ae22e0 16-tap); HQ-on moving-control cadence still unproved |
 | Ladder flag 0x49 (alt cutoff) | version proxy `0x90..=0x92` | **open**: mechanism confirmed, source byte not decoded for v0x95; needs a native capture with the byte set |
 | Ladder moving controls | 32-frame ramp, 2 ms | partly confirmed (FUN_140b036a0, FUN_140b06180 ramp count); HQ cadence open |
-| Monark LP4 variant 0 | Exact (kemu oracle, mono 48 kHz and stereo 44.1/48/96 kHz, moving knobs) | Setter, prepare, tick, process and the mode entry confirmed in the decompile; stereo layout as in Dual SKF. Open: LP2/LP1/BP and variants 1/2 (see Monark open items). |
+| Monark variant 0, modes LP4/LP2/LP1/BP | Exact (kemu oracle, mono 48 kHz; stereo 44.1/48/96 kHz for LP4, 48 kHz for the others) | Setter, prepare, reset (slot 6, per-mode seed), tick, process and the mode entry confirmed in the decompile. Open: variants 1/2 (see Monark modes and open items). |
 | Pro-53 | parity (kemu oracle) | constants and stage code confirmed; static 44.1/48/96 kHz, moving clock (up and down), stereo and call size vectored; constructor not located; non-multiple-of-32 calls and 192 kHz open (see Pro-53 section) |
 
 
@@ -152,4 +158,4 @@ Rows marked confirmed were checked against the decompile and the binary's consta
 
 1. Done: the flag is explicit (`cutoff_path`). Confirm flag 1 with a native capture (open in
    `ladder-cutoff-byte.md`).
-2. Monark open items above: find the old generator setup for modes 1-3 and the native variant setter, then add their vectors.
+2. Monark variants 1/2: find where the record variant is read (not core+0x3c, not a vtable class), then add vectors.
