@@ -1,0 +1,153 @@
+┌ 621: fcn.141978300 (int64_t arg1, int64_t arg2, int64_t arg3);
+│ `- args(rcx, rdx, r8) vars(19:sp[0x10..0x120])
+│           0x141978300      48895c2408     mov qword [var_8h], rbx
+│           0x141978305      4889742410     mov qword [var_10h], rsi
+│           0x14197830a      48897c2418     mov qword [var_18h], rdi
+│           0x14197830f      55             push rbp
+│           0x141978310      4156           push r14
+│           0x141978312      4157           push r15
+│           0x141978314      488d6c24b9     lea rbp, [rsp - 0x47]
+│           0x141978319      4881ec0001..   sub rsp, 0x100
+│           0x141978320      488b0599d5..   mov rax, qword [0x14a2a58c0] ; [0x14a2a58c0:8]=0x2b992ddfa232
+│           0x141978327      4833c4         xor rax, rsp
+│           0x14197832a      48894537       mov qword [var_37h], rax
+│           0x14197832e      488d45d7       lea rax, [var_29h]
+│           0x141978332      48894d97       mov qword [var_69h], rcx   ; arg1
+│           0x141978336      488945cf       mov qword [var_31h], rax
+│           0x14197833a      488db14c02..   lea rsi, [rcx + 0x24c]     ; arg1
+│           0x141978341      48894da7       mov qword [var_59h], rcx   ; arg1
+│           0x141978345      488bfa         mov rdi, rdx               ; arg2
+│           0x141978348      4c89459f       mov qword [var_61h], r8    ; arg3
+│           0x14197834c      488d4c2430     lea rcx, [var_30h]
+│           0x141978351      498b00         mov rax, qword [r8]        ; arg3
+│           0x141978354      488945af       mov qword [var_51h], rax
+│           0x141978358      488d45d7       lea rax, [var_29h]
+│           0x14197835c      4889442428     mov qword [var_28h], rax
+│           0x141978361      488d442428     lea rax, [var_28h]
+│           0x141978366      4889442430     mov qword [var_30h], rax
+│           0x14197836b      488d4597       lea rax, [var_69h]
+│           0x14197836f      4889442438     mov qword [var_38h], rax
+│           0x141978374      488d442420     lea rax, [var_20h]
+│           0x141978379      48894587       mov qword [var_79h], rax
+│           0x14197837d      488d45d7       lea rax, [var_29h]
+│           0x141978381      4889458f       mov qword [var_71h], rax
+│           0x141978385      488d45d7       lea rax, [var_29h]
+│           0x141978389      48c745bf07..   mov qword [var_41h], 7
+│           0x141978391      a803           test al, 3                 ; reloc.WS2_32.dll_closesocket
+│       ┌─< 0x141978393      0f850f010000   jne 0x1419784a8
+│       │   0x141978399      488d5dd7       lea rbx, [var_29h]
+│       │   0x14197839d      b815000000     mov eax, reloc.WS2_32.dll_setsockopt ; 0x15
+│       │   0x1419783a2      48c1eb02       shr rbx, 2
+│       │   0x1419783a6      48f7db         neg rbx
+│       │   0x1419783a9      83e303         and ebx, 3
+│       │   0x1419783ac      482bc3         sub rax, rbx
+│       │   0x1419783af      448bc3         mov r8d, ebx
+│       │   0x1419783b2      4899           cqo
+│       │   0x1419783b4      83e203         and edx, 3                 ; arg2
+│       │   0x1419783b7      4803c2         add rax, rdx               ; arg2
+│       │   0x1419783ba      33d2           xor edx, edx
+│       │   0x1419783bc      48c1f802       sar rax, 2
+│       │   0x1419783c0      4c8bf0         mov r14, rax
+│       │   0x1419783c3      4c8d3c83       lea r15, [rbx + rax*4]
+│       │   0x1419783c7      e884caffff     call 0x141974e50
+│       │   0x1419783cc      493bdf         cmp rbx, r15
+│      ┌──< 0x1419783cf      0f8de6000000   jge 0x1419784bb
+│      ││   0x1419783d5      4a8d14b5ff..   lea rdx, [r14*4 - 1]
+│      ││   0x1419783dd      48c1ea02       shr rdx, 2
+│      ││   0x1419783e1      488d1c9da8..   lea rbx, [rbx*4 + 0xa8]
+│      ││   0x1419783e9      48ffc2         inc rdx
+│      ││   0x1419783ec      0f1f4000       nop dword [rax]
+│     ┌───> 0x1419783f0      488b45a7       mov rax, qword [var_59h]
+│     ╎││   0x1419783f4      488b4daf       mov rcx, qword [var_51h]
+│     ╎││   0x1419783f8      0f104403ac     movups xmm0, xmmword [rbx + rax - 0x54]
+│     ╎││   0x1419783fd      f30f105904     movss xmm3, dword [rcx + 4]
+│     ╎││   0x141978402      f30f1009       movss xmm1, dword [rcx]
+│     ╎││   0x141978406      f30f105108     movss xmm2, dword [rcx + 8]
+│     ╎││   0x14197840b      0fc6db00       shufps xmm3, xmm3, 0
+│     ╎││   0x14197840f      0f59d8         mulps xmm3, xmm0
+│     ╎││   0x141978412      0f10840358..   movups xmm0, xmmword [rbx + rax - 0xa8]
+│     ╎││   0x14197841a      0fc6c900       shufps xmm1, xmm1, 0
+│     ╎││   0x14197841e      0f59c8         mulps xmm1, xmm0
+│     ╎││   0x141978421      0f100403       movups xmm0, xmmword [rbx + rax]
+│     ╎││   0x141978425      0fc6d200       shufps xmm2, xmm2, 0
+│     ╎││   0x141978429      0f58d9         addps xmm3, xmm1
+│     ╎││   0x14197842c      0f59d0         mulps xmm2, xmm0
+│     ╎││   0x14197842f      0f10440354     movups xmm0, xmmword [rbx + rax + 0x54]
+│     ╎││   0x141978434      f30f10490c     movss xmm1, dword [rcx + 0xc]
+│     ╎││   0x141978439      0f58da         addps xmm3, xmm2
+│     ╎││   0x14197843c      0fc6c900       shufps xmm1, xmm1, 0
+│     ╎││   0x141978440      f30f105110     movss xmm2, dword [rcx + 0x10]
+│     ╎││   0x141978445      0f59c8         mulps xmm1, xmm0
+│     ╎││   0x141978448      0f108403a8..   movups xmm0, xmmword [rbx + rax + 0xa8]
+│     ╎││   0x141978450      0fc6d200       shufps xmm2, xmm2, 0
+│     ╎││   0x141978454      0f58d9         addps xmm3, xmm1
+│     ╎││   0x141978457      0f59d0         mulps xmm2, xmm0
+│     ╎││   0x14197845a      0f108403fc..   movups xmm0, xmmword [rbx + rax + 0xfc]
+│     ╎││   0x141978462      f30f104914     movss xmm1, dword [rcx + 0x14]
+│     ╎││   0x141978467      0f58da         addps xmm3, xmm2
+│     ╎││   0x14197846a      0fc6c900       shufps xmm1, xmm1, 0
+│     ╎││   0x14197846e      f30f105118     movss xmm2, dword [rcx + 0x18]
+│     ╎││   0x141978473      0f59c8         mulps xmm1, xmm0
+│     ╎││   0x141978476      0f10840350..   movups xmm0, xmmword [rbx + rax + 0x150]
+│     ╎││   0x14197847e      488b442428     mov rax, qword [var_28h]
+│     ╎││   0x141978483      0fc6d200       shufps xmm2, xmm2, 0
+│     ╎││   0x141978487      0f58d9         addps xmm3, xmm1
+│     ╎││   0x14197848a      0f59d0         mulps xmm2, xmm0
+│     ╎││   0x14197848d      0f58da         addps xmm3, xmm2
+│     ╎││   0x141978490      0f119c0358..   movups xmmword [rbx + rax - 0xa8], xmm3
+│     ╎││   0x141978498      4883c310       add rbx, 0x10              ; reloc.WS2_32.dll_recv
+│     ╎││   0x14197849c      4883ea01       sub rdx, 1
+│     └───< 0x1419784a0      0f854affffff   jne 0x1419783f0
+│     ┌───< 0x1419784a6      eb13           jmp 0x1419784bb
+│     ││└─> 0x1419784a8      33d2           xor edx, edx
+│     ││    0x1419784aa      41b815000000   mov r8d, reloc.WS2_32.dll_setsockopt ; 0x15
+│     ││    0x1419784b0      e89bc9ffff     call 0x141974e50
+│     ││    0x1419784b5      41bf15000000   mov r15d, reloc.WS2_32.dll_setsockopt ; 0x15
+│     ││    ; CODE XREF from fcn.141978300 @ 0x1419784a6(x)
+│     └└──> 0x1419784bb      41b815000000   mov r8d, reloc.WS2_32.dll_setsockopt ; 0x15
+│           0x1419784c1      488d4c2430     lea rcx, [var_30h]
+│           0x1419784c6      498bd7         mov rdx, r15
+│           0x1419784c9      e882c9ffff     call 0x141974e50
+│           0x1419784ce      488b45cf       mov rax, qword [var_31h]
+│           0x1419784d2      4889752f       mov qword [var_2fh], rsi
+│           0x1419784d6      0f1006         movups xmm0, xmmword [rsi]
+│           0x1419784d9      0f1008         movups xmm1, xmmword [rax]
+│           0x1419784dc      0f58c8         addps xmm1, xmm0
+│           0x1419784df      0f110f         movups xmmword [rdi], xmm1
+│           0x1419784e2      488b45cf       mov rax, qword [var_31h]
+│           0x1419784e6      0f105610       movups xmm2, xmmword [rsi + 0x10]
+│           0x1419784ea      0f104010       movups xmm0, xmmword [rax + 0x10]
+│           0x1419784ee      0f58d0         addps xmm2, xmm0
+│           0x1419784f1      0f115710       movups xmmword [rdi + 0x10], xmm2
+│           0x1419784f5      488b45cf       mov rax, qword [var_31h]
+│           0x1419784f9      0f104e20       movups xmm1, xmmword [rsi + 0x20]
+│           0x1419784fd      0f104020       movups xmm0, xmmword [rax + 0x20]
+│           0x141978501      0f58c8         addps xmm1, xmm0
+│           0x141978504      0f114f20       movups xmmword [rdi + 0x20], xmm1
+│           0x141978508      488b45cf       mov rax, qword [var_31h]
+│           0x14197850c      0f105630       movups xmm2, xmmword [rsi + 0x30]
+│           0x141978510      0f104030       movups xmm0, xmmword [rax + 0x30]
+│           0x141978514      0f58d0         addps xmm2, xmm0
+│           0x141978517      0f115730       movups xmmword [rdi + 0x30], xmm2
+│           0x14197851b      488b45cf       mov rax, qword [var_31h]
+│           0x14197851f      0f104e40       movups xmm1, xmmword [rsi + 0x40]
+│           0x141978523      0f104040       movups xmm0, xmmword [rax + 0x40]
+│           0x141978527      0f58c8         addps xmm1, xmm0
+│           0x14197852a      0f114f40       movups xmmword [rdi + 0x40], xmm1
+│           0x14197852e      488b45cf       mov rax, qword [var_31h]
+│           0x141978532      f30f104650     movss xmm0, dword [rsi + 0x50]
+│           0x141978537      f30f584050     addss xmm0, dword [rax + 0x50]
+│           0x14197853c      488bc7         mov rax, rdi
+│           0x14197853f      f30f114750     movss dword [rdi + 0x50], xmm0
+│           0x141978544      488b4d37       mov rcx, qword [var_37h]
+│           0x141978548      4833cc         xor rcx, rsp
+│           0x14197854b      e84010a502     call 0x1443c9590
+│           0x141978550      4c8d9c2400..   lea r11, [var_100h]
+│           0x141978558      498b5b20       mov rbx, qword [r11 + 0x20]
+│           0x14197855c      498b7328       mov rsi, qword [r11 + 0x28]
+│           0x141978560      498b7b30       mov rdi, qword [r11 + 0x30]
+│           0x141978564      498be3         mov rsp, r11
+│           0x141978567      415f           pop r15
+│           0x141978569      415e           pop r14
+│           0x14197856b      5d             pop rbp
+└           0x14197856c      c3             ret

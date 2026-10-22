@@ -1,0 +1,33 @@
+┌ 120: fcn.141946410 (int64_t arg1, int64_t arg2, int64_t arg3);
+│ `- args(rcx, rdx, r8) vars(4:sp[0x40..0x58])
+│           0x141946410      4883ec38       sub rsp, 0x38
+│           0x141946414      488b05a5f4..   mov rax, qword [0x14a2a58c0] ; [0x14a2a58c0:8]=0x2b992ddfa232
+│           0x14194641b      4833c4         xor rax, rsp
+│           0x14194641e      4889442420     mov qword [var_20h], rax
+│           0x141946423      488d442410     lea rax, [var_10h]
+│           0x141946428      4889442408     mov qword [var_8h], rax
+│           0x14194642d      4c8d4920       lea r9, [rcx + 0x20]       ; arg1
+│           0x141946431      498b00         mov rax, qword [r8]        ; arg3
+│           0x141946434      0f104110       movups xmm0, xmmword [rcx + 0x10] ; arg1
+│           0x141946438      0f105010       movups xmm2, xmmword [rax + 0x10]
+│           0x14194643c      0f1008         movups xmm1, xmmword [rax]
+│           0x14194643f      488bc2         mov rax, rdx               ; arg2
+│           0x141946442      0f59d0         mulps xmm2, xmm0
+│           0x141946445      0f1001         movups xmm0, xmmword [rcx] ; arg1
+│           0x141946448      4c894c2418     mov qword [var_18h], r9
+│           0x14194644d      0f59c8         mulps xmm1, xmm0
+│           0x141946450      0f58d1         addps xmm2, xmm1
+│           0x141946453      0f28ca         movaps xmm1, xmm2
+│           0x141946456      0f12ca         movhlps xmm1, xmm2
+│           0x141946459      0f58ca         addps xmm1, xmm2
+│           0x14194645c      0f28c1         movaps xmm0, xmm1
+│           0x14194645f      0fc6c101       shufps xmm0, xmm1, 1
+│           0x141946463      f30f58c8       addss xmm1, xmm0
+│           0x141946467      f30f114c2410   movss dword [var_10h], xmm1
+│           0x14194646d      f3410f5809     addss xmm1, dword [r9]
+│           0x141946472      f30f110a       movss dword [rdx], xmm1    ; arg2
+│           0x141946476      488b4c2420     mov rcx, qword [var_20h]
+│           0x14194647b      4833cc         xor rcx, rsp
+│           0x14194647e      e80d31a802     call fcn.1443c9590
+│           0x141946483      4883c438       add rsp, 0x38
+└           0x141946487      c3             ret
