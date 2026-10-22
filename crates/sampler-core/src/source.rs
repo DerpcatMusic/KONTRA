@@ -1554,15 +1554,15 @@ impl Cursor {
         let (chunks, tail) = output.as_chunks_mut::<4>();
         for chunk in chunks {
             let mut phases = [0.; 4];
-            let windows = std::array::from_fn(|i| {
+            let mut windows = [&span[..0]; 4];
+            for i in 0..4 {
                 phases[i] = fraction;
-                let window = &span[offset..offset + width];
+                windows[i] = &span[offset..offset + width];
                 let phase = fraction + step;
                 let whole = phase as i64;
                 fraction = phase - whole as f64;
                 offset += whole as usize;
-                window
-            });
+            }
             let sources = crate::resample::cubic_four(windows, phases);
             for (frame, source) in chunk.iter_mut().zip(sources) {
                 last = if source.iter().all(|value| value.is_finite()) {
