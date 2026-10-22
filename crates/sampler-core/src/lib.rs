@@ -258,6 +258,9 @@ pub enum EventInfo {
     MidiChannel,
     /// Physical creator script slot, or -1 for a host event.
     Source,
+    /// Microseconds the play cursor of the event's first audible voice is
+    /// past its zone start (`$EVENT_PAR_PLAY_POS`); 0 with no voice.
+    PlayPosition,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
