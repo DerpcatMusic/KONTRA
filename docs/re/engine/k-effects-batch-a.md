@@ -133,6 +133,32 @@ shaper cases, and to check each mode's wet part against the vectors.
 Mode table and knob registrations: see `k-stomps-b.md` (unchanged, still
 measured).
 
+### Kolor shaper cases 2 and 5, decoded (2026-10-23, port in `kolor/shaper_2_5.rs`)
+
+Dispatch `1419749f0`: jump table at `0x141974d68` (dwords, relative to `0x140000000`). Case targets:
+0 `141974a2e`, 1 `141974b60`, 2 `141974bf1`, 3 `141974c02`, 4 `141974c7e`, 5 `141974cad`, 6 `141974cbf`,
+7 `141974cee`, 8 `141974d1d`, 9 `141974d4c`. All cases return through the epilogue at `141974b43` with the
+result in `xmm0`.
+
+- Case 2 (`141974bf1`) reads the float at `*(rcx)` and calls `14197adb0`. Stateless.
+  With `x` the input and constants 0.05, 0.0025, 1, 13.72612, -0.75:
+  `y = (x*0.05)/sqrt(0.0025*x*x + 1) * 13.72612`,
+  `s = exp(-(exp(-0.75*sqrt|y|) + 1) * y)`, out = `(exp(y) - s) / (exp(-y) + exp(y))`.
+- Case 5 (`141974cad`) reads the float at `*(rcx+8)` and calls `14197ae80`. Stateless odd soft clip:
+  out = `1 - e` for `x < 0`, `e - 1` for `x >= 0`, with `e = exp(-|x|)`.
+- `1443d111a` is the CRT `expf` thunk (`api-ms-win-crt-math`).
+
+Not yet measured: which `param+0x7dc` mode selects which case, and whether the post-dispatch gain
+(`DAT_14769aea8`) and the mode-4/2/5 branches apply to these outputs.
+
+### Kolor fixture check (2026-10-23): the dry path is not a scaled input
+
+The earlier "dry path = `(1-wet) * in * ramp`" reading does not hold for the native vectors. Dividing
+`steady_L` by `0.5 * in` gives a ratio that changes with the sample index (mode 0: 7.9e-4 at n=1, 0.017 at
+n=32, 0.10 at n=200, 0.23 at n=511). So the output is filtered by the per-stage sections (`+0x9484`,
+`+0x9568`, `+0x9670`, `+0x9708`), and the ramp alone cannot explain it. Any port must include those
+sections with coefficients from prepare/notify, which are still open.
+
 ## Skreamer Deluxe (`BEffectSkreamerDlx` 0x144e93da8, wrapper 0x144e93c98)
 
 | Step | Address | Size |

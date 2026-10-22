@@ -19,6 +19,7 @@ mod hilbert;
 mod bite;
 mod tape;
 mod exciter;
+mod kolor;
 mod tonestack;
 mod diode;
 mod lofi;
