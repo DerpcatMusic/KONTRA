@@ -1749,10 +1749,12 @@ impl Cascade {
     /// modulation).
     ///
     /// The control clock (`0x140ae9f90`, types 2..=17): the first call snaps to the target;
-    /// after every 32-frame chunk the cutoff moves toward it by at most
+    /// before every 32-frame chunk the cutoff moves toward it by at most
     /// `clamp(1 / (31 r + 4), 1/35, 1/4)` (`r` the resonance at the call's start; downward
     /// moves snap while modulated) and the resonance by `0.015` of the distance when that is
-    /// over `1e-4`. Versatile's clock (`0x140aea690`) moves both by `0.015`.
+    /// over `1e-4`; the chunk then runs with the coefficients of that step, and a call ends with
+    /// one more step (kemu, Pro-53, 64-frame calls).
+    /// Versatile's clock (`0x140aea690`) moves both by `0.015` after each chunk.
     // ponytail: "modulated" is a nonzero cutoff delta, not the native's modulation-buffer
     // pointer. The clock's alternative branch is dead: `DAT_144fd4c54` is 0 in the image's
     // .rdata and never written in the decompile, so FUN_140ae9f90 runs its `else` path only.
@@ -1789,9 +1791,13 @@ impl Cascade {
         let mut current = if started { cells[CLOCK].map(|v| v as f32) } else { target(0) };
         let step = (1.0 / (31.0 * current[1] + 4.0)).clamp(0.028_571_429, 0.25);
         let mut position = 0;
+        let mut goal = target(0);
         while position < len {
-            let goal = target(position);
+            goal = target(position);
             let frames = position..position + QUANTUM.min(len - position);
+            if class.clock_first() {
+                current = class.clock(current, goal, step, modulation[0] != 0.0);
+            }
             match class.law(self.rate, cells, current) {
                 Law::Sections(d) => {
                     for ch in 0..2 {
@@ -1829,6 +1835,12 @@ impl Cascade {
                 }
             }
             position = frames.end;
+            if !class.clock_first() {
+                current = class.clock(current, goal, step, modulation[0] != 0.0);
+            }
+        }
+        if len > 0 && class.clock_first() {
+            // The wrapper ends each call with one more clock step after its last chunk.
             current = class.clock(current, goal, step, modulation[0] != 0.0);
         }
         cells[CLOCK] = current.map(f64::from);
@@ -1839,6 +1851,13 @@ impl Cascade {
 }
 
 impl ClockedClass {
+    /// The wrapper (`0x140ae9f90`) moves the clock before a chunk takes its coefficients. Versatile
+    /// has its own clock (`0x140aea690`), whose order is not verified yet, so it keeps the order of
+    /// its last verification.
+    fn clock_first(self) -> bool {
+        !matches!(self, Self::Versatile(_))
+    }
+
     /// One control tick toward `goal`.
     fn clock(self, [cut, res]: [f32; 2], goal: [f32; 2], step: f32, modulated: bool) -> [f32; 2] {
         if matches!(self, Self::Versatile(_)) {
@@ -2043,9 +2062,10 @@ mod tests {
         for at in [128, 192] {
             unit.process(&mut cells, &parameters, &mut block, 64, at, [0.0; 4]);
         }
-        // Four 32-frame updates: the first four native setter arguments from
-        // wrapper 0x140ae9f90 at res .25, rather than a clipped 1 -> .5 slew.
-        assert_eq!(cells[CLOCK][0], f64::from(8.15957260131836_f32));
+        // Two 64-frame wrapper calls at res .25: three clock steps per call (one per 32-frame
+        // chunk and one at the call's end), setter args 8.41489, 8.32979, 8.24468 | 8.15957,
+        // 8.07447, 7.98936 under kemu (0x140ae9f90, LP1), not a clipped 1 -> .5 slew.
+        assert_eq!(cells[CLOCK][0], f64::from(7.989_359_4_f32));
         assert_eq!(ClockedClass::Sections(SectionClass::Lp1).clock([8.5, 0.25], [0.5, 0.25], 1.0 / 11.75, true)[0], 0.5);
     }
 

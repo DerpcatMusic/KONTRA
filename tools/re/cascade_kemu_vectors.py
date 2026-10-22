@@ -1,29 +1,27 @@
 """Native PRO-53 (saved 16) vectors under the kemu emulator (original code, no host).
 
-Runs the unchanged Pro-53 core: rate setter FUN_1408de8e0 (rate at +0x14, scale K/rate at +0x364),
-coefficient setter FUN_14095d940 (vtable slot 0x120), process FUN_1409099a0 (vtable slot 0x108) and
-the block wrapper / control clock FUN_140ae9f90, which renders 32-frame chunks through slot 0x108,
-moves cutoff and resonance toward their goals and calls the setter after each step.
+Runs the unchanged Pro-53 code: rate setter FUN_1408de8e0 (rate at +0x14, scale K/rate at +0x364),
+coefficient setter FUN_14095d940, process FUN_1409099a0 and the block wrapper FUN_140ae9f90, which
+runs 32-frame chunks through the process, moves the cutoff and resonance clock and calls the setter.
 
     python3 -I tools/re/cascade_kemu_vectors.py KONTAKT8_EXE OUT_JSON
 
-The vtable is the one that holds the Pro-53 setter and process (base 0x144F0FBD0: slot 0x108 is
-process, 0x120 the setter, 0x8 the rate setter). The constructor was not located, so the harness
-builds the object: zeroed memory, the vtable pointer, the rate setter, channel count (+0x124) and
-input/output channel pointers (+0x20 / +0xA0). Stored raw knobs (+0x1E4/+0x1E8) start at -123 so the
-first setter always updates (its guard skips identical values only). Slots 0x28, 0x168 and 0x170
-are no-op stubs (rate hook and the wrapper's modulation checks; no modulation here).
+The harness allocates its own vtable with the slot offsets of the Pro-53 vtable in the image (base
+0x144F0FBD0: slot 0x108 process, 0x120 setter; the image holds both there). The constructor was not
+located, so the harness builds the object: zeroed memory, the vtable pointer, the rate setter,
+channel count (+0x124), input and output channel pointers (+0x20, +0xA0). Stored raw knobs
+(+0x1E4/+0x1E8) start at -123 so the first setter updates (its guard only skips identical values).
+Slots 0x28, 0x168 and 0x170 are no-op stubs (rate hook and wrapper modulation checks; none here).
 
-Output keys:
-  'static'  : {rate, cut, res, input, out, channels} with one setter then 32-frame process calls.
-  'single'  : one 128-frame process call at 48 kHz, to test the 32+ frame call path.
-  'moving'  : wrapper runs 'frames' frames; goals move from start to end, one 32-frame chunk per step.
-  'stereo'  : two channels, separate inputs (left impulse, right loud square).
+Cases ('name', 'rate', 'start', 'end', 'input', 'frames', 'out' = one list per channel):
+  static    one setter, then 32-frame process calls (48, 44.1, 96 kHz).
+  single128 one 128-frame process call (the 32+ frame call path; equal to 32-frame calls).
+  moving    64-frame wrapper calls; goals move from start to end, one 32-frame clock step per chunk
+            and one more step at the end of each call; the step is taken once per call.
+  stereo    two channels with separate inputs (left impulse, right square) over shared coefficients.
 """
 import json
-import math
 import os
-import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -104,18 +102,23 @@ def static_case(e, rate, cut, res, kind, n=64, channels=1, stim=None, chunk=32):
     return p.read(n)
 
 
-def moving_case(e, rate, start, end, kind, frames, channels=1):
+def moving_case(e, rate, start, end, kind, frames, channels=1, call=64):
+    """Wrapper calls of `call` frames: the clock step is taken once per call (from the resonance at
+    the call start), so the call size is part of the vector. The buffers advance per call."""
     p = Pro53(e, rate, channels, frames)
     p.feed([stimulus(kind, frames)] * channels)
-    # Snap the clock to the start: the dirty branch copies the goals; no frames yet.
     e.write(p.obj + OFF_GOAL_CUT, "f", start[0])
     e.write(p.obj + OFF_GOAL_RES, "f", start[1])
     e.write(p.obj + OFF_DIRTY, "B", 1)
-    p.wrapper(0)
+    p.wrapper(0)  # snap the clock to the start
     p.setter(*start)
     e.write(p.obj + OFF_GOAL_CUT, "f", end[0])
     e.write(p.obj + OFF_GOAL_RES, "f", end[1])
-    p.wrapper(frames)
+    for at in range(0, frames, call):
+        for ch in range(channels):
+            e.write(p.obj + OFF_IN + 8 * ch, "Q", p.inputs[ch] + 4 * at)
+            e.write(p.obj + OFF_OUT + 8 * ch, "Q", p.outputs[ch] + 4 * at)
+        p.wrapper(call)
     return p.read(frames)
 
 
@@ -142,6 +145,11 @@ def main():
             for kind in ("imp", "loud"):
                 cases.append({"name": "moving", "rate": rate, "start": list(start), "end": list(end),
                               "input": [kind], "frames": 256, "out": moving_case(e, float(rate), start, end, kind, 256)})
+    # The clock step is taken once per call from the resonance at its start: a sweep whose
+    # resonance keeps rising across calls separates that from a step fixed at the block start.
+    cases.append({"name": "moving", "rate": 48000, "start": [0.00, 0.50], "end": [1.00, 0.90],
+                  "input": ["loud"], "frames": 512,
+                  "out": moving_case(e, 48000.0, (0.00, 0.50), (1.00, 0.90), "loud", 512)})
     # Stereo: two channels, own stage state, shared coefficients (left impulse, right square).
     cases.append({"name": "stereo", "rate": 48000, "start": [0.30, 0.0], "end": [0.30, 0.0],
                   "input": ["imp", "loud"], "frames": 64,
