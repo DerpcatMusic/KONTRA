@@ -28,9 +28,9 @@ use std::f64::consts::PI;
 
 const N: usize = 11;
 
-/// Coefficient smoothing time constant of the native G_EQ: 20 ms (RE notes). The stepping here
-/// is a one-pole glide per block, a placeholder: the native ramp is linear per frame (see
-/// docs/re/engine/eq-kontakt.md sec. 5).
+/// Knob-glide length of the native G_EQ: 20 ms (RE notes; the native literal 0.02 is in the
+/// `.rdata` cache). The native ramp moves the knob values linearly per frame and redesigns each
+/// frame; the increment writer that fixes the length is not located (docs/re/engine/eq-kontakt.md sec. 5).
 pub(super) const RAMP_SECONDS: f64 = 0.020;
 
 /// The native grid: F(i * F(0.1)) widened, so it is not exact decimal tenths.
