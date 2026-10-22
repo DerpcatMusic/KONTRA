@@ -57,7 +57,7 @@ shape of the emulated response. UNKNOWN = no name.
 | 25 | double slope 280 v + 20 (UNKNOWN role) | none (stimuli a, b, c) | C+0x928, C+0x930 |
 | 26 | candidate select flag (+0x916) | none | C+0x916 |
 | 27 | raw store only | none | none |
-| 28 | path select (+0x604) and F-stage flag | v=1: silent; v=0 = default | C+0x604; F1, F2 +0x4 |
+| 28 | PATH SELECT = head mode (CONFIRMED by emulation, name INFERRED): k = min(4, trunc(5 v)) | k = 1 (v 0.2-0.4): mode 1, max diff 0.33 vs default (noise); k = 2 (v 0.4-0.6): mode 2; k = 3 (0.6-0.8): mode 3 (not emulated); k = 0 or 4 (v < 0.2, v >= 0.8): mode 0 | raw C+0x8b0; C+0x604, C+0x830 = k; heads H+0xc0 = k; kernel select H+0x270/H+0x340 (kernel 1 at k = 1, kernel 2 at k = 2, observed); F1, F2 +0x4 |
 | 29 | SATURATION (CONFIRMED anchor) | v=0.5: peak 0.78 (vector); v=1: peak 0.32, energy 0.10 (default 1.0) | C+0x142b0 target (live: C+0x142ac); drive/gain copies |
 | 30 | rotator coefficients, LFO rate (UNKNOWN consumer) | none | C+0x980..0x997; P +0x3c |
 | 31 | head sub-state; echo moves (UNKNOWN role) | v=1: echo 1742 -> 2116, energy 0.14 | heads 1, 2, 3 sub-state |
@@ -161,7 +161,7 @@ reset value otherwise.
 | 52 | TAP GAIN | core; not wired (implicit 1.0) |
 
 Piece 2 (ducking): indices 17, 18, 19 ported as the gate and wired from the saved DUCKING_* fields (see below).
-The mode-1 kernels are not ported (piece 3).
+Piece 3 (mode 1): the selector is closed (index 28, below); the mode-1 kernels are not ported.
 
 ## Ducking (piece 2)
 
@@ -199,3 +199,34 @@ Not confirmed: the release factor is written by the setter from the block rate. 
 (rate 0, base 0) it is 0, which is instant release. The harness routes 19 after prepare every quantum, as
 the wrapper does for routed indices; the reset default (19 = 0, no route) is only correct after prepare.
 The port uses the prepared rate.
+
+## Mode-1 selector (piece 3)
+
+Selector: index 28, CONFIRMED by decompile and emulation. Setter case `0x1c` (`0141ac0000.c` 3648) sets flags and
+calls `141aca670`; the value is the raw store `C+0x8b0`. `141aca670` (`0141ac0000.c`, 1200 B) computes
+`k = min(4, trunc(5 v))` (`1447149f0` = 5.0, `constants.tsv`), writes `C+0x604` and `C+0x830`, then calls
+`141aca4a0(H, uVar5, 0)` for the three inline heads (`C+0xac0`, `C+0x6380`, `C+0xbc40`), with uVar5 = k for k = 1 to 3 and 0 otherwise.
+`141aca4a0` writes `H+0xc0 = mode` (`0141ac0000.c`, first line of the body). The head read `141ab7a90`
+(`0141ab0000.c` 4456) takes `141ab82e0` (mode 0) when `H+0xc0 == 0`, else `141ab8c60`.
+
+Other writers of `H+0xc0 = 1` (`141ab4e30`, `141ab5890`, `141ab69f0`; `0141ab0000.c` 2611, 3030, 3756) are not reached from the
+core setter: their callers are the wrapper's lane objects (`141ac5340` case 6, `141abab20`, `141abdaf0`).
+Index 9 (TYPE, `C+0x93c` = int(4 v)) does not write `H+0xc0`.
+
+Emulation (`tools/re/replika_mode1_kemu.py`, one emulator per run; `H+0xc0` read after the setter and one
+quantum):
+
+| index 28 | 0.19 | 0.21 | 0.39 | 0.41 | 0.59 | 0.61 | 0.79 | 0.81 | 1.0 |
+|---|---|---|---|---|---|---|---|---|---|
+| H+0xc0 | 0 | 1 | 1 | 2 | 2 | 3 | 3 | 0 | 0 |
+
+At 0.3 (mode 1), each 4096-frame noise run calls `141ab8c60` 12288 times (3 heads x 4096 frames), kernel
+`141ab87d0` 24576 times (L and R) and the post filter `141aa3e00` 24576 times. The output moves by 0.33 against
+the default. Index 9 at 0.3 moves the output by 0.49 with no mode-1 call (the TYPE path, not the head kernels).
+Index 28 at 0.3 also sets the bypass and gain state of `141aca670`, so the difference is the head reader
+path as a whole, not the kernels alone.
+
+Reference vectors (emulated, not Kontakt renders, no port yet): `vectors/replika-native-mode1-index28-v0p3.json`
+(impulse, peak 2.06e-4) and `vectors/replika-native-mode1-index28-noise-v0p3.json` (noise, peak 0.107, energy
+2.63); 4096 frames, index 28 = 0.3 on every quantum. The mode-1 chain they need is listed in `k-replika-gaps.md`
+(GAP-C).

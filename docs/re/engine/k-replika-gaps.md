@@ -337,7 +337,7 @@ was not changed and not built.
 |---|---|---|
 | GAP-A | Open | Lanes 2-3 closed (GAP-K). `147697658` = 0.02 (f32 `3ca3d70b`), so the ramp length is `max(1, trunc(rate x 0.02 / n + 0.5))` (`141aa1580`; the limiter uses the same law, `141ae28c0`). Open: `n`, the integer divisor set earlier in `141aa1580`. |
 | GAP-B | Open | Not traced in this pass: writers of `C+0xad0`, `C+0xad8`, `+0x918`, `+0x91c`, `+0x938`. |
-| GAP-C | Open | Mode-1 kernels not read in this pass: `141ab8c60` (1240 B, selection), `141ab8a00` (530 B), `141ab87d0` (549 B), `141ab7fe0` (754 B), blend `141ab7e00` (468 B; the blend is partly lost in the text). Active-branch length writer in `141ab4e30` (1480 B). Stays NotModeled. |
+| GAP-C | Open | Mode-1 selector closed: index 28 (`141aca670`, `0141ac0000.c`; `141aca4a0` writes `H+0xc0 = k`; see `k-replika-binding.md`). Open, mode-1 chain (not ported): write filter `141aa3c60` (403 B; state `H+0x2dc0` / `H+0x4240`); head filter design `141abbc90` (715 B; `141ac3fd0` 836 B, `1419529e0` 169 B, `14199dbf0` 137 B), called from `141aca4a0`; `141aca4a0` also calls `141abd190` (115 B) and `141ac4510` (105 B; mode-1 time field `H+0xa4`, writer not traced); read post filter `141aa3e00` (189 B; state `H+0x56c0` / `H+0x5724`); kernel 1 `141ab87d0` (549 B) with `14199dcc0` (182 B); read position, speed and wrap in `141ab8c60` (`H+0x58` / `H+0x60`, mask `H+0x1c0`); delay positions `141abd0b0` (214 B) and `141abd290` (569 B, GAP-M). Kernels `141ab8a00` (530 B, kernel 0) and `141ab7fe0` (754 B, kernel 2) are void in the text. Reference vectors: `vectors/replika-native-mode1-*.json`. |
 | GAP-D | Open | Unchanged: glide 3 step, `F+0x100` object, writer of `F+0x5`. |
 | GAP-E | Closed | Rate setup `141ae28c0` (limiter slot 3, `0141ae0000.c:2118`): `L+0x40` = rate. Attack `L+0xcc` = 1 - 200/rate (`144f38ce4` = 200, u32 `43480000`). Second dB state `L+0xbc`: rise `L+0xc0` = 1 - (1/15)/rate (`144f386a8`, u32 `3d888889`), fall `L+0xc4` = 1 - (1/3)/rate (`144760108`); update in `141ae3ba0`. Gain = -max(0, env, hold) dB. Index 4 sets `L+0xad` (mode): 1 = the first envelope rises at once, else attack. Ported in `db_limiter.rs`, with the output clamp kept. Open: release before the index-1 setter (default `L+0xb0`, so release starts at 0 in the port); ramp lengths `L+0x88` and `+0x8c` (not applied); rebuild `141ae6c60` (writes `+0xd0` and `+0xc0`, reached from `141ae9e40`, which is not a slot of this vtable; not applied). |
 | GAP-F | Closed for R and the polynomial | c50 (R of section A, `B+0x50`) and `B+0x84` (R of section B) = 2.0: `141ac9c50` (`0141ac0000.c:6018`) writes `0x40000000` when `144714994` is nonzero (u32 `40000000`). Sections at 2205 Hz (`1479ab60c`) and 5 Hz (`1447149f0`), Q = 1 (`14470bad4`). Polynomial: `141abe910` with K = 0.05 (`1447148c0`, u32 `3d4ccccd`), exponents (0, -40, -45, -49, -40) from slot 1 `141a9e300`, divided by the raw base 1.0668702: c4 = 0.0453523, c8 = -0.2085480, c0c = -0.0266059, c10 = 0.1499714. Output `141aa44a0`: g (tanh(d x) + (P - c50 A.out5 - A.out6) c18), with c14 = c18 = 1, d = 10^a, g = 10^(-a/2). Ported as `tpt_svf::Saturator` (not wired). Open: writer of `C+0x142a8` (amount glide coefficient). |
@@ -473,6 +473,7 @@ against Kontakt. No native vector. Ported code is unwired (`crates/sampler-core/
 | GAP-C mode-0 tap position (wrap, clamp) | Closed (ported, unwired); sample blend open | `141ab7e00`, `0141ab0000.c:4522-4560` |
 | GAP-C mode-0 left offset `min(0, s k T + b) + base` | Closed (ported, unwired) | `141ab82e0`, `0141ab0000.c:4640-4700` |
 | GAP-C sample blend of the tap read | Open | `141ab7e00` return value is not in the text |
+| GAP-C mode-1 selector | Closed (emulated) | index 28: `141aca670` (`0141ac0000.c`) computes k = min(4, trunc(5 v)); `141aca4a0` writes `H+0xc0 = k`; `tools/re/replika_mode1_kemu.py` |
 | GAP-C mode-1 kernels (playing reader) | Open | `141ab8a00` (4875), `141ab7fe0` (4562): void in text; `141ab87d0` (4810) needs `14199dcc0` (unread) |
 | GAP-C mode-1 mask and length | Open | `141ab4e30` active branch (2551-2767) writes `H+0x1c0` from a table at `H+0x1003a8`; no Len_L/Len_R write there |
 | GAP-C head time field `H+0xa0..0xac` | Open | writer not traced |
@@ -505,7 +506,7 @@ Open:
   signature in the text but their callers use the return value; the return is not recoverable. `141ab87d0`
   (549 B, 4810) returns the linear blend of `buf[i]` and `buf[i+1]` after a catch-up pass of a two-state
   section (the `c2 = A`, `c3 = k`, `c4 = B` form of the saturator section, CONFIRMED by arithmetic); it calls
-  `14199dcc0`, which is not read. The selector's writer is not traced.
+  `14199dcc0`, which is not read. The selector is index 28 (closed; see `k-replika-binding.md`, Mode-1 selector).
 - Active branch of `141ab4e30` (`0141ab0000.c:2551-2767`). The n_ring write (`H+0x158`, `H+0x220`) and the
   `n_ring < 1` zeroing of `H+0x15c` are confirmed. In the active branch the function writes `H+0x1c0`
   (the mode-1 wrap mask) from a 32-entry int table at `H+0x1003a8`, indexed by `H+0x1a8` (clamped to 0..31),
@@ -614,7 +615,7 @@ Laws added in this piece:
 
 Open after piece 1:
 - Ducking (GAP-B, GAP-M): closed in piece 2 (the gate is ported; GAP-M is the head update, not the ducker; see below).
-- Mode-1 head kernels (GAP-C): piece 3.
+- Mode-1 head kernels (GAP-C): open. The selector is closed (index 28); the chain is in the GAP-C table row.
 - Gate closed branch (|mid| >= threshold, GAP-G): the threshold is 1.0 at reset and no vector reaches it.
 - Head gain index 12 (floor `f9` unbacked): not wired.
 - LFO and rotator (depth, rate, modulation): head read depth is 0 in the vectors, so they are inert; lane products `m`
