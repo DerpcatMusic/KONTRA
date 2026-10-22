@@ -411,3 +411,30 @@ Corrects pass 3. Evidence: `tools/re/chainsaw_hm2_kemu.py` (fixed), `docs/re/dis
    /`+0x1f8` via `param[9]`, `param[6]`, `param[12]`; it is not a `+0x215` writer).
 
 Status: **still missing**. No Rust port, no kemu vector, no PARITY_MATRIX row change.
+
+## Pass 5: Surround Panner speaker law ported, vectors pass (2026-10-23)
+
+Evidence: `tools/re/surround_panner_kemu_vectors.py` (kemu on `Kontakt8.exe`, sha256 `0fe6356e…`),
+`crates/sampler-core/src/dsp/surround_panner.rs`, vectors `surround_panner_native_vectors.json`.
+
+- **Tables located.** The runtime-filled tables are written by `FUN_140a9cb40` (decompile
+  `0140a90000.c:8107`, pass 2 missed it). Loop 1 fills `0x14a611750` with `sin(k * 0.0015339807878856412)`
+  (`144fc3c70` = 2pi/4096, a running double accumulator), 1025 entries. Loop 2 fills `0x14a612760` with
+  `asin(-1 + j * 0.001953125)` (`144fc3cc8` = 2/1024), 1025 entries. Confirmed under kemu: max error 6e-8.
+  The sine table is quarter-wave: index k is the angle k*pi/2048, not a full period.
+- **Lookup** `140ac3230`: reduce to [0, pi/2] (2pi, pi sign flip, pi/2 mirror), then `sin[(int)(x*2/pi*1024+0.5)]`.
+- **Source position** `140a985b0`: `c = |dx|/r` (1 if r < 1e-5), `theta = acos(c)` mirrored by the sign of
+  `x-0.5` (pi - theta) and `y-0.5` (2pi - theta), radius `r + 0x358`, angle `(theta/pi + 0x35c)*pi`,
+  `x = 0.5 + r*cos`, `y = 0.5 + r*sin`, plus `0x350/0x354`, clamped to [0, 1].
+- **Distance** `140a94180`: source scaled by `0x348` around 0.5, speakers scaled by 0.1 around 0.5, Euclidean,
+  times 1.1785 when flag = 1.
+- **Weight** `140a93cb0`: zero for disabled speakers; else `cos^2(theta * wf / 2)` where
+  `wf = max(0, (R - s)/(R + s))`, `R` = speaker radius * 1.1785, `s = 0x348 * 0.7071`, and `theta` from the
+  quadrant of the source-to-speaker vector (the four branches are reproduced literally, `DAT_14471489c` = 1e-6).
+- **Gain** `140a94580`: mode 0 `(w_i/d_i^2)^p` normalised over the enabled speakers (`d` clamped to 0.01);
+  mode 1 `cos(d*p*2pi)` for `d*p*2pi <= pi/2`, else 0; mode 2 `2^(-8 d p)`; any other mode returns 1.0.
+
+Not ported (the record stays NotModeled, so the pass-through diagnostic in `effects/mod.rs` still holds):
+block driver `140ab0070` (per source: scalar fast path at `+0xc00` or the panned path `140ab4eb0`),
+shared mix `140ac21f0`, LFE sub-object at `+0x7a0`, and the output layouts above stereo. The engine has no
+multi-channel output path for this module yet; a stereo downmix needs the driver first.
