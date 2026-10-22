@@ -403,6 +403,7 @@ impl RuntimeLog {
         let mut changed = false;
         for (reason, subject, count) in [
             ("CapacityDrops", "RuntimeAdmission", p.capacity_drops),
+            ("VoiceDrops", "RuntimeAdmission", p.voice_drops),
             ("Underruns", "Stream", p.underruns),
             ("ColdStarts", "SampleStart", p.cold_starts),
             ("StreamCapacity", "PagePool", p.stream_capacity),
