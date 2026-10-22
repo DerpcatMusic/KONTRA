@@ -1099,25 +1099,40 @@ impl Cursor {
 
     #[inline]
     fn span(&self) -> (usize, usize, Direction) {
+        match self.loops {
+            None => self.span_in(self.loop_range, self.exit, self.position),
+            Some(_) => {
+                let (range, exit, position) = self.segment_of(i128::from(self.position));
+                self.span_in(range, exit, position as u64)
+            }
+        }
+    }
+
+    // `span` for the loop and exit of one segment at `position` within it.
+    fn span_in(
+        &self,
+        loop_range: Option<Loop>,
+        exit: Option<u64>,
+        position: u64,
+    ) -> (usize, usize, Direction) {
         let length = (self.end - self.start) as u64;
         let mut direction = self.direction;
-        let (offset, count) = if let Some(r) = self.loop_range {
+        let (offset, count) = if let Some(r) = loop_range {
             let first = self.first_boundary(r);
-            if let Some(exit) = self.exit
-                && self.position >= exit
+            if let Some(exit) = exit
+                && position >= exit
             {
-                let offset = first + (self.position - exit);
+                let offset = first + (position - exit);
                 (offset, length - offset)
-            } else if self.position < first {
-                (self.position, first - self.position)
+            } else if position < first {
+                (position, first - position)
             } else {
                 let loop_length = (r.end - r.start) as u64;
-                let (within, count, reverse) = r.span(self.position - first);
+                let (within, count, reverse) = r.span(position - first);
                 // Only a reflected span can cross an outward exit inside its
                 // contiguous run. Wrap spans already stop at that boundary.
                 let count = if r.shape == LoopShape::PingPong {
-                    self.exit
-                        .map_or(count, |exit| count.min(exit - self.position))
+                    exit.map_or(count, |exit| count.min(exit - position))
                 } else {
                     count
                 };
@@ -1130,7 +1145,7 @@ impl Cursor {
                 (first - loop_length + within, count)
             }
         } else {
-            (self.position, length - self.position)
+            (position, length - position)
         };
         let index = match self.direction {
             Direction::Forward => self.start + offset as usize,
@@ -1386,9 +1401,6 @@ impl Cursor {
         gains: [f32; 2],
         kernel: &Kernel,
     ) -> usize {
-        if self.loops.is_some() {
-            return 0;
-        }
         if self.step() >= 2.0 && !pcm.levels().is_empty() {
             return 0;
         }
@@ -1401,7 +1413,11 @@ impl Cursor {
         // Stop the run short of the next boundary (loop end or crossfade)
         // instead of rendering every frame before it one at a time.
         let (_, contiguous, _) = self.span();
-        let fade = match self.loop_range.map(|r| r.shape) {
+        let segment_loop = match self.loops {
+            None => self.loop_range,
+            Some(_) => self.segment_of(i128::from(self.position)).0,
+        };
+        let fade = match segment_loop.map(|r| r.shape) {
             Some(LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames }) => {
                 frames
             }
