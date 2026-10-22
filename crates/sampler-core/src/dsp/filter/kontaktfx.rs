@@ -1220,7 +1220,7 @@ mod tests {
     }
 
     /// kemu stereo vectors (`tools/re/kontaktfx_kemu_vectors.py`): independent L/R noise through
-    /// Dual SKF and BlueMonark (mode 0, variant 0) at 44.1, 48 and 96 kHz, steady and moving knobs.
+    /// Dual SKF and BlueMonark (variant 0; mode 0 at 44.1, 48 and 96 kHz, modes 1..3 at 48 kHz), steady and moving knobs.
     /// The native sequence per 32-frame block is setters for changed knobs, the tick, then the
     /// process; each block here builds the core from its knobs and passes the same history on.
     #[test]
