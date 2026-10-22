@@ -1,0 +1,83 @@
+{
+  "codes": [
+    {
+      "code": "LOAD-FAIL",
+      "count": 4,
+      "impact": 4,
+      "libraries": 3,
+      "severity": "error"
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "LOAD-FAIL",
+      "impact": 1,
+      "library": "bindings",
+      "message": "no zone covers any key at any velocity",
+      "path": "crates/sampler-kontakt/tests/fixtures/bindings/Effects-Reverb_RV_SIZE_700000.nki",
+      "severity": "error"
+    },
+    {
+      "code": "LOAD-FAIL",
+      "impact": 1,
+      "library": "fixtures",
+      "message": "no zone covers any key at any velocity",
+      "path": "crates/sampler-kontakt/tests/fixtures/kontakt8131-start-options.nki",
+      "severity": "error"
+    },
+    {
+      "code": "LOAD-FAIL",
+      "impact": 1,
+      "library": "fixtures",
+      "message": "no zone covers any key at any velocity",
+      "path": "crates/sampler-kontakt/tests/fixtures/kontakt8131-volume-law.nki",
+      "severity": "error"
+    },
+    {
+      "code": "LOAD-FAIL",
+      "impact": 1,
+      "library": "scenarios",
+      "message": "no zone covers any key at any velocity",
+      "path": "tools/kontakt-reference/scenarios/calibration.nki",
+      "severity": "error"
+    }
+  ],
+  "items": 4,
+  "libraries": [
+    {
+      "codes": {
+        "LOAD-FAIL": 2
+      },
+      "error": 2,
+      "info": 0,
+      "items": 2,
+      "library": "fixtures",
+      "warn": 0
+    },
+    {
+      "codes": {
+        "LOAD-FAIL": 1
+      },
+      "error": 1,
+      "info": 0,
+      "items": 1,
+      "library": "bindings",
+      "warn": 0
+    },
+    {
+      "codes": {
+        "LOAD-FAIL": 1
+      },
+      "error": 1,
+      "info": 0,
+      "items": 1,
+      "library": "scenarios",
+      "warn": 0
+    }
+  ],
+  "totals": {
+    "error": 4,
+    "info": 0,
+    "warn": 0
+  }
+}

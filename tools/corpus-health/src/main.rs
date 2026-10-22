@@ -16,6 +16,7 @@
 //! A crash (abort, OOM kill) leaves a `started` line without a result. On
 //! resume that item is recorded as `crash` and skipped, so one bad library
 //! cannot stall the run.
+mod health;
 mod heap;
 mod inspect;
 mod load_audit;
@@ -3092,6 +3093,7 @@ fn main() {
         [cmd, rest @ ..] if cmd == "load-audit" => load_audit::run(rest),
         [cmd, rest @ ..] if cmd == "preset-switch" => preset_switch::run(rest),
         [cmd, rest @ ..] if cmd == "onset" => onset::run(rest),
+        [cmd, rest @ ..] if cmd == "health" => health::run(rest),
         [cmd, rest @ ..] if cmd == "onset-worker" => onset::worker(rest),
         [cmd, out, rest @ ..] if cmd == "run" => {
             let mut opts = Opts::default();
@@ -3142,6 +3144,7 @@ fn main() {
                 "usage: corpus-health run OUT.jsonl [--tier parse|full|quick] [--shard I/N] [--only GLOB]\n\
                  \x20      [--from RUN [--reuse]] [--failed-from RUN] [--workers N] [--timeout S] [ROOT ...]\n\
                  \x20      | quick [--workers N] | quick-list RUN | summary OUT.jsonl SUMMARY.md | diff OLD NEW\n\
+                 \x20      | health RUN... [--json OUT] [--md LIBRARY_GAPS.md] [--baseline OLD.json] (exit 1 on errors)\n\
                  \x20      | preset-switch PLAN.json (explicit full-swap runtime probe; ui-render helper)\n\
                  \x20      | inspect INPUT [--program INDEX|BANK_MEMBER] [--base ORIGINAL.nki]\n\
                  \x20          [--initialize] [--ephemeral-source] [--ui-only] [--ephemeral-render] [--profile-init]"
