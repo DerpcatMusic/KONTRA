@@ -55,7 +55,8 @@ Evidence labels:
    is the working assumption).
 2. The DSP topology. Lambdas for the 13 smoothed knobs are bound in the Kolor
    constructor (`0141970000.c` around line 5950); the processing function is not
-   yet located. Until it is, Kolor stays reported as not modeled.
+   yet located. Update: the per-block process is core vtable slot 19 = `14197a2c0`,
+   reached from the wrapper driver `140900eb0`; see `k-effects-batch-a.md`. Kolor stays not modeled.
 3. Boost and Mode are KSP constants without a registration in the 0xe4..0xee block.
 
 ## Measurement (Wine oracle)
