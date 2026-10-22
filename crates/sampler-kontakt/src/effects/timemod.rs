@@ -366,10 +366,19 @@ fn unit_interval(values: &[f32]) -> bool {
     values.iter().all(|v| v.is_finite() && (0. ..=1.).contains(v))
 }
 
+/// Replika free time in ms from the stored value (setter case 8, mode-3 branch,
+/// `0x141ac5980`): clamp(0.5 x v x 4000, 0, 8000). 0.5 is the flag-clear factor
+/// (`DAT_14470bad0`, flag +0x14385 clear); 4000 is `DAT_144f39e1c`; 8000 is `DAT_14756bdf8`.
+/// The mode-3 branch is taken when the core mode (index 9) is 3; the default mode is not
+/// established (docs/re/engine/k-replika.md).
+fn replika_time_ms(v: f32) -> f64 {
+    (0.5 * f64::from(v) * 4000.).clamp(0., 8000.)
+}
+
 /// Replika Delay (v0x12). Only the laws measured or documented so far are
 /// mapped; every other control is reported as not modelled.
 fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> {
-    // Documented (binding TSV, RDL_TIME "linear a=0 b=2000"): free time in ms = 2000 x stored.
+    // Free time (replika_time_ms, mode-3 branch): 2000 x stored over the 0..1 range.
     // Everything else is reported, not modelled: the oracle capture could not move the echo
     // gain, time or tone with feedback, cut, saturation, ping-pong or type writes
     // (docs/re/engine/k-delays.md), so no law for them is mapped.
@@ -421,7 +430,7 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
         notes.push(("parameters".into(), format!("{name} {on}"), reason));
     }
     notes.push(("type".into(), rep.ty.to_string(), Reason::NotModeled));
-    let mut line = Line::single(DelayTime::Ms(f64::from(rep.time) * 2000.), 2000.);
+    let mut line = Line::single(DelayTime::Ms(replika_time_ms(rep.time)), 2000.);
     line.native = Native::None;
     Some(Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry, wet: 1. })
 }
