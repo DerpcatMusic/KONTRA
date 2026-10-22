@@ -16,6 +16,7 @@ mod container;
 mod channel_reader;
 pub use channel_reader::{ChannelPackDestinations, EncodedChannelReader, FlacStreamAdmission, PcmStreamAdmission, PcmStreamEncoding, install_resident_source_reload, resident_storage_from_interleaved};
 mod diagnostics;
+mod dfd_window;
 pub use diagnostics::diagnostic_detail;
 #[cfg(feature = "scan")]
 mod coverage;
