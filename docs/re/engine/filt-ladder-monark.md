@@ -52,13 +52,10 @@ drive, 2 drive. Knob order in the core: cutoff, resonance, input gain, modulatio
   rate, one host frame at a time. Its registers live in the chain's cells. The static
   composition matches all 282 native HQ cells bit-exact (`ladder_original_hq_static_composition`).
   Moving controls in HQ retune once per host frame (native cadence unproved).
-- Alternative cutoff path, flag `0x49`: the decompile shows the flag byte at `+0x49` written by
-  FUN_140b04a20 and read in FUN_140b00b80 (selects the second cutoff lane block 0x5010 instead of
-  0x4fc4). That block is advanced by FUN_140b036a0, a state machine with a snap and a
-  coefficient `1 / (x 1500 + 150)` set in FUN_140b04d60. Our kernel implements this path behind
-  `instant_cutoff(version)` (versions 0x90..0x92), a proxy. The native source of the byte
-  (record offset 0x29, the v0x95 second flag) is recorded in NATIVE_LADDER_EVIDENCE but not yet
-  decoded for v0x95; the proxy is unverified for v0x92 (which has no second flag).
+- Alternative cutoff path, flag `0x49`: decoded in `ladder-cutoff-byte.md`. v0x90..0x94 set the
+  flag to 1 (the reader's tail), v0x95 reads it as its first flag byte, and HQ is its second.
+  Flag 1 snaps the cutoff lane to each target on the 32-frame tick (zero step rate from the core
+  init). The kernel reads it from `LadderLP4::cutoff_path`, not from the record version.
 
 ### Monark (saved 140..143)
 - Oversampling: x3 below 66 kHz, x2 below 100 kHz through the shared Kaiser stage.
@@ -100,6 +97,6 @@ Rows marked confirmed were checked against the decompile and the binary's consta
 
 ## Next steps
 
-1. Decode the v0x95 second flag (record offset 0x29) into the Ladder config and make the cutoff
-   path explicit (replace `instant_cutoff`), then confirm with a native capture that sets it.
+1. Done: the flag is explicit (`cutoff_path`). Confirm flag 1 with a native capture (open in
+   `ladder-cutoff-byte.md`).
 2. Re-read Monark's setter and process (FUN_140b05740 / FUN_140afd9c0) against the decompile.

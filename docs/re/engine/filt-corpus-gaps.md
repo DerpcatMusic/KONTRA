@@ -23,8 +23,9 @@ Both gaps are concentrated in Conflux.
   (70/71), Formant II (91), Simple LP/HP (120) and 3x2 Versatile (19).
 - Per-entry evidence: the one per-entry dump in scratch (`ray-unsupported.tsv`, Conflux Ray Line,
   program 1) has 78 "filter law" entries: 72 Ladder LP4, 5 Daft LP, 1 Ladder BP4.
-- So the bulk of gap 6 is Ladder, and the Ladder rows stay Partial until the flag 0x49 path below
-  is proved. The Daft rows are a separate, smaller open item (see Daft).
+- So the bulk of gap 6 is Ladder. Update 2026-10-22: the flag 0x49 byte is decoded
+  (`ladder-cutoff-byte.md`); Ladder LP4 with HQ off is Exact, so its refusal goes away. The
+  other Ladder rows stay Partial. The Daft rows are a separate, smaller open item (see Daft).
 
 ### Ladder: what the decompile confirms
 
@@ -39,14 +40,10 @@ Both gaps are concentrated in Conflux.
   file `0140960000.c`) reaches it for the Ladder selectors (internal ids 22..33) through the
   wrapper at 0x140aefe50, which is passed the record object's byte at +0x29. A second caller
   (inner case 0x58, not a Ladder id) writes the same byte into another object (base +0x84).
-- Gap in the decompile: the wrapper at 0x140aefe50 is decompiled with one parameter, so the byte
-  is dropped and the store reads an unrecovered register. The byte source is therefore NOT
-  established. The v0x95 record's second flag is the documented candidate
-  (`filt-ladder-monark.md`); the v0x92 value (Conflux) is not traced.
-- Rust today keys this path on record version (`ladder_kernel.rs::instant_cutoff`, versions
-  0x90..=0x92 on). That is a proxy, unverified for v0x92. Because 72 of the 78 entries are Ladder
-  LP4 and Conflux stores v0x92, the proxy decides the path for most of gap 6. It is left as is:
-  changing it without the byte source would be a guess.
+- Resolved: the wrapper at 0x140aefe50 is a 12-byte tail jump; the argument passes through
+  unchanged. The byte is the record's +0x29, which the reader sets to 1 for v0x90..0x94 and reads
+  from the stream for v0x95 (`ladder-cutoff-byte.md`). The v0x92 value is 1.
+- Rust keys this on the explicit `cutoff_path` flag, not on the record version.
 
 ### Daft (5 entries, Ray Line)
 
@@ -84,10 +81,9 @@ Both gaps are concentrated in Conflux.
 
 ## Open items (in order)
 
-1. Recover the byte that drives core+0x49 for each Ladder record version. Needs the call-site
-   argument at the 0x140960000 apply (decompile re-export, not a new Ghidra session in this pass).
-2. Native capture with the flag set and clear (Wine oracle), then decide Exact versus Partial for
-   Ladder LP4 with moving cutoff. Current kemu vectors all have flag 0 (`ladder_kemu_vectors.json`).
+1. Done: the byte that drives core+0x49 per record version (`ladder-cutoff-byte.md`).
+2. Native capture with the flag set (kemu or Wine oracle) to turn the flag-1 snap law from
+   decompile-confirmed into vector-confirmed. Current kemu vectors all have flag 0.
 3. Identify the 39 effect instruments' modules with the census test, then pick the module with the
    most instruments and move it out of the `unproved()` tables with its own evidence.
 4. Daft: find the vtable slot 8 caller and the countdown arming (matrix open items).
