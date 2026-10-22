@@ -62,6 +62,17 @@ Kontakt values. Confirming them needs the decompiled core or Kontakt vectors.
 - **Per-sample wow/flutter kernel: NOT located.** The laws in `wowflutter.rs` (8 ms base, 0.5 % wow, 0.2 % flutter, 0.5-2 Hz / 6-12 Hz, Stereo/2 phase) remain **unconfirmed**. They are not taken from this decompile.
 - Scrape, age, saturation and gate laws: **unconfirmed** (no kernel located).
 - **Wrapper vtables.** `ModulatableDSPCoreWrapper<BEffectWowFlutterTraits>` = `0x144fc2d38` (written by `FUN_140a842b0` and `FUN_140a87d20`). `BEffectWowFlutter` = `0x144fc2e48` (written by ctor `FUN_140a87420`, which calls the core ctor at offset 0). Its first 16 slots match the wrapper's. Slot targets are all small except `FUN_140a9f850` (1647 bytes), which is a per-block peak tracker (`[+0x3500]`, `[+0x3510]`), not the wow kernel. `FUN_140ac21f0` (1777 bytes) is a block loop with a slewed gain (`+0x1ac`, target `+0x1a4`) over 4096-byte-stride buffers; **not identified** as the wow kernel. Next step: the wow kernel is reached through `FUN_140ac21f0`'s callees or a per-sample trait method outside the 16 shared slots.
+- **Vtable slots 16–32 ruled out (2026-10-23).** `0x144fc2e48` has 31 function slots (slot 32 is the first non-slot word, `0x140ad1c50`). Read from the decompile cache, none calls sin/cos or a tap read, so none is the wow kernel:
+  - `0x14050f330` (slots 16, 17, 24, 30, 31): 3-byte stubs (ret).
+  - `0x1408802a0` (18), `0x14051b400` (15), `0x140abd780` (25), `0x140abd6e0` (14), `0x140abd670` (13), `0x140abd610` (12), `0x140885be0` (10): 7–13-byte forwarders or setters.
+  - `0x140abca00` (20, 123 B), `0x140abc920`-family: per-bypass/peak-hold `+0x3514`/`+0x3510` latch.
+  - `0x140a98820` (21, 42 B), `0x140acc440` (22, 29 B): state/begin-latch (`+0x3518`).
+  - `0x140a93ae0` (26), `0x140a94970` (27): 25-byte setters.
+  - `0x140abc820` (29, 253 B): eight `+0x100` virtual set-parameter calls (`set_param(i, …)` for slots 0–8), not a process.
+  - `0x140ad1c50` (32, 101 B): clamped control store into `+0x351c[id]` plus `FUN_14199dd80` (ramp target).
+  - `0x1404f99a0` (19, 20) is `_guard_check_icall`.
+  - Also excluded: `0x140a99b10` (1, 181 B: resets `+0x6a0/+0x6a2` and calls `+0x100` for slots 0–9), `0x140a94bf0` (3, 238 B: copies a param block and calls `+0x100`).
+  Conclusion: the BEffectWowFlutter vtable has no per-sample process entry. The kernel is driven from a parent (BEffectBase or the block loop) through a non-vtable direct call. Next step: find the direct callers of `FUN_140ac21f0`, and of the `+0x100` setter with id 0x6A, rather than more slots.
 - **Level bound (no gain in the law).** The shipped law is `out = wet * y + dry * x` with `dry = 1 - mix` and `y` a linear interpolation of earlier inputs. Its peak cannot exceed the input peak at any mix or depth (test `wowflutter::tests::wow_flutter_adds_no_gain_at_any_mix`). A +23 dB insert gain therefore comes from downstream stages, not the Wow law. For Conflux `Ray Line`, that stage is the Gainer (0x13) after it. It takes its gain from the saved footer knob (`make_persistent($Footer__Volume)`, then `set_engine_par($ENGINE_PAR_GN_GAIN, $Footer__Volume, …)`) and its output from script writes (`INSERT_EFFECT_OUTPUT_GAIN`). The gain law (output-gain cubic, unity 396851) is assumed, and the Gainer gain is unprobed (`KE070` in `audit-probes.tsv`).
 
 ## Gap table
