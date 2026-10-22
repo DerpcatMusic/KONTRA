@@ -119,3 +119,12 @@ values stay repo-evidence only until the oracle is run.
    evaluation (eval.rs), and attach native fault text to `EngineParameterOutcome`.
 4. Confirm ids and display strings with a Wine-oracle dump, then move the row
    to `parity`.
+
+## Status (final lane pass)
+
+- Ids: `crates/sampler-core/src/engine_par_ids.tsv` is the single source (710 rows). 692 bound. The `#`-templates in the catalog all resolve to bound concrete instances; the only native names without an id are the 18 listed in the matrix.
+- Internal ids: the builder table at `0x140780c80` was simulated from its frame stores (rbp = rsp + 0x100, array at rsp + 0x20, memset to -1). 335 native constants have an internal id in the TSV (`internal_id`). Reverb special cases: RV_SIZE 0x294, RV_COLOUR 0x295, RV_STEREO 0x296, RV2_DAMPING 0x2a2, RV2_MOD 0x2a3, RDL_NOISE 0x2de.
+- `get/set_engine_par_m`: argument arity 4/5 from the statement constructors; multi-script-only compile errors.
+- `get_engine_par_disp_m`: args (id, slot-or-output, generic, channel-search flag), from the call site at `0140780000.c:8100`. Slot range 0..63, output range 0..127, "not active" checks. Diagnosed as not modelled.
+- Display text: each module's display vtable (`FUN_1408a6400` and others), not one table. Not ported.
+- Consumers: none found for the 18 unbound names; each is blocked on a live-control path owned by another lane (Raum live controls, sends live, wavetable/ext-mod live, MIDI filter).
