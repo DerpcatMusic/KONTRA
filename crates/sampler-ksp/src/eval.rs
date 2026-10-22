@@ -2167,6 +2167,10 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 self.warn(span,"get_purge_state during initialization has no physical residency authority; startup query remains unsupported");
                 V::I(0)
             }
+            GetSampleLength => {
+                self.warn(span, "get_sample_length during initialization has no event zone; -1");
+                V::I(-1)
+            }
             GetNumZones => V::I(self.env.zone_catalog.len().min(i32::MAX as usize) as i32),
             GetZoneId => {
                 let ordinal=self.int(args,0)?;

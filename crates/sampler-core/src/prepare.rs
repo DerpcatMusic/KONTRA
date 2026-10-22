@@ -2096,6 +2096,17 @@ programs = programs.into_boxed_slice();
         self.region_zone_ids.iter().position(|&id| id == zone_id)
     }
 
+    /// The sample a zone ID plays: a native identity when the instrument has a
+    /// native catalog (as `EventInfo::ZoneId` then reports), else an event ID.
+    pub fn source_zone_sample(&self, zone_id: u32) -> Option<usize> {
+        let region = if self.source_zone_identity_count() != 0 {
+            self.source_zone_identity_region(zone_id)
+        } else {
+            self.source_zone_region(zone_id)
+        };
+        Some(self.regions.get(region?)?.sample)
+    }
+
     /// Read an immutable authored home by native zone-command identity.
     /// Requires `with_source_zone_identities`; `with_source_zones` supplies event IDs
     /// in a separate namespace. `Runtime::zone_parameter_in` reads committed edits.
