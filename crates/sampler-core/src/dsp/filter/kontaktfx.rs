@@ -1219,12 +1219,12 @@ mod tests {
         }
     }
 
-    /// kemu stereo vectors of Dual SKF (`tools/re/kontaktfx_kemu_vectors.py`): independent L/R
-    /// noise at 44.1, 48 and 96 kHz, steady and moving knobs. The native sequence per 32-frame
-    /// block is setters for changed knobs, the tick, then the process; each block here builds the
-    /// core from its knobs and passes the same history on, which is that sequence.
+    /// kemu stereo vectors (`tools/re/kontaktfx_kemu_vectors.py`): independent L/R noise through
+    /// Dual SKF and BlueMonark (mode 0, variant 0) at 44.1, 48 and 96 kHz, steady and moving knobs.
+    /// The native sequence per 32-frame block is setters for changed knobs, the tick, then the
+    /// process; each block here builds the core from its knobs and passes the same history on.
     #[test]
-    fn dual_skf_stereo_matches_the_native_vectors() {
+    fn stereo_vectors_match_the_native_kemu_runs() {
         let file: serde_json::Value = serde_json::from_str(include_str!("kontaktfx_stereo_vectors.json")).unwrap();
         let f = |v: &serde_json::Value| v.as_f64().unwrap() as f32;
         let floats = |v: &serde_json::Value| -> Vec<f32> { v.as_array().unwrap().iter().map(f).collect() };
@@ -1236,7 +1236,11 @@ mod tests {
             let (mut out_l, mut out_r) = (Vec::new(), Vec::new());
             for (b, knobs) in case["knobs"].as_array().unwrap().iter().enumerate() {
                 let k = floats(knobs);
-                let unit = KontaktFilter::new(KontaktFx::DualSkf([k[0], k[1], k[2], k[3], k[4]]), rate);
+                let fx = match case["class"].as_str().unwrap() {
+                    "DualSKF" => KontaktFx::DualSkf([k[0], k[1], k[2], k[3], k[4]]),
+                    _ => KontaktFx::Monark { mode: case["mode"].as_u64().unwrap() as u8, variant: case["variant"].as_u64().unwrap() as u8, knobs: [k[0], k[1], k[2], k[3], k[4]] },
+                };
+                let unit = KontaktFilter::new(fx, rate);
                 let mut block: Planar = [[0.0; BLOCK]; 2];
                 for n in 0..QUANTUM as usize {
                     block[0][n] = f64::from(left[b * QUANTUM as usize + n]);
@@ -1249,7 +1253,7 @@ mod tests {
             for (name, got, want) in [("L", &out_l, &native_l), ("R", &out_r, &native_r)] {
                 let peak = want.iter().fold(1.0f32, |m, v| m.max(v.abs()));
                 for (n, (a, b)) in got.iter().zip(want).enumerate() {
-                    assert!((a - b).abs() <= 1e-6 * peak, "{rate} {} {name} [{n}] {a} vs {b}", case["label"]);
+                    assert!((a - b).abs() <= 1e-6 * peak, "{} {rate} {} {name} [{n}] {a} vs {b}", case["class"], case["label"]);
                 }
             }
         }
