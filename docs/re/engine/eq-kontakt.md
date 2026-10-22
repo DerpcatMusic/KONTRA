@@ -81,6 +81,13 @@ Kontakt 8 exposes three EQ modules that matter here, plus one that has no law ye
   its write and was history-independent, so settle time is ≤300 ms. This is
   consistent with the measurement but does not confirm the native stepping. The
   setter law is still not located; confirm it when the decompile is ready.
+  **Decompile check (2026-10-22, not closed):** the process loop `0x141a595d0`
+  advances its 22 current registers (`+0x13db0..+0x13dec`) by their increments
+  once per frame, i.e. a linear per-frame ramp, not a one-pole per block. The
+  placeholder in `solid.rs` therefore differs in shape. The increment writer is
+  still not located (`0x141aa1580` init sets `+0x13e00` and `+0x13e04/08`, but
+  not the per-register increments). The Kontakt mapping reports this as
+  UnknownLaw (`effects/eq.rs`, "Solid G-EQ smoothing").
 - **Live switches (OPEN in the engine).** A bell or pass switch changes the
   band's `Kind` (shelf↔peak) or adds a section. `Kind` is compile-time in the
   stage, so a live switch write has no binding and reports

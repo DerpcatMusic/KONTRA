@@ -1,6 +1,6 @@
 # Engine unit: Kontakt Freak, Ring Modulator, Rotator
 
-Status: **waiting on READY**. `/data/dev/workspace/Research/KONTRA/source/kontakt8/` is empty and has no `READY` marker, so no decompiled Kontakt 8 code was available. Ring Modulator and Rotator core laws are not recovered and nothing below is fabricated. `docs/ENGINE.md` named in the swarm brief and AGENTS.md is not present in this repo; the engine map is taken from `crates/sampler-core/src/dsp/` and `crates/sampler-ir/src/fx/` directly.
+Status: Freak live controls done (see the section below). The Kontakt 8 decompile export is READY (`source/kontakt8/READY`, 2026-10-22); Ring Modulator and Rotator DSP bodies are still not located. Ring Modulator and Rotator core laws are not recovered and nothing below is fabricated. `docs/ENGINE.md` named in the swarm brief and AGENTS.md is not present in this repo; the engine map is taken from `crates/sampler-core/src/dsp/` and `crates/sampler-ir/src/fx/` directly.
 
 Evidence used: `docs/re/kontakt-bindings/fx_bite_dirt_freak_wowflutter_twindelay.tsv` (Freak), `docs/re/kontakt-bindings/fx_other.tsv` (Ring Modulator, Rotator), the in-repo code comments in `crates/sampler-kontakt/src/effects/{color,timemod,mod}.rs`, and `crates/sampler-core/src/dsp/color/freak.rs`.
 
@@ -23,6 +23,18 @@ Gap table (Freak):
 | `docs/architecture-v2/DSP_COVERAGE.md:173` lists Freak as "missing, unmeasured, 0 slots" | Stale | Update the coverage row once this doc is merged. |
 
 Freak is covered by the shared engine; the Hilbert designer is ported (see gap table).
+
+### Freak live controls (Creative FX lanes)
+
+| Item | Detail |
+|---|---|
+| Lanes | 13 continuous knobs, binding rows `F` (identity law): `ENGINE_PAR_FREAK_ANTIFOLD` (core 0), `_FREQUENCY` (1), `_TYPE` (3), `_HARMONICS` (4), `_CONTOUR` (5), `_RELEASE` (6), `_BP_FREQ` (7), `_STEREO` (10), `_FEEDBACK` (11), `_CARRIER` (12), `_TUNING` (13), `_WIDTH` (14), `_MIX` (18). Table `sampler_ir::fx::color::FREAK_LIVE`; roles `ProcessorParameter::Freak*`. |
+| Stored, not live | BP_FILTER (core 8), DEMOD (15), GATE (17), WIDE_RANGE (2): bool rows (`stored = 1 when value >= 1`), which the identity lane would not reproduce for fractional writes, so they are diagnosed and held. MODE (core 16): the setter also returns the engine's `d00`, which the engine holds, so it is held. Field 17 (core 9): no binding row. |
+| Write path | Per block: a lane value that differs from the stored slot (`+0x70 + 4i`) writes the slot and its shadow (`+0x588 + 4i`) and runs the setter for that index (`freak::set_live`). Unchanged values cost nothing. The live state holds the full core image (`Mem<0x1400,0>`, about 2.9 KB more per Freak shaper state than the old window). |
+| Setter evidence | The constructor registers one parameter callback per knob. Knob 9 (`0x141964260`) reads slot `+0x94` and writes `+0xd4c`; knob 10 (`0x141964280`) reads `+0x98` and writes `+0xd18`. Both match the ported `set`. |
+| Tests | `live_knob_writes_match_a_core_built_with_them` (13 moves, bit-exact over 8 blocks against a core built with the new knobs); `live_lane_names_are_engine_parameters` (every name resolves, since lowering unwraps the lookup). |
+| Open | No native live-move vector, so the live path is not measured against Kontakt. Whether the native framework ramps a knob move (per frame or per block) is not checked; the write lands at the block's first frame. Scripts writing the four bool switches or MODE still get stored values only. |
+
 
 ## Ring Modulator (serialization id 0x64)
 
