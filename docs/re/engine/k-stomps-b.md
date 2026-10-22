@@ -54,8 +54,16 @@ Evidence labels:
    drives (the apply for module 0x79 has not been located; the registration order
    is the working assumption).
 2. The DSP topology. Lambdas for the 13 smoothed knobs are bound in the Kolor
-   constructor (`0141970000.c` around line 5950); the processing function is not
-   yet located. Until it is, Kolor stays reported as not modeled.
+   constructor (`0141970000.c` around line 5950). The constructor is
+   `FUN_141976b20` (size 2783, reads all 12 Kolor offsets).
+   Candidate kernel: `FUN_140ab0d20` (`0140ab0000.c`, size 5402, 1221 lines).
+   It is a per-sample SIMD loop over four bands: per-band gains at
+   `+0x96e8..0x96fc`, a feedback/one-pole stage at `+0x9718..0x971c`,
+   a second gain set at `+0x9708..0x970c`, and a clamped table lookup
+   (`+0x9c70..0x9c88` table pointers, `+0x9bf0` clamp) used as a shaper.
+   It is not confirmed as Kolor's kernel (no mode switch was found in it,
+   and it may be a shared shaper), so it is not ported. Until it is confirmed
+   and ported, Kolor stays reported as not modeled.
 3. Boost and Mode are KSP constants without a registration in the 0xe4..0xee block.
 
 ## Measurement (Wine oracle)
