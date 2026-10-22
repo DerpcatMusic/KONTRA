@@ -71,6 +71,13 @@ fn native_lanes(p: ir::Processor) -> Vec<(NativeControl, crate::EngineParameterB
                 ],
             )
         }
+        ir::Processor::LivePhaser { knobs: [cutoff, resonance], address } => (
+            address,
+            vec![
+                ("ENGINE_PAR_CUTOFF", f64::from(cutoff), unit),
+                ("ENGINE_PAR_RESONANCE", f64::from(resonance), unit),
+            ],
+        ),
         ir::Processor::LiveFormant { knobs: [talk, sharp, size], address, .. } => (
             address,
             vec![
@@ -138,6 +145,7 @@ fn lane_roles(p: ir::Processor) -> Vec<ir::ProcessorParameter> {
     use ir::ProcessorParameter as P;
     match p {
         ir::Processor::LiveFormant { .. } => vec![P::FormantTalk, P::FormantSharp, P::FormantSize],
+        ir::Processor::LivePhaser { .. } => vec![P::Cutoff, P::Resonance],
         _ => p.lanes().map_or_else(Vec::new, |(_, l)| l.into_iter().map(|l| l.role).collect()),
     }
 }
@@ -3013,6 +3021,12 @@ impl Lowering<'_> {
                     taps: d.taps,
                     high_quality: d.high_quality,
                 }))
+            }
+            ir::Processor::LivePhaser { .. } => {
+                let lanes = native_lanes(processor);
+                Processor::LivePhaser {
+                    knobs: std::array::from_fn(|i| native_parameter(&lanes, i)),
+                }
             }
             ir::Processor::LiveFormant { second, .. } => {
                 let lanes = native_lanes(processor);

@@ -347,6 +347,9 @@ impl Check<'_> {
                 Processor::LiveFormant { knobs, .. } => {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
                 }
+                Processor::LivePhaser { knobs, .. } => {
+                    for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "phaser control")?; }
+                }
                 Processor::SendReturnGate { .. } => {}
                 Processor::Branch { gain, .. } => self.gain(gain, "branch gain")?,
                 Processor::Daft(d) => {
