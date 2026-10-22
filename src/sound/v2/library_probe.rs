@@ -66,6 +66,9 @@ pub fn run(path: &Path) -> Value {
     for missing in &loaded.report.missing {
         trace.missing(missing, loaded.instrument.as_deref());
     }
+    if let Some(instrument) = loaded.instrument.as_deref() {
+        trace.ksp_symbols(&sampler_kontakt::parity_summaries(instrument));
+    }
     if let Some(startup) = &loaded.report.stream_startup {
         trace.detail(
             "stream_startup",

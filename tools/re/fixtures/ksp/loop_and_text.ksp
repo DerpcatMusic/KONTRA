@@ -1,0 +1,16 @@
+{ CI fixture: control flow and text; doctor --strict must pass }
+declare $i
+declare ui_label $label
+on init
+    $i := 0
+    while ($i < 4)
+        $i := $i + 1
+    end while
+    set_text($label, "ready")
+end on
+
+on note
+    if ($EVENT_VELOCITY > 64)
+        message("loud")
+    end if
+end on
