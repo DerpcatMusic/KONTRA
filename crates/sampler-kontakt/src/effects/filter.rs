@@ -40,7 +40,7 @@ const fn native(topology: Topology, response: Response, poles: u8) -> Config {
 use Fidelity::{Exact, Partial};
 use Response::{BandPass as Bp, HighPass as Hp, LowPass as Lp, Notch as Nt, Peak as Pk};
 
-const SV: &str = "FilterSV1/2/4/6 setters, 32-frame coefficient ramp and process ([ref].., [ref]..) run by the cascade core match the native classes under kemu to 1e-6 and the Kontakt measurements (rows 1..56) at res <= .5; self-oscillating rows (res .9) are level-dependent and unmeasured here";
+const SV: &str = "FilterSV1/2/4/6 setters, 32-frame coefficient ramp and process ([ref].., [ref]..) run by the cascade core match the native classes under kemu to 1e-6 at res <= .5 and 1e-5 at res .9 (kemu oracle); the Kontakt measurements (rows 1..56) match at res <= .5, and the res .9 capture rows differ by 2 to 7 dB in the measurement chain, not the stages";
 const MULTI_SV: &str = "FilterMultiSV matches the native class under kemu to 1e-6; the bandwidth is the record's leading value (read into +0x24), its ENGINE_PAR id is unprobed";
 const LEGACY: &str = "BFilter class law and process run by the cascade core (dsp/filter/cascade.rs) match the native classes under kemu to 2e-5 and the Kontakt LP4/LP6 measurements; control clock [ref] reproduced except its alternative branch (global [ref]) and offset slew (+0x1f8), both unwritten";
 const STAGES: &str = "setter and process (Pro-53 [ref], Legacy Ladder [ref], Vowel [ref]) run by the cascade core match the native code (kemu) to 2e-5; scalar summation order only (the SSE path for >= 32-frame calls differs in rounding); clock as LEGACY";
