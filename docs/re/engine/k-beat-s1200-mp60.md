@@ -6,7 +6,7 @@ Status: **S1200 partial** (filter modes 1..=5 run on voices with `Group.machine`
 
 | Stored mode | Module | Engine parameter / fields |
 |---:|---|---|
-| 4 | Beat Machine | `slice_float_1`, `slice_float_2`, `slice_flag_1` (unassigned meaning) |
+| 4 | Beat Machine | `slice_float_1` = Slice Atk, `slice_float_2` = Slice Rel (ms); `slice_flag_1` unassigned; see `k-tone-beat-machine.md` |
 | 6 | S1200 Machine | filter mode = engine parameter `0x318` (range 0..=5, validated by `FUN_140789c30`) |
 | 7 | MP60 Machine | common fields only; the loader maps it to `Machine::Mp60`, which lowering places as `Processor::Mp60` |
 
