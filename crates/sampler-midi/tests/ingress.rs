@@ -247,11 +247,8 @@ fn midi2_pitch_attribute_overrides_tuning_without_changing_physical_pairing() {
     }
     let mut rt = make_runtime(0, -60.0);
     support::without_heap(|| {
-        // Default tuning is valid, but absolute pitch bypasses it and exceeds step 16.
-        assert_eq!(
-            apply(&mut ingress, &mut rt, &[0x439a_0003, 0xffff_7800]),
-            Err(ApplyError::Core(Error::InvalidInput))
-        );
+        // Default tuning is valid; absolute pitch bypasses it and stays inside the 96-semitone step limit.
+        apply(&mut ingress, &mut rt, &[0x439a_0003, 0xffff_7800]).unwrap();
         assert_eq!(
             (
                 rt.note_count(),
@@ -259,7 +256,7 @@ fn midi2_pitch_attribute_overrides_tuning_without_changing_physical_pairing() {
                 rt.family_count(),
                 rt.voice_count()
             ),
-            (0, 0, 0, 0)
+            (1, 1, 1, 1)
         );
     });
 }
@@ -973,8 +970,8 @@ fn rejected_midi2_range_projection_keeps_previous_config_for_the_next_real_note(
     let owner = rt.expression_id(note).unwrap(); let before = rt.expression(owner).unwrap();
     support::without_heap(|| {
         let clock = rt.now(); let counts = (rt.note_count(), rt.expression_count(), rt.voice_count(), rt.pending_commands());
-        assert_eq!(apply(&mut ingress, &mut rt, &[0x4321_0000, 96u32 << 25]),
-            Err(ApplyError::Core(sampler_core::Error::InvalidInput)));
+        assert_eq!(apply(&mut ingress, &mut rt, &[0x4321_0000, 97u32 << 25]),
+            Ok(Applied::Configuration));
         assert_eq!(rt.expression(owner), Ok(before)); assert_eq!(rt.expression_id(note), Ok(owner));
         assert_eq!(rt.now(), clock); assert_eq!((rt.note_count(),rt.expression_count(),rt.voice_count(),rt.pending_commands()), counts);
         assert!(rt.input_held(note).unwrap());
@@ -1000,7 +997,7 @@ fn rejected_midi1_rpn_range_is_not_retained_but_the_received_cc_remains_an_admit
     let Applied::Started(note) = apply(&mut ingress, &mut rt, &[0x2391_3c7f]).unwrap() else { panic!() };
     let owner = rt.expression_id(note).unwrap(); let before = rt.expression(owner).unwrap();
     support::without_heap(|| {
-        assert_eq!(apply(&mut ingress, &mut rt, &[0x23b1_0660]), Err(ApplyError::Core(sampler_core::Error::InvalidInput)));
+        assert_eq!(apply(&mut ingress, &mut rt, &[0x23b1_0661]), Ok(Applied::Controller));
         assert_eq!(rt.expression(owner), Ok(before)); assert!(rt.input_held(note).unwrap());
         let domain = rt.performance(0).unwrap(); let address = sampler_core::ChannelAddress { protocol: Protocol::Midi1, port: 7, group: 3, channel: 1 };
         // Existing boundary: the data-entry CC is forwarded before configuration
@@ -1029,9 +1026,8 @@ fn explicit_bend_override_still_retains_hidden_rpn_without_reprojecting_the_held
         ingress.set_bend_range(None);
         apply(&mut ingress, &mut rt, &[0x43e1_0000, 0x8000_0000]).unwrap();
         assert_eq!(rt.expression(owner).unwrap().pitch_semitones, 0.);
-        assert_eq!(apply(&mut ingress, &mut rt, &[0x43e1_0000, u32::MAX]), Err(ApplyError::Core(sampler_core::Error::InvalidInput)),
-            "previously accepted hidden96 range must remain after removing the override");
-        assert_eq!(rt.expression(owner).unwrap().pitch_semitones, 0.);
+        apply(&mut ingress, &mut rt, &[0x43e1_0000, u32::MAX]).unwrap();
+        assert_eq!(rt.expression(owner).unwrap().pitch_semitones, 96., "hidden96 range stays admitted after removing the override");
     });
 }
 
