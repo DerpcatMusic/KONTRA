@@ -98,6 +98,10 @@ impl Transport {
 
 /// Steps one `on init` may take before evaluation is abandoned.
 pub const INIT_FUEL: u64 = 200_000_000;
+/// Fuel for the load-time copy of a scheduled `on persistence_changed`: enough for the
+/// writes of a real preset (about 1e4 in measured libraries); a body that polls for an
+/// async flag never finishes with waits elapsed, and exhausts this instead of INIT_FUEL.
+const SCHEDULED_LOAD_FUEL: u64 = 1_000_000;
 
 /// Detect suspension before evaluating a callback, so its prefix is never replayed.
 fn may_suspend<'a>(hir: &'a Hir, body: &'a [Stmt], async_wait_suspends: bool) -> bool {
@@ -429,11 +433,12 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
     if let Some(cb) = persistence_changed {
         if may_suspend(hir, &cb.body, true) {
             // The runtime runs this body later, but its set_engine_par writes are
-            // load-time engine state. Run a copy now, waits elapsed as in init, and
-            // keep only the engine writes; everything else rolls back. Failure keeps none.
-            // ponytail: one bounded pass on a copy, so a suspending body's own clock
-            // waits and async completions are not replayed here.
+            // load-time engine state. Run a copy now, waits elapsed as in init, on a
+            // small fuel budget, and keep only the engine writes; everything else rolls
+            // back (the fuel too). Failure or exhaustion keeps none.
+            // ponytail: async completions and clock waits of the body are not replayed here.
             let before = (e.st.clone(), e.fuel, e.consumed.clone(), e.pending_menus.clone(), e.zone_batch.clone());
+            e.fuel = e.fuel.min(SCHEDULED_LOAD_FUEL);
             let ok = e.block(&cb.body).and_then(|_| e.finish_zone_batch(cb.span, true)).is_ok();
             let engine = if ok { e.st.engine.clone() } else { before.0.engine.clone() };
             (e.st, e.fuel, e.consumed, e.pending_menus, e.zone_batch) = before;
