@@ -20,8 +20,9 @@
 //! ```
 //!
 //! Verified against native `c830` (`kolor_shaper_6_9_c830.json`, 1e-5) and against warmed
-//! multi-block `cfb0` runs with steady and moving parameters (`kolor_shaper_6_9_sequence.json`).
-//! Still open: case 9 (`1419748b0`), the inlined twin of `cfb0` that writes state back.
+//! multi-block `cfb0` and case 9 (`1419748b0`) runs with steady and moving parameters
+//! (`kolor_shaper_6_9_sequence.json`). Case 9 is the same math with another calling convention
+//! (x through a pointer at +0x10, y returned in xmm0), so it uses the same [`Shaper6_9`].
 
 /// Eigen `ptanh_float`, as in `141943490` / `141943550` (clamp, rational approximation).
 fn ptanh(x: f32) -> f32 {
@@ -45,7 +46,8 @@ fn ptanh(x: f32) -> f32 {
         return c;
     }
     let x2 = c * c;
-    let p = c * ((((((A[0] * x2 + A[1]) * x2 + A[2]) * x2 + A[3]) * x2 + A[4]) * x2 + A[5]) * x2 + A[6]);
+    let p = c
+        * ((((((A[0] * x2 + A[1]) * x2 + A[2]) * x2 + A[3]) * x2 + A[4]) * x2 + A[5]) * x2 + A[6]);
     let q = ((B[0] * x2 + B[1]) * x2 + B[2]) * x2 + B[3];
     p / q
 }
@@ -202,9 +204,20 @@ mod tests {
         let doc = fixture("kolor_shaper_6_9_tanh.json");
         for case in doc["cases"].as_array().unwrap() {
             let x = case["x"].as_f64().unwrap() as f32;
-            let (want_t, want_s) = (case["tanh"].as_f64().unwrap() as f32, case["sigmoid"].as_f64().unwrap() as f32);
-            assert!((ptanh(x) - want_t).abs() < 1e-6, "ptanh({x}) {} want {want_t}", ptanh(x));
-            assert!((sigmoid(x) - want_s).abs() < 1e-6, "sigmoid({x}) {} want {want_s}", sigmoid(x));
+            let (want_t, want_s) = (
+                case["tanh"].as_f64().unwrap() as f32,
+                case["sigmoid"].as_f64().unwrap() as f32,
+            );
+            assert!(
+                (ptanh(x) - want_t).abs() < 1e-6,
+                "ptanh({x}) {} want {want_t}",
+                ptanh(x)
+            );
+            assert!(
+                (sigmoid(x) - want_s).abs() < 1e-6,
+                "sigmoid({x}) {} want {want_s}",
+                sigmoid(x)
+            );
         }
     }
 
@@ -251,9 +264,15 @@ mod tests {
 
     #[test]
     fn shaper_sequence_matches_native() {
-        // Warmed multi-block runs of cfb0 (state carried across samples; some blocks rewrite P/P2).
+        // Warmed multi-block runs of cfb0 (`cases`) and case 9 (`cases9`): state carried across
+        // samples, some blocks rewrite P/P2.
         let doc = fixture("kolor_shaper_6_9_sequence.json");
-        for case in doc["cases"].as_array().unwrap() {
+        let all = doc["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(doc["cases9"].as_array().unwrap());
+        for case in all {
             let mut buf = floats(&case["init"]);
             let mut sh = Shaper6_9::new(&buf);
             for (k, step) in case["steps"].as_array().unwrap().iter().enumerate() {
@@ -270,7 +289,10 @@ mod tests {
                 let want = step["y"].as_f64().unwrap() as f32;
                 assert!((y - want).abs() < 1e-5, "case step {k}: y {y} want {want}");
                 for (got, want) in sh.state().iter().zip(floats(&step["state"])) {
-                    assert!((got - want).abs() < 1e-5, "case step {k}: state {got} want {want}");
+                    assert!(
+                        (got - want).abs() < 1e-5,
+                        "case step {k}: state {got} want {want}"
+                    );
                 }
             }
         }

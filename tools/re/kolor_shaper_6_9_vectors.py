@@ -10,11 +10,11 @@ Writes:
   kolor_shaper_{6..9}_wrapper.json  the real wrapper drive (kolor_kemu_probe) for one mode each.
   kolor_shaper_6_9_tanh.json      141943490 (ptanh, 4-lane) and 141943870 (sigmoid, 8-lane) sweeps.
   kolor_shaper_6_9_c830.json      c830 state update alone: P2 (0x108 floats), x, s -> s'.
-  kolor_shaper_6_9_sequence.json  warmed cfb0 runs, state carried across 12 samples; steady and
-                                  moving parameters (blocks rewritten between samples).
+  kolor_shaper_6_9_sequence.json  warmed cfb0 runs (`cases`) and case 9 runs (`cases9`, 1419748b0),
+                                  state carried across 12 samples; steady and moving parameters.
 
 Status: cc70, cfb0's sample, c830 and the multi-block state carry are verified against the emulator.
-Case 9 (1419748b0) is not in here; see docs/re/engine/kolor-shaper-cases.md.
+Case 9 (1419748b0) is the same math with another calling convention; see the sequence `cases9`.
 """
 import json
 import os
@@ -26,7 +26,7 @@ import kolor_kemu_probe as probe  # noqa: E402
 from kemu import Emu  # noqa: E402
 
 CFB0, CC70, C830 = 0x14194CFB0, 0x14194CC70, 0x14194C830
-PTANH, SIG = 0x141943490, 0x141943870
+PTANH, SIG, CASE9 = 0x141943490, 0x141943870, 0x1419748B0
 P_FLOATS = 0x284 // 4  # 0x000..0x280 inclusive: M1, b1, M2, off, w, c
 SHAPER_FLOATS = 0x2C0 // 4
 GRU_FLOATS = 0x108  # c830 P2: x-gains, biases, 24x8 M, 24 bias (shaper+0x2c0 .. +0x6e0)
@@ -92,8 +92,20 @@ def c830_vector(e, p2, x, s):
     return list(e.read(out, 'f', 8))
 
 
-def sequence_case(e, rnd, moving):
-    """One warmed shaper: init block, 12 cfb0 samples; `moving` rewrites P/P2 at steps 3, 6, 9."""
+def case9_step(e, sh, x):
+    """Case 9 (1419748b0): x through ctx+0x10 -> *ptr, shaper in rdx, y returned in xmm0."""
+    xv, ctx = e.alloc(8), e.alloc(32)
+    e.write(xv, 'f', x)
+    e.write(ctx + 0x10, 'Q', xv)
+    e.call(CASE9, ctx, sh, limit=50_000_000)
+    return e.retf()
+
+
+def sequence_case(e, rnd, moving, step_fn=None):
+    """One warmed shaper: init block, 12 samples through `step_fn` (cfb0 by default).
+
+    `moving` rewrites P/P2 at steps 3, 6, 9."""
+    step_fn = step_fn or (lambda sh, x: cfb0_step(e, sh, x))
     init = [rnd.uniform(-0.5, 0.5) for _ in range(SHAPER_BLOCK_FLOATS)]
     sh = e.alloc(4 * SHAPER_BLOCK_FLOATS)
     e.write(sh, 'f', *init)
@@ -107,12 +119,18 @@ def sequence_case(e, rnd, moving):
         for w in writes:
             e.write(sh + 4 * w['at'], 'f', *w['vals'])
         x = rnd.uniform(-1.0, 1.0)
-        fp, xp, out = e.alloc(16), e.alloc(16), e.alloc(64)
-        e.write(fp, 'f', x)
-        e.write(xp, 'Q', fp)
-        e.call(CFB0, sh, out, xp, limit=50_000_000)
-        steps.append({'writes': writes, 'x': x, 'y': e.read(out, 'f'), 'state': list(e.read(sh, 'f', 8))})
+        y = step_fn(sh, x)
+        steps.append({'writes': writes, 'x': x, 'y': y, 'state': list(e.read(sh, 'f', 8))})
     return {'init': init, 'steps': steps}
+
+
+def cfb0_step(e, sh, x):
+    """One cfb0 call on shaper block `sh` (state written back by the callee); returns y."""
+    fp, xp, out = e.alloc(16), e.alloc(16), e.alloc(64)
+    e.write(fp, 'f', x)
+    e.write(xp, 'Q', fp)
+    e.call(CFB0, sh, out, xp, limit=50_000_000)
+    return e.read(out, 'f')
 
 
 def main():
@@ -153,8 +171,9 @@ def main():
         json.dump({'stage': 'c830', 'cases': c830_cases}, fh)
 
     seq = [sequence_case(e, rnd2, moving=m) for m in (False, False, True, True)]
+    seq9 = [sequence_case(e, rnd2, moving=m, step_fn=lambda sh, x: case9_step(e, sh, x)) for m in (False, True)]
     with open(os.path.join(outdir, 'kolor_shaper_6_9_sequence.json'), 'w') as fh:
-        json.dump({'stage': 'cfb0 sequence', 'cases': seq}, fh)
+        json.dump({'stage': 'cfb0 / case 9 sequence', 'cases': seq, 'cases9': seq9}, fh)
 
     for mode in MODES:
         em = probe.make(exe)
