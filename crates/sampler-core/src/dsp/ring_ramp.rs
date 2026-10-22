@@ -42,6 +42,21 @@ impl Ramp4 {
         std::array::from_fn(|l| self.f(4 * l))
     }
 
+    /// Sets the lanes at once (a native apply writes current = target, with no ramp).
+    pub(crate) fn snap(&mut self, lanes: [f32; 4]) {
+        for (l, v) in lanes.iter().enumerate() {
+            self.wf(4 * l, *v);
+        }
+    }
+
+    /// Per-frame lane step: `cur += step` at the start of every frame of a block (Stereo Tune core).
+    pub(crate) fn advance(&mut self) {
+        for l in 0..4 {
+            let v = self.f(4 * l) + self.f(0x10 + 4 * l);
+            self.wf(4 * l, v);
+        }
+    }
+
     /// Sets the target lanes and the ramp rate, and arms the ramp (the caller owns the timing).
     pub(crate) fn set_target(&mut self, target: [f32; 4], rate: f32, reload: f32) {
         for (l, t) in target.iter().enumerate() {

@@ -1,8 +1,10 @@
 """Chainsaw kernel probe: call HM2 (`hm2::dsp::effektrig::HM2`) slot 19 directly under kemu.
 
-Status (2026-10-23): BLOCKED, not a vector. The calls below run without faulting, but the
-output stays exactly zero because the per-block gain (object +0x40, copied from +0x180 under
-the dirty flag +0x215) is never refreshed. See docs/re/engine/k-effects-batch-a.md, pass 3.
+Status (2026-10-23, pass 4): BLOCKED, not a vector. The knob setter 1409a9ec0 takes its value in
+xmm2 (float), so the knobs are passed with f={2: v}. After that fix the gain at +0x40 is 0.5 (set
+directly by the apply's else branch through +0x34[i]); the dirty flag +0x215 is NOT the gain gate.
+The output stays exactly zero because the per-sample solver chain reads a coefficient block at
++0x520..+0x5cc that the prepare order never fills. See docs/re/engine/k-effects-batch-a.md, pass 4.
 
     python3 -I tools/re/chainsaw_hm2_kemu.py
 
@@ -24,10 +26,6 @@ TEB = 0x7D0000000000
 CTOR, KNOB, PROCESS = 0x14196FD00, 0x1409A9EC0, 0x141971820
 TLS_INDEX_SITE, HEAP_ALLOC = 0x141951F97 + 6 + 0x94655F3, 0x1443C9194
 BLOCK = 32
-
-
-def f32_bits(v):
-    return struct.unpack("<I", struct.pack("<f", v))[0]
 
 
 def hook_alloc(e):
@@ -61,7 +59,7 @@ def main():
     e.call(slot(6), obj)
     e.call(slot(20), obj, f={1: rate})
     for i in range(4):
-        e.call(KNOB, obj, i, f32_bits(0.5))
+        e.call(KNOB, obj, i, f={2: 0.5})  # value is float in xmm2
 
     ins, outs = e.alloc(16), e.alloc(16)
     chans = [e.alloc(4 * BLOCK) for _ in range(2)]
@@ -73,7 +71,7 @@ def main():
     e.call(PROCESS, obj, ins, outs, BLOCK)
     out = e.read(e.read(outs, "Q"), "f", 8)
     print("out L", out)
-    print("gain +0x40 =", e.read(obj + 0x40, "I"), "(zero: block gain never refreshed)")
+    print("gain +0x40 =", e.read(obj + 0x40, "f"))
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in 
 | category | symbols | full | simplified | stub | unsupported | % full | corpus-weighted % full | tested |
 |---|---|---|---|---|---|---|---|---|
 | callback | 17 | 0 | 14 | 0 | 3 | 0.0% | 0.0% | 14 |
-| command | 282 | 14 | 228 | 5 | 35 | 5.0% | 15.4% | 189 |
+| command | 282 | 22 | 223 | 5 | 32 | 7.8% | 27.5% | 191 |
 | keyword | 18 | 2 | 16 | 0 | 0 | 11.1% | - | 18 |
 | datatype | 6 | 0 | 6 | 0 | 0 | 0.0% | - | 0 |
 | ui_control | 16 | 0 | 16 | 0 | 0 | 0.0% | 0.0% | 14 |
@@ -29,10 +29,10 @@ Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in 
 | variable | 14 | 0 | 8 | 0 | 6 | 0.0% | 0.0% | 10 |
 | engine_par | 726 | 0 | 726 | 0 | 0 | 0.0% | 0.0% | 36 |
 | control_par | 94 | 0 | 73 | 21 | 0 | 0.0% | 0.0% | 32 |
-| event_par | 31 | 0 | 27 | 0 | 4 | 0.0% | 0.0% | 17 |
+| event_par | 31 | 0 | 29 | 0 | 2 | 0.0% | 0.0% | 19 |
 | zone_par | 19 | 0 | 19 | 0 | 0 | 0.0% | 0.0% | 4 |
 | loop_par | 6 | 0 | 6 | 0 | 0 | 0.0% | - | 0 |
-| **all** | **1996** | **16** | **1893** | **26** | **61** | **0.8%** | **6.2%** | **422** |
+| **all** | **1996** | **24** | **1890** | **26** | **56** | **1.2%** | **11.0%** | **426** |
 
 Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMBOLS.tsv and KSP_MODERN.md; they are excluded from the totals above.
 
@@ -43,33 +43,29 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 | 1 | `on init` | callback | simplified | 2741 | crates/sampler-ksp/src/sema.rs:106 |
 | 2 | `on note` | callback | simplified | 2741 | crates/sampler-ksp/src/sema.rs:106 |
 | 3 | `on ui_control` | callback | simplified | 2741 | crates/sampler-ksp/src/sema.rs:106 |
-| 4 | `add_menu_item` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2711 |
 | 5 | `get_control_par` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2661 |
 | 6 | `get_engine_par_disp` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:1332 |
-| 7 | `get_ui_id` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2549 |
-| 9 | `make_persistent` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2886 |
 | 10 | `message` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2872 |
 | 11 | `set_control_par` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2658 |
 | 12 | `set_control_par_str` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2634 |
 | 13 | `set_engine_par` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2412 |
 | 14 | `set_key_color` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2871 |
-| 15 | `set_script_title` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2889 |
-| 16 | `set_ui_height_px` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2888 |
 | 17 | `$INST_ICON_ID` | constant | simplified | 2741 | crates/sampler-ksp/src/builtins.rs:611 |
 | 18 | `$CONTROL_PAR_DEFAULT_VALUE` | control_par | simplified | 2741 | crates/sampler-ksp/src/model.rs:283 |
 | 19 | `$CONTROL_PAR_HIDE` | control_par | simplified | 2741 | crates/sampler-ksp/src/model.rs:283 |
 | 20 | `$CONTROL_PAR_PICTURE` | control_par | simplified | 2741 | crates/sampler-ksp/src/model.rs:283 |
 | 21 | `$CONTROL_PAR_POS_X` | control_par | simplified | 2741 | crates/sampler-ksp/src/model.rs:283 |
+| 22 | `$CONTROL_PAR_POS_Y` | control_par | simplified | 2741 | crates/sampler-ksp/src/model.rs:283 |
+| 23 | `$CONTROL_PAR_TEXT` | control_par | simplified | 2741 | crates/sampler-ksp/src/model.rs:283 |
+| 24 | `$CONTROL_PAR_TEXT_ALIGNMENT` | control_par | simplified | 2741 | crates/sampler-ksp/src/model.rs:283 |
+| 25 | `$CONTROL_PAR_VALUE` | control_par | simplified | 2741 | crates/sampler-ksp/src/model.rs:283 |
+| 26 | `$CONTROL_PAR_WIDTH` | control_par | simplified | 2741 | crates/sampler-ksp/src/model.rs:283 |
 
 ## Backlog by family (non-full, corpus-used, top 12 per family)
 
 ### control_par (49 symbols, 52957 instrument-uses)
 
 `$CONTROL_PAR_DEFAULT_VALUE` (simplified, 2741), `$CONTROL_PAR_HIDE` (simplified, 2741), `$CONTROL_PAR_PICTURE` (simplified, 2741), `$CONTROL_PAR_POS_X` (simplified, 2741), `$CONTROL_PAR_POS_Y` (simplified, 2741), `$CONTROL_PAR_TEXT` (simplified, 2741), `$CONTROL_PAR_TEXT_ALIGNMENT` (simplified, 2741), `$CONTROL_PAR_VALUE` (simplified, 2741), `$CONTROL_PAR_WIDTH` (simplified, 2741), `$CONTROL_PAR_ALLOW_AUTOMATION` (simplified, 2740), `$CONTROL_PAR_FONT_TYPE` (simplified, 2740), `$CONTROL_PAR_HEIGHT` (simplified, 2740)
-
-### command / User Interface Commands (32 symbols, 27227 instrument-uses)
-
-`add_menu_item` (simplified, 2741), `get_control_par` (simplified, 2741), `get_ui_id` (simplified, 2741), `set_control_par` (simplified, 2741), `set_script_title` (simplified, 2741), `set_ui_height_px` (simplified, 2741), `move_control_px` (simplified, 2736), `set_knob_label` (simplified, 2018), `set_knob_unit` (simplified, 2018), `set_ui_width_px` (simplified, 722), `set_text` (simplified, 505), `add_text_line` (simplified, 473)
 
 ### engine_par (302 symbols, 25663 instrument-uses)
 
@@ -78,6 +74,10 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 ### callback / Callbacks (10 symbols, 17208 instrument-uses)
 
 `on init` (simplified, 2741), `on note` (simplified, 2741), `on ui_control` (simplified, 2741), `on controller` (simplified, 2740), `on release` (simplified, 2740), `on pgs_changed` (simplified, 2389), `on listener` (simplified, 722), `on persistence_changed` (simplified, 377), `on async_complete` (simplified, 16), `on poly_at` (simplified, 1)
+
+### command / User Interface Commands (28 symbols, 16263 instrument-uses)
+
+`get_control_par` (simplified, 2741), `set_control_par` (simplified, 2741), `move_control_px` (simplified, 2736), `set_knob_label` (simplified, 2018), `set_knob_unit` (simplified, 2018), `set_ui_width_px` (simplified, 722), `set_text` (simplified, 505), `add_text_line` (simplified, 473), `set_menu_item_str` (simplified, 376), `set_menu_item_visibility` (simplified, 373), `get_font_id` (simplified, 368), `set_skin_offset` (simplified, 353)
 
 ### constants $KEY (20 symbols, 12701 instrument-uses)
 
@@ -117,15 +117,11 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 
 ### event_par (15 symbols, 6677 instrument-uses)
 
-`$EVENT_PAR_MOD_VALUE_ID` (simplified, 1911), `$EVENT_PAR_ALLOW_GROUP` (simplified, 1552), `$EVENT_PAR_0` (simplified, 619), `$EVENT_PAR_1` (unsupported, 610), `$EVENT_PAR_SOURCE` (simplified, 369), `$EVENT_PAR_2` (unsupported, 349), `$EVENT_PAR_3` (simplified, 349), `$EVENT_PAR_TUNE` (simplified, 270), `$EVENT_PAR_NOTE` (simplified, 269), `$EVENT_PAR_VELOCITY` (simplified, 268), `$EVENT_PAR_ZONE_ID` (simplified, 103), `$EVENT_PAR_PLAY_POS` (simplified, 3)
+`$EVENT_PAR_MOD_VALUE_ID` (simplified, 1911), `$EVENT_PAR_ALLOW_GROUP` (simplified, 1552), `$EVENT_PAR_0` (simplified, 619), `$EVENT_PAR_1` (simplified, 610), `$EVENT_PAR_SOURCE` (simplified, 369), `$EVENT_PAR_2` (simplified, 349), `$EVENT_PAR_3` (simplified, 349), `$EVENT_PAR_TUNE` (simplified, 270), `$EVENT_PAR_NOTE` (simplified, 269), `$EVENT_PAR_VELOCITY` (simplified, 268), `$EVENT_PAR_ZONE_ID` (simplified, 103), `$EVENT_PAR_PLAY_POS` (simplified, 3)
 
 ### command / Keyboard Commands (7 symbols, 6373 instrument-uses)
 
 `set_key_color` (simplified, 2741), `set_key_type` (simplified, 724), `set_key_pressed` (simplified, 721), `set_key_pressed_support` (simplified, 720), `set_key_name` (simplified, 719), `remove_keyrange` (simplified, 374), `set_keyrange` (simplified, 374)
-
-### command / Variables (3 symbols, 5486 instrument-uses)
-
-`make_persistent` (simplified, 2741), `read_persistent_var` (simplified, 2740), `make_instr_persistent` (simplified, 5)
 
 ### constants $INST (2 symbols, 5481 instrument-uses)
 
@@ -154,6 +150,10 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 ### command / Time-Related Commands (6 symbols, 2753 instrument-uses)
 
 `wait` (simplified, 1100), `set_listener` (simplified, 927), `stop_wait` (simplified, 368), `ticks_to_ms` (simplified, 349), `wait_async` (simplified, 8), `ms_to_ticks` (simplified, 1)
+
+### command / Variables (2 symbols, 2745 instrument-uses)
+
+`read_persistent_var` (simplified, 2740), `make_instr_persistent` (simplified, 5)
 
 ### command / Control Parameters (1 symbols, 2741 instrument-uses)
 

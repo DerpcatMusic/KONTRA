@@ -105,6 +105,7 @@ Kontakt values. Confirming them needs the decompiled core or Kontakt vectors.
 | Lo-Fi hold, quantizer, noise | covered, measured | mapped | flag (P truncation), reset seed |
 | Bite | covered, model-checked; live lanes wired (10 continuous) | mapped | 20 ms ramp (not in the control callbacks; process `0x141937fb0` untraced), DC/HPF live switches, Kontakt output vectors |
 | Tape Saturator | covered, table recovered | mapped | Kontakt output vectors |
+| Tape live slew | tick law verified under KEMU, Rust `Slew` (not wired) | tick cadence decoded (every 32 host frames, `FUN_1408fc360`), per-frame lane use decoded | host warmth → per-tick flag/array path (`FUN_14199dd80`), wrapper KEMU run, live Rust lane |
 | Wow / Flutter parameters | bindings measured | mapped | scrape, age, saturation, gate laws |
 | Wow / Flutter DSP | generic only | unrecovered | exact pitch law, Scrape/Age/Saturation/Gate |
 | Wine oracle measurement | none | no Kontakt install in the Wine prefix | everything measured against Kontakt |
@@ -113,3 +114,31 @@ Kontakt values. Confirming them needs the decompiled core or Kontakt vectors.
 - `wowflutter::tests::zero_depth_is_the_base_delay` (sampler-core): zero depth is a pure 384-frame delay at 48 kHz.
 - `wowflutter::tests::wow_flutter_adds_no_gain_at_any_mix` (sampler-core): peak stays at or below the input peak for mix 0, 0.5 and 1; wet-only RMS stays within 2 % of the input.
 - `effects::timemod::tests::wow_flutter_reads_its_stream_and_maps_generic_law` (sampler-kontakt): reader order, mix, and the omitted-law diagnostic.
+
+- **Kernel located (2026-10-23):** see [k-wowflutter-kernel.md](k-wowflutter-kernel.md). Process = vtable slot 19 (`FUN_14199d080`) of `WowFlutter::vftable` (`0x1476a3400`), reached from slot 7 (`FUN_14099f000`). Port still blocked on the sub-object readers and constants.
+
+## Live control: Tape Saturator (decoded 2026-10-23, not yet a Rust lane)
+
+Source: `source/kontakt8/0140ae0000.c`. Object fields, from the setter and ramp code:
+
+- Setter `FUN_140ae1e10(obj, param, value)`: param 0 gain → `FUN_140ae1ee0` (dB table lookup, not decoded); param 1 warmth → `obj+0x3c = 10^(0.05·(6w−3))`, ramp target `obj+0x2240`; param 2 roll-off → `obj+0x24`/`+0x40` (law not decoded); param 3 quality → bool `obj+0x2c = 0.5 < v`. Warmth and the flags set `+0x2250 = 1`, `+0x2260 = 1`.
+- **Native vector (KEMU, `tools/re/tape_live_kemu.py`):** warmth 0, 0.25, 0.5, 1 gives gain 0.70794577, 0.84139514, 1.0, 1.41253757, exact match with the law (error 0). `tape.rs` already uses the same law at init.
+- **Slew (`FUN_140ae1b40`, 713 B):** four lanes, current `+0x2220..0x222c`, target `+0x2240..0x224c`, per-step increment `+0x2230..0x223c`, step counter `+0x2254` reloaded from `+0x2258`, step rate `+0x225c`. A lane snaps when its square falls under the threshold.
+- Init `FUN_140ae0fc0(obj, T, sr)` (decompiled, constants read from `.rdata`): `+0x2170 = T`, `+0x2174 = 1/T`, `+0x2178 = sr`. `T` is compared with 50 kHz and 100 kHz (`DAT_144f38d5c`, `DAT_1447377cc`) to pick the oversampling (`+0x2160`, `+0x2164`), so **T is the processing rate (host rate times oversampling), not a ramp length**.
+- Step count: `+0x2258 = max(1, int(0.03·T/sr + 0.5))` (`DAT_144fcdc04 = 0.03`, `DAT_14470bad0 = 0.5`). For any real T/sr below about 16.7 this is 1, so the warmth ramp is one tick.
+- Slew rate: `+0x225c = 1/(N·sr)` with `N = +0x2258` (`DAT_14470bad4 = 1.0`). The earlier note `0.025/(N·sr)` was wrong. The constant 0.025 (`DAT_144f38678`) feeds the `+0x1458` field, not the slew.
+- **Tick (`FUN_140ae1b40`, group B) vectors, KEMU (`tools/re/tape_slew_kemu.py`):** a pending tick sets `inc = (tgt − cur)·rate` per lane, snaps lanes with `inc² < 1e-15`, reloads the counter `+0x2254` from `+0x2258`; a non-pending tick decrements the counter and snaps `cur = tgt`, `inc = 0` at zero. Verified in `tape.rs::Slew` (`slew_tick_matches_the_native_lanes`, sampler-core).
+- Per-frame advance and read (`FUN_140ae1190`, lines ~1210–1245, **decompiled, not yet run under KEMU**): the lane advance `cur += inc` runs once per **base-rate frame** (inner loop over the chunk's `uVar34` frames, not per oversampled sample; the oversampled loop feeds the resampler, bounded by `+0x2168`). Output is `out_L = cur0 · b_L + a_L`, `out_R = cur0 · b_R + a_R`, with `cur0 = +0x2220` read after the increment. This is the Rust `self.warmth * b[2] + a[2]` term, so the live lane replaces `warmth` with `cur0` per frame.
+- **Tick cadence (decoded 2026-10-23).** The tape wrapper is `BEffectTape` (ctor `FUN_1407c8890`, vtable `0x144f14e40`). Its block process is **vtable slot 23 = `FUN_1408fc360`** (`01408f0000.c`). It keeps a control counter at wrapper `+0x1bc`:
+  - When the counter is `< 1`, it sets it to **32** (host frames), then for params 0..4 calls the core setter (`core->vt[0x60]`, slot 12 = `FUN_140ae1e10`) only where the per-param flag `+0xb5b0 + i` is set, with the value from the per-tick array `+0xb5c0 + 4·tick` (clamped to `[0, 1]`), then calls **`core->vt[0x40]` = slot 8 = the slew tick `FUN_140ae1b40`**.
+  - Then it runs `core->vt[0x38]` = slot 7 = `FUN_140ae1190` on `min(counter, remaining)` frames and subtracts that from the counter.
+  - So the tick fires **once per 32 host frames** (not per sample and not per block), and the first tick happens at the first frame. The setter's per-param flags are the only way a value reaches the core from this loop.
+- **Derived consequence (not yet run through the wrapper):** with `N = max(1, int(0.03·T/sr + 0.5)) = 1` for every realistic `T` (`T ≤ 4·sr`), a pending tick sets `inc = (tgt − cur)/sr` and reloads the counter to 1. The next tick snaps `cur = tgt`. So one warmth move is a **32-frame linear segment** of slope `(tgt − cur)/sr`, then a snap at the next tick. That is a very small move per segment, and it will be checked against the wrapper before any Rust lane depends on it.
+- **Still open (the live-lane blocker):** how a host warmth change becomes the per-tick flag and array above. The host path is the generic store `FUN_140ad1c50(wrapper, id, value, force)` (writes `+0x351c[id]`, then `FUN_14199dd80(wrapper+0x1c0, value, clamp)`). `FUN_14199dd80` writes a per-param value array (`+0x388`, or the smoothing arrays `+0x340/+0x358/+0x370/+0x3a0` when `+0x2f8` is set), sets the dirty flag `+0x3d4` (or `+0x3d0`), and, for param 9, a flag `+0x3288`. Which of these becomes the `+0xb5b1` flag and `+0xb5c8` array of `FUN_1408fc360` is **not traced yet**. Without that link, the 32-frame cadence is confirmed, but the value curve a host sees is not.
+- A KEMU end-to-end run (ctor, init, setParam, per-block) needs that link too. A harness that only sets the setter directly would skip the wrapper path, so it is not a native vector for the live curve.
+
+**Blocker for the live Rust lane:** the host warmth → `FUN_14199dd80` → `+0xb5b1`/`+0xb5c8` → `FUN_1408fc360` chain. Next step: trace who reads `+0x3d4`/`+0x3d0` in the wrapper and what writes `+0xb5b1`, then run the wrapper under KEMU with a moving warmth to produce the vectors.
+
+No Rust processor lane or parity row is claimed. The Tape `live control not modelled` gap stays open.
+
+Bite (0x66) and the Bus Comp and Raum trailing items were not started in this pass.

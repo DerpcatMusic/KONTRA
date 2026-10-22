@@ -1,0 +1,120 @@
+            0x141aba680      0f57c0         xorps xmm0, xmm0
+            0x141aba683      4533c9         xor r9d, r9d
+            0x141aba686      660f7ec2       movd edx, xmm0
+            0x141aba68a      4c8bc1         mov r8, rcx
+            0x141aba68d      660f7ec0       movd eax, xmm0
+            0x141aba691      3bd0           cmp edx, eax
+        ,=< 0x141aba693      750b           jne 0x141aba6a0
+        |   0x141aba695      33c0           xor eax, eax
+        |   0x141aba697      894124         mov dword [rcx + 0x24], eax
+       ,==< 0x141aba69a      eb08           jmp 0x141aba6a4
+       ||   0x141aba69c      0f1f4000       nop dword [rax]
+       |`-> 0x141aba6a0      44894924       mov dword [rcx + 0x24], r9d
+       `--> 0x141aba6a4      660f7ec1       movd ecx, xmm0
+            0x141aba6a8      660f7ec0       movd eax, xmm0
+            0x141aba6ac      3bc8           cmp ecx, eax
+        ,=< 0x141aba6ae      7510           jne 0x141aba6c0
+        |   0x141aba6b0      33c0           xor eax, eax
+        |   0x141aba6b2      41894028       mov dword [r8 + 0x28], eax
+       ,==< 0x141aba6b6      eb0c           jmp 0x141aba6c4
+       ||   0x141aba6b8      0f1f840000..   nop dword [rax + rax]
+       |`-> 0x141aba6c0      45894828       mov dword [r8 + 0x28], r9d
+       `--> 0x141aba6c4      660f7ec1       movd ecx, xmm0
+            0x141aba6c8      660f7ec0       movd eax, xmm0
+            0x141aba6cc      3bc8           cmp ecx, eax
+        ,=< 0x141aba6ce      7510           jne 0x141aba6e0
+        |   0x141aba6d0      33c0           xor eax, eax
+        |   0x141aba6d2      41894058       mov dword [r8 + 0x58], eax
+       ,==< 0x141aba6d6      eb0c           jmp 0x141aba6e4
+       ||   0x141aba6d8      0f1f840000..   nop dword [rax + rax]
+       |`-> 0x141aba6e0      45894858       mov dword [r8 + 0x58], r9d
+       `--> 0x141aba6e4      660f7ec1       movd ecx, xmm0
+            0x141aba6e8      660f7ec0       movd eax, xmm0
+            0x141aba6ec      3bc8           cmp ecx, eax
+        ,=< 0x141aba6ee      7507           jne 0x141aba6f7
+        |   0x141aba6f0      33c0           xor eax, eax
+        |   0x141aba6f2      4189405c       mov dword [r8 + 0x5c], eax
+        |   0x141aba6f6      c3             ret
+        `-> 0x141aba6f7      4589485c       mov dword [r8 + 0x5c], r9d
+            0x141aba6fb      c3             ret
+            0x141aba6fc      cc             int3
+            0x141aba6fd      cc             int3
+            0x141aba6fe      cc             int3
+            0x141aba6ff      cc             int3
+            0x141aba700      48895c2408     mov qword [rsp + 8], rbx
+            0x141aba705      4889742410     mov qword [rsp + 0x10], rsi
+            0x141aba70a      57             push rdi
+            0x141aba70b      4883ec20       sub rsp, 0x20
+            0x141aba70f      488d5908       lea rbx, [rcx + 8]
+            0x141aba713      33c0           xor eax, eax
+            0x141aba715      488d7b10       lea rdi, [rbx + 0x10]
+            0x141aba719      41b802000000   mov r8d, 2
+            0x141aba71f      483bdf         cmp rbx, rdi
+            0x141aba722      488bf1         mov rsi, rcx
+            0x141aba725      440f47c0       cmova r8d, eax
+        ,=< 0x141aba729      770e           ja 0x141aba739
+        |   0x141aba72b      49c1e003       shl r8, 3
+        |   0x141aba72f      33d2           xor edx, edx
+        |   0x141aba731      488bcb         mov rcx, rbx
+        |   0x141aba734      e8c7689102     call 0x1443d1000
+        `-> 0x141aba739      f20f1023       movsd xmm4, qword [rbx]
+            0x141aba73d      f20f105b18     movsd xmm3, qword [rbx + 0x18]
+            0x141aba742      0f28ec         movaps xmm5, xmm4
+            0x141aba745      f20f104308     movsd xmm0, qword [rbx + 8]
+            0x141aba74a      f20f5907       mulsd xmm0, qword [rdi]
+            0x141aba74e      f20f5927       mulsd xmm4, qword [rdi]
+            0x141aba752      f20f59eb       mulsd xmm5, xmm3
+            0x141aba756      f20f595b08     mulsd xmm3, qword [rbx + 8]
+            0x141aba75b      f20f58e8       addsd xmm5, xmm0
+            0x141aba75f      f20f5ce3       subsd xmm4, xmm3
+            0x141aba763      660f5ac5       cvtpd2ps xmm0, xmm5
+            0x141aba767      f20f582519..   addsd xmm4, qword [0x144714988]
+            0x141aba76f      f20f1123       movsd qword [rbx], xmm4
+            0x141aba773      f20f116b08     movsd qword [rbx + 8], xmm5
+            0x141aba778      488b5c2430     mov rbx, qword [rsp + 0x30]
+            0x141aba77d      f30f1106       movss dword [rsi], xmm0
+            0x141aba781      488b742438     mov rsi, qword [rsp + 0x38]
+            0x141aba786      4883c420       add rsp, 0x20
+            0x141aba78a      5f             pop rdi
+            0x141aba78b      c3             ret
+            0x141aba78c      cc             int3
+            0x141aba78d      cc             int3
+            0x141aba78e      cc             int3
+            0x141aba78f      cc             int3
+            0x141aba790      4533d2         xor r10d, r10d
+            0x141aba793      448911         mov dword [rcx], r10d
+            0x141aba796      4c895108       mov qword [rcx + 8], r10
+            0x141aba79a      4c895110       mov qword [rcx + 0x10], r10
+            0x141aba79e      44895130       mov dword [rcx + 0x30], r10d
+            0x141aba7a2      44895138       mov dword [rcx + 0x38], r10d
+            0x141aba7a6      4881c1a000..   add rcx, 0xa0              ; 160
+            0x141aba7ad      488d5168       lea rdx, [rcx + 0x68]
+            0x141aba7b1      483bca         cmp rcx, rdx
+            0x141aba7b4      7447           je 0x141aba7fd
+            0x141aba7b6      0f57c0         xorps xmm0, xmm0
+            0x141aba7b9      660f7ec0       movd eax, xmm0
+            0x141aba7bd      66410f7ec0     movd r8d, xmm0
+            0x141aba7c2      66410f7ec1     movd r9d, xmm0
+            0x141aba7c7      442bc0         sub r8d, eax
+            0x141aba7ca      660f7ec0       movd eax, xmm0
+            0x141aba7ce      442bc8         sub r9d, eax
+            0x141aba7d1      4585c0         test r8d, r8d
+            0x141aba7d4      750a           jne 0x141aba7e0
+            0x141aba7d6      33c0           xor eax, eax
+            0x141aba7d8      8901           mov dword [rcx], eax
+            0x141aba7da      eb07           jmp 0x141aba7e3
+            0x141aba7dc      0f1f4000       nop dword [rax]
+            0x141aba7e0      448911         mov dword [rcx], r10d
+            0x141aba7e3      4585c9         test r9d, r9d
+            0x141aba7e6      7508           jne 0x141aba7f0
+            0x141aba7e8      33c0           xor eax, eax
+            0x141aba7ea      894104         mov dword [rcx + 4], eax
+            0x141aba7ed      eb05           jmp 0x141aba7f4
+            0x141aba7ef      90             nop
+            0x141aba7f0      44895104       mov dword [rcx + 4], r10d
+            0x141aba7f4      4883c134       add rcx, 0x34              ; reloc.WS2_32.dll_gethostbyname
+            0x141aba7f8      483bca         cmp rcx, rdx
+            0x141aba7fb      75d4           jne 0x141aba7d1
+            0x141aba7fd      c3             ret
+            0x141aba7fe      cc             int3
+            0x141aba7ff      cc             int3

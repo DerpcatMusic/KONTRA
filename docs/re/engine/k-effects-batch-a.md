@@ -71,10 +71,64 @@ Per-block (`14197a2c0`, `param_4` samples, two channels):
 4. A stereo level detector updates `param+0x9748` with attack/release from
    `+0x9754`/`+0x9758`.
 
-Not yet done: the helpers `14194cc70`, `14194c830`, `141974860`,
-`14197adb0`, `14197a150`, `14197ae80`, `14194cfb0`, `1419748b0` (called from the
-shaper dispatch); the exact coefficient meaning of the biquad state; the
-Kolor state init. No kemu vector exists; the port is not started.
+### Kolor emulation status (2026-10-23, corrected; `tools/re/kolor_kemu_probe.py`)
+
+The earlier "wet path silent in every mode" blocker was a harness error, not a kernel fault. Four causes:
+
+1. The record's mode field was set to 32 (the block size). Apply reads the mode from record `+0x38`.
+2. The probe poked the control flag `+0x515` by hand. No writer of it exists in the decompile cache.
+   The poke made the refresh `141940330` read an empty snapshot and write non-physical coefficients
+   (`0x955c = 1.3e11`). Removed.
+3. The probe called core slot 19 directly and skipped the driver's control tick `14197ab90`. The driver
+   runs it when wrapper `+0x1bc < 1` and then processes 32 samples. Now replayed per 32-sample segment.
+4. Knob 7 is the wet mix. It lives at `core+0x78` (= `core+0x5c+4*7`), fed from reader float `+0x30`.
+   The wrapper setter `1409aaa90` skips a write equal to its cached value unless `r9` is set; apply calls
+   it unforced, so a value equal to the cache is dropped. The probe forces the knob writes.
+
+**Measured apply tie** (`140abae20` disassembly; setter index `i` lives at `core+0x5c+4i`):
+
+| Setter index | Source in reader record | Note |
+| --- | --- | --- |
+| 0 | float `+0x0c` | |
+| 1 | byte `+0x34` (mono flag, as 0/1) | |
+| 2 | float `+0x10` | |
+| 3 | float `+0x08` | |
+| 4 | int `+0x38` (mode) times `0x144e79a14` = 1/9 | per-mode seed runs in the notify |
+| 5 | float `+0x14` | |
+| 6 | float `+0x18` | |
+| 7 | float `+0x30` | wet mix (`core+0x78`) |
+| 8 | float `+0x1c` | |
+| 9 | float `+0x20` | |
+| 10 | float `+0x24` | |
+| 11 | float `+0x28` | |
+| 12 | float `+0x2c` | |
+| 13 | constant 0.5 | gain lambda `141977bf0` |
+
+Every knob goes through setter `1409aaa90` (wrapper vtable slot 32). Notify objects are at wrapper
+`+0x290+64*i`; knob 7 has none. The probe's knob ids use this table.
+
+**Native vectors.** `tools/re/fixtures/kolor_native_vectors.json`: 10 modes, steady (all knobs 0.5, wet 0.5)
+and moving (knob 0 steps 0.2, 0.4, 0.6, 0.8 per 128 samples), 48 kHz, stereo, 512 samples. Every mode is
+nonzero, peak about 0.079 steady. That is the dry path (`(1-wet) * in * ramp`, ramp starting at 0 after
+prepare). Modes 2 and 5 also carry a shaper contribution (about 0.26 for a 0.3 input on a fresh shaper).
+Modes 0, 1, 3, 4, 6..9 return zero from their shaper case on a fresh state. Cases 0, 1, 3, 4 and 6..9 are
+not read, so their wet part is **unverified**.
+
+**Still open (blocks parity; Kolor row stays `missing`):**
+
+- Prepare `141979410` (1607 B) and `1419790c0`: rate-dependent constants.
+- Knob notify lambdas `141977860..141978610`: control design per knob, including `141978610` (1844 B),
+  `141978300` (592 B), `141977990` (471 B), `141978060` (455 B).
+- Control refresh `1419421c0` (656 B) and `141940da0` (4284 B): the snapshot/commit state machine on
+  `+0x480..+0x518` (flags `+0x510`, `+0x514`, `+0x515`, `+0x518`).
+- Shaper cases 0..9 (`1419748b0` is case 9) and their helpers `14194cc70` (450 B), `14194c830` (501 B),
+  `14194cfb0`, `14194ca80`, `14194c5b0`. Cases 2 and 5 are read only through the dispatch.
+- Per-mode seed `14197acc0` and state init `141974d90`.
+- Driver pre/post bus stages `140ac28f0` / `140ac21f0`. Not replayed here. They mix the bus into the
+  buffers with a gain ramp. Identity for a single insert is **not measured**.
+
+No port exists. The next step is to read the notify lambdas and the snapshot state machine, then the
+shaper cases, and to check each mode's wet part against the vectors.
 
 Mode table and knob registrations: see `k-stomps-b.md` (unchanged, still
 measured).
@@ -136,12 +190,23 @@ copied into the wrapper byte `+0x1c0` (see the driver below).
   the `+0x2500` level is at or below `+0x2510 * DAT_1447148a0`, it moves to 2. The
   branch that zeroes outputs (`memset`) is not yet read.
 
-**Still not decoded (so no port):** the exact stereo combine (how `+0x25d8`
-selects between core outputs), the `FUN_141ee2160` ramp, and the gate's constant
-`DAT_1447148a0`. There is no native capture and no kemu harness for the wrapper
-(`140902480` calls shared stages, so a kemu run needs them stubbed or emulated).
-Next: decode the combine and the gate, then run the driver under kemu with the
-core's seeding slot after prepare, and compare to a native capture.
+**Stereo combine (decoded 2026-10-23, `0140900000.c` lines 1790-1860).** Stereo branch
+(wrapper byte `+0x1c0 == 0`): `memmove(in1 <- in0)` after saving R to `+0x1280`/`+0x1300`.
+Core `+0x1480` runs on `[L, L]` into the host outputs; core `+0x200` runs on `[R, R]` into
+`+0x1380`; `memmove(out1 <- +0x1380)`. Each core keeps its own state, and the two cores
+share the knobs. Ported as `Stereorizer<Tubescreamer>` (`dsp/color/stereorizer.rs`).
+
+**Gate (decoded).** `DAT_1447148a0` = 9.99999975e-06 (1e-5). The gate test only moves the
+status word `+0x2514` from 1 to 2 when the peak `+0x2500` falls below `+0x2510 * 1e-5`. Nothing
+reads that state for audio; `+0x2514` is queried by the host, and the silence path (`memset`
+of outputs) runs only while the transition flag `+0x2518` is set (set and cleared around the
+core reset in `140971540`). Steady-state audio is unaffected, so the port omits it.
+
+**Still not decoded:** the control ramp `FUN_141ee2160` (kernels types 1, 3, 4, 5, 6;
+type 2 is a copy). It runs only when the ramp flags `+0x19fc` / `+0x77c` are set, which
+the steady-state path does not need. The mono branch (flag `+0x1c0 != 0`, core `+0x1480`
+in place) is not modeled. No native stereo capture exists; the port's vectors are the
+native mono Tubescreamer vectors applied per channel.
 
 ## Chainsaw (`BEffectChainsaw` 0x144f15e68, wrapper 0x144f15d58)
 
@@ -189,7 +254,7 @@ vtable. The speaker matrix and LFE routing are still unrecovered.
    vectors (`tools/re/*_kemu_vectors.py` templates).
 2. Skreamer Deluxe and Chainsaw: diff `140902480` and `1408fe290` (same length);
    identify the shared core, then read the Chainsaw kernel behind `140aba230`.
-3. Stereo Tune: read `FUN_140aaf640`.
+3. Stereo Tune: core ported and bit-exact (above); lowering needs the record mapping.
 4. Surround Panner: find the core that slot 23 dispatches to.
 
 ## Pass 2 (decoded, not ported, no native vector yet)
@@ -222,7 +287,34 @@ ported and no kemu vector exists, so no row can be "parity".
   calling slot 19 directly on a prepared HM2 object (no driver, so the
   ring-buffer fault in `engine-k-stomps-full/tools/re/kemu_chainsaw.py` is not hit).
 
-### Stereo Tune per-chunk core (partly read)
+### Stereo Tune: core ported, bit-exact (2026-10-23)
+
+Status: **core partial**. `crates/sampler-core/src/dsp/stereo_tune.rs` ports the per-frame core
+`140aaf640`, the driver `140aa7320` without its post stage, prepare `140a9cae0`/`140ac0de0`/`140ad2210`
+and apply `140abbce0`; the smoother `140acb6c0` is `ring_ramp::Ramp4`. The vectors come from
+`tools/re/stereotune_kemu_vectors.py` run under kemu (ctor `140a86e50`, prepare, apply, driver
+countdown, core per 32-frame chunk). Four knob settings x 256 frames, both channels, match the native
+f32 output bit for bit (`matches_native_kemu_vectors`).
+
+Decoded facts that the port depends on:
+
+- The core reads inputs at object `+0x20` (L) and `+0x28` (R). It writes the scratch L at
+  `ctx+0x9c010` and R at `ctx+0x9d010` (f32, frame index added). The post stage `140ac21f0` is the
+  shared host mix and is not ported here.
+- The main ring (`+0x2e8`, length `N = rate*0.0116099771`) is written at a head that decrements per
+  frame; two taps move by `1/ratio` and `ratio` (`ratio = 1.0594631^(4*f^3)`, `f = 0.85*b*0.4+0.06`).
+  The window `+0x248` is `0.5 - cos(2*pi*i/N)*0.5`.
+- Output rings (`+0x250`, `+0x258`, length `R = rate*0.04`): the lagged reads come **before** the
+  frame's writes. Reading after the write is off by one frame and gives 1e-4 errors.
+- Apply sets the four ramp lanes: 1.0, `(900*a+100)*k/rate` (one-pole coefficient), `2*(0.99*c)+0.02`
+  (cross spread) and the mix as f32 bits (`+0x20c`).
+
+Not settled: the record-to-apply mapping (which saved field is `a`, `b`, `c`, `mix`, the KSP names are
+`$ENGINE_PAR_STEREOTUNE_DRIFT/MIX/SPLIT/SPREAD`), and the `+0x1c0` scale `k` (the harness uses 1.0; the
+writer is not in the stereo tune functions). Lowering stays unwired until both are read from the
+`BParFXStereoTune` loader `140701a80` and its writers.
+
+### Stereo Tune per-chunk core (read, kept for the record)
 
 - Driver `140aa7320` (176 B): loops over 32-sample chunks (`+0x120` total,
   `+0x1bc` countdown), calls `FUN_140acb6c0` on the boundary, `FUN_140aaf640`
@@ -286,3 +378,36 @@ Helpers still unread for the port: `14194c5b0` (580 B), `1419590a0` (397 B), `14
 `1419714c0` (863 B) is a Newton-style solver with up to 20 iterations and an exp-polynomial
 approximation; its polynomial constants `DAT_14769ab64/ab68` and `DAT_144e79a48` are read here.
 No Rust port and no native vector exist, so the row stays **missing**.
+
+## Pass 4: dirty-flag hypothesis rejected, probe knob bug fixed (blocked, 2026-10-23)
+
+Corrects pass 3. Evidence: `tools/re/chainsaw_hm2_kemu.py` (fixed), `docs/re/disasm/chainsaw-hm2-215-scan.txt`.
+
+1. **The knob value is a float in xmm2, not an int in r8.** `1409a9ec0` does `movss [rcx+r9*4+0x150], xmm2`
+   (disasm at `0x1409a9eca`). Pass 3 passed the bit pattern as an integer, so the knobs held garbage
+   (`0x31932fad`) and the gain read was meaningless. The probe now passes `f={2: v}`.
+2. **The per-block gain does not need `+0x215`.** With correct knobs, the apply's else branch
+   (`+0x148 != 0`, the prepared path) writes `+0x34[i] = +0x180[i] = value` directly, so `+0x40`
+   (= `+0x34 + 3*4`) is 0.5 before the block. The dirty path (`+0x215 != 0`) in `141971820` only
+   refreshes `+0x180` from the LFO state; it is not the only route to the gain.
+3. **No code raises `+0x215`.** The `.text` scan (disp32 0x210..0x215, capstone-decoded) finds no store
+   in the HM2 class range that sets that byte. The only uses are clears (`141972140` at
+   `0141970000.c:1162`, `1409x` at `0140990000.c:10227`) and the read `cmp byte [rdi+0x215],0` in
+   `141971820`. The dirty path is therefore not reachable from any prepared object by writes we can find.
+   Full hit list: `docs/re/disasm/chainsaw-hm2-215-scan.txt`.
+4. **Real blocker: the solver chain is zero.** After the fixed knobs the block still outputs exactly 0.
+   The chain is `141971150` (835 B, state-space step with a 10x10 solve `141950580`), which feeds
+   `1419590a0` (397 B, reads a 4x12 coefficient block at `+0x520..+0x5a0`), then `14194c5b0` and the
+   shaper `1419714c0`. Measured after the prepare order plus a redesign (`1419709e0` again):
+   `+0x520..+0x57c` = 0 (`1419590a0` output is therefore the bias `param[0x30]` = 0), while `+0x750`
+   (the `141971150` matrix) is non-zero (7.23, 1.75). The writers of `+0x584` and up are the
+   template constructors `141974510`, `141975080`, `141976810` (used for the `+0x800`/`+0x8e0` shaper
+   objects, `0141970000.c:5834..5838`); no writer of `+0x520..+0x57c` exists in the HM2 functions.
+   So that block is either built by a template copy we have not found, or it is a sub-object whose
+   constructor the wrapper does not run. Next: find which function owns `+0x4c0` (the `1419714c0` object)
+   and whether its ctor is reached from `14196fd00` or from `14196fab0` (the base ctor, `0141960000.c:12982`).
+5. Helpers still unread: `14194c5b0`, `141950580`, `1419723e0` (read partially, it consumes the
+   `+0x520` block), `141936990`, `141ee86c0`, `1409abdd0` (the deferred apply, reads `+0x148`/`+0x1b0`
+   /`+0x1f8` via `param[9]`, `param[6]`, `param[12]`; it is not a `+0x215` writer).
+
+Status: **still missing**. No Rust port, no kemu vector, no PARITY_MATRIX row change.

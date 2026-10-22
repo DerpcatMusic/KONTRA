@@ -12,6 +12,7 @@ mod amp;
 mod distortion;
 mod drive;
 mod tubescreamer;
+mod stereorizer;
 mod dirt;
 mod freak;
 mod hilbert;
@@ -85,6 +86,8 @@ pub enum CurveSettings {
     /// A UVI drive engine.
     Drive(sampler_ir::fx::color::Drive),
     Tubescreamer(sampler_ir::fx::color::Tubescreamer),
+    /// Kontakt `Stereorizer<Tubescreamer>`: one core per channel.
+    Stereorizer(sampler_ir::fx::color::Tubescreamer),
     Dirt(sampler_ir::fx::color::Dirt),
     /// Kontakt Freak: the saved knobs, and per core index a live parameter where a script
     /// or modulation drives it.
@@ -197,7 +200,7 @@ impl Settings {
                 CurveSettings::Bite(d, live) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)) && live.iter().flatten().all(live_knob),
                 CurveSettings::Dirt(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Freak(d, live) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)) && live.iter().flatten().all(live_knob),
-                CurveSettings::Tubescreamer(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
+                CurveSettings::Tubescreamer(d) | CurveSettings::Stereorizer(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Drive(d) => [d.input_gain, d.overdrive, d.trash, d.mix, d.output_gain].iter().all(|v| v.is_finite()),
             }
             && self.damping.as_ref().is_none_or(live_knob)
@@ -222,7 +225,7 @@ impl Settings {
             && self.tone.is_none()
             && self.stereo.is_none()
             && self.widener.is_none()
-            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Tubescreamer(_) | CurveSettings::Dirt(_) | CurveSettings::Freak(..) | CurveSettings::Bite(..) | CurveSettings::Tape(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_) | CurveSettings::Amp(_) | CurveSettings::Fuzz { .. })
+            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Tubescreamer(_) | CurveSettings::Stereorizer(_) | CurveSettings::Dirt(_) | CurveSettings::Freak(..) | CurveSettings::Bite(..) | CurveSettings::Tape(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_) | CurveSettings::Amp(_) | CurveSettings::Fuzz { .. })
     }
 
     /// Frames of ring storage the pseudo-stereo delay needs.
@@ -263,6 +266,7 @@ impl Settings {
             }
             CurveSettings::Drive(d) => Curve::Drive(drive::Engine::new(d, rate)),
             CurveSettings::Tubescreamer(d) => Curve::Tubescreamer(tubescreamer::Engine::new(d, rate)),
+            CurveSettings::Stereorizer(d) => Curve::Stereorizer(stereorizer::Stereorizer::new(tubescreamer::Engine::new(d, rate))),
             CurveSettings::Dirt(d) => Curve::Dirt(dirt::Engine::new(d, rate)),
             CurveSettings::Freak(d, live) => {
                 let live = live.map(|p| p.map(|p| p.compile(bindings)));
@@ -347,6 +351,7 @@ enum Curve {
     LiveSkreamer([PreparedParameter; 5]),
     Drive(drive::Engine),
     Tubescreamer(tubescreamer::Engine),
+    Stereorizer(stereorizer::Stereorizer<tubescreamer::Engine>),
     Dirt(dirt::Engine),
     Freak(freak::Engine),
     /// Freak with script-driven knobs: written at each block start, before the process.
@@ -395,6 +400,8 @@ enum Shaper {
     Skreamer(skreamer::State),
     Drive(drive::State),
     Tubescreamer(tubescreamer::State),
+    /// One history per channel of a `Stereorizer`.
+    Stereorizer([tubescreamer::State; 2]),
     Dirt(dirt::State),
     Freak(freak::State),
     Bite(bite::State),
@@ -415,6 +422,7 @@ impl Shaper {
             Self::Skreamer(s) => s.finite(),
             Self::Drive(s) => s.finite(),
             Self::Tubescreamer(s) => s.finite(),
+            Self::Stereorizer(s) => s.iter().all(tubescreamer::State::finite),
             Self::Dirt(s) => s.finite(),
             Self::Freak(s) => s.finite(),
             Self::Bite(s) => s.finite(),
@@ -548,6 +556,8 @@ impl Color {
             "rectifier"
         } else if matches!(self.curve, Curve::Skreamer(_) | Curve::LiveSkreamer(_)) {
             "kontakt_skreamer"
+        } else if matches!(self.curve, Curve::Stereorizer(_)) {
+            "kontakt_stereorizer"
         } else if matches!(self.curve, Curve::Fuzz { .. }) {
             "kontakt_fuzz"
         } else if self.decimator.is_some() {
@@ -653,6 +663,7 @@ impl Color {
             ),
             Curve::Drive(d) => d.process(slot!(state, Drive), block, len),
             Curve::Tubescreamer(d) => d.process(slot!(state, Tubescreamer), block, len),
+            Curve::Stereorizer(d) => d.process(slot!(state, Stereorizer), block, len),
             Curve::Dirt(d) => d.process(slot!(state, Dirt), block, len),
             Curve::Freak(d) => d.process(slot!(state, Freak), block, len),
             Curve::LiveFreak(d, knobs) => {
