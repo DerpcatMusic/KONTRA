@@ -1105,6 +1105,9 @@ impl Instrument {
             if let Some(stretch) = group.time_stretch {
                 check.within(f64::from(stretch.speed), 0.0..=64.0, "time stretch speed")?;
             }
+            if let Some(crate::Machine::S1200 { filter_mode: Some(mode) }) = group.machine {
+                check.within(f64::from(mode), 0.0..=f64::from(crate::S1200_FILTER_MODE_MAX), "S1200 filter mode")?;
+            }
             if let Some(limit) = group.source_voice_limit {
                 check.exists(Reference::VoiceLimit(limit))?;
             }
@@ -1663,6 +1666,15 @@ mod tests {
             config.cutoff = 0.5;
             config.resonance = 8.5;
             assert!(check(config).is_err());
+        }
+    }
+
+    #[test]
+    fn s1200_filter_mode_is_bounded_by_the_stored_selector() {
+        for (filter_mode, valid) in [(None, true), (Some(0), true), (Some(5), true), (Some(6), false)] {
+            let mut ir = one_zone();
+            ir.groups.push(Group { machine: Some(Machine::S1200 { filter_mode }), ..Default::default() });
+            assert_eq!(ir.validate().is_ok(), valid, "{filter_mode:?}");
         }
     }
 
