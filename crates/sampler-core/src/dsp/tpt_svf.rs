@@ -49,6 +49,12 @@ impl Section {
         Self { c2, c3, c4: g * c3, r }
     }
 
+    /// A section from the three coefficients a native object stores (`140d947a0` reads only these; `r` is
+    /// not part of the object, so it is 0 here).
+    pub fn from_coefficients(c2: f32, c3: f32, c4: f32) -> Self {
+        Self { c2, c3, c4, r: 0. }
+    }
+
     /// Lowpass-type section at `hz` (Kontakt: g = prewarp x Q, R = 5/3).
     pub fn lowpass(hz: f32, fs: f32) -> Self {
         Self::new(prewarp(hz, fs) * LOWPASS_Q, LOWPASS_R)
