@@ -115,14 +115,33 @@ Closed: Limiter output clamp (lower −1, upper 1.0: the gain formula uses K = 1
 - Medium: saved-field orders and the Transient clip-flag mapping (inferred from the reader layout).
 - Not verified: side-chain behaviour (not implemented), flags 4–7, gain-copy flags.
 
-## Open blocker, Transient variant dispatch (2026-10-22)
+## Transient variant dispatch: mapped (2026-10-22)
 
 The 6-bit mask is rebuilt in `FUN_141aaac90` (`0141aa0000.c:6084`, export) as
 bit0 = `+0x261`, bit1 = ctrl 7 (`+0x6b`), bit2 = ctrl 4 (`+0x69`), bit3 = ctrl 5
-(`+0x6a`), bit4 = ctrl 6 (`+0x6c`), bit5 = ctrl 3 (`+0x68`). The mask then
-indexes an indirect jump table at `LAB_141aaaffc`. Ghidra did not recover that
-table in text (`Could not recover jumptable`), so the mask-to-function map for
-the other 62 variants is unknown from the export. Reading the table bytes needs
-a binary read, which was not done in this pass. Controls 4–7 and bit0 therefore
-stay unmapped. Variant 0 (`0x141a4a9d0`) and the clip variant (`0x141a59d40`)
-are the only entries tied to a known function.
+(`+0x6a`), bit4 = ctrl 6 (`+0x6c`), bit5 = ctrl 3 (`+0x68`). The mask indexes
+a 64-entry table of 4-byte entries at `0x141aaaffc` (file offset `0x1aaa3fc`).
+Ghidra did not recover that table in text. A one-shot read-only PE byte read
+(pefile) of the table, then a capstone decode of the 64 twelve-byte thunks it
+points to, recovers the map. Each thunk is `mov rdx,rbx; mov rcx,r11; pop rbx;
+jmp <process>`, so the variant is selected by the table and the process
+function body is distinct per mask.
+
+Full map: `docs/re/engine/vectors/transient-variant-map.tsv` (64 rows: mask,
+flag bits, thunk VA, process VA, export size). All 64 process functions are in
+the export (1,885–2,282 bytes each). Confirmed points: mask 0 → `0x141a4a9d0`
+(variant 0), mask 32 (ctrl 3 only) → `0x141a59d40` (clip).
+
+Statement-level comparison (normalised identifiers, multiset difference against
+mask 0). This is not a semantic recovery and needs review before porting:
+- mask 1 (+0x261), mask 4 (ctrl 4) and mask 16 (ctrl 6) each add the same
+  eight-float block `+0x200..+0x21c += +0x220..+0x23c`.
+- mask 2 (ctrl 7) adds a thresholded branch (two constants against `V`,
+  `DAT_1479ab1ac`/`DAT_1479ab1b8`) and reads `+0x194`, `+0x198`, `+0x1cc`,
+  `+0x1ec`.
+- mask 8 (ctrl 5) adds terms with `DAT_1447148ec`, `DAT_144fc44fc` and
+  `DAT_144fc4b50`.
+
+Controls 4–7 and bit0 are therefore mapped to their process functions but not
+yet to a behaviour. The mapping still needs the same statement-level review for
+the remaining 62 variants before any flag is implemented.
