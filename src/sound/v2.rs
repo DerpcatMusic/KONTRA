@@ -3630,6 +3630,9 @@ fn budgeted_limits(plan: &Prepared, stream_voices: Option<usize>) -> (Limits, us
         channels: 3 * 16,
         families: notes,
         decisions: notes,
+        // Future starts and releases share this queue. Left at the generic 256,
+        // ringing notes with scheduled releases refuse starts while voices are free.
+        commands: notes,
         ..Limits::for_plan(plan, notes, voices)
     };
     // Script release reserves share the same ceiling as ordinary voices.
