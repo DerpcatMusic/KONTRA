@@ -978,6 +978,21 @@ end on
     }
 
     #[test]
+    fn reset_and_breath_keys_are_hints_not_switch_sets() {
+        // Afflatus brass: a control key resets round robin, and a key that
+        // selects breath groups also plays a note, so neither is a silent switch.
+        let source = "on init\n declare %KS_keys[2] := (60, 62)\n declare $KS_Base := 0\n\
+            set_key_type(%KS_keys[$KS_Base], $NI_KEY_TYPE_CONTROL)\nend on\n\
+            on note\n if ($EVENT_NOTE = %KS_keys[$KS_Base])\n call reset\n exit\n end if\n\
+            if ($EVENT_NOTE = 64)\n disallow_group($ALL_GROUPS)\n allow_group(3)\n\
+            $id := play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, -1)\n exit\n end if\nend on";
+        assert!(matches!(
+            detect(source, &[]),
+            Detection::Unrecognized(why) if why.contains("no recognized switch")
+        ));
+    }
+
+    #[test]
     fn start_on_key_groups_become_native_articulations() {
         let criteria = |mode, low, high| StartCriteriaParams {
             mode,
