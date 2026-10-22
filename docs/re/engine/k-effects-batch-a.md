@@ -526,3 +526,42 @@ Still open (the record stays NotModeled, so the pass-through diagnostic in `effe
 - Shared mix `140ac21f0` (slot 23 post-process).
 - Output layouts and stereo downmix: the speaker matrix is not extracted, so no stereo fold is claimed.
 - Kemu wrapper vectors for the driver (ctor, prepare, apply, per-block) are not recorded yet.
+
+## Pass 7: Surround Panner block vectors (black-box, stereo fixed positions verified, 2026-10-23)
+
+Evidence: `tools/re/surround_panner_driver_kemu.py` (kemu on `Kontakt8.exe`), fixture
+`crates/sampler-core/src/dsp/surround_panner_driver_native_vectors.json` (case `stereo_fixed`), test
+`native_driver_tests::stereo_fixed_positions_match_native_mix` (passes at 1e-5). Probe scripts were scratch only.
+
+Replayed sequence (no flag poked): factory body without the pool (LFE `1407f0a50`, base `140a856c0`, vtable
+stores, `140702fe0` + BHeapMem vslot `0x38`, the 1.0 defaults), `140a9cb40` tables, slot 12 `140abd610` (counts),
+slot 6 `140ac17a0` (inputs), slot 7 `140ab9a30` (outputs), `+0x120` block, parameters (speakers `+0x1c0`,
+sources `+0x284`, scale `+0x348`, exponent `+0x34c`, mode `+0x394`, output gain `+0x1a4/+0x1a8`), slot 5
+`14094cde0` reset, then slot 23 `140905fa0` per block.
+
+Measured:
+- **Fixed positions: exact linear mix.** Output `k` = sum over sources `s` of `g(s,k) * in_s[n]`, residual
+  3e-8 (float noise), with `g` = `140a94580` mode 0 (`0.4195/0.6770`, `0.5805/0.3230` for the test layout).
+  Constant over all blocks; no delay is visible for a fixed source.
+- **Shared mix `140ac21f0`** is the per-output accumulator: it reads the per-output scratch at
+  `buf + 0x9c010 + 0x1000 k`, multiplies by `+0x1a4` and adds into the output pointer from slot 7 (so the
+  host clears outputs per block). The `FUN_14097cc50` ramp test gates a fader path that does not run at gain 1.0.
+- **Moving source and scale changes are not a 32-sample step.** A DC input (1.0) with a scale step 1.0 -> 1.7 at
+  sample 128 is flat before 128, then rises with a slope of 1.68e-5/sample decaying to 0.8e-5 by sample 2500 and
+  has not settled after 2560 samples (`dc_step` case in the harness). The slope change is smooth, with no break at
+  block (64) or 32-sample boundaries. So the panned path smooths the gain toward its target over a long, nonlinear
+  curve. Not yet identified: the time constant, whether the smoothing is in the gain, the scale, or a delay line.
+
+Unknown (so the panned path stays unported and the Kontakt lowering stays NotModeled):
+1. The smoothing law: which function holds the target and state (`140ab4eb0` cache `+0x39c`, state `+0x1bc`,
+   countdown `+0xc88`), and its constant. Next probe: scale step with N = 32 and a 1-sample DC impulse, and
+   read `140ab4eb0` in full (3813 B) for the state update.
+2. The distance delay (`(N-0x20)*d*scale` samples, `+0x2638`/`+0x2640`). A fixed source shows no delay, so the
+   delay's read/write has not been exercised yet. An impulse probe at a distance change will show it.
+3. The LFE sub-object (`+0x7a0`, a BFilter4PoleLP) law, and the stereo speaker matrix (the stereo test assigns
+   speaker k to output k; that mapping is assumed, not extracted).
+4. Multi-channel layouts: the harness uses two speakers only.
+
+Known facts from this pass that the port must keep: the source count and output count are the same field pair
+(`+0x124`, `+0x128`, both set by slot 12), so a mono scenario needs a silent second source; the sin/asin tables
+must be initialised first (`140a9cb40`), otherwise the source position is wrong and every gain is zero.

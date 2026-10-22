@@ -442,3 +442,72 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod native_driver_tests {
+    //! Block driver against Kontakt 8 kemu output (`tools/re/surround_panner_driver_kemu.py`, case
+    //! `stereo_fixed`). With fixed positions the native output is the linear sum of the speaker gains
+    //! from the gain law (`0x140a94580`) for every block; the fade and distance-delay paths only appear
+    //! when a position or scale changes, and are not covered here.
+    use super::*;
+
+    #[derive(serde::Deserialize)]
+    struct Block {
+        input: Vec<Vec<f32>>,
+        out: Vec<Vec<f32>>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        n: usize,
+        speakers: Vec<[f32; 2]>,
+        sources: Vec<[f32; 2]>,
+        blocks: Vec<Block>,
+    }
+
+    #[test]
+    fn stereo_fixed_positions_match_native_mix() {
+        let v: Fixture =
+            serde_json::from_str(include_str!("surround_panner_driver_native_vectors.json"))
+                .unwrap();
+        let speakers = v
+            .speakers
+            .iter()
+            .map(|&[x, y]| Speaker {
+                pos: Point { x, y },
+                disabled: false,
+            })
+            .collect();
+        let sources = v.sources.iter().map(|&[x, y]| Point { x, y }).collect();
+        let panner = Panner::new(speakers, sources, GainMode::Power);
+        let gains: Vec<Vec<f32>> = (0..v.sources.len())
+            .map(|s| (0..v.speakers.len()).map(|k| panner.gain(s, k)).collect())
+            .collect();
+
+        for (b, block) in v.blocks.iter().enumerate() {
+            let inputs: Vec<&[f32]> = block.input.iter().map(|x| x.as_slice()).collect();
+            let mut outs = vec![vec![0.0f32; v.n]; v.speakers.len()];
+            let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|o| o.as_mut_slice()).collect();
+            let routes = vec![Route::Panned; v.speakers.len()];
+            drive_block(
+                &inputs,
+                &routes,
+                &mut out_refs,
+                |s, k, overwrite, input, out| {
+                    let g = gains[s][k];
+                    for (o, i) in out.iter_mut().zip(input) {
+                        *o = if overwrite { i * g } else { *o + i * g };
+                    }
+                },
+            );
+            for (k, got) in outs.iter().enumerate() {
+                let want = &block.out[k];
+                let worst = got
+                    .iter()
+                    .zip(want)
+                    .fold(0f32, |m, (g, w)| m.max((g - w).abs()));
+                assert!(worst <= 1e-5, "block {b} output {k}: worst {worst}");
+            }
+        }
+    }
+}
