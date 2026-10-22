@@ -401,6 +401,8 @@ measured against Kontakt. No native vector.
 ### Still open
 
 2. **Output term `OUT = F1 x Ctl(0x60) + F2`** (`141aa9480` step 13). Not wired.
+   - SUPERSEDED by "Heads and feedback pass" below: the default is 1.0 (slot-1 init `141a9e300`), and the
+     bypass fade `141acc600` writes `P3 + 0x60`. The paragraph below (default 0, no writer) is wrong.
    - `Ctl(0x60)` = block `P0 + 0x60`. Default **0**: the block allocator `141a7d480` zeroes every 0x70-byte
      block, and nothing writes the offset. GAP-J stays open. The setter switch `141ac5980` has no store at
      that offset (checked: its only `+0x60` references are virtual calls on sub-objects). The bypass fade
@@ -456,3 +458,136 @@ measured against Kontakt. No native vector.
 - `effects::timemod::replika_saturation_maps_into_the_line_input` (sampler-kontakt): maps 0.5, rejects 1.5.
 - `replika_time_law_is_documented_and_the_rest_is_reported`: note count 28 -> 27 (saturation is mapped).
 - Existing `loop_cut_acts_only_through_the_feedback_matrix` (zero matrix bit-identical): passes.
+
+---
+
+## Heads and feedback pass
+
+Scope: GAP-C (head addressing and read), GAP-J (writer of Ctl(0x60)), the output term, and the feedback law
+(`141aa9480` step 12, head gain `141abba60`). Method: decompile text (`0141aa0000.c`, `0141ab0000.c`,
+`0141ac0000.c`, `0141a90000.c`) only; no binary, Ghidra, radare2, REA, Wine or Kontakt. Nothing measured
+against Kontakt. No native vector. Ported code is unwired (`crates/sampler-core/src/dsp/replika_head.rs`).
+
+### Summary
+
+| Item | Status | Address |
+|---|---|---|
+| GAP-C mode-0 write slot | Closed (ported, unwired) | `141acd110`, `0141ac0000.c:8436-8470` |
+| GAP-C mode-0 tap position (wrap, clamp) | Closed (ported, unwired); sample blend open | `141ab7e00`, `0141ab0000.c:4522-4560` |
+| GAP-C mode-0 left offset `min(0, s k T + b) + base` | Closed (ported, unwired) | `141ab82e0`, `0141ab0000.c:4640-4700` |
+| GAP-C sample blend of the tap read | Open | `141ab7e00` return value is not in the text |
+| GAP-C mode-1 kernels (playing reader) | Open | `141ab8a00` (4875), `141ab7fe0` (4562): void in text; `141ab87d0` (4810) needs `14199dcc0` (unread) |
+| GAP-C mode-1 mask and length | Open | `141ab4e30` active branch (2551-2767) writes `H+0x1c0` from a table at `H+0x1003a8`; no Len_L/Len_R write there |
+| GAP-C head time field `H+0xa0..0xac` | Open | writer not traced |
+| GAP-J writer of Ctl(0x60) | Closed (writers found; default 1.0) | slot-1 init `141a9e300` (`0141a90000.c:9830-9834`); bypass fade `141acc600` (`0141ac0000.c:8022`) |
+| Output term `OUT = F1 Ctl(0x60) + F2` | Open (formula ported, not wired) | `141aa9480` step 13; needs heads 2-3 |
+| Feedback scalar | Open | `141aa9480` step 12; head 3 gain `141ac5980` case 0xc, `141abba60` |
+| FEEDBACK index binding | Open | name binding (above) |
+
+### GAP-C: head addressing and read (partly closed)
+
+Closed (CONFIRMED by decompile arithmetic):
+- Write slot (`141acd110`, mode 0). Slot = `a` for `0 <= a < len`, `a - len` for `a >= len`, `a + len` for
+  `a < 0`. Port: `replika_head::write_slot`.
+- Tap position (`141ab7e00`). `x = a + p`; subtract `len` once if `x >= len`; add `len` if `x < 0`; clamp to
+  `[0, len - 1]`. The function returns a value in the decompiled caller (`141ab82e0` stores it as the tap), but
+  the decompile text of `141ab7e00` ends in a bare `return`. Port: `replika_head::tap_position`.
+- Mode-0 left offset (`141ab82e0`, `fVar10` path). `min(0, s k T + b) + base`, with `s` = f64 `H+0x98`
+  (cast to f32), `k` = f32 `H+0xb0`, `T` = f32 `C+0x968`, `b` = `H+0xb4`, `base` = f64 `H+0xd8`. The right
+  channel uses `g U + (1 - g) T` (`U` = f64 `C+0x970`, `g` = `H+0x57e8`). Port: `replika_head::mode0_offset`.
+- Bias `b` (`H+0xb4`): INFERRED `-trunc(a k + 2.0)` (`a` = f32 `H+0xa0`, 2.0 = f32 `144714994`). The text
+  shows `(uint)(...) ^ DAT_144714ba0`; the int-to-float step is not in the text, so the sign-XOR reading is
+  the inferred one. Port: `replika_head::head_bias`.
+
+Open:
+- Sample blend of the tap read. The blend is the value `141ab7e00` returns. Its text lost the return; the
+  mode-0 read has no sample value in this port.
+- Mode-1 reader `141ab8c60` (`0141ab0000.c:4937-5100`). It is the playing reader (`H+0xc0 = 1`, set by
+  `141ab4e30`). Its selection reads `H+0x270` (L) and `H+0x340` (R): 0 = `141ab8a00`, 1 = `141ab87d0`,
+  2 = `141ab7fe0`, other = 0. `141ab8a00` (530 B, 4875) and `141ab7fe0` (754 B, 4562) have a `void`
+  signature in the text but their callers use the return value; the return is not recoverable. `141ab87d0`
+  (549 B, 4810) returns the linear blend of `buf[i]` and `buf[i+1]` after a catch-up pass of a two-state
+  section (the `c2 = A`, `c3 = k`, `c4 = B` form of the saturator section, CONFIRMED by arithmetic); it calls
+  `14199dcc0`, which is not read. The selector's writer is not traced.
+- Active branch of `141ab4e30` (`0141ab0000.c:2551-2767`). The n_ring write (`H+0x158`, `H+0x220`) and the
+  `n_ring < 1` zeroing of `H+0x15c` are confirmed. In the active branch the function writes `H+0x1c0`
+  (the mode-1 wrap mask) from a 32-entry int table at `H+0x1003a8`, indexed by `H+0x1a8` (clamped to 0..31),
+  and a pending-update list at `H+0x40046c`. These offsets are far outside the head layout (heads are about
+  `0x58c0` apart), so the object they belong to is unresolved. The function does not write `H+0x15c` or
+  `H+0x194` on the active branch. The one candidate found, `141ac8a40` (`0141ac0000.c:5164`), writes `+0x15c`
+  on the object at its `+0x38`, which is not identified as a head. Open.
+- Head time field `H+0xa0..0xac`: writer not traced.
+
+### GAP-J: writer of Ctl(0x60) (closed; the earlier default-0 note is wrong)
+
+Two writers, both on the block pointers of the core (`C+0x80` P0, `C+0x98` P1, `C+0xb0` P2, `C+0xc8` P3,
+`C+0xe0` P4), offset `+0x60`:
+- Slot-1 init `141a9e300` (`0141a90000.c:9606-9834`). After `141a998a0` zeroes the triple (line 9624), it
+  writes P1 = 0 (`0141a90000.c:9830`), then P2, P3, P0 and P4 = `0x3f800000` = 1.0 (lines 9831-9834).
+  Confirmed by the offsets: `param_1[0x10]` = `C+0x80`, `[0x13]` = `C+0x98`, `[0x16]` = `C+0xb0`,
+  `[0x19]` = `C+0xc8`, `[0x1c]` = `C+0xe0`.
+- Bypass fade `141acc600` (`0141ac0000.c:7942-8025`). Line 8022-8023: `*(float*)(*(longlong*)(C+0xc8) + 0x60) =
+  fVar4`, where `fVar4 = 1.0` if any sub-effect enable is set (`C+0x14381`, `+0x14382`, `+0x14383`, `+0x14384`,
+  `+0x914`, `+0x915` are not all zero) and 0.0 otherwise. It then sets the pending flags `C+0x114 = 1` and
+  `C+0x110 = 1`, so the change is glided (GAP-A), not stepped. Its callers are the enable cases of the setter
+  (indices 6, 7, 10, 11, 12, 15; e.g. `0141ac0000.c:3444`, `3453`, `3524-3608`).
+- Setter `141ac5980` has no store at `+0x60` of any block (the index table in `k-replika-core.md` has no
+  `+0x60` entry). The copies in the epilogue (`141abbac0`) and the commit (`141a956d0`) move the value without
+  changing it.
+
+Effect: Ctl(0x60) is 1.0 at init and whenever an enable is set. At reset, index 15 has its default 0.3
+(`144f38764`), so the enable `C+0x14384` is set and Ctl(0x60) = 1.0. The enables are indices 6, 7, 10, 11,
+12, 15, and their saved-field binding is open (name binding). The port therefore keeps Ctl(0x60) at its
+slot-1 default 1.0 (`replika_head::OUT_GAIN_DEFAULT`), and does not switch it.
+
+### Output term `OUT = F1 Ctl(0x60) + F2` (open; formula ported)
+
+- `replika_head::output_term(f1, f2, ctl60) = f1 ctl60 + f2`. At the default it is `F1 + F2` (bit for bit, test
+  `output_term_at_default_is_f1_plus_f2`). This is NOT bit-identical to the current unwired output, which has
+  no F1 or F2 term; F1 is included at its default gain of 1.0. Only Ctl(0x60) = 0 gives F2 alone.
+- Not wired: F1 is the cut on the head sum (`Mo = (L3 + L1) m`, step 12), and F2 is the same cut on the head 2
+  read of F1's output. Head 2 needs the mode-1 reader (GAP-C open), so F2 has no faithful position. The
+  current loop's cut sits on the recirculated signal, which is zero while the feedback matrix is zero.
+
+### Feedback law (open)
+
+- Structure (`141aa9480` step 12, CONFIRMED): F2's output is written to head 3 and read at the start of the
+  next frame. No separate feedback coefficient appears in step 12.
+- Head 3's gain is set by setter index 12 (`141ac5980` case 0xc, `0141ac0000.c:3547-3584`): at v = 0.5 all three
+  head gains are 1.0. For v > 0.5, head 1 = 1, head 2 = `max(2(1 - v), f9)`, head 3 = 1 / head 2. For v < 0.5
+  the head 1 and head 3 gains use `max(2v, f9)` and head 2 = 1 / f9. The floor `f9` = f32 `14a6b4594 x 1479ab230
+  + 14a6b4590` is not a closed value: the two words 14a6b4590 and 14a6b4594 are unbacked in rdata
+  (`constants.tsv` `.data(bss-or-unbacked)`), set elsewhere and not traced; 1479ab230 is an rdata constant
+  (f32 0.650085, 8-byte read 1.7285e-4). So the law is not a closed scalar. The write goes
+  through `141abba60` (`0141ab0000.c:6522-6537`): target `H+0x584c`, step `(v - cur) / len` (`H+0x5850`,
+  `len` = `H+0x5858`), and output `H+0x74`, which `141ab7a90` multiplies into the read.
+- FEEDBACK index: not bound (name binding section above). Without it the saved FEEDBACK control cannot be
+  wired.
+- Result: feedback stays at zero (`UnknownLawOmitted`), and test (c) is not written.
+
+### LOWCUT and HIGHCUT
+
+- Still `UnknownLawOmitted`. The note now says the open reason: the binding (GAP-D), and that F1 and F2 need
+  heads 2-3 (GAP-C).
+- Audible on the output: NO. The port's cut is applied to the recirculated signal before the feedback
+  matrix, and the matrix is zero, so the cut never reaches the output. The decompile places F1 on the output
+  path and F2 after head 2; neither position exists in the port.
+
+### Mapping (sampler-kontakt `replika_config`)
+
+- No control moved to mapped. Notes updated: `feedback` (141aa9480 step 12, index 12 floor, FEEDBACK
+  binding), `lowcut` and `highcut` (binding, heads 2-3).
+- `replika_time_ms` clamp corrected to 4000 (`DAT_14756bdf8`, as `k-replika-core.md` says). Output is unchanged
+  for v in 0..=1 (the largest value is 2000 ms).
+
+### Tests
+
+- `dsp::replika_head::tests::mode0_head_offset_is_the_clipped_bias_law` (test a): `b = -trunc(10 x 1.5 + 2) = -17`;
+  offsets -17, -15.5 and 0 (positive excursion clipped).
+- `dsp::replika_head::tests::output_term_at_default_is_f1_plus_f2` (test b): at `Ctl(0x60) = 1.0` the term is
+  `F1 + F2` bit for bit; at 0.0 it is `F2`.
+- `dsp::replika_head::tests::write_slot_and_tap_position_wrap_the_ring`: wrap and clamp of the ring laws.
+- Test (c), the feedback echo scale, is not written (the feedback law is open).
+- Existing tests unchanged and passing: `loop_cut_acts_only_through_the_feedback_matrix`, the saturator-at-zero
+  path (`replika_zero_saturation_passes_the_delayed_input_exactly`), and the svf, timemod and sampler-kontakt
+  replika filters.
