@@ -196,3 +196,34 @@ hold for this instrument. No engine change.
 - So a bounded head (head-policy PR #294, aaf2210) does not make this voice cold. The silence and
   the note_off burst still need another explanation. Open: the attack envelope and its
   ATK_CURVE/ATTACK law under `note_off`, and what the decompile says about attack-stage release.
+
+## Dolce Staccato: attack-law probe, repro and hypothesis list (2026-10-22, eighth pass, stopped)
+
+Root cause not reached. This pass stops here by the last-round rule. Nothing is changed in the engine.
+
+### Repro
+
+- Instrument: `/data/main/Libraries/Kontakt/Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 07 7 1st Violins - Staccato.nki`, program `Pyramid (Tonal and Atonal)`.
+- KONTRA: `sampler-native render-kontakt NKI OUT "60:100:0:1,62:100:3:1,58:100:6:1,65:100:9:1"`.
+- Kontakt reference `scratch/oracle/dolce/dolce07.wav` (48 kHz float, stereo): exact 0.0 through 1.00 s, first nonzero about 1.02 s, peak 0.0199 at about 1.2 s, below 0.001 by 2.0 s.
+- KONTRA: the held note peaks about 0.0002; the note_off gives no burst. At note_off (frame 48128) the 72 family voices are all not held, resident, with envelope level 0.01376.
+
+### Established facts
+
+- SHORT is articulation 0. Its attack is `play_note($EVENT_NOTE, velcurve, 0, 0)` at script line 71673, then `change_tune` by `2*$neighbor_borrow` (line 71676). The velocity curve is identity (`switch_opts_velcurve=0`, lines 18130/37441), so velocity 100 stays 100.
+- The attack voice gets no `set_engine_par` and no `EVENT_PAR_MOD_VALUE_ID` write on the SHORT path (dyns-from-script is 0, lines 71664-71667). So no script volume reaches it at note_off.
+- SHORT release (lines 77455-77461) is `note_off` only, under `CC64 < 64`. The only release `play_note` is on the LONG branch (77297).
+- On note, the envelope is set with ATTACK `$temp` (line 65610) and ATK_CURVE 1000000 (lines 65656, 65674). Stored values are attack 416200, decay/sustain/release 1000000, curve 275000.
+- The curve law is `ahdsr_coefficients` (`crates/sampler-kontakt/src/library.rs:1223`). At c = 1 it gives a coefficient of about -9.9.
+- Engine release from script: `ReleaseCause::Script` ends held voices (`stop_held_onsets`) and runs `envelope.release()` on the others (`ownership.rs`, `blocks/envelope.rs:437`). A voice still in attack releases from its current level.
+
+### Hypotheses (ranked; each has a discriminator)
+
+1. **H1, Kontakt releases an attack-stage envelope from sustain.** This would give the burst the right size: sample peak times sustain, and it would also give the about 20 ms onset through the first-window path. Discriminator: release the same SHORT note at two hold lengths (0.2 s and 1 s). H1 predicts the burst peak does not grow with hold length. KONTRA's ramp-release predicts it does.
+2. **H2, Kontakt's attack law gives exact zero until the attack ends.** This would explain the exact-zero hold if the ATK_CURVE/ATTACK mapping differs from KONTRA's (KONTRA gives 0.0138 at 1 s). Discriminator: decompile the attack-level evaluator and check the value of 1000000 for the curve. Entry points: converters `FUN_1407b85a0` and `FUN_1407b85e0` (bucket `01407b0000.c`, lines 4404-4426), which have no direct callers by name. The evaluator is reached another way.
+3. **H3, Kontakt holds the played voice cold until note_off.** This was refuted for the preload head (see the seventh pass), but it is not excluded by Kontakt's stream request policy. Discriminator: the DFD request timing in the decompile. It is not yet found.
+4. **Refuted: velocity mapping, and a script volume at note_off.** Identity curve, and no dyn write on the SHORT path.
+
+### Next step if resumed
+
+Find the attack-stage evaluator in the decompile (search by the stored value constants, not by callers). Test H1 with a second Kontakt render at a different hold length. That is the first render allowed under this family's rules, and it needs the Kontakt-session check first.
