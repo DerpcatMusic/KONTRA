@@ -249,6 +249,7 @@ pub(crate) mod kaiser;
 pub(crate) mod ring_ramp;
 // Wired by the Kontakt mapping for module 0x22; until then only the tests build it.
 #[allow(dead_code)]
+pub(crate) mod gater;
 pub(crate) mod rotator;
 pub(crate) mod space;
 pub(crate) mod timemod;
