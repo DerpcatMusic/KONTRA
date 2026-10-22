@@ -52,3 +52,28 @@ fn group_start_conditions_match_what_kontakt_stored() {
         ]
     );
 }
+
+/// Native playback modes (tools/kontakt-oracle/dump.lua, `get_group_playback_mode`, Kontakt
+/// 8.13.1) for each group in order, paired with the stored source mode of that group.
+/// Stored 0 is Sampler and stored 3 is DFD (`library.rs` SOURCE_MODE_DFD; decompile menu
+/// `0140610000.c` lists DFD with UI id 4, runtime mode 4 at `+0xba8`).
+#[test]
+fn stored_source_modes_match_kontakt_playback_modes() {
+    use ni_file::kontakt::objects::{GroupList, Program};
+    let cases: [(&str, &[u32]); 2] = [
+        ("tests/fixtures/kontakt8131-volume-law.nki", &[3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        ("tests/fixtures/kontakt8131-start-options.nki", &[3, 0, 0, 0, 0, 0, 0]),
+    ];
+    for (file, stored) in cases {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+        let chunks = sampler_kontakt::read_chunks(&path).expect("chunks");
+        let program = Program::try_from(chunks.find_first(0x28).expect("program")).expect("program");
+        let groups = GroupList::try_from(program.0.find_first(0x33).expect("groups")).expect("groups");
+        let modes: Vec<u32> = groups
+            .groups
+            .iter()
+            .map(|g| g.source_params().expect("source").0.mode)
+            .collect();
+        assert_eq!(modes, stored, "{file}");
+    }
+}
