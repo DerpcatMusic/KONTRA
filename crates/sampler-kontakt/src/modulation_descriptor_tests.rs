@@ -69,6 +69,18 @@ fn descriptor_slots(
     }
     descriptor_object(id, 0x10, &[], &public, &[])
 }
+/// One external modulation record: `source` is the wire source (type code, then
+/// any payload), followed by a fixed unknown block and `suffix`.
+fn external_mod(source: Vec<u8>, suffix: &[u8]) -> ni_file::kontakt::Chunk {
+    let mut private = descriptor_targets();
+    descriptor_name(&mut private, "duplicate");
+    private.extend(1u32.to_le_bytes());
+    private.extend(source);
+    private.extend([0x7f, 2, 3, 4]);
+    private.extend(99u32.to_le_bytes());
+    private.extend(suffix);
+    descriptor_object(0x0c, 0x104, &private, &[], &[])
+}
 fn descriptor_group() -> Group {
     use ni_file::kontakt::objects::{EnvelopeFlex, FlexPoint};
     let lfo = Lfo {
@@ -115,16 +127,6 @@ fn descriptor_group() -> Group {
         private.extend(1u32.to_le_bytes());
         descriptor_object(0x0d, 0x81, &private, &[], &[source])
     };
-    let external = |source, suffix: &[u8]| {
-        let mut private = descriptor_targets();
-        descriptor_name(&mut private, "duplicate");
-        private.extend(1u32.to_le_bytes());
-        private.extend(source);
-        private.extend([0x7f, 2, 3, 4]);
-        private.extend(99u32.to_le_bytes());
-        private.extend(suffix);
-        descriptor_object(0x0c, 0x104, &private, &[], &[])
-    };
     Group(ni_file::kontakt::StructuredObject {
         version: 0x95,
         public_data: vec![],
@@ -142,10 +144,10 @@ fn descriptor_group() -> Group {
                 EXTERNAL_MODS,
                 32,
                 &[
-                    (3, external(11u32.to_le_bytes().to_vec(), &[8, 9])),
+                    (3, external_mod(11u32.to_le_bytes().to_vec(), &[8, 9])),
                     (
                         31,
-                        external([4u32.to_le_bytes().as_slice(), &[127]].concat(), &[10, 11]),
+                        external_mod([4u32.to_le_bytes().as_slice(), &[127]].concat(), &[10, 11]),
                     ),
                 ],
             ),
@@ -411,4 +413,62 @@ fn malformed_modulation_does_not_publish_original_wire() {
     assert!(error.to_string().contains("Unexpected internal modulator category 3"));
     assert!(out.ir.source_parameters.is_empty());
     assert!(out.ir.source_indices.modulators.is_empty());
+}
+
+/// A group whose only modulator is one external slot with wire `source`.
+fn external_only_group(source: Vec<u8>) -> Group {
+    Group(ni_file::kontakt::StructuredObject {
+        version: 0x95,
+        public_data: group_public(0),
+        private_data: vec![],
+        children: vec![
+            // An empty start-criteria list (chunk 0x38).
+            ni_file::kontakt::Chunk {
+                id: 0x38,
+                data: 0u32.to_le_bytes().to_vec(),
+            },
+            descriptor_slots(EXTERNAL_MODS, 32, &[(31, external_mod(source, &[10, 11]))]),
+        ],
+    })
+}
+
+/// BASIC_BEHAVIORS row 24: an external MIDI CC source reaches the engine as
+/// `Controller(cc)` with its own CC number.
+#[test]
+fn basic_behavior_midi_cc_source_maps_to_controller_with_its_number() {
+    for cc in [0u8, 74, 127] {
+        let mut out = translation();
+        let group = external_only_group([4u32.to_le_bytes().as_slice(), &[cc]].concat());
+        out.source_modulators(9, &group).unwrap();
+        out.group(9, &group).unwrap();
+        assert!(
+            out.ir
+                .modulators
+                .iter()
+                .any(|m| m.source == ir::ModulationSource::Controller(cc)),
+            "cc {cc}: {:?}",
+            out.ir.modulators
+        );
+    }
+}
+
+/// BASIC_BEHAVIORS row 25: mono aftertouch is channel pressure and poly
+/// aftertouch is polyphonic pressure.
+#[test]
+fn basic_behavior_aftertouch_sources_map_to_channel_and_poly_pressure() {
+    // Wire codes: 3 = mono aftertouch, 2 = poly aftertouch (no payload).
+    for (code, expected) in [
+        (3u32, ir::ModulationSource::ChannelPressure),
+        (2, ir::ModulationSource::PolyPressure),
+    ] {
+        let mut out = translation();
+        let group = external_only_group(code.to_le_bytes().to_vec());
+        out.source_modulators(9, &group).unwrap();
+        out.group(9, &group).unwrap();
+        assert!(
+            out.ir.modulators.iter().any(|m| m.source == expected),
+            "code {code}: {:?}",
+            out.ir.modulators
+        );
+    }
 }

@@ -3729,7 +3729,7 @@ mod zone_range_tests {
     use std::io::Cursor;
 
     /// A v0x9a sampled zone record in group 3 with file 0, gain 1 and tune 1.
-    fn sampled(velocities: [i16; 2], keys: [i16; 2], root: i16) -> Vec<u8> {
+    pub(super) fn sampled(velocities: [i16; 2], keys: [i16; 2], root: i16) -> Vec<u8> {
         let mut public = vec![0u8; 82];
         public[12..14].copy_from_slice(&velocities[0].to_le_bytes());
         public[14..16].copy_from_slice(&velocities[1].to_le_bytes());
@@ -4917,6 +4917,76 @@ mod modulation {
             #[cfg(feature = "scan")]
             target_outcomes: HashMap::new(),
         }
+    }
+
+    /// A group with no routes, envelope or insert chain: only what a zone inherits.
+    fn plain_group(reverse: bool) -> GroupInfo {
+        GroupInfo {
+            index: 0,
+            group: ir::GroupRef(0),
+            release: false,
+            tracking: true,
+            reverse,
+            envelope: None,
+            velocity: ir::VelocityResponse::None,
+            routes: Vec::new(),
+            chain: None,
+            bus: None,
+        }
+    }
+
+    /// BASIC_BEHAVIORS row 21: a zone tune ratio of 2.0 is +12 semitones.
+    #[test]
+    fn basic_behavior_zone_tune_ratio_two_is_plus_twelve_semitones() {
+        let mut out = translation();
+        // The sampled record from zone_range_tests (tune 1, public offset 38);
+        // the public block starts after the group id, header and two lengths.
+        let mut record = super::zone_range_tests::sampled([0, 127], [0, 127], 60);
+        record[4 + 3 + 4 + 4 + 38..][..4].copy_from_slice(&2f32.to_le_bytes());
+        let zone = super::raw_zone(&mut std::io::Cursor::new(record.as_slice())).unwrap();
+        let program = ni_file::kontakt::objects::ProgramPublicParams {
+            tune: 1.0,
+            ..Default::default()
+        };
+        out.zone(
+            0,
+            zone,
+            None,
+            &plain_group(false),
+            &program,
+            "tone.wav".into(),
+        );
+        let [made] = out.ir.zones.as_slice() else {
+            panic!("one zone")
+        };
+        let ir::Pitch::Semitones(semitones) = made.tune else {
+            panic!("semitone tune")
+        };
+        assert!((semitones - 12.).abs() < 1e-9, "{semitones}");
+    }
+
+    /// BASIC_BEHAVIORS row 20: a zone inherits reverse from its reversed group.
+    #[test]
+    fn basic_behavior_reversed_group_sets_reverse_on_its_zones() {
+        let mut out = translation();
+        let record = super::zone_range_tests::sampled([0, 127], [0, 127], 60);
+        let zone = super::raw_zone(&mut std::io::Cursor::new(record.as_slice())).unwrap();
+        let program = ni_file::kontakt::objects::ProgramPublicParams {
+            tune: 1.0,
+            ..Default::default()
+        };
+        out.zone(
+            0,
+            zone,
+            None,
+            &plain_group(true),
+            &program,
+            "ramp.wav".into(),
+        );
+        let [made] = out.ir.zones.as_slice() else {
+            panic!("one zone")
+        };
+        assert!(made.playback.reverse);
     }
 
     #[test]
