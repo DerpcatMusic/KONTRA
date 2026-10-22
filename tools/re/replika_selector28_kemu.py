@@ -1,14 +1,15 @@
 """Native vectors for the Kontakt 8 Replika index-28 selector `141aca670` (1200 B) under kemu, through the real setter.
 
 The core is built and prepared as in `replika_kemu_vectors.py`, then the state the selector reads and writes is
-randomised (ducker envelope, saturator section states, the tap rates and the LFO glide `+0x57e8` of each head; the
-same kind of seeded state the mode-writer vectors use). The snapshot is taken, index 28 is written through the
+randomised (ducker envelope, saturator section states, each tap's driver fields `K+0x00..0x54` and rates, and the
+LFO glide current `+0x57e8` of each head; the same kind of seeded state the mode-writer vectors use). The snapshot is taken, index 28 is written through the
 setter `141ac5980` (slot 12), and the snapshot is taken again. The mode-1 heads are inline in the core object
 (`C+0xac0`, `C+0x6380`, `C+0xbc40`), so one snapshot covers the core, the heads and their taps.
 
-The vector records every field the snapshot reads and the list of fields whose value changed. The port
-(`Heads::select` in `replika/head.rs`) covers the subset documented there; `changed` shows what the native
-selector writes beyond it (head reset `141aba100`, bypass fade `141acc600`, delay caller `141abd290`, ...).
+`init` and `end` hold the fields the port reads or writes; `changed` names the ones that differ. `changed_bytes` holds
+every byte run the setter changed in the core object (offsets from C) and in the control blocks P0..P5 (offsets from
+each block), which includes what the port leaves out (head reset `141aba100`, delay caller `141abd290`, rotator, ...;
+see `Heads::select`).
 
 Cases: index 28 = 0.1 (path 0, no change from the reset path 0), 0.3 (path 1), 0.5 (path 2), 0.9 (path 4). Path 3
 (index 0.7) is not recorded: the port returns Blocked for it, and the native call runs the unported `141acb100`.
@@ -41,6 +42,8 @@ CORE_FIELDS = {  # (offset, format)
     "env": (0x13E38, "d"),  # ducker envelope in dB (141aba800 zeroes it)
 }
 SAT_FIELDS = {"a_s0": (0x24, "f"), "a_s1": (0x28, "f"), "b_s0": (0x58, "f"), "b_s1": (0x5C, "f")}
+BLOCKS = {"P0": 0x80, "P1": 0x98, "P2": 0xB0, "P3": 0xC8, "P4": 0xE0, "P5": 0xF8}  # core pointers to 0x70 blocks
+BLOCK_BYTES = 0x70
 RATE_OFFS = (0x90, 0x98, 0xA0)
 SEED = 28
 
@@ -76,6 +79,9 @@ def inject(e, obj, rnd):
     for h in HEADS:
         e.write(obj + h + 0x57E8, "f", rnd.uniform(0.0, 1.0))  # glide current
         for off in TAPS.values():
+            for name, (o, fmt) in mw.TAP_FIELDS.items():
+                if o < 0x84:  # the driver and kernel fields that the tap reset zeroes (not the rates or history)
+                    e.write(obj + h + off + o, fmt, mw.RANDOM[fmt](rnd))
             for ro in RATE_OFFS:
                 e.write(obj + h + off + ro, "d", rnd.uniform(0.5, 2.0))
 
@@ -85,6 +91,40 @@ def changed(init, end):
     core = [k for k in init["core"] if init["core"][k] != end["core"][k]]
     heads = [[k for k in init["heads"][i] if init["heads"][i][k] != end["heads"][i][k]] for i in range(3)]
     return {"core": core, "heads": heads}
+
+
+def runs(a, b):
+    """[start, end) runs of the bytes that differ between two equal-length byte strings."""
+    out = []
+    for k in range(len(a)):
+        if a[k] != b[k]:
+            if out and out[-1][1] == k:
+                out[-1][1] = k + 1
+            else:
+                out.append([k, k + 1])
+    return out
+
+
+def memory(e, obj):
+    """The core object and the six control blocks it points to (P0..P5, 0x70 bytes each), as bytes."""
+    core = bytes(e.uc.mem_read(obj, rk.CORE_BYTES))
+    blocks = {}
+    for name, off in BLOCKS.items():
+        p = struct.unpack_from("<Q", core, off)[0]
+        blocks[name] = (p, bytes(e.uc.mem_read(p, BLOCK_BYTES))) if p else (0, b"")
+    return core, blocks
+
+
+def changed_bytes(before, after):
+    """Byte runs changed by the setter: the core object (offsets from C) and each control block (offsets from P)."""
+    (core0, blocks0), (core1, blocks1) = before, after
+    out = {"core": runs(core0, core1), "blocks": {}}
+    for name in BLOCKS:
+        if blocks0[name][1]:
+            r = runs(blocks0[name][1], blocks1[name][1])
+            if r:
+                out["blocks"][name] = r
+    return out
 
 
 def case(exe, name, v):
@@ -97,8 +137,10 @@ def case(exe, name, v):
     core.prepare(float(rk.RATE))
     inject(e, obj, random.Random(SEED))
     init = {"core": core_snapshot(e, obj), "heads": [head_snapshot(e, obj + h) for h in HEADS]}
+    mem0 = memory(e, obj)
     core.set(SETTER_INDEX, rk.f32(v))
     end = {"core": core_snapshot(e, obj), "heads": [head_snapshot(e, obj + h) for h in HEADS]}
+    bytes_changed = changed_bytes(mem0, memory(e, obj))
     assert end["core"]["raw28"] == rk.f32(v), end["core"]["raw28"]
     k = end["core"]["path604"]
     assert k == path_of(v), (k, path_of(v))
@@ -113,6 +155,7 @@ def case(exe, name, v):
         "init": init,
         "end": end,
         "changed": changed(init, end),
+        "changed_bytes": bytes_changed,
     }
 
 
