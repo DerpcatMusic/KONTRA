@@ -1039,6 +1039,16 @@ mod id_tests {
         assert_eq!(native("ENGINE_PAR_RAUM_TIME_UNIT"), Some(981));
         assert_eq!(super::engine_parameter_id("ENGINE_PAR_RAUM_TIME_UNIT"), None);
     }
+
+    /// Kontakt 8's builder maps script constants to internal ids; the native special cases key on
+    /// these (`0x294..0x296` are the reverb size/colour/stereo, `0x2de` the delay noise).
+    #[test]
+    fn reverb_special_cases_have_their_internal_ids() {
+        let internal = |constant| crate::ENGINE_PARAMETER_INTERNAL_IDS.iter().find(|(c, _)| *c == constant).map(|(_, i)| *i);
+        assert_eq!(internal(138), Some(0x294));
+        assert_eq!(internal(140), Some(0x296));
+        assert_eq!(internal(197), Some(0x2de));
+    }
     #[test]
     fn indexed_ids_match_the_first_listed_name() {
         for name in crate::ENGINE_PARAMETER_NAMES {

@@ -1235,6 +1235,13 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 _ => V::I(0),
             });
         }
+        // On-init bodies are evaluated here, not lowered, so the unsupported-name check lives too.
+        if matches!(builtin, SetEnginePar | GetEnginePar | GetEngineParDisp | GetEngineParDispExt | GetEngineParDispM)
+            && let Ok(id) = self.int(args, 0)
+            && symbol_name(self.hir, id).is_some_and(|n| crate::builtins::unsupported_engine_parameter(&n))
+        {
+            self.warn(span, format!("{}(): engine parameter is not supported; ignored", builtin.name()));
+        }
         let real = |x: f64| V::R(x);
         Ok(match builtin {
             Exit | Continue => V::I(0),
@@ -1945,6 +1952,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             }
             // Multi-script only: lowering rejects these at build time.
             GetEngineParM | SetEngineParM => V::I(0),
+            GetEngineParDispM => V::S(String::new()),
             GetEngineParDispExt => {
                 let parameter = symbol_name(self.hir, self.int(args, 0)?)
                     .and_then(|name| sampler_core::engine_parameter_id(&name));

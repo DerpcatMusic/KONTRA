@@ -215,6 +215,7 @@ builtins! {
     GetEngineParDispExt "get_engine_par_disp_ext" [I I I I I] 0 Str;
     SetEnginePar "set_engine_par" [I I I I I] 0 Int;
     GetEngineParM "get_engine_par_m" [I I I I] 0 Int;
+    GetEngineParDispM "get_engine_par_disp_m" [I I I I] 0 Str;
     SetEngineParM "set_engine_par_m" [I I I I I] 0 Int;
     GetVoiceLimit "get_voice_limit" [I] 0 Int;
     SetVoiceLimit "set_voice_limit" [I I] 0 Int;
@@ -734,6 +735,15 @@ pub fn scales() -> impl Iterator<Item = (i32, &'static [u8])> {
 
 /// `$NUM_OUTPUT_CHANNELS`: mono channels of the plugin's 16 stereo output buses (`sound::BUSES`).
 pub const NUM_OUTPUT_CHANNELS: i32 = 32;
+
+/// A catalog `ENGINE_PAR_*` constant this engine has no engine id for. Kontakt accepts it;
+/// reads and writes through it cannot be honoured, so they are diagnosed.
+pub fn unsupported_engine_parameter(name: &str) -> bool {
+    let name = name.trim_start_matches('$');
+    name.starts_with("ENGINE_PAR_")
+        && sampler_core::engine_parameter_id(name).is_none()
+        && is_vendor_constant(&format!("${name}"))
+}
 
 pub fn is_vendor_constant(name: &str) -> bool {
     static CATALOG: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
