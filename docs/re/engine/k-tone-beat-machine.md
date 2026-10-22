@@ -188,6 +188,23 @@ the oracle, and no slice-playback capture has been made.
 - The slice-to-voice playback path (fade, reverse) and the source player call
   from slot 18.
 
+## Native Tone vector (oracle, default parameters)
+
+Captured once with `tools/kontakt-oracle/render.py` (Kontakt 8 under Wine). The
+probe is in the same folder. Group playback mode `tone_machine` was accepted
+(readback `tone_machine`); all Tone controls at defaults; input a 220 Hz sine at
+0.5 amplitude; the note is triggered by the oracle's MIDI note.
+
+- File: `/data/dev/workspace/PluginArtifacts/kontra-oracle/tone-machine/tone_default.wav`
+  (float32, 2 channels, 48 kHz, 6.112 s; SHA-256
+  `6d942a83f13cbd36e5fc0986f0bbee0c2ab51d8b5c8a974e3996de72e615486c`).
+- Level: peak 0.192, RMS 0.0174 (the stimulus peak is 0.5, so the default path
+  lowers level; the cause is not characterised). First non-zero frame 50062 (1.043 s).
+
+This vector is the baseline for a Tone kernel port. No port exists yet, so no
+comparison has been run. The slot-23 kernel's SIMD branch and its object
+layout are still open.
+
 ## Gap table
 
 | Module | Shared engine covers | Missing |
