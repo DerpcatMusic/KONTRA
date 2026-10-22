@@ -53,13 +53,15 @@ fn internal(
     name(&mut private, if sibling { "sibling" } else { "main" });
     private.extend(1u32.to_le_bytes());
     let source = if envelope {
+        // Stored AHDSR fields are unit knobs: times go through the A/D laws and sustain is
+        // cubed. Store the knobs that give 20 ms release and sustain level .5.
         EnvelopeAhdsr {
             attack_curve: 0.,
             attack_ms: 0.,
             decay_ms: 0.,
             hold_ms: 0.,
-            release_ms: 20.,
-            sustain: 0.5,
+            release_ms: sampler_core::native_mod_laws::n2u_env_d(20.),
+            sustain: 0.5f32.cbrt(),
             unknown_flag: 0,
             unknown_tail: vec![0; 16],
         }
