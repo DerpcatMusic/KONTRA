@@ -21,6 +21,7 @@ pub use diagnostics::diagnostic_detail;
 #[cfg(feature = "scan")]
 mod coverage;
 mod effects;
+mod head_cache;
 mod header_cache;
 pub mod keyswitch;
 mod keyswitch_ui;

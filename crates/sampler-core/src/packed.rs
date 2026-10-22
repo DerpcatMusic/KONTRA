@@ -59,7 +59,7 @@ impl Packed {
         }
     }
 
-    pub(crate) fn frame(&self, index: usize) -> Frame {
+    pub fn frame(&self, index: usize) -> Frame {
         let mut out = [[0.0; 2]];
         self.copy(index, &mut out);
         out[0]
