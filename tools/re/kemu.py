@@ -183,4 +183,5 @@ MATH1D = {
     'exp': math.exp, 'log': math.log, 'log10': math.log10, 'sqrt': math.sqrt, 'sin': math.sin, 'cos': math.cos,
     'tan': math.tan, 'atan': math.atan, 'tanh': math.tanh, 'floor': math.floor, 'ceil': math.ceil,
     'trunc': math.trunc, 'exp2': lambda x: 2.0 ** x, 'log2': math.log2,
+    'round': lambda x: math.copysign(math.floor(abs(x) + 0.5), x),  # C round: half away from zero
 }
