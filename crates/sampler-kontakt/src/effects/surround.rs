@@ -44,7 +44,15 @@ fn speaker_list(r: &mut Reader) -> Option<Vec<Speaker>> {
     let n = usize::try_from(r.i32()?).ok()?;
     // Each entry is 9 bytes; a count the record cannot hold is rejected before allocating.
     (n <= r.0.len() / 9).then_some(())?;
-    (0..n).map(|_| Some(Speaker { x: r.f32()?, y: r.f32()?, disabled: r.flag()? })).collect()
+    (0..n)
+        .map(|_| {
+            Some(Speaker {
+                x: r.f32()?,
+                y: r.f32()?,
+                disabled: r.flag()?,
+            })
+        })
+        .collect()
 }
 
 /// Reads one record. The whole payload must be consumed: trailing bytes mean this is not the 0x70 layout.
@@ -64,7 +72,18 @@ pub(super) fn read(r: &mut Reader) -> Option<Record> {
     let offset = [r.f32()?, r.f32()?];
     let _ = r.i32()?;
     r.0.is_empty().then_some(())?;
-    Some(Record { speakers, sources, lfe_volume, size, divergence, distance, azimuth, offset, mode, layout })
+    Some(Record {
+        speakers,
+        sources,
+        lfe_volume,
+        size,
+        divergence,
+        distance,
+        azimuth,
+        offset,
+        mode,
+        layout,
+    })
 }
 
 #[cfg(test)]
@@ -102,10 +121,37 @@ mod tests {
     fn saved_record_reads_in_reader_order() {
         let bytes = record_bytes();
         let rec = read(&mut Reader(&bytes)).expect("record parses");
-        assert_eq!(rec.speakers, vec![Speaker { x: 0.1, y: 0.9, disabled: false }, Speaker { x: 0.9, y: 0.9, disabled: true }]);
-        assert_eq!(rec.sources, vec![Speaker { x: 0.5, y: 0.5, disabled: false }]);
-        assert_eq!((rec.lfe_volume, rec.size, rec.divergence), (-6.0, 0.3, 0.25));
-        assert_eq!((rec.distance, rec.azimuth, rec.offset), (0.4, -0.2, [0.6, -0.8]));
+        assert_eq!(
+            rec.speakers,
+            vec![
+                Speaker {
+                    x: 0.1,
+                    y: 0.9,
+                    disabled: false
+                },
+                Speaker {
+                    x: 0.9,
+                    y: 0.9,
+                    disabled: true
+                }
+            ]
+        );
+        assert_eq!(
+            rec.sources,
+            vec![Speaker {
+                x: 0.5,
+                y: 0.5,
+                disabled: false
+            }]
+        );
+        assert_eq!(
+            (rec.lfe_volume, rec.size, rec.divergence),
+            (-6.0, 0.3, 0.25)
+        );
+        assert_eq!(
+            (rec.distance, rec.azimuth, rec.offset),
+            (0.4, -0.2, [0.6, -0.8])
+        );
         assert_eq!((rec.mode, rec.layout), (1, 3));
     }
 
@@ -132,6 +178,14 @@ mod tests {
         fx.version = 0x70;
         let built = chain(&[fx], Scope::Bus);
         assert!(built.processors.is_empty(), "{:?}", built.processors);
-        assert!(built.notes.iter().any(|(_, _, t, r)| t.contains("Surround Panner") && *r == sampler_ir::Reason::NotModeled), "{:?}", built.notes);
+        assert!(
+            built
+                .notes
+                .iter()
+                .any(|(_, _, t, r)| t.contains("Surround Panner")
+                    && *r == sampler_ir::Reason::NotModeled),
+            "{:?}",
+            built.notes
+        );
     }
 }
