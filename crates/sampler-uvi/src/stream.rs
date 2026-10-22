@@ -271,7 +271,12 @@ impl Sample {
         })
     }
     fn open_accounted_channels(&self,counted:bool,workspace_limit:usize)->io::Result<Option<SampleReader>> {
-        if self.parts.len()>2 {return Err(crate::sample_metadata::wide_stream_refusal("wide UVI multipart stream needs owned decoder/container admission"));}
+        // Owned multipart admission: every member is an owned stream whose
+        // header workspace is charged to the budget before any read. Members
+        // beyond the first two are owned but not routed to the stereo output.
+        let member_cost=CHUNK.checked_add(size_of::<Bytes>()).ok_or_else(||invalid("origin workspace overflow"))?;
+        let owned=self.parts.len().checked_mul(member_cost).ok_or_else(||invalid("owned UVI multipart workspace overflow"))?;
+        if owned>workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"owned UVI multipart workspace admission"));}
         let mut admitted=None;
         for part in &self.parts {
             // The bounded header-discovery owner precedes the ordinary format
@@ -685,6 +690,8 @@ mod tests {
 
 
 pub(crate) struct InitialSource {
+    /// Members owned but not routed to the stereo output (multipart beyond two).
+    pub unrouted_parts:usize,
     pub original_channels:Option<usize>,
     pub source:Arc<dyn AssetSource>,
     pub playback:Result<Option<sampler_ir::Playback>,String>,
@@ -703,7 +710,7 @@ pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool)->Result<InitialSour
             // No legacy probe or decoder is constructed to carry this frozen
             // recipe. The initial sample-source gate refuses it before any
             // playback/instrument mutation; impulse-only uses remain separate.
-            return Ok(InitialSource {source:Arc::new(sample),original_channels:None,playback:Ok(None),admission:Err(error.to_string())});
+            return Ok(InitialSource {unrouted_parts:0,source:Arc::new(sample),original_channels:None,playback:Ok(None),admission:Err(error.to_string())});
         }
         Err(error)=>return Err(error.to_string()),
     };
@@ -742,5 +749,6 @@ pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool)->Result<InitialSour
         }
         Ok(metadata)
     } else {Ok(None)} })();
-    Ok(InitialSource {source:Arc::new(sample),original_channels,playback,admission:Ok(())})
+    let unrouted_parts=sample.parts.len().saturating_sub(2);
+    Ok(InitialSource {unrouted_parts,source:Arc::new(sample),original_channels,playback,admission:Ok(())})
 }
