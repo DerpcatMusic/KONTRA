@@ -122,6 +122,8 @@ pub struct Part {
     /// DAW pairs some node plays to directly, as a bit set.
     direct: u32,
     problems: RuntimeProblems,
+    /// The core `voice_drops` already attributed to a refusal here (see `refuse_capacity`).
+    voice_drops_seen: u64,
     pub(crate) fault_inbox: Arc<super::report::FaultInbox>,
     /// Velocity, channel, CC or program selecting articulations, when not keys.
     articulator: Option<Articulator>,
@@ -414,6 +416,7 @@ impl Part {
             audible: vec![true; count].into_boxed_slice(),
             direct: 0,
             problems: RuntimeProblems::default(),
+            voice_drops_seen: 0,
             fault_inbox: Arc::new(super::report::FaultInbox::default()),
             articulator,
             drivers: Vec::new(),
@@ -1461,7 +1464,7 @@ impl V2Core {
         // before any Native callback, tombstone or Core key/pedal mutation.
         for part in self.parts.iter_mut().flatten() {
             if part.mpe.validate_all_physical_releases(&part.runtime).is_err() {
-                part.problems.capacity_drops+=1;
+                part.refuse_capacity();
                 return;
             }
         }
@@ -1469,7 +1472,7 @@ impl V2Core {
             // Only disjoint queues changed since the pure all-Part preflight;
             // this recheck therefore cannot reject under the owner contract.
             if part.mpe.queue_all_physical_releases(&mut part.runtime).is_err() {
-                part.problems.capacity_drops+=1;
+                part.refuse_capacity();
                 return;
             }
         }
@@ -1802,7 +1805,7 @@ fn wire_packet(part: &mut Part, words: &[u32]) {
     match Packets::new(words).next() {
         Some(Ok(packet)) => match part.mpe.apply_with_source(&mut part.runtime, packet, source) {
             Ok(sampler_midi::Applied::Unsupported) => part.problems.ignored_input += 1,
-            Err(ApplyError::Core(sampler_core::Error::Capacity)) => part.problems.capacity_drops += 1,
+            Err(ApplyError::Core(sampler_core::Error::Capacity)) => part.refuse_capacity(),
             Err(_) => part.problems.ignored_input += 1,
             Ok(_) => {}
         },
@@ -1894,7 +1897,7 @@ fn host_pressure(
         };
         if let Err(sampler_core::Error::Capacity) = part.runtime.dispatch_poly_pressure_selected(
             performance, h.input.channel_address(), h.note.key, value, Some(selector),
-        ) { part.problems.capacity_drops += 1; }
+        ) { part.refuse_capacity(); }
     }
 }
 
@@ -1997,7 +2000,7 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
                         .unwrap()
                         .note_on(&mut part.runtime, note, a, velocity)
                     {
-                        part.problems.capacity_drops += 1;
+                        part.refuse_capacity();
                     }
                 }
                 Ok(sampler_midi::Applied::Released { note, velocity, .. }) => {
@@ -2008,7 +2011,7 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
                         .note_off_note_velocity(&mut part.runtime, note, a, velocity.map(sampler_midi::Value::normalized));
                 }
                 Err(ApplyError::Core(sampler_core::Error::Capacity)) => {
-                    part.problems.capacity_drops += 1
+                    part.refuse_capacity()
                 }
                 Ok(sampler_midi::Applied::Unsupported) | Err(_) => part.problems.ignored_input += 1,
                 Ok(_) => {}
@@ -2099,11 +2102,11 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                             id,
                         });
                         match script.note_on(&mut part.runtime, id, note.key, velocity) {
-                            Err(sampler_core::Error::Capacity) => part.problems.capacity_drops += 1,
+                            Err(sampler_core::Error::Capacity) => part.refuse_capacity(),
                             _ => {}
                         }
                     }
-                    Err(sampler_core::Error::Capacity) => part.problems.capacity_drops += 1,
+                    Err(sampler_core::Error::Capacity) => part.refuse_capacity(),
                     Err(_) => {}
                 }
                 return;
@@ -2118,7 +2121,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
             ) {
                 Ok(id) => id,
                 Err(sampler_core::Error::Capacity) => {
-                    part.problems.capacity_drops += 1;
+                    part.refuse_capacity();
                     return;
                 }
                 Err(_) => return,
@@ -2138,7 +2141,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
             };
             if !matches!(event,Event::Choke(_))
                 && let Err(error)=part.mpe.validate_native_physical_releases(&part.runtime,|_,source|native_source_matches(pattern,source)) {
-                if error==sampler_core::Error::Capacity {part.problems.capacity_drops+=1;} else {part.problems.ignored_input+=1;}
+                if error==sampler_core::Error::Capacity {part.refuse_capacity();} else {part.problems.ignored_input+=1;}
                 return;
             }
             // Release consumed presses by the exact host identity captured at onset,
@@ -2181,7 +2184,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 part.mpe.release_native_physical(&mut part.runtime,|_,source|native_source_matches(pattern,source),velocity)
             };
             if let Err(error)=native {
-                if error==sampler_core::Error::Capacity {part.problems.capacity_drops+=1;} else {part.problems.ignored_input+=1;}
+                if error==sampler_core::Error::Capacity {part.refuse_capacity();} else {part.problems.ignored_input+=1;}
                 return;
             }
             drain_terminal_releases(part);
@@ -2724,7 +2727,7 @@ impl V2Core {
                 if matches!(event, Event::NoteOffVelocity(_, velocity) if !(0.0..=1.0).contains(&velocity)) {return;}
                 if let Some(Some(part))=self.parts.get_mut(slot)
                     && let Err(error)=part.mpe.validate_native_physical_releases(&part.runtime,|_,source|native_source_matches(pattern,source)) {
-                    if error==sampler_core::Error::Capacity {part.problems.capacity_drops+=1;} else {part.problems.ignored_input+=1;}
+                    if error==sampler_core::Error::Capacity {part.refuse_capacity();} else {part.problems.ignored_input+=1;}
                     return;
                 }
             }
@@ -2792,7 +2795,7 @@ impl V2Core {
                     part.mpe.release_native_physical(&mut part.runtime,retired,velocity)
                 };
                 if let Err(error)=result {
-                    if error==sampler_core::Error::Capacity {part.problems.capacity_drops+=1;} else {part.problems.ignored_input+=1;}
+                    if error==sampler_core::Error::Capacity {part.refuse_capacity();} else {part.problems.ignored_input+=1;}
                     return;
                 }
                 drain_terminal_releases(part);
@@ -2865,6 +2868,20 @@ fn dispatch_host_parameter(part: &mut Part, address: u16, value: f64) -> bool {
         channels: 1,
     };
     rt.dispatch_host_parameter(context, address, value).is_ok()
+}
+
+impl Part {
+    /// Count one refused operation. The core counts the voice-pool and stream
+    /// refusals it makes itself, so a refusal that moved its `voice_drops` is a
+    /// voice drop; any other capacity refusal is a non-voice capacity drop.
+    fn refuse_capacity(&mut self) {
+        let voices = self.runtime.stats().voice_drops;
+        if voices > self.voice_drops_seen {
+            self.voice_drops_seen = voices;
+        } else {
+            self.problems.capacity_drops += 1;
+        }
+    }
 }
 
 fn record_stream_error(problems: &mut RuntimeProblems, error: sampler_core::StreamError) {
@@ -3389,7 +3406,8 @@ impl Core for V2Core {
             nonfinite: stats.nonfinite_frames,
             underruns: stats.stream_underruns,
             cold_starts: stats.cold_starts,
-            capacity_drops: p.problems.capacity_drops + stats.voice_drops,
+            capacity_drops: p.problems.capacity_drops,
+            voice_drops: stats.voice_drops,
             voice_pool_refusals: stats.voice_pool_refusals,
             waiting_voice_replacements: stats.waiting_voice_replacements,
             stream_capacity: p.problems.stream_capacity + stats.stream_capacity_refusals,
@@ -6830,6 +6848,36 @@ mod tests {
             Default::default()
         ));
         assert_eq!(ingress.values(&face)[&text], values[&text]);
+    }
+
+    /// A refusal the core did not count as a voice drop is a capacity drop, and
+    /// the product reports the two separately.
+    #[test]
+    fn a_refusal_the_core_did_not_count_is_a_capacity_drop_not_a_voice_drop() {
+        let pcm = Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap();
+        let region = Region {
+            sample: 0,
+            key_low: 60,
+            key_high: 60,
+            root_key: Some(60),
+            velocity_low: 0.0,
+            velocity_high: 1.0,
+            gain: 1.0,
+            envelope: Envelope::default(),
+            playback: Playback::default(),
+        };
+        let plan = Prepared::new(48000, vec![pcm], vec![region], 1).unwrap();
+        let limits = limits(&plan).0;
+        let part = Part::new(
+            Runtime::new(plan, limits).unwrap(),
+            MixTree::instrument("s"),
+        )
+        .unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        core.parts[0].as_mut().unwrap().refuse_capacity();
+        let problems = core.problems(0);
+        assert_eq!((problems.capacity_drops, problems.voice_drops), (1, 0));
     }
 
     #[test]
