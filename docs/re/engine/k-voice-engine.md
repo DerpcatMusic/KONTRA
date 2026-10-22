@@ -189,3 +189,23 @@ spec below is our own wording.
 
 Matrix impact: the voice row is `partial` (ordering matches for four kill modes; Any key,
 tie-breaks, fade law and per-key record are open).
+
+## Revision: field meanings from writers (decompile, 2026-10-22)
+
+- **+0x534 (Oldest/Newest key).** Constructed as -1 (`FUN_1405dc150`, `01405d0000.c:9587`)
+  and reset to 0 when a voice is (re)started (`FUN_1408d9d60`, `01408d0000.c:7777`). No
+  per-voice stamp is written elsewhere. It therefore reads as an elapsed count since voice
+  start, not a global birth index. Oldest (max) and Newest (min) orderings then equal the
+  engine's birth-order ordering except for voices started in the same block, which tie
+  natively. The tie order is list order and is not recovered.
+- **+0x51c (Any key).** Written by two routines: `FUN_14099c140` (`0140990000.c:9968`)
+  computes it at setup as `max(1, round(a * k * ratio / b + c))` from two integer counters
+  of the sample object and a float ratio; `FUN_140968ba0` (`0140960000.c:4944`) stores a
+  script-supplied value into voices matching a group/channel filter. Because the first
+  writer runs on the sample object, the Any key is a voice-length or priority quantity,
+  not a loudness. The engine's gain ranking for Any is therefore not the native law. The
+  exact meaning of the two counters is not recovered.
+- **+0x518 (Highest/Lowest key).** Integer, compared directly. Not written in the voice
+  start path that was read, so its source remains open.
+
+Matrix: unchanged, still partial. Any and the steal fade law stay open.
