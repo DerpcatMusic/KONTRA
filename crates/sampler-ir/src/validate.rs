@@ -396,6 +396,13 @@ impl Check<'_> {
                 Processor::Phaser(knobs) => {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "phaser control")?; }
                 }
+                Processor::StereoTune(config) => {
+                    config.check().map_err(|field| ValidationError::OutOfRange {
+                        owner: self.owner.clone(),
+                        field,
+                        value: f64::NAN,
+                    })?;
+                }
                 Processor::RingMod(config) => {
                     config.check().map_err(|field| ValidationError::OutOfRange {
                         owner: self.owner.clone(),

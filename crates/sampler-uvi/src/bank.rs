@@ -497,10 +497,10 @@ impl Bank {
         }).collect()
     }
 
-    pub(crate) fn initial_stream_source(&self,program_path:&str,path:&str,inherit:bool)
+    pub(crate) fn initial_stream_source(&self,program_path:&str,path:&str,inherit:bool,placement:Option<Vec<[f64;2]>>)
         ->Result<crate::stream::InitialSource,String> {
         let parts=self.resource_origins(program_path,path).map_err(|e|access::failure_reason(&e))?;
-        crate::stream::initial_source(parts,inherit)
+        crate::stream::initial_source(parts,inherit,placement)
     }
 
     fn stream_inner(
