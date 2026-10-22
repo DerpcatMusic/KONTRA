@@ -30,7 +30,7 @@ PRESETS = Path("/home/derpcat/.wine/drive_c/Program Files/Common Files/VST3/Port
 NAMES = ROOT / "crates/sampler-core/src/engine_parameter_names.rs"
 DECODER = Path(os.environ.get("NKP_DECODE", "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/"
                               "kontakto-agent-a374c576a1f496725/debug/examples/nkp_decode"))
-STEPS = Path("/tmp/w3/steps")
+STEPS = Path.home() / ".cache/kontra-oracle/steps"
 
 
 def winpath(p: Path) -> str:
