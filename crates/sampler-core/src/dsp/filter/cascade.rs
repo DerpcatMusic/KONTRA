@@ -2272,6 +2272,57 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// The SV2 and SV4 classes at res .9 (cutoff .5) against native impulse outputs of the
+    /// process functions 0x140b02400 and 0x140b02790 run under kemu with the setters' targets
+    /// (`cascade_sv_res9_vectors.json`, 512 frames). Their algebra is the native one; the capture
+    /// rows at this setting differ by the measurement chain, not by these stages.
+    #[test]
+    fn sv_res9_match_the_native_vectors() {
+        super::super::ladder_kernel::prepare();
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("cascade_sv_res9_vectors.json")).unwrap();
+        const N: usize = 512;
+        const BLOCK: usize = super::super::super::BLOCK;
+        let mut failures = Vec::new();
+        for case in &cases {
+            let set = &case["setting"];
+            let name = set["type"].as_str().unwrap();
+            let sv = match name {
+                "LP2" => Sv::Two { mode: 0 },
+                "BP2" => Sv::Two { mode: 1 },
+                "HP2" => Sv::Two { mode: 2 },
+                "LP4" => Sv::Four { mode: 0 },
+                "BP4" => Sv::Four { mode: 1 },
+                "HP4" => Sv::Four { mode: 2 },
+                _ => Sv::Four { mode: 3 },
+            };
+            let unit = CascadeSettings {
+                class: Legacy::Sv(sv),
+                cutoff: Parameter::Constant(set["cutoff"].as_f64().unwrap()),
+                resonance: Parameter::Constant(set["res"].as_f64().unwrap()),
+            }
+            .compile(48_000, &mut Vec::new());
+            let native: Vec<f32> =
+                case["impulse"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+            let mut cells = vec![[0f64; 2]; CELLS];
+            let mut ours = Vec::with_capacity(N);
+            for at in (0..N).step_by(BLOCK) {
+                let mut block = [[0f64; BLOCK]; 2];
+                if at == 0 {
+                    block[0][0] = 1.0;
+                }
+                unit.process(&mut cells, &[], &mut block, BLOCK, at as u64, [0.0; 4]);
+                ours.extend_from_slice(&block[0]);
+            }
+            let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+            let err = ours.iter().zip(&native).map(|(a, b)| (*a as f32 - b).abs() / scale).fold(0f32, f32::max);
+            if !(err < 1e-4) {
+                failures.push(format!("{} {name}: err {err}", case["class"]));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     /// Full resonance is the self-oscillating corner (measured +40..+54 dB peaks in
     /// filter-laws.tsv): every SV class must stay finite and bounded there, at both cutoff
     /// ends, under a +-4 square. The state clamp at +-2L is what keeps it so.
@@ -2312,21 +2363,31 @@ mod tests {
     /// Kontakt's SV magnitude responses (Wine-oracle capture, `sv_response_vectors.tsv`: an
     /// impulse through the effect, 48 kHz, 16384 bins, left channel, dB at ten probes). Every
     /// row must reproduce within 1 dB, except the rows listed in `KNOWN_OPEN`, which are the
-    /// measured gaps of `docs/re/engine/filt-sv.md` (G4: res .9; G10: the LP-type and BP6 outputs
-    /// at u = 0; G12: BP2 skirt at u = 1).
+    /// measured residuals of `docs/re/engine/filt-sv.md` (G4: res .9 capture rows; G12: BP2 at
+    /// u = 1). The measurement follows the capture: a 16384-sample window from 256 samples before
+    /// the response peak, dB read by linear interpolation between the two bins around the probe.
     #[test]
     fn sv_responses_match_the_kontakt_capture() {
         super::super::ladder_kernel::prepare();
         const N: usize = 16384;
         const BLOCK: usize = super::super::super::BLOCK;
         const PROBES: [f64; 10] = [30., 60., 100., 200., 500., 1000., 2000., 5000., 10000., 15000.];
-        const KNOWN_OPEN: [&str; 6] = [
-            "SV_LP2 cutoff=0 res=0",
-            "SV_LP4 cutoff=0 res=0",
-            "SV_LP6 cutoff=0 res=0",
-            "SV_BP6 cutoff=0 res=0",
-            "SV_NOTCH6 cutoff=0 res=0",
+        // Measured residuals of the capture chain (G4, G12). At res .9 the algebra is native-exact
+        // (`sv_res9_match_the_native_vectors`); the capture's own window and its ramp from the
+        // previous step differ from the impulse-from-rest model there. BP2 at u = 1 is G12.
+        const KNOWN_OPEN: [&str; 12] = [
             "SV_BP2 cutoff=1000000 res=0",
+            "SV_BP2 cutoff=500000 res=900000",
+            "SV_BP4 cutoff=500000 res=900000",
+            "SV_LP2 cutoff=500000 res=900000",
+            "SV_HP2 cutoff=500000 res=900000",
+            "SV_LP4 cutoff=500000 res=900000",
+            "SV_HP4 cutoff=500000 res=900000",
+            "SV_NOTCH4 cutoff=500000 res=900000",
+            "SV_LP6 cutoff=500000 res=900000",
+            "SV_BP6 cutoff=500000 res=900000",
+            "SV_HP6 cutoff=500000 res=900000",
+            "SV_NOTCH6 cutoff=500000 res=900000",
         ];
         let mut failures = Vec::new();
         for line in include_str!("sv_response_vectors.tsv").lines().skip(1) {
@@ -2358,8 +2419,8 @@ mod tests {
             }
             .compile(48_000, &mut Vec::new());
             let mut cells = vec![[0f64; 2]; CELLS];
-            let mut h = Vec::with_capacity(N);
-            for at in (0..N).step_by(BLOCK) {
+            let mut h = Vec::with_capacity(N + 1024);
+            for at in (0..N + 1024).step_by(BLOCK) {
                 let mut block = [[0f64; BLOCK]; 2];
                 if at == 0 {
                     block[0][0] = 1.0;
@@ -2367,20 +2428,34 @@ mod tests {
                 unit.process(&mut cells, &[], &mut block, BLOCK, at as u64, [0.0; 4]);
                 h.extend_from_slice(&block[0]);
             }
+            // The capture windows N samples from 256 before the response peak (the peak of the
+            // output), so an LP response with a long group delay loses its first samples there.
+            let peak = (0..h.len()).fold(0, |best, i| if h[i].abs() > h[best].abs() { i } else { best });
+            let window: Vec<f64> = (0..N)
+                .map(|n| (peak + n).checked_sub(256).and_then(|i| h.get(i)).copied().unwrap_or(0.0) as f64)
+                .collect();
             let mut err = 0f64;
             for (probe, native) in PROBES.iter().zip(cols) {
                 let native: f64 = native.parse().unwrap();
-                let w = std::f64::consts::TAU * probe / 48_000.0;
-                let (re, im) = h.iter().enumerate().fold((0.0, 0.0), |(re, im), (n, v)| {
-                    let a = w * n as f64;
-                    (re + v * a.cos(), im - v * a.sin())
-                });
-                let ours = 20.0 * re.hypot(im).log10();
+                // The capture's dB are the 16384-bin FFT interpolated linearly between the two bins
+                // around the probe, so a narrow null is read the same way here.
+                let bin = probe * N as f64 / 48_000.0;
+                let (k, t) = (bin.floor(), bin.fract());
+                let db_at = |k: f64| {
+                    let w = std::f64::consts::TAU * k / N as f64;
+                    let (re, im) = window.iter().enumerate().fold((0.0, 0.0), |(re, im), (n, v)| {
+                        let a = w * n as f64;
+                        (re + v * a.cos(), im - v * a.sin())
+                    });
+                    20.0 * re.hypot(im).log10()
+                };
+                let (d0, d1) = (db_at(k), db_at(k + 1.0));
+                let ours = d0 + t * (d1 - d0);
                 if native > -60.0 {
                     err = err.max((ours - native).abs());
                 }
             }
-            let open = KNOWN_OPEN.contains(&name) || (res > 0.5 && words[0] != "SV_LP1" && words[0] != "SV_HP1");
+            let open = KNOWN_OPEN.contains(&name);
             if !open && err > 1.0 {
                 failures.push(format!("{name}: {err:.2} dB"));
             }
