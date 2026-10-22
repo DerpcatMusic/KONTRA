@@ -120,14 +120,14 @@ Resampling: Kaiser x2 up before the loop, x2 down after (`dsp/kaiser.rs`). The p
 | 2x resampler | confirmed as Kaiser x2 (mode 4 up, mode 5 down); reuses `kaiser.rs` (its taps are documented there) |
 | Ramp object layout and per-2x-sample advance | confirmed: `FUN_140affa30` adds delta to current once per 2x sample in chunks of at most 32 frames; channel 0 advances a local copy and channel 1 the object, so both channels see the same lanes |
 | Ramp tick | vtable slot 8 of `FilterDaft` (`0x144fcf3f0`) is `FUN_140b03620` → `FUN_140acb6c0`; the tick's target-dirty branch (flag at `+0x30`) computes the deltas and sets state 2. Matches the kernel's branch order |
-| Ramp clock | **open**: the tick runs once per call of slot 8, and the caller of slot 8 is not found. The kernel ticks every 32 frames, so a target change lands at most 32 frames late here. Countdown: no setter writes it; only ctor and prepare zero it, so the snap-to-target step after `quanta` ticks is not reached by the decompile alone. The kernel arms it at `quanta` (the only reading that snaps). Delta arithmetic reaches the target after `quanta * 32` frames either way |
+| Ramp clock | **confirmed**: the caller of slot 8 is the BFilterDaft slot-23 driver `FUN_1408fa270` (`01408f0000.c`). Per 32 host frames (countdown `+0x1bc` = 0x20): setters 0..3 for enabled routes (flags `+0x49090..93`), then the tick (slot 8), then the loop (slot 7). The tick has one dirty flag for all four lanes (any setter sets it, even with an unchanged value); with it set, every lane's delta is re-derived and the countdown restarts at `quanta`. Confirmed by `daft_kemu_vectors.json`, including enabled routes that hold |
 | Start-up | confirmed: `FUN_140afd210` (prepare, vtable slot 3) copies the stored targets (`0x48e50`, `0x48e58`) into the current lanes, sets flag 1, state 1, quanta at `0x48e68` and inverse at `0x48e6c`. The ctor's `-1` values are overwritten there. The kernel's first-control snap matches when parameters are set before prepare, as hosts do |
 | Response mode ramp | native sets the weights immediately; matched |
+| Kernel under kemu | **confirmed**: `tools/re/daft_kemu_vectors.py` drives ctor, prepare, setters, tick and loop; `daft_kemu_vectors.json` (10 cases, LP/HP, steady, moving, routed hold, 44.1 and 48 kHz) matches the Rust kernel to 2e-7 of peak (1.1e-6 self-oscillating) |
 | Kontakt audio | **open**: Wine oracle (level sweep at several gain and resonance settings) not run |
 
 ## Open items (in order)
-1. Find the caller of `FilterDaft` vtable slot 8 (tick) in the host block driver; it sets the
-   update rate of the target lanes. Countdown arming is in the same caller or in a path not yet read.
+1. Done: the caller of slot 8 is `FUN_1408fa270` (see Ramp clock).
 2. Daft Kontakt audio: `eqrender.py` needs the Daft ENGINE_PAR ids for gain and response, which
    `docs/re/kontakt-bindings/` does not record (only the subtype ids 70/71). Discover them, then run
    a level sweep (gain 0 and +1, resonance 0 and 1, cutoff 0.2 / 0.6 / 0.95) against this kernel.

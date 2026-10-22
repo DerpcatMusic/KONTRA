@@ -45,7 +45,7 @@ const MULTI_SV: &str = "FilterMultiSV (0x140b05d50, 0x140b01d00) matches the nat
 const LEGACY: &str = "BFilter class law and process run by the cascade core (dsp/filter/cascade.rs) match the native classes under kemu to 2e-5 and the Kontakt LP4/LP6 measurements; control clock 0x140ae9f90 reproduced except its alternative branch (global 0x144fd4c54) and offset slew (+0x1f8), both unwritten";
 const STAGES: &str = "setter and process (Pro-53 FUN_14095d940/FUN_1409099a0, Legacy Ladder FUN_14095d630/FUN_140aef200, Vowel FUN_14095dd00/FUN_14095e250/FUN_140914a20) run by the cascade core match the native code (kemu) to 2e-5; scalar summation order only (the SSE path for >= 32-frame calls differs in rounding); clock as LEGACY";
 const LADDER: &str = "core FUN_140b00be2/FUN_140b06180 (cutoff law and table, pole polynomial, resonance, feedback correction, clip, stages, tap weights and compensation, 2 ms ramp), gain law (1200 + 119.589 g table index) and HQ (flag > 0.5, shared 2x Kaiser) checked against the Kontakt 8 decompile; steady knobs bit-exact on the native PCM grid (ladder_native_vectors.rs, ladder_native_hq_vectors.rs); moving cutoff (flag 0 within 2e-7 of peak), cutoff path flag 0x49 = 1 and HQ-on moving controls match kemu-run native code for every selector (tools/re/ladder_kemu_vectors.py, ladder_kemu_vectors.json); the flag source is decoded (docs/re/engine/ladder-cutoff-byte.md)";
-const DAFT: &str = "saved controls and ramp scheduling extracted; native audio core and resampler not recovered, saturation and interpolation are stand-ins (CORE-FILTERS-029..031)";
+const DAFT: &str = "kernel (two-stage loop, knees, gain, cutoff, feedback, resonance and response laws, Kaiser x2, ramp) matches the native code under kemu (tools/re/daft_kemu_vectors.py, daft_kemu_vectors.json): steady, moving and routed knobs, LP and HP, 44.1 and 48 kHz, worst 1.1e-6 of peak (self-oscillating) and 2e-7 otherwise; host cadence is the BFilterDaft slot-23 driver FUN_1408fa270 (setters, 32-frame tick, loop). Not yet checked: the saved-record mapping (leading value to gain, 70/71 to response) rests on v1's table, and no Kontakt audio render";
 const AR: &str = "FilterDJ equation and 32-frame clock match extracted instruction vectors; no host oracle (CORE-FILTERS-019)";
 const KFX: &str = "KONTAKTFX cores (dsp/filter/kontaktfx.rs: FilterDJExtRange + FilterLadderExtRange, Dual SKF, BlueMonark) bit-exact against the native classes under kemu at 48 kHz; record layouts and knob order from the BFilter readers; stereo interleave and the Simple LP/HP alternate smoother (u8, rate 1/(p2 1500 + 150)) unprobed";
 const SIMPLE: KontaktFx = KontaktFx::SimpleLpHp { lp: 0.0, hp: 0.0 };
@@ -106,8 +106,8 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         63 => ("SV Par LP/HP", C(variant(Lp, 4, Variant::MultiSv { mode: 0, bandwidth: 0.0 }), Exact, MULTI_SV)),
         64 => ("SV Par BP/BP", C(variant(Bp, 4, Variant::MultiSv { mode: 1, bandwidth: 0.0 }), Exact, MULTI_SV)),
         65 => ("SV Ser LP/HP", C(variant(Bp, 4, Variant::MultiSv { mode: 2, bandwidth: 0.0 }), Exact, MULTI_SV)),
-        70 => ("Daft LP", C(native(Topology::Daft, Lp, 2), Partial, DAFT)),
-        71 => ("Daft HP", C(native(Topology::Daft, Hp, 2), Partial, DAFT)),
+        70 => ("Daft LP", C(native(Topology::Daft, Lp, 2), Exact, DAFT)),
+        71 => ("Daft HP", C(native(Topology::Daft, Hp, 2), Exact, DAFT)),
         90 => ("Formant I", C(native(Topology::Formant, Lp, 0), Exact, "")),
         91 => ("Formant II", C(native(Topology::FormantII, Lp, 0), Partial, FORMANT_II)),
         100 => ("AR LP2", C(native(Topology::Ar, Lp, 2), Exact, AR)),
