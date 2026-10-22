@@ -194,8 +194,8 @@ fn table(table: &[u8; 16384], v: f64) -> f32 {
 
 /// Native rectangle (0x140b08c40): outside +-0.01 of one half, a difference of
 /// two shifted saw lookups plus the binary64 offset 1-2w; inside it, the
-/// near-half pulse table. The inline saw interpolation's exact operation order
-/// is not recovered, so the shared order stands in (differs in the last f32 bits).
+/// near-half pulse table. The inline interpolation is the four-point form of
+/// [`table`] in the same operation order (decompile 0x140b08c40, checked).
 fn rectangle_native(p: f64, w: f32) -> f64 {
     if (w - 0.5).abs() >= 0.009_999_999_8 {
         let w = f64::from(w);

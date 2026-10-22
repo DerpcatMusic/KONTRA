@@ -60,20 +60,25 @@ Weights are stored in order sine (`+0x128`), then saw, triangle, pulse, noise
   `0.75`.
 - Not confirmed from the binary: the numeric data constants (`DAT_*`) behind the saw wrap and the
   triangle gain. They are in the image's data section, not in the decompile text.
-- Inline rectangle interpolation order in the analog kernel is not recovered (last-bit only,
-  documented in `rectangle_native`).
-- Held noise: the recurrence (`LCG`) and half-cycle grid are native. The reset seed is not:
-  native uses the tick count (`0x1405f4510`), the repo folds the caller seed instead
-  (`HELD_RESET_SEED_IS_NATIVE = false`). Repeated resets therefore differ from Kontakt.
+- Rectangle (0x140b08c40): the far branch (|w - 0.5| >= 0.01) is two saw-table lookups, at `p`
+  and at `p + (1 - w)`, each the same four-point interpolation as `table()`, in the same
+  operation order, minus `(1 - 2w)`. The near branch is one lookup in the pulse table at `p`.
+  `rectangle_native` implements exactly this; the earlier "last bit" caveat was stale.
+- Held noise (0x1405f4510): the reset is `GetTickCount()` times `0xbb38435` plus `0x3619636b`,
+  the same LCG the `held_native` path applies to its seed. The law is native and bit-exact for a
+  given tick. Only the host tick is nondeterministic, so no fixed vector can pin a live reset.
+  Each reset also restores the phase from `+0xe8`, the fade count from `+0xf8`, and the fade state
+  to `0.3` (`0x3e99999a`).
 
 ### Admission (translator, `fn lfo`)
 
 | Entry | Admitted | Refused (reported as `UnknownLaw`) |
 |---|---|---|
 | Zero Multi (5) | all weights zero | none |
-| Digital sine-only (6) | fade 0, or retrigger + unsynced fade with the verified records | synced fade, alternate mode, multi-component |
+| Digital sine-only (6) | fade 0, or retrigger + unsynced fade with the verified records | synced fade, alternate mode |
 | Legacy weighted sine (5) | sine-only, fade 0 | none |
-| Multi (5) with components | fade 0, or unsynced fade (records[1] = -1) | Digital (6) with fade > 0 and components |
+| Multi (5) with components | fade 0, or unsynced fade (records[1] = -1) | none |
+| Digital Multi (6) with components | fade 0, or the same digital clock and records as the sine-only entry | alternate mode, synced fade |
 | Native waves (0..4) | any width in 0..1 (rect), held needs phase < 0.5 | other waveform ids |
 
 Pulse width is refused outside the builder's `0.05..0.95` window for Multi, and the held noise
@@ -85,8 +90,12 @@ needs a start phase below one half.
   `+0xb0` (binary64), step `+0xb8`. Free-run wraps by the length, one-shot sets the step to 0 and
   holds the last entry. `blocks/step_table.rs` matches this.
 - End-of-call correction (0x140a768d0 caller path) is implemented as `StepTable::correct`.
-- **Not modelled:** the per-lookup branch on `+0xdd` (the decompile routes through a different
-  path when it is non-zero). The repo already lists this as unproved (`step_table.rs` header).
+- **Not modelled:** the per-lookup branch on `+0xdd`. When it is non-zero, each output first
+  calls `FUN_140a76c40(this, i)` (0140a70000.c, `0x140a76c40`), which copies per-step arrays into
+  the object: the step rate `+0xb8` from the array at `+0xc8` (through `FUN_1407b8a30`, times
+  `+0xc0`), and about 30 fields from arrays at `+0x160..+0x250` and `+0x258` into slots
+  `+0xe0..+0x15c` (the same offsets as the table, so the table and these fields overlap). Which
+  stored Arp field fills each array is not yet traced, so the per-step semantics stay unmodelled.
 - **Not recovered:** how the stored Kontakt "Arp" fields become table, length, rate and mode. The
   writers of `+0xd8`/`+0xdc` are shared across many object classes; the loader of this object is
   not yet identified. The translator reports it as `UnknownLaw` (`library.rs` ~L1904).
