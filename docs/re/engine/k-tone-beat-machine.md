@@ -82,6 +82,10 @@ recovered.
 
 ## Tone Machine (internal id 1, stored mode 1)
 
+Status update: the render kernel (slot 23), its grain scheduler and the mark search are
+ported in `crates/sampler-core/src/source/tone_machine.rs`; the source pass, mark table and
+parameter setters are still open. See `k-tone-machine-kernel.md`.
+
 ### Object
 
 - Allocation: 0x420 bytes (`FUN_140d20640`), zeroed, then `FUN_140cd94c0`.
