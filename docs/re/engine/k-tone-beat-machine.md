@@ -200,14 +200,11 @@ law (now named `attack` / `release` and `crossfade`):
   agree with the KSP manual names `num_slices_zone`, `zone_slice_idx_loop_start/end`,
   `zone_slice_loop_count`, `zone_slice_length` (KSP manual, Zone and Slice Functions).
 
-Wiring: the Kontakt loader reads `slice_float_1`, `slice_float_2` and `slice_flag_1` from
-the mode-4 record into `ir::Group::beat_slices` (`crates/sampler-ir/src/lib.rs`,
-`BeatSlices`; `crates/sampler-kontakt/src/library.rs`, `beat_slices_from_record`). Lowering
-does not consume it yet: no voice runs the sequencer, so the zone still plays as a sampler
-and the report says so. Unit tests: `beat_slices` (sequencer and crossfade rounding at 48 kHz
-and 44.1 kHz) and the loader mapping test.
+Loader: the Kontakt loader reads `slice_float_1`, `slice_float_2` and `slice_flag_1` from the
+mode-4 record into `ir::Group::beat_slices` (`crates/sampler-ir/src/lib.rs`, `BeatSlices`;
+`crates/sampler-kontakt/src/library.rs`, `beat_slices_from_record`).
 
-### Zone slice markers (chunk 0x35, parsed)
+### Zone slice markers (chunk 0x35) and zone grid
 
 A zone with a grid stores its slice boundaries in a structured child chunk `0x35` of the
 zone (`vendor/ni-file/src/kontakt/objects/zone_slices.rs`, `ZoneSlices`). Public payload, from
@@ -220,31 +217,72 @@ the capture (grid fixed, 120 BPM, four 1/16 slices, 48 kHz):
   extra (8 on the first record, 0 after)
 
 Frames: 0, 6000, 12000, 18000, 24000, so the four slices are consecutive pairs. The loader
-copies the frames into `BeatSlices::markers` (checked on the saved NKI through `ir_json`:
-`markers` = `[0,6000,12000,18000,24000]`, attack 3.0, release 12.5, flag true). A zone with
-a second, different grid in the same Beat Machine group is reported as unsupported. The
-layout is confirmed for one grid only; other grid modes and counts are not in the corpus.
+stores them per zone in `ir::Playback::beat_grid` (`BeatGrid`: up to nine markers, the
+native eight-slice table; `tempo_scale` from the zone private float at byte 12). A Beat Machine
+zone without a grid, or with more than nine markers, is reported and plays as a sampler.
+The layout is confirmed for one grid only.
 
-### Playback rate candidate (one capture)
+### Zone playback rate (private float at byte 12)
 
 The zone private block holds a float at byte offset 12: 0.25 in the grid-fixed zone and 1.0
-in the plain zone (the same in the sampler-fixed file). That matches the decompiled zone
+in the plain zone (the same in the sampler-fixed file). It matches the decompiled zone
 `tempoScaling` (`+0x7a8`, default `0x3f800000`, written at `0140860000.c:9276-9278` and
-multiplied into the grid factor `FUN_14087d740`, `0140870000.c:9390`). The capture's
-playback rate is 0.25 (200/320/440/560 Hz tones heard at 50/80/110/140 Hz, slices cut at
-about 125 ms), so the candidate is: rate = stored tempo scaling for a fixed grid. The grid
-factor's constants are not resolved, and only one grid setting has been measured, so this is
-not a law yet.
+multiplied into the grid factor `FUN_14087d740`, `0140870000.c:9390`). The loader keeps it as
+`tempo_scale`; lowering folds it into the zone transposition (12 * log2 of the rate), so the
+voice reads the sample at that step. The grid factor's constants are not resolved, so the
+rule "rate = stored value" is verified for this one grid only.
+
+### Voice (lowering and playback) — implemented
+
+`sampler-core` plays a Beat Machine zone as slices (`source/beat_slices.rs`, `Player`):
+
+- The sequencer (`Sequencer`, slots 12/13/18) holds one active entry per slice. Each slice
+  plays for its cell: its source length at the output rate. The next slice starts when the
+  cell ends (slices in order, no loops, count 1). The read position jumps to the slice start.
+- Each slice fades in over the attack and out over the release (`Sequencer::crossfade`, frames
+  at the output rate). The fade shape is linear: the native shape is not recovered.
+- Loops are ignored on Beat Machine zones (ponytail: a Beat zone with loops is not seen yet).
+- Cursor reuse is disabled for beat cursors (`source/reuse.rs`).
+- Tests: `beat_slices` (player order, cell length at 44.1 kHz, fades) and
+  `source::tests::beat_zone_plays_grid_slices_in_order_at_the_stored_rate` (four synthetic
+  tones, zero-crossing rate within one crossing per 0.1 s window).
+
+### Verification against the captured wav (one session)
+
+Reference: `beat_machine_v2.wav` and `beat_machine_4slices.wav` (note 60, velocity 100, 1/16 at
+120 BPM, sample `beat_4slices_120bpm_48k_f32.wav`). Render: `sampler-native render-kontakt`
+of the saved `beat_fixed.nki`, `--no-scripts`, note 60 for 0.8 s.
+
+| Check | Oracle | Render | Tolerance | Result |
+| --- | --- | --- | --- | --- |
+| Slot rates (tone x 0.25), slices 1-3 (50, 80, 110 Hz) | 50.02, 79.98, 109.90 Hz | 49.94, 80.00, 109.96 Hz | 0.5 % | pass (render within 0.12 %) |
+| Slot boundaries (onset at 0, cells 125 ms) | changes near 100, 240, 350 ms | same within one 20 ms step | 20 ms | pass |
+| Slice 4 (560 Hz) | silent after 380 ms | 139.91 Hz, full level | — | fail (decay, below) |
+| Level (peak, first 100 ms) | 0.136 RMS | 0.161 RMS | — | fail, 1.5 dB; the plain sampler render of the same zone is at our level, so the gap is in the shared level path |
+| Amplitude over time | flat to ~100 ms, then falls to ~0 by 350 ms (tau about 0.1 s) | flat | — | fail, not modelled |
+
+The source tones are flat (RMS 0.35 in each cell), and the NKI amplitude envelope has sustain
+1.0, so neither explains the fall. Its cause is open.
+
+### Second oracle session (retrigger, grid, BPM) — not conclusive
+
+`tools/kontakt-oracle/probes/beat_machine_session2.lua` was run once (`session2_grid_retrigger.wav`
+in the artifacts folder). It asked for three zones (1/16 at 120 BPM, 1/16 at 90 BPM, 1/8 at
+100 BPM) and timed notes by KSP timer chains. Only the first note of the first zone sounded.
+The later notes and the other two zones did not appear. The probe design cannot separate a
+timer that does not re-arm from a silent second note, and standalone Kontakt sends MIDI to the
+selected instrument only. The grid law (rate and slot spacing for other grids and BPMs) and the
+second-trigger silence are therefore still open. A corrected probe would use one instrument with
+three zones (keys 0-59, 60-84, 85-127, root keys 48, 72, 96) and MIDI timing from a file.
 
 ### Not recovered
 
-- The playback rate law beyond the candidate above (grid factor constants, auto grid).
-- The second-trigger silence (the Lua probe's second note produced nothing).
+- The grid factor constants behind the rate rule (other grids, auto grid, other BPM).
+- The amplitude fall after about 100 ms in the oracle, and the 1.5 dB level gap.
+- The second-trigger silence (session 2 did not test it).
 - The meaning of `slice_flag_1` (`+0x99`) and of the float copy in the `0x35` records.
-- The source player call from slot 18 (`+0x38`) and the slice-to-voice path (fade
-  shape beyond the attack and release lengths, reverse).
-- The source player call from slot 18 (`+0x38`) and the slice-to-voice path (fade
-  shape beyond the attack and release lengths, reverse).
+- The source player call from slot 18 (`+0x38`) and the fade shape beyond the linear attack
+  and release.
 
 ## Native Tone vector (oracle, default parameters)
 
@@ -307,7 +345,7 @@ and group 0 with `set_group_playback_mode(inst, 0, "beat_machine")`. Readbacks: 
 | Module | Shared engine covers | Missing |
 | --- | --- | --- |
 | Tone Machine | Mode mapping and stand-in granular engine, reported `NotModeled` | Render kernel, grain/formant/DC laws, record-to-object mapping, `hiQuality` |
-| Beat Machine | Stored mode reported; `slice_float_1/2` = Slice Atk/Rel (ms) and `+0x27d00` = render rate decoded; crossfade law and sequencer ported and unit-tested; controls and zone slice markers (chunk 0x35) reach `ir::Group::beat_slices` | No voice runs the sequencer or plays marker slices yet; playback rate law (candidate: zone tempo scaling, one capture); second-trigger silence; `slice_flag_1` meaning |
+| Beat Machine | Stored mode and controls decoded; zone grid (chunk 0x35, `Playback::beat_grid`) and rate (private float 12) parsed; zone played as sliced cells with the sequencer, linear fades, at the stored rate (one capture, rate within 0.2 %) | Oracle amplitude fall after about 100 ms and 1.5 dB level gap; second trigger; grid factor (other grids); `slice_flag_1` meaning; auto grid |
 
 ## Open items (for the next pass)
 
@@ -317,12 +355,13 @@ and group 0 with `set_group_playback_mode(inst, 0, "beat_machine")`. Readbacks: 
 2. Confirm the stored-mode to internal-id map. The export groups internal id 4
    with the sampler family and uses id 5 for the Beat Machine rule, so stored
    Beat (4 in the repo) is not the identity map. Unresolved.
-3. Oracle, Beat Machine: the playback rate law (candidate in the capture section),
-   the second-trigger behaviour, and the speed readout on the normal Use Beat Machine
-   path. One session each, nice 19. A second grid setting (other tempo or unit) would
-   test the candidate directly.
-4. Lowering: a voice that plays `BeatSlices::markers` through `beat_slices::Sequencer`
-   with the crossfade law. Blocked on the internal-trigger semantics in item 2 and 3.
+3. Oracle, Beat Machine (one corrected session): a single instrument with three zones
+   (keys 0-59 root 48, 60-84 root 72, 85-127 root 96; grids 1/16 at 120, 1/16 at 90,
+   1/8 at 100), notes sent by a MIDI file so each note-on and note-off is timed. This tests
+   the rate rule on other grids, the retrigger and hold behaviour, and the second-trigger
+   silence. Session 2 (KSP timers) did not produce them.
+4. Oracle, amplitude: the fall after about 100 ms and the 1.5 dB level gap (compare the
+   plain sampler render of the same zone, which is at the render level).
 5. `slice_flag_1` (`+0x99`): find the control or the writer of that byte.
-6. Zone grid mode (Fix/Auto/none) and the grid factor constants behind the rate
-   candidate, from the zone private block and `FUN_14087d740`.
+6. Grid factor constants behind the rate rule (`FUN_14087d740`), and the zone grid mode
+   (Fix/Auto/none) from the zone private block.

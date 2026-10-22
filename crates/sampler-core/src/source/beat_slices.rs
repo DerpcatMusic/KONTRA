@@ -1,4 +1,4 @@
-//! Kontakt Beat Machine slice sequencer and crossfade law.
+//! Kontakt Beat Machine slice sequencer, crossfade law and voice playback.
 //!
 //! Ported from the render-side methods of `BSlice` (vtable `0x144f39f00`, Kontakt 8):
 //! slot 12 (cursor reset), slot 13 (cursor settle) and slot 18 (crossfade lengths).
@@ -8,12 +8,11 @@
 //! Slot 18 turns the stored `slice_float_1` and `slice_float_2` (Kontakt's "Slice Atk"
 //! and "Slice Rel", milliseconds) into frame counts at the render sample rate, which is
 //! the render-context field at `+0x27d00` (set from the host rate, default 44100).
-//! Wired as data only: the loader fills `ir::Group::beat_slices`, and no voice runs
-//! this sequencer yet, so the Beat Machine still plays as a sampler. Slot 18 also sets a
-//! field from a call into the source player, which is not modelled.
+//! The voice ([`Player`]) plays the zone's grid slices in order at the zone's stored rate
+//! (the source step, carried in `Playback::transpose_semitones`). The fade shape inside a
+//! slice is linear over the attack and release lengths: the native shape is not recovered.
 //! The native 0.001 and 0.5 constants are the `.rdata` values
 //! (`docs/re/kontakt-rdata/constants.tsv`).
-#![allow(dead_code)] // the sequencer has no voice caller yet, see the module docs
 
 /// Native entry kinds below this are skipped by the sequencer.
 pub const ACTIVE_KIND: i32 = 3;
@@ -36,7 +35,7 @@ pub struct Slice {
 }
 
 /// Sequencer state of one Beat Machine group (the modelled `BSlice` fields).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sequencer {
     pub slices: [Slice; SLOTS],
     /// Native `+0x88`: current entry index. Written only when the walk advances.
@@ -127,6 +126,109 @@ impl Sequencer {
     }
 }
 
+/// Zone slices of one Beat Machine zone: boundaries in source frames (slice `i` spans
+/// `markers[i]..markers[i + 1]`, `count` entries used) and the group's crossfade controls.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spec {
+    pub markers: [u32; SLOTS + 1],
+    pub count: u8,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+    pub flag: bool,
+}
+
+/// One Beat Machine voice. The sequencer walks the slices in order; each slice plays for
+/// its grid cell (its source length at the output rate) and the next one starts when the
+/// cell ends. A slice fades in over `attack` frames and out over `release` frames.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Player {
+    seq: Sequencer,
+    spec: Spec,
+    /// Output frames per source frame.
+    ratio: f64,
+    /// Output frames played in the current slice, and the slice length.
+    slot: u32,
+    len: u32,
+}
+
+impl Player {
+    pub(super) fn new(spec: Spec, source_rate: u32, output_rate: u32) -> Self {
+        let slices = usize::from(spec.count) - 1;
+        let mut table = [Slice::default(); SLOTS];
+        for entry in &mut table[..slices] {
+            *entry = Slice {
+                count: 1,
+                kind: ACTIVE_KIND,
+            };
+        }
+        let mut seq = Sequencer::new(table);
+        seq.crossfade(
+            spec.attack_ms,
+            spec.release_ms,
+            output_rate as f32,
+            spec.flag,
+        );
+        seq.reset(0.0);
+        let mut player = Self {
+            seq,
+            spec,
+            ratio: f64::from(output_rate) / f64::from(source_rate),
+            slot: 0,
+            len: 0,
+        };
+        player.len = player.cell();
+        player
+    }
+
+    /// Source frame where the current slice starts, as an offset from the sample start.
+    pub(super) fn origin(&self, start: usize) -> u64 {
+        u64::from(self.spec.markers[self.seq.index as usize]).saturating_sub(start as u64)
+    }
+
+    /// Output frames of the current slice: its source length at the output rate.
+    fn cell(&self) -> u32 {
+        let i = self.seq.index as usize;
+        let source = self.spec.markers[i + 1] - self.spec.markers[i];
+        ((f64::from(source) * self.ratio).round() as u32).max(1)
+    }
+
+    pub(super) fn slot_done(&self) -> bool {
+        self.slot >= self.len
+    }
+
+    /// Advance to the next slice. Returns `false` after the last one.
+    pub(super) fn next_slice(&mut self) -> bool {
+        self.seq.index += 1;
+        self.seq.settle();
+        if self.seq.index as usize >= usize::from(self.spec.count) - 1 {
+            return false;
+        }
+        self.slot = 0;
+        self.len = self.cell();
+        true
+    }
+
+    /// Gain of the next output frame: fade-in from the slice start, fade-out to its end.
+    pub(super) fn gain(&self) -> f32 {
+        let (t, n) = (self.slot as f32, self.len as f32);
+        let rise = if self.seq.attack > 0 {
+            (t / self.seq.attack as f32).min(1.)
+        } else {
+            1.
+        };
+        let fall = if self.seq.release > 0 {
+            ((n - t) / self.seq.release as f32).min(1.)
+        } else {
+            1.
+        };
+        rise * fall
+    }
+
+    pub(super) fn played(&mut self) {
+        self.slot += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +306,46 @@ mod tests {
         assert_eq!((s.attack, s.release, s.flag), (4800, 24000, true));
         s.crossfade(100.0, 500.0, 44100.0, false);
         assert_eq!((s.attack, s.release), (4410, 22050));
+    }
+
+    fn grid_spec() -> Spec {
+        Spec {
+            markers: [0, 6000, 12000, 18000, 24000, 0, 0, 0, 0],
+            count: 5,
+            attack_ms: 3.0,
+            release_ms: 12.5,
+            flag: true,
+        }
+    }
+
+    #[test]
+    fn player_walks_the_grid_slices_in_order_then_ends() {
+        let mut p = Player::new(grid_spec(), 48000, 48000);
+        assert_eq!((p.origin(0), p.cell()), (0, 6000));
+        assert!(p.next_slice());
+        assert_eq!(p.origin(0), 6000);
+        assert!(p.next_slice());
+        assert!(p.next_slice());
+        assert_eq!(p.origin(0), 18000);
+        assert!(!p.next_slice(), "four slices end after the fourth");
+    }
+
+    #[test]
+    fn player_cell_follows_the_output_rate() {
+        assert_eq!(Player::new(grid_spec(), 48000, 44100).cell(), 5513);
+    }
+
+    #[test]
+    fn player_fades_in_over_attack_and_out_over_release() {
+        let mut p = Player::new(grid_spec(), 48000, 48000);
+        assert_eq!(p.gain(), 0.0);
+        for _ in 0..144 {
+            p.played();
+        }
+        assert_eq!(p.gain(), 1.0);
+        for _ in 144..5999 {
+            p.played();
+        }
+        assert!((p.gain() - 1.0 / 600.0).abs() < 1e-6);
     }
 }
