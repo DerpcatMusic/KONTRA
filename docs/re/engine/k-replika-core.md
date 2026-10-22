@@ -261,7 +261,7 @@ loop reads directly.
 | ID | What is missing | Address |
 |---|---|---|
 | GAP-A | Whether Ctl(0x80) aliases Ctl(0xc8). Idx 0, 1, 4, 8, 13, 14, 16, 52 write only Ctl(0xc8) but the loop reads Ctl(0x80). Top priority. | ctor 141a7f4d0, rebuild 141acbfb0, update 141ab4a10 |
-| GAP-B | Writers of `C+0xad0`, `C+0xad8`, `+0x918`, `+0x91c`, `+0x938`. | not traced |
+| GAP-B | Closed for `+0x938` (`141aca670`), `+0x918`, `+0x91c` (`141ac9420`). OPEN: `C+0xad0`, `C+0xad8` (double reads alias an int table). See `k-replika-gaps.md` piece 2. | 141abd290 |
 | GAP-C | Head ring addressing (write index from `+0x158/+0x15c`, `+0x190/+0x194`; ring length; read glide). | 141acd110, 141ab7a90 |
 | GAP-D | Filter families and coefficients of F1, F2 (glide targets `+0x1408`, `+0x141c`). Low cut, high cut not identified. | 141aa3ec0 |
 | GAP-E | Effect objects `C+0x13f80`, `C+0x13e80` (vtable +0x38, +0x60). | not read |
@@ -272,7 +272,7 @@ loop reads directly.
 | GAP-J | Closed: Ctl(0x60) writers are slot-1 init 141a9e300 (1.0) and bypass fade 141acc600 (0 or 1 by enables). Enable binding open. | 141a9e300, 141acc600 |
 | GAP-K | Bank lane increments `144714b78`, `144714b7c` (not in constants.tsv). | constants.tsv |
 | GAP-L | Writers of `C+0x600`, `C+0x604`, `C+0x630..+0x638`, `C+0x6cc`, `C+0x6d0`, `C+0x48`. | 141ac0000 ~4700-4970, 141aa1580 |
-| GAP-M | Ducking body `141abd0b0` (section position and gain) and the rest of `141abd290`. | 141abd0b0 |
+| GAP-M | Closed: `141abd290` is the head position update, not the ducker. The ducker is the gate of `141aa9480` steps 10 and 14 (`k-replika-gaps.md` piece 2). | 141abd290 |
 | GAP-N | Modes 0..2 rebuild, `141acc600` ramp length (`+0x62d8`), idx 8 table path, idx 0/1 conversion `141a90910`. | 141acbfb0, 141a9d4a0, 141a90910 |
 | GAP-O | `14199ce60` beyond its first 40 lines (noise consumer). | 14199ce60 |
 | GAP-P | Live epilogue `141a95830`, update `141ab4a10`, slot 1 `141a9e300`, ctor helpers `141a7d480`, `141a7ea50`, `141a7fb90`. | as named |
@@ -296,7 +296,7 @@ Laws, one label each (35 lines). CONFIRMED 22, INFERRED 8, UNKNOWN 5.
 - L12 Matrix: side scale (idx 16), dry pan pair (idx 4 x 13/14): CONFIRMED arithmetic.
 - L13 Output followers and tail test (-100 dB): CONFIRMED arithmetic.
 - L14 Smoother form: INFERRED (thresholds and coefficients UNKNOWN).
-- L15 Ducking read path (constants decoded); head roles INFERRED: CONFIRMED arithmetic.
+- L15 Head position update `141abd290` (not the ducker): CONFIRMED arithmetic. The ducker (steps 10, 14) is CONFIRMED and emulated (piece 2).
 - L16 Time law, mode 3: ms = clamp(k v 4000, 0, 4000), k = 0.5 or 1; rebuild gives ms/2000 or ms/4000: CONFIRMED.
 - L17 Pow law idx 30/35/44: 440 x 2^((79.726 v - 145.239)/12): CONFIRMED formula; use INFERRED.
 - L18 Mode quantiser int(4v) clamped 0..3, default 3: CONFIRMED.
