@@ -44,8 +44,7 @@ const SV: &str = "FilterSV1/2/4/6 setters, 32-frame coefficient ramp and process
 const MULTI_SV: &str = "FilterMultiSV (0x140b05d50, 0x140b01d00) matches the native class under kemu to 1e-6; the bandwidth is the record's leading value (read into +0x24), its ENGINE_PAR id is unprobed";
 const LEGACY: &str = "BFilter class law and process run by the cascade core (dsp/filter/cascade.rs) match the native classes under kemu to 2e-5 and the Kontakt LP4/LP6 measurements; control clock 0x140ae9f90 reproduced except its alternative branch (global 0x144fd4c54) and offset slew (+0x1f8), both unwritten";
 const STAGES: &str = "setter and process (Pro-53 FUN_14095d940/FUN_1409099a0, Legacy Ladder FUN_14095d630/FUN_140aef200, Vowel FUN_14095dd00/FUN_14095e250/FUN_140914a20) run by the cascade core match the native code (kemu) to 2e-5; scalar summation order only (the SSE path for >= 32-frame calls differs in rounding); clock as LEGACY";
-const LADDER: &str = "core FUN_140b00be2/FUN_140b06180 checked (cutoff law and table, pole polynomial, resonance, feedback correction, clip, stages, tap weights and compensation, 2 ms ramp); gain law (1200 + 119.589 g table index) and HQ (flag > 0.5, shared 2x Kaiser) confirmed against the Kontakt 8 decompile; HQ is the shared 2x Kaiser oversampler around the core (static composition bit-exact on 282 native cells); the cutoff path flag 0x49 is decoded from the record (docs/re/engine/ladder-cutoff-byte.md); flag-1 PCM not yet captured";
-const LADDER_LP4_HQ_OFF: &str = "LP4, HQ off: steady knobs bit-exact (84 native HQ-off cells), moving cutoff vs native (kemu, flag 0) to 1-2 ulp; the alternative cutoff path (flag 0x49, the record's +0x29 byte) is decompile-confirmed (core ctor zeroes the lane's step, snap epsilon 1e-15, snap on the 32-frame tick) with no native flag-1 PCM capture yet; HQ-on and the other Ladder rows stay partial";
+const LADDER: &str = "core FUN_140b00be2/FUN_140b06180 (cutoff law and table, pole polynomial, resonance, feedback correction, clip, stages, tap weights and compensation, 2 ms ramp), gain law (1200 + 119.589 g table index) and HQ (flag > 0.5, shared 2x Kaiser) checked against the Kontakt 8 decompile; steady knobs bit-exact on the native PCM grid (ladder_native_vectors.rs, ladder_native_hq_vectors.rs); moving cutoff (flag 0 within 2e-7 of peak), cutoff path flag 0x49 = 1 and HQ-on moving controls match kemu-run native code for every selector (tools/re/ladder_kemu_vectors.py, ladder_kemu_vectors.json); the flag source is decoded (docs/re/engine/ladder-cutoff-byte.md)";
 const DAFT: &str = "saved controls and ramp scheduling extracted; native audio core and resampler not recovered, saturation and interpolation are stand-ins (CORE-FILTERS-029..031)";
 const AR: &str = "FilterDJ equation and 32-frame clock match extracted instruction vectors; no host oracle (CORE-FILTERS-019)";
 const KFX: &str = "KONTAKTFX cores (dsp/filter/kontaktfx.rs: FilterDJExtRange + FilterLadderExtRange, Dual SKF, BlueMonark) bit-exact against the native classes under kemu at 48 kHz; record layouts and knob order from the BFilter readers; stereo interleave and the Simple LP/HP alternate smoother (u8, rate 1/(p2 1500 + 150)) unprobed";
@@ -79,18 +78,18 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         22 => ("EQ 1 band", Elsewhere("eq family")),
         23 => ("EQ 2 band", Elsewhere("eq family")),
         24 => ("EQ 3 band", Elsewhere("eq family")),
-        30 => ("Ladder LP1", C(native(Topology::Ladder, Lp, 1), Partial, LADDER)),
-        31 => ("Ladder LP2", C(native(Topology::Ladder, Lp, 2), Partial, LADDER)),
-        32 => ("Ladder LP3", C(native(Topology::Ladder, Lp, 3), Partial, LADDER)),
-        33 => ("Ladder LP4", C(native(Topology::Ladder, Lp, 4), Partial, LADDER)),
-        34 => ("Ladder HP1", C(native(Topology::Ladder, Hp, 1), Partial, LADDER)),
-        35 => ("Ladder HP2", C(native(Topology::Ladder, Hp, 2), Partial, LADDER)),
-        36 => ("Ladder HP3", C(native(Topology::Ladder, Hp, 3), Partial, LADDER)),
-        37 => ("Ladder HP4", C(native(Topology::Ladder, Hp, 4), Partial, LADDER)),
-        38 => ("Ladder BP2", C(native(Topology::Ladder, Bp, 2), Partial, LADDER)),
-        39 => ("Ladder BP4", C(native(Topology::Ladder, Bp, 4), Partial, LADDER)),
-        40 => ("Ladder Peak", C(native(Topology::Ladder, Pk, 4), Partial, LADDER)),
-        41 => ("Ladder Notch", C(native(Topology::Ladder, Nt, 4), Partial, LADDER)),
+        30 => ("Ladder LP1", C(native(Topology::Ladder, Lp, 1), Exact, LADDER)),
+        31 => ("Ladder LP2", C(native(Topology::Ladder, Lp, 2), Exact, LADDER)),
+        32 => ("Ladder LP3", C(native(Topology::Ladder, Lp, 3), Exact, LADDER)),
+        33 => ("Ladder LP4", C(native(Topology::Ladder, Lp, 4), Exact, LADDER)),
+        34 => ("Ladder HP1", C(native(Topology::Ladder, Hp, 1), Exact, LADDER)),
+        35 => ("Ladder HP2", C(native(Topology::Ladder, Hp, 2), Exact, LADDER)),
+        36 => ("Ladder HP3", C(native(Topology::Ladder, Hp, 3), Exact, LADDER)),
+        37 => ("Ladder HP4", C(native(Topology::Ladder, Hp, 4), Exact, LADDER)),
+        38 => ("Ladder BP2", C(native(Topology::Ladder, Bp, 2), Exact, LADDER)),
+        39 => ("Ladder BP4", C(native(Topology::Ladder, Bp, 4), Exact, LADDER)),
+        40 => ("Ladder Peak", C(native(Topology::Ladder, Pk, 4), Exact, LADDER)),
+        41 => ("Ladder Notch", C(native(Topology::Ladder, Nt, 4), Exact, LADDER)),
         50 => ("SV LP1", C(variant(Lp, 1, Variant::Sv), Exact, SV)),
         51 => ("SV HP1", C(variant(Hp, 1, Variant::Sv), Exact, SV)),
         52 => ("SV LP2", C(variant(Lp, 2, Variant::Sv), Exact, SV)),
@@ -689,13 +688,7 @@ pub(super) fn slot_ladder(
         && values[1..].iter().all(|v| (0.0..=1.0).contains(v))
     {
         b.out.filter_slots.push((s.fx.slot, b.out.processors.len() + b.filters.len()));
-        let mut mapped = template(kind).expect("ladder rows are in the table");
-        // LP4 with HQ off is the one row with native moving-cutoff vectors (kemu, flag 0);
-        // its flag-1 cutoff law is the decompile-confirmed snap (see LADDER_LP4_HQ_OFF).
-        if kind == 33 && !hq {
-            mapped.fidelity = Exact;
-            mapped.caveat = LADDER_LP4_HQ_OFF;
-        }
+        let mapped = template(kind).expect("ladder rows are in the table");
         let mut config = mapped.config;
         config.drive = f64::from(values[0]);
         config.cutoff = f64::from(values[1]);

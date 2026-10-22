@@ -32,6 +32,18 @@ mod impulse_namespace;
 mod zone_routing;
 use impulse_namespace::EffectFileOrigins;
 
+/// Kontakt's release-trigger-counter source (source type 10). The producer
+/// at decompile 0x14084f380 returns `(T - held) / T`, clamped at 0, only for a
+/// release-trigger group with `T > 0` (`T` in ms, the group's `rls_trig_counter`);
+/// every other group holds 1.
+fn release_counter_source(release_trigger: bool, counter_ms: i32) -> ir::ModulationSource {
+    if release_trigger && counter_ms > 0 {
+        ir::ModulationSource::ReleaseCounter(ir::Time::Milliseconds(f64::from(counter_ms)))
+    } else {
+        ir::ModulationSource::Constant
+    }
+}
+
 /// A translated instrument and the resolver of the samples its assets name.
 pub struct Kontakt {
     pub instrument: ir::Instrument,
@@ -961,11 +973,27 @@ fn group_engine_write(writes: &[sampler_ksp::EnginePar], parameter: &str, group:
 
 /// The Beat Machine controls of a stored mode-4 record: `slice_float_1` is Slice Atk and
 /// `slice_float_2` Slice Rel (both milliseconds, in control order), `slice_flag_1` the flag.
-fn beat_slices_from_record(params: &ni_file::kontakt::objects::BParSrcMode) -> Option<ir::BeatSlices> {
+fn beat_slices_from_record(
+    params: &ni_file::kontakt::objects::BParSrcMode,
+) -> Option<ir::BeatSlices> {
     use ni_file::kontakt::objects::SourceValue as V;
-    let value = |name: &str| params.fields.iter().find(|f| f.name == name).map(|f| f.value);
-    match (value("slice_float_1")?, value("slice_float_2")?, value("slice_flag_1")?) {
-        (V::Float(attack_ms), V::Float(release_ms), V::Flag(flag)) => Some(ir::BeatSlices { attack_ms, release_ms, flag }),
+    let value = |name: &str| {
+        params
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.value)
+    };
+    match (
+        value("slice_float_1")?,
+        value("slice_float_2")?,
+        value("slice_flag_1")?,
+    ) {
+        (V::Float(attack_ms), V::Float(release_ms), V::Flag(flag)) => Some(ir::BeatSlices {
+            attack_ms,
+            release_ms,
+            flag,
+        }),
         _ => None,
     }
 }
@@ -1722,12 +1750,22 @@ impl Translation {
                     beat_slices = match group.source_params() {
                         Ok((params, _)) => beat_slices_from_record(&params),
                         Err(error) => {
-                            self.unsupported(&at, "beat machine source record", error, ir::Reason::Unknown);
+                            self.unsupported(
+                                &at,
+                                "beat machine source record",
+                                error,
+                                ir::Reason::Unknown,
+                            );
                             None
                         }
                     };
                     if beat_slices.is_none() {
-                        self.unsupported(&at, "beat machine slice controls missing", source.mode, not_modeled);
+                        self.unsupported(
+                            &at,
+                            "beat machine slice controls missing",
+                            source.mode,
+                            not_modeled,
+                        );
                     }
                 }
             }
@@ -2164,12 +2202,8 @@ impl Translation {
                     ModSource::MonoAftertouch => ir::ModulationSource::ChannelPressure,
                     ModSource::PolyAftertouch => ir::ModulationSource::PolyPressure,
                     ModSource::Constant => ir::ModulationSource::Constant,
-                    // Kontakt manual (Source module, T): counts down from T ms
-                    // at note-on and holds its value at note-off.
-                    ModSource::ReleaseTriggerCounter if v.rls_trig_counter > 0 => {
-                        ir::ModulationSource::ReleaseCounter(ir::Time::Milliseconds(f64::from(
-                            v.rls_trig_counter,
-                        )))
+                    ModSource::ReleaseTriggerCounter => {
+                        release_counter_source(v.release_trigger, v.rls_trig_counter)
                     }
                     // KSP set_event_par_arr($EVENT_PAR_MOD_VALUE_ID, v, id).
                     ModSource::Script(id) if id <= 1000 => ir::ModulationSource::Script(id as u16),
@@ -3695,7 +3729,7 @@ mod zone_range_tests {
     use std::io::Cursor;
 
     /// A v0x9a sampled zone record in group 3 with file 0, gain 1 and tune 1.
-    fn sampled(velocities: [i16; 2], keys: [i16; 2], root: i16) -> Vec<u8> {
+    pub(super) fn sampled(velocities: [i16; 2], keys: [i16; 2], root: i16) -> Vec<u8> {
         let mut public = vec![0u8; 82];
         public[12..14].copy_from_slice(&velocities[0].to_le_bytes());
         public[14..16].copy_from_slice(&velocities[1].to_le_bytes());
@@ -3742,6 +3776,22 @@ mod zone_range_tests {
     fn zone_partly_outside_still_fails_until_checked_against_kontakt() {
         let error = read(&sampled([100, 200], [36, 81], 60)).err().unwrap();
         assert_eq!(error, "high velocity 200 is outside 0..=127");
+    }
+
+    /// The zone parameter block starts `sample_start`, `sample_end`, then
+    /// `sample_start_mod_range`, all i32 in source frames (public offsets 0, 4
+    /// and 8; the record's public block begins 15 bytes in). Kontakt's start
+    /// modulation adds an amount in frames and bounds it by this range in the
+    /// same unit (decompile 0x14084f380 and the zone getter at 0x140884db0),
+    /// so the range passes through unscaled. A -1 range is kept as no range
+    /// (`max(0)`), as the oracle diff compares it.
+    #[test]
+    fn start_modulation_range_is_source_frames_and_minus_one_is_no_range() {
+        let mut record = sampled([1, 127], [36, 81], 60);
+        record[23..27].copy_from_slice(&1234i32.to_le_bytes());
+        assert_eq!(read(&record).unwrap().start_mod, 1234);
+        record[23..27].copy_from_slice(&(-1i32).to_le_bytes());
+        assert_eq!(read(&record).unwrap().start_mod, 0);
     }
 
     #[test]
@@ -4885,6 +4935,76 @@ mod modulation {
         }
     }
 
+    /// A group with no routes, envelope or insert chain: only what a zone inherits.
+    fn plain_group(reverse: bool) -> GroupInfo {
+        GroupInfo {
+            index: 0,
+            group: ir::GroupRef(0),
+            release: false,
+            tracking: true,
+            reverse,
+            envelope: None,
+            velocity: ir::VelocityResponse::None,
+            routes: Vec::new(),
+            chain: None,
+            bus: None,
+        }
+    }
+
+    /// BASIC_BEHAVIORS row 21: a zone tune ratio of 2.0 is +12 semitones.
+    #[test]
+    fn basic_behavior_zone_tune_ratio_two_is_plus_twelve_semitones() {
+        let mut out = translation();
+        // The sampled record from zone_range_tests (tune 1, public offset 38);
+        // the public block starts after the group id, header and two lengths.
+        let mut record = super::zone_range_tests::sampled([0, 127], [0, 127], 60);
+        record[4 + 3 + 4 + 4 + 38..][..4].copy_from_slice(&2f32.to_le_bytes());
+        let zone = super::raw_zone(&mut std::io::Cursor::new(record.as_slice())).unwrap();
+        let program = ni_file::kontakt::objects::ProgramPublicParams {
+            tune: 1.0,
+            ..Default::default()
+        };
+        out.zone(
+            0,
+            zone,
+            None,
+            &plain_group(false),
+            &program,
+            "tone.wav".into(),
+        );
+        let [made] = out.ir.zones.as_slice() else {
+            panic!("one zone")
+        };
+        let ir::Pitch::Semitones(semitones) = made.tune else {
+            panic!("semitone tune")
+        };
+        assert!((semitones - 12.).abs() < 1e-9, "{semitones}");
+    }
+
+    /// BASIC_BEHAVIORS row 20: a zone inherits reverse from its reversed group.
+    #[test]
+    fn basic_behavior_reversed_group_sets_reverse_on_its_zones() {
+        let mut out = translation();
+        let record = super::zone_range_tests::sampled([0, 127], [0, 127], 60);
+        let zone = super::raw_zone(&mut std::io::Cursor::new(record.as_slice())).unwrap();
+        let program = ni_file::kontakt::objects::ProgramPublicParams {
+            tune: 1.0,
+            ..Default::default()
+        };
+        out.zone(
+            0,
+            zone,
+            None,
+            &plain_group(true),
+            &program,
+            "ramp.wav".into(),
+        );
+        let [made] = out.ir.zones.as_slice() else {
+            panic!("one zone")
+        };
+        assert!(made.playback.reverse);
+    }
+
     #[test]
     fn group_send_taps_keep_physical_return_identity_and_amplifier_side() {
         let mut out = translation();
@@ -5327,6 +5447,25 @@ mod modulation {
             unknown_i16: -1,
             unknown_flags: 0x10,
         }
+    }
+
+    /// The release counter counts `T` ms only in a release-trigger group with
+    /// `T > 0` (decompile 0x14084f380, source type 10). Otherwise its value is
+    /// the constant 1, not a dropped route.
+    #[test]
+    fn release_counter_is_a_counter_only_in_a_release_group_with_a_time() {
+        assert_eq!(
+            release_counter_source(true, 1000),
+            ir::ModulationSource::ReleaseCounter(ir::Time::Milliseconds(1000.))
+        );
+        assert_eq!(
+            release_counter_source(true, 0),
+            ir::ModulationSource::Constant
+        );
+        assert_eq!(
+            release_counter_source(false, 1000),
+            ir::ModulationSource::Constant
+        );
     }
 
     /// An AHDSR stage time addressed as a modulation target binds to the
@@ -7040,15 +7179,30 @@ mod time_machine_tests {
     #[test]
     fn beat_machine_slice_fields_map_to_atk_rel_and_flag() {
         use ni_file::kontakt::objects::{BParSrcMode, SourceField, SourceValue as V};
-        let field = |name: &'static str, value| SourceField { offset: 0, name, value };
-        let record = |fields: Vec<SourceField>| BParSrcMode { version: 0x106, mode: 4, fields, bytes: 0 };
+        let field = |name: &'static str, value| SourceField {
+            offset: 0,
+            name,
+            value,
+        };
+        let record = |fields: Vec<SourceField>| BParSrcMode {
+            version: 0x106,
+            mode: 4,
+            fields,
+            bytes: 0,
+        };
         let full = record(vec![
             field("slice_float_1", V::Float(32.0)),
             field("slice_float_2", V::Float(600.0)),
             field("slice_flag_1", V::Flag(true)),
         ]);
-        assert_eq!(beat_slices_from_record(&full), Some(ir::BeatSlices { attack_ms: 32.0, release_ms: 600.0, flag: true }));
-        assert_eq!(beat_slices_from_record(&record(vec![field("slice_float_1", V::Float(1.0))])), None);
+        let expected = ir::BeatSlices {
+            attack_ms: 32.0,
+            release_ms: 600.0,
+            flag: true,
+        };
+        assert_eq!(beat_slices_from_record(&full), Some(expected));
+        let partial = record(vec![field("slice_float_1", V::Float(1.0))]);
+        assert_eq!(beat_slices_from_record(&partial), None);
     }
 }
 

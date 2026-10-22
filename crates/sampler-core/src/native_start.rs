@@ -106,17 +106,8 @@ impl Prepared {
             StartTest::RoundRobin(position) => {
                 state.native_tick % u64::from(self.native_rr_length) + 1 == u64::from(position)
             }
-            StartTest::Random => {
-                // SplitMix64 placeholder draw (KSP PRNG unproved): explicit reset
-                // seed, no clock or voice-slot dependence.
-                let mut value = state
-                    .native_seed
-                    .wrapping_add(state.native_tick.wrapping_mul(0x9e3779b97f4a7c15));
-                value = (value ^ (value >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-                value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
-                value ^= value >> 31;
-                ordinal == Some((value % u64::from(self.native_random_rows)) as u32)
-            }
+            // One draw per admitted note, shared by every mode-4 row (see `admit`).
+            StartTest::Random => ordinal == Some(state.native_draw),
         };
         let Some(first) = rows.first() else {
             return true;
@@ -135,13 +126,108 @@ impl Prepared {
 }
 impl Runtime {
     /// Explicit phase reset; captured selections and sounding voices stay intact.
+    /// Only the low 32 bits of `seed` reach the generator (Kontakt's seed word is 32-bit).
     pub fn reset_native_cycles(&mut self, seed: u64) {
         for slot in &mut self.plans.slots {
             if let Some(generation) = &mut slot.value {
                 generation.native_cycle = 0;
-                generation.native_seed = seed;
+                generation.native_random = NativeRandom::new(seed as u32);
+                generation.native_draw = 0;
                 generation.sequences.reset(&generation.prepared);
             }
         }
+    }
+}
+
+/// Kontakt 8 `random(from, to)` generator, as used by the mode-4 start draw.
+///
+/// MT19937 with `init_genrand` seeding and standard tempering. Kontakt 8
+/// `0x1410ebf10` seeds it, `0x1410ec0c0` generates, and the global
+/// `0x14a6381e0` backs `0x1414d5e80`. The binary keeps a double-buffered
+/// layout; its stream matches standard MT19937 (checked in the tests below).
+/// Open: the native per-process seed. The global is seeded from
+/// `std::random_device` (`0x1414e7ec0`), so no fixed native seed is recovered.
+#[derive(Clone, Copy)]
+pub(crate) struct NativeRandom {
+    words: [u32; 624],
+    index: usize,
+}
+
+impl NativeRandom {
+    pub(crate) fn new(seed: u32) -> Self {
+        let mut words = [0; 624];
+        words[0] = seed;
+        for i in 1..624 {
+            let prev = words[i - 1];
+            words[i] = 1_812_433_253u32
+                .wrapping_mul(prev ^ (prev >> 30))
+                .wrapping_add(i as u32);
+        }
+        Self { words, index: 624 }
+    }
+
+    fn word(&mut self) -> u32 {
+        if self.index == 624 {
+            for i in 0..624 {
+                let y = (self.words[i] & 0x8000_0000) | (self.words[(i + 1) % 624] & 0x7fff_ffff);
+                self.words[i] =
+                    self.words[(i + 397) % 624] ^ (y >> 1) ^ (0x9908_b0df & (y & 1).wrapping_neg());
+            }
+            self.index = 0;
+        }
+        let mut y = self.words[self.index];
+        self.index += 1;
+        y ^= y >> 11;
+        y ^= (y << 7) & 0x9d2c_5680;
+        y ^= (y << 15) & 0xefc6_0000;
+        y ^ (y >> 18)
+    }
+
+    /// Uniform in `0..n`, as Kontakt's `random(0, n - 1)`: Lemire multiply-high
+    /// with rejection over 32-bit words (`0x1414e6140`), first word most
+    /// significant. `n == 0` draws nothing and returns 0 (no mode-4 row).
+    pub(crate) fn below(&mut self, n: u64) -> u64 {
+        if n == 0 {
+            return 0;
+        }
+        let words = if n - 1 > u64::from(u32::MAX) { 2 } else { 1 };
+        let bits = 32 * words;
+        let n = u128::from(n);
+        let threshold = ((1u128 << bits) - n) % n;
+        loop {
+            let mut x = 0u128;
+            for _ in 0..words {
+                x = (x << 32) | u128::from(self.word());
+            }
+            let product = x * n;
+            if product & ((1u128 << bits) - 1) >= threshold {
+                return (product >> bits) as u64;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NativeRandom;
+
+    #[test]
+    fn mt19937_matches_reference_vectors() {
+        // Seed 5489 is the reference default; 10000th output is the C++ std::mt19937 check value.
+        let mut rng = NativeRandom::new(5489);
+        assert_eq!(rng.word(), 3_499_211_612);
+        for _ in 1..9_999 {
+            rng.word();
+        }
+        assert_eq!(rng.word(), 4_123_659_995);
+    }
+
+    #[test]
+    fn bounded_mapping_uses_multiply_high_with_rejection() {
+        // First word 3499211612: 3499211612 * 6 >> 32 = 4, low word above the threshold.
+        assert_eq!(NativeRandom::new(5489).below(6), 4);
+        assert_eq!(NativeRandom::new(5489).below(0), 0);
+        // Two-word path (span above 32 bits): vector from the same stream.
+        assert_eq!(NativeRandom::new(5489).below(1 << 33), 6_998_423_224);
     }
 }
