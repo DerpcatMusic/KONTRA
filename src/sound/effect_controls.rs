@@ -98,6 +98,7 @@ pub(crate) mod tests {
             resonance: 0.2,
             record_version: 1,
             taps: 4,
+            high_quality: false,
         });
         instrument.chains = vec![ir::Chain {
             scope: ir::Scope::Group(ir::GroupRef(3)),

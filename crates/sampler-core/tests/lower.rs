@@ -1103,6 +1103,7 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
         resonance: 0.,
         record_version: 0x92,
         taps: 4,
+        high_quality: false,
     });
     let pcm = Pcm::new(
         48000,
@@ -1570,6 +1571,7 @@ fn physical_ladder_lanes_keep_signed_gain_and_drive_audio_without_heap() {
                 resonance: 0.,
                 record_version: 0x92,
                 taps: 4,
+                high_quality: false,
             })],
             post_amplitude: vec![],
         }],
@@ -1630,6 +1632,7 @@ fn normalized_cutoff_routes_address_ladder_and_daft_without_audio_heap() {
                             resonance: 0.1,
                             record_version: 0x92,
                             taps: 4,
+                            high_quality: false,
                         })
                     } else {
                         ir::Processor::Daft(ir::Daft {
@@ -1769,6 +1772,7 @@ fn normalized_q_gain_routes_address_native_knobs_without_audio_heap() {
                         resonance,
                         record_version: 0x92,
                         taps: 4,
+                        high_quality: false,
                     })
                 } else {
                     ir::Processor::Daft(ir::Daft {
@@ -4066,7 +4070,7 @@ fn compressor_editors_use_each_laws_physical_domain_without_invalidating_loads()
         (Law::KontaktPro(native), 4),
         (Law::KontaktFeedback { native: Native { threshold_db: 1.7782794, ratio: 4.8 }, high_quality: true }, 4),
         (Law::KontaktLimiter(Native { threshold_db: 0.0, ratio: 0.0 }), 2),
-        (Law::KontaktHilbert(Native { threshold_db: 0.5, ratio: 0.8 }), 0),
+        (Law::KontaktHilbert(Native { threshold_db: 0.5, ratio: 0.8 }, ir::fx::dynamics::Key::Internal), 0),
     ] {
         let mut i = instrument();
         i.sequences.clear();

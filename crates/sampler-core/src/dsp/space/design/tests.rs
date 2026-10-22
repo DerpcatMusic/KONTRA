@@ -117,7 +117,7 @@ fn freeverb_net(width: f64, predelay: f64) -> Network {
         topology: Topology::Freeverb,
         predelay_seconds: predelay,
         input_cutoff_hz: 192_000.0,
-        freeverb: Some(Freeverb { feedback: 0.8, damp: 0.7, allpass: 0.5, input_gain: 0.015, width }),
+        freeverb: Some(Freeverb { feedback: 0.8, damp: 0.7, allpass: 0.5, input_gain: 0.015, width, input_filter: InputFilter::OnePole }),
         ..Network::DEFAULT
     }
 }
@@ -241,7 +241,8 @@ fn spark_lengths_match_native_vectors() {
 /// laws at 48 kHz, RoomSize 20, Decay 1, N 8.
 #[test]
 fn spark_coefficients_match_native_vectors() {
-    use spark_law::shelf;
+    use super::shelf::{Warp, first_order};
+    let shelf = |fc, g0, gp| first_order(Warp::Tan(fc), g0, gp);
     let close = |a: f64, b: f64, tol: f64| assert!((a - b).abs() < tol, "{a} vs {b}");
     let s = shelf(250.0 / 48_000.0, 0.5, 1.0);
     [0.988_691, -0.966_072, -0.954_763].iter().zip(s).for_each(|(&b, a)| close(a, b, 2e-6));
@@ -362,4 +363,29 @@ fn generic_low_band_decays_slower_when_asked() {
     let (b, _) = stereo_impulse(&Network { bands: Some(bands), ..flat }, 48_000, 3);
     let late = |v: &[f32]| v[48_000..].iter().map(|x| x * x).sum::<f32>();
     assert!(late(&b) > late(&a) * 2.0, "{} vs {}", late(&b), late(&a));
+}
+
+/// Kontakt Legacy input low-pass (`freeverb_law::butterworth2`): DC gain 1, a
+/// Nyquist null and the -3 dB points of the decompile's closed form at 44.1 kHz.
+#[test]
+fn legacy_input_lowpass_matches_closed_form() {
+    let mag = |c: [f64; 5], f: f64, rate: f64| {
+        let z = std::f64::consts::TAU * f / rate;
+        let (cz, sz) = (z.cos(), z.sin());
+        // The network's y = Σb·x − a1·y₋₁ − a2·y₋₂: denominator 1 + a1·e^{-jz} + a2·e^{-2jz}.
+        let (nr, ni) = (c[0] + c[1] * cz + c[2] * (2.0 * z).cos(), -(c[1] * sz + c[2] * (2.0 * z).sin()));
+        let (dr, di) = (1.0 + c[3] * cz + c[4] * (2.0 * z).cos(), -(c[3] * sz + c[4] * (2.0 * z).sin()));
+        ((nr * nr + ni * ni) / (dr * dr + di * di)).sqrt()
+    };
+    for (x, hz) in [(0.25, 248.01), (0.5, 1194.17), (0.75, 5369.32)] {
+        let c = freeverb_law::butterworth2(x, 44_100.0);
+        assert!((mag(c, 1e-3, 44_100.0) - 1.0).abs() < 1e-9);
+        assert!(mag(c, 22_049.0, 44_100.0) < 1e-3);
+        let (mut lo, mut hi) = (1.0, 22_050.0);
+        for _ in 0..60 {
+            let m = 0.5 * (lo + hi);
+            if mag(c, m, 44_100.0) > std::f64::consts::FRAC_1_SQRT_2 { lo = m } else { hi = m }
+        }
+        assert!((lo - hz).abs() < 0.02, "x {x}: {lo} Hz");
+    }
 }

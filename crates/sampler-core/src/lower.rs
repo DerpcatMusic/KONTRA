@@ -217,6 +217,11 @@ pub(crate) fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             fx::Curve::Tubescreamer(d) => Curve::Tubescreamer(d),
             fx::Curve::Dirt(d) => Curve::Dirt(d),
             fx::Curve::Freak(d) => Curve::Freak(d),
+            // Fuzz's three knobs are live lanes; its mono flag is stored only.
+            fx::Curve::Amp(d) if matches!(d.model, fx::AmpModel::Fuzz) => Curve::Fuzz {
+                knobs: [knob(P::FuzzAmount, d.knobs[0]), knob(P::FuzzBass, d.knobs[1]), knob(P::FuzzTreble, d.knobs[2])],
+                mono: d.knobs[3] != 0.0,
+            },
             fx::Curve::Amp(d) => Curve::Amp(d),
             fx::Curve::Bite(d) => Curve::Bite(d),
             fx::Curve::Tape(d) => Curve::Tape(d),
@@ -248,6 +253,7 @@ fn stretch_spec(t: ir::TimeStretch) -> crate::source::StretchSpec {
             ir::StretchKind::TimeMachine1 => StretchMode::TimeMachine,
             ir::StretchKind::TimeMachine2 => StretchMode::TimeMachine2,
             ir::StretchKind::TimeMachinePro => StretchMode::TimeMachinePro,
+            ir::StretchKind::ToneMachine => StretchMode::ToneMachine,
         },
         hq: t.high_quality,
         speed: t.speed,
@@ -946,13 +952,7 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
     if instrument.voice_limit.is_some() || !instrument.voice_limits.is_empty() {
         let limit = |l: &ir::VoiceLimit| crate::VoiceLimit {
             voices: l.voices,
-            kill: match l.kill {
-                ir::Kill::Any => crate::Kill::Any,
-                ir::Kill::Oldest => crate::Kill::Oldest,
-                ir::Kill::Newest => crate::Kill::Newest,
-                ir::Kill::Highest => crate::Kill::Highest,
-                ir::Kill::Lowest => crate::Kill::Lowest,
-            },
+            kill: l.kill,
             prefer_released: l.prefer_released,
             fade: lowering.frames(l.fade),
         };
@@ -1452,6 +1452,11 @@ impl Lowering<'_> {
         let envelope = self.envelope(&owner, zone)?;
         let mut pre = Vec::new();
         let mut post = Vec::new();
+        // The machine is the source: it runs before the region gain and the chain.
+        // Modes 1..=5 are the recovered ones; others stay a sampler (loader diagnostic).
+        if let Some(&ir::Machine::S1200 { filter_mode: Some(mode @ 1..=ir::S1200_FILTER_MODE_MAX) }) = group.and_then(|g| g.machine.as_ref()) {
+            pre.push(Processor::S1200(crate::dsp::machine::S1200Stage::new(crate::dsp::machine::s1200_mode(mode), self.rate)));
+        }
         if gain > 1.0 {
             // Region gain is an attenuator; boost belongs to the voice chain.
             pre.push(Processor::Gain(gain));
@@ -2474,6 +2479,8 @@ impl Lowering<'_> {
     ) -> Result<ModSource, LowerError> {
         Ok(match source {
             ir::ModulationSource::Envelope(e) => ModSource::Envelope(self.adsr(owner, e, false)?),
+            ir::ModulationSource::Follower(f) => ModSource::Follower([f.attack, f.decay, f.gain, f.adaption]),
+            ir::ModulationSource::Glide(g) => ModSource::Glide { mode: g.mode, time_ms: g.time_ms },
             ir::ModulationSource::Breakpoints(b) => {
                 let mut points = Vec::with_capacity(b.points.len());
                 for p in &b.points {
@@ -2974,6 +2981,7 @@ impl Lowering<'_> {
                     gain: parameter(2, d.gain),
                     record_version: d.record_version,
                     taps: d.taps,
+                    high_quality: d.high_quality,
                 }))
             }
             ir::Processor::LiveFormant { second, .. } => {
@@ -2988,6 +2996,7 @@ impl Lowering<'_> {
                 None => Processor::TimeMod(config),
             },
             ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
+            ir::Processor::RingMod(config) => Processor::RingMod(config),
             ir::Processor::Formant(knobs) => Processor::Formant(knobs),
             ir::Processor::FilterBank(c) => match c.topology {
                 ir::fx::filter::Topology::FormantII => {

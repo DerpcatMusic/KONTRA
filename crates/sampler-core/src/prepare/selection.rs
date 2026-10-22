@@ -1122,7 +1122,7 @@ input.group>=16||input.channel>=16||input.key>=128
                 let n = self.notes.get(note.0).unwrap();
                 let controllers = &self.performance_state.states[snapshot].controllers;
                 let g = self.plans.get_mut(plan.0).unwrap();
-                let inputs = crate::voice_mod::Inputs::new(
+                let mut inputs = crate::voice_mod::Inputs::new(
                     n,
                     self.expressions.get(n.expression.0).unwrap().value,
                     controllers,
@@ -1130,6 +1130,8 @@ input.group>=16||input.channel>=16||input.key>=128
                     &self.note_params[note.0.index].mods,
                     g.controls.base_reals(),
                 );
+                // Glide origin: semitones from this plan's previous started note.
+                inputs.interval = g.modulation.glide_interval(i32::from(n.pitch.key()));
                 let clock = crate::voice_mod::Clock {
                     rate: f64::from(self.rate),
                     tempo: self.tempo,

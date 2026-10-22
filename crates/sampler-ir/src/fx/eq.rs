@@ -53,7 +53,8 @@ pub enum Law {
     KontaktLegacy,
     /// Solid G-EQ: `frequency`, `q` and `gain_db` are the saved normalized 0..=1 knobs of the
     /// section; the native cubic-spline tables turn them into Hz, bandwidth and dB (proved). The
-    /// biquad that follows is generic RBJ (topology unproved). `q` is ignored for HP/LP sections.
+    /// section's biquads follow the topology in `docs/re/engine/eq-kontakt.md` (LF/HF shelves
+    /// still partial). `q` is ignored for HP/LP sections.
     Solid(SolidSection),
     /// RBJ cookbook biquads by the bilinear transform: Hertz, Q (`alpha = sin(w0) / 2q`), decibels
     /// (`A = 10^(dB/40)`). UVI TwoBandEq/ThreeBandEq/ParametricEQ coefficient routines (proved).

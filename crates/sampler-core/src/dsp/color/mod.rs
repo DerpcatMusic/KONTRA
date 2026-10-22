@@ -14,6 +14,7 @@ mod drive;
 mod tubescreamer;
 mod dirt;
 mod freak;
+mod hilbert;
 mod bite;
 mod tape;
 mod exciter;
@@ -93,6 +94,8 @@ pub enum CurveSettings {
     Diode(sampler_ir::fx::color::Diode),
     /// A Kontakt amp, cabinet or pedal model.
     Amp(sampler_ir::fx::color::Amp),
+    /// Kontakt Fuzz: live amount, bass and treble, and the stored mono flag.
+    Fuzz { knobs: [Parameter; 3], mono: bool },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -183,6 +186,7 @@ impl Settings {
                 CurveSettings::Destructor(d) => d.is_finite() && (0.0..=1.0).contains(d),
                 CurveSettings::Skreamer(k) => k.iter().all(live_knob),
                 CurveSettings::Amp(a) => a.knobs.iter().all(|v| v.is_finite()),
+                CurveSettings::Fuzz { knobs, .. } => knobs.iter().all(live_knob),
                 CurveSettings::Diode(d) => [d.drive, d.tone, d.high_pass, d.asymmetry, d.output_gain].iter().all(|v| v.is_finite()),
                 CurveSettings::ToneStack(d) => [d.bass, d.mid, d.treble, d.gain].iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Exciter(d) => [d.input_gain, d.amount, d.mix, d.output_gain].iter().all(|v| v.is_finite()),
@@ -215,7 +219,7 @@ impl Settings {
             && self.tone.is_none()
             && self.stereo.is_none()
             && self.widener.is_none()
-            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Tubescreamer(_) | CurveSettings::Dirt(_) | CurveSettings::Freak(_) | CurveSettings::Bite(_) | CurveSettings::Tape(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_) | CurveSettings::Amp(_))
+            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Tubescreamer(_) | CurveSettings::Dirt(_) | CurveSettings::Freak(_) | CurveSettings::Bite(_) | CurveSettings::Tape(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_) | CurveSettings::Amp(_) | CurveSettings::Fuzz { .. })
     }
 
     /// Frames of ring storage the pseudo-stereo delay needs.
@@ -264,6 +268,7 @@ impl Settings {
             CurveSettings::ToneStack(d) => Curve::ToneStack(tonestack::Engine::new(d, rate)),
             CurveSettings::Diode(d) => Curve::Diode(diode::Engine::new(d, rate)),
             CurveSettings::Amp(a) => Curve::Amp(amp::Engine::new(a, rate)),
+            CurveSettings::Fuzz { knobs, mono } => Curve::Fuzz { knobs: knobs.map(|p| p.compile(bindings)), mono },
             CurveSettings::Tube(p) | CurveSettings::Transistor(p) => {
                 let transistor = matches!(self.curve, CurveSettings::Transistor(_));
                 let p = p.compile(bindings);
@@ -340,6 +345,7 @@ enum Curve {
     ToneStack(tonestack::Engine),
     Diode(diode::Engine),
     Amp(amp::Engine),
+    Fuzz { knobs: [PreparedParameter; 3], mono: bool },
 }
 enum Damping {
     Fixed(distortion::Damper),
@@ -382,6 +388,7 @@ enum Shaper {
     ToneStack(tonestack::State),
     Diode(diode::State),
     Amp(amp::State),
+    Fuzz(amp::fuzz::State),
     /// A Kontakt KONTAKTFX filter stage's history: a filter stage runs no shaper.
     KontaktFilter(super::filter::kontaktfx::State),
 }
@@ -401,6 +408,7 @@ impl Shaper {
             Self::ToneStack(s) => s.finite(),
             Self::Diode(s) => s.finite(),
             Self::Amp(s) => s.finite(),
+            Self::Fuzz(s) => s.finite(),
             Self::KontaktFilter(s) => s.finite(),
         }
     }
@@ -525,6 +533,8 @@ impl Color {
             "rectifier"
         } else if matches!(self.curve, Curve::Skreamer(_) | Curve::LiveSkreamer(_)) {
             "kontakt_skreamer"
+        } else if matches!(self.curve, Curve::Fuzz { .. }) {
+            "kontakt_fuzz"
         } else if self.decimator.is_some() {
             "decimator"
         } else if self.gainer.is_some() {
@@ -555,6 +565,7 @@ impl Color {
             Curve::LiveSkreamer(knobs) => {
                 parameters.extend(["tone", "drive", "bass", "bright", "mix"].into_iter().zip(*knobs));
             }
+            Curve::Fuzz { knobs, .. } => parameters.extend(["amount", "bass", "treble"].into_iter().zip(*knobs)),
             _ => {}
         }
         match &self.damping {
@@ -635,6 +646,7 @@ impl Color {
             Curve::ToneStack(d) => d.process(slot!(state, ToneStack), block, len),
             Curve::Diode(d) => d.process(slot!(state, Diode), block, len),
             Curve::Amp(d) => d.process(slot!(state, Amp), block, len, ring),
+            Curve::Fuzz { knobs, mono } => amp::fuzz::process_live(*knobs, *mono, self.rate, slot!(state, Fuzz), parameters, block, len, at),
         }
     }
 

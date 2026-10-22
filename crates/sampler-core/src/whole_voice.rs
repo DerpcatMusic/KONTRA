@@ -321,7 +321,7 @@ pub(crate) fn prepare(
     if program.sources.iter().enumerate().any(|(i, s)| {
         matches!(
             s,
-            ModSource::Envelope(_) | ModSource::Lfo(_) | ModSource::Breakpoints(_)
+            ModSource::Envelope(_) | ModSource::Lfo(_) | ModSource::Breakpoints(_) | ModSource::Follower(_) | ModSource::Glide { .. }
         ) && flex_source != Some(i)
     }) {
         return None;

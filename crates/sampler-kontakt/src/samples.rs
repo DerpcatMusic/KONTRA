@@ -151,45 +151,51 @@ impl Samples {
         })
     }
 
+    /// Monolith members for a saved name: an exact member path, then a unique
+    /// suffix, then a unique basename. Saved paths can include the old external
+    /// sample folder, so an ambiguous match is an error rather than a guess.
+    // ponytail: linear member scan; index names if large monoliths load slowly.
+    fn embedded_member(&self, parent: &Path, name: &str) -> Result<Option<PathBuf>, LoadError> {
+        if self.embedded.is_empty() {
+            return Ok(None);
+        }
+        let normalized = name.replace('|', "/").to_lowercase();
+        let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
+        for (exact, key) in [
+            (true, normalized.as_str()),
+            (false, normalized.as_str()),
+            (false, basename),
+        ] {
+            let suffix = format!("/{key}");
+            let matches = self.embedded.iter().filter_map(|(path, source)| {
+                let hit = if exact {
+                    path.strip_prefix(&source.path)
+                        .is_ok_and(|member| member.to_string_lossy().to_lowercase() == normalized)
+                } else {
+                    path.to_string_lossy().to_lowercase().ends_with(&suffix)
+                };
+                hit.then_some(path)
+            });
+            match unique(matches) {
+                Unique::None => {}
+                Unique::One(found) => return Ok(Some(found.clone())),
+                Unique::Many => {
+                    return Err(LoadError::Invalid {
+                        path: parent.join(name),
+                        reason: "ambiguous monolith sample name".into(),
+                    });
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Where the sample `name`, as the instrument at `parent` authored it, lives:
     /// a file, or `<archive>/<member>` for an archive member. `None` when absent.
     pub fn resolve(&mut self, parent: &Path, name: &str) -> Result<Option<PathBuf>, LoadError> {
         let name = name.replace('\\', "/");
-        // Saved paths can include the old external sample folder. Prefer an
-        // exact member, then a unique suffix/basename; never choose a duplicate.
-        // ponytail: linear member lookup; index names if large monoliths load slowly.
-        if !self.embedded.is_empty() {
-            let normalized = name.replace('|', "/").to_lowercase();
-            let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
-            for (exact, suffix) in [
-                (true, normalized.as_str()),
-                (false, normalized.as_str()),
-                (false, basename),
-            ] {
-                let suffix = format!("/{suffix}");
-                let mut matches = self
-                    .embedded
-                    .iter()
-                    .filter(|(path, source)| {
-                        if exact {
-                            path.strip_prefix(&source.path).is_ok_and(|member| {
-                                member.to_string_lossy().to_lowercase() == normalized
-                            })
-                        } else {
-                            path.to_string_lossy().to_lowercase().ends_with(&suffix)
-                        }
-                    })
-                    .map(|(path, _)| path);
-                if let Some(found) = matches.next() {
-                    if matches.next().is_some() {
-                        return Err(LoadError::Invalid {
-                            path: parent.join(&name),
-                            reason: "ambiguous monolith sample name".into(),
-                        });
-                    }
-                    return Ok(Some(found.clone()));
-                }
-            }
+        if let Some(found) = self.embedded_member(parent, &name)? {
+            return Ok(Some(found));
         }
         // Kontakt resolves relative names from the instrument folder, and
         // monolith paths also from the library folders above it.
@@ -275,7 +281,7 @@ impl Samples {
         let Some(matches) = loose.get(&basename) else {
             return Ok(None);
         };
-        if let [only] = matches.as_slice() {
+        if let Unique::One(only) = unique(matches.iter()) {
             return Ok(Some(only.clone()));
         }
         let parts: Vec<_> = name
@@ -284,12 +290,11 @@ impl Samples {
             .collect();
         for n in (2..=parts.len()).rev() {
             let suffix = parts[parts.len() - n..].join("/").to_lowercase();
-            let found: Vec<_> = matches
+            let found = matches
                 .iter()
-                .filter(|p| p.to_string_lossy().to_lowercase().ends_with(&suffix))
-                .collect();
-            if let [only] = found.as_slice() {
-                return Ok(Some((*only).clone()));
+                .filter(|p| p.to_string_lossy().to_lowercase().ends_with(&suffix));
+            if let Unique::One(only) = unique(found) {
+                return Ok(Some(only.clone()));
             }
         }
         Err(LoadError::Invalid {
@@ -839,6 +844,21 @@ impl Seek for FileAt<'_> {
 }
 
 // Port from v1 0cb7a8a0:src/import.rs: format only an actual archive member.
+/// Candidates from a name lookup: none, exactly one, or ambiguous.
+enum Unique<T> {
+    None,
+    One(T),
+    Many,
+}
+
+fn unique<T>(mut matches: impl Iterator<Item = T>) -> Unique<T> {
+    match (matches.next(), matches.next()) {
+        (None, _) => Unique::None,
+        (Some(only), None) => Unique::One(only),
+        _ => Unique::Many,
+    }
+}
+
 fn archive_member_where(
     path: &Path,
     mut is_file: impl FnMut(&Path) -> bool,

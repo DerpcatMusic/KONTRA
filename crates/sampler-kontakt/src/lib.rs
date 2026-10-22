@@ -41,6 +41,7 @@ mod samples;
 mod script;
 mod snapshot;
 mod source_parameters;
+mod time_stretch_writes;
 mod stream;
 mod wavetable;
 #[cfg(feature = "library-access")]
