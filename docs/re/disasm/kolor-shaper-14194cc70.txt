@@ -1,0 +1,121 @@
+┌ 489: fcn.14194cc70 (int64_t arg1, int64_t arg2);
+│ `- args(rcx, rdx) vars(7:sp[0x40..0x160])
+│           0x14194cc70      488bc4         mov rax, rsp
+│           0x14194cc73      48895820       mov qword [rax + 0x20], rbx
+│           0x14194cc77      55             push rbp
+│           0x14194cc78      56             push rsi
+│           0x14194cc79      57             push rdi
+│           0x14194cc7a      488d68a8       lea rbp, [rax - 0x58]
+│           0x14194cc7e      4881ec4001..   sub rsp, 0x140
+│           0x14194cc85      0f2970d8       movaps xmmword [rax - 0x28], xmm6
+│           0x14194cc89      0f2978c8       movaps xmmword [rax - 0x38], xmm7
+│           0x14194cc8d      440f2940b8     movaps xmmword [rax - 0x48], xmm8
+│           0x14194cc92      440f2948a8     movaps xmmword [rax - 0x58], xmm9
+│           0x14194cc97      488b05228c..   mov rax, qword [0x14a2a58c0] ; [0x14a2a58c0:8]=0x2b992ddfa232
+│           0x14194cc9e      4833c4         xor rax, rsp
+│           0x14194cca1      488945f0       mov qword [rbp - 0x10], rax
+│           0x14194cca5      488bf2         mov rsi, rdx               ; arg2
+│           0x14194cca8      488bd9         mov rbx, rcx               ; arg1
+│           0x14194ccab      488d542440     lea rdx, [var_40h]
+│           0x14194ccb0      e8db98ffff     call 0x141946590
+│           0x14194ccb5      66440f6f0d..   movdqa xmm9, xmmword [0x144714b70] ; [0x144714b70:16]=-1
+│           0x14194ccbe      488d442440     lea rax, [var_40h]
+│           0x14194ccc3      488945b0       mov qword [rbp - 0x50], rax
+│           0x14194ccc7      488d934001..   lea rdx, [rbx + 0x140]
+│           0x14194ccce      488d4580       lea rax, [rbp - 0x80]
+│           0x14194ccd2      c744242000..   mov dword [var_20h], 0x3f800000 ; [0x3f800000:4]=-1
+│           0x14194ccda      0f57c9         xorps xmm1, xmm1
+│           0x14194ccdd      4889442470     mov qword [var_70h], rax
+│           0x14194cce2      660f7ec8       movd eax, xmm1
+│           0x14194cce6      488dba0001..   lea rdi, [rdx + 0x100]
+│           0x14194cced      660f7ec9       movd ecx, xmm1
+│           0x14194ccf1      0f57c0         xorps xmm0, xmm0
+│           0x14194ccf4      3bc8           cmp ecx, eax
+│       ┌─< 0x14194ccf6      750a           jne 0x14194cd02
+│       │   0x14194ccf8      0f114580       movups xmmword [rbp - 0x80], xmm0
+│       │   0x14194ccfc      0f114590       movups xmmword [rbp - 0x70], xmm0
+│      ┌──< 0x14194cd00      eb08           jmp 0x14194cd0a
+│      │└─> 0x14194cd02      0f294580       movaps xmmword [rbp - 0x80], xmm0
+│      │    0x14194cd06      0f294d90       movaps xmmword [rbp - 0x70], xmm1
+│      │    ; CODE XREF from fcn.14194cc70 @ 0x14194cd00(x)
+│      └──> 0x14194cd0a      4889542430     mov qword [var_30h], rdx
+│           0x14194cd0f      488d45b0       lea rax, [rbp - 0x50]
+│           0x14194cd13      488d542428     lea rdx, [var_28h]
+│           0x14194cd18      4889442428     mov qword [var_28h], rax
+│           0x14194cd1d      4c8d4c2420     lea r9, [var_20h]
+│           0x14194cd22      4c8d4580       lea r8, [rbp - 0x80]
+│           0x14194cd26      488d4c2430     lea rcx, [var_30h]
+│           0x14194cd2b      e88004feff     call 0x14192d1b0
+│           0x14194cd30      488b442470     mov rax, qword [var_70h]
+│           0x14194cd35      488d8b6002..   lea rcx, [rbx + 0x260]
+│           0x14194cd3c      48897da0       mov qword [rbp - 0x60], rdi
+│           0x14194cd40      4c8d45b0       lea r8, [rbp - 0x50]
+│           0x14194cd44      488bd6         mov rdx, rsi
+│           0x14194cd47      0f1038         movups xmm7, xmmword [rax]
+│           0x14194cd4a      0f583f         addps xmm7, xmmword [rdi]
+│           0x14194cd4d      440f104010     movups xmm8, xmmword [rax + 0x10]
+│           0x14194cd52      488d442440     lea rax, [var_40h]
+│           0x14194cd57      440f584710     addps xmm8, xmmword [rdi + 0x10]
+│           0x14194cd5c      488945b0       mov qword [rbp - 0x50], rax
+│           0x14194cd60      0f28cf         movaps xmm1, xmm7
+│           0x14194cd63      0f59cf         mulps xmm1, xmm7
+│           0x14194cd66      410f28f0       movaps xmm6, xmm8
+│           0x14194cd6a      410f59f0       mulps xmm6, xmm8
+│           0x14194cd6e      410f58c9       addps xmm1, xmm9
+│           0x14194cd72      410f58f1       addps xmm6, xmm9
+│           0x14194cd76      0f52d1         rsqrtps xmm2, xmm1
+│           0x14194cd79      0f28d9         movaps xmm3, xmm1
+│           0x14194cd7c      0fc21d5c9f..   cmpltps xmm3, xmmword [0x147696ce0] ; [0x147696ce0:16]=-1
+│           0x14194cd84      0f52e6         rsqrtps xmm4, xmm6
+│           0x14194cd87      0f28c1         movaps xmm0, xmm1
+│           0x14194cd8a      0fc2056ec5..   cmpeqps xmm0, xmmword [0x144f39300] ; [0x144f39300:16]=-1
+│           0x14194cd92      0f56d8         orps xmm3, xmm0
+│           0x14194cd95      0f28ee         movaps xmm5, xmm6
+│           0x14194cd98      0fc22d409f..   cmpltps xmm5, xmmword [0x147696ce0] ; [0x147696ce0:16]=-1
+│           0x14194cda0      0f28c6         movaps xmm0, xmm6
+│           0x14194cda3      0f59f4         mulps xmm6, xmm4
+│           0x14194cda6      0fc20552c5..   cmpeqps xmm0, xmmword [0x144f39300] ; [0x144f39300:16]=-1
+│           0x14194cdae      0f56e8         orps xmm5, xmm0
+│           0x14194cdb1      0f28c2         movaps xmm0, xmm2
+│           0x14194cdb4      0f59c1         mulps xmm0, xmm1
+│           0x14194cdb7      0f28cb         movaps xmm1, xmm3
+│           0x14194cdba      0f59f4         mulps xmm6, xmm4
+│           0x14194cdbd      0f59c2         mulps xmm0, xmm2
+│           0x14194cdc0      0f593509a0..   mulps xmm6, xmmword [0x147696dd0]
+│           0x14194cdc7      0f590502a0..   mulps xmm0, xmmword [0x147696dd0]
+│           0x14194cdce      0f5835bb9f..   addps xmm6, xmmword [0x147696d90]
+│           0x14194cdd5      0f5805b49f..   addps xmm0, xmmword [0x147696d90]
+│           0x14194cddc      0f59f4         mulps xmm6, xmm4
+│           0x14194cddf      0f54e5         andps xmm4, xmm5
+│           0x14194cde2      0f59c2         mulps xmm0, xmm2
+│           0x14194cde5      0f54d3         andps xmm2, xmm3
+│           0x14194cde8      0f55c8         andnps xmm1, xmm0
+│           0x14194cdeb      410f28c1       movaps xmm0, xmm9
+│           0x14194cdef      0f59442440     mulps xmm0, xmmword [var_40h]
+│           0x14194cdf4      0f56ca         orps xmm1, xmm2
+│           0x14194cdf7      440f594c2450   mulps xmm9, xmmword [var_sp_50h]
+│           0x14194cdfd      0f59cf         mulps xmm1, xmm7
+│           0x14194ce00      0f58c8         addps xmm1, xmm0
+│           0x14194ce03      0f28c5         movaps xmm0, xmm5
+│           0x14194ce06      0f55c6         andnps xmm0, xmm6
+│           0x14194ce09      0f56c4         orps xmm0, xmm4
+│           0x14194ce0c      410f59c0       mulps xmm0, xmm8
+│           0x14194ce10      0f294c2440     movaps xmmword [var_40h], xmm1
+│           0x14194ce15      410f58c1       addps xmm0, xmm9
+│           0x14194ce19      0f29442450     movaps xmmword [var_sp_50h], xmm0
+│           0x14194ce1e      e8ed95ffff     call 0x141946410
+│           0x14194ce23      488bc6         mov rax, rsi
+│           0x14194ce26      488b4df0       mov rcx, qword [rbp - 0x10]
+│           0x14194ce2a      4833cc         xor rcx, rsp
+│           0x14194ce2d      e85ec7a702     call 0x1443c9590
+│           0x14194ce32      4c8d9c2440..   lea r11, [var_140h]
+│           0x14194ce3a      498b5b38       mov rbx, qword [r11 + 0x38]
+│           0x14194ce3e      410f2873f0     movaps xmm6, xmmword [r11 - 0x10]
+│           0x14194ce43      410f287be0     movaps xmm7, xmmword [r11 - 0x20]
+│           0x14194ce48      450f2843d0     movaps xmm8, xmmword [r11 - 0x30]
+│           0x14194ce4d      450f284bc0     movaps xmm9, xmmword [r11 - 0x40]
+│           0x14194ce52      498be3         mov rsp, r11
+│           0x14194ce55      5f             pop rdi
+│           0x14194ce56      5e             pop rsi
+│           0x14194ce57      5d             pop rbp
+└           0x14194ce58      c3             ret

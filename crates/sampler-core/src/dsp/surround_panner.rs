@@ -284,6 +284,75 @@ impl Panner {
     }
 }
 
+/// Route of one output in the block driver (`0x140ab0070`, per-output flag at record `+0x1c8 + 12k`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Route {
+    /// Flag 1: scalar level (`+0xc00`) and no panning. The LFE sub-object (vtable at `+0x7a0`, not
+    /// modelled) processes the buffer afterwards.
+    Lfe { level: f32 },
+    /// Flag 0: positional, rendered by the panned path (`0x140ab4eb0`, not ported yet).
+    Panned,
+}
+
+/// Block driver routing (`0x140ab0070`, scalar fast path). `inputs[s]` is source `s` for one block,
+/// `outs[k]` is output `k`. For each output the first source to reach it overwrites it and the later
+/// sources sum into it, as the native per-output bit does. `panned(s, k, overwrite, input, out)`
+/// renders a positional route; the native call passes `overwrite` as its mode argument.
+pub fn drive_block(
+    inputs: &[&[f32]],
+    routes: &[Route],
+    outs: &mut [&mut [f32]],
+    mut panned: impl FnMut(usize, usize, bool, &[f32], &mut [f32]),
+) {
+    let mut written = vec![false; routes.len()];
+    for (s, input) in inputs.iter().enumerate() {
+        for (k, route) in routes.iter().enumerate() {
+            let overwrite = !written[k];
+            written[k] = true;
+            let out = &mut *outs[k];
+            match *route {
+                Route::Lfe { level } => {
+                    for (o, i) in out.iter_mut().zip(input.iter()) {
+                        *o = if overwrite { i * level } else { *o + i * level };
+                    }
+                }
+                Route::Panned => panned(s, k, overwrite, input, out),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod driver_tests {
+    use super::*;
+
+    #[test]
+    fn first_source_overwrites_later_sources_sum() {
+        let a = [1.0f32, 2.0, 3.0, 4.0];
+        let b = [0.5f32, 0.5, 0.5, 0.5];
+        let mut out = [9.0f32; 4];
+        let mut panned_calls = Vec::new();
+        drive_block(
+            &[&a, &b],
+            &[Route::Lfe { level: 2.0 }, Route::Panned],
+            &mut [&mut out[..], &mut [0.0f32; 4][..]],
+            |s, k, overwrite, _, _| panned_calls.push((s, k, overwrite)),
+        );
+        assert_eq!(out, [3.0, 5.0, 7.0, 9.0], "LFE: a*2 overwrites, then b*2 sums");
+        assert_eq!(panned_calls, [(0, 1, true), (1, 1, false)], "panned route: overwrite on the first source only");
+    }
+
+    #[test]
+    fn lfe_output_never_reaches_the_panned_path() {
+        let a = [1.0f32; 3];
+        let mut out = [0.0f32; 3];
+        let mut called = false;
+        drive_block(&[&a], &[Route::Lfe { level: 0.25 }], &mut [&mut out[..]], |_, _, _, _, _| called = true);
+        assert!(!called);
+        assert_eq!(out, [0.25; 3]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
