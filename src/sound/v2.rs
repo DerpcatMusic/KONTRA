@@ -3709,7 +3709,7 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
                 [usize::from(d.taps.clamp(1, 12)) - 1],
             ir::Processor::Ar(_) => "AR filter",
             ir::Processor::TimeMod(_) => "Delay / modulation",
-            ir::Processor::Phaser(_) => "Phaser filter",
+            ir::Processor::Phaser(_) | ir::Processor::LivePhaser { .. } => "Phaser filter",
             ir::Processor::RingMod(_) => "Ring modulator",
             ir::Processor::Formant(_) => "Formant I",
             ir::Processor::FilterBank(c) => match c.topology {
@@ -8889,6 +8889,21 @@ mod tests {
     #[test]
     #[cfg(feature = "library-access")]
     fn raw_midi2_script_children_follow_only_their_real_per_note_owner_and_release_velocity() {
+        // Streamed pages that are not yet resident play as silence and count as
+        // underruns. The attack-time renders below may hit that, so underruns
+        // are only held to zero from the first readiness point onward. Each
+        // later render waits for readiness first. Not checked: the attack
+        // transient, and wall-clock stream timing in the asserted windows.
+        fn wait_streams_ready(core:&mut V2Core){
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+            loop {
+                let part=core.parts[0].as_mut().unwrap();
+                let ready=part.horizon.is_none_or(|horizon|part.runtime.service_streaming(horizon).expect("stream service"));
+                if ready {return;}
+                assert!(std::time::Instant::now()<deadline,"streamed pages never became resident");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
         for mapping in [0,12] {
         let tmp = tempfile::tempdir().unwrap(); let wav = tmp.path().join("note.wav"); sine(&wav);
         let bank = tmp.path().join("RawPN.ufs");
@@ -8933,12 +8948,15 @@ mod tests {
         core.event(0,Event::NoteOff(wrong));
         assert!(core.parts[0].as_ref().unwrap().runtime.input_held(parent).unwrap());
         assert!((parent_value(&core,child).pitch_semitones-expected).abs()<1e-12);
-        let mut peak=0f32;for _ in 0..16 {let output=core.render(64);for value in &output.buses[0][0][..64] {peak=peak.max(value.abs());}}
+        wait_streams_ready(&mut core);let underruns=core.problems(0).underruns;
+        let mut peak=0f32;for _ in 0..16 {wait_streams_ready(&mut core);let output=core.render(64);for value in &output.buses[0][0][..64] {peak=peak.max(value.abs());}}
         assert!(peak>0.01,"normal script child did not reach output");
         // Independent known-source pitch witness after attack: measure positive
         // zero crossings in real product PCM, not the receiver's own numbers.
         let mut samples=Vec::with_capacity(16384);
-        for _ in 0..128 {let output=core.render(128);samples.extend_from_slice(&output.buses[0][0][..128]);}
+        for _ in 0..128 {wait_streams_ready(&mut core);let output=core.render(128);samples.extend_from_slice(&output.buses[0][0][..128]);}
+        // The measurement is only valid if no block in the window played silence.
+        assert_eq!(core.problems(0).underruns,underruns,"pitch window had gaps; zero-crossing pitch is not valid");
         let mut first=None;let mut last=0.;let mut crossings=0usize;
         for (frame,pair) in samples.windows(2).enumerate() {if pair[0]<=0.&&pair[1]>0. {let at=frame as f64+f64::from(-pair[0])/f64::from(pair[1]-pair[0]);if first.is_none(){first=Some(at);}last=at;crossings+=1;}}
         assert!(crossings>8);let hz=(crossings-1) as f64*48000./(last-first.unwrap());
@@ -8947,14 +8965,15 @@ mod tests {
         core.event(0,raw(0x80,60,0,0));
         assert!(!core.parts[0].as_ref().unwrap().runtime.input_held(parent).unwrap_or(false));
         let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
-        loop {core.render(64);if ui.interfaces()[0].widgets.iter().any(|widget|widget.text=="Released 0") {break;}assert!(std::time::Instant::now()<deadline,"raw zero release velocity was replaced by default64");std::thread::sleep(std::time::Duration::from_millis(1));}
+        loop {wait_streams_ready(&mut core);core.render(64);if ui.interfaces()[0].widgets.iter().any(|widget|widget.text=="Released 0") {break;}assert!(std::time::Instant::now()<deadline,"raw zero release velocity was replaced by default64");std::thread::sleep(std::time::Duration::from_millis(1));}
         core.event(0,raw(0x90,60,0,0xffff_0000));
-        for _ in 0..16 {core.render(64);std::thread::sleep(std::time::Duration::from_millis(1));}
+        for _ in 0..16 {wait_streams_ready(&mut core);core.render(64);std::thread::sleep(std::time::Duration::from_millis(1));}
         core.event(0,raw(0x80,60,0,0xffff_0000));
         let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
-        loop {core.render(64);if ui.interfaces()[0].widgets.iter().any(|widget|widget.text=="Released 127") {break;}assert!(std::time::Instant::now()<deadline,"raw maximum release velocity lost its ordinary UVI seven-bit callback projection");std::thread::sleep(std::time::Duration::from_millis(1));}
-        for _ in 0..200 {core.render(64);std::thread::sleep(std::time::Duration::from_millis(1));}
-        assert_eq!(core.voices().active,0);assert_eq!(core.problems(0).capacity_drops,0);assert_eq!(core.problems(0).underruns,0);
+        loop {wait_streams_ready(&mut core);core.render(64);if ui.interfaces()[0].widgets.iter().any(|widget|widget.text=="Released 127") {break;}assert!(std::time::Instant::now()<deadline,"raw maximum release velocity lost its ordinary UVI seven-bit callback projection");std::thread::sleep(std::time::Duration::from_millis(1));}
+        for _ in 0..200 {wait_streams_ready(&mut core);core.render(64);std::thread::sleep(std::time::Duration::from_millis(1));}
+        assert_eq!(core.voices().active,0);assert_eq!(core.problems(0).capacity_drops,0);
+        assert_eq!(core.problems(0).underruns,underruns,"a block after stream readiness played pending pages as silence");
         }
     }
 
