@@ -35,12 +35,15 @@ impl Receiver {
     }
 }
 fn runtime()->Runtime {
+    runtime_rooted(69)
+}
+fn runtime_rooted(root:u8)->Runtime {
     let source=Pcm::new(48000,(0..32768).map(|frame| {
         let phase=f64::from(frame)*std::f64::consts::TAU*440./48000.;
         [phase.sin() as f32*0.1,phase.cos() as f32*0.1]
     }).collect()).unwrap();
     let plan=Prepared::new(48000,vec![source],vec![Region {sample:0,key_low:48,key_high:84,
-        root_key:Some(69),velocity_low:0.,velocity_high:1.,gain:1.,
+        root_key:Some(root),velocity_low:0.,velocity_high:1.,gain:1.,
         envelope:Envelope::new(0,0,0,1.,1024).unwrap(),playback:Playback::default()}],37).unwrap();
     let limits=Limits::for_plan(&plan,8,8);Runtime::new(plan,limits).unwrap()
 }
@@ -161,10 +164,14 @@ fn attribute_initial_override_is_not_reloaded_by_bend_but_later_registered_pitch
         });
     }
 }
+// Step is 2^((pitch - root)/12), limited to [1/256, 256]: the same 96-semitone window as the
+// bend path. Root 31 puts the registered limit at 127 (root + 96), so u32::MAX (127.99...)
+// is the first rejected pitch. Root 69 admits every registered pitch, and root 0 silences
+// the reference by pushing the 440 Hz source above Nyquist, so neither can test rejection.
 #[test]
 fn rejected_live_registered_pitch_keeps_current_pcm_and_future_key_default(){
     for mpe in [false,true]{
-        let mut actual=runtime();let mut reference=runtime();let mut receiver=Receiver::new(&actual,mpe);
+        let mut actual=runtime_rooted(31);let mut reference=runtime_rooted(31);let mut receiver=Receiver::new(&actual,mpe);
         receiver.pitch(&mut actual,60,69u32<<25);let held=receiver.on(&mut actual,60,0);reference_note(&mut reference,60,69.);
         support::without_heap(||{
             compare(&mut actual,&mut reference);let before=(actual.now(),actual.note_count(),actual.voice_count(),actual.expression(actual.expression_id(held).unwrap()).unwrap());
