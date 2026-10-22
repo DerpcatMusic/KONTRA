@@ -69,11 +69,17 @@ impl Section {
     /// the step, then advances both integrators by the trapezoidal rule.
     #[inline(always)]
     pub fn tick(&self, state: &mut State, x: f32) -> (f32, f32) {
-        let d = x - state.s1;
-        let bp = d * self.c3 + state.s0 * self.c2;
-        let lp = self.c3 * state.s0 + d * self.c4 + state.s1;
-        state.s0 = 2. * bp - state.s0;
-        state.s1 = 2. * lp - state.s1;
+        // The native operation order (the rounding of the state updates is part of the vectors): -0 enters as +0,
+        // s0' = ((2d c3 + X) + X) - s0 and s1' = ((((2 s0) c3 + s1) + s1 + Y) + Y) - s1 with X = s0 c2, Y = d c4.
+        let x = if x == 0. { 0. } else { x };
+        let (s0, s1) = (state.s0, state.s1);
+        let d = x - s1;
+        let xc = s0 * self.c2;
+        let yc = d * self.c4;
+        let bp = d * self.c3 + xc;
+        let lp = self.c3 * s0 + yc + s1;
+        state.s0 = ((d + d) * self.c3 + xc + xc) - s0;
+        state.s1 = ((((s0 + s0) * self.c3 + s1 + s1) + yc) + yc) - s1;
         (bp, lp)
     }
 }
