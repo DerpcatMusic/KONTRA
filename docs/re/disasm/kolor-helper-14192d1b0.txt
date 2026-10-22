@@ -1,0 +1,22 @@
+┌ 88: fcn.14192d1b0 (int64_t arg1, int64_t arg2, int64_t arg3, int64_t arg4);
+`- args(rcx, rdx, r8, r9) vars(1:sp[0x60..0x60])
+0x14192d1b0      4c8bdc         mov r11, rsp
+0x14192d1b3      4883ec68       sub rsp, 0x68
+0x14192d1b7      488b02         mov rax, qword [rdx]       ; arg2
+0x14192d1ba      f3410f1001     movss xmm0, dword [r9]     ; arg4
+0x14192d1bf      4d8d4bd8       lea r9, [r11 - 0x28]
+0x14192d1c3      f30f11442430   movss dword [var_30h], xmm0
+0x14192d1c9      49c743c001..   mov qword [r11 - 0x40], 1
+0x14192d1d1      488b10         mov rdx, qword [rax]
+0x14192d1d4      488b01         mov rax, qword [rcx]       ; arg1
+0x14192d1d7      498953d8       mov qword [r11 - 0x28], rdx
+0x14192d1db      ba08000000     mov edx, 8
+0x14192d1e0      4d8943b8       mov qword [r11 - 0x48], r8 ; arg3
+0x14192d1e4      8bca           mov ecx, edx
+0x14192d1e6      4d8d43e8       lea r8, [r11 - 0x18]
+0x14192d1ea      49c743e001..   mov qword [r11 - 0x20], 1
+0x14192d1f2      498943e8       mov qword [r11 - 0x18], rax
+0x14192d1f6      49c743f008..   mov qword [r11 - 0x10], 8
+0x14192d1fe      e86d5c0000     call fcn.141932e70
+0x14192d203      4883c468       add rsp, 0x68
+└           0x14192d207      c3             ret
