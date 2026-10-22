@@ -36,6 +36,27 @@ impl Source {
         self.identity.check_range(self.offset, self.size)?;
         self.identity.check(file)
     }
+    /// The admitted file identity, the member range, and the keystream the
+    /// bytes are decrypted under. Equal keys decode to equal frames.
+    pub(crate) fn source_key(&self) -> Arc<str> {
+        use std::fmt::Write;
+        let mut key = format!(
+            "{}\0{}\0{}\0{:?}",
+            self.path.display(),
+            self.offset,
+            self.size,
+            self.identity
+        );
+        if let Some(library) = &self.key {
+            // XOR of zeros yields the keystream itself: a fingerprint of the key.
+            let mut stream = [0u8; 64];
+            library.apply_at(0, &mut stream);
+            for byte in stream {
+                let _ = write!(key, "{byte:02x}");
+            }
+        }
+        Arc::from(key)
+    }
 }
 
 /// Resolves and decodes the samples of one library, opening each archive's

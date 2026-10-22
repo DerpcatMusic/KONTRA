@@ -70,7 +70,7 @@ pub(super) fn fill_resident(
 }
 
 #[derive(Default)]
-pub(super) struct Timing {
+pub(crate) struct Timing {
     pub read_decode_us: u64,
     pub validate_pack_us: u64,
 }
@@ -267,6 +267,10 @@ pub(super) fn prepare(
                                 )
                                 .map(Prepared::Resident);
                             }
+                            let content = source.content_key();
+                            let cache = content
+                                .as_ref()
+                                .map(|key| crate::head_cache::ChunkCache::new(crate::head_cache::process(), key));
                             prepare_head_ranges(
                                 &pcm.head_preparer(),
                                 &mut reader,
@@ -274,6 +278,7 @@ pub(super) fn prepare(
                                 &mut page,
                                 &|| stop.load(Ordering::Acquire) || canceled(),
                                 audit_enabled.then_some(&mut timing),
+                                cache,
                             )
                             .map(Prepared::Head)
                         })();
@@ -380,7 +385,9 @@ fn prepare_logical(selected:&[(&Pcm,&[Range<usize>])],sources:&HashMap<AssetId,A
                 result[index]=Some(Prepared::Resident(fill_resident(pcm.sample_rate(),pcm.frame_count(),buffer,&mut reader,canceled,None)?));
             } else {
                 let mut page=vec![[0.;2];sampler_core::PAGE_FRAMES];
-                result[index]=Some(Prepared::Head(prepare_head_ranges(&pcm.head_preparer(),&mut reader,ranges,&mut page,canceled,None)?));
+                let content=source.content_key();
+                let cache=content.as_ref().map(|key|crate::head_cache::ChunkCache::new(crate::head_cache::process(),key));
+                result[index]=Some(Prepared::Head(prepare_head_ranges(&pcm.head_preparer(),&mut reader,ranges,&mut page,canceled,None,cache)?));
             }
         }
     }

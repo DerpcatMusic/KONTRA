@@ -54,6 +54,10 @@ impl PreparedRanges {
     pub fn bytes(&self) -> usize {
         self.bytes
     }
+    /// The packed chunks, ascending and disjoint.
+    pub fn ranges(&self) -> &Ranges {
+        &self.ranges
+    }
     pub(super) fn charged_to(&self, budget: &HeadBudget) -> bool {
         self.bytes == 0
             || self
@@ -134,34 +138,56 @@ pub struct HeadRangeBuilder {
     bytes: usize,
 }
 impl HeadRangeBuilder {
-    pub fn push(&mut self, start: usize, frames: &[Frame]) -> Result<(), Error> {
+    fn admit_next(&self, start: usize, frames: usize) -> Result<(), Error> {
         if !self.recipe.streamed
-            || frames.is_empty()
+            || frames == 0
             || start
-                .checked_add(frames.len())
+                .checked_add(frames)
                 .is_none_or(|end| end > self.recipe.length)
             || self.data.last().is_some_and(|(s, p)| s + p.len() > start)
         {
             return Err(Error::InvalidInput);
         }
+        Ok(())
+    }
+    /// Charges `bytes` to this generation's lease before the payload is kept;
+    /// returns the new total.
+    fn charge(&mut self, bytes: usize) -> Result<usize, Error> {
+        let total = self.bytes.checked_add(bytes).ok_or(Error::Capacity)?;
+        if let Some(budget) = &self.recipe.budget {
+            match &mut self.lease {
+                Some(lease) => lease.extend(bytes)?,
+                None => self.lease = Some(budget.reserve(bytes)?),
+            }
+        }
+        Ok(total)
+    }
+    pub fn push(&mut self, start: usize, frames: &[Frame]) -> Result<(), Error> {
+        self.admit_next(start, frames.len())?;
         for (index, chunk) in frames.chunks(PAGE_FRAMES).enumerate() {
             if chunk.iter().flatten().any(|v| !v.is_finite()) {
                 return Err(Error::InvalidInput);
             }
             let packing = Packed::prepare(chunk);
-            let bytes = packing.bytes();
-            let total = self.bytes.checked_add(bytes).ok_or(Error::Capacity)?;
-            if let Some(budget) = &self.recipe.budget {
-                match &mut self.lease {
-                    Some(lease) => lease.extend(bytes)?,
-                    None => self.lease = Some(budget.reserve(bytes)?),
-                }
-            }
-            let data = packing.finish();
-            self.data.push((start + index * PAGE_FRAMES, data));
-            self.bytes = total;
+            self.bytes = self.charge(packing.bytes())?;
+            self.data.push((start + index * PAGE_FRAMES, packing.finish()));
         }
         Ok(())
+    }
+    /// Admits a chunk already packed from the same immutable frames (the head
+    /// cache). Geometry and budget checks match `push`.
+    pub fn push_packed(&mut self, start: usize, packed: Packed) -> Result<(), Error> {
+        self.admit_next(start, packed.len())?;
+        if packed.len() > PAGE_FRAMES {
+            return Err(Error::InvalidInput);
+        }
+        self.bytes = self.charge(packed.bytes())?;
+        self.data.push((start, packed));
+        Ok(())
+    }
+    /// The chunk admitted last; callers that push one page at a time read their own chunk here.
+    pub fn last_packed(&self) -> Option<&Packed> {
+        self.data.last().map(|(_, packed)| packed)
     }
     pub fn finish(self) -> PreparedRanges {
         let lease = std::sync::OnceLock::new();
