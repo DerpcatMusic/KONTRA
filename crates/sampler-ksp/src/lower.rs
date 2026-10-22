@@ -2273,7 +2273,8 @@ impl Gen<'_, '_> {
                     self.u
                         .groups
                         .iter()
-                        .position(|g| g.eq_ignore_ascii_case(name))
+                        // Exact, case-sensitive, like Kontakt's group lookup.
+                        .position(|g| g == name)
                 });
                 self.set(dst, index.map_or(-1, |i| i as i64))?;
                 if let (None, Some(name)) = (index, name) {
