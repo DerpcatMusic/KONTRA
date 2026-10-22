@@ -1,6 +1,6 @@
 //! MT19937 and MSVC's `generate_canonical`, as UVI's delays draw them.
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct Mt {
     pub(crate) s: [u32; 624],
     pub(crate) i: usize,

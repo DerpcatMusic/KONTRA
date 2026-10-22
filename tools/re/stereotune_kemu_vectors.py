@@ -8,8 +8,11 @@ knobs at param+8..0x14), then the driver FUN_140aa7320 without its post stage: t
 at +0x1bc drives the boundary smoother FUN_140acb6c0 and the core FUN_140aaf640 is called per chunk
 (the post stage FUN_140ac21f0 is the shared host mix into the output, not part of the core).
 Core outputs are read from the scratch that the core writes (L at ctx+0x9c010, R at ctx+0x9d010, f32).
-Inputs are read from the object's channel pointers (+0x20 L, +0x28 R). The +0x1c0 rate scale is set
-to 1.0: its writer is not located yet (see docs/re/engine/k-effects-batch-a.md).
+Inputs are read from the object's channel pointers (+0x20 L, +0x28 R).
+
+The +0x1c0 rate scale is not written by the host: the ctor FUN_140a86e50 stores 0x40c90fdb (2*pi, f32) at
++0x1c0 and nothing in the reset, prepare or apply path overwrites it. The harness keeps the ctor value, so the
+one-pole coefficient is (900*a+100)*2*pi/rate.
 """
 import json
 import math
@@ -36,7 +39,7 @@ def complete(e, *args, **kwargs):
         raise RuntimeError("instruction budget exhausted")
 
 
-def run_case(exe_emu, knobs, stim):
+def run_case(exe_emu, knobs, stim, rate):
     e = exe_emu
     obj = e.alloc(0x4000)
     ctx = e.alloc(0xA4000)
@@ -44,8 +47,8 @@ def run_case(exe_emu, knobs, stim):
     e.write(inL, "f", *stim[0])
     e.write(inR, "f", *stim[1])
     complete(e, CTOR, obj)
-    e.write(obj + 0x1C0, "f", 1.0)
-    complete(e, PREPARE, obj, 0, f={1: RATE})
+    assert abs(e.read(obj + 0x1C0, "f") - 2 * math.pi) < 1e-6, "ctor must leave the native 2*pi rate scale at +0x1c0"
+    complete(e, PREPARE, obj, 0, f={1: rate})
     e.write(obj + 0x20, "Q", inL)
     e.write(obj + 0x28, "Q", inR)
     params = e.alloc(0x40)
@@ -74,16 +77,17 @@ def main():
     rng = random.Random(7)
     stim = [[rng.uniform(-0.3, 0.3) for _ in range(N)], [rng.uniform(-0.3, 0.3) for _ in range(N)]]
     cases = [
-        ("mid", [0.5, 0.5, 0.5, 0.5]),
-        ("low_knobs", [0.1, 0.2, 0.3, 0.25]),
-        ("high_knobs", [0.9, 0.8, 0.7, 1.0]),
-        ("sweep_b", [0.5, 0.9, 0.1, 0.7]),
+        ("mid", [0.5, 0.5, 0.5, 0.5], RATE),
+        ("low_knobs", [0.1, 0.2, 0.3, 0.25], RATE),
+        ("high_knobs", [0.9, 0.8, 0.7, 1.0], RATE),
+        ("sweep_b", [0.5, 0.9, 0.1, 0.7], RATE),
+        ("rate_44100", [0.3, 0.6, 0.4, 0.8], 44100.0),
     ]
     out = []
-    for name, knobs in cases:
+    for name, knobs, rate in cases:
         e = Emu(exe)
-        l, r = run_case(e, knobs, stim)
-        out.append({"name": name, "knobs": knobs, "rate": RATE, "stim": stim, "outL": l, "outR": r})
+        l, r = run_case(e, knobs, stim, rate)
+        out.append({"name": name, "knobs": knobs, "rate": rate, "stim": stim, "outL": l, "outR": r})
         peak = max(max(map(abs, l)), max(map(abs, r)))
         print(name, "peak", peak, flush=True)
     with open(dst, "w") as f:

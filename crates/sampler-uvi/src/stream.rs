@@ -243,6 +243,9 @@ impl Stream {
 
 /// An audio resource: one file, or a bundle of synchronized mono files.
 pub(crate) struct Sample {
+    /// `[left, right]` gain of each member of a bundle wider than two. Absent
+    /// means an equal-power spread (see [`even_spread`]).
+    placement: Option<Vec<[f64; 2]>>,
     parts: Vec<FrozenOrigin>,
 }
 
@@ -264,6 +267,7 @@ impl AssetSource for Sample {
 impl Sample {
     fn new(parts: Vec<Origin>) -> io::Result<Self> {
         Ok(Self {
+            placement: None,
             parts: parts
                 .into_iter()
                 .map(FrozenOrigin::admit)
@@ -272,8 +276,8 @@ impl Sample {
     }
     fn open_accounted_channels(&self,counted:bool,workspace_limit:usize)->io::Result<Option<SampleReader>> {
         // Owned multipart admission: every member is an owned stream whose
-        // header workspace is charged to the budget before any read. Members
-        // beyond the first two are owned but not routed to the stereo output.
+        // header workspace is charged to the budget before any read. Every member
+        // is mixed to stereo through its placement.
         let member_cost=CHUNK.checked_add(size_of::<Bytes>()).ok_or_else(||invalid("origin workspace overflow"))?;
         let owned=self.parts.len().checked_mul(member_cost).ok_or_else(||invalid("owned UVI multipart workspace overflow"))?;
         if owned>workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"owned UVI multipart workspace admission"));}
@@ -327,6 +331,22 @@ impl Sample {
             .min()
             .expect("a sample has a part");
         let rate = streams[0].rate;
+        let wide = streams.len() > 2;
+        let gains: Vec<[f32; 2]> = if !wide {
+            Vec::new()
+        } else {
+            match &self.placement {
+                Some(placed) if placed.len() == streams.len() => placed
+                    .iter()
+                    .map(|g| [g[0] as f32, g[1] as f32])
+                    .collect(),
+                Some(_) => return Err(invalid("bundle placement differs from its member count")),
+                None => even_spread(streams.len())
+                    .iter()
+                    .map(|g| [g[0] as f32, g[1] as f32])
+                    .collect(),
+            }
+        };
         let mut scratch = Vec::<f32>::new();
         Ok(SampleReader::custom(
             rate,
@@ -343,11 +363,24 @@ impl Sample {
                         }
                     }
                     many => {
-                        for (k, stream) in many.iter_mut().take(2).enumerate() {
-                            scratch.resize(out.len(), 0.0);
-                            stream.read(start, &mut scratch)?;
-                            for (frame, &s) in out.iter_mut().zip(&scratch) {
-                                frame[k] = s;
+                        if wide {
+                            // Every member contributes through its placed gains.
+                            out.iter_mut().for_each(|f| *f = [0.0; 2]);
+                            for (stream, [left, right]) in many.iter_mut().zip(&gains) {
+                                scratch.resize(out.len(), 0.0);
+                                stream.read(start, &mut scratch)?;
+                                for (frame, &s) in out.iter_mut().zip(&scratch) {
+                                    frame[0] += left * s;
+                                    frame[1] += right * s;
+                                }
+                            }
+                        } else {
+                            for (k, stream) in many.iter_mut().enumerate() {
+                                scratch.resize(out.len(), 0.0);
+                                stream.read(start, &mut scratch)?;
+                                for (frame, &s) in out.iter_mut().zip(&scratch) {
+                                    frame[k] = s;
+                                }
                             }
                         }
                         if many.len() == 1 {
@@ -557,6 +590,85 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn pcm16_mono(samples: &[i16]) -> Vec<u8> {
+        let data = u32::try_from(samples.len() * 2).unwrap();
+        let mut out = b"RIFF".to_vec();
+        out.extend((36 + data).to_le_bytes());
+        out.extend(b"WAVEfmt ");
+        out.extend(16u32.to_le_bytes());
+        out.extend(1u16.to_le_bytes());
+        out.extend(1u16.to_le_bytes());
+        out.extend(48000u32.to_le_bytes());
+        out.extend(96000u32.to_le_bytes());
+        out.extend(2u16.to_le_bytes());
+        out.extend(16u16.to_le_bytes());
+        out.extend(b"data");
+        out.extend(data.to_le_bytes());
+        for sample in samples {
+            out.extend(sample.to_le_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn every_bundle_member_mixes_by_its_placement_or_the_even_spread() {
+        let dir = std::env::temp_dir().join(format!("uvi-bundle-placement-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths: Vec<_> = [4000i16, -8000, 12000, 16000]
+            .iter()
+            .enumerate()
+            .map(|(k, &level)| {
+                let path = dir.join(format!("m{k}.wav"));
+                let samples: Vec<i16> = (0..256).map(|i| if i % 2 == 0 { level } else { level / 3 }).collect();
+                std::fs::write(&path, pcm16_mono(&samples)).unwrap();
+                path
+            })
+            .collect();
+        let member = |k: usize| Origin::File(paths[k].clone());
+        // Each member read alone is its own mono signal, duplicated to both channels.
+        let solo: Vec<Vec<[f32; 2]>> = (0..4)
+            .map(|k| {
+                let mut out = vec![[0.; 2]; 256];
+                Sample::new(vec![member(k)]).unwrap().open().unwrap().read(0, &mut out).unwrap();
+                out
+            })
+            .collect();
+        let mix = |gains: &[[f64; 2]]| -> Vec<[f32; 2]> {
+            (0..256)
+                .map(|i| {
+                    let mut frame = [0f32; 2];
+                    for (k, [left, right]) in gains.iter().enumerate() {
+                        frame[0] += (*left as f32) * solo[k][i][0];
+                        frame[1] += (*right as f32) * solo[k][i][0];
+                    }
+                    frame
+                })
+                .collect()
+        };
+        let read = |placement: Option<Vec<[f64; 2]>>| {
+            let mut sample = Sample::new((0..4).map(member).collect()).unwrap();
+            sample.placement = placement;
+            let mut out = vec![[0.; 2]; 256];
+            sample.open().unwrap().read(0, &mut out).unwrap();
+            out
+        };
+        let check = |actual: &[[f32; 2]], expected: &[[f32; 2]]| {
+            for (a, e) in actual.iter().zip(expected) {
+                assert!((a[0] - e[0]).abs() < 1e-3 && (a[1] - e[1]).abs() < 1e-3, "{a:?} != {e:?}");
+            }
+        };
+        // Authored placement: member 2 only left, 4 mostly right, others split.
+        let placed = vec![[1.0, 0.0], [0.0, 0.5], [0.25, 0.75], [0.5, 0.5]];
+        check(&read(Some(placed.clone())), &mix(&placed));
+        // No authored placement: the equal-power spread from hard left to hard right.
+        check(&read(None), &mix(&even_spread(4)));
+        // A placement that does not match the member count is refused.
+        let mut mismatched = Sample::new((0..4).map(member).collect()).unwrap();
+        mismatched.placement = Some(vec![[1.0, 0.0]; 3]);
+        assert!(mismatched.open().is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn streamed_reads_equal_a_full_decode_for_files_and_bundles() {
         let dir = std::env::temp_dir().join(format!("uvi-stream-{}", std::process::id()));
@@ -689,9 +801,19 @@ mod tests {
 }
 
 
+/// Equal-power spread from hard left (first member) to hard right (last), for
+/// a bundle whose program gives no placement. Its power is `cos² + sin² = 1`.
+pub(crate) fn even_spread(members: usize) -> Vec<[f64; 2]> {
+    (0..members)
+        .map(|k| {
+            let position = if members == 1 { 0.5 } else { k as f64 / (members - 1) as f64 };
+            let angle = position * std::f64::consts::FRAC_PI_2;
+            [angle.cos(), angle.sin()]
+        })
+        .collect()
+}
+
 pub(crate) struct InitialSource {
-    /// Members owned but not routed to the stereo output (multipart beyond two).
-    pub unrouted_parts:usize,
     pub original_channels:Option<usize>,
     pub source:Arc<dyn AssetSource>,
     pub playback:Result<Option<sampler_ir::Playback>,String>,
@@ -701,8 +823,9 @@ pub(crate) struct InitialSource {
 }
 /// Same frozen normal source as `source`, plus optional initial file playback.
 /// No dynamic-sample admission or channel-routing policy is changed here.
-pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool)->Result<InitialSource,String> {
-    let sample=Sample::new(parts).map_err(|e|e.to_string())?;
+pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool,placement:Option<Vec<[f64;2]>>)->Result<InitialSource,String> {
+    let mut sample=Sample::new(parts).map_err(|e|e.to_string())?;
+    sample.placement=placement;
     let reader=match sample.open_channels(8<<20) {
         Ok(Some(reader))=>reader,
         Ok(None)=>sample.open().map_err(|e|e.to_string())?,
@@ -710,7 +833,7 @@ pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool)->Result<InitialSour
             // No legacy probe or decoder is constructed to carry this frozen
             // recipe. The initial sample-source gate refuses it before any
             // playback/instrument mutation; impulse-only uses remain separate.
-            return Ok(InitialSource {unrouted_parts:0,source:Arc::new(sample),original_channels:None,playback:Ok(None),admission:Err(error.to_string())});
+            return Ok(InitialSource {source:Arc::new(sample),original_channels:None,playback:Ok(None),admission:Err(error.to_string())});
         }
         Err(error)=>return Err(error.to_string()),
     };
@@ -749,6 +872,5 @@ pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool)->Result<InitialSour
         }
         Ok(metadata)
     } else {Ok(None)} })();
-    let unrouted_parts=sample.parts.len().saturating_sub(2);
-    Ok(InitialSource {unrouted_parts,source:Arc::new(sample),original_channels,playback,admission:Ok(())})
+    Ok(InitialSource {source:Arc::new(sample),original_channels,playback,admission:Ok(())})
 }
