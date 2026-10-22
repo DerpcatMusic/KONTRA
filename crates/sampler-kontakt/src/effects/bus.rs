@@ -443,6 +443,7 @@ mod tests {
                 muted: false,
                 wavetable: None,
                 time_stretch: None,
+                machine: None,
                 start: Vec::new(),
                 name: "g".into(),
                 gain: ir::Gain::UNITY,
