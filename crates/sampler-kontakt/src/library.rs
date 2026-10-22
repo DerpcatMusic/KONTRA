@@ -959,6 +959,17 @@ fn group_engine_write(writes: &[sampler_ksp::EnginePar], parameter: &str, group:
     find(-1).or_else(|| find(0))
 }
 
+/// The Beat Machine controls of a stored mode-4 record: `slice_float_1` is Slice Atk and
+/// `slice_float_2` Slice Rel (both milliseconds, in control order), `slice_flag_1` the flag.
+fn beat_slices_from_record(params: &ni_file::kontakt::objects::BParSrcMode) -> Option<ir::BeatSlices> {
+    use ni_file::kontakt::objects::SourceValue as V;
+    let value = |name: &str| params.fields.iter().find(|f| f.name == name).map(|f| f.value);
+    match (value("slice_float_1")?, value("slice_float_2")?, value("slice_flag_1")?) {
+        (V::Float(attack_ms), V::Float(release_ms), V::Flag(flag)) => Some(ir::BeatSlices { attack_ms, release_ms, flag }),
+        _ => None,
+    }
+}
+
 /// Stored (serialized) group source modes, in the order of Kontakt 8.13.1's own
 /// enum-name table (strings at file offset 0x7555700 of Kontakt8.exe: Sampler, ToneMachine, TimeMachine,
 /// DirectFromDisk, BeatMachine, TimeMachine2, S1200Machine, MP60Machine,
@@ -1654,6 +1665,7 @@ impl Translation {
         let mut wavetable = None;
         let mut time_stretch = None;
         let mut machine = None;
+        let mut beat_slices = None;
         match group.source_identity() {
             Ok(source) if source.mode == 9 => {
                 wavetable = group
@@ -1706,6 +1718,18 @@ impl Translation {
             }
             Ok(source) if machine_kind(source.mode).is_some() => {
                 machine = self.machine(source.mode, &at, index);
+                if matches!(machine, Some(ir::Machine::BeatMachine)) {
+                    beat_slices = match group.source_params() {
+                        Ok((params, _)) => beat_slices_from_record(&params),
+                        Err(error) => {
+                            self.unsupported(&at, "beat machine source record", error, ir::Reason::Unknown);
+                            None
+                        }
+                    };
+                    if beat_slices.is_none() {
+                        self.unsupported(&at, "beat machine slice controls missing", source.mode, not_modeled);
+                    }
+                }
             }
             // The remaining engines are played as a sampler, named in the report.
             Ok(source) => self.unsupported(
@@ -1730,6 +1754,7 @@ impl Translation {
             wavetable,
             time_stretch,
             machine,
+            beat_slices,
             name: v.name.clone(),
             gain: ir::Gain::Linear(f64::from(v.volume)),
             pan: ir::Pan {
@@ -7010,6 +7035,20 @@ mod time_machine_tests {
         assert_eq!(source_mode_name(SOURCE_MODE_TM2), "Time Machine 2");
         assert_eq!(source_mode_name(SOURCE_MODE_TM_PRO), "Time Machine Pro");
         assert_eq!(SOURCE_MODE_DFD, 3);
+    }
+
+    #[test]
+    fn beat_machine_slice_fields_map_to_atk_rel_and_flag() {
+        use ni_file::kontakt::objects::{BParSrcMode, SourceField, SourceValue as V};
+        let field = |name: &'static str, value| SourceField { offset: 0, name, value };
+        let record = |fields: Vec<SourceField>| BParSrcMode { version: 0x106, mode: 4, fields, bytes: 0 };
+        let full = record(vec![
+            field("slice_float_1", V::Float(32.0)),
+            field("slice_float_2", V::Float(600.0)),
+            field("slice_flag_1", V::Flag(true)),
+        ]);
+        assert_eq!(beat_slices_from_record(&full), Some(ir::BeatSlices { attack_ms: 32.0, release_ms: 600.0, flag: true }));
+        assert_eq!(beat_slices_from_record(&record(vec![field("slice_float_1", V::Float(1.0))])), None);
     }
 }
 
