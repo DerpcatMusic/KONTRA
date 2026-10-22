@@ -2991,7 +2991,7 @@ impl Lowering<'_> {
                     cutoff: parameter(0, d.cutoff),
                     resonance: parameter(1, d.resonance),
                     gain: parameter(2, d.gain),
-                    record_version: d.record_version,
+                    cutoff_path: d.cutoff_path,
                     taps: d.taps,
                     high_quality: d.high_quality,
                 }))

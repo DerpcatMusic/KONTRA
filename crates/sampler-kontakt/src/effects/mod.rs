@@ -315,8 +315,10 @@ pub(crate) enum Params {
         cutoff: f32,
         resonance: f32,
         extra: Vec<f32>,
-        /// Ladder HQ flag (the first flag byte of the Ladder record).
+        /// Ladder HQ flag (native 2x path; the record's HQ byte, +0x28).
         hq: bool,
+        /// Ladder alternative cutoff path (flag 0x49, +0x29 of the record).
+        cutoff_path: bool,
     },
     /// 1-3 band EQ (filter types 22..=24): Hz, octaves, dB.
     Eq {
@@ -461,7 +463,7 @@ impl Slot {
             },
             0x18 => {
                 let kind = r.i32()?;
-                let mut hq = false;
+                let (mut hq, mut cutoff_path) = (false, false);
                 if (30..=41).contains(&kind) {
                     // Port from v1 0cb7a8a0:src/fx/params.rs::parse_versioned.
                     // Exact version framing comes from the shared verified reader.
@@ -477,9 +479,21 @@ impl Slot {
                             resonance: record.resonance,
                             extra: vec![record.leading_value],
                             hq: record.unknown_flag.is_some_and(|flag| flag != 0),
+                            // The v0x90..=0x94 readers set +0x29 to the constant 1.
+                            cutoff_path: true,
                         });
                     }
-                    hq = r.skip_repeats(kind);
+                    // Stream order (reader 0x140d00db0): v0x95 reads the cutoff-path byte, then
+                    // HQ. Older Ladder layouts carry only HQ; their cutoff-path byte is the constant 1.
+                    let flags = r.skip_repeats(kind);
+                    let first = flags.first().copied().unwrap_or(false);
+                    if self.version == 0x95 {
+                        cutoff_path = first;
+                        hq = flags.get(1).copied().unwrap_or(false);
+                    } else {
+                        hq = first;
+                        cutoff_path = true;
+                    }
                 } else if matches!(kind, 120 | 130 | 140..=143) {
                     // KONTAKTFX layouts: Simple LP/HP kind, u8, kind x4, two knobs; Dual SKF
                     // kind x3, five knobs, kind x2; Monark kind x2, i32 variant, five knobs,
@@ -503,7 +517,7 @@ impl Slot {
                     let values: Vec<f32> = (0..knobs).map(|_| r.f32()).collect::<Option<_>>()?;
                     let mut extra = values[2..].to_vec();
                     extra.extend(variant);
-                    return Some(Params::Filter { kind, cutoff: values[0], resonance: values[1], extra, hq: false });
+                    return Some(Params::Filter { kind, cutoff: values[0], resonance: values[1], extra, hq: false, cutoff_path: false });
                 } else if (22..=24).contains(&kind) && self.version >= 0x93 {
                     // Later records repeat the EQ kind (v0x95: five times) before the bands.
                     r.skip_repeats(kind);
@@ -534,6 +548,7 @@ impl Slot {
                         resonance,
                         extra,
                         hq,
+                        cutoff_path,
                     }
                 }
             }
@@ -570,17 +585,18 @@ impl Reader<'_> {
     }
     /// Skip repeated subtype ids and the one flag byte in front of each repeat; true when the
     /// first flag is set.
-    fn skip_repeats(&mut self, kind: i32) -> bool {
+    /// Skips a kind that repeats, with a one-byte flag before each repeat; returns the flags.
+    fn skip_repeats(&mut self, kind: i32) -> Vec<bool> {
         let k = kind.to_le_bytes();
-        let mut first = None;
+        let mut flags = Vec::new();
         loop {
             if let Some(rest) = self.0.strip_prefix(&k) {
                 self.0 = rest;
             } else if let Some((&flag, rest)) = self.0.split_first().filter(|(_, r)| r.starts_with(&k)) {
-                first.get_or_insert(flag != 0);
+                flags.push(flag != 0);
                 self.0 = &rest[k.len()..];
             } else {
-                return first.unwrap_or(false);
+                return flags;
             }
         }
     }
@@ -900,10 +916,10 @@ pub(crate) fn chain_with(
             Some(Params::SendLevels { sends, .. }) => {
                 modelled = bus::slot_send_levels(&mut b, &site, &mut notes, sends)
             }
-            Some(Params::Filter { kind: kind @ 30..=41, cutoff, resonance, extra, hq })
+            Some(Params::Filter { kind: kind @ 30..=41, cutoff, resonance, extra, hq, cutoff_path })
                 if !extra.is_empty() && matches!(fx.version, 0x90..=0x92 | 0x95) =>
             {
-                modelled = filter::slot_ladder(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra, *hq)
+                modelled = filter::slot_ladder(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra, *hq, *cutoff_path)
             }
             // Adaptive-resonance family: saved 100..=108 are modes 0..=8 of the native FilterDJ.
             Some(Params::Filter { kind: kind @ 100..=108, cutoff, resonance, .. })
@@ -1707,19 +1723,20 @@ mod tests {
     }
 
     #[test]
-    fn ladder_first_flag_byte_selects_high_quality() {
-        // Morphology (v0x95): kind, flag, kind, kind, kind, flag, kind floats. The first flag is HQ.
+    fn ladder_v095_flags_split_cutoff_path_and_high_quality() {
+        // Morphology (v0x95): kind, cutoff-path byte (+0x29), kind, kind, kind, HQ byte (+0x28), kind, floats.
         let k = 33i32.to_le_bytes();
         let floats: Vec<u8> = [0.0f32, 0.4, 0.25].iter().flat_map(|x| x.to_le_bytes()).collect();
-        for (flag, expect) in [(0u8, false), (1, true)] {
-            let mut bytes = [&k[..], &[flag], &k, &k, &k, &[0], &k].concat();
+        for (path, hq) in [(0u8, 0u8), (1, 0), (0, 1), (1, 1)] {
+            let mut bytes = [&k[..], &[path], &k, &k, &k, &[hq], &k].concat();
             bytes.extend(&floats);
             let mut slot_ = slot(0x18, bytes, 1.0);
             slot_.version = 0x95;
             let built = chain(&[slot_], Scope::Voice);
             assert!(
-                built.processors.iter().any(|p| matches!(p, sampler_ir::Processor::LadderLP4(d) if d.high_quality == expect)),
-                "flag {flag}: {:?}",
+                built.processors.iter().any(|p| matches!(p, sampler_ir::Processor::LadderLP4(d)
+                    if d.cutoff_path == (path != 0) && d.high_quality == (hq != 0))),
+                "path {path} hq {hq}: {:?}",
                 built.notes
             );
         }

@@ -45,6 +45,7 @@ const MULTI_SV: &str = "FilterMultiSV (0x140b05d50, 0x140b01d00) matches the nat
 const LEGACY: &str = "BFilter class law and process run by the cascade core (dsp/filter/cascade.rs) match the native classes under kemu to 2e-5 and the Kontakt LP4/LP6 measurements; control clock 0x140ae9f90 reproduced except its alternative branch (global 0x144fd4c54) and offset slew (+0x1f8), both unwritten";
 const STAGES: &str = "setter and process (Pro-53 FUN_14095d940/FUN_1409099a0, Legacy Ladder FUN_14095d630/FUN_140aef200, Vowel FUN_14095dd00/FUN_14095e250/FUN_140914a20) run by the cascade core match the native code (kemu) to 2e-5; scalar summation order only (the SSE path for >= 32-frame calls differs in rounding); clock as LEGACY";
 const LADDER: &str = "core FUN_140b00be2/FUN_140b06180 checked (cutoff law and table, pole polynomial, resonance, feedback correction, clip, stages, tap weights and compensation, 2 ms ramp); gain law (1200 + 119.589 g table index) and HQ (flag > 0.5, shared 2x Kaiser) confirmed against the Kontakt 8 decompile; HQ is the shared 2x Kaiser oversampler around the core (static composition bit-exact on 282 native cells); the cutoff path flag 0x49 source byte is unproved";
+const LADDER_LP4_HQ_OFF: &str = "LP4, HQ off: steady knobs bit-exact (84 native HQ-off cells), moving cutoff vs native (kemu, flag 0) to 1-2 ulp; the alternative cutoff path (flag 0x49, the record's +0x29 byte) is decompile-confirmed (core ctor zeroes the lane's step, snap epsilon 1e-15, snap on the 32-frame tick) with no native flag-1 PCM capture yet; HQ-on and the other Ladder rows stay partial";
 const DAFT: &str = "saved controls and ramp scheduling extracted; native audio core and resampler not recovered, saturation and interpolation are stand-ins (CORE-FILTERS-029..031)";
 const AR: &str = "FilterDJ equation and 32-frame clock match extracted instruction vectors; no host oracle (CORE-FILTERS-019)";
 const KFX: &str = "KONTAKTFX cores (dsp/filter/kontaktfx.rs: FilterDJExtRange + FilterLadderExtRange, Dual SKF, BlueMonark) bit-exact against the native classes under kemu at 48 kHz; record layouts and knob order from the BFilter readers; stereo interleave and the Simple LP/HP alternate smoother (u8, rate 1/(p2 1500 + 150)) unprobed";
@@ -360,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn native_ladder_lp4_import_preserves_signed_gain_and_record_version() {
+    fn native_ladder_lp4_import_preserves_signed_gain_and_cutoff_path() {
         let mut public = 33i32.to_le_bytes().to_vec();
         public.push(0);
         public.extend(33i32.to_le_bytes());
@@ -389,7 +390,7 @@ mod tests {
         assert!(chain.processors.iter().any(|p| matches!(p,
             sampler_ir::Processor::LadderLP4(d) if d.gain == -0.25
                 && d.cutoff == 0.5 && (d.resonance - 0.3).abs() < 1e-7
-                && d.record_version == 0x92)));
+                && d.cutoff_path)));
     }
 
     #[test]
@@ -415,7 +416,7 @@ mod tests {
         assert!(only_law_notes(&chain.notes), "{:?}", chain.notes);
         assert!(chain.processors.iter().any(|p| matches!(p,
             sampler_ir::Processor::LadderLP4(d) if d.taps == 1 && d.cutoff == 1.0
-                && d.resonance == 0.0 && d.record_version == 0x95)));
+                && d.resonance == 0.0 && !d.cutoff_path && !d.high_quality)));
     }
 
     #[test]
@@ -678,6 +679,7 @@ pub(super) fn slot_ladder(
     resonance: f32,
     extra: &[f32],
     hq: bool,
+    cutoff_path: bool,
 ) -> bool {
     // Kontakt 8 Filter Reference: Ladder filters. FUN_140cf4c80
     // maps saved 30..=41 to the 12 rows in FUN_140b00b80.
@@ -687,19 +689,25 @@ pub(super) fn slot_ladder(
         && values[1..].iter().all(|v| (0.0..=1.0).contains(v))
     {
         b.out.filter_slots.push((s.fx.slot, b.out.processors.len() + b.filters.len()));
-        let mapped = template(kind).expect("ladder rows are in the table");
+        let mut mapped = template(kind).expect("ladder rows are in the table");
+        // LP4 with HQ off is the one row with native moving-cutoff vectors (kemu, flag 0);
+        // its flag-1 cutoff law is the decompile-confirmed snap (see LADDER_LP4_HQ_OFF).
+        if kind == 33 && !hq {
+            mapped.fidelity = Exact;
+            mapped.caveat = LADDER_LP4_HQ_OFF;
+        }
         let mut config = mapped.config;
         config.drive = f64::from(values[0]);
         config.cutoff = f64::from(values[1]);
         config.resonance = f64::from(values[2]);
         config.high_quality = hq;
+        config.cutoff_path = cutoff_path;
         config.binding = Some(sampler_ir::fx::filter::Binding {
             address: sampler_ir::SlotAddress {
                 group: s.physical.0,
                 slot: s.fx.slot as i32,
                 generic: s.physical.1,
             },
-            record_version: s.fx.version,
         });
         b.filters.extend(config.processors(None).expect("ladder rows configure"));
         note_fidelity(notes, kind, &mapped);
