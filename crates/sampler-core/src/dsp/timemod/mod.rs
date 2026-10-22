@@ -23,7 +23,7 @@ mod voices;
 mod diffuse;
 mod dual;
 mod dual_x;
-mod mt;
+pub(crate) mod mt;
 mod tape;
 mod buzz;
 mod psyche;
