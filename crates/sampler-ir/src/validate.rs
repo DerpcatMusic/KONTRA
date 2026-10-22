@@ -711,7 +711,7 @@ impl Instrument {
                     }
                 }
             }
-            if recipe.members.is_empty() || recipe.members.len() > 16 {
+            if recipe.members.is_empty() || recipe.members.len() > crate::MAX_PROCESSING_MEMBERS {
                 return Err(invalid("processing recipe member capacity is invalid"));
             }
             for member in &recipe.members {
@@ -927,9 +927,9 @@ impl Instrument {
         let mut processing_members = std::collections::BTreeSet::new();
         for (index, scope) in self.processing_scopes.iter().enumerate() {
             check.owner = format!("processing scope {index}");
-            if scope.members.is_empty() || scope.members.len() > 16 {
+            if scope.members.is_empty() || scope.members.len() > crate::MAX_PROCESSING_MEMBERS {
                 return Err(ValidationError::ZoneRouting { owner: check.owner.clone(),
-                    reason: "processing scope requires 1..=16 authored members" });
+                    reason: "processing scope requires 1..=MAX_PROCESSING_MEMBERS authored members" });
             }
             if let Some(crate::ProcessingSignal{source_law:crate::ProcessingSourceLaw::UviC997Layout{members},..})=&scope.signal {
                 if members.iter().filter(|input|input.is_some()).count()!=scope.members.len(){return Err(ValidationError::ZoneRouting{owner:check.owner.clone(),reason:"native source ordinal roster differs from actual scope members"});}

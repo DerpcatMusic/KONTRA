@@ -27,6 +27,16 @@ fn pcm()->Vec<Pcm>{(0..2).map(|_|Pcm::new(48000,vec![[0.1;2];128].into_boxed_sli
 #[test]fn narrowing_remaps_recipe_and_scope_without_erasing_native_owners(){
     let mut ir=graph(true);let ids:Vec<_>=ir.source_indices.owners.iter().map(|owner|owner.id).collect();ir.retain_zones(|zone|zone.asset==Some(ir::AssetRef(1)));assert_eq!(ir.source_indices.owners.iter().map(|owner|owner.id).collect::<Vec<_>>(),ids);assert_eq!(ir.source_indices.processing[0].members,vec![ir::ZoneRef(0)]);assert_eq!(ir.source_indices.processing[0].compiled,Some(0));assert_eq!(ir.processing_scopes[0].members,vec![ir::ZoneRef(0)]);assert!(ir.validate().is_ok());
 }
+#[test]fn keygroup_processing_recipe_admits_authored_zone_counts_up_to_the_engine_capacity(){
+    // A keygroup owns all its zones: 17 is past the old 16-member capacity.
+    for (count,admitted) in [(17,true),(ir::MAX_PROCESSING_MEMBERS,true),(ir::MAX_PROCESSING_MEMBERS+1,false)]{
+        let mut ir=graph(false);
+        while ir.zones.len()<count{let mut zone=ir::Zone::new(ir::AssetRef(0));zone.keys=ir::KeyRange{low:60,high:60};zone.group=Some(ir::GroupRef(0));ir.zones.push(zone);}
+        let all:Vec<_>=(0..count).map(ir::ZoneRef).collect();
+        ir.source_indices.owners[1].zones=all.clone();ir.source_indices.processing[0].members=all;
+        assert_eq!(ir.validate().is_ok(),admitted,"{count} zones");
+    }
+}
 #[test]fn source_send_cannot_disappear_through_group_tap_rewriting(){
     let mut ir=graph(true);ir.buses.push(ir::Bus{name:"actual-send".into(),chain:None,sends:vec![],output:ir::Output::Master,gain:ir::Gain::UNITY});ir.groups[0].sends.push(ir::GroupSend{to:ir::BusRef(0),gain:ir::Gain::Linear(0.5),pre_fader:true});let result=lower(&ir,48000,pcm(),|_,plan|Ok(plan));assert!(matches!(result,Err(LowerError::Core{stage:Stage::Regions,error:Error::UnsupportedSourceLayout,..})));
 }

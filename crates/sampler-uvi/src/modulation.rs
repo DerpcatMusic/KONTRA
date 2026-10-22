@@ -319,9 +319,14 @@ impl Translation {
     pub(crate) fn connect_shared_output(&mut self, connection: Node, out: &mut Modulation) -> Result<(), String> {
         let mut qualification = SourceQualification::default();
         if let Err(gap) = self.try_connect(connection, out, None, &mut qualification)? {
-            let feature = gap.feature;
+            let message = format!(
+                "{}: shared output connection has no supported exact modulator program: {} {}",
+                path(connection),
+                gap.feature,
+                gap.detail
+            );
             self.gap(connection, gap);
-            return Err(format!("{}: shared output connection has no supported exact modulator program: {feature}", path(connection)));
+            return Err(message);
         }
         qualification.require_output(connection)
     }
