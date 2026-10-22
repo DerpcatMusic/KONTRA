@@ -8,7 +8,6 @@
 use super::super::Planar;
 use super::hilbert;
 use super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
-use super::hilbert;
 use sampler_ir::fx::color::Freak;
 
 const BASE: usize = 0x940;
@@ -355,7 +354,6 @@ fn prepare(m: &mut Image, sr: u32) {
     m.pair(0xcc0, tanpoly(f64(w * m.f(0xcf0))));
     m.pair(0x1110, tanpoly(f64(w * 20000.0 * 0.75)));
     m.pair(0x1140, tanpoly(f64(w * 20.0)));
-    let h = hilbert::design(w, 20.0, 20_000.0);
     let h = hilbert::design(sr);
     m.wf4(0x960, h.gain);
     for j in 0..8 {

@@ -894,7 +894,6 @@ mod tests {
     #[test]
     fn unity_speed_and_pitch_reproduce_the_source() {
         let src = sine(20000, 441.);
-        for mode in [Mode::TimeMachine, Mode::TimeMachinePro] {
         for mode in MODES {
             let out = play(mode, &src, 1., 1., 16000);
             assert!(out.len() >= 16000, "{mode:?} ended early");

@@ -2164,9 +2164,9 @@ mod tests {
             b.out.notes.push((
                 fx.slot,
                 "effect".into(),
-                match color::unproved(fx.module).or(timemod::unproved(fx.module)).or(dynamics::unproved(fx.module)) {
                 match color::unproved(fx.module)
                     .or(timemod::unproved(fx.module))
+                    .or(dynamics::unproved(fx.module))
                     .or(mangling::unproved(fx.module))
                 {
                     Some(why) => format!("{name} v{:#x} len {}: {why}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),

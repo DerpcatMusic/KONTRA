@@ -9,7 +9,6 @@ mod crywah;
 mod dstortion;
 pub(super) mod fuzz;
 mod chain;
-mod fuzz;
 mod kernel;
 mod jump;
 mod twang;
