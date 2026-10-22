@@ -208,7 +208,7 @@ then `count` records of `u32` frame, `f32` frame copy, `u32` extra. Count 0 is a
 9-byte payload. Frames are boundaries: `count` markers give `count - 1` slices only
 if the first marker is 0 and the last is the grid length, as in the one capture
 (0, 6000, 12000, 18000, 24000 for four 1/16 slices). Loader:
-`vendor/ni-file/src/kontakt/objects/zone_slices.rs`, `ir::BeatSlices::markers`. The
+`vendor/ni-file/src/kontakt/objects/zone_slices.rs`, `ir::Playback::beat_grid`. The
 `f32` copy and `extra` meanings are open.
 
 ### Loop array 0x39 / embedded 0x05 v0x60

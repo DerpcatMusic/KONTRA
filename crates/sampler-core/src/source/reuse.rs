@@ -93,6 +93,7 @@ impl CursorKey {
         // Deliberately exhaustive: a future cursor field must be considered
         // before this optimization can compile. NaNs and signed zeros use bits.
         let Cursor {
+            beat,
             wavetable,
             wavetable_base,
             start,
@@ -114,7 +115,8 @@ impl CursorKey {
             bounded_demand,
             lead,
         } = cursor;
-        if wavetable.is_some()
+        if beat.is_some()
+            || wavetable.is_some()
             || wavetable_base.is_some()
             || loops.is_some()
             || starvation.is_some()
@@ -157,6 +159,7 @@ impl CursorKey {
             lead,
         } = self;
         Cursor {
+            beat: None,
             wavetable: None,
             wavetable_base: None,
             start,
