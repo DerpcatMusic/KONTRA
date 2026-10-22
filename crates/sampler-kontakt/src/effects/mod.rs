@@ -901,7 +901,10 @@ pub(crate) fn chain_with(
             Some(Params::Distortion { mode, drive, damping }) => {
                 modelled = color::slot_distortion(&mut b, &site, &mut notes, *mode, *drive, *damping)
             }
-            // The Surround Panner record (version 0x70) has no lowering yet: named NotModeled, audio passes through.
+            // Bus scope, stereo out: a fixed mix (surround.rs). Voice and group inserts are NotModeled.
+            Some(Params::SurroundPanner(rec)) if scope == Scope::Bus => {
+                modelled = surround::slot_surround_panner(&mut b, &site, rec)
+            }
             Some(Params::SurroundPanner(_)) => modelled = false,
             Some(Params::Saturation { shape, mode }) => {
                 modelled = color::slot_saturation(&mut b, &site, &mut notes, *shape, *mode)
@@ -1833,7 +1836,7 @@ mod tests {
     }
 
 
-    /// Stereo Tune and Surround Panner have no proved law: each must surface a
+    /// Stereo Tune and Surround Panner on a voice have no proved law: each must surface a
     /// named diagnostic and pass audio through, never a silent or invented DSP.
     #[test]
     fn unproved_spatial_modules_are_named_and_pass_through() {
