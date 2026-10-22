@@ -49,7 +49,7 @@ Persisted declarations in the corpus (count of `make_persistent` calls, scripts 
 | ui_text_edit, plain `@` | `@` string | `Value::Text` -> `Home::Text` | match |
 | plain `!` string arrays | `!` entries | dropped by `saved()` (reported) | **mismatch** |
 | ui_file_selector, ui_waveform | not established; the file format of these entries is unverified | no special handling | unknown (2 uses each) |
-| polyphonic variables | not persistable | write ignored at init | match |
+| polyphonic variables | not persistable | initializer ignored with a warning (the manual's `declare polyphonic $<name>` has no initial value); cells start at 0 per note | match (manual) |
 
 ### 1.4 `$switch_sordino` in script 778d5bb709976a72 (Audio Imperia Areia/Pyramid, 7+ Core and Legato patches)
 
@@ -123,7 +123,7 @@ The "zones rejected by group selection" counts (Areia 1,122 zones; Dolce 7 1st V
 | `wait(t)` microseconds -> frames; `wait(0)` continues | S | `lower.rs:1608-1625`, `behavior.rs:1947` | match |
 | `wait_ticks(n)` | S (tempo-relative) | fixed 520 us per tick (`lower.rs:1612`), i.e. 120 BPM; real value 500000/960 = 520.83 us, tempo ignored | mismatch; 0 corpus uses (M) |
 | Callback continuation after note-off | not documented in the manual extract | `WaitLifetime::Gate` default (`behavior.rs:31-35`) | unknown |
-| Polyphonic variables are per note event, readable in release of that note, usable only in note/release | S (manual p.32) | `Home::Note` cells (`lower.rs:597-599`, `790-794`): outside note callbacks writes are ignored, reads are 0 | match |
+| Polyphonic variables are per note event, readable in release of that note, usable only in note/release | S (manual p.32) | `Home::Note` cells (`lower.rs:889-895`, `1089-1095`): outside note callbacks writes are ignored, reads are 0 with a warning. Corpus (Areia 16 Violins, 778d5bb709976a72) reads them in `ui_control` and `on controller`, which the manual forbids; Kontakt's value there is not established. Binary: the message string `Polyphonic variables can only be used in "on note" and "on release" callbacks!` (file 0x4e8b230) is referenced from `FUN_140798900` (VA 0x140799edd) on the path where the callback-kind field at `[r14+0x8450]` is not 1 or 2, i.e. a compile-time check through the diagnostic emitter `FUN_1407973e0`. Per-note lifetime: runtime zeroes a note's cells on note creation (`sampler-core/src/lib.rs` ~2048) and keeps them to release | match (manual); ui/controller reads: open |
 | Event IDs are reusable; stale IDs are no-ops | S/I | source-visible alias with generation check, unknown/retired IDs resolve to nothing (`BEHAVIOR.md` "Source-visible event identities") | match (I) |
 | Init budget | n/a | `INIT_FUEL` 200,000,000 steps (`eval.rs:28`); on exhaustion the script is abandoned | by design |
 

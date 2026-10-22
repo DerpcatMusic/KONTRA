@@ -73,14 +73,14 @@ Kontakt 8 exposes three EQ modules that matter here, plus one that has no law ye
   k = 0.97/0.84/0.63/0.56/0.54 at |G| = 20/17/10/5.6/1.9 dB (LMF); HMF k is
   0.90/0.79/0.65/0.59/0.58. Boost and cut mirror each other.
 - **Stereo.** No L→R coupling.
-- **Knob glide (IMPLEMENTED, length unconfirmed).** A knob move glides the three
-  Solid knobs (freq, Q, gain) linearly from where they were to the new target over
-  `EqBand::ramp` (20 ms, `solid::RAMP_SECONDS`), and the section is redesigned from the
-  moving values each block (`eq_family/generic.rs`, Law::Solid). This matches the native
-  structure in sec. 5 (knob-domain registers, per-frame recompute). Native redesign is
-  per frame, ours per block. The 20 ms length is the RE-notes value; the native literal
-  f32 0.02 (bits 0x3ca3d70a, `.rdata` 0x1447148b8) is pinned by a test but its use as the
-  G_EQ ramp is not proven.
+- **Knob glide (PROVED, section 8).** A control move restarts the three knob lanes of
+  a band toward their targets over `N = int(rate * 0.02 / 32 + 0.5)` grid blocks of 32
+  frames (30 at 48 kHz, 28 at 44.1 kHz), linearly in knob space, and the section is redesigned
+  from the lanes on every frame that moves them (DF1, the native cascade record).
+  Vectors: `crates/sampler-core/src/dsp/eq_family/geq_ramp_vectors.json` (kemu, see
+  `tools/re/geq_ramp_vectors.py`). The Rust test `solid_knob_glide_is_the_native_lane_schedule`
+  matches the native lanes, gate and countdown bit for bit over 2048 frames at two rates,
+  including a second move while the first ramp runs.
 - **Live switches (OPEN in the engine).** A bell or pass switch changes the
   band's `Kind` (shelf↔peak) or adds a section. `Kind` is compile-time in the
   stage, so a live switch write has no binding and reports
@@ -96,7 +96,7 @@ Kontakt 8 exposes three EQ modules that matter here, plus one that has no law ye
 | G3 | Solid HP, LP | `solid.rs` HP/LP sections | none found | `eq-topology.tsv` |
 | G4 | Solid LF shelf | RBJ S 0.5 shelf + two Q 0.5 peaks (`solid.rs`) | residual 0.2–1.0 dB; native shelf formula not recovered | native shelf coefficient code (decompile READY) |
 | G5 | Solid HF shelf | RBJ S 0.55 shelf + Q 0.7 peak (`solid.rs`) | residual up to 1.1 dB | same as G4 |
-| G6 | Solid knob glide (20 ms) | `EqBand::ramp`, linear knob-space glide, redesign per block (`generic.rs`) | native redesigns per frame; ramp length unconfirmed (no increment writer in the `.c` export) | locate the increment writer, or a sample-accurate oracle step |
+| G6 | Solid knob glide | native lane schedule in `solid::Glide`, per-frame DF1 redesign (`generic.rs`); kemu vectors match bit for bit (`geq_ramp_vectors.json`) | live-flag writer 0x13da0 not located (non-live glide unknown); per-band re-timing instead of whole-object | locate the writer of 0x13da0 |
 | G7 | Solid live switches (LF/HF bell, LP/HP on) | saved and init writes only (`apply_writes`), live lane absent | runtime kind/section change | Kontakt step test on switch flips, and decompile of the setter |
 | G8 | Solid bank selection | bank 0 applied (matches measurement) | none for Kontakt 8 | — |
 | G9 | Pro EQ | n/a | not a Kontakt 8 module (section 6) | none |
@@ -219,26 +219,38 @@ Still open (no code in this pass): the glide writer for the per-knob increment
 (section 5), live switch semantics beyond the recompute path, bank 16, the HF
 shelf gain=max rows, the HF bell knob >= 0.75 rows, and the LMF/HMF rows above.
 
-## 8. Solid G-EQ native ramp, decoded from the export (2026-10-22)
+## 8. Solid G-EQ native ramp (decoded 2026-10-22, closed 2026-10-23)
 
-Source: cached decompile `Research/KONTRA/source/kontakt8/0141a50000.c`
-(`FUN_141a595d0`, 1894 bytes) and `0141a80000.c` (`FUN_141a89140`, `FUN_141a89350`).
-Read-only; no disassembly re-run, no code change.
+Source: cached decompile `Research/KONTRA/source/kontakt8/` (`0141a50000.c` frame loop
+`FUN_141a595d0`; `0141a80000.c` `FUN_141a89140`, `FUN_141a89350`; `0141aa0000.c` ramp length
+`FUN_141aa1fb0`; `0141ab0000.c` block start `FUN_141ab4d70`; `0140ac0000.c` lane writer
+`FUN_140acbe30`; `0141ac0000.c` setter `FUN_141ac70f0`). Verified by kemu runs of the live
+path (`tools/re/geq_ramp_vectors.py`).
 
-- **Lane block.** 16 float lanes at `obj+0x13db0 + 4*i` hold current values; the
-  matching per-frame increments sit at `obj+0x13df0 + 4*i`. Per frame of the chunk
-  (`param_4` frames) every lane does `value += inc`.
-- **Lane to parameter.** Lanes 0..11 write through `FUN_141a89350(obj, idx, value)`
-  to indices `0,1,3,4,5,6,7,8,9,10,12,13` (lane 2 is index 3, lane 10 is index 12,
-  lane 11 is index 13). Each write is gated on that lane's increment being nonzero.
-  Lane 12 (`0x13de0`, inc `0x13e20`) is copied to `obj+0x13da4` instead of a param
-  write. Lanes 13..15 advance but have no write in this function.
-- **Gates.** Per-frame writes run only when pending flag `obj+0x13da1` is 0 and gate
-  `obj+0x13e71` is nonzero. When the pending flag is set, `FUN_141a89140` does a full
-  redesign of every lane (indices 12,13,0,1,3..10, plus bools 11 from `obj+0xef9a` and
-  2 from `obj+0xef99`), then clears the flag.
-- **Reset.** `FUN_141a9eac0` zeroes lanes, increments and the pending flag.
-- **Still open.** The increment writer (ramp length, the 20 ms claim) is not located:
-  no literal store to `0x13df0..0x13e2c` outside the reset. The stores are probably
-  computed offsets. The redesign law itself is in `FUN_141a89350`
-  (27 KB) and is not decoded here.
+- **Lanes.** 16 f32 lanes at `obj+0x13db0 + 4*i` (current), increments at `obj+0x13df0 + 4*i`,
+  targets at `obj+0x13e30 + 4*i`. Lane to knob index: 0 LF gain, 1 LF freq, 2 LMF gain (knob 3),
+  3 LMF freq (knob 4), 4 LMF Q (knob 5), 5 HMF gain (6), 6 HMF freq (7), 7 HMF Q (8), 8 HF gain (9),
+  9 HF freq (10), 10 HP freq (12), 11 LP freq (13).
+- **Ramp length (writer located).** `FUN_141aa1fb0(obj, rate, 32)` stores
+  `N = (int)(rate * 0.02f / 32 + 0.5f)`, at least 1, at `obj+0x13e78`, and the increment scale
+  `1 / (N * 32)` at `obj+0x13e7c`. Constants: `.rdata` 0x147697658 (0.02f), 0x14470bad0 (0.5f).
+- **Block sequence.** The caller `FUN_1408fbd60` runs every 32 frames: setter
+  `FUN_141ac70f0(obj, idx, value)` for each control that moved (clamped to 0..1), then
+  `FUN_141ab4d70` (block start, which calls `FUN_140acbe30`), then the frame loop. On a move,
+  `FUN_140acbe30` sets `inc = (target - lane) * scale` for all 16 lanes, snaps any lane whose
+  squared step is below 1e-15 (lane := target, step := 0), and, if a step remains, sets the
+  countdown to `N` and the gate `obj+0x13e71`. A block with no move counts the countdown down;
+  at zero every lane snaps to its target and the gate drops. The ramp covers `N` blocks, that is
+  `N * 32` frames.
+- **Frame loop.** Per frame: `lane += inc`, then, when the gate is set and a lane moved, the
+  section is redesigned from the lanes (`FUN_141a89350`). Each section is a direct-form-I
+  biquad, `y = b0 x + b1 x1 + b2 x2 - a1 y1 - a2 y2`, one cascade record per channel
+  (`obj + (0x28f + 0x10*section + channel) * 0x60`, coefficients at +0..+0x20).
+- **Retiming.** A move re-times every lane that is still moving: the new increments come from
+  each lane's current value over the new `N` blocks. The Rust band stage holds its own lanes, so
+  a move re-times only its own band.
+- **Reset.** `FUN_141a9eac0` zeroes lanes, increments, the gate and the countdown.
+- **Still open.** The writer of the live flag `obj+0x13da0`. The setter applies a move at once
+  when it is 0 and ramps it when it is 1; no writer is in the export, so the mode of a real host
+  move is not established. Audio is not vector-checked: the cascade records need the object's
+  loader state, which kemu does not reproduce.

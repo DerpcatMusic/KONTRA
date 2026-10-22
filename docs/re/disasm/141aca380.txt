@@ -1,0 +1,120 @@
+            0x141aca380      4053           push rbx
+            0x141aca382      4883ec70       sub rsp, 0x70
+            0x141aca386      0f29742460     movaps xmmword [rsp + 0x60], xmm6
+            0x141aca38b      0f57c0         xorps xmm0, xmm0
+            0x141aca38e      0f297c2450     movaps xmmword [rsp + 0x50], xmm7
+            0x141aca393      488bd9         mov rbx, rcx
+            0x141aca396      440f294c2440   movaps xmmword [rsp + 0x40], xmm9
+            0x141aca39c      0f57ff         xorps xmm7, xmm7
+            0x141aca39f      f2440f100d..   movsd xmm9, qword [0x144714988] ; [0x144714988:8]=0x3ff0000000000000
+            0x141aca3a8      440f29542430   movaps xmmword [rsp + 0x30], xmm10
+            0x141aca3ae      440f28d1       movaps xmm10, xmm1
+            0x141aca3b2      440f295c2420   movaps xmmword [rsp + 0x20], xmm11
+            0x141aca3b8      440f28da       movaps xmm11, xmm2
+            0x141aca3bc      f3410f5ac3     cvtss2sd xmm0, xmm11
+            0x141aca3c1      f2440f5ec8     divsd xmm9, xmm0
+            0x141aca3c6      0f28c1         movaps xmm0, xmm1
+            0x141aca3c9      f30f59411c     mulss xmm0, dword [rcx + 0x1c]
+            0x141aca3ce      f30f5af8       cvtss2sd xmm7, xmm0
+            0x141aca3d2      f20f593dde..   mulsd xmm7, qword [0x1447149b8]
+            0x141aca3da      f2410f59f9     mulsd xmm7, xmm9
+            0x141aca3df      0f28c7         movaps xmm0, xmm7
+            0x141aca3e2      f20f117960     movsd qword [rcx + 0x60], xmm7
+            0x141aca3e7      e84c6d9002     call 0x1443d1138
+            0x141aca3ec      f20f594368     mulsd xmm0, qword [rbx + 0x68]
+            0x141aca3f1      f20f114350     movsd qword [rbx + 0x50], xmm0
+            0x141aca3f6      0f28c7         movaps xmm0, xmm7
+            0x141aca3f9      e8466d9002     call 0x1443d1144
+            0x141aca3fe      f20f594368     mulsd xmm0, qword [rbx + 0x68]
+            0x141aca403      0f57ff         xorps xmm7, xmm7
+            0x141aca406      410f28ca       movaps xmm1, xmm10
+            0x141aca40a      f20f114358     movsd qword [rbx + 0x58], xmm0
+            0x141aca40f      f30f594b20     mulss xmm1, dword [rbx + 0x20]
+            0x141aca414      f20f10b398..   movsd xmm6, qword [rbx + 0x98]
+            0x141aca41c      f30f5af9       cvtss2sd xmm7, xmm1
+            0x141aca420      f20f593d90..   mulsd xmm7, qword [0x1447149b8]
+            0x141aca428      f2410f59f9     mulsd xmm7, xmm9
+            0x141aca42d      0f28c7         movaps xmm0, xmm7
+            0x141aca430      f20f11bb90..   movsd qword [rbx + 0x90], xmm7
+            0x141aca438      e8fb6c9002     call 0x1443d1138
+            0x141aca43d      f20f59c6       mulsd xmm0, xmm6
+            0x141aca441      f20f118380..   movsd qword [rbx + 0x80], xmm0
+            0x141aca449      0f28c7         movaps xmm0, xmm7
+            0x141aca44c      e8f36c9002     call 0x1443d1144
+            0x141aca451      f3440f591d..   mulss xmm11, dword [0x1447149e4]
+            0x141aca45a      0f287c2450     movaps xmm7, xmmword [rsp + 0x50]
+            0x141aca45f      440f284c2440   movaps xmm9, xmmword [rsp + 0x40]
+            0x141aca465      f3450f5eda     divss xmm11, xmm10
+            0x141aca46a      440f28542430   movaps xmm10, xmmword [rsp + 0x30]
+            0x141aca470      f3410f2cc3     cvttss2si eax, xmm11
+            0x141aca475      440f285c2420   movaps xmm11, xmmword [rsp + 0x20]
+            0x141aca47b      f20f59c6       mulsd xmm0, xmm6
+            0x141aca47f      0f28742460     movaps xmm6, xmmword [rsp + 0x60]
+            0x141aca484      f20f118388..   movsd qword [rbx + 0x88], xmm0
+            0x141aca48c      894324         mov dword [rbx + 0x24], eax
+            0x141aca48f      4883c470       add rsp, 0x70
+            0x141aca493      5b             pop rbx
+            0x141aca494      c3             ret
+            0x141aca495      cc             int3
+            0x141aca496      cc             int3
+            0x141aca497      cc             int3
+            0x141aca498      cc             int3
+            0x141aca499      cc             int3
+            0x141aca49a      cc             int3
+            0x141aca49b      cc             int3
+            0x141aca49c      cc             int3
+            0x141aca49d      cc             int3
+            0x141aca49e      cc             int3
+            0x141aca49f      cc             int3
+            0x141aca4a0      48895c2408     mov qword [rsp + 8], rbx
+            0x141aca4a5      48896c2410     mov qword [rsp + 0x10], rbp
+            0x141aca4aa      4889742418     mov qword [rsp + 0x18], rsi
+            0x141aca4af      57             push rdi
+            0x141aca4b0      4883ec20       sub rsp, 0x20
+            0x141aca4b4      8991c0000000   mov dword [rcx + 0xc0], edx
+            0x141aca4ba      410fb6e8       movzx ebp, r8b
+            0x141aca4be      488bd9         mov rbx, rcx
+            0x141aca4c1      85d2           test edx, edx
+            0x141aca4c3      0f8424010000   je 0x141aca5ed
+            0x141aca4c9      83ea01         sub edx, 1
+            0x141aca4cc      0f848e000000   je 0x141aca560
+            0x141aca4d2      83ea01         sub edx, 1
+            0x141aca4d5      7433           je 0x141aca50a
+            0x141aca4d7      83fa01         cmp edx, 1                 ; reloc.WS2_32.dll_accept
+            0x141aca4da      0f8568010000   jne 0x141aca648
+            0x141aca4e0      0fb6818800..   movzx eax, byte [rcx + 0x88]
+            0x141aca4e7      660f6ec8       movd xmm1, eax
+            0x141aca4eb      0f5bc9         cvtdq2ps xmm1, xmm1
+            0x141aca4ee      e80d0c0000     call 0x141acb100
+            0x141aca4f3      807b6a00       cmp byte [rbx + 0x6a], 0
+            0x141aca4f7      0f849f000000   je 0x141aca59c
+            0x141aca4fd      f30f1005cf..   movss xmm0, dword [0x14470bad4] ; [0x14470bad4:4]=0x3f800000
+            0x141aca505      e995000000     jmp 0x141aca59f
+            0x141aca50a      c781700200..   mov dword [rcx + 0x270], 2
+            0x141aca514      4881c1a801..   add rcx, 0x1a8             ; 424
+            0x141aca51b      e89005ffff     call 0x141abaab0
+            0x141aca520      488d8b7802..   lea rcx, [rbx + 0x278]
+            0x141aca527      c783400300..   mov dword [rbx + 0x340], 2
+            0x141aca531      e87a05ffff     call 0x141abaab0
+            0x141aca536      4084ed         test bpl, bpl
+            0x141aca539      0f8409010000   je 0x141aca648
+            0x141aca53f      b201           mov dl, 1
+            0x141aca541      488d8ba801..   lea rcx, [rbx + 0x1a8]
+            0x141aca548      e8f3fafeff     call 0x141aba040
+            0x141aca54d      b201           mov dl, 1
+            0x141aca54f      488d8b7802..   lea rcx, [rbx + 0x278]
+            0x141aca556      e8e5fafeff     call 0x141aba040
+            0x141aca55b      e9e8000000     jmp 0x141aca648
+            0x141aca560      8b918c000000   mov edx, dword [rcx + 0x8c]
+            0x141aca566      e82517ffff     call 0x141abbc90
+            0x141aca56b      4084ed         test bpl, bpl
+            0x141aca56e      741c           je 0x141aca58c
+            0x141aca570      488d8ba801..   lea rcx, [rbx + 0x1a8]
+            0x141aca577      b201           mov dl, 1
+            0x141aca579      e8c2fafeff     call 0x141aba040
+            0x141aca57e      488d8b7802..   lea rcx, [rbx + 0x278]
+            0x141aca585      b201           mov dl, 1
+            0x141aca587      e8b4fafeff     call 0x141aba040
+            0x141aca58c      807b6900       cmp byte [rbx + 0x69], 0
+            0x141aca590      740a           je 0x141aca59c
+            0x141aca592      f30f10053a..   movss xmm0, dword [0x14470bad4] ; [0x14470bad4:4]=0x3f800000

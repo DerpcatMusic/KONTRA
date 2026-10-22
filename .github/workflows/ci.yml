@@ -62,6 +62,10 @@ jobs:
           for hal in (p for p in packages if p['name'] == 'wgpu-hal'):
               assert windows(allocator) == windows(hal), 'DX12 allocator and wgpu-hal must share Windows interface types'
           PYDEPS
+      - name: KSP surface map (catalogue in sync, every row has a status and a test link)
+        run: |
+          python3 tools/re/ksp_symbols.py check
+          python3 tools/re/test_ksp_symbols.py
       - name: Classify changes
         id: changes
         env:

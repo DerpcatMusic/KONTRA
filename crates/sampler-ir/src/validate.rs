@@ -235,7 +235,7 @@ impl Check<'_> {
             // Translators clamp to the native ranges; the runtime checks finiteness.
             Curve::Dirt(_) | Curve::Freak(_) | Curve::Amp(_) => {}
             // Translators clamp to the native ranges; the runtime checks finiteness.
-            Curve::Tubescreamer(_) => {}
+            Curve::Tubescreamer(_) | Curve::Stereorizer(_) => {}
             Curve::Skreamer(knobs) => {
                 for knob in knobs {
                     unit(knob, "skreamer control")?;

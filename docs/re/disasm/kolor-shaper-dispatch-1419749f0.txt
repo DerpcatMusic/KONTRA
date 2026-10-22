@@ -1,0 +1,194 @@
+1419749f0: mov      qword ptr [rsp + 0x18], rbx
+1419749f5: push     rbp
+1419749f6: lea      rbp, [rsp - 0x20]
+1419749fb: sub      rsp, 0x120
+141974a02: mov      rax, qword ptr [rip + 0x8930eb7]
+141974a09: xor      rax, rsp
+141974a0c: mov      qword ptr [rbp + 0x10], rax
+141974a10: movsx    rax, byte ptr [rdx + 0x6f0]
+141974a18: mov      rbx, rdx
+141974a1b: lea      rdx, [rip - 0x1974a22]
+141974a22: mov      eax, dword ptr [rdx + rax*4 + 0x1974d68]
+141974a29: add      rax, rdx
+141974a2c: jmp      rax
+141974a2e: mov      rax, qword ptr [rcx + 0x10]
+141974a32: movss    xmm0, dword ptr [rax]
+141974a36: lea      rax, [rsp + 0x68]
+141974a3b: movss    dword ptr [rsp + 0x30], xmm0
+141974a41: test     al, 3
+141974a43: jbe      0x141974a50
+141974a45: movss    dword ptr [rsp + 0x68], xmm0
+141974a4b: jmp      0x141974ad0
+141974a50: mov      ecx, 1
+141974a55: lea      rax, [rsp + 0x68]
+141974a5a: shr      rax, 2
+141974a5e: mov      edx, ecx
+141974a60: neg      rax
+141974a63: and      eax, 3
+141974a66: cmp      rax, rcx
+141974a69: cmovb    edx, eax
+141974a6c: sub      rcx, rdx
+141974a6f: and      rcx, 0xfffffffffffffffc
+141974a73: add      rcx, rdx
+141974a76: test     rdx, rdx
+141974a79: je       0x141974a94
+141974a7b: lea      r9, [rsp + 0x68]
+141974a80: xor      r8d, r8d
+141974a83: mov      eax, dword ptr [rsp + r8*4 + 0x30]
+141974a88: mov      dword ptr [r9 + r8*4], eax
+141974a8c: inc      r8
+141974a8f: cmp      r8, rdx
+141974a92: jl       0x141974a83
+141974a94: cmp      rdx, rcx
+141974a97: jge      0x141974ab2
+141974a99: lea      rax, [rsp + 0x68]
+141974a9e: nop      
+141974aa0: movups   xmm0, xmmword ptr [rsp + rdx*4 + 0x30]
+141974aa5: movups   xmmword ptr [rax + rdx*4], xmm0
+141974aa9: add      rdx, 4
+141974aad: cmp      rdx, rcx
+141974ab0: jl       0x141974aa0
+141974ab2: cmp      rcx, 1
+141974ab6: jge      0x141974ad0
+141974ab8: lea      rdx, [rsp + 0x68]
+141974abd: nop      dword ptr [rax]
+141974ac0: mov      eax, dword ptr [rsp + rcx*4 + 0x30]
+141974ac4: mov      dword ptr [rdx + rcx*4], eax
+141974ac7: inc      rcx
+141974aca: cmp      rcx, 1
+141974ace: jl       0x141974ac0
+141974ad0: movups   xmm0, xmmword ptr [rbx]
+141974ad3: lea      rax, [rsp + 0x68]
+141974ad8: movups   xmmword ptr [rsp + 0x6c], xmm0
+141974add: lea      rcx, [rbx + 0x30]
+141974ae1: mov      qword ptr [rbp - 0x30], rax
+141974ae5: movups   xmm1, xmmword ptr [rbx + 0x10]
+141974ae9: lea      r8, [rbp - 0x30]
+141974aed: lea      rdx, [rsp + 0x20]
+141974af2: movups   xmmword ptr [rsp + 0x7c], xmm1
+141974af7: call     0x14194cc70
+141974afc: lea      rax, [rsp + 0x30]
+141974b01: mov      qword ptr [rsp + 0x50], 0
+141974b0a: lea      rcx, [rbx + 0x2c0]
+141974b11: mov      qword ptr [rsp + 0x38], rax
+141974b16: lea      r9, [rsp + 0x50]
+141974b1b: mov      qword ptr [rsp + 0x50], rbx
+141974b20: lea      r8, [rsp + 0x38]
+141974b25: lea      rdx, [rbp - 0x70]
+141974b29: call     0x14194c830
+141974b2e: movaps   xmm0, xmmword ptr [rbp - 0x70]
+141974b32: movaps   xmm1, xmmword ptr [rbp - 0x60]
+141974b36: movups   xmmword ptr [rbx], xmm0
+141974b39: movups   xmmword ptr [rbx + 0x10], xmm1
+141974b3d: movss    xmm0, dword ptr [rsp + 0x20]
+141974b43: mov      rcx, qword ptr [rbp + 0x10]
+141974b47: xor      rcx, rsp
+141974b4a: call     0x1443c9590
+141974b4f: mov      rbx, qword ptr [rsp + 0x140]
+141974b57: add      rsp, 0x120
+141974b5e: pop      rbp
+141974b5f: ret      
+141974b60: mov      rax, qword ptr [rcx + 0x10]
+141974b64: lea      r8, [rsp + 0x20]
+141974b69: lea      rdx, [rbp - 0x70]
+141974b6d: lea      rcx, [rbp - 0x30]
+141974b71: movss    xmm0, dword ptr [rax]
+141974b75: movss    dword ptr [rsp + 0x20], xmm0
+141974b7b: call     0x1419426e0
+141974b80: mov      rdx, rbx
+141974b83: mov      rcx, rax
+141974b86: call     0x141974860
+141974b8b: lea      rax, [rbp - 0x30]
+141974b8f: lea      rcx, [rbx + 0x30]
+141974b93: mov      qword ptr [rbp - 0x70], rax
+141974b97: lea      r8, [rbp - 0x70]
+141974b9b: lea      rdx, [rsp + 0x28]
+141974ba0: call     0x14194cc70
+141974ba5: lea      rax, [rsp + 0x20]
+141974baa: mov      qword ptr [rsp + 0x50], 0
+141974bb3: lea      rcx, [rbx + 0x2c0]
+141974bba: mov      qword ptr [rsp + 0x38], rax
+141974bbf: lea      r9, [rsp + 0x50]
+141974bc4: mov      qword ptr [rsp + 0x50], rbx
+141974bc9: lea      r8, [rsp + 0x38]
+141974bce: lea      rdx, [rbp - 0x70]
+141974bd2: call     0x14194c830
+141974bd7: movaps   xmm0, xmmword ptr [rbp - 0x70]
+141974bdb: movaps   xmm1, xmmword ptr [rbp - 0x60]
+141974bdf: movups   xmmword ptr [rbx], xmm0
+141974be2: movss    xmm0, dword ptr [rsp + 0x28]
+141974be8: movups   xmmword ptr [rbx + 0x10], xmm1
+141974bec: jmp      0x141974b43
+141974bf1: mov      rax, qword ptr [rcx]
+141974bf4: movss    xmm0, dword ptr [rax]
+141974bf8: call     0x14197adb0
+141974bfd: jmp      0x141974b43
+141974c02: mov      rax, qword ptr [rcx + 0x10]
+141974c06: lea      r8, [rsp + 0x20]
+141974c0b: lea      rdx, [rbp - 0x70]
+141974c0f: lea      rcx, [rbp - 0x30]
+141974c13: movss    xmm0, dword ptr [rax]
+141974c17: movss    dword ptr [rsp + 0x20], xmm0
+141974c1d: call     0x1419426e0
+141974c22: mov      rdx, rbx
+141974c25: mov      rcx, rax
+141974c28: call     0x141974860
+141974c2d: lea      rax, [rbp - 0x30]
+141974c31: lea      rcx, [rbx + 0x30]
+141974c35: mov      qword ptr [rbp - 0x70], rax
+141974c39: lea      r8, [rbp - 0x70]
+141974c3d: lea      rdx, [rsp + 0x28]
+141974c42: call     0x14194cc70
+141974c47: lea      rax, [rsp + 0x20]
+141974c4c: mov      qword ptr [rsp + 0x50], 0
+141974c55: lea      rcx, [rbx + 0x2c0]
+141974c5c: mov      qword ptr [rsp + 0x38], rax
+141974c61: lea      r9, [rsp + 0x50]
+141974c66: mov      qword ptr [rsp + 0x50], rbx
+141974c6b: lea      r8, [rsp + 0x38]
+141974c70: lea      rdx, [rbp - 0x70]
+141974c74: call     0x14194c830
+141974c79: jmp      0x141974bd7
+141974c7e: mov      rax, qword ptr [rcx + 0x10]
+141974c82: lea      r8, [rsp + 0x38]
+141974c87: lea      rdx, [rsp + 0x20]
+141974c8c: mov      rcx, rbx
+141974c8f: movss    xmm0, dword ptr [rax]
+141974c93: lea      rax, [rsp + 0x28]
+141974c98: mov      qword ptr [rsp + 0x38], rax
+141974c9d: movss    dword ptr [rsp + 0x28], xmm0
+141974ca3: call     0x14197a150
+141974ca8: jmp      0x141974b3d
+141974cad: mov      rax, qword ptr [rcx + 8]
+141974cb1: movss    xmm0, dword ptr [rax]
+141974cb5: call     0x14197ae80
+141974cba: jmp      0x141974b43
+141974cbf: mov      rax, qword ptr [rcx + 0x10]
+141974cc3: lea      r8, [rsp + 0x38]
+141974cc8: lea      rdx, [rsp + 0x20]
+141974ccd: mov      rcx, rbx
+141974cd0: movss    xmm0, dword ptr [rax]
+141974cd4: lea      rax, [rsp + 0x28]
+141974cd9: mov      qword ptr [rsp + 0x38], rax
+141974cde: movss    dword ptr [rsp + 0x28], xmm0
+141974ce4: call     0x14194cfb0
+141974ce9: jmp      0x141974b3d
+141974cee: mov      rax, qword ptr [rcx + 0x10]
+141974cf2: lea      r8, [rsp + 0x38]
+141974cf7: lea      rdx, [rsp + 0x20]
+141974cfc: mov      rcx, rbx
+141974cff: movss    xmm0, dword ptr [rax]
+141974d03: lea      rax, [rsp + 0x28]
+141974d08: mov      qword ptr [rsp + 0x38], rax
+141974d0d: movss    dword ptr [rsp + 0x28], xmm0
+141974d13: call     0x14194cfb0
+141974d18: jmp      0x141974b3d
+141974d1d: mov      rax, qword ptr [rcx + 0x10]
+141974d21: lea      r8, [rsp + 0x38]
+141974d26: lea      rdx, [rsp + 0x20]
+141974d2b: mov      rcx, rbx
+141974d2e: movss    xmm0, dword ptr [rax]
+141974d32: lea      rax, [rsp + 0x28]
+141974d37: mov      qword ptr [rsp + 0x38], rax
+141974d3c: movss    dword ptr [rsp + 0x28], xmm0
+141974d42: call     0x14194cfb0

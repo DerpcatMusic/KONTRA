@@ -71,9 +71,40 @@ Per-block (`14197a2c0`, `param_4` samples, two channels):
 4. A stereo level detector updates `param+0x9748` with attack/release from
    `+0x9754`/`+0x9758`.
 
+### Kolor emulation status (2026-10-23, `tools/re/kolor_kemu_probe.py`)
+
+Established under kemu (native code, no port):
+
+- Construction: `BEffectKolor` ctor `1407c7950` runs (allocator `140711a10` intercepted). The core is
+  the object at `obj+0x1c0`; its vtable is `14769af00`, slot 19 = `14197a2c0`, slot 20 = `141979410`.
+- Block call (read from `140900eb0` at `0x140901088..0x140901178`): core process is
+  `(this=core, in_chans, out_chans, count)`; the driver passes the same two-pointer array for both.
+  The kernel reads the dry sample from `in[k]` and writes `out[k]`.
+- Prepare = core slot 20, `141979410(this, rate f32)`. It seeds `+0x7e0` (smoother), `+0x7e4`/`+0x7e8`
+  (= 1), `+0x9744` (= rate), calls `FUN_1419790c0`.
+- Per-mode seed `14197acc0(core, mode)` writes `+0x7dc`, clears `+0x7f4`, and resets the two shaper
+  objects of that mode at `core+0x800+(2m+k)*0x700` through `141974d90`.
+- Apply `140abae20` (slot 29) calls the wrapper setter `1409aaa90` (slot 32) for knobs 0..13; knob
+  values land at `core+0x5c`.
+- Shaper dispatch `1419749f0` returns the first float of its stage output (`movss xmm0,[rsp+0x20]` at
+  `141974b43`; disassembly in `docs/re/disasm/kolor-shaper-dispatch-1419749f0.txt`). Case 9 is
+  `1419748b0` (`docs/re/disasm/kolor-case9-1419748b0.txt`).
+- Ctor builds each shaper template in a 0x6f0 scratch via `141975910`/`141975c10`/... and copies it with
+  `1419735c0`/`1419738d0`/`141973be0`/`141973ef0`/`1419732b0`. Writers into the mode-9 object are the copy
+  at `0x1419734f3`.
+- Dry path works: with `+0x78 = 0`, output = gain ramp `+0x7c4` times input (peak 0.0074 on a 0.5 sine
+  in the first block, from the ramp starting at 0).
+
+Blocker (evidence): with `+0x78 = 1` (wet) the output is exactly zero in all 10 modes. The biquad
+coefficient blocks at `0x9400..0x96b8` are only partly sane: values such as `0x955c = 1.3e11`,
+`0x94c0 = 4.8e20`, `0x9508 = 13676.7` are non-physical, so the knob-driven design step is not run
+correctly. The writer is the control refresh `141940330`, gated by flags at `param+0x498` and by
+`+0x515`, which the probe does not yet satisfy. Next: trace which function writes `+0x9508`/`+0x955c`
+during the block (same write-tracer approach as `probe5`), and resolve the `+0x498` flag source.
+
 Not yet done: the helpers `14194cc70`, `14194c830`, `141974860`,
 `14197adb0`, `14197a150`, `14197ae80`, `14194cfb0`, `1419748b0` (called from the
-shaper dispatch); the exact coefficient meaning of the biquad state; the
+shaper dispatch; their bodies are read from the cache, not yet ported); the exact coefficient meaning of the biquad state; the
 Kolor state init. No kemu vector exists; the port is not started.
 
 Mode table and knob registrations: see `k-stomps-b.md` (unchanged, still
@@ -90,6 +121,69 @@ measured).
 
 The driver is the same length as the Chainsaw driver (both 2283 bytes); the
 two are probably one template with different cores. Not compared yet.
+
+### Skreamer Deluxe, decoded (2026-10-23, decompile cache and binary constants)
+
+Core type: the wrapper is `ModulatableDSPCoreWrapper<BEffectSkreamerDlxTraits>`
+over **`Stereorizer<Tubescreamer>`** (`vtables.tsv.gz`, wrapper rows). So the
+kernel is the Tubescreamer core already in `sampler-core/src/dsp/color/tubescreamer.rs`,
+not a new one. Its native vectors are `tables/kontakt_tubescreamer_vectors.json`.
+
+**Reader to core index (apply `140abb9f0`, decompile `0140ab0000.c:7935`).** The
+apply calls `FUN_1409a9f90(core, index, value)` on both cores (`param+0x1480`
+and `param+0x200`). Values are clamped to [0, 1] (`DAT_14470bad4` = 1; the
+mode step uses `DAT_14470bad0` = 0.5):
+
+| Reader field | Field | Core index | Knob (KSP name) |
+| --- | --- | --- | --- |
+| `+0x08` float | drive | 0 | Drive |
+| `+0x0c` float | tone | 4 | Tone |
+| `+0x10` float | bass | 1 | Bass (`pot a` in the core's own naming) |
+| `+0x14` float | mid | 2 | Mid (`pot b`) |
+| `+0x18` float | treble | 3 | Treble (`filter`) |
+| `+0x1c` int | mode | 6 = `clamp(int * 0.5, 0, 1)` | circuit `int(p6 * 3)` in the core (ints 0, 1, 2) |
+| (constant) | level | 5 = 0.5 | written once (`+0x2530` guard) |
+
+This is the same field-to-index table the removed test
+`tubescreamer_record_fields_land_on_their_core_indices` asserted
+(`[0.1, 0.3, 0.4, 0.6, 0.2, 0.5, 1.0]` for drive, pot a, pot b, filter, tone), so
+that mapping was not wrong. Only the names differed. The apply writes indices by
+number, and the index meaning comes from the core ctor. Byte `+0x20` is a flag
+copied into the wrapper byte `+0x1c0` (see the driver below).
+
+**Driver `140902480` (2283 B), what is confirmed:**
+- Pre stage `140ac28f0`, post stage `140ac21f0` (shared with Kolor and Chainsaw).
+- Two-path branch on wrapper byte `+0x1c0` (from reader `+0x20`):
+  - `+0x1c0 == 0`: stereo branch. Core `+0x1480` runs on the stereo pointer pair
+    `+0x2540` to `+0x25d0`, and core `+0x200` runs on a second pair built in
+    `+0x1280`/`+0x1300`/`+0x1380`/`+0x1400` (the L/R copies with `memmove`), then a
+    combine into `+0x25d8`.
+  - `+0x1c0 != 0`: mono branch. Only core `+0x1480` is called.
+- Each core call is vtable slot 0x98 (index 19), the same as Kolor.
+- Optional control-rate smoother `FUN_141ee2160` (fractional block split by a
+  ramp count from `+0x1874`/`+0x17d8`/`+0x17e0`) runs before each core, on the
+  flag `+0x19fc` (the input side) and `+0x77c` (the core-2 side).
+- Tail: peak-hold at `+0x2510`, and a state at `+0x2514`. When the state is 1 and
+  the `+0x2500` level is at or below `+0x2510 * DAT_1447148a0`, it moves to 2. The
+  branch that zeroes outputs (`memset`) is not yet read.
+
+**Stereo combine (decoded 2026-10-23, `0140900000.c` lines 1790-1860).** Stereo branch
+(wrapper byte `+0x1c0 == 0`): `memmove(in1 <- in0)` after saving R to `+0x1280`/`+0x1300`.
+Core `+0x1480` runs on `[L, L]` into the host outputs; core `+0x200` runs on `[R, R]` into
+`+0x1380`; `memmove(out1 <- +0x1380)`. Each core keeps its own state, and the two cores
+share the knobs. Ported as `Stereorizer<Tubescreamer>` (`dsp/color/stereorizer.rs`).
+
+**Gate (decoded).** `DAT_1447148a0` = 9.99999975e-06 (1e-5). The gate test only moves the
+status word `+0x2514` from 1 to 2 when the peak `+0x2500` falls below `+0x2510 * 1e-5`. Nothing
+reads that state for audio; `+0x2514` is queried by the host, and the silence path (`memset`
+of outputs) runs only while the transition flag `+0x2518` is set (set and cleared around the
+core reset in `140971540`). Steady-state audio is unaffected, so the port omits it.
+
+**Still not decoded:** the control ramp `FUN_141ee2160` (kernels types 1, 3, 4, 5, 6;
+type 2 is a copy). It runs only when the ramp flags `+0x19fc` / `+0x77c` are set, which
+the steady-state path does not need. The mono branch (flag `+0x1c0 != 0`, core `+0x1480`
+in place) is not modeled. No native stereo capture exists; the port's vectors are the
+native mono Tubescreamer vectors applied per channel.
 
 ## Chainsaw (`BEffectChainsaw` 0x144f15e68, wrapper 0x144f15d58)
 
@@ -241,3 +335,56 @@ writer is not in the stereo tune functions). Lowering stays unwired until both a
   (`1447148d0`), `0.5`, `1.0`, `1024` (`144fc4b0c`), `1/pi` (`144f38960`),
   `2/pi` (`144f38988`), `pi`, `2pi`, `pi/2`, `1e-6`, `1e-7`, `-1`, `2.0`, `-8`,
   `0.7071` (`144fc3b60`); `144fc3e50` = 1.17851126, `144fc43c0` = 2pi (f32).
+
+## Pass 3: direct HM2 kemu probe (blocked, 2026-10-23)
+
+Probe: `tools/re/chainsaw_hm2_kemu.py` (runs, no fault, output 0). Sequence: ctor `14196fd00`,
+slot 5 `14099c970`, slot 3 `14099a700` (rate, 32), slot 6 `1419709e0`, slot 20 `141970b50` (rate),
+knobs `1409a9ec0` 0..3, slot 19 `141971820`. The ring-buffer fault of the driver path is not hit.
+
+Blocker: output is exactly zero. The per-block gain is `obj+0x40`, copied from `+0x180[3]` only in
+the block that is gated by the dirty flag `+0x215`. `1409a9ec0` takes the `+0x148 != 0` branch after
+prepare (zeroes `+0x198[i]`, so nothing is copied), and no decompiled writer sets `+0x215` to 1
+(`0140990000.c:10227` and `0141970000.c:1162` only clear it). Needed before a vector: read
+`1409abdd0` (the `+0x214` deferred-apply path, called from slot 8 `1419721a0`) and the setter that
+raises `+0x215`, then confirm the apply order.
+
+Helpers still unread for the port: `14194c5b0` (580 B), `1419590a0` (397 B), `141950580`
+(the 10x10 solver used by `141971150`), `1419723e0` (685 B, the reset-constants path), `141936990`,
+`141ee86c0`. Constants: the `DAT_14769ab*`/`DAT_14769ac*` table and `DAT_14470bad*` (read via `pf`).
+`1419714c0` (863 B) is a Newton-style solver with up to 20 iterations and an exp-polynomial
+approximation; its polynomial constants `DAT_14769ab64/ab68` and `DAT_144e79a48` are read here.
+No Rust port and no native vector exist, so the row stays **missing**.
+
+## Pass 4: dirty-flag hypothesis rejected, probe knob bug fixed (blocked, 2026-10-23)
+
+Corrects pass 3. Evidence: `tools/re/chainsaw_hm2_kemu.py` (fixed), `docs/re/disasm/chainsaw-hm2-215-scan.txt`.
+
+1. **The knob value is a float in xmm2, not an int in r8.** `1409a9ec0` does `movss [rcx+r9*4+0x150], xmm2`
+   (disasm at `0x1409a9eca`). Pass 3 passed the bit pattern as an integer, so the knobs held garbage
+   (`0x31932fad`) and the gain read was meaningless. The probe now passes `f={2: v}`.
+2. **The per-block gain does not need `+0x215`.** With correct knobs, the apply's else branch
+   (`+0x148 != 0`, the prepared path) writes `+0x34[i] = +0x180[i] = value` directly, so `+0x40`
+   (= `+0x34 + 3*4`) is 0.5 before the block. The dirty path (`+0x215 != 0`) in `141971820` only
+   refreshes `+0x180` from the LFO state; it is not the only route to the gain.
+3. **No code raises `+0x215`.** The `.text` scan (disp32 0x210..0x215, capstone-decoded) finds no store
+   in the HM2 class range that sets that byte. The only uses are clears (`141972140` at
+   `0141970000.c:1162`, `1409x` at `0140990000.c:10227`) and the read `cmp byte [rdi+0x215],0` in
+   `141971820`. The dirty path is therefore not reachable from any prepared object by writes we can find.
+   Full hit list: `docs/re/disasm/chainsaw-hm2-215-scan.txt`.
+4. **Real blocker: the solver chain is zero.** After the fixed knobs the block still outputs exactly 0.
+   The chain is `141971150` (835 B, state-space step with a 10x10 solve `141950580`), which feeds
+   `1419590a0` (397 B, reads a 4x12 coefficient block at `+0x520..+0x5a0`), then `14194c5b0` and the
+   shaper `1419714c0`. Measured after the prepare order plus a redesign (`1419709e0` again):
+   `+0x520..+0x57c` = 0 (`1419590a0` output is therefore the bias `param[0x30]` = 0), while `+0x750`
+   (the `141971150` matrix) is non-zero (7.23, 1.75). The writers of `+0x584` and up are the
+   template constructors `141974510`, `141975080`, `141976810` (used for the `+0x800`/`+0x8e0` shaper
+   objects, `0141970000.c:5834..5838`); no writer of `+0x520..+0x57c` exists in the HM2 functions.
+   So that block is either built by a template copy we have not found, or it is a sub-object whose
+   constructor the wrapper does not run. Next: find which function owns `+0x4c0` (the `1419714c0` object)
+   and whether its ctor is reached from `14196fd00` or from `14196fab0` (the base ctor, `0141960000.c:12982`).
+5. Helpers still unread: `14194c5b0`, `141950580`, `1419723e0` (read partially, it consumes the
+   `+0x520` block), `141936990`, `141ee86c0`, `1409abdd0` (the deferred apply, reads `+0x148`/`+0x1b0`
+   /`+0x1f8` via `param[9]`, `param[6]`, `param[12]`; it is not a `+0x215` writer).
+
+Status: **still missing**. No Rust port, no kemu vector, no PARITY_MATRIX row change.

@@ -1,0 +1,9 @@
+{ doctor fixture: one known engine template, one unknown constant }
+on init
+    declare $gain := 0
+end on
+
+on note
+    $ENGINE_PAR_RV2_DAMPING := 3
+    $MADE_UP_CONSTANT := play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, 100000)
+end on
