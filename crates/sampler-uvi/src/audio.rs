@@ -98,7 +98,7 @@ fn append_initial_packet(samples:&mut Vec<f32>,buffer:&mut Option<SampleBuffer<f
 }
 
 /// One sample, or a channel bundle of mono members, as stereo frames: mono
-/// is duplicated and channels past the second are left out (reported by the caller).
+/// is duplicated and every bundle member is mixed through the shared placement.
 fn decode_with_initial_playback(parts: &[Vec<u8>],inherit:bool) -> Result<(Decoded, usize, Result<Option<sampler_ir::Playback>,String>), String> {
     if parts.is_empty() || parts.len()>12 {return Err("invalid sample part count".into());}
     let decoded = parts
@@ -122,6 +122,7 @@ fn decode_with_initial_playback(parts: &[Vec<u8>],inherit:bool) -> Result<(Decod
                 .collect()
         }
     };
+    // Only the first two are cloned for length and playback; the wide mix reads every member.
     let playback=(|| -> Result<Option<sampler_ir::Playback>,String> { if inherit {
         let frames=channels[0].0.len();let mut metadata=None;
         for (bytes,(samples,count,_)) in parts.iter().zip(&decoded) {
@@ -140,8 +141,17 @@ fn decode_with_initial_playback(parts: &[Vec<u8>],inherit:bool) -> Result<(Decod
         Ok(metadata)
     } else {Ok(None)} })();
     let total = decoded.iter().map(|(_, count, _)| count).sum();
-    let (left, right) = (&channels[0].0, &channels.get(1).unwrap_or(&channels[0]).0);
-    let frames = left.iter().zip(right).map(|(&l, &r)| [l, r]).collect();
+    let frames = if decoded.len() > 2 {
+        let gains = crate::placement::member_gains(None, decoded.len())?;
+        let mut mixed = vec![[0f32; 2]; channels[0].0.len()];
+        for ((samples, _, _), &gain) in decoded.iter().zip(&gains) {
+            crate::placement::mix_member(&mut mixed, gain, samples);
+        }
+        mixed
+    } else {
+        let (left, right) = (&channels[0].0, &channels.get(1).unwrap_or(&channels[0]).0);
+        left.iter().zip(right).map(|(&l, &r)| [l, r]).collect()
+    };
     Ok((
         Decoded {
             rate: decoded[0].2,

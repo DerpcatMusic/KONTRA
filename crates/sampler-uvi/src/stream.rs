@@ -3,6 +3,7 @@
 //! read, never written out) is decoded a window at a time through the same
 //! decoder a full load uses, so a streamed frame equals the loaded frame.
 
+pub(crate) use crate::placement::{even_spread, member_gains, mix_member};
 use sampler_kontakt::{AssetSource, EncodedChannelReader, FileIdentity, SampleReader};
 use std::{
     fs::File,
@@ -332,20 +333,10 @@ impl Sample {
             .expect("a sample has a part");
         let rate = streams[0].rate;
         let wide = streams.len() > 2;
-        let gains: Vec<[f32; 2]> = if !wide {
-            Vec::new()
+        let gains = if wide {
+            member_gains(self.placement.as_deref(), streams.len()).map_err(invalid)?
         } else {
-            match &self.placement {
-                Some(placed) if placed.len() == streams.len() => placed
-                    .iter()
-                    .map(|g| [g[0] as f32, g[1] as f32])
-                    .collect(),
-                Some(_) => return Err(invalid("bundle placement differs from its member count")),
-                None => even_spread(streams.len())
-                    .iter()
-                    .map(|g| [g[0] as f32, g[1] as f32])
-                    .collect(),
-            }
+            Vec::new()
         };
         let mut scratch = Vec::<f32>::new();
         Ok(SampleReader::custom(
@@ -366,13 +357,10 @@ impl Sample {
                         if wide {
                             // Every member contributes through its placed gains.
                             out.iter_mut().for_each(|f| *f = [0.0; 2]);
-                            for (stream, [left, right]) in many.iter_mut().zip(&gains) {
+                            for (stream, &gain) in many.iter_mut().zip(&gains) {
                                 scratch.resize(out.len(), 0.0);
                                 stream.read(start, &mut scratch)?;
-                                for (frame, &s) in out.iter_mut().zip(&scratch) {
-                                    frame[0] += left * s;
-                                    frame[1] += right * s;
-                                }
+                                mix_member(out, gain, &scratch);
                             }
                         } else {
                             for (k, stream) in many.iter_mut().enumerate() {
@@ -666,6 +654,11 @@ mod tests {
         let mut mismatched = Sample::new((0..4).map(member).collect()).unwrap();
         mismatched.placement = Some(vec![[1.0, 0.0]; 3]);
         assert!(mismatched.open().is_err());
+        // The resident decode of the same members (no keygroup placement) takes
+        // the same even spread as the streamed reader, for all four members.
+        let bytes: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+        let (decoded, _) = crate::audio::decode(&bytes).unwrap();
+        check(&decoded.frames, &read(None));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -800,18 +793,6 @@ mod tests {
     }
 }
 
-
-/// Equal-power spread from hard left (first member) to hard right (last), for
-/// a bundle whose program gives no placement. Its power is `cos² + sin² = 1`.
-pub(crate) fn even_spread(members: usize) -> Vec<[f64; 2]> {
-    (0..members)
-        .map(|k| {
-            let position = if members == 1 { 0.5 } else { k as f64 / (members - 1) as f64 };
-            let angle = position * std::f64::consts::FRAC_PI_2;
-            [angle.cos(), angle.sin()]
-        })
-        .collect()
-}
 
 pub(crate) struct InitialSource {
     pub original_channels:Option<usize>,
