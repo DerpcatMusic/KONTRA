@@ -25,7 +25,7 @@ stand-ins until their laws are recovered from the binary.
 | Smooth | `machine_float_1` | 0..=1 | 0.5 | native (two-reader crossfade, `N * smooth` frames) |
 | Grain | `machine_float_2` | ms, engine clamps 0.3..=100 | 20 ms | native |
 | HQ analysis | `machine_flag` | bool | false | **not modelled**: non-HQ scheduler used |
-| Tempo-synced speed | `timing_value` > 1e-9 | sync law | - | **not modelled** (UnknownLaw, reported) |
+| Tempo-synced speed | `timing_unit` = 1, `timing_value` (beats) | sync speed law | - | **partly**: `SPEED_UNIT` writes decode to `timing_value` / `timing_unit` (measured table, `SPEED_UNIT_BEATS`, all kinds). The tempo-to-speed law is not measured yet (UnknownLaw, reported) |
 
 Law/edge notes recorded in code: TM1 does not floor the base speed (TM2 and Pro floor at 0.01).
 
@@ -150,7 +150,7 @@ Generic index: the corpus writes group-level parameters with generic -1 (`set_en
 and generic 0 also reaches the record. Both are read (`group_engine_write`), and the sweep shows the same result for each.
 
 `SMOOTH` and `GRAIN_LENGTH` on TM2 and Pro: measured with generic -1 at raw 0 and 1e6; no stored field
-changes for either kind, so those writes are reported as unapplied. `SPEED_UNIT`, `TRANSIENT_SIZE` and
+changes for either kind, so those writes are reported as unapplied. `TRANSIENT_SIZE` and
 `TM_LEGATO` have no measured law.
 
 Applied in `crates/sampler-kontakt/src/time_stretch_writes.rs` and tested against the measured points.
