@@ -70,6 +70,14 @@ fn counts(instrument: &ir::Instrument) -> Value {
 }
 
 pub(super) fn run(args: &[String]) -> i32 {
+    if let Some(at) = args.iter().position(|a| a == "--swap") {
+        // load-audit BASE.nki --swap FIRST.nksn SECOND.nksn: one process, the
+        // host's snapshot path (read_with_snapshot + streamed load) per preset.
+        let (Some(base), Some(first), Some(second)) = (args.first(), args.get(at + 1), args.get(at + 2)) else {
+            return 2;
+        };
+        return swap(Path::new(base), Path::new(first), Path::new(second));
+    }
     let Some(input) = args.first() else {
         eprintln!("load-audit INPUT [--program INDEX] [--stream]");
         return 2;
@@ -176,5 +184,55 @@ pub(super) fn run(args: &[String]) -> i32 {
         record["loadavg"] = json!(std::fs::read_to_string("/proc/loadavg").ok());
         println!("{}", record);
     }
+    i32::from(failed)
+}
+
+/// Time one snapshot preset load: the base read with the saved state applied,
+/// then the streamed bind. The second preset is timed after the first, as a
+/// swap inside one host process.
+fn swap(base: &Path, first: &Path, second: &Path) -> i32 {
+    // The host's streaming policy (src/sound/v2.rs stream_policy, default streaming).
+    let policy = sampler_kontakt::StreamPolicy {
+        lazy: false,
+        head_budget: 256 << 20,
+        allow_cold_fallback: true,
+        decoders: 2,
+        ..Default::default()
+    };
+    let mut failed = false;
+    let mut rows = Vec::new();
+    for (label, snapshot) in [("first", first), ("second", second)] {
+        let start = Instant::now();
+        let result = sampler_kontakt::read_snapshot_for_base(snapshot, base)
+            .map_err(|e| format!("snapshot: {e}"))
+            .and_then(|state| {
+                sampler_kontakt::read_with_snapshot_and_controls(base, &state, &[])
+                    .map_err(|e| format!("read: {e}"))
+            });
+        let read_ms = start.elapsed().as_secs_f64() * 1000.;
+        let options = sampler_kontakt::Options {
+            library: Some(base.into()),
+            ..Default::default()
+        };
+        let ready = result.and_then(|kontakt| {
+            sampler_kontakt::load_read_streamed(kontakt, &options, &policy, |_| {})
+                .map(|_| ())
+                .map_err(|e| format!("stream: {e}"))
+        });
+        let ready_ms = start.elapsed().as_secs_f64() * 1000.;
+        failed |= ready.is_err();
+        rows.push(json!({
+            "step": label,
+            "snapshot": snapshot.to_string_lossy(),
+            "ok": ready.is_ok(),
+            "error": ready.err(),
+            "read_ms": read_ms,
+            "ready_ms": ready_ms,
+        }));
+    }
+    println!(
+        "{}",
+        json!({"format": "kontra-swap-audit", "schema": 1, "base": base.to_string_lossy(), "steps": rows})
+    );
     i32::from(failed)
 }
