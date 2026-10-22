@@ -556,7 +556,9 @@ slot-1 default 1.0 (`replika_head::OUT_GAIN_DEFAULT`), and does not switch it.
 - Head 3's gain is set by setter index 12 (`141ac5980` case 0xc, `0141ac0000.c:3547-3584`): at v = 0.5 all three
   head gains are 1.0. For v > 0.5, head 1 = 1, head 2 = `max(2(1 - v), f9)`, head 3 = 1 / head 2. For v < 0.5
   the head 1 and head 3 gains use `max(2v, f9)` and head 2 = 1 / f9. The floor `f9` = f32 `14a6b4594 x 1479ab230
-  + 14a6b4590` is a runtime value, not in `constants.tsv`, so the law is not a closed scalar. The write goes
+  + 14a6b4590` is not a closed value: the two words 14a6b4590 and 14a6b4594 are unbacked in rdata
+  (`constants.tsv` `.data(bss-or-unbacked)`), set elsewhere and not traced; 1479ab230 is an rdata constant
+  (f32 0.650085, 8-byte read 1.7285e-4). So the law is not a closed scalar. The write goes
   through `141abba60` (`0141ab0000.c:6522-6537`): target `H+0x584c`, step `(v - cur) / len` (`H+0x5850`,
   `len` = `H+0x5858`), and output `H+0x74`, which `141ab7a90` multiplies into the read.
 - FEEDBACK index: not bound (name binding section above). Without it the saved FEEDBACK control cannot be
