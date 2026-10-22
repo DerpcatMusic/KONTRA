@@ -1487,6 +1487,25 @@ fn declaration_ranges_read_variables_where_on_init_reaches_them() {
 }
 
 #[test]
+fn a_declaration_range_inside_an_always_true_if_reads_its_variable() {
+    let script = compile(
+        "on init
+            if (1=1)
+                declare $hi
+                $hi := 648
+                declare ui_slider $s (0, $hi)
+            end if
+        end on",
+        48000,
+        limits(),
+    )
+    .unwrap();
+    let view = script.view();
+    let widget = view.model().interface.widgets.iter().find(|w| w.name == "$s").unwrap();
+    assert_eq!(widget.range, Some((0, 648)));
+}
+
+#[test]
 fn a_variable_declaration_range_keeps_its_initializer_and_needs_to_run_once() {
     let script = compile(
         "on init declare $hi := 10 declare ui_knob $k (0, $hi, 1) := 5 end on",
