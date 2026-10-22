@@ -1077,16 +1077,34 @@ mod tests {
                 assert_eq!(h.kernel[1] as f64, f(e, "kernel_r"), "{tag} kernel R");
                 let g = &h.glide;
                 close_f32(&format!("{tag} glide cur"), g.cur as f64, f(e, "g_cur"));
-                close_f32(&format!("{tag} glide target"), g.target as f64, f(e, "g_target"));
+                close_f32(
+                    &format!("{tag} glide target"),
+                    g.target as f64,
+                    f(e, "g_target"),
+                );
                 close_f32(&format!("{tag} glide step"), g.step as f64, f(e, "g_step"));
                 assert_eq!(g.count as f64, f(e, "g_count"), "{tag} glide count");
-                assert_eq!(g.count_init as f64, f(e, "g_count_init"), "{tag} count init");
+                assert_eq!(
+                    g.count_init as f64,
+                    f(e, "g_count_init"),
+                    "{tag} count init"
+                );
                 assert_eq!(g.pending, f(e, "g_pend") != 0.0, "{tag} glide pending");
                 assert_eq!(g.fresh, f(e, "g_fresh") != 0.0, "{tag} glide fresh");
                 close(&format!("{tag} s"), h.s, f(e, "s"), 1e-5);
                 close(&format!("{tag} base"), h.base_src, f(e, "base_src"), 1e-5);
-                close(&format!("{tag} fade target"), h.fade.target, f(e, "fade_target"), 1e-5);
-                close(&format!("{tag} fade level"), h.fade.level, f(e, "level"), 1e-5);
+                close(
+                    &format!("{tag} fade target"),
+                    h.fade.target,
+                    f(e, "fade_target"),
+                    1e-5,
+                );
+                close(
+                    &format!("{tag} fade level"),
+                    h.fade.level,
+                    f(e, "level"),
+                    1e-5,
+                );
                 assert_eq!(h.fade.pending, f(e, "pend") != 0.0, "{tag} fade pending");
                 assert_eq!(h.fade.trigger, f(e, "trig") != 0.0, "{tag} fade trigger");
                 for (side, tap) in [("L", &h.taps[0]), ("R", &h.taps[1])] {
