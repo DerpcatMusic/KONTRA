@@ -10,6 +10,7 @@
 //! Phaser filter 0x1407c9a70). Interpolation, pan, saturation and the sweep
 //! law are generic.
 use super::tpt_svf::{Cut as LoopCut, CutState, Saturator, SaturatorState, State};
+use super::replika::{self, ReplikaCore, ReplikaState, STATE_SLOTS};
 use super::{Planar, ProcessorState, flush};
 use crate::Error;
 use sampler_ir::fx::timemod::{
@@ -128,6 +129,8 @@ pub(crate) struct TimeMod {
     oscillator: Oscillator,
     /// The voice bank (`Native::VoiceBank`).
     bank: Option<Box<voices::Bank>>,
+    /// Replika core (`Native::Replika`): its rings and packed state are slab entries (`cap` + `STATE_SLOTS`).
+    replika: Option<Box<ReplikaCore>>,
     /// In-loop cut (`Feedback::cut`) and the first of its [`CUT_FRAMES`] state frames.
     cut: Option<LoopCut>,
     cut_at: usize,
@@ -294,6 +297,7 @@ impl TimeMod {
         let mut min_delay = 1.;
         let mut voice_delay = 0.;
         let mut bank = None;
+        let mut replika = None;
         if let Some(line) = &cfg.line {
             voice_delay = line.voice_delay_ms * 0.001 * rate;
             taps = usize::from(line.tap_count);
@@ -348,6 +352,10 @@ impl TimeMod {
                 Native::UviVelvetDelay(_) => cap = velvet::capacity(rate),
                 Native::UviBuzzDelay(_) => cap = buzz::capacity(rate),
                 Native::WowFlutter(_) => cap = wowflutter::capacity(rate),
+                Native::Replika(ref controls) => {
+                    cap = replika::storage_len(rate as f32);
+                    replika = Some(Box::new(ReplikaCore::from_controls(rate as f32, controls)));
+                }
             }
         }
         let stages = cfg.allpass.map_or(0, |a| usize::from(a.stages));
@@ -361,6 +369,10 @@ impl TimeMod {
         let saturation = cfg.line.filter(|l| l.native == Native::None).map_or(0., |l| l.saturation);
         let saturator = (saturation != 0.).then(|| Saturator::new(rate as f32));
         let sat_at = cut_at + if cut.is_some() { CUT_FRAMES } else { 0 };
+        let frames = match replika {
+            Some(_) => cap + STATE_SLOTS,
+            None => sat_at + if saturator.is_some() { SAT_FRAMES } else { 0 },
+        };
         Ok(Self {
             cfg,
             rate,
@@ -368,7 +380,7 @@ impl TimeMod {
             ap_at,
             fb_at,
             tap_at,
-            frames: sat_at + if saturator.is_some() { SAT_FRAMES } else { 0 },
+            frames,
             cut,
             cut_at,
             saturator,
@@ -384,6 +396,7 @@ impl TimeMod {
             voice_delay,
             oscillator: Oscillator::new(cfg.lfo.shape),
             bank,
+            replika,
         })
     }
 
@@ -402,7 +415,12 @@ impl TimeMod {
     /// family's `set` writes may differ (legacy natives own fixed rings).
     pub(crate) fn retuned(&self, cfg: Config) -> Self {
         debug_assert!(self.bank.is_none());
-        Self { cfg, bank: None, ..*self }
+        // The Replika core is derived from its controls, so it is rebuilt; its rings and state are slab entries.
+        let replika = match cfg.line.as_ref().map(|l| &l.native) {
+            Some(Native::Replika(controls)) => Some(Box::new(ReplikaCore::from_controls(self.rate as f32, controls))),
+            _ => None,
+        };
+        Self { cfg, bank: None, replika, ..*self }
     }
 
     /// Slab frames this stage needs.
@@ -483,6 +501,9 @@ impl TimeMod {
                 }
             }
             state.aux[15] = 1.;
+        }
+        if let Some(core) = &self.replika {
+            return self.replika_delay(slab, block, len, core);
         }
         if let Some(law) = &self.bank {
             return law.process(slab, block, len, [cfg.dry, cfg.wet]);
@@ -867,6 +888,18 @@ impl TimeMod {
     /// Kontakt Legacy Delay audio (0x140aa1130, stereo branch), f32 operation
     /// order. The low-pass states lag one sample and are both the wet output
     /// and the recirculated signal; `pan` crosses the channels.
+    /// Replika core (`dsp::replika`) in place over `block`. The rings are the first `cap` slab entries and the
+    /// packed state the `STATE_SLOTS` after them. Returns whether the output went nonfinite.
+    fn replika_delay(&self, slab: &mut [[f64; 2]], block: &mut Planar, len: usize, core: &ReplikaCore) -> bool {
+        let input = *block;
+        let (rings, slots) = slab.split_at_mut(self.cap);
+        let mut st = ReplikaState::load(self.rate as f32, slots);
+        let [out_l, out_r] = block;
+        core.process(&mut st, rings, [&input[0][..len], &input[1][..len]], [&mut out_l[..len], &mut out_r[..len]]);
+        st.store(slots);
+        out_l[..len].iter().chain(out_r[..len].iter()).any(|x| !x.is_finite())
+    }
+
     fn legacy_delay(&self, state: &mut ProcessorState, slab: &mut [[f64; 2]], block: &mut Planar, len: usize, tempo: f64, [time, unit, feedback, damping, pan]: [f32; 5]) -> bool {
         const MASK: usize = LEGACY_RING - 1;
         let ms = if unit > f32::from_bits(0x3089705f) {

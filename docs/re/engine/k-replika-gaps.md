@@ -591,3 +591,42 @@ slot-1 default 1.0 (`replika_head::OUT_GAIN_DEFAULT`), and does not switch it.
 - Existing tests unchanged and passing: `loop_cut_acts_only_through_the_feedback_matrix`, the saturator-at-zero
   path (`replika_zero_saturation_passes_the_delayed_input_exactly`), and the svf, timemod and sampler-kontakt
   replika filters.
+
+## Piece 1: core port (`engine/replika-port`)
+
+Ported in `crates/sampler-core/src/dsp/replika/` (`ReplikaCore`, `ReplikaState`) and wired into `TimeMod` as
+`Native::Replika(ReplikaControls)` (sampler-ir). The rings and the packed state are slab entries
+(`storage_len` + `STATE_SLOTS`; 29 words, `ReplikaState::load`/`store`); `DbLimiter` exposes its two dB states for
+the packing. `replika_config` maps TIME (8), FEEDBACK (5), LOWCUT (2), HIGHCUT (3) and SATURATION (29). Their notes
+are removed; the other controls keep their notes (24 in total).
+
+Evidence. `dsp::replika::tests` run the seven emulated native vectors (kemu output, not a Kontakt render) in 32-frame
+quanta. Max abs error per case: default 2.384e-7, time-v0p01 2.384e-7, time-v0p03 2.384e-7, feedback-v0p8 2.384e-7,
+saturation-v0p5 1.192e-7, lowcut-v0p5 2.384e-7, highcut-v0p5 1.192e-7. Tolerance 1e-5; no frame exceeds it.
+Also: the slab path equals the bare core frame for frame (`timemod::tests::replika_stage_equals_the_bare_core`), and a
+packed state resumes the run exactly (`replika::tests::packed_state_resumes_the_run_exactly`).
+
+Laws added in this piece:
+- Input and output level (indices 0 and 1): `idx = trunc(v x 499.980408 + 819.609009)`, T4 linear interpolation, then
+  `(T4 - C) x D` with C = 0.0123456742 and D = 1.00311076. The output stage is from the disassembly of `141a90910`;
+  C and D are fitted to the native measurements (not in `constants.tsv`; residual about 1e-7).
+- Feedback: 1.2 x index 5 on the head 2 and head 3 outputs (`1479ab410`).
+- Head 3 path at half scale (`0141aa0000.c` 5561-5578); matrix limiter x 0.5 before and x 2 after.
+- Head offsets `[[0, 360], [540, -180], [-180, 540]]` with bias 2: delays 1742/2102, 2282/1562, 1562/2282 at TIME 0.02.
+  The offsets are verified by the vectors at TIME 0.01, 0.02 and 0.03 only.
+
+Open after piece 1:
+- Ducking (GAP-B, GAP-M): piece 2, needs a new vector.
+- Mode-1 head kernels (GAP-C): piece 3.
+- Gate closed branch (|mid| >= threshold, GAP-G): the threshold is 1.0 at reset and no vector reaches it.
+- Head gain index 12 (floor `f9` unbacked): not wired.
+- LFO and rotator (depth, rate, modulation): head read depth is 0 in the vectors, so they are inert; lane products `m`
+  are 1 in every vector.
+- Ctl(0x60) is fixed at 1.0 (GAP-J).
+- Not wired from Kontakt (reset values): input levels (0, 1), DRY_WET (4), PAN_DRY (13), PAN_WET (14), DELAY_OFFSET (15),
+  WIDTH (16), TAP_GAIN (52).
+- The slot's `dry` level does not reach native Replika output (other natives do the same); the core's DRY_WET is wet only
+  at reset. This differs from the generic line, which mixed `dry x input`. Needs a Kontakt check if a slot dry must sum in.
+- Feedback tail not reported to the engine (`tail_ms` is 0 for natives in sampler-ir).
+- Ring is 2.5 s per head (2^17 frames at 48 kHz); the native rings are 2^19. Output is equal while the longest read
+  (2000 ms + 542 frames) fits.
