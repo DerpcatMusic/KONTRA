@@ -212,3 +212,47 @@ fn resident_source_over_head_budget_streams_under_cold_fallback() {
     );
     assert!(strict.is_err());
 }
+
+#[test]
+fn pinned_wavetables_over_head_budget_stream_under_cold_fallback() {
+    struct Source;
+    impl AssetSource for Source {
+        fn header(&self) -> Option<(u32, usize)> {
+            Some((48000, 4096))
+        }
+        fn open(&self) -> io::Result<SampleReader> {
+            Ok(SampleReader::custom(48000, 4096, |start, out| {
+                for (i, frame) in out.iter_mut().enumerate() {
+                    *frame = [(start + i) as f32 / 4096., -0.25];
+                }
+                Ok(())
+            }))
+        }
+    }
+    // Three pinned wavetables need 3 x 8 KiB of packed heads, over a 12 KB budget.
+    let assets: Vec<Pcm> = (0..3).map(|_| Pcm::streamed(48000, 4096).unwrap()).collect();
+    let ranges = vec![vec![0..4096]; 3];
+    let pins: HashSet<AssetId> = assets.iter().map(Pcm::asset_id).collect();
+    for (allow_cold_fallback, admitted) in [(true, true), (false, false)] {
+        let sources = assets
+            .iter()
+            .map(|p| (p.asset_id(), Arc::new(Source) as Arc<dyn AssetSource>))
+            .collect();
+        let (_, worker) = StreamCache::new(4).unwrap();
+        let started = Streamer::start_with_fallbacks_cancelable(
+            sources,
+            &assets,
+            ranges.clone(),
+            None,
+            None,
+            worker,
+            1,
+            false,
+            12_000,
+            pins.clone(),
+            allow_cold_fallback,
+            &|| false,
+        );
+        assert_eq!(started.is_ok(), admitted, "cold fallback {allow_cold_fallback}");
+    }
+}
