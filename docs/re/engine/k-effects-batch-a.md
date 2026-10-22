@@ -583,6 +583,117 @@ Evidence: `tools/re/surround_panner_driver_kemu.py` (kemu on `Kontakt8.exe`, 5 c
 - **Open:** rate dependence (the driver never sets a sample rate, so `1/1800` is only measured at the default),
   the raw disassembly confirmation of the smoother (`140ab4eb0` not re-read here), the distance delay line with an
   impulse probe, the LFE filter law, `140ac21f0` fader path, multichannel layouts, stereo downmix.
-- **Lowering still open:** the Surround Panner record (version 0x70) reader is not identified, so the
+- **Lowering still open:** the Surround Panner record reader is now identified (Pass 9), but the apply is not, so the
   `sampler-kontakt` lowering keeps the NotModeled pass-through. The DSP is in `sampler_core` and is not wired to any
   runtime yet.
+
+## Pass 9: Surround Panner record reader identified (decompile + bindings, 2026-10-23)
+
+Evidence: reader `140d02f60` (`0140d00000.c:2062`, 692 B, vtable slot 8 of `BParFXSurroundPanner`, SER catalog
+`reader_schemas.tsv`), field names from `kontakt-bindings/fx_other.tsv` (`$ENGINE_PAR_SP_*`). Code:
+`crates/sampler-kontakt/src/effects/surround.rs` (parse only; test on a constructed record in reader order).
+
+Record, reader order, little-endian (`FUN_142a78270` = i32, `FUN_142a780f0` = f32, `FUN_142a780c0` = u8):
+
+| Order | Bytes (object offset) | Field |
+| --- | --- | --- |
+| 1 | i32 `n1` | speaker count (guard: `n1 <= remaining/9`) |
+| 2 | `n1` x (f32 x, f32 y, u8 disabled), stride 9 in the record (stride 12 in the object) | speakers |
+| 3 | i32 `n2` | source count |
+| 4 | `n2` x (f32, f32, u8) | sources |
+| 5 | f32 `+0x194` | unnamed |
+| 6 | f32 `+0x198` | `ENGINE_PAR_SP_LFE_VOLUME` (dB, -36..36) |
+| 7 | f32 `+0x19c` | `ENGINE_PAR_SP_SIZE` (0.1..0.9) |
+| 8 | f32 `+0x1a0` | `ENGINE_PAR_SP_DIVERGENCE` (0..1) |
+| 9 | f32 `+0x1bc`, f32 `+0x1c0` | unnamed |
+| 10 | i32 `+0x1c4` | gain mode selector, 0..=2 (`FUN_142a78270`, else throws) |
+| 11 | i32 `+0x1c8` | layout selector, 0..=6 (else throws) |
+| 12 | u8 `+0x1a4`, u8 `+0x1a5`, u8 `+0x1a6` | flags (unnamed) |
+| 13 | f32 `+0x1a8` | `ENGINE_PAR_SP_OFFSET_DISTANCE` (0..1) |
+| 14 | f32 `+0x1ac` | `ENGINE_PAR_SP_OFFSET_AZIMUTH` (-1..1) |
+| 15 | f32 `+0x1b0`, f32 `+0x1b4` | `ENGINE_PAR_SP_OFFSET_X`, `_Y` (-1..1) |
+| 16 | i32 `+0x1cc` | unnamed |
+
+The schema string in `reader_schemas.tsv` agrees (`I`, then `FFB`×n1, `I`, `FFB`×n2, `F`×6, `I I`, `B B B`, `F`×4, `I`).
+The reader throws for a version other than 0x70, for a mode outside 0..=2 and a layout outside 0..=6.
+
+**Still open (blocks lowering):** the apply that copies this record onto the Panner object (the
+`+0x1c0` speakers, `+0x280`/`+0x284` counts, `+0x348` scale, `+0x34c` exponent, `+0x394` mode the driver
+writes). Not found by offset search over `0140[89a-f]*.c` (the copies at `140800000.c:3889` and
+`140700000.c:3218` are other classes). Which record field feeds `scale` and `exponent` (SIZE? divergence?)
+is therefore not decided, and the stereo-out lowering stays NotModeled. The unnamed floats `+0x194`,
+`+0x1bc`, `+0x1c0` and the flags are unknown. Vtable slot 9 (`140d11ff0`, the writer) is the natural
+cross-check for the round trip. Rate dependence of `1/1800` (item 3 in Pass 8) was not probed in this pass.
+
+## Pass 10: record apply found and measured under kemu (2026-10-23)
+
+The Pass 9 blocker is resolved for the parameter mapping. The apply is the load path case 6 in
+`1409619b0` (`0140960000.c:1493`), which calls the setter `1409685e0` (`0140960000.c:4728`, 20 args) with P
+(the reader's record object): `spk = P+8`, `src = P+0xcc`, SIZE `0x19c` (xmm3), DIVERGENCE `0x1a0`, `0x194`,
+LFE dB `0x198`, flags `0x1a4/0x1a5/0x1a6`, `0x1bc`, `0x1b8` (never written by the reader, so 0), `0x1c0`,
+gain mode `0x1c4`, layout `0x1c8`, OFFSET_X `0x1b0`, OFFSET_Y `0x1b4`, DISTANCE `0x1a8`, AZIMUTH `0x1ac`.
+
+Constants read from the binary: `1.1` (scale), `2.0` (LFE base), `1/6` (LFE exponent), `0.5` (offset scale),
+`-1` and `1` (clamp), `pi/2`. Setter rules, now confirmed by the probe below:
+
+| DSP field (object) | Record source | Rule |
+| --- | --- | --- |
+| `+0x348` scale | SIZE | `1.1 - SIZE` |
+| `+0x34c` exponent | DIVERGENCE | `2 * DIVERGENCE` |
+| `+0x350`, `+0x354` offset | OFFSET_X, OFFSET_Y | `clamp(0.5 * v, -1, 1)` |
+| `+0x358` radius offset | DISTANCE | `clamp(0.5 * v, 0, 1)` |
+| `+0x35c` angle offset | AZIMUTH | `clamp(v, -1, 1)` |
+| `+0x394` gain mode | `0x1c4` | identity (native 1 = `Cosine`-mode index, to confirm) |
+| `+0x398` layout | `0x1c8` | identity, no output effect measured yet |
+| `+0x1c0 + 12i` speakers | P+8 | raw 12-byte copy |
+| `+0x280`, `+0x344` counts | P+0xc8, P+0x18c | copies |
+| LFE gain | LFE dB `0x198` | `2^(dB/6)` (not 10^(dB/20)) |
+| rate term | `+0x7b4` (object) | `p6 * pi / rate` term: `0x194` is a frequency-like input |
+
+Probe: `tools/re/surround_record_kemu.py` (reader on a crafted record, then the setter, then the driver). The
+one-at-a-time sweep matches the table above exactly in the object fields (`scale 0.9` at SIZE 0.2, `exp 0.4`
+at DIVERGENCE 0.2, offsets/angles as listed). Fixture: `crates/sampler-core/src/dsp/surround_record_native_vectors.json`.
+
+Findings (first pass; corrected in Pass 11):
+- **"Main-output gain differs by pi/2" was a harness artefact, not a missing sub-object.** The apply calls
+  slot 25 (`0x140abd780`, `mov [rcx+0x1a4], xmm1`) with the output gain in `xmm1`. The native caller loads it
+  from its own state object just before (`movss xmm1,[rdi+0x10]` at `0x1409620d2`). The harness passed no
+  float there, so `xmm1` held whatever the reader had left (pi/2 at base, and rate/LFE-dependent values in
+  the other cases). With the state gain passed as 1.0 (`apply(..., out_gain=1.0)`), the setter path equals the
+  direct-write path and the Rust model, block for block at 1e-5 across every fixture case.
+- Whole-object diff (direct-write A vs setter B, `0x2670` bytes): besides the mapped fields the setter writes
+  the speaker copy `+0x1c0..`, the source copy `+0x284..`, the counts, `+0xc04`, `+0xc8c`, `+0x2498`, `+0x263c`,
+  `+0x2638`, `+0x2640`, `+0x380..+0x38c` and `+0x350..+0x35c` (the clamp helper `0x140abd6f0`), `+0x1a4`
+  (slot 25), `+0x9a4` and `+0xba8..+0xbcc`, `+0xbf8`, `+0xc00` (the LFE filter design, called through
+  `0x1408e4970`). None of the last group is needed for the stereo, LFE-free output: the fixture matches
+  without modelling them.
+- Flags `0x1a4` and `0x1a6` set to 1 make the driver raise an exception in the harness (the rebuild path
+  `140ac1dc0` with the output pool, not the DSP); `0x1a5` = 1 gives NaN. Not swept, the meaning is open
+  (optional, not needed for the stereo-out path).
+- Gain mode `0x1c4` and layout `0x1c8` are written to `+0x394` and `+0x398`. Mode 1 is verified (Cosine);
+  mode 2 is not measured; layout 2 had no output effect in the sweep but other layouts are unverified.
+
+## Pass 11: stereo-out lowering (2026-10-23)
+
+Pass 10's pi/2 gap is closed (see its Findings): the record apply equals the Rust model at 1e-5 for every
+fixture case (`record_apply_matches_native_blocks`, un-ignored). The rate dependence was the same artefact:
+at 44.1, 48 and 96 kHz (`+0x7b4`, read by the setter's `p6 / rate` term) the stereo output is unchanged. The LFE
+dB only reaches LFE-routed outputs, which the stereo subset does not contain.
+
+Lowering (`sampler-kontakt/src/effects/surround.rs`): a bus-scope record with two enabled speakers, two enabled
+sources, gain mode 0 or 1 and layout 0 is a fixed 2x2 mix. `stereo_panner` maps the record with the Pass 10 table
+(`scale = 1.1 - SIZE`, `exponent = 2 * DIVERGENCE`, offsets `clamp(0.5 v)`, radius `clamp(0.5 DIST)`, angle
+`clamp(AZ)`), `sampler_core::surround_panner::Panner::gain` gives the gains, and the matrix is folded into the
+chain's `StereoMatrix` (rows: output L/R, columns: input L/R; source 0 is left, source 1 right).
+Why a static matrix is exact: the apply writes the positions once, and the native gain smoother starts each
+pair at its target, so with no moving source or live control every gain is constant over the run.
+
+Tests: `every_native_stereo_case_matches_its_block` runs every fixture case in the subset (scale, exponent, radius,
+angle and the mix against native block 0, 1e-5); `saved_stereo_record_lowers_to_the_native_block` runs the saved
+record through the bus chain.
+
+Not modelled (each stays NotModeled): flagged (disabled) speakers or sources and the LFE route; more than two
+outputs (multichannel); gain mode 2 (`Exp2`, not measured); layouts other than 0; moving sources or a scale
+change over time (the static matrix assumes a constant record); live script controls; voice and group
+inserts. No delay is modelled. Open: the crash flags `0x1a4` and `0x1a6` (rebuild path `140ac1dc0`, needs the
+output pool state) and the NaN flag `0x1a5`.

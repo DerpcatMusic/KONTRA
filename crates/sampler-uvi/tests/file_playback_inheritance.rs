@@ -120,9 +120,28 @@ fn explicit_options_do_not_depend_on_unsupported_file_vendor_metadata() {
     let f=Fixture::new();let path=f.program("wav",&wav(16,95,true),"<PlaybackOptions/>");
     for streamed in [false,true] {let (_,voices,audio,_)=render(&path,streamed,60);assert_eq!(voices,0);assert_eq!(late_energy(&audio),0.);}
 }
+/// A stored loop end past EOF is no longer refused. UVI exports may store the
+/// last index as frames*channels-1, so the exclusive end lands past the decoded
+/// frame count. The loop is clamped to EOF, reported once per asset as
+/// UVI-LOOP-CLAMPED, and stays playable. (Previously this was refused as
+/// "unreadable initial sample".) Only start >= end is still malformed; see below.
+#[test]
+fn loop_end_past_eof_is_clamped_with_one_warning_and_stays_playable() {
+    let f=Fixture::new();let path=f.program("wav",&wav(16,999,false),"");
+    for streamed in [false,true] {
+        let (ir,voices,audio,_)=render(&path,streamed,60);
+        let clamps:Vec<_>=ir.unsupported.iter().filter(|u|u.feature=="UVI-LOOP-CLAMPED").collect();
+        assert_eq!(clamps.len(),1,"one warning per asset: {:?}",ir.unsupported);
+        assert!(clamps[0].value.contains("loop end 1000") && clamps[0].value.contains("clamped to 128"),"{}",clamps[0].value);
+        assert!(!ir.unsupported.iter().any(|u|u.feature=="unreadable initial sample"));
+        assert_eq!(loop_range(&ir),(16,FRAMES as u64));
+        assert_eq!(voices,1);assert!(late_energy(&audio)>0.01);
+    }
+}
 #[test]
 fn malformed_inherited_loop_is_reported_and_cancellation_never_publishes() {
-    let f=Fixture::new();let path=f.program("wav",&wav(16,999,false),"");
+    // Start at or past the end (reversed) is still malformed: nothing to clamp to.
+    let f=Fixture::new();let path=f.program("wav",&wav(999,16,false),"");
     let loaded=sampler_uvi::load(&path,48000).unwrap();assert!(loaded.instrument.unsupported.iter().any(|u|u.feature=="unreadable initial sample" && u.value.contains("metadata")),"malformed metadata must not silently become unlooped playback");
     let loaded=sampler_uvi::load_streamed(&path,48000,&Default::default()).unwrap();assert!(loaded.loaded.instrument.unsupported.iter().any(|u|u.value.contains("metadata")));
     let path=f.program("wav",&wav(16,95,false),"");let t=sampler_uvi::translate_path(&path).unwrap();let count=AtomicU64::new(0);
@@ -243,7 +262,7 @@ fn mixed_players(f:&Fixture,bytes:&[u8],options:&str,impulse:bool)->PathBuf {
 }
 #[test]
 fn malformed_inheritance_preserves_explicit_players_sharing_valid_pcm_full_and_streamed() {
-    for bytes in [wav(16,95,true),wav(16,999,false)] {
+    for bytes in [wav(16,95,true),wav(999,16,false)] {
         for options in ["<PlaybackOptions/>","<PlaybackOptions Start='0' Stop='128'><Loop Start='32' End='64' Type='0'/></PlaybackOptions>"] {
             let f=Fixture::new();let path=mixed_players(&f,&bytes,options,false);
             for streamed in [false,true] {
