@@ -2268,15 +2268,20 @@ impl Gen<'_, '_> {
                 return Ok(());
             }
             FindGroup | GetGroupIdx => {
-                let index = self.const_text(args, 0).and_then(|name| {
+                let name = self.const_text(args, 0);
+                let index = name.as_ref().and_then(|name| {
                     self.u
                         .groups
                         .iter()
-                        .position(|g| g.eq_ignore_ascii_case(&name))
+                        .position(|g| g.eq_ignore_ascii_case(name))
                 });
                 self.set(dst, index.map_or(-1, |i| i as i64))?;
-                if index.is_none() {
-                    self.warn(format!("{}: group not found; -1", builtin.name()));
+                if let (None, Some(name)) = (index, name) {
+                    // Kontakt's own wording; the index is invalid (-1) and the script goes on.
+                    self.warn(format!(
+                        "{}(): Group \"{name}\" was not found. Index will be invalid!",
+                        builtin.name()
+                    ));
                 }
                 true
             }
