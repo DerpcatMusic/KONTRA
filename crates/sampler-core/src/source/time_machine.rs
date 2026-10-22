@@ -54,7 +54,11 @@ pub enum Mode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scheduler {
     TwoReader,
+    /// WSOLA overlap-add at a fixed hop (provisional stand-in).
     Grains,
+    /// Pitch-synchronous overlap-add (TD-PSOLA): grains snap to pitch marks and
+    /// are spaced by the detected period, so the pitch is kept under time stretch.
+    Pitch,
 }
 
 /// Mode-specific shape of the shared algorithm.
@@ -90,11 +94,11 @@ impl Mode {
                 search_stride: 4,
             },
             Mode::TimeMachine2 => ModeConfig {
-                scheduler: Scheduler::Grains,
-                grain_ms: 46.,
-                overlap: 4,
-                search: 0.5,
-                search_stride: 4,
+                scheduler: Scheduler::Pitch,
+                grain_ms: 0.,
+                overlap: 1,
+                search: 0.,
+                search_stride: 1,
             },
             Mode::TimeMachinePro => ModeConfig {
                 scheduler: Scheduler::Grains,
@@ -143,6 +147,11 @@ const RUN: usize = 128;
 fn dims(cfg: ModeConfig, rate: u32) -> (usize, usize, usize) {
     if cfg.scheduler == Scheduler::TwoReader {
         return (0, (RUN as f64 * MAX_STEP) as usize + 16, 1);
+    }
+    if cfg.scheduler == Scheduler::Pitch {
+        // Output grain = 2P / step with P <= max period and step >= 1/MAX_STEP.
+        let (min, max) = pitch_range(rate);
+        return (8 * max, 4 * max + 16, min);
     }
     let hop = ((cfg.grain_ms * rate as f32 / 1000.) as usize / cfg.overlap).max(8);
     let grain = hop * cfg.overlap;
@@ -233,6 +242,11 @@ pub struct Engine {
     primed: bool,
     /// Where the last grain's content continues in the source (WSOLA target).
     follow: Option<f64>,
+    /// Pitch period in source frames (Scheduler::Pitch), 0 until detected.
+    period: f32,
+    /// Source positions of the marks the grains were snapped to (tests only).
+    #[cfg(test)]
+    marks: Vec<f64>,
     len: usize,
     params: Params,
     /// Output frames left to drain once the source ended.
@@ -272,6 +286,9 @@ impl Engine {
             tr: TwoReader::default(),
             primed: false,
             follow: None,
+            period: 0.,
+            #[cfg(test)]
+            marks: Vec::new(),
             len: 0,
             params: Params::default(),
             drain: None,
@@ -593,6 +610,9 @@ impl Engine {
     /// Synthesize one grain whose nominal analysis start is `at`, writing its
     /// frames from `skip` on (earlier ones lie before the note).
     fn grain_at(&mut self, src: &(impl ReadFrames + ?Sized), at: f64, skip: usize) {
+        if self.cfg.scheduler == Scheduler::Pitch {
+            return self.pitch_grain(src, at, skip);
+        }
         let radius = self.search_radius();
         let step = self.params.step;
         let mut start = at;
@@ -627,6 +647,92 @@ impl Engine {
         if skip == 0 {
             self.follow = Some(start + self.hop as f64 * step);
         }
+    }
+
+    /// TD-PSOLA grain at analysis position `at`. The period is estimated by
+    /// normalised autocorrelation over a window starting at `at` (searched near
+    /// the last period once one is known). The pitch mark is the largest positive
+    /// sample in the first period from `at`, so the mark never sits before the
+    /// clock. A Hann grain two source periods long is centred on the mark and
+    /// placed on the synthesis grid, so marks on a steady period keep the pitch.
+    fn pitch_grain(&mut self, src: &(impl ReadFrames + ?Sized), at: f64, skip: usize) {
+        let (min, max) = pitch_range(self.rate);
+        let c = at.floor() as i64;
+        if !self.fetch(src, c, 3 * max + 2) {
+            self.starved = true;
+            return;
+        }
+        let mono = |x: &[Frame], i: usize| (x[i][0] + x[i][1]) * 0.5;
+        let (lo, hi) = if self.period > 0. {
+            let p = self.period as usize;
+            ((p * 85 / 100).max(min), (p * 115 / 100 + 1).min(max))
+        } else {
+            (min, max)
+        };
+        let window = 2 * max;
+        let score = |lag: usize| {
+            let (mut dot, mut e1, mut e2) = (0f32, 1e-9f32, 1e-9f32);
+            for i in 0..window {
+                let (x, y) = (mono(&self.scratch, i), mono(&self.scratch, i + lag));
+                dot += x * y;
+                e1 += x * x;
+                e2 += y * y;
+            }
+            dot / (e1 * e2).sqrt()
+        };
+        let top = (lo..=hi).map(score).fold(f32::MIN, f32::max);
+        // Shortest local peak near the best: multiples of the period score almost as high.
+        let lag = (lo..=hi)
+            .find(|&l| {
+                let v = score(l);
+                v >= 0.9 * top && v >= score(l.saturating_sub(1)) && v >= score(l + 1)
+            })
+            .unwrap_or(lo);
+        let best = (top, lag);
+        if best.0 >= PITCH_CONFIDENCE || self.period == 0. {
+            self.period = if best.0 >= PITCH_CONFIDENCE { best.1 } else { default_period(self.rate) } as f32;
+        }
+        let period = self.period.round() as usize;
+        // Mark: the largest sample in the first period from `at`.
+        let (mut mark, mut peak) = (0usize, f32::MIN);
+        for k in 0..period {
+            let v = mono(&self.scratch, k);
+            if v > peak {
+                (mark, peak) = (k, v);
+            }
+        }
+        let mark_src = c + mark as i64;
+        #[cfg(test)]
+        self.marks.push(mark_src as f64);
+        let step = self.params.step;
+        let hop = ((period as f64 / step).round() as usize).max(1);
+        let len = 2 * hop;
+        // Grain window: two periods of source ending one period past the mark.
+        let start = mark_src as f64 - period as f64;
+        let first = start.floor() as i64 - 1;
+        let need = ((2. * period as f64 * step) as usize + 5).min(self.scratch.len());
+        let ok = self.fetch(src, first, need);
+        self.starved |= !ok;
+        if ok {
+            let frac = start - start.floor();
+            for n in skip..len {
+                let x = 1. + frac + n as f64 * step;
+                let i = x as usize;
+                let t = (x - i as f64) as f32;
+                let (a, b, cc, d) = (
+                    self.scratch[i - 1],
+                    self.scratch[i],
+                    self.scratch[(i + 1).min(need - 1)],
+                    self.scratch[(i + 2).min(need - 1)],
+                );
+                let w = 0.5 - 0.5 * (std::f32::consts::TAU * n as f32 / len as f32).cos();
+                let slot = &mut self.acc[(self.head + n - skip) % self.grain];
+                for ch in 0..2 {
+                    slot[ch] += w * catmull_rom(a[ch], b[ch], cc[ch], d[ch], t);
+                }
+            }
+        }
+        self.hop = hop;
     }
 
     /// WSOLA: the offset in `-radius..=radius` around the nominal position
@@ -713,6 +819,19 @@ impl Engine {
     }
 }
 
+/// Pitch range searched by [`Engine::pitch_grain`] at `rate`: 40 Hz to 2 kHz.
+fn pitch_range(rate: u32) -> (usize, usize) {
+    ((rate / 2000).max(8) as usize, (rate / 40) as usize)
+}
+
+/// Period assumed until a pitch is detected: 220 Hz.
+fn default_period(rate: u32) -> usize {
+    (rate / 220) as usize
+}
+
+/// Minimum normalised autocorrelation for a period to be trusted.
+const PITCH_CONFIDENCE: f32 = 0.5;
+
 #[inline]
 fn catmull_rom(a: f32, b: f32, c: f32, d: f32, t: f32) -> f32 {
     b + 0.5 * t * (c - a + t * (2. * a - 5. * b + 4. * c - d + t * (3. * (b - c) + d - a)))
@@ -762,7 +881,7 @@ mod tests {
     #[test]
     fn unity_speed_and_pitch_reproduce_the_source() {
         let src = sine(20000, 441.);
-        for mode in [Mode::TimeMachine, Mode::TimeMachine2, Mode::TimeMachinePro] {
+        for mode in [Mode::TimeMachine, Mode::TimeMachinePro] {
             let out = play(mode, &src, 1., 1., 16000);
             assert!(out.len() >= 16000, "{mode:?} ended early");
             let worst = out[..16000]
@@ -771,6 +890,46 @@ mod tests {
                 .map(|(a, b)| (a[0] - b[0]).abs().max((a[1] - b[1]).abs()))
                 .fold(0., f32::max);
             assert!(worst < 1e-3, "{mode:?} deviates by {worst}");
+        }
+    }
+
+    /// TD-PSOLA at unity speed is the source delayed by `period - mark`: the grain
+    /// centre sits one period after its window start, and the mark is the peak 25
+    /// samples into a 100-sample period, so the sine comes back 75 samples late.
+    #[test]
+    fn pitch_passthrough_is_null_after_its_latency() {
+        let src = sine(20000, 441.);
+        let out = play(Mode::TimeMachine2, &src, 1., 1., 16000);
+        let (lag, worst) = (0..200)
+            .map(|lag| {
+                let worst = (2000..12000)
+                    .map(|i| (out[i + lag][0] - src[i][0]).abs())
+                    .fold(0., f32::max);
+                (lag, worst)
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        assert_eq!(lag, 75, "latency");
+        assert!(worst < 1e-3, "TimeMachine2 deviates by {worst} at lag {lag}");
+    }
+
+    /// Marks of a steady 441 Hz sine sit on its peaks, one period (100 samples) apart.
+    #[test]
+    fn pitch_marks_land_on_period_boundaries() {
+        let src = sine(20000, 441.);
+        let mut e = Engine::new(Mode::TimeMachine2, false, RATE);
+        let params = Params::default();
+        e.start(&src[..], Region { len: src.len(), looped: None }, 0., params);
+        let mut block = [[0.; 2]; 256];
+        while e.marks.len() < 8 && !e.done() {
+            e.render(&src[..], params, &mut block);
+        }
+        let marks = &e.marks[..8];
+        for pair in marks.windows(2) {
+            assert!(((pair[1] - pair[0]) - 100.).abs() <= 1., "spacing {pair:?}");
+        }
+        for m in marks {
+            assert!(((m - 25.).rem_euclid(100.)).min(100. - (m - 25.).rem_euclid(100.)) <= 1., "mark {m} off the peak");
         }
     }
 
@@ -806,7 +965,8 @@ mod tests {
             out.len()
         );
         // Frequency from the steady middle of the output.
-        let mid = &out[8000..out.len() - 8000];
+        // Stay inside the stretched source: past its end the grains decay to silence.
+        let mid = &out[8000..2 * src.len() - 8000];
         let hz = crossings(mid) as f32 / 2. / (mid.len() as f32 / RATE as f32);
         assert!((hz - 441.).abs() < 6., "pitch {hz}");
     }
@@ -821,7 +981,7 @@ mod tests {
             "length {}",
             out.len()
         );
-        let mid = &out[4000..out.len() - 4000];
+        let mid = &out[4000..src.len() - 4000];
         let hz = crossings(mid) as f32 / 2. / (mid.len() as f32 / RATE as f32);
         assert!((hz - 882.).abs() < 12., "pitch {hz}");
     }
