@@ -49,3 +49,26 @@ Source: `scratch/survey/full-20261022.jsonl` (`corpus-health --tier full`, 1395 
   intensity, 78 filter law. Those are the owning modulation and filter lanes. The survey's
   Conflux records stop at `started` (the PC crashed mid-run), so their sound check never ran.
 - Not done: the 51-stack deadline re-run on a quiet machine, and the MPE probes.
+
+## Dolce note-off burst: where it comes from (third pass, 2026-10-22)
+
+- Kontakt's note-off burst is not a release-trigger zone. Every zone at key 60 (384 of them) has
+  `trigger: Attack`, so no zone selection can answer a key-up. The instrument sets
+  `NO_SYS_SCRIPT_RLS_TRIG`, so the script plays the release samples itself from `on release`.
+- Oracle per-second peaks for the four-note file (`dolce07.wav`): 0.020 / 0.022 / 0.014 / 0.017 at
+  1, 4, 7, 10 s, each exactly at a note-off. KONTRA's render (`--no-scripts` or not) peaks
+  0.0002 at 0, 3, 6, 9 s, which is the attack noise floor of the amplitude envelope (15 s attack).
+- KONTRA does run the on-release callback: `advance_release_stage` fires for both keys, and the
+  release stage behaviour executes. The script's `play_note` never executes. The native `Play`
+  instruction is not reached from the release, so the branch that plays the release samples is
+  not taken. The branch is gated by developer/page/UI state (`$switch_developer_enable_performance`,
+  `$page_current_developer`, `get_event_par($EVENT_ID, $EVENT_PAR_SOURCE)`, and the
+  `%store_menu_developer_type_art` select). Which gate evaluates differently is open.
+- Not the cause: group gain, output routing, sample decode (peak 0.042), controller 111 at 127
+  (still 0.003 peak), velocity curve.
+- Caveat on evidence: `message()` text is kept only up to 1000 messages per run, and the `NOTE
+  RELEASE` message is lost behind the init messages, so message output cannot show the release
+  branch. Use the Play instrumentation instead.
+- Tooling trap: `sampler-native render-kontakt*` refuses to overwrite an existing output and exits
+  with "File exists (os error 17)" with no other output. An old output path can look like a
+  silent render. Check the exit status and the file's mtime.
