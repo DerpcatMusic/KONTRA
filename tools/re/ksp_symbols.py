@@ -553,8 +553,8 @@ def extract_nki(path):
     shutil.copy(path, tmp / Path(path).name)
     out = tmp / "scripts"
     out.mkdir()
-    cmd = ["build-slot", "cargo", "run", "-q", "-p", "sampler-kontakt", "--example", "dump_scripts",
-           "--", str(tmp), str(out)]
+    cmd = ["nice", "-n", "10", "build-slot", "cargo", "run", "-q", "-p", "sampler-kontakt",
+           "--example", "dump_scripts", "--", str(tmp), str(out)]
     subprocess.run(cmd, cwd=ROOT, check=True)
     return out, tmp
 
@@ -581,6 +581,8 @@ def doctor(paths, fail_on):
         for label, text in scripts:
             text = strip_source(text)
             local = set(re.findall(r"\bfunction\s+([A-Za-z_]\w*)", text))
+            # Script-declared variables and arrays shadow same-named manual tokens.
+            declared = set(re.findall(r"\bdeclare\s+(?:polyphonic\s+|const\s+)?(?:ui_\w+\s+)?([$%~!@?][A-Za-z_]\w*)", text))
             hits = collections.Counter()
             for m in re.finditer(r"^[ \t]*on[ \t]+([a-z_]+)\b", text, re.M):
                 hits[f"on {m[1]}"] += 1
@@ -590,6 +592,8 @@ def doctor(paths, fail_on):
                     continue
                 if sigil:
                     key = sigil + word
+                    if key in declared:
+                        continue
                     if lookup(key):
                         hits[key] += 1
                     elif sigil == "$" and word.isupper():
