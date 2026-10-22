@@ -81,6 +81,40 @@ Ramp (`FUN_140acb6c0`): per control quantum, countdown on the object's clock; de
 `(target - current) * (1 / (quanta * 32 * 2))` in f32, snapped below 1e-15; `quanta = trunc(2 rate
 * 0.002 / 64 + 0.5)`, at least one (`0x144f3860c` = 0.002). Lanes advance once per 2x sample.
 
+### Routed knobs (driver clamp, confirmed under kemu)
+`FUN_1408fa270` (`01408f0000.c`, the BFilterDaft slot-23 driver) runs once per 32-frame chunk. For
+setter index `i` (0 gain, 1 cutoff, 2 resonance, 3 response) with enable byte `wrapper+0x49090+i`
+set, it reads the chunk's float from source pointer `wrapper+0x49098+8i`, clamps it to `[0, 1]`
+(`max(0, min(v, DAT_14470bad4))`, `DAT_14470bad4 = 1.0` read by kemu; NaN gives 0 through the `0 <= v`
+tests), and calls setParam (FilterDaft vtable `+0x60` = `FUN_140b05900`, checked by kemu) before the
+tick and the loop. Connect setters found: `FUN_1409a8850` (cutoff: enable `+0x49091`, source
+`+0x490a0`) and `FUN_1409a8a90` (resonance: `+0x49092`, `+0x490a8`); the gain and response connects
+were not located in this pass.
+
+The clamp is on routed sources only. A static (unrouted) gain goes to the setter signed and unclamped,
+as before. An enabled gain route clamps even at zero delta, as the Ladder does (v1 `filter.rs`).
+
+Kemu (`tools/re/daft_route_clamp_kemu.py` -> `crates/sampler-core/src/dsp/filter/daft_route_clamp_kemu.json`,
+6 cases): the script runs the real driver body with the prelude and postlude (`FUN_140ac28f0`,
+`FUN_140ac21f0`: wrapper host buffers and fades) skipped by code hooks. Every setParam call matched
+the clamp (`received` per case). Examples from the native run:
+
+| Route source per chunk | setParam received |
+|---|---|
+| gain 1.7, 2.5, 1.3 | 1.0, 1.0, 1.0 |
+| gain -0.5, -3.0, -0.3 | 0.0, 0.0, 0.0 |
+| gain 0.3, 0.6, 0.9 (in range) | unchanged |
+| cutoff 1.4, 1.7; resonance 1.5, -0.4 | 1.0, 1.0; 1.0, 0.0 |
+
+Rust: `daft.rs` `control()` clamps `x[0]` when the Gain route bit (4 in `modulation[3]`) is set. Cutoff and
+resonance already clamped (`targets`). The vectors replay each route through the production kernel
+(`native_route_clamp_vectors`), within the 2e-6 of peak tolerance the existing Daft vectors use. The
+test fails without the clamp for the gain cases.
+
+Open in this block: the native composition of the source (knob plus routed depth, as v1 adds it) was
+not recovered from the host side; the Rust clamp assumes it. The response route (`+0x49093`, source
+`+0x490b0`) is also clamped natively, but no Rust route targets Daft response.
+
 ### Per 2x-sample loop (`FUN_140affa30`, transcribed in f32 with the native order)
 Constants read from the image: stage A series `pi^4/120`, `pi^2/12`, `pi/2`; stage B series
 `2 pi^4/15`, `pi^2/3`, `pi` (all at `0x144fcfd40..`, `0x144fcfe08..`, `0x144714960`, `0x1447149d4`);
@@ -105,7 +139,8 @@ Resampling: Kaiser x2 up before the loop, x2 down after (`dsp/kaiser.rs`). The p
 - Cutoff is clamped to 1..30000 Hz only (was also clamped to 0.45 rate).
 - Ramp quanta uses the native rounding (was `ceil`): 22.05 kHz gives 1 quantum, not 2.
 - Gain is unclamped in the kernel (signed input), and the Kontakt mapping no longer clamps
-  `extra[0]` to 0..1 (native setter takes the signed value).
+  `extra[0]` to 0..1 (native setter takes the signed value). An enabled gain route is clamped to
+  0..1 (driver, see Routed knobs); the kernel now does that in `control()`.
 - Table and tail: shared `table.rs`, Daft reads the native tail past index 2400.
 - Golden hashes recorded from this kernel (`daft::tests::output_is_bit_stable`, responses LP and HP).
   The old hashes are invalid by design.
@@ -124,6 +159,7 @@ Resampling: Kaiser x2 up before the loop, x2 down after (`dsp/kaiser.rs`). The p
 | Start-up | confirmed: `FUN_140afd210` (prepare, vtable slot 3) copies the stored targets (`0x48e50`, `0x48e58`) into the current lanes, sets flag 1, state 1, quanta at `0x48e68` and inverse at `0x48e6c`. The ctor's `-1` values are overwritten there. The kernel's first-control snap matches when parameters are set before prepare, as hosts do |
 | Response mode ramp | native sets the weights immediately; matched |
 | Kernel under kemu | **confirmed**: `tools/re/daft_kemu_vectors.py` drives ctor, prepare, setters, tick and loop; `daft_kemu_vectors.json` (10 cases, LP/HP, steady, moving, routed hold, 44.1 and 48 kHz) matches the Rust kernel to 2e-7 of peak (1.1e-6 self-oscillating) |
+| Routed-knob clamp | **confirmed** (`FUN_1408fa270`, DAT_14470bad4 = 1.0): native clamps each enabled route to [0, 1] before setParam; kemu receipts (`tools/re/daft_route_clamp_kemu.py`) and `daft_route_clamp_kemu.json`. Rust clamps an enabled gain route in `control()`. Source composition (knob plus depth) assumed, not recovered; gain and response connect setters not located |
 | Kontakt audio | **open**: Wine oracle (level sweep at several gain and resonance settings) not run |
 
 ## Open items (in order)
