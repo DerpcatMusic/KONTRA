@@ -33,6 +33,8 @@ By stage: `load` 412, `translate-to-IR` 280. Two families cover everything:
 
 The old UVI Translate refusal ("live global ... requires the actual shared owner modulator") no longer appears. The 660 UVI programs still load 0, so this is a stage move, not a fix.
 
+Update (branch `uvi-activation-ownership`, 2026-10-23): the "source activation ownership is unproved" refusal is gone. A shared Gain/Pan source gated by an unproved activation (non-plain DAHDSR, Program/Layer LFO/StepEnvelope) is approximated per voice, owned by the routing keygroup, and reported as an `UnknownLaw` warning (`shared_envelope_ownership.rs`). `V Strings Bartok.uvip` (Augmented Orchestra) now translates and renders (6984 zones, 11 warnings). The rest of the 248 translate-stage family (MultiLFO waveforms, synced LFO frequency, StepEnvelope smoothing, nonlinear depth) still refuses. VWinds Clarinet A now stops at Prepare on the 13-program Frequency family (`native Frequency connection attachment and typed parameter cadence are unqualified`), so VWinds does not load yet.
+
 ## Ranked gaps (instruments affected)
 
 | # | instruments | libraries | gap | lane |
