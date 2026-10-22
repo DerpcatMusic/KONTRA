@@ -62,6 +62,16 @@ not the DSP. Candidate slots checked and rejected as DSP: 0x140651900,
 (generic module plumbing: parameter get/set and state queries). The process
 slot is therefore still unidentified.
 
+Follow-up (static scan): the StereoTuneModuleBase vtable is 0x14474b140. The
+instance (0x14474b670) overrides only slot 16 (0x140668220, parameter-object
+wiring at +0x430..+0x450 and +0x400/+0x408, the same generic pattern used by
+other modules) and slot 69 (returns -1). Every other slot is inherited from the
+base, so the audio work is not a virtual override of this class. The DSP is
+probably a child core object at instance +0x410 (`FUN_141f33da0`,
+`FUN_141f362a0`, vtable slot 0x58). Its class is not identified yet. The
+modeller's process is `FUN_140aa5ac0` on `BEffectStereo` vtable 0x144e961d0
+slot 23, and it has no Stereo Tune branch.
+
 Before this change the module had no name in the module table and showed as
 `unknown effect 0x70`. It now has a name and a `NotModeled` note saying the
 slot is passed through unprocessed. No DSP is invented.
