@@ -205,3 +205,38 @@ Interpretation (not yet proven):
 Still open (no code in this pass): the glide writer for the per-knob increment
 (section 5), live switch semantics beyond the recompute path, bank 16, the HF
 shelf gain=max rows, the HF bell knob >= 0.75 rows, and the LMF/HMF rows above.
+
+## 8. HF bell branch and curve registration (2026-10-22)
+
+Decompile, recompute `0x141a89350`, case 9/10 (HF gain id 9, HF freq id 10,
+HF bell id 0xb). The shelf branch is taken when the bell value is <= 0.5
+(`0x141ac3480`, then a peak). The else branch is the bell:
+
+- frequency = (1 - (1 - T(0x9df0, HF_GAIN)) * 0.5 * HF_FREQ) * E(HF_FREQ)
+- gain (dB)  = T(0x99c0, HF_FREQ) * E(HF_GAIN)
+- Q          = 1.08 * T(0x9590, HF_GAIN)
+- design     = `0x141ac4cf0` (Orfanidis, prescribed Nyquist gain)
+
+`T` is `0x141a95be0` (curve evaluation) and `E` is `0x141a98340` (spline
+evaluation, `solid::Spline`). Their exact semantics are not yet confirmed.
+
+Curve registration: the constructor `0x141a800c0` registers the curve
+objects with `FUN_141a9a510(param_1 + k, grid, y, n, _)`, where `param_1` is a
+`undefined8*`, so byte offset = qword index * 8. Offset `0x9590` maps to
+ctor index `0x12b2` (`DAT_1479a9480`), and `0x99c0` to `0x1338`
+(`DAT_1479a9540`).
+
+Native y-values read from the image (not guessed):
+- `0x9590` (`DAT_1479a9480`): `[1.0, 0.8056, 0.6481, 0.6019, 0.6019, 0.6019, 0.6019, 0.6019, 0.6481, 0.8056, 1.0]`
+- `0x99c0` (`DAT_1479a9540`): `[1.0, 1.0123, 1.0056, 0.9642, 0.9795, 0.9565, 0.9468, 0.9714, 0.9744, 0.9811, 0.9693]`
+
+Test check (`scan`, not committed): 1.08 * T(0x9590, gain=1) = 1.08 does not fit
+the native HF bell rows at knob 0.25 or 0.5 (the best Q is about 1.25 and 1.21).
+So the Q wiring is not confirmed. The repo's current HF bell (`C_4818 * 1.2 *
+C_5078/C_4C48`) matches the rows at knob <= 0.5. The `C_54A8` gain table
+matches there too, though it does not equal the `0x99c0` values, so the
+evaluator mapping needs to be settled before any table change.
+
+Still open for HF bell knob >= 0.75: a low-frequency term at the native
+centre. Our Orfanidis port is not yet shown to be wrong. The next step is to
+confirm `T` and `E` from `0x141a95be0` / `0x141a98340` and rerun the probe test.
