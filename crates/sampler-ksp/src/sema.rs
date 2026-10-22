@@ -9,9 +9,10 @@ use sampler_core::Comparison;
 use std::collections::HashMap;
 
 /// Commands the manual restricts to the "on init" callback.
-const INIT_ONLY: [Builtin; 4] = [
+const INIT_ONLY: [Builtin; 5] = [
     Builtin::AddMenuItem,
     Builtin::MakePersistent,
+    Builtin::ReadPersistentVar,
     Builtin::SetScriptTitle,
     Builtin::SetUiHeightPx,
 ];
