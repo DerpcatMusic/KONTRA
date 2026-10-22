@@ -365,7 +365,7 @@ impl Stage {
     /// Only the exact semantic Core OnePole operand is admitted here. Current
     /// native Frequency attachment/cadence is NOT inferred from this base lane.
     pub(crate) fn processor_parameter_lane(&self,role:ir::ProcessorParameter)->Option<usize>{
-        let base=match (self,role){(Self::OnePole{cutoff,..},ir::ProcessorParameter::Cutoff)=>cutoff.base,_=>return None};
+        let base=match (self,role){(Self::OnePole{cutoff,..}|Self::UviOnePole{frequency:cutoff,..},ir::ProcessorParameter::Cutoff)=>cutoff.base,_=>return None};
         if let PreparedParameter::Control(lane)=base{Some(lane)}else{None}
     }
     pub(crate) fn scope_control_lane(&self,field:crate::SourceOwnerControl)->Option<usize>{
