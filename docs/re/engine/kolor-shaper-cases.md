@@ -1,6 +1,6 @@
 # Kolor shaper cases 0, 1, 3, 4: dispatch findings
 
-Status: **cc70 stage recovered and verified; case 4 ported (output 0.0 natively, see below); c830 (state update) and cases 6-9 recovered and verified; cases 6-9 are a Rust kernel, not yet wired into the dispatch (control lane).**
+Status: **cc70 stage recovered and verified; case 4 ported (output 0.0 natively, see below); c830 (state update) and cases 0, 1, 3, 6-9 recovered and verified as one kernel (`Shaper6_9`); not yet wired into the dispatch (control lane).**
 Scope: decompiled source in `/data/dev/workspace/Research/KONTRA/source/kontakt8/` (`0141970000.c`,
 `0141940000.c`), the dispatch disassembly `docs/re/disasm/kolor-shaper-dispatch-1419749f0.txt`, and the raw
 disassembly of the shaper functions in `docs/re/disasm/kolor-*.txt` (radare2 `pdf`, read by hand, no decompile).
@@ -69,7 +69,7 @@ is not connected to it yet.
 ## Open
 
 - Wiring cases 6-9 into the dispatch (control lane; `kolor/mod.rs`).
-- Case 4 (`14197a150`) is resolved on main (see the case 4 sections below). Cases 0, 1, 3 are unchanged here.
+- Case 4 (`14197a150`) is resolved on main (see the case 4 sections below). Cases 0, 1, 3 are ported (see above).
 - Parameter fill of `P` and `P2` (control lane).
 
 ## Dispatch (1419749f0, `FUN_1419749f0`)
@@ -82,10 +82,31 @@ is not connected to it yet.
 
 | Case | Body | Notes |
 |------|------|-------|
-| 0 | input x = `*param_1[2]` → 4-slot state vector `[x, s0..s6]` built from shaper fields → `14194cc70(shaper+0x30, out, vec)` → `14194c830(shaper+0x2c0, ...)` → store the 8-float result back into shaper+0..0x1c | Two-stage: first `cc70`, then `c830`. |
+| 0 | input x = `*param_1[2]` → 9-float `V = [x, s0..s7]` (from `shaper[0..8]`, read in full) → `14194cc70(shaper+0x30, y, V)` → `14194c830(shaper+0x2c0, ..., x)` → store the 8-float result back into shaper+0..0x1c; returns `y` (xmm0, the cc70 output) | Verified from the disassembly (`docs/re/disasm/kolor-shaper-dispatch-1419749f0.txt`, 141974a2e..141974b3d). Same as cfb0 (cases 6-8). |
 | 1 | `1419426e0` wraps x into a 1-element array → `141974860` pushes an 8-float record into a ring (slot stride 9 floats) → `cc70` on the ring as above | Same code path as 3. |
 | 3 | identical to case 1 | Confirmed by reading both arms. |
 | 4 | x → `14197a150(shaper, out, &x)`, which calls `141979f60(shaper+0x20, ...)` then `141979bf0(shaper+0x208, ...)` and stores 4 floats back at shaper+0..0xc | Not yet read below these two helpers. |
+
+## Cases 0, 1, 3: ported (2026-10-23)
+
+Read from the dispatch disassembly (`141974a2e` case 0, `141974b75`/`141974c02` cases 1/3) and checked against
+the emulator. All three compute the cfb0 sequence, so they share `Shaper6_9` (`shaper_0_1_3.rs`: `Shaper0`,
+`Shaper1_3` aliases).
+
+- Case 0: `V = [x, s0..s7]` in a stack buffer (`[rsp+0x68]`, state copied to `[rsp+0x6c..0x8c]`); `cc70` writes
+  `y` at `[rsp+0x20]`; `c830` (P2 = shaper+0x2c0, x at `[rsp+0x30]`) writes the new state to `[rbp-0x70]`; the
+  state is stored to shaper[0..8]; `y` is returned in xmm0.
+- Case 1/3: `1419426e0` makes a 1-element view of the data buffer `[rbp-0x30]` and writes `x` at float 0.
+  `141974860` pushes `shaper[0..8]` at float 1..8 (ring: `off = 0 + cap(1)`, count 1 then 0, stride 9). So
+  the buffer is `V = [x, s]`, and `cc70` reads it through `*V`. `c830` and the state store are as in case 0;
+  return is the cc70 `y` at `[rsp+0x28]`.
+- The ring state (count, offset, cap) is not read by `cc70` (checked: the native vectors match with it ignored).
+
+Fixtures: `tools/re/kolor_shaper_0_1_3_vectors.py` drives the dispatch with the selector byte at shaper+0x6f0 (0,
+1, 3), 12 samples per warmed run, steady and moving P/P2 at samples 3, 6, 9. Output: `kolor_shaper_0_sequence.json`,
+`kolor_shaper_1_3_sequence.json`. Tests: `case0_sequence_matches_native`, `case1_3_sequence_matches_native` at 1e-5.
+
+Not measured: which modes select cases 0, 1, 3 in the wrapper (only the dispatch is driven, not `14197a2c0`).
 
 ## Helpers
 
