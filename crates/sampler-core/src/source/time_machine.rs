@@ -254,8 +254,12 @@ pub struct Engine {
     primed: bool,
     /// Where the last grain's content continues in the source (WSOLA target).
     follow: Option<f64>,
-    /// Pitch period in source frames (Scheduler::Pitch), 0 until detected.
-    period: f32,
+    /// Fractional pitch period in source frames (Scheduler::Pitch), 0 until detected.
+    period: f64,
+    /// Scheduler::Pitch output state.
+    pitch: PitchState,
+    /// Summed Hann weights per output slot (Scheduler::Pitch normalisation).
+    pwsum: Box<[f32]>,
     /// Source positions of the marks the grains were snapped to (tests only).
     #[cfg(test)]
     marks: Vec<f64>,
@@ -265,6 +269,29 @@ pub struct Engine {
     drain: Option<usize>,
     starved: bool,
 }
+
+/// Scheduler::Pitch state. `pred` is the source position the advance chain is at
+/// (it moves on whether or not a peak is found); `last_centre` and `last_mark` are
+/// the output centre and the fractional source mark of the newest grain.
+/// `emitted` is the next absolute output frame.
+#[derive(Clone, Copy, Debug, Default)]
+struct PitchState {
+    started: bool,
+    emitted: usize,
+    pred: f64,
+    last_centre: f64,
+    last_mark: f64,
+    /// Centre-to-mark offset the stretch should produce: it rises by
+    /// `nominal * (1 - advance)` per grain.
+    reference: f64,
+    end: Option<f64>,
+    grains: usize,
+}
+
+/// Phase lock on the output centres: each grain's spacing is pulled by this
+/// fraction of the offset's deviation from the stretch reference, so the centres
+/// hold to the marks (and unity cannot drift) while the stretch still goes through.
+const PITCH_PHASE_LOCK: f64 = 0.05;
 
 impl Engine {
     /// Allocates every buffer for `mode` and nothing else.
@@ -291,6 +318,8 @@ impl Engine {
             hop: 1,
             window: vec![0.; grain].into(),
             acc: vec![[0.; 2]; grain].into(),
+            pwsum: vec![0.; grain].into(),
+            pitch: PitchState::default(),
             scratch: vec![[0.; 2]; reach].into(),
             head: 0,
             until_grain: 0,
@@ -368,6 +397,9 @@ impl Engine {
         params: Params,
     ) {
         self.acc.fill([0.; 2]);
+        self.pwsum.fill(0.);
+        self.pitch = PitchState { last_mark: from, ..PitchState::default() };
+        self.period = 0.;
         self.head = 0;
         self.until_grain = 0;
         self.follow = None;
@@ -443,6 +475,9 @@ impl Engine {
         self.starved = false;
         if self.cfg.scheduler == Scheduler::TwoReader {
             return self.render_two_readers(src, out, clock);
+        }
+        if self.cfg.scheduler == Scheduler::Pitch {
+            return self.render_pitch(src, out);
         }
         for (n, frame) in out.iter_mut().enumerate() {
             if self.until_grain == 0 && self.drain.is_none() {
@@ -622,9 +657,6 @@ impl Engine {
     /// Synthesize one grain whose nominal analysis start is `at`, writing its
     /// frames from `skip` on (earlier ones lie before the note).
     fn grain_at(&mut self, src: &(impl ReadFrames + ?Sized), at: f64, skip: usize) {
-        if self.cfg.scheduler == Scheduler::Pitch {
-            return self.pitch_grain(src, at, skip);
-        }
         let radius = self.search_radius();
         let step = self.params.step;
         let mut start = at;
@@ -661,90 +693,179 @@ impl Engine {
         }
     }
 
-    /// TD-PSOLA grain at analysis position `at`. The period is estimated by
-    /// normalised autocorrelation over a window starting at `at` (searched near
-    /// the last period once one is known). The pitch mark is the largest positive
-    /// sample in the first period from `at`, so the mark never sits before the
-    /// clock. A Hann grain two source periods long is centred on the mark and
-    /// placed on the synthesis grid, so marks on a steady period keep the pitch.
-    fn pitch_grain(&mut self, src: &(impl ReadFrames + ?Sized), at: f64, skip: usize) {
+    /// Scheduler::Pitch output. Grains are created ahead of the emission point and
+    /// summed with their Hann weights; each output sample is the weighted sum
+    /// divided by the weight sum, so a grain set that reproduces the source gives
+    /// the source back exactly.
+    fn render_pitch(&mut self, src: &(impl ReadFrames + ?Sized), out: &mut [Frame]) -> usize {
+        let mut written = 0;
+        for frame in out.iter_mut() {
+            self.pitch_grains(src);
+            if self.pitch.end.is_some_and(|end| self.pitch.emitted as f64 >= end) {
+                break;
+            }
+            let slot = self.pitch.emitted % self.grain;
+            let (v, w) = (self.acc[slot], self.pwsum[slot]);
+            *frame = if w > 1e-6 { [v[0] / w, v[1] / w] } else { [0.; 2] };
+            self.acc[slot] = [0.; 2];
+            self.pwsum[slot] = 0.;
+            self.pitch.emitted += 1;
+            written += 1;
+        }
+        written
+    }
+
+    /// Creates grains until the newest centre is one lead ahead of the emission
+    /// point (two maximum periods, so every window lies ahead of it).
+    fn pitch_grains(&mut self, src: &(impl ReadFrames + ?Sized)) {
+        let lead = 2. * pitch_range(self.rate).1 as f64;
+        while self.pitch.end.is_none() && self.pitch.last_centre <= self.pitch.emitted as f64 + lead {
+            self.pitch_grain(src);
+        }
+    }
+
+    /// One TD-PSOLA grain. The advance chain `pred` moves by the nominal output
+    /// spacing times `advance` each grain. The source mark is the peak nearest that
+    /// prediction. The output centre moves by the nominal spacing, pulled back by
+    /// a small share of its offset from the mark, so the centre stays on the mark
+    /// at unity without tracking the snapped marks (which would stall).
+    fn pitch_grain(&mut self, src: &(impl ReadFrames + ?Sized)) {
+        if self.pitch.grains % 4 == 0 {
+            let at = self.pitch.last_mark;
+            self.pitch_estimate(src, at);
+        }
+        let step = self.params.step;
+        let period = self.period_or_default();
+        let nominal = period / step;
+        let mut pred = if self.pitch.started {
+            self.pitch.pred + nominal * self.params.advance
+        } else {
+            self.pitch.last_mark + period / 2.
+        };
+        if let Some(l) = &self.clock.looped {
+            let span = (l.end - l.start).max(1) as f64;
+            if pred >= l.end as f64 {
+                pred = l.start as f64 + (pred - l.start as f64) % span;
+            }
+        } else if pred >= self.len as f64 {
+            self.pitch.end = Some(self.pitch.last_centre + nominal);
+            return;
+        }
+        let mark = self.snap_peak(src, pred, period);
+        let centre = if self.pitch.started {
+            self.pitch.reference += nominal * (1. - self.params.advance);
+            let deviation = self.pitch.last_centre - self.pitch.last_mark - self.pitch.reference;
+            self.pitch.last_centre + (nominal - PITCH_PHASE_LOCK * deviation).max(0.25 * nominal)
+        } else {
+            mark
+        };
+        self.write_grain(src, centre, mark, period);
+        #[cfg(test)]
+        self.marks.push(mark);
+        self.pitch.started = true;
+        self.pitch.pred = pred;
+        self.pitch.last_centre = centre;
+        self.pitch.last_mark = mark;
+        self.pitch.grains += 1;
+    }
+
+    /// Period in source frames: the estimate, or the default before one exists.
+    fn period_or_default(&self) -> f64 {
+        if self.period > 0. { self.period } else { default_period(self.rate) as f64 }
+    }
+
+    /// Fractional position of the largest sample within half a period of `pred`:
+    /// the largest sample, refined by a parabola through its neighbours.
+    fn snap_peak(&mut self, src: &(impl ReadFrames + ?Sized), pred: f64, period: f64) -> f64 {
+        let half = (period / 2.).ceil() as i64;
+        let first = pred.floor() as i64 - half - 1;
+        let len = (2 * half + 4) as usize;
+        if !self.fetch(src, first, len) {
+            self.starved = true;
+            return pred;
+        }
+        let mono = |x: &[Frame], i: usize| (x[i][0] + x[i][1]) * 0.5;
+        let (mut best, mut peak) = (1usize, f32::MIN);
+        for k in 1..len - 1 {
+            if ((first + k as i64) as f64 - pred).abs() > period / 2. {
+                continue;
+            }
+            let v = mono(&self.scratch, k);
+            if v > peak {
+                (best, peak) = (k, v);
+            }
+        }
+        if peak == f32::MIN {
+            return pred;
+        }
+        let (y0, y1, y2) = (mono(&self.scratch, best - 1), peak, mono(&self.scratch, best + 1));
+        let den = y0 - 2. * y1 + y2;
+        let delta = if den.abs() > 1e-12 { (0.5 * (y0 - y2) / den).clamp(-0.5, 0.5) } else { 0. };
+        first as f64 + best as f64 + delta as f64
+    }
+
+    /// Fractional period by normalised autocorrelation over a window at `at`:
+    /// the shortest lag near the best (a local peak within 90% of it, so
+    /// multiples of the period do not win), refined by a parabola. Searched near
+    /// the current period once one exists.
+    fn pitch_estimate(&mut self, src: &(impl ReadFrames + ?Sized), at: f64) {
         let (min, max) = pitch_range(self.rate);
-        let c = at.floor() as i64;
-        if !self.fetch(src, c, 3 * max + 2) {
+        let known = self.period;
+        let (lo, hi, window) = if known > 0. {
+            (((known * 0.85) as usize).max(min), ((known * 1.15) as usize + 1).min(max), (2. * known) as usize)
+        } else {
+            (min, max, 2 * max)
+        };
+        let need = window + hi + 3;
+        if !self.fetch(src, at.floor() as i64, need) {
             self.starved = true;
             return;
         }
-        let mono = |x: &[Frame], i: usize| (x[i][0] + x[i][1]) * 0.5;
-        let (lo, hi) = if self.period > 0. {
-            let p = self.period as usize;
-            ((p * 85 / 100).max(min), (p * 115 / 100 + 1).min(max))
-        } else {
-            (min, max)
-        };
-        let window = 2 * max;
-        let score = |lag: usize| {
-            let (mut dot, mut e1, mut e2) = (0f32, 1e-9f32, 1e-9f32);
-            for i in 0..window {
-                let (x, y) = (mono(&self.scratch, i), mono(&self.scratch, i + lag));
-                dot += x * y;
-                e1 += x * x;
-                e2 += y * y;
-            }
-            dot / (e1 * e2).sqrt()
-        };
+        let score = |lag: usize| normalised_autocorrelation(&self.scratch, window, lag);
         let top = (lo..=hi).map(score).fold(f32::MIN, f32::max);
-        // Shortest local peak near the best: multiples of the period score almost as high.
         let lag = (lo..=hi)
             .find(|&l| {
                 let v = score(l);
-                v >= 0.9 * top && v >= score(l.saturating_sub(1)) && v >= score(l + 1)
+                v >= 0.9 * top && v >= score(l - 1) && v >= score(l + 1)
             })
             .unwrap_or(lo);
-        let best = (top, lag);
-        if best.0 >= PITCH_CONFIDENCE || self.period == 0. {
-            self.period = if best.0 >= PITCH_CONFIDENCE { best.1 } else { default_period(self.rate) } as f32;
+        if top < PITCH_CONFIDENCE {
+            return;
         }
-        let period = self.period.round() as usize;
-        // Mark: the largest sample in the first period from `at`.
-        let (mut mark, mut peak) = (0usize, f32::MIN);
-        for k in 0..period {
-            let v = mono(&self.scratch, k);
-            if v > peak {
-                (mark, peak) = (k, v);
-            }
-        }
-        let mark_src = c + mark as i64;
-        #[cfg(test)]
-        self.marks.push(mark_src as f64);
+        let (y0, y1, y2) = (score(lag - 1), score(lag), score(lag + 1));
+        let den = y0 - 2. * y1 + y2;
+        let delta = if den.abs() > 1e-12 { (0.5 * (y0 - y2) / den).clamp(-0.5, 0.5) } else { 0. };
+        self.period = lag as f64 + delta as f64;
+    }
+
+    /// Hann grain of two periods: window centred on `centre`, source read at
+    /// `step` from `mark`, accumulated with its weights for normalisation.
+    fn write_grain(&mut self, src: &(impl ReadFrames + ?Sized), centre: f64, mark: f64, period: f64) {
         let step = self.params.step;
-        let hop = ((period as f64 / step).round() as usize).max(1);
-        let len = 2 * hop;
-        // Grain window: two periods of source ending one period past the mark.
-        let start = mark_src as f64 - period as f64;
-        let first = start.floor() as i64 - 1;
-        let need = ((2. * period as f64 * step) as usize + 5).min(self.scratch.len());
-        let ok = self.fetch(src, first, need);
-        self.starved |= !ok;
-        if ok {
-            let frac = start - start.floor();
-            for n in skip..len {
-                let x = 1. + frac + n as f64 * step;
-                let i = x as usize;
-                let t = (x - i as f64) as f32;
-                let (a, b, cc, d) = (
-                    self.scratch[i - 1],
-                    self.scratch[i],
-                    self.scratch[(i + 1).min(need - 1)],
-                    self.scratch[(i + 2).min(need - 1)],
-                );
-                let w = 0.5 - 0.5 * (std::f32::consts::TAU * n as f32 / len as f32).cos();
-                let slot = &mut self.acc[(self.head + n - skip) % self.grain];
-                for ch in 0..2 {
-                    slot[ch] += w * catmull_rom(a[ch], b[ch], cc[ch], d[ch], t);
-                }
-            }
+        let half = period / step;
+        let first = (mark - period).floor() as i64 - 1;
+        let need = ((2. * period) as usize + 6).min(self.scratch.len());
+        if !self.fetch(src, first, need) {
+            self.starved = true;
         }
-        self.hop = hop;
+        let lo = (centre - half).ceil().max(self.pitch.emitted as f64) as i64;
+        let hi = (centre + half).floor() as i64;
+        for i in lo..=hi {
+            let u = i as f64 - centre;
+            let w = (0.5 + 0.5 * (std::f64::consts::PI * u / half).cos()) as f32;
+            let x = mark + u * step - first as f64;
+            let k = x.floor() as usize;
+            if k < 1 || k + 2 >= need {
+                continue;
+            }
+            let t = (x - k as f64) as f32;
+            let (a, b, c, d) = (self.scratch[k - 1], self.scratch[k], self.scratch[k + 1], self.scratch[k + 2]);
+            let slot = (i as usize) % self.grain;
+            for ch in 0..2 {
+                self.acc[slot][ch] += w * catmull_rom(a[ch], b[ch], c[ch], d[ch], t);
+            }
+            self.pwsum[slot] += w;
+        }
     }
 
     /// WSOLA: the offset in `-radius..=radius` around the nominal position
@@ -836,6 +957,19 @@ fn pitch_range(rate: u32) -> (usize, usize) {
     ((rate / 2000).max(8) as usize, (rate / 40) as usize)
 }
 
+/// Normalised autocorrelation of the mono mix of `x` over `window` frames at `lag`.
+fn normalised_autocorrelation(x: &[Frame], window: usize, lag: usize) -> f32 {
+    let mono = |i: usize| (x[i][0] + x[i][1]) * 0.5;
+    let (mut dot, mut e1, mut e2) = (0f32, 1e-9f32, 1e-9f32);
+    for i in 0..window {
+        let (a, b) = (mono(i), mono(i + lag));
+        dot += a * b;
+        e1 += a * a;
+        e2 += b * b;
+    }
+    dot / (e1 * e2).sqrt()
+}
+
 /// Period assumed until a pitch is detected: 220 Hz.
 fn default_period(rate: u32) -> usize {
     (rate / 220) as usize
@@ -907,24 +1041,13 @@ mod tests {
         }
     }
 
-    /// TD-PSOLA at unity speed is the source delayed by `period - mark`: the grain
-    /// centre sits one period after its window start, and the mark is the peak 25
-    /// samples into a 100-sample period, so the sine comes back 75 samples late.
+    /// TD-PSOLA at unity speed is the source itself: no latency, no shift.
     #[test]
-    fn pitch_passthrough_is_null_after_its_latency() {
+    fn pitch_passthrough_is_null() {
         let src = sine(20000, 441.);
         let out = play(Mode::TimeMachine2, &src, 1., 1., 16000);
-        let (lag, worst) = (0..200)
-            .map(|lag| {
-                let worst = (2000..12000)
-                    .map(|i| (out[i + lag][0] - src[i][0]).abs())
-                    .fold(0., f32::max);
-                (lag, worst)
-            })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .unwrap();
-        assert_eq!(lag, 75, "latency");
-        assert!(worst < 1e-3, "TimeMachine2 deviates by {worst} at lag {lag}");
+        let worst = (2000..12000).map(|i| (out[i][0] - src[i][0]).abs()).fold(0., f32::max);
+        assert!(worst < 1e-3, "TimeMachine2 deviates by {worst}");
     }
 
     /// Marks of a steady 441 Hz sine sit on its peaks, one period (100 samples) apart.
