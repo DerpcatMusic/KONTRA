@@ -921,6 +921,8 @@ impl TraceGraph {
             }
             // Filter-mode and anti-alias group delay is not traced (no latency reported).
             ProcessorRef::S1200 { .. } => ("kontakt_s1200_machine", Vec::new(), 0),
+            // The host-rate wrapper's lag is the chain's group delay; not traced yet.
+            ProcessorRef::Mp60 { .. } => ("kontakt_mp60_machine", Vec::new(), 0),
             ProcessorRef::Formant(f) => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(f.knobs).map(|(n, v)| constant(n, f64::from(v))).collect(), 0),
             ProcessorRef::LiveFormant { knobs, .. } => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(knobs).map(|(n, v)| parameter(n, *v)).collect(), 0),
             ProcessorRef::Space(i, _) => (

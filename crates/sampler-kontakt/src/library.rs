@@ -2352,8 +2352,11 @@ impl Translation {
             ir::Machine::Mp60 => (Some(ir::Machine::Mp60), "MP60 Machine"),
             ir::Machine::BeatMachine => (Some(ir::Machine::BeatMachine), "Beat Machine"),
         };
-        // Filter modes 1..=5 of the S1200 are modelled; the rest play as a sampler.
-        let modelled = matches!(value, Some(ir::Machine::S1200 { filter_mode: Some(1..=ir::S1200_FILTER_MODE_MAX) }));
+        // Filter modes 1..=5 of the S1200 and the MP60 chain are modelled; the rest play as a sampler.
+        let modelled = matches!(
+            value,
+            Some(ir::Machine::S1200 { filter_mode: Some(1..=ir::S1200_FILTER_MODE_MAX) } | ir::Machine::Mp60)
+        );
         if !modelled {
             self.unsupported(
                 at,

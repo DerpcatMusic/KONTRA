@@ -6,7 +6,8 @@
 //! Chain per channel: the 7-tap / 6-pole anti-alias IIR, the filter-mode
 //! biquads (modes 2..=5; mode 1 is a bypass), the mode gain, then the 26 kHz
 //! sample-and-hold and output quantiser. Not recovered: filter modes 0, 6 and 7.
-//! MP60 is not implemented.
+//! MP60 Machine: the chain (stage 1 IIR, 12-bit quantiser, stage 2 IIR) and the
+//! host-rate wrapper [`Mp60Stage`] that runs it on a 44.1 kHz grid.
 
 use super::machine_tables::{S1200_MODE_BITS, S1200_NUMERATOR_BITS};
 
@@ -247,7 +248,6 @@ impl S1200Stage {
 
 /// One MP60 section: `y = x + ff[0] x[n-1] + ff[1] x[n-2] + fb[0] y[n-1] + fb[1] y[n-2]`.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)] // MP60 chain is unwired until its resampler's rate law is decoded.
 pub struct Mp60Section {
     pub ff: [f32; 2],
     pub fb: [f32; 2],
@@ -256,7 +256,6 @@ pub struct Mp60Section {
 /// One MP60 IIR stage: sections in render order, a trailing `tail * y[n-1]`
 /// tap on the last section's output, then the stage gain.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)] // MP60 chain is unwired until its resampler's rate law is decoded.
 pub struct Mp60Iir {
     pub sections: &'static [Mp60Section],
     pub tail: f32,
@@ -264,7 +263,6 @@ pub struct Mp60Iir {
 }
 
 /// Stage 1 (object `+0xa60..+0xaf0`, render `FUN_140cddf50`): five sections.
-#[allow(dead_code)] // MP60 chain is unwired until its resampler's rate law is decoded.
 pub const MP60_IIR1: Mp60Iir = Mp60Iir {
     sections: &[
         Mp60Section { ff: [f32::from_bits(0xbe90_159c), f32::from_bits(0x3f4f_a03a)], fb: [f32::from_bits(0x3f3f_d3c9), f32::from_bits(0xbf30_08e5)] },
@@ -278,7 +276,6 @@ pub const MP60_IIR1: Mp60Iir = Mp60Iir {
 };
 
 /// Stage 2 (object `+0xb24..+0xbc4`): six sections.
-#[allow(dead_code)] // MP60 chain is unwired until its resampler's rate law is decoded.
 pub const MP60_IIR2: Mp60Iir = Mp60Iir {
     sections: &[
         Mp60Section { ff: [f32::from_bits(0x3fd2_4e50), f32::from_bits(0x3f49_7b8e)], fb: [f32::from_bits(0xbfd8_41bf), f32::from_bits(0xbf67_99cc)] },
@@ -303,7 +300,6 @@ pub const MP60_SECTIONS: usize = 6;
 pub const MP60_STAGE_WORDS: usize = MP60_SECTIONS * 4;
 
 /// Runs one sample through an MP60 IIR stage, updating its histories.
-#[allow(dead_code)] // MP60 chain is unwired until its resampler's rate law is decoded.
 fn mp60_iir(stage: &Mp60Iir, history: &mut [[[f32; 2]; 2]; MP60_SECTIONS], x: f32) -> f32 {
     let mut input = x;
     for (section, h) in stage.sections.iter().zip(history.iter_mut()) {
@@ -320,7 +316,6 @@ fn mp60_iir(stage: &Mp60Iir, history: &mut [[[f32; 2]; 2]; MP60_SECTIONS], x: f3
 /// The MP60 IIR chain: stage 1, the 12-bit quantiser, stage 2. Resampling
 /// around the chain is not implemented (its rate law is not decoded).
 #[derive(Clone, Copy, Debug, Default)]
-#[allow(dead_code)] // MP60 chain is unwired until its resampler's rate law is decoded.
 pub struct Mp60Chain {
     stage1: [[[f32; 2]; 2]; MP60_SECTIONS],
     stage2: [[[f32; 2]; 2]; MP60_SECTIONS],
@@ -355,11 +350,8 @@ impl Mp60Chain {
 /// MP60 resample kernel constants (`DAT_144714b70..7c` = 1.0 per lane,
 /// `DAT_144f39230..3c` = 1/6, `DAT_144f39250..5c` = 0.5; the lanes are the
 /// four window columns of `FUN_140947580`).
-#[allow(dead_code)] // MP60 resampler is unwired until the render driver is ported.
 const MP60_KERNEL_ONE: f32 = f32::from_bits(0x3f80_0000);
-#[allow(dead_code)]
 const MP60_KERNEL_SIXTH: f32 = f32::from_bits(0x3e2a_aaab);
-#[allow(dead_code)]
 const MP60_KERNEL_HALF: f32 = f32::from_bits(0x3f00_0000);
 
 /// Port of `FUN_140947580` (416 bytes, `0140940000.c`): four-point Lagrange
@@ -368,12 +360,8 @@ const MP60_KERNEL_HALF: f32 = f32::from_bits(0x3f00_0000);
 /// rows outside the window read as zero. `state` = `[base, frac]` (`param_5`),
 /// `limit` = `param_6`, `count` = `param_7` (rows still to produce). Returns the
 /// number of output rows written to `out`.
-#[allow(dead_code)] // MP60 resampler is unwired until the render driver is ported.
 pub fn mp60_resample_rows(window: &[[f32; 4]], step: f32, state: &mut [i32; 2], limit: i32, count: &mut i32, out: &mut [[f32; 4]]) -> usize {
     let row = |i: i32| usize::try_from(i).ok().and_then(|i| window.get(i)).copied().unwrap_or([0.0; 4]);
-    let one = MP60_KERNEL_ONE;
-    let sixth = MP60_KERNEL_SIXTH;
-    let half = MP60_KERNEL_HALF;
     let mut base = [state[0]; 4];
     let mut pos = [state[0] as f32 + state[1] as f32; 4];
     let mut written = 0;
@@ -390,11 +378,7 @@ pub fn mp60_resample_rows(window: &[[f32; 4]], step: f32, state: &mut [i32; 2], 
         }
         let mut result = [0.0f32; 4];
         for j in 0..4 {
-            let a = t[j] + one;
-            let b = a - one;
-            let c = b - one;
-            let d = c - one;
-            result[j] = (a * x2[j] * b * c - d * xm1[j] * b * c) * sixth + (x0[j] * a * c - a * x1[j] * b) * d * half;
+            result[j] = lagrange4(xm1[j], x0[j], x1[j], x2[j], t[j]);
         }
         out[written] = result;
         written += 1;
@@ -404,6 +388,114 @@ pub fn mp60_resample_rows(window: &[[f32; 4]], step: f32, state: &mut [i32; 2], 
     state[0] = pos[0] as i32;
     state[1] = (pos[0] - state[0] as f32) as i32;
     written
+}
+
+/// Four-point Lagrange cubic between nodes 0 and 1 at `t` in `[0, 1)`, over
+/// nodes `-1, 0, 1, 2` (one lane of `FUN_140947580`; the expression order is the
+/// render's, so the lane results are bit-identical to [`mp60_resample_rows`]).
+#[inline]
+fn lagrange4(xm1: f32, x0: f32, x1: f32, x2: f32, t: f32) -> f32 {
+    let a = t + MP60_KERNEL_ONE;
+    let b = a - MP60_KERNEL_ONE;
+    let c = b - MP60_KERNEL_ONE;
+    let d = c - MP60_KERNEL_ONE;
+    (a * x2 * b * c - d * xm1 * b * c) * MP60_KERNEL_SIXTH + (x0 * a * c - a * x1 * b) * d * MP60_KERNEL_HALF
+}
+
+/// The MP60 chain runs on a 44.1 kHz grid (`DAT_144f38d58`); the host rate is
+/// converted to and from it around the chain.
+pub const MP60_INTERNAL_RATE: u64 = 44_100;
+
+/// Ring length of the host-rate input history and the 44.1 kHz output history
+/// (a power of two; the four-point window plus the output lag fit in it).
+const MP60_RING: usize = 32;
+
+/// Delay-storage words of one MP60 stage (one `[f64; 2]` slot per word, both
+/// channels): the host input ring, the 44.1 kHz output ring, then the two
+/// chain stages' histories ([`MP60_STAGE_WORDS`] each).
+pub const MP60_WORDS: usize = 2 * MP60_RING + 2 * MP60_STAGE_WORDS;
+
+/// Output lag in host frames. Internal sample `k` needs host input up to
+/// `floor(k * H / 44100) + 2`, and output frame `m` needs internal samples up
+/// to `floor(m * 44100 / H) + 2`; `2 + ceil(3 H / 44100)` covers both.
+pub fn mp60_latency(host_rate: u64) -> u64 {
+    (3 * host_rate).div_ceil(MP60_INTERNAL_RATE) + 2
+}
+
+/// Reads the four-point window at `whole + frac` of a ring of per-channel
+/// samples at `slots[base + (i & (MP60_RING - 1))]`. Indices below zero read as
+/// silence (the stream starts there).
+fn mp60_ring_read(slots: &[[f64; 2]], base: usize, c: usize, whole: i64, frac: f32) -> f32 {
+    let at = |i: i64| if i < 0 { 0.0 } else { slots[base + (i as usize & (MP60_RING - 1))][c] as f32 };
+    lagrange4(at(whole - 1), at(whole), at(whole + 1), at(whole + 2), frac)
+}
+
+/// One MP60 machine source stage, applied to the sampler output at the host
+/// rate: host to the 44.1 kHz grid, stage 1 IIR, 12-bit quantiser, stage 2
+/// IIR, and back to the host rate. At 44.1 kHz the render takes its copy path
+/// and the stage is the bare chain with no lag.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mp60Stage {
+    host_rate: u64,
+    latency: u64,
+}
+
+impl Mp60Stage {
+    pub fn new(host_rate: u32) -> Self {
+        let host_rate = u64::from(host_rate);
+        let latency = if host_rate == MP60_INTERNAL_RATE { 0 } else { mp60_latency(host_rate) };
+        Self { host_rate, latency }
+    }
+
+    pub fn valid(&self) -> bool {
+        self.host_rate > 0
+    }
+
+    /// Runs `len` frames of both channels. `slots` holds [`MP60_WORDS`] words;
+    /// `schedule` is `[frames run, internal samples run]`, zeroed for a fresh
+    /// voice. Output frame `n` is the chain's output for host time `n - latency`,
+    /// so the first `latency` frames are silent.
+    pub fn process(&self, slots: &mut [[f64; 2]], schedule: &mut [f64; 2], block: [&mut [f64]; 2], len: usize) {
+        let start = schedule[0] as u64;
+        if start == 0 {
+            slots.fill([0.; 2]);
+        }
+        let (h, lag) = (self.host_rate, self.latency);
+        let k0 = schedule[1] as u64;
+        let mut k_end = k0;
+        for (c, channel) in block.into_iter().enumerate() {
+            let mut chain = Mp60Chain::load(&slots[2 * MP60_RING..], c);
+            let mut k = k0;
+            for (i, v) in channel[..len].iter_mut().enumerate() {
+                if h == MP60_INTERNAL_RATE {
+                    *v = f64::from(chain.process(*v as f32));
+                    continue;
+                }
+                let n = start + i as u64;
+                slots[n as usize & (MP60_RING - 1)][c] = f64::from(*v as f32);
+                // Internal samples whose four-point window is complete.
+                while (k * h) / MP60_INTERNAL_RATE + 2 <= n {
+                    let u = k * h;
+                    let frac = (u % MP60_INTERNAL_RATE) as f32 / MP60_INTERNAL_RATE as f32;
+                    let z = mp60_ring_read(slots, 0, c, (u / MP60_INTERNAL_RATE) as i64, frac);
+                    let y = chain.process(z);
+                    slots[MP60_RING + (k as usize & (MP60_RING - 1))][c] = f64::from(y);
+                    k += 1;
+                }
+                *v = if n >= lag {
+                    let w = (n - lag) * MP60_INTERNAL_RATE;
+                    let frac = (w % h) as f32 / h as f32;
+                    f64::from(mp60_ring_read(slots, MP60_RING, c, (w / h) as i64, frac))
+                } else {
+                    0.0
+                };
+            }
+            chain.store(&mut slots[2 * MP60_RING..], c);
+            k_end = k;
+        }
+        schedule[0] = (start + len as u64) as f64;
+        schedule[1] = k_end as f64;
+    }
 }
 
 #[cfg(test)]
@@ -552,5 +644,45 @@ mod tests {
             out
         };
         assert_eq!(run(1000), run(7));
+    }
+
+    #[test]
+    fn mp60_at_44k_is_the_bare_chain() {
+        let input: Vec<f32> = (0..512).map(|i| (i as f32 * 0.07).sin() * 0.8).collect();
+        let mut chain = Mp60Chain::default();
+        let expect: Vec<f32> = input.iter().map(|&x| chain.process(x)).collect();
+        let mut left: Vec<f64> = input.iter().map(|&x| f64::from(x)).collect();
+        let mut right = vec![0.0; 512];
+        let mut slots = vec![[0.0; 2]; MP60_WORDS];
+        let mut schedule = [0.0; 2];
+        Mp60Stage::new(44_100).process(&mut slots, &mut schedule, [&mut left, &mut right], 512);
+        for (got, want) in left.iter().zip(&expect) {
+            assert_eq!(*got as f32, *want);
+        }
+    }
+
+    #[test]
+    fn mp60_at_48k_is_delayed_settles_to_the_chain_dc_and_is_block_invariant() {
+        let mut chain = Mp60Chain::default();
+        let dc = f64::from((0..40_000).map(|_| chain.process(0.5)).last().unwrap());
+        let stage = Mp60Stage::new(48_000);
+        let lag = mp60_latency(48_000) as usize;
+        let run = |blocks: &[usize]| {
+            let mut slots = vec![[0.0; 2]; MP60_WORDS];
+            let mut schedule = [0.0; 2];
+            let mut out = Vec::new();
+            for &len in blocks {
+                let (mut l, mut r) = (vec![0.5; len], vec![0.5; len]);
+                stage.process(&mut slots, &mut schedule, [&mut l, &mut r], len);
+                out.extend(l);
+            }
+            out
+        };
+        let whole = run(&[60_000]);
+        let split = run(&[25_000, 7_000, 28_000]);
+        assert_eq!(whole, split, "block size must not change the output");
+        assert!(whole[..lag].iter().all(|&v| v == 0.0), "output lags the input by the stage latency");
+        let settled = *whole.last().unwrap();
+        assert!((settled - dc).abs() <= 1e-4 * dc.abs().max(1e-3), "settled {settled} vs chain DC {dc}");
     }
 }
