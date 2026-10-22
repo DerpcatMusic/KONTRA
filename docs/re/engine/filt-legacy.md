@@ -144,6 +144,22 @@ Built on `engine/filt-sv` (`dsp/filter/linear.rs` `Zdf`, `dsp/filter/shaper.rs` 
   `space/shape.rs`, `space/network.rs`, `timemod/dual_x.rs`, `color/tonestack.rs`. Sharing one runner
   there needs a bit-identity vector per caller and is not done here.
 
+## Knob-0 status (2026-10-22, full-parity pass)
+
+- The LP4 setter (`FUN_14095c9c0`) and the allpass substitution (`FUN_1408e4970`) were compared term by
+  term with `cascade.rs` `knob_position`, `angle`, `lp_pole`, `substitute`, `warp` and the LP4 design.
+  Every constant and operation matches, including the normalisation `(2 - sum c) / sum b`, `n = q 0.35 + 0.65`,
+  and both sections using the same low-pass pole `a`. The formulas predict the Kontakt-measured shape
+  at knobs .25 and above (golden), and cannot produce the knob-0 tail at any small knob (engine sweep 0 to 0.05).
+- So the knob-0 difference is not in the section law. It must come from code the setter does not
+  reach at knob 0 or from the process path. Not yet identified.
+- A Kontakt fine sweep (0 to 0.25) to find the transition is the next measurement. It could not be
+  run on 2026-10-22: the `kontra_ref` PipeWire sink is SUSPENDED and the known-good Ladder spec now
+  measures silence on the monitor (see the oracle note in the parity matrix PR). Routing is the
+  user's audio setup; it was not changed.
+- Simple LP/HP: the BFilterSimpleLPHP constructor (`01407c0000.c:8080`) initialises two wrapper cores
+  (`FilterDJExtRange`, `FilterLadderExtRange`) with fixed floats `-1.0`; the record-to-parameter mapping is still not traced.
+
 ## Pending
 
 1. Legacy Ladder knob 0: knob sweep and table check (above).
