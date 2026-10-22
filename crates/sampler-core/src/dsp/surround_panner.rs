@@ -284,6 +284,35 @@ impl Panner {
     }
 }
 
+/// One-pole coefficient of the panned path's gain smoother (native, kemu `dc_step`): every sample
+/// the gain moves `1/1800` of the way to its block target. Only measured at the driver's default
+/// rate; the driver never sets a rate, so the rate dependence is still open.
+pub const GAIN_SMOOTH: f32 = 1.0 / 1800.0;
+
+/// Smoothed gain per (source, output) pair. The first block starts each pair at its target.
+pub struct GainSmoother {
+    gain: Vec<Vec<Option<f32>>>,
+}
+
+impl GainSmoother {
+    pub fn new(sources: usize, outputs: usize) -> Self {
+        Self {
+            gain: vec![vec![None; outputs]; sources],
+        }
+    }
+
+    /// Renders one route: each sample emits `gain * input` (overwriting `out` when `overwrite`), then
+    /// steps the gain toward `target`.
+    pub fn render(&mut self, s: usize, k: usize, target: f32, overwrite: bool, input: &[f32], out: &mut [f32]) {
+        let gain = self.gain[s][k].get_or_insert(target);
+        for (o, i) in out.iter_mut().zip(input) {
+            let v = *gain * i;
+            *o = if overwrite { v } else { *o + v };
+            *gain += GAIN_SMOOTH * (target - *gain);
+        }
+    }
+}
+
 /// Route of one output in the block driver (`0x140ab0070`, per-output flag at record `+0x1c8 + 12k`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Route {
@@ -445,68 +474,79 @@ mod tests {
 
 #[cfg(test)]
 mod native_driver_tests {
-    //! Block driver against Kontakt 8 kemu output (`tools/re/surround_panner_driver_kemu.py`, case
-    //! `stereo_fixed`). With fixed positions the native output is the linear sum of the speaker gains
-    //! from the gain law (`0x140a94580`) for every block; the fade and distance-delay paths only appear
-    //! when a position or scale changes, and are not covered here.
+    //! Block driver against Kontakt 8 kemu output (`tools/re/surround_panner_driver_kemu.py`): fixed
+    //! positions, moving source, distance (scale) steps, a mono source, and a 40-block DC scale step.
     use super::*;
 
     #[derive(serde::Deserialize)]
     struct Block {
+        sources: Vec<[f32; 2]>,
+        scale: f32,
         input: Vec<Vec<f32>>,
         out: Vec<Vec<f32>>,
     }
 
     #[derive(serde::Deserialize)]
-    struct Fixture {
+    struct Case {
+        name: String,
         n: usize,
         speakers: Vec<[f32; 2]>,
-        sources: Vec<[f32; 2]>,
         blocks: Vec<Block>,
     }
 
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        cases: Vec<Case>,
+    }
+
     #[test]
-    fn stereo_fixed_positions_match_native_mix() {
+    fn panned_route_matches_native_kemu_blocks() {
         let v: Fixture =
             serde_json::from_str(include_str!("surround_panner_driver_native_vectors.json"))
                 .unwrap();
-        let speakers = v
-            .speakers
-            .iter()
-            .map(|&[x, y]| Speaker {
-                pos: Point { x, y },
-                disabled: false,
-            })
-            .collect();
-        let sources = v.sources.iter().map(|&[x, y]| Point { x, y }).collect();
-        let panner = Panner::new(speakers, sources, GainMode::Power);
-        let gains: Vec<Vec<f32>> = (0..v.sources.len())
-            .map(|s| (0..v.speakers.len()).map(|k| panner.gain(s, k)).collect())
-            .collect();
-
-        for (b, block) in v.blocks.iter().enumerate() {
-            let inputs: Vec<&[f32]> = block.input.iter().map(|x| x.as_slice()).collect();
-            let mut outs = vec![vec![0.0f32; v.n]; v.speakers.len()];
-            let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|o| o.as_mut_slice()).collect();
-            let routes = vec![Route::Panned; v.speakers.len()];
-            drive_block(
-                &inputs,
-                &routes,
-                &mut out_refs,
-                |s, k, overwrite, input, out| {
-                    let g = gains[s][k];
-                    for (o, i) in out.iter_mut().zip(input) {
-                        *o = if overwrite { i * g } else { *o + i * g };
-                    }
-                },
-            );
-            for (k, got) in outs.iter().enumerate() {
-                let want = &block.out[k];
-                let worst = got
-                    .iter()
-                    .zip(want)
-                    .fold(0f32, |m, (g, w)| m.max((g - w).abs()));
-                assert!(worst <= 1e-5, "block {b} output {k}: worst {worst}");
+        for case in &v.cases {
+            let speakers: Vec<Speaker> = case
+                .speakers
+                .iter()
+                .map(|&[x, y]| Speaker {
+                    pos: Point { x, y },
+                    disabled: false,
+                })
+                .collect();
+            let outputs = speakers.len();
+            let mut smoother = GainSmoother::new(case.blocks[0].sources.len(), outputs);
+            for (b, block) in case.blocks.iter().enumerate() {
+                let sources: Vec<Point> =
+                    block.sources.iter().map(|&[x, y]| Point { x, y }).collect();
+                let mut panner = Panner::new(speakers.clone(), sources, GainMode::Power);
+                panner.scale = block.scale;
+                let gains: Vec<Vec<f32>> = (0..block.sources.len())
+                    .map(|s| (0..outputs).map(|k| panner.gain(s, k)).collect())
+                    .collect();
+                let inputs: Vec<&[f32]> = block.input.iter().map(|x| x.as_slice()).collect();
+                let mut outs = vec![vec![0.0f32; case.n]; outputs];
+                let mut out_refs: Vec<&mut [f32]> =
+                    outs.iter_mut().map(|o| o.as_mut_slice()).collect();
+                let routes = vec![Route::Panned; outputs];
+                drive_block(
+                    &inputs,
+                    &routes,
+                    &mut out_refs,
+                    |s, k, overwrite, input, out| {
+                        smoother.render(s, k, gains[s][k], overwrite, input, out);
+                    },
+                );
+                for (k, got) in outs.iter().enumerate() {
+                    let worst = got
+                        .iter()
+                        .zip(&block.out[k])
+                        .fold(0f32, |m, (g, w)| m.max((g - w).abs()));
+                    assert!(
+                        worst <= 1e-5,
+                        "{} block {b} output {k}: worst {worst}",
+                        case.name
+                    );
+                }
             }
         }
     }
