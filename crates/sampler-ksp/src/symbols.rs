@@ -60,7 +60,11 @@ pub fn table() -> &'static [Symbol] {
 pub fn lookup(name: &str) -> Option<&'static Symbol> {
     static BY_NAME: OnceLock<HashMap<&'static str, usize>> = OnceLock::new();
     let index = BY_NAME.get_or_init(|| {
-        table().iter().enumerate().map(|(i, s)| (s.name, i)).collect()
+        table()
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name, i))
+            .collect()
     });
     index.get(name).map(|&i| &table()[i])
 }
@@ -84,9 +88,19 @@ pub fn of_construct(name: &str, ledger: sampler_parity::Status) -> Status {
 fn parse(text: &'static str) -> Vec<Symbol> {
     let mut lines = text.lines();
     let header: Vec<&str> = lines.next().unwrap_or_default().split('\t').collect();
-    let col = |want: &str| header.iter().position(|h| *h == want).expect("SYMBOLS.tsv column");
-    let (c_name, c_class, c_status, c_tests, c_rank) =
-        (col("name"), col("class"), col("status"), col("tests"), col("corpus_rank"));
+    let col = |want: &str| {
+        header
+            .iter()
+            .position(|h| *h == want)
+            .expect("SYMBOLS.tsv column")
+    };
+    let (c_name, c_class, c_status, c_tests, c_rank) = (
+        col("name"),
+        col("class"),
+        col("status"),
+        col("tests"),
+        col("corpus_rank"),
+    );
     lines
         .filter(|l| !l.is_empty())
         .map(|line| {
@@ -132,7 +146,10 @@ mod tests {
     #[test]
     fn catalogue_is_loaded_and_resolves_names() {
         assert!(table().len() > 1000);
-        assert_eq!(lookup("on init").map(|s| s.status), Some(Status::Simplified));
+        assert_eq!(
+            lookup("on init").map(|s| s.status),
+            Some(Status::Simplified)
+        );
         assert!(lookup("no_such_ksp_symbol").is_none());
     }
 }

@@ -14,7 +14,10 @@ const LISTED_SYMBOLS: usize = 32;
 /// Unsupported, stub and simplified symbols per KSP script, one issue per script and code.
 pub(super) fn symbol_issues(reports: &[sampler_parity::ScriptReport]) -> Vec<SymbolIssue> {
     let mut out = Vec::new();
-    for report in reports.iter().filter(|r| r.lang == sampler_parity::Lang::Ksp) {
+    for report in reports
+        .iter()
+        .filter(|r| r.lang == sampler_parity::Lang::Ksp)
+    {
         // code -> symbol -> uses, in first-use order per code.
         let mut by_code: Vec<(&'static str, Vec<(String, u64)>)> = Vec::new();
         for construct in &report.constructs {
@@ -37,7 +40,11 @@ pub(super) fn symbol_issues(reports: &[sampler_parity::ScriptReport]) -> Vec<Sym
             }
         }
         for (code, uses) in by_code {
-            let names: Vec<String> = uses.iter().take(LISTED_SYMBOLS).map(|(n, c)| format!("{n} x{c}")).collect();
+            let names: Vec<String> = uses
+                .iter()
+                .take(LISTED_SYMBOLS)
+                .map(|(n, c)| format!("{n} x{c}"))
+                .collect();
             let omitted = uses.len().saturating_sub(LISTED_SYMBOLS);
             let kind = code.trim_start_matches("KSP-").to_ascii_lowercase();
             let mut message = format!(
@@ -189,8 +196,8 @@ mod tests {
             source_len: 0,
             tokens: vec![],
             constructs: vec![
-                construct("sh_left", Status::Implemented),  // untested in SYMBOLS.tsv: simplified
-                construct("real", Status::Implemented),     // tested: full, no issue
+                construct("sh_left", Status::Implemented), // untested in SYMBOLS.tsv: simplified
+                construct("real", Status::Implemented),    // tested: full, no issue
                 construct("sh_left", Status::Implemented),
                 construct("no_such_builtin", Status::Unsupported),
                 construct("@linked-source", Status::Unsupported),
@@ -202,7 +209,11 @@ mod tests {
         let issues = symbol_issues(&[report, lua]);
         let codes: Vec<_> = issues.iter().map(|i| i.code).collect();
         assert_eq!(codes, ["KSP-SIMPLIFIED", "KSP-UNSUPPORTED"]);
-        assert!(issues[0].message.contains("sh_left x2"), "{}", issues[0].message);
+        assert!(
+            issues[0].message.contains("sh_left x2"),
+            "{}",
+            issues[0].message
+        );
         assert!(!issues[0].message.contains("real"));
         assert_eq!(issues[1].details["symbols"].as_array().unwrap().len(), 2);
     }
