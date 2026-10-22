@@ -2,6 +2,15 @@
 use sampler_parity::ScriptReport;
 
 pub fn parity_reports(instrument: &sampler_ir::Instrument) -> Vec<ScriptReport> {
+    reports(instrument, false)
+}
+
+/// The same statuses without token and lowered maps: for load diagnostics and corpus reports.
+pub fn parity_summaries(instrument: &sampler_ir::Instrument) -> Vec<ScriptReport> {
+    reports(instrument, true)
+}
+
+fn reports(instrument: &sampler_ir::Instrument, summary: bool) -> Vec<ScriptReport> {
     instrument
         .behaviors
         .iter()
@@ -17,13 +26,12 @@ pub fn parity_reports(instrument: &sampler_ir::Instrument) -> Vec<ScriptReport> 
                 &instrument.zones,
                 Default::default(),
             );
-            sampler_ksp::parity_report_with(
-                &b.source,
-                &format!("ksp:slot{slot}"),
-                &b.name,
-                sampler_ksp::Limits::LIBRARY,
-                &environment,
-            )
+            let (source, id, title) = (&b.source, format!("ksp:slot{slot}"), &b.name);
+            if summary {
+                sampler_ksp::parity_report_summary_with(source, &id, title, sampler_ksp::Limits::LIBRARY, &environment)
+            } else {
+                sampler_ksp::parity_report_with(source, &id, title, sampler_ksp::Limits::LIBRARY, &environment)
+            }
         })
         .collect()
 }

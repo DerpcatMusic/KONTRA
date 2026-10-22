@@ -6,7 +6,8 @@
   sync                                  recompute status, owner, tests and corpus rank;
                                         write docs/re/ksp/SYMBOLS.tsv and COVERAGE.md
   check                                 CI gate: every row has a status and a test link,
-                                        and the committed files match a fresh sync
+                                        full rows keep their test (docs/re/ksp/FULL_UNTESTED.txt
+                                        lists the known debt), and the committed files match a fresh sync
   doctor FILE... [--fail-on STATUS]     per-symbol status for KSP text (.ksp) or .nki
                                         instruments (scripts extracted with dump_scripts)
 
@@ -530,6 +531,29 @@ def sync_all(write):
     return rows, text_tsv, text_md
 
 
+FULL_UNTESTED = OUT / "FULL_UNTESTED.txt"
+
+
+def allowed_full_untested():
+    """Ledger `full` rows that have no conformance test yet, known debt (one id per line)."""
+    if not FULL_UNTESTED.exists():
+        return set()
+    return {l.strip() for l in FULL_UNTESTED.read_text().splitlines() if l.strip() and not l.startswith("#")}
+
+
+def full_without_test(rows, allowed):
+    """A row marked full must keep its conformance test. Debt in `allowed` is listed, not new."""
+    errors = []
+    for r in rows:
+        untested = r["tests"] == "untested"
+        if r["status"] == "full" and untested and r["id"] not in allowed:
+            errors.append(f"{r['id']}: marked full but no conformance test names it "
+                          "(add a test, or demote the ledger row)")
+        if r["id"] in allowed and not (r["status"] == "full" and untested):
+            errors.append(f"{r['id']}: no longer full-without-test; remove it from FULL_UNTESTED.txt")
+    return errors
+
+
 def check():
     rows, text_tsv, text_md = sync_all(write=False)
     errors = []
@@ -538,6 +562,7 @@ def check():
             errors.append(f"{r['id']}: no status ({r['status']!r})")
         if not r["tests"]:
             errors.append(f"{r['id']}: no test link or 'untested'")
+    errors += full_without_test(rows, allowed_full_untested())
     if SYMBOLS.read_text() != text_tsv:
         errors.append("SYMBOLS.tsv is out of date: run tools/re/ksp_symbols.py sync")
     if COVERAGE.read_text() != text_md:

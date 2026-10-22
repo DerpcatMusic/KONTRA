@@ -1,0 +1,5 @@
+# Ledger rows marked full with no conformance test yet (debt). Remove a line when a test names it.
+command:int_to_real
+command:real_to_int
+command:sh_left
+command:sh_right
