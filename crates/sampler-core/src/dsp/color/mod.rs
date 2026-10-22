@@ -8,8 +8,6 @@
 //!
 //! Stages run over the whole block one after another, which equals the native
 //! per-frame order because no stage reads another stage's state.
-#[allow(dead_code)] // unwired until the cfb0 state update (c830) is recovered
-mod kolor;
 mod amp;
 mod distortion;
 mod drive;
@@ -21,6 +19,7 @@ mod hilbert;
 mod bite;
 mod tape;
 mod exciter;
+mod kolor;
 mod tonestack;
 mod diode;
 mod lofi;
