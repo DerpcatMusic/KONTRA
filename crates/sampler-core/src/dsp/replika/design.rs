@@ -10,8 +10,9 @@
 //!
 //! `pow` and `exp` are the libm calls `1443d10b4` and `1443d10cc`; here they run in f64 and round to f32.
 //!
-//! Not ported here: the resets `141abaab0` at `H+0x1a8` and `H+0x278` with the flag `H+0x1a8+0xc8` (1 for modes
-//! 1..3, else 2), and the per-mode read and speed selection `141abd190` and `141ac4510` (piece 3b).
+//! Not ported here: the tail of `141abbc90` (the kernel flags `K+0xc8` = 1 for lane modes 1..3, else 2, and the
+//! resets `141abaab0` of both taps), which `Head::set_mode` applies for k = 1, and the per-mode read and speed
+//! selection `141abd190` and `141ac4510` (piece 3b).
 //!
 //! Vectors: `docs/re/engine/vectors/replika-native-mode1-design.json` (kemu, rates 44.1/48/96 kHz, modes 0..3),
 //! plus the core-run mode-3 vectors `replika-native-mode1-write-l.json` and `replika-native-mode1-postfilter-l.json`.
