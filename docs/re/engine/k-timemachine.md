@@ -38,8 +38,9 @@ Law/edge notes recorded in code: TM1 does not floor the base speed (TM2 and Pro 
 | Transient Size | `dfd_integer_1` | source positions | carried, unused |
 | Grain profile | `dfd_integer_2` | index 0..=4 | carried, unused |
 
-Engine: **WSOLA stand-in** (`Scheduler::Grains`, 46 ms grain, overlap 4, search 0.5).
-The original is PSOLA with mark analysis; not native. Reported as NotModeled.
+Engine: **own pitch-synchronous core** (`Scheduler::Pitch`): autocorrelation period, forward pitch
+mark, Hann grain over two periods on the synthesis grid. Not a port of Kontakt's estimator, and not
+measured against Kontakt 8 yet (native vectors pending). Previously a WSOLA stand-in.
 
 ### Time Machine Pro (stored mode 8)
 
@@ -60,7 +61,7 @@ Engine: **WSOLA stand-in** in place of the Elastique backend. Not native.
 | --- | --- | --- | --- |
 | TM1 two-reader scheduler, smooth, grain | yes (`TwoReader`) | yes | HQ analysis path missing |
 | TM1 tempo-synced speed | no | yes | sync law unrecovered |
-| TM2 PSOLA mark analysis | no (WSOLA stand-in) | yes | mark detector + transient scheduling unrecovered |
+| TM2 PSOLA mark analysis | partial: own `Scheduler::Pitch` (autocorrelation period, forward mark) | yes | Kontakt's estimator is FFT-based (`FUN_1419d2d80`, below); transient scheduling unrecovered; no native vectors |
 | TM2 Transient Copy / Size / Grain profile | carried in IR, unused | yes | wire into scheduler once TM2 law known |
 | Pro Elastique backend | no (WSOLA stand-in) | yes | backend unrecovered; formant-preserving stretch absent |
 | Pro Keep Formants / Formant Shift / Env Order | carried, unused | yes | needs formant-preserving path |
@@ -236,7 +237,15 @@ Vtable slots come from `tools/re/tm/slots.py`. Addresses are VAs in `Kontakt8.ex
   Mark time, `+0x7c`, is written back, and the buffer shift `FUN_1419cfd70` runs last.
 - **Pitch tracker** (`CPitchTrack`, vtable `0x1476a6608`): the object is allocated with analysis size
   `0x1000` / hop `0x100` / window `0x400` for the quality mode 0 (`FUN_1419d1840`). Its ring buffer is
-  masked (`& mask`), and `FUN_1419d2d80` is the period estimator (not yet read).
+  masked (`& mask`). Period estimator `FUN_1419d2d80` (1441 B, `01419d0000.c:2094`) reads as: RMS of
+  the rectified frame sets the level (`+0x28`, `+0x2c`) and a relative change (`+0x30`); the frame is
+  windowed into `+0x58`, transformed through the vtable at `+0xb0`, and a peak-search over spectral bins
+  between two constant-derived bounds picks the period candidates. It is spectral, not autocorrelation.
+
+**Attribution correction:** the PSOLA analysis object (`CPSOLAAnalysisRT`) is constructed only inside
+Elastique core setup (`FUN_1419d64d0` at `01419d0000.c:4801`, `FUN_1419c8b60` at `01419c0000.c:6128`,
+both calling `FUN_1419ced60`). The TM2 mode-5 engine kind (`+0x138`) is not resolved, so the TM2 core
+above is our design, not a recovered Kontakt TM2 algorithm.
 
 ### CPSOLASynthesis, TM2 ratio setter (vtable `0x1476a6040`, slot 7 = `FUN_1419ce540`, 131 B)
 
@@ -271,8 +280,9 @@ inside the stage virtuals is not read, so no Elastique stage is implemented.
 
 ## Status of the cores
 
-- TM2 PSOLA core: the analysis loop structure, the ratio law and the setter constants are recorded above.
-  The emit call and the period estimator (`FUN_1419d2d80`) are not confirmed, so the core is not
-  implemented.
+- TM2 core: implemented as `Scheduler::Pitch` in `crates/sampler-core/src/source/time_machine.rs`
+  (own design; tests on synthetic sines: unity passthrough with latency, marks on period boundaries,
+  half-speed duration, octave-up pitch). It does not reproduce Kontakt's estimator or emit law. The
+  emit call (7-argument call in `FUN_1419d1600`) is still unconfirmed.
 - Pro stage: the Pro synthesis variant (`0x1476a6f08`) has the same ratio setter at other offsets. The
   formant and envelope order laws are still unread, so no Pro stage is implemented.
