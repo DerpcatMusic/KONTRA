@@ -143,7 +143,7 @@ Per frame i = 0 .. count-1:
     to (L2, R2), x m. F2 in place. Write head 3 with F2 out. FEEDBACK PATH (L4): F2 output enters head 3,
     read at the start of the next frame. No separate feedback coefficient (INFERRED: strength is set by
     head gains, filters, effect).
-13. OUT_L = F1_L x Ctl(0x60) + F2_L; OUT_R = F1_R x Ctl(0x60) + F2_R. No setter writes Ctl(0x60) (GAP-J).
+13. OUT_L = F1_L x Ctl(0x60) + F2_L; OUT_R = F1_R x Ctl(0x60) + F2_R. Ctl(0x60) is written by slot-1 init 141a9e300 (1.0) and the bypass fade 141acc600 (0 or 1); not by a setter index (GAP-J closed, k-replika-gaps.md "Heads and feedback pass").
 14. g = 10^(env/20) from the T4 table (L10), same index for both channels. W_A = OUT_L x Ctl(0xc) x Ctl(0x24) x g;
     W_B = OUT_R x Ctl(0xc) x Ctl(0x28) x g. These replace tapA, tapB.
 15. Path 3: each W runs through its two-state section (`+0x14198` for A, `+0x141cc` for B) and is replaced by
@@ -237,7 +237,7 @@ tie; no name appears in the decompile, so ties are at most INFERRED.
 | 52 | raw into Ctl(0xc8)+0x68 (no broadcast) | Ctl(0)+0x68: tap gain (GAP-A) | UNKNOWN |
 | 20-24, 27, 33, 38, 47 | raw only (no case) | none | - |
 
-Read by the loop with no setter writer: Ctl(0)+0x60, `C+0x600`, `C+0x604`, `C+0x938`, frame-count
+Read by the loop with no setter writer (Ctl(0)+0x60 now has writers, GAP-J closed): `C+0x600`, `C+0x604`, `C+0x938`, frame-count
 parameters, `C+0x48` (GAP-J, GAP-L).
 
 Summary: 27 indices write a field the loop or direct helpers read. Of those, 2, 3, 5, 30, 35, 36, 39, 40,
@@ -269,7 +269,7 @@ loop reads directly.
 | GAP-G | Writers of `C+0x13e20` (gate retention) and `C+0x13e30` (pow base). | not traced |
 | GAP-H | Start-line call `141ee2160(C+0x618, ...)`: second argument printed as double, callee reads a pointer array. Line types 1, 3-6 (`141ee7670`, `141ee8370`, `141ee7cd0`, `141ee79e0`, `141ee80a0`) not read. | 141ee2160, 141ee5da0 |
 | GAP-I | Consumers of LFOs (`+0x94c`, `+0x960`), rotator (`+0x968`), and LFO slope writers (`+0x944`, `+0x958`). | 141ab7480 |
-| GAP-J | Writer of Ctl(0x60) (OUT mix gain). | not found |
+| GAP-J | Closed: Ctl(0x60) writers are slot-1 init 141a9e300 (1.0) and bypass fade 141acc600 (0 or 1 by enables). Enable binding open. | 141a9e300, 141acc600 |
 | GAP-K | Bank lane increments `144714b78`, `144714b7c` (not in constants.tsv). | constants.tsv |
 | GAP-L | Writers of `C+0x600`, `C+0x604`, `C+0x630..+0x638`, `C+0x6cc`, `C+0x6d0`, `C+0x48`. | 141ac0000 ~4700-4970, 141aa1580 |
 | GAP-M | Ducking body `141abd0b0` (section position and gain) and the rest of `141abd290`. | 141abd0b0 |
