@@ -506,6 +506,25 @@ mod tests {
         f32::from_le_bytes(t[4 * i..4 * i + 4].try_into().unwrap())
     }
 
+    /// Native `.rdata` tables of Kontakt 8 (`re-binaries/Kontakt8.exe`), 4096 binary32 each at
+    /// VA [ref] (sine, helper [ref]), [ref] (saw, [ref]),
+    /// [ref] (triangle, [ref]), [ref] (pulse, [ref]). The shipped
+    /// bytes are pinned by FNV-1a 64 of the native image.
+    #[test]
+    fn shipped_lfo_tables_are_the_native_rdata_bytes() {
+        fn fnv1a64(b: &[u8]) -> u64 {
+            b.iter().fold(0xcbf2_9ce4_8422_2325, |h, &x| (h ^ u64::from(x)).wrapping_mul(0x0100_0000_01b3))
+        }
+        for (name, table, hash) in [
+            ("sine", SINE, 0xf3d3_3932_056e_dfc3),
+            ("saw", SAW, 0x3331_f786_13c2_57b8),
+            ("triangle", TRIANGLE, 0x17d2_6667_bf8c_bb31),
+            ("pulse", PULSE, 0xa035_45c2_0d68_6944),
+        ] {
+            assert_eq!(fnv1a64(table), hash, "{name} table differs from the native image");
+        }
+    }
+
     /// modulators.md "Exact table interpolation": landmarks of each table helper.
     #[test]
     fn native_tables_hit_the_recovered_landmarks() {
