@@ -801,6 +801,8 @@ pub(crate) struct InitialSource {
     /// Fatal only for an actual initial sample-zone use. Impulse-only readers
     /// retain their prior domain; no recipe or dummy playback is fabricated.
     pub admission:Result<(),String>,
+    /// (stored end, frames) when the inherited loop end was clamped to EOF.
+    pub loop_clamp:Option<(usize,usize)>,
 }
 /// Same frozen normal source as `source`, plus optional initial file playback.
 /// No dynamic-sample admission or channel-routing policy is changed here.
@@ -814,7 +816,7 @@ pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool,placement:Option<Vec
             // No legacy probe or decoder is constructed to carry this frozen
             // recipe. The initial sample-source gate refuses it before any
             // playback/instrument mutation; impulse-only uses remain separate.
-            return Ok(InitialSource {source:Arc::new(sample),original_channels:None,playback:Ok(None),admission:Err(error.to_string())});
+            return Ok(InitialSource {source:Arc::new(sample),original_channels:None,playback:Ok(None),admission:Err(error.to_string()),loop_clamp:None});
         }
         Err(error)=>return Err(error.to_string()),
     };
@@ -824,6 +826,7 @@ pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool,placement:Option<Vec
     // AFTER dropping the initial reader, so decoder workspaces never overlap.
     let original_channels=if sample.parts.len()>1{None}else if let Some(channels)=original_channels{Some(channels)}
         else{Some(Stream::open_counted(&sample.parts[0],false).map_err(|e|e.to_string())?.channels)};
+    let mut loop_clamp=None;
     let playback=(|| -> Result<Option<sampler_ir::Playback>,String> { if inherit {
         let mut metadata=None;
         for origin in &sample.parts {
@@ -849,9 +852,10 @@ pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool,placement:Option<Vec
             }
             let playback=found.initial_ir_playback().map_err(|e|format!("initial sample playback conversion {e:?}"))?;
             if metadata.is_some_and(|old|old!=playback) {return Err("channel bundle has inconsistent initial playback".into());}
+            loop_clamp=loop_clamp.or(found.loop_clamp);
             metadata=Some(playback);
         }
         Ok(metadata)
     } else {Ok(None)} })();
-    Ok(InitialSource {source:Arc::new(sample),original_channels,playback,admission:Ok(())})
+    Ok(InitialSource {source:Arc::new(sample),original_channels,playback,admission:Ok(()),loop_clamp})
 }

@@ -180,6 +180,8 @@ pub(crate) struct InitialDecoded {
     pub original_channels:Option<usize>,
     pub source:sampler_core::SourceStorage,
     pub playback:Result<Option<sampler_ir::Playback>,String>,
+    /// (stored end, frames) when the inherited loop end was clamped to EOF.
+    pub loop_clamp:Option<(usize,usize)>,
 }
 impl InitialDecoded {
     /// Impulses use the existing explicit stereo resource contract. A wide
@@ -213,6 +215,7 @@ pub(crate) fn decode_initial(parts:&[Vec<u8>],inherit:bool)->Result<InitialDecod
         if decoded.iter().any(|(_,channels,_)|*channels!=1) {return Err("channel bundle members must be mono at one rate".into());}
         decoded.len()
     };
+    let mut loop_clamp=None;
     let playback=(||->Result<Option<sampler_ir::Playback>,String> {
         if !inherit {return Ok(None);}
         let mut metadata=None;
@@ -221,6 +224,7 @@ pub(crate) fn decode_initial(parts:&[Vec<u8>],inherit:bool)->Result<InitialDecod
             if found.channels.map(usize::from)!=Some(*channels) {return Err("initial playback channel metadata differs from decoder".into());}
             let playback=found.initial_ir_playback().map_err(|e|format!("initial sample playback conversion {e:?}"))?;
             if metadata.is_some_and(|old|old!=playback) {return Err("channel bundle has inconsistent initial playback".into());}
+            loop_clamp=loop_clamp.or(found.loop_clamp);
             metadata=Some(playback);
         }
         Ok(metadata)
@@ -236,7 +240,7 @@ pub(crate) fn decode_initial(parts:&[Vec<u8>],inherit:bool)->Result<InitialDecod
         for frame in 0..frames {for (samples,_,_) in &decoded {interleaved.push(samples[frame]);}}
         sampler_kontakt::resident_storage_from_interleaved(rate,channels,&interleaved,MEMORY_LIMIT).map_err(|e|e.to_string())?
     };
-    Ok(InitialDecoded{source,playback,original_channels:if decoded.len()==1{Some(channels)}else{None}})
+    Ok(InitialDecoded{source,playback,loop_clamp,original_channels:if decoded.len()==1{Some(channels)}else{None}})
 }
 
 #[cfg(test)]

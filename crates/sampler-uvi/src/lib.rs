@@ -2193,6 +2193,9 @@ fn assemble_streamed_cancelable(
                 reason: ir::Reason::InvalidValue,
             });
         }
+        if let Ok(s) = result {
+            loop_clamp_warning(&mut instrument, location, s.loop_clamp);
+        }
     }
     inserts::fill_impulses(&mut instrument, &locations, |a| {
         let source = sources[a].as_ref().map_err(Clone::clone)?;
@@ -2686,7 +2689,7 @@ mod narrowed_impulse_tests {
             },
             |location,_| {
                 reads.push(location.to_owned());
-                Ok(audio::InitialDecoded {original_channels:Some(2),source:sampler_core::Pcm::new(48000,vec![[0.5,-0.5]].into_boxed_slice()).unwrap().into(),playback:Ok(None)})
+                Ok(audio::InitialDecoded {original_channels:Some(2),source:sampler_core::Pcm::new(48000,vec![[0.5,-0.5]].into_boxed_slice()).unwrap().into(),playback:Ok(None),loop_clamp:None})
             },
         ).unwrap();
         assert_eq!(reads, ["room.wav", "low.wav"]);
@@ -2895,6 +2898,19 @@ fn describe(path: &Path, e: Translate) -> Error {
     }
 }
 
+/// One structured warning per asset whose stored loop end lay past EOF. The
+/// loop is clamped to the decoded frame count and stays playable.
+fn loop_clamp_warning(instrument: &mut ir::Instrument, location: &str, clamp: Option<(usize, usize)>) {
+    if let Some((stored, frames)) = clamp {
+        instrument.unsupported.push(ir::Unsupported {
+            location: location.into(),
+            feature: "UVI-LOOP-CLAMPED".into(),
+            value: format!("stored loop end {stored} is past {frames} frames; clamped to {frames}"),
+            reason: ir::Reason::InvalidValue,
+        });
+    }
+}
+
 /// Report unreadable initial samples, retain unbound script-loadable recipes,
 /// then fit decoded zones to their audio and lower. `decoded[i]` belongs to asset `i`.
 fn assemble(
@@ -2917,6 +2933,9 @@ fn assemble(
                 value: reason.clone(),
                 reason: ir::Reason::InvalidValue,
             });
+        }
+        if let Ok(d) = result {
+            loop_clamp_warning(&mut instrument, location, d.loop_clamp);
         }
     }
     inserts::fill_impulses(&mut instrument, &locations, |a| match &decoded[a] {
