@@ -1481,6 +1481,12 @@ impl Cursor {
         gains: [f32; 2],
         kernel: &Kernel,
     ) -> usize {
+        // ponytail: serial-loop cursors stay per-frame. The run's crossfade check
+        // only tests window endpoints, not segment interiors (e92cb2bc5 dropped
+        // this guard and broke tuned_serial_loops in tests/paged_render.rs).
+        if self.loops.is_some() {
+            return 0;
+        }
         if self.step() >= 2.0 && !pcm.levels().is_empty() {
             return 0;
         }
