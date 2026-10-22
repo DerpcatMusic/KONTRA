@@ -395,12 +395,34 @@ pub(super) fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
     fit
 }
 
-pub(super) fn room_height(ui: &Ui, slot: usize) -> f64 {
+/// A part the user sized: its height is set and it is not folded. Only such a part
+/// scrolls its stage in the room its height leaves; any other part is as tall as
+/// its content, so its room must not depend on its own height.
+pub(super) fn sized(cx: &Cx, slot: usize) -> bool {
+    let p = &cx.selection.parts[slot];
+    !p.collapsed && p.height > 0.
+}
+
+/// The room a part's page has below its tab bar. A sized part's room is its scroll
+/// viewport's height, as last laid out (the bar sits inside the viewport); any other
+/// part's room is [`rack_room`], which does not depend on how tall the part is now.
+pub(super) fn room_height(ui: &Ui, slot: usize, sized: bool) -> f64 {
     let Some(scene) = ui.scene() else { return 0. };
-    // A sized part's stage has the scroll viewport's height, as last laid out.
-    if let Some(view) = scene.surface(&format!("patch-view-{slot}")) {
-        return view.frame.size.height;
+    if sized {
+        if let Some(view) = scene.surface(&format!("patch-view-{slot}")) {
+            let tabs = scene
+                .surface(&format!("face-bar-{slot}"))
+                .map_or(0., |s| s.frame.size.height);
+            return (view.frame.size.height - tabs).max(0.);
+        }
     }
+    rack_room(ui, slot)
+}
+
+/// The room a part's stage has in the rack, from its header down to the rack's bottom.
+/// Unlike [`room_height`], this does not depend on how tall the part is now.
+pub(super) fn rack_room(ui: &Ui, slot: usize) -> f64 {
+    let Some(scene) = ui.scene() else { return 0. };
     let (Some(rack), Some(part), Some(stage)) = (
         scene.surface("rack-view"),
         scene.surface(&format!("part-{slot}")),
@@ -432,6 +454,7 @@ pub(super) fn interaction(edit: &ir_view::Edit) -> sampler_core::WidgetInteracti
 /// `slot`'s library interface, when its scripts declare one.
 fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<(El, f64)> {
     use crate::plugin::ui_activity::{Count, Phase};
+    let sized = sized(cx, slot);
     let activity = cx.p.shared.ui_activity.clone();
     let projection = activity.span(Phase::UiProjectionSync);
     let from = cx.view.parts.get(slot)?.interfaces.clone();
@@ -569,12 +592,13 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         .and_then(|s| s.surface(&format!("face-{slot}")))
         .map_or(f64::from(page.size.width), |s| s.frame.size.width);
     // The page-tab bar sits in the stage's viewport above the page, so the page
-    // fills the room the bar leaves; the bar's height is as last laid out.
+    // fills the room the bar leaves (`room_height` takes the bar out); the bar's
+    // height is as last laid out.
     let tabs_h = ui
         .scene()
         .and_then(|s| s.surface(&format!("face-bar-{slot}")))
         .map_or(0., |s| s.frame.size.height);
-    let room = (room_height(ui, slot) - tabs_h).max(0.);
+    let room = room_height(ui, slot, sized);
     let scale = scale_to_fit(
         Size::new(avail, room),
         Size::new(
@@ -837,11 +861,13 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
                 .pad((TIGHT, INSET))
                 .w(Len::Pct(100.))
                 .shrink(0),
-            // Fills the part's room; the fitted view sits centred on both axes.
+            // A sized part's page fills its room; the fitted view sits centred on both
+            // axes. An auto-sized part is as tall as its page (its natural height), so
+            // the face takes no minimum there: a room it cannot reach would clip.
             row![spacer(), view, spacer()]
                 .align(Align::Center)
                 .w(Len::Pct(100.))
-                .when(room > 0., |e| e.min_h(room))
+                .when(sized && room > 0., |e| e.min_h(room))
                 .shrink(0)
                 .id(format!("face-{slot}"))
         ]
@@ -1079,6 +1105,7 @@ pub fn header_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (inside::View, Optio
 
 /// The picked view's body: its interface, articulations, mapping, sound or info.
 pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize, view: inside::View) -> El {
+    let sized = sized(cx, slot);
     let content = if view == inside::View::Interface
         && let Some((face, natural)) = interface(ui, cx, slot, None)
     {
@@ -1087,8 +1114,10 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize, view: inside::View) -> El {
     } else {
         cx.state.face_natural.remove(&slot);
         // Every tab reaches the part's bottom edge, like the interface does; taller
-        // content still grows the part and scrolls the rack.
-        let room = room_height(ui, slot);
+        // content still grows the part and scrolls the rack. A sized part's stage
+        // scrolls in its viewport and its natural height is the unclamped content,
+        // so it takes no minimum (a minimum at the viewport height would pin it).
+        let room = if sized { 0. } else { room_height(ui, slot, false) };
         inside::view(ui, cx, slot, view)
             .map(|el| if room > 0. { el.min_h(room) } else { el })
             .unwrap_or_else(|| spacer().h(0))
