@@ -73,21 +73,14 @@ Kontakt 8 exposes three EQ modules that matter here, plus one that has no law ye
   k = 0.97/0.84/0.63/0.56/0.54 at |G| = 20/17/10/5.6/1.9 dB (LMF); HMF k is
   0.90/0.79/0.65/0.59/0.58. Boost and cut mirror each other.
 - **Stereo.** No L→R coupling.
-- **Coefficient smoothing (IMPLEMENTED, unconfirmed law).** Kontakt builds the
-  core with smoothing on (20 ms, per the RE notes in `solid.rs`). The engine now
-  glides each redesigned section's TPT coefficients toward the new design with a
-  one-pole step per block, time constant 20 ms (`EqBand::ramp`, set by
-  `eq_family::live_band` for `Law::Solid`). Every step was measured 300 ms after
-  its write and was history-independent, so settle time is ≤300 ms. This is
-  consistent with the measurement but does not confirm the native stepping. The
-  setter law is still not located; confirm it when the decompile is ready.
-  **Decompile check (2026-10-22, not closed):** the process loop `0x141a595d0`
-  advances its 22 current registers (`+0x13db0..+0x13dec`) by their increments
-  once per frame, i.e. a linear per-frame ramp, not a one-pole per block. The
-  placeholder in `solid.rs` therefore differs in shape. The increment writer is
-  still not located (`0x141aa1580` init sets `+0x13e00` and `+0x13e04/08`, but
-  not the per-register increments). The Kontakt mapping reports this as
-  UnknownLaw (`effects/eq.rs`, "Solid G-EQ smoothing").
+- **Knob glide (IMPLEMENTED, length unconfirmed).** A knob move glides the three
+  Solid knobs (freq, Q, gain) linearly from where they were to the new target over
+  `EqBand::ramp` (20 ms, `solid::RAMP_SECONDS`), and the section is redesigned from the
+  moving values each block (`eq_family/generic.rs`, Law::Solid). This matches the native
+  structure in sec. 5 (knob-domain registers, per-frame recompute). Native redesign is
+  per frame, ours per block. The 20 ms length is the RE-notes value; the native literal
+  f32 0.02 (bits 0x3ca3d70a, `.rdata` 0x1447148b8) is pinned by a test but its use as the
+  G_EQ ramp is not proven.
 - **Live switches (OPEN in the engine).** A bell or pass switch changes the
   band's `Kind` (shelf↔peak) or adds a section. `Kind` is compile-time in the
   stage, so a live switch write has no binding and reports
@@ -103,7 +96,7 @@ Kontakt 8 exposes three EQ modules that matter here, plus one that has no law ye
 | G3 | Solid HP, LP | `solid.rs` HP/LP sections | none found | `eq-topology.tsv` |
 | G4 | Solid LF shelf | RBJ S 0.5 shelf + two Q 0.5 peaks (`solid.rs`) | residual 0.2–1.0 dB; native shelf formula not recovered | native shelf coefficient code (decompile READY) |
 | G5 | Solid HF shelf | RBJ S 0.55 shelf + Q 0.7 peak (`solid.rs`) | residual up to 1.1 dB | same as G4 |
-| G6 | Solid coefficient smoothing (20 ms) | `EqBand::ramp`, one-pole glide per block (`generic.rs`) | exact native stepping (block vs sample) unconfirmed | setter from decompile, or sample-accurate oracle steps |
+| G6 | Solid knob glide (20 ms) | `EqBand::ramp`, linear knob-space glide, redesign per block (`generic.rs`) | native redesigns per frame; ramp length unconfirmed (no increment writer in the `.c` export) | locate the increment writer, or a sample-accurate oracle step |
 | G7 | Solid live switches (LF/HF bell, LP/HP on) | saved and init writes only (`apply_writes`), live lane absent | runtime kind/section change | Kontakt step test on switch flips, and decompile of the setter |
 | G8 | Solid bank selection | bank 0 applied (matches measurement) | none for Kontakt 8 | — |
 | G9 | Pro EQ | n/a | not a Kontakt 8 module (section 6) | none |
@@ -161,6 +154,19 @@ RE note) and its shape (linear per sample vs my one-pole per block) are still
 unconfirmed. The current code's one-pole glide should be treated as a
 placeholder until that writer is found. Shelf law (G4/G5), live switches (G7),
 and Pro EQ (G9) are not closed in this pass.
+
+**Knob-domain ramp (2026-10-22, cached `.rdata` and `.c` export).** The copy routine
+(`0141a90000.c`, the function holding the `0x13e30..0x13e6c` copies) snaps the current
+registers `+0x13db0..+0x13dec` to the stored targets `+0x13e30..`, so both sets are in the
+knob domain. The per-frame loop of `0x141a595d0` adds each register's increment once per
+frame, and while an increment is nonzero it passes the current register value to the knob
+recompute `0x141a89350`. The native glide is therefore a linear per-frame ramp of the knob
+values, redesigned every frame. Not found: any store of the increments `+0x13df0..+0x13e2c`
+in the export (only a reset), so the ramp length is still unproven. Checked and not
+attributed to G_EQ: `0x141ac5980` writes `+0x13e10/18/28` (a time-constant coefficient
+from a 200..7500 range), and `0x141aa1580` computes a 20 ms frame count
+`round(0.02 * rate / block) * block` with a per-sample step `1/N` for other registers
+at `+0x120..0x12c`. The 0.02 literal (`.rdata` `0x1447148b8`) has about 20 users.
 
 ## 6. Scope check: Pro EQ and the Kontakt 8 EQ modules (2026-10-21)
 

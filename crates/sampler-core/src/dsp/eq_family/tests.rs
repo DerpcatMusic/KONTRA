@@ -77,8 +77,10 @@ fn solid_knobs_run_through_the_spline_tables() {
 }
 
 #[test]
-fn solid_coefficients_glide_to_a_new_design_over_the_native_ramp() {
-    // A knob move redesigns the section; the 20 ms smoothing approaches it over blocks, not at once.
+fn solid_knobs_glide_linearly_over_the_native_ramp() {
+    // A knob move glides the knob values over the ramp and redesigns from them: one block is part
+    // way to the new design, and after the ramp the cached TPT coefficients are the design at the
+    // target, bit for bit.
     let c = Parameter::Constant;
     let band = |gain| EqBand {
         law: Law::Solid(SolidSection::HighMid),
@@ -88,19 +90,29 @@ fn solid_coefficients_glide_to_a_new_design_over_the_native_ramp() {
         ramp: solid::RAMP_SECONDS,
         ..EqBand::rbj(Kind::Peak, 0., 0., 0.)
     };
+    let design = |gain: f64| {
+        let [b0, b1, b2, a1, a2] = solid::coefficients(SolidSection::HighMid, Kind::Peak, 2, f64::from(RATE), 0.5, 0.5, gain);
+        kernel::Svf::from_biquad(&kernel::Biquad { b: [b0, b1, b2], a: [a1, a2] }).unwrap().to_array()
+    };
     let (flat, boost) = (stage(band(0.5)), stage(band(1.)));
     let mut state = ProcessorState::default();
     let mut block: Planar = [[0.; BLOCK]; 2];
     flat.process(&mut state, &[], &mut block, BLOCK, 0);
-    let before = state.aux[4..10].to_vec();
+    assert!(state.aux[10..16] == design(0.5), "first use is the design at the stored knobs");
     boost.process(&mut state, &[], &mut block, BLOCK, BLOCK as u64);
-    let target = state.aux[10..16].to_vec();
-    let first = state.aux[4..10].to_vec();
-    assert!(first != before && first != target, "one block is part-way to the new design");
+    assert!(state.aux[10..16] != design(0.5) && state.aux[10..16] != design(1.), "one block is part-way");
+    assert_eq!(state.aux[7], BLOCK as f64, "the ramp counts the frames it has run");
     for n in 2..2000 {
         boost.process(&mut state, &[], &mut block, BLOCK, (n * BLOCK) as u64);
     }
-    assert!(state.aux[4..10].iter().zip(&target).all(|(a, b)| (a - b).abs() < 1e-12), "glide settles");
+    assert!(state.aux[10..16] == design(1.), "the ramp ends at the target design, bit for bit");
+}
+
+/// The native literal behind the 20 ms ramp (f32 0.02, bits 0x3ca3d70a at 0x1447148b8 in the
+/// Kontakt 8 `.rdata` cache). Its use as the G_EQ ramp length is not yet proven (eq-kontakt sec. 5).
+#[test]
+fn ramp_constant_is_the_native_twenty_ms_literal() {
+    assert_eq!((solid::RAMP_SECONDS as f32).to_bits(), 0x3ca3d70a);
 }
 
 #[test]
