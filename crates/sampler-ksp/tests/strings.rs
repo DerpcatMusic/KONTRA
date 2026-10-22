@@ -356,9 +356,8 @@ fn runtime_menu_getters_read_authored_and_live_items() {
 
 #[test]
 fn runtime_menu_add_and_invalid_indexes_follow_native_defaults() {
-    let rt = run("on init declare $count declare $value declare $invalid declare $visible declare @text declare ui_menu $m end on
+    let rt = run("on init declare $count declare $value declare $invalid declare $visible declare @text declare ui_menu $m add_menu_item($m,\"added\",-2147483648) end on
         on note
-            add_menu_item($m,\"added\",-2147483648)
             set_menu_item_value(get_ui_id($m),-1,73)
             set_menu_item_str(get_ui_id($m),5,\"invalid\")
             set_menu_item_visibility(get_ui_id($m),0,7)
@@ -793,8 +792,8 @@ fn menu_text_read_modify_write_emits_the_same_value_it_stores() {
 #[test]
 fn appended_menu_item_read_modify_write_emits_the_same_value_it_stores() {
     let mut rt = run(
-        "on init declare ui_menu $m add_menu_item($m,\"first\",17) declare $value end on
-        on note add_menu_item($m,\"second\",get_num_menu_items(get_ui_id($m)))
+        "on init declare ui_menu $m add_menu_item($m,\"first\",17) declare $value
+            add_menu_item($m,\"second\",get_num_menu_items(get_ui_id($m)))
             $value := get_menu_item_value(get_ui_id($m),1) end on",
         &[],
     );

@@ -1191,11 +1191,11 @@ fn unsupported_and_approximate_builtins_are_positioned_diagnostics() {
         variables: 8,
         array_cells: 0,
     };
-    let script = compile("on note\n  set_script_title(\"x\")\nend on", 48000, limits).unwrap();
+    let script = compile("on note\n  set_ui_height(300)\nend on", 48000, limits).unwrap();
     let w = script
         .warnings()
         .iter()
-        .find(|w| w.builtin == Some("set_script_title"))
+        .find(|w| w.builtin == Some("set_ui_height"))
         .unwrap();
     assert_eq!(
         (w.kind, w.line, w.column),
