@@ -118,15 +118,19 @@ Resampling: Kaiser x2 up before the loop, x2 down after (`dsp/kaiser.rs`). The p
 | Two-stage loop, constants, order | transcribed from `FUN_140affa30`; golden hash guards it; **not yet confirmed against Kontakt audio** |
 | Knees (clamp 1 / 0.5 and clamp 4 / 0.125) | confirmed as constants; placement as in the loop |
 | 2x resampler | confirmed as Kaiser x2 (mode 4 up, mode 5 down); reuses `kaiser.rs` (its taps are documented there) |
-| Ramp clock | approximated: 32-frame control quantum, countdown and snap as `FUN_140acb6c0`; the caller clock (`FUN_140b03620`, `FUN_140b00b80`) not traced in full |
-| Start-up | **open**: native lanes start at zero in the ctor and ramp in; this kernel snaps to the first target |
+| Ramp object layout and per-2x-sample advance | confirmed: `FUN_140affa30` adds delta to current once per 2x sample in chunks of at most 32 frames; channel 0 advances a local copy and channel 1 the object, so both channels see the same lanes |
+| Ramp tick | vtable slot 8 of `FilterDaft` (`0x144fcf3f0`) is `FUN_140b03620` → `FUN_140acb6c0`; the tick's target-dirty branch (flag at `+0x30`) computes the deltas and sets state 2. Matches the kernel's branch order |
+| Ramp clock | **open**: the tick runs once per call of slot 8, and the caller of slot 8 is not found. The kernel ticks every 32 frames, so a target change lands at most 32 frames late here. Countdown: no setter writes it; only ctor and prepare zero it, so the snap-to-target step after `quanta` ticks is not reached by the decompile alone. The kernel arms it at `quanta` (the only reading that snaps). Delta arithmetic reaches the target after `quanta * 32` frames either way |
+| Start-up | confirmed: `FUN_140afd210` (prepare, vtable slot 3) copies the stored targets (`0x48e50`, `0x48e58`) into the current lanes, sets flag 1, state 1, quanta at `0x48e68` and inverse at `0x48e6c`. The ctor's `-1` values are overwritten there. The kernel's first-control snap matches when parameters are set before prepare, as hosts do |
 | Response mode ramp | native sets the weights immediately; matched |
 | Kontakt audio | **open**: Wine oracle (level sweep at several gain and resonance settings) not run |
 
 ## Open items (in order)
-1. Trace the native ramp caller (`FUN_140b03620`, `FUN_140b00b80`) for the countdown and start-up.
-2. Wine-oracle level sweep of Daft LP and HP (gain 0 and +1, resonance 0 and 1, cutoff 0.2 / 0.6 / 0.95)
-   against this kernel's probe response (recorded: passband gain 1.08 at zero resonance; LP cutoff
-   sweeps monotone; HP mirrors LP).
+1. Find the caller of `FilterDaft` vtable slot 8 (tick) in the host block driver; it sets the
+   update rate of the target lanes. Countdown arming is in the same caller or in a path not yet read.
+2. Daft Kontakt audio: `eqrender.py` needs the Daft ENGINE_PAR ids for gain and response, which
+   `docs/re/kontakt-bindings/` does not record (only the subtype ids 70/71). Discover them, then run
+   a level sweep (gain 0 and +1, resonance 0 and 1, cutoff 0.2 / 0.6 / 0.95) against this kernel.
 3. AR past-table tail: resolve the decompile (tail) vs vector (last entry) conflict if an AR input
    ever reaches index 2400.
+4. AR host recording and quiet CPU run at 300 voices: both need the same live Kontakt audio path.
