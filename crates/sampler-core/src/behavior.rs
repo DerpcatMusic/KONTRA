@@ -2623,7 +2623,7 @@ outcome.is_none()
                             (note.velocity * 127.).round() as i64
                         }
                     }
-                    7 | 8 | 10 | 11 | 13 | 15 => self.read_event_info(
+                    7 | 8 | 10 | 11 | 12 | 13 | 15 => self.read_event_info(
                         plan,
                         event,
                         match parameter {
@@ -2631,6 +2631,7 @@ outcome.is_none()
                             8 => super::EventInfo::Velocity,
                             10 => super::EventInfo::ZoneId,
                             11 => super::EventInfo::Source,
+                            12 => super::EventInfo::PlayPosition,
                             13 => super::EventInfo::MidiChannel,
                             _ => super::EventInfo::ReleaseVelocity,
                         },
