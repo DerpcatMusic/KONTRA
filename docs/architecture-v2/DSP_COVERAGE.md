@@ -193,7 +193,7 @@ VWinds (40) uses OnePole (6,318), GainMatrix, DigitalEq, Convolver (376), Sample
 | Reverb | partial | measured: Time (RT60 = 0.82*0.5*40.4^x s), High Cut, Low Shelf displays (REF s.21, s.28); room type, size, damping, modulation, diffusion unmeasured | 371 instruments | own FDN, reported as 'reverb algorithm' unknown law |
 | Legacy Reverb | missing | unmeasured | 0 |  |
 | Stereo Modeller | partial | measured: spread, pan, output as a 2x2 matrix, residual -119 dB (REF s.20); pseudo-stereo unmeasured | 2 instruments report pseudo-stereo, 8 bus slots | pseudo stereo missing |
-| Stereo Tune | missing | unmeasured | 0 |  |
+| Stereo Tune | partial | core bit-exact against kemu vectors at four knob settings (`crates/sampler-core/src/dsp/stereo_tune.rs`, `stereo_tune_native_vectors.json`); knob-to-record mapping and the `+0x1c0` rate scale not located | 0 (lowering not wired) | lowering from the saved record pending |
 | Surround Panner | missing | unmeasured | 6 instruments, 174 group-insert slots |  |
 | AET Filter | missing | unmeasured | 0 |  |
 | Gainer | implemented | measured: tau 45 ms (43-49 ms at two step sizes), mix 0.5 on a fresh module (REF s.25); recurrence verified from original bytes | modelled | dry/wet honoured; stored dry is 0 in all corpus slots |
