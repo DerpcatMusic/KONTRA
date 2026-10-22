@@ -17,7 +17,7 @@ Saved type ids are measured (`docs/re/kontakt-bindings/filter-type-ids.tsv`). Ma
 | Ladder BP2 / BP4 | 38 / 39 | same, taps 9..10 | Partial |
 | Ladder Peak / Notch | 40 / 41 | same, taps 11..12 | Partial |
 | Monark LP4 / LP2 / LP1 / BP | 142 / 141 / 140 / 143 | `kontaktfx.rs` (Monark) | Exact (KFX, kemu, 48 kHz) |
-| Pro-53 | 16 | `cascade.rs` `Variant::Pro52` (Chamberlin) | Exact (kemu, 2e-5) |
+| Pro-53 | 16 | `cascade.rs` `Variant::Pro52` (Chamberlin) | parity (kemu oracle), caveats in the Pro-53 section |
 
 Ladder taps follow the saved id: `taps = id - 29` (1..=12), internal selectors 22..33 map to
 modes 0..11 (`docs/re/DSP_SYSTEM_INVENTORY.md`).
@@ -71,6 +71,38 @@ drive, 2 drive. Knob order in the core: cutoff, resonance, input gain, modulatio
   the feedback NL `(a - c|s|)s`, input clamped to +-4.
 - Output selector Lp 4 pole, `Variant::Pro52`.
 
+#### Pro-53 native evidence (kemu, filt-pro53)
+
+Oracle: `tools/re/cascade_kemu_vectors.py` writes `crates/sampler-core/src/dsp/filter/pro53_kemu_vectors.json`
+(29 cases); test `pro53_native_vectors_match_static_clock_and_stereo` (2e-5 of each vector's peak).
+
+- Object: the image vtable at 0x144F0FBD0 holds the process at slot 0x108 and the setter at 0x120.
+  No instruction in the image takes its address (no LEA into that table), so the constructor was not
+  located. The generator builds the object on the same slot offsets: zeroed memory, rate setter
+  FUN_1408de8e0 (rate at +0x14, scale K / rate at +0x364, K = 6.283 at 0x144F38BDC), channel count
+  (+0x124), input and output channel pointers (+0x20, +0xA0).
+- Setter guard: the stored raw knobs (+0x1E4, +0x1E8) gate the update. Identical values are skipped;
+  any change, however small, updates the coefficients. The generator starts them at -123.
+- Stereo: the process keeps 5 floats of state per channel (+0x208 + 20 i) and shares the
+  coefficients. A two-channel object gives each channel its own run (left impulse, right square,
+  bit-equal to the mono runs). Whether Kontakt runs one two-channel object or two one-channel objects
+  is not shown.
+- Call size: 32-, 64- and 128-frame process calls are bit-identical. The process has no SSE
+  rounding path (the earlier open note for 32+ frame calls does not apply to FUN_1409099a0).
+- Sample rates: 48, 44.1 and 96 kHz static and moving. 192 kHz is untested.
+- Control clock: the wrapper FUN_140AE9F90 renders each 32-frame chunk as [clock step, setter,
+  process]. It makes one more clock step (and setter) at the end of each call, so a call of N frames
+  takes N / 32 + 1 steps. The cutoff step is `clamp(1 / (31 r + 4), 1/35, 1/4)`, taken once per call from
+  the resonance at the call start (a 512-frame sweep with rising resonance separates this from a step
+  fixed at the block start: 6.7e-5 against 0.95). The resonance moves 0.015 of its distance per step.
+  LP1 (legacy type 2) uses the same wrapper with the same event order (probe: set, process, set,
+  process, set), so `Cascade::process` now clocks before each chunk for every clocked family except
+  Versatile. The LP1 test expectation changed from the four-step value 8.15957 to the native six-step
+  value 7.98936 (two 64-frame calls).
+- Not covered: call sizes that are not a multiple of 32 (the native chunk counter persists across
+  calls; `Cascade::process` restarts chunking per call), the host's real call size, and
+  Versatile's clock (its own function, 0x140AEA690; kept in the old order, checked in filt-multi-versatile).
+
 ## Evidence
 
 - Ladder core checks: `NATIVE_LADDER_EVIDENCE.md`, `ladder_native_vectors.rs`,
@@ -78,7 +110,7 @@ drive, 2 drive. Knob order in the core: cutoff, resonance, input gain, modulatio
   HQ on and off, 44.1/48/96 kHz, gain -1/0/+1; HQ-on captures are not reproduced).
 - Monark and KONTAKTFX: bit-exact vs the native classes under `kemu` (per
   `sampler-kontakt/src/effects/filter.rs` KFX note).
-- Pro-53 and Legacy Ladder: `FUN_14095d940` / `FUN_1409099a0` checked under `kemu` to 2e-5.
+- Pro-53: `FUN_14095d940` / `FUN_1409099a0` / `FUN_140ae9f90` under `kemu` at 2e-5 (`pro53_kemu_vectors.json`, see the Pro-53 section). The other clocked legacy types (LP1 probed, Legacy Ladder, Moog and Rez) now share the wrapper clock order; their moving-control output is not vectored.
 
 ## Gap table (after the decompile)
 
@@ -92,7 +124,7 @@ Rows marked confirmed were checked against the decompile and the binary's consta
 | Ladder flag 0x49 (alt cutoff) | version proxy `0x90..=0x92` | **open**: mechanism confirmed, source byte not decoded for v0x95; needs a native capture with the byte set |
 | Ladder moving controls | 32-frame ramp, 2 ms | partly confirmed (FUN_140b036a0, FUN_140b06180 ramp count); HQ cadence open |
 | Monark | Exact (kemu runs native code) | not re-read in the decompile this pass; stereo interleave unprobed |
-| Pro-53 | Exact (constants confirmed) | confirmed; per-stage feedback constants (0.13335, 0.0166875) verified by vectors, not re-read |
+| Pro-53 | parity (kemu oracle) | constants and stage code confirmed; static 44.1/48/96 kHz, moving clock (up and down), stereo and call size vectored; constructor not located; non-multiple-of-32 calls and 192 kHz open (see Pro-53 section) |
 
 
 ## Next steps
