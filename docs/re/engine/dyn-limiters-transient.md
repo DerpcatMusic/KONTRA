@@ -145,3 +145,17 @@ mask 0). This is not a semantic recovery and needs review before porting:
 Controls 4–7 and bit0 are therefore mapped to their process functions but not
 yet to a behaviour. The mapping still needs the same statement-level review for
 the remaining 62 variants before any flag is implemented.
+
+## Limiter native vector: attempt (2026-10-22)
+
+One `stimrender.py` run (limiter stimulus, carrier `Effects/Compressor`,
+`generic=1`, `EFFECT_TYPE = $EFFECT_TYPE_LIMITER`, release u = 0.5, in_gain
+u = 0.25 / 0.5 / 0.625 / 0.75, one settle group before the first parameter
+write). Every step read L/R = 0.4606/0.4606 at the DC segment (0.00 dB). The
+static law predicts about −0.45 dB at 0 dB in_gain, so the limiter did not
+run. The captured screenshot shows the Kontakt Options dialog open, so the
+GUI automation did not reach the loaded state. The sampled native arrays were
+not saved and are not a vector. Next step: check the type-change path with a
+separate, single load probe before a full capture. The earlier static-curve
+measurements in `limiter-dynamics.tsv` remain summary values only (their raw
+captures are gone).
