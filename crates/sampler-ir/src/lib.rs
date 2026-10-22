@@ -774,12 +774,16 @@ pub enum Machine {
 /// Beat Machine slice controls of a stored mode-4 group. `attack_ms` and `release_ms`
 /// are Kontakt's "Slice Atk" and "Slice Rel" (stored `slice_float_1`, `slice_float_2`,
 /// milliseconds); `flag` is the stored `slice_flag_1`, whose UI meaning is not recovered.
+/// `markers` are the zone's slice boundaries in sample frames (strictly increasing; slice
+/// `i` spans `markers[i]..markers[i + 1]`); empty when the zone stores no grid.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BeatSlices {
     pub attack_ms: f32,
     pub release_ms: f32,
     pub flag: bool,
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub markers: Vec<u32>,
 }
 
 /// Largest stored S1200 filter selector; `set_engine_par` rejects larger values.

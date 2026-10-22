@@ -200,6 +200,17 @@ keyswitch or cycle condition. The Always row terminates a populated condition
 list. Script `allow_group` / `disallow_group` is a separate selection layer;
 KSP/core owners must define how it interacts with native start criteria.
 
+### Zone slice markers 0x35 / v0x10
+
+Structured child of a zone with a grid (Beat Machine slices). Public payload: `u8`
+reserved, `i32` selected (-1), `u32` count; if count > 0, `u32` grid length in frames,
+then `count` records of `u32` frame, `f32` frame copy, `u32` extra. Count 0 is a
+9-byte payload. Frames are boundaries: `count` markers give `count - 1` slices only
+if the first marker is 0 and the last is the grid length, as in the one capture
+(0, 6000, 12000, 18000, 24000 for four 1/16 slices). Loader:
+`vendor/ni-file/src/kontakt/objects/zone_slices.rs`, `ir::BeatSlices::markers`. The
+`f32` copy and `extra` meanings are open.
+
 ### Loop array 0x39 / embedded 0x05 v0x60
 
 `u8 mask` covers eight slots. Occupied entries have `u8 structured; u16 0x60`.
