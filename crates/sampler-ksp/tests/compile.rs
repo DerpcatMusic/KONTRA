@@ -1191,11 +1191,11 @@ fn unsupported_and_approximate_builtins_are_positioned_diagnostics() {
         variables: 8,
         array_cells: 0,
     };
-    let script = compile("on note\n  set_script_title(\"x\")\nend on", 48000, limits).unwrap();
+    let script = compile("on note\n  set_ui_height(300)\nend on", 48000, limits).unwrap();
     let w = script
         .warnings()
         .iter()
-        .find(|w| w.builtin == Some("set_script_title"))
+        .find(|w| w.builtin == Some("set_ui_height"))
         .unwrap();
     assert_eq!(
         (w.kind, w.line, w.column),
@@ -1400,4 +1400,38 @@ fn real_sgn_note_reuses_full_operand_bits_and_preserves_comparison_policy() {
             assert_eq!(rt.note_count(), 0);
         });
     }
+}
+
+// KSP manual, Real Number Commands: exp2(x) = 2^x, log2 base 2, log10 base 10.
+#[test]
+fn real_exp2_log2_log10_note_match_manual_semantics() {
+    let source = "on init declare $a declare $b declare $c declare ~input end on
+         on note ~input := 1024.0
+             $a := int(log2(~input))
+             $b := int(round(log10(~input) * 100.0))
+             $c := int(exp2(10.0))
+         end on";
+    let mut rt = real_sgn_note_runtime(source);
+    support::without_heap(|| {
+        let input = Input {
+            protocol: Protocol::Native,
+            port: 0,
+            group: 0,
+            channel: 0,
+            key: 60,
+            external_id: None,
+        };
+        let note = rt.trigger(input, 60, 1.).unwrap();
+        let instance = sampler_core::ScriptInstanceId(0);
+        assert_eq!(rt.script_cell(rt.active_plan(), instance, 0), Ok(10), "log2(1024)");
+        assert_eq!(rt.script_cell(rt.active_plan(), instance, 1), Ok(301), "log10(1024)");
+        assert_eq!(rt.script_cell(rt.active_plan(), instance, 2), Ok(1024), "exp2(10)");
+        rt.key_up(note, None).unwrap();
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+    });
 }

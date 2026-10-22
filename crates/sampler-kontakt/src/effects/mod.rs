@@ -907,6 +907,9 @@ pub(crate) fn chain_with(
             Some(Params::Fields(fields)) if fx.module == 0x21 => {
                 modelled = color::slot_skreamer(&mut b, &site, fields)
             }
+            Some(Params::Fields(fields)) if fx.module == 0x78 => {
+                modelled = color::slot_skreamer_deluxe(&mut b, &site, &mut notes, fields)
+            }
             Some(Params::Fields(fields)) if fx.module == 0x64 => {
                 modelled = ringmod::slot_ring_modulator(&mut b, &site, &mut notes, fields)
             }

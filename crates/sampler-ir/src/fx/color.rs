@@ -98,6 +98,9 @@ pub enum Curve {
     Drive(Drive),
     /// Kontakt Tubescreamer (diode clipper and DK tone stack / MNA pot network).
     Tubescreamer(Tubescreamer),
+    /// Kontakt `Stereorizer<Tubescreamer>` (Skreamer Deluxe): one mono core per channel,
+    /// left fed by the left input, right by the right input.
+    Stereorizer(Tubescreamer),
     /// Kontakt Dirt (two diode drive stages with routing, effektrig x2).
     Dirt(Dirt),
     /// Kontakt Freak (quadrature/side-chain modulated feedback drive with fuzz).
@@ -487,6 +490,11 @@ impl Config {
         Self { curve: Curve::Tubescreamer(ts), ..Self::IDENTITY }
     }
 
+    /// Kontakt `Stereorizer<Tubescreamer>` (Skreamer Deluxe).
+    pub fn stereorizer_tubescreamer(ts: Tubescreamer) -> Self {
+        Self { curve: Curve::Stereorizer(ts), ..Self::IDENTITY }
+    }
+
     /// Kontakt Dirt.
     pub fn dirt(dirt: Dirt) -> Self {
         Self { curve: Curve::Dirt(dirt), ..Self::IDENTITY }
@@ -614,6 +622,7 @@ impl Config {
             Self { curve: Curve::Skreamer(_), .. } => "Skreamer",
             Self { curve: Curve::Drive(_), .. } => "Drive",
             Self { curve: Curve::Tubescreamer(_), .. } => "Tubescreamer",
+            Self { curve: Curve::Stereorizer(_), .. } => "Stereorizer<Tubescreamer>",
             Self { curve: Curve::Dirt(_), .. } => "Dirt",
             Self { curve: Curve::Freak(_), .. } => "Freak",
             Self { curve: Curve::Amp(Amp { model: AmpModel::Cabinet, .. }), .. } => "Cabinet",
