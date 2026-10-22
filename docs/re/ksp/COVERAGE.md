@@ -20,7 +20,7 @@ Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in 
 | category | symbols | full | simplified | stub | unsupported | % full | corpus-weighted % full | tested |
 |---|---|---|---|---|---|---|---|---|
 | callback | 17 | 0 | 14 | 0 | 3 | 0.0% | 0.0% | 14 |
-| command | 282 | 22 | 223 | 5 | 32 | 7.8% | 27.5% | 192 |
+| command | 282 | 23 | 222 | 5 | 32 | 8.2% | 29.9% | 192 |
 | keyword | 18 | 2 | 16 | 0 | 0 | 11.1% | - | 18 |
 | datatype | 6 | 0 | 6 | 0 | 0 | 0.0% | - | 0 |
 | ui_control | 16 | 0 | 16 | 0 | 0 | 0.0% | 0.0% | 14 |
@@ -32,7 +32,7 @@ Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in 
 | event_par | 31 | 0 | 29 | 0 | 2 | 0.0% | 0.0% | 19 |
 | zone_par | 19 | 0 | 19 | 0 | 0 | 0.0% | 0.0% | 4 |
 | loop_par | 6 | 0 | 6 | 0 | 0 | 0.0% | - | 0 |
-| **all** | **1996** | **24** | **1890** | **26** | **56** | **1.2%** | **11.0%** | **427** |
+| **all** | **1996** | **25** | **1889** | **26** | **56** | **1.3%** | **12.0%** | **427** |
 
 Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMBOLS.tsv and KSP_MODERN.md; they are excluded from the totals above.
 
@@ -75,9 +75,9 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 
 `on init` (simplified, 2741), `on note` (simplified, 2741), `on ui_control` (simplified, 2741), `on controller` (simplified, 2740), `on release` (simplified, 2740), `on pgs_changed` (simplified, 2389), `on listener` (simplified, 722), `on persistence_changed` (simplified, 377), `on async_complete` (simplified, 16), `on poly_at` (simplified, 1)
 
-### command / User Interface Commands (28 symbols, 16263 instrument-uses)
+### command / User Interface Commands (27 symbols, 13527 instrument-uses)
 
-`get_control_par` (simplified, 2741), `set_control_par` (simplified, 2741), `move_control_px` (simplified, 2736), `set_knob_label` (simplified, 2018), `set_knob_unit` (simplified, 2018), `set_ui_width_px` (simplified, 722), `set_text` (simplified, 505), `add_text_line` (simplified, 473), `set_menu_item_str` (simplified, 376), `set_menu_item_visibility` (simplified, 373), `get_font_id` (simplified, 368), `set_skin_offset` (simplified, 353)
+`get_control_par` (simplified, 2741), `set_control_par` (simplified, 2741), `set_knob_label` (simplified, 2018), `set_knob_unit` (simplified, 2018), `set_ui_width_px` (simplified, 722), `set_text` (simplified, 505), `add_text_line` (simplified, 473), `set_menu_item_str` (simplified, 376), `set_menu_item_visibility` (simplified, 373), `get_font_id` (simplified, 368), `set_skin_offset` (simplified, 353), `set_control_help` (simplified, 350)
 
 ### constants $KEY (20 symbols, 12701 instrument-uses)
 

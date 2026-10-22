@@ -437,19 +437,33 @@ fn apply_ui_effect(
         let Some(w) = widget else { return false };
         let before = w.clone();
         match service {
-            "move_control" | "move_control_px" => {
+            "move_control" => {
                 let (Some(x), Some(y)) = (arg(1), arg(2)) else {
                     return false;
                 };
-                let (px, py) = if service == "move_control" {
-                    ("grid_x", "grid_y")
-                } else {
-                    w.properties.remove("grid_x");
-                    w.properties.remove("grid_y");
-                    ("$CONTROL_PAR_POS_X", "$CONTROL_PAR_POS_Y")
+                w.properties.insert("grid_x".into(), Value::Int(x));
+                w.properties.insert("grid_y".into(), Value::Int(y));
+            }
+            "move_control_px" => {
+                let (Some(x), Some(y)) = (arg(1), arg(2)) else {
+                    return false;
                 };
-                w.properties.insert(px.into(), Value::Int(x));
-                w.properties.insert(py.into(), Value::Int(y));
+                w.properties.remove("grid_x");
+                w.properties.remove("grid_y");
+                let hide = match w.properties.get("$CONTROL_PAR_HIDE") {
+                    Some(Value::Int(h)) => *h,
+                    _ => 0,
+                };
+                match ui::px_move(x, y) {
+                    Some((x, y)) => {
+                        w.properties.insert("$CONTROL_PAR_HIDE".into(), Value::Int(hide & !builtins::HIDE_WHOLE_CONTROL));
+                        w.properties.insert("$CONTROL_PAR_POS_X".into(), Value::Int(x));
+                        w.properties.insert("$CONTROL_PAR_POS_Y".into(), Value::Int(y));
+                    }
+                    None => {
+                        w.properties.insert("$CONTROL_PAR_HIDE".into(), Value::Int(hide | builtins::HIDE_WHOLE_CONTROL));
+                    }
+                }
             }
             "add_menu_item" => {
                 let (Some(text), Some(value)) = (text(), arg(1)) else {
