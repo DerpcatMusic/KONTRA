@@ -333,7 +333,8 @@ fn dormant_targets_report_absent_source_and_unsupported_per_key_pitch_honestly()
             sample: DORMANT_SAMPLE,
             key_low: 0,
             key_high: 127,
-            root_key: Some(60),
+            // Key 127 is 107 semitones above this root: step 2^(107/12) exceeds MAX_STEP (256).
+            root_key: Some(20),
             velocity_low: 0.,
             velocity_high: 1.,
             gain: 1.,
