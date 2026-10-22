@@ -241,7 +241,16 @@ pub(crate) fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
                 mono: d.knobs[3] != 0.0,
             },
             fx::Curve::Amp(d) => Curve::Amp(d),
-            fx::Curve::Bite(d) => Curve::Bite(d),
+            fx::Curve::Bite(d) => Curve::Bite(d, {
+                let mut live = [None; 12];
+                for (index, _, role) in ir::fx::color::BITE_LIVE {
+                    live[usize::from(index)] = roles
+                        .iter()
+                        .position(|r| *r == role)
+                        .map(|k| lane_parameter(ir::Processor::Color(c), &lanes, k));
+                }
+                live
+            }),
             fx::Curve::Tape(d) => Curve::Tape(d),
             fx::Curve::Exciter(d) => Curve::Exciter(d),
             fx::Curve::ToneStack(d) => Curve::ToneStack(d),
