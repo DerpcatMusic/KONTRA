@@ -1,5 +1,11 @@
 # Same-owner Kontakt preset application
 
+Player preset swaps (`queue_snapshot(..., reuse: false)`) do not use this path.
+Reuse keeps the previous preset's runtime, samples, scripts, ordinary values and
+UI tree, so a swap through it is not a fresh load. Swaps prepare a fresh
+replacement through the ordinary loader instead. Reuse can serve a swap again
+only after ordinary and script state are reset to fresh-load values (open).
+
 The product loader can submit a compatible snapshot to the existing owner's
 control queue. It does not prepare or install another Runtime, rerun `on init`,
 replace ScriptViews, reset the interface generation, or replace the resource

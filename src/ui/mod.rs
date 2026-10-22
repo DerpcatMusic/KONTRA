@@ -784,7 +784,7 @@ impl Cx<'_> {
             .selection
             .parts
             .get(slot)
-            .is_some_and(|part| self.p.shared.queue_snapshot(slot, part, path));
+            .is_some_and(|part| self.p.shared.queue_snapshot(slot, part, path, false));
         if accepted {
             self.state.select(slot);
             self.state.notice.clear();
@@ -1140,6 +1140,7 @@ fn native_files(
                 slot,
                 &selection.parts[slot],
                 paths[0].to_string_lossy().into_owned(),
+                false,
             );
         }
         return true;
