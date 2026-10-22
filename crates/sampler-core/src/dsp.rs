@@ -247,6 +247,9 @@ pub(crate) mod kaiser;
 // Ring sub-object ramp; wired when the Ring core lands.
 #[allow(dead_code)]
 pub(crate) mod ring_ramp;
+// Stereo Tune core (native [ref]); the Kontakt lowering is not wired yet.
+#[allow(dead_code)]
+pub(crate) mod stereo_tune;
 // Wired by the Kontakt mapping for module 0x22; until then only the tests build it.
 #[allow(dead_code)]
 pub(crate) mod gater;
