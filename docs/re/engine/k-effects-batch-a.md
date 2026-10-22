@@ -583,6 +583,44 @@ Evidence: `tools/re/surround_panner_driver_kemu.py` (kemu on `Kontakt8.exe`, 5 c
 - **Open:** rate dependence (the driver never sets a sample rate, so `1/1800` is only measured at the default),
   the raw disassembly confirmation of the smoother (`140ab4eb0` not re-read here), the distance delay line with an
   impulse probe, the LFE filter law, `140ac21f0` fader path, multichannel layouts, stereo downmix.
-- **Lowering still open:** the Surround Panner record (version 0x70) reader is not identified, so the
+- **Lowering still open:** the Surround Panner record reader is now identified (Pass 9), but the apply is not, so the
   `sampler-kontakt` lowering keeps the NotModeled pass-through. The DSP is in `sampler_core` and is not wired to any
   runtime yet.
+
+## Pass 9: Surround Panner record reader identified (decompile + bindings, 2026-10-23)
+
+Evidence: reader `140d02f60` (`0140d00000.c:2062`, 692 B, vtable slot 8 of `BParFXSurroundPanner`, SER catalog
+`reader_schemas.tsv`), field names from `kontakt-bindings/fx_other.tsv` (`$ENGINE_PAR_SP_*`). Code:
+`crates/sampler-kontakt/src/effects/surround.rs` (parse only; test on a constructed record in reader order).
+
+Record, reader order, little-endian (`FUN_142a78270` = i32, `FUN_142a780f0` = f32, `FUN_142a780c0` = u8):
+
+| Order | Bytes (object offset) | Field |
+| --- | --- | --- |
+| 1 | i32 `n1` | speaker count (guard: `n1 <= remaining/9`) |
+| 2 | `n1` x (f32 x, f32 y, u8 disabled), stride 9 in the record (stride 12 in the object) | speakers |
+| 3 | i32 `n2` | source count |
+| 4 | `n2` x (f32, f32, u8) | sources |
+| 5 | f32 `+0x194` | unnamed |
+| 6 | f32 `+0x198` | `ENGINE_PAR_SP_LFE_VOLUME` (dB, -36..36) |
+| 7 | f32 `+0x19c` | `ENGINE_PAR_SP_SIZE` (0.1..0.9) |
+| 8 | f32 `+0x1a0` | `ENGINE_PAR_SP_DIVERGENCE` (0..1) |
+| 9 | f32 `+0x1bc`, f32 `+0x1c0` | unnamed |
+| 10 | i32 `+0x1c4` | gain mode selector, 0..=2 (`FUN_142a78270`, else throws) |
+| 11 | i32 `+0x1c8` | layout selector, 0..=6 (else throws) |
+| 12 | u8 `+0x1a4`, u8 `+0x1a5`, u8 `+0x1a6` | flags (unnamed) |
+| 13 | f32 `+0x1a8` | `ENGINE_PAR_SP_OFFSET_DISTANCE` (0..1) |
+| 14 | f32 `+0x1ac` | `ENGINE_PAR_SP_OFFSET_AZIMUTH` (-1..1) |
+| 15 | f32 `+0x1b0`, f32 `+0x1b4` | `ENGINE_PAR_SP_OFFSET_X`, `_Y` (-1..1) |
+| 16 | i32 `+0x1cc` | unnamed |
+
+The schema string in `reader_schemas.tsv` agrees (`I`, then `FFB`×n1, `I`, `FFB`×n2, `F`×6, `I I`, `B B B`, `F`×4, `I`).
+The reader throws for a version other than 0x70, for a mode outside 0..=2 and a layout outside 0..=6.
+
+**Still open (blocks lowering):** the apply that copies this record onto the Panner object (the
+`+0x1c0` speakers, `+0x280`/`+0x284` counts, `+0x348` scale, `+0x34c` exponent, `+0x394` mode the driver
+writes). Not found by offset search over `0140[89a-f]*.c` (the copies at `140800000.c:3889` and
+`140700000.c:3218` are other classes). Which record field feeds `scale` and `exponent` (SIZE? divergence?)
+is therefore not decided, and the stereo-out lowering stays NotModeled. The unnamed floats `+0x194`,
+`+0x1bc`, `+0x1c0` and the flags are unknown. Vtable slot 9 (`140d11ff0`, the writer) is the natural
+cross-check for the round trip. Rate dependence of `1/1800` (item 3 in Pass 8) was not probed in this pass.
