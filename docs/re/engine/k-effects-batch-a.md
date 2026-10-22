@@ -39,6 +39,43 @@ and 5 (`+0x9400`). The function is numeric and mode-driven; the lookup body
 `1419749f0` and the constants at `DAT_14769aed0` / `DAT_14769aea8` still need to
 be read before a port.
 
+### Kolor kernel, decoded (2026-10-23, from `0141970000.c` and the binary)
+
+Constants read from `Kontakt8.exe` with radare2 (`pf 8f`, file-backed, not
+from the decompile):
+
+| Symbol | Address | Values (index 0..) |
+| --- | --- | --- |
+| `DAT_14769aed0` | `0x14769aed0` | 26.3290501, 0.836556315, 11.2201843, 0.0222088695, 10.0359087 (indices 5+ not read) |
+| `DAT_14769aea8` | `0x14769aea8` | 0.0847919211, -0.364524066, 0.562341332, 0.527866721, 0.121059023, 1.0, 0.189637259, 0.335529774 (indices 8+ not read) |
+
+Per-block (`14197a2c0`, `param_4` samples, two channels):
+
+1. If `param+0x515`: refresh 14 control slots at `param+0x5c` from `param+0x480`
+   (helper `141940330`), and notify the slots at `param+0xd0` (vtable slot 2).
+2. Gain smoother on `param+0x7e4` toward `param+0x7e8` with one-pole coefficient
+   `param+0x7e0`. Below the threshold `param+0x7ec` it snaps and sets the
+   `param+0x7f0` flag.
+3. Per sample, input is scaled by the smoothed gain and the stage chain runs in
+   order:
+   - pre-gain `DAT_14769aed0[mode]` times `param+0x7d4` times `param+0x7c0`;
+   - a two-pole section (state `+0x9568`, coefficients at `-0xc`..`-0x1`);
+   - the shaper `FUN_1419749f0` on the object at
+     `param+0x800 + (mode*2 + k)*0x700` (dispatch on the object's type byte at
+     `+0x6f0`, cases 0..9; cases 0, 1, 3, 4, 6..9 are read as calls and not yet
+     followed);
+   - post-gain `DAT_14769aea8[mode]`; modes 2 and 5 multiply by `param+0x9400`;
+   - mode 4 adds a second two-pole section (`+0x9568` lane, offset `-0x4e`);
+   - a bank of biquad-style sections at `+0x9484` and `+0x9670`, and a mix
+     through `param+0x78` (wet) against the dry input, scaled by the gain.
+4. A stereo level detector updates `param+0x9748` with attack/release from
+   `+0x9754`/`+0x9758`.
+
+Not yet done: the helpers `14194cc70`, `14194c830`, `141974860`,
+`14197adb0`, `14197a150`, `14197ae80`, `14194cfb0`, `1419748b0` (called from the
+shaper dispatch); the exact coefficient meaning of the biquad state; the
+Kolor state init. No kemu vector exists; the port is not started.
+
 Mode table and knob registrations: see `k-stomps-b.md` (unchanged, still
 measured).
 
