@@ -7,8 +7,10 @@ use super::super::super::Planar;
 
 /// Shaper knots over -1..1 (linear interpolation between them).
 pub(crate) const KNOTS: usize = 17;
-/// Largest latency a spec may ask for, in samples.
-pub(crate) const MAX_DELAY: usize = 256;
+/// Largest latency a spec may ask for, in samples. The ring is inline in the color state
+/// (2 channels of f64), so it stays small: Jump needs 48. ponytail: raise this if a preset
+/// needs more latency, and mind the 3 KB color state budget (`color_state_holds_one_shaper_at_a_time`).
+pub(crate) const MAX_DELAY: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Spec {

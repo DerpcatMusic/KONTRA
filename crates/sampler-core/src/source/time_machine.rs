@@ -894,7 +894,8 @@ mod tests {
     #[test]
     fn unity_speed_and_pitch_reproduce_the_source() {
         let src = sine(20000, 441.);
-        for mode in MODES {
+        // TM2 is PSOLA (delayed by its mark, see pitch_passthrough_is_null_after_its_latency).
+        for mode in [Mode::TimeMachine, Mode::TimeMachinePro] {
             let out = play(mode, &src, 1., 1., 16000);
             assert!(out.len() >= 16000, "{mode:?} ended early");
             let worst = out[..16000]
