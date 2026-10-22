@@ -367,12 +367,13 @@ fn unit_interval(values: &[f32]) -> bool {
 }
 
 /// Replika free time in ms from the stored value (setter case 8, mode-3 branch,
-/// `0x141ac5980`): clamp(0.5 x v x 4000, 0, 8000). 0.5 is the flag-clear factor
-/// (`DAT_14470bad0`, flag +0x14385 clear); 4000 is `DAT_144f39e1c`; 8000 is `DAT_14756bdf8`.
+/// `0x141ac5980`): clamp(0.5 x v x 4000, 0, 4000). 0.5 is the flag-clear factor
+/// (`DAT_14470bad0`, flag +0x14385 clear); 4000 is `DAT_144f39e1c` and the clamp `DAT_14756bdf8`
+/// (corrected from 8000 in docs/re/engine/k-replika-core.md; no change for v in 0..=1).
 /// The mode-3 branch is taken when the core mode (index 9) is 3; the default mode is not
 /// established (docs/re/engine/k-replika.md).
 fn replika_time_ms(v: f32) -> f64 {
-    (0.5 * f64::from(v) * 4000.).clamp(0., 8000.)
+    (0.5 * f64::from(v) * 4000.).clamp(0., 4000.)
 }
 
 /// Replika LOWCUT (setter index 2) and HIGHCUT (index 3) as the in-loop cut (decompile
@@ -419,8 +420,8 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
     // equivalent (filters, tape, flutter, BBD, ducking, noise, density, shuffle).
     // The open address is appended where the loop law is known to be blocked (k-replika-gaps.md).
     let open = |name: &str| match name {
-        "feedback" => " (open: 141aa9480 step 12, no confirmed feedback scalar)",
-        "lowcut" | "highcut" => " (open: GAP-D binding; inert while feedback is 0)",
+        "feedback" => " (open: 141aa9480 step 12, F2 into head 3; head 3 gain is index 12 (141ac5980 case 0xc) with an unread runtime floor; FEEDBACK index unbound)",
+        "lowcut" | "highcut" => " (open: GAP-D binding; F1 and F2 need heads 2-3 (GAP-C, mode-1 kernels); inert while feedback is 0)",
         "depth" | "rate" | "modulation" => " (open: GAP-I, LFO consumers in 141ab7480)",
         "ducking_sense" | "ducking_release" | "ducking_amount" => " (open: 141abd290, GAP-M and GAP-B)",
         _ => "",
