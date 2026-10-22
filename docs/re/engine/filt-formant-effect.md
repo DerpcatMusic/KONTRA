@@ -66,6 +66,8 @@ when it lands.
 - Gap: live Cutoff/Resonance lanes are not wired (`Processor::Phaser` is static). Resonance feedback and the
   cutoff-to-coefficient law above cutoff 0 are not recorded as vectors. Kontakt's internal feedback path is
   not verified. Note: `docs/FEATURES.md` describes an older notch-only model; that is stale.
+- Native (2026-10-22): the object, vtable `0x144f0fa38`, driver (slot 23), kernel (slot 33) and coefficient
+  (slot 36) are located and read; the live-lane writer is not. See `docs/re/engine/filt-phaser.md`.
 
 ### Vowel A / Vowel B (types 14 and 15)
 
