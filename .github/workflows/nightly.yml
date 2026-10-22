@@ -9,6 +9,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# At most one nightly runs and one waits; newer pushes replace the waiting one.
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
