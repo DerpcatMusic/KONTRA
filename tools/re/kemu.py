@@ -137,6 +137,8 @@ class Emu:
             self._retf(f32(math.atan2(self._argf(0), self._argf(1))))
         elif name == 'fmodf':
             self._retf(f32(math.fmod(self._argf(0), self._argf(1))))
+        elif name == '?_Random_device@std@@YAIXZ':
+            self._ret(0x2545F491)  # fixed seed: deterministic noise state (Replika ctor, 141a7d920)
         elif name in ('_purecall', '__std_terminate', '_invalid_parameter_noinfo_noreturn'):
             raise Stop(name)
         else:
