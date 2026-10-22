@@ -745,6 +745,23 @@ pub fn unsupported_engine_parameter(name: &str) -> bool {
         && is_vendor_constant(&format!("${name}"))
 }
 
+/// `$EFFECT_TYPE_*` and `$FILTER_TYPE_*` values, the native constants Kontakt 8.13.1
+/// registers (`module_types.tsv`, read from the PE's constant registrations).
+fn module_types() -> &'static std::collections::HashMap<&'static str, i32> {
+    static TYPES: std::sync::OnceLock<std::collections::HashMap<&'static str, i32>> =
+        std::sync::OnceLock::new();
+    TYPES.get_or_init(|| {
+        include_str!("module_types.tsv")
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let (name, value) = line.split_once('\t')?;
+                Some((name, value.parse().ok()?))
+            })
+            .collect()
+    })
+}
+
 pub fn is_vendor_constant(name: &str) -> bool {
     static CATALOG: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
         std::sync::OnceLock::new();
@@ -793,6 +810,9 @@ pub fn constant(name: &str) -> Option<i32> {
         return Some(event as i32);
     }
     if let Some(&(_, v)) = VALUED.iter().find(|(n, _)| *n == name) {
+        return Some(v);
+    }
+    if let Some(&v) = module_types().get(name) {
         return Some(v);
     }
     if let Some(name) = name.strip_prefix("$NI_CONTROL_TYPE_") {
@@ -964,5 +984,22 @@ impl Builtin {
             Self::SaveMidiFile => SaveFile,
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::constant;
+
+    #[test]
+    fn module_type_constants_use_the_native_values() {
+        // Values read from the Kontakt 8.13.1 PE: the registration stores before each name.
+        assert_eq!(constant("$EFFECT_TYPE_NONE"), Some(0x26e));
+        assert_eq!(constant("$EFFECT_TYPE_COMPRESSOR"), Some(0x26f));
+        assert_eq!(constant("$EFFECT_TYPE_BITE"), Some(0x299));
+        assert_eq!(constant("$FILTER_TYPE_DAFT_LP"), Some(0x2e6));
+        assert_eq!(constant("$FILTER_TYPE_AR_HP24"), Some(0x2f2));
+        // Not a module type: no value is invented for an unknown name.
+        assert_eq!(constant("$EFFECT_TYPE_NOT_A_MODULE"), None);
     }
 }
