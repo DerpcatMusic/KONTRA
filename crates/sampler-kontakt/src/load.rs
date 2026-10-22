@@ -1208,11 +1208,19 @@ fn bind_source_processing(instrument: &mut ir::Instrument, sources: &[SourceStor
     // every owner, source and signal definition has been checked.
     let mut control_definitions=instrument.controls.clone();
     let mut next=instrument.processing_scopes.len();
+    let mut warnings=Vec::new();
     for recipe in &instrument.source_indices.processing {
         let native=instrument.source_indices.uvi_native_processing.iter().find(|profile|profile.owner==recipe.owner)
             .filter(|profile|profile.requested==Some(ir::UviNativeLayout::Code2)
                 && profile.members.iter().any(|(_,member)|member.is_some_and(|member|member.layout==ir::UviNativeLayout::Code6))
                 && !instrument.source_indices.processing_ports.iter().any(|port|port.owner==recipe.owner));
+        // Native Frequency attachment and parameter cadence are not measured
+        // from UVI. Bind the typed parameter to the native one-pole site once
+        // per voice, and keep the uncertainty visible as a warning.
+        if native.is_some()&&instrument.source_indices.processing_parameters.iter().any(|binding|binding.owner==recipe.owner) {
+            warnings.push(ir::Unsupported{location:format!("{:?}",recipe.owner),feature:"native Frequency connection attachment and typed parameter cadence".into(),
+                value:"approximated: the parameter binds the native one-pole Freq per voice; UVI's real attachment cadence is unmeasured".into(),reason:ir::Reason::UnknownLaw});
+        }
         let mut width=None;
         for (ordinal,member) in recipe.members.iter().enumerate() {
             let Some(asset)=instrument.zones[member.0].asset else {continue;};
@@ -1296,6 +1304,7 @@ fn bind_source_processing(instrument: &mut ir::Instrument, sources: &[SourceStor
                     if let ir::SourceOwnerControlTarget::ProcessingScope{scope,site}=target{(scope==index).then_some(site)}else{None});
         }
     }
+    instrument.unsupported.extend(warnings);
     for matrix in &mut instrument.source_indices.processing_matrices {matrix.compiled=None;}
     for (index,binding) in matrices {
         instrument.source_indices.processing_matrices[index].controls=binding.cells.clone();
@@ -1346,9 +1355,6 @@ fn source_processing_signal(
             if !instrument.source_indices.processing_parameters.iter().any(|binding|binding.owner==recipe.owner&&binding.chain==chain_id&&binding.index==index&&binding.parameter==parameter){
                 return Err("source channel processor modulation requires an exact owned parameter binding".into());
             }
-        }
-        if native.is_some()&&instrument.source_indices.processing_parameters.iter().any(|binding|binding.owner==recipe.owner){
-            return Err("native Frequency connection attachment and typed parameter cadence are unqualified; historical Core law cannot activate the native profile".into());
         }
         sites.resize(chain.pre_amplitude.len(),usize::MAX);
         for (index,processor) in chain.pre_amplitude.iter().enumerate() {
