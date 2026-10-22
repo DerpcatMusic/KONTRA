@@ -102,6 +102,56 @@ pub fn linear_sweep_hz(v: f32, lo: f32, hi: f32) -> f32 {
     lo + (hi - lo) * v
 }
 
+/// Kontakt 8 Replika (`NI::DSP::FXFDelayLight`) controls the core runs (setter indices in
+/// `docs/re/engine/k-replika-binding.md`). Each is a stored value in 0..=1 (the wrapper's clamp). The
+/// reset values of the other setters are the core's (sampler-core `dsp::replika`).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReplikaControls {
+    /// Index 0 and 1: input level A and B (reset 0.762405 = unity).
+    pub input_a: f32,
+    pub input_b: f32,
+    /// Index 2 (LOWCUT, highpass 10 Hz to 1 kHz on a log law; off at 0) and 3 (HIGHCUT, lowpass 200 Hz to 20 kHz; off at 1).
+    pub lowcut: f32,
+    pub highcut: f32,
+    /// Index 4 (dry/wet balance; reset 1.0 = wet only), 5 (FEEDBACK, head 2 and 3 gain 1.2 x value).
+    pub dry_wet: f32,
+    pub feedback: f32,
+    /// Index 8 (TIME, mode 3: 2000 ms x value), 15 (delay offset, -600 frames per unit at 48 kHz).
+    pub time: f32,
+    pub delay_offset: f32,
+    /// Index 13 and 14 (dry and wet pan pairs; reset 0.5), 16 (WIDTH, side scale; reset 0.5).
+    pub pan_dry: f32,
+    pub pan_wet: f32,
+    pub width: f32,
+    /// Index 29 (SATURATION, amount 0..1; 0 = off).
+    pub saturation: f32,
+    /// Index 52 (tap gain; implicit 1.0 at reset).
+    pub tap_gain: f32,
+}
+
+impl Default for ReplikaControls {
+    /// The reset values of `1408ddbc0` (`144f38814` = 0.762405 for inputs, `144f38764` = 0.3 for index 15),
+    /// with TIME at 0.02 and HIGHCUT off, the harness choices of the native vectors.
+    fn default() -> Self {
+        Self {
+            input_a: 0.762_405,
+            input_b: 0.762_405,
+            lowcut: 0.,
+            highcut: 1.,
+            dry_wet: 1.,
+            feedback: 0.,
+            time: 0.02,
+            delay_offset: 0.3,
+            pan_dry: 0.5,
+            pan_wet: 0.5,
+            width: 0.5,
+            saturation: 0.,
+            tap_gain: 1.,
+        }
+    }
+}
+
 /// A native Kontakt delay-line kernel that replaces the generic line
 /// recursion. Everything else in [`Line`] is ignored while one is set.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -169,6 +219,9 @@ pub enum Native {
     /// (`sampler_core::dsp::timemod::wowflutter`). Its laws are not verified
     /// against Kontakt; the mapping reports them as unknown.
     WowFlutter(WowFlutter),
+    /// Kontakt 8 Replika Delay core (`NI::DSP::FXFDelayLight`, `k-replika-binding.md`): runs the controls
+    /// in sampler-core `dsp::replika`. Natives ignore the generic line.
+    Replika(ReplikaControls),
 }
 
 /// Wow / Flutter controls, normalized `0..=1`. The mix is the line's wet gain.
@@ -817,6 +870,13 @@ impl Config {
             }
             if !(0.1..=10.).contains(&l.right_scale) {
                 return Err("right_scale");
+            }
+            if let Native::Replika(r) = l.native {
+                let unit_interval = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
+                let all = [r.input_a, r.input_b, r.lowcut, r.highcut, r.dry_wet, r.feedback, r.time, r.delay_offset, r.pan_dry, r.pan_wet, r.width, r.saturation, r.tap_gain];
+                if !all.iter().all(|&v| unit_interval(v)) {
+                    return Err("replika");
+                }
             }
             if let Native::LegacyDelay { time, unit, feedback, damping, pan } = l.native {
                 let unit_interval = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);

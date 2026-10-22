@@ -15,7 +15,7 @@
 //! `141ae6c60` writes release and hold coefficients too, but it is reached from another class's
 //! function (`141ae9e40`), not from a slot of this vtable; not ported.
 //! The dB-to-linear table (`T4`) is replaced by `powf`; the difference is below 2e-5.
-#![allow(dead_code)] // not wired: the Replika matrix that would host it is not implemented yet.
+#![allow(dead_code)] // `set` is not called: the Replika limiters keep the constructor values (`replika::ReplikaState::new`).
 
 /// Detector floor, added before the magnitude (f32 `144f385a8` = 1e-12).
 const FLOOR: f32 = 1e-12;
@@ -63,6 +63,15 @@ impl DbLimiter {
             envelope: 0.,
             hold: 0.,
         }
+    }
+
+    /// The two dB states (`L+0xc8`, `L+0xbc`): the only run-time state, packed by `replika::ReplikaState`.
+    pub(crate) fn dynamics(&self) -> [f32; 2] {
+        [self.envelope, self.hold]
+    }
+
+    pub(crate) fn set_dynamics(&mut self, [envelope, hold]: [f32; 2]) {
+        (self.envelope, self.hold) = (envelope, hold);
     }
 
     /// Parameter `index` (decompile `141aea740`), value in 0..1.
