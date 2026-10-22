@@ -114,3 +114,15 @@ Closed: Limiter output clamp (lower −1, upper 1.0: the gain formula uses K = 1
 - High: Limiter (all rows), Transparent controls 0–2, Transient constants, Gainer smoother and unity hold (process and constants read from the image).
 - Medium: saved-field orders and the Transient clip-flag mapping (inferred from the reader layout).
 - Not verified: side-chain behaviour (not implemented), flags 4–7, gain-copy flags.
+
+## Open blocker, Transient variant dispatch (2026-10-22)
+
+The 6-bit mask is rebuilt in `FUN_141aaac90` (`0141aa0000.c:6084`, export) as
+bit0 = `+0x261`, bit1 = ctrl 7 (`+0x6b`), bit2 = ctrl 4 (`+0x69`), bit3 = ctrl 5
+(`+0x6a`), bit4 = ctrl 6 (`+0x6c`), bit5 = ctrl 3 (`+0x68`). The mask then
+indexes an indirect jump table at `LAB_141aaaffc`. Ghidra did not recover that
+table in text (`Could not recover jumptable`), so the mask-to-function map for
+the other 62 variants is unknown from the export. Reading the table bytes needs
+a binary read, which was not done in this pass. Controls 4–7 and bit0 therefore
+stay unmapped. Variant 0 (`0x141a4a9d0`) and the clip variant (`0x141a59d40`)
+are the only entries tied to a known function.
