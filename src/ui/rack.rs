@@ -395,7 +395,7 @@ fn part(
         };
         (
             height(format!("part-{slot}")),
-            natural_body(ui, slot),
+            natural_body(ui, slot, cx.state.face_natural.get(&slot).copied()),
         )
     };
     if let Some(h) = body_h {
@@ -544,12 +544,13 @@ fn part(
 }
 
 /// A part's body at full height, as last laid out. A sized body clips what
-/// its viewport hides, so the viewport's content height stands in for it.
-fn natural_body(ui: &Ui, slot: usize) -> Option<f64> {
+/// its viewport hides, so the viewport's content height stands in for it, or
+/// `face`, the shown interface's natural stage height, when there is one.
+fn natural_body(ui: &Ui, slot: usize, face: Option<f64>) -> Option<f64> {
     let scene = ui.scene()?;
     let body = scene.surface(&format!("body-{slot}"))?.frame.size.height;
     Some(match scene.surface(&format!("patch-view-{slot}")) {
-        Some(view) => body - view.frame.size.height + view.content.height,
+        Some(view) => body - view.frame.size.height + face.unwrap_or(view.content.height),
         None => body,
     })
 }
