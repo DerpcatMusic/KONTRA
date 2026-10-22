@@ -137,7 +137,7 @@ vtable. The speaker matrix and LFE routing are still unrecovered.
    vectors (`tools/re/*_kemu_vectors.py` templates).
 2. Skreamer Deluxe and Chainsaw: diff `140902480` and `1408fe290` (same length);
    identify the shared core, then read the Chainsaw kernel behind `140aba230`.
-3. Stereo Tune: read `FUN_140aaf640`.
+3. Stereo Tune: core ported and bit-exact (above); lowering needs the record mapping.
 4. Surround Panner: find the core that slot 23 dispatches to.
 
 ## Pass 2 (decoded, not ported, no native vector yet)
@@ -170,7 +170,34 @@ ported and no kemu vector exists, so no row can be "parity".
   calling slot 19 directly on a prepared HM2 object (no driver, so the
   ring-buffer fault in `engine-k-stomps-full/tools/re/kemu_chainsaw.py` is not hit).
 
-### Stereo Tune per-chunk core (partly read)
+### Stereo Tune: core ported, bit-exact (2026-10-23)
+
+Status: **core partial**. `crates/sampler-core/src/dsp/stereo_tune.rs` ports the per-frame core
+`140aaf640`, the driver `140aa7320` without its post stage, prepare `140a9cae0`/`140ac0de0`/`140ad2210`
+and apply `140abbce0`; the smoother `140acb6c0` is `ring_ramp::Ramp4`. The vectors come from
+`tools/re/stereotune_kemu_vectors.py` run under kemu (ctor `140a86e50`, prepare, apply, driver
+countdown, core per 32-frame chunk). Four knob settings x 256 frames, both channels, match the native
+f32 output bit for bit (`matches_native_kemu_vectors`).
+
+Decoded facts that the port depends on:
+
+- The core reads inputs at object `+0x20` (L) and `+0x28` (R). It writes the scratch L at
+  `ctx+0x9c010` and R at `ctx+0x9d010` (f32, frame index added). The post stage `140ac21f0` is the
+  shared host mix and is not ported here.
+- The main ring (`+0x2e8`, length `N = rate*0.0116099771`) is written at a head that decrements per
+  frame; two taps move by `1/ratio` and `ratio` (`ratio = 1.0594631^(4*f^3)`, `f = 0.85*b*0.4+0.06`).
+  The window `+0x248` is `0.5 - cos(2*pi*i/N)*0.5`.
+- Output rings (`+0x250`, `+0x258`, length `R = rate*0.04`): the lagged reads come **before** the
+  frame's writes. Reading after the write is off by one frame and gives 1e-4 errors.
+- Apply sets the four ramp lanes: 1.0, `(900*a+100)*k/rate` (one-pole coefficient), `2*(0.99*c)+0.02`
+  (cross spread) and the mix as f32 bits (`+0x20c`).
+
+Not settled: the record-to-apply mapping (which saved field is `a`, `b`, `c`, `mix`, the KSP names are
+`$ENGINE_PAR_STEREOTUNE_DRIFT/MIX/SPLIT/SPREAD`), and the `+0x1c0` scale `k` (the harness uses 1.0; the
+writer is not in the stereo tune functions). Lowering stays unwired until both are read from the
+`BParFXStereoTune` loader `140701a80` and its writers.
+
+### Stereo Tune per-chunk core (read, kept for the record)
 
 - Driver `140aa7320` (176 B): loops over 32-sample chunks (`+0x120` total,
   `+0x1bc` countdown), calls `FUN_140acb6c0` on the boundary, `FUN_140aaf640`
