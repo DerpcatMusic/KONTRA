@@ -204,9 +204,9 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Glide | partial | decomp | Executable (`ModSource::Glide`), setup law from FUN_140cebba0; interval source identified (record +0x458-+0x454, `0140970000.c:7753`), origin per plan, consumer units unproven (`k-mod-external.md`) |
 | External MIDI/performance sources | partial | none | 13 `ExternalSource` variants mapped (`modulation_objects.rs:84-96`); no per-source vectors (`k-mod-external.md`) |
 | Modulation routing (target, depth/polarity, shaping, smoothing) | partial | none | Depth sign/invert tested (`library.rs:6063`); negative lag and shape law unproven (`k-mod-external.md`) |
-| LFO | partial | decomp + vector | Native waves and Multi/Digital structure confirmed; fade cadence, fade init, synced fade, held-noise reset seed open. See `docs/re/engine/k-mod-lfo-step.md`. |
-| Multi Digital | partial | decomp + vector | Mixer terms and normalisation confirmed; data constants unverified in binary; fade > 0 with components refused. |
-| Step modulator | partial | decomp + vector | Render confirmed (`0x140a768e0`); `+0xdd` branch and stored-field setup not modelled (`UnknownLaw`). |
+| LFO | partial | decomp + vector | Native waves, rectangle op order and held-noise LCG confirmed. Held reset is `GetTickCount`-seeded: law exact, live tick not reproducible. Open: fade init (writer of `+0xf4/+0xf8` not identified), synced fade. See `docs/re/engine/k-mod-lfo-step.md`. |
+| Multi Digital | partial | decomp + vector | Mixer terms and normalisation confirmed; Digital components with an unsynced fade now admitted (shared post stage `0x140b06c90`). Open: data constants (`DAT_*`) not readable from the decompile text; synced fade; alternate switch unmapped. |
+| Step modulator | partial | decomp + vector | Render confirmed (`0x140a768e0`). Open: `+0xdd` per-step lanes (`0x140a76c40`) copy about 30 stored arrays into fields overlapping the table, per-step semantics untraced; stored-field loader not identified (`UnknownLaw`). |
 
 ## Script and library (k-ksp-engine-params, k-library-load)
 

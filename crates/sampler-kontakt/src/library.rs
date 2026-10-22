@@ -3181,6 +3181,14 @@ impl Translation {
         retrigger: bool,
     ) -> Option<ir::Lfo> {
         let [fade_ms, rate, width, phase] = lfo.initial_values.map(f64::from);
+        // The saved Digital fade clock: retriggered, unsynchronized, free of the trailing
+        // delay flag and the alternate record flag. Both Digital entries use it; the shared
+        // post stage 0x140b06c90 runs after the Digital mixer 0x140b078d0 as after the sine.
+        let digital_clock = retrigger
+            && !lfo.trailing_flag
+            && !lfo.records[1].flag
+            && lfo.records[0].values[0] == -1.
+            && (0. ..=1.).contains(&phase);
         let shape = match (lfo.waveform, lfo.trailing_values) {
             // NI LFO controls / Waveform Mixer; native core 0x140b07290 sums five weights.
             // Admit zero before sine-only Multi; its unipolar view remains 0.5.
@@ -3194,11 +3202,7 @@ impl Translation {
                 if sine.is_finite()
                     && sine.abs() <= 1.
                     && (0. ..=5000.).contains(&fade_ms)
-                    && (fade_ms == 0. || (retrigger
-                        && !lfo.trailing_flag
-                        && !lfo.records[1].flag
-                        && lfo.records[0].values[0] == -1.
-                        && (0. ..=1.).contains(&phase)))
+                    && (fade_ms == 0. || digital_clock)
                     && lfo.records[1].values[0] == -1.
                     && lfo.additional_flag == Some(false) =>
             {
@@ -3234,7 +3238,13 @@ impl Translation {
             // ponytail: free-running LFOs fade per voice from note start, as the fade
             // lives in the per-voice modulator; not reference-rendered.
             (5 | 6, Some([sine, pulse, triangle, saw, noise]))
-                if (fade_ms == 0. || (lfo.waveform == 5 && (0. ..=5000.).contains(&fade_ms) && lfo.records[1].values[0] == -1.))
+                if (fade_ms == 0.
+                    || (lfo.waveform == 5 && (0. ..=5000.).contains(&fade_ms) && lfo.records[1].values[0] == -1.)
+                    || (lfo.waveform == 6
+                        && (0. ..=5000.).contains(&fade_ms)
+                        && lfo.records[1].values[0] == -1.
+                        && lfo.additional_flag == Some(false)
+                        && digital_clock))
                     && [sine, pulse, triangle, saw, noise].iter().all(|w| w.is_finite())
                     && (0.05..=0.95).contains(&width)
                     && (noise == 0. || (0. ..0.5).contains(&phase)) =>
@@ -6251,6 +6261,32 @@ mod modulation {
                 assert_eq!(t.ir.routes[0].invert, invert);
             }
         }
+    }
+
+    #[test]
+    fn digital_multi_components_take_the_saved_digital_fade_clock() {
+        let mut t = translation();
+        let mut raw = Lfo {
+            structured: false,
+            version: 0x73,
+            waveform: 6,
+            initial_values: [100., 4., 0.5, 0.25],
+            records: [
+                LfoRecord { flag: false, values: [-1., 0., 0.] },
+                LfoRecord { flag: false, values: [-1., 0., 0.] },
+            ],
+            trailing_flag: false,
+            trailing_values: Some([0.5, 0.25, 0.125, 0., 0.]),
+            additional_flag: Some(false),
+        };
+        let faded = t.lfo("g", &raw, true).unwrap().shape;
+        assert!(
+            matches!(faded, ir::LfoShape::NativeFaded { wave: ir::NativeWave::Multi { digital: true, .. }, fade_ms } if fade_ms == 100.),
+            "{faded:?}"
+        );
+        assert!(t.lfo("g", &raw, false).is_none(), "free-running fade stays unverified");
+        raw.additional_flag = Some(true);
+        assert!(t.lfo("g", &raw, true).is_none(), "alternate fade stays unverified");
     }
 
     #[test]
