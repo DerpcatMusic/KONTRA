@@ -71,41 +71,64 @@ Per-block (`14197a2c0`, `param_4` samples, two channels):
 4. A stereo level detector updates `param+0x9748` with attack/release from
    `+0x9754`/`+0x9758`.
 
-### Kolor emulation status (2026-10-23, `tools/re/kolor_kemu_probe.py`)
+### Kolor emulation status (2026-10-23, corrected; `tools/re/kolor_kemu_probe.py`)
 
-Established under kemu (native code, no port):
+The earlier "wet path silent in every mode" blocker was a harness error, not a kernel fault. Four causes:
 
-- Construction: `BEffectKolor` ctor `1407c7950` runs (allocator `140711a10` intercepted). The core is
-  the object at `obj+0x1c0`; its vtable is `14769af00`, slot 19 = `14197a2c0`, slot 20 = `141979410`.
-- Block call (read from `140900eb0` at `0x140901088..0x140901178`): core process is
-  `(this=core, in_chans, out_chans, count)`; the driver passes the same two-pointer array for both.
-  The kernel reads the dry sample from `in[k]` and writes `out[k]`.
-- Prepare = core slot 20, `141979410(this, rate f32)`. It seeds `+0x7e0` (smoother), `+0x7e4`/`+0x7e8`
-  (= 1), `+0x9744` (= rate), calls `FUN_1419790c0`.
-- Per-mode seed `14197acc0(core, mode)` writes `+0x7dc`, clears `+0x7f4`, and resets the two shaper
-  objects of that mode at `core+0x800+(2m+k)*0x700` through `141974d90`.
-- Apply `140abae20` (slot 29) calls the wrapper setter `1409aaa90` (slot 32) for knobs 0..13; knob
-  values land at `core+0x5c`.
-- Shaper dispatch `1419749f0` returns the first float of its stage output (`movss xmm0,[rsp+0x20]` at
-  `141974b43`; disassembly in `docs/re/disasm/kolor-shaper-dispatch-1419749f0.txt`). Case 9 is
-  `1419748b0` (`docs/re/disasm/kolor-case9-1419748b0.txt`).
-- Ctor builds each shaper template in a 0x6f0 scratch via `141975910`/`141975c10`/... and copies it with
-  `1419735c0`/`1419738d0`/`141973be0`/`141973ef0`/`1419732b0`. Writers into the mode-9 object are the copy
-  at `0x1419734f3`.
-- Dry path works: with `+0x78 = 0`, output = gain ramp `+0x7c4` times input (peak 0.0074 on a 0.5 sine
-  in the first block, from the ramp starting at 0).
+1. The record's mode field was set to 32 (the block size). Apply reads the mode from record `+0x38`.
+2. The probe poked the control flag `+0x515` by hand. No writer of it exists in the decompile cache.
+   The poke made the refresh `141940330` read an empty snapshot and write non-physical coefficients
+   (`0x955c = 1.3e11`). Removed.
+3. The probe called core slot 19 directly and skipped the driver's control tick `14197ab90`. The driver
+   runs it when wrapper `+0x1bc < 1` and then processes 32 samples. Now replayed per 32-sample segment.
+4. Knob 7 is the wet mix. It lives at `core+0x78` (= `core+0x5c+4*7`), fed from reader float `+0x30`.
+   The wrapper setter `1409aaa90` skips a write equal to its cached value unless `r9` is set; apply calls
+   it unforced, so a value equal to the cache is dropped. The probe forces the knob writes.
 
-Blocker (evidence): with `+0x78 = 1` (wet) the output is exactly zero in all 10 modes. The biquad
-coefficient blocks at `0x9400..0x96b8` are only partly sane: values such as `0x955c = 1.3e11`,
-`0x94c0 = 4.8e20`, `0x9508 = 13676.7` are non-physical, so the knob-driven design step is not run
-correctly. The writer is the control refresh `141940330`, gated by flags at `param+0x498` and by
-`+0x515`, which the probe does not yet satisfy. Next: trace which function writes `+0x9508`/`+0x955c`
-during the block (same write-tracer approach as `probe5`), and resolve the `+0x498` flag source.
+**Measured apply tie** (`140abae20` disassembly; setter index `i` lives at `core+0x5c+4i`):
 
-Not yet done: the helpers `14194cc70`, `14194c830`, `141974860`,
-`14197adb0`, `14197a150`, `14197ae80`, `14194cfb0`, `1419748b0` (called from the
-shaper dispatch; their bodies are read from the cache, not yet ported); the exact coefficient meaning of the biquad state; the
-Kolor state init. No kemu vector exists; the port is not started.
+| Setter index | Source in reader record | Note |
+| --- | --- | --- |
+| 0 | float `+0x0c` | |
+| 1 | byte `+0x34` (mono flag, as 0/1) | |
+| 2 | float `+0x10` | |
+| 3 | float `+0x08` | |
+| 4 | int `+0x38` (mode) times `0x144e79a14` = 1/9 | per-mode seed runs in the notify |
+| 5 | float `+0x14` | |
+| 6 | float `+0x18` | |
+| 7 | float `+0x30` | wet mix (`core+0x78`) |
+| 8 | float `+0x1c` | |
+| 9 | float `+0x20` | |
+| 10 | float `+0x24` | |
+| 11 | float `+0x28` | |
+| 12 | float `+0x2c` | |
+| 13 | constant 0.5 | gain lambda `141977bf0` |
+
+Every knob goes through setter `1409aaa90` (wrapper vtable slot 32). Notify objects are at wrapper
+`+0x290+64*i`; knob 7 has none. The probe's knob ids use this table.
+
+**Native vectors.** `tools/re/fixtures/kolor_native_vectors.json`: 10 modes, steady (all knobs 0.5, wet 0.5)
+and moving (knob 0 steps 0.2, 0.4, 0.6, 0.8 per 128 samples), 48 kHz, stereo, 512 samples. Every mode is
+nonzero, peak about 0.079 steady. That is the dry path (`(1-wet) * in * ramp`, ramp starting at 0 after
+prepare). Modes 2 and 5 also carry a shaper contribution (about 0.26 for a 0.3 input on a fresh shaper).
+Modes 0, 1, 3, 4, 6..9 return zero from their shaper case on a fresh state. Cases 0, 1, 3, 4 and 6..9 are
+not read, so their wet part is **unverified**.
+
+**Still open (blocks parity; Kolor row stays `missing`):**
+
+- Prepare `141979410` (1607 B) and `1419790c0`: rate-dependent constants.
+- Knob notify lambdas `141977860..141978610`: control design per knob, including `141978610` (1844 B),
+  `141978300` (592 B), `141977990` (471 B), `141978060` (455 B).
+- Control refresh `1419421c0` (656 B) and `141940da0` (4284 B): the snapshot/commit state machine on
+  `+0x480..+0x518` (flags `+0x510`, `+0x514`, `+0x515`, `+0x518`).
+- Shaper cases 0..9 (`1419748b0` is case 9) and their helpers `14194cc70` (450 B), `14194c830` (501 B),
+  `14194cfb0`, `14194ca80`, `14194c5b0`. Cases 2 and 5 are read only through the dispatch.
+- Per-mode seed `14197acc0` and state init `141974d90`.
+- Driver pre/post bus stages `140ac28f0` / `140ac21f0`. Not replayed here. They mix the bus into the
+  buffers with a gain ramp. Identity for a single insert is **not measured**.
+
+No port exists. The next step is to read the notify lambdas and the snapshot state machine, then the
+shaper cases, and to check each mode's wet part against the vectors.
 
 Mode table and knob registrations: see `k-stomps-b.md` (unchanged, still
 measured).
