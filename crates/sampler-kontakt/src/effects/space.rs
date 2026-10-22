@@ -126,7 +126,9 @@ pub(super) fn convolution(
 }
 
 /// Legacy Reverb 0x15: the stored values are predelay (milliseconds, 0 to 180),
-/// size, stereo, colour, damping, each 0..1. The setter (case 0x3e of
+/// size, colour, stereo, damping, each 0..1 (saved slots 8, 12, 16, 20, 24;
+/// fx_legacy_delay_reverb_mod.tsv: RV_STEREO is field 2 at slot 20, RV_COLOUR
+/// field 3 at slot 16). The setter (case 0x3e of
 /// `FUN_1409619b0`) turns them into: comb feedback `size*0.3 + 0.65`, comb
 /// damping coefficient `1 - (1-colour)*0.35`, channel-mix weight
 /// `(stereo+1)/2`, the input low-pass at normalized cutoff
@@ -134,7 +136,7 @@ pub(super) fn convolution(
 /// [`InputFilter::Butterworth2`]), fixed allpass gain 0.5 and input gain 0.015.
 pub(super) fn legacy(v: &[f32; 5], _notes: &mut Notes) -> Config {
     let predelay_ms = f64::from(v[0].clamp(0.0, 180.0));
-    let [_, size, stereo, colour, damping] = v.map(|x| x.clamp(0.0, 1.0));
+    let [_, size, colour, stereo, damping] = v.map(|x| x.clamp(0.0, 1.0));
     let feedback = size * 0.3 + 0.65;
     let damp = 1.0 - (1.0 - colour) * 0.35;
     let width = (stereo + 1.0) * 0.5;
@@ -299,11 +301,11 @@ mod tests {
     #[test]
     fn legacy_predelay_is_stored_milliseconds() {
         let mut notes = Notes::new();
-        let c = legacy(&[90.0, 0.5, 1.0, 0.5, 0.5], &mut notes);
+        let c = legacy(&[90.0, 0.5, 0.5, 1.0, 0.5], &mut notes);
         let n = c.network.unwrap();
         assert!((n.predelay_seconds - 0.09).abs() < 1e-12);
         assert!(notes.is_empty());
-        // size .5 -> 0.8, colour .5 -> 1 - .5*.35, stereo 1 -> width 1.
+        // size .5 -> 0.8, colour .5 -> 1 - .5*.35 (slot 16), stereo 1 -> width 1 (slot 20).
         let f = n.freeverb.unwrap();
         assert!((f.feedback - 0.8).abs() < 1e-6 && (f.damp - 0.825).abs() < 1e-6 && f.width == 1.0);
     }
@@ -344,7 +346,8 @@ mod tests {
         c.address = Some(sampler_ir::SlotAddress { group: -1, slot: 7, generic: 1003 });
         let lanes = c.lanes();
         let stored: Vec<f64> = lanes.iter().map(|l| (l.value * 1e4).round() / 1e4).collect();
-        assert_eq!(stored, [90.0, 0.5, 0.25, 0.5, 0.75]);
+        // Saved order is colour before stereo: the input's 0.25 is colour.
+        assert_eq!(stored, [90.0, 0.5, 0.5, 0.25, 0.75]);
         let mut rebuilt = c;
         for lane in &lanes {
             rebuilt.set(lane.role, lane.value);
