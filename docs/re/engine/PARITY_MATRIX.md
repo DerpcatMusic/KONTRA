@@ -148,7 +148,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | --- | --- | --- | --- |
 | Choral | partial | decomp + kemu vectors | 4 modes, laws in `choral()`; kemu-rendered native f32 vectors, no Wine-oracle dump yet. `docs/re/engine/k-modfx-classic.md` |
 | Flair | missing | decomp (located, partly read) | Per-sample two-channel recursion and four-lane ramp bank read; voice loop, pre-stage, resampler, pitch note writer and start phase still unread; unsupported with reason. `docs/re/engine/modfx-flair-phasis-vibrato.md` |
-| Phasis | missing | decomp (kernel read) | Allpass stage kernel (2x2 state, trapezoidal per stage) and parameter writer with notch branch read; coefficient helper tail, body and table values not yet; unsupported with reason. `docs/re/engine/modfx-flair-phasis-vibrato.md` |
+| Phasis | missing | decomp (body, cascade, output stage, writer, runtime tables read) | Per-block and per-sample order, 2x2 stage cascade, trapezoidal output stage, parameter writer and the table initializer `FUN_14197df70` read; oversampler modes, prepare/reset helpers, stage-count law, notch activation and the saved-field id map open; no law validated, so unsupported with reason. `docs/re/engine/modfx-flair-phasis-vibrato.md` |
 | Vibrato/Chorus | missing | decomp (located only) | LC ladder bodies and core located, not read; unsupported with reason. `docs/re/engine/modfx-flair-phasis-vibrato.md` |
 | Legacy Chorus | partial | Wine oracle + decomp | Two-head structure confirmed by decompile; oracle shows ~8.85 ms echoes, engine base is 0 (contradicted). Base-time source and Depth law open |
 | Legacy Flanger | parity | decomp constants + kemu native vectors | Mapping and vectors present; not yet checked against Wine oracle |
