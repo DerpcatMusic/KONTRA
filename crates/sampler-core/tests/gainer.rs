@@ -90,9 +90,11 @@ fn gain_steps_follow_a_one_pole_around_the_dry_mix() {
             rt.trigger(input, 60, 1.).unwrap();
             let mut first = [[0f32; 2]; 1];
             rt.render(&mut first).unwrap();
+            // Both ends at unity (1.0 target): the native unity window passes the input through
+            // and the smoother holds, so no dry mix (kernels::gainer, 2937bc389).
             assert!(
-                (f64::from(first[0][0]) - (DRY + 1.)).abs() < 1e-6,
-                "starts at its first target"
+                (f64::from(first[0][0]) - 1.).abs() < 1e-6,
+                "unity window passes the input untouched"
             );
             rt.edit_controls(
                 p,
