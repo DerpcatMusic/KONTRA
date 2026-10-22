@@ -24,12 +24,20 @@ class KspSymbols(unittest.TestCase):
     def test_doctor_resolves_templates_and_flags_unknown_constants(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            code = k.doctor([str(FIXTURE)], "unknown")
+            code = k.doctor([str(FIXTURE)], strict=True)
         out = buf.getvalue()
         self.assertIn("$ENGINE_PAR_RV2_DAMPING", out)
         self.assertIn("KSP-UNKNOWN", out)
         self.assertIn("on note", out)
         self.assertEqual(code, 1)
+
+    def test_nkb_bank_input_is_a_usage_error(self):
+        with self.assertRaises(SystemExit):
+            k.scripts_of("bank.nkb")
+
+    def test_library_is_the_folder_above_instruments(self):
+        self.assertEqual(k.library_of("/x/Conflux/Instruments/Conflux.nki"), "Conflux")
+        self.assertEqual(k.library_of("/x/Loose/a.nki"), "Loose")
 
 
 if __name__ == "__main__":
