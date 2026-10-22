@@ -28,9 +28,21 @@ fn reports(instrument: &sampler_ir::Instrument, summary: bool) -> Vec<ScriptRepo
             );
             let (source, id, title) = (&b.source, format!("ksp:slot{slot}"), &b.name);
             if summary {
-                sampler_ksp::parity_report_summary_with(source, &id, title, sampler_ksp::Limits::LIBRARY, &environment)
+                sampler_ksp::parity_report_summary_with(
+                    source,
+                    &id,
+                    title,
+                    sampler_ksp::Limits::LIBRARY,
+                    &environment,
+                )
             } else {
-                sampler_ksp::parity_report_with(source, &id, title, sampler_ksp::Limits::LIBRARY, &environment)
+                sampler_ksp::parity_report_with(
+                    source,
+                    &id,
+                    title,
+                    sampler_ksp::Limits::LIBRARY,
+                    &environment,
+                )
             }
         })
         .collect()

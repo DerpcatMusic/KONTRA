@@ -17,7 +17,10 @@ use std::{
 /// `Lib/Instruments/X.nki` belongs to `Lib`; an instrument elsewhere belongs to its folder.
 pub fn library_of(path: &Path) -> String {
     let parent = path.parent();
-    let name = |p: Option<&Path>| p.and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
+    let name = |p: Option<&Path>| {
+        p.and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+    };
     match name(parent) {
         Some(n) if n.eq_ignore_ascii_case("instruments") => name(parent.and_then(Path::parent)),
         other => other,
@@ -38,7 +41,10 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
     for entry in entries {
         if entry.is_dir() {
             collect(&entry, out);
-        } else if entry.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki")) {
+        } else if entry
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+        {
             out.push(entry);
         }
     }
@@ -46,9 +52,13 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) {
 
 /// Symbol uses of one instrument: name -> (status, occurrences).
 fn instrument_symbols(path: &Path) -> Result<BTreeMap<String, (Status, u64)>, String> {
-    let reports = sampler_kontakt::read_parity_reports_summary(path).map_err(|e| format!("{e:?}"))?;
+    let reports =
+        sampler_kontakt::read_parity_reports_summary(path).map_err(|e| format!("{e:?}"))?;
     let mut uses = BTreeMap::new();
-    for report in reports.iter().filter(|r| r.lang == sampler_parity::Lang::Ksp) {
+    for report in reports
+        .iter()
+        .filter(|r| r.lang == sampler_parity::Lang::Ksp)
+    {
         for construct in &report.constructs {
             let status = symbols::of_construct(&construct.name, construct.status);
             let entry = uses.entry(construct.name.clone()).or_insert((status, 0u64));
@@ -124,7 +134,11 @@ pub fn run(args: &[String]) -> i32 {
         let _ = writeln!(writer, "{record}");
     }
     let instruments = files.len() - failed;
-    println!("ksp: {instruments} instruments, {failed} unreadable, {} records -> {}", records.len(), out.display());
+    println!(
+        "ksp: {instruments} instruments, {failed} unreadable, {} records -> {}",
+        records.len(),
+        out.display()
+    );
     if let Some(md) = md {
         if let Err(error) = std::fs::write(&md, ranked_markdown(&records)) {
             eprintln!("ksp: cannot write {}: {error}", md.display());
@@ -138,7 +152,9 @@ pub fn run(args: &[String]) -> i32 {
 /// Read JSONL records back, skipping any line that is not a record.
 fn read_records(path: &Path) -> Vec<Value> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
-    text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+    text.lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
 }
 
 /// Symbols that are not full, ranked by the instruments that use them (then occurrences).
@@ -152,17 +168,26 @@ fn ranked_markdown(records: &[Value]) -> String {
         corpus_rank: Option<u64>,
     }
     let mut rows = BTreeMap::<String, Row>::new();
-    for r in records.iter().filter(|r| r["kind"] == "symbol" && r["code"] != "KSP-FULL") {
-        let row = rows.entry(r["symbol"].as_str().unwrap_or("?").into()).or_default();
+    for r in records
+        .iter()
+        .filter(|r| r["kind"] == "symbol" && r["code"] != "KSP-FULL")
+    {
+        let row = rows
+            .entry(r["symbol"].as_str().unwrap_or("?").into())
+            .or_default();
         row.code = r["code"].as_str().unwrap_or("?").into();
-        row.instruments.insert(r["path"].as_str().unwrap_or("?").into());
-        row.libraries.insert(r["library"].as_str().unwrap_or("?").into());
+        row.instruments
+            .insert(r["path"].as_str().unwrap_or("?").into());
+        row.libraries
+            .insert(r["library"].as_str().unwrap_or("?").into());
         row.occurrences += r["occurrences"].as_u64().unwrap_or(0);
         row.corpus_rank = r["corpus_rank"].as_u64().or(row.corpus_rank);
     }
     let mut ranked: Vec<_> = rows.into_iter().collect();
     ranked.sort_by(|a, b| {
-        b.1.instruments.len().cmp(&a.1.instruments.len())
+        b.1.instruments
+            .len()
+            .cmp(&a.1.instruments.len())
             .then(b.1.occurrences.cmp(&a.1.occurrences))
             .then(a.0.cmp(&b.0))
     });
@@ -175,7 +200,13 @@ fn ranked_markdown(records: &[Value]) -> String {
         let rank = row.corpus_rank.map_or("-".into(), |r| r.to_string());
         md.push_str(&format!(
             "| {} | {} | `{}` | {} | {} | {} | {} |\n",
-            i + 1, row.code, name, row.instruments.len(), row.libraries.len(), row.occurrences, rank
+            i + 1,
+            row.code,
+            name,
+            row.instruments.len(),
+            row.libraries.len(),
+            row.occurrences,
+            rank
         ));
     }
     md.push_str(&format!("\n{} symbols not full.\n", ranked.len()));
@@ -201,19 +232,35 @@ pub fn summary(args: &[String]) -> i32 {
             }
             Some("error") => entry.3 += 1,
             Some("symbol") if r["code"] != "KSP-FULL" => {
-                *entry.4.entry(r["symbol"].as_str().unwrap_or("?").into()).or_default() += 1;
+                *entry
+                    .4
+                    .entry(r["symbol"].as_str().unwrap_or("?").into())
+                    .or_default() += 1;
             }
             _ => {}
         }
     }
-    println!("| library | instruments | unreadable | symbols used | % full | top blockers (instruments) |");
+    println!(
+        "| library | instruments | unreadable | symbols used | % full | top blockers (instruments) |"
+    );
     println!("|---|---:|---:|---:|---:|---|");
     for (lib, (instruments, symbols, full, errors, blockers)) in &libs {
-        let pct = if *symbols == 0 { 0.0 } else { 100.0 * *full as f64 / *symbols as f64 };
+        let pct = if *symbols == 0 {
+            0.0
+        } else {
+            100.0 * *full as f64 / *symbols as f64
+        };
         let mut top: Vec<_> = blockers.iter().collect();
         top.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-        let top: Vec<String> = top.iter().take(5).map(|(s, n)| format!("{s} ({n})")).collect();
-        println!("| {lib} | {instruments} | {errors} | {symbols} | {pct:.1} | {} |", top.join(", "));
+        let top: Vec<String> = top
+            .iter()
+            .take(5)
+            .map(|(s, n)| format!("{s} ({n})"))
+            .collect();
+        println!(
+            "| {lib} | {instruments} | {errors} | {symbols} | {pct:.1} | {} |",
+            top.join(", ")
+        );
     }
     0
 }
@@ -224,16 +271,21 @@ mod tests {
 
     #[test]
     fn library_is_the_folder_above_instruments() {
-        assert_eq!(library_of(Path::new("/x/Conflux/Instruments/Conflux.nki")), "Conflux");
+        assert_eq!(
+            library_of(Path::new("/x/Conflux/Instruments/Conflux.nki")),
+            "Conflux"
+        );
         assert_eq!(library_of(Path::new("/x/Loose/a.nki")), "Loose");
     }
 
     #[test]
     fn report_ranks_non_full_symbols_by_instruments_affected() {
-        let rec = |path: &str, symbol: &str, code: &str, n: u64| json!({
-            "kind": "symbol", "library": "L", "path": path, "symbol": symbol,
-            "status": "x", "code": code, "occurrences": n, "corpus_rank": 3,
-        });
+        let rec = |path: &str, symbol: &str, code: &str, n: u64| {
+            json!({
+                "kind": "symbol", "library": "L", "path": path, "symbol": symbol,
+                "status": "x", "code": code, "occurrences": n, "corpus_rank": 3,
+            })
+        };
         let records = vec![
             rec("a.nki", "rare", "KSP-UNSUPPORTED", 50),
             rec("a.nki", "common", "KSP-SIMPLIFIED", 1),
@@ -243,7 +295,10 @@ mod tests {
         let md = ranked_markdown(&records);
         let common = md.find("`common`").unwrap();
         let rare = md.find("`rare`").unwrap();
-        assert!(common < rare, "two instruments outrank one heavy use:\n{md}");
+        assert!(
+            common < rare,
+            "two instruments outrank one heavy use:\n{md}"
+        );
         assert!(!md.contains("`fine`"));
         assert!(md.contains("2 symbols not full."));
     }
