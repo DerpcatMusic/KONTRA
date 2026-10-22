@@ -11,8 +11,8 @@ use super::{Lowering, Notes, Reader, Site};
 use sampler_ir::{
     Processor, Reason, SlotAddress,
     fx::timemod::{
-        Allpass, BANK_VOICES, BankVoice, Config, DelayTime, Lfo, LfoShape, Line, Native, Order, Rate, PsycheDelay,
-        SweepLaw, TwinDelay, VoiceBank, WowFlutter,
+        Allpass, BANK_VOICES, BankVoice, Config, Cut, DelayTime, Lfo, LfoShape, Line, Native, Order, Rate, PsycheDelay,
+        SweepLaw, TwinDelay, VoiceBank, WowFlutter, linear_sweep_hz, log_sweep_hz,
     },
 };
 
@@ -375,15 +375,30 @@ fn replika_time_ms(v: f32) -> f64 {
     (0.5 * f64::from(v) * 4000.).clamp(0., 8000.)
 }
 
+/// Replika LOWCUT (setter index 2) and HIGHCUT (index 3) as the in-loop cut (decompile
+/// `141abe6a0`, `141abe820`): a highpass 10 Hz to 1 kHz on a log law, off at 0, and a lowpass
+/// 200 Hz to 20 kHz on a linear law, off at 1. The name-to-index binding is INFERRED from the field
+/// names (docs/re/engine/k-replika-gaps.md, GAP-D).
+fn replika_cut(lowcut: f32, highcut: f32) -> Option<Cut> {
+    let highpass_hz = (lowcut != 0.).then(|| log_sweep_hz(lowcut, 10., 1000.));
+    let lowpass_hz = (highcut != 1.).then(|| linear_sweep_hz(highcut, 200., 20_000.));
+    (highpass_hz.is_some() || lowpass_hz.is_some()).then_some(Cut { highpass_hz, lowpass_hz })
+}
+
 /// Replika Delay (v0x12). Only the laws measured or documented so far are
 /// mapped; every other control is reported as not modelled.
 fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> {
     // Free time (replika_time_ms, mode-3 branch): 2000 x stored over the 0..1 range.
     // Everything else is reported, not modelled: the oracle capture could not move the echo
-    // gain, time or tone with feedback, cut, saturation, ping-pong or type writes
-    // (docs/re/engine/k-delays.md), so no law for them is mapped.
+    // gain, time or tone with feedback, saturation, ping-pong or type writes
+    // (docs/re/engine/k-delays.md), so no law for them is mapped. LOWCUT and HIGHCUT are mapped
+    // into the loop (replika_cut) and act only once the feedback law sets the matrix.
     if !(0. ..=1.).contains(&rep.time) || !rep.time.is_finite() {
         notes.push(("parameters".into(), format!("time {}", rep.time), Reason::InvalidValue));
+        return None;
+    }
+    if !(0. ..=1.).contains(&rep.lowcut) || !(0. ..=1.).contains(&rep.highcut) {
+        notes.push(("parameters".into(), format!("lowcut {} highcut {}", rep.lowcut, rep.highcut), Reason::InvalidValue));
         return None;
     }
     if unit_set(rep.time_unit).is_some() {
@@ -396,8 +411,9 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
     // equivalent (filters, saturation, tape, flutter, BBD, ducking, noise, density, shuffle).
     for (name, value, reason) in [
         ("feedback", rep.feedback, Reason::UnknownLawOmitted),
-        ("lowcut", rep.lowcut, Reason::NotModeled),
-        ("highcut", rep.highcut, Reason::NotModeled),
+        // In the loop: inert until the feedback law exists, so reported with the feedback reason.
+        ("lowcut", rep.lowcut, Reason::UnknownLawOmitted),
+        ("highcut", rep.highcut, Reason::UnknownLawOmitted),
         ("saturation", rep.saturation, Reason::NotModeled),
         ("tape_age", rep.tape_age, Reason::NotModeled),
         ("flutter", rep.flutter, Reason::NotModeled),
@@ -432,6 +448,7 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
     notes.push(("type".into(), rep.ty.to_string(), Reason::NotModeled));
     let mut line = Line::single(DelayTime::Ms(replika_time_ms(rep.time)), 2000.);
     line.native = Native::None;
+    line.feedback.cut = replika_cut(rep.lowcut, rep.highcut);
     Some(Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry, wet: 1. })
 }
 
@@ -806,6 +823,18 @@ mod tests {
         // Every other control is reported (none silently dropped), with a precise reason.
         assert_eq!(notes.len(), 28, "22 float controls, 5 flags and the type");
         assert!(notes.iter().all(|n| n.2 != sampler_ir::Reason::Unknown));
+    }
+
+    /// LOWCUT 0 and HIGHCUT 1 are the neutral points (no cut); the endpoints follow the sweep laws.
+    #[test]
+    fn replika_cut_controls_map_into_the_loop() {
+        assert_eq!(super::replika_cut(0., 1.), None, "both neutral: no cut");
+        let full = super::replika_cut(1., 0.5).expect("cut");
+        assert_eq!(full.highpass_hz, Some(1000.), "LOWCUT 1 is 1 kHz");
+        assert_eq!(full.lowpass_hz, Some(10_100.), "HIGHCUT 0.5 is 200 + 19800 x 0.5");
+        let mid = super::replika_cut(0.5, 1.).expect("cut");
+        assert!((mid.highpass_hz.expect("highpass") - 100.).abs() < 1e-3, "LOWCUT 0.5 is 10^(2 x 0.5 + 1)");
+        assert_eq!(mid.lowpass_hz, None);
     }
 
     #[test]
