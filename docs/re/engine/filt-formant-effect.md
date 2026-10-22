@@ -25,15 +25,20 @@ when it lands.
 
 - Parameters: Talk, Sharp, Size (normalized 0..1). Rows of 5 frequency/radius/amplitude sets; Talk selects
   4·Talk with linear interpolation; Sharp and Size select the core index (see `docs/re/kontakt-formant.md`).
-- Law: three parallel second-order bandpasses, coefficients updated every four samples, 32-sample control
-  clock. Evidence: tables 0x144fcea10..0x144fcebc0, setter 0x140b05ac0, radare2 hexdumps.
-- Engine: `Processor::Formant` (static) and `Processor::LiveFormant` (event-rate lanes, KSP `ENGINE_PAR_FORMANT_*`).
-- Gap: live control ramps are not wired. Decompile (`FUN_140b00750`, audio): each band's state
-  accumulates a per-sample coefficient increment (`state += delta` at `+0x30..`), and the deltas are
-  recomputed every 4 frames (`(frame & 3) == 0`). `FUN_140b05ac0` writes the targets and deltas at
-  `+0x500..+0x540` and sets a dirty flag at `+0x530`. The 15 ms ramp length is not yet read as a constant.
-  The engine uses `Formant::compile` per fragment (no ramp), so live Formant timing is approximate.
-  Static saved controls are exact to the recorded impulse vector.
+- Law: three parallel second-order bandpasses, coefficients refreshed every four frames within a call.
+- Ramp (decompiled, now ported): the setters (`FUN_140b05ac0`) write twelve targets (frequency, radius,
+  amplitude; lane 3 is zero) and the shared dirty flag `+0x530`. The 32-frame tick `FUN_140b03690` calls
+  `FUN_140acbcb0` on the block at `+0x4a0`: a dirty tick sets `delta = (target - cur) / (N · 32)`,
+  N = round(15 ms · rate / 32) (`FUN_140afd4f0`), and arms a countdown of N; a clean tick counts down and
+  snaps to the target. The audio loop `FUN_140b00750` advances `cur += delta` every frame.
+- Engine: `formant::process_ramp` (`crates/sampler-core/src/dsp/filter/formant.rs`). `Processor::LiveFormant`
+  writes its three lanes every 32-frame chunk (dirty each chunk); `Processor::Formant` writes once.
+- Evidence: `tools/re/formant_kemu_vectors.py` drives the unchanged core under kemu; the Rust test
+  `native_kemu_vectors_through_the_live_path` matches nine cases (static, sweeps, a hold and 44.1 kHz)
+  within 3.3e-6 of peak.
+- Open: the host start-up order (prepare and setter sequence) is not recovered. The vectors use the
+  prepared state (controls written, second prepare). A single prepare with no targets set ramps the
+  frequency lanes in from zero; the Kontakt measurements show no start-up ramp, so that is not used.
 
 ### Formant II (type 91)
 
@@ -49,13 +54,10 @@ when it lands.
     arguments, which Ghidra did not recover, so the static flag value for type 91 is **confirmed as a
     control-3 selector, not yet read as a constant**.
   Tests: `second_table_starts_five_rows_in`, `second_table_row_five_matches_libm_coefficients`.
-- Engine: static `Processor::FormantII` through `FilterBank(Topology::FormantII)`.
-- Change in this unit: script/modulation lanes now drive Formant II through `Processor::LiveFormant { second: true }`
-  instead of being dropped with a `NotModeled` note. The output for a given knob setting is identical to the
-  static path by construction (same `Formant::compile`).
-- Gap / confidence: no measured Kontakt vector for Formant II output exists yet. Routing Formant II lanes
-  through the same setter is now supported by the decompile (control 3 selector above). Lane routing is still
-  **unverified** against a Kontakt measurement.
+- Engine: static `Processor::FormantII` through `FilterBank(Topology::FormantII)`; live lanes through
+  `Processor::LiveFormant { second: true }`, the same ramp as Formant I.
+- Gap / confidence: the kemu vectors cover Formant II (flag 1 cases). No Kontakt audio render of a moving
+  Formant II control exists; the lane routing is verified against the native core, not against Kontakt output.
 
 ### Phaser filter (type 13)
 
@@ -94,8 +96,8 @@ when it lands.
 
 | Module | Kontakt type | Engine now | Missing | Evidence | Status |
 | --- | --- | --- | --- | --- | --- |
-| Formant I | 90 | static + live lanes (Talk/Sharp/Size) | per-sample coefficient ramps (decompiled, not ported), 15 ms length unread | kontakt-formant.md, FUN_140b00750, FUN_140b05ac0 | Exact (static), Partial (live timing) |
-| Formant II | 91 | static table 2 + live lanes (this PR) | measured output vector; lane routing confirmed on Kontakt | formant.rs tests, core inference | Partial, unverified routing |
+| Formant I | 90 | static + live lanes (Talk/Sharp/Size) with the native 15 ms ramp | host start-up order | kemu vectors, FUN_140acbcb0, FUN_140b00750 | parity (kemu oracle) |
+| Formant II | 91 | static table 2 + live lanes with the native ramp | flag constant for type 91; no Kontakt audio of a moving control | kemu vectors (flag 1) | parity (kemu oracle) |
 | Phaser | 13 | static four-stage allpass | live Cutoff/Resonance lanes; feedback vector | timemod.rs test | Partial |
 | Vowel A | 14 | cascade VowelA, BP4 | live morph lanes; recorded vector | filter.rs (kemu) | Claimed exact, not re-run |
 | Vowel B | 15 | cascade VowelB, BP4 | live morph lanes; recorded vector | filter.rs (kemu) | Claimed exact, not re-run |
@@ -145,4 +147,5 @@ Rendered with `tools/kontakt-oracle/eqrender.py` (48 kHz, impulse through L, byp
 | Vowel A (14), Vowel B (15) | 16 | `vowel_filters_match_kontakt_measurements` (cascade `design`, parallel bank) | < 0.1 dB |
 | Phaser (13) | 8 (cutoff grid at res 0, res .5/.9/1 at cutoff .5) | `phaser_filter_matches_kontakt_measurements` | < 0.1 dB, including resonance feedback `0.85 r` |
 
-Still open: Formant live ramps, live lanes for Phaser and Vowel, AET Filter (not implemented).
+Still open: live lanes for Phaser and Vowel, AET Filter (not implemented). Formant live ramps are ported and
+vector-checked (see Formant I above).
