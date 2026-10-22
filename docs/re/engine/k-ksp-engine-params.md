@@ -128,3 +128,9 @@ values stay repo-evidence only until the oracle is run.
 - `get_engine_par_disp_m`: args (id, slot-or-output, generic, channel-search flag), from the call site at `0140780000.c:8100`. Slot range 0..63, output range 0..127, "not active" checks. Diagnosed as not modelled.
 - Display text: each module's display vtable (`FUN_1408a6400` and others), not one table. Not ported.
 - Consumers: none found for the 18 unbound names; each is blocked on a live-control path owned by another lane (Raum live controls, sends live, wavetable/ext-mod live, MIDI filter).
+
+## Module-type constants (2026-10-22)
+
+- `$EFFECT_TYPE_*` (88) and `$FILTER_TYPE_*` (46) are script constants with native values, read from `Kontakt 8.exe` (8.13.1, read-only copy): each name's `lea rdx,[name]` follows `mov dword ptr [rbp+X], value` and `lea r8,[rbp+X]`, the same registration as the ENGINE_PAR table. Values 622..756 (0x26e..0x2f4), one value per name, no duplicates. Table: `crates/sampler-ksp/src/module_types.tsv`.
+- Before this, a Conflux performance view reported 38 `$FILTER_TYPE_*` and 19 `$EFFECT_TYPE_*` names as "not in the performance view". They now resolve to their values.
+- Not changed: `ENGINE_PAR_EFFECT_TYPE` and `ENGINE_PAR_FILTER_TYPE*` have no consumer that reads these values.
