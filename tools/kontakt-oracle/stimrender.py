@@ -52,7 +52,13 @@ def stim_impulse():
     return x
 
 
-STIMULI = {"limiter": stim_limiter, "ramp": stim_ramp, "release": stim_release, "impulse": stim_impulse}
+def stim_sine_mid():
+    """0.6 s 200 Hz sine at 0.4: inside a waveshaper's knee for both Distortion modes."""
+    n = int(0.6 * RATE)
+    return 0.4 * np.sin(2 * np.pi * 200 * np.arange(n) / RATE)
+
+
+STIMULI = {"limiter": stim_limiter, "ramp": stim_ramp, "release": stim_release, "impulse": stim_impulse, "sine_mid": stim_sine_mid}
 
 
 def write_wav(path: Path, x, right=False):
