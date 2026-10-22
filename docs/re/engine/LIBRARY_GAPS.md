@@ -96,6 +96,8 @@ These are the same 15 instruments that stop at stage note-on/selection with "not
 On quiet samples (loadavg1 < 8): fresh 0 of 403 instruments, baseline 34 of 946. Re-run on a quiet machine before treating this as a gap.
 Audio-thread allocations: 0.
 
+Profiled 2026-10-22 (ANALOG STRINGS, 2 voices, 4875 blocks, quiet-ish host, niced): 5-8 misses per run, max 8.4-11.4 ms. Each spike is inside `render` (stream service < 0.02 ms, 0 minor faults, 0 allocations, 0 underruns). `corpus-health` now splits misses by involuntary context switches of the render thread into `deadline_misses` and `preempted_deadline_misses`. Preemption explains about 3 of 8; the rest have no preemption on the render thread, so the cause is still open (host CPU contention or cache/frequency effects are not separable without a perf trace). Treat `deadline_misses` as host-sensitive until that trace exists.
+
 ## Script diagnostics
 
 | instruments | kind |
