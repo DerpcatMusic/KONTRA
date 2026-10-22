@@ -9,9 +9,10 @@ use sampler_core::Comparison;
 use std::collections::HashMap;
 
 /// Commands the manual restricts to the "on init" callback.
-const INIT_ONLY: [Builtin; 4] = [
+const INIT_ONLY: [Builtin; 5] = [
     Builtin::AddMenuItem,
     Builtin::MakePersistent,
+    Builtin::ReadPersistentVar,
     Builtin::SetScriptTitle,
     Builtin::SetUiHeightPx,
 ];
@@ -131,9 +132,23 @@ pub fn analyze<'a, 's>(
             ("rpn", None) => CallbackKind::Rpn,
             ("nrpn", None) => CallbackKind::Nrpn,
             ("ui_control", Some((name, span))) => {
-                let var = s.lookup(name, span)?;
+                let Some(var) = s.resolve_or_declare(name, span)? else {
+                    return fault(
+                        span,
+                        format!(
+                            "on ui_control: Variable \"{}\" was not declared!",
+                            s.name(name)
+                        ),
+                    );
+                };
                 if s.hir.vars[var.0 as usize].ui.is_none() {
-                    return fault(span, "ui_control callback requires a UI control variable");
+                    return fault(
+                        span,
+                        format!(
+                            "on ui_control: Variable \"{}\" is not a UI control!",
+                            s.name(name)
+                        ),
+                    );
                 }
                 CallbackKind::UiControl(var)
             }
@@ -1175,6 +1190,18 @@ impl<'a> Sema<'a, '_> {
             return fault(
                 span,
                 format!("{}() can only be used in \"on init\" callback!", b.name()),
+            );
+        }
+        if b == Builtin::ReadPersistentVar
+            && let Some(A::Var(sym, None)) = args.first().map(|e| &e.kind)
+            && self.resolve_or_declare(*sym, args[0].span)?.is_none()
+        {
+            return fault(
+                args[0].span,
+                format!(
+                    "read_persistent_var(): Variable \"{}\" was not declared!",
+                    self.name(*sym)
+                ),
             );
         }
         let sig = b.sig();

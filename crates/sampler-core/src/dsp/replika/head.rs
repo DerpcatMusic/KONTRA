@@ -19,8 +19,8 @@
 //!
 //! The tap object also keeps the driver's write side (`K+0x08` index, `+0x10` fraction, `+0x1c` step, `+0x20` and
 //! `+0x40` of the previous frame, `+0x90..+0xa0` the rate history): the deposit `141accfb0` reads them as its
-//! index, offset, count and rates, so they are part of this port. Not ported: the deposit's own history (`+0x84..+0x8c`),
-//! the write stage `141acd110`, the wrapper `141ab7a90` (the gains `+0x70`, `+0x74` and the mixing) and the caller of
+//! index, offset, count and rates, so they are part of this port, and the deposit's history `+0x84..+0x8c` is `Tap::hist`.
+//! The write stage `141acd110` is in `write.rs`. Not ported: the wrapper `141ab7a90` (the gains `+0x70`, `+0x74` and the mixing) and the caller of
 //! the speeds. The mode writer `141aca4a0` (k = 0, 1, 2, 4, `Head::set_mode`) is ported; its k = 3 is blocked.
 //! The index-28 selector `141aca670` (`Heads::select`) applies the mode writers to the three heads and the
 //! selector's own state effects that are modelled (see there).
@@ -29,9 +29,9 @@
 
 use super::ReplikaState;
 use super::delay::DelayPos;
-use super::mode1::PostFilter;
+use super::mode1::{PostFilter, WriteFilter};
 use super::read::{Tap, retune};
-use crate::dsp::tpt_svf::Section;
+use crate::dsp::tpt_svf::{Section, State};
 
 /// `1479ab4c0`: the clamp of the speed ratios (50.5).
 const SPEED_MAX: f64 = f64::from_bits(0x4049_4000_0000_0000);
@@ -137,6 +137,23 @@ pub struct Head {
     pub mode_flags: [bool; 3],
     /// `+0x270` (L) and `+0x340` (R): the kernel flags, which are the taps' `+0xc8` (1 = kernel 1, 2 = kernel 2).
     pub kernel: [i32; 2],
+    /// `+0x158` (L) and `+0x194` (R): the mode-0 ring write index; `+0x15c` (L) and `+0x190` (R) its wrap
+    /// (`141acd110`; the writers are not traced). The R pair is read in the mirrored order, see `write.rs`.
+    pub ring_pos: [i32; 2],
+    pub ring_wrap: [i32; 2],
+    /// `+0x6c`: hold. With the fade clear the write stage stores its inputs and writes nothing.
+    pub hold: bool,
+    /// `+0x5824`: the fade is on (`141acc600`, not ported); `+0x5808`: its amount, the inputs scale by `1 - amount`.
+    pub fade_on: bool,
+    pub fade_amount: f32,
+    /// `+0x348` (L) and `+0x34c` (R): the inputs of the last write that stored them (hold or fade).
+    pub stored: [f32; 2],
+    /// `+0x2dc0` (L) and `+0x4240` (R): the mode-1 write filters (`141aa3c60`).
+    pub write_filter: [WriteFilter; 2],
+    /// `+0x350` and `+0x384`: the state of the write sections; their coefficients are `sec`.
+    pub sec_state: [State; 2],
+    /// `+0x368` (L) and `+0x39c` (R): the lowpass output of the write sections, the deposit's input.
+    pub sec_out: [f32; 2],
 }
 
 /// `141aca4a0` with k = 3 calls `141acb100`, which is not ported. Returned before anything is written.
@@ -501,7 +518,24 @@ mod tests {
             lane: 0,
             mode_flags: [false; 3],
             kernel: [1, 1],
+            ring_pos: [0; 2],
+            ring_wrap: [0; 2],
+            hold: false,
+            fade_on: false,
+            fade_amount: 0.,
+            stored: [0.; 2],
+            write_filter: idle_write_filters(),
+            sec_state: [State::default(); 2],
+            sec_out: [0.; 2],
         }
+    }
+
+    /// Write filters with an all-zero lane object (the tests that do not run the write stage).
+    fn idle_write_filters() -> [WriteFilter; 2] {
+        [
+            WriteFilter::from_object(&[0; 1312]),
+            WriteFilter::from_object(&[0; 1312]),
+        ]
     }
 
     fn words(v: &Value) -> Vec<f32> {
@@ -888,6 +922,15 @@ mod tests {
             lane: f(init, "lane") as i32,
             mode_flags: ["flag68", "flag69", "flag6a"].map(|k| f(init, k) != 0.0),
             kernel: [f(init, "kernel_l") as i32, f(init, "kernel_r") as i32],
+            ring_pos: [0; 2],
+            ring_wrap: [0; 2],
+            hold: false,
+            fade_on: false,
+            fade_amount: 0.,
+            stored: [0.; 2],
+            write_filter: idle_write_filters(),
+            sec_state: [State::default(); 2],
+            sec_out: [0.; 2],
         }
     }
 

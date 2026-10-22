@@ -20,7 +20,7 @@ Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in 
 | category | symbols | full | simplified | stub | unsupported | % full | corpus-weighted % full | tested |
 |---|---|---|---|---|---|---|---|---|
 | callback | 17 | 0 | 14 | 0 | 3 | 0.0% | 0.0% | 14 |
-| command | 282 | 23 | 222 | 5 | 32 | 8.2% | 29.9% | 192 |
+| command | 282 | 24 | 221 | 5 | 32 | 8.5% | 32.3% | 192 |
 | keyword | 18 | 2 | 16 | 0 | 0 | 11.1% | - | 18 |
 | datatype | 6 | 0 | 6 | 0 | 0 | 0.0% | - | 0 |
 | ui_control | 16 | 0 | 16 | 0 | 0 | 0.0% | 0.0% | 14 |
@@ -32,7 +32,7 @@ Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in 
 | event_par | 31 | 0 | 29 | 0 | 2 | 0.0% | 0.0% | 19 |
 | zone_par | 19 | 0 | 19 | 0 | 0 | 0.0% | 0.0% | 4 |
 | loop_par | 6 | 0 | 6 | 0 | 0 | 0.0% | - | 0 |
-| **all** | **1996** | **25** | **1889** | **26** | **56** | **1.3%** | **12.0%** | **427** |
+| **all** | **1996** | **26** | **1888** | **26** | **56** | **1.3%** | **13.0%** | **427** |
 
 Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMBOLS.tsv and KSP_MODERN.md; they are excluded from the totals above.
 
@@ -151,10 +151,6 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 
 `wait` (simplified, 1100), `set_listener` (simplified, 927), `stop_wait` (simplified, 368), `ticks_to_ms` (simplified, 349), `wait_async` (simplified, 8), `ms_to_ticks` (simplified, 1)
 
-### command / Variables (2 symbols, 2745 instrument-uses)
-
-`read_persistent_var` (simplified, 2740), `make_instr_persistent` (simplified, 5)
-
 ### command / Control Parameters (1 symbols, 2741 instrument-uses)
 
 `set_control_par_str` (simplified, 2741)
@@ -218,6 +214,10 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 ### constants $UI (2 symbols, 6 instrument-uses)
 
 `$UI_WAVEFORM_USE_TABLE` (simplified, 3), `$UI_WF_PROP_PLAY_CURSOR` (simplified, 3)
+
+### command / Variables (1 symbols, 5 instrument-uses)
+
+`make_instr_persistent` (simplified, 5)
 
 ### command / Zone Commands (3 symbols, 3 instrument-uses)
 
