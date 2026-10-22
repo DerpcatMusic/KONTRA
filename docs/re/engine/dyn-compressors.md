@@ -278,3 +278,34 @@ recovered, constants and the gain computer still open.
 - Still unrecovered: gain computer, `FUN_141a964a0` coefficients and reset,
   the `+0x2f8`/`+0x318` objects, saturation and character curves, and the
   setter-to-core-index map for saved Supercharger fields.
+
+### Look-ahead window `FUN_141a964a0` (export, `0141a90000.c:3381`, 3,392 bytes)
+
+Read in this pass (text only):
+- Signature: `(state, sample, coefficient) → sample`. It is called on the
+  mid and side samples from the per-frame core. Its output is the windowed
+  signal that the core recombines.
+- Bank of about 11 first-order followers on the state block (`+0x4a` …
+  `+0x5d` in double units). Each updates as `y = y·a + x·b`, where the pair
+  (a, b) is chosen by a fixed constant pair (`DAT_1479ab3d8`/`DAT_144f38840`
+  for the first group). Any result below `DAT_144fc3270` that is also above
+  `DAT_1479ab668` is flushed to 0 (denormal guard).
+- Second group (`+0x43`, `+0x44`, `+0x3f`, `+0x41`, `+0x39`, and the output
+  states `+0x4e`, `+0x50`, `+0x51`, `+0x54`, `+0x55`): each picks one of two
+  coefficient pairs by comparing the new value with the state (attack when
+  rising, release when falling). A flag byte at `+0x30` (bypass or reset)
+  copies the input straight into the state, with no smoothing. Same flush
+  rule as above.
+- Constants (one-shot pefile read of the image, f64):
+  `DAT_1479ab3d8` = 0.995, `DAT_144f38840` = 0.005 (the pair for the fast
+  group: falling state `= input·0.005 + state·0.995`); `DAT_1479ab3e0` =
+  0.9995 and `DAT_144fc3b88` = 0.0005 (rising state `= state·0.9995 +
+  input·0.0005`); `DAT_144fc3ff0` = 0.9999 and `DAT_144737738` = 0.0001 (the
+  slowest pair, used by the output states); `DAT_144fc3270` = +1e-15 and
+  `DAT_1479ab668` = −1e-15 (a state with |y| < 1e-15 is set to 0); `DAT_144714988`
+  = 1.0.
+- Coefficient pairs are as read in the second group: a value at or below the
+  state takes the release pair, a value above it takes the attack pair.
+- Not yet read: the tail of the function (after `LAB_141a96ad4`, the output
+  tap combination), and so the window length and the exact gain-computer law
+  it implies. This is the open part of the CompXT gain computer.
