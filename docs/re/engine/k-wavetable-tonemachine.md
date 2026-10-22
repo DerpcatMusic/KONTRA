@@ -196,3 +196,24 @@ phase-randomness and inharmonic laws.
 - "Wavetable source" unsupported (20 instruments): the admission rejects phase
   random, inharmonic and the modulation oscillator. Their native laws are not
   recovered (see the decompile notes above). Not changed here.
+
+## Corpus zones with a misaligned start (2026-10-22, Conflux)
+
+- Conflux's zones with a start off the 2048-frame grid were dropped by the
+  loader ("cycle-aligned start", 249 zones in a full-tier run). `Table` reads
+  cycle k at `start + k * 2048`, so alignment is not needed to play. The
+  alignment rule came from the v1 port, not from native evidence. The loader
+  and `Table::new` now accept any start with one full cycle. Kontakt's own rule
+  for misaligned starts is unverified.
+
+## Conflux load blocker (not changed)
+
+- Full-tier corpus-health reports Conflux (1.4 GB of pinned wavetable PCM,
+  packed minimum 1,419,161,782 bytes) as "resident PCM requires at least ...
+  exceeding configured payload budget 268435456" at translate-to-IR. Pinned
+  wavetable ranges are charged against the same 256 MiB head cap that
+  `ef2b4313e` introduced. `wavetable_pin_reads_lazy_cycles_and_survives_purge_with_explicit_budget_failure`
+  asserts that failure on purpose, so the policy is a decision, not a bug. Options:
+  raise the mandatory-wavetable allowance, or stream wavetable cycles. The packed
+  size is only known after analysis, so any allowance must use the decoded upper
+  bound (8 bytes per frame), not the packed minimum.
