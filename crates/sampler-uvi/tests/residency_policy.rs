@@ -91,18 +91,20 @@ fn any_authored_resident_user_dominates_a_shared_source_even_when_bypassed() {
 }
 
 #[test]
-fn mixed_full_and_packed_storage_share_cap_and_fallback_never_streams_a_required_source() {
+fn mixed_full_and_packed_storage_share_cap_and_cold_fallback_streams_oversize_residents() {
     let dir = Scratch::new();
     let path = dir.program(
         "",
         "<SamplePlayer SamplePath='a.wav' AllowStreaming='0'/><SamplePlayer SamplePath='b.wav'/>",
     );
-    for (lazy, cap, fallback, success, packed) in [
-        (true, 128, false, true, 0),
-        (false, 160, false, true, 32),
-        (false, 159, false, false, 0),
-        (false, 128, true, true, 0),
-        (false, 127, true, false, 0),
+    // Under cold fallback a resident source that no longer fits the shared cap
+    // streams from disk instead of failing the load.
+    for (lazy, cap, fallback, success, packed, resident) in [
+        (true, 128, false, true, 0, true),
+        (false, 160, false, true, 32, true),
+        (false, 159, false, false, 0, true),
+        (false, 128, true, true, 0, true),
+        (false, 127, true, true, 64, false),
     ] {
         let mut policy = policy(lazy, cap);
         policy.allow_cold_fallback = fallback;
@@ -114,24 +116,32 @@ fn mixed_full_and_packed_storage_share_cap_and_fallback_never_streams_a_required
             "lazy={lazy} cap={cap} fallback={fallback}"
         );
         if let Ok(streamed) = result {
-            assert_eq!(
-                &*streamed.assets[0].resident_frames().unwrap(),
-                &[[0.25; 2]; 16]
-            );
+            assert_eq!(streamed.assets[0].resident_frames().is_some(), resident);
+            if resident {
+                assert_eq!(
+                    &*streamed.assets[0].resident_frames().unwrap(),
+                    &[[0.25; 2]; 16]
+                );
+            }
             assert!(streamed.assets[1].resident_frames().is_none());
-            assert_eq!(streamed.report.required_resident_bytes, 128);
-            assert_eq!(streamed.report.head_bytes, packed);
             assert_eq!(
-                streamed.streamer.head_budget_status().held_bytes,
-                128 + packed
+                streamed.report.required_resident_bytes,
+                if resident { 128 } else { 0 }
             );
-            assert_eq!(streamed.report.head_fallback.is_some(), fallback);
+            assert_eq!(streamed.report.head_bytes, packed);
+            let held = streamed.streamer.head_budget_status().held_bytes;
+            if resident {
+                assert_eq!(held, 128 + packed);
+            } else {
+                assert!(held <= cap, "streamed fallback stays within the cap");
+            }
+            assert_eq!(streamed.report.head_fallback.is_some(), fallback && resident);
             assert_eq!(
                 streamed
                     .streamer
                     .head_readiness(&streamed.assets)
                     .complete(),
-                packed == 32
+                packed == 32 || !resident
             );
         }
     }

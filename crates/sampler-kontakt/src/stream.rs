@@ -706,8 +706,9 @@ pub struct StreamPolicy {
     /// Publish before heads are read. Runtime must enable cold-start holding.
     pub lazy: bool,
     /// Opt in to cold starts when optional attack preparation exceeds the shared
-    /// payload budget. Mandatory full sources are never made disk-streamed.
-    /// Source, metadata, cancellation and mandatory-residency failures propagate.
+    /// payload budget. Resident sources that do not fit the budget (smallest
+    /// first kept whole) stream from disk. Source, metadata and cancellation
+    /// failures propagate.
     pub allow_cold_fallback: bool,
     /// RAM-only: keep whole samples smallest first within this safe byte budget.
     pub resident_budget: Option<usize>,
@@ -1272,6 +1273,53 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>], pa
     }
 }
 
+/// Keep every item when all of them fit `budget`. Otherwise keep the smallest
+/// ones that fit half of it: the rest is headroom for staging and publishing
+/// the admitted heads. Items not kept stream from disk.
+fn admit_within_budget<T>(mut items: Vec<(usize, T)>, budget: usize) -> Vec<T> {
+    let total = items.iter().fold(0usize, |sum, (bytes, _)| sum.saturating_add(*bytes));
+    if total <= budget {
+        return items.into_iter().map(|(_, item)| item).collect();
+    }
+    items.sort_by_key(|(bytes, _)| *bytes);
+    let room = budget / 2;
+    let mut held = 0usize;
+    let mut kept = Vec::new();
+    for (bytes, item) in items {
+        if held.saturating_add(bytes) <= room {
+            held += bytes;
+            kept.push(item);
+        }
+    }
+    kept
+}
+
+/// Under cold fallback, resident sources are admitted whole while they fit the
+/// shared head budget (see `admit_within_budget`); the rest stream from disk
+/// instead of failing the load. Unknown sizes stay resident.
+fn admit_resident_within_budget(
+    requirements: &[ir::AssetResidency],
+    frames: &[Option<usize>],
+    policy: &StreamPolicy,
+) -> Vec<ir::AssetResidency> {
+    let mut out = requirements.to_vec();
+    if !policy.allow_cold_fallback {
+        return out;
+    }
+    let sized = |i: usize| requirements[i] == ir::AssetResidency::Resident && frames[i].is_some();
+    let items = (0..requirements.len())
+        .filter(|&i| sized(i))
+        .map(|i| (frames[i].unwrap_or(0).saturating_mul(size_of::<Frame>()), i))
+        .collect();
+    let kept = admit_within_budget(items, policy.head_budget);
+    for i in (0..requirements.len()).filter(|&i| sized(i)) {
+        if !kept.contains(&i) {
+            out[i] = ir::AssetResidency::Streamable;
+        }
+    }
+    out
+}
+
 /// A startup capacity failure, distinct from unreadable/missing source bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeadBudgetExceeded {
@@ -1649,12 +1697,22 @@ impl Streamer {
         canceled:&(dyn Fn()->bool+Sync),progress:&mut dyn FnMut(usize,usize))->Result<Opened,LoadError> {
         if sources.len()!=requirements.len() {return Err(LoadError::Invalid{path:"logical sources".into(),reason:"source requirement count mismatch".into()});}
         let mut wide=false;
-        for (source,path) in &sources {
+        let mut frames=Vec::with_capacity(sources.len());
+        for (i,(source,path)) in sources.iter().enumerate() {
             if canceled(){return Err(LoadError::Canceled);}
-            if let Some(reader)=source.open_channels(READER_CACHE_BYTES/policy.decoders.clamp(1,8)/2).map_err(|e|LoadError::io(path,e))? {
+            let reader=source.open_channels(READER_CACHE_BYTES/policy.decoders.clamp(1,8)/2).map_err(|e|LoadError::io(path,e))?;
+            // Sizing a resident source needs its length; an unknown one is left resident.
+            frames.push(match (&reader,source.header()) {
+                (Some(reader),_)=>Some(reader.frames()),
+                (None,Some((_,frames)))=>Some(frames),
+                (None,None) if requirements[i]==ir::AssetResidency::Resident=>source.open().ok().map(|r|r.frames()),
+                (None,None)=>None,
+            });
+            if let Some(reader)=reader {
                 wide |= reader.original_channels().is_some_and(|n|n>2);
             }
         }
+        let requirements=&admit_resident_within_budget(requirements,&frames,policy)[..];
         if !wide {return Self::open_required_stereo(sources,requirements,rate,policy,probe,canceled,progress);}
         if policy.resident_budget.is_some() {return Err(LoadError::Invalid{path:"logical stream".into(),reason:"whole-source promotion requires resident logical producer".into()});}
         let mut logical=Vec::new();let mut assets=Vec::new();let mut registry=HashMap::new();let mut latency=Vec::new();let mut full=0u64;let mut max_packs=1usize;
@@ -1927,6 +1985,17 @@ impl Streamer {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "unknown pinned wavetable asset"));
         }
         if canceled() { return Err(canceled_head()); }
+        // Pinned wavetables are mandatory heads; under cold fallback the ones that
+        // cannot fit the shared budget together stream like any other source.
+        let pinned_wavetables = if allow_cold_fallback {
+            let items = assets.iter()
+                .filter(|p| pinned_wavetables.contains(&p.asset_id()))
+                .map(|p| (range_bounds(p, &table[&p.asset_id()]).map_or(usize::MAX, |b| b.0), p.asset_id()))
+                .collect();
+            admit_within_budget(items, head_budget).into_iter().collect()
+        } else {
+            pinned_wavetables
+        };
         let residency_budget = HeadBudget::new(head_budget);
         for pcm in assets {
             let bound = if pcm.requires_resident() { pcm.bind_resident_budget(&residency_budget) } else { pcm.bind_head_budget(&residency_budget) };
@@ -3266,11 +3335,14 @@ mod tests {
 
     #[test]
     fn cold_fallback_is_opt_in_typed_and_preserves_mandatory_residency() {
-        for (allow,pinned,budget,success,partial) in [
-            (false,false,80,false,false),
-            (true,false,80,true,true),
-            (true,true,80,true,true),
-            (true,true,63,false,false),
+        // (allow, pinned, budget, success, partial, resident): a pinned range over
+        // the budget streams under cold fallback instead of failing the load.
+        for (allow,pinned,budget,success,partial,resident) in [
+            (false,false,80,false,false,false),
+            (true,false,80,true,true,false),
+            (true,true,80,true,true,true),
+            (true,true,63,true,true,false),
+            (false,true,63,false,false,false),
         ] {
             let pcm=Pcm::streamed(48000,8192).unwrap();
             let other=Pcm::streamed(48000,8192).unwrap();
@@ -3283,10 +3355,10 @@ mod tests {
             if success {
                 let (streamer,bytes)=result.unwrap();
                 assert_eq!(streamer.head_fallback().is_some(),partial);
-                assert_eq!(bytes,if pinned{64}else{0});
+                assert_eq!(bytes,if resident{64}else{0});
                 assert_eq!(streamer.head_budget_status().held_bytes,bytes);
                 assert!(streamer.head_budget_status().peak_bytes<=budget);
-                assert_eq!(assets[0].resident_covers(0..32),pinned);
+                assert_eq!(assets[0].resident_covers(0..32),resident);
                 assert!(!assets[1].resident_covers(0..32));
                 assert!(!streamer.head_readiness(&assets).complete());
             } else {
