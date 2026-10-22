@@ -20,6 +20,14 @@ Remaining gaps after this confirmation: resize engine (Élastique, see above), S
 - IR load in `FUN_140ab5e00` (`0140ab0000.c:4010+`): the IR sample's rate and channel count are read; the flag `+0x224` is set when the IR channel count differs from `+0x124`. The decimation step divides the host rate by the IR rate with a floor at `0.0` before the `DAT_144fc4048` scale, which is a `double` constant that must be read as `<d`, not `<f`.
 - Parity for S.Rate, crossover default and true-stereo therefore remains open; nothing in this pass changes the Rust behaviour.
 
+## Corpus gap 2: Preserve Length and latency bypass (RE status)
+
+- Gap log row 2 (416 instruments) reports both flags as unsupported. The Rust engine currently only reports them (`NotModeled`); no shaping is applied.
+- Latency term found (`01419b0000.c`, `FUN_1419b1030`/`FUN_1419b3e10`/`FUN_1419b42d0` callers, lines ~430, 2091, 3939): each ring/partition read offset is `(-(bool)(+0x230 != 0) & 0x11) + ring_len + head_offset`. When the flag at `+0x230` is set the read is shifted by **17 frames** (`0x11`) and the ring is allocated `2*n + 0x11`. This is a fixed stretch-engine latency compensation, not an IR-length law.
+- `+0x230` is written at `01419b0000.c:3488` as `(float(+0xc) != float(+0x8))`. Those two floats are internal, not the saved flags, so the route from the saved Preserve Length / Bypass flags into `+0x230` is **not traced**. Until it is, neither flag can be implemented with a native-data vector.
+- The 17-frame term only matters when a stretch engine runs. Size 1.0 uses the identity copy path (see the resize section), so for unit sizes the flags are not expected to change the output; this is an inference, not measured.
+- Next step to close: capture Kontakt audio (Wine oracle, `tools/kontakt-oracle/render.py`) with one IR at size 1.0 and at 1.25, flags on and off, and compare. Until that capture exists, both flags remain `NotModeled`.
+
 ## Evidence used
 
 - Saved record and wrapper preparation: `crates/sampler-kontakt/src/effects/mod.rs` (0x16 reader, ~l.427-449), `crates/sampler-kontakt/src/effects/space.rs` (`convolution`).
