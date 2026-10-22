@@ -149,7 +149,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Freak | partial | vector | Native fxemu vectors at 48 kHz pass (`dsp::color::freak::tests::matches_the_native_core`). Hilbert designer (0x141968890) ported in `dsp/color/hilbert.rs`: 44.1 and 96 kHz tables bit-exact, 48 and 88.2 kHz within 4e-6 relative (cause not isolated; ulp-level sensitivity of `log2`). Saved field 17 binding unverified. See `docs/re/engine/k-modfx-freak-ring-rotator.md`. |
 | Phasis | unknown | none | |
 | Ring Modulator | missing | decomp | Class/module names and LFO waveform count (2) confirmed in decompile. No core, no mapping, no DSP law yet; process method not locatable without vtable slot dump. |
-| Rotator | missing | decomp | Class/module names confirmed in decompile (`BEffectRotator`, `RotModuleBase`). No core, no mapping, no law yet; process method not locatable without vtable slot dump. |
+| Rotator | partial | decomp | Core 0x140aae920, driver 0x140aa4900 and control law 0x140a97d30 ported in `dsp/rotator.rs` at native offsets (smoke test only). Not yet: parameter setters (0x210..0x220, 0x1380..0x138c, 0x1300..0x131c), sampler-ir config, Kontakt mapping for module 0x22, post stage 0x140ac21f0, and any oracle comparison. Unmapped, so the module stays unsupported. |
 | Vibrato/Chorus | unknown | none | |
 | Legacy Chorus | unknown | none | |
 | Legacy Flanger | unknown | none | |
