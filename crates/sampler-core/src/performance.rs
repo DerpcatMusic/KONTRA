@@ -100,7 +100,8 @@ pub(super) struct State {
     pub program: Option<crate::ProgramSelection>,
     pub native_key: Option<u8>,
     pub native_tick: u64,
-    pub native_seed: u64,
+    /// The Random start draw of this note (`NativeRandom::below`, one per admitted note).
+    pub native_draw: u32,
     pub controllers: [u32; 128],
     /// Script pitch bend (128) and mono pressure (129) are independent of the
     /// native previous-key/axis selectors addressed by `value`.
@@ -201,7 +202,7 @@ impl PerformanceState {
                 program: None,
                 native_key: None,
                 native_tick: 0,
-                native_seed: 0,
+                native_draw: 0,
                 controllers: RESET_CONTROLLERS,
                 script_virtual: [0x8000_0000, 0],
                 previous: 0,
@@ -353,11 +354,11 @@ impl PerformanceState {
             if self.physical[i].performance != performance { continue; }
             let current = &self.states[self.physical[i].current];
             if current.articulation == global.articulation && current.native_key == global.native_key
-                && current.native_tick == global.native_tick && current.native_seed == global.native_seed
+                && current.native_tick == global.native_tick && current.native_draw == global.native_draw
                 && current.previous == global.previous && current.axes == global.axes { continue; }
             let target = self.edit_physical(i);
             target.articulation = global.articulation; target.native_key = global.native_key;
-            target.native_tick = global.native_tick; target.native_seed = global.native_seed;
+            target.native_tick = global.native_tick; target.native_draw = global.native_draw;
             target.previous = global.previous; target.axes = global.axes;
         }
     }

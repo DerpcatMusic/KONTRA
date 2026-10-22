@@ -2704,6 +2704,19 @@ mod fade_tests {
         assert_eq!(ramp(100, 1, 100, 0, 60), 1.0 / 61.0);
         assert_eq!(ramp(80, 1, 100, 0, 60), 21.0 / 61.0);
     }
+
+    /// Kontakt 8 key-axis measurements (KONTAKT_REFERENCE.md s.11 and s.15):
+    /// L=24/F=36 gives (k-23)/37; H=72/F=36 gives (73-k)/37, so key 72 sits
+    /// at 1/37 and key 60 at 13/37 (-22.3 dB apart, measured).
+    #[test]
+    fn key_crossfades_follow_the_same_linear_steps() {
+        assert_eq!(ramp(24, 24, 127, 36, 0), 1.0 / 37.0);
+        assert_eq!(ramp(36, 24, 127, 36, 0), 13.0 / 37.0);
+        assert_eq!(ramp(60, 24, 127, 36, 0), 1.0);
+        assert_eq!(ramp(48, 0, 72, 0, 36), 25.0 / 37.0);
+        assert_eq!(ramp(60, 0, 72, 0, 36), 13.0 / 37.0);
+        assert_eq!(ramp(72, 0, 72, 0, 36), 1.0 / 37.0);
+    }
 }
 
 impl Prepared {

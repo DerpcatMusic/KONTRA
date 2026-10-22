@@ -814,6 +814,118 @@ fn transition_zones_follow_the_interval_from_the_held_key() {
     assert!((start(&mut rt, 62) - (0.1 + 0.2 + 0.4)).abs() < 1e-6);
 }
 
+/// A frame ramp, 1/8 apart, so each output frame shows where it was read.
+fn ramp(frames: usize) -> Pcm {
+    let frames = (0..frames).map(|i| [i as f32 / 8.; 2]).collect::<Vec<_>>();
+    Pcm::new(48000, frames.into_boxed_slice()).unwrap()
+}
+
+/// BASIC_BEHAVIORS row 2: a round-robin sequence hands out its takes in order
+/// on successive note-ons and wraps after the last one.
+#[test]
+fn basic_behavior_round_robin_takes_in_order_across_note_ons() {
+    let zone = |take: usize| ir::Zone {
+        keys: ir::KeyRange { low: 60, high: 60 },
+        pitch: ir::KeyTracking::Fixed,
+        velocity: ir::VelocityResponse::None,
+        selection: Some(ir::Selection {
+            sequence: ir::SequenceRef(0),
+            take: ir::Take::Index(take as u32),
+        }),
+        ..ir::Zone::new(ir::AssetRef(take))
+    };
+    let ir = ir::Instrument {
+        assets: ["a", "b", "c"].map(asset).to_vec(),
+        sequences: vec![ir::Sequence {
+            policy: ir::SequencePolicy::RoundRobin,
+            takes: 3,
+            counter: ir::CounterScope::Instrument,
+        }],
+        zones: (0..3).map(zone).collect(),
+        ..ir::Instrument::default()
+    };
+    let pcm = vec![constant(0.1), constant(0.2), constant(0.4)];
+    let plan = lower(&ir, 48000, pcm, no_behaviors).unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    let mut heard = Vec::new();
+    for _ in 0..6 {
+        heard.push(play(&mut rt, 60, 1.0)[0]);
+        rt.render(&mut [[0.0; 2]; 4800]).unwrap();
+    }
+    assert_eq!(heard, [0.1, 0.2, 0.4, 0.1, 0.2, 0.4]);
+}
+
+/// BASIC_BEHAVIORS row 9: a transition zone sounds for an interval inside its
+/// inclusive range (the top of +1..=+12 included) and not one just outside it.
+#[test]
+fn basic_behavior_transition_range_is_inclusive_and_excludes_outside_intervals() {
+    let zone = |asset, trigger| ir::Zone {
+        keys: ir::KeyRange { low: 0, high: 127 },
+        pitch: ir::KeyTracking::Fixed,
+        velocity: ir::VelocityResponse::None,
+        trigger,
+        ..ir::Zone::new(ir::AssetRef(asset))
+    };
+    let ir = ir::Instrument {
+        assets: ["first", "up"].map(asset).to_vec(),
+        zones: vec![
+            zone(0, ir::Trigger::First),
+            zone(1, ir::Trigger::Transition { low: 1, high: 12 }),
+        ],
+        ..ir::Instrument::default()
+    };
+    let build = || lower(&ir, 48000, vec![constant(0.1), constant(0.2)], no_behaviors).unwrap();
+    let start = |rt: &mut Runtime, key| {
+        rt.trigger(input(key), key, 1.0).unwrap();
+        let mut out = [[0.0; 2]; 64];
+        rt.render(&mut out).unwrap();
+        out[32][0]
+    };
+    // 60 stays held (its 0.1 voice keeps sounding); 72 is +12, the top of the
+    // range, so the transition zone adds its 0.2 voice.
+    let mut rt = Runtime::new(build(), limits()).unwrap();
+    assert!((start(&mut rt, 60) - 0.1).abs() < 1e-6);
+    assert!((start(&mut rt, 72) - (0.1 + 0.2)).abs() < 1e-6);
+    // Fresh runtime: 60 held, 73 is +13, outside the range, so only 60 sounds.
+    let mut rt = Runtime::new(build(), limits()).unwrap();
+    assert!((start(&mut rt, 60) - 0.1).abs() < 1e-6);
+    assert!((start(&mut rt, 73) - 0.1).abs() < 1e-6);
+}
+
+/// BASIC_BEHAVIORS row 17: an alternating loop plays forward to its last frame,
+/// reverses there without repeating that frame, and reverses again at its start.
+#[test]
+fn basic_behavior_alternating_loop_reverses_direction_at_its_end() {
+    let ir = ir::Instrument {
+        assets: vec![asset("ramp")],
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 0, high: 127 },
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            playback: ir::Playback {
+                looping: ir::Looping::Continuous(ir::LoopRange {
+                    start: 2,
+                    end: 6,
+                    crossfade: ir::Span::Frames(0),
+                    alternating: true,
+                }),
+                ..ir::Playback::default()
+            },
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        ..ir::Instrument::default()
+    };
+    let plan = lower(&ir, 48000, vec![ramp(8)], no_behaviors).unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    rt.trigger(input(60), 60, 1.0).unwrap();
+    let mut out = [[0.0; 2]; 12];
+    rt.render(&mut out).unwrap();
+    assert_eq!(
+        out.map(|f| f[0]),
+        [0, 1, 2, 3, 4, 5, 4, 3, 2, 3, 4, 5].map(|i| i as f32 / 8.)
+    );
+}
+
 /// Two nested selectors (outer A/B, inner x/y): each keeps its choice while the
 /// other changes, and a zone sounds only under the pair it names.
 #[test]
