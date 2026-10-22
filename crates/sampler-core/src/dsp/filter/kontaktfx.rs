@@ -1238,13 +1238,13 @@ mod tests {
                 let k = floats(knobs);
                 let unit = KontaktFilter::new(KontaktFx::DualSkf([k[0], k[1], k[2], k[3], k[4]]), rate);
                 let mut block: Planar = [[0.0; BLOCK]; 2];
-                for n in 0..BLOCK {
-                    block[0][n] = f64::from(left[b * BLOCK + n]);
-                    block[1][n] = f64::from(right[b * BLOCK + n]);
+                for n in 0..QUANTUM as usize {
+                    block[0][n] = f64::from(left[b * QUANTUM as usize + n]);
+                    block[1][n] = f64::from(right[b * QUANTUM as usize + n]);
                 }
-                assert!(!unit.process(&mut state, &mut block, BLOCK, (b * BLOCK) as u64, [0.0; 4]));
-                out_l.extend(block[0].iter().map(|&v| v as f32));
-                out_r.extend(block[1].iter().map(|&v| v as f32));
+                assert!(!unit.process(&mut state, &mut block, QUANTUM as usize, b as u64 * QUANTUM, [0.0; 4]));
+                out_l.extend(block[0][..QUANTUM as usize].iter().map(|&v| v as f32));
+                out_r.extend(block[1][..QUANTUM as usize].iter().map(|&v| v as f32));
             }
             for (name, got, want) in [("L", &out_l, &native_l), ("R", &out_r, &native_r)] {
                 let peak = want.iter().fold(1.0f32, |m, v| m.max(v.abs()));
