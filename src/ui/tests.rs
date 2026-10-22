@@ -3575,3 +3575,30 @@ fn replacing_a_part_drops_the_old_presets_saved_controls() {
     replace_part(&mut part, "b.nki".into());
     assert!(part.control_values.is_empty());
 }
+
+/// A swap leaves nothing derived from the old preset; rack routing stays.
+#[test]
+fn replacing_a_part_leaves_no_preset_state_and_keeps_rack_routing() {
+    use crate::sound::edits::{Edits, Override, Param};
+    let mut part = crate::plugin::Part {
+        path: "a.nki".into(),
+        port: 2,
+        channel: 5,
+        gain: -3.,
+        tune: 2.,
+        mpe: true,
+        uvi_state: "{}".into(),
+        uvi_state_source: "a".into(),
+        script_state: "saved".into(),
+        script_state_source: "a".into(),
+        bend_range: 12,
+        edits: Edits(vec![Override { group: None, param: Param::Attack, offset: 0.5 }]),
+        ..Default::default()
+    };
+    replace_part(&mut part, "b.nki".into());
+    assert_eq!(part.path, "b.nki");
+    assert_eq!((part.port, part.channel, part.gain, part.tune, part.mpe), (2, 5, -3., 2., true));
+    assert!(part.edits.0.is_empty(), "A's overrides must not shape B");
+    assert!(part.uvi_state.is_empty() && part.script_state.is_empty());
+    assert_eq!(part.bend_range, 0);
+}
