@@ -677,6 +677,7 @@ pub(super) fn slot_ladder(
     cutoff: f32,
     resonance: f32,
     extra: &[f32],
+    hq: bool,
 ) -> bool {
     // Kontakt 8 Filter Reference: Ladder filters. FUN_140cf4c80
     // maps saved 30..=41 to the 12 rows in FUN_140b00b80.
@@ -691,6 +692,7 @@ pub(super) fn slot_ladder(
         config.drive = f64::from(values[0]);
         config.cutoff = f64::from(values[1]);
         config.resonance = f64::from(values[2]);
+        config.high_quality = hq;
         config.binding = Some(sampler_ir::fx::filter::Binding {
             address: sampler_ir::SlotAddress {
                 group: s.physical.0,
@@ -737,7 +739,8 @@ pub(super) fn slot_daft(b: &mut Lowering, s: &Site, notes: &mut Notes, kind: i32
     b.out.filter_slots.push((s.fx.slot, b.out.processors.len() + b.filters.len()));
     let mapped = template(kind).expect("Daft rows are in the table");
     let mut config = mapped.config;
-    config.drive = f64::from(extra[0]).clamp(0.0, 1.0);
+    // Native gain setter (FUN_140b05290) takes the signed leading value unclamped.
+    config.drive = f64::from(extra[0]);
     config.cutoff = f64::from(cutoff).clamp(0.0, 1.0);
     config.resonance = f64::from(resonance).clamp(0.0, 1.0);
     b.filters.extend(config.processors(None).expect("Daft rows configure"));
