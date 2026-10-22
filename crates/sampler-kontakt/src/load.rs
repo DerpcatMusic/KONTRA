@@ -2116,7 +2116,7 @@ mod diagnostic_tests {
         let (scripts, _, _) = compile_ui(&mut instrument, &Options::default());
         assert_eq!(scripts.len(), 1);
         let warnings = &instrument.unsupported;
-        assert!(warnings.iter().any(|w| w.location == "script slot 3 Lookup line 7" && w.value.contains("find_group") && w.value.contains("-1")), "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.location == "script slot 3 Lookup line 7" && w.value.contains("find_group") && w.value.contains("was not found. Index will be invalid")), "{warnings:?}");
         assert!(warnings.iter().any(|w| w.location == "script slot 3 Lookup line 4" && w.value.contains("array index 9 out of bounds")), "{warnings:?}");
     }
 }
