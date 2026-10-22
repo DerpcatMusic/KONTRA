@@ -1980,16 +1980,18 @@ impl Translation {
                         mode: g.mode,
                         time_ms: g.values[0],
                     }),
-                    Modulator::Dbd(_) => {
-                        let feature = "DBD envelope (0x41): saved-duration resolver and legacy tail";
-                        self.unsupported(
-                            &at,
-                            feature,
-                            format!("{:?} {:?}", params.name, params.modulator),
-                            ir::Reason::UnknownLaw,
-                        );
-                        continue;
-                    }
+                    Modulator::Dbd(ref dbd) => match dbd_breakpoints(dbd) {
+                        Some(breakpoints) => ir::ModulationSource::Breakpoints(breakpoints),
+                        None => {
+                            self.unsupported(
+                                &at,
+                                "DBD envelope (0x41): v0x10/0x11 record or refused duration shape",
+                                format!("{:?} {:?}", params.name, params.modulator),
+                                ir::Reason::UnknownLaw,
+                            );
+                            continue;
+                        }
+                    },
                     Modulator::Other { chunk_id } => {
                         // 0x09 is BParArp, the note-blind 32-step table modulator
                         // (BArp32Step): its stored-to-table/length/rate/mode setup is unproved.
@@ -4712,6 +4714,31 @@ mod modulation {
     use ni_file::kontakt::objects::{Lfo, LfoRecord, ModTarget};
 
     #[test]
+    /// DBD v0x12 stored record: knobs 0.5 are 221.6 ms each, level 0.25 raw,
+    /// start 1/3; the flag zeroes the envelope; refused shapes stay diagnosed.
+    #[test]
+    fn dbd_v12_lowers_to_the_native_three_point_ramp() {
+        use ni_file::kontakt::objects::EnvelopeDbd;
+        let dbd = |version, values, flag| EnvelopeDbd {
+            version,
+            values,
+            extra: None,
+            records: None,
+            flag: Some(flag),
+        };
+        let b = dbd_breakpoints(&dbd(0x12, [0.5, 0.25, 0.5], 0)).unwrap();
+        assert_eq!(b.points.len(), 3);
+        assert_eq!(b.points[1].level, 0.25);
+        let ir::Time::Milliseconds(ms) = b.points[1].time else { panic!("ms") };
+        assert!((ms - 221.615_87).abs() < 1e-3, "{ms}");
+        assert_eq!(b.points[2].level, 0.0);
+        let zero = dbd_breakpoints(&dbd(0x12, [0.5, 0.25, 0.5], 1)).unwrap();
+        assert_eq!(zero.points.len(), 1);
+        assert_eq!(zero.points[0].level, 0.0);
+        assert!(dbd_breakpoints(&dbd(0x12, [0.5, 0.5, 0.0], 0)).is_none());
+        assert!(dbd_breakpoints(&dbd(0x11, [0.5, 0.5, 0.5], 0)).is_none());
+    }
+
     /// Stored knobs (KONTAKT_DSP_LAWS.md, AHDSR section): knob 0.5 is 171.2 ms
     /// attack/hold, 221.6 ms decay/release, and sustain level 0.125.
     #[test]
@@ -6532,6 +6559,48 @@ mod multi_tests {
         assert!(!k.instrument.groups.is_empty());
         assert!(super::read_program(&path, 999).is_err());
     }
+}
+
+/// Kontakt DBD (`BParEnv_DBD`, 0x41) v0x12 as the universal breakpoint envelope.
+/// Stored fields (reader `0x140cffd40`, resolver `0x1409651b0` mode 2): `values[0]`
+/// and `values[2]` are unit knobs for the two durations (decay law,
+/// `fconv_u2n_env_d`), `values[1]` is the level, read raw by the static
+/// preparation (`0x140ae5d70`); the flag byte zeroes level and second duration.
+/// The live re-preparation (`0x140ae4b50`) uses the same decay law. The start
+/// is 1/3 (`0x144760108`) with linear ramps (`0x140ae43d0`). Frames are
+/// `round(ms · rate / 1000)` in the lowering, the native `trunc(ms·0.001·R + 0.5)`.
+/// Refused: other versions (legacy tails unproven) and a nonzero first duration
+/// followed by a zero second one (unproven transition, the engine refuses it too).
+fn dbd_breakpoints(dbd: &ni_file::kontakt::objects::EnvelopeDbd) -> Option<ir::Breakpoints> {
+    if dbd.version != 0x12 || !dbd.values.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let [first, level, second] = dbd.values;
+    let point = |ms: f64, level: f64| ir::Breakpoint {
+        time: ir::Time::Milliseconds(ms),
+        level,
+        shape: ir::Curve::Linear,
+    };
+    if dbd.flag.unwrap_or(0) != 0 {
+        return Some(ir::Breakpoints {
+            points: vec![point(0.0, 0.0)],
+            ..Default::default()
+        });
+    }
+    let decay = |knob: f32| f64::from(sampler_core::native_mod_laws::u2n_env_d(knob));
+    let (first, second) = (decay(first), decay(second));
+    if first > 0.0 && second == 0.0 {
+        return None;
+    }
+    Some(ir::Breakpoints {
+        points: vec![
+            // 1/3 is the native f32 start (0x144760108), reached at once.
+            point(0.0, f64::from(1.0f32 / 3.0)),
+            point(first, f64::from(level)),
+            point(second, 0.0),
+        ],
+        ..Default::default()
+    })
 }
 
 /// Kontakt Flex (`BEnvelopeFM7`) as the universal breakpoint envelope.
