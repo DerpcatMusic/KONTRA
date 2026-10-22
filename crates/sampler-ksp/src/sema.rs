@@ -8,6 +8,14 @@ use crate::model::PerformanceControl;
 use sampler_core::Comparison;
 use std::collections::HashMap;
 
+/// Commands the manual restricts to the "on init" callback.
+const INIT_ONLY: [Builtin; 4] = [
+    Builtin::AddMenuItem,
+    Builtin::MakePersistent,
+    Builtin::SetScriptTitle,
+    Builtin::SetUiHeightPx,
+];
+
 /// Declaration budgets; see `crate::Limits`.
 #[derive(Clone, Copy)]
 pub struct Budget {
@@ -28,6 +36,8 @@ struct Sema<'a, 's> {
     budget: Budget,
     array_cells: usize,
     in_init: bool,
+    /// Function bodies are checked for their callers' context at lowering time.
+    in_function: bool,
     loops: usize,
     /// Controls from the performance view file, once `load_performance_view` ran.
     performance_view: &'s [PerformanceControl],
@@ -50,6 +60,7 @@ pub fn analyze<'a, 's>(
         budget,
         array_cells: 0,
         in_init: false,
+        in_function: false,
         loops: 0,
         performance_view,
         performance_loaded: false,
@@ -98,10 +109,12 @@ pub fn analyze<'a, 's>(
             body,
         });
     }
+    s.in_function = true;
     for (index, body) in bodies.into_iter().enumerate() {
         let body = s.block(&body)?;
         s.hir.functions[index].body = body;
     }
+    s.in_function = false;
     let mut seen = HashMap::new();
     for c in callbacks {
         let kind = match (syms.name(c.name), c.arg) {
@@ -1147,6 +1160,14 @@ impl<'a> Sema<'a, '_> {
     }
 
     fn builtin(&mut self, b: Builtin, args: &[ast::Expr], span: Span) -> Result<(Vec<Arg>, Ty)> {
+        // Kontakt rejects these outside "on init" (its own error text); functions
+        // inherit the context of the callback that calls them, so they are exempt.
+        if INIT_ONLY.contains(&b) && !self.in_init && !self.in_function {
+            return fault(
+                span,
+                format!("{}() can only be used in \"on init\" callback!", b.name()),
+            );
+        }
         let sig = b.sig();
         let max = sig.args.len();
         let min = max - sig.optional as usize;
