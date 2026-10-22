@@ -243,6 +243,10 @@ pub(crate) fn apply_writes(
             "ENGINE_PAR_GAIN1" if group >= 0 && generic == -1 => fx.apply_eq_gain(0, w.value),
             "ENGINE_PAR_GAIN2" if group >= 0 && generic == -1 => fx.apply_eq_gain(1, w.value),
             "ENGINE_PAR_GAIN3" if group >= 0 && generic == -1 => fx.apply_eq_gain(2, w.value),
+            // Wow / Flutter (0x6a) fields: the saved record the reader parses.
+            parameter if fx.module == 0x6a => {
+                let _ = timemod::wowflutter_store(fx.version, &mut fx.public, parameter, w.value);
+            }
             // Solid G-EQ (0x44) knobs and switches: the saved record the reader parses.
             parameter if fx.module == 0x44 => {
                 let _ = eq::solid_store(fx.version, &mut fx.public, parameter, w.value);
