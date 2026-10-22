@@ -135,3 +135,13 @@ Unit: `k-mod-external`. Matrix rows: `docs/re/engine/PARITY_MATRIX.md`, "Modulat
 - Glide consumer: `FUN_140ceb090` (ramp render) has no direct caller in the export; it is reached
   through a virtual call. Its output units, and how a pitch route scales them, are unproven.
 - External sources and routing lag/shape: no getter or lag law located in this pass. Status stays partial.
+
+## Routing smoothing (final pass)
+
+- Native compiler FUN_140873040 (`0140870000.c`, body at ~1413-1435, text emit ~1839-1870) reads the
+  signed lag `+0xe` and computes, with constants from the binary: rate * |lag| / 32000 (32-frame cells).
+- Positive lag: `1 - exp(-2 ln10 / cells)` per cell. The engine's per-chunk step at 64 frames equals
+  two cells (`voice_mod::laws::native_lag_coefficient_per_cell`, test `route_lag_matches_the_native_compiler_laws`).
+- Negative lag: `trunc(cells_samples * 0.25 + 0.5)` as a stored integer. The consumer that uses this count
+  was not located. The lowering keeps negative lag unsupported.
+- Still open: shape law (`+0x..` shaper tables) and the bypass flag semantics.
