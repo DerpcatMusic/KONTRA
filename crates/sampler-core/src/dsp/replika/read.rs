@@ -18,6 +18,11 @@ const PI_F32: f32 = f32::from_bits(0x4049_0fdb);
 /// `144f38948`: the lower clamp of the section frequency.
 const FREQ_LO: f64 = 0.2;
 
+/// `14199dcc0`: `sec` retuned to frequency `f` with the rate factor `rate`: g = tan(f pi rate), damping kept.
+pub(super) fn retune(sec: Section, f: f32, rate: f32) -> Section {
+    Section::new(tan_poly(f * PI_F32 * rate), sec.parts().3)
+}
+
 /// One read tap. Field comments give the offsets in the kernel object.
 #[derive(Clone, Copy, Debug)]
 pub struct Tap {
@@ -80,8 +85,7 @@ impl Tap {
     /// `14199dcc0`: the section for frequency `f`, g = tan(f pi rate) with the kernel's damping.
     fn set_freq(&mut self, f: f32) {
         self.freq = f;
-        let g = tan_poly(f * PI_F32 * self.rate);
-        self.sec = Section::new(g, self.sec.parts().3);
+        self.sec = retune(self.sec, f, self.rate);
     }
 
     /// `141ab87d0`: the interpolated ring sample at `pos - x`. `ring` is the data of length `mask + 1`.
