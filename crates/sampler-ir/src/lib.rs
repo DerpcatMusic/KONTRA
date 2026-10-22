@@ -1400,6 +1400,9 @@ pub enum VelocityResponse {
     /// Amplitude is velocity / 127.
     #[default]
     Linear,
+    /// Kontakt's velocity-to-volume route at the default intensity (50 of 127, the Beat Machine
+    /// route). Amplitude follows Kontakt's measured relative-dB table (`sampler-core` prepare).
+    VolumeTable,
     /// Amplitude is (velocity / 127) ^ exponent.
     Power(f64),
 }

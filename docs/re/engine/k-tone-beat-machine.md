@@ -4,8 +4,10 @@ Status: **missing, candidate kernels located.** The process kernels are now
 located through the cached vtable table (`docs/re/kontakt-rdata/vtables.tsv.gz`,
 section "Vtable slots" below), but they are not ported: the Tone kernel is
 three ~2 KB vectorised variants whose laws are not yet read, and the Beat
-Machine has no audio kernel of its own (slice playback, see below). No DSP is
-changed; both matrix rows stay `missing`.
+Machine has no audio kernel of its own (slice playback, see below). The one DSP law
+added is the velocity-to-volume table for the Beat route at its default intensity
+(`VolumeTable`, see "Sessions A and B"). The Beat rate rule is still open; both matrix
+rows stay `missing`.
 
 Scope: Kontakt 8 only. Addresses are Kontakt 8.exe VAs. Decompile text is
 read with `rg`; no C is pasted here.
@@ -251,11 +253,16 @@ Source: `Research/KONTRA/source/kontakt8/*.c` (the Ghidra project is gone, so `q
   BPM (`+0x28`). No host tempo, sync or transport input is read here. Cell length `FUN_140872590`
   (`0140870000.c:1780`): `240 * W_n / (B * W_d)`.
 - Apply gate: `FUN_14086f680` writes `ts` only when `record[0] != 0` and `record[0x20] != 0`. Callers:
-  `FUN_1408af580` (`01408a0000.c:7194`) skips the apply for group id 5 (the Beat Machine) when the
-  group byte `+0xc2d` is non-zero (not fully traced); `FUN_1408b1960` (`01408b0000.c:1583`) and
-  `FUN_14135e550` (`0141350000.c:11331`) are file-record gated. A zone that is not applied keeps
-  `ts = 1.0` (default `FUN_1408df940`). That fits the 1.0 playbacks in sessions 3 to 5, but the flag
-  that blocks the apply in those sessions is not identified.
+  `FUN_1408af580` (`01408a0000.c:7081`, the apply call at 7194) and its group-5 check below;
+  `FUN_1408b1960` (`01408b0000.c:1583`) and `FUN_14135e550` (`0141350000.c:11331`) are file-record
+  gated. A zone that is not applied keeps `ts = 1.0` (default `FUN_1408df940`). That fits the 1.0
+  playbacks in sessions 3 to 5, but the flag that blocks the apply in those sessions is not identified.
+- Group byte `+0xc2d` (the Beat group id 5 check): written to 1 by `FUN_140832960`
+  (`0140830000.c:1947`, next to `+0xbbc` set to 1.0 at line 1946). Read in `FUN_1408af580` at
+  `01408a0000.c:7164`: when the group is id 5 (`+0xba8 == 5`) and the flag is set, the code jumps
+  past the `FUN_140820fd0` call (7165) to `LAB_1408af6a7` (7186), which calls `FUN_140890100` instead.
+  Not traced: whether the `ts` apply (7194) still runs on that path, and any reader of `+0xbbc`.
+  The rate itself is not read here.
 - Slot 18 writes the attack and release frames (`+0x54`, `+0x58`) and the flag (`+0x50`). The generic
   render `FUN_140cdb6f0` (`0140cd0000.c:6251`) uses `+0x58` as a crossfade length and a per-sample
   exponential gain, `pow(DAT_1447149a8, +0x3c)`. That is a candidate for the decay the oracle showed
@@ -294,7 +301,7 @@ of the saved `beat_fixed.nki`, `--no-scripts`, note 60 for 0.8 s.
 | Slot rates (tone x 0.25), slices 1-3 (50, 80, 110 Hz) | 49.86, 79.99, 110.02 Hz | 49.86, 80.00, 109.97 Hz | 0.5 % | pass (oracle vs render within 0.05 %; analytic-signal median over the central 55 ms of each cell, re-measured 2026-10-22) |
 | Slot boundaries (onset at 0, cells 125 ms) | changes near 100, 240, 350 ms | same within one 20 ms step | 20 ms | pass |
 | Slice 4 (560 Hz) | silent after 380 ms | 139.91 Hz, full level | — | fail (decay, below) |
-| Level (peak, first 100 ms) | 0.136 RMS | 0.161 RMS | — | fail, 1.5 dB. Our plain sampler render equals our Beat render, but no oracle plain-sampler level was measured, so it is not known whether the gap is shared (velocity curve) or Beat-only |
+| Level (peak, first 100 ms) | 0.136 RMS | 0.161 RMS | — | fail, 1.5 dB at velocity 100. Explained by the route's velocity curve (see "Sessions A and B") and closed by the `VolumeTable` law |
 | Amplitude over time | flat to ~100 ms, then falls to ~0 by 350 ms (tau about 0.1 s) | flat | — | fail, not modelled |
 
 The source tones are flat (RMS 0.35 in each cell), and the NKI amplitude envelope has sustain
@@ -341,7 +348,9 @@ Results (artifacts: `PluginArtifacts/kontra-oracle/beat-machine/session3/`):
   silence.
 - The native render of the same NKI and MIDI (`sampler-native render-kontakt-midi --no-scripts`)
   plays at the stored rate: A 49.86, 80.00, 109.97, 139.95 Hz; C 100, 100, 160, 160, 220, 220,
-  280, 280 Hz. Its level is flat at -15.81 dB, so the level gap is a constant 1.54 dB.
+  280, 280 Hz. Its level is flat at -15.81 dB, 1.54 dB above the oracle. All seven notes were at
+  velocity 100, so this is one point of the route's velocity curve, not a constant (see
+  "Sessions A and B").
 
 Conflict with session 1. Session 1 (KSP `play_note`, one zone, 1/16 at 120 BPM, trigger file
 without a tempo meta, so 120 BPM) played at 0.25, with the decay and the slice-4 silence. Session 3
@@ -355,11 +364,55 @@ sessions 3 to 5 used MIDI) and the zone count (session 1 had one zone over all k
 had three). The decay and the slice-4 silence belong to
 the 0.25 case, and they have not been reproduced at 1.0.
 
+### Sessions A and B (2026-10-22, one run each, niced)
+
+Probes: `beat_machine_single.lua` (A) and `beat_machine_velocity.lua` (B); MIDI from
+`beat_machine_session3_midi.py` (scenarios `single` and `velocity`, file tempo 60 BPM, 1 ms per
+tick). Kontakt 8 under Wine via `render.py`. Scratch WAVs were deleted after the numbers were taken.
+
+Session A (rate, one zone). One instrument, one zone over keys 0-127, root 48, 1/16 at 120 BPM
+(stored `tempo_scale` 0.25), group mode `beat_machine`. Notes: key 48, velocity 100, at 0 s and
+2 s, held 1.2 s. Each note played the 0.5 s slice set once, in four 125 ms cells at 203, 317, 441
+and 559 Hz (and 198, 322, 441, 559 Hz for the second note): rate **1.0**. So one zone with
+MIDI notes is not the condition that gives 0.25. Session 1 (one zone, KSP `play_note`) gave 0.25
+with the same stored value, so the remaining candidate is the note source. Not tested in isolation.
+Beat rate work stops here. Our engine applies the stored 0.25 to this zone, so a MIDI-triggered Beat
+instrument still differs from the oracle. Nothing was changed for rate.
+
+Session B (level, velocity). Group 0: Beat zone over keys 64-127, root 96, `a_16_120.wav`
+(1/16 at 120 BPM). Group 1: sampler zone over keys 0-63, root 48, sine 440 Hz at 0.5 amplitude,
+no route. Notes: key 48 at 0, 2, 4, 6 s, then key 96 at 8, 10, 12, 14 s, velocities 32, 64, 100, 127,
+held 1.2 s. The oracle recording starts 1.03 s after MIDI time 0 (onset detection). Measured at each
+note (peak over the note, RMS from 20 ms to the end of the 0.5 s slice set):
+
+| Route | Velocity | Oracle peak | Ours, before the fix | Ours, now | Ours, now vs oracle (RMS) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Sampler zone | 32, 64, 100, 127 | 0.1250 each (RMS 0.0884) | 0.1250 (RMS 0.0884) | same | 0.00 dB at all four |
+| Beat zone | 32 | 0.0875 | 0.1764 (+6.09 dB) | 0.0877 | −0.13 dB |
+| Beat zone | 64 | 0.1295 | 0.2012 (+3.83 dB) | 0.1297 | −0.12 dB |
+| Beat zone | 100 | 0.1919 | 0.2291 (+1.54 dB) | 0.1918 | −0.12 dB |
+| Beat zone | 127 | 0.2500 | 0.2500 (0 dB) | 0.2500 | −0.13 dB |
+
+- The sampler zone is flat at gain 0.25 at every velocity, the same in the oracle and in ours.
+  So the plain path has no velocity curve here.
+- The Beat route follows the calibrated table (`docs/architecture-v2/KONTAKT_DSP_LAWS.md`). Oracle
+  peak ratios against velocity 127: −9.12, −5.71, −2.30 dB at 32, 64, 100. Before the fix, our
+  route ran on the generic modulation path as a linear depth, gain = 1 − 0.3937 × (1 − v/127).
+  That gives 0.2291 at velocity 100 (+1.54 dB), the same figure as the session 3 level gap. All
+  session 3 notes were at velocity 100, so that gap was one point of the curve, not a constant.
+- The fix is a `VelocityResponse::VolumeTable` law for exactly the default route intensity
+  (50 of 127) in `sampler-core` (`VOLUME_TABLE_DB`). Full intensity stays `Linear`. Other
+  intensities are not measured and keep the generic path. Peaks now match the oracle within
+  0.02 dB. The RMS is 0.12 to 0.13 dB low at every velocity. Not explained (the slice release is
+  linear, not native).
+- Session 1's peak of 0.192 is the same velocity-100 point (0.1919 here).
+
 ### Not recovered
 
 - The runtime condition for applying the stored `ts` (session 1 vs session 3), auto grid, and
   whether `set_zone_grid`'s width argument reaches the record (session 3's `8` did not change the cells).
-- The amplitude fall after about 100 ms in the oracle, and the 1.5 dB level gap.
+- The amplitude fall after about 100 ms in the oracle (the 1.5 dB level gap is resolved, see
+  "Sessions A and B").
 - The second-trigger silence (session 2 did not test it).
 - The meaning of `slice_flag_1` (`+0x99`) and of the float copy in the `0x35` records.
 - The source player call from slot 18 (`+0x38`) and the fade shape beyond the linear attack
@@ -426,7 +479,7 @@ and group 0 with `set_group_playback_mode(inst, 0, "beat_machine")`. Readbacks: 
 | Module | Shared engine covers | Missing |
 | --- | --- | --- |
 | Tone Machine | Mode mapping and stand-in granular engine, reported `NotModeled` | Render kernel, grain/formant/DC laws, record-to-object mapping, `hiQuality` |
-| Beat Machine | Stored mode and controls decoded; zone grid (chunk 0x35, `Playback::beat_grid`) and rate (private float 12) parsed; zone played as sliced cells with the sequencer, linear fades, at the stored rate (session 1, rate within 0.2 %) | Oracle rate 1.0 in session 3 against stored 0.25 and 0.5 (rate rule open); constant 1.54 dB level gap; `slice_flag_1` meaning; loops; auto grid. Second trigger: resolved (sounds in session 3) |
+| Beat Machine | Stored mode and controls decoded; zone grid (chunk 0x35, `Playback::beat_grid`) and rate (private float 12) parsed; zone played as sliced cells with the sequencer, linear fades, at the stored rate (session 1, rate within 0.2 %); velocity-to-volume law at the default route intensity (`VolumeTable`, session B, peaks within 0.02 dB) | Oracle rate 1.0 in sessions 3 to 5 and A against stored 0.25 (rate rule open; note source is the remaining candidate); other route intensities; `slice_flag_1` meaning; loops; auto grid; fall after about 100 ms. Second trigger: resolved (sounds in session 3) |
 
 ## Open items (for the next pass)
 
@@ -436,17 +489,14 @@ and group 0 with `set_group_playback_mode(inst, 0, "beat_machine")`. Readbacks: 
 2. Confirm the stored-mode to internal-id map. The export groups internal id 4
    with the sampler family and uses id 5 for the Beat Machine rule, so stored
    Beat (4 in the repo) is not the identity map. Unresolved.
-3. Oracle, Beat Machine rate: sessions 3 to 5 gave rate 1.0 where the stored value is 0.25 (1/16)
-   and 0.5 (1/8). Session 1 gave 0.25 with the same stored value. Excluded: the script being
-   present (session 4) and the MIDI file tempo, 60 or 120 BPM (session 5). Remaining: the note
-   source (KSP `play_note` or MIDI) and the zone count (one or three). The decompile gate (item 6)
-   names a group flag (`+0xc2d`, group id 5) that is not traced; it is the next lead.
-4. Oracle, level: the 1.54 dB gap is constant (oracle -17.35 dB, render -15.81 dB RMS) in sessions 3
-   to 5. No oracle plain-sampler level exists, so it is not known whether the gap is shared (the
-   velocity curve) or Beat-only. Oracle peak gain at velocity 100 is 0.384, about (100/127)^4 (one
-   point, not a fit); ours is 0.458. One plain-sampler session at several velocities would separate
-   the two. The session 1 decay after about 100 ms did not reproduce at rate 1.0; it may belong to
-   the 0.25 case.
+3. Oracle, Beat Machine rate: sessions 3 to 5 and A gave rate 1.0 where the stored value is 0.25
+   (1/16) and 0.5 (1/8). Session 1 gave 0.25 with the same stored value. Excluded: the script being
+   present (session 4), the MIDI file tempo at 60 or 120 BPM (session 5), and the zone count
+   (session A, one zone, rate 1.0). Remaining: the note source, KSP `play_note` (session 1) against
+   MIDI (sessions 3 to 5, A). Not tested in isolation. The group flag `+0xc2d` is traced in the
+   decompile section: it selects a trigger path, and no reader of the rate was found.
+4. Oracle, level: resolved for the default velocity route (see "Sessions A and B"). The 1.54 dB gap
+   was the Beat route's velocity curve, not a constant. Other route intensities are unmeasured.
 5. `slice_flag_1` (`+0x99`): find the control or the writer of that byte.
 6. Grid factor: resolved for the stored `ts` (`BPM * len / 240`, see "Zone playback rate"). Still
    open: the runtime condition under which `ts` is applied (session 1 yes, session 3 no), the zone grid
