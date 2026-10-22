@@ -931,6 +931,16 @@ pub(crate) fn initialize_scripts_with_zones(
                         reason: ir::Reason::InvalidValue,
                     }),
                 }
+            } else if behavior.source.contains("load_performance_view") {
+                // Kontakt evaluates the file name at the call; only one literal name
+                // in on init is read here, so other forms leave the view empty.
+                views.push(ir::Unsupported {
+                    location: behavior.name.clone(),
+                    feature: "performance view".into(),
+                    value: "load_performance_view name is not one literal in on init; no view is read"
+                        .into(),
+                    reason: ir::Reason::NotModeled,
+                });
             }
             let mut environment = script_environment_with_zones(
                 behavior,
