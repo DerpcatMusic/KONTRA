@@ -20,6 +20,8 @@ pub mod shaper_4;
 // unwired until the cfb0 state update (c830) is recovered; see docs/re/engine/kolor-shaper-cases.md
 #[allow(dead_code)]
 pub mod shaper_6_9;
+#[allow(dead_code)]
+pub mod shaper_0_1_3;
 
 /// One Kolor shaper case: a sample in, a sample out. Stateless cases ignore `&mut self`.
 pub trait KolorShaper {
