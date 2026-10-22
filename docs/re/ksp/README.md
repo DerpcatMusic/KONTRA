@@ -8,7 +8,7 @@ Diagnose which KSP symbols a script uses and how KONTRA implements each one.
 
 ```sh
 python3 tools/re/ksp_symbols.py doctor script.ksp            # text report
-python3 tools/re/ksp_symbols.py doctor Patch.nki --json      # .nki/.nkb/.nkm/.nka extracted via dump_scripts
+python3 tools/re/ksp_symbols.py doctor Patch.nki --json      # .nki instrument, scripts extracted via dump_scripts
 python3 tools/re/ksp_symbols.py doctor a.ksp b.ksp --strict  # exit 1 if an unsupported symbol is used
 ```
 
