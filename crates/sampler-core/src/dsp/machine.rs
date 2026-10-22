@@ -399,7 +399,8 @@ fn lagrange4(xm1: f32, x0: f32, x1: f32, x2: f32, t: f32) -> f32 {
     let b = a - MP60_KERNEL_ONE;
     let c = b - MP60_KERNEL_ONE;
     let d = c - MP60_KERNEL_ONE;
-    (a * x2 * b * c - d * xm1 * b * c) * MP60_KERNEL_SIXTH + (x0 * a * c - a * x1 * b) * d * MP60_KERNEL_HALF
+    (a * x2 * b * c - d * xm1 * b * c) * MP60_KERNEL_SIXTH
+        + (x0 * a * c - a * x1 * b) * d * MP60_KERNEL_HALF
 }
 
 /// The MP60 chain runs on a 44.1 kHz grid (`DAT_144f38d58`); the host rate is
@@ -426,7 +427,13 @@ pub fn mp60_latency(host_rate: u64) -> u64 {
 /// samples at `slots[base + (i & (MP60_RING - 1))]`. Indices below zero read as
 /// silence (the stream starts there).
 fn mp60_ring_read(slots: &[[f64; 2]], base: usize, c: usize, whole: i64, frac: f32) -> f32 {
-    let at = |i: i64| if i < 0 { 0.0 } else { slots[base + (i as usize & (MP60_RING - 1))][c] as f32 };
+    let at = |i: i64| {
+        if i < 0 {
+            0.0
+        } else {
+            slots[base + (i as usize & (MP60_RING - 1))][c] as f32
+        }
+    };
     lagrange4(at(whole - 1), at(whole), at(whole + 1), at(whole + 2), frac)
 }
 
@@ -443,7 +450,11 @@ pub struct Mp60Stage {
 impl Mp60Stage {
     pub fn new(host_rate: u32) -> Self {
         let host_rate = u64::from(host_rate);
-        let latency = if host_rate == MP60_INTERNAL_RATE { 0 } else { mp60_latency(host_rate) };
+        let latency = if host_rate == MP60_INTERNAL_RATE {
+            0
+        } else {
+            mp60_latency(host_rate)
+        };
         Self { host_rate, latency }
     }
 
@@ -455,7 +466,13 @@ impl Mp60Stage {
     /// `schedule` is `[frames run, internal samples run]`, zeroed for a fresh
     /// voice. Output frame `n` is the chain's output for host time `n - latency`,
     /// so the first `latency` frames are silent.
-    pub fn process(&self, slots: &mut [[f64; 2]], schedule: &mut [f64; 2], block: [&mut [f64]; 2], len: usize) {
+    pub fn process(
+        &self,
+        slots: &mut [[f64; 2]],
+        schedule: &mut [f64; 2],
+        block: [&mut [f64]; 2],
+        len: usize,
+    ) {
         let start = schedule[0] as u64;
         if start == 0 {
             slots.fill([0.; 2]);
@@ -681,8 +698,14 @@ mod tests {
         let whole = run(&[60_000]);
         let split = run(&[25_000, 7_000, 28_000]);
         assert_eq!(whole, split, "block size must not change the output");
-        assert!(whole[..lag].iter().all(|&v| v == 0.0), "output lags the input by the stage latency");
+        assert!(
+            whole[..lag].iter().all(|&v| v == 0.0),
+            "output lags the input by the stage latency"
+        );
         let settled = *whole.last().unwrap();
-        assert!((settled - dc).abs() <= 1e-4 * dc.abs().max(1e-3), "settled {settled} vs chain DC {dc}");
+        assert!(
+            (settled - dc).abs() <= 1e-4 * dc.abs().max(1e-3),
+            "settled {settled} vs chain DC {dc}"
+        );
     }
 }
