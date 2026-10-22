@@ -22,9 +22,12 @@
 //! index, offset, count and rates, so they are part of this port. Not ported: the deposit's own history (`+0x84..+0x8c`),
 //! the write stage `141acd110`, the wrapper `141ab7a90` (the gains `+0x70`, `+0x74` and the mixing) and the caller of
 //! the speeds. The mode writer `141aca4a0` (k = 0, 1, 2, 4, `Head::set_mode`) is ported; its k = 3 is blocked.
+//! The index-28 selector `141aca670` (`Heads::select`) applies the mode writers to the three heads and the
+//! selector's own state effects that are modelled (see there).
 //!
 //! Vectors: `docs/re/engine/vectors/replika-native-mode1-driver.json` (kemu, 4 cases of 128 frames, modes 1, 2, 3, 1).
 
+use super::ReplikaState;
 use super::delay::DelayPos;
 use super::mode1::PostFilter;
 use super::read::{Tap, retune};
@@ -332,6 +335,69 @@ impl Head {
             g.fresh = true;
             g.pending = false;
         }
+    }
+
+    /// The part of the head reset `141aba100` (run by `141aba800` with flag 1) that the port takes: both taps reset
+    /// (`141aba040` with flag 0, [`Tap::reset`]; the ring clear of flag 1 is not ported), then a pending settle lands on
+    /// the target now (`+0x57c8` = `+0x57d0`, the pending byte cleared, the trigger `+0x57e1` set). The rest of
+    /// `141aba100` is not ported (see [`Heads::select`]).
+    fn reset_taps_and_settle(&mut self) {
+        self.taps.iter_mut().for_each(Tap::reset);
+        if self.fade.pending {
+            self.fade.level = self.fade.target;
+            self.fade.pending = false;
+            self.fade.trigger = true;
+        }
+    }
+}
+
+/// The mode-1 heads (`C+0xac0`, `C+0x6380`, `C+0xbc40`, in this order) and the path the selector last applied:
+/// `C+0x830`, and `C+0x604` is the same value. Not in the state slab yet (the heads are not packed).
+#[derive(Clone, Debug)]
+pub struct Heads {
+    /// `C+0x830`. The ctor and prepare leave `0x7fffffff` (measured under kemu), so the first selector call changes the path.
+    pub path: i32,
+    pub heads: [Head; 3],
+}
+
+impl Heads {
+    /// `141aca670`, the index-28 selector, for the raw value `v`. Ported, in native order: the path guard (an unchanged
+    /// path does nothing), the mode writer `141aca4a0` on each head with flag 0 (`Head::set_mode`; mode k for k = 1, 2,
+    /// else 0), then `141aba800` and `141aba680`: each head's taps reset and pending fade settle (the parts of `141aba100`
+    /// the port takes), the ducker envelope goes to 0 dB, and the saturator section states to 0.
+    ///
+    /// Path 3 returns `Err(Blocked)` before anything is written (its mode writer calls the unported `141acb100`).
+    ///
+    /// Not ported. The native selector writes these too; `changed_bytes` in `replika-native-selector28-*.json` has the
+    /// byte runs. The bypass fade `141acc600` (its blocks at `H+0x5808`, `P3+0x60`) changes nothing with the default
+    /// enables, so the vectors do not exercise it. The rest of `141aba100` (the ring clear `1407e6d80` of flag 1, sections
+    /// `+0x350`/`+0x384`, post filters, lane banks, the words `+0x158`, `+0x190`, `+0x5788..+0x57b0`). The delay caller
+    /// `141abd290` (`H+0x58`/`+0x60` speed ratios, `+0xc8`/`+0xd0` positions, the `+0x90` flag, the words `+0xd8..+0xf0`),
+    /// with its path callees `141aca380` (path 2, the block `C+0x9a0`) and `141acb160` (path 3, `C+0x14198`). The rotator at
+    /// `C+0x980..0x997` (`141aca670` itself, and `141aba700`), the post table `C+0x944..0x967` (path 1), the table
+    /// `C+0x14208..` and the flags `C+0x11504`, `C+0x12984` (path 4), the ducking flag `C+0x938`, and `141aba570`.
+    /// The lane and post coefficients of `141abbc90` (k = 1) also stay with the mode writer's design chain (not applied).
+    pub fn select(&mut self, st: &mut ReplikaState, v: f32) -> Result<(), Blocked> {
+        let k = path_for_index(v);
+        if k == self.path {
+            return Ok(());
+        }
+        if k == 3 {
+            return Err(Blocked);
+        }
+        self.path = k;
+        let mode = if (1..=3).contains(&k) { k } else { 0 };
+        for h in &mut self.heads {
+            // Flag 0: the taps keep their rings (`reset_taps` then touches only the rates).
+            h.set_mode(mode, false, [&mut [], &mut []])
+                .expect("modes 0, 1, 2 and 4 are ported");
+        }
+        for h in &mut self.heads {
+            h.reset_taps_and_settle();
+        }
+        st.env = 0.;
+        st.saturator = Default::default();
+        Ok(())
     }
 }
 
@@ -947,5 +1013,148 @@ mod tests {
         assert_eq!(h.glide, before.glide);
         assert_eq!(h.kernel, before.kernel);
         assert_eq!(ring_l, words(&case["init"]["ring_l"]));
+    }
+
+    fn selector_vector(name: &str) -> Value {
+        let path = format!(
+            "{}/../../docs/re/engine/vectors/replika-native-selector28-{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        serde_json::from_str(&std::fs::read_to_string(path).expect("vector file"))
+            .expect("vector json")
+    }
+
+    /// The selector's state from a vector's `init`: the path, the three heads, the ducker and the saturators.
+    fn selector_state(init: &Value) -> (Heads, ReplikaState) {
+        let core = &init["core"];
+        let heads = Heads {
+            path: f(core, "path830") as i32,
+            heads: [0, 1, 2].map(|i| mode_head(&init["heads"][i])),
+        };
+        let mut st = ReplikaState::new(48_000.);
+        st.env = f(core, "env");
+        for (ch, side) in [(0, "L"), (1, "R")] {
+            let sec = |p: &str| State {
+                s0: f(core, &format!("sat{side}_{p}_s0")) as f32,
+                s1: f(core, &format!("sat{side}_{p}_s1")) as f32,
+            };
+            st.saturator[ch] = [sec("b"), sec("a")];
+        }
+        (heads, st)
+    }
+
+    /// `141aca670` through the setter (index 28) from the reset path: v = 0.1 (k 0), 0.3 (k 1), 0.5 (k 2), 0.9 (k 4).
+    /// The ported fields after the call equal the native ones (floats within 1e-5, integers and flags exact). The
+    /// `changed` list of each vector holds what the port does not write (see [`Heads::select`]); it is not checked.
+    #[test]
+    fn selector_matches_native_vectors() {
+        for name in ["v0p1", "v0p3", "v0p5", "v0p9"] {
+            let doc = selector_vector(name);
+            let (init, end) = (&doc["init"], &doc["end"]);
+            let (mut heads, mut st) = selector_state(init);
+            heads
+                .select(&mut st, f(&doc, "v") as f32)
+                .expect("paths 0, 1, 2 and 4 are ported");
+            let tag = format!("{name} k {}", f(&doc, "k"));
+            assert_eq!(heads.path as f64, f(&end["core"], "path830"), "{tag} path");
+            assert_eq!(st.env, f(&end["core"], "env"), "{tag} env");
+            for (ch, side) in [(0, "L"), (1, "R")] {
+                let got = [
+                    ("a_s0", st.saturator[ch][1].s0),
+                    ("a_s1", st.saturator[ch][1].s1),
+                    ("b_s0", st.saturator[ch][0].s0),
+                    ("b_s1", st.saturator[ch][0].s1),
+                ];
+                for (part, g) in got {
+                    let want = f(&end["core"], &format!("sat{side}_{part}"));
+                    close_f32(&format!("{tag} sat{side} {part}"), g as f64, want);
+                }
+            }
+            for (i, h) in heads.heads.iter().enumerate() {
+                let (e, tag) = (&end["heads"][i], format!("{tag} head {i}"));
+                assert_eq!(h.mode as f64, f(e, "mode"), "{tag} mode");
+                assert_eq!(h.kernel[0] as f64, f(e, "kernel_l"), "{tag} kernel L");
+                assert_eq!(h.kernel[1] as f64, f(e, "kernel_r"), "{tag} kernel R");
+                let g = &h.glide;
+                close_f32(&format!("{tag} glide cur"), g.cur as f64, f(e, "g_cur"));
+                close_f32(
+                    &format!("{tag} glide target"),
+                    g.target as f64,
+                    f(e, "g_target"),
+                );
+                close_f32(&format!("{tag} glide step"), g.step as f64, f(e, "g_step"));
+                assert_eq!(g.count as f64, f(e, "g_count"), "{tag} glide count");
+                assert_eq!(
+                    g.count_init as f64,
+                    f(e, "g_count_init"),
+                    "{tag} count init"
+                );
+                assert_eq!(g.pending, f(e, "g_pend") != 0.0, "{tag} glide pending");
+                assert_eq!(g.fresh, f(e, "g_fresh") != 0.0, "{tag} glide fresh");
+                close(&format!("{tag} s"), h.s, f(e, "s"), 1e-5);
+                close(&format!("{tag} base"), h.base_src, f(e, "base_src"), 1e-5);
+                close(
+                    &format!("{tag} fade target"),
+                    h.fade.target,
+                    f(e, "fade_target"),
+                    1e-5,
+                );
+                close(
+                    &format!("{tag} fade level"),
+                    h.fade.level,
+                    f(e, "level"),
+                    1e-5,
+                );
+                assert_eq!(h.fade.pending, f(e, "pend") != 0.0, "{tag} fade pending");
+                assert_eq!(h.fade.trigger, f(e, "trig") != 0.0, "{tag} fade trigger");
+                for (side, tap) in [("L", &h.taps[0]), ("R", &h.taps[1])] {
+                    let key = |n: &str| format!("{side}_{n}");
+                    for (k, n) in ["rate0", "rate1", "rate2"].iter().enumerate() {
+                        close_f32(&format!("{tag} {side} {n}"), tap.rates[k], f(e, &key(n)));
+                    }
+                    // The driver fields the tap reset zeroes (`141aba040`), and the write-side fields it leaves.
+                    for (n, got) in [
+                        ("pos", tap.pos),
+                        ("frac", tap.frac),
+                        ("phase", tap.phase),
+                        ("xprev", tap.x_prev),
+                        ("pfrac", tap.prev_frac),
+                        ("offset", tap.offset),
+                        ("s0", tap.state.s0 as f64),
+                        ("s1", tap.state.s1 as f64),
+                    ] {
+                        close_f32(&format!("{tag} {side} {n}"), got, f(e, &key(n)));
+                    }
+                    for (n, got) in [
+                        ("wr", tap.wr),
+                        ("delta", tap.delta),
+                        ("pwr", tap.prev_wr),
+                        ("idx", tap.idx),
+                    ] {
+                        assert_eq!(got as f64, f(e, &key(n)), "{tag} {side} {n}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Index 0.7 (path 3) returns `Err(Blocked)` with nothing written. A repeat of the same index changes nothing.
+    #[test]
+    fn selector_path_three_is_blocked_and_repeat_is_a_no_op() {
+        let doc = selector_vector("v0p1");
+        let (mut heads, mut st) = selector_state(&doc["init"]);
+        let (path, glide, kernel) = (heads.path, heads.heads[0].glide, heads.heads[0].kernel);
+        let (env, sat) = (st.env, st.saturator);
+        assert_eq!(heads.select(&mut st, 0.7), Err(Blocked));
+        assert_eq!(heads.path, path);
+        assert_eq!(heads.heads[0].glide, glide);
+        assert_eq!(heads.heads[0].kernel, kernel);
+        assert_eq!(st.env, env);
+        assert_eq!(st.saturator, sat);
+        heads.select(&mut st, 0.1).expect("path 0");
+        let (glide, fade) = (heads.heads[0].glide, heads.heads[0].fade);
+        heads.select(&mut st, 0.1).expect("same path");
+        assert_eq!(heads.heads[0].glide, glide);
+        assert_eq!(heads.heads[0].fade, fade);
     }
 }

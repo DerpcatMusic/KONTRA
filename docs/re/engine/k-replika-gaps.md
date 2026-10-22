@@ -376,6 +376,33 @@ Tests: `mode_writer_matches_native_vectors` (tolerance 1e-5, integers and flags 
 `mode_three_is_blocked_and_writes_nothing`. Still open: `141acb100` (k = 3), the k = 1 design chain on the write filter, and the
 deposit history `K+0x84` / `K+0x8c` (not in `Tap`).
 
+### Piece 3c part 2: selector `141aca670` side effects (PORTED, NOT WIRED)
+
+`Heads::select` (`replika/head.rs`) ports the index-28 selector for k = 0, 1, 2, 4 (path `min(4, floor(5 v))`). Native order:
+the path guard (`C+0x830` = `C+0x604`; the ctor leaves `0x7fffffff`, so the first call always changes it), the mode writer
+`141aca4a0` on heads 1, 2, 3 (`C+0xac0`, `C+0x6380`, `C+0xbc40`; mode k for k = 1, 2, else 0; flag 0), then `141aba800`
+and `141aba680`: each head's taps reset (`141aba040` with flag 0, `Tap::reset`) and pending fade settle (the fade part of
+`141aba100`), the ducker envelope `C+0x13e38` to 0 dB, and the saturator section states `C+0x14080`, `C+0x1410c` to 0. For
+k = 1 (index 0.3) this gives: the heads run mode 1 with kernel 1 (lane mode 3), glide target 0 (from `H+0x69`), `base = a0 x 0.25 x a38`,
+the fades level 0 with the trigger set, the tap rates 1. Path 3 returns `Err(Blocked)` before any write (its mode writer
+calls `141acb100`, unported). The guard is `C+0x830` only: `C+0x829` is set by the setter and `C+8` is 1 after prepare.
+
+Not ported (the vectors list every changed byte in `changed_bytes`): the bypass fade `141acc600` (its blocks at `H+0x5808`,
+`P3+0x60`; no change with the default enables); the rest of `141aba100` (ring clear `1407e6d80` of flag 1, sections `+0x350`,
+`+0x384`, post filters, lane banks, the words `+0x158`, `+0x190`, `+0x5788..+0x57b0`); the delay caller `141abd290` (speed
+ratios `H+0x58`, `+0x60`, positions `+0xc8`, `+0xd0`, flag `+0x90`, words `+0xd8..+0xf0`), with `141aca380` (path 2) and
+`141acb160` (path 3) behind it; the rotator `C+0x980..0x997` and `141aba700`/`141aba790`; `141aba570`; the post table
+`C+0x944..0x967` (path 1, from `P3+0x40`); the table `C+0x14208..` and the flags `C+0x11504`, `C+0x12984` (path 4); `C+0x938`.
+Correction to the blocker list (b): `141aca380` is path 2's callee (through `141abd290`), not a k = 3 callee; k = 3 needs
+`141acb100` (mode writer) and `141acb160` (through `141abd290`). Index 28 stays unwired until the delay caller and `141aba100`
+are ported.
+
+Vectors: `docs/re/engine/vectors/replika-native-selector28-{v0p1,v0p3,v0p5,v0p9}.json` (kemu, `tools/re/replika_selector28_kemu.py`;
+the real setter 28 on a prepared core with seeded ducker, saturator, tap driver and glide-current state; `init`, `end`,
+`changed` for the ported fields, `changed_bytes` for every byte run of the core and blocks P0..P5). Path 0 from the reset
+state is a change (0x7fffffff). Test: `selector_matches_native_vectors` (tolerance 1e-5, integers and flags exact) and
+`selector_path_three_is_blocked_and_repeat_is_a_no_op`.
+
 ### Name binding (task 1)
 
 Not confirmed as a table. Findings:
