@@ -58,7 +58,7 @@ jobs:
         run: |
           target/debug/corpus-health run "$RUNNER_TEMP/corpus.jsonl" --tier quick \
             crates/sampler-kontakt/tests/fixtures tools/kontakt-reference/scenarios
-      - name: Diagnostics: fail on new errors
+      - name: "Diagnostics: fail on new errors"
         run: |
           target/debug/corpus-health health "$RUNNER_TEMP/corpus.jsonl" \
             --json "$RUNNER_TEMP/diagnostics.json" \
