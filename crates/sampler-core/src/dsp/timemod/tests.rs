@@ -81,6 +81,28 @@ fn replika_full_saturation_delivers_gain_times_tanh_of_drive_at_dc() {
     assert!((last - want).abs() <= 2e-3 * want, "{last} vs {want}");
 }
 
+/// `Native::Replika` through the stage (slab rings and packed state, 64-frame blocks, stale slab contents)
+/// equals the bare core frame for frame.
+#[test]
+fn replika_stage_equals_the_bare_core() {
+    use sampler_ir::fx::timemod::ReplikaControls;
+    let controls = ReplikaControls { feedback: 0.8, saturation: 0.5, lowcut: 0.3, highcut: 0.6, ..ReplikaControls::default() };
+    let mut l = line(&[Tap::at(DelayTime::Frames(4))], 10.);
+    l.native = Native::Replika(controls);
+    let input = impulse(4096, [1., 0.5]);
+    let got = run(wrap(l, LFO_OFF), 48_000, 120., &input, 64).0;
+
+    let core = replika::ReplikaCore::from_controls(48_000., &controls);
+    let (in_l, in_r): (Vec<f64>, Vec<f64>) = input.iter().map(|f| (f[0], f[1])).unzip();
+    let (mut want_l, mut want_r) = (vec![0.; input.len()], vec![0.; input.len()]);
+    let mut storage = vec![[0.; 2]; replika::storage_len(48_000.)];
+    core.process(&mut ReplikaState::new(48_000.), &mut storage, [&in_l[..], &in_r[..]], [&mut want_l[..], &mut want_r[..]]);
+    for (i, frame) in got.iter().enumerate() {
+        assert_eq!(*frame, [want_l[i], want_r[i]], "frame {i}");
+    }
+    assert!(got.iter().any(|f| f[0] != 0.), "the feedback repeats must be audible in the window");
+}
+
 #[test]
 fn integer_delay_impulse_and_feedback_repeats() {
     let (out, fault) = run(Config::delay(5, [[0.5, 0.], [0., 0.]], 0., 1.), 48_000, 120., &impulse(20, [1., 2.]), 64);
