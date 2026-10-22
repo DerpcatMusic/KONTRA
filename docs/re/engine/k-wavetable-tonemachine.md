@@ -184,3 +184,15 @@ phase-randomness and inharmonic laws.
   2400-entry table read. This is the inharmonic/mod path. Not ported.
 - Quality: `$NI_WT_QUALITY_*` values LOFI 0, MEDIUM 1, HIGH 2, BEST 3 (`crates/sampler-ksp/src/builtins.rs`, v1 port). The readout kernel for each level is not recovered.
 - Phase randomness, live wavetable routes: no native law recovered yet.
+
+## Corpus gap 10 (2026-10-22 survey)
+
+- "Complete N-frame cycles, zone dropped" (32 instruments): `wavetable::Table::new`
+  refused any span that was not a whole number of 2048-frame cycles, so the
+  zone was dropped at prepare. It now floors to whole cycles and ignores the
+  trailing partial cycle (v1 behaviour; `tests/wavetable.rs` oracle uses
+  `len / CYCLE`). **Kontakt's partial-cycle rule is not recovered.** This is a
+  labelled floor, not parity, and the matrix row stays partial.
+- "Wavetable source" unsupported (20 instruments): the admission rejects phase
+  random, inharmonic and the modulation oscillator. Their native laws are not
+  recovered (see the decompile notes above). Not changed here.
