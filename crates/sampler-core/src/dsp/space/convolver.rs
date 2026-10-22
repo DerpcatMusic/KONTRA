@@ -48,6 +48,8 @@ struct Partitioned {
     spectrum: Vec<Complex32>,
     time: Vec<f32>,
     input: Vec<f32>,
+    /// Whether `input` holds any non-zero sample; avoids rescanning it per call.
+    input_nonzero: bool,
     fill: usize,
     overlap: Vec<f32>,
     scratch: Vec<Complex32>,
@@ -86,6 +88,7 @@ impl Partitioned {
             spectrum: vec![Complex32::default(); bins],
             time,
             input: vec![0.0; block],
+            input_nonzero: false,
             fill: 0,
             overlap: vec![0.0; block],
             scratch,
@@ -99,6 +102,7 @@ impl Partitioned {
         self.history.fill(Complex32::default());
         self.quiet_history = true;
         self.input.fill(0.0);
+        self.input_nonzero = false;
         self.overlap.fill(0.0);
         (self.current, self.pending, self.fill) = (0, 1, 0);
     }
@@ -115,11 +119,12 @@ impl Partitioned {
             let n = (input.len() - done).min(self.block - start);
             let fresh = &input[done..done + n];
             self.input[start..start + n].copy_from_slice(fresh);
+            self.input_nonzero |= fresh.iter().any(|&x| x != 0.0);
 
             let current = self.current * bins;
             let segment = &mut self.segments[current..current + bins];
             // The spectrum of a silent block is all zeros.
-            if self.input[..start + n].iter().any(|&x| x != 0.0) {
+            if self.input_nonzero {
                 self.time[..self.block].copy_from_slice(&self.input);
                 self.time[self.block..].fill(0.0);
                 let _ = self
@@ -167,6 +172,7 @@ impl Partitioned {
             if self.fill == self.block {
                 self.fill = 0;
                 self.input.fill(0.0);
+                self.input_nonzero = false;
                 self.overlap.copy_from_slice(&self.time[self.block..]);
                 self.current = (self.current + count - 1) % count;
                 if !self.quiet_history {

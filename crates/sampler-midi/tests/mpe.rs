@@ -156,8 +156,9 @@ fn failed_gestures_and_binding_pressure_do_not_publish_partial_state() {
     let mut rt = runtime();
     let mut foreign = runtime();
     let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 2, 2).unwrap();
-    // Manager range 49: a full zone bend (48 on member 2 + 49) exceeds the 96-semitone limit.
-    for (cc, value) in [(101, 0), (100, 0), (6, 49)] {
+    // Manager range 96 (the admitted limit): a full manager bend adds 96
+    // semitones on top of the 48-semitone member bend, past the step limit.
+    for (cc, value) in [(101, 0), (100, 0), (6, 96)] {
         apply(&mut mpe, &mut rt, packet(0xb0, 0, cc, value)).unwrap();
     }
     support::without_heap(|| {
@@ -1593,8 +1594,8 @@ fn rejected_mcm_pitch_reset_preserves_configuration_held_siblings_controllers_an
     let before = (rt.now(), rt.note_count(), rt.voice_count(), rt.expression_count(),
         rt.pending_commands(), expression(&rt, held), expression(&rt, sibling), mpe.pitch_sensitivities());
     support::without_heap(|| {
-        // Old range0 admits tuning49. Resetting to48 with retained positive
-        // bend would require 97 semitones, beyond the 96-semitone step 256 limit.
+        // Range 0 admits tuning 49. Resetting to 48 with the retained positive
+        // bend would require 97 semitones, beyond the 96-semitone step limit.
         assert_eq!(apply(&mut mpe, &mut rt, packet(0xb0, 0, 6, 2)), Err(ApplyError::Core(Error::InvalidInput)));
         assert_eq!(mpe.configuration(), None);
         assert_eq!((rt.now(), rt.note_count(), rt.voice_count(), rt.expression_count(),
