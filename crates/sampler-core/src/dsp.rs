@@ -1278,6 +1278,8 @@ pub(super) struct ProcessorState {
     color: color::State,
     /// Daft's loop states and x2 resamplers.
     daft: filter::daft::State,
+    /// Live Formant's control ramp.
+    formant: formant::Ramp,
 }
 impl ProcessorState {
     fn finite_for(&self, stage: ProcessorRef<'_>) -> bool {
@@ -1550,10 +1552,16 @@ pub(super) fn process<'a, const TRACE: bool>(
             }
             // Event-rate lanes: constant within a fragment (as LiveDistortion); the
             // coefficients follow them while the filter and noise states persist.
-            ProcessorRef::LiveFormant { knobs, second, rate } => {
-                let [talk, sharp, size] = knobs.map(|k| k.value(parameters, at, None) as f32);
-                formant::Formant::compile([talk, sharp, size], *second, *rate).process(state, block, len)
-            }
+            ProcessorRef::LiveFormant { knobs, second, rate } => formant::process_ramp(
+                &mut state.formant,
+                &mut state.aux,
+                *second,
+                *rate,
+                true,
+                block,
+                len,
+                |offset| knobs.map(|k| k.value(parameters, at + offset as u64, None) as f32),
+            ),
             ProcessorRef::Filter { engine, offset } => {
                 fault |= engine.process(
                     state,
