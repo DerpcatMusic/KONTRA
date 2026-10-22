@@ -184,9 +184,8 @@ fn oscillator_fundamental_uses_note_and_output_rate_and_sustains_past_all_cycles
     }
 }
 #[test]
-fn incomplete_cycles_and_unproved_forms_are_rejected_at_preparation() {
-    let data = vec![[0.; 2]; CYCLE + 1];
-    let region = Region {
+fn incomplete_cycles_are_floored_and_unproved_forms_are_rejected_at_preparation() {
+    let region = |wavetable: Wavetable| Region {
         sample: 0,
         key_low: 69,
         key_high: 69,
@@ -196,19 +195,22 @@ fn incomplete_cycles_and_unproved_forms_are_rejected_at_preparation() {
         gain: 1.,
         envelope: Envelope::default(),
         playback: Playback {
-            wavetable: Some(Wavetable::default()),
+            wavetable: Some(wavetable),
             ..Default::default()
         },
     };
-    assert!(
+    let prepare = |wavetable: Wavetable| {
         Prepared::new(
             48000,
-            vec![Pcm::new(48000, data.into_boxed_slice()).unwrap()],
-            vec![region],
-            1
+            vec![Pcm::new(48000, vec![[0.; 2]; CYCLE + 1].into_boxed_slice()).unwrap()],
+            vec![region(wavetable)],
+            1,
         )
-        .is_err()
-    );
+    };
+    // A trailing partial cycle is floored, not rejected (60a1d6285, Table::new).
+    assert!(prepare(Wavetable::default()).is_ok());
+    // Kind 19 is outside the phase forms admitted by Wavetable::supports_form.
+    assert!(prepare(Wavetable { form1_type: 19, ..Wavetable::default() }).is_err());
 }
 
 #[test]
@@ -597,7 +599,8 @@ fn phase_form_controls_reject_unproved_or_fractional_modes_atomically() {
         );
         assert_eq!(rt.engine_parameter(address).unwrap(), 0);
     });
-    for value in [1., 18., 8.5] {
+    // Form 1 is an admitted phase form now (40d4bb2d4); 19 and 18 are not.
+    for value in [19., 18., 8.5] {
         let plan = addressed_wave_plan(&data, Wavetable::default(), false);
         let mut controls = plan.controls().to_vec();
         controls

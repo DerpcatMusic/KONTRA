@@ -778,7 +778,7 @@ fn family_capacity_failure_preserves_take_and_selected_pitch_preflight_is_atomic
     });
     let high = Region {
         playback: Playback {
-            transpose_semitones: 48.,
+            transpose_semitones: 96.,
             ..Playback::default()
         },
         ..region(0)

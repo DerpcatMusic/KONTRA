@@ -315,7 +315,7 @@ fn condition_validation_and_zero_match_do_not_consume_sequence_or_source_ownersh
 fn pending_release_pitch_checks_use_known_onset_controllers_and_all_possible_current_values() {
     for policy in [SelectionPolicy::Onset, SelectionPolicy::Current] {
         let mut high = region(0);
-        high.playback.transpose_semitones = 48.;
+        high.playback.transpose_semitones = 96.; // step 256 = MAX_STEP; +12 exceeds it
         let plan = Prepared::new(
             48000,
             vec![Pcm::new(48000, Box::from([[0.25; 2]; 2])).unwrap()],
