@@ -3602,3 +3602,131 @@ fn replacing_a_part_leaves_no_preset_state_and_keeps_rack_routing() {
     assert!(part.uvi_state.is_empty() && part.script_state.is_empty());
     assert_eq!(part.bend_range, 0);
 }
+
+/// A sized part's patch scrolls inside it. Wheeled again and again, the patch
+/// stops at its content's end, and that end does not move as it scrolls: the
+/// offset stays within `total - view_h` and the content height holds still.
+#[test]
+fn a_sized_part_scrolls_its_patch_to_its_content_and_stops() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/crates/sampler-kontakt/tests/fixtures/kontakt8131-start-options.nki"
+    );
+    let p = Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts.push(Part {
+        path: fixture.into(),
+        ..Default::default()
+    });
+    {
+        use moose::prelude::BackgroundTask;
+        crate::plugin::Load.run(&p);
+    }
+    let mut h = Harness::new(&p, 1180., 760.);
+    for _ in 0..200 {
+        h.idle(2);
+        if p.shared.view.lock().unwrap().parts[0].instrument.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    h.idle(10);
+    // Sized short: its stage overflows the room the header leaves.
+    write(&p.selection).parts[0].height = 80.;
+    h.press("view-0-Info");
+    h.idle(40);
+    // The patch's offset: how far its stage sits above the viewport's top.
+    let shown = |h: &Harness| {
+        let scene = h.ui.scene().unwrap();
+        let view = scene.surface("patch-view-0").unwrap();
+        let stage = scene.surface("stage-0").unwrap();
+        (
+            view.frame.y - stage.frame.y,
+            view.frame.size.height,
+            view.content.height,
+        )
+    };
+    let mut totals = Vec::new();
+    let mut scrolled = 0.;
+    for _ in 0..40 {
+        let view = h.ui.scene().unwrap().surface("patch-view-0").unwrap().frame;
+        h.tick(Input {
+            wheel: Vec2::new(0., 60.),
+            ..pointer(
+                Point::new(
+                    view.x + view.size.width / 2.,
+                    view.y + view.size.height / 2.,
+                ),
+                false,
+            )
+        });
+        h.idle(2);
+        let (at, view_h, total) = shown(&h);
+        assert!(
+            at <= total - view_h + 0.5,
+            "the patch scrolls past its content: at {at}, total {total}, view {view_h}"
+        );
+        scrolled = f64::max(scrolled, at);
+        totals.push(total);
+    }
+    h.idle(60);
+    let (at, view_h, total) = shown(&h);
+    assert!(scrolled > 0., "the wheel scrolled the patch");
+    assert!(
+        at <= total - view_h + 0.5,
+        "at rest the patch sits within its content: at {at}, total {total}, view {view_h}"
+    );
+    assert!(
+        totals.iter().all(|t| (t - totals[0]).abs() < 0.5),
+        "the content height does not move as the patch scrolls: {totals:?}"
+    );
+}
+
+/// A part whose interface is shown keeps its height and its patch's content
+/// frame by frame. The page-tab bar sits inside the patch's viewport, so a page
+/// that fills the room must leave the bar's height out, or the part grows by
+/// that height on every frame (auto-sized) or overflows its viewport (sized).
+#[test]
+fn a_part_with_its_interface_keeps_its_height_frame_by_frame() {
+    let emit = |source| sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[])
+        .unwrap().ui(&|_| None).unwrap();
+    let face = emit("on init declare ui_knob $k(0,100,1) declare ui_knob $j(0,100,1) end on");
+    let p = Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts.push(Part {
+        path: "/audit/interface-part.nki".into(),
+        ..Default::default()
+    });
+    p.shared.view.lock().unwrap().parts[0].interfaces = vec![face].into();
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.idle(10);
+    h.press("view-0-Interface");
+    h.idle(40);
+    assert!(
+        h.ui.scene().unwrap().surface("face-bar-0").is_some(),
+        "the interface is shown"
+    );
+    let shown = |h: &Harness| {
+        let scene = h.ui.scene().unwrap();
+        (
+            scene.surface("part-0").unwrap().frame.size.height,
+            scene.surface("patch-view-0").unwrap().content.height,
+        )
+    };
+    // Auto-sized: the part settles, and does not grow while it stays put.
+    let settled = shown(&h);
+    h.idle(60);
+    let later = shown(&h);
+    assert!(
+        (later.0 - settled.0).abs() < 0.5 && (later.1 - settled.1).abs() < 0.5,
+        "an auto-sized part keeps its height: {settled:?} then {later:?}"
+    );
+    // Sized: the part holds its height, and so does its content.
+    write(&p.selection).parts[0].height = 300.;
+    h.idle(40);
+    let sized = shown(&h);
+    h.idle(60);
+    let later = shown(&h);
+    assert!(
+        (later.0 - sized.0).abs() < 0.5 && (later.1 - sized.1).abs() < 0.5,
+        "a sized part keeps its height: {sized:?} then {later:?}"
+    );
+}
