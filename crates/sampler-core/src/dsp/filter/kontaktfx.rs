@@ -7,7 +7,10 @@
 //! - Simple LP/HP (BFilterSimpleLPHP): FilterDJExtRange mode 2 high pass (vt 0x144fcf580; mode
 //!   0x140b04660, setParam 0x140b058a0, prepare 0x140afd0f0, block 0x140b03490, process
 //!   0x140afef00) into FilterLadderExtRange mode 0 (vt 0x144fcf7d8; setParam 0x140b05ce0,
-//!   process 0x140b01440, prepare 0x140afd5f0/0x140b06380).
+//!   process 0x140b01440, prepare 0x140afd5f0/0x140b06380). The wrapper's own slot 23
+//!   (0x140908ae0) only forwards to the two cores' slot 23, which are no-op stubs (0x14050a460);
+//!   the per-chunk work is wrapper tick slot 8 (0x140959cb0: DJ block 0x140b03490, Ladder block)
+//!   then process slot 7 (0x140959ce0).
 //! - Dual SKF (vt 0x144fce538): setParam 0x140b059c0, prepare 0x140afd350, block 0x140b03630,
 //!   process 0x140b000c0, cutoff law 0x140b06580; x2 through the shared Kaiser stage below
 //!   66 kHz.
