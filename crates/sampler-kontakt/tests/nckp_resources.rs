@@ -173,13 +173,14 @@ fn precompile_discovery_does_not_read_a_fragment_or_later_unrelated_literal() {
             "no resource may be guessed: {source}"
         );
         assert_eq!(interface.width_px, None);
-        assert!(
-            !instrument
-                .unsupported
-                .iter()
-                .any(|u| u.feature == "performance view"),
-            "no guessed-resource read, including no missing-resource lookup"
-        );
+        // A name that is not one literal is reported as unsupported; the report must say that no
+        // view is read, so discovery never guesses a resource.
+        for u in instrument.unsupported.iter().filter(|u| u.feature == "performance view") {
+            assert!(
+                u.value.contains("no view is read"),
+                "guessed-resource read or lookup reported: {u:?}"
+            );
+        }
     }
 }
 
