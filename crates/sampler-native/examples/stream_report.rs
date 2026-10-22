@@ -36,8 +36,18 @@ fn main() {
         ..Default::default()
     };
     let begin = Instant::now();
+    // Production (src/sound/v2.rs `Auto`) settings are reachable with env overrides:
+    // HEAD_BUDGET bytes, MAX_STEP, BLOCK_FRAMES, COLD_FALLBACK=1.
+    let env = |name: &str| std::env::var(name).ok();
+    let base = sampler_kontakt::StreamPolicy::default();
     let policy = sampler_kontakt::StreamPolicy {
         voices,
+        head_budget: env("HEAD_BUDGET").map_or(base.head_budget, |v| v.parse().unwrap()),
+        max_step: env("MAX_STEP").map_or(base.max_step, |v| v.parse().unwrap()),
+        block_frames: env("BLOCK_FRAMES").map_or(base.block_frames, |v| v.parse().unwrap()),
+        allow_cold_fallback: env("COLD_FALLBACK").map_or(base.allow_cold_fallback, |v| v == "1"),
+        // RAM-only (src/sound/v2.rs) keeps whole samples within this budget.
+        resident_budget: env("RESIDENT_BUDGET").map(|v| v.parse().unwrap()),
         ..Default::default()
     };
     let streamed = sampler_kontakt::load_streamed(path, &options, &policy, |_| {})
