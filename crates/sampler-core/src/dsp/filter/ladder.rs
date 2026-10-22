@@ -15,7 +15,8 @@ pub struct LadderSettings {
     pub cutoff_path: bool,
     /// Output selector: saved Morphology type minus 29 (1..=12).
     pub taps: u8,
-    /// Native HQ: the core runs at twice the rate inside the shared 2x Kaiser oversampler.
+    /// Native HQ: the core runs at twice the rate inside the shared 2x Kaiser oversampler, with
+    /// its controls sampled once per 32 host frames.
     pub high_quality: bool,
 }
 
@@ -59,6 +60,9 @@ impl LadderSettings {
 
 /// Kernel state cells; the HQ oversampler's registers follow them.
 pub(crate) const CELLS: usize = 19;
+/// Native control cadence: setters and the control tick run once per 32 host frames, in HQ too.
+/// (Non-HQ gets the same cadence from the kernel's own 32-sample phase clock.)
+const CONTROL_FRAMES: u64 = 32;
 
 pub(crate) struct Ladder {
     rate: f32,
@@ -126,20 +130,23 @@ impl Ladder {
         let last = values(at + len.saturating_sub(1) as u64);
         let mut scratch: [[f32; BLOCK]; 2] = std::array::from_fn(|c| block[c].map(|v| v as f32));
         let constant = first == last;
-        if constant {
-            tune(&mut kernel, cells, first, self.rate);
-        }
         let [left, right] = &mut scratch;
         match &self.os {
             Some(os) => {
                 // Per host frame: 2x up, the kernel at twice the rate, 2x down (the native order).
+                // Controls sample only at 32-frame boundaries, as the native host does; the first
+                // call of a voice snapshots its targets (tune's unset-cell check).
+                if cells[18][1] == 0.0 {
+                    tune(&mut kernel, cells, first, self.rate);
+                }
                 let mut states: [kaiser::State; 2] = Default::default();
                 for (c, s) in states.iter_mut().enumerate() {
                     s.load(&cells[CELLS..].as_flattened()[c * kaiser::WORDS..(c + 1) * kaiser::WORDS]);
                 }
                 for i in 0..len {
-                    if !constant {
-                        tune(&mut kernel, cells, values(at + i as u64), self.rate);
+                    let frame = at + i as u64;
+                    if frame % CONTROL_FRAMES == 0 {
+                        tune(&mut kernel, cells, values(frame), self.rate);
                     }
                     let (mut l, mut r) = ([0f32; 2], [0f32; 2]);
                     os.up(&mut states[0], left[i], &mut l);
@@ -153,7 +160,10 @@ impl Ladder {
                     s.save(&mut flat[c * kaiser::WORDS..(c + 1) * kaiser::WORDS]);
                 }
             }
-            None if constant => kernel.process(&mut left[..len], &mut right[..len]),
+            None if constant => {
+                tune(&mut kernel, cells, first, self.rate);
+                kernel.process(&mut left[..len], &mut right[..len]);
+            }
             None => {
                 for i in 0..len {
                     tune(&mut kernel, cells, values(at + i as u64), self.rate);
@@ -278,5 +288,99 @@ mod tests {
             }
             assert_eq!(split, expected);
         }
+    }
+
+    #[test]
+    fn native_kemu_vectors_through_the_production_path() {
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("ladder_kemu_vectors.json")).unwrap();
+        let num = |v: &serde_json::Value| v.as_f64().unwrap();
+        let mut failures = Vec::new();
+        for case in &cases {
+            let settings = LadderSettings {
+                // Knobs arrive through the modulation lanes once per 32-frame block, as the
+                // native setters do; the base values stay zero.
+                gain: Parameter::Constant(0.0),
+                cutoff: Parameter::Constant(0.0),
+                resonance: Parameter::Constant(0.0),
+                cutoff_path: case["flag49"].as_u64().unwrap() != 0,
+                taps: case["mode"].as_u64().unwrap() as u8 + 1,
+                high_quality: case["hq"].as_u64().unwrap_or(0) != 0,
+            };
+            let prepared = settings.compile(num(&case["rate"]) as u32, &mut Vec::new());
+            let schedule: Vec<[f64; 3]> = case["schedule"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|k| [num(&k[1]), num(&k[2]), num(&k[0])])
+                .collect();
+            let stim: Vec<Vec<f64>> = case["stim"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c.as_array().unwrap().iter().map(num).collect())
+                .collect();
+            let mut cells = vec![[0.0; 2]; prepared.cells()];
+            let mut state = ProcessorState::default();
+            let mut out: [Vec<f64>; 2] = Default::default();
+            for (block, knobs) in schedule.iter().enumerate() {
+                let range = block * 32..(block + 1) * 32;
+                let mut buffer: Planar = [[0.0; BLOCK]; 2];
+                buffer[0][..32].copy_from_slice(&stim[0][range.clone()]);
+                buffer[1][..32].copy_from_slice(&stim[1][range]);
+                let modulation = [knobs[0], knobs[1], knobs[2], 0.0];
+                assert!(!prepared.process(&mut state, &mut cells, &[], &mut buffer, 32, (block * 32) as u64, modulation));
+                for c in 0..2 {
+                    out[c].extend_from_slice(&buffer[c][..32]);
+                }
+            }
+            let name = case["name"].as_str().unwrap();
+            let peak = (0..2)
+                .flat_map(|c| case[if c == 0 { "outL" } else { "outR" }].as_array().unwrap().iter().map(num))
+                .fold(0f64, |m, v| m.max(v.abs()));
+            // Stored native outputs are f32; the bound is relative to the case peak.
+            for (c, key) in [(0, "outL"), (1, "outR")] {
+                let want: Vec<f64> = case[key].as_array().unwrap().iter().map(num).collect();
+                for (i, (&got, &want)) in out[c].iter().zip(&want).enumerate() {
+                    if (got - want).abs() > 1e-6 * peak.max(1e-4) {
+                        failures.push(format!("{name} {key}[{i}] ours {got:e} native {want:e}"));
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn hq_controls_sample_once_per_32_host_frames_whatever_the_fragmenting() {
+        let settings = LadderSettings {
+            gain: Parameter::Constant(0.0),
+            cutoff: Parameter::Constant(0.0),
+            resonance: Parameter::Constant(0.0),
+            cutoff_path: false,
+            taps: 4,
+            high_quality: true,
+        };
+        let prepared = settings.compile(48_000, &mut Vec::new());
+        let knob = |frame: u64| 0.5 + 0.4 * (frame as f64 * 0.37).sin();
+        // One frame per call, so the modulation can change on every host frame.
+        let run = |sample_at: &dyn Fn(u64) -> u64| -> Vec<f64> {
+            let mut cells = vec![[0.0; 2]; prepared.cells()];
+            let mut state = ProcessorState::default();
+            (0..256u64)
+                .map(|frame| {
+                    let mut block: Planar = [[0.0; BLOCK]; 2];
+                    block[0][0] = (frame as f64 * 0.11).sin() * 0.05;
+                    block[1][0] = (frame as f64 * 0.13).cos() * 0.05;
+                    let modulation = [knob(sample_at(frame)), 0.3, 0.1, 0.0];
+                    assert!(!prepared.process(&mut state, &mut cells, &[], &mut block, 1, frame, modulation));
+                    block[0][0]
+                })
+                .collect()
+        };
+        let per_frame = run(&|frame| frame);
+        let per_block = run(&|frame| frame / 32 * 32);
+        assert_eq!(per_frame, per_block);
     }
 }

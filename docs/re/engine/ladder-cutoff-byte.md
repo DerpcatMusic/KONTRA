@@ -2,7 +2,7 @@
 
 Status: the flag source is decoded for every Ladder record version the importer admits
 (v0x90..0x92 and v0x95). Corpus gap 6 ("filter law") was 56 instruments, 72 of the 78 Ray Line
-refusals being Ladder LP4. LP4 with HQ off is now Exact (see Gap table). Evidence is the Kontakt 8
+refusals being Ladder LP4. All twelve Ladder selectors are now Exact (see Gap table). Evidence is the Kontakt 8
 decompile export and the `.rdata` tables; the binary was not re-opened.
 
 ## Record bytes (reader 0x140d00db0, BParFXFilter, container offset 0xA00)
@@ -70,18 +70,21 @@ vectors (`ladder_kemu_vectors.json`) still pass.
 | --- | --- | --- |
 | flag 0x49 source byte, v0x90..0x95 | per-version rule above | decoded (static, decompile + stream order) |
 | v0x95 HQ / cutoff-path order | second flag = HQ, first = cutoff path | corrected (was first = HQ) |
-| flag-1 cutoff law | snap on the 32-frame tick | decompile-confirmed (init 0x5030 = 0, epsilon 1e-15, 0x140b036a0 snap branch); no native PCM with flag 1 |
-| LP4, HQ off | kernel + flag law | Exact: steady knobs bit-exact (84 native cells), moving cutoff 1-2 ulp (kemu, flag 0), flag-1 law decompile-confirmed |
-| LP4, HQ on | shared 2x Kaiser | Partial: moving controls in HQ unvectored |
-| LP1..Notch except LP4 | kernel | Partial, unchanged |
+| flag-1 cutoff law | snap on the 32-frame tick | decompile-confirmed (init 0x5030 = 0, epsilon 1e-15, 0x140b036a0 snap branch); kemu PCM with flag 1 (LP4 steady and moving, BP4 moving, HQ on moving) matches |
+| LP4, HQ off | kernel + flag law | Exact: steady knobs bit-exact (84 native cells), moving cutoff 1-2 ulp (kemu, flag 0), flag 1 (kemu) |
+| LP4, HQ on | shared 2x Kaiser | Exact (kemu): steady, moving and flag-1 moving match. HQ controls sample once per 32 host frames, as the native host does (per-frame sampling only differs when a control changes inside a block) |
+| BP4, HQ off | kernel + taps 10 | Exact (kemu): steady, moving and flag-1 moving |
+| BP4, HQ on | shared 2x Kaiser | Exact (kemu): steady, moving, flag-1 moving |
+| LP1..LP3, HP1..HP4, BP2, Peak, Notch | kernel, taps 1..3, 5..8, 9, 11, 12 | Exact (kemu, modes 0,1,2,4..8,10,11): moving cutoff flag 0 within 2e-7 of peak; flag 1 and HQ on match. Steady knobs from the static PCM grid |
 | v0x93 / v0x94 Ladder records | reader read, importer does not admit | open (no corpus record checked) |
 
 ## Open
 
-1. Native flag-1 PCM: one kemu run of the core with +0x49 = 1 (the generator for
-   `ladder_kemu_vectors.json` is not in the repo), or a Wine render of a v0x92 Ladder LP4 with
-   a moving cutoff. Until then, LP4 flag-1 parity rests on the decompile constants.
-2. HQ-on moving controls (cadence).
+1. Live Kontakt check of flag 1 and HQ on: the vectors come from the native core under kemu
+   (no Wine render). A Wine render of a v0x92 Ladder LP4 with a moving cutoff would confirm them
+   against the host, and is still open.
+2. Host cadence of HQ controls rests on the decompile of the host caller (0x1408faa30: setters and
+   tick once per 32-frame chunk). Not yet confirmed by a host render.
 3. Admit v0x93/0x94 records if a corpus record needs them.
 
 ## Evidence (Kontakt 8 decompile export, `source/kontakt8`)
