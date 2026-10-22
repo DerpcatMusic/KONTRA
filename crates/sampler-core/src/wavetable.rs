@@ -126,9 +126,13 @@ pub(super) struct Table {
 }
 
 impl Table {
+    /// Whole cycles from a cycle-aligned start. Frames past the last whole
+    /// cycle are never read: a trailing partial cycle is ignored, as v1 did
+    /// (`tests/wavetable.rs` oracle uses `len / CYCLE`). Kontakt's own rule for
+    /// partial cycles is not recovered; this floors and is not yet parity.
     pub fn new(first: usize, end: usize) -> Option<Self> {
         let frames = end.checked_sub(first)?;
-        (first % CYCLE == 0 && frames > 0 && frames % CYCLE == 0).then_some(Self {
+        (first % CYCLE == 0 && frames >= CYCLE).then_some(Self {
             first,
             cycles: frames / CYCLE,
         })
@@ -239,6 +243,14 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn partial_trailing_cycle_is_ignored_and_short_tables_are_refused() {
+        assert_eq!(super::Table::new(0, 3 * super::CYCLE + 100).unwrap().cycles, 3);
+        assert_eq!(super::Table::new(0, super::CYCLE).unwrap().cycles, 1);
+        assert!(super::Table::new(0, 100).is_none());
+        assert!(super::Table::new(64, 64 + 2 * super::CYCLE).is_none());
+    }
+
     #[test]
     fn phase_forms_match_original_kontakt_instructions() {
         let receipt: serde_json::Value =
