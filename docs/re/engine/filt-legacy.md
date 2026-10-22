@@ -218,7 +218,8 @@ writer found in the export. The DJ block's clamp is dead code for this module, s
 proven: a record reader that writes a rate directly through a base register other than `param_1` (none is named in
 the export; the reader for saved type 120 was not located). Also open: the knob source (route flags or the reader),
 the Ladder setter index that carries CUTOFF, the stereo interleave, and whether the Rust modulation pairs
-(`modulated: [0, 1]`) match the native route indices (route 1 on the DJ child is the resonance raw, not the cutoff).
+(`modulated: [0, 1]`) match the native route indices (route 1 on the DJ child is the resonance raw, not the cutoff). Route 2 on the HP child is the DJ mode setter
+(`FUN_140b04660`, value times the scale at `0x1447149f8`), which the Rust model does not implement.
 
 ## Pending
 
