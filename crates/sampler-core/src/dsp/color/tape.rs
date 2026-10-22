@@ -285,9 +285,82 @@ impl Engine {
     }
 }
 
+/// Four-lane live slew of the native Tape object, group B (current `+0x2220`, increment
+/// `+0x2230`, target `+0x2240`, counter `+0x2254`, reload `+0x2258`, rate `+0x225c`).
+/// `tick` is `FUN_140ae1b40` and `step` is the per-sample add in the process loop
+/// `FUN_140ae1190`. Cadence of `tick` is not modelled yet (see docs/re/engine/k-lofi-tape.md).
+// ponytail: not wired into Tape::process; the tick cadence of the native caller is still unknown.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Slew {
+    pub cur: [f32; 4],
+    pub inc: [f32; 4],
+    pub tgt: [f32; 4],
+    pub cnt: i32,
+    pub reload: i32,
+    pub rate: f32,
+    pub pending: bool,
+}
+
+#[allow(dead_code)]
+impl Slew {
+    pub(super) fn tick(&mut self) {
+        if !self.pending {
+            self.cnt = self.cnt.wrapping_sub(1);
+            if self.cnt == 0 {
+                self.cur = self.tgt;
+                self.inc = [0.0; 4];
+            }
+            return;
+        }
+        self.pending = false;
+        for j in 0..4 {
+            self.inc[j] = (self.tgt[j] - self.cur[j]) * self.rate;
+            if f64::from(self.inc[j] * self.inc[j]) < 1e-15 {
+                self.inc[j] = 0.0;
+                self.cur[j] = self.tgt[j];
+            }
+        }
+        if self.inc.iter().any(|v| *v != 0.0) {
+            self.cnt = self.reload;
+        }
+    }
+
+    pub(super) fn step(&mut self) {
+        for j in 0..4 {
+            self.cur[j] += self.inc[j];
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Native vectors from `tools/re/tape_slew_kemu.py` (Kontakt 8.13.1 under kemu, 48 kHz).
+    #[test]
+    fn slew_tick_matches_the_native_lanes() {
+        let mut s = Slew { cur: [0.0; 4], tgt: [1.0, 0.5, -0.25, 2.0], reload: 1, rate: 1.0 / 48_000.0, pending: true, ..Slew::default() };
+        s.tick();
+        for (got, want) in s.inc.iter().zip([2.083_333_3e-5_f32, 1.041_666_7e-5, -5.208_333_3e-6, 4.166_666_6e-5]) {
+            assert!((got - want).abs() < 1e-9, "inc {got} vs {want}");
+        }
+        assert_eq!(s.cur, [0.0; 4]);
+        s.tick();
+        assert_eq!(s.cur, [1.0, 0.5, -0.25, 2.0]);
+        assert_eq!(s.inc, [0.0; 4]);
+
+        let mut s = Slew { cur: [0.75; 4], tgt: [1.412_537_6; 4], reload: 3, rate: 1.0 / 144_000.0, pending: true, ..Slew::default() };
+        s.tick();
+        assert!(s.inc.iter().all(|v| (v - 4.600_955_4e-6).abs() < 1e-11), "{:?}", s.inc);
+        assert_eq!(s.cnt, 3);
+        s.tick();
+        s.tick();
+        assert_eq!(s.cur, [0.75; 4]);
+        s.tick();
+        assert!(s.cur.iter().all(|v| (v - 1.412_537_6).abs() < 1e-6), "{:?}", s.cur);
+        assert_eq!(s.inc, [0.0; 4]);
+    }
 
     /// The emulated native core (kcolor/vec_tape.json, 48 kHz, left of a mono input): an
     /// impulse of 0.5 (128 frames) and a 0.5 sine at 200 Hz, frames 1920..2400.
