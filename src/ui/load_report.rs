@@ -246,7 +246,7 @@ impl Runtime {
             ),
             Self::VoicesDropped { count } => (
                 format!("{count} notes dropped"),
-                "The part ran out of voices.".into(),
+                "The part reached a capacity limit: voices or another internal limit was full.".into(),
             ),
             Self::StreamUnderruns { count } => (
                 format!("{count} streaming underruns"),

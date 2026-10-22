@@ -1479,7 +1479,10 @@ fn route(params: &SamplerParams) {
 impl Shared {
     /// Queue a snapshot against this exact source. Parsing and mutation stay
     /// on the existing worker; a later source request cancels its result.
-    pub(crate) fn queue_snapshot(&self, slot: usize, part: &Part, path: String) -> bool {
+    /// `reuse` admits the same-owner fast path, which keeps the previous
+    /// preset's runtime, samples and ordinary values. A preset swap passes
+    /// `false` so it always equals a fresh load of the base plus snapshot.
+    pub(crate) fn queue_snapshot(&self, slot: usize, part: &Part, path: String, reuse: bool) -> bool {
         if !part.snapshot_base() {
             return false;
         }
@@ -1501,7 +1504,7 @@ impl Shared {
             generation,
             sequence: previous + 1,
             recall_revision,
-            allow_reuse: true,
+            allow_reuse: reuse,
         });
         true
     }
@@ -2795,6 +2798,7 @@ fn load_part_with(
             } else {
                 *atoms.effect_controls.lock_unpoisoned() =
                     effect_controls::EffectControls::default();
+                *atoms.engine_bindings.lock_unpoisoned() = Arc::from(Vec::new());
             }
             let nodes = v.tree.as_ref().map_or(1, |t| t.nodes.len());
             *atoms.node_meters.lock_unpoisoned() = (0..nodes).map(|_| Default::default()).collect();
@@ -4960,7 +4964,7 @@ mod settings_parity_tests {
         let generation = p.shared.part(0).unwrap().generation.load(Ordering::Acquire);
         assert!(
             p.shared
-                .queue_snapshot(0, &part, "/unavailable-kontakto/missing.nksn".into())
+                .queue_snapshot(0, &part, "/unavailable-kontakto/missing.nksn".into(), true)
         );
         assert_eq!(
             p.shared.part(0).unwrap().generation.load(Ordering::Acquire),
@@ -4995,7 +4999,7 @@ mod settings_parity_tests {
         );
         assert!(
             p.shared
-                .queue_snapshot(0, &part, "/unavailable-kontakto/stale.nksn".into())
+                .queue_snapshot(0, &part, "/unavailable-kontakto/stale.nksn".into(), true)
         );
         p.selection.write_unpoisoned().parts[0].snapshot = "replacement.nksn".into();
         p.shared.view.lock_unpoisoned().parts[0].status = "replacement".into();
@@ -5017,9 +5021,9 @@ mod settings_parity_tests {
             path: "ensemble.nkm".into(),
             ..Default::default()
         };
-        assert!(!p.shared.queue_snapshot(0, &multi, "preset.nksn".into()));
+        assert!(!p.shared.queue_snapshot(0, &multi, "preset.nksn".into(), true));
         let program = Part { program: 1, ..part };
-        assert!(!p.shared.queue_snapshot(0, &program, "preset.nksn".into()));
+        assert!(!p.shared.queue_snapshot(0, &program, "preset.nksn".into(), true));
     }
 
     #[test]

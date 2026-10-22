@@ -85,7 +85,7 @@ fn harness() -> Harness {
 impl Harness {
     fn queue(&self, path: &str) {
         let part = self.params.selection.read_unpoisoned().parts[0].clone();
-        assert!(self.params.shared.queue_snapshot(0, &part, path.into()));
+        assert!(self.params.shared.queue_snapshot(0, &part, path.into(), true));
         assert!(
             prepare_snapshot(&self.params).is_none(),
             "eligible snapshot queues rather than prepares replacement"
@@ -230,8 +230,52 @@ fn exhausted_sequence_reserves_a_final_host_recall_cancellation_epoch() {
     assert_eq!(h.core.control_value(0, h.value), Some(250.));
     assert!(h.selected().is_empty());
     let part = h.params.selection.read_unpoisoned().parts[0].clone();
-    assert!(!h.params.shared.queue_snapshot(0, &part, h.b.clone()));
+    assert!(!h.params.shared.queue_snapshot(0, &part, h.b.clone(), true));
     assert!(h.params.shared.snapshot_request.lock_unpoisoned().is_none());
+}
+
+/// A preset swap never takes the same-owner path: it prepares a fresh
+/// replacement, so the previous preset's runtime and ordinary values stay out.
+#[test]
+fn a_preset_swap_prepares_a_fresh_replacement_not_the_retained_owner() {
+    let h = harness();
+    let part = h.params.selection.read_unpoisoned().parts[0].clone();
+    assert!(h.params.shared.queue_snapshot(0, &part, h.a.clone(), false));
+    assert!(!h.params.shared.snapshot_request.lock_unpoisoned().as_ref().unwrap().allow_reuse);
+    assert!(prepare_snapshot(&h.params).is_some(), "fresh replacement prepared");
+}
+
+/// The product swap: queue without reuse, prepare the fresh replacement, install it.
+fn product_swap(h: &mut Harness, path: &str) {
+    let part = h.params.selection.read_unpoisoned().parts[0].clone();
+    assert!(h.params.shared.queue_snapshot(0, &part, path.into(), false));
+    let (slot, _, candidate) = prepare_snapshot(&h.params).expect("fresh replacement prepared");
+    assert!(load_part(&h.params, slot, Some(candidate)));
+    let (slot, _, part) = h.params.shared.ready.pop().unwrap();
+    h.core.install(slot, part);
+    h.audio();
+}
+
+/// Swapping A then B leaves the runtime state of loading B alone. B sets no
+/// `$value`, so only a fresh load returns it to its default instead of A's 800.
+#[test]
+fn a_swap_then_b_equals_loading_b_alone() {
+    let mut alone = harness();
+    let mut swapped = harness();
+    let none: &[&str] = &[];
+    let empty = fixture::script_only_snapshot("Retained", "", &[none, none, none, none, none]);
+    std::fs::write(&alone.b, &empty).unwrap();
+    std::fs::write(&swapped.b, &empty).unwrap();
+    let (a, b) = (swapped.a.clone(), swapped.b.clone());
+    product_swap(&mut alone, &b);
+    product_swap(&mut swapped, &a);
+    assert_eq!(swapped.core.control_value(0, swapped.value), Some(800.), "A applied");
+    product_swap(&mut swapped, &b);
+    assert_eq!(
+        swapped.core.control_value(0, swapped.value),
+        alone.core.control_value(0, alone.value)
+    );
+    assert_eq!(swapped.core.control_value(0, swapped.value), Some(250.));
 }
 
 #[test]
@@ -269,7 +313,7 @@ fn explicit_snapshot_replacement_does_not_replay_an_old_project_capture() {
     h.poll();
     assert_eq!(h.core.control_value(0, h.value), Some(100.));
     let part = h.params.selection.read_unpoisoned().parts[0].clone();
-    assert!(h.params.shared.queue_snapshot(0, &part, h.a.clone()));
+    assert!(h.params.shared.queue_snapshot(0, &part, h.a.clone(), true));
     h.params.shared.snapshot_request.lock_unpoisoned().as_mut().unwrap().allow_reuse = false;
     let (slot, _, candidate) = prepare_snapshot(&h.params).expect("full replacement prepared");
     assert!(load_part(&h.params, slot, Some(candidate)));
@@ -326,7 +370,7 @@ pub(crate) fn gui_fixture() -> (tempfile::TempDir, Arc<SamplerParams>, V2Core, S
 
 pub(crate) fn gui_apply(params: &SamplerParams, core: &mut V2Core, path: &str) {
     let part = params.selection.read_unpoisoned().parts[0].clone();
-    assert!(params.shared.queue_snapshot(0, &part, path.into()));
+    assert!(params.shared.queue_snapshot(0, &part, path.into(), true));
     assert!(prepare_snapshot(params).is_none());
     core.begin_block(&BlockInfo {
         frames: 128,

@@ -784,7 +784,7 @@ impl Cx<'_> {
             .selection
             .parts
             .get(slot)
-            .is_some_and(|part| self.p.shared.queue_snapshot(slot, part, path));
+            .is_some_and(|part| self.p.shared.queue_snapshot(slot, part, path, false));
         if accepted {
             self.state.select(slot);
             self.state.notice.clear();
@@ -850,21 +850,33 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
     shelf.of(path).map(|l| l.name.clone()).unwrap_or_default()
 }
 
-/// Instrument state belongs to its preset; rack routing and player settings stay.
+/// A swap is a fresh part for `path`: only the rack routing and player
+/// settings carry over. Anything derived from the preset (saved controls,
+/// script/UVI state, overrides, output tree, articulation overlay, bend range)
+/// takes its default, so a new preset field defaults fresh instead of leaking.
 fn replace_part(part: &mut Part, path: String) {
-    part.path = path;
-    part.program = 0;
-    part.snapshot.clear();
-    // Control ids derive from the variable name, so the old preset's values
-    // would seed the next preset's same-named controls at load.
-    part.control_values.clear();
-    part.view = 0;
-    part.name.clear();
-    // Another instrument has another output tree, switching and dynamics.
-    part.nodes.clear();
-    part.switching = 0;
-    part.articulation_overlay = Default::default();
-    part.dynamics = -1;
+    *part = Part {
+        path,
+        port: part.port,
+        channel: part.channel,
+        output: part.output,
+        output_manual: part.output_manual,
+        gain: part.gain,
+        pan: part.pan,
+        tune: part.tune,
+        mute: part.mute,
+        solo: part.solo,
+        aux: part.aux,
+        aux_gain: part.aux_gain,
+        collapsed: part.collapsed,
+        height: part.height,
+        mpe: part.mpe,
+        mpe_upper: part.mpe_upper,
+        streaming: part.streaming,
+        group: part.group,
+        timing: std::mem::take(&mut part.timing),
+        ..Default::default()
+    };
 }
 
 /// How many rack parts `path` opens as: one per program of a Kontakt multi.
@@ -1128,6 +1140,7 @@ fn native_files(
                 slot,
                 &selection.parts[slot],
                 paths[0].to_string_lossy().into_owned(),
+                false,
             );
         }
         return true;
