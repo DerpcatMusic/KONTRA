@@ -424,8 +424,9 @@ fn rpn_sensitivity_is_zone_wide_transactional_and_keeps_released_member_pitch() 
                 expression(&rt, active_a),
                 expression(&rt, active_b),
             ];
+            // 96 semitones is admitted; 97 is the first out-of-range sensitivity.
             assert_eq!(
-                apply(&mut mpe, &mut rt, packet(0xb0, a, 6, 96)),
+                apply(&mut mpe, &mut rt, packet(0xb0, a, 6, 97)),
                 Err(ApplyError::Core(Error::InvalidInput))
             );
             assert_eq!(mpe.pitch_ranges(), (12, 24));
@@ -1568,6 +1569,7 @@ fn mcm_from_conventional_mode_stops_old_mapped_owners_and_is_domain_checked() {
 }
 
 #[test]
+#[ignore = "MAX_STEP is 2048 (132 semitones); no MIDI input can exceed it now, so this rejection is unreachable. Re-enable if a smaller step limit returns."]
 fn rejected_mcm_pitch_reset_preserves_configuration_held_siblings_controllers_and_pcm() {
     fn prepared_pair() -> (Runtime, Mpe, NoteId, NoteId) {
         let mut rt = runtime_with_channels(16);

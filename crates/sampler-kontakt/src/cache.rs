@@ -712,6 +712,7 @@ mod tests {
         std::fs::write(&source, wav).unwrap();
         let params = crate::effects::Convolution {
             decimation: 1.,
+            block: 0,
             predelay_ms: 0.,
             early: [1., 0., 0.],
             late: [1., 0., 0.],

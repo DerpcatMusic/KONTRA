@@ -16,7 +16,7 @@
 //! band (plus one per extra filter section and an output gain); per-voice state stays in the
 //! stage's `ProcessorState`, so nothing allocates while rendering.
 //!
-mod digital;
+pub(crate) mod digital;
 mod generic;
 mod kernel;
 pub(super) mod legacy;

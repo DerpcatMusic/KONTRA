@@ -33,9 +33,9 @@ fn integer_arithmetic_wraps_like_the_interpreter() {
         $f := $b / -1
         $g := $b mod 7
         $h := 7 / 0
-        $i := $a and 1234
-        $j := $b or 5
-        $k := $a xor $b
+        $i := $a .and. 1234
+        $j := $b .or. 5
+        $k := $a .xor. $b
         $l := -$b
         end on",
     );
@@ -80,13 +80,10 @@ fn real_arithmetic_and_truncating_stores() {
 }
 
 #[test]
-fn control_flow_functions_and_inc_dec() {
+fn control_flow_and_inc_dec() {
+    // Kontakt rejects `call` in on init, so the loop body is inlined here.
     assert_init_equivalent(
-        "function bump
-          inc($s)
-          if ($s = 3) exit end if
-        end function
-        on init
+        "on init
         declare $i := 0
         declare $s := 0
         declare $t := 0
@@ -95,8 +92,8 @@ fn control_flow_functions_and_inc_dec() {
           if ($i mod 2 = 0) continue end if
           $t := $t + $i
         end while
-        while (1)
-          call bump()
+        while (1 = 1)
+          inc($s)
           if ($s = 5) exit end if
         end while
         select($t)

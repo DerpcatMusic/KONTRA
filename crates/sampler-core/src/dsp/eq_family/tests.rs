@@ -418,3 +418,20 @@ fn uvi_digital_bands_match_the_native_design() {
     }
 }
 
+
+#[test]
+fn uvi_digital_q_half_band_pass_is_the_square_of_the_bandwidth_factor() {
+    // Q = 0.5 (x = 1) makes the band-pass quartic a perfect square: both sections are the bilinear
+    // transform of beta s / (s^2 + beta s + 1), beta = 2^(bw/2) - 2^(-bw/2). Root pairing used to
+    // return two different quadratics here.
+    let (fnorm, bw) = (0.1f64, 1.0f64);
+    let k = 1. / (std::f64::consts::PI * fnorm).tan();
+    let beta = 2f64.powf(bw * 0.5) - 2f64.powf(-bw * 0.5);
+    let d0 = k * k + beta * k + 1.;
+    let want = [beta * k / d0, 0., -beta * k / d0, 2. * (1. - k * k) / d0, (k * k - beta * k + 1.) / d0];
+    for index in 0..digital::sections(Kind::BandPass, 2) {
+        let b = digital::section(Kind::BandPass, 2, fnorm, 0., 0.5, bw, index).unwrap();
+        let got = [b.b[0], b.b[1], b.b[2], b.a[0], b.a[1]];
+        assert!(got.iter().zip(&want).all(|(a, b)| (a - b).abs() < 1e-12), "section {index}: {got:?} vs {want:?}");
+    }
+}
