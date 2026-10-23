@@ -40,7 +40,7 @@ impl Compiler<'_> {
     }
 
     /// Text arguments as Lua, as in `pgs.rs`.
-    fn text_of(&mut self, arg: Option<&Arg>) -> Option<String> {
+    pub(super) fn text_of(&mut self, arg: Option<&Arg>) -> Option<String> {
         match arg {
             Some(Arg::Key(k)) => Some(super::lua_str(k)),
             Some(Arg::Expr(e)) => match e.ty {

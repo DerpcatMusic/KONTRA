@@ -364,6 +364,11 @@ impl Host {
         self.controls.borrow().controls.clone()
     }
 
+    /// Menu items per UI index, as `(text, value, visible)`.
+    pub fn menus(&self) -> Vec<Vec<(String, i32, bool)>> {
+        self.controls.borrow().menu_items()
+    }
+
     /// Integer `$CONTROL_PAR_*` mirror (`Initial::properties`).
     pub fn properties(&self) -> HashMap<(i32, i32), i32> {
         self.controls.borrow().properties.clone()
