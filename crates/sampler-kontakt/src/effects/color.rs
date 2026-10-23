@@ -219,7 +219,9 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
         // kernel are not extracted and KSP has no ENGINE_PAR_CHAINSAW_* names: its knobs are
         // not guessed from the Big Fuzz layout.
         0x77 => "Chainsaw: record reader 0x140ac51f0 (Fx4B) is shared with Big Fuzz, but its ctor, apply, kernel and parameter names are not extracted",
-        0x52 | 0x54 | 0x61 | 0x6c | 0x76 | 0x79 => {
+        // The record is lowered (`Params::Kolor`); the shaper cases and control tick are not run.
+        0x79 => "Kolor: record lowered to sampler_ir::fx::kolor::Record; shaper cases 0..9 and the control tick (14197ab90) are not wired, so the slot passes audio through",
+        0x52 | 0x54 | 0x61 | 0x6c | 0x76 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
         }
         _ => return None,
