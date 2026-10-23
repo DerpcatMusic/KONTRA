@@ -209,6 +209,16 @@ fn compare(host: &host::Host, lowered: &Lowered, expected: &crate::eval::Initial
     if host.controls() != expected.controls {
         return Err(format!("controls differ: interpreter {:?}, luau {:?}", expected.controls, host.controls()));
     }
+    let want: Vec<Vec<(String, i32, bool)>> = (0..lowered.compiled.ui.len())
+        .map(|ui| {
+            expected.model.interface.widgets.get(ui).map_or_else(Vec::new, |w| {
+                w.menu.iter().map(|item| (item.text.clone(), item.value, item.visible)).collect()
+            })
+        })
+        .collect();
+    if host.menus() != want {
+        return Err(format!("menu items differ: interpreter {want:?}, luau {:?}", host.menus()));
+    }
     if host.properties() != expected.properties {
         return Err("control properties differ".into());
     }
