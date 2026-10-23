@@ -1053,6 +1053,10 @@ input.group>=16||input.channel>=16||input.key>=128
                         generation.source(sample).expect("admitted logical source").sample_rate())
                 }else{source_cursor};
                 let cursor=if start!=0{cursor.skip(start)}else{cursor};
+                // Zone start randomisation is a delayed onset (see `random_delay`), not a skip.
+                // One draw per note: the seed without the region bits, so layers share it.
+                let note_seed = seed ^ ((candidate.region as u64) << 20);
+                let delay = u64::from(prepared.voice_modulation.random_delay(candidate.region, note_seed));
                 let family = *family.get_or_insert_with(|| {
                     let family = self
                         .create_family_for(note, trigger)
@@ -1069,7 +1073,7 @@ input.group>=16||input.channel>=16||input.key>=128
                 let admitted = self.admit_voice(
                     family,
                     sample,
-                    self.now,
+                    self.now + delay,
                     r.gain * r.velocity_curve.amplitude(velocity) * r.fade_gain(key, velocity),
                     envelope,
                     cursor.with_step(step),
