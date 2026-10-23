@@ -980,8 +980,7 @@ impl<'a> Sema<'a, '_> {
             }
             A::Unary(UnOp::Not, inner) => {
                 let inner = self.expr(inner)?;
-                let ty = if inner.ty == Ty::Bool { Ty::Bool } else { Ty::Int };
-                (ty, ExprKind::Not(Box::new(self.coerce(inner, Ty::Bool)?)))
+                (Ty::Bool, ExprKind::Not(Box::new(self.boolean(inner)?)))
             }
             A::Binary(op, l, r) => return self.binary(*op, l, r, span),
         };
@@ -1057,13 +1056,12 @@ impl<'a> Sema<'a, '_> {
         };
         let arith = match op {
             ScalarOp::Logic(logic) => {
-                // Boolean operands give a boolean; integer operands give an integer, which
-                // Kontakt does not accept as a condition (see `condition`).
-                let ty = if l.ty == Ty::Bool && r.ty == Ty::Bool { Ty::Bool } else { Ty::Int };
-                let l = self.coerce(l, Ty::Bool)?;
-                let r = self.coerce(r, Ty::Bool)?;
+                // Kontakt compiles and/or/xor only over comparisons (boolean terms), never
+                // over integers; measured by the conformance suite (`intval_and_value`).
+                let l = self.boolean(l)?;
+                let r = self.boolean(r)?;
                 return Ok(Expr {
-                    ty,
+                    ty: Ty::Bool,
                     span,
                     kind: ExprKind::Logic(logic, Box::new(l), Box::new(r)),
                 });
@@ -1083,6 +1081,10 @@ impl<'a> Sema<'a, '_> {
             }
             ScalarOp::Arithmetic(arith) => arith,
         };
+        // Kontakt rejects a condition used as a number (`typing_bool_arith`).
+        if l.ty == Ty::Bool || r.ty == Ty::Bool {
+            return fault(span, "operator requires numbers, found boolean");
+        }
         let (l, r) = unify(self, l, r)?;
         let integer_only = !matches!(arith, Arith::Add | Arith::Sub | Arith::Mul | Arith::Div);
         if l.ty == Ty::Str || (l.ty == Ty::Real && integer_only) {
