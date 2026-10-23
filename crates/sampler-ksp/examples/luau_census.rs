@@ -17,6 +17,8 @@ fn main() {
     let mut front_reasons: BTreeMap<String, usize> = BTreeMap::new();
     let mut unsupported: BTreeMap<String, usize> = BTreeMap::new();
     let mut mismatches = Vec::new();
+    let mut single_blockers: BTreeMap<String, usize> = BTreeMap::new();
+    let mut blocker_counts: BTreeMap<usize, usize> = BTreeMap::new();
     for path in &paths {
         let source = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
         let lowered = match lower(&source) {
@@ -33,6 +35,12 @@ fn main() {
         }
         if !lowered.compiled.is_complete() {
             outside += 1;
+            // Scripts blocked by exactly one construct name: what the next widening unlocks.
+            *blocker_counts.entry(lowered.compiled.unsupported.len()).or_default() += 1;
+            if lowered.compiled.unsupported.len() == 1 {
+                let name = lowered.compiled.unsupported.keys().next().cloned().unwrap_or_default();
+                *single_blockers.entry(name).or_default() += 1;
+            }
             continue;
         }
         compared += 1;
@@ -50,6 +58,13 @@ fn main() {
     println!("in subset, init compared: {compared}; matched {matched}; mismatched {}", mismatches.len());
     for m in mismatches.iter().take(12) {
         println!("  MISMATCH {m}");
+    }
+    let mut single: Vec<_> = single_blockers.into_iter().collect();
+    single.sort_by(|a, b| b.1.cmp(&a.1));
+    println!("outside scripts by number of distinct blocking constructs: {blocker_counts:?}");
+    println!("scripts blocked by exactly one construct:");
+    for (name, n) in single.iter().take(20) {
+        println!("  {n:5}  {name}");
     }
     let mut top: Vec<_> = unsupported.into_iter().collect();
     top.sort_by(|a, b| b.1.cmp(&a.1));
