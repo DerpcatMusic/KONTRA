@@ -317,6 +317,31 @@ impl Host {
         self.controls.borrow().text.clone()
     }
 
+    /// PGS integer keys (`Initial::model.pgs`).
+    pub fn pgs(&self) -> BTreeMap<String, Vec<i32>> {
+        let mut out = BTreeMap::new();
+        let Ok(table) = self.callbacks.get::<Table>("pgs") else { return out };
+        for pair in table.pairs::<String, Table>() {
+            let Ok((key, values)) = pair else { continue };
+            let n = values.raw_get::<i64>("n").unwrap_or(0);
+            let values = (1..=n).map(|i| values.raw_get::<f64>(i).unwrap_or(0.0) as i32).collect();
+            out.insert(key, values);
+        }
+        out
+    }
+
+    /// PGS text keys (`Initial::model.pgs_text`).
+    pub fn pgs_text(&self) -> BTreeMap<String, String> {
+        let Ok(table) = self.callbacks.get::<Table>("pgs_text") else { return BTreeMap::new() };
+        table.pairs::<String, String>().filter_map(Result::ok).collect()
+    }
+
+    /// `set_script_title`'s last title (`Initial::model.interface.title`).
+    pub fn title(&self) -> Option<String> {
+        let model = self.callbacks.get::<Table>("model").ok()?;
+        model.get::<Option<String>>("title").ok().flatten()
+    }
+
     /// `set_engine_par` writes, keyed `[parameter, group, slot, generic]`.
     pub fn engine(&self) -> BTreeMap<[i64; 4], i64> {
         self.engine.borrow().clone()
