@@ -345,6 +345,9 @@ impl<'a> Sema<'a, '_> {
                 let ty = self.hir.vars[place.var().0 as usize].ty;
                 self.check_writable(place.var(), target.span)?;
                 let value = self.expr(value)?;
+                if ty == Ty::Int && value.ty == Ty::Bool {
+                    return fault(value.span, "expected integer, found condition");
+                }
                 StmtKind::Assign(place, self.coerce(value, ty)?)
             }
             ast::StmtKind::If(cond, yes, no) => {
@@ -377,6 +380,7 @@ impl<'a> Sema<'a, '_> {
                 StmtKind::Select(value, out)
             }
             ast::StmtKind::Call(name) => match self.function(*name) {
+                Some(_) if self.in_init => return fault(s.span, "call is not allowed in on init"),
                 Some(f) => StmtKind::Call(f),
                 None => return fault(s.span, format!("unknown function {}", self.name(*name))),
             },
@@ -384,6 +388,9 @@ impl<'a> Sema<'a, '_> {
                 if let Some(f) = self.function(*name)
                     && args.is_empty()
                 {
+                    if self.in_init {
+                        return fault(s.span, "call is not allowed in on init");
+                    }
                     return Ok(Some(StmtKind::Call(f)));
                 }
                 let Some(b) = Builtin::from_name(self.name(*name)) else {
@@ -813,7 +820,16 @@ impl<'a> Sema<'a, '_> {
 
     fn condition(&mut self, e: &ast::Expr) -> Result<Expr> {
         let e = self.expr(e)?;
-        self.coerce(e, Ty::Bool)
+        self.boolean(e)
+    }
+
+    /// Kontakt compiles a condition, and the operands of and/or/not, only when they are
+    /// comparisons or other boolean terms. An integer there is a compile error.
+    fn boolean(&self, e: Expr) -> Result<Expr> {
+        if e.ty == Ty::Bool {
+            return Ok(e);
+        }
+        fault(e.span, format!("expected a condition, found {}", ty_name(e.ty)))
     }
 
     /// Implicit conversions KSP performs: condition <-> integer, anything -> text.
@@ -916,10 +932,8 @@ impl<'a> Sema<'a, '_> {
             }
             A::Unary(UnOp::Not, inner) => {
                 let inner = self.expr(inner)?;
-                (
-                    Ty::Bool,
-                    ExprKind::Not(Box::new(self.coerce(inner, Ty::Bool)?)),
-                )
+                let ty = if inner.ty == Ty::Bool { Ty::Bool } else { Ty::Int };
+                (ty, ExprKind::Not(Box::new(self.coerce(inner, Ty::Bool)?)))
             }
             A::Binary(op, l, r) => return self.binary(*op, l, r, span),
         };
@@ -995,10 +1009,13 @@ impl<'a> Sema<'a, '_> {
         };
         let arith = match op {
             ScalarOp::Logic(logic) => {
+                // Boolean operands give a boolean; integer operands give an integer, which
+                // Kontakt does not accept as a condition (see `condition`).
+                let ty = if l.ty == Ty::Bool && r.ty == Ty::Bool { Ty::Bool } else { Ty::Int };
                 let l = self.coerce(l, Ty::Bool)?;
                 let r = self.coerce(r, Ty::Bool)?;
                 return Ok(Expr {
-                    ty: Ty::Bool,
+                    ty,
                     span,
                     kind: ExprKind::Logic(logic, Box::new(l), Box::new(r)),
                 });
