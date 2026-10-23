@@ -309,6 +309,15 @@ Test `surround_{panner,record,panner_driver}_native_vectors.json`, ring tests,
 or stricter, no new admission. Delete core-type dependency and replaced offset accessors.
 Estimate: 0–150 LOC; CPU ~0%. New multichannel/gater scheduling is a separate capability PR.
 
+**Status: no admissible change (2026-10-24).** Audit with file:line evidence:
+- `surround_panner.rs:136` `clamp01` and `filter/cascade.rs:199` `clamp01` look alike but differ for NaN (the panner returns
+  NaN, the cascade returns 0). Sharing would change a behaviour, so no merge.
+- `color/widener.rs:33` `shelf` is a first-order high shelf with its own pre-warp; the shared first-order designs are in
+  `biquad.rs` (`Design::FirstOrder`) and have different (Kontakt) arithmetic. Not bit-identical.
+- The format-side `Panner` construction (`K/effects/surround.rs`) is a coupling to remove, not duplicate code; the gate for this
+  ticket is deletion or measured improvement, so it is not a change under this record.
+Nothing was deleted.
+
 ### 11. Source coloration and scheduler sub-models (high reach, high risk; last)
 
 Files: `D/{machine,machine_tables}.rs`, `C/source/{time_machine,tone_machine,beat_slices}.rs`,
