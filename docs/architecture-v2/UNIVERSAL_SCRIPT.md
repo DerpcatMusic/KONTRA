@@ -195,6 +195,8 @@ Subset: int/real/text scalars and arrays, `if`/`while`/`select`/`call`/`exit`/`c
 
 Corpus: 696 real scripts extracted from `/data/main/Libraries` (`sampler-kontakt/examples/ksp_corpus_extract`), census with `sampler-ksp/examples/luau_census`: 5 fail the front end, 691 compile but use constructs outside the subset, **0 in subset and compared**. Top gaps by site: `set_control_par` (2.2 M), `set_control_par_str` (0.46 M), UI controls (0.40 M), `make_persistent` (0.19 M), `search` (0.16 M), `get_ui_id` (0.14 M), `read_persistent_var` (0.09 M).
 
+Lane B (language/builtins, census `scripts blocked only by non-UI constructs`): 0 of 696 yet. Builtins now in subset: `in_range`, `abs`, `sgn`, `sh_left/right`, `msb/lsb`, `ms_to_ticks/ticks_to_ms`, `min/max`, conversions, `round`, `floor/ceil`, `sqrt/exp/log/log10`, trig, `pow`, `num_elements`, `search`, integer `sort`, `message`. Top remaining non-UI blockers by script: `on controller` (687), `play_note` (684), `disallow_group`/`ignore_event`/`allow_group` (~680), `note_off`, `change_tune`, `get_event_par`, `set_event_par`, `fade_out`: all need the engine action sink, not started.
+
 Per event (`examples/luau_bench`, release, shared host, 20 000 events): interpreter p50 0.8-1.7 µs, p99.9 3.5-11 µs; Luau p50 5.5 µs, p99.9 46-51 µs, max 170-220 µs. The budget hook costs about 1.3 µs of the p50. **Luau is not faster with equal or better tail latency: the interpreter stays the default.**
 
 ## Remaining
