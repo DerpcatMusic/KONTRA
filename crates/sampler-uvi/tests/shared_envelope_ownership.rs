@@ -65,15 +65,16 @@ fn cached_ratio_dependency_cannot_hide_the_ahd_limitation() {
 }
 
 #[test]
-fn cached_depth_dependency_keeps_the_unsupported_composite_boundary() {
+fn cached_depth_dependency_omits_the_unsupported_composite_output_and_reports_it() {
     let source = r#"<AHD Name="Steps"/><LFO Name="Composite" Freq="3" Retrigger="0">
       <Connections><SignalConnection Source="$Program/Steps" Destination="Depth" Ratio="0.5"/></Connections></LFO>"#;
     let pitch = r#"<SignalConnection Source="$Program/Steps" Destination="Pitch" Ratio="0.1"/>"#;
     let output = r#"<SignalConnection Source="$Program/Composite" Destination="Gain" Ratio="0.5"/>"#;
     for prefix in [pitch, ""] {
-        let reason = refused(&xml(source, prefix, "", output));
-        assert!(reason.contains("shared output connection"), "{reason}");
-        assert!(reason.contains("no supported exact modulator program"), "{reason}");
+        let instrument = sampler_uvi::translate(&xml(source, prefix, "", output), Path::new(".")).unwrap().instrument;
+        instrument.validate().unwrap();
+        assert!(instrument.unsupported.iter().any(|u| u.location.contains("SignalConnection")), "{:?}", instrument.unsupported);
+        assert!(instrument.source_indices.processing.iter().all(|recipe| recipe.routes.is_empty()), "no exact output route");
     }
 }
 
