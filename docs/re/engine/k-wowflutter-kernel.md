@@ -108,3 +108,24 @@ So the wow kernel's 4-lane sines come from this SIMD `sincos4`. Its polynomial c
 6. **KEMU vectors.** No native vectors. `tools/re/kemu_timemod.py` seeding of the nine control targets is not attempted.
 
 Until (1), (2) and (5) are decoded, the generic law in `dsp/timemod/wowflutter.rs` stays **unconfirmed** and the PARITY_MATRIX Wow/Flutter row stays not-parity.
+
+## Pass 5 (2026-10-23): step 1 merged, gate writer resolved, rest still open
+
+Step 1 (code, PR #463, merged a798e72): the resolved control laws (wow `4w²`, flutter `0.5f²`, speed `0.75s+0.05`, stereo `s²`, mix `sqrt(m)` / `sqrt(1-m)`) are in `wow_flutter_laws` (sampler-kontakt) and the mix in `config`/`slot_timemod`. The PE constants (4.0, 0.5, 0.75, 0.05, 1.2) were re-read from Kontakt8.exe `.rdata` and match. The pitch scale is still generic and flagged; the IR fields carry the law values.
+
+### Gate (blocker, now decoded): the flag reads an int written as a sample count
+
+- Handler `0x14199c470` (radare2, `pdf @ 0x14199c470`): `rax = [rcx+8]` (owner), `movss xmm0, [0x14470bad0]` (0.5), `comiss xmm0, [rax+0x31c]`, `setbe cl`, then `cmp [rax+0x3318], cl`; on change, `[rax+0x32e4] = 0` and `[rax+0x3318] = cl`.
+- So the gate reads **`+0x31c` as a float**, not the control slot `+0x68`. The earlier "(gate reads +0x68)" note was wrong; the cache decompile (`0141990000.c:8788`) agrees.
+- Writer of `+0x31c`: `FUN_14099aac0` (`0140990000.c:9075`, line 9188), called with kernel `+0x1c0` (`0140970000.c:980/988`). It stores an **int** sample count: `max(1, int(ms·1e-3·rate/… + 1))`, bits ~1..1e3.
+- A tiny int reinterpreted as a float is far below 0.5, so `0.5 <= bits(+0x31c)` is false on every reachable path. **Consequence: the Gate flag is always 0 in the decoded path, so the Gate control has no audible effect there.** Not yet confirmed by a native vector (no vectors exist).
+- Not claimed: whether the owner pointer for handler 7 is the kernel (assumed from the `FUN_14199de70` capture of `this`).
+
+### Still open after pass 5
+
+1. **Fractional readers** at kernel `+0x6b0`/`+0x6e8` (object `+0x680`): no store to these offsets in `0141990000.c`, `0141970000.c`, `0141aa0000.c`; the `+0x680` init (`FUN_14199d6a0`, `FUN_14199e150`) writes other fields. Writers are elsewhere (probably the object's ctor via a generic setter). Not located.
+2. **LFO entry init** (`+0x68`, `+0x98`, `+0x1c`, `+0x20`): not written in the file set above; still open.
+3. **Age loop** `0x14199c280`: calls `FUN_14199dbf0` / `FUN_14199db20`, not decoded.
+4. **Saturation** `FUN_14199db20` coefficients: not decoded.
+5. **Sin/cos core** `FUN_1443c9bb0`: the cache decompile (`01443c0000.c:11187`) is an SSE body with no readable semantics; `FUN_1443c9bd0` (`:11538`) is a `|x| >= threshold` range-reduction wrapper. Needs a disassembly pass (`pdf @ 0x1443c9bb0`); not done in this lane.
+6. **Step 3 (KEMU vectors)**: not attempted. No native vectors exist, so the PARITY_MATRIX Wow/Flutter row stays `partial`.
