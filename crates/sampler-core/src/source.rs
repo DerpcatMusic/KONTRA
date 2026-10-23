@@ -11,6 +11,8 @@ pub(crate) mod channels;
 pub(crate) mod bundle;
 #[cfg(test)]
 mod mix_experiment;
+#[cfg(test)]
+mod voice_receipt;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Direction {

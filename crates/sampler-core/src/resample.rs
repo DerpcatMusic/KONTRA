@@ -144,8 +144,9 @@ fn cubic(fraction: f64, mut read: impl FnMut(i64) -> [f32; 2]) -> [f32; 2] {
     })
 }
 
-/// Stretches of the polyphase bank: eight per octave above unity.
-const STRETCHES: usize = 8;
+/// Stretches of the polyphase bank: eight per octave, two octaves (steps up to 4).
+const STRETCHES: usize = 16;
+const PER_OCTAVE: f64 = 8.0;
 /// Phases per input frame; coefficients interpolate linearly between rows.
 const PHASES: usize = 64;
 
@@ -325,8 +326,8 @@ fn accumulate<const FUSED: bool>(
     }
 }
 
-/// Widest polyphase window: radius 12 at stretch 2.
-const MAX_TAPS: usize = 2 * 2 * SHORT_RADIUS + 1;
+/// Widest polyphase window: radius 12 at stretch 4.
+const MAX_TAPS: usize = 2 * 4 * SHORT_RADIUS + 1;
 /// Its padded width in frames.
 const MAX_WIDTH: usize = (2 * MAX_TAPS).div_ceil(CHUNK) * CHUNK / 2;
 
@@ -359,13 +360,13 @@ impl Kernel {
     }
 
     fn stretch(index: usize) -> f64 {
-        ((index + 1) as f64 / STRETCHES as f64).exp2()
+        ((index + 1) as f64 / PER_OCTAVE).exp2()
     }
 
-    /// The bank entry for 1 < step <= 2: the narrowest stretch at or above
+    /// The bank entry for 1 < step <= 4: the narrowest stretch at or above
     /// step, so the band edge sits at most an eighth of an octave low.
     pub(super) fn polyphase(&self, step: f64) -> Option<&Polyphase> {
-        if self.quality != ResampleQuality::Realtime || step <= 1.0 || step > 2.0 {
+        if self.quality != ResampleQuality::Realtime || step <= 1.0 || step > 4.0 {
             return None;
         }
         self.bank.iter().find(|entry| entry.stretch >= step)
@@ -531,6 +532,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn wide_bank_tracks_short_sinc_between_steps_two_and_four() {
+        // Steps 2..4 moved from the per-frame short sinc to the bank. Bound the change on
+        // a tone well inside the passband: the bank must agree with the sinc to 2e-3.
+        let kernel = Kernel::new(ResampleQuality::Realtime);
+        let mut worst = 0.0_f64;
+        for step in [2.0, 2.5, 3.0, 3.5, 4.0] {
+            for fraction in [0.0, 0.125, 0.5, 0.999] {
+                let frequency = 0.1 / step;
+                let read = |i: i64| {
+                    let angle = 2.0 * PI * frequency * i as f64;
+                    [angle.cos() as f32, angle.sin() as f32]
+                };
+                let bank = kernel.sample(fraction, step, read);
+                let sinc = kernel.short.sample(fraction, step, read);
+                for c in 0..2 {
+                    worst = worst.max((f64::from(bank[c]) - f64::from(sinc[c])).abs());
+                }
+            }
+        }
+        assert!(worst < 2e-3, "worst bank-vs-sinc error {worst}");
     }
 
     #[test]
