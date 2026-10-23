@@ -59,7 +59,8 @@ fn function_reached_from_note_is_in_scope() {
 }
 
 #[test]
-fn initializer_is_reported_not_applied() {
-    let w = warnings("on init declare polyphonic $a := 5 end on on note end on");
-    assert!(w.iter().any(|m| m.contains("initializer ignored")), "{w:?}");
+fn initializer_is_not_applied_and_not_reported() {
+    // Kontakt keeps no note-owned initializer and prints no diagnostic for it.
+    let source = "on init declare polyphonic $a := 5 end on on note end on";
+    assert!(warnings(source).is_empty(), "{:?}", warnings(source));
 }
