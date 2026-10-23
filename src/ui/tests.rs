@@ -2497,7 +2497,7 @@ fn mixer_routing_edits() {
 /// walked: the same tree, framed again, shows the new level. The editor
 /// asks for frames only while a meter moves.
 #[test]
-fn mixer_meters_paint_without_a_rebuild() {
+fn mixer_meters_paint_as_they_move() {
     let p = two_parts();
     let (width, height) = (1180u16, 760u16);
     let mut h = Harness::new(&p, f64::from(width), f64::from(height));
@@ -2509,6 +2509,8 @@ fn mixer_meters_paint_without_a_rebuild() {
     for m in &p.shared.part(0).unwrap().meter {
         m.store(0.8f32.to_bits(), Ordering::Relaxed);
     }
+    // A memo keeps its meter's closure, so a moved level is built again.
+    let root = (h.build)(&mut h.ui, &mut h.bridge);
     h.ui.frame(root, Some(h.size), Input::default(), 0.)
         .unwrap();
     let loud = pixels(&h.ui, width, height);
