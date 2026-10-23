@@ -308,6 +308,8 @@ fn translate(
         alias_claims: HashMap::new(),
         intensity_scales: Vec::new(),
         lane_slots: Vec::new(),
+        intensity_slots: HashMap::new(),
+        engine_by_group: Default::default(),
         dormant_modulators: Default::default(),
         amplitude_envelopes: Vec::new(),
         send_taps: Vec::new(),
@@ -914,6 +916,11 @@ struct Translation {
     /// Module slot -> processor index of the current group's script-addressed
     /// effect modules (distortion, saturation, formant, lo-fi).
     lane_slots: Vec<(usize, usize)>,
+    /// First modulator slot per (group, lower-case name) in `engine_lookups`,
+    /// so `script_intensity` is a map probe instead of a scan of every lookup.
+    intensity_slots: HashMap<(i32, String), i32>,
+    /// `engine` positions per group, built on first read (writes come first).
+    engine_by_group: std::cell::OnceCell<HashMap<i32, Vec<usize>>>,
     /// (group, internal slot) of saved-bypassed modulators nothing can wake.
     dormant_modulators: std::collections::HashSet<(usize, usize)>,
     /// Each group's own amplitude envelope, once its internal modulators are
@@ -1577,6 +1584,9 @@ impl Translation {
         targets: &[ni_file::kontakt::objects::ModTarget],
         settings: Option<ir::kontakt::Modulation>,
     ) {
+        self.intensity_slots
+            .entry((group as i32, name.to_ascii_lowercase()))
+            .or_insert(slot as i32);
         self.ir
             .source_indices
             .engine_lookups
@@ -2473,12 +2483,21 @@ impl Translation {
     }
 
     fn script_par(&self, parameter: &str, group: i32, slot: i32, generic: i32) -> Option<i32> {
-        self.engine
+        let by_group = self.engine_by_group.get_or_init(|| {
+            let mut map: HashMap<i32, Vec<usize>> = HashMap::new();
+            for (at, write) in self.engine.iter().enumerate() {
+                map.entry(write.group).or_default().push(at);
+            }
+            map
+        });
+        by_group
+            .get(&group)?
             .iter()
             .rev()
+            .map(|&at| &self.engine[at])
             .find(|w| {
                 w.parameter.trim_start_matches('$') == parameter
-                    && (w.group, w.slot, w.generic) == (group, slot, generic)
+                    && (w.slot, w.generic) == (slot, generic)
             })
             .map(|w| w.value)
     }
@@ -2808,18 +2827,9 @@ impl Translation {
 
     /// The modulation intensity a script set for modulation `name` of group `index`.
     fn script_intensity(&self, index: usize, name: &str) -> Option<f32> {
-        let slot = self
-            .ir
-            .source_indices
-            .engine_lookups
-            .iter()
-            .find(|lookup| {
-                lookup.group == index as i32
-                    && lookup.owner == -1
-                    && !lookup.target
-                    && lookup.name.eq_ignore_ascii_case(name)
-            })?
-            .index;
+        let slot = *self
+            .intensity_slots
+            .get(&(index as i32, name.to_ascii_lowercase()))?;
         let v = self.script_par("ENGINE_PAR_MOD_TARGET_INTENSITY", index as i32, slot, -1)?;
         Some(v.clamp(0, 1_000_000) as f32 / 1_000_000.0)
     }
@@ -5046,6 +5056,8 @@ mod modulation {
             alias_claims: HashMap::new(),
             intensity_scales: Vec::new(),
             lane_slots: Vec::new(),
+            intensity_slots: HashMap::new(),
+            engine_by_group: Default::default(),
         dormant_modulators: Default::default(),
             amplitude_envelopes: Vec::new(),
             send_taps: Vec::new(),
@@ -5206,6 +5218,31 @@ mod modulation {
             value: 500000,
         });
         assert_eq!(out.script_intensity(7, "controller"), Some(0.5));
+    }
+
+    /// The indexed lookups keep the scan's answers: the first modulator named
+    /// case-insensitively within the group wins, and the last engine write wins.
+    #[test]
+    fn script_intensity_index_matches_first_lookup_and_last_write() {
+        let mut out = translation();
+        out.source_modulator(3, 1, true, "Foo".into(), &[], None);
+        out.source_modulator(3, 2, true, "foo".into(), &[], None);
+        out.source_modulator(4, 5, true, "FOO".into(), &[], None);
+        let write = |group, slot, value| sampler_ksp::EnginePar {
+            parameter: "$ENGINE_PAR_MOD_TARGET_INTENSITY".into(),
+            group,
+            slot,
+            generic: -1,
+            value,
+        };
+        out.engine.push(write(3, 1, 100_000));
+        out.engine.push(write(3, 1, 250_000));
+        out.engine.push(write(4, 5, 750_000));
+        assert_eq!(out.script_intensity(3, "FOO"), Some(0.25));
+        assert_eq!(out.script_intensity(4, "foo"), Some(0.75));
+        assert_eq!(out.script_intensity(3, "bar"), None);
+        assert_eq!(out.script_intensity(5, "foo"), None);
+        assert_eq!(out.script_par("ENGINE_PAR_MOD_TARGET_INTENSITY", 3, 2, -1), None);
     }
 
     fn group_public(interp_quality: i32) -> Vec<u8> {

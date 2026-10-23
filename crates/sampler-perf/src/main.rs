@@ -209,6 +209,12 @@ const SCENARIOS: &[Scenario] = &[
         notes: chord16,
     },
     Scenario {
+        name: "conflux-load",
+        source: Source::Kontakt("Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki"),
+        seconds: 4.0,
+        notes: dense,
+    },
+    Scenario {
         name: "convolution-pads",
         source: Source::Kontakt("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki"),
         seconds: 8.0,
@@ -287,7 +293,7 @@ const SILENT: f32 = 0.001;
 fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, String> {
     match &s.source {
         Source::Kontakt(rel) | Source::KontaktProgram(rel, _) => {
-            let path = root(KONTAKT, "/mnt/MAIN_STORAGE/Libraries/Kontakt").join(rel);
+            let path = root(KONTAKT, "/data/main/Libraries/Kontakt").join(rel);
             let keys = messages
                 .iter()
                 .filter(|m| m.1[0] & 0xf0 == 0x90)
@@ -1023,6 +1029,47 @@ fn play_uvi(p: &mut Player, messages: &[Message], block: usize, frames: usize) -
     cell
 }
 
+/// One cold load of a scenario's instrument, timed as the host sees it. Prints one JSON line:
+/// wall and process CPU seconds of `load`, peak RSS (VmHWM) and RSS after load, in kB.
+/// Run it in a fresh process per repeat: the peak is process-wide.
+fn loadbench(args: &[String]) -> Result<(), String> {
+    let name = match args {
+        [flag, name] if flag == "--only" => name,
+        _ => return Err("usage: sampler-perf loadbench --only NAME".into()),
+    };
+    let s = SCENARIOS
+        .iter()
+        .find(|s| s.name == name)
+        .ok_or(format!("unknown scenario {name}"))?;
+    let messages = (s.notes)();
+    let cpu = || {
+        // SAFETY: zeroed rusage is a valid out-parameter for getrusage.
+        #[allow(unsafe_code, reason = "getrusage is a plain syscall wrapper")]
+        let usage = unsafe {
+            let mut u: libc::rusage = std::mem::zeroed();
+            libc::getrusage(libc::RUSAGE_SELF, &mut u);
+            u
+        };
+        let t = |tv: libc::timeval| tv.tv_sec as f64 + tv.tv_usec as f64 * 1e-6;
+        t(usage.ru_utime) + t(usage.ru_stime)
+    };
+    let (wall0, cpu0) = (Instant::now(), cpu());
+    let loaded = load(s, &messages, BLOCKS[0])?;
+    let (wall, cpu_s) = (wall0.elapsed().as_secs_f64(), cpu() - cpu0);
+    println!(
+        "{}",
+        json!({
+            "scenario": s.name,
+            "wall_s": wall,
+            "cpu_s": cpu_s,
+            "peak_rss_kb": proc_value("/proc/self/status", "VmHWM:"),
+            "rss_kb": proc_value("/proc/self/status", "VmRSS:"),
+            "stream_head_bytes": loaded.stream_bytes,
+        })
+    );
+    Ok(())
+}
+
 fn run(args: &[String]) -> Result<(), String> {
     let (mut out, mut only, mut seconds, mut cell) = (None, None, None, None);
     let mut it = args.iter();
@@ -1207,6 +1254,7 @@ fn main() {
         Some("spike") => capacity::spike(&args[1..]).map(|()| true),
         Some("run") => run(&args[1..]).map(|()| true),
         Some("compare") => compare(&args[1..]),
+        Some("loadbench") => loadbench(&args[1..]).map(|()| true),
         _ => Err("usage: sampler-perf sustain [--only afflatus|conflux|conflux-multi] [--block 64|256] [--notes 1|8] [--seconds S] [--out FILE] | run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S] | compare BASE.json NEW.json [--threshold PERCENT] | capacity [--caps 64,256,4096] [--only NAME] [--block 64] [--seconds S] [--repeats N]".into()),
     };
     report_alloc_traces();
