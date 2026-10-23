@@ -8,8 +8,9 @@ table `C+0x14208..0x142b0` (four entries of value, target, threshold and flags, 
 previous entry's last slot), the bounds `C+0xad0`/`C+0xad8`, the path `C+0x604`, the flag `C+0x600`, the
 smoothing flag `C+0x938` and the P0 control block that holds the spread targets (`+0x2c`, `+0x30`, `+0x34`, `+0x38`).
 
-The Rust test (`replika::chain::tests`) loads this as the start state and runs the frame loop from it. The
-vectors (`replika-native-mode1-index28-*.json`) are the output of the same run, with the same routes.
+The Rust test `replika::chain::tests::start_matches_native_dump` compares `Mode1::start` (built in Rust, `replika/start.rs`)
+with this dump field by field; the production start does not read it. The vectors (`replika-native-mode1-index28-*.json`) are
+the output of the same run, with the same routes.
 
     nice -n 19 python3 -I tools/re/replika_mode1_start_kemu.py KONTAKT8_EXE OUT_JSON
 
