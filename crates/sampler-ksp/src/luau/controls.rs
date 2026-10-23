@@ -99,7 +99,7 @@ impl State {
     }
 
     /// `write_var` for a control: clamp into the declared range.
-    fn write_control(&mut self, meta: &[UiMeta], ui: usize, n: i32) {
+    pub fn write_control(&mut self, meta: &[UiMeta], ui: usize, n: i32) {
         self.controls[ui] = match meta[ui].range {
             Some((lo, hi)) => n.clamp(lo.min(hi), hi.max(lo)),
             None => n,

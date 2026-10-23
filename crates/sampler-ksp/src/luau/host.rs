@@ -5,6 +5,7 @@
 //! caller splits its render blocks.
 
 use super::{Compiled, controls};
+use crate::builtins::FIRST_UI_ID;
 use mlua::{Function, Lua, MultiValue, Table, Thread, Value, VmState};
 use sampler_script::{Budget, Jit, cache_dir, cached_bytecode, new_vm_with};
 use std::{cell::RefCell, collections::{BTreeMap, HashMap}, rc::Rc};
@@ -13,6 +14,8 @@ use std::{cell::RefCell, collections::{BTreeMap, HashMap}, rc::Rc};
 const CALLBACK_CHECKPOINTS: u64 = 1_000_000;
 /// Luau memory cap for one instrument VM.
 const MEMORY: usize = 64 << 20;
+/// Note id of UI callbacks: they have no note, but `NV` still needs a table.
+const NO_NOTE: u32 = u32::MAX;
 
 struct Job {
     thread: Thread,
@@ -49,6 +52,7 @@ pub struct Host {
     queue: BTreeMap<(u64, u64), Job>,
     engine: Rc<RefCell<BTreeMap<[i64; 4], i64>>>,
     controls: Rc<RefCell<controls::State>>,
+    ui_meta: Rc<[controls::UiMeta]>,
     budget: Rc<Budget>,
 }
 
@@ -135,6 +139,7 @@ impl Host {
             queue: BTreeMap::new(),
             engine,
             controls: ui_state,
+            ui_meta,
             budget,
         })
     }
@@ -150,6 +155,27 @@ impl Host {
         let Some(init) = init else { return Ok(()) };
         self.budget.refill(CALLBACK_CHECKPOINTS, None);
         init.call::<()>(()).map_err(|e| e.to_string())
+    }
+
+    /// The user changed UI control `ui` to `value`. The control takes the value (clamped), then
+    /// the dispatcher starts `on ui_controls` (with `$UI_ID`), the control's `on ui_control`, and
+    /// `on ui_update`, each up to its first wait, as the runtime does.
+    pub fn ui_change(&mut self, ui: usize, value: i32) -> Result<(), String> {
+        self.controls.borrow_mut().write_control(&self.ui_meta, ui, value);
+        let id = i64::from(FIRST_UI_ID + ui as i32);
+        for key in ["ui_controls".to_string(), format!("ui_{ui}"), "ui_update".to_string()] {
+            let Some(func) = self.callbacks.get::<Option<Function>>(key.as_str()).map_err(|e| e.to_string())? else {
+                continue;
+            };
+            // The runner passes `key` as the first argument: `$UI_ID` for `on ui_controls`.
+            self.launch(func, false, NO_NOTE, id, 0.0)?;
+        }
+        Ok(())
+    }
+
+    /// Whether a resumption is queued (a callback is waiting on a clock).
+    pub fn pending(&self) -> bool {
+        !self.queue.is_empty()
     }
 
     /// A note started at the current frame: `on note` with the key and velocity.
@@ -171,12 +197,17 @@ impl Host {
             }
             return Ok(());
         };
+        self.launch(func, release, note, key, velocity)
+    }
+
+    /// Start `func` on a pooled coroutine at the current frame.
+    fn launch(&mut self, func: Function, ends_note: bool, note: u32, key: i64, velocity: f64) -> Result<(), String> {
         let thread = match self.free.pop() {
             Some(thread) => thread,
             None => self.lua.create_thread(self.runner.clone()).map_err(|e| e.to_string())?,
         };
         let notes = self.note_table(note)?;
-        let job = Job { thread, carry: 0, note, ends_note: release };
+        let job = Job { thread, carry: 0, note, ends_note };
         let now = self.now;
         self.selected = Some(note);
         // First resume: the runner's arguments (callback, note table, key, velocity).

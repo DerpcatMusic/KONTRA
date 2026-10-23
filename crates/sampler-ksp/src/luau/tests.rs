@@ -345,3 +345,53 @@ fn control_properties_are_mirrored_for_non_controls_too() {
         end on",
     );
 }
+
+/// Run `on init`, then a user change of `ui` to `value`, on both paths; compare the state.
+fn assert_ui_equivalent(source: &str, ui: usize, value: i32) {
+    let lowered = lower(source).unwrap_or_else(|e| panic!("front end: {e}"));
+    if let Err(e) = super::check_ui(&lowered, ui, value) {
+        panic!("{e}\n{}", lowered.compiled.source);
+    }
+}
+
+#[test]
+fn ui_control_and_update_callbacks_dispatch_like_the_runtime() {
+    let source = "on init
+        declare ui_slider $gain (0, 100)
+        declare ui_knob $k (-5, 5)
+        declare ui_switch $sw
+        declare $seen := 0
+        declare $last := 0
+        declare $ids := 0
+        end on
+        on ui_control($gain)
+          $seen := $seen + 1
+          $last := $gain + $seen
+        end on
+        on ui_control($sw)
+          $ids := $ids + 100
+        end on
+        on ui_update
+          $ids := $ids + 1000
+        end on
+        on ui_controls
+          $ids := $ids + $NI_UI_ID
+        end on";
+    for (ui, value) in [(0, 250), (0, -3), (1, 4), (2, 1)] {
+        assert_ui_equivalent(source, ui, value);
+    }
+}
+
+#[test]
+fn ui_change_with_wait_is_refused_not_guessed() {
+    let source = "on init
+        declare ui_slider $gain (0, 100)
+        declare $x := 0
+        end on
+        on ui_control($gain)
+          wait(1000)
+          $x := 1
+        end on";
+    let lowered = lower(source).unwrap();
+    assert!(super::check_ui(&lowered, 0, 5).unwrap_err().contains("waits"));
+}
