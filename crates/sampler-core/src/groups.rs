@@ -277,6 +277,20 @@ impl Runtime {
 }
 
 impl Prepared {
+    /// Purged groups start non-resident, so their zones never start until
+    /// `purge_group`/`load` makes them resident.
+    pub fn with_group_purge(self, purged: Vec<bool>) -> Result<Self, Error> {
+        if purged.len() != self.group_count as usize {
+            return Err(Error::InvalidInput);
+        }
+        if let Some(residency) = &self.residency {
+            for (group, _) in purged.iter().enumerate().filter(|(_, p)| **p) {
+                residency.set_initially_purged(group as u32);
+            }
+        }
+        Ok(self)
+    }
+
     pub fn with_group_mutes(mut self, muted: Vec<bool>) -> Result<Self, Error> {
         if muted.len() != self.group_count as usize {
             return Err(Error::InvalidInput);
