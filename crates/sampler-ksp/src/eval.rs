@@ -325,6 +325,8 @@ struct Eval<'h, const TRACK: bool> {
     consumed: BTreeSet<VarId>,
     pending_menus: BTreeMap<usize, i32>,
     callback_type: i32,
+    /// `$UI_ID` of the running callback (`ReadCallbackUiId` in the runtime; 0 outside UI callbacks).
+    ui_id: i32,
     residency_pass: model::ResidencyPass,
     async_result: Option<(i32, i32)>,
     async_depth: u8,
@@ -339,13 +341,23 @@ struct Eval<'h, const TRACK: bool> {
 
 pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
     if env.coverage.is_some() {
-        run_observed::<true>(hir, env)
+        run_observed::<true>(hir, env, None)
     } else {
-        run_observed::<false>(hir, env)
+        run_observed::<false>(hir, env, None)
     }
 }
 
-fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initial> {
+/// `on init`, then one user change of UI control `ui` to `value` and its dispatch
+/// (`on ui_controls`, `on ui_control`, `on ui_update`). The oracle for the Luau host.
+pub fn run_ui_change(hir: &Hir, env: &Environment, ui: usize, value: i32) -> Result<Initial> {
+    if env.coverage.is_some() {
+        run_observed::<true>(hir, env, Some((ui, value)))
+    } else {
+        run_observed::<false>(hir, env, Some((ui, value)))
+    }
+}
+
+fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment, ui_change: Option<(usize, i32)>) -> Result<Initial> {
     let mut model = model::Model::default();
     model.interface.keys = vec![Key::default(); 128];
     // A snapshot load first runs as the instrument, with its own saved values.
@@ -378,6 +390,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         consumed: BTreeSet::new(),
         pending_menus: BTreeMap::new(),
         callback_type: b::cb::INIT,
+        ui_id: 0,
         residency_pass: model::ResidencyPass::InstrumentPersistence,
         async_result: None,
         async_depth: 0,
@@ -480,6 +493,9 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
                 }
             };
         }
+    }
+    if let Some((ui, value)) = ui_change {
+        e.ui_change(ui, value)?;
     }
     if let Some(profile) = &e.profile {
         eprintln!(
@@ -911,6 +927,38 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         })
     }
 
+    /// The runtime's UI dispatcher (`lib.rs`): the control takes the value, then
+    /// `on ui_controls` (with `$UI_ID` = the control), its `on ui_control`, and `on ui_update`.
+    fn ui_change(&mut self, ui: usize, value: i32) -> Result<()> {
+        let hir = self.hir;
+        let mut n = value;
+        if let Some((lo, hi)) = declared_range(&hir.uis[ui]) {
+            n = n.clamp(lo.min(hi), hi.max(lo));
+        }
+        self.st.controls[ui] = n;
+        let id = b::FIRST_UI_ID + ui as i32;
+        for stage in 0..3 {
+            for cb in &hir.callbacks {
+                let (hit, ui_id, kind) = match cb.kind {
+                    CallbackKind::UiControls => (stage == 0, id, b::cb::UI_CONTROLS),
+                    CallbackKind::UiControl(var) => {
+                        (stage == 1 && hir.vars[var.0 as usize].ui.map(|u| u as usize) == Some(ui), id, b::cb::UI_CONTROL)
+                    }
+                    CallbackKind::UiUpdate => (stage == 2, 0, b::cb::UI_UPDATE),
+                    _ => (false, 0, 0),
+                };
+                if !hit {
+                    continue;
+                }
+                self.ui_id = ui_id;
+                self.callback_type = kind;
+                self.block(&cb.body)?;
+                self.finish_zone_batch(cb.span, true)?;
+            }
+        }
+        Ok(())
+    }
+
     fn sys(&mut self, sys: b::SysVar, span: Span) -> Result<i32> {
         use b::SysVar::*;
         if matches!(
@@ -943,6 +991,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             AsyncExitStatus => self.async_result.map_or(0, |v| v.1),
             NumOutputChannels => b::NUM_OUTPUT_CHANNELS,
             CurrentScriptSlot => i32::from(self.env.slot),
+            UiId => self.ui_id,
             _ => 0,
         })
     }

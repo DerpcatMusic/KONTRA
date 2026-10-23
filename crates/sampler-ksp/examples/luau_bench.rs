@@ -6,6 +6,7 @@
 use sampler_core::*;
 use sampler_core::ScriptInstanceId;
 use sampler_ksp::luau::{host::Host, lower};
+use sampler_script::Jit;
 use std::time::Instant;
 
 const SCRIPT: &str = "on init declare $x := 0 declare %t[8] declare $i := 0 end on
@@ -87,22 +88,24 @@ fn main() {
         let _ = rt.note_off(input(i as i32), None);
         rt.flush_ended(|_| true);
     }
-    // Luau: one note per 64 frames, same cadence.
+    // Luau: one note per 64 frames, same cadence, interpreted and native code.
     let lowered = lower(SCRIPT).unwrap();
     assert!(lowered.compiled.is_complete(), "{:?}", lowered.compiled.unsupported);
-    let mut host = Host::new(&lowered.compiled, lowered.cells, lowered.texts, lowered.note_cells, 48_000).unwrap();
-    host.init().unwrap();
-    let mut luau = Vec::with_capacity(EVENTS);
-    for i in 0..EVENTS {
-        let t = Instant::now();
-        host.note_on(i as u32, 60, 1.0).unwrap();
-        host.advance_to(host.now() + 64).unwrap();
-        luau.push(t.elapsed().as_nanos());
-        host.release(i as u32, 60, 1.0).unwrap();
-        host.advance_to(host.now() + 64).unwrap();
-    }
     report("interpreter", interp);
-    report("luau", luau);
+    for (name, jit) in [("luau", Jit::Interpreter), ("luau-jit", Jit::Native)] {
+        let mut host = Host::new_with(&lowered.compiled, lowered.cells, lowered.texts, lowered.note_cells, 48_000, jit).unwrap();
+        host.init().unwrap();
+        let mut luau = Vec::with_capacity(EVENTS);
+        for i in 0..EVENTS {
+            let t = Instant::now();
+            host.note_on(i as u32, 60, 1.0).unwrap();
+            host.advance_to(host.now() + 64).unwrap();
+            luau.push(t.elapsed().as_nanos());
+            host.release(i as u32, 60, 1.0).unwrap();
+            host.advance_to(host.now() + 64).unwrap();
+        }
+        report(name, luau);
+    }
 
     // Wait invariance: frame at which the note's wait resumes, for each block size.
     println!("wait(1000) started at frame 0 (48 kHz: resumes at index 48, visible after 49 rendered frames):");

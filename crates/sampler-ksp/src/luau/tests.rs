@@ -305,6 +305,153 @@ fn lowered_fine_trace(lowered: &super::Lowered) -> Vec<f64> {
 
 
 #[test]
+fn ui_controls_clamp_and_read_back_like_the_interpreter() {
+    assert_init_equivalent(
+        "on init
+        declare ui_slider $gain (0, 100)
+        declare ui_knob $k (-5, 5)
+        declare ui_switch $sw
+        declare $a := 0
+        declare $b := 0
+        declare $c := 0
+        declare $id := 0
+        $gain := 250
+        $k := -9
+        $sw := 3
+        inc($sw)
+        $a := $gain
+        $id := get_ui_id($gain)
+        set_control_par($id, $CONTROL_PAR_VALUE, 42)
+        set_control_par($id, $CONTROL_PAR_HIDE, 1)
+        $b := get_control_par($id, $CONTROL_PAR_VALUE)
+        $c := get_control_par($id, $CONTROL_PAR_MAX_VALUE) + get_control_par($id, $CONTROL_PAR_MIN_VALUE) + get_control_par($id, $CONTROL_PAR_HIDE)
+        end on",
+    );
+}
+
+#[test]
+fn control_properties_are_mirrored_for_non_controls_too() {
+    assert_init_equivalent(
+        "on init
+        declare $id := 0
+        declare $t := 0
+        declare $n := 0
+        $id := 12345
+        set_control_par($id, $CONTROL_PAR_LABEL, 7)
+        set_control_par_str($id, $CONTROL_PAR_TEXT, \"hello\")
+        set_control_par_real($id, $CONTROL_PAR_WIDTH, 2.9)
+        $t := get_control_par($id, $CONTROL_PAR_LABEL)
+        $n := get_control_par($id, $CONTROL_PAR_WIDTH) + get_control_par($id, $CONTROL_PAR_HEIGHT)
+        end on",
+    );
+}
+
+/// Run `on init`, then a user change of `ui` to `value`, on both paths; compare the state.
+fn assert_ui_equivalent(source: &str, ui: usize, value: i32) {
+    let lowered = lower(source).unwrap_or_else(|e| panic!("front end: {e}"));
+    if let Err(e) = super::check_ui(&lowered, ui, value) {
+        panic!("{e}\n{}", lowered.compiled.source);
+    }
+}
+
+#[test]
+fn ui_control_and_update_callbacks_dispatch_like_the_runtime() {
+    let source = "on init
+        declare ui_slider $gain (0, 100)
+        declare ui_knob $k (-5, 5)
+        declare ui_switch $sw
+        declare $seen := 0
+        declare $last := 0
+        declare $ids := 0
+        end on
+        on ui_control($gain)
+          $seen := $seen + 1
+          $last := $gain + $seen
+        end on
+        on ui_control($sw)
+          $ids := $ids + 100
+        end on
+        on ui_update
+          $ids := $ids + 1000
+        end on
+        on ui_controls
+          $ids := $ids + $NI_UI_ID
+        end on";
+    for (ui, value) in [(0, 250), (0, -3), (1, 4), (2, 1)] {
+        assert_ui_equivalent(source, ui, value);
+    }
+}
+
+#[test]
+fn ui_change_with_wait_is_refused_not_guessed() {
+    let source = "on init
+        declare ui_slider $gain (0, 100)
+        declare $x := 0
+        end on
+        on ui_control($gain)
+          wait(1000)
+          $x := 1
+        end on";
+    let lowered = lower(source).unwrap();
+    assert!(super::check_ui(&lowered, 0, 5).unwrap_err().contains("waits"));
+}
+
+#[test]
+fn pgs_keys_and_script_title_match_the_interpreter() {
+    assert_init_equivalent(
+        "on init
+        declare $a := 0
+        declare $b := 0
+        declare $c := 0
+        pgs_create_key(TEST, 4)
+        pgs_set_key_val(TEST, 2, 77)
+        pgs_set_key_val(TEST, 9, 5)
+        pgs_set_key_val(TEST, -1, 5)
+        $a := pgs_get_key_val(TEST, 2) + pgs_get_key_val(TEST, 9)
+        $b := pgs_get_key_val(MISSING, 0) + pgs_key_exists(TEST) * 10 + pgs_key_exists(MISSING) * 100
+        pgs_create_key(TEST, 99)
+        pgs_create_key(BIG, 1000)
+        $c := pgs_get_key_val(TEST, 3) + pgs_get_key_val(BIG, 255) + pgs_get_key_val(BIG, 256)
+        pgs_create_str_key(NAME)
+        pgs_set_str_key_val(NAME, \"hello\")
+        pgs_set_str_key_val(OTHER, \"lost\")
+        set_script_title(\"Demo\")
+        end on",
+    );
+}
+
+#[test]
+fn ui_record_builtins_match_the_interpreter() {
+    assert_init_equivalent(
+        "on init
+        declare ui_knob $k (0, 10)
+        declare ui_slider $s (0, 100)
+        declare $n := 0
+        set_text($k, \"text\")
+        set_knob_label($k, \"label\")
+        set_control_help($k, \"help\")
+        add_text_line($k, \"one\")
+        add_text_line($k, \"two\")
+        set_knob_unit($k, 3)
+        set_knob_defval($s, 40)
+        hide_part($s, 1)
+        move_control($k, 10, 20)
+        move_control_px($k, 500, 300)
+        move_control_px($s, -1, 5)
+        set_ui_height_px(300)
+        set_ui_width_px(400)
+        set_ui_height(4)
+        set_skin_offset(2)
+        make_perfview
+        message(\"hi\")
+        message(\"there\")
+        expose_controls
+        $n := 1
+        end on",
+    );
+}
+
+#[test]
 fn integer_builtins_match_the_interpreter() {
     assert_init_equivalent(
         "on init
