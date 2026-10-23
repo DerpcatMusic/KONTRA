@@ -3,7 +3,9 @@ use super::*;
 use crate::Frame;
 
 const FRAMES: usize = 64;
-const ROW: usize = MAX_WIDTH * 2;
+// Keys admit only steps <= 2, so rows span that narrower bank, not the widest one (step 4).
+const NARROW_WIDTH: usize = (2 * (2 * 2 * SHORT_RADIUS + 1)).div_ceil(CHUNK) * CHUNK / 2;
+const ROW: usize = NARROW_WIDTH * 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Key {
