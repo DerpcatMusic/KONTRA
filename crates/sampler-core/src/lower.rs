@@ -937,6 +937,7 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
             })
             .and_then(|p| p.with_group_params(params))
             .and_then(|p| p.with_group_mutes(instrument.groups.iter().map(|g| g.muted).collect()))
+            .and_then(|p| p.with_group_purge(instrument.groups.iter().map(|g| g.purged).collect()))
             .map_err(core(Stage::Regions, "groups"))?;
     }
     // Only source modulators that actually own an amplitude envelope get lanes.

@@ -345,6 +345,13 @@ impl Residency {
             completed: AtomicUsize::new(0),
         })
     }
+    /// Start a group non-resident (Kontakt saved it purged). Load/purge
+    /// requests flip the same flag later.
+    pub(crate) fn set_initially_purged(&self, group: u32) {
+        if let Some(g) = self.shared.groups.get(group as usize) {
+            g.loaded.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
     pub fn allowed(&self, group: u32) -> bool {
         self.shared
             .groups
