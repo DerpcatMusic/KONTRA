@@ -122,3 +122,30 @@ not measured separately. Whether routed regions carry the same random term is un
 
 **Keyswitch scenario (item 3).** Not run. Keyswitch notes need a per-library key map, which this lane does not have; the
 scenario needs that before it can be scored.
+
+## Fourth pass: round robin, start-offset law, keyswitch
+
+**Vista round robin: no counter divergence found.** Checked `native_start.rs` and `lib.rs` (native_cycle) against
+`docs/re/KONTAKT_START_CONDITIONS.md` (mode 3 law). Cycle length = max stored position + 1; the index is shared per instrument,
+starts at -1 in Kontakt and at 0 in KONTRA (same first match); release events reuse the index. KONTRA stores the getter value
+(stored + 1) and matches `tick % len + 1 == position`, which is the same as Kontakt's `index == stored`. Vista key 60, velocity 100
+has one round-robin group only on the release layer (group 24 `cl legreldyn1`, 25 zones; groups 25 and 26 are empty and store position
+0 each), so the cycle length is 1 and group 24 fires on every note-off in both engines. The rr8 Vista mismatch is therefore not a
+counter problem. Remaining gap: KONTRA excludes keyswitch notes from the increment; Kontakt's note callback may count them. Not verified,
+needs a keyswitch capture (see below). No unit test added, because no divergence was found.
+
+**Start-offset law, per session (rr32, 32 Horns hits each, `kontakt` side, KS vs candidate law over [0, 5120) frames):**
+
+| session | mean delay ms | KS uniform | KS u^1.5 |
+|---|---:|---:|---:|
+| s1 | 57 | 0.194 | 0.305 |
+| s2 | 52 | 0.200 | 0.322 |
+| s3 | 26 | 0.491 | 0.357 |
+
+The 96-hit pooled fit favours u^1.5 (KS 0.147 vs 0.21), but only because s3 is low. s1 and s2 fit uniform, and s3 fits
+neither (critical KS at n=32, alpha 0.05 is about 0.24). Session-to-session spread is larger than the difference between the
+two laws, so the law is not established. **#522 keeps the uniform draw.** A future law needs more sessions of the same scenario
+and a check on whether velocity or sample rate moves the mean.
+
+**Keyswitch scenario.** The dump of Vista/Horns zones and the keyswitch dump (`~/.cache/kontra-lane-c/ks-dump/`) are still waiting
+on the shared oracle lock, held by other lanes (fxrig sweep, ksp persistence loop). Nothing has run for this lane yet.
