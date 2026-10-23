@@ -272,6 +272,15 @@ modules/format tests, and `stereo_tune_native_vectors.json`; bit-exact extractio
 gate for alternative interpolation. Delete matching reader/clock/ramp copies as adopted.
 Estimate: 100–300 LOC; ~0% CPU; ring sharing is allowed only for identical ownership/lifetime.
 
+**Status (PR for ticket 7): partial.** Admitted: the Catmull-Rom cubic in `stereo_tune::cubic` and
+`timemod/uvi_legacy::catmull` was one expression written twice in the same f32 operation order. It is
+now `timemod::cubic`; the stereo copy is deleted. Equivalence: bit-for-bit test against the UVI legacy
+expression, plus the existing `catmull_matches_the_native_vector` and stereo native vectors (58 timemod
+and stereo tests pass). Net LOC +14 because the shared function, its doc and the equivalence test are
+new lines; the duplicate itself is removed. Not admitted: the f64 Hermite in `timemod::read` (different
+rounding from the f32 cubic, and the ring accessor differs), `lagrange`, and the replika/ring readers
+(different ownership and wrap rules).
+
 ### 8. Replika primitive adoption (high maintenance value, high risk)
 
 Files: `D/replika/{delay,read,write,deposit,head,chain,design,stage,mod,start,mode1,tests}.rs`,
