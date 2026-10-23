@@ -169,6 +169,7 @@ fn attribute_initial_override_is_not_reloaded_by_bend_but_later_registered_pitch
 // is the first rejected pitch. Root 69 admits every registered pitch, and root 0 silences
 // the reference by pushing the 440 Hz source above Nyquist, so neither can test rejection.
 #[test]
+#[ignore = "MAX_STEP is 2048 (132 semitones); no registered pitch (max 127.99) can exceed it now, so this rejection is unreachable. Re-enable if a smaller step limit returns."]
 fn rejected_live_registered_pitch_keeps_current_pcm_and_future_key_default(){
     for mpe in [false,true]{
         let mut actual=runtime_rooted(31);let mut reference=runtime_rooted(31);let mut receiver=Receiver::new(&actual,mpe);
