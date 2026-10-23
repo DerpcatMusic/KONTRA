@@ -1150,7 +1150,10 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     // Blocks over the deadline during which the render thread was preempted by the
     // OS (involuntary context switch). A shared host steals wall time from a block
     // with no work in the runtime; counted apart so the DSP miss count stays honest.
-    let (mut deadline_misses, mut preempted_misses) = (0usize, 0usize);
+    // Blocks over the deadline on which the render thread took a minor page fault
+    // (first touch of a freshly mapped page) and no preemption. Kept apart so the
+    // fault-driven spikes can be told from plain DSP overrun.
+    let (mut deadline_misses, mut preempted_misses, mut faulted_misses) = (0usize, 0usize, 0usize);
     // Allocation calls on this (the render) thread: the note-on block, the
     // release block, and every other block.
     let (mut allocs_on, mut allocs_off, mut allocs_steady) = (0usize, 0usize, 0usize);
@@ -1185,6 +1188,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         let len = buffer.len().min(total - begin);
         let has_release = (begin..begin + len).contains(&release_at);
         let preempt0 = involuntary_switches();
+        let faults0 = minor_faults();
         let (t0, a0);
         let mut audio_cost: Option<AudioCost> = None;
         match &mut rig {
@@ -1320,6 +1324,8 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         if block_time > deadline {
             if involuntary_switches() != preempt0 {
                 preempted_misses += 1;
+            } else if minor_faults() != faults0 {
+                faulted_misses += 1;
             } else {
                 deadline_misses += 1;
             }
@@ -1456,6 +1462,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         "block_max_ms": q(1.0) * 1e3,
         "deadline_misses": deadline_misses,
         "preempted_deadline_misses": preempted_misses,
+        "faulted_deadline_misses": faulted_misses,
         "blocks": block_times.len(),
         "peak_voices": peak_voices,
         "ksp_ui_effects": ksp_ui_effects,
@@ -3533,6 +3540,19 @@ mod tests {
         assert_eq!(rt.voice_count(), 0);
         assert_eq!(rt.note_count(), 0);
     }
+}
+
+/// Minor page faults of the calling thread (`/proc/thread-self/stat`, field 10),
+/// zero when unavailable. Read outside the timed block interval.
+fn minor_faults() -> u64 {
+    std::fs::read_to_string("/proc/thread-self/stat")
+        .ok()
+        .and_then(|t| {
+            // The comm field is parenthesised and may contain spaces; fields resume after ')'.
+            let rest = t.rsplit_once(')')?.1;
+            rest.split_whitespace().nth(7)?.parse().ok()
+        })
+        .unwrap_or(0)
 }
 
 /// Involuntary context switches of the calling thread (`/proc/thread-self/status`),

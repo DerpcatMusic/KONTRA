@@ -135,6 +135,8 @@ Read: the non-full engine symbols are rare (one instrument each). The engine-imp
 
 Profiled 2026-10-22 (ANALOG STRINGS, 2 voices, 4875 blocks, quiet-ish host, niced): 5-8 misses per run, max 8.4-11.4 ms. Each spike is inside `render` (stream service < 0.02 ms, 0 minor faults, 0 allocations, 0 underruns). `corpus-health` now splits misses by involuntary context switches of the render thread into `deadline_misses` and `preempted_deadline_misses`. Preemption explains about 3 of 8; the rest have no preemption on the render thread, so the cause is still open (host CPU contention or cache/frequency effects are not separable without a perf trace). Treat `deadline_misses` as host-sensitive until that trace exists.
 
+Fault split (2026-10-23, ANALOG STRINGS, quick tier, 3 runs, host load average 41-56 on 16 CPUs): `faulted_deadline_misses` (render-thread minor fault in the block, no preemption) is 0 in every run; the misses are 5-8 preempted and 1-2 unexplained. Render-thread page faults are ruled out as the spike cause. `stream.latency_p50_ms` is the load-time first-read probe, not note-on latency: 10.5 ms on a cold disk cache, 0.03 ms warm.
+
 ## Script diagnostics
 
 Unsupported and Warning counts for the 10-23 run in the table above. Compile failures: 1 (Shreddage E-Upright).
