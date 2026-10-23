@@ -72,7 +72,7 @@ const MAX_TAIL_SECONDS: f64 = 5.0;
 /// Longest a script may keep owing events after release before the probe gives up
 /// and reports them as `pending_script_events` rather than as stuck voices.
 const SETTLE_MAX_SECONDS: f64 = 30.0;
-const VELOCITY: u8 = 64;
+const VELOCITY: u8 = 100;
 
 #[derive(Clone, Debug)]
 enum Item {
