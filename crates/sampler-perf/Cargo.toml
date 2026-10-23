@@ -15,5 +15,9 @@ sampler-uvi = { path = "../sampler-uvi" }
 serde_json = "1"
 libc = "0.2"
 
+[dev-dependencies]
+# Same pinned Luau build as sampler-uvi, to prove the counter sees Luau allocations.
+mlua = { version = "=0.12.2", features = ["luau"] }
+
 [lints.rust]
 unsafe_code = "deny" # Only the counting allocator in main.rs opts out.
