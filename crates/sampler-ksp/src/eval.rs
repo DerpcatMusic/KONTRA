@@ -1044,7 +1044,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         }
         // The library tab's fields (`$INST_LIB_*_ID`) are instrument metadata
         // addressed by vendor id; their values are kept above for the interface.
-        let library_info = symbol_in(&self.hir.symbols, id).is_some_and(|n| n.starts_with("$INST_LIB_"));
+        let library_info = (b::INST_LIB_COPYRIGHT_ID..=b::INST_LIB_PIC_TWO_ID).contains(&id);
         if self.ui_index(id).is_none()
             && !library_info
             && !(b::INST_ICON_ID..=b::INST_ICON_ID + 5).contains(&id)
