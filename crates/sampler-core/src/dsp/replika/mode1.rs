@@ -18,9 +18,8 @@
 //! reduction when |v| >= 25966 (`1476a3760`), and `14199b1d0` does the same when |v| >= 18838 (`1476a3750`). The
 //! write path's arguments are the lane coefficients times |t| <= 1, all below 13.
 //!
-//! Piece 3a is still partial. Open (addresses in `k-replika-gaps.md`): the design chain that sets the write
-//! filter's coefficients (`141abbc90`, `141ac3fd0`, `1419529e0`, `14199dbf0`, `141ac96c0`), the MT seed of the
-//! lane (its init is not read), and everything on the kernel side.
+//! Piece 3a is still partial. Open (addresses in `k-replika-gaps.md`): the write filter's coefficients are the
+//! design of `design.rs` (`WriteFilter::start` takes them), and everything on the kernel side.
 #![allow(dead_code)] // not wired: the mode-1 reader is not in the loop yet.
 
 use super::t4;
@@ -273,10 +272,48 @@ impl WriteFilter {
 }
 
 impl WriteFilter {
+    /// The write filter of a lane at its start: the ctor constants (waveshaper weights and harmonics, the slope and
+    /// offset of the linear branches, the dither range), the lane design (`design::lane`) and the dither generator
+    /// seeded with `seed` at the start of its block (index 624, as the object has it after the ctor).
+    pub(super) fn start(d: &super::design::LaneDesign, seed: u32) -> WriteFilter {
+        let sec = |s: crate::dsp::tpt_svf::Section| {
+            let (c2, c3, c4, _) = s.parts();
+            (
+                crate::dsp::tpt_svf::Section::from_coefficients(c2, c3, c4),
+                State::default(),
+            )
+        };
+        WriteFilter {
+            d: [0x3f02_6136, 0x3e02_6136, 0x3cc6_ac83, 0x3b15_0162].map(f32::from_bits),
+            w: [0x3e26_012f, 0x3ca6_012f, 0x3b28_a3be, 0x393d_b835].map(f32::from_bits),
+            c: [0x4049_0fdb, 0x40c9_0fdb, 0x4116_cbe4, 0x4149_0fdb].map(f32::from_bits),
+            prev_t: 0.,
+            in_gain: f32::from_bits(0x3e8c_0000),
+            lin: f32::from_bits(0xbe2e_b888),
+            prev_f: 0.,
+            konst: f32::from_bits(0xbe3d_9352),
+            env: 0.,
+            env_coef: d.env_coef,
+            env_idx: 0.,
+            dither_lo: -1.,
+            dither_hi: 1.,
+            dither_gain: d.dither_gain,
+            in_scale: d.in_scale,
+            out_gain: d.out_gain,
+            adaa_k: d.adaa_k,
+            prev_z: 0.,
+            prev_cubic: 0.,
+            sec_a: sec(d.sec_a),
+            sec_b: sec(d.sec_b),
+            mt: crate::dsp::timemod::mt::Mt::new(seed),
+        }
+    }
+
     /// The lane object as the native has it: `words` is the 0x1480-byte object (1312 u32). Offsets are the
     /// native ones (`/4` for words). The MT ring is `+0xc4..+0x1440` (1248 entries, word `48 + k` for k in
     /// 1..=1248) with the index at `+0xc0`: index p <= 624 is the block at ring[1..=624] at position p, index
     /// p > 624 is the block at ring[625..=1248] at position p - 624 (`1410ec0c0` twists into the other half).
+    #[cfg(test)]
     pub(super) fn from_object(words: &[u32]) -> WriteFilter {
         let f = |off: usize| f32::from_bits(words[off / 4]);
         let sec = |o: usize| {

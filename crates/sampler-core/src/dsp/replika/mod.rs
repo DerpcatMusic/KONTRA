@@ -598,6 +598,7 @@ mod design;
 mod head;
 mod mode1;
 mod read;
+mod start;
 mod write;
 #[cfg(test)]
 mod tests;

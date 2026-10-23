@@ -7,11 +7,9 @@
 //! tail. Before the taps, the spread table glides and the caller `141abd290` (`delay::positions`) places the heads'
 //! delay positions every frame while `C+0x938` is set.
 //!
-//! Start state: the native state after the selector (setter 28 = 0.3, before the first frame), dumped by
-//! `tools/re/replika_mode1_start_kemu.py` to `docs/re/engine/vectors/replika-native-mode1-index28-start.json`.
-//! [`Mode1::from_native`] reads it by the native offsets. Not ported (the prepare-time and setter inputs of the
-//! chain): the spread targets are the P0 block values as dumped (their setter mapping is open), the anchors and
-//! the head time are the dumped ones, and the ring is zero at start (the prepare zeroes it).
+//! Start state: [`Mode1::start`] (`start.rs`) builds it from the rate and the reset controls. The native dump
+//! `docs/re/engine/vectors/replika-native-mode1-index28-start.json` (`tools/re/replika_mode1_start_kemu.py`) is only the
+//! oracle of `tests::start_matches_native_dump`, through [`Mode1::from_native`] (test only). The ring is zero at start.
 //!
 //! Setter writes: the native setter `141ac5980` runs its tail on every write while the core is active (`C+0x8`):
 //! `141a95830` snaps each spread entry whose flag is set onto its target and clears the flag, and `141abd290` places
@@ -36,13 +34,15 @@ use super::read::Tap;
 use super::{ReplikaCore, ReplikaState, index};
 use crate::dsp::tpt_svf::{Section, State};
 
-/// Ring length of each mode-1 tap in frames: 2^19 (`K+0x18` = 0x7ffff in the start dump).
-pub const RING: usize = 1 << 19;
-/// Words of one head object (`0x5900` bytes) and of one write lane object (`0x1480` bytes).
+/// Words of one head object (`0x5900` bytes) and of one write lane object (`0x1480` bytes), for the dump loader.
+#[cfg(test)]
 const HEAD_WORDS: usize = 0x5900 / 4;
+#[cfg(test)]
 const LANE_WORDS: usize = 0x1480 / 4;
 /// Lane objects inside a head: L at `+0x2dc0`, R at `+0x4240`.
+#[cfg(test)]
 const LANE_L: usize = 0x2dc0;
+#[cfg(test)]
 const LANE_R: usize = 0x4240;
 
 /// One entry of the smoothed spread table (`C+0x14210 + 0x28 k`): `value` glides toward `target` by `coef` per frame
@@ -94,6 +94,7 @@ pub struct WrapGlide {
 impl WrapGlide {
     /// `o` is the glide's first word (`+0x5828` the level, `+0x5848` the gain); the fields follow at +4, +8, +0xc,
     /// +0x14 and +0x1c.
+    #[cfg(test)]
     fn load(w: Words, o: usize) -> Self {
         WrapGlide {
             cur: w.f32(o),
@@ -138,6 +139,7 @@ pub struct Wrap {
 }
 
 impl Wrap {
+    #[cfg(test)]
     fn load(w: Words) -> Self {
         Wrap {
             level: WrapGlide::load(w, 0x5828),
@@ -160,10 +162,12 @@ impl Wrap {
     }
 }
 
-/// Reads a dense u32 word array by native byte offset.
+/// Reads a dense u32 word array by native byte offset (the dump loader of the tests).
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct Words<'a>(&'a [u32]);
 
+#[cfg(test)]
 impl Words<'_> {
     fn u32(&self, o: usize) -> u32 {
         self.0[o / 4]
@@ -204,6 +208,7 @@ impl Words<'_> {
 }
 
 /// One tap object (`K` = `H+0x1a8` L, `H+0x278` R), native offsets in the comments of [`Tap`].
+#[cfg(test)]
 fn load_tap(w: Words, o: usize) -> Tap {
     Tap {
         pos: w.f64(o),
@@ -239,6 +244,7 @@ fn load_tap(w: Words, o: usize) -> Tap {
 }
 
 /// One head object from the dump (offsets of `Head`'s fields in the comments of `head.rs`).
+#[cfg(test)]
 fn load_head(w: Words) -> Head {
     let post = |o: usize| PostFilter {
         env: w.f32(o + 0x20),
@@ -314,9 +320,10 @@ fn load_head(w: Words) -> Head {
 }
 
 impl Mode1 {
-    /// The start state from the native dump: `heads` are the three head objects as u32 words (`0x5900` bytes each),
+    /// The start state from the native dump (test oracle only: production builds the start with `start.rs`): `heads` are the three head objects as u32 words (`0x5900` bytes each),
     /// `core` the core words (byte offsets from `C`, dense), `p0` the P0 block words (`C+0x80` block). `rate` is the
     /// sample rate. The rings start at zero.
+    #[cfg(test)]
     pub fn from_native(heads: [&[u32]; 3], core: &[u32], p0: &[u32], rate: f32) -> Self {
         assert!(
             heads.iter().all(|h| h.len() == HEAD_WORDS),
@@ -337,7 +344,10 @@ impl Mode1 {
                 path: c.i32(0x604),
                 heads: std::array::from_fn(|h| load_head(Words(heads[h]))),
             },
-            rings: std::array::from_fn(|_| [vec![0.; RING], vec![0.; RING]]),
+            rings: std::array::from_fn(|_| {
+                let n = super::start::ring_len(rate);
+                [vec![0.; n], vec![0.; n]]
+            }),
             table,
             targets,
             bounds: [c.f64(0xad8), c.f64(0xad0)],
@@ -485,6 +495,7 @@ mod tests {
     const QUANTUM: usize = 32;
     const CORE_WORDS: usize = 0x14980 / 4;
     const TOLERANCE: f32 = 1e-5;
+    const RATE: f32 = 48_000.;
 
     /// Pairs `[offset, u32]` into a dense word array of `len` words.
     fn dense(list: &Value, len: usize) -> Vec<u32> {
@@ -504,22 +515,94 @@ mod tests {
             .collect()
     }
 
-    /// Runs the vector from the native start state and returns the max abs error and the first frame over tolerance.
-    fn check(vector: &str) -> (f32, Option<usize>) {
-        let v: Value = serde_json::from_str(vector).expect("vector json");
+    /// The start state of the dump (the oracle of `start_matches_native_dump`).
+    fn native_dump_start() -> Mode1 {
         let start: Value = serde_json::from_str(START).expect("start json");
-        let rate = 48_000.;
         let heads = ["H1", "H2", "H3"].map(|h| dense(&start["heads"][h], HEAD_WORDS));
         let core = dense(&start["core"], CORE_WORDS);
         let p0 = dense(&start["p0"], 0x70 / 4);
-        let mut state = ReplikaState::new(rate);
-        state.mode1 = Some(Box::new(Mode1::from_native(
-            [&heads[0], &heads[1], &heads[2]],
-            &core,
-            &p0,
-            rate,
-        )));
-        let mut core_obj = ReplikaCore::new(rate);
+        Mode1::from_native([&heads[0], &heads[1], &heads[2]], &core, &p0, RATE)
+    }
+
+    /// Every field the chain reads, against the dump: the Debug text of each part, line by line. The rings are not
+    /// in the compared parts (they start at zero in both).
+    #[test]
+    fn start_matches_native_dump() {
+        let want = native_dump_start();
+        let got = Mode1::start(RATE);
+        let parts = [
+            (
+                "heads",
+                format!("{:#?}", want.heads),
+                format!("{:#?}", got.heads),
+            ),
+            (
+                "wrap",
+                format!("{:#?}", want.wrap),
+                format!("{:#?}", got.wrap),
+            ),
+            (
+                "table",
+                format!("{:#?}", want.table),
+                format!("{:#?}", got.table),
+            ),
+            (
+                "targets",
+                format!("{:?}", want.targets),
+                format!("{:?}", got.targets),
+            ),
+            (
+                "bounds",
+                format!("{:?}", want.bounds),
+                format!("{:?}", got.bounds),
+            ),
+            (
+                "flag",
+                format!("{:?}", want.flag),
+                format!("{:?}", got.flag),
+            ),
+            (
+                "smooth",
+                format!("{:?}", want.smooth),
+                format!("{:?}", got.smooth),
+            ),
+        ];
+        let mut report = Vec::new();
+        for (name, a, b) in &parts {
+            if a == b {
+                continue;
+            }
+            let (la, lb): (Vec<_>, Vec<_>) = (a.lines().collect(), b.lines().collect());
+            if la.len() != lb.len() {
+                report.push(format!("{name}: {} lines against {}", la.len(), lb.len()));
+            }
+            for (i, (x, y)) in la
+                .iter()
+                .zip(&lb)
+                .enumerate()
+                .filter(|(_, (x, y))| x != y)
+                .take(16)
+            {
+                report.push(format!(
+                    "{name} line {i}: native `{}` rust `{}`",
+                    x.trim(),
+                    y.trim()
+                ));
+            }
+        }
+        assert!(
+            report.is_empty(),
+            "start state differs:\n{}",
+            report.join("\n")
+        );
+    }
+
+    /// Runs the vector from the Rust start state and returns the max abs error and the first frame over tolerance.
+    fn check(vector: &str) -> (f32, Option<usize>) {
+        let v: Value = serde_json::from_str(vector).expect("vector json");
+        let mut state = ReplikaState::new(RATE);
+        state.mode1 = Some(Box::new(Mode1::start(RATE)));
+        let mut core_obj = ReplikaCore::new(RATE);
         for p in v["defaults"].as_array().expect("defaults") {
             core_obj.set_param(
                 p[0].as_u64().unwrap() as usize,
@@ -528,7 +611,7 @@ mod tests {
         }
         let stim = v["stim"].as_array().expect("stim");
         let (stim_l, stim_r) = (floats(&stim[0]), floats(&stim[1]));
-        let mut storage = vec![[0.; 2]; crate::dsp::replika::storage_len(rate)];
+        let mut storage = vec![[0.; 2]; crate::dsp::replika::storage_len(RATE)];
         let (mut out_l, mut out_r) = (vec![0.; N], vec![0.; N]);
         for q in 0..N / QUANTUM {
             for w in v["writes"][q].as_array().expect("writes") {
