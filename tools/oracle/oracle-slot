@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# oracle-slot [--exclusive] COMMAND [ARGS...]
+#   Runs COMMAND in a free real-Kontakt oracle slot (1..$ORACLE_SLOTS, default 3), blocking until one
+#   is free. Exports ORACLE_SLOT, ORACLE_PREFIX (this slot's Wine prefix, reflink copy of ~/.wine),
+#   ORACLE_DISPLAY (:7N), ORACLE_SINK (kontra_ref_N), ORACLE_WORK (~/.cache/kontra-oracle-slot-N) and
+#   WINEPREFIX. Kontakt, wineserver and Xvfb of that slot are stopped when COMMAND exits.
+#   --exclusive: the legacy protocol (flock /tmp/kontra-oracle.lock): one session on the whole pool,
+#   no slot env. Use it for tools that are not slot-aware yet.
+# Slots: /tmp/kontra-oracle-slot-N.lock. Legacy: /tmp/kontra-oracle.lock, shared by slot jobs and
+# exclusive for legacy/--exclusive jobs, so a legacy job waits for running slots and blocks new ones.
+# Scheduling: waiters poll the slot locks every 2 s (not strictly FIFO). Every session runs under
+# nice 10 and MemoryMax=8G (systemd-run --user --scope, when available).
+set -euo pipefail
+
+SLOTS=${ORACLE_SLOTS:-3}
+SRC_PREFIX=${ORACLE_SRC_PREFIX:-$HOME/.wine}
+ROOT=${ORACLE_ROOT:-$HOME/.wine-oracle}
+LEGACY_LOCK=${ORACLE_LEGACY_LOCK:-/tmp/kontra-oracle.lock}  # override: tests only
+LOCK_DIR=${ORACLE_LOCK_DIR:-/tmp}
+MEM_MAX=${ORACLE_MEMORY_MAX:-8G}
+
+[ $# -ge 1 ] || { sed -n 2,4p "$0" >&2; exit 2; }
+
+if [ "$1" = "--exclusive" ]; then
+  shift
+  [ $# -ge 1 ] || { sed -n 2,4p "$0" >&2; exit 2; }
+  exec 9>>"$LEGACY_LOCK"
+  flock -x 9
+  nice -n 10 "$@" 9>&- && rc=0 || rc=$?
+  exit "${rc:-0}"
+fi
+
+exec 8>>"$LEGACY_LOCK"
+flock -s 8 # waits while a legacy/--exclusive job runs
+
+slot=""
+announced=""
+while [ -z "$slot" ]; do
+  for n in $(seq 1 "$SLOTS"); do
+    exec 9>>"$LOCK_DIR/kontra-oracle-slot-$n.lock"
+    if flock -n 9; then slot=$n; break; fi
+  done
+  if [ -z "$slot" ]; then
+    [ -n "$announced" ] || { echo "oracle-slot: all $SLOTS slots busy, waiting" >&2; announced=1; }
+    sleep 2
+  fi
+done
+
+P="$ROOT/slot-$slot"
+D=":7$slot"
+SINK="kontra_ref_$slot"
+WORK="$HOME/.cache/kontra-oracle-slot-$slot"
+
+if [ ! -d "$P/drive_c" ]; then
+  # Reflink copy of the default prefix (same btrfs, so ~0 disk). Kontakt's audio device is pointed at this slot's sink.
+  mkdir -p "$ROOT"
+  rm -rf "$P.tmp"
+  cp -a --reflink=auto "$SRC_PREFIX" "$P.tmp"
+  sed -i "s/^\(AB2 AudioDevice=.*\)kontra_ref\r\?\$/\1$SINK/" "$P.tmp/drive_c/Program Files/Common Files/VST3/Portapotty/UserData/Settings.cfg" 2>/dev/null || true
+  mv "$P.tmp" "$P"
+fi
+mkdir -p "$WORK"
+
+export ORACLE_SLOT=$slot ORACLE_PREFIX="$P" ORACLE_DISPLAY="$D" ORACLE_SINK="$SINK" ORACLE_WORK="$WORK"
+export WINEPREFIX="$P"
+
+cleanup() {
+  pkill -f "Xvfb $D( |\$)" 2>/dev/null || true
+  WINEPREFIX="$P" wineserver -k 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# no-op when the sink exists (exact name)
+pactl list short sinks | awk -v s="$SINK" '$2==s{f=1} END{exit !f}' ||
+  pactl load-module module-null-sink "sink_name=$SINK" "sink_properties=device.description=$SINK" format=float32le rate=48000 channels=2 >/dev/null
+
+# The command gets no lock fds: a wineserver or Xvfb it leaves behind must not keep the slot locked.
+if systemd-run --user --scope -q true 2>/dev/null; then
+  systemd-run --user --scope -q -p "MemoryMax=$MEM_MAX" nice -n 10 "$@" 8>&- 9>&- && rc=0 || rc=$?
+else
+  echo "oracle-slot: systemd-run --user unavailable, running without MemoryMax" >&2
+  nice -n 10 "$@" 8>&- 9>&- && rc=0 || rc=$?
+fi
+exit "$rc"
