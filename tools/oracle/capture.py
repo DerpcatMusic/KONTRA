@@ -60,7 +60,8 @@ SCENARIOS = {
     "rr8": [(0.2 + 0.7 * i, 0.5, 60, 100) for i in range(8)],
     "velsweep": [(0.2 + 0.7 * i, 0.5, 60, v) for i, v in enumerate(range(16, 128, 16))],
     "rr32": [(0.2 + 0.7 * i, 0.5, 60, 100) for i in range(32)],  # distribution of per-hit start offsets
-    "release": [(0.2 + 1.0 * i, 0.15, 60, 100) for i in range(4)],  # short notes: each note-off fires release triggers
+    "release": [(0.2 + 1.0 * i, 0.15, 60, 100) for i in range(4)],
+    "velsplit": [(0.2 + 0.7 * i, 0.5, 60, 127 if i % 2 == 0 else 40) for i in range(16)],  # velocity scaling of start offsets  # short notes: each note-off fires release triggers
     "legato": [(0.2 + 0.8 * i, 1.1, k, 100) for i, k in enumerate((60, 62, 64, 65))],
 }
 
