@@ -16,6 +16,10 @@ use std::{
     cell::Cell,
     path::PathBuf,
     process::{Command, Stdio},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -35,7 +39,28 @@ thread_local! {
     static SERVICE_MASK: Cell<u8> = const { Cell::new(0) };
     static STREAM_SERVICE_ERRORS: Cell<u64> = const { Cell::new(0) };
     static BEHAVIOR_ERRORS: Cell<u64> = const { Cell::new(0) };
+    /// Set while the allocator itself captures a trace, so those calls are not sampled.
+    static TRACING: Cell<bool> = const { Cell::new(false) };
 }
+/// `PERF_ALLOC_TRACE=N`: capture a backtrace of every Nth counted heap call (0 = off).
+static TRACE_EVERY: AtomicU64 = AtomicU64::new(0);
+static TRACE_SEEN: AtomicU64 = AtomicU64::new(0);
+static TRACES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Records one sampled backtrace. Runs inside the allocator, so it allocates only under `TRACING`.
+fn sample_trace() {
+    let every = TRACE_EVERY.load(Ordering::Relaxed);
+    if every == 0 || TRACING.get() || TRACE_SEEN.fetch_add(1, Ordering::Relaxed) % every != 0 {
+        return;
+    }
+    TRACING.set(true);
+    let text = std::backtrace::Backtrace::force_capture().to_string();
+    if let Ok(mut traces) = TRACES.lock() {
+        traces.push(text);
+    }
+    TRACING.set(false);
+}
+
 // SAFETY: forwards every call unchanged to System; only counts on the thread that asked.
 #[allow(
     unsafe_code,
@@ -45,6 +70,7 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if COUNTING.get() {
             CALLS.set(CALLS.get() + 1);
+            sample_trace();
         }
         unsafe { System.alloc(layout) }
     }
@@ -403,6 +429,85 @@ struct Cell_ {
     audible: Option<(f64, f64)>,
     /// Per output frame (render clock): whether either channel exceeds -80 dB.
     loud: Vec<bool>,
+    /// Per block counters, read outside the timed region (see [`Rec`]).
+    recs: Vec<Rec>,
+    /// FNV-1a over every output sample's bits: equal hashes mean bit-identical audio.
+    hash: u64,
+    /// MXCSR of the rendering thread before the first block (FTZ = bit 15, DAZ = bit 6).
+    mxcsr: u32,
+}
+
+/// Deterministic per-block work counters. Wall time is noisy on a shared host;
+/// these say what a block did, so the expensive blocks can be explained.
+#[derive(Clone, Copy, Default)]
+struct Rec {
+    /// Heap calls (alloc, realloc, free) on this thread during the render.
+    allocs: u64,
+    /// Minor page faults of this thread during the render (first touch).
+    minflt: u64,
+    /// Note events in the block.
+    events: u32,
+    /// Callbacks flushed (script behaviors run) and ended during the block.
+    behaviors: u32,
+    ended: u32,
+    /// Runtime counter deltas across the block.
+    cold: u64,
+    refused: u64,
+    growths: u64,
+    underruns: u64,
+    replacements: u64,
+    nonfinite: u64,
+    /// Active voices after the block.
+    voices: u32,
+    /// Where the render time went (see `PHASE_NS`).
+    phase: [u64; 3],
+}
+
+thread_local! {
+    static BEHAVIORS_RUN: Cell<u32> = const { Cell::new(0) };
+    static ENDED_RUN: Cell<u32> = const { Cell::new(0) };
+    /// Nanoseconds of the last render, split: [service+due, ingress (events and
+    /// audio), effects+callback flush].
+    static PHASE_NS: Cell<[u64; 3]> = const { Cell::new([0; 3]) };
+}
+
+/// Minor faults of the calling thread so far.
+#[allow(unsafe_code, reason = "getrusage is a plain syscall wrapper")]
+fn thread_minflt() -> u64 {
+    // SAFETY: zeroed rusage is a valid out-parameter for getrusage.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: RUSAGE_THREAD with a valid pointer to a rusage.
+    unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut usage) };
+    usage.ru_minflt as u64
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code, deprecated, reason = "MXCSR read and set is the only way to query FTZ/DAZ")]
+fn mxcsr() -> u32 {
+    // SAFETY: reads the thread's MXCSR, which is always accessible in user mode.
+    unsafe { std::arch::x86_64::_mm_getcsr() }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn mxcsr() -> u32 {
+    0
+}
+
+/// Sets FTZ and DAZ on the calling thread (bench experiment via `PERF_FTZ=1`).
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code, deprecated, reason = "MXCSR set is the only way to enable FTZ/DAZ")]
+fn set_ftz_daz() {
+    // SAFETY: sets two rounding-control bits of the thread's own MXCSR.
+    unsafe { std::arch::x86_64::_mm_setcsr(std::arch::x86_64::_mm_getcsr() | 0x8040) };
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn set_ftz_daz() {}
+
+fn fnv(hash: u64, samples: &[Frame]) -> u64 {
+    samples.iter().flatten().fold(hash, |h, x| {
+        (h ^ u64::from(x.to_bits())).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Cell_ {
@@ -430,7 +535,14 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
         peak: 0.0,
         audible: None,
         loud: Vec::with_capacity(frames),
+        recs: Vec::with_capacity(frames / block + 1),
+        hash: 0xcbf2_9ce4_8422_2325,
+        mxcsr: 0,
     };
+    if std::env::var_os("PERF_FTZ").is_some() {
+        set_ftz_daz();
+    }
+    cell.mxcsr = mxcsr();
     let (mut buffer, mut next) = (vec![[0.0f32; 2]; block], 0);
     let mut batch: Vec<TimedPacket<'_>> = Vec::with_capacity(64);
     let start = Instant::now();
@@ -445,6 +557,8 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
             next += 1;
         }
         let before = CALLS.get();
+        let (s0, f0) = (stats(p), thread_minflt());
+        let (b0, e0) = (BEHAVIORS_RUN.get(), ENDED_RUN.get());
         COUNTING.set(true);
         let t = Instant::now();
         let service = render(p, &mut buffer, &batch, messages, begin, &mut next);
@@ -452,6 +566,23 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
         cell.service.push(service);
         let took = t.elapsed();
         COUNTING.set(false);
+        let (s1, f1) = (stats(p), thread_minflt());
+        cell.recs.push(Rec {
+            allocs: CALLS.get() - before,
+            minflt: f1 - f0,
+            events: batch.len() as u32,
+            behaviors: BEHAVIORS_RUN.get() - b0,
+            ended: ENDED_RUN.get() - e0,
+            cold: s1.cold_starts - s0.cold_starts,
+            refused: s1.refused_starts - s0.refused_starts,
+            growths: s1.voice_growths - s0.voice_growths,
+            underruns: s1.stream_underruns - s0.stream_underruns,
+            replacements: s1.waiting_voice_replacements - s0.waiting_voice_replacements,
+            nonfinite: s1.nonfinite_frames - s0.nonfinite_frames,
+            voices: s1.voices as u32,
+            phase: PHASE_NS.get(),
+        });
+        cell.hash = fnv(cell.hash, &buffer);
         if std::env::var_os("PERF_DEBUG").is_some() {
             let now = stats(p).stream_underruns;
             if now != last_underruns {
@@ -508,6 +639,7 @@ fn render(
             ingress,
             horizon,
         } => {
+            let t_start = Instant::now();
             if let Some(h) = horizon {
                 // Production V2 advances due/bootstrap callbacks before asking
                 // for pages, without advancing the sample clock or refilling fuel.
@@ -537,6 +669,7 @@ fn render(
                     );
                 }
             }
+            let t_ingress = Instant::now();
             let mut errors = 0;
             let result = ingress.render(rt, buffer, batch, batch.len().max(64), |i, r| {
                 if let Err(e) = r {
@@ -550,6 +683,12 @@ fn render(
             // Match sampler-native's headless service policy: retain external
             // async work and fail the cell, rather than pretending it completed.
             // UI presentation effects may be discarded by this headless audit.
+            let t_post = Instant::now();
+            PHASE_NS.set([
+                t_ingress.duration_since(t_start).as_nanos() as u64,
+                t_post.duration_since(t_ingress).as_nanos() as u64,
+                0,
+            ]);
             rt.drain_effects(|effect| {
                 let bit = match effect.service {
                     sampler_core::MIDI_SERVICE => 1,
@@ -563,6 +702,7 @@ fn render(
                 } else { true }
             });
             rt.flush_behaviors(|_, _, outcome| {
+                BEHAVIORS_RUN.set(BEHAVIORS_RUN.get() + 1);
                 if matches!(
                     outcome,
                     sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted
@@ -571,7 +711,11 @@ fn render(
                 }
                 true
             });
-            rt.flush_ended(|_| true);
+            rt.flush_ended(|_| {
+                ENDED_RUN.set(ENDED_RUN.get() + 1);
+                true
+            });
+            PHASE_NS.set([PHASE_NS.get()[0], PHASE_NS.get()[1], t_post.elapsed().as_nanos() as u64]);
         }
         Player::Uvi(player) => {
             // Script-host events are applied at block starts: coarse, but the same for every run.
@@ -740,6 +884,13 @@ fn run_scenario(
             if cell.peak < SILENT {
                 failures.push(format!("silent (peak {:.5})", cell.peak));
             }
+            // Heap calls on the audio thread, Luau's included: mlua's allocator is the
+            // Rust global allocator, so the counter sees Lua growth. Kontakt cells are
+            // asserted to be zero; UVI cells report theirs (mlua argument conversion
+            // in script field access, about 10 per block) until that path is fixed.
+            if cell.allocations > 0 && !matches!(s.source, Source::Uvi(..)) {
+                failures.push(format!("{} audio-thread allocations", cell.allocations));
+            }
             let event_errors = EVENT_ERRORS.replace(0);
             if event_errors > 0 {
                 failures.push(format!("{event_errors} event errors"));
@@ -771,6 +922,8 @@ fn run_scenario(
                 "stream_underruns": st.stream_underruns,
                 "core_render_peak_us": st.render_nanos_peak as f64 / 1e3,
                 "voice_capacity": st.voice_capacity, "voice_drops": st.voice_drops,
+                "render_hash": format!("{:016x}", cell.hash), "mxcsr": format!("{:#06x}", cell.mxcsr),
+                "spikes": spike_report(&cell.times, &cell.recs),
             }));
             eprintln!(
                 "{} block {block} threads {t}: core render peak {:.0} us; p50 {:.0} us p99 {:.0} us max {:.0} us",
@@ -797,21 +950,33 @@ fn play_uvi(p: &mut Player, messages: &[Message], block: usize, frames: usize) -
         peak: 0.0,
         audible: None,
         loud: Vec::new(),
+        recs: Vec::new(),
+        hash: 0xcbf2_9ce4_8422_2325,
+        mxcsr: 0,
     };
     let mut buffer = vec![[0.0f32; 2]; block];
     let start = Instant::now();
     for begin in (0..frames).step_by(block) {
         uvi_events(p, messages, begin, begin + block);
         let before = CALLS.get();
+        let f0 = thread_minflt();
         COUNTING.set(true);
         let t = Instant::now();
         render(p, &mut buffer, &[], messages, begin, &mut 0);
         hash_output(&buffer);
-        cell.loud.extend(buffer.iter().map(|f| f[0].abs().max(f[1].abs()) > SILENT_FRAME));
         let took = t.elapsed();
         COUNTING.set(false);
         cell.allocations += CALLS.get() - before;
         cell.times.push(took.as_nanos() as u64);
+        cell.recs.push(Rec {
+            allocs: CALLS.get() - before,
+            minflt: thread_minflt() - f0,
+            voices: stats(p).voices as u32,
+            ..Rec::default()
+        });
+        cell.hash = fnv(cell.hash, &buffer);
+        // Outside the counted window: the loudness log grows its own Vec.
+        cell.loud.extend(buffer.iter().map(|f| f[0].abs().max(f[1].abs()) > SILENT_FRAME));
         let top = buffer.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
         cell.peak = cell.peak.max(top);
         if top > 1e-4 {
@@ -1001,6 +1166,9 @@ fn compare(args: &[String]) -> Result<bool, String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(every) = std::env::var("PERF_ALLOC_TRACE").ok().and_then(|v| v.parse().ok()) {
+        TRACE_EVERY.store(every, Ordering::Relaxed);
+    }
     let result = match args.first().map(String::as_str) {
         Some("sustain") => sustain::run(&args[1..]).map(|()| true),
         Some("stress") => stress::run(&args[1..]).map(|()| true),
@@ -1008,6 +1176,7 @@ fn main() {
         Some("compare") => compare(&args[1..]),
         _ => Err("usage: sampler-perf sustain [--only afflatus|conflux|conflux-multi] [--block 64|256] [--notes 1|8] [--seconds S] [--out FILE] | run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S] | compare BASE.json NEW.json [--threshold PERCENT]".into()),
     };
+    report_alloc_traces();
     match result {
         Ok(true) => {}
         Ok(false) => std::process::exit(1),
@@ -1015,6 +1184,140 @@ fn main() {
             eprintln!("sampler-perf: {e}");
             std::process::exit(2);
         }
+    }
+}
+
+/// Explains the slow blocks with their counters: spike blocks (over 4x the median
+/// render time) against the rest, plus the eight slowest blocks in full.
+fn spike_report(took: &[u64], recs: &[Rec]) -> Value {
+    if took.is_empty() || took.len() != recs.len() {
+        return json!(null);
+    }
+    let mut sorted = took.to_vec();
+    sorted.sort_unstable();
+    let median = sorted[sorted.len() / 2];
+    let spike = |i: usize| took[i] > median.saturating_mul(4);
+    let fields: [(&str, fn(&Rec) -> f64); 12] = [
+        ("allocs", |r| r.allocs as f64),
+        ("minflt", |r| r.minflt as f64),
+        ("events", |r| f64::from(r.events)),
+        ("behaviors", |r| f64::from(r.behaviors)),
+        ("ended", |r| f64::from(r.ended)),
+        ("cold", |r| r.cold as f64),
+        ("refused", |r| r.refused as f64),
+        ("growths", |r| r.growths as f64),
+        ("underruns", |r| r.underruns as f64),
+        ("replacements", |r| r.replacements as f64),
+        ("nonfinite", |r| r.nonfinite as f64),
+        ("voices", |r| f64::from(r.voices)),
+    ];
+    let (mut in_spike, mut outside) = (Vec::new(), Vec::new());
+    for i in 0..took.len() {
+        if spike(i) { in_spike.push(i) } else { outside.push(i) }
+    }
+    let mean = |ix: &[usize], f: fn(&Rec) -> f64| -> f64 {
+        if ix.is_empty() { 0.0 } else { ix.iter().map(|&i| f(&recs[i])).sum::<f64>() / ix.len() as f64 }
+    };
+    let frac = |ix: &[usize], f: fn(&Rec) -> f64| -> f64 {
+        if ix.is_empty() { 0.0 } else { ix.iter().filter(|&&i| f(&recs[i]) > 0.0).count() as f64 / ix.len() as f64 }
+    };
+    let mut per_field = serde_json::Map::new();
+    for (name, f) in &fields {
+        per_field.insert(
+            (*name).to_string(),
+            json!({
+                "spike_mean": mean(&in_spike, *f),
+                "normal_mean": mean(&outside, *f),
+                "spike_nonzero": frac(&in_spike, *f),
+                "normal_nonzero": frac(&outside, *f),
+            }),
+        );
+    }
+    let mut slowest: Vec<usize> = (0..took.len()).collect();
+    slowest.sort_by_key(|&i| std::cmp::Reverse(took[i]));
+    let top: Vec<Value> = slowest
+        .iter()
+        .take(8)
+        .map(|&i| {
+            let r = &recs[i];
+            json!({
+                "block": i, "took_us": took[i] as f64 / 1e3, "allocs": r.allocs, "minflt": r.minflt,
+                "events": r.events, "behaviors": r.behaviors, "ended": r.ended, "cold": r.cold,
+                "refused": r.refused, "growths": r.growths, "underruns": r.underruns,
+                "replacements": r.replacements, "nonfinite": r.nonfinite, "voices": r.voices,
+                "phase_us": r.phase.map(|n| n as f64 / 1e3),
+            })
+        })
+        .collect();
+    json!({
+        "median_us": median as f64 / 1e3,
+        "spike_blocks": in_spike.len(),
+        "fields": per_field,
+        "slowest": top,
+    })
+}
+
+/// Prints the most common call paths of the sampled audio-thread allocations: the
+/// first few frames outside std and the allocator, so the calling code shows.
+fn report_alloc_traces() {
+    if TRACE_EVERY.load(Ordering::Relaxed) == 0 {
+        return;
+    }
+    let traces = TRACES.lock().map(|t| t.clone()).unwrap_or_default();
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for text in &traces {
+        let frames: Vec<&str> = text
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim_start();
+                let (n, sym) = l.split_once(": ")?;
+                n.parse::<u32>().ok()?;
+                Some(sym.trim())
+            })
+            .filter(|f| {
+                !["std::", "core::", "alloc::", "backtrace", "sampler_perf::", "<alloc", "__rust", "<unknown"]
+                    .iter()
+                    .any(|skip| f.starts_with(skip))
+            })
+            .take(3)
+            .collect();
+        *counts.entry(frames.join(" <- ")).or_default() += 1;
+    }
+    let mut ranked: Vec<_> = counts.into_iter().collect();
+    ranked.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    eprintln!("alloc traces: {} sampled audio-thread heap calls", traces.len());
+    for (path, n) in ranked.iter().take(12) {
+        eprintln!("  {n:>5}  {path}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Luau allocates through mlua's allocator, which is the Rust global allocator, so
+    /// the audio-thread counter must see it. Small Lua objects come from Luau's own
+    /// pages, so only page-sized growth shows up one call at a time: test with a big string.
+    #[test]
+    fn counter_sees_luau_allocations() {
+        let lua = mlua::Lua::new();
+        COUNTING.set(true);
+        let before = CALLS.get();
+        lua.load("return #string.rep('x', 1048576)").exec().unwrap();
+        let counted = CALLS.get() - before;
+        COUNTING.set(false);
+        assert!(counted >= 1, "Luau allocation not counted");
+    }
+
+    #[test]
+    fn spike_report_flags_only_the_slow_block() {
+        let took = [100, 100, 100, 100, 1000];
+        let mut recs = vec![Rec::default(); took.len()];
+        recs[4].allocs = 7;
+        let report = spike_report(&took, &recs);
+        assert_eq!(report["spike_blocks"], 1);
+        assert_eq!(report["fields"]["allocs"]["spike_mean"], 7.0);
+        assert_eq!(report["fields"]["allocs"]["normal_nonzero"], 0.0);
     }
 }
 
