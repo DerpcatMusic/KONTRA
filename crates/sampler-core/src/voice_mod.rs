@@ -1131,6 +1131,20 @@ impl VoiceModulation {
         self.regions.get(region).copied().flatten()
     }
 
+    /// Kontakt's start randomisation for a region whose `sample_start_mod_range` is set and
+    /// that has no SampleStart route: the note sounds `delay` frames late, uniform in
+    /// [0, range). The seed is per note, so all layers of one note share the draw. Measured on
+    /// Horns KS against the unrandomised render: Kontakt's hits lag it by 1..98 ms (pooled over
+    /// 96 hits, three sessions), never early, and not velocity-scaled (velocity 40 and 127 span
+    /// the same range). A delayed start, not a skip: a skip moves the playhead forward.
+    pub fn random_delay(&self, region: usize, seed: u64) -> u32 {
+        let range = self.start_ranges.get(region).copied().unwrap_or(0);
+        if range == 0 || self.program(region).is_some_and(|index| self.programs[index as usize].start) {
+            return 0;
+        }
+        (uniform(hash(seed, 0, u64::MAX - 1)) * f64::from(range)) as u32
+    }
+
     /// The ordinary onset consumer. A provider-dependent onset must use the
     /// explicitly borrowed real owner row, never a per-player approximation.
     pub fn start_offset(&self, region:usize, inputs:&Inputs<'_>, seed:u64)->Result<u32,Error>{
@@ -2614,6 +2628,18 @@ pub(crate) fn process_frame_tone(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unrouted start randomisation is a per-voice delay in [0, range); zero-range regions and
+    /// regions with a SampleStart route get none, and the route-based start stays untouched.
+    #[test]
+    fn unrouted_start_range_is_a_per_voice_delay() {
+        let modulation = VoiceModulation::new(vec![], vec![None, None], vec![5120, 0]).unwrap();
+        let delays: Vec<u32> = (0..256u64).map(|seed| modulation.random_delay(0, seed)).collect();
+        assert!(delays.iter().all(|&d| d < 5120));
+        assert!(delays.iter().max().unwrap() - delays.iter().min().unwrap() > 4000);
+        assert!((0..256u64).all(|seed| modulation.random_delay(1, seed) == 0));
+        assert_eq!(modulation.constant_start_offset(0), Some(0));
+    }
 
     #[test]
     fn uniform_shaper_uses_v1_index_instead_of_binary_search() {
