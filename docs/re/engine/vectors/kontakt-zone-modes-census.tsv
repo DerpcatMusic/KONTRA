@@ -1,0 +1,19 @@
+9557754	11	loop=none trigger=attack start= stretch=- machine=-
+3420	1	loop=none trigger=attack start= stretch=TimeMachinePro machine=-
+1050	1	loop=none trigger=attack start=rr stretch=- machine=-
+319986	5	loop=none trigger=gaterelease start= stretch=- machine=-
+50	1	loop=none trigger=gaterelease start=rr stretch=- machine=-
+1344466	10	loop=slots1 trigger=attack start= stretch=- machine=-
+3	1	loop=slots1 trigger=attack start=rr stretch=- machine=-
+56	1	loop=slots1 trigger=gaterelease start= stretch=- machine=-
+5652	3	loop=slots2 trigger=attack start= stretch=- machine=-
+4212	2	loop=slots3 trigger=attack start= stretch=- machine=-
+3636	2	loop=slots4 trigger=attack start= stretch=- machine=-
+3492	2	loop=slots5 trigger=attack start= stretch=- machine=-
+1088	1	loop=slots6 trigger=attack start= stretch=- machine=-
+512	1	loop=slots7 trigger=attack start= stretch=- machine=-
+768	1	loop=slots8 trigger=attack start= stretch=- machine=-
+84	1	slot[alt]
+86692	8	slot[plain]
+420	1	slot[until-release]
+1329529	8	slot[xfade]

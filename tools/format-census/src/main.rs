@@ -202,10 +202,115 @@ fn ser_table() {
     }
 }
 
+/// Zone- and slot-level playback-mode tally for every `.nki` under a tree. One line per
+/// mode key: zones, and distinct libraries (top-level folders, counted, never named) using it.
+/// Loop slots are keyed by their own flags (alternating, crossfade, counted, until-release,
+/// tuned). Output carries mode names only, never installed names.
+fn modes(root: &Path) {
+    use sampler_ir::{Looping, Span, Trigger};
+    let mut files = Vec::new();
+    walk(root, &mut files);
+    files.retain(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki")));
+    files.sort();
+    let mut zones = BTreeMap::<String, usize>::new();
+    let mut libs = BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+    let mut failed = 0usize;
+    let mut add = |key: String, lib: &str| {
+        *zones.entry(key.clone()).or_default() += 1;
+        libs.entry(key).or_default().insert(lib.to_string());
+    };
+    for path in &files {
+        let lib = path
+            .strip_prefix(root)
+            .ok()
+            .and_then(|r| r.components().next())
+            .map_or(String::new(), |c| c.as_os_str().to_string_lossy().into_owned());
+        let Ok(k) = sampler_kontakt::read(path) else {
+            failed += 1;
+            continue;
+        };
+        let options = Options {
+            library: Some(path.into()),
+            ..Options::default()
+        };
+        let Ok(s) = load_read_streamed(k, &options, &StreamPolicy::default(), |_| {}) else {
+            failed += 1;
+            continue;
+        };
+        let inst = &s.loaded.instrument;
+        for zone in &inst.zones {
+            let group = zone.group.map(|g| &inst.groups[g.0]);
+            let looping = match zone.playback.looping {
+                Looping::None => "none".to_string(),
+                Looping::OneShot => "one-shot".into(),
+                Looping::Continuous(l) => format!("continuous{}{}", xf(l.crossfade), if l.alternating { "-alt" } else { "" }),
+                Looping::UntilRelease(l) => format!("until-release{}", xf(l.crossfade)),
+                Looping::Slots(slots) => {
+                    for slot in slots.iter().flatten() {
+                        let mut flags = Vec::new();
+                        if slot.range.alternating {
+                            flags.push("alt");
+                        }
+                        if slot.range.crossfade != Span::Frames(0) {
+                            flags.push("xfade");
+                        }
+                        if slot.count > 0 {
+                            flags.push("counted");
+                        }
+                        if slot.until_release {
+                            flags.push("until-release");
+                        }
+                        if slot.tuning != 1.0 {
+                            flags.push("tuned");
+                        }
+                        let key = format!("slot[{}]", if flags.is_empty() { "plain".into() } else { flags.join("+") });
+                        add(key, &lib);
+                    }
+                    let n = slots.iter().flatten().count();
+                    format!("slots{n}")
+                }
+            };
+            let trigger = match zone.trigger {
+                Trigger::Transition { .. } => "transition".to_string(),
+                t => format!("{t:?}").to_lowercase(),
+            };
+            let starts = group.map_or(String::new(), |g| {
+                g.start
+                    .iter()
+                    .map(|st| match st.test {
+                        sampler_ir::StartTest::Key { .. } => "key",
+                        sampler_ir::StartTest::Controller { .. } => "cc",
+                        sampler_ir::StartTest::RoundRobin(_) => "rr",
+                        sampler_ir::StartTest::Random => "random",
+                    })
+                    .collect::<Vec<_>>()
+                    .join("+")
+            });
+            let stretch = group.and_then(|g| g.time_stretch).map_or("-".to_string(), |t| format!("{:?}", t.kind));
+            let machine = group.and_then(|g| g.machine).map_or("-".to_string(), |m| format!("{m:?}").split([' ', '{', '(']).next().unwrap_or("").to_string());
+            add(format!("loop={looping} trigger={trigger} start={starts} stretch={stretch} machine={machine}").replace("  ", " "), &lib);
+        }
+    }
+    for (key, n) in &zones {
+        println!("{n}\t{}\t{key}", libs[key].len());
+    }
+    eprintln!("files={} failed={failed}", files.len());
+
+    fn xf(span: Span) -> &'static str {
+        match span {
+            Span::Frames(0) => "",
+            _ => "-xfade",
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--ser") {
         return ser_table();
+    }
+    if args.first().is_some_and(|a| a == "--modes") {
+        return modes(Path::new(args.get(1).expect("--modes <dir>")));
     }
     if args.first().is_some_and(|a| a == "--ncw") {
         // Full NCW decode (not just header) of every .ncw under a directory: one line per file.
