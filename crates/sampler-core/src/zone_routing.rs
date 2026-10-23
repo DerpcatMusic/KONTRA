@@ -1204,6 +1204,13 @@ impl super::Prepared {
                 return Err(Error::InvalidInput);
             }
         }
+        let mut identities = vec![None; self.regions.len()];
+        for row in &catalog.rows {
+            if let (Some(id), Some(region)) = (row.id, row.region) {
+                identities[region].get_or_insert(id);
+            }
+        }
+        self.region_identities = identities.into_boxed_slice();
         self.source_zone_catalog = Some(catalog);
         Ok(self)
     }

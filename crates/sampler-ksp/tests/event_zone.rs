@@ -308,3 +308,32 @@ fn play_position_reports_microseconds_into_the_zone() {
         assert!((19_000..=25_000).contains(&pos), "play position {pos} us");
     });
 }
+
+#[test]
+fn zone_id_is_the_native_identity_when_the_instrument_has_one() {
+    const NATIVE: &str = "on init declare $id declare $zone end on
+on note
+  $id := $EVENT_ID
+  wait(1)
+  $zone := get_event_par($id,$EVENT_PAR_ZONE_ID)
+end on";
+    for native in [9727, 0] {
+        let prepared = prepared(&[(73, 60)], 4800)
+            .with_groups(1, vec![Some(0)])
+            .unwrap()
+            .with_source_zone_identities(
+                vec![SourceZoneIdentity {
+                    id: Some(native),
+                    home: SourceZoneHome { group: 0, low_key: 60, high_key: 60 },
+                    region: Some(0),
+                }],
+                4,
+                4096,
+            )
+            .unwrap();
+        let mut rt = runtime(NATIVE, prepared);
+        rt.trigger(input(60), 60, 1.).unwrap();
+        rt.render(&mut [[0.; 2]; 8]).unwrap();
+        assert_eq!(cell(&rt, 1), i64::from(native));
+    }
+}
