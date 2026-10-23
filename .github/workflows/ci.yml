@@ -156,6 +156,17 @@ jobs:
         # Ordinary PR CI retains its complete default-target command.
         # library-access is already a default feature; this includes access::*.
         run: cargo test --locked --profile "$CI_PROFILE" $CRATES
+      - name: Format feature matrix (optional formats off, then each on alone)
+        if: ${{ !inputs.release_validation }}
+        # Kontakt and UVI are still unconditional in the root; only ample and ikmpak toggle.
+        # --no-default-features also turns off library-access in kontakt and uvi (first check).
+        run: |
+          cargo check --locked --profile "$CI_PROFILE" -p kontakto --no-default-features --lib
+          cargo check --locked --profile "$CI_PROFILE" -p kontakto --no-default-features --features plugin --lib
+          cargo check --locked --profile "$CI_PROFILE" -p kontakto --no-default-features --features plugin,format-ample --lib
+          cargo check --locked --profile "$CI_PROFILE" -p kontakto --no-default-features --features plugin,format-ikmpak --lib
+          cargo test --locked --profile "$CI_PROFILE" -p kontakto --no-default-features --features plugin,format-ample --lib formats::
+          cargo test --locked --profile "$CI_PROFILE" -p kontakto --no-default-features --features plugin,format-ikmpak --lib formats::
       - name: Shipping library, binary, documentation and example coverage
         if: inputs.release_validation
         # Match Cargo's default target coverage: examples build, never execute.
