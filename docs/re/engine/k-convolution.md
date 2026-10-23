@@ -87,3 +87,10 @@ Remaining gaps after this confirmation: resize engine (Élastique, see above), S
 4. Check the true-stereo / multichannel IR route in the CConvolver channel setup before claiming any surround behaviour.
 
 Confidence: high that the flags were silently dropped before this change and are now diagnosed; high that every item in the gap table is unverified where marked; low on the exact native defaults.
+
+## Oracle attempt (2026-10-23): flags are not measurable yet
+
+- **Census (factory presets, measured with `nkp_decode dump`)**: all 633 presets under `Effects/Convolution` carry Preserve Length = 1, latency-compensation bypass = 0, auto gain = 1. Reverse and volume envelope vary (3 presets each). The off state of Preserve Length and the on state of latency bypass never occur in the factory library, so no factory preset can measure them. Data: `tools/kontakt-oracle/fixtures/convolution_flag_census.tsv`, script `tools/kontakt-oracle/conv_flag_census.sh`.
+- **Lua**: no convolution parameter id is exposed by the Kontakt Lua bindings (`docs/re/kontakt-bindings`), so the flags cannot be set through `set_engine_par`.
+- **Render blocker**: `stimrender.py` on a factory preset (`Effects/Convolution/08 Tiny Rooms/0.1s Iso Booth.nkp`, impulse stimulus) loads the chain (`load: true`, `ready: true`) but records silence. All GUI clicks fail with "Failed creating new xdo instance" (the render's Xvfb `:78` is shared with another oracle session that runs back-to-back dumps), and Kontakt exposes 0 PipeWire output ports, so the device routing step never happens.
+- **Next**: run the render with the `:78` display exclusively ours; then, to measure the off state, write a patched copy of a factory preset (flip record bytes 42/43 at the field offsets above) and load it with `kt.load_fx_preset`. Until a capture exists, no latency, preserve-length or S.Rate law is implemented and the three rows stay `NotModeled`.
