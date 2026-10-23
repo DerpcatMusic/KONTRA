@@ -210,6 +210,16 @@ fn compare(host: &host::Host, lowered: &Lowered, expected: &crate::eval::Initial
     if host.controls() != expected.controls {
         return Err(format!("controls differ: interpreter {:?}, luau {:?}", expected.controls, host.controls()));
     }
+    let want: Vec<Vec<(String, i32, bool)>> = (0..lowered.compiled.ui.len())
+        .map(|ui| {
+            expected.model.interface.widgets.get(ui).map_or_else(Vec::new, |w| {
+                w.menu.iter().map(|item| (item.text.clone(), item.value, item.visible)).collect()
+            })
+        })
+        .collect();
+    if host.menus() != want {
+        return Err(format!("menu items differ: interpreter {want:?}, luau {:?}", host.menus()));
+    }
     if host.properties() != expected.properties {
         return Err("control properties differ".into());
     }
@@ -303,6 +313,11 @@ pub fn compile(hir: &Hir) -> Compiled {
                 }
             },
             CallbackKind::UiUpdate => ("ui_update".into(), "", "0".into()),
+            // Run by the host right after `on init` (the load path); a body that
+            // may wait would be scheduled by the interpreter, so it is refused here.
+            CallbackKind::PersistenceChanged if !crate::eval::may_suspend(hir, &cb.body, true) => {
+                ("persistence_changed".into(), "", "0".into())
+            }
             other => {
                 c.unsupported(&format!("callback {other:?}"));
                 continue;
@@ -811,6 +826,9 @@ impl Compiler<'_> {
                 }
                 _ => self.unsupported("note_off without event"),
             },
+            // Saved values are not part of this host yet: a fresh instrument has none, so
+            // `read_persistent_var` restores nothing (interpreter: `restore`, empty `persisted`).
+            Builtin::MakePersistent | Builtin::MakeInstrPersistent | Builtin::ReadPersistentVar => "0".into(),
             Builtin::Abs => match ex(args, 0) {
                 Some(e) if e.ty == Ty::Real => format!("math.abs({})", self.expr(e)),
                 Some(e) => format!("W(math.abs({}))", self.int(e)),
