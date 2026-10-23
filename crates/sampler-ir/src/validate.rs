@@ -977,10 +977,9 @@ impl Instrument {
             check.range(row.home.low_key, row.home.high_key, "keys")?;
             check.within(f64::from(row.home.high_key), 0.0..=127.0, "high key")?;
             check.within(f64::from(row.home.group), 0.0..=f64::from(i32::MAX), "physical group")?;
+            // A shared identity addresses its first zone, as Kontakt's zone lookup does.
             if let Some(id) = row.id {
-                if identities.insert(id, ordinal).is_some() {
-                    return Err(invalid_routing(check.owner.clone(), "duplicate native source identity"));
-                }
+                identities.entry(id).or_insert(ordinal);
             }
         }
         if !self.zone_routing.is_empty() && !matches!(self.zone_routing_mode, Some(2 | 3)) {
