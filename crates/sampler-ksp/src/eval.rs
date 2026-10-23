@@ -1267,7 +1267,8 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             && let Ok(id) = self.int(args, 0)
             && symbol_name(self.hir, id).is_some_and(|n| crate::builtins::unsupported_engine_parameter(&n))
         {
-            self.warn(span, format!("{}(): engine parameter is not supported; ignored", builtin.name()));
+            let name = symbol_name(self.hir, id).unwrap_or_default();
+            self.warn(span, format!("{}(): engine parameter ${} is not supported; ignored", builtin.name(), name.trim_start_matches('$')));
         }
         let real = |x: f64| V::R(x);
         Ok(match builtin {
