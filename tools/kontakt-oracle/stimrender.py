@@ -58,7 +58,15 @@ def stim_sine_mid():
     return 0.4 * np.sin(2 * np.pi * 200 * np.arange(n) / RATE)
 
 
-STIMULI = {"limiter": stim_limiter, "ramp": stim_ramp, "release": stim_release, "impulse": stim_impulse, "sine_mid": stim_sine_mid}
+def stim_impulse8():
+    """One 0.5 unit impulse in 8 s: decay times up to about 4 s (RT60 by Schroeder integration)."""
+    x = np.zeros(int(8 * RATE))
+    x[0] = 0.5
+    return x
+
+
+STIMULI = {"limiter": stim_limiter, "ramp": stim_ramp, "release": stim_release, "impulse": stim_impulse,
+           "impulse8": stim_impulse8, "sine_mid": stim_sine_mid}
 
 
 def write_wav(path: Path, x, right=False):
