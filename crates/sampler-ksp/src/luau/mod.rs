@@ -63,6 +63,48 @@ local function RDT(c, off, len, i)
   if i < 0 or i >= len then return '' end
   return c[off + i + 1]
 end
+local function SGN(x)
+  if x > 0 then return 1 elseif x < 0 then return -1 end
+  return 0
+end
+local function INRANGE(x, lo, hi)
+  return (lo <= x and x <= hi) and 1 or 0
+end
+local function TDIV(a, b)
+  if a >= 0 then return math.floor(a / b) end
+  return math.ceil(a / b)
+end
+local function ROUND(x)
+  local t = TDIV(x, 1)
+  local d = x - t
+  if d >= 0.5 then return t + 1 elseif d <= -0.5 then return t - 1 end
+  return t
+end
+local function SHL(a, n) return W(a * 2 ^ (n % 32)) end
+local function SHR(a, n) return math.floor(a / 2 ^ (n % 32)) end
+local function MSB(x) return math.floor(x / 128) % 128 end
+local function MS_TO_TICKS(x) return W(TDIV(x * 960, 500000)) end
+local function TICKS_TO_MS(x) return W(TDIV(x * 500000, 960)) end
+local function SEARCH(c, off, len, x, lo, hi)
+  if lo < 0 then lo = 0 end
+  if hi > len - 1 then hi = len - 1 end
+  for i = lo, hi do
+    if c[off + i + 1] == x then return i end
+  end
+  return -1
+end
+local function SORT(c, off, len, lo, hi, desc)
+  if lo < 0 then lo = 0 end
+  if hi > len - 1 then hi = len - 1 end
+  if lo > hi then return end
+  local t = {}
+  for i = lo, hi do t[#t + 1] = c[off + i + 1] end
+  table.sort(t)
+  if desc ~= 0 then
+    for i = 1, math.floor(#t / 2) do t[i], t[#t + 1 - i] = t[#t + 1 - i], t[i] end
+  end
+  for i = lo, hi do c[off + i + 1] = t[i - lo + 1] end
+end
 ";
 
 /// One script lowered for both paths: the interpreter's `on init` result and the Luau chunk.
@@ -738,10 +780,164 @@ impl Compiler<'_> {
                 let name = if builtin == Builtin::SetEnginePar { "SEP" } else { "GEP" };
                 format!("{name}({})", parts.join(", "))
             }
+            Builtin::Abs => match ex(args, 0) {
+                Some(e) if e.ty == Ty::Real => format!("math.abs({})", self.expr(e)),
+                Some(e) => format!("W(math.abs({}))", self.int(e)),
+                None => self.unsupported("builtin abs"),
+            },
+            Builtin::Min | Builtin::Max => {
+                let f = if builtin == Builtin::Min { "math.min" } else { "math.max" };
+                match (ex(args, 0), ex(args, 1)) {
+                    (Some(a), Some(b)) if a.ty == Ty::Real && b.ty == Ty::Real => {
+                        format!("{f}({}, {})", self.expr(a), self.expr(b))
+                    }
+                    (Some(a), Some(b)) => format!("{f}({}, {})", self.int(a), self.int(b)),
+                    _ => self.unsupported("builtin min/max"),
+                }
+            }
+            Builtin::InRange => match (ex(args, 0), ex(args, 1), ex(args, 2)) {
+                (Some(x), Some(lo), Some(hi)) if x.ty == Ty::Real => {
+                    format!("INRANGE({}, {}, {})", self.expr(x), self.expr(lo), self.expr(hi))
+                }
+                (Some(x), Some(lo), Some(hi)) => {
+                    format!("INRANGE({}, {}, {})", self.int(x), self.int(lo), self.int(hi))
+                }
+                _ => self.unsupported("builtin in_range"),
+            },
+            Builtin::Sgn => match ex(args, 0) {
+                Some(e) if e.ty == Ty::Real => format!("SGN({})", self.expr(e)),
+                Some(e) => format!("SGN({})", self.int(e)),
+                None => self.unsupported("builtin sgn"),
+            },
+            Builtin::ShLeft | Builtin::ShRight => match (ex(args, 0), ex(args, 1)) {
+                (Some(a), Some(n)) => {
+                    let f = if builtin == Builtin::ShLeft { "SHL" } else { "SHR" };
+                    format!("{f}({}, {})", self.int(a), self.int(n))
+                }
+                _ => self.unsupported("builtin sh_left/sh_right"),
+            },
+            Builtin::Msb => match ex(args, 0) {
+                Some(e) => format!("MSB({})", self.int(e)),
+                None => self.unsupported("builtin msb"),
+            },
+            Builtin::Lsb => match ex(args, 0) {
+                Some(e) => format!("(({}) % 128)", self.int(e)),
+                None => self.unsupported("builtin lsb"),
+            },
+            Builtin::MsToTicks | Builtin::TicksToMs => match ex(args, 0) {
+                Some(e) => {
+                    let f = if builtin == Builtin::MsToTicks { "MS_TO_TICKS" } else { "TICKS_TO_MS" };
+                    format!("{f}({})", self.int(e))
+                }
+                None => self.unsupported("builtin ms_to_ticks"),
+            },
+            Builtin::IntToReal | Builtin::Real => match ex(args, 0) {
+                Some(e) => format!("({})", self.int(e)),
+                None => self.unsupported("builtin int_to_real"),
+            },
+            Builtin::RealToInt | Builtin::Int => match ex(args, 0) {
+                Some(e) if e.ty == Ty::Real => format!("RI({})", self.expr(e)),
+                Some(e) => self.int(e),
+                None => self.unsupported("builtin real_to_int"),
+            },
+            Builtin::Round => match ex(args, 0) {
+                Some(e) => format!("ROUND({})", self.expr(e)),
+                None => self.unsupported("builtin round"),
+            },
+            Builtin::Floor | Builtin::Ceil | Builtin::Sqrt | Builtin::Exp | Builtin::Log | Builtin::Log10
+            | Builtin::Sin | Builtin::Cos | Builtin::Tan | Builtin::Asin | Builtin::Acos | Builtin::Atan => {
+                let f = match builtin {
+                    Builtin::Floor => "math.floor",
+                    Builtin::Ceil => "math.ceil",
+                    Builtin::Sqrt => "math.sqrt",
+                    Builtin::Exp => "math.exp",
+                    Builtin::Log => "math.log",
+                    Builtin::Log10 => "math.log10",
+                    Builtin::Sin => "math.sin",
+                    Builtin::Cos => "math.cos",
+                    Builtin::Tan => "math.tan",
+                    Builtin::Asin => "math.asin",
+                    Builtin::Acos => "math.acos",
+                    _ => "math.atan",
+                };
+                match ex(args, 0) {
+                    Some(e) => format!("{f}({})", self.expr(e)),
+                    None => self.unsupported("builtin math"),
+                }
+            }
+            Builtin::Pow => match (ex(args, 0), ex(args, 1)) {
+                (Some(x), Some(e)) => format!("(({}) ^ ({}))", self.expr(x), self.expr(e)),
+                _ => self.unsupported("builtin pow"),
+            },
+            Builtin::NumElements => match array_var(args, 0) {
+                Some(var) => format!("{}", self.hir.vars[var.0 as usize].len.unwrap_or(1)),
+                None => self.unsupported("builtin num_elements"),
+            },
+            Builtin::Search => self.search(args),
+            Builtin::Sort => self.sort(args),
             other => match self.control_builtin(other, args).or_else(|| self.pgs_builtin(other, args)).or_else(|| self.record_builtin(other, args)) {
                 Some(call) => call,
                 None => self.unsupported(&format!("builtin {}", other.name())),
             },
         }
+    }
+
+    /// `search(array, needle [, lo, hi])`: index of the first element equal to `needle`, or -1.
+    fn search(&mut self, args: &[Arg]) -> String {
+        let (Some(var), Some(needle)) = (array_var(args, 0), ex(args, 1)) else {
+            return self.unsupported("builtin search");
+        };
+        let (base, off, len) = self.elem_base(var);
+        let ty = self.hir.vars[var.0 as usize].ty;
+        let x = match (ty, needle.ty) {
+            (Ty::Str, Ty::Str) => self.expr(needle),
+            (Ty::Real, Ty::Real | Ty::Int | Ty::Bool) => self.expr(needle),
+            (Ty::Int | Ty::Bool, _) => self.int(needle),
+            _ => return self.unsupported("search needle type"),
+        };
+        let (lo, hi) = match (ex(args, 2), ex(args, 3)) {
+            (Some(lo), Some(hi)) => (self.int(lo), self.int(hi)),
+            _ => ("0".into(), format!("{}", len as i64 - 1)),
+        };
+        format!("SEARCH({base}, {off}, {len}, {x}, {lo}, {hi})")
+    }
+
+    /// `sort(array, descending [, lo, hi])` over an integer array. Real and text arrays
+    /// stay outside the subset: Kontakt orders reals by `total_cmp` and texts by bytes.
+    fn sort(&mut self, args: &[Arg]) -> String {
+        let Some(var) = array_var(args, 0) else {
+            return self.unsupported("builtin sort");
+        };
+        let ty = self.hir.vars[var.0 as usize].ty;
+        if !matches!(ty, Ty::Int | Ty::Bool) {
+            return self.unsupported("sort of real or text array");
+        }
+        let (base, off, len) = self.elem_base(var);
+        let desc = match ex(args, 1) {
+            Some(e) => self.int(e),
+            None => return self.unsupported("builtin sort"),
+        };
+        let (lo, hi) = match (ex(args, 2), ex(args, 3)) {
+            (Some(lo), Some(hi)) => (self.int(lo), self.int(hi)),
+            _ => ("0".into(), format!("{}", len as i64 - 1)),
+        };
+        format!("SORT({base}, {off}, {len}, {lo}, {hi}, {desc})")
+    }
+}
+
+/// The expression of argument `i`, when it is a plain expression.
+fn ex(args: &[Arg], i: usize) -> Option<&Expr> {
+    match args.get(i) {
+        Some(Arg::Expr(e)) => Some(e),
+        _ => None,
+    }
+}
+
+/// The array variable named by argument `i`.
+fn array_var(args: &[Arg], i: usize) -> Option<VarId> {
+    match args.get(i) {
+        Some(Arg::Var(v, _)) => Some(*v),
+        Some(Arg::Place(p)) => Some(p.var()),
+        _ => None,
     }
 }
