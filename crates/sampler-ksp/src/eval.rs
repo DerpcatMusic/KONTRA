@@ -1055,7 +1055,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
 
     fn get_property(&self, id: i32, par: i32) -> V {
         if let Some(ui) = self.ui_index(id)
-            && (Some(par) == b::control_par("$CONTROL_PAR_SELECTED_ITEM_IDX")
+            && (par == b::CONTROL_PAR_SELECTED_ITEM_IDX
                 || (par == b::CONTROL_PAR_VALUE && self.hir.uis[ui].kind == WidgetKind::Menu))
         {
             let value = self.read_var(self.hir.uis[ui].var).int();
@@ -1639,13 +1639,14 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             }
             GetMenuItemStr | GetMenuItemValue | GetMenuItemVisibility => {
                 let (id, index) = (self.int(args, 0)?, self.int(args, 1)?);
+                // Borrowed, not cloned: the item text is only copied for GetMenuItemStr.
                 let item = self
                     .ui_index(id)
-                    .and_then(|ui| self.menu(ui).get(index as usize).cloned());
-                match (builtin, item) {
-                    (GetMenuItemStr, item) => V::S(item.map(|i| i.text).unwrap_or_default()),
-                    (GetMenuItemValue, item) => V::I(item.map_or(0, |i| i.value)),
-                    (_, item) => V::I(item.map_or(0, |i| i32::from(i.visible))),
+                    .and_then(|ui| self.menu(ui).get(index as usize));
+                match builtin {
+                    GetMenuItemStr => V::S(item.map(|i| i.text.clone()).unwrap_or_default()),
+                    GetMenuItemValue => V::I(item.map_or(0, |i| i.value)),
+                    _ => V::I(item.map_or(0, |i| i32::from(i.visible))),
                 }
             }
             GetNumMenuItems => {

@@ -952,6 +952,7 @@ pub const CONTROL_PAR_NUM_ITEMS: i32 = SYMBOL_BASE + 15;
 pub const CONTROL_PAR_TYPE: i32 = SYMBOL_BASE + 21;
 pub const CONTROL_PAR_PICTURE: i32 = SYMBOL_BASE + 12;
 pub const CONTROL_PAR_PARENT_PANEL: i32 = SYMBOL_BASE + 28;
+pub const CONTROL_PAR_SELECTED_ITEM_IDX: i32 = SYMBOL_BASE + 14;
 
 impl Builtin {
     pub(crate) fn midi(self) -> Option<sampler_core::MidiAction> {
@@ -1000,7 +1001,7 @@ impl Builtin {
 
 #[cfg(test)]
 mod tests {
-    use super::constant;
+    use super::{CONTROL_PAR_SELECTED_ITEM_IDX, constant, control_par};
 
     #[test]
     fn module_type_constants_use_the_native_values() {
@@ -1050,5 +1051,10 @@ mod tests {
         // 622..=690 with one hole: 652 has no registered name in the PE.
         let expected: Vec<i32> = (622..=690).filter(|v| *v != 652).collect();
         assert_eq!(values, expected);
+    }
+
+    #[test]
+    fn selected_item_index_constant_matches_its_name() {
+        assert_eq!(control_par("$CONTROL_PAR_SELECTED_ITEM_IDX"), Some(CONTROL_PAR_SELECTED_ITEM_IDX));
     }
 }
