@@ -502,7 +502,8 @@ fn streamed_native_nki(sample:&str)->Vec<u8> {
     let mut private=Vec::new();for _ in 0..136 {private.extend(8u32.to_le_bytes());private.extend([0;8]);}private.extend([0;24]);
     private.extend([0,0x13,0]);private.extend(8u32.to_le_bytes());
     private.extend([0;8]);
-    private.push(1);private.extend([0,6,1]);private.extend(0u32.to_le_bytes());private.extend([0;23]);private.extend([255;22]);
+    // Source flag 0 = loaded; 1 is "purged" at load (1e4c68fa7).
+    private.push(0);private.extend([0,6,1]);private.extend(0u32.to_le_bytes());private.extend([0;23]);private.extend([255;22]);
     let mut groups=1u32.to_le_bytes().to_vec();groups.extend(streamed_wire::object(0x95,&private,&group,&streamed_wire::chunk(0x38,&0u32.to_le_bytes())));
     let mut zone=vec![0;12];for v in [1i16,127,60,61,0,0,0,0,60] {zone.extend(v.to_le_bytes());}
     for v in [1f32,0.,1.] {zone.extend(v.to_le_bytes());}zone.extend([0,1,0,0,0,0]);
