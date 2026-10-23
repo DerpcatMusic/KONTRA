@@ -232,10 +232,10 @@ fn compare(host: &host::Host, lowered: &Lowered, expected: &crate::eval::Initial
     if host.requests() != want {
         return Err(format!("host requests differ: interpreter {want:?}, luau {:?}", host.requests()));
     }
-    if host.properties() != expected.properties {
+    if host.properties() != expected.properties.iter().map(|(k, v)| (*k, *v)).collect() {
         return Err("control properties differ".into());
     }
-    if host.text_properties() != expected.text_properties {
+    if host.text_properties() != expected.text_properties.iter().map(|(k, v)| (*k, v.clone())).collect() {
         return Err("control text properties differ".into());
     }
     let engine: std::collections::BTreeMap<[i64; 4], i64> = expected
