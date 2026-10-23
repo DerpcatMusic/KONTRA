@@ -301,6 +301,8 @@ pub(crate) enum Params {
         drive: f32,
         damping: f32,
     },
+    /// `BParFXKolor` (0x79): lowered to the IR record; the shaper is not run yet.
+    Kolor(sampler_ir::fx::kolor::Record),
     /// `BParFXCompressor`: integer mode (Classic/Enhanced/Pro),
     /// threshold dB, ratio, attack and release ms, stereo link.
     Compressor {
@@ -470,6 +472,18 @@ impl Slot {
                 mode: r.i32()? as f32,
             },
             0x1e => Params::Distortion { mode: r.i32()? as f32, drive: r.f32()?, damping: r.f32()? },
+            // Reader order: mode selector (0..=9), 11 floats, flag byte (`sampler_ir::fx::kolor`).
+            0x79 if self.version == 0x10 => {
+                let mode = r.i32()?;
+                if !(0..=9).contains(&mode) {
+                    return None;
+                }
+                let mut floats = [0.0; 11];
+                for f in &mut floats {
+                    *f = r.f32()?;
+                }
+                Params::Kolor(sampler_ir::fx::kolor::Record { mode, floats, flag: r.flag()? })
+            }
             0x17 => Params::SendLevels {
                 sends: r.list()?,
                 outputs: r.list()?,

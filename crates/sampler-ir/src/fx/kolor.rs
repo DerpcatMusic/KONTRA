@@ -80,9 +80,62 @@ pub const CONTROLS: [Control; 13] = [
 /// floats, then one byte. The order is `Measured`; the float-to-knob tie is not.
 pub const RECORD_FLOATS: usize = 11;
 
+/// Knobs the host writes (`core+0x5c+4*i`): 13 plus the constant knob 13.
+pub const KNOB_COUNT: usize = 14;
+
+/// The knob each reader float feeds, in reader order. `Measured`: the apply `140abae20`
+/// as traced by `tools/re/kolor_kemu_probe.py` (floats at +0x08..+0x30). Knob 7 is the wet mix.
+pub const FLOAT_KNOBS: [usize; RECORD_FLOATS] = [3, 0, 2, 5, 6, 8, 9, 10, 11, 12, 7];
+/// The knob the flag byte feeds (`Measured`, byte at +0x34).
+pub const FLAG_KNOB: usize = 1;
+/// The knob the mode selector feeds, as `mode / 9` (`Measured`, int at +0x38).
+pub const MODE_KNOB: usize = 4;
+/// The constant the apply writes to knob 13 (`Measured`; untested beyond the apply).
+pub const CONSTANT_KNOB: (usize, f32) = (13, 0.5);
+
+/// A saved Kolor record, lowered from the Kontakt reader. The mode is `0..=9` (the
+/// reader's own range); the engine owns what each value does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Record {
+    pub mode: i32,
+    pub floats: [f32; RECORD_FLOATS],
+    pub flag: bool,
+}
+
+impl Record {
+    /// The value the host writes to each knob, indexed by knob.
+    pub fn knobs(&self) -> [f32; KNOB_COUNT] {
+        let mut knobs = [0.0; KNOB_COUNT];
+        for (&knob, &value) in FLOAT_KNOBS.iter().zip(&self.floats) {
+            knobs[knob] = value;
+        }
+        knobs[FLAG_KNOB] = f32::from(u8::from(self.flag));
+        knobs[MODE_KNOB] = self.mode as f32 / 9.0;
+        knobs[CONSTANT_KNOB.0] = CONSTANT_KNOB.1;
+        knobs
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn record_knobs_follow_the_measured_apply_layout() {
+        let floats: [f32; RECORD_FLOATS] = std::array::from_fn(|i| 0.1 * (i as f32 + 1.0));
+        let knobs = Record { mode: 9, floats, flag: true }.knobs();
+        // Float 0 (drive) lands on knob 3, float 10 (mix) on the wet knob 7.
+        assert_eq!(knobs[3], floats[0]);
+        assert_eq!(knobs[7], floats[10]);
+        assert_eq!(knobs[FLAG_KNOB], 1.0);
+        assert_eq!(knobs[MODE_KNOB], 1.0);
+        assert_eq!(knobs[13], 0.5);
+        // Every knob is written exactly once: 11 floats, flag, mode, constant.
+        let mut targets: Vec<usize> = FLOAT_KNOBS.to_vec();
+        targets.extend([FLAG_KNOB, MODE_KNOB, CONSTANT_KNOB.0]);
+        targets.sort_unstable();
+        assert_eq!(targets, (0..KNOB_COUNT).collect::<Vec<_>>());
+    }
 
     #[test]
     fn tables_are_complete_and_match_the_reader() {
