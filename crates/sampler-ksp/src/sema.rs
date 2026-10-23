@@ -727,11 +727,9 @@ impl<'a> Sema<'a, '_> {
             return Ok(None);
         }
         if d.storage == Storage::Polyphonic {
-            self.hir.warnings.push(crate::diag::Fault {
-                span,
-                builtin: None,
-                message: "polyphonic variables start at 0; initializer ignored".into(),
-            });
+            // Kontakt keeps no value for a note-owned initializer (cells start at 0
+            // per note; a write outside a note is dropped, measured on Kontakt 8.13.1).
+            // Kontakt emits no diagnostic for it, so neither do we.
             return Ok(None);
         }
         let mut values = Vec::with_capacity(d.init.len());
