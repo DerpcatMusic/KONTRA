@@ -612,3 +612,25 @@ fn play_note_and_note_off_reach_the_engine_sink() {
         ],
     );
 }
+
+#[test]
+fn controller_reads_bank_units_and_ignore_suppresses_forwarding() {
+    // %CC[n] converts the raw bank value (0..127; pitch bend at 128 is -8192..8191).
+    let source = "on init declare $v declare $n end on
+        on controller
+        $n := $CC_NUM
+        if $CC_NUM = 2
+          ignore_controller
+        end if
+        $v := %CC[1] * 1000 + %CC[128]
+        end on";
+    let lowered = lower(source).unwrap_or_else(|e| panic!("front end: {e}"));
+    let mut host = Host::new(&lowered.compiled, lowered.cells, lowered.texts, lowered.note_cells, 48_000).unwrap();
+    host.init().unwrap();
+    // Before `on init` ends, `%CC[]` reads 0 (interpreter parity); the bank is live after.
+    assert!(host.controller(1, 1 << 31).unwrap(), "forwarded");
+    assert_eq!(host.cells(lowered.cells)[0], 64.0 * 1000.0 + 0.0, "CC1 at 2^31 is 64; pitch bend centre is 0");
+    assert!(!host.controller(2, 0).unwrap(), "ignore_controller suppresses forwarding");
+    assert!(host.controller(1, u32::MAX).unwrap());
+    assert_eq!(host.cells(lowered.cells)[0], 127.0 * 1000.0);
+}
