@@ -247,6 +247,15 @@ tests, first-call allocation check and frozen state; bit-exact extraction. A sim
 Delete replaced table-evaluation and rate-wrapper loops, retaining preset table assets.
 Estimate: 100–400 LOC across the series; ~0% CPU expected; SIMD/fusion wins unmeasured.
 
+**Status (PR for ticket 5): partial, net −10 LOC.** Admitted: the four-lane `ld`/`st` state access
+(cat, dstortion, twang: identical bodies, differing only by size and base offset) and the stereo/mono
+block loop (cat, dstortion, fuzz, bigfuzz: identical except the mono sum, which is bit-equal). Both now
+live in `color/amp/kernel.rs` (`run_block`, `ld`, `st`). Covered by the existing native amp vectors,
+the color tests (89 pass) and a new routing/mono test. Not admitted: the five `shaper()` loaders (each
+a per-file `OnceLock` over its own `include_bytes!`; a helper saves no lines), and the table
+evaluation (`lookup`) is already shared in `kernel.rs`. Instructions per block not measured (same
+arithmetic, one closure call per sample).
+
 ### 6. One nonlinear-stage vocabulary (high value, high risk)
 
 Files: `D/color/{shaping,distortion,saturator,dirt,diode,tubescreamer,tape,freak,bite,mod}.rs`,
