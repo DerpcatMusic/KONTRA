@@ -499,6 +499,12 @@ impl<S: Script> Driver<S> {
         }
     }
 
+    /// Whether a script wake-up or glide step is still scheduled. A wait for a
+    /// release is not counted: it has no due time and only note-off ends it.
+    pub fn has_due_events(&mut self) -> bool {
+        !self.glides.is_empty() || self.host.next_due().is_some()
+    }
+
     fn apply(&mut self, rt: &mut Runtime, closing: bool) -> Result<(), Error> {
         let mut inbox = std::mem::take(&mut self.inbox);
         self.host.drain(&mut inbox);

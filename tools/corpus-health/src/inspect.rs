@@ -2537,8 +2537,10 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
     #[test]
     fn deferred_persistence_ui_is_reported_without_executing_or_hiding_it() {
         let source = |wait: &str| format!("on init make_perfview declare ui_label $drawer(1,1) move_control_px($drawer,10,20) end on on persistence_changed {wait} move_control_px($drawer,10,-100) end on");
-        for (wait, pending, y, status) in [("wait(1000)", true, 20., "scheduled_for_plan_activation"), ("", false, -100., "completed")] {
+        for (wait, pending, y, status) in [("wait(1000)", true, 20., "scheduled_for_plan_activation"), ("", false, 20., "completed")] {
             let script = sampler_ksp::compile(&source(wait), 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+            // The static witness is the on-init layout; persistence_changed writes are
+            // applied by the production lifecycle, not by compile (docs/library-inspector.md).
             assert_eq!(script.ui(&|_| None).unwrap().widgets[0].rect.y, y);
             let opts=Options { path: PathBuf::from("authored.nki"), initialize: true, ..Default::default() };
             let mut report=base(&opts,"kontakt");

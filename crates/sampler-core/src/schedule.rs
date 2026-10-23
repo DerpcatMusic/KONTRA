@@ -57,6 +57,29 @@ impl Scheduled {
 impl Runtime {
     pub fn next_scheduled_frame(&self)->Option<u64>{self.commands.first().map(|command|command.at)}
 
+    /// Scheduled work that belongs to a note: its note-off, voice start, or a
+    /// resume of a callback the note owns. Plan-level timers (`on listener`)
+    /// re-arm forever and are not counted, so "drained" can be reached.
+    pub fn pending_note_events(&self) -> usize {
+        self.commands
+            .iter()
+            .filter(|command| match command.action {
+                Action::Start(_) => true,
+                Action::Event(
+                    Event::KeyUp(..)
+                    | Event::ScriptKeyUp(..)
+                    | Event::Release(..)
+                    | Event::ForwardRelease(..),
+                ) => true,
+                Action::Resume(id) => matches!(
+                    self.behaviors.get(id.0).map(|b| b.owner),
+                    Some(super::BehaviorOwner::Note(_))
+                ),
+                _ => false,
+            })
+            .count()
+    }
+
     pub(super) fn available_commands(&self) -> usize {
         self.command_limit - self.commands.len() - self.reserved_commands
     }
