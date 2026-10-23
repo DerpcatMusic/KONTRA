@@ -303,10 +303,12 @@ impl Part {
     }
 
     pub(crate) fn new(runtime: Runtime, tree: MixTree) -> Result<Self, CoreError> {
-        Self::new_profile(runtime,tree,Zone::Lower)
+        Self::new_profile(runtime,tree,Zone::Lower,&[])
     }
 
-    fn new_profile(mut runtime: Runtime, tree: MixTree, zone:Zone) -> Result<Self, CoreError> {
+    /// `power` are controller events received before anything else: Kontakt's
+    /// power-on values for the instrument (`sampler_kontakt::power_on_ccs`).
+    fn new_profile(mut runtime: Runtime, tree: MixTree, zone:Zone, power: &[(u8, u8)]) -> Result<Self, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
         let mut mpe =
             Mpe::new(&runtime, WIRE.port, WIRE.group, zone, 15, runtime.note_capacity().max(1)).map_err(core)?;
@@ -366,7 +368,7 @@ impl Part {
             .with_control_updates(256, sampler_core::SNAPSHOT_OVERLAY_VALUE_CAPACITY + 7)
             .map_err(core)?;
         let tone = sampler_core::OutputLowPass::new(runtime.sample_rate()).map_err(core)?;
-        Ok(Self {
+        let mut part = Self {
             epoch: 0,
             engine_bindings,
             uvi_meter_buses: Arc::default(),
@@ -434,7 +436,11 @@ impl Part {
             grower: None,
             script: None,
             execution_actor:PartExecutionActor::default(),
-        })
+        };
+        for &(cc, value) in power {
+            wire_event(&mut part, 0xb0, cc, value);
+        }
+        Ok(part)
     }
 
     /// Inactive candidate setup only. The caller must have used the genuine
@@ -4387,7 +4393,8 @@ impl V2Loader {
         }
         let grower = Grower::start(&mut runtime, control, ceiling, per_voice, limits.notes)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
-        let mut part = Part::new_profile(runtime, tree.clone(),if request.mpe_upper{Zone::Upper}else{Zone::Lower})?;
+        let power = instrument.as_deref().map(sampler_kontakt::power_on_ccs).unwrap_or_default();
+        let mut part = Part::new_profile(runtime, tree.clone(),if request.mpe_upper{Zone::Upper}else{Zone::Lower}, &power)?;
         part.install_uvi_meter_buses(scripts.uvi_meter_buses.clone(), &interfaces);
         part.waveform_sources = waveform_sources;
         part.mpe.set_timbre_controller(&mut part.runtime,timbre).map_err(core)?;
