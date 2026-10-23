@@ -6,7 +6,8 @@
 
 use super::{Compiled, controls};
 use crate::builtins::FIRST_UI_ID;
-use crate::engine::{Duration, EngineSink, Play, Recorder};
+use crate::engine::{Call, Duration, EngineSink, Play, Recorder};
+use sampler_core::ModTarget;
 use mlua::{Function, Lua, MultiValue, Table, Thread, Value, VmState};
 use sampler_script::{Budget, Jit, cache_dir, cached_bytecode, new_vm_with};
 use std::{cell::RefCell, collections::{BTreeMap, HashMap}, rc::Rc};
@@ -143,6 +144,32 @@ impl Host {
             lua.create_function(move |_, (event, micros): (i64, Option<i64>)| {
                 let delay = micros.map(|us| micros_to_frames(us.max(0) as u64, rate));
                 note_off_sink.borrow_mut().note_off(event as u32, delay);
+                Ok(())
+            })
+            .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let param_sink = Rc::clone(&sink);
+        host.set(
+            "param",
+            lua.create_function(move |_, (event, target, value, relative): (i64, i64, i64, i64)| {
+                let target = match target {
+                    0 => ModTarget::Decibels,
+                    1 => ModTarget::Pitch,
+                    _ => ModTarget::Pan,
+                };
+                // Event ids are the script's i32 bit pattern in the sink's u32.
+                param_sink.borrow_mut().set_param(event as u32, target, value, relative == 1);
+                Ok(())
+            })
+            .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let attack_sink = Rc::clone(&sink);
+        host.set(
+            "suppress_attack",
+            lua.create_function(move |_, event: i64| {
+                attack_sink.borrow_mut().suppress_attack(event as u32);
                 Ok(())
             })
             .map_err(|e| e.to_string())?,
@@ -456,6 +483,11 @@ impl Host {
     /// Replace the engine the script's `play_note` and `note_off` calls go to.
     pub fn set_sink(&mut self, sink: Box<dyn EngineSink>) {
         *self.sink.borrow_mut() = sink;
+    }
+
+    /// Engine calls recorded since the last take. Only the default [`Recorder`] keeps them.
+    pub fn take_calls(&self) -> Vec<Call> {
+        self.sink.borrow_mut().take_calls()
     }
 
     /// `set_engine_par` writes, keyed `[parameter, group, slot, generic]`.

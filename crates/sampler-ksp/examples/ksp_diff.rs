@@ -14,6 +14,7 @@
 //! events. The Luau front end does not run those callbacks yet (see the census
 //! histogram), and the interpreter exposes no event-time engine-write trace.
 use sampler_core::{Frame, Input, Prepared, Protocol, Runtime, ScriptInstanceId, Limits as CoreLimits};
+use sampler_ksp::engine::Call;
 use sampler_ksp::luau::{check_init, host::Host, lower};
 use sampler_script::Jit;
 use std::collections::BTreeMap;
@@ -40,6 +41,8 @@ struct Tally {
     events: usize,
     matched_native: usize,
     native_mismatch: Vec<String>,
+    /// Note-scope parameter writes compared between the interpreter and the Luau sink.
+    writes: usize,
 }
 
 fn main() {
@@ -88,9 +91,10 @@ fn main() {
             }
         };
         match trace(&lowered, &mut interp, Jit::Interpreter) {
-            Ok(n) => {
+            Ok((n, w)) => {
                 tally.matched += 1;
                 tally.events += n;
+                tally.writes += w;
             }
             Err(e) => {
                 tally.event_mismatch.push(format!("{name}: {e}"));
@@ -124,6 +128,7 @@ fn main() {
     println!("  matched, native VM:      {}", tally.matched_native);
     println!("  init mismatches:         {}", tally.init_mismatch.len());
     println!("  event-trace mismatches:  {}", tally.event_mismatch.len() + tally.native_mismatch.len());
+    println!("  note writes compared:    {} (interpreter log == Luau sink calls)", tally.writes);
     println!("  interpreter bind failed: {}", tally.bind_failed.len());
     for m in tally.init_mismatch.iter().chain(&tally.event_mismatch).chain(&tally.native_mismatch).take(20) {
         println!("  MISMATCH {m}");
@@ -154,7 +159,7 @@ fn interpreter(source: &str) -> Result<Runtime, String> {
     let prepared = Prepared::new(RATE, vec![], vec![], 0).map_err(|e| format!("prepare: {e:?}"))?;
     let plan = script.bind(prepared).map_err(|e| format!("bind: {e:?}"))?;
     let cells = plan.behavior_local_count() * 2;
-    Runtime::new(
+    let mut rt = Runtime::new(
         plan,
         CoreLimits {
             notes: 4,
@@ -171,7 +176,10 @@ fn interpreter(source: &str) -> Result<Runtime, String> {
             note_cells: 4,
         },
     )
-        .map_err(|e| format!("runtime: {e:?}"))
+    .map_err(|e| format!("runtime: {e:?}"))?;
+    // Note-scope writes (`change_vol` ...) are the engine-call trace the Luau sink is compared with.
+    rt.record_script_writes(true);
+    Ok(rt)
 }
 
 fn input(id: i32) -> Input {
@@ -179,13 +187,14 @@ fn input(id: i32) -> Input {
 }
 
 /// Run the event trace on one Luau VM and the interpreter; `Ok(events)` when every step agrees.
-fn trace(lowered: &sampler_ksp::luau::Lowered, rt: &mut Runtime, jit: Jit) -> Result<usize, String> {
+fn trace(lowered: &sampler_ksp::luau::Lowered, rt: &mut Runtime, jit: Jit) -> Result<(usize, usize), String> {
     let plan = rt.active_plan();
     let mut host = Host::new_with(&lowered.compiled, lowered.cells, lowered.texts, lowered.note_cells, RATE, jit)?;
     host.init()?;
     let mut block: Vec<Frame> = vec![[0.0; 2]; BLOCK];
     let mut id = 0_i32;
     let mut events = 0;
+    let mut writes = 0;
     for &key in &KEYS {
         for &vel in &VELOCITIES {
             id += 1;
@@ -193,15 +202,15 @@ fn trace(lowered: &sampler_ksp::luau::Lowered, rt: &mut Runtime, jit: Jit) -> Re
             // Interpreter: trigger, settle; Luau: note_on, settle at the same frame.
             rt.trigger(input(id), key, velocity).map_err(|e| format!("trigger: {e:?}"))?;
             host.note_on(id as u32, i64::from(key), f64::from(vel))?;
-            settle(rt, &mut host, &mut block, lowered, plan, &format!("note {key}/{vel}"))?;
+            writes += settle(rt, &mut host, &mut block, lowered, plan, &format!("note {key}/{vel}"))?;
             rt.note_off(input(id), None).map_err(|e| format!("note_off: {e:?}"))?;
             host.release(id as u32, i64::from(key), f64::from(vel))?;
-            settle(rt, &mut host, &mut block, lowered, plan, &format!("release {key}/{vel}"))?;
+            writes += settle(rt, &mut host, &mut block, lowered, plan, &format!("release {key}/{vel}"))?;
             rt.flush_ended(|_| true);
             events += 2;
         }
     }
-    Ok(events)
+    Ok((events, writes))
 }
 
 fn settle(
@@ -211,13 +220,34 @@ fn settle(
     lowered: &sampler_ksp::luau::Lowered,
     plan: sampler_core::PlanId,
     step: &str,
-) -> Result<(), String> {
+) -> Result<usize, String> {
+    let writes = compare_writes(rt, host).map_err(|e| format!("after {step}: {e}"))?;
     for _ in 0..SETTLE_BLOCKS {
         rt.render(block).map_err(|e| format!("render: {e:?}"))?;
         host.advance_to(host.now() + BLOCK as u64)?;
         compare(rt, host, lowered, plan).map_err(|e| format!("after {step}: {e}"))?;
     }
-    Ok(())
+    Ok(writes)
+}
+
+/// Note-scope parameter writes since the last call, both sides: the interpreter's write log and
+/// the Luau sink's `Param` calls, formatted alike (`param Note <event> <target> <value> relative <flag>`).
+fn compare_writes(rt: &mut Runtime, host: &Host) -> Result<usize, String> {
+    let expected: Vec<String> = rt.take_script_writes().into_iter().filter(|w| w.starts_with("param Note ")).collect();
+    let got: Vec<String> = host
+        .take_calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Param { event, target, value, relative } => {
+                Some(format!("param Note {} {target:?} {value} relative {relative}", event as i32))
+            }
+            _ => None,
+        })
+        .collect();
+    if expected != got {
+        return Err(format!("note writes differ: interpreter {expected:?}, luau {got:?}"));
+    }
+    Ok(got.len())
 }
 
 /// Global cells, interpreter vs Luau: reals bit for bit, integers as `i32`.
