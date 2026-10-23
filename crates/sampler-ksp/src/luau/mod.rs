@@ -14,6 +14,7 @@ use std::fmt::Write;
 
 pub mod host;
 mod controls;
+mod keys;
 mod pgs;
 mod record;
 #[cfg(test)]
@@ -228,6 +229,11 @@ fn compare(host: &host::Host, lowered: &Lowered, expected: &crate::eval::Initial
     if host.pgs_text() != expected.model.pgs_text {
         return Err("PGS text keys differ".into());
     }
+    let (keys, key_ranges, key_pressed_support) = host.key_state();
+    let want = &expected.model.interface;
+    if keys != want.keys || key_ranges != want.key_ranges || key_pressed_support != want.key_pressed_support {
+        return Err("key-switch state differs".into());
+    }
     let ui = host.interface();
     let want = &expected.model.interface;
     let got = (ui.width_px, ui.height_px, ui.height_grid, ui.skin_offset, ui.performance_view, &ui.messages);
@@ -268,6 +274,7 @@ pub fn compile(hir: &Hir) -> Compiled {
     c.out.push_str(PRELUDE);
     c.out.push_str(pgs::PRELUDE);
     c.out.push_str(record::PRELUDE);
+    c.out.push_str(keys::PRELUDE);
     c.out.push_str("local CB = {}\n");
     c.out.push_str("local SEP, GEP = HOST.set_engine_par, HOST.get_engine_par\n");
     if !hir.functions.is_empty() {
@@ -875,7 +882,7 @@ impl Compiler<'_> {
             },
             Builtin::Search => self.search(args),
             Builtin::Sort => self.sort(args),
-            other => match self.control_builtin(other, args).or_else(|| self.pgs_builtin(other, args)).or_else(|| self.record_builtin(other, args)) {
+            other => match self.control_builtin(other, args).or_else(|| self.pgs_builtin(other, args)).or_else(|| self.record_builtin(other, args)).or_else(|| self.key_builtin(other, args)) {
                 Some(call) => call,
                 None => self.unsupported(&format!("builtin {}", other.name())),
             },

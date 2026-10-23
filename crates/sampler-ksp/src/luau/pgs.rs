@@ -50,7 +50,7 @@ end
 impl Compiler<'_> {
     /// A text argument as a Lua expression. Reals are refused (their text form is the
     /// interpreter's `real_text`, not modelled here); integers print as decimal, as `V::text`.
-    fn text_arg(&mut self, arg: Option<&Arg>) -> Option<String> {
+    pub(super) fn text_arg(&mut self, arg: Option<&Arg>) -> Option<String> {
         match arg {
             Some(Arg::Key(k)) => Some(super::lua_str(k)),
             Some(Arg::Expr(e)) => match e.ty {
@@ -62,7 +62,7 @@ impl Compiler<'_> {
         }
     }
 
-    fn int_arg(&mut self, arg: Option<&Arg>) -> Option<String> {
+    pub(super) fn int_arg(&mut self, arg: Option<&Arg>) -> Option<String> {
         match arg {
             Some(Arg::Expr(e)) => Some(self.int(e)),
             _ => None,

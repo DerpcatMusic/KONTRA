@@ -365,6 +365,37 @@ impl Host {
         out
     }
 
+    /// Key-switch state (`Initial::model.interface`): the 128 keys, the ranges and the support flag.
+    pub fn key_state(&self) -> (Vec<crate::model::Key>, Vec<crate::model::KeyRange>, bool) {
+        let Ok(model) = self.callbacks.get::<Table>("model") else { return (Vec::new(), Vec::new(), false) };
+        let mut keys = Vec::new();
+        if let Ok(table) = model.get::<Table>("keys") {
+            for i in 0..128 {
+                let key = match table.get::<Option<Table>>(i) {
+                    Ok(Some(k)) => crate::model::Key {
+                        color: k.get::<Option<i64>>("color").ok().flatten().map(|n| n as i32),
+                        kind: k.get::<Option<i64>>("kind").ok().flatten().map(|n| n as i32),
+                        name: k.get::<Option<String>>("name").ok().flatten(),
+                        pressed: k.get::<Option<i64>>("pressed").ok().flatten().map(|n| n as i32),
+                    },
+                    _ => crate::model::Key::default(),
+                };
+                keys.push(key);
+            }
+        }
+        let mut ranges = Vec::new();
+        if let Ok(table) = model.get::<Table>("key_ranges") {
+            for range in table.sequence_values::<Table>().flatten() {
+                ranges.push(crate::model::KeyRange {
+                    low: range.get::<i64>("low").unwrap_or(0) as i32,
+                    high: range.get::<i64>("high").unwrap_or(0) as i32,
+                    name: range.get::<String>("name").unwrap_or_default(),
+                });
+            }
+        }
+        (keys, ranges, model.get::<bool>("key_pressed_support").unwrap_or(false))
+    }
+
     /// `set_script_title`'s last title (`Initial::model.interface.title`).
     pub fn title(&self) -> Option<String> {
         let model = self.callbacks.get::<Table>("model").ok()?;
