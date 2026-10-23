@@ -166,6 +166,33 @@ pub(crate) fn translate(
     }
     if !instrument.articulations.is_empty() {
         instrument.switching.owner = ir::SwitchOwner::Native;
+        // Migrate to zone selectors: a zone whose group is only ever selected by
+        // one articulation is tagged with it, so the switch filters the zone at
+        // runtime. Groups that mix other predicates, or that several articulations
+        // share, stay untagged; the start rows still decide for them.
+        let mut owners = vec![Vec::new(); instrument.groups.len()];
+        for (i, a) in instrument.articulations.iter().enumerate() {
+            for (g, _) in membership(a.switch_keys[0]) {
+                if !owners[g].contains(&i) {
+                    owners[g].push(i);
+                }
+            }
+        }
+        for (_, group, list) in groups {
+            let slots = (0..4).filter(|slot| list.mask & (1 << slot) != 0);
+            let keyed_only = slots
+                .zip(&list.items)
+                .all(|(_, c)| c.mode == START_ON_KEY && c.next_criteria != 2);
+            if !keyed_only {
+                owners[group.0].clear();
+            }
+        }
+        for zone in &mut instrument.zones {
+            let Some(group) = zone.group else { continue };
+            if let (None, [only]) = (zone.articulation, owners[group.0].as_slice()) {
+                zone.articulation = Some(ir::ArticulationRef(*only));
+            }
+        }
     }
     let mut owner: Option<String> = None;
     for behavior in &instrument.behaviors {
@@ -1045,7 +1072,22 @@ end on
             .iter()
             .map(|z| z.articulation.map(|a| a.0))
             .collect();
-        assert_eq!(tags, [None, None, None, None]);
+        // Key-only groups become zone selectors (articulations sort by key:
+        // 24 is index 0, 25 is index 1). Random and empty groups stay untagged.
+        assert_eq!(tags, [Some(1), Some(0), None, None]);
+        // Zones a key sounds under: untagged zones always, tagged ones only
+        // under their own articulation.
+        let sounding = |key: u8| {
+            let art = ir
+                .articulations
+                .iter()
+                .position(|a| a.switch_keys.contains(&key));
+            (0..4)
+                .filter(|&z| ir.zones[z].articulation.is_none_or(|a| Some(a.0) == art))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sounding(24), [1, 2, 3]);
+        assert_eq!(sounding(25), [0, 2, 3]);
         assert_eq!(ir.groups[3].start[0].test, ir::StartTest::Random);
         assert_eq!(
             ir.articulations[0].source,
