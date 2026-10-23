@@ -489,6 +489,10 @@ impl Pcm {
         if !self.0.full || self.0.resident_budget.get().is_none() { return Err(Error::InvalidInput); }
         self.0.residency_loader.set(ResidencyLoader::Resident(std::sync::Arc::new(loader))).map_err(|_|Error::InvalidInput)
     }
+    /// A reload recipe exists, so the purged frames can be dropped and later restored.
+    pub(crate) fn can_reload(&self) -> bool {
+        self.0.residency_loader.get().is_some()
+    }
     pub(crate) fn residency_acquire(&self) {
         self.0
             .residency_managed
@@ -1157,6 +1161,8 @@ crate) source_zone_catalog: Option<zone_routing::SourceZoneCatalog>,
     pub(super) sample_targets: Box<[SampleTarget]>,
     pub(super) sample_limits: Option<SampleRevisionLimits>,
     pub(super) group_mutes: Box<[AtomicBool]>,
+    /// Kontakt-saved purge state per group; purged groups start non-resident.
+    pub(super) group_purged: Box<[bool]>,
     pub(super) residency: Option<super::residency::Residency>,
     pub(super) parameter_registry: super::PreparedParameterRegistry,
     pub(super) signal_trace: Option<crate::trace::TracePrepared>,
@@ -1519,6 +1525,7 @@ impl Prepared {
             source_zone_catalog: None,
             zone_routing: None,
             group_mutes: Box::new([]),
+            group_purged: Box::new([]),
             residency: None,
             initial_residency: Box::new([]),
             parameter_registry: Default::default(),

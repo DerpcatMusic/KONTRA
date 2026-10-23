@@ -2005,7 +2005,10 @@ impl Streamer {
         // Range-table borrows end before trying a new candidate or publishing.
         let prepare = |optional: Option<&StartTable>, lazy: bool, phase: &str|
             -> io::Result<(Vec<head_prepare::Prepared>, usize, Vec<&Pcm>, Arc<RestoreTable>)> {
-            let selected = select_attack_ranges(assets, &table, optional, &pinned_wavetables, lazy);
+            // A purged group's assets are not preloaded: they stay non-resident
+            // until a purge/load request acquires them (residency_permitted).
+            let selected: Vec<_> = select_attack_ranges(assets, &table, optional, &pinned_wavetables, lazy)
+                .into_iter().filter(|(pcm, _)| pcm.residency_permitted()).collect();
             let audit = std::env::var_os("KONTRA_AUDIT_LOAD").is_some();
             let started = audit.then(Instant::now);
             let result = (|| {

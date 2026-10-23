@@ -198,6 +198,10 @@ struct Completion {
     reload: bool,
     success: bool,
 }
+/// Purged, and every asset can be restored from its reload recipe.
+fn lazy_group(plan: &Prepared, group: usize, assets: &[Pcm]) -> bool {
+    plan.group_purged.get(group).copied().unwrap_or(false) && assets.iter().all(Pcm::can_reload)
+}
 impl Residency {
     pub fn new(plan: &Prepared) -> Result<Self, Error> {
         let mut groups: Vec<Vec<Pcm>> = vec![vec![]; plan.group_count as usize];
@@ -244,20 +248,42 @@ impl Residency {
                 });
             }
         }
-        for pcm in groups.iter().flatten().chain(&pinned) {
+        // A purged group with a reload recipe owns nothing until a request makes
+        // it resident: its assets stay unacquired (no preload, no cold restore),
+        // but are marked managed so the cold-start worker cannot restore them
+        // behind the purge. Without a recipe the frames are the only copy, so the
+        // group keeps its owner and the frames survive.
+        for (group, assets) in groups.iter().enumerate() {
+            let lazy = lazy_group(plan, group, assets);
+            for pcm in assets {
+                if lazy {
+                    pcm.residency_acquire();
+                    pcm.residency_release();
+                } else {
+                    pcm.residency_acquire();
+                }
+            }
+        }
+        for pcm in &pinned {
             pcm.residency_acquire();
         }
         let shared = Arc::new(Shared {
             groups: groups
                 .into_iter()
                 .zip(group_families)
-                .map(|(assets, families)| Group {
-                    assets: assets.into(),
-                    families: families.into(),
-                    loaded: AtomicBool::new(true),
-                    revision: AtomicU64::new(1),
-                    pending: AtomicUsize::new(0),
-                    last_requested_reload: AtomicBool::new(true),
+                .enumerate()
+                .map(|(group, (assets, families))| {
+                    let purged = plan.group_purged.get(group).copied().unwrap_or(false);
+                    let lazy = lazy_group(plan, group, &assets);
+                    Group {
+                        assets: assets.into(),
+                        families: families.into(),
+                        loaded: AtomicBool::new(!purged),
+                        // Low bit = reload owned; a lazy purged group owns nothing yet.
+                        revision: AtomicU64::new(u64::from(!lazy)),
+                        pending: AtomicUsize::new(0),
+                        last_requested_reload: AtomicBool::new(!lazy),
+                    }
                 })
                 .collect(),
             pinned: pinned.into(),
@@ -344,13 +370,6 @@ impl Residency {
             submitted: AtomicUsize::new(0),
             completed: AtomicUsize::new(0),
         })
-    }
-    /// Start a group non-resident (Kontakt saved it purged). Load/purge
-    /// requests flip the same flag later.
-    pub(crate) fn set_initially_purged(&self, group: u32) {
-        if let Some(g) = self.shared.groups.get(group as usize) {
-            g.loaded.store(false, std::sync::atomic::Ordering::Release);
-        }
     }
     pub fn allowed(&self, group: u32) -> bool {
         self.shared
@@ -787,6 +806,40 @@ mod logical_source_residency_tests {
         assert_eq!(retained.sample(2, 127), Some(2.));
         assert_eq!(family.resident_view().sample(2, 127), None);
     }
+    #[test]
+    fn purged_group_without_reload_recipe_keeps_its_frames() {
+        let data = vec![[0.25f32, -0.25]; 128];
+        let pcm = Pcm::new(48000, data.into_boxed_slice()).unwrap();
+        let mut plan = Prepared::new_sources(48000, vec![pcm.clone().into()], vec![region(0)], 1).unwrap();
+        plan.group_count = 1;
+        plan.region_groups = vec![Some(0)].into_boxed_slice();
+        plan.group_purged = vec![true].into_boxed_slice();
+        let owner = Residency::new(&plan).unwrap();
+        assert_eq!(pcm.residency_owners(), 1);
+        assert!(pcm.resident_frames().is_some());
+        drop(owner);
+        assert_eq!(pcm.residency_owners(), 0);
+    }
+
+    #[test]
+    fn purged_group_owns_nothing_until_requested() {
+        let data = vec![[0.5f32, -0.5]; 128];
+        let pcm = Pcm::new(48000, data.clone().into_boxed_slice()).unwrap();
+        pcm.set_residency_loader(move || Ok(vec![(0, data.clone().into_boxed_slice())])).unwrap();
+        let mut plan = Prepared::new_sources(48000, vec![pcm.clone().into()], vec![region(0)], 1).unwrap();
+        plan.group_count = 1;
+        plan.region_groups = vec![Some(0)].into_boxed_slice();
+        plan.group_purged = vec![true].into_boxed_slice();
+        let owner = Residency::new(&plan).unwrap();
+        assert!(!owner.allowed(0));
+        assert_eq!(pcm.residency_owners(), 0);
+        owner.request(0, true, 1, ScriptInstanceId(0)).unwrap();
+        assert!(finish(&owner).success);
+        assert!(owner.allowed(0));
+        assert_eq!(pcm.residency_owners(), 1);
+        assert!(pcm.resident_frames().is_some());
+    }
+
     fn family_owner(members: Vec<Option<u32>>, fail_middle: Arc<AtomicBool>)
         -> (Residency, crate::SourceStorageFamily, Vec<Pcm>) {
         let packs: Vec<_> = (1..=3).map(|n| {
