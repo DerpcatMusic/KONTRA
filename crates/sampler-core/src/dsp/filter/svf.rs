@@ -533,6 +533,8 @@ pub(crate) struct FilterContext<'a> {
     pub spaces: &'a mut [super::super::Space],
     /// A bus's stereo tunes, by `PreparedProcessor::StereoTune` index; empty elsewhere.
     pub stereo_tunes: &'a mut [super::super::stereo_tune::StereoTune],
+    /// A bus's mode-1 Replika stages, by `PreparedProcessor::TimeMod` stage index; empty elsewhere.
+    pub replikas: &'a mut [super::super::replika::Stage],
 }
 /// Which cache a voice's filter resolved to for this block.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -756,7 +758,7 @@ mod tests {
         let mut expected = actual;
         let mut state = [[0.; 2]; 2];
         let mut expected_state = state;
-        FilterContext { tempo: 120., bank: &mut bank, expression: None, spaces: &mut [], stereo_tunes: &mut [] }
+        FilterContext { tempo: 120., bank: &mut bank, expression: None, spaces: &mut [], stereo_tunes: &mut [], replikas: &mut [] }
             .process(handle, &mut state, &mut actual, BLOCK, &[], 0);
         let oracle = StateVariableFilter { mode: SvfMode::LowPass,
             cutoff_hz: Parameter::Constant(1050.), q: Parameter::Constant(1.4) }

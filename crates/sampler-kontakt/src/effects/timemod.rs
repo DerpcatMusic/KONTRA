@@ -406,9 +406,15 @@ fn unit_interval(values: &[f32]) -> bool {
 /// Replika Delay (v0x12). Wired to the sampler-core Replika core (`Native::Replika`, `dsp::replika`):
 /// TIME (setter 8, mode 3: 2000 ms x value), FEEDBACK (5, head 2 and 3 gain 1.2 x value), LOWCUT (2) and
 /// HIGHCUT (3) as the loop filters, SATURATION (29, the tap saturator amount), and the ducker: DUCKING_SENSE
-/// (17), DUCKING_AMOUNT (18), DUCKING_RELEASE (19; tie INFERRED, k-replika-binding.md). Every other control
-/// keeps its reset value and is reported with the reason it is not wired (docs/re/engine/k-replika-gaps.md).
+/// (17), DUCKING_AMOUNT (18), DUCKING_RELEASE (19; tie INFERRED, k-replika-binding.md) and the path (index 28,
+/// from TYPE; tie INFERRED). Every other control keeps its reset value and is reported with the reason it is not
+/// wired (docs/re/engine/k-replika-gaps.md).
 fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> {
+    // The engine range-checks TYPE to 0..4 ("Invalid Replika delay type!").
+    if !(0..=4).contains(&rep.ty) {
+        notes.push(("type".into(), rep.ty.to_string(), Reason::InvalidValue));
+        return None;
+    }
     for (name, v) in [
         ("time", rep.time),
         ("feedback", rep.feedback),
@@ -465,7 +471,18 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
     ] {
         notes.push(("parameters".into(), format!("{name} {on}"), reason));
     }
-    notes.push(("type".into(), rep.ty.to_string(), Reason::NotModeled));
+    // Index 28 path k = min(4, trunc(5 v)): TYPE (0..4) at the centre of its bin, so the path is TYPE. INFERRED: the
+    // binding doc also names TYPE as index 9 (k-replika-binding.md rows 9 and 28, unresolved). The stage keeps the
+    // mode-0 frame for every path until the mode-1 chain persists across blocks (k-replika-gaps.md piece 3c part 5b).
+    let path = (rep.ty as f32 + 0.5) / 5.;
+    notes.push((
+        "type".into(),
+        format!(
+            "{} (path 28, INFERRED; mode 1 not yet run by the stage)",
+            rep.ty
+        ),
+        Reason::UnknownLawOmitted,
+    ));
     let controls = ReplikaControls {
         time: rep.time,
         feedback: rep.feedback,
@@ -475,6 +492,7 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
         ducking_sense: rep.ducking_sense,
         ducking_amount: rep.ducking_amount,
         ducking_release: rep.ducking_release,
+        path,
         ..ReplikaControls::default()
     };
     let mut line = Line::single(DelayTime::Frames(1), 2000.);
@@ -935,6 +953,126 @@ mod tests {
         let mut notes = Vec::new();
         assert!(super::replika_config(&rep, 0.5, &mut notes).is_none());
         assert!(notes.iter().any(|n| n.1.starts_with("saturation") && n.2 == sampler_ir::Reason::InvalidValue));
+    }
+
+    /// TYPE (saved integer 0..4) sets the index-28 path to its own value: min(4, trunc(5 v)) recovers TYPE (INFERRED,
+    /// k-replika-binding.md). Outside 0..4 the engine rejects the type, so the unit is not read.
+    #[test]
+    fn replika_type_binds_the_index28_path() {
+        for ty in 0..=4i32 {
+            let mut public = replika_stream([0.25, 0., 0., 0., 0., 0., 0., 0., 0., 0.], [0.; 9]);
+            public[..4].copy_from_slice(&ty.to_le_bytes());
+            let mut r = super::super::Reader(&public);
+            let Some(super::Unit::Replika(rep)) = super::read_replika(0x12, &mut r) else { panic!("v0x12 must read") };
+            let mut notes = Vec::new();
+            let cfg = super::replika_config(&rep, 0.5, &mut notes).expect("maps");
+            let sampler_ir::fx::timemod::Native::Replika(c) = cfg.line.expect("delay line").native else { panic!("native") };
+            assert_eq!(c.path, (ty as f32 + 0.5) / 5., "TYPE {ty}");
+            assert_eq!((c.path * 5.) as i32, ty, "TYPE {ty} is path {ty}");
+        }
+        let mut public = replika_stream([0.25, 0., 0., 0., 0., 0., 0., 0., 0., 0.], [0.; 9]);
+        public[..4].copy_from_slice(&5i32.to_le_bytes());
+        let mut r = super::super::Reader(&public);
+        let Some(super::Unit::Replika(rep)) = super::read_replika(0x12, &mut r) else { panic!("v0x12 must read") };
+        let mut notes = Vec::new();
+        assert!(super::replika_config(&rep, 0.5, &mut notes).is_none());
+        assert!(notes.iter().any(|n| n.1 == "5" && n.2 == sampler_ir::Reason::InvalidValue), "{notes:?}");
+    }
+
+    const REPLIKA_MODE1_IMPULSE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/re/engine/vectors/replika-native-mode1-index28-v0p3.json"
+    ));
+    const REPLIKA_MODE1_NOISE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/re/engine/vectors/replika-native-mode1-index28-noise-v0p3.json"
+    ));
+    const REPLIKA_MODE0_DEFAULT: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/re/engine/vectors/replika-native-default.json"
+    ));
+    /// Block sizes of the production render (mixed, not the 32-frame quanta of the vectors); they sum to 4096.
+    const REPLIKA_BLOCKS: [usize; 5] = [512, 1000, 512, 1000, 1072];
+
+    /// The saved Replika unit (TYPE `ty`, TIME 0.02, HIGHCUT off, the other wired fields at zero) in the instrument insert
+    /// rack, rendered by the instrument's bus route (`instrument_buses`, sampler-core lower and Runtime). The input is the
+    /// stimulus as the sample, then silence. Returns the `REPLIKA_BLOCKS` render (4096 frames at 48 kHz).
+    fn replika_insert_render(ty: i32, input: &[[f32; 2]]) -> Vec<[f32; 2]> {
+        let mut public = replika_stream([0.02, 0., 0., 1., 0., 0., 0., 0., 0., 0.], [0.; 9]);
+        public[..4].copy_from_slice(&ty.to_le_bytes());
+        let slot = Slot { version: 0x12, ..slot(0x5a, public, 1.) };
+        let mut instrument = sampler_ir::Instrument::default();
+        instrument.assets.push(sampler_ir::Asset { residency: Default::default(), location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
+        instrument.groups.push(sampler_ir::Group::default());
+        let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
+        zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
+        zone.group = Some(sampler_ir::GroupRef(0));
+        zone.velocity = sampler_ir::VelocityResponse::None;
+        instrument.zones.push(zone);
+        let racks = vec![("instrument insert".to_string(), vec![slot])];
+        crate::effects::instrument_buses(&mut instrument, &racks, &[], false, &mut |_| Err("unused".into()));
+        let mut samples = input.to_vec();
+        samples.resize(8192, [0.; 2]);
+        let pcm = sampler_core::Pcm::new(48000, samples.into_boxed_slice()).unwrap();
+        let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, p| Ok(p)).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+        let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
+        let key = sampler_core::Input { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+        rt.trigger(key, 60, 1.0).unwrap();
+        let mut out = vec![[0f32; 2]; REPLIKA_BLOCKS.iter().sum()];
+        let mut at = 0;
+        for len in REPLIKA_BLOCKS {
+            rt.render(&mut out[at..at + len]).unwrap();
+            at += len;
+        }
+        out
+    }
+
+    /// The vector's stimulus (`stim`, L and R) as frames.
+    fn replika_stimulus(v: &serde_json::Value) -> Vec<[f32; 2]> {
+        let (l, r) = (floats(&v["stim"][0]), floats(&v["stim"][1]));
+        l.into_iter().zip(r).map(|(l, r)| [l, r]).collect()
+    }
+
+    /// Largest abs error of `got` against the vector's outL and outR (over the whole vector).
+    fn replika_error(got: &[[f32; 2]], v: &serde_json::Value) -> f32 {
+        let (want_l, want_r) = (floats(&v["outL"]), floats(&v["outR"]));
+        got.iter()
+            .zip(want_l.iter().zip(&want_r))
+            .map(|(g, (wl, wr))| (g[0] - wl).abs().max((g[1] - wr).abs()))
+            .fold(0f32, f32::max)
+    }
+
+    fn floats(v: &serde_json::Value) -> Vec<f32> {
+        v.as_array().expect("samples").iter().map(|x| x.as_f64().expect("sample") as f32).collect()
+    }
+
+    /// Production path of the mode-1 selector (saved TYPE 1, index 28 = 0.3 from `ReplikaControls::path`): the bus owns the
+    /// chain (`replika::Stage`), the start is the Rust builder, and the writes run every 32 frames of the stream while the
+    /// render is in mixed blocks. Impulse and noise vectors, 4096 frames at 48 kHz, tolerance 1e-5.
+    #[test]
+    fn replika_type1_bus_route_matches_native_mode1_vectors() {
+        for (name, json) in [("impulse", REPLIKA_MODE1_IMPULSE), ("noise", REPLIKA_MODE1_NOISE)] {
+            let v: serde_json::Value = serde_json::from_str(json).unwrap();
+            let err = replika_error(&replika_insert_render(1, &replika_stimulus(&v)), &v);
+            eprintln!("replika mode-1 production {name}: max abs error {err:.3e}");
+            assert!(err <= 1e-5, "{name}: max abs error {err:.3e}");
+        }
+    }
+
+    /// TYPE 0 keeps the mode-0 frame and matches the native default vector (no writes, the same controls). TYPE 2, 3 and 4
+    /// (path k = 2, 3, 4: not wired) run that same frame bit for bit.
+    #[test]
+    fn replika_other_types_keep_the_mode0_frame() {
+        let v: serde_json::Value = serde_json::from_str(REPLIKA_MODE0_DEFAULT).unwrap();
+        let stim = replika_stimulus(&v);
+        let type0 = replika_insert_render(0, &stim);
+        let err = replika_error(&type0, &v);
+        eprintln!("replika TYPE 0 production vs default vector: max abs error {err:.3e}");
+        assert!(err <= 1e-5, "TYPE 0: max abs error {err:.3e}");
+        for ty in [2, 3, 4] {
+            assert!(replika_insert_render(ty, &stim) == type0, "TYPE {ty} is not the mode-0 frame");
+        }
     }
 
     #[test]

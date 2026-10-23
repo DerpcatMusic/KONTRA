@@ -306,6 +306,8 @@ pub(super) enum PreparedProcessor {
         timemod: timemod::TimeMod,
         offset: usize,
         live: PreparedKnobs,
+        /// Index into the bus's mode-1 Replika stages (`FilterContext::replikas`), when the unit runs path 1.
+        stage: Option<usize>,
     },
     Dynamics(dynamics::Dynamics),
     LiveFormant { knobs: [control::PreparedParameter; 3], second: bool, rate: u32 },
@@ -411,7 +413,7 @@ impl PreparedProcessor {
             Self::Eq(x) => ProcessorRef::Eq(eq_family::EqRef::Scalar(x)),
             Self::ControlGain(x) => ProcessorRef::ControlGain(x),
             Self::ControlMatrix(x) => ProcessorRef::ControlMatrix(x),
-            Self::TimeMod { timemod, offset, live } => ProcessorRef::TimeMod { timemod, offset, live },
+            Self::TimeMod { timemod, offset, live, stage } => ProcessorRef::TimeMod { timemod, offset, live, stage },
             Self::Dynamics(x) => ProcessorRef::Dynamics(x),
             Self::LiveFormant { knobs, second, rate } => ProcessorRef::LiveFormant { knobs, second, rate },
             Self::LivePhaser { knobs, offset } => ProcessorRef::LivePhaser { knobs, offset },
@@ -462,7 +464,7 @@ pub(super) enum ProcessorRef<'a> {
     Gain(&'a f64), StereoMatrix(&'a [[f64; 2]; 2]), Biquad(&'a Biquad),
     Eq(eq_family::EqRef<'a>), ControlGain(&'a usize),
     ControlMatrix(&'a [control::PreparedParameter; 4]),
-    TimeMod { timemod: &'a timemod::TimeMod, offset: &'a usize, live: &'a PreparedKnobs },
+    TimeMod { timemod: &'a timemod::TimeMod, offset: &'a usize, live: &'a PreparedKnobs, stage: &'a Option<usize> },
     Dynamics(&'a dynamics::Dynamics),
     LiveFormant { knobs: &'a [control::PreparedParameter; 3], second: &'a bool, rate: &'a u32 },
     LivePhaser { knobs: &'a [control::PreparedParameter; 2], offset: &'a usize },
@@ -751,6 +753,7 @@ impl VoiceChain {
                 filters,
                 None,
                 None,
+                None,
             )?,
             post: compile_processors(
                 self.post,
@@ -758,6 +761,7 @@ impl VoiceChain {
                 bindings,
                 &mut delay_frames,
                 filters,
+                None,
                 None,
                 None,
             )?,
@@ -779,13 +783,22 @@ fn prepare_timemod(
     live: Option<LiveKnobs>,
     bindings: &mut Vec<ControlRange>,
     delay_frames: &mut usize,
+    replikas: Option<&mut Vec<sampler_ir::fx::timemod::ReplikaControls>>,
 ) -> Result<PreparedProcessor, Error> {
     let offset = *delay_frames;
     *delay_frames = offset.checked_add(timemod.frames()).ok_or(Error::Capacity)?;
+    // Only a bus owns a mode-1 stage. A live unit (script lanes re-derive its core every block) keeps the mode-0 frame.
+    let stage = match (replikas, live.is_none()) {
+        (Some(list), true) => timemod.stage_controls().map(|controls| {
+            list.push(controls);
+            list.len() - 1
+        }),
+        _ => None,
+    };
     let live = live.map_or([None; LIVE_KNOBS], |knobs| {
         knobs.map(|k| k.map(|(role, parameter)| (role, parameter.compile(bindings))))
     });
-    Ok(PreparedProcessor::TimeMod { timemod, offset, live })
+    Ok(PreparedProcessor::TimeMod { timemod, offset, live, stage })
 }
 
 pub(super) fn compile_processors(
@@ -796,6 +809,7 @@ pub(super) fn compile_processors(
     filters: &mut svf::FilterRegistryBuilder,
     mut spaces: Option<&mut Vec<sampler_ir::fx::space::Config>>,
     mut tunes: Option<&mut Vec<sampler_ir::fx::stereo_tune::Config>>,
+    mut replikas: Option<&mut Vec<sampler_ir::fx::timemod::ReplikaControls>>,
 ) -> Result<Box<[PreparedProcessor]>, Error> {
     if stages.iter().any(|stage| !stage.valid()) {
         return Err(Error::InvalidInput);
@@ -810,16 +824,16 @@ pub(super) fn compile_processors(
                     PreparedProcessor::StateVariable(index)
                 }
                 Processor::Delay(delay) => prepare_timemod(
-                    timemod::TimeMod::compile(delay.config(), rate)?, None, bindings, delay_frames,
+                    timemod::TimeMod::compile(delay.config(), rate)?, None, bindings, delay_frames, None,
                 )?,
                 Processor::TimeMod(config) => prepare_timemod(
-                    timemod::TimeMod::compile(config, rate)?, None, bindings, delay_frames,
+                    timemod::TimeMod::compile(config, rate)?, None, bindings, delay_frames, replikas.as_deref_mut(),
                 )?,
                 Processor::LiveTimeMod(config, knobs) => prepare_timemod(
-                    timemod::TimeMod::compile(config, rate)?, Some(knobs), bindings, delay_frames,
+                    timemod::TimeMod::compile(config, rate)?, Some(knobs), bindings, delay_frames, replikas.as_deref_mut(),
                 )?,
                 Processor::Phaser(knobs) => prepare_timemod(
-                    timemod::TimeMod::phaser_filter(knobs)?, None, bindings, delay_frames,
+                    timemod::TimeMod::phaser_filter(knobs)?, None, bindings, delay_frames, None,
                 )?,
                 Processor::RingMod(config) => {
                     let offset = *delay_frames;
@@ -1559,7 +1573,7 @@ pub(super) fn process<'a, const TRACE: bool>(
                     }
                 }
             }
-            ProcessorRef::TimeMod { timemod, offset, live } => {
+            ProcessorRef::TimeMod { timemod, offset, live, stage } => {
                 // Event-rate lanes: the unit re-derives from its stored knobs; the ring persists.
                 let retuned;
                 let timemod = if live[0].is_some() {
@@ -1572,12 +1586,15 @@ pub(super) fn process<'a, const TRACE: bool>(
                 } else {
                     timemod
                 };
+                let tempo = filters.tempo;
+                let stage = (*stage).and_then(|index| filters.replikas.get_mut(index));
                 fault |= timemod.process(
                     state,
                     &mut delay_samples[*offset..*offset + timemod.frames()],
                     block,
                     len,
-                    filters.tempo,
+                    tempo,
+                    stage,
                 );
             }
             ProcessorRef::Dynamics(dynamics) => dynamics.process(
@@ -2251,7 +2268,7 @@ mod tests {
                         &mut svf::FilterContext {
                             tempo: 120.0,
                             bank: &mut filters,
-                            spaces: &mut [], stereo_tunes: &mut [],
+                            spaces: &mut [], stereo_tunes: &mut [], replikas: &mut [],
                             expression: None,
                         },
                     );
@@ -2331,7 +2348,7 @@ mod tests {
                                     &mut svf::FilterContext {
                                         tempo: 120.0,
                                         bank: &mut filters,
-                                        spaces: &mut [], stereo_tunes: &mut [],
+                                        spaces: &mut [], stereo_tunes: &mut [], replikas: &mut [],
                                         expression: None,
                                     },
                                 );
@@ -2679,6 +2696,7 @@ mod live_phaser_processor_tests {
                 &mut svf::FilterRegistryBuilder::default(),
                 None,
                 None,
+                None,
             )
             .unwrap();
             assert_eq!(bindings.len(), 2, "{name}: lanes are cutoff then resonance");
@@ -2703,7 +2721,7 @@ mod live_phaser_processor_tests {
                 let mut context = svf::FilterContext {
                     tempo: 120.0,
                     bank: &mut filters,
-                    spaces: &mut [], stereo_tunes: &mut [],
+                    spaces: &mut [], stereo_tunes: &mut [], replikas: &mut [],
                     expression: None,
                 };
                 assert!(!super::process::<false>(
