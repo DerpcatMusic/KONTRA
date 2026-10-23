@@ -9,7 +9,7 @@
 
 use super::Compiler;
 use crate::builtins::{self as b, Builtin};
-use crate::eval::{declared_range, real_to_int};
+use crate::eval::{GRID_X, GRID_Y, declared_range, real_to_int};
 use crate::hir::{Arg, Hir, Ty, VarId, WidgetKind};
 use mlua::{Lua, Table, Value};
 use std::{
@@ -106,6 +106,37 @@ impl State {
         };
     }
 
+    /// `add_text_line`: the new line goes after a non-empty text (interpreter `AddTextLine`).
+    pub fn add_text_line(&mut self, id: i32, par: i32, line: String) {
+        let text = match self.text.get(&(id, par)) {
+            Some(old) if !old.is_empty() => format!("{old}\n{line}"),
+            _ => line,
+        };
+        self.text.insert((id, par), text);
+    }
+
+    /// `move_control`: grid position as two integer properties.
+    pub fn move_control(&mut self, meta: &[UiMeta], id: i32, x: i32, y: i32) {
+        self.set(meta, id, GRID_X, Prop::Int(x));
+        self.set(meta, id, GRID_Y, Prop::Int(y));
+    }
+
+    /// `move_control_px` (interpreter `MoveControlPx`). Kontakt sets or clears only the
+    /// whole-control hide bit; a negative position sets it and leaves the placement alone.
+    pub fn move_px(&mut self, id: i32, x: i32, y: i32) {
+        let hide = self.properties.get(&(id, b::CONTROL_PAR_HIDE)).copied().unwrap_or(0);
+        match crate::ui::px_move(x, y) {
+            Some((x, y)) => {
+                self.properties.insert((id, b::CONTROL_PAR_HIDE), hide & !b::HIDE_WHOLE_CONTROL);
+                self.properties.insert((id, b::CONTROL_PAR_POS_X), x);
+                self.properties.insert((id, b::CONTROL_PAR_POS_Y), y);
+            }
+            None => {
+                self.properties.insert((id, b::CONTROL_PAR_HIDE), hide | b::HIDE_WHOLE_CONTROL);
+            }
+        }
+    }
+
     /// `set_property`.
     pub fn set(&mut self, meta: &[UiMeta], id: i32, par: i32, value: Prop) {
         if par == b::CONTROL_PAR_VALUE
@@ -195,6 +226,36 @@ pub fn install(lua: &Lua, host: &Table, state: &Rc<RefCell<State>>, meta: &Rc<[U
         "set_par",
         lua.create_function(move |_, (id, par, value): (i64, i64, Value)| {
             s.borrow_mut().set(&m, id as i32, par as i32, prop_of(value)?);
+            Ok(())
+        })
+        .map_err(err)?,
+    )
+    .map_err(err)?;
+    let s = Rc::clone(state);
+    host.set(
+        "add_text_line",
+        lua.create_function(move |_, (id, par, line): (i64, i64, String)| {
+            s.borrow_mut().add_text_line(id as i32, par as i32, line);
+            Ok(())
+        })
+        .map_err(err)?,
+    )
+    .map_err(err)?;
+    let (s, m) = (Rc::clone(state), Rc::clone(meta));
+    host.set(
+        "move_control",
+        lua.create_function(move |_, (id, x, y): (i64, i64, i64)| {
+            s.borrow_mut().move_control(&m, id as i32, x as i32, y as i32);
+            Ok(())
+        })
+        .map_err(err)?,
+    )
+    .map_err(err)?;
+    let s = Rc::clone(state);
+    host.set(
+        "move_px",
+        lua.create_function(move |_, (id, x, y): (i64, i64, i64)| {
+            s.borrow_mut().move_px(id as i32, x as i32, y as i32);
             Ok(())
         })
         .map_err(err)?,

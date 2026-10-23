@@ -419,3 +419,34 @@ fn pgs_keys_and_script_title_match_the_interpreter() {
         end on",
     );
 }
+
+#[test]
+fn ui_record_builtins_match_the_interpreter() {
+    assert_init_equivalent(
+        "on init
+        declare ui_knob $k (0, 10)
+        declare ui_slider $s (0, 100)
+        declare $n := 0
+        set_text($k, \"text\")
+        set_knob_label($k, \"label\")
+        set_control_help($k, \"help\")
+        add_text_line($k, \"one\")
+        add_text_line($k, \"two\")
+        set_knob_unit($k, 3)
+        set_knob_defval($s, 40)
+        hide_part($s, 1)
+        move_control($k, 10, 20)
+        move_control_px($k, 500, 300)
+        move_control_px($s, -1, 5)
+        set_ui_height_px(300)
+        set_ui_width_px(400)
+        set_ui_height(4)
+        set_skin_offset(2)
+        make_perfview
+        message(\"hi\")
+        message(\"there\")
+        expose_controls
+        $n := 1
+        end on",
+    );
+}
