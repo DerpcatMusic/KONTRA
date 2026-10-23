@@ -1006,15 +1006,24 @@ fn group_engine_write(writes: &[sampler_ksp::EnginePar], parameter: &str, group:
 }
 
 /// Zone velocity response for a velocity-driven plain volume route, or `None` when the route stays on
-/// the generic modulation path. Full intensity is gain x velocity. Kontakt's default intensity
-/// (50 of 127, the Beat Machine route, oracle session B) follows `VolumeTable`. Other intensities
-/// are not measured and keep the generic path.
+/// the generic modulation path (intensity 0: no effect). Full intensity is gain x velocity. Kontakt's
+/// default intensity (50 of 127, the Beat Machine route, oracle session B) follows `VolumeTable`.
+/// Other intensities use the two-parameter law `(1 - depth) + depth * v^exponent` (`ir::Depth`):
+/// depth = min(1, 2 * intensity) and exponent interpolated from the default point to 1 at full
+/// intensity. At the default intensity (depth 0.787, exponent 1.285) the law is within 0.34 dB rms of
+/// the measured table; the intensity dependence is a hypothesis until a multi-intensity oracle capture
+/// confirms it.
 fn velocity_volume_law(intensity: f64) -> Option<ir::VelocityResponse> {
     const DEFAULT_INTENSITY: f64 = 50.0 / 127.0;
+    const DEFAULT_EXPONENT: f64 = 1.285;
     if intensity == 1.0 {
         Some(ir::VelocityResponse::Linear)
     } else if (intensity - DEFAULT_INTENSITY).abs() < 1e-6 {
         Some(ir::VelocityResponse::VolumeTable)
+    } else if intensity > 0.0 && intensity < 1.0 {
+        let exponent = (1.0 + (DEFAULT_EXPONENT - 1.0) * (1.0 - intensity) / (1.0 - DEFAULT_INTENSITY))
+            .clamp(1.0, 2.5);
+        Some(ir::VelocityResponse::Depth { depth: (2.0 * intensity).min(1.0), exponent })
     } else {
         None
     }
@@ -7406,7 +7415,21 @@ mod velocity_volume_law_tests {
             velocity_volume_law(f64::from(0.393_700_99_f32)),
             Some(ir::VelocityResponse::VolumeTable)
         );
-        assert_eq!(velocity_volume_law(0.5), None);
         assert_eq!(velocity_volume_law(0.0), None);
+    }
+
+    #[test]
+    fn other_intensities_use_the_depth_law() {
+        // Full depth at half intensity, exponent between the default point and linear.
+        let Some(ir::VelocityResponse::Depth { depth, exponent }) = velocity_volume_law(0.5) else {
+            panic!("0.5 must use the depth law")
+        };
+        assert_eq!(depth, 1.0);
+        assert!(exponent > 1.0 && exponent < 1.285);
+        // Depth scales with intensity below half.
+        let Some(ir::VelocityResponse::Depth { depth, exponent }) = velocity_volume_law(0.3) else {
+            panic!("0.3 must use the depth law")
+        };
+        assert!((depth - 0.6).abs() < 1e-9 && exponent > 1.285);
     }
 }

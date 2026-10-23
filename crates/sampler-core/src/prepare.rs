@@ -774,6 +774,8 @@ pub enum VelocityCurve {
     Power(f64),
     /// Kontakt's velocity-to-volume response at the default route intensity; see `VOLUME_TABLE_DB`.
     VolumeTable,
+    /// `(1 - depth) + depth * v^exponent` for normalized velocity `v`; see `ir::VelocityResponse::Depth`.
+    Depth { depth: f64, exponent: f64 },
 }
 
 impl PreparedRegion {
@@ -796,6 +798,10 @@ impl VelocityCurve {
             Self::Linear => velocity as f32,
             Self::Power(exponent) => velocity.powf(exponent) as f32,
             Self::VolumeTable => volume_table_amplitude(velocity),
+            Self::Depth { depth, exponent } => {
+                let v = velocity.clamp(0.0, 1.0);
+                if v <= 0.0 { 0.0 } else { ((1.0 - depth) + depth * v.powf(exponent)) as f32 }
+            }
         }
     }
 }
@@ -1332,6 +1338,7 @@ impl Prepared {
         if curves.len() != self.regions.len()
             || curves.iter().any(|curve| {
                 matches!(curve, VelocityCurve::Power(exponent) if !exponent.is_finite() || *exponent <= 0.0)
+                    || matches!(curve, VelocityCurve::Depth { depth, exponent } if !depth.is_finite() || !(0.0..=1.0).contains(depth) || !exponent.is_finite() || *exponent <= 0.0)
             })
         {
             return Err(Error::InvalidInput);
@@ -2911,6 +2918,8 @@ impl Prepared {
                     VelocityCurve::Power(p) => p,
                     // Not an exponent: the table law (see VOLUME_TABLE_DB).
                     VelocityCurve::VolumeTable => -1.,
+                    // Two-parameter law: the trace shows the exponent, the depth is in the curve.
+                    VelocityCurve::Depth { exponent, .. } => exponent,
                 },
             )))
             .chain(
@@ -3222,6 +3231,20 @@ mod volume_table_tests {
             let rel = 20.0 * (at(v) / at(127.0)).log10();
             assert!((rel - oracle_db).abs() < 0.15, "velocity {v}: {rel:.2} dB, oracle {oracle_db}");
         }
+    }
+
+    #[test]
+    fn depth_law_is_silent_at_zero_unity_at_full_and_monotonic() {
+        let law = VelocityCurve::Depth { depth: 0.787, exponent: 1.285 };
+        let at = |v: f64| law.amplitude(v / 127.0);
+        assert_eq!(at(0.0), 0.0);
+        assert!((at(127.0) - 1.0).abs() < 1e-6);
+        for v in 1..=127 {
+            assert!(at(f64::from(v)) >= at(f64::from(v) - 1.0), "dips at velocity {v}");
+        }
+        // Zero depth is no velocity effect; full depth with exponent 1 is linear.
+        assert!((VelocityCurve::Depth { depth: 0.0, exponent: 2.0 }.amplitude(0.3) - 1.0).abs() < 1e-6);
+        assert!((VelocityCurve::Depth { depth: 1.0, exponent: 1.0 }.amplitude(0.3) - 0.3).abs() < 1e-6);
     }
 
     #[test]
