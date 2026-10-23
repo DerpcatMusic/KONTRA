@@ -373,6 +373,15 @@ bit-exact extraction. Scheduler algorithm changes need their own native/quality 
 outside the linear response gate. Delete only replaced machine loops/grain read helpers.
 Estimate: 100–300 LOC; CPU ~0% until benchmarked; protect plain sampler fast paths entirely.
 
+**Status: no admissible change (2026-10-24).** Audit with file:line evidence:
+- `dsp/machine.rs:54` `round_step` (ties-to-even, MP60 and S1200) is already shared inside `machine.rs`.
+- `dsp/machine.rs:397` `lagrange4` and `dsp/timemod/mod.rs:77` `lagrange` are different Lagrange forms (operation order and
+  precision differ), so they are not interchangeable without bit changes.
+- `color/lofi.rs:93` truncates and `lofi.rs:103` floors, both different from ties-to-even `round_step`; the three quantisers are distinct laws.
+- `source/tone_machine.rs:50` `window` (cubic in-out) is used only by the tone machine; `source/time_machine.rs` and `beat_slices.rs`
+  have their own scheduler code (the ticket keeps scheduler sub-models separate).
+Nothing was deleted; the plain sampler fast paths are untouched.
+
 ### 12. Neutralize bindings and retire compatibility names (after consumers migrate)
 
 Files: `I/fx/{mod,eq,filter,dynamics,color,timemod,space,ringmod,stereo_tune}.rs`,
