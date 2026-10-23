@@ -206,8 +206,8 @@ fn iterator_preserves_work_budget_faults_and_restores_callback_allowance() {
     };
     let reference = host_config(script, config);
     let candidate = host_config(script, config);
-    reference.shared.remaining_work.set(7);
-    candidate.shared.remaining_work.set(7);
+    reference.shared.budget.remaining.set(7);
+    candidate.shared.budget.remaining.set(7);
     assert_eq!(
         candidate.interface_classified::<2>(),
         reference.interface_classified::<0>()
@@ -220,11 +220,11 @@ fn iterator_preserves_work_budget_faults_and_restores_callback_allowance() {
             .any(|row| row.value.contains("budget"))
     );
     assert_eq!(
-        candidate.shared.vm_checkpoints.get(),
-        reference.shared.vm_checkpoints.get()
+        candidate.shared.budget.checkpoints.get(),
+        reference.shared.budget.checkpoints.get()
     );
-    assert_eq!(candidate.shared.remaining_work.get(), 7);
-    assert_eq!(reference.shared.remaining_work.get(), 7);
+    assert_eq!(candidate.shared.budget.remaining.get(), 7);
+    assert_eq!(reference.shared.budget.remaining.get(), 7);
 }
 
 #[test]
@@ -282,8 +282,8 @@ fn raw_iterator_reentry_and_in_place_mutation_preserve_sequence_and_model() {
         reference.global_text("meta_calls")
     );
     assert_eq!(
-        candidate.shared.vm_checkpoints.get(),
-        reference.shared.vm_checkpoints.get()
+        candidate.shared.budget.checkpoints.get(),
+        reference.shared.budget.checkpoints.get()
     );
     assert_eq!(candidate.interface(), reference.interface_classified::<0>());
     assert_eq!(candidate.findings(), reference.findings());
@@ -463,8 +463,8 @@ fn projection_fallback_keeps_nested_reads_and_budget_fault_order() {
     };
     let reference = host_config(script, config);
     let candidate = host_config(script, config);
-    reference.shared.remaining_work.set(7);
-    candidate.shared.remaining_work.set(7);
+    reference.shared.budget.remaining.set(7);
+    candidate.shared.budget.remaining.set(7);
     assert_eq!(
         candidate.interface_classified::<3>(),
         reference.interface_classified::<2>()
@@ -477,11 +477,11 @@ fn projection_fallback_keeps_nested_reads_and_budget_fault_order() {
             .any(|row| row.value.contains("budget"))
     );
     assert_eq!(
-        candidate.shared.vm_checkpoints.get(),
-        reference.shared.vm_checkpoints.get()
+        candidate.shared.budget.checkpoints.get(),
+        reference.shared.budget.checkpoints.get()
     );
-    assert_eq!(candidate.shared.remaining_work.get(), 7);
-    assert_eq!(reference.shared.remaining_work.get(), 7);
+    assert_eq!(candidate.shared.budget.remaining.get(), 7);
+    assert_eq!(reference.shared.budget.remaining.get(), 7);
 }
 
 #[cfg(feature = "scan")]

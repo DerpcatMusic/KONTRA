@@ -275,8 +275,8 @@ mod tests {
             .load("local definitions=Program.inserts[1].parameterDefinitions")
             .exec()
             .unwrap_err();
-        assert!(host.shared.work_exhausted.get(), "{error}");
-        assert_eq!(host.shared.remaining_work.get(), 0);
+        assert!(host.shared.budget.exhausted.get(), "{error}");
+        assert_eq!(host.shared.budget.remaining.get(), 0);
         host.shared.arm(std::time::Duration::from_secs(20), 10_000);
         host.lua
             .load(
@@ -291,7 +291,7 @@ mod tests {
             )
             .exec()
             .unwrap();
-        assert!(!host.shared.work_exhausted.get());
-        assert!(host.shared.remaining_work.get() < 10_000);
+        assert!(!host.shared.budget.exhausted.get());
+        assert!(host.shared.budget.remaining.get() < 10_000);
     }
 }
