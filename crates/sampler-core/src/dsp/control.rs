@@ -305,6 +305,13 @@ pub(crate) fn initial_parameter(plan: &Prepared, binding: &ControlRange) -> Cont
     ControlRamp { from: target, target, start: 0, frames: 0, modulation: None,owner_projection:None }
 }
 
+/// Return `mirror` to `base` at exactly the lanes a projection recorded in `dirty`.
+pub(crate) fn restore_lanes(mirror: &mut [ControlRamp], base: &[ControlRamp], dirty: &mut Vec<usize>) {
+    for lane in dirty.drain(..) {
+        mirror[lane] = base[lane];
+    }
+}
+
 impl super::DspState {
     pub(crate) fn edit_control(
         &mut self,
@@ -321,6 +328,9 @@ impl super::DspState {
             value,
             at,
         );
+        // Control-side edits are rare; the projection mirror resyncs to the new base.
+        self.owner_parameters.copy_from_slice(&self.parameters);
+        self.owner_parameter_dirty.clear();
         edit_parameters(
             &mut self.buses.parameters,
             &plan.buses.parameters,
@@ -352,6 +362,18 @@ fn edit_parameters(
 #[cfg(test)]
 mod projection_tests {
     use super::*;
+
+    #[test]
+    fn owner_projection_restore_returns_only_recorded_lanes_to_base() {
+        let base = [ControlRamp::test_ramp(1., 1., 0, 0), ControlRamp::test_ramp(2., 2., 0, 0), ControlRamp::test_ramp(3., 3., 0, 0)];
+        let mut mirror = base;
+        mirror[0] = ControlRamp::test_ramp(9., 9., 0, 0);
+        mirror[2] = ControlRamp::test_ramp(8., 8., 0, 0);
+        let mut dirty = vec![0, 2];
+        restore_lanes(&mut mirror, &base, &mut dirty);
+        assert!(dirty.is_empty());
+        assert_eq!([mirror[0].from, mirror[1].from, mirror[2].from], [1., 2., 3.]);
+    }
 
     #[test]
     fn typed_projection_retains_full_width_extreme_equal_and_signed_zero_laws() {
