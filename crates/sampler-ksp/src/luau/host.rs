@@ -5,6 +5,7 @@
 //! caller splits its render blocks.
 
 use super::{Compiled, controls};
+use crate::builtins::FIRST_UI_ID;
 use mlua::{Function, Lua, MultiValue, Table, Thread, Value, VmState};
 use sampler_script::{Budget, new_vm};
 use std::{cell::RefCell, collections::{BTreeMap, HashMap}, rc::Rc};
@@ -13,6 +14,8 @@ use std::{cell::RefCell, collections::{BTreeMap, HashMap}, rc::Rc};
 const CALLBACK_CHECKPOINTS: u64 = 1_000_000;
 /// Luau memory cap for one instrument VM.
 const MEMORY: usize = 64 << 20;
+/// Note id of UI callbacks: they have no note, but `NV` still needs a table.
+const NO_NOTE: u32 = u32::MAX;
 
 struct Job {
     thread: Thread,
@@ -40,6 +43,7 @@ pub struct Host {
     queue: BTreeMap<(u64, u64), Job>,
     engine: Rc<RefCell<BTreeMap<[i64; 4], i64>>>,
     controls: Rc<RefCell<controls::State>>,
+    ui_meta: Rc<[controls::UiMeta]>,
     budget: Rc<Budget>,
 }
 
@@ -106,6 +110,7 @@ impl Host {
             queue: BTreeMap::new(),
             engine,
             controls: ui_state,
+            ui_meta,
             budget,
         })
     }
@@ -121,6 +126,23 @@ impl Host {
         let Some(init) = init else { return Ok(()) };
         self.budget.refill(CALLBACK_CHECKPOINTS, None);
         init.call::<()>(()).map_err(|e| e.to_string())
+    }
+
+    /// The user changed UI control `ui` to `value`. The control takes the value (clamped), then
+    /// the dispatcher starts `on ui_controls` (with `$UI_ID`), the control's `on ui_control`, and
+    /// `on ui_update`, each up to its first wait, as the runtime does.
+    pub fn ui_change(&mut self, ui: usize, value: i32) -> Result<(), String> {
+        self.controls.borrow_mut().write_control(&self.ui_meta, ui, value);
+        let local = format!("ui_{ui}");
+        let id = FIRST_UI_ID + ui as i32;
+        self.start("ui_controls", NO_NOTE, vec![Value::Integer(i64::from(id))])?;
+        self.start(&local, NO_NOTE, Vec::new())?;
+        self.start("ui_update", NO_NOTE, Vec::new())
+    }
+
+    /// Whether a resumption is queued (a callback is waiting on a clock).
+    pub fn pending(&self) -> bool {
+        !self.queue.is_empty()
     }
 
     /// A note started at the current frame: `on note` with the key and velocity.

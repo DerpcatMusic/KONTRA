@@ -19,6 +19,8 @@ fn main() {
     let mut mismatches = Vec::new();
     let mut single_blockers: BTreeMap<String, usize> = BTreeMap::new();
     let mut blocker_counts: BTreeMap<usize, usize> = BTreeMap::new();
+    // LUAU_CENSUS_BLOCKERS=<file>: one line per outside script, `name<TAB>construct,...`.
+    let mut dump = std::env::var_os("LUAU_CENSUS_BLOCKERS").map(|p| std::fs::File::create(p).unwrap());
     for path in &paths {
         let source = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
         let lowered = match lower(&source) {
@@ -37,6 +39,11 @@ fn main() {
             outside += 1;
             // Scripts blocked by exactly one construct name: what the next widening unlocks.
             *blocker_counts.entry(lowered.compiled.unsupported.len()).or_default() += 1;
+            if let Some(f) = dump.as_mut() {
+                use std::io::Write;
+                let names: Vec<&str> = lowered.compiled.unsupported.keys().map(String::as_str).collect();
+                writeln!(f, "{}\t{}", path.file_name().unwrap().to_string_lossy(), names.join(",")).unwrap();
+            }
             if lowered.compiled.unsupported.len() == 1 {
                 let name = lowered.compiled.unsupported.keys().next().cloned().unwrap_or_default();
                 *single_blockers.entry(name).or_default() += 1;

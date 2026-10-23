@@ -6,7 +6,7 @@
 //! conversion are done by the prelude below. Constructs outside the subset are
 //! not emitted: they are counted by name in [`Compiled::unsupported`].
 
-use crate::builtins::{Builtin, SysVar};
+use crate::builtins::{self as b, Builtin, SysVar};
 use crate::hir::{Arg, Arith, CallbackKind, Case, Const, Expr, ExprKind, Hir, Home, Logic, Place, Stmt, StmtKind, Ty, VarId};
 use sampler_core::Comparison;
 use std::collections::BTreeMap;
@@ -73,6 +73,8 @@ pub struct Lowered {
     pub cell_types: Vec<Ty>,
     /// Interpreter `on init` result (`eval::run`), the oracle for `Host::init`.
     pub init: crate::eval::Initial,
+    /// The resolved program, to run UI changes on the interpreter (`check_ui`).
+    pub hir: Hir,
 }
 
 /// Front end for both paths: parse, resolve, run the interpreter's `on init`, and compile the Luau chunk.
@@ -92,13 +94,15 @@ pub fn lower(source: &str) -> Result<Lowered, String> {
             _ => {}
         }
     }
+    let compiled = compile(&hir);
     Ok(Lowered {
-        compiled: compile(&hir),
+        compiled,
         cells: hir.cells,
         texts: hir.texts,
         note_cells: hir.note_cells,
         cell_types,
         init,
+        hir,
     })
 }
 
@@ -106,37 +110,60 @@ pub fn lower(source: &str) -> Result<Lowered, String> {
 /// (reals bit for bit), every text cell, and every `set_engine_par` write.
 /// Returns the number of cells compared.
 pub fn check_init(lowered: &Lowered) -> Result<usize, String> {
+    let mut host = new_host(lowered)?;
+    host.init()?;
+    compare(&host, lowered, &lowered.init)
+}
+
+/// Run `on init`, then the user change of UI control `ui` to `value` on the Luau path, and
+/// compare with the interpreter's `run_ui_change`. A UI callback that waits is refused:
+/// the interpreter runs waits as no-ops, so only synchronous dispatches are comparable.
+pub fn check_ui(lowered: &Lowered, ui: usize, value: i32) -> Result<usize, String> {
+    let mut host = new_host(lowered)?;
+    host.init()?;
+    host.ui_change(ui, value)?;
+    if host.pending() {
+        return Err("a UI callback waits; the interpreter runs waits as no-ops".into());
+    }
+    let expected = crate::eval::run_ui_change(&lowered.hir, &crate::Environment::default(), ui, value)
+        .map_err(|e| format!("interpreter: {e:?}"))?;
+    compare(&host, lowered, &expected)
+}
+
+fn new_host(lowered: &Lowered) -> Result<host::Host, String> {
     if !lowered.compiled.is_complete() {
         return Err(format!("outside the subset: {:?}", lowered.compiled.unsupported));
     }
-    let mut host = host::Host::new(&lowered.compiled, lowered.cells, lowered.texts, lowered.note_cells, 48_000)?;
-    host.init()?;
+    host::Host::new(&lowered.compiled, lowered.cells, lowered.texts, lowered.note_cells, 48_000)
+}
+
+/// Every cell, text, control, property and engine write of `host` against the interpreter's `expected`.
+fn compare(host: &host::Host, lowered: &Lowered, expected: &crate::eval::Initial) -> Result<usize, String> {
     let luau = host.cells(lowered.cells);
-    for (i, (ty, bits)) in lowered.cell_types.iter().zip(&lowered.init.cells).enumerate() {
-        let expected = match ty {
+    for (i, (ty, bits)) in lowered.cell_types.iter().zip(&expected.cells).enumerate() {
+        let want = match ty {
             Ty::Real => f64::from_bits(*bits as u64),
             _ => f64::from(*bits as i32),
         };
         let got = luau[i];
-        let same = if expected.is_nan() { got.is_nan() } else { got == expected };
+        let same = if want.is_nan() { got.is_nan() } else { got == want };
         if !same {
-            return Err(format!("cell {i} ({ty:?}): interpreter {expected:?}, luau {got:?}"));
+            return Err(format!("cell {i} ({ty:?}): interpreter {want:?}, luau {got:?}"));
         }
     }
-    if host.texts(lowered.texts) != lowered.init.texts {
+    if host.texts(lowered.texts) != expected.texts {
         return Err("text cells differ".into());
     }
-    if host.controls() != lowered.init.controls {
-        return Err(format!("controls differ: interpreter {:?}, luau {:?}", lowered.init.controls, host.controls()));
+    if host.controls() != expected.controls {
+        return Err(format!("controls differ: interpreter {:?}, luau {:?}", expected.controls, host.controls()));
     }
-    if host.properties() != lowered.init.properties {
+    if host.properties() != expected.properties {
         return Err("control properties differ".into());
     }
-    if host.text_properties() != lowered.init.text_properties {
+    if host.text_properties() != expected.text_properties {
         return Err("control text properties differ".into());
     }
-    let engine: std::collections::BTreeMap<[i64; 4], i64> = lowered
-        .init
+    let engine: std::collections::BTreeMap<[i64; 4], i64> = expected
         .engine
         .iter()
         .map(|(k, v)| ([i64::from(k[0]), i64::from(k[1]), i64::from(k[2]), i64::from(k[3])], i64::from(*v)))
@@ -167,9 +194,10 @@ impl Compiled {
 /// Compile every callback and function of `hir`. Never fails: unsupported sites
 /// are emitted as no-ops and counted, so the caller decides what to run.
 pub fn compile(hir: &Hir) -> Compiled {
-    let mut c = Compiler { hir, out: String::new(), unsupported: BTreeMap::new(), loops: 0 };
+    let mut c = Compiler { hir, out: String::new(), unsupported: BTreeMap::new(), loops: 0, ui_id: None };
     controls::guard(hir, &mut c.unsupported);
     c.out.push_str(PRELUDE);
+    c.out.push_str("local CB = {}\n");
     if !hir.functions.is_empty() {
         let names: Vec<String> = (0..hir.functions.len()).map(|i| format!("F{i}")).collect();
         let _ = writeln!(c.out, "local {}", names.join(", "));
@@ -179,23 +207,35 @@ pub fn compile(hir: &Hir) -> Compiled {
         c.block(&f.body);
         let _ = writeln!(c.out, "end -- {}", f.name);
     }
-    let mut table = Vec::new();
     for cb in &hir.callbacks {
-        let (key, params) = match cb.kind {
-            CallbackKind::Init => ("init", ""),
-            CallbackKind::Note => ("note", "NOTE, VEL"),
-            CallbackKind::Release => ("release", "NOTE, VEL"),
+        // `$UI_ID` as the runtime's dispatcher sets it (`lower.rs`): a control's own callback
+        // has the control's id, `on ui_controls` gets the changed control's id as a parameter.
+        let (key, params, ui_id): (String, &str, String) = match cb.kind {
+            CallbackKind::Init => ("init".into(), "", "0".into()),
+            CallbackKind::Note => ("note".into(), "NOTE, VEL", "0".into()),
+            CallbackKind::Release => ("release".into(), "NOTE, VEL", "0".into()),
+            CallbackKind::UiControls => ("ui_controls".into(), "UIID", "UIID".into()),
+            CallbackKind::UiControl(var) => match hir.vars[var.0 as usize].ui {
+                Some(ui) => (format!("ui_{ui}"), "", (b::FIRST_UI_ID + ui as i32).to_string()),
+                None => {
+                    c.unsupported("ui_control without control");
+                    continue;
+                }
+            },
+            CallbackKind::UiUpdate => ("ui_update".into(), "", "0".into()),
             other => {
                 c.unsupported(&format!("callback {other:?}"));
                 continue;
             }
         };
-        let _ = writeln!(c.out, "local function cb_{key}({params})");
+        let _ = writeln!(c.out, "CB.{key} = function({params})");
+        c.ui_id = Some(ui_id);
         c.block(&cb.body);
+        c.ui_id = None;
         let _ = writeln!(c.out, "end");
-        table.push(format!("{key} = cb_{key}"));
     }
-    let _ = writeln!(c.out, "return {{ {}, select_note = function(t) NV = t end }}", table.join(", "));
+    let _ = writeln!(c.out, "CB.select_note = function(t) NV = t end");
+    let _ = writeln!(c.out, "return CB");
     Compiled { source: format!("local C, T, NV, HOST = ...\n{}", c.out), unsupported: c.unsupported, ui: controls::meta(hir) }
 }
 
@@ -205,6 +245,8 @@ struct Compiler<'h> {
     unsupported: BTreeMap<String, usize>,
     /// Enclosing `while` loops in the current function body.
     loops: usize,
+    /// `$UI_ID` expression of the callback being compiled; `None` in functions (refused).
+    ui_id: Option<String>,
 }
 
 fn lua_str(s: &str) -> String {
@@ -460,6 +502,10 @@ impl Compiler<'_> {
             ExprKind::Sys(sys) => match sys {
                 SysVar::EventNote => "NOTE".into(),
                 SysVar::EventVelocity => "VEL".into(),
+                SysVar::UiId => match self.ui_id.clone() {
+                    Some(id) => id,
+                    None => self.unsupported("sys UiId in function"),
+                },
                 other => self.unsupported(&format!("sys {other:?}")),
             },
             ExprKind::SysElem(array, _) => self.unsupported(&format!("sys array {array:?}")),
