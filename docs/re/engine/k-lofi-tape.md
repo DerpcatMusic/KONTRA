@@ -142,3 +142,14 @@ Source: `source/kontakt8/0140ae0000.c`. Object fields, from the setter and ramp 
 No Rust processor lane or parity row is claimed. The Tape `live control not modelled` gap stays open.
 
 Bite (0x66) and the Bus Comp and Raum trailing items were not started in this pass.
+
+## Wow / Flutter kernel search (2026-10-23, negative)
+
+Decompile cache only (`source/kontakt8`, no REA). The Wow / Flutter per-sample kernel is **still not located**; the laws stay **unconfirmed**. Corrections to earlier pointers:
+
+- `FUN_140ac0de0` (0140ac0000.c:186) is **not** the Wow setup. It is voice-resampler preparation: a 1-cos crossfade table of `param+0x238` entries, a 16-slot ring pool, and `FUN_140ad2210` (rotating read heads over `+0x244`). Its neighbour `FUN_140ac21f0` is the sample-voice block loop (called by the per-interpolation `1408f….` family), and `FUN_140ade200` is the 32-sample voice ramp with cubic taps. None of these is the Wow core.
+- `FUN_140ac65f0` (reader) sits next to them by address only.
+- Core vtable `0x144fc2e48` (BEffectWowFlutter) slots 0–11 were read from the PE and are not the kernel: slot 0 `FUN_140a929a0` (58 B), 1 `FUN_140a99b10` (reset), 2 `FUN_140ac3920` (sample-rate one-pole `pow(c, k/sr)` setter), 4 `FUN_1405f06c0` (ret), 5 `FUN_140ab6ed0` (state reset), 6 `FUN_140ac17a0` (stub), 7 `FUN_140ab9a30` (12 B), 8 `FUN_140959bf0` (189 B), 9 `FUN_14087d2a0` (12 B), 11 `FUN_140959450` (7 B). Slot 23 is the peak tracker already excluded.
+- The only `sin`/`cos` sites in the 0140a7/0140a9/0140ae/0140ac files belong to window and table generators (`FUN_140a7b490`, `FUN_140a7cfb0`, `FUN_140a78a80`, `FUN_140a9cb40`, `FUN_140ae2910`), not a per-sample LFO. `2π` (`DAT_144fc40c0`) has one reference in the cache.
+
+Next step (not done): find the core process by its caller. Start from the `ModulatableDSPCoreWrapper<BEffectWowFlutterTraits>` process path (`0x144fc2d38`) and from the block driver that passes control id `0x6A`, rather than from address neighbourhood. Parity rows stay `partial`.
