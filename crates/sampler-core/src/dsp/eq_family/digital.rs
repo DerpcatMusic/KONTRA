@@ -24,7 +24,7 @@ fn band_pass_family(kind: Kind) -> bool {
 }
 
 /// How many biquads (first-order sections count as one) a band of `kind` and order `n` runs.
-pub(super) fn sections(kind: Kind, n: u8) -> usize {
+pub(crate) fn sections(kind: Kind, n: u8) -> usize {
     let pairs = usize::from(n / 2);
     let odd = usize::from(n % 2);
     if band_pass_family(kind) { 2 * pairs + odd } else { pairs + odd }
@@ -75,6 +75,11 @@ fn prototype(n: u8, q: f64) -> ([(f64, f64); 8], usize) {
 /// native root finder (0x1412881a0) groups them.
 fn split(a: f64, b: f64) -> [(f64, f64); 2] {
     let disc = a * a - 4. * b + 8.;
+    // disc = 0 (Q = 0.5 for every band-pass family prototype) makes the quartic the square of
+    // `s^2 + (a / 2) s + 1`: both quadratics are that factor. Root pairing is ill-conditioned here.
+    if disc.abs() <= 1e-12 * (a * a + 8.) {
+        return [(a * 0.5, 1.); 2];
+    }
     let root = C::new(disc, 0.).sqrt();
     let (d, h) = (root * 0.25, root * (-a * 0.5));
     let c = a * a * 0.5 - b - 2.;
@@ -102,7 +107,7 @@ fn bilinear(n: [f64; 3], d: [f64; 3], k: f64) -> Biquad {
 
 /// Section `index` of a band: `fnorm` is frequency / rate (native clamp 0.499), `gain_db` the band
 /// gain (GainScale applied), `bandwidth` octaves. `None` past the last section.
-pub(super) fn section(kind: Kind, n: u8, fnorm: f64, gain_db: f64, q: f64, bandwidth: f64, index: usize) -> Option<Biquad> {
+pub(crate) fn section(kind: Kind, n: u8, fnorm: f64, gain_db: f64, q: f64, bandwidth: f64, index: usize) -> Option<Biquad> {
     let k = 1. / (PI * fnorm.min(0.499)).tan();
     let big = (gain_db * 0.115_129_254_758_358).exp().powf(1. / (2. * f64::from(n)));
     let g2 = big * big;
