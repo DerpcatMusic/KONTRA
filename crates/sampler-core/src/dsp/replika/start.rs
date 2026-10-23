@@ -179,8 +179,21 @@ fn settled_glide() -> WrapGlide {
 
 impl Mode1 {
     /// The start state of path 1 at rate `fs` (see the module doc). Built from the formulas, then the selector runs for
-    /// index 28 = 0.3, as the native setter does.
+    /// index 28 = 0.3, as the native setter does. Allocates the rings: control side only.
     pub(super) fn start(fs: f32) -> Self {
+        let ring = ring_len(fs);
+        Self::with_rings(fs, std::array::from_fn(|_| [vec![0.; ring], vec![0.; ring]]))
+    }
+
+    /// The start state again, in place: the rings are cleared and kept, the rest is rebuilt. No allocation, so the audio
+    /// thread can reset a stage with it (`Stage::reset`).
+    pub(super) fn reset(&mut self, fs: f32) {
+        let mut rings = std::mem::take(&mut self.rings);
+        rings.iter_mut().flatten().for_each(|r| r.fill(0.));
+        *self = Self::with_rings(fs, rings);
+    }
+
+    fn with_rings(fs: f32, rings: [[Vec<f32>; 2]; 3]) -> Self {
         let ring = ring_len(fs);
         let mut heads = Heads {
             path: i32::MAX,
@@ -201,7 +214,7 @@ impl Mode1 {
         };
         Self {
             heads,
-            rings: std::array::from_fn(|_| [vec![0.; ring], vec![0.; ring]]),
+            rings,
             // Width, skew, ratio, depth (the table order); the start values of the table are 0, 0.5, 0, 0.5.
             table: [entry(0.), entry(0.5), entry(0.), entry(0.5)],
             // The spread targets at the reset controls, in the order `[+0x2c, +0x34, +0x30, +0x38]` (P0 words 40, 0.5, 0, 0.3).
