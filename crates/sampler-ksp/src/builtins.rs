@@ -1032,4 +1032,23 @@ mod tests {
             assert!(id == "unmeasured" || id.parse::<i32>().is_ok(), "{name}: bad measured id {id:?}");
         }
     }
+
+    #[test]
+    fn effect_type_table_matches_the_registration_values() {
+        // ksp_value is the registration dword read from Kontakt 8.13.1 (see the evidence column).
+        // A wrong value in either table, or a dropped row, fails here.
+        let table = include_str!("../../../docs/re/kontakt-bindings/effect-type-ids.tsv");
+        let mut values = Vec::new();
+        for row in table.lines().skip(1) {
+            let mut columns = row.split('\t');
+            let name = columns.next().unwrap();
+            let ksp_value: i32 = columns.nth(1).unwrap().parse().unwrap();
+            assert_eq!(constant(name), Some(ksp_value), "{name}");
+            values.push(ksp_value);
+        }
+        values.sort_unstable();
+        // 622..=690 with one hole: 652 has no registered name in the PE.
+        let expected: Vec<i32> = (622..=690).filter(|v| *v != 652).collect();
+        assert_eq!(values, expected);
+    }
 }
