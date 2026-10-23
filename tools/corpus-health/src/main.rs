@@ -69,6 +69,9 @@ fn faults() -> (u64, u64) {
 const HOLD_SECONDS: f64 = 1.5;
 const TAIL_SECONDS: f64 = 0.5;
 const MAX_TAIL_SECONDS: f64 = 5.0;
+/// Longest a script may keep owing events after release before the probe gives up
+/// and reports them as `pending_script_events` rather than as stuck voices.
+const SETTLE_MAX_SECONDS: f64 = 30.0;
 const VELOCITY: u8 = 64;
 
 #[derive(Clone, Debug)]
@@ -494,6 +497,8 @@ struct Sound {
     finite: bool,
     stuck_voices: usize,
     stuck_notes: usize,
+    /// Script events still scheduled when the settle horizon ended (0 when drained).
+    pending_script_events: usize,
     tail_peak: f32,
     faults: Vec<String>,
     /// One sentence on a silent note ([`sampler_core::why_silent`]); set when
@@ -764,6 +769,74 @@ fn scripted_render(
     // retire-when-silent notes that finished still count as stuck.
     rt.flush_ended(|_| true);
     Ok(())
+}
+
+/// Render silence after release until no note-owned event is scheduled and no
+/// voice is left, or `end` (in frames) passes. Returns the frame reached and the
+/// note events still pending then (0 when drained). Plan timers are not waited
+/// for (see `Runtime::pending_note_events`). `CH_SETTLE_TRACE` logs once a second.
+fn settle(
+    rig: &mut Rig,
+    feed: &mut sampler_uvi::scripted::MidiFeed,
+    views: &mut Vec<sampler_ksp::ScriptView>,
+    from: usize,
+    end: usize,
+    rate: u32,
+) -> Result<(usize, usize), String> {
+    let trace = std::env::var_os("CH_SETTLE_TRACE").is_some();
+    let mut settled = from;
+    let mut cost = AudioCost::default();
+    let mut block = [[0.0f32; 2]; 64];
+    loop {
+        let (events, voices) = match &mut *rig {
+            Rig::Midi { rt, .. } => (rt.pending_note_events(), rt.voice_count()),
+            Rig::Scripted { rt, driver, .. } => (
+                rt.pending_note_events() + usize::from(driver.has_due_events()),
+                rt.voice_count(),
+            ),
+        };
+        if (events == 0 && voices == 0) || settled >= end {
+            return Ok((settled, events));
+        }
+        let len = block.len().min(end - settled);
+        match &mut *rig {
+            Rig::Midi { rt, horizon, .. } => {
+                if let Some(h) = horizon {
+                    let _ = rt.service_streaming(*h);
+                }
+                rt.render(&mut block[..len]).map_err(|e| format!("{e:?}"))?;
+                sampler_ksp::service_ui_effects(rt, views).map_err(|e| format!("KSP host service: {e}"))?;
+                rt.flush_ended(|_| true);
+            }
+            Rig::Scripted {
+                rt,
+                driver,
+                horizon,
+                ..
+            } => scripted_render(rt, driver, *horizon, feed, &mut block[..len], &mut cost)
+                .map_err(|e| format!("{e:?}"))?,
+        }
+        settled += len;
+        if trace && settled.is_multiple_of(rate as usize) {
+            let (rt, pending) = match &*rig {
+                Rig::Midi { rt, .. } | Rig::Scripted { rt, .. } => (rt, rt.pending_command_frames()),
+            };
+            let mut waits = Vec::new();
+            rt.visit_behavior_progress(|p| {
+                if p.outcome.is_none() && p.waiting {
+                    waits.push(format!("prog{}@pc{} owner={:?}", p.program, p.pc, p.owner));
+                }
+            });
+            let voices: Vec<String> = rt
+                .voice_taps()
+                .iter()
+                .flatten()
+                .map(|v| format!("k{} g{} phase{} {:.4}", v.key, v.group, v.phase, v.level))
+                .collect();
+            let due: Vec<f64> = pending.map(|f| f as f64 / f64::from(rate)).collect();
+            eprintln!("settle t={:.1}s due={due:?} waits={waits:?} voices={voices:?}", settled as f64 / f64::from(rate));
+        }
+    }
 }
 
 /// What one probed voice plays, from its zone.
@@ -1313,6 +1386,18 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         }
     }
     tail_peak = tail_blocks.into_iter().fold(tail_peak, f32::max);
+    // Settle (after the tail window, so peak/tail numbers are unchanged): a script
+    // may still owe note events after release (a `wait` that fires later, a
+    // generated note-off). See [`settle`] for what is waited for.
+    let (_, pending_script_events) = settle(
+        &mut rig,
+        &mut feed,
+        &mut views,
+        rendered_frames,
+        release_at + frame(SETTLE_MAX_SECONDS),
+        rate,
+    )
+    .map_err(|e| format!("settle: {e}"))?;
     block_times.sort_by(f64::total_cmp);
     let q = |f: f64| block_times[((block_times.len() - 1) as f64 * f) as usize];
     let mut why_silent = None;
@@ -1445,6 +1530,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         finite,
         stuck_voices,
         stuck_notes,
+        pending_script_events,
         tail_peak,
         faults,
         why_silent,
@@ -1993,6 +2079,7 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
                         "finite": s.finite,
                         "stuck_voices": s.stuck_voices,
                         "stuck_notes": s.stuck_notes,
+                        "pending_script_events": s.pending_script_events,
                         "tail_peak_db": db(s.tail_peak),
                         "script_faults": s.faults,
                         "why_silent": s.why_silent,
@@ -3373,6 +3460,64 @@ mod tests {
         for _ in 0..16 {
             scripted_render(&mut rt, &mut driver, None, &mut feed, &mut block, &mut cost).unwrap();
         }
+        assert_eq!(rt.voice_count(), 0);
+        assert_eq!(rt.note_count(), 0);
+    }
+
+    /// A script that owes a note 1 s after note-on, long after the probe released
+    /// the key at 0.1 s, must not read as stuck: the settle waits for it to play
+    /// and drain instead of counting the note before it exists.
+    #[test]
+    fn settle_waits_for_a_script_event_owed_after_release() {
+        use sampler_core::{Envelope, Input, Limits, Pcm, Playback, Prepared, Protocol, Region};
+        use sampler_uvi::{OscGroup, script::{Config, ScriptHost}, scripted::{Driver, MidiFeed}};
+        let samples = [[1., 0.], [0., 1.]]
+            .map(|f| Pcm::new(48000, vec![f; 4096].into_boxed_slice()).unwrap());
+        let regions = (0..2)
+            .map(|sample| Region {
+                sample,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::default(),
+                playback: Playback::default(),
+            })
+            .collect();
+        let plan = Prepared::new(48000, samples.into(), regions, 2)
+            .unwrap()
+            .with_groups(2, vec![Some(1), Some(0)])
+            .unwrap();
+        let limits = Limits::for_plan(&plan, 4, 4);
+        let rt = Runtime::new(plan, limits).unwrap();
+        let xml = "<UVI4><Program><Layers><Layer/><Layer/></Layers><EventProcessors><ScriptProcessor><script>function onNote(e) spawn(function() wait(1000); playNote(e.note,e.velocity) end) end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
+        let host = ScriptHost::new(xml, (), Config::default()).unwrap();
+        let groups = (0..2)
+            .map(|n| OscGroup { layer: n + 1, osc: 1, group: 1 - n, keygroup: n as usize, oscillator: n as usize })
+            .collect();
+        let mut rig = Rig::Scripted {
+            rt: Box::new(rt),
+            driver: Box::new(Driver::new(host, groups, 48000)),
+            horizon: None,
+            _keep: None,
+        };
+        let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+        let Rig::Scripted { rt, driver, .. } = &mut rig else { unreachable!() };
+        let note = rt.note_on(input, 60, 1.).unwrap();
+        driver.note_on(rt, note, 60, 1.).unwrap();
+        let mut cost = AudioCost::default();
+        let mut block = vec![[0.; 2]; 480];
+        for _ in 0..10 {
+            scripted_render(rt, driver, None, &mut MidiFeed::default(), &mut block, &mut cost).unwrap();
+        }
+        driver.note_off(rt, 60).unwrap();
+        let (settled, pending) =
+            settle(&mut rig, &mut MidiFeed::default(), &mut Vec::new(), 4800, 48000 * 30, 48000).unwrap();
+        let Rig::Scripted { rt, .. } = &rig else { unreachable!() };
+        assert_eq!(pending, 0);
+        assert!(settled >= 48000, "the owed note plays at 1 s, so settle reaches it");
         assert_eq!(rt.voice_count(), 0);
         assert_eq!(rt.note_count(), 0);
     }
