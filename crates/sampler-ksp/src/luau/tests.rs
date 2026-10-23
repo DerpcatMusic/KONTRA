@@ -303,3 +303,45 @@ fn lowered_fine_trace(lowered: &super::Lowered) -> Vec<f64> {
 }
 
 
+
+#[test]
+fn ui_controls_clamp_and_read_back_like_the_interpreter() {
+    assert_init_equivalent(
+        "on init
+        declare ui_slider $gain (0, 100)
+        declare ui_knob $k (-5, 5)
+        declare ui_switch $sw
+        declare $a := 0
+        declare $b := 0
+        declare $c := 0
+        declare $id := 0
+        $gain := 250
+        $k := -9
+        $sw := 3
+        inc($sw)
+        $a := $gain
+        $id := get_ui_id($gain)
+        set_control_par($id, $CONTROL_PAR_VALUE, 42)
+        set_control_par($id, $CONTROL_PAR_HIDE, 1)
+        $b := get_control_par($id, $CONTROL_PAR_VALUE)
+        $c := get_control_par($id, $CONTROL_PAR_MAX_VALUE) + get_control_par($id, $CONTROL_PAR_MIN_VALUE) + get_control_par($id, $CONTROL_PAR_HIDE)
+        end on",
+    );
+}
+
+#[test]
+fn control_properties_are_mirrored_for_non_controls_too() {
+    assert_init_equivalent(
+        "on init
+        declare $id := 0
+        declare $t := 0
+        declare $n := 0
+        $id := 12345
+        set_control_par($id, $CONTROL_PAR_LABEL, 7)
+        set_control_par_str($id, $CONTROL_PAR_TEXT, \"hello\")
+        set_control_par_real($id, $CONTROL_PAR_WIDTH, 2.9)
+        $t := get_control_par($id, $CONTROL_PAR_LABEL)
+        $n := get_control_par($id, $CONTROL_PAR_WIDTH) + get_control_par($id, $CONTROL_PAR_HEIGHT)
+        end on",
+    );
+}
