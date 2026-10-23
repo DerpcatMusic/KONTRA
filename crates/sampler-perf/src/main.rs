@@ -19,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod stress;
 mod sustain;
 
 const RATE: u32 = 48_000;
@@ -400,6 +401,8 @@ struct Cell_ {
     peak: f32,
     /// Seconds of the first and last block with output above -80 dB.
     audible: Option<(f64, f64)>,
+    /// Per output frame (render clock): whether either channel exceeds -80 dB.
+    loud: Vec<bool>,
 }
 
 fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Cell_ {
@@ -426,6 +429,7 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
         allocations: 0,
         peak: 0.0,
         audible: None,
+        loud: Vec::with_capacity(frames),
     };
     let (mut buffer, mut next) = (vec![[0.0f32; 2]; block], 0);
     let mut batch: Vec<TimedPacket<'_>> = Vec::with_capacity(64);
@@ -475,6 +479,7 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
             let at = begin as f64 / f64::from(RATE);
             cell.audible = Some(cell.audible.map_or((at, at), |(first, _)| (first, at)));
         }
+        cell.loud.extend(buffer.iter().map(|f| f[0].abs().max(f[1].abs()) > SILENT_FRAME));
         // Real time: streamed pages arrive from reader threads, which an unpaced render starves.
         let due = start + Duration::from_secs_f64((begin + block) as f64 / f64::from(RATE));
         if let Some(wait) = due.checked_duration_since(Instant::now()) {
@@ -483,6 +488,9 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
     }
     cell
 }
+
+/// Frame-level audibility for onset timing (-80 dB), the same threshold as `audible`.
+const SILENT_FRAME: f32 = 1e-4;
 
 fn render(
     p: &mut Player,
@@ -785,6 +793,7 @@ fn play_uvi(p: &mut Player, messages: &[Message], block: usize, frames: usize) -
         allocations: 0,
         peak: 0.0,
         audible: None,
+        loud: Vec::new(),
     };
     let mut buffer = vec![[0.0f32; 2]; block];
     let start = Instant::now();
@@ -794,6 +803,7 @@ fn play_uvi(p: &mut Player, messages: &[Message], block: usize, frames: usize) -
         COUNTING.set(true);
         let t = Instant::now();
         render(p, &mut buffer, &[], messages, begin, &mut 0);
+        cell.loud.extend(buffer.iter().map(|f| f[0].abs().max(f[1].abs()) > SILENT_FRAME));
         let took = t.elapsed();
         COUNTING.set(false);
         cell.allocations += CALLS.get() - before;
@@ -989,6 +999,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("sustain") => sustain::run(&args[1..]).map(|()| true),
+        Some("stress") => stress::run(&args[1..]).map(|()| true),
         Some("run") => run(&args[1..]).map(|()| true),
         Some("compare") => compare(&args[1..]),
         _ => Err("usage: sampler-perf sustain [--only afflatus|conflux|conflux-multi] [--block 64|256] [--notes 1|8] [--seconds S] [--out FILE] | run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S] | compare BASE.json NEW.json [--threshold PERCENT]".into()),
