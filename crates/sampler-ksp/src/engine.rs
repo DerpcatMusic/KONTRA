@@ -4,7 +4,8 @@
 //!
 //! Events are opaque [`EventId`]s chosen by the caller (the Luau host's note
 //! number). Velocities are normalised to 0..=1 by the caller: the trait speaks
-//! engine units, not KSP's 0..127.
+//! engine units, not KSP's 0..127. Durations are frames, already converted
+//! from KSP microseconds with the interpreter's rule (`MicrosToFrames`: ceil).
 
 use sampler_core::{Inheritance, NoteId, NotePitch, Runtime};
 use std::collections::BTreeMap;
@@ -12,19 +13,33 @@ use std::collections::BTreeMap;
 /// A script-visible event, as the caller numbers it.
 pub type EventId = u32;
 
-pub trait EngineSink {
-    /// KSP `play_note`: a child of `parent` at `key`. None when the engine refuses it.
-    fn play_child(
-        &mut self,
-        parent: EventId,
-        key: u8,
-        velocity: f64,
-        linked: bool,
-        inheritance: Inheritance,
-    ) -> Option<EventId>;
+/// How long a `play_note` child lasts (KSP's duration argument).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Duration {
+    /// Duration 0: the child sounds until the engine silences it.
+    UntilSilent,
+    /// Negative duration in a note callback: the child ends with its parent's gate.
+    Gate,
+    /// Positive duration: the child is released after this many frames.
+    Frames(u64),
+}
 
-    /// KSP `note_off`: key `event` up now. False when the engine does not know it.
-    fn note_off(&mut self, event: EventId, velocity: Option<f64>) -> bool;
+/// One `play_note` request. Inheritance is `Expression`, as the interpreter lowers it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Play {
+    pub parent: EventId,
+    pub key: u8,
+    pub velocity: f64,
+    pub duration: Duration,
+}
+
+pub trait EngineSink {
+    /// KSP `play_note`: a child of `parent`. None when the engine refuses it.
+    fn play(&mut self, request: Play) -> Option<EventId>;
+
+    /// KSP `note_off`: release `event` now (`delay` None) or after `delay` frames.
+    /// False when the engine does not know the event.
+    fn note_off(&mut self, event: EventId, delay: Option<u64>) -> bool;
 }
 
 /// Forwards to a live runtime. The driver registers each trigger's [`NoteId`] with [`LiveSink::bind`].
@@ -54,51 +69,52 @@ impl LiveSink {
 }
 
 impl EngineSink for LiveSink {
-    fn play_child(
-        &mut self,
-        parent: EventId,
-        key: u8,
-        velocity: f64,
-        linked: bool,
-        inheritance: Inheritance,
-    ) -> Option<EventId> {
-        let parent = *self.events.get(&parent)?;
+    fn play(&mut self, request: Play) -> Option<EventId> {
+        let parent = *self.events.get(&request.parent)?;
+        let linked = request.duration == Duration::Gate;
         let child = self
             .runtime
-            .child_pitched(parent, NotePitch::Key(key), velocity, linked, inheritance)
+            .child_pitched(
+                parent,
+                NotePitch::Key(request.key),
+                request.velocity,
+                linked,
+                Inheritance::Expression,
+            )
             .ok()?;
+        if let Duration::Frames(frames) = request.duration {
+            let at = self.runtime.now() + frames;
+            if self.runtime.release_at(child, at).is_err() {
+                let _ = self.runtime.release(child);
+                return None;
+            }
+        }
         let id = self.next;
-        // Ponytail: ids grow without reuse; add recycling when a long session nears u32::MAX.
+        // ponytail: ids grow without reuse; add recycling when a long session nears u32::MAX.
         self.next += 1;
         self.events.insert(id, child);
         Some(id)
     }
 
-    fn note_off(&mut self, event: EventId, velocity: Option<f64>) -> bool {
+    fn note_off(&mut self, event: EventId, delay: Option<u64>) -> bool {
         let Some(&note) = self.events.get(&event) else {
             return false;
         };
-        // Input-held notes take the release velocity; play_note children have no input,
-        // so they are released without one.
-        // ponytail: child release velocity is dropped; add a runtime path when a script depends on it.
-        self.runtime.note_off_exact(note, velocity).is_ok() || self.runtime.release(note).is_ok()
+        match delay {
+            None => self.runtime.release(note).is_ok(),
+            Some(frames) => {
+                let at = self.runtime.now() + frames;
+                self.runtime.release_at(note, at).is_ok()
+            }
+        }
     }
 }
 
 /// One engine call, as [`Recorder`] logs it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Call {
-    PlayChild {
-        parent: EventId,
-        key: u8,
-        velocity: f64,
-        linked: bool,
-        inheritance: Inheritance,
-    },
-    NoteOff {
-        event: EventId,
-        velocity: Option<f64>,
-    },
+    Play(Play),
+    NoteOff { event: EventId, delay: Option<u64> },
 }
 
 /// Logs every call and accepts all of them; child ids count up from 1.
@@ -109,27 +125,14 @@ pub struct Recorder {
 }
 
 impl EngineSink for Recorder {
-    fn play_child(
-        &mut self,
-        parent: EventId,
-        key: u8,
-        velocity: f64,
-        linked: bool,
-        inheritance: Inheritance,
-    ) -> Option<EventId> {
-        self.calls.push(Call::PlayChild {
-            parent,
-            key,
-            velocity,
-            linked,
-            inheritance,
-        });
+    fn play(&mut self, request: Play) -> Option<EventId> {
+        self.calls.push(Call::Play(request));
         self.next += 1;
         Some(self.next)
     }
 
-    fn note_off(&mut self, event: EventId, velocity: Option<f64>) -> bool {
-        self.calls.push(Call::NoteOff { event, velocity });
+    fn note_off(&mut self, event: EventId, delay: Option<u64>) -> bool {
+        self.calls.push(Call::NoteOff { event, delay });
         true
     }
 }
@@ -141,23 +144,22 @@ mod tests {
     #[test]
     fn recorder_logs_calls_and_numbers_children() {
         let mut rec = Recorder::default();
-        let child = rec.play_child(1, 60, 1.0 / 127.0, false, Inheritance::Independent);
-        assert_eq!(child, Some(1));
-        assert!(rec.note_off(1, None));
+        let request = Play {
+            parent: 7,
+            key: 60,
+            velocity: 1.0 / 127.0,
+            duration: Duration::Frames(480),
+        };
+        assert_eq!(rec.play(request), Some(1));
+        assert!(rec.note_off(1, Some(12)));
         assert_eq!(
             rec.calls,
             vec![
-                Call::PlayChild {
-                    parent: 1,
-                    key: 60,
-                    velocity: 1.0 / 127.0,
-                    linked: false,
-                    inheritance: Inheritance::Independent
-                },
+                Call::Play(request),
                 Call::NoteOff {
                     event: 1,
-                    velocity: None
-                },
+                    delay: Some(12)
+                }
             ]
         );
     }
@@ -181,14 +183,28 @@ mod tests {
         };
         let note = sink.runtime().trigger(input, 60, 0.8).unwrap();
         sink.bind(1, note);
+        let unbound = Play {
+            parent: 2,
+            key: 61,
+            velocity: 0.5,
+            duration: Duration::UntilSilent,
+        };
+        assert!(sink.play(unbound).is_none(), "unbound parent");
+        let child = sink
+            .play(Play {
+                parent: 1,
+                ..unbound
+            })
+            .expect("bound parent plays a child");
+        assert!(sink.note_off(child, None));
         assert!(
-            sink.play_child(2, 61, 0.5, false, Inheritance::Independent)
-                .is_none(),
-            "unbound parent"
+            sink.play(Play {
+                parent: 1,
+                duration: Duration::Frames(480),
+                ..unbound
+            })
+            .is_some()
         );
-        let child = sink.play_child(1, 61, 0.5, false, Inheritance::Independent);
-        assert!(child.is_some());
-        assert!(sink.note_off(child.unwrap(), None));
         assert!(!sink.note_off(999, None));
     }
 }

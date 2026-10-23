@@ -269,13 +269,13 @@ impl Compiled {
 /// Compile every callback and function of `hir`. Never fails: unsupported sites
 /// are emitted as no-ops and counted, so the caller decides what to run.
 pub fn compile(hir: &Hir) -> Compiled {
-    let mut c = Compiler { hir, out: String::new(), unsupported: BTreeMap::new(), loops: 0, loops_seen: false, ui_id: None };
+    let mut c = Compiler { hir, out: String::new(), unsupported: BTreeMap::new(), loops: 0, loops_seen: false, ui_id: None, note_ctx: false };
     controls::guard(hir, &mut c.unsupported);
     c.out.push_str(PRELUDE);
     c.out.push_str(pgs::PRELUDE);
     c.out.push_str(record::PRELUDE);
     c.out.push_str(keys::PRELUDE);
-    c.out.push_str("local CB = {}\n");
+    c.out.push_str("local CB = {}\nlocal EV = 0\n");
     c.out.push_str("local SEP, GEP = HOST.set_engine_par, HOST.get_engine_par\n");
     if !hir.functions.is_empty() {
         let names: Vec<String> = (0..hir.functions.len()).map(|i| format!("F{i}")).collect();
@@ -309,14 +309,16 @@ pub fn compile(hir: &Hir) -> Compiled {
         };
         let _ = writeln!(c.out, "CB.{key} = function({params})");
         c.ui_id = Some(ui_id);
+        c.note_ctx = matches!(cb.kind, CallbackKind::Note);
         c.block(&cb.body);
         c.ui_id = None;
+        c.note_ctx = false;
         let _ = writeln!(c.out, "end");
     }
     // Pooled thread body: runs one callback, reports done with -1, then waits for the
     // next job, so a finished coroutine is reused instead of created per event.
-    c.out.push_str("local function RUNNER(f, t, n, v)\n  while true do\n    NV = t\n    f(n, v)\n    f, t, n, v = coroutine.yield(-1)\n  end\nend\n");
-    let _ = writeln!(c.out, "CB.select_note = function(t) NV = t end");
+    c.out.push_str("local function RUNNER(f, t, n, v, e)\n  while true do\n    NV, EV = t, e\n    f(n, v)\n    f, t, n, v, e = coroutine.yield(-1)\n  end\nend\n");
+    let _ = writeln!(c.out, "CB.select_note = function(t, e) NV, EV = t, e end");
     let _ = writeln!(c.out, "CB.runner = RUNNER");
     let _ = writeln!(c.out, "CB.pgs, CB.pgs_text, CB.model = PGS, PGS_TEXT, MODEL");
     let _ = writeln!(c.out, "return CB");
@@ -360,6 +362,8 @@ struct Compiler<'h> {
     loops: usize,
     /// `$UI_ID` expression of the callback being compiled; `None` in functions (refused).
     ui_id: Option<String>,
+    /// Compiling an `on note` body: `$EVENT_ID` and `play_note` are the note's own.
+    note_ctx: bool,
     loops_seen: bool,
 }
 
@@ -656,6 +660,7 @@ impl Compiler<'_> {
             },
             ExprKind::Sys(sys) => match sys {
                 SysVar::EventNote => "NOTE".into(),
+                SysVar::EventId if self.note_ctx => "EV".into(),
                 SysVar::EventVelocity => "VEL".into(),
                 SysVar::UiId => match self.ui_id.clone() {
                     Some(id) => id,
@@ -787,6 +792,24 @@ impl Compiler<'_> {
                 let name = if builtin == Builtin::SetEnginePar { "SEP" } else { "GEP" };
                 format!("{name}({})", parts.join(", "))
             }
+            // Note callbacks only; the offset form is refused (not yet in the engine sink).
+            Builtin::PlayNote => match (ex(args, 0), ex(args, 1), ex(args, 2), ex(args, 3)) {
+                (Some(key), Some(vel), offset, Some(micros))
+                    if self.note_ctx && offset.is_none_or(|o| matches!(o.kind, ExprKind::Int(0))) =>
+                {
+                    let (key, vel, micros) = (self.int(key), self.int(vel), self.int(micros));
+                    format!("HOST.play(EV, {key}, {vel}, {micros})")
+                }
+                _ => self.unsupported("play_note outside a note callback or with an offset"),
+            },
+            Builtin::NoteOff => match (ex(args, 0), ex(args, 1)) {
+                (Some(event), delay) => {
+                    let event = self.int(event);
+                    let delay = delay.map_or_else(|| "nil".to_string(), |d| self.int(d));
+                    format!("HOST.note_off({event}, {delay})")
+                }
+                _ => self.unsupported("note_off without event"),
+            },
             Builtin::Abs => match ex(args, 0) {
                 Some(e) if e.ty == Ty::Real => format!("math.abs({})", self.expr(e)),
                 Some(e) => format!("W(math.abs({}))", self.int(e)),
