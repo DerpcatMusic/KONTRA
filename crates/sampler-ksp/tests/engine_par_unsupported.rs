@@ -116,3 +116,18 @@ fn find_group_of_an_unknown_constant_name_warns_with_the_native_wording() {
     let known = warnings("on note message(find_group(\"Group 0\")) end on");
     assert!(known.iter().all(|m| !m.contains("was not found")), "{known:?}");
 }
+
+#[test]
+fn unsupported_set_engine_par_warning_names_the_parameter() {
+    // The load report groups these by message, so the name must be in it.
+    let lowered = warnings("on note set_engine_par($ENGINE_PAR_WT_MOD_AMOUNT, 0, -1, -1, -1) end on");
+    assert!(
+        lowered.iter().any(|m| m.contains("set_engine_par") && m.contains("ENGINE_PAR_WT_MOD_AMOUNT") && m.contains("not supported")),
+        "{lowered:?}"
+    );
+    let on_init = warnings("on init set_engine_par($ENGINE_PAR_WT_MOD_AMOUNT, 0, -1, -1, -1) end on on note end on");
+    assert!(
+        on_init.iter().any(|m| m.contains("set_engine_par") && m.contains("ENGINE_PAR_WT_MOD_AMOUNT") && m.contains("not supported")),
+        "{on_init:?}"
+    );
+}
