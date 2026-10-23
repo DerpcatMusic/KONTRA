@@ -2573,7 +2573,8 @@ impl Gen<'_, '_> {
                 match self.engine_par_rejection(args, group_arg) {
                     Some(why) => {
                         self.ignore(builtin, why);
-                        self.set(dst, 0)?;
+                        // A set reports no pending async operation (-1), as the success path does.
+                        self.set(dst, if builtin == SetEnginePar { -1 } else { 0 })?;
                     }
                     None => {
                         // Ascending registers: the value's evaluation uses those above it.
@@ -2587,7 +2588,8 @@ impl Gen<'_, '_> {
                             write: builtin == SetEnginePar,
                         }))?;
                         if builtin == SetEnginePar {
-                            self.set(dst, 0)?;
+                            // -1 = no async operation pending, so `while (id > -1) wait` exits.
+                            self.set(dst, -1)?;
                         }
                     }
                 }
