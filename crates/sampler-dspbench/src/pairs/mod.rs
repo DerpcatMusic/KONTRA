@@ -7,6 +7,7 @@ pub mod limiter;
 pub mod oversampler;
 pub mod compressor;
 pub mod resampler;
+pub mod svf;
 
 use crate::band::{Band, Verdict, classify};
 use serde::Serialize;

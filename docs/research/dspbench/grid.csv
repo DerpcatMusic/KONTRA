@@ -1,39 +1,111 @@
 pair,implementation,rate,block,fidelity_worst_db,fidelity_median_db,alias_db,thd_n_db,noise_dbfs,subnormal,denormal_spike,stable,peak_dbfs,latency,ns_per_frame,instr_per_frame,verdict
-resampler,sampler-core resample (High),48000,0,NaN,NaN,-64.42,-105.20,-200.00,0,0.00,true,-6.02,0,223.652,,no Kontakt reference
-resampler,rubato sinc (async),48000,0,NaN,NaN,-57.75,-105.20,-200.00,0,0.00,true,-6.02,0,160.769,,no Kontakt reference
-filter-lp2,sampler-core LP2 cascade,44100,32,NaN,NaN,-16.49,-105.19,-200.00,1560,9.97,true,-5.83,4,8.926,146.9,no Kontakt reference
-filter-lp2,biquad crate LP (RBJ-style),44100,32,NaN,NaN,-20.29,-105.20,-200.00,1553,2.71,true,-5.85,8,1.915,22.1,no Kontakt reference
-filter-lp2,sampler-core LP2 cascade,44100,64,NaN,NaN,-16.51,-105.19,-200.00,1560,30.42,true,-5.83,4,7.775,128.8,no Kontakt reference
-filter-lp2,biquad crate LP (RBJ-style),44100,64,NaN,NaN,-14.37,-105.20,-200.00,1553,1.77,true,-4.48,8,1.886,21.5,no Kontakt reference
-filter-lp2,sampler-core LP2 cascade,44100,512,NaN,NaN,-11.34,-105.19,-200.00,1560,1.61,true,-2.19,4,7.684,128.0,no Kontakt reference
-filter-lp2,biquad crate LP (RBJ-style),44100,512,NaN,NaN,-11.54,-105.20,-200.00,1553,1.04,true,3.22,8,1.832,21.1,no Kontakt reference
-filter-lp2,sampler-core LP2 cascade,48000,32,NaN,NaN,-17.11,-87.81,-200.00,1700,6.68,true,-5.88,4,8.613,146.6,no Kontakt reference
-filter-lp2,biquad crate LP (RBJ-style),48000,32,NaN,NaN,-21.58,-87.81,-200.00,1695,25.71,true,-5.95,9,1.905,22.0,no Kontakt reference
-filter-lp2,sampler-core LP2 cascade,48000,64,0.005,0.004,-17.11,-87.81,-200.00,1700,4.35,true,-5.88,4,7.828,129.1,faithful
-filter-lp2,biquad crate LP (RBJ-style),48000,64,8.732,0.004,-15.69,-87.81,-200.00,1695,24.75,true,-5.46,9,2.347,21.5,differs from Kontakt (character change)
-filter-lp2,sampler-core LP2 cascade,48000,512,NaN,NaN,-10.27,-87.81,-200.00,1700,5.41,true,-2.08,4,9.389,128.3,no Kontakt reference
-filter-lp2,biquad crate LP (RBJ-style),48000,512,NaN,NaN,-8.20,-87.81,-200.00,1695,1.13,true,12.88,9,2.289,21.1,no Kontakt reference
-filter-lp2,sampler-core LP2 cascade,96000,32,NaN,NaN,-22.67,-87.82,-200.00,3397,33.00,true,-6.00,8,8.821,145.4,no Kontakt reference
-filter-lp2,biquad crate LP (RBJ-style),96000,32,NaN,NaN,-29.68,-87.81,-200.00,3384,3.29,true,-6.04,17,1.895,22.1,no Kontakt reference
-filter-lp2,sampler-core LP2 cascade,96000,64,NaN,NaN,-22.66,-87.82,-200.00,3397,36.96,true,-6.00,8,7.756,128.2,no Kontakt reference
-filter-lp2,biquad crate LP (RBJ-style),96000,64,NaN,NaN,-21.77,-87.81,-200.00,3384,25.88,true,-5.89,17,1.857,21.5,no Kontakt reference
-filter-lp2,sampler-core LP2 cascade,96000,512,NaN,NaN,-7.20,-87.82,-200.00,3397,4.20,true,-2.25,8,7.683,127.0,no Kontakt reference
-filter-lp2,biquad crate LP (RBJ-style),96000,512,NaN,NaN,1.33,-87.81,-200.00,3384,4.18,true,10.64,17,1.822,21.1,no Kontakt reference
-limiter,sampler-core DbLimiter,44100,32,NaN,NaN,-63.74,-53.46,-200.00,1566,12.82,true,1.26,0,12.745,168.3,no Kontakt reference
-limiter,look-ahead reference (bench),44100,32,NaN,NaN,-115.18,-102.82,-200.00,1344,2.27,true,0.00,222,4.135,110.4,no Kontakt reference
-limiter,sampler-core DbLimiter,44100,64,NaN,NaN,-63.74,-53.46,-200.00,1566,7.23,true,1.26,0,12.495,167.6,no Kontakt reference
-limiter,look-ahead reference (bench),44100,64,NaN,NaN,-115.18,-102.82,-200.00,1344,12.31,true,0.00,222,4.141,109.7,no Kontakt reference
-limiter,sampler-core DbLimiter,44100,512,NaN,NaN,-63.74,-53.46,-200.00,1566,3.33,true,1.26,0,12.556,167.0,no Kontakt reference
-limiter,look-ahead reference (bench),44100,512,NaN,NaN,-115.18,-102.82,-200.00,1344,4.54,true,0.00,222,4.190,109.1,no Kontakt reference
-limiter,sampler-core DbLimiter,48000,32,NaN,NaN,-56.49,-54.10,-200.00,1719,26.85,true,2.26,0,12.708,168.3,no Kontakt reference
-limiter,look-ahead reference (bench),48000,32,NaN,NaN,-111.16,-87.81,-200.00,1478,82.53,true,0.00,241,4.179,110.4,no Kontakt reference
-limiter,sampler-core DbLimiter,48000,64,NaN,NaN,-56.49,-54.10,-200.00,1719,3.41,true,2.26,0,13.244,167.6,no Kontakt reference
-limiter,look-ahead reference (bench),48000,64,NaN,NaN,-111.16,-87.81,-200.00,1478,7.96,true,0.00,241,4.122,109.7,no Kontakt reference
-limiter,sampler-core DbLimiter,48000,512,NaN,NaN,-56.49,-54.10,-200.00,1719,1.94,true,2.26,0,13.119,167.0,no Kontakt reference
-limiter,look-ahead reference (bench),48000,512,NaN,NaN,-111.16,-87.81,-200.00,1478,2.37,true,0.00,241,4.193,109.1,no Kontakt reference
-limiter,sampler-core DbLimiter,96000,32,NaN,NaN,-62.61,-57.14,-200.00,3417,14.85,true,1.74,0,13.440,168.3,no Kontakt reference
-limiter,look-ahead reference (bench),96000,32,NaN,NaN,-108.24,-87.82,-200.00,2936,27.60,true,0.00,481,4.200,110.4,no Kontakt reference
-limiter,sampler-core DbLimiter,96000,64,NaN,NaN,-62.61,-57.14,-200.00,3417,4.96,true,1.74,0,13.657,167.6,no Kontakt reference
-limiter,look-ahead reference (bench),96000,64,NaN,NaN,-108.24,-87.82,-200.00,2936,8.17,true,0.00,481,5.944,109.7,no Kontakt reference
-limiter,sampler-core DbLimiter,96000,512,NaN,NaN,-62.61,-57.14,-200.00,3417,3.16,true,1.74,0,17.115,167.0,no Kontakt reference
-limiter,look-ahead reference (bench),96000,512,NaN,NaN,-108.24,-87.82,-200.00,2936,1.97,true,0.00,481,4.229,109.1,no Kontakt reference
+resampler,sampler-core resample (High),48000,0,NaN,NaN,-64.42,-105.20,-200.00,0,0.00,true,-6.02,0,475.379,,no Kontakt reference
+resampler,rubato sinc (async),48000,0,NaN,NaN,-57.75,-105.20,-200.00,0,0.00,true,-6.02,0,275.404,,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,44100,32,NaN,NaN,-16.49,-105.19,-200.00,1560,4.42,true,-5.83,4,10.398,148.7,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),44100,32,NaN,NaN,-20.29,-105.20,-200.00,1553,28.00,true,-5.85,8,2.152,22.1,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,44100,64,NaN,NaN,-16.51,-105.19,-200.00,1560,5.67,true,-5.83,4,10.514,128.8,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),44100,64,NaN,NaN,-14.37,-105.20,-200.00,1553,17.79,true,-4.48,8,2.263,21.6,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,44100,512,NaN,NaN,-11.34,-105.19,-200.00,1560,1.57,true,-2.19,4,9.069,128.1,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),44100,512,NaN,NaN,-11.54,-105.20,-200.00,1553,1.10,true,3.22,8,1.888,21.1,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,48000,32,NaN,NaN,-17.11,-87.81,-200.00,1700,90.06,true,-5.88,4,9.597,148.5,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),48000,32,NaN,NaN,-21.58,-87.81,-200.00,1695,2.86,true,-5.95,9,1.952,22.0,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,48000,64,0.005,0.004,-17.11,-87.81,-200.00,1700,9.15,true,-5.88,4,8.126,128.6,faithful
+filter-lp2,biquad crate LP (RBJ-style),48000,64,8.732,0.004,-15.69,-87.81,-200.00,1695,1.64,true,-5.46,9,1.920,21.5,differs from Kontakt (character change)
+filter-lp2,sampler-core LP2 cascade,48000,512,NaN,NaN,-10.27,-87.81,-200.00,1700,3.21,true,-2.08,4,8.470,127.8,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),48000,512,NaN,NaN,-8.20,-87.81,-200.00,1695,15.64,true,12.88,9,2.069,21.1,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,96000,32,NaN,NaN,-22.67,-87.82,-200.00,3397,10.65,true,-6.00,8,10.270,145.5,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),96000,32,NaN,NaN,-29.68,-87.81,-200.00,3384,42.26,true,-6.04,17,2.118,22.0,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,96000,64,NaN,NaN,-22.66,-87.82,-200.00,3397,9.28,true,-6.00,8,8.506,127.4,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),96000,64,NaN,NaN,-21.77,-87.81,-200.00,3384,4.86,true,-5.89,17,1.970,21.5,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,96000,512,NaN,NaN,-7.20,-87.82,-200.00,3397,4.02,true,-2.25,8,9.290,126.5,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),96000,512,NaN,NaN,1.33,-87.81,-200.00,3384,3.25,true,10.64,17,1.884,21.1,no Kontakt reference
+limiter,sampler-core DbLimiter,44100,32,NaN,NaN,-63.74,-53.46,-200.00,1566,18.49,true,1.26,0,15.332,168.3,no Kontakt reference
+limiter,look-ahead reference (bench),44100,32,NaN,NaN,-115.18,-102.82,-200.00,1344,5.56,true,0.00,222,4.689,110.4,no Kontakt reference
+limiter,sampler-core DbLimiter,44100,64,NaN,NaN,-63.74,-53.46,-200.00,1566,5.09,true,1.26,0,14.064,167.6,no Kontakt reference
+limiter,look-ahead reference (bench),44100,64,NaN,NaN,-115.18,-102.82,-200.00,1344,7.58,true,0.00,222,4.724,109.7,no Kontakt reference
+limiter,sampler-core DbLimiter,44100,512,NaN,NaN,-63.74,-53.46,-200.00,1566,2.56,true,1.26,0,20.987,167.0,no Kontakt reference
+limiter,look-ahead reference (bench),44100,512,NaN,NaN,-115.18,-102.82,-200.00,1344,64.98,true,0.00,222,8.169,109.1,no Kontakt reference
+limiter,sampler-core DbLimiter,48000,32,NaN,NaN,-56.49,-54.10,-200.00,1719,675.13,true,2.26,0,19.227,168.3,no Kontakt reference
+limiter,look-ahead reference (bench),48000,32,NaN,NaN,-111.16,-87.81,-200.00,1478,10.96,true,0.00,241,4.850,110.4,no Kontakt reference
+limiter,sampler-core DbLimiter,48000,64,NaN,NaN,-56.49,-54.10,-200.00,1719,4.08,true,2.26,0,15.260,167.6,no Kontakt reference
+limiter,look-ahead reference (bench),48000,64,NaN,NaN,-111.16,-87.81,-200.00,1478,5.29,true,0.00,241,8.549,109.7,no Kontakt reference
+limiter,sampler-core DbLimiter,48000,512,NaN,NaN,-56.49,-54.10,-200.00,1719,1.68,true,2.26,0,13.948,167.0,no Kontakt reference
+limiter,look-ahead reference (bench),48000,512,NaN,NaN,-111.16,-87.81,-200.00,1478,1.64,true,0.00,241,4.729,109.2,no Kontakt reference
+limiter,sampler-core DbLimiter,96000,32,NaN,NaN,-62.61,-57.14,-200.00,3417,9.94,true,1.74,0,20.785,168.3,no Kontakt reference
+limiter,look-ahead reference (bench),96000,32,NaN,NaN,-108.24,-87.82,-200.00,2936,12.52,true,0.00,481,7.069,110.4,no Kontakt reference
+limiter,sampler-core DbLimiter,96000,64,NaN,NaN,-62.61,-57.14,-200.00,3417,5.91,true,1.74,0,14.603,167.6,no Kontakt reference
+limiter,look-ahead reference (bench),96000,64,NaN,NaN,-108.24,-87.82,-200.00,2936,10.95,true,0.00,481,12.798,109.7,no Kontakt reference
+limiter,sampler-core DbLimiter,96000,512,NaN,NaN,-62.61,-57.14,-200.00,3417,3.12,true,1.74,0,14.720,167.0,no Kontakt reference
+limiter,look-ahead reference (bench),96000,512,NaN,NaN,-108.24,-87.82,-200.00,2936,2.06,true,0.00,481,4.327,109.1,no Kontakt reference
+eq-bell,sampler-core Solid G-EQ designer,44100,32,NaN,NaN,-21.64,-105.21,-200.00,1529,44.25,true,0.51,0,2.062,25.2,no Kontakt reference
+eq-bell,Signalsmith BiquadStatic (Vicanek),44100,32,NaN,NaN,-21.68,-105.21,-200.00,1529,5.57,true,0.51,0,3.966,33.3,no Kontakt reference
+eq-bell,sampler-core Solid G-EQ designer,44100,64,7.322,0.273,-17.77,-105.21,-200.00,1529,5.14,true,1.02,0,2.016,24.6,differs from Kontakt (character change)
+eq-bell,Signalsmith BiquadStatic (Vicanek),44100,64,7.012,0.564,-17.82,-105.21,-200.00,1529,7.88,true,1.02,0,3.891,32.7,differs from Kontakt (character change)
+eq-bell,sampler-core Solid G-EQ designer,44100,512,NaN,NaN,-22.54,-105.21,-200.00,1529,1.68,true,0.52,0,2.022,24.1,no Kontakt reference
+eq-bell,Signalsmith BiquadStatic (Vicanek),44100,512,NaN,NaN,-22.47,-105.21,-200.00,1529,1.34,true,0.61,0,3.981,32.1,no Kontakt reference
+eq-bell,sampler-core Solid G-EQ designer,48000,32,NaN,NaN,-22.62,-87.81,-200.00,1662,27.00,true,0.42,0,1.948,25.2,no Kontakt reference
+eq-bell,Signalsmith BiquadStatic (Vicanek),48000,32,NaN,NaN,-22.66,-87.81,-200.00,1661,18.00,true,0.43,0,3.808,33.4,no Kontakt reference
+eq-bell,sampler-core Solid G-EQ designer,48000,64,7.323,0.273,-18.56,-87.81,-200.00,1662,5.50,true,0.89,0,2.049,24.6,differs from Kontakt (character change)
+eq-bell,Signalsmith BiquadStatic (Vicanek),48000,64,7.010,0.553,-18.59,-87.81,-200.00,1661,21.23,true,0.89,0,3.848,32.7,differs from Kontakt (character change)
+eq-bell,sampler-core Solid G-EQ designer,48000,512,NaN,NaN,-22.02,-87.81,-200.00,1662,9.44,true,1.76,0,1.869,24.1,no Kontakt reference
+eq-bell,Signalsmith BiquadStatic (Vicanek),48000,512,NaN,NaN,-21.92,-87.81,-200.00,1661,2.90,true,1.95,0,3.712,32.1,no Kontakt reference
+eq-bell,sampler-core Solid G-EQ designer,96000,32,NaN,NaN,-30.73,-87.82,-200.00,3325,2.38,true,0.25,0,1.904,25.1,no Kontakt reference
+eq-bell,Signalsmith BiquadStatic (Vicanek),96000,32,NaN,NaN,-30.75,-87.82,-200.00,3324,16.08,true,0.25,0,3.704,33.3,no Kontakt reference
+eq-bell,sampler-core Solid G-EQ designer,96000,64,7.325,0.287,-23.73,-87.82,-200.00,3325,15.29,true,0.46,0,1.950,24.6,differs from Kontakt (character change)
+eq-bell,Signalsmith BiquadStatic (Vicanek),96000,64,7.004,0.370,-23.73,-87.82,-200.00,3324,15.24,true,0.46,0,3.851,32.7,differs from Kontakt (character change)
+eq-bell,sampler-core Solid G-EQ designer,96000,512,NaN,NaN,-10.22,-87.82,-200.00,3325,1.10,true,5.29,0,1.871,24.1,no Kontakt reference
+eq-bell,Signalsmith BiquadStatic (Vicanek),96000,512,NaN,NaN,-10.22,-87.82,-200.00,3324,1.99,true,5.30,0,3.758,32.1,no Kontakt reference
+oversampler,sampler-core hiir 2x (20 kHz, 78 dB),44100,32,NaN,NaN,-88.65,-15.45,-200.00,1561,5.98,true,-11.18,3,14.594,219.4,no Kontakt reference
+oversampler,Signalsmith Oversampler2xFIR,44100,32,NaN,NaN,-87.63,-15.45,-200.00,1533,7.58,true,-12.05,32,41.519,717.5,no Kontakt reference
+oversampler,sampler-core hiir 2x (20 kHz, 78 dB),44100,64,NaN,NaN,-88.65,-15.45,-200.00,1561,31.39,true,-11.18,3,14.845,215.3,no Kontakt reference
+oversampler,Signalsmith Oversampler2xFIR,44100,64,NaN,NaN,-87.63,-15.45,-200.00,1533,2.22,true,-12.05,32,62.122,704.6,no Kontakt reference
+oversampler,sampler-core hiir 2x (20 kHz, 78 dB),44100,512,NaN,NaN,-88.65,-15.45,-200.00,1561,245.23,true,-11.18,3,17.851,211.5,no Kontakt reference
+oversampler,Signalsmith Oversampler2xFIR,44100,512,NaN,NaN,-87.63,-15.45,-200.00,1533,1.47,true,-12.05,32,61.966,693.6,no Kontakt reference
+oversampler,sampler-core hiir 2x (20 kHz, 78 dB),48000,32,NaN,NaN,-44.78,-15.45,-200.00,1704,9160.84,true,-11.16,3,17.509,219.3,no Kontakt reference
+oversampler,Signalsmith Oversampler2xFIR,48000,32,NaN,NaN,-41.75,-15.44,-200.00,1684,4.55,true,-12.18,32,63.230,717.4,no Kontakt reference
+oversampler,sampler-core hiir 2x (20 kHz, 78 dB),48000,64,NaN,NaN,-44.78,-15.45,-200.00,1704,2.40,true,-11.16,3,17.554,215.3,no Kontakt reference
+oversampler,Signalsmith Oversampler2xFIR,48000,64,NaN,NaN,-41.75,-15.44,-200.00,1684,777.02,true,-12.18,32,62.086,704.6,no Kontakt reference
+oversampler,sampler-core hiir 2x (20 kHz, 78 dB),48000,512,NaN,NaN,-44.78,-15.45,-200.00,1704,727.60,true,-11.16,3,17.841,211.5,no Kontakt reference
+oversampler,Signalsmith Oversampler2xFIR,48000,512,NaN,NaN,-41.75,-15.44,-200.00,1684,49.92,true,-12.18,32,59.091,693.6,no Kontakt reference
+oversampler,sampler-core hiir 2x (20 kHz, 78 dB),96000,32,NaN,NaN,-86.42,-15.22,-200.00,3402,152.93,true,-12.22,3,15.796,193.2,no Kontakt reference
+oversampler,Signalsmith Oversampler2xFIR,96000,32,NaN,NaN,-108.25,-15.22,-200.00,3383,27.80,true,-12.36,32,64.295,717.4,no Kontakt reference
+oversampler,sampler-core hiir 2x (20 kHz, 78 dB),96000,64,NaN,NaN,-86.42,-15.22,-200.00,3402,739.20,true,-12.22,3,15.374,189.1,no Kontakt reference
+oversampler,Signalsmith Oversampler2xFIR,96000,64,NaN,NaN,-108.25,-15.22,-200.00,3383,12.39,true,-12.36,32,66.062,704.5,no Kontakt reference
+oversampler,sampler-core hiir 2x (20 kHz, 78 dB),96000,512,NaN,NaN,-86.42,-15.22,-200.00,3402,1.58,true,-12.22,3,15.746,185.3,no Kontakt reference
+oversampler,Signalsmith Oversampler2xFIR,96000,512,NaN,NaN,-108.25,-15.22,-200.00,3383,85.32,true,-12.36,32,72.676,693.6,no Kontakt reference
+compressor,sampler-core generic compressor kernel,44100,32,NaN,NaN,NaN,-70.48,-200.00,1566,5.26,true,-13.76,0,34.545,272.6,no Kontakt reference
+compressor,Giannoulis/Massberg/Reiss gain computer (bench),44100,32,NaN,NaN,NaN,-70.48,-200.00,1566,2547.27,true,-13.76,0,32.556,238.6,no Kontakt reference
+compressor,sampler-core generic compressor kernel,44100,64,NaN,NaN,NaN,-70.48,-200.00,1566,2212.82,true,-13.76,0,33.722,260.5,no Kontakt reference
+compressor,Giannoulis/Massberg/Reiss gain computer (bench),44100,64,NaN,NaN,NaN,-70.48,-200.00,1566,2.71,true,-13.76,0,31.089,237.6,no Kontakt reference
+compressor,sampler-core generic compressor kernel,44100,512,NaN,NaN,NaN,-70.48,-200.00,1566,2.17,true,-13.76,0,33.991,259.7,no Kontakt reference
+compressor,Giannoulis/Massberg/Reiss gain computer (bench),44100,512,NaN,NaN,NaN,-70.48,-200.00,1566,1.29,true,-13.76,0,31.331,236.8,no Kontakt reference
+compressor,sampler-core generic compressor kernel,48000,32,NaN,NaN,NaN,-70.43,-200.00,1719,1761.52,true,-13.77,0,34.151,272.2,no Kontakt reference
+compressor,Giannoulis/Massberg/Reiss gain computer (bench),48000,32,NaN,NaN,NaN,-70.43,-200.00,1719,2561.87,true,-13.77,0,32.051,238.7,no Kontakt reference
+compressor,sampler-core generic compressor kernel,48000,64,NaN,NaN,NaN,-70.43,-200.00,1719,4.62,true,-13.77,0,32.766,260.1,no Kontakt reference
+compressor,Giannoulis/Massberg/Reiss gain computer (bench),48000,64,NaN,NaN,NaN,-70.43,-200.00,1719,602.22,true,-13.77,0,31.295,237.6,no Kontakt reference
+compressor,sampler-core generic compressor kernel,48000,512,NaN,NaN,NaN,-70.43,-200.00,1719,2.04,true,-13.77,0,33.402,259.4,no Kontakt reference
+compressor,Giannoulis/Massberg/Reiss gain computer (bench),48000,512,NaN,NaN,NaN,-70.43,-200.00,1719,3.71,true,-13.77,0,31.562,236.8,no Kontakt reference
+compressor,sampler-core generic compressor kernel,96000,32,NaN,NaN,NaN,-70.46,-200.00,3417,468.27,true,-13.76,0,33.716,271.2,no Kontakt reference
+compressor,Giannoulis/Massberg/Reiss gain computer (bench),96000,32,NaN,NaN,NaN,-70.46,-200.00,3417,67.48,true,-13.76,0,31.535,238.7,no Kontakt reference
+compressor,sampler-core generic compressor kernel,96000,64,NaN,NaN,NaN,-70.46,-200.00,3417,132.85,true,-13.76,0,33.022,259.1,no Kontakt reference
+compressor,Giannoulis/Massberg/Reiss gain computer (bench),96000,64,NaN,NaN,NaN,-70.46,-200.00,3417,648.53,true,-13.76,0,32.463,237.7,no Kontakt reference
+compressor,sampler-core generic compressor kernel,96000,512,NaN,NaN,NaN,-70.46,-200.00,3417,298.51,true,-13.76,0,32.845,258.4,no Kontakt reference
+compressor,Giannoulis/Massberg/Reiss gain computer (bench),96000,512,NaN,NaN,NaN,-70.46,-200.00,3417,140.47,true,-13.76,0,31.359,236.8,no Kontakt reference
+svf-ladder,sampler-core Ladder (legacy class 17),44100,32,NaN,NaN,-11.41,-78.73,-101.92,0,1002.01,true,-10.78,24,66.377,331.7,no Kontakt reference
+svf-ladder,Zavalishin TPT ladder, one-sample feedback (bench),44100,32,NaN,NaN,-25.15,-105.20,-200.00,1633,7007.26,true,-6.87,21,9.075,35.2,no Kontakt reference
+svf-ladder,sampler-core Ladder (legacy class 17),44100,64,NaN,NaN,-11.49,-78.73,-101.92,0,6.12,true,-10.79,24,65.050,316.6,no Kontakt reference
+svf-ladder,Zavalishin TPT ladder, one-sample feedback (bench),44100,64,NaN,NaN,-19.77,-105.20,-200.00,1633,369.35,true,-6.87,21,8.831,34.6,no Kontakt reference
+svf-ladder,sampler-core Ladder (legacy class 17),44100,512,NaN,NaN,-10.98,-78.73,-101.92,0,61.76,true,-10.79,24,65.024,315.0,no Kontakt reference
+svf-ladder,Zavalishin TPT ladder, one-sample feedback (bench),44100,512,NaN,NaN,-15.35,-105.20,-200.00,1633,1.66,true,-6.84,21,8.937,34.1,no Kontakt reference
+svf-ladder,sampler-core Ladder (legacy class 17),48000,32,NaN,NaN,-12.34,-78.29,-101.53,0,12.42,true,-10.64,26,66.776,331.4,no Kontakt reference
+svf-ladder,Zavalishin TPT ladder, one-sample feedback (bench),48000,32,NaN,NaN,-25.50,-87.81,-200.00,1774,12.87,true,-6.96,23,8.963,35.1,no Kontakt reference
+svf-ladder,sampler-core Ladder (legacy class 17),48000,64,0.038,0.005,-12.34,-78.29,-101.53,0,485.26,true,-10.64,26,64.326,315.5,faithful + cleaner
+svf-ladder,Zavalishin TPT ladder, one-sample feedback (bench),48000,64,5.996,0.123,-20.25,-87.81,-200.00,1774,5.00,true,-6.96,23,8.865,34.6,differs from Kontakt (character change)
+svf-ladder,sampler-core Ladder (legacy class 17),48000,512,NaN,NaN,-9.32,-78.29,-101.53,0,1.17,true,-10.65,26,63.322,315.6,no Kontakt reference
+svf-ladder,Zavalishin TPT ladder, one-sample feedback (bench),48000,512,NaN,NaN,-14.88,-87.81,-200.00,1774,1.41,true,-6.96,23,8.942,34.1,no Kontakt reference
+svf-ladder,sampler-core Ladder (legacy class 17),96000,32,NaN,NaN,-18.03,-78.64,-98.42,0,3.39,true,-9.72,54,62.274,329.2,no Kontakt reference
+svf-ladder,Zavalishin TPT ladder, one-sample feedback (bench),96000,32,NaN,NaN,-38.51,-87.82,-200.00,3557,9.53,true,-7.04,46,8.856,35.2,no Kontakt reference
+svf-ladder,sampler-core Ladder (legacy class 17),96000,64,NaN,NaN,-17.99,-78.64,-98.42,0,2.01,true,-9.72,54,62.109,315.1,no Kontakt reference
+svf-ladder,Zavalishin TPT ladder, one-sample feedback (bench),96000,64,NaN,NaN,-25.52,-87.82,-200.00,3557,6.41,true,-7.04,46,8.859,34.6,no Kontakt reference
+svf-ladder,sampler-core Ladder (legacy class 17),96000,512,NaN,NaN,-8.15,-78.64,-98.42,0,1.19,true,-9.76,54,61.949,313.9,no Kontakt reference
+svf-ladder,Zavalishin TPT ladder, one-sample feedback (bench),96000,512,NaN,NaN,-12.99,-87.82,-200.00,3557,1.53,true,-7.04,46,8.790,34.1,no Kontakt reference
