@@ -1234,6 +1234,12 @@ fn initialize_inner(
         #[cfg(feature = "scan")]
         scan::initialized(init.is_ok());
         let init = init?;
+        let mut hir = hir;
+        for (ui, params) in hir.uis.iter_mut().zip(&init.ui_params) {
+            if let Some(params) = params {
+                ui.params.clone_from(params);
+            }
+        }
         if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
             eprintln!(
                 "AUDIT {{\"stage\":\"ksp_on_init\",\"ms\":{}}}",

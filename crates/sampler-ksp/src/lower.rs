@@ -767,7 +767,7 @@ impl Gen<'_, '_> {
         match &s.kind {
             StmtKind::Assign(place, value) => self.assign(place, value),
             // Declaration initializers only occur in `on init`.
-            StmtKind::Fill(..) => Ok(()),
+            StmtKind::Fill(..) | StmtKind::UiParams(..) => Ok(()),
             StmtKind::If(cond, then, otherwise) => {
                 self.value(cond, 0)?;
                 let branch = self.jump_if_zero(0)?;

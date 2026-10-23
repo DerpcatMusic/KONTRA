@@ -1431,3 +1431,114 @@ fn real_exp2_log2_log10_note_match_manual_semantics() {
         assert_eq!(rt.note_count(), 0);
     });
 }
+
+#[test]
+fn a_declaration_range_can_use_the_instruments_group_count() {
+    let environment = sampler_ksp::Environment {
+        groups: vec!["a".into(), "b".into(), "c".into()],
+        ..Default::default()
+    };
+    let script = sampler_ksp::compile_with(
+        "on init declare ui_value_edit $shift (-($NUM_GROUPS-1),$NUM_GROUPS-1,1) end on",
+        48000,
+        limits(),
+        &[],
+        &environment,
+    )
+    .unwrap();
+    let view = script.view();
+    let setup = view.setup();
+    let field = setup.fields.iter().find(|f| f.name == "$shift").unwrap();
+    let sampler_ksp::model::Location::Control(id) = field.storage else {
+        panic!("{:?}", field.storage)
+    };
+    let domain = setup.control_domains.iter().find(|(c, _)| *c == id).unwrap().1;
+    assert_eq!(domain, sampler_core::ControlDomain::Integer { min: -2, max: 2 });
+}
+
+#[test]
+fn declaration_ranges_read_variables_where_on_init_reaches_them() {
+    let script = compile(
+        "on init
+            declare $lo
+            declare $hi
+            $lo := 0
+            $hi := 1000000
+            declare ui_slider $s ($lo, $hi)
+            $lo := 5
+            declare $low_note := 36
+            declare ui_value_edit $v ($low_note, $low_note + 12, 1)
+        end on",
+        48000,
+        limits(),
+    )
+    .unwrap();
+    let view = script.view();
+    let setup = view.setup();
+    let domain = |name: &str| {
+        let field = setup.fields.iter().find(|f| f.name == name).unwrap();
+        let sampler_ksp::model::Location::Control(id) = field.storage else {
+            panic!("{:?}", field.storage)
+        };
+        setup.control_domains.iter().find(|(c, _)| *c == id).unwrap().1
+    };
+    assert_eq!(domain("$s"), sampler_core::ControlDomain::Integer { min: 0, max: 1000000 });
+    assert_eq!(domain("$v"), sampler_core::ControlDomain::Integer { min: 36, max: 48 });
+}
+
+#[test]
+fn a_declaration_range_inside_an_always_true_if_reads_its_variable() {
+    let script = compile(
+        "on init
+            if (1=1)
+                declare $hi
+                $hi := 648
+                declare ui_slider $s (0, $hi)
+            end if
+        end on",
+        48000,
+        limits(),
+    )
+    .unwrap();
+    let view = script.view();
+    let widget = view.model().interface.widgets.iter().find(|w| w.name == "$s").unwrap();
+    assert_eq!(widget.range, Some((0, 648)));
+}
+
+#[test]
+fn a_variable_declaration_range_keeps_its_initializer_and_needs_to_run_once() {
+    let script = compile(
+        "on init declare $hi := 10 declare ui_knob $k (0, $hi, 1) := 5 end on",
+        48000,
+        limits(),
+    )
+    .unwrap();
+    let view = script.view();
+    let widget = view.model().interface.widgets.iter().find(|w| w.name == "$k").unwrap();
+    assert_eq!(widget.range, Some((0, 10)));
+    assert_eq!(widget.value, sampler_ksp::model::WidgetValue::Int(5));
+    // A skipped branch would leave the range unknown: still a compile error.
+    let error = compile(
+        "on init declare $hi := 10 if ($hi = 0) declare ui_knob $k (0, $hi, 1) end if end on",
+        48000,
+        limits(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.message, "constant integer expression required");
+}
+
+#[test]
+fn a_negative_range_starts_at_its_minimum() {
+    let script = compile(
+        "on init declare $lo := -10 declare ui_slider $v ($lo, -5) declare ui_slider $c (-10, -5) end on",
+        48000,
+        limits(),
+    )
+    .unwrap();
+    let view = script.view();
+    for name in ["$v", "$c"] {
+        let widget = view.model().interface.widgets.iter().find(|w| w.name == name).unwrap();
+        assert_eq!(widget.value, sampler_ksp::model::WidgetValue::Int(-10), "{name}");
+    }
+}

@@ -39,6 +39,10 @@ struct Sema<'a, 's> {
     in_init: bool,
     /// Function bodies are checked for their callers' context at lowering time.
     in_function: bool,
+    /// Nesting of the block being analysed; `on init`'s own body is 1.
+    depth: u32,
+    /// A declaration's init-time UI parameters, emitted before its initializer.
+    ui_params: Option<StmtKind>,
     loops: usize,
     /// Controls from the performance view file, once `load_performance_view` ran.
     performance_view: &'s [PerformanceControl],
@@ -62,6 +66,8 @@ pub fn analyze<'a, 's>(
         array_cells: 0,
         in_init: false,
         in_function: false,
+        depth: 0,
+        ui_params: None,
         loops: 0,
         performance_view,
         performance_loaded: false,
@@ -277,14 +283,23 @@ impl<'a> Sema<'a, '_> {
         self.syms.name(sym)
     }
 
+    // One frame per nesting level (with stmt): nesting tests run near the
+    // default test-thread stack.
     fn block(&mut self, body: &[ast::Stmt]) -> Result<Vec<Stmt>> {
+        self.depth += 1;
         let mut out = Vec::with_capacity(body.len());
         for s in body {
-            if let Some(kind) = self.stmt(s)? {
-                out.push(Stmt { span: s.span, kind });
-            }
+            let kind = self.stmt(s)?;
+            self.push(s.span, kind, &mut out);
         }
+        self.depth -= 1;
         Ok(out)
+    }
+
+    /// A statement, after the init-time UI parameters its declaration left.
+    #[inline(never)]
+    fn push(&mut self, span: Span, kind: Option<StmtKind>, out: &mut Vec<Stmt>) {
+        out.extend(self.ui_params.take().into_iter().chain(kind).map(|kind| Stmt { span, kind }));
     }
 
     fn stmt(&mut self, s: &ast::Stmt) -> Result<Option<StmtKind>> {
@@ -352,7 +367,13 @@ impl<'a> Sema<'a, '_> {
             }
             ast::StmtKind::If(cond, yes, no) => {
                 let cond = self.condition(cond)?;
-                StmtKind::If(cond, self.block(yes)?, self.block(no)?)
+                // `if (1=1)` around a whole on init runs its body exactly once,
+                // like the enclosing block.
+                let once = always_true(&self.hir, &cond);
+                self.depth -= u32::from(once);
+                let yes = self.block(yes)?;
+                self.depth += u32::from(once);
+                StmtKind::If(cond, yes, self.block(no)?)
             }
             ast::StmtKind::While(cond, body) => {
                 let cond = self.condition(cond)?;
@@ -591,6 +612,8 @@ impl<'a> Sema<'a, '_> {
         Ok(offset)
     }
 
+    /// The initializer a declaration runs in `on init`; deferred UI
+    /// parameters go to `ui_params`, which run first.
     fn declare(&mut self, d: &ast::Declare) -> Result<Option<StmtKind>> {
         let text = self.name(d.name);
         let span = d.name_span;
@@ -666,11 +689,23 @@ impl<'a> Sema<'a, '_> {
                 if (ty, array) != expected {
                     return fault(span, format!("{word} requires a different variable type"));
                 }
+                // A range read from variables runs where on init reaches it, so
+                // only a declaration that on init always reaches once may defer.
+                let ranged = matches!(kind, WidgetKind::Knob | WidgetKind::Slider | WidgetKind::ValueEdit)
+                    && self.depth == 1;
                 let mut params = Vec::with_capacity(d.params.len());
-                for p in &d.params {
-                    params.push(self.const_int(p)?);
+                let mut at_init = Vec::new();
+                for (i, p) in d.params.iter().enumerate() {
+                    match self.int_expr(p)? {
+                        (_, Some(n)) => params.push(n),
+                        (value, None) if ranged => {
+                            at_init.push((i as u8, value));
+                            params.push(0);
+                        }
+                        _ => return fault(p.span, "constant integer expression required"),
+                    }
                 }
-                Some((kind, params))
+                Some((kind, params, at_init))
             }
             None if !d.params.is_empty() => {
                 return fault(d.params[0].span, "only UI declarations take parameters");
@@ -678,7 +713,7 @@ impl<'a> Sema<'a, '_> {
             None => None,
         };
         let home = match (&ui, d.storage, len) {
-            (Some((kind, _)), _, None) if kind.has_control() => {
+            (Some((kind, _, _)), _, None) if kind.has_control() => {
                 Home::Control(self.hir.uis.len() as u32)
             }
             (_, Storage::Polyphonic, None) => {
@@ -721,7 +756,7 @@ impl<'a> Sema<'a, '_> {
                 span,
             },
         )?;
-        if let Some((kind, params)) = ui {
+        if let Some((kind, params, at_init)) = ui {
             self.hir.uis.push(Ui {
                 unresolved: false,
                 kind,
@@ -729,6 +764,10 @@ impl<'a> Sema<'a, '_> {
                 params,
                 callback: None,
             });
+            if !at_init.is_empty() {
+                self.hir.ui_params_at_init = true;
+                self.ui_params = Some(StmtKind::UiParams(ui_index.unwrap(), at_init));
+            }
         }
         if d.init.is_empty() {
             return Ok(None);
@@ -810,12 +849,21 @@ impl<'a> Sema<'a, '_> {
     }
 
     fn const_int(&mut self, e: &ast::Expr) -> Result<i32> {
-        let value = self.expr(e)?;
-        let value = self.coerce(value, Ty::Int)?;
-        match fold(&self.hir, &value) {
-            Some(Const::Int(n)) => Ok(n),
+        match self.int_expr(e)? {
+            (_, Some(n)) => Ok(n),
             _ => fault(e.span, "constant integer expression required"),
         }
+    }
+
+    /// An integer expression and its folded value, when it is constant.
+    fn int_expr(&mut self, e: &ast::Expr) -> Result<(Expr, Option<i32>)> {
+        let value = self.expr(e)?;
+        let value = self.coerce(value, Ty::Int)?;
+        let folded = match fold(&self.hir, &value) {
+            Some(Const::Int(n)) => Some(n),
+            _ => None,
+        };
+        Ok((value, folded))
     }
 
     fn condition(&mut self, e: &ast::Expr) -> Result<Expr> {
@@ -1396,6 +1444,10 @@ fn is_literal(e: &Expr) -> bool {
         ExprKind::Arith(_, l, r) => is_literal(l) && is_literal(r),
         _ => false,
     }
+}
+
+fn always_true(hir: &Hir, cond: &Expr) -> bool {
+    matches!(fold(hir, cond), Some(Const::Int(n)) if n != 0)
 }
 
 /// Compile-time evaluation of constant expressions with KSP integer semantics.
