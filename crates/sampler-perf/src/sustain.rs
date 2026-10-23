@@ -57,7 +57,7 @@ fn summary(mut times: Vec<u64>, block: usize) -> Value {
     unsafe_code,
     reason = "Read the thread CPU clock; no user/library data is exposed"
 )]
-fn cpu_ns(process: bool) -> u64 {
+pub(super) fn cpu_ns(process: bool) -> u64 {
     let mut time = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
@@ -69,7 +69,7 @@ fn cpu_ns(process: bool) -> u64 {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn cpu_ns(_: bool) -> u64 {
+pub(super) fn cpu_ns(_: bool) -> u64 {
     0
 }
 
