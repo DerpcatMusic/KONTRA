@@ -4,7 +4,7 @@
 //! micro-frame carry is kept per callback), so timing does not depend on how the
 //! caller splits its render blocks.
 
-use super::{Compiled, controls};
+use super::{Compiled, controls, request};
 use crate::builtins::FIRST_UI_ID;
 use crate::engine::{Call, Duration, EngineSink, Play, Recorder};
 use sampler_core::ModTarget;
@@ -68,6 +68,8 @@ pub struct Host {
     sink: Rc<RefCell<Box<dyn EngineSink>>>,
     controls: Rc<RefCell<controls::State>>,
     ui_meta: Rc<[controls::UiMeta]>,
+    /// Host requests in call order (`request::install`).
+    requests: request::Log,
     budget: Rc<Budget>,
 }
 
@@ -178,6 +180,8 @@ impl Host {
         let ui_state = Rc::new(RefCell::new(controls::State::new(&compiled.ui)));
         let ui_meta: Rc<[controls::UiMeta]> = compiled.ui.clone().into();
         controls::install(&lua, &host, &ui_state, &ui_meta)?;
+        let requests: request::Log = Rc::default();
+        request::install(&lua, &host, &requests)?;
         let cell_table = lua.create_table().map_err(|e| e.to_string())?;
         for i in 1..=i64::from(cells) {
             cell_table.raw_set(i, 0.0).map_err(|e| e.to_string())?;
@@ -219,6 +223,7 @@ impl Host {
             sink,
             controls: ui_state,
             ui_meta,
+            requests,
             budget,
         })
     }
@@ -389,6 +394,11 @@ impl Host {
     /// Control values by UI index (`Initial::controls`).
     pub fn controls(&self) -> Vec<i32> {
         self.controls.borrow().controls.clone()
+    }
+
+    /// Host requests in call order, as the interpreter's `Model::requests`.
+    pub fn requests(&self) -> Vec<(String, Vec<crate::model::Value>)> {
+        self.requests.borrow().clone()
     }
 
     /// Menu items per UI index, as `(text, value, visible)`.
