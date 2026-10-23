@@ -236,6 +236,9 @@ fn main() {
             sampler_kontakt::ResourceContainer::open(Path::new(&args[1])).expect("open archive");
         for name in &args[2..] {
             match container.read(name) {
+                Ok(Some(bytes)) if std::env::var_os("CENSUS_HEX").is_some() => {
+                    println!("{name}\t{} bytes\t{:02x?}", bytes.len(), &bytes[..bytes.len().min(256)]);
+                }
                 Ok(Some(bytes)) => println!("{name}\t{} bytes", bytes.len()),
                 Ok(None) => println!("{name}\tabsent"),
                 Err(e) => println!("{name}\t{e:?}"),
