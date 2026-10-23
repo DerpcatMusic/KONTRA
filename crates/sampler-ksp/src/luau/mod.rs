@@ -6,13 +6,14 @@
 //! conversion are done by the prelude below. Constructs outside the subset are
 //! not emitted: they are counted by name in [`Compiled::unsupported`].
 
-use crate::builtins::{self as b, Builtin, SysVar};
+use crate::builtins::{self as b, Builtin, SysArray, SysVar};
 use crate::hir::{Arg, Arith, CallbackKind, Case, Const, Expr, ExprKind, Hir, Home, Logic, Place, Stmt, StmtKind, Ty, VarId};
 use sampler_core::Comparison;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
 pub mod host;
+mod controllers;
 mod controls;
 mod keys;
 mod pgs;
@@ -209,6 +210,9 @@ fn compare(host: &host::Host, lowered: &Lowered, expected: &crate::eval::Initial
     if host.controls() != expected.controls {
         return Err(format!("controls differ: interpreter {:?}, luau {:?}", expected.controls, host.controls()));
     }
+    if host.controllers() != expected.model.controllers {
+        return Err(format!("set_controller writes differ: interpreter {:?}, luau {:?}", expected.model.controllers, host.controllers()));
+    }
     if host.properties() != expected.properties {
         return Err("control properties differ".into());
     }
@@ -269,12 +273,13 @@ impl Compiled {
 /// Compile every callback and function of `hir`. Never fails: unsupported sites
 /// are emitted as no-ops and counted, so the caller decides what to run.
 pub fn compile(hir: &Hir) -> Compiled {
-    let mut c = Compiler { hir, out: String::new(), unsupported: BTreeMap::new(), loops: 0, loops_seen: false, ui_id: None, note_ctx: false };
+    let mut c = Compiler { hir, out: String::new(), unsupported: BTreeMap::new(), loops: 0, loops_seen: false, ui_id: None, note_ctx: false, cc_ctx: None };
     controls::guard(hir, &mut c.unsupported);
     c.out.push_str(PRELUDE);
     c.out.push_str(pgs::PRELUDE);
     c.out.push_str(record::PRELUDE);
     c.out.push_str(keys::PRELUDE);
+    c.out.push_str(controllers::PRELUDE);
     c.out.push_str("local CB = {}\nlocal EV = 0\n");
     c.out.push_str("local SEP, GEP = HOST.set_engine_par, HOST.get_engine_par\n");
     if !hir.functions.is_empty() {
@@ -302,19 +307,35 @@ pub fn compile(hir: &Hir) -> Compiled {
                 }
             },
             CallbackKind::UiUpdate => ("ui_update".into(), "", "0".into()),
+            CallbackKind::Controller => {
+                // The interpreter runs `on controller` synchronously too; a wait would
+                // make the forwarding decision late, so such a body stays on the interpreter.
+                if crate::eval::may_suspend(hir, &cb.body, true) {
+                    c.unsupported("wait in on controller");
+                    continue;
+                }
+                ("controller".into(), "NUM", "0".into())
+            }
             other => {
                 c.unsupported(&format!("callback {other:?}"));
                 continue;
             }
         };
         let _ = writeln!(c.out, "CB.{key} = function({params})");
+        if cb.kind == CallbackKind::Controller {
+            c.out.push_str("CCN = NUM\nCCIG = false\n");
+        }
         c.ui_id = Some(ui_id);
         c.note_ctx = matches!(cb.kind, CallbackKind::Note);
+        c.cc_ctx = Some(cb.kind);
         c.block(&cb.body);
         c.ui_id = None;
         c.note_ctx = false;
+        c.cc_ctx = None;
         let _ = writeln!(c.out, "end");
     }
+    // The host reads this after `on controller`: true when the body called `ignore_controller`.
+    c.out.push_str("CB.cc_ignored = function() return CCIG end\n");
     // Pooled thread body: runs one callback, reports done with -1, then waits for the
     // next job, so a finished coroutine is reused instead of created per event.
     c.out.push_str("local function RUNNER(f, t, n, v, e)\n  while true do\n    NV, EV = t, e\n    f(n, v)\n    f, t, n, v, e = coroutine.yield(-1)\n  end\nend\n");
@@ -364,6 +385,8 @@ struct Compiler<'h> {
     ui_id: Option<String>,
     /// Compiling an `on note` body: `$EVENT_ID` and `play_note` are the note's own.
     note_ctx: bool,
+    /// The callback being compiled; `None` in functions, whose caller decides the context.
+    cc_ctx: Option<CallbackKind>,
     loops_seen: bool,
 }
 
@@ -659,6 +682,7 @@ impl Compiler<'_> {
                 None => "0".into(),
             },
             ExprKind::Sys(sys) => match sys {
+                SysVar::CcNum => self.cc_number(),
                 SysVar::EventNote => "NOTE".into(),
                 SysVar::EventId if self.note_ctx => "EV".into(),
                 SysVar::EventVelocity => "VEL".into(),
@@ -668,6 +692,7 @@ impl Compiler<'_> {
                 },
                 other => self.unsupported(&format!("sys {other:?}")),
             },
+            ExprKind::SysElem(SysArray::Cc, index) => self.cc_read(index),
             ExprKind::SysElem(array, _) => self.unsupported(&format!("sys array {array:?}")),
             ExprKind::Neg(inner) => match e.ty {
                 Ty::Real => format!("(-{})", self.expr(inner)),
@@ -905,7 +930,7 @@ impl Compiler<'_> {
             },
             Builtin::Search => self.search(args),
             Builtin::Sort => self.sort(args),
-            other => match self.control_builtin(other, args).or_else(|| self.pgs_builtin(other, args)).or_else(|| self.record_builtin(other, args)).or_else(|| self.key_builtin(other, args)) {
+            other => match self.control_builtin(other, args).or_else(|| self.pgs_builtin(other, args)).or_else(|| self.record_builtin(other, args)).or_else(|| self.key_builtin(other, args)).or_else(|| self.cc_builtin(other, args)) {
                 Some(call) => call,
                 None => self.unsupported(&format!("builtin {}", other.name())),
             },

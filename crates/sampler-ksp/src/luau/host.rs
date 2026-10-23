@@ -47,6 +47,13 @@ pub struct Host {
     /// `note` and `release` callbacks, looked up once.
     note_fn: Option<Function>,
     release_fn: Option<Function>,
+    /// `on controller`, and its `ignore_controller` flag reader.
+    controller_fn: Option<Function>,
+    cc_ignored_fn: Option<Function>,
+    /// Input bank: the last value of each controller number (`HOST.cc`).
+    cc: Table,
+    /// `set_controller` calls made in `on init`, as `Initial::model.controllers` holds them.
+    controllers: Rc<RefCell<Vec<(u8, u8)>>>,
     /// The chunk's pooled thread body (see `RUNNER` in `luau::compile`).
     runner: Function,
     /// Coroutines that finished their last callback, ready for the next job.
@@ -148,6 +155,27 @@ impl Host {
             .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
+        let controllers = Rc::new(RefCell::new(Vec::new()));
+        let store = Rc::clone(&controllers);
+        host.set(
+            "set_controller",
+            lua.create_function(move |_, (controller, value): (i64, i64)| {
+                // Out-of-byte numbers and values are ignored, as the interpreter does.
+                if let (Ok(c), Ok(v)) = (u8::try_from(controller), u8::try_from(value)) {
+                    let mut set = store.borrow_mut();
+                    set.retain(|&(x, _)| x != c);
+                    set.push((c, v));
+                }
+                Ok(0_i64)
+            })
+            .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let cc = lua.create_table().map_err(|e| e.to_string())?;
+        for i in 0..130_i64 {
+            cc.raw_set(i, 0.0).map_err(|e| e.to_string())?;
+        }
+        host.set("cc", cc.clone()).map_err(|e| e.to_string())?;
         let ui_state = Rc::new(RefCell::new(controls::State::new(&compiled.ui)));
         let ui_meta: Rc<[controls::UiMeta]> = compiled.ui.clone().into();
         controls::install(&lua, &host, &ui_state, &ui_meta)?;
@@ -170,6 +198,8 @@ impl Host {
         let runner: Function = callbacks.get("runner").map_err(|e| e.to_string())?;
         let note_fn = callbacks.get("note").map_err(|e| e.to_string())?;
         let release_fn = callbacks.get("release").map_err(|e| e.to_string())?;
+        let controller_fn = callbacks.get("controller").map_err(|e| e.to_string())?;
+        let cc_ignored_fn = callbacks.get("cc_ignored").map_err(|e| e.to_string())?;
         Ok(Self {
             lua,
             rate,
@@ -178,6 +208,10 @@ impl Host {
             callbacks,
             note_fn,
             release_fn,
+            controller_fn,
+            cc_ignored_fn,
+            cc,
+            controllers,
             runner,
             free: Vec::new(),
             free_notes: Vec::new(),
@@ -204,9 +238,37 @@ impl Host {
     /// Run `on init` to completion. Waits are no-ops there (interpreter parity).
     pub fn init(&mut self) -> Result<(), String> {
         let init: Option<Function> = self.callbacks.get("init").map_err(|e| e.to_string())?;
-        let Some(init) = init else { return Ok(()) };
+        let result = match init {
+            Some(init) => {
+                self.budget.refill(CALLBACK_CHECKPOINTS, None);
+                init.call::<()>(()).map_err(|e| e.to_string())
+            }
+            None => Ok(()),
+        };
+        // From here on `%CC[]` reads the bank; during init it reads 0 (interpreter parity).
+        self.cc.raw_set("live", true).map_err(|e| e.to_string())?;
+        result
+    }
+
+    /// A controller message `number` = `value` (the bank's raw 32-bit value) arrives: it
+    /// updates the bank, then runs `on controller`. Returns whether the message is forwarded
+    /// (false when the body called `ignore_controller`). Bodies cannot wait (see `compile`).
+    pub fn controller(&mut self, number: u8, value: u32) -> Result<bool, String> {
+        if number >= 130 {
+            return Err(format!("controller {number} out of range"));
+        }
+        self.cc.raw_set(i64::from(number), f64::from(value)).map_err(|e| e.to_string())?;
+        let Some(func) = self.controller_fn.clone() else { return Ok(true) };
         self.budget.refill(CALLBACK_CHECKPOINTS, None);
-        init.call::<()>(()).map_err(|e| e.to_string())
+        func.call::<()>(i64::from(number)).map_err(|e| e.to_string())?;
+        let ignored_fn = self.cc_ignored_fn.clone().ok_or("on controller without its flag reader")?;
+        let ignored: bool = ignored_fn.call(()).map_err(|e| e.to_string())?;
+        Ok(!ignored)
+    }
+
+    /// The `set_controller` calls of `on init`, as `Initial::model.controllers` holds them.
+    pub fn controllers(&self) -> Vec<(u8, u8)> {
+        self.controllers.borrow().clone()
     }
 
     /// The user changed UI control `ui` to `value`. The control takes the value (clamped), then
