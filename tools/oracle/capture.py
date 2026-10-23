@@ -248,12 +248,12 @@ def run_session(nkis, window, work, midi=None):
             sys.exit(f"Kontakt has no audio output ports; see {work / 'kontakt.log'}")
         keep = subprocess.Popen(["pw-cat", "-p", "--raw", "--rate", "48000", "--channels", "2", "--format", "f32",
                                  "--target", SINK, "/dev/zero"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        t_rec = time.monotonic()  # the WAV's sample 0 is at recorder start, so the clock starts here
         rec = subprocess.Popen(["pw-record", "--target", SINK, "-P", "{ stream.capture.sink=true }", "--rate", "48000",
                                 "--format", "f32", "--channels", "2", str(session)],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(1.5)
+        time.sleep(1.5)  # recorder start-up; no MIDI yet
         route_kontakt_to_sink()
-        t_rec = time.monotonic()
         player = subprocess.Popen(["aplaymidi", "-p", midi_port(), str(midi)],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         t_midi = time.monotonic() - t_rec

@@ -9,8 +9,9 @@ KONTRA_DIR:  <name>.wav from kontra_render.py (the same notes, starting at 0).
 Per instrument, over the first WINDOW seconds of the note scenario:
   level      integrated RMS and peak, dBFS, Kontakt minus KONTRA (L+R)
   onsets     10 ms envelope rises; per-note onset lag (Kontakt minus KONTRA) in ms
-  timing     the envelope cross-correlation lag (+-2.5 s, the Kontakt path adds about 1 s); the median over all instruments is the
+  timing     the envelope cross-correlation lag (+-2.5 s); renders are aligned by it before comparing; the median over all instruments is the
              systematic latency (audio path + MIDI), the per-instrument deviation from it is the diff
+  alignment  |timing deviation| >= 290 ms = the search hit its edge; timing and waveform are then void
   timbre     1/3-octave band levels after removing the broadband level offset: RMS of the residual, dB
   waveform   normalised cross-correlation at the best lag (+-20 ms) after the timing alignment;
              r near 1 = same sample and articulation; low r = wrong sample, articulation or
@@ -82,12 +83,13 @@ def onsets(env_db):
     return out
 
 
-def envelope_lag(ke, re, max_frames=250):
-    """Lag (frames) that maximises the correlation of the mean-removed envelopes; + means K later."""
+def envelope_lag(ke, re, center=0, span=250):
+    """Lag (frames) that maximises the correlation of the mean-removed envelopes, searched in
+    center +- span frames; + means K later."""
     n = min(len(ke), len(re))
     best, best_lag = -2.0, 0
     k, r = ke[:n] - ke[:n].mean(), re[:n] - re[:n].mean()
-    for lag in range(-max_frames, max_frames + 1):
+    for lag in range(center - span, center + span + 1):
         if lag >= 0:
             a, b = k[lag:], r[: n - lag]
         else:
@@ -147,26 +149,40 @@ def band_levels(x, n_fft=4096):
     return np.array(out)
 
 
-def compare_one(name, kontakt_path, kontra_path, window):
+def compare_one(name, kontakt_path, kontra_path, window, center_ms=None):
+    """Aligns the two renders first (envelope cross-correlation over +-2.5 s), then compares the
+    overlap of the first WINDOW seconds, so a systematic offset never truncates either side."""
     n = int(window * RATE)
-    k_full = load(kontakt_path)[:, int(PRE * RATE): int(PRE * RATE) + n]
-    r_full = load(kontra_path)[:, :n]
-    m = min(k_full.shape[1], r_full.shape[1])
-    k, r = k_full[:, :m], r_full[:, :m]
-    res = {"name": name, "seconds": m / RATE}
+    k_all = load(kontakt_path)[:, int(PRE * RATE):]  # from the slot start
+    r_all = load(kontra_path)  # from the slot start
+    res = {"name": name}
+    res["kontakt_rms_db"] = rms_db(k_all[:, :n])
+    res["kontra_rms_db"] = rms_db(r_all[:, :n])
+    if res["kontakt_rms_db"] < SILENT_DB or res["kontra_rms_db"] < SILENT_DB:
+        res["silent"] = "kontakt" if res["kontakt_rms_db"] < SILENT_DB else "kontra"
+        return res
+    if center_ms is None:  # first pass: coarse search over +-2.5 s
+        lag_frames, env_r = envelope_lag(envelope(k_all), envelope(r_all[:, : n + 2 * RATE]))
+    else:  # second pass: +-300 ms around the median lag, so a local envelope match cannot win
+        lag_frames, env_r = envelope_lag(envelope(k_all), envelope(r_all[:, : n + 2 * RATE]),
+                                         center=int(round(center_ms / 10.0)), span=30)
+    lag = lag_frames * RATE // 100  # samples; + means Kontakt is later
+    if lag >= 0:
+        k, r = k_all[:, lag:], r_all
+    else:
+        k, r = k_all, r_all[:, -lag:]
+    m = min(k.shape[1], r.shape[1], n)
+    k, r = k[:, :m], r[:, :m]
+    res["seconds"] = m / RATE
     res["kontakt_rms_db"] = rms_db(k)
     res["kontra_rms_db"] = rms_db(r)
     res["kontakt_peak_db"] = db(np.abs(k).max())
     res["kontra_peak_db"] = db(np.abs(r).max())
-    if res["kontakt_rms_db"] < SILENT_DB or res["kontra_rms_db"] < SILENT_DB:
-        res["silent"] = "kontakt" if res["kontakt_rms_db"] < SILENT_DB else "kontra"
-        return res
     res["level_diff_db"] = res["kontakt_rms_db"] - res["kontra_rms_db"]
     res["peak_diff_db"] = res["kontakt_peak_db"] - res["kontra_peak_db"]
-    ke, re = envelope(k), envelope(r)
-    lag_frames, env_r = envelope_lag(ke, re)
     res["env_lag_ms"] = lag_frames * 10.0
     res["env_r"] = env_r
+    ke, re = envelope(k), envelope(r)
     ko, ro = onsets(ke), onsets(re)
     res["onsets_kontakt_ms"] = [round(i * 10.0, 1) for i in ko]
     res["onsets_kontra_ms"] = [round(i * 10.0, 1) for i in ro]
@@ -174,14 +190,7 @@ def compare_one(name, kontakt_path, kontra_path, window):
     resid = (kb - rb) - np.median(kb - rb)
     res["timbre_db"] = float(np.sqrt(np.mean(resid ** 2)))
     res["band_diff_db"] = [round(float(v), 1) for v in (kb - rb)]
-    # waveform after the envelope alignment: shift Kontakt by the lag, then correlate
-    shift = int(round(res["env_lag_ms"] * RATE / 1000))
-    if shift >= 0:
-        kk, rr = k[:, shift:], r
-    else:
-        kk, rr = k, r[:, -shift:]
-    m2 = min(kk.shape[1], rr.shape[1])
-    fine_lag, fine_r = waveform_r(kk[:, :m2], rr[:, :m2])
+    fine_lag, fine_r = waveform_r(k[:, : 2 * RATE], r[:, : 2 * RATE])
     res["wave_r"] = fine_r
     res["wave_lag_ms"] = fine_lag * 1000.0 / RATE
     return res
@@ -199,20 +208,28 @@ def finish(rows):
         r["level_dev_db"] = r["level_diff_db"] - med_level
         r["timing_dev_ms"] = r["env_lag_ms"] - med_lag
         r["wave_lag_dev_ms"] = r["wave_lag_ms"] - med_wlag
+        # an envelope lag at the edge of its +-300 ms search is a failed alignment: timing and
+        # waveform say nothing about the instrument then
+        unreliable = abs(r["timing_dev_ms"]) >= 290
+        r["alignment_unreliable"] = unreliable
         flags = []
         if abs(r["level_dev_db"]) > LEVEL_TOL_DB:
             flags.append("level")
-        if abs(r["timing_dev_ms"]) > TIMING_TOL_MS:
-            flags.append("timing")
         if r["timbre_db"] > TIMBRE_TOL_DB:
             flags.append("timbre")
-        if r["wave_r"] < WAVE_R_MIN:
-            flags.append("sample/articulation/RR suspected")
-        elif abs(r["wave_lag_dev_ms"]) > 1.5:
-            flags.append("start offset")
+        if unreliable:
+            flags.append("alignment unreliable")
+        else:
+            if abs(r["timing_dev_ms"]) > TIMING_TOL_MS:
+                flags.append("timing")
+            if r["wave_r"] < WAVE_R_MIN:
+                flags.append("sample/articulation/RR suspected")
+            elif abs(r["wave_lag_dev_ms"]) > 1.5:
+                flags.append("start offset")
         r["flags"] = flags
-        r["severity"] = round(abs(r["level_dev_db"]) / LEVEL_TOL_DB + abs(r["timing_dev_ms"]) / TIMING_TOL_MS
-                              + r["timbre_db"] / TIMBRE_TOL_DB + 5 * (1 - r["wave_r"]), 3)
+        r["severity"] = round(abs(r["level_dev_db"]) / LEVEL_TOL_DB + r["timbre_db"] / TIMBRE_TOL_DB
+                              + (0 if unreliable else abs(r["timing_dev_ms"]) / TIMING_TOL_MS
+                                 + 5 * (1 - r["wave_r"])), 3)
     rows.sort(key=lambda r: (-(r.get("severity") or 0), r["name"]))
     return rows, {"median_level_offset_db": med_level, "median_env_lag_ms": med_lag}
 
@@ -257,6 +274,12 @@ def main():
             rows.append({"name": name, "silent": "capture" if not entry.get("wav") else "kontra", "error": entry.get("error", "")})
             continue
         rows.append(compare_one(name, entry["wav"], kontra, args.window))
+    coarse = [r["env_lag_ms"] for r in rows if "silent" not in r]
+    center = float(np.median(coarse)) if coarse else 0.0
+    for i, r in enumerate(rows):
+        if "silent" not in r:
+            rows[i] = compare_one(r["name"], manifest[r["name"]]["wav"], Path(args.kontra_dir) / f"{r['name']}.wav",
+                                  args.window, center_ms=center)
     out = finish(rows)
     if isinstance(out, tuple):
         rows, summary = out
