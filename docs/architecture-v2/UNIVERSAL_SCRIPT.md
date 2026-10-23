@@ -1,6 +1,6 @@
 # Universal script layer (`sampler-script`)
 
-Status: phase 1, 2026-10-23. Owner: script lane. Crate: `crates/sampler-script`.
+Status: phase 2, 2026-10-23 (phase 1 merged as #452). Owner: script lane. Crate: `crates/sampler-script`.
 
 ## Decision
 
@@ -113,14 +113,89 @@ path. Both are required before the JIT default is changed.
   callback-heavy programs measured with a real bank. Not changed here: another
   lane owns `perf/uvi-luau-jit`.
 
+## JIT policy (phase 2)
+
+Finding: mlua's default for `luau-jit` builds is `enable_jit = true`
+(`mlua/src/state/extra.rs`), so every chunk, in every VM, was natively
+compiled inside `load`. That is the "7 ms per VM" cost, and it is paid per
+module, not once. `new_vm` now sets the interpreter; `new_vm_with(mem,
+Jit::Native)` opts a VM in, and UVI exposes `Config::jit` (default
+`Interpreter`). Codegen happens at load only, so the switch applies to chunks
+loaded after it, not to running ones.
+
+`perf/uvi-luau-jit` is an ancestor of `main` (no unique commits), so there
+was nothing to duplicate.
+
+Measured per-module load, 19 embedded modules of Augmented Orchestra (389 KB
+source), best of 5, fresh VM per load:
+
+| Path | Compile from source | Bytecode load, interpreter | Bytecode load, native (default before) |
+|---|---|---|---|
+| layer.lua 115 KB | 3.4 ms | 0.13 ms | 2.5 ms |
+| part.lua 78 KB | 3.4 ms | 0.07 ms | 20.6 ms |
+| main.lua 69 KB | 2.1 ms | 0.06 ms | 14.7 ms |
+| arpeggiator.lua 36 KB | 1.2 ms | 0.04 ms | 8.0 ms |
+| small modules (7–26 KB) | 0.2–0.4 ms | 0.01–0.03 ms | 2–2.7 ms |
+
+## Bytecode cache (phase 2)
+
+`sampler_script::cached_bytecode(dir, source)`: BLAKE3 key over (crate
+version, source); file = magic + BLAKE3 of the bytecode + bytecode; write to a
+temp file, then rename. A bad checksum, truncation or junk is a miss: recompile
+and rewrite. Any cache I/O error falls back to compiling. Directory:
+`KONTRA_SCRIPT_CACHE` (empty disables), else `$XDG_CACHE_HOME/kontra/luau`,
+else `~/.cache/kontra/luau`. UVI's module `compile` and root-script load go
+through it (`chunk_bytes` in `script.rs`), except inspection builds, which need
+the coverage compiler.
+
+Whole-host effect, 4 Augmented Orchestra presets (`script_init_bench`): root
+scripts are 20 bytes, so `ScriptHost::new` is 615–765 ms with or without the
+cache. That time is the 18 MB program XML parse and host work, not Luau. The
+cache removes about 11 ms of module compile per VM only for programs that load
+these modules. Not measured on a program with a large root script: none of the
+survey's "~4 s" UVI programs has one (their time is sample loading, `load_ms`).
+
+## DAW-criteria checklist
+
+Status key: **M** measured here (numbers in the Measured table), **T** test
+in `crates/sampler-script/tests/daw_bounds.rs`, **P** partial, **O** open
+(not built in this pass).
+
+| # | Criterion | Status | Evidence / next step |
+|---|---|---|---|
+| 1 | Worst case per event, not mean (p99/p99.9/max, GC pause) | **M** | Measured table. Only synthetic `onNote`; real UVI callbacks not timed. |
+| 2 | No allocation or unbounded GC on the audio path | **P** | GC steps are bounded (`bounded_gc_step`, T). Memory cap per VM (T). Audio-thread placement of script callbacks is not verified here. |
+| 3 | Deterministic bounded execution; runaway aborts; error isolates | **T** | Budget stops at exactly limit+1 checkpoints; VM survives a refill (T). The host still needs to disable a faulting script. O. |
+| 4 | Sample-accurate event timing, wait() across block sizes, offline == realtime | **O** | Not built. UVI `wait` is a host-scheduled coroutine; no block-size trace test exists. |
+| 5 | Determinism for bounce and recall: seeded RNG, no wall clock, state save/restore, hot reload | **P** | Budget is checkpoint-based, not timer-based (T). `math.random` seeding exists only under the `scan` feature. Save/restore of script state: O. |
+| 6 | Threading: UI/file work through lock-free queues, no blocking | **O** | Not in this crate. Existing UVI command queues are not audited here. |
+| 7 | Many instances: per-VM memory and creation cost | **M** | ~0.43 MB per empty VM, ~0.48 MB with a callback chunk; create 0.23 ms native / 0.38 ms interp (includes stdlib setup). Per-voice script state: O. |
+| 8 | Tempo/transport, denormals, NaN/inf containment, int vs real | **O** | KSP int semantics belong to the KSP front end (not started). |
+| 9 | Startup off the UI thread; off-thread compile | **P** | Bytecode cache makes module load ~20-50x cheaper on the interpreter. Off-thread compile: O. |
+
+## Measured (2026-10-23, release, shared host, `daw_bench 20000`)
+
+| Metric | Interpreter | Native (JIT) |
+|---|---|---|
+| onNote (8-step loop, hooked with checkpoint), p50 / p99 / p99.9 / max | 230 / 320 / 600 / 38 591 ns | 140 / 181 / 320 / 29 670 ns |
+| GC slice, 8 steps, p50 / p99 / p99.9 / max | 2.2 / 2.6 / 4.4 / 17.6 µs | 2.2 / 2.3 / 4.5 / 9.2 µs |
+| VM create / empty heap / heap with callback chunk | 0.38 ms / 435 KB / 484 KB | 0.23 ms / 435 KB / 484 KB |
+| Runaway loop: checkpoints / wall time to abort | 1 000 001 / 7.5 ms | (interp only) |
+
+Max values are single outliers on a busy host, not bounds; the DAW target is
+the p99.9 column. A 230 ns callback is about 4.6 % of a 5 µs sample-voice
+budget, so one callback per note is affordable; a 30-40 µs max shows the host
+must keep callbacks off the audio thread or at block boundaries (items 2-3).
+
 ## Remaining
 
-1. UVI wait/spawn queue (`Waiting`, `advance`) into a generic scheduler in
-   `sampler-script`. Not started; entangled with input authority.
-2. KSP-to-Luau compiler and trace-equivalence on real corpus scripts. Not
-   started in this pass. Corpus dump tool exists
-   (`crates/sampler-kontakt/examples/dump_scripts.rs`); it was built, not run.
-3. Real UVI bank and KSP benchmarks (see Limits).
-4. Pre-existing failure: `cargo test -p sampler-uvi --test parity`
-   `ledger_matches_generated_table` (UVI_PARITY_LEDGER.md out of date). This
-   diff does not touch the ledger; not verified on main.
+1. KSP-to-Luau compiler: **not started**. Trace equivalence against the
+   existing KSP interpreter on >= 20 corpus scripts and per-event cost are
+   not done. Starting it needs KSP int/real typing and the event model
+   written down first.
+2. UVI wait/spawn queue into `sampler-script`: not started.
+3. Real UVI callback benchmark (not synthetic) and the DAW checklist items
+   marked O above.
+4. `UVI_PARITY_LEDGER.md` embeds `script.rs:LINE` in ~5 800 rows. Any edit to
+   `script.rs` moves those numbers and fails `ledger_matches_generated_table`
+   until the ledger is regenerated with `parity_summary -- --ledger`.
