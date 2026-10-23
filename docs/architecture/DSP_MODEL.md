@@ -313,6 +313,13 @@ line/RT60 tests in `space/design/tests.rs`, Plate/Raum fixtures referenced by th
 impulse latency at every ratio; bit-exact extraction or response/phase/RT60 gate.
 Estimate: 40–150 LOC; CPU ~0%; no whole reverb rewrite or generic dense-matrix substitution.
 
+**Status (PR for ticket 9): partial, net −12 LOC.** Admitted: `space/resample.rs` carried a second
+Bessel I0 (`i0` and `poly`, the Numerical Recipes polynomials and branch at 3.75). `kaiser::i0` and
+`kaiser::big` compute the same polynomials; they agreed bit for bit on 4000 points across both branches
+before the deletion. The resampler now uses the Kaiser module's functions. Not admitted: `space/shape.rs::
+bessel_i0`, a power series with different arithmetic and a different use (reverb damping), and the
+f32 `kaiser::Effektrig` / `hiir` filters, which keep their own register order (per the ticket).
+
 ### 10. Spatial and incomplete effect state (medium value, high integration risk)
 
 Files: `D/{surround_panner,ringmod,ring_ramp,stereo_tune,rotator,gater}.rs`,
