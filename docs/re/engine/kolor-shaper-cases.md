@@ -279,3 +279,34 @@ The pre-gain is multiplied with `param_7d4` and `param_7c0` (not decoded here).
 
 **Not done:** P/P2 fill (step 2), wiring the tick into the live path, and the Processor (step 4). The
 parity row stays `partial`; no mode flips.
+
+## Block process `14197a2c0` and prepare `141979410`: per-sample map (2026-10-23, step 5)
+
+Raw disassembly: `docs/re/disasm/kolor-14197a2c0.txt` (436 lines), `docs/re/disasm/kolor-prepare-141979410.txt`
+(348 lines). Read by hand, no port yet. Decompile cross-check: `0141970000.c`.
+
+Outer loop over the `n` samples (`arg4`, `[var_24h]`), inner loop over channels `k = 0, 1`. Per sample:
+
+1. Control refresh if `core+0x515` (`141940330`, notify slots at `+0xd0`), then the 14 knob slots at `+0x5c` are re-read from `+0x480` when `+0x498` says so.
+2. Gain smoother on `+0x7e4` toward `+0x7e8` with coefficient `+0x7e0`; snaps and sets word `+0x7f0 = 0x100` below `+0x7ec`.
+3. Per channel `k`: `u_k = in_k[n] * g_s * DAT_14769aed0[mode] * (+0x7d4) * (+0x7c0)`, kept in a stack pair.
+4. Section chain on the object at `core+0x9568` (48-byte stride per channel): a two-state zero-delay section, then the shaper dispatch `1419749f0` on the object at `core + 0x800 + (mode*2+k)*0x700` with `x` at `[var_20h]`. Output `y` in xmm0.
+5. Post: `y` goes through a second zero-delay section on the `+0x5c..+0x60` state with `+0x54/+0x58/+0x3c/+0x40` coefficients, then `* DAT_14769aea8[mode]`.
+   - `*(+0x9400)` is multiplied **only for modes 2 and 5** (`cmp ecx,2 / cmp ecx,5`, `14197a620`). Its writer is `FUN_141977ca0` (`0141970000.c:6480`, knob at `core+0x68` = knob 3 = **drive**): `+0x7d4 = d*d*C + D`, `+0x7d8 = 1/sqrt(+0x7d4)`, `+0x9400 = 1 - d*K` for `d <= +0x30`, else `0.5`. So the modes 2/5 "post multiplier" is a drive-driven gain, not a biquad.
+   - Mode 4 (`cmp ecx,4`) runs an extra section on `+0x9568`-stride state `-0x138..-0x158` (before the bank below).
+6. Bank: sections at `core+0x9484` (`+0x24` per channel) and `core+0x9670` (`+0x40` per channel), and `core+0x9708` (`+0x34` per channel), each a zero-delay one-pole/biquad with coefficients laid out as in prepare.
+7. Output for channel `k` is written to `out_k[n]` after a mix with the dry input through `wet = core+0x78` (knob 7). The exact mix formula is **not verified** (read by eye only). Then a level detector: `+0x9748` is updated with `+0x9754` (attack) or `+0x9758` (release), chosen by comparison, and stored at `+0x7d0`. Consumer of `+0x7d0` not found.
+
+**Prepare `141979410`** (rate `xmm1`, stored in `xmm8`): fills coefficient blocks from the rate with `tan`-style
+pre-warp via helper `14195c0f0` (183 B, a copy-then-scale helper). Loops: `+0x9404` (6 sections, `0x30` stride, `rsi`
+from `+0x9404+4`), then `+0x9464` (`0x24` stride, 3 entries), `+0x94ac` and `+0x94f4` (`0x24` stride, 2 each). Constants:
+`0x40490fdb` (pi), `0x3eaaaaab` (1/3), `0x3e088889`, `0x3f2a152d`, `0x3e70f0f1`, `0x3f34b4b5`, `0x41200000` (10.0),
+`0x3fb504f3` (1/sqrt 2, the Butterworth Q). The coefficient formulas are not yet mapped to sections one by one.
+
+What this means for the parity row:
+
+- Modes 2 and 5 mismatch comes from the sections in steps 4-6 and the drive-dependent `+0x9400`, not from a single missing "post-shaper biquad". Porting needs prepare's coefficient blocks at the exact offsets above.
+- `P2`/`S` (shaper source block, `this[9]` at `core+0x4c8`) is still unassigned on the live path.
+
+Open after this pass: map prepare's coefficient blocks to sections; confirm the dry/wet mix formula against
+`kolor_native_vectors.json`; read `14195c0f0` fully; find the consumer of `+0x7d0`.
