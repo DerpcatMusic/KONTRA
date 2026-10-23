@@ -194,6 +194,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn library_nka_takes_its_member_identity_and_a_short_prefix() {
+        // Conflux: a `%num_IRs` header under the member `gui__fx__num_irs`, and
+        // `!gui__fx__IR_names[128]` with only 2 names in the file.
+        let count = ArrayFileArray {
+            key: 0,
+            name: Text::new("%gui__fx__num_IRs"),
+            kind: ArrayFileKind::Integer,
+            offset: 0,
+            len: 1,
+        };
+        let done = ArrayFileCompletion::from_bytes(count, b"%num_IRs\n8\n").unwrap();
+        assert_eq!(done.numbers(), &[8]);
+        let names = ArrayFileArray {
+            name: Text::new("!gui__fx__IR_names"),
+            kind: ArrayFileKind::Text,
+            len: 128,
+            ..count
+        };
+        let done = ArrayFileCompletion::from_bytes(names, b"!gui__fx__IR_names\nChamber\nHall\n").unwrap();
+        assert_eq!(done.texts().len(), 2);
+        // Explicit path reads keep the header name and exact length checks.
+        assert!(decode(count, &b"%other\n1\n"[..], false).is_err());
+        assert!(decode(count, &b"%num_IRs\n1\n"[..], false).is_err());
+    }
+
+    #[test]
     fn snapshot_jobs_scale_concurrency_without_rejecting_large_arrays() {
         // Large payloads get one reserved slot; only arithmetic overflow fails.
         let numbers = SNAPSHOT_TARGET_BYTES / std::mem::size_of::<i64>();
@@ -364,7 +390,7 @@ impl ArrayFileCompletion {
             path: Text::default(),
             write: false,
             captured: true,
-            payload: decode(array, bytes)?,
+            payload: decode(array, bytes, true)?,
         })
     }
     pub fn numbers(&self) -> &[i64] {
@@ -403,7 +429,7 @@ impl ArrayFileCompletion {
             if !file.metadata().map_err(|_| Error::InvalidInput)?.is_file() {
                 return Err(Error::InvalidInput);
             }
-            self.payload = decode(self.array, BufReader::new(file))?;
+            self.payload = decode(self.array, BufReader::new(file), false)?;
         }
         self.success = true;
         Ok(())
@@ -416,12 +442,16 @@ fn validate_path(path: &str) -> Result<(), Error> {
         Ok(())
     }
 }
-fn decode(array: ArrayFileArray, mut reader: impl BufRead) -> Result<ArrayFilePayload, Error> {
+/// `library` reads a Kontakt data-folder member (`Resources/data/*.nka`), which
+/// the container already identifies: its header name is informational (Conflux
+/// writes `%num_IRs` for `%gui__fx__num_IRs`), and a short file leaves the
+/// rest of the declared array as it was, as Kontakt does.
+fn decode(array: ArrayFileArray, mut reader: impl BufRead, library: bool) -> Result<ArrayFilePayload, Error> {
     let mut line = String::new();
     reader
         .read_line(&mut line)
         .map_err(|_| Error::InvalidInput)?;
-    if line.lines().next() != Some(array.name.as_str()) {
+    if !library && line.lines().next() != Some(array.name.as_str()) {
         return Err(Error::InvalidInput);
     }
     let mut payload = ArrayFilePayload::prepared(
@@ -443,6 +473,9 @@ fn decode(array: ArrayFileArray, mut reader: impl BufRead) -> Result<ArrayFilePa
             .map_err(|_| Error::InvalidInput)?
             == 0
         {
+            if library {
+                break;
+            }
             return Err(Error::InvalidInput);
         }
         let value = line.lines().next().unwrap_or("");
@@ -468,7 +501,11 @@ fn decode(array: ArrayFileArray, mut reader: impl BufRead) -> Result<ArrayFilePa
     }
     // Values past the declared length are ignored, as Kontakt does: a library
     // shares one data file between instruments that declare fewer entries.
-    if !payload.valid(array) {
+    let read = ArrayFileArray {
+        len: (payload.numbers.len() + payload.texts.len()) as u32,
+        ..array
+    };
+    if !payload.valid(if library { read } else { array }) {
         return Err(Error::InvalidInput);
     }
     Ok(payload)

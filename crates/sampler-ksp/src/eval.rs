@@ -2231,7 +2231,9 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                                 self.st.texts[cell] = value.as_str().to_owned();
                             }
                         } else {
-                            self.st.cells[range].copy_from_slice(output.numbers());
+                            // A short data file fills its prefix; the rest keeps its value.
+                            let cells = &mut self.st.cells[range.start..range.start + output.numbers().len()];
+                            cells.copy_from_slice(output.numbers());
                         }
                         Some(())
                     });
