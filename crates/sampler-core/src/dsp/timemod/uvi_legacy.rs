@@ -12,6 +12,7 @@
 //! - F: the legacy cutoff biquad (`0x14156b1e0` → `0x141243ec0`), DF-I.
 
 use super::{Planar, ProcessorState, TimeMod};
+use super::cubic;
 use crate::dsp::kernels::uvi_legacy_cutoff;
 use sampler_ir::fx::timemod::{UviLegacyDelay, UviLegacyKind};
 
@@ -39,8 +40,7 @@ fn catmull(ring: &[[f64; 2]], n: usize, c: usize, pos: f32) -> f32 {
     let i = pos as usize;
     let f = pos - i as f32;
     let at = |k: usize| ring[k % n][c] as f32;
-    let (p0, p1, p2, p3) = (at(i + n - 1), at(i), at(i + 1), at(i + 2));
-    ((((p0 - p1 * 2.5) + p2 + p2 - p3 * 0.5) + ((p1 - p2) * 1.5 + (p3 - p0) * 0.5) * f) * f + (p2 - p0) * 0.5) * f + p1
+    cubic(at(i + n - 1), at(i), at(i + 1), at(i + 2), f)
 }
 
 impl TimeMod {

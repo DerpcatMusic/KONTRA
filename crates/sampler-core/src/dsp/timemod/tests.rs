@@ -554,3 +554,14 @@ fn phaser_filter_matches_kontakt_measurements() {
         }
     }
 }
+
+#[test]
+fn shared_cubic_is_the_catmull_rom_reader_bit_for_bit() {
+    // The UVI legacy reader's expression as it was written before the shared `cubic`.
+    for k in 0..256 {
+        let f = k as f32 / 256.;
+        let (p0, p1, p2, p3) = (0.3f32, -1.7 + k as f32 * 0.01, 2.2f32, -0.4f32 + f * 0.9);
+        let want = ((((p0 - p1 * 2.5) + p2 + p2 - p3 * 0.5) + ((p1 - p2) * 1.5 + (p3 - p0) * 0.5) * f) * f + (p2 - p0) * 0.5) * f + p1;
+        assert_eq!(super::cubic(p0, p1, p2, p3, f).to_bits(), want.to_bits(), "k {k}");
+    }
+}
