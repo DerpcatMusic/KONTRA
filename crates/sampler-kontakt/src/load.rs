@@ -563,10 +563,22 @@ pub fn power_on_ccs(instrument: &ir::Instrument) -> Vec<(u8, u8)> {
         .collect()
 }
 
+/// [`power_on_ccs`] minus the controllers the prepared plan's script init
+/// already set: init ran first, so its value is the instrument's power-on state.
+pub fn power_on_for(instrument: &ir::Instrument, plan: &Prepared) -> Vec<(u8, u8)> {
+    let init: Vec<u8> = plan.initialized_controllers().collect();
+    power_on_ccs(instrument)
+        .into_iter()
+        .filter(|(cc, _)| !init.contains(cc))
+        .collect()
+}
+
 fn powered(plan: Prepared, instrument: &ir::Instrument, dynamics: &[(u8, f64)]) -> Prepared {
+    // Script init wrote these during compile; its values beat the table's.
+    let init: Vec<u8> = plan.initialized_controllers().collect();
     let plan = dynamics
         .iter()
-        .filter(|&&(cc, v)| cc != 11 && v != 0.0)
+        .filter(|&&(cc, v)| cc != 11 && v != 0.0 && !init.contains(&cc))
         .fold(plan, |plan, &(cc, v)| plan.with_initial_level(cc, v));
     match instrument.host_volume.filter(|v| v.saved > 0.0) {
         Some(v) if !instrument.zones.is_empty() => {
