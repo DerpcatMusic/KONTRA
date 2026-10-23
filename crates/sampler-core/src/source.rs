@@ -1694,6 +1694,7 @@ impl Cursor {
     ) {
         let (mut fraction, step, mut offset, mut last) = (self.fraction, self.step(), 0, self.last);
         let (chunks, tail) = output.as_chunks_mut::<4>();
+        let constant = envelope.constant_level();
         for chunk in chunks {
             let mut phases = [0.; 4];
             let mut windows = [&span[..0]; 4];
@@ -1708,7 +1709,7 @@ impl Cursor {
             let sources = bank.dot_four::<FUSED>(phases, windows);
             for (frame, source) in chunk.iter_mut().zip(sources) {
                 last = if source.iter().all(|value| value.is_finite()) { source } else { [0.; 2] };
-                let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
+                let level = constant.unwrap_or_else(|| envelope.constant_level().unwrap_or_else(|| envelope.next()));
                 for channel in 0..2 {
                     frame[channel] += source[channel] * gain * gains[channel] * level;
                 }
@@ -1737,6 +1738,9 @@ impl Cursor {
         sample: impl Fn(f64, &[Frame]) -> Frame,
     ) {
         let (mut fraction, step, mut offset, mut last) = (self.fraction, self.step(), 0, self.last);
+        // A sustained envelope cannot change while the run reads its constant,
+        // so the check is made once per run; any other level still advances per frame.
+        let constant = envelope.constant_level();
         for frame in output {
             let source = sample(fraction, &span[offset..offset + width]);
             last = if source.iter().all(|value| value.is_finite()) {
@@ -1744,7 +1748,7 @@ impl Cursor {
             } else {
                 [0.; 2]
             };
-            let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
+            let level = constant.unwrap_or_else(|| envelope.constant_level().unwrap_or_else(|| envelope.next()));
             for channel in 0..2 {
                 frame[channel] += source[channel] * gain * gains[channel] * level;
             }
