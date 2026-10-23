@@ -587,9 +587,7 @@ impl SampleReader {
                 bytes.seek(SeekFrom::Start((wav.data.start + start * align) as u64))?;
                 self.scratch.resize(out.len() * align, 0);
                 bytes.read_exact(&mut self.scratch)?;
-                for (frame, data) in out.iter_mut().zip(self.scratch.chunks_exact(align)) {
-                    *frame = wav.frame(data);
-                }
+                wav.frames_into(&self.scratch, out);
             }
             Codec::Ncw(reader) => {
                 const BLOCK: usize = ncw::NcwReader::<Bytes>::FRAMES_PER_BLOCK;
@@ -4817,5 +4815,68 @@ mod wide_ncw_workspace_tests {
             assert!(reader.cache_bytes().unwrap()+transient<=limit);
         }
         std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+/// Ignored CPU receipt for the disk read path: sequential `read` of a 16-bit stereo WAV that
+/// does not fit one `BUFFER` refill. Run: `KONTRA_STREAM_BENCH_DIR=<scratch dir> nice -n 10
+/// build-slot cargo test --release -p sampler-kontakt --lib stream_read_receipt -- --ignored --nocapture`.
+#[cfg(test)]
+mod stream_read_receipt {
+    use super::*;
+    use std::{hint::black_box, time::Instant};
+
+    const FRAMES: usize = 1 << 22;
+    const REPEATS: usize = 7;
+
+    fn wav() -> Vec<u8> {
+        let data_bytes = (FRAMES * 4) as u32;
+        let mut v = b"RIFF".to_vec();
+        v.extend((36 + data_bytes).to_le_bytes());
+        v.extend(b"WAVEfmt ");
+        v.extend(16u32.to_le_bytes());
+        v.extend(1u16.to_le_bytes());
+        v.extend(2u16.to_le_bytes());
+        v.extend(48000u32.to_le_bytes());
+        v.extend(192000u32.to_le_bytes());
+        v.extend(4u16.to_le_bytes());
+        v.extend(16u16.to_le_bytes());
+        v.extend(b"data");
+        v.extend(data_bytes.to_le_bytes());
+        for i in 0..FRAMES {
+            v.extend(((i % 30000) as i16).to_le_bytes());
+            v.extend((-((i % 30000) as i16)).to_le_bytes());
+        }
+        v
+    }
+
+    #[test]
+    #[ignore = "disk read CPU receipt; needs KONTRA_STREAM_BENCH_DIR, run --release"]
+    fn stream_read_receipt() {
+        let dir = std::path::PathBuf::from(
+            std::env::var("KONTRA_STREAM_BENCH_DIR").expect("set KONTRA_STREAM_BENCH_DIR"),
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("receipt.wav");
+        std::fs::write(&path, wav()).unwrap();
+        let mut source = crate::Samples::new(&dir).source(&path).unwrap();
+        source.handle = Some(Arc::new(File::open(&path).unwrap()));
+        for block in [64usize, 4096] {
+            let mut best = f64::MAX;
+            for _ in 0..REPEATS {
+                let mut reader = source.open().unwrap();
+                let mut out = vec![[0.0_f32; 2]; block];
+                let started = Instant::now();
+                let mut start = 0;
+                while start + block <= FRAMES {
+                    reader.read(start, &mut out).unwrap();
+                    black_box(&out);
+                    start += block;
+                }
+                let ns = started.elapsed().as_nanos() as f64 / start as f64;
+                best = best.min(ns);
+            }
+            println!("stream_read_receipt block={block:<5} ns/frame={best:.2}");
+        }
     }
 }
