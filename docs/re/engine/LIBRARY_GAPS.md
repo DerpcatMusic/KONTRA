@@ -158,4 +158,14 @@ Update (branch `fix-conflux-dark-context-level`, 2026-10-23): **Conflux 'Dark Co
   | this branch, effects unresolved, filters resolved, set fix | -13.49 | -11.47 |
 
   The shift comes from `$EFFECT_TYPE_*` resolution (#356), not from the filter or init work: disabling only effect resolution restores the pre-#356 values (Blessed -11.47 equals the survey value exactly). Effect-type PE values are unmeasured against stored subtype ids, the same class of mismatch #429 found for filters, so the resolved effect values are not evidence of correct behaviour. Open: measure the effect-type subtype ids (as `filter-type-ids.tsv` does) before deciding whether the survey values or the resolved values are intended.
+- **Effect-type branch, measured (2026-10-23, `ksp-effect-type-ids`).** The premise did not hold on current `origin/main` (#430 merged). Single-instrument `corpus-health run --tier full`, program 1 peak:
+
+  | state | Blessed Emotions | Conflux Arps | Dark Context |
+  |---|---|---|---|
+  | survey (2026-10-22) | -11.47 | -13.14 | -11.9 |
+  | origin/main, `$EFFECT_TYPE_*` resolved to PE values | -11.35 | -15.39 | -11.94 |
+  | `$EFFECT_TYPE_*` opaque (unresolved) | -12.03 | -15.39 | -11.94 |
+
+  Disabling effect resolution does not restore the survey: it moves Blessed away from it and leaves Arps unchanged. The Arps gap (about 2.2 dB) and the Blessed offset are not explained by `$EFFECT_TYPE_*` resolution. Resolution is kept.
+- **Subtype ids: not measured.** `tools/kontakt-oracle/probe_fx.py` on `Effects/Chorus` (EFFECT_SUBTYPE 0-30) and `Effects/Compressor` (EFFECT_SUBTYPE 0-5, 623, 651, plus EFFECT_TYPE) returned no changed field, and a full-parameter scan of `Effects/Chorus` returned zero changed fields. The same harness moves `Filters/EQ` (`EFFECT_SUBTYPE` 2 stored as 2), so the effect-preset probe, not the harness, is the suspect. Next: find the field that holds the effect's type in the effect object (the Chorus object reads as `BParFX` 0x50, field 0 = 16 at every value), or measure the setter's acceptance from the decompile. `docs/re/kontakt-bindings/effect-type-ids.tsv` lists all 68 names as `unmeasured`; `every_effect_type_constant_has_a_measurement_row` keeps the table complete.
 - **Other Conflux multis, single-instrument run after the fix (survey peak → now, program 1):** Big Screen -13.81 → -13.81; Blessed Emotions -11.47 → -11.91; Cold Antarctica -17.68 → -17.68; Conflux Arps -13.14 → -16.00; Different Places -17.38 → -17.38. Only Dark Context was in the init-cut class; the Arps and Blessed moves are the effect-type resolution above.
