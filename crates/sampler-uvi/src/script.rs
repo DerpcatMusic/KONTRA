@@ -1576,11 +1576,14 @@ impl ScriptHost {
         let pristine = input_authority::fresh_environment(&lua, &lua.globals()).map_err(lua_error)?;
         *shared.pristine_globals.borrow_mut()=Some(lua.create_registry_value(pristine).map_err(lua_error)?);
         let host = Self { lua, shared };
-        let initialized = host
-            .install()
-            .and_then(|_| host.build_program(&doc))
-            .map_err(lua_error)
-            .and_then(|_| host.load_scripts(&doc, state));
+        let mut trace = crate::LoadTrace::start();
+        trace.phase("host_setup");
+        let installed = host.install().map_err(lua_error);
+        trace.phase("install_api");
+        let built = installed.and_then(|_| host.build_program(&doc).map_err(lua_error));
+        trace.phase("build_program");
+        let initialized = built.and_then(|_| host.load_scripts(&doc, state));
+        trace.phase("load_scripts");
         #[cfg(feature = "scan")]
         for (name, (calls, elapsed)) in host.shared.init_api.borrow().iter() {
             eprintln!(
@@ -1616,6 +1619,7 @@ impl ScriptHost {
             let final_doc = crate::parse_program_xml(&final_xml).map_err(|e|e.to_string())?;
             host.shared.sample_loads.borrow_mut().refresh_initial(&final_doc)?;
         }
+        trace.phase("refresh_check");
         host.shared.initializing.set(false);
         host.shared.staged_preparation.set(false);
         Ok(host)
@@ -1928,7 +1932,10 @@ impl ScriptHost {
         let s = shared.clone();
         // v1 host.rs keeps inventories in Lua; retain one private scalar schema per kind.
         let schemas = lua.create_table()?;
-        let retained_fields = lua.create_table()?;
+        // Float and string templates, keyed by field name: one table lookup each,
+        // with no per-field formatted key.
+        let retained_float = lua.create_table()?;
+        let retained_string = lua.create_table()?;
         // Clone the scalar schema and current retained-field templates in one
         // VM entry, rather than crossing Rust/Lua once for every parameter.
         // Retained templates are gathered anew for this element on every call.
@@ -2005,8 +2012,8 @@ impl ScriptHost {
                         } else {
                             "string"
                         };
-                        let key = format!("{kind}:{name}");
-                        let template = match retained_fields.raw_get::<Value>(key.as_str())? {
+                        let retained = if kind == "float" { &retained_float } else { &retained_string };
+                        let template = match retained.raw_get::<Value>(name.as_str())? {
                             Value::Table(template) => template,
                             _ => {
                                 let template = lua.create_table()?;
@@ -2017,7 +2024,7 @@ impl ScriptHost {
                                 template.raw_set("serialize", true)?;
                                 template.raw_set("type", kind)?;
                                 template.raw_set("provenance", "retained-xml")?;
-                                retained_fields.raw_set(key.as_str(), template.clone())?;
+                                retained.raw_set(name.as_str(), template.clone())?;
                                 template
                             }
                         };
@@ -2043,8 +2050,9 @@ impl ScriptHost {
             })?,
         )?;
         let s=shared.clone();
-        native.set("constantPropertyField",lua.create_function(move |_,(id,name):(usize,String)|{
-            let property=s.constant_property_field(id,&name);
+        native.set("constantPropertyField",lua.create_function(move |_,(id,name):(usize,mlua::String)|{
+            // Borrow the Lua string: this runs on every getParameter/setParameter.
+            let property=s.constant_property_field(id,&name.to_str()?);
             Ok((property,property&&!s.initializing.get()))
         })?)?;
         let s = shared.clone();
@@ -2413,28 +2421,39 @@ impl ScriptHost {
                 if s.profile.enabled() {
                     return s.profile.parameter(lua, kinds.get(id).map_or("", String::as_str), &name, &s.params, id);
                 }
-                let definition = parameters::definitions(kinds.get(id).map_or("", String::as_str))
-                    .iter()
-                    .find(|p| p.name == name);
-                let found = s
-                    .params
-                    .borrow()
-                    .get(id)
-                    .and_then(|p| p.iter().find(|(k, _)| *k == name))
-                    .map(|(_, v)| v.clone());
+                let definition = parameters::definition(kinds.get(id).map_or("", String::as_str), &name);
+                // Read under the field borrow; only a string result leaves it as
+                // an owned copy, since a Lua string allocation must not run inside it.
+                enum Found {
+                    Bool(bool),
+                    Number(f64),
+                    Text(String),
+                }
+                let found = {
+                    let params = s.params.borrow();
+                    params
+                        .get(id)
+                        .and_then(|p| p.iter().find(|(k, _)| *k == name))
+                        .map(|(_, v)| {
+                            if definition.is_some_and(|p| p.kind == "boolean") {
+                                Found::Bool(v == "1" || v == "true")
+                            } else {
+                                match v.parse::<f64>() {
+                                    Ok(n) => Found::Number(n),
+                                    Err(_) => Found::Text(v.clone()),
+                                }
+                            }
+                        })
+                };
                 Ok(match found {
                     None => match definition {
                         Some(p) if p.kind == "boolean" => Value::Boolean(p.default != 0.),
                         Some(p) => Value::Number(p.default),
                         None => Value::Nil,
                     },
-                    Some(v) if definition.is_some_and(|p| p.kind == "boolean") => {
-                        Value::Boolean(v == "1" || v == "true")
-                    }
-                    Some(v) => match v.parse::<f64>() {
-                        Ok(n) => Value::Number(n),
-                        Err(_) => Value::String(lua.create_string(&v)?),
-                    },
+                    Some(Found::Bool(b)) => Value::Boolean(b),
+                    Some(Found::Number(n)) => Value::Number(n),
+                    Some(Found::Text(v)) => Value::String(lua.create_string(&v)?),
                 })
             })?,
         )?;

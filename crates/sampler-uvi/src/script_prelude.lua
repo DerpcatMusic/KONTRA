@@ -468,8 +468,11 @@ function element.getParameter(self, name)
   end
   -- A standing definition is queried from its real bound Core owner. Accepted
   -- local writes are not a cache for later generic control edits or reset.
-  local _, canonical = native.constantPropertyField(rawget(self,'__id'),name)
-  if canonical then return native.param(rawget(self,'__id'),name) end
+  -- Only a promoted constant's Value/Style can be standing; other names skip the probe.
+  if name == "Value" or name == "Style" then
+    local _, canonical = native.constantPropertyField(rawget(self,'__id'),name)
+    if canonical then return native.param(rawget(self,'__id'),name) end
+  end
   local overlay = rawget(self, "__set")
   if overlay and overlay[name] ~= nil then return overlay[name] end
   local v = native.param(rawget(self, "__id"), name)
@@ -521,7 +524,7 @@ function element.setParameter(self, name, value)
     native.setterMismatch(expected,actual)
     return
   end
-  local constantProperty = native.constantPropertyField(rawget(self,'__id'),name)
+  local constantProperty = (name == "Value" or name == "Style") and native.constantPropertyField(rawget(self,'__id'),name)
   if actual == 'number' then
     if value ~= value or math.abs(value) == math.huge then error('expected finite parameter') end
     -- Keep reversed documented bounds intact; native semantics need a measurement.
