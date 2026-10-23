@@ -84,3 +84,21 @@ path was not run in this pass.
 2. Add a `#[ignore]` micro-bench for `render_source_voice` on a resident sample, counting
    instructions via `perf stat`.
 3. Only then prototype the head-size change in `stream.rs` with late-read and decode counters.
+
+## Measured (this lane, 2026-10-23)
+
+Host was loaded but `cargo test --release` timings are repeat-and-take-min.
+
+- Plain resident voice, `sampler-core voice_receipt` (the metric defined above), before
+  this change: unity_copy 0.028 µs, unity_cubic 0.36 µs, down_cubic 0.36 µs, up_polyphase
+  0.70 µs, up_shortsinc 1.09 µs per voice-block, flat from 1 to 256 voices. Already under
+  the 5 µs target; this change does not touch that path.
+- Streamed WAV read, `sampler-kontakt stream_read_receipt` (16-bit stereo, 2^22 frames,
+  sequential reads of 64 and 4096 frames): 16.5 ns/frame before, 0.71 ns/frame after.
+  The cost was the per-sample width and tag dispatch in `Wav::sample`. `Wav::frames_into`
+  is a direct i16 loop; `i16 as f32 / 32768` is exact, so it is bit-exact to `Wav::frame`
+  (`sixteen_bit_fast_path_matches_frame`). For a streamed WAV voice that is ~1.0 µs down to
+  ~0.05 µs per 64-frame block.
+- Reader refill (16 KiB `BUFFER`, one pread plus one fstat per refill) is now ~0.7 ns/frame
+  amortised with the fast path, so changing `BUFFER` is not the next lever. Not measured:
+  NCW decode (no NCW fixture in-tree), cold head fill on real disks (no corpus on this box).
