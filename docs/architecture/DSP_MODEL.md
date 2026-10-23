@@ -332,6 +332,13 @@ serialized config round-trip, unsupported diagnostics and existing native runtim
 bit-exact audio/control behavior. Delete consumed aliases, raw-index knob arrays and old
 product selector arms only after callers are gone. Estimate: 50–200 LOC; ~0% CPU.
 
+**Status: no admissible change (2026-10-24).** Audit:
+- `sampler-core/src/engine_parameters.rs` and the generated `engine_par_ids.tsv` / `build.rs` define the parameter IDs once;
+  `engine_par_ids` is generated, so there is no hand-written duplicate to delete.
+- The compatibility names (`ENGINE_PAR_*`, about 130 occurrences in `sampler-ir/src/fx`) are still read by the Kontakt and UVI
+  bindings and by saved configurations. The ticket deletes them only after their callers are gone, which has not happened.
+- Changing them now would change stored parameter IDs without a versioned conversion. Nothing was deleted.
+
 ## Simplifications worth keeping
 
 - Treat frequency/Q/gain mapping as data once, not as per-product processor classes. But do
