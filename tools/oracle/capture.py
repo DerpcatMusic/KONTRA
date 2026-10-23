@@ -52,6 +52,15 @@ PRE = 0.5  # seconds kept before each slot
 DISPLAY = ":79"  # dump.py uses :78, the reference harness :77
 DESKTOP = "1600x1000"
 SCENARIO = [(0.2, 1.0, 60, 100), (1.6, 1.0, 64, 90), (3.0, 1.5, 67, 110)]  # start, length, key, velocity
+# Causes separated by scenario (all notes on one MIDI channel): round robin = same key and velocity
+# repeated (a counter RR shows as different samples per hit); velsweep = one key, velocity sweep
+# (layer boundaries); legato = each note-on lands 0.3 s before the previous note-off (overlap).
+SCENARIOS = {
+    "base": SCENARIO,
+    "rr8": [(0.2 + 0.7 * i, 0.5, 60, 100) for i in range(8)],
+    "velsweep": [(0.2 + 0.7 * i, 0.5, 60, v) for i, v in enumerate(range(16, 128, 16))],
+    "legato": [(0.2 + 0.8 * i, 1.1, k, 100) for i, k in enumerate((60, 62, 64, 65))],
+}
 
 
 def sh(*a):
@@ -71,14 +80,14 @@ def vlq(n):
     return bytes(out)
 
 
-def make_midi(path, slots, window=None):
-    """Format 0, 120 bpm, 480 ppq (960 ticks/s). Slot k: SCENARIO on channel k+1 from k*window.
+def make_midi(path, slots, window=None, notes=SCENARIO):
+    """Format 0, 120 bpm, 480 ppq (960 ticks/s). Slot k: `notes` on channel k+1 from k*window.
     With `window`, All Sound Off (CC 120) on channel k+1 closes each slot; without it (the single
     scenario file) only the notes are written."""
     events = []
     for k in range(slots):
         ch, base = k, (k * window if window else 0.0)
-        for start, length, key, vel in SCENARIO:
+        for start, length, key, vel in notes:
             on, off = round((base + start) * 960), round((base + start + length) * 960)
             events.append((on, 1, bytes([0x90 | ch, key, vel])))
             events.append((off, 0, bytes([0x80 | ch, key, 0])))
@@ -200,7 +209,7 @@ def stop_kontakt(timeout=20):
         time.sleep(2)
 
 
-def run_session(nkis, window, work, midi=None):
+def run_session(nkis, window, work, midi=None, notes=SCENARIO):
     """Loads up to PER_SESSION NKIs, plays the slotted MIDI, records. Returns (wav, t_midi, loaded)
     where t_midi is the MIDI start on the recording clock and loaded[k] = (ok, error)."""
     if kontakt_running():
@@ -215,7 +224,7 @@ def run_session(nkis, window, work, midi=None):
                       + probe_lua([dump.winpath(Path(n).resolve()) for n in nkis]))
     if midi is None:  # batch: one slot per instrument
         midi = work / "slots.mid"
-        make_midi(midi, len(nkis), window)
+        make_midi(midi, len(nkis), window, notes)
     ensure_sink()
     session = work / "session.wav"
     xvfb = subprocess.Popen(["Xvfb", DISPLAY, "-screen", "0", f"{DESKTOP}x24"],
@@ -303,7 +312,7 @@ def slice_session(session, t_midi, names, loaded, out_dir, window):
     return manifest
 
 
-def capture(items, out_dir, window, midi=None):
+def capture(items, out_dir, window, midi=None, notes=SCENARIO):
     """items: [(name, nki)]. Returns the manifest {name: {...}}; WAVs land in out_dir.
     `midi` (single instrument only) is played as given instead of the slotted batch scenario."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -311,7 +320,7 @@ def capture(items, out_dir, window, midi=None):
     for g in range(0, len(items), PER_SESSION):
         group = items[g:g + PER_SESSION]
         work = CACHE / f"capture-{os.getpid()}-{g}"
-        session, t_midi, loaded = run_session([nki for _, nki in group], window, work, midi)
+        session, t_midi, loaded = run_session([nki for _, nki in group], window, work, midi, notes)
         part = slice_session(session, t_midi, [n for n, _ in group], loaded, out_dir, window)
         for name, nki in group:
             part[name]["nki"] = nki
@@ -320,10 +329,10 @@ def capture(items, out_dir, window, midi=None):
     return manifest
 
 
-def write_scenario():
-    path = CACHE / "scenario.mid"
+def write_scenario(name="base"):
+    path = CACHE / f"scenario-{name}.mid"
     CACHE.mkdir(parents=True, exist_ok=True)
-    make_midi(path, 1)
+    make_midi(path, 1, notes=SCENARIOS[name])
     return path
 
 
@@ -333,6 +342,8 @@ def main():
     ap.add_argument("--batch", metavar="LIST.tsv")
     ap.add_argument("--window", type=float, default=6.0, help="seconds per instrument slot (default 6)")
     ap.add_argument("--midi", help="single mode: MIDI file to play (default: the built-in scenario)")
+    ap.add_argument("--scenario", choices=sorted(SCENARIOS), default="base",
+                    help="note pattern for the slots or the single file (see SCENARIOS)")
     args = ap.parse_args()
     if args.batch:
         if len(args.inputs) != 1:
@@ -347,8 +358,8 @@ def main():
         out_wav = Path(args.inputs[1]).resolve()
         items = [(out_wav.stem, str(Path(args.inputs[0]).resolve()))]
         out_dir = out_wav.parent
-    midi = None if args.batch else Path(args.midi).resolve() if args.midi else write_scenario()
-    manifest = capture(items, out_dir, args.window, midi)
+    midi = None if args.batch else Path(args.midi).resolve() if args.midi else write_scenario(args.scenario)
+    manifest = capture(items, out_dir, args.window, midi, SCENARIOS[args.scenario])
     if args.batch:  # merge: a resumed batch keeps the earlier entries
         cj = out_dir / "capture.json"
         merged = json.loads(cj.read_text()) if cj.exists() else {}
