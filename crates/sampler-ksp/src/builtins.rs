@@ -746,25 +746,30 @@ pub fn unsupported_engine_parameter(name: &str) -> bool {
 }
 
 /// `$EFFECT_TYPE_*` values, the native constants Kontakt 8.13.1 registers
-/// (`module_types.tsv`, read from the PE's constant registrations).
-/// `$FILTER_TYPE_*` is left out on purpose: those PE values are not the subtype ids
-/// `set_engine_par(EFFECT_SUBTYPE)` stores (`docs/re/kontakt-bindings/filter-type-ids.tsv`).
-/// Resolving them makes Conflux 'Dark Context' init take another branch that cuts the
-/// rest of `on init` (peak -11.9 -> -56.6 dBFS). ponytail: resolve filter names from
-/// filter-type-ids.tsv once that cut is fixed.
+/// (`module_types.tsv`, read from the PE's constant registrations), and `$FILTER_TYPE_*`
+/// values, the subtype ids `set_engine_par(EFFECT_SUBTYPE)` stores
+/// (`docs/re/kontakt-bindings/filter-type-ids.tsv`). The PE registrations of the filter
+/// names are not those ids, so they are not used.
 fn module_types() -> &'static std::collections::HashMap<&'static str, i32> {
     static TYPES: std::sync::OnceLock<std::collections::HashMap<&'static str, i32>> =
         std::sync::OnceLock::new();
     TYPES.get_or_init(|| {
-        include_str!("module_types.tsv")
+        let effects = include_str!("module_types.tsv")
             .lines()
             .skip(1)
             .filter_map(|line| {
                 let (name, value) = line.split_once('\t')?;
                 (!name.starts_with("$FILTER_TYPE_")).then_some(())?;
                 Some((name, value.parse().ok()?))
-            })
-            .collect()
+            });
+        let filters = include_str!("../../../docs/re/kontakt-bindings/filter-type-ids.tsv")
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let mut columns = line.split('\t');
+                Some((columns.next()?, columns.next()?.parse().ok()?))
+            });
+        effects.chain(filters).collect()
     })
 }
 
@@ -1003,8 +1008,11 @@ mod tests {
         assert_eq!(constant("$EFFECT_TYPE_NONE"), Some(0x26e));
         assert_eq!(constant("$EFFECT_TYPE_COMPRESSOR"), Some(0x26f));
         assert_eq!(constant("$EFFECT_TYPE_BITE"), Some(0x299));
-        // Filter names stay opaque: their PE values are not stored subtype ids.
-        assert_eq!(constant("$FILTER_TYPE_DAFT_LP"), None);
+        // Filter names are the subtype ids set_engine_par(EFFECT_SUBTYPE) stores, not PE values.
+        assert_eq!(constant("$FILTER_TYPE_DAFT_LP"), Some(70));
+        assert_eq!(constant("$FILTER_TYPE_SV_LP2"), Some(52));
+        assert_eq!(constant("$FILTER_TYPE_AR_HP24"), Some(108));
+        assert_eq!(constant("$FILTER_TYPE_NOT_A_FILTER"), None);
         // Not a module type: no value is invented for an unknown name.
         assert_eq!(constant("$EFFECT_TYPE_NOT_A_MODULE"), None);
     }

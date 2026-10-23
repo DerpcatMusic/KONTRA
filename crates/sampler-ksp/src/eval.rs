@@ -1960,7 +1960,8 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 let value = self.int(args, 1)?;
                 self.st.engine.insert(key, value);
                 self.request(builtin, args)?;
-                V::I(0)
+                // -1 = no async operation pending, so `while (id > -1) wait` exits.
+                V::I(-1)
             }
             GetEnginePar | GetEngineParDisp => {
                 let key = [
