@@ -602,6 +602,72 @@ What 5b does not do (the stage stays mode 0):
 Until (m) is done, `Mode1` is reached only through the core route. Do not enable the stage's path-1 branch before (o) is
 settled: if TYPE is index 9, the heads are bypassed for TYPE 1 and the index-28 binding is wrong.
 
+### Piece 3c part 5c: the mode-1 stage in the production path (blockers m and n closed; o INFERRED)
+
+What runs: a saved unit with TYPE 1 (index 28 = 0.3) runs the mode-1 chain in the bus route (saved unit, sampler-kontakt
+`instrument_buses`, sampler-core lower and Runtime). `tests::replika_type1_bus_route_matches_native_mode1_vectors` (sampler-kontakt
+`effects/timemod.rs`): impulse max abs error 5.97e-10, noise 2.01e-7 (tolerance 1e-5), 4096 frames at 48 kHz, blocks 512, 1000,
+512, 1000, 1072. The start is `Mode1::start` (part 5a); the native start dump is not read.
+
+Persistence (blocker m, closed). The chain lives in a bus-owned `replika::Stage` (`dsp/replika/stage.rs`), not in the `TimeMod`
+unit as the brief preferred. The reason: `TimeMod::process` takes `&self` and the prepared plan is shared by every block and
+render lane, so the unit cannot hold mutable state; `Space` and `StereoTune` are bus-owned for the same reason. The path is:
+- Index: `compile_processors` (bus scope only) pushes the unit's `ReplikaControls` into `PreparedBuses::replikas` when
+  `Stage::applies` (path 1, rate 48 kHz or below, no live lanes), and the unit keeps the index in
+  `PreparedProcessor::TimeMod { stage }`. Voice-scope chains pass no list, so they keep mode 0.
+- Allocation: `Stage::new` in `BusState::new` (control side, at prepare). It builds the core and the chain: `Mode1::start`
+  allocates the six rings (3 heads x 2 channels x 2^19 f32, 12.6 MB at 48 kHz). That is the only allocation. A different TYPE is a
+  different plan, so the path never changes on the audio thread.
+- Reset: `Stage::reset` runs where the unit's `ProcessorState` is reset (`aux[15] == 0`: the first block, and after the bus resets
+  its cells). It clears the rings with `fill(0)` and rebuilds the rest with `Mode1::reset` (`with_rings`, the start formulas): no
+  allocation. `reset_replays_the_mode1_start` (sampler-core `stage.rs`) runs the impulse vector, resets, runs it again, and
+  checks the two runs equal bit for bit and match the vector.
+- Cost: the packed slab region of the unit (`cap + STATE_SLOTS`, 6.3 MB at 48 kHz) is still allocated for path 1 and unused.
+  Removing it is a follow-up. The stage's 12.6 MB is not in the plan's `delay_frames` or in `Limits`.
+
+Per-quantum writes (blocker n, closed). `Stage::process` runs any block in 32-frame quanta on `ReplikaState::frame`, which the
+mode-1 frame now advances (the mode-0 frame already did), so the quantum phase carries across blocks. At each quantum start it
+calls `set_param(28, raw)`: one write per quantum, so `sync_selector` runs the selector and the spread snap (`141a95830`) each
+time, as the vectors do (`writes q0 [[28, 0.3]]`). Block sizes do not change the writes; the production test runs 512 and 1000
+frame blocks across the quanta.
+
+Mode 0 unchanged: the mode-0 path keeps the per-block slab call and no writes, so its arithmetic and the mode-0 vectors are
+untouched by construction. TYPE 0 through the bus route matches `replika-native-default.json` with error 0. TYPE 2, 3 and 4 (paths
+2, 3, 4, not wired) run that same mode-0 frame: their bus output equals TYPE 0's output bit for bit
+(`replika_other_types_keep_the_mode0_frame`).
+
+Binding argument for TYPE (blocker o, still INFERRED). Two readings of the saved field 0 (`fx_raum_delight_psyche_vibrato_phasis_replika.tsv`,
+RDL_TYPE, "table law 0:0 1:1 2:2 3:3 4:4"; every other stored value maps to 0):
+- The saved table has five values, 0 to 4. Index 28 (CONFIRMED selector, `k = min(4, trunc(5 v))`) has five bins of width 0.2,
+  and the bin centre of TYPE t is `(t + 0.5) / 5`, which the binding writes (`replika_type_binds_the_index28_path` checks that
+  `trunc(5 v)` returns TYPE for all five).
+- The index 9 reading (`k-replika-binding.md` row 9, `C+0x93c = int(4 v)`, mode clamp 0 to 3) has four levels of width 0.25 and
+  v = 1 alone reaches 4. A mode clamp of 0 to 3 has no value for saved TYPE 4, so index 9 does not express the five saved values.
+This favours index 28 and is consistent with the TSV, but it is not a proof: no decompile text binds the saved field to the setter,
+and no Kontakt render of a TYPE 1 unit has been compared. Under index 28, k = 0 and k = 4 both select mode 0 (binding row 28), so
+TYPE 4 cannot differ from TYPE 0 in head mode; this is the reason it stays unwired here. Keep the label INFERRED until the field tie
+or a Kontakt render confirms it.
+
+Blockers after 5c (the table in part 5b otherwise stands):
+- Closed: (m) persistence (bus-owned stage, above); (n) per-quantum index 28 writes (`Stage::process`).
+- Open: (o) TYPE to index 28 (INFERRED, argument above); (d) identity of the `K+0xc0` rings (the port keeps one Rust ring per head and
+  channel); (e), (f), (h), (i), (k), (l) as in part 5b.
+- Open, new: voice-scope Replika (mode 0 only, no bus owner); live Replika lanes (mode 0; their `retuned` rebuilds the core each
+  block, so a stage would need the lane values, not yet designed); the fade and hold branches (part 4).
+
+Start-state limits (part 5a, unchanged): the chain is verified from the reset controls (TIME 0.02 and HIGHCUT off, as the harness
+writes them). The spread targets, the table start values and the wrapper levels are the reset values, not functions of the saved
+controls, so mode 1 with other saved TIME or spread-affecting controls is not verified. Rates above 48 kHz keep mode 0 (the oversampled
+start is not ported). The dither seed is the emulator's `std::random_device` value (0x2545F491), so noise output is not a
+Kontakt-exact vector.
+
+Paths 2 to 4 stay unwired: k = 2 needs the mode-2 kernels (`141ab7fe0`, blocker l), k = 4 is not verified (blocker l, flag-0 kernel
+`141ab8a00`), and k = 3 is blocked in the selector (`141acb100`, blocker c). `Heads::select` returns `Blocked` for path 3, so a unit with TYPE 3 is never a stage.
+
+Tests (`build-slot cargo test ... --lib replika`): sampler-core 47 passed (includes `reset_replays_the_mode1_start`), sampler-core
+`timemod` 56 passed; sampler-kontakt `replika` 8 passed (includes `replika_type1_bus_route_matches_native_mode1_vectors` and
+`replika_other_types_keep_the_mode0_frame`).
+
 ### Name binding (task 1)
 
 Not confirmed as a table. Findings:
