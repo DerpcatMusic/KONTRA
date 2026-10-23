@@ -612,3 +612,14 @@ fn play_note_and_note_off_reach_the_engine_sink() {
         ],
     );
 }
+
+#[test]
+fn persistence_declarations_and_the_load_time_persistence_body_match_the_interpreter() {
+    // `on persistence_changed` runs right after init on a fresh instrument; the saved-value
+    // restore is a no-op there, so the declarations only mark storage.
+    assert_init_equivalent(
+        "on init declare $a := 3 make_persistent($a) declare ~r := 1.5 make_instr_persistent(~r) \
+         declare @s := \"x\" make_persistent(@s) read_persistent_var($a) $a := $a * 2 end on \
+         on persistence_changed $a := $a + 5 ~r := ~r * 2.0 end on",
+    );
+}

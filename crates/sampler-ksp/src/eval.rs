@@ -106,7 +106,7 @@ const SCHEDULED_LOAD_FUEL: u64 = 1_000_000;
 const LOAD_COPY_STOP: &str = "load-time copy reached a clock wait";
 
 /// Detect suspension before evaluating a callback, so its prefix is never replayed.
-fn may_suspend<'a>(hir: &'a Hir, body: &'a [Stmt], async_wait_suspends: bool) -> bool {
+pub(crate) fn may_suspend<'a>(hir: &'a Hir, body: &'a [Stmt], async_wait_suspends: bool) -> bool {
     let mut pending = vec![body];
     let mut seen = vec![false; hir.functions.len()];
     while let Some(body) = pending.pop() {
