@@ -1839,6 +1839,7 @@ impl Translation {
         }
         self.ir.groups.push(ir::Group {
             muted: v.muted,
+            purged: group.source_identity().is_ok_and(|s| s.flag == 1),
             wavetable,
             time_stretch,
             machine,
