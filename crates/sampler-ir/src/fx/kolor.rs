@@ -117,6 +117,29 @@ impl Record {
         knobs[CONSTANT_KNOB.0] = CONSTANT_KNOB.1;
         knobs
     }
+
+    /// The display name of the saved mode; `"Unknown"` only for a selector outside `0..=9`.
+    pub fn mode_label(&self) -> &'static str {
+        MODES.iter().find(|(_, s, _)| i32::from(*s) == self.mode).map_or("Unknown", |(m, _, _)| m.label())
+    }
+}
+
+impl Mode {
+    /// The mode's name as its `$NI_KOLOR_*` constant spells it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::SolidConsole => "Solid Console",
+            Mode::AnalogAura => "Analog Aura",
+            Mode::HarmonicCtrl => "Harmonic Control",
+            Mode::FullOn => "Full On",
+            Mode::SuperAmp => "Super Amp",
+            Mode::SmoothFuzz => "Smooth Fuzz",
+            Mode::Tape => "Tape",
+            Mode::Crunch => "Crunch",
+            Mode::Saturaver => "Saturaver",
+            Mode::Diode => "Diode",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -133,6 +156,7 @@ mod tests {
         assert_eq!(knobs[FLAG_KNOB], 1.0);
         assert_eq!(knobs[MODE_KNOB], 1.0);
         assert_eq!(knobs[13], 0.5);
+        assert_eq!(Record { mode: 9, floats, flag: true }.mode_label(), "Diode");
         // Every knob is written exactly once: 11 floats, flag, mode, constant.
         let mut targets: Vec<usize> = FLOAT_KNOBS.to_vec();
         targets.extend([FLAG_KNOB, MODE_KNOB, CONSTANT_KNOB.0]);

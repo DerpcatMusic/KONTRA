@@ -622,6 +622,29 @@ fn play_note_and_note_off_reach_the_engine_sink() {
 }
 
 #[test]
+fn persistence_declarations_and_the_load_time_persistence_body_match_the_interpreter() {
+    // `on persistence_changed` runs right after init on a fresh instrument; the saved-value
+    // restore is a no-op there, so the declarations only mark storage.
+    assert_init_equivalent(
+        "on init declare $a := 3 make_persistent($a) declare ~r := 1.5 make_instr_persistent(~r) \
+         declare @s := \"x\" make_persistent(@s) read_persistent_var($a) $a := $a * 2 end on \
+         on persistence_changed $a := $a + 5 ~r := ~r * 2.0 end on",
+    );
+}
+
+#[test]
+fn menu_items_and_selection_match_the_interpreter() {
+    assert_init_equivalent(
+        "on init declare ui_menu $m add_menu_item($m, \"a\", 20) add_menu_item($m, \"b\", 80) \
+         declare $id := get_ui_id($m) set_menu_item_str($id, 1, \"bb\") \
+         set_menu_item_visibility($id, 0, 0) set_menu_item_value($id, 1, 90) $m := 90 \
+         declare $n := get_num_menu_items($id) declare $v := get_menu_item_value($id, 1) \
+         declare $vis := get_menu_item_visibility($id, 0) declare $sel := get_control_par($id, $CONTROL_PAR_SELECTED_ITEM_IDX) \
+         declare $bad := get_menu_item_value($id, 7) declare @t := get_menu_item_str($id, 1) end on",
+    );
+}
+
+#[test]
 fn event_volume_tune_pan_and_ignore_reach_the_engine_sink() {
     use crate::engine::Call;
     use sampler_core::ModTarget;
