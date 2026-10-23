@@ -1090,7 +1090,11 @@ impl Gen<'_, '_> {
                 self.emit(I::ReadNoteCell { local: dst, cell })
             }
             Home::Note(_) => {
-                self.warn("polyphonic variable read outside a note callback is 0");
+                // Shipped Audio Imperia Areia reads these from ui_control and
+                // on controller; Kontakt compiles them and they read no note.
+                if self.ctx != Context::Controller && self.ui_id.is_none() {
+                    self.warn("polyphonic variable read outside a note callback is 0");
+                }
                 self.set(dst, 0)
             }
             Home::Control(ui) => {
