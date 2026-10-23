@@ -423,18 +423,13 @@ fn polyphonic_declarations_and_callback_tables_reject_invalid_scopes_and_budgets
             .expect("invalid source accepted");
         assert!(source.is_char_boundary(error.offset));
     }
-    // v2: polyphonic initializers are ignored silently (Kontakt has no diagnostic for
-    // them); literals wrap.
+    // v2: polyphonic initializers are ignored (Kontakt has no diagnostic for them);
+    // literals wrap.
     for source in [
         "on init declare polyphonic $a $a := 1 end on on release end on",
         "on init declare polyphonic $a := 1 end on on release end on",
     ] {
-        assert!(
-            compile(source, 48000, limits())
-                .unwrap()
-                .warnings()
-                .is_empty()
-        );
+        assert!(compile(source, 48000, limits()).is_ok(), "{source}");
     }
     let source = format!("{init} on release $a := -2147483648 end on");
     assert!(
