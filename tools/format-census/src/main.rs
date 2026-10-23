@@ -117,7 +117,13 @@ fn judge(path: &Path, ext: &str, h: &[u8; 16]) -> (String, String) {
             Ok(_) => ("container-only".into(), "chunks".into()),
             Err(e) => ("failed".into(), format!("chunks:{}", class(&e))),
         },
-        "nkx" | "nkr" | "nicnt" => match std::fs::File::open(path)
+        // Monoliths are GB-sized: open the member index only (NIFile::read
+        // validates the whole NIS body and stalls the census on I/O).
+        "nkx" | "nkr" => match sampler_kontakt::ResourceContainer::open(path) {
+            Ok(_) => ("container-only".into(), "archive".into()),
+            Err(e) => ("failed".into(), format!("resource:{}", class(&e))),
+        },
+        "nicnt" => match std::fs::File::open(path)
             .map_err(|e| e.to_string())
             .and_then(|mut f| NIFile::read(&mut f).map_err(|e| format!("{e:?}")))
         {
@@ -230,6 +236,49 @@ fn main() {
         }
         return;
     }
+    if args.first().is_some_and(|a| a == "--nkx") {
+        // Monolith resolution: every NCW member of every .nkx/.nkr below a directory,
+        // read through the archive index and fully decoded. One line per member.
+        let mut files = Vec::new();
+        let root = Path::new(args.get(1).expect("--nkx <dir|archive>"));
+        if root.is_file() {
+            files.push(root.to_path_buf());
+        } else {
+            walk(root, &mut files);
+        }
+        files.retain(|p| p.extension().is_some_and(|e| e == "nkx" || e == "nkr"));
+        files.sort();
+        for path in &files {
+            let mut container = match sampler_kontakt::ResourceContainer::open(path) {
+                Ok(c) => c,
+                Err(e) => {
+                    println!("archive\tERR\t{e:?}\t{}", path.display());
+                    continue;
+                }
+            };
+            let names: Vec<String> = container.names().iter().map(|n| n.to_string()).collect();
+            for name in names {
+                if !name.to_lowercase().ends_with(".ncw") {
+                    continue;
+                }
+                let outcome = match container.read(&name) {
+                    Ok(Some(bytes)) => ncw::NcwReader::read(std::io::Cursor::new(bytes))
+                        .map_err(|e| e.to_string())
+                        .and_then(|mut r| r.decode_samples().map(|s| s.len()).map_err(|e| e.to_string()))
+                        .map(|n| format!("ok\t{n}"))
+                        .unwrap_or_else(|e| format!("ERR\t{e}")),
+                    Ok(None) => "ERR\tabsent".into(),
+                    Err(e) => format!("ERR\t{e:?}"),
+                };
+                if std::env::var_os("CENSUS_PATHS").is_some() {
+                    println!("{outcome}\t{name}\t{}", path.display());
+                } else {
+                    println!("{outcome}");
+                }
+            }
+        }
+        return;
+    }
     if args.first().is_some_and(|a| a == "--resource") {
         // `--resource <archive> [member...]`: list members, or read named ones (size only).
         let mut container =
@@ -315,7 +364,12 @@ fn main() {
             }
             _ => judge(path, &ext, &h),
         };
-        println!("{family}\t{outcome}\t{detail}");
+        if std::env::var_os("CENSUS_PATHS").is_some() {
+            // Local diagnostics only: the installed path, never committed.
+            println!("{family}\t{outcome}\t{detail}\t{}", path.display());
+        } else {
+            println!("{family}\t{outcome}\t{detail}");
+        }
         *counts.entry((family, outcome, detail)).or_default() += 1;
     }
     for ((family, outcome, detail), n) in &counts {

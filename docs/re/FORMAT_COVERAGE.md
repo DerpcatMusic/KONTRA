@@ -143,3 +143,77 @@ in the lane brief. Counts above come from the code, not the brief.
 3. NCW: check the block-4 channel signature in the Areia stream caches
    against the FORMAT notes in `vendor/ncw`.
 4. Ample `.ascf`: RE the `aswv` container with the native oracle before any reader.
+
+## Full-corpus pass, 2026-10-24 (installed `/data/main/Libraries/Kontakt`)
+
+Run per library (11 roots, 4 in parallel), release build of this branch.
+Measured, not estimated. Files, not libraries.
+
+| Family | Files | Outcome |
+| --- | ---: | --- |
+| `.nki` | 682 | 251 full, 429 partial, 2 failed |
+| `.nkm` | 54 | 2 full, 52 partial, 0 failed |
+| `.nkx` | 229 | 229 archive index OK (1,107,379 members indexed) |
+| `.nkr` / `.nicnt` | 12 / 9 | archive index OK |
+| `.nkc` | 241 | census reads them as chunk containers: `failed` (see below) |
+| `.ncw` | 21066 | header parse OK (full decode not run) |
+| `.nksn` | 1139 | chunk framing OK |
+
+### Load failures (what they are)
+
+- **2 NKI, Areia 1.2.0 Legacy Patches (Legato 01, 05): hard failure.** Root
+  cause is in `Areia_0.nkx`, not the NKI reader. Member
+  `Samples/Areia_16VlnsLgtSstndVFMDyn3RR1_75_87_12.ncw` decodes its first
+  groups correctly, then group 4 (table offset 10420, after two stereo
+  groups of 2464 bytes each) has no block signature under any keystream start
+  in 0..65536 (`LibraryKey::apply_at`). The raw bytes at that group do not
+  decrypt to a block header with the library's keystream. Treat as corrupt
+  shipped data until Kontakt is checked with the oracle.
+- **241 `.nkc` "failed"**: not a load failure. `.nkc` is an NI stream cache
+  (`NICache`, magic `0x7A10E13F`), not a preset chunk container; the census
+  parses it with the chunk reader and rejects it. Needs NICache-aware
+  classification in the census; no sample is lost.
+
+### Monolith (`.nkx`) resolution
+
+- `format-census --nkx <archive|dir>` decodes every NCW member of an archive
+  through the archive index. On `Areia_0.nkx`: 6050 of 6067 directory entries
+  have a valid member header at their declared offset; the other 17 are all
+  Dyn3 `VFM` members in the `75_87` to `77_81` run. For those 17 the valid
+  header sits exactly 0x8000 bytes before the declared offset (verified by
+  signature scan; their payloads are not decoded yet). Other `.nkx` files
+  have no invalid entries.
+- The reader now names the reason: `Invalid resource member: Invalid NKX
+  member signature` instead of a bare `Invalid resource member`.
+
+### Missing content, not a reader gap
+
+- `load_array: data/vel_db.nka not loaded` (51 Conflux multis): `vel_db.nka`
+  is absent from `Samples/Conflux.nkr`, `Conflux.nicnt`, `CNX_01.nkx` and
+  `Conflux.nkc` (census `--resource` on each: `absent`). The script declares
+  `%vel_db[1408]` and loads it in init; whether Kontakt restores it from the
+  preset's saved state is not verified.
+
+### Script warnings (not format; sampler-ksp)
+
+- `find_group(): Group "..." was not found` (Areia 150, Audio Imperia Dolce
+  77 in every Legato-type instrument): the script looks up group names that
+  this instrument does not define. Kontakt prints the same text, but whether
+  it reaches the same branch is not verified.
+- `keyswitch script` (102), `array index N out of bounds` (about 131).
+
+### Tooling added
+
+- `format-census --nkx`, `CENSUS_PATHS=1` (adds a local path column; never
+  committed output), `.nkx`/`.nkr` now index-only (NIFile::read validated
+  whole multi-GB monoliths and stalled the census for hours).
+
+### Next, in order
+
+1. Areia legacy: check group 4 of member 75_87_12 against Kontakt with the
+   oracle (does Kontakt play Legato 01 with that member's zones silent?).
+   Decide between "damaged shipped data" and "our keystream model is wrong".
+2. The 17 shifted entries: if the -0x8000 header is the real one, add the
+   recovery in the reader and decode the payloads with `--nkx`.
+3. NKC: NICache classification in the census.
+4. `vel_db`: check the NKM saved state for `%vel_db` (preset-level persistence).
