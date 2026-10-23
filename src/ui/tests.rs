@@ -85,6 +85,18 @@ impl Harness {
             .unwrap();
     }
 
+    /// [`Harness::tick`] with the view build and the frame timed apart.
+    pub(super) fn tick_split(&mut self, input: Input) -> (f64, f64) {
+        let t = std::time::Instant::now();
+        let root = (self.build)(&mut self.ui, &mut self.bridge);
+        let build = t.elapsed().as_secs_f64() * 1e3;
+        let t = std::time::Instant::now();
+        self.ui
+            .frame(root, Some(self.size), input, 1. / 60.)
+            .unwrap();
+        (build, t.elapsed().as_secs_f64() * 1e3)
+    }
+
     #[cfg(feature = "shots")]
     pub(crate) fn tick_cost(&mut self, input: Input) -> (usize, usize) {
         let mut root = None;
