@@ -423,7 +423,7 @@ mod tests {
                                                 tempo: 120.0,
                                                 bank: &mut bank,
                                                 expression: None,
-                                                spaces: &mut [], stereo_tunes: &mut [],
+                                                spaces: &mut [], stereo_tunes: &mut [], replikas: &mut [],
                                             },
                                             None,
                                         );

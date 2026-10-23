@@ -491,7 +491,7 @@ impl View<'_> {
                 tempo: self.tempo,
                 bank: &mut bank[0],
                 expression: Some((n.expression, expression.value)),
-                spaces: &mut [], stereo_tunes: &mut [],
+                spaces: &mut [], stereo_tunes: &mut [], replikas: &mut [],
             },
             at: self.at,
             feeds: &mut [],

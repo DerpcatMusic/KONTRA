@@ -133,6 +133,9 @@ pub struct ReplikaControls {
     pub ducking_sense: f32,
     pub ducking_amount: f32,
     pub ducking_release: f32,
+    /// Index 28 (path select: path k = min(4, trunc(5 v)); k = 1 is head mode 1). Reset 0 (path 0). The saved-field
+    /// tie is INFERRED (sampler-kontakt maps the saved TYPE here, k-replika-gaps.md piece 3c part 5b).
+    pub path: f32,
 }
 
 impl Default for ReplikaControls {
@@ -156,6 +159,7 @@ impl Default for ReplikaControls {
             ducking_sense: 0.,
             ducking_amount: 0.,
             ducking_release: 0.,
+            path: 0.,
         }
     }
 }
