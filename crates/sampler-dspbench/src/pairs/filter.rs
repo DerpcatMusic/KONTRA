@@ -27,6 +27,11 @@ pub struct Oracle {
 }
 
 pub fn oracle() -> Oracle {
+    oracle_class("Lp2")
+}
+
+/// The Kontakt oracle cases of one legacy class (`Lp2`, `Ladder`, ...).
+pub fn oracle_class(class: &str) -> Oracle {
     let v: serde_json::Value = serde_json::from_str(ORACLE).expect("oracle json");
     let num = |x: &serde_json::Value| x.as_f64().expect("number");
     Oracle {
@@ -36,7 +41,7 @@ pub fn oracle() -> Oracle {
             .as_array()
             .expect("cases")
             .iter()
-            .filter(|c| c["class"] == "Lp2")
+            .filter(|c| c["class"] == class)
             .map(|c| Case {
                 cutoff: num(&c["cutoff"]),
                 resonance: num(&c["resonance"]),
@@ -133,7 +138,7 @@ pub mod candidate {
 
 /// Fit a model's parameters to one oracle case: minimise the mean squared dB error over the probes
 /// above the floor. Returns the best parameter vector and its shape error (dB).
-fn fit_case(make: Factory, rate: f64, probes: &[f64], case: &Case, x0: &[Vec<f64>], to_params: &dyn Fn(&[f64]) -> Vec<(&'static str, f64)>, steps: &[f64]) -> (Vec<f64>, f64, f64) {
+pub(crate) fn fit_case(make: Factory, rate: f64, probes: &[f64], case: &Case, x0: &[Vec<f64>], to_params: &dyn Fn(&[f64]) -> Vec<(&'static str, f64)>, steps: &[f64]) -> (Vec<f64>, f64, f64) {
     let objective = |x: &[f64]| {
         let h = measure::impulse_response(make, rate, &to_params(x), 64, PROBE_FRAMES);
         let db = measure::probe_db(&h, rate, probes);
@@ -242,7 +247,7 @@ pub fn defaults(label: &str) -> Vec<(&'static str, f64)> {
 }
 
 /// Quality of one implementation with its own default setting, plus fast-modulation alias and stability.
-pub fn quality(make: Factory, rate: f64, block: usize, defaults: &[(&str, f64)], key: &str, lo: f64, hi: f64) -> Quality {
+pub(crate) fn quality(make: Factory, rate: f64, block: usize, defaults: &[(&str, f64)], key: &str, lo: f64, hi: f64) -> Quality {
     let thd = {
         let y = measure::run(measure::build(make, rate, defaults).as_mut(), &crate::signal::sine(rate, 1000.0, 0.5, rate as usize), block);
         measure::thd_n_db(&y, rate, 1000.0)

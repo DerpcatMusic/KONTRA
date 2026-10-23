@@ -11,11 +11,13 @@ pub mod measure;
 pub mod pairs;
 pub mod report;
 pub mod signal;
+#[cfg(feature = "candidates")]
+pub mod signalsmith;
 
 pub use block::{Block, Factory, Impl};
 
 /// Pair ids in report order.
-pub const PAIRS: [&str; 3] = ["filter-lp2", "limiter", "resampler"];
+pub const PAIRS: [&str; 6] = ["filter-lp2", "limiter", "resampler", "eq-bell", "oversampler", "compressor"];
 
 /// Our and candidate implementations of a pair, as the CLI and the perf child see them.
 /// Block-based pairs only; the resampler is not a `Block` and runs through `pairs::resampler`.
@@ -23,6 +25,9 @@ pub fn impls(pair: &str) -> (Impl, Option<Impl>) {
     match pair {
         "filter-lp2" => (pairs::filter::ours_impl(), pairs::filter::cand_impl()),
         "limiter" => (pairs::limiter::ours_impl(), pairs::limiter::cand_impl()),
+        "eq-bell" => (pairs::eq::ours_impl(), pairs::eq::cand_impl()),
+        "oversampler" => (pairs::oversampler::ours_impl(), pairs::oversampler::cand_impl()),
+        "compressor" => (pairs::compressor::ours_impl(), pairs::compressor::cand_impl()),
         other => panic!("unknown pair {other}"),
     }
 }
@@ -33,6 +38,9 @@ pub fn default_params(pair: &str, label: &str) -> Vec<(&'static str, f64)> {
         "filter-lp2" => pairs::filter::defaults(label),
         "limiter" if label.starts_with("sampler-core") => vec![("release_ms", 100.0)],
         "limiter" => vec![("ceiling_db", 0.0), ("lookahead_ms", 5.0), ("release_ms", 100.0)],
+        "eq-bell" => vec![("shape", 0.0), ("hz", 1000.0), ("db", 6.0), ("q", 1.0)],
+        "oversampler" => vec![("drive", 4.0)],
+        "compressor" => pairs::compressor::defaults(),
         other => panic!("unknown pair {other}"),
     }
 }
