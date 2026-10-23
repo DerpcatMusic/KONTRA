@@ -445,7 +445,7 @@ into sampler-kontakt or sampler-ir; it stays unwired (GAP-C a and b).
 
 Start state: `tools/re/replika_mode1_start_kemu.py` dumps the native state after the selector (`docs/re/engine/vectors/
 replika-native-mode1-index28-start.json`: the three head objects, the spread table, the bounds, the path, the P0 block).
-`Mode1::from_native` loads it (`replika/chain.rs`).
+Part 5a builds it in Rust (see Piece 3c part 5a); `Mode1::from_native` is now the test oracle only.
 
 Ported (`replika/chain.rs`, `replika/mod.rs`):
 - The path-1 frame of `141aa9480` (decompile `0141aa0000.c` 5277-5700): H1 write (tap) and read, H3 read, F1 cut on the
@@ -484,6 +484,70 @@ Still open (not on the impulse or noise path): the fade (`+0x5808` glide, `+0x58
 write and the wrapper (`141acc600` bypass fade writes them); the LFO `141ab7480` (depth `s` is zero in the vectors); the
 design chain `141abbc90` for a selector that is not already applied; paths 2 to 4; the P0 block as the spread targets (its
 setter mapping, the values are the dumped ones).
+
+### Piece 3c part 5a: mode-1 start state in Rust (PORTED, MATCHES THE NATIVE DUMP FIELD BY FIELD)
+
+`Mode1::start(rate)` (`replika/start.rs`) builds the index-28 start of path 1 from the rate and the reset controls, with no
+start dump in the production path. `tests::start_matches_native_dump` compares every chain field with
+`replika-native-mode1-index28-start.json` (the Debug text of the heads, the wrapper glides, the spread table, the targets,
+the bounds, the flag and the smoothing flag, exact match at 48 kHz). The impulse and noise vectors run from the Rust start:
+max abs error 5.97e-10 and 2.01e-7 (tolerance 1e-5), the same as with the dump. `ReplikaCore::mode1_start` returns the
+start for path 1 at up to 48 kHz and `None` otherwise (not wired, part 5b).
+
+How each field is obtained (native offsets are head `H` = `C+0xac0`, `C+0x6380`, `C+0xbc40`, unless noted):
+- Rate and prepare (`141aa1580` and its head setup `141a9ac90`, decompile `0141aa0000.c` from line 832, `0141a90000.c`):
+  `H+0x0` = rate; `+0x8` lo = 0; `+0xc` hi = `rate x 5500 x 0.001` frames; `+0x28` mode = `rate x 50 x 0.001`;
+  `+0x48` base = 1; ring `next_pow2(max(hi + mode/2 + 4, next_pow2(rate)))` (`-0.5` is the native constant), the tap
+  masks `+0x1c0`, `+0x290` = ring - 1, `+0x15c`, `+0x194` ring, `+0x158`, `+0x190` 0; glide `+0x57f8` div = `rate x 0.08`
+  (f32 `0x3da3d70b`), `+0x57fc`, `+0x5800` count = round(div); fade `+0x57c0` = `0.05^(1/(0.005 rate))` (verified at 44.1
+  and 48 kHz); sections `+0x350`, `+0x384` = `Section::new(tan_series(20000, rate), 1.4)` (the 20 kHz high cut default,
+  `c2 = 1/(g^2 + 1.4 g + 1)` checked); post filters `+0x56c0`, `+0x5724` = `design::post(rate, 3)` (envelope
+  `exp(-50 pi / rate)`, gain = damping 15.9375); write lanes `+0x2dc0`, `+0x4240` = `design::lane(rate, 3)` (envelope
+  `exp(-75 pi / rate)`, sections, in 0.6, out 1.6, adaa 0.2, dither 0.01).
+- Spread table `C+0x14208..0x142b0`: coefficient `exp(-35.322115776986905 / rate)` (`1479ab708`, read from the exe rdata);
+  thresholds `1e-4` (the loop at `0141aa0000.c` line 1081).
+- Bounds `C+0xad0` = 5500 (ms), `C+0xad8` = 0 (rdata `1479ab538` = 5500.0). Flag `C+0x600` = 0, path `C+0x604` = 1,
+  `C+0x938` = 1 (the selector and the setter tail).
+- Ctor constants (the ctor output under kemu, the same at both rates; the rdata origin is not traced): the lane waveshaper
+  `+0x00..+0x0c` (`d`), `+0x10..+0x1c` (`w`), `+0x20..+0x2c` (`pi, 2 pi, 3 pi, 4 pi`), `+0x34` 0.273438, `+0x38`
+  -0.170626, `+0x40` -0.185132, dither range `+0x1448`, `+0x144c` = -1, 1; the tap sections `+0x1a8+0x58..0x7c` and
+  `+0x278+0x58..0x7c` (0.041816, 0.17303, 0.71595, 1.4); tap rates 0.5 (`+0x80`), 1 (`+0x90..+0xa0`); the section damping
+  1.4 (`+0x37c`, `+0x3b0`); the wrapper gains `+0x5848` = 1, own `+0x78` = 1, cross `+0x7c` = 0; the wrapper thresholds
+  0.001 (`+0x5834`, `+0x5854`) and the glide threshold `+0x57f4`.
+- Noise seed: the lanes' MT19937 (`+0xc0` index 624, ring `+0xc4..`) is `init_genrand(0x2545F491)` in both lanes. The ctor draws
+  the seed from `std::random_device` (`141a7d920`); the emulator returns 0x2545F491, so the start is deterministic here.
+- Selector (`Heads::select`, index 28 = 0.3): the mode `+0xc0` = 1, kernel flags `+0x270`, `+0x340` = 1, the rebase
+  `+0x50` = `fs x 0.25 x 0.5` (6000), the taps' rates, the fade settle (`+0x57c8` = 0, `+0x57e0` cleared, `+0x57e1` set).
+  The glide target `+0x57ec` stays 0 (the flag byte `+0x69` is 0 at rest), so the step keeps its value.
+- Glide step `+0x57f0` = `1 / (44100 x 0.08)`: the defaults setter ran at the ctor's 44.1 kHz, and prepare changed the divisor
+  afterwards without recomputing the step. The start keeps the 44.1 kHz step (0.00028345).
+- Heads' delays `+0xc8`, `+0xd0` (`a`, `b`) = 0, `+0x58`, `+0x60` (`r58`, `r60`) = infinity: the values after the
+  selector's tail for the start table (`base / 0`). Recomputed by the per-frame caller on the first frame.
+
+Still constants, not computed (dump-only in origin; the reset setter or writer is not traced):
+- Spread targets, P0 block `C+0x80` words `+0x2c` = 40.0, `+0x30` = 0.0, `+0x34` = 0.5, `+0x38` = 0.3 (f32). These change
+  during the reset sequence (`S0 -> S1` in the kemu staging) but no single index in the `--state` map writes them.
+- Table start values, `C+0x14210` (width) = 0, `C+0x14238` (skew) = 0.5, `C+0x14260` (ratio) = 0, `C+0x14288` (depth)
+  = 0.5, and their targets `+0x8`. Flags `+0x18` = 0.
+- Wrapper level per head, `H+0x5828` (current) and `H+0x582c` (target): head 1 = 1, heads 2 and 3 = 0 (the level writer
+  is not traced; the value is the reset state of the head level).
+- Head constants of the reset sequence: `H+0x38` = 0.5 and `+0x40` = 0.125 (anchors), `+0x8c` = 3 (lane mode), `+0x68` = 1
+  (mode flag 0, the byte `+0x69` is 0), `+0x90` = 1 (delay flag), `H+0x48` base = 1.
+- Stale glide step (above) and the delay values of the start (above).
+
+Reset controls only: the start is derived for the reset values (`1408ddbc0` with TIME 0.02 and HIGHCUT 1.0, the harness
+choices). The spread targets and the table start values depend on controls in the native code, but their setter mapping
+is open (the P0 words above), so `Mode1::start` does not take them as inputs yet. Other control values are not folded.
+
+Rates: 44.1 kHz and 48 kHz match the native dumps (44.1 kHz: one fade coefficient differs by one ulp, the rounding of `pow`).
+Above 48 kHz the native start equals the 48 kHz start word for word (checked at 96 kHz with a scratch dump): when the rate
+exceeds 48000 (`DAT_147559b18`), prepare sets the oversampling flag `0x608` and runs the chain at `rate / trunc(rate x
+1/44100)` (`0x610`, `DAT_144f385c4`; decompile `0141aa0000.c`, the `DAT_147559b18 < fVar21` branch at line 906). The oversampler
+is not ported, so `ReplikaCore::mode1_start` is `None` above 48 kHz.
+
+Not computed, not on the impulse or noise path (unchanged from part 4): the fade and hold branches of the write and the
+wrapper, the LFO `141ab7480`, the design chain `141abbc90` for a selector that is not already applied, paths 2 to 4, the
+mode-1 ring clear for flag 1.
 
 ### Name binding (task 1)
 
