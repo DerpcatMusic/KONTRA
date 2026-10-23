@@ -260,6 +260,15 @@ color preset tests; bit-exact factoring, nonlinear gate for changed algorithms. 
 the replaced curve/conditioning helpers, never the GRU/circuit recurrence on name similarity.
 Estimate: 100–350 LOC; CPU ~0%, extra ADAA/oversampling can cost CPU and requires evidence.
 
+**Status: no admissible change (2026-10-24).** Audit with file:line evidence:
+- `color/distortion.rs:8` `tube_curve`, `:28` `transistor_curve`, `color/shaping.rs:8` `saturation`: three different
+  transfer functions (rectifier branches, native Transistor core, Classic v1 saturation); no identical stateless curve exists.
+- `color/dirt.rs:23` `tanpoly` (f32, `w/3 + 2w^3/15` series) and `color/freak.rs:143` `tanpoly` (f64, `P/(P+1)` one-pole gain):
+  different constants, precision and form. `freak.rs:150` `tanc` is the clamped series used by the TPT blocks, not the same function.
+- `color/saturator.rs:117` `lerp` (table point + fraction) and `amp/kernel.rs` `lookup` (value and slope pairs) differ in the data they read.
+- `filter/shaper.rs:68-98` (`soft`, `pade`, `unit_sqrt`) is already the shared shaper vocabulary.
+Nothing was deleted; the Kolor recurrence and circuit stages are left as they are, per the ticket.
+
 ### 7. Shared delay readers, then model recipes (high value, medium–high risk)
 
 Files: `D/timemod/{mod,uvi_legacy,dual,dual_x,twin,tape,buzz,wowflutter,psyche,velvet,diffuse,voices,mt}.rs`,
