@@ -430,6 +430,8 @@ impl ReplikaCore {
 
     /// One frame of path 1 (`141aa9480` with `C+0x604 = 1`), in the native order (see the module doc).
     pub(super) fn frame_mode1(&self, st: &mut ReplikaState, x: [f32; 2]) -> [f32; 2] {
+        // The stream's frame counter (the quantum phase of `Stage::process`), as the mode-0 frame keeps it.
+        st.frame = st.frame.wrapping_add(1);
         let c = self.ctl;
         let dry = [c.input * x[0], c.input * x[1]];
         let tap = [dry[0] * c.tap, dry[1] * c.tap];
