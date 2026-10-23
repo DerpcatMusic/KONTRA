@@ -1,6 +1,7 @@
 pub mod build_info;
 pub mod creator;
 pub mod diagnostics;
+pub mod formats;
 pub mod parity;
 #[cfg(feature = "shots")]
 #[path = "../tools/kontra-scan/metrics.rs"]
