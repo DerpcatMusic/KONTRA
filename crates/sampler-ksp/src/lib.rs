@@ -11,6 +11,7 @@ use sampler_core::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 mod headless;
+pub mod engine;
 pub mod luau;
 pub use headless::service_ui_effects;
 
