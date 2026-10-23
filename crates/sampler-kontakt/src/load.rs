@@ -541,6 +541,28 @@ fn power_on(instrument: &ir::Instrument, start: Option<u8>) -> Vec<(u8, f64)> {
         .collect()
 }
 
+/// Kontakt's power-on controller values: CC7 volume 100, CC10 pan centre 64,
+/// CC11 expression full, CC1 0. Every other controller starts at 0, and pitch
+/// bend starts centred (`POWER_ON_BEND`). The probe sends these before every
+/// note; the instrument's own saved or scripted values then take over.
+pub const POWER_ON: [(u8, u8); 4] = [(1, 0), (7, 100), (10, 64), (11, 127)];
+/// Pitch bend centre (14-bit 8192): MIDI 1.0 UMP, channel 0, LSB 0, MSB 0x40.
+pub const POWER_ON_BEND: u32 = 0x20E0_0040;
+
+/// `POWER_ON` minus a volume controller the instrument saved its own value on
+/// (that saved volume is the instrument's power-on state, not 100).
+pub fn power_on_ccs(instrument: &ir::Instrument) -> Vec<(u8, u8)> {
+    let saved = instrument
+        .host_volume
+        .filter(|v| v.saved > 0.0)
+        .map(|v| v.controller);
+    POWER_ON
+        .iter()
+        .copied()
+        .filter(|&(cc, _)| Some(cc) != saved)
+        .collect()
+}
+
 fn powered(plan: Prepared, instrument: &ir::Instrument, dynamics: &[(u8, f64)]) -> Prepared {
     let plan = dynamics
         .iter()
