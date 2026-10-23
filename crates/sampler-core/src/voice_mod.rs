@@ -1126,13 +1126,29 @@ impl VoiceModulation {
         self.regions.get(region).copied().flatten()
     }
 
+    /// Kontakt's zone start randomisation: a region with a `sample_start_mod_range` and no
+    /// SampleStart route starts each note at a uniform offset in [0, range) frames. Measured on
+    /// Horns KS (32 hits, range 5120 frames): Kontakt onsets spread 50..140 ms, KONTRA's fixed
+    /// 30 ms. Routed regions keep the route law; a combined route + random law is unmeasured.
+    pub(crate) fn random_start(&self, region: usize) -> bool {
+        self.start_ranges.get(region).is_some_and(|&range| range > 0)
+            && !self.program(region).is_some_and(|index| self.programs[index as usize].start)
+    }
+
+    fn random_offset(&self, region: usize, seed: u64) -> u32 {
+        if !self.random_start(region) {
+            return 0;
+        }
+        (uniform(hash(seed, 0, u64::MAX - 1)) * f64::from(self.start_ranges[region])) as u32
+    }
+
     /// The ordinary onset consumer. A provider-dependent onset must use the
     /// explicitly borrowed real owner row, never a per-player approximation.
     pub fn start_offset(&self, region:usize, inputs:&Inputs<'_>, seed:u64)->Result<u32,Error>{
         self.start_offset_provided(region,inputs,seed,0,ProviderView::empty())
     }
     pub(crate) fn start_offset_provided(&self,region:usize,inputs:&Inputs<'_>,seed:u64,frame:u64,provider:ProviderView<'_>)->Result<u32,Error>{
-        let Some(index)=self.program(region)else{return Ok(0);};
+        let Some(index)=self.program(region)else{return Ok(self.random_offset(region,seed));};
         let program=&self.programs[index as usize];
         if program.provider_scope!=provider.scope{return Err(Error::InvalidInput);}
         if program.provider_scope.is_some(){
@@ -1141,7 +1157,7 @@ impl VoiceModulation {
                 if Some(source.scope)!=provider.scope||source.source>=provider.from.len()||source.source>=provider.to.len(){return Err(Error::InvalidInput);}
             }}
         }
-        if !program.start{return Ok(0);}
+        if !program.start{return Ok(self.random_offset(region,seed));}
         Ok(self.offset(program,region,|index|match program.sources[index]{
             Prepared::Lfo(lfo)if lfo.delay==0&&lfo.fade==0=>{
                 let signal=wave(lfo.shape,lfo.phase,seed^index as u64);
@@ -1157,6 +1173,9 @@ impl VoiceModulation {
     /// route makes the entire result unknown, even when its saved depth is zero.
     pub fn constant_start_offset(&self, region: usize) -> Option<u32> {
         self.start_ranges.get(region)?;
+        if self.random_start(region) {
+            return None;
+        }
         let Some(index) = self.program(region) else {
             return Some(0);
         };
@@ -1179,6 +1198,9 @@ impl VoiceModulation {
         controller: impl Fn(u8) -> Option<u32>,
     ) -> Option<u32> {
         self.start_ranges.get(region)?;
+        if self.random_start(region) {
+            return None;
+        }
         let Some(index) = self.program(region) else { return Some(0) };
         let program = &self.programs[index as usize];
         let at_start = |index: usize| match program.sources[index] {
@@ -2609,6 +2631,20 @@ pub(crate) fn process_frame_tone(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Kontakt's per-note start randomisation with no SampleStart route (Horns KS): the offset
+    /// spreads over [0, range) per voice, zero-range regions stay at 0, and the predictors refuse.
+    #[test]
+    fn unrouted_start_range_is_a_uniform_per_voice_offset() {
+        let modulation = VoiceModulation::new(vec![], vec![None, None], vec![5120, 0]).unwrap();
+        let offsets: Vec<u32> = (0..256u64).map(|seed| modulation.random_offset(0, seed)).collect();
+        assert!(offsets.iter().all(|&o| o < 5120));
+        assert!(offsets.iter().max().unwrap() - offsets.iter().min().unwrap() > 4000);
+        assert!((0..256u64).all(|seed| modulation.random_offset(1, seed) == 0));
+        assert_eq!(modulation.constant_start_offset(0), None);
+        assert_eq!(modulation.initialized_start_offset(0, |_| None), None);
+        assert_eq!(modulation.constant_start_offset(1), Some(0));
+    }
 
     #[test]
     fn uniform_shaper_uses_v1_index_instead_of_binary_search() {
