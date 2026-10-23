@@ -129,3 +129,15 @@ Step 1 (code, PR #463, merged a798e72): the resolved control laws (wow `4w²`, f
 4. **Saturation** `FUN_14199db20` coefficients: not decoded.
 5. **Sin/cos core** `FUN_1443c9bb0`: the cache decompile (`01443c0000.c:11187`) is an SSE body with no readable semantics; `FUN_1443c9bd0` (`:11538`) is a `|x| >= threshold` range-reduction wrapper. Needs a disassembly pass (`pdf @ 0x1443c9bb0`); not done in this lane.
 6. **Step 3 (KEMU vectors)**: not attempted. No native vectors exist, so the PARITY_MATRIX Wow/Flutter row stays `partial`.
+
+## Pass 6 (2026-10-23): dynamic harness boots, prepare blocked on owner state
+
+Harness: `tools/re/kemu_wowflutter.py` (real sequence, nothing poked except inputs).
+
+- **Ctor works under kemu:** `BEffectWowFlutter` ctor `0x140a842b0` (reached from `0x140a87420`) runs to completion with `*param_2 = 0`. Kernel sits at wrapper+`0x1c0`, vtable `0x1476a3400`.
+- **`0x140971930` (set-rate, owner side) faults** at `0x14196b8aa`: its first-time branch (flag `+0x3558` clear) reads kernel `+0x2c8`, which is 0 after the ctor. `0x14196b880` copies a parameter struct through that pointer into `+0x2b0`/`+0x2e0`/`+0x280`.
+- **Direct kernel prepare `0x14099aac0` faults** at `0x141ee86ed`: `0x141ee86c0` (reset of the ring object at kernel `+0x68`) walks `count=kernel[+0x68+0x10]=1` entries from the array pointer at `+0x68+0x130`, which is 0. That array is allocated by a path the ctor does not take.
+- Both faults point at one missing owner-side step (a setup call that fills `+0x2c8` and the `+0x130` array) that is not in the ctor. Next: find the caller of virtual slot `0x90` (kernel `+0x120`, wrapper `+0x48`) on the BEffectWowFlutter path and the `0x140aa2060` block loop. Do not set `+0x3558`; that would skip the native first-time init.
+- Parameter handlers: nine `std::function<void()>` objects at kernel `+0x78 + k*0x40` (k=0..8), bound in `setParameterHandlers` (`0x14199de70`). They take no argument, so raw values come from fields the wrapper setter writes first. Not yet mapped.
+
+Still open: LFO rates/shape/depth, delay-read interpolation, age (`0x14199c280`), saturation (`0x14199db20`), sin/cos (`0x1443c9bd0`). No native vectors yet; PARITY_MATRIX row unchanged.
