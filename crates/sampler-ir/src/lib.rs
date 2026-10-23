@@ -1431,6 +1431,11 @@ pub enum VelocityResponse {
     VolumeTable,
     /// Amplitude is (velocity / 127) ^ exponent.
     Power(f64),
+    /// Kontakt's velocity-to-volume route at an arbitrary intensity: amplitude is
+    /// `(1 - depth) + depth * (velocity / 127) ^ exponent`. `depth` and `exponent` are
+    /// fitted per intensity (`sampler-kontakt` `velocity_volume_law`); the default intensity
+    /// keeps `VolumeTable`.
+    Depth { depth: f64, exponent: f64 },
 }
 
 /// Zone crossfades, in key and velocity steps inside the zone's own ranges.
