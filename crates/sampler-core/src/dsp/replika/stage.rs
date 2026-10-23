@@ -72,3 +72,49 @@ impl Stage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    const IMPULSE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/re/engine/vectors/replika-native-mode1-index28-v0p3.json"
+    ));
+
+    /// A reset replays the start: the impulse vector in mixed blocks, then reset, then the same again. Both runs are equal
+    /// bit for bit (the rings are cleared, and no chain or write count leaks), and match the native vector.
+    #[test]
+    fn reset_replays_the_mode1_start() {
+        let v: Value = serde_json::from_str(IMPULSE).unwrap();
+        let samples = |c: usize| -> Vec<f64> {
+            v["stim"][c].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect()
+        };
+        let (stim_l, stim_r) = (samples(0), samples(1));
+        let controls = ReplikaControls { path: 0.3, ..ReplikaControls::default() };
+        let mut stage = Stage::new(48_000., &controls).unwrap();
+        let run = |stage: &mut Stage| {
+            let (mut l, mut r) = (vec![0.; stim_l.len()], vec![0.; stim_l.len()]);
+            for (a, b) in [(0, 512), (512, 1512), (1512, 2024), (2024, 3024), (3024, 4096)] {
+                stage.process([&stim_l[a..b], &stim_r[a..b]], [&mut l[a..b], &mut r[a..b]]);
+            }
+            (l, r)
+        };
+        let first = run(&mut stage);
+        stage.reset();
+        let second = run(&mut stage);
+        assert!(first == second, "a reset must replay the start");
+        let want = v["outL"].as_array().unwrap().iter().zip(v["outR"].as_array().unwrap());
+        let err = first
+            .0
+            .iter()
+            .zip(&first.1)
+            .zip(want)
+            .map(|((l, r), (wl, wr))| {
+                (*l as f32 - wl.as_f64().unwrap() as f32).abs().max((*r as f32 - wr.as_f64().unwrap() as f32).abs())
+            })
+            .fold(0f32, f32::max);
+        assert!(err <= 1e-5, "max abs error {err:e}");
+    }
+}
