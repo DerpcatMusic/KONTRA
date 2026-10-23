@@ -340,10 +340,14 @@ drive 0, .25, .5, .75, 1, inputs sine / impulse / noise, all 10 modes).
   P and P2 from the source block `S = *(core+0x4c8)`. In the probe `S` is a kemu heap pointer (`0x100009c40`) to
   a zero block, so every shaper case returns 0 and drive has no effect. The "drive shaper not run" note in
   `slot_kolor` is therefore not the cause of any measured mismatch for these modes.
-- **Open blocker: who writes `S`.** `core+0x4c8` is written in the base constructor path (`01407f0000.c`,
-  `FUN_1407f10e0`, and `141976b20`, `0141970000.c:5901`), its contents are set nowhere in the decompile we have, and
-  `FUN_141979a60` / `FUN_141979b10` (`0141970000.c:8139`, `:8193`) copy it into `core+0x4b0` and call notify A.
-  Callers of `141979b10` are the wrapper at `14094b350` (`0140940000.c`) and `0140970000.c:723`, `0140990000.c:10449`.
-  Until the real `S` contents are known, the probe cannot show the shaper's effect and the live path cannot be
-  driven. Next step: trace the writer of the 0x40-byte block at `S` in the Kontakt host (the reader or the template
-  copied by `141974510`), with REA `xrefs` on the constructor, not by reading more of the shaper.
+- **Correction (2026-10-23, `tools/re/kolor_s_writer_probe.py`): `S` is not a zero static block.** After apply, `S`
+  is the 14-float knob mirror (index = knob id; S+0x10 = mode/9, the rest 0.5, knob 1 = 0). Its writes come from
+  PC `0x1409aab0a` during apply (13 writes, the setter path). Copy B `141979b10` then copies `S` into notify
+  `this[6]` (X), `this[0]` (P) and `this[0xc]` (P2), so notify P equals the knobs after a copy-B call. The earlier
+  "S is zero" reading came from an S pointer read before apply.
+- **Still open: the shaper parameter block itself.** `shaper+0x30` (cc70 params) and `shaper+0x2c0` (c830 params)
+  get no writes during apply, prepare, copy B or a block (`shaper+0x30` reads zero after the ctor), and the static init `1404ac840` does not fill
+  them either. So in kemu the shaper output is 0 for every mode and drive, and the modes 2/5 drive dependence
+  (up to 4.4e-3) comes from the post-shaper sections alone. The source of the real weights (reader record, a
+  host resource, or a pointer-based template) is not traced. The per-mode seed `14197acc0` / `141974d90` zeroes
+  only the default and case-4 branches of the shaper header. REA was not used (times out on this host).
