@@ -1105,6 +1105,8 @@ input.group>=16||input.channel>=16||input.key>=128
                     .get(candidate.region)
                     .copied()
                     .unwrap_or(candidate.region as u32 + 1);
+                state.native_zone = self.plans.get(plan.0).unwrap().prepared
+                    .region_identities.get(candidate.region).copied().flatten();
                 if let Some(record) = self.selection_log.as_mut().and_then(|log| log.last_mut()) {
                     if let Some(candidate) = record
                         .candidates

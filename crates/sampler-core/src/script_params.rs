@@ -1044,6 +1044,10 @@ impl Runtime {
             }
             crate::EventInfo::PlayPosition => self.play_position_micros(plan, note)?,
             crate::EventInfo::ZoneId => {
+                // Native zone commands and this query share Kontakt's zone
+                // identities; plans without a native catalog keep event IDs.
+                let native = self.plans.get(plan.0).ok_or(Error::StaleHandle)?
+                    .prepared.source_zone_identity_count() != 0;
                 let mut highest = -1;
                 let mut family = self.notes.get(note.0).unwrap().first_family;
                 while let Some(index) = family {
@@ -1054,7 +1058,8 @@ impl Runtime {
                         let state = self.voices.slots[v.get()].value.unwrap();
                         voice = state.siblings.next;
                         if !state.stolen {
-                            highest = highest.max(i64::from(state.source_zone));
+                            let zone = if native { state.native_zone.map_or(-1, i64::from) } else { i64::from(state.source_zone) };
+                            highest = highest.max(zone);
                         }
                     }
                 }
