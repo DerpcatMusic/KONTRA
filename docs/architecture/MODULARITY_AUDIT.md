@@ -16,7 +16,7 @@ Crate edges from `crates/*/Cargo.toml` (`sampler-*` only):
 | sampler-core | ir, simd, pool | engine |
 | sampler-midi | core | engine |
 | sampler-script, sampler-ui-ir, sampler-parity, sampler-simd, sampler-pool | nothing | shared |
-| sampler-ksp | parity, core, ir, ui-ir, script | script format |
+| sampler-ksp | parity, core, ir, ui-ir, script | Kontakt script language runtime (`.nckp`), not a container |
 | sampler-kontakt | parity, ir, core, **ksp**, ui-ir | format |
 | **sampler-uvi** | ir, ui-ir, core, midi, parity, script, **kontakt** | format |
 | sampler-ample, sampler-ikmpak | nothing | format stubs, unwired |
@@ -38,8 +38,9 @@ Findings:
   Target: move them into a neutral loader/stream module (engine or `sampler-ir`) so uvi depends on
   engine only.
 - **Kontakt depends on KSP.** `sampler-kontakt` references `sampler_ksp` 91 times (`src`).
-  KSP is a 23.6k LOC scripting runtime, not Kontakt-only code. It should be a sibling format
-  behind the same registry rather than a dependency of Kontakt.
+  KSP is the Kontakt script language (23.6k LOC runtime, `.nckp` inside libraries), not a file
+  container, so it is not a `FormatModule`. It belongs beside `sampler-script` as a shared script
+  runtime that Kontakt calls, instead of being a dependency of the Kontakt reader.
 - **Root binds all formats unconditionally.** `Cargo.toml` lists `sampler-kontakt`,
   `sampler-uvi` and `sampler-ksp` as non-optional dependencies. Root `src/` references
   `sampler_kontakt` in 60+ places across `sound/`, `ui/`, `plugin.rs`, `library.rs`, `parity.rs`,

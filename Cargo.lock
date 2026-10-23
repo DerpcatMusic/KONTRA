@@ -2169,7 +2169,9 @@ dependencies = [
  "resvg",
  "rfd 0.17.2",
  "rustc-hash 2.1.3",
+ "sampler-ample",
  "sampler-core",
+ "sampler-ikmpak",
  "sampler-ir",
  "sampler-kontakt",
  "sampler-ksp",
@@ -4176,6 +4178,9 @@ dependencies = [
 [[package]]
 name = "sampler-ample"
 version = "0.1.0"
+dependencies = [
+ "sampler-ir",
+]
 
 [[package]]
 name = "sampler-core"
@@ -4194,6 +4199,9 @@ dependencies = [
 [[package]]
 name = "sampler-ikmpak"
 version = "0.1.0"
+dependencies = [
+ "sampler-ir",
+]
 
 [[package]]
 name = "sampler-ir"
