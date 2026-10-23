@@ -5,6 +5,21 @@ Scope: decompiled source in `/data/dev/workspace/Research/KONTRA/source/kontakt8
 `0141940000.c`), the dispatch disassembly `docs/re/disasm/kolor-shaper-dispatch-1419749f0.txt`, and the raw
 disassembly of the shaper functions in `docs/re/disasm/kolor-*.txt` (radare2 `pdf`, read by hand, no decompile).
 
+## Step 6: Processor shipped, wet mix resolved (2026-10-23)
+
+- **Wet mix (knob 7, `core+0x78`) resolved.** Kemu sweep (`tools/re/kolor_kemu_probe.py --wet-sweep`, fixture
+  `tools/re/fixtures/kolor_wet_sweep.json`): output scales as `(1 - wet)` on the dry path (modes 6 and 9,
+  wet 0, .25, .5, 1 give ratios 1, .75, .5, 0). The smoother target is 1.0, not 0.5: the earlier `B = 0.5 (1 - A)`
+  was `(1 - wet) (1 - A)` at the default wet. Rust: `chain.rs::Dry`, test `wet_sweep_matches_native_for_every_dry_mode`.
+- **Live path.** `ir::Processor::Kolor(Record)` lowers to `sampler_core` `Processor::Kolor(wet)`. The state lives in
+  two frames of delay storage (`Dry::FRAMES`), like the RingMod phase. The translator is `color::slot_kolor`.
+- **Mode 2 and 5 mix/post stage**: the post-shaper sections are not run; `UnknownLaw` note.
+- **Modes 0, 1, 3, 4, 6..9 at non-default drive**: the drive shaper is not run; `NotModeled` note.
+- **Mix wrapper.** The wet mix is internal to the native effect (`core+0x78`). The slot's dynamic Mix (script
+  bypass or trim) wraps the whole slot as it does for every module; it is not a second wet stage.
+- **Still open:** level detector `+0x9748` (consumer of `+0x7d0` not found), prepare coefficient blocks for modes 2
+  and 5, drive shaper at non-default drive, and the P/P2 source block S on the live path.
+
 ## Recovered: cc70 and the cfb0 sample (cases 6-8)
 
 `cfb0` (`14194cfb0`) takes the shaper and `&x`. Verified against the binary: its returned `out[0]` is the

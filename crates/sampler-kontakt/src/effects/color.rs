@@ -27,6 +27,21 @@ pub(super) fn saturation(shape: f32, algorithm: f32) -> Option<Config> {
     }
 }
 
+/// 0x79 Kolor: the saved record drives the dry path and the wet mix (knob 7). The wet mix is internal
+/// to the native effect (`core+0x78`), so a script's slot Mix wraps the whole slot like any other module.
+/// The drive shaper cases run only in the native path and are not in the engine yet: modes 2 and 5
+/// also miss their post-shaper sections, and that is reported as an unknown law.
+pub(super) fn slot_kolor(b: &mut Lowering, s: &Site, notes: &mut Notes, record: &sampler_ir::fx::kolor::Record) -> bool {
+    b.flush();
+    b.out.processors.push(Processor::Kolor(*record));
+    b.combined = s.gain;
+    if matches!(record.mode, 2 | 5) {
+        notes.push(("Kolor post-shaper stage".into(), format!("mode {}: biquad sections and drive-dependent post gain are not run", record.mode), Reason::UnknownLaw));
+    }
+    notes.push(("Kolor drive shaper".into(), "cases 0..9 are not run; exact only at default drive".into(), Reason::NotModeled));
+    true
+}
+
 /// 0x20 Lo-Fi (reader 0x140d01f20, `FFBFF`): Bits, Frequency, flag, Noise
 /// level, Noise color; probe-measured field order (BITS 0, FREQUENCY 1,
 /// NOISELEVEL 3, NOISECOLOR 4).
@@ -219,8 +234,6 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
         // kernel are not extracted and KSP has no ENGINE_PAR_CHAINSAW_* names: its knobs are
         // not guessed from the Big Fuzz layout.
         0x77 => "Chainsaw: record reader 0x140ac51f0 (Fx4B) is shared with Big Fuzz, but its ctor, apply, kernel and parameter names are not extracted",
-        // The record is lowered (`Params::Kolor`); the shaper cases and control tick are not run.
-        0x79 => "Kolor: record lowered to sampler_ir::fx::kolor::Record; shaper cases 0..9 and the control tick (14197ab90) are not wired, so the slot passes audio through",
         0x52 | 0x54 | 0x61 | 0x6c | 0x76 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
         }
