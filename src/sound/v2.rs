@@ -3704,6 +3704,7 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::Eq(_) => "EQ",
             ir::Processor::Dynamics(_) => "Compressor",
             ir::Processor::Color(c) => c.label(),
+            ir::Processor::Kolor(_) => "Kolor",
             ir::Processor::Daft(_) => "Daft",
             ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4", "Ladder HP1", "Ladder HP2", "Ladder HP3", "Ladder HP4", "Ladder BP2", "Ladder BP4", "Ladder Peak", "Ladder Notch"]
                 [usize::from(d.taps.clamp(1, 12)) - 1],
