@@ -211,6 +211,10 @@ pub struct Cache {
     /// allocation, which is what keeps the address a sound key.
     // ponytail: linear scan, bounded by the live image count.
     images: Vec<(Weak<[u8]>, Stored)>,
+    /// Rasterise every glyph as a path, never from the atlas. The atlas draws
+    /// a glyph's second use from a bitmap, so a glyph's pixels depend on which
+    /// frames drew it before; a partial repaint would not match a full one.
+    pub(crate) stateless_glyphs: bool,
 }
 
 #[cfg_attr(
@@ -370,7 +374,7 @@ macro_rules! wrapper {
                     .normalized_coords(coords)
                     // Rasterise each glyph once and reuse the bitmap: strip
                     // generation per glyph was most of a frame's encode.
-                    .atlas_cache($atlas && warm)
+                    .atlas_cache($atlas && warm && !self.cache.stateless_glyphs)
                     .fill_glyphs(run(text.origin, &text.glyphs[start..end]));
                 start = end;
             }
@@ -573,11 +577,26 @@ pub fn paint(
     scene: &ResolvedScene,
     transform: Affine,
 ) -> Result<(), Error> {
+    paint_within(canvas, scene, transform, None)
+}
+
+/// [`paint`], skipping the plain fills, strokes, shadows and text whose
+/// device box misses `within` (device space under `transform`). Their pixels
+/// all lie outside `within`, so a canvas drawing only `within` sees the same
+/// pixels. Structural entries are never skipped, and a scene holding a
+/// [`Layer::Backdrop`] cannot be culled: its blur reads past its own edges.
+pub(crate) fn paint_within(
+    canvas: &mut impl Canvas,
+    scene: &ResolvedScene,
+    transform: Affine,
+    within: Option<Rect>,
+) -> Result<(), Error> {
     // A CPU/sink Canvas must not silently omit external GPU paint. Use
     // effects::GpuRenderer for scenes containing native material surfaces.
     if scene.paint.iter().any(|p| p.layer == Layer::External) {
         return Err(Error::InvalidPath);
     }
+    let within = within.filter(|_| !scene.paint.iter().any(|p| p.layer == Layer::Backdrop));
     canvas.begin_frame();
     let mut bez = BezPath::new();
     let mut skip_to = 0;
@@ -587,6 +606,12 @@ pub fn paint(
         }
         if let Some(end) = invisible_end(&scene.paint, i) {
             skip_to = end + 1;
+            continue;
+        }
+        if let Some(w) = within
+            && device_reach(p, transform, false)
+                .is_some_and(|r| r.x1 < w.x0 || r.x0 > w.x1 || r.y1 < w.y0 || r.y0 > w.y1)
+        {
             continue;
         }
         if layered(canvas, p) {
@@ -641,6 +666,49 @@ pub(crate) fn placed(base: Affine, p: &Painted) -> Affine {
         o if o.x == 0. && o.y == 0. => base,
         o => base * Affine::translate((o.x, o.y)),
     }
+}
+
+/// Where the plain paint `p` can reach in device space under `transform`:
+/// its box, grown by its blur and stroke. `None` for a structural entry (a
+/// clip, layer or backdrop, which reaches past its own box), and for a
+/// path-only entry unless `convert` is set, since its box needs the path
+/// converted; cheaper callers skip those and draw them.
+// ponytail: the per-frame cull skips path-only entries (icons, custom
+// outlines) rather than converting them; add their bounds to mui-scene when
+// a scene of them is measured hot.
+pub(crate) fn device_reach(p: &Painted, transform: Affine, convert: bool) -> Option<Rect> {
+    if !matches!(
+        p.layer,
+        Layer::Fill
+            | Layer::Stroke
+            | Layer::Text
+            | Layer::Shell(_)
+            | Layer::Draw(_)
+            | Layer::Shadow(_)
+    ) {
+        return None;
+    }
+    let local = match (&p.rect, &p.text) {
+        (Some(rr), _) => rr.bounds(),
+        // Ink reaches past the run's advance box, above and below it: a full em.
+        (None, Some(t)) => {
+            paint_box(p, &BezPath::new()).inflate(f64::from(t.size), f64::from(t.size))
+        }
+        (None, None) if convert => {
+            let mut bez = BezPath::new();
+            bez_path_into(&p.path, ARC_TOLERANCE, &mut bez).ok()?;
+            bez.bounding_box()
+        }
+        (None, None) => return None,
+    };
+    let placed = transform * p.transform;
+    let scale = placed.as_coeffs()[..4].iter().fold(0., |s, v| s + v.abs());
+    let grow = (3. * p.blur + p.width / 2. + 2.) * scale;
+    Some(
+        placed
+            .transform_rect_bbox(local + kurbo::Vec2::new(p.offset.x, p.offset.y))
+            .inflate(grow, grow),
+    )
 }
 
 /// `p`'s paint box where it stands in the scene.

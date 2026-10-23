@@ -1,6 +1,9 @@
 //! Retained CPU pixels and optional native presentation without a GPU device.
-use crate::{Cache, Canvas, Cpu, kurbo::Affine};
-use mui_scene::{Painted, ResolvedScene};
+use crate::{
+    Cache, Canvas, Cpu,
+    kurbo::{Affine, Rect},
+};
+use mui_scene::{Layer, Painted, ResolvedScene};
 use vello_common::pixmap::Pixmap;
 
 /// A single-threaded CPU renderer. Unchanged scenes reuse their pixels.
@@ -48,7 +51,11 @@ impl Renderer {
         Ok(Self {
             ctx: context(size),
             resources: vello_cpu::Resources::default(),
-            cache: Cache::default(),
+            // Stateless glyphs: a partial repaint must match a whole frame.
+            cache: Cache {
+                stateless_glyphs: true,
+                ..Default::default()
+            },
             pixels: Pixmap::new(size.0, size.1),
             retained: Vec::new(),
             transform: None,
@@ -105,8 +112,66 @@ impl Renderer {
         if overlay.is_none() && self.transform == Some(transform) && self.retained == scene.paint {
             return Ok(false);
         }
+        // Only what changed is repainted, when every change is a plain paint
+        // with a box. A whole-frame repaint covers the rest.
+        let part = match overlay.is_none() && self.transform == Some(transform) {
+            true => damage(&self.retained, &scene.paint, transform),
+            false => None,
+        };
+        let (fw, fh) = (self.pixels.width(), self.pixels.height());
+        let part = part.and_then(|r| {
+            let (x0, y0) = (r.x0.floor().max(0.), r.y0.floor().max(0.));
+            let (x1, y1) = (
+                r.x1.ceil().min(f64::from(fw)),
+                r.y1.ceil().min(f64::from(fh)),
+            );
+            // Half the frame or more: one whole-frame pass is cheaper than a crop.
+            let area = (x1 - x0) * (y1 - y0);
+            (area * 2. < f64::from(fw) * f64::from(fh)).then_some((x0, y0, x1, y1))
+        });
+        let Some((x0, y0, x1, y1)) =
+            part.map(|(x0, y0, x1, y1)| (x0 as u16, y0 as u16, x1 as u16, y1 as u16))
+        else {
+            return self.render_full(scene, transform, overlay);
+        };
+        self.retained.clone_from(&scene.paint);
+        self.transform = Some(transform);
+        if x1 <= x0 || y1 <= y0 {
+            return Ok(false);
+        }
+        let (w, h) = (x1 - x0, y1 - y0);
+
+        self.ctx.reset_and_resize(w, h);
+        let mut canvas = Cpu {
+            ctx: &mut self.ctx,
+            resources: &mut self.resources,
+            cache: &mut self.cache,
+        };
+        let rect = Rect::new(0., 0., f64::from(w), f64::from(h));
+        let shifted = Affine::translate((-f64::from(x0), -f64::from(y0))) * transform;
+        crate::paint_within(&mut canvas, scene, shifted, Some(rect)).map_err(|e| e.to_string())?;
+        self.ctx.flush();
+        let mut patch = Pixmap::new(w, h);
+        self.ctx.render(&mut patch, &mut self.resources);
+        let stride = usize::from(fw) * 4;
+        let row = usize::from(w) * 4;
+        let dst = self.pixels.data_as_u8_slice_mut();
+        for (y, src) in patch.data_as_u8_slice().chunks_exact(row).enumerate() {
+            let at = (usize::from(y0) + y) * stride + usize::from(x0) * 4;
+            dst[at..at + row].copy_from_slice(src);
+        }
+        Ok(true)
+    }
+
+    fn render_full(
+        &mut self,
+        scene: &ResolvedScene,
+        transform: Affine,
+        overlay: Option<impl FnOnce(&mut dyn Canvas)>,
+    ) -> Result<bool, String> {
         self.transform = None;
-        self.ctx.reset();
+        self.ctx
+            .reset_and_resize(self.pixels.width(), self.pixels.height());
         let mut canvas = Cpu {
             ctx: &mut self.ctx,
             resources: &mut self.resources,
@@ -118,13 +183,33 @@ impl Renderer {
             overlay(&mut canvas);
         }
         self.ctx.flush();
-        // ponytail: changed frames repaint fully; add damage clipping after
-        // measuring active CPU fallback workloads, preserving blend/backdrop order.
         self.ctx.render(&mut self.pixels, &mut self.resources);
         self.retained.clone_from(&scene.paint);
         self.transform = (!has_overlay).then_some(transform);
         Ok(true)
     }
+}
+
+/// The device box that every changed entry of `new` (against `old`) can
+/// reach, or `None` when a whole-frame repaint is needed: the lists differ in
+/// length, a structural entry changed, or a backdrop reads what is beneath it.
+fn damage(old: &[Painted], new: &[Painted], transform: Affine) -> Option<Rect> {
+    if old.len() != new.len() || new.iter().any(|p| p.layer == Layer::Backdrop) {
+        return None;
+    }
+    let mut rect = Rect::ZERO;
+    let mut any = false;
+    for (a, b) in old.iter().zip(new) {
+        if a == b {
+            continue;
+        }
+        for p in [a, b] {
+            let r = crate::device_reach(p, transform, true)?;
+            rect = if any { rect.union(r) } else { r };
+            any = true;
+        }
+    }
+    Some(rect)
 }
 
 /// An opaque native window presenting CPU pixels. No wgpu device or surface is used.
@@ -303,6 +388,51 @@ mod tests {
         assert!(renderer.render(&scene, Affine::IDENTITY).unwrap());
         assert_eq!(&renderer.pixels()[..4], &[255, 0, 0, 255]);
         assert!(!renderer.render(&scene, Affine::IDENTITY).unwrap());
+    }
+
+    #[test]
+    fn damaged_repaint_matches_a_full_frame_pixel_for_pixel() {
+        use mui_scene::prelude::*;
+        // Each step recolours one tile, so only its box is repainted. The
+        // retained renderer must match a fresh full-frame render exactly.
+        let scene = |colors: &[Color; 6]| {
+            let tiles = colors
+                .iter()
+                .map(|c| block(16., 24.).radius(5.).fill(*c))
+                .collect::<Vec<_>>();
+            mui_scene::resolve(&SceneSpec::new(row(tiles))).unwrap()
+        };
+        let palette = [
+            Color::srgb(1., 0., 0.),
+            Color::srgb(0., 1., 0.),
+            Color::srgb(0., 0., 1.),
+            Color::srgb(1., 1., 0.),
+        ];
+        let mut colors = [palette[0]; 6];
+        let mut renderer = Renderer::new((104, 40)).unwrap();
+        for (step, transform) in [
+            (0, Affine::IDENTITY),
+            (1, Affine::IDENTITY),
+            (2, Affine::IDENTITY),
+            (3, Affine::scale(2.)),
+            (4, Affine::scale(2.)),
+        ] {
+            colors[step % 6] = palette[step % 4];
+            let frame = scene(&colors);
+            let size = if transform == Affine::IDENTITY {
+                (104, 40)
+            } else {
+                (208, 80)
+            };
+            renderer.resize(size).unwrap();
+            renderer.render(&frame, transform).unwrap();
+            let mut fresh = Renderer::new(size).unwrap();
+            fresh.render(&frame, transform).unwrap();
+            assert!(
+                renderer.pixels() == fresh.pixels(),
+                "step {step} differs from a full frame"
+            );
+        }
     }
 
     #[test]
