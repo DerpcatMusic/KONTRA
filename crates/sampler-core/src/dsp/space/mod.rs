@@ -514,6 +514,38 @@ mod tests {
     }
 
     #[test]
+    fn default_convolution_wet_is_sample_exact_with_dry() {
+        // Zero-latency engine: a unit IR at lag 0 must land on the same frame as the dry input.
+        let ir = Arc::new(Impulse::new(vec![1.0], vec![1.0]).unwrap());
+        let c = Config::convolution(ImpulseRef(0), 0.5, 0.5);
+        let mut s = Space::new(&c, 48_000, &[ir]).unwrap();
+        let mut seed = 1u32;
+        let x: Vec<f32> = (0..4096)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 8) as f32 / (1 << 24) as f32 - 0.5
+            })
+            .collect();
+        let mut y = x.clone();
+        let mut r = x.clone();
+        for (l, r) in y.chunks_mut(64).zip(r.chunks_mut(64)) {
+            s.process([l, r], 120.0);
+        }
+        for (i, (got, want)) in y.iter().zip(&x).enumerate() {
+            assert!((got - want).abs() < 1e-6, "frame {i}: {got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn tail_covers_the_full_impulse_up_to_the_cap() {
+        let c = Config::convolution(ImpulseRef(0), 0.0, 1.0);
+        let max = Impulse::new(vec![0.0; MAX_IMPULSE_FRAMES], vec![0.0; MAX_IMPULSE_FRAMES]).unwrap();
+        assert!(tail_frames(&c, 48_000, Some(&max)) as usize >= MAX_IMPULSE_FRAMES);
+        // Longer than the cap is refused, so no response is silently truncated.
+        assert!(Impulse::new(vec![0.0; MAX_IMPULSE_FRAMES + 1], vec![0.0; MAX_IMPULSE_FRAMES + 1]).is_err());
+    }
+
+    #[test]
     fn tail_follows_decay_predelay_and_impulse() {
         let c = Config::network(Network { decay_seconds: 2.0, predelay_seconds: 0.5, ..Network::DEFAULT });
         assert_eq!(tail_frames(&c, 48_000, None), ((0.5 + 4.0) * 48_000.0) as u32);
