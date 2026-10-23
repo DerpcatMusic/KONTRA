@@ -597,11 +597,9 @@ mod tests {
         );
     }
 
-    /// Runs the vector from the Rust start state and returns the max abs error and the first frame over tolerance.
+    /// Runs the vector from the core with its reset defaults written through `set_param`.
     fn check(vector: &str) -> (f32, Option<usize>) {
         let v: Value = serde_json::from_str(vector).expect("vector json");
-        let mut state = ReplikaState::new(RATE);
-        state.mode1 = Some(Box::new(Mode1::start(RATE)));
         let mut core_obj = ReplikaCore::new(RATE);
         for p in v["defaults"].as_array().expect("defaults") {
             core_obj.set_param(
@@ -609,6 +607,15 @@ mod tests {
                 p[1].as_f64().unwrap() as f32,
             );
         }
+        run(&v, &mut core_obj)
+    }
+
+    /// Runs the vector's stimulus and per-quantum writes through `core_obj` from the Rust start state (the test places
+    /// the chain; the stage does not, see k-replika-gaps.md piece 3c part 5b). Returns the max abs error and the first
+    /// frame over tolerance.
+    fn run(v: &Value, core_obj: &mut ReplikaCore) -> (f32, Option<usize>) {
+        let mut state = ReplikaState::new(RATE);
+        state.mode1 = Some(Box::new(Mode1::start(RATE)));
         let stim = v["stim"].as_array().expect("stim");
         let (stim_l, stim_r) = (floats(&stim[0]), floats(&stim[1]));
         let mut storage = vec![[0.; 2]; crate::dsp::replika::storage_len(RATE)];
@@ -666,6 +673,28 @@ mod tests {
         let (max, first) = check(NOISE);
         eprintln!(
             "replika mode-1 noise: max abs error {max:.3e}, first frame over 1e-5: {first:?}"
+        );
+        assert!(
+            max <= TOLERANCE,
+            "max abs error {max:.3e}, first frame over tolerance {first:?}"
+        );
+    }
+
+    /// Index 28 = 0.3 set through `ReplikaControls::path` (the sampler-ir field the Kontakt unit maps into), the other
+    /// controls at their `ReplikaControls` defaults, and the vector's per-quantum writes. The chain is still placed by
+    /// the test (`Mode1::start`, no dump): the stage does not carry it across blocks yet (gaps doc, piece 3c part 5b).
+    #[test]
+    fn controls_index28_mode1_matches_native_impulse_vector() {
+        use sampler_ir::fx::timemod::ReplikaControls;
+        let v: Value = serde_json::from_str(IMPULSE).expect("vector json");
+        let controls = ReplikaControls {
+            path: 0.3,
+            ..ReplikaControls::default()
+        };
+        let mut core_obj = ReplikaCore::from_controls(RATE, &controls);
+        let (max, first) = run(&v, &mut core_obj);
+        eprintln!(
+            "replika mode-1 controls impulse: max abs error {max:.3e}, first frame over 1e-5: {first:?}"
         );
         assert!(
             max <= TOLERANCE,
