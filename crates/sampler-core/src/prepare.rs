@@ -1911,16 +1911,27 @@ programs = programs.into_boxed_slice();
                         controls.push((routes.len(), ids));
                     }
                     // Compiled control addresses are private to this preparation call.
-                    routes.push(super::ModRoute {
+                    let span = binding.high - binding.low;
+                    let mut bound = super::ModRoute {
                         target: super::ParameterAddress {
                             scope: super::ParameterScope::Voice,
                             node: u32::try_from(lane).map_err(|_| Error::Capacity)?,
                             parameter: u32::MAX - 13,
                         },
-                        depth: route.depth * (binding.high - binding.low),
-                        live_gain: route.live_gain * (binding.high - binding.low),
+                        depth: route.depth * span,
+                        live_gain: route.live_gain * span,
                         ..*route
-                    });
+                    };
+                    // An intensity unit is depth per normalized intensity: it scales with
+                    // the depth. A zero-width lane leaves no depth, and keeps its unit.
+                    if span != 0.0 {
+                        for scale in bound.scales_mut() {
+                            if let super::ModScaleLaw::KontaktIntensity { unit, .. } = &mut scale.law {
+                                *unit *= span;
+                            }
+                        }
+                    }
+                    routes.push(bound);
                 }
             }
             program.routes = routes;
