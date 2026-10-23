@@ -1,0 +1,17 @@
+[package]
+name = "sampler-script"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+# Luau for every target; native builds also enable the JIT. See docs/architecture-v2/UNIVERSAL_SCRIPT.md.
+mlua = { version = "=0.12.2", features = ["luau"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+mlua = { version = "=0.12.2", features = ["luau-jit"] }
+
+[lints.rust]
+unsafe_code = "forbid"
