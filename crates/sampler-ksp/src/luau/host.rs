@@ -201,12 +201,17 @@ impl Host {
         self.now
     }
 
-    /// Run `on init` to completion. Waits are no-ops there (interpreter parity).
+    /// Run `on init`, then `on persistence_changed` (the load order of `eval::run`: a fresh
+    /// instrument restores nothing, so the persistence body follows init directly). Waits
+    /// are no-ops there (interpreter parity).
     pub fn init(&mut self) -> Result<(), String> {
-        let init: Option<Function> = self.callbacks.get("init").map_err(|e| e.to_string())?;
-        let Some(init) = init else { return Ok(()) };
-        self.budget.refill(CALLBACK_CHECKPOINTS, None);
-        init.call::<()>(()).map_err(|e| e.to_string())
+        for key in ["init", "persistence_changed"] {
+            let func: Option<Function> = self.callbacks.get(key).map_err(|e| e.to_string())?;
+            let Some(func) = func else { continue };
+            self.budget.refill(CALLBACK_CHECKPOINTS, None);
+            func.call::<()>(()).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     /// The user changed UI control `ui` to `value`. The control takes the value (clamped), then
