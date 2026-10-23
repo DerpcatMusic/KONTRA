@@ -1569,3 +1569,18 @@ fn source_sized_lower_batch_over_256_keeps_boundary_exact_ids_callbacks_and_no_h
         rt.flush_behaviors(|_, _, _| true);
     });
 }
+
+#[test]
+fn a_shared_source_zone_identity_stays_on_every_zone_and_addresses_the_first() {
+    let row = |id, group, region| SourceZoneIdentity {
+        id: Some(id),
+        home: SourceZoneHome { group, low_key: 60, high_key: 61 },
+        region,
+    };
+    let p = make(false, false)
+        .with_source_zone_identities(vec![row(5, SAMPLER, Some(0)), row(5, WT, None), row(9, WT, None)], 4, 4096)
+        .unwrap();
+    assert_eq!([0, 1, 2].map(|i| p.source_zone_identity(i)), [Some(5), Some(5), Some(9)]);
+    assert_eq!(p.source_zone_identity_home(5).map(|h| h.group), Some(SAMPLER));
+    assert_eq!(p.source_zone_identity_region(5), Some(0));
+}

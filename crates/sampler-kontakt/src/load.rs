@@ -840,9 +840,7 @@ fn script_environment_with_zones(
         engine_lookups: sampler_core::lower::source_engine_lookups(source),
         snapshot_mode: Default::default(),
         zone_catalog: source.zone_catalog.clone(),
-        zones: metadata.cloned().unwrap_or_else(|| source.zone_catalog.iter().filter_map(|z| {
-            Some((z.id?,[i32::try_from(z.home.group).ok()?,i32::from(z.home.low_key),i32::from(z.home.high_key)]))
-        }).collect()),
+        zones: metadata.cloned().unwrap_or_else(|| first_homes(source.zone_catalog.iter().map(|z| (z, true)))),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),
         persisted,
@@ -885,12 +883,23 @@ pub(crate) struct ScriptInit {
 /// Raw metadata preserves authored keys when playback admission narrows them.
 fn admitted_zone_metadata(instrument: &ir::Instrument) -> std::collections::BTreeMap<u32, [i32; 3]> {
     if instrument.source_indices.zone_catalog.len()!=instrument.source_indices.zones.len() {return Default::default();}
-    instrument.source_indices.zone_catalog.iter().zip(&instrument.source_indices.zones)
-        .filter_map(|(source,entry)| {
-            instrument.zones.get(entry.as_ref()?.0)?.asset?;
-            Some((source.id?,[i32::try_from(source.home.group).ok()?,
-                i32::from(source.home.low_key),i32::from(source.home.high_key)]))
-        }).collect()
+    first_homes(instrument.source_indices.zone_catalog.iter().zip(&instrument.source_indices.zones)
+        .map(|(source,entry)| (source, entry.as_ref()
+            .and_then(|z| instrument.zones.get(z.0)?.asset).is_some())))
+}
+
+/// Home of each identity's first zone (Kontakt's lookup order), if that zone is kept.
+pub(crate) fn first_homes<'a>(zones: impl Iterator<Item = (&'a ir::SourceZone, bool)>)
+    -> std::collections::BTreeMap<u32, [i32; 3]> {
+    let mut homes = std::collections::BTreeMap::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for (zone, kept) in zones {
+        let Some(id) = zone.id.filter(|id| seen.insert(*id)) else { continue };
+        if let (true, Ok(group)) = (kept, i32::try_from(zone.home.group)) {
+            homes.insert(id, [group, i32::from(zone.home.low_key), i32::from(zone.home.high_key)]);
+        }
+    }
+    homes
 }
 
 pub(crate) fn admit_initialized_zone_sources(instrument: &mut ir::Instrument, initialized: &mut ScriptInit) {
