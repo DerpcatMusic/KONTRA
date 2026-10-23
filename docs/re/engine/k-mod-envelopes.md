@@ -24,12 +24,15 @@ milliseconds: `exp(x·C + ln 2) − 2`, with `C = 8.9228` for attack/hold (`0x14
 these give `trunc(ms·0.001·R)` = 24/28, 256/332, 2415/3543, 22500/37500 at x = .25/.5/.75/1,
 exactly the recorded control table (`envelope_time_matches_recorded_control_ticks`).
 
-**AHDSR stored fields are unit knobs.** The v0x11 reader (`0x140cffb40`) reads, in order:
-curve, attack, decay, hold, release, sustain, flag byte, then four 13-byte timing records.
-That order matches the `ni-file` field order. Attack and hold go through the A law, decay and
-release through the D law. Sustain is cubed: level `x³` (the stored state is `x³ + 0.075` with
-a 0.075 floor, output `(state − 0.075)·scale + bias`). The engine's own stage scaling
-(`EnvelopeState::scale_stage`) already treats the stage knob this way.
+**AHDSR stored times are milliseconds (correction 2026-10-23).** The v0x11 reader
+(`0x140cffb40`) stores the raw f32 fields with no law: curve, attack, decay, hold, release,
+sustain, flag byte, then four 13-byte timing records (same order as `ni-file`). The
+time converters above clamp to `[0, 1]`, so applying them to a stored ms value (80 ms → 15 s)
+was the Dolce staccato silence bug. Corpus evidence across Kontakt 168/171/174/177 files
+(Dolce, Chorus, Pacific, Vista, Una Corda, ANALOG STRINGS, Afflatus): stored values are clean
+musical milliseconds (125.01, 80.01, 1050.0, 25000.04 = law max) and sustain is the only knob.
+The converters apply to script and automation values, not to these fields. Sustain is cubed:
+level `x³` (stored state `x³ + 0.075`, output `(state − 0.075)·scale + bias`).
 
 **DBD preparation** (`0x140ae5d70`, called from resolver `0x1409651b0` mode 2, disasm
 around `0x1409652c4`): arguments are `(this, N0_ms, level, N1_ms)` with
@@ -45,7 +48,7 @@ time converter of their sub-object (vtable slot `+0x28`); flag byte. The engine'
 | Item | Shared engine | Kontakt 8 | Status |
 | --- | --- | --- | --- |
 | AHDSR time converter (attack/hold A, decay/release D) | `voice_mod::laws::u2n_env_{a,d}` with tick test | verified (decompile + recorded table) | **covered** |
-| AHDSR stored knob → time and sustain (lowering) | `sampler-kontakt` `ahdsr_*` helpers (this PR; was raw ms / linear sustain) | verified | **fixed in this PR** |
+| AHDSR stored time → ms and sustain (lowering) | `sampler-kontakt` `ahdsr_*` helpers: times pass through as ms (PR #476), sustain cubed | verified (corpus survey, 7 libraries) | covered |
 | AHDSR stage laws (curve, floor, release restart) | `v1_voice_controls::Ahdsr` (native f32 path) | verified (lifecycle vectors) | covered, not rendered against Kontakt |
 | AHDSR control rate R (cadence in ticks) | sample-rate frames | not proved | **open** |
 | AHDSR note-off scheduling, voice reset, one-shot flag | partial (`one_shot`, `ahd_only`) | not recovered in this pass | open |
@@ -61,8 +64,8 @@ time converter of their sub-object (vtable slot `+0x28`); flag byte. The engine'
 ## Evidence confidence
 
 - AHDSR time converter and tick table: high (decompile, PE constants, recorded native table).
-- AHDSR sustain cube and stored-knob interpretation: high for the decompiled reader and engine
-  convention; end-to-end render against Kontakt not run.
+- AHDSR sustain cube: high for the decompiled reader and engine convention; end-to-end render
+  against Kontakt not run. Stored times are ms: high (raw reader + corpus values).
 - DBD preparation: high for the law; medium for the argument mapping (from disassembly).
 - Open rows: nothing established beyond the table.
 
