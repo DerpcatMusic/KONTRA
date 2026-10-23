@@ -2776,16 +2776,22 @@ fn apply_overrides(text: &str, overrides: &[(usize, String, String)]) -> String 
     let Ok(doc) = roxmltree::Document::parse(text) else {
         return text.to_owned();
     };
+    // Group by node once: a scan of every override per node is quadratic on
+    // large programs (tens of thousands of overrides, megabyte XML).
+    let mut by_node: HashMap<usize, Vec<(&str, &str)>> = HashMap::new();
+    for (id, name, value) in overrides {
+        by_node.entry(*id).or_default().push((name, value));
+    }
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     for node in doc.descendants().filter(|n| n.is_element()) {
-        for (_, name, value) in overrides
-            .iter()
-            .filter(|(id, ..)| *id == node.id().get_usize())
-        {
-            match node.attribute_node(name.as_str()) {
+        let Some(list) = by_node.get(&node.id().get_usize()) else {
+            continue;
+        };
+        for &(name, value) in list {
+            match node.attribute_node(name) {
                 Some(a) => {
                     let r = a.range_value();
-                    edits.push((r.start, r.end, value.clone()));
+                    edits.push((r.start, r.end, value.to_owned()));
                 }
                 None => {
                     let at = node.range().start + 1 + node.tag_name().name().len();
@@ -2795,6 +2801,27 @@ fn apply_overrides(text: &str, overrides: &[(usize, String, String)]) -> String 
         }
     }
     edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    // Disjoint edits commute, so one forward pass gives the same text as
+    // applying them last-first. Ties (two insertions at one point) keep the
+    // original sequential semantics below.
+    let mut ascending: Vec<&(usize, usize, String)> = edits.iter().collect();
+    ascending.reverse();
+    let disjoint = ascending
+        .windows(2)
+        .all(|w| w[0].0 < w[1].0 && w[0].1 <= w[1].0)
+        && ascending.first().is_none_or(|e| e.0 <= e.1 && e.1 <= text.len())
+        && ascending.last().is_none_or(|e| e.1 <= text.len());
+    if disjoint {
+        let mut out = String::with_capacity(text.len() + edits.len() * 16);
+        let mut last = 0;
+        for (start, end, value) in ascending {
+            out.push_str(&text[last..*start]);
+            out.push_str(value);
+            last = *end;
+        }
+        out.push_str(&text[last..]);
+        return out;
+    }
     let mut out = text.to_owned();
     for (start, end, value) in edits {
         out.replace_range(start..end, &value);
@@ -2956,6 +2983,73 @@ fn assemble(
     let bindings=engine_parameters::bindings(&loaded.instrument);
     loaded.plan = loaded.plan.with_engine_parameters(bindings, Vec::new())?;
     Ok(loaded)
+}
+
+#[cfg(all(test, feature = "library-access"))]
+mod override_tests {
+    use super::apply_overrides;
+
+    /// The original one-edit-at-a-time application, kept as the reference.
+    fn sequential(text: &str, overrides: &[(usize, String, String)]) -> String {
+        let doc = roxmltree::Document::parse(text).unwrap();
+        let mut edits: Vec<(usize, usize, String)> = Vec::new();
+        for node in doc.descendants().filter(|n| n.is_element()) {
+            for (_, name, value) in overrides.iter().filter(|(id, ..)| *id == node.id().get_usize()) {
+                match node.attribute_node(name.as_str()) {
+                    Some(a) => {
+                        let r = a.range_value();
+                        edits.push((r.start, r.end, value.clone()));
+                    }
+                    None => {
+                        let at = node.range().start + 1 + node.tag_name().name().len();
+                        edits.push((at, at, format!(" {name}=\"{value}\"")));
+                    }
+                }
+            }
+        }
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+        let mut out = text.to_owned();
+        for (start, end, value) in edits {
+            out.replace_range(start..end, &value);
+        }
+        out
+    }
+
+    #[test]
+    fn overrides_match_sequential_application() {
+        let xml = r#"<Program Name="p"><Layers><Layer Gain="1" Pan="0"><Keygroups><Keygroup Low="1"/><Keygroup Low="2" High="5"/></Keygroups></Layer></Layers></Program>"#;
+        let ov = |id: usize, name: &str, value: &str| (id, name.to_owned(), value.to_owned());
+        let overrides = vec![
+            ov(1, "Gain", "0.5"),
+            ov(1, "Mute", "1"),
+            ov(3, "Low", "9"),
+            ov(4, "Low", "7"),
+            ov(4, "Pan", "-1"),
+            ov(3, "Low", "8"),
+        ];
+        assert_eq!(apply_overrides(xml, &overrides), sequential(xml, &overrides));
+        // Two insertions on one tag share a point: the sequential order must hold.
+        let ties = vec![ov(2, "A", "1"), ov(2, "B", "2")];
+        assert_eq!(apply_overrides(xml, &ties), sequential(xml, &ties));
+    }
+
+    /// Guards the quadratic regression: 20k overrides over a 20k-element document
+    /// took seconds when every node scanned every override and every edit shifted the text.
+    #[test]
+    fn many_overrides_stay_linear() {
+        let mut xml = String::from("<Program>");
+        let mut overrides = Vec::new();
+        for i in 0..20_000usize {
+            xml.push_str(&format!(r#"<Keygroup Low="{i}" Gain="1"/>"#));
+            overrides.push((i + 2, "Gain".to_owned(), "0.5".to_owned()));
+        }
+        xml.push_str("</Program>");
+        let started = std::time::Instant::now();
+        let out = apply_overrides(&xml, &overrides);
+        let elapsed = started.elapsed();
+        assert_eq!(out.matches(r#"Gain="0.5""#).count(), 20_000);
+        assert!(elapsed.as_secs_f64() < 2.0, "apply_overrides took {elapsed:?}");
+    }
 }
 
 #[cfg(all(test, feature = "library-access"))]
