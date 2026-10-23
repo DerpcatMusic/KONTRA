@@ -105,12 +105,11 @@ impl SourceQualification {
         }
     }
 
-    fn require_output(self, connection: Node) -> Result<(), String> {
-        let Some(limitation) = self.limitation else { return Ok(()); };
-        let (node, law) = match limitation {
-            SourceLimitation::Envelope(node, law) => (node, law.description()),
-        };
-        Err(format!("{}: shared output source node {} has no supported exact law: {law}", path(connection), node.get_usize()))
+    /// The source law UVI does not publish, if any. The route is kept per voice
+    /// and reported as UnknownLaw instead of refusing the program.
+    fn unproved(self) -> Option<Gap> {
+        let Some(SourceLimitation::Envelope(node, law)) = self.limitation else { return None; };
+        Some(gap("shared output source", format!("source node {}: {}", node.get_usize(), law.description()), ir::Reason::UnknownLaw))
     }
 }
 
@@ -281,6 +280,11 @@ impl Translation {
     fn gap(&mut self, connection: Node, gap: Gap) {
         #[cfg(feature = "scan")]
         self.dropped_connections.insert(connection.id());
+        self.approximated_gap(connection, gap);
+    }
+
+    /// Report `gap` for `connection` without dropping its route.
+    fn approximated_gap(&mut self, connection: Node, gap: Gap) {
         let what = format!(
             "{} -> {}",
             connection.attribute("Source").unwrap_or_default(),
@@ -318,14 +322,25 @@ impl Translation {
             }
             return Ok(());
         }
-        qualification.require_output(connection)
+        self.approximate_output(connection, qualification);
+        Ok(())
     }
 
-    pub(crate) fn qualify_envelope_output(&self, connection: Node, source: Node) -> Result<(), String> {
+    pub(crate) fn qualify_envelope_output(&mut self, connection: Node, source: Node) -> Result<(), String> {
         let definition = *self.envelopes.get(&source.id()).ok_or_else(|| "envelope definition qualification missing".to_owned())?;
         let mut qualification = SourceQualification::default();
         qualification.envelope(source, definition);
-        qualification.require_output(connection)
+        self.approximate_output(connection, qualification);
+        Ok(())
+    }
+
+    /// A shared output whose source has no exact law keeps its route, approximated
+    /// per voice, and is reported once as UnknownLaw (never a refused program).
+    fn approximate_output(&mut self, connection: Node, qualification: SourceQualification) {
+        let Some(gap) = qualification.unproved() else { return };
+        if self.shared_sources.insert(connection.id()) {
+            self.approximated_gap(connection, gap);
+        }
     }
 
     /// A program or layer connection applied to one keygroup of its scope: a
