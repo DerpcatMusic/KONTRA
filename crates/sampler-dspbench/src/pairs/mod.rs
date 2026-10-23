@@ -1,9 +1,13 @@
 //! Pair definitions and the shared result types. Each pair module compares our implementation with
 //! one or more candidates on the same quality metrics, and fits each one to Kontakt where a reference exists.
 
+pub mod eq;
 pub mod filter;
 pub mod limiter;
+pub mod oversampler;
+pub mod compressor;
 pub mod resampler;
+pub mod svf;
 
 use crate::band::{Band, Verdict, classify};
 use serde::Serialize;
@@ -34,10 +38,11 @@ pub struct Quality {
 }
 
 impl Quality {
-    /// True when `self` beats `other` by at least `margin_db` on aliasing or noise, or when it is
-    /// stable where the other is not, or has fewer subnormal outputs.
+    /// True when `self` beats `other` by at least `margin_db` on overshoot, aliasing or noise, or when
+    /// it is stable where the other is not, or has fewer subnormal outputs.
     pub fn cleaner_than(&self, other: &Quality, margin_db: f64) -> bool {
-        (other.alias_db - self.alias_db) >= margin_db
+        (other.peak_dbfs - self.peak_dbfs) >= margin_db
+            || (other.alias_db - self.alias_db) >= margin_db
             || (other.noise_dbfs - self.noise_dbfs) >= margin_db
             || (self.stable && !other.stable)
             || (other.subnormal > 0 && self.subnormal == 0)
