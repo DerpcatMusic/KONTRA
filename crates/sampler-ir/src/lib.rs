@@ -734,6 +734,10 @@ pub struct Group {
     /// Saved mute preserves the complete definition for live unmute.
     #[cfg_attr(feature = "cache", serde(default))]
     pub muted: bool,
+    /// Kontakt saved this group as purged (not resident): it must not sound
+    /// until a script or UI makes it resident.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub purged: bool,
     /// Strictly admitted Kontakt cycle oscillator, independent of sample root/rate.
     #[cfg_attr(feature = "cache", serde(default))]
     pub wavetable: Option<Wavetable>,
