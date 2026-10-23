@@ -4902,6 +4902,15 @@ mod modulation {
     fn ahdsr_stored_times_are_native_milliseconds_and_sustain_is_a_knob() {
         assert_eq!(ahdsr_attack_ms(80.0077), 80.0077);
         assert_eq!(ahdsr_decay_ms(351.0), 351.0);
+        // Raw stored values from the native-file survey (2026-10-23): Dolce
+        // legato/staccato (v174), ANALOG STRINGS 1.05 ms (v171), Una Corda
+        // 25000.04 ms release at the law maximum (v168), Dolce 1050 ms release.
+        assert_eq!(ahdsr_attack_ms(139.9995574951172), 139.9995574951172);
+        assert_eq!(ahdsr_attack_ms(0.00010704994201660156), 0.00010704994201660156);
+        assert_eq!(ahdsr_attack_ms(1.05), 1.05);
+        assert_eq!(ahdsr_decay_ms(213.49972534179688), 213.49972534179688);
+        assert_eq!(ahdsr_decay_ms(1050.0009765625), 1050.0009765625);
+        assert_eq!(ahdsr_decay_ms(25000.04), 25000.04);
         assert_eq!(ahdsr_attack_ms(-1.0), 0.0);
         assert_eq!(ahdsr_sustain(0.5), 0.125);
         assert_eq!(ahdsr_sustain(2.0), 1.0);
