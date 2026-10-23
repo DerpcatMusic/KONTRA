@@ -501,6 +501,15 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
 }
 
 /// `dry` is the slot's own dry level when the effect runs outside a Mix block.
+/// Wow / Flutter control laws, from the handlers of `FUN_14199de70` (constants read from
+/// Kontakt8.exe `.rdata`, pass 4 in docs/re/engine/k-wowflutter-kernel.md):
+/// wow `4 w²` (`0x1447149e4`), flutter `0.5 f²` (`0x14470bad0`), speed `0.75 s + 0.05`
+/// (`0x144714900`, `0x1447148c0`), stereo `s²`. Scrape, age, saturation and gate have no
+/// consumer resolved yet and are not passed on.
+fn wow_flutter_laws([wow, flutter, speed, stereo]: [f32; 4]) -> WowFlutter {
+    WowFlutter { wow: 4. * wow * wow, flutter: 0.5 * flutter * flutter, speed: 0.75 * speed + 0.05, stereo: stereo * stereo }
+}
+
 pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config> {
     let lfo = |speed, unit, phase: f32| Lfo { shape: LfoShape::Sine, rate: rate(speed, unit), phase };
     let cfg = match *unit {
@@ -575,9 +584,11 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 notes.push(("parameters".into(), format!("{wow}/{flutter}/{speed}/{stereo}/{mix}"), Reason::InvalidValue));
                 return None;
             }
-            // Wow, flutter, speed, stereo and mix run the generic tape-transport law
-            // (dsp/timemod/wowflutter.rs); its Kontakt laws are not extracted.
-            notes.push(("Wow / Flutter pitch law".into(), "generic, not Kontakt-verified".into(), Reason::UnknownLaw));
+            // Control laws resolved from the nine handlers of FUN_14199de70 (pass 4 table in
+            // docs/re/engine/k-wowflutter-kernel.md). The pitch law that consumes them
+            // (LFO base frequencies, depth scale) is still the generic one in
+            // dsp/timemod/wowflutter.rs, so it stays reported as unconfirmed.
+            notes.push(("Wow / Flutter pitch law".into(), "resolved controls, generic pitch scale".into(), Reason::UnknownLaw));
             for (name, value) in [("Scrape", scrape), ("Age", age), ("Saturation", saturation)] {
                 if value > 0. {
                     notes.push((format!("Wow / Flutter {name}"), format!("{value}"), Reason::UnknownLawOmitted));
@@ -587,8 +598,9 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 notes.push(("Wow / Flutter Gate".into(), "on".into(), Reason::UnknownLawOmitted));
             }
             let mut line = Line::single(DelayTime::Ms(0.), 2000.);
-            line.native = Native::WowFlutter(WowFlutter { wow, flutter, speed, stereo });
-            Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: f64::from(mix) }
+            line.native = Native::WowFlutter(wow_flutter_laws([wow, flutter, speed, stereo]));
+            // Equal-power mix: the wet gain is sqrt(m) (the dry gain is sqrt(1 - m) on a Mix block, see slot_timemod).
+            Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: f64::from(mix).sqrt() }
         }
         Unit::Psyche(p) => {
             // Kernel 0x140aadb50 (sampler_core dsp/timemod/psyche.rs): wet only.
@@ -1173,7 +1185,17 @@ mod tests {
         let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.notes) };
         let sampler_ir::fx::timemod::Native::WowFlutter(w) = config.line.unwrap().native else { panic!() };
         assert_eq!(w.wow, 0.25);
-        assert!((config.wet - 0.5).abs() < 1e-6, "mix {}", config.wet);
+        assert!((config.wet - 0.5f64.sqrt()).abs() < 1e-6, "mix {}", config.wet);
+    }
+
+    /// Control laws against the PE constants (wow 4.0, flutter 0.5, speed 0.75 / 0.05, stereo squared).
+    #[test]
+    fn wow_flutter_control_laws_match_the_pe_constants() {
+        use super::wow_flutter_laws;
+        let w = wow_flutter_laws([0.5, 1.0, 1.0, 0.5]);
+        assert_eq!((w.wow, w.flutter), (1.0, 0.5));
+        assert!((w.speed - 0.8).abs() < 1e-6 && (w.stereo - 0.25).abs() < 1e-6, "{w:?}");
+        assert!((wow_flutter_laws([0., 0., 0., 0.]).speed - 0.05).abs() < 1e-6);
     }
 
     #[test]
@@ -1230,8 +1252,10 @@ mod tests {
         let built = chain(&[fx], Scope::Voice);
         let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.notes) };
         let sampler_ir::fx::timemod::Native::WowFlutter(w) = config.line.unwrap().native else { panic!() };
-        assert_eq!((w.wow, w.flutter, w.speed, w.stereo), (0.3, 0.2, 0.5, 0.4));
-        assert!((config.wet - 0.8).abs() < 1e-6);
+        // Laws: wow 4·0.3², flutter 0.5·0.2², speed 0.75·0.5 + 0.05, stereo 0.4².
+        assert!((w.wow - 0.36).abs() < 1e-6 && (w.flutter - 0.02).abs() < 1e-6, "{w:?}");
+        assert!((w.speed - 0.425).abs() < 1e-6 && (w.stereo - 0.16).abs() < 1e-6, "{w:?}");
+        assert!((config.wet - 0.8f64.sqrt()).abs() < 1e-6);
         // Scrape is set, so it is reported as omitted; the generic pitch law is always reported.
         assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::UnknownLawOmitted && n.1.contains("Scrape")), "{:?}", built.notes);
     }
@@ -1244,7 +1268,7 @@ pub(super) fn slot_timemod(b: &mut Lowering, s: &Site, notes: &mut Notes, unit: 
     // On an insert, Wow / Flutter's Mix is the dry/wet blend the modulated cores use
     // (dry = 1 - mix, docs/re/engine/k-modfx-classic-bodies.md), so mix 0 passes the input.
     let dry = match unit {
-        Unit::WowFlutter { mix, .. } if s.mix => 1. - f64::from(*mix),
+        Unit::WowFlutter { mix, .. } if s.mix => (1. - f64::from(*mix)).sqrt(),
         _ if s.mix || matches!(unit, Unit::Phaser { .. }) => 0.,
         _ => f64::from(s.fx.dry_level),
     };
