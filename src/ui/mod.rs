@@ -1803,3 +1803,5 @@ pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
 mod uvi_audit;
 #[cfg(all(test, feature = "library-access"))]
 mod uvi_bench;
+#[cfg(test)]
+mod frame_cost_bench;
