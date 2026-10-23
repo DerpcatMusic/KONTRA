@@ -57,7 +57,7 @@ pub use library::{
 };
 #[cfg(feature = "scan")]
 pub use load::take_script_init_runs;
-pub use load::{POWER_ON, POWER_ON_BEND, power_on_ccs};
+pub use load::{POWER_ON, POWER_ON_BEND, power_on_ccs, power_on_for};
 // Stage and Kind are defined below with LoadError.
 pub use load::{
     ArticulationMigration, Loaded, Options, Progress, ScriptInitFault, articulation_migration, compile_ui, finish, finish_sources,
