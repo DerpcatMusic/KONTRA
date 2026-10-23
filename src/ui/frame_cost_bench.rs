@@ -1,55 +1,109 @@
 //! Opt-in per-scenario frame cost for the editor. Run one scenario per process
-//! (so `perf stat` can wrap it):
-//! `KONTRA_FRAME_SCENARIO=hover cargo test -p kontakto --lib frame_cost -- --ignored --nocapture`
-//! Scenarios: idle (display-tick watch only), hover, drag, readout, focus.
-//! Prints medians in ms per frame: build+layout (`tick`) and CPU paint (`pixels`).
+//! (so `perf stat` can wrap it), in release:
+//! `KONTRA_FRAME_SCENARIO=hover cargo test --release -p kontakto --lib frame_cost -- --ignored --nocapture`
+//! Scenarios: idle (display-tick watch only), hover, drag, focus, meter, readout,
+//! resize, hidpi2, hidpi3, tab, mixer (tab + live meters), sound (text-heavy tab),
+//! keys (lit keyboard), typing, wheel.
+//! `KONTRA_FRAME_COUNT` sets the frames per scenario (default 120). Prints medians in
+//! ms: `build` (view closure), `layout` (`Ui::frame`, layout + scene), `encode` and
+//! `raster_cpu` (vello CPU paint with a warm glyph/image cache, as the editor's software
+//! path keeps one; the GPU path only pays `encode` on the CPU), plus the per-frame CPU
+//! sum and % of one core at 60 fps.
 use super::*;
 
 #[test]
 #[ignore = "timings only; select with KONTRA_FRAME_SCENARIO"]
 fn frame_cost() {
+    use moose::mui::mui::vello::{
+        self,
+        kurbo::Affine,
+        vello_cpu::{Pixmap, RenderContext, Resources},
+    };
     use std::time::Instant;
     let scenario = std::env::var("KONTRA_FRAME_SCENARIO").unwrap_or_else(|_| "idle".into());
+    let frames_wanted: usize = std::env::var("KONTRA_FRAME_COUNT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
     let p = Arc::new(SamplerParams::new());
     p.shared.view.lock().unwrap().scanned = p.shared.libraries.wanted();
     let meters = Meters::default();
     let computer = computer::Computer::default();
     let mut h = tests::Harness::new(&p, 1180., 780.);
-    h.idle(3);
+    let mut cache = vello::Cache::default();
+    let mut resources = Resources::default();
+    // One paint of the current scene at `scale`, as the editor's software path does it.
+    // Returns (encode, raster) in ms: the GPU path pays the encode on the CPU too.
+    let mut paint = |ui: &Ui, scale: f64| {
+        let (w, hgt) = ((1180. * scale) as u16, (780. * scale) as u16);
+        let mut ctx = RenderContext::new(w, hgt);
+        let t = Instant::now();
+        vello::paint(
+            &mut vello::Cpu {
+                ctx: &mut ctx,
+                resources: &mut resources,
+                cache: &mut cache,
+            },
+            ui.scene().unwrap(),
+            Affine::scale(scale),
+        )
+        .unwrap();
+        ctx.flush();
+        let encode = t.elapsed().as_secs_f64() * 1e3;
+        let t = Instant::now();
+        let mut pix = Pixmap::new(w, hgt);
+        ctx.render(&mut pix, &mut resources);
+        let raster = t.elapsed().as_secs_f64() * 1e3;
+        (encode, raster)
+    };
     let med = |v: &mut Vec<f64>| {
         v.sort_by(f64::total_cmp);
         v.get(v.len() / 2).copied().unwrap_or(0.)
     };
-    let (mut tick, mut paint, mut watch_us) = (vec![], vec![], vec![]);
+    // Scenario setup: the tab the scenario lives on, shown before timing starts.
+    match scenario.as_str() {
+        "mixer" | "meter" => h.press("tab-mixer"),
+        "sound" => h.press("tab-sound"),
+        _ => {}
+    }
+    h.idle(3);
+    let (mut build, mut layout, mut paint_ms, mut encode_ms, mut watch_us) =
+        (vec![], vec![], vec![], vec![], vec![]);
     let mut watch = Watch::default();
     // Any stable on-screen control serves as the pointer target.
     let a = tests::center(&h.ui, "tab-rack");
     let b = Point::new(a.x + 40., a.y);
     let mut frames = 0usize;
-    for i in 0..120 {
+    let mut timed_frame =
+        |h: &mut tests::Harness, input: Input, build: &mut Vec<f64>, layout: &mut Vec<f64>| {
+            let (b, l) = h.tick_split(input);
+            build.push(b);
+            layout.push(l);
+            frames += 1;
+        };
+    for i in 0..frames_wanted {
+        let mut painted = true;
         match scenario.as_str() {
             "idle" => {
                 let t = Instant::now();
                 let moved = watch.changed(&p, &meters, &computer);
                 watch_us.push(t.elapsed().as_secs_f64() * 1e6);
-                if moved {
-                    frames += 1;
-                }
                 // Idle draws nothing: only frames the watch asks for are timed.
                 if !moved {
                     continue;
                 }
+                timed_frame(&mut h, Input::default(), &mut build, &mut layout);
             }
-            "hover" => {
+            "hover" | "hidpi2" | "hidpi3" => {
                 let pos = if i % 2 == 0 { a } else { b };
                 let input = Input {
-                    pointer: PointerInput { pos: Some(pos), ..Default::default() },
+                    pointer: PointerInput {
+                        pos: Some(pos),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 };
-                let t = Instant::now();
-                h.tick(input);
-                tick.push(t.elapsed().as_secs_f64() * 1e3);
-                frames += 1;
+                timed_frame(&mut h, input, &mut build, &mut layout);
             }
             "drag" => {
                 let x = a.x + (i % 20) as f64;
@@ -61,55 +115,112 @@ fn frame_cost() {
                     },
                     ..Default::default()
                 };
-                let t = Instant::now();
-                h.tick(input);
-                tick.push(t.elapsed().as_secs_f64() * 1e3);
-                frames += 1;
+                timed_frame(&mut h, input, &mut build, &mut layout);
             }
-            "meter" => {
+            "meter" | "mixer" => {
                 // A live master meter: the watch runs frames on the animation clock.
                 p.shared.meters.master[0].store(0.5f32.to_bits(), Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(16));
-                let t = Instant::now();
-                if watch.changed(&p, &meters, &computer) {
-                    h.tick(Input::default());
-                    tick.push(t.elapsed().as_secs_f64() * 1e3);
-                    frames += 1;
-                    let _ = tests::pixels(&h.ui, 1180, 780);
+                if !watch.changed(&p, &meters, &computer) {
+                    continue;
                 }
+                timed_frame(&mut h, Input::default(), &mut build, &mut layout);
             }
             "readout" => {
                 p.shared.voices.store(i as u64 % 7, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(101));
-                let t = Instant::now();
-                if watch.changed(&p, &meters, &computer) {
-                    h.tick(Input::default());
-                    tick.push(t.elapsed().as_secs_f64() * 1e3);
-                    frames += 1;
+                if !watch.changed(&p, &meters, &computer) {
+                    continue;
                 }
+                timed_frame(&mut h, Input::default(), &mut build, &mut layout);
+                painted = false;
             }
-            _ => {
-                let t = Instant::now();
+            "resize" => {
+                // A window drag: the size changes every frame.
+                let w = if i % 2 == 0 { 1180. } else { 1000. };
+                h.resize(Size::new(w, 700.));
+                timed_frame(&mut h, Input::default(), &mut build, &mut layout);
+            }
+            "tab" => {
+                let tab = if i % 2 == 0 { "tab-mixer" } else { "tab-rack" };
+                h.ui.focus(tab);
+                timed_frame(&mut h, enter_key(), &mut build, &mut layout);
+            }
+            "sound" => {
+                // Idle text-heavy panel: pointer moves over its rows.
+                let pos = Point::new(a.x + (i % 30) as f64 * 3., a.y);
+                let input = Input {
+                    pointer: PointerInput {
+                        pos: Some(pos),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                timed_frame(&mut h, input, &mut build, &mut layout);
+            }
+            "keys" => {
+                // The keyboard lights one key per frame.
+                p.shared.played[40 + i % 24].store(1 - (i as u8 % 2), Ordering::Relaxed);
+                timed_frame(&mut h, Input::default(), &mut build, &mut layout);
+            }
+            "typing" => {
+                h.ui.focus("search");
+                let input = Input {
+                    text: "k".into(),
+                    ..Default::default()
+                };
+                timed_frame(&mut h, input, &mut build, &mut layout);
+            }
+            "wheel" => {
+                let input = Input {
+                    pointer: PointerInput {
+                        pos: Some(a),
+                        ..Default::default()
+                    },
+                    wheel: Vec2::new(0., if i % 2 == 0 { 12. } else { -12. }),
+                    ..Default::default()
+                };
+                timed_frame(&mut h, input, &mut build, &mut layout);
+            }
+            "focus" => {
                 h.ui.focus(if i % 2 == 0 { "search" } else { "tab-rack" });
-                h.tick(Input::default());
-                tick.push(t.elapsed().as_secs_f64() * 1e3);
-                frames += 1;
+                timed_frame(&mut h, Input::default(), &mut build, &mut layout);
             }
+            other => panic!("unknown KONTRA_FRAME_SCENARIO {other}"),
         }
-        if !matches!(scenario.as_str(), "idle" | "readout" | "meter") {
-            let t = Instant::now();
-            let _ = tests::pixels(&h.ui, 1180, 780);
-            paint.push(t.elapsed().as_secs_f64() * 1e3);
+        if painted {
+            let scale = match scenario.as_str() {
+                "hidpi2" => 2.,
+                "hidpi3" => 3.,
+                _ => 1.,
+            };
+            let (enc, ras) = paint(&h.ui, scale);
+            encode_ms.push(enc);
+            paint_ms.push(enc + ras);
         }
     }
-    if scenario == "meter" {
-        println!("FRAME_COST scenario=meter frames_per_s={:.1} tick_ms={:.3} paint_ms={:.3}", frames as f64 / 2.0, med(&mut tick), 0.);
-        return;
-    }
-    println!(
-        "FRAME_COST scenario={scenario} frames={frames} watch_us={:.2} tick_ms={:.3} paint_ms={:.3}",
-        med(&mut watch_us),
-        med(&mut tick),
-        med(&mut paint)
+    let (b, l, pt, en) = (
+        med(&mut build),
+        med(&mut layout),
+        med(&mut paint_ms),
+        med(&mut encode_ms),
     );
+    // Editor CPU per frame on the GPU path: build + layout + vello encode (raster is on the GPU).
+    let total = b + l + en;
+    println!(
+        "FRAME_COST scenario={scenario} frames={frames} watch_us={:.2} build_ms={b:.3} layout_ms={l:.3} encode_ms={en:.3} raster_cpu_ms={:.3} cpu_ms={total:.3} cpu_at_60fps={:.1}%",
+        med(&mut watch_us),
+        pt - en,
+        total * 60. / 10.
+    );
+}
+
+fn enter_key() -> Input {
+    Input {
+        keys: vec![KeyPress {
+            key: Key::Enter,
+            mods: Mods::default(),
+        }],
+        ..Default::default()
+    }
 }
