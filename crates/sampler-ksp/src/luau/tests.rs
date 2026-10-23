@@ -547,3 +547,27 @@ fn messages_are_recorded_in_call_order() {
         end on",
     );
 }
+
+#[test]
+fn key_switch_state_matches_the_interpreter() {
+    assert_init_equivalent(
+        "on init
+        declare $c := 0
+        declare $t := 0
+        declare $n := 0
+        set_key_color(60, 5)
+        set_key_type(60, 2)
+        set_key_name(60, \"C3\")
+        set_key_pressed(61, 1)
+        set_key_color(200, 7)
+        set_key_pressed_support(1)
+        set_keyrange(36, 48, \"low\")
+        set_keyrange(40, 80, \"mid\")
+        set_keyrange(90, 100, \"high\")
+        remove_keyrange(44)
+        $c := get_key_color(60) + get_key_color(0) * 100
+        $t := get_key_type(60) + get_key_type(1) * 10
+        $n := 0
+        end on",
+    );
+}
