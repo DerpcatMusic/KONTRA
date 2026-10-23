@@ -49,8 +49,8 @@ Remaining gaps after this confirmation: resize engine (Élastique, see above), S
 | `decimation` | f32 | S.Rate: wet path at `(int)(rate/S.Rate)` | Reported unmodeled (inner-rate IR preparation untraced) |
 | `flags[0]` | bool | Reverse | Modeled |
 | `flags[1]` | bool | Auto Gain | Modeled (`FUN_1419b2bc0`, see docs/re/kontakt-reverb-convolution.md) |
-| `flags[2]` | bool | Preserve Length | **Now reported unmodeled** (was silently dropped) |
-| `flags[3]` | bool | Bypass latency compensation | **Now reported unmodeled** (was silently dropped) |
+| `flags[2]` | bool | Preserve Length | Factory default on (633/633). Off raises `NotModeled` (S.Rate resize path); on is the modeled full-length path |
+| `flags[3]` | bool | Bypass latency compensation | Factory default off (633/633). On raises `NotModeled`; off is the zero-latency path |
 | `flags[4]` | bool | Volume envelope on | Modeled (8 knots, amplitude-interpolated) |
 | `curve_x`, `curve_db` | lists | Envelope knots | Modeled when exactly 8 |
 | block size (4 bytes after `decimation`) | i32 | Read and discarded | Meaning not recovered; no field |
@@ -71,13 +71,16 @@ Remaining gaps after this confirmation: resize engine (Élastique, see above), S
 
 ## What changed in this unit
 
-- `effects/space.rs` `convolution`: Preserve Length and latency-compensation bypass, when set, now produce `NotModeled` notes instead of being dropped. The test `convolution_reports_unmodeled_length_and_latency_flags` pins both notes and the silent off state.
+- `effects/space.rs` `convolution`: a note fires only for the non-default states (Preserve Length off, latency bypass on). The factory defaults (Preserve Length on, bypass off) are silent. The test `convolution_reports_only_non_default_length_and_latency_flags` pins both.
+- `sampler-core` `dsp/space/mod.rs`: `default_convolution_wet_is_sample_exact_with_dry` (wet = dry sample-exact for a unit IR across blocks) and `tail_covers_the_full_impulse_up_to_the_cap`.
+- Latency: the engine's convolver is zero-latency, so there is no partition latency to report. The plugin latency comes from `timing::Plan` (hold/quantize), which convolution does not feed; 0 is the correct report for the default state.
+- Cap: `MAX_IMPULSE_FRAMES` (20 s at 192 kHz) rejects longer responses in `Impulse::new`; the full IR is otherwise kept (tail = IR frames + 2 stage blocks).
 
 ## Not done, and why
 
 - No convolution law was implemented: every missing item (IR stretch, S.Rate preparation, crossover default, latency, true-stereo routing) needs the decompiled source, which is not ready. Inventing these laws would be fabrication.
 - The partition and block size is read and dropped by the reader; a field would change the serialized cache, so it stays as documented.
-- Off-state of Preserve Length and latency bypass is silent because its native default is not recovered; a note on off would need that default first.
+- The defaults are now known from the #441 census (Preserve Length on, latency bypass off), so the default states are silent and only the non-default states are noted. Native measurement of the non-default states is still blocked (oracle render; see above).
 
 ## Planned work (after READY)
 

@@ -220,7 +220,8 @@ mod tests {
             for value in [0f32, 1., 20., 20_000., 1., 20., 20_000., 0.5] {
                 public.extend(value.to_le_bytes());
             }
-            public.extend([0; 5]);
+            // Reverse, auto gain, Preserve Length (on), latency bypass, envelope.
+            public.extend([0, 0, 1, 0, 0]);
             public.extend(0u32.to_le_bytes()); // envelope x
             public.extend(0u32.to_le_bytes()); // envelope dB
             public.extend(0i32.to_le_bytes()); // same native index in both origins

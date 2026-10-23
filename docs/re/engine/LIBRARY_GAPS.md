@@ -76,8 +76,6 @@ Owner lanes (suggested): k-convolution, k-ksp-engine-params, k-mod-external, own
 | 2 | 550 | 4 | gap | lua setParameter ConstantModulation.Value | UVI mapping |
 | 3 | 528 | 1 | gap (reason label is generic) | `module` (no specific detail in the record) | UVI mapping (loader must name it) |
 | 4 | 432 | 1 | gap | lua setParameter SignalConnection.Ratio | UVI mapping |
-| 5 | 416 | 5 | gap | Convolution: IR preserve length | k-convolution |
-| 6 | 416 | 5 | gap | Convolution: IR latency compensation bypass | k-convolution |
 | 7 | 349 | 2 | gap | script: polyphonic variables start at N; initializer ignored | k-ksp-engine-params |
 | 8 | 271 | 3 | gap | script: polyphonic variable read outside a note callback | k-ksp-engine-params |
 | 9 | 261 | 1 | gap | Program-level MultiLFO | UVI mapping |
@@ -145,13 +143,14 @@ Unsupported and Warning counts for the 10-23 run in the table above. Compile fai
 
 Re-run this when the machine is quiet (loadavg1 < 8). Timing numbers here are not evidence.
 
+Convolution rows 5 and 6 were removed (2026-10-23, #441 census): both are the factory **default** states, not gaps. All 633 factory Convolution presets have Preserve Length on and latency compensation on (bypass off). The engine's zero-latency, full-length path is that default. Only the non-default states (Preserve Length off, bypass on) raise a `NotModeled` note, and no factory preset exercises them. Default state, no gap.
+
 ## Ranked gap lanes (owner suggestions)
 
 | lane | gap rows | instruments (top) | priority |
 |---|---|---|---|
 | UVI modulation mapping (lua setParameter, LFO/MultiLFO/DAHDSR, ConstantModulation, Program-level LFO) | 1, 2, 3, 4, 9, 10, 11, 14-22, 24, 26-29, 31-33, 35, 37, 38 | 577 + 550 + 528 + 432 + ... (overlap, one family) | 1 |
 | UVI load: translate refusals (SignalConnection, Frequency) | 83 failing programs | 83 | 2 |
-| Convolution IR latency and preserve length | 5, 6 | 416 each | 3 |
 | KSP script: polyphonic variables (initializer; read outside callback) | 7, 8 | 349, 271 | 4 |
 | Keyswitch script migration | 23 | 105 | 5 |
 | set_engine_par unsupported | 40 | 52 | 6 |
