@@ -141,3 +141,25 @@ Harness: `tools/re/kemu_wowflutter.py` (real sequence, nothing poked except inpu
 - Parameter handlers: nine `std::function<void()>` objects at kernel `+0x78 + k*0x40` (k=0..8), bound in `setParameterHandlers` (`0x14199de70`). They take no argument, so raw values come from fields the wrapper setter writes first. Not yet mapped.
 
 Still open: LFO rates/shape/depth, delay-read interpolation, age (`0x14199c280`), saturation (`0x14199db20`), sin/cos (`0x1443c9bd0`). No native vectors yet; PARITY_MATRIX row unchanged.
+
+## Pass 7 (2026-10-23): owner pointer table decoded, native process still not reached
+
+Harness: `tools/re/kemu_wowflutter_probe.py` (three owner-side strategies; each replays the ctor first). Method: disassembly (capstone), vtable reads, decompile cache, and Unicorn memory-write traces on kernel `+0x280..0x300`. No new native vectors, PARITY_MATRIX unchanged.
+
+What the ctor really does (`0x140a842b0`, verified by disassembly):
+1. Kernel ctor `0x14199bc70`, then virtual slot 18 (`0x90` = `0x14199dc80`): scalar defaults only (`+0x24..+0x44`). It does not allocate the pointer tables.
+2. Ten control writes through slot 12 (`0x60` = `0x14199dd80`): `kernel[+0x300 + 4·i]`. With the byte at `+0x2f8` set (ctor writes 1 there), it writes through the pointer arrays `+0x340/+0x358/+0x370/+0x388/+0x3a0`; those are allocated by the ctor and are valid.
+3. Then `+0x3558`, `+0x3554`, `+0x3d0` etc. are zeroed. The ctor does not write `+0x298`, `+0x2c8`, `+0x2e0`.
+
+Pointer table `kernel+0x280` (read by the first-time copy routine `0x14196b880`, decompile `0141960000.c`):
+- `+0x280` = `kernel` itself after the ctor (self reference). `+0x2b0` = `wrap+0x438` = `kernel+0x278` (an address inside the wrapper, not a heap block). `+0x2f8` = `0x200000001` (the ctor's byte write, not a pointer).
+- `+0x298`, `+0x2c8`, `+0x2e0` are NULL after the ctor. `0x14196b880` needs all of them as valid buffers: `+0x2c8` 32-byte source, `+0x2e0` destination, `+0x298` and `+0x2f8` zeroed buffers.
+
+Strategies tried (all fail, addresses as Unicorn reports them):
+1. Plain ctor → set-rate `0x140971930`: read of `kernel+0x2c8` at `0x14196b8aa`.
+2. Pointers at `+0x298/+0x2c8/+0x2e0/+0x2f8` (64-byte heap blocks): write through `[kernel+0x280]` at `0x14196b8ce`. The first copy write (`0x14196b8b1`, `movups` through `+0x2b0`) lands on `kernel+0x278`, and `[kernel+0x280]` is zero when it is reached. So the ctor's `+0x2b0`/`+0x280` values do not match what the copy routine expects (self/ internal pointers instead of owned storage), or kemu's ctor diverges from native.
+3. Direct prepare `0x14099aac0` (block 32, 48 kHz) with a 256-byte array at `kernel+0x100`: read at `0x141ee86ed`. Correction to pass 6: the reset `0x141ee86c0` takes the object at `kernel+0x68` (`count` = dword at `+0x70`, which is 0 after the ctor; the array pointer is `[+0x68+0x98]` = `kernel+0x100`, which the ctor leaves as the kernel self pointer). Pass 6's "`+0x130` array" note was the wrong offset.
+
+Not tried, and the next lead: sibling kernels (Choral `0x141939b10`, `tools/re/kemu_timemod.py`) work without any pointer table, so the owner-side difference is in the wrapper (`0x140a87420` factory and the owner that calls `0x140a842b0`). A divergence check is needed first: a Unicorn trace of the ctor's calls to `malloc`/allocator stubs, to see whether `kernel+0x280/0x2b0` come from a branch kemu takes differently.
+
+Still open: LFO rates/shape/depth, delay-read interpolation, age `0x14199c280`, saturation `0x14199db20`, sin/cos `0x1443c9bd0`. Nothing ported in pass 7.
