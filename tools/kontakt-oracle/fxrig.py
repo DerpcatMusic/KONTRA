@@ -21,6 +21,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import eqrender  # noqa: E402
 import wavutil  # noqa: E402
+sys.path.insert(0, str(HERE.parent / "oracle"))
+import slot  # noqa: E402  (oracle-slot: this session's MIDI channel block; legacy = channels 1..16)
+
+BASE, CHANNELS = slot.channel_block()  # instance k plays on MIDI channel BASE + k + 1 (1-based in Lua)
 
 SLOT = 2.0       # seconds per instance in the MIDI timeline
 FIRST = 2.0      # first note
@@ -44,7 +48,7 @@ def make_lua(spec, work: Path) -> str:
         body.append(f"""
 do
   local i = kt.add_instrument()
-  kt.set_instrument_midi_channel(i, {k + 1})
+  kt.set_instrument_midi_channel(i, {k + 1 + BASE})
   local z = kt.add_zone(i, 0, WAV)
   kt.set_zone_geometry(i, z, {{ root_key = 60, low_key = 0, high_key = 127 }})
   for slot, p in ipairs(CHAIN) do log('{{"load":' .. tostring(pcall(kt.load_fx_preset, p, i, -1, slot - 1, kt.insert_fx)) .. ',"inst":{k}}}') end
@@ -122,6 +126,8 @@ def main() -> int:
     work = eqrender.scratch_dir()
     mid = work / "rig.mid"
     n = len(spec["instances"])
+    if n > CHANNELS:
+        sys.exit(f"fxrig: {n} instances, this session has {CHANNELS} MIDI channels; split the spec")
     write_midi(n, mid)
     lua = work / "fxrig_gen.lua"
     lua.write_text(make_lua(spec, work))
@@ -136,7 +142,7 @@ def write_midi(n: int, path: Path):
     ev = []
     for k in range(n):
         t = FIRST + k * SLOT
-        ev += [(t, bytes([0x90 | k, 60, 100])), (t + 0.1, bytes([0x80 | k, 60, 0]))]
+        ev += [(t, bytes([0x90 | (BASE + k), 60, 100])), (t + 0.1, bytes([0x80 | (BASE + k), 60, 0]))]
     trk, last = b"\x00\xff\x51\x03" + (500000).to_bytes(3, "big"), 0
     for t, m in sorted(ev, key=lambda e: e[0]):
         tick = round(t * 960)
