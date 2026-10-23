@@ -1,0 +1,17 @@
+[package]
+name = "format-census"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+publish = false
+description = "Format coverage census: which installed library files each shipped reader parses fully, partially or not at all"
+
+[dependencies]
+ni-file = { path = "../../vendor/ni-file" }
+ncw = { path = "../../vendor/ncw" }
+sampler-kontakt = { path = "../../crates/sampler-kontakt", features = ["scan"] }
+sampler-uvi = { path = "../../crates/sampler-uvi", features = ["scan"] }
+
+[lints.rust]
+unsafe_code = "deny"
