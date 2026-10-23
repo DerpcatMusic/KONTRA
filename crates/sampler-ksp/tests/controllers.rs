@@ -1158,3 +1158,16 @@ fn out_of_range_init_controller_requests_do_not_replace_valid_prepared_seeds() {
     assert_initial_controller_banks(&rt, 17, 0x1234_5678);
     assert_initial_controller_banks(&rt, 111, (100u64 * u64::from(u32::MAX) / 127) as u32);
 }
+
+#[test]
+fn polyphonic_read_in_init_before_any_note_is_zero() {
+    // Measured on Kontakt 8.13.1 (docs/re/engine/ksp-polyphonic-read.md): a polyphonic
+    // variable read from on init with no note played yet is 0. KONTRA compiles this
+    // read without a warning; the reads in other non-note callbacks do warn.
+    let source = "on init declare $result declare polyphonic $v $result := $v end on
+        on note $v := $EVENT_NOTE end on";
+    let rt = runtime(source);
+    support::without_heap(|| {
+        assert_eq!(rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0), Ok(0));
+    });
+}
