@@ -370,6 +370,17 @@ fn other_keys(ir: &sampler_ir::Instrument, pick: Pick) -> Vec<u8> {
     keys
 }
 
+/// A key to hold under the probed one when a script gates on held keys (reads
+/// `%KEY_DOWN`, as a trill script does: a note plays only while a neighbour is
+/// held). Kontakt users play such patches that way, so a lone key is silent by
+/// design. The key above the pick, or below it at the top of the range.
+fn held_neighbour(ir: &sampler_ir::Instrument, key: u8) -> Option<u8> {
+    if !ir.behaviors.iter().any(|b| b.source.contains("%KEY_DOWN")) {
+        return None;
+    }
+    Some(if key < 127 { key + 1 } else { key - 1 })
+}
+
 /// The key most zones cover at the test velocity, nearest middle C, outside
 /// the articulation switch keys. Falls back to the velocity nearest 64 that
 /// any zone covers, then to playing a switch key first.
@@ -985,6 +996,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         Subject::Scripted(program) => Playable::Scripted(program),
         Subject::Ir(_) => return Err("prepare: no plan".into()),
     };
+    let held = held_neighbour(subject.instrument(), pick.key);
     let (rate, limits) = match &subject {
         Playable::Plan(l) => (l.plan.sample_rate(), limits_for(&l.plan)),
         Playable::Streamed(s) => (s.loaded.plan.sample_rate(), limits_for(&s.loaded.plan)),
@@ -1168,7 +1180,8 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     let (mut script_allocs, mut script_seconds) = (0usize, 0.0f64);
     let (mut peak, mut tail_peak, mut finite) = (0.0f32, 0.0f32, true);
     let sw = u32::from(pick.switch.unwrap_or(0)) << 8;
-    // Controllers first, then the switch key taps, then the note.
+    // Controllers first, then the switch key taps, then the held neighbour,
+    // then the note.
     let mut pre_words: Vec<[u32; 1]> = ccs
         .iter()
         .map(|&(cc, v)| [0x20B0_0000 | u32::from(cc) << 8 | u32::from(v)])
@@ -1176,6 +1189,9 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     if pick.switch.is_some() {
         pre_words.push([0x2090_0000 | sw | 64]);
         pre_words.push([0x2080_0000 | sw]);
+    }
+    if let Some(held) = held {
+        pre_words.push([0x2090_0000 | u32::from(held) << 8 | u32::from(VELOCITY)]);
     }
     let note_index = pre_words.len();
     let mut note = String::from("not sent");
