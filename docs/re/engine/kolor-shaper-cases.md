@@ -214,5 +214,17 @@ Read from `0141970000.c` (not yet ported):
   (k = 0, 1), which matches the `(mode*2+k)*0x700` note in `kolor/mod.rs`.
 - `FUN_14197adb0` is the case-2 body read in `shaper_2_5.rs`.
 
-Still open for the live path: `141974d90` (the per-mode template load), `14193fab0` / `1419421c0`, and the
-per-knob notify lambdas that fill the `P` and `P2` blocks from the knobs. The mode-to-case table is not recovered.
+`141974d90` (134 B, decompile `0141970000.c:3869`) is **not a template load**. It switches on the selector byte
+at `shaper+0x6f0` and only clears shaper state:
+
+- default (cases 0, 1, 3, 6-9): zero `shaper[0..8]` (8 floats, the recurrent `s`).
+- case 4: zero `shaper[0..7]` (7 floats: 2 qwords, 1 dword, then the 4-byte tail at +0x18).
+- cases 2, 5: nothing (stateless, matches `shaper_2_5.rs`).
+
+Call sites: `14197acc0(mode)` (`0141970000.c:9092`) runs it on `this+0x800+mode*0xe00` and `this+0xf00+mode*0xe00`
+(the two `0x700` objects, k = 0, 1). Mode 4 additionally zeroes `+0x942c/+0x9418` and `+0x945c/+0x9448`. This
+is decompile-only: not yet checked against the emulator. The per-mode *parameter* fill (P, P2) is still open.
+
+Still open for the live path: `14193fab0` / `1419421c0`, the per-knob notify lambdas that fill `P` and `P2`, and the
+mode-to-case table (which selector byte each mode writes at `shaper+0x6f0`). The control tick, the P/P2 fill and
+the mode table are needed before a Kolor `Processor` can be attached to the IR; none is in the tree yet.
