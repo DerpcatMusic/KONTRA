@@ -18,6 +18,11 @@ sys.path.insert(0, str(HERE))
 import capture  # noqa: E402  (scenario writer, same notes as the Kontakt slots)
 
 
+def capped(cmd):
+    """The render runs in its own 8G cgroup: an instrument that overflows it fails alone, the run goes on."""
+    return ["systemd-run", "--user", "--scope", "-p", "MemoryMax=8G", "nice", "-n", "10", *cmd]
+
+
 def binary():
     env = os.environ.get("SAMPLER_NATIVE")
     if env:
