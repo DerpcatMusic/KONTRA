@@ -625,9 +625,8 @@ pub(crate) fn render_stages(
     let mut dry = generation.dsp.channel_mix.claim(0);
     for node in &signal.nodes{if let Node::Stage(stage)=node{stage.prepare_native_note(&mut histories,native_note)?;}}
     if signal.output.get()!=2 {return Err(Error::UnsupportedSourceLayout);}
-    let projected=generation.dsp.modulated_parameters.claim(0);
     let offset=render_program(signal,&mut work,&mut histories,&mut dry,
-        if generation.dsp.owner_modulation.program(index).is_some(){&projected}else{&generation.dsp.parameters},generation.prepared.rate,at,frames,expression)?;
+        if generation.dsp.owner_modulation.program(index).is_some(){&generation.dsp.owner_parameters}else{&generation.dsp.parameters},generation.prepared.rate,at,frames,expression)?;
     for (i, frame) in stereo.iter_mut().take(frames).enumerate() {
         *frame = [work[offset+i], work[offset+crate::dsp::BLOCK+i]];
     }
@@ -653,9 +652,8 @@ pub(crate) fn render_wide_stages(
     let mut work=generation.dsp.channel_work.claim(0);
     let mut histories=generation.dsp.owner_signal_history.claim(index);
     let mut dry=generation.dsp.channel_mix.claim(0);
-    let projected=generation.dsp.modulated_parameters.claim(0);
     let offset=render_program(signal,&mut work,&mut histories,&mut dry,
-        if generation.dsp.owner_modulation.program(index).is_some(){&projected}else{&generation.dsp.parameters},generation.prepared.rate,at,frames,expression)?;
+        if generation.dsp.owner_modulation.program(index).is_some(){&generation.dsp.owner_parameters}else{&generation.dsp.parameters},generation.prepared.rate,at,frames,expression)?;
     for frame in 0..frames {
         let level=owner.envelope.constant_level().unwrap_or_else(||owner.envelope.next());
         let gain=level*expression_gain;
