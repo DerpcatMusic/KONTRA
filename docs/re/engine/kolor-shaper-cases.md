@@ -184,3 +184,35 @@ at +0x120 are zero.
 Measured: `u = bias + c*x` with `c` at shaper+0x20 (8 floats) and bias at shaper+0x120 matches native to 4 decimals.
 Recurrent part (`141979bf0`, `141978300`, `141974f10`, `14192d1b0`) still unread for the state.
 
+
+## Case 4 output statics: writer search (2026-10-23)
+
+Checked against the cached decompile `/data/dev/workspace/Research/KONTRA/source/kontakt8/` (1113 files), by
+`rg` on `DAT_14a64ba20|ba30|ba40` and on `14a64ba` (direct and `uRam…` forms):
+
+- `DAT_14a64ba20`, `_DAT_14a64ba30`, `DAT_14a64ba40` are read in one place only: `0141970000.c:5622-5627`, the
+  BEffectKolor constructor, which copies them into the object (`param_1[0x4c]`, `[0x4e]`, `[0x50]`). The same
+  constructor copies the template block at `&DAT_14a64ba50` (line 5585).
+- No decompiled file writes to them. `01404a0000.c:7905-7913` writes `DAT_14a64ba14`, `ba04`, `ba0c` at init,
+  which are the neighbouring words and are not read by case 4.
+- Caveat: a write through a computed pointer (for example `(&DAT_14a64ba00)[i]`) would not match these
+  patterns. The grep excludes only direct and named-symbol writes. The emulator run (1709 calls, output exactly 0)
+  is the stronger evidence.
+
+Conclusion (unchanged): case 4 outputs the zero statics, so the Rust case returning `0.0` stands.
+
+## Control tick and per-mode seed (decompile read, 2026-10-23)
+
+Read from `0141970000.c` (not yet ported):
+
+- `FUN_14197ab90` (control tick, line 9030): a 2-step countdown at object `+0x510/+0x518` (calls `14193fab0` or
+  `1419421c0`). When `+0x7f1` is set and `+0x7e8` is 0, it runs `14197acc0(mode)` if `+0x7f4` is set, then sets
+  `+0x7e8 = 1.0`, and sets `+0x7f0` when `+0x7e4` differs from `DAT_14470bad4` (1.0).
+- `FUN_14197acc0(mode)` (line 9092): stores `mode` at `+0x7dc`, clears `+0x7f4`, calls
+  `141974d90(this+0x800 + mode*0xe00)` and `141974d90(this+0xf00 + mode*0xe00)`. Mode 4 also zeroes
+  `+0x942c/+0x9418` and `+0x945c/+0x9448` and reloads its state. The `0xe00` stride is two `0x700` objects
+  (k = 0, 1), which matches the `(mode*2+k)*0x700` note in `kolor/mod.rs`.
+- `FUN_14197adb0` is the case-2 body read in `shaper_2_5.rs`.
+
+Still open for the live path: `141974d90` (the per-mode template load), `14193fab0` / `1419421c0`, and the
+per-knob notify lambdas that fill the `P` and `P2` blocks from the knobs. The mode-to-case table is not recovered.
