@@ -4308,6 +4308,7 @@ name = "sampler-ksp"
 version = "0.1.0"
 dependencies = [
  "mlua",
+ "rustc-hash 2.1.3",
  "sampler-core",
  "sampler-ir",
  "sampler-parity",

@@ -4,6 +4,7 @@ use crate::builtins::{self as b, Builtin};
 use crate::diag::{Fault, Result, Span, fault};
 use crate::hir::*;
 use crate::model::{self, Key, KeyRange, MenuItem, Request, Value};
+use rustc_hash::FxHashMap;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Saved scalars and arrays by variable name.
@@ -302,8 +303,8 @@ pub struct Initial {
     /// Committed physical-source metadata replacements; never creates a zone.
     pub zone_parameters: BTreeMap<u32, [i32; 3]>,
     /// Integer `$CONTROL_PAR_*` mirror keyed `(ui id, parameter)`.
-    pub properties: HashMap<(i32, i32), i32>,
-    pub text_properties: HashMap<(i32, i32), String>,
+    pub properties: FxHashMap<(i32, i32), i32>,
+    pub text_properties: FxHashMap<(i32, i32), String>,
     /// `set_control_par*_arr` writes keyed `(ui id, parameter, index)`.
     pub indexed_properties: BTreeMap<(i32, i32, i32), Value>,
 }
@@ -381,8 +382,8 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment, ui_change: Opti
             warnings: Vec::new(),
             engine: HashMap::new(),
             zone_parameters: BTreeMap::new(),
-            properties: HashMap::new(),
-            text_properties: HashMap::new(),
+            properties: FxHashMap::default(),
+            text_properties: FxHashMap::default(),
             indexed_properties: BTreeMap::new(),
         },
         fuel: env.evaluation_budget.unwrap_or(INIT_FUEL),
