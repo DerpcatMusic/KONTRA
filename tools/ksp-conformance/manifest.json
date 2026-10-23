@@ -193,5 +193,45 @@
   "id": "logic_vars_2",
   "category": "logic",
   "results": 2
+ },
+ {
+  "id": "cond_bare_int",
+  "category": "logic",
+  "results": 1
+ },
+ {
+  "id": "cond_int_and",
+  "category": "logic",
+  "results": 1
+ },
+ {
+  "id": "cond_not_compare",
+  "category": "logic",
+  "results": 2
+ },
+ {
+  "id": "cond_compare_ops",
+  "category": "logic",
+  "results": 2
+ },
+ {
+  "id": "typing_bool_assign",
+  "category": "typing",
+  "results": 1
+ },
+ {
+  "id": "typing_real_assign",
+  "category": "typing",
+  "results": 1
+ },
+ {
+  "id": "call_init_empty",
+  "category": "function",
+  "results": 1
+ },
+ {
+  "id": "call_init_global",
+  "category": "function",
+  "results": 1
  }
 ]
