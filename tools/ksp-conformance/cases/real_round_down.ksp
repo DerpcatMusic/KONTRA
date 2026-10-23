@@ -1,6 +1,7 @@
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare ~h := 0.49999
   $cv := real_to_int(round(~h))
   $cb := 0
@@ -10,4 +11,5 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on

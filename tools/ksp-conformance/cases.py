@@ -74,4 +74,13 @@ CASES = [
     # --- boolean operators on variables (flags set in conditions) ----------------
     ("logic_vars", "logic", "declare $t := 1\n  declare $f := 0\n  declare $a := 0\n  declare $b := 0\n  declare $c := 0\n  declare $d := 0\n  if ($t and $f)\n    $a := 1\n  end if\n  if ($t or $f)\n    $b := 1\n  end if\n  if (not $f)\n    $c := 1\n  end if\n  if (not $t)\n    $d := 1\n  end if", ["$a", "$b"]),
     ("logic_vars_2", "logic", "declare $t := 1\n  declare $f := 0\n  declare $a := 0\n  declare $b := 0\n  if ($t and $t)\n    $a := 1\n  end if\n  if ($f or $f)\n    $b := 1\n  end if", ["$a", "$b"]),
+    # --- condition truth, typing and call probes (slice 2) -----------------------
+    ("cond_bare_int", "logic", "declare $a := 0\n  if (1)\n    $a := 1\n  end if", ["$a"]),
+    ("cond_int_and", "logic", "declare $a := 0\n  if (1 and 1)\n    $a := 1\n  end if", ["$a"]),
+    ("cond_not_compare", "logic", "declare $t := 1\n  declare $f := 0\n  declare $a := 0\n  declare $b := 0\n  if (not ($f = 1))\n    $a := 1\n  end if\n  if (not ($t = 1))\n    $b := 1\n  end if", ["$a", "$b"]),
+    ("cond_compare_ops", "logic", "declare $t := 1\n  declare $a := 0\n  declare $b := 0\n  if ($t # 0)\n    $a := 1\n  end if\n  if ($t > 0)\n    $b := 1\n  end if", ["$a", "$b"]),
+    ("typing_bool_assign", "typing", "declare $t := 1\n  declare $x := 5\n  $x := ($t = 1)", ["$x"]),
+    ("typing_real_assign", "typing", "declare $x := 5\n  $x := 7.5 / 2", ["$x"]),
+    ("call_init_empty", "function", "call f", ["0"], "function f\nend function"),
+    ("call_init_global", "function", "call f", ["$g"], "declare $g := 1\nfunction f\n  $g := 7\nend function"),
 ]

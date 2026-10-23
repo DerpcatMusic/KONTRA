@@ -1,6 +1,7 @@
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   $cv := real_to_int(2.5 + 2.5)
   $cb := 0
   while ($cb < 32)
@@ -9,4 +10,5 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
