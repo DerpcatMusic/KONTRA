@@ -584,6 +584,14 @@ impl crate::engine::EngineSink for Log {
         self.0.borrow_mut().push(crate::engine::Call::NoteOff { event, delay });
         true
     }
+    fn set_param(&mut self, event: crate::engine::EventId, target: sampler_core::ModTarget, value: i64, relative: bool) -> bool {
+        self.0.borrow_mut().push(crate::engine::Call::Param { event, target, value, relative });
+        true
+    }
+    fn suppress_attack(&mut self, event: crate::engine::EventId) -> bool {
+        self.0.borrow_mut().push(crate::engine::Call::SuppressAttack { event });
+        true
+    }
 }
 
 #[test]
@@ -633,5 +641,34 @@ fn menu_items_and_selection_match_the_interpreter() {
          declare $n := get_num_menu_items($id) declare $v := get_menu_item_value($id, 1) \
          declare $vis := get_menu_item_visibility($id, 0) declare $sel := get_control_par($id, $CONTROL_PAR_SELECTED_ITEM_IDX) \
          declare $bad := get_menu_item_value($id, 7) declare @t := get_menu_item_str($id, 1) end on",
+    );
+}
+
+#[test]
+fn event_volume_tune_pan_and_ignore_reach_the_engine_sink() {
+    use crate::engine::Call;
+    use sampler_core::ModTarget;
+    let source = "on init declare $c := 0 end on
+        on note
+        change_vol($EVENT_ID, -6000, 0)
+        change_tune($EVENT_ID, 1200, 1)
+        change_pan(7, -250, 1)
+        ignore_event($EVENT_ID)
+        end on";
+    let lowered = lower(source).unwrap_or_else(|e| panic!("front end: {e}"));
+    assert!(lowered.compiled.is_complete(), "{:?}", lowered.compiled.unsupported);
+    let mut host = Host::new(&lowered.compiled, lowered.cells, lowered.texts, lowered.note_cells, 48_000).unwrap();
+    let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    host.set_sink(Box::new(Log(log.clone())));
+    host.init().unwrap();
+    host.note_on(1, 60, 100.0).unwrap();
+    assert_eq!(
+        *log.borrow(),
+        vec![
+            Call::Param { event: 1, target: ModTarget::Decibels, value: -6000, relative: false },
+            Call::Param { event: 1, target: ModTarget::Pitch, value: 1200, relative: true },
+            Call::Param { event: 7, target: ModTarget::Pan, value: -250, relative: true },
+            Call::SuppressAttack { event: 1 },
+        ],
     );
 }

@@ -7,7 +7,7 @@
 //! engine units, not KSP's 0..127. Durations are frames, already converted
 //! from KSP microseconds with the interpreter's rule (`MicrosToFrames`: ceil).
 
-use sampler_core::{Inheritance, NoteId, NotePitch, Runtime};
+use sampler_core::{Inheritance, ModTarget, NoteId, NotePitch, Runtime};
 use std::collections::BTreeMap;
 
 /// A script-visible event, as the caller numbers it.
@@ -40,6 +40,19 @@ pub trait EngineSink {
     /// KSP `note_off`: release `event` now (`delay` None) or after `delay` frames.
     /// False when the engine does not know the event.
     fn note_off(&mut self, event: EventId, delay: Option<u64>) -> bool;
+
+    /// KSP `change_vol`/`change_tune`/`change_pan`: write `value` (the script's integer,
+    /// in the target's millidecibel/millicent/milli-pan units) to `event`, or add it when
+    /// `relative`. False when the engine does not know the event.
+    fn set_param(&mut self, event: EventId, target: ModTarget, value: i64, relative: bool) -> bool;
+
+    /// KSP `ignore_event` on the current note: suppress its attack. False when unknown.
+    fn suppress_attack(&mut self, event: EventId) -> bool;
+
+    /// Calls made since the last take, oldest first. Only a [`Recorder`] keeps them.
+    fn take_calls(&mut self) -> Vec<Call> {
+        Vec::new()
+    }
 }
 
 /// Forwards to a live runtime. The driver registers each trigger's [`NoteId`] with [`LiveSink::bind`].
@@ -108,6 +121,25 @@ impl EngineSink for LiveSink {
             }
         }
     }
+
+    fn set_param(&mut self, event: EventId, target: ModTarget, value: i64, relative: bool) -> bool {
+        let Some(&note) = self.events.get(&event) else {
+            return false;
+        };
+        // The runtime takes engine units and rounds back to the integer: exact for script ints.
+        let scale = match target {
+            ModTarget::Decibels | ModTarget::Pan => 1000.0,
+            ModTarget::Pitch => 100_000.0,
+            _ => return false,
+        };
+        self.runtime
+            .set_note_param_with_immediate(note, target, value as f64 / scale, relative, true)
+            .is_ok()
+    }
+
+    fn suppress_attack(&mut self, event: EventId) -> bool {
+        self.events.get(&event).is_some_and(|&note| self.runtime.suppress_attack(note).is_ok())
+    }
 }
 
 /// One engine call, as [`Recorder`] logs it.
@@ -115,6 +147,8 @@ impl EngineSink for LiveSink {
 pub enum Call {
     Play(Play),
     NoteOff { event: EventId, delay: Option<u64> },
+    Param { event: EventId, target: ModTarget, value: i64, relative: bool },
+    SuppressAttack { event: EventId },
 }
 
 /// Logs every call and accepts all of them; child ids count up from 1.
@@ -134,6 +168,20 @@ impl EngineSink for Recorder {
     fn note_off(&mut self, event: EventId, delay: Option<u64>) -> bool {
         self.calls.push(Call::NoteOff { event, delay });
         true
+    }
+
+    fn set_param(&mut self, event: EventId, target: ModTarget, value: i64, relative: bool) -> bool {
+        self.calls.push(Call::Param { event, target, value, relative });
+        true
+    }
+
+    fn suppress_attack(&mut self, event: EventId) -> bool {
+        self.calls.push(Call::SuppressAttack { event });
+        true
+    }
+
+    fn take_calls(&mut self) -> Vec<Call> {
+        std::mem::take(&mut self.calls)
     }
 }
 
