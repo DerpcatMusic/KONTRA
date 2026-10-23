@@ -721,9 +721,32 @@ fn new_ingress() -> Ingress {
     Ingress::new(0, groups)
 }
 
+/// Kontakt's power-on controller values: CC7 volume 100, CC10 pan centre 64,
+/// CC11 expression full, CC1 0. Every other controller starts at 0, and pitch
+/// bend starts centred (`POWER_ON_BEND`). Every probe note starts from these;
+/// the instrument's own saved or scripted values then take over.
+const POWER_ON: [(u8, u8); 4] = [(1, 0), (7, 100), (10, 64), (11, 127)];
+/// Pitch bend centre (14-bit 8192): MIDI 1.0 UMP, channel 0, LSB 0, MSB 0x40.
+const POWER_ON_BEND: u32 = 0x20E0_0040;
+
+/// `POWER_ON` minus a volume controller the instrument saved its own value on
+/// (that saved volume is the instrument's power-on state, not 100).
+fn power_on_ccs(ir: &sampler_ir::Instrument) -> Vec<(u8, u8)> {
+    let saved = ir
+        .host_volume
+        .filter(|v| v.saved > 0.0)
+        .map(|v| v.controller);
+    POWER_ON
+        .iter()
+        .copied()
+        .filter(|&(cc, _)| Some(cc) != saved)
+        .collect()
+}
+
 /// Controllers a player would have up: mod wheel, expression and CC2 high,
 /// plus every plain controller the instrument's modulators read. (Controllers
 /// scripts read directly are not listed in the IR, so they are not covered.)
+/// Only the controller search after a silent power-on note sends these.
 fn musical_ccs(ir: &sampler_ir::Instrument, dynamics: &[(u8, f64)]) -> Vec<(u8, u8)> {
     let mut ccs = vec![(1, 100), (2, 100), (11, 127)];
     for (n, _) in dynamics {
@@ -1180,11 +1203,13 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     let (mut script_allocs, mut script_seconds) = (0usize, 0.0f64);
     let (mut peak, mut tail_peak, mut finite) = (0.0f32, 0.0f32, true);
     let sw = u32::from(pick.switch.unwrap_or(0)) << 8;
-    // Controllers first, then the switch key taps, then the held neighbour,
-    // then the note.
-    let mut pre_words: Vec<[u32; 1]> = ccs
-        .iter()
-        .map(|&(cc, v)| [0x20B0_0000 | u32::from(cc) << 8 | u32::from(v)])
+    // Pitch bend centre, then controllers, then the switch key taps, then the
+    // held neighbour, then the note.
+    let mut pre_words: Vec<[u32; 1]> = std::iter::once([POWER_ON_BEND])
+        .chain(
+            ccs.iter()
+                .map(|&(cc, v)| [0x20B0_0000 | u32::from(cc) << 8 | u32::from(v)]),
+        )
         .collect();
     if pick.switch.is_some() {
         pre_words.push([0x2090_0000 | sw | 64]);
@@ -2006,6 +2031,9 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
         }
         if ctx.tier != Tier::Parse && !matches!(subject, Subject::Ir(_)) {
             let played = Instant::now();
+            // Every note starts from Kontakt's power-on controllers. Only the
+            // controller search below (silent notes) sends other values.
+            let power = power_on_ccs(subject.instrument());
             let ccs = musical_ccs(subject.instrument(), &dynamics);
             let silent = |s: &Sound| s.peak <= 1e-4 || s.note != "started";
             let reload_at =
@@ -2016,14 +2044,14 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
                 };
             let reload = |ccs: &[(u8, u8)], diagnose: bool| reload_at(None, ccs, diagnose);
             let others = other_keys(subject.instrument(), pick);
-            let first = play(subject, pick, false, &[]);
+            let first = play(subject, pick, false, &power);
             // Silent at the picked key: try other covered keys before calling the
             // instrument silent (the script may not play that key at all).
             let first = match first {
                 Ok(s) if silent(&s) => Ok(others
                     .iter()
                     .find_map(|&k| {
-                        reload_at(Some(k), &[], false)
+                        reload_at(Some(k), &power, false)
                             .filter(|x| !silent(x))
                             .map(|x| (k, x))
                     })
@@ -2041,7 +2069,7 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
                 {
                     // Selection records allocate, so they only run on a second
                     // pass over an item that was silent.
-                    if let Some(d) = reload(&[], true) {
+                    if let Some(d) = reload(&power, true) {
                         s.selection = d.selection;
                         s.why_silent = d.why_silent;
                     }
@@ -2092,7 +2120,7 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
                     let t = Instant::now();
                     // The probe decodes fully: keep it out of the peak memory.
                     peak_heap = heap::peak();
-                    record["mpe"] = mpe_probe(path, pick, &ccs);
+                    record["mpe"] = mpe_probe(path, pick, &power);
                     record["perf_mpe_ms"] = json!(t.elapsed().as_millis() as u64);
                 }
             }
@@ -3287,6 +3315,26 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn power_on_table_is_kontakts_defaults() {
+        assert_eq!(POWER_ON, [(1, 0), (7, 100), (10, 64), (11, 127)]);
+        // 14-bit centre 8192: LSB 0 in data1, MSB 0x40 in data2.
+        let centre = 8192u32;
+        assert_eq!(
+            POWER_ON_BEND,
+            0x20E0_0000 | (centre & 0x7F) << 8 | centre >> 7
+        );
+        // An instrument with no saved volume gets the whole table.
+        let mut ir = sampler_ir::Instrument::default();
+        assert_eq!(power_on_ccs(&ir), POWER_ON.to_vec());
+        // A saved CC7 volume is the instrument's own value and is not replaced.
+        ir.host_volume = Some(sampler_ir::HostVolume {
+            controller: 7,
+            saved: 0.5,
+        });
+        assert_eq!(power_on_ccs(&ir), vec![(1, 0), (10, 64), (11, 127)]);
+    }
 
     #[test]
     fn kontakt_audition_services_ui_backpressure_before_judging_silence() {
