@@ -38,15 +38,15 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | SV Par. LP/HP | parity (kemu oracle) | vector | Kemu vector at bandwidth .3, u .5, res .5 (1e-6); gains and `l` confirmed from the binary (G8, G9 closed). The bandwidth record path (G7) is accepted under the kemu oracle; capture open. Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
 | SV Par. BP/BP | parity (kemu oracle) | vector | Kemu vector at bandwidth .3, u .5, res .5 (1e-6); gains and `l` confirmed (G8, G9 closed). G7 accepted under the kemu oracle; capture open. Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
 | SV Ser. LP/HP | parity (kemu oracle) | vector | Kemu vector at bandwidth .3, u .5, res .5 (1e-6); gains and `l` confirmed (G8, G9 closed). G7 accepted under the kemu oracle; capture open. Kemu oracle accepted for res .9 (coordinator decision 2026-10-22). filt-sv |
-| AR LP2 | partial | vector | Kernel matches native vectors (2e-6, ar_native_vectors.json, 81 scenarios). Cutoff law decomp-confirmed. Host recording and CPU acceptance open (docs/re/engine/filt-ar-daft.md). |
-| AR LP4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
-| AR LP2/4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
-| AR HP2 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
-| AR HP4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
-| AR HP2/4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
-| AR BP2 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
-| AR BP4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
-| AR BP2/4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
+| AR LP2 | parity | vector | Kernel matches native vectors (2e-6, ar_native_vectors.json, 81 scenarios). Cutoff law decomp-confirmed. Synthetic-input checkpoints only; whole-voice host recording not compared (docs/re/engine/filt-ar-daft.md). |
+| AR LP4 | parity | vector | Same kernel and vectors as AR LP2. Whole-voice host recording not compared. |
+| AR LP2/4 | parity | vector | Same kernel and vectors as AR LP2. Whole-voice host recording not compared. |
+| AR HP2 | parity | vector | Same kernel and vectors as AR LP2. Whole-voice host recording not compared. |
+| AR HP4 | parity | vector | Same kernel and vectors as AR LP2. Whole-voice host recording not compared. |
+| AR HP2/4 | parity | vector | Same kernel and vectors as AR LP2. Whole-voice host recording not compared. |
+| AR BP2 | parity | vector | Same kernel and vectors as AR LP2. Whole-voice host recording not compared. |
+| AR BP4 | parity | vector | Same kernel and vectors as AR LP2. Whole-voice host recording not compared. |
+| AR BP2/4 | parity | vector | Same kernel and vectors as AR LP2. Whole-voice host recording not compared. |
 | Daft | parity (kernel) | decomp, vector | Kernel matches native code under kemu to 2e-7 of peak (1.1e-6 self-oscillating): loop, knees, laws, Kaiser x2, ramp, routed setters (`tools/re/daft_kemu_vectors.py`, `daft_kemu_vectors.json`). Cadence: BFilterDaft slot-23 driver FUN_1408fa270 runs setters, tick and loop per 32 host frames. Routed knobs: the driver clamps each enabled route to [0, 1]; kemu receipts (`daft_route_clamp_kemu.json`) and the Rust gain clamp match. Open: saved-record mapping (gain, 70/71 response) from v1 table; source composition of routes (knob plus depth) assumed; no Kontakt audio render. `docs/re/engine/filt-ar-daft.md` |
 | Daft HP | parity (kernel) | decomp, vector | Same kernel and vectors as Daft (response 1). Same open items as Daft. |
 | Ladder LP1 | parity | vector | steady knobs bit-exact on the native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving cutoff (flag 0) within 2e-7 of peak, flag 0x49 = 1 and HQ-on moving controls match kemu-run native code (`ladder_kemu_vectors.json`, mode 0, run through `LadderSettings` in `dsp/filter/ladder.rs`) |
