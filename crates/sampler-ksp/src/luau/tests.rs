@@ -571,3 +571,44 @@ fn key_switch_state_matches_the_interpreter() {
         end on",
     );
 }
+
+/// Records the engine calls the Luau host makes, shared with the test.
+struct Log(std::rc::Rc<std::cell::RefCell<Vec<crate::engine::Call>>>);
+
+impl crate::engine::EngineSink for Log {
+    fn play(&mut self, request: crate::engine::Play) -> Option<crate::engine::EventId> {
+        self.0.borrow_mut().push(crate::engine::Call::Play(request));
+        Some(2)
+    }
+    fn note_off(&mut self, event: crate::engine::EventId, delay: Option<u64>) -> bool {
+        self.0.borrow_mut().push(crate::engine::Call::NoteOff { event, delay });
+        true
+    }
+}
+
+#[test]
+fn play_note_and_note_off_reach_the_engine_sink() {
+    use crate::engine::{Call, Duration, Play};
+    let source = "on init declare $c := 0 end on
+        on note
+        $c := play_note(61, 100, 0, 250000)
+        $c := play_note(63, 90, 0, -1)
+        $c := play_note(62, 0, 0, 1000)
+        note_off($EVENT_ID, 1000)
+        end on";
+    let lowered = lower(source).unwrap_or_else(|e| panic!("front end: {e}"));
+    let mut host = Host::new(&lowered.compiled, lowered.cells, lowered.texts, lowered.note_cells, 48_000).unwrap();
+    let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    host.set_sink(Box::new(Log(log.clone())));
+    host.init().unwrap();
+    host.note_on(1, 60, 100.0).unwrap();
+    // Velocity 0 is outside KSP's 1..127 for play_note: refused without a call.
+    assert_eq!(
+        *log.borrow(),
+        vec![
+            Call::Play(Play { parent: 1, key: 61, velocity: 100.0 / 127.0, duration: Duration::Frames(12_000) }),
+            Call::Play(Play { parent: 1, key: 63, velocity: 90.0 / 127.0, duration: Duration::Gate }),
+            Call::NoteOff { event: 1, delay: Some(48) },
+        ],
+    );
+}
