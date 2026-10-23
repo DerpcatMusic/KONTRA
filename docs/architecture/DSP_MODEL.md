@@ -211,14 +211,28 @@ own state and discretization.
 
 ### 4. Dynamics recipe/settings boundary (medium value, low–medium risk)
 
-Files: `D/dynamics/{laws,pipeline,detector,computer,ballistics,output,mod,tests}.rs`,
-`D/db_limiter.rs`, `I/fx/dynamics.rs`; dispatch hooks in `C/dsp.rs` only if currently used.
-Keep the existing pipeline; expose neutral recipe selectors behind compatible presets.
-One PR audits/prepares cold spline data; a separate PR moves the dB limiter into this family
-without changing its law or visibility. Test: `every_law_matches_its_golden_output_bits`, native
-dynamics tests and a frozen dB limiter trace; bit-exact, plus attack/release gate for any later
-law substitution. Delete relocated limiter loop/duplicate recipe helpers, not `logarithm.rs`.
-Estimate: 30–120 LOC; ~0% CPU; use `bench_every_law` to detect accidental dispatch overhead.
+**Status: closed without a code PR (2026-10-24): no net deletion is admitted.**
+
+Audit on `origin/main`:
+
+- The dynamics pipeline is already composed of stages (`dynamics/pipeline.rs` `Stage`/`run`; recipes
+  in `dynamics/mod.rs`, `output.rs`, `ballistics.rs`). Nothing duplicates a recipe that would be deleted
+  by a neutral selector.
+- `rbj_low_pass` (`dynamics/pipeline.rs:206`) and `high_pass_1` (`:233`) are Kontakt-measured f32
+  approximations (polynomial sine/cosine, native rounding). They are not copies of `biquad::rbj` or
+  `biquad::first_order`, which are f64 designs with different arithmetic. Keep.
+- The only duplicated recurrence is the dB one-pole with separate rise and fall coefficients:
+  `dynamics/ballistics.rs:28-31` (`SmoothBranch::channel`, f64, floors below 1e-12) and
+  `db_limiter.rs:110-123` (`DbLimiter::process` envelope and hold, f32, with the instant mode and no
+  floor). Sharing it would need a float-generic helper and would keep the instant mode and the floor as
+  separate branches, so the net LOC change is about zero. Not done.
+- Moving `db_limiter.rs` into `dynamics/` is a relocation (0 net LOC), and its public path is used by
+  `dspbench.rs:7`. Not done.
+- `laws.rs:276` and `:348` use `8.656_169_89` and `8.656_170_245` for the dB-per-neper constant, not
+  the `DB_PER_NEPER` value (8.685889...) used in `computer.rs:8`. The difference is a measured law
+  or a precision choice, not a duplicate. Not changed.
+
+Result: no deletion. The cold-spline audit (`LazyLock<Spline>`) is a cold-start check, not a LOC change.
 
 ### 5. Common table-shaper/rate wrapper (high value, medium–high risk)
 
