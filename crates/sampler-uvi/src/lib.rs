@@ -331,11 +331,37 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
     // Real insert controls exist only now. Join exact original placement and
     // semantic role; no placeholder control or output-field surrogate.
     for (owner,source_node,chain,index,fixed_factors) in &out.processing_parameter_intents {
-        let bindings:Vec<_>=out.ir.processor_controls.iter().filter(|row|row.chain==*chain&&row.index==*index&&row.parameter==ir::ProcessorParameter::Cutoff).collect();
-        if bindings.len()!=1{return Err(Translate::Invalid("shared Frequency connection has no unique real Freq control".into()));}
+        let mut controls:Vec<ir::ControlRef>=Vec::new();
+        for row in out.ir.processor_controls.iter().filter(|row|row.chain==*chain&&row.index==*index&&row.parameter==ir::ProcessorParameter::Cutoff) {
+            if !controls.contains(&row.control){controls.push(row.control);}
+        }
+        // Exactly one real Freq control binds exactly. Otherwise the connection
+        // is approximated or dropped, and the UnknownLaw warning says which.
+        let control=match controls.as_slice() {
+            [only]=>*only,
+            [] => {
+                out.ir.unsupported.push(ir::Unsupported{
+                    location:format!("node {source_node}"),feature:"Frequency connection (no real Freq control)".into(),
+                    value:"connection not applied; the insert has no Freq control to drive".into(),reason:ir::Reason::UnknownLaw,
+                });
+                // The route has no owned parameter to drive: unlink it from its recipe.
+                for recipe in out.ir.source_indices.processing.iter_mut().filter(|recipe|recipe.owner==*owner) {
+                    recipe.routes.retain(|route|!matches!(out.ir.routes[route.0].target,
+                        ir::Target::Processor{chain:target,index:target_index,parameter:ir::ProcessorParameter::Cutoff} if target==*chain&&target_index==*index));
+                }
+                continue;
+            }
+            [first,rest@..]=>{
+                out.ir.unsupported.push(ir::Unsupported{
+                    location:format!("node {source_node}"),feature:"Frequency connection (ambiguous Freq control)".into(),
+                    value:format!("bound to the first of {} Freq controls", rest.len()+1),reason:ir::Reason::UnknownLaw,
+                });
+                *first
+            }
+        };
         out.ir.source_indices.processing_parameters.push(ir::SourceProcessingParameter{
             owner:*owner,source_node:*source_node,chain:*chain,index:*index,parameter:ir::ProcessorParameter::Cutoff,
-            control:bindings[0].control,law:ir::SourceProcessingParameterLaw::HistoricalUviFrequencyThreeDecadeCore,
+            control,law:ir::SourceProcessingParameterLaw::HistoricalUviFrequencyThreeDecadeCore,
             fixed_factors:fixed_factors.clone(),compiled:None,
         });
     }
