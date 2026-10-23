@@ -7,7 +7,7 @@
 //! Whatever the host does not model is inert and reported, not silent.
 
 use mlua::{
-    Function, Lua, LuaOptions, MultiValue, StdLib, Table, Thread, Value, Variadic, VmState,
+    Function, Lua, MultiValue, Table, Thread, Value, Variadic, VmState,
 };
 use sampler_kontakt::audit::Span;
 use std::{
@@ -681,10 +681,7 @@ struct Shared {
     ids: Cell<u64>,
     seq: Cell<u64>,
     /// Elapsed observation only; admission is bounded by deterministic work.
-    deadline: Cell<Option<Instant>>,
-    remaining_work: Cell<u64>,
-    work_exhausted: Cell<bool>,
-    vm_checkpoints: Cell<u64>,
+    budget: std::rc::Rc<sampler_script::Budget>,
     graph_nodes: Cell<usize>,
     graph_depth: Cell<usize>,
     script_bytes: Cell<usize>,
@@ -755,13 +752,13 @@ struct InspectionBudget<'a> {
 impl Drop for InspectionBudget<'_> {
     fn drop(&mut self) {
         if let Some((work, exhausted, deadline)) = self.saved {
-            if self.shared.work_exhausted.get() {
+            if self.shared.budget.exhausted.get() {
                 self.shared
                     .find("lua error", "work budget exceeded during UI snapshot");
             }
-            self.shared.remaining_work.set(work);
-            self.shared.work_exhausted.set(exhausted);
-            self.shared.deadline.set(deadline);
+            self.shared.budget.remaining.set(work);
+            self.shared.budget.exhausted.set(exhausted);
+            self.shared.budget.deadline.set(deadline);
             #[cfg(feature = "scan")]
             self.shared.observe_work();
         }
@@ -786,9 +783,9 @@ impl Shared {
     fn observe_work(&self) {
         if let Some(progress) = &self.progress {
             progress.work(
-                self.remaining_work.get(),
-                self.vm_checkpoints.get(),
-                self.work_exhausted.get(),
+                self.budget.remaining.get(),
+                self.budget.checkpoints.get(),
+                self.budget.exhausted.get(),
             );
         }
     }
@@ -797,9 +794,10 @@ impl Shared {
         // Readback gets load-sized work without spending or refilling live work.
         let saved = (!self.initializing.get()).then(|| {
             (
-                self.remaining_work.replace(self.config.load_work),
-                self.work_exhausted.replace(false),
-                self.deadline
+                self.budget.remaining.replace(self.config.load_work),
+                self.budget.exhausted.replace(false),
+                self.budget
+                    .deadline
                     .replace(Some(Instant::now() + self.config.load)),
             )
         });
@@ -944,26 +942,19 @@ impl Shared {
     /// All initialization phases share one allowance, including spawned work.
     fn arm(&self, elapsed: Duration, work: u64) {
         if !self.initializing.get() {
-            self.deadline.set(Some(Instant::now() + elapsed));
-            self.remaining_work.set(work);
-            self.work_exhausted.set(false);
+            self.budget.deadline.set(Some(Instant::now() + elapsed));
+            self.budget.remaining.set(work);
+            self.budget.exhausted.set(false);
             #[cfg(feature = "scan")]
             self.observe_work();
         }
     }
 
     fn consume_work(&self) -> mlua::Result<()> {
-        if let Some(left) = self.remaining_work.get().checked_sub(1) {
-            self.remaining_work.set(left);
-            #[cfg(feature = "scan")]
-            self.observe_work();
-            Ok(())
-        } else {
-            self.work_exhausted.set(true);
-            #[cfg(feature = "scan")]
-            self.observe_work();
-            Err(mlua::Error::runtime("work budget exceeded"))
-        }
+        let charged = self.budget.consume();
+        #[cfg(feature = "scan")]
+        self.observe_work();
+        Ok(charged?)
     }
 
     fn next_id(&self) -> u64 {
@@ -1487,13 +1478,8 @@ impl ScriptHost {
         let lua = {
             let _profile = profile.span("vm_create");
             let _span = Span::new("uvi_lua_vm");
-            Lua::new_with(
-                StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::COROUTINE | StdLib::BIT,
-                LuaOptions::new(),
-            )
-            .map_err(lua_error)?
+            sampler_script::new_vm(config.memory).map_err(lua_error)?
         };
-        lua.set_memory_limit(config.memory).map_err(lua_error)?;
         #[cfg(feature = "scan")]
         if let Some(seed) = config.audit_seed {
             let math: Table = lua.globals().get("math").map_err(lua_error)?;
@@ -1527,10 +1513,7 @@ impl ScriptHost {
             now: Cell::new(0.0),
             ids: Cell::new(1 << 32),
             seq: Cell::new(0),
-            deadline: Cell::new(Some(Instant::now() + config.load)),
-            remaining_work: Cell::new(config.load_work),
-            work_exhausted: Cell::new(false),
-            vm_checkpoints: Cell::new(0),
+            budget: std::rc::Rc::new(sampler_script::Budget::new(config.load_work, Some(Instant::now() + config.load))),
             graph_nodes: Cell::new(0),
             graph_depth: Cell::new(0),
             script_bytes: Cell::new(PRELUDE.len()),
@@ -1597,15 +1580,15 @@ impl ScriptHost {
                 serde_json::json!({"stage":"uvi_lua_work",
                 "xml_bytes":xml.len(),"script_bytes":host.shared.script_bytes.get(),
                 "graph_nodes":host.shared.graph_nodes.get(),"graph_depth":host.shared.graph_depth.get(),
-                "vm_checkpoints":host.shared.vm_checkpoints.get(),
-                "work_limit":config.load_work,"work_remaining":host.shared.remaining_work.get(),
-                "work_exhausted":host.shared.work_exhausted.get(),"memory_bytes":host.lua.used_memory(),
+                "vm_checkpoints":host.shared.budget.checkpoints.get(),
+                "work_limit":config.load_work,"work_remaining":host.shared.budget.remaining.get(),
+                "work_exhausted":host.shared.budget.exhausted.get(),"memory_bytes":host.lua.used_memory(),
                 "wall_limit_ms":config.load.as_millis(),
-                "wall_expired":host.shared.deadline.get().is_some_and(|d| Instant::now() >= d),
+                "wall_expired":host.shared.budget.deadline.get().is_some_and(|d| Instant::now() >= d),
                 "initialized":initialized.is_ok()})
             );
         }
-        if host.shared.work_exhausted.get() {
+        if host.shared.budget.exhausted.get() {
             return Err(INIT_BUDGET.into());
         }
         initialized?;
@@ -1637,7 +1620,7 @@ impl ScriptHost {
         {
             report["native_apis"]=serde_json::json!(self.shared.init_api.borrow().iter().map(|(phase,(calls,elapsed))|serde_json::json!({"phase":phase,"calls":calls,"elapsed_ms":elapsed.as_secs_f64()*1000.})).collect::<Vec<_>>());
         }
-        report["work"] = serde_json::json!({"vm_checkpoints":self.shared.vm_checkpoints.get(),"graph_nodes":self.shared.graph_nodes.get(),"graph_depth":self.shared.graph_depth.get(),"script_bytes":self.shared.script_bytes.get(),"lua_memory_bytes":self.lua.used_memory()});
+        report["work"] = serde_json::json!({"vm_checkpoints":self.shared.budget.checkpoints.get(),"graph_nodes":self.shared.graph_nodes.get(),"graph_depth":self.shared.graph_depth.get(),"script_bytes":self.shared.script_bytes.get(),"lua_memory_bytes":self.lua.used_memory()});
         report
     }
 
@@ -1726,11 +1709,12 @@ impl ScriptHost {
         let budget = shared.clone();
         lua.set_interrupt(move |lua| {
             budget
-                .vm_checkpoints
-                .set(budget.vm_checkpoints.get().saturating_add(1));
+                .budget
+                .checkpoints
+                .set(budget.budget.checkpoints.get().saturating_add(1));
             budget.consume_work()?;
             if budget.initializing.get() {
-                budget.profile.sample(lua, budget.vm_checkpoints.get());
+                budget.profile.sample(lua, budget.budget.checkpoints.get());
             }
             Ok(VmState::Continue)
         });
@@ -3299,8 +3283,8 @@ impl ScriptHost {
         }else{None};
         let (thread,projection,args,creator,origin,wall)=if let Some(root)=prepared{
             let creator=if root.descriptor.origin==sampler_core::PreparedGlobalTaskOrigin::None{PlayCreator::None}else{PlayCreator::Event};
-            self.shared.remaining_work.set(root.remaining_work);self.shared.work_exhausted.set(root.exhausted);
-            let wall=self.shared.config.load;self.shared.deadline.set(Instant::now().checked_add(wall));
+            self.shared.budget.remaining.set(root.remaining_work);self.shared.budget.exhausted.set(root.exhausted);
+            let wall=self.shared.config.load;self.shared.budget.deadline.set(Instant::now().checked_add(wall));
             if let Some(delay)=root.delay{
                 let next=turn.resume_frame.checked_add(delay).ok_or("prepared residual wait overflow")?;
                 let mut rows=self.shared.external_waiting.borrow_mut();if rows.len()>=4096{return Err("external coroutine capacity".into());}rows.try_reserve(1).map_err(|_|"external coroutine allocation")?;drop(rows);
@@ -3311,10 +3295,10 @@ impl ScriptHost {
             (root.thread,None,root.args,creator,root.origin,wall)
         }else if let Some(waiting)=waiting{
             if waiting.processor!=turn.processor{return Err("external resume processor changed".into());}
-            self.shared.remaining_work.set(waiting.remaining_work);self.shared.work_exhausted.set(waiting.exhausted);
+            self.shared.budget.remaining.set(waiting.remaining_work);self.shared.budget.exhausted.set(waiting.exhausted);
             // Sleeping time is Core-rendered time, not Lua execution time. A
             // new segment gets a wall deadline without refilling callback fuel.
-            self.shared.deadline.set(Instant::now().checked_add(waiting.wall));
+            self.shared.budget.deadline.set(Instant::now().checked_add(waiting.wall));
             (waiting.thread,waiting.projection,MultiValue::new(),waiting.creator,waiting.origin,waiting.wall)
         }else{
             match turn.event{
@@ -3397,7 +3381,7 @@ impl ScriptHost {
             let next=turn.resume_frame.checked_add(frames as u64).ok_or("external wait frame overflow")?;
             if self.shared.external_waiting.borrow().len()>=4096{return Err("external coroutine capacity".into());}
             _context.restore().map_err(lua_error)?;self.external_operation(AuthorityOperation::Complete{next_frame:Some(next)})?;
-            self.shared.external_waiting.borrow_mut().push(input_authority::ExternalWaiting{behavior:turn.input.behavior(),processor:turn.processor,thread,projection,creator,origin,wall,remaining_work:self.shared.remaining_work.get(),exhausted:self.shared.work_exhausted.get()});
+            self.shared.external_waiting.borrow_mut().push(input_authority::ExternalWaiting{behavior:turn.input.behavior(),processor:turn.processor,thread,projection,creator,origin,wall,remaining_work:self.shared.budget.remaining.get(),exhausted:self.shared.budget.exhausted.get()});
         }else{_context.restore().map_err(lua_error)?;self.external_operation(AuthorityOperation::Complete{next_frame:None})?;}
         Ok(())
     }
@@ -4051,8 +4035,8 @@ fn resume_with_prepared_origin(lua:&Lua,shared:&Rc<Shared>,thread:Thread,args:Mu
                 creator,
                 processor,
                 release,
-                remaining_work:shared.remaining_work.get(),
-                exhausted:shared.work_exhausted.get(),
+                remaining_work:shared.budget.remaining.get(),
+                exhausted:shared.budget.exhausted.get(),
                 prepared_origin:origin,
             });
         }
@@ -4195,10 +4179,10 @@ end
         let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script>function onInit() for n=1,100 do assert(n&gt;0) end end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
         let first = super::ScriptHost::new(xml, (), super::Config::default()).unwrap();
         let second = super::ScriptHost::new(xml, (), super::Config::default()).unwrap();
-        assert!(first.shared.vm_checkpoints.get() > 100);
+        assert!(first.shared.budget.checkpoints.get() > 100);
         assert_eq!(
-            first.shared.vm_checkpoints.get(),
-            second.shared.vm_checkpoints.get()
+            first.shared.budget.checkpoints.get(),
+            second.shared.budget.checkpoints.get()
         );
         assert_eq!(
             first.shared.graph_nodes.get(),
@@ -4250,51 +4234,51 @@ end
         let h = super::ScriptHost::new("<UVI4><Program/></UVI4>", (), super::Config::default())
             .unwrap();
         h.shared.initializing.set(true);
-        h.shared.remaining_work.set(0);
+        h.shared.budget.remaining.set(0);
         assert!(h.shared.consume_work().is_err());
         h.shared.arm(std::time::Duration::from_secs(20), 100);
-        assert_eq!(h.shared.remaining_work.get(), 0);
-        assert!(h.shared.work_exhausted.get());
+        assert_eq!(h.shared.budget.remaining.get(), 0);
+        assert!(h.shared.budget.exhausted.get());
         h.shared.initializing.set(false);
         h.shared.arm(std::time::Duration::from_secs(20), 100);
-        assert_eq!(h.shared.remaining_work.get(), 100);
-        assert!(!h.shared.work_exhausted.get());
+        assert_eq!(h.shared.budget.remaining.get(), 100);
+        assert!(!h.shared.budget.exhausted.get());
     }
 
     #[test]
     fn ui_inspection_preserves_live_work_and_exhaustion() {
         let h = super::ScriptHost::new("<UVI4><Program><EventProcessors><ScriptProcessor><script>Knob('K',1,0,127)</script></ScriptProcessor></EventProcessors></Program></UVI4>", (), super::Config::default()).unwrap();
-        let deadline = h.shared.deadline.get();
+        let deadline = h.shared.budget.deadline.get();
         for (work, exhausted) in [(1, false), (0, true)] {
-            h.shared.remaining_work.set(work);
-            h.shared.work_exhausted.set(exhausted);
+            h.shared.budget.remaining.set(work);
+            h.shared.budget.exhausted.set(exhausted);
             let face = h.interface();
             assert_eq!(face.widgets[0].name, "K");
             assert_eq!(face.widgets[0].initial_value, 1.);
-            assert_eq!(h.shared.remaining_work.get(), work);
-            assert_eq!(h.shared.work_exhausted.get(), exhausted);
-            assert_eq!(h.shared.deadline.get(), deadline);
+            assert_eq!(h.shared.budget.remaining.get(), work);
+            assert_eq!(h.shared.budget.exhausted.get(), exhausted);
+            assert_eq!(h.shared.budget.deadline.get(), deadline);
         }
-        h.shared.remaining_work.set(7);
-        h.shared.work_exhausted.set(false);
+        h.shared.budget.remaining.set(7);
+        h.shared.budget.exhausted.set(false);
         {
             let _inspection = h.shared.inspection_budget();
-            h.shared.remaining_work.set(0);
+            h.shared.budget.remaining.set(0);
             assert!(h.shared.consume_work().is_err());
         }
-        assert_eq!(h.shared.remaining_work.get(), 7);
-        assert!(!h.shared.work_exhausted.get());
+        assert_eq!(h.shared.budget.remaining.get(), 7);
+        assert!(!h.shared.budget.exhausted.get());
         assert_eq!(
             h.fault_counts().runtime.get(&super::FaultCategory::Budget),
             Some(&1)
         );
         h.shared.initializing.set(true);
-        h.shared.remaining_work.set(0);
+        h.shared.budget.remaining.set(0);
         {
             let _inspection = h.shared.inspection_budget();
-            assert_eq!(h.shared.remaining_work.get(), 0);
+            assert_eq!(h.shared.budget.remaining.get(), 0);
         }
-        assert_eq!(h.shared.remaining_work.get(), 0);
+        assert_eq!(h.shared.budget.remaining.get(), 0);
     }
 
     use super::*;
