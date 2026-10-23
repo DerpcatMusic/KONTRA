@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# tools/oracle/capture NKI MIDI OUT.wav [WINDOW_SECONDS]
+# One real-Kontakt capture of NKI playing MIDI (standard file, channel 1) into OUT.wav (48 kHz float stereo).
+# Batch: tools/oracle/capture.py --batch LIST.tsv OUTDIR. See capture.py for how it works.
+set -euo pipefail
+[ $# -ge 3 ] || { sed -n 2,4p "$0" >&2; exit 2; }
+here="$(cd "$(dirname "$0")" && pwd)"
+exec python3 "$here/capture.py" "$1" "$3" --midi "$2" --window "${4:-6}"
