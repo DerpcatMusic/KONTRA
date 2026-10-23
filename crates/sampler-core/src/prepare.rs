@@ -1270,7 +1270,7 @@ impl Prepared {
     /// and does not cover arbitrary script offsets or future source revisions.
     pub fn constant_start_offset(&self, region: usize) -> Option<u32> {
         self.regions.get(region)?;
-        if self.voice_modulation.is_empty() && !self.voice_modulation.random_start(region) {
+        if self.voice_modulation.is_empty() {
             Some(0)
         } else {
             self.voice_modulation.constant_start_offset(region)
@@ -1288,7 +1288,7 @@ impl Prepared {
     /// script offset, plan/source revision or authored listener changes state.
     pub fn initialized_start_offset(&self, region: usize) -> Option<u32> {
         self.regions.get(region)?;
-        if self.voice_modulation.is_empty() && !self.voice_modulation.random_start(region) { return Some(0); }
+        if self.voice_modulation.is_empty() { return Some(0); }
         self.voice_modulation.initialized_start_offset(region, |controller| {
             self.initial_controllers.iter().rev()
                 .find(|&&(cc, _)| cc == controller).map(|&(_, value)| value)

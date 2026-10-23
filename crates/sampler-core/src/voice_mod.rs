@@ -1126,20 +1126,18 @@ impl VoiceModulation {
         self.regions.get(region).copied().flatten()
     }
 
-    /// Kontakt's zone start randomisation: a region with a `sample_start_mod_range` and no
-    /// SampleStart route starts each note at a uniform offset in [0, range) frames. Measured on
-    /// Horns KS (32 hits, range 5120 frames): Kontakt onsets spread 50..140 ms, KONTRA's fixed
-    /// 30 ms. Routed regions keep the route law; a combined route + random law is unmeasured.
-    pub(crate) fn random_start(&self, region: usize) -> bool {
-        self.start_ranges.get(region).is_some_and(|&range| range > 0)
-            && !self.program(region).is_some_and(|index| self.programs[index as usize].start)
-    }
-
-    fn random_offset(&self, region: usize, seed: u64) -> u32 {
-        if !self.random_start(region) {
+    /// Kontakt's start randomisation for a region whose `sample_start_mod_range` is set and
+    /// that has no SampleStart route: the note sounds `delay` frames late, uniform in
+    /// [0, range). The seed is per note, so all layers of one note share the draw. Measured on
+    /// Horns KS against the unrandomised render: Kontakt's hits lag it by 1..98 ms (pooled over
+    /// 96 hits, three sessions), never early, and not velocity-scaled (velocity 40 and 127 span
+    /// the same range). A delayed start, not a skip: a skip moves the playhead forward.
+    pub fn random_delay(&self, region: usize, seed: u64) -> u32 {
+        let range = self.start_ranges.get(region).copied().unwrap_or(0);
+        if range == 0 || self.program(region).is_some_and(|index| self.programs[index as usize].start) {
             return 0;
         }
-        (uniform(hash(seed, 0, u64::MAX - 1)) * f64::from(self.start_ranges[region])) as u32
+        (uniform(hash(seed, 0, u64::MAX - 1)) * f64::from(range)) as u32
     }
 
     /// The ordinary onset consumer. A provider-dependent onset must use the
@@ -1148,7 +1146,7 @@ impl VoiceModulation {
         self.start_offset_provided(region,inputs,seed,0,ProviderView::empty())
     }
     pub(crate) fn start_offset_provided(&self,region:usize,inputs:&Inputs<'_>,seed:u64,frame:u64,provider:ProviderView<'_>)->Result<u32,Error>{
-        let Some(index)=self.program(region)else{return Ok(self.random_offset(region,seed));};
+        let Some(index)=self.program(region)else{return Ok(0);};
         let program=&self.programs[index as usize];
         if program.provider_scope!=provider.scope{return Err(Error::InvalidInput);}
         if program.provider_scope.is_some(){
@@ -1157,7 +1155,7 @@ impl VoiceModulation {
                 if Some(source.scope)!=provider.scope||source.source>=provider.from.len()||source.source>=provider.to.len(){return Err(Error::InvalidInput);}
             }}
         }
-        if !program.start{return Ok(self.random_offset(region,seed));}
+        if !program.start{return Ok(0);}
         Ok(self.offset(program,region,|index|match program.sources[index]{
             Prepared::Lfo(lfo)if lfo.delay==0&&lfo.fade==0=>{
                 let signal=wave(lfo.shape,lfo.phase,seed^index as u64);
@@ -1173,9 +1171,6 @@ impl VoiceModulation {
     /// route makes the entire result unknown, even when its saved depth is zero.
     pub fn constant_start_offset(&self, region: usize) -> Option<u32> {
         self.start_ranges.get(region)?;
-        if self.random_start(region) {
-            return None;
-        }
         let Some(index) = self.program(region) else {
             return Some(0);
         };
@@ -1198,9 +1193,6 @@ impl VoiceModulation {
         controller: impl Fn(u8) -> Option<u32>,
     ) -> Option<u32> {
         self.start_ranges.get(region)?;
-        if self.random_start(region) {
-            return None;
-        }
         let Some(index) = self.program(region) else { return Some(0) };
         let program = &self.programs[index as usize];
         let at_start = |index: usize| match program.sources[index] {
@@ -2632,18 +2624,16 @@ pub(crate) fn process_frame_tone(
 mod tests {
     use super::*;
 
-    /// Kontakt's per-note start randomisation with no SampleStart route (Horns KS): the offset
-    /// spreads over [0, range) per voice, zero-range regions stay at 0, and the predictors refuse.
+    /// Unrouted start randomisation is a per-voice delay in [0, range); zero-range regions and
+    /// regions with a SampleStart route get none, and the route-based start stays untouched.
     #[test]
-    fn unrouted_start_range_is_a_uniform_per_voice_offset() {
+    fn unrouted_start_range_is_a_per_voice_delay() {
         let modulation = VoiceModulation::new(vec![], vec![None, None], vec![5120, 0]).unwrap();
-        let offsets: Vec<u32> = (0..256u64).map(|seed| modulation.random_offset(0, seed)).collect();
-        assert!(offsets.iter().all(|&o| o < 5120));
-        assert!(offsets.iter().max().unwrap() - offsets.iter().min().unwrap() > 4000);
-        assert!((0..256u64).all(|seed| modulation.random_offset(1, seed) == 0));
-        assert_eq!(modulation.constant_start_offset(0), None);
-        assert_eq!(modulation.initialized_start_offset(0, |_| None), None);
-        assert_eq!(modulation.constant_start_offset(1), Some(0));
+        let delays: Vec<u32> = (0..256u64).map(|seed| modulation.random_delay(0, seed)).collect();
+        assert!(delays.iter().all(|&d| d < 5120));
+        assert!(delays.iter().max().unwrap() - delays.iter().min().unwrap() > 4000);
+        assert!((0..256u64).all(|seed| modulation.random_delay(1, seed) == 0));
+        assert_eq!(modulation.constant_start_offset(0), Some(0));
     }
 
     #[test]

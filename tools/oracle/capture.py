@@ -332,10 +332,19 @@ def capture(items, out_dir, window, midi=None, notes=SCENARIO):
     return manifest
 
 
-def write_scenario(name="base"):
-    path = CACHE / f"scenario-{name}.mid"
+def scenario_notes(name="base", keyswitch=None):
+    """SCENARIOS[name]; with `keyswitch`, a 0.1 s keyswitch note at 0 s and the scenario 0.3 s later."""
+    notes = SCENARIOS[name]
+    if keyswitch is None:
+        return notes
+    return [(0.0, 0.1, keyswitch, 100)] + [(start + 0.3, length, key, vel) for start, length, key, vel in notes]
+
+
+def write_scenario(name="base", keyswitch=None):
+    tag = f"{name}-ks{keyswitch}" if keyswitch is not None else name
+    path = CACHE / f"scenario-{tag}.mid"
     CACHE.mkdir(parents=True, exist_ok=True)
-    make_midi(path, 1, notes=SCENARIOS[name])
+    make_midi(path, 1, notes=scenario_notes(name, keyswitch))
     return path
 
 
@@ -347,6 +356,8 @@ def main():
     ap.add_argument("--midi", help="single mode: MIDI file to play (default: the built-in scenario)")
     ap.add_argument("--scenario", choices=sorted(SCENARIOS), default="base",
                     help="note pattern for the slots or the single file (see SCENARIOS)")
+    ap.add_argument("--keyswitch", type=int, metavar="KEY",
+                    help="play a keyswitch note KEY at 0 s, the scenario from 0.3 s (single-file mode)")
     args = ap.parse_args()
     if args.batch:
         if len(args.inputs) != 1:
@@ -361,8 +372,8 @@ def main():
         out_wav = Path(args.inputs[1]).resolve()
         items = [(out_wav.stem, str(Path(args.inputs[0]).resolve()))]
         out_dir = out_wav.parent
-    midi = None if args.batch else Path(args.midi).resolve() if args.midi else write_scenario(args.scenario)
-    manifest = capture(items, out_dir, args.window, midi, SCENARIOS[args.scenario])
+    midi = None if args.batch else Path(args.midi).resolve() if args.midi else write_scenario(args.scenario, args.keyswitch)
+    manifest = capture(items, out_dir, args.window, midi, scenario_notes(args.scenario, args.keyswitch))
     if args.batch:  # merge: a resumed batch keeps the earlier entries
         cj = out_dir / "capture.json"
         merged = json.loads(cj.read_text()) if cj.exists() else {}
