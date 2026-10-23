@@ -308,17 +308,15 @@ impl Translation {
 
     /// An exact shared output must qualify every actually evaluated source,
     /// including Ratio/Depth dependencies, independently of diagnostic dedup.
+    /// A shared output whose modulator has no exact law omits only this route,
+    /// reported once like any other connection; the program still loads.
     pub(crate) fn connect_shared_output(&mut self, connection: Node, out: &mut Modulation) -> Result<(), String> {
         let mut qualification = SourceQualification::default();
         if let Err(gap) = self.try_connect(connection, out, None, &mut qualification)? {
-            let message = format!(
-                "{}: shared output connection has no supported exact modulator program: {} {}",
-                path(connection),
-                gap.feature,
-                gap.detail
-            );
-            self.gap(connection, gap);
-            return Err(message);
+            if self.shared_sources.insert(connection.id()) {
+                self.gap(connection, gap);
+            }
+            return Ok(());
         }
         qualification.require_output(connection)
     }
@@ -1931,8 +1929,9 @@ mod tests {
         // Through a gain (factor law) the product is not separable: reported.
         let nonlinear=r#"<SignalConnection Source="$Program/V" Destination="Gain" Ratio="1"/>"#;
         let ir=translate_connections(lfo,nonlinear,"");
-        let refusal=crate::translate_bank(&normal_xml(lfo,nonlinear,"")).err().expect("a shared unknown nonlinear law must refuse the whole plan").to_string();
-        assert!(refusal.contains("shared output connection has no supported exact modulator program"),"{refusal}");
+        let (loaded,_)=crate::translate_bank(&normal_xml(lfo,nonlinear,"")).expect("a shared unknown nonlinear law omits its route and loads");
+        loaded.validate().unwrap();
+        assert!(loaded.unsupported.iter().any(|u|u.feature=="live LFO depth through a nonlinear connection"),"{:?}",loaded.unsupported);
         assert!(ir.zones[0].routes.is_empty());
         assert_eq!(
             ir.unsupported[0].feature,
@@ -2191,8 +2190,9 @@ mod tests {
         assert_eq!((actual.target,actual.depth),(route.target,route.depth));
         let mixed_sources=format!("{sources}<StepEnvelope Name='B' Bipolar='1' Levels='0'/>");
         let mixed_routes=format!("{valid}<SignalConnection Source='$Program/B' Destination='Gain' Ratio='1'/>");
-        let refusal=crate::translate_bank(&normal_xml(&mixed_sources,&mixed_routes,"")).err().expect("unknown shared output may not publish a partial instrument").to_string();
-        assert!(refusal.contains("shared output connection has no supported exact modulator program"),"{refusal}");
+        let (mixed,_)=crate::translate_bank(&normal_xml(&mixed_sources,&mixed_routes,"")).expect("the unknown shared output is omitted and reported; the program loads");
+        mixed.validate().unwrap();
+        assert!(mixed.unsupported.iter().any(|u|u.location.contains("SignalConnection")),"{:?}",mixed.unsupported);
     }
 
     #[test]

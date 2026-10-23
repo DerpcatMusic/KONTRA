@@ -40,10 +40,7 @@ impl Translation {
             || !pan.is_finite() || !(-1. ..=1.).contains(&pan){return Err(format!("{at}: global outlet scalar outside supported real domain"));}
         let mut modulation=super::modulation::Modulation::default();
         for connection in super::connections(parent).filter(|connection|matches!(connection.attribute("Destination"),Some("Gain"|"Pan"))){
-            let before=self.ir.unsupported.len();self.connect_scoped(connection,&mut modulation)?;
-            if self.ir.unsupported.len()!=before {
-                return Err(format!("{}: global outlet source has no accepted executable law",path(connection)));
-            }
+            self.connect_scoped(connection,&mut modulation)?;
         }
         // This finite source family has a proved default-state controller
         // owner. Note/Script/LFO sources require their actual creator/context
