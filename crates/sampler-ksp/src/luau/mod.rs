@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 pub mod host;
+mod controls;
 #[cfg(test)]
 mod tests;
 
@@ -125,6 +126,15 @@ pub fn check_init(lowered: &Lowered) -> Result<usize, String> {
     if host.texts(lowered.texts) != lowered.init.texts {
         return Err("text cells differ".into());
     }
+    if host.controls() != lowered.init.controls {
+        return Err(format!("controls differ: interpreter {:?}, luau {:?}", lowered.init.controls, host.controls()));
+    }
+    if host.properties() != lowered.init.properties {
+        return Err("control properties differ".into());
+    }
+    if host.text_properties() != lowered.init.text_properties {
+        return Err("control text properties differ".into());
+    }
     let engine: std::collections::BTreeMap<[i64; 4], i64> = lowered
         .init
         .engine
@@ -144,6 +154,8 @@ pub struct Compiled {
     pub source: String,
     /// Constructs outside the subset, by name, with the number of sites.
     pub unsupported: BTreeMap<String, usize>,
+    /// UI controls by index, for the host's control state.
+    pub ui: Vec<controls::UiMeta>,
 }
 
 impl Compiled {
@@ -156,6 +168,7 @@ impl Compiled {
 /// are emitted as no-ops and counted, so the caller decides what to run.
 pub fn compile(hir: &Hir) -> Compiled {
     let mut c = Compiler { hir, out: String::new(), unsupported: BTreeMap::new(), loops: 0 };
+    controls::guard(hir, &mut c.unsupported);
     c.out.push_str(PRELUDE);
     if !hir.functions.is_empty() {
         let names: Vec<String> = (0..hir.functions.len()).map(|i| format!("F{i}")).collect();
@@ -183,7 +196,7 @@ pub fn compile(hir: &Hir) -> Compiled {
         table.push(format!("{key} = cb_{key}"));
     }
     let _ = writeln!(c.out, "return {{ {}, select_note = function(t) NV = t end }}", table.join(", "));
-    Compiled { source: format!("local C, T, NV, HOST = ...\n{}", c.out), unsupported: c.unsupported }
+    Compiled { source: format!("local C, T, NV, HOST = ...\n{}", c.out), unsupported: c.unsupported, ui: controls::meta(hir) }
 }
 
 struct Compiler<'h> {
@@ -315,6 +328,10 @@ impl Compiler<'_> {
         match place {
             Place::Var(var) => {
                 let value = self.coerce(value, ty);
+                if let Home::Control(ui) = self.hir.vars[var.0 as usize].home {
+                    self.line(&format!("HOST.ctl_set({ui}, {value})"));
+                    return;
+                }
                 let target = self.var_target(*var);
                 self.line(&format!("{target} = {value}"));
             }
@@ -354,6 +371,10 @@ impl Compiler<'_> {
         match place {
             Place::Var(var) => {
                 let Some(ty) = self.var_ty(*var) else { return };
+                if let Home::Control(ui) = self.hir.vars[var.0 as usize].home {
+                    self.line(&format!("HOST.ctl_set({ui}, W({} {step}))", Self::ctl_get(ui)));
+                    return;
+                }
                 let target = self.var_target(*var);
                 let next = if ty == Ty::Real { format!("{target} {step}") } else { format!("W({target} {step})") };
                 self.line(&format!("{target} = {next}"));
@@ -401,10 +422,6 @@ impl Compiler<'_> {
     fn var_ty(&mut self, var: VarId) -> Option<Ty> {
         let v = &self.hir.vars[var.0 as usize];
         match v.home {
-            Home::Control(_) => {
-                self.unsupported("ui control");
-                None
-            }
             Home::Note(_) if v.ty == Ty::Str => {
                 self.unsupported("polyphonic text");
                 None
@@ -495,7 +512,7 @@ impl Compiler<'_> {
                 Const::Real(r) => lua_num(*r),
                 Const::Str(s) => lua_str(s),
             },
-            Home::Control(_) => self.unsupported("ui control"),
+            Home::Control(ui) => Self::ctl_get(ui),
             Home::Cells { .. } | Home::Texts { .. } => self.unsupported("whole array value"),
         }
     }
@@ -567,7 +584,10 @@ impl Compiler<'_> {
                 let name = if builtin == Builtin::SetEnginePar { "set_engine_par" } else { "get_engine_par" };
                 format!("HOST.{name}({})", parts.join(", "))
             }
-            other => self.unsupported(&format!("builtin {}", other.name())),
+            other => match self.control_builtin(other, args) {
+                Some(call) => call,
+                None => self.unsupported(&format!("builtin {}", other.name())),
+            },
         }
     }
 }
