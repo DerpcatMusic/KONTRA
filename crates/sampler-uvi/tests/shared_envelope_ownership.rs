@@ -12,16 +12,19 @@ fn xml(sources: &str, program_connections: &str, keygroup_sources: &str, connect
       </Keygroup></Keygroups></Layer></Layers></Program>"#)
 }
 
-fn refused(text: &str) -> String {
-    match sampler_uvi::translate(text, Path::new(".")) {
-        Err(sampler_uvi::Translate::Invalid(reason)) => reason,
-        Err(other) => panic!("expected semantic refusal, got {other}"),
-        Ok(_) => panic!("an unqualified output source was admitted"),
-    }
+/// The UnknownLaw warning a shared output carries when its source has no
+/// exact law: the route is kept per voice, and the program still loads.
+fn approximated_output(text: &str) -> String {
+    let instrument = sampler_uvi::translate(text, Path::new(".")).unwrap().instrument;
+    instrument.validate().unwrap();
+    let warning = instrument.unsupported.iter().find(|u| u.feature == "shared output source")
+        .unwrap_or_else(|| panic!("no shared output warning: {:?}", instrument.unsupported));
+    assert_eq!(warning.reason, ir::Reason::UnknownLaw);
+    warning.value.clone()
 }
 
 fn ahd_boundary(reason: &str) {
-    assert!(reason.contains("shared output source node"), "{reason}");
+    assert!(reason.contains("source node"), "{reason}");
     assert!(reason.ends_with("AHD note-off release is unproved"), "{reason}");
 }
 
@@ -38,7 +41,7 @@ fn ahd_output_qualification_survives_non_output_cache_fill_and_order() {
         ("", format!("{pitch}{gain}")),
         ("", format!("{gain}{pitch}")),
     ] {
-        ahd_boundary(&refused(&xml(source, prefix, "", &connections)));
+        ahd_boundary(&approximated_output(&xml(source, prefix, "", &connections)));
     }
 }
 
@@ -48,7 +51,7 @@ fn cached_ahd_pan_has_the_same_missing_law_as_gain() {
     let pitch = r#"<SignalConnection Source="$Program/Steps" Destination="Pitch" Ratio="0.1"/>"#;
     for destination in ["Gain", "Pan"] {
         let output = format!(r#"<SignalConnection Source="$Program/Steps" Destination="{destination}" Ratio="0.5"/>"#);
-        ahd_boundary(&refused(&xml(source, pitch, "", &output)));
+        ahd_boundary(&approximated_output(&xml(source, pitch, "", &output)));
     }
 }
 
@@ -60,7 +63,7 @@ fn cached_ratio_dependency_cannot_hide_the_ahd_limitation() {
       <Connections><SignalConnection Source="$Program/Steps" Destination="Ratio" Ratio="0.5"/></Connections>
       </SignalConnection>"#;
     for prefix in [pitch, ""] {
-        ahd_boundary(&refused(&xml(source, prefix, "", output)));
+        ahd_boundary(&approximated_output(&xml(source, prefix, "", output)));
     }
 }
 
@@ -112,8 +115,8 @@ fn cached_partial_dahdsr_is_not_requalified_as_a_plain_gate() {
     let pitch = r#"<SignalConnection Source="$Program/Amp" Destination="Pitch" Ratio="0.1"/>"#;
     let output = r#"<SignalConnection Source="$Program/Amp" Destination="Gain" Ratio="1"/>"#;
     for prefix in [pitch, ""] {
-        let reason = refused(&xml(source, prefix, "", output));
-        assert!(reason.contains("shared output source node"), "{reason}");
+        let reason = approximated_output(&xml(source, prefix, "", output));
+        assert!(reason.contains("source node"), "{reason}");
         assert!(reason.ends_with("envelope partial velocity amount is approximated"), "{reason}");
     }
 }
