@@ -375,6 +375,31 @@ KONTRA 0.3.393 brings together a broad set of loading, sound, scripting and edit
 
 ## Unreleased
 
+### 2026-10-01 to 2026-10-23 (main 16f110c11, 436 merged PRs)
+
+Reviewed summary. Status labels follow [ROADMAP.md](ROADMAP.md). "Parity" means a native reference test exists; "approximated" means a documented approximation (UnknownLaw or load-report warning).
+
+- **Kontakt DSP and parity**: Ladder HQ controls and native vectors (#279, #285); Daft and Daft HP kernel (#284, #293, #304); Monark LP2, LP1 and BP at kemu parity (#318, #366); PRO-53 (#307); Dual SKF stereo and multi-rate vectors (#308); Formant I/II control ramps and live lanes (#305); Versatile sweeps (#315); Simple LP/HP driver chain (#292, #310); state-variable res .9 vectors (#290); Kolor shaper cases and dry-path ramp, partial (#410, #414, #417, #419, #422, #462, #470, #471); Gater kernel with kemu vectors (#375); Stereo Tune core bit-exact against kemu vectors (#387); Surround Panner speaker law and block driver, partial (#401, #405, #415, #418, #421); Cry Wah and DStortion parity (#190); Bite live lanes (#397); Chainsaw HM2 probe, still blocked (#376, #385); Kontakt AHDSR times in milliseconds (#476, #479); Wow/Flutter control laws applied, kernel still blocked (#317, #322, #325, #463); Replika mode-1 chain and head kernels, not fully wired (#323, #326, #328, #348, #425, #427, #428).
+- **Kontakt sources and modulation**: Beat and S1200/MP60 machine controls carried in the IR (#100, #176, #223, #253, #258, #286, #297, #319); Time Machine PSOLA fractional period and tempo table (#202, #238); Kontakt envelope laws (#122, #183); external modulation route smoothing and zero-intensity routes (#203, #343); script modulation drives global outputs (#214, #215, #222); Kontakt Stereo Tune and bus amplifier laws (#180, #200).
+- **Kontakt measurement**: native oracle compares authored mapping with Kontakt 8.13.1 (#60, #110, #205); Kontakt wave of parity probes and decompile ledgers (#152, #164, #166, #168, #233, #235).
+- **KSP**: native `find_group` and array-bounds semantics (#261, #355); `$EFFECT_TYPE_*` and `$FILTER_TYPE_*` resolved to measured values (#356, #430, #432, #481); keyswitch articulations migrated to zone selectors (#436); exp2, log2 and log10 (#380); init-only commands promoted to full (#394, #395, #411); `read_persistent_var` full (#406); polyphonic variable scope and initializer semantics pinned (#384, #442); `EVENT_PAR_PLAY_POS` readback (#347); MT19937 start draw (#274); KSP diagnostics per symbol and `.nki` doctor (#379, #399, #81, #267, #270).
+- **Scripting (Luau)**: universal `sampler-script` runtime, phase 1 and 2 (#452, #453); KSP-to-Luau front end, phase 3, differential harness and key-switch builtins (#460, #477, #478, #480, #482, #483, #485, #487). Not the default; 0 of 696 extracted scripts are fully in subset.
+- **UVI**: approximated where the law is unproved: constant property reads (#364), shared-output activation (#374, #473), Frequency attachment (#391, #435), MultiLFO waveforms (#388), program-level LFO (#408), shared-output connections omitted instead of refused (#438); multipart streams and placement (#392, #413, #420); loop end clamped with a warning instead of refused (#423); script-init hot paths trimmed (#440, #445, #446, #454).
+- **Loading, streaming and memory**: oversize resident sources stream under cold fallback (#358); default streamed head budget bounded to the host budget (#294); shared packed sample heads across preset swaps (#259); direct 16-bit WAV frame decode, 23x streamed read (#451); wavetable zones admitted with trailing partial cycles and off-grid starts (#264, #349); resampling covers eight octaves (#212); convolution reports only non-default flags (#118, #189, #360, #441, #449).
+- **Performance tooling**: `sampler-perf` UVI scenario fixed and per-block counters, spike report and audio-thread allocation gate (#443, #444, #447, #464); `perf` counters and capacity sweep; DFD preload zero rule (#365).
+- **Editor, MIDI and platform**: Linux gesture cancellation during X11 grabs fixed (#79); X11 focus clicks kept (#83); part height and popup fixes (#243, #254); MPE bend and per-note sensitivity tests (#281, #333, #334, #337); 96-semitone bend admitted in stale ingress tests (#333).
+- **Corpus and CI**: corpus-health stable diagnostic codes and 0-error gate (#345), split render-thread misses by minor faults and preemption (#365, #437), settled note events before counting stuck voices (#424, #426); nightly keeps only the newest waiting run (#240); shipping examples built with the ci profile (#134); integration test shards (#75); draft PRs skip expensive jobs (#142).
+- **Docs**: one-engine architecture (#96); KSP Luau subset and KSP surface map (#372, #484); Kontakt 8 parity matrix (#152) and per-row status updates (#166, #172, #174, #175, #177, #178, #179, #184, #190, #191, #193, #195, #196, #198, #290); full corpus survey and library gap report (#208, #354, #434).
+
+#### Known limitations (2026-10-23)
+
+- Survey 2026-10-23 (base `3ab06104d`, machine loaded): 1,312 of 1,395 instruments and programs load; 1,297 sound; 1,295 no failure. Kontakt: 682 of 682 single instruments and 53 of 53 multis load; one script compile failure.
+- UVI: 577 of 660 programs loaded in the survey. The 83 refusals (79 SignalConnection, 4 Frequency) were changed to bindings or approximations by #435 and #438, which merged after the survey base; the count needs a re-survey.
+- 15 instruments silent at a covered key (Dolce 10, Pacific Ensemble Strings 5); key 60 may be a probe artifact.
+- Pacific Ensemble Strings "Cluster Risers" moved -23.7 dB against the previous run; not investigated.
+- 300 voices at 1% of the meter is not achieved; the Kontakt and Falcon comparison is not measured.
+- Performance baseline `fbc205f7` (2026-10-07) predates much of the performance work and records 98 audio-thread allocations on the UVI scripted pad scenario; re-measure before claiming zero.
+
 ### Fixed after 0.3.326
 
 - Open protected Falcon and UVI content with the native format implementation.
