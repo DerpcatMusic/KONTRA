@@ -74,6 +74,14 @@ fn legacy_phase(p: f32) -> [f64; 2] {
 /// Kontakt's legacy 4-point Lagrange read of the 4096 ring at float `position`
 /// (0x140aa0510 / 0x140aa2350): points `p-2 .. p+1`, `t = 0` reads `p-1`.
 #[inline(always)]
+/// Catmull-Rom cubic between `y0` and `y1` at fraction `x`, with `ym1` and `y2` the neighbours. The
+/// stereo-tune and UVI legacy readers both use this native operation order.
+pub(super) fn cubic(ym1: f32, y0: f32, y1: f32, y2: f32, x: f32) -> f32 {
+    let a = ((ym1 - y0 * 2.5) + y1 + y1) - y2 * 0.5;
+    let b = (y0 - y1) * 1.5 + (y2 - ym1) * 0.5;
+    ((a + b * x) * x + (y1 - ym1) * 0.5) * x + y0
+}
+
 fn lagrange(slab: &[[f64; 2]], position: f32, c: usize) -> f32 {
     let whole = position as u32;
     let t = position - whole as f32;
