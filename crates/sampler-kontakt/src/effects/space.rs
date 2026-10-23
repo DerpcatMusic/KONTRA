@@ -82,12 +82,14 @@ pub(super) fn convolution(
             NotModeled,
         ));
     }
-    // Saved flags [2] and [3] have no shaping law here; say so rather than drop them.
-    if c.flags[2] {
-        notes.push(("IR preserve length".into(), "on: Kontakt keeps the response's full length under its IR size control; that resize path is not modeled".into(), NotModeled));
+    // Defaults (census of 633 factory presets, #441): Preserve Length on,
+    // latency compensation on (bypass off). Only the non-default states need
+    // a note; the engine's full-length, zero-latency path is the default one.
+    if !c.flags[2] {
+        notes.push(("IR preserve length".into(), "off (default on): Kontakt resizes the response on the S.Rate path (IR rate (int)(file_rate/S.Rate), 0x140ab5e00); that path is not modeled, the full response is used".into(), NotModeled));
     }
     if c.flags[3] {
-        notes.push(("IR latency compensation bypass".into(), "on: the host latency report for this convolution is not modeled; the engine is zero-latency".into(), NotModeled));
+        notes.push(("IR latency compensation bypass".into(), "on (default off): Kontakt leaves the convolution's partition latency uncompensated; the engine is zero-latency, so the wet path stays aligned with dry and this state is not modeled".into(), NotModeled));
     }
     let left: Vec<f32> = frames.iter().map(|f| f[0]).collect();
     let right: Vec<f32> = frames.iter().map(|f| f[1]).collect();
@@ -311,33 +313,44 @@ mod tests {
     }
 
     #[test]
-    fn convolution_reports_unmodeled_length_and_latency_flags() {
+    fn convolution_reports_only_non_default_length_and_latency_flags() {
         let c = Convolution {
             decimation: 1.0,
             predelay_ms: 0.0,
             early: [1.0, 20.0, 20_000.0],
             late: [1.0, 20.0, 20_000.0],
             xpoint: -1.0,
-            flags: [false, false, true, true, false],
+            flags: [false, false, true, false, false],
             curve_x: vec![],
             curve_db: vec![],
             ir_index: 0,
         };
         let (mut store, mut recipes) = (Vec::new(), None);
         let mut load = |_| Ok((48_000u32, vec![[1.0f32, 0.5]; 4]));
+        let request = ImpulseRequest { index: 0, address: sampler_ir::SlotAddress { group: -1, slot: -1, generic: -1 } };
+        // Factory default: Preserve Length on, compensation on. No diagnostic.
         let mut notes = Notes::new();
         let mut impulses = Impulses { store: &mut store, recipes: recipes.as_mut(), load: &mut load };
-        let request = ImpulseRequest { index: 0, address: sampler_ir::SlotAddress { group: -1, slot: -1, generic: -1 } };
         convolution(&c, request, &mut impulses, &mut notes).unwrap();
-        let names: Vec<&str> = notes.iter().map(|n| n.0.as_str()).collect();
-        assert_eq!(names, ["IR preserve length", "IR latency compensation bypass"]);
-        assert!(notes.iter().all(|n| n.2 == NotModeled));
-        // Off flags stay silent.
-        let quiet = Convolution { flags: [false; 5], ..c };
+        assert!(notes.is_empty(), "{:?}", notes.iter().map(|n| &n.0).collect::<Vec<_>>());
+        // Non-default: Preserve Length off names the flag and its state.
+        let off = Convolution { flags: [false, false, false, false, false], ..c.clone() };
         let mut notes = Notes::new();
         let mut impulses = Impulses { store: &mut store, recipes: None, load: &mut load };
-        convolution(&quiet, request, &mut impulses, &mut notes).unwrap();
-        assert!(notes.is_empty());
+        convolution(&off, request, &mut impulses, &mut notes).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].0, "IR preserve length");
+        assert!(notes[0].1.starts_with("off (default on)"), "{}", notes[0].1);
+        assert_eq!(notes[0].2, NotModeled);
+        // Non-default: latency compensation bypass on names the flag and its state.
+        let bypass = Convolution { flags: [false, false, true, true, false], ..c };
+        let mut notes = Notes::new();
+        let mut impulses = Impulses { store: &mut store, recipes: None, load: &mut load };
+        convolution(&bypass, request, &mut impulses, &mut notes).unwrap();
+        let names: Vec<&str> = notes.iter().map(|n| n.0.as_str()).collect();
+        assert_eq!(names, ["IR latency compensation bypass"]);
+        assert!(notes[0].1.starts_with("on (default off)"), "{}", notes[0].1);
+        assert_eq!(notes[0].2, NotModeled);
     }
 
     #[test]
