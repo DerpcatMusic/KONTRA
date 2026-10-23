@@ -4268,6 +4268,13 @@ name = "sampler-pool"
 version = "0.1.0"
 
 [[package]]
+name = "sampler-script"
+version = "0.1.0"
+dependencies = [
+ "mlua",
+]
+
+[[package]]
 name = "sampler-simd"
 version = "0.1.0"
 
@@ -4294,6 +4301,7 @@ dependencies = [
  "sampler-kontakt",
  "sampler-midi",
  "sampler-parity",
+ "sampler-script",
  "sampler-ui-ir",
  "serde",
  "serde_json",
