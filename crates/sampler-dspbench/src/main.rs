@@ -47,6 +47,9 @@ fn main() {
                 let mut r = match pair {
                     "filter-lp2" => pairs::filter::run(&band, ours, cand, rate, block, fit),
                     "limiter" => pairs::limiter::run(&band, ours, cand.expect("limiter candidate"), rate, block),
+                    "eq-bell" => pairs::eq::run(&band, ours, cand, rate, block, fit),
+                    "oversampler" => pairs::oversampler::run(&band, ours, cand, rate, block),
+                    "compressor" => pairs::compressor::run(&band, ours, cand, rate, block),
                     _ => unreachable!(),
                 };
                 if perf {

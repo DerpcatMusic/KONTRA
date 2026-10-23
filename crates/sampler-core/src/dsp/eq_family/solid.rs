@@ -266,7 +266,7 @@ fn orfanidis(w0: f64, gl: f64, gb: f64, dw: f64) -> Coefficients {
     normalize(m + a, [n + b, (g1 - w2) * -2., n - b, (1. - w2) * -2., m - a])
 }
 
-fn peak(fs: f64, f: f64, g: f64, q: f64) -> Coefficients {
+pub(crate) fn peak(fs: f64, f: f64, g: f64, q: f64) -> Coefficients {
     if !(f > f64::EPSILON) || !(g.abs() > f64::EPSILON) {
         return IDENTITY;
     }
@@ -304,7 +304,7 @@ fn angle(fs: f64, f: f64) -> (f64, f64, f64) {
 }
 
 /// RBJ high shelf with slope `slope` (0x141abee60).
-fn high_shelf(fs: f64, f: f64, g: f64, slope: f64) -> Coefficients {
+pub(crate) fn high_shelf(fs: f64, f: f64, g: f64, slope: f64) -> Coefficients {
     let a = 10f64.powf(g * 0.025);
     if f == 0. {
         return IDENTITY;
@@ -321,7 +321,7 @@ fn high_shelf(fs: f64, f: f64, g: f64, slope: f64) -> Coefficients {
 }
 
 /// RBJ low shelf with slope `slope` (0x141ac3480).
-fn low_shelf(fs: f64, f: f64, g: f64, slope: f64) -> Coefficients {
+pub(crate) fn low_shelf(fs: f64, f: f64, g: f64, slope: f64) -> Coefficients {
     let a = 10f64.powf(g * 0.025);
     if f == 0. {
         return IDENTITY;

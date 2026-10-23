@@ -2,7 +2,8 @@
 //! Each wrapper drives the engine's own code path, so the bench measures what ships.
 
 use crate::dsp::filter::cascade::{Cascade, CascadeSettings};
-use crate::dsp::{BLOCK, Parameter, Planar};
+use crate::dsp::{BLOCK, Planar};
+pub use crate::dsp::Parameter;
 
 pub use crate::dsp::db_limiter::DbLimiter;
 pub use crate::dsp::filter::cascade::Legacy;
@@ -84,3 +85,55 @@ impl Resampler {
             .collect()
     }
 }
+
+/// Solid G-EQ section designers (the bell and shelf biquads Kontakt's G-EQ uses).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SolidShape {
+    Peak,
+    LowShelf,
+    HighShelf,
+}
+
+/// Our Solid G-EQ section at `fs`: normalised `[b0, b1, b2, a1, a2]`. `gain_db` is the section
+/// gain; `q_or_slope` is Q for the peak and the shelf slope for the shelves.
+pub fn solid_section(shape: SolidShape, fs: f64, freq_hz: f64, gain_db: f64, q_or_slope: f64) -> [f64; 5] {
+    use crate::dsp::eq_family::solid;
+    match shape {
+        SolidShape::Peak => solid::peak(fs, freq_hz, gain_db, q_or_slope),
+        SolidShape::LowShelf => solid::low_shelf(fs, freq_hz, gain_db, q_or_slope),
+        SolidShape::HighShelf => solid::high_shelf(fs, freq_hz, gain_db, q_or_slope),
+    }
+}
+
+/// Our 2x half-band oversampler path (`hiir`, the color/drive design: 20 kHz edge, 78 dB).
+pub struct HalfBand {
+    hiir: crate::dsp::hiir::Hiir,
+    state: crate::dsp::hiir::HiirState,
+    scratch: Vec<f32>,
+}
+
+impl HalfBand {
+    pub fn new(rate: f32) -> Self {
+        Self { hiir: crate::dsp::hiir::Hiir::new(rate, 20_000.0, 78.0), state: Default::default(), scratch: Vec::new() }
+    }
+
+    /// `input` (n frames) to `out` (2n frames), 2x upsampled.
+    pub fn up(&mut self, input: &[f32], out: &mut [f32]) {
+        if self.scratch.len() < out.len() {
+            self.scratch.resize(out.len(), 0.0);
+        }
+        self.hiir.up(&mut self.state, input, 1, out, &mut self.scratch);
+    }
+
+    /// `input` (2n frames, consumed) to `out` (n frames), back at the base rate.
+    pub fn down(&mut self, input: &mut [f32], out: &mut [f32]) {
+        self.hiir.down(&mut self.state, input, 1, out);
+    }
+}
+
+/// Generic (textbook) compressor and limiter settings, driven through the engine's dynamics stage.
+pub use crate::dsp::dynamics::DynamicsSettings;
+pub use crate::dsp::dynamics::bench::Stage as DynamicsStage;
+pub use sampler_ir::fx::dynamics::{Detector, Direction, Generic, Law as DynamicsLaw, Link, Topology};
+pub use sampler_ir::units::Time;
+
