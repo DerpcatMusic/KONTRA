@@ -745,8 +745,13 @@ pub fn unsupported_engine_parameter(name: &str) -> bool {
         && is_vendor_constant(&format!("${name}"))
 }
 
-/// `$EFFECT_TYPE_*` and `$FILTER_TYPE_*` values, the native constants Kontakt 8.13.1
-/// registers (`module_types.tsv`, read from the PE's constant registrations).
+/// `$EFFECT_TYPE_*` values, the native constants Kontakt 8.13.1 registers
+/// (`module_types.tsv`, read from the PE's constant registrations).
+/// `$FILTER_TYPE_*` is left out on purpose: those PE values are not the subtype ids
+/// `set_engine_par(EFFECT_SUBTYPE)` stores (`docs/re/kontakt-bindings/filter-type-ids.tsv`).
+/// Resolving them makes Conflux 'Dark Context' init take another branch that cuts the
+/// rest of `on init` (peak -11.9 -> -56.6 dBFS). ponytail: resolve filter names from
+/// filter-type-ids.tsv once that cut is fixed.
 fn module_types() -> &'static std::collections::HashMap<&'static str, i32> {
     static TYPES: std::sync::OnceLock<std::collections::HashMap<&'static str, i32>> =
         std::sync::OnceLock::new();
@@ -756,6 +761,7 @@ fn module_types() -> &'static std::collections::HashMap<&'static str, i32> {
             .skip(1)
             .filter_map(|line| {
                 let (name, value) = line.split_once('\t')?;
+                (!name.starts_with("$FILTER_TYPE_")).then_some(())?;
                 Some((name, value.parse().ok()?))
             })
             .collect()
@@ -997,8 +1003,8 @@ mod tests {
         assert_eq!(constant("$EFFECT_TYPE_NONE"), Some(0x26e));
         assert_eq!(constant("$EFFECT_TYPE_COMPRESSOR"), Some(0x26f));
         assert_eq!(constant("$EFFECT_TYPE_BITE"), Some(0x299));
-        assert_eq!(constant("$FILTER_TYPE_DAFT_LP"), Some(0x2e6));
-        assert_eq!(constant("$FILTER_TYPE_AR_HP24"), Some(0x2f2));
+        // Filter names stay opaque: their PE values are not stored subtype ids.
+        assert_eq!(constant("$FILTER_TYPE_DAFT_LP"), None);
         // Not a module type: no value is invented for an unknown name.
         assert_eq!(constant("$EFFECT_TYPE_NOT_A_MODULE"), None);
     }
