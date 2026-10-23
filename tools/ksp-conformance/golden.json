@@ -1,0 +1,218 @@
+{
+ "arith_abs": {
+  "results": [
+   2147483647,
+   5
+  ]
+ },
+ "arith_add_wrap": {
+  "results": [
+   -2147483648
+  ]
+ },
+ "arith_div_trunc_pos": {
+  "results": [
+   3,
+   -3
+  ]
+ },
+ "arith_mod_negneg": {
+  "results": [
+   -1
+  ]
+ },
+ "arith_mod_signs": {
+  "results": [
+   -1,
+   1
+  ]
+ },
+ "arith_mul_neg": {
+  "results": [
+   -2147479015
+  ]
+ },
+ "arith_mul_wrap": {
+  "results": [
+   0
+  ]
+ },
+ "arith_neg_min": {
+  "results": [
+   -2147483648,
+   2147483647
+  ]
+ },
+ "arith_precedence__0": {
+  "results": [
+   14,
+   5
+  ]
+ },
+ "arith_precedence__1": {
+  "results": [
+   2
+  ]
+ },
+ "arith_sub_wrap": {
+  "results": [
+   2147483647
+  ]
+ },
+ "array_init_list": {
+  "results": [
+   20,
+   20
+  ]
+ },
+ "array_num_elements": {
+  "results": [
+   9
+  ]
+ },
+ "array_out_of_bounds_read": {
+  "results": [
+   0
+  ]
+ },
+ "array_out_of_bounds_write": {
+  "results": [
+   3
+  ]
+ },
+ "array_store_load": {
+  "results": [
+   21,
+   0
+  ]
+ },
+ "function_nested_call": {
+  "results": [
+   0
+  ]
+ },
+ "function_updates_global": {
+  "results": [
+   0
+  ]
+ },
+ "incdec_sequence": {
+  "results": [
+   6
+  ]
+ },
+ "incdec_wrap": {
+  "results": [
+   -2147483648
+  ]
+ },
+ "logic_and_or": {
+  "results": [
+   0,
+   0
+  ]
+ },
+ "logic_compare": {
+  "results": [
+   1,
+   0
+  ]
+ },
+ "logic_in_range": {
+  "results": [
+   1,
+   0
+  ]
+ },
+ "logic_not": {
+  "results": [
+   0,
+   0
+  ]
+ },
+ "logic_vars": {
+  "results": [
+   0,
+   0
+  ]
+ },
+ "logic_vars_2": {
+  "results": [
+   0,
+   0
+  ]
+ },
+ "loop_count": {
+  "results": [
+   45,
+   10
+  ]
+ },
+ "loop_nested": {
+  "results": [
+   12
+  ]
+ },
+ "real_add_exact": {
+  "results": [
+   5
+  ]
+ },
+ "real_div_mixed": {
+  "results": [
+   3,
+   7
+  ]
+ },
+ "real_int_real_exact": {
+  "results": [
+   16777217
+  ]
+ },
+ "real_round_down": {
+  "results": [
+   0
+  ]
+ },
+ "real_round_half": {
+  "results": [
+   3,
+   -3
+  ]
+ },
+ "real_to_int_big": {
+  "results": [
+   2147483647
+  ]
+ },
+ "real_to_int_trunc": {
+  "results": [
+   3,
+   -3
+  ]
+ },
+ "shift_left_31": {
+  "results": [
+   -2147483648,
+   -1073741824
+  ]
+ },
+ "shift_right_negative": {
+  "results": [
+   -4,
+   -1
+  ]
+ },
+ "shift_right_positive": {
+  "results": [
+   125,
+   1000
+  ]
+ },
+ "type_real_to_int_assign": {
+  "results": [
+   0,
+   0
+  ]
+ }
+}
