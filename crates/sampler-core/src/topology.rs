@@ -134,7 +134,8 @@ impl Prepared {
                 ||route.invert||route.shape.is_some()||route.scale.is_some()||route.more_scales.iter().any(Option::is_some)
                 ||route.lag!=0||route.live_gain!=1.||route.unipolar
                 ||program.controls.iter().any(|(row,_)|*row==gate.route)
-                ||matches!(gate.velocity,crate::VelocityCurve::Power(p)if !p.is_finite()||p<=0.){return Err(Error::InvalidInput);}
+                ||matches!(gate.velocity,crate::VelocityCurve::Power(p)if !p.is_finite()||p<=0.)
+                ||matches!(gate.velocity,crate::VelocityCurve::Depth{depth,exponent}if !(0.0..=1.0).contains(&depth)||!exponent.is_finite()||exponent<=0.){return Err(Error::InvalidInput);}
         }
         let parameter_bytes=self.processing_parameter_preparation_bytes(&programs,&scopes)?;
         let mut preparation_bytes=parameter_bytes.checked_add(crate::voice_mod::VoiceModulation::scoped_preparation_bytes(&programs,programs.capacity(),&scopes,scopes.capacity())?).ok_or(Error::Capacity)?
@@ -536,7 +537,7 @@ impl Runtime {
         }
         if phase==ProcessingModulationPhase::Commit{
             if let Some(gate)=generation.prepared.processing_scopes[owner.template].modulation_gate{
-                let factor=match gate.velocity{crate::VelocityCurve::Constant=>1.,crate::VelocityCurve::Linear=>inputs.velocity,crate::VelocityCurve::Power(p)=>inputs.velocity.powf(p),crate::VelocityCurve::VolumeTable=>f64::from(crate::prepare::volume_table_amplitude(inputs.velocity))};
+                let factor=match gate.velocity{crate::VelocityCurve::Constant=>1.,crate::VelocityCurve::Linear=>inputs.velocity,crate::VelocityCurve::Power(p)=>inputs.velocity.powf(p),crate::VelocityCurve::VolumeTable=>f64::from(crate::prepare::volume_table_amplitude(inputs.velocity)),crate::VelocityCurve::Depth{depth,exponent}=>{let v=inputs.velocity.clamp(0.,1.);if v<=0.{0.}else{(1.-depth)+depth*v.powf(exponent)}}};
                 ramp.from.scalar_gain*=factor;ramp.to.scalar_gain*=factor;
             }
             // Only the lanes the previous projection wrote differ from the base; restoring

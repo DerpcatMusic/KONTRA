@@ -822,7 +822,7 @@ impl Instrument {
                     ||!matches!(self.modulators[gate.source.0].source,crate::ModulationSource::Envelope(_))
                     ||self.modulators[gate.source.0].scope!=crate::Scope::Voice
                     ||self.source_indices.route_controls.iter().any(|row|row.0==gate.route)
-                    ||matches!(gate.velocity,crate::VelocityResponse::Power(p)if !p.is_finite()||p<=0.){return Err(invalid("source gate requires exact actual plain amplitude source/route"));}
+                    ||matches!(gate.velocity,crate::VelocityResponse::Power(p)if !p.is_finite()||p<=0.)||matches!(gate.velocity,crate::VelocityResponse::Depth{depth,exponent}if !(0.0..=1.0).contains(&depth)||!exponent.is_finite()||exponent<=0.){return Err(invalid("source gate requires exact actual plain amplitude source/route"));}
             }
             if let Some(chain) = recipe.chain { check.exists(Reference::Chain(chain.0))?; }
             if let Some(amplitude) = recipe.amplitude { check.exists(Reference::Modulator(amplitude.0))?; }

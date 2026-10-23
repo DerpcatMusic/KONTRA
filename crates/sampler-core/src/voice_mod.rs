@@ -537,7 +537,8 @@ impl VoiceModulation {
                     ||route.invert||route.shape.is_some()||route.scale.is_some()||route.more_scales.iter().any(Option::is_some)
                     ||route.lag!=0||route.live_gain!=1.||route.unipolar
                     ||program.controls.iter().any(|(row,_)|*row==gate.route)
-                    ||matches!(gate.velocity,crate::VelocityCurve::Power(p)if !p.is_finite()||p<=0.){return Err(Error::InvalidInput);}
+                    ||matches!(gate.velocity,crate::VelocityCurve::Power(p)if !p.is_finite()||p<=0.)
+                    ||matches!(gate.velocity,crate::VelocityCurve::Depth{depth,exponent}if !(0.0..=1.0).contains(&depth)||!exponent.is_finite()||exponent<=0.){return Err(Error::InvalidInput);}
             }
         }Ok(())
     }
