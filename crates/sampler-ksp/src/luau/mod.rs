@@ -14,6 +14,7 @@ use std::fmt::Write;
 
 pub mod host;
 mod controls;
+mod pgs;
 #[cfg(test)]
 mod tests;
 
@@ -178,6 +179,15 @@ fn compare(host: &host::Host, lowered: &Lowered, expected: &crate::eval::Initial
     if host.engine() != engine {
         return Err("engine writes differ".into());
     }
+    if host.pgs() != expected.model.pgs {
+        return Err(format!("PGS keys differ: interpreter {:?}, luau {:?}", expected.model.pgs, host.pgs()));
+    }
+    if host.pgs_text() != expected.model.pgs_text {
+        return Err("PGS text keys differ".into());
+    }
+    if host.title() != expected.model.interface.title {
+        return Err(format!("script title differs: interpreter {:?}, luau {:?}", expected.model.interface.title, host.title()));
+    }
     Ok(luau.len())
 }
 
@@ -206,6 +216,7 @@ pub fn compile(hir: &Hir) -> Compiled {
     let mut c = Compiler { hir, out: String::new(), unsupported: BTreeMap::new(), loops: 0, loops_seen: false, ui_id: None };
     controls::guard(hir, &mut c.unsupported);
     c.out.push_str(PRELUDE);
+    c.out.push_str(pgs::PRELUDE);
     c.out.push_str("local CB = {}\n");
     c.out.push_str("local SEP, GEP = HOST.set_engine_par, HOST.get_engine_par\n");
     if !hir.functions.is_empty() {
@@ -249,6 +260,7 @@ pub fn compile(hir: &Hir) -> Compiled {
     c.out.push_str("local function RUNNER(f, t, n, v)\n  while true do\n    NV = t\n    f(n, v)\n    f, t, n, v = coroutine.yield(-1)\n  end\nend\n");
     let _ = writeln!(c.out, "CB.select_note = function(t) NV = t end");
     let _ = writeln!(c.out, "CB.runner = RUNNER");
+    let _ = writeln!(c.out, "CB.pgs, CB.pgs_text, CB.model = PGS, PGS_TEXT, MODEL");
     let _ = writeln!(c.out, "return CB");
     let has_loops = c.loops_seen;
     Compiled { source: format!("local C, T, NV, HOST = ...\n{}", c.out), unsupported: c.unsupported, has_loops, ui: controls::meta(hir) }
@@ -717,7 +729,7 @@ impl Compiler<'_> {
                 let name = if builtin == Builtin::SetEnginePar { "SEP" } else { "GEP" };
                 format!("{name}({})", parts.join(", "))
             }
-            other => match self.control_builtin(other, args) {
+            other => match self.control_builtin(other, args).or_else(|| self.pgs_builtin(other, args)) {
                 Some(call) => call,
                 None => self.unsupported(&format!("builtin {}", other.name())),
             },
