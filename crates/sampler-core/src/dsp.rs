@@ -1790,6 +1790,10 @@ pub(super) struct DspState {
     pub channel_work: Slab<f32>,
     pub channel_mix: Slab<f32>,
     pub parameters: Box<[ControlRamp]>,
+    /// Projection mirror for processing owners: equals `parameters` except the lanes in
+    /// `owner_parameter_dirty`, which the last owner projection wrote.
+    pub owner_parameters: Box<[ControlRamp]>,
+    pub owner_parameter_dirty: Vec<usize>,
     pub modulated_parameters: Slab<ControlRamp>,
     pub delay_samples: Slab<[f64; 2]>,
     /// Filter coefficient caches, one per render lane. Lane 0 is the audio
@@ -1908,6 +1912,8 @@ impl DspState {
                 )
             },
             parameters: control::initial_parameters(plan, &plan.dsp_bindings),
+            owner_parameters: control::initial_parameters(plan, &plan.dsp_bindings),
+            owner_parameter_dirty: Vec::with_capacity(plan.processing_scopes.iter().map(|scope| scope.parameters.len() + 2).max().unwrap_or(0)),
             buses: crate::bus::BusState::new(plan)?,
             feeds: allocate(feeds)?,
             trace: plan
@@ -1996,6 +2002,11 @@ impl DspState {
         delays.as_mut_slice()[..n].swap_with_slice(self.delay_samples.as_mut_slice());
         std::mem::swap(&mut self.delay_samples, delays);
         self.voices = voices;
+    }
+    /// Return the projection mirror to the base bank: only the lanes the last
+    /// owner projection wrote can differ. Render side: no allocation.
+    pub(crate) fn restore_owner_parameters(&mut self) {
+        control::restore_lanes(&mut self.owner_parameters, &self.parameters, &mut self.owner_parameter_dirty);
     }
     /// Make sure there is a filter cache for each of `lanes` render lanes.
     /// Control side: allocates.
