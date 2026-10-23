@@ -295,7 +295,7 @@ Outer loop over the `n` samples (`arg4`, `[var_24h]`), inner loop over channels 
    - `*(+0x9400)` is multiplied **only for modes 2 and 5** (`cmp ecx,2 / cmp ecx,5`, `14197a620`). Its writer is `FUN_141977ca0` (`0141970000.c:6480`, knob at `core+0x68` = knob 3 = **drive**): `+0x7d4 = d*d*C + D`, `+0x7d8 = 1/sqrt(+0x7d4)`, `+0x9400 = 1 - d*K` for `d <= +0x30`, else `0.5`. So the modes 2/5 "post multiplier" is a drive-driven gain, not a biquad.
    - Mode 4 (`cmp ecx,4`) runs an extra section on `+0x9568`-stride state `-0x138..-0x158` (before the bank below).
 6. Bank: sections at `core+0x9484` (`+0x24` per channel) and `core+0x9670` (`+0x40` per channel), and `core+0x9708` (`+0x34` per channel), each a zero-delay one-pole/biquad with coefficients laid out as in prepare.
-7. Output for channel `k`: `out_k[n] = bank * (1 - wet) + dry * wet`, with `wet = core+0x78` (knob 7). Then the level detector: `+0x9748` follows `|+0x7cc..|` with attack `+0x9754` or release `+0x9758`, chosen by comparison; the value is also stored at `+0x7d0`. Consumer of `+0x7d0` not yet found.
+7. Output for channel `k` is written to `out_k[n]` after a mix with the dry input through `wet = core+0x78` (knob 7). The exact mix formula is **not verified** (read by eye only). Then a level detector: `+0x9748` is updated with `+0x9754` (attack) or `+0x9758` (release), chosen by comparison, and stored at `+0x7d0`. Consumer of `+0x7d0` not found.
 
 **Prepare `141979410`** (rate `xmm1`, stored in `xmm8`): fills coefficient blocks from the rate with `tan`-style
 pre-warp via helper `14195c0f0` (183 B, a copy-then-scale helper). Loops: `+0x9404` (6 sections, `0x30` stride, `rsi`
