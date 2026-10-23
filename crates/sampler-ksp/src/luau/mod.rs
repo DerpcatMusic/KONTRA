@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 pub mod host;
+mod controls;
 #[cfg(test)]
 mod tests;
 
@@ -132,6 +133,15 @@ pub fn check_init(lowered: &Lowered) -> Result<usize, String> {
     if host.texts(lowered.texts) != lowered.init.texts {
         return Err("text cells differ".into());
     }
+    if host.controls() != lowered.init.controls {
+        return Err(format!("controls differ: interpreter {:?}, luau {:?}", lowered.init.controls, host.controls()));
+    }
+    if host.properties() != lowered.init.properties {
+        return Err("control properties differ".into());
+    }
+    if host.text_properties() != lowered.init.text_properties {
+        return Err("control text properties differ".into());
+    }
     let engine: std::collections::BTreeMap<[i64; 4], i64> = lowered
         .init
         .engine
@@ -153,6 +163,8 @@ pub struct Compiled {
     pub unsupported: BTreeMap<String, usize>,
     /// Some callback or function contains a `while` loop: the native-code opt-in.
     pub has_loops: bool,
+    /// UI controls by index, for the host's control state.
+    pub ui: Vec<controls::UiMeta>,
 }
 
 impl Compiled {
@@ -165,6 +177,7 @@ impl Compiled {
 /// are emitted as no-ops and counted, so the caller decides what to run.
 pub fn compile(hir: &Hir) -> Compiled {
     let mut c = Compiler { hir, out: String::new(), unsupported: BTreeMap::new(), loops: 0, loops_seen: false };
+    controls::guard(hir, &mut c.unsupported);
     c.out.push_str(PRELUDE);
     c.out.push_str("local SEP, GEP = HOST.set_engine_par, HOST.get_engine_par\n");
     if !hir.functions.is_empty() {
@@ -197,7 +210,7 @@ pub fn compile(hir: &Hir) -> Compiled {
     c.out.push_str("local function RUNNER(f, t, n, v)\n  while true do\n    NV = t\n    f(n, v)\n    f, t, n, v = coroutine.yield(-1)\n  end\nend\n");
     let _ = writeln!(c.out, "return {{ {}, select_note = function(t) NV = t end, runner = RUNNER }}", table.join(", "));
     let has_loops = c.loops_seen;
-    Compiled { source: format!("local C, T, NV, HOST = ...\n{}", c.out), unsupported: c.unsupported, has_loops }
+    Compiled { source: format!("local C, T, NV, HOST = ...\n{}", c.out), unsupported: c.unsupported, has_loops, ui: controls::meta(hir) }
 }
 
 struct Compiler<'h> {
@@ -409,6 +422,10 @@ impl Compiler<'_> {
         match place {
             Place::Var(var) => {
                 let value = self.coerce(value, ty);
+                if let Home::Control(ui) = self.hir.vars[var.0 as usize].home {
+                    self.line(&format!("HOST.ctl_set({ui}, {value})"));
+                    return;
+                }
                 let target = self.var_target(*var);
                 self.line(&format!("{target} = {value}"));
             }
@@ -446,6 +463,10 @@ impl Compiler<'_> {
         match place {
             Place::Var(var) => {
                 let Some(ty) = self.var_ty(*var) else { return };
+                if let Home::Control(ui) = self.hir.vars[var.0 as usize].home {
+                    self.line(&format!("HOST.ctl_set({ui}, W({} {step}))", Self::ctl_get(ui)));
+                    return;
+                }
                 let target = self.var_target(*var);
                 let next = if ty == Ty::Real { format!("{target} {step}") } else { wrap(&format!("{target} {step}")) };
                 self.line(&format!("{target} = {next}"));
@@ -491,10 +512,6 @@ impl Compiler<'_> {
     fn var_ty(&mut self, var: VarId) -> Option<Ty> {
         let v = &self.hir.vars[var.0 as usize];
         match v.home {
-            Home::Control(_) => {
-                self.unsupported("ui control");
-                None
-            }
             Home::Note(_) if v.ty == Ty::Str => {
                 self.unsupported("polyphonic text");
                 None
@@ -579,7 +596,7 @@ impl Compiler<'_> {
                 Const::Real(r) => lua_num(*r),
                 Const::Str(s) => lua_str(s),
             },
-            Home::Control(_) => self.unsupported("ui control"),
+            Home::Control(ui) => Self::ctl_get(ui),
             Home::Cells { .. } | Home::Texts { .. } => self.unsupported("whole array value"),
         }
     }
@@ -653,7 +670,10 @@ impl Compiler<'_> {
                 let name = if builtin == Builtin::SetEnginePar { "SEP" } else { "GEP" };
                 format!("{name}({})", parts.join(", "))
             }
-            other => self.unsupported(&format!("builtin {}", other.name())),
+            other => match self.control_builtin(other, args) {
+                Some(call) => call,
+                None => self.unsupported(&format!("builtin {}", other.name())),
+            },
         }
     }
 }

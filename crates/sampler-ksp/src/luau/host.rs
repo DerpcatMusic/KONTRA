@@ -4,10 +4,10 @@
 //! micro-frame carry is kept per callback), so timing does not depend on how the
 //! caller splits its render blocks.
 
-use super::Compiled;
-use mlua::{Function, Lua, Table, Thread, VmState};
+use super::{Compiled, controls};
+use mlua::{Function, Lua, MultiValue, Table, Thread, Value, VmState};
 use sampler_script::{Budget, Jit, cache_dir, cached_bytecode, new_vm_with};
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{cell::RefCell, collections::{BTreeMap, HashMap}, rc::Rc};
 
 /// Checkpoints one callback may spend before it is aborted (deterministic, not timed).
 const CALLBACK_CHECKPOINTS: u64 = 1_000_000;
@@ -48,6 +48,7 @@ pub struct Host {
     seq: u64,
     queue: BTreeMap<(u64, u64), Job>,
     engine: Rc<RefCell<BTreeMap<[i64; 4], i64>>>,
+    controls: Rc<RefCell<controls::State>>,
     budget: Rc<Budget>,
 }
 
@@ -92,6 +93,9 @@ impl Host {
             .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
+        let ui_state = Rc::new(RefCell::new(controls::State::new(&compiled.ui)));
+        let ui_meta: Rc<[controls::UiMeta]> = compiled.ui.clone().into();
+        controls::install(&lua, &host, &ui_state, &ui_meta)?;
         let cell_table = lua.create_table().map_err(|e| e.to_string())?;
         for i in 1..=i64::from(cells) {
             cell_table.raw_set(i, 0.0).map_err(|e| e.to_string())?;
@@ -130,6 +134,7 @@ impl Host {
             seq: 0,
             queue: BTreeMap::new(),
             engine,
+            controls: ui_state,
             budget,
         })
     }
@@ -264,6 +269,21 @@ impl Host {
     /// Script text cells.
     pub fn texts(&self, count: u32) -> Vec<String> {
         (1..=i64::from(count)).map(|i| self.texts.raw_get::<String>(i).unwrap_or_default()).collect()
+    }
+
+    /// Control values by UI index (`Initial::controls`).
+    pub fn controls(&self) -> Vec<i32> {
+        self.controls.borrow().controls.clone()
+    }
+
+    /// Integer `$CONTROL_PAR_*` mirror (`Initial::properties`).
+    pub fn properties(&self) -> HashMap<(i32, i32), i32> {
+        self.controls.borrow().properties.clone()
+    }
+
+    /// Text `$CONTROL_PAR_*` mirror (`Initial::text_properties`).
+    pub fn text_properties(&self) -> HashMap<(i32, i32), String> {
+        self.controls.borrow().text.clone()
     }
 
     /// `set_engine_par` writes, keyed `[parameter, group, slot, generic]`.
