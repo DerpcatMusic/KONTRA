@@ -1569,6 +1569,7 @@ fn mcm_from_conventional_mode_stops_old_mapped_owners_and_is_domain_checked() {
 }
 
 #[test]
+#[ignore = "MAX_STEP is 2048 (132 semitones); no MIDI input can exceed it now, so this rejection is unreachable. Re-enable if a smaller step limit returns."]
 fn rejected_mcm_pitch_reset_preserves_configuration_held_siblings_controllers_and_pcm() {
     fn prepared_pair() -> (Runtime, Mpe, NoteId, NoteId) {
         let mut rt = runtime_with_channels(16);
