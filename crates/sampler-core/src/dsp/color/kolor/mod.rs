@@ -11,7 +11,8 @@
 //! - cases 0, 1, 3, 6..9: not ported yet, owned by other lanes.
 //!
 //! `control` (`mode_from_knob`, `shaper_selector` = mode, the control tick) is native-verified; the
-//! notify phase (P/P2 fill) is not ported, see `docs/re/engine/kolor-shaper-cases.md`.
+//! notify lambdas A and B (P/P2 blocks and phase) are ported in [`notify`] and native-verified. The
+//! writer of the source block S is not traced yet, see `docs/re/engine/kolor-shaper-cases.md`.
 //!
 //! Status: partial. The control tick, prepare and biquad sections are open (see
 //! `docs/re/engine/k-effects-batch-a.md`), so modes 2 and 5 of
@@ -19,6 +20,7 @@
 
 pub mod chain;
 pub mod control;
+pub mod notify;
 pub mod shaper_2_5;
 pub mod shaper_4;
 // unwired until the cfb0 state update (c830) is recovered; see docs/re/engine/kolor-shaper-cases.md
