@@ -199,11 +199,19 @@ pub(crate) fn live_names(node: roxmltree::Node) -> Vec<&'static str> {
         // Marked by `promote` when a script can write it.
         return if node.attribute("ScriptLive").is_some() { vec!["Value", "Style"] } else { vec![] };
     }
-    let mut out: Vec<&'static str> = parameters::definitions(kind)
-        .iter()
-        .filter(|p| !node_lanes(node, p.name).is_empty())
-        .map(|p| p.name)
-        .collect();
+    // node_lanes is empty unless the kind is laneable or the node is bus scoped.
+    // Decide that once per node: bus_scope walks every ancestor, and per parameter
+    // that walk dominated the UVI init of large programs (86k nodes on one bank).
+    let laneable = matches!(kind, "Gain" | "OnePole" | "GainMatrix") || bus_scope(node);
+    let mut out: Vec<&'static str> = if laneable {
+        parameters::definitions(kind)
+            .iter()
+            .filter(|p| !node_lanes(node, p.name).is_empty())
+            .map(|p| p.name)
+            .collect()
+    } else {
+        Vec::new()
+    };
     // Tracking no longer folds the native wide owner's base Freq. The normal
     // profile can bind its exact control after decoded geometry; an unbound
     // legacy shape still refuses at the actual Core command/home check.
