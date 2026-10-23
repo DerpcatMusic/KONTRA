@@ -126,6 +126,15 @@ fn dense() -> Vec<Message> {
     m
 }
 
+/// One 16-note chord held for 4 s: the "16 voices" cell of the Areia perf lane.
+fn chord16() -> Vec<Message> {
+    let mut m = expression();
+    for i in 0..16 {
+        on_off(&mut m, 48 + i, 100, 0.0, 4.0);
+    }
+    m
+}
+
 /// A legato line over two held notes.
 fn legato() -> Vec<Message> {
     let mut m = expression();
@@ -190,6 +199,14 @@ const SCENARIOS: &[Scenario] = &[
         ),
         seconds: 11.0,
         notes: sweep,
+    },
+    Scenario {
+        name: "areia-full-ens-chord",
+        source: Source::Kontakt(
+            "Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/07 Full Ens/Areia - 04 Full Ens - Spiccato Slow.nki",
+        ),
+        seconds: 6.0,
+        notes: chord16,
     },
     Scenario {
         name: "convolution-pads",
