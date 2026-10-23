@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render the same notes as capture.py through KONTRA (sampler-native render-kontakt-midi).
 
-    tools/oracle/kontra_render.py LIST.tsv OUTDIR [--midi FILE]
+    tools/oracle/kontra_render.py LIST.tsv OUTDIR [--midi FILE | --scenario NAME]
 
 LIST.tsv: `name<TAB>nki_path` (the same list as capture.py --batch). Writes OUTDIR/<name>.wav.
 The binary is $SAMPLER_NATIVE, else the release build under the KONTRA cargo target root
@@ -34,8 +34,9 @@ def main():
     ap.add_argument("list")
     ap.add_argument("out_dir")
     ap.add_argument("--midi")
+    ap.add_argument("--scenario", choices=sorted(capture.SCENARIOS), default="base")
     args = ap.parse_args()
-    midi = Path(args.midi) if args.midi else capture.write_scenario()
+    midi = Path(args.midi) if args.midi else capture.write_scenario(args.scenario)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     rows = [l.split("\t") for l in Path(args.list).read_text().splitlines() if l.strip() and not l.startswith("#")]
