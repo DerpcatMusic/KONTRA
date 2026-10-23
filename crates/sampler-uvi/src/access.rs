@@ -189,7 +189,7 @@ pub(crate) fn failure_reason(error: &anyhow::Error) -> String {
     if error.chain().any(|cause| cause.is::<serde_json::Error>()) {
         "Invalid private UVI access record".into()
     } else {
-        error.to_string()
+        format!("{error:#}")
     }
 }
 
@@ -219,6 +219,9 @@ mod tests {
         assert_eq!(failure_reason(&error), "Invalid private UVI access record");
         let error = anyhow::anyhow!("Content-state file must be private (chmod 600)");
         assert_eq!(failure_reason(&error), error.to_string());
+        // The cause is the reason a bank fails; keep it, not just the outer context.
+        let error = anyhow::anyhow!("Expected UFS2 container").context("Opening UFS bank");
+        assert_eq!(failure_reason(&error), "Opening UFS bank: Expected UFS2 container");
     }
 
     fn authored_png() -> Vec<u8> {
