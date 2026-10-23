@@ -721,27 +721,7 @@ fn new_ingress() -> Ingress {
     Ingress::new(0, groups)
 }
 
-/// Kontakt's power-on controller values: CC7 volume 100, CC10 pan centre 64,
-/// CC11 expression full, CC1 0. Every other controller starts at 0, and pitch
-/// bend starts centred (`POWER_ON_BEND`). Every probe note starts from these;
-/// the instrument's own saved or scripted values then take over.
-const POWER_ON: [(u8, u8); 4] = [(1, 0), (7, 100), (10, 64), (11, 127)];
-/// Pitch bend centre (14-bit 8192): MIDI 1.0 UMP, channel 0, LSB 0, MSB 0x40.
-const POWER_ON_BEND: u32 = 0x20E0_0040;
-
-/// `POWER_ON` minus a volume controller the instrument saved its own value on
-/// (that saved volume is the instrument's power-on state, not 100).
-fn power_on_ccs(ir: &sampler_ir::Instrument) -> Vec<(u8, u8)> {
-    let saved = ir
-        .host_volume
-        .filter(|v| v.saved > 0.0)
-        .map(|v| v.controller);
-    POWER_ON
-        .iter()
-        .copied()
-        .filter(|&(cc, _)| Some(cc) != saved)
-        .collect()
-}
+use sampler_kontakt::{POWER_ON_BEND, power_on_ccs};
 
 /// Controllers a player would have up: mod wheel, expression and CC2 high,
 /// plus every plain controller the instrument's modulators read. (Controllers
@@ -3318,6 +3298,7 @@ mod tests {
 
     #[test]
     fn power_on_table_is_kontakts_defaults() {
+        use sampler_kontakt::POWER_ON;
         assert_eq!(POWER_ON, [(1, 0), (7, 100), (10, 64), (11, 127)]);
         // 14-bit centre 8192: LSB 0 in data1, MSB 0x40 in data2.
         let centre = 8192u32;
