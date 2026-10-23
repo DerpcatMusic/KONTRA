@@ -931,6 +931,19 @@ fn one_pole_connections_address_each_stage_in_a_shared_voice_chain() {
 }
 
 #[test]
+fn one_pole_frequency_connection_without_a_real_freq_control_warns_instead_of_refusing() {
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-cutoff-none-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &[0; 64])).unwrap();
+    // Freq 10 Hz is outside the catalog range (20..20000), so the insert has no Freq control to bind.
+    let xml = insert_program(None).replace("<Oscillators>", r#"<Inserts><OnePole Name="Tone" Freq="10"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio="0.5"/></Connections></OnePole></Inserts><Oscillators>"#);
+    let instrument = sampler_uvi::translate(&xml, &dir).expect("translate must not refuse the program").instrument;
+    assert!(instrument.unsupported.iter().any(|u| u.reason == ir::Reason::UnknownLaw && u.feature.contains("no real Freq control")), "{:?}", instrument.unsupported);
+    assert!(instrument.source_indices.processing_parameters.is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn typed_one_pole_catalog_controls_reach_distinct_live_processors() {
     let xml = insert_program(None).replace(
         "<Oscillators>",
