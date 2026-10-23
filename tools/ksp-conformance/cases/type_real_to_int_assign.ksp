@@ -1,0 +1,20 @@
+on init
+  declare $cv
+  declare $cb
+  $cv := round(2.5)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := 7.0 / 2
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+end on

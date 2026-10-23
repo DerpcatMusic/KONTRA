@@ -1,0 +1,197 @@
+[
+ {
+  "id": "arith_add_wrap",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "arith_sub_wrap",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "arith_mul_wrap",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "arith_mul_neg",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "arith_neg_min",
+  "category": "arithmetic",
+  "results": 2
+ },
+ {
+  "id": "arith_div_trunc_pos",
+  "category": "arithmetic",
+  "results": 2
+ },
+ {
+  "id": "arith_mod_signs",
+  "category": "arithmetic",
+  "results": 2
+ },
+ {
+  "id": "arith_mod_negneg",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "arith_precedence__0",
+  "category": "arithmetic",
+  "results": 2
+ },
+ {
+  "id": "arith_precedence__1",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "arith_abs",
+  "category": "arithmetic",
+  "results": 2
+ },
+ {
+  "id": "real_round_half",
+  "category": "real",
+  "results": 2
+ },
+ {
+  "id": "real_round_down",
+  "category": "real",
+  "results": 1
+ },
+ {
+  "id": "real_to_int_trunc",
+  "category": "real",
+  "results": 2
+ },
+ {
+  "id": "real_to_int_big",
+  "category": "real",
+  "results": 1
+ },
+ {
+  "id": "real_int_real_exact",
+  "category": "real",
+  "results": 1
+ },
+ {
+  "id": "real_div_mixed",
+  "category": "real",
+  "results": 2
+ },
+ {
+  "id": "real_add_exact",
+  "category": "real",
+  "results": 1
+ },
+ {
+  "id": "type_real_to_int_assign",
+  "category": "typing",
+  "results": 2
+ },
+ {
+  "id": "shift_left_31",
+  "category": "shift",
+  "results": 2
+ },
+ {
+  "id": "shift_right_negative",
+  "category": "shift",
+  "results": 2
+ },
+ {
+  "id": "shift_right_positive",
+  "category": "shift",
+  "results": 2
+ },
+ {
+  "id": "logic_not",
+  "category": "logic",
+  "results": 2
+ },
+ {
+  "id": "logic_and_or",
+  "category": "logic",
+  "results": 2
+ },
+ {
+  "id": "logic_compare",
+  "category": "logic",
+  "results": 2
+ },
+ {
+  "id": "logic_in_range",
+  "category": "logic",
+  "results": 2
+ },
+ {
+  "id": "incdec_sequence",
+  "category": "incdec",
+  "results": 1
+ },
+ {
+  "id": "incdec_wrap",
+  "category": "incdec",
+  "results": 1
+ },
+ {
+  "id": "array_store_load",
+  "category": "array",
+  "results": 2
+ },
+ {
+  "id": "array_num_elements",
+  "category": "array",
+  "results": 1
+ },
+ {
+  "id": "array_init_list",
+  "category": "array",
+  "results": 2
+ },
+ {
+  "id": "array_out_of_bounds_read",
+  "category": "array",
+  "results": 1
+ },
+ {
+  "id": "array_out_of_bounds_write",
+  "category": "array",
+  "results": 1
+ },
+ {
+  "id": "loop_count",
+  "category": "loop",
+  "results": 2
+ },
+ {
+  "id": "loop_nested",
+  "category": "loop",
+  "results": 1
+ },
+ {
+  "id": "function_updates_global",
+  "category": "function",
+  "results": 1
+ },
+ {
+  "id": "function_nested_call",
+  "category": "function",
+  "results": 1
+ },
+ {
+  "id": "logic_vars",
+  "category": "logic",
+  "results": 2
+ },
+ {
+  "id": "logic_vars_2",
+  "category": "logic",
+  "results": 2
+ }
+]
