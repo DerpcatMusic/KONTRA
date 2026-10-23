@@ -145,8 +145,10 @@ mod tests {
 
     /// `tools/re/kolor_drive_sweep.py`: the kemu block at drive 0..1 (knob 3) and wet 0.5, for the
     /// three inputs sine, impulse and noise. Measured: the drive knob does nothing for the shaper-free
-    /// modes on these inputs (the native output is the dry path at every drive, with the shaper
-    /// parameter blocks P and P2 zero in the probe). Modes 2 and 5 are checked in their own test.
+    /// modes on these inputs: the native output is the dry path at every drive. The shaper readout weights
+    /// `w` and bias `c` (shaper P[152..161]) are zero in every GRU mode, so the shaper output is zero even
+    /// with the static-init blocks loaded (`tools/re/kolor_static_init.py`). Modes 2 and 5 are checked in
+    /// their own test.
     #[test]
     fn drive_sweep_matches_native_for_dry_modes() {
         let fx: serde_json::Value =
