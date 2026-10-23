@@ -489,6 +489,10 @@ impl Pcm {
         if !self.0.full || self.0.resident_budget.get().is_none() { return Err(Error::InvalidInput); }
         self.0.residency_loader.set(ResidencyLoader::Resident(std::sync::Arc::new(loader))).map_err(|_|Error::InvalidInput)
     }
+    /// A reload recipe exists, so the purged frames can be dropped and later restored.
+    pub(crate) fn can_reload(&self) -> bool {
+        self.0.residency_loader.get().is_some()
+    }
     pub(crate) fn residency_acquire(&self) {
         self.0
             .residency_managed
