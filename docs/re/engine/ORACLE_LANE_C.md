@@ -97,3 +97,28 @@ mismatches again carry large lags: 040 Areia 6 Celli Spiccato Fast +79 ms (+4..+
 056 (r 0.51, lag +1) and Morphology 080 (r 0.39, lag +11) have no lag, so they are sample or timbre differences, not
 start offsets. 048 and 088 have no KONTRA render (048 scored no notes on either side; 088 KONTRA silent).
 Keyswitch scenario: not run (per-library key numbers still needed).
+
+## Third pass: start-offset law (open; #522 not merged)
+
+**Engine draws (debug trace, Horns KS, 32 notes).** One offset per region per note: each note triggers 16 regions, and the
+seed is `now ^ (note << 40) ^ (region << 20)`, so regions draw independently. Draws are spread over 0..5120 frames, as expected
+for a uniform draw.
+
+**Direction of the effect (the important finding).** `start_offset` feeds `cursor.skip(start)` (`prepare/selection.rs`), which
+moves the playhead *forward* into the sample. A forward skip makes hits start louder and earlier, not later. Measured on the
+rendered audio (`/tmp` analysis, `kontra-shared` vs unfixed): hits 1 and 2 are louder in 0–20 ms than the unfixed render, so the
+skip is audible, but in the wrong direction. Kontakt is the reverse: its hits are *delayed* 16–98 ms against the unfixed render
+(envelope cross-correlation, 5 ms smoothing). The random term should therefore be a note-start delay (attack pushed back by
+`offset`), not a sample skip. That is a scheduling change (voice admission at `now + offset`) and is not implemented.
+
+**Per-session variation of Kontakt.** The same Horns material gave delays of 16–98 ms (rr32, velocity 100, 32 hits) and 0–61 ms
+(velsplit, 8 hits at velocity 127, 8 at velocity 40). Neither set separates velocity: under velocity-proportional scaling
+velocity 40 would top out near 34 ms, but its maximum was 61 ms. The sample sizes are too small to settle a law from one session;
+the next step is several sessions of the same scenario, pooled.
+
+**Not checked.** The decompile of the zone getter (0x14084f380) was requested through REA; Ghidra startup on Kontakt8.exe
+exceeded its 20-minute deadline, so no pseudocode was read. Sample-rate scaling (44.1k vs 48k: 116 vs 107 ms per 5120 frames) is
+not measured separately. Whether routed regions carry the same random term is untested.
+
+**Keyswitch scenario (item 3).** Not run. Keyswitch notes need a per-library key map, which this lane does not have; the
+scenario needs that before it can be scored.
