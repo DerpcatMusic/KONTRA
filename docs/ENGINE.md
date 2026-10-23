@@ -13,10 +13,21 @@ An extension never contains its own DSP. If a format needs something the engine 
 ## The rule
 
 - **One implementation per kind of processing.** One EQ with any number of bands, not thirty. One filter family with every core. One dynamics, delay, reverb, modulation, distortion, oscillator and source engine. Product differences are *settings of the shared engine* (a law, a table, a topology, a constant), not copies of it.
-- **Match, don't approximate.** The engine must be able to reproduce the corresponding module of each emulated product exactly, or as close as measurement allows. Behaviour includes parameter laws, units, smoothing, denormal and edge handling, scheduling, voice and scope lifetime, and the controls themselves.
+- **Match the sound, not the code.** The engine reproduces each emulated product's audible behaviour (response shape, level, time constants, parameter laws, units, scheduling, voice and scope lifetime, the controls themselves) as close as measurement shows is needed. It does not have to reproduce the product's internal algorithm or topology step by step. See *KISS and YAGNI* below.
 - **Evidence decides.** Laws come from the original binaries (decompilation, recovered DSP, recorded vectors, null tests), never from guesses. Kontakt and Falcon DSP are not interchangeable without evidence.
 - **Modular and robust.** Processing is built from small cores that compose, so a new product's module is usually a new configuration, not new code.
 - **Format-neutral configuration.** The engine reads `sampler_ir` configuration. Format crates translate into it.
+
+## KISS and YAGNI
+
+We live by KISS and YAGNI. More often than not the simpler solution is the correct one.
+
+- **Example.** Matching Kontakt's EQ curve exactly can take thousands of lines of recreated steps. A standard, high-quality modern EQ in a fraction of the code is better (cleaner, less aliasing and fewer numerical problems) and close enough: a bell with the same shape sounds the same.
+- **One model, many settings.** Write the compressor, EQ, filter, delay, reverb and so on once, globally and well. Kontakt libraries load Kontakt's parameter mapping and curves into it; UVI/Falcon load theirs. Matching a product is a different set of parameters, tables and laws, never a new implementation.
+- **Close enough is the bar.** Accept a modern implementation when its measured response (magnitude and phase shape, static curves, time constants, level) lands inside the tolerance of the product's, checked against native vectors or oracle captures. Prefer the cleaner implementation over a faithful one that is noisier.
+- **Do not build it until it is needed.** No speculative generality, no per-product copies, no scaffolding for later.
+
+**The caveat.** Simple must not mean wrong. Keep the extra code when evidence shows it is audible or behaviourally required: a nonlinearity's shape, a quirk libraries rely on (script-visible behaviour, parameter rounding, a law that changes level or timbre), real-time safety, determinism, state recall. Measure first; add complexity only for a measured difference, and say which measurement justified it.
 
 ## Layout
 
