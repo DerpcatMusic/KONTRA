@@ -283,6 +283,15 @@ chain until missing-path evidence exists. Test `D/replika/tests.rs` using
 Delete only superseded primitives; do not delete rings that hold independent history.
 Estimate: 50–200 LOC; CPU ~0%; memory savings unknown, report actual peak state separately.
 
+**Status: no admissible change (2026-10-24).** Audit with file:line evidence:
+- The replika post filter already uses the shared `tpt_svf::Section` and `State` (`replika/mode1.rs:58-70`).
+- The only repeated expression is the dB envelope step `env = (env - v) * coef + v` in `mode1.rs` (`PostFilter::tick`, and
+  `WriteFilter::pre`). A helper would replace one expression at two sites inside one file, so it saves no lines.
+- `replika/mod.rs:580-587` `write`/`read` (mode-0 head ring) are used by the core path (`mod.rs:509-536`); the ring-index
+  mask `& (ring - 1)` is one expression. `replika/read.rs:145` `Tap::read` is the fractional tap with its own frequency
+  tracking, and `replika/write.rs:27-37` `slot_l`/`slot_r` are different wrap rules by design (the ticket keeps them).
+Nothing was deleted; ring ownership and the head trajectories are unchanged.
+
 ### 9. Oversampling and reverb boundary (medium value, medium–high risk)
 
 Files: `D/{hiir,kaiser}.rs`, `D/space/{resample,network,design,mod}.rs`,
