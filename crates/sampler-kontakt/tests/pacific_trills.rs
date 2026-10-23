@@ -18,13 +18,24 @@ fn find() -> Option<PathBuf> {
 }
 
 fn input(key: u8) -> Input {
-    Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key, external_id: None }
+    Input {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key,
+        external_id: None,
+    }
 }
 
 /// Peak of 0.5 s with `held` (if any) pressed first, then `key`, and the
 /// selection records of those attacks.
 fn render(path: &Path, held: Option<u8>, key: u8) -> (f32, Vec<sampler_core::SelectionRecord>) {
-    let options = sampler_kontakt::Options { rate: 48000, keys: 0..=127, ..Default::default() };
+    let options = sampler_kontakt::Options {
+        rate: 48000,
+        keys: 0..=127,
+        ..Default::default()
+    };
     let loaded = sampler_kontakt::load(path, &options, |_| {}).unwrap();
     let limits = sampler_core::Limits::for_plan(&loaded.plan, 16, 256);
     let mut rt = Runtime::new(loaded.plan, limits).unwrap();
@@ -61,7 +72,14 @@ fn held_neighbour_turns_a_trill_into_play_note() {
         .iter()
         .find(|r| r.parent_event.is_some() && r.key == key)
         .expect("play_note creates a child event for the trill key");
-    assert!((child.velocity - 1.0 / 127.0).abs() < 1e-9, "velocity {}", child.velocity);
-    assert!(child.candidates.iter().any(|c| c.started.is_some()), "no region started");
+    assert!(
+        (child.velocity - 1.0 / 127.0).abs() < 1e-9,
+        "velocity {}",
+        child.velocity
+    );
+    assert!(
+        child.candidates.iter().any(|c| c.started.is_some()),
+        "no region started"
+    );
     assert!(peak > 1e-4, "peak {peak}");
 }
