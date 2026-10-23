@@ -2462,13 +2462,16 @@ fn initialized_translation_configured(
     profile: bool,
     config: script::Config,
 ) -> Result<(FullTranslation, script::ScriptHost), ScriptedTranslationFailure> {
+    let mut trace = LoadTrace::start();
     let promote_started = std::time::Instant::now();
     let text = promote(text, &files);
     let promote_ms = promote_started.elapsed().as_secs_f64() * 1000.;
+    trace.phase("promote");
     // Pure translation guard precedes main/onLoad/onInit and any retained VM.
     let (preflight,..)=translate_full(&text,source.clone()).map_err(|error|ScriptedTranslationFailure::Translate(Box::new(describe(path,error))))?;
     require_ordinary_source_publication(&preflight).map_err(|error|ScriptedTranslationFailure::Translate(Box::new(describe(path,error))))?;
     drop(preflight);
+    trace.phase("preflight_translate");
     let host = if profile {
         script::ScriptHost::new_profiled(&text, files.clone(), config, inspected)
     } else if inspected {
@@ -2477,6 +2480,7 @@ fn initialized_translation_configured(
         script::ScriptHost::new(&text, files.clone(), config)
     }
     .map_err(|error| ScriptedTranslationFailure::Initialize(error.into()))?;
+    trace.phase("script_host");
     if profile {
         host.profile_record("script_promotion", promote_ms);
     }
@@ -2489,6 +2493,7 @@ fn initialized_translation_configured(
         translate_initialized(&text, source, &insert_overrides, &folded_writes).map_err(
             |error| ScriptedTranslationFailure::Translate(Box::new(describe(path, error))),
         )?;
+    trace.phase("translate_initialized");
     if let Some(sources) = &mut instrument.uvi_script_sources {
         sources.files = files.sources();
     }
@@ -2775,9 +2780,11 @@ fn translate_initialized(
     };
     // An element left bypassed (or inside a bypassed one) is silent, so its
     // fields are rightly never read: such writes have no effect.
-    let doc = roxmltree::Document::parse(&patched).ok();
+    // Parsed on first need only: a read write never reaches it, and a parse of
+    // a megabyte program is a visible share of translation time.
+    let doc = std::cell::OnceCell::new();
     let silent = |node: usize| {
-        let Some(doc) = &doc else { return false };
+        let Some(doc) = doc.get_or_init(|| roxmltree::Document::parse(&patched).ok()) else { return false };
         let Some(node) = u32::try_from(node).ok().and_then(|n| doc.get_node(roxmltree::NodeId::new(n))) else {
             return false;
         };
@@ -2875,23 +2882,45 @@ fn note_script(host: &script::ScriptHost, instrument: &mut ir::Instrument) {
 /// [`load_program_scripted`] with the samples streamed from the bank: every zone
 /// is present for the scripts, only their starts are resident.
 #[cfg(feature = "library-access")]
+/// Phase clock for [`load_program_scripted_streamed`]: one stderr line per phase,
+/// only when `KONTRA_UVI_LOAD_TRACE` is set. Off by default; a single env check.
+pub(crate) struct LoadTrace(Option<std::time::Instant>);
+
+impl LoadTrace {
+    pub(crate) fn start() -> Self {
+        Self(std::env::var_os("KONTRA_UVI_LOAD_TRACE").map(|_| std::time::Instant::now()))
+    }
+    pub(crate) fn phase(&mut self, name: &str) {
+        if let Some(at) = self.0.as_mut() {
+            eprintln!("UVI_LOAD {name} {:.1}ms", at.elapsed().as_secs_f64() * 1e3);
+            *at = std::time::Instant::now();
+        }
+    }
+}
+
 pub fn load_program_scripted_streamed(
     bank: &Bank,
     program: &str,
     rate: u32,
     policy: &sampler_kontakt::StreamPolicy,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
+    let mut trace = LoadTrace::start();
     let (text, program_path) = bank.program(program)?;
+    trace.phase("program_text");
     let lua = bank.bind_script_samples(&program_path, bank.scripts());
+    trace.phase("bind_script_samples");
     let ((instrument, locations, groups, inserts), host) =
         initialized_translation(text, lua, Source::Bank, Path::new(program), false)
             .map_err(ScriptedTranslationFailure::into_error)?;
+    trace.phase("initialized_translation");
     let inherit=initial_playback_assets(&instrument,locations.len())?;
     let sources = locations
         .iter().enumerate()
         .map(|(asset,authored)| bank.initial_stream_source(&program_path, authored,inherit[asset],authored_placement(&instrument,authored)))
         .collect();
+    trace.phase("initial_stream_sources");
     let streamed = assemble_streamed(instrument, locations, sources, rate, policy)?;
+    trace.phase("assemble_streamed");
     let sampler_kontakt::Streamed {
         loaded,
         assets,
