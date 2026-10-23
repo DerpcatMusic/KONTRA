@@ -256,7 +256,16 @@ Two facts the port depends on, found by the probe:
   phase. So the countdown, the flags and the seed are ported and checked, and the phase rule
   is not (it depends on the P data, which is step 2).
 
-**Still open (step 2, P/P2 fill).** `14193fab0` (notify A, `this` = core+0x480) copies 0x40-byte source blocks (`this[6]`) into
+**Step 2 (P/P2 fill): ported and native-verified (`crates/sampler-core/src/dsp/color/kolor/notify.rs`).**
+Notify B, per lane (16 floats per block): X := S, P2 := P, Z := 0, D := X - P; with `a = float(|P| bits)`
+and `e = float(|D| bits)` (integer magnitudes, not reinterpreted), `T = 0` if a = 0 else `float((int)a+1) - a`;
+`e < T` snaps (D := 0, P := X, P2 := X); `sum = sum of e`; `sum <= 0` gives phase 4, else phase 2, byte +0x95 := 1,
++0x98 := +0x9c. Since T = 1 for every integer P below 2^24, the snap only zeroes lanes with a zero delta.
+Vectors: `tools/re/fixtures/kolor_notify_b.json` (160 cases, 16 per mode, `tools/re/kolor_notify_b_probe.py`).
+Notify A (`14193fab0`) copies X into P and P2, zeroes D and Z, sets phase 4 and +0x95 := 0, then tail-calls B.
+Still open: who writes the source block S (`this[9]`, core+0x4c8) on the live path. The notify test does not need it.
+
+Historical notes (before step 2): `14193fab0` (notify A, `this` = core+0x480) copies 0x40-byte source blocks (`this[6]`) into
 `this[0]` and `this[0xc]`, zeroes `this[3]` and `this[0xf]`, sets the phase (`this+0x90` = core+0x510) to 4,
 clears the byte `this+0x95`, then tail-calls B. The source block (who writes `param_1[6]`) is not traced.
 B (`1419421c0`, 656 B) is the SIMD routine that computes the activity sum above and the P2 data. Not
