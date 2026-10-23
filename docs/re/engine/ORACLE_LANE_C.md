@@ -88,3 +88,12 @@ background but not analysed in this pass.
 **Test status.** `sampler-core` lib tests: 832 passed before the new test was added, and the new test passes. The
 integration test `articulation::known_onset_articulation_filters_dormant_pitch_and_scope_requirements` fails on the
 unmodified engine too (a pre-existing failure on this base), so it is not caused by this change.
+
+**Release scenario, same 12 instruments (4 notes, 0.15 s long, 1 s apart; KONTRA baseline render, 10 of 12 rendered).**
+Deterministic instruments match: 024 Solo Trumpet Metal Mute Staccato r 1.000 (lag -2 ms), 016 Solo Bass Trombone
+Wooden Mute Tenuto r 0.990 (lag -6 ms), 000 ANALOG STRINGS r 0.921, 032 Areia Full Ens r 0.879 (lag -4 ms). The
+mismatches again carry large lags: 040 Areia 6 Celli Spiccato Fast +79 ms (+4..+128), 064 Dolce 1st Violins Legato
++89 ms (+5..+140), 072 Dolce 3 Celli Sustained +44 ms (+39..+60), 008 Trumpets Trills +30 ms with +20 dB level. Chorus
+056 (r 0.51, lag +1) and Morphology 080 (r 0.39, lag +11) have no lag, so they are sample or timbre differences, not
+start offsets. 048 and 088 have no KONTRA render (048 scored no notes on either side; 088 KONTRA silent).
+Keyswitch scenario: not run (per-library key numbers still needed).
