@@ -311,6 +311,16 @@ fn target_name(i: &ir::Instrument, t: ir::Target) -> String {
                 ir::ProcessorParameter::FreakTuning => "Tuning",
                 ir::ProcessorParameter::FreakWidth => "Width",
                 ir::ProcessorParameter::FreakMix => "Mix",
+                ir::ProcessorParameter::BiteSaturate => "Saturate",
+                ir::ProcessorParameter::BitePrefilter => "Prefilter",
+                ir::ProcessorParameter::BiteFrequency => "Frequency",
+                ir::ProcessorParameter::BiteJitter => "Jitter",
+                ir::ProcessorParameter::BiteCrunch => "Crunch",
+                ir::ProcessorParameter::BiteBits => "Bits",
+                ir::ProcessorParameter::BiteDither => "Dither",
+                ir::ProcessorParameter::BiteExpand => "Expand",
+                ir::ProcessorParameter::BitePostfilter => "Postfilter",
+                ir::ProcessorParameter::BiteMix => "Mix",
             },
             index + 1
         ),
@@ -448,6 +458,13 @@ fn detail(p: ir::Processor) -> String {
         ir::Processor::TimeMod(_) => "Delay / modulation".into(),
         ir::Processor::Phaser(_) | ir::Processor::LivePhaser { .. } => "Phaser filter".into(),
         ir::Processor::RingMod(_) => "Ring modulator".into(),
+        ir::Processor::StereoTune(c) => format!(
+            "Stereo Tune · split {:.0}% · drift {:.0}% · spread {:.0}% · mix {:.0}%",
+            c.split * 100.,
+            c.drift * 100.,
+            c.spread * 100.,
+            c.mix * 100.
+        ),
         ir::Processor::Eq(_) => "EQ".into(),
         ir::Processor::Formant(_) => "Formant I".into(),
         ir::Processor::FilterBank(c) => match c.topology {
