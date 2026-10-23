@@ -25,7 +25,8 @@
 //! Not from the formulas: the spread targets (the P0 block at `C+0x80`, words `+0x2c`, `+0x30`, `+0x34`, `+0x38`) and
 //! the start values of the table, which are the values the reset setters leave (their setter mapping is open, see the
 //! gaps doc). The noise seed is the emulator's `std::random_device` value (`0x2545F491`, kemu stub `?_Random_device`).
-//! The start is valid for the reset controls; other control values are not folded into it yet.
+//! The start is valid for the reset controls and rates up to 48 kHz (44.1 and 48 kHz are checked against the native
+//! dumps). Above 48 kHz the native chain runs at an internal rate with an oversampler (not ported, see the gaps doc).
 
 use super::chain::{Entry, Mode1, Wrap, WrapGlide};
 use super::delay::DelayPos;
@@ -224,9 +225,11 @@ impl Mode1 {
 }
 
 impl ReplikaCore {
-    /// The mode-1 start for the core's index-28 selection. `None` when index 28 selects another path. Built from the
-    /// core's rate; the controls are the reset values the start is derived for (see the module doc).
+    /// The mode-1 start for the core's index-28 selection. `None` when index 28 selects another path, and above 48 kHz:
+    /// the native prepare runs the chain at an internal 48 kHz there (oversampled, flag `0x608`, not ported), so the
+    /// 1x start does not apply. The controls are the reset values the start is derived for (see the module doc).
     pub(super) fn mode1_start(&self) -> Option<Mode1> {
-        (path_for_index(self.raw[index::SELECT]) == 1).then(|| Mode1::start(self.rate))
+        let on_path = path_for_index(self.raw[index::SELECT]) == 1;
+        (on_path && self.rate <= 48_000.).then(|| Mode1::start(self.rate))
     }
 }
