@@ -9,10 +9,30 @@ pub fn libs() -> StdLib {
     StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::COROUTINE | StdLib::BIT
 }
 
-/// A sandboxed Luau state with `memory` bytes allowed.
+/// Native code generation for a VM. Codegen runs inside every `load`, so it
+/// is paid per chunk, per VM: 2-20 ms per UVI module (see
+/// docs/architecture-v2/UNIVERSAL_SCRIPT.md). The interpreter is the default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Jit {
+    #[default]
+    Interpreter,
+    Native,
+}
+
+/// A sandboxed Luau state with `memory` bytes allowed, interpreted.
 pub fn new_vm(memory: usize) -> mlua::Result<Lua> {
+    new_vm_with(memory, Jit::Interpreter)
+}
+
+/// A sandboxed Luau state with `memory` bytes allowed and the given codegen policy.
+/// Affects chunks loaded after this call only.
+pub fn new_vm_with(memory: usize, jit: Jit) -> mlua::Result<Lua> {
     let lua = Lua::new_with(libs(), LuaOptions::new())?;
     lua.set_memory_limit(memory)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    lua.enable_jit(jit == Jit::Native);
+    #[cfg(target_arch = "wasm32")]
+    let _ = jit;
     Ok(lua)
 }
 

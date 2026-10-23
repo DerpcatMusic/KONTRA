@@ -7,12 +7,14 @@
 //! Design: `docs/architecture-v2/UNIVERSAL_SCRIPT.md`.
 
 mod budget;
+mod cache;
 mod gc;
 mod vm;
 
 pub use budget::{Budget, BudgetExhausted};
+pub use cache::{bytecode as cached_bytecode, default_dir as cache_dir};
 pub use gc::bounded_gc_step;
-pub use vm::{check_syntax, compile_bytecode, compiler, libs, new_vm};
+pub use vm::{Jit, check_syntax, compile_bytecode, compiler, libs, new_vm, new_vm_with};
 
 #[cfg(test)]
 mod tests {
