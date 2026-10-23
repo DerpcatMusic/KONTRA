@@ -1,0 +1,39 @@
+pair,implementation,rate,block,fidelity_worst_db,fidelity_median_db,alias_db,thd_n_db,noise_dbfs,subnormal,denormal_spike,stable,peak_dbfs,latency,ns_per_frame,instr_per_frame,verdict
+resampler,sampler-core resample (High),48000,0,NaN,NaN,-64.42,-105.20,-200.00,0,0.00,true,-6.02,0,223.652,,no Kontakt reference
+resampler,rubato sinc (async),48000,0,NaN,NaN,-57.75,-105.20,-200.00,0,0.00,true,-6.02,0,160.769,,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,44100,32,NaN,NaN,-16.49,-105.19,-200.00,1560,9.97,true,-5.83,4,8.926,146.9,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),44100,32,NaN,NaN,-20.29,-105.20,-200.00,1553,2.71,true,-5.85,8,1.915,22.1,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,44100,64,NaN,NaN,-16.51,-105.19,-200.00,1560,30.42,true,-5.83,4,7.775,128.8,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),44100,64,NaN,NaN,-14.37,-105.20,-200.00,1553,1.77,true,-4.48,8,1.886,21.5,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,44100,512,NaN,NaN,-11.34,-105.19,-200.00,1560,1.61,true,-2.19,4,7.684,128.0,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),44100,512,NaN,NaN,-11.54,-105.20,-200.00,1553,1.04,true,3.22,8,1.832,21.1,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,48000,32,NaN,NaN,-17.11,-87.81,-200.00,1700,6.68,true,-5.88,4,8.613,146.6,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),48000,32,NaN,NaN,-21.58,-87.81,-200.00,1695,25.71,true,-5.95,9,1.905,22.0,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,48000,64,0.005,0.004,-17.11,-87.81,-200.00,1700,4.35,true,-5.88,4,7.828,129.1,faithful
+filter-lp2,biquad crate LP (RBJ-style),48000,64,8.732,0.004,-15.69,-87.81,-200.00,1695,24.75,true,-5.46,9,2.347,21.5,differs from Kontakt (character change)
+filter-lp2,sampler-core LP2 cascade,48000,512,NaN,NaN,-10.27,-87.81,-200.00,1700,5.41,true,-2.08,4,9.389,128.3,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),48000,512,NaN,NaN,-8.20,-87.81,-200.00,1695,1.13,true,12.88,9,2.289,21.1,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,96000,32,NaN,NaN,-22.67,-87.82,-200.00,3397,33.00,true,-6.00,8,8.821,145.4,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),96000,32,NaN,NaN,-29.68,-87.81,-200.00,3384,3.29,true,-6.04,17,1.895,22.1,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,96000,64,NaN,NaN,-22.66,-87.82,-200.00,3397,36.96,true,-6.00,8,7.756,128.2,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),96000,64,NaN,NaN,-21.77,-87.81,-200.00,3384,25.88,true,-5.89,17,1.857,21.5,no Kontakt reference
+filter-lp2,sampler-core LP2 cascade,96000,512,NaN,NaN,-7.20,-87.82,-200.00,3397,4.20,true,-2.25,8,7.683,127.0,no Kontakt reference
+filter-lp2,biquad crate LP (RBJ-style),96000,512,NaN,NaN,1.33,-87.81,-200.00,3384,4.18,true,10.64,17,1.822,21.1,no Kontakt reference
+limiter,sampler-core DbLimiter,44100,32,NaN,NaN,-63.74,-53.46,-200.00,1566,12.82,true,1.26,0,12.745,168.3,no Kontakt reference
+limiter,look-ahead reference (bench),44100,32,NaN,NaN,-115.18,-102.82,-200.00,1344,2.27,true,0.00,222,4.135,110.4,no Kontakt reference
+limiter,sampler-core DbLimiter,44100,64,NaN,NaN,-63.74,-53.46,-200.00,1566,7.23,true,1.26,0,12.495,167.6,no Kontakt reference
+limiter,look-ahead reference (bench),44100,64,NaN,NaN,-115.18,-102.82,-200.00,1344,12.31,true,0.00,222,4.141,109.7,no Kontakt reference
+limiter,sampler-core DbLimiter,44100,512,NaN,NaN,-63.74,-53.46,-200.00,1566,3.33,true,1.26,0,12.556,167.0,no Kontakt reference
+limiter,look-ahead reference (bench),44100,512,NaN,NaN,-115.18,-102.82,-200.00,1344,4.54,true,0.00,222,4.190,109.1,no Kontakt reference
+limiter,sampler-core DbLimiter,48000,32,NaN,NaN,-56.49,-54.10,-200.00,1719,26.85,true,2.26,0,12.708,168.3,no Kontakt reference
+limiter,look-ahead reference (bench),48000,32,NaN,NaN,-111.16,-87.81,-200.00,1478,82.53,true,0.00,241,4.179,110.4,no Kontakt reference
+limiter,sampler-core DbLimiter,48000,64,NaN,NaN,-56.49,-54.10,-200.00,1719,3.41,true,2.26,0,13.244,167.6,no Kontakt reference
+limiter,look-ahead reference (bench),48000,64,NaN,NaN,-111.16,-87.81,-200.00,1478,7.96,true,0.00,241,4.122,109.7,no Kontakt reference
+limiter,sampler-core DbLimiter,48000,512,NaN,NaN,-56.49,-54.10,-200.00,1719,1.94,true,2.26,0,13.119,167.0,no Kontakt reference
+limiter,look-ahead reference (bench),48000,512,NaN,NaN,-111.16,-87.81,-200.00,1478,2.37,true,0.00,241,4.193,109.1,no Kontakt reference
+limiter,sampler-core DbLimiter,96000,32,NaN,NaN,-62.61,-57.14,-200.00,3417,14.85,true,1.74,0,13.440,168.3,no Kontakt reference
+limiter,look-ahead reference (bench),96000,32,NaN,NaN,-108.24,-87.82,-200.00,2936,27.60,true,0.00,481,4.200,110.4,no Kontakt reference
+limiter,sampler-core DbLimiter,96000,64,NaN,NaN,-62.61,-57.14,-200.00,3417,4.96,true,1.74,0,13.657,167.6,no Kontakt reference
+limiter,look-ahead reference (bench),96000,64,NaN,NaN,-108.24,-87.82,-200.00,2936,8.17,true,0.00,481,5.944,109.7,no Kontakt reference
+limiter,sampler-core DbLimiter,96000,512,NaN,NaN,-62.61,-57.14,-200.00,3417,3.16,true,1.74,0,17.115,167.0,no Kontakt reference
+limiter,look-ahead reference (bench),96000,512,NaN,NaN,-108.24,-87.82,-200.00,2936,1.97,true,0.00,481,4.229,109.1,no Kontakt reference
