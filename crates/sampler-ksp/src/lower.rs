@@ -2572,7 +2572,7 @@ impl Gen<'_, '_> {
                 let group_arg = if builtin == SetEnginePar { 2 } else { 1 };
                 match self.engine_par_rejection(args, group_arg) {
                     Some(why) => {
-                        self.ignore(builtin, why);
+                        self.ignore(builtin, &why);
                         // A set reports no pending async operation (-1), as the success path does.
                         self.set(dst, if builtin == SetEnginePar { -1 } else { 0 })?;
                     }
@@ -3199,14 +3199,15 @@ impl Gen<'_, '_> {
     fn engine_par_unsupported(&self, args: &[Arg]) -> bool {
         self.engine_par_name(args).is_some_and(|name| crate::builtins::unsupported_engine_parameter(&name))
     }
-    fn engine_par_rejection(&self, args: &[Arg], group_arg: usize) -> Option<&'static str> {
+    fn engine_par_rejection(&self, args: &[Arg], group_arg: usize) -> Option<String> {
         if self.engine_par_unsupported(args) {
-            return Some("engine parameter is not supported; ignored");
+            let name = self.engine_par_name(args).unwrap_or_default();
+            return Some(format!("engine parameter ${name} is not supported; ignored"));
         }
         let group = self.const_int(args, group_arg)?;
         let groups = self.u.groups.len() as i32;
         (!self.u.groups.is_empty() && (group < -1 || group >= groups))
-            .then_some("invalid group index; ignored")
+            .then(|| "invalid group index; ignored".to_string())
     }
 
     /// AHDSR times a script sets on a modulator (`generic` -1).
