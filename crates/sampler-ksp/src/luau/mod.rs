@@ -14,6 +14,7 @@ use std::fmt::Write;
 
 pub mod host;
 mod controls;
+mod events;
 mod keys;
 mod pgs;
 mod record;
@@ -905,7 +906,7 @@ impl Compiler<'_> {
             },
             Builtin::Search => self.search(args),
             Builtin::Sort => self.sort(args),
-            other => match self.control_builtin(other, args).or_else(|| self.pgs_builtin(other, args)).or_else(|| self.record_builtin(other, args)).or_else(|| self.key_builtin(other, args)) {
+            other => match self.control_builtin(other, args).or_else(|| self.pgs_builtin(other, args)).or_else(|| self.record_builtin(other, args)).or_else(|| self.key_builtin(other, args)).or_else(|| self.event_builtin(other, args)) {
                 Some(call) => call,
                 None => self.unsupported(&format!("builtin {}", other.name())),
             },
