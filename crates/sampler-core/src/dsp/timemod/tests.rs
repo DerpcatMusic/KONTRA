@@ -15,7 +15,7 @@ pub(super) fn run(cfg: Config, rate: u32, tempo: f64, input: &[[f64; 2]], block:
             planar[0][i] = f[0];
             planar[1][i] = f[1];
         }
-        fault |= tm.process(&mut state, &mut slab, &mut planar, chunk.len(), tempo);
+        fault |= tm.process(&mut state, &mut slab, &mut planar, chunk.len(), tempo, None);
         out.extend((0..chunk.len()).map(|i| [planar[0][i], planar[1][i]]));
     }
     (out, fault)
@@ -232,7 +232,7 @@ fn phaser_filter_matches_native_four_stage_impulse() {
     let mut block: Planar = [[0.; BLOCK]; 2];
     block[0][0] = 1.;
     block[1][0] = -0.5;
-    tm.process(&mut state, &mut slab, &mut block, 4, 120.);
+    tm.process(&mut state, &mut slab, &mut block, 4, 120., None);
     for (i, e) in [0.926062942f64, -0.136394471, -0.114671811, -0.095316768].into_iter().enumerate() {
         assert!((block[0][i] - e).abs() < 2e-7 && (block[1][i] + e * 0.5).abs() < 2e-7, "{i}");
     }

@@ -208,7 +208,7 @@ fn check(stages: &[BatchOp], filters: &PreparedFilters, parameters: &[ControlRam
                                 tempo: 120.0,
                                 bank: &mut scalar_bank,
                                 expression: None,
-                                spaces: &mut [], stereo_tunes: &mut [],
+                                spaces: &mut [], stereo_tunes: &mut [], replikas: &mut [],
                             },
                             None
                         ));
@@ -394,7 +394,7 @@ fn held_mix_reads_controls_once_per_block_in_scalar_and_lanes() {
         tempo: 120.0,
         bank: &mut bank,
         expression: None,
-        spaces: &mut [], stereo_tunes: &mut [],
+        spaces: &mut [], stereo_tunes: &mut [], replikas: &mut [],
     };
     RAMP_READS.with(|n| n.set(0));
     assert!(!super::process::<false>(

@@ -170,6 +170,8 @@ pub(super) struct PreparedBuses {
     /// Every Stereo Tune, by `PreparedProcessor::StereoTune` index, and the bus each belongs to.
     stereo_tunes: Box<[sampler_ir::fx::stereo_tune::Config]>,
     stereo_tune_bus: Box<[usize]>,
+    /// Every mode-1 Replika stage's controls, by `PreparedProcessor::TimeMod` stage index (`replika::Stage`).
+    replikas: Box<[sampler_ir::fx::timemod::ReplikaControls]>,
     /// The spaces that hold a convolution, in order: the slots
     /// [`crate::Runtime::swap_convolution`] addresses.
     convolutions: Box<[usize]>,
@@ -285,6 +287,7 @@ impl PreparedBuses {
         let mut space_bus = Vec::new();
         let mut stereo_tunes = Vec::new();
         let mut stereo_tune_bus = Vec::new();
+        let mut replikas = Vec::new();
         let nodes = buses
             .into_iter()
             .enumerate()
@@ -301,6 +304,7 @@ impl PreparedBuses {
                     &mut filters,
                     Some(&mut spaces),
                     Some(&mut stereo_tunes),
+                    Some(&mut replikas),
                 )?;
                 space_bus.resize(spaces.len(), index);
                 stereo_tune_bus.resize(stereo_tunes.len(), index);
@@ -338,6 +342,7 @@ impl PreparedBuses {
             space_bus: space_bus.into_boxed_slice(),
             stereo_tunes: stereo_tunes.into_boxed_slice(),
             stereo_tune_bus: stereo_tune_bus.into_boxed_slice(),
+            replikas: replikas.into_boxed_slice(),
             convolutions: convolutions.into_boxed_slice(),
             impulses: impulses.into(),
             rate,
@@ -770,6 +775,8 @@ pub(super) struct BusState {
     delay_samples: Box<[[f64; 2]]>,
     spaces: Box<[crate::dsp::Space]>,
     stereo_tunes: Box<[crate::dsp::stereo_tune::StereoTune]>,
+    /// The mode-1 Replika stages (their chains persist across blocks), by `PreparedProcessor::TimeMod` stage index.
+    replikas: Box<[crate::dsp::replika::Stage]>,
     /// Per bus, the frames its tail rings after input stops; a swapped-in
     /// impulse may change it.
     tail_frames: Box<[u32]>,
@@ -831,6 +838,12 @@ impl BusState {
                     )
                 })
                 .collect(),
+            replikas: plan
+                .buses
+                .replikas
+                .iter()
+                .map(|c| crate::dsp::replika::Stage::new(plan.buses.rate as f32, c).ok_or(Error::InvalidInput))
+                .collect::<Result<_, _>>()?,
             tail_frames: plan.buses.nodes.iter().map(|n| n.tail_frames).collect(),
             filters: crate::dsp::svf::FilterBank::new(&plan.buses.filters, 0)?,
             parameters: crate::dsp::control::initial_parameters(plan, &plan.buses.parameters),
@@ -1113,7 +1126,7 @@ impl BusState {
             for c in 0..2{for frame in 0..frames{block[c][frame]=f64::from(planes[c*stride+frame]);}}
             let fault=crate::dsp::process::<TRACE>(node.processors.as_ref(),states,&mut block,frames,
                 parameters,at,&mut self.delay_samples,
-                &mut crate::dsp::svf::FilterContext{tempo,bank:&mut self.filters,expression:None,spaces:&mut self.spaces,stereo_tunes:&mut self.stereo_tunes},
+                &mut crate::dsp::svf::FilterContext{tempo,bank:&mut self.filters,expression:None,spaces:&mut self.spaces,stereo_tunes:&mut self.stereo_tunes,replikas:&mut self.replikas},
                 if TRACE{trace.as_mut().map(|(graph,recorder)|crate::trace::Section{recorder:&mut **recorder,graph,nodes:&graph.buses[index].stages,identity:Default::default()})}else{None});
             if fault || !crate::dsp::finite_states(&node.processors,states)
                 || block.iter().any(|values|values[..frames].iter().any(|value|!(*value as f32).is_finite())) {
@@ -1300,6 +1313,7 @@ impl BusState {
                         expression: None,
                         spaces: &mut self.spaces,
                         stereo_tunes: &mut self.stereo_tunes,
+                        replikas: &mut self.replikas,
                     },
                     if TRACE {
                         trace.as_mut().map(|(g, r)| crate::trace::Section {
