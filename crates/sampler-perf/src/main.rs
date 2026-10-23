@@ -448,6 +448,7 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
         COUNTING.set(true);
         let t = Instant::now();
         let service = render(p, &mut buffer, &batch, messages, begin, &mut next);
+        hash_output(&buffer);
         cell.service.push(service);
         let took = t.elapsed();
         COUNTING.set(false);
@@ -719,6 +720,7 @@ fn run_scenario(
                 proc_value("/proc/self/io", "read_bytes:"),
                 proc_value("/proc/self/io", "rchar:"),
             );
+            OUTPUT_HASH.store(0xcbf29ce484222325, std::sync::atomic::Ordering::Relaxed);
             let (cell, counters) = counted(|| {
                 if matches!(loaded.player, Player::Uvi(_)) {
                     play_uvi(&mut loaded.player, &messages, block, frames)
@@ -726,6 +728,7 @@ fn run_scenario(
                     play(&mut loaded.player, &messages, block, frames)
                 }
             });
+            eprintln!("output-hash {} block {block} threads {t} {:016x}", s.name, OUTPUT_HASH.load(std::sync::atomic::Ordering::Relaxed));
             let mut times = cell.times.clone();
             times.sort_unstable();
             let mut service = cell.service.clone();
@@ -803,6 +806,7 @@ fn play_uvi(p: &mut Player, messages: &[Message], block: usize, frames: usize) -
         COUNTING.set(true);
         let t = Instant::now();
         render(p, &mut buffer, &[], messages, begin, &mut 0);
+        hash_output(&buffer);
         cell.loud.extend(buffer.iter().map(|f| f[0].abs().max(f[1].abs()) > SILENT_FRAME));
         let took = t.elapsed();
         COUNTING.set(false);
@@ -1012,4 +1016,12 @@ fn main() {
             std::process::exit(2);
         }
     }
+}
+
+/// FNV-1a over the rendered output bits of the measured cell: equal hashes mean bit-identical audio.
+static OUTPUT_HASH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0xcbf29ce484222325);
+fn hash_output(b: &[[f32; 2]]) {
+    let mut h = OUTPUT_HASH.load(std::sync::atomic::Ordering::Relaxed);
+    for f in b { for x in f { h = (h ^ u64::from(x.to_bits())).wrapping_mul(0x100000001b3); } }
+    OUTPUT_HASH.store(h, std::sync::atomic::Ordering::Relaxed);
 }

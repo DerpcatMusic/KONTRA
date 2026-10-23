@@ -539,11 +539,15 @@ impl Runtime {
                 let factor=match gate.velocity{crate::VelocityCurve::Constant=>1.,crate::VelocityCurve::Linear=>inputs.velocity,crate::VelocityCurve::Power(p)=>inputs.velocity.powf(p),crate::VelocityCurve::VolumeTable=>f64::from(crate::prepare::volume_table_amplitude(inputs.velocity))};
                 ramp.from.scalar_gain*=factor;ramp.to.scalar_gain*=factor;
             }
-            let mut parameters=generation.dsp.modulated_parameters.claim(0);
-            parameters.copy_from_slice(&generation.dsp.parameters);
-            generation.prepared.project_processing_outputs(owner.template,ramp,&mut parameters);
+            // Only the lanes the previous projection wrote differ from the base; restoring
+            // those replaces a full copy of the parameter bank per owner per block.
+            generation.dsp.restore_owner_parameters();
+            let scope=&generation.prepared.processing_scopes[owner.template];
+            generation.dsp.owner_parameter_dirty.extend(scope.parameters.iter().map(|row|row.lane));
+            generation.dsp.owner_parameter_dirty.extend(generation.prepared.processing_output_lanes(owner.template));
+            generation.prepared.project_processing_outputs(owner.template,ramp,&mut generation.dsp.owner_parameters);
             generation.dsp.owner_modulation.project_processing_parameters(&generation.prepared.processing_modulation,
-                id.0.index,owner.template,&generation.prepared.processing_scopes[owner.template].parameters,ramp.begin,ramp.end,self.rate,&mut parameters)?;
+                id.0.index,owner.template,&scope.parameters,ramp.begin,ramp.end,self.rate,&mut generation.dsp.owner_parameters)?;
         }
         Ok(())
     }
@@ -697,13 +701,12 @@ impl Runtime {
                 for &bus in &chain.tap_buses {
                     generation.dsp.feeds[bus].samples = [[0.; crate::dsp::BLOCK]; 2];
                 }
-                let projected=generation.dsp.modulated_parameters.claim(0);
                 let context = crate::dsp::RenderContext {
                     controls: None,
                     amplifier: None,
                     expression: expression_gains,
                     delay: &mut delay[..chain.delay_frames],
-                    parameters: if generation.dsp.owner_modulation.program(index).is_some(){&projected}else{&generation.dsp.parameters},
+                    parameters: if generation.dsp.owner_modulation.program(index).is_some(){&generation.dsp.owner_parameters}else{&generation.dsp.parameters},
                     filters: crate::dsp::svf::FilterContext {
                         tempo: self.tempo,
                         bank: filters,
