@@ -6,6 +6,7 @@
 
 use super::{Compiled, controls};
 use crate::builtins::FIRST_UI_ID;
+use crate::engine::{Duration, EngineSink, Play, Recorder};
 use mlua::{Function, Lua, MultiValue, Table, Thread, Value, VmState};
 use sampler_script::{Budget, Jit, cache_dir, cached_bytecode, new_vm_with};
 use std::{cell::RefCell, collections::{BTreeMap, HashMap}, rc::Rc};
@@ -62,6 +63,8 @@ pub struct Host {
     seq: u64,
     queue: BTreeMap<(u64, u64), Job>,
     engine: Rc<RefCell<BTreeMap<[i64; 4], i64>>>,
+    /// Engine calls of `play_note` and `note_off`; a [`Recorder`] until [`Host::set_sink`].
+    sink: Rc<RefCell<Box<dyn EngineSink>>>,
     controls: Rc<RefCell<controls::State>>,
     ui_meta: Rc<[controls::UiMeta]>,
     budget: Rc<Budget>,
@@ -80,6 +83,7 @@ impl Host {
     /// per instrument: [`Compiled::has_loops`] is the opt-in the caller should use.
     pub fn new_with(compiled: &Compiled, cells: u32, texts: u32, note_cells: u16, rate: u32, jit: Jit) -> Result<Self, String> {
         let lua = new_vm_with(MEMORY, jit).map_err(|e| e.to_string())?;
+        let sink: Rc<RefCell<Box<dyn EngineSink>>> = Rc::new(RefCell::new(Box::new(Recorder::default())));
         let budget = Rc::new(Budget::new(CALLBACK_CHECKPOINTS, None));
         let hook = Rc::clone(&budget);
         lua.set_interrupt(move |_| {
@@ -104,6 +108,42 @@ impl Host {
             "get_engine_par",
             lua.create_function(move |_, (p, g, s, generic): (i64, i64, i64, i64)| {
                 Ok(store.borrow().get(&[p, g, s, generic]).copied().unwrap_or(0))
+            })
+            .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let play_sink = Rc::clone(&sink);
+        host.set(
+            "play",
+            lua.create_function(move |_, (parent, key, velocity, micros): (i64, i64, i64, i64)| {
+                // KSP range checks: key 0..127, velocity 1..127; otherwise play_note returns -1.
+                if !(0..128).contains(&key) || !(1..128).contains(&velocity) {
+                    return Ok(-1_i64);
+                }
+                let duration = match micros {
+                    0 => Duration::UntilSilent,
+                    us if us < 0 => Duration::Gate,
+                    us => Duration::Frames(micros_to_frames(us as u64, rate)),
+                };
+                let request = Play {
+                    parent: parent as u32,
+                    key: key as u8,
+                    velocity: velocity as f64 / 127.0,
+                    duration,
+                };
+                let child = play_sink.borrow_mut().play(request);
+                Ok(child.map_or(-1, i64::from))
+            })
+            .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let note_off_sink = Rc::clone(&sink);
+        host.set(
+            "note_off",
+            lua.create_function(move |_, (event, micros): (i64, Option<i64>)| {
+                let delay = micros.map(|us| micros_to_frames(us.max(0) as u64, rate));
+                note_off_sink.borrow_mut().note_off(event as u32, delay);
+                Ok(())
             })
             .map_err(|e| e.to_string())?,
         )
@@ -149,6 +189,7 @@ impl Host {
             seq: 0,
             queue: BTreeMap::new(),
             engine,
+            sink,
             controls: ui_state,
             ui_meta,
             budget,
@@ -222,7 +263,7 @@ impl Host {
         let now = self.now;
         self.selected = Some(note);
         // First resume: the runner's arguments (callback, note table, key, velocity).
-        self.step(job, now, Some((func, notes, key, velocity)))
+        self.step(job, now, Some((func, notes, key, velocity, note)))
     }
 
     /// Render frames `[now, end)`: run every resumption due at a frame index below `end`,
@@ -245,19 +286,19 @@ impl Host {
         self.now = at;
         if self.selected != Some(job.note) {
             let notes = self.note_table(job.note)?;
-            self.select_note.call::<()>(notes).map_err(|e| e.to_string())?;
+            self.select_note.call::<()>((notes, job.note)).map_err(|e| e.to_string())?;
             self.selected = Some(job.note);
         }
         self.step(job, at, None)
     }
 
     /// Run `job` until it waits (queued at its due frame) or finishes (thread pooled).
-    fn step(&mut self, mut job: Job, at: u64, start: Option<(Function, Table, i64, f64)>) -> Result<(), String> {
+    fn step(&mut self, mut job: Job, at: u64, start: Option<(Function, Table, i64, f64, u32)>) -> Result<(), String> {
         let mut first = start;
         loop {
             self.budget.refill(CALLBACK_CHECKPOINTS, None);
             let yielded: Option<i64> = match first.take() {
-                Some((f, t, k, v)) => job.thread.resume((f, t, k, v)),
+                Some((f, t, k, v, e)) => job.thread.resume((f, t, k, v, e)),
                 None => job.thread.resume(()),
             }
             .map_err(|e| e.to_string())?;
@@ -402,10 +443,20 @@ impl Host {
         model.get::<Option<String>>("title").ok().flatten()
     }
 
+    /// Replace the engine the script's `play_note` and `note_off` calls go to.
+    pub fn set_sink(&mut self, sink: Box<dyn EngineSink>) {
+        *self.sink.borrow_mut() = sink;
+    }
+
     /// `set_engine_par` writes, keyed `[parameter, group, slot, generic]`.
     pub fn engine(&self) -> BTreeMap<[i64; 4], i64> {
         self.engine.borrow().clone()
     }
+}
+
+/// Frames of a KSP duration in microseconds, rounded up (`sampler-core` `MicrosToFrames`).
+fn micros_to_frames(micros: u64, rate: u32) -> u64 {
+    (u128::from(micros) * u128::from(rate)).div_ceil(1_000_000) as u64
 }
 
 /// Frames a `wait(micros)` takes, as `sampler-core` computes them (`Instruction::WaitMicros`).
