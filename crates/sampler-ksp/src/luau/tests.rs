@@ -395,3 +395,27 @@ fn ui_change_with_wait_is_refused_not_guessed() {
     let lowered = lower(source).unwrap();
     assert!(super::check_ui(&lowered, 0, 5).unwrap_err().contains("waits"));
 }
+
+#[test]
+fn pgs_keys_and_script_title_match_the_interpreter() {
+    assert_init_equivalent(
+        "on init
+        declare $a := 0
+        declare $b := 0
+        declare $c := 0
+        pgs_create_key(TEST, 4)
+        pgs_set_key_val(TEST, 2, 77)
+        pgs_set_key_val(TEST, 9, 5)
+        pgs_set_key_val(TEST, -1, 5)
+        $a := pgs_get_key_val(TEST, 2) + pgs_get_key_val(TEST, 9)
+        $b := pgs_get_key_val(MISSING, 0) + pgs_key_exists(TEST) * 10 + pgs_key_exists(MISSING) * 100
+        pgs_create_key(TEST, 99)
+        pgs_create_key(BIG, 1000)
+        $c := pgs_get_key_val(TEST, 3) + pgs_get_key_val(BIG, 255) + pgs_get_key_val(BIG, 256)
+        pgs_create_str_key(NAME)
+        pgs_set_str_key_val(NAME, \"hello\")
+        pgs_set_str_key_val(OTHER, \"lost\")
+        set_script_title(\"Demo\")
+        end on",
+    );
+}
