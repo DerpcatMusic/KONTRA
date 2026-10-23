@@ -314,13 +314,15 @@ fn translate(
         #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
     };
-    // Kontakt stores the preload in bytes. 0 selects the global policy and 0xf000 (60 KiB) is
-    // the instrument default set at init (Kontakt 8 `FUN_140940000`, `0x21b70`). Any other
-    // value is an authored override that the stream policy does not yet apply.
+    // Kontakt stores the preload in bytes (`dfdChannelPreloadSize`, Kontakt 8 `0x21b70`).
+    // The global `overrideInstPreloadSize` replaces it only when the user preference
+    // `overrideInstDFD` is on (`FUN_14082a530`), which a library load never sets, so the
+    // authored value is in effect and 0 is a zero window, not a policy selector. 0xf000 is
+    // the init default (`FUN_140940000`). The stream head does not use the window yet.
     if !matches!(params.dfd_channel_preload_size, 0 | 0xf000) {
         out.unsupported(
             "instrument",
-            "DFD preload override",
+            "DFD preload window not applied to stream head",
             params.dfd_channel_preload_size,
             ir::Reason::NotModeled,
         );

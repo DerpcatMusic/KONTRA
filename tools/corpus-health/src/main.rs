@@ -1147,6 +1147,10 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     let deadline = buffer.len() as f64 / f64::from(rate);
     let mut feed = sampler_uvi::scripted::MidiFeed::default();
     let mut block_times: Vec<f64> = Vec::with_capacity(total / buffer.len() + 1);
+    // Blocks over the deadline during which the render thread was preempted by the
+    // OS (involuntary context switch). A shared host steals wall time from a block
+    // with no work in the runtime; counted apart so the DSP miss count stays honest.
+    let (mut deadline_misses, mut preempted_misses) = (0usize, 0usize);
     // Allocation calls on this (the render) thread: the note-on block, the
     // release block, and every other block.
     let (mut allocs_on, mut allocs_off, mut allocs_steady) = (0usize, 0usize, 0usize);
@@ -1180,6 +1184,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     for begin in (0..total).step_by(buffer.len()) {
         let len = buffer.len().min(total - begin);
         let has_release = (begin..begin + len).contains(&release_at);
+        let preempt0 = involuntary_switches();
         let (t0, a0);
         let mut audio_cost: Option<AudioCost> = None;
         match &mut rig {
@@ -1309,11 +1314,17 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                 audio_cost = Some(cost);
             }
         }
-        block_times.push(
-            audio_cost
-                .as_ref()
-                .map_or_else(|| t0.elapsed().as_secs_f64(), |c| c.seconds),
-        );
+        let block_time = audio_cost
+            .as_ref()
+            .map_or_else(|| t0.elapsed().as_secs_f64(), |c| c.seconds);
+        if block_time > deadline {
+            if involuntary_switches() != preempt0 {
+                preempted_misses += 1;
+            } else {
+                deadline_misses += 1;
+            }
+        }
+        block_times.push(block_time);
         let used = audio_cost
             .as_ref()
             .map_or_else(|| heap::calls() - a0, |c| c.allocs);
@@ -1443,7 +1454,8 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         "block_p50_ms": q(0.5) * 1e3,
         "block_p99_ms": q(0.99) * 1e3,
         "block_max_ms": q(1.0) * 1e3,
-        "deadline_misses": block_times.iter().filter(|t| **t > deadline).count(),
+        "deadline_misses": deadline_misses,
+        "preempted_deadline_misses": preempted_misses,
         "blocks": block_times.len(),
         "peak_voices": peak_voices,
         "ksp_ui_effects": ksp_ui_effects,
@@ -3521,4 +3533,17 @@ mod tests {
         assert_eq!(rt.voice_count(), 0);
         assert_eq!(rt.note_count(), 0);
     }
+}
+
+/// Involuntary context switches of the calling thread (`/proc/thread-self/status`),
+/// zero when unavailable. Read outside the timed block interval.
+fn involuntary_switches() -> u64 {
+    std::fs::read_to_string("/proc/thread-self/status")
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .find(|l| l.starts_with("nonvoluntary_ctxt_switches"))
+                .and_then(|l| l.split_whitespace().nth(1)?.parse().ok())
+        })
+        .unwrap_or(0)
 }

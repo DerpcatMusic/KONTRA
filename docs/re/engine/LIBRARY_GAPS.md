@@ -133,6 +133,8 @@ Non-full symbols that matter for the engine (instruments, occurrences):
 
 Read: the non-full engine symbols are rare (one instrument each). The engine-impacting work is the 40-row table above, not the symbol list.
 
+Profiled 2026-10-22 (ANALOG STRINGS, 2 voices, 4875 blocks, quiet-ish host, niced): 5-8 misses per run, max 8.4-11.4 ms. Each spike is inside `render` (stream service < 0.02 ms, 0 minor faults, 0 allocations, 0 underruns). `corpus-health` now splits misses by involuntary context switches of the render thread into `deadline_misses` and `preempted_deadline_misses`. Preemption explains about 3 of 8; the rest have no preemption on the render thread, so the cause is still open (host CPU contention or cache/frequency effects are not separable without a perf trace). Treat `deadline_misses` as host-sensitive until that trace exists.
+
 ## Script diagnostics
 
 Unsupported and Warning counts for the 10-23 run in the table above. Compile failures: 1 (Shreddage E-Upright).
