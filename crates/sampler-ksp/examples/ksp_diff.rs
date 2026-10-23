@@ -13,7 +13,7 @@
 //! Not yet in the trace: controllers, UI control changes and engine-write traces during
 //! events. The Luau front end does not run those callbacks yet (see the census
 //! histogram), and the interpreter exposes no event-time engine-write trace.
-use sampler_core::{Frame, Input, Prepared, Protocol, Runtime, ScriptInstanceId, Limits as CoreLimits};
+use sampler_core::{ChannelAddress, Frame, Input, Prepared, Protocol, Runtime, ScriptInstanceId, Limits as CoreLimits};
 use sampler_ksp::luau::{check_init, host::Host, lower};
 use sampler_script::Jit;
 use std::collections::BTreeMap;
@@ -26,6 +26,11 @@ const KEYS: [u8; 3] = [36, 60, 96];
 const VELOCITIES: [u8; 3] = [1, 64, 127];
 /// Blocks rendered after each event step (64 frames each).
 const SETTLE_BLOCKS: usize = 4;
+/// Controller messages on host channel 0 after the notes: a CC, a mid-range CC, pitch bend.
+/// Values are the runtime's raw 32-bit controller values (0 .. u32::MAX).
+const CONTROLLERS: [(u8, u32); 6] = [(1, 0), (1, 1 << 31), (64, u32::MAX), (64, 1 << 30), (128, 0), (128, u32::MAX)];
+/// Downstream channel mask for channel 0 (the runtime's `channels` argument).
+const CHANNEL_MASK: u16 = 1;
 
 #[derive(Default)]
 struct Tally {
@@ -158,7 +163,7 @@ fn interpreter(source: &str) -> Result<Runtime, String> {
         plan,
         CoreLimits {
             notes: 4,
-            channels: 0,
+            channels: 2,
             performances: 1,
             families: 4,
             expressions: 4,
@@ -200,6 +205,22 @@ fn trace(lowered: &sampler_ksp::luau::Lowered, rt: &mut Runtime, jit: Jit) -> Re
             rt.flush_ended(|_| true);
             events += 2;
         }
+    }
+    // Controllers: each message runs `on controller` on both paths. The downstream value on
+    // the channel must be the forwarded value, or the value it had before when the body ignored it.
+    let performance = rt.performance(0).map_err(|e| format!("performance: {e:?}"))?;
+    let origin = ChannelAddress { protocol: Protocol::Clap, port: 0, group: 0, channel: 0 };
+    for &(number, value) in &CONTROLLERS {
+        let before = rt.channel_controller(performance, origin, number).map_err(|e| format!("read cc {number}: {e:?}"))?;
+        let forwarded = host.controller(number, value)?;
+        rt.dispatch_controller(performance, origin, CHANNEL_MASK, number, value).map_err(|e| format!("dispatch cc {number}: {e:?}"))?;
+        settle(rt, &mut host, &mut block, lowered, plan, &format!("cc {number}={value}"))?;
+        let downstream = rt.channel_controller(performance, origin, number).map_err(|e| format!("read cc {number}: {e:?}"))?;
+        let expected = if forwarded { value } else { before };
+        if downstream != expected {
+            return Err(format!("cc {number}={value}: interpreter downstream {downstream}, expected {expected} (forwarded: {forwarded})"));
+        }
+        events += 1;
     }
     Ok(events)
 }
