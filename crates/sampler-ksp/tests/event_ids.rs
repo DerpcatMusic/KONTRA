@@ -631,8 +631,16 @@ fn negative_note_duration_uses_only_the_note_callbacks_originating_gate() {
 }
 
 #[test]
-fn unsupported_play_position_reports_the_parameter_gap_in_a_valid_note_context() {
+fn play_position_is_read_in_a_note_context_without_a_gap_warning() {
+    // PLAY_POS is lowered to a live ReadEventInfo (see event_zone.rs), so it must not warn.
     let script=compile("on init declare $position end on on note $position := get_event_par($EVENT_ID,$EVENT_PAR_PLAY_POS) end on").unwrap();
+    assert!(!script.warnings().iter().any(|w| w.message.contains("event parameter is not implemented")));
+    assert!(!script.warnings().iter().any(|w| w.message.contains("originating note")));
+}
+
+#[test]
+fn unimplemented_event_parameter_still_reports_the_gap_in_a_valid_note_context() {
+    let script=compile("on init declare $custom end on on note $custom := get_event_par($EVENT_ID,$EVENT_PAR_CUSTOM) end on").unwrap();
     assert!(script.warnings().iter().any(|w| w.message.contains("event parameter is not implemented")));
     assert!(!script.warnings().iter().any(|w| w.message.contains("originating note")));
 }
