@@ -303,3 +303,100 @@ fn lowered_fine_trace(lowered: &super::Lowered) -> Vec<f64> {
 }
 
 
+
+#[test]
+fn integer_builtins_match_the_interpreter() {
+    assert_init_equivalent(
+        "on init
+        declare $a := 0
+        declare $b := 0
+        declare $c := 0
+        declare $d := 0
+        declare $e := 0
+        declare $f := 0
+        declare $g := 0
+        declare $h := 0
+        declare $i := 0
+        declare $j := 0
+        declare $k := 0
+        declare %t[7] := (1)
+        declare $l := 0
+        $a := abs(-2147483648)
+        $b := sgn(-17) + sgn(0) * 10 + sgn(3) * 100
+        $c := sh_left(3, 33) + sh_right(-64, 3) + sh_left(1, -1)
+        $d := msb(-1000) * 1000 + lsb(-1000)
+        $e := ms_to_ticks(2147483647) + ticks_to_ms(-2000)
+        $f := in_range(5, 1, 5) + in_range(6, 1, 5) * 10 + in_range(-1, -1, 0) * 100
+        $g := min(3, -4) + max(3, -4) * 10
+        $h := real_to_int(-7.9) + int(2.5) * 10 + real_to_int(1.0e30)
+        $i := num_elements(%t) + 0
+        $j := sgn(-0.0) + abs(-3) * 10
+        $k := min(3, 2) + ($j mod 3)
+        $l := 0
+        end on",
+    );
+}
+
+#[test]
+fn real_builtins_match_the_interpreter() {
+    assert_init_equivalent(
+        "on init
+        declare ~a := 0.0
+        declare ~b := 0.0
+        declare ~c := 0.0
+        declare ~d := 0.0
+        declare ~e := 0.0
+        declare ~f := 0.0
+        declare ~g := 0.0
+        declare ~h := 0.0
+        declare ~i := 0.0
+        declare ~j := 0.0
+        declare ~k := 0.0
+        declare $n := 0
+        ~a := round(2.5) + round(-2.5) * 10.0 + round(0.49999999999999994)
+        ~b := sqrt(2.0) + exp(1.5) + log(10.0) + log10(1000.0)
+        ~c := sin(0.5) + cos(0.5) + tan(0.5) + atan(0.5) + asin(0.5) + acos(0.5)
+        ~d := pow(2.0, 0.5) + floor(-1.5) + ceil(-1.5)
+        ~e := abs(-1.25) + int_to_real(7) + real(-3)
+        ~f := min(1.5, -2.5) + max(1.5, -2.5)
+        ~g := 1.0 / 3.0 + int_to_real(int(-0.5))
+        ~h := log(0.0) * 0.0
+        ~i := int_to_real(sgn(-2.5))
+        ~j := int_to_real(in_range(0.25, 0.0, 0.5))
+        ~k := ~a + ~b
+        $n := sgn(~k)
+        end on",
+    );
+}
+
+#[test]
+fn search_and_sort_match_the_interpreter() {
+    assert_init_equivalent(
+        "on init
+        declare %a[6] := (5, 3, 9, 3, -1, 7)
+        declare %b[4] := (4, 2)
+        declare $i := 0
+        declare $j := 0
+        declare $k := 0
+        declare $m := 0
+        $i := search(%a, 3)
+        $j := search(%a, 3, 2, 5)
+        $k := search(%a, 42)
+        $m := search(%b, 0)
+        sort(%a, 0, 1, 4)
+        sort(%b, 1)
+        end on",
+    );
+}
+
+#[test]
+fn messages_are_recorded_in_call_order() {
+    assert_init_equivalent(
+        "on init
+        declare $x := 4
+        message(\"first\")
+        message($x)
+        message(\"\")
+        end on",
+    );
+}

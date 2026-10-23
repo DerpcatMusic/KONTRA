@@ -39,6 +39,7 @@ pub struct Host {
     seq: u64,
     queue: BTreeMap<(u64, u64), Job>,
     engine: Rc<RefCell<BTreeMap<[i64; 4], i64>>>,
+    messages: Rc<RefCell<Vec<String>>>,
     budget: Rc<Budget>,
 }
 
@@ -75,6 +76,21 @@ impl Host {
             .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
+        let messages = Rc::new(RefCell::new(Vec::new()));
+        let store = Rc::clone(&messages);
+        host.set(
+            "message",
+            lua.create_function(move |_, text: String| {
+                // The interpreter keeps the first 1000 messages (`eval.rs`, Message).
+                let mut store = store.borrow_mut();
+                if store.len() < 1000 {
+                    store.push(text);
+                }
+                Ok(())
+            })
+            .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
         let cell_table = lua.create_table().map_err(|e| e.to_string())?;
         for i in 1..=i64::from(cells) {
             cell_table.raw_set(i, 0.0).map_err(|e| e.to_string())?;
@@ -101,6 +117,7 @@ impl Host {
             seq: 0,
             queue: BTreeMap::new(),
             engine,
+            messages,
             budget,
         })
     }
@@ -199,6 +216,11 @@ impl Host {
     /// Script text cells.
     pub fn texts(&self, count: u32) -> Vec<String> {
         (1..=i64::from(count)).map(|i| self.texts.raw_get::<String>(i).unwrap_or_default()).collect()
+    }
+
+    /// `message()` texts, in call order.
+    pub fn messages(&self) -> Vec<String> {
+        self.messages.borrow().clone()
     }
 
     /// `set_engine_par` writes, keyed `[parameter, group, slot, generic]`.
