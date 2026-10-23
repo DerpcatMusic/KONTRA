@@ -37,7 +37,7 @@ pub(super) fn tan_poly(x: f32) -> f32 {
 }
 
 /// `1419529e0` with x = pi f / fs, the argument rounded to f32 as the native `cvtpd2ps`.
-fn tan_series(f: f32, fs: f32) -> f32 {
+pub(super) fn tan_series(f: f32, fs: f32) -> f32 {
     tan_poly((f64::from(f) * std::f64::consts::PI / f64::from(fs)) as f32)
 }
 
