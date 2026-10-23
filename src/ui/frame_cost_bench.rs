@@ -3,7 +3,7 @@
 //! `KONTRA_FRAME_SCENARIO=hover cargo test --release -p kontakto --lib frame_cost -- --ignored --nocapture`
 //! Scenarios: idle (display-tick watch only), hover, drag, focus, meter, readout,
 //! resize, hidpi2, hidpi3, tab, mixer (tab + live meters), sound (text-heavy tab),
-//! keys (lit keyboard), typing, wheel.
+//! keys (lit keyboard), typing, wheel, mixer16 (sixteen mixer strips, live meters).
 //! `KONTRA_FRAME_COUNT` sets the frames per scenario (default 120). Prints medians in
 //! ms: `build` (view closure), `layout` (`Ui::frame`, layout + scene), `encode` and
 //! `raster_cpu` (vello CPU paint with a warm glyph/image cache, as the editor's software
@@ -61,8 +61,20 @@ fn frame_cost() {
         v.get(v.len() / 2).copied().unwrap_or(0.)
     };
     // Scenario setup: the tab the scenario lives on, shown before timing starts.
+    if scenario == "mixer16" {
+        // Sixteen loaded parts, so the mixer shows sixteen strips.
+        p.shared.ensure_parts(16);
+        let mut sel = write(&p.selection);
+        sel.parts = (0..16)
+            .map(|i| Part {
+                path: format!("bench/strip{i}.nki").into(),
+                ..Default::default()
+            })
+            .collect();
+        sel.order = (0..16).collect();
+    }
     match scenario.as_str() {
-        "mixer" | "meter" => h.press("tab-mixer"),
+        "mixer" | "meter" | "mixer16" => h.press("tab-mixer"),
         "sound" => h.press("tab-sound"),
         _ => {}
     }
@@ -117,7 +129,7 @@ fn frame_cost() {
                 };
                 timed_frame(&mut h, input, &mut build, &mut layout);
             }
-            "meter" | "mixer" => {
+            "meter" | "mixer" | "mixer16" => {
                 // A live master meter: the watch runs frames on the animation clock.
                 p.shared.meters.master[0].store(0.5f32.to_bits(), Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(16));
