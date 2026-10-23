@@ -24,6 +24,8 @@ use super::theme::*;
 pub use crate::sound::tree::{NodeKind as Kind, NodeOutput as Output};
 use moose::mui::mui::prelude::*;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// One mixer node's settings: plain data the core fills and reads back.
@@ -153,6 +155,12 @@ fn colour(tree: &Tree, n: usize, root_slot: &dyn Fn(usize) -> usize) -> Color {
     )
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The strip keys built this frame, for the memo tests.
+    pub(crate) static BUILT: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The mixer: `pairs` host stereo pairs; `height` the room for a top strip.
 pub fn view(
     ui: &mut Ui,
@@ -206,7 +214,7 @@ fn family(
     let children: Vec<usize> = tree.children(n).collect();
     let folded = state.folded.contains(&tree.nodes[n].id);
     let colour = colour(tree, n, slot);
-    let mut parts = vec![strip(
+    let mut parts = vec![strip_memo(
         ui,
         tree,
         state,
@@ -233,6 +241,63 @@ fn family(
         );
     }
     row(parts).gap(1).align(Align::End).shrink(0)
+}
+
+/// One strip as a memo keyed by everything it reads: its node's settings, its
+/// place in the tree, the view state that shapes it, and its live level.
+/// Pan and fader drags, hover and focus reach the memo through the runtime,
+/// which rebuilds every memo on a button, key or pointer change. The level is
+/// in the key, not a leaf, because a kept memo would keep the meter's closure
+/// (painted once, not per frame); a silent strip keeps its memo.
+#[allow(clippy::too_many_arguments)]
+fn strip_memo(
+    ui: &mut Ui,
+    tree: &mut Tree,
+    state: &mut State,
+    n: usize,
+    pairs: u8,
+    height: f64,
+    colour: Color,
+    children: usize,
+    levels: &Levels,
+) -> El {
+    let node = &tree.nodes[n];
+    let key = node.id;
+    let meter = levels(n).map(f32::to_bits);
+    let renaming = state
+        .renaming
+        .as_ref()
+        .filter(|(id, _)| *id == key)
+        .map(|(_, text)| text.clone());
+    // Hashed here, so the borrows of the node end before the build takes the tree.
+    let deps = {
+        let mut hash = DefaultHasher::new();
+        key.hash(&mut hash);
+        (tree.depth(n), format!("{colour:?}"), children, pairs).hash(&mut hash);
+        (height.to_bits(), state.wide, state.folded.contains(&key)).hash(&mut hash);
+        (state.picking == Some(key), renaming).hash(&mut hash);
+        format!("{:?}{:?}", node.kind, node.output).hash(&mut hash);
+        (
+            &node.name,
+            node.parent.is_some(),
+            node.gain_db.to_bits(),
+            node.pan.to_bits(),
+            node.mute,
+            node.solo,
+        )
+            .hash(&mut hash);
+        (node.output_set, node.host, node.renamed).hash(&mut hash);
+        (&node.inserts, node.aux.map(|(a, g)| (a, g.to_bits()))).hash(&mut hash);
+        meter.hash(&mut hash);
+        hash.finish()
+    };
+    // The memo's root is a plain row: a memo root's own id is not surfaced.
+    ui.memo(format!("mt-memo-{key}"), deps, |ui| {
+        #[cfg(test)]
+        BUILT.with(|b| b.borrow_mut().push(key));
+        let el = strip(ui, tree, state, n, pairs, height, colour, children, levels);
+        row(vec![el]).gap(0).shrink(0)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -651,6 +716,121 @@ pub(crate) mod tests {
         (nodes[0].output, nodes[5].output) = (Output::Pair(0), Output::Pair(1));
         (nodes[3].output, nodes[3].output_set) = (Output::Pair(4), true);
         Tree { nodes }
+    }
+
+    /// Which strips a frame built: each memo rebuilds on the inputs it reads and no others.
+    #[test]
+    fn strip_memo_rebuilds_only_the_strips_that_read_a_change() {
+        use std::sync::Mutex;
+        let meter = Arc::new(Mutex::new([0f32; 2]));
+        let m = meter.clone();
+        let levels: Levels = Arc::new(move |n| if n == 2 { *m.lock().unwrap() } else { [0.; 2] });
+        let (mut ui, mut tree, mut state) = (Ui::default(), sample(), State::default());
+        let mut frame = |ui: &mut Ui, tree: &mut Tree, state: &mut State| -> Vec<u64> {
+            BUILT.with(|b| b.borrow_mut().clear());
+            let el = view(ui, tree, state, 2, 300., levels.clone());
+            ui.frame(
+                row([el]),
+                Some(Size::new(900., 400.)),
+                PointerInput::default(),
+                0.016,
+            )
+            .unwrap();
+            BUILT.with(|b| b.take())
+        };
+        let all = [1, 2, 3, 4, 5, 6];
+        assert_eq!(
+            frame(&mut ui, &mut tree, &mut state),
+            all,
+            "first frame builds every strip"
+        );
+        assert!(
+            frame(&mut ui, &mut tree, &mut state).is_empty(),
+            "an unchanged frame reuses all"
+        );
+        tree.nodes[2].name = "Close 2".into();
+        assert_eq!(
+            frame(&mut ui, &mut tree, &mut state),
+            [3],
+            "a name is read by its strip only"
+        );
+        tree.nodes[0].gain_db = -6.;
+        assert_eq!(
+            frame(&mut ui, &mut tree, &mut state),
+            [1],
+            "a fader is read by its strip only"
+        );
+        state.wide = true;
+        assert_eq!(
+            frame(&mut ui, &mut tree, &mut state),
+            all,
+            "the strip width is read by all"
+        );
+        state.wide = false;
+        frame(&mut ui, &mut tree, &mut state);
+        *meter.lock().unwrap() = [0.5, 0.5];
+        assert_eq!(
+            frame(&mut ui, &mut tree, &mut state),
+            [3],
+            "a live level is read by its strip only"
+        );
+    }
+
+    /// Rendered after each change, the kept strips paint what a fresh build paints.
+    #[test]
+    fn kept_strips_paint_what_a_fresh_build_paints() {
+        use moose::mui::mui::vello::{
+            self,
+            kurbo::Affine,
+            vello_cpu::{Pixmap, RenderContext, Resources},
+        };
+        let size = Size::new(900., 400.);
+        let paint = |ui: &mut Ui, tree: &mut Tree, wide: bool, levels: &Levels| -> Pixmap {
+            let mut state = State {
+                wide,
+                ..State::default()
+            };
+            let el = view(ui, tree, &mut state, 2, 300., levels.clone());
+            ui.frame(row([el]), Some(size), PointerInput::default(), 0.016)
+                .unwrap();
+            let mut ctx = RenderContext::new(900, 400);
+            let mut cache = vello::Cache::default();
+            let mut resources = Resources::default();
+            vello::paint(
+                &mut vello::Cpu {
+                    ctx: &mut ctx,
+                    resources: &mut resources,
+                    cache: &mut cache,
+                },
+                ui.scene().unwrap(),
+                Affine::scale(1.),
+            )
+            .unwrap();
+            let mut pix = Pixmap::new(900, 400);
+            ctx.render(&mut pix, &mut resources);
+            pix
+        };
+        let meter = Arc::new(std::sync::Mutex::new([0f32; 2]));
+        let m = meter.clone();
+        let levels: Levels = Arc::new(move |n| if n == 2 { *m.lock().unwrap() } else { [0.; 2] });
+        let (mut live, mut tree) = (Ui::default(), sample());
+        let mut check = |live: &mut Ui, tree: &mut Tree, wide: bool, what: &str| {
+            let kept = paint(live, tree, wide, &levels);
+            let fresh = paint(&mut Ui::default(), &mut tree.clone(), wide, &levels);
+            assert!(
+                kept.data() == fresh.data(),
+                "{what}: kept strips paint differently"
+            );
+        };
+        check(&mut live, &mut tree, false, "first frame");
+        check(&mut live, &mut tree, false, "unchanged");
+        tree.nodes[2].name = "Close 2".into();
+        check(&mut live, &mut tree, false, "renamed");
+        tree.nodes[0].gain_db = -6.;
+        check(&mut live, &mut tree, false, "fader");
+        check(&mut live, &mut tree, true, "wide");
+        *meter.lock().unwrap() = [0.5, 0.5];
+        check(&mut live, &mut tree, true, "meter");
     }
 
     #[test]
