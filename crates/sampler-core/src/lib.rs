@@ -1582,6 +1582,11 @@ impl Runtime {
         self.commands.len()
     }
 
+    /// Due frame of each scheduled command, earliest first (diagnostics).
+    pub fn pending_command_frames(&self) -> impl Iterator<Item = u64> + '_ {
+        self.commands.iter().map(|c| c.at)
+    }
+
     /// Frames silenced because finite source values overflowed during summation.
     /// Buses of the active plan.
     pub fn bus_count(&self) -> usize {
