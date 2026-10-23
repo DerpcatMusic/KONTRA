@@ -170,7 +170,7 @@ const SCENARIOS: &[Scenario] = &[
         name: "uvi-scripted-pad",
         source: Source::Uvi(
             "UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs",
-            "PAD Angela.uvip",
+            "Presets/04 Hybrid/Asak Dancer.uvip",
         ),
         seconds: 8.0,
         notes: pad,
@@ -598,6 +598,10 @@ fn stats(p: &Player) -> sampler_core::RuntimeStats {
 }
 
 fn percentile(sorted: &[u64], p: f64) -> u64 {
+    // UVI cells record no service times, so their service percentiles are empty.
+    if sorted.is_empty() {
+        return 0;
+    }
     sorted[((sorted.len() - 1) as f64 * p).round() as usize]
 }
 
