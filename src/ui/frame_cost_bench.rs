@@ -81,6 +81,11 @@ fn frame_cost() {
     h.idle(3);
     let (mut build, mut layout, mut paint_ms, mut encode_ms, mut watch_us) =
         (vec![], vec![], vec![], vec![], vec![]);
+    // The CPU fallback's retained renderer: each frame repaints what changed
+    // since the last one (`soft`), on the frame the scenario drew.
+    let mut soft_ms = vec![];
+    let mut verified = 0usize;
+    let mut soft = moose::mui::mui::vello::software::Renderer::new((1180, 780)).unwrap();
     let mut watch = Watch::default();
     // Any stable on-screen control serves as the pointer target.
     let a = tests::center(&h.ui, "tab-rack");
@@ -209,18 +214,49 @@ fn frame_cost() {
             let (enc, ras) = paint(&h.ui, scale);
             encode_ms.push(enc);
             paint_ms.push(enc + ras);
+            let (w, hgt) = ((1180. * scale) as u32, (780. * scale) as u32);
+            soft.resize((w, hgt)).unwrap();
+            let t = Instant::now();
+            soft.render(h.ui.scene().unwrap(), Affine::scale(scale))
+                .unwrap();
+            soft_ms.push(t.elapsed().as_secs_f64() * 1e3);
+            // KONTRA_FRAME_VERIFY=1: every repainted frame must equal a full frame.
+            if std::env::var_os("KONTRA_FRAME_VERIFY").is_some() {
+                let mut full = moose::mui::mui::vello::software::Renderer::new((w, hgt)).unwrap();
+                full.render(h.ui.scene().unwrap(), Affine::scale(scale))
+                    .unwrap();
+                if soft.pixels() != full.pixels() {
+                    let wp = w as usize;
+                    let bad: Vec<(usize, usize)> = soft
+                        .pixels()
+                        .chunks_exact(4)
+                        .zip(full.pixels().chunks_exact(4))
+                        .enumerate()
+                        .filter(|(_, (a, b))| a != b)
+                        .map(|(k, _)| (k % wp, k / wp))
+                        .collect();
+                    panic!(
+                        "{scenario} frame {i}: damage repaint differs from a full frame in {} px, first {:?} last {:?}",
+                        bad.len(),
+                        bad.first(),
+                        bad.last()
+                    );
+                }
+                verified += 1;
+            }
         }
     }
-    let (b, l, pt, en) = (
+    let (b, l, pt, en, sf) = (
         med(&mut build),
         med(&mut layout),
         med(&mut paint_ms),
         med(&mut encode_ms),
+        med(&mut soft_ms),
     );
     // Editor CPU per frame on the GPU path: build + layout + vello encode (raster is on the GPU).
     let total = b + l + en;
     println!(
-        "FRAME_COST scenario={scenario} frames={frames} watch_us={:.2} build_ms={b:.3} layout_ms={l:.3} encode_ms={en:.3} raster_cpu_ms={:.3} cpu_ms={total:.3} cpu_at_60fps={:.1}%",
+        "FRAME_COST scenario={scenario} frames={frames} verified={verified} watch_us={:.2} build_ms={b:.3} layout_ms={l:.3} encode_ms={en:.3} raster_cpu_ms={:.3} soft_ms={sf:.3} cpu_ms={total:.3} cpu_at_60fps={:.1}%",
         med(&mut watch_us),
         pt - en,
         total * 60. / 10.
