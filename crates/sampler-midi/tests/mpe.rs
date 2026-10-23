@@ -424,8 +424,9 @@ fn rpn_sensitivity_is_zone_wide_transactional_and_keeps_released_member_pitch() 
                 expression(&rt, active_a),
                 expression(&rt, active_b),
             ];
+            // 96 semitones is admitted; 97 is the first out-of-range sensitivity.
             assert_eq!(
-                apply(&mut mpe, &mut rt, packet(0xb0, a, 6, 96)),
+                apply(&mut mpe, &mut rt, packet(0xb0, a, 6, 97)),
                 Err(ApplyError::Core(Error::InvalidInput))
             );
             assert_eq!(mpe.pitch_ranges(), (12, 24));
