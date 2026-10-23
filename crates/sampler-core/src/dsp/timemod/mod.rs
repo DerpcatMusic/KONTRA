@@ -14,8 +14,8 @@ use super::replika::{self, ReplikaCore, ReplikaState, STATE_SLOTS};
 use super::{Planar, ProcessorState, flush};
 use crate::Error;
 use sampler_ir::fx::timemod::{
-    Allpass, Config, DelayTime, Interpolation, LfoShape, MAX_TAPS, MAX_VOICES, Native, Order, Rate, UviWave,
-    SweepLaw,
+    Allpass, Config, DelayTime, Interpolation, LfoShape, MAX_TAPS, MAX_VOICES, Native, Order, Rate, ReplikaControls,
+    UviWave, SweepLaw,
 };
 use std::f64::consts::{PI, TAU};
 
@@ -428,6 +428,14 @@ impl TimeMod {
         self.frames
     }
 
+    /// The Replika controls when this unit runs the mode-1 chain, which a bus then owns (`replika::Stage`).
+    pub(crate) fn stage_controls(&self) -> Option<ReplikaControls> {
+        match &self.cfg.line.as_ref()?.native {
+            Native::Replika(c) if replika::Stage::applies(self.rate as f32, c) => Some(*c),
+            _ => None,
+        }
+    }
+
     pub(crate) fn trace_frames(&self) -> u32 {
         if self.cfg.dry == 0. { self.cap.saturating_sub(GUARD) as u32 } else { 0 }
     }
@@ -467,6 +475,7 @@ impl TimeMod {
         block: &mut Planar,
         len: usize,
         tempo: f64,
+        mut stage: Option<&mut replika::Stage>,
     ) -> bool {
         let cfg = &self.cfg;
         let (cap, stages) = (self.cap, cfg.allpass.map_or(0, |a| usize::from(a.stages)));
@@ -474,6 +483,9 @@ impl TimeMod {
         // Reset validity, not the potentially long ring: a reused voice or a
         // faulted chain never reads samples from its previous lifetime.
         if state.aux[15] == 0. {
+            if let Some(stage) = stage.as_mut() {
+                stage.reset();
+            }
             slab[if cfg.line.as_ref().is_some_and(|l| l.native != Native::None) { 0 } else { cap }..].fill([0.; 2]);
             (state.aux[6], state.aux[7]) = (0., 0.);
             let phase = cfg.lfo.phase;
@@ -503,7 +515,7 @@ impl TimeMod {
             state.aux[15] = 1.;
         }
         if let Some(core) = &self.replika {
-            return self.replika_delay(slab, block, len, core);
+            return self.replika_delay(slab, block, len, core, stage);
         }
         if let Some(law) = &self.bank {
             return law.process(slab, block, len, [cfg.dry, cfg.wet]);
@@ -888,15 +900,27 @@ impl TimeMod {
     /// Kontakt Legacy Delay audio (0x140aa1130, stereo branch), f32 operation
     /// order. The low-pass states lag one sample and are both the wet output
     /// and the recirculated signal; `pan` crosses the channels.
-    /// Replika core (`dsp::replika`) in place over `block`. The rings are the first `cap` slab entries and the
-    /// packed state the `STATE_SLOTS` after them. Returns whether the output went nonfinite.
-    fn replika_delay(&self, slab: &mut [[f64; 2]], block: &mut Planar, len: usize, core: &ReplikaCore) -> bool {
+    /// Replika core (`dsp::replika`) in place over `block`. Mode 0 runs from the slab: the rings are the first `cap`
+    /// slab entries and the packed state the `STATE_SLOTS` after them. A bus's mode-1 stage (`stage`) keeps its own
+    /// state across blocks instead. Returns whether the output went nonfinite.
+    fn replika_delay(
+        &self,
+        slab: &mut [[f64; 2]],
+        block: &mut Planar,
+        len: usize,
+        core: &ReplikaCore,
+        stage: Option<&mut replika::Stage>,
+    ) -> bool {
         let input = *block;
-        let (rings, slots) = slab.split_at_mut(self.cap);
-        let mut st = ReplikaState::load(self.rate as f32, slots);
         let [out_l, out_r] = block;
-        core.process(&mut st, rings, [&input[0][..len], &input[1][..len]], [&mut out_l[..len], &mut out_r[..len]]);
-        st.store(slots);
+        if let Some(stage) = stage {
+            stage.process([&input[0][..len], &input[1][..len]], [&mut out_l[..len], &mut out_r[..len]]);
+        } else {
+            let (rings, slots) = slab.split_at_mut(self.cap);
+            let mut st = ReplikaState::load(self.rate as f32, slots);
+            core.process(&mut st, rings, [&input[0][..len], &input[1][..len]], [&mut out_l[..len], &mut out_r[..len]]);
+            st.store(slots);
+        }
         out_l[..len].iter().chain(out_r[..len].iter()).any(|x| !x.is_finite())
     }
 

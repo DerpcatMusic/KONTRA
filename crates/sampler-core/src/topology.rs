@@ -708,7 +708,7 @@ impl Runtime {
                         tempo: self.tempo,
                         bank: filters,
                         expression: Some((note.expression, stage_expression)),
-                        spaces: &mut [], stereo_tunes: &mut [],
+                        spaces: &mut [], stereo_tunes: &mut [], replikas: &mut [],
                     },
                     at,
                     feeds: &mut generation.dsp.feeds,

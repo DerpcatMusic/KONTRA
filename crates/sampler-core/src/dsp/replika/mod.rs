@@ -599,7 +599,9 @@ mod design;
 mod head;
 mod mode1;
 mod read;
+mod stage;
 mod start;
 mod write;
+pub(crate) use stage::Stage;
 #[cfg(test)]
 mod tests;
