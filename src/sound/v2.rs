@@ -3711,6 +3711,7 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::TimeMod(_) => "Delay / modulation",
             ir::Processor::Phaser(_) | ir::Processor::LivePhaser { .. } => "Phaser filter",
             ir::Processor::RingMod(_) => "Ring modulator",
+            ir::Processor::StereoTune(_) => "Stereo Tune",
             ir::Processor::Formant(_) => "Formant I",
             ir::Processor::FilterBank(c) => match c.topology {
                 ir::fx::filter::Topology::FormantII => "Formant II",

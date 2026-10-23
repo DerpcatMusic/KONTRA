@@ -231,7 +231,7 @@ fn severity_index(s: Severity) -> usize {
 
 /// Load records from a run file or a directory of runs (dedup as the summary does).
 fn records(run: &Path) -> Vec<Value> {
-    crate::all_records(run)
+    super::all_records(run)
         .into_iter()
         .filter(|r| r["status"] != "started")
         .filter(|r| {
