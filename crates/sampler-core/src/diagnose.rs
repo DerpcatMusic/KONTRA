@@ -153,10 +153,16 @@ impl SilentNote {
 /// records of that note and the script faults seen. `None` if a region
 /// was accepted (the silence is not the selection's).
 pub fn why_silent(key: u8, records: &[SelectionRecord], faults: &[ScriptFault]) -> Option<String> {
-    if let Some(r) = records.iter().find(|r| r.key == key && r.suppressed) {
+    let mine: Vec<&SelectionRecord> = records.iter().filter(|r| r.key == key).collect();
+    // An accepted region on this key means the selection did not silence it, even when a
+    // different attack on the same key was suppressed by the script.
+    if mine.iter().any(|r| SilentNote::from_record(r).is_none()) {
+        return None;
+    }
+    if let Some(r) = mine.iter().find(|r| r.suppressed) {
         return SilentNote::from_record(r).map(|n| n.message(faults));
     }
-    let Some(record) = records.iter().find(|r| r.key == key) else {
+    let Some(record) = mine.first() else {
         return Some(format!("key {key}: no selection was recorded"));
     };
     SilentNote::from_record(record).map(|n| n.message(faults))
@@ -219,6 +225,15 @@ mod tests {
         );
         assert_eq!(
             why_silent(60, &[record(60, false, &[None, group])], &[]),
+            None
+        );
+        // A stray suppressed attack on the key must not outrank the accepted one.
+        assert_eq!(
+            why_silent(
+                60,
+                &[record(60, true, &[]), record(60, false, &[None, group])],
+                &[],
+            ),
             None
         );
         let note = SilentNote {
