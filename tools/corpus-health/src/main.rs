@@ -72,7 +72,7 @@ const MAX_TAIL_SECONDS: f64 = 5.0;
 /// Longest a script may keep owing events after release before the probe gives up
 /// and reports them as `pending_script_events` rather than as stuck voices.
 const SETTLE_MAX_SECONDS: f64 = 30.0;
-const VELOCITY: u8 = 64;
+const VELOCITY: u8 = 100;
 
 #[derive(Clone, Debug)]
 enum Item {
@@ -989,6 +989,13 @@ impl Playable {
             Self::Scripted(program) => &program.instrument,
         }
     }
+    fn plan(&self) -> &sampler_core::Prepared {
+        match self {
+            Self::Plan(loaded) => &loaded.plan,
+            Self::Streamed(stream) => &stream.loaded.plan,
+            Self::Scripted(program) => &program.plan,
+        }
+    }
 }
 
 fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Result<Sound, String> {
@@ -1000,6 +1007,9 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         Subject::Ir(_) => return Err("prepare: no plan".into()),
     };
     let held = held_neighbour(subject.instrument(), pick.key);
+    // Like the plugin's power-on: controllers script init set keep init's value.
+    let init: Vec<u8> = subject.plan().initialized_controllers().collect();
+    let ccs: Vec<(u8, u8)> = ccs.iter().copied().filter(|(cc, _)| !init.contains(cc)).collect();
     let (rate, limits) = match &subject {
         Playable::Plan(l) => (l.plan.sample_rate(), limits_for(&l.plan)),
         Playable::Streamed(s) => (s.loaded.plan.sample_rate(), limits_for(&s.loaded.plan)),

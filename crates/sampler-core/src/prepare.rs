@@ -1295,6 +1295,12 @@ impl Prepared {
         })
     }
 
+    /// Controllers the plan's init writes set. Host power-on defaults must not
+    /// override these: init runs first and its values are the instrument's own.
+    pub fn initialized_controllers(&self) -> impl Iterator<Item = u8> + '_ {
+        self.initial_controllers.iter().map(|&(controller, _)| controller)
+    }
+
     /// Positive Constant onset through the actual prepared cursor/skip law.
     /// Only looped forward cursors qualify. Loop controls and complex segments remain unsupported;
     /// the returned descriptor still checks each requested physical window.

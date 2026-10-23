@@ -437,6 +437,7 @@ impl Part {
             script: None,
             execution_actor:PartExecutionActor::default(),
         };
+        wire_packet(&mut part, &[sampler_kontakt::POWER_ON_BEND]);
         for &(cc, value) in power {
             wire_event(&mut part, 0xb0, cc, value);
         }
@@ -4333,6 +4334,11 @@ impl V2Loader {
                 (prepared, Some(reader))
             }
         };
+        // Read before the plan moves into the runtime: init-set controllers keep their values.
+        let power = instrument
+            .as_deref()
+            .map(|i| sampler_kontakt::power_on_for(i, &prepared))
+            .unwrap_or_default();
         let (runtime, control) = Runtime::with_plan_updates_and_note_capacity_cancelable(
             prepared,
             limits,
@@ -4393,7 +4399,6 @@ impl V2Loader {
         }
         let grower = Grower::start(&mut runtime, control, ceiling, per_voice, limits.notes)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
-        let power = instrument.as_deref().map(sampler_kontakt::power_on_ccs).unwrap_or_default();
         let mut part = Part::new_profile(runtime, tree.clone(),if request.mpe_upper{Zone::Upper}else{Zone::Lower}, &power)?;
         part.install_uvi_meter_buses(scripts.uvi_meter_buses.clone(), &interfaces);
         part.waveform_sources = waveform_sources;
