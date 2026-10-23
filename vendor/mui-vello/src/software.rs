@@ -51,9 +51,9 @@ impl Renderer {
         Ok(Self {
             ctx: context(size),
             resources: vello_cpu::Resources::default(),
-            // Stateless glyphs: a partial repaint must match a whole frame.
+            // Atlas glyphs from the first use: a partial repaint must match a whole frame.
             cache: Cache {
-                stateless_glyphs: true,
+                atlas_always: true,
                 ..Default::default()
             },
             pixels: Pixmap::new(size.0, size.1),
@@ -120,10 +120,16 @@ impl Renderer {
         };
         let (fw, fh) = (self.pixels.width(), self.pixels.height());
         let part = part.and_then(|r| {
-            let (x0, y0) = (r.x0.floor().max(0.), r.y0.floor().max(0.));
+            // vello_cpu rasterises in 4 px tiles from its context origin. A box
+            // off that grid rasterises atlas glyph edges differently from a full
+            // frame (a few px per typed glyph), so the box snaps to the grid.
+            let (x0, y0) = (
+                (r.x0 / 4.).floor().max(0.) * 4.,
+                (r.y0 / 4.).floor().max(0.) * 4.,
+            );
             let (x1, y1) = (
-                r.x1.ceil().min(f64::from(fw)),
-                r.y1.ceil().min(f64::from(fh)),
+                ((r.x1 / 4.).ceil() * 4.).min(f64::from(fw)),
+                ((r.y1 / 4.).ceil() * 4.).min(f64::from(fh)),
             );
             // Half the frame or more: one whole-frame pass is cheaper than a crop.
             let area = (x1 - x0) * (y1 - y0);

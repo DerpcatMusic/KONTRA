@@ -220,6 +220,10 @@ fn frame_cost() {
             soft.render(h.ui.scene().unwrap(), Affine::scale(scale))
                 .unwrap();
             soft_ms.push(t.elapsed().as_secs_f64() * 1e3);
+            // KONTRA_FRAME_DUMP=path: the last painted frame's raw premultiplied RGBA.
+            if let Some(path) = std::env::var_os("KONTRA_FRAME_DUMP") {
+                std::fs::write(path, soft.pixels()).unwrap();
+            }
             // KONTRA_FRAME_VERIFY=1: every repainted frame must equal a full frame.
             if std::env::var_os("KONTRA_FRAME_VERIFY").is_some() {
                 let mut full = moose::mui::mui::vello::software::Renderer::new((w, hgt)).unwrap();
