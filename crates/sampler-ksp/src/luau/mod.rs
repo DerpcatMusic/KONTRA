@@ -15,6 +15,7 @@ use std::fmt::Write;
 pub mod host;
 mod controls;
 mod pgs;
+mod record;
 #[cfg(test)]
 mod tests;
 
@@ -185,6 +186,13 @@ fn compare(host: &host::Host, lowered: &Lowered, expected: &crate::eval::Initial
     if host.pgs_text() != expected.model.pgs_text {
         return Err("PGS text keys differ".into());
     }
+    let ui = host.interface();
+    let want = &expected.model.interface;
+    let got = (ui.width_px, ui.height_px, ui.height_grid, ui.skin_offset, ui.performance_view, &ui.messages);
+    let wanted = (want.width_px, want.height_px, want.height_grid, want.skin_offset, want.performance_view, &want.messages);
+    if got != wanted {
+        return Err(format!("interface differs: interpreter {wanted:?}, luau {got:?}"));
+    }
     if host.title() != expected.model.interface.title {
         return Err(format!("script title differs: interpreter {:?}, luau {:?}", expected.model.interface.title, host.title()));
     }
@@ -217,6 +225,7 @@ pub fn compile(hir: &Hir) -> Compiled {
     controls::guard(hir, &mut c.unsupported);
     c.out.push_str(PRELUDE);
     c.out.push_str(pgs::PRELUDE);
+    c.out.push_str(record::PRELUDE);
     c.out.push_str("local CB = {}\n");
     c.out.push_str("local SEP, GEP = HOST.set_engine_par, HOST.get_engine_par\n");
     if !hir.functions.is_empty() {
@@ -729,7 +738,7 @@ impl Compiler<'_> {
                 let name = if builtin == Builtin::SetEnginePar { "SEP" } else { "GEP" };
                 format!("{name}({})", parts.join(", "))
             }
-            other => match self.control_builtin(other, args).or_else(|| self.pgs_builtin(other, args)) {
+            other => match self.control_builtin(other, args).or_else(|| self.pgs_builtin(other, args)).or_else(|| self.record_builtin(other, args)) {
                 Some(call) => call,
                 None => self.unsupported(&format!("builtin {}", other.name())),
             },

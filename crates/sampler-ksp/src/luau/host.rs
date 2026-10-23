@@ -26,6 +26,17 @@ struct Job {
     ends_note: bool,
 }
 
+/// The interface fields the Luau path models, as `Initial::model.interface` holds them.
+#[derive(Debug, Default, PartialEq)]
+pub struct UiFields {
+    pub width_px: Option<i32>,
+    pub height_px: Option<i32>,
+    pub height_grid: Option<i32>,
+    pub skin_offset: Option<i32>,
+    pub performance_view: bool,
+    pub messages: Vec<String>,
+}
+
 pub struct Host {
     lua: Lua,
     rate: u32,
@@ -334,6 +345,24 @@ impl Host {
     pub fn pgs_text(&self) -> BTreeMap<String, String> {
         let Ok(table) = self.callbacks.get::<Table>("pgs_text") else { return BTreeMap::new() };
         table.pairs::<String, String>().filter_map(Result::ok).collect()
+    }
+
+    /// The interface fields this path models (`Initial::model.interface`).
+    pub fn interface(&self) -> UiFields {
+        let mut out = UiFields::default();
+        let Ok(model) = self.callbacks.get::<Table>("model") else { return out };
+        if let Ok(ui) = model.get::<Table>("ui") {
+            let int = |key: &str| ui.get::<Option<i64>>(key).ok().flatten().map(|n| n as i32);
+            out.width_px = int("width_px");
+            out.height_px = int("height_px");
+            out.height_grid = int("height_grid");
+            out.skin_offset = int("skin_offset");
+            out.performance_view = ui.get::<bool>("performance_view").unwrap_or(false);
+        }
+        if let Ok(messages) = model.get::<Table>("messages") {
+            out.messages = messages.sequence_values::<String>().filter_map(Result::ok).collect();
+        }
+        out
     }
 
     /// `set_script_title`'s last title (`Initial::model.interface.title`).
