@@ -4271,6 +4271,7 @@ version = "0.1.0"
 name = "sampler-script"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "mlua",
 ]
 

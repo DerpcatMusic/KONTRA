@@ -297,6 +297,9 @@ pub struct Config {
     pub callback_work: u64,
     /// Bytes the Lua state may allocate.
     pub memory: usize,
+    /// Native codegen for this program's VM. Off by default: codegen costs load
+    /// time on every chunk, and callbacks are far below the audio budget interpreted.
+    pub jit: sampler_script::Jit,
     /// The host's sample rate, for `getSamplingRate` and the sample conversions.
     pub rate: f64,
     /// Explicit audit seed; absent from normal builds and user preferences.
@@ -345,6 +348,7 @@ impl Default for Config {
             load_work: 1 << 25,
             callback_work: 1 << 20,
             memory: 1536 << 20,
+            jit: sampler_script::Jit::Interpreter,
             rate: 48000.0,
             #[cfg(feature = "scan")]
             audit_seed: None,
@@ -1158,6 +1162,18 @@ fn field(table: &Table, name: &str) -> Option<f64> {
     table.get::<Value>(name).ok().as_ref().and_then(number)
 }
 
+/// Bytes to hand `lua.load`: cached Luau bytecode when available, else the
+/// source. Inspection builds need the coverage compiler, so they always load
+/// source. A cache failure falls back to source, which reports the error.
+fn chunk_bytes(inspected: bool, source: &[u8]) -> Vec<u8> {
+    if !inspected {
+        if let Ok(bytes) = sampler_script::cached_bytecode(sampler_script::cache_dir().as_deref(), source) {
+            return bytes;
+        }
+    }
+    source.to_vec()
+}
+
 fn lua_error(e: mlua::Error) -> String {
     // The message plus the innermost frames (file:line), not the whole trace.
     let text = e.to_string();
@@ -1478,7 +1494,7 @@ impl ScriptHost {
         let lua = {
             let _profile = profile.span("vm_create");
             let _span = Span::new("uvi_lua_vm");
-            sampler_script::new_vm(config.memory).map_err(lua_error)?
+            sampler_script::new_vm_with(config.memory, config.jit).map_err(lua_error)?
         };
         #[cfg(feature = "scan")]
         if let Some(seed) = config.audit_seed {
@@ -2495,9 +2511,10 @@ impl ScriptHost {
                     s.profile.register_chunk(&name);
                 }
                 let chunk_name = resolved_name.unwrap_or(name);
-                let bytes = source.as_bytes();
-                let mut chunk = lua.load(bytes.as_ref()).set_name(&chunk_name).set_environment(lua.globals());
-                if s.inspection.borrow().is_some() {
+                let inspected = s.inspection.borrow().is_some();
+                let bytes = chunk_bytes(inspected, &source.as_bytes());
+                let mut chunk = lua.load(bytes).set_name(&chunk_name).set_environment(lua.globals());
+                if inspected {
                     chunk =
                         chunk.set_compiler(mlua::chunk::Compiler::default().set_coverage_level(1));
                 }
@@ -3066,8 +3083,9 @@ impl ScriptHost {
                     let compile_profile=self.shared.profile.span("root_script_compile");
                     let chunk_name=if self.shared.inspection.borrow().is_some(){format!("uvi-script-{}",script.id().get_usize())}else{"script".into()};
                     self.shared.profile.register_chunk(&chunk_name);
-                    let mut chunk=self.lua.load(text).set_name(&chunk_name).set_environment(environment.clone());
-                    if self.shared.inspection.borrow().is_some(){chunk=chunk.set_compiler(mlua::chunk::Compiler::default().set_coverage_level(1));}
+                    let inspected=self.shared.inspection.borrow().is_some();
+                    let mut chunk=self.lua.load(chunk_bytes(inspected,text.as_bytes())).set_name(&chunk_name).set_environment(environment.clone());
+                    if inspected{chunk=chunk.set_compiler(mlua::chunk::Compiler::default().set_coverage_level(1));}
                     let function=chunk.into_function().map_err(lua_error)?;
                     if let Some(inspection)=self.shared.inspection.borrow_mut().as_mut(){inspection.register(crate::parity::script_id(script),chunk_name,text,function.clone());}
                     drop(compile_profile);
