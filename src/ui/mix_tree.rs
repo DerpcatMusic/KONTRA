@@ -291,7 +291,7 @@ fn strip_memo(
         meter.hash(&mut hash);
         hash.finish()
     };
-    // The memo's root is a plain row: a memo root's own id is not surfaced.
+    // The strip is wrapped in a plain row so the memo root carries no id of its own.
     ui.memo(format!("mt-memo-{key}"), deps, |ui| {
         #[cfg(test)]
         BUILT.with(|b| b.borrow_mut().push(key));
