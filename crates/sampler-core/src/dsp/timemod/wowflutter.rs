@@ -1,15 +1,17 @@
 //! Wow / Flutter (Kontakt 0x6A) as a generic tape-transport pitch wobble.
 //!
-//! This is a generic law, not a reproduction of the Kontakt kernel: the decompiled
-//! Wow / Flutter core is not yet extracted (docs/re/engine/k-lofi-tape.md). Two
-//! sine modulators move a fractional read of a short ring around a fixed base
-//! delay. A peak pitch deviation `p` at modulation rate `f` needs an excursion of
-//! `p / (2π f)` seconds, so wow (0.5 %, 0.5..2 Hz) and flutter (0.2 %, 6..12 Hz) are
-//! set by their depths. The right channel's phase trails the left by `stereo / 2`
-//! cycles. The output is the line's wet signal; the mix is the wet gain.
+//! Generic pitch law under the resolved Kontakt controls. The controls arrive already
+//! mapped (`wow_flutter_laws` in sampler-kontakt; docs/re/engine/k-wowflutter-kernel.md
+//! pass 4): `wow` and `flutter` are depth multipliers, `speed` is the rate multiplier,
+//! `stereo` the right-channel phase offset (squared control). Two sine modulators move
+//! a fractional read of a short ring around a fixed base delay. A peak pitch deviation
+//! `p` at modulation rate `f` needs an excursion of `p / (2π f)` seconds. The output is
+//! the line's wet signal; the mix is the wet gain.
 //! Scrape, age, saturation and gate are not modelled (reported by the mapper).
-// ponytail: generic laws, no Kontakt measurement yet. Upgrade with the decompiled
-// core or Kontakt vectors and replace the constants below.
+// ponytail: the pitch scale (peak constants, base rates, phase mapping) is still generic:
+// the LFO entry init (+0x1c/+0x20/+0x68/+0x98) is unresolved. Excursions clamp to the
+// ring, so a slow deep wow flattens instead of wrapping. Upgrade when the base rates
+// are measured.
 use super::{Planar, ProcessorState, TimeMod};
 use sampler_ir::fx::timemod::WowFlutter;
 use std::f64::consts::TAU;
@@ -17,9 +19,11 @@ use std::f64::consts::TAU;
 /// Base delay in ms, and the longest excursion the ring must hold.
 const BASE_MS: f64 = 8.0;
 const MAX_MS: f64 = 12.0;
-/// Peak pitch deviation at full wow / flutter depth.
+/// Peak pitch deviation at unit depth, and base modulation rates at unit speed (unconfirmed).
 const WOW_PEAK: f64 = 0.005;
 const FLUTTER_PEAK: f64 = 0.002;
+const WOW_HZ: f64 = 1.0;
+const FLUTTER_HZ: f64 = 8.0;
 /// Samples kept beyond the longest read for the interpolation neighbour.
 const GUARD: usize = 4;
 
@@ -43,8 +47,8 @@ impl TimeMod {
     ) -> bool {
         let rate = self.rate;
         let n = ring(rate);
-        let wow_hz = 0.5 + 1.5 * f64::from(w.speed);
-        let flutter_hz = 6. + 6. * f64::from(w.speed);
+        let wow_hz = WOW_HZ * f64::from(w.speed);
+        let flutter_hz = FLUTTER_HZ * f64::from(w.speed);
         // Excursions in frames: peak deviation / (2π f) seconds, times the rate.
         let wow_frames = f64::from(w.wow) * WOW_PEAK / (TAU * wow_hz) * rate;
         let flutter_frames = f64::from(w.flutter) * FLUTTER_PEAK / (TAU * flutter_hz) * rate;
@@ -63,9 +67,11 @@ impl TimeMod {
             let mut y = [0f64; 2];
             for (c, out) in y.iter_mut().enumerate() {
                 let shift = c as f64 * stereo;
-                let delay = base
+                // Clamped to the ring: a slow, deep excursion flattens rather than wrapping.
+                let delay = (base
                     + wow_frames * (TAU * (pw + shift)).sin()
-                    + flutter_frames * (TAU * (pf + shift)).sin();
+                    + flutter_frames * (TAU * (pf + shift)).sin())
+                .clamp(0., (n - GUARD) as f64);
                 let p = (write as f64 - delay).rem_euclid(n as f64);
                 // The clamp guards a rounded `rem_euclid` that lands exactly on `n`.
                 let i = (p as usize).min(n - 1);
