@@ -6,7 +6,7 @@
 
 use super::{Compiled, controls};
 use mlua::{Function, Lua, MultiValue, Table, Thread, Value, VmState};
-use sampler_script::{Budget, new_vm};
+use sampler_script::{Budget, Jit, cache_dir, cached_bytecode, new_vm_with};
 use std::{cell::RefCell, collections::{BTreeMap, HashMap}, rc::Rc};
 
 /// Checkpoints one callback may spend before it is aborted (deterministic, not timed).
@@ -21,8 +21,6 @@ struct Job {
     note: u32,
     /// A release callback: its note's polyphonic cells are freed once it finishes.
     ends_note: bool,
-    /// Event arguments, passed on the first resume only.
-    args: Vec<Value>,
 }
 
 pub struct Host {
@@ -31,6 +29,17 @@ pub struct Host {
     cells: Table,
     texts: Table,
     callbacks: Table,
+    /// `note` and `release` callbacks, looked up once.
+    note_fn: Option<Function>,
+    release_fn: Option<Function>,
+    /// The chunk's pooled thread body (see `RUNNER` in `luau::compile`).
+    runner: Function,
+    /// Coroutines that finished their last callback, ready for the next job.
+    free: Vec<Thread>,
+    /// Note tables of ended notes, cleared and reused by the next note.
+    free_notes: Vec<Table>,
+    /// Note whose table is currently `NV` in the VM.
+    selected: Option<u32>,
     select_note: Function,
     /// Polyphonic cells per note id.
     notes: BTreeMap<u32, Table>,
@@ -46,8 +55,16 @@ pub struct Host {
 impl Host {
     /// Load `compiled` for an instrument with `cells`/`texts` script cells and
     /// `note_cells` polyphonic cells per note. Every cell starts at zero or "".
+    /// Interpreted VM; see [`Host::new_with`] for the native-code option.
     pub fn new(compiled: &Compiled, cells: u32, texts: u32, note_cells: u16, rate: u32) -> Result<Self, String> {
-        let lua = new_vm(MEMORY).map_err(|e| e.to_string())?;
+        Self::new_with(compiled, cells, texts, note_cells, rate, Jit::Interpreter)
+    }
+
+    /// As [`Host::new`] with an explicit codegen policy. Native code runs loop-heavy
+    /// callbacks 2-3x faster, but codegen runs at load (about 7 ms per VM), so it is
+    /// per instrument: [`Compiled::has_loops`] is the opt-in the caller should use.
+    pub fn new_with(compiled: &Compiled, cells: u32, texts: u32, note_cells: u16, rate: u32, jit: Jit) -> Result<Self, String> {
+        let lua = new_vm_with(MEMORY, jit).map_err(|e| e.to_string())?;
         let budget = Rc::new(Budget::new(CALLBACK_CHECKPOINTS, None));
         let hook = Rc::clone(&budget);
         lua.set_interrupt(move |_| {
@@ -87,17 +104,29 @@ impl Host {
         for i in 1..=i64::from(texts) {
             text_table.raw_set(i, "").map_err(|e| e.to_string())?;
         }
-        let chunk = lua.load(&compiled.source).set_name("ksp").into_function().map_err(|e| e.to_string())?;
+        // Bytecode from the content-hash cache (compiled once per source, reused by
+        // every instrument with the same script); `source` stays the key.
+        let bytes = cached_bytecode(cache_dir().as_deref(), compiled.source.as_bytes()).map_err(|e| e.to_string())?;
+        let chunk = lua.load(&bytes[..]).into_function().map_err(|e| e.to_string())?;
         let callbacks: Table = chunk
             .call((cell_table.clone(), text_table.clone(), lua.create_table().map_err(|e| e.to_string())?, host))
             .map_err(|e| e.to_string())?;
         let select_note: Function = callbacks.get("select_note").map_err(|e| e.to_string())?;
+        let runner: Function = callbacks.get("runner").map_err(|e| e.to_string())?;
+        let note_fn = callbacks.get("note").map_err(|e| e.to_string())?;
+        let release_fn = callbacks.get("release").map_err(|e| e.to_string())?;
         Ok(Self {
             lua,
             rate,
             cells: cell_table,
             texts: text_table,
             callbacks,
+            note_fn,
+            release_fn,
+            runner,
+            free: Vec::new(),
+            free_notes: Vec::new(),
+            selected: None,
             select_note,
             notes: BTreeMap::new(),
             note_cells,
@@ -125,22 +154,33 @@ impl Host {
 
     /// A note started at the current frame: `on note` with the key and velocity.
     pub fn note_on(&mut self, id: u32, key: i64, velocity: f64) -> Result<(), String> {
-        self.start("note", id, vec![Value::Integer(key), Value::Number(velocity)])
+        self.start(false, id, key, velocity)
     }
 
     /// A note ended at the current frame: `on release`.
     pub fn release(&mut self, id: u32, key: i64, velocity: f64) -> Result<(), String> {
-        self.start("release", id, vec![Value::Integer(key), Value::Number(velocity)])
+        self.start(true, id, key, velocity)
     }
 
-    fn start(&mut self, key: &str, note: u32, args: Vec<Value>) -> Result<(), String> {
-        let Some(func) = self.callbacks.get::<Option<Function>>(key).map_err(|e| e.to_string())? else {
+    fn start(&mut self, release: bool, note: u32, key: i64, velocity: f64) -> Result<(), String> {
+        let func = if release { &self.release_fn } else { &self.note_fn };
+        let Some(func) = func.clone() else {
+            // Nothing to run, but a released note still frees its polyphonic cells.
+            if release {
+                self.end_note(note);
+            }
             return Ok(());
         };
-        let thread = self.lua.create_thread(func).map_err(|e| e.to_string())?;
-        let job = Job { thread, carry: 0, note, ends_note: key == "release", args };
+        let thread = match self.free.pop() {
+            Some(thread) => thread,
+            None => self.lua.create_thread(self.runner.clone()).map_err(|e| e.to_string())?,
+        };
+        let notes = self.note_table(note)?;
+        let job = Job { thread, carry: 0, note, ends_note: release };
         let now = self.now;
-        self.resume(job, now)
+        self.selected = Some(note);
+        // First resume: the runner's arguments (callback, note table, key, velocity).
+        self.step(job, now, Some((func, notes, key, velocity)))
     }
 
     /// Render frames `[now, end)`: run every resumption due at a frame index below `end`,
@@ -157,19 +197,33 @@ impl Host {
         Ok(())
     }
 
-    /// Resume `job` at frame `at`, then keep it queued for its next wait or drop it when done.
-    fn resume(&mut self, mut job: Job, at: u64) -> Result<(), String> {
+    /// Resume `job` at frame `at`, then keep it queued for its next wait or return
+    /// its thread to the pool when the callback is done.
+    fn resume(&mut self, job: Job, at: u64) -> Result<(), String> {
         self.now = at;
-        let notes = self.note_table(job.note)?;
-        self.select_note.call::<()>(notes).map_err(|e| e.to_string())?;
+        if self.selected != Some(job.note) {
+            let notes = self.note_table(job.note)?;
+            self.select_note.call::<()>(notes).map_err(|e| e.to_string())?;
+            self.selected = Some(job.note);
+        }
+        self.step(job, at, None)
+    }
+
+    /// Run `job` until it waits (queued at its due frame) or finishes (thread pooled).
+    fn step(&mut self, mut job: Job, at: u64, start: Option<(Function, Table, i64, f64)>) -> Result<(), String> {
+        let mut first = start;
         loop {
             self.budget.refill(CALLBACK_CHECKPOINTS, None);
-            let args = MultiValue::from_vec(std::mem::take(&mut job.args));
-            let yielded: Option<i64> = job.thread.resume(args).map_err(|e| e.to_string())?;
-            if !matches!(job.thread.status(), mlua::thread::ThreadStatus::Resumable) {
+            let yielded: Option<i64> = match first.take() {
+                Some((f, t, k, v)) => job.thread.resume((f, t, k, v)),
+                None => job.thread.resume(()),
+            }
+            .map_err(|e| e.to_string())?;
+            if yielded == Some(-1) {
                 if job.ends_note {
-                    self.notes.remove(&job.note);
+                    self.end_note(job.note);
                 }
+                self.free.push(job.thread);
                 return Ok(());
             }
             let micros = yielded.unwrap_or(0).max(0);
@@ -184,11 +238,22 @@ impl Host {
         }
     }
 
+    /// Free a note's polyphonic cells: the table is cleared and pooled.
+    fn end_note(&mut self, note: u32) {
+        if let Some(t) = self.notes.remove(&note) {
+            self.free_notes.push(t);
+        }
+        self.selected = None;
+    }
+
     fn note_table(&mut self, note: u32) -> Result<Table, String> {
         if let Some(t) = self.notes.get(&note) {
             return Ok(t.clone());
         }
-        let t = self.lua.create_table().map_err(|e| e.to_string())?;
+        let t = match self.free_notes.pop() {
+            Some(t) => t,
+            None => self.lua.create_table().map_err(|e| e.to_string())?,
+        };
         for i in 1..=i64::from(self.note_cells) {
             t.raw_set(i, 0.0).map_err(|e| e.to_string())?;
         }
