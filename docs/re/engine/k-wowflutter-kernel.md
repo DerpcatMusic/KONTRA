@@ -52,3 +52,59 @@ Method: type → vtable → process → kernel, decompile cache only (no REA, no
 6. **Blocker B: `FUN_1443c9bb0`** (the sin/cos core behind `FUN_1443c9bd0`) and the constants `DAT_1447149b8`, `DAT_144714988`, `DAT_1447149e4`, `DAT_144714b90` (sign mask), `DAT_144714b70..7c` (lane increments), `DAT_144fc40e0`, `DAT_1447377cc`, `DAT_1447148f8`, `DAT_144fc4d18`. These need the PE `.rdata` read.
 
 Still missing for a port: (a) lambda_1..9 bodies (control→law), (b) the two fractional readers at `+0x30`/`+0x68`, (c) `FUN_14199ae00` from disassembly, (d) sin/cos core and PE constants, (e) a KEMU wrapper run that seeds the 10 control targets (`tools/re/kemu_timemod.py`). The generic law in `wowflutter.rs` stays **unconfirmed**; the Wow/Flutter parity row stays `partial`. No native vectors exist yet, so nothing is claimed as parity.
+
+## Pass 4 (2026-10-23): lambdas decoded, blocker (c) corrected, port still blocked
+
+Method: decompile cache (`source/kontakt8/0141990000.c`) cross-checked with radare2 disassembly of `Kontakt8.exe` (no analysis, `pD` at the address) and constants read with `pefile` from `.rdata`/`.data`. No REA, no Ghidra.
+
+### (a) Control -> law map (resolved)
+
+`FUN_14199de70` builds nine `_Func_impl_no_alloc` handlers at `this+0x78+0x40k`. Each handler's vtable slot 2 is the invoke function (vtables `0x1476a34c8 + 0x38·k`, read from PE). The handler reads its control from `this+0x4c+4k`, which the process loop (`FUN_14199d080`, `if (+0x358[k] != 0) this+0x4c+4k = +0x340[k]`) refreshes from the smoothers. Index `k` matches the TSV `index` column in `docs/re/kontakt-bindings/fx_bite_dirt_freak_wowflutter_twindelay.tsv` (WOW 0, FLUTTER 1, SCRAPE 2, SPEED 3, STEREO 4, AGE 5, SATURATION 6, GATE 7, MIX 8).
+
+| k | param | invoke | reads | writes | law (constants from PE) |
+|---|---|---|---|---|---|
+| 0 | WOW | `0x14199c1d0` | ctrl `+0x4c` | `+0x32fc` | `wow² · 4.0` (`DAT_1447149e4`) |
+| 1 | FLUTTER | `0x14199c1f0` | ctrl `+0x50` | `+0x3300` | `flutter² · 0.5` (`DAT_14470bad0`) |
+| 2 | SCRAPE | `0x14199c210` | ctrl `+0x54` | `+0x930` | `scrape · 0.5` |
+| 3 | SPEED | `0x14199c230` | ctrl `+0x58` | `+0x3304` | `speed · 0.75 + 0.05` (`DAT_144714900`, `DAT_1447148c0`) |
+| 4 | STEREO | `0x14199c260` | ctrl `+0x5c` | `+0x3308` | `stereo²` |
+| 5 | AGE | `0x14199c280` (463 B) | ctrl `+0x60` | `+0x3280`, then a loop | `age · 1.2` (`DAT_144f388bc`); loop over `this+0x940 + j·0x14a0`, j=0,1, per-channel drift state (see open items) |
+| 6 | SATURATION | `0x14199c450` | ctrl `+0x64` | calls `FUN_14199e660(this+0x680, sat)` | sets `+0x2c04 = sat`, `+0x2c0c = 1 + (DAT_144fd1c58 - 1)·sat` and per-tap filter coefs (`FUN_14199db20`); full law open |
+| 7 | GATE | `0x14199c470` | **`+0x31c`** (not `+0x68`) | `+0x3318` (flag), zeroes `+0x32e4` on change | `flag = (0.5 <= +0x31c)` |
+| 8 | MIX | `0x14199c4a0` | ctrl `+0x6c`, clamped to [0,1] | `+0x330c`, `+0x3310` | `wet = sqrt(m)`, `dry = sqrt(1 - m)` (equal-power, not linear) |
+
+Consequence for the port: the current generic law in `wowflutter.rs` (linear `wet`/`dry`, `wow` linear, sine excursions in ms) disagrees with the decoded control laws on every mapped parameter (quadratic wow/flutter, `sqrt` mix). The unconfirmed comment stays until vectors exist.
+
+Open inside (a): the GATE handler reads `+0x31c` while the ctrl slot is `+0x68`; one of the two readings is wrong or `+0x31c` is a second copy. Not resolved.
+
+### Process kernel `FUN_14199d080` (verified from decompile, constants from PE)
+
+- Smoother `+0x3290 = f` is the speed-derived rate multiplier (`this+0x3304` after smoothing).
+- LFO entries `E0 = this+0x6f0`, `E1 = this+0x808` (stride 0x118, loop `!= this+0x920`):
+  - `E.+0x60 = f · E.+0x1c · 2π · (1.0 / srate)`, with `2π` = `DAT_1447149b8` (double), `1.0` = `DAT_144714988` (double), `srate = this+0x920`.
+  - `E.+0x50 = cos(E.+0x60) · E.+0x68`, `E.+0x58 = sin(E.+0x60) · E.+0x68` (via `FUN_1443c9bd0`; the cos/sin return-register order is assumed from the decompile, not yet proved).
+  - `E.+0x90 = f · E.+0x20 · 2π / srate`; `E.+0x80`, `E.+0x88` = cos/sin of that `· E.+0x98`.
+  - Integer tap delay `E.+0x24 = (int)(srate · 4.0 / f)`.
+- `this+0x928 = smoothed(+0x32fc) / f`, `this+0x92c = smoothed(+0x3300) / f`.
+- Per sample: `FUN_14199cc10(this+0x680, inL, inR)`, then `out = y·wet·g + x·dry` with `wet = +0x330c`, `dry = +0x3310`, `g = 1` unless the gate flag `+0x3318` is set (level-detector gain `+0x32e4`, release/attack in `+0x32f0/+0x32f4`).
+
+### (c) resolved: `FUN_14199ae00` is not a feedback matrix
+
+Disassembly (`0x14199ae00`..`0x14199b1c4`, 965 B, `ret` at `0x14199b1c4`): input `__m128` at `[rcx]`, output `__m128` in `xmm0` (the cache's `void` return is wrong; callers `FUN_14199c870` and `FUN_14199d080` read `extraout_XMM0`). It is a 4-lane sine/cosine kernel:
+
+- `|x|` via `andps` with `0x144714b90`; reduction `k = round(|x| · c)` with the magic-add trick (`0x1476a3770`), `r = |x| - k·π/2` in two parts (`0x1476a37b0`).
+- Polynomial in `r²` (`0x1476a3790`, `0x1476a3720`, `0x147696dd0`, `0x144714b70` ...), blended by quadrant mask (`pslld 30`, `cmpeq` on `0x144f38ef0`), sign from `x` xor quadrant (`0x144714ba0`).
+- Any lane with `|x| >= ~26000` (`0x46cadc00`) falls to a Payne-Hanek path using the 2/π table at `0x1476a3390` (integer `imul` chain, `shl/shr 0x3e`).
+
+So the wow kernel's 4-lane sines come from this SIMD `sincos4`. Its polynomial coefficients are at the `0x1476a37xx`/`0x1476a36xx` constants and need a PE dump for bit-exact replication (open).
+
+### Still open (blockers, exact addresses)
+
+1. **(b) fractional readers.** `FUN_14199cc10` calls `(**(code**)(this+0x680+0x30))` and `(**(code**)(this+0x680+0x68))` with `double` positions, i.e. function pointers stored at `this+0x6b0` and `this+0x6e8`. Their writers are not in `0141990000.c`; `this+0x680` is a `FUN_14199e660`/`FUN_14199e150`/`FUN_14199d6a0` object. Next: search the cache for stores to `+0x6b0`/`+0x6e8` on that object type (`0141970000.c:680`, `0141aa0000.c:7786` read the same fields for another type).
+2. **LFO entry init.** `E.+0x68`, `E.+0x98`, `E.+0x1c`, `E.+0x20` (depth and base frequency) are not written in `0141990000.c`; the stride-0x118 entries are inline in `this`, so their init is in a constructor or zeroing loop not yet located (`FUN_14199d6a0` zeroes parts of `this`, not these fields).
+3. **Age loop** `0x14199c280` inner body calls `FUN_14199dbf0` and `FUN_14199db20` (smoother and filter), not decoded.
+4. **Saturation** `FUN_14199e660` filter coefficients (`FUN_14199db20`), not decoded.
+5. **Sin/cos core** `FUN_1443c9bb0` (double) and the return-register order of `FUN_1443c9bd0`: not decoded.
+6. **KEMU vectors.** No native vectors. `tools/re/kemu_timemod.py` seeding of the nine control targets is not attempted.
+
+Until (1), (2) and (5) are decoded, the generic law in `dsp/timemod/wowflutter.rs` stays **unconfirmed** and the PARITY_MATRIX Wow/Flutter row stays not-parity.
