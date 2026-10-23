@@ -375,6 +375,74 @@ KONTRA 0.3.393 brings together a broad set of loading, sound, scripting and edit
 
 ## Unreleased
 
+### New
+
+- Add a KSP doctor that reports per-symbol support status for .nki scripts, with JSON output and a strict mode.
+- KSP scripts can call exp2, log2 and log10.
+- Add a shared Luau runtime for UVI Lua scripts, with a bytecode cache; the interpreter remains the default JIT policy.
+- Add an opt-in KSP-to-Luau front end with UI, persistence, menu, key-switch and host-request builtins. The interpreter remains the default.
+- Read Modo Drum .pak packs. Their instruments do not play yet.
+- Add Kontakt Gater processing and the Stereo Tune core, checked against native reference vectors.
+- Add the Kontakt Surround Panner speaker law and block driver for fixed positions, with a static stereo mix.
+
+### Improved
+
+- Keyswitch articulations use zone selectors, and the keyswitch panel lists only real keyswitch and group-start entries.
+- Diagnostics report voice drops separately from capacity refusals, so the cause is clear.
+- The default streamed head budget is bounded by the host's Auto budget.
+- Streamed 16-bit WAV reads decode frames directly and are substantially faster.
+- Reduce per-block overhead in the sampler core: serial loops, PCM packing and cubic setup avoid copies and temporary closures.
+- Convolution tracks nonzero input per block instead of rescanning the whole buffer.
+- Packed sample-head chunks are shared across preset swaps instead of being rebuilt.
+- UVI programs load and initialize with less copying: override application and the parameter bank are no longer copied per owner.
+- UVI programs with unproved modulation laws load with flagged approximations instead of being refused.
+- KSP support reports name the failing operation and input, and a data file that is not loaded says why.
+- Filters now match Kontakt native reference vectors for Ladder HQ, Daft, Formant, PRO-53, Monark, Dual SKF, Versatile and Vowel in the tested cases.
+- Kolor: the dry-path ramp and several shaper cases now match native reference vectors. Other shaper modes remain open.
+- Time Machine uses fractional-period PSOLA and a measured tempo division table. It remains partial.
+- Beat Machine zone slice markers are read and played in Beat Machine voices; the machine remains partial.
+- S1200 modes and MP60 machine controls are carried into the engine, and MP60 runs as a host-rate source stage.
+- Convolution reports only non-default Preserve Length and latency-bypass flags; unmodeled flags stay visible.
+
+### Fixed
+
+- Read stored Kontakt AHDSR envelope times in milliseconds, correcting envelope timing.
+- Fix a Conflux level regression by keeping unmeasured $FILTER_TYPE_* constants opaque.
+- Stream oversized resident and pinned sources under cold fallback, fixing a Conflux regression.
+- Load wavetable zones that end in a partial cycle or start off the 2048-frame grid, playing whole cycles.
+- Resample across eight octaves, so authored zone keys no longer narrow the playable range.
+- Size script callbacks by held notes rather than a fixed 32 keys, so dense chords are no longer limited.
+- find_group matches group names exactly and case-sensitively, as Kontakt does.
+- EVENT_PAR_PLAY_POS now reads back the play position instead of being unimplemented.
+- Load data-folder arrays synchronously during on init.
+- Resolve $EFFECT_TYPE_* and $FILTER_TYPE_* constants to values measured from Kontakt; unmeasured ones stay opaque.
+- Clamp UVI loop ends that run past the end of a sample, with a load warning, instead of refusing the program.
+- Admit multipart UVI streams and route each bundle member through its program placement, so resident decoding keeps every member.
+- Script modulation now drives UVI global Gain and Pan outputs.
+- Linux editor gestures survive temporary X11 grabs, and clicks and double-clicks are kept when the host moves focus.
+- Parts with sized interfaces no longer grow or overflow their patch.
+- Preset swaps drop the previous preset's saved controls, and a Conflux swap now matches a fresh load.
+- Instruments with untriggerable zones remain loadable.
+- A loose bank beside a library's Samples folder no longer hides any library content.
+- An empty control label now shows as empty instead of the default label.
+- Fixed picture edges on script buttons and switches stay in place.
+- Restore Conflux wavetable modulation.
+- Zero-intensity and floating-point residue modulation routes are inert rather than reported as unsupported.
+- The release-trigger counter runs only in release groups with a positive time.
+
+### Known issues
+
+- Kontakt and UVI parity is partial. Many effects, modulators and script actions are approximated, unported or unmeasured; Wow/Flutter, Chainsaw, Jump and Flair/Phasis/Vibrato are not yet processing, and Replika Delay is partial.
+- Most UVI modulation is approximated. LFO, MultiLFO and DAHDSR parameter writes from scripts are not bound, and approximations are flagged in the load report rather than proven exact.
+- Ample Sound .ascf containers are read, but zone mapping is not implemented. Multiple loops per zone, NKB bank program switching and multichannel sample files are unsupported.
+- KSP scripts run on the existing interpreter by default. The Luau front end is opt-in, and none of the 696 extracted scripts is yet fully in its subset.
+- 300 voices at 1% of the meter is not achieved, and the performance baseline predates much of this work. The Kontakt and Falcon comparison is not measured.
+
+## Superseded drafts before 0.3.503
+
+The material below was written before the reviewed fix ledger became the source of Nightly notes. It is kept for history and is not published.
+
+
 ### 2026-10-01 to 2026-10-23 (main 16f110c11, 436 merged PRs)
 
 Reviewed summary. Status labels follow [ROADMAP.md](ROADMAP.md). "Parity" means a native reference test exists; "approximated" means a documented approximation (UnknownLaw or load-report warning).
