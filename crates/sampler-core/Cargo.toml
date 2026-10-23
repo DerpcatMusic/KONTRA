@@ -8,6 +8,8 @@ publish = false
 
 [features]
 cache = []
+# Bench-only block access to DSP primitives for `sampler-dspbench`; never enabled by the plugin.
+dspbench = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
