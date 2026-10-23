@@ -6,9 +6,12 @@
 // ponytail: the table, its bounds and the phase matrices do not depend on the rate or the
 // knobs; they are the native init's output (dumped under kemu), not re-derived here.
 use super::super::super::Planar;
-use super::kernel::{DECIMATE, PHASE, V, lookup, zip};
+use super::kernel::{ld, st, run_block, DECIMATE, PHASE, V, lookup, zip};
 use super::super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
 
+
+/// Offset 0 of the state array.
+const BASE: isize = 24;
 
 const LO: f32 = -127.0;
 const HI: f32 = 128.0;
@@ -19,15 +22,6 @@ fn shaper() -> &'static [f32] {
     T.get_or_init(|| include_bytes!("dstortion.f32le").chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
 }
 
-fn ld(s: &[f32; 32], o: isize) -> V {
-    let i = (o + 24) as usize;
-    [s[i], s[i + 1], s[i + 2], s[i + 3]]
-}
-
-fn st(s: &mut [f32; 32], o: isize, v: V) {
-    let i = (o + 24) as usize;
-    s[i..i + 4].copy_from_slice(&v);
-}
 
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -102,22 +96,22 @@ impl Engine {
     fn sample(&self, s: &mut [f32; 32], x: f32) -> f32 {
         let tab = shaper();
         s[24 - 2] = x + x;
-        let mut x7 = ld(s, -4);
-        let mut x10 = zip(x7, ld(s, 0), |a, b| a - b);
-        st(s, 0, zip(zip(self.lp, x10, |a, b| a * b), ld(s, 0), |a, b| a + b));
+        let mut x7 = ld(s, BASE, -4);
+        let mut x10 = zip(x7, ld(s, BASE, 0), |a, b| a - b);
+        st(s, BASE, 0, zip(zip(self.lp, x10, |a, b| a * b), ld(s, BASE, 0), |a, b| a + b));
         let mut x8 = zip(x10, self.pa, |a, b| a * b);
-        let mut x6 = ld(s, -24);
+        let mut x6 = ld(s, BASE, -24);
         x6[0] = x8[0];
-        st(s, -24, x6);
+        st(s, BASE, -24, x6);
         let m: [V; 4] = std::array::from_fn(|r| zip(PHASE[r], x6, |a, b| a * b));
         let x2 = [m[0][2] + m[0][0], m[0][3] + m[0][1], m[1][2] + m[1][0], m[1][3] + m[1][1]];
         let x0 = [m[2][2] + m[2][0], m[2][3] + m[2][1], m[3][2] + m[3][0], m[3][3] + m[3][1]];
         let x5 = zip([x2[1], x2[3], x0[1], x0[3]], [x2[0], x2[2], x0[0], x0[2]], |a, b| a + b);
         let x5 = x5.map(|v| v + BIAS);
         let y: V = lookup(tab, x5, LO, HI);
-        st(s, -20, y);
-        let x3 = ld(s, -16);
-        let x2 = ld(s, -12);
+        st(s, BASE, -20, y);
+        let x3 = ld(s, BASE, -16);
+        let x2 = ld(s, BASE, -12);
         x6 = [x6[0], x6[0], x6[1], x6[2]];
         let mut x1 = zip(y, DECIMATE[0], |a, b| a * b);
         x7 = zip(x7, x8, |a, b| a + b);
@@ -126,35 +120,24 @@ impl Engine {
         x10 = [x10[1], x10[1], x7[2], x7[2]];
         x1 = zip(x1, x0, |a, b| a + b);
         x1 = zip(x1, zip(x2, DECIMATE[2], |a, b| a * b), |a, b| a + b);
-        let x0 = zip(DECIMATE[3], ld(s, -8), |a, b| a * b);
-        st(s, -8, x2);
-        st(s, -12, x3);
-        st(s, -16, y);
+        let x0 = zip(DECIMATE[3], ld(s, BASE, -8), |a, b| a * b);
+        st(s, BASE, -8, x2);
+        st(s, BASE, -12, x3);
+        st(s, BASE, -16, y);
         x1 = zip(x1, x0, |a, b| a + b);
-        st(s, -24, x6);
+        st(s, BASE, -24, x6);
         let h = (x1[3] + x1[1]) + (x1[2] + x1[0]);
         let x4 = self.pb.map(|p| h * p);
         x10 = [x10[1], x10[2], x4[2], x4[3]];
-        let old = ld(s, 4);
+        let old = ld(s, BASE, 4);
         x10 = zip(zip(zip(x10, old, |a, b| a - b), self.lp2, |a, b| a * b), old, |a, b| a + b);
-        st(s, 4, x10);
-        st(s, -4, [x10[0], x10[1], x8[0], x8[0]]);
+        st(s, BASE, 4, x10);
+        st(s, BASE, -4, [x10[0], x10[1], x8[0], x8[0]]);
         (x10[2] + x4[0]) + x10[3]
     }
 
     pub(crate) fn process(&self, s: &mut State, block: &mut Planar, len: usize) {
-        for i in 0..len {
-            if self.mono {
-                let x = 0.5 * block[1][i] as f32 + 0.5 * block[0][i] as f32;
-                let y = f64::from(self.sample(&mut s.s[0], x));
-                block[0][i] = y;
-                block[1][i] = y;
-            } else {
-                for c in 0..2 {
-                    block[c][i] = f64::from(self.sample(&mut s.s[c], block[c][i] as f32));
-                }
-            }
-        }
+        run_block(self.mono, block, len, |c, x| self.sample(&mut s.s[c], x));
     }
 }
 
