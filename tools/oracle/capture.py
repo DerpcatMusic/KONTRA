@@ -32,8 +32,11 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import slot  # noqa: E402  (oracle-slot environment; legacy single session when unset)
+
 KONTAKT_ORACLE = Path(__file__).resolve().parent.parent / "kontakt-oracle"
-CACHE = Path.home() / ".cache/kontra-native-oracle"
+CACHE = slot.work(Path.home() / ".cache/kontra-native-oracle")
 
 
 def _load(name, path):
@@ -46,10 +49,10 @@ def _load(name, path):
 dump = _load("dump", KONTAKT_ORACLE / "dump.py")  # EXE, winpath, dismiss_dialogs
 wavutil = _load("wavutil", KONTAKT_ORACLE / "wavutil.py")
 
-SINK = "kontra_ref"
-PER_SESSION = 16  # MIDI channels
+SINK = slot.sink("kontra_ref")
+PER_SESSION = slot.channel_block()[1]  # MIDI channels this session may use (16 in legacy mode, 5 per slot of 3)
 PRE = 0.5  # seconds kept before each slot
-DISPLAY = ":79"  # dump.py uses :78, the reference harness :77
+DISPLAY = slot.display(":79")  # dump.py uses :78, the reference harness :77
 DESKTOP = "1600x1000"
 SCENARIO = [(0.2, 1.0, 60, 100), (1.6, 1.0, 64, 90), (3.0, 1.5, 67, 110)]  # start, length, key, velocity
 # Causes separated by scenario (all notes on one MIDI channel): round robin = same key and velocity
@@ -88,8 +91,9 @@ def make_midi(path, slots, window=None, notes=SCENARIO):
     With `window`, All Sound Off (CC 120) on channel k+1 closes each slot; without it (the single
     scenario file) only the notes are written."""
     events = []
+    first = slot.channel_block()[0]  # this session's MIDI channel block (see slot.py)
     for k in range(slots):
-        ch, base = k, (k * window if window else 0.0)
+        ch, base = first + k, (k * window if window else 0.0)
         for start, length, key, vel in notes:
             on, off = round((base + start) * 960), round((base + start + length) * 960)
             events.append((on, 1, bytes([0x90 | ch, key, vel])))
@@ -118,7 +122,7 @@ local function say(t) out:write(t, "\\n") out:flush() end
 for i, path in ipairs(ORACLE_ITEMS) do
   local ok, idx = pcall(Kontakt.load_instrument, path)
   local good = ok and math.type(idx) == "integer"
-  if good then pcall(Kontakt.set_instrument_midi_channel, idx, i) end
+  if good then pcall(Kontakt.set_instrument_midi_channel, idx, i + {slot.channel_block()[0]}) end
   say(string.format('{{"ready":%d,"ok":%s,"error":%q}}', i, tostring(good), good and "" or tostring(idx)))
 end
 say('{{"done":true}}')
@@ -127,10 +131,7 @@ out:close()
 
 
 def ensure_sink():
-    if SINK not in sh("pactl", "list", "short", "sinks"):
-        subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={SINK}",
-                        f"sink_properties=device.description={SINK}", "format=float32le",
-                        "rate=48000", "channels=2"], capture_output=True)
+    slot.ensure_sink(SINK)
 
 
 def kontakt_ports():
@@ -141,6 +142,8 @@ def route_kontakt_to_sink(wait=0):
     """Link Kontakt's outputs to kontra_ref and remove every other link from them. Idempotent:
     PipeWire re-creates the ports when the audio device opens and auto-links them to the default
     output (the speakers). Returns the number of Kontakt output ports (0 = none yet)."""
+    if slot.active():  # this session's Kontakt nodes only (see slot.route_slot)
+        return slot.route_slot(SINK, slot.kontakt_pids(), wait)
     deadline = time.monotonic() + wait
     ports = kontakt_ports()
     while not ports and time.monotonic() < deadline:
@@ -198,18 +201,12 @@ def midi_port():
 
 
 def kontakt_running():
-    return subprocess.run(["pgrep", "-x", "Kontakt 8.exe"], capture_output=True).returncode == 0
+    return bool(slot.kontakt_pids())
 
 
 def stop_kontakt(timeout=20):
-    """Ends Kontakt (Wine takes a few seconds to tear down); SIGKILL if it lingers."""
-    subprocess.run(["pkill", "-x", "Kontakt 8.exe"], check=False)
-    end = time.monotonic() + timeout
-    while kontakt_running() and time.monotonic() < end:
-        time.sleep(0.5)
-    if kontakt_running():
-        subprocess.run(["pkill", "-9", "-x", "Kontakt 8.exe"], check=False)
-        time.sleep(2)
+    """Ends this session's Kontakt (Wine takes a few seconds to tear down); SIGKILL if it lingers."""
+    slot.stop_kontakt(timeout)
 
 
 def run_session(nkis, window, work, midi=None, notes=SCENARIO):
@@ -232,8 +229,8 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO):
     session = work / "session.wav"
     xvfb = subprocess.Popen(["Xvfb", DISPLAY, "-screen", "0", f"{DESKTOP}x24"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    env = dict(os.environ, DISPLAY=DISPLAY, WINEDLLOVERRIDES="d3d11,d3d10core,dxgi,d3d9=b",
-               WINEDEBUG="-all", PULSE_SINK=SINK)
+    env = slot.wine_env(dict(os.environ, DISPLAY=DISPLAY, WINEDLLOVERRIDES="d3d11,d3d10core,dxgi,d3d9=b",
+                             WINEDEBUG="-all", PULSE_SINK=SINK))
     kontakt = subprocess.Popen(["wine", "explorer", f"/desktop=oracle,{DESKTOP}", dump.EXE, dump.winpath(script)],
                                env=env, stdout=open(work / "kontakt.log", "w"), stderr=subprocess.STDOUT,
                                start_new_session=True)
@@ -255,7 +252,8 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO):
             time.sleep(1)
         if not done:
             sys.exit(f"probe did not finish; see {work}")
-        select_device(env)
+        if not slot.active() or os.environ.get("ORACLE_GUI_SETUP"):  # a slot's device/MIDI come from its Settings.cfg
+            select_device(env)
         if not route_kontakt_to_sink(wait=60):
             sys.exit(f"Kontakt has no audio output ports; see {work / 'kontakt.log'}")
         keep = subprocess.Popen(["pw-cat", "-p", "--raw", "--rate", "48000", "--channels", "2", "--format", "f32",
