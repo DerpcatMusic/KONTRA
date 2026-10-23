@@ -4174,6 +4174,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "sampler-ample"
+version = "0.1.0"
+
+[[package]]
 name = "sampler-core"
 version = "0.1.0"
 dependencies = [
