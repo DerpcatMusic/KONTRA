@@ -236,15 +236,19 @@ pub enum Native {
     Replika(ReplikaControls),
 }
 
-/// Wow / Flutter controls, normalized `0..=1`. The mix is the line's wet gain.
+/// Wow / Flutter controls after the Kontakt control laws (`wow_flutter_laws` in
+/// sampler-kontakt): wow `4 w²` and flutter `0.5 f²` depth multipliers, speed
+/// `0.75 s + 0.05` rate multiplier, stereo `s²`. The mix is the line's wet gain (`sqrt(m)`).
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WowFlutter {
+    /// Depth multiplier, `0..=4`.
     pub wow: f32,
+    /// Depth multiplier, `0..=0.5`.
     pub flutter: f32,
-    /// Sets both modulation rates (wow 0.5..2 Hz, flutter 6..12 Hz).
+    /// Rate multiplier, `0.05..=0.8`, applied to both modulators' base rates.
     pub speed: f32,
-    /// Right channel's modulation phase offset, up to half a cycle.
+    /// Right channel's modulation phase offset, in squared-control units `0..=1`.
     pub stereo: f32,
 }
 
