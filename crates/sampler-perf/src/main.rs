@@ -23,8 +23,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod capacity;
 mod stress;
 mod sustain;
+use sustain::cpu_ns;
 
 const RATE: u32 = 48_000;
 const BLOCKS: [usize; 3] = [64, 128, 512];
@@ -42,6 +44,8 @@ thread_local! {
     /// Set while the allocator itself captures a trace, so those calls are not sampled.
     static TRACING: Cell<bool> = const { Cell::new(false) };
 }
+/// Voice-pool capacity for the next [`load`]; `capacity` sweeps it.
+static VOICE_CAP: AtomicU64 = AtomicU64::new(2048);
 /// `PERF_ALLOC_TRACE=N`: capture a backtrace of every Nth counted heap call (0 = off).
 static TRACE_EVERY: AtomicU64 = AtomicU64::new(0);
 static TRACE_SEEN: AtomicU64 = AtomicU64::new(0);
@@ -336,7 +340,7 @@ fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, Stri
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(2048),
-                ..Limits::for_plan(&plan, 2048, 2048)
+                ..Limits::for_plan(&plan, 2048, VOICE_CAP.load(Ordering::Relaxed) as usize)
             };
             // Dense chords re-trigger scripts faster than their release tails end: Limits::script_capacity (about 4 per stage per key) is too small for 30 notes every half beat.
             let limits = Limits {
@@ -421,6 +425,8 @@ fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, Stri
 #[derive(Default)]
 struct Cell_ {
     times: Vec<u64>,
+    /// Per block: thread CPU nanoseconds inside the same timed call (`times` is wall time).
+    cpu: Vec<u64>,
     /// Per block: nanoseconds `service_streaming` took (inside `times`).
     service: Vec<u64>,
     allocations: u64,
@@ -529,6 +535,7 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
         })
         .collect();
     let mut cell = Cell_ {
+        cpu: Vec::new(),
         times: Vec::with_capacity(frames / block + 1),
         service: Vec::with_capacity(frames / block + 1),
         allocations: 0,
@@ -561,10 +568,12 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
         let (b0, e0) = (BEHAVIORS_RUN.get(), ENDED_RUN.get());
         COUNTING.set(true);
         let t = Instant::now();
+        let c0 = cpu_ns(false);
         let service = render(p, &mut buffer, &batch, messages, begin, &mut next);
         hash_output(&buffer);
         cell.service.push(service);
         let took = t.elapsed();
+        let cpu = cpu_ns(false).saturating_sub(c0);
         COUNTING.set(false);
         let (s1, f1) = (stats(p), thread_minflt());
         cell.recs.push(Rec {
@@ -605,6 +614,7 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
             );
         }
         cell.times.push(took.as_nanos() as u64);
+        cell.cpu.push(cpu);
         let top = buffer.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
         cell.peak = cell.peak.max(top);
         if top > 1e-4 {
@@ -944,6 +954,7 @@ fn run_scenario(
 /// [`play`] for a script-hosted program: notes go to the player between blocks.
 fn play_uvi(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Cell_ {
     let mut cell = Cell_ {
+        cpu: Vec::new(),
         times: Vec::with_capacity(frames / block + 1),
         service: Vec::with_capacity(frames / block + 1),
         allocations: 0,
@@ -962,12 +973,15 @@ fn play_uvi(p: &mut Player, messages: &[Message], block: usize, frames: usize) -
         let f0 = thread_minflt();
         COUNTING.set(true);
         let t = Instant::now();
+        let c0 = cpu_ns(false);
         render(p, &mut buffer, &[], messages, begin, &mut 0);
         hash_output(&buffer);
         let took = t.elapsed();
+        let cpu = cpu_ns(false).saturating_sub(c0);
         COUNTING.set(false);
         cell.allocations += CALLS.get() - before;
         cell.times.push(took.as_nanos() as u64);
+        cell.cpu.push(cpu);
         cell.recs.push(Rec {
             allocs: CALLS.get() - before,
             minflt: thread_minflt() - f0,
@@ -1172,9 +1186,11 @@ fn main() {
     let result = match args.first().map(String::as_str) {
         Some("sustain") => sustain::run(&args[1..]).map(|()| true),
         Some("stress") => stress::run(&args[1..]).map(|()| true),
+        Some("capacity") => capacity::run(&args[1..]).map(|()| true),
+        Some("spike") => capacity::spike(&args[1..]).map(|()| true),
         Some("run") => run(&args[1..]).map(|()| true),
         Some("compare") => compare(&args[1..]),
-        _ => Err("usage: sampler-perf sustain [--only afflatus|conflux|conflux-multi] [--block 64|256] [--notes 1|8] [--seconds S] [--out FILE] | run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S] | compare BASE.json NEW.json [--threshold PERCENT]".into()),
+        _ => Err("usage: sampler-perf sustain [--only afflatus|conflux|conflux-multi] [--block 64|256] [--notes 1|8] [--seconds S] [--out FILE] | run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S] | compare BASE.json NEW.json [--threshold PERCENT] | capacity [--caps 64,256,4096] [--only NAME] [--block 64] [--seconds S] [--repeats N]".into()),
     };
     report_alloc_traces();
     match result {
