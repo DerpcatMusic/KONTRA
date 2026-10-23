@@ -473,6 +473,11 @@ pub const ALL_EVENTS: i32 = 0x3FFF_FFFE;
 pub const MARKS_FLAG: i32 = 0x2000_0000;
 pub const INST_ICON_ID: i32 = 0x3F00_0001;
 pub const INST_WALLPAPER_ID: i32 = 0x3F00_0002;
+// Library-tab fields (`$INST_LIB_*_ID`): instrument metadata addressed by vendor id, not UI controls.
+pub const INST_LIB_COPYRIGHT_ID: i32 = 0x3F00_0010;
+pub const INST_LIB_DESCRIPTION_ID: i32 = 0x3F00_0011;
+pub const INST_LIB_PIC_ONE_ID: i32 = 0x3F00_0012;
+pub const INST_LIB_PIC_TWO_ID: i32 = 0x3F00_0013;
 pub const FIRST_UI_ID: i32 = 32768;
 pub const HIDE_WHOLE_CONTROL: i32 = 16;
 
@@ -667,6 +672,10 @@ const VALUED: &[(&str, i32)] = &[
     ("$VCC_MONO_AT", VCC_MONO_AT),
     ("$INST_ICON_ID", INST_ICON_ID),
     ("$INST_WALLPAPER_ID", INST_WALLPAPER_ID),
+    ("$INST_LIB_COPYRIGHT_ID", INST_LIB_COPYRIGHT_ID),
+    ("$INST_LIB_DESCRIPTION_ID", INST_LIB_DESCRIPTION_ID),
+    ("$INST_LIB_PIC_ONE_ID", INST_LIB_PIC_ONE_ID),
+    ("$INST_LIB_PIC_TWO_ID", INST_LIB_PIC_TWO_ID),
     ("$EVENT_PAR_VOLUME", event_par::VOLUME),
     ("$EVENT_PAR_TUNE", event_par::TUNE),
     ("$EVENT_PAR_PAN", event_par::PAN),
