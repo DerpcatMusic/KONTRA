@@ -6,20 +6,23 @@
 //! conversion are done by the prelude below. Constructs outside the subset are
 //! not emitted: they are counted by name in [`Compiled::unsupported`].
 
-use crate::builtins::{Builtin, SysVar};
+use crate::builtins::{self as b, Builtin, SysVar};
 use crate::hir::{Arg, Arith, CallbackKind, Case, Const, Expr, ExprKind, Hir, Home, Logic, Place, Stmt, StmtKind, Ty, VarId};
 use sampler_core::Comparison;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
 pub mod host;
+mod controls;
+mod pgs;
+mod record;
 #[cfg(test)]
 mod tests;
 
 /// i32 and KSP operator semantics on Luau doubles. Exact for |x| < 2^52.
 const PRELUDE: &str = "\
 local function WAIT(us)
-  if coroutine.isyieldable() then coroutine.yield(us) end
+  if coroutine.isyieldable() then coroutine.yield(us < 0 and 0 or us) end
   return 0
 end
 local TWO31 = 2147483648
@@ -114,6 +117,15 @@ pub struct Lowered {
     pub cell_types: Vec<Ty>,
     /// Interpreter `on init` result (`eval::run`), the oracle for `Host::init`.
     pub init: crate::eval::Initial,
+    /// The resolved program, to run UI changes on the interpreter (`check_ui`).
+    pub hir: Hir,
+}
+
+impl Lowered {
+    /// Whether script cell `i` is real-typed (compared bit for bit).
+    pub fn cell_is_real(&self, i: usize) -> bool {
+        matches!(self.cell_types.get(i), Some(Ty::Real))
+    }
 }
 
 /// Front end for both paths: parse, resolve, run the interpreter's `on init`, and compile the Luau chunk.
@@ -133,13 +145,15 @@ pub fn lower(source: &str) -> Result<Lowered, String> {
             _ => {}
         }
     }
+    let compiled = compile(&hir);
     Ok(Lowered {
-        compiled: compile(&hir),
+        compiled,
         cells: hir.cells,
         texts: hir.texts,
         note_cells: hir.note_cells,
         cell_types,
         init,
+        hir,
     })
 }
 
@@ -147,28 +161,60 @@ pub fn lower(source: &str) -> Result<Lowered, String> {
 /// (reals bit for bit), every text cell, and every `set_engine_par` write.
 /// Returns the number of cells compared.
 pub fn check_init(lowered: &Lowered) -> Result<usize, String> {
+    let mut host = new_host(lowered)?;
+    host.init()?;
+    compare(&host, lowered, &lowered.init)
+}
+
+/// Run `on init`, then the user change of UI control `ui` to `value` on the Luau path, and
+/// compare with the interpreter's `run_ui_change`. A UI callback that waits is refused:
+/// the interpreter runs waits as no-ops, so only synchronous dispatches are comparable.
+pub fn check_ui(lowered: &Lowered, ui: usize, value: i32) -> Result<usize, String> {
+    let mut host = new_host(lowered)?;
+    host.init()?;
+    host.ui_change(ui, value)?;
+    if host.pending() {
+        return Err("a UI callback waits; the interpreter runs waits as no-ops".into());
+    }
+    let expected = crate::eval::run_ui_change(&lowered.hir, &crate::Environment::default(), ui, value)
+        .map_err(|e| format!("interpreter: {e:?}"))?;
+    compare(&host, lowered, &expected)
+}
+
+fn new_host(lowered: &Lowered) -> Result<host::Host, String> {
     if !lowered.compiled.is_complete() {
         return Err(format!("outside the subset: {:?}", lowered.compiled.unsupported));
     }
-    let mut host = host::Host::new(&lowered.compiled, lowered.cells, lowered.texts, lowered.note_cells, 48_000)?;
-    host.init()?;
+    host::Host::new(&lowered.compiled, lowered.cells, lowered.texts, lowered.note_cells, 48_000)
+}
+
+/// Every cell, text, control, property and engine write of `host` against the interpreter's `expected`.
+fn compare(host: &host::Host, lowered: &Lowered, expected: &crate::eval::Initial) -> Result<usize, String> {
     let luau = host.cells(lowered.cells);
-    for (i, (ty, bits)) in lowered.cell_types.iter().zip(&lowered.init.cells).enumerate() {
-        let expected = match ty {
+    for (i, (ty, bits)) in lowered.cell_types.iter().zip(&expected.cells).enumerate() {
+        let want = match ty {
             Ty::Real => f64::from_bits(*bits as u64),
             _ => f64::from(*bits as i32),
         };
         let got = luau[i];
-        let same = if expected.is_nan() { got.is_nan() } else { got == expected };
+        let same = if want.is_nan() { got.is_nan() } else { got == want };
         if !same {
-            return Err(format!("cell {i} ({ty:?}): interpreter {expected:?}, luau {got:?}"));
+            return Err(format!("cell {i} ({ty:?}): interpreter {want:?}, luau {got:?}"));
         }
     }
-    if host.texts(lowered.texts) != lowered.init.texts {
+    if host.texts(lowered.texts) != expected.texts {
         return Err("text cells differ".into());
     }
-    let engine: std::collections::BTreeMap<[i64; 4], i64> = lowered
-        .init
+    if host.controls() != expected.controls {
+        return Err(format!("controls differ: interpreter {:?}, luau {:?}", expected.controls, host.controls()));
+    }
+    if host.properties() != expected.properties {
+        return Err("control properties differ".into());
+    }
+    if host.text_properties() != expected.text_properties {
+        return Err("control text properties differ".into());
+    }
+    let engine: std::collections::BTreeMap<[i64; 4], i64> = expected
         .engine
         .iter()
         .map(|(k, v)| ([i64::from(k[0]), i64::from(k[1]), i64::from(k[2]), i64::from(k[3])], i64::from(*v)))
@@ -176,8 +222,21 @@ pub fn check_init(lowered: &Lowered) -> Result<usize, String> {
     if host.engine() != engine {
         return Err("engine writes differ".into());
     }
-    if host.messages() != lowered.init.model.interface.messages {
-        return Err("messages differ".into());
+    if host.pgs() != expected.model.pgs {
+        return Err(format!("PGS keys differ: interpreter {:?}, luau {:?}", expected.model.pgs, host.pgs()));
+    }
+    if host.pgs_text() != expected.model.pgs_text {
+        return Err("PGS text keys differ".into());
+    }
+    let ui = host.interface();
+    let want = &expected.model.interface;
+    let got = (ui.width_px, ui.height_px, ui.height_grid, ui.skin_offset, ui.performance_view, &ui.messages);
+    let wanted = (want.width_px, want.height_px, want.height_grid, want.skin_offset, want.performance_view, &want.messages);
+    if got != wanted {
+        return Err(format!("interface differs: interpreter {wanted:?}, luau {got:?}"));
+    }
+    if host.title() != expected.model.interface.title {
+        return Err(format!("script title differs: interpreter {:?}, luau {:?}", expected.model.interface.title, host.title()));
     }
     Ok(luau.len())
 }
@@ -189,6 +248,10 @@ pub struct Compiled {
     pub source: String,
     /// Constructs outside the subset, by name, with the number of sites.
     pub unsupported: BTreeMap<String, usize>,
+    /// Some callback or function contains a `while` loop: the native-code opt-in.
+    pub has_loops: bool,
+    /// UI controls by index, for the host's control state.
+    pub ui: Vec<controls::UiMeta>,
 }
 
 impl Compiled {
@@ -200,8 +263,13 @@ impl Compiled {
 /// Compile every callback and function of `hir`. Never fails: unsupported sites
 /// are emitted as no-ops and counted, so the caller decides what to run.
 pub fn compile(hir: &Hir) -> Compiled {
-    let mut c = Compiler { hir, out: String::new(), unsupported: BTreeMap::new(), loops: 0 };
+    let mut c = Compiler { hir, out: String::new(), unsupported: BTreeMap::new(), loops: 0, loops_seen: false, ui_id: None };
+    controls::guard(hir, &mut c.unsupported);
     c.out.push_str(PRELUDE);
+    c.out.push_str(pgs::PRELUDE);
+    c.out.push_str(record::PRELUDE);
+    c.out.push_str("local CB = {}\n");
+    c.out.push_str("local SEP, GEP = HOST.set_engine_par, HOST.get_engine_par\n");
     if !hir.functions.is_empty() {
         let names: Vec<String> = (0..hir.functions.len()).map(|i| format!("F{i}")).collect();
         let _ = writeln!(c.out, "local {}", names.join(", "));
@@ -211,24 +279,70 @@ pub fn compile(hir: &Hir) -> Compiled {
         c.block(&f.body);
         let _ = writeln!(c.out, "end -- {}", f.name);
     }
-    let mut table = Vec::new();
     for cb in &hir.callbacks {
-        let (key, params) = match cb.kind {
-            CallbackKind::Init => ("init", ""),
-            CallbackKind::Note => ("note", "NOTE, VEL"),
-            CallbackKind::Release => ("release", "NOTE, VEL"),
+        // `$UI_ID` as the runtime's dispatcher sets it (`lower.rs`): a control's own callback
+        // has the control's id, `on ui_controls` gets the changed control's id as a parameter.
+        let (key, params, ui_id): (String, &str, String) = match cb.kind {
+            CallbackKind::Init => ("init".into(), "", "0".into()),
+            CallbackKind::Note => ("note".into(), "NOTE, VEL", "0".into()),
+            CallbackKind::Release => ("release".into(), "NOTE, VEL", "0".into()),
+            CallbackKind::UiControls => ("ui_controls".into(), "UIID", "UIID".into()),
+            CallbackKind::UiControl(var) => match hir.vars[var.0 as usize].ui {
+                Some(ui) => (format!("ui_{ui}"), "", (b::FIRST_UI_ID + ui as i32).to_string()),
+                None => {
+                    c.unsupported("ui_control without control");
+                    continue;
+                }
+            },
+            CallbackKind::UiUpdate => ("ui_update".into(), "", "0".into()),
             other => {
                 c.unsupported(&format!("callback {other:?}"));
                 continue;
             }
         };
-        let _ = writeln!(c.out, "local function cb_{key}({params})");
+        let _ = writeln!(c.out, "CB.{key} = function({params})");
+        c.ui_id = Some(ui_id);
         c.block(&cb.body);
+        c.ui_id = None;
         let _ = writeln!(c.out, "end");
-        table.push(format!("{key} = cb_{key}"));
     }
-    let _ = writeln!(c.out, "return {{ {}, select_note = function(t) NV = t end }}", table.join(", "));
-    Compiled { source: format!("local C, T, NV, HOST = ...\n{}", c.out), unsupported: c.unsupported }
+    // Pooled thread body: runs one callback, reports done with -1, then waits for the
+    // next job, so a finished coroutine is reused instead of created per event.
+    c.out.push_str("local function RUNNER(f, t, n, v)\n  while true do\n    NV = t\n    f(n, v)\n    f, t, n, v = coroutine.yield(-1)\n  end\nend\n");
+    let _ = writeln!(c.out, "CB.select_note = function(t) NV = t end");
+    let _ = writeln!(c.out, "CB.runner = RUNNER");
+    let _ = writeln!(c.out, "CB.pgs, CB.pgs_text, CB.model = PGS, PGS_TEXT, MODEL");
+    let _ = writeln!(c.out, "return CB");
+    let has_loops = c.loops_seen;
+    Compiled { source: format!("local C, T, NV, HOST = ...\n{}", c.out), unsupported: c.unsupported, has_loops, ui: controls::meta(hir) }
+}
+
+/// i32 wrap of a double-valued Lua expression, inline (no call, no interrupt).
+/// Exact while the operand is below 2^52 in magnitude, which i32 operands are.
+fn wrap(expr: &str) -> String {
+    format!("((({expr}) + 2147483648) % 4294967296 - 2147483648)")
+}
+
+/// No calls, waits or engine access: safe to evaluate twice.
+fn is_pure(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(_) | ExprKind::Real(_) | ExprKind::Str(_) | ExprKind::Load(_) | ExprKind::Sys(_) => true,
+        ExprKind::LoadElem(_, i) | ExprKind::Neg(i) | ExprKind::BitNot(i) | ExprKind::Not(i) | ExprKind::Cast(i) => is_pure(i),
+        ExprKind::Arith(_, l, r) | ExprKind::Compare(_, l, r) | ExprKind::Logic(_, l, r) => is_pure(l) && is_pure(r),
+        ExprKind::Concat(parts) => parts.iter().all(is_pure),
+        ExprKind::SysElem(..) | ExprKind::Builtin(..) => false,
+    }
+}
+
+fn compare_sym(c: Comparison) -> &'static str {
+    match c {
+        Comparison::Equal => "==",
+        Comparison::NotEqual => "~=",
+        Comparison::Less => "<",
+        Comparison::LessEqual => "<=",
+        Comparison::Greater => ">",
+        Comparison::GreaterEqual => ">=",
+    }
 }
 
 struct Compiler<'h> {
@@ -237,6 +351,9 @@ struct Compiler<'h> {
     unsupported: BTreeMap<String, usize>,
     /// Enclosing `while` loops in the current function body.
     loops: usize,
+    /// `$UI_ID` expression of the callback being compiled; `None` in functions (refused).
+    ui_id: Option<String>,
+    loops_seen: bool,
 }
 
 fn lua_str(s: &str) -> String {
@@ -308,8 +425,58 @@ impl Compiler<'_> {
         }
     }
 
+    /// A Lua boolean for a KSP condition. Comparisons and logic are emitted as
+    /// Lua booleans directly, without the `and 1 or 0` round trip.
     fn cond(&mut self, e: &Expr) -> String {
-        format!("({}) ~= 0", self.int(e))
+        match &e.kind {
+            ExprKind::Compare(c, l, r) if !(l.ty == Ty::Str && r.ty == Ty::Str && !matches!(c, Comparison::Equal | Comparison::NotEqual)) => {
+                let (a, b) = self.compare_operands(l, r);
+                format!("({a}) {} ({b})", compare_sym(*c))
+            }
+            _ => format!("({}) ~= 0", self.int(e)),
+        }
+    }
+
+    /// Element `index` of `var` as an inline read when the index is pure: a literal
+    /// in range, or a pure expression checked twice. Calls cost an interrupt checkpoint
+    /// each, so the common cases avoid `RD`.
+    fn elem_read(&mut self, var: VarId, index: &Expr) -> String {
+        let (base, off, len) = self.elem_base(var);
+        let text = base == "T";
+        let zero = if text { "''" } else { "0" };
+        if let ExprKind::Int(n) = index.kind {
+            return if (0..len as i64).contains(&i64::from(n)) {
+                format!("{base}[{}]", off + n as u32 + 1)
+            } else {
+                zero.into()
+            };
+        }
+        let idx = self.int(index);
+        if is_pure(index) && idx.len() <= 160 {
+            format!("(({idx} >= 0 and {idx} < {len}) and {base}[{off} + {idx} + 1] or {zero})")
+        } else if text {
+            format!("RDT({base}, {off}, {len}, {idx})")
+        } else {
+            format!("RD({base}, {off}, {len}, {idx})")
+        }
+    }
+
+    /// Store `value` into element `index` of `var` without a call: the index is
+    /// evaluated first, then the value, as `WR` does.
+    fn elem_write(&mut self, var: VarId, index: &Expr, value: String) {
+        let (base, off, len) = self.elem_base(var);
+        if let ExprKind::Int(n) = index.kind {
+            if (0..len as i64).contains(&i64::from(n)) {
+                self.line(&format!("{base}[{}] = {value}", off + n as u32 + 1));
+            } else {
+                self.line(&format!("local _ = {value}"));
+            }
+            return;
+        }
+        let idx = self.int(index);
+        self.line(&format!(
+            "do local i, v = {idx}, {value} if i >= 0 and i < {len} then {base}[{off} + i + 1] = v end end"
+        ));
     }
 
     fn stmt(&mut self, s: &Stmt) {
@@ -328,6 +495,7 @@ impl Compiler<'_> {
             }
             StmtKind::While(cond, body) => {
                 let c = self.cond(cond);
+                self.loops_seen = true;
                 self.line(&format!("while {c} do"));
                 self.loops += 1;
                 self.block(body);
@@ -360,14 +528,16 @@ impl Compiler<'_> {
         match place {
             Place::Var(var) => {
                 let value = self.coerce(value, ty);
+                if let Home::Control(ui) = self.hir.vars[var.0 as usize].home {
+                    self.line(&format!("HOST.ctl_set({ui}, {value})"));
+                    return;
+                }
                 let target = self.var_target(*var);
                 self.line(&format!("{target} = {value}"));
             }
             Place::Elem(var, index) => {
-                let idx = self.int(index);
                 let value = self.coerce(value, ty);
-                let (base, off, len) = self.elem_base(*var);
-                self.line(&format!("WR({base}, {off}, {len}, {idx}, {value})"));
+                self.elem_write(*var, index, value);
             }
         }
     }
@@ -399,17 +569,19 @@ impl Compiler<'_> {
         match place {
             Place::Var(var) => {
                 let Some(ty) = self.var_ty(*var) else { return };
+                if let Home::Control(ui) = self.hir.vars[var.0 as usize].home {
+                    self.line(&format!("HOST.ctl_set({ui}, W({} {step}))", Self::ctl_get(ui)));
+                    return;
+                }
                 let target = self.var_target(*var);
-                let next = if ty == Ty::Real { format!("{target} {step}") } else { format!("W({target} {step})") };
+                let next = if ty == Ty::Real { format!("{target} {step}") } else { wrap(&format!("{target} {step}")) };
                 self.line(&format!("{target} = {next}"));
             }
             Place::Elem(var, index) => {
                 let Some(ty) = self.var_ty(*var) else { return };
-                let idx = self.int(index);
-                let (base, off, len) = self.elem_base(*var);
-                let current = format!("RD({base}, {off}, {len}, {idx})");
-                let next = if ty == Ty::Real { format!("{current} {step}") } else { format!("W({current} {step})") };
-                self.line(&format!("WR({base}, {off}, {len}, {idx}, {next})"));
+                let current = self.elem_read(*var, index);
+                let next = if ty == Ty::Real { format!("{current} {step}") } else { wrap(&format!("{current} {step}")) };
+                self.elem_write(*var, index, next);
             }
         }
     }
@@ -446,10 +618,6 @@ impl Compiler<'_> {
     fn var_ty(&mut self, var: VarId) -> Option<Ty> {
         let v = &self.hir.vars[var.0 as usize];
         match v.home {
-            Home::Control(_) => {
-                self.unsupported("ui control");
-                None
-            }
             Home::Note(_) if v.ty == Ty::Str => {
                 self.unsupported("polyphonic text");
                 None
@@ -475,25 +643,23 @@ impl Compiler<'_> {
             ExprKind::Real(r) => lua_num(*r),
             ExprKind::Str(s) => lua_str(s),
             ExprKind::Load(var) => self.load(*var),
-            ExprKind::LoadElem(var, index) => {
-                let idx = self.int(index);
-                match self.var_ty(*var) {
-                    Some(_) => {
-                        let (base, off, len) = self.elem_base(*var);
-                        if base == "T" { format!("RDT({base}, {off}, {len}, {idx})") } else { format!("RD({base}, {off}, {len}, {idx})") }
-                    }
-                    None => "0".into(),
-                }
-            }
+            ExprKind::LoadElem(var, index) => match self.var_ty(*var) {
+                Some(_) => self.elem_read(*var, index),
+                None => "0".into(),
+            },
             ExprKind::Sys(sys) => match sys {
                 SysVar::EventNote => "NOTE".into(),
                 SysVar::EventVelocity => "VEL".into(),
+                SysVar::UiId => match self.ui_id.clone() {
+                    Some(id) => id,
+                    None => self.unsupported("sys UiId in function"),
+                },
                 other => self.unsupported(&format!("sys {other:?}")),
             },
             ExprKind::SysElem(array, _) => self.unsupported(&format!("sys array {array:?}")),
             ExprKind::Neg(inner) => match e.ty {
                 Ty::Real => format!("(-{})", self.expr(inner)),
-                _ => format!("W(-({}))", self.int(inner)),
+                _ => wrap(&format!("-({})", self.int(inner))),
             },
             ExprKind::BitNot(inner) => format!("(-({}) - 1)", self.int(inner)),
             ExprKind::Not(inner) => format!("((({}) == 0) and 1 or 0)", self.int(inner)),
@@ -540,7 +706,7 @@ impl Compiler<'_> {
                 Const::Real(r) => lua_num(*r),
                 Const::Str(s) => lua_str(s),
             },
-            Home::Control(_) => self.unsupported("ui control"),
+            Home::Control(ui) => Self::ctl_get(ui),
             Home::Cells { .. } | Home::Texts { .. } => self.unsupported("whole array value"),
         }
     }
@@ -560,36 +726,37 @@ impl Compiler<'_> {
         let _ = e;
         let (a, b) = (self.int(l), self.int(r));
         match op {
-            Arith::Add => format!("W(({a}) + ({b}))"),
-            Arith::Sub => format!("W(({a}) - ({b}))"),
+            Arith::Add => wrap(&format!("({a}) + ({b})")),
+            Arith::Sub => wrap(&format!("({a}) - ({b})")),
+            Arith::Mul if is_pure(l) && is_pure(r) && a.len() + b.len() <= 160 => {
+                // Exact in doubles while |a*b| <= 2^53; otherwise the split multiply.
+                format!("((({a}) * ({b}) >= -9007199254740992 and ({a}) * ({b}) <= 9007199254740992) and {} or MUL({a}, {b}))", wrap(&format!("({a}) * ({b})")))
+            }
             Arith::Mul => format!("MUL({a}, {b})"),
             Arith::Div => format!("DIV({a}, {b})"),
             Arith::Mod => format!("MOD({a}, {b})"),
-            Arith::BitAnd => format!("W(bit32.band(({a}) % TWO32, ({b}) % TWO32))"),
-            Arith::BitOr => format!("W(bit32.bor(({a}) % TWO32, ({b}) % TWO32))"),
-            Arith::BitXor => format!("W(bit32.bxor(({a}) % TWO32, ({b}) % TWO32))"),
+            Arith::BitAnd => wrap(&format!("bit32.band(({a}) % 4294967296, ({b}) % 4294967296)")),
+            Arith::BitOr => wrap(&format!("bit32.bor(({a}) % 4294967296, ({b}) % 4294967296)")),
+            Arith::BitXor => wrap(&format!("bit32.bxor(({a}) % 4294967296, ({b}) % 4294967296)")),
+        }
+    }
+
+    fn compare_operands(&mut self, l: &Expr, r: &Expr) -> (String, String) {
+        let text_both = l.ty == Ty::Str && r.ty == Ty::Str;
+        if text_both || (l.ty == Ty::Real && r.ty == Ty::Real) {
+            (self.expr(l), self.expr(r))
+        } else {
+            (self.int(l), self.int(r))
         }
     }
 
     fn compare(&mut self, c: Comparison, l: &Expr, r: &Expr) -> String {
-        let sym = match c {
-            Comparison::Equal => "==",
-            Comparison::NotEqual => "~=",
-            Comparison::Less => "<",
-            Comparison::LessEqual => "<=",
-            Comparison::Greater => ">",
-            Comparison::GreaterEqual => ">=",
-        };
         let text_both = l.ty == Ty::Str && r.ty == Ty::Str;
-        let (a, b) = if text_both || (l.ty == Ty::Real && r.ty == Ty::Real) {
-            (self.expr(l), self.expr(r))
-        } else {
-            (self.int(l), self.int(r))
-        };
         if text_both && !matches!(c, Comparison::Equal | Comparison::NotEqual) {
             return "0".into();
         }
-        format!("((({a}) {sym} ({b})) and 1 or 0)")
+        let (a, b) = self.compare_operands(l, r);
+        format!("((({a}) {} ({b})) and 1 or 0)", compare_sym(c))
     }
 
     fn builtin(&mut self, builtin: Builtin, args: &[Arg]) -> String {
@@ -609,8 +776,9 @@ impl Compiler<'_> {
                         Arg::Key(_) | Arg::Var(..) | Arg::SysArray(_) | Arg::Place(_) => "0".into(),
                     });
                 }
-                let name = if builtin == Builtin::SetEnginePar { "set_engine_par" } else { "get_engine_par" };
-                format!("HOST.{name}({})", parts.join(", "))
+                // Aliases declared at the top of the chunk (`SEP`, `GEP`): no table lookup per call.
+                let name = if builtin == Builtin::SetEnginePar { "SEP" } else { "GEP" };
+                format!("{name}({})", parts.join(", "))
             }
             Builtin::Abs => match ex(args, 0) {
                 Some(e) if e.ty == Ty::Real => format!("math.abs({})", self.expr(e)),
@@ -707,12 +875,10 @@ impl Compiler<'_> {
             },
             Builtin::Search => self.search(args),
             Builtin::Sort => self.sort(args),
-            Builtin::Message => match ex(args, 0) {
-                Some(e) if e.ty == Ty::Str => format!("HOST.message({})", self.expr(e)),
-                Some(e) if e.ty != Ty::Real => format!("HOST.message(tostring({}))", self.int(e)),
-                _ => self.unsupported("builtin message real"),
+            other => match self.control_builtin(other, args).or_else(|| self.pgs_builtin(other, args)).or_else(|| self.record_builtin(other, args)) {
+                Some(call) => call,
+                None => self.unsupported(&format!("builtin {}", other.name())),
             },
-            other => self.unsupported(&format!("builtin {}", other.name())),
         }
     }
 

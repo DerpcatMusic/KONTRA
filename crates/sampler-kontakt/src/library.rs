@@ -1219,17 +1219,17 @@ fn ahdsr_curves(curve: f32) -> (ir::Curve, ir::Curve) {
     (ir::Curve::Exponential(attack), ir::Curve::Exponential(fall))
 }
 
-/// Stored AHDSR times are unit knobs, not milliseconds. Attack and hold use the
-/// 15 s law (`fconv_u2n_env_a`), decay and release the 25 s law
-/// (`fconv_u2n_env_d`); the sustain knob is cubed (`x³`, see
-/// `docs/re/engine/k-mod-envelopes.md`). The engine's own stage scaling uses the
-/// same knob convention (`EnvelopeState::scale_stage`).
-fn ahdsr_attack_ms(knob: f32) -> f32 {
-    sampler_core::native_mod_laws::u2n_env_a(knob)
+/// Stored AHDSR times are already milliseconds: the 15 s / 25 s laws
+/// (`fconv_u2n_env_a` / `_d`) apply to script and automation values in 0..1, not
+/// to these fields. Running them here clamped every stored time of 1 ms or more
+/// to the law's maximum (Dolce staccato: 80 ms attack became 15 s, silent).
+/// Corpus evidence: stored attacks are 80/125/200 ms, releases 120/351/1050 ms.
+fn ahdsr_attack_ms(ms: f32) -> f32 {
+    ms.max(0.0)
 }
 
-fn ahdsr_decay_ms(knob: f32) -> f32 {
-    sampler_core::native_mod_laws::u2n_env_d(knob)
+fn ahdsr_decay_ms(ms: f32) -> f32 {
+    ms.max(0.0)
 }
 
 fn ahdsr_sustain(knob: f32) -> f32 {
@@ -4894,12 +4894,24 @@ mod modulation {
         assert!(dbd_breakpoints(&dbd(0x11, [0.5, 0.5, 0.5], 0)).is_none());
     }
 
-    /// Stored knobs (KONTAKT_DSP_LAWS.md, AHDSR section): knob 0.5 is 171.2 ms
-    /// attack/hold, 221.6 ms decay/release, and sustain level 0.125.
+    /// Stored AHDSR times are milliseconds (Dolce staccato stores 80 ms attack;
+    /// the corpus stores 80/125/200 ms attacks and 120/351/1050 ms releases). The
+    /// 15 s / 25 s laws apply to normalized control values, not to these fields.
+    /// Sustain stays the cubed knob.
     #[test]
-    fn ahdsr_stored_knobs_map_to_native_times_and_sustain() {
-        assert!((ahdsr_attack_ms(0.5) - 171.2167).abs() < 1e-3);
-        assert!((ahdsr_decay_ms(0.5) - 221.6159).abs() < 1e-3);
+    fn ahdsr_stored_times_are_native_milliseconds_and_sustain_is_a_knob() {
+        assert_eq!(ahdsr_attack_ms(80.0077), 80.0077);
+        assert_eq!(ahdsr_decay_ms(351.0), 351.0);
+        // Raw stored values from the native-file survey (2026-10-23): Dolce
+        // legato/staccato (v174), ANALOG STRINGS 1.05 ms (v171), Una Corda
+        // 25000.04 ms release at the law maximum (v168), Dolce 1050 ms release.
+        assert_eq!(ahdsr_attack_ms(139.9995574951172), 139.9995574951172);
+        assert_eq!(ahdsr_attack_ms(0.00010704994201660156), 0.00010704994201660156);
+        assert_eq!(ahdsr_attack_ms(1.05), 1.05);
+        assert_eq!(ahdsr_decay_ms(213.49972534179688), 213.49972534179688);
+        assert_eq!(ahdsr_decay_ms(1050.0009765625), 1050.0009765625);
+        assert_eq!(ahdsr_decay_ms(25000.04), 25000.04);
+        assert_eq!(ahdsr_attack_ms(-1.0), 0.0);
         assert_eq!(ahdsr_sustain(0.5), 0.125);
         assert_eq!(ahdsr_sustain(2.0), 1.0);
     }
