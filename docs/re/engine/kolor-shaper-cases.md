@@ -228,3 +228,45 @@ is decompile-only: not yet checked against the emulator. The per-mode *parameter
 Still open for the live path: `14193fab0` / `1419421c0`, the per-knob notify lambdas that fill `P` and `P2`, and the
 mode-to-case table (which selector byte each mode writes at `shaper+0x6f0`). The control tick, the P/P2 fill and
 the mode table are needed before a Kolor `Processor` can be attached to the IR; none is in the tree yet.
+
+## Mode table and control tick: resolved (step 3, 2026-10-23)
+
+**Mode -> selector (resolved, kemu-verified).** `14197a2c0` and `141977d20` compute
+`mode = clamp((int)(knob4 * 10.0), 0, 9)` (`DAT_144714a00` = 10.0, `141977d20` clamp at 0 and 9). The
+block process uses object `n = mode*2 + k` at `core + 0x800 + n*0x700`. Its selector byte (`+0x6f0`) is
+**the mode itself**: the constructor writes `0,0,1,1,...,9,9` for `n = 0..19` (the `*(undefined1*)(...+0xde) = s`
+writes in `141972fa0`, `1419732b0`, `1419735c0`, `1419738d0`, `141973be0`, `141973ef0`, `141974200`,
+`141974510`, plus `0xa9e/0xb7e/0x55e/0x63e` for modes 5 and 2). Probe `tools/re/kolor_mode_table_probe.py`
+reads the bytes under kemu after every mode and observes the dispatch case that runs (`case0` ... `case9`;
+modes 6-8 run `14194cfb0`, told apart by the byte). Table: `control.rs::shaper_selector`.
+`mode_from_knob` is unit-tested with the `mode/9` round trip that `apply` uses.
+
+**Control tick `14197ab90` (ported, native-verified).** `control.rs::Control::tick`. The fields and their
+offsets are read from the decompile. The probe `tools/re/kolor_control_tick_probe.py` writes 400 random
+control states, runs the tick natively, and records the fields after it and the notify and seed calls.
+`tick_matches_native` checks every field, the phase and the notify/seed counts.
+
+Two facts the port depends on, found by the probe:
+- `+0x7f0` is a 2-byte word. Its low byte is a flag (`14197a2c0` tests it and writes `0x100`). Its high byte
+  is `+0x7f1`, the pending apply byte. The tick writes the word as `1` after clearing pending. A probe
+  that wrote the two as separate fields clobbered the pending byte, so they are separate `u8`s in the port.
+- Notify A (`14193fab0`) sets phase 4 and tail-calls notify B (`1419421c0`). B sets the phase from
+  data: `if (sum <= 0) phase = 4 else { phase = 2; byte this+0x95 = 1 }` (`this` = core+0x480) (`0141940000.c` `1419421c0`, end of
+  function). The port takes the notify results through the `Notifier` trait. The test replays the native
+  phase. So the countdown, the flags and the seed are ported and checked, and the phase rule
+  is not (it depends on the P data, which is step 2).
+
+**Still open (step 2, P/P2 fill).** `14193fab0` (notify A, `this` = core+0x480) copies 0x40-byte source blocks (`this[6]`) into
+`this[0]` and `this[0xc]`, zeroes `this[3]` and `this[0xf]`, sets the phase (`this+0x90` = core+0x510) to 4,
+clears the byte `this+0x95`, then tail-calls B. The source block (who writes `param_1[6]`) is not traced.
+B (`1419421c0`, 656 B) is the SIMD routine that computes the activity sum above and the P2 data. Not
+ported. The tick port needs no P data, but the phase after a B call does.
+
+**Per-mode gains (read, not yet used).** `14197a2c0` multiplies the pre-shaper input by
+`DAT_14769aed0[mode]` and the post-shaper output by `DAT_14769aea8[mode]` (`pefile`, 10 floats each):
+pre = 26.32905, 0.836556, 11.220184, 0.022209, 10.035909, 7.079458, 8.291311, 0.33225, 14.77084, 12.438722;
+post = 0.084792, -0.364524, 0.562341, 0.527867, 0.121059, 1.0, 0.189637, 0.33553, -0.148212, -0.12086.
+The pre-gain is multiplied with `param_7d4` and `param_7c0` (not decoded here).
+
+**Not done:** P/P2 fill (step 2), wiring the tick into the live path, and the Processor (step 4). The
+parity row stays `partial`; no mode flips.

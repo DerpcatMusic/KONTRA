@@ -10,11 +10,15 @@
 //! - [`shaper_4`]: case 4, output identically zero natively (state unobservable), tested against native vectors.
 //! - cases 0, 1, 3, 6..9: not ported yet, owned by other lanes.
 //!
+//! `control` (`mode_from_knob`, `shaper_selector` = mode, the control tick) is native-verified; the
+//! notify phase (P/P2 fill) is not ported, see `docs/re/engine/kolor-shaper-cases.md`.
+//!
 //! Status: partial. The control tick, prepare and biquad sections are open (see
 //! `docs/re/engine/k-effects-batch-a.md`), so modes 2 and 5 of
 //! `tools/re/fixtures/kolor_native_vectors.json` do not match yet.
 
 pub mod chain;
+pub mod control;
 pub mod shaper_2_5;
 pub mod shaper_4;
 // unwired until the cfb0 state update (c830) is recovered; see docs/re/engine/kolor-shaper-cases.md
