@@ -336,6 +336,7 @@ impl ReplikaCore {
             (index::DUCKING_SENSE, c.ducking_sense),
             (index::DUCKING_AMOUNT, c.ducking_amount),
             (index::DUCKING_RELEASE, c.ducking_release),
+            (index::SELECT, c.path),
         ];
         for (i, v) in values {
             core.set_param(i, v);

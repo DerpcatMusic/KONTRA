@@ -406,9 +406,15 @@ fn unit_interval(values: &[f32]) -> bool {
 /// Replika Delay (v0x12). Wired to the sampler-core Replika core (`Native::Replika`, `dsp::replika`):
 /// TIME (setter 8, mode 3: 2000 ms x value), FEEDBACK (5, head 2 and 3 gain 1.2 x value), LOWCUT (2) and
 /// HIGHCUT (3) as the loop filters, SATURATION (29, the tap saturator amount), and the ducker: DUCKING_SENSE
-/// (17), DUCKING_AMOUNT (18), DUCKING_RELEASE (19; tie INFERRED, k-replika-binding.md). Every other control
-/// keeps its reset value and is reported with the reason it is not wired (docs/re/engine/k-replika-gaps.md).
+/// (17), DUCKING_AMOUNT (18), DUCKING_RELEASE (19; tie INFERRED, k-replika-binding.md) and the path (index 28,
+/// from TYPE; tie INFERRED). Every other control keeps its reset value and is reported with the reason it is not
+/// wired (docs/re/engine/k-replika-gaps.md).
 fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> {
+    // The engine range-checks TYPE to 0..4 ("Invalid Replika delay type!").
+    if !(0..=4).contains(&rep.ty) {
+        notes.push(("type".into(), rep.ty.to_string(), Reason::InvalidValue));
+        return None;
+    }
     for (name, v) in [
         ("time", rep.time),
         ("feedback", rep.feedback),
@@ -465,7 +471,18 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
     ] {
         notes.push(("parameters".into(), format!("{name} {on}"), reason));
     }
-    notes.push(("type".into(), rep.ty.to_string(), Reason::NotModeled));
+    // Index 28 path k = min(4, trunc(5 v)): TYPE (0..4) at the centre of its bin, so the path is TYPE. INFERRED: the
+    // binding doc also names TYPE as index 9 (k-replika-binding.md rows 9 and 28, unresolved). The stage keeps the
+    // mode-0 frame for every path until the mode-1 chain persists across blocks (k-replika-gaps.md piece 3c part 5b).
+    let path = (rep.ty as f32 + 0.5) / 5.;
+    notes.push((
+        "type".into(),
+        format!(
+            "{} (path 28, INFERRED; mode 1 not yet run by the stage)",
+            rep.ty
+        ),
+        Reason::UnknownLawOmitted,
+    ));
     let controls = ReplikaControls {
         time: rep.time,
         feedback: rep.feedback,
@@ -475,6 +492,7 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
         ducking_sense: rep.ducking_sense,
         ducking_amount: rep.ducking_amount,
         ducking_release: rep.ducking_release,
+        path,
         ..ReplikaControls::default()
     };
     let mut line = Line::single(DelayTime::Frames(1), 2000.);
@@ -935,6 +953,30 @@ mod tests {
         let mut notes = Vec::new();
         assert!(super::replika_config(&rep, 0.5, &mut notes).is_none());
         assert!(notes.iter().any(|n| n.1.starts_with("saturation") && n.2 == sampler_ir::Reason::InvalidValue));
+    }
+
+    /// TYPE (saved integer 0..4) sets the index-28 path to its own value: min(4, trunc(5 v)) recovers TYPE (INFERRED,
+    /// k-replika-binding.md). Outside 0..4 the engine rejects the type, so the unit is not read.
+    #[test]
+    fn replika_type_binds_the_index28_path() {
+        for ty in 0..=4i32 {
+            let mut public = replika_stream([0.25, 0., 0., 0., 0., 0., 0., 0., 0., 0.], [0.; 9]);
+            public[..4].copy_from_slice(&ty.to_le_bytes());
+            let mut r = super::super::Reader(&public);
+            let Some(super::Unit::Replika(rep)) = super::read_replika(0x12, &mut r) else { panic!("v0x12 must read") };
+            let mut notes = Vec::new();
+            let cfg = super::replika_config(&rep, 0.5, &mut notes).expect("maps");
+            let sampler_ir::fx::timemod::Native::Replika(c) = cfg.line.expect("delay line").native else { panic!("native") };
+            assert_eq!(c.path, (ty as f32 + 0.5) / 5., "TYPE {ty}");
+            assert_eq!((c.path * 5.) as i32, ty, "TYPE {ty} is path {ty}");
+        }
+        let mut public = replika_stream([0.25, 0., 0., 0., 0., 0., 0., 0., 0., 0.], [0.; 9]);
+        public[..4].copy_from_slice(&5i32.to_le_bytes());
+        let mut r = super::super::Reader(&public);
+        let Some(super::Unit::Replika(rep)) = super::read_replika(0x12, &mut r) else { panic!("v0x12 must read") };
+        let mut notes = Vec::new();
+        assert!(super::replika_config(&rep, 0.5, &mut notes).is_none());
+        assert!(notes.iter().any(|n| n.1 == "5" && n.2 == sampler_ir::Reason::InvalidValue), "{notes:?}");
     }
 
     #[test]
