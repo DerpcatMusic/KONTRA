@@ -166,8 +166,8 @@ in `crates/sampler-script/tests/daw_bounds.rs`, **P** partial, **O** open
 | 1 | Worst case per event, not mean (p99/p99.9/max, GC pause) | **M** | Measured table. Only synthetic `onNote`; real UVI callbacks not timed. |
 | 2 | No allocation or unbounded GC on the audio path | **P** | GC steps are bounded (`bounded_gc_step`, T). Memory cap per VM (T). Audio-thread placement of script callbacks is not verified here. |
 | 3 | Deterministic bounded execution; runaway aborts; error isolates | **T** | Budget stops at exactly limit+1 checkpoints; VM survives a refill (T). The host still needs to disable a faulting script. O. |
-| 4 | Sample-accurate event timing, wait() across block sizes, offline == realtime | **O** | Not built. UVI `wait` is a host-scheduled coroutine; no block-size trace test exists. |
-| 5 | Determinism for bounce and recall: seeded RNG, no wall clock, state save/restore, hot reload | **P** | Budget is checkpoint-based, not timer-based (T). `math.random` seeding exists only under the `scan` feature. Save/restore of script state: O. |
+| 4 | Sample-accurate event timing, wait() across block sizes, offline == realtime | **P** | KSP front end (`sampler-ksp::luau`): wait resumes at the interpreter's exact frame (micro-frame carry copied), 1-frame stepping test and 32/64/512/4096 block rows identical to the interpreter. Offline == realtime not tested. UVI wait: not ported. |
+| 5 | Determinism for bounce and recall: seeded RNG, no wall clock, state save/restore, hot reload | **P** (Luau path: pending waits are coroutines and cannot be serialized; save/restore not built) | Budget is checkpoint-based, not timer-based (T). `math.random` seeding exists only under the `scan` feature. Save/restore of script state: O. |
 | 6 | Threading: UI/file work through lock-free queues, no blocking | **O** | Not in this crate. Existing UVI command queues are not audited here. |
 | 7 | Many instances: per-VM memory and creation cost | **M** | ~0.43 MB per empty VM, ~0.48 MB with a callback chunk; create 0.23 ms native / 0.38 ms interp (includes stdlib setup). Per-voice script state: O. |
 | 8 | Tempo/transport, denormals, NaN/inf containment, int vs real | **O** | KSP int semantics belong to the KSP front end (not started). |
@@ -187,15 +187,21 @@ the p99.9 column. A 230 ns callback is about 4.6 % of a 5 µs sample-voice
 budget, so one callback per note is affordable; a 30-40 µs max shows the host
 must keep callbacks off the audio thread or at block boundaries (items 2-3).
 
+## KSP front end, phase 3 (2026-10-23)
+
+`crates/sampler-ksp/src/luau`: HIR -> Luau compiler (`compile`), `lower()` (interpreter `on init` + Luau chunk), `check_init` (cell/text/engine equality), `host::Host` (one VM per instrument, one coroutine per callback, exact-frame waits).
+
+Subset: int/real/text scalars and arrays, `if`/`while`/`select`/`call`/`exit`/`continue`/`inc`/`dec`, i32 wrap/div/mod/bit ops, `wait`, `set_engine_par`/`get_engine_par`, `on init`/`on note`/`on release`. `exit` leaves the enclosing callback or function (interpreter semantics, not just the loop).
+
+Corpus: 696 real scripts extracted from `/data/main/Libraries` (`sampler-kontakt/examples/ksp_corpus_extract`), census with `sampler-ksp/examples/luau_census`: 5 fail the front end, 691 compile but use constructs outside the subset, **0 in subset and compared**. Top gaps by site: `set_control_par` (2.2 M), `set_control_par_str` (0.46 M), UI controls (0.40 M), `make_persistent` (0.19 M), `search` (0.16 M), `get_ui_id` (0.14 M), `read_persistent_var` (0.09 M).
+
+Per event (`examples/luau_bench`, release, shared host, 20 000 events): interpreter p50 0.8-1.7 µs, p99.9 3.5-11 µs; Luau p50 5.5 µs, p99.9 46-51 µs, max 170-220 µs. The budget hook costs about 1.3 µs of the p50. **Luau is not faster with equal or better tail latency: the interpreter stays the default.**
+
 ## Remaining
 
-1. KSP-to-Luau compiler: **not started**. Trace equivalence against the
-   existing KSP interpreter on >= 20 corpus scripts and per-event cost are
-   not done. Starting it needs KSP int/real typing and the event model
-   written down first.
-2. UVI wait/spawn queue into `sampler-script`: not started.
-3. Real UVI callback benchmark (not synthetic) and the DAW checklist items
-   marked O above.
+1. Widen the subset until real scripts are in it: UI controls and `set_control_par*` (record-only), persistence, `search`/`get_ui_id`, `num_elements`, `message`. Then compare traces, not only `on init`.
+2. Pending waits and polyphonic state save/restore (checklist 5): coroutines cannot be serialized; needs a continuation form for waits.
+3. Real UVI callback benchmark and the DAW checklist items marked O above.
 4. `UVI_PARITY_LEDGER.md` embeds `script.rs:LINE` in ~5 800 rows. Any edit to
    `script.rs` moves those numbers and fails `ledger_matches_generated_table`
    until the ledger is regenerated with `parity_summary -- --ledger`.
