@@ -138,20 +138,31 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         .min_w(0)
         .when(!activity.is_empty(), |e| e.tip(activity))
         .id("activity"),
-        stat("CPU", format!("{:.0}%", cpu * 100.), "100%"),
-        stat("Voices", audible.to_string(), "000").tip(format!(
-            "{voices} running, {} muted by the script",
-            voices.saturating_sub(audible)
-        )),
-        // Sample heads sized by use and idle stream rings handed back.
-        stat("RAM", megabytes(memory), "00000 MB")
-            .tip(format!(
-                "Smart memory: {} of samples resident, for this rack · {} freed",
-                megabytes(memory),
-                megabytes(freed as usize)
+        // Each readout is a memo keyed by the text it shows: the numbers are
+        // already quantised to what is drawn, so an unchanged one is kept.
+        {
+            let text = format!("{:.0}%", cpu * 100.);
+            ui.memo("top-cpu", text.clone(), |_| stat("CPU", text, "100%"))
+        },
+        ui.memo("top-voices", (audible, voices), |_| {
+            stat("Voices", audible.to_string(), "000").tip(format!(
+                "{voices} running, {} muted by the script",
+                voices.saturating_sub(audible)
             ))
-            .id("readout-ram"),
-        stat("Disk", format!("{disk:.1} MB/s"), "000.0 MB/s").id("readout-disk"),
+        }),
+        // Sample heads sized by use and idle stream rings handed back.
+        ui.memo("top-ram", (memory, freed), |_| {
+            stat("RAM", megabytes(memory), "00000 MB")
+                .tip(format!(
+                    "Smart memory: {} of samples resident, for this rack · {} freed",
+                    megabytes(memory),
+                    megabytes(freed as usize)
+                ))
+                .id("readout-ram")
+        }),
+        ui.memo("top-disk", format!("{disk:.1}"), |_| {
+            stat("Disk", format!("{disk:.1} MB/s"), "000.0 MB/s").id("readout-disk")
+        }),
         vrule().h(CONTROL - TIGHT),
         cluster(vec![section("Master"), master, meter_bar(level)]).gap(SPACE),
         vrule().h(CONTROL - TIGHT),
