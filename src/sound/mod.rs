@@ -42,7 +42,10 @@ pub const MAX_BLOCK: usize = 128;
 pub const BUSES: usize = 16;
 /// Initial rack storage for existing sessions; this is not a part-count limit.
 pub const RACK_SLOTS: usize = 16;
-pub use crate::plugin::automation_ids::HOST_AUTOMATION_SLOTS;
+// One source for the host automation capacity, shared with build.rs (same file).
+#[path = "../plugin/automation_ids.rs"]
+mod automation_ids;
+pub use automation_ids::HOST_AUTOMATION_SLOTS;
 /// A host automation slot's route into one control, from the plan's bindings.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HostBinding {

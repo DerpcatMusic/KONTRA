@@ -169,6 +169,7 @@ impl Edits {
             .collect()
     }
 }
+#[cfg(feature = "plugin")]
 impl moose::core::custom_state::StateField for Edits {
     fn write_field(&self, buf: &mut Vec<u8>) {
         serde_json::to_string(self)
