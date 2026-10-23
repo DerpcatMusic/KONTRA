@@ -1016,4 +1016,20 @@ mod tests {
         // Not a module type: no value is invented for an unknown name.
         assert_eq!(constant("$EFFECT_TYPE_NOT_A_MODULE"), None);
     }
+
+    #[test]
+    fn every_effect_type_constant_has_a_measurement_row() {
+        // Each PE-registered effect name needs a row in effect-type-ids.tsv: a measured subtype id
+        // or the explicit `unmeasured` marker (the PE value is then used, but flagged as unverified).
+        let pe = include_str!("module_types.tsv");
+        let table = include_str!("../../../docs/re/kontakt-bindings/effect-type-ids.tsv");
+        for name in pe.lines().filter(|l| l.starts_with("$EFFECT_TYPE_")).map(|l| l.split('\t').next().unwrap()) {
+            let row = table
+                .lines()
+                .find(|l| l.split('\t').next() == Some(name))
+                .unwrap_or_else(|| panic!("{name} has no row in effect-type-ids.tsv"));
+            let id = row.split('\t').nth(1).unwrap_or("");
+            assert!(id == "unmeasured" || id.parse::<i32>().is_ok(), "{name}: bad measured id {id:?}");
+        }
+    }
 }
