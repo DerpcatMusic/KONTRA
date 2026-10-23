@@ -524,4 +524,43 @@ mod tests {
             assert!((v - want).abs() < 1e-6, "{i}: {v}");
         }
     }
+
+    /// One stereo convolver, 3 s decaying-noise IR, 64-frame blocks, noise in
+    /// (no silent-block shortcut): `cargo test --release -p sampler-core
+    /// cpu_three_second_ir -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn cpu_three_second_ir() {
+        const RATE: usize = 48_000;
+        let ir = |seed| -> Vec<f32> {
+            noise(3 * RATE, seed)
+                .iter()
+                .enumerate()
+                .map(|(i, v)| v * (-(i as f32) / 20_000.0).exp())
+                .collect()
+        };
+        let impulse = Impulse::new(ir(11), ir(12)).unwrap();
+        let input = noise(10 * RATE, 13);
+        let t = std::time::Instant::now();
+        let mut conv = Conv::new(&impulse);
+        println!("upload {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        let (mut best, mut sink) = (f64::MAX, 0f32);
+        for _ in 0..3 {
+            conv.clear();
+            let (mut l, mut r) = (vec![0f32; 64], vec![0f32; 64]);
+            let t = std::time::Instant::now();
+            for chunk in input.chunks_exact(64) {
+                l.copy_from_slice(chunk);
+                r.copy_from_slice(chunk);
+                conv.process([&mut l, &mut r]);
+                sink += l[0] + r[63];
+            }
+            best = best.min(t.elapsed().as_secs_f64() * 1e9 / input.len() as f64);
+        }
+        std::hint::black_box(sink);
+        println!(
+            "conv 3s stereo ir, 64-frame blocks: {best:.1} ns/frame = {:.2}% of one core at {RATE} Hz",
+            best * RATE as f64 / 1e9 * 100.0
+        );
+    }
 }
