@@ -297,8 +297,9 @@ impl Polyphase {
             }
         }
         std::array::from_fn(|frame| {
-            // Match dot's memory barrier and reduction association per output.
-            let sum = std::hint::black_box(sums[frame]);
+            // dot's reduction association per output, kept in registers: a
+            // memory barrier here cost a spill and scalar reload of every lane.
+            let sum = sums[frame];
             let half: [f32; 4] = std::array::from_fn(|k| sum[0][k] + sum[1][k]);
             [half[0] + half[2], half[1] + half[3]]
         })
