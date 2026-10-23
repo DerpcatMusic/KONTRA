@@ -8,12 +8,20 @@ Tolerance bands: magnitude shape +-0.5 dB, phase +-5 deg, time constants +-10 %,
 
 | Pair | Implementation | Fidelity: worst shape (dB) | Alias (dB) | THD+N (dB) | Noise (dBFS) | Subnormal | Stable | Latency | ns/frame | instr/frame | Verdict |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Sample-rate conversion: engine kernel (ours) vs rubato sinc | sampler-core resample (High) | n/a | -64.4 | -105.2 | -200.0 | 0 | yes | 0 | 223.65 | n/a | no Kontakt reference |
-| Sample-rate conversion: engine kernel (ours) vs rubato sinc | rubato sinc (async) | n/a | -57.7 | -105.2 | -200.0 | 0 | yes | 0 | 160.77 | n/a | no Kontakt reference |
-| Filter: Kontakt LP2 legacy (ours) vs biquad crate | sampler-core LP2 cascade | 0.0 | -17.1 | -87.8 | -200.0 | 1700 | yes | 4 | 7.83 | 129 | faithful |
-| Filter: Kontakt LP2 legacy (ours) vs biquad crate | biquad crate LP (RBJ-style) | 8.7 | -15.7 | -87.8 | -200.0 | 1695 | yes | 9 | 2.35 | 22 | differs from Kontakt (character change) |
-| Limiter: DbLimiter (ours) vs look-ahead reference | sampler-core DbLimiter | n/a | -56.5 | -54.1 | -200.0 | 1719 | yes | 0 | 13.24 | 168 | no Kontakt reference |
-| Limiter: DbLimiter (ours) vs look-ahead reference | look-ahead reference (bench) | n/a | -111.2 | -87.8 | -200.0 | 1478 | yes | 241 | 4.12 | 110 | no Kontakt reference |
+| Sample-rate conversion: engine kernel (ours) vs rubato sinc | sampler-core resample (High) | n/a | -64.4 | -105.2 | -200.0 | 0 | yes | 0 | 475.38 | n/a | no Kontakt reference |
+| Sample-rate conversion: engine kernel (ours) vs rubato sinc | rubato sinc (async) | n/a | -57.7 | -105.2 | -200.0 | 0 | yes | 0 | 275.40 | n/a | no Kontakt reference |
+| Filter: Kontakt LP2 legacy (ours) vs biquad crate | sampler-core LP2 cascade | 0.0 | -17.1 | -87.8 | -200.0 | 1700 | yes | 4 | 8.13 | 129 | faithful |
+| Filter: Kontakt LP2 legacy (ours) vs biquad crate | biquad crate LP (RBJ-style) | 8.7 | -15.7 | -87.8 | -200.0 | 1695 | yes | 9 | 1.92 | 22 | differs from Kontakt (character change) |
+| Limiter: DbLimiter (ours) vs look-ahead reference | sampler-core DbLimiter | n/a | -56.5 | -54.1 | -200.0 | 1719 | yes | 0 | 15.26 | 168 | no Kontakt reference |
+| Limiter: DbLimiter (ours) vs look-ahead reference | look-ahead reference (bench) | n/a | -111.2 | -87.8 | -200.0 | 1478 | yes | 241 | 8.55 | 110 | no Kontakt reference |
+| Solid G-EQ bell and shelf: ours vs Signalsmith BiquadStatic | sampler-core Solid G-EQ designer | 7.3 | -18.6 | -87.8 | -200.0 | 1662 | yes | 0 | 2.05 | 25 | differs from Kontakt (character change) |
+| Solid G-EQ bell and shelf: ours vs Signalsmith BiquadStatic | Signalsmith BiquadStatic (Vicanek) | 7.0 | -18.6 | -87.8 | -200.0 | 1661 | yes | 0 | 3.85 | 33 | differs from Kontakt (character change) |
+| 2x oversampling: hiir half-band (ours) vs Signalsmith Oversampler2xFIR | sampler-core hiir 2x (20 kHz, 78 dB) | n/a | -44.8 | -15.4 | -200.0 | 1704 | yes | 3 | 17.55 | 215 | no Kontakt reference |
+| 2x oversampling: hiir half-band (ours) vs Signalsmith Oversampler2xFIR | Signalsmith Oversampler2xFIR | n/a | -41.8 | -15.4 | -200.0 | 1684 | yes | 32 | 62.09 | 705 | no Kontakt reference |
+| Compressor: generic kernel (ours) vs Giannoulis/Reiss gain computer | sampler-core generic compressor kernel | n/a | n/a | -70.4 | -200.0 | 1719 | yes | 0 | 32.77 | 260 | no Kontakt reference |
+| Compressor: generic kernel (ours) vs Giannoulis/Reiss gain computer | Giannoulis/Massberg/Reiss gain computer (bench) | n/a | n/a | -70.4 | -200.0 | 1719 | yes | 0 | 31.29 | 238 | no Kontakt reference |
+| Ladder: Kontakt legacy class 17 (ours) vs Zavalishin TPT ladder | sampler-core Ladder (legacy class 17) | 0.0 | -12.3 | -78.3 | -101.5 | 0 | yes | 26 | 64.33 | 315 | faithful + cleaner |
+| Ladder: Kontakt legacy class 17 (ours) vs Zavalishin TPT ladder | Zavalishin TPT ladder, one-sample feedback (bench) | 6.0 | -20.3 | -87.8 | -200.0 | 1774 | yes | 23 | 8.86 | 35 | differs from Kontakt (character change) |
 
 ## Notes
 
@@ -26,3 +34,15 @@ Tolerance bands: magnitude shape +-0.5 dB, phase +-5 deg, time constants +-10 %,
 - **Limiter: DbLimiter (ours) vs look-ahead reference**: reference: none (no Kontakt limiter capture).
   - sampler-core DbLimiter: no Kontakt limiter capture; absolute quality only
   - look-ahead reference (bench): no Kontakt limiter capture; absolute quality only
+- **Solid G-EQ bell and shelf: ours vs Signalsmith BiquadStatic**: reference: Kontakt 8 Solid G-EQ, LL channel, 228 rows x 10 probes (solid-geq-responses.tsv).
+  - sampler-core Solid G-EQ designer: p90 over 228 rows; worst row 19.02 dB
+  - Signalsmith BiquadStatic (Vicanek): p90 over 228 rows; worst row 19.23 dB
+- **2x oversampling: hiir half-band (ours) vs Signalsmith Oversampler2xFIR**: reference: none (no Kontakt oversampler capture).
+  - sampler-core hiir 2x (20 kHz, 78 dB): passband ripple 0.010 dB
+  - Signalsmith Oversampler2xFIR: passband ripple 0.020 dB
+- **Compressor: generic kernel (ours) vs Giannoulis/Reiss gain computer**: reference: none for compressors (the committed Kontakt data has the legacy limiter curve only).
+  - sampler-core generic compressor kernel: static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms (63 %)
+  - Giannoulis/Massberg/Reiss gain computer (bench): static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms; divergence from ours: max 0.00 dB, mean 0.00 dB
+- **Ladder: Kontakt legacy class 17 (ours) vs Zavalishin TPT ladder**: reference: Kontakt 8 Ladder oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json, class Ladder).
+  - sampler-core Ladder (legacy class 17): cutoff and resonance fitted per case
+  - Zavalishin TPT ladder, one-sample feedback (bench): hz and resonance fitted per case

@@ -17,6 +17,8 @@
 mod ballistics;
 mod computer;
 mod detector;
+#[cfg(feature = "dspbench")]
+pub mod bench;
 mod laws;
 mod logarithm;
 mod output;
