@@ -325,3 +325,25 @@ What this means for the parity row:
 
 Open after this pass: map prepare's coefficient blocks to sections; confirm the dry/wet mix formula against
 `kolor_native_vectors.json`; read `14195c0f0` fully; find the consumer of `+0x7d0`.
+
+## Drive sweep and the zero shaper parameter blocks (2026-10-23, step 1-3 of the drive lane)
+
+Fixture: `tools/re/fixtures/kolor_drive_sweep.json` from `tools/re/kolor_drive_sweep.py` (kemu, 256 frames, wet 0.5,
+drive 0, .25, .5, .75, 1, inputs sine / impulse / noise, all 10 modes).
+
+- **Shaper-free modes 0, 1, 3, 4, 6..9: native output = dry path at every drive** (max diff 0 on all three inputs).
+  Also at input amplitude 1 and 4 (sine, 110 Hz). Test: `chain::tests::drive_sweep_matches_native_for_dry_modes`.
+- **Modes 2 and 5 depend on drive**: native differs from drive 0 by up to 4.4e-3 (sine, drive 1). The dry model misses
+  the post-shaper sections, so they also differ at drive 0 (sine 7.9e-3 and 8.6e-3, amplitude 0.5).
+- **Why the shaper cases are invisible in the probe.** After a probe block, `P = shaper+0x30` and
+  `P2 = shaper+0x2c0` are zero, and so is the recurrent state `s` (modes 2 and 6 checked, drive 1). Notify B fills
+  P and P2 from the source block `S = *(core+0x4c8)`. In the probe `S` is a kemu heap pointer (`0x100009c40`) to
+  a zero block, so every shaper case returns 0 and drive has no effect. The "drive shaper not run" note in
+  `slot_kolor` is therefore not the cause of any measured mismatch for these modes.
+- **Open blocker: who writes `S`.** `core+0x4c8` is written in the base constructor path (`01407f0000.c`,
+  `FUN_1407f10e0`, and `141976b20`, `0141970000.c:5901`), its contents are set nowhere in the decompile we have, and
+  `FUN_141979a60` / `FUN_141979b10` (`0141970000.c:8139`, `:8193`) copy it into `core+0x4b0` and call notify A.
+  Callers of `141979b10` are the wrapper at `14094b350` (`0140940000.c`) and `0140970000.c:723`, `0140990000.c:10449`.
+  Until the real `S` contents are known, the probe cannot show the shaper's effect and the live path cannot be
+  driven. Next step: trace the writer of the 0x40-byte block at `S` in the Kontakt host (the reader or the template
+  copied by `141974510`), with REA `xrefs` on the constructor, not by reading more of the shaper.

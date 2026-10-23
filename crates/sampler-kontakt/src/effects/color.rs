@@ -766,3 +766,56 @@ impl Slot {
         self.public[at..at + 4].copy_from_slice(&stored.to_le_bytes());
     }
 }
+
+#[cfg(test)]
+mod kolor_translator_tests {
+    use super::*;
+    use crate::effects::test_support::slot;
+    use crate::effects::{Scope, Site};
+    use sampler_ir::fx::kolor::Record;
+
+    fn lower(record: &Record) -> (Lowering, Notes) {
+        let fx = slot(0x79, Vec::new(), 1.0);
+        let site = Site {
+            fx: &fx,
+            scope: Scope::Bus,
+            dynamic: None,
+            physical: (0, 0),
+            live_eq: &[],
+            mix: false,
+            gain: [[0.25, 0.0], [0.0, 0.5]],
+            wet: 1.0,
+            eq_gain: [[1.0, 0.0], [0.0, 1.0]],
+        };
+        let mut b = Lowering::new();
+        let mut notes = Notes::new();
+        assert!(slot_kolor(&mut b, &site, &mut notes, record));
+        (b, notes)
+    }
+
+    /// The saved record becomes one `Processor::Kolor` carrying every field, and the slot gain
+    /// becomes the pending matrix. Drive is not run, so the shaper note is always present.
+    #[test]
+    fn kolor_lowers_the_record_and_reports_the_drive_gap() {
+        let record = Record { mode: 6, floats: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 0.75], flag: true };
+        let (mut b, notes) = lower(&record);
+        b.flush();
+        // The slot gain is the matrix flushed after the stage.
+        assert_eq!(b.out.processors, vec![Processor::Kolor(record), Processor::StereoMatrix([[0.25, 0.0], [0.0, 0.5]])]);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].0, "Kolor drive shaper");
+        assert_eq!(notes[0].2, Reason::NotModeled);
+    }
+
+    /// Modes 2 and 5 also miss their post-shaper sections, reported as an unknown law.
+    #[test]
+    fn kolor_modes_2_and_5_report_the_post_shaper_law() {
+        for mode in [2, 5] {
+            let record = Record { mode, floats: [0.5; 11], flag: false };
+            let (_, notes) = lower(&record);
+            assert!(notes.iter().any(|n| n.0 == "Kolor post-shaper stage" && n.2 == Reason::UnknownLaw), "mode {mode}");
+        }
+        let (_, notes) = lower(&Record { mode: 0, floats: [0.5; 11], flag: false });
+        assert!(notes.iter().all(|n| n.2 != Reason::UnknownLaw));
+    }
+}

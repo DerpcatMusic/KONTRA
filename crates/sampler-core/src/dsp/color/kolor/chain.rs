@@ -143,6 +143,44 @@ mod tests {
         }
     }
 
+    /// `tools/re/kolor_drive_sweep.py`: the kemu block at drive 0..1 (knob 3) and wet 0.5, for the
+    /// three inputs sine, impulse and noise. Measured: the drive knob does nothing for the shaper-free
+    /// modes on these inputs (the native output is the dry path at every drive, with the shaper
+    /// parameter blocks P and P2 zero in the probe). Modes 2 and 5 are checked in their own test.
+    #[test]
+    fn drive_sweep_matches_native_for_dry_modes() {
+        let fx: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../../../tools/re/fixtures/kolor_drive_sweep.json")).unwrap();
+        let n = 256;
+        let (sine_l, sine_r) = signal();
+        let mut seed = |mut x: u64| -> Vec<f64> {
+            (0..n).map(|_| {
+                x = (1_103_515_245 * x + 12_345) & 0x7FFF_FFFF;
+                0.5 * (x as f64 / 0x7FFF_FFFF as f64 * 2.0 - 1.0)
+            }).collect()
+        };
+        let inputs = [
+            ("sine", sine_l[..n].to_vec(), sine_r[..n].to_vec()),
+            ("impulse", [vec![1.0], vec![0.0; n - 1]].concat(), vec![0.0; n]),
+            ("noise", seed(12345), seed(777)),
+        ];
+        for case in fx["cases"].as_array().unwrap() {
+            let mode = case["mode"].as_u64().unwrap();
+            if !DRY_ONLY_MODES.contains(&mode) {
+                continue;
+            }
+            let name = case["signal"].as_str().unwrap();
+            let (_, left, right) = inputs.iter().find(|(s, _, _)| *s == name).unwrap();
+            let (l, r) = run(fx["wet"].as_f64().unwrap(), left, right);
+            let (want_l, want_r) = (floats(&case["L"]), floats(&case["R"]));
+            for i in 0..n {
+                let drive = case["drive"].as_f64().unwrap();
+                assert!((l[i] - want_l[i]).abs() < 1e-5, "mode {mode} drive {drive} {name} L n={i}");
+                assert!((r[i] - want_r[i]).abs() < 1e-5, "mode {mode} drive {drive} {name} R n={i}");
+            }
+        }
+    }
+
     #[test]
     fn smoother_settles_at_one_and_starts_at_its_measured_values() {
         // Left first gain (1-A)/2, right first gain (1-A), with wet 0 so the dry share is 1.
