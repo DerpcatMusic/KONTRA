@@ -120,6 +120,13 @@ def svmore():
     resonance .5 and .9 at cutoff .5."""
     steps = []
     for name, sub in {"SV_LP2": 52, "SV_HP2": 54, "SV_BP6": 60, "SV_HP6": 61, "SV_NOTCH6": 62}.items():
+        for c in GRID:
+            steps.append({"name": f"{name} cutoff={c} res=0", "set": [[0, "EFFECT_SUBTYPE", sub], [0, "CUTOFF", c], [0, "RESONANCE", 0]]})
+        for r in (M // 2, 9 * M // 10):
+            steps.append({"name": f"{name} cutoff=500000 res={r}", "set": [[0, "EFFECT_SUBTYPE", sub], [0, "CUTOFF", M // 2], [0, "RESONANCE", r]]})
+    return {"chain": ["Filters/Effect"], "pre": [], "steps": steps}
+
+
 # Legacy BFilter types with no Kontakt measurement yet (filter-laws.tsv): saved ids from filter-type-ids.tsv.
 LEGACY_UNMEASURED = {"LP2POLE": 6, "HP2POLE": 7, "BP2": 4, "HP4POLE": 9, "BP4": 10, "BR4": 11,
                      "LADDER_LEGACY": 17, "SIMPLE_LPHP": 120}
