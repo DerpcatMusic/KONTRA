@@ -173,7 +173,9 @@ impl Host {
         .map_err(|e| e.to_string())?;
         let cc = lua.create_table().map_err(|e| e.to_string())?;
         for i in 0..130_i64 {
-            cc.raw_set(i, 0.0).map_err(|e| e.to_string())?;
+            // Pitch bend starts centred, as the runtime's input bank does.
+            let centre = if i == 128 { f64::from(1_u32 << 31) } else { 0.0 };
+            cc.raw_set(i, centre).map_err(|e| e.to_string())?;
         }
         host.set("cc", cc.clone()).map_err(|e| e.to_string())?;
         let ui_state = Rc::new(RefCell::new(controls::State::new(&compiled.ui)));
