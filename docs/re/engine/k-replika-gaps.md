@@ -549,6 +549,59 @@ Not computed, not on the impulse or noise path (unchanged from part 4): the fade
 wrapper, the LFO `141ab7480`, the design chain `141abbc90` for a selector that is not already applied, paths 2 to 4, the
 mode-1 ring clear for flag 1.
 
+### Piece 3c part 5b: index 28 lowered into the controls (CORE ROUTE ONLY; the stage still runs mode 0)
+
+Status of the blockers listed at GAP-C (the "Closed in this pass" table):
+
+| Blocker | Status after 5b |
+|---|---|
+| (a) mode writer `141aca4a0` (k = 1: `141abbc90` design, flags) | Ported (parts 1 and 2); core route only |
+| (b) selector side effects `141aca670` | Ported except the bypass fade `141acc600` (inert in the vectors), the rotator and `141aba570` |
+| (c) write stage `141acd110` | Ported (part 3); modes 2 and 3 blocked |
+| (d) identity of the `K+0xc0` ring handle for mode-1 taps | Open; the port keeps one Rust ring per head and channel (part 5a), not traced natively |
+| (e) active branch `141ab4e30` | Open |
+| (f) head time field and anchor writers | Open; anchors are the reset values (part 5a) |
+| (g) wrapper `141ab7a90` | Ported (part 4, `Wrap`); fade and hold branches open |
+| (h) bounds `C+0xad0`, `C+0xad8` | Constants set (5500, 0; part 5a); writers open (GAP-B) |
+| (i) limiter `C+0x13f80` parameter 1 | Open (returned, not wired) |
+| (j) deposit history `+0x84..+0x8c` | Ported (`Tap::hist`, part 3b) |
+| (k) flag-1 reset branch `1407e6d80` | Open; the selector passes flag 0 |
+| (l) kernels `141ab7fe0` (mode 2) and `141ab8a00` (flag 0) | Open; paths 2 and 4 not wired |
+| (m) new: the mode-1 chain across blocks in the stage | Open (see below) |
+| (n) new: index 28 written every 32-frame quantum in the stage | Open (see below) |
+| (o) new: saved TYPE tied to index 28 and to index 9 | Open; INFERRED on both (see below) |
+
+What 5b does:
+- `ReplikaControls::path` (sampler-ir) is the raw index-28 value; `ReplikaCore::from_controls` writes it. Reset 0 (path 0).
+- sampler-kontakt maps the saved TYPE (v0x12 field 0, the engine's 0..4 range check) to `path = (TYPE + 0.5) / 5`, so
+  `min(4, trunc(5 v))` gives TYPE back. INFERRED: the same saved field is index 9 in `k-replika-binding.md` (row 9, mode
+  clamp 0..3), and that index 9 bypasses the heads when its mode is not 3 (`k-replika.md` row 9). The two readings disagree on what TYPE 1
+  does to the heads; neither is confirmed by a fixture or a Kontakt render. An out-of-range TYPE is rejected (InvalidValue).
+- Core route test `controls_index28_mode1_matches_native_impulse_vector` (sampler-core, `chain::tests`): the
+  `ReplikaControls` defaults with `path = 0.3`, the impulse stimulus, 4096 frames at 48 kHz, index 28 written every
+  quantum as the vector does. Max abs error 5.97e-10 against `replika-native-mode1-index28-v0p3.json` (tolerance 1e-5).
+  The chain is placed by the test (`Mode1::start`, no dump). No fixture of a saved instrument with a Replika unit exists
+  in the repo, so the controls are built from the same values. The noise vector test is unchanged (2.01e-7).
+- Tests: `sampler-kontakt` `replika_type_binds_the_index28_path` (TYPE 0..4 maps to path TYPE, 5 is rejected).
+
+What 5b does not do (the stage stays mode 0):
+- (m) The stage cannot carry the mode-1 chain. `TimeMod::replika_delay` loads the packed `ReplikaState` each block and
+  stores it back, and both `load` and `store` (`plain()`) drop `mode1`. A chain placed at prepare would be gone after the
+  first block, and placing it per block restarts the chain every block (the audio thread may not allocate,
+  `docs/ENGINE.md`; `process` takes `&self`). The mode-1 state is three heads with taps, post filters, write lanes with a
+  624-word MT state, sections, wrappers, the spread table and six rings of 2^19 f32 (12.6 MB at 48 kHz). It needs a
+  slab layout (rings as slab frames, the chain packed like `ReplikaState`) or a bus-owned store like `Space`. That is
+  the next piece (5c), and it is an architecture decision: not done here.
+- (n) The vectors write index 28 on every quantum, and each write runs the spread snap (`ReplikaCore::writes`; without it
+  the onset moves by 131 frames). The wrapper's per-quantum reader `1408f98d0` is the source of those writes. The stage
+  writes controls once at construction, so mode 1 in the stage must replay the writes per 32-frame quantum before it is
+  turned on.
+- Paths 2 to 4 (TYPE 2, 3, 4): not wired. The stage runs the mode-0 frame for them, as before, so the output is unchanged.
+  Path 3 returns `Blocked` in the selector (the mode writer calls `141acb100`). Modes 2 and 4 are not verified.
+
+Until (m) is done, `Mode1` is reached only through the core route. Do not enable the stage's path-1 branch before (o) is
+settled: if TYPE is index 9, the heads are bypassed for TYPE 1 and the index-28 binding is wrong.
+
 ### Name binding (task 1)
 
 Not confirmed as a table. Findings:
