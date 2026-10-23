@@ -5134,6 +5134,588 @@
       "category": "Fixed",
       "release_note": "Distribute shipping integration tests across runners without dropping tests or changing the shipping profile.",
       "validation": "74 workflow safety tests, actionlint and Nightly packaging/signing/install safety checks pass. Real all-fourteen release Cargo proofs pass 26 tests with one explicit manual survey ignored; emitted features, duplicate target names and inspector binary use verified with unchanged source hashes. Final stamped-source planning and actual hosted shipping/native/editor/signing/publication retain separate required identities; cold-time recovery is not yet measured."
+    },
+    {
+      "id": "ahdsr-stored-milliseconds",
+      "summary": "Read stored Kontakt AHDSR times as milliseconds.",
+      "source_commits": [
+        "29b239222cc358a1a03553d4962ab9bc9e37613f",
+        "f2a3eff8de4572bf1e56d1ec7e9e0f6472025ff6"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Read stored Kontakt AHDSR envelope times in milliseconds, correcting envelope timing.",
+      "validation": "Merged in PR #476, #479; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "conflux-filter-type-opaque",
+      "summary": "Keep unmeasured $FILTER_TYPE constants opaque to stop a Conflux level regression.",
+      "source_commits": [
+        "323cb7c1d58dc31afbf18823bf0b1cf877a94585"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Fix a Conflux level regression by keeping unmeasured $FILTER_TYPE_* constants opaque.",
+      "validation": "Merged in PR #429; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "stream-oversize-cold-fallback",
+      "summary": "Stream oversized resident and pinned sources under cold fallback.",
+      "source_commits": [
+        "22b7e36aff0a66d47dfd6975d90753c21fa6b550"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Stream oversized resident and pinned sources under cold fallback, fixing a Conflux regression.",
+      "validation": "Merged in PR #358; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "wavetable-partial-cycles",
+      "summary": "Admit wavetable zones with trailing partial cycles or off-grid starts.",
+      "source_commits": [
+        "e633a749d730dd9a990e26da1dadd78a4061580c",
+        "75e79d6ee7d509c417cf467e7c351187c1ba30cb",
+        "fd4c28748bb38da301952d11f2144a5048eb738d"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Load wavetable zones that end in a partial cycle or start off the 2048-frame grid, playing whole cycles.",
+      "validation": "Merged in PR #209, #264, #349; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "resample-eight-octaves",
+      "summary": "Resample across eight octaves so authored zone keys do not narrow the range.",
+      "source_commits": [
+        "b87f644ccefde65b998a9c0401708dd60797db8d"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Resample across eight octaves, so authored zone keys no longer narrow the playable range.",
+      "validation": "Merged in PR #212; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "script-callbacks-held-notes",
+      "summary": "Size script callbacks by held notes instead of a fixed 32 keys.",
+      "source_commits": [
+        "86fe0ca4c01c32c672575e9aa4abcfb09e6a537e"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Size script callbacks by held notes rather than a fixed 32 keys, so dense chords are no longer limited.",
+      "validation": "Merged in PR #312; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "ksp-find-group-exact-case",
+      "summary": "find_group matches group names exactly and case-sensitively.",
+      "source_commits": [
+        "6c08893d4e519c8472d87be1c9dd50bd27eee0fb"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "find_group matches group names exactly and case-sensitively, as Kontakt does.",
+      "validation": "Merged in PR #261; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "ksp-play-pos-readback",
+      "summary": "EVENT_PAR_PLAY_POS reads back the play position.",
+      "source_commits": [
+        "270c6d072e4ced305941bba0f611298c7f045a51"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "EVENT_PAR_PLAY_POS now reads back the play position instead of being unimplemented.",
+      "validation": "Merged in PR #347; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "ksp-data-arrays-on-init",
+      "summary": "Load data-folder arrays synchronously during on init.",
+      "source_commits": [
+        "5dc4abc47ec61a64b9b6e5efd974655e6a66badd"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Load data-folder arrays synchronously during on init.",
+      "validation": "Merged in PR #86; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "ksp-filter-effect-constants",
+      "summary": "Resolve $EFFECT_TYPE_* and $FILTER_TYPE_* constants to values measured from Kontakt.",
+      "source_commits": [
+        "04abb8d5d5bbbedf89fb4d862f54ac496104d004",
+        "3ee763c9e1719a7caa2ccd44d95674a8c30b3b0a",
+        "baae2480ef5d8de33d3eb4614fd4f9e1f6a249c1",
+        "aeeec2b0a1e934cff2837a4979f2520da57cee48"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Resolve $EFFECT_TYPE_* and $FILTER_TYPE_* constants to values measured from Kontakt; unmeasured ones stay opaque.",
+      "validation": "Merged in PR #356, #430, #432, #481; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "uvi-loop-end-clamp",
+      "summary": "Clamp UVI loop ends past end of file with a warning instead of refusing.",
+      "source_commits": [
+        "6d51aa2018d1872841b21f94ecc449460f6cf52f"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Clamp UVI loop ends that run past the end of a sample, with a load warning, instead of refusing the program.",
+      "validation": "Merged in PR #423; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "uvi-multipart-streams",
+      "summary": "Admit multipart UVI streams and place every bundle member through the program placement.",
+      "source_commits": [
+        "08b1e9366142c384ddb5cb47855b3e41477119f7",
+        "18cff27739e1bb1b516352f06614b84ae0a02fb8",
+        "db6aaf1e8953b628a1ffb9c29541cbccf9796106"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Admit multipart UVI streams and route each bundle member through its program placement, so resident decoding keeps every member.",
+      "validation": "Merged in PR #392, #413, #420; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "uvi-script-modulation-globals",
+      "summary": "Script modulation drives UVI global output sources.",
+      "source_commits": [
+        "101cc55ddf1a835d22be3dd7df441217dcabc70c",
+        "ccad3bc7515dc97bd26dd19dbc744a25c1c847fb",
+        "eab26daa1f290f7cae13b37e88bf482a33c900aa"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Script modulation now drives UVI global Gain and Pan outputs.",
+      "validation": "Merged in PR #214, #215, #222; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "linux-x11-gestures",
+      "summary": "Keep Linux editor gestures and clicks across X11 grabs and focus changes.",
+      "source_commits": [
+        "0193469f6615d806e433b7b33f101e67b8b6ec94",
+        "bd4b9933882a123b364dff1e8cff9befba6cd559"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Linux editor gestures survive temporary X11 grabs, and clicks and double-clicks are kept when the host moves focus.",
+      "validation": "Merged in PR #79, #83; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "editor-sized-parts",
+      "summary": "Keep sized parts inside their patch and measure natural height.",
+      "source_commits": [
+        "e25fa009277e6bd799b35a22aa85badb3f001543",
+        "37b7b32147315272b094ef782207f1bbd3b4c193"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Parts with sized interfaces no longer grow or overflow their patch.",
+      "validation": "Merged in PR #243, #254; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "preset-swap-controls",
+      "summary": "Preset swaps drop the previous preset saved controls; Conflux swaps match fresh loads.",
+      "source_commits": [
+        "de4f38aa47c3522bdcadbc0e838def4b9d62c26f",
+        "4f6122ea7aa3317ebe51113216453bd7a2292658",
+        "b084d5098ad05bd4fab562a06160c72938638279"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Preset swaps drop the previous preset's saved controls, and a Conflux swap now matches a fresh load.",
+      "validation": "Merged in PR #131, #186, #228; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "import-untriggerable-zones",
+      "summary": "Keep instruments with untriggerable zones loadable.",
+      "source_commits": [
+        "a2c646f884c522ccb5b51817b51836c5c6f8b281"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Instruments with untriggerable zones remain loadable.",
+      "validation": "Merged in PR #84; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "loose-bank-library",
+      "summary": "A loose bank beside a library's Samples folder no longer hides library content.",
+      "source_commits": [
+        "d5342572b8ff35281be71bd78d2143c5b74db2c3"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "A loose bank beside a library's Samples folder no longer hides any library content.",
+      "validation": "Merged in PR #88; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "empty-control-text",
+      "summary": "An empty control label displays as empty, not the default label.",
+      "source_commits": [
+        "6bf0f4026b69f405950588c8bc81c059a6848708"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "An empty control label now shows as empty instead of the default label.",
+      "validation": "Merged in PR #89; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "script-picture-edges",
+      "summary": "Keep fixed picture edges on script buttons and switches.",
+      "source_commits": [
+        "813e17f8a34551a156991c553382734e38c2cdfb"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Fixed picture edges on script buttons and switches stay in place.",
+      "validation": "Merged in PR #87; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "conflux-wavetable-modulation",
+      "summary": "Restore Conflux wavetable modulation found by the installed-library audit.",
+      "source_commits": [
+        "840600db0fa99c54b87974005616d235a6a3b14e"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Restore Conflux wavetable modulation.",
+      "validation": "Merged in PR #82; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "zero-intensity-routes",
+      "summary": "Zero-intensity and float-residue modulation routes are inert, not unsupported.",
+      "source_commits": [
+        "3f15855d991877206db0464e32154bb4d246b3cf"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Zero-intensity and floating-point residue modulation routes are inert rather than reported as unsupported.",
+      "validation": "Merged in PR #343; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "release-counter-group",
+      "summary": "The release counter runs only in release groups with positive time.",
+      "source_commits": [
+        "7e2998f51a641e73c5aa7e79867abeb80eafb59f"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "The release-trigger counter runs only in release groups with a positive time.",
+      "validation": "Merged in PR #277; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "ksp-keyswitch-zone-selectors",
+      "summary": "Migrate keyswitch articulations to zone selectors and list only real keyswitch entries.",
+      "source_commits": [
+        "f31d6f051a480b03b4919bf04c3ff17139088383",
+        "512ead2d09b3695905d46cb36bba0ea5adaba94b"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "Keyswitch articulations use zone selectors, and the keyswitch panel lists only real keyswitch and group-start entries.",
+      "validation": "Merged in PR #436, #262; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "voice-drop-accounting",
+      "summary": "Report voice drops separately from capacity refusals.",
+      "source_commits": [
+        "26198d858d937e4763899e4591334d4ad2aad59d"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "Diagnostics report voice drops separately from capacity refusals, so the cause is clear.",
+      "validation": "Merged in PR #237; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "streamed-head-budget",
+      "summary": "Bound the default streamed head budget to the host Auto budget.",
+      "source_commits": [
+        "4f2969d8bba7252689d0f3523714482ce7a3e49d"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "The default streamed head budget is bounded by the host's Auto budget.",
+      "validation": "Merged in PR #294; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "wav16-direct-decode",
+      "summary": "Decode 16-bit WAV frames directly for streamed reads.",
+      "source_commits": [
+        "b4dd3c198f35e7e4e1825dcbd9b815895445ce96"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "Streamed 16-bit WAV reads decode frames directly and are substantially faster.",
+      "validation": "Merged in PR #451; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "sampler-core-block-overhead",
+      "summary": "Reduce sampler-core per-block overhead in serial loops, PCM packing and cubic setup.",
+      "source_commits": [
+        "a101e3de23f4c6f42d2d97467a65c23e88a6da11",
+        "102213fa2ca99d5f03523bba3c47d508831ab553",
+        "b38da7ebab504ab8c20697a1f4805434865e083b",
+        "7f9bb1d0c721ab5ec5dd2d71df391ba7502313ca",
+        "ffcc00c0032546060d997b0912d3d294f16e0c07"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "Reduce per-block overhead in the sampler core: serial loops, PCM packing and cubic setup avoid copies and temporary closures.",
+      "validation": "Merged in PR #236, #244, #251, #268, #269; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "convolution-tracks-input",
+      "summary": "Track nonzero convolution input per block instead of rescanning.",
+      "source_commits": [
+        "b65dab5f575009ed2278f0d58ac26b62a045d9e1"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "Convolution tracks nonzero input per block instead of rescanning the whole buffer.",
+      "validation": "Merged in PR #340; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "shared-sample-heads",
+      "summary": "Share packed sample-head chunks across preset swaps.",
+      "source_commits": [
+        "c0b8f8cde0b4aed6e827963d7e525ab715a07705"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "Packed sample-head chunks are shared across preset swaps instead of being rebuilt.",
+      "validation": "Merged in PR #259; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "uvi-load-init-work",
+      "summary": "Trim UVI load and script-init copies and hot-path work.",
+      "source_commits": [
+        "b44279c5cec1db4d5e21fb32a45e32be730fac4d",
+        "90c279a9b15e18352029424ac21bfe343dbf62cd",
+        "8547a6de7cce093b21f9b9e34139a48cf5e89d92"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "UVI programs load and initialize with less copying: override application and the parameter bank are no longer copied per owner.",
+      "validation": "Merged in PR #440, #445, #446; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "uvi-approximate-unproved-laws",
+      "summary": "Approximate unproved UVI modulation laws, flagged in the load report, instead of refusing.",
+      "source_commits": [
+        "05a0e389469f089eaeef4e94c63a8ef3b7496ec9",
+        "196de231d7977bf6dc50b8f387f5c8351c86c334",
+        "8c458330905a747852db5e0d352ad5040fa3677e",
+        "a51b0be2d9e57c63b99577ea0ef017b508c58baa",
+        "3588c9ba54b463016c81f59b1e5a1a2d89f568c1",
+        "5067fe5b1eeb062ccb1b1f7f88ae94a6d98fe7f3",
+        "0b93c191cc3dade178f7eeb5705aba51feddad67",
+        "30abb7a7971f7ddd3c0280f023190b00fabf3d5f"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "UVI programs with unproved modulation laws load with flagged approximations instead of being refused.",
+      "validation": "Merged in PR #364, #374, #388, #391, #408, #435, #438, #473; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "ksp-diagnostics-named",
+      "summary": "KSP support reports name the failing operation and input, and explain unloaded data files.",
+      "source_commits": [
+        "ee7ccb50da111730f694aa22e7e646749c145997",
+        "cb01d4504c8d2cf6d18b377e07b224701ad4340d"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "KSP support reports name the failing operation and input, and a data file that is not loaded says why.",
+      "validation": "Merged in PR #81, #267; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "ksp-doctor",
+      "summary": "Add a KSP doctor that reports per-symbol support status.",
+      "source_commits": [
+        "65245f6282de2bcec48b3e273cdfe354d48a5ddc",
+        "e65aee47410692f03b353ce23ca66bed1757b3e3"
+      ],
+      "accepted": true,
+      "category": "New",
+      "release_note": "Add a KSP doctor that reports per-symbol support status for .nki scripts, with JSON output and a strict mode.",
+      "validation": "Merged in PR #379, #399; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "ksp-math-builtins",
+      "summary": "Add exp2, log2 and log10 to KSP.",
+      "source_commits": [
+        "56a8ba9034bce080122c5f26e3646d2a8dbc3e44"
+      ],
+      "accepted": true,
+      "category": "New",
+      "release_note": "KSP scripts can call exp2, log2 and log10.",
+      "validation": "Merged in PR #380; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "luau-script-runtime",
+      "summary": "Add the shared Luau runtime for UVI Lua scripts, with a bytecode cache.",
+      "source_commits": [
+        "1d830e382f9765559b786a6df09342e2e90d9a12",
+        "88c4cd5bf0a41b02686a3128eead4f5941f2ffc1"
+      ],
+      "accepted": true,
+      "category": "New",
+      "release_note": "Add a shared Luau runtime for UVI Lua scripts, with a bytecode cache; the interpreter remains the default JIT policy.",
+      "validation": "Merged in PR #452, #453; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "ksp-luau-front-end",
+      "summary": "Add an opt-in KSP-to-Luau front end with UI, persistence, menu and host-request builtins.",
+      "source_commits": [
+        "8220d0e2cfad8bb1df6c0724b071d0adaac89b5f",
+        "d89939c706e5d78145b31570fe25bb71cc6873e5",
+        "6fc5756ec0aecf15f4c2ffdc7a6104f3d6a9e3f1",
+        "59540203bcfa38c058775d350b50b900298f5998",
+        "bc40331a6f03e083fe38e76329f74a15c8d9b53f",
+        "5308e1717838fc0eb8baf1a3354b78eaa5f8e93a",
+        "e8cc438564f518d6b14303c79f48631ff2894cb1",
+        "16f110c11b1aa9b46cfa3378003319b7cfca521e",
+        "ac074245c550e79879386e0a81142cb93bcc832d",
+        "0e665c8640fab9e962f3f4fddb14081dd45c69b0",
+        "f07998601fa7a7f807e96ef2ba51ccb0d9d27271",
+        "e01915cf3a2c5889d15a4eba9c71aaf8af12f483",
+        "2ad1778f5a0d86fdb6e0d6e3c6c4904184b6b150"
+      ],
+      "accepted": true,
+      "category": "New",
+      "release_note": "Add an opt-in KSP-to-Luau front end with UI, persistence, menu, key-switch and host-request builtins. The interpreter remains the default.",
+      "validation": "Merged in PR #460, #477, #478, #480, #482, #483, #485, #487, #492, #494, #495, #497, #498; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "ikmpak-reader",
+      "summary": "Read Modo Drum IKMPAK packs.",
+      "source_commits": [
+        "ade9d821b3f3ee022b9e94653b7cd246742d809f"
+      ],
+      "accepted": true,
+      "category": "New",
+      "release_note": "Read Modo Drum .pak packs. Their instruments do not play yet.",
+      "validation": "Merged in PR #505; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "kontakt-gater-stereo-tune",
+      "summary": "Add the Gater kernel and Stereo Tune core, checked against native vectors.",
+      "source_commits": [
+        "f24dc56c15a780aebcf9bb82ef3b7ab99be5fc2f",
+        "95f87130f0d92747d8efaeb49bf4d74b48623372"
+      ],
+      "accepted": true,
+      "category": "New",
+      "release_note": "Add Kontakt Gater processing and the Stereo Tune core, checked against native reference vectors.",
+      "validation": "Merged in PR #375, #387; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "surround-panner-speaker-law",
+      "summary": "Add the Surround Panner speaker law and block driver for fixed positions.",
+      "source_commits": [
+        "2a64460a26035831d45a448a6a73be1ca9320a94",
+        "6f29c23de685114b915b215cb3ae938b0c3e523f",
+        "2f5beb3efd7006e46ba98c52b3593c5c88556059",
+        "121c8906647eedb3decea26cb5efc8be0e80b030",
+        "56f5d1dcac475c5adf274cb9be057560d88d28cb"
+      ],
+      "accepted": true,
+      "category": "New",
+      "release_note": "Add the Kontakt Surround Panner speaker law and block driver for fixed positions, with a static stereo mix.",
+      "validation": "Merged in PR #401, #405, #415, #418, #421; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "filter-native-parity-vectors",
+      "summary": "Match native reference vectors for Ladder HQ and several Kontakt filter families.",
+      "source_commits": [
+        "f166ebbfa86df4006e9f8757f52e4064d3b8534d",
+        "5b752fbbe1ce3cc374b1e33629a1bda80f1879ee",
+        "4277d0a6ee88917c8ed2ae787ed30d707f4127c6",
+        "d8e97d51ca29df59b8e590b26d5d45a80fc899aa",
+        "b743b9f4a110f204dfd71b7a1f4365b332e6618d",
+        "7380ab5154f97b27bda6bf2953580c416e54ddb8",
+        "91d2ed191721c730d468e5700b0c42a161fd73b3",
+        "87bbb457e48c0c09c76e40c1268c5812b9957dee",
+        "2490145dd0603c6bd7e71bccee305d33cdb0dbe5",
+        "374a81cd9281b174e2c4aece58cc51a04ee045f9",
+        "68df1cbf400bd5aa36f9b6b3cc884ff030e60d15",
+        "f4f11ee79a42a0d33f7bdebff05e01ebe0f7faac",
+        "60013a3163960c137a25d5cb0a1abdedd11c1b17",
+        "59de84185e3fbd3d497c673402fcc4bf78b1b268"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "Filters now match Kontakt native reference vectors for Ladder HQ, Daft, Formant, PRO-53, Monark, Dual SKF, Versatile and Vowel in the tested cases.",
+      "validation": "Merged in PR #279, #284, #285, #292, #293, #304, #305, #307, #308, #310, #313, #315, #318, #366; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "kolor-shaper-ports",
+      "summary": "Port the Kolor dry-path ramp and several shaper cases, checked against native vectors.",
+      "source_commits": [
+        "3f4a2045ca49021e58321d4a461fbe7f87d0df2b",
+        "664c7824b8419f638c75296f2fd78d8b6c3396cc",
+        "0762039304e14e077b43a3ce9fed0f679fba5e21",
+        "3769dcfc8a1cce517e089a09f95cebe3c9213416",
+        "553a89e97f6ae4d1a29689b4c72b3dbe64b34692",
+        "d29d2d7797674344787b64d8bc120e431dc3b067",
+        "c904593f88cb01868afbf21a1860f2f98f0e7a25",
+        "84cda3cc248894eb80ddefb9f25228df4c565fb4"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "Kolor: the dry-path ramp and several shaper cases now match native reference vectors. Other shaper modes remain open.",
+      "validation": "Merged in PR #410, #414, #417, #419, #422, #462, #470, #471; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "time-machine-psola",
+      "summary": "Time Machine uses fractional-period PSOLA and a measured tempo table.",
+      "source_commits": [
+        "b232735366de9dbe4d5c82556f203686cc8097e5",
+        "c6e73df96e3e68d3d1f90eb8da02255a01279193"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "Time Machine uses fractional-period PSOLA and a measured tempo division table. It remains partial.",
+      "validation": "Merged in PR #202, #238; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "beat-machine-slices",
+      "summary": "Parse Beat Machine zone slice markers and play them in Beat Machine voices.",
+      "source_commits": [
+        "3e1ca7b1e9345a34626d9f0c3c83715f30e46845",
+        "f6d92007419df27dbc63fe880989189813c5be38",
+        "7a233d3cf824e8f3337f33badafe110de76b2f5b",
+        "c7bee302192fe491dd608a4b1761ab0ba79ee6fe"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "Beat Machine zone slice markers are read and played in Beat Machine voices; the machine remains partial.",
+      "validation": "Merged in PR #258, #286, #297, #319; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "s1200-mp60-machine",
+      "summary": "Carry S1200 modes and the MP60 machine into the engine as sources.",
+      "source_commits": [
+        "2dcfaacd0011df33bff612a2f17a1640e534ae81",
+        "f03c1c0f8a3e1d3f89515469ba790f8ed8e32c59"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "S1200 modes and MP60 machine controls are carried into the engine, and MP60 runs as a host-rate source stage.",
+      "validation": "Merged in PR #176, #223; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "convolution-flags",
+      "summary": "Report only non-default convolution flags, keeping unmodeled ones visible.",
+      "source_commits": [
+        "b5ff82cd1cb4f411a152aefc2b16b8f5b82c491f",
+        "5f7fffaa1bb734c53b05c48ed0ed7bf7ae40c4ca",
+        "66a5f251f5db895d366f245c83d925800e7fcc1c",
+        "3e938885066cf5868601e7fc5b97edd000cd2ca0"
+      ],
+      "accepted": true,
+      "category": "Improved",
+      "release_note": "Convolution reports only non-default Preserve Length and latency-bypass flags; unmodeled flags stay visible.",
+      "validation": "Merged in PR #118, #360, #441, #449; focused checks and native-reference evidence are recorded in those pull requests."
     }
   ]
 }
