@@ -79,7 +79,8 @@ fn group(wave: bool) -> Vec<u8> {
     private.extend([0, 0x13, 0]);
     private.extend(8u32.to_le_bytes());
     private.extend([0; 8]);
-    private.push(1);
+    // Source flag 1 is "purged" at load (1e4c68fa7); this fixture group is loaded.
+    private.push(0);
     if wave {
         let mut common = [0u8; 30];
         common[..7].copy_from_slice(&[0, 6, 1, 9, 0, 0, 0]);
