@@ -633,10 +633,12 @@ fn translate(
         return Err(invalid("zone count exceeds the zone list"));
     }
     out.ir.source_indices.zones.resize(count, None);
+    let addressed = addressed(&out.ir.source_indices.zone_catalog);
     for index in 0..count {
         let mut zone =
             raw_zone(&mut r).map_err(|reason| invalid(&format!("zone {index}: {reason}")))?;
-        zone.source_id = out.ir.source_indices.zone_catalog.get(index).and_then(|z| z.id);
+        zone.source_id = out.ir.source_indices.zone_catalog.get(index).and_then(|z| z.id)
+            .filter(|_| addressed.get(index).copied().unwrap_or(false));
         if !zone_metadata.is_empty() {
             if let Some(id)=zone.source_id {
                 zone_routes.apply_initial(id,&mut zone).map_err(|reason|invalid(&reason))?;
@@ -3656,14 +3658,13 @@ fn source_zone_catalog_with_layouts(data:&[u8],groups:usize)->Result<(Vec<ir::So
     let count=u32le(&mut reader).map_err(|e|e.to_string())?;
     if count as usize>data.len()/8 {return Err("zone count exceeds the zone list".into());}
     let mut catalog=Vec::with_capacity(count as usize);
-    let mut identities=std::collections::BTreeSet::new();
     for index in 0..count {
         let zone=raw_zone(&mut reader).map_err(|e|format!("zone {index}: {e}"))?;
         if zone.group>=groups {return Err(format!("zone {index} refers to missing group {}",zone.group));}
         if zone.source_id.is_none() {
             *layouts.entry(zone.identity_layout).or_insert(0usize) += 1;
         }
-        let id=zone.source_id.filter(|id|identities.insert(*id));
+        let id=zone.source_id;
         if !(0..=127).contains(&zone.source.low_key) || !(0..=127).contains(&zone.source.high_key)
             || zone.source.low_key>zone.source.high_key {return Err(format!("zone {index} has invalid source key bounds"));}
         catalog.push(ir::SourceZone {id,home:ir::SourceZoneHome {
@@ -3679,8 +3680,12 @@ fn source_zone_catalog_with_layouts(data:&[u8],groups:usize)->Result<(Vec<ir::So
     Ok((catalog, if omitted > 0 { format!("{summary}; {omitted} more layouts omitted") } else { summary }))
 }
 fn zone_catalog_homes(catalog:&[ir::SourceZone])->std::collections::BTreeMap<u32,[i32;3]> {
-    catalog.iter().filter_map(|z|Some((z.id?,[i32::try_from(z.home.group).ok()?,
-        i32::from(z.home.low_key),i32::from(z.home.high_key)]))).collect()
+    crate::load::first_homes(catalog.iter().map(|z|(z,true)))
+}
+/// Whether each catalog zone is the first with its identity, the one lookups by identity find.
+fn addressed(catalog:&[ir::SourceZone])->Vec<bool> {
+    let mut seen=std::collections::BTreeSet::new();
+    catalog.iter().map(|z|z.id.is_some_and(|id|seen.insert(id))).collect()
 }
 #[cfg(test)]
 fn source_zone_metadata(data:&[u8],groups:usize)->Result<std::collections::BTreeMap<u32,[i32;3]>,String> {
@@ -3749,7 +3754,8 @@ mod empty_zone_tests {
         data.extend(zone_record(0,0,36,48));
         data.extend(zone_record(7,1,80,90));
         let ids:Vec<_>=super::source_zone_catalog(&data,3).unwrap().iter().map(|z|z.id).collect();
-        assert_eq!(ids,[Some(0),None,Some(7)]);
+        // get_zone_id reads each zone's own identity; lookups by identity find the first.
+        assert_eq!(ids,[Some(0),Some(0),Some(7)]);
         assert_eq!(super::source_zone_metadata(&data,3).unwrap(),[(0,[2,60,61]),(7,[1,80,90])].into());
     }
 

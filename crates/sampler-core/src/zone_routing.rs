@@ -73,10 +73,9 @@ impl SourceZoneCatalog {
                 .enumerate()
                 .filter_map(|(i, r)| r.id.map(|id| (id, i))),
         );
-        lookup.sort_unstable_by_key(|r| r.0);
-        if lookup.windows(2).any(|p| p[0].0 == p[1].0) {
-            return Err(Error::InvalidInput);
-        }
+        // A shared identity addresses its first zone, as Kontakt's zone lookup does.
+        lookup.sort_unstable();
+        lookup.dedup_by_key(|r| r.0);
         Ok(Self {
             rows: rows.into_boxed_slice(),
             lookup: lookup.into_boxed_slice(),
@@ -1851,12 +1850,12 @@ mod authored {
             "source filtering preserves metadata without fake PCM"
         );
         assert!(p.find(1).is_none());
+        // A shared identity stays on both zones and finds the first.
         let mut duplicate = p.rows.to_vec();
         duplicate[2].id = Some(0);
-        assert!(matches!(
-            SourceZoneCatalog::new(duplicate, 2, 3, 4096),
-            Err(Error::InvalidInput)
-        ));
+        let shared = SourceZoneCatalog::new(duplicate, 2, 3, 4096).unwrap();
+        assert_eq!((shared.identity(0), shared.identity(2)), (Some(0), Some(0)));
+        assert_eq!(shared.find(0).unwrap().region, Some(0));
         let mut unknown = p.rows.to_vec();
         unknown[1].id = None;
         let p = SourceZoneCatalog::new(unknown, 2, 3, 4096).unwrap();
