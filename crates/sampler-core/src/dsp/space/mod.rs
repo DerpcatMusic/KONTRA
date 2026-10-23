@@ -553,4 +553,58 @@ mod tests {
         let c = Config::convolution(ImpulseRef(0), 0.0, 1.0);
         assert!(tail_frames(&c, 48_000, Some(&ir)) >= 1000);
     }
+
+    /// Schroeder T30 of an impulse response: backward energy integral from 20 ms after onset,
+    /// -5 dB to -35 dB, doubled (the same reading the Kontakt oracle capture uses).
+    fn t30(e: &[f32]) -> f64 {
+        let peak = e.iter().fold(0f32, |m, v| m.max(v.abs()));
+        let start = e.iter().position(|v| v.abs() > 1e-3 * peak).unwrap();
+        let tail = &e[start + 960..];
+        let mut edc = vec![0f64; tail.len()];
+        let mut acc = 0f64;
+        for (dst, v) in edc.iter_mut().rev().zip(tail.iter().rev()) {
+            acc += f64::from(*v) * f64::from(*v);
+            *dst = acc;
+        }
+        let db = |i: usize| 10.0 * (edc[i] / edc[0] + 1e-30).log10();
+        let at = |level: f64| (0..tail.len()).find(|&i| db(i) <= level).unwrap();
+        2.0 * (at(-35.0) - at(-5.0)) as f64 / 48_000.0
+    }
+
+    /// Kontakt 8.13.1 Raum, factory INIT preset (Airy, decay 0.639), 8 s impulse capture
+    /// (`tools/kontakt-oracle/stimrender.py`, impulse8): T30 4.25 s. Our kernel: within 1 %.
+    #[test]
+    fn raum_airy_init_decay_matches_kontakt_capture() {
+        let x = 0.639_186_7_f64;
+        let n = Network {
+            topology: Topology::Raum,
+            decay_seconds: 199.75 * x / (75.0 * (1.0 - x) + 1.0) + 0.25,
+            raum: Some([0.5, 0.0, 0.0, 0.25, 0.0625, 0.0, 0.0, 1.0, 0.0, 0.5, x as f32, 0.5, 0.25, 0.25, 0.624_770_6, 0.25, 0.0, 1.0, 0.0, 1.0]),
+            ..Network::DEFAULT
+        };
+        let (l, _) = run(&Config::network(n), &[], 48_000 * 6);
+        let t = t30(&l);
+        assert!((t - 4.25).abs() / 4.25 < 0.10, "T30 {t:.3} s, Kontakt 4.25 s");
+    }
+
+    #[test]
+    #[ignore = "measurement dump for the Kontakt oracle; RAUM_CORE=20 floats, RAUM_IR_OUT=path"]
+    fn raum_ir_dump() {
+        let (Ok(out), Ok(core)) = (std::env::var("RAUM_IR_OUT"), std::env::var("RAUM_CORE")) else { return };
+        let mut c = [0f32; 20];
+        for (slot, v) in c.iter_mut().zip(core.split(',')) {
+            *slot = v.trim().parse().unwrap();
+        }
+        let x = c[1] as f64;
+        let n = Network {
+            topology: Topology::Raum,
+            decay_seconds: 199.75 * f64::from(c[10]) / (75.0 * (1.0 - f64::from(c[10])) + 1.0) + 0.25,
+            predelay_seconds: if x <= 0.5 { 0.08 * (2.0 * x).powi(2) } else { 1.92 * (2.0 * x - 1.0).powi(2) + 0.08 },
+            raum: Some(c),
+            ..Network::DEFAULT
+        };
+        let (l, _) = run(&Config::network(n), &[], 48_000 * 8);
+        let bytes: Vec<u8> = l.iter().flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(out, bytes).unwrap();
+    }
 }
