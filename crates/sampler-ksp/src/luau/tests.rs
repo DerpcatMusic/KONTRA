@@ -635,3 +635,13 @@ fn menu_items_and_selection_match_the_interpreter() {
          declare $bad := get_menu_item_value($id, 7) declare @t := get_menu_item_str($id, 1) end on",
     );
 }
+
+#[test]
+fn host_requests_match_the_interpreter() {
+    assert_init_equivalent(
+        "on init declare %a[4] declare ?r[2] declare $x := 2 save_array(%a, 1) set_ui_color(3) \
+         set_voice_limit(4, 8) load_ir_sample(\"ir.wav\", 1, 0) fs_navigate(0, 1) \
+         set_nks_nav_name(1, 2, \"n\") set_nks_nav_par(1, 2, 3) reset_nks_nav() \
+         attach_level_meter(1, 2, 3, 4, 5) save_array(?r, 0) load_native_ui(\"x\") end on",
+    );
+}
