@@ -411,7 +411,7 @@ impl Slot {
             0x16 => {
                 let decimation = r.f32()?;
                 // The block size, stored as an integer.
-                r.take::<4>()?;
+                let block = r.i32()?;
                 let mut v = [0.0; 8];
                 for x in &mut v {
                     *x = r.f32()?;
@@ -423,6 +423,7 @@ impl Slot {
                 }
                 Params::Convolution(Box::new(Convolution {
                     decimation,
+                    block,
                     predelay_ms,
                     early: [e_len, e_lo, e_hi],
                     late: [l_len, l_lo, l_hi],
