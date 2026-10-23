@@ -319,6 +319,11 @@ impl ModRoute {
     pub fn scales(&self) -> impl Iterator<Item = ModScale> + '_ {
         self.scale.iter().chain(self.more_scales.iter().flatten()).copied()
     }
+
+    /// [`Self::scales`], to edit in place.
+    pub fn scales_mut(&mut self) -> impl Iterator<Item = &mut ModScale> + '_ {
+        self.scale.iter_mut().chain(self.more_scales.iter_mut().flatten())
+    }
 }
 
 /// One voice modulation program, shared by the regions bound to it.
