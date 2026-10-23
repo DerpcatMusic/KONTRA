@@ -2879,9 +2879,6 @@ fn note_script(host: &script::ScriptHost, instrument: &mut ir::Instrument) {
     }
 }
 
-/// [`load_program_scripted`] with the samples streamed from the bank: every zone
-/// is present for the scripts, only their starts are resident.
-#[cfg(feature = "library-access")]
 /// Phase clock for [`load_program_scripted_streamed`]: one stderr line per phase,
 /// only when `KONTRA_UVI_LOAD_TRACE` is set. Off by default; a single env check.
 pub(crate) struct LoadTrace(Option<std::time::Instant>);
@@ -2898,6 +2895,9 @@ impl LoadTrace {
     }
 }
 
+/// [`load_program_scripted`] with the samples streamed from the bank: every zone
+/// is present for the scripts, only their starts are resident.
+#[cfg(feature = "library-access")]
 pub fn load_program_scripted_streamed(
     bank: &Bank,
     program: &str,
