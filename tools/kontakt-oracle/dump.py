@@ -21,11 +21,13 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-EXE = os.environ.get("KONTAKT_EXE", "/home/derpcat/.wine/drive_c/Program Files/Common Files/"
-                     "VST3/Portapotty/Kontakt 8/x64/Kontakt 8.exe")
+sys.path.insert(0, str(HERE.parent / "oracle"))
+import slot  # noqa: E402  (oracle-slot: prefix, display and work dir of this session; legacy when unset)
+
+EXE = os.environ.get("KONTAKT_EXE") or slot.exe_default()
 SETTINGS = Path(EXE).parents[2] / "UserData/Settings.cfg"
-WORK = Path.home() / ".cache/kontra-native-oracle/run" / str(os.getpid())
-DISPLAY = ":78"  # not :77, which the audio reference harness owns
+WORK = slot.work(Path.home() / ".cache/kontra-native-oracle") / "run" / str(os.getpid())
+DISPLAY = slot.display(":78")  # not :77, which the audio reference harness owns
 
 
 def winpath(p: Path) -> str:
@@ -69,7 +71,7 @@ def main() -> int:
     inputs = [Path(p).resolve() for p in sys.argv[2:]]
     if b"DeveloperFeatures=dw:1" not in SETTINGS.read_bytes():
         sys.exit(f"enable Options > Developer first: DeveloperFeatures=dw:1 in {SETTINGS}")
-    if subprocess.run(["pgrep", "-f", "[K]ontakt 8.exe"], capture_output=True).returncode == 0:
+    if slot.kontakt_pids():
         sys.exit("another Kontakt is running; one oracle session at a time")
     WORK.mkdir(parents=True, exist_ok=True)
     raw = WORK / "oracle.jsonl"
@@ -82,8 +84,8 @@ def main() -> int:
 
     xvfb = subprocess.Popen(["Xvfb", DISPLAY, "-screen", "0", "1600x1000x24"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    env = dict(os.environ, DISPLAY=DISPLAY, WINEDLLOVERRIDES="d3d11,d3d10core,dxgi,d3d9=b",
-               WINEDEBUG="-all")
+    env = slot.wine_env(dict(os.environ, DISPLAY=DISPLAY, WINEDLLOVERRIDES="d3d11,d3d10core,dxgi,d3d9=b",
+                             WINEDEBUG="-all"))
     log = open(WORK / "kontakt.log", "w")
     kontakt = subprocess.Popen(["wine", "explorer", "/desktop=oracle,1600x1000", EXE, winpath(script)],
                                env=env, stdout=log, stderr=subprocess.STDOUT,
@@ -100,8 +102,7 @@ def main() -> int:
         else:
             subprocess.run(["import", "-window", "root", str(WORK / "timeout.png")], env=env, check=False)
     finally:
-        subprocess.run(["pkill", "-f", "[K]ontakt 8.exe"], check=False)
-        time.sleep(2)
+        slot.stop_kontakt()
         os.killpg(kontakt.pid, signal.SIGKILL) if kontakt.poll() is None else None
         xvfb.terminate()
     if not raw.exists():

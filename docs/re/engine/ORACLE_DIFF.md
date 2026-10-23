@@ -51,6 +51,29 @@ ANALOG STRINGS, Conflux, Morphology Evolved, Shreddage 3.5 E-Upright, 1 each). S
 
 ## How to run
 
+Run every real-Kontakt session through the slot pool, not the old global lock:
+
+    tools/oracle/oracle-slot tools/oracle/capture.py NKI OUT.wav           # any free slot (3 by default)
+    tools/oracle/oracle-slot --exclusive CMD...                            # legacy: whole pool, one session
+
+Do not use `flock /tmp/kontra-oracle.lock` for new work. Legacy `flock` jobs still run: they hold the legacy
+lock exclusively, which waits for running slots and blocks new ones, so they never overlap a slot.
+
+Slots (`tools/oracle/slot.py`, `tools/oracle/oracle-slot`): slot N has its own Wine prefix
+(`~/.wine-oracle/slot-N`, a reflink copy of `~/.wine`, so ~0 disk on the same btrfs), Xvfb display `:7N`,
+PipeWire null sink `kontra_ref_N` and work dir `~/.cache/kontra-oracle-slot-N`. Each session runs under
+`nice -n 10` and `systemd-run --user --scope -p MemoryMax=8G`. Kontakt, Xvfb and wineserver of a slot are
+stopped on exit, and a session only touches its own processes and its own sink.
+
+MIDI: all slots share ALSA "Midi Through", so each slot owns a block of MIDI channels
+(`slot.channel_block()`: 16 / 3 = 5 per slot; a batch holds 5 instruments per session). `capture.py`,
+`fxrig.py` and `render.py` use the block; any other channel-hard-coded probe must run with `--exclusive`.
+
+Tools that honour the slot environment: `tools/oracle/capture.py`, `tools/oracle/kontra_render.py` (no Kontakt,
+work dir only), `tools/kontakt-oracle/dump.py` (KSP conformance runner `tools/ksp-conformance/run.sh`),
+`tools/kontakt-oracle/render.py` and `fxrig.py`. Without the slot environment each tool keeps its old single-session behaviour.
+Not slot-aware yet (use `--exclusive`): `eqrender.py`, `probe_fx.py`, `sweep.py` and other hard-coded-channel probes.
+
     tools/oracle/capture NKI MIDI OUT.wav [WINDOW]          # one instrument, MIDI file as given
     tools/oracle/capture.py --batch LIST.tsv OUTDIR         # name<TAB>nki per line; 16 per Kontakt session
     tools/oracle/kontra_render.py LIST.tsv OUTDIR           # same notes through KONTRA
