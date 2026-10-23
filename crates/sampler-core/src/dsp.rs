@@ -150,6 +150,8 @@ pub enum Processor {
     Phaser([f32; 2]),
     /// Ring modulator: sine carrier crossfaded with the input (`sampler_ir::fx::ringmod`).
     RingMod(sampler_ir::fx::ringmod::Config),
+    /// Kontakt Kolor dry path and wet mix (knob 7 in `0..=1`), see `dsp/color/kolor/chain.rs`.
+    Kolor(f64),
     /// Kontakt Stereo Tune: bus scope only, its delay state is owned by the bus (like [`Processor::Space`]).
     StereoTune(sampler_ir::fx::stereo_tune::Config),
     /// Formant I (or Formant II when `second`) with Talk, Sharp, Size as event-rate lanes
@@ -227,6 +229,7 @@ impl Processor {
             Processor::TimeMod(config) => config.check().is_ok(),
             Processor::Phaser(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::RingMod(config) => config.check().is_ok(),
+            Processor::Kolor(wet) => wet.is_finite() && (0.0..=1.0).contains(wet),
             Processor::StereoTune(config) => config.check().is_ok(),
             Processor::Formant(knobs) | Processor::FormantII(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Branch { gain, .. } => gain.is_finite(),
@@ -352,6 +355,8 @@ pub(super) enum PreparedProcessor {
     Pan { position: control::PreparedParameter, offset:f64, law: sampler_ir::PanLaw, expression: bool },
     /// Ring modulator carrier phase at `offset` of the delay storage.
     RingMod { ring: ringmod::RingMod, offset: usize },
+    /// Kolor dry path: its smoother states live at `offset` of the delay storage.
+    Kolor { dry: color::KolorDry, offset: usize },
     /// Index into the bus's stereo tunes.
     StereoTune(usize),
 }
@@ -400,7 +405,7 @@ impl PreparedProcessor {
             },
             scalar @ (Self::Pan { .. } | Self::ControlMatrix(_) | Self::TimeMod { .. } | Self::Dynamics(_)
                 | Self::LiveFormant { .. } | Self::LivePhaser { .. } | Self::Formant(_) | Self::Filter { .. } | Self::S1200 { .. } | Self::Mp60 { .. }
-                | Self::Branch { .. } | Self::Space(..) | Self::RingMod { .. } | Self::StereoTune(..)) => OperationOwner::Scalar(scalar),
+                | Self::Branch { .. } | Self::Space(..) | Self::RingMod { .. } | Self::Kolor { .. } | Self::StereoTune(..)) => OperationOwner::Scalar(scalar),
         }
     }
     pub(super) fn view(&self) -> ProcessorRef<'_> {
@@ -408,6 +413,7 @@ impl PreparedProcessor {
             Self::Gain(x) => ProcessorRef::Gain(x),
             Self::Pan { position, offset, law, expression } => ProcessorRef::Pan { position, offset, law, expression },
             Self::RingMod { ring, offset } => ProcessorRef::RingMod { ring, offset },
+            Self::Kolor { dry, offset } => ProcessorRef::Kolor { dry, offset },
             Self::StereoMatrix(x) => ProcessorRef::StereoMatrix(x),
             Self::Biquad(x) => ProcessorRef::Biquad(x),
             Self::Eq(x) => ProcessorRef::Eq(eq_family::EqRef::Scalar(x)),
@@ -478,6 +484,7 @@ pub(super) enum ProcessorRef<'a> {
     S1200 { stage: &'a machine::S1200Stage, offset: &'a usize },
     Mp60 { stage: &'a machine::Mp60Stage, offset: &'a usize },
     RingMod { ring: &'a ringmod::RingMod, offset: &'a usize },
+    Kolor { dry: &'a color::KolorDry, offset: &'a usize },
     StereoTune(&'a usize),
 }
 impl<'a> From<&'a PreparedProcessor> for ProcessorRef<'a> {
@@ -839,6 +846,11 @@ pub(super) fn compile_processors(
                     let offset = *delay_frames;
                     *delay_frames = offset.checked_add(ringmod::RingMod::FRAMES).ok_or(Error::Capacity)?;
                     PreparedProcessor::RingMod { ring: ringmod::RingMod::compile(config, rate), offset }
+                }
+                Processor::Kolor(wet) => {
+                    let offset = *delay_frames;
+                    *delay_frames = offset.checked_add(color::KolorDry::FRAMES).ok_or(Error::Capacity)?;
+                    PreparedProcessor::Kolor { dry: color::KolorDry::new(wet), offset }
                 }
                 Processor::Dynamics(settings) => {
                     PreparedProcessor::Dynamics(settings.prepare(rate, bindings, delay_frames)?)
@@ -1346,6 +1358,7 @@ impl ProcessorState {
             ProcessorRef::Gain(_)
             | ProcessorRef::Pan { .. }
             | ProcessorRef::RingMod { .. }
+            | ProcessorRef::Kolor { .. }
             | ProcessorRef::StereoMatrix(_)
             | ProcessorRef::Biquad(_)
             | ProcessorRef::ControlGain(_)
@@ -1658,6 +1671,9 @@ pub(super) fn process<'a, const TRACE: bool>(
             ProcessorRef::Color { color, offset } => {
                 let ring = &mut delay_samples[*offset..];
                 color.process(&mut state.color, parameters, block, len, at, ring);
+            }
+            ProcessorRef::Kolor { dry, offset } => {
+                dry.process(&mut delay_samples[*offset..*offset + color::KolorDry::FRAMES], block, len);
             }
             ProcessorRef::RingMod { ring, offset } => {
                 ring.process(&mut delay_samples[*offset..*offset + ringmod::RingMod::FRAMES], block, len);

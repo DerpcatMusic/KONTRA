@@ -20,6 +20,7 @@ mod bite;
 mod tape;
 mod exciter;
 mod kolor;
+pub(crate) use kolor::chain::Dry as KolorDry;
 mod tonestack;
 mod diode;
 mod lofi;

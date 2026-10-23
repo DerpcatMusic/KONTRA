@@ -2755,6 +2755,8 @@ pub enum Processor {
     LivePhaser { knobs: [f32; 2], address: SlotAddress },
     /// Kontakt Ring Modulator: sine carrier, see `fx::ringmod`.
     RingMod(fx::ringmod::Config),
+    /// Kontakt Kolor (module 0x79): the saved record. The engine owns the mode laws, see `fx::kolor`.
+    Kolor(fx::kolor::Record),
     /// Kontakt Stereo Tune: detuned delay taps with cross spread, see `fx::stereo_tune`. Bus scope only.
     StereoTune(fx::stereo_tune::Config),
     /// Universal delay / modulation effect (delays, chorus, flanger, phaser, ...).

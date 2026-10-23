@@ -843,6 +843,11 @@ impl TraceGraph {
                     sampler_ir::PanLaw::RaisedCosineCoreF64=>2.,
                 }),constant("canonical_expression_home",f64::from(*expression)),constant("offset",*offset)],0,
             ),
+            ProcessorRef::Kolor { dry, offset } => (
+                "kolor",
+                vec![constant("dry", dry.dry()), constant("offset", *offset as f64)],
+                0,
+            ),
             ProcessorRef::RingMod { ring, offset } => (
                 "ring_modulator",
                 vec![constant("frequency_step", ring.step()), constant("mix", ring.mix()), constant("offset", *offset as f64)],
