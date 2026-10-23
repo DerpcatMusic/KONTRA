@@ -20,7 +20,7 @@ Quick runs rotate `~/.cache/kontakto-corpus/quick/current.jsonl` to `previous.js
 Pool sized by RAM (MemAvailable minus 12 GiB) and at most 12, scaled down by other tenants' load average. Each job runs under `catch_unwind` with a timeout (300 s parse, 600 s otherwise); a hung job is recorded as a timeout and replaced.
 
 ## Record
-Failures carry `stage`, `where` (crate::module::fn) and `error`. Perf: `load_ms`, `phases_ms`, `peak_heap`, `audio_thread_allocs` (render only, expected 0), `script_inline_allocs`/`script_inline_ms` (UVI Lua runs inline in the harness). Silent notes carry `sound.why_silent` (`sampler_core::why_silent`); `unsupported_ranked` is `sampler_ir::rank_features`. Multis play up to 16 programs; empty programs (no zones) count as empty slots.
+Failures carry `stage`, `where` (crate::module::fn) and `error`. Perf: `load_ms`, `phases_ms`, `peak_heap`, `audio_thread_allocs` (render only, expected 0), `script_inline_allocs`/`script_inline_ms` (UVI Lua runs inline in the harness). Silent notes carry `sound.why_silent` (`sampler_core::why_silent`); `unsupported_ranked` is `sampler_ir::rank_features`. Multis play up to 16 programs; empty programs (no zones) count as empty slots. A script whose source reads `%KEY_DOWN` (a trill gated on a held neighbour) is probed with the key one above the pick held first, as a player would play it; a lone key is silent by design.
 
 ## Env
 `CH_RESCAN` rescan instead of `~/.cache/kontakto-corpus/items.tsv` (24 h); `CH_QUICK_FILE` alternate list; `CH_MPE` MPE probe on all; `CH_NOMPE` none; `CH_STEAL`, `CH_NOSTREAM` runtime variants.
