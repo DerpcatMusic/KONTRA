@@ -1,0 +1,873 @@
+[
+  {
+    "id": "resampler",
+    "title": "Sample-rate conversion: engine kernel (ours) vs rubato sinc",
+    "reference": "none (no Kontakt interpolation capture)",
+    "rate": 48000.0,
+    "block": 0,
+    "sides": [
+      {
+        "label": "sampler-core resample (High)",
+        "quality": {
+          "alias_db": -64.41646718182506,
+          "thd_n_db": -105.20389518458815,
+          "noise_dbfs": -200.0,
+          "subnormal": 0,
+          "denormal_spike": 0.0,
+          "stable": true,
+          "peak_dbfs": -6.018424728887441,
+          "latency": 0,
+          "ns_per_frame": 223.65172335600906,
+          "instr_per_frame": null
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.17 dB; stopband 64.4 dB (worst of 1.02/1.05/1.08 x output Nyquist); impulse peak at frame 0"
+      },
+      {
+        "label": "rubato sinc (async)",
+        "quality": {
+          "alias_db": -57.74623306964515,
+          "thd_n_db": -105.20497913602406,
+          "noise_dbfs": -200.0,
+          "subnormal": 0,
+          "denormal_spike": 0.0,
+          "stable": true,
+          "peak_dbfs": -6.020640295484077,
+          "latency": 0,
+          "ns_per_frame": 160.76909297052154,
+          "instr_per_frame": null
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.04 dB; stopband 57.7 dB (worst of 1.02/1.05/1.08 x output Nyquist); impulse peak at frame 0"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 44100.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -16.49352595892951,
+          "thd_n_db": -105.19072679491148,
+          "noise_dbfs": -200.0,
+          "subnormal": 1560,
+          "denormal_spike": 9.966666666666667,
+          "stable": true,
+          "peak_dbfs": -5.828248743084615,
+          "latency": 4,
+          "ns_per_frame": 8.926485260770976,
+          "instr_per_frame": 146.90503401360544
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -20.288564710022435,
+          "thd_n_db": -105.1987751397023,
+          "noise_dbfs": -200.0,
+          "subnormal": 1553,
+          "denormal_spike": 2.7142857142857144,
+          "stable": true,
+          "peak_dbfs": -5.850877950687799,
+          "latency": 8,
+          "ns_per_frame": 1.9149886621315193,
+          "instr_per_frame": 22.061156462585036
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 44100.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -16.510909273488192,
+          "thd_n_db": -105.19072679491148,
+          "noise_dbfs": -200.0,
+          "subnormal": 1560,
+          "denormal_spike": 30.423076923076923,
+          "stable": true,
+          "peak_dbfs": -5.828213296531796,
+          "latency": 4,
+          "ns_per_frame": 7.774965986394558,
+          "instr_per_frame": 128.83430839002267
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -14.365678790261661,
+          "thd_n_db": -105.1987751397023,
+          "noise_dbfs": -200.0,
+          "subnormal": 1553,
+          "denormal_spike": 1.7692307692307692,
+          "stable": true,
+          "peak_dbfs": -4.477170916743403,
+          "latency": 8,
+          "ns_per_frame": 1.8857369614512471,
+          "instr_per_frame": 21.54206349206349
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 44100.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -11.34317398821769,
+          "thd_n_db": -105.19072679491148,
+          "noise_dbfs": -200.0,
+          "subnormal": 1560,
+          "denormal_spike": 1.6111111111111112,
+          "stable": true,
+          "peak_dbfs": -2.1939125608389287,
+          "latency": 4,
+          "ns_per_frame": 7.6840362811791385,
+          "instr_per_frame": 128.0025850340136
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -11.541146426397129,
+          "thd_n_db": -105.1987751397023,
+          "noise_dbfs": -200.0,
+          "subnormal": 1553,
+          "denormal_spike": 1.0416666666666667,
+          "stable": true,
+          "peak_dbfs": 3.2226867453473567,
+          "latency": 8,
+          "ns_per_frame": 1.8315419501133787,
+          "instr_per_frame": 21.083356009070293
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 48000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -17.114854498776708,
+          "thd_n_db": -87.81464624045094,
+          "noise_dbfs": -200.0,
+          "subnormal": 1700,
+          "denormal_spike": 6.67741935483871,
+          "stable": true,
+          "peak_dbfs": -5.878341256290441,
+          "latency": 4,
+          "ns_per_frame": 8.613083333333334,
+          "instr_per_frame": 146.64739583333332
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -21.575958166867043,
+          "thd_n_db": -87.81480435243752,
+          "noise_dbfs": -200.0,
+          "subnormal": 1695,
+          "denormal_spike": 25.714285714285715,
+          "stable": true,
+          "peak_dbfs": -5.948325471663438,
+          "latency": 9,
+          "ns_per_frame": 1.9050416666666667,
+          "instr_per_frame": 22.037666666666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 48000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -17.11051171825517,
+          "thd_n_db": -87.81464624045094,
+          "noise_dbfs": -200.0,
+          "subnormal": 1700,
+          "denormal_spike": 4.352941176470588,
+          "stable": true,
+          "peak_dbfs": -5.878428857905915,
+          "latency": 4,
+          "ns_per_frame": 7.827854166666667,
+          "instr_per_frame": 129.05016666666666
+        },
+        "fit": {
+          "mag_err_db": 0.004598156968699496,
+          "mag_err_median_db": 0.003774177696061312,
+          "gain_offset_db": 0.0004827355163803383,
+          "identity_mag_err_db": 0.005214324884578607,
+          "phase_err_deg": null,
+          "time_err_pct": null,
+          "cases": 7
+        },
+        "verdict": "Faithful",
+        "note": "identity worst 0.01 dB"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -15.694711040433,
+          "thd_n_db": -87.81480435243752,
+          "noise_dbfs": -200.0,
+          "subnormal": 1695,
+          "denormal_spike": 24.75,
+          "stable": true,
+          "peak_dbfs": -5.4574374241838655,
+          "latency": 9,
+          "ns_per_frame": 2.3473333333333333,
+          "instr_per_frame": 21.539125
+        },
+        "fit": {
+          "mag_err_db": 8.731623206098849,
+          "mag_err_median_db": 0.0037321298391569968,
+          "gain_offset_db": 0.8061145635978001,
+          "identity_mag_err_db": null,
+          "phase_err_deg": null,
+          "time_err_pct": null,
+          "cases": 7
+        },
+        "verdict": "Differs",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 48000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -10.270326682214826,
+          "thd_n_db": -87.81464624045094,
+          "noise_dbfs": -200.0,
+          "subnormal": 1700,
+          "denormal_spike": 5.407407407407407,
+          "stable": true,
+          "peak_dbfs": -2.078947724255073,
+          "latency": 4,
+          "ns_per_frame": 9.388916666666667,
+          "instr_per_frame": 128.2823125
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -8.19646570408706,
+          "thd_n_db": -87.81480435243752,
+          "noise_dbfs": -200.0,
+          "subnormal": 1695,
+          "denormal_spike": 1.134453781512605,
+          "stable": true,
+          "peak_dbfs": 12.87903807825481,
+          "latency": 9,
+          "ns_per_frame": 2.2892083333333333,
+          "instr_per_frame": 21.0713125
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 96000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -22.672047280231315,
+          "thd_n_db": -87.81773616791186,
+          "noise_dbfs": -200.0,
+          "subnormal": 3397,
+          "denormal_spike": 33.0,
+          "stable": true,
+          "peak_dbfs": -6.0048827213890466,
+          "latency": 8,
+          "ns_per_frame": 8.820697916666667,
+          "instr_per_frame": 145.43472916666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -29.67567701838515,
+          "thd_n_db": -87.8120266507886,
+          "noise_dbfs": -200.0,
+          "subnormal": 3384,
+          "denormal_spike": 3.2857142857142856,
+          "stable": true,
+          "peak_dbfs": -6.035283448986588,
+          "latency": 17,
+          "ns_per_frame": 1.8952395833333333,
+          "instr_per_frame": 22.053020833333335
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 96000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -22.656471180809167,
+          "thd_n_db": -87.81773616791186,
+          "noise_dbfs": -200.0,
+          "subnormal": 3397,
+          "denormal_spike": 36.96078431372549,
+          "stable": true,
+          "peak_dbfs": -6.00484964731468,
+          "latency": 8,
+          "ns_per_frame": 7.7555625,
+          "instr_per_frame": 128.239125
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -21.769874526566227,
+          "thd_n_db": -87.8120266507886,
+          "noise_dbfs": -200.0,
+          "subnormal": 3384,
+          "denormal_spike": 25.88125,
+          "stable": true,
+          "peak_dbfs": -5.8853909177408115,
+          "latency": 17,
+          "ns_per_frame": 1.85659375,
+          "instr_per_frame": 21.532208333333333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 96000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -7.203021960869794,
+          "thd_n_db": -87.81773616791186,
+          "noise_dbfs": -200.0,
+          "subnormal": 3397,
+          "denormal_spike": 4.203517587939698,
+          "stable": true,
+          "peak_dbfs": -2.252994952646577,
+          "latency": 8,
+          "ns_per_frame": 7.683479166666666,
+          "instr_per_frame": 127.01732291666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": 1.3307747069172347,
+          "thd_n_db": -87.8120266507886,
+          "noise_dbfs": -200.0,
+          "subnormal": 3384,
+          "denormal_spike": 4.180851063829787,
+          "stable": true,
+          "peak_dbfs": 10.636412835954985,
+          "latency": 17,
+          "ns_per_frame": 1.8224375,
+          "instr_per_frame": 21.08578125
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 44100.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -63.74244062977729,
+          "thd_n_db": -53.45567182232266,
+          "noise_dbfs": -200.0,
+          "subnormal": 1566,
+          "denormal_spike": 12.818181818181818,
+          "stable": true,
+          "peak_dbfs": 1.263333396726256,
+          "latency": 0,
+          "ns_per_frame": 12.74469387755102,
+          "instr_per_frame": 168.28451247165532
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -115.17761502741727,
+          "thd_n_db": -102.81824401689455,
+          "noise_dbfs": -200.0,
+          "subnormal": 1344,
+          "denormal_spike": 2.2666666666666666,
+          "stable": true,
+          "peak_dbfs": 0.00002102018977891788,
+          "latency": 222,
+          "ns_per_frame": 4.134761904761905,
+          "instr_per_frame": 110.40006802721088
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 44100.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -63.74244062977729,
+          "thd_n_db": -53.45567182232266,
+          "noise_dbfs": -200.0,
+          "subnormal": 1566,
+          "denormal_spike": 7.230088495575221,
+          "stable": true,
+          "peak_dbfs": 1.263333396726256,
+          "latency": 0,
+          "ns_per_frame": 12.494580498866213,
+          "instr_per_frame": 167.61192743764173
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -115.17761502741727,
+          "thd_n_db": -102.81824401689455,
+          "noise_dbfs": -200.0,
+          "subnormal": 1344,
+          "denormal_spike": 12.310344827586206,
+          "stable": true,
+          "peak_dbfs": 0.00002102018977891788,
+          "latency": 222,
+          "ns_per_frame": 4.1413605442176875,
+          "instr_per_frame": 109.71281179138322
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 44100.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -63.74244062977729,
+          "thd_n_db": -53.45567182232266,
+          "noise_dbfs": -200.0,
+          "subnormal": 1566,
+          "denormal_spike": 3.3302186878727635,
+          "stable": true,
+          "peak_dbfs": 1.263333396726256,
+          "latency": 0,
+          "ns_per_frame": 12.556031746031746,
+          "instr_per_frame": 167.04115646258504
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -115.17761502741727,
+          "thd_n_db": -102.81824401689455,
+          "noise_dbfs": -200.0,
+          "subnormal": 1344,
+          "denormal_spike": 4.539906103286385,
+          "stable": true,
+          "peak_dbfs": 0.00002102018977891788,
+          "latency": 222,
+          "ns_per_frame": 4.190340136054422,
+          "instr_per_frame": 109.11510204081632
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 48000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -56.49007890656957,
+          "thd_n_db": -54.09918853052545,
+          "noise_dbfs": -200.0,
+          "subnormal": 1719,
+          "denormal_spike": 26.853658536585368,
+          "stable": true,
+          "peak_dbfs": 2.259627692678232,
+          "latency": 0,
+          "ns_per_frame": 12.70775,
+          "instr_per_frame": 168.28854166666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -111.16157939166145,
+          "thd_n_db": -87.81415581620479,
+          "noise_dbfs": -200.0,
+          "subnormal": 1478,
+          "denormal_spike": 82.53333333333333,
+          "stable": true,
+          "peak_dbfs": 0.0,
+          "latency": 241,
+          "ns_per_frame": 4.178833333333333,
+          "instr_per_frame": 110.40952083333333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 48000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -56.49007890656957,
+          "thd_n_db": -54.09918853052545,
+          "noise_dbfs": -200.0,
+          "subnormal": 1719,
+          "denormal_spike": 3.40625,
+          "stable": true,
+          "peak_dbfs": 2.259627692678232,
+          "latency": 0,
+          "ns_per_frame": 13.243583333333333,
+          "instr_per_frame": 167.60952083333333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -111.16157939166145,
+          "thd_n_db": -87.81415581620479,
+          "noise_dbfs": -200.0,
+          "subnormal": 1478,
+          "denormal_spike": 7.964285714285714,
+          "stable": true,
+          "peak_dbfs": 0.0,
+          "latency": 241,
+          "ns_per_frame": 4.12175,
+          "instr_per_frame": 109.69241666666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 48000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -56.49007890656957,
+          "thd_n_db": -54.09918853052545,
+          "noise_dbfs": -200.0,
+          "subnormal": 1719,
+          "denormal_spike": 1.9393939393939394,
+          "stable": true,
+          "peak_dbfs": 2.259627692678232,
+          "latency": 0,
+          "ns_per_frame": 13.119,
+          "instr_per_frame": 167.02339583333332
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -111.16157939166145,
+          "thd_n_db": -87.81415581620479,
+          "noise_dbfs": -200.0,
+          "subnormal": 1478,
+          "denormal_spike": 2.365740740740741,
+          "stable": true,
+          "peak_dbfs": 0.0,
+          "latency": 241,
+          "ns_per_frame": 4.193395833333334,
+          "instr_per_frame": 109.1239375
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 96000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -62.60840224121968,
+          "thd_n_db": -57.1376447517584,
+          "noise_dbfs": -200.0,
+          "subnormal": 3417,
+          "denormal_spike": 14.848484848484848,
+          "stable": true,
+          "peak_dbfs": 1.7377883267565106,
+          "latency": 0,
+          "ns_per_frame": 13.439635416666667,
+          "instr_per_frame": 168.28180208333333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -108.23797947171863,
+          "thd_n_db": -87.81706017719918,
+          "noise_dbfs": -200.0,
+          "subnormal": 2936,
+          "denormal_spike": 27.6,
+          "stable": true,
+          "peak_dbfs": 0.0,
+          "latency": 481,
+          "ns_per_frame": 4.1995625,
+          "instr_per_frame": 110.40271875
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 96000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -62.60840224121968,
+          "thd_n_db": -57.1376447517584,
+          "noise_dbfs": -200.0,
+          "subnormal": 3417,
+          "denormal_spike": 4.955384615384616,
+          "stable": true,
+          "peak_dbfs": 1.7377883267565106,
+          "latency": 0,
+          "ns_per_frame": 13.656625,
+          "instr_per_frame": 167.59825
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -108.23797947171863,
+          "thd_n_db": -87.81706017719918,
+          "noise_dbfs": -200.0,
+          "subnormal": 2936,
+          "denormal_spike": 8.172413793103448,
+          "stable": true,
+          "peak_dbfs": 0.0,
+          "latency": 481,
+          "ns_per_frame": 5.9444895833333335,
+          "instr_per_frame": 109.70475
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 96000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -62.60840224121968,
+          "thd_n_db": -57.1376447517584,
+          "noise_dbfs": -200.0,
+          "subnormal": 3417,
+          "denormal_spike": 3.159448818897638,
+          "stable": true,
+          "peak_dbfs": 1.7377883267565106,
+          "latency": 0,
+          "ns_per_frame": 17.114916666666666,
+          "instr_per_frame": 167.00982291666668
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -108.23797947171863,
+          "thd_n_db": -87.81706017719918,
+          "noise_dbfs": -200.0,
+          "subnormal": 2936,
+          "denormal_spike": 1.9650537634408602,
+          "stable": true,
+          "peak_dbfs": 0.0,
+          "latency": 481,
+          "ns_per_frame": 4.229354166666667,
+          "instr_per_frame": 109.10209375
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  }
+]

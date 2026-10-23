@@ -315,7 +315,7 @@ fn downsampling_rejects_above_output_nyquist_and_invalid_ratios() {
         assert!(audio.iter().flatten().all(|x| x.abs() < 0.0002));
     }
     // Step 2^(97/12) is past MAX_STEP (256); -97 is below MIN_STEP.
-    for transpose_semitones in [f64::NAN, f64::INFINITY, f64::MAX, -f64::MAX, 97.0, -97.0] {
+    for transpose_semitones in [f64::NAN, f64::INFINITY, f64::MAX, -f64::MAX, 133.0, -133.0] {
         assert!(matches!(
             prepare(
                 Pcm::new(48000, Box::from([[1.0; 2]; 8])).unwrap(),
@@ -399,12 +399,12 @@ fn prepared_key_tracking_uses_logical_keys_and_keeps_exact_root_pitch() {
         gain: 1.0,
         envelope: Envelope::default(),
         playback: Playback {
-            transpose_semitones: 96.0,
+            transpose_semitones: 132.0,
             ..Playback::default()
         },
     };
     // Only mapped keys need to be playable; the unselected root can lie outside
-    // the supported source/output ratio, while the authored key is exactly step 256 (MAX_STEP).
+    // the supported source/output ratio, while the authored key is exactly step 2048 (MAX_STEP).
     let sample = || vec![Pcm::new(96000, Box::from([[0.25; 2]; 128])).unwrap()];
     assert!(Prepared::new(48000, sample(), vec![region], 1).is_ok());
     assert!(matches!(
@@ -835,7 +835,7 @@ fn pending_pitch_constrains_late_sources_and_detachment_keeps_admission_atomic()
             .unwrap();
         let family = rt.create_family(root).unwrap();
         let at_limit = Playback {
-            transpose_semitones: 96.0,
+            transpose_semitones: 132.0,
             ..Playback::default()
         };
         assert_eq!(
@@ -857,7 +857,7 @@ fn pending_pitch_constrains_late_sources_and_detachment_keeps_admission_atomic()
             1.0,
             Envelope::default(),
             Playback {
-                transpose_semitones: 84.0,
+                transpose_semitones: 120.0,
                 ..Playback::default()
             },
         )
@@ -949,7 +949,7 @@ fn initial_expression_precedes_selection_and_immediate_snapshot_programs() {
         for invalid in [
             expression(f64::NAN),
             expression(f64::INFINITY),
-            expression(97.0),
+            expression(133.0),
             Expression {
                 gain: -1.0,
                 ..initial
@@ -1032,7 +1032,7 @@ fn controller_batches_reject_every_change_if_any_owner_or_source_is_invalid() {
         let other = foreign.note_on(input(), 60, 1.0).unwrap();
         let other = foreign.expression_id(other).unwrap();
         for (bad_owner, bad_value, error) in [
-            (b, expression(97.0), Error::InvalidInput),
+            (b, expression(133.0), Error::InvalidInput),
             (b, expression(f64::NAN), Error::InvalidInput),
             (other, expression(12.0), Error::StaleHandle),
         ] {

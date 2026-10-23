@@ -1,0 +1,354 @@
+{
+ "arith_abs": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   2147483647,
+   5
+  ]
+ },
+ "arith_add_wrap": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -2147483648
+  ]
+ },
+ "arith_div_trunc_pos": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   3,
+   -3
+  ]
+ },
+ "arith_mod_negneg": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1
+  ]
+ },
+ "arith_mod_signs": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1,
+   1
+  ]
+ },
+ "arith_mul_neg": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -2147479015
+  ]
+ },
+ "arith_mul_wrap": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "arith_neg_min": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -2147483648,
+   2147483647
+  ]
+ },
+ "arith_precedence__0": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   14,
+   5
+  ]
+ },
+ "arith_precedence__1": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   2
+  ]
+ },
+ "arith_sub_wrap": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   2147483647
+  ]
+ },
+ "array_init_list": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   20,
+   20
+  ]
+ },
+ "array_num_elements": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   9
+  ]
+ },
+ "array_out_of_bounds_read": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "array_out_of_bounds_write": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   3
+  ]
+ },
+ "array_store_load": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   21,
+   0
+  ]
+ },
+ "call_init_empty": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "call_init_global": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "cond_bare_int": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "cond_compare_ops": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1,
+   1
+  ]
+ },
+ "cond_int_and": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "cond_not_compare": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1,
+   0
+  ]
+ },
+ "function_nested_call": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "function_updates_global": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "incdec_sequence": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   6
+  ]
+ },
+ "incdec_wrap": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -2147483648
+  ]
+ },
+ "logic_and_or": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "logic_compare": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1,
+   0
+  ]
+ },
+ "logic_in_range": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1,
+   0
+  ]
+ },
+ "logic_not": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "logic_vars": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "logic_vars_2": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "loop_count": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   45,
+   10
+  ]
+ },
+ "loop_nested": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   12
+  ]
+ },
+ "real_add_exact": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   5
+  ]
+ },
+ "real_div_mixed": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   3,
+   7
+  ]
+ },
+ "real_int_real_exact": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   16777217
+  ]
+ },
+ "real_round_down": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "real_round_half": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   3,
+   -3
+  ]
+ },
+ "real_to_int_big": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   2147483647
+  ]
+ },
+ "real_to_int_trunc": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   3,
+   -3
+  ]
+ },
+ "shift_left_31": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -2147483648,
+   -1073741824
+  ]
+ },
+ "shift_right_negative": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -4,
+   -1
+  ]
+ },
+ "shift_right_positive": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   125,
+   1000
+  ]
+ },
+ "type_real_to_int_assign": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "typing_bool_assign": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "typing_real_assign": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ }
+}

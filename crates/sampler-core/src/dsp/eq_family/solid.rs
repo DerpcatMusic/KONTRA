@@ -693,4 +693,51 @@ mod tests {
             assert!(*err < 0.1, "{key}: worst {err:.3} dB");
         }
     }
+
+    /// Full native table from a Kontakt 8 sweep (`docs/re/engine/fx-measured/solid-geq.tsv`,
+    /// made by `tools/kontakt-oracle/fxrig.py` + `geq_golden.py`): one band per row, bypass-referenced
+    /// LL dB at 30..15000 Hz. Reports the worst error per section; the shape tolerance is 0.5 dB.
+    #[test]
+    fn native_sweep_table_shape() {
+        use SolidSection::*;
+        const PROBES: [f64; 10] = [30., 60., 100., 200., 500., 1000., 2000., 5000., 10000., 15000.];
+        let table = include_str!("../../../../../docs/re/engine/fx-measured/solid-geq.tsv");
+        let mut worst = std::collections::BTreeMap::<&str, (f64, String, usize)>::new();
+        for line in table.lines().skip(1) {
+            let c: Vec<&str> = line.split('\t').collect();
+            let (name, sec) = (c[1], c[2]);
+            let (f, q, g): (f64, f64, f64) = (c[3].parse().unwrap(), c[4].parse().unwrap(), c[5].parse().unwrap());
+            let want: Vec<f64> = c[6..16].iter().map(|v| v.parse().unwrap()).collect();
+            let sections: Vec<[f64; 5]> = match sec {
+                "LFSHELF" => (0..3).map(|i| coefficients(LowFrequency, Kind::LowShelf, i, 48000., f, q, g)).collect(),
+                "LFBELL" => vec![coefficients(LowFrequency, Kind::Peak, 0, 48000., f, q, g)],
+                "LMF" => vec![coefficients(LowMid, Kind::Peak, 0, 48000., f, q, g)],
+                "HMF" => vec![coefficients(HighMid, Kind::Peak, 0, 48000., f, q, g)],
+                "HFSHELF" => (0..2).map(|i| coefficients(HighFrequency, Kind::HighShelf, i, 48000., f, q, g)).collect(),
+                "HFBELL" => vec![coefficients(HighFrequency, Kind::Peak, 0, 48000., f, q, g)],
+                "HP" => (0..2).map(|i| coefficients(HighPass, Kind::Peak, i, 48000., f, q, g)).collect(),
+                _ => (0..2).map(|i| coefficients(LowPass, Kind::Peak, i, 48000., f, q, g)).collect(),
+            };
+            for (hz, db) in PROBES.iter().zip(&want) {
+                let err = (cascade_db(&sections, *hz, 48000.) - db).abs();
+                let entry = worst.entry(sec).or_insert((0., String::new(), 0));
+                if err > 0.5 {
+                    entry.2 += 1;
+                }
+                if err > entry.0 {
+                    *entry = (err, format!("{name} at {hz} Hz (native {db})"), entry.2);
+                }
+            }
+        }
+        for (sec, (err, at, bad)) in &worst {
+            println!("{sec}: worst {err:.2} dB, probes over 0.5 dB {bad}, at {at}");
+        }
+        // HFSHELF is open: at HF freq 0.5 the native shelf has a ~17 dB low-frequency cut that the
+        // model lacks (docs/re/engine/fx-measured/solid-geq.md). Every other section is inside 0.5 dB.
+        for (sec, (err, at, _)) in &worst {
+            if *sec != "HFSHELF" {
+                assert!(*err < 0.5, "{sec}: {err:.2} dB at {at}");
+            }
+        }
+    }
 }

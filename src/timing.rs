@@ -283,6 +283,7 @@ impl Holds {
         self.1[self.row(row)]
     }
 }
+#[cfg(feature = "plugin")]
 impl moose::core::custom_state::StateField for Timing {
     fn write_field(&self, b: &mut Vec<u8>) {
         serde_json::to_string(self)

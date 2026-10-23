@@ -48,7 +48,8 @@ fn listener_init_evaluator_checks_nonconstant_arguments_before_registration() {
 #[test]
 fn set_listener_context_follows_function_callers() {
     let function = "function register set_listener($NI_SIGNAL_TIMER_MS,1000) end function";
-    assert!(compile(&format!("{function} on init call register end on")).is_ok());
+    // Kontakt rejects `call` in on init (docs/re/KSP_CONFORMANCE.md).
+    assert!(compile(&format!("{function} on init call register end on")).is_err());
     for callback in [
         "note",
         "release",
