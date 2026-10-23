@@ -1054,6 +1054,30 @@ impl Wav {
         let width = self.width;
         [self.sample(&frame[..width]),self.sample(&frame[(self.channels.min(2)-1)*width..][..width])]
     }
+    /// Decode whole interleaved frames from `bytes` into `out`. Little-endian 16-bit PCM
+    /// (the common case) takes a direct loop: `i16 as f32 / 32768` is exact, so it matches
+    /// `frame` bit for bit without its per-sample width and tag dispatch.
+    pub(crate) fn frames_into(&self, bytes: &[u8], out: &mut [[f32; 2]]) {
+        let stride = self.width * self.channels;
+        if self.width == 2 && self.tag != 3 && !self.big_endian && self.channels <= 2 {
+            const SCALE: f32 = 1.0 / 32768.0;
+            let le = |b: &[u8]| f32::from(i16::from_le_bytes([b[0], b[1]])) * SCALE;
+            if self.channels == 2 {
+                for (frame, data) in out.iter_mut().zip(bytes.chunks_exact(stride)) {
+                    *frame = [le(&data[..2]), le(&data[2..4])];
+                }
+            } else {
+                for (frame, data) in out.iter_mut().zip(bytes.chunks_exact(stride)) {
+                    let x = le(data);
+                    *frame = [x, x];
+                }
+            }
+            return;
+        }
+        for (frame, data) in out.iter_mut().zip(bytes.chunks_exact(stride)) {
+            *frame = self.frame(data);
+        }
+    }
     pub(crate) fn sample(&self,s:&[u8])->f32 {
         let width=self.width;
         match (self.tag, width) {
@@ -1595,5 +1619,36 @@ mod tests {
         let missing = root.join("absent.ncw");
         assert!(samples.sources(&[missing.as_path()], &|| false).is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod frames_into_tests {
+    use super::*;
+
+    /// The 16-bit fast path must match the per-sample `frame` bit for bit.
+    #[test]
+    fn sixteen_bit_fast_path_matches_frame() {
+        let bytes: Vec<u8> = (0..4096u32)
+            .flat_map(|i| (i.wrapping_mul(2_654_435_761) as u16).to_le_bytes())
+            .collect();
+        for channels in [1usize, 2] {
+            let wav = Wav {
+                rate: 48000,
+                channels,
+                width: 2,
+                tag: 1,
+                big_endian: false,
+                signed8: false,
+                data: 0..bytes.len(),
+            };
+            let stride = 2 * channels;
+            let count = bytes.len() / stride;
+            let mut fast = vec![[0.0_f32; 2]; count];
+            wav.frames_into(&bytes[..count * stride], &mut fast);
+            for (i, frame) in fast.iter().enumerate() {
+                assert_eq!(*frame, wav.frame(&bytes[i * stride..(i + 1) * stride]));
+            }
+        }
     }
 }
