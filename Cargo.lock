@@ -4211,9 +4211,11 @@ dependencies = [
 name = "sampler-ksp"
 version = "0.1.0"
 dependencies = [
+ "mlua",
  "sampler-core",
  "sampler-ir",
  "sampler-parity",
+ "sampler-script",
  "sampler-ui-ir",
  "serde",
  "serde_json",
