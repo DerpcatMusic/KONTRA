@@ -169,29 +169,45 @@ Estimate: 0–40 net LOC removed, ~0% CPU. This is the first safe seam, not the 
 
 ### 2. EQ designers and control separation (high value, medium risk)
 
-Files: `D/eq_family/{legacy,solid,generic,mod,tests}.rs`, `D/biquad.rs`, `I/fx/eq.rs`,
-`K/effects/eq.rs`, `U/fx/eq.rs`; core export in `C/lib.rs` only if needed.
-First move knob-domain conversion out of the execution type, remove the mapper's core helper
-calls. Then separate designer from update schedule and realized section; retain legacy
-constant/lane specialization. Evaluate one Solid bell against standard matched/cookbook
-design using its measured physical controls before considering removal of iterative native
-design work. Test: existing legacy frozen recurrence and Solid knob/glide tests bit-exact for
-extraction; bell substitution requires response gate plus automation tests. Delete duplicated
-conversions and, **only if admitted**, the replaced bell designer/iteration path in `solid.rs`.
-Estimate: 80–250 LOC, steady CPU ~0%; automated redesign cost may improve, measure separately.
-Do not delete spline/control data or shelf/pass designs merely because the bell passed.
+**Status after implementation (2026-10-24): no net deletion; gate fails for the bell change.**
+Measured on `origin/main` before any edit:
+
+- Knob conversions have a single implementation: `KontaktLegacyEqSettings::{frequency_knob,
+  bandwidth_knob, gain_knob, frequency_hz}` at `crates/sampler-core/src/dsp/eq_family/legacy.rs:22-40`.
+  Callers (`K/effects/eq.rs:34-35`, `engine_parameters.rs:269`, `library.rs:1446`) only read it.
+  Moving it to `sampler-ir` is a relocation (0 net LOC), not a deletion; there is no duplicate
+  conversion to delete.
+- Solid bell `peak_iterative` (`solid.rs:281`, used only for HighMid below 60 kHz, `solid.rs:401-403`)
+  against the closed-form `peak` (`solid.rs:269`). Native probe rows 53-56 (HMF, 10 probe
+  frequencies, max error in dB):
+
+  | row | iterative | closed form |
+  |---|---|---|
+  | f 0.25 q 0 | 0.027 | 0.107 |
+  | f 0.25 q 1 | 0.029 | 0.108 |
+  | f 0.75 q 0 | 0.028 | 0.174 |
+  | f 0.75 q 1 | 4.036 | 6.148 |
+
+  The closed form is worse on every row and fails the 0.5 dB gate; the iterative bell stays.
+  Its own failing row (f 0.75, q 1, 4.0 dB) is an open probe row, not fixed by this change.
+
+Result: no ticket-2 deletion is admitted. Ticket 2 is closed without a PR; knob-domain relocation
+remains optional and needs no measurement.
 
 ### 3. Remove duplicated linear design/section code (high value, medium risk)
 
-Files: `D/filter/cascade.rs`, `D/eq_family/digital.rs`, `D/biquad.rs`,
-`D/filter/{linear,chamberlin}.rs`, `D/eq_family/kernel.rs`, `D/tpt_svf.rs`.
-First compare `cascade`'s `digital_design`/root transforms/RBJ helpers with the EQ designer;
-share only mathematically AND numerically compatible parts. Next consolidate one identical
-linear recurrence at a time with precision/realization explicit. Test: `cascade_uvi_bank_vectors.json`,
-`cascade_uvi_vectors.json`, DigitalEq response tests, `pro53_kemu_vectors.json`,
-`versatile_kemu_vectors.json`, all existing section tests; bit-exact extraction or measured
-response admission. Delete each superseded helper/loop, retain distinct TPT/Chamberlin state.
-Estimate: 100–300 LOC; CPU ~0%, possible preparation reduction, no assumed voice-loop gain.
+**Status: done (PR #552).** The duplicate was the UVI DigitalFilter/DigitalEq routine, implemented
+twice: `filter/cascade.rs::digital_design` and `eq_family/digital.rs::section` (both cite 0x1412840f0).
+The bank now uses `eq_family::digital`. Deleted: `digital_design`, `bilinear`, `bilinear2`,
+`band_roots`, `csqrt`, `re_mul`, the bank's f32 first-order stage. Net -147 LOC.
+Measured against the deleted designer (grid: kinds 0-6, orders 1-16, fnorm 0.001-0.45, Q 0.2-8,
+gain -12..6 dB, bandwidth 0.5-2): response max 8.8e-5 dB, phase 3.4e-4 deg. The same comparison found
+a real bug in the EQ copy at Q = 0.5 (exact square quartic; wrong root pairing, up to 36 dB), fixed in
+the same PR. Native DigitalFilter vectors pass at 1e-5.
+
+Original scope (kept for reference): the remaining linear-section helpers (`filter/linear.rs`,
+`chamberlin.rs`, `eq_family/kernel.rs`, `tpt_svf.rs`) were not consolidated; each realisation keeps its
+own state and discretization.
 
 ### 4. Dynamics recipe/settings boundary (medium value, low–medium risk)
 
