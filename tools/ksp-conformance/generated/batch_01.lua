@@ -9,6 +9,7 @@ local CASES = {
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare ~x := 7.0
   $cv := real_to_int(~x / 2.0)
   $cb := 0
@@ -26,12 +27,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "real_add_exact", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   $cv := real_to_int(2.5 + 2.5)
   $cb := 0
   while ($cb < 32)
@@ -40,12 +43,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "type_real_to_int_assign", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   $cv := round(2.5)
   $cb := 0
   while ($cb < 32)
@@ -62,12 +67,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "shift_left_31", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   $cv := sh_left(1, 31)
   $cb := 0
   while ($cb < 32)
@@ -84,12 +91,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "shift_right_negative", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := -8
   $cv := sh_right($a, 1)
   $cb := 0
@@ -107,12 +116,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "shift_right_positive", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := 1000
   $cv := sh_right($a, 3)
   $cb := 0
@@ -130,12 +141,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "logic_not", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := 0
   declare $b := 0
   if (not 0)
@@ -160,12 +173,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "logic_and_or", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := 0
   declare $b := 0
   if (5 and 3)
@@ -190,12 +205,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "logic_compare", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := 3
   declare $x := 0
   declare $y := 0
@@ -221,12 +238,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "logic_in_range", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := 0
   declare $b := 0
   if (in_range(5, 1, 10))
@@ -251,12 +270,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "incdec_sequence", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := 5
   inc($a)
   inc($a)
@@ -269,12 +290,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "incdec_wrap", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := 2147483647
   inc($a)
   $cv := $a
@@ -285,12 +308,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "array_store_load", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare %a[4]
   %a[2] := 7
   %a[3] := %a[2] * 3
@@ -310,12 +335,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "array_num_elements", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare %a[9]
   $cv := num_elements(%a)
   $cb := 0
@@ -325,12 +352,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "array_init_list", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare %a[3] := (10, 20, 30)
   $cv := %a[1]
   $cb := 0
@@ -348,12 +377,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "array_out_of_bounds_read", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare %a[3] := (1, 2, 3)
   $cv := %a[5]
   $cb := 0
@@ -363,6 +394,7 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
 }
@@ -370,7 +402,7 @@ local ids = {}
 for n, c in ipairs(CASES) do
   local i = kt.add_instrument()
   kt.set_instrument_volume(i, 0)
-  for _ = 1, 32 * c.results - 1 do kt.add_group(i) end
+  for _ = 1, 65 do kt.add_group(i) end
   ids[n] = i
   local ok, err = pcall(kt.set_instrument_script_source, i, 0, c.src)
   log(string.format('{"compile":"%s","ok":%s}', c.id, tostring(ok)))
@@ -380,6 +412,8 @@ local t0 = os.time()
 repeat until os.time() - t0 >= 4
 for n, c in ipairs(CASES) do
   local rows = {}
+  local start = kt.get_group_volume(ids[n], 64) < -100
+  local finish = kt.get_group_volume(ids[n], 65) < -100
   for k = 0, c.results - 1 do
     local bits = {}
     for b = 0, 31 do
@@ -388,7 +422,7 @@ for n, c in ipairs(CASES) do
     end
     rows[#rows + 1] = '"' .. table.concat(bits) .. '"'
   end
-  log(string.format('{"case":"%s","bits":[%s]}', c.id, table.concat(rows, ',')))
+  log(string.format('{"case":"%s","start":%s,"end":%s,"bits":[%s]}', c.id, tostring(start), tostring(finish), table.concat(rows, ',')))
 end
 log('{"done":true}')
 out:close()

@@ -259,11 +259,14 @@ fn boolean_precedence_normalization_and_constant_evaluation_share_native_operati
         ("in_range(-1,0,1)", 0),
         ("(1 or 0) = 1 and (4 .or. 2) = 6", 1),
     ] {
+        // The expected values are logical truth values. Kontakt rejects a boolean assigned
+        // to an integer and an integer used as a condition, so each arm tests truth with `# 0`.
         let source = format!(
-            "on init declare const $C := {expression}
-            declare $initial := $C declare $value declare $branch end on
-            on note ignore_event($EVENT_ID) $value := {expression}
-            if ({expression}) $branch := 1 else $branch := 0 end if end on"
+            "on init declare $initial := 0 declare $value declare $branch
+            if (({expression}) # 0) $initial := 1 else $initial := 0 end if end on
+            on note ignore_event($EVENT_ID)
+            if (({expression}) # 0) $value := 1 else $value := 0 end if
+            if (({expression}) # 0) $branch := 1 else $branch := 0 end if end on"
         );
         let mut rt = runtime(&source, 512);
         support::without_heap(|| {
@@ -284,9 +287,9 @@ fn boolean_short_circuit_guards_arrays_but_never_hides_malformed_source_or_runti
       on note ignore_event($EVENT_ID)
         if ($i >= 0 and $i < num_elements(%a) and %a[$i] = 17) $result := 99
         else $result := 1 end if
-        if ($result or %a[99]) inc($result) end if
+        if (($result # 0) or (%a[99] # 0)) inc($result) end if
         $i := -2
-        while ($i) inc($i) inc($result) end while
+        while ($i # 0) inc($i) inc($result) end while
       end on";
     let mut rt = runtime(source, 256);
     support::without_heap(|| {

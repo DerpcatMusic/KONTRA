@@ -115,7 +115,7 @@ fn empty_slot_has_no_gap_and_user_commands_use_resolved_functions() {
 
 #[test]
 fn constants_and_init_function_statements_keep_their_source_spans() {
-    let source = "on init declare const $c := 2 call f end on function f message($c) end function";
+    let source = "on init declare const $c := 2 end on on note call f end on function f message($c) end function";
     let r = parity_report(source, "ksp:slot0", "test");
     assert!(
         r.tokens
