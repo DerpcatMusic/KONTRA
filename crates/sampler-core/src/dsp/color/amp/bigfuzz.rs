@@ -6,7 +6,7 @@
 // ponytail: the table and the phase/decimation matrices do not depend on rate or knobs; they
 // are the native ctor/init output (dumped under kemu), not re-derived here.
 use super::super::super::Planar;
-use super::kernel::{DECIMATE, PHASE_BIG_FUZZ, V, add, mul, sub};
+use super::kernel::{run_block, DECIMATE, PHASE_BIG_FUZZ, V, add, mul, sub};
 use super::super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
 
 
@@ -125,18 +125,7 @@ impl Engine {
     }
 
     pub(crate) fn process(&self, s: &mut State, block: &mut Planar, len: usize) {
-        for i in 0..len {
-            if self.mono {
-                let x = (block[0][i] as f32 + block[1][i] as f32) * 0.5;
-                let y = f64::from(self.sample(&mut s.l[0], x));
-                block[0][i] = y;
-                block[1][i] = y;
-            } else {
-                for c in 0..2 {
-                    block[c][i] = f64::from(self.sample(&mut s.l[c], block[c][i] as f32));
-                }
-            }
-        }
+        run_block(self.mono, block, len, |c, x| self.sample(&mut s.l[c], x));
     }
 }
 
