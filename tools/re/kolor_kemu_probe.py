@@ -4,6 +4,7 @@ Status: the full native path runs for all 10 modes (nonzero output). This is the
 port, not a port; wet output is verified only for modes 2 and 5. See docs/re/engine/k-effects-batch-a.md.
 
     python3 -I tools/re/kolor_kemu_probe.py KONTAKT8_EXE [OUT_JSON]
+    python3 -I tools/re/kolor_kemu_probe.py --wet-sweep KONTAKT8_EXE OUT_JSON   (dry path per wet, fixture)
 
 Call order as the host does it (measured, not guessed):
   1. BEffectKolor ctor 1407c7950 (holder = {ptr, size}); the allocator 140711a10 is intercepted.
@@ -150,5 +151,25 @@ def main():
         print('wrote', out)
 
 
+def wet_sweep(exe, out, n=256, modes=(0, 1, 3, 4, 6, 7, 8, 9), wets=(0.0, 0.25, 0.5, 1.0)):
+    """Native dry path under the wet knob (knob 7), default drive. Written to the fixture the Rust
+    dry-path test reads (`kolor_wet_sweep.json`): one steady block per (mode, wet)."""
+    left, right = signal(n)
+    cases = []
+    for mode in modes:
+        for wet in wets:
+            e = make(exe)
+            _, core = build(e, mode=mode, knobs={7: wet})
+            l, r = block(e, core, left, right)
+            cases.append({'mode': mode, 'wet': wet, 'L': l, 'R': r})
+            print(f'mode {mode} wet {wet}: peak {max(map(abs, l)):.6f}')
+    with open(out, 'w') as fh:
+        json.dump({'rate': RATE, 'input': f'signal({n}) in tools/re/kolor_kemu_probe.py', 'cases': cases}, fh)
+    print('wrote', out)
+
+
 if __name__ == '__main__':
-    main()
+    if sys.argv[1:2] == ['--wet-sweep']:
+        wet_sweep(sys.argv[2], sys.argv[3])
+    else:
+        main()

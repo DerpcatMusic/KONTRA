@@ -301,7 +301,7 @@ pub(crate) enum Params {
         drive: f32,
         damping: f32,
     },
-    /// `BParFXKolor` (0x79): lowered to the IR record; the shaper is not run yet.
+    /// `BParFXKolor` (0x79): the saved record, run by `sampler_core` as the Kolor dry path.
     Kolor(sampler_ir::fx::kolor::Record),
     /// `BParFXCompressor`: integer mode (Classic/Enhanced/Pro),
     /// threshold dB, ratio, attack and release ms, stereo link.
@@ -923,6 +923,7 @@ pub(crate) fn chain_with(
             Some(Params::Saturation { shape, mode }) => {
                 modelled = color::slot_saturation(&mut b, &site, &mut notes, *shape, *mode)
             }
+            Some(Params::Kolor(record)) => modelled = color::slot_kolor(&mut b, &site, &mut notes, record),
             Some(Params::TimeMod(unit)) => modelled = timemod::slot_timemod(&mut b, &site, &mut notes, unit),
             Some(Params::Filter { kind: 13, cutoff, resonance, .. }) => {
                 modelled = timemod::slot_phaser(&mut b, &site, &mut notes, *cutoff, *resonance)

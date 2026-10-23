@@ -403,6 +403,7 @@ impl Check<'_> {
                         value: f64::NAN,
                     })?;
                 }
+                Processor::Kolor(record) => self.within(f64::from(record.mode), 0.0..=9.0, "kolor mode")?,
                 Processor::RingMod(config) => {
                     config.check().map_err(|field| ValidationError::OutOfRange {
                         owner: self.owner.clone(),

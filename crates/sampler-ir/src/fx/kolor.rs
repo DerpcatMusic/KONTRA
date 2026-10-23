@@ -86,6 +86,8 @@ pub const KNOB_COUNT: usize = 14;
 /// The knob each reader float feeds, in reader order. `Measured`: the apply `140abae20`
 /// as traced by `tools/re/kolor_kemu_probe.py` (floats at +0x08..+0x30). Knob 7 is the wet mix.
 pub const FLOAT_KNOBS: [usize; RECORD_FLOATS] = [3, 0, 2, 5, 6, 8, 9, 10, 11, 12, 7];
+/// The wet mix knob (`Measured`, `core+0x78`). The dry share is `1 - wet`.
+pub const WET_KNOB: usize = 7;
 /// The knob the flag byte feeds (`Measured`, byte at +0x34).
 pub const FLAG_KNOB: usize = 1;
 /// The knob the mode selector feeds, as `mode / 9` (`Measured`, int at +0x38).
@@ -95,6 +97,7 @@ pub const CONSTANT_KNOB: (usize, f32) = (13, 0.5);
 
 /// A saved Kolor record, lowered from the Kontakt reader. The mode is `0..=9` (the
 /// reader's own range); the engine owns what each value does.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Record {
     pub mode: i32,

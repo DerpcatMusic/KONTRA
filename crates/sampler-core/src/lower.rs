@@ -3051,6 +3051,7 @@ impl Lowering<'_> {
             },
             ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
             ir::Processor::RingMod(config) => Processor::RingMod(config),
+            ir::Processor::Kolor(record) => Processor::Kolor(f64::from(record.knobs()[ir::fx::kolor::WET_KNOB])),
             ir::Processor::StereoTune(config) => Processor::StereoTune(config),
             ir::Processor::Formant(knobs) => Processor::Formant(knobs),
             ir::Processor::FilterBank(c) => match c.topology {
