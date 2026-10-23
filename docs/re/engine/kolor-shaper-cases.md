@@ -381,3 +381,11 @@ initialisers. The P/P2 values are compiled into `Kontakt8.exe` as float immediat
   (copy B `141979b10` reads the knob mirror `core+0x4c8` into `core+0x4b0` and calls notify slot `+0x10`) and
   the saved-state reader (record `BParFXKolor`, 11 floats, flag and mode only). Without `w` and `c` the GRU
   modes are silent in this build, so the Rust shaper cases stay unwired.
+
+## Readout w/c recheck (2026-10-23, parity burn-down lane)
+
+Read from `tools/re/fixtures/kolor_shaper_params.json` (static-init parameters, `P[152..160]` = readout `w`, `c`):
+- Modes 0, 1, 3, 6, 7, 8, 9: `w` and `c` are all zero (unchanged). Modes 2 and 5 have no GRU block.
+- Mode 4 is the only mode with nonzero readout (`w[0..8] = 0.565, -0.117, -0.163, 0.467, 0.589, -0.422, -0.025, 0.183`), but its layout differs and case 4 natively outputs 0.0.
+- Not resolved: no new writer found. The fixture confirms the claim above; the GRU modes stay silent in the static build.
+- Next candidate: a runtime writer reached after apply in the real host (notify path, or a host-supplied table). Needs a kemu run that seeds that path, not another static scan.
