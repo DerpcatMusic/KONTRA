@@ -443,6 +443,10 @@ impl PreparedBuses {
 }
 
 impl Prepared {
+    /// Output lanes that one processing scope's own projection may write.
+    pub(crate) fn processing_output_lanes(&self,scope:usize)->impl Iterator<Item=usize>+'_{
+        [SourceOwnerControl::Gain,SourceOwnerControl::Pan].into_iter().filter_map(move|field|self.processing_output_lane(scope,field))
+    }
     fn processing_output_lane(&self,scope:usize,field:SourceOwnerControl)->Option<usize>{
         let index=self.processing_scopes.get(scope)?.source_owner?;
         let owner=self.source_owners().get(index)?.id;
