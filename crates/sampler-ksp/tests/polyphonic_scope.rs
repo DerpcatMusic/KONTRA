@@ -27,24 +27,15 @@ fn note_and_release_reads_are_in_scope() {
 }
 
 #[test]
-fn read_in_ui_control_warns_and_compiles() {
-    // Shape seen in Audio Imperia Areia (ui_control and on controller reads).
+fn read_in_ui_control_and_controller_is_silent() {
+    // Shape shipped in Audio Imperia Areia (ui_control and on controller reads):
+    // Kontakt compiles it, so no diagnostic.
     let source = "on init declare ui_button $b declare polyphonic $a declare $x end on
         on ui_control($b) $x := $a end on";
-    let w = warnings(source);
-    assert_eq!(w.len(), 1, "{w:?}");
-    assert!(w[0].contains("read outside a note callback"), "{w:?}");
-}
-
-#[test]
-fn read_in_controller_warns() {
+    assert!(warnings(source).is_empty(), "{:?}", warnings(source));
     let source = "on init declare polyphonic $a declare $x end on
         on controller $x := $a end on";
-    assert!(
-        warnings(source)
-            .iter()
-            .any(|m| m.contains("read outside a note callback"))
-    );
+    assert!(warnings(source).is_empty(), "{:?}", warnings(source));
 }
 
 #[test]
