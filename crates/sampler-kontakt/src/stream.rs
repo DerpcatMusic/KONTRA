@@ -1292,6 +1292,16 @@ fn admit_within_budget<T>(mut items: Vec<(usize, T)>, budget: usize) -> Vec<T> {
     kept
 }
 
+/// The bytes a source's start needs in the head budget: a required-resident source is
+/// all of its frames, anything else is the lowest frame its start ranges reach.
+fn minimum_head_bytes(pcm: &Pcm, ranges: &[Range<usize>]) -> io::Result<usize> {
+    if pcm.requires_resident() {
+        pcm.frame_count().checked_mul(size_of::<Frame>()).ok_or_else(|| io::Error::other("resident source size overflow"))
+    } else {
+        Ok(range_bounds(pcm, ranges)?.0)
+    }
+}
+
 /// Under cold fallback, resident sources are admitted whole while they fit the
 /// shared head budget (see `admit_within_budget`); the rest stream from disk
 /// instead of failing the load. Unknown sizes stay resident.
@@ -2020,19 +2030,39 @@ impl Streamer {
         }
         // Every attempt keeps its chosen asset identities with its owned staging.
         // Range-table borrows end before trying a new candidate or publishing.
-        let prepare = |optional: Option<&StartTable>, lazy: bool, phase: &str|
+        let prepare = |optional: Option<&StartTable>, lazy: bool, phase: &str, greedy: bool|
             -> io::Result<(Vec<head_prepare::Prepared>, usize, Vec<&Pcm>, Arc<RestoreTable>)> {
             // A purged group's assets are not preloaded: they stay non-resident
             // until a purge/load request acquires them (residency_permitted).
-            let selected: Vec<_> = select_attack_ranges(assets, &table, optional, &pinned_wavetables, lazy)
+            let mut selected: Vec<_> = select_attack_ranges(assets, &table, optional, &pinned_wavetables, lazy)
                 .into_iter().filter(|(pcm, _)| pcm.residency_permitted()).collect();
+            if greedy {
+                // Degrade, never fail: the cheapest starts are admitted first within the budget
+                // that is left, and a source that does not fit is skipped (it streams on demand).
+                // Pinned wavetables are mandatory heads and are always kept.
+                let room = head_budget.saturating_sub(residency_budget.status().held_bytes);
+                let mut keep = Vec::new();
+                let mut pinned_bytes = 0usize;
+                let mut rest = Vec::new();
+                for (index, (pcm, ranges)) in selected.iter().enumerate() {
+                    let bytes = minimum_head_bytes(pcm, ranges)?;
+                    if pinned_wavetables.contains(&pcm.asset_id()) {
+                        pinned_bytes = pinned_bytes.saturating_add(bytes);
+                        keep.push(index);
+                    } else {
+                        rest.push((bytes, index));
+                    }
+                }
+                keep.extend(admit_within_budget(rest, room.saturating_sub(pinned_bytes)));
+                let keep: HashSet<usize> = keep.into_iter().collect();
+                selected = selected.into_iter().enumerate()
+                    .filter(|(index, _)| keep.contains(index)).map(|(_, item)| item).collect();
+            }
             let audit = std::env::var_os("KONTRA_AUDIT_LOAD").is_some();
             let started = audit.then(Instant::now);
             let result = (|| {
                 let minimum = selected.iter().try_fold(0usize, |sum, (pcm, ranges)| {
-                    let min = if pcm.requires_resident() {
-                        pcm.frame_count().checked_mul(size_of::<Frame>()).ok_or_else(|| io::Error::other("resident source size overflow"))?
-                    } else { range_bounds(pcm, ranges)?.0 };
+                    let min = minimum_head_bytes(pcm, ranges)?;
                     sum.checked_add(min).ok_or_else(|| io::Error::other("sample head size overflow"))
                 })?;
                 let minimum = residency_budget.status().held_bytes.checked_add(minimum)
@@ -2075,7 +2105,7 @@ impl Streamer {
         let mut selected_hint_table = None;
         let mut selected_hint_head_frames = if !lazy && hinted_table.is_some() { requested_hint_head_frames } else { None };
         let mut selected_requested_hints = selected_hint_head_frames.is_some();
-        let (staged, bytes, selected_assets, restore_ranges) = match prepare(None, lazy, "full_possible") {
+        let (staged, bytes, selected_assets, restore_ranges) = match prepare(None, lazy, "full_possible", false) {
             Ok(staged) => staged,
             Err(error) => {
                 let reason = error.get_ref().and_then(|e|e.downcast_ref::<HeadBudgetExceeded>()).copied();
@@ -2086,7 +2116,7 @@ impl Streamer {
                 for (candidate, hinted, phase) in [(hinted_table.as_ref(), true, "initial_state_onsets"),
                     (onset_table.as_ref(), false, "base_onsets")] {
                     let Some(candidate) = candidate else { continue; };
-                    match prepare(Some(candidate), false, phase) {
+                    match prepare(Some(candidate), false, phase, false) {
                         Ok(staged) => {
                             selected_requested_hints = hinted;
                             selected_hint_head_frames = if hinted { requested_hint_head_frames } else { None };
@@ -2116,7 +2146,7 @@ impl Streamer {
                                 }
                             }
                         }
-                        match prepare(Some(&ranges), false, phase) {
+                        match prepare(Some(&ranges), false, phase, false) {
                             Ok(staged) => {
                                 selected_anchor_head_frames = Some(candidate.output_frames);
                                 selected_hint_head_frames = hinted.then_some(candidate.output_frames);
@@ -2134,7 +2164,14 @@ impl Streamer {
                 }
                 let staged = match accepted {
                     Some(staged) => staged,
-                    None => prepare(None, true, "mandatory_only")?,
+                    None => match prepare(None, true, "mandatory_only", false) {
+                        Ok(staged) => staged,
+                        // Even the mandatory sources overflow the budget: admit the cheapest
+                        // starts first instead of failing the whole preload.
+                        Err(error) if error.get_ref().is_some_and(|e| e.is::<HeadBudgetExceeded>()) =>
+                            prepare(None, false, "budget_priority", true)?,
+                        Err(error) => return Err(error),
+                    },
                 };
                 head_fallback = Some(reason);
                 staged
@@ -3596,11 +3633,13 @@ mod tests {
                 assert_eq!(streamer.restore_ranges[&assets[0].asset_id()].as_ref(),&[0..8192]);
             }
         } else {
-            let error=result.err().unwrap();
-            let capacity=error.get_ref().and_then(|e|e.downcast_ref::<HeadBudgetExceeded>()).unwrap();
-            assert_eq!(capacity.budget_bytes,budget);
-            assert_eq!(capacity.required_at_least_bytes,512);
-            assert!(assets.iter().all(|p|p.head_bytes()==0 && p.resident_frames().is_none()));
+            // The 512-byte required source cannot fit at all: it degrades to streaming instead of
+            // failing the load, and nothing over budget is published.
+            let (streamer,bytes)=result.expect("an over-budget required source must degrade, not fail");
+            assert!(bytes<=budget);
+            assert!(streamer.head_fallback().is_some());
+            assert!(streamer.head_budget_status().peak_bytes<=budget);
+            assert!(assets[1].resident_frames().is_none());
             assert_eq!(assets[0].head_preparer().budget_status().unwrap().held_bytes,0);
         }
         }
@@ -3648,6 +3687,28 @@ mod tests {
         }
     }
 
+    /// A required-resident source larger than the whole head budget used to fail the preload
+    /// ("resident start ranges 0 of N"). The cheapest starts are admitted instead, and the
+    /// oversized source is left to stream on demand.
+    #[test]
+    fn over_budget_resident_source_degrades_to_the_cheapest_starts() {
+        let assets = vec![Pcm::streamed(48000,16).unwrap(), Pcm::pending_resident(48000,64).unwrap()];
+        let opens = Arc::new(AtomicU64::new(0));
+        let sources = HashMap::from([
+            (assets[0].asset_id(), Arc::new(HeadFixture{opens:opens.clone(),cancel:None,frames:16,wide:false}) as Arc<dyn AssetSource>),
+            (assets[1].asset_id(), Arc::new(HeadFixture{opens:opens.clone(),cancel:None,frames:64,wide:false}) as Arc<dyn AssetSource>),
+        ]);
+        let (_,worker) = StreamCache::new(1).unwrap();
+        // The resident source needs 512 bytes, the budget is 256: the mandatory-only attempt
+        // overflows, and the cheap streamed head (16 frames) is admitted in its place.
+        let (_streamer,bytes) = Streamer::start_with_fallbacks_cancelable(sources,&assets,
+            vec![vec![0..16],vec![0..64]],None,None,worker,1,false,256,HashSet::new(),true,&||false)
+            .expect("an over-budget resident source must degrade, not fail the load");
+        assert!(bytes > 0 && bytes <= 256, "admitted {bytes} bytes");
+        assert!(assets[0].head_frames() > 0);
+        assert!(assets[1].resident_frames().is_none());
+    }
+
     #[test]
     fn onset_fallback_keeps_reverse_ranges_and_mandatory_sources_atomic() {
         for (budget, allowed, expected) in [(672, true, Some(true)), (671, true, Some(false)),
@@ -3686,6 +3747,12 @@ mod tests {
                     assert!(reload(&assets, &streamer.sources, &streamer.ranges, streamer.head_budget, &streamer.head_mutation).is_err());
                     assert_eq!(assets[0].resident_covers(0..16),onset_ready);
                     assert!(streamer.head_budget_status().held_bytes<=budget);
+                } else if allowed {
+                    // The over-budget required source streams on demand; the load keeps what fits.
+                    let (streamer, bytes) = result.expect("an over-budget required source must degrade, not fail");
+                    assert!(bytes <= budget, "admitted {bytes} of {budget}");
+                    assert!(streamer.head_budget_status().held_bytes <= budget);
+                    assert!(assets[3].resident_frames().is_none());
                 } else {
                     let error = result.err().unwrap();
                     assert!(error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()));
