@@ -7,5 +7,12 @@ license = "Apache-2.0"
 publish = false
 description = "Playback contracts C1-C10 (docs/architecture-v3/10-TESTING.md)"
 
+[[bin]]
+name = "kontra-probe"
+path = "src/main.rs"
+
 [dependencies]
 kontakto = { path = "../.." }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

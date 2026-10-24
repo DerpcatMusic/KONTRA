@@ -8423,58 +8423,6 @@ mod tests {
         assert_eq!(core.problems(0).offline_failures, 0);
         eprintln!("KONTAKT_STREAM_PURGE before={before_trim} after={after_trim} freed={freed} reloaded_audible=yes");
     }
-    /// Audit probe: `KONTRA_PROBE_NKI=<path> cargo test --lib audit_probe -- --ignored --nocapture`.
-    /// Real-time product path (fuel, runway, cold holds), host-paced 128-frame blocks.
-    #[test]
-    #[ignore]
-    fn audit_probe_dense_realtime_playback() {
-        thread_local! { static HIST: std::cell::RefCell<std::collections::BTreeMap<u16, usize>> = Default::default(); }
-        let Some(path) = std::env::var_os("KONTRA_PROBE_NKI").map(PathBuf::from) else { return };
-        let frames = 128usize;
-        let request = LoadRequest { path, sample_rate: 48000.0, ..Default::default() };
-        let loaded = V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
-        if let Some(s) = &loaded.stream { eprintln!("PROBE head_frames={} anchor={:?} fallback={:?} budget={:?} resident={}MB", s.report.head_frames, s.streamer.selected_anchor_head_frames(), s.streamer.head_fallback(), s.streamer.head_budget_status(), s.resident_bytes() >> 20); }
-        let mut core = V2Core::with_parts(1, 48000.0);
-        core.install(0, loaded.part);
-        let block = |core: &mut V2Core, events: &[Event]| {
-            core.begin_block(&BlockInfo { frames, offline: false, ..Default::default() });
-            for e in events { core.event(0, *e); }
-            let r = core.render(frames);
-            let peak = r.buses.iter().zip(r.live).filter(|(_, l)| *l).flat_map(|(b, _)| b[0][..frames].iter().chain(&b[1][..frames])).fold(0f32, |m, x| m.max(x.abs()));
-            core.end_block(frames, &mut |_| true);
-            let mut n = 0;
-            core.take_effects(0, &mut |_, e| { n += 1; HIST.with(|h| *h.borrow_mut().entry(e.service).or_insert(0usize) += 1); true });
-            std::thread::sleep(std::time::Duration::from_micros(2667));
-            (peak, n)
-        };
-        let settle: usize = (0..400).map(|_| block(&mut core, &[]).1).sum(); // settle init/listeners
-        eprintln!("PROBE settle effects={settle}");
-        let (mut effects, mut onset_blocks, mut peak) = (0usize, Vec::new(), 0f32);
-        // 16ths at 140 bpm: 4-note chords, ~51 blocks of 128 per 16th? (0.107 s = 40 blocks)
-        // KONTRA_PROBE_PATTERN=live: one note per step, like a player; default: DAW-style chords.
-        let live = std::env::var("KONTRA_PROBE_PATTERN").is_ok_and(|p| p == "live");
-        let chords = [[48u8, 55, 60, 64], [50, 57, 62, 65], [52, 59, 64, 67], [53, 60, 65, 69]];
-        let mut id = 1;
-        for step in 0..64 {
-            let chord = chords[(step / 4) % 4];
-            let keys = if live { &chord[step % 4..step % 4 + 1] } else { &chord[..] };
-            let ons: Vec<_> = keys.iter().map(|&key| { id += 1; on(HostNote { port: 0, channel: 0, key, id, clap: false }) }).collect();
-            let mut first = None;
-            for b in 0..19 {
-                let (p, n) = block(&mut core, if b == 0 { &ons } else { &[] });
-                effects += n; peak = peak.max(p);
-                if first.is_none() && p > 1e-3 { first = Some(b); }
-            }
-            onset_blocks.push(first);
-            let offs: Vec<_> = keys.iter().map(|&key| Event::NoteOff(HostPattern { port: -1, channel: 0, key: i32::from(key), id: -1, clap: false })).collect();
-            for b in 0..20 { effects += block(&mut core, if b == 0 { &offs } else { &[] }).1; }
-        }
-        HIST.with(|h| eprintln!("PROBE live={live} services {:?}", h.borrow()));
-        eprintln!("PROBE effects_during_play={effects} peak={peak} first_audible_block_per_chord={onset_blocks:?}");
-        let s = core.runtime_stats(0).unwrap();
-        eprintln!("PROBE {s:#?}");
-        eprintln!("PROBE problems {:?}", core.problems(0));
-    }
 
     #[test]
     #[cfg(feature = "library-access")]
