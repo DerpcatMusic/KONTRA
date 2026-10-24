@@ -16,6 +16,9 @@ use kontakto::sound::v2::{V2Core, V2Loader};
 use kontakto::sound::{BlockInfo, Core, CoreLoader, LoadRequest, Loaded, MAX_BLOCK, ScriptUi};
 use serde::Serialize;
 
+pub mod fixtures;
+pub use fixtures::Fixture;
+
 /// Host block size the contracts run at.
 pub const BLOCK: usize = 128;
 /// Host block sizes C4 compares against [`BLOCK`]. Sizes above [`MAX_BLOCK`] are
