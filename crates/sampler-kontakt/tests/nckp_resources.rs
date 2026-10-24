@@ -159,10 +159,14 @@ fn precompile_discovery_does_not_read_a_fragment_or_later_unrelated_literal() {
     fixture.view("base.nckp", "Fragment", 321);
     fixture.view("basesuffix.nckp", "Complete", 640);
     for source in [
-        r#"on init declare @view := "basesuffix"
+        // Kontakt refuses a string declaration with a literal initializer (str_decl_init),
+        // so the variables are assigned in on init.
+        r#"on init declare @view
+           @view := "basesuffix"
            load_performance_view(@view) message("unrelated") end on"#,
         r#"on init load_performance_view("base" & "suffix") end on"#,
-        r#"on init declare @suffix := "suffix"
+        r#"on init declare @suffix
+           @suffix := "suffix"
            load_performance_view("base" & @suffix) end on"#,
     ] {
         let (instrument, scripts) = fixture.compile(source);
