@@ -229,6 +229,42 @@ fn ser_table() {
     }
 }
 
+/// One line per zone with loop slots: zone index, key range, slot ranges and flags.
+/// Local inspection only (prints the file's own instrument name).
+fn slots(path: &Path) {
+    let k = sampler_kontakt::read(path).expect("read");
+    let options = Options {
+        library: Some(path.into()),
+        ..Options::default()
+    };
+    let s = load_read_streamed(k, &options, &StreamPolicy::default(), |_| {}).expect("load");
+    let inst = &s.loaded.instrument;
+    println!("instrument\t{}", inst.name);
+    let gate = inst.zones.iter().filter(|z| matches!(z.trigger, sampler_ir::Trigger::GateRelease)).count();
+    let counter = format!("{:?}{:?}", inst.modulators, inst.routes).matches("ReleaseCounter").count();
+    println!("gate_release_zones\t{gate}\trelease_counter_refs\t{counter}");
+    for z in inst.zones.iter().filter(|z| matches!(z.trigger, sampler_ir::Trigger::GateRelease)).take(12) {
+        let g = z.group.map(|g| &inst.groups[g.0]);
+        println!("gate_zone\tkeys={:?}\tgroup={:?}\tstart={:?}\tmono={:?}\tzone_trigger={:?}", z.keys, g.map(|g| g.name.clone()), g.map(|g| g.start.clone()), g.map(|g| g.monophonic_release), z.trigger);
+    }
+    for (i, zone) in inst.zones.iter().enumerate() {
+        if let sampler_ir::Looping::Slots(slots) = zone.playback.looping {
+            for slot in slots.iter().flatten() {
+                println!(
+                    "zone{i}\tslot start={} end={} xfade={:?} alt={} count={} until_release={} tuning={}",
+                    slot.range.start,
+                    slot.range.end,
+                    slot.range.crossfade,
+                    slot.range.alternating,
+                    slot.count,
+                    slot.until_release,
+                    slot.tuning
+                );
+            }
+        }
+    }
+}
+
 /// Zone- and slot-level playback-mode tally for every `.nki` under a tree. One line per
 /// mode key: zones, and distinct libraries (top-level folders, counted, never named) using it.
 /// Loop slots are keyed by their own flags (alternating, crossfade, counted, until-release,
@@ -335,6 +371,9 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--ser") {
         return ser_table();
+    }
+    if args.first().is_some_and(|a| a == "--slots") {
+        return slots(Path::new(args.get(1).expect("--slots <nki>")));
     }
     if args.first().is_some_and(|a| a == "--modes") {
         return modes(Path::new(args.get(1).expect("--modes <dir>")));
