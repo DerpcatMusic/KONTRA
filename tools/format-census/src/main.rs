@@ -240,7 +240,7 @@ fn slots(path: &Path) {
     let s = load_read_streamed(k, &options, &StreamPolicy::default(), |_| {}).expect("load");
     let inst = &s.loaded.instrument;
     println!("instrument\t{}", inst.name);
-    println!("scripts\t{}\tunsupported\t{:?}", s.loaded.scripts.len(), inst.unsupported.iter().map(|u| u.feature.to_string()).collect::<Vec<_>>());
+    println!("scripts\t{}\towns_release\t{:?}\tunsupported\t{:?}", s.loaded.scripts.len(), s.loaded.scripts.iter().map(|v| v.owns_release_triggers()).collect::<Vec<_>>(), inst.unsupported.iter().map(|u| u.feature.to_string()).collect::<Vec<_>>());
     if std::env::var("CENSUS_GROUPS").is_ok() {
         for (i, z) in inst.zones.iter().enumerate() {
             let g = z.group.map(|g| &inst.groups[g.0]);

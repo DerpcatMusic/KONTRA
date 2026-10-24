@@ -234,6 +234,7 @@ impl Script {
             entries: self.entries.clone(),
             listener_drivers: self.listener_drivers.clone(),
             programs: self.programs.len(),
+            owns_release_triggers: self.owns_release_triggers,
         }
     }
 
@@ -259,9 +260,14 @@ pub struct ScriptView {
     entries: Vec<Entry>,
     listener_drivers: Vec<(usize, usize)>,
     programs: usize,
+    owns_release_triggers: bool,
 }
 
 impl ScriptView {
+    /// `SET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)`: native release-trigger groups stay silent.
+    pub fn owns_release_triggers(&self) -> bool {
+        self.owns_release_triggers
+    }
     pub fn setup(&self) -> &setup::SetupLayout {
         &self.setup
     }
