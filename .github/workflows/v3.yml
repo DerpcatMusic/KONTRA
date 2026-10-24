@@ -1,0 +1,72 @@
+name: v3 plan
+
+# Enforces docs/architecture-v3/12-WORKFLOW.md on the v3 integration branch:
+# the manifest is valid, each PR stays inside its task's owned paths, merged
+# task PRs close their issue (closing keywords only work on the default
+# branch), and v3 itself gets full CI after every merge.
+on:
+  pull_request:
+    branches: [v3]
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, closed]
+  push:
+    branches: [v3]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v3-plan-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' }}
+
+jobs:
+  plan:
+    name: v3 plan
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Manifest
+        run: |
+          python3 tools/plan/plan.py validate
+          python3 tools/plan/plan.py index --check
+          python3 -m unittest tools/plan/test_plan.py
+      - name: Scope
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          OVERRIDE: ${{ contains(github.event.pull_request.labels.*.name, 'scope-override') }}
+        run: |
+          task=$(python3 tools/plan/plan.py task-of "$HEAD_REF" || true)
+          if [ -z "$task" ]; then
+            echo "::error::Branch '$HEAD_REF' is not v3/<task id>-<slug>, v3/plan-<slug> or v3/sync-main-<date>. See docs/architecture-v3/12-WORKFLOW.md §3."
+            exit 1
+          fi
+          if [ "$OVERRIDE" = "true" ]; then
+            python3 tools/plan/plan.py scope "$task" --base "origin/$BASE_REF" || echo "::warning::scope-override label set; outside-scope files allowed"
+          else
+            python3 tools/plan/plan.py scope "$task" --base "origin/$BASE_REF"
+          fi
+
+  merged:
+    name: close task issue
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.head_ref }}
+          PR: ${{ github.event.pull_request.number }}
+        run: python3 tools/plan/plan.py on-merge "$HEAD_REF" --pr "$PR"
+
+  ci:
+    name: v3 CI
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/ci.yml
+    with:
+      release_validation: false
