@@ -383,6 +383,8 @@ pub(super) enum BatchOp {
     ControlGain(usize),
     StateVariable(svf::SvfHandle),
     Mix { count: u16, lanes: [usize; 3] },
+    /// Live Formant: per-voice ramp and filter state in the voice's own cell.
+    LiveFormant { knobs: [control::PreparedParameter; 3], second: bool, rate: u32 },
 }
 /// Preparation classifies a valid operation; scalar ownership is not an error.
 enum OperationOwner { Batch(BatchOp), Scalar(PreparedProcessor) }
@@ -395,6 +397,7 @@ impl PreparedProcessor {
             Self::ControlGain(x) => OperationOwner::Batch(BatchOp::ControlGain(x)),
             Self::StateVariable(x) => OperationOwner::Batch(BatchOp::StateVariable(x)),
             Self::Mix { count, lanes } => OperationOwner::Batch(BatchOp::Mix { count, lanes }),
+            Self::LiveFormant { knobs, second, rate } => OperationOwner::Batch(BatchOp::LiveFormant { knobs, second, rate }),
             Self::Eq(eq) => match eq.constant() {
                 Some(eq) => OperationOwner::Batch(BatchOp::Eq(eq)),
                 None => OperationOwner::Scalar(Self::Eq(eq)),
@@ -404,7 +407,7 @@ impl PreparedProcessor {
                 color::ColorOwner::Scalar(color) => OperationOwner::Scalar(Self::Color { color, offset }),
             },
             scalar @ (Self::Pan { .. } | Self::ControlMatrix(_) | Self::TimeMod { .. } | Self::Dynamics(_)
-                | Self::LiveFormant { .. } | Self::LivePhaser { .. } | Self::Formant(_) | Self::Filter { .. } | Self::S1200 { .. } | Self::Mp60 { .. }
+                | Self::LivePhaser { .. } | Self::Formant(_) | Self::Filter { .. } | Self::S1200 { .. } | Self::Mp60 { .. }
                 | Self::Branch { .. } | Self::Space(..) | Self::RingMod { .. } | Self::Kolor { .. } | Self::StereoTune(..)) => OperationOwner::Scalar(scalar),
         }
     }
@@ -447,6 +450,7 @@ impl BatchOp {
             Self::ControlGain(x) => PreparedProcessor::ControlGain(x),
             Self::StateVariable(x) => PreparedProcessor::StateVariable(x),
             Self::Mix { count, lanes } => PreparedProcessor::Mix { count, lanes },
+            Self::LiveFormant { knobs, second, rate } => PreparedProcessor::LiveFormant { knobs, second, rate },
         }
     }
     fn view(&self) -> ProcessorRef<'_> {
@@ -459,6 +463,7 @@ impl BatchOp {
             Self::ControlGain(x) => ProcessorRef::ControlGain(x),
             Self::StateVariable(x) => ProcessorRef::StateVariable(x),
             Self::Mix { count, lanes } => ProcessorRef::Mix { count, lanes },
+            Self::LiveFormant { knobs, second, rate } => ProcessorRef::LiveFormant { knobs, second, rate },
         }
     }
 }
