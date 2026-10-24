@@ -1,0 +1,166 @@
+{
+ "chain": [
+  "Effects/Tape Saturator"
+ ],
+ "stimulus": {
+  "freq": 1000,
+  "db": -18,
+  "dur": 5.0
+ },
+ "bin_ms": 1.0,
+ "instances": [
+  {
+   "name": "ref",
+   "pre": [
+    [
+     0,
+     "EFFECT_BYPASS",
+     1
+    ]
+   ],
+   "post": []
+  },
+  {
+   "name": "gain_a",
+   "pre": [
+    [
+     0,
+     "EFFECT_BYPASS",
+     0
+    ],
+    [
+     0,
+     "TP_GAIN",
+     200000
+    ],
+    [
+     0,
+     "TP_WARMTH",
+     0
+    ],
+    [
+     0,
+     "TP_HF_ROLLOFF",
+     0
+    ],
+    [
+     0,
+     "TP_QUALITY",
+     0
+    ]
+   ],
+   "post": []
+  },
+  {
+   "name": "gain_b",
+   "pre": [
+    [
+     0,
+     "EFFECT_BYPASS",
+     0
+    ],
+    [
+     0,
+     "TP_GAIN",
+     200000
+    ],
+    [
+     0,
+     "TP_WARMTH",
+     0
+    ],
+    [
+     0,
+     "TP_HF_ROLLOFF",
+     0
+    ],
+    [
+     0,
+     "TP_QUALITY",
+     0
+    ]
+   ],
+   "post": [
+    [
+     0,
+     "TP_GAIN",
+     800000
+    ]
+   ]
+  },
+  {
+   "name": "gain_c",
+   "pre": [
+    [
+     0,
+     "EFFECT_BYPASS",
+     0
+    ],
+    [
+     0,
+     "TP_GAIN",
+     200000
+    ],
+    [
+     0,
+     "TP_WARMTH",
+     0
+    ],
+    [
+     0,
+     "TP_HF_ROLLOFF",
+     0
+    ],
+    [
+     0,
+     "TP_QUALITY",
+     0
+    ]
+   ],
+   "post": [
+    [
+     0,
+     "TP_GAIN",
+     800000
+    ]
+   ]
+  },
+  {
+   "name": "bypass_cal",
+   "pre": [
+    [
+     0,
+     "EFFECT_BYPASS",
+     0
+    ],
+    [
+     0,
+     "TP_GAIN",
+     200000
+    ],
+    [
+     0,
+     "TP_WARMTH",
+     0
+    ],
+    [
+     0,
+     "TP_HF_ROLLOFF",
+     0
+    ],
+    [
+     0,
+     "TP_QUALITY",
+     0
+    ]
+   ],
+   "post": [
+    [
+     0,
+     "EFFECT_BYPASS",
+     1
+    ]
+   ]
+  }
+ ]
+}

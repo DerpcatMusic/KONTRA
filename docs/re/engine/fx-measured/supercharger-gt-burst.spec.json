@@ -1,0 +1,18 @@
+{
+ "chain": ["Effects/Supercharger GT"],
+ "stimulus": "burst",
+ "pre": [
+  [0, "SUPERGT_TRIM", 500000],
+  [0, "SUPERGT_SATURATION", 0],
+  [0, "SUPERGT_CHARACTER", 0],
+  [0, "SUPERGT_MIX", 1000000],
+  [0, "SUPERGT_COMPRESS", 1000000]
+ ],
+ "steps": [
+  {"name": "att0_rel50", "set": [[0, "SUPERGT_ATTACK", 0], [0, "SUPERGT_RELEASE", 500000]]},
+  {"name": "att50_rel50", "set": [[0, "SUPERGT_ATTACK", 500000], [0, "SUPERGT_RELEASE", 500000]]},
+  {"name": "att100_rel50", "set": [[0, "SUPERGT_ATTACK", 1000000], [0, "SUPERGT_RELEASE", 500000]]},
+  {"name": "att50_rel0", "set": [[0, "SUPERGT_ATTACK", 500000], [0, "SUPERGT_RELEASE", 0]]},
+  {"name": "att50_rel100", "set": [[0, "SUPERGT_ATTACK", 500000], [0, "SUPERGT_RELEASE", 1000000]]}
+ ]
+}
