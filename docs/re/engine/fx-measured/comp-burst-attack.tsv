@@ -1,0 +1,6 @@
+step	name	attack_ms	release_ms	gain0.5s	gain1.0s	gain2.0s	status
+1	att0_rel30	1	144	-13.16	-13.16	-13.16	ok
+2	att25_rel30	6		-116.67	-16.10	-16.10	glitch: -116.67 dB bin at 0.5 s; release not used
+3	att50_rel30	27	167	-17.67	-17.67	-17.67	ok
+4	att75_rel30	116	273	-18.88	-18.92	-18.92	ok
+5	att100_rel30	482	1201	-12.87	-17.90	-19.91	ok
