@@ -31,7 +31,7 @@ not used.
 | 4 | 0x141a3e853 | sine-type on the phase pair |
 | 5 | 0x141a3e891 | sign test on `+0xb8`, then `+0xc` path |
 | 6 | 0x141a3e8af | sine-type on `+0xc` |
-| 7 | 0x141a3e8e1 | `+0x6d0` advance; if `a <= 0` return 0; else `\|shape(b·2π + π)\|` (abs mask `0x144714b90`) |
+| 7 | 0x141a3e8e1 | advance via `0x141a3e6d0`; if `a < 0` return `\|shape(b·2π + π)\|` (abs mask `0x144714b90`), else 0 |
 | 8 | 0x141a3e921 | advance; `v = shape(b·2π + π)`; if `a < 0` return `v²`; else take the zero-return tail at `0x141a3e883` |
 | 9 | 0x141a3e95e | tail call `0x141a3f230` with `rcx = state+0x24` (sub-object, not decoded) |
 | 10 | 0x141a3e971 | tail call `0x141a3f120` with `rcx = state+0x24` (not decoded) |
