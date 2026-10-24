@@ -149,7 +149,7 @@ lane = "tooling"
 size = "M"
 agent = "worker"
 deps = ["P0.2"]
-owns = ["tools/probe/fixtures/**", "tools/probe/src/fixtures.rs", "tools/probe/tests/**"]
+owns = ["tools/probe/**"]
 docs = ["10-TESTING.md#1-playback-contracts-toolsprobe-crate-kontra-probe", "06-FORMATS.md#4-native-format"]
 goal = "Synthetic, redistributable instruments that trigger the same paths as Areia and Vista, so contracts run in CI without vendor libraries."
 steps = [
@@ -165,6 +165,28 @@ done = [
   "Each fixture reproduces its bug on today's v3 (the ignored tests fail when run with --ignored; paste that output).",
   "No audio or vendor files committed."
 ]
+
+[[task]]
+id = "P0.3b"
+title = "Probe fixtures that reproduce the bugs: authored KSP (play_note offsets, ignore_event, UI load)"
+phase = 0
+lane = "tooling"
+size = "M"
+agent = "worker"
+deps = ["P0.3"]
+owns = ["tools/probe/**", "src/creator.rs"]
+docs = ["10-TESTING.md#1-playback-contracts-toolsprobe-crate-kontra-probe", "../audit-2026-10-24/PLAYBACK_AUDIT.md"]
+goal = "P0.3's fixtures pass every contract because the generated NKIs carry no routes or scripts. The NKI writer (`src/creator/nki.rs`, `Program.script`) already takes any KSP source; use it to author scripts that drive the same engine paths as Areia and Vista, so the bugs reproduce in CI."
+steps = [
+  "Make `creator::nki` reachable from the probe: `pub mod nki;` in src/creator.rs (the only change outside tools/probe).",
+  "`cc_start`: zones in 3 mic groups; KSP `on note`: `ignore_event($EVENT_ID)`, read `%CC[113]`, then one `play_note($EVENT_NOTE, $EVENT_VELOCITY, <offset µs from CC113, 0..30% of the sample>, -1)` per mic group with the group selected via `set_event_par_arr(..., $EVENT_PAR_ALLOW_GROUP, ...)` (or `disallow_group`/`allow_group` around each play_note). Probe sends CC113 before the notes. This is the script-offset cold-start path the audit found.",
+  "`ui_load`: `declare ui_knob` controls in `on init`; `on note` calls `set_control_par(get_ui_id($knob), $CONTROL_PAR_VALUE, ...)` 300 times plus `message(...)`. Reproduces the effect-outbox stall (C7, C8 dense).",
+  "`dense`: `on note`: `ignore_event` + `play_note` for each chord voice; probe sends 4-note same-frame chords. Checks C6 (double attack: exactly one voice set per note) and C8.",
+  "Keep `key_position` and `streamed` from P0.3; for `key_position` add a KSP emulation (offset from `$EVENT_NOTE` position in the zone range) if the writer has no route support, and say so.",
+  "Tests: assert what passes today; mark failures `#[ignore = \"fails until P1.x/P2.1\"]` with the owning task id. Paste the `--ignored` run showing they fail on today's v3."
+]
+gate = ["build-slot cargo test -p kontra-probe", "build-slot cargo test -p kontra-probe -- --ignored  (expected failures, paste)"]
+done = ["At least C1 or C9 (offsets), C7/C8 (UI load) and C6 (double attack) fail on today's v3 through fixtures, or the PR proves with engine traces why a path cannot be reached from KSP."]
 
 [[task]]
 id = "P0.4"
@@ -252,7 +274,7 @@ phase = 1
 lane = "playback"
 size = "L"
 agent = "worker"
-deps = ["P1.1"]
+deps = ["P1.1", "P0.3b"]
 owns = ["crates/sampler-kontakt/src/stream.rs", "crates/sampler-kontakt/src/head_prepare.rs", "crates/sampler-kontakt/src/head_cache.rs", "crates/sampler-core/src/head_budget.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/prepare/**", "crates/sampler-core/tests/stream_start_runway.rs"]
 docs = ["05-STREAM.md#1-the-preload-law"]
 goal = "Head length = base (60 KB-equivalent per channel, Kontakt DFD default) + the zone's start range from P1.1, instead of measured warm-cache latency; over budget never truncates silently."
@@ -316,7 +338,11 @@ deps = ["P1.4"]
 owns = ["docs/architecture-v3/gates/G1.md"]
 docs = ["11-MIGRATION.md#phase-13-playback-users-hear-it"]
 goal = "Prove C1, C3, C6, C9 on Areia, Vista, Conflux, ANALOG; listen-test the original complaints."
-steps = ["Run kontra-probe on the four libraries (live + dense + offsets). Compare with G0.", "Build once, listen in a DAW (Bitwig) to Areia Spiccato Fast and Vista; note the verdict per the plays-correctly rule."]
+steps = [
+  "Run kontra-probe on the four libraries (live + dense + offsets). Compare with G0.",
+  "Explain or file tasks for the open probe findings from P0.2: Areia Spiccato Fast live gives 0 voices on keys 48/50/52/53 (zones cover them: engine drop or a missing condition/articulation gate?); Vista dense chords 0/64 audible while single notes play; dropout counts differ between identical real-time runs (Vista 4 vs 0).",
+  "Build once, listen in a DAW (Bitwig) to Areia Spiccato Fast and Vista; note the verdict per the plays-correctly rule."
+]
 gate = ["kontra-probe runs recorded in G1.md"]
 done = ["G1.md: contracts green or each failure has a follow-up task id."]
 
@@ -329,7 +355,7 @@ phase = 2
 lane = "script"
 size = "L"
 agent = "worker"
-deps = ["P0.3"]
+deps = ["P0.3b"]
 owns = ["crates/sampler-core/src/control.rs", "crates/sampler-core/src/control/**", "crates/sampler-core/src/ops.rs", "crates/sampler-core/src/midi_object.rs", "crates/sampler-core/src/array_file.rs", "crates/sampler-core/src/widget.rs", "crates/sampler-pool/**", "@corelib", "@plugin"]
 docs = ["04-SCRIPT.md#5-ui-from-scripts", "07-APP.md#2-the-three-channels"]
 goal = "`set_control_par`, `set_key_*`, `message` and similar UI effects write a per-control latest-value cell; the 256-entry effect outbox and the 1024 ArrayQueue drained at 10 Hz in `control_tick` stop carrying UI state."
@@ -406,7 +432,7 @@ lane = "script"
 size = "M"
 agent = "spike"
 deps = ["P3.1"]
-owns = ["docs/architecture-v3/spikes/luau-alloc-mlua.md", "tools/spikes/luau-alloc/**"]
+owns = ["docs/architecture-v3/spikes/luau-alloc-mlua.md", "tools/spikes/**"]
 docs = ["docs/architecture-v3/spikes/luau-alloc.md", "04-SCRIPT.md#4-kontra-lua"]
 goal = "P3.1 proved a raw `lua_newstate` arena works but mlua's own API cannot take an allocator. 28 files use mlua's high-level API, so a raw-FFI rewrite is expensive. Find the cheapest way to keep that API with zero system allocations on the audio thread, and measure GC on real UVI scripts."
 steps = [
@@ -420,6 +446,27 @@ gate = ["spike report committed with measured numbers"]
 done = ["luau-alloc-mlua.md recommends A, B or C with evidence; the coordinator rewrites P3.2 from it."]
 
 [[task]]
+id = "P3.1c"
+title = "Spike: Lua GC on the audio thread for large heaps (Augmented Orchestra 360 MB, 15 ms stalls)"
+phase = 3
+lane = "script"
+size = "M"
+agent = "spike"
+deps = ["P3.1b"]
+owns = ["docs/architecture-v3/spikes/luau-gc.md", "tools/spikes/**", "crates/sampler-uvi/src/script.rs"]
+docs = ["docs/architecture-v3/spikes/luau-alloc.md", "docs/architecture-v3/spikes/luau-alloc-mlua.md", "04-SCRIPT.md#4-kontra-lua"]
+goal = "P3.1b chose the allocator (routing global allocator + ArenaScope) but found 14.5–16 ms GC cycle-boundary stalls on a 4e6-table heap the size of Augmented Orchestra's (355–379 MB Lua heap). Audio blocks are 1.3–2.7 ms. Find why the heap is that big and a GC strategy whose worst audio-thread pause fits a block budget."
+steps = [
+  "Add a minimal test-only hook in crates/sampler-uvi/src/script.rs (`#[cfg(any(test, feature = \"spike-hooks\"))]` or a `pub fn` doc-hidden accessor) so a spike can step the collector and run one note on a loaded ScriptHost. Keep it tiny; say exactly what it exposes.",
+  "Decompose Augmented Orchestra's heap: count tables/strings/closures by origin (sample metadata, mapping tables, UI, prelude). Is the bulk static data that could live in Rust (userdata/light userdata, read-only buffers) instead of Lua tables?",
+  "Measure on real hosts (VWinds, Augmented Orchestra): worst `LUA_GCSTEP` pause at several step sizes, cycle-boundary (atomic) cost, and how it scales with heap size; try `LUA_GCSETGOAL`/`LUA_GCSETSTEPMUL`/`LUA_GCSETSTEPSIZE` tuning.",
+  "Evaluate strategies: (a) small steps every block with the atomic phase bounded by heap size; (b) static data moved out of the Lua heap; (c) GC stopped on audio and run between callbacks on a helper thread while the state is parked (only if the state can be safely handed over: prove it); (d) per-instrument script heap split. Give measured worst pause for each feasible one.",
+  "Write spikes/luau-gc.md: the recommended strategy with numbers, the heap-cap rule, and what P3.2 must implement."
+]
+gate = ["spike report committed with measured real-host numbers"]
+done = ["luau-gc.md gives a strategy whose measured worst audio-thread pause is under 0.5 ms on Augmented Orchestra, or proves none exists and recommends the fallback (keep a script thread for heaps above a size, with explicit latency compensation)."]
+
+[[task]]
 id = "P3.2"
 title = "UVI Lua inline on the audio thread; ScriptThread only as a feature fallback"
 phase = 3
@@ -427,12 +474,12 @@ lane = "script"
 size = "L"
 agent = "worker"
 draft = true
-deps = ["P3.1b", "P2.2"]
+deps = ["P3.1c", "P2.2"]
 owns = ["crates/sampler-uvi/src/scripted.rs", "crates/sampler-uvi/src/scripted/**", "crates/sampler-uvi/src/script.rs", "crates/sampler-uvi/src/script/**", "crates/sampler-uvi/tests/**", "@plugin", "@v2rs"]
-docs = ["04-SCRIPT.md#4-kontra-lua", "docs/architecture-v3/spikes/luau-alloc.md", "docs/architecture-v3/spikes/luau-alloc-mlua.md"]
+docs = ["04-SCRIPT.md#4-kontra-lua", "docs/architecture-v3/spikes/luau-alloc.md", "docs/architecture-v3/spikes/luau-alloc-mlua.md", "docs/architecture-v3/spikes/luau-gc.md"]
 goal = "Lua callbacks run at their event's sample on the audio thread with the allocator from P3.1; `wait` resumes at an exact sample; offline and real time share the path."
 steps = [
-  "Use the allocator option chosen by P3.1b. Whatever the option: every script entry point is protected (`pcall`/mlua `Result`), memory exhaustion is an error and never an abort, numbers cross the boundary as f64, and the arena is sized at prepare with the headroom rule from the spike.",
+  "Use the allocator chosen by P3.1b (option A: routing `#[global_allocator]` + `ArenaScope`) and the GC strategy from P3.1c. Whatever the option: every script entry point is protected (`pcall`/mlua `Result`), memory exhaustion is an error and never an abort, numbers cross the boundary as f64, and the arena is sized at prepare with the headroom rule from the spike.",
   "Replace `ScriptThread` polling with inline execution in the voice-start path used by KSP.",
   "Keep `ScriptThread` behind a cargo feature `lua-thread` (off by default) until G3.",
   "Delete the separate offline inline host so both modes use the same code."
@@ -491,6 +538,7 @@ steps = [
   "For each crate in 01-LAYOUT.md §1 create `Cargo.toml` (package name `kontra-*`, `edition.workspace = true`, `publish = false`, path deps exactly per the DAG in §2) and `src/lib.rs` with a one-line `//!` doc naming its doc section.",
   "Add `[workspace.dependencies]` entries for everything later tasks will need: thiserror, smallvec, serde (derive), toml, crossbeam-queue/utils already present, syn/quote/proc-macro2 for kontra-macros. Versions must already be in Cargo.lock where possible.",
   "Register all members in the root Cargo.toml; add them to `CRATES` in .github/workflows/ci.yml.",
+  "Add a per-layer test job to CI (09-BUILD.md §4) for the new crates; this was deferred from P0.5.",
   "Write the target DAG into tools/xtask/dag.toml as `[target]` (deps-check reports target violations as warnings until P8.6 makes them errors).",
   "Skip crates that already exist under the old name (pool, simd, ir, …): their moves are P4.3/P4.4/P4.10."
 ]
