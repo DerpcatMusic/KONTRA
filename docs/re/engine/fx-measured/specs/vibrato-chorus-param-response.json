@@ -1,0 +1,13 @@
+{
+  "chain": ["Effects/VibratoChorus"],
+  "pre": [[0, "VC_RATE", 500000], [0, "VC_DEPTH", 3], [0, "VC_COLOR", 0], [0, "VC_BLEND", 0], [0, "VC_MIX", 1000000]],
+  "steps": [
+    {"name": "mix0", "set": [[0, "VC_MIX", 0]]},
+    {"name": "mix1", "set": [[0, "VC_MIX", 1000000]]},
+    {"name": "depth0", "set": [[0, "VC_DEPTH", 0]]},
+    {"name": "depth5", "set": [[0, "VC_DEPTH", 5]]},
+    {"name": "rate0", "set": [[0, "VC_RATE", 0]]},
+    {"name": "rate1", "set": [[0, "VC_RATE", 1000000]]},
+    {"name": "blend1", "set": [[0, "VC_BLEND", 1000000]]}
+  ]
+}
