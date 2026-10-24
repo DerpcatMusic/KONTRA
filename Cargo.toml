@@ -49,6 +49,8 @@ symphonia = { version = "0.5", default-features = false, features = ["aiff", "wa
 hound = "3.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
+flate2 = "1"
 realfft = "3.5"
 walkdir = "2"
 # Kontakt NKI export compresses the preset the way Kontakt does.
