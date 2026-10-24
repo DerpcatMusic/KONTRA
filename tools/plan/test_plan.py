@@ -58,6 +58,12 @@ class Manifest(unittest.TestCase):
         self.assertIsNone(plan.task_of("v3-P9.9-nope", self.plan))
         self.assertIsNone(plan.task_of("fix/other", self.plan))
 
+    def test_sync_keeps_claims(self):
+        self.assertFalse(plan.managed("status:claimed"))
+        self.assertFalse(plan.managed("scope-override"))
+        self.assertTrue(plan.managed("status:ready"))
+        self.assertTrue(plan.managed("phase:3"))
+
     def test_slug(self):
         self.assertEqual(plan.slug("5. Current → new mapping"), "5-current--new-mapping")
         self.assertEqual(plan.slug("Phase 1–3: playback (users hear it)"), "phase-13-playback-users-hear-it")

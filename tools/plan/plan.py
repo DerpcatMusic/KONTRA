@@ -386,6 +386,9 @@ LABELS = {
 
 
 def managed(name: str) -> bool:
+    """Labels sync owns. Claims and overrides are set by people and kept."""
+    if name in ("status:claimed", "scope-override"):
+        return False
     return name in LABELS or name.startswith(("phase:", "lane:"))
 
 
