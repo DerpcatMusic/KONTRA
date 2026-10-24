@@ -80,6 +80,10 @@ fn kontakt(path: &Path, program: Option<usize>) -> (String, String) {
         Ok(s) => {
             let mut features = BTreeMap::<String, usize>::new();
             for u in &s.loaded.instrument.unsupported {
+                // Notes are not losses: they never make an instrument partial.
+                if u.reason == sampler_ir::Reason::Info {
+                    continue;
+                }
                 // Local diagnostics: CENSUS_VALUES adds the value text (not committed).
                 let key = if std::env::var_os("CENSUS_VALUES").is_some() {
                     format!("{}={}", u.feature, u.value.chars().take(160).collect::<String>())
