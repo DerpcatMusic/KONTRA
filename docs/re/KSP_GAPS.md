@@ -89,6 +89,26 @@ duplicates) cannot be checked here: the KSP manual pages returned HTTP 403/404 a
 run was made. The next step for 11-15 is one oracle-slot probe per symbol (a KSP script that writes the
 result into an engine parameter), then the fix.
 
+## Round 3 (2026-10-24): stubs and approximations, measured on Kontakt 8
+
+Method: one oracle-slot probe per symbol (`dump.py` with a Lua probe under `oracle-slot --exclusive`).
+Each test instrument is a fresh KSP script that encodes one value into the engine volume
+(`1000 * (value + 10)`); calibration instruments in the same session give the dB-to-value map.
+Persisted variables cannot be read back, because Kontakt's saved NKI is rejected by our reader
+(`.nicnt` access data), so this encoding is the only readback.
+
+| symbol | measured Kontakt 8 behaviour | KONTRA today | action |
+|---|---|---|---|
+| `$MARK_n` | `$MARK_1`=2, `_2`=4, `_3`=8, `_5`=32, `_10`=1024, `_11`=2048 (bit 2^n) | `1 << (n-1)` (off by one), census "unsupported" for `_10` | fixed in PR #643, with a compile test |
+| `find_zone(name)` | index of the zone whose sample name (file stem) equals `name`; `-1` if none or empty; `find_zone("pv_tone")` = 0 and `"pv_other"` = 1 for zones 0 and 1 | always `NOT_FOUND` (stub) | NOT implemented: needs zone sample names in the KSP environment (IR asset to `zone_catalog` mapping and an init-cache field). Group names did not match a zone (`find_zone(group_name(0))` = -1 for an unnamed group); whether a *named* group matches its zone is unmeasured. Morphology's own script is protected, so its call cannot be probed directly. |
+| `later on ui_control replaces an earlier one` | not measurable with the volume readback (fires on UI events) | warning | callback family: left to the wave70 conformance lane |
+
+Approximations (round-2 rows 8, 9, 14): not probed. Their effects are UI state (menu visibility) or
+MIDI controller writes (`%CC` lowering), and neither shows in the volume readback. A probe needs a UI
+or MIDI-driven oracle run, which is a separate piece of tooling. The find_zone plumbing is a
+medium-size change (IR, loader, environment, cache) and is recorded here as the next step, not
+implemented in this round.
+
 ## Round log
 
 - Round 1 (branch `ksp/corpus-survey-r1`): cluster 13 fixed (`5246a819d`), regression test red then
