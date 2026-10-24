@@ -98,3 +98,39 @@ a separate change to the engine.
 - Signalsmith Stretch (brief item 5) is not run.
 - Kontakt captures needed for a fidelity verdict: limiter, resampler, oversampler, compressor.
 - Phase and time-constant bands are wired in `band.rs` but no pair supplies Kontakt phase or time-constant data.
+
+## Wave 3: what changed as a result of the bake-off
+
+Measured on the engine's own code paths; the reference for each number is in the PR linked.
+
+**1. Resampler (High kernel): landed.** Blackman sinc at cutoff 0.9 replaced by a Kaiser window
+(cutoff 0.9, beta 10), same radius and taps, so the same per-sample cost. Engine probe (complex tones,
+16 fractional phases, worst phase), stop-band worst over 1.00-1.08 output Nyquist: 1.088 ratio from
+-81 to -102 dB; 2:1 from -108 to -105 dB. The -6 dB point stays at 0.9 Nyquist. The trade-off is a
+less steep 0.90-0.95 knee, which is recorded in the PR. The bench's stop-band column reads about -65 dB
+for both kernels; that is a measurement floor in the bench, not the kernel, so the probe numbers are
+the reference.
+
+**2. Limiter (`DbLimiter`): no change.** The +1.3 to +2.3 dB "overshoot" was measured against 0 dBFS. The
+Kontakt limiter's output is hard-clamped to +-2.5 linear (`db_limiter.rs`, RE notes `k-replika-gaps.md`
+GAP-E), so 0 dBFS is the wrong reference for this stage. Its attack is a fixed one-pole, with no
+look-ahead, but it is the only consumer's parity law. Adding true-peak detection would change the
+RE-matched behaviour without a Kontakt capture showing a difference, so it is not an upgrade.
+
+**3. Time-stretch (Signalsmith Stretch vs the shipping WSOLA engine): not ported.** Harness:
+`dspbench --stretch` (feature `candidates`). Synthetic drums (6 hits) and a 220 Hz vibrato tone, at
+time ratios 0.5, 0.75, 1.5.
+
+| Metric | Input | Ours (WSOLA) | Signalsmith Stretch |
+|---|---|---|---|
+| Drum transient rise, ratio to input at 0.5 / 0.75 / 1.5 | 1.00 | 1.00 / 1.00 / 1.00 | 11.8 / 6.5 / 6.2 |
+| Harmonic clarity at 0.5 / 0.75 / 1.5 (dB) | 24.6 | 20.1 / 22.6 / 22.8 | 29.8 / 29.5 / 24.1 |
+| CPU (ns per output frame, min of 3) | | 10.2 | 129.1 |
+
+Signalsmith is cleaner on sustained tones (+1 to +9 dB) and smears transients 6-12x at 13x the CPU.
+With up to 32 stretch voices that is not an upgrade that can be heard without a cost. The shipping
+engine keeps transients exactly. Recommendation: keep WSOLA; if sustained clarity matters, tune its
+grain size before adopting another algorithm. Caveats: synthetic material; clarity is one tone, one
+window; Signalsmith's 120 ms latency is handled by the metric, not by the engine.
+
+**4. Oversampler (hiir): kept**, as the bake-off showed (about 3.5x cheaper than Signalsmith's FIR).

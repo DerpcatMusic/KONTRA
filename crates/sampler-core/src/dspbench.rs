@@ -137,3 +137,27 @@ pub use crate::dsp::dynamics::bench::Stage as DynamicsStage;
 pub use sampler_ir::fx::dynamics::{Detector, Direction, Generic, Law as DynamicsLaw, Link, Topology};
 pub use sampler_ir::units::Time;
 
+
+/// Bench-only: the shipping time-stretch engine (`source::time_machine`, Time Machine mode) on one
+/// resident mono-in buffer. `speed` is the time ratio (0.5 = twice as long); pitch is unchanged.
+pub struct TimeStretch {
+    engine: crate::source::time_machine::Engine,
+    data: Vec<crate::Frame>,
+    params: crate::source::time_machine::Params,
+}
+
+impl TimeStretch {
+    pub fn new(data: Vec<crate::Frame>, rate: u32, speed: f64) -> Self {
+        use crate::source::time_machine::{Engine, Mode, Params, Region};
+        let params = Params { advance: speed, step: 1.0, ..Params::default() };
+        let mut engine = Engine::new(Mode::TimeMachine, false, rate);
+        let len = data.len();
+        engine.start(data.as_slice(), Region { len, looped: None }, 0.0, params);
+        Self { engine, data, params }
+    }
+
+    /// Render up to `out.len()` frames; returns the frames produced (short once the source ends).
+    pub fn render(&mut self, out: &mut [crate::Frame]) -> usize {
+        self.engine.render(self.data.as_slice(), self.params, out)
+    }
+}
