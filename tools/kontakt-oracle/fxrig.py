@@ -87,8 +87,28 @@ LF:close()
 """
 
 
-TIMED = ('levels', 'burst')  # stimuli that are one long WAV per note: hold the note for the slot
-STIM_WAV = {'levels': 'levels_lr.wav', 'burst': 'burst_lr.wav'}
+TONE_LEN = 5.0                                         # seconds of steady 1 kHz tone (the "tone" stimulus)
+TONE_DB = -12.0
+TONE_SLOT = 7.0                                        # seconds per instance for the "tone" stimulus
+
+
+def tone_lua(path: Path) -> str:
+    """Lua that writes a steady 1 kHz tone WAV (stereo, identical channels) inside Kontakt."""
+    frames = int(TONE_LEN * 48000)
+    amp = 10 ** (TONE_DB / 20)
+    return f"""local LF = io.open({json.dumps(str(path))}, "wb")
+local NF = {frames}
+LF:write("RIFF", string.pack("<I4", 36 + NF * 8), "WAVEfmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, 2, 48000, 384000, 8, 32), "data", string.pack("<I4", NF * 8))
+for i = 0, NF - 1 do
+  local v = {amp!r} * math.sin(2 * math.pi * 1000 * i / 48000)
+  LF:write(string.pack("<ff", v, v))
+end
+LF:close()
+"""
+
+
+TIMED = ('levels', 'burst', 'tone')  # stimuli that are one long WAV per note: hold the note for the slot
+STIM_WAV = {'levels': 'levels_lr.wav', 'burst': 'burst_lr.wav', 'tone': 'tone_lr.wav'}
 
 
 def make_lua(spec, work: Path) -> str:
@@ -117,6 +137,7 @@ end""")
         f"local CHAIN = {{{chain}}}\n"
         + (levels_lua(work / "levels_lr.wav") if spec.get("stimulus") == "levels" else
            burst_lua(work / "burst_lr.wav") if spec.get("stimulus") == "burst" else
+           tone_lua(work / "tone_lr.wav") if spec.get("stimulus") == "tone" else
            eqrender.IMPULSE_LUA.replace("@WAV@", json.dumps(eqrender.winpath(wav))))
         + "kt.reset_multi()\n"
         + "".join(body)
@@ -211,11 +232,14 @@ def sweep(chain, pre, steps, out_prefix: Path):
 
 def burst_curve(chain, pre, steps, out_prefix: Path):
     """Attack/release of each setting against the bypassed reference, from the 1 ms RMS envelope of the burst.
-    Writes out_prefix.tsv: name, attack ms (onset to 63% of the gain 2 s in), release ms (quiet tone onset to 63%
-    recovered, i.e. 37% of the reduction left, against the gain at the quiet onset), gain 0.5 s / 1.0 s / 2.0 s into
-    the loud tone (dB, active minus reference; the steady-state check)."""
+
+    The tone starts at the first sample above threshold after the previous instance's tail (1.4 s after the note).
+    Writes out_prefix.tsv: name, attack ms (tone onset to 63% of the gain 2 s in), release ms (end of the loud tone to
+    63% recovered), gain 0.5 s / 1.0 s / 2.0 s into the tone (dB, active minus reference; the steady-state check).
+    An instance whose sound ends before 4.9 s after onset is marked INCOMPLETE and its numbers are left blank."""
     global SLOT
     SLOT = BURST_LEAD + BURST_ON + BURST_OFF + 1.0
+    tone_ms = off_ms = int(BURST_ON * 1000)
     rows = []
     for c0 in range(0, len(steps), CHUNK):
         part = steps[c0:c0 + CHUNK]
@@ -223,36 +247,102 @@ def burst_curve(chain, pre, steps, out_prefix: Path):
         render_chunk(chain, [[*pre, *st["set"]] for st in part], wav, stimulus="burst")
         ch, rate, (L, R) = wavutil.read(wav)
         x = np.array(L)
-        ref = env_db(x, rate, FIRST)
+        ref = burst_env_db(x, rate, FIRST)
         for i, st in enumerate(part, start=1):
-            act = env_db(x, rate, FIRST + i * SLOT)
-            gain = act - ref  # per 1 ms, dB, negative = reduction
-            on = int(BURST_LEAD * 1000)
-            off = on + int(BURST_ON * 1000)
-            steady = gain[on + 2000]
-            attack = next((k for k in range(on, off) if gain[k] <= 0.63 * steady), None)
-            release = next((k for k in range(off, len(gain)) if gain[k] >= 0.37 * gain[off]), None)
-            rows.append([c0 + i, st["name"],
-                         "" if attack is None else attack - on,
-                         "" if release is None else release - off,
-                         f"{gain[on + 500]:.2f}", f"{gain[on + 1000]:.2f}", f"{gain[on + 2000]:.2f}"])
+            act = burst_env_db(x, rate, FIRST + i * SLOT)
+            if act is None or ref is None:
+                rows.append([c0 + i, st["name"], "", "", "", "", "", "INCOMPLETE"])
+                continue
+            gain = act - ref  # 1 ms bins from the tone onset, dB, negative = reduction
+            steady = gain[2000]
+            attack = next((k for k in range(0, tone_ms) if gain[k] <= 0.63 * steady), None)
+            g0 = gain[tone_ms - 1]
+            release = next((k for k in range(off_ms, len(gain)) if gain[k] >= 0.37 * g0), None)
+            rows.append([c0 + i, st["name"], attack or "", "" if release is None else release - off_ms,
+                         f"{gain[500]:.2f}", f"{gain[1000]:.2f}", f"{gain[2000]:.2f}", "ok"])
     tsv = out_prefix.with_suffix(".tsv")
-    tsv.write_text("\n".join("\t".join(map(str, r)) for r in rows) + "\n")
+    tsv.write_text("step\tname\tattack_ms\trelease_ms\tgain0.5s\tgain1.0s\tgain2.0s\tstatus\n"
+                   + "\n".join("\t".join(map(str, r)) for r in rows) + "\n")
     return tsv
 
 
-def env_db(x, rate, onset):
-    """RMS dB in 1 ms bins from the instance's first sound (file start = first sample above 1e-4 after onset)."""
+def burst_env_db(x, rate, note):
+    """1 ms RMS dB from the tone onset of the instance whose note is at `note`; None if the instance is silent or the
+    sound ends before 4.9 s after onset. The search starts 1.4 s after the note: the previous instance's tail ends there."""
+    m = np.abs(x)
+    a = int((note + 1.4) * rate)
+    hit = np.nonzero(m[a:a + int(0.5 * rate)] > 1e-3)[0]
+    if not len(hit):
+        return None
+    onset = a + int(hit[0])
+    span = int(4.9 * rate)
+    if onset + span > len(x):
+        return None
+    seg = x[onset:onset + int(5.5 * rate)]
+    last = np.nonzero(np.abs(x[onset:onset + int(5.5 * rate)]) > 1e-4)[0]
+    if not len(last) or last[-1] < span:
+        return None
+    bins = seg[:len(seg) // 48 * 48].reshape(-1, 48)
+    return 10 * np.log10(np.mean(bins ** 2, axis=1) + 1e-14)
+
+
+def tone_metrics(chain, pre, steps, out_prefix: Path):
+    """Steady-tone response of each setting against the bypassed reference. Per instance, over 3 s of the steady
+    part of the output: RMS dB, carrier (1 kHz) dB, the strongest sideband within 0.5..30 Hz on each side (its offset
+    from the carrier is the modulation rate, its level relative to the carrier is the depth). Writes out_prefix.tsv:
+    step, name, rms dB, carrier dB, rate Hz (mean of both sides), sideband dB (louder side, relative to carrier), dB
+    delta of rms/carrier against the reference."""
+    global SLOT
+    SLOT = TONE_SLOT
+    rows, ref = [], None
+    for c0 in range(0, len(steps), CHUNK):
+        part = steps[c0:c0 + CHUNK]
+        wav = out_prefix.with_name(f"{out_prefix.name}_c{c0 // CHUNK}.wav")
+        render_chunk(chain, [[*pre, *st["set"]] for st in part], wav, stimulus="tone")
+        ch, rate, (L, R) = wavutil.read(wav)
+        x = np.array(L)
+        for i, st in enumerate(part, start=0):
+            m = tone_stats(x, rate, FIRST + (i + 1) * SLOT)          # instance i+1 (instance 0 is the reference)
+            rows.append([c0 + i + 1, st["name"], *m])
+        if c0 == 0:
+            ref = tone_stats(x, rate, FIRST)
+    out = []
+    for r in rows:
+        out.append([r[0], r[1], *[f"{v:.2f}" if isinstance(v, float) else v for v in r[2:]],
+                    f"{r[2] - ref[0]:.2f}", f"{r[3] - ref[1]:.2f}"])
+    tsv = out_prefix.with_suffix(".tsv")
+    hdr = "\t".join(["step", "name", "rms_db", "carrier_db", "rate_hz", "sideband_db", "d_rms_db", "d_carrier_db"])
+    tsv.write_text(hdr + "\n" + "\n".join("\t".join(map(str, r)) for r in out) + "\n")
+    print("ref\t" + "\t".join(f"{v:.2f}" for v in ref))
+    return tsv
+
+
+def tone_stats(x, rate, onset):
+    """(rms dB, carrier dB, rate Hz, sideband dB) of one instance's steady tone, from the sound start after onset."""
     m = np.abs(x)
     lo = int(onset * rate)
     first = lo + int(np.argmax(m[lo:lo + int(SLOT * rate)] > 1e-4))
-    n = int(BURST_LEAD * 1000 + (BURST_ON + BURST_OFF) * 1000)
-    seg = x[first - int(BURST_LEAD * rate):first - int(BURST_LEAD * rate) + n * 48]
-    bins = seg.reshape(-1, 48)
-    return 10 * np.log10(np.mean(bins ** 2, axis=1) + 1e-12)
+    seg = x[first + int(1.0 * rate): first + int(4.0 * rate)]
+    n = len(seg)
+    win = np.hanning(n)
+    spec = np.abs(np.fft.rfft(seg * win)) * 2 / np.sum(win)
+    freqs = np.fft.rfftfreq(n, 1 / rate)
+    rms = 20 * np.log10(np.sqrt(np.mean(seg ** 2)) + 1e-12)
+    carrier = spec[np.argmin(np.abs(freqs - 1000.0))]
+    band = lambda a, b: (freqs >= a) & (freqs <= b)
+    up = np.where(band(1000.5, 1030))[0]
+    dn = np.where(band(970, 999.5))[0]
+    ku, kd = up[np.argmax(spec[up])], dn[np.argmax(spec[dn])]
+    f_up, f_dn = freqs[ku] - 1000.0, 1000.0 - freqs[kd]
+    sb = max(spec[ku], spec[kd])
+    return rms, 20 * np.log10(carrier + 1e-12), (f_up + f_dn) / 2, 20 * np.log10(sb / carrier + 1e-12)
 
 
 def main() -> int:
+    if sys.argv[1] == "tone":
+        spec = json.load(open(sys.argv[2]))
+        print(tone_metrics(spec["chain"], spec.get("pre", []), spec["steps"], Path(sys.argv[3]).resolve()))
+        return 0
     if sys.argv[1] == "levels":
         spec = json.load(open(sys.argv[2]))
         print(level_curve(spec["chain"], spec.get("pre", []), spec["steps"], Path(sys.argv[3]).resolve()))

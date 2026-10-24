@@ -1667,16 +1667,21 @@ fn load_item(item: &Item, ctx: &Ctx, key: Option<u8>) -> Loading {
                 Err(e) => return load_failure(&e, "parse"),
             };
             let read_ms = t.elapsed().as_millis() as u64;
-            let Some(pick) = pick_key(&kontakt.instrument, key) else {
-                return no_zone();
-            };
-            let pick_ms = t.elapsed().as_millis() as u64 - read_ms;
             let parse_only = ctx.tier == Tier::Parse;
+            // The parse tier lowers every zone before the key probe, so an
+            // instrument that plays nothing at the probed key still gets its
+            // load verified.
+            let probe = pick_key(&kontakt.instrument, key);
+            if probe.is_none() && !parse_only {
+                return no_zone();
+            }
+            let pick_ms = t.elapsed().as_millis() as u64 - read_ms;
             let options = sampler_kontakt::Options {
                 keys: if parse_only {
                     0..=127
                 } else {
-                    pick.key..=pick.key
+                    let probed = probe.as_ref().map_or(0, |p| p.key);
+                    probed..=probed
                 },
                 scripts: true,
                 library: Some(path.clone()),
@@ -1702,6 +1707,9 @@ fn load_item(item: &Item, ctx: &Ctx, key: Option<u8>) -> Loading {
                     .collect();
                 return match sampler_kontakt::finish(instrument, pcm, labels, &options) {
                     Ok(l) => {
+                        let Some(pick) = probe else {
+                            return no_zone();
+                        };
                         let mut record = ok(pick, &l.instrument);
                         let lower_ms = t.elapsed().as_millis() as u64 - read_ms - pick_ms;
                         record["phases_ms"] =
@@ -1711,6 +1719,9 @@ fn load_item(item: &Item, ctx: &Ctx, key: Option<u8>) -> Loading {
                     Err(e) => load_failure(&e, "prepare"),
                 };
             }
+            let Some(pick) = probe else {
+                return no_zone();
+            };
             stage("load");
             if std::env::var_os("CH_NOSTREAM").is_some() {
                 return match sampler_kontakt::load(path, &options, |_| {}) {
