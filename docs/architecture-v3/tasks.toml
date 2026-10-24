@@ -399,6 +399,27 @@ gate = ["spike report committed"]
 done = ["luau-alloc.md gives a yes/no with evidence, the chosen API, and numbers; P3.2's brief is updated by the coordinator from it."]
 
 [[task]]
+id = "P3.1b"
+title = "Spike: keep mlua's API on an arena, and measure GC on the real UVI corpus"
+phase = 3
+lane = "script"
+size = "M"
+agent = "spike"
+deps = ["P3.1"]
+owns = ["docs/architecture-v3/spikes/luau-alloc-mlua.md", "tools/spikes/luau-alloc/**"]
+docs = ["docs/architecture-v3/spikes/luau-alloc.md", "04-SCRIPT.md#4-kontra-lua"]
+goal = "P3.1 proved a raw `lua_newstate` arena works but mlua's own API cannot take an allocator. 28 files use mlua's high-level API, so a raw-FFI rewrite is expensive. Find the cheapest way to keep that API with zero system allocations on the audio thread, and measure GC on real UVI scripts."
+steps = [
+  "Option A (no fork): a `#[global_allocator]` wrapper that routes allocations to a thread-local arena while an audio-thread scope flag is set (`ArenaScope::enter()` around every script entry), else to the system allocator. mlua's allocator calls the Rust global allocator (memory.rs:137), so all Luau and Rust allocations inside callbacks land in the arena. Measure the overhead of the flag check on non-audio allocations, and check dealloc of arena blocks outside the scope is routed correctly (address-range test).",
+  "Option B: a small patch to mlua's `memory.rs` allocator (vendored fork under vendor/) that forwards to a pluggable arena; estimate the patch size and upkeep.",
+  "Option C: the raw FFI shim from P3.1; estimate the rewrite size from the 28 mlua-using files (`rg -l mlua crates src`).",
+  "Run all applicable options in the spike crate with the same benchmarks as P3.1, plus: load 5 real UVI scripts (find .uvip/.ufs scripts via the existing sampler-uvi loader in a test, or extract script text with the existing tools) and measure heap size and worst GC step per script.",
+  "Recommend one option with numbers; give the per-script arena size rule and GC step budget."
+]
+gate = ["spike report committed with measured numbers"]
+done = ["luau-alloc-mlua.md recommends A, B or C with evidence; the coordinator rewrites P3.2 from it."]
+
+[[task]]
 id = "P3.2"
 title = "UVI Lua inline on the audio thread; ScriptThread only as a feature fallback"
 phase = 3
@@ -406,11 +427,12 @@ lane = "script"
 size = "L"
 agent = "worker"
 draft = true
-deps = ["P3.1", "P2.2"]
+deps = ["P3.1b", "P2.2"]
 owns = ["crates/sampler-uvi/src/scripted.rs", "crates/sampler-uvi/src/scripted/**", "crates/sampler-uvi/src/script.rs", "crates/sampler-uvi/src/script/**", "crates/sampler-uvi/tests/**", "@plugin", "@v2rs"]
-docs = ["04-SCRIPT.md#4-kontra-lua", "docs/architecture-v3/spikes/luau-alloc.md"]
+docs = ["04-SCRIPT.md#4-kontra-lua", "docs/architecture-v3/spikes/luau-alloc.md", "docs/architecture-v3/spikes/luau-alloc-mlua.md"]
 goal = "Lua callbacks run at their event's sample on the audio thread with the allocator from P3.1; `wait` resumes at an exact sample; offline and real time share the path."
 steps = [
+  "Use the allocator option chosen by P3.1b. Whatever the option: every script entry point is protected (`pcall`/mlua `Result`), memory exhaustion is an error and never an abort, numbers cross the boundary as f64, and the arena is sized at prepare with the headroom rule from the spike.",
   "Replace `ScriptThread` polling with inline execution in the voice-start path used by KSP.",
   "Keep `ScriptThread` behind a cargo feature `lua-thread` (off by default) until G3.",
   "Delete the separate offline inline host so both modes use the same code."
