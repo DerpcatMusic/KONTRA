@@ -1,0 +1,1294 @@
+# KONTRA v3 task manifest: the single source of truth for v3 work.
+#
+# Every v3 issue on GitHub is generated from this file by `tools/plan/plan.py sync`.
+# Edit here, never on GitHub; the next sync overwrites issue bodies.
+# Format and rules: docs/architecture-v3/12-WORKFLOW.md.
+#
+# Task fields
+#   id      "P<phase>.<n>[letter]"; the branch is v3/<id>-<slug>, the PR title starts with "<id>:"
+#   deps    task ids that must be merged into v3 first
+#   owns    path globs this task may change (relative to repo root). "@lock" pulls in a lock group.
+#           Two open tasks never own overlapping paths (plan.py ready / scope enforce it).
+#   agent   worker      : self-contained, an agent can do it from the brief alone
+#           coordinator : merges, measurement, real-library runs, repo settings
+#           spike       : research with a written verdict, small code allowed
+#   draft   true = owns/steps are a forecast; the coordinator re-checks them against the tree
+#           (and clears draft) before the task is dispatched
+#   gate    commands that must pass; paste their output in the PR
+#   done    acceptance criteria, checked in review
+
+[meta]
+branch = "v3"
+branch_prefix = "v3/"
+docs = "docs/architecture-v3"
+project = "KONTRA v3"
+
+[phases]
+0 = "Guard rails"
+1 = "On-time start"
+2 = "Scripts never stall notes"
+3 = "One script path, no transport holds"
+4 = "Base and model crates"
+5 = "DSP families"
+6 = "Engine crates"
+7 = "Script and format crates"
+8 = "App and plugin"
+
+# Shared hot files. mode: exclusive = one open task at a time;
+# append = several tasks may each add lines (conflicts resolve by keeping both);
+# regenerate = never hand-merged, regenerated after rebase (see 12-WORKFLOW.md §6).
+[locks.manifests]
+mode = "exclusive"
+paths = ["Cargo.toml", ".cargo/**", "rust-toolchain.toml"]
+[locks.lockfile]
+mode = "regenerate"
+paths = ["Cargo.lock"]
+[locks.ci]
+mode = "exclusive"
+paths = [".github/workflows/**", ".github/scripts/**"]
+[locks.v2rs]
+mode = "exclusive"
+paths = ["src/sound/v2.rs", "src/sound/v2/**"]
+[locks.plugin]
+mode = "exclusive"
+paths = ["src/plugin.rs", "src/plugin/**", "src/lib.rs"]
+[locks.corelib]
+mode = "exclusive"
+paths = ["crates/sampler-core/src/lib.rs", "crates/sampler-core/Cargo.toml"]
+[locks.registry]
+mode = "append"
+paths = ["crates/dsp/registry/src/lib.rs", "crates/dsp/registry/Cargo.toml"]
+[locks.plan]
+mode = "exclusive"
+paths = ["docs/architecture-v3/tasks.toml", "docs/architecture-v3/TASKS.md"]
+
+# ───────────────────────────── Phase 0: guard rails ─────────────────────────────
+
+[[task]]
+id = "P0.1"
+title = "xtask: size, debt, deps-check, timings"
+phase = 0
+lane = "tooling"
+size = "M"
+agent = "worker"
+deps = []
+owns = ["tools/xtask/**", "@manifests", "@lockfile"]
+docs = ["09-BUILD.md#3-xtask", "00-BASELINE.md"]
+goal = "A `cargo xtask` crate that measures the codebase the way 00-BASELINE.md does, so every later gate is a command, not a judgement."
+steps = [
+  "Create `tools/xtask` (binary crate `xtask`, publish = false, std + `cargo_metadata` + `serde_json` only). Add it to workspace members and add `[alias] xtask = \"run -p xtask --\"` in `.cargo/config.toml` (create the file; keep `fast-linux.toml` separate).",
+  "`xtask size`: production vs test lines per workspace crate, using the 00-BASELINE.md rule (test = `*test*.rs`, `tests/`, trailing `#[cfg(test)] mod` blocks). Print a markdown table. `--max-crate 8000 --max-file 800` flags fail when exceeded; an allow-list file `tools/xtask/size-allow.txt` lists today's offenders so it passes on v3 now.",
+  "`xtask debt`: counts of `#[path]`, `#[allow(`, `Processor::`, `impl Default for`, `#[cfg(test)]` inside fn bodies (approximate: lines between `fn` and its closing brace), `Mutex` in RT crates (crates/engine, crates/dsp, sampler-core). `--baseline tools/xtask/debt-baseline.json` fails if any count grows; `--write-baseline` updates it.",
+  "`xtask deps-check`: read `cargo metadata`; fail on any workspace→workspace edge not in `tools/xtask/dag.toml`. Seed dag.toml with today's edges (so it passes now) plus a `[forbidden]` table: no GPU crates (`wgpu*`, `naga`, `ash`, `x11rb`, `zbus`) reachable from `crates/{base,model,dsp,engine,script,format}/**` packages.",
+  "`xtask timings`: runs the gate edits from 09-BUILD.md §2 (append a comment to a chosen file, rebuild, revert via a saved copy) under `build-slot`, prints a table. Never leaves the edit behind (restore in a drop guard).",
+  "Unit tests for the line counter and the DAG checker (small, in-crate)."
+]
+gate = [
+  "build-slot cargo test -p xtask",
+  "build-slot cargo xtask size",
+  "build-slot cargo xtask debt --baseline tools/xtask/debt-baseline.json",
+  "build-slot cargo xtask deps-check"
+]
+done = [
+  "All four commands run on v3 and pass against the seeded baselines.",
+  "`xtask size` totals are within 5% of 00-BASELINE.md (explain any difference in the PR).",
+  "No new dependency besides cargo_metadata/serde/serde_json/toml (already in Cargo.lock: check, do not add others)."
+]
+
+[[task]]
+id = "P0.2"
+title = "kontra-probe: playback contracts C1–C10 as a tool"
+phase = 0
+lane = "tooling"
+size = "L"
+agent = "worker"
+deps = []
+owns = ["tools/probe/**", "@v2rs", "@manifests", "@lockfile"]
+docs = ["10-TESTING.md#1-playback-contracts-toolsprobe-crate-kontra-probe", "../audit-2026-10-24/PLAYBACK_AUDIT.md"]
+goal = "Turn the ignored `audit_probe_dense_realtime_playback` test in src/sound/v2.rs into the `kontra-probe` crate: a CLI plus library that loads an instrument, drives it with patterns and asserts contracts C1–C10."
+steps = [
+  "Read `audit_probe_dense_realtime_playback` in src/sound/v2.rs (search the name) and PLAYBACK_AUDIT.md: it pins block size 128 at 48 kHz, paces blocks in real time, drains `take_effects`, and records first-audible block per note.",
+  "Create `tools/probe` (package `kontra-probe`, lib + bin `kontra-probe`), depending on the root `kontakto` crate for now (it needs `V2Loader`). Later phases repoint it at `kontra-engine`.",
+  "Library API: `Session::load(path, rate)`, `Pattern` (live single notes, dense chords, offsets sweep, CC sweep, block-size sweep), `Mode::{RealTime, Offline}`, and `Report` with per-note: scheduled sample, first-output sample per voice, voice count, dropout frames.",
+  "Contracts as functions returning `Verdict { id, pass, detail }`: C1 start error = 0, C3 start spread within a note = 0, C4 block-size null < -120 dB across 32/64/128/512/1024/97, C5 offline vs real-time null, C6 voices per note as expected, C8 dense 64/64 audible on the first block. C2/C7/C9/C10 may return `Verdict::unsupported` with the reason until fixtures and hooks exist; list which.",
+  "CLI: `kontra-probe <instrument> [--pattern dense|live|offsets|cc] [--contracts C1,C3,...] [--json out.json]`; exit 1 if any selected contract fails.",
+  "Move the old test body out of src/sound/v2.rs (delete it there; keep one `#[ignore]` smoke test in tools/probe/tests that runs when `KONTRA_PROBE_NKI` is set).",
+  "Expose only through public kontakto APIs. If a needed value is private, add the narrowest `pub fn` accessor on the type in src/sound/v2.rs and say so in the PR."
+]
+gate = [
+  "build-slot cargo test -p kontra-probe",
+  "build-slot cargo build --release -p kontra-probe",
+  "KONTRA_PROBE_NKI=<any local NKI> ./target/.../kontra-probe <nki> --pattern live --json /data/dev/workspace/PluginArtifacts/probe-smoke.json  (paste the summary; real-library runs are coordinator work, one run is enough)"
+]
+done = [
+  "Contracts run and report; today's known failures (Areia dense C8, Vista C1) are expected and documented in the PR, not fixed here.",
+  "`src/sound/v2.rs` no longer contains the probe test.",
+  "JSON report schema documented in tools/probe/README.md."
+]
+
+[[task]]
+id = "P0.3"
+title = "Probe fixtures: native-format instruments that reproduce the audited bugs"
+phase = 0
+lane = "tooling"
+size = "M"
+agent = "worker"
+deps = ["P0.2"]
+owns = ["tools/probe/fixtures/**", "tools/probe/src/fixtures.rs", "tools/probe/tests/**"]
+docs = ["10-TESTING.md#1-playback-contracts-toolsprobe-crate-kontra-probe", "06-FORMATS.md#4-native-format"]
+goal = "Synthetic, redistributable instruments that trigger the same paths as Areia and Vista, so contracts run in CI without vendor libraries."
+steps = [
+  "Find how native instruments are built today (`graft ask \"create native library\" --source`; see crates/sampler-native and src/create_library.rs). Generate fixtures in code at test time (sine/noise WAVs written to a temp dir under the target dir), never commit audio.",
+  "Fixture `cc_start`: 3 mic groups (close/room/far) per note, CC113 routed to sample start across 0..30% (Areia pattern), plus a KSP script that calls `set_control_par` 300 times per note (UI load).",
+  "Fixture `key_position`: KeyPosition/RTC → sample start (Vista pattern), 2 layers.",
+  "Fixture `dense`: 4-voice chords with one script `play_note` per voice and `ignore_event` on the original (double-attack check).",
+  "Fixture `streamed`: samples longer than the preload so streaming is exercised.",
+  "Wire them into `kontra-probe` as `--fixture <name>` and as `#[test]`s that assert the contracts that currently pass; mark the currently failing ones `#[ignore = \"fails until P1.x\"]` with the owning task id."
+]
+gate = ["build-slot cargo test -p kontra-probe"]
+done = [
+  "Each fixture reproduces its bug on today's v3 (the ignored tests fail when run with --ignored; paste that output).",
+  "No audio or vendor files committed."
+]
+
+[[task]]
+id = "P0.4"
+title = "Build profiles: fast profile, workspace-hack, mold"
+phase = 0
+lane = "tooling"
+size = "S"
+agent = "worker"
+deps = ["P0.1"]
+owns = ["@manifests", "@lockfile", "crates/workspace-hack/**", "docs/CI.md", "CONTRIBUTING.md"]
+docs = ["09-BUILD.md#1-levers-in-order-of-payoff"]
+goal = "Cut local release-like rebuilds without touching shipping profiles."
+steps = [
+  "Add `[profile.fast]` exactly as in 09-BUILD.md §1 item 3. Do not change `release`, `ci`, `maxperf`, `corpus`.",
+  "Add a workspace-hack crate with `cargo hakari` (install with `cargo install cargo-hakari --locked` into the dev drive toolchain if missing; if you cannot install, stop and report). Commit `.config/hakari.toml` and `crates/workspace-hack`.",
+  "Document in CONTRIBUTING.md (Local workflow) how to use `--profile fast` and `--config .cargo/fast-linux.toml`.",
+  "Measure with `cargo xtask timings` before and after; put both tables in the PR."
+]
+gate = ["build-slot cargo build --profile fast --lib", "build-slot cargo xtask timings"]
+done = ["fast rebuild after a sampler-core edit measured and reported; release profile byte-identical in config."]
+
+[[task]]
+id = "P0.5"
+title = "v3 CI: plan checks, scope guard, push CI on v3"
+phase = 0
+lane = "tooling"
+size = "S"
+agent = "coordinator"
+deps = []
+owns = ["@ci", "tools/plan/**"]
+docs = ["12-WORKFLOW.md"]
+goal = "CI enforces the plan: manifest valid, each PR stays inside its task's owned paths, and v3 itself is CI-checked after every merge."
+steps = [
+  "Already landed with the plan tooling: `.github/workflows/v3.yml` (plan validate + scope on PRs into v3; full CI via workflow_call on push to v3). Verify it ran green on the first v3 PR and add `v3 plan` to the v3 ruleset required checks.",
+  "After P4.0 lands, add a per-layer test matrix job for the new crates (09-BUILD.md §4)."
+]
+gate = ["python3 tools/plan/plan.py validate", "python3 -m unittest tools/plan/test_plan.py"]
+done = ["Ruleset on v3 requires `CI required` and `v3 plan`."]
+
+[[task]]
+id = "P0.6"
+title = "Gate G0: baseline on v3"
+phase = 0
+lane = "coordinator"
+size = "S"
+agent = "coordinator"
+deps = ["P0.1", "P0.2", "P0.3", "P0.4"]
+owns = ["docs/architecture-v3/00-BASELINE.md", "docs/architecture-v3/gates/G0.md"]
+docs = ["00-BASELINE.md", "11-MIGRATION.md#phase-0-guard-rails-12-prs"]
+goal = "Record the measured starting point with the new tools, including today's contract failures on the reference libraries."
+steps = [
+  "Run xtask size/debt/timings and kontra-probe (all fixtures + Areia Spiccato Fast, Vista, Conflux, ANALOG) on v3 head.",
+  "Write `docs/architecture-v3/gates/G0.md` with the tables and the failing contracts per library; update 00-BASELINE.md numbers."
+]
+gate = ["build-slot cargo xtask size", "kontra-probe runs listed in G0.md"]
+done = ["G0.md committed; every later gate compares against it."]
+
+# ───────────────────────────── Phase 1: on-time start ─────────────────────────────
+
+[[task]]
+id = "P1.1"
+title = "Reachable start range per zone (S.Mod, script offsets, CC/RTC → start)"
+phase = 1
+lane = "playback"
+size = "M"
+agent = "worker"
+deps = ["P0.3"]
+owns = ["crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs", "crates/sampler-kontakt/src/stream_hint_tests.rs", "crates/sampler-core/src/head_ranges.rs", "crates/sampler-ksp/src/sema.rs", "crates/sampler-ksp/src/hir.rs"]
+docs = ["05-STREAM.md#1-the-preload-law", "../audit-2026-10-24/PLAYBACK_AUDIT.md"]
+goal = "At load, compute for every zone the full range of sample-start offsets it can be played from, so the preload can cover it."
+steps = [
+  "Read how start hints are computed today: `stream_initial_hints.rs` and where `bounded_attack_anchors` consumes them (crates/sampler-kontakt/src/stream.rs; read only, owned by P1.2).",
+  "Range sources: zone S.Mod / sample-start modulation depth; every KSP `play_note(..., offset, ...)` and `$EVENT_PAR_PLAY_POS`/`set_event_par(...PLAY_POS...)` whose offset sema can bound (constant, or a variable whose assigned values are bounded constants / a declared knob range); every modulation route whose target is sample start (CC, RTC, KeyPosition).",
+  "Output: `StartRange { max_frames: Frames, unbounded: bool, sources: SmallVec<StartSource> }` per zone, carried on the existing hint structure.",
+  "Unbounded ranges produce a load diagnostic naming the script line or route.",
+  "Tests: the `cc_start` and `key_position` probe fixtures produce the expected ranges; an unbounded `play_note` offset produces `unbounded = true` and a diagnostic."
+]
+gate = ["build-slot cargo test -p sampler-kontakt stream_initial_hints", "build-slot cargo test -p sampler-ksp sema"]
+done = ["Areia Spiccato Fast and Vista report non-zero start ranges (coordinator confirms on real libraries)."]
+
+[[task]]
+id = "P1.2"
+title = "Preload law: base + full start range, never shrink below the law"
+phase = 1
+lane = "playback"
+size = "L"
+agent = "worker"
+deps = ["P1.1"]
+owns = ["crates/sampler-kontakt/src/stream.rs", "crates/sampler-kontakt/src/head_prepare.rs", "crates/sampler-kontakt/src/head_cache.rs", "crates/sampler-core/src/head_budget.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/prepare/**", "crates/sampler-core/tests/stream_start_runway.rs"]
+docs = ["05-STREAM.md#1-the-preload-law"]
+goal = "Head length = base (60 KB-equivalent per channel, Kontakt DFD default) + the zone's start range from P1.1, instead of measured warm-cache latency; over budget never truncates silently."
+steps = [
+  "Replace the head-size computation (`fn head_frames` in sampler-kontakt/src/stream.rs and sampler-core/src/prepare.rs: p95 latency + 10 ms slack) with `PreloadLaw { base, min, max }` applied per zone: frames = base + start_range.max_frames; unbounded → whole sample.",
+  "Remove the budget binary search with `include_offsets = false` in `bounded_attack_anchors`. Over budget: load continues, every zone keeps its law-sized head, and the load report lists the budget excess with the largest contributors. (Purge selection is a later UX task.)",
+  "Replace the ×16 `max_step` scaling with the zone's real maximum pitch step from its mapping/tune range.",
+  "Keep heads in their current storage format in this task (format change is P6.1d)."
+]
+gate = ["build-slot cargo test -p sampler-kontakt stream", "build-slot cargo test -p sampler-core --lib prepare", "build-slot cargo test -p kontra-probe cc_start"]
+done = ["Probe C9 passes on `cc_start` and `key_position` fixtures.", "Coordinator: Areia head frames reported ≥ base + CC113 range."]
+
+[[task]]
+id = "P1.3"
+title = "No cold holds: late data is silence, the cursor keeps time"
+phase = 1
+lane = "playback"
+size = "M"
+agent = "worker"
+deps = ["P1.2"]
+owns = ["crates/sampler-core/src/source.rs", "crates/sampler-core/src/source/**", "crates/sampler-core/tests/cold_chain.rs", "@v2rs"]
+docs = ["05-STREAM.md#3-when-data-is-late", "02-ENGINE.md#5-voices"]
+goal = "A voice never waits for storage. Missing frames render as silence, counted as dropouts; the voice timeline advances."
+steps = [
+  "Find `Cursor::cold` and `render_starved` in crates/sampler-core/src/source.rs and every caller (`graft callers render_starved --depth 2`).",
+  "Replace the hold with: output zeros for the missing span, advance the cursor by the span, increment a `dropout_frames` counter and record the first stall position.",
+  "Delete the `cold` state and its tests; replace with tests that a starved voice stays aligned to its schedule after data arrives.",
+  "Expose `dropout_frames` through the existing runtime stats so kontra-probe C2 can read it (update tools/probe only via a public accessor; if probe code must change, list it as a deviation)."
+]
+gate = ["build-slot cargo test -p sampler-core --lib source", "build-slot cargo test -p sampler-core --test cold_chain", "build-slot cargo test -p kontra-probe"]
+done = ["Probe C1 passes on all fixtures in real-time mode with a throttled disk (`streamed` fixture)."]
+
+[[task]]
+id = "P1.4"
+title = "One start batch per callback instant; delete start runway and per-family cohorts"
+phase = 1
+lane = "playback"
+size = "M"
+agent = "worker"
+deps = ["P1.3"]
+owns = ["crates/sampler-core/src/onset.rs", "crates/sampler-core/src/stream.rs", "crates/sampler-core/tests/stream_start_runway.rs", "crates/sampler-kontakt/tests/channel_topology.rs", "@v2rs"]
+docs = ["02-ENGINE.md#4-the-note-ledger", "../audit-2026-10-24/PLAYBACK_AUDIT.md"]
+goal = "All voices started at the same sample (one host note, or one callback instant's play_note calls) start together. This is the Areia 'double attack, mono then wide' fix."
+steps = [
+  "Read `onset.rs` `Probe::cohort` and `set_stream_start_runway` (stream.rs, onset.rs, and its call site in src/sound/v2.rs, which you own for this task).",
+  "Group voice starts by (sample time, callback instant) instead of per family/`play_note`. Start the whole group in one pass.",
+  "Delete the start-runway mechanism: with P1.2 the head covers the start range, so no runway is needed.",
+  "Tests: three mic groups started by three `play_note`s in one callback produce first output frames at the same sample (probe fixture `cc_start`, C3)."
+]
+gate = ["build-slot cargo test -p sampler-core --lib onset", "build-slot cargo test -p kontra-probe cc_start"]
+done = ["C3 and C6 pass on fixtures; coordinator confirms on Areia Spiccato Fast."]
+
+[[task]]
+id = "P1.5"
+title = "Gate G1: on-time start on real libraries"
+phase = 1
+lane = "coordinator"
+size = "S"
+agent = "coordinator"
+deps = ["P1.4"]
+owns = ["docs/architecture-v3/gates/G1.md"]
+docs = ["11-MIGRATION.md#phase-13-playback-users-hear-it"]
+goal = "Prove C1, C3, C6, C9 on Areia, Vista, Conflux, ANALOG; listen-test the original complaints."
+steps = ["Run kontra-probe on the four libraries (live + dense + offsets). Compare with G0.", "Build once, listen in a DAW (Bitwig) to Areia Spiccato Fast and Vista; note the verdict per the plays-correctly rule."]
+gate = ["kontra-probe runs recorded in G1.md"]
+done = ["G1.md: contracts green or each failure has a follow-up task id."]
+
+# ───────────────────────────── Phase 2: scripts never stall ─────────────────────────────
+
+[[task]]
+id = "P2.1"
+title = "Script UI writes go to a latest-value control store, not a queue"
+phase = 2
+lane = "script"
+size = "L"
+agent = "worker"
+deps = ["P0.3"]
+owns = ["crates/sampler-core/src/control.rs", "crates/sampler-core/src/control/**", "crates/sampler-core/src/ops.rs", "crates/sampler-core/src/midi_object.rs", "crates/sampler-core/src/array_file.rs", "crates/sampler-core/src/widget.rs", "crates/sampler-pool/**", "@corelib", "@plugin"]
+docs = ["04-SCRIPT.md#5-ui-from-scripts", "07-APP.md#2-the-three-channels"]
+goal = "`set_control_par`, `set_key_*`, `message` and similar UI effects write a per-control latest-value cell; the 256-entry effect outbox and the 1024 ArrayQueue drained at 10 Hz in `control_tick` stop carrying UI state."
+steps = [
+  "Map every producer of UI effects (`EFFECT_CAPACITY` users: ops.rs, control/transfer.rs, midi_object.rs, array_file.rs, lib.rs) and the consumer (`control_tick` in src/plugin.rs, `take_effects`).",
+  "Add `LatestCell<T>` to sampler-pool (seqlock or triple buffer, no allocation after construction, tested with loom-free stress test in tests/) and a `ControlStore` (one cell per declared control, sized at prepare) owned by the script UI declaration.",
+  "Route UI-only effects into the store. Keep the queue only for effects that are true events (e.g. file I/O requests); document which remain.",
+  "UI side reads the store each frame instead of draining the queue.",
+  "A full effect queue must never release or abort a note: remove that path (`fail_behavior` on outbox full) for UI effects."
+]
+gate = ["build-slot cargo test -p sampler-pool", "build-slot cargo test -p sampler-core --lib control", "build-slot cargo test -p kontra-probe cc_start"]
+done = ["Probe C7 passes on `cc_start` (300 UI writes per note).", "Script UI still updates in the editor (coordinator check)."]
+
+[[task]]
+id = "P2.2"
+title = "Delete behavior fuel and BehaviorOverload::Abort; KSP while limit only"
+phase = 2
+lane = "script"
+size = "M"
+agent = "worker"
+deps = ["P2.1"]
+owns = ["crates/sampler-core/src/behavior.rs", "crates/sampler-core/src/behavior/**", "crates/sampler-core/src/behavior_fault.rs", "crates/sampler-core/tests/behavior.rs", "@v2rs"]
+docs = ["04-SCRIPT.md#2-kontra-vm"]
+goal = "Callbacks run to completion at their event time; the only loop bound is Kontakt's `while` iteration limit (already implemented in #687)."
+steps = [
+  "Find `behavior_allowance` (src/sound/v2.rs: frames × 2048 per block) and `BehaviorOverload` (behavior.rs, behavior/dispatch.rs, lib.rs is read-only: if its re-export must change, report).",
+  "Remove the per-block fuel budget, the deferral of over-budget callbacks and Abort-and-release. Keep the while-limit behaviour and its tests.",
+  "Add a test: a callback doing 1M loop iterations inside bounded whiles completes and plays its note at the scheduled sample."
+]
+gate = ["build-slot cargo test -p sampler-core --test behavior", "build-slot cargo test -p sampler-ksp while", "build-slot cargo test -p kontra-probe"]
+done = ["No `BehaviorOverload` or fuel left (`graft grep BehaviorOverload` empty)."]
+
+[[task]]
+id = "P2.3"
+title = "Gate G2: Areia dense chords 64/64"
+phase = 2
+lane = "coordinator"
+size = "S"
+agent = "coordinator"
+deps = ["P2.2", "P1.5"]
+owns = ["docs/architecture-v3/gates/G2.md"]
+docs = ["10-TESTING.md"]
+goal = "C7, C8 on Areia and Conflux; CPU (C10) not worse than G0."
+steps = ["Probe dense + live on Areia Spiccato Fast and Conflux; record CPU p99."]
+gate = ["kontra-probe runs recorded in G2.md"]
+done = ["Areia dense 64/64 audible on first block."]
+
+# ───────────────────────────── Phase 3: one script path ─────────────────────────────
+
+[[task]]
+id = "P3.1"
+title = "Spike: real-time-safe Luau allocator (mlua custom allocator or C-API shim)"
+phase = 3
+lane = "script"
+size = "S"
+agent = "spike"
+deps = []
+owns = ["docs/architecture-v3/spikes/luau-alloc.md", "tools/spikes/luau-alloc/**"]
+docs = ["04-SCRIPT.md#4-kontra-lua", "../audit-2026-10-24/ONE_ENGINE.md"]
+goal = "Decide how Lua runs on the audio thread without system malloc: verify whether the mlua version in Cargo.lock exposes a custom allocator for Luau (`lua_newstate` with an allocator), else design a thin shim."
+steps = [
+  "Check the exact mlua and mlua-sys versions in Cargo.lock; read their source (`find-crate-source` skill) for allocator hooks on the Luau backend.",
+  "Write a tiny standalone crate in tools/spikes/luau-alloc (not a workspace member; build with its own manifest under build-slot) that runs a Luau callback 1e5 times with a fixed arena and counts global allocations (custom `#[global_allocator]` counter).",
+  "Also measure: GC step cost bound (`lua_gc` step with small size), coroutine resume cost."
+]
+gate = ["spike report committed"]
+done = ["luau-alloc.md gives a yes/no with evidence, the chosen API, and numbers; P3.2's brief is updated by the coordinator from it."]
+
+[[task]]
+id = "P3.2"
+title = "UVI Lua inline on the audio thread; ScriptThread only as a feature fallback"
+phase = 3
+lane = "script"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P3.1", "P2.2"]
+owns = ["crates/sampler-uvi/src/scripted.rs", "crates/sampler-uvi/src/scripted/**", "crates/sampler-uvi/src/script.rs", "crates/sampler-uvi/src/script/**", "crates/sampler-uvi/tests/**", "@plugin", "@v2rs"]
+docs = ["04-SCRIPT.md#4-kontra-lua", "docs/architecture-v3/spikes/luau-alloc.md"]
+goal = "Lua callbacks run at their event's sample on the audio thread with the allocator from P3.1; `wait` resumes at an exact sample; offline and real time share the path."
+steps = [
+  "Replace `ScriptThread` polling with inline execution in the voice-start path used by KSP.",
+  "Keep `ScriptThread` behind a cargo feature `lua-thread` (off by default) until G3.",
+  "Delete the separate offline inline host so both modes use the same code."
+]
+gate = ["build-slot cargo test -p sampler-uvi", "build-slot cargo test -p kontra-probe"]
+done = ["C5 (offline = real time) passes on a UVI fixture; scripted notes are on time (C1)."]
+
+[[task]]
+id = "P3.3"
+title = "Auto-align as per-zone plan offsets; no transport holds"
+phase = 3
+lane = "playback"
+size = "M"
+agent = "worker"
+deps = ["P1.2"]
+owns = ["src/timing.rs", "src/timing/**"]
+docs = ["07-APP.md#6-auto-align-appalign-feature-align"]
+goal = "Auto-align measures onsets at load and applies them as start offsets inside the preload range; it never holds notes while the transport plays."
+steps = [
+  "Read src/timing.rs: notes are held only while the transport plays (off by default).",
+  "Change it to produce `align_offset` per zone at load and feed it into the start range (P1.1) so the preload covers it.",
+  "Delete the hold path and its transport-dependent state."
+]
+gate = ["build-slot cargo test --lib timing"]
+done = ["DAW playback with auto-align on gives C1 in the probe with transport running."]
+
+[[task]]
+id = "P3.4"
+title = "Gate G3: original complaints closed"
+phase = 3
+lane = "coordinator"
+size = "S"
+agent = "coordinator"
+deps = ["P3.2", "P3.3", "P2.3"]
+owns = ["docs/architecture-v3/gates/G3.md"]
+docs = ["11-MIGRATION.md#phase-13-playback-users-hear-it"]
+goal = "Double attacks, DAW lag, Areia width and Vista position all have green contracts; one build and one library survey."
+steps = ["Probe all fixtures + 4 libraries, DAW listen test, periodic library survey; remove the `lua-thread` feature if C5 holds."]
+gate = ["G3.md"]
+done = ["G3.md signed off; v3 merged to main is now a candidate (user decides)."]
+
+# ───────────────────────────── Phase 4: base and model crates ─────────────────────────────
+
+[[task]]
+id = "P4.0"
+title = "Scaffold every v3 crate (empty), workspace deps, target DAG"
+phase = 4
+lane = "structure"
+size = "M"
+agent = "worker"
+deps = ["P0.1", "P0.4"]
+owns = ["crates/base/**", "crates/model/**", "crates/dsp/**", "crates/engine/**", "crates/script/**", "crates/format/**", "crates/app/**", "plugin/**", "tools/xtask/dag.toml", "@manifests", "@lockfile", "@ci"]
+docs = ["01-LAYOUT.md#1-the-crate-tree", "01-LAYOUT.md#2-dependency-dag"]
+goal = "Create all 38 crates from 01-LAYOUT.md as empty, compiling skeletons with their target dependencies declared, so later tasks only edit inside one crate folder and never touch the root manifest."
+steps = [
+  "For each crate in 01-LAYOUT.md §1 create `Cargo.toml` (package name `kontra-*`, `edition.workspace = true`, `publish = false`, path deps exactly per the DAG in §2) and `src/lib.rs` with a one-line `//!` doc naming its doc section.",
+  "Add `[workspace.dependencies]` entries for everything later tasks will need: thiserror, smallvec, serde (derive), toml, crossbeam-queue/utils already present, syn/quote/proc-macro2 for kontra-macros. Versions must already be in Cargo.lock where possible.",
+  "Register all members in the root Cargo.toml; add them to `CRATES` in .github/workflows/ci.yml.",
+  "Write the target DAG into tools/xtask/dag.toml as `[target]` (deps-check reports target violations as warnings until P8.6 makes them errors).",
+  "Skip crates that already exist under the old name (pool, simd, ir, …): their moves are P4.3/P4.4/P4.10."
+]
+gate = ["build-slot cargo check --workspace", "build-slot cargo xtask deps-check"]
+done = ["Every crate in 01-LAYOUT.md exists or is listed as 'moved by Pn.m'.", "Root Cargo.toml needs no further member edits until P8."]
+
+[[task]]
+id = "P4.1"
+title = "kontra-macros: #[derive(Stats)] and #[derive(Config)]"
+phase = 4
+lane = "structure"
+size = "M"
+agent = "worker"
+deps = ["P4.0"]
+owns = ["crates/base/macros/**"]
+docs = ["08-MACROS.md#1-inventory", "08-MACROS.md#2-examples"]
+goal = "The first two derives, with trybuild-free tests (expand into a test module and assert behaviour)."
+steps = [
+  "`Stats`: fields u64/u32; attributes `#[stat(max)]` (keep maximum) default sum; generates `snapshot() -> Self` (Copy), `reset()`, `merge(&other)`, `fields() -> &'static [(&'static str, fn(&Self)->u64)]` for publication/Display.",
+  "`Config`: `#[config(default = expr)]` per field generates `Default`; `#[config(version = N)]` on the struct adds `VERSION` const.",
+  "Errors via `syn::Error::new_spanned` on unsupported field types."
+]
+gate = ["build-slot cargo test -p kontra-macros"]
+done = ["Examples in 08-MACROS.md §2 compile verbatim in the crate's tests."]
+
+[[task]]
+id = "P4.2"
+title = "kontra-time and kontra-law"
+phase = 4
+lane = "structure"
+size = "M"
+agent = "worker"
+draft = true
+deps = ["P4.0"]
+owns = ["crates/base/time/**", "crates/base/law/**"]
+docs = ["03-DSP.md#4-laws", "01-LAYOUT.md#1-the-crate-tree"]
+goal = "SampleTime/Frames/Tempo types and the Law enum with eval and TOML parsing, written fresh from the docs; existing code adopts them in later tasks."
+steps = [
+  "kontra-time: `SampleTime(u64)`, `Frames(u32)`, `Tempo`, `Transport`, beat↔sample conversion; mirror semantics of the existing sampler-core time types (`graft ask \"sample time type\"`).",
+  "kontra-law: `Law` exactly as in 03-DSP.md §4, `eval(x) -> f32`, `ModuleLaw`, TOML schema with `tolerance_db`; property tests: monotonic tapers stay monotonic, tables interpolate endpoints exactly.",
+  "Do not change existing crates in this task."
+]
+gate = ["build-slot cargo test -p kontra-time -p kontra-law"]
+done = ["Docs examples parse; law TOML schema documented in crates/base/law/README.md."]
+
+[[task]]
+id = "P4.3"
+title = "Move sampler-pool → crates/base/pool (kontra-pool)"
+phase = 4
+lane = "structure"
+size = "S"
+agent = "worker"
+deps = ["P4.0", "P2.1"]
+owns = ["crates/sampler-pool/**", "crates/base/pool/**", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
+docs = ["11-MIGRATION.md#rules-during-migration"]
+goal = "Pure move with `git mv`; package renamed to kontra-pool; dependents use `sampler-pool = { package = \"kontra-pool\", path = ... }` so no source edits are needed."
+steps = ["git mv crates/sampler-pool crates/base/pool (merge with the scaffold if P4.0 created an empty one: delete the scaffold first).", "Rename the package; update dependents' Cargo.toml with `package =` aliases; update CRATES in ci.yml.", "No code changes. The PR diff must be renames plus manifest lines."]
+gate = ["build-slot cargo check --workspace"]
+done = ["`git log --follow` works on moved files; zero non-manifest content changes."]
+
+[[task]]
+id = "P4.4"
+title = "Move sampler-simd (+ dsp/lanes.rs) → crates/base/simd (kontra-simd)"
+phase = 4
+lane = "structure"
+size = "S"
+agent = "worker"
+deps = ["P4.3"]
+owns = ["crates/sampler-simd/**", "crates/base/simd/**", "crates/sampler-core/src/dsp/lanes.rs", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
+docs = ["01-LAYOUT.md#5-current--new-mapping"]
+goal = "Same pattern as P4.3. `dsp/lanes.rs` moves into kontra-simd with a `pub use` left in sampler-core."
+steps = ["git mv; package alias in dependents; leave `pub use kontra_simd::lanes::*;` at the old path.", "No behaviour changes."]
+gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-simd"]
+done = ["Moves only, plus the re-export line."]
+
+[[task]]
+id = "P4.5"
+title = "#[derive(Params)] in kontra-macros"
+phase = 4
+lane = "structure"
+size = "M"
+agent = "worker"
+deps = ["P4.1", "P4.2"]
+owns = ["crates/base/macros/**", "crates/model/params/src/lib.rs", "crates/model/params/src/set.rs", "crates/model/params/tests/**"]
+docs = ["08-MACROS.md#2-examples", "03-DSP.md#2-the-module-contract"]
+goal = "The Params derive and the `ParamSet` trait in kontra-params."
+steps = [
+  "`ParamSet` trait: `type Id: Copy + Eq + 'static`; `fn set(&mut self, id, v)`; `fn meta() -> &'static [ParamMeta]` (name, unit, range, default, law kind, smooth ms); `fn id(name) -> Option<Id>`.",
+  "Derive implements it from `#[param(range, unit, default, law, smooth)]`; generates `<Name>Id` enum.",
+  "Test with the Compressor example from 08-MACROS.md."
+]
+gate = ["build-slot cargo test -p kontra-macros -p kontra-params"]
+done = ["The 08-MACROS.md Compressor example compiles and its meta() matches the attributes."]
+
+[[task]]
+id = "P4.6"
+title = "Parameter catalog: every DSP module's params in kontra-params"
+phase = 4
+lane = "structure"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P4.5"]
+owns = ["crates/model/params/src/**"]
+docs = ["03-DSP.md#3-the-families", "08-MACROS.md#1-inventory"]
+goal = "One `#[derive(Params)]` struct per module class in 03-DSP.md §3, in `params/src/<family>.rs`, with ranges/defaults taken from today's implementations and registries."
+steps = [
+  "Sources (read-only): crates/sampler-core/src/engine_parameters.rs, parameter_registry.rs, script_params.rs, engine_par_ids.tsv, crates/sampler-uvi/src/engine_parameters.rs, parameters.tsv, the ir::Processor configs in crates/sampler-ir/src/lib.rs.",
+  "One file per family; `ModuleKind` enum lists every class.",
+  "A generated table test: every `$ENGINE_PAR_*` id in engine_par_ids.tsv maps to a (ModuleKind, ParamId) or is listed in `unmapped.txt` with a reason."
+]
+gate = ["build-slot cargo test -p kontra-params"]
+done = ["Coverage test passes; unmapped list reviewed."]
+
+[[task]]
+id = "P4.7"
+title = "Point the 5 parameter registries at the catalog; delete 4"
+phase = 4
+lane = "structure"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P4.6"]
+owns = ["crates/sampler-core/src/engine_parameters.rs", "crates/sampler-core/src/engine_parameter_names.rs", "crates/sampler-core/src/parameter_registry.rs", "crates/sampler-core/src/script_params.rs", "crates/sampler-core/src/engine_par_ids.tsv", "crates/sampler-uvi/src/engine_parameters.rs", "crates/sampler-uvi/src/parameters.rs", "crates/sampler-uvi/src/parameters.tsv", "crates/sampler-ksp/src/symbols.rs", "@corelib"]
+docs = ["00-BASELINE.md#structural-debt-counts"]
+goal = "Registries become thin lookups into kontra-params; `xtask debt` registries 5 → 1."
+steps = ["Replace each registry's table with catalog lookups, keeping public function signatures.", "Delete tables and duplicated name lists.", "Keep behaviour: existing KSP/UVI parameter tests must pass unchanged."]
+gate = ["build-slot cargo test -p sampler-core --lib engine_param", "build-slot cargo test -p sampler-ksp", "build-slot cargo test -p sampler-uvi parameters"]
+done = ["Net line count negative; tests unchanged and green."]
+
+[[task]]
+id = "P4.8"
+title = "kontra-events from sampler-midi + src/sound/event.rs + held keys"
+phase = 4
+lane = "structure"
+size = "M"
+agent = "worker"
+draft = true
+deps = ["P4.0", "P4.2"]
+owns = ["crates/sampler-midi/**", "crates/model/events/**", "src/sound/event.rs", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
+docs = ["01-LAYOUT.md#5-current--new-mapping", "02-ENGINE.md#2-one-event-type-one-queue"]
+goal = "One event model crate. Move sampler-midi (git mv + alias), then move src/sound/event.rs types in with a re-export."
+steps = ["git mv crates/sampler-midi crates/model/events; package kontra-events with alias.", "Move event.rs content; leave `pub use kontra_events::*` in src/sound/event.rs.", "held_keys stays in src/plugin until P6.4 (ledger)."]
+gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-events"]
+done = ["Moves plus re-exports only."]
+
+[[task]]
+id = "P4.9"
+title = "kontra-ui-model from sampler-ui-ir + core widget/script_params + ControlStore"
+phase = 4
+lane = "structure"
+size = "M"
+agent = "worker"
+draft = true
+deps = ["P4.0", "P2.1", "P4.7"]
+owns = ["crates/sampler-ui-ir/**", "crates/model/ui-model/**", "crates/sampler-core/src/widget.rs", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
+docs = ["01-LAYOUT.md#5-current--new-mapping", "04-SCRIPT.md#5-ui-from-scripts"]
+goal = "UI model data in one crate the UI and engine both depend on; the ControlStore from P2.1 lives here."
+steps = ["git mv sampler-ui-ir → crates/model/ui-model with alias.", "Move widget.rs and the ControlStore type; re-export at old paths."]
+gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-ui-model"]
+done = ["Moves plus re-exports only."]
+
+[[task]]
+id = "P4.10"
+title = "Move sampler-ir → crates/model/ir (kontra-ir)"
+phase = 4
+lane = "structure"
+size = "S"
+agent = "worker"
+deps = ["P4.0", "P4.3"]
+owns = ["crates/sampler-ir/**", "crates/model/ir/**", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
+docs = ["01-LAYOUT.md#5-current--new-mapping"]
+goal = "Pure move like P4.3."
+steps = ["git mv + package alias; no content changes."]
+gate = ["build-slot cargo check --workspace"]
+done = ["Renames plus manifest lines only."]
+
+[[task]]
+id = "P4.11"
+title = "kontra-protocol: Command, Publications, Retired types"
+phase = 4
+lane = "structure"
+size = "S"
+agent = "worker"
+deps = ["P4.0", "P4.9"]
+owns = ["crates/model/protocol/**"]
+docs = ["07-APP.md#2-the-three-channels"]
+goal = "Types and the SPSC/LatestCell plumbing only, unit-tested; no wiring into the plugin (that is P8.1)."
+steps = ["Implement the three channel types from 07-APP.md §2 on kontra-pool primitives.", "Test: full command ring returns Err(Full), never blocks; publications are latest-value."]
+gate = ["build-slot cargo test -p kontra-protocol"]
+done = ["API matches 07-APP.md or the doc is updated in the same PR."]
+
+[[task]]
+id = "P4.12"
+title = "Gate G4: model crates in place"
+phase = 4
+lane = "coordinator"
+size = "S"
+agent = "coordinator"
+deps = ["P4.4", "P4.7", "P4.8", "P4.10", "P4.11", "P3.4"]
+owns = ["docs/architecture-v3/gates/G4.md"]
+docs = ["11-MIGRATION.md#phase-4-base-and-model-crates-mechanical"]
+goal = "Registries 5 → 1, `#[path]` falling, contracts unchanged from G3."
+steps = ["xtask debt/size/timings; probe fixtures; record in G4.md."]
+gate = ["G4.md"]
+done = ["No contract regressions against G3."]
+
+# ───────────────────────────── Phase 5: DSP families ─────────────────────────────
+
+[[task]]
+id = "P5.0"
+title = "kontra-dsp-core (Module trait, shared blocks) + registry with legacy bridge"
+phase = 5
+lane = "dsp"
+size = "L"
+agent = "worker"
+deps = ["P4.5", "P4.12"]
+owns = ["crates/dsp/core/**", "@registry", "@corelib", "@lockfile", "crates/sampler-core/src/dsp.rs", "crates/sampler-core/src/lower.rs", "crates/sampler-core/src/dsp/biquad.rs", "crates/sampler-core/src/dsp/hiir.rs", "crates/sampler-core/src/dsp/kaiser.rs", "crates/sampler-core/src/dsp/tpt_svf.rs", "crates/base/macros/**"]
+docs = ["03-DSP.md#2-the-module-contract", "03-DSP.md#5-the-registry-cratesdspregistry-crate-kontra-dsp", "11-MIGRATION.md#phase-5-dsp-families-one-pr-per-family-parallelizable"]
+goal = "The Module trait, shared building blocks, the `modules!` proc macro and a bridge so the old runtime can run any registry module. After this, family tasks never touch dsp.rs or lower.rs."
+steps = [
+  "kontra-dsp-core: `Module`, `Io`, `PrepareCtx`, `Tail` as in 03-DSP.md §2; move biquad/hiir/kaiser/tpt_svf math in (re-export at old paths); add smooth.rs, db.rs, denormal.rs, delay_line.rs, allpass.rs, waveshape.rs as needed by the moved code only (YAGNI: add the rest when a family needs it).",
+  "`modules!` in kontra-macros: generates `AnyModule`, `build(&ModuleSpec, &PrepareCtx)`, `param(kind, name)`, metadata. Start with an empty list plus one trivial `core::Gain` module to prove it.",
+  "Add path dependencies from sampler-core to `kontra-dsp` and every `kontra-dsp-<family>` scaffold now, so family tasks never edit sampler-core's Cargo.toml.",
+  "Bridge: one new variant in the old core `Processor` enum, `Processor::Module(kontra_dsp::AnyModule)`, and in lower.rs a single first-match call `if let Some(m) = kontra_dsp::lower(&ir_processor) { return Processor::Module(m) }`. Families then become reachable by adding their registry line only.",
+  "Generic `module_tests!` macro (block-size independence, reset = fresh, silence, extremes) applied to `Gain`."
+]
+gate = ["build-slot cargo test -p kontra-dsp-core -p kontra-dsp -p kontra-macros", "build-slot cargo test -p sampler-core --lib dsp"]
+done = ["Gain runs through the bridge in a sampler-core test; family tasks need no edits outside their folder + one registry line."]
+
+# Family template (all P5.x): port classes per 03-DSP.md §3, vendor variants → laws, move vectors,
+# register the classes in the registry (append lock), A/B against the old implementation in a test,
+# then shrink each old file to a thin adapter onto the new crate. The module declarations in dsp.rs
+# belong to P5.0/P5.9, so families never delete old files; P5.9 deletes all adapters at once.
+
+[[task]]
+id = "P5.1"
+title = "DSP family: dynamics (Compressor, Limiter, Gate/Expander, Transient)"
+phase = 5
+lane = "dsp"
+size = "L"
+agent = "worker"
+deps = ["P5.0"]
+owns = ["crates/dsp/dynamics/**", "@registry", "crates/model/params/src/dynamics.rs", "crates/sampler-core/src/dsp/dynamics/**", "crates/sampler-core/src/dsp/db_limiter.rs", "crates/sampler-core/src/dsp/gater.rs", "crates/sampler-core/src/dsp/gater_kemu_vectors.json", "crates/sampler-core/src/bus_amp.rs"]
+docs = ["03-DSP.md#1-folder-anatomy", "03-DSP.md#3-the-families", "03-DSP.md#7-quality-bar"]
+goal = "The reference family: folder exactly like 03-DSP.md §1. Every other family copies its shape."
+steps = [
+  "Port detector/computer/ballistics/laws/pipeline/output from sampler-core/src/dsp/dynamics into the folder layout; Compressor = detector → computer → ballistics → makeup; Limiter, Gate, Transient as compositions.",
+  "Each Kontakt/UVI compressor variant becomes a `laws/<vendor>/<unit>.toml`. Keep a second class only with a vector proving the topology differs; name the vector in the doc comment.",
+  "Move matching vectors (gater_kemu_vectors.json etc.) into `vectors/` with `vectors!`.",
+  "Before deleting old code: an A/B test renders old vs new on the vectors and on noise bursts; tolerance from the law file.",
+  "Register classes in the registry. Then replace the body of each old file with a thin adapter that forwards to the new crate (keep the old type names and signatures that dsp.rs/lower.rs use; do not edit dsp.rs, lower.rs or module declarations: P5.9 deletes the adapters)."
+]
+gate = ["build-slot cargo test -p kontra-dsp-dynamics", "build-slot cargo test -p sampler-core --lib dsp"]
+done = ["Vectors pass at stated tolerance; module_tests! green; old dynamics files are adapters only; net lines negative."]
+
+[[task]]
+id = "P5.2"
+title = "DSP family: eq (Band, ParametricEq, GraphicEq)"
+phase = 5
+lane = "dsp"
+size = "M"
+agent = "worker"
+deps = ["P5.1"]
+owns = ["crates/dsp/eq/**", "@registry", "crates/model/params/src/eq.rs", "crates/sampler-core/src/dsp/eq_family/**"]
+docs = ["03-DSP.md#3-the-families"]
+goal = "Copy P5.1's shape. digital/generic/legacy/solid variants become Q/gain laws on one Band."
+steps = ["As the family template above; vectors from eq_family move to vectors/."]
+gate = ["build-slot cargo test -p kontra-dsp-eq", "build-slot cargo test -p sampler-core --lib dsp"]
+done = ["Same as P5.1."]
+
+[[task]]
+id = "P5.3a"
+title = "DSP family: filter part A (Svf, BiquadCascade)"
+phase = 5
+lane = "dsp"
+size = "L"
+agent = "worker"
+deps = ["P5.1"]
+owns = ["crates/dsp/filter/**", "@registry", "crates/model/params/src/filter.rs", "crates/sampler-core/src/dsp/filter/svf.rs", "crates/sampler-core/src/dsp/filter/chamberlin.rs", "crates/sampler-core/src/dsp/filter/linear.rs", "crates/sampler-core/src/dsp/filter/cascade*", "crates/sampler-core/src/dsp/filter/sv_*", "crates/sampler-core/src/dsp/filter/lp1_*", "crates/sampler-core/src/dsp/filter/simple_lphp_*", "crates/sampler-core/src/dsp/filter/table.rs", "crates/sampler-core/src/dsp/filter/kontaktfx*", "crates/sampler-core/src/dsp/filter/versatile_*", "crates/sampler-core/src/dsp/filter/pro53_*"]
+docs = ["03-DSP.md#3-the-families"]
+goal = "SVF (TPT, 1–4 pole cascades, morph) and biquad cascade cover svf/chamberlin/linear/cascade/table/kontaktfx variants as laws."
+steps = ["Family template. cascade.rs (2.8k) and kontaktfx.rs (1.7k) are the bulk: their per-vendor responses become laws over Svf/BiquadCascade with the existing oracle vectors as proof."]
+gate = ["build-slot cargo test -p kontra-dsp-filter", "build-slot cargo test -p sampler-core --lib dsp::filter"]
+done = ["Same as P5.1."]
+
+[[task]]
+id = "P5.3b"
+title = "DSP family: filter part B (Ladder, Ar, Daft)"
+phase = 5
+lane = "dsp"
+size = "L"
+agent = "worker"
+deps = ["P5.3a"]
+owns = ["crates/dsp/filter/src/ladder*", "crates/dsp/filter/laws/**", "crates/dsp/filter/vectors/**", "crates/dsp/filter/tests/ladder*", "@registry", "crates/sampler-core/src/dsp/filter/ladder*", "crates/sampler-core/src/dsp/filter/ar*", "crates/sampler-core/src/dsp/filter/daft*", "crates/sampler-core/src/dsp/filter/monark.f32le"]
+docs = ["03-DSP.md#3-the-families"]
+goal = "One Ladder class (4-pole, drive, HQ oversampled) replaces ladder/ladder_kernel/ladder_wrapper_research; Ar and Daft become laws on Ladder or Svf if vectors allow, else stay as justified classes."
+steps = ["Family template. Delete ladder_wrapper_research.rs unless a vector needs it."]
+gate = ["build-slot cargo test -p kontra-dsp-filter"]
+done = ["Same as P5.1."]
+
+[[task]]
+id = "P5.3c"
+title = "DSP family: filter part C (Formant, Comb, Phaser, shaper)"
+phase = 5
+lane = "dsp"
+size = "M"
+agent = "worker"
+deps = ["P5.3a"]
+owns = ["crates/dsp/filter/src/formant*", "crates/dsp/filter/src/comb*", "crates/dsp/filter/src/phaser*", "crates/dsp/filter/tests/formant*", "crates/dsp/filter/tests/phaser*", "@registry", "crates/sampler-core/src/dsp/filter/formant*", "crates/sampler-core/src/dsp/filter/vowel_*", "crates/sampler-core/src/dsp/filter/phaser*", "crates/sampler-core/src/dsp/filter/shaper.rs"]
+docs = ["03-DSP.md#3-the-families"]
+goal = "Formant (vowel bank), Comb, Phaser (allpass chain). Filter `shaper.rs` moves to drive::Shaper if it is a waveshaper (check), else stays here."
+steps = ["Family template."]
+gate = ["build-slot cargo test -p kontra-dsp-filter"]
+done = ["Same as P5.1; after 5.3a–c every file in sampler-core/src/dsp/filter is an adapter."]
+
+[[task]]
+id = "P5.4a"
+title = "DSP family: delay part A (timemod → DelayLine, ModDelay, Tape, Diffuse)"
+phase = 5
+lane = "dsp"
+size = "L"
+agent = "worker"
+deps = ["P5.1"]
+owns = ["crates/dsp/delay/**", "@registry", "crates/model/params/src/delay.rs", "crates/sampler-core/src/dsp/timemod/**", "crates/sampler-core/src/dsp/taps.rs"]
+docs = ["03-DSP.md#3-the-families"]
+goal = "timemod's 13 files (buzz, diffuse, dual, dual_x, mt, psyche, tape, twin, uvi_legacy, velvet, voices, wowflutter) collapse into 4 classes + laws."
+steps = ["Family template."]
+gate = ["build-slot cargo test -p kontra-dsp-delay"]
+done = ["Same as P5.1."]
+
+[[task]]
+id = "P5.4b"
+title = "DSP family: delay part B (Replika as DelayLine laws)"
+phase = 5
+lane = "dsp"
+size = "L"
+agent = "worker"
+deps = ["P5.4a"]
+owns = ["crates/dsp/delay/src/replika*", "crates/dsp/delay/laws/kontakt/replika*", "crates/dsp/delay/vectors/replika*", "crates/dsp/delay/tests/replika*", "@registry", "crates/sampler-core/src/dsp/replika/**", "crates/sampler-core/src/dsp/replika_head.rs"]
+docs = ["03-DSP.md#3-the-families"]
+goal = "Replika's modes become DelayLine/ModDelay/Tape laws; a mode keeps code only with a vector showing the topology differs."
+steps = ["Family template."]
+gate = ["build-slot cargo test -p kontra-dsp-delay"]
+done = ["Same as P5.1."]
+
+[[task]]
+id = "P5.5"
+title = "DSP family: reverb (Fdn, Convolver)"
+phase = 5
+lane = "dsp"
+size = "L"
+agent = "worker"
+deps = ["P5.1"]
+owns = ["crates/dsp/reverb/**", "@registry", "crates/model/params/src/reverb.rs", "crates/sampler-core/src/dsp/space/**"]
+docs = ["03-DSP.md#3-the-families"]
+goal = "space/ (network, design/{cosmic,plate,raum,shelf}, convolver, resample, shape) → Fdn + design laws, Convolver."
+steps = ["Family template."]
+gate = ["build-slot cargo test -p kontra-dsp-reverb"]
+done = ["Same as P5.1."]
+
+[[task]]
+id = "P5.6a"
+title = "DSP family: drive part A (Shaper + named units as laws)"
+phase = 5
+lane = "dsp"
+size = "L"
+agent = "worker"
+deps = ["P5.1"]
+owns = ["crates/dsp/drive/**", "@registry", "crates/model/params/src/drive.rs", "crates/sampler-core/src/dsp/color/{bite,diode,dirt,distortion,drive,exciter,freak,saturator,shaping,skreamer,tubescreamer,tape,tone,mod,tests}.rs", "crates/sampler-core/src/dsp/color/kolor/**", "crates/sampler-core/src/dsp/color/tables/**"]
+docs = ["03-DSP.md#3-the-families"]
+goal = "Shaper (oversampled waveshaper + pre/post tone) and Exciter; Skreamer, Kolor, TubeScreamer, Freak, Bite, Dirt… become laws."
+steps = ["Family template. Amp models are P5.6b; lofi/redux/machine are P5.6c."]
+gate = ["build-slot cargo test -p kontra-dsp-drive"]
+done = ["Same as P5.1."]
+
+[[task]]
+id = "P5.6b"
+title = "DSP family: drive part B (Amp: tonestack → shaper → cab)"
+phase = 5
+lane = "dsp"
+size = "L"
+agent = "worker"
+deps = ["P5.6a"]
+owns = ["crates/dsp/drive/src/amp*", "crates/dsp/drive/laws/kontakt/amp_*", "crates/dsp/drive/vectors/amp_*", "crates/dsp/drive/tests/amp*", "@registry", "crates/sampler-core/src/dsp/color/amp/**", "crates/sampler-core/src/dsp/color/tonestack.rs"]
+docs = ["03-DSP.md#3-the-families"]
+goal = "amp/{acbox,bigfuzz,cabinet,cat,chain,crywah,dstortion,fuzz,jump,kernel,mod,twang} → one Amp class + laws."
+steps = ["Family template."]
+gate = ["build-slot cargo test -p kontra-dsp-drive"]
+done = ["Same as P5.1."]
+
+[[task]]
+id = "P5.6c"
+title = "DSP family: drive part C (Crush: lofi, redux, machine)"
+phase = 5
+lane = "dsp"
+size = "M"
+agent = "worker"
+deps = ["P5.6a"]
+owns = ["crates/dsp/drive/src/crush*", "crates/dsp/drive/laws/kontakt/crush_*", "crates/dsp/drive/laws/uvi/crush_*", "crates/dsp/drive/vectors/crush_*", "crates/dsp/drive/tests/crush*", "@registry", "crates/sampler-core/src/dsp/color/lofi.rs", "crates/sampler-core/src/dsp/color/redux.rs", "crates/sampler-core/src/dsp/machine.rs", "crates/sampler-core/src/dsp/machine_tables.rs"]
+docs = ["03-DSP.md#3-the-families"]
+goal = "Bit depth, rate reduction, lofi and the machine tables as one Crush class + laws."
+steps = ["Family template."]
+gate = ["build-slot cargo test -p kontra-dsp-drive"]
+done = ["Same as P5.1."]
+
+[[task]]
+id = "P5.7"
+title = "DSP family: spatial (Pan, Width, Rotator, SurroundPan, RingMod, StereoTune)"
+phase = 5
+lane = "dsp"
+size = "M"
+agent = "worker"
+deps = ["P5.1"]
+owns = ["crates/dsp/spatial/**", "@registry", "crates/model/params/src/spatial.rs", "crates/sampler-core/src/dsp/rotator.rs", "crates/sampler-core/src/dsp/surround_*", "crates/sampler-core/src/dsp/stereo_tune*", "crates/sampler-core/src/dsp/ringmod.rs", "crates/sampler-core/src/dsp/ring_ramp.rs", "crates/sampler-core/src/dsp/color/stereo.rs", "crates/sampler-core/src/dsp/color/stereorizer.rs", "crates/sampler-core/src/dsp/color/widener.rs", "crates/sampler-core/src/dsp/color/hilbert.rs"]
+docs = ["03-DSP.md#3-the-families"]
+goal = "Spatial tools in one family; existing native vectors move with them."
+steps = ["Family template."]
+gate = ["build-slot cargo test -p kontra-dsp-spatial"]
+done = ["Same as P5.1."]
+
+[[task]]
+id = "P5.8"
+title = "DSP family: modulators (Envelope, Lfo, Step, Follower, Glide)"
+phase = 5
+lane = "dsp"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P5.1"]
+owns = ["crates/dsp/modulators/**", "@registry", "crates/model/params/src/modulators.rs", "crates/sampler-core/src/blocks/**", "crates/sampler-core/src/voice_mod.rs", "crates/sampler-core/src/voice_mod/**", "crates/sampler-core/src/modulation.rs"]
+docs = ["03-DSP.md#3-the-families"]
+goal = "One Envelope (multi-segment: AHDSR, flex, analog), one Lfo (incl. uvi_lfo shapes), Step, Follower, Glide. arp/pattern_arp move out to the VM later (P6.3), keep them in place here."
+steps = ["Family template; voice_mod.rs keeps routing, loses evaluation code."]
+gate = ["build-slot cargo test -p kontra-dsp-modulators", "build-slot cargo test -p sampler-core --lib"]
+done = ["Same as P5.1."]
+
+[[task]]
+id = "P5.9"
+title = "Delete both Processor enums' legacy arms, lower.rs mapping, dsp.rs routing"
+phase = 5
+lane = "dsp"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P5.2", "P5.3b", "P5.3c", "P5.4b", "P5.5", "P5.6b", "P5.6c", "P5.7", "P5.8"]
+owns = ["crates/sampler-core/src/dsp.rs", "crates/sampler-core/src/lower.rs", "crates/sampler-core/src/dsp/**", "crates/model/ir/src/**", "@corelib"]
+docs = ["03-DSP.md#5-the-registry-cratesdspregistry-crate-kontra-dsp"]
+goal = "IR carries `ModuleSpec { kind, law, params }`; core runs `AnyModule` directly; `xtask debt` Processor:: = 0."
+steps = ["Replace ir::Processor with ModuleSpec; migrate format mappers via a temporary `From<old>`; delete old enums and routing match.", "Delete remaining sampler-core/src/dsp files (lanes/kernels/control/live go to registry/simd per 03-DSP.md §3)."]
+gate = ["build-slot cargo check --workspace", "build-slot cargo xtask debt"]
+done = ["Processor:: count 0; sampler-core/src/dsp gone."]
+
+[[task]]
+id = "P5.10"
+title = "Gate G5: DSP A/B on reference libraries"
+phase = 5
+lane = "coordinator"
+size = "S"
+agent = "coordinator"
+deps = ["P5.9"]
+owns = ["docs/architecture-v3/gates/G5.md"]
+docs = ["11-MIGRATION.md#phase-5-dsp-families-one-pr-per-family-parallelizable"]
+goal = "Renders null below family tolerance vs G4 on the 4 libraries; CPU not worse."
+steps = ["A/B renders, C4, C10; dspbench before/after."]
+gate = ["G5.md"]
+done = ["Every surviving second class has its measurement linked."]
+
+# ───────────────────────────── Phase 6: engine crates (draft) ─────────────────────────────
+
+[[task]]
+id = "P6.1a"
+title = "kontra-stream: crate, Source trait, core stream/residency/head code moved"
+phase = 6
+lane = "engine"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P5.10"]
+owns = ["crates/engine/stream/**", "crates/sampler-core/src/stream.rs", "crates/sampler-core/src/residency*", "crates/sampler-core/src/residency/**", "crates/sampler-core/src/resident_data.rs", "crates/sampler-core/src/head_*", "crates/sampler-core/src/packed*", "crates/sampler-core/src/packed/**", "@corelib"]
+docs = ["05-STREAM.md"]
+goal = "Move with re-exports; introduce `Source` trait for format readers."
+steps = ["git mv into crates/engine/stream; re-export from sampler-core."]
+gate = ["build-slot cargo test -p kontra-stream", "build-slot cargo check --workspace"]
+done = ["Moves + trait only."]
+
+[[task]]
+id = "P6.1b"
+title = "kontra-stream: move the Kontakt stream service and drop uvi → kontakt"
+phase = 6
+lane = "engine"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P6.1a"]
+owns = ["crates/engine/stream/**", "crates/sampler-kontakt/src/stream.rs", "crates/sampler-kontakt/src/head_*", "crates/sampler-kontakt/src/channel_reader.rs", "crates/sampler-kontakt/src/dfd_window.rs", "crates/sampler-uvi/src/stream.rs", "crates/sampler-uvi/src/residency_policy.rs", "crates/sampler-uvi/Cargo.toml", "crates/sampler-kontakt/Cargo.toml", "@lockfile"]
+docs = ["05-STREAM.md#4-formats"]
+goal = "StreamPolicy/Streamed/AssetSource live in kontra-stream; sampler-uvi no longer depends on sampler-kontakt."
+steps = ["Move, implement Source for NCW/monolith/UFS readers in their format crates."]
+gate = ["build-slot cargo check --workspace", "build-slot cargo xtask deps-check"]
+done = ["deps-check shows no uvi → kontakt edge."]
+
+[[task]]
+id = "P6.1c"
+title = "Sample store: content-keyed, process-wide, packed preloads, deadline I/O"
+phase = 6
+lane = "engine"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P6.1b"]
+owns = ["crates/engine/stream/**"]
+docs = ["05-STREAM.md#2-the-store", "05-STREAM.md#5-memory-targets"]
+goal = "Two instances share one preload; preloads stored in source format; earliest-deadline I/O; two stream buffers per voice."
+steps = ["Implement Store/Blob/PageCache/IoService; measure memory before/after on Areia (coordinator)."]
+gate = ["build-slot cargo test -p kontra-stream", "build-slot cargo test -p kontra-probe"]
+done = ["Memory table in 05-STREAM.md filled with measurements."]
+
+[[task]]
+id = "P6.2"
+title = "kontra-voice: source/resample/release/pitch moved; one chain runner"
+phase = 6
+lane = "engine"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P6.1a"]
+owns = ["crates/engine/voice/**", "crates/sampler-core/src/source*", "crates/sampler-core/src/source/**", "crates/sampler-core/src/resample*", "crates/sampler-core/src/resample/**", "crates/sampler-core/src/release.rs", "crates/sampler-core/src/pitch.rs", "crates/sampler-core/src/whole_voice.rs", "crates/sampler-core/src/v1_voice_controls.rs", "crates/sampler-core/src/render*", "crates/sampler-core/src/render/**", "crates/sampler-core/src/parallel*", "crates/sampler-core/src/parallel/**", "@corelib"]
+docs = ["02-ENGINE.md#5-voices", "03-DSP.md#6-voice-vs-bus-processing"]
+goal = "One voice crate; ~54 render* functions collapse into one chain runner (SIMD batched by kind)."
+steps = ["Move first (separate commit), then collapse render variants with A/B null tests."]
+gate = ["build-slot cargo test -p kontra-voice", "build-slot cargo test -p kontra-probe"]
+done = ["C4, C10 vs G5."]
+
+[[task]]
+id = "P6.3a"
+title = "kontra-vm: behavior/ops/schedule moved; HostApi trait"
+phase = 6
+lane = "engine"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P5.10"]
+owns = ["crates/engine/vm/**", "crates/sampler-core/src/behavior*", "crates/sampler-core/src/behavior/**", "crates/sampler-core/src/ops.rs", "crates/sampler-core/src/schedule.rs", "crates/sampler-core/src/script.rs", "crates/sampler-core/src/control/**", "@corelib"]
+docs = ["04-SCRIPT.md#2-kontra-vm"]
+goal = "VM crate knows no language and no format; engine implements HostApi."
+steps = ["Move; define HostApi from today's op handlers; Scheduler on the event queue."]
+gate = ["build-slot cargo test -p kontra-vm", "build-slot cargo test -p sampler-ksp"]
+done = ["No format or KSP names in kontra-vm."]
+
+[[task]]
+id = "P6.3b"
+title = "on init on the VM; delete eval.rs and sampler-ksp luau/"
+phase = 6
+lane = "engine"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P6.3a"]
+owns = ["crates/sampler-ksp/src/eval.rs", "crates/sampler-ksp/src/luau/**", "crates/sampler-ksp/src/init_cache.rs", "crates/sampler-ksp/src/headless.rs", "crates/sampler-ksp/src/lower.rs", "crates/sampler-ksp/src/lib.rs", "crates/sampler-ksp/tests/**", "crates/engine/vm/**"]
+docs = ["04-SCRIPT.md#2-kontra-vm", "04-SCRIPT.md#6-what-gets-deleted"]
+goal = "One KSP execution engine. `on init` runs through lowering + VM against an init HostApi that records UI and initial params."
+steps = ["Find all users of eval.rs and luau/ (`graft callers` depth all). Port init-only builtins to HostApi.", "KSP conformance suite (tools/ksp-conformance) must not regress."]
+gate = ["build-slot cargo test -p sampler-ksp", "ksp-conformance run (see tools/ksp-conformance/README)"]
+done = ["`xtask debt` KSP engines 3 → 1."]
+
+[[task]]
+id = "P6.4a"
+title = "kontra-engine: EventQueue + Timed<Work> + render loop at queue boundaries"
+phase = 6
+lane = "engine"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P6.2", "P6.3b"]
+owns = ["crates/engine/engine/**", "crates/sampler-core/src/lib.rs", "crates/sampler-core/src/plans.rs", "crates/sampler-core/src/prepare*", "crates/sampler-core/src/prepare/**", "@v2rs", "@plugin"]
+docs = ["02-ENGINE.md#2-one-event-type-one-queue", "02-ENGINE.md#3-the-render-loop"]
+goal = "The engine splits at queue boundaries; the plugin shell stops splitting blocks."
+steps = ["Implement EventQueue (fixed heap, seq tiebreak); move render loop; remove block splitting in src/plugin.rs."]
+gate = ["build-slot cargo test -p kontra-engine", "build-slot cargo test -p kontra-probe"]
+done = ["C4, C5 green."]
+
+[[task]]
+id = "P6.4b"
+title = "kontra-engine: NoteLedger replaces held/consumed/closed tables and families-as-cohorts"
+phase = 6
+lane = "engine"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P6.4a"]
+owns = ["crates/engine/engine/**", "crates/sampler-core/src/ownership.rs", "crates/sampler-core/src/steal.rs", "crates/sampler-core/src/groups.rs", "crates/sampler-core/src/note_event.rs", "src/plugin/held_keys.rs", "@v2rs", "@plugin"]
+docs = ["02-ENGINE.md#4-the-note-ledger"]
+goal = "One ledger maps host notes ↔ script events ↔ voices; CLAP note-end from the ledger."
+steps = ["Implement Arena<Note>; port tables; delete held_keys."]
+gate = ["build-slot cargo test -p kontra-engine", "build-slot cargo test -p kontra-probe"]
+done = ["C3, C6 green."]
+
+[[task]]
+id = "P6.4c"
+title = "kontra-engine: Engine struct replaces Runtime's 109 fields; Stats derive"
+phase = 6
+lane = "engine"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P6.4b"]
+owns = ["crates/engine/engine/**", "crates/sampler-core/**", "@v2rs"]
+docs = ["02-ENGINE.md#1-the-engine-struct"]
+goal = "sampler-core is reduced to re-exports (or deleted); counters live in one Stats."
+steps = ["Move remaining Runtime state into the 10 owners; #[derive(Stats)]."]
+gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-probe"]
+done = ["sampler-core production lines < 1k."]
+
+[[task]]
+id = "P6.5"
+title = "Gate G6: engine crates"
+phase = 6
+lane = "coordinator"
+size = "S"
+agent = "coordinator"
+deps = ["P6.1c", "P6.4c"]
+owns = ["docs/architecture-v3/gates/G6.md"]
+docs = ["11-MIGRATION.md#phase-6-engine-crates"]
+goal = "All contracts green; CPU no worse than G5; fast rebuild after a DSP edit ≤ 25 s."
+steps = ["probe, xtask timings, survey."]
+gate = ["G6.md"]
+done = ["Targets met or follow-ups filed."]
+
+# ───────────────────────────── Phase 7: script and format crates (draft) ─────────────────────────────
+
+[[task]]
+id = "P7.1"
+title = "kontra-ksp: move sampler-ksp; builtins! drives sema + lowering"
+phase = 7
+lane = "script"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P6.5"]
+owns = ["crates/sampler-ksp/**", "crates/script/ksp/**", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
+docs = ["04-SCRIPT.md#3-kontra-ksp"]
+goal = "One builtin table generates checks, lowering, docs and the unsupported list."
+steps = ["git mv first (pure), then extend builtins!."]
+gate = ["build-slot cargo test -p kontra-ksp"]
+done = ["Scripts tab unsupported list generated from the table."]
+
+[[task]]
+id = "P7.2"
+title = "kontra-lua: UVIScript surface from sampler-uvi/sampler-script"
+phase = 7
+lane = "script"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P6.5"]
+owns = ["crates/script/lua/**", "crates/sampler-script/**", "crates/sampler-uvi/src/script*", "crates/sampler-uvi/src/script/**", "crates/sampler-uvi/src/scripted*", "crates/sampler-uvi/src/scripted/**", "crates/sampler-uvi/src/script_prelude.lua"]
+docs = ["04-SCRIPT.md#4-kontra-lua"]
+goal = "Lua front end on the VM HostApi; UVI format crate keeps no script code."
+steps = ["Move, generate api.rs table."]
+gate = ["build-slot cargo test -p kontra-lua -p sampler-uvi"]
+done = ["Lua and KSP share HostApi; C5 green on UVI fixture."]
+
+[[task]]
+id = "P7.3"
+title = "kontra-format: Format trait, formats! registry, map_effects!/map_mods!/map_zone!"
+phase = 7
+lane = "format"
+size = "M"
+agent = "worker"
+draft = true
+deps = ["P6.5"]
+owns = ["crates/format/common/**", "crates/base/macros/**", "src/formats.rs"]
+docs = ["06-FORMATS.md#1-the-contract", "06-FORMATS.md#2-mapping-effects-data-not-code"]
+goal = "The translator contract and mapping macros, with sfz as the first user if small enough."
+steps = ["Implement trait + macros; move src/formats.rs registry; re-export."]
+gate = ["build-slot cargo test -p kontra-format"]
+done = ["06-FORMATS.md examples compile."]
+
+[[task]]
+id = "P7.4"
+title = "format/kontakt: move sampler-kontakt; effects become map_effects! rows"
+phase = 7
+lane = "format"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P7.3", "P7.1"]
+owns = ["crates/sampler-kontakt/**", "crates/format/kontakt/**", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
+docs = ["06-FORMATS.md"]
+goal = "No DSP in the format crate; ~6.5k effects code becomes table rows + laws."
+steps = ["git mv first; then replace effects/* with map_effects!."]
+gate = ["build-slot cargo test -p kontra-format-kontakt", "load parity (tools/parity-run) unchanged"]
+done = ["Load parity vs Kontakt 8.13.1 still 0 mismatches (coordinator)."]
+
+[[task]]
+id = "P7.5"
+title = "format/uvi: move sampler-uvi; fx mapping as table rows"
+phase = 7
+lane = "format"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P7.3", "P7.2"]
+owns = ["crates/sampler-uvi/**", "crates/format/uvi/**", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
+docs = ["06-FORMATS.md"]
+goal = "Same as P7.4 for UVI."
+steps = ["git mv; map_effects!/map_mods!."]
+gate = ["build-slot cargo test -p kontra-format-uvi"]
+done = ["UVI fixtures and survey unchanged."]
+
+[[task]]
+id = "P7.6"
+title = "format/sfz, format/native, ample, ikmpak moves"
+phase = 7
+lane = "format"
+size = "M"
+agent = "worker"
+draft = true
+deps = ["P7.3"]
+owns = ["crates/format/sfz/**", "crates/format/native/**", "crates/format/ample/**", "crates/format/ikmpak/**", "crates/sampler-native/**", "crates/sampler-ample/**", "crates/sampler-ikmpak/**", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
+docs = ["06-FORMATS.md#3-size-targets", "06-FORMATS.md#4-native-format"]
+goal = "Every format behind the Format trait."
+steps = ["Moves + trait impls; probe fixtures switch to format/native."]
+gate = ["build-slot cargo test -p kontra-format-sfz -p kontra-format-native"]
+done = ["kontra-probe fixtures load through format/native."]
+
+[[task]]
+id = "P7.7"
+title = "Gate G7: surveys and parity"
+phase = 7
+lane = "coordinator"
+size = "S"
+agent = "coordinator"
+deps = ["P7.4", "P7.5", "P7.6"]
+owns = ["docs/architecture-v3/gates/G7.md"]
+docs = ["11-MIGRATION.md#phase-7-script-and-format-crates"]
+goal = "No new survey regressions; every unsupported feature is a diagnostic."
+steps = ["Library survey, load parity, probe."]
+gate = ["G7.md"]
+done = ["Gap log generated from diagnostics."]
+
+# ───────────────────────────── Phase 8: app and plugin (draft) ─────────────────────────────
+
+[[task]]
+id = "P8.1"
+title = "Protocol channels replace Shared's 54 fields"
+phase = 8
+lane = "app"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P7.7"]
+owns = ["@plugin", "@v2rs", "crates/model/protocol/**"]
+docs = ["07-APP.md#2-the-three-channels"]
+goal = "Commands in, publications out, retirements out; no Mutex reachable from audio."
+steps = ["Replace each Shared field family with a protocol channel; delete control_tick drains."]
+gate = ["build-slot cargo test --lib plugin", "build-slot cargo test -p kontra-probe"]
+done = ["Shared struct gone."]
+
+[[task]]
+id = "P8.2"
+title = "app/host from src/sound, src/plugin.rs (non-UI), routing, support"
+phase = 8
+lane = "app"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P8.1"]
+owns = ["crates/app/host/**", "src/sound/**", "src/routing.rs", "src/support/**", "src/support.rs", "@plugin", "@v2rs"]
+docs = ["07-APP.md#4-host-apphost"]
+goal = "Host crate owns rack, load pipeline, state."
+steps = ["Move with re-exports, then delete the re-exports when the plugin uses kontra-host directly."]
+gate = ["build-slot cargo check --workspace"]
+done = ["src/sound gone."]
+
+[[task]]
+id = "P8.3"
+title = "app/library and app/align"
+phase = 8
+lane = "app"
+size = "M"
+agent = "worker"
+draft = true
+deps = ["P8.1"]
+owns = ["crates/app/library/**", "crates/app/align/**", "src/library*", "src/library/**", "src/artwork.rs", "src/creator*", "src/creator/**", "src/timing.rs"]
+docs = ["01-LAYOUT.md#5-current--new-mapping"]
+goal = "Library scanning and auto-align as their own crates."
+steps = ["Moves with re-exports."]
+gate = ["build-slot cargo test -p kontra-library -p kontra-align"]
+done = ["Moves only."]
+
+[[task]]
+id = "P8.4"
+title = "app/ui depends on protocol only"
+phase = 8
+lane = "app"
+size = "L"
+agent = "worker"
+draft = true
+deps = ["P8.2"]
+owns = ["crates/app/ui/**", "src/ui/**"]
+docs = ["07-APP.md#5-ui-boundary"]
+goal = "UI crate never depends on engine/vm/dsp; engine tests never build GPU crates."
+steps = ["Move src/ui; replace engine reads with publications; trim v2_tests.rs per 10-TESTING.md §4."]
+gate = ["build-slot cargo xtask deps-check"]
+done = ["deps-check forbidden table enforced as errors."]
+
+[[task]]
+id = "P8.5"
+title = "plugin/ thin shell; tools moves; final DAG enforcement"
+phase = 8
+lane = "app"
+size = "M"
+agent = "worker"
+draft = true
+deps = ["P8.3", "P8.4"]
+owns = ["plugin/**", "src/**", "tools/**", "crates/sampler-perf/**", "crates/sampler-dspbench/**", "crates/sampler-parity/**", "@manifests", "@lockfile", "@ci"]
+docs = ["07-APP.md#3-plugin-shell-plugin-15k", "01-LAYOUT.md#2-dependency-dag"]
+goal = "Root package is the ~1.5k plugin shell; every README target measured."
+steps = ["Move entry + moose glue; move perf/dspbench/parity/create_library into tools; make deps-check target DAG an error."]
+gate = ["build-slot cargo xtask deps-check", "build-slot cargo xtask size --max-crate 8000 --max-file 800"]
+done = ["README targets table filled with measured values."]
+
+[[task]]
+id = "P8.6"
+title = "Gate G8: v3 complete, merge to main"
+phase = 8
+lane = "coordinator"
+size = "S"
+agent = "coordinator"
+deps = ["P8.5"]
+owns = ["docs/architecture-v3/gates/G8.md"]
+docs = ["README.md#targets", "11-MIGRATION.md#phase-8-app-and-plugin"]
+goal = "Release gate: v1 UX parity, all contracts, surveys, CPU, memory; user decides the merge to main."
+steps = ["Full gate run per the v2 release gate rules; write G8.md; open v3 → main PR for the user."]
+gate = ["G8.md"]
+done = ["User approves."]

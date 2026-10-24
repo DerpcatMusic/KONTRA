@@ -1,0 +1,54 @@
+name: Bug report
+description: Something plays, loads or behaves wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks! Please read [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) first: do not attach commercial
+        presets, samples, `.nicnt` files, extracted scripts or library artwork.
+  - type: input
+    id: version
+    attributes:
+      label: KONTRA version / build
+      description: From the About panel or the nightly name.
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host and plugin format
+      placeholder: Bitwig 5.3, CLAP, Linux
+    validations:
+      required: true
+  - type: input
+    id: library
+    attributes:
+      label: Library and instrument
+      placeholder: Spitfire Areia, Spiccato Fast
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Playback timing / double attacks, Sound differs from Kontakt/UVI, Loading, Script / UI, CPU / memory, Crash, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Live MIDI or DAW playback? Block size and sample rate if timing related.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: The load report or `kontra-probe --json` summary, reviewed for private data.
+      render: text

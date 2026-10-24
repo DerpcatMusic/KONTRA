@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: v3 refactor plan
+    url: https://github.com/DerpcatMusic/KONTRA/tree/v3/docs/architecture-v3
+    about: Architecture docs, the task index and the workflow for the v3 refactor.
