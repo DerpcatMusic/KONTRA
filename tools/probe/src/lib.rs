@@ -42,6 +42,8 @@ pub const NULL_MIN_AUDIBLE: usize = 32;
 pub const NULL_LIMIT_DB: f64 = -120.0;
 /// MIDI velocity of every note the probe sends.
 const VELOCITY: u8 = 100;
+/// CC113 (sample start) value sent before notes of patterns that do not sweep it.
+const DEFAULT_START: u8 = 64;
 /// Chord shapes. A dense step holds one chord; a live step plays one key of it.
 const CHORDS: [[u8; 4]; 4] = [
     [48, 55, 60, 64],
@@ -196,6 +198,10 @@ pub struct Session {
     rate: f64,
     /// The instrument's zones; `None` for a plain audio file.
     zones: Option<Vec<Zone>>,
+    /// Script slots that compiled; a slot that fails to compile is silently absent.
+    scripts: usize,
+    /// Voices one played key should start, when the fixture knows.
+    expected: Option<usize>,
     primed: Option<Loaded<<V2Core as Core>::Prepared>>,
 }
 
@@ -205,6 +211,8 @@ impl fmt::Debug for Session {
             .field("path", &self.path)
             .field("rate", &self.rate)
             .field("zones", &self.zones.as_ref().map(Vec::len))
+            .field("scripts", &self.scripts)
+            .field("expected", &self.expected)
             .finish_non_exhaustive()
     }
 }
@@ -220,6 +228,8 @@ impl Session {
             path: path.to_path_buf(),
             rate,
             zones: zones_of(&primed),
+            scripts: primed.scripts.views.len(),
+            expected: None,
             primed: Some(primed),
         })
     }
@@ -227,6 +237,18 @@ impl Session {
     /// Sample rate the instrument was loaded at.
     pub fn rate(&self) -> f64 {
         self.rate
+    }
+
+    /// Script slots that compiled when the instrument was loaded.
+    pub fn scripts(&self) -> usize {
+        self.scripts
+    }
+
+    /// Sets the voice count one played key is expected to start, which
+    /// [`check`] C6 and C7 compare against.
+    pub fn expect_voices(mut self, count: usize) -> Self {
+        self.expected = Some(count);
+        self
     }
 
     /// Lowest and highest key any zone plays; `None` without a zone map.
@@ -337,17 +359,9 @@ pub fn check(session: &mut Session, id: &str, pattern: Pattern) -> Result<Verdic
         "C4" => c4_block_size(session)?,
         "C5" => c5_offline_matches_realtime(session)?,
         "C6" => c6_voices_per_note(session, pattern)?,
-        "C7" => Verdict::unsupported(
-            "C7",
-            pattern,
-            "no script-load fixture: needs 300 UI writes per note (Areia-style)",
-        ),
+        "C7" => c7_script_load(session, pattern)?,
         "C8" => c8_dense_first_block(session)?,
-        "C9" => Verdict::unsupported(
-            "C9",
-            pattern,
-            "start offsets are sent (Pattern::Offsets) but playPos is not observable",
-        ),
+        "C9" => c9_start_offsets(session)?,
         "C10" => Verdict::unsupported(
             "C10",
             pattern,
@@ -418,12 +432,21 @@ fn plan(pattern: Pattern) -> Plan {
             Pattern::Dense => chord.to_vec(),
             Pattern::Live | Pattern::Offsets | Pattern::Cc => vec![chord[step % 4]],
         };
-        let sweep = (step * 2 % 128) as u8;
+        // The sweep starts late, not at zero: a first note at offset zero loads
+        // the instrument's pages and hides the audited start-offset stall.
+        let sweep = ((step * 2 + 96) % 128) as u8;
         let velocity = f64::from(VELOCITY) / 127.0;
+        // CC113 is the start offset of the cc_start fixture: every pattern gives
+        // it a value so a script that reads it never sees a default of 0.
         match pattern {
             Pattern::Offsets => events.push((at, Event::midi1(0xb0, 113, sweep))),
-            Pattern::Cc => events.push((at, Event::midi1(0xb0, 1, sweep))),
-            Pattern::Live | Pattern::Dense => {}
+            Pattern::Cc => {
+                events.push((at, Event::midi1(0xb0, 113, DEFAULT_START)));
+                events.push((at, Event::midi1(0xb0, 1, sweep)));
+            }
+            Pattern::Live | Pattern::Dense => {
+                events.push((at, Event::midi1(0xb0, 113, DEFAULT_START)));
+            }
         }
         for &key in &keys {
             id += 1;
@@ -545,6 +568,21 @@ fn first_audible(audio: &[[f32; 2]], from: usize, to: usize) -> Option<usize> {
 }
 
 fn c1_on_time(session: &mut Session, pattern: Pattern) -> Result<Verdict> {
+    on_time(session, "C1", pattern, "")
+}
+
+/// C9 is C1 with a start offset on every note: CC113 sweeps 0..126, which the
+/// fixture turns into a source offset of up to 30 % of the sample.
+fn c9_start_offsets(session: &mut Session) -> Result<Verdict> {
+    on_time(session, "C9", Pattern::Offsets, "CC113 0..126 every note; ")
+}
+
+fn on_time(
+    session: &mut Session,
+    id: &'static str,
+    pattern: Pattern,
+    note: &str,
+) -> Result<Verdict> {
     let report = session.play(pattern, Mode::RealTime, BLOCK)?;
     let missing = audible_missing(&report);
     let worst = report
@@ -555,13 +593,13 @@ fn c1_on_time(session: &mut Session, pattern: Pattern) -> Result<Verdict> {
         .max()
         .unwrap_or(0);
     let detail = format!(
-        "worst start error {worst} frames over {} notes; {missing} never audible",
+        "{note}worst start error {worst} frames over {} notes; {missing} never audible",
         report.notes.len()
     );
     Ok(if missing == 0 && worst == 0 {
-        Verdict::passed("C1", pattern, detail)
+        Verdict::passed(id, pattern, detail)
     } else {
-        Verdict::failed("C1", pattern, detail)
+        Verdict::failed(id, pattern, detail)
     })
 }
 
@@ -625,11 +663,24 @@ fn c6_voices_per_note(session: &mut Session, pattern: Pattern) -> Result<Verdict
     let report = session.play(pattern, Mode::Offline, BLOCK)?;
     let counts: Vec<usize> = report.notes.iter().map(|n| n.voices).collect();
     let first = counts.first().copied().unwrap_or(0);
-    Ok(if first > 0 && counts.iter().all(|&c| c == first) {
+    let (ok, expected) = match session.expected {
+        Some(n) => (
+            counts.iter().all(|&c| c == n),
+            format!("{n} voice(s) expected on every note"),
+        ),
+        None => (
+            first > 0 && counts.iter().all(|&c| c == first),
+            "voices equal on every note and above zero".to_owned(),
+        ),
+    };
+    Ok(if ok {
         Verdict::passed(
             "C6",
             pattern,
-            format!("{first} voice(s) on every one of {} notes", counts.len()),
+            format!(
+                "{first} voice(s) on every one of {} notes; {expected}",
+                counts.len()
+            ),
         )
     } else {
         let silent: Vec<String> = report
@@ -638,15 +689,15 @@ fn c6_voices_per_note(session: &mut Session, pattern: Pattern) -> Result<Verdict
             .filter(|n| n.voices == 0)
             .map(|n| silent_note(session, n))
             .collect();
-        Verdict::failed(
-            "C6",
-            pattern,
-            format!(
-                "voices per note vary: {counts:?}; {} with no voices: {}",
+        let mut detail = format!("{expected}; voices per note: {counts:?}");
+        if !silent.is_empty() {
+            detail.push_str(&format!(
+                "; {} with no voices: {}",
                 silent.len(),
                 silent.join("; ")
-            ),
-        )
+            ));
+        }
+        Verdict::failed("C6", pattern, detail)
     })
 }
 
@@ -661,6 +712,32 @@ fn silent_note(session: &Session, note: &NoteReport) -> String {
         "step {} keys {:?} velocity {}: {zones}",
         note.step, note.keys, note.velocity
     )
+}
+
+/// C7 is C1 and C6 with the fixture's on-note load running: a script slot must
+/// have compiled, else the load never ran and the contract would pass vacuously.
+fn c7_script_load(session: &mut Session, pattern: Pattern) -> Result<Verdict> {
+    if session.scripts() == 0 {
+        return Ok(Verdict::failed(
+            "C7",
+            pattern,
+            "no script slot compiled, so the on-note load did not run",
+        ));
+    }
+    let on_time = c1_on_time(session, pattern)?;
+    let voices = c6_voices_per_note(session, pattern)?;
+    let pass = on_time.pass == Some(true) && voices.pass == Some(true);
+    let detail = format!(
+        "{} script slot(s) compiled; C1: {}; C6: {}",
+        session.scripts(),
+        on_time.detail,
+        voices.detail
+    );
+    Ok(if pass {
+        Verdict::passed("C7", pattern, detail)
+    } else {
+        Verdict::failed("C7", pattern, detail)
+    })
 }
 
 fn c8_dense_first_block(session: &mut Session) -> Result<Verdict> {
@@ -806,11 +883,33 @@ mod tests {
     }
 
     #[test]
+    fn every_live_step_carries_a_start_offset_value() {
+        let live = plan(Pattern::Live);
+        let first_note = live.notes[0].scheduled as usize;
+        let controllers: Vec<(u8, u8)> = live
+            .events
+            .iter()
+            .filter(|(frame, _)| *frame == first_note)
+            .filter_map(|(_, event)| match event {
+                Event::Ump([word, _]) => Some((((word >> 8) & 0x7f) as u8, (word & 0x7f) as u8)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            controllers,
+            vec![(113, DEFAULT_START)],
+            "a script that reads CC113 always sees a value"
+        );
+    }
+
+    #[test]
     fn unknown_contract_is_an_error() {
         let mut session = Session {
             path: PathBuf::new(),
             rate: 48_000.0,
             zones: None,
+            scripts: 0,
+            expected: None,
             primed: None,
         };
         assert!(check(&mut session, "C11", Pattern::Live).is_err());
@@ -850,6 +949,8 @@ mod tests {
                 keys: (55, 96),
                 velocities: (1, 127),
             }]),
+            scripts: 0,
+            expected: None,
             primed: None,
         };
         let note = NoteReport {

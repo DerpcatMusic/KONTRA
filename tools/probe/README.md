@@ -26,14 +26,15 @@ by the library creator, so no vendor files or audio are committed.
 
 | Fixture | Stands for | Not carried by the creator |
 |---|---|---|
-| `cc_start` | Areia: 3 mic groups x 4 round robins, round-robin script | CC113 start route, 300 UI writes per note |
-| `key_position` | Vista: 2 velocity layers | KeyPosition/RTC start route |
-| `dense` | 4-note chords on 1 mic x 4 round robins | `play_note` per voice, `ignore_event` |
+| `cc_start` | Areia: 3 mic groups x 4 round robins, round-robin script | CC113 start route (the offset is `play_note`'s start time instead) |
+| `ui_load` | Areia's effect traffic: 300 `set_control_par` writes and one `message` per note | the 16,700-line `on note` |
+| `key_position` | Vista: 2 velocity layers | KeyPosition/RTC start route (the offset is computed in KSP) |
+| `dense` | 4-note chords on 1 mic x 4 round robins | none of the audited load; the chords pass |
 | `streamed` | 2 s samples, past the head | cold disk reads (the files are in the page cache) |
 
-The probe prints what is missing when a fixture is played. Today every
-measurable contract passes on all four fixtures, so none reproduces the audited
-bugs yet. `tests/fixtures.rs` asserts those passing contracts.
+The probe prints what is missing when a fixture is played. Failing contracts
+are `#[ignore]`d in `tests/fixtures.rs` with the task that fixes them. Run
+`cargo test -p kontra-probe -- --ignored` to see the audited bugs reproduce.
 
 ## Contracts
 
@@ -45,9 +46,9 @@ bugs yet. `tests/fixtures.rs` asserts those passing contracts.
 | C4 | measured | live | offline: null test of each block size against 128, < −120 dB |
 | C5 | measured | live | real time vs offline, null test < −120 dB |
 | C6 | measured | selected | offline: voices per note, equal on every note and > 0 |
-| C7 | unsupported | – | needs a script-load fixture (300 UI writes per note) |
+| C7 | measured | selected | script slot compiled, plus C1 and C6 under the fixture's load |
 | C8 | measured | dense | real time: every chord audible in its first block |
-| C9 | unsupported | – | playPos is not observable; the offsets pattern only sends CC113 |
+| C9 | measured | offsets | real time: CC113 0..126 on every note, first audible frame minus scheduled frame |
 | C10 | unsupported | – | render time per block is not instrumented |
 
 Null tests (C4, C5) refuse to pass without evidence. The reference render must
