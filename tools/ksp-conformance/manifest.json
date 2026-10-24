@@ -533,5 +533,100 @@
   "id": "str_var_ne_cond",
   "category": "string",
   "results": 1
+ },
+ {
+  "id": "ctl_knob_default",
+  "category": "control",
+  "results": 2
+ },
+ {
+  "id": "ctl_knob_set_high",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ctl_knob_set_neg",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ctl_switch_set",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ctl_hide_set",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ctl_pos_x_set",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ctl_menu_items",
+  "category": "control",
+  "results": 2
+ },
+ {
+  "id": "diag_decl_switch",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_set_switch",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_get_switch",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_get_int",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ui_var_knob_default",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ui_var_knob_set_high",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ui_var_knob_set_neg",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ui_var_switch_set",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_get_index0",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_menu_add",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_menu_count",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_menu_count_after_add",
+  "category": "control",
+  "results": 1
  }
 ]
