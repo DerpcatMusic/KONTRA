@@ -31,3 +31,15 @@ plane, not a resonance:
 - gain 0.90: DC is positive (`~0.62` at 0.40 up to `0.99` at 0.52), slope about 3.1 per unit freq.
 
 So the native DC gain changes sign between gain 0.90 and 0.95 at freq 0.40, and its zero moves with gain (0.46 at gain 1, 0.42 at gain 0.95). A model that puts the cut in a separate section cannot reproduce this without the shelf's DC term. Blocker: the native DC law `H_DC(freq, gain)` must be recovered (the DC term of the HF biquad pair, `solid.rs` `high_shelf` + `peak`), then fitted. Not fitted; Solid G-EQ stays partial.
+
+## Single-shelf candidate (not shipped)
+
+Fit (`hfshelf_fit.py`, `final_law.py`): one RBJ high shelf per row, gain from the existing `C_5D08` knob law, corner
+`fc = HF_CORNER_MID(gain knob) * 2f` with `HF_CORNER_MID = [3800, 3295, 2790, 2510, 2455, 2400, 2474, 2547, 2815, 3655, 4509]`
+(11 knots over the gain knob). Over the 40 HF rows: above 2 kHz median max-error 0.67 dB; 6 of 40 rows exceed 1 dB
+(freq 0 at gain max: 6.7 dB; freq 0.25 / 0.75 / 1.0 at gain max: 2.1 / 2.3 / 2.8 dB; freq 0.55 / 0.60 at gain 1.0:
+1.1 dB). Below 200 Hz the DC cut remains (rms 2.4 dB median).
+
+Not applied: the existing `sections_match`/`coefficients_match_the_native_setter` test (Unicorn run of the original setter,
+0x141ac70f0) asserts the two-biquad HF shelf bit for bit. Replacing it removes that native evidence, so the change needs an
+explicit decision first. Solid G-EQ row stays partial.
