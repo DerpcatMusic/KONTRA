@@ -29,6 +29,10 @@ pub(crate) enum Unit {
     Twin(TwinDelay),
     Psyche(PsycheDelay),
     Replika(Replika),
+    /// Phasis v0x51 (`BParFXPhasis`): the stored fields, bound by name from the
+    /// measured table `fx_raum_delight_psyche_vibrato_phasis_replika.tsv`. Read at
+    /// absolute offsets (the record is not sequential). Not mapped onto a core yet.
+    Phasis(Phasis),
     /// Wow / Flutter v0x10: wow, flutter, scrape, speed, stereo, age, saturation (f32),
     /// gate (flag), mix (f32).
     WowFlutter { fields: [f32; 7], gate: bool, mix: f32 },
@@ -295,6 +299,54 @@ pub(super) fn read_psyche(version: u16, r: &mut Reader) -> Option<Unit> {
     Some(Unit::Psyche(PsycheDelay { time: v[0], unit, feedback: v[1], detune: v[2], pitch: v[3], offset: v[4], cross: v[5], reverse_stereo, detune_stereo, reverse }))
 }
 
+/// `BParFXPhasis` v0x51 stored fields, by the `ENGINE_PAR_PHASIS_*` names.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Phasis {
+    pub rate: f32,
+    pub center: f32,
+    pub spread: f32,
+    pub feedback: f32,
+    pub mix: f32,
+    pub notches: f32,
+    pub amount: f32,
+    pub stereo: f32,
+    pub mod_mix: f32,
+    pub ultra: bool,
+    pub invert_phase: bool,
+    pub invert_mod_mix: bool,
+    /// Sync unit (field 12, offset 80). INFERRED from the table's RATE_UNIT rows.
+    pub unit: f32,
+}
+
+/// Phasis v0x51 (`BParFXPhasis`). Field offsets from the binding table; the unit
+/// offset is INFERRED (RATE_UNIT rows at 80 and 92, field 12 taken as the unit).
+pub(super) fn read_phasis(version: u16, public: &[u8]) -> Option<Unit> {
+    if version != 0x51 {
+        return None;
+    }
+    let f32_at = |at: usize| -> Option<f32> {
+        let bytes = public.get(at..at + 4)?;
+        let x = f32::from_le_bytes(bytes.try_into().ok()?);
+        x.is_finite().then_some(x)
+    };
+    let flag_at = |at: usize| public.get(at).map(|b| *b != 0);
+    Some(Unit::Phasis(Phasis {
+        rate: f32_at(8)?,
+        center: f32_at(12)?,
+        spread: f32_at(16)?,
+        feedback: f32_at(20)?,
+        mix: f32_at(24)?,
+        notches: f32_at(28)?,
+        amount: f32_at(32)?,
+        stereo: f32_at(36)?,
+        mod_mix: f32_at(40)?,
+        ultra: flag_at(44)?,
+        invert_phase: flag_at(45)?,
+        invert_mod_mix: flag_at(46)?,
+        unit: f32_at(80)?,
+    }))
+}
+
 /// Replika Delay v0x12 (reader `0x140d02250`); older versions are not read.
 pub(super) fn read_replika(version: u16, r: &mut Reader) -> Option<Unit> {
     if version != 0x12 {
@@ -381,7 +433,7 @@ pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
 pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x5a => "Replika: only the v0x12 reader (0x140d02250) is read; other saved versions are not (docs/re/engine/k-replika.md)",
-        0x5b => "Phasis: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but their binding to the core parameter indices and the core's oversampling resamplers (about 96 kHz internal) are not extracted",
+        0x5b => "Phasis: fields bound (fx_raum_delight_psyche_vibrato_phasis_replika.tsv); the core's oversampling resamplers (about 96 kHz internal) and the center and notch laws are not mapped",
         0x5c => "Flair: saved fields and most of the core law are extracted, but the writer of the pitch note field (+0x40), the internal-rate resampler and the random start phase are not",
         0x69 => "Vibrato Chorus: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the core's wave-digital LC ladder (the delay line it models) is not extracted",
         0x22 => "Rotator: horn/drum law located (control 0x140a97d30, audio 0x140aae920, output stage 0x140ac21f0 ported) but the runtime-initialised lane vectors at 0x149e6c400..0x149e6c45c and the RT_* setter binding (virtual BParFXRotator, vtable not exported) are not yet verified",
@@ -579,6 +631,10 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
         Unit::Replika(ref rep) => return replika_config(rep, dry, notes),
+        Unit::Phasis(_) => {
+            notes.push(("parameters".into(), "Phasis: bound fields read; core (center, notch count, oversampling resamplers) not mapped".into(), Reason::NotModeled));
+            return None;
+        }
         Unit::WowFlutter { fields: [wow, flutter, scrape, speed, stereo, age, saturation], gate, mix } => {
             if ![wow, flutter, scrape, speed, stereo, age, saturation, mix].iter().all(|v| unit_interval(&[*v])) {
                 notes.push(("parameters".into(), format!("{wow}/{flutter}/{speed}/{stereo}/{mix}"), Reason::InvalidValue));
@@ -1300,5 +1356,36 @@ pub(super) fn slot_phaser(b: &mut Lowering, s: &Site, notes: &mut Notes, cutoff:
     } else {
         notes.push(("Phaser filter parameters".into(), format!("{knobs:?}"), Reason::InvalidValue));
         false
+    }
+}
+
+#[cfg(test)]
+mod phasis_binding_tests {
+    use super::*;
+
+    /// A v0x51 record with each measured float at its table offset (`ENGINE_PAR_PHASIS_*`
+    /// rows of fx_raum_delight_psyche_vibrato_phasis_replika.tsv) and distinct values, so a
+    /// swapped offset fails.
+    #[test]
+    fn phasis_fields_read_from_their_measured_offsets() {
+        let mut public = vec![0u8; 96];
+        let floats = [(8, 0.1f32), (12, 0.2), (16, 0.3), (20, 0.4), (24, 0.5), (28, 0.6), (32, 0.7), (36, 0.8), (40, 0.9), (80, 4.0)];
+        for (at, x) in floats {
+            public[at..at + 4].copy_from_slice(&x.to_le_bytes());
+        }
+        public[44] = 1;
+        public[46] = 1;
+        let Some(Unit::Phasis(p)) = read_phasis(0x51, &public) else { panic!("v0x51 must read") };
+        assert_eq!(
+            [p.rate, p.center, p.spread, p.feedback, p.mix, p.notches, p.amount, p.stereo, p.mod_mix, p.unit],
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 4.0]
+        );
+        assert!(p.ultra && !p.invert_phase && p.invert_mod_mix);
+    }
+
+    #[test]
+    fn other_phasis_versions_and_short_records_are_not_read() {
+        assert!(read_phasis(0x50, &[0u8; 96]).is_none());
+        assert!(read_phasis(0x51, &[0u8; 40]).is_none());
     }
 }
