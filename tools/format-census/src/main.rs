@@ -229,6 +229,49 @@ fn ser_table() {
     }
 }
 
+/// One line per zone with loop slots: zone index, key range, slot ranges and flags.
+/// Local inspection only (prints the file's own instrument name).
+fn slots(path: &Path) {
+    let k = sampler_kontakt::read(path).expect("read");
+    let options = Options {
+        library: Some(path.into()),
+        ..Options::default()
+    };
+    let s = load_read_streamed(k, &options, &StreamPolicy::default(), |_| {}).expect("load");
+    let inst = &s.loaded.instrument;
+    println!("instrument\t{}", inst.name);
+    println!("scripts\t{}\towns_release\t{:?}\tunsupported\t{:?}", s.loaded.scripts.len(), s.loaded.scripts.iter().map(|v| v.owns_release_triggers()).collect::<Vec<_>>(), inst.unsupported.iter().map(|u| u.feature.to_string()).collect::<Vec<_>>());
+    if std::env::var("CENSUS_GROUPS").is_ok() {
+        for (i, z) in inst.zones.iter().enumerate() {
+            let g = z.group.map(|g| &inst.groups[g.0]);
+            println!("zone{i}\tkeys={:?}\ttrig={:?}\tgroup={:?}\tstart={:?}\tvel={:?}", z.keys, z.trigger, g.map(|g| g.name.clone()), g.map(|g| g.start.iter().map(|s| s.test).collect::<Vec<_>>()), z.velocities);
+        }
+    }
+    let gate = inst.zones.iter().filter(|z| matches!(z.trigger, sampler_ir::Trigger::GateRelease)).count();
+    let counter = format!("{:?}{:?}", inst.modulators, inst.routes).matches("ReleaseCounter").count();
+    println!("gate_release_zones\t{gate}\trelease_counter_refs\t{counter}");
+    for z in inst.zones.iter().filter(|z| matches!(z.trigger, sampler_ir::Trigger::GateRelease)).take(12) {
+        let g = z.group.map(|g| &inst.groups[g.0]);
+        println!("gate_zone\tkeys={:?}\tgroup={:?}\tstart={:?}\tmono={:?}\tzone_trigger={:?}", z.keys, g.map(|g| g.name.clone()), g.map(|g| g.start.clone()), g.map(|g| g.monophonic_release), z.trigger);
+    }
+    for (i, zone) in inst.zones.iter().enumerate() {
+        if let sampler_ir::Looping::Slots(slots) = zone.playback.looping {
+            for slot in slots.iter().flatten() {
+                println!(
+                    "zone{i}\tslot start={} end={} xfade={:?} alt={} count={} until_release={} tuning={}",
+                    slot.range.start,
+                    slot.range.end,
+                    slot.range.crossfade,
+                    slot.range.alternating,
+                    slot.count,
+                    slot.until_release,
+                    slot.tuning
+                );
+            }
+        }
+    }
+}
+
 /// Zone- and slot-level playback-mode tally for every `.nki` under a tree. One line per
 /// mode key: zones, and distinct libraries (top-level folders, counted, never named) using it.
 /// Loop slots are keyed by their own flags (alternating, crossfade, counted, until-release,
@@ -331,10 +374,28 @@ fn modes(root: &Path) {
     }
 }
 
+/// Prints every script's source text (program script chunks, id 6), for reading. Local only.
+fn scripts(path: &Path) {
+    use ni_file::kontakt::objects::{BParScript, Program};
+    let chunks = sampler_kontakt::read_chunks(path).expect("read chunks");
+    let program = Program::try_from(chunks.find_first(0x28).expect("program chunk")).expect("program");
+    for (i, chunk) in program.0.children.iter().filter(|c| c.id == 6).enumerate() {
+        let params = BParScript::try_from(chunk).and_then(|s| s.params()).expect("script params");
+        println!("=== script {i} (bypass={:?}) ===", params.bypass);
+        println!("{}", params.text.unwrap_or_default());
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--ser") {
         return ser_table();
+    }
+    if args.first().is_some_and(|a| a == "--scripts") {
+        return scripts(Path::new(args.get(1).expect("--scripts <nki>")));
+    }
+    if args.first().is_some_and(|a| a == "--slots") {
+        return slots(Path::new(args.get(1).expect("--slots <nki>")));
     }
     if args.first().is_some_and(|a| a == "--modes") {
         return modes(Path::new(args.get(1).expect("--modes <dir>")));
@@ -382,7 +443,16 @@ fn main() {
                     continue;
                 }
             };
-            let names: Vec<String> = container.names().iter().map(|n| n.to_string()).collect();
+            // CENSUS_MEMBERS=a,b,c limits the decode to named members (targeted checks).
+            let wanted: Option<Vec<String>> = std::env::var("CENSUS_MEMBERS")
+                .ok()
+                .map(|v| v.split(',').map(str::to_string).collect());
+            let names: Vec<String> = container
+                .names()
+                .iter()
+                .map(|n| n.to_string())
+                .filter(|n| wanted.as_ref().is_none_or(|w| w.contains(n)))
+                .collect();
             for name in names {
                 if !name.to_lowercase().ends_with(".ncw") {
                     continue;
@@ -439,6 +509,31 @@ fn main() {
                 }))
                 .collect();
             println!("{} : {}", b.name, names.join(" "));
+        }
+        return;
+    }
+    if args.first().is_some_and(|a| a == "--unsupported") {
+        // `--unsupported <nki>`: every load-report entry for one instrument, with its reason.
+        let k = sampler_kontakt::read(Path::new(&args[1])).expect("read");
+        let options = Options {
+            library: Some(Path::new(&args[1]).into()),
+            ..Options::default()
+        };
+        let streamed = load_read_streamed(k, &options, &StreamPolicy::default(), |_| {}).expect("load");
+        for u in &streamed.loaded.instrument.unsupported {
+            println!("{:?}\t{}\t{}\t{}", u.reason, u.feature, u.value.chars().take(120).collect::<String>(), u.location);
+        }
+        return;
+    }
+    if args.first().is_some_and(|a| a == "--locations") {
+        // `--locations <nki>`: each distinct sample location the instrument uses, with its zone count.
+        let k = sampler_kontakt::read(Path::new(&args[1])).expect("read");
+        let mut counts = BTreeMap::<String, usize>::new();
+        for loc in &k.locations {
+            *counts.entry(loc.display().to_string()).or_default() += 1;
+        }
+        for (loc, n) in &counts {
+            println!("{n}\t{loc}");
         }
         return;
     }

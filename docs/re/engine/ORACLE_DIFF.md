@@ -69,6 +69,14 @@ the exclusive lock for over an hour on 2026-10-24 and stopped the whole queue. C
 `lslocks | grep kontra-oracle` (and `ls -l /proc/<pid>/fd | grep kontra-oracle`). Daemons started from
 legacy jobs must close the lock fd (`3>&- 8>&- 9>&-`). `oracle-slot` already does this for its command.
 
+Channel handling: a `--midi` file is written for channel 1, so `capture.py` remaps it into the slot's MIDI block
+(`slot.remap_midi`). Before this fix, captures in slots 2 and 3 with `--midi` recorded digital silence.
+
+Silence guard: a slice below -100 dBFS is re-run once (the whole session). If it is still silent, the capture
+entry is marked `silent` with the session's reason (sink links, `aplaymidi` exit, instrument channel) and
+`capture.py` exits non-zero. `aplaymidi` delivery itself is not observed.
+`python3 tools/oracle/test_slot.py` checks the remap without Kontakt.
+
 Do not use `flock /tmp/kontra-oracle.lock` for new work. Legacy `flock` jobs still run: they hold the legacy
 lock exclusively, which waits for running slots and blocks new ones, so they never overlap a slot.
 

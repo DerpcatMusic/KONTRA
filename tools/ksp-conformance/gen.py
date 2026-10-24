@@ -129,7 +129,9 @@ def to_signed(bits):
 
 
 def decode(paths):
-    golden = {}
+    # Merge into the committed golden: a batch run only refreshes the cases it contains.
+    out = HERE / "golden.json"
+    golden = json.loads(out.read_text()) if out.exists() else {}
     compile_errors = []
     lines = [line for path in paths for line in Path(path).read_text().splitlines()]
     for line in lines:
@@ -147,7 +149,6 @@ def decode(paths):
         }
     expected = {u[0] for u in units()}
     missing = sorted(expected - set(golden))
-    out = HERE / "golden.json"
     out.write_text(json.dumps(golden, indent=1, sort_keys=True) + "\n")
     print(f"{len(golden)} golden cases -> {out}")
     if missing:

@@ -295,6 +295,11 @@ pub fn load_read_streamed_cancelable(
             .map_err(|e| e.at(crate::Stage::SampleResolve))?,
     };
     let sources: Vec<_> = resolved.into_iter().map(std::sync::Arc::new).collect();
+    let damage_keys: Vec<(String, String)> = sources
+        .iter()
+        .zip(kept.iter())
+        .map(|(source, &asset)| (crate::stream::source_label(source), locations[asset].display().to_string()))
+        .collect();
     let registry = sources
         .iter()
         .cloned()
@@ -342,7 +347,25 @@ pub fn load_read_streamed_cancelable(
         .map(|&a| locations[a].display().to_string())
         .collect();
     let (loaded, kept) = finish_sources_kept(instrument, logical, labels, options, initialized)?;
-    crate::Streamed::new_sources(loaded, opened, kept, canceled)
+    let mut streamed = crate::Streamed::new_sources(loaded, opened, kept, canceled)?;
+    report_damaged_sources(&mut streamed.loaded.instrument, &damage_keys);
+    Ok(streamed)
+}
+
+/// Adds one partial per sample whose NCW blocks failed to decode during load.
+/// `samples` pairs each sample's stream identity with its authored location.
+fn report_damaged_sources(instrument: &mut ir::Instrument, samples: &[(String, String)]) {
+    let damaged = crate::stream::damaged_sources();
+    for (label, location) in samples {
+        if let Some(blocks) = damaged.get(label) {
+            instrument.unsupported.push(ir::Unsupported {
+                location: location.clone(),
+                feature: "NCW sample data".into(),
+                value: format!("{blocks} damaged block(s) play silence"),
+                reason: ir::Reason::InvalidValue,
+            });
+        }
+    }
 }
 
 /// Stream an instrument translated by another loader: `sources[i]` and
@@ -843,6 +866,8 @@ fn script_environment_with_zones(
         engine_lookups: sampler_core::lower::source_engine_lookups(source),
         snapshot_mode: Default::default(),
         zone_catalog: source.zone_catalog.clone(),
+        // Copied only for scripts that call find_zone, so other inits pay nothing.
+        zone_names: if behavior.source.contains("find_zone") { source.zone_names.clone() } else { Vec::new() },
         zones: metadata.cloned().unwrap_or_else(|| first_homes(source.zone_catalog.iter().map(|z| (z, true)))),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),
@@ -1182,7 +1207,11 @@ fn compile_ui_initialized(
                             None => format!("script {:?}: {}", w.kind, warning_class(&w.message)),
                         },
                         value: w.message.clone(),
-                        reason: ir::Reason::NotModeled,
+                        reason: if native_script_note(w.kind, w.builtin, &w.message) {
+                            ir::Reason::Info
+                        } else {
+                            ir::Reason::NotModeled
+                        },
                     }));
                 names.push((
                     behavior.slot.map_or(index, usize::from),
@@ -1638,6 +1667,29 @@ mod cancellation_tests {
 }
 
 #[cfg(test)]
+mod native_note_tests {
+    use super::*;
+    use sampler_ksp::Kind;
+
+    #[test]
+    fn native_group_and_array_diagnostics_are_notes_not_losses() {
+        let miss = "find_group(): Group \"4CllChnswStbsBr21ClsDyn1RR1\" was not found. Index will be invalid!";
+        assert!(native_script_note(Kind::Warning, None, miss));
+        assert!(native_script_note(Kind::Warning, Some("get_group_idx"), "x"));
+        assert!(native_script_note(
+            Kind::Warning,
+            None,
+            "array index 76 out of bounds for %_legato_event_id (length 72); read returns zero or empty text"
+        ));
+        assert!(native_script_note(Kind::Warning, None, "later ui_control callback replaces an earlier one"));
+        // Behaviour that may really differ stays a loss, as do other kinds.
+        assert!(!native_script_note(Kind::Warning, None, "DurationSixteenth read in on init takes the host transport"));
+        assert!(!native_script_note(Kind::Approximate, Some("attach_zone"), "simplified"));
+        assert!(!native_script_note(Kind::Unsupported, None, miss));
+    }
+}
+
+#[cfg(test)]
 mod migration_tests {
     use super::*;
 
@@ -2089,6 +2141,22 @@ mod fit_tests {
 
 /// Message with the per-site parts (`$names`, numbers) masked, so each distinct script warning
 /// is one feature class in diagnostics instead of a single opaque "script Warning".
+/// A script warning that is Kontakt's own diagnostic for a case whose result is
+/// the same here: a group lookup that misses (index -1, the branch is skipped) or
+/// an array read out of range (zero or empty text). Kontakt prints these too
+/// (docs/re/KSP_GROUP_AND_ARRAY_LOOKUP.md), so they are notes, not lost features.
+fn native_script_note(kind: sampler_ksp::Kind, builtin: Option<&str>, message: &str) -> bool {
+    if kind != sampler_ksp::Kind::Warning {
+        return false;
+    }
+    let group_miss = (message.starts_with("find_group(") || message.starts_with("get_group_idx("))
+        && message.ends_with("Index will be invalid!");
+    let array_read = builtin.is_none() && message.contains("out of bounds for");
+    // The later ui_control callback replaces the earlier one, as Kontakt does.
+    let ui_replace = message == "later ui_control callback replaces an earlier one";
+    matches!(builtin, Some("find_group" | "get_group_idx")) || group_miss || array_read || ui_replace
+}
+
 fn warning_class(message: &str) -> String {
     let mut out = String::with_capacity(message.len());
     let mut chars = message.chars().peekable();

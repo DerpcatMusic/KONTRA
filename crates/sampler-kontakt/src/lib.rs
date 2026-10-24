@@ -50,7 +50,7 @@ mod stream;
 mod wavetable;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
-pub use container::{Multi, read_chunks, read_multi};
+pub use container::{Multi, Part as MultiPart, read_chunks, read_multi};
 pub use library::{
     Kontakt, read, read_program, read_program_with_controls, read_with_controls,
     read_with_snapshot, read_with_snapshot_and_controls,

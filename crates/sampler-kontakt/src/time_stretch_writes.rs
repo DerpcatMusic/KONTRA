@@ -47,7 +47,7 @@ const TRANSIENT_SIZE: [f64; 11] = [
 /// The values are 4 / k for k = 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32, 64, 256 (raw
 /// 5, 6, 7, 8, 9, 10, 12, 13, 15, 16, 17, 19, 21). Raw 22 sets `common_flag_16`, which
 /// has no consumer, so it is reported.
-const SPEED_UNIT_BEATS: [Option<f64>; 22] = [
+pub(crate) const SPEED_UNIT_BEATS: [Option<f64>; 22] = [
     None,
     None,
     None,

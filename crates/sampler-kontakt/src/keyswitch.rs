@@ -430,11 +430,13 @@ pub fn detect(source: &str, saved: &[(String, i64)]) -> Detection {
             }
             (None, Some(hint)) if hint.starts_with("control keys ") => {
                 Detection::ControlKeysOnly(format!(
-                    "keyswitch hints ({hint}) but no recognized switch in on note"
+                    "keyswitch hints ({hint}) but no recognized switch in on note: sounding keys are one-shot triggers"
                 ))
             }
-            (None, Some(hint)) => Detection::Unrecognized(format!(
-                "keyswitch hints ({hint}) but no recognized switch in on note"
+            // A sounding key that selects groups for its own note is a one-shot
+            // trigger, not an articulation set: informational, not a gap.
+            (None, Some(hint)) => Detection::ControlKeysOnly(format!(
+                "keyswitch hints ({hint}) but no recognized switch in on note: sounding keys are one-shot triggers"
             )),
             (None, None) => Detection::None,
         };
@@ -636,14 +638,41 @@ impl Env {
     fn from_init(init: &[String], saved: &[(String, i64)]) -> Self {
         let mut env = Self::default();
         let mut depth = 0;
+        // One frame per open block: the value of its `if` condition when known.
+        let mut frames: Vec<Option<bool>> = Vec::new();
         for line in init {
             let lower = line.to_ascii_lowercase();
             if closes(&lower) == 1 {
                 depth -= 1;
+                frames.pop();
                 continue;
             }
-            let nested = depth > 0;
+            if lower == "else" {
+                if let Some(frame) = frames.last_mut() {
+                    *frame = frame.map(|b| !b);
+                }
+                continue;
+            }
+            if lower.starts_with("else if") {
+                // Replaces the current branch; its condition is not tracked.
+                if let Some(frame) = frames.last_mut() {
+                    *frame = None;
+                }
+                continue;
+            }
+            // Assignments run when every enclosing branch is known to run; a branch
+            // known false is skipped; anything unknown forgets the variable.
+            let skipped = frames.contains(&Some(false));
+            let nested = depth > 0 && !frames.iter().all(|f| *f == Some(true));
+            if opens(&lower) == 1 {
+                let cond = lower.starts_with("if").then(|| env.condition(line)).flatten();
+                frames.push(if lower.starts_with("if") { cond } else { None });
+            }
             depth += opens(&lower);
+            // Block bookkeeping above; a branch known not to run changes nothing.
+            if skipped || opens(&lower) == 1 {
+                continue;
+            }
             let declaration = lower.starts_with("declare ");
             let statement = if declaration {
                 // Drop the keyword and modifiers before the variable.
@@ -762,6 +791,23 @@ impl Env {
                 env.strings.get(&name).cloned()
             });
         env
+    }
+
+    /// `if (A op B)` with both sides evaluable: whether it holds.
+    fn condition(&self, line: &str) -> Option<bool> {
+        let text = line.trim().strip_prefix("if")?.trim();
+        let text = text.strip_prefix('(')?.strip_suffix(')')?;
+        let ops = [">=", "<=", "<>", "!=", "=", ">", "<"];
+        let (at, op) = ops.iter().find_map(|op| text.find(op).map(|at| (at, *op)))?;
+        let (left, right) = (self.eval(&text[..at])?, self.eval(&text[at + op.len()..])?);
+        Some(match op {
+            ">=" => left >= right,
+            "<=" => left <= right,
+            "<>" | "!=" => left != right,
+            "=" => left == right,
+            ">" => left > right,
+            _ => left < right,
+        })
     }
 
     fn forget(&mut self, name: &str) {
@@ -1030,8 +1076,37 @@ end on
             $id := play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, -1)\n exit\n end if\nend on";
         assert!(matches!(
             detect(source, &[]),
-            Detection::ControlKeysOnly(why) if why.contains("no recognized switch")
+            Detection::ControlKeysOnly(why) if why.contains("no recognized switch") && why.contains("one-shot")
         ));
+    }
+
+    #[test]
+    fn init_if_conditions_decide_which_assignments_run() {
+        // `$mode` is 1, so the `= 2` branch never runs and `$x` keeps its value, the
+        // `= 1` branch runs, `else` takes the other side, and an unknown condition
+        // forgets what it assigns.
+        let init = [
+            "declare $mode := 1",
+            "declare $x := 1",
+            "declare $y := 1",
+            "declare $z := 1",
+            "if ($mode = 2)",
+            "$x := 5",
+            "end if",
+            "if ($mode = 1)",
+            "$y := 7",
+            "else",
+            "$y := 9",
+            "end if",
+            "if ($nope = 1)",
+            "$z := 2",
+            "end if",
+        ];
+        let init: Vec<String> = init.iter().map(|l| l.to_string()).collect();
+        let env = Env::from_init(&init, &[]);
+        assert_eq!(env.scalars.get("$x"), Some(&1));
+        assert_eq!(env.scalars.get("$y"), Some(&7));
+        assert_eq!(env.scalars.get("$z"), None);
     }
 
     #[test]

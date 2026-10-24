@@ -13,6 +13,14 @@ Trills (16 Violins, Kontakt-compiled script `perf063`).
   non-velocity value there: the trill script passes its interval index (1 or 2),
   so the child plays at velocity 1/127 or 2/127. Whether Kontakt applies the same
   velocity-to-level curve for such children is not yet checked against Kontakt.
+- Velocity 0 is clamped to 1 and the child sounds; it is not refused. Evidence:
+  Vista's `on release` plays its release samples as `play_note($EVENT_NOTE, $xfy15)`
+  and `$xfy15` is 0 when CC1 was never received. Refusing it killed the release
+  tail (no PlayMidi in the release window; forcing velocity restores the tail). A
+  repeated same-key legato note (`$1e5yd = 0`) also plays velocity 0 and was silent
+  while Kontakt sounds it. The Kontakt manual page for `play_note` was not
+  reachable (HTTP 403), so the documented range is unverified; the clamp follows the
+  captured Kontakt behaviour. Key outside 0..127 is still refused (returns -1).
 - Admission for a probe must go through `Runtime::trigger` (the MIDI path). The
   lower-level `note_on` admits the note without starting its attack, so `on note`
   never runs.

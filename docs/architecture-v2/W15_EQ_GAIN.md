@@ -68,3 +68,7 @@ Frequency/bandwidth target adapters, full native-host A/B and W12 recount remain
 open. This gain step does not claim complete DSP coverage or the release gate.
 
 NEXT: normalized EQ frequency/bandwidth lanes, preserving physical band owners.
+
+Kontakt EQ-gain routes: a Normalized route depth of 1.0 moves the band by 12 dB, not the 36 dB lane span.
+`EQ_GAIN_ROUTE_SCALE = 1/3` in `sampler-kontakt/src/library.rs` is a fit from one instrument (Solo Trumpet
+Trills, CC1, 17 points); verify on the next EQ-route instrument.

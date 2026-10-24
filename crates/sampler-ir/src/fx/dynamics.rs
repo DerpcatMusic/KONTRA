@@ -256,8 +256,12 @@ impl Config {
         let seconds = |table: &[f64]| [table[0] * 1e-3, table[table.len() - 1] * 1e-3];
         match self.law {
             Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) => vec![
-                Lane::new("ENGINE_PAR_THRESHOLD", P::Threshold, n.threshold_db, L::Linear { a: -68., b: 65. }),
-                Lane::new("ENGINE_PAR_RATIO", P::Ratio, n.ratio, L::Exp { a: 1., r: 0.04 }),
+                // Universal compressor knob map, fitted to the native Enhanced grid (docs/re/engine/fx-measured/comp-grid.md):
+                // threshold dB = -76 + 66 k, saved ratio = 0.05^k (the grid's lowest ratio). Shared by the three
+                // compressor modes. A saved value past the knob ends is kept as saved: the lane's domain holds it
+                // (sampler-core lower.rs, NativeControl).
+                Lane::new("ENGINE_PAR_THRESHOLD", P::Threshold, n.threshold_db, L::Linear { a: -76., b: 66. }),
+                Lane::new("ENGINE_PAR_RATIO", P::Ratio, n.ratio, L::Exp { a: 1., r: 0.05 }),
                 Lane::new("ENGINE_PAR_COMP_ATTACK", P::Attack, ms(self.attack), L::Table(&tables::COMP_ATTACK))
                     .scaled(seconds(&tables::COMP_ATTACK)),
                 Lane::new("ENGINE_PAR_COMP_DECAY", P::Release, ms(self.release), L::Table(&tables::COMP_DECAY))
@@ -275,5 +279,60 @@ impl Config {
     /// Whether this configuration reproduces a recovered Kontakt core.
     pub fn is_native(&self) -> bool {
         !matches!(self.law, Law::Generic(_))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fx::Law as Lane_;
+
+    /// Stored value of a lane law at knob `k` (0..=1), as `lower.rs` evaluates it.
+    fn stored(law: Lane_, k: f64) -> f64 {
+        match law {
+            Lane_::Linear { a, b } => a + b * k,
+            Lane_::Exp { a, r } => a * r.powf(k),
+            _ => unreachable!("compressor lanes are linear or exponential"),
+        }
+    }
+
+    /// The compressor lanes against the native Enhanced grid (`comp-grid.tsv`): threshold knob -> dB (1 dB gate),
+    /// ratio knob -> saved ratio (0.05 gate; the native 0.75 and 1.0 ratio rows are fitted on a 0.05 grid).
+    #[test]
+    fn compressor_lanes_follow_the_measured_grid() {
+        let address = crate::SlotAddress { group: 0, slot: 1, generic: 0 };
+        let config = |threshold_db, ratio| Config {
+            address: Some(address),
+            law: Law::KontaktEnhanced(Native { threshold_db, ratio }),
+            ..Config::generic(0., 1., Time::Seconds(0.1), Time::Seconds(0.3))
+        };
+        let lanes = config(0., 0.).lanes();
+        let lane = |name: &str| *lanes.iter().find(|l| l.name == name).unwrap();
+        for (k, db) in [(0.25, -60.), (0.5, -42.), (0.75, -26.), (1.0, -10.)] {
+            let got = stored(lane("ENGINE_PAR_THRESHOLD").law, k);
+            assert!((got - db).abs() <= 1., "threshold knob {k}: {got:.2} dB vs native {db}");
+        }
+        for (k, ratio) in [(0., 1.), (0.25, 0.5), (0.5, 0.25), (0.75, 0.1), (1.0, 0.05)] {
+            let got = stored(lane("ENGINE_PAR_RATIO").law, k);
+            assert!((got - ratio).abs() <= 0.05, "ratio knob {k}: {got:.3} vs native {ratio}");
+        }
+    }
+
+    /// Saved compressor values at the extremes (0, past the grid ends such as ANALOG STRINGS' -8.05 dB) are kept as
+    /// saved: the lane holds the value, nothing is clamped. The runtime domain check is covered in sampler-core.
+    #[test]
+    fn compressor_lanes_keep_extreme_saved_values() {
+        let address = crate::SlotAddress { group: 0, slot: 1, generic: 0 };
+        for (threshold_db, ratio) in [(-120., 0.), (-14.15, 0.5), (-8.05, 0.34), (0., 0.01), (6., 1.)] {
+            let lanes = Config {
+                address: Some(address),
+                law: Law::KontaktEnhanced(Native { threshold_db, ratio }),
+                ..Config::generic(0., 1., Time::Seconds(0.1), Time::Seconds(0.3))
+            }
+            .lanes();
+            let value = |name: &str| lanes.iter().find(|l| l.name == name).unwrap().value;
+            assert_eq!(value("ENGINE_PAR_THRESHOLD"), threshold_db);
+            assert_eq!(value("ENGINE_PAR_RATIO"), ratio);
+        }
     }
 }

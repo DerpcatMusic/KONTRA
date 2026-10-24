@@ -3567,6 +3567,9 @@ fn ram_free() -> Option<(usize, usize)> {
 }
 
 // Port from v1 bank::load_cancelable: reserve 1 GiB + one eighth of RAM.
+/// Shared head budget for cold-streamed attacks: 1/32 of RAM, between 256 MiB
+/// (the floor on small machines) and 4 GiB.
+
 fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
     let resident_budget = (request.streaming == super::Streaming::RamOnly).then(|| {
         // ponytail: v1's /proc/meminfo probe; other systems keep its 8 GiB ceiling.

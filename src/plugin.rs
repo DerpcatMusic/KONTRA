@@ -384,7 +384,9 @@ pub struct Selection {
 
 /// Seconds a streamed sample goes unplayed before the memory budget may drop it.
 /// Largest saved UVI/script state blob a project may carry; save and load agree.
-const MAX_SAVED_STATE: usize = 8 << 20;
+/// Large KSP libraries (Areia, Dolce) hold ~1.3M script values, ~14 MB as JSON; 8 MiB
+/// dropped their script state silently. Measured on the host recall test.
+const MAX_SAVED_STATE: usize = 64 << 20;
 
 pub const IDLE_SECONDS: f64 = 30.0;
 
@@ -4953,6 +4955,8 @@ mod pressed_tests;
 mod uvi_save_tests;
 #[cfg(test)]
 mod lifecycle_audit_tests;
+#[cfg(test)]
+mod host_recall_tests;
 
 #[cfg(test)]
 mod settings_parity_tests {

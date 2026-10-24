@@ -15,7 +15,37 @@ use std::{
 /// translation and MIDI-channel routing belong to the IR frontend.
 pub struct Multi {
     pub programs: Vec<(u16, ni_file::kontakt::objects::Program)>,
+    /// Aligned with `programs`.
+    pub parts: Vec<Part>,
     pub sample_names: Vec<String>,
+}
+
+/// A program's part settings as the multi stores them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Part {
+    /// MIDI channel 0..=15, or -1 for omni.
+    pub channel: i16,
+    /// The program references at least one unmuted sample. False is an empty
+    /// slot; true with nothing translated is a missing sample.
+    pub has_samples: bool,
+}
+
+/// The part's MIDI channel from its SaveSettings record (0x47, version 0x10: a
+/// flag byte, a u16 version, then three i32s). The first i32 is read as a 1-based
+/// channel, 1..=16; anything else is omni. This convention is inferred from the
+/// corpus, not yet checked against Kontakt.
+fn save_settings_channel(container: &ni_file::kontakt::objects::ProgramContainer) -> i16 {
+    let value = container
+        .0
+        .children
+        .iter()
+        .find(|c| c.id == 0x47)
+        .and_then(|c| c.data.get(3..7))
+        .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    match value {
+        Some(channel @ 1..=16) => (channel - 1) as i16,
+        _ => -1,
+    }
 }
 
 pub fn read_multi(path: &Path) -> Result<Multi, LoadError> {
@@ -30,9 +60,15 @@ pub fn read_multi(path: &Path) -> Result<Multi, LoadError> {
     let mut slots: Vec<_> = bank.slot_list().map_err(error)?.slots.into_iter().collect();
     slots.sort_by_key(|(slot, _)| *slot);
     let mut programs = Vec::new();
+    let mut parts = Vec::new();
     for (slot, container) in slots {
+        let channel = save_settings_channel(&container);
         for program in container.program_list().map_err(error)?.programs {
             programs.push((slot, program));
+            parts.push(Part {
+                channel,
+                has_samples: false,
+            });
         }
     }
     let table = chunks
@@ -43,7 +79,7 @@ pub fn read_multi(path: &Path) -> Result<Multi, LoadError> {
         })?
         .map_err(error)?;
     let mut sample_names = Vec::new();
-    for (_, program) in &programs {
+    for (index, (_, program)) in programs.iter().enumerate() {
         let groups = GroupList::try_from(
             program
                 .0
@@ -81,12 +117,14 @@ pub fn read_multi(path: &Path) -> Result<Multi, LoadError> {
                 ))
             })?;
             sample_names.push(name.clone());
+            parts[index].has_samples = true;
         }
     }
     sample_names.sort();
     sample_names.dedup();
     Ok(Multi {
         programs,
+        parts,
         sample_names,
     })
 }
@@ -235,4 +273,65 @@ fn nis_payload(
         .properties()
         .map_err(|e| decode("NIS preset chunk", e))?
         .0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ni_file::kontakt::{Chunk, StructuredObject};
+
+    /// A slot whose SaveSettings record (0x47) carries `channel` as its first i32.
+    fn slot(channel: i32) -> ni_file::kontakt::objects::ProgramContainer {
+        let mut data = vec![0, 0x10, 0];
+        data.extend(channel.to_le_bytes());
+        data.extend([0; 11]);
+        ni_file::kontakt::objects::ProgramContainer(StructuredObject {
+            version: 0x81,
+            public_data: Vec::new(),
+            private_data: Vec::new(),
+            children: vec![Chunk { id: 0x47, data }],
+        })
+    }
+
+    #[test]
+    fn save_settings_channel_is_one_based_and_other_values_are_omni() {
+        assert_eq!(save_settings_channel(&slot(1)), 0);
+        assert_eq!(save_settings_channel(&slot(5)), 4);
+        assert_eq!(save_settings_channel(&slot(16)), 15);
+        assert_eq!(save_settings_channel(&slot(-1)), -1);
+        assert_eq!(save_settings_channel(&slot(0)), -1);
+        assert_eq!(save_settings_channel(&slot(17)), -1);
+    }
+}
+
+#[cfg(test)]
+mod corpus_tests {
+    use super::*;
+
+    /// Audio Imperia Syllables: three slots, the first empty. Pins the channels
+    /// read from the corpus (1-based 2 and 4 become 0-based 1 and 3).
+    #[test]
+    #[ignore = "needs the Kontakt corpus at /data/main/Libraries"]
+    fn syllables_parts_take_their_channels_from_save_settings() {
+        let path = Path::new(
+            "/data/main/Libraries/Kontakt/Audio Imperia CHORUS/Multis/10 Chorus - Ensemble - Traditional Syllables.nkm",
+        );
+        let multi = read_multi(path).expect("multi");
+        let channels: Vec<i16> = multi.parts.iter().map(|p| p.channel).collect();
+        assert_eq!(channels, [-1, 1, 3]);
+        assert_eq!(multi.parts.iter().map(|p| p.has_samples).collect::<Vec<_>>(), [false, true, true]);
+    }
+
+    /// Healed Heart's program 0 references a sample the library does not have: the
+    /// part is kept and its load reports the missing sample, rather than vanishing.
+    #[test]
+    #[ignore = "needs the Kontakt corpus at /data/main/Libraries"]
+    fn a_part_with_a_missing_sample_reports_it() {
+        let path = Path::new("/data/main/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Healed Heart.nkm");
+        let multi = read_multi(path).expect("multi");
+        assert!(multi.parts[0].has_samples);
+        let program = crate::read_program(path, 0).expect("program 0");
+        assert!(program.instrument.zones.is_empty());
+        assert!(program.instrument.unsupported.iter().any(|u| u.feature == "missing sample"));
+    }
 }
