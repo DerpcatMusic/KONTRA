@@ -58,6 +58,37 @@ Not KSP (routed to other lanes, found by the same survey):
 - ANALOG STRINGS.nki: "zone 12867: Regions rejected by the native runtime: invalid input" (loader).
 - SOUND-STUCK (367) and SOUND-SUSPECT (450) in the full tier: engine/sound lanes.
 
+## Round 2 (2026-10-24): builtins by instruments affected
+
+Source: the existing full-tier census (`~/.cache/kontra-ksp-survey/full-r1.jsonl`, 735 items, 11
+libraries; per-instrument `scripts.diagnostics` and `unsupported`) and `SYMBOLS.tsv`. No new sweep.
+Only KSP-level builtins/constructs; engine-feature and asset rows are listed for completeness.
+
+| rank | item | inst | libs | class | status |
+|---:|---|---:|---:|---|---|
+| 1 | `set_engine_par($ENGINE_PAR_WT_MOD_AMOUNT)` unsupported; ignored | 52 | 2 | ENGINE | PARKED (WT_MOD blocked: Conflux does not load in the oracle) |
+| 2 | `get_engine_par_disp_ext(WT_MOD_AMOUNT)` unsupported; text empty | 51 | 1 | ENGINE | PARKED, same root as 1 |
+| 3 | `find_group()` absent group, dead branch | 229 | 2 | FAITHFUL | wave70 lane (find_group-absent) |
+| 4 | `array index N out of bounds` (`!name`, `%name`) | 77+54+3 | 1 | FAITHFUL (unverified) | wave70 lane (arrays) |
+| 5 | keyswitch base-key hints (`%KS_keys[$KS_Base]`) | 105 | 3 | HEURISTIC | dropped (breath cluster, report-only) |
+| 6 | `load_array: data/vel_db.nka not loaded` | 51 | 1 | ASSET | file missing from install |
+| 7 | `$name clamped to its declared range` | 8 | 3 | FAITHFUL (KONTRA warning) | noise; no behaviour change |
+| 8 | `menu item N out of range; set_menu_item_visibility ignored` | 3 | 1 | APPROX | Una Corda; Kontakt wording unverified |
+| 9 | `write to %name lowered as set_controller` | 5 | 1 | APPROX | documented lowering |
+| 10 | transport reads in `on init` (`DurationQuarter`, `SignatureNum/Denom`) | 6 | 2 | informational | host transport supplied by loader |
+| 11 | `find_zone` (stub: always NOT_FOUND) | 1 | 1 | STUB | 470 uses in one script; manual semantics not verified |
+| 12 | `$CONTROL_PAR_CUSTOM_ID`, `$CONTROL_PAR_DISABLE_TEXT_SHIFTING` (stub) | 1 each | 1 | STUB | UI-only; stored, no widget effect |
+| 13 | `$MARK_10` unsupported | 1 | 1 | UNSUPPORTED | 527 uses in one script |
+| 14 | `$ENGINE_PAR_SENDLEVEL_SMOOTHED_0..7`, `@syntax` | 1 each | 1 | UNSUPPORTED | single use |
+| 15 | later `on ui_control` replaces an earlier one | 1 | 1 | UNKNOWN | Kontakt behaviour unverified |
+
+Decision for this round: no universal fix is implemented. The engine-level rows (1-2) are parked, rows
+3-4 belong to the wave70 lane, and rows 6-10 are assets, noise or documented approximations. Rows
+11-15 each touch one instrument, and their Kontakt semantics (`find_zone`, `$MARK_10`, `on ui_control`
+duplicates) cannot be checked here: the KSP manual pages returned HTTP 403/404 and no oracle conformance
+run was made. The next step for 11-15 is one oracle-slot probe per symbol (a KSP script that writes the
+result into an engine parameter), then the fix.
+
 ## Round log
 
 - Round 1 (branch `ksp/corpus-survey-r1`): cluster 13 fixed (`5246a819d`), regression test red then
