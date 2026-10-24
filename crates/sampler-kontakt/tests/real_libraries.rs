@@ -758,12 +758,10 @@ fn installed_keyswitch_patterns_report_and_own_switching_as_measured() {
         let kontakt = sampler_kontakt::read(&path).unwrap();
         let m = sampler_kontakt::articulation_migration(&kontakt.instrument);
         assert_eq!((m.switches_found, m.migrated), (0, 0));
-        assert!(!m.unrecognised.is_empty());
-        assert!(
-            m.unrecognised.iter().all(|u| u.contains("keyswitch")),
-            "{:?}",
-            m.unrecognised
-        );
+        // `on init` now evaluates the script's `if ($range_min >= $range_max)`, so
+        // the playable gate `$range_min`..`$range_max` is known and nothing is left
+        // unrecognised. Keys 91..=94 stay unswitched: they only release or play.
+        assert!(m.unrecognised.is_empty(), "{:?}", m.unrecognised);
     }
     if let Some(path) = find(
         "Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/02 Areia - 10 Violas - Core Techniques.nki",
