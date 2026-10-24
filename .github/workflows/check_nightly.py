@@ -135,7 +135,7 @@ for case in (*successful_signing, "bad-ca-import", "bad-chain", "rejected", "bad
         for product in ("KONTRA.clap/Contents/MacOS/KONTRA","KONTRA.vst3/Contents/MacOS/KONTRA","KONTRA.app/Contents/MacOS/KONTRA"):
             path=stage/product;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b"fixture")
         stage.joinpath("build-info.json").write_text(json.dumps(dict(version="0.3.78-nightly.test",revision="a"*40,target="aarch64-apple-darwin")))
-        env=dict(clean_env,PATH=str(tools)+":"+os.environ["PATH"],STAGE=str(stage),KONTRA_TARGET="aarch64-apple-darwin",GITHUB_SHA="a"*40,NATIVE_CALLS=str(root/"calls"),SIGNING_CASE=case)
+        env=dict(clean_env,PATH=str(tools)+":"+os.environ["PATH"],STAGE=str(stage),KONTRA_TARGET="aarch64-apple-darwin",GITHUB_SHA="a"*40,NATIVE_CALLS=str(root/"calls"),SIGNING_CASE=case,KONTRA_DMG_RETRY_PAUSE="0")
         for secret in ("APPLE_CERTIFICATE_PASSWORD","APPLE_DEVELOPER_ID_APPLICATION","APPLE_ID","APPLE_APP_SPECIFIC_PASSWORD","APPLE_TEAM_ID"): env[secret]="synthetic-fixture"
         env["APPLE_APPLICATION_CERTIFICATE_P12_BASE64"]=base64.b64encode(b"synthetic-fixture").decode()+"\n"
         env["APPLE_INSTALLER_CERTIFICATE_P12_BASE64"]=base64.b64encode(b"synthetic-installer-fixture").decode()+"\n"
