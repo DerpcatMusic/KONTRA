@@ -23,7 +23,8 @@ fn auto_streaming_preloads_authored_attacks_before_publication() {
     assert!(readiness.ranges > 0);
     assert!(readiness.complete(), "{readiness:?}");
     assert!(readiness.packed_bytes > 0);
-    assert_eq!(readiness.budget_bytes, 256 << 20);
+    // RAM-scaled head budget: never below the 256 MiB floor.
+    assert!(readiness.budget_bytes >= 256 << 20);
     assert!(readiness.packed_bytes <= readiness.budget_bytes);
     assert!(loaded.report.stream_startup.as_ref().unwrap().warning().is_none());
     assert!(stream.assets.iter().all(|pcm| pcm.head_bytes() > 0));
