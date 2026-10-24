@@ -5,7 +5,7 @@ Kontakt's timing laws, UVI's scripting model, HISE's compiled DSP, KODA's
 authoring and Opus/SINE's footprint, built so a playback bug is impossible
 by construction, not counted after the fact.
 
-Inputs: [PLAYBACK_AUDIT.md](PLAYBACK_AUDIT.md) (what is broken and why),
+Inputs: [PLAYBACK_AUDIT.md](PLAYBACK_AUDIT.md) (what is broken and why), [ONE_ENGINE.md](ONE_ENGINE.md) (one runtime, thin translators, memory, CPU),
 [SAMPLER_LANDSCAPE.md](SAMPLER_LANDSCAPE.md) (what each competitor does best).
 
 ## 1. The invariants
