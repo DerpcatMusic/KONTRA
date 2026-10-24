@@ -433,7 +433,7 @@ pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
 pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x5a => "Replika: only the v0x12 reader (0x140d02250) is read; other saved versions are not (docs/re/engine/k-replika.md)",
-        0x5b => "Phasis: fields bound (fx_raum_delight_psyche_vibrato_phasis_replika.tsv); the core's oversampling resamplers (about 96 kHz internal) and the center and notch laws are not mapped",
+        0x5b => "Phasis: fields bound and mapped onto the legacy phaser (KISS); center, spread, notch count and the oversampling resamplers are not mapped",
         0x5c => "Flair: saved fields and most of the core law are extracted, but the writer of the pitch note field (+0x40), the internal-rate resampler and the random start phase are not",
         0x69 => "Vibrato Chorus: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the core's wave-digital LC ladder (the delay line it models) is not extracted",
         0x22 => "Rotator: horn/drum law located (control 0x140a97d30, audio 0x140aae920, output stage 0x140ac21f0 ported) but the runtime-initialised lane vectors at 0x149e6c400..0x149e6c45c and the RT_* setter binding (virtual BParFXRotator, vtable not exported) are not yet verified",
@@ -631,9 +631,25 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
         Unit::Replika(ref rep) => return replika_config(rep, dry, notes),
-        Unit::Phasis(_) => {
-            notes.push(("parameters".into(), "Phasis: bound fields read; core (center, notch count, oversampling resamplers) not mapped".into(), Reason::NotModeled));
-            return None;
+        // KISS mapping onto the legacy phaser: amount is the sweep depth, feedback the allpass
+        // feedback (x 0.85 as the legacy phaser), rate the LFO speed (with its sync unit), mix the
+        // wet share. Center, spread, notch count, stereo, mod mix and the flags have no law here
+        // and are reported; the oversampling resamplers are not modelled.
+        Unit::Phasis(ref p) => {
+            if !(unit_interval(&[p.amount, p.feedback, p.mix]) && p.rate.is_finite() && p.rate >= 0. && p.unit.is_finite()) {
+                notes.push(("parameters".into(), format!("{}/{}/{}/{}", p.amount, p.feedback, p.mix, p.rate), Reason::InvalidValue));
+                return None;
+            }
+            notes.push(("parameters".into(), "Phasis: center, spread, notch count, stereo, mod mix, ultra and invert flags not mapped (KISS phaser)".into(), Reason::NotModeled));
+            Config {
+                address: None,
+                line: None,
+                allpass: Some(Allpass { stages: 4, law: SweepLaw::Legacy { depth: p.amount }, feedback: (f64::from(p.feedback) * 0.85) as f32 }),
+                order: Order::LineThenAllpass,
+                lfo: lfo(p.rate, p.unit, 0.),
+                dry: 1. - f64::from(p.mix),
+                wet: f64::from(p.mix),
+            }
         }
         Unit::WowFlutter { fields: [wow, flutter, scrape, speed, stereo, age, saturation], gate, mix } => {
             if ![wow, flutter, scrape, speed, stereo, age, saturation, mix].iter().all(|v| unit_interval(&[*v])) {
@@ -1381,6 +1397,33 @@ mod phasis_binding_tests {
             [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 4.0]
         );
         assert!(p.ultra && !p.invert_phase && p.invert_mod_mix);
+    }
+
+    #[test]
+    fn phasis_maps_onto_the_legacy_phaser() {
+        let p = Phasis {
+            rate: 0.3,
+            center: 0.,
+            spread: 0.,
+            feedback: 0.5,
+            mix: 0.6,
+            notches: 0.,
+            amount: 0.7,
+            stereo: 0.,
+            mod_mix: 0.,
+            ultra: false,
+            invert_phase: false,
+            invert_mod_mix: false,
+            unit: -1.,
+        };
+        let mut notes = Vec::new();
+        let cfg = config(&Unit::Phasis(p.clone()), 0.4, &mut notes).expect("maps onto the phaser");
+        assert_eq!(cfg.allpass.expect("allpass").stages, 4);
+        assert!((cfg.wet - 0.6).abs() < 1e-6 && (cfg.dry - 0.4).abs() < 1e-6, "mix splits the dry and wet shares");
+        assert!(notes.iter().any(|n| n.2 == sampler_ir::Reason::NotModeled), "unmapped fields are reported");
+        let mut out_of_range = p;
+        out_of_range.amount = 2.;
+        assert!(config(&Unit::Phasis(out_of_range), 0.4, &mut Vec::new()).is_none());
     }
 
     #[test]
