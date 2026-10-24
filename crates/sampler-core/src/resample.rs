@@ -1,4 +1,5 @@
 //! Control-prepared, table-interpolated low-pass kernel for resident rate conversion.
+use crate::dsp::kaiser;
 use std::{f64::consts::PI, sync::OnceLock};
 mod cubic_block;
 pub(super) use cubic_block::cubic_four;
@@ -14,6 +15,11 @@ pub(super) const MAX_STEP: f64 = 2048.0;
 pub(super) const OCTAVES: usize = 11;
 const RADIUS: usize = 48;
 const SHORT_RADIUS: usize = 12;
+/// High kernel: cutoff as a fraction of the output Nyquist, and Kaiser beta. Same radius and taps as the
+/// Blackman kernel it replaces, and the same -6 dB point (0.9 Nyquist), so the top end is unchanged. Stop-band
+/// rises from -81 dB at Nyquist and -85 dB at 1.02 to -106 and -102 dB (engine probe, 16 fractional phases).
+const LONG_CUTOFF: f64 = 0.9;
+const LONG_BETA: f64 = 10.0;
 
 /// Source frames any quality reads on each side of a voice's position at
 /// `step`: what a resident range around a start needs beyond its frames.
@@ -53,6 +59,28 @@ impl Table {
                     let window = 0.42
                         + 0.5 * (PI * x / radius as f64).cos()
                         + 0.08 * (2.0 * PI * x / radius as f64).cos();
+                    (sinc * window) as f32
+                })
+                .collect(),
+        }
+    }
+
+    /// Kaiser-windowed sinc (`beta`), same layout as `new`: the High kernel. The window is the
+    /// shared Bessel I0 from `dsp::kaiser`, so the tap count and per-sample cost do not change.
+    fn kaiser(radius: usize, cutoff: f64, beta: f64) -> Self {
+        let norm = kaiser::i0(beta);
+        Self {
+            radius,
+            taps: (0..=radius * RESOLUTION)
+                .map(|i| {
+                    let x = i as f64 / RESOLUTION as f64;
+                    let sinc = if i == 0 {
+                        cutoff
+                    } else {
+                        (cutoff * PI * x).sin() / (PI * x)
+                    };
+                    let t = x / radius as f64;
+                    let window = kaiser::i0(beta * (1.0 - t * t).max(0.0).sqrt()) / norm;
                     (sinc * window) as f32
                 })
                 .collect(),
@@ -106,7 +134,7 @@ impl Table {
 pub(super) const DECIMATION_REACH: i64 = 2 * RADIUS as i64;
 
 /// Octave levels 1..=log2(MAX_STEP), each the previous low-passed by the long
-/// kernel (0.9 of the new Nyquist) and decimated by two, sample j centered on
+/// kernel (LONG_CUTOFF of the new Nyquist) and decimated by two, sample j centered on
 /// frame 2j of the finer level. Control-side only.
 pub(super) fn octaves(frames: &[[f32; 2]], depth: usize) -> Box<[Box<[[f32; 2]]>]> {
     let table = Kernel::new(ResampleQuality::High).long;
@@ -353,7 +381,7 @@ impl Kernel {
         let short = SHORT.get_or_init(|| Table::new(SHORT_RADIUS, 0.8));
         Self {
             quality,
-            long: LONG.get_or_init(|| Table::new(RADIUS, 0.9)),
+            long: LONG.get_or_init(|| Table::kaiser(RADIUS, LONG_CUTOFF, LONG_BETA)),
             short,
             bank: BANK
                 .get_or_init(|| std::array::from_fn(|i| Polyphase::new(short, Self::stretch(i)))),
