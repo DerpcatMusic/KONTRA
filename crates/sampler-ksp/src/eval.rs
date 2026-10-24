@@ -2275,7 +2275,9 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                         }
                         Some(())
                     });
-                    if loaded.is_none() {
+                    // A saved array is already restored at its declaration: an absent data
+                    // file then leaves the saved values in place, which is not a loss.
+                    if loaded.is_none() && !self.env.persisted_arrays.contains_key(&**name) {
                         let reason = self
                             .env
                             .data_array_reasons
