@@ -805,10 +805,12 @@ fn code(ui: &mut Ui, state: &mut State, key: &str) -> El {
                 .pad(INSET),
         );
     }
-    let list = col(rows)
+    let mut list = col(rows)
         .gap(0)
         .align(Align::Stretch)
-        .h(Len::Pct(100.))
+        // A percentage of an unbounded parent would take the spacers' full
+        // height, which the scroll root's own layout cap refuses.
+        .h(height)
         .w(Len::Pct(100.))
         .scroll()
         .no_scrollbar()
@@ -818,6 +820,10 @@ fn code(ui: &mut Ui, state: &mut State, key: &str) -> El {
         .a11y(A11y::Group)
         .named("Read-only script source; arrows navigate, left/right scroll horizontally")
         .id(id);
+    // Spacer rows stand in for every line scrolled past, so the list is as tall as
+    // the whole source. Layout caps each node at 1e6 px unless the scroll root
+    // declares its extent, as mui's own virtual lists do.
+    list.payload_mut().extras_mut().virtual_scroll_extent = Some(total.max(height));
     let mut layers = vec![list];
     if total > height {
         layers.push(
@@ -1602,16 +1608,16 @@ mod tests {
         assert!(state.scripts[0].coverage.is_none());
     }
 
-    #[test]
-    fn ten_thousand_lines_stay_under_node_budget() {
-        let source: Arc<str> = (1..=10_000)
+    /// A synthetic script of `lines` lines, each one construct with a builtin call.
+    fn synthetic_script(lines: usize) -> Script {
+        let source: Arc<str> = (1..=lines)
             .map(|n| format!("message({n})"))
             .collect::<Vec<_>>()
             .join("\n")
             .into();
         let mut report = ScriptReport {
             id: "ksp:large".into(),
-            title: "10k synthetic lines".into(),
+            title: format!("{lines} synthetic lines"),
             lang: Lang::Ksp,
             source_len: source.len() as u32,
             tokens: vec![],
@@ -1644,8 +1650,13 @@ mod tests {
             });
             start += text.len() as u32 + 1;
         }
+        Script::new(report, source)
+    }
+
+    #[test]
+    fn ten_thousand_lines_stay_under_node_budget() {
         let mut state = State::default();
-        state.scripts = vec![Script::new(report, source)];
+        state.scripts = vec![synthetic_script(10_000)];
         let mut ui = super::super::theme::ui();
         ui.set_node_limit(600);
         for _ in 0..3 {
@@ -1700,6 +1711,39 @@ mod tests {
             start.elapsed().as_secs_f64() * 1000. / 20.
         );
         assert!(ui.layout_stats().validated_nodes < 600);
+    }
+
+    #[test]
+    fn source_past_the_layout_extent_still_lays_out_and_scrolls() {
+        // 60k lines * 22 px is past the 1e6 px layout cap that a plain
+        // spacer column hits; the list must declare its virtual extent.
+        let mut state = State::default();
+        state.scripts = vec![synthetic_script(60_000)];
+        let mut ui = super::super::theme::ui();
+        ui.set_node_limit(600);
+        for _ in 0..2 {
+            tick(&mut ui, &mut state, Input::default());
+        }
+        assert!(ui.scene().unwrap().surface("scripts-test-code").is_some());
+        ui.focus("scripts-test-code");
+        tick(
+            &mut ui,
+            &mut state,
+            Input {
+                keys: vec![KeyPress {
+                    key: Key::End,
+                    mods: Mods::default(),
+                }],
+                ..Default::default()
+            },
+        );
+        tick(&mut ui, &mut state, Input::default());
+        assert!(
+            ui.scene()
+                .unwrap()
+                .surface("scripts-test-line-60000")
+                .is_some()
+        );
     }
 
     struct Board(Arc<Mutex<String>>);
