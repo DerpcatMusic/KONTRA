@@ -89,10 +89,10 @@ LF:close()
 
 TONE_LEN = 5.0                                         # seconds of steady 1 kHz tone (the "tone" stimulus)
 TONE_DB = -12.0
-TONE_SLOT = 7.0                                        # seconds per instance for the "tone" stimulus
+STEADY_TONE_SLOT = 7.0                                        # seconds per instance for the "tone" stimulus
 
 
-def tone_lua(path: Path) -> str:
+def steady_tone_lua(path: Path) -> str:
     """Lua that writes a steady 1 kHz tone WAV (stereo, identical channels) inside Kontakt."""
     frames = int(TONE_LEN * 48000)
     amp = 10 ** (TONE_DB / 20)
@@ -137,7 +137,7 @@ end""")
         f"local CHAIN = {{{chain}}}\n"
         + (levels_lua(work / "levels_lr.wav") if spec.get("stimulus") == "levels" else
            burst_lua(work / "burst_lr.wav") if spec.get("stimulus") == "burst" else
-           tone_lua(work / "tone_lr.wav") if spec.get("stimulus") == "tone" else
+           steady_tone_lua(work / "tone_lr.wav") if spec.get("stimulus") == "tone" else
            eqrender.IMPULSE_LUA.replace("@WAV@", json.dumps(eqrender.winpath(wav))))
         + "kt.reset_multi()\n"
         + "".join(body)
@@ -293,7 +293,7 @@ def tone_metrics(chain, pre, steps, out_prefix: Path):
     step, name, rms dB, carrier dB, rate Hz (mean of both sides), sideband dB (louder side, relative to carrier), dB
     delta of rms/carrier against the reference."""
     global SLOT
-    SLOT = TONE_SLOT
+    SLOT = STEADY_TONE_SLOT
     rows, ref = [], None
     for c0 in range(0, len(steps), CHUNK):
         part = steps[c0:c0 + CHUNK]
@@ -338,10 +338,265 @@ def tone_stats(x, rate, onset):
     return rms, 20 * np.log10(carrier + 1e-12), (f_up + f_dn) / 2, 20 * np.log10(sb / carrier + 1e-12)
 
 
+TONE_SLOT = 5.0     # seconds per instance (live modes): note 0..4.5 s, one CC20 step at STEP_AT, then silence
+STEP_AT = 1.5       # seconds after the note-on that CC20 arrives (controller applies the "post" sets)
+
+
+def tone_lua(path: Path, freq: float, db: float, dur: float) -> str:
+    """Lua that writes a steady sine WAV (stereo, identical channels, starts at sample 0) inside Kontakt."""
+    frames = int(dur * 48000)
+    amp = 10 ** (db / 20)
+    return f"""local LF = io.open({json.dumps(str(path))}, "wb")
+local NF = {frames}
+LF:write("RIFF", string.pack("<I4", 36 + NF * 8), "WAVEfmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, 2, 48000, 384000, 8, 32), "data", string.pack("<I4", NF * 8))
+for i = 0, NF - 1 do
+  local v = {amp!r} * math.sin(2 * math.pi * {freq!r} * i / 48000)
+  LF:write(string.pack("<ff", v, v))
+end
+LF:close()
+"""
+
+
+def tone_session_lua(spec, work: Path) -> str:
+    """One session: each instance plays the tone on its own channel and zone. `pre` sets apply in on init;
+    `post` sets apply in on controller when CC20 arrives (the live control change at STEP_AT). Instance 0 is
+    the bypassed reference (EFFECT_BYPASS=1)."""
+    wav = work / "tone_lr.wav"
+    tone = spec["stimulus"]
+    chain_paths = [eqrender.winpath(eqrender.init_preset(c)) for c in spec["chain"]]
+    body = []
+    for k, inst in enumerate(spec["instances"]):
+        init = "\\n".join(["on init"] + [f"  set_engine_par($ENGINE_PAR_{p}, {int(v)}, -1, {s}, 0)" for s, p, v in inst["pre"]] + ["end on"])
+        ctrl = "\\n".join(["on controller", "  if ($CC_NUM = 20)"] + [f"    set_engine_par($ENGINE_PAR_{p}, {int(v)}, -1, {s}, 0)" for s, p, v in inst.get("post", [])] + ["  end if", "end on"])
+        body.append(f"""
+do
+  local i = kt.add_instrument()
+  kt.set_instrument_midi_channel(i, {k + 1 + BASE})
+  local z = kt.add_zone(i, 0, WAV)
+  kt.set_zone_geometry(i, z, {{ root_key = 60, low_key = 0, high_key = 127 }})
+  for slot, p in ipairs(CHAIN) do log('{{"load":' .. tostring(pcall(kt.load_fx_preset, p, i, -1, slot - 1, kt.insert_fx)) .. ',"inst":{k}}}') end
+  log('{{"script":' .. tostring(pcall(kt.set_instrument_script_source, i, 0, "{init}\\n{ctrl}")) .. ',"inst":{k}}}')
+end""")
+    chain = ",".join(json.dumps(p) for p in chain_paths)
+    return (
+        "local kt = Kontakt\n"
+        "local out = assert(io.open(ORACLE_OUT, \"w\"))\n"
+        "local function log(t) out:write(t .. \"\\n\") out:flush() end\n"
+        f"local WAV = {json.dumps(eqrender.winpath(wav))}\n"
+        f"local CHAIN = {{{chain}}}\n"
+        + tone_lua(work / "tone_lr.wav", tone["freq"], tone["db"], tone["dur"])
+        + "kt.reset_multi()\n"
+        + "".join(body)
+        + "\nlog('{\"ready\":true}')\nout:close()\n"
+    )
+
+
+def write_midi_step(n: int, path: Path):
+    """Per instance: note-on at its slot start, CC20=127 at STEP_AT, note-off at the slot end (PPQ 480, 120 bpm)."""
+    ev = []
+    for k in range(n):
+        t = FIRST + k * TONE_SLOT
+        ch = BASE + k
+        ev += [(t, bytes([0x90 | ch, 60, 100])), (t + STEP_AT, bytes([0xB0 | ch, 20, 127])),
+               (t + TONE_SLOT - 0.5, bytes([0x80 | ch, 60, 0]))]
+    trk, last = b"\x00\xff\x51\x03" + (500000).to_bytes(3, "big"), 0
+    for t, m in sorted(ev, key=lambda e: e[0]):
+        tick = round(t * 960)
+        trk += eqrender.vlq(tick - last) + m
+        last = tick
+    trk += b"\x00\xff\x2f\x00"
+    head = b"MThd" + (6).to_bytes(4, "big") + bytes([0, 0, 0, 1]) + (480).to_bytes(2, "big")
+    path.write_bytes(head + b"MTrk" + len(trk).to_bytes(4, "big") + trk)
+
+
+def render_tone(spec, out_wav: Path):
+    """One Kontakt session for a tone spec (live CC20 steps). Returns nothing; the WAV is written to out_wav."""
+    work = eqrender.scratch_dir()
+    mid, lua = work / "rig.mid", work / "fxrig_tone.lua"
+    write_midi_step(len(spec["instances"]), mid)
+    lua.write_text(tone_session_lua(spec, work))
+    total = FIRST + len(spec["instances"]) * TONE_SLOT + 2.0
+    subprocess.run([sys.executable, str(HERE / "render.py"), str(lua), str(out_wav), str(total), str(mid)], check=True)
+
+
+def time_origin(x, rate):
+    """Seconds from the file start to the scheduled MIDI time 0. The recording starts before the MIDI (render.py
+    sleeps 1 s after pw-record), and instances play back to back, so silence cannot mark each onset. The first
+    instance (ref) starts from silence: its first sound gives the offset for the whole session."""
+    first = int(np.argmax(np.abs(x) > 1e-4))
+    return first / rate - FIRST
+
+
+def env_bins(x, rate, onset_s, t0, t1, bin_s, hilbert=False):
+    """dB in bins of bin_s seconds from t0 to t1, relative to onset_s (scheduled instance start in file time).
+    RMS per bin, or (hilbert=True) the mean analytic amplitude per bin: no ripple for tones below ~1 kHz, where a
+    bin cannot hold a whole period."""
+    nb = int(round(bin_s * rate))
+    a0, a1 = int((onset_s + t0) * rate), int((onset_s + t1) * rate)
+    seg = x[a0:a1]
+    if hilbert:
+        n = len(seg)
+        h = np.zeros(n)
+        h[0] = 1
+        h[1:(n + 1) // 2] = 2
+        if n % 2 == 0:
+            h[n // 2] = 1
+        seg = np.abs(np.fft.ifft(np.fft.fft(seg) * h)) / np.sqrt(2)
+        return np.array([10 * np.log10(np.mean(seg[i:i + nb] ** 2) + 1e-14) for i in range(0, len(seg) - nb + 1, nb)])
+    return np.array([10 * np.log10(np.mean(seg[i:i + nb] ** 2) + 1e-14) for i in range(0, len(seg) - nb + 1, nb)])
+
+
+def cross_frac(t, y, pre, post, t_from, frac):
+    """First time after t_from where y passes pre + frac (post - pre), linear interpolation; None if no step."""
+    if abs(post - pre) < 0.05:
+        return None
+    lvl = pre + frac * (post - pre)
+    up = post > pre
+    for i in np.where(t >= t_from)[0][1:]:
+        if np.isfinite(y[i]) and np.isfinite(y[i - 1]) and ((y[i] >= lvl) if up else (y[i] <= lvl)) and y[i] != y[i - 1]:
+            return float(t[i - 1] + (lvl - y[i - 1]) / (y[i] - y[i - 1]) * (t[i] - t[i - 1]))
+    return None
+
+
+def fit_step(t, y, t_nom, span=0.02, win=0.5):
+    """One-pole step fit with the start time free: y = pre before t0, y = a + b*exp(-(t - t0)/tau) from t0.
+    t0 is searched within +-span of t_nom (the scheduled CC20), tau on a log grid. CC20 timing jitter between
+    instances is a pure shift, so a free t0 keeps tau free of it. Returns (t0, tau, plateau, pre, rms residual)."""
+    m = (t > t_nom - span - 0.05) & (t < t_nom + win) & np.isfinite(y)
+    tt, yy = t[m], y[m]
+    pre = float(np.mean(yy[tt < t_nom - span]))
+    best = None
+    for t0 in np.arange(t_nom - span, t_nom + span + 1e-9, 0.00025):
+        on = tt >= t0
+        for tau in np.geomspace(0.0005, 0.5, 240):
+            e = np.exp(-(tt[on] - t0) / tau)
+            A = np.stack([np.ones_like(e), e], axis=1)
+            coef, *_ = np.linalg.lstsq(A, yy[on], rcond=None)
+            r = np.concatenate([yy[~on] - pre, yy[on] - A @ coef])
+            rms = float(np.sqrt(np.mean(r * r)))
+            if best is None or rms < best[4]:
+                best = (float(t0), float(tau), float(coef[0]), pre, rms)
+    return best
+
+
+def fit_ramp(t, y, t_nom, span=0.02, win=0.5):
+    """Linear-ramp alternative to fit_step (dB domain): y = pre, then a linear ramp of length D from t0 to the
+    plateau. Returns (t0, D, rms residual). Same free start time as fit_step."""
+    m = (t > t_nom - span - 0.05) & (t < t_nom + win) & np.isfinite(y)
+    tt, yy = t[m], y[m]
+    pre = float(np.mean(yy[tt < t_nom - span]))
+    best = None
+    for t0 in np.arange(t_nom - span, t_nom + span + 1e-9, 0.00025):
+        for dur in np.arange(0.0005, 0.1, 0.0005):
+            A = np.clip((tt - t0) / dur, 0, 1)[:, None]
+            c, *_ = np.linalg.lstsq(A, yy - pre, rcond=None)
+            rms = float(np.sqrt(np.mean((yy - pre - A @ c) ** 2)))
+            if best is None or rms < best[2]:
+                best = (float(t0), float(dur), rms)
+    return best
+
+
+def step_analysis(spec, wav: Path, out_prefix: Path):
+    """Per gain instance (gain = active minus reference, dB, bin_ms bins; dropouts below -60 dB excluded):
+    model-free 10-90% rise time, and a one-pole fit (free start time, least squares) on dB and on the linear gain.
+    The bypass instances (post EFFECT_BYPASS=1, a hard switch) are only a per-event timing check: each CC20 has its
+    own MIDI jitter, so they are reported and not used to shift the gain fits.
+    Writes out_prefix.tsv (raw envelope rows) and out_prefix.fit.tsv."""
+    ch, rate, (L, R) = wavutil.read(wav)
+    x = np.array(L)
+    bin_s = spec.get("bin_ms", 1.0) / 1000  # one whole period of the tone per bin (1 kHz: 1 ms; 40 Hz: 25 ms)
+    off = time_origin(x, rate)
+    t = np.arange(int(round((STEP_AT + 3.0 + 0.3) / bin_s))) * bin_s - 0.3
+    hil = bool(spec.get("hilbert", False))
+    ref = env_bins(x, rate, FIRST + off, -0.3, STEP_AT + 3.0, bin_s, hil)
+    gains, raw = {}, []
+    for k, inst in enumerate(spec["instances"]):
+        if k == 0:
+            continue
+        env = env_bins(x, rate, FIRST + k * TONE_SLOT + off, -0.3, STEP_AT + 3.0, bin_s, hil)
+        gain = env - ref
+        gain[(env < -60) | (ref < -60)] = np.nan  # recording dropouts (digital silence inside the tone)
+        gains[inst["name"]] = (inst, gain)
+        raw += [[inst["name"], f"{tt * 1000:.1f}", f"{g:.3f}"] for tt, g in zip(t, gain)]
+    cal, fits = [], []
+    for name, (inst, gain) in gains.items():
+        pre = float(np.nanmean(gain[(t > 0.2) & (t < STEP_AT - 0.1)]))
+        post = float(np.nanmean(gain[(t > STEP_AT + 0.2) & (t < STEP_AT + 0.5)]))  # before any note-off cut
+        if any(p == "EFFECT_BYPASS" for _, p, _ in inst.get("post", [])):
+            if abs(post - pre) > 0.5:
+                cal.append(f"{name} {(cross_frac(t, gain, pre, post, STEP_AT - 0.3, 0.632) - STEP_AT) * 1000:.1f}")
+            continue
+        r10, r90 = (cross_frac(t, gain, pre, post, STEP_AT - 0.1, f) for f in (0.1, 0.9))
+        rise = "n/a" if r10 is None or r90 is None else f"{(r90 - r10) * 1000:.2f}"
+        db = fit_step(t, gain, STEP_AT)
+        lin = fit_step(t, 10 ** (gain / 20), STEP_AT)
+        ramp = fit_ramp(t, gain, STEP_AT)
+        ramp_lin = fit_ramp(t, 10 ** (gain / 20), STEP_AT)
+        fits.append([name, f"{(db[0] - STEP_AT) * 1000:.2f}", f"{db[1] * 1000:.2f}", f"{db[4]:.3f}", f"{pre:.2f}",
+                     f"{post:.2f}", rise, f"{(lin[0] - STEP_AT) * 1000:.2f}", f"{lin[1] * 1000:.2f}", f"{lin[4]:.4f}",
+                     f"{ramp[1] * 1000:.2f}", f"{ramp[2]:.3f}", f"{ramp_lin[1] * 1000:.2f}", f"{ramp_lin[2]:.5f}",
+                     str(int(np.sum(~np.isfinite(gain[t > STEP_AT]))))])
+    tsv = out_prefix.with_suffix(".tsv")
+    tsv.write_text("name\tt_ms\tgain_db\n" + "\n".join("\t".join(map(str, r)) for r in raw) + "\n")
+    fit_tsv = out_prefix.with_name(out_prefix.name + ".fit.tsv")
+    fit_tsv.write_text("name\tdb_t0_ms\tdb_tau_ms\tdb_resid_db\tpre_db\tpost_db\trise10_90_ms\tlin_t0_ms\tlin_tau_ms\tlin_resid\tramp_dur_ms\tramp_resid_db\tramp_lin_dur_ms\tramp_lin_resid\tdropout_bins\n"
+                       + "\n".join("\t".join(map(str, r)) for r in fits)
+                       + f"\n# t0 relative to the scheduled CC20 at {STEP_AT} s. time origin {off:.4f} s. bypass-edge timing check (63%, ms): {'; '.join(cal) or 'none'}\n")
+    return tsv, fit_tsv
+
+
+def spectrum_analysis(spec, wav: Path, out_prefix: Path):
+    """Steady-state spectrum per instance (a 1 s Hann window after the tone settles). Reports the fundamental, the
+    2nd and 3rd harmonics, and the alias bin of the 3rd harmonic (48 kHz - 3f when 3f > 24 kHz), in dBFS-relative
+    dB of the fundamental, plus the floor at 22 kHz (no content expected there)."""
+    ch, rate, (L, R) = wavutil.read(wav)
+    x = np.array(L)
+    f0 = spec["stimulus"]["freq"]
+    off = time_origin(x, rate)
+    rows = []
+    for k, inst in enumerate(spec["instances"]):
+        on = FIRST + k * TONE_SLOT + off
+        lo = int((on + 0.5) * rate)
+        seg = x[lo:lo + rate] * np.hanning(rate)
+        mag = 20 * np.log10(np.abs(np.fft.rfft(seg)) / np.sum(np.hanning(rate)) * 2 + 1e-12)
+        fr = np.fft.rfftfreq(rate, 1 / rate)
+
+        def at(f, half=30.0):
+            sel = (fr > f - half) & (fr < f + half)
+            return float(np.max(mag[sel]))
+        f3 = 3 * f0
+        alias = 2 * 24000 - f3 if f3 > 24000 else f3
+        base = at(f0)
+        h3 = f"{at(f3) - base:.2f}" if f3 < 24000 else "above-nyquist"  # 3f > 24 kHz folds to the alias bin
+        rows.append([inst["name"], f"{base:.2f}", f"{at(2 * f0) - base:.2f}", h3,
+                     f"{at(alias) - base:.2f}", f"{at(22000) - base:.2f}"])
+    tsv = out_prefix.with_suffix(".tsv")
+    tsv.write_text("name\tfund_dbfs\th2_rel_db\th3_rel_db\talias_rel_db\tfloor22k_rel_db\n"
+                   + "\n".join("\t".join(map(str, r)) for r in rows) + "\n")
+    return tsv
+
+
+def tone_cmd(spec_path: Path, out_prefix: Path, wav: Path = None):
+    """tone SPEC.json OUT_PREFIX [WAV]: one session (or, given WAV, analysis only); mode 'step' (CC20 live steps)
+    or 'spectrum' (static, no CC)."""
+    spec = json.load(open(spec_path))
+    wav = wav or out_prefix.with_suffix(".wav")
+    if len(spec["instances"]) > CHANNELS:
+        sys.exit(f"fxrig tone: {len(spec['instances'])} instances, this oracle slot has {CHANNELS} MIDI channels; split the spec")
+    if not wav.exists():
+        render_tone(spec, wav)
+    if spec.get("mode", "step") == "spectrum":
+        return spectrum_analysis(spec, wav, out_prefix)
+    return step_analysis(spec, wav, out_prefix)
+
+
 def main() -> int:
     if sys.argv[1] == "tone":
         spec = json.load(open(sys.argv[2]))
-        print(tone_metrics(spec["chain"], spec.get("pre", []), spec["steps"], Path(sys.argv[3]).resolve()))
+        if "instances" in spec:
+            print(tone_cmd(Path(sys.argv[2]), Path(sys.argv[3]).resolve(), Path(sys.argv[4]).resolve() if len(sys.argv) > 4 else None))
+        else:
+            print(tone_metrics(spec["chain"], spec.get("pre", []), spec["steps"], Path(sys.argv[3]).resolve()))
         return 0
     if sys.argv[1] == "levels":
         spec = json.load(open(sys.argv[2]))
