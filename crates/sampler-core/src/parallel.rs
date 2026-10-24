@@ -44,7 +44,7 @@ struct Outcome {
     produced: usize,
     done: bool,
     faults: u64,
-    underrun: bool,
+    underrun: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -379,7 +379,7 @@ impl Runtime {
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(outcome.faults);
                 self.stream_underruns = self
                     .stream_underruns
-                    .saturating_add(u64::from(outcome.underrun));
+                    .saturating_add(outcome.underrun);
                 if !outcome.done {
                     self.refresh_stream_reservation(i, stream_step);
                 }
@@ -565,7 +565,7 @@ impl View<'_> {
             std::array::from_fn(|k| voices.get(k).map(|&i| self.voices.claim(i)));
         let mut begun = [None; VOICES];
         let mut gains = [[0.; 2]; VOICES];
-        let mut starved = [false; VOICES];
+        let mut misses = [0u64; VOICES];
         let mut plan_id = None;
         let reuse_mask = super::source::reuse::candidates(
             slots[..voices.len()]
@@ -593,7 +593,7 @@ impl View<'_> {
                 .stretch
                 .map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
             let engine = stretch.as_mut().map(|c| &mut c[0]);
-            starved[k] = v.cursor.starved();
+            misses[k] = v.cursor.misses();
             batch.expressions[k] = Some((n.expression, expression.value));
             let mut planar = [[0.; BLOCK]; 2];
             begun[k] = if let Some(head) = &self.onset_heads[voices[k]] {
@@ -719,7 +719,7 @@ impl View<'_> {
                 produced,
                 done: chain.done(v) || super::render::inaudible(v, produced, gains[k]),
                 faults: u64::from(fault),
-                underrun: !starved[k] && v.cursor.starved(),
+                underrun: v.cursor.misses() - misses[k],
             };
         }
     }
