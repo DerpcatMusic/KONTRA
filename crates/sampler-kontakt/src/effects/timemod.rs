@@ -29,6 +29,9 @@ pub(crate) enum Unit {
     Twin(TwinDelay),
     Psyche(PsycheDelay),
     Replika(Replika),
+    /// Rotator v0x50 (`BParFXRotator`): the RT_* stored fields bound from fx_other.tsv.
+    /// Read at absolute offsets. Not mapped onto the rotator core yet.
+    Rotator(Rotator),
     /// Wow / Flutter v0x10: wow, flutter, scrape, speed, stereo, age, saturation (f32),
     /// gate (flag), mix (f32).
     WowFlutter { fields: [f32; 7], gate: bool, mix: f32 },
@@ -295,6 +298,37 @@ pub(super) fn read_psyche(version: u16, r: &mut Reader) -> Option<Unit> {
     Some(Unit::Psyche(PsycheDelay { time: v[0], unit, feedback: v[1], detune: v[2], pitch: v[3], offset: v[4], cross: v[5], reverse_stereo, detune_stereo, reverse }))
 }
 
+/// `BParFXRotator` v0x50 stored fields, by the `ENGINE_PAR_RT_*` names.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Rotator {
+    pub speed: f32,
+    pub balance: f32,
+    pub accel_hi: f32,
+    pub accel_lo: f32,
+    pub distance: f32,
+    pub mix: f32,
+}
+
+/// Rotator v0x50 (`BParFXRotator`), offsets from fx_other.tsv (`ENGINE_PAR_RT_*` rows).
+pub(super) fn read_rotator(version: u16, public: &[u8]) -> Option<Unit> {
+    if version != 0x50 {
+        return None;
+    }
+    let f32_at = |at: usize| -> Option<f32> {
+        let bytes = public.get(at..at + 4)?;
+        let x = f32::from_le_bytes(bytes.try_into().ok()?);
+        x.is_finite().then_some(x)
+    };
+    Some(Unit::Rotator(Rotator {
+        speed: f32_at(8)?,
+        balance: f32_at(12)?,
+        accel_hi: f32_at(16)?,
+        accel_lo: f32_at(20)?,
+        distance: f32_at(24)?,
+        mix: f32_at(28)?,
+    }))
+}
+
 /// Replika Delay v0x12 (reader `0x140d02250`); older versions are not read.
 pub(super) fn read_replika(version: u16, r: &mut Reader) -> Option<Unit> {
     if version != 0x12 {
@@ -384,7 +418,7 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
         0x5b => "Phasis: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but their binding to the core parameter indices and the core's oversampling resamplers (about 96 kHz internal) are not extracted",
         0x5c => "Flair: saved fields and most of the core law are extracted, but the writer of the pitch note field (+0x40), the internal-rate resampler and the random start phase are not",
         0x69 => "Vibrato Chorus: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the core's wave-digital LC ladder (the delay line it models) is not extracted",
-        0x22 => "Rotator: horn/drum law located (control 0x140a97d30, audio 0x140aae920, output stage 0x140ac21f0 ported) but the runtime-initialised lane vectors at 0x149e6c400..0x149e6c45c and the RT_* setter binding (virtual BParFXRotator, vtable not exported) are not yet verified",
+        0x22 => "Rotator: RT_* fields bound (fx_other.tsv); rotation, acceleration and distance laws and the runtime lane vectors (0x149e6c400..0x149e6c45c) are not mapped",
         _ => return None,
     })
 }
@@ -579,6 +613,10 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
         Unit::Replika(ref rep) => return replika_config(rep, dry, notes),
+        Unit::Rotator(_) => {
+            notes.push(("parameters".into(), "Rotator: bound fields read; core (rotation, acceleration and distance laws, runtime lane vectors) not mapped".into(), Reason::NotModeled));
+            return None;
+        }
         Unit::WowFlutter { fields: [wow, flutter, scrape, speed, stereo, age, saturation], gate, mix } => {
             if ![wow, flutter, scrape, speed, stereo, age, saturation, mix].iter().all(|v| unit_interval(&[*v])) {
                 notes.push(("parameters".into(), format!("{wow}/{flutter}/{speed}/{stereo}/{mix}"), Reason::InvalidValue));
@@ -1300,5 +1338,27 @@ pub(super) fn slot_phaser(b: &mut Lowering, s: &Site, notes: &mut Notes, cutoff:
     } else {
         notes.push(("Phaser filter parameters".into(), format!("{knobs:?}"), Reason::InvalidValue));
         false
+    }
+}
+
+#[cfg(test)]
+mod rotator_binding_tests {
+    use super::*;
+
+    /// A v0x50 record with each RT_* float at its fx_other.tsv offset and distinct values.
+    #[test]
+    fn rotator_fields_read_from_their_measured_offsets() {
+        let mut public = vec![0u8; 40];
+        let floats = [(8, 0.1f32), (12, 0.2), (16, 0.3), (20, 0.4), (24, 0.5), (28, 0.6)];
+        for (at, x) in floats {
+            public[at..at + 4].copy_from_slice(&x.to_le_bytes());
+        }
+        let Some(Unit::Rotator(r)) = read_rotator(0x50, &public) else { panic!("v0x50 must read") };
+        assert_eq!(
+            [r.speed, r.balance, r.accel_hi, r.accel_lo, r.distance, r.mix],
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+        );
+        assert!(read_rotator(0x51, &public).is_none());
+        assert!(read_rotator(0x50, &public[..28]).is_none());
     }
 }
