@@ -219,6 +219,13 @@ fn slots(path: &Path) {
     let s = load_read_streamed(k, &options, &StreamPolicy::default(), |_| {}).expect("load");
     let inst = &s.loaded.instrument;
     println!("instrument\t{}", inst.name);
+    let gate = inst.zones.iter().filter(|z| matches!(z.trigger, sampler_ir::Trigger::GateRelease)).count();
+    let counter = format!("{:?}{:?}", inst.modulators, inst.routes).matches("ReleaseCounter").count();
+    println!("gate_release_zones\t{gate}\trelease_counter_refs\t{counter}");
+    for z in inst.zones.iter().filter(|z| matches!(z.trigger, sampler_ir::Trigger::GateRelease)).take(12) {
+        let g = z.group.map(|g| &inst.groups[g.0]);
+        println!("gate_zone\tkeys={:?}\tgroup={:?}\tstart={:?}\tmono={:?}\tzone_trigger={:?}", z.keys, g.map(|g| g.name.clone()), g.map(|g| g.start.clone()), g.map(|g| g.monophonic_release), z.trigger);
+    }
     for (i, zone) in inst.zones.iter().enumerate() {
         if let sampler_ir::Looping::Slots(slots) = zone.playback.looping {
             for slot in slots.iter().flatten() {
