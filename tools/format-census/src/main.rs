@@ -240,6 +240,13 @@ fn slots(path: &Path) {
     let s = load_read_streamed(k, &options, &StreamPolicy::default(), |_| {}).expect("load");
     let inst = &s.loaded.instrument;
     println!("instrument\t{}", inst.name);
+    println!("scripts\t{}\tunsupported\t{:?}", s.loaded.scripts.len(), inst.unsupported.iter().map(|u| u.feature.to_string()).collect::<Vec<_>>());
+    if std::env::var("CENSUS_GROUPS").is_ok() {
+        for (i, z) in inst.zones.iter().enumerate() {
+            let g = z.group.map(|g| &inst.groups[g.0]);
+            println!("zone{i}\tkeys={:?}\ttrig={:?}\tgroup={:?}\tstart={:?}\tvel={:?}", z.keys, z.trigger, g.map(|g| g.name.clone()), g.map(|g| g.start.iter().map(|s| s.test).collect::<Vec<_>>()), z.velocities);
+        }
+    }
     let gate = inst.zones.iter().filter(|z| matches!(z.trigger, sampler_ir::Trigger::GateRelease)).count();
     let counter = format!("{:?}{:?}", inst.modulators, inst.routes).matches("ReleaseCounter").count();
     println!("gate_release_zones\t{gate}\trelease_counter_refs\t{counter}");
