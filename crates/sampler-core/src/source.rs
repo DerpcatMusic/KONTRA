@@ -2983,7 +2983,7 @@ mod tests {
 
 mod demand;
 pub use demand::SampleDemand;
-mod time_machine;
+pub(crate) mod time_machine;
 pub(crate) mod beat_slices;
 mod tone_machine;
 
