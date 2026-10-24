@@ -243,6 +243,103 @@ on init
   set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
+  { id = "ctl_knob_default", results = 2, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare ui_knob $k(0,127,1)
+  $cv := get_control_par($k, $CONTROL_PAR_VALUE, -1)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := get_control_par($k, $CONTROL_PAR_DEFAULT_VALUE, -1)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "ctl_knob_set_high", results = 1, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare ui_knob $k(0,127,1)
+  set_control_par($k, $CONTROL_PAR_VALUE, 150)
+  $cv := get_control_par($k, $CONTROL_PAR_VALUE, -1)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "ctl_knob_set_neg", results = 1, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare ui_knob $k(0,127,1)
+  set_control_par($k, $CONTROL_PAR_VALUE, -5)
+  $cv := get_control_par($k, $CONTROL_PAR_VALUE, -1)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "ctl_switch_set", results = 1, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare ui_switch $s
+  set_control_par($s, $CONTROL_PAR_VALUE, 1)
+  $cv := get_control_par($s, $CONTROL_PAR_VALUE, -1)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "ctl_hide_set", results = 1, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare ui_knob $k(0,127,1)
+  set_control_par($k, $CONTROL_PAR_HIDE, 1)
+  $cv := get_control_par($k, $CONTROL_PAR_HIDE, -1)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
 }
 local ids = {}
 for n, c in ipairs(CASES) do
