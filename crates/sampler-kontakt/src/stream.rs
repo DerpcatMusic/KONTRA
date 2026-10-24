@@ -1521,18 +1521,35 @@ impl AsRef<[Range<usize>]> for RestoreRange {
 }
 type RestoreTable = HashMap<AssetId, RestoreRange>;
 
-fn checked_start_table(assets: &[Pcm], ranges: Vec<Vec<Range<usize>>>, enclosing: Option<&StartTable>) -> io::Result<StartTable> {
+fn checked_start_table(assets: &[Pcm], mut ranges: Vec<Vec<Range<usize>>>, enclosing: Option<&StartTable>) -> io::Result<StartTable> {
     if ranges.len() != assets.len() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "sample start asset/range count mismatch"));
     }
-    for (pcm, ranges) in assets.iter().zip(&ranges) {
+    for (pcm, ranges) in assets.iter().zip(&mut ranges) {
         range_bounds(pcm, ranges)?;
-        if enclosing.is_some_and(|table| ranges.iter().any(|range| !table[&pcm.asset_id()].iter()
-            .any(|full| full.start <= range.start && full.end >= range.end))) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "sample start range outside requested coverage"));
+        // A start outside the requested coverage (the resident budget trimmed it) streams on
+        // demand instead of failing the load: keep only the part the coverage holds.
+        if let Some(table) = enclosing {
+            let covered = table.get(&pcm.asset_id()).map_or(&[][..], Vec::as_slice);
+            *ranges = intersect_ranges(ranges, covered);
         }
     }
     Ok(physical_start_ranges(assets, &ranges))
+}
+
+/// The parts of `ranges` that `covered` also holds. Both sorted and merged.
+fn intersect_ranges(ranges: &[Range<usize>], covered: &[Range<usize>]) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    for range in ranges {
+        for full in covered {
+            let (start, end) = (range.start.max(full.start), range.end.min(full.end));
+            if start < end {
+                out.push(start..end);
+            }
+        }
+    }
+    merge_start_ranges(&mut out);
+    out
 }
 
 fn select_attack_ranges<'a, 'r>(
@@ -2994,6 +3011,15 @@ impl Streamed {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    /// A start range the resident budget did not cover is clipped to the covered part (it
+    /// streams on demand), not an error that stops the instrument from loading.
+    #[test]
+    fn start_ranges_outside_the_requested_coverage_are_clipped() {
+        let clipped = intersect_ranges(&[0..100, 150..200], &[50..120, 160..170]);
+        assert_eq!(clipped, vec![50..100, 160..170]);
+        assert!(intersect_ranges(&[0..10], &[]).is_empty());
+    }
 
     #[test]
     fn cached_numeric_headers_keep_bounded_real_latency_probes() {
