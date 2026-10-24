@@ -21,6 +21,7 @@
 //! controller, or a sample-rate change without reloading.
 
 use anyhow::{Context, ensure};
+mod memory;
 mod uvi_meters;
 mod control_diagnostics;
 #[cfg(feature = "shots")]
@@ -2385,14 +2386,13 @@ impl V2Core {
         self.signal_trace_active = false;
         self.tapped[..n].fill(0.0);
         let solo = self.mix.parts.iter().take(self.parts.len()).any(|c| c.solo);
-        let render_allowance = (!self.host_block)
-            .then(|| behavior_allowance(n, self.rate, self.parts.iter().flatten().count(), false));
+        let render_allowance = (!self.host_block).then(|| behavior_allowance(n, false));
         for (index, part) in self.parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
             #[cfg(test)]
             let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
-            if let Some((fuel, time)) = render_allowance {
-                part.runtime.begin_behavior_block(fuel, time);
+            if let Some(fuel) = render_allowance {
+                part.runtime.begin_behavior_block(fuel, None);
             }
             // Native replies apply backpressure; bounded ingress is serviced before rendering.
             for _ in 0..256 {
@@ -2993,12 +2993,11 @@ impl Core for V2Core {
 
     fn begin_block(&mut self, block: &BlockInfo) {
         self.host_block = true;
-        let parts = self.parts.iter().flatten().count().max(1);
-        let (fuel, time) = behavior_allowance(block.frames, self.rate, parts, block.offline);
+        let fuel = behavior_allowance(block.frames, block.offline);
         let tails = self.tails.iter_mut().flatten().map(|t| &mut t.part);
         for part in self.parts.iter_mut().flatten().chain(tails) {
             part.runtime.set_offline(block.offline);
-            part.runtime.begin_behavior_block(fuel, time);
+            part.runtime.begin_behavior_block(fuel, None);
         }
         self.update_transport(block.transport);
     }
@@ -3547,48 +3546,27 @@ fn number(value: ControlValue) -> f64 {
     }
 }
 
-/// Shared player execution allowance. Fragments of an explicit host block
-/// never install a fresh budget; render-driven callers install one before work.
-fn behavior_allowance(
-    frames: usize,
-    rate: f64,
-    parts: usize,
-    offline: bool,
-) -> (usize, Option<std::time::Duration>) {
-    let parts = parts.max(1);
+/// Deterministic per-part execution allowance. Idle loaded instruments do not
+/// reduce another instrument's ability to process an event. Wall-clock quotas
+/// would turn OS scheduling noise into dropped or delayed musical events.
+fn behavior_allowance(frames: usize, offline: bool) -> usize {
+    // Zero-frame control/flush transactions still need bounded runnable work.
+    let frames = if frames == 0 { MAX_BLOCK } else { frames };
     if offline {
-        return (512 * 4096, None);
+        512 * 4096
+    } else {
+        frames.saturating_mul(2048)
     }
-    let fuel = frames.saturating_mul(2048) / parts;
-    let time = std::time::Duration::try_from_secs_f64(frames as f64 / rate * 0.4 / parts as f64)
-        .unwrap_or_default();
-    (fuel, Some(time))
 }
 
 /// Prepares [`V2Core`] parts from Kontakt instruments and WAV files.
 #[derive(Default)]
 pub struct V2Loader;
 
-/// Free (available) and total RAM in bytes, from `/proc/meminfo`.
-fn ram_free() -> Option<(usize, usize)> {
-    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let field = |name: &str| -> Option<usize> {
-        let line = info.lines().find(|l| l.starts_with(name))?;
-        let kib: usize = line[name.len()..]
-            .trim()
-            .trim_end_matches("kB")
-            .trim()
-            .parse()
-            .ok()?;
-        Some(kib << 10)
-    };
-    Some((field("MemAvailable:")?, field("MemTotal:")?))
-}
-
 /// Normal streaming prepares complete attack heads, never quota-shortened
 /// anchors. A load that cannot meet this contract fails before publication.
 fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
-    stream_policy_for_memory(request, ram_free())
+    stream_policy_for_memory(request, memory::available())
 }
 
 fn stream_policy_for_memory(
@@ -3598,15 +3576,15 @@ fn stream_policy_for_memory(
     // Keep the existing system reserve: 1 GiB plus one eighth of physical RAM.
     // Auto spends at most another eighth on heads, capped at 2 GiB per part.
     // This admits the measured 637 MB / 1,067 MB Areia heads without making
-    // all sample tails resident. Other platforms retain an explicit 2 GiB cap
-    // until a native available-memory probe is supplied.
-    let available = memory.map_or(8 << 30, |(free, total)| {
+    // all sample tails resident. Failed OS probes use a conservative 256 MiB
+    // capacity instead of assuming that physical memory is available.
+    let available = memory.map_or(256 << 20, |(free, total)| {
         free.saturating_sub((1 << 30) + total / 8)
     });
     let resident_budget = (request.streaming == super::Streaming::RamOnly).then_some(available);
     let head_budget = resident_budget.unwrap_or_else(|| {
         available
-            .min(memory.map_or(2 << 30, |(_, total)| total / 8))
+            .min(memory.map_or(256 << 20, |(_, total)| total / 8))
             .min(2 << 30)
     });
     sampler_kontakt::StreamPolicy {
@@ -5368,12 +5346,12 @@ mod tests {
         for frames in [1, 31, 32] {
             core.render(frames);
             for part in core.parts.iter().flatten() {
-                assert_eq!(part.runtime.behavior_block_fuel(), 64 * 2048 / 2);
+                assert_eq!(part.runtime.behavior_block_fuel(), 64 * 2048);
             }
         }
         core.begin_block(&BlockInfo { frames: 32, ..Default::default() });
-        assert_eq!(core.parts[0].as_ref().unwrap().runtime.behavior_block_fuel(), 32 * 2048 / 2);
-        // Invalid host rates exhaust time conservatively rather than panicking.
+        assert_eq!(core.parts[0].as_ref().unwrap().runtime.behavior_block_fuel(), 32 * 2048);
+        // The deterministic instruction allowance is independent of host-rate noise.
         core.rate = f64::NAN;
         core.begin_block(&BlockInfo { frames: 64, ..Default::default() });
     }

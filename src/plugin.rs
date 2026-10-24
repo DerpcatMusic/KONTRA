@@ -3813,6 +3813,13 @@ pub(crate) mod tests {
             cold_starts: 126,
             voice_pool_refusals: 127,
             waiting_voice_replacements: 128,
+            script_preemptions: 129,
+            script_budget_failures: 130,
+            script_service_stalls: 131,
+            late_attacks: 132,
+            max_attack_lateness_frames: 133,
+            closed_pending_attacks: 134,
+            max_onset_wait_frames: 135,
             ..Default::default()
         };
         assert_eq!(

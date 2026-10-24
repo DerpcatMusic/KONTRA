@@ -26,7 +26,9 @@ the FIFO contains later events. A queue pass may block behind a callback that
 actually preempts again, never behind a newly created runnable stage.
 
 Deferral remains an explicit engine capability for offline/control clients.
-The player selects terminal overload: bounded work that cannot complete is a
+Normal playback uses a deterministic instruction allowance per part and block;
+wall-clock scheduling noise and idle loaded parts do not reduce it. The player
+selects terminal overload: bounded work that cannot complete is a
 visible failure, not an implicit musical delay. Intentional waits and external
 asynchronous operations retain their authored timing and lifetime rules.
 
