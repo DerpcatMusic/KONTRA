@@ -256,3 +256,15 @@ fn pinned_wavetables_over_head_budget_stream_under_cold_fallback() {
         assert_eq!(started.is_ok(), admitted, "cold fallback {allow_cold_fallback}");
     }
 }
+
+#[test]
+fn optional_start_tables_clip_to_base_coverage_instead_of_failing_the_load() {
+    let pcm = Pcm::streamed(48000, 2048).unwrap();
+    let assets = std::slice::from_ref(&pcm);
+    let base = checked_start_table(assets, vec![vec![0..100]], None).unwrap();
+    // Budget promotion can make an optional table cover the whole asset while the base stays partial.
+    let promoted = checked_start_table(assets, vec![vec![0..2048]], Some(&base)).unwrap();
+    assert_eq!(promoted[&pcm.asset_id()], vec![0..100]);
+    let outside = checked_start_table(assets, vec![vec![500..600]], Some(&base)).unwrap();
+    assert!(outside[&pcm.asset_id()].is_empty());
+}

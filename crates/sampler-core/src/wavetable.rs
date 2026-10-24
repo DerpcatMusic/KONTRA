@@ -143,7 +143,7 @@ impl Table {
     /// Phase stays within one cycle, including when a block crosses its seam.
     pub(super) fn render_frames(
         self,
-        mut read: impl FnMut(usize) -> Frame,
+        mut copy: impl FnMut(std::ops::Range<usize>, &mut [Frame]) -> bool,
         source: &Wavetable,
         mut phase: f64,
         step: f64,
@@ -166,11 +166,11 @@ impl Table {
                 source.form2_type,
             ) as f64
                 * CYCLE as f64;
-            let a = Self::read(&mut read, lo, read_phase);
+            let a = Self::read(&mut copy, lo, read_phase);
             let b = if lo == hi || blend == 0. {
                 a
             } else {
-                Self::read(&mut read, hi, read_phase)
+                Self::read(&mut copy, hi, read_phase)
             };
             *frame = std::array::from_fn(|c| a[c] + (b[c] - a[c]) * blend);
             phase = (phase + step).rem_euclid(CYCLE as f64);
@@ -178,10 +178,19 @@ impl Table {
         phase
     }
 
-    fn read(read: &mut impl FnMut(usize) -> Frame, first: usize, phase: f64) -> Frame {
-        let index = phase as usize;
-        let taps: [Frame; 4] =
-            std::array::from_fn(|i| read(first + (index + CYCLE + i - 1) % CYCLE));
+    /// The four Hermite taps are one block read unless they wrap past the cycle's end,
+    /// which then reads them one by one. A missing frame fails the copy, as before.
+    fn read(copy: &mut impl FnMut(std::ops::Range<usize>, &mut [Frame]) -> bool, first: usize, phase: f64) -> Frame {
+        let start = (phase as usize + CYCLE - 1) % CYCLE;
+        let mut taps = [[0.; 2]; 4];
+        if start + 4 <= CYCLE {
+            copy(first + start..first + start + 4, &mut taps);
+        } else {
+            for (i, tap) in taps.iter_mut().enumerate() {
+                let at = first + (start + i) % CYCLE;
+                copy(at..at + 1, std::slice::from_mut(tap));
+            }
+        }
         hermite(&taps, phase.fract() as f32)
     }
 }
@@ -207,11 +216,10 @@ impl Table {
         let mut ready = true;
         let mut out = [[0.; 2]; 1];
         self.render_frames(
-            |at| {
-                pcm.frame(at).unwrap_or_else(|| {
-                    ready = false;
-                    [0.; 2]
-                })
+            |range, taps| {
+                let copied = pcm.copy(range, taps);
+                ready &= copied;
+                copied
             },
             source,
             phase,

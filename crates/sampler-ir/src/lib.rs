@@ -307,6 +307,10 @@ pub struct SourceIndices {
     /// Original physical order. Empty for caches without native identity metadata.
     #[cfg_attr(feature = "cache", serde(default))]
     pub zone_catalog: Vec<SourceZone>,
+    /// Kontakt sample name of each physical zone (file stem, as `find_zone` matches it),
+    /// aligned with `zone_catalog`. Empty string: no sample name.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub zone_names: Vec<String>,
     /// Authored sample-player identities, independent of asset renumbering.
     /// An initially empty player retains complete dormant zone recipes.
     #[cfg_attr(feature = "cache", serde(default))]

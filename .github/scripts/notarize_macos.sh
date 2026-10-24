@@ -37,7 +37,15 @@ done
 phase "Native bundle/factory verification" xcrun swift .github/scripts/check_macos_bundles.swift --register "$STAGE/KONTRA.app" "$STAGE/KONTRA.clap" "$STAGE/KONTRA.vst3"
 # ZIP containers cannot carry stapled tickets. A DMG holds
 # these same signed products plus the legal/build metadata for offline delivery.
-phase "DMG creation" hdiutil create -format UDZO -volname KONTRA -srcfolder "$STAGE" "$work/KONTRA.dmg"
+# hosted runners intermittently fail hdiutil with "Resource busy" on the staged tree; a fresh
+# attempt after a pause succeeds (run 40049358519 failed once and nothing else changed).
+dmg_create() { rm -f "$work/KONTRA.dmg"; hdiutil create -format UDZO -volname KONTRA -srcfolder "$STAGE" "$work/KONTRA.dmg"; }
+for attempt in 1 2 3; do
+  dmg_status=0
+  phase "DMG creation" dmg_create || dmg_status=$?
+  [ "$dmg_status" -eq 0 ] && break
+  [ "$attempt" -lt 3 ] && sleep "${KONTRA_DMG_RETRY_PAUSE:-20}" || exit "$dmg_status"
+done
 phase "DMG signing" codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" --keychain "$keychain" --timestamp "$work/KONTRA.dmg"
 phase "DMG signature verification" codesign --verify --strict "$work/KONTRA.dmg"
 if phase "Apple notarization submission" python3 "$(dirname "$0")/notarize.py" "$work/KONTRA.dmg" > "$work/notary.json"; then

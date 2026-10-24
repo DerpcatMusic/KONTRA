@@ -1,0 +1,6 @@
+name	fund_dbfs	h2_rel_db	h3_rel_db	alias_rel_db	floor22k_rel_db
+ref	-14.32	-225.30	above-nyquist	-175.32	-225.44
+g020_q0	-17.23	-120.53	above-nyquist	-115.21	-177.65
+g050_q0	-22.41	-101.25	above-nyquist	-93.79	-166.43
+g080_q0	-43.05	-75.92	above-nyquist	-76.22	-77.37
+g100_q0	-45.85	-99.40	above-nyquist	-94.09	-111.42
