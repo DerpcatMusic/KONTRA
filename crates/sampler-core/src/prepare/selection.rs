@@ -977,7 +977,7 @@ input.group>=16||input.channel>=16||input.key>=128
                 .map(|c| prepared.voice_modulation.start_range(c.region))
                 .max()
                 .unwrap_or(0);
-            (range, self.now ^ ((note.0.index as u64) << 40))
+            (range, self.start_clock() ^ ((note.0.index as u64) << 40))
         };
         let mut from = begin;
         while from < end {
@@ -1031,7 +1031,7 @@ input.group>=16||input.channel>=16||input.key>=128
                     .flatten();
                 let Some((sample,source_cursor))=self.plans.get(plan.0).unwrap().samples.source(prepared,candidate,note_pitch) else {continue;};
                 let step=source_cursor.step();
-                let seed=self.now^((note.0.index as u64)<<40)^((candidate.region as u64)<<20);
+                let seed=self.start_clock()^((note.0.index as u64)<<40)^((candidate.region as u64)<<20);
                 let provider_scope=prepared.voice_modulation.region_provider_scope(candidate.region);
                 // Claim the real shared owner BEFORE a provider-dependent
                 // SampleStart is read and before the physical cursor offset
@@ -1278,6 +1278,13 @@ input.group>=16||input.channel>=16||input.key>=128
 }
 
 impl Runtime {
+    /// Clock that seeds a note's random start draws. Offline renders use a constant so
+    /// they reproduce bit-for-bit regardless of how far the clock advanced; the
+    /// real-time path keeps the running clock.
+    fn start_clock(&self) -> u64 {
+        if self.offline { 0 } else { self.now }
+    }
+
     fn next_source_selected_candidate(&self,note:Option<NoteId>,matching:&mut super::Matching,plan:PlanId,snapshot:usize,velocity:f64,groups:Option<&[u64]>)->Option<super::Candidate>{
         let generation=self.plans.get(plan.0)?;let prepared=&generation.prepared;
         loop{let candidate=matching.next_in_groups(prepared,&self.performance_state.states[snapshot],velocity,groups,generation.zone_routing.as_ref())?;

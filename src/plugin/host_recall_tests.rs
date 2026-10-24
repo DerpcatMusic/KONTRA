@@ -24,11 +24,15 @@ const INSTRUMENTS: &[&str] = &[
 
 /// Render a fixed phrase and hash every output sample. Each block refreshes the control cells
 /// the way the plugin's process callback does, so saves read the audio side's live values.
+/// Offline blocks wait for streamed pages instead of starving voices, so every load of the
+/// same instrument renders the same samples (real-time blocks shed load and vary by timing).
 fn render_hash(params: &SamplerParams, core: &mut V2Core, part: usize) -> u64 {
+    use crate::sound::{BlockInfo, Core};
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for key in [48u8, 60, 67] {
         core.play(part, CoreEvent::midi1(0x90, key, 100));
         for _ in 0..(48_000 / 64 / 2) {
+            core.begin_block(&BlockInfo { frames: 64, offline: true, ..Default::default() });
             let out = core.render(64);
             for bus in out.buses.iter().take(2) {
                 for channel in bus.iter() {
@@ -196,16 +200,14 @@ fn recall_one(path: &str) -> Result<String, String> {
 }
 
 /// Files whose reload still diverges. Reported, not asserted, until each is fixed.
-/// Una Corda, ANALOG STRINGS, Morphology: script-driven volume sliders (`set_engine_par` in
-/// `on ui_control`) whose engine layer is not saved, so `on persistence_changed` reads the
-/// .nki default back over the slider (Una Corda 630957 -> 339282; Morphology 2e-13 -> 1.0).
-/// Pacific, Vista: audio differs on reload with no control moved; cause not found yet.
+/// Una Corda: faithful to the script. Its `on persistence_changed` reads the engine back
+/// into `$T1_sliRumbleVol` through `%VolumeConvert`, which tops out at 629961, so any saved
+/// position above that (630957) reloads as the table's top entry (339282). Kontakt runs the
+/// same script, so the clamp is the expected reload value; the harness reports, not fails.
+/// Pacific and Vista were nondeterministic on the real-time block path (stream starvation);
+/// the offline block path in `render_hash` removed that, so they are asserted now.
 const KNOWN_DIVERGENT: &[&str] = &[
     "Una Corda Felt.nki",
-    "ANALOG STRINGS.nki",
-    "Morphology Evolved.nki",
-    "Pacific - Ens Strings",
-    "Vista - 5 Violins.nki",
 ];
 
 #[test]
@@ -252,4 +254,27 @@ fn two_parts_recall_together() {
     assert!(resaved == saved, "re-save after a two-part load is not idempotent");
     // Part 1 (Vista) is a known audio divergence above; part 0 must match.
     assert!(fresh_hashes[0] == live_hashes[0], "two-part audio differs after reload: live {live_hashes:x?} fresh {fresh_hashes:x?}");
+}
+
+/// Una Corda's rumble slider above the script's volume table reloads clamped, by design: the
+/// script's `persistence_changed` reads `%VolumeConvert[100]` (339282) back into the slider.
+#[test]
+fn una_corda_rumble_above_the_volume_table_reloads_clamped() {
+    let Some(path) = library_path("Una Corda Library/Instruments/Una Corda Felt.nki") else { return };
+    let rumble = sampler_ui_ir::ControlId(4731838657588158385350167845526311085);
+    let cell = |params: &SamplerParams| params.shared.part(0).unwrap().controls.lock_unpoisoned().iter().find(|x| x.id == rumble).map(|x| x.value());
+    let live = SamplerParams::new();
+    let mut live_core = load_into(&live, Part { path: path.clone(), ..Default::default() }).unwrap();
+    let atoms = live.shared.part(0).unwrap();
+    let view = atoms.scripts.lock_unpoisoned().views.first().unwrap().clone();
+    let face = view.ui(&|_| None).unwrap();
+    let widget = face.widgets.iter().find(|w| w.name.contains("Rumble")).unwrap().clone();
+    let epoch = atoms.generation.load(Ordering::Acquire);
+    live.shared.set_widget_at(0, epoch, 0, &widget, None, sampler_ui_ir::Value::Real(630957.));
+    assert_eq!(cell(&live), Some(630957.));
+    let _ = render_hash(&live, &mut live_core, 0);
+    let fresh = SamplerParams::new();
+    let mut core = load_into(&fresh, save(&live)).unwrap();
+    let _ = render_hash(&fresh, &mut core, 0);
+    assert_eq!(cell(&fresh), Some(339282.), "reloaded rumble is the script's clamped volume-table top");
 }

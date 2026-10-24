@@ -65,7 +65,7 @@ mod effect_controls;
 mod host_transport;
 #[cfg(test)]
 mod host_transport_tests;
-mod persistence;
+pub(crate) mod persistence;
 pub(crate) mod snapshot_reuse;
 #[cfg(test)]
 mod pressed_tests;
