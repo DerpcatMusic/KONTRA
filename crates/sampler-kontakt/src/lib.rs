@@ -80,7 +80,7 @@ pub use snapshot::{
     snapshot_base_name, snapshot_identity, validate_snapshot_base,
 };
 pub use stream::{
-    LogicalStreamRecipe, logical_stream_source, AssetSource, DynamicSources, HeadBudgetExceeded, HeadReadiness, SourceRegistration, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
+    LogicalStreamRecipe, logical_stream_source, AssetSource, DynamicSources, HeadBudgetExceeded, HeadReadiness, SourceRegistration, DISK_READ, SampleReader, StreamPolicy, cold_head_budget, StreamReport, Streamed, Streamer,
 };
 mod source_identity;
 pub use source_identity::{FileIdentity, SourceChanged};
