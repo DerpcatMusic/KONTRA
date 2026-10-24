@@ -846,7 +846,8 @@ pub fn constant(name: &str) -> Option<i32> {
         .strip_prefix("$MARK_")
         .and_then(|n| n.parse::<u32>().ok())
     {
-        return (1..=28).contains(&n).then(|| 1 << (n - 1));
+        // Kontakt 8 value is 2^n (measured: MARK_1=2, _2=4, _3=8, _5=32, _10=1024, _11=2048).
+        return (1..=28).contains(&n).then(|| 1 << n);
     }
     if let Some(n) = name
         .strip_prefix("$EVENT_PAR_")
@@ -1066,5 +1067,14 @@ mod tests {
     #[test]
     fn selected_item_index_constant_matches_its_name() {
         assert_eq!(control_par("$CONTROL_PAR_SELECTED_ITEM_IDX"), Some(CONTROL_PAR_SELECTED_ITEM_IDX));
+    }
+
+    #[test]
+    fn mark_constants_are_kontakt_bit_values() {
+        // Measured on Kontakt 8 through the oracle (ANALOG STRINGS, volume readback).
+        for (n, v) in [(1, 2), (2, 4), (3, 8), (5, 32), (10, 1024), (11, 2048)] {
+            assert_eq!(constant(&format!("$MARK_{n}")), Some(v), "$MARK_{n}");
+        }
+        assert_eq!(constant("$MARK_0"), None);
     }
 }

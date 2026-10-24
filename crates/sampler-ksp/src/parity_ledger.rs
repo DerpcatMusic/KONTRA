@@ -15,6 +15,7 @@ const ENGINE: &str =
     "Parameter ID is accepted; scope, DSP law and host application need verification";
 const STATE: &str = "System state is modeled; callback context and host fidelity need verification";
 const CONSTANT: &str = "Constant is resolved; native enum fidelity needs verification";
+const MARK_VALUE: &str = "$MARK_n is the bit 2^n; Kontakt 8 measured n=1,2,3,5,10,11 (oracle volume readback)";
 const OPAQUE: &str = "Opaque symbolic identity; no native numeric value or behavior implied";
 const OPAQUE_CONTROL: &str = "Opaque control property is stored but has no modeled widget effect";
 const IGNORED: &str = "This call is accepted but ignored in this context or for these operands";
@@ -1143,8 +1144,8 @@ pub(super) const TABLE: &[LedgerEntry] = &[
     LedgerEntry { name: "$LOOP_PAR_TUNING", status: Status::Approximate, owner: "crates/sampler-ksp/src/sema.rs:1093", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-parameters#loop-parameters", detail: OPAQUE },
     LedgerEntry { name: "$LOOP_PAR_XFADE", status: Status::Approximate, owner: "crates/sampler-ksp/src/sema.rs:1093", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-parameters#loop-parameters", detail: OPAQUE },
     LedgerEntry { name: "$MARK_", status: Status::Approximate, owner: "crates/sampler-ksp/src/builtins.rs:739", spec: "docs/architecture-v2/KSP_PARITY.md", detail: CONSTANT },
-    LedgerEntry { name: "$MARK_#", status: Status::Approximate, owner: "crates/sampler-ksp/src/builtins.rs:682", spec: "docs/architecture-v2/KSP_PARITY.md", detail: OPAQUE },
-    LedgerEntry { name: "$MARK_1", status: Status::Approximate, owner: "crates/sampler-ksp/src/sema.rs:1093", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants#events-and-midi", detail: OPAQUE },
+    LedgerEntry { name: "$MARK_#", status: Status::Approximate, owner: "crates/sampler-ksp/src/builtins.rs:682", spec: "docs/architecture-v2/KSP_PARITY.md", detail: MARK_VALUE },
+    LedgerEntry { name: "$MARK_1", status: Status::Implemented, owner: "crates/sampler-ksp/src/sema.rs:1093", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants#events-and-midi", detail: OPAQUE },
     LedgerEntry { name: "$MARK_28", status: Status::Approximate, owner: "crates/sampler-ksp/src/sema.rs:1093", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants#events-and-midi", detail: OPAQUE },
     LedgerEntry { name: "$MIDI_BYTE_#", status: Status::Approximate, owner: "crates/sampler-ksp/src/builtins.rs:682", spec: "docs/architecture-v2/KSP_PARITY.md", detail: OPAQUE },
     LedgerEntry { name: "$MIDI_BYTE_1", status: Status::Approximate, owner: "crates/sampler-ksp/src/sema.rs:1093", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/multi-script#multi-script-command-arguments", detail: OPAQUE },
