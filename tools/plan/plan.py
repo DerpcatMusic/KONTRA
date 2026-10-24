@@ -175,6 +175,9 @@ def validate(plan: dict) -> tuple[list[str], list[str]]:
     ids = [t["id"] for t in plan.get("task", [])]
     if len(ids) != len(set(ids)):
         errors.append("duplicate task ids: " + ", ".join(sorted({i for i in ids if ids.count(i) > 1})))
+    for n, name in plan["phases"].items():
+        if "," in name:
+            errors.append(f"phase {n}: no commas in phase names (project select options are comma-separated)")
     for t in plan.get("task", []):
         tid = t["id"]
         if not re.fullmatch(r"P\d\.\d+[a-z]?", tid):

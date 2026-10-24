@@ -42,7 +42,7 @@ class Manifest(unittest.TestCase):
     def test_offline_ready_is_conflict_free(self):
         st = plan.status(self.plan, {})
         batch, _ = plan.ready_batch(self.plan, st)
-        self.assertIn("P0.1", batch)
+        self.assertIn("P0.0", batch)
         skip = ("append", "regenerate")
         for i, a in enumerate(batch):
             for b in batch[i + 1:]:

@@ -7,8 +7,9 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 
 | Id | Task | Lane | Size | Agent | Deps |
 |---|---|---|---|---|---|
-| P0.1 | xtask: size, debt, deps-check, timings | tooling | M | worker | – |
-| P0.2 | kontra-probe: playback contracts C1–C10 as a tool | tooling | L | worker | – |
+| P0.0 | Scaffold tools/xtask and tools/probe (workspace members) | tooling | S | coordinator | – |
+| P0.1 | xtask: size, debt, deps-check, timings | tooling | M | worker | P0.0 |
+| P0.2 | kontra-probe: playback contracts C1–C10 as a tool | tooling | L | worker | P0.0 |
 | P0.3 | Probe fixtures: native-format instruments that reproduce the audited bugs | tooling | M | worker | P0.2 |
 | P0.4 | Build profiles: fast profile, workspace-hack, mold | tooling | S | worker | P0.1 |
 | P0.5 | v3 CI: plan checks, scope guard, push CI on v3 | tooling | S | coordinator | – |
@@ -32,7 +33,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | P2.2 | Delete behavior fuel and BehaviorOverload::Abort; KSP while limit only | script | M | worker | P2.1 |
 | P2.3 | Gate G2: Areia dense chords 64/64 | coordinator | S | coordinator | P2.2, P1.5 |
 
-## Phase 3: One script path, no transport holds
+## Phase 3: One script path without transport holds
 
 | Id | Task | Lane | Size | Agent | Deps |
 |---|---|---|---|---|---|
@@ -123,6 +124,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 ```mermaid
 flowchart LR
   subgraph ph0["0. Guard rails"]
+    P0_0["P0.0"]
     P0_1["P0.1"]
     P0_2["P0.2"]
     P0_3["P0.3"]
@@ -142,7 +144,7 @@ flowchart LR
     P2_2["P2.2"]
     P2_3["P2.3"]
   end
-  subgraph ph3["3. One script path, no transport holds"]
+  subgraph ph3["3. One script path without transport holds"]
     P3_1["P3.1"]
     P3_2["P3.2"]
     P3_3["P3.3"]
@@ -210,6 +212,8 @@ flowchart LR
     P8_5["P8.5"]
     P8_6["P8.6"]
   end
+  P0_0 --> P0_1
+  P0_0 --> P0_2
   P0_2 --> P0_3
   P0_1 --> P0_4
   P0_1 --> P0_6
