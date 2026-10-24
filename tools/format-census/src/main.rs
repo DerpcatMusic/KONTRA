@@ -374,10 +374,25 @@ fn modes(root: &Path) {
     }
 }
 
+/// Prints every script's source text (program script chunks, id 6), for reading. Local only.
+fn scripts(path: &Path) {
+    use ni_file::kontakt::objects::{BParScript, Program};
+    let chunks = sampler_kontakt::read_chunks(path).expect("read chunks");
+    let program = Program::try_from(chunks.find_first(0x28).expect("program chunk")).expect("program");
+    for (i, chunk) in program.0.children.iter().filter(|c| c.id == 6).enumerate() {
+        let params = BParScript::try_from(chunk).and_then(|s| s.params()).expect("script params");
+        println!("=== script {i} (bypass={:?}) ===", params.bypass);
+        println!("{}", params.text.unwrap_or_default());
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--ser") {
         return ser_table();
+    }
+    if args.first().is_some_and(|a| a == "--scripts") {
+        return scripts(Path::new(args.get(1).expect("--scripts <nki>")));
     }
     if args.first().is_some_and(|a| a == "--slots") {
         return slots(Path::new(args.get(1).expect("--slots <nki>")));
