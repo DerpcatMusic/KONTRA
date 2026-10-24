@@ -1715,10 +1715,10 @@ mod tests {
 
     #[test]
     fn source_past_the_layout_extent_still_lays_out_and_scrolls() {
-        // 60k lines * 22 px is past the 1e6 px layout cap that a plain
+        // 280k lines (Areia) * 22 px is past the 1e6 px layout cap that a plain
         // spacer column hits; the list must declare its virtual extent.
         let mut state = State::default();
-        state.scripts = vec![synthetic_script(60_000)];
+        state.scripts = vec![synthetic_script(280_000)];
         let mut ui = super::super::theme::ui();
         ui.set_node_limit(600);
         for _ in 0..2 {
@@ -1741,7 +1741,7 @@ mod tests {
         assert!(
             ui.scene()
                 .unwrap()
-                .surface("scripts-test-line-60000")
+                .surface("scripts-test-line-280000")
                 .is_some()
         );
     }
