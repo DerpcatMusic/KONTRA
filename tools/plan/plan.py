@@ -244,7 +244,9 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
         lines.append("> ⚠️ **Draft brief.** Scope and steps are a forecast. The coordinator re-checks them against the tree and removes `draft` before dispatch.")
     lines += ["", "## Goal", t["goal"], "", "## Read first",
               f"- [README.md]({doc_url('README.md', branch)}): the ten rules",
-              f"- [12-WORKFLOW.md]({doc_url('12-WORKFLOW.md', branch)}): how to work on v3 (branching, scope, tests, PR)"]
+              f"- [12-WORKFLOW.md]({doc_url('12-WORKFLOW.md', branch)}): how to work on v3 (branching, scope, tests, PR)",
+              "- `.claude/skills/beautiful-rust/SKILL.md`: the Rust style every v3 change follows (load it with the Skill tool "
+              "as `beautiful-rust`, or read the file). Where it conflicts with these docs or the KISS/real-time rules, the docs win."]
     lines += [f"- [{d}]({doc_url(d, branch)})" for d in t.get("docs", [])]
     lines += ["", "## Steps"] + [f"{i}. {s}" for i, s in enumerate(t["steps"], 1)]
     lines += ["", "## Scope (enforced by the `v3 plan` CI check)",
@@ -263,10 +265,12 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
               f"1. Branch from `{branch}`: `wt switch -c {meta['branch_prefix']}{tid}-{slug_} -b {branch}` "
               f"(T3/Claude worktrees: `git switch -c {meta['branch_prefix']}{tid}-{slug_} origin/{branch}`).",
               f"2. Commit early and often. Conventional Commits, with a `Task: {tid}` trailer.",
-              "3. Run only the gate's crate-scoped commands, always through `build-slot`. No workspace builds, corpus runs, "
+              "3. Write Rust per the `beautiful-rust` skill; before the PR run `cargo fmt` and "
+              "`build-slot cargo clippy -p <your crates> --all-targets -- -D warnings` on the crates you changed.",
+              "4. Run only the gate's crate-scoped commands, always through `build-slot`. No workspace builds, corpus runs, "
               "real-library surveys or plugin bundles: the coordinator does those once per merge batch.",
-              f"4. `git push -u origin HEAD` then `gh pr create --base {branch} --title \"{tid}: {t['title']}\"` and fill in the template.",
-              "5. Report back: PR URL, head SHA, gate output, any deviation from this brief and why."]
+              f"5. `git push -u origin HEAD` then `gh pr create --base {branch} --title \"{tid}: {t['title']}\"` and fill in the template.",
+              "6. Report back: PR URL, head SHA, gate output, any deviation from this brief and why."]
     return "\n".join(lines) + "\n"
 
 
@@ -564,7 +568,7 @@ def on_merge(plan: dict, branch: str, pr: str) -> None:
 
 # Non-task branches into v3 and what they may touch.
 SPECIAL = {
-    "plan": ["docs/architecture-v3/**", "tools/plan/**", ".github/**", "AGENTS.md", "CONTRIBUTING.md"],
+    "plan": ["docs/architecture-v3/**", "tools/plan/**", ".github/**", ".claude/skills/**", "AGENTS.md", "CONTRIBUTING.md"],
     "sync-main": ["**"],
 }
 

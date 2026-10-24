@@ -31,6 +31,15 @@ is pointless: the next `sync` overwrites it. Discussion goes in comments.
 - **Spike** (agent or person). Answers a question with a written verdict and
   evidence (`docs/architecture-v3/spikes/*.md`); code only as a throwaway probe.
 
+## 2b. Rust style
+
+Every Rust change on v3 follows the vendored
+[BeautifulRust](https://github.com/morganlinton/BeautifulRust) skill at
+`.claude/skills/beautiful-rust/` (Claude agents in any v3 worktree load it as
+`beautiful-rust`; people can read `SKILL.md`). Precedence when they disagree:
+README rules and real-time constraints (no allocation, locks or I/O on the
+audio thread), then KISS/YAGNI (AGENTS.md, ENGINE.md), then the skill.
+
 ## 3. Branches
 
 ```
@@ -168,6 +177,8 @@ the worker's replies (`-r2`, `-r3` …).
 - [ ] Net production lines reported; negative unless the task adds a crate.
 - [ ] No new `#[allow]`, `#[path]`, `cfg(test)` hooks in production functions,
       `Mutex` in RT crates, vendor names below `format-*` (README rules).
+- [ ] Rust follows the `beautiful-rust` skill (`.claude/skills/beautiful-rust`): fmt and clippy clean on the touched crates,
+      no `unwrap` on fallible paths, `// SAFETY:` on every `unsafe`, types over bool flags. The architecture docs win on conflict.
 - [ ] Docs in this folder updated if the code diverged from them.
 - [ ] Moves are pure moves (`git diff -M --stat` shows renames).
 
