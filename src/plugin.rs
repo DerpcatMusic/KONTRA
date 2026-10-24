@@ -2659,6 +2659,10 @@ fn load_part_with(
         {
             let persistence = sampler_kontakt::audit::Span::new("persistence_prepare");
             if let Some(runtime) = loaded.part.as_mut() {
+                // Engine-bound controls carry their engine value: restore it before
+                // persistence_changed reads the engine back into the sliders.
+                let engine: Vec<(u128, f64)> = part.control_values.iter().map(|c| (c.id().0, c.value)).collect();
+                runtime.restore_engine_controls(&engine);
                 runtime.prepare_persistence(&loaded.scripts.views, saved)?;
                 for (id, value) in &mut loaded.controls {
                     if let Some(current) = runtime.persistent_control_value(*id) {
