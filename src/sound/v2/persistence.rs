@@ -9,12 +9,12 @@ use std::sync::{
 };
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct Saved {
+pub(crate) struct Saved {
     schema: String,
-    values: Vec<SavedValue>,
+    pub(crate) values: Vec<SavedValue>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-enum SavedValue {
+pub(crate) enum SavedValue {
     Integer(i64),
     Real(f64),
     Toggle(bool),
@@ -67,7 +67,7 @@ fn encode(saved: &Saved) -> String {
 }
 
 /// The saved state, or `None` when the text is neither format.
-fn decode(text: &str) -> Option<Saved> {
+pub(crate) fn decode(text: &str) -> Option<Saved> {
     use base64::Engine as _;
     use std::io::Read as _;
     let Some(body) = text.strip_prefix(FORMAT_2) else {
