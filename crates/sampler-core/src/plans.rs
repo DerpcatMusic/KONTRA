@@ -53,6 +53,8 @@ pub struct PlanTransfer {
 }
 
 pub(super) struct Generation {
+    /// Only genuine preemption blocks later independent events in this pass.
+    pub dispatch_preempted: bool,
     pub request: u64,
     pub script_revision: u64,
     pub prepared: Box<Prepared>,
@@ -521,6 +523,7 @@ controls.pending == 0
                     self.plans.restore(
                         id,
                         Generation {
+                            dispatch_preempted: false,
                             script_revision,
                             native_cycle: 0,
                             native_random: crate::native_start::NativeRandom::new(0),
@@ -587,6 +590,7 @@ controls.pending == 0
         self.active_plan = PlanId(
             self.plans
                 .insert(Generation {
+                    dispatch_preempted: false,
                     script_revision: 0,
                     native_cycle: 0,
                     native_random: crate::native_start::NativeRandom::new(0),

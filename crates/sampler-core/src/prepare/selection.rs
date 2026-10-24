@@ -463,6 +463,14 @@ input.group>=16||input.channel>=16||input.key>=128
         let n = self.notes.get_mut(note.0).unwrap();
         n.pins -= 1;
         let release = release?;
+        if self.note_events[note.0.index].routed && !self.note_events[note.0.index].intentional_wait
+        {
+            let late = self.now.saturating_sub(n.admitted_at);
+            if late != 0 {
+                self.late_attacks = self.late_attacks.saturating_add(1);
+                self.max_attack_lateness_frames = self.max_attack_lateness_frames.max(late);
+            }
+        }
         n.pitch = event.pitch;
         n.velocity = event.velocity;
         self.commit_attack(note, release, snapshot, stage);

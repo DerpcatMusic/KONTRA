@@ -204,7 +204,7 @@ impl Runtime {
             .and_then(|n|n.checked_add(2))
             .and_then(|n|n.checked_add(lookup.checked_mul(2)?)).ok_or(Error::Capacity)?;
         let cost=per_task.checked_mul(count).and_then(|n|n.checked_add(bindings.checked_mul(4)?)).ok_or(Error::Capacity)?;
-        if cost>self.behavior_fuel||cost>self.block_fuel_left{return Err(Error::Capacity);}Ok(cost)
+        if cost>self.behavior_fuel||cost>self.behavior_budget.remaining{return Err(Error::Capacity);}Ok(cost)
     }
     // Execute the actual validated first AwaitExternal entry directly under
     // the task admission work charge. Queuing it behind exhausted ordinary
@@ -261,9 +261,12 @@ impl Runtime {
             let generation=self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
             for (index,binding) in generation.prepared.source_tasks.iter().enumerate(){if binding.family==reason.family(){generation.source_tasks.initialized[index]=true;}}
         }
-        self.block_fuel_left-=cost;
-        for index in 0..self.source_task_scratch.len(){self.park_source_task(self.source_task_scratch[index])?;}
-        self.source_task_scratch.clear();Ok(count)
+        self.behavior_budget.remaining -= cost;
+        for index in 0..self.source_task_scratch.len() {
+            self.park_source_task(self.source_task_scratch[index])?;
+        }
+        self.source_task_scratch.clear();
+        Ok(count)
     }
     /// Compatibility entry for a genuine main/restore residual with no creator.
     pub fn start_prepared_source_task(
@@ -343,7 +346,7 @@ impl Runtime {
                 }
             }
         }
-        self.block_fuel_left-=cost;
+        self.behavior_budget.remaining -= cost;
         // Actual first AwaitExternal has a validated shape and aggregate order
         // credit. It parks the SAME continuations without executing a Lua prefix.
         for index in 0..count{self.park_source_task(self.source_task_scratch[index])?;}
@@ -372,7 +375,7 @@ impl Runtime {
         let run_parent=if immediate{Some(RunParent{input:parent,resume_sequence:state.sequence.checked_add(1).ok_or(Error::Capacity)?,priority:state.priority.checked_add(1).ok_or(Error::Capacity)?})}else{None};
         self.next_external_turn_order.checked_add(self.reserved_external_turn_orders).and_then(|order|order.checked_add(if immediate{2}else{1})).ok_or(Error::Capacity)?;
         let child=self.admit_plan_context(plan,binding.program,PlanContext::Task(TaskContext{processor:binding.processor,reason,creator,domain,original_frame:self.now,run_parent}))?;
-        self.block_fuel_left-=cost;
+        self.behavior_budget.remaining-=cost;
         if run_parent.is_some(){
             self.reserved_external_turn_orders+=1;
             self.behaviors.get_mut(parent.behavior().0).ok_or(Error::StaleHandle)?.external.as_mut().ok_or(Error::StaleHandle)?.phase=Phase::WaitingRunChild;

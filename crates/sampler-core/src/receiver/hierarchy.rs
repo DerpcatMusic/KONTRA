@@ -90,10 +90,17 @@ impl Runtime {
         }
         Ok(cost.max(1))
     }
-    fn reserve_external_source_work(&mut self,plan:crate::PlanId,owner:PreparedSourceOwnerIndex)->Result<(),Error>{
-        let cost=self.source_owner_work_cost(plan,owner)?;
-        if cost>self.behavior_fuel||cost>self.block_fuel_left{return Err(Error::Capacity);}
-        self.block_fuel_left-=cost;Ok(())
+    fn reserve_external_source_work(
+        &mut self,
+        plan: crate::PlanId,
+        owner: PreparedSourceOwnerIndex,
+    ) -> Result<(), Error> {
+        let cost = self.source_owner_work_cost(plan, owner)?;
+        if cost > self.behavior_fuel || cost > self.behavior_budget.remaining {
+            return Err(Error::Capacity);
+        }
+        self.behavior_budget.remaining -= cost;
+        Ok(())
     }
     pub(crate) fn source_note_owner_entered(&self,note:NoteId,owner:PreparedSourceOwnerIndex)->bool{
         self.note_events.get(note.0.index).and_then(|event|event.source_route)

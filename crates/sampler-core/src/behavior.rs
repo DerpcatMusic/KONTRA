@@ -1,6 +1,9 @@
 //! Native bounded musical instructions, independent of any vendor language VM.
 use super::{Action, Error, Handle, Inheritance, NoteId, Runtime};
 use std::{ops::Range, sync::Arc};
+mod dispatch;
+pub use dispatch::BehaviorOverload;
+pub(crate) use dispatch::DispatchBudget;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Velocity {
@@ -984,7 +987,7 @@ pub struct BehaviorId(pub(super) Handle);
 pub enum Outcome {
     Finished,
     Cancelled,
-    /// Still running after one second of continuous preemption (a runaway loop).
+    /// Execution allowance exhausted under Abort, or a second of continuous deferral.
     FuelExhausted,
     Fault(Error),
 }
@@ -1494,164 +1497,6 @@ impl Runtime {
         self.drain_behavior();
     }
 
-    pub(super) fn queue_behavior(&mut self, id: BehaviorId) {
-        // Behind a preempted callback of the same instrument: keep event order.
-        if self.behaviors.get(id.0).is_some_and(|c|c.external.is_some_and(|state|state.blocks_dispatch())) { return; }
-        let plan = self.behaviors.get(id.0).map(|c| c.owner);
-        let plan = plan.and_then(|o| self.behavior_plan(o).ok());
-        if self
-            .yielded
-            .iter()
-            .any(|&y| self.yielded_plan(y).is_some() && self.yielded_plan(y) == plan)
-        {
-            self.yielded.push_back(id);
-            return;
-        }
-        self.push_behavior_work(Ready::Resume {
-            id,
-            fuel: self.behavior_fuel,
-        });
-    }
-
-    pub(super) fn drain_behavior(&mut self) {
-        if self.publishing_receiver || self.dispatching_behavior || self.behavior_ready.is_empty() && !self.has_ready_zone_completions() {
-            return;
-        }
-        let time = self.behavior_time_left;
-        let started = time.map(|_| std::time::Instant::now());
-        let mut time_check_steps = 64usize;
-        self.dispatching_behavior = true;
-        // A bounded explicit stack preserves synchronous nested callback ordering.
-        // Each suspended caller retains its own remaining fuel, never a Rust frame.
-        loop {
-            while let Some(ready) = self.behavior_ready.last().copied() {
-                let index = self.behavior_ready.len() - 1;
-                let (id, fuel) = match ready {
-                    Ready::Resume { id, fuel } => (id, fuel),
-                    Ready::Release { note, stage } => {
-                        self.behavior_ready.pop();
-                        self.note_events[note.0.index].release_queued = false;
-                        if self.notes.get(note.0).unwrap().gate() {
-                            if let Some(stage) = stage {
-                                self.advance_release_stage(note, stage);
-                            } else {
-                                self.key_up_with_cause(note, None, super::ReleaseCause::Script)
-                                    .expect("retained generated note release");
-                            }
-                        }
-                        self.notes.get_mut(note.0).unwrap().work -= 1;
-                        continue;
-                    }
-                };
-                // A finished callback retires at once; a stale entry is skipped.
-                let Some(c) = self.behaviors.get(id.0).copied() else {
-                    self.behavior_ready.pop();
-                    continue;
-                };
-                if c.outcome.is_some() {
-                    self.release_controller_reserve(id);
-                    self.behavior_ready.pop();
-                    continue;
-                }
-                let plan = &self
-                    .plans
-                    .get(self.behavior_plan(c.owner).unwrap().0)
-                    .unwrap()
-                    .prepared;
-                let Some(op) = plan.programs[c.program].code.get(c.pc).copied() else {
-                    self.flush_zone_parameters(id);
-                    self.flush_deferred(id);
-                    self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
-                    self.release_controller_reserve(id);
-                    self.behavior_ready.remove(index);
-                    continue;
-                };
-                if time_check_steps >= 64 {
-                    time_check_steps = 0;
-                    if started.zip(time).is_some_and(|(start, left)| start.elapsed() >= left) {
-                        self.block_fuel_left = 0;
-                    }
-                }
-                if fuel == 0 || self.block_fuel_left == 0 {
-                    self.behavior_ready.remove(index);
-                    self.yield_behavior(id);
-                    continue;
-                }
-                // Bound the interval between clock checks without timing every instruction.
-                let slice = if started.is_some() { 256 } else { usize::MAX };
-                let ran = self.run_straight(id, fuel.min(self.block_fuel_left).min(slice));
-                if ran > 0 {
-                    time_check_steps = time_check_steps.saturating_add(ran);
-                    self.block_fuel_left = self.block_fuel_left.saturating_sub(ran);
-                    self.behavior_ready[index] = Ready::Resume {
-                        id,
-                        fuel: fuel - ran,
-                    };
-                    continue;
-                }
-                self.behaviors.get_mut(id.0).unwrap().last_pc = c.pc;
-                let cost=if matches!(op,Instruction::AdvanceSourceNote){
-                    match c.owner.note().and_then(|note|self.source_note_work_cost(note)){
-                        Ok(cost) if cost<=self.behavior_fuel=>cost,
-                        Ok(_)=>{self.fail_behavior(id,Outcome::Fault(Error::Capacity));self.behavior_ready.remove(index);continue;}
-                        Err(error)=>{self.fail_behavior(id,Outcome::Fault(error));self.behavior_ready.remove(index);continue;}
-                    }
-                }else{1};
-                if cost>fuel||cost>self.block_fuel_left{
-                    self.behavior_ready.remove(index);self.yield_behavior(id);continue;
-                }
-                time_check_steps=time_check_steps.saturating_add(cost);
-                self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - cost };
-                self.block_fuel_left = self.block_fuel_left.saturating_sub(cost);
-                self.behaviors.get_mut(id.0).unwrap().pc += 1;
-                let stepped = self.behavior_step(id, c.owner, op);
-                if !matches!(stepped, Ok(false) | Err(Error::ClosedNote)) {
-                    // Zone commit precedes deferred attacks at actual wait/end.
-                    // This ordering is KONTRA policy; no native ordering claim.
-                    if stepped == Ok(true) {
-                        self.flush_zone_parameters(id);
-                    } else if stepped.is_err() {
-                        self.cancel_zone_parameters(id);
-                    }
-                    self.flush_deferred(id);
-                }
-                match stepped {
-                    Ok(true) => {
-                        if self.behaviors.get(id.0).unwrap().outcome.is_some() {
-                            self.release_controller_reserve(id);
-                        }
-                        self.behavior_ready.remove(index);
-                    }
-                    Ok(false) => {
-                        // Outbox full: the emit rewound its pc; resume next block.
-                        if std::mem::take(&mut self.ops.outbox_full) {
-                            self.behavior_ready[index] = Ready::Resume { id, fuel: 0 };
-                        }
-                    }
-                    // Kontakt ignores a script's call on a note that already ended
-                    // (play_note on a released parent, forwarding a dropped note).
-                    Err(Error::ClosedNote) => {}
-                    Err(error) => {
-                        self.fail_behavior(id, Outcome::Fault(error));
-                        self.behavior_ready.remove(index);
-                    }
-                }
-            }
-            // Entries have settled before completion admissions can push work.
-            // One completion at a time preserves callback/waiter order with LIFO
-            // dispatch and keeps callback execution on this bounded explicit stack.
-            let serviced = match self.service_zone_completions() {
-                Ok(serviced) => serviced,
-                Err(error) => { self.fault = Some((0, error)); false },
-            };
-            if self.behavior_ready.is_empty() && !serviced { break; }
-        }
-        if let Some((start, left)) = started.zip(time) {
-            self.behavior_time_left = Some(left.saturating_sub(start.elapsed()));
-        }
-        self.dispatching_behavior = false;
-    }
-
     /// Run straight-line local and script-cell instructions in a tight loop,
     /// resolving the callback's locals, plan and cell bank once instead of
     /// per instruction. Stops before anything else, a would-be fault or when
@@ -1840,70 +1685,7 @@ impl Runtime {
         steps
     }
 
-    pub(super) fn yielded_plan(&self, id: BehaviorId) -> Option<super::PlanId> {
-        let c = self.behaviors.get(id.0)?;
-        if c.outcome.is_some() {
-            return None;
-        }
-        self.behavior_plan(c.owner).ok()
-    }
-
-    /// Out of fuel for this block: continue next block, unless it has been
-    /// continuously preempted for a second without an intentional wait.
-    fn yield_behavior(&mut self, id: BehaviorId) {
-        let now = self.now;
-        let c = self.behaviors.get_mut(id.0).unwrap();
-        let since = *c.yielded_at.get_or_insert(now);
-        if now - since >= u64::from(self.rate) {
-            self.fail_behavior(id, Outcome::FuelExhausted);
-            return;
-        }
-        self.preemptions += 1;
-        self.longest_preempted = self.longest_preempted.max(now - since);
-        // Capacity is the behavior arena's; each callback is queued at most once.
-        self.yielded.push_back(id);
-    }
-
-    /// Resume preempted callbacks with fresh fuel, oldest first. A callback
-    /// stays queued while an earlier one of its instrument preempted again
-    /// in this pass.
-    pub(super) fn resume_yielded(&mut self) {
-        let pending = self.yielded.len();
-        for done in 0..pending {
-            let Some(id) = self.yielded.pop_front() else {
-                break;
-            };
-            let Some(plan) = self.yielded_plan(id) else {
-                continue;
-            };
-            let requeued = self.yielded.len() - (pending - done - 1);
-            let blocked = self
-                .yielded
-                .iter()
-                .rev()
-                .take(requeued)
-                .any(|&y| self.yielded_plan(y) == Some(plan));
-            if blocked {
-                self.yielded.push_back(id);
-                continue;
-            }
-            self.push_behavior_work(Ready::Resume {
-                id,
-                fuel: self.behavior_fuel,
-            });
-            self.drain_behavior();
-        }
-    }
-
-    pub(super) fn push_behavior_work(&mut self, ready: Ready) {
-        assert!(
-            self.behavior_ready.len() < self.behavior_ready.capacity(),
-            "reserved callback dispatch capacity"
-        );
-        self.behavior_ready.push(ready);
-    }
-
-    /// true means suspended or finished, false means continue synchronously.
+    /// True means suspended or finished; false continues synchronously.
     fn behavior_step(
         &mut self,
         id: BehaviorId,
@@ -3038,6 +2820,11 @@ outcome.is_none()
         }
         let c = self.behaviors.get_mut(id.0).unwrap();
         c.waiting = true;
+        if let BehaviorOwner::Note(note) = c.owner
+            && matches!(c.note_stage, Some(NoteStage::Attack(_)))
+        {
+            self.note_events[note.0.index].intentional_wait = true;
+        }
         // A scheduled wait ends the current burst of continuous preemption.
         c.yielded_at = None;
         self.queue(at, Action::Resume(id));

@@ -68,8 +68,8 @@ pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
 use behavior::Continuation;
 pub use behavior::{
-    BehaviorId, BehaviorOwner, BehaviorProgress, Comparison, Duration, DurationValue, FadeCurve,
-    Instruction, Outcome, Program, Velocity, WaitLifetime,
+    BehaviorId, BehaviorOverload, BehaviorOwner, BehaviorProgress, Comparison, Duration,
+    DurationValue, FadeCurve, Instruction, Outcome, Program, Velocity, WaitLifetime,
 };
 mod behavior_fault;
 pub use behavior_fault::{BehaviorFault, SourceSite, FAULT_CALLERS, FAULT_REGISTERS};
@@ -733,6 +733,7 @@ enum AttackStatus {
 
 #[derive(Clone, Copy, Debug)]
 struct Note {
+    admitted_at: u64,
     input: Option<Input>,
     /// Physical provenance when an adapter maps host identities onto a wire.
     input_source: Option<Input>,
@@ -1184,18 +1185,17 @@ pub struct Runtime {
     /// their script's event order; resumed at the next block, oldest first.
     yielded: std::collections::VecDeque<BehaviorId>,
     preemptions: u64,
+    behavior_budget_failures: u64,
+    late_attacks: u64,
+    max_attack_lateness_frames: u64,
+    closed_pending_attacks: u64,
+    max_onset_wait_frames: u64,
     longest_preempted: u64,
     dispatching_behavior: bool,
     /// The plan whose plan programs have started.
     started_plan: Option<PlanId>,
     behavior_fuel: usize,
-    /// Instructions every callback together may run per block, and what is
-    /// left of it. The excess waits in `yielded`, so a chord's script work
-    /// spreads over blocks instead of landing in one.
-    block_fuel: usize,
-    block_fuel_left: usize,
-    behavior_block_explicit: bool,
-    behavior_time_left: Option<std::time::Duration>,
+    behavior_budget: behavior::DispatchBudget,
     behavior_stride: usize,
     behavior_locals: Box<[i64]>,
     note_stride: usize,
@@ -1337,6 +1337,7 @@ impl Runtime {
         let mut plans = Arena::new(id, 1);
         let active_plan = PlanId(
             plans.insert(Generation {
+                dispatch_preempted: false,
                 script_revision: 0,
                 native_cycle: 0,
                 native_random: native_start::NativeRandom::new(0),
@@ -1449,14 +1450,16 @@ impl Runtime {
             behavior_ready: Vec::with_capacity(ready_capacity),
             yielded: std::collections::VecDeque::with_capacity(limits.behaviors),
             preemptions: 0,
+            behavior_budget_failures: 0,
+            late_attacks: 0,
+            max_attack_lateness_frames: 0,
+            closed_pending_attacks: 0,
+            max_onset_wait_frames: 0,
             longest_preempted: 0,
             dispatching_behavior: false,
             started_plan: None,
             behavior_fuel: limits.behavior_fuel,
-            block_fuel: usize::MAX,
-            block_fuel_left: usize::MAX,
-            behavior_block_explicit: false,
-            behavior_time_left: None,
+            behavior_budget: behavior::DispatchBudget::default(),
             behavior_stride,
             behavior_locals: vec![0; cells].into_boxed_slice(),
             executing_due: false,
@@ -2008,8 +2011,12 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
         self.note_note_pressure();
         let id = match self.notes.insert_below(
             Note {
+                admitted_at: self.now,
                 input,
-                input_source: match origin { NoteOrigin::Input(input)=>Some(input.source), _=>None },
+                input_source: match origin {
+                    NoteOrigin::Input(input) => Some(input.source),
+                    _ => None,
+                },
                 input_down: input.is_some(),
                 address,
                 plan,

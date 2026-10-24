@@ -10,6 +10,19 @@ std::thread_local! { static SUM_CELLS: std::cell::Cell<usize> = const { std::cel
 /// Counters are cumulative since construction; timings cover `render` calls.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RuntimeStats {
+    /// Real preemptions; independent events queued behind them are not counted.
+    pub script_preemptions: u64,
+    /// Callbacks terminated because their execution allowance was exhausted.
+    pub script_budget_failures: u64,
+    /// Bounded host-service outbox pressure, independent of execution fuel.
+    pub script_service_stalls: u64,
+    /// Routed attacks committed late without an authored wait.
+    pub late_attacks: u64,
+    pub max_attack_lateness_frames: u64,
+    /// Physical/musical releases that reached a still-pending routed attack.
+    pub closed_pending_attacks: u64,
+    /// Maximum source-runway hold before an admitted voice could start.
+    pub max_onset_wait_frames: u64,
     /// Voices that ran out of resident stream pages and faded out.
     pub stream_underruns: u64,
     /// Starts and rendered chunks using the admitted pinned whole-voice controls.
@@ -66,32 +79,15 @@ struct PendingBatch {
 }
 
 impl Runtime {
-    /// Cap the callback instructions run per rendered block across all
-    /// callbacks (default unlimited). Callbacks over it resume next block in
-    /// order, so notes they play start a few blocks later but no block runs
-    /// long.
-    pub fn set_behavior_block_fuel(&mut self, fuel: usize) {
-        self.block_fuel = fuel;
-        self.block_fuel_left = fuel;
-        self.behavior_block_explicit = false;
-        self.behavior_time_left = None;
-    }
-
-    /// One host block's shared callback allowance, installed before its events.
-    /// MIDI, empty renders and render fragments consume the same allowance.
-    pub fn begin_behavior_block(&mut self, fuel: usize, time: Option<std::time::Duration>) {
-        self.block_fuel = fuel;
-        self.block_fuel_left = fuel;
-        self.behavior_time_left = time;
-        self.behavior_block_explicit = true;
-    }
-
-    pub fn behavior_block_fuel(&self) -> usize {
-        self.block_fuel
-    }
-
     pub fn stats(&self) -> RuntimeStats {
         RuntimeStats {
+            script_preemptions: self.preemptions,
+            script_budget_failures: self.behavior_budget_failures,
+            script_service_stalls: self.ops.stalled_effects,
+            late_attacks: self.late_attacks,
+            max_attack_lateness_frames: self.max_attack_lateness_frames,
+            closed_pending_attacks: self.closed_pending_attacks,
+            max_onset_wait_frames: self.max_onset_wait_frames,
             stream_underruns: self.stream_underruns,
             v1_control_starts: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_starts).sum(),
             v1_control_blocks: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_blocks.load(std::sync::atomic::Ordering::Relaxed)).sum(),
@@ -274,8 +270,8 @@ impl Runtime {
         debug_assert_eq!(self.now, end);
         // Legacy render-driven callers refill per nonempty render. Explicit host
         // blocks refill only at begin_behavior_block, never between fragments.
-        if !output.is_empty() && !self.behavior_block_explicit {
-            self.block_fuel_left = self.block_fuel;
+        if !output.is_empty() && !self.behavior_budget.host_block {
+            self.behavior_budget.remaining = self.behavior_budget.limit;
         }
         Ok(())
     }
