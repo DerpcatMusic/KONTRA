@@ -10,7 +10,10 @@ pub struct NoteProperties {
 #[derive(Clone, Copy)]
 pub(super) struct NoteEvent {
     pub initial: NoteProperties,
-    pub(crate) source_route:Option<crate::receiver::hierarchy::SourceNoteRoute>,
+    /// An authored wait may deliberately postpone the attack. Keep it separate
+    /// from dispatcher latency when reporting musical timing.
+    pub intentional_wait: bool,
+    pub(crate) source_route: Option<crate::receiver::hierarchy::SourceNoteRoute>,
     pub pending_callbacks: usize,
     pub pending_releases: usize,
     pub release_start: usize,
@@ -38,7 +41,8 @@ impl NoteEvent {
         let initial = NoteProperties { pitch, velocity };
         Self {
             initial,
-            source_route:None,
+            intentional_wait: false,
+            source_route: None,
             pending_callbacks: 0,
             pending_releases: 0,
             release_start: 0,

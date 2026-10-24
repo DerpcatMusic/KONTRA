@@ -325,7 +325,7 @@ fn downsampling_rejects_above_output_nyquist_and_invalid_ratios() {
         rt.render(&mut audio).unwrap();
         assert!(audio.iter().flatten().all(|x| x.abs() < 0.0002));
     }
-    // Step 2^(97/12) is past MAX_STEP (256); -97 is below MIN_STEP.
+    // Step 2^(133/12) is past MAX_STEP (2048); -133 is below MIN_STEP.
     for transpose_semitones in [f64::NAN, f64::INFINITY, f64::MAX, -f64::MAX, 133.0, -133.0] {
         assert!(matches!(
             prepare(

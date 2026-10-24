@@ -340,7 +340,10 @@ fn dormant_targets_report_absent_source_and_unsupported_per_key_pitch_honestly()
             velocity_high: 1.,
             gain: 1.,
             envelope: Envelope::default(),
-            playback: Playback::default(),
+            playback: Playback {
+                transpose_semitones: 12.,
+                ..Playback::default()
+            },
         }],
         128,
     )

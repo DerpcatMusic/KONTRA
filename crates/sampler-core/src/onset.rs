@@ -213,6 +213,8 @@ impl Runtime {
             if ready {
                 self.pending_onsets -= end - begin;
                 for p in &self.onsets.probes[begin..end] {
+                    self.max_onset_wait_frames =
+                        self.max_onset_wait_frames.max(at.saturating_sub(p.at));
                     self.voices.slots[p.voice]
                         .value
                         .as_mut()

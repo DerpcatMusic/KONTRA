@@ -6,6 +6,14 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## Unreleased — playback foundations
+
+- Keep runnable script stages at the same event time, including chords arriving after a preemption.
+- Complete runnable startup on the loader before an instrument is ready. Preserve intentional script waits.
+- Share the RAM-scaled attack budget across loader and player, cap it by available memory, and report any bounded preload fallback instead of rejecting large libraries solely for expanded start ranges.
+- Include the current effects, persistence, multi-instrument, loop-limit and streaming fixes from the 28-PR integration.
+- Report execution-budget failures, host-service stalls, late attacks and source-readiness delays through the plugin diagnostics. Over-budget playback callbacks fail explicitly instead of replaying notes in later blocks.
+
 ## 0.3.503
 
 Distributes shipping integration-test compilation across eight Linux runners after the 0.3.502 Nightly exhausted its three-hour validation budget before any test harness started. Every integration target remains required exactly once, including names shared by packages. All fourteen first-party package selections and the release ThinLTO profile remain unchanged.

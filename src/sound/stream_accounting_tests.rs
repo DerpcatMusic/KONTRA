@@ -23,10 +23,17 @@ fn auto_streaming_preloads_authored_attacks_before_publication() {
     assert!(readiness.ranges > 0);
     assert!(readiness.complete(), "{readiness:?}");
     assert!(readiness.packed_bytes > 0);
-    // RAM-scaled head budget: never below the 256 MiB floor.
-    assert!(readiness.budget_bytes >= 256 << 20);
+    assert!(readiness.budget_bytes > 0 && readiness.budget_bytes <= 4 << 30);
     assert!(readiness.packed_bytes <= readiness.budget_bytes);
-    assert!(loaded.report.stream_startup.as_ref().unwrap().warning().is_none());
+    assert!(
+        loaded
+            .report
+            .stream_startup
+            .as_ref()
+            .unwrap()
+            .warning()
+            .is_none()
+    );
     assert!(stream.assets.iter().all(|pcm| pcm.head_bytes() > 0));
     let mut core = V2Core::with_parts(1, 48000.0);
     use super::Core;

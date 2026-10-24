@@ -1,6 +1,45 @@
 use sampler_core::{Instruction as I, *};
 mod support;
 
+#[test]
+fn resumed_stages_finish_the_chord_before_audio_time_advances() {
+    let prepared = plan(vec![I::SetLocal { local: 0, value: 1 }, I::ForwardAttack]);
+    let mut budget = limits(&prepared, 32);
+    budget.notes = 8;
+    budget.expressions = 8;
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    support::without_heap(|| {
+        rt.begin_behavior_block(1, None);
+        let notes =
+            std::array::from_fn::<_, 8, _>(|i| rt.trigger(input(i as i32), 60, 1.).unwrap());
+        assert_eq!(rt.preemptions(), 1);
+        rt.begin_behavior_block(usize::MAX, None);
+        rt.render(&mut []).unwrap();
+        assert_eq!(rt.now(), 0);
+        for note in notes {
+            assert_eq!(rt.suppress_attack(note), Ok(false));
+        }
+        assert_eq!(rt.stats().late_attacks, 0);
+    });
+}
+
+#[test]
+fn preparation_preserves_authored_waits_without_advancing_the_clock() {
+    let prepared = plan(vec![I::Wait(4), I::ForwardAttack]);
+    let budget = limits(&prepared, 4);
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    let note = rt.trigger(input(1), 60, 1.).unwrap();
+    rt.prepare_behaviors(64, &|| false, &mut |_| Ok(()))
+        .unwrap();
+    assert_eq!(rt.now(), 0);
+    let mut waiting = 0;
+    rt.visit_behavior_progress(|c| waiting += usize::from(c.waiting));
+    assert_eq!(waiting, 1);
+    support::without_heap(|| rt.render(&mut [[0.; 2]; 4]).unwrap());
+    assert_eq!(rt.suppress_attack(note), Ok(false));
+    assert_eq!(rt.stats().late_attacks, 0);
+}
+
 fn input(id: i32) -> Input {
     Input {
         protocol: Protocol::Clap,

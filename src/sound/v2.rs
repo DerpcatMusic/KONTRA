@@ -21,6 +21,7 @@
 //! controller, or a sample-rate change without reloading.
 
 use anyhow::{Context, ensure};
+mod memory;
 mod uvi_meters;
 mod control_diagnostics;
 #[cfg(feature = "shots")]
@@ -2385,10 +2386,14 @@ impl V2Core {
         self.signal_trace_active = false;
         self.tapped[..n].fill(0.0);
         let solo = self.mix.parts.iter().take(self.parts.len()).any(|c| c.solo);
+        let render_allowance = (!self.host_block).then(|| behavior_allowance(n, false));
         for (index, part) in self.parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
             #[cfg(test)]
             let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
+            if let Some(fuel) = render_allowance {
+                part.runtime.begin_behavior_block(fuel, None);
+            }
             // Native replies apply backpressure; bounded ingress is serviced before rendering.
             for _ in 0..256 {
                 if !matches!(part.runtime.poll_control_update_with_snapshot_gate(|| {
@@ -2413,14 +2418,6 @@ impl V2Core {
             let pairs = |direct: u32| (0..BUSES).filter(move |pair| direct & 1 << pair != 0);
             for pair in pairs(part.direct) {
                 self.direct[pair][..n].fill([0.0; 2]);
-            }
-            // Render-driven callers retain their instruction cap. Hosts install
-            // a shared instruction/time allowance before MIDI in begin_block.
-            if !self.host_block {
-                let fuel = (n * 128).max(8192);
-                if part.runtime.behavior_block_fuel() != fuel {
-                    part.runtime.set_behavior_block_fuel(fuel);
-                }
             }
             #[cfg(test)]
             let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
@@ -2996,19 +2993,11 @@ impl Core for V2Core {
 
     fn begin_block(&mut self, block: &BlockInfo) {
         self.host_block = true;
-        let parts = self.parts.iter().flatten().count().max(1);
-        // Port v1 0cb7a8a0:src/ksp/runtime.rs begin_audio_block, before MIDI/UI callbacks.
-        let fuel = if block.offline {
-            512 * 4096
-        } else {
-            block.frames.saturating_mul(2048) / parts
-        };
-        let time = (!block.offline).then(|| std::time::Duration::try_from_secs_f64(
-            block.frames as f64 / self.rate * 0.4 / parts as f64).unwrap_or_default());
+        let fuel = behavior_allowance(block.frames, block.offline);
         let tails = self.tails.iter_mut().flatten().map(|t| &mut t.part);
         for part in self.parts.iter_mut().flatten().chain(tails) {
             part.runtime.set_offline(block.offline);
-            part.runtime.begin_behavior_block(fuel, time);
+            part.runtime.begin_behavior_block(fuel, None);
         }
         self.update_transport(block.transport);
     }
@@ -3409,7 +3398,18 @@ impl Core for V2Core {
             .map_or((0, 0), |s| s.ui().runtime_faults());
         RuntimeProblems {
             lua_faults,
-            script_overruns: p.problems.script_overruns.saturating_add(lua_budgets),
+            script_overruns: p
+                .problems
+                .script_overruns
+                .saturating_add(lua_budgets)
+                .saturating_add(stats.script_budget_failures),
+            script_preemptions: stats.script_preemptions,
+            script_service_stalls: stats.script_service_stalls,
+            script_budget_failures: stats.script_budget_failures,
+            late_attacks: stats.late_attacks,
+            max_attack_lateness_frames: stats.max_attack_lateness_frames,
+            closed_pending_attacks: stats.closed_pending_attacks,
+            max_onset_wait_frames: stats.max_onset_wait_frames,
             nonfinite: stats.nonfinite_frames,
             underruns: stats.stream_underruns,
             loop_limits: stats.loop_limits,
@@ -3548,45 +3548,46 @@ fn number(value: ControlValue) -> f64 {
     }
 }
 
+/// Deterministic per-part execution allowance. Idle loaded instruments do not
+/// reduce another instrument's ability to process an event. Wall-clock quotas
+/// would turn OS scheduling noise into dropped or delayed musical events.
+fn behavior_allowance(frames: usize, offline: bool) -> usize {
+    // Zero-frame control/flush transactions still need bounded runnable work.
+    let frames = if frames == 0 { MAX_BLOCK } else { frames };
+    if offline {
+        512 * 4096
+    } else {
+        frames.saturating_mul(2048)
+    }
+}
+
 /// Prepares [`V2Core`] parts from Kontakt instruments and WAV files.
 #[derive(Default)]
 pub struct V2Loader;
 
-/// Free (available) and total RAM in bytes, from `/proc/meminfo`.
-fn ram_free() -> Option<(usize, usize)> {
-    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let field = |name: &str| -> Option<usize> {
-        let line = info.lines().find(|l| l.starts_with(name))?;
-        let kib: usize = line[name.len()..]
-            .trim()
-            .trim_end_matches("kB")
-            .trim()
-            .parse()
-            .ok()?;
-        Some(kib << 10)
-    };
-    Some((field("MemAvailable:")?, field("MemTotal:")?))
+/// Prepare attack heads before publication. Capacity fallback remains bounded
+/// and visible; source failures remain load errors.
+fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
+    stream_policy_for_memory(request, memory::available())
 }
 
-// Port from v1 bank::load_cancelable: reserve 1 GiB + one eighth of RAM.
-/// Shared head budget for cold-streamed attacks: 1/32 of RAM, between 256 MiB
-/// (the floor on small machines) and 4 GiB.
-
-fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
-    let resident_budget = (request.streaming == super::Streaming::RamOnly).then(|| {
-        // ponytail: v1's /proc/meminfo probe; other systems keep its 8 GiB ceiling.
-        ram_free().map_or(8 << 30, |(free, total)| {
-            free.saturating_sub((1 << 30) + total / 8)
-        })
+fn stream_policy_for_memory(
+    request: &LoadRequest,
+    memory: Option<(usize, usize)>,
+) -> sampler_kontakt::StreamPolicy {
+    // Reserve 1 GiB plus one eighth of physical RAM. The shared RAM-scaled
+    // policy sizes Auto heads; available memory remains the physical upper bound.
+    let available = memory.map_or(256 << 20, |(free, total)| {
+        free.saturating_sub((1 << 30) + total / 8)
+    });
+    let resident_budget = (request.streaming == super::Streaming::RamOnly).then_some(available);
+    let head_budget = resident_budget.unwrap_or_else(|| {
+        sampler_kontakt::cold_head_budget_for(memory.map(|(_, total)| total)).min(available)
     });
     sampler_kontakt::StreamPolicy {
         resident_budget,
-        // Prepare Auto attacks on the loader worker before publication;
-        // any capacity fallback stays explicit in the load report.
         lazy: false,
-        head_budget: resident_budget.unwrap_or_else(sampler_kontakt::cold_head_budget),
-        // Capacity fallback is distinct from a source/decode failure and must
-        // remain visible in the load report and diagnostics.
+        head_budget,
         allow_cold_fallback: true,
         block_frames: super::MAX_BLOCK,
         max_step: 16.0,
@@ -4257,7 +4258,7 @@ impl V2Loader {
             mut report,
             interfaces,
             instrument,
-            scripts,
+            mut scripts,
             stream,
             ..
         } = if is_kontakt(&request.path) {
@@ -4365,14 +4366,10 @@ impl V2Loader {
             runtime.seed_random(u64::from(seed));
             runtime.reset_native_cycles(u64::from(seed));
         }
-        // A source whose first window is not resident starts silent and fades in
-        // rather than being refused NotReady.
+        // Explicit script purge/sample-change operations can still need worker
+        // data. Normal initial heads are guaranteed by the strict load policy;
+        // exceptions retain source offsets and publish separate cold-hold stats.
         runtime.set_cold_starts(true);
-        // A chord's script work spreads over blocks: 30 notes of a 14k-instruction
-        // callback measured 8.0 ms in one block unlimited, 0.70 ms at this cap
-        // (sampler-perf dense-strings, 64-frame blocks).
-        // render() rescales it to 128 per frame for longer blocks.
-        runtime.set_behavior_block_fuel(8192);
         let streams = cache.is_some();
         let stream_contract = stream.as_ref().map(|s| sampler_stream_contract(
             s.report.head_frames, instrument.as_deref())).transpose()?;
@@ -4413,7 +4410,34 @@ impl V2Loader {
         let mut part = Part::new_profile(runtime, tree.clone(),if request.mpe_upper{Zone::Upper}else{Zone::Lower}, &power)?;
         part.install_uvi_meter_buses(scripts.uvi_meter_buses.clone(), &interfaces);
         part.waveform_sources = waveform_sources;
-        part.mpe.set_timbre_controller(&mut part.runtime,timbre).map_err(core)?;
+        part.mpe
+            .set_timbre_controller(&mut part.runtime, timbre)
+            .map_err(core)?;
+        // Candidate ownership is still private to this loader. Finish runnable
+        // startup at sample zero; do not make the first chord drain this queue.
+        let mut service_failure = None;
+        part.runtime
+            .prepare_behaviors(16 * 1024 * 1024, canceled, &mut |runtime| {
+                sampler_ksp::service_ui_effects(runtime, &mut scripts.views)
+                    .map(|_| ())
+                    .map_err(|error| {
+                        service_failure = Some(error.to_string());
+                        sampler_core::Error::InvalidInput
+                    })
+            })
+            .map_err(|error| {
+                if error == sampler_core::Error::Canceled {
+                    CoreError::Canceled
+                } else {
+                    CoreError::Invalid(format!(
+                        "instrument initialization did not complete: {}",
+                        service_failure.unwrap_or_else(|| error.to_string())
+                    ))
+                }
+            })?;
+        part.runtime
+            .set_behavior_overload(sampler_core::BehaviorOverload::Abort);
+        part.runtime.set_behavior_block_fuel(MAX_BLOCK * 2048);
         part.grower = Some(grower);
         part.script = script.map(Box::new);
         if let Some(inst) = instrument.as_deref() {
@@ -5325,12 +5349,12 @@ mod tests {
         for frames in [1, 31, 32] {
             core.render(frames);
             for part in core.parts.iter().flatten() {
-                assert_eq!(part.runtime.behavior_block_fuel(), 64 * 2048 / 2);
+                assert_eq!(part.runtime.behavior_block_fuel(), 64 * 2048);
             }
         }
         core.begin_block(&BlockInfo { frames: 32, ..Default::default() });
-        assert_eq!(core.parts[0].as_ref().unwrap().runtime.behavior_block_fuel(), 32 * 2048 / 2);
-        // Invalid host rates exhaust time conservatively rather than panicking.
+        assert_eq!(core.parts[0].as_ref().unwrap().runtime.behavior_block_fuel(), 32 * 2048);
+        // The deterministic instruction allowance is independent of host-rate noise.
         core.rate = f64::NAN;
         core.begin_block(&BlockInfo { frames: 64, ..Default::default() });
     }

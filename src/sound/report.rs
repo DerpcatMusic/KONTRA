@@ -151,6 +151,56 @@ impl FaultInbox {
     }
 }
 
+// One field declaration drives both the report and its atomic host transport.
+// Adding a health counter cannot silently omit it from a positional array.
+trait ProblemValue: Copy {
+    type Atomic: Default;
+    fn load(value: &Self::Atomic) -> Self;
+    fn store(self, value: &Self::Atomic);
+}
+impl ProblemValue for u64 {
+    type Atomic = std::sync::atomic::AtomicU64;
+    fn load(value: &Self::Atomic) -> Self {
+        value.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn store(self, value: &Self::Atomic) {
+        value.store(self, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+impl ProblemValue for [u64; 3] {
+    type Atomic = [std::sync::atomic::AtomicU64; 3];
+    fn load(value: &Self::Atomic) -> Self {
+        value.each_ref().map(u64::load)
+    }
+    fn store(self, value: &Self::Atomic) {
+        for (value, atom) in self.into_iter().zip(value) {
+            value.store(atom);
+        }
+    }
+}
+macro_rules! runtime_problems {
+    ($(#[$meta:meta])* pub struct RuntimeProblems {
+        $($(#[$field_meta:meta])* pub $field:ident: $ty:ty,)*
+    }) => {
+        $(#[$meta])* pub struct RuntimeProblems {
+            $($(#[$field_meta])* pub $field: $ty,)*
+        }
+        #[derive(Default)]
+        pub(crate) struct AtomicRuntimeProblems {
+            $($field: <$ty as ProblemValue>::Atomic,)*
+        }
+        impl AtomicRuntimeProblems {
+            pub(crate) fn load(&self) -> RuntimeProblems {
+                RuntimeProblems { $($field: <$ty>::load(&self.$field),)* }
+            }
+            pub(crate) fn store(&self, value: RuntimeProblems) {
+                $(value.$field.store(&self.$field);)*
+            }
+        }
+    };
+}
+
+runtime_problems! {
 /// Problems while playing, cumulative since the part was installed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeProblems {
@@ -216,6 +266,24 @@ pub struct RuntimeProblems {
     pub fault_program: u64,
     #[serde(default)]
     pub fault_error: u64,
+    /// Actual scheduler preemptions, distinct from terminal overload failures.
+    #[serde(default)]
+    pub script_preemptions: u64,
+    #[serde(default)]
+    pub script_budget_failures: u64,
+    #[serde(default)]
+    pub script_service_stalls: u64,
+    /// Routed attacks admitted late without an authored wait.
+    #[serde(default)]
+    pub late_attacks: u64,
+    #[serde(default)]
+    pub max_attack_lateness_frames: u64,
+    #[serde(default)]
+    pub closed_pending_attacks: u64,
+    /// Source-window readiness delay, independent of script admission delay.
+    #[serde(default)]
+    pub max_onset_wait_frames: u64,
+}
 }
 
 /// A part's load report.
