@@ -2179,27 +2179,16 @@ impl Streamer {
                 selected_requested_hints = false;
                 selected_hint_head_frames = None;
                 let mut accepted = None;
-                for (candidate, hinted, phase) in [(hinted_table.as_ref(), true, "initial_state_onsets"),
-                    (onset_table.as_ref(), false, "base_onsets")] {
-                    let Some(candidate) = candidate else { continue; };
-                    match prepare(Some(candidate), false, phase, false) {
-                        Ok(staged) => {
-                            selected_requested_hints = hinted;
-                            selected_hint_head_frames = if hinted { requested_hint_head_frames } else { None };
-                            accepted = Some(staged);
-                            break;
-                        }
-                        Err(error) if error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()) => {}
-                        Err(error) => return Err(error),
-                    }
-                }
+                // Every start first gets its minimal guaranteed head (anchors: the interpolation
+                // guards of each start, grown with the budget left over). Onset windows only
+                // spend budget afterwards, since they can leave starts without any head.
                 if accepted.is_none() {
                     for (factory, hinted, phase) in [(hint_anchors.filter(|_|hinted_table.is_some()), true, "initial_state_anchors"),
                         (anchors, false, "base_anchors")] {
                         let Some(factory) = factory else { continue; };
                         let room = head_budget.saturating_sub(residency_budget.status().held_bytes);
                         let candidate = factory(room)?;
-                        let enclosing = if hinted { hinted_table.as_ref().unwrap() } else { onset_table.as_ref().unwrap_or(&table) };
+                        let enclosing = if hinted { hinted_table.as_ref().unwrap() } else { &table };
                         let ranges = checked_start_table(assets, candidate.ranges, Some(enclosing))?;
                         let hint_ranges = candidate.hint_ranges.map(|h| checked_start_table(assets,h,hint_table.as_ref())).transpose()?;
                         if hinted && hint_ranges.is_none() {
@@ -2227,6 +2216,21 @@ impl Streamer {
                     }
                     // Optional anchors may stay cold; the mandatory-only attempt
                     // below still admits full sources and pinned wavetable ranges.
+                }
+                for (candidate, hinted, phase) in [(hinted_table.as_ref(), true, "initial_state_onsets"),
+                    (onset_table.as_ref(), false, "base_onsets")] {
+                    if accepted.is_some() { break; }
+                    let Some(candidate) = candidate else { continue; };
+                    match prepare(Some(candidate), false, phase, false) {
+                        Ok(staged) => {
+                            selected_requested_hints = hinted;
+                            selected_hint_head_frames = if hinted { requested_hint_head_frames } else { None };
+                            accepted = Some(staged);
+                            break;
+                        }
+                        Err(error) if error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()) => {}
+                        Err(error) => return Err(error),
+                    }
                 }
                 let staged = match accepted {
                     Some(staged) => staged,
