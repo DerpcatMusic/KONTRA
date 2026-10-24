@@ -104,7 +104,7 @@ def render_chunk(chain, sets_list, out_wav: Path, stimulus=None):
     spec = {"chain": chain, "stimulus": stimulus, "instances": [{"name": "ref", "sets": [[0, "EFFECT_BYPASS", 1]]}]
             + [{"name": f"s{i}", "sets": [[0, "EFFECT_BYPASS", 0]] + sets} for i, sets in enumerate(sets_list)]}
     mid, lua = work / "rig.mid", work / "fxrig_gen.lua"
-    write_midi(len(spec["instances"]), mid)
+    write_midi(len(spec["instances"]), mid, hold=SLOT - 1.0 if spec.get("stimulus") == "levels" else 0.1)
     lua.write_text(make_lua(spec, work))
     total = FIRST + len(spec["instances"]) * SLOT + 2.0
     subprocess.run([sys.executable, str(HERE / "render.py"), str(lua), str(out_wav), str(total), str(mid)], check=True)
@@ -195,7 +195,7 @@ def main() -> int:
     n = len(spec["instances"])
     if n > CHANNELS:
         sys.exit(f"fxrig: {n} instances, this session has {CHANNELS} MIDI channels; split the spec")
-    write_midi(n, mid)
+    write_midi(n, mid, hold=SLOT - 1.0 if spec.get("stimulus") == "levels" else 0.1)
     lua = work / "fxrig_gen.lua"
     lua.write_text(make_lua(spec, work))
     total = FIRST + n * SLOT + 2.0
@@ -204,12 +204,13 @@ def main() -> int:
     return 0
 
 
-def write_midi(n: int, path: Path):
-    """One note per instance on its own channel, SLOT seconds apart (PPQ 480, 120 bpm)."""
+def write_midi(n: int, path: Path, hold: float = 0.1):
+    """One note per instance on its own channel, SLOT seconds apart (PPQ 480, 120 bpm). `hold` is the note length:
+    a long stimulus needs the note held, or the sample is cut by the note-off."""
     ev = []
     for k in range(n):
         t = FIRST + k * SLOT
-        ev += [(t, bytes([0x90 | (BASE + k), 60, 100])), (t + 0.1, bytes([0x80 | (BASE + k), 60, 0]))]
+        ev += [(t, bytes([0x90 | (BASE + k), 60, 100])), (t + hold, bytes([0x80 | (BASE + k), 60, 0]))]
     trk, last = b"\x00\xff\x51\x03" + (500000).to_bytes(3, "big"), 0
     for t, m in sorted(ev, key=lambda e: e[0]):
         tick = round(t * 960)
