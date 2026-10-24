@@ -104,7 +104,9 @@ fn native_lanes(p: ir::Processor) -> Vec<(NativeControl, crate::EngineParameterB
             // The law's values at both write ends (16 at the top of an output gain).
             let (a, b) = (law.decode(if law == SignedNormalized { -1_000_000 } else { 0 }), law.decode(1_000_000));
             (
-                NativeControl { id, min: a.min(b), max: a.max(b), default: value },
+                // A saved value may sit outside the law's write range; widen the domain to hold it so the
+                // instrument loads at its saved level instead of being rejected whole.
+                NativeControl { id, min: a.min(b).min(value), max: a.max(b).max(value), default: value },
                 crate::EngineParameterBinding {
                     address,
                     control: id,
