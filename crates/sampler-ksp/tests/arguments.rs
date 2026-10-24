@@ -465,3 +465,28 @@ fn budget_diagnostics_report_size_against_limit() {
         .usage();
     assert_eq!((usage.source_bytes, usage.variables), (14, 0));
 }
+
+#[test]
+fn play_note_with_velocity_below_one_sounds_at_one_instead_of_refusing() {
+    // A dynamic value that is still 0 (an unset controller, or a same-key legato interval)
+    // must not drop the child note: KSP starts it at the lowest velocity.
+    for (body, expected_children) in [
+        ("play_note(60, $v, 0, 0)", 1),
+        ("play_note(60, $v - 1, 0, 0)", 1),
+        ("play_note(60, 200, 0, 0)", 1),
+        ("play_note(200, $v, 0, 0)", 0),
+    ] {
+        let mut rt = runtime(
+            &format!("on init declare $v := 0 end on on note ignore_event($EVENT_ID) {body} end on"),
+            48000,
+        );
+        support::without_heap(|| {
+            rt.trigger(input(1), 60, 1.).unwrap();
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished, "{body}");
+                true
+            });
+            assert_eq!(rt.note_count(), 1 + expected_children, "{body}");
+        });
+    }
+}

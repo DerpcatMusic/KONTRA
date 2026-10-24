@@ -661,9 +661,13 @@ fn unowned_negative_duration_preserves_midi_argument_rejection() {
     let mut rt=runtime_script(script);
     support::without_heap(|| {
         rt.invoke_control(control_context(&rt),rt.active_plan(),None,ControlWrite {id:ControlId(7),value:ControlValue::Integer(1)}).unwrap();
-        for cell in 0..3 { assert_eq!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),cell),Ok(-1)); }
+        // Key -1 and key 128 are refused. Velocity 0 is not: it sounds at velocity 1, so the
+        // unowned note with a negative duration (UntilSilent) starts.
+        assert_eq!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),0),Ok(-1));
+        assert!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),1).unwrap() >= 0);
+        assert_eq!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),2),Ok(-1));
         rt.flush_behaviors(|_,_,outcome|{assert_eq!(outcome,Outcome::Finished);true});
-        assert_eq!((rt.note_count(),rt.voice_count(),rt.pending_commands()),(0,0,0));
+        assert_eq!(rt.note_count(),1);
     });
 }
 
@@ -689,8 +693,8 @@ fn a_release_the_script_asked_for_cannot_be_ignored_by_its_own_release_callback(
 }
 
 #[test]
-fn play_note_outside_the_midi_ranges_is_ignored_and_returns_minus_one() {
-    // Vista plays its "no key held" sentinel -1.
+fn play_note_outside_the_midi_key_range_is_ignored_and_velocity_zero_sounds() {
+    // Vista plays its "no key held" sentinel -1. Velocity 0 sounds at velocity 1.
     let source = "on init declare $a declare $b declare $c end on
       on note
         $a := play_note(-1,100,0,0)
@@ -701,12 +705,9 @@ fn play_note_outside_the_midi_ranges_is_ignored_and_returns_minus_one() {
     rt.trigger(input(60), 60, 1.).unwrap();
     let mut audio = [[0.; 2]; 4];
     rt.render(&mut audio).unwrap();
-    for cell in 0..3 {
-        assert_eq!(
-            rt.script_cell(rt.active_plan(), ScriptInstanceId(0), cell),
-            Ok(-1)
-        );
-    }
+    assert_eq!(rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0), Ok(-1));
+    assert!(rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 1).unwrap() >= 0);
+    assert_eq!(rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 2), Ok(-1));
     rt.flush_behaviors(|_, _, outcome| {
         assert_eq!(outcome, Outcome::Finished);
         true

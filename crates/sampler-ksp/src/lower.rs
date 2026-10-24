@@ -3929,14 +3929,24 @@ impl Gen<'_, '_> {
         }
         let (key_ok, velocity_ok) = (reg(frames, 2)?, reg(frames, 3)?);
         self.in_range(dst, 0, 127, key_ok)?;
-        self.in_range(velocity, 1, 127, velocity_ok)?;
+        // A velocity below 1 sounds at 1 instead of refusing the note: scripts pass
+        // intervals and unset dynamic values here, and Kontakt's release groups
+        // (`play_note($EVENT_NOTE, $dyn)`) must still start. velocity_ok keeps the
+        // clamped value, so it is the velocity the note plays with.
+        self.set(velocity_ok, 0)?;
+        self.emit(I::Binary32 {
+            lhs: velocity_ok,
+            rhs: velocity,
+            operation: IB::Add,
+        })?;
+        self.clamp(velocity_ok, 1, 127)?;
         self.emit(I::Binary32 {
             lhs: key_ok,
             rhs: velocity_ok,
             operation: IB::Multiply,
         })?;
         let bad = self.jump_if_zero(key_ok)?;
-        self.play_checked(args, dst, velocity, offset_micros)?;
+        self.play_checked(args, dst, velocity_ok, offset_micros)?;
         let end = self.jump()?;
         self.land(bad);
         self.set(dst, -1)?;
