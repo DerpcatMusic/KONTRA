@@ -125,12 +125,7 @@ impl Runtime {
         }
         let plan = self.behaviors.get(id.0).map(|c| c.owner);
         let plan = plan.and_then(|o| self.behavior_plan(o).ok());
-        if !self.dispatching_behavior
-            && self
-                .yielded
-                .iter()
-                .any(|&y| self.yielded_plan(y).is_some() && self.yielded_plan(y) == plan)
-        {
+        if plan.is_some_and(|plan| self.queues_deferred(plan)) {
             self.defer_behavior(id);
             return;
         }
@@ -319,6 +314,13 @@ impl Runtime {
             self.behavior_budget.time_left = Some(left.saturating_sub(start.elapsed()));
         }
         self.dispatching_behavior = false;
+    }
+
+    /// Whether `queue_behavior` sends `plan`'s new work to the FIFO (true) or
+    /// the LIFO ready stack (false). Fanouts order their admissions by this.
+    pub(crate) fn queues_deferred(&self, plan: crate::PlanId) -> bool {
+        !self.dispatching_behavior
+            && self.yielded.iter().any(|&y| self.yielded_plan(y) == Some(plan))
     }
 
     pub(crate) fn yielded_plan(&self, id: BehaviorId) -> Option<crate::PlanId> {
