@@ -146,6 +146,44 @@
    3
   ]
  },
+ "array_search_short": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1
+  ]
+ },
+ "array_search_value__0": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1,
+   3
+  ]
+ },
+ "array_search_value__1": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1
+  ]
+ },
+ "array_sort_asc__0": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "array_sort_asc__1": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0,
+   0
+  ]
+ },
  "array_store_load": {
   "compiled": true,
   "completed": true,
@@ -165,6 +203,14 @@
   "compiled": false,
   "completed": false,
   "results": [
+   0
+  ]
+ },
+ "bool_xor_cond": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1,
    0
   ]
  },
@@ -383,6 +429,28 @@
   "completed": true,
   "results": [
    -2147483648
+  ]
+ },
+ "int_bitnot_dot": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -6,
+   -1
+  ]
+ },
+ "int_xor_cond": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "int_xor_value": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
   ]
  },
  "intval_and_value": {
@@ -607,6 +675,93 @@
   "results": [
    125,
    1000
+  ]
+ },
+ "sort_asc_two__0": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1,
+   2
+  ]
+ },
+ "sort_asc_two__1": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   3,
+   4
+  ]
+ },
+ "sort_desc_two": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   4,
+   1
+  ]
+ },
+ "str_assign_decl": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "str_decl_init": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "str_lit_cond": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "str_var_cond": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "str_var_ne_cond": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "string_case_sensitive": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "string_concat_eq": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "string_eq_literal": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "string_ne_literal": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
   ]
  },
  "type_real_to_int_assign": {

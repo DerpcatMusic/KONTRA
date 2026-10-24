@@ -106,6 +106,230 @@ on init
   set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
+  { id = "int_xor_value", results = 1, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  $cv := 6 xor 3
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "int_bitnot_dot", results = 2, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  $cv := .not. 5
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := .not. 0
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "bool_xor_cond", results = 2, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare $a := 0
+  declare $b := 0
+  if ((1 = 1) xor (2 = 3))
+  $a := 1
+  end if
+  if ((1 = 1) xor (2 = 2))
+  $b := 1
+  end if
+  $cv := $a
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := $b
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "int_xor_cond", results = 1, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare $a := 0
+  if (1 xor 0)
+  $a := 1
+  end if
+  $cv := $a
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "array_search_value__0", results = 2, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare %a[5] := (4, 9, 2, 9, 1)
+  $cv := search(%a, 9, 0, 4)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := search(%a, 9, 2, 4)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "array_search_value__1", results = 1, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare %a[5] := (4, 9, 2, 9, 1)
+  $cv := search(%a, 7, 0, 4)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "array_search_short", results = 1, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare %a[5] := (4, 9, 2, 9, 1)
+  $cv := search(%a, 9)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "array_sort_asc__0", results = 2, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare %a[4] := (3, 1, 4, 2)
+  sort(%a, 0, 3)
+  $cv := %a[0]
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := %a[1]
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "array_sort_asc__1", results = 2, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare %a[4] := (3, 1, 4, 2)
+  sort(%a, 0, 3)
+  $cv := %a[2]
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := %a[3]
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "string_eq_literal", results = 1, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare @s := "abc"
+  declare $e := 0
+  if (@s = "abc")
+  $e := 1
+  end if
+  $cv := $e
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
 }
 local ids = {}
 for n, c in ipairs(CASES) do
