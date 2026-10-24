@@ -253,14 +253,24 @@ deliberately keeps this as a report, so changing it is a reporting policy choice
   so the absent data file loses nothing.
 - NKC classified by NICache magic (census), not the chunk reader: 241 files are
   stream caches (`container-only`), not failures.
+- Keyswitch control-key hint with no switch: reported as `Reason::Info` (PR 602).
+- KSP `find_group` misses and array out-of-range reads: `Info` notes when the
+  message is a native Kontakt diagnostic (PR 608). Those lookups are dead guards in the
+  developer branch that the repo docs describe as native diagnostics.
+- NCW stream errors name the sample file and block (PR 624).
+- Census: `CENSUS_MEMBERS` and `CENSUS_PATHS` for checking one archive member (PR 625).
 
 ## Still open
 
-- Areia Legacy Legato NKIs: after the offset fix the failure moved from
-  `block 4, channel 0` to `block 11, channel 0` in the stream cache. The member
-  that now fails is not yet identified; the stream cache error does not name it.
-  Member 75_87_12 has no keystream start in 0..65536 that makes group 4 valid
-  (measured in the earlier probe), so it is not a simple alignment problem.
-- `find_group` (227 instruments): check whether the absent group names are reached
-  in Kontakt; that decides real loss vs benign.
+- Areia Violins Legacy Legato and Violins 8va Legato (Areia_0.nkx): the stream
+  cache fails at `block 11`. Now named (PR 624), the failing member is
+  `Samples/Areia_16VlnsLgtSstndVFMDyn3RR1_75_87_12.ncw`, the only one of 4,574
+  members this instrument uses that fails a full decode (`block 4, channel 0`).
+  Blocks 0–3 decode. From block 4 onward no NCW block signature appears at any
+  keystream alignment (0..131072 searched with `LibraryKey::apply_at`), and the
+  member has no other copy in the library. The payload looks damaged or truncated.
+  Open: an oracle check of whether Kontakt plays this member. Until then the
+  instrument fails to load; a degrade-to-silence path would be a product decision.
+- `find_group` (227 instruments): PR 608 reports these as native-diagnostic notes.
+  Still open: confirm in Kontakt that the absent group names are reached.
 
