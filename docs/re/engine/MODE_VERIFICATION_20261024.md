@@ -31,3 +31,19 @@ Per-slot MIDI must use the slot's channel block (`slot.channel_block()`); `mkmid
 
 - Third mode (until-release loops, 420 zones in one library): not captured; the scan of 60 files was stopped.
 - Sample-start offset, reverse and one-shot were not counted by the census, so they were not chosen.
+
+## 4. Una Corda Cotton key 96: follow-up (static read and one capture)
+
+- Static read of the script's `on note` (No Dampers killer after 10 s, repetition killer with `$NUM_REP=4`,
+  `fade_out(..., 150000, 1)`, `play_note` start offsets) and `on release` (`ignore_event`, `note_off` loop).
+  Checked and ruled out as the cause: `$ENGINE_UPTIME` units (KONTRA `ReadClock micros:1000` = ms, matches KSP);
+  `fade_out` time units and stop flag (`lower.rs` FadeOut lowering); `%StartOffset` and `%FadeInTabelle` index
+  ranges for key 96 (in bounds).
+- One capture (`oracle-slot`, `capture.py --midi`, six key-96 notes, 2 s apart, 1.5 s long, 16 s window):
+  Kontakt plays all six notes (onsets at about 1.0, 3.0, ... 11.0 s, -32.6 dB peaks, same decay per note).
+  Nothing went silent, so this capture does not reproduce the nine-note silence seen earlier.
+- Not done: KSP variable dump of `NotePointer` / `NumNotes` per note (no dump tool hook used), and a matching KONTRA
+  render. The earlier silence probably needs held or overlapping notes (the 10 s killer and repetition killer only
+  act once slots are full and older than 10 s). Next step if picked up again: capture with notes held 12 s each, and
+  diff against KONTRA's per-note slot choice.
+- Verdict: cause not found; no engine change; time-boxed and moved on.
