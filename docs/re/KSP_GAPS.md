@@ -151,6 +151,44 @@ Nothing in this round is a universal translation fix that can be measured today.
 to pursue next: it needs a raw script-text accessor (or the NKI script chunk decoded) to read the
 `on note` switch pattern before any change. Rank 8 needs a measured RandomBipolar law.
 
+## Round 6 (2026-10-24): census rerun, breath key decision, backlog
+
+Census rerun: `tools/corpus-health/run.sh run full-r2.jsonl --tier full --workers 2` over
+`/data/main/Libraries/Kontakt` (735 items, nice 19, 12 GiB scope). The record count and the
+unsupported ranking match round 5 except for the keyswitch row, which is now Info.
+
+Decisions and measurements:
+
+- **Afflatus breath key 91 (`2 Horns Repetitions`): one-shot trigger (Option B).** Key 91 starts
+  groups 28-31; key 60 starts 0-3 (`tests/afflatus_breath_keyswitch.rs`, PR #656). The keyswitch
+  is not an articulation entry. Hints without a recognised switch set are Info now, not a gap
+  (PR #658).
+- **Breath level (backlog, oracle needed for the verdict).** Decoded source peaks through
+  `Prepared::source_storage` and `copy_resident_range`: breath sources 0.00013-0.00023
+  (about -78 dBFS); plain sources for key 60 0.011-0.033 (about -40 to -30 dBFS). The -38 dB
+  gap is already in the decoded data, before any playback. Open question: whether the decode is
+  faithful for those sample files. Oracle check: capture key 91 vs 60 in Kontakt when the oracle
+  is free; compare the breath sample level there.
+
+Next gaps, ranked by instruments (round 6 census; Info items and faithful warnings excluded):
+
+| rank | gap | instruments | libraries | reading |
+|---:|---|---:|---|---|
+| 1 | `effect`: unmodelled Kontakt effect modules | 36 | Conflux, Areia | `effects/mod.rs:1094`: each effect module with no `color`/`timemod`/`dynamics`/`mangling` model. Closing it is DSP RE per module (large) |
+| 2 | `wavetable source` not modelled | 16 | Conflux, Morphology | `library.rs:1811`; the WT_MOD path, parked |
+| 3 | `DFD preload window not applied to stream head` | 11 | Audio Imperia Dolce | `library.rs:327`; preload sizing for the stream head. No timbre effect, so not a parity gap for output |
+| 4 | `Tape Saturator: Creative FX live controls` | 7 | Conflux, Morphology | UI live controls of an effect, not output |
+| 5 | `loop crossfade longer than its loop, clamped` | 4 | Audio Imperia CHORUS | `load.rs:751`; the clamp follows Kontakt v1 (`play_map`), faithful |
+
+Not universal: `find_group` misses (Areia, Dolce, faithful: the scripts request groups the
+instrument does not have), array index warnings (faithful), `RandomBipolar` and
+`get_engine_par_disp_ext` (Conflux only, parked), `load_array` of a `data/` file that the library
+does not ship (faithful).
+
+Next universal candidate with output effect: rank 1 (effects), which needs one module measured
+at a time. Start with the module behind the Areia rows (the Areia instrument whose `effect`
+entry names the module, then one oracle capture of that module on or off).
+
 ## Round log
 
 - Round 1 (branch `ksp/corpus-survey-r1`): cluster 13 fixed (`5246a819d`), regression test red then
