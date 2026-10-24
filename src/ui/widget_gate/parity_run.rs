@@ -785,6 +785,31 @@ fn census(faces: &[sampler_ui_ir::Interface]) -> Value {
     json!(out)
 }
 
+/// One PNG of an instrument's performance view (the Interface tab) at the editor's
+/// default size, for defect review. Opt-in: `KONTRA_SHOT_NKI`, `KONTRA_SHOT_OUT`.
+#[test]
+#[ignore = "screenshot only; KONTRA_SHOT_NKI=path KONTRA_SHOT_OUT=dir"]
+fn performance_view_shot() {
+    let path = std::env::var("KONTRA_SHOT_NKI").expect("KONTRA_SHOT_NKI");
+    let out = PathBuf::from(std::env::var_os("KONTRA_SHOT_OUT").expect("KONTRA_SHOT_OUT"));
+    std::fs::create_dir_all(&out).unwrap();
+    let mut selection = Selection::default();
+    selection.parts = vec![Part { path: path.into(), ..Default::default() }];
+    let mut gate = Gate::load(selection);
+    for _ in 0..50 {
+        gate.settle();
+    }
+    assert!(gate.tab("Interface"), "Interface tab missing");
+    for (w, h) in [(900u16, 600u16), (1500, 1100)] {
+        gate.editor.resize(Size::new(w.into(), h.into()));
+        for _ in 0..3 {
+            gate.settle();
+        }
+        let rgba = super::super::tests::pixels(&gate.editor.ui, w, h);
+        moose::core::screenshot::save_png(&out.join(format!("performance-{w}.png")), &rgba, w.into(), h.into());
+    }
+}
+
 /// Per-frame cost of one instrument's performance view in the editor: build and layout
 /// medians over `KONTRA_FACE_FRAMES` frames, pointer moving over the face. Opt-in timing.
 #[test]
