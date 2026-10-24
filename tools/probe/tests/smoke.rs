@@ -15,7 +15,7 @@ fn live_pattern_renders_every_step() {
         .play(Pattern::Live, Mode::Offline, BLOCK)
         .expect("live pattern renders");
     assert_eq!(report.notes.len(), 64, "one entry per live step");
-    let verdict = check(&mut session, "C6").expect("C6 runs");
+    let verdict = check(&mut session, "C6", Pattern::Live).expect("C6 runs");
     assert!(
         verdict.pass.is_some(),
         "C6 is measurable: {}",
