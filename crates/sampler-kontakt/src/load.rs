@@ -295,6 +295,11 @@ pub fn load_read_streamed_cancelable(
             .map_err(|e| e.at(crate::Stage::SampleResolve))?,
     };
     let sources: Vec<_> = resolved.into_iter().map(std::sync::Arc::new).collect();
+    let damage_keys: Vec<(String, String)> = sources
+        .iter()
+        .zip(kept.iter())
+        .map(|(source, &asset)| (crate::stream::source_label(source), locations[asset].display().to_string()))
+        .collect();
     let registry = sources
         .iter()
         .cloned()
@@ -342,7 +347,25 @@ pub fn load_read_streamed_cancelable(
         .map(|&a| locations[a].display().to_string())
         .collect();
     let (loaded, kept) = finish_sources_kept(instrument, logical, labels, options, initialized)?;
-    crate::Streamed::new_sources(loaded, opened, kept, canceled)
+    let mut streamed = crate::Streamed::new_sources(loaded, opened, kept, canceled)?;
+    report_damaged_sources(&mut streamed.loaded.instrument, &damage_keys);
+    Ok(streamed)
+}
+
+/// Adds one partial per sample whose NCW blocks failed to decode during load.
+/// `samples` pairs each sample's stream identity with its authored location.
+fn report_damaged_sources(instrument: &mut ir::Instrument, samples: &[(String, String)]) {
+    let damaged = crate::stream::damaged_sources();
+    for (label, location) in samples {
+        if let Some(blocks) = damaged.get(label) {
+            instrument.unsupported.push(ir::Unsupported {
+                location: location.clone(),
+                feature: "NCW sample data".into(),
+                value: format!("{blocks} damaged block(s) play silence"),
+                reason: ir::Reason::InvalidValue,
+            });
+        }
+    }
 }
 
 /// Stream an instrument translated by another loader: `sources[i]` and

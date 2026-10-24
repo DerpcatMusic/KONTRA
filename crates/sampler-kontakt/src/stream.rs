@@ -351,6 +351,31 @@ pub fn logical_stream_source(source:Arc<dyn AssetSource>, workspace_limit:usize)
     Ok((family.into(),registry))
 }
 
+/// NCW blocks that failed to decode, by sample file. A damaged block plays
+/// silence and the file is reported as partial. Damage is a fact about the
+/// file, so every instrument that uses the file reports it.
+static DAMAGED_BLOCKS: std::sync::Mutex<std::collections::BTreeMap<String, std::collections::BTreeSet<usize>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Identity of one sample: its file, and its data offset inside an archive.
+pub(crate) fn source_label(source: &Source) -> String {
+    format!("{}#{}", source.path.display(), source.offset)
+}
+
+fn record_damaged_block(label: &str, block: usize) {
+    if let Ok(mut damaged) = DAMAGED_BLOCKS.lock() {
+        damaged.entry(label.to_string()).or_default().insert(block);
+    }
+}
+
+/// Damaged sample files (path → number of silent blocks) seen so far.
+pub fn damaged_sources() -> std::collections::BTreeMap<String, usize> {
+    DAMAGED_BLOCKS
+        .lock()
+        .map(|damaged| damaged.iter().map(|(path, blocks)| (path.clone(), blocks.len())).collect())
+        .unwrap_or_default()
+}
+
 /// Random-access frames of one sample, converted exactly as a full decode.
 pub struct SampleReader {
     codec: Codec,
@@ -432,7 +457,7 @@ impl SampleReader {
                 rate: wav.rate,
                 frames,
                 codec: Codec::Wav(wav),
-                label: source.path.display().to_string(),
+                label: source_label(source),
                 bytes: Some(bytes),
                 scratch: Vec::new(),
             });
@@ -450,12 +475,12 @@ impl SampleReader {
             }));
         }
         let reader = ncw::NcwReader::read(bytes)
-            .map_err(|e| invalid(format!("NCW {}: {e}", source.path.display())))?;
+            .map_err(|e| invalid(format!("NCW {}: {e}", source_label(source))))?;
         Ok(Self {
             rate: reader.header.sample_rate,
             frames: reader.header.num_samples as usize,
             codec: Codec::Ncw(Box::new(reader)),
-            label: source.path.display().to_string(),
+            label: source_label(source),
             bytes: None,
             scratch: Vec::new(),
         })
@@ -564,7 +589,17 @@ impl SampleReader {
                 let convert=crate::samples::ncw_sample(reader.sample_format,reader.header.bits_per_sample);
                 let mut at=start;let mut done=0;
                 while done<frames {
-                    let values=reader.decode_block(at/BLOCK).map_err(|e|io::Error::new(io::ErrorKind::InvalidData,format!("NCW {}: block {}: {e}",self.label,at/BLOCK)))?;
+                    let values=match reader.decode_block(at/BLOCK) {
+                        Ok(values)=>values,
+                        Err(_)=>{
+                            // A damaged block plays silence for its frames; the file is reported as partial.
+                            record_damaged_block(&self.label,at/BLOCK);
+                            let count=(BLOCK-at%BLOCK).min(frames-done);
+                            for frame in 0..count {for channel in 0..channels {out.put(done+frame,channel,0.);}}
+                            at+=count;done+=count;
+                            continue;
+                        }
+                    };
                     if values.len()!=channels {return Err(io::Error::new(io::ErrorKind::InvalidData,"NCW channel width changed"));}
                     let offset=at%BLOCK;let count=values[0].len().saturating_sub(offset).min(frames-done);
                     if count==0 || values.iter().any(|v|v.len()<offset+count) {return Err(io::ErrorKind::UnexpectedEof.into());}
@@ -603,9 +638,18 @@ impl SampleReader {
                 let mut at = start;
                 let mut out = &mut out[..];
                 while !out.is_empty() {
-                    let channels = reader
-                        .decode_block(at / BLOCK)
-                        .map_err(|e| invalid(format!("NCW {}: block {}: {e}", self.label, at / BLOCK)))?;
+                    let channels = match reader.decode_block(at / BLOCK) {
+                        Ok(channels) => channels,
+                        Err(_) => {
+                            // A damaged block plays silence for its frames; the file is reported as partial.
+                            record_damaged_block(&self.label, at / BLOCK);
+                            let n = (BLOCK - at % BLOCK).min(out.len());
+                            out[..n].fill([0.; 2]);
+                            at += n;
+                            out = &mut out[n..];
+                            continue;
+                        }
+                    };
                     let offset = at % BLOCK;
                     let n = (channels[0].len().saturating_sub(offset)).min(out.len());
                     if n == 0 {
@@ -3945,6 +3989,42 @@ mod tests {
         let err = source.open().err().expect("corrupt first block fails at open");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(err.to_string().contains("broken-block.ncw"), "{err}");
+    }
+
+    #[test]
+    fn damaged_ncw_block_plays_silence_and_is_recorded() {
+        const BLOCK: usize = ncw::NcwReader::<Bytes>::FRAMES_PER_BLOCK;
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/ncw/tests/data/16-bit-mono.ncw");
+        let pristine = std::fs::read(&fixture).unwrap();
+        let layout = ncw::NcwReader::read(std::io::Cursor::new(pristine.clone())).unwrap();
+        assert!(layout.header.num_samples as usize > 2 * BLOCK, "fixture needs two blocks");
+        let at = layout.header.data_offset as usize + layout.block_offsets[1] as usize;
+        let mut damaged = pristine.clone();
+        damaged[at..at + 4].fill(0);
+        let dir = std::env::temp_dir().join(format!("kontakt-ncw-silence-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pristine.ncw"), &pristine).unwrap();
+        let path = dir.join("damaged-block.ncw");
+        std::fs::write(&path, &damaged).unwrap();
+        let mut samples = crate::Samples::new(&dir);
+        let mut good = samples.source(&dir.join("pristine.ncw")).unwrap().open().unwrap();
+        let source = samples.source(&path).unwrap();
+        let label = source_label(&source);
+        let mut reader = source.open().unwrap();
+        let frames = reader.frames();
+
+        let mut expected = vec![[0.; 2]; BLOCK];
+        let mut actual = vec![[0.; 2]; BLOCK];
+        good.read(0, &mut expected).unwrap();
+        reader.read(0, &mut actual).unwrap();
+        assert_eq!(actual, expected, "undamaged block decodes as before");
+
+        let n = BLOCK.min(frames - BLOCK);
+        reader.read(BLOCK, &mut actual[..n]).expect("damaged block reads as silence");
+        assert!(actual[..n].iter().all(|f| *f == [0.; 2]));
+        assert_eq!(damaged_sources().get(&label), Some(&1));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
