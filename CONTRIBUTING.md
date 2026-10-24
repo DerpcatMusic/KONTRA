@@ -43,6 +43,15 @@ from the locked dependency graph and review new licenses, native components
 and vendored changes. The required `ni-file` permission and focused GPL
 reference review remain unresolved; a successful build is not clearance.
 
+## The v3 refactor
+
+A large restructuring happens on the `v3` branch, planned in
+[docs/architecture-v3](docs/architecture-v3/README.md). Its work is split into
+issues labelled `v3`, each with a brief, owned paths and gate commands; PRs for
+them target `v3`, not `main`. Read
+[12-WORKFLOW.md](docs/architecture-v3/12-WORKFLOW.md) before picking one up, and
+comment on the issue to claim it. Fixes for current users still go to `main`.
+
 ## Local workflow
 
 The declared minimum is Rust 1.92, matching the pinned plugin framework. CI and contributors
