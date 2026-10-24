@@ -907,3 +907,43 @@ mod sidechain {
         assert!(rms(&keyed[1000..]) > rms(&internal[1000..]) * 1.05, "{} {}", rms(&keyed[1000..]), rms(&internal[1000..]));
     }
 }
+
+/// Enhanced law against the native Kontakt 8 compressor curves (`fx-measured/comp-grid.tsv`: 1 kHz tone, 7 levels,
+/// bypass-referenced, attack 0.1 s, release 0.3 s). Knob map as fitted (docs/re/engine/fx-measured/comp-grid.md):
+/// threshold knob -> dB, ratio knob -> saved ratio. Gate: RMS of the level deltas <= 1 dB per setting; the
+/// threshold-knob-0 row is outside (native output is level-independent there) and is excluded, not hidden.
+#[test]
+fn enhanced_matches_native_levels() {
+    let tsv = include_str!("../../../../../docs/re/engine/fx-measured/comp-grid.tsv");
+    let fitted: [(&str, f64, f64); 8] = [
+        ("thr25_ratio50", -60., 0.3),
+        ("thr50_ratio50", -42., 0.25),
+        ("thr75_ratio50", -26., 0.25),
+        ("thr100_ratio50", -10., 0.6),
+        ("thr50_ratio0", -40., 1.),
+        ("thr50_ratio25", -42., 0.5),
+        ("thr50_ratio75", -42., 0.1),
+        ("thr50_ratio100", -42., 0.05),
+    ];
+    let law = Law::KontaktEnhanced(Native { threshold_db: 0., ratio: 0. });
+    for (name, db, ratio) in fitted {
+        let (mut refs, mut want) = (vec![], vec![]);
+        for line in tsv.lines().filter(|l| l.split('\t').nth(1) == Some(name)) {
+            let c: Vec<&str> = line.split('\t').collect();
+            refs.push(c[3].parse::<f64>().unwrap());
+            want.push(c[5].parse::<f64>().unwrap());
+        }
+        let mut sq = 0.;
+        for (&r, &w) in refs.iter().zip(&want) {
+            let amp = std::f64::consts::SQRT_2 * 10f64.powf(r / 20.);
+            let input = sine(amp, 1000., 24_000);
+            let out = run_law(law, Link::Mean, [db, ratio, 0.1, 0.3], &input);
+            let tail = &out[12_000..];
+            let rms_out = (tail.iter().map(|f| f[0] * f[0]).sum::<f64>() / tail.len() as f64).sqrt();
+            let rms_in = (input[12_000..].iter().map(|f| f[0] * f[0]).sum::<f64>() / tail.len() as f64).sqrt();
+            sq += (20. * (rms_out / rms_in).log10() - w).powi(2);
+        }
+        let rms = (sq / refs.len() as f64).sqrt();
+        assert!(rms <= 1., "{name}: level-delta RMS {rms:.2} dB");
+    }
+}

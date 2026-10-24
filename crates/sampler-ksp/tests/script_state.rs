@@ -10,7 +10,7 @@ fn setup() -> (Runtime, ControlClient, ScriptStateBuffer) {
         declare ~r := 1.25 make_persistent(~r)
         declare %nums[3] := (2,3,4) make_persistent(%nums)
         declare ?reals[2] := (0.25,0.75) make_persistent(?reals)
-        declare @text := "first" make_persistent(@text)
+        declare @text @text := "first" make_persistent(@text)
         declare !texts[2] := ("a","b") make_persistent(!texts)
         declare $calls declare $done
         end on

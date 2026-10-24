@@ -228,7 +228,7 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x1d => "Surround Panner (version 0x70): speaker gain law is ported (sampler_core::dsp::surround_panner); the block driver (0x140ab0070, 0x140ab4eb0), LFE routing and channel layouts are not mapped",
         0x70 => "Stereo Tune outside a bus chain: its delay state is bus-owned like a reverb, so a voice or group insert passes audio through",
-        0x22 => "Rotator: summed-input core 0x140aae920 with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
+        0x22 => "Rotator: RT_* fields bound (fx_other.tsv); the summed-input core (four-state recurrences, ring buffers) and its rotation, acceleration and distance laws are not mapped",
         0x78 => "Skreamer Deluxe mono branch (stored flag != 0, driver 140902480 calls only core 1480 in place): not decoded, so the slot passes audio through unprocessed",
         // Reader 0x140ac51f0 (Fx4B) is shared with Big Fuzz, but the Chainsaw ctor, apply and
         // kernel are not extracted and KSP has no ENGINE_PAR_CHAINSAW_* names: its knobs are

@@ -629,6 +629,11 @@ impl<'a> Sema<'a, '_> {
             return fault(span, "invalid or reserved variable name");
         }
         let (ty, array) = prefix_type(text);
+        // Kontakt rejects a scalar string declaration with a literal initializer (conformance
+        // `str_decl_init`); the value is assigned in on init instead. Text arrays are not measured.
+        if ty == Ty::Str && !array && d.init.iter().any(|e| matches!(e.kind, A::Str(_))) {
+            return fault(d.init[0].span, "string variable takes no literal initializer; assign it in on init");
+        }
         let name: Box<str> = text.into();
         let persistence = match d.storage {
             Storage::Persistent => Persistence::Snapshot,
@@ -921,11 +926,9 @@ impl<'a> Sema<'a, '_> {
                 let value = if *hex {
                     *n as u32 as i32
                 } else {
-                    // Kontakt wraps decimal literals up to 2^32 - 1 into 32 bits.
-                    match u32::try_from(*n) {
-                        Ok(v) => v as i32,
-                        Err(_) => return fault(span, "literal exceeds 32-bit range"),
-                    }
+                    // Kontakt clamps a decimal literal above i32::MAX to i32::MAX
+                    // (`lit_int_overflow`: 2147483648 reads back as 2147483647).
+                    i32::try_from(*n).unwrap_or(i32::MAX)
                 };
                 (Ty::Int, ExprKind::Int(value))
             }
@@ -949,13 +952,6 @@ impl<'a> Sema<'a, '_> {
                 (ret, ExprKind::Builtin(b, args))
             }
             A::Unary(UnOp::Neg, inner) => {
-                if let A::Int(2_147_483_648, false) = inner.kind {
-                    return Ok(Expr {
-                        ty: Ty::Int,
-                        span,
-                        kind: ExprKind::Int(i32::MIN),
-                    });
-                }
                 let inner = self.expr(inner)?;
                 let inner = if inner.ty == Ty::Bool {
                     self.coerce(inner, Ty::Int)?
@@ -980,8 +976,7 @@ impl<'a> Sema<'a, '_> {
             }
             A::Unary(UnOp::Not, inner) => {
                 let inner = self.expr(inner)?;
-                let ty = if inner.ty == Ty::Bool { Ty::Bool } else { Ty::Int };
-                (ty, ExprKind::Not(Box::new(self.coerce(inner, Ty::Bool)?)))
+                (Ty::Bool, ExprKind::Not(Box::new(self.boolean(inner)?)))
             }
             A::Binary(op, l, r) => return self.binary(*op, l, r, span),
         };
@@ -1057,13 +1052,12 @@ impl<'a> Sema<'a, '_> {
         };
         let arith = match op {
             ScalarOp::Logic(logic) => {
-                // Boolean operands give a boolean; integer operands give an integer, which
-                // Kontakt does not accept as a condition (see `condition`).
-                let ty = if l.ty == Ty::Bool && r.ty == Ty::Bool { Ty::Bool } else { Ty::Int };
-                let l = self.coerce(l, Ty::Bool)?;
-                let r = self.coerce(r, Ty::Bool)?;
+                // Kontakt compiles and/or/xor only over comparisons (boolean terms), never
+                // over integers; measured by the conformance suite (`intval_and_value`).
+                let l = self.boolean(l)?;
+                let r = self.boolean(r)?;
                 return Ok(Expr {
-                    ty,
+                    ty: Ty::Bool,
                     span,
                     kind: ExprKind::Logic(logic, Box::new(l), Box::new(r)),
                 });
@@ -1083,6 +1077,10 @@ impl<'a> Sema<'a, '_> {
             }
             ScalarOp::Arithmetic(arith) => arith,
         };
+        // Kontakt rejects a condition used as a number (`typing_bool_arith`).
+        if l.ty == Ty::Bool || r.ty == Ty::Bool {
+            return fault(span, "operator requires numbers, found boolean");
+        }
         let (l, r) = unify(self, l, r)?;
         let integer_only = !matches!(arith, Arith::Add | Arith::Sub | Arith::Mul | Arith::Div);
         if l.ty == Ty::Str || (l.ty == Ty::Real && integer_only) {

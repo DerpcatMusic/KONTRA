@@ -12,6 +12,8 @@ pub mod pairs;
 pub mod report;
 pub mod signal;
 #[cfg(feature = "candidates")]
+pub mod stretch;
+#[cfg(feature = "candidates")]
 pub mod signalsmith;
 
 pub use block::{Block, Factory, Impl};

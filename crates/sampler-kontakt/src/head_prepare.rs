@@ -185,7 +185,7 @@ pub(super) fn prepare(
             let full = if pcm.requires_resident() {
                 Some(
                     ResidentBuffer::new(pcm.sample_rate(), pcm.frame_count(), budget)
-                        .map_err(io::Error::other)?,
+                        .map_err(|e| super::head_budget_capacity(budget.status(), e))?,
                 )
             } else {
                 None
@@ -345,7 +345,7 @@ pub(super) fn prepare(
 fn prepare_logical(selected:&[(&Pcm,&[Range<usize>])],sources:&HashMap<AssetId,Arc<dyn AssetSource>>,
     budget:&HeadBudget,canceled:&(dyn Fn()->bool+Sync))->io::Result<(Vec<Prepared>,usize)> {
     let mut full=selected.iter().map(|(pcm,_)|if pcm.requires_resident() {
-        ResidentBuffer::new(pcm.sample_rate(),pcm.frame_count(),budget).map(Some).map_err(io::Error::other)
+        ResidentBuffer::new(pcm.sample_rate(),pcm.frame_count(),budget).map(Some).map_err(|e|super::head_budget_capacity(budget.status(),e))
     } else {Ok(None)}).collect::<io::Result<Vec<_>>>()?;
     let mut result:Vec<Option<Prepared>>=(0..selected.len()).map(|_|None).collect();
     for index in 0..selected.len() {

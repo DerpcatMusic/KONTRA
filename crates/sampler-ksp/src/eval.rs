@@ -40,6 +40,8 @@ pub struct Environment {
     pub zones: BTreeMap<u32, [i32; 3]>,
     /// Physical order and source-defined IDs; not dense DSP region order.
     pub zone_catalog: Vec<sampler_ir::SourceZone>,
+    /// Sample name per physical zone (aligned with `zone_catalog`); `find_zone` matches it.
+    pub zone_names: Vec<String>,
     /// Current global instrument policy inherited from earlier physical slots.
     pub snapshot_mode: model::SnapshotMode,
     /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
@@ -2176,7 +2178,17 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 self.warn(span, "subscribe_async: the plugin has no global key/scale to deliver");
                 V::I(0)
             }
-            FindZone => V::I(b::NOT_FOUND),
+            FindZone => {
+                let name = self.text(args, 0)?;
+                // An empty name never matches: unnamed zones are not findable.
+                V::I(
+                    self.env
+                        .zone_names
+                        .iter()
+                        .position(|n| !n.is_empty() && *n == name)
+                        .map_or(b::NOT_FOUND, |i| i as i32),
+                )
+            }
             GetZonePar => {
                 let zone = self.int(args, 0)?;
                 let parameter = self.int(args, 1)?;

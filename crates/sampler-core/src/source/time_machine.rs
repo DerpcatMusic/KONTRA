@@ -268,6 +268,8 @@ pub struct Engine {
     /// Output frames left to drain once the source ended.
     drain: Option<usize>,
     starved: bool,
+    /// Failed source fetches since creation: every silenced grain window counts.
+    misses: u64,
 }
 
 /// Scheduler::Pitch state. `last_centre` and `last_mark` are the output centre and the
@@ -335,6 +337,7 @@ impl Engine {
             params: Params::default(),
             drain: None,
             starved: false,
+            misses: 0,
         }
     }
 
@@ -368,6 +371,11 @@ impl Engine {
     /// Whether a needed source range was missing in the last `render`.
     pub fn starved(&self) -> bool {
         self.starved
+    }
+
+    /// Failed source fetches so far (monotonic; not reset by starts).
+    pub fn misses(&self) -> u64 {
+        self.misses
     }
 
     pub fn done(&self) -> bool {
@@ -954,6 +962,9 @@ impl Engine {
                 out[..n].fill([0.; 2]);
             }
             done += n;
+        }
+        if !ok {
+            self.misses = self.misses.saturating_add(1);
         }
         ok
     }

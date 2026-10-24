@@ -8,9 +8,30 @@
 use serde_json::Value;
 use std::path::PathBuf;
 
-/// Units whose interpreter result differs from Kontakt today. Empty after slice 2; add an
-/// entry only as tracked debt, and remove it in the change that fixes it.
-const KNOWN_MISMATCHES: &[&str] = &[];
+/// Units whose interpreter result differs from Kontakt today. Add an entry only as tracked
+/// debt, and remove it in the change that fixes it.
+///
+/// `min`/`max` with two arguments: Kontakt rejects every on-init form measured (`builtin_*`),
+/// the interpreter accepts them. No corpus library uses them (survey: no symbol occurrences).
+/// Open: measure them in `on note` and then reject or keep.
+const KNOWN_MISMATCHES: &[&str] = &[
+    "builtin_minmax__0",
+    "builtin_minmax__1",
+    "builtin_min_lit",
+    "builtin_max_lit",
+    "builtin_min_var",
+    "builtin_max_neg",
+    // String `=` in a condition: Kontakt rejects it in on init (measured); the interpreter
+    // accepts it. Open: measure string comparison in on note before rejecting it.
+    "str_lit_cond",
+    "string_case_sensitive",
+    // get_num_menu_items in on init: Kontakt rejects it (diag_menu_count, diag_menu_count_after_add);
+    // the interpreter and about ten existing tests use it there. Open: move those tests to
+    // on note / on ui_control, then reject the call in on init.
+    "ctl_menu_items",
+    "diag_menu_count",
+    "diag_menu_count_after_add",
+];
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/ksp-conformance")

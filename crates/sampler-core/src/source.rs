@@ -248,6 +248,7 @@ impl Playback {
             exit: None,
             last: [0.; 2],
             starvation: None,
+            misses: 0,
             fade_in: 0,
             fade_frames: output_rate.div_ceil(1000),
             cold_hold: false,
@@ -401,6 +402,7 @@ impl CursorTemplate {
             exit: self.exit,
             last: [0.; 2],
             starvation: None,
+            misses: 0,
             fade_in: 0,
             fade_frames: self.fade_frames,
             cold_hold: false,
@@ -441,6 +443,8 @@ pub(super) struct Cursor {
     last: Frame,
     // Remaining fade-out frames after a miss; zero while waiting for the page.
     starvation: Option<u32>,
+    /// Silenced misses since creation (monotonic; see [`Cursor::miss`]).
+    misses: u64,
     // Remaining fade-in frames after a recovered miss.
     fade_in: u32,
     fade_frames: u32,
@@ -870,6 +874,22 @@ impl Cursor {
         self.starvation.is_some()
     }
 
+    /// Silenced misses so far: each entry into starvation (a fade-out that
+    /// then waits for its window) and each failed stretch-engine fetch.
+    pub(super) fn misses(&self) -> u64 {
+        self.misses
+    }
+
+    /// Enter starvation: one silenced miss, even when it recovers within the block.
+    fn miss(&mut self) {
+        self.misses = self.misses.saturating_add(1);
+        self.starvation = Some(self.fade_frames);
+    }
+
+    pub(super) fn count_misses(&mut self, n: u64) {
+        self.misses = self.misses.saturating_add(n);
+    }
+
     pub(super) fn with_start_runway(mut self, frames: u32) -> Self {
         self.start_runway = if frames > 1 { frames } else { 0 };
         self.bounded_demand = frames > 1;
@@ -1206,7 +1226,7 @@ impl Cursor {
             let mut rendered = 0;
             while rendered < output.len() && !envelope.done() {
                 let Some(mut sample) = self.sample(pcm, kernel) else {
-                    self.starvation = Some(self.fade_frames);
+                    self.miss();
                     return rendered
                         + self.render_starved(
                             pcm,
@@ -1300,7 +1320,7 @@ impl Cursor {
             }
             let Some(sample) = self.sample(pcm, kernel) else {
                 self.beat = Some(player);
-                self.starvation = Some(self.fade_frames);
+                self.miss();
                 return rendered
                     + self.render_starved(
                         pcm,
@@ -1865,7 +1885,7 @@ impl Cursor {
                 }
             }
             let Some(source) = self.sample(pcm, kernel) else {
-                self.starvation = Some(self.fade_frames);
+                self.miss();
                 return rendered
                     + self.render_starved(
                         pcm,
@@ -2224,6 +2244,48 @@ mod tests {
                 println!("seam_cpu_receipt shape={shape:?} round={round} scalar_ms={:.3} gathered_ms={:.3} ratio={:.4} checksum={:016x}", elapsed[0]*1000., elapsed[1]*1000., elapsed[1]/elapsed[0], checksums[0].to_bits());
             }
         }
+    }
+
+    #[test]
+    fn each_silenced_outage_counts_once_across_blocks() {
+        use std::cell::Cell;
+        // A window missing for several blocks is one silenced miss; each later
+        // outage counts again. Recovery inside a block still counts.
+        struct Gappy<'a> { frames: &'a [Frame], missing: Cell<(usize, usize)> }
+        impl ReadFrames for Gappy<'_> {
+            fn frame(&self, index: usize) -> Option<Frame> {
+                (!(self.missing.get().0..self.missing.get().1).contains(&index)).then(|| self.frames.get(index).copied()).flatten()
+            }
+            fn span(&self, _: std::ops::Range<usize>) -> Option<&[Frame]> { None }
+        }
+        let frames: Vec<Frame> = (0..2048).map(|i| [(i as f32 * 0.01).sin(); 2]).collect();
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        let mut cursor = Playback::default().cursor(frames.len(), 48000, 48000).unwrap().with_step(0.731);
+        let mut env = EnvelopeState::new(crate::Envelope::default());
+        let pcm = Gappy { frames: &frames, missing: Cell::new((0, 0)) };
+        let mut output = [[0.; 2]; 64];
+        // Outage 1: blocks render silently while the window is missing.
+        pcm.missing.set((100, 4096));
+        while !cursor.starved() {
+            cursor.render(&pcm, &mut output, &mut env, 1., [1.; 2], &kernel);
+        }
+        assert_eq!(cursor.misses(), 1);
+        for _ in 0..5 {
+            cursor.render(&pcm, &mut output, &mut env, 1., [1.; 2], &kernel);
+            assert!(cursor.starved());
+            assert_eq!(cursor.misses(), 1);
+        }
+        // Recovery: the window is available again; no new miss is counted.
+        pcm.missing.set((0, 0));
+        while cursor.starved() {
+            cursor.render(&pcm, &mut output, &mut env, 1., [1.; 2], &kernel);
+        }
+        assert_eq!(cursor.misses(), 1);
+        // Outage 2 begins and ends inside one block: still one silenced miss.
+        let at = cursor.position as usize + 8;
+        pcm.missing.set((at, at + 1));
+        cursor.render(&pcm, &mut output, &mut env, 1., [1.; 2], &kernel);
+        assert_eq!(cursor.misses(), 2);
     }
 
     #[test]
@@ -2983,7 +3045,7 @@ mod tests {
 
 mod demand;
 pub use demand::SampleDemand;
-mod time_machine;
+pub(crate) mod time_machine;
 pub(crate) mod beat_slices;
 mod tone_machine;
 
@@ -3049,7 +3111,10 @@ pub(super) fn stretch_block(
         link.started = true;
     }
     let cursor = &mut voice.cursor;
-    engine.render_with(pcm, params, out, |elapsed| cursor.analysis(if frozen { 0 } else { elapsed }))
+    let before = engine.misses();
+    let rendered = engine.render_with(pcm, params, out, |elapsed| cursor.analysis(if frozen { 0 } else { elapsed }));
+    cursor.count_misses(engine.misses() - before);
+    rendered
 }
 #[allow(unused_imports)] // wired by the voice source in a later commit
 pub(crate) use time_machine::{

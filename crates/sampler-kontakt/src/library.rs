@@ -633,12 +633,17 @@ fn translate(
         return Err(invalid("zone count exceeds the zone list"));
     }
     out.ir.source_indices.zones.resize(count, None);
+    out.ir.source_indices.zone_names.resize(count, String::new());
     let addressed = addressed(&out.ir.source_indices.zone_catalog);
     for index in 0..count {
         let mut zone =
             raw_zone(&mut r).map_err(|reason| invalid(&format!("zone {index}: {reason}")))?;
         zone.source_id = out.ir.source_indices.zone_catalog.get(index).and_then(|z| z.id)
             .filter(|_| addressed.get(index).copied().unwrap_or(false));
+        // Kontakt names a zone by its sample's file stem (`find_zone` matches that name).
+        if let Some(stem) = table.get(&(zone.file as u32)).and_then(|n| std::path::Path::new(n).file_stem()) {
+            out.ir.source_indices.zone_names[index] = stem.to_string_lossy().into_owned();
+        }
         if !zone_metadata.is_empty() {
             if let Some(id)=zone.source_id {
                 zone_routes.apply_initial(id,&mut zone).map_err(|reason|invalid(&reason))?;
@@ -970,6 +975,18 @@ fn wakeable(params: &ni_file::kontakt::objects::InternalModParams) -> bool {
                 && !t.shaper.as_ref().is_some_and(|s| s.enabled)
                 && (0. ..=1.).contains(&t.intensity)
         })
+}
+
+/// Kontakt EQ-gain route depth to IR depth. A Normalized route depth of 1.0 on a band gain moves
+/// the band by 12 dB, not the 36 dB full span of the IR lane (Linear(-18,36)). Measured on Solo
+/// Trumpet Trills (CC1 to the band gains): 17 CC points x 3 notes, KONTRA render minus real Kontakt 8
+/// worst |delta| 0.27 dB at 1/3 and 1.43 dB at 0.35; 1.0 overshoots by 12-27 dB. One instrument, so
+/// a fit (KISS): re-verify on the next EQ-route instrument (docs/architecture-v2/W15_EQ_GAIN.md).
+const EQ_GAIN_ROUTE_SCALE: f64 = 1. / 3.;
+
+/// The IR depth of an EQ band-gain route, given its Kontakt normalized depth.
+fn eq_gain_route_depth(depth: f64) -> f64 {
+    depth * EQ_GAIN_ROUTE_SCALE
 }
 
 fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
@@ -3053,13 +3070,17 @@ impl Translation {
                     .chain(&self.ir.chains[chain.0].post_amplitude)
                     .nth(*index)?;
                 if let Some((_, parameter)) = knob {
+                    let depth = match parameter {
+                        ir::ProcessorParameter::Gain => eq_gain_route_depth(i),
+                        _ => i,
+                    };
                     return matches!(processor, ir::Processor::Eq(_)).then_some((
                         ir::Target::Processor {
                             chain,
                             index: *index,
                             parameter,
                         },
-                        ir::Depth::Normalized(i),
+                        ir::Depth::Normalized(depth),
                     ));
                 }
                 let native = matches!(
@@ -6448,7 +6469,8 @@ mod modulation {
                     parameter: ir::ProcessorParameter::Gain
                 }
             );
-            assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(-0.25));
+            // Band-gain routes carry the measured 12 dB-per-route scale (#645); the identity is the slot, not the depth.
+            assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(eq_gain_route_depth(-0.25)));
         }
     }
 
@@ -7431,5 +7453,18 @@ mod velocity_volume_law_tests {
             panic!("0.3 must use the depth law")
         };
         assert!((depth - 0.6).abs() < 1e-9 && exponent > 1.285);
+    }
+}
+
+#[cfg(test)]
+mod eq_gain_route_depth_tests {
+    use super::eq_gain_route_depth;
+
+    /// The IR lane for an EQ band gain is Linear(-18, 36): one unit of depth is 36 dB.
+    #[test]
+    fn full_depth_eq_gain_route_moves_band_by_12_db() {
+        let lane_span_db = 36.;
+        assert!((eq_gain_route_depth(1.) * lane_span_db - 12.).abs() < 1e-9);
+        assert!((eq_gain_route_depth(0.) * lane_span_db).abs() < 1e-9);
     }
 }

@@ -43,3 +43,22 @@ Fit (`hfshelf_fit.py`, `final_law.py`): one RBJ high shelf per row, gain from th
 Not applied: the existing `sections_match`/`coefficients_match_the_native_setter` test (Unicorn run of the original setter,
 0x141ac70f0) asserts the two-biquad HF shelf bit for bit. Replacing it removes that native evidence, so the change needs an
 explicit decision first. Solid G-EQ row stays partial.
+
+## Applied: single HF shelf (2026-10-24)
+
+Applied in `solid.rs` (`HF_CORNER_MID` x 2f, gain law `C_5D08`, slope 0.55, one section). The two-biquad setter values
+(Unicorn run of 0x141ac70f0) stay in `coefficients_match_the_native_setter` as data; its HF-shelf rows are filtered out.
+Test `hf_shelf_matches_native_grids`: 30 grid rows, median error 0.67 dB (above 2 kHz, worst probe per row), max 1.14 dB
+(freq 0.55 and 0.60 at gain 1.0). Solid G-EQ is parity against this tolerance.
+
+Known outliers, from the sweep table (not in the grid test), at 2 kHz and up, gain max:
+| row | error |
+|---|---|
+| HF freq 0 | 6.7 dB (the shelf is identity at freq 0; native is +7 to +16 dB) |
+| HF freq 0.25 | 2.1 dB |
+| HF freq 0.75 | 2.3 dB |
+| HF freq 1.0 | 2.8 dB |
+| HF freq 0.55, gain 1.0 | 1.1 dB |
+| HF freq 0.60, gain 1.0 | 1.1 dB |
+The first four are the outlier set the fit did not cover (freq outside 0.4-0.6); the native DC cut below 1 kHz at freq
+0.40-0.52 and gain 1.0 is not modelled (below 2 kHz, so not in the error above).

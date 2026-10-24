@@ -122,10 +122,11 @@ impl SetupLayout {
             hir.cells, hir.texts, resources.controls, resources.store_capacity
         ));
         let context = digest_fields(format_args!(
-            "KSP setup context 2|{conditions:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            "KSP setup context 3|{conditions:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
             environment.groups,
             environment.zones,
             environment.zone_catalog,
+            environment.zone_names,
             environment.snapshot_mode,
             environment.engine_lookups,
             environment.performance_view

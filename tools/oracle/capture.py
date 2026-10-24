@@ -21,6 +21,7 @@ Accuracy: slot starts come from the monotonic clock at MIDI start; slices are go
 Absolute latency is not calibrated here: compare.py aligns each capture to the KONTRA render.
 """
 import argparse
+import math
 import array
 import importlib.util
 import json
@@ -86,15 +87,17 @@ def vlq(n):
     return bytes(out)
 
 
-def make_midi(path, slots, window=None, notes=SCENARIO):
-    """Format 0, 120 bpm, 480 ppq (960 ticks/s). Slot k: `notes` on channel k+1 from k*window.
+def make_midi(path, slots, window=None, notes=SCENARIO, per_slot=None, cc=()):
+    """Format 0, 120 bpm, 480 ppq (960 ticks/s). Slot k: `notes` (or `per_slot[k]`) on channel k+1 from k*window.
     With `window`, All Sound Off (CC 120) on channel k+1 closes each slot; without it (the single
     scenario file) only the notes are written."""
     events = []
     first = slot.channel_block()[0]  # this session's MIDI channel block (see slot.py)
     for k in range(slots):
         ch, base = first + k, (k * window if window else 0.0)
-        for start, length, key, vel in notes:
+        for at, number, value in cc:  # (seconds, controller, value) on this slot's channel
+            events.append((round((base + at) * 960), 1, bytes([0xB0 | ch, number, value])))
+        for start, length, key, vel in (per_slot[k] if per_slot else notes):
             on, off = round((base + start) * 960), round((base + start + length) * 960)
             events.append((on, 1, bytes([0x90 | ch, key, vel])))
             events.append((off, 0, bytes([0x80 | ch, key, 0])))
@@ -130,8 +133,37 @@ out:close()
 """
 
 
+def sink_state():
+    for line in sh("pactl", "list", "short", "sinks").splitlines():
+        if SINK in line.split("\t")[1:2]:
+            return line.split("\t")[-1].strip()
+    return None
+
+
 def ensure_sink():
-    slot.ensure_sink(SINK)
+    """The capture sink must never suspend: a suspended null sink records silence even with Kontakt
+    linked to it. A sink loaded without node.always-process (or found SUSPENDED) is reloaded."""
+    if sink_state() in ("IDLE", "RUNNING"):
+        return
+    for line in sh("pactl", "list", "short", "modules").splitlines():
+        if f"sink_name={SINK}" in line:
+            subprocess.run(["pactl", "unload-module", line.split("\t")[0]], capture_output=True)
+    subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={SINK}",
+                    f"sink_properties=device.description={SINK} node.always-process=true session.suspend-timeout-seconds=0",
+                    "format=float32le", "rate=48000", "channels=2"], capture_output=True)
+    time.sleep(1)
+    if sink_state() in (None, "SUSPENDED"):
+        sys.exit(f"{SINK} is missing or suspended after reload; check pactl list sinks")
+
+
+def log(work, msg):
+    """Session diagnostics: appended to WORK/session.log (sink, links, peaks)."""
+    with open(work / "session.log", "a") as f:
+        f.write(time.strftime("%H:%M:%S ") + msg + "\n")
+
+
+def kontakt_links():
+    return [l.strip() for l in sh("pw-link", "-l").splitlines() if "Kontakt" in l or "kontra_ref" in l][:8]
 
 
 def kontakt_ports():
@@ -209,14 +241,31 @@ def stop_kontakt(timeout=20):
     slot.stop_kontakt(timeout)
 
 
-def run_session(nkis, window, work, midi=None, notes=SCENARIO):
+def kontakt_ticks():
+    """utime+stime (clock ticks) of this slot's Kontakt process, threads included."""
+    total = 0
+    for pid in slot.kontakt_pids():
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            total += int(fields[11]) + int(fields[12])  # fields 14 and 15 of stat, counted from state
+        except (OSError, IndexError):  # process ended while we looked
+            pass
+    return total
+
+
+def run_session(nkis, window, work, midi=None, notes=SCENARIO, per_slot=None, cpu=None):
     """Loads up to PER_SESSION NKIs, plays the slotted MIDI, records. Returns (wav, t_midi, loaded)
-    where t_midi is the MIDI start on the recording clock and loaded[k] = (ok, error)."""
+    where t_midi is the MIDI start on the recording clock and loaded[k] = (ok, error).
+    `cpu` (a dict, optional): filled with "start" (monotonic, MIDI start) and "samples"
+    [(monotonic, ticks)] of Kontakt's CPU time, sampled every 0.1 s while the slots play."""
     if kontakt_running():
         stop_kontakt()  # left over from the previous group of this batch, or a crashed session
     if kontakt_running():
         sys.exit("another Kontakt is running; one oracle session at a time")
     work.mkdir(parents=True, exist_ok=True)
+    if midi is not None and slot.active():  # a --midi file is written for channel 1; this slot's instrument is elsewhere
+        midi = slot.remap_midi(midi, work / "block.mid", slot.channel_block()[0])
+    diag = {"routed": None, "midi_rc": None, "channel": slot.channel_block()[0] + 1, "links_end": None}
     raw = work / "probe.jsonl"
     raw.unlink(missing_ok=True)
     script = work / "probe.lua"
@@ -224,7 +273,7 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO):
                       + probe_lua([dump.winpath(Path(n).resolve()) for n in nkis]))
     if midi is None:  # batch: one slot per instrument
         midi = work / "slots.mid"
-        make_midi(midi, len(nkis), window, notes)
+        make_midi(midi, len(nkis), window, notes, per_slot)
     ensure_sink()
     session = work / "session.wav"
     xvfb = subprocess.Popen(["Xvfb", DISPLAY, "-screen", "0", f"{DESKTOP}x24"],
@@ -254,8 +303,10 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO):
             sys.exit(f"probe did not finish; see {work}")
         if not slot.active() or os.environ.get("ORACLE_GUI_SETUP"):  # a slot's device/MIDI come from its Settings.cfg
             select_device(env)
-        if not route_kontakt_to_sink(wait=60):
+        diag["routed"] = route_kontakt_to_sink(wait=60)
+        if not diag["routed"]:
             sys.exit(f"Kontakt has no audio output ports; see {work / 'kontakt.log'}")
+        log(work, f"after route: sink={sink_state()} links={kontakt_links()}")
         keep = subprocess.Popen(["pw-cat", "-p", "--raw", "--rate", "48000", "--channels", "2", "--format", "f32",
                                  "--target", SINK, "/dev/zero"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         t_rec = time.monotonic()  # the WAV's sample 0 is at recorder start, so the clock starts here
@@ -267,12 +318,23 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO):
         player = subprocess.Popen(["aplaymidi", "-p", midi_port(), str(midi)],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         t_midi = time.monotonic() - t_rec
-        end = t_rec + t_midi + len(nkis) * window + 1
+        end = t_rec + t_midi + max(1, len(nkis)) * window + 1  # an empty rack (idle baseline) still runs a window
+        if cpu is not None:
+            cpu["start"], cpu["samples"] = time.monotonic(), []
         while time.monotonic() < end:  # phase 2: keep links pinned while the slots play
             route_kontakt_to_sink()
+            if cpu is not None:
+                cpu["samples"].append((time.monotonic(), kontakt_ticks()))
             time.sleep(0.1)
         time.sleep(0.5)
+        log(work, f"session end: sink={sink_state()} links={kontakt_links()}")
     finally:
+        diag["links_end"] = kontakt_links()
+        if player:
+            diag["midi_rc"] = player.poll()
+            if diag["midi_rc"] is None:
+                player.kill()
+        (work / "diag.json").write_text(json.dumps(diag, indent=1))
         if player and player.poll() is None:
             player.kill()
         if rec:
@@ -308,25 +370,81 @@ def slice_session(session, t_midi, names, loaded, out_dir, window):
         path.write_bytes(b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt "
                          + struct.pack("<IHHIIHH", 16, 3, ch, rate, rate * ch * 4, ch * 4, 32)
                          + b"data" + struct.pack("<I", len(data)) + data)
+        peak = max(max(inter), -min(inter), 0.0)
         manifest[name] = {"loaded": True, "error": "", "wav": str(path), "frames": end - start,
-                          "slot_start_in_wav_s": PRE}
+                          "slot_start_in_wav_s": PRE, "peak_db": 20 * math.log10(peak + 1e-12)}
     return manifest
 
 
-def capture(items, out_dir, window, midi=None, notes=SCENARIO):
-    """items: [(name, nki)]. Returns the manifest {name: {...}}; WAVs land in out_dir.
-    `midi` (single instrument only) is played as given instead of the slotted batch scenario."""
+CANARY_NAME = "__canary__"
+CANARY_MIN_DB = -50.0  # the canary is known audible: below this the session is broken
+
+
+SILENT_DB = -100.0  # a recorded slice below this has no sound (digital silence is -240 dBFS)
+
+
+def silence_reason(work):
+    """Why a slice recorded silence, from the session's diag.json (what the session could observe)."""
+    path = Path(work) / "diag.json"
+    if not path.exists():
+        return "no session diagnostics"
+    diag = json.loads(path.read_text())
+    return (f"Kontakt outputs linked to the sink: {diag.get('routed')}; "
+            f"aplaymidi exit {diag.get('midi_rc')} (delivery itself is not observed); "
+            f"instrument MIDI channel {diag.get('channel')}; "
+            f"links at end: {diag.get('links_end') or 'none'}")
+
+
+def run_group(group, g, window, midi, out_dir, tag=""):
+    """One Kontakt session for `group`: slices into out_dir. Returns (manifest part, work dir)."""
+    work = CACHE / f"capture-{os.getpid()}-{g}{tag}"
+    names = [n for n, _, _ in group]
+    nkis = [k for _, k, _ in group]
+    per_slot = [ns for _, _, ns in group]
+    session, t_midi, loaded = run_session(nkis, window, work, midi, per_slot=per_slot)
+    if session.exists():
+        _, _, chans = wavutil.read(session)
+        peak = max((max(max(c), -min(c)) for c in chans if len(c)), default=0.0)
+        log(work, f"recording peak {20 * math.log10(peak + 1e-12):.1f} dBFS, {len(chans[0])} frames")
+    part = slice_session(session, t_midi, names, loaded, out_dir, window)
+    for name, nki, _ in group:
+        part[name]["nki"] = nki
+    session.unlink(missing_ok=True)
+    return part, work
+
+
+def capture(items, out_dir, window, midi=None, notes=SCENARIO, canary=None):
+    """items: [(name, nki)] or [(name, nki, notes)] (per-instrument notes; default `notes`).
+    `canary` = (name, nki, notes) of a known audible instrument: it takes slot 0 of every session,
+    and the session aborts loudly when it records silence (the audio or MIDI path is broken).
+    `midi` (single instrument only) is played as given instead of the slotted batch scenario.
+    A slice below SILENT_DB is retried once (whole session). Still silent: the entry gets
+    silent=True, wav=None and the reason in error; the caller exits non-zero.
+    Returns the manifest {name: {...}}; WAVs land in out_dir."""
     out_dir.mkdir(parents=True, exist_ok=True)
+    items = [(it[0], it[1], it[2] if len(it) > 2 else notes) for it in items]
+    if canary:
+        items = [(CANARY_NAME, canary[1], canary[2])] + items
     manifest = {}
     for g in range(0, len(items), PER_SESSION):
         group = items[g:g + PER_SESSION]
-        work = CACHE / f"capture-{os.getpid()}-{g}"
-        session, t_midi, loaded = run_session([nki for _, nki in group], window, work, midi, notes)
-        part = slice_session(session, t_midi, [n for n, _ in group], loaded, out_dir, window)
-        for name, nki in group:
-            part[name]["nki"] = nki
+        part, work = run_group(group, g, window, midi, out_dir)
+        silent = [n for n, m in part.items() if m.get("loaded") and m.get("peak_db", -240) < SILENT_DB]
+        if silent:
+            log(work, f"silent slices {silent}: retrying the session once")
+            part, work = run_group(group, g, window, midi, out_dir, tag="-retry")
+            for n in silent:
+                m = part.get(n, {})
+                if m.get("loaded") and m.get("peak_db", -240) < SILENT_DB:
+                    if m.get("wav"):
+                        Path(m["wav"]).unlink(missing_ok=True)  # no WAV for a silent slice
+                    m.update(wav=None, silent=True, error=f"silent after retry: {silence_reason(work)}")
+        if canary and g == 0:
+            c = part[CANARY_NAME]
+            if not c.get("loaded") or c.get("peak_db", -240) < CANARY_MIN_DB:
+                sys.exit(f"canary silent in session {work} ({c.get('peak_db')} dBFS, load {c.get('error')}): "
+                         f"audio or MIDI path broken, see {work / 'session.log'}")
         manifest.update(part)
-        session.unlink(missing_ok=True)
     return manifest
 
 
@@ -377,6 +495,9 @@ def main():
         merged = json.loads(cj.read_text()) if cj.exists() else {}
         merged.update(manifest)
         cj.write_text(json.dumps(merged, indent=1, sort_keys=True))
+    for name, m in sorted(manifest.items()):
+        if m.get("silent"):
+            print(f"SILENT {name}: {m['error']}", file=sys.stderr)
     ok = sum(1 for m in manifest.values() if m.get("wav"))
     print(f"captured {ok}/{len(items)} -> {out_dir}")
     return 0 if ok == len(items) else 1
