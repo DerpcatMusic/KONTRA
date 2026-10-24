@@ -337,3 +337,74 @@ end on";
         assert_eq!(cell(&rt, 1), i64::from(native));
     }
 }
+
+#[test]
+fn sample_length_is_the_event_zones_sample_in_microseconds() {
+    const LENGTH: &str = "on init
+  declare $id declare $zone declare $length declare $unknown
+end on
+on note
+  $id := $EVENT_ID
+  wait(1)
+  $zone := get_event_par($id,$EVENT_PAR_ZONE_ID)
+  $length := get_sample_length($zone)
+  $unknown := get_sample_length($zone + 1)
+end on";
+    // Half a second recorded at 44.1 kHz, played by a 48 kHz host.
+    let prepared = Prepared::new(
+        48000,
+        vec![Pcm::new(44100, vec![[1.; 2]; 22050].into_boxed_slice()).unwrap()],
+        vec![Region {
+            sample: 0,
+            key_low: 60,
+            key_high: 60,
+            root_key: None,
+            velocity_low: 0.,
+            velocity_high: 1.,
+            gain: 1.,
+            envelope: Envelope::new(0, 0, 0, 1., 128).unwrap(),
+            playback: Playback::default(),
+        }],
+        128,
+    )
+    .unwrap()
+    .with_source_zones(vec![73])
+    .unwrap();
+    let mut rt = runtime(LENGTH, prepared);
+    rt.trigger(input(60), 60, 1.).unwrap();
+    rt.render(&mut [[0.; 2]; 8]).unwrap();
+    assert_eq!(cell(&rt, 1), 73);
+    assert_eq!(cell(&rt, 2), 500_000);
+    assert_eq!(cell(&rt, 3), -1);
+}
+
+#[test]
+fn sample_length_takes_the_native_identity_get_zone_id_returns() {
+    const LENGTH: &str = "on init
+  declare $id declare $by_ordinal declare $by_event
+end on
+on note
+  $id := $EVENT_ID
+  wait(1)
+  $by_ordinal := get_sample_length(get_zone_id(0))
+  $by_event := get_sample_length(get_event_par($id,$EVENT_PAR_ZONE_ID))
+end on";
+    let prepared = prepared(&[(73, 60)], 24000)
+        .with_groups(1, vec![Some(0)])
+        .unwrap()
+        .with_source_zone_identities(
+            vec![SourceZoneIdentity {
+                id: Some(9727),
+                home: SourceZoneHome { group: 0, low_key: 60, high_key: 60 },
+                region: Some(0),
+            }],
+            4,
+            4096,
+        )
+        .unwrap();
+    let mut rt = runtime(LENGTH, prepared);
+    rt.trigger(input(60), 60, 1.).unwrap();
+    rt.render(&mut [[0.; 2]; 8]).unwrap();
+    // 24000 frames at 48 kHz.
+    assert_eq!((cell(&rt, 1), cell(&rt, 2)), (500_000, 500_000));
+}

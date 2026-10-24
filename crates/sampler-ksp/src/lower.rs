@@ -2864,6 +2864,11 @@ impl Gen<'_, '_> {
                 self.emit(I::Op(Op::SourceZoneIdentity {index:dst,local:dst}))?;
                 true
             }
+            GetSampleLength => {
+                self.arg(args,0,dst)?;
+                self.emit(I::Op(Op::SampleLength {zone:dst,local:dst}))?;
+                true
+            }
             GetZonePar | SetZonePar => {
                 let selectors =
                     ["$ZONE_PAR_GROUP", "$ZONE_PAR_LOW_KEY", "$ZONE_PAR_HIGH_KEY"].map(|name| {
