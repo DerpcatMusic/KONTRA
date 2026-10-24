@@ -62,6 +62,35 @@ LF:close()
 """
 
 
+BURST_LEAD = 0.5                                       # silence before the burst
+BURST_ON = 2.5                                         # tone on (1 kHz, BURST_DB)
+BURST_OFF = 2.5                                        # quiet tone after the burst (below the threshold: the gain recovers)
+BURST_DB = -12.0
+BURST_QUIET_DB = -50.0
+
+
+def burst_lua(path: Path) -> str:
+    """Lua that writes one tone-burst WAV (stereo, identical channels) inside Kontakt: lead, loud tone, quiet tone."""
+    frames = int((BURST_LEAD + BURST_ON + BURST_OFF) * 48000)
+    lead, on = int(BURST_LEAD * 48000), int(BURST_ON * 48000)
+    amp, quiet = 10 ** (BURST_DB / 20), 10 ** (BURST_QUIET_DB / 20)
+    return f"""local LF = io.open({json.dumps(str(path))}, "wb")
+local NF, LEAD, ON = {frames}, {lead}, {on}
+LF:write("RIFF", string.pack("<I4", 36 + NF * 8), "WAVEfmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, 2, 48000, 384000, 8, 32), "data", string.pack("<I4", NF * 8))
+for i = 0, NF - 1 do
+  local v = 0.0
+  if i >= LEAD and i < LEAD + ON then v = {amp!r} * math.sin(2 * math.pi * 1000 * i / 48000)
+  elseif i >= LEAD + ON then v = {quiet!r} * math.sin(2 * math.pi * 1000 * i / 48000) end
+  LF:write(string.pack("<ff", v, v))
+end
+LF:close()
+"""
+
+
+TIMED = ('levels', 'burst')  # stimuli that are one long WAV per note: hold the note for the slot
+STIM_WAV = {'levels': 'levels_lr.wav', 'burst': 'burst_lr.wav'}
+
+
 def make_lua(spec, work: Path) -> str:
     """Lua for the whole session: each instance gets its own zone and init script."""
     wav = work / "impulse_lr.wav"  # written by IMPULSE_LUA inside Kontakt
@@ -84,9 +113,10 @@ end""")
         "local kt = Kontakt\n"
         "local out = assert(io.open(ORACLE_OUT, \"w\"))\n"
         "local function log(t) out:write(t .. \"\\n\") out:flush() end\n"
-        f"local WAV = {json.dumps(eqrender.winpath(work / ('levels_lr.wav' if spec.get('stimulus') == 'levels' else 'impulse_lr.wav')))}\n"
+        f"local WAV = {json.dumps(eqrender.winpath(work / (STIM_WAV[spec.get('stimulus')] if spec.get('stimulus') in STIM_WAV else 'impulse_lr.wav')))}\n"
         f"local CHAIN = {{{chain}}}\n"
         + (levels_lua(work / "levels_lr.wav") if spec.get("stimulus") == "levels" else
+           burst_lua(work / "burst_lr.wav") if spec.get("stimulus") == "burst" else
            eqrender.IMPULSE_LUA.replace("@WAV@", json.dumps(eqrender.winpath(wav))))
         + "kt.reset_multi()\n"
         + "".join(body)
@@ -104,7 +134,7 @@ def render_chunk(chain, sets_list, out_wav: Path, stimulus=None):
     spec = {"chain": chain, "stimulus": stimulus, "instances": [{"name": "ref", "sets": [[0, "EFFECT_BYPASS", 1]]}]
             + [{"name": f"s{i}", "sets": [[0, "EFFECT_BYPASS", 0]] + sets} for i, sets in enumerate(sets_list)]}
     mid, lua = work / "rig.mid", work / "fxrig_gen.lua"
-    write_midi(len(spec["instances"]), mid, hold=SLOT - 1.0 if spec.get("stimulus") == "levels" else 0.1)
+    write_midi(len(spec["instances"]), mid, hold=SLOT - 1.0 if spec.get("stimulus") in TIMED else 0.1)
     lua.write_text(make_lua(spec, work))
     total = FIRST + len(spec["instances"]) * SLOT + 2.0
     subprocess.run([sys.executable, str(HERE / "render.py"), str(lua), str(out_wav), str(total), str(mid)], check=True)
@@ -179,10 +209,57 @@ def sweep(chain, pre, steps, out_prefix: Path):
     return tsv
 
 
+def burst_curve(chain, pre, steps, out_prefix: Path):
+    """Attack/release of each setting against the bypassed reference, from the 1 ms RMS envelope of the burst.
+    Writes out_prefix.tsv: name, attack ms (onset to 63% of the gain 2 s in), release ms (quiet tone onset to 63%
+    recovered, i.e. 37% of the reduction left, against the gain at the quiet onset), gain 0.5 s / 1.0 s / 2.0 s into
+    the loud tone (dB, active minus reference; the steady-state check)."""
+    global SLOT
+    SLOT = BURST_LEAD + BURST_ON + BURST_OFF + 1.0
+    rows = []
+    for c0 in range(0, len(steps), CHUNK):
+        part = steps[c0:c0 + CHUNK]
+        wav = out_prefix.with_name(f"{out_prefix.name}_c{c0 // CHUNK}.wav")
+        render_chunk(chain, [[*pre, *st["set"]] for st in part], wav, stimulus="burst")
+        ch, rate, (L, R) = wavutil.read(wav)
+        x = np.array(L)
+        ref = env_db(x, rate, FIRST)
+        for i, st in enumerate(part, start=1):
+            act = env_db(x, rate, FIRST + i * SLOT)
+            gain = act - ref  # per 1 ms, dB, negative = reduction
+            on = int(BURST_LEAD * 1000)
+            off = on + int(BURST_ON * 1000)
+            steady = gain[on + 2000]
+            attack = next((k for k in range(on, off) if gain[k] <= 0.63 * steady), None)
+            release = next((k for k in range(off, len(gain)) if gain[k] >= 0.37 * gain[off]), None)
+            rows.append([c0 + i, st["name"],
+                         "" if attack is None else attack - on,
+                         "" if release is None else release - off,
+                         f"{gain[on + 500]:.2f}", f"{gain[on + 1000]:.2f}", f"{gain[on + 2000]:.2f}"])
+    tsv = out_prefix.with_suffix(".tsv")
+    tsv.write_text("\n".join("\t".join(map(str, r)) for r in rows) + "\n")
+    return tsv
+
+
+def env_db(x, rate, onset):
+    """RMS dB in 1 ms bins from the instance's first sound (file start = first sample above 1e-4 after onset)."""
+    m = np.abs(x)
+    lo = int(onset * rate)
+    first = lo + int(np.argmax(m[lo:lo + int(SLOT * rate)] > 1e-4))
+    n = int(BURST_LEAD * 1000 + (BURST_ON + BURST_OFF) * 1000)
+    seg = x[first - int(BURST_LEAD * rate):first - int(BURST_LEAD * rate) + n * 48]
+    bins = seg.reshape(-1, 48)
+    return 10 * np.log10(np.mean(bins ** 2, axis=1) + 1e-12)
+
+
 def main() -> int:
     if sys.argv[1] == "levels":
         spec = json.load(open(sys.argv[2]))
         print(level_curve(spec["chain"], spec.get("pre", []), spec["steps"], Path(sys.argv[3]).resolve()))
+        return 0
+    if sys.argv[1] == "burst":
+        spec = json.load(open(sys.argv[2]))
+        print(burst_curve(spec["chain"], spec.get("pre", []), spec["steps"], Path(sys.argv[3]).resolve()))
         return 0
     if sys.argv[1] == "sweep":
         spec = json.load(open(sys.argv[2]))
@@ -195,7 +272,7 @@ def main() -> int:
     n = len(spec["instances"])
     if n > CHANNELS:
         sys.exit(f"fxrig: {n} instances, this session has {CHANNELS} MIDI channels; split the spec")
-    write_midi(n, mid, hold=SLOT - 1.0 if spec.get("stimulus") == "levels" else 0.1)
+    write_midi(n, mid, hold=SLOT - 1.0 if spec.get("stimulus") in TIMED else 0.1)
     lua = work / "fxrig_gen.lua"
     lua.write_text(make_lua(spec, work))
     total = FIRST + n * SLOT + 2.0
