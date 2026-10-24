@@ -800,7 +800,10 @@ fn performance_view_shot() {
         gate.settle();
     }
     assert!(gate.tab("Interface"), "Interface tab missing");
-    for (w, h) in [(900u16, 600u16), (1500, 1100)] {
+    // KONTRA_SHOT_SIZES="1100x700,1500x1100"; the default is the two review sizes.
+    let sizes = std::env::var("KONTRA_SHOT_SIZES").unwrap_or_else(|_| "900x600,1500x1100".into());
+    for size in sizes.split(',') {
+        let (w, h) = size.split_once('x').map(|(w, h)| (w.parse::<u16>().unwrap(), h.parse::<u16>().unwrap())).expect("KONTRA_SHOT_SIZES");
         gate.editor.resize(Size::new(w.into(), h.into()));
         for _ in 0..3 {
             gate.settle();
