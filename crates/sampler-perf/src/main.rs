@@ -188,6 +188,10 @@ fn pad() -> Vec<Message> {
     m
 }
 
+/// `--repeat N`: the note schedule is played N times back to back (N x the scenario length), so
+/// profiles and warm CPU cells see many more render blocks than one 8 s pass gives.
+static REPEAT: AtomicU64 = AtomicU64::new(1);
+
 const KONTAKT: &str = "KONTRA_KONTAKT_LIBRARIES";
 const UVI: &str = "KONTRA_UVI_LIBRARIES";
 
@@ -883,8 +887,14 @@ fn run_scenario(
     cores: usize,
     only_cell: Option<(usize, usize)>,
 ) -> Result<(Vec<Value>, Value), String> {
+    let repeat = REPEAT.load(Ordering::Relaxed).max(1) as usize;
+    let period = seconds.unwrap_or(s.seconds);
     let messages = {
-        let mut m = (s.notes)();
+        let once = (s.notes)();
+        let mut m = Vec::with_capacity(once.len() * repeat);
+        for k in 0..repeat {
+            m.extend(once.iter().map(|&(t, bytes)| (t + k as f64 * period, bytes)));
+        }
         m.sort_by(|a, b| {
             a.0.total_cmp(&b.0)
                 .then((a.1[0] & 0xf0 == 0x90).cmp(&(b.1[0] & 0xf0 == 0x90)))
@@ -906,7 +916,7 @@ fn run_scenario(
     let (w0, t0) = (wakeups(), Instant::now());
     std::thread::sleep(Duration::from_secs(3));
     let idle = (wakeups() - w0) as f64 / t0.elapsed().as_secs_f64();
-    let frames = (seconds.unwrap_or(s.seconds) * f64::from(RATE)) as usize;
+    let frames = (period * repeat as f64 * f64::from(RATE)) as usize;
     let mut threads = vec![1, 2, 4, cores];
     threads.sort_unstable();
     threads.dedup();
@@ -1130,6 +1140,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 ));
             }
             "--seconds" => seconds = Some(v.parse::<f64>().map_err(fail)?),
+            "--repeat" => REPEAT.store(v.parse::<u64>().map_err(fail)?.max(1), Ordering::Relaxed),
             _ => return Err(format!("unknown option {a}")),
         }
     }
@@ -1299,7 +1310,7 @@ fn main() {
         Some("run") => run(&args[1..]).map(|()| true),
         Some("compare") => compare(&args[1..]),
         Some("loadbench") => loadbench(&args[1..]).map(|()| true),
-        _ => Err("usage: sampler-perf sustain [--only afflatus|conflux|conflux-multi] [--block 64|256] [--notes 1|8] [--seconds S] [--out FILE] | run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S] | compare BASE.json NEW.json [--threshold PERCENT] | capacity [--caps 64,256,4096] [--only NAME] [--block 64] [--seconds S] [--repeats N]".into()),
+        _ => Err("usage: sampler-perf sustain [--only afflatus|conflux|conflux-multi] [--block 64|256] [--notes 1|8] [--seconds S] [--out FILE] | run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S] [--repeat N] | compare BASE.json NEW.json [--threshold PERCENT] | capacity [--caps 64,256,4096] [--only NAME] [--block 64] [--seconds S] [--repeats N]".into()),
     };
     report_alloc_traces();
     match result {
