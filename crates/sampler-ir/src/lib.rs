@@ -3248,6 +3248,9 @@ pub enum Reason {
     /// The law is unverified and the feature was omitted, rather than executed
     /// by an approximation. Preserve that distinction in every host report.
     UnknownLawOmitted,
+    /// Not a loss: the source names something the instrument already plays
+    /// correctly without it. Reported as a note, never as partial.
+    Info,
 }
 
 /// A feature name with its numbers and paths removed, so equal causes group:

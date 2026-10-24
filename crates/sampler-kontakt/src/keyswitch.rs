@@ -46,6 +46,9 @@ pub enum Detection {
     Found(Detected),
     /// Hints or patterns whose keys or logic could not be established.
     Unrecognized(String),
+    /// Only evaluated control-type keys (reset, breath) and no note switch: the
+    /// articulations come from the group start rows, so this is a note.
+    ControlKeysOnly(String),
 }
 
 /// Add the instrument's articulation map. `groups` holds each translated
@@ -216,6 +219,12 @@ pub(crate) fn translate(
         match detect(&behavior.source, &saved) {
             Detection::None => {}
             Detection::Unrecognized(why) => instrument.unsupported.push(unsupported(why)),
+            Detection::ControlKeysOnly(why) => instrument.unsupported.push(ir::Unsupported {
+                location: behavior.name.clone(),
+                feature: "keyswitch script".into(),
+                value: why,
+                reason: ir::Reason::Info,
+            }),
             Detection::Found(found) if !instrument.articulations.is_empty() => {
                 let why = match &owner {
                     Some(first) => format!("{first} already owns switching"),
@@ -418,6 +427,11 @@ pub fn detect(source: &str, saved: &[(String, i64)]) -> Detection {
         return match (keys.first(), hints(&lines, &env)) {
             (Some(key), _) => {
                 Detection::Unrecognized(format!("single switch key {key}: a toggle, not a set"))
+            }
+            (None, Some(hint)) if hint.starts_with("control keys ") => {
+                Detection::ControlKeysOnly(format!(
+                    "keyswitch hints ({hint}) but no recognized switch in on note"
+                ))
             }
             (None, Some(hint)) => Detection::Unrecognized(format!(
                 "keyswitch hints ({hint}) but no recognized switch in on note"
@@ -986,7 +1000,8 @@ end on
         let hinted = "on init\n declare $base := 24\n set_key_type($base, $NI_KEY_TYPE_CONTROL)\nend on\n\
             on note\n if ($EVENT_NOTE = $base)\n call toggle\n end if\nend on";
         assert!(
-            matches!(detect(hinted, &[]), Detection::Unrecognized(why) if why.contains("control keys [24]"))
+            // Control keys without a note switch are an info note, not a partial load.
+            matches!(detect(hinted, &[]), Detection::ControlKeysOnly(why) if why.contains("control keys [24]"))
         );
         // A range sized to nothing by saved state is inert; the next range is the set.
         let empty = "on init\n declare $low := 20\n declare $count := 0\nend on\non note\n\
@@ -1015,7 +1030,7 @@ end on
             $id := play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, -1)\n exit\n end if\nend on";
         assert!(matches!(
             detect(source, &[]),
-            Detection::Unrecognized(why) if why.contains("no recognized switch")
+            Detection::ControlKeysOnly(why) if why.contains("no recognized switch")
         ));
     }
 
