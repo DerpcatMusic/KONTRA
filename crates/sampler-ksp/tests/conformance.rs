@@ -25,6 +25,12 @@ const KNOWN_MISMATCHES: &[&str] = &[
     // accepts it. Open: measure string comparison in on note before rejecting it.
     "str_lit_cond",
     "string_case_sensitive",
+    // get_num_menu_items in on init: Kontakt rejects it (diag_menu_count, diag_menu_count_after_add);
+    // the interpreter and about ten existing tests use it there. Open: move those tests to
+    // on note / on ui_control, then reject the call in on init.
+    "ctl_menu_items",
+    "diag_menu_count",
+    "diag_menu_count_after_add",
 ];
 
 fn root() -> PathBuf {

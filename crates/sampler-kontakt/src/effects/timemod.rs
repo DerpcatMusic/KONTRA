@@ -29,9 +29,16 @@ pub(crate) enum Unit {
     Twin(TwinDelay),
     Psyche(PsycheDelay),
     Replika(Replika),
+    /// Rotator v0x50 (`BParFXRotator`): the RT_* stored fields bound from fx_other.tsv.
+    /// Read at absolute offsets. Not mapped onto the rotator core yet.
+    Rotator(Rotator),
     /// Flair v0x51 (`BParFXFlair`): the stored fields bound by name from
     /// fx_other.tsv. Read at absolute offsets. Not mapped onto a core yet.
     Flair(Flair),
+    /// Phasis v0x51 (`BParFXPhasis`): the stored fields, bound by name from the
+    /// measured table `fx_raum_delight_psyche_vibrato_phasis_replika.tsv`. Read at
+    /// absolute offsets (the record is not sequential). Not mapped onto a core yet.
+    Phasis(Phasis),
     /// Wow / Flutter v0x10: wow, flutter, scrape, speed, stereo, age, saturation (f32),
     /// gate (flag), mix (f32).
     WowFlutter { fields: [f32; 7], gate: bool, mix: f32 },
@@ -298,6 +305,37 @@ pub(super) fn read_psyche(version: u16, r: &mut Reader) -> Option<Unit> {
     Some(Unit::Psyche(PsycheDelay { time: v[0], unit, feedback: v[1], detune: v[2], pitch: v[3], offset: v[4], cross: v[5], reverse_stereo, detune_stereo, reverse }))
 }
 
+/// `BParFXRotator` v0x50 stored fields, by the `ENGINE_PAR_RT_*` names.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Rotator {
+    pub speed: f32,
+    pub balance: f32,
+    pub accel_hi: f32,
+    pub accel_lo: f32,
+    pub distance: f32,
+    pub mix: f32,
+}
+
+/// Rotator v0x50 (`BParFXRotator`), offsets from fx_other.tsv (`ENGINE_PAR_RT_*` rows).
+pub(super) fn read_rotator(version: u16, public: &[u8]) -> Option<Unit> {
+    if version != 0x50 {
+        return None;
+    }
+    let f32_at = |at: usize| -> Option<f32> {
+        let bytes = public.get(at..at + 4)?;
+        let x = f32::from_le_bytes(bytes.try_into().ok()?);
+        x.is_finite().then_some(x)
+    };
+    Some(Unit::Rotator(Rotator {
+        speed: f32_at(8)?,
+        balance: f32_at(12)?,
+        accel_hi: f32_at(16)?,
+        accel_lo: f32_at(20)?,
+        distance: f32_at(24)?,
+        mix: f32_at(28)?,
+    }))
+}
+
 /// `BParFXFlair` v0x51 stored fields, by the `ENGINE_PAR_FLAIR_*` names. The pitch note
 /// field (+0x40) has no binding row and is not read.
 #[derive(Clone, Debug, PartialEq)]
@@ -335,6 +373,54 @@ pub(super) fn read_flair(version: u16, public: &[u8]) -> Option<Unit> {
         detune: f32_at(40)?,
         offset: f32_at(44)?,
         invert_phase: *public.get(48)? != 0,
+    }))
+}
+
+/// `BParFXPhasis` v0x51 stored fields, by the `ENGINE_PAR_PHASIS_*` names.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Phasis {
+    pub rate: f32,
+    pub center: f32,
+    pub spread: f32,
+    pub feedback: f32,
+    pub mix: f32,
+    pub notches: f32,
+    pub amount: f32,
+    pub stereo: f32,
+    pub mod_mix: f32,
+    pub ultra: bool,
+    pub invert_phase: bool,
+    pub invert_mod_mix: bool,
+    /// Sync unit (field 12, offset 80). INFERRED from the table's RATE_UNIT rows.
+    pub unit: f32,
+}
+
+/// Phasis v0x51 (`BParFXPhasis`). Field offsets from the binding table; the unit
+/// offset is INFERRED (RATE_UNIT rows at 80 and 92, field 12 taken as the unit).
+pub(super) fn read_phasis(version: u16, public: &[u8]) -> Option<Unit> {
+    if version != 0x51 {
+        return None;
+    }
+    let f32_at = |at: usize| -> Option<f32> {
+        let bytes = public.get(at..at + 4)?;
+        let x = f32::from_le_bytes(bytes.try_into().ok()?);
+        x.is_finite().then_some(x)
+    };
+    let flag_at = |at: usize| public.get(at).map(|b| *b != 0);
+    Some(Unit::Phasis(Phasis {
+        rate: f32_at(8)?,
+        center: f32_at(12)?,
+        spread: f32_at(16)?,
+        feedback: f32_at(20)?,
+        mix: f32_at(24)?,
+        notches: f32_at(28)?,
+        amount: f32_at(32)?,
+        stereo: f32_at(36)?,
+        mod_mix: f32_at(40)?,
+        ultra: flag_at(44)?,
+        invert_phase: flag_at(45)?,
+        invert_mod_mix: flag_at(46)?,
+        unit: f32_at(80)?,
     }))
 }
 
@@ -424,10 +510,10 @@ pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
 pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x5a => "Replika: only the v0x12 reader (0x140d02250) is read; other saved versions are not (docs/re/engine/k-replika.md)",
-        0x5b => "Phasis: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but their binding to the core parameter indices and the core's oversampling resamplers (about 96 kHz internal) are not extracted",
+        0x5b => "Phasis: fields bound (fx_raum_delight_psyche_vibrato_phasis_replika.tsv); the core's oversampling resamplers (about 96 kHz internal) and the center and notch laws are not mapped",
         0x5c => "Flair: fields bound (fx_other.tsv) and mapped onto the legacy flanger (KISS); offset, width, voices, damping, detune and the pitch note are not mapped",
         0x69 => "Vibrato Chorus: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the core's wave-digital LC ladder (the delay line it models) is not extracted",
-        0x22 => "Rotator: horn/drum law located (control 0x140a97d30, audio 0x140aae920, output stage 0x140ac21f0 ported) but the runtime-initialised lane vectors at 0x149e6c400..0x149e6c45c and the RT_* setter binding (virtual BParFXRotator, vtable not exported) are not yet verified",
+        0x22 => "Rotator: RT_* fields bound (fx_other.tsv); rotation, acceleration and distance laws and the runtime lane vectors (0x149e6c400..0x149e6c45c) are not mapped",
         _ => return None,
     })
 }
@@ -473,10 +559,22 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
             return None;
         }
     }
-    if unit_set(rep.time_unit).is_some() {
-        notes.push(("time_unit".into(), format!("{}", rep.time_unit), Reason::NotModeled));
-        return None;
-    }
+    // Tempo-synced TIME: the unit's beats per note (the table every `*_UNIT` effect shares,
+    // PROVED in timemod-reads.tsv) times a note count. The count law round(1 + 11 v) is the
+    // legacy Delay's (PROVED there); it is reused for Replika, not measured on Replika.
+    let synced_beats = match unit_set(rep.time_unit) {
+        None => None,
+        Some(unit) => {
+            let factor = crate::time_stretch_writes::SPEED_UNIT_BEATS.get(unit.round() as usize).copied().flatten();
+            match factor {
+                Some(factor) => Some(factor * (1. + 11. * f64::from(rep.time)).round()),
+                None => {
+                    notes.push(("time_unit".into(), format!("{}", rep.time_unit), Reason::NotModeled));
+                    return None;
+                }
+            }
+        }
+    };
     // Reason split (docs/re/engine/k-replika.md): a control whose effect the IR can already
     // represent (feedback matrix, tap pan and level, tap depth, LFO rate, input matrix) but
     // whose source law is unestablished is UnknownLawOmitted. Everything else has no IR
@@ -536,6 +634,7 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
         ducking_amount: rep.ducking_amount,
         ducking_release: rep.ducking_release,
         path,
+        synced_beats,
         ..ReplikaControls::default()
     };
     let mut line = Line::single(DelayTime::Frames(1), 2000.);
@@ -622,6 +721,10 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
         Unit::Replika(ref rep) => return replika_config(rep, dry, notes),
+        Unit::Rotator(_) => {
+            notes.push(("parameters".into(), "Rotator: bound fields read; core (rotation, acceleration and distance laws, runtime lane vectors) not mapped".into(), Reason::NotModeled));
+            return None;
+        }
         // KISS mapping onto the legacy flanger: amount is the depth, feedback the feedback, rate the
         // speed (free: no sync field in the table), mix the wet share. The base delay is the
         // flanger default (2.5 ms, unmeasured for Flair); offset, width, voices, damping, detune,
@@ -638,6 +741,10 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             let mut line = Line::single(DelayTime::Frames(1), 0.);
             line.native = Native::LegacyModDelay { base_ms: 3.8125, excursion: f64::from(f.amount) * 75., feedback: f.feedback.sqrt(), second_head: false, smoothing: f32::from_bits(0x3f733333) };
             return Some(Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(f.rate, -1., 0.), dry: 1. - f64::from(f.mix), wet: f64::from(f.mix) });
+        }
+        Unit::Phasis(_) => {
+            notes.push(("parameters".into(), "Phasis: bound fields read; core (center, notch count, oversampling resamplers) not mapped".into(), Reason::NotModeled));
+            return None;
         }
         Unit::WowFlutter { fields: [wow, flutter, scrape, speed, stereo, age, saturation], gate, mix } => {
             if ![wow, flutter, scrape, speed, stereo, age, saturation, mix].iter().all(|v| unit_interval(&[*v])) {
@@ -915,6 +1022,31 @@ mod tests {
             assert!(built.notes.is_empty(), "{:?}", built.notes);
             let y = render(built.processors, &input);
             assert_ulps(&y, &want, &format!("choral mode {mode}"));
+        }
+    }
+
+    /// A tempo-synced Replika TIME: unit factor (beats per note) x count round(1 + 11 v). Several units.
+    #[test]
+    fn replika_synced_time_is_unit_factor_times_note_count() {
+        for (time, unit, want) in [(0.0f32, 9.0f32, 1.0f64), (0.5, 9.0, 7.0), (0.0, 5.0, 4.0), (1.0, 12.0, 6.0), (0.0, 10.0, 0.6666667)] {
+            let mut public = 0i32.to_le_bytes().to_vec();
+            let mut fields = [0f32; 10];
+            fields[0] = time;
+            for f in fields {
+                public.extend(f.to_le_bytes());
+            }
+            public.extend([0u8; 3]);
+            public.extend(unit.to_le_bytes());
+            public.extend([0u8; 8]);
+            public.push(0);
+            public.extend(std::iter::repeat_n(0u8, 4 * 4 + 1 + 9 * 4 + 1));
+            let mut r = super::super::Reader(&public);
+            let Some(super::Unit::Replika(rep)) = super::read_replika(0x12, &mut r) else { panic!("v0x12 must read") };
+            let mut notes = Vec::new();
+            let cfg = super::replika_config(&rep, 0.5, &mut notes).expect("synced TIME maps");
+            let sampler_ir::fx::timemod::Native::Replika(controls) = cfg.line.expect("delay line").native else { panic!("native") };
+            let got = controls.synced_beats.expect("synced");
+            assert!((got - want).abs() < 1e-6, "time {time} unit {unit}: {got} beats, want {want}");
         }
     }
 
@@ -1364,6 +1496,48 @@ pub(super) fn slot_phaser(b: &mut Lowering, s: &Site, notes: &mut Notes, cutoff:
 }
 
 #[cfg(test)]
+mod flair_map_tests {
+    use super::*;
+
+    #[test]
+    fn flair_maps_onto_the_legacy_flanger() {
+        let f = Flair { amount: 0.6, rate: 0.3, width: 0., mix: 0.5, voices: 0., feedback: 0.4, damping: 0., detune: 0., offset: 0., invert_phase: false };
+        let mut notes = Vec::new();
+        let cfg = config(&Unit::Flair(f.clone()), 0.5, &mut notes).expect("maps onto the flanger");
+        assert!((cfg.wet - 0.5).abs() < 1e-6 && (cfg.dry - 0.5).abs() < 1e-6);
+        // Measured base spacing 3.8125 ms (183 frames), one head; feedback loop gain sqrt(0.4).
+        let Some(Native::LegacyModDelay { base_ms, second_head, feedback, .. }) = cfg.line.as_ref().map(|l| l.native) else { panic!("legacy delay") };
+        assert!((base_ms - 3.8125).abs() < 1e-6 && !second_head && (feedback - 0.4f32.sqrt()).abs() < 1e-6);
+        assert!(notes.iter().any(|n| n.2 == sampler_ir::Reason::NotModeled));
+        let mut out_of_range = f;
+        out_of_range.amount = 2.;
+        assert!(config(&Unit::Flair(out_of_range), 0.5, &mut Vec::new()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod rotator_binding_tests {
+    use super::*;
+
+    /// A v0x50 record with each RT_* float at its fx_other.tsv offset and distinct values.
+    #[test]
+    fn rotator_fields_read_from_their_measured_offsets() {
+        let mut public = vec![0u8; 40];
+        let floats = [(8, 0.1f32), (12, 0.2), (16, 0.3), (20, 0.4), (24, 0.5), (28, 0.6)];
+        for (at, x) in floats {
+            public[at..at + 4].copy_from_slice(&x.to_le_bytes());
+        }
+        let Some(Unit::Rotator(r)) = read_rotator(0x50, &public) else { panic!("v0x50 must read") };
+        assert_eq!(
+            [r.speed, r.balance, r.accel_hi, r.accel_lo, r.distance, r.mix],
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+        );
+        assert!(read_rotator(0x51, &public).is_none());
+        assert!(read_rotator(0x50, &public[..28]).is_none());
+    }
+}
+
+#[cfg(test)]
 mod flair_binding_tests {
     use super::*;
 
@@ -1387,21 +1561,32 @@ mod flair_binding_tests {
 }
 
 #[cfg(test)]
-mod flair_map_tests {
+mod phasis_binding_tests {
     use super::*;
 
+    /// A v0x51 record with each measured float at its table offset (`ENGINE_PAR_PHASIS_*`
+    /// rows of fx_raum_delight_psyche_vibrato_phasis_replika.tsv) and distinct values, so a
+    /// swapped offset fails.
     #[test]
-    fn flair_maps_onto_the_legacy_flanger() {
-        let f = Flair { amount: 0.6, rate: 0.3, width: 0., mix: 0.5, voices: 0., feedback: 0.4, damping: 0., detune: 0., offset: 0., invert_phase: false };
-        let mut notes = Vec::new();
-        let cfg = config(&Unit::Flair(f.clone()), 0.5, &mut notes).expect("maps onto the flanger");
-        assert!((cfg.wet - 0.5).abs() < 1e-6 && (cfg.dry - 0.5).abs() < 1e-6);
-        // Measured base spacing 3.8125 ms (183 frames), one head; feedback loop gain sqrt(0.4).
-        let Some(Native::LegacyModDelay { base_ms, second_head, feedback, .. }) = cfg.line.as_ref().map(|l| l.native) else { panic!("legacy delay") };
-        assert!((base_ms - 3.8125).abs() < 1e-6 && !second_head && (feedback - 0.4f32.sqrt()).abs() < 1e-6);
-        assert!(notes.iter().any(|n| n.2 == sampler_ir::Reason::NotModeled));
-        let mut out_of_range = f;
-        out_of_range.amount = 2.;
-        assert!(config(&Unit::Flair(out_of_range), 0.5, &mut Vec::new()).is_none());
+    fn phasis_fields_read_from_their_measured_offsets() {
+        let mut public = vec![0u8; 96];
+        let floats = [(8, 0.1f32), (12, 0.2), (16, 0.3), (20, 0.4), (24, 0.5), (28, 0.6), (32, 0.7), (36, 0.8), (40, 0.9), (80, 4.0)];
+        for (at, x) in floats {
+            public[at..at + 4].copy_from_slice(&x.to_le_bytes());
+        }
+        public[44] = 1;
+        public[46] = 1;
+        let Some(Unit::Phasis(p)) = read_phasis(0x51, &public) else { panic!("v0x51 must read") };
+        assert_eq!(
+            [p.rate, p.center, p.spread, p.feedback, p.mix, p.notches, p.amount, p.stereo, p.mod_mix, p.unit],
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 4.0]
+        );
+        assert!(p.ultra && !p.invert_phase && p.invert_mod_mix);
+    }
+
+    #[test]
+    fn other_phasis_versions_and_short_records_are_not_read() {
+        assert!(read_phasis(0x50, &[0u8; 96]).is_none());
+        assert!(read_phasis(0x51, &[0u8; 40]).is_none());
     }
 }
