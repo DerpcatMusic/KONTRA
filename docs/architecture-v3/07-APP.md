@@ -1,0 +1,78 @@
+# 07 App: threads, channels, plugin shell, UI boundary
+
+Today the plugin's `Shared` struct has 54 fields, including 7 `ArrayQueue`s,
+19 `AtomicU64`s and 9 `Mutex`es: one ad-hoc channel per feature. In v3 the
+audio thread talks to the rest of the process through three channels.
+
+## 1. Threads
+
+| Thread | Owns | Runs |
+|---|---|---|
+| audio (host) | `Engine` | `process()` only |
+| control (host main / timer) | `Rack` (parts, routing, settings), `Commands` sender | host callbacks, state save/load, automation glue |
+| loader (1) | load pipeline | format → IR → plan → hand over |
+| I/O (N) | page fills | `kontra-stream` `IoService` |
+| UI | editor view state | reads publications, sends commands |
+| library (1) | catalog | scanning, artwork |
+
+## 2. The three channels
+
+```rust
+// kontra-protocol
+pub enum Command {                  // control/UI/loader → audio. SPSC ring, fixed capacity, never dropped silently
+    Plan(Arc<Plan>), Purge(PurgeSet), SetParam(ParamAddr, f32), Ui(ControlId, ControlValue),
+    Transport(TransportCmd), Panic, ...
+}
+pub struct Publications {           // audio → others. Latest value only, no queue
+    meters: LatestCell<Meters>, voices: LatestCell<VoiceTaps>, controls: ControlStore,   // LatestCell per script control
+    params: LatestCell<ParamSnapshot>, stats: LatestCell<StatsSnapshot>, messages: LatestCell<MessageRef>,
+}
+pub enum Retired { Plan(Arc<Plan>), Buffers(Box<[f32]>), ... }   // audio → control, dropped off-audio
+```
+
+- **Commands** are the only way into the engine. When the ring is full, the
+  sender gets `Err(Full)` and retries next tick. The audio side never blocks.
+- **Publications** are latest-value cells (`kontra-pool::LatestCell`, a
+  triple buffer or seqlock). A slow UI skips frames and never builds up a
+  backlog. That removes the UI effect outbox and the 10 Hz `control_tick`
+  drain.
+- **Retirements** carry anything the audio thread lets go of, so it can be
+  freed on the control thread.
+
+## 3. Plugin shell (`plugin/`, ~1.5k)
+
+- moose CLAP/VST3/standalone glue: ports, the state chunk, parameters
+  (generated from the catalog) and note expressions.
+- It stamps host events with sample offsets and calls
+  `engine.process(block, events)`. It doesn't split blocks, track held keys
+  or apply script logic.
+- The host-note ↔ CLAP note-end mapping lives in the ledger (02-ENGINE.md),
+  not in `held_keys*`.
+
+## 4. Host (`app/host`)
+
+- `Rack`: parts (instrument slots), each with `PartState`, routing, purge
+  set and saved script `persist` data.
+- Load pipeline: `Format::load` → IR → validate → `Plan::build` (compile
+  chains via the `kontra-dsp` registry, compile scripts via
+  `kontra-ksp`/`kontra-lua`, run `on init` on the VM, compute preload law
+  ranges, register blobs with the store) → `Command::Plan`.
+- State: one serde struct, versioned; no v1 compatibility (memory: v2
+  product goals).
+
+## 5. UI boundary
+
+`kontra-ui` depends on `protocol`, `ui-model` and library data types
+only. It never depends on `engine`, `vm` or `dsp`. It renders the script UI
+from `ui-model` trees and the `ControlStore`, sends `Command::Ui` for user
+edits, and reads meters and stats from `Publications`. That's why a UI
+edit rebuilds only `ui` and `plugin`, and why engine tests never compile
+the GPU stack.
+
+## 6. Auto-align (`app/align`, feature `align`)
+
+Auto-align stays optional. It measures onsets at load and sends a
+per-zone `align_offset` in the plan, which applies as a start offset
+inside the preload range. It no longer holds notes while the transport
+plays. If a sample needs more delay compensation than its preload allows,
+that is a load diagnostic.
