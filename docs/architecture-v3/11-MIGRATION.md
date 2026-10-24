@@ -10,6 +10,10 @@ Playback fixes come first (ONE_ENGINE.md, FUTURE_SAMPLER_PLAN.md): users
 hear phases 1–3. The structural work after them is easier and safer once
 the contracts exist.
 
+Step numbers in the tables below are the original outline. The task ids in
+[tasks.toml](tasks.toml) / [TASKS.md](TASKS.md) are authoritative (for example
+"1.3 one start batch" is task P1.4).
+
 ## Phase 0: guard rails (1–2 PRs)
 
 | PR | Does | Gate |

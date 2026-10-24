@@ -174,7 +174,7 @@ lane = "tooling"
 size = "M"
 agent = "worker"
 deps = ["P0.3"]
-owns = ["tools/probe/**", "src/creator.rs"]
+owns = ["tools/probe/**", "src/creator.rs", "@lockfile"]
 docs = ["10-TESTING.md#1-playback-contracts-toolsprobe-crate-kontra-probe", "../audit-2026-10-24/PLAYBACK_AUDIT.md"]
 goal = "P0.3's fixtures pass every contract because the generated NKIs carry no routes or scripts. The NKI writer (`src/creator/nki.rs`, `Program.script`) already takes any KSP source; use it to author scripts that drive the same engine paths as Areia and Vista, so the bugs reproduce in CI."
 steps = [
@@ -305,7 +305,7 @@ steps = [
   "Expose `dropout_frames` through the existing runtime stats so kontra-probe C2 can read it (update tools/probe only via a public accessor; if probe code must change, list it as a deviation)."
 ]
 gate = ["build-slot cargo test -p sampler-core --lib source", "build-slot cargo test -p sampler-core --test cold_chain", "build-slot cargo test -p kontra-probe"]
-done = ["Probe C1 passes on all fixtures in real-time mode with a throttled disk (`streamed` fixture)."]
+done = ["Probe C1 passes on all fixtures in real-time mode with a throttled disk (`streamed` fixture).", "C5 (offline = real time) passes on `cc_start` and `key_position` (P0.3b measured −3 / −5.3 dB nulls: the cold path only runs in real time, sampler-core/src/lib.rs ~2382). Un-ignore those tests."]
 
 [[task]]
 id = "P1.4"
@@ -315,14 +315,15 @@ lane = "playback"
 size = "M"
 agent = "worker"
 deps = ["P1.3"]
-owns = ["crates/sampler-core/src/onset.rs", "crates/sampler-core/src/stream.rs", "crates/sampler-core/tests/stream_start_runway.rs", "crates/sampler-kontakt/tests/channel_topology.rs", "@v2rs"]
+owns = ["crates/sampler-core/src/onset.rs", "crates/sampler-core/src/stream.rs", "crates/sampler-core/tests/stream_start_runway.rs", "crates/sampler-kontakt/tests/channel_topology.rs", "tools/probe/**", "@v2rs"]
 docs = ["02-ENGINE.md#4-the-note-ledger", "../audit-2026-10-24/PLAYBACK_AUDIT.md"]
 goal = "All voices started at the same sample (one host note, or one callback instant's play_note calls) start together. This is the Areia 'double attack, mono then wide' fix."
 steps = [
   "Read `onset.rs` `Probe::cohort` and `set_stream_start_runway` (stream.rs, onset.rs, and its call site in src/sound/v2.rs, which you own for this task).",
   "Group voice starts by (sample time, callback instant) instead of per family/`play_note`. Start the whole group in one pass.",
   "Delete the start-runway mechanism: with P1.2 the head covers the start range, so no runway is needed.",
-  "Tests: three mic groups started by three `play_note`s in one callback produce first output frames at the same sample (probe fixture `cc_start`, C3)."
+  "Tests: three mic groups started by three `play_note`s in one callback produce first output frames at the same sample (probe fixture `cc_start`, C3).",
+  "Probe: C6 is measured offline, where the cold-start path is off (P0.3b), so double attacks cannot show. Add a real-time C6 variant to kontra-probe and expose per-voice start frames through a public accessor so C3 becomes measurable."
 ]
 gate = ["build-slot cargo test -p sampler-core --lib onset", "build-slot cargo test -p kontra-probe cc_start"]
 done = ["C3 and C6 pass on fixtures; coordinator confirms on Areia Spiccato Fast."]
