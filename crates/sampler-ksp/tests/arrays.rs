@@ -170,7 +170,7 @@ fn indexed_state_and_nested_reads_drive_overlapping_notes_and_release_callbacks(
         });
     }
     let mut rt = runtime(
-        "on init declare %wrap[2] := (2147483647,-2147483648) end on
+        "on init declare %wrap[2] := (2147483647,-2147483647) end on
         on note ignore_event($EVENT_ID) inc(%wrap[0]) dec(%wrap[1]) end on",
         2,
     );
@@ -181,7 +181,7 @@ fn indexed_state_and_nested_reads_drive_overlapping_notes_and_release_callbacks(
     );
     assert_eq!(
         rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 1),
-        Ok(i64::from(i32::MAX))
+        Ok(i64::from(i32::MIN))
     );
 }
 

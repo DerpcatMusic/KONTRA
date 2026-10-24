@@ -83,3 +83,27 @@ the same intent, except where noted:
 - `golden.json` comes from one oracle run on Kontakt 8.13.1. Regenerate after any
   generator or case change.
 - Interpreter micro-bench (init and per-note callback cost on corpus scripts): not started.
+
+## Slice 3 (86 units)
+
+Probes added: numeric builtins (`sgn`, `msb`, `lsb`, `sh_*`, `pow`, `floor`, `ceil`, `round`,
+`int`, `sqrt`), literal range, and boolean builtins used as numbers. Results in
+`golden.json` (86 units, all decoded from Kontakt 8.13.1).
+
+| Rule | Evidence |
+|---|---|
+| Integer `and`, `or`, `not` are rejected as values and as conditions; `.and.`/`.or.` are bitwise. | `intval_and_value`, `intval_or_value`, `intval_not_value` rejected; `intval_bitand` = 2, 7 |
+| A boolean is not a number: `(3 > 2) + 0` is rejected. | `typing_bool_arith` rejected |
+| `in_range(...) + 0` and `pgs_key_exists(...) + 0` are rejected. | `bool_inrange_arith`, `bool_pgs_arith` rejected |
+| A decimal literal above 2147483647 clamps to 2147483647. | `lit_int_overflow`, `lit_u32_max`, `lit_u32_over`, `lit_3e9` |
+| `-2147483648` reads as -2147483647 (the literal clamps, then negates). `-2147483649` also reads -2147483647. | `lit_neg_min`, `lit_neg_over` |
+| `80000000h` wraps to -2147483648 (hex literals are 32-bit). | `lit_hex_top` |
+| Division and modulo by zero yield 0 and the script continues. | `arith_div_zero`, `arith_mod_zero` |
+| Shift amounts are masked to 5 bits: `sh_left(1, 32)` = 1, `sh_left(1, -1)` = -2147483648. | `builtin_sh_32`, `builtin_sh_negative` |
+| `min`/`max` with two arguments are rejected in `on init`, with or without variables or negatives. | `builtin_min*`, `builtin_max*` rejected |
+
+Interpreter changes: `sema.rs` boolean-only and/or/xor/not; boolean operands in arithmetic
+are errors; decimal literal clamp; no special case for `-2147483648`.
+
+Open: `min`/`max` (known debt in `KNOWN_MISMATCHES`; no corpus library uses them);
+integer `xor` and `.not.` (not probed).
