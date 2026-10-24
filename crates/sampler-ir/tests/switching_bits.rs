@@ -51,3 +51,42 @@ fn amplitude_controllers_lists_live_controller_to_amplitude_routes_by_zone_count
     // CC1 drives three zones, CC11 one, CC7 has depth 0.
     assert_eq!(ir.amplitude_controllers(), vec![1, 11]);
 }
+
+#[test]
+fn amplitude_controllers_skip_controllers_that_turn_the_zone_down() {
+    use sampler_ir::*;
+    let mut ir = Instrument::default();
+    ir.assets.push(Asset {
+        location: AssetLocation::Path("a".into()),
+        residency: Default::default(),
+        encoding: Encoding::Wav,
+        root_key: None,
+        loops: Vec::new(),
+    });
+    for cc in [20u8, 21, 22, 23, 24, 25] {
+        ir.modulators.push(Modulator {
+            scope: Scope::Voice,
+            source: ModulationSource::Controller(cc),
+        });
+    }
+    // Full at 0, silent above it: a "mute while held" controller.
+    ir.shapes.push(Shape {
+        points: vec![(0.0, 1.0), (0.01, 0.0), (1.0, 0.0)],
+    });
+    let amp =
+        |m: usize, depth| Route::new(ModulatorRef(m), Target::Amplitude, Depth::Normalized(depth));
+    ir.routes = vec![
+        amp(0, 1.0),
+        Route { shape: Some(ShapeRef(0)), ..amp(1, 1.0) },
+        Route { invert: true, ..amp(2, 1.0) },
+        amp(3, -0.5),
+        // gain × g^v: -60 dB turns the zone down, +6 dB up.
+        Route::new(ModulatorRef(4), Target::Amplitude, Depth::Gain(Gain::Decibels(-60.))),
+        Route::new(ModulatorRef(5), Target::Amplitude, Depth::Gain(Gain::Decibels(6.))),
+    ];
+    ir.zones = vec![Zone {
+        routes: (0..6).map(RouteRef).collect(),
+        ..Zone::new(AssetRef(0))
+    }];
+    assert_eq!(ir.amplitude_controllers(), vec![20, 25]);
+}

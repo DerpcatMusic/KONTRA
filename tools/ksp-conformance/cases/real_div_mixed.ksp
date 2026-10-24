@@ -1,0 +1,23 @@
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare ~x := 7.0
+  $cv := real_to_int(~x / 2.0)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := real_to_int(~x / 2.0 * 2.0)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on

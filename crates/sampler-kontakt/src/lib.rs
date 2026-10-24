@@ -651,3 +651,6 @@ mod stage_tests {
         assert_eq!(LoadError::Canceled.at(Stage::Bind).stage(), None);
     }
 }
+
+mod format;
+pub use format::FORMAT;

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render the same notes as capture.py through KONTRA (sampler-native render-kontakt-midi).
 
-    tools/oracle/kontra_render.py LIST.tsv OUTDIR [--midi FILE]
+    tools/oracle/kontra_render.py LIST.tsv OUTDIR [--midi FILE | --scenario NAME]
 
 LIST.tsv: `name<TAB>nki_path` (the same list as capture.py --batch). Writes OUTDIR/<name>.wav.
 The binary is $SAMPLER_NATIVE, else the release build under the KONTRA cargo target root
@@ -16,6 +16,11 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import capture  # noqa: E402  (scenario writer, same notes as the Kontakt slots)
+
+
+def capped(cmd):
+    """The render runs in its own 8G cgroup: an instrument that overflows it fails alone, the run goes on."""
+    return ["systemd-run", "--user", "--scope", "-p", "MemoryMax=8G", "nice", "-n", "10", *cmd]
 
 
 def binary():
@@ -34,8 +39,10 @@ def main():
     ap.add_argument("list")
     ap.add_argument("out_dir")
     ap.add_argument("--midi")
+    ap.add_argument("--scenario", choices=sorted(capture.SCENARIOS), default="base")
+    ap.add_argument("--keyswitch", type=int, metavar="KEY")
     args = ap.parse_args()
-    midi = Path(args.midi) if args.midi else capture.write_scenario()
+    midi = Path(args.midi) if args.midi else capture.write_scenario(args.scenario, args.keyswitch)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     rows = [l.split("\t") for l in Path(args.list).read_text().splitlines() if l.strip() and not l.startswith("#")]

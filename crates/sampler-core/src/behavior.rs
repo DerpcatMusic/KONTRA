@@ -2300,7 +2300,8 @@ outcome.is_none()
             Instruction::ReadEventMark { event, mark, local } => {
                 let plan = self.behavior_plan(owner)?;
                 let event = i32::try_from(*self.local_cell_mut(id, event)?).ok();
-                let mark = *self.local_cell_mut(id, mark)? as u32 & 0x0fff_ffff;
+                // $MARK_n is bit 2^n for n in 1..=28, so the mask keeps bits 0..=28.
+                let mark = *self.local_cell_mut(id, mark)? as u32 & 0x1fff_ffff;
                 let note = event
                     .map(|e| self.resolve_source_event(plan, e))
                     .transpose()?
@@ -2315,7 +2316,8 @@ outcome.is_none()
             } => {
                 let plan = self.behavior_plan(owner)?;
                 let event = i32::try_from(*self.local_cell_mut(id, event)?).ok();
-                let mark = *self.local_cell_mut(id, mark)? as u32 & 0x0fff_ffff;
+                // $MARK_n is bit 2^n for n in 1..=28, so the mask keeps bits 0..=28.
+                let mark = *self.local_cell_mut(id, mark)? as u32 & 0x1fff_ffff;
                 if let Some(note) = event
                     .map(|e| self.resolve_source_event(plan, e))
                     .transpose()?

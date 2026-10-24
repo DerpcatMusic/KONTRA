@@ -136,10 +136,10 @@ fn resource_name_never_guesses_from_nonliteral_or_ambiguous_source() {
         r#"{ load_performance_view("decoy") } on init end on"#,
         r#"on init message("load_performance_view(decoy)") end on"#,
         r#"on init load_performance_view_extra("decoy") end on"#,
-        r#"on init declare @view := "real" load_performance_view(@view)
+        r#"on init declare @view @view := "real" load_performance_view(@view)
            message("unrelated") end on"#,
         r#"on init load_performance_view("base" & "suffix") end on"#,
-        r#"on init declare @suffix := "suffix"
+        r#"on init declare @suffix @suffix := "suffix"
            load_performance_view("base" & @suffix) end on"#,
         r#"on init load_performance_view("real", "extra") end on"#,
         r#"on init load_performance_view() message("unrelated") end on"#,

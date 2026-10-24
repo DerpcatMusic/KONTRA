@@ -190,7 +190,7 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
                 let messages: Vec<_> = keys.iter().map(|&k| (0., [0x90, k, 100])).collect();
                 let count = if name == "conflux-multi" {
                     sampler_kontakt::read_multi(
-                        &root(KONTAKT, "/mnt/MAIN_STORAGE/Libraries/Kontakt").join(path),
+                        &root(KONTAKT, "/data/main/Libraries/Kontakt").join(path),
                     )
                     .map_err(fail)?
                     .programs

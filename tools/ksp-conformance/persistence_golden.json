@@ -1,0 +1,93 @@
+{
+ "array_pers": {
+  "compiled": true,
+  "completed": true,
+  "persistence_changed_ran": false,
+  "points": {
+   "A": 0,
+   "B": 0,
+   "C": 0,
+   "D": 0,
+   "S": 0
+  },
+  "source": "on init\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)\ndeclare $cv\ndeclare $cb\ndeclare $s\nmake_persistent($s)\n  $cv := $s\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 32 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nread_persistent_var($s)\ndeclare %a[3]\nmake_persistent(%a)\n  $cv := %a[1]\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 0 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nif ($s = 0)\n  %a[1] := 5\n  $s := 1\nend if\n  $cv := %a[1]\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 16 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)\nend on\non persistence_changed\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 66, -1, -1)\n  $cv := %a[1]\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 24 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nend on\n"
+ },
+ "instr_pers": {
+  "compiled": true,
+  "completed": true,
+  "persistence_changed_ran": false,
+  "points": {
+   "A": 0,
+   "B": 0,
+   "C": 0,
+   "D": 0,
+   "S": 0
+  },
+  "source": "on init\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)\ndeclare $cv\ndeclare $cb\ndeclare $s\nmake_persistent($s)\n  $cv := $s\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 32 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nread_persistent_var($s)\ndeclare $ii\nmake_instr_persistent($ii)\n  $cv := $ii\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 0 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nif ($s = 0)\n  $ii := 6\n  $s := 1\nend if\n  $cv := $ii\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 16 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)\nend on\non persistence_changed\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 66, -1, -1)\n  $cv := $ii\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 24 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nend on\n"
+ },
+ "int_nonpers": {
+  "compiled": true,
+  "completed": true,
+  "persistence_changed_ran": false,
+  "points": {
+   "A": 0,
+   "B": 0,
+   "C": 0,
+   "D": 0,
+   "S": 0
+  },
+  "source": "on init\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)\ndeclare $cv\ndeclare $cb\ndeclare $s\nmake_persistent($s)\n  $cv := $s\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 32 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nread_persistent_var($s)\ndeclare $p\n  $cv := $p\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 0 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nif ($s = 0)\n  $p := 7\n  $s := 1\nend if\n  $cv := $p\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 16 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)\nend on\non persistence_changed\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 66, -1, -1)\n  $cv := $p\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 24 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nend on\n"
+ },
+ "int_pers_noread": {
+  "compiled": true,
+  "completed": true,
+  "persistence_changed_ran": false,
+  "points": {
+   "A": 0,
+   "B": 0,
+   "C": 0,
+   "D": 0,
+   "S": 0
+  },
+  "source": "on init\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)\ndeclare $cv\ndeclare $cb\ndeclare $s\nmake_persistent($s)\n  $cv := $s\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 32 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nread_persistent_var($s)\ndeclare $p\nmake_persistent($p)\n  $cv := $p\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 0 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nif ($s = 0)\n  $p := 7\n  $s := 1\nend if\n  $cv := $p\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 16 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)\nend on\non persistence_changed\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 66, -1, -1)\n  $cv := $p\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 24 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nend on\n"
+ },
+ "int_pers_readvar": {
+  "compiled": true,
+  "completed": true,
+  "persistence_changed_ran": false,
+  "points": {
+   "A": 0,
+   "B": 7,
+   "C": 7,
+   "D": 0,
+   "S": 0
+  },
+  "source": "on init\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)\ndeclare $cv\ndeclare $cb\ndeclare $s\nmake_persistent($s)\n  $cv := $s\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 32 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nread_persistent_var($s)\ndeclare $p\nmake_persistent($p)\n  $cv := $p\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 0 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nread_persistent_var($p)\n  $cv := $p\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 8 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nif ($s = 0)\n  $p := 7\n  $s := 1\nend if\n  $cv := $p\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 16 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)\nend on\non persistence_changed\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 66, -1, -1)\n  $cv := $p\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 24 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nend on\n"
+ },
+ "real_pers": {
+  "compiled": true,
+  "completed": true,
+  "persistence_changed_ran": false,
+  "points": {
+   "A": 0,
+   "B": 0,
+   "C": 0,
+   "D": 0,
+   "S": 0
+  },
+  "source": "on init\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)\ndeclare $cv\ndeclare $cb\ndeclare $s\nmake_persistent($s)\n  $cv := $s\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 32 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nread_persistent_var($s)\ndeclare ~r\nmake_persistent(~r)\n  $cv := int(~r)\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 0 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nif ($s = 0)\n  ~r := 3.7\n  $s := 1\nend if\n  $cv := int(~r)\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 16 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)\nend on\non persistence_changed\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 66, -1, -1)\n  $cv := int(~r)\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 24 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nend on\n"
+ },
+ "untaken_mp": {
+  "compiled": true,
+  "completed": true,
+  "persistence_changed_ran": false,
+  "points": {
+   "A": 0,
+   "B": 0,
+   "C": 0,
+   "D": 0,
+   "S": 0
+  },
+  "source": "on init\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)\ndeclare $cv\ndeclare $cb\ndeclare $s\nmake_persistent($s)\n  $cv := $s\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 32 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nread_persistent_var($s)\ndeclare $z\nif (0 = 1)\n  make_persistent($z)\nend if\n  $cv := $z\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 0 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nif ($s = 0)\n  $z := 4\n  $s := 1\nend if\n  $cv := $z\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 16 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)\nend on\non persistence_changed\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 66, -1, -1)\n  $cv := $z\n  $cb := 0\n  while ($cb < 8)\n    if ((sh_right($cv, $cb) mod 2) # 0)\n      set_engine_par($ENGINE_PAR_VOLUME, 1000, 24 + $cb, -1, -1)\n    end if\n    inc($cb)\n  end while\nend on\n"
+ }
+}

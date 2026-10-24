@@ -767,7 +767,7 @@ impl Gen<'_, '_> {
         match &s.kind {
             StmtKind::Assign(place, value) => self.assign(place, value),
             // Declaration initializers only occur in `on init`.
-            StmtKind::Fill(..) => Ok(()),
+            StmtKind::Fill(..) | StmtKind::UiParams(..) => Ok(()),
             StmtKind::If(cond, then, otherwise) => {
                 self.value(cond, 0)?;
                 let branch = self.jump_if_zero(0)?;
@@ -1090,7 +1090,11 @@ impl Gen<'_, '_> {
                 self.emit(I::ReadNoteCell { local: dst, cell })
             }
             Home::Note(_) => {
-                self.warn("polyphonic variable read outside a note callback is 0");
+                // Shipped Audio Imperia Areia reads these from ui_control and
+                // on controller; Kontakt compiles them and they read no note.
+                if self.ctx != Context::Controller && self.ui_id.is_none() {
+                    self.warn("polyphonic variable read outside a note callback is 0");
+                }
                 self.set(dst, 0)
             }
             Home::Control(ui) => {
@@ -2860,6 +2864,11 @@ impl Gen<'_, '_> {
                 self.emit(I::Op(Op::SourceZoneIdentity {index:dst,local:dst}))?;
                 true
             }
+            GetSampleLength => {
+                self.arg(args,0,dst)?;
+                self.emit(I::Op(Op::SampleLength {zone:dst,local:dst}))?;
+                true
+            }
             GetZonePar | SetZonePar => {
                 let selectors =
                     ["$ZONE_PAR_GROUP", "$ZONE_PAR_LOW_KEY", "$ZONE_PAR_HIGH_KEY"].map(|name| {
@@ -3920,14 +3929,24 @@ impl Gen<'_, '_> {
         }
         let (key_ok, velocity_ok) = (reg(frames, 2)?, reg(frames, 3)?);
         self.in_range(dst, 0, 127, key_ok)?;
-        self.in_range(velocity, 1, 127, velocity_ok)?;
+        // A velocity below 1 sounds at 1 instead of refusing the note: scripts pass
+        // intervals and unset dynamic values here, and Kontakt's release groups
+        // (`play_note($EVENT_NOTE, $dyn)`) must still start. velocity_ok keeps the
+        // clamped value, so it is the velocity the note plays with.
+        self.set(velocity_ok, 0)?;
+        self.emit(I::Binary32 {
+            lhs: velocity_ok,
+            rhs: velocity,
+            operation: IB::Add,
+        })?;
+        self.clamp(velocity_ok, 1, 127)?;
         self.emit(I::Binary32 {
             lhs: key_ok,
             rhs: velocity_ok,
             operation: IB::Multiply,
         })?;
         let bad = self.jump_if_zero(key_ok)?;
-        self.play_checked(args, dst, velocity, offset_micros)?;
+        self.play_checked(args, dst, velocity_ok, offset_micros)?;
         let end = self.jump()?;
         self.land(bad);
         self.set(dst, -1)?;

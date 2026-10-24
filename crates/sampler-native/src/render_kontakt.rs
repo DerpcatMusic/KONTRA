@@ -2,7 +2,7 @@
 //! core, played by a MIDI 1.0 note sequence into a WAV file.
 
 use crate::wave;
-use sampler_core::{Limits, Outcome, Runtime};
+use sampler_core::{Limits, Outcome, PAGE_FRAMES, Runtime};
 use sampler_midi::{Ingress, Packets, TimedPacket, Version};
 use std::{
     fs::OpenOptions,
@@ -193,6 +193,12 @@ pub fn note_messages(notes: &[Note]) -> Vec<Message> {
     m
 }
 
+/// What [`render`] plays: a fully decoded instrument, or one streamed from disk.
+pub enum Playback {
+    Resident(sampler_kontakt::Loaded),
+    Streamed(sampler_kontakt::Streamed),
+}
+
 pub fn run(
     instrument: &Path,
     output: &Path,
@@ -214,16 +220,16 @@ pub fn run(
             eprintln!("translated: {zones} zones over {assets} samples in the played key range");
         }
     };
+    let read = |e: sampler_kontakt::LoadError| io::Error::other(e.to_string());
     // KONTRA_PLAY_KEYS=1: load only zones covering a played key, not the whole
     // range between the lowest and highest (probe grids span octaves).
-    let loaded = if std::env::var_os("KONTRA_PLAY_KEYS").is_some() {
+    let (kontakt, options) = if std::env::var_os("KONTRA_PLAY_KEYS").is_some() {
         let options = sampler_kontakt::Options {
             keys: 0..=127,
             library: Some(instrument.into()),
             ..options
         };
-        let mut kontakt =
-            sampler_kontakt::read(instrument).map_err(|e| io::Error::other(e.to_string()))?;
+        let mut kontakt = sampler_kontakt::read(instrument).map_err(read)?;
         // Reference diagnostics only: override saved scalar inputs before init.
         // This does not alter library files or production loader defaults.
         if let Ok(value) = std::env::var("KONTRA_PROBE_SAVED_INTS") {
@@ -251,28 +257,68 @@ pub fn run(
             .instrument
             .retain_zones(|z| keys.iter().any(|&k| z.keys.low <= k && k <= z.keys.high));
         kontakt.locations = kept.iter().map(|&a| kontakt.locations[a].clone()).collect();
-        sampler_kontakt::load_read(kontakt, &options, progress, || false)
+        (kontakt, options)
     } else if let Some((path, index)) = program_path(instrument) {
         // `file.nkm#N`: program N of a multi, as the corpus survey addresses it.
         let options = sampler_kontakt::Options {
             library: Some(path.clone().into()),
             ..options
         };
-        let kontakt = sampler_kontakt::read_program(&path, index)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        sampler_kontakt::load_read(kontakt, &options, progress, || false)
+        (sampler_kontakt::read_program(&path, index).map_err(read)?, options)
     } else {
-        sampler_kontakt::load(instrument, &options, progress)
-    }
-    .map_err(|e| io::Error::other(e.to_string()))?;
-    render(loaded, output, messages)
+        let options = sampler_kontakt::Options {
+            library: Some(instrument.into()),
+            ..options
+        };
+        (sampler_kontakt::read(instrument).map_err(read)?, options)
+    };
+    // KONTRA_STREAMED=1: only start heads and a page pool are resident, as the
+    // app loads (src/sound/v2.rs). Default is the full decode, which keeps the
+    // output identical to earlier renders; it needs about 12 GiB for a 95k-zone
+    // library such as ANALOG STRINGS, where streamed needs about 1 GiB.
+    let playback = if std::env::var_os("KONTRA_STREAMED").is_none() {
+        Playback::Resident(sampler_kontakt::load_read(kontakt, &options, progress, || false).map_err(read)?)
+    } else {
+        let policy = sampler_kontakt::StreamPolicy {
+            voices: 512,
+            allow_cold_fallback: true,
+            ..Default::default()
+        };
+        Playback::Streamed(
+            sampler_kontakt::load_read_streamed(kontakt, &options, &policy, progress).map_err(read)?,
+        )
+    };
+    render(playback, output, messages)
 }
 
-pub fn render(
-    loaded: sampler_kontakt::Loaded,
-    output: &Path,
-    messages: &[Message],
-) -> io::Result<()> {
+/// The runtime every native render and `explain` run uses, so both play identically.
+/// Sizing comes from the plan (Limits::for_plan), not a literal: a 64-note literal refused
+/// dense chords with Capacity and their note-offs then failed with StaleHandle.
+pub fn runtime(plan: sampler_core::Prepared) -> io::Result<Runtime> {
+    let limits = Limits::for_plan(&plan, 4096, 512);
+    let mut rt =
+        Runtime::new(plan, limits).map_err(|e| io::Error::other(format!("native core: {e}")))?;
+    // KONTRA_SELECTION_TRACE=1: per note, how many regions each reason rejected and what sounded.
+    rt.record_selections(std::env::var_os("KONTRA_SELECTION_TRACE").is_some());
+    rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
+        rt.sample_rate(),
+        limits.voices,
+    )))
+    .map_err(|e| io::Error::other(format!("native core: {e}")))?;
+    Ok(rt)
+}
+
+pub fn render(playback: Playback, output: &Path, messages: &[Message]) -> io::Result<()> {
+    // Streamed playback keeps its streamer and assets alive for the whole render.
+    let (loaded, cache, _pages, horizon) = match playback {
+        Playback::Resident(loaded) => (loaded, None, None, None),
+        Playback::Streamed(streamed) => {
+            let sampler_kontakt::Streamed { loaded, cache, report, streamer, assets } = streamed;
+            // Heads bound only starts; running voices request a page ahead.
+            let horizon = (report.head_frames.max(PAGE_FRAMES) + 256) as u32;
+            (loaded, Some(cache), Some((streamer, assets)), Some(horizon))
+        }
+    };
     let ir = &loaded.instrument;
     eprintln!(
         "{:?}: {} groups, {} zones, {} envelopes, {} scripts, {} unsupported",
@@ -302,23 +348,15 @@ pub fn render(
         );
     }
     let mut scripts = loaded.scripts;
-    let plan = loaded.plan;
-    let rate = plan.sample_rate();
-    // The sizing a host gets (Limits::for_plan), not a hand-written literal. The
-    // literal's 64 note slots and 16 script callbacks refused notes with Capacity
-    // (dense Vista and ANALOG STRINGS chords), and their note-offs then failed
-    // with StaleHandle.
-    let limits = Limits::for_plan(&plan, 4096, 512);
-    let mut rt =
-        Runtime::new(plan, limits).map_err(|e| io::Error::other(format!("native core: {e}")))?;
-    // KONTRA_SELECTION_TRACE=1: per note, how many regions each reason rejected and what sounded.
-    let trace = std::env::var_os("KONTRA_SELECTION_TRACE").is_some();
-    rt.record_selections(trace);
-    rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
-        rt.sample_rate(),
-        limits.voices,
-    )))
-    .map_err(|e| io::Error::other(format!("native core: {e}")))?;
+    let rate = loaded.plan.sample_rate();
+    let mut rt = runtime(loaded.plan)?;
+    if let Some(cache) = cache {
+        // Same as the plugin: a start whose head is not resident is admitted silent and
+        // its voice plays once its pages arrive. Offline playback waits for those pages
+        // below, so the output does not depend on disk timing.
+        rt = rt.with_stream_cache(cache);
+        rt.set_cold_starts(true);
+    }
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     // MIDI 1.0 channel voice messages as UMP words, in the order given (a
     // stable sort keeps simultaneous messages in file order).
@@ -365,6 +403,16 @@ pub fn render(
                 ..packets[next]
             });
             next += 1;
+        }
+        // Offline playback waits for the pages this block needs, so the output
+        // does not depend on disk timing.
+        if let Some(horizon) = horizon {
+            while !rt
+                .service_streaming(horizon)
+                .map_err(|e| io::Error::other(format!("stream service: {e:?}")))?
+            {
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
         }
         let mut failure = None;
         ingress
@@ -415,6 +463,15 @@ pub fn render(
         wave::frames(&mut out, &buffer[..len])?;
     }
     out.flush()?;
+    if horizon.is_some() {
+        // Streamed refusals are silent otherwise: a refused start leaves its note dark.
+        let stats = rt.stats();
+        eprintln!(
+            "stream: refused_starts={} cold_starts={} voice_drops={} stream_capacity_refusals={} stream_disconnected_refusals={}",
+            stats.refused_starts, stats.cold_starts, stats.voice_drops,
+            stats.stream_capacity_refusals, stats.stream_disconnected_refusals
+        );
+    }
     drop(rt);
     if !sampler_core::trace_report::flush(std::time::Duration::from_secs(10)) {
         return Err(io::Error::other("signal trace report flush timed out"));
@@ -517,7 +574,7 @@ mod tests {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         )));
         render(
-            loaded,
+            Playback::Resident(loaded),
             &output.0,
             &[(0., [0x90, 60, 100]), (0.2, [0x80, 60, 64])],
         )

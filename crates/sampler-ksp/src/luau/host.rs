@@ -119,10 +119,11 @@ impl Host {
         host.set(
             "play",
             lua.create_function(move |_, (parent, key, velocity, micros): (i64, i64, i64, i64)| {
-                // KSP range checks: key 0..127, velocity 1..127; otherwise play_note returns -1.
-                if !(0..128).contains(&key) || !(1..128).contains(&velocity) {
+                // KSP range checks: key 0..127; a velocity below 1 sounds at 1 (see the lowering).
+                if !(0..128).contains(&key) {
                     return Ok(-1_i64);
                 }
+                let velocity = velocity.clamp(1, 127);
                 let duration = match micros {
                     0 => Duration::UntilSilent,
                     us if us < 0 => Duration::Gate,

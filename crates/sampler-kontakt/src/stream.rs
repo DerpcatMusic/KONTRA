@@ -351,9 +351,36 @@ pub fn logical_stream_source(source:Arc<dyn AssetSource>, workspace_limit:usize)
     Ok((family.into(),registry))
 }
 
+/// NCW blocks that failed to decode, by sample file. A damaged block plays
+/// silence and the file is reported as partial. Damage is a fact about the
+/// file, so every instrument that uses the file reports it.
+static DAMAGED_BLOCKS: std::sync::Mutex<std::collections::BTreeMap<String, std::collections::BTreeSet<usize>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Identity of one sample: its file, and its data offset inside an archive.
+pub(crate) fn source_label(source: &Source) -> String {
+    format!("{}#{}", source.path.display(), source.offset)
+}
+
+fn record_damaged_block(label: &str, block: usize) {
+    if let Ok(mut damaged) = DAMAGED_BLOCKS.lock() {
+        damaged.entry(label.to_string()).or_default().insert(block);
+    }
+}
+
+/// Damaged sample files (path → number of silent blocks) seen so far.
+pub fn damaged_sources() -> std::collections::BTreeMap<String, usize> {
+    DAMAGED_BLOCKS
+        .lock()
+        .map(|damaged| damaged.iter().map(|(path, blocks)| (path.clone(), blocks.len())).collect())
+        .unwrap_or_default()
+}
+
 /// Random-access frames of one sample, converted exactly as a full decode.
 pub struct SampleReader {
     codec: Codec,
+    /// The sample file, named in decode errors so a bad block points at its asset.
+    label: String,
     /// The WAV byte stream (NCW keeps its own inside the decoder).
     bytes: Option<Bytes>,
     rate: u32,
@@ -430,6 +457,7 @@ impl SampleReader {
                 rate: wav.rate,
                 frames,
                 codec: Codec::Wav(wav),
+                label: source_label(source),
                 bytes: Some(bytes),
                 scratch: Vec::new(),
             });
@@ -446,11 +474,13 @@ impl SampleReader {
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
             }));
         }
-        let reader = ncw::NcwReader::read(bytes).map_err(|e| invalid(format!("NCW: {e}")))?;
+        let reader = ncw::NcwReader::read(bytes)
+            .map_err(|e| invalid(format!("NCW {}: {e}", source_label(source))))?;
         Ok(Self {
             rate: reader.header.sample_rate,
             frames: reader.header.num_samples as usize,
             codec: Codec::Ncw(Box::new(reader)),
+            label: source_label(source),
             bytes: None,
             scratch: Vec::new(),
         })
@@ -464,6 +494,7 @@ impl SampleReader {
     ) -> Self {
         Self {
             codec: Codec::Custom(Box::new(read)),
+            label: String::new(),
             bytes: None,
             rate,
             frames,
@@ -478,7 +509,7 @@ impl SampleReader {
     pub fn accounted_encoded(reader:crate::EncodedChannelReader)->io::Result<Self> {
         reader.accounted_workspace_bytes().ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"encoded reader has no checked codec accounting"))?;
         let frames=usize::try_from(reader.frames()).map_err(io::Error::other)?;let rate=reader.rate();
-        Ok(Self{codec:Codec::Encoded(Box::new(reader)),bytes:None,rate,frames,scratch:Vec::new()})
+        Ok(Self{codec:Codec::Encoded(Box::new(reader)),label:String::new(),bytes:None,rate,frames,scratch:Vec::new()})
     }
     pub fn rate(&self) -> u32 {
         self.rate
@@ -558,7 +589,17 @@ impl SampleReader {
                 let convert=crate::samples::ncw_sample(reader.sample_format,reader.header.bits_per_sample);
                 let mut at=start;let mut done=0;
                 while done<frames {
-                    let values=reader.decode_block(at/BLOCK).map_err(|e|io::Error::new(io::ErrorKind::InvalidData,e.to_string()))?;
+                    let values=match reader.decode_block(at/BLOCK) {
+                        Ok(values)=>values,
+                        Err(_)=>{
+                            // A damaged block plays silence for its frames; the file is reported as partial.
+                            record_damaged_block(&self.label,at/BLOCK);
+                            let count=(BLOCK-at%BLOCK).min(frames-done);
+                            for frame in 0..count {for channel in 0..channels {out.put(done+frame,channel,0.);}}
+                            at+=count;done+=count;
+                            continue;
+                        }
+                    };
                     if values.len()!=channels {return Err(io::Error::new(io::ErrorKind::InvalidData,"NCW channel width changed"));}
                     let offset=at%BLOCK;let count=values[0].len().saturating_sub(offset).min(frames-done);
                     if count==0 || values.iter().any(|v|v.len()<offset+count) {return Err(io::ErrorKind::UnexpectedEof.into());}
@@ -597,9 +638,18 @@ impl SampleReader {
                 let mut at = start;
                 let mut out = &mut out[..];
                 while !out.is_empty() {
-                    let channels = reader
-                        .decode_block(at / BLOCK)
-                        .map_err(|e| invalid(format!("NCW: {e}")))?;
+                    let channels = match reader.decode_block(at / BLOCK) {
+                        Ok(channels) => channels,
+                        Err(_) => {
+                            // A damaged block plays silence for its frames; the file is reported as partial.
+                            record_damaged_block(&self.label, at / BLOCK);
+                            let n = (BLOCK - at % BLOCK).min(out.len());
+                            out[..n].fill([0.; 2]);
+                            at += n;
+                            out = &mut out[n..];
+                            continue;
+                        }
+                    };
                     let offset = at % BLOCK;
                     let n = (channels[0].len().saturating_sub(offset)).min(out.len());
                     if n == 0 {
@@ -1292,6 +1342,27 @@ fn admit_within_budget<T>(mut items: Vec<(usize, T)>, budget: usize) -> Vec<T> {
     kept
 }
 
+/// Smallest stored form of a source's start: 2 bytes a frame (`Packed` never stores less).
+fn head_floor_bytes(pcm: &Pcm, ranges: &[Range<usize>]) -> io::Result<usize> {
+    if pcm.requires_resident() {
+        return head_cost(pcm, ranges);
+    }
+    Ok(range_bounds(pcm, ranges)?.0)
+}
+
+/// The head-budget cost of a source's start, in the one unit the budget and every
+/// admission check share: decoded `Frame` bytes. A required-resident source is all of its
+/// frames; anything else is the full extent of its start ranges. A packed head is stored at
+/// most this wide (`Packed` never exceeds an f32 frame), so the cost never understates a
+/// reservation, and the reservation itself stays the exact check.
+fn head_cost(pcm: &Pcm, ranges: &[Range<usize>]) -> io::Result<usize> {
+    if pcm.requires_resident() {
+        pcm.frame_count().checked_mul(size_of::<Frame>()).ok_or_else(|| io::Error::other("resident source size overflow"))
+    } else {
+        Ok(range_bounds(pcm, ranges)?.1)
+    }
+}
+
 /// Under cold fallback, resident sources are admitted whole while they fit the
 /// shared head budget (see `admit_within_budget`); the rest stream from disk
 /// instead of failing the load. Unknown sizes stay resident.
@@ -1454,15 +1525,18 @@ pub(crate) fn prepare_head_ranges(
     Ok(builder.finish())
 }
 fn head_prepare_error(recipe: &HeadPreparer, error: sampler_core::Error) -> io::Error {
-    if error == sampler_core::Error::Capacity {
-        if let Some(status) = recipe
-            .budget_status()
-            .filter(|s| s.limit_bytes < usize::MAX)
-        {
-            // A failed exact reservation proves this lower bound; concurrent
-            // transactions may release storage before this diagnostic is read.
-            return head_budget_error(status.limit_bytes, status.limit_bytes + 1);
-        }
+    match recipe.budget_status() {
+        Some(status) => head_budget_capacity(status, error),
+        None => io::Error::new(io::ErrorKind::InvalidData, error),
+    }
+}
+/// A failed exact reservation against the shared head budget is the typed
+/// `HeadBudgetExceeded`, which the cold-fallback ladder degrades on.
+pub(super) fn head_budget_capacity(status: sampler_core::HeadBudgetStatus, error: sampler_core::Error) -> io::Error {
+    if error == sampler_core::Error::Capacity && status.limit_bytes < usize::MAX {
+        // A failed exact reservation proves this lower bound; concurrent
+        // transactions may release storage before this diagnostic is read.
+        return head_budget_error(status.limit_bytes, status.limit_bytes + 1);
     }
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
@@ -1521,18 +1595,35 @@ impl AsRef<[Range<usize>]> for RestoreRange {
 }
 type RestoreTable = HashMap<AssetId, RestoreRange>;
 
-fn checked_start_table(assets: &[Pcm], ranges: Vec<Vec<Range<usize>>>, enclosing: Option<&StartTable>) -> io::Result<StartTable> {
+fn checked_start_table(assets: &[Pcm], mut ranges: Vec<Vec<Range<usize>>>, enclosing: Option<&StartTable>) -> io::Result<StartTable> {
     if ranges.len() != assets.len() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "sample start asset/range count mismatch"));
     }
-    for (pcm, ranges) in assets.iter().zip(&ranges) {
+    for (pcm, ranges) in assets.iter().zip(&mut ranges) {
         range_bounds(pcm, ranges)?;
-        if enclosing.is_some_and(|table| ranges.iter().any(|range| !table[&pcm.asset_id()].iter()
-            .any(|full| full.start <= range.start && full.end >= range.end))) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "sample start range outside requested coverage"));
+        // A start outside the requested coverage (the resident budget trimmed it) streams on
+        // demand instead of failing the load: keep only the part the coverage holds.
+        if let Some(table) = enclosing {
+            let covered = table.get(&pcm.asset_id()).map_or(&[][..], Vec::as_slice);
+            *ranges = intersect_ranges(ranges, covered);
         }
     }
     Ok(physical_start_ranges(assets, &ranges))
+}
+
+/// The parts of `ranges` that `covered` also holds. Both sorted and merged.
+fn intersect_ranges(ranges: &[Range<usize>], covered: &[Range<usize>]) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    for range in ranges {
+        for full in covered {
+            let (start, end) = (range.start.max(full.start), range.end.min(full.end));
+            if start < end {
+                out.push(start..end);
+            }
+        }
+    }
+    merge_start_ranges(&mut out);
+    out
 }
 
 fn select_attack_ranges<'a, 'r>(
@@ -2003,16 +2094,41 @@ impl Streamer {
         }
         // Every attempt keeps its chosen asset identities with its owned staging.
         // Range-table borrows end before trying a new candidate or publishing.
-        let prepare = |optional: Option<&StartTable>, lazy: bool, phase: &str|
+        let prepare = |optional: Option<&StartTable>, lazy: bool, phase: &str, greedy: bool|
             -> io::Result<(Vec<head_prepare::Prepared>, usize, Vec<&Pcm>, Arc<RestoreTable>)> {
-            let selected = select_attack_ranges(assets, &table, optional, &pinned_wavetables, lazy);
+            // A purged group's assets are not preloaded: they stay non-resident
+            // until a purge/load request acquires them (residency_permitted).
+            let mut selected: Vec<_> = select_attack_ranges(assets, &table, optional, &pinned_wavetables, lazy)
+                .into_iter().filter(|(pcm, _)| pcm.residency_permitted()).collect();
+            if greedy {
+                // Degrade, never fail: the cheapest starts are admitted first within the budget
+                // that is left, and a source that does not fit is skipped (it streams on demand).
+                // Pinned wavetables are mandatory heads and are always kept.
+                let room = head_budget.saturating_sub(residency_budget.status().held_bytes);
+                let mut keep = Vec::new();
+                let mut pinned_bytes = 0usize;
+                let mut rest = Vec::new();
+                for (index, (pcm, ranges)) in selected.iter().enumerate() {
+                    let bytes = head_cost(pcm, ranges)?;
+                    if pinned_wavetables.contains(&pcm.asset_id()) {
+                        pinned_bytes = pinned_bytes.saturating_add(bytes);
+                        keep.push(index);
+                    } else {
+                        rest.push((bytes, index));
+                    }
+                }
+                keep.extend(admit_within_budget(rest, room.saturating_sub(pinned_bytes)));
+                let keep: HashSet<usize> = keep.into_iter().collect();
+                selected = selected.into_iter().enumerate()
+                    .filter(|(index, _)| keep.contains(index)).map(|(_, item)| item).collect();
+            }
             let audit = std::env::var_os("KONTRA_AUDIT_LOAD").is_some();
             let started = audit.then(Instant::now);
             let result = (|| {
+                // Early out only: even the smallest stored form (2 bytes a frame) cannot
+                // fit. Admission itself is the exact reservation inside `head_prepare`.
                 let minimum = selected.iter().try_fold(0usize, |sum, (pcm, ranges)| {
-                    let min = if pcm.requires_resident() {
-                        pcm.frame_count().checked_mul(size_of::<Frame>()).ok_or_else(|| io::Error::other("resident source size overflow"))?
-                    } else { range_bounds(pcm, ranges)?.0 };
+                    let min = head_floor_bytes(pcm, ranges)?;
                     sum.checked_add(min).ok_or_else(|| io::Error::other("sample head size overflow"))
                 })?;
                 let minimum = residency_budget.status().held_bytes.checked_add(minimum)
@@ -2055,7 +2171,7 @@ impl Streamer {
         let mut selected_hint_table = None;
         let mut selected_hint_head_frames = if !lazy && hinted_table.is_some() { requested_hint_head_frames } else { None };
         let mut selected_requested_hints = selected_hint_head_frames.is_some();
-        let (staged, bytes, selected_assets, restore_ranges) = match prepare(None, lazy, "full_possible") {
+        let (staged, bytes, selected_assets, restore_ranges) = match prepare(None, lazy, "full_possible", false) {
             Ok(staged) => staged,
             Err(error) => {
                 let reason = error.get_ref().and_then(|e|e.downcast_ref::<HeadBudgetExceeded>()).copied();
@@ -2063,27 +2179,16 @@ impl Streamer {
                 selected_requested_hints = false;
                 selected_hint_head_frames = None;
                 let mut accepted = None;
-                for (candidate, hinted, phase) in [(hinted_table.as_ref(), true, "initial_state_onsets"),
-                    (onset_table.as_ref(), false, "base_onsets")] {
-                    let Some(candidate) = candidate else { continue; };
-                    match prepare(Some(candidate), false, phase) {
-                        Ok(staged) => {
-                            selected_requested_hints = hinted;
-                            selected_hint_head_frames = if hinted { requested_hint_head_frames } else { None };
-                            accepted = Some(staged);
-                            break;
-                        }
-                        Err(error) if error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()) => {}
-                        Err(error) => return Err(error),
-                    }
-                }
+                // Every start first gets its minimal guaranteed head (anchors: the interpolation
+                // guards of each start, grown with the budget left over). Onset windows only
+                // spend budget afterwards, since they can leave starts without any head.
                 if accepted.is_none() {
                     for (factory, hinted, phase) in [(hint_anchors.filter(|_|hinted_table.is_some()), true, "initial_state_anchors"),
                         (anchors, false, "base_anchors")] {
                         let Some(factory) = factory else { continue; };
                         let room = head_budget.saturating_sub(residency_budget.status().held_bytes);
                         let candidate = factory(room)?;
-                        let enclosing = if hinted { hinted_table.as_ref().unwrap() } else { onset_table.as_ref().unwrap_or(&table) };
+                        let enclosing = if hinted { hinted_table.as_ref().unwrap() } else { &table };
                         let ranges = checked_start_table(assets, candidate.ranges, Some(enclosing))?;
                         let hint_ranges = candidate.hint_ranges.map(|h| checked_start_table(assets,h,hint_table.as_ref())).transpose()?;
                         if hinted && hint_ranges.is_none() {
@@ -2096,7 +2201,7 @@ impl Streamer {
                                 }
                             }
                         }
-                        match prepare(Some(&ranges), false, phase) {
+                        match prepare(Some(&ranges), false, phase, false) {
                             Ok(staged) => {
                                 selected_anchor_head_frames = Some(candidate.output_frames);
                                 selected_hint_head_frames = hinted.then_some(candidate.output_frames);
@@ -2112,9 +2217,31 @@ impl Streamer {
                     // Optional anchors may stay cold; the mandatory-only attempt
                     // below still admits full sources and pinned wavetable ranges.
                 }
+                for (candidate, hinted, phase) in [(hinted_table.as_ref(), true, "initial_state_onsets"),
+                    (onset_table.as_ref(), false, "base_onsets")] {
+                    if accepted.is_some() { break; }
+                    let Some(candidate) = candidate else { continue; };
+                    match prepare(Some(candidate), false, phase, false) {
+                        Ok(staged) => {
+                            selected_requested_hints = hinted;
+                            selected_hint_head_frames = if hinted { requested_hint_head_frames } else { None };
+                            accepted = Some(staged);
+                            break;
+                        }
+                        Err(error) if error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
                 let staged = match accepted {
                     Some(staged) => staged,
-                    None => prepare(None, true, "mandatory_only")?,
+                    None => match prepare(None, true, "mandatory_only", false) {
+                        Ok(staged) => staged,
+                        // Even the mandatory sources overflow the budget: admit the cheapest
+                        // starts first instead of failing the whole preload.
+                        Err(error) if error.get_ref().is_some_and(|e| e.is::<HeadBudgetExceeded>()) =>
+                            prepare(None, false, "budget_priority", true)?,
+                        Err(error) => return Err(error),
+                    },
                 };
                 head_fallback = Some(reason);
                 staged
@@ -2992,6 +3119,15 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
+    /// A start range the resident budget did not cover is clipped to the covered part (it
+    /// streams on demand), not an error that stops the instrument from loading.
+    #[test]
+    fn start_ranges_outside_the_requested_coverage_are_clipped() {
+        let clipped = intersect_ranges(&[0..100, 150..200], &[50..120, 160..170]);
+        assert_eq!(clipped, vec![50..100, 160..170]);
+        assert!(intersect_ranges(&[0..10], &[]).is_empty());
+    }
+
     #[test]
     fn cached_numeric_headers_keep_bounded_real_latency_probes() {
         struct Cached(Arc<AtomicU64>);
@@ -3567,11 +3703,13 @@ mod tests {
                 assert_eq!(streamer.restore_ranges[&assets[0].asset_id()].as_ref(),&[0..8192]);
             }
         } else {
-            let error=result.err().unwrap();
-            let capacity=error.get_ref().and_then(|e|e.downcast_ref::<HeadBudgetExceeded>()).unwrap();
-            assert_eq!(capacity.budget_bytes,budget);
-            assert_eq!(capacity.required_at_least_bytes,512);
-            assert!(assets.iter().all(|p|p.head_bytes()==0 && p.resident_frames().is_none()));
+            // The 512-byte required source cannot fit at all: it degrades to streaming instead of
+            // failing the load, and nothing over budget is published.
+            let (streamer,bytes)=result.expect("an over-budget required source must degrade, not fail");
+            assert!(bytes<=budget);
+            assert!(streamer.head_fallback().is_some());
+            assert!(streamer.head_budget_status().peak_bytes<=budget);
+            assert!(assets[1].resident_frames().is_none());
             assert_eq!(assets[0].head_preparer().budget_status().unwrap().held_bytes,0);
         }
         }
@@ -3619,6 +3757,38 @@ mod tests {
         }
     }
 
+    /// A required-resident source larger than the whole head budget used to fail the preload
+    /// ("resident start ranges 0 of N"). The cheapest starts are admitted instead, and the
+    /// oversized source is left to stream on demand.
+    #[test]
+    fn over_budget_resident_source_degrades_to_the_cheapest_starts() {
+        let assets = vec![Pcm::streamed(48000,16).unwrap(), Pcm::pending_resident(48000,64).unwrap()];
+        let opens = Arc::new(AtomicU64::new(0));
+        let sources = HashMap::from([
+            (assets[0].asset_id(), Arc::new(HeadFixture{opens:opens.clone(),cancel:None,frames:16,wide:false}) as Arc<dyn AssetSource>),
+            (assets[1].asset_id(), Arc::new(HeadFixture{opens:opens.clone(),cancel:None,frames:64,wide:false}) as Arc<dyn AssetSource>),
+        ]);
+        let (_,worker) = StreamCache::new(1).unwrap();
+        // The resident source needs 512 bytes, the budget is 256: the mandatory-only attempt
+        // overflows, and the cheap streamed head (16 frames) is admitted in its place.
+        let (_streamer,bytes) = Streamer::start_with_fallbacks_cancelable(sources,&assets,
+            vec![vec![0..16],vec![0..64]],None,None,worker,1,false,256,HashSet::new(),true,&||false)
+            .expect("an over-budget resident source must degrade, not fail the load");
+        assert!(bytes > 0 && bytes <= 256, "admitted {bytes} bytes");
+        assert!(assets[0].head_frames() > 0);
+        assert!(assets[1].resident_frames().is_none());
+    }
+
+    #[test]
+    fn head_floor_and_cost_bracket_the_stored_form_of_a_start() {
+        // Two start ranges of one streamed source: 4288 frames. The floor is the narrowest
+        // stored form (2 bytes a frame), the cost the widest (an f32 frame, 8 bytes).
+        let pcm = Pcm::streamed(48000, 8192).unwrap();
+        let ranges = [2000..4096, 6000..8192];
+        assert_eq!(head_floor_bytes(&pcm, &ranges).unwrap(), 4288 * 2);
+        assert_eq!(head_cost(&pcm, &ranges).unwrap(), 4288 * size_of::<Frame>());
+    }
+
     #[test]
     fn onset_fallback_keeps_reverse_ranges_and_mandatory_sources_atomic() {
         for (budget, allowed, expected) in [(672, true, Some(true)), (671, true, Some(false)),
@@ -3657,6 +3827,12 @@ mod tests {
                     assert!(reload(&assets, &streamer.sources, &streamer.ranges, streamer.head_budget, &streamer.head_mutation).is_err());
                     assert_eq!(assets[0].resident_covers(0..16),onset_ready);
                     assert!(streamer.head_budget_status().held_bytes<=budget);
+                } else if allowed {
+                    // The over-budget required source streams on demand; the load keeps what fits.
+                    let (streamer, bytes) = result.expect("an over-budget required source must degrade, not fail");
+                    assert!(bytes <= budget, "admitted {bytes} of {budget}");
+                    assert!(streamer.head_budget_status().held_bytes <= budget);
+                    assert!(assets[3].resident_frames().is_none());
                 } else {
                     let error = result.err().unwrap();
                     assert!(error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()));
@@ -3820,6 +3996,65 @@ mod tests {
             header: None,
         };
         SampleReader::open(&source).unwrap()
+    }
+
+    #[test]
+    fn ncw_block_error_names_the_sample_file() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/ncw/tests/data/16-bit-mono.ncw");
+        let mut bytes = std::fs::read(&fixture).unwrap();
+        // Break the first block signature (BE 0x160C9A3E) past the 120-byte header.
+        let at = bytes
+            .windows(4)
+            .skip(120)
+            .position(|w| w == [0x16, 0x0C, 0x9A, 0x3E])
+            .map(|i| i + 120)
+            .expect("fixture has a block signature");
+        bytes[at..at + 4].fill(0);
+        let dir = std::env::temp_dir().join(format!("kontakt-ncw-label-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broken-block.ncw");
+        std::fs::write(&path, &bytes).unwrap();
+        let source = crate::Samples::new(&dir).source(&path).unwrap();
+        let err = source.open().err().expect("corrupt first block fails at open");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(err.to_string().contains("broken-block.ncw"), "{err}");
+    }
+
+    #[test]
+    fn damaged_ncw_block_plays_silence_and_is_recorded() {
+        const BLOCK: usize = ncw::NcwReader::<Bytes>::FRAMES_PER_BLOCK;
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/ncw/tests/data/16-bit-mono.ncw");
+        let pristine = std::fs::read(&fixture).unwrap();
+        let layout = ncw::NcwReader::read(std::io::Cursor::new(pristine.clone())).unwrap();
+        assert!(layout.header.num_samples as usize > 2 * BLOCK, "fixture needs two blocks");
+        let at = layout.header.data_offset as usize + layout.block_offsets[1] as usize;
+        let mut damaged = pristine.clone();
+        damaged[at..at + 4].fill(0);
+        let dir = std::env::temp_dir().join(format!("kontakt-ncw-silence-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pristine.ncw"), &pristine).unwrap();
+        let path = dir.join("damaged-block.ncw");
+        std::fs::write(&path, &damaged).unwrap();
+        let mut samples = crate::Samples::new(&dir);
+        let mut good = samples.source(&dir.join("pristine.ncw")).unwrap().open().unwrap();
+        let source = samples.source(&path).unwrap();
+        let label = source_label(&source);
+        let mut reader = source.open().unwrap();
+        let frames = reader.frames();
+
+        let mut expected = vec![[0.; 2]; BLOCK];
+        let mut actual = vec![[0.; 2]; BLOCK];
+        good.read(0, &mut expected).unwrap();
+        reader.read(0, &mut actual).unwrap();
+        assert_eq!(actual, expected, "undamaged block decodes as before");
+
+        let n = BLOCK.min(frames - BLOCK);
+        reader.read(BLOCK, &mut actual[..n]).expect("damaged block reads as silence");
+        assert!(actual[..n].iter().all(|f| *f == [0.; 2]));
+        assert_eq!(damaged_sources().get(&label), Some(&1));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

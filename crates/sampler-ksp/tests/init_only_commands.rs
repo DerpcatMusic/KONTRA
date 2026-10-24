@@ -39,8 +39,12 @@ fn init_only_commands_reject_other_callbacks_with_kontakt_text() {
 
 #[test]
 fn init_only_commands_reached_through_functions_follow_their_caller() {
-    // Functions take their caller's callback context at lowering; a function body
-    // is not rejected on its own, so this shape keeps loading as before.
+    // Kontakt rejects `call` in on init (docs/re/KSP_CONFORMANCE.md), so the init-only
+    // command cannot be reached this way from on init. Reaching it from other callbacks
+    // is covered by the callback tests above.
     let source = "on init declare ui_menu $m declare $v call setup end on function setup add_menu_item($m, \"a\", 1) end function";
-    assert!(compile(source).is_ok());
+    let Err(err) = compile(source) else {
+        panic!("call in on init accepted")
+    };
+    assert!(err.message.contains("call is not allowed in on init"), "{err}");
 }

@@ -1,0 +1,180 @@
+{
+ "chain": [
+  "Effects/Compressor"
+ ],
+ "stimulus": "burst",
+ "pre": [
+  [
+   0,
+   "EFFECT_BYPASS",
+   0
+  ],
+  [
+   0,
+   "COMP_TYPE",
+   1
+  ],
+  [
+   0,
+   "THRESHOLD",
+   500000
+  ],
+  [
+   0,
+   "RATIO",
+   500000
+  ]
+ ],
+ "steps": [
+  {
+   "name": "att0_rel30",
+   "set": [
+    [
+     0,
+     "COMP_ATTACK",
+     0
+    ],
+    [
+     0,
+     "COMP_DECAY",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "att25_rel30",
+   "set": [
+    [
+     0,
+     "COMP_ATTACK",
+     250000
+    ],
+    [
+     0,
+     "COMP_DECAY",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "att50_rel30",
+   "set": [
+    [
+     0,
+     "COMP_ATTACK",
+     500000
+    ],
+    [
+     0,
+     "COMP_DECAY",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "att75_rel30",
+   "set": [
+    [
+     0,
+     "COMP_ATTACK",
+     750000
+    ],
+    [
+     0,
+     "COMP_DECAY",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "att100_rel30",
+   "set": [
+    [
+     0,
+     "COMP_ATTACK",
+     1000000
+    ],
+    [
+     0,
+     "COMP_DECAY",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "att10_rel0",
+   "set": [
+    [
+     0,
+     "COMP_ATTACK",
+     100000
+    ],
+    [
+     0,
+     "COMP_DECAY",
+     0
+    ]
+   ]
+  },
+  {
+   "name": "att10_rel25",
+   "set": [
+    [
+     0,
+     "COMP_ATTACK",
+     100000
+    ],
+    [
+     0,
+     "COMP_DECAY",
+     250000
+    ]
+   ]
+  },
+  {
+   "name": "att10_rel50",
+   "set": [
+    [
+     0,
+     "COMP_ATTACK",
+     100000
+    ],
+    [
+     0,
+     "COMP_DECAY",
+     500000
+    ]
+   ]
+  },
+  {
+   "name": "att10_rel75",
+   "set": [
+    [
+     0,
+     "COMP_ATTACK",
+     100000
+    ],
+    [
+     0,
+     "COMP_DECAY",
+     750000
+    ]
+   ]
+  },
+  {
+   "name": "att10_rel100",
+   "set": [
+    [
+     0,
+     "COMP_ATTACK",
+     100000
+    ],
+    [
+     0,
+     "COMP_DECAY",
+     1000000
+    ]
+   ]
+  }
+ ]
+}

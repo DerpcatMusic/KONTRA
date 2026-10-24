@@ -312,4 +312,25 @@ mod tests {
             }
         }
     }
+
+    /// Classic (`shaping::saturation`, memoryless) against the native static table
+    /// (`docs/re/kontakt-bindings/saturation-curves.tsv`, Effects/Shaper, SHAPE_TYPE 0): expander below 0.5,
+    /// identity at 0.5, hard ceiling above. Output peaks at the five 200 Hz-ramp inputs.
+    #[test]
+    fn classic_matches_the_native_static_table() {
+        const INPUT: [f64; 5] = [0.082, 0.235, 0.389, 0.542, 0.696];
+        const CLASSIC: [(f32, [f64; 5]); 5] = [
+            (0.0, [0.008, 0.033, 0.088, 0.194, 0.369]),
+            (0.25, [0.055, 0.162, 0.280, 0.416, 0.577]),
+            (0.5, INPUT),
+            (0.75, [0.299, 0.718, 0.948, 0.998, 0.998]),
+            (1.0, [0.545, 0.994, 0.998, 0.998, 0.998]),
+        ];
+        for (normalized, native) in CLASSIC {
+            for (x, want) in INPUT.iter().zip(native) {
+                let got = super::super::shaping::saturation(*x, 2.0 * normalized - 1.0);
+                assert!((got - want).abs() <= 0.01, "shape={normalized} in={x}: {got:.4} vs native {want}");
+            }
+        }
+    }
 }

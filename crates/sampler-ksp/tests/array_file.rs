@@ -461,7 +461,7 @@ fn nka_completion_is_plan_scoped_across_adoption_and_never_edits_the_replacement
 #[test]
 fn nka_runtime_concatenated_path_truncation_is_not_used_as_a_different_path() {
     let source = format!(
-        r#"on init declare %data[1] := (7) declare $job declare $status := -1 declare @path := "/" end on
+        r#"on init declare %data[1] := (7) declare $job declare $status := -1 declare @path @path := "/" end on
         on pgs_changed @path := @path & "{}" & "suffix.nka" $job := load_array_str(%data,@path) end on
         on async_complete $status := $NI_ASYNC_EXIT_STATUS end on"#,
         "x".repeat(TEXT_CAPACITY)
@@ -1315,6 +1315,33 @@ fn nka_missing_data_warning_says_why_the_host_could_not_read_it() {
         script.warnings().iter().any(|w| w.message.contains(
             "data/pos.nka not loaded: resource container could not be indexed"
         )),
+        "{:?}",
+        script.warnings()
+    );
+}
+
+#[test]
+fn saved_array_without_a_data_file_is_not_reported_as_lost() {
+    // Conflux multis save `%vel_db` in the preset; its data file is not shipped. The saved
+    // values are restored at declaration, so the absent file loses nothing and must not warn.
+    let source = r#"on init
+        declare %pos[2]
+        load_array(%pos, 2)
+    end on"#;
+    let mut env = sampler_ksp::Environment::default();
+    env.persisted_arrays.insert(
+        "%pos".into(),
+        vec![sampler_ksp::model::Value::Int(3), sampler_ksp::model::Value::Int(4)],
+    );
+    let init = sampler_ksp::initialize(source, sampler_ksp::Limits::LIBRARY, &env).unwrap();
+    let script =
+        sampler_ksp::compile_initialized(source, 48000, sampler_ksp::Limits::LIBRARY, &[], init)
+            .unwrap();
+    assert!(
+        !script
+            .warnings()
+            .iter()
+            .any(|w| w.message.contains("data/pos.nka not loaded")),
         "{:?}",
         script.warnings()
     );

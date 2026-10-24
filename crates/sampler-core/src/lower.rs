@@ -937,6 +937,7 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
             })
             .and_then(|p| p.with_group_params(params))
             .and_then(|p| p.with_group_mutes(instrument.groups.iter().map(|g| g.muted).collect()))
+            .and_then(|p| p.with_group_purge(instrument.groups.iter().map(|g| g.purged).collect()))
             .map_err(core(Stage::Regions, "groups"))?;
     }
     // Only source modulators that actually own an amplitude envelope get lanes.
@@ -1111,6 +1112,7 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
                 ir::VelocityResponse::Linear => VelocityCurve::Linear,
                 ir::VelocityResponse::Power(exponent) => VelocityCurve::Power(exponent),
                 ir::VelocityResponse::VolumeTable => VelocityCurve::VolumeTable,
+                ir::VelocityResponse::Depth { depth, exponent } => VelocityCurve::Depth { depth, exponent },
             })
             .collect();
         plan = plan
@@ -2070,7 +2072,7 @@ impl Lowering<'_> {
                 gates[scope]=Some(crate::ProcessingModulationGate{
                     source:*sources.get(&gate.source).ok_or_else(||core(Stage::Modulation,"scope gate source absent")(Error::InvalidInput))?,
                     route:*routes.get(&gate.route).ok_or_else(||core(Stage::Modulation,"scope gate route absent")(Error::InvalidInput))?,
-                    velocity:match gate.velocity{ir::VelocityResponse::None=>crate::VelocityCurve::Constant,ir::VelocityResponse::Linear=>crate::VelocityCurve::Linear,ir::VelocityResponse::Power(p)=>crate::VelocityCurve::Power(p),ir::VelocityResponse::VolumeTable=>crate::VelocityCurve::VolumeTable},
+                    velocity:match gate.velocity{ir::VelocityResponse::None=>crate::VelocityCurve::Constant,ir::VelocityResponse::Linear=>crate::VelocityCurve::Linear,ir::VelocityResponse::Power(p)=>crate::VelocityCurve::Power(p),ir::VelocityResponse::VolumeTable=>crate::VelocityCurve::VolumeTable,ir::VelocityResponse::Depth{depth,exponent}=>crate::VelocityCurve::Depth{depth,exponent}},
                 });
             }
             for (identity,&source)in &sources{

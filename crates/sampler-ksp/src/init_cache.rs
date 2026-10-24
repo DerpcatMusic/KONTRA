@@ -112,6 +112,8 @@ pub struct CachedInit {
     snapshot_mode: crate::model::SnapshotMode,
     #[serde(default)]
     zone_catalog: Vec<(Option<u32>, u32, u8, u8)>,
+    #[serde(default)]
+    zone_names: Vec<String>,
     state: Box<serde_json::value::RawValue>,
     cells: u32,
     texts: u32,
@@ -229,6 +231,8 @@ impl Initialized {
             || !self.environment.midi_object.has_only_async_id_reservations()
             || crate::eval::uses_array_file(&self.hir)
             || crate::zone_routing::requirements(&self.hir).writes
+            // ponytail: init-time declaration ranges are not cached; cache them if those loads get slow.
+            || self.hir.ui_params_at_init
             || self.init.midi_object.async_id_high_water().checked_sub(self.environment.midi_object.async_id_high_water())
                 .and_then(|n|usize::try_from(n).ok()) != Some(self.init.residency.len())
         {
@@ -236,10 +240,11 @@ impl Initialized {
         }
         Some(CachedInit {
             residency_schema: 1,
-            zone_identity_schema: 1,
+            zone_identity_schema: 2,
             snapshot_mode: self.environment.snapshot_mode,
             zone_catalog: self.environment.zone_catalog.iter().map(|z|
                 (z.id,z.home.group,z.home.low_key,z.home.high_key)).collect(),
+            zone_names: self.environment.zone_names.clone(),
             async_base:self.environment.midi_object.async_id_high_water(),
             async_high:self.init.midi_object.async_id_high_water(),
             residency:self.init.residency.clone(),
@@ -422,7 +427,7 @@ pub fn restore_initialized(
         || home[0]<0 || !(0..=127).contains(&home[1]) || !(0..=127).contains(&home[2]) || home[1]>home[2]) {
         return Err(error("invalid cached native zone homes"));
     }
-    if cached.zone_identity_schema != 1 {
+    if cached.zone_identity_schema != 2 {
         return Err(error("cached zone source identity schema is obsolete"));
     }
     let frontend_begin = std::time::Instant::now();
@@ -456,6 +461,9 @@ pub fn restore_initialized(
     if crate::zone_routing::requirements(&hir).writes {
         return Err(error("zone-writer cache requires fresh physical-source initialization"));
     }
+    if hir.ui_params_at_init {
+        return Err(error("init-time declaration ranges require fresh initialization"));
+    }
     if cached.persistence.len() != hir.vars.len() {
         return Err(error("cached persistence shape mismatch"));
     }
@@ -483,6 +491,7 @@ pub fn restore_initialized(
         properties: cached.properties.into_iter().collect(),
         text_properties: cached.text_properties.into_iter().collect(),
         indexed_properties: cached.indexed_properties.into_iter().collect(),
+        ui_params: vec![None; hir.uis.len()],
     };
     init.midi_object.reserve_async_ids_through(cached.async_high).map_err(|_|error("invalid cached async high-water"))?;
     use serde::de::DeserializeSeed;
@@ -532,6 +541,7 @@ pub fn restore_initialized(
         zones: cached.zones.into_iter().collect(),
         zone_catalog: cached.zone_catalog.into_iter().map(|(id,group,low_key,high_key)|
             sampler_ir::SourceZone {id,home:sampler_ir::SourceZoneHome {group,low_key,high_key}}).collect(),
+        zone_names: cached.zone_names,
         ..Default::default()
     };
     #[cfg(feature = "scan")]

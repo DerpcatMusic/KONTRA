@@ -211,10 +211,12 @@ pub struct Cache {
     /// allocation, which is what keeps the address a sound key.
     // ponytail: linear scan, bounded by the live image count.
     images: Vec<(Weak<[u8]>, Stored)>,
-    /// Rasterise every glyph as a path, never from the atlas. The atlas draws
-    /// a glyph's second use from a bitmap, so a glyph's pixels depend on which
-    /// frames drew it before; a partial repaint would not match a full one.
-    pub(crate) stateless_glyphs: bool,
+    /// Draw every glyph from the atlas, its first use included. The default
+    /// draws a glyph's first use as a path and later uses from the bitmap, so
+    /// a glyph's pixels depend on which frames drew it before; a partial repaint
+    /// would not match a full one. The atlas key (glyph, size, hint, quantised
+    /// subpixel) alone fixes the bitmap, so this keeps the output frame-independent.
+    pub(crate) atlas_always: bool,
 }
 
 #[cfg_attr(
@@ -374,7 +376,7 @@ macro_rules! wrapper {
                     .normalized_coords(coords)
                     // Rasterise each glyph once and reuse the bitmap: strip
                     // generation per glyph was most of a frame's encode.
-                    .atlas_cache($atlas && warm && !self.cache.stateless_glyphs)
+                    .atlas_cache($atlas && (warm || self.cache.atlas_always))
                     .fill_glyphs(run(text.origin, &text.glyphs[start..end]));
                 start = end;
             }

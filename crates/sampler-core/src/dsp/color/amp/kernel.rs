@@ -54,3 +54,55 @@ pub(super) fn lookup(tab: &[f32], u: V, lo: f32, hi: f32) -> V {
         fr * tab[i + 1] + tab[i]
     })
 }
+
+/// Four lanes at offset `o` of a state array whose offset 0 is at index `base`, and the store back.
+#[inline]
+pub(super) fn ld<const N: usize>(s: &[f32; N], base: isize, o: isize) -> V {
+    let i = (o + base) as usize;
+    [s[i], s[i + 1], s[i + 2], s[i + 3]]
+}
+
+#[inline]
+pub(super) fn st<const N: usize>(s: &mut [f32; N], base: isize, o: isize, v: V) {
+    let i = (o + base) as usize;
+    s[i..i + 4].copy_from_slice(&v);
+}
+
+/// The block loop every amp model runs over its per-channel `sample`: mono sums the two inputs
+/// into one state (both outputs take its result); stereo runs each channel through its own.
+#[inline]
+pub(super) fn run_block(mono: bool, block: &mut super::super::super::Planar, len: usize, mut sample: impl FnMut(usize, f32) -> f32) {
+    for i in 0..len {
+        if mono {
+            let y = f64::from(sample(0, 0.5 * block[1][i] as f32 + 0.5 * block[0][i] as f32));
+            block[0][i] = y;
+            block[1][i] = y;
+        } else {
+            for c in 0..2 {
+                block[c][i] = f64::from(sample(c, block[c][i] as f32));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_block_routes_channels_and_sums_mono_into_channel_zero() {
+        let mut block: super::super::super::Planar = [[1.; 64], [3.; 64]];
+        run_block(false, &mut block, 2, |c, x| x + 10. * c as f32);
+        assert_eq!(block[0][..2], [1.; 2]);
+        assert_eq!(block[1][..2], [13.; 2]);
+        let mut block: super::super::super::Planar = [[1.; 64], [3.; 64]];
+        let mut seen = Vec::new();
+        run_block(true, &mut block, 2, |c, x| {
+            seen.push((c, x));
+            x
+        });
+        assert_eq!(seen, [(0, 2.), (0, 2.)]);
+        assert_eq!(block[0][..2], [2.; 2]);
+        assert_eq!(block[1][..2], [2.; 2]);
+    }
+}

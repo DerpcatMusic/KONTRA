@@ -8,6 +8,7 @@
 //! KSP_FUEL sets the per-block callback budget (default
 //! `Limits::DEFAULT_BEHAVIOR_FUEL`); longer callbacks continue next block.
 use sampler_core::*;
+use std::hash::Hasher;
 use std::time::{Duration, Instant};
 
 const BLOCK: usize = 64;
@@ -39,7 +40,7 @@ fn main() {
         "fuel {fuel} per callback per block; {BLOCKS} blocks of {BLOCK} frames; deadline 1333 us"
     );
     println!(
-        "{:<10} {:>10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>6} {:>6} {:>6}",
+        "{:<10} {:>10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>6} {:>6} {:>6} {:>18}",
         "script",
         "compile",
         "mean us",
@@ -49,7 +50,8 @@ fn main() {
         "preempt",
         "blocks",
         "fuel!",
-        "fault"
+        "fault",
+        "audio fp"
     );
     let mut all = Vec::new();
     let mut long = Vec::new();
@@ -129,6 +131,7 @@ fn main() {
         let mut out = [[0f32; 2]; BLOCK];
         let mut held = std::collections::VecDeque::new();
         let mut times = Vec::with_capacity(BLOCKS);
+        let mut audio = std::collections::hash_map::DefaultHasher::new();
         let (mut exhausted, mut faults) = (0, 0);
         for i in 0..BLOCKS {
             let t = Instant::now();
@@ -158,6 +161,10 @@ fn main() {
                 let _ = rt.edit_controls(generation, None, &[ControlWrite { id: c.id, value }]);
             }
             let _ = rt.render(&mut out);
+            for frame in &out {
+                audio.write_u32(frame[0].to_bits());
+                audio.write_u32(frame[1].to_bits());
+            }
             rt.flush_behaviors(|_, owner, outcome| {
                 match outcome {
                     Outcome::FuelExhausted => exhausted += 1,
@@ -194,11 +201,12 @@ fn main() {
         total_exhausted += exhausted;
         all.extend_from_slice(&times);
         println!(
-            "{file:<10} {:>8.1}ms {:>8.1} {:>8.1} {:>8.1} {over:>8} {preempted:>8} {blocks:>6} {exhausted:>6} {faults:>6}",
+            "{file:<10} {:>8.1}ms {:>8.1} {:>8.1} {:>8.1} {over:>8} {preempted:>8} {blocks:>6} {exhausted:>6} {faults:>6} {:>18x}",
             compile.as_secs_f64() * 1e3,
             mean.as_secs_f64() * 1e6,
             p99.as_secs_f64() * 1e6,
             max.as_secs_f64() * 1e6,
+            audio.finish(),
         );
     }
     println!("callbacks spanning more than {LONG_BLOCKS} blocks: {long:?}");

@@ -5716,6 +5716,18 @@
       "category": "Improved",
       "release_note": "Convolution reports only non-default Preserve Length and latency-bypass flags; unmodeled flags stay visible.",
       "validation": "Merged in PR #118, #360, #441, #449; focused checks and native-reference evidence are recorded in those pull requests."
+    },
+    {
+      "id": "playback-dispatch-stage-order",
+      "summary": "Preserve nested note-stage ordering through dispatch yields and bound live callbacks explicitly.",
+      "source_commits": [
+        "a0ae89901bab1330f6ad49b2dbd9cba9a99503c7",
+        "762d774d178d810b1a70f39c554a0619b2dba151"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Shared sampler note stages retain their execution order through dispatch yields. Live playback uses deterministic per-part callback limits and reports overload explicitly.",
+      "validation": "sampler-core suite: 1752 passed, 13 ignored; focused eight-note stage-resume, authored-wait and terminal-overload checks passed with allocation guards. Root sound checks and health transport checked; release plugin and standalone built. Real-library DAW playback remains owner verification."
     }
   ]
 }
