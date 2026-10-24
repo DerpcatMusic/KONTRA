@@ -67,7 +67,10 @@ fn host_save_contains_live_original_text_and_array_values() {
         "audio capture must not allocate or free"
     );
     p.capture_ui_controls();
-    let encoded = serde_json::to_string(&p.selection.read().unwrap().parts).unwrap();
+    // Script state is stored compressed (KSS2); check the decoded values, not the raw text.
+    let captured = p.selection.read().unwrap().parts[0].script_state.clone();
+    let decoded = crate::sound::v2::persistence::decode(&captured).expect("saved script state decodes");
+    let encoded = serde_json::to_string(&decoded.values).unwrap();
     assert!(
         encoded.contains("host edited text"),
         "host save loses live Original text"
@@ -94,12 +97,13 @@ fn host_save_contains_live_original_text_and_array_values() {
     reloaded
         .prepare_persistence(&views, &restored.script_state)
         .unwrap();
-    let saved = reloaded
+    let raw = reloaded
         .ui_controls
         .as_ref()
         .unwrap()
         .save_script_state()
         .unwrap();
+    let saved = serde_json::to_string(&crate::sound::v2::persistence::decode(&raw).expect("recalled state decodes").values).unwrap();
     assert!(
         saved.contains("host edited text")
             && saved.contains("837")
@@ -115,7 +119,7 @@ fn host_save_contains_live_original_text_and_array_values() {
             .unwrap()
             .save_script_state()
             .unwrap(),
-        saved,
+        raw,
         "rejected state cannot lose the current values"
     );
 }
