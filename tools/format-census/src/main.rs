@@ -442,6 +442,19 @@ fn main() {
         }
         return;
     }
+    if args.first().is_some_and(|a| a == "--unsupported") {
+        // `--unsupported <nki>`: every load-report entry for one instrument, with its reason.
+        let k = sampler_kontakt::read(Path::new(&args[1])).expect("read");
+        let options = Options {
+            library: Some(Path::new(&args[1]).into()),
+            ..Options::default()
+        };
+        let streamed = load_read_streamed(k, &options, &StreamPolicy::default(), |_| {}).expect("load");
+        for u in &streamed.loaded.instrument.unsupported {
+            println!("{:?}\t{}\t{}", u.reason, u.feature, u.value.chars().take(120).collect::<String>());
+        }
+        return;
+    }
     if args.first().is_some_and(|a| a == "--resource") {
         // `--resource <archive> [member...]`: list members, or read named ones (size only).
         let mut container =
