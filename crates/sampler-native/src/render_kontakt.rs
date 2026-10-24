@@ -351,7 +351,11 @@ pub fn render(playback: Playback, output: &Path, messages: &[Message]) -> io::Re
     let rate = loaded.plan.sample_rate();
     let mut rt = runtime(loaded.plan)?;
     if let Some(cache) = cache {
+        // Same as the plugin: a start whose head is not resident is admitted silent and
+        // its voice plays once its pages arrive. Offline playback waits for those pages
+        // below, so the output does not depend on disk timing.
         rt = rt.with_stream_cache(cache);
+        rt.set_cold_starts(true);
     }
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     // MIDI 1.0 channel voice messages as UMP words, in the order given (a
