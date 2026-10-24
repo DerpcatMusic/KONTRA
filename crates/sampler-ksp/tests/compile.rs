@@ -875,7 +875,9 @@ fn repeating_source_loops_stop_per_owner_at_key_up_and_cancel_without_heap() {
 #[test]
 fn loops_obey_fuel_and_continue_targets_the_innermost_loop() {
     for (body, expected) in [
-        ("while (1 = 1) end while", Outcome::FuelExhausted),
+        // Kontakt leaves a loop after 10,000,001 iterations and continues; one
+        // that changes nothing gets there at once (`LoopGuard`).
+        ("while (1 = 1) end while", Outcome::Finished),
         (
             "while (1 = 1) wait(0) continue end while",
             Outcome::FuelExhausted,
@@ -984,8 +986,9 @@ fn loops_obey_fuel_and_continue_targets_the_innermost_loop() {
         compile(
             source,
             48000,
+            // Condition (2), branch, loop guard, back edge, loop reset, end.
             Limits {
-                instructions: 5,
+                instructions: 7,
                 ..limits()
             }
         )
@@ -996,7 +999,7 @@ fn loops_obey_fuel_and_continue_targets_the_innermost_loop() {
             source,
             48000,
             Limits {
-                instructions: 4,
+                instructions: 6,
                 ..limits()
             }
         )

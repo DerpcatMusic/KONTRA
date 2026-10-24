@@ -69,7 +69,7 @@ mod behavior;
 use behavior::Continuation;
 pub use behavior::{
     BehaviorId, BehaviorOverload, BehaviorOwner, BehaviorProgress, Comparison, Duration,
-    DurationValue, FadeCurve, Instruction, Outcome, Program, Velocity, WaitLifetime,
+    DurationValue, FadeCurve, Instruction, LOOP_LIMIT, LoopWatch, Outcome, Program, Velocity, WaitLifetime,
 };
 mod behavior_fault;
 pub use behavior_fault::{BehaviorFault, SourceSite, FAULT_CALLERS, FAULT_REGISTERS};
@@ -123,7 +123,7 @@ pub use engine_parameter_names::{
 };
 pub use engine_parameters::{
     BUS_VOLUME_LAW, EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
-    EngineParameterLaw, EngineParameterOffset, EngineParameterOutcome, engine_parameter_control,
+    EngineParameterLaw, EngineParameterOffset, EngineParameterOutcome, engine_address_of_control, engine_parameter_control, script_engine_control_ids,
     engine_parameter_display, engine_parameter_id, engine_parameter_name,
 };
 mod parameter_registry;
@@ -1146,6 +1146,7 @@ pub struct Runtime {
     kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
+    loop_limits: u64,
     offline: bool,
     stream_fault: Option<StreamError>,
     stream_horizon: u32,
@@ -1420,6 +1421,7 @@ impl Runtime {
             kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
             stream_underruns: 0,
+            loop_limits: 0,
             offline: false,
             stream_fault: None,
             stream_horizon: 1,

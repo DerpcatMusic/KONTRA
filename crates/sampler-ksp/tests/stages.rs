@@ -490,9 +490,9 @@ fn stage_linked_children_obey_pedals_without_fabricating_host_inputs() {
 #[test]
 fn late_parent_fault_closes_a_linked_child_held_in_a_downstream_release() {
     let plan = plan(&[
-        "on init declare polyphonic $mine end on
+        "on init declare polyphonic $mine declare $spin end on
         on note $mine := 1 ignore_event($EVENT_ID) play_note(64,127,0,-1) end on
-        on release if ($mine = 1) wait(125) while (1 = 1) end while end if end on",
+        on release if ($mine = 1) wait(125) while (1 = 1) inc($spin) end while end if end on",
         "on release ignore_event($EVENT_ID) wait(1000) note_off($EVENT_ID) end on",
     ]);
     let budget = limits(&plan, 5);
@@ -531,8 +531,8 @@ fn late_parent_fault_closes_a_linked_child_held_in_a_downstream_release() {
 fn generated_note_fault_cannot_orphan_its_already_queued_parent_release() {
     let plan = plan(&[
         "on release play_note(64,127,0,125) end on",
-        "on init declare $released end on
-        on note if ($EVENT_NOTE = 64) while (1 = 1) end while end if end on
+        "on init declare $released declare $spin end on
+        on note if ($EVENT_NOTE = 64) while (1 = 1) inc($spin) end while end if end on
         on release inc($released) end on",
     ]);
     let budget = limits(&plan, 6);

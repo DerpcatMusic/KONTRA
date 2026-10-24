@@ -771,10 +771,9 @@ impl Default for StreamPolicy {
             block_frames: 64,
             voices: 256,
             decoders: 4,
-            // The host's `Auto` payload budget (src/sound/v2.rs). Unbounded heads
-            // reached 20 GB on ANALOG STRINGS; over budget, starts fall back to
-            // the bounded initial-state windows instead of failing.
-            head_budget: DEFAULT_HEAD_BUDGET,
+            // Unbounded heads reached 20 GB on ANALOG STRINGS; over budget, starts
+            // fall back to the bounded initial-state windows instead of failing.
+            head_budget: cold_head_budget(),
             lazy: false,
             allow_cold_fallback: true,
             resident_budget: None,
@@ -782,8 +781,28 @@ impl Default for StreamPolicy {
     }
 }
 
-/// Packed head bytes shared by all streamed sources of one load.
-const DEFAULT_HEAD_BUDGET: usize = 256 << 20;
+/// The cold-stream head budget for this machine: 1/32 of physical RAM, clamped
+/// to [256 MiB, 4 GiB]. The single place the streamed head and residency cap
+/// is chosen; hosts use it as their Auto budget and `StreamPolicy::default`
+/// uses it too.
+pub fn cold_head_budget() -> usize {
+    cold_head_budget_for(system_ram_total())
+}
+
+/// [`cold_head_budget`] for a known physical RAM size (`None`: unknown, floor).
+pub fn cold_head_budget_for(total_ram: Option<usize>) -> usize {
+    const FLOOR: usize = 256 << 20;
+    const CEILING: usize = 4 << 30;
+    total_ram.map_or(FLOOR, |total| (total / 32).clamp(FLOOR, CEILING))
+}
+
+/// `MemTotal` from `/proc/meminfo`, in bytes.
+fn system_ram_total() -> Option<usize> {
+    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = info.lines().find(|l| l.starts_with("MemTotal:"))?;
+    let kib: usize = line["MemTotal:".len()..].trim().trim_end_matches("kB").trim().parse().ok()?;
+    Some(kib << 10)
+}
 
 /// Pool pages per streaming voice: the page it reads, the next, and one more
 /// for a window or crossfade spanning a page boundary.
@@ -5113,5 +5132,19 @@ mod stream_read_receipt {
             }
             println!("stream_read_receipt block={block:<5} ns/frame={best:.2}");
         }
+    }
+}
+
+#[cfg(test)]
+mod head_budget_tests {
+    use super::cold_head_budget_for;
+
+    #[test]
+    fn cold_head_budget_scales_with_ram_within_its_clamp() {
+        const MIB: usize = 1 << 20;
+        assert_eq!(cold_head_budget_for(None), 256 * MIB);
+        assert_eq!(cold_head_budget_for(Some(2 << 30)), 256 * MIB);
+        assert_eq!(cold_head_budget_for(Some(46 << 30)), (46usize << 30) / 32);
+        assert_eq!(cold_head_budget_for(Some(512 << 30)), 4 << 30);
     }
 }

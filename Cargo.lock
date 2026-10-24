@@ -2182,9 +2182,10 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kontakto"
-version = "0.3.550"
+version = "0.3.551"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "blake3",
  "buffr-durable-file",
  "clap-sys",
@@ -2192,6 +2193,7 @@ dependencies = [
  "derpcat-flight-recorder",
  "dirs",
  "fastlz",
+ "flate2",
  "getrandom 0.4.3",
  "hound",
  "image-webp",

@@ -1,0 +1,6 @@
+step	name	attack_ms	release_ms	gain0.5s	gain1.0s	gain2.0s	status
+1	att10_rel0	2	46	-14.71	-14.71	-14.71	ok
+2	att10_rel25	2	0	-116.67	-14.72	-14.72	ok
+3	att10_rel50	2	329	-14.73	-14.73	-14.73	ok
+4	att10_rel75	2	868	-14.73	-14.73	-14.73	ok
+5	att10_rel100	2	2287	-14.73	-14.73	-14.73	ok

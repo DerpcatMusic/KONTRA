@@ -5728,6 +5728,17 @@
       "category": "Fixed",
       "release_note": "Shared sampler note stages retain their execution order through dispatch yields. Live playback uses deterministic per-part callback limits and reports overload explicitly.",
       "validation": "sampler-core suite: 1752 passed, 13 ignored; focused eight-note stage-resume, authored-wait and terminal-overload checks passed with allocation guards. Root sound checks and health transport checked; release plugin and standalone built. Real-library DAW playback remains owner verification."
+    },
+    {
+      "id": "ksp-while-loop-limit-continuation",
+      "summary": "Leave a non-progressing KSP while loop at the native iteration limit and continue its callback.",
+      "source_commits": [
+        "fb913948aab6891c7ec8ad8053e497bd9bc4eb92"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "A non-progressing KSP while loop can finish with an explicit loop-limit diagnostic and continue to the statements after it, instead of silencing the entire note callback.",
+      "validation": "PR #687 focused callback-fuel regression passed without callback heap work; production-loader witness reported one loop limit and audible output. Combined-source checks are recorded in the integration receipt."
     }
   ]
 }
