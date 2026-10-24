@@ -428,7 +428,16 @@ fn main() {
                     continue;
                 }
             };
-            let names: Vec<String> = container.names().iter().map(|n| n.to_string()).collect();
+            // CENSUS_MEMBERS=a,b,c limits the decode to named members (targeted checks).
+            let wanted: Option<Vec<String>> = std::env::var("CENSUS_MEMBERS")
+                .ok()
+                .map(|v| v.split(',').map(str::to_string).collect());
+            let names: Vec<String> = container
+                .names()
+                .iter()
+                .map(|n| n.to_string())
+                .filter(|n| wanted.as_ref().is_none_or(|w| w.contains(n)))
+                .collect();
             for name in names {
                 if !name.to_lowercase().ends_with(".ncw") {
                     continue;
@@ -498,6 +507,18 @@ fn main() {
         let streamed = load_read_streamed(k, &options, &StreamPolicy::default(), |_| {}).expect("load");
         for u in &streamed.loaded.instrument.unsupported {
             println!("{:?}\t{}\t{}", u.reason, u.feature, u.value.chars().take(120).collect::<String>());
+        }
+        return;
+    }
+    if args.first().is_some_and(|a| a == "--locations") {
+        // `--locations <nki>`: each distinct sample location the instrument uses, with its zone count.
+        let k = sampler_kontakt::read(Path::new(&args[1])).expect("read");
+        let mut counts = BTreeMap::<String, usize>::new();
+        for loc in &k.locations {
+            *counts.entry(loc.display().to_string()).or_default() += 1;
+        }
+        for (loc, n) in &counts {
+            println!("{n}\t{loc}");
         }
         return;
     }
