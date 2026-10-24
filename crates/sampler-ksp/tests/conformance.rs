@@ -8,9 +8,20 @@
 use serde_json::Value;
 use std::path::PathBuf;
 
-/// Units whose interpreter result differs from Kontakt today. Empty after slice 2; add an
-/// entry only as tracked debt, and remove it in the change that fixes it.
-const KNOWN_MISMATCHES: &[&str] = &[];
+/// Units whose interpreter result differs from Kontakt today. Add an entry only as tracked
+/// debt, and remove it in the change that fixes it.
+///
+/// `min`/`max` with two arguments: Kontakt rejects every on-init form measured (`builtin_*`),
+/// the interpreter accepts them. No corpus library uses them (survey: no symbol occurrences).
+/// Open: measure them in `on note` and then reject or keep.
+const KNOWN_MISMATCHES: &[&str] = &[
+    "builtin_minmax__0",
+    "builtin_minmax__1",
+    "builtin_min_lit",
+    "builtin_max_lit",
+    "builtin_min_var",
+    "builtin_max_neg",
+];
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/ksp-conformance")

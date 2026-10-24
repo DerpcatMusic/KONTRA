@@ -118,4 +118,7 @@ CASES = [
     ("lit_hex_top", "arithmetic", "declare $a := 80000000h", ["$a"]),
     ("lit_neg_min", "arithmetic", "declare $a := -2147483648", ["$a"]),
     ("lit_neg_over", "arithmetic", "declare $a := -2147483649", ["$a"]),
+    # --- slice 3c: builtins returning booleans used as numbers ----------------------
+    ("bool_inrange_arith", "typing", "", ["in_range(5, 1, 5) + 0"]),
+    ("bool_pgs_arith", "typing", "pgs_create_key(TEST, 4)", ["pgs_key_exists(TEST) + 0"]),
 ]

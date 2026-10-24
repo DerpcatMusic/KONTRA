@@ -14,6 +14,13 @@
    -2147483648
   ]
  },
+ "arith_compound_neg": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   10
+  ]
+ },
  "arith_div_trunc_pos": {
   "compiled": true,
   "completed": true,
@@ -95,6 +102,21 @@
    2147483647
   ]
  },
+ "arith_unary_prec__0": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   6,
+   5
+  ]
+ },
+ "arith_unary_prec__1": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -5
+  ]
+ },
  "array_init_list": {
   "compiled": true,
   "completed": true,
@@ -132,6 +154,20 @@
    0
   ]
  },
+ "bool_inrange_arith": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "bool_pgs_arith": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
  "builtin_floor_ceil__0": {
   "compiled": true,
   "completed": true,
@@ -153,6 +189,34 @@
   "results": [
    3,
    -3
+  ]
+ },
+ "builtin_max_lit": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "builtin_max_neg": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "builtin_min_lit": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "builtin_min_var": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
   ]
  },
  "builtin_minmax__0": {
@@ -321,6 +385,91 @@
    -2147483648
   ]
  },
+ "intval_and_value": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "intval_bitand": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   2,
+   7
+  ]
+ },
+ "intval_not_value": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "intval_or_value": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "lit_3e9": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   2147483647
+  ]
+ },
+ "lit_hex_top": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -2147483648
+  ]
+ },
+ "lit_int_max": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   2147483647
+  ]
+ },
+ "lit_int_overflow": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   2147483647
+  ]
+ },
+ "lit_neg_min": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -2147483647
+  ]
+ },
+ "lit_neg_over": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -2147483647
+  ]
+ },
+ "lit_u32_max": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   2147483647
+  ]
+ },
+ "lit_u32_over": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   2147483647
+  ]
+ },
  "logic_and_or": {
   "compiled": false,
   "completed": false,
@@ -465,6 +614,13 @@
   "completed": false,
   "results": [
    0,
+   0
+  ]
+ },
+ "typing_bool_arith": {
+  "compiled": false,
+  "completed": false,
+  "results": [
    0
   ]
  },
