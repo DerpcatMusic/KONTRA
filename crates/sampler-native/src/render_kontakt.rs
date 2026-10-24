@@ -252,6 +252,32 @@ pub fn run(
     render(loaded, output, messages)
 }
 
+/// The runtime every native render and `explain` run uses, so both play identically.
+pub fn runtime(plan: sampler_core::Prepared) -> io::Result<Runtime> {
+    let limits = Limits {
+        notes: 64,
+        channels: 16,
+        performances: 1,
+        expressions: 64,
+        families: 64,
+        decisions: 256,
+        voices: 512,
+        commands: 256,
+        behaviors: 16,
+        behavior_fuel: 1 << 20,
+        behavior_cells: plan.behavior_local_count().saturating_mul(16),
+        note_cells: plan.note_cell_count().saturating_mul(64),
+    };
+    let mut rt =
+        Runtime::new(plan, limits).map_err(|e| io::Error::other(format!("native core: {e}")))?;
+    rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
+        rt.sample_rate(),
+        limits.voices,
+    )))
+    .map_err(|e| io::Error::other(format!("native core: {e}")))?;
+    Ok(rt)
+}
+
 pub fn render(
     loaded: sampler_kontakt::Loaded,
     output: &Path,
@@ -286,29 +312,8 @@ pub fn render(
         );
     }
     let mut scripts = loaded.scripts;
-    let plan = loaded.plan;
-    let rate = plan.sample_rate();
-    let limits = Limits {
-        notes: 64,
-        channels: 16,
-        performances: 1,
-        expressions: 64,
-        families: 64,
-        decisions: 256,
-        voices: 512,
-        commands: 256,
-        behaviors: 16,
-        behavior_fuel: 1 << 20,
-        behavior_cells: plan.behavior_local_count().saturating_mul(16),
-        note_cells: plan.note_cell_count().saturating_mul(64),
-    };
-    let mut rt =
-        Runtime::new(plan, limits).map_err(|e| io::Error::other(format!("native core: {e}")))?;
-    rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
-        rt.sample_rate(),
-        limits.voices,
-    )))
-    .map_err(|e| io::Error::other(format!("native core: {e}")))?;
+    let rate = loaded.plan.sample_rate();
+    let mut rt = runtime(loaded.plan)?;
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     // MIDI 1.0 channel voice messages as UMP words, in the order given (a
     // stable sort keeps simultaneous messages in file order).
