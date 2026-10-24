@@ -28,7 +28,7 @@ is pointless: the next `sync` overwrites it. Discussion goes in comments.
   paths, runs only its gate commands, opens one PR, reports. Default model for
   agent workers: see the coordinator's standing instructions (currently Claude
   Haiku 5.5 at xhigh via T3 `delegate_task`, self-contained brief).
-- **Escalation.** When a task is large (engine rewrites, big DSP families,
+- **Escalation (paused 2026-10-25: DeepSeek capacity reached; Haiku only, split large tasks smaller).** When a task is large (engine rewrites, big DSP families,
   KSP init-on-VM) or Haiku needs a third review round, the coordinator gives
   it to DeepSeek V4.1 Flash Free on OpenCode at max thinking
   (`opencode/deepseek-v4.1-flash-free`, variant `max`). It is not Claude and
