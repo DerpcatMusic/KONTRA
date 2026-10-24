@@ -1319,3 +1319,30 @@ fn nka_missing_data_warning_says_why_the_host_could_not_read_it() {
         script.warnings()
     );
 }
+
+#[test]
+fn saved_array_without_a_data_file_is_not_reported_as_lost() {
+    // Conflux multis save `%vel_db` in the preset; its data file is not shipped. The saved
+    // values are restored at declaration, so the absent file loses nothing and must not warn.
+    let source = r#"on init
+        declare %pos[2]
+        load_array(%pos, 2)
+    end on"#;
+    let mut env = sampler_ksp::Environment::default();
+    env.persisted_arrays.insert(
+        "%pos".into(),
+        vec![sampler_ksp::model::Value::Int(3), sampler_ksp::model::Value::Int(4)],
+    );
+    let init = sampler_ksp::initialize(source, sampler_ksp::Limits::LIBRARY, &env).unwrap();
+    let script =
+        sampler_ksp::compile_initialized(source, 48000, sampler_ksp::Limits::LIBRARY, &[], init)
+            .unwrap();
+    assert!(
+        !script
+            .warnings()
+            .iter()
+            .any(|w| w.message.contains("data/pos.nka not loaded")),
+        "{:?}",
+        script.warnings()
+    );
+}

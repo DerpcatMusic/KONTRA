@@ -217,3 +217,50 @@ Measured, not estimated. Files, not libraries.
    recovery in the reader and decode the payloads with `--nkx`.
 3. NKC: NICache classification in the census.
 4. `vel_db`: check the NKM saved state for `%vel_db` (preset-level persistence).
+
+## Partial NKI causes, 2026-10-24 (pre-fix census; 429 partial NKI)
+
+Instruments per cause (an instrument can carry several causes). Measured with
+the census value mode (local only). "Real loss" means sound or articulation
+data is dropped; "report" means the reader says something it could not map
+while the instrument still plays what the file describes.
+
+| Cause | Instruments | Libraries | Class |
+| --- | ---: | ---: | --- |
+| KSP `find_group` on an absent group name | 227 | 2 (Areia, Dolce) | script semantics (open: needs KSP check) |
+| KSP array index out of bounds, read returns zero | 134 | 3 | script semantics (KSP lane) |
+| Keyswitch script: control-key hint, no switch found | 105 | 3 (Afflatus 102) | report, not a loss (see below) |
+| KSP other script semantics | 17 | 8 | script semantics |
+| DFD preload window not applied to stream head | 14 | 2 | real: engine streaming, not format |
+| Loop crossfade longer than loop, clamped | 6 | 3 | Kontakt-matching clamp, documented in load.rs |
+| Parameter clamped to declared range | 5 | 2 | report |
+| Modulation of a module parameter / modulator intensity / RandomBipolar | 6 | 3 | real: modulation not modelled |
+| Tape Saturator, Solid G-EQ, Solid Bus Comp, Filter law, Convolution, LFO waveform, wavetable, effect, Jump, time machine, native interface, dropped | 26 | 5 | real: FX not modelled (engine lanes) |
+
+Keyswitch decision (open for the user): all 102 Afflatus reports are the same
+text, `keyswitch hints (control keys [21, 21]) but no recognized switch in on note`.
+The script's only key declaration is `set_key_type(%KS_keys[$KS_Base], $NI_KEY_TYPE_CONTROL)`
+with the name "Reset RR"; articulations come from the native group start rows, which
+are unaffected. The existing test `reset_and_breath_keys_are_hints_not_switch_sets`
+deliberately keeps this as a report, so changing it is a reporting policy choice.
+
+## Fixes landed in this pass
+
+- NKX stale directory offset (PR 595): 17 members of `Areia_0.nkx` now resolve.
+  Five sampled members checked: all resolve, shifted ones decrypt to the NCW magic.
+- `load_array` warning suppressed when the array holds saved state (sampler-ksp):
+  Conflux multis save `%vel_db:ints` in the preset (checked on Adios Horner program 1),
+  so the absent data file loses nothing.
+- NKC classified by NICache magic (census), not the chunk reader: 241 files are
+  stream caches (`container-only`), not failures.
+
+## Still open
+
+- Areia Legacy Legato NKIs: after the offset fix the failure moved from
+  `block 4, channel 0` to `block 11, channel 0` in the stream cache. The member
+  that now fails is not yet identified; the stream cache error does not name it.
+  Member 75_87_12 has no keystream start in 0..65536 that makes group 4 valid
+  (measured in the earlier probe), so it is not a simple alignment problem.
+- `find_group` (227 instruments): check whether the absent group names are reached
+  in Kontakt; that decides real loss vs benign.
+

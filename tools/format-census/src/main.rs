@@ -80,7 +80,13 @@ fn kontakt(path: &Path, program: Option<usize>) -> (String, String) {
         Ok(s) => {
             let mut features = BTreeMap::<String, usize>::new();
             for u in &s.loaded.instrument.unsupported {
-                *features.entry(u.feature.to_string()).or_default() += 1;
+                // Local diagnostics: CENSUS_VALUES adds the value text (not committed).
+                let key = if std::env::var_os("CENSUS_VALUES").is_some() {
+                    format!("{}={}", u.feature, u.value.chars().take(160).collect::<String>())
+                } else {
+                    u.feature.to_string()
+                };
+                *features.entry(key).or_default() += 1;
             }
             if features.is_empty() {
                 ("full".into(), String::new())
@@ -113,7 +119,18 @@ fn judge(path: &Path, ext: &str, h: &[u8; 16]) -> (String, String) {
             }
         },
         "nka" => ("text".into(), "preset-list".into()),
-        "nksn" | "nkc" => match sampler_kontakt::read_chunks(path) {
+        // NKC is an NI stream cache (NICache), not a preset chunk container: judge the
+        // magic only. Its payload is read through the NCW stream path, not here.
+        "nkc" => {
+            let le = [0x7a, 0x10, 0xe1, 0x3f];
+            let be_magic = [0x3f, 0xe1, 0x10, 0x7a];
+            if h.starts_with(&le) || h.starts_with(&be_magic) {
+                ("container-only".into(), "stream-cache".into())
+            } else {
+                ("failed".into(), "not-nicache".into())
+            }
+        }
+        "nksn" => match sampler_kontakt::read_chunks(path) {
             Ok(_) => ("container-only".into(), "chunks".into()),
             Err(e) => ("failed".into(), format!("chunks:{}", class(&e))),
         },
@@ -381,6 +398,43 @@ fn main() {
                     println!("{outcome}");
                 }
             }
+        }
+        return;
+    }
+    if args.first().is_some_and(|a| a == "--script") {
+        // `--script <nki>`: print the KSP source of each script slot to stdout (local reading only).
+        let k = match args.get(2) {
+            Some(i) => sampler_kontakt::read_program(Path::new(&args[1]), i.parse().expect("index")),
+            None => sampler_kontakt::read(Path::new(&args[1])),
+        }
+        .expect("read");
+        for b in &k.instrument.behaviors {
+            println!("--- {} ({:?})", b.name, b.language);
+            println!("{}", b.source);
+        }
+        return;
+    }
+    if args.first().is_some_and(|a| a == "--state") {
+        // `--state <nkm|nki> [program]`: persisted script variables per script slot (names and kinds only).
+        let k = match args.get(2) {
+            Some(i) => sampler_kontakt::read_program(Path::new(&args[1]), i.parse().expect("index")),
+            None => sampler_kontakt::read(Path::new(&args[1])),
+        }
+        .expect("read");
+        for b in &k.instrument.behaviors {
+            let names: Vec<String> = b
+                .state
+                .iter()
+                .map(|(n, v)| format!("{n}:{}", match v {
+                    sampler_ir::Saved::Int(_) => "int",
+                    sampler_ir::Saved::Real(_) => "real",
+                    sampler_ir::Saved::Text(_) => "text",
+                    sampler_ir::Saved::Ints(_) => "ints",
+                    sampler_ir::Saved::Reals(_) => "reals",
+                    sampler_ir::Saved::Texts(_) => "texts",
+                }))
+                .collect();
+            println!("{} : {}", b.name, names.join(" "));
         }
         return;
     }
