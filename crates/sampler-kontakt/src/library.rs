@@ -163,18 +163,6 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
     read_program_with_controls(path, index, &[])
 }
 
-/// The programs of the multi at `path` that translate to at least one zone: the
-/// parts a rack should open. An empty slot, or one whose samples do not resolve
-/// (the part would play nothing), is left out. A program that fails to load stays
-/// in so its error still shows. If none sounds, every program is returned.
-pub fn sounding_programs(path: &Path) -> Result<Vec<usize>, LoadError> {
-    let count = crate::read_multi(path)?.programs.len().max(1);
-    let sounding: Vec<usize> = (0..count)
-        .filter(|&index| read_program(path, index).map_or(true, |k| !k.instrument.zones.is_empty()))
-        .collect();
-    Ok(if sounding.is_empty() { (0..count).collect() } else { sounding })
-}
-
 /// [`read_program`] with host overrides applied before script initialization.
 pub fn read_program_with_controls(
     path: &Path,

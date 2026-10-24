@@ -1886,9 +1886,17 @@ fn check_multi(item: &Item, path: &Path, ctx: &Ctx) -> Value {
     let mut record = json!({"id": item.id(), "kind": item.kind(), "status": "done", "tier": ctx.tier.name(), "load": load});
     let programs = record["load"]["programs"].as_u64().unwrap_or(0) as usize;
     if record["load"]["ok"] == true {
-        // Only sounding programs are parts (the rack opens the same ones); an empty
-        // or unresolved slot checked as an instrument reads as a silent failure.
-        let indices = sampler_kontakt::sounding_programs(path).unwrap_or_else(|_| (0..programs).collect());
+        // The rack's parts: programs that reference samples (an empty slot is not a part).
+        let indices: Vec<usize> = match sampler_kontakt::read_multi(path) {
+            Ok(m) if m.parts.iter().any(|p| p.has_samples) => m
+                .parts
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.has_samples)
+                .map(|(i, _)| i)
+                .collect(),
+            _ => (0..programs).collect(),
+        };
         let cap = match ctx.tier {
             Tier::Full => 16,
             Tier::Quick => 4,
