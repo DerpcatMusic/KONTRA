@@ -161,6 +161,9 @@ fn judge(ins: &Instrument, zone: &Zone, note: &Note, held: &[u8], scenario: &Sce
             return Verdict::Rejected("controller", format!("CC{} = {value} outside {}-{}", c.controller, c.low, c.high));
         }
     }
+    if zone.group.is_some_and(|g| ins.groups[g.0].purged) {
+        return Verdict::Rejected("purged", "group saved as purged (not resident): sounds only once a script or UI loads it".into());
+    }
     match zone.trigger {
         Trigger::Attack => {}
         Trigger::First if !held.is_empty() => {
@@ -225,7 +228,17 @@ fn volume_path(ins: &Instrument, zone: &Zone, velocity: u8) -> Value {
         Some(Output::Bus(bus)) => format!("bus {}", bus.0),
         _ => "master".to_string(),
     };
+    let envelope_delay_s = zone.amplitude.and_then(|m| match &ins.modulators[m.0].source {
+        sampler_ir::ModulationSource::Envelope(env) => Some(env.delay.seconds()),
+        _ => None,
+    });
+    let pan = |p: &sampler_ir::Pan| json!({"position": p.position, "law": format!("{:?}", p.law)});
     json!({
+        "start_frames": zone.playback.start,
+        "start_range_frames": zone.playback.start_range,
+        "envelope_delay_s": envelope_delay_s,
+        "zone_pan": pan(&zone.pan),
+        "group_pan": group.map(|g| pan(&g.pan)),
         "zone_db": gain_db(zone.gain),
         "velocity_db": velocity_db,
         "group_db": group_db,
@@ -397,10 +410,26 @@ pub fn report(loaded: sampler_kontakt::Loaded, scenario: &Scenario) -> io::Resul
         let mut candidates = Vec::new();
         let mut accepted: BTreeSet<Option<usize>> = BTreeSet::new();
         let mut open: BTreeSet<Option<usize>> = BTreeSet::new();
+        let mut near_misses = Vec::new();
+        let mut tallies: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
         for (zi, zone) in ins.zones.iter().enumerate() {
             let verdict = judge(&ins, zone, &note, &held_keys, scenario);
+            let in_key = (zone.keys.low..=zone.keys.high).contains(&note.key);
+            if in_key {
+                let label = match &verdict {
+                    Verdict::Accepted => "accepted".to_string(),
+                    Verdict::Conditional(_) => "conditional".to_string(),
+                    Verdict::Rejected(kind, _) => format!("rejected:{kind}"),
+                };
+                *tallies.entry(group_of(&ins, zone)).or_default().entry(label).or_default() += 1;
+            }
             match &verdict {
-                Verdict::Rejected(kind, _) => *rejected.entry(kind).or_default() += 1,
+                Verdict::Rejected(kind, why) => {
+                    *rejected.entry(kind).or_default() += 1;
+                    if in_key {
+                        near_misses.push(json!({"zone": zi, "group": group_of(&ins, zone), "sample": sample_name(&ins, zone), "reason": why}));
+                    }
+                }
                 Verdict::Accepted => {
                     accepted.insert(zone.group.map(|g| g.0));
                 }
@@ -434,13 +463,20 @@ pub fn report(loaded: sampler_kontakt::Loaded, scenario: &Scenario) -> io::Resul
             ));
         }
         held.push((note.key, note.start_ms + note.length_ms));
-        static_notes.push((index, note, held_keys, candidates, rejected, releases, accepted, open));
+        let groups_in_key: Vec<Value> = tallies
+            .into_iter()
+            .map(|(group, counts)| {
+                let purged = ins.groups.iter().any(|g| g.name == group && g.purged);
+                json!({"group": group, "purged": purged, "zones": counts})
+            })
+            .collect();
+        static_notes.push((index, note, held_keys, candidates, rejected, releases, accepted, open, near_misses, groups_in_key));
     }
 
     let play = play(plan, scripts, scenario)?;
     let tail_frames = (scenario.tail_ms * f64::from(rate) / 1000.0) as usize;
     let mut notes_out = Vec::new();
-    for (index, note, held_keys, candidates, rejected, releases, accepted, open) in static_notes {
+    for (index, note, held_keys, candidates, rejected, releases, accepted, open, near_misses, groups_in_key) in static_notes {
         let start = (note.start_ms * f64::from(rate) / 1000.0).round() as usize;
         let end = start + (note.length_ms * f64::from(rate) / 1000.0).round() as usize;
         let heard: Vec<&Heard> = play
@@ -493,6 +529,8 @@ pub fn report(loaded: sampler_kontakt::Loaded, scenario: &Scenario) -> io::Resul
             "held_before": held_keys,
             "candidates": candidates,
             "rejected_by": rejected,
+            "groups_in_key": groups_in_key,
+            "rejected_in_key_range": near_misses,
             "release_triggers_matched": releases,
             "runtime": {
                 "onset_ms": onset,
@@ -611,20 +649,53 @@ fn print_table(value: &Value) {
             "\nnote key {} vel {} at {} ms for {} ms · held before {}",
             n["key"], n["velocity"], n["start_ms"], n["length_ms"], n["held_before"]
         );
+        // Purged groups are listed as a count; the JSON keeps each one.
+        let groups = n["groups_in_key"].as_array().map_or(&[][..], Vec::as_slice);
+        let purged = groups.iter().filter(|g| g["purged"].as_bool() == Some(true)).count();
+        println!("  groups at this key: {} ({} purged, not resident), others:", groups.len(), purged);
+        for g in groups.iter().filter(|g| g["purged"].as_bool() != Some(true)) {
+            println!("    {} {}", g["group"].as_str().unwrap_or(""), g["zones"]);
+        }
         for c in n["candidates"].as_array().into_iter().flatten().take(40) {
+            let v = &c["volume"];
+            let db = |x: &Value| x.as_f64().map_or("n/a".into(), |d| format!("{d:+.1}"));
+            let pan = |p: &Value| if p.is_null() { "-".into() } else { format!("{:+.2} {}", p["position"].as_f64().unwrap_or(0.0), p["law"].as_str().unwrap_or("")) };
             println!(
-                "  {:<11} zone {:>5} · {} · {} dB · {} ({})",
+                "  {:<11} zone {:>5} · {} · {}",
                 c["verdict"]["verdict"].as_str().unwrap_or(""),
                 c["zone"],
                 c["group"],
-                c["volume"]["total_db"].as_f64().map_or("n/a".into(), |v| format!("{v:.1}")),
-                c["sample"],
-                c["verdict"]["reason"].as_str().unwrap_or("")
+                c["sample"]
+            );
+            if let Some(reason) = c["verdict"]["reason"].as_str() {
+                println!("              why: {reason}");
+            }
+            println!(
+                "              start {} frames (+range {}), envelope delay {} s",
+                v["start_frames"],
+                v["start_range_frames"],
+                v["envelope_delay_s"].as_f64().map_or("none".into(), |d| format!("{d:.3}"))
+            );
+            println!(
+                "              gain: zone {} · velocity {} · group {} = {} dB → {} · pan zone {} / group {}",
+                db(&v["zone_db"]),
+                db(&v["velocity_db"]),
+                db(&v["group_db"]),
+                db(&v["total_db"]),
+                v["output"].as_str().unwrap_or(""),
+                pan(&v["zone_pan"]),
+                pan(&v["group_pan"])
             );
         }
         let candidates = n["candidates"].as_array().map_or(0, Vec::len);
         if candidates > 40 {
             println!("  ... {} more candidates", candidates - 40);
+        }
+        let near = n["rejected_in_key_range"].as_array().map_or(&[][..], Vec::as_slice);
+        let shown: Vec<&Value> = near.iter().filter(|r| !r["reason"].as_str().unwrap_or("").starts_with("group saved as purged")).collect();
+        println!("  rejected in key range: {} ({} purged), other reasons (first 30):", near.len(), near.len() - shown.len());
+        for r in shown.iter().take(30) {
+            println!("    zone {:>5} · {} · {}", r["zone"], r["group"], r["reason"].as_str().unwrap_or(""));
         }
         println!("  rejected: {}", n["rejected_by"]);
         println!(
