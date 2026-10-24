@@ -108,6 +108,9 @@ pub fn articulation_migration(ir: &ir::Instrument) -> ArticulationMigration {
             .unsupported
             .iter()
             .filter(|u| {
+                if u.reason == ir::Reason::Info {
+                    return false;
+                }
                 let f = u.feature.to_lowercase();
                 // "group start" only: a bare "start" also matches unrelated
                 // KSP warnings such as "polyphonic variables start at 0".
