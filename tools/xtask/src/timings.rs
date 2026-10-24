@@ -95,11 +95,19 @@ pub fn run(args: &[String]) -> Result<Verdict, String> {
 
 fn build(root: &std::path::Path, cargo: &[&str]) -> Result<Duration, String> {
     let start = Instant::now();
-    let status = Command::new("build-slot")
+    // build-slot shares build capacity on the maintainer's machine; elsewhere run cargo directly.
+    let status = match Command::new("build-slot")
         .args(cargo)
         .current_dir(root)
         .status()
-        .map_err(|error| format!("cannot run build-slot: {error}"))?;
+    {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Command::new(cargo[0])
+            .args(&cargo[1..])
+            .current_dir(root)
+            .status(),
+        other => other,
+    }
+    .map_err(|error| format!("cannot run {}: {error}", cargo[0]))?;
     if !status.success() {
         return Err(format!(
             "`build-slot {}` failed ({status})",
