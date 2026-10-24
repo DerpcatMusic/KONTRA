@@ -917,3 +917,47 @@ fn tuned_serial_loops_match_resident_audio_and_demand_at_every_partition() {
         }
     }
 }
+
+#[test]
+fn a_cold_start_past_its_loaded_page_waits_for_the_offset_page_instead_of_refusing() {
+    // The offline and plugin shape of the Chorus silence: page 0 is resident, the
+    // sample-start route moves the voice into page 2, which is not. With cold starts
+    // on, the start is admitted silent (never refused), and its page then plays.
+    let data: Vec<Frame> = (0..PAGE_FRAMES * 3).map(|i| [0.25 + (i / PAGE_FRAMES) as f32 * 0.25; 2]).collect();
+    let asset = Pcm::streamed(48000, data.len()).unwrap();
+    let (mut cache, mut worker) = StreamCache::new(4).unwrap();
+    load(&mut cache, &mut worker, &asset, &data, 0);
+    let program = ModProgram {
+        controls: vec![],
+        breakpoints: vec![],
+        sources: vec![ModSource::Velocity],
+        routes: vec![ModRoute::new(0, ModTarget::SampleStart, 1.)],
+        shapes: vec![],
+        envelope_controls: vec![],
+    };
+    let plan = Prepared::new(48000, vec![asset.clone()], vec![region(0, Playback::default())], 8)
+        .unwrap()
+        .with_velocity_curves(vec![VelocityCurve::Constant])
+        .unwrap()
+        .with_voice_modulation(vec![program], vec![Some(0)], vec![PAGE_FRAMES as u32 * 2])
+        .unwrap();
+    let mut rt = from_plan(plan).with_stream_cache(cache);
+    rt.set_cold_starts(true);
+    let mut output = [[0.; 2]; 64];
+    rt.trigger(input(), 60, 1.).unwrap();
+    rt.service_streaming(64).unwrap();
+    rt.render(&mut output).unwrap();
+    let stats = rt.stats();
+    assert_eq!((stats.refused_starts, stats.cold_starts, stats.voices), (0, 1, 1));
+    assert!(output.iter().all(|f| f == &[0.; 2]), "silent while its page is pending");
+    assert!(asset.take_cold(), "the cold start asks for its page");
+    // Serve the pending page request, then the voice must sound.
+    let mut job = worker.next_job().unwrap();
+    let range = job.range();
+    job.frames_mut().copy_from_slice(&data[range]);
+    worker.complete(job, Ok(())).unwrap();
+    assert!(rt.service_streaming(PAGE_FRAMES as u32).unwrap());
+    rt.render(&mut output).unwrap();
+    assert!(output.iter().any(|f| f[0] > 0.), "the voice plays once its page arrives");
+    assert_eq!(rt.stats().refused_starts, 0);
+}
