@@ -220,6 +220,8 @@ pub struct ReplikaCore {
     feedback_gain: f32,
     gate: Gate,
     delay: [[usize; 2]; 3],
+    /// Tempo-synced TIME in beats (`ReplikaControls::synced_beats`): the caller recomputes the delays per block.
+    synced_beats: Option<f64>,
     cut: Cut,
     saturator: Saturator,
     ring: usize,
@@ -341,6 +343,7 @@ impl ReplikaCore {
         for (i, v) in values {
             core.set_param(i, v);
         }
+        core.synced_beats = c.synced_beats;
         core
     }
 
@@ -373,6 +376,7 @@ impl ReplikaCore {
             feedback_gain: 0.,
             gate: Gate::new(rate, 0., 0., 0.),
             delay: [[1; 2]; 3],
+            synced_beats: None,
             cut: Cut::new(
                 CutSpec {
                     highpass_hz: None,
@@ -431,15 +435,7 @@ impl ReplikaCore {
             v[index::DUCKING_RELEASE],
         );
         // TIME (mode 3): 2000 ms x v, 48 frames per ms at 48 kHz; the delay offset index 15 is 600 frames at 48 kHz.
-        let scale = f64::from(self.rate) / 48_000.;
-        let time = 2. * f64::from(self.rate) * f64::from(v[index::TIME])
-            - 600. * scale * f64::from(v[index::DELAY_OFFSET]);
-        for (h, offsets) in HEAD_OFFSET.iter().enumerate() {
-            for (c, o) in offsets.iter().enumerate() {
-                let frames = (time + o * scale + HEAD_BIAS).round().max(1.);
-                self.delay[h][c] = frames as usize;
-            }
-        }
+        self.delay = self.head_delays(2. * f64::from(self.rate) * f64::from(v[index::TIME]));
         // LOWCUT (highpass, enabled when != 0) and HIGHCUT (lowpass, enabled when != 1), as in `replika_cut`.
         let spec = CutSpec {
             highpass_hz: (v[index::LOWCUT] != 0.)
@@ -455,9 +451,50 @@ impl ReplikaCore {
         self.delay
     }
 
+    /// Tempo-synced TIME in beats, or `None` for the free law.
+    pub fn synced_beats(&self) -> Option<f64> {
+        self.synced_beats
+    }
+
+    /// Head delays for a tempo-synced TIME at `tempo` BPM (below 0.1 reads 120, as the
+    /// timemod sync getter does). The delay offset of index 15 still applies. The length is
+    /// capped at the free TIME maximum, 2000 ms, which the ring is sized for.
+    pub fn synced_delays(&self, tempo: f64, beats: f64) -> [[usize; 2]; 3] {
+        let tempo = if tempo < 0.1 { 120. } else { tempo };
+        let frames = (beats * 60. / tempo * f64::from(self.rate)).min(2. * f64::from(self.rate));
+        self.head_delays(frames)
+    }
+
+    /// The head delays for a TIME base of `base` frames (before the index 15 offset and the
+    /// per-head offsets, both measured at 48 kHz).
+    fn head_delays(&self, base: f64) -> [[usize; 2]; 3] {
+        let scale = f64::from(self.rate) / 48_000.;
+        let time = base - 600. * scale * f64::from(self.raw[index::DELAY_OFFSET]);
+        let mut delay = [[1; 2]; 3];
+        for (h, offsets) in HEAD_OFFSET.iter().enumerate() {
+            for (c, o) in offsets.iter().enumerate() {
+                let frames = (time + o * scale + HEAD_BIAS).round().max(1.);
+                delay[h][c] = frames as usize;
+            }
+        }
+        delay
+    }
+
     /// Process `input` (L, R) into `output` (L, R). `storage` is `storage_len(rate)` `[L, R]` entries.
     pub fn process(
         &self,
+        state: &mut ReplikaState,
+        storage: &mut [[f64; 2]],
+        input: [&[f64]; 2],
+        output: [&mut [f64]; 2],
+    ) {
+        self.process_with_delays(self.delay, state, storage, input, output);
+    }
+
+    /// [`Self::process`] with head delays from the caller (a tempo-synced TIME changes them per block).
+    pub fn process_with_delays(
+        &self,
+        delay: [[usize; 2]; 3],
         state: &mut ReplikaState,
         storage: &mut [[f64; 2]],
         input: [&[f64]; 2],
@@ -477,7 +514,7 @@ impl ReplikaCore {
             let [l, r] = if mode1 {
                 self.frame_mode1(state, x)
             } else {
-                self.frame(state, storage, x)
+                self.frame(delay, state, storage, x)
             };
             output_l[i] = f64::from(l);
             output_r[i] = f64::from(r);
@@ -485,7 +522,7 @@ impl ReplikaCore {
     }
 
     /// One frame, in the order of `141aa9480`. Lane products `m` are 1 and the gate is open (no gain).
-    fn frame(&self, st: &mut ReplikaState, storage: &mut [[f64; 2]], x: [f32; 2]) -> [f32; 2] {
+    fn frame(&self, delay: [[usize; 2]; 3], st: &mut ReplikaState, storage: &mut [[f64; 2]], x: [f32; 2]) -> [f32; 2] {
         let ring = self.ring;
         let t = st.frame;
         st.frame = st.frame.wrapping_add(1);
@@ -508,13 +545,13 @@ impl ReplikaCore {
         // Head 1: write the taps, read at its delays. Head 3: feedback read x gain, path-0 limiter at half scale.
         write(storage, ring, 0, t, tap);
         let head1 = [
-            read(storage, ring, 0, t, self.delay[0][0], 0),
-            read(storage, ring, 0, t, self.delay[0][1], 1),
+            read(storage, ring, 0, t, delay[0][0], 0),
+            read(storage, ring, 0, t, delay[0][1], 1),
         ];
         let g = self.feedback_gain;
         let head3 = [
-            g * read(storage, ring, 2, t, self.delay[2][0], 0),
-            g * read(storage, ring, 2, t, self.delay[2][1], 1),
+            g * read(storage, ring, 2, t, delay[2][0], 0),
+            g * read(storage, ring, 2, t, delay[2][1], 1),
         ];
         let head3 = half_scale(&mut st.head3_limiter, head3);
 
@@ -526,8 +563,8 @@ impl ReplikaCore {
         ];
         write(storage, ring, 1, t, f1);
         let h2 = [
-            g * read(storage, ring, 1, t, self.delay[1][0], 0),
-            g * read(storage, ring, 1, t, self.delay[1][1], 1),
+            g * read(storage, ring, 1, t, delay[1][0], 0),
+            g * read(storage, ring, 1, t, delay[1][1], 1),
         ];
         let f2 = [
             self.cut.tick(&mut st.filters[1][0], h2[0]),

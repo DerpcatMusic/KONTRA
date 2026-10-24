@@ -1,0 +1,148 @@
+{
+ "mode": "spectrum",
+ "chain": [
+  "Effects/Tape Saturator"
+ ],
+ "stimulus": {
+  "freq": 9500,
+  "db": -6,
+  "dur": 5.0
+ },
+ "instances": [
+  {
+   "name": "ref",
+   "pre": [
+    [
+     0,
+     "EFFECT_BYPASS",
+     1
+    ]
+   ],
+   "post": []
+  },
+  {
+   "name": "g050_q0_rep",
+   "pre": [
+    [
+     0,
+     "EFFECT_BYPASS",
+     0
+    ],
+    [
+     0,
+     "TP_GAIN",
+     500000
+    ],
+    [
+     0,
+     "TP_WARMTH",
+     0
+    ],
+    [
+     0,
+     "TP_HF_ROLLOFF",
+     0
+    ],
+    [
+     0,
+     "TP_QUALITY",
+     0
+    ]
+   ],
+   "post": []
+  },
+  {
+   "name": "g050_q1",
+   "pre": [
+    [
+     0,
+     "EFFECT_BYPASS",
+     0
+    ],
+    [
+     0,
+     "TP_GAIN",
+     500000
+    ],
+    [
+     0,
+     "TP_WARMTH",
+     0
+    ],
+    [
+     0,
+     "TP_HF_ROLLOFF",
+     0
+    ],
+    [
+     0,
+     "TP_QUALITY",
+     1000000
+    ]
+   ],
+   "post": []
+  },
+  {
+   "name": "g080_q1",
+   "pre": [
+    [
+     0,
+     "EFFECT_BYPASS",
+     0
+    ],
+    [
+     0,
+     "TP_GAIN",
+     800000
+    ],
+    [
+     0,
+     "TP_WARMTH",
+     0
+    ],
+    [
+     0,
+     "TP_HF_ROLLOFF",
+     0
+    ],
+    [
+     0,
+     "TP_QUALITY",
+     1000000
+    ]
+   ],
+   "post": []
+  },
+  {
+   "name": "g100_q1",
+   "pre": [
+    [
+     0,
+     "EFFECT_BYPASS",
+     0
+    ],
+    [
+     0,
+     "TP_GAIN",
+     1000000
+    ],
+    [
+     0,
+     "TP_WARMTH",
+     0
+    ],
+    [
+     0,
+     "TP_HF_ROLLOFF",
+     0
+    ],
+    [
+     0,
+     "TP_QUALITY",
+     1000000
+    ]
+   ],
+   "post": []
+  }
+ ]
+}
