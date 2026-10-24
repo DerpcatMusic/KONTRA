@@ -10,7 +10,7 @@ It is enforced by tools (`tools/plan/plan.py`, the `v3 plan` CI check, the
 | What | Where | Who edits |
 |---|---|---|
 | Design | `docs/architecture-v3/00–11` | any PR that changes reality updates the doc in the same PR |
-| Tasks: ids, deps, owned paths, steps, gates | [`tasks.toml`](tasks.toml) | coordinator only (`v3/plan-*` branches) |
+| Tasks: ids, deps, owned paths, steps, gates | [`tasks.toml`](tasks.toml) | coordinator only (`v3-plan-*` branches) |
 | Task index + dependency graph | [`TASKS.md`](TASKS.md) | generated: `plan.py index` |
 | Live status | GitHub issues (`v3` label), project **KONTRA v3** | `plan.py sync` / `refresh`, the merge hook, claims |
 | Gate results | `docs/architecture-v3/gates/G<n>.md` | coordinator |
@@ -38,19 +38,19 @@ main ──────────────●──────────
                     \ merge main   \ merge main
 v3   ──●──●──●──●────●──●──●──●─────●──●──●────▶  integration branch, protected, always green
         \  \  \
-         v3/P1.2-preload-law, v3/P5.1-dsp-family-dynamics, ...   one branch per task
-         v3/plan-<slug>      plan edits (tasks.toml, docs, tools/plan)
-         v3/sync-main-<date> main → v3 merges
+         v3-P1.2-preload-law, v3-P5.1-dsp-family-dynamics, ...   one branch per task
+         v3-plan-<slug>      plan edits (tasks.toml, docs, tools/plan)
+         v3-sync-main-<date> main → v3 merges
 ```
 
 - `v3` is created from the commit that holds this folder. It merges back into
   `main` only at a gate the user approves (G3 is the first candidate: the
   playback fixes are user-visible; G8 is the end).
-- Task branches: `v3/<task id>-<slug>`. CI reads the task id from the branch
+- Task branches: `v3-<task id>-<slug>`. CI reads the task id from the branch
   name, so the name is not cosmetic. `plan.py brief <id>` prints the exact name.
-- Squash-merge only. One task = one squash commit on `v3`, titled
+- Squash-merge task and plan PRs (merge commits only for main syncs). One task = one squash commit on `v3`, titled
   `<id>: <title>`.
-- `main` → `v3`: the coordinator opens `v3/sync-main-YYYYMMDD` with a merge
+- `main` → `v3`: the coordinator opens `v3-sync-main-YYYYMMDD` with a merge
   commit (never rebase `v3`) at least weekly and before every gate.
 
 ## 4. Task lifecycle
@@ -150,7 +150,7 @@ For a T3 delegated worker:
 ```text
 delegate_task(
   task = <output of `python3 tools/plan/plan.py brief P5.2`>
-         + "Issue: #<n>. Work in your worktree; first run `git fetch origin && git switch -c v3/P5.2-<slug> origin/v3`.",
+         + "Issue: #<n>. Work in your worktree; first run `git fetch origin && git switch -c v3-P5.2-<slug> origin/v3`.",
   target = { model: <the coordinator's standing worker model> },
   isolation = "worktree",
   clientRequestId = "v3-P5.2-r1")
@@ -173,7 +173,7 @@ the worker's replies (`-r2`, `-r3` …).
 
 ## 10. Changing the plan
 
-- Only on `v3/plan-<slug>` branches, by the coordinator: edit `tasks.toml`,
+- Only on `v3-plan-<slug>` branches, by the coordinator: edit `tasks.toml`,
   run `plan.py validate && plan.py index`, PR into `v3`, then `plan.py sync`.
 - New task ids append (`P5.11`, `P1.4b`); never renumber merged tasks.
 - A task that turns out bigger than one PR is split into lettered tasks with
@@ -183,7 +183,7 @@ the worker's replies (`-r2`, `-r3` …).
 
 | Thing | Setting |
 |---|---|
-| Branch `v3` | ruleset "v3 integration": PR required, required checks `CI required` + `v3 plan`, squash only, no force push, no deletion |
+| Branch `v3` | ruleset "v3 integration": PR required, required checks `CI required` + `v3 plan`, squash (merge commits only for `v3-sync-main-*`), no force push, no deletion, admins may bypass in a PR |
 | Repo | auto-merge allowed; delete head branches on merge |
 | Labels | `v3`, `v3-epic`, `phase:0–8`, `lane:*`, `size:S/M/L`, `agent:*`, `status:ready/blocked/claimed`, `draft-brief`, `scope-override` (`plan.py sync`) |
 | Milestones | `v3 · P<n> <phase>` per phase |
@@ -191,3 +191,6 @@ the worker's replies (`-r2`, `-r3` …).
 | Project | **KONTRA v3** (user project, linked to the repo): fields Phase, Lane, Size, Agent, Task; suggested views: Board by Status, Table grouped by Phase, Roadmap by milestone (views are created in the UI; the API cannot create them) |
 | Templates | `.github/pull_request_template.md`, issue forms for bugs and v3 task proposals |
 | CI | `.github/workflows/v3.yml`: `v3 plan` (validate, index check, unit tests, scope) on PRs into `v3`; issue close on merge; full CI on push to `v3` |
+
+Why `v3-` and not `v3/`: git stores refs as files, so a branch named `v3`
+makes every `v3/...` branch impossible (`directory file conflict`).

@@ -42,7 +42,7 @@ class Manifest(unittest.TestCase):
     def test_offline_ready_is_conflict_free(self):
         st = plan.status(self.plan, {})
         batch, _ = plan.ready_batch(self.plan, st)
-        self.assertIn("P0.1", batch)
+        self.assertIn("P0.0", batch)
         skip = ("append", "regenerate")
         for i, a in enumerate(batch):
             for b in batch[i + 1:]:
@@ -54,8 +54,8 @@ class Manifest(unittest.TestCase):
         text = plan.brief(self.plan, "P1.2")
         self.assertIn("<!-- v3-task: P1.2 -->", text)
         self.assertIn("crates/sampler-kontakt/src/stream.rs", text)
-        self.assertEqual(plan.task_of("v3/P5.3a-filter-part-a", self.plan), "P5.3a")
-        self.assertIsNone(plan.task_of("v3/P9.9-nope", self.plan))
+        self.assertEqual(plan.task_of("v3-P5.3a-filter-part-a", self.plan), "P5.3a")
+        self.assertIsNone(plan.task_of("v3-P9.9-nope", self.plan))
         self.assertIsNone(plan.task_of("fix/other", self.plan))
 
     def test_slug(self):

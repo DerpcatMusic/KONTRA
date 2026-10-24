@@ -17,7 +17,7 @@ body:
     id: phase
     attributes:
       label: Phase
-      options: ["0 Guard rails", "1 On-time start", "2 Scripts never stall notes", "3 One script path", "4 Base and model crates", "5 DSP families", "6 Engine crates", "7 Script and format crates", "8 App and plugin"]
+      options: ["0 Guard rails", "1 On-time start", "2 Scripts never stall notes", "3 One script path without transport holds", "4 Base and model crates", "5 DSP families", "6 Engine crates", "7 Script and format crates", "8 App and plugin"]
     validations:
       required: true
   - type: textarea

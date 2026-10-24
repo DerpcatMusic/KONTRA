@@ -1,5 +1,5 @@
 <!--
-v3 PRs: base `v3`, branch `v3/<task id>-<slug>`, title "<task id>: <task title>".
+v3 PRs: base `v3`, branch `v3-<task id>-<slug>`, title "<task id>: <task title>".
 See docs/architecture-v3/12-WORKFLOW.md. Other PRs: delete the v3 section.
 -->
 

@@ -6,10 +6,10 @@
   plan.py brief ID               print the self-contained agent brief (= issue body)
   plan.py ready [--offline]      tasks that can start now, as a conflict-free batch
   plan.py scope ID [--base REF]  fail if the branch changes files outside the task's owns
-  plan.py task-of BRANCH         print the task id encoded in a v3/<id>-slug branch
+  plan.py task-of BRANCH         print the task id encoded in a v3-<id>-slug branch
   plan.py sync [--dry-run]       labels, milestones, epics, issues, sub-issues, deps, project
   plan.py refresh                status:ready / status:blocked labels only (CI-safe, no project access)
-  plan.py on-merge BRANCH        close the task issue of a merged v3/<id> branch, then refresh
+  plan.py on-merge BRANCH        close the task issue of a merged v3-<id> branch, then refresh
 
 Workflow and rules: docs/architecture-v3/12-WORKFLOW.md. Python >= 3.11, stdlib only, `gh` for sync.
 """
@@ -175,6 +175,9 @@ def validate(plan: dict) -> tuple[list[str], list[str]]:
     ids = [t["id"] for t in plan.get("task", [])]
     if len(ids) != len(set(ids)):
         errors.append("duplicate task ids: " + ", ".join(sorted({i for i in ids if ids.count(i) > 1})))
+    for n, name in plan["phases"].items():
+        if "," in name:
+            errors.append(f"phase {n}: no commas in phase names (project select options are comma-separated)")
     for t in plan.get("task", []):
         tid = t["id"]
         if not re.fullmatch(r"P\d\.\d+[a-z]?", tid):
