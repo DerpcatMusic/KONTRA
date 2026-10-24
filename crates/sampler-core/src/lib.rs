@@ -123,7 +123,7 @@ pub use engine_parameter_names::{
 };
 pub use engine_parameters::{
     BUS_VOLUME_LAW, EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
-    EngineParameterLaw, EngineParameterOffset, EngineParameterOutcome, engine_parameter_control,
+    EngineParameterLaw, EngineParameterOffset, EngineParameterOutcome, engine_address_of_control, engine_parameter_control, script_engine_control_ids,
     engine_parameter_display, engine_parameter_id, engine_parameter_name,
 };
 mod parameter_registry;

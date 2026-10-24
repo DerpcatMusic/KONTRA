@@ -65,7 +65,7 @@ mod effect_controls;
 mod host_transport;
 #[cfg(test)]
 mod host_transport_tests;
-mod persistence;
+pub(crate) mod persistence;
 pub(crate) mod snapshot_reuse;
 #[cfg(test)]
 mod pressed_tests;
@@ -3528,6 +3528,7 @@ impl Core for V2Core {
             && (control.0>>64)==0x5556490000000000
         {return script.ui().value(control);}
         let rt = &p.runtime;
+        if let Some(value)=rt.script_engine_value(rt.active_plan(),control.0) {return Some(value);}
         rt.control_base_value(rt.active_plan(), sampler_core::ControlId(control.0))
             .ok()
             .map(number)
@@ -4305,6 +4306,12 @@ impl V2Loader {
         if let Some(script) = &script {
             controls.extend(script.ui().values());
         }
+        // Script-written group volume/pan/tune: refreshed and saved like controls.
+        controls.extend(
+            sampler_core::script_engine_control_ids(prepared.group_count())
+                .into_iter()
+                .map(|id| (sampler_ui_ir::ControlId(id), 0.0)),
+        );
         let (limits, ceiling) =
             budgeted_limits(&prepared, cache.as_ref().map(StreamCache::voice_budget));
         let per_voice = prepared.voice_state_bytes() + VOICE_OVERHEAD;
