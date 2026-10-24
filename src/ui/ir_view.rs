@@ -2938,6 +2938,25 @@ mod page_layout_tests {
         (face, assets)
     }
 
+    #[test]
+    fn picture_switch_without_authored_size_takes_the_picture_size() {
+        let mut face = face(ir::Source::Ksp { slot: 0 });
+        let mut switch = ir::Widget::new("$switch", PageRef(0), ir::Rect::new(100, 381, 0, 0), Kind::Switch);
+        switch.images.push(ir::ImageUse::new(ir::AssetRef(0), Use::Strip));
+        face.widgets = vec![switch];
+        face.assets = vec![ir::Asset {
+            path: "synthetic-strip".into(),
+            kind: ir::AssetKind::Image(ir::ImageMeta {
+                frames: 6,
+                size: Some(ir::Size { width: 16.0, height: 22.0 }),
+                ..Default::default()
+            }),
+        }];
+        let resolved = resolved(&face);
+        let rect = resolved.widgets[0].rect;
+        assert_eq!((rect.width, rect.height), (16.0, 22.0));
+    }
+
     fn memo_misses(el: &El) -> usize {
         usize::from(el.payload().extras().memo.is_some_and(|m| !m.reused))
             + el.children().iter().map(memo_misses).sum::<usize>()
