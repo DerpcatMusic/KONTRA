@@ -32,8 +32,11 @@ Fixtures:
 - Real-library runs (Areia, Vista, Conflux, ...) are nightly and local,
   with the same contracts and `KONTRA_PROBE_NKI`-style env selection.
 
-The ignored test in `src/sound/v2.rs` is the seed. Phase 1 moves it into
-`kontra-probe` and turns its prints into assertions.
+Task P0.2 moved the old ignored test from `src/sound/v2.rs` into
+`kontra-probe` (`tools/probe`) and turned its prints into verdicts. Until the
+engine exposes per-voice start frames, onsets are measured on the mixed output,
+so C3 is unsupported. Null contracts (C4, C5) must fail or report unsupported
+when the reference render is silent, never pass vacuously.
 
 ## 2. DSP vectors
 
