@@ -29,6 +29,9 @@ pub(crate) enum Unit {
     Twin(TwinDelay),
     Psyche(PsycheDelay),
     Replika(Replika),
+    /// Flair v0x51 (`BParFXFlair`): the stored fields bound by name from
+    /// fx_other.tsv. Read at absolute offsets. Not mapped onto a core yet.
+    Flair(Flair),
     /// Wow / Flutter v0x10: wow, flutter, scrape, speed, stereo, age, saturation (f32),
     /// gate (flag), mix (f32).
     WowFlutter { fields: [f32; 7], gate: bool, mix: f32 },
@@ -295,6 +298,46 @@ pub(super) fn read_psyche(version: u16, r: &mut Reader) -> Option<Unit> {
     Some(Unit::Psyche(PsycheDelay { time: v[0], unit, feedback: v[1], detune: v[2], pitch: v[3], offset: v[4], cross: v[5], reverse_stereo, detune_stereo, reverse }))
 }
 
+/// `BParFXFlair` v0x51 stored fields, by the `ENGINE_PAR_FLAIR_*` names. The pitch note
+/// field (+0x40) has no binding row and is not read.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Flair {
+    pub amount: f32,
+    pub rate: f32,
+    pub width: f32,
+    pub mix: f32,
+    pub voices: f32,
+    pub feedback: f32,
+    pub damping: f32,
+    pub detune: f32,
+    pub offset: f32,
+    pub invert_phase: bool,
+}
+
+/// Flair v0x51 (`BParFXFlair`), offsets from fx_other.tsv (`ENGINE_PAR_FLAIR_*` rows).
+pub(super) fn read_flair(version: u16, public: &[u8]) -> Option<Unit> {
+    if version != 0x51 {
+        return None;
+    }
+    let f32_at = |at: usize| -> Option<f32> {
+        let bytes = public.get(at..at + 4)?;
+        let x = f32::from_le_bytes(bytes.try_into().ok()?);
+        x.is_finite().then_some(x)
+    };
+    Some(Unit::Flair(Flair {
+        amount: f32_at(8)?,
+        rate: f32_at(16)?,
+        width: f32_at(20)?,
+        mix: f32_at(24)?,
+        voices: f32_at(28)?,
+        feedback: f32_at(32)?,
+        damping: f32_at(36)?,
+        detune: f32_at(40)?,
+        offset: f32_at(44)?,
+        invert_phase: *public.get(48)? != 0,
+    }))
+}
+
 /// Replika Delay v0x12 (reader `0x140d02250`); older versions are not read.
 pub(super) fn read_replika(version: u16, r: &mut Reader) -> Option<Unit> {
     if version != 0x12 {
@@ -382,7 +425,7 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x5a => "Replika: only the v0x12 reader (0x140d02250) is read; other saved versions are not (docs/re/engine/k-replika.md)",
         0x5b => "Phasis: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but their binding to the core parameter indices and the core's oversampling resamplers (about 96 kHz internal) are not extracted",
-        0x5c => "Flair: saved fields and most of the core law are extracted, but the writer of the pitch note field (+0x40), the internal-rate resampler and the random start phase are not",
+        0x5c => "Flair: fields bound (fx_other.tsv); the pitch note writer (+0x40, no binding row), the internal-rate resampler and the random start phase are not mapped",
         0x69 => "Vibrato Chorus: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the core's wave-digital LC ladder (the delay line it models) is not extracted",
         0x22 => "Rotator: horn/drum law located (control 0x140a97d30, audio 0x140aae920, output stage 0x140ac21f0 ported) but the runtime-initialised lane vectors at 0x149e6c400..0x149e6c45c and the RT_* setter binding (virtual BParFXRotator, vtable not exported) are not yet verified",
         _ => return None,
@@ -579,6 +622,10 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
         Unit::Replika(ref rep) => return replika_config(rep, dry, notes),
+        Unit::Flair(_) => {
+            notes.push(("parameters".into(), "Flair: bound fields read; core (pitch note writer, resampler, random start phase) not mapped".into(), Reason::NotModeled));
+            return None;
+        }
         Unit::WowFlutter { fields: [wow, flutter, scrape, speed, stereo, age, saturation], gate, mix } => {
             if ![wow, flutter, scrape, speed, stereo, age, saturation, mix].iter().all(|v| unit_interval(&[*v])) {
                 notes.push(("parameters".into(), format!("{wow}/{flutter}/{speed}/{stereo}/{mix}"), Reason::InvalidValue));
@@ -1300,5 +1347,28 @@ pub(super) fn slot_phaser(b: &mut Lowering, s: &Site, notes: &mut Notes, cutoff:
     } else {
         notes.push(("Phaser filter parameters".into(), format!("{knobs:?}"), Reason::InvalidValue));
         false
+    }
+}
+
+#[cfg(test)]
+mod flair_binding_tests {
+    use super::*;
+
+    /// A v0x51 record with each bound float at its fx_other.tsv offset and distinct values.
+    #[test]
+    fn flair_fields_read_from_their_measured_offsets() {
+        let mut public = vec![0u8; 64];
+        let floats = [(8, 0.1f32), (16, 0.2), (20, 0.3), (24, 0.4), (28, 0.5), (32, 0.6), (36, 0.7), (40, 0.8), (44, 0.9)];
+        for (at, x) in floats {
+            public[at..at + 4].copy_from_slice(&x.to_le_bytes());
+        }
+        public[48] = 1;
+        let Some(Unit::Flair(f)) = read_flair(0x51, &public) else { panic!("v0x51 must read") };
+        assert_eq!(
+            [f.amount, f.rate, f.width, f.mix, f.voices, f.feedback, f.damping, f.detune, f.offset],
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+        );
+        assert!(f.invert_phase);
+        assert!(read_flair(0x50, &public).is_none());
     }
 }
