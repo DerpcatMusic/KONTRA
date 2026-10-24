@@ -266,7 +266,7 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
               f"(T3/Claude worktrees: `git switch -c {meta['branch_prefix']}{tid}-{slug_} origin/{branch}`).",
               f"2. Commit early and often. Conventional Commits, with a `Task: {tid}` trailer.",
               "3. Write Rust per the `beautiful-rust` skill; before the PR run `cargo fmt` and "
-              "`build-slot cargo clippy -p <your crates> --all-targets -- -D warnings` on the crates you changed.",
+              "`build-slot cargo clippy -p <your crates> --all-targets --no-deps -- -D warnings` on the crates you changed (`--no-deps`: some old crates are not clippy-clean yet).",
               "4. Run only the gate's crate-scoped commands, always through `build-slot`. No workspace builds, corpus runs, "
               "real-library surveys or plugin bundles: the coordinator does those once per merge batch.",
               f"5. `git push -u origin HEAD` then `gh pr create --base {branch} --title \"{tid}: {t['title']}\"` and fill in the template.",
