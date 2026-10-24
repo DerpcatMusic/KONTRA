@@ -1,13 +1,19 @@
 # Kontakt Compressor (Effects/Compressor, Enhanced) level-curve pilot (2026-10-24)
 
-Rig: `fxrig.py levels` (level-stepped 1 kHz tone, -40..0 dBFS, 1 s per level; bypassed reference in the same session).
-Table: `comp-levels-pilot.tsv` (step, name, input dBFS, reference dB, output dB, delta dB).
+Rig: `fxrig.py levels` through `oracle-slot`: 1 kHz tone, 7 levels (-40..0 dBFS, 1 s each), bypassed reference in the same session.
+Table: `comp-levels-pilot.tsv` (step, name, level, reference dB, output dB, delta dB). The earlier dropout at -18 dBFS was the
+MIDI-channel bug; all seven levels now measure.
 
-Status: NOT a usable static curve yet.
-- The stimulus plays (checked: segment RMS -43/-33/-27/-21/-15/-9/-3 dB as written).
-- The -18 dBFS segment reads silent (-240 dB) in the reference in all three settings: a capture problem not yet explained.
-- Deltas are not monotone in level (for example thr 0.5 / ratio 0.5: -58 dB at -40 dBFS, -16 at -30, -14 at -24, -12 at -12, -16 at 0),
-  and with threshold 0.25 the output sits near -56 dB at every level. The 0.25 s measurement window is probably still inside the
-  attack/settling of this preset, and the threshold/ratio knob-to-dB laws are not calibrated yet.
-Next: measure the steady state after a 2 s tone, check the -18 dBFS dropout, and calibrate THRESHOLD and RATIO knob laws against
-the level sweep before any fit. Dynamics parity rows are unchanged.
+Result of the grid fit (Rust probe, `KontaktEnhanced`, threshold dB x saved ratio, delta RMS against the native deltas):
+
+| threshold knob | ratio knob | best threshold dB | best saved ratio | RMS error |
+|---|---|---|---|---|
+| 0.50 | 0.50 | -52 | 0.75 | 2.6 dB |
+| 0.25 | 0.50 | -56 | 0.15 | 1.0 dB |
+| 0.75 | 0.25 | -30 | 0.70 | 0.5 dB |
+
+Not a fit yet. The three settings want different ratio mappings (0.5 -> 0.75 and 0.25 -> 0.15), so the knob-to-ratio law of
+the Enhanced law (`1/(r+0.13) - 0.884`) does not match this data. The threshold knob to dB map is not linear in these three
+points (0.25 -> -56, 0.5 -> -52, 0.75 -> -30). The 0.25 s measurement window also sits on the attack/release settling. Next:
+a threshold grid at fixed ratio (5 knobs), a ratio grid at fixed threshold (5 knobs), and the same levels after a 2 s tone.
+Dynamics parity rows are unchanged.
