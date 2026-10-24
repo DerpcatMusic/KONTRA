@@ -19,10 +19,10 @@ const SOURCE: &str = r#"on init
     declare ~real := 1.5 make_persistent(~real)
     declare %ints[2] := (1,2) make_persistent(%ints)
     declare ?reals[2] := (0.25,0.5) make_persistent(?reals)
-    declare @title := "initial" make_persistent(@title)
+    declare @title @title := "initial" make_persistent(@title)
     declare !texts[2] := ("first","second") make_persistent(!texts)
     declare $instrument := 2 make_instr_persistent($instrument)
-    declare $ordinary := 3 declare @ordinary_text := "initial"
+    declare $ordinary := 3 declare @ordinary_text @ordinary_text := "initial"
     declare ui_switch $edit declare $calls declare $seen declare $pgs_seen
     pgs_create_key(SHARED,1) pgs_set_key_val(SHARED,0,7)
     set_control_par(get_ui_id($edit),$CONTROL_PAR_HIDE,0)
