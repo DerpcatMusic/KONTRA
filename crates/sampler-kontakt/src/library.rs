@@ -633,12 +633,17 @@ fn translate(
         return Err(invalid("zone count exceeds the zone list"));
     }
     out.ir.source_indices.zones.resize(count, None);
+    out.ir.source_indices.zone_names.resize(count, String::new());
     let addressed = addressed(&out.ir.source_indices.zone_catalog);
     for index in 0..count {
         let mut zone =
             raw_zone(&mut r).map_err(|reason| invalid(&format!("zone {index}: {reason}")))?;
         zone.source_id = out.ir.source_indices.zone_catalog.get(index).and_then(|z| z.id)
             .filter(|_| addressed.get(index).copied().unwrap_or(false));
+        // Kontakt names a zone by its sample's file stem (`find_zone` matches that name).
+        if let Some(stem) = table.get(&(zone.file as u32)).and_then(|n| std::path::Path::new(n).file_stem()) {
+            out.ir.source_indices.zone_names[index] = stem.to_string_lossy().into_owned();
+        }
         if !zone_metadata.is_empty() {
             if let Some(id)=zone.source_id {
                 zone_routes.apply_initial(id,&mut zone).map_err(|reason|invalid(&reason))?;
