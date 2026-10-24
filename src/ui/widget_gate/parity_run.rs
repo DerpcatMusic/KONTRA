@@ -784,3 +784,54 @@ fn census(faces: &[sampler_ui_ir::Interface]) -> Value {
     }
     json!(out)
 }
+
+/// Per-frame cost of one instrument's performance view in the editor: build and layout
+/// medians over `KONTRA_FACE_FRAMES` frames, pointer moving over the face. Opt-in timing.
+#[test]
+#[ignore = "timings only; KONTRA_FACE_NKI=path"]
+fn face_frame_cost() {
+    let path = std::env::var("KONTRA_FACE_NKI").expect("KONTRA_FACE_NKI");
+    let frames: usize = std::env::var("KONTRA_FACE_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+    let mut selection = Selection::default();
+    selection.parts = vec![Part { path: path.into(), ..Default::default() }];
+    let mut gate = Gate::load(selection);
+    for _ in 0..50 {
+        gate.settle();
+    }
+    assert!(gate.tab("Interface"), "Interface tab missing");
+    let ir = gate.editor.ui.scene().map_or(0, |s| s.surfaces().filter(|x| x.key.contains("-ir-")).count());
+    let (mut build, mut layout) = (Vec::new(), Vec::new());
+    let centre = super::super::tests::center(&gate.editor.ui, "view-0-Interface");
+    for i in 0..frames {
+        let pos = if i % 2 == 0 { centre } else { Point::new(centre.x + 30., centre.y) };
+        let input = Input { pointer: PointerInput { pos: Some(pos), ..Default::default() }, ..Default::default() };
+        let (b, l) = gate.editor.tick_split(input);
+        build.push(b);
+        layout.push(l);
+    }
+    let med = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    let (b, l) = (med(&mut build), med(&mut layout));
+    // Cost components that scale with all widgets, hidden included: the draw order
+    // (built per frame) and the visibility scan over every widget.
+    let faces: Vec<sampler_ui_ir::Interface> = gate.params.shared.view.lock().unwrap().parts[0].interfaces.iter().cloned().collect();
+    if let Some(face) = faces.iter().find(|f| f.performance) {
+        let page = sampler_ui_ir::PageRef(0);
+        let mut order = Vec::new();
+        let mut scan = Vec::new();
+        for _ in 0..200 {
+            let t = std::time::Instant::now();
+            let d = face.draw_order(page);
+            order.push(t.elapsed().as_secs_f64() * 1e6);
+            let t = std::time::Instant::now();
+            let vis = d.iter().filter(|&&w| face.visible(w)).count();
+            scan.push(t.elapsed().as_secs_f64() * 1e6);
+            std::hint::black_box(vis);
+        }
+        let visible = face.widgets.iter().enumerate().filter(|(i, _)| face.visible(sampler_ui_ir::WidgetRef(*i))).count();
+        println!("FACE_SCAN widgets={} visible={visible} draw_order_us={:.1} visibility_scan_us={:.1}", face.widgets.len(), med(&mut order), med(&mut scan));
+    }
+    println!("FACE_COST nodes_ir={ir} frames={frames} build_ms={b:.3} layout_ms={l:.3} cpu_ms={:.3}", b + l);
+}
