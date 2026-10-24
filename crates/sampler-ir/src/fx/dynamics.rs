@@ -257,16 +257,11 @@ impl Config {
         match self.law {
             Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) => vec![
                 // Universal compressor knob map, fitted to the native Enhanced grid (docs/re/engine/fx-measured/comp-grid.md):
-                // threshold dB = -76 + 66 k (native -76..-10), saved ratio = 0.05^k (native 0.05..1). Shared by the three
-                // compressor modes. A saved value outside the knob's range is held at the nearest end: the runtime rejects
-                // it otherwise (ANALOG STRINGS saves -8.05 dB, above the -10 dB top).
-                Lane::new(
-                    "ENGINE_PAR_THRESHOLD",
-                    P::Threshold,
-                    n.threshold_db.clamp(-76., -10.),
-                    L::Linear { a: -76., b: 66. },
-                ),
-                Lane::new("ENGINE_PAR_RATIO", P::Ratio, n.ratio.clamp(0.05, 1.), L::Exp { a: 1., r: 0.05 }),
+                // threshold dB = -76 + 66 k, saved ratio = 0.05^k (the grid's lowest ratio). Shared by the three
+                // compressor modes. A saved value past the knob ends is kept as saved: the lane's domain holds it
+                // (sampler-core lower.rs, NativeControl).
+                Lane::new("ENGINE_PAR_THRESHOLD", P::Threshold, n.threshold_db, L::Linear { a: -76., b: 66. }),
+                Lane::new("ENGINE_PAR_RATIO", P::Ratio, n.ratio, L::Exp { a: 1., r: 0.05 }),
                 Lane::new("ENGINE_PAR_COMP_ATTACK", P::Attack, ms(self.attack), L::Table(&tables::COMP_ATTACK))
                     .scaled(seconds(&tables::COMP_ATTACK)),
                 Lane::new("ENGINE_PAR_COMP_DECAY", P::Release, ms(self.release), L::Table(&tables::COMP_DECAY))
@@ -323,40 +318,21 @@ mod tests {
         }
     }
 
-    /// Saved compressor values at the extremes, including 0 and values past the grid ends (ANALOG STRINGS saves
-    /// -8.05 dB), must sit inside the knob range of their lane: the runtime rejects a value outside it. Out-of-range
-    /// values are held at the nearest end.
+    /// Saved compressor values at the extremes (0, past the grid ends such as ANALOG STRINGS' -8.05 dB) are kept as
+    /// saved: the lane holds the value, nothing is clamped. The runtime domain check is covered in sampler-core.
     #[test]
-    fn compressor_lanes_accept_extreme_saved_values() {
+    fn compressor_lanes_keep_extreme_saved_values() {
         let address = crate::SlotAddress { group: 0, slot: 1, generic: 0 };
-        for threshold_db in [-120., -76., -14.15, -8.05, -10., 0., 6.] {
-            for ratio in [0., 0.01, 0.05, 0.5, 1.] {
-                let config = Config {
-                    address: Some(address),
-                    law: Law::KontaktEnhanced(Native { threshold_db, ratio }),
-                    ..Config::generic(0., 1., Time::Seconds(0.1), Time::Seconds(0.3))
-                };
-                for lane in config.lanes().iter().filter(|l| l.name.ends_with("THRESHOLD") || l.name.ends_with("RATIO")) {
-                    let (end_a, end_b) = (stored(lane.law, 0.), stored(lane.law, 1.));
-                    let (lo, hi) = (end_a.min(end_b), end_a.max(end_b));
-                    assert!(
-                        (lo..=hi).contains(&lane.value),
-                        "{} saved {} outside the knob range {lo}..={hi} (native {threshold_db} dB / {ratio})",
-                        lane.name,
-                        lane.value,
-                    );
-                }
+        for (threshold_db, ratio) in [(-120., 0.), (-14.15, 0.5), (-8.05, 0.34), (0., 0.01), (6., 1.)] {
+            let lanes = Config {
+                address: Some(address),
+                law: Law::KontaktEnhanced(Native { threshold_db, ratio }),
+                ..Config::generic(0., 1., Time::Seconds(0.1), Time::Seconds(0.3))
             }
+            .lanes();
+            let value = |name: &str| lanes.iter().find(|l| l.name == name).unwrap().value;
+            assert_eq!(value("ENGINE_PAR_THRESHOLD"), threshold_db);
+            assert_eq!(value("ENGINE_PAR_RATIO"), ratio);
         }
-        // The clamp is the only change from the native value: -8.05 dB saved holds at the -10 dB top.
-        let lanes = Config {
-            address: Some(address),
-            law: Law::KontaktEnhanced(Native { threshold_db: -8.05, ratio: 0. }),
-            ..Config::generic(0., 1., Time::Seconds(0.1), Time::Seconds(0.3))
-        }
-        .lanes();
-        let value = |name: &str| lanes.iter().find(|l| l.name == name).unwrap().value;
-        assert_eq!(value("ENGINE_PAR_THRESHOLD"), -10.);
-        assert_eq!(value("ENGINE_PAR_RATIO"), 0.05);
     }
 }
