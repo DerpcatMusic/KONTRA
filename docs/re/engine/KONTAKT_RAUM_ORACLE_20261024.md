@@ -39,7 +39,7 @@ no capture varies one control at a time.
 ## Re-measured (2026-10-24, same capture, time-domain bands)
 
 The Grounded LF/HF mismatch above does not reproduce. Boxed In (`impulse8`, Kontakt 8.13.1 via `oracle-slot`) against
-the current engine, 50 ms power windows, 10-biquad-free time-domain band split (RBJ, 2 cascaded per edge):
+the current engine, 50 ms power windows, time-domain band split (RBJ biquads, 2 cascaded per edge):
 
 | Band | Kontakt dB/s, 0.1-1.0 s | Ours dB/s | Dev |
 |---|---|---|---|
