@@ -360,44 +360,91 @@ impl Ladder {
     }
 
     fn process_held(&mut self, left: &mut [f32], right: &mut [f32]) {
-        let c = self.g * self.reciprocal;
-        let c4 = ((c * c) * c) * c;
-        let cell = Tpt1 { g: self.g, r: self.reciprocal };
-        let taps = usize::from(self.taps());
-        let feedback_scale = self.feedback * FEEDBACK;
-        for (channel, samples) in [left, right].into_iter().enumerate() {
-            let state = &mut self.state[channel];
-            for sample in samples {
-                let input = self.gain * *sample;
-                // Original 0x140b01092..0x140b01125 doubles each history before addition.
-                let step = |h: f32, s: f32| h * self.reciprocal * self.g + (s + s);
-                let histories = step(step(step(state[0] + state[0], state[1]), state[2]), state[3]);
-                // Original 0x140b010c4 forms q*4.16 before both feedback products.
-                let predicted = (c4 * input + histories * self.reciprocal)
-                    / (c4 * feedback_scale + 1.0);
-                let feedback = predicted * feedback_scale;
-                let correction =
-                    (feedback - state[4] * self.correction_previous) * self.correction_reciprocal;
-                let feedback =
-                    feedback + (state[4] + correction) * self.correction * self.correction_gain;
-                state[4] = correction;
-                let mut value = CLIP.apply(input - feedback);
-                let mut outputs = [value; 5];
-                for (stage, history) in state[..4].iter_mut().enumerate() {
-                    value = cell.tick(history, value);
-                    outputs[stage + 1] = value;
-                }
-                let tap = if taps <= 4 {
-                    outputs[taps]
-                } else {
-                    let weights = MORPHOLOGY_WEIGHTS[taps - 1];
-                    // Original 0x140b012a9..0x140b012bf groups stage 1 with the input.
-                    ((outputs[4] * weights[4] + outputs[3] * weights[3]) + outputs[2] * weights[2])
-                        + (outputs[1] * weights[1] + outputs[0] * weights[0])
-                };
-                *sample = tap * self.compensation;
-            }
+        let held = Held::new(self);
+        let [state_left, state_right] = &mut self.state;
+        // The channels are independent recurrences. Interleaving them lets the
+        // core overlap one channel's serial feedback chain with the other's;
+        // each channel's arithmetic and order are unchanged.
+        let n = left.len().min(right.len());
+        let (left_head, left_tail) = left.split_at_mut(n);
+        let (right_head, right_tail) = right.split_at_mut(n);
+        for (l, r) in left_head.iter_mut().zip(right_head.iter_mut()) {
+            *l = held.sample(state_left, *l);
+            *r = held.sample(state_right, *r);
         }
+        for l in left_tail {
+            *l = held.sample(state_left, *l);
+        }
+        for r in right_tail {
+            *r = held.sample(state_right, *r);
+        }
+    }
+}
+
+/// The per-block constants of [`Ladder::process_held`], formed once per call
+/// from the same expressions the per-sample loop used.
+struct Held {
+    g: f32,
+    reciprocal: f32,
+    gain: f32,
+    compensation: f32,
+    correction: f32,
+    correction_reciprocal: f32,
+    correction_previous: f32,
+    correction_gain: f32,
+    c4: f32,
+    feedback_scale: f32,
+    taps: usize,
+}
+
+impl Held {
+    fn new(filter: &Ladder) -> Self {
+        let c = filter.g * filter.reciprocal;
+        Self {
+            g: filter.g,
+            reciprocal: filter.reciprocal,
+            gain: filter.gain,
+            compensation: filter.compensation,
+            correction: filter.correction,
+            correction_reciprocal: filter.correction_reciprocal,
+            correction_previous: filter.correction_previous,
+            correction_gain: filter.correction_gain,
+            c4: ((c * c) * c) * c,
+            feedback_scale: filter.feedback * FEEDBACK,
+            taps: usize::from(filter.taps()),
+        }
+    }
+
+    #[inline(always)]
+    fn sample(&self, state: &mut [f32; 5], sample: f32) -> f32 {
+        let cell = Tpt1 { g: self.g, r: self.reciprocal };
+        let input = self.gain * sample;
+        // Original 0x140b01092..0x140b01125 doubles each history before addition.
+        let step = |h: f32, s: f32| h * self.reciprocal * self.g + (s + s);
+        let histories = step(step(step(state[0] + state[0], state[1]), state[2]), state[3]);
+        // Original 0x140b010c4 forms q*4.16 before both feedback products.
+        let predicted = (self.c4 * input + histories * self.reciprocal)
+            / (self.c4 * self.feedback_scale + 1.0);
+        let feedback = predicted * self.feedback_scale;
+        let correction =
+            (feedback - state[4] * self.correction_previous) * self.correction_reciprocal;
+        let feedback = feedback + (state[4] + correction) * self.correction * self.correction_gain;
+        state[4] = correction;
+        let mut value = CLIP.apply(input - feedback);
+        let mut outputs = [value; 5];
+        for (stage, history) in state[..4].iter_mut().enumerate() {
+            value = cell.tick(history, value);
+            outputs[stage + 1] = value;
+        }
+        let tap = if self.taps <= 4 {
+            outputs[self.taps]
+        } else {
+            let weights = MORPHOLOGY_WEIGHTS[self.taps - 1];
+            // Original 0x140b012a9..0x140b012bf groups stage 1 with the input.
+            ((outputs[4] * weights[4] + outputs[3] * weights[3]) + outputs[2] * weights[2])
+                + (outputs[1] * weights[1] + outputs[0] * weights[0])
+        };
+        tap * self.compensation
     }
 }
 
