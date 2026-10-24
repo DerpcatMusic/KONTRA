@@ -362,6 +362,7 @@ impl Slot {
             0x63 => Params::TimeMod(timemod::read_psyche(self.version, &mut r)?),
             0x6b => Params::TimeMod(timemod::read_twin(self.version, &mut r)?),
             0x5a => Params::TimeMod(timemod::read_replika(self.version, &mut r)?),
+            0x22 => Params::TimeMod(timemod::read_rotator(self.version, &self.public)?),
             0x6a => Params::TimeMod(timemod::read_wow_flutter(self.version, &mut r)?),
             // Cosmic (type 2) keeps its decoded fields: its core is not built.
             // Grounded (0), Airy (1) and Cosmic (2) decode alike.
