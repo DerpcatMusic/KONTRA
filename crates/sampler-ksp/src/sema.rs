@@ -629,6 +629,11 @@ impl<'a> Sema<'a, '_> {
             return fault(span, "invalid or reserved variable name");
         }
         let (ty, array) = prefix_type(text);
+        // Kontakt rejects a scalar string declaration with a literal initializer (conformance
+        // `str_decl_init`); the value is assigned in on init instead. Text arrays are not measured.
+        if ty == Ty::Str && !array && d.init.iter().any(|e| matches!(e.kind, A::Str(_))) {
+            return fault(d.init[0].span, "string variable takes no literal initializer; assign it in on init");
+        }
         let name: Box<str> = text.into();
         let persistence = match d.storage {
             Storage::Persistent => Persistence::Snapshot,

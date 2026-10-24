@@ -153,7 +153,7 @@ const SOURCE: &str = "on init
  set_snapshot_type(1)
  declare $saved := 11 make_persistent($saved)
  declare $instrument := 22 make_instr_persistent($instrument)
- declare $private := 33 declare @private_text := \"initial\"
+ declare $private := 33 declare @private_text @private_text := \"initial\"
  declare polyphonic $per_note
  declare ui_switch $tab declare $calls
  set_control_par(get_ui_id($tab),$CONTROL_PAR_HIDE,0)

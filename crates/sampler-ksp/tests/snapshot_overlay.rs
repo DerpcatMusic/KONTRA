@@ -98,10 +98,10 @@ const ALL: &str = r#"on init
     declare ~real := 1.5 make_persistent(~real)
     declare %ints[2] := (1,2) make_persistent(%ints)
     declare ?reals[2] := (0.25,0.5) make_persistent(?reals)
-    declare @text := "default" make_persistent(@text)
+    declare @text @text := "default" make_persistent(@text)
     declare !texts[2] := ("a","b") make_persistent(!texts)
     declare $instrument := 22 make_instr_persistent($instrument)
-    declare $ordinary := 33 declare @ordinary_text := "initial"
+    declare $ordinary := 33 declare @ordinary_text @ordinary_text := "initial"
     declare ui_switch $edit declare $calls declare $pgs_seen declare @picture_seen
     pgs_create_key(SHARED,1) pgs_set_key_val(SHARED,0,7)
     set_control_par(get_ui_id($edit),$CONTROL_PAR_HIDE,0)

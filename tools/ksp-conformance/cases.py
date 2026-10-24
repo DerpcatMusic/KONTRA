@@ -121,4 +121,26 @@ CASES = [
     # --- slice 3c: builtins returning booleans used as numbers ----------------------
     ("bool_inrange_arith", "typing", "", ["in_range(5, 1, 5) + 0"]),
     ("bool_pgs_arith", "typing", "pgs_create_key(TEST, 4)", ["pgs_key_exists(TEST) + 0"]),
+    # --- slice 4: integer xor / bitwise not, boolean xor ---------------------------
+    ("int_xor_value", "bitops", "", ["6 xor 3"]),
+    ("int_bitnot_dot", "bitops", "", [".not. 5", ".not. 0"]),
+    ("bool_xor_cond", "logic", "declare $a := 0\n  declare $b := 0\n  if ((1 = 1) xor (2 = 3))\n    $a := 1\n  end if\n  if ((1 = 1) xor (2 = 2))\n    $b := 1\n  end if", ["$a", "$b"]),
+    ("int_xor_cond", "logic", "declare $a := 0\n  if (1 xor 0)\n    $a := 1\n  end if", ["$a"]),
+    # --- slice 4: array search and sort at init --------------------------------------
+    ("array_search_value", "array2", "declare %a[5] := (4, 9, 2, 9, 1)", ["search(%a, 9, 0, 4)", "search(%a, 9, 2, 4)", "search(%a, 7, 0, 4)"]),
+    ("array_search_short", "array2", "declare %a[5] := (4, 9, 2, 9, 1)", ["search(%a, 9)"]),
+    ("array_sort_asc", "array2", "declare %a[4] := (3, 1, 4, 2)\n  sort(%a, 0, 3)", ["%a[0]", "%a[1]", "%a[2]", "%a[3]"]),
+    # --- slice 4: string comparison and concatenation at init ----------------------
+    ("string_eq_literal", "string", "declare @s := \"abc\"\n  declare $e := 0\n  if (@s = \"abc\")\n    $e := 1\n  end if", ["$e"]),
+    ("string_ne_literal", "string", "declare @s := \"abc\"\n  declare $e := 0\n  if (@s # \"abd\")\n    $e := 1\n  end if", ["$e"]),
+    ("string_concat_eq", "string", "declare @s := \"ab\"\n  declare @t := \"c\"\n  declare $e := 0\n  if (@s & @t = \"abc\")\n    $e := 1\n  end if", ["$e"]),
+    ("string_case_sensitive", "string", "declare $e := 0\n  if (\"ABC\" = \"abc\")\n    $e := 1\n  end if", ["$e"]),
+    # --- slice 4b: sort arity and string forms (probe which Kontakt accepts) --------
+    ("sort_asc_two", "array2", "declare %a[4] := (3, 1, 4, 2)\n  sort(%a, 0)", ["%a[0]", "%a[1]", "%a[2]", "%a[3]"]),
+    ("sort_desc_two", "array2", "declare %a[4] := (3, 1, 4, 2)\n  sort(%a, 1)", ["%a[0]", "%a[3]"]),
+    ("str_decl_init", "string", "declare @s := \"abc\"", ["0"]),
+    ("str_assign_decl", "string", "declare @s\n  @s := \"abc\"", ["0"]),
+    ("str_lit_cond", "string", "declare $e := 0\n  if (\"abc\" = \"abc\")\n    $e := 1\n  end if", ["$e"]),
+    ("str_var_cond", "string", "declare @s := \"abc\"\n  declare $e := 0\n  if (@s = \"abc\")\n    $e := 1\n  end if", ["$e"]),
+    ("str_var_ne_cond", "string", "declare @s := \"abc\"\n  declare $e := 0\n  if (@s # \"abd\")\n    $e := 1\n  end if", ["$e"]),
 ]

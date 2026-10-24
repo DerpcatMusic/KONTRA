@@ -461,7 +461,7 @@ fn nka_completion_is_plan_scoped_across_adoption_and_never_edits_the_replacement
 #[test]
 fn nka_runtime_concatenated_path_truncation_is_not_used_as_a_different_path() {
     let source = format!(
-        r#"on init declare %data[1] := (7) declare $job declare $status := -1 declare @path := "/" end on
+        r#"on init declare %data[1] := (7) declare $job declare $status := -1 declare @path @path := "/" end on
         on pgs_changed @path := @path & "{}" & "suffix.nka" $job := load_array_str(%data,@path) end on
         on async_complete $status := $NI_ASYNC_EXIT_STATUS end on"#,
         "x".repeat(TEXT_CAPACITY)
