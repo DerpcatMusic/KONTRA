@@ -136,6 +136,9 @@ pub struct ReplikaControls {
     /// Index 28 (path select: path k = min(4, trunc(5 v)); k = 1 is head mode 1). Reset 0 (path 0). The saved-field
     /// tie is INFERRED (sampler-kontakt maps the saved TYPE here, k-replika-gaps.md piece 3c part 5b).
     pub path: f32,
+    /// Tempo-synced TIME in beats (the unit factor times the note count). `None` is the
+    /// free law, 2000 ms x `time`. The host tempo turns beats into frames at render.
+    pub synced_beats: Option<f64>,
 }
 
 impl Default for ReplikaControls {
@@ -160,6 +163,7 @@ impl Default for ReplikaControls {
             ducking_amount: 0.,
             ducking_release: 0.,
             path: 0.,
+            synced_beats: None,
         }
     }
 }
