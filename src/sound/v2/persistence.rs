@@ -22,6 +22,96 @@ enum SavedValue {
     Text(String),
 }
 
+/// Script state text. Format 2 is `KSS2:` plus base64 of deflated binary: values are
+/// tagged little-endian words, so a 1.3M-value library (Areia) shrinks from 14 MB of JSON to
+/// a few hundred KB. Format 1 is the JSON of [`Saved`] and still loads; a text without the
+/// prefix is format 1.
+const FORMAT_2: &str = "KSS2:";
+
+fn put_str(out: &mut Vec<u8>, text: &str) {
+    out.extend((text.len() as u32).to_le_bytes());
+    out.extend(text.as_bytes());
+}
+
+fn encode(saved: &Saved) -> String {
+    use base64::Engine as _;
+    use std::io::Write as _;
+    let mut raw = Vec::with_capacity(saved.values.len() * 9);
+    put_str(&mut raw, &saved.schema);
+    raw.extend((saved.values.len() as u32).to_le_bytes());
+    for value in &saved.values {
+        match value {
+            SavedValue::Integer(v) => {
+                raw.push(0);
+                raw.extend(v.to_le_bytes());
+            }
+            SavedValue::Real(v) => {
+                raw.push(1);
+                raw.extend(v.to_bits().to_le_bytes());
+            }
+            SavedValue::Toggle(v) => raw.extend([2, u8::from(*v)]),
+            SavedValue::Cell(v) => {
+                raw.push(3);
+                raw.extend(v.to_le_bytes());
+            }
+            SavedValue::Text(text) => {
+                raw.push(4);
+                put_str(&mut raw, text);
+            }
+        }
+    }
+    let mut packed = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+    packed.write_all(&raw).expect("writing to a Vec cannot fail");
+    let packed = packed.finish().expect("writing to a Vec cannot fail");
+    format!("{FORMAT_2}{}", base64::engine::general_purpose::STANDARD.encode(packed))
+}
+
+/// The saved state, or `None` when the text is neither format.
+fn decode(text: &str) -> Option<Saved> {
+    use base64::Engine as _;
+    use std::io::Read as _;
+    let Some(body) = text.strip_prefix(FORMAT_2) else {
+        return serde_json::from_str(text).ok();
+    };
+    let packed = base64::engine::general_purpose::STANDARD.decode(body).ok()?;
+    // Bounded: a crafted blob must not inflate past the saved-state cap.
+    let mut raw = Vec::new();
+    flate2::read::DeflateDecoder::new(&packed[..])
+        .take(crate::plugin::MAX_SAVED_STATE as u64 + 1)
+        .read_to_end(&mut raw)
+        .ok()?;
+    if raw.len() > crate::plugin::MAX_SAVED_STATE {
+        return None;
+    }
+    let mut at = 0usize;
+    let mut take = |n: usize| {
+        let bytes = raw.get(at..at.checked_add(n)?)?;
+        at += n;
+        Some(bytes)
+    };
+    let schema = {
+        let len = u32::from_le_bytes(take(4)?.try_into().ok()?) as usize;
+        String::from_utf8(take(len)?.to_vec()).ok()?
+    };
+    let count = u32::from_le_bytes(take(4)?.try_into().ok()?) as usize;
+    let mut values = Vec::with_capacity(count.min(raw.len()));
+    for _ in 0..count {
+        let tag = take(1)?[0];
+        values.push(match tag {
+            0 => SavedValue::Integer(i64::from_le_bytes(take(8)?.try_into().ok()?)),
+            1 => SavedValue::Real(f64::from_bits(u64::from_le_bytes(take(8)?.try_into().ok()?))),
+            2 => SavedValue::Toggle(take(1)?[0] != 0),
+            3 => SavedValue::Cell(i64::from_le_bytes(take(8)?.try_into().ok()?)),
+            4 => {
+                let len = u32::from_le_bytes(take(4)?.try_into().ok()?) as usize;
+                SavedValue::Text(String::from_utf8(take(len)?.to_vec()).ok()?)
+            }
+            _ => return None,
+        });
+    }
+    (at == raw.len()).then_some(Saved { schema, values })
+}
+
 struct Atom {
     kind: u8,
     offset: usize,
@@ -283,11 +373,10 @@ impl Snapshot {
                 .map(|index| self.atom(index).read(&self.slots[slot]))
                 .collect();
             self.reading.store(usize::MAX, Ordering::SeqCst);
-            return serde_json::to_string(&Saved {
+            return encode(&Saved {
                 schema: self.schema.clone(),
                 values,
-            })
-            .expect("validated script state");
+            });
         }
     }
 }
@@ -467,8 +556,8 @@ impl Persistence {
             schema(runtime, views, &state)?
         };
         if !saved.is_empty() {
-            let saved: Saved = serde_json::from_str(saved)
-                .map_err(|_| CoreError::Invalid("Saved script state is malformed".into()))?;
+            let saved = decode(saved)
+                .ok_or_else(|| CoreError::Invalid("Saved script state is malformed".into()))?;
             let previous =
                 saved.schema == previous_schema && saved.values.len() == previous_len;
             if !previous && (saved.schema != schema || saved.values.len() != state.values.len()) {
@@ -753,7 +842,7 @@ mod tests {
         let (mut current, views, owner) = make(true);
         let recalled = Persistence::new(&mut current, &views, &saved)
             .expect("adding DSP owners must preserve the exact previous v2 script save");
-        let restored: Saved = serde_json::from_str(&recalled.snapshot.save()).unwrap();
+        let restored: Saved = decode(&recalled.snapshot.save()).unwrap();
         assert!(
             restored
                 .values
@@ -770,23 +859,23 @@ mod tests {
             Ok(ControlValue::Real(0.5))
         );
 
-        let mut corrupt: Saved = serde_json::from_str(&saved).unwrap();
+        let mut corrupt: Saved = decode(&saved).unwrap();
         corrupt.schema = "unknown schema".into();
         assert!(
             Persistence::new(
                 &mut current,
                 &views,
-                &serde_json::to_string(&corrupt).unwrap()
+                &encode(&corrupt)
             )
             .is_err()
         );
-        let mut corrupt: Saved = serde_json::from_str(&saved).unwrap();
+        let mut corrupt: Saved = decode(&saved).unwrap();
         corrupt.values[0] = SavedValue::Toggle(true);
         assert!(
             Persistence::new(
                 &mut current,
                 &views,
-                &serde_json::to_string(&corrupt).unwrap()
+                &encode(&corrupt)
             )
             .is_err()
         );
@@ -867,7 +956,7 @@ mod tests {
                 index: offset + 1,
             };
             let index = persistence.snapshot.find(address).unwrap();
-            let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
+            let saved: Saved = decode(&persistence.snapshot.save()).unwrap();
             assert!(matches!(saved.values[index], SavedValue::Cell(v) if v == bits));
         }
     }
@@ -915,7 +1004,7 @@ mod tests {
                 persistence.snapshot.captured_values.load(Ordering::Relaxed) <= 16384,
                 "one scalar write must not copy the whole saved array"
             );
-            let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
+            let saved: Saved = decode(&persistence.snapshot.save()).unwrap();
             for old in 60..=key {
                 assert!(
                     matches!(saved.values[usize::from(old)], SavedValue::Cell(v) if v == i64::from(old) + 1)
@@ -939,7 +1028,7 @@ mod tests {
         let persistence = part.persistence.as_mut().unwrap();
         persistence.publish(&mut part.runtime);
         assert!(persistence.snapshot.captured_values.load(Ordering::Relaxed) <= 16384);
-        let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
+        let saved: Saved = decode(&persistence.snapshot.save()).unwrap();
         assert!(matches!(saved.values[32767], SavedValue::Cell(99)));
     }
     #[test]
@@ -1046,7 +1135,7 @@ mod tests {
             )
             .unwrap();
         persistence.publish(&mut part.runtime);
-        let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
+        let saved: Saved = decode(&persistence.snapshot.save()).unwrap();
         assert!(matches!(saved.values.as_slice(), [SavedValue::Cell(61)]));
     }
     #[test]
@@ -1123,7 +1212,7 @@ mod tests {
             runtime.poll_control_update().unwrap();
             persistence.publish(&mut runtime);
         }
-        let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
+        let saved: Saved = decode(&persistence.snapshot.save()).unwrap();
         assert!(matches!(saved.values.as_slice(), [SavedValue::Real(v)] if *v == 0.75));
         let slot = persistence.snapshot.published.load(Ordering::SeqCst);
         persistence.publish(&mut runtime);
@@ -1250,7 +1339,7 @@ mod tests {
             }
         });
         for _ in 0..2000 {
-            let saved: Saved = serde_json::from_str(&snapshot.save()).unwrap();
+            let saved: Saved = decode(&snapshot.save()).unwrap();
             let [
                 SavedValue::Cell(a),
                 SavedValue::Cell(b),
@@ -1335,9 +1424,61 @@ mod tests {
             texts: vec![sampler_core::Text::new("声 🎹")],
         };
         let saved: Saved =
-            serde_json::from_str(&Snapshot::new("test".into(), &state).save()).unwrap();
+            decode(&Snapshot::new("test".into(), &state).save()).unwrap();
         assert!(
             matches!(saved.values.as_slice(),[SavedValue::Integer(i64::MAX),SavedValue::Real(real),SavedValue::Toggle(true),SavedValue::Cell(i64::MIN),SavedValue::Text(text)] if real.to_bits()==(-0f64).to_bits() && text=="声 🎹")
         );
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    fn sample() -> Saved {
+        Saved {
+            schema: "schema-v2".into(),
+            values: vec![
+                SavedValue::Integer(-7),
+                SavedValue::Real(3.7),
+                SavedValue::Toggle(true),
+                SavedValue::Cell(i64::MIN),
+                SavedValue::Text("héllo".into()),
+                SavedValue::Cell(0),
+            ],
+        }
+    }
+
+    fn same(a: &Saved, b: &Saved) -> bool {
+        a.schema == b.schema
+            && a.values.len() == b.values.len()
+            && a.values.iter().zip(&b.values).all(|(x, y)| match (x, y) {
+                (SavedValue::Integer(x), SavedValue::Integer(y)) | (SavedValue::Cell(x), SavedValue::Cell(y)) => x == y,
+                (SavedValue::Real(x), SavedValue::Real(y)) => x.to_bits() == y.to_bits(),
+                (SavedValue::Toggle(x), SavedValue::Toggle(y)) => x == y,
+                (SavedValue::Text(x), SavedValue::Text(y)) => x == y,
+                _ => false,
+            })
+    }
+
+    #[test]
+    fn format_2_round_trips_every_value_kind() {
+        let text = encode(&sample());
+        assert!(text.starts_with(FORMAT_2));
+        assert!(same(&decode(&text).unwrap(), &sample()));
+    }
+
+    #[test]
+    fn format_1_json_still_loads() {
+        let json = serde_json::to_string(&sample()).unwrap();
+        assert!(same(&decode(&json).unwrap(), &sample()));
+    }
+
+    #[test]
+    fn corrupt_or_truncated_format_2_is_rejected() {
+        let text = encode(&sample());
+        assert!(decode(&text[..text.len() - 4]).is_none());
+        assert!(decode("KSS2:!!!").is_none());
+        assert!(decode("KSS2:").is_none());
     }
 }

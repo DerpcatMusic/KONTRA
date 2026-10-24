@@ -2,6 +2,7 @@
 //! host saves it, reload into a fresh part, and compare the reload with the live part (script
 //! variables, UI values, re-save, and rendered audio). Skips when the library is not installed.
 use super::*;
+use std::time::Instant;
 
 const KONTAKT: &str = "/data/main/Libraries/Kontakt";
 const UVI: &str = "/data/main/Libraries/UVI";
@@ -86,10 +87,14 @@ fn recall_one(path: &str) -> Result<String, String> {
         .ok_or("live load failed")?;
     let moved = move_first_control(&live);
     let live_hash = render_hash(&live, &mut live_core);
+    let t = Instant::now();
     let saved = save(&live);
+    let save_ms = t.elapsed().as_millis();
 
     let fresh = SamplerParams::new();
+    let t = Instant::now();
     let mut fresh_core = load_into(&fresh, saved.clone()).ok_or("reload failed")?;
+    let load_ms = t.elapsed().as_millis();
     let fresh_hash = render_hash(&fresh, &mut fresh_core);
     let resaved = save(&fresh);
 
@@ -134,10 +139,7 @@ fn recall_one(path: &str) -> Result<String, String> {
     }
     if saved.script_state.is_empty() {
         let size = live.shared.part(0).unwrap().ingress.lock_unpoisoned().as_ref().and_then(|c| c.save_script_state()).unwrap_or_default();
-        let json: serde_json::Value = serde_json::from_str(&size).unwrap();
-        let schema = json["schema"].as_str().unwrap_or("").len();
-        let values = json["values"].as_array().map_or(0, |v| v.len());
-        failures.push(format!("no script state saved (live state {} bytes: schema {schema} bytes, {values} values) {diag}", size.len()));
+        failures.push(format!("no script state saved (live state {} bytes) {diag}", size.len()));
     }
     if live_hash != fresh_hash {
         failures.push(format!("audio hash {live_hash:x} != reloaded {fresh_hash:x}"));
@@ -156,7 +158,7 @@ fn recall_one(path: &str) -> Result<String, String> {
         failures.push("state codec round trip differs".into());
     }
     let report = format!(
-        "{}: moved {:?}, controls {}, script_state {} bytes",
+        "{}: moved {:?}, controls {}, script_state {} bytes, save {save_ms} ms, load {load_ms} ms",
         Path::new(path).file_name().unwrap().to_string_lossy(),
         moved,
         saved.control_values.len(),
