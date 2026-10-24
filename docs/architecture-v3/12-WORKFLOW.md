@@ -28,6 +28,12 @@ is pointless: the next `sync` overwrites it. Discussion goes in comments.
   paths, runs only its gate commands, opens one PR, reports. Default model for
   agent workers: see the coordinator's standing instructions (currently Claude
   Haiku 5.5 at xhigh via T3 `delegate_task`, self-contained brief).
+- **Escalation.** When a task is large (engine rewrites, big DSP families,
+  KSP init-on-VM) or Haiku needs a third review round, the coordinator gives
+  it to DeepSeek V4.1 Flash Free on OpenCode at max thinking
+  (`opencode/deepseek-v4.1-flash-free`, variant `max`). It is not Claude and
+  does not auto-load `.claude/skills`, so its brief says to read
+  `.claude/skills/beautiful-rust/SKILL.md` and repeats the repo rules.
 - **Spike** (agent or person). Answers a question with a written verdict and
   evidence (`docs/architecture-v3/spikes/*.md`); code only as a throwaway probe.
 
