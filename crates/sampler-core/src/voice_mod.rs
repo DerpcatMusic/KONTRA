@@ -434,6 +434,9 @@ struct Program {
 #[derive(Default)]
 pub(crate) struct VoiceModulation {
     programs: Box<[Program]>,
+    /// Sorted union of every program's `filter_indices`: the only filter-table rows any
+    /// program can write, so per-owner clears need to reset only these.
+    filter_rows: Box<[usize]>,
     regions: Box<[Option<u32>]>,
     start_ranges: Box<[u32]>,
     sources: usize,
@@ -1095,7 +1098,11 @@ impl VoiceModulation {
                 shapes: shapes.into_boxed_slice(),
             });
         }
+        let mut filter_rows: Vec<usize> = compiled.iter().flat_map(|p| p.filter_indices.iter().copied()).collect();
+        filter_rows.sort_unstable();
+        filter_rows.dedup();
         Ok(Self {
+            filter_rows: filter_rows.into_boxed_slice(),
             sources: compiled.iter().map(|p| p.sources.len()).max().unwrap_or(0),
             envelopes: compiled
                 .iter()
@@ -1126,6 +1133,11 @@ impl VoiceModulation {
 
     pub fn is_empty(&self) -> bool {
         self.programs.is_empty()
+    }
+
+    /// Filter-table rows that any program can write; see the `filter_rows` field.
+    pub(crate) fn filter_rows(&self) -> &[usize] {
+        &self.filter_rows
     }
 
     pub fn program(&self, region: usize) -> Option<u32> {
