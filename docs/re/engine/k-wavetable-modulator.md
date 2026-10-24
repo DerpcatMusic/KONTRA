@@ -52,7 +52,13 @@ not used.
    The output scaling of `shape` (how the consumer maps [2, π] to a wave) is not decoded.
 2. The mixing kernel `0x140cd5af0` (entry decoded: rate from `[rdi+0x40/0x58/0x48]` into `0x141a3eac0`,
    then `0x141a3e720` gives the modulator `m`; the blend then calls `0x140ce8df0`, `0x140ce7ea0`,
-   `0x140cd55c0`, `0x140ce6eb0` and `0x140567aa0` twice, not yet decoded) (how amount, the modulator value and `+0x40`, `+0x58`,
+   `0x140cd55c0`, `0x140ce6eb0` and `0x140567aa0` twice, not yet decoded.
+   Further read (not decoded): state fields `+0x10000` (running accumulator, wrapped by `comiss` at 1 and
+   reflected), `+0x10004`, `+0x10028` (gain), `+0x10100`/`+0x10104` (previous and current modulator),
+   `+0x10030` (sub-state for `0x141a3e720`), `+0x80`/`+0x90` (`0x141a3e720` modes). A clamped index
+   (`cvttss2si`, cap 0x95f = 2399) into a table at `0x14a6b2600` (8-byte entries, linear interpolation)
+   appears in the kernel, plus helpers `0x1443d10a8` and `0x1443d109c` (wrap or fold). Pieces are
+   interleaved; the full blend is a multi-step job, not a single formula.) (how amount, the modulator value and `+0x40`, `+0x58`,
    `+0x68`, `+0x70`, `+0x78` combine with the warped phase).
 3. `0x1443d10cc` (exp-like, smoother coefficient) and `0x1443d107e` (round, assumed from use, not confirmed).
 4. Oracle probe: set `ENGINE_PAR_WT_MOD_AMOUNT` from a KSP script and capture a wavetable sweep
