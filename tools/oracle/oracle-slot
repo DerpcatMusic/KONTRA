@@ -19,6 +19,23 @@ LEGACY_LOCK=${ORACLE_LEGACY_LOCK:-/tmp/kontra-oracle.lock}  # override: tests on
 LOCK_DIR=${ORACLE_LOCK_DIR:-/tmp}
 MEM_MAX=${ORACLE_MEMORY_MAX:-8G}
 
+# --self-update: replace the installed copies with origin/main's (no worktree needed). The installed
+# wrapper is a real file in ~/.local/bin (replaced by rename, so a running copy keeps its inode).
+if [ "${1:-}" = "--self-update" ]; then
+  REPO=${ORACLE_REPO:-/data/dev/projects/AudioPlugins/KONTRA}
+  SHARE=$HOME/.local/share/kontra-oracle
+  mkdir -p "$SHARE" "$HOME/.local/bin"
+  git -C "$REPO" fetch -q origin main
+  for f in oracle-slot slot.py; do
+    git -C "$REPO" show "FETCH_HEAD:tools/oracle/$f" > "$SHARE/.$f.tmp"
+    chmod +x "$SHARE/.$f.tmp"
+    mv -f "$SHARE/.$f.tmp" "$SHARE/$f"
+  done
+  cp "$SHARE/oracle-slot" "$HOME/.local/bin/.oracle-slot.tmp" && mv -f "$HOME/.local/bin/.oracle-slot.tmp" "$HOME/.local/bin/oracle-slot"
+  echo "oracle-slot: installed $(git -C "$REPO" rev-parse --short FETCH_HEAD) to $SHARE and ~/.local/bin" >&2
+  exit 0
+fi
+
 [ $# -ge 1 ] || { sed -n 2,4p "$0" >&2; exit 2; }
 
 if [ "$1" = "--exclusive" ]; then
