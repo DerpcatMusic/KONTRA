@@ -972,6 +972,18 @@ fn wakeable(params: &ni_file::kontakt::objects::InternalModParams) -> bool {
         })
 }
 
+/// Kontakt EQ-gain route depth to IR depth. A Normalized route depth of 1.0 on a band gain moves
+/// the band by 12 dB, not the 36 dB full span of the IR lane (Linear(-18,36)). Measured on Solo
+/// Trumpet Trills (CC1 to the band gains): 17 CC points x 3 notes, KONTRA render minus real Kontakt 8
+/// worst |delta| 0.27 dB at 1/3 and 1.43 dB at 0.35; 1.0 overshoots by 12-27 dB. One instrument, so
+/// a fit (KISS): re-verify on the next EQ-route instrument (docs/architecture-v2/W15_EQ_GAIN.md).
+const EQ_GAIN_ROUTE_SCALE: f64 = 1. / 3.;
+
+/// The IR depth of an EQ band-gain route, given its Kontakt normalized depth.
+fn eq_gain_route_depth(depth: f64) -> f64 {
+    depth * EQ_GAIN_ROUTE_SCALE
+}
+
 fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
     for (prefix, parameter) in [
         ("eqGain", ir::ProcessorParameter::Gain),
@@ -3053,13 +3065,17 @@ impl Translation {
                     .chain(&self.ir.chains[chain.0].post_amplitude)
                     .nth(*index)?;
                 if let Some((_, parameter)) = knob {
+                    let depth = match parameter {
+                        ir::ProcessorParameter::Gain => eq_gain_route_depth(i),
+                        _ => i,
+                    };
                     return matches!(processor, ir::Processor::Eq(_)).then_some((
                         ir::Target::Processor {
                             chain,
                             index: *index,
                             parameter,
                         },
-                        ir::Depth::Normalized(i),
+                        ir::Depth::Normalized(depth),
                     ));
                 }
                 let native = matches!(
@@ -7431,5 +7447,18 @@ mod velocity_volume_law_tests {
             panic!("0.3 must use the depth law")
         };
         assert!((depth - 0.6).abs() < 1e-9 && exponent > 1.285);
+    }
+}
+
+#[cfg(test)]
+mod eq_gain_route_depth_tests {
+    use super::eq_gain_route_depth;
+
+    /// The IR lane for an EQ band gain is Linear(-18, 36): one unit of depth is 36 dB.
+    #[test]
+    fn full_depth_eq_gain_route_moves_band_by_12_db() {
+        let lane_span_db = 36.;
+        assert!((eq_gain_route_depth(1.) * lane_span_db - 12.).abs() < 1e-9);
+        assert!((eq_gain_route_depth(0.) * lane_span_db).abs() < 1e-9);
     }
 }
