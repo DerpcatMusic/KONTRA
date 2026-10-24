@@ -2074,3 +2074,18 @@ fn conflux_production_load_binds_live_wave_controls_to_the_authored_group() {
     }
     println!("CONFLUX_LIVE_WAVE physical_owners=3 phase_unbound=true form_modes_bound=true");
 }
+
+/// Morphology's wavetable lookup is `find_zone(group)`: its zones must carry sample names
+/// aligned with the zone catalog, or the lookup would never find them.
+#[test]
+fn installed_morphology_zones_carry_sample_names_for_find_zone() {
+    if let Some(path) = find("Morphology Evolved [Zero-G] rutracker.org/Morphology Evolved.nki") {
+        let kontakt = sampler_kontakt::read(&path).unwrap();
+        let source = &kontakt.instrument.source_indices;
+        assert_eq!(source.zone_names.len(), source.zone_catalog.len());
+        assert!(
+            source.zone_names.iter().any(|n| !n.is_empty()),
+            "no zone sample names were recorded"
+        );
+    }
+}

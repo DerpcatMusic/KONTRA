@@ -16,6 +16,7 @@ const ENGINE: &str =
 const STATE: &str = "System state is modeled; callback context and host fidelity need verification";
 const CONSTANT: &str = "Constant is resolved; native enum fidelity needs verification";
 const MARK_VALUE: &str = "$MARK_n is the bit 2^n; Kontakt 8 measured n=1,2,3,5,10,11 (oracle volume readback)";
+const FIND_ZONE: &str = "find_zone(name) is the zone index whose sample name (file stem) matches, -1 if none; Kontakt 8 measured \"pv_tone\"->0, \"pv_other\"->1, missing/empty->-1 (tests/find_zone.rs). Group names are not matched: unmeasured for named groups";
 const OPAQUE: &str = "Opaque symbolic identity; no native numeric value or behavior implied";
 const OPAQUE_CONTROL: &str = "Opaque control property is stored but has no modeled widget effect";
 const IGNORED: &str = "This call is accepted but ignored in this context or for these operands";
@@ -1817,7 +1818,7 @@ pub(super) const TABLE: &[LedgerEntry] = &[
     LedgerEntry { name: "find_group", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2102", spec: "docs/architecture-v2/KSP_PARITY.md", detail: SUBSET },
     LedgerEntry { name: "find_mod", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2132", spec: "docs/architecture-v2/KSP_PARITY.md", detail: SUBSET },
     LedgerEntry { name: "find_target", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2132", spec: "docs/architecture-v2/KSP_PARITY.md", detail: SUBSET },
-    LedgerEntry { name: "find_zone", status: Status::Stub, owner: "crates/sampler-ksp/src/eval.rs:1835", spec: "docs/architecture-v2/KSP_PARITY.md", detail: ZONE_STUB },
+    LedgerEntry { name: "find_zone", status: Status::Implemented, owner: "crates/sampler-ksp/src/eval.rs", spec: "docs/architecture-v2/KSP_PARITY.md", detail: FIND_ZONE },
     LedgerEntry { name: "floor", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:1833", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#rounding-commands", detail: SUBSET },
     LedgerEntry { name: "fs_get_filename", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:1294", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#fs_get_filename--", detail: SUBSET },
     LedgerEntry { name: "fs_navigate", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2870", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#fs_navigate--", detail: SUBSET },
