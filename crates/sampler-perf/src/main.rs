@@ -363,6 +363,10 @@ fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, Stri
                     resident_budget: std::env::var("PERF_RESIDENT_BUDGET")
                         .ok()
                         .and_then(|v| v.parse().ok()),
+                    head_budget: std::env::var("PERF_HEAD_BUDGET")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(sampler_kontakt::StreamPolicy::default().head_budget),
                     ..Default::default()
                 },
                 |_| {},
@@ -889,7 +893,8 @@ fn run_scenario(
 ) -> Result<(Vec<Value>, Value), String> {
     let repeat = REPEAT.load(Ordering::Relaxed).max(1) as usize;
     let period = seconds.unwrap_or(s.seconds);
-    let messages = {
+    // PERF_IDLE=1 plays no notes: the loaded instrument's silent-block cost.
+    let messages = if std::env::var_os("PERF_IDLE").is_some() { Vec::new() } else {
         let once = (s.notes)();
         let mut m = Vec::with_capacity(once.len() * repeat);
         for k in 0..repeat {

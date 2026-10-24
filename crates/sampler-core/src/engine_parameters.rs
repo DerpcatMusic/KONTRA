@@ -22,6 +22,30 @@ pub struct EngineParameterOffset {
 }
 
 /// A native FX lane keeps its complete physical address, without hashing.
+/// Inverse of [`engine_parameter_control`]: the engine address a control id names.
+pub fn engine_address_of_control(id: u128) -> Option<EngineParameterAddress> {
+    (id >> 112 == 0x4658).then(|| EngineParameterAddress {
+        parameter: (id >> 96) as u16,
+        group: (id >> 64) as u32 as i32,
+        slot: (id >> 32) as u32 as i32,
+        generic: id as u32 as i32,
+    })
+}
+
+/// Control ids for each group's script-written volume, pan and tune. The host refreshes them
+/// like any control, so a save records what the scripts set; load writes them back with
+/// [`Runtime::restore_engine_controls`].
+pub fn script_engine_control_ids(group_count: u32) -> Vec<u128> {
+    const LAYERS: [&str; 3] = ["$ENGINE_PAR_VOLUME", "$ENGINE_PAR_PAN", "$ENGINE_PAR_TUNE"];
+    (0..group_count as i32)
+        .flat_map(|group| LAYERS.map(move |name| (group, name)))
+        .filter_map(|(group, name)| {
+            let parameter = engine_parameter_id(name)?;
+            Some(engine_parameter_control(EngineParameterAddress { parameter, group, slot: -1, generic: -1 }).0)
+        })
+        .collect()
+}
+
 pub fn engine_parameter_control(address: EngineParameterAddress) -> ControlId {
     ControlId(
         (0x4658u128 << 112)
@@ -844,6 +868,48 @@ impl Runtime {
     }
     pub fn engine_parameter(&mut self, address: EngineParameterAddress) -> Result<i32, Error> {
         self.engine_parameter_in(self.active_plan(), address)
+    }
+    /// Load-time restore of engine-bound controls (volume, pan, ...): each saved control value
+    /// is written to its engine address through the binding's law, so the engine holds what
+    /// the control showed when the project was saved. No script callback runs. Ids without a
+    /// binding (script and UI controls) are skipped.
+    pub fn restore_engine_controls(&mut self, plan: PlanId, values: &[(u128, f64)]) -> Result<usize, Error> {
+        let bindings: std::collections::HashMap<u128, EngineParameterBinding> = self
+            .engine_parameter_bindings(plan)?
+            .iter()
+            .map(|binding| (binding.control.0, *binding))
+            .collect();
+        let mut restored = 0;
+        for &(id, value) in values {
+            let (address, encoded) = match bindings.get(&id) {
+                // Bound controls hold the law-encoded engine value.
+                Some(binding) => (binding.address, binding.law.encode(value)),
+                // Script layer controls hold the engine value itself.
+                None => match engine_address_of_control(id) {
+                    Some(address) if self.script_engine_value(plan, id).is_some() => (address, value as i32),
+                    _ => continue,
+                },
+            };
+            // Already holding the saved value: leave it. Re-writing a quantized engine value
+            // would read back as a different control value (144 -> 143.99992).
+            if self.engine_parameter_in(plan, address).is_ok_and(|current| current == encoded) {
+                continue;
+            }
+            self.set_engine_parameter_in(plan, address, encoded)?;
+            restored += 1;
+        }
+        Ok(restored)
+    }
+
+    /// The script-written value of a group layer control, as `engine_parameter` reads it.
+    pub fn script_engine_value(&self, plan: PlanId, id: u128) -> Option<f64> {
+        let address = engine_address_of_control(id)?;
+        let target = layer_parameter(engine_parameter_name(address.parameter)?)?;
+        if address.slot != -1 || address.generic != -1 {
+            return None;
+        }
+        let layer = self.plans.get(plan.0)?.script.groups.get(usize::try_from(address.group).ok()?)?;
+        Some(f64::from(layer_encode(target, layer.read(target))))
     }
     pub(crate) fn set_engine_parameter_in(
         &mut self,

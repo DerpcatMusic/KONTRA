@@ -11,8 +11,10 @@ pub(crate) fn snapshot_callback_safe(
     ranges.iter().all(|range| {
         code[range.clone()].iter().all(|op| match *op {
             I::Jump { target: at } | I::JumpIfZero { target: at, .. } => target(at),
+            I::LoopGuard { exit: at, .. } => target(at as usize),
             I::Op(Op::Call { target: at }) => target(at as usize),
-            I::SetLocal { .. }
+            I::LoopReset
+            | I::SetLocal { .. }
             | I::AddLocal { .. }
             | I::Binary32 { .. }
             | I::Unary32 { .. }

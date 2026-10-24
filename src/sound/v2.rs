@@ -66,7 +66,7 @@ mod effect_controls;
 mod host_transport;
 #[cfg(test)]
 mod host_transport_tests;
-mod persistence;
+pub(crate) mod persistence;
 pub(crate) mod snapshot_reuse;
 #[cfg(test)]
 mod pressed_tests;
@@ -3412,6 +3412,7 @@ impl Core for V2Core {
             max_onset_wait_frames: stats.max_onset_wait_frames,
             nonfinite: stats.nonfinite_frames,
             underruns: stats.stream_underruns,
+            loop_limits: stats.loop_limits,
             cold_starts: stats.cold_starts,
             capacity_drops: p.problems.capacity_drops,
             voice_drops: stats.voice_drops,
@@ -3528,6 +3529,7 @@ impl Core for V2Core {
             && (control.0>>64)==0x5556490000000000
         {return script.ui().value(control);}
         let rt = &p.runtime;
+        if let Some(value)=rt.script_engine_value(rt.active_plan(),control.0) {return Some(value);}
         rt.control_base_value(rt.active_plan(), sampler_core::ControlId(control.0))
             .ok()
             .map(number)
@@ -3563,8 +3565,8 @@ fn behavior_allowance(frames: usize, offline: bool) -> usize {
 #[derive(Default)]
 pub struct V2Loader;
 
-/// Normal streaming prepares complete attack heads, never quota-shortened
-/// anchors. A load that cannot meet this contract fails before publication.
+/// Prepare attack heads before publication. Capacity fallback remains bounded
+/// and visible; source failures remain load errors.
 fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
     stream_policy_for_memory(request, memory::available())
 }
@@ -3573,25 +3575,20 @@ fn stream_policy_for_memory(
     request: &LoadRequest,
     memory: Option<(usize, usize)>,
 ) -> sampler_kontakt::StreamPolicy {
-    // Keep the existing system reserve: 1 GiB plus one eighth of physical RAM.
-    // Auto spends at most another eighth on heads, capped at 2 GiB per part.
-    // This admits the measured 637 MB / 1,067 MB Areia heads without making
-    // all sample tails resident. Failed OS probes use a conservative 256 MiB
-    // capacity instead of assuming that physical memory is available.
+    // Reserve 1 GiB plus one eighth of physical RAM. The shared RAM-scaled
+    // policy sizes Auto heads; available memory remains the physical upper bound.
     let available = memory.map_or(256 << 20, |(free, total)| {
         free.saturating_sub((1 << 30) + total / 8)
     });
     let resident_budget = (request.streaming == super::Streaming::RamOnly).then_some(available);
     let head_budget = resident_budget.unwrap_or_else(|| {
-        available
-            .min(memory.map_or(256 << 20, |(_, total)| total / 8))
-            .min(2 << 30)
+        sampler_kontakt::cold_head_budget_for(memory.map(|(_, total)| total)).min(available)
     });
     sampler_kontakt::StreamPolicy {
         resident_budget,
         lazy: false,
         head_budget,
-        allow_cold_fallback: false,
+        allow_cold_fallback: true,
         block_frames: super::MAX_BLOCK,
         max_step: 16.0,
         voices: MAX_VOICES,
@@ -4311,6 +4308,12 @@ impl V2Loader {
         if let Some(script) = &script {
             controls.extend(script.ui().values());
         }
+        // Script-written group volume/pan/tune: refreshed and saved like controls.
+        controls.extend(
+            sampler_core::script_engine_control_ids(prepared.group_count())
+                .into_iter()
+                .map(|id| (sampler_ui_ir::ControlId(id), 0.0)),
+        );
         let (limits, ceiling) =
             budgeted_limits(&prepared, cache.as_ref().map(StreamCache::voice_budget));
         let per_voice = prepared.voice_state_bytes() + VOICE_OVERHEAD;

@@ -1,0 +1,8 @@
+{
+  "chain": ["Filters/Solid G-EQ"],
+  "pre": [[0, "SEQ_LMF_GAIN", 500000]],
+  "steps": [
+    {"name": "lmf_gain_0", "set": [[0, "SEQ_LMF_GAIN", 0]]},
+    {"name": "lmf_gain_1", "set": [[0, "SEQ_LMF_GAIN", 1000000]]}
+  ]
+}

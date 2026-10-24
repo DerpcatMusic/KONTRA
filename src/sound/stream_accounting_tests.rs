@@ -23,7 +23,7 @@ fn auto_streaming_preloads_authored_attacks_before_publication() {
     assert!(readiness.ranges > 0);
     assert!(readiness.complete(), "{readiness:?}");
     assert!(readiness.packed_bytes > 0);
-    assert!(readiness.budget_bytes > 0 && readiness.budget_bytes <= 2 << 30);
+    assert!(readiness.budget_bytes > 0 && readiness.budget_bytes <= 4 << 30);
     assert!(readiness.packed_bytes <= readiness.budget_bytes);
     assert!(
         loaded

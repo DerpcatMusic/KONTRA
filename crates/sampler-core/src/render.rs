@@ -25,6 +25,8 @@ pub struct RuntimeStats {
     pub max_onset_wait_frames: u64,
     /// Voices that ran out of resident stream pages and faded out.
     pub stream_underruns: u64,
+    /// `while` loops left at Kontakt's iteration limit (the callback continued).
+    pub loop_limits: u64,
     /// Starts and rendered chunks using the admitted pinned whole-voice controls.
     pub v1_control_starts: u64,
     pub v1_control_blocks: u64,
@@ -89,6 +91,7 @@ impl Runtime {
             closed_pending_attacks: self.closed_pending_attacks,
             max_onset_wait_frames: self.max_onset_wait_frames,
             stream_underruns: self.stream_underruns,
+            loop_limits: self.loop_limits,
             v1_control_starts: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_starts).sum(),
             v1_control_blocks: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_blocks.load(std::sync::atomic::Ordering::Relaxed)).sum(),
             voice_drops: self.voice_drops,
@@ -494,7 +497,7 @@ impl Runtime {
         };
         let mut begun = [None; VOICES];
         let mut gains = [[0.; 2]; VOICES];
-        let mut starved = [false; VOICES];
+        let mut misses = [0u64; VOICES];
         let mut plan_id = None;
         let reuse_mask = super::source::reuse::candidates(
             voices.iter().map(|&i| self.voices.slots[i].value.as_ref().unwrap()),
@@ -515,7 +518,7 @@ impl Runtime {
             let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
             let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
             let engine = stretch.as_mut().map(|c| &mut c[0]);
-            starved[lane] = v.cursor.starved();
+            misses[lane] = v.cursor.misses();
             batch.expressions[lane] = Some((n.expression, expression.value));
             let mut planar = [[0.; super::dsp::BLOCK]; 2];
             begun[lane] = if let Some(head) = &self.onsets.heads[i] {
@@ -637,7 +640,7 @@ impl Runtime {
             }
             self.stream_underruns = self
                 .stream_underruns
-                .saturating_add(u64::from(!starved[lane] && v.cursor.starved()));
+                .saturating_add(v.cursor.misses() - misses[lane]);
             if let Some(bus) = v.bus {
                 dsp.buses.fed(bus, produced);
             }
@@ -1092,7 +1095,7 @@ impl Runtime {
         v.last_gains = applied.map(|g| g * v.gain);
         let done = done || stop || inaudible(v, produced, applied);
         self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
-        self.stream_underruns = self.stream_underruns.saturating_add(u64::from(underrun));
+        self.stream_underruns = self.stream_underruns.saturating_add(underrun);
         if let Some(bus) = bus {
             plan.dsp.buses.fed(bus, produced);
         }
@@ -1140,12 +1143,12 @@ pub(super) fn render_source<const TRACE: bool>(
     states: &mut [super::dsp::ProcessorState],
     mut context: super::dsp::RenderContext<'_>,
     kernel: &super::resample::Kernel,
-) -> (usize, bool, u64, bool) {
+) -> (usize, bool, u64, u64) {
     // A cohort decision happens before any source, envelope or voice DSP work.
     if voice.cursor.pending_start_runway() > 1 {
-        return (0, voice.envelope.done(), 0, false);
+        return (0, voice.envelope.done(), 0, 0);
     }
-    let was_starved = voice.cursor.starved();
+    let misses = voice.cursor.misses();
     let (produced, done, faults) = if let Some(chain) = chain {
         let (produced, faults) =
             chain.render::<TRACE>(voice, source, output, states, context, kernel);
@@ -1194,7 +1197,7 @@ pub(super) fn render_source<const TRACE: bool>(
         produced,
         done,
         faults,
-        !was_starved && voice.cursor.starved(),
+        voice.cursor.misses() - misses,
     )
 }
 

@@ -10,7 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 - Keep runnable script stages at the same event time, including chords arriving after a preemption.
 - Complete runnable startup on the loader before an instrument is ready. Preserve intentional script waits.
-- Require complete attack preloads for normal streaming. Use a bounded memory-aware head budget; insufficient capacity is an explicit load error.
+- Share the RAM-scaled attack budget across loader and player, cap it by available memory, and report any bounded preload fallback instead of rejecting large libraries solely for expanded start ranges.
+- Include the current effects, persistence, multi-instrument, loop-limit and streaming fixes from the 28-PR integration.
 - Report execution-budget failures, host-service stalls, late attacks and source-readiness delays through the plugin diagnostics. Over-budget playback callbacks fail explicitly instead of replaying notes in later blocks.
 
 ## 0.3.503

@@ -452,7 +452,7 @@ impl crate::Runtime {
                 count,
                 crate::dsp::BLOCK,
             )?;
-            let was_starved = v.cursor.starved();
+            let misses = v.cursor.misses();
             let produced = match source {
                 crate::SourceStorageRef::Channels(family) if family.is_paged() => {
                     let cache = self.stream_cache.as_ref().ok_or(Error::NotReady)?;
@@ -477,7 +477,7 @@ impl crate::Runtime {
                 }
             };
             heads.fill_with(|| None);
-            self.stream_underruns = self.stream_underruns.saturating_add(u64::from(!was_starved && v.cursor.starved()));
+            self.stream_underruns = self.stream_underruns.saturating_add(v.cursor.misses() - misses);
             let levels = crate::dsp::levels(v, produced, 0);
             let ramp = prelude.points.map(|r| r.prepare_gains());
             let gains = v
