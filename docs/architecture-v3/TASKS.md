@@ -40,7 +40,8 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 |---|---|---|---|---|---|
 | P3.1 | Spike: real-time-safe Luau allocator (mlua custom allocator or C-API shim) | script | S | spike | – |
 | P3.1b | Spike: keep mlua's API on an arena, and measure GC on the real UVI corpus | script | M | spike | P3.1 |
-| P3.2 | UVI Lua inline on the audio thread; ScriptThread only as a feature fallback (draft) | script | L | worker | P3.1b, P2.2 |
+| P3.1c | Spike: Lua GC on the audio thread for large heaps (Augmented Orchestra 360 MB, 15 ms stalls) | script | M | spike | P3.1b |
+| P3.2 | UVI Lua inline on the audio thread; ScriptThread only as a feature fallback (draft) | script | L | worker | P3.1c, P2.2 |
 | P3.3 | Auto-align as per-zone plan offsets; no transport holds | playback | M | worker | P1.2 |
 | P3.4 | Gate G3: original complaints closed | coordinator | S | coordinator | P3.2, P3.3, P2.3 |
 
@@ -150,6 +151,7 @@ flowchart LR
   subgraph ph3["3. One script path without transport holds"]
     P3_1["P3.1"]
     P3_1b["P3.1b"]
+    P3_1c["P3.1c"]
     P3_2["P3.2"]
     P3_3["P3.3"]
     P3_4["P3.4"]
@@ -236,7 +238,8 @@ flowchart LR
   P2_2 --> P2_3
   P1_5 --> P2_3
   P3_1 --> P3_1b
-  P3_1b --> P3_2
+  P3_1b --> P3_1c
+  P3_1c --> P3_2
   P2_2 --> P3_2
   P1_2 --> P3_3
   P3_2 --> P3_4

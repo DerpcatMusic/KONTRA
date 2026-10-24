@@ -446,6 +446,27 @@ gate = ["spike report committed with measured numbers"]
 done = ["luau-alloc-mlua.md recommends A, B or C with evidence; the coordinator rewrites P3.2 from it."]
 
 [[task]]
+id = "P3.1c"
+title = "Spike: Lua GC on the audio thread for large heaps (Augmented Orchestra 360 MB, 15 ms stalls)"
+phase = 3
+lane = "script"
+size = "M"
+agent = "spike"
+deps = ["P3.1b"]
+owns = ["docs/architecture-v3/spikes/luau-gc.md", "tools/spikes/**", "crates/sampler-uvi/src/script.rs"]
+docs = ["docs/architecture-v3/spikes/luau-alloc.md", "docs/architecture-v3/spikes/luau-alloc-mlua.md", "04-SCRIPT.md#4-kontra-lua"]
+goal = "P3.1b chose the allocator (routing global allocator + ArenaScope) but found 14.5–16 ms GC cycle-boundary stalls on a 4e6-table heap the size of Augmented Orchestra's (355–379 MB Lua heap). Audio blocks are 1.3–2.7 ms. Find why the heap is that big and a GC strategy whose worst audio-thread pause fits a block budget."
+steps = [
+  "Add a minimal test-only hook in crates/sampler-uvi/src/script.rs (`#[cfg(any(test, feature = \"spike-hooks\"))]` or a `pub fn` doc-hidden accessor) so a spike can step the collector and run one note on a loaded ScriptHost. Keep it tiny; say exactly what it exposes.",
+  "Decompose Augmented Orchestra's heap: count tables/strings/closures by origin (sample metadata, mapping tables, UI, prelude). Is the bulk static data that could live in Rust (userdata/light userdata, read-only buffers) instead of Lua tables?",
+  "Measure on real hosts (VWinds, Augmented Orchestra): worst `LUA_GCSTEP` pause at several step sizes, cycle-boundary (atomic) cost, and how it scales with heap size; try `LUA_GCSETGOAL`/`LUA_GCSETSTEPMUL`/`LUA_GCSETSTEPSIZE` tuning.",
+  "Evaluate strategies: (a) small steps every block with the atomic phase bounded by heap size; (b) static data moved out of the Lua heap; (c) GC stopped on audio and run between callbacks on a helper thread while the state is parked (only if the state can be safely handed over: prove it); (d) per-instrument script heap split. Give measured worst pause for each feasible one.",
+  "Write spikes/luau-gc.md: the recommended strategy with numbers, the heap-cap rule, and what P3.2 must implement."
+]
+gate = ["spike report committed with measured real-host numbers"]
+done = ["luau-gc.md gives a strategy whose measured worst audio-thread pause is under 0.5 ms on Augmented Orchestra, or proves none exists and recommends the fallback (keep a script thread for heaps above a size, with explicit latency compensation)."]
+
+[[task]]
 id = "P3.2"
 title = "UVI Lua inline on the audio thread; ScriptThread only as a feature fallback"
 phase = 3
@@ -453,12 +474,12 @@ lane = "script"
 size = "L"
 agent = "worker"
 draft = true
-deps = ["P3.1b", "P2.2"]
+deps = ["P3.1c", "P2.2"]
 owns = ["crates/sampler-uvi/src/scripted.rs", "crates/sampler-uvi/src/scripted/**", "crates/sampler-uvi/src/script.rs", "crates/sampler-uvi/src/script/**", "crates/sampler-uvi/tests/**", "@plugin", "@v2rs"]
-docs = ["04-SCRIPT.md#4-kontra-lua", "docs/architecture-v3/spikes/luau-alloc.md", "docs/architecture-v3/spikes/luau-alloc-mlua.md"]
+docs = ["04-SCRIPT.md#4-kontra-lua", "docs/architecture-v3/spikes/luau-alloc.md", "docs/architecture-v3/spikes/luau-alloc-mlua.md", "docs/architecture-v3/spikes/luau-gc.md"]
 goal = "Lua callbacks run at their event's sample on the audio thread with the allocator from P3.1; `wait` resumes at an exact sample; offline and real time share the path."
 steps = [
-  "Use the allocator option chosen by P3.1b. Whatever the option: every script entry point is protected (`pcall`/mlua `Result`), memory exhaustion is an error and never an abort, numbers cross the boundary as f64, and the arena is sized at prepare with the headroom rule from the spike.",
+  "Use the allocator chosen by P3.1b (option A: routing `#[global_allocator]` + `ArenaScope`) and the GC strategy from P3.1c. Whatever the option: every script entry point is protected (`pcall`/mlua `Result`), memory exhaustion is an error and never an abort, numbers cross the boundary as f64, and the arena is sized at prepare with the headroom rule from the spike.",
   "Replace `ScriptThread` polling with inline execution in the voice-start path used by KSP.",
   "Keep `ScriptThread` behind a cargo feature `lua-thread` (off by default) until G3.",
   "Delete the separate offline inline host so both modes use the same code."
