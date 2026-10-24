@@ -21,6 +21,7 @@ Accuracy: slot starts come from the monotonic clock at MIDI start; slices are go
 Absolute latency is not calibrated here: compare.py aligns each capture to the KONTRA render.
 """
 import argparse
+import math
 import array
 import importlib.util
 import json
@@ -86,15 +87,15 @@ def vlq(n):
     return bytes(out)
 
 
-def make_midi(path, slots, window=None, notes=SCENARIO):
-    """Format 0, 120 bpm, 480 ppq (960 ticks/s). Slot k: `notes` on channel k+1 from k*window.
+def make_midi(path, slots, window=None, notes=SCENARIO, per_slot=None):
+    """Format 0, 120 bpm, 480 ppq (960 ticks/s). Slot k: `notes` (or `per_slot[k]`) on channel k+1 from k*window.
     With `window`, All Sound Off (CC 120) on channel k+1 closes each slot; without it (the single
     scenario file) only the notes are written."""
     events = []
     first = slot.channel_block()[0]  # this session's MIDI channel block (see slot.py)
     for k in range(slots):
         ch, base = first + k, (k * window if window else 0.0)
-        for start, length, key, vel in notes:
+        for start, length, key, vel in (per_slot[k] if per_slot else notes):
             on, off = round((base + start) * 960), round((base + start + length) * 960)
             events.append((on, 1, bytes([0x90 | ch, key, vel])))
             events.append((off, 0, bytes([0x80 | ch, key, 0])))
@@ -130,8 +131,37 @@ out:close()
 """
 
 
+def sink_state():
+    for line in sh("pactl", "list", "short", "sinks").splitlines():
+        if SINK in line.split("\t")[1:2]:
+            return line.split("\t")[-1].strip()
+    return None
+
+
 def ensure_sink():
-    slot.ensure_sink(SINK)
+    """The capture sink must never suspend: a suspended null sink records silence even with Kontakt
+    linked to it. A sink loaded without node.always-process (or found SUSPENDED) is reloaded."""
+    if sink_state() in ("IDLE", "RUNNING"):
+        return
+    for line in sh("pactl", "list", "short", "modules").splitlines():
+        if f"sink_name={SINK}" in line:
+            subprocess.run(["pactl", "unload-module", line.split("\t")[0]], capture_output=True)
+    subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={SINK}",
+                    f"sink_properties=device.description={SINK} node.always-process=true session.suspend-timeout-seconds=0",
+                    "format=float32le", "rate=48000", "channels=2"], capture_output=True)
+    time.sleep(1)
+    if sink_state() in (None, "SUSPENDED"):
+        sys.exit(f"{SINK} is missing or suspended after reload; check pactl list sinks")
+
+
+def log(work, msg):
+    """Session diagnostics: appended to WORK/session.log (sink, links, peaks)."""
+    with open(work / "session.log", "a") as f:
+        f.write(time.strftime("%H:%M:%S ") + msg + "\n")
+
+
+def kontakt_links():
+    return [l.strip() for l in sh("pw-link", "-l").splitlines() if "Kontakt" in l or "kontra_ref" in l][:8]
 
 
 def kontakt_ports():
@@ -209,7 +239,7 @@ def stop_kontakt(timeout=20):
     slot.stop_kontakt(timeout)
 
 
-def run_session(nkis, window, work, midi=None, notes=SCENARIO):
+def run_session(nkis, window, work, midi=None, notes=SCENARIO, per_slot=None):
     """Loads up to PER_SESSION NKIs, plays the slotted MIDI, records. Returns (wav, t_midi, loaded)
     where t_midi is the MIDI start on the recording clock and loaded[k] = (ok, error)."""
     if kontakt_running():
@@ -224,7 +254,7 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO):
                       + probe_lua([dump.winpath(Path(n).resolve()) for n in nkis]))
     if midi is None:  # batch: one slot per instrument
         midi = work / "slots.mid"
-        make_midi(midi, len(nkis), window, notes)
+        make_midi(midi, len(nkis), window, notes, per_slot)
     ensure_sink()
     session = work / "session.wav"
     xvfb = subprocess.Popen(["Xvfb", DISPLAY, "-screen", "0", f"{DESKTOP}x24"],
@@ -256,6 +286,7 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO):
             select_device(env)
         if not route_kontakt_to_sink(wait=60):
             sys.exit(f"Kontakt has no audio output ports; see {work / 'kontakt.log'}")
+        log(work, f"after route: sink={sink_state()} links={kontakt_links()}")
         keep = subprocess.Popen(["pw-cat", "-p", "--raw", "--rate", "48000", "--channels", "2", "--format", "f32",
                                  "--target", SINK, "/dev/zero"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         t_rec = time.monotonic()  # the WAV's sample 0 is at recorder start, so the clock starts here
@@ -272,6 +303,7 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO):
             route_kontakt_to_sink()
             time.sleep(0.1)
         time.sleep(0.5)
+        log(work, f"session end: sink={sink_state()} links={kontakt_links()}")
     finally:
         if player and player.poll() is None:
             player.kill()
@@ -308,23 +340,47 @@ def slice_session(session, t_midi, names, loaded, out_dir, window):
         path.write_bytes(b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt "
                          + struct.pack("<IHHIIHH", 16, 3, ch, rate, rate * ch * 4, ch * 4, 32)
                          + b"data" + struct.pack("<I", len(data)) + data)
+        peak = max(max(inter), -min(inter), 0.0)
         manifest[name] = {"loaded": True, "error": "", "wav": str(path), "frames": end - start,
-                          "slot_start_in_wav_s": PRE}
+                          "slot_start_in_wav_s": PRE, "peak_db": 20 * math.log10(peak + 1e-12)}
     return manifest
 
 
-def capture(items, out_dir, window, midi=None, notes=SCENARIO):
-    """items: [(name, nki)]. Returns the manifest {name: {...}}; WAVs land in out_dir.
-    `midi` (single instrument only) is played as given instead of the slotted batch scenario."""
+CANARY_NAME = "__canary__"
+CANARY_MIN_DB = -50.0  # the canary is known audible: below this the session is broken
+
+
+def capture(items, out_dir, window, midi=None, notes=SCENARIO, canary=None):
+    """items: [(name, nki)] or [(name, nki, notes)] (per-instrument notes; default `notes`).
+    `canary` = (name, nki, notes) of a known audible instrument: it takes slot 0 of every session,
+    and the session aborts loudly when it records silence (the audio or MIDI path is broken).
+    `midi` (single instrument only) is played as given instead of the slotted batch scenario.
+    Returns the manifest {name: {...}}; WAVs land in out_dir."""
     out_dir.mkdir(parents=True, exist_ok=True)
+    items = [(it[0], it[1], it[2] if len(it) > 2 else notes) for it in items]
+    if canary:
+        items = [(CANARY_NAME, canary[1], canary[2])] + items
     manifest = {}
-    for g in range(0, len(items), PER_SESSION):
-        group = items[g:g + PER_SESSION]
+    per = PER_SESSION
+    for g in range(0, len(items), per):
+        group = items[g:g + per]
         work = CACHE / f"capture-{os.getpid()}-{g}"
-        session, t_midi, loaded = run_session([nki for _, nki in group], window, work, midi, notes)
-        part = slice_session(session, t_midi, [n for n, _ in group], loaded, out_dir, window)
-        for name, nki in group:
+        names = [n for n, _, _ in group]
+        nkis = [k for _, k, _ in group]
+        per_slot = [ns for _, _, ns in group]
+        session, t_midi, loaded = run_session(nkis, window, work, midi, per_slot=per_slot)
+        if session.exists():
+            _, _, chans = wavutil.read(session)
+            peak = max((max(max(c), -min(c)) for c in chans if len(c)), default=0.0)
+            log(work, f"recording peak {20 * math.log10(peak + 1e-12):.1f} dBFS, {len(chans[0])} frames")
+        part = slice_session(session, t_midi, names, loaded, out_dir, window)
+        for name, nki, _ in group:
             part[name]["nki"] = nki
+        if canary and g == 0:
+            c = part[CANARY_NAME]
+            if not c.get("loaded") or c.get("peak_db", -240) < CANARY_MIN_DB:
+                sys.exit(f"canary silent in session {work} ({c.get('peak_db')} dBFS, load {c.get('error')}): "
+                         f"audio or MIDI path broken, see {work / 'session.log'}")
         manifest.update(part)
         session.unlink(missing_ok=True)
     return manifest
