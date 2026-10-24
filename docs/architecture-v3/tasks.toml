@@ -5,7 +5,7 @@
 # Format and rules: docs/architecture-v3/12-WORKFLOW.md.
 #
 # Task fields
-#   id      "P<phase>.<n>[letter]"; the branch is v3/<id>-<slug>, the PR title starts with "<id>:"
+#   id      "P<phase>.<n>[letter]"; the branch is v3-<id>-<slug>, the PR title starts with "<id>:"
 #   deps    task ids that must be merged into v3 first
 #   owns    path globs this task may change (relative to repo root). "@lock" pulls in a lock group.
 #           Two open tasks never own overlapping paths (plan.py ready / scope enforce it).
@@ -19,7 +19,7 @@
 
 [meta]
 branch = "v3"
-branch_prefix = "v3/"
+branch_prefix = "v3-"
 docs = "docs/architecture-v3"
 project = "KONTRA v3"
 
@@ -27,7 +27,7 @@ project = "KONTRA v3"
 0 = "Guard rails"
 1 = "On-time start"
 2 = "Scripts never stall notes"
-3 = "One script path, no transport holds"
+3 = "One script path without transport holds"
 4 = "Base and model crates"
 5 = "DSP families"
 6 = "Engine crates"
@@ -65,18 +65,33 @@ paths = ["docs/architecture-v3/tasks.toml", "docs/architecture-v3/TASKS.md"]
 # ───────────────────────────── Phase 0: guard rails ─────────────────────────────
 
 [[task]]
+id = "P0.0"
+title = "Scaffold tools/xtask and tools/probe (workspace members)"
+phase = 0
+lane = "tooling"
+size = "S"
+agent = "coordinator"
+deps = []
+owns = ["tools/xtask/**", "tools/probe/**", "tools/plan/**", ".github/ISSUE_TEMPLATE/**", "@manifests", "@lockfile", "@plan"]
+docs = ["12-WORKFLOW.md#5-scope-why-parallel-work-does-not-conflict"]
+goal = "Register the two phase-0 tool crates as empty members so P0.1 and P0.2 never touch the root manifest and can run in parallel."
+steps = ["Done in the plan PR that added this task: stub crates, members, Cargo.lock."]
+gate = ["build-slot cargo check -p xtask -p kontra-probe"]
+done = ["Both stubs compile on v3."]
+
+[[task]]
 id = "P0.1"
 title = "xtask: size, debt, deps-check, timings"
 phase = 0
 lane = "tooling"
 size = "M"
 agent = "worker"
-deps = []
-owns = ["tools/xtask/**", "@manifests", "@lockfile"]
+deps = ["P0.0"]
+owns = ["tools/xtask/**", ".cargo/config.toml", "@lockfile"]
 docs = ["09-BUILD.md#3-xtask", "00-BASELINE.md"]
 goal = "A `cargo xtask` crate that measures the codebase the way 00-BASELINE.md does, so every later gate is a command, not a judgement."
 steps = [
-  "Create `tools/xtask` (binary crate `xtask`, publish = false, std + `cargo_metadata` + `serde_json` only). Add it to workspace members and add `[alias] xtask = \"run -p xtask --\"` in `.cargo/config.toml` (create the file; keep `fast-linux.toml` separate).",
+  "Fill in the `tools/xtask` stub (binary crate `xtask`, already a workspace member; std + `cargo_metadata` + `serde_json` + `toml` only). Add `[alias] xtask = \"run -p xtask --\"` in a new `.cargo/config.toml` (keep `fast-linux.toml` separate).",
   "`xtask size`: production vs test lines per workspace crate, using the 00-BASELINE.md rule (test = `*test*.rs`, `tests/`, trailing `#[cfg(test)] mod` blocks). Print a markdown table. `--max-crate 8000 --max-file 800` flags fail when exceeded; an allow-list file `tools/xtask/size-allow.txt` lists today's offenders so it passes on v3 now.",
   "`xtask debt`: counts of `#[path]`, `#[allow(`, `Processor::`, `impl Default for`, `#[cfg(test)]` inside fn bodies (approximate: lines between `fn` and its closing brace), `Mutex` in RT crates (crates/engine, crates/dsp, sampler-core). `--baseline tools/xtask/debt-baseline.json` fails if any count grows; `--write-baseline` updates it.",
   "`xtask deps-check`: read `cargo metadata`; fail on any workspace→workspace edge not in `tools/xtask/dag.toml`. Seed dag.toml with today's edges (so it passes now) plus a `[forbidden]` table: no GPU crates (`wgpu*`, `naga`, `ash`, `x11rb`, `zbus`) reachable from `crates/{base,model,dsp,engine,script,format}/**` packages.",
@@ -102,13 +117,13 @@ phase = 0
 lane = "tooling"
 size = "L"
 agent = "worker"
-deps = []
-owns = ["tools/probe/**", "@v2rs", "@manifests", "@lockfile"]
+deps = ["P0.0"]
+owns = ["tools/probe/**", "@v2rs", "@lockfile"]
 docs = ["10-TESTING.md#1-playback-contracts-toolsprobe-crate-kontra-probe", "../audit-2026-10-24/PLAYBACK_AUDIT.md"]
 goal = "Turn the ignored `audit_probe_dense_realtime_playback` test in src/sound/v2.rs into the `kontra-probe` crate: a CLI plus library that loads an instrument, drives it with patterns and asserts contracts C1–C10."
 steps = [
   "Read `audit_probe_dense_realtime_playback` in src/sound/v2.rs (search the name) and PLAYBACK_AUDIT.md: it pins block size 128 at 48 kHz, paces blocks in real time, drains `take_effects`, and records first-audible block per note.",
-  "Create `tools/probe` (package `kontra-probe`, lib + bin `kontra-probe`), depending on the root `kontakto` crate for now (it needs `V2Loader`). Later phases repoint it at `kontra-engine`.",
+  "Fill in the `tools/probe` stub (package `kontra-probe`, already a workspace member depending on the root `kontakto` crate, which it needs for `V2Loader`); add a bin target `kontra-probe`. Later phases repoint it at `kontra-engine`.",
   "Library API: `Session::load(path, rate)`, `Pattern` (live single notes, dense chords, offsets sweep, CC sweep, block-size sweep), `Mode::{RealTime, Offline}`, and `Report` with per-note: scheduled sample, first-output sample per voice, voice count, dropout frames.",
   "Contracts as functions returning `Verdict { id, pass, detail }`: C1 start error = 0, C3 start spread within a note = 0, C4 block-size null < -120 dB across 32/64/128/512/1024/97, C5 offline vs real-time null, C6 voices per note as expected, C8 dense 64/64 audible on the first block. C2/C7/C9/C10 may return `Verdict::unsupported` with the reason until fixtures and hooks exist; list which.",
   "CLI: `kontra-probe <instrument> [--pattern dense|live|offsets|cc] [--contracts C1,C3,...] [--json out.json]`; exit 1 if any selected contract fails.",
