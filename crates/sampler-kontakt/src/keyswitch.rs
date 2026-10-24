@@ -430,11 +430,13 @@ pub fn detect(source: &str, saved: &[(String, i64)]) -> Detection {
             }
             (None, Some(hint)) if hint.starts_with("control keys ") => {
                 Detection::ControlKeysOnly(format!(
-                    "keyswitch hints ({hint}) but no recognized switch in on note"
+                    "keyswitch hints ({hint}) but no recognized switch in on note: sounding keys are one-shot triggers"
                 ))
             }
-            (None, Some(hint)) => Detection::Unrecognized(format!(
-                "keyswitch hints ({hint}) but no recognized switch in on note"
+            // A sounding key that selects groups for its own note is a one-shot
+            // trigger, not an articulation set: informational, not a gap.
+            (None, Some(hint)) => Detection::ControlKeysOnly(format!(
+                "keyswitch hints ({hint}) but no recognized switch in on note: sounding keys are one-shot triggers"
             )),
             (None, None) => Detection::None,
         };
@@ -1074,7 +1076,7 @@ end on
             $id := play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, -1)\n exit\n end if\nend on";
         assert!(matches!(
             detect(source, &[]),
-            Detection::ControlKeysOnly(why) if why.contains("no recognized switch")
+            Detection::ControlKeysOnly(why) if why.contains("no recognized switch") && why.contains("one-shot")
         ));
     }
 
