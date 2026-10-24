@@ -47,3 +47,13 @@ Per-slot MIDI must use the slot's channel block (`slot.channel_block()`); `mkmid
   act once slots are full and older than 10 s). Next step if picked up again: capture with notes held 12 s each, and
   diff against KONTRA's per-note slot choice.
 - Verdict: cause not found; no engine change; time-boxed and moved on.
+
+## 5. Third mode: until-release loops (not verified)
+
+- Chosen: until-release loop slots (420 zones, 1 library). Not verified: the instrument was not located.
+- Probed with `format-census --slots` (`until_release=true`), first 25 to 30 NKIs per folder: Areia, Afflatus Chapter II
+  Brass, Audio Imperia Dolce, Pacific Ensemble Strings, Audio Imperia CHORUS, Performance Samples Vista, and all three
+  Una Corda instruments. No hit in about 150 files. The rule against corpus sweeps stopped the search.
+- Next step: find the 420-zone library with a bounded `--slots` pass over the remaining files of the largest folders
+  (one process at a time), then one oracle-slot capture of a held note longer than the loop, releasing it, and comparing
+  the release tail with KONTRA.
