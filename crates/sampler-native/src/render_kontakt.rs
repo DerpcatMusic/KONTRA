@@ -2,7 +2,13 @@
 //! core, played by a MIDI 1.0 note sequence into a WAV file.
 
 use crate::wave;
+<<<<<<< Updated upstream
 use sampler_core::{Limits, Outcome, PAGE_FRAMES, Runtime};
+||||||| Stash base
+use sampler_core::{Limits, Outcome, Runtime};
+=======
+use sampler_core::{Limits, Outcome, PAGE_FRAMES, Runtime, StreamCache};
+>>>>>>> Stashed changes
 use sampler_midi::{Ingress, Packets, TimedPacket, Version};
 use std::{
     fs::OpenOptions,
@@ -204,6 +210,7 @@ pub fn run(
     output: &Path,
     messages: &[Message],
     scripts: bool,
+    streamed: bool,
 ) -> io::Result<()> {
     let keys: Vec<u8> = messages
         .iter()
@@ -223,7 +230,27 @@ pub fn run(
     let read = |e: sampler_kontakt::LoadError| io::Error::other(e.to_string());
     // KONTRA_PLAY_KEYS=1: load only zones covering a played key, not the whole
     // range between the lowest and highest (probe grids span octaves).
+<<<<<<< Updated upstream
     let (kontakt, options) = if std::env::var_os("KONTRA_PLAY_KEYS").is_some() {
+||||||| Stash base
+    let loaded = if std::env::var_os("KONTRA_PLAY_KEYS").is_some() {
+=======
+    if streamed {
+        // Plain instruments only: the streamed loader keeps start heads and a page pool
+        // resident instead of every sample (what a plugin host does), so a large library
+        // renders in a bounded footprint. The blocks wait for their pages to match the
+        // resident render sample for sample.
+        let streamed = sampler_kontakt::load_streamed(
+            instrument,
+            &options,
+            &sampler_kontakt::StreamPolicy::default(),
+            progress,
+        )
+        .map_err(|e| io::Error::other(e.to_string()))?;
+        return render_streamed(streamed, output, messages);
+    }
+    let loaded = if std::env::var_os("KONTRA_PLAY_KEYS").is_some() {
+>>>>>>> Stashed changes
         let options = sampler_kontakt::Options {
             keys: 0..=127,
             library: Some(instrument.into()),
@@ -308,6 +335,7 @@ pub fn runtime(plan: sampler_core::Prepared) -> io::Result<Runtime> {
     Ok(rt)
 }
 
+<<<<<<< Updated upstream
 pub fn render(playback: Playback, output: &Path, messages: &[Message]) -> io::Result<()> {
     // Streamed playback keeps its streamer and assets alive for the whole render.
     let (loaded, cache, _pages, horizon) = match playback {
@@ -319,6 +347,68 @@ pub fn render(playback: Playback, output: &Path, messages: &[Message]) -> io::Re
             (loaded, Some(cache), Some((streamer, assets)), Some(horizon))
         }
     };
+||||||| Stash base
+pub fn render(
+    loaded: sampler_kontakt::Loaded,
+    output: &Path,
+    messages: &[Message],
+) -> io::Result<()> {
+=======
+pub fn render(
+    loaded: sampler_kontakt::Loaded,
+    output: &Path,
+    messages: &[Message],
+) -> io::Result<()> {
+    render_with(loaded, output, messages, None)
+}
+
+/// Streaming state of a `--streamed` render: the stream cache, and the frames of audio
+/// whose pages must be ready before each block.
+struct Streaming {
+    cache: Option<StreamCache>,
+    horizon: u32,
+}
+
+/// Renders a streamed load. Its assets and streamer stay alive for the whole render.
+fn render_streamed(
+    streamed: sampler_kontakt::Streamed,
+    output: &Path,
+    messages: &[Message],
+) -> io::Result<()> {
+    let horizon = (streamed.report.head_frames.max(PAGE_FRAMES) + 256) as u32;
+    let sampler_kontakt::Streamed { loaded, assets, cache, streamer, .. } = streamed;
+    let result = render_with(
+        loaded,
+        output,
+        messages,
+        Some(Streaming { cache: Some(cache), horizon }),
+    );
+    drop((assets, streamer));
+    result
+}
+
+/// Services the streamer until every page the next block can need is resident.
+fn wait_for_pages(runtime: &mut Runtime, horizon: u32) -> io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        match runtime.service_streaming(horizon) {
+            Ok(true) => return Ok(()),
+            Ok(false) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Ok(false) => return Err(io::Error::other("streamed pages not ready after 60 s")),
+            Err(e) => return Err(io::Error::other(format!("stream service: {e:?}"))),
+        }
+    }
+}
+
+fn render_with(
+    loaded: sampler_kontakt::Loaded,
+    output: &Path,
+    messages: &[Message],
+    mut streaming: Option<Streaming>,
+) -> io::Result<()> {
+>>>>>>> Stashed changes
     let ir = &loaded.instrument;
     eprintln!(
         "{:?}: {} groups, {} zones, {} envelopes, {} scripts, {} unsupported",
@@ -349,10 +439,24 @@ pub fn render(playback: Playback, output: &Path, messages: &[Message]) -> io::Re
     }
     let mut scripts = loaded.scripts;
     let rate = loaded.plan.sample_rate();
+<<<<<<< Updated upstream
     let mut rt = runtime(loaded.plan)?;
     if let Some(cache) = cache {
         rt = rt.with_stream_cache(cache);
     }
+||||||| Stash base
+    let mut rt = runtime(loaded.plan)?;
+=======
+    let mut rt = match streaming.as_mut().and_then(|s| s.cache.take()) {
+        Some(cache) => {
+            let limits = Limits::for_plan(&loaded.plan, 4096, 512);
+            Runtime::new(loaded.plan, limits)
+                .map_err(|e| io::Error::other(format!("native core: {e}")))?
+                .with_stream_cache(cache)
+        }
+        None => runtime(loaded.plan)?,
+    };
+>>>>>>> Stashed changes
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     // MIDI 1.0 channel voice messages as UMP words, in the order given (a
     // stable sort keeps simultaneous messages in file order).
@@ -400,6 +504,7 @@ pub fn render(playback: Playback, output: &Path, messages: &[Message]) -> io::Re
             });
             next += 1;
         }
+<<<<<<< Updated upstream
         // Offline playback waits for the pages this block needs, so the output
         // does not depend on disk timing.
         if let Some(horizon) = horizon {
@@ -409,6 +514,11 @@ pub fn render(playback: Playback, output: &Path, messages: &[Message]) -> io::Re
             {
                 std::thread::sleep(std::time::Duration::from_micros(200));
             }
+||||||| Stash base
+=======
+        if let Some(streaming) = &streaming {
+            wait_for_pages(&mut rt, streaming.horizon)?;
+>>>>>>> Stashed changes
         }
         let mut failure = None;
         ingress

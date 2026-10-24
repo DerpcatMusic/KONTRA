@@ -375,24 +375,26 @@ fn run() -> io::Result<()> {
             Path::new(output),
         ),
         [command, instrument, output, rest @ ..]
-            if command == "render-kontakt" && rest.len() <= 2 =>
+            if command == "render-kontakt" && rest.len() <= 3 =>
         {
             let scripts = !rest.iter().any(|a| a == "--no-scripts");
-            let sequence = rest.iter().find(|a| *a != "--no-scripts");
+            let streamed = rest.iter().any(|a| a == "--streamed");
+            let sequence = rest.iter().find(|a| *a != "--no-scripts" && *a != "--streamed");
             let sequence = sequence.map_or(Some(render_kontakt::DEFAULT_SEQUENCE), |s| s.to_str());
             let notes = render_kontakt::parse(sequence.unwrap_or(""))
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
             let messages = render_kontakt::note_messages(&notes);
-            render_kontakt::run(Path::new(instrument), Path::new(output), &messages, scripts)
+            render_kontakt::run(Path::new(instrument), Path::new(output), &messages, scripts, streamed)
         }
         // A Standard MIDI File: notes, controllers, pedal, bend, program changes.
         [command, instrument, output, midi, rest @ ..]
-            if command == "render-kontakt-midi" && rest.len() <= 1 =>
+            if command == "render-kontakt-midi" && rest.len() <= 2 =>
         {
             let scripts = !rest.iter().any(|a| a == "--no-scripts");
+            let streamed = rest.iter().any(|a| a == "--streamed");
             let messages = render_kontakt::midi_file(&std::fs::read(midi)?)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-            render_kontakt::run(Path::new(instrument), Path::new(output), &messages, scripts)
+            render_kontakt::run(Path::new(instrument), Path::new(output), &messages, scripts, streamed)
         }
         [command, instrument] if command == "kontakt-keys" => identify::keys(Path::new(instrument)),
         [command, instrument, grid, output, renders @ ..]
