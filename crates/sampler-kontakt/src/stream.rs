@@ -354,6 +354,8 @@ pub fn logical_stream_source(source:Arc<dyn AssetSource>, workspace_limit:usize)
 /// Random-access frames of one sample, converted exactly as a full decode.
 pub struct SampleReader {
     codec: Codec,
+    /// The sample file, named in decode errors so a bad block points at its asset.
+    label: String,
     /// The WAV byte stream (NCW keeps its own inside the decoder).
     bytes: Option<Bytes>,
     rate: u32,
@@ -430,6 +432,7 @@ impl SampleReader {
                 rate: wav.rate,
                 frames,
                 codec: Codec::Wav(wav),
+                label: source.path.display().to_string(),
                 bytes: Some(bytes),
                 scratch: Vec::new(),
             });
@@ -446,11 +449,13 @@ impl SampleReader {
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
             }));
         }
-        let reader = ncw::NcwReader::read(bytes).map_err(|e| invalid(format!("NCW: {e}")))?;
+        let reader = ncw::NcwReader::read(bytes)
+            .map_err(|e| invalid(format!("NCW {}: {e}", source.path.display())))?;
         Ok(Self {
             rate: reader.header.sample_rate,
             frames: reader.header.num_samples as usize,
             codec: Codec::Ncw(Box::new(reader)),
+            label: source.path.display().to_string(),
             bytes: None,
             scratch: Vec::new(),
         })
@@ -464,6 +469,7 @@ impl SampleReader {
     ) -> Self {
         Self {
             codec: Codec::Custom(Box::new(read)),
+            label: String::new(),
             bytes: None,
             rate,
             frames,
@@ -478,7 +484,7 @@ impl SampleReader {
     pub fn accounted_encoded(reader:crate::EncodedChannelReader)->io::Result<Self> {
         reader.accounted_workspace_bytes().ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"encoded reader has no checked codec accounting"))?;
         let frames=usize::try_from(reader.frames()).map_err(io::Error::other)?;let rate=reader.rate();
-        Ok(Self{codec:Codec::Encoded(Box::new(reader)),bytes:None,rate,frames,scratch:Vec::new()})
+        Ok(Self{codec:Codec::Encoded(Box::new(reader)),label:String::new(),bytes:None,rate,frames,scratch:Vec::new()})
     }
     pub fn rate(&self) -> u32 {
         self.rate
@@ -558,7 +564,7 @@ impl SampleReader {
                 let convert=crate::samples::ncw_sample(reader.sample_format,reader.header.bits_per_sample);
                 let mut at=start;let mut done=0;
                 while done<frames {
-                    let values=reader.decode_block(at/BLOCK).map_err(|e|io::Error::new(io::ErrorKind::InvalidData,e.to_string()))?;
+                    let values=reader.decode_block(at/BLOCK).map_err(|e|io::Error::new(io::ErrorKind::InvalidData,format!("NCW {}: block {}: {e}",self.label,at/BLOCK)))?;
                     if values.len()!=channels {return Err(io::Error::new(io::ErrorKind::InvalidData,"NCW channel width changed"));}
                     let offset=at%BLOCK;let count=values[0].len().saturating_sub(offset).min(frames-done);
                     if count==0 || values.iter().any(|v|v.len()<offset+count) {return Err(io::ErrorKind::UnexpectedEof.into());}
@@ -599,7 +605,7 @@ impl SampleReader {
                 while !out.is_empty() {
                     let channels = reader
                         .decode_block(at / BLOCK)
-                        .map_err(|e| invalid(format!("NCW: {e}")))?;
+                        .map_err(|e| invalid(format!("NCW {}: block {}: {e}", self.label, at / BLOCK)))?;
                     let offset = at % BLOCK;
                     let n = (channels[0].len().saturating_sub(offset)).min(out.len());
                     if n == 0 {
@@ -3916,6 +3922,29 @@ mod tests {
             header: None,
         };
         SampleReader::open(&source).unwrap()
+    }
+
+    #[test]
+    fn ncw_block_error_names_the_sample_file() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/ncw/tests/data/16-bit-mono.ncw");
+        let mut bytes = std::fs::read(&fixture).unwrap();
+        // Break the first block signature (BE 0x160C9A3E) past the 120-byte header.
+        let at = bytes
+            .windows(4)
+            .skip(120)
+            .position(|w| w == [0x16, 0x0C, 0x9A, 0x3E])
+            .map(|i| i + 120)
+            .expect("fixture has a block signature");
+        bytes[at..at + 4].fill(0);
+        let dir = std::env::temp_dir().join(format!("kontakt-ncw-label-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broken-block.ncw");
+        std::fs::write(&path, &bytes).unwrap();
+        let source = crate::Samples::new(&dir).source(&path).unwrap();
+        let err = source.open().err().expect("corrupt first block fails at open");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(err.to_string().contains("broken-block.ncw"), "{err}");
     }
 
     #[test]
