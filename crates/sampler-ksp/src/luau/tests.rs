@@ -405,7 +405,9 @@ fn pgs_keys_and_script_title_match_the_interpreter() {
         pgs_set_key_val(TEST, 9, 5)
         pgs_set_key_val(TEST, -1, 5)
         $a := pgs_get_key_val(TEST, 2) + pgs_get_key_val(TEST, 9)
-        $b := pgs_get_key_val(MISSING, 0) + pgs_key_exists(TEST) * 10 + pgs_key_exists(MISSING) * 100
+        $b := pgs_get_key_val(MISSING, 0)
+        if (pgs_key_exists(TEST)) $b := $b + 10 end if
+        if (pgs_key_exists(MISSING)) $b := $b + 100 end if
         pgs_create_key(TEST, 99)
         pgs_create_key(BIG, 1000)
         $c := pgs_get_key_val(TEST, 3) + pgs_get_key_val(BIG, 255) + pgs_get_key_val(BIG, 256)
@@ -450,6 +452,8 @@ fn ui_record_builtins_match_the_interpreter() {
 
 #[test]
 fn integer_builtins_match_the_interpreter() {
+    // in_range and pgs_key_exists return booleans: Kontakt rejects them as numbers
+    // (conformance `bool_inrange_arith`, `bool_pgs_arith`), so they are tested with `if`.
     assert_init_equivalent(
         "on init
         declare $a := 0
@@ -470,7 +474,9 @@ fn integer_builtins_match_the_interpreter() {
         $c := sh_left(3, 33) + sh_right(-64, 3) + sh_left(1, -1)
         $d := msb(-1000) * 1000 + lsb(-1000)
         $e := ms_to_ticks(2147483647) + ticks_to_ms(-2000)
-        $f := in_range(5, 1, 5) + in_range(6, 1, 5) * 10 + in_range(-1, -1, 0) * 100
+        if (in_range(5, 1, 5)) $f := $f + 1 end if
+        if (in_range(6, 1, 5)) $f := $f + 10 end if
+        if (in_range(-1, -1, 0)) $f := $f + 100 end if
         $g := min(3, -4) + max(3, -4) * 10
         $h := real_to_int(-7.9) + int(2.5) * 10 + real_to_int(1.0e30)
         $i := num_elements(%t) + 0

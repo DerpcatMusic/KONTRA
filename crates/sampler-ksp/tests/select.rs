@@ -242,22 +242,21 @@ fn case_dispatch_and_parsing_are_bounded_and_dead_cases_are_validated() {
 #[test]
 fn boolean_precedence_normalization_and_constant_evaluation_share_native_operations() {
     for (expression, expected) in [
-        ("1 or 0 and 0", 1),
-        ("1 xor 1 or 1", 1),
-        ("1 or 1 xor 1", 0),
+        // and/or/not take comparisons only (Kontakt rejects integer operands: conformance
+        // `intval_and_value`), so the precedence cases use comparison operands.
+        ("1 = 1 or 0 = 1 and 0 = 1", 1),
+        ("1 = 0 or 1 = 1 and 0 = 1", 0),
         ("not 2 = 3", 1),
         ("not 2 < 3", 0),
-        ("2 and -3", 1),
-        ("0 or -2", 1),
-        ("-2 xor 7", 0),
-        ("not .not. -1", 1),
+        ("(2 # 0) and (-3 # 0)", 1),
+        ("(0 # 0) or (-2 # 0)", 1),
         ("(2 .and. 3) = 2 and ((4 + 2) * 3 = 18)", 1),
         ("in_range(2+1,1,3)", 1),
         ("in_range(1,1,3)", 1),
         ("in_range(2,3,1)", 0),
         ("in_range(07FFFFFFFH,080000000H,07FFFFFFFH)", 1),
         ("in_range(-1,0,1)", 0),
-        ("(1 or 0) = 1 and (4 .or. 2) = 6", 1),
+        ("((1 = 1) or (0 = 1)) and ((4 .or. 2) = 6)", 1),
     ] {
         // The expected values are logical truth values. Kontakt rejects a boolean assigned
         // to an integer and an integer used as a condition, so each arm tests truth with `# 0`.
@@ -305,14 +304,14 @@ fn boolean_short_circuit_guards_arrays_but_never_hides_malformed_source_or_runti
     });
     // An unguarded read outside the array is 0, so the expression still runs.
     for (expression, expected) in [
-        ("1 and %a[99]", 0),
-        ("0 or %a[99]", 0),
-        ("1 xor %a[99]", 1),
-        ("0 xor %a[99]", 0),
+        ("(1 = 1) and (%a[99] # 0)", 0),
+        ("(0 = 1) or (%a[99] # 0)", 0),
+        ("(1 = 1) or (%a[99] # 0)", 1),
+        ("(0 = 1) and (%a[99] # 0)", 0),
     ] {
         let source = format!(
             "on init declare %a[1] declare $result := 7 end on
-            on note ignore_event($EVENT_ID) $result := {expression} end on"
+            on note ignore_event($EVENT_ID) if ({expression}) $result := 1 else $result := 0 end if end on"
         );
         let mut rt = runtime(&source, 128);
         support::without_heap(|| {

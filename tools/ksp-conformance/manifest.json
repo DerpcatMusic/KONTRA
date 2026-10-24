@@ -233,5 +233,200 @@
   "id": "call_init_global",
   "category": "function",
   "results": 1
+ },
+ {
+  "id": "builtin_sgn__0",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_sgn__1",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "builtin_minmax__0",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_minmax__1",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "builtin_msb_lsb",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_msb_zero",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_sh_32",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_sh_negative",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_pow",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_floor_ceil__0",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_floor_ceil__1",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "builtin_round_neg",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_int_conv",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_sqrt",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_real_literal",
+  "category": "real",
+  "results": 2
+ },
+ {
+  "id": "arith_div_zero",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "arith_mod_zero",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "arith_unary_prec__0",
+  "category": "arithmetic",
+  "results": 2
+ },
+ {
+  "id": "arith_unary_prec__1",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "arith_compound_neg",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_int_max",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_int_overflow",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "intval_and_value",
+  "category": "intvalue",
+  "results": 1
+ },
+ {
+  "id": "intval_or_value",
+  "category": "intvalue",
+  "results": 1
+ },
+ {
+  "id": "intval_bitand",
+  "category": "intvalue",
+  "results": 2
+ },
+ {
+  "id": "intval_not_value",
+  "category": "intvalue",
+  "results": 1
+ },
+ {
+  "id": "typing_bool_arith",
+  "category": "typing",
+  "results": 1
+ },
+ {
+  "id": "builtin_min_lit",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "builtin_max_lit",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "builtin_min_var",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "builtin_max_neg",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "lit_u32_max",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_u32_over",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_3e9",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_hex_top",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_neg_min",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_neg_over",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "bool_inrange_arith",
+  "category": "typing",
+  "results": 1
+ },
+ {
+  "id": "bool_pgs_arith",
+  "category": "typing",
+  "results": 1
  }
 ]
