@@ -247,6 +247,9 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO, per_slot=None):
     if kontakt_running():
         sys.exit("another Kontakt is running; one oracle session at a time")
     work.mkdir(parents=True, exist_ok=True)
+    if midi is not None and slot.active():  # a --midi file is written for channel 1; this slot's instrument is elsewhere
+        midi = slot.remap_midi(midi, work / "block.mid", slot.channel_block()[0])
+    diag = {"routed": None, "midi_rc": None, "channel": slot.channel_block()[0] + 1, "links_end": None}
     raw = work / "probe.jsonl"
     raw.unlink(missing_ok=True)
     script = work / "probe.lua"
@@ -284,7 +287,8 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO, per_slot=None):
             sys.exit(f"probe did not finish; see {work}")
         if not slot.active() or os.environ.get("ORACLE_GUI_SETUP"):  # a slot's device/MIDI come from its Settings.cfg
             select_device(env)
-        if not route_kontakt_to_sink(wait=60):
+        diag["routed"] = route_kontakt_to_sink(wait=60)
+        if not diag["routed"]:
             sys.exit(f"Kontakt has no audio output ports; see {work / 'kontakt.log'}")
         log(work, f"after route: sink={sink_state()} links={kontakt_links()}")
         keep = subprocess.Popen(["pw-cat", "-p", "--raw", "--rate", "48000", "--channels", "2", "--format", "f32",
@@ -305,6 +309,12 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO, per_slot=None):
         time.sleep(0.5)
         log(work, f"session end: sink={sink_state()} links={kontakt_links()}")
     finally:
+        diag["links_end"] = kontakt_links()
+        if player:
+            diag["midi_rc"] = player.poll()
+            if diag["midi_rc"] is None:
+                player.kill()
+        (work / "diag.json").write_text(json.dumps(diag, indent=1))
         if player and player.poll() is None:
             player.kill()
         if rec:
@@ -350,39 +360,71 @@ CANARY_NAME = "__canary__"
 CANARY_MIN_DB = -50.0  # the canary is known audible: below this the session is broken
 
 
+SILENT_DB = -100.0  # a recorded slice below this has no sound (digital silence is -240 dBFS)
+
+
+def silence_reason(work):
+    """Why a slice recorded silence, from the session's diag.json (what the session could observe)."""
+    path = Path(work) / "diag.json"
+    if not path.exists():
+        return "no session diagnostics"
+    diag = json.loads(path.read_text())
+    return (f"Kontakt outputs linked to the sink: {diag.get('routed')}; "
+            f"aplaymidi exit {diag.get('midi_rc')} (delivery itself is not observed); "
+            f"instrument MIDI channel {diag.get('channel')}; "
+            f"links at end: {diag.get('links_end') or 'none'}")
+
+
+def run_group(group, g, window, midi, out_dir, tag=""):
+    """One Kontakt session for `group`: slices into out_dir. Returns (manifest part, work dir)."""
+    work = CACHE / f"capture-{os.getpid()}-{g}{tag}"
+    names = [n for n, _, _ in group]
+    nkis = [k for _, k, _ in group]
+    per_slot = [ns for _, _, ns in group]
+    session, t_midi, loaded = run_session(nkis, window, work, midi, per_slot=per_slot)
+    if session.exists():
+        _, _, chans = wavutil.read(session)
+        peak = max((max(max(c), -min(c)) for c in chans if len(c)), default=0.0)
+        log(work, f"recording peak {20 * math.log10(peak + 1e-12):.1f} dBFS, {len(chans[0])} frames")
+    part = slice_session(session, t_midi, names, loaded, out_dir, window)
+    for name, nki, _ in group:
+        part[name]["nki"] = nki
+    session.unlink(missing_ok=True)
+    return part, work
+
+
 def capture(items, out_dir, window, midi=None, notes=SCENARIO, canary=None):
     """items: [(name, nki)] or [(name, nki, notes)] (per-instrument notes; default `notes`).
     `canary` = (name, nki, notes) of a known audible instrument: it takes slot 0 of every session,
     and the session aborts loudly when it records silence (the audio or MIDI path is broken).
     `midi` (single instrument only) is played as given instead of the slotted batch scenario.
+    A slice below SILENT_DB is retried once (whole session). Still silent: the entry gets
+    silent=True, wav=None and the reason in error; the caller exits non-zero.
     Returns the manifest {name: {...}}; WAVs land in out_dir."""
     out_dir.mkdir(parents=True, exist_ok=True)
     items = [(it[0], it[1], it[2] if len(it) > 2 else notes) for it in items]
     if canary:
         items = [(CANARY_NAME, canary[1], canary[2])] + items
     manifest = {}
-    per = PER_SESSION
-    for g in range(0, len(items), per):
-        group = items[g:g + per]
-        work = CACHE / f"capture-{os.getpid()}-{g}"
-        names = [n for n, _, _ in group]
-        nkis = [k for _, k, _ in group]
-        per_slot = [ns for _, _, ns in group]
-        session, t_midi, loaded = run_session(nkis, window, work, midi, per_slot=per_slot)
-        if session.exists():
-            _, _, chans = wavutil.read(session)
-            peak = max((max(max(c), -min(c)) for c in chans if len(c)), default=0.0)
-            log(work, f"recording peak {20 * math.log10(peak + 1e-12):.1f} dBFS, {len(chans[0])} frames")
-        part = slice_session(session, t_midi, names, loaded, out_dir, window)
-        for name, nki, _ in group:
-            part[name]["nki"] = nki
+    for g in range(0, len(items), PER_SESSION):
+        group = items[g:g + PER_SESSION]
+        part, work = run_group(group, g, window, midi, out_dir)
+        silent = [n for n, m in part.items() if m.get("loaded") and m.get("peak_db", -240) < SILENT_DB]
+        if silent:
+            log(work, f"silent slices {silent}: retrying the session once")
+            part, work = run_group(group, g, window, midi, out_dir, tag="-retry")
+            for n in silent:
+                m = part.get(n, {})
+                if m.get("loaded") and m.get("peak_db", -240) < SILENT_DB:
+                    if m.get("wav"):
+                        Path(m["wav"]).unlink(missing_ok=True)  # no WAV for a silent slice
+                    m.update(wav=None, silent=True, error=f"silent after retry: {silence_reason(work)}")
         if canary and g == 0:
             c = part[CANARY_NAME]
             if not c.get("loaded") or c.get("peak_db", -240) < CANARY_MIN_DB:
                 sys.exit(f"canary silent in session {work} ({c.get('peak_db')} dBFS, load {c.get('error')}): "
                          f"audio or MIDI path broken, see {work / 'session.log'}")
         manifest.update(part)
-        session.unlink(missing_ok=True)
     return manifest
 
 
@@ -433,6 +475,9 @@ def main():
         merged = json.loads(cj.read_text()) if cj.exists() else {}
         merged.update(manifest)
         cj.write_text(json.dumps(merged, indent=1, sort_keys=True))
+    for name, m in sorted(manifest.items()):
+        if m.get("silent"):
+            print(f"SILENT {name}: {m['error']}", file=sys.stderr)
     ok = sum(1 for m in manifest.values() if m.get("wav"))
     print(f"captured {ok}/{len(items)} -> {out_dir}")
     return 0 if ok == len(items) else 1
