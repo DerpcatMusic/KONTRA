@@ -412,6 +412,7 @@ impl RuntimeLog {
             ("OfflineFailures", "Render", p.offline_failures),
             ("Nonfinite", "Render", p.nonfinite),
             ("ScriptOverruns", "Callback", p.script_overruns),
+            ("LoopLimits", "Callback", p.loop_limits),
             ("RefusedStarts", "SampleStart", p.refused_starts),
             ("IgnoredInput", "Midi", p.ignored_input),
             ("NarrowedInput", "Midi", p.narrowed_input),
