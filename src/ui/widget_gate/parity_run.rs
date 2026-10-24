@@ -490,6 +490,10 @@ fn parity_run() {
         let p = &view.parts[0];
         (p.status.clone(), p.report.clone(), p.trace.clone(), p.instrument.clone())
     };
+    // Census of what the script-declared views decode to: kinds, placement and visibility
+    // properties per face. Written beside the screenshots for the KSP UI census.
+    let faces: Vec<sampler_ui_ir::Interface> = gate.params.shared.view.lock().unwrap().parts[0].interfaces.iter().cloned().collect();
+    std::fs::write(out.join("census.json"), census(&faces).to_string()).ok();
     let failure = load_failure(&status);
     let mut by_reason = BTreeMap::<String, usize>::new();
     let mut top = BTreeMap::<String, usize>::new();
@@ -753,4 +757,30 @@ fn parity_run() {
         "baseline": baseline, "controls": {"ui": controls, "ui_targets_total": total_targets, "host": host, "host_assigned_total": host_total, "midi": midi, "engine": engine, "engine_bindings_total": bindings.len()},
         "presets": presets, "final_rss_mb": kb("VmRSS:") / 1024, "final_peak_rss_mb": kb("VmHWM:") / 1024});
     std::fs::write(out.join("result.json"), serde_json::to_string_pretty(&result).unwrap()).unwrap();
+}
+
+/// Per-face counts for the KSP UI census (kinds from the decoded widgets, not raw script text).
+fn census(faces: &[sampler_ui_ir::Interface]) -> Value {
+    let mut out = Vec::new();
+    for face in faces {
+        let mut kinds = BTreeMap::<String, usize>::new();
+        let (mut hidden, mut hide, mut disabled, mut grid, mut text_y, mut value_y, mut value_text, mut shift) = (0, 0, 0, 0, 0, 0, 0, 0);
+        for w in &face.widgets {
+            let dbg = format!("{:?}", w.kind);
+            *kinds.entry(dbg.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("").to_string()).or_default() += 1;
+            hidden += usize::from(w.hidden);
+            hide += usize::from(w.hide.background || w.hide.value || w.hide.title || w.hide.unit);
+            disabled += usize::from(!w.enabled);
+            grid += usize::from(matches!(w.placement, sampler_ui_ir::Placement::Grid { .. }));
+            text_y += usize::from(w.text_y.is_some());
+            value_y += usize::from(w.value_y.is_some());
+            value_text += usize::from(w.value_text.is_some());
+            shift += usize::from(w.text_shift_on_press);
+        }
+        out.push(json!({"performance": face.performance, "native_ui": face.native_ui.is_some(),
+            "pages": face.pages.iter().map(|p| json!([p.size.width, p.size.height])).collect::<Vec<_>>(),
+            "widgets": face.widgets.len(), "kinds": kinds, "hidden": hidden, "hide_parts": hide, "disabled": disabled,
+            "grid_placed": grid, "text_y": text_y, "value_y": value_y, "value_text": value_text, "shift_on_press": shift}));
+    }
+    json!(out)
 }
