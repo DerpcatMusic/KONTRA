@@ -1120,9 +1120,22 @@ pub(super) trait Tape {
     fn at(&self, w: usize, k: usize) -> f32;
     fn put(&mut self, w: usize, v: f32);
     fn add(&mut self, w: usize, v: f32);
+    /// `(at(w, k), at(w, k + 1))`.
+    #[inline(always)]
+    fn pair(&self, w: usize, k: usize) -> (f32, f32) {
+        (self.at(w, k), self.at(w, k + 1))
+    }
 }
 
 impl Tape for Ring {
+    /// One index for both taps: `k + 1` is the index one slot back, masked.
+    #[inline(always)]
+    fn pair(&self, w: usize, k: usize) -> (f32, f32) {
+        let buf = self.view_ref();
+        let mask = (1 << self.bits) - 1;
+        let i = w.wrapping_add(self.skew).wrapping_sub(k) & mask;
+        (buf[i], buf[i.wrapping_sub(1) & mask])
+    }
     #[inline(always)]
     fn at(&self, w: usize, k: usize) -> f32 {
         Ring::at(self, w, k)
@@ -1231,10 +1244,13 @@ fn read<const I: u8, R: Tape>(ring: &R, w: usize, j: usize, f: f32) -> f32 {
     match I {
         0 => ring.at(w, j),
         1 => {
-            let (a, b) = (ring.at(w, j), ring.at(w, j + 1));
+            let (a, b) = ring.pair(w, j);
             a + (b - a) * f
         }
-        2 => (1.0 - f) * ring.at(w, j) + f * ring.at(w, j + 1),
+        2 => {
+            let (a, b) = ring.pair(w, j);
+            (1.0 - f) * a + f * b
+        }
         _ => {
             let (m, a, b, c) = (ring.at(w, j.wrapping_sub(1)), ring.at(w, j), ring.at(w, j + 1), ring.at(w, j + 2));
             let (fm, fp, f2) = (f - 1.0, f + 1.0, f - 2.0);
