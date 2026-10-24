@@ -87,8 +87,28 @@ LF:close()
 """
 
 
-TIMED = ('levels', 'burst')  # stimuli that are one long WAV per note: hold the note for the slot
-STIM_WAV = {'levels': 'levels_lr.wav', 'burst': 'burst_lr.wav'}
+TONE_LEN = 5.0                                         # seconds of steady 1 kHz tone (the "tone" stimulus)
+TONE_DB = -12.0
+TONE_SLOT = 7.0                                        # seconds per instance for the "tone" stimulus
+
+
+def tone_lua(path: Path) -> str:
+    """Lua that writes a steady 1 kHz tone WAV (stereo, identical channels) inside Kontakt."""
+    frames = int(TONE_LEN * 48000)
+    amp = 10 ** (TONE_DB / 20)
+    return f"""local LF = io.open({json.dumps(str(path))}, "wb")
+local NF = {frames}
+LF:write("RIFF", string.pack("<I4", 36 + NF * 8), "WAVEfmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, 2, 48000, 384000, 8, 32), "data", string.pack("<I4", NF * 8))
+for i = 0, NF - 1 do
+  local v = {amp!r} * math.sin(2 * math.pi * 1000 * i / 48000)
+  LF:write(string.pack("<ff", v, v))
+end
+LF:close()
+"""
+
+
+TIMED = ('levels', 'burst', 'tone')  # stimuli that are one long WAV per note: hold the note for the slot
+STIM_WAV = {'levels': 'levels_lr.wav', 'burst': 'burst_lr.wav', 'tone': 'tone_lr.wav'}
 
 
 def make_lua(spec, work: Path) -> str:
@@ -117,6 +137,7 @@ end""")
         f"local CHAIN = {{{chain}}}\n"
         + (levels_lua(work / "levels_lr.wav") if spec.get("stimulus") == "levels" else
            burst_lua(work / "burst_lr.wav") if spec.get("stimulus") == "burst" else
+           tone_lua(work / "tone_lr.wav") if spec.get("stimulus") == "tone" else
            eqrender.IMPULSE_LUA.replace("@WAV@", json.dumps(eqrender.winpath(wav))))
         + "kt.reset_multi()\n"
         + "".join(body)
@@ -265,7 +286,63 @@ def burst_env_db(x, rate, note):
     return 10 * np.log10(np.mean(bins ** 2, axis=1) + 1e-14)
 
 
+def tone_metrics(chain, pre, steps, out_prefix: Path):
+    """Steady-tone response of each setting against the bypassed reference. Per instance, over 3 s of the steady
+    part of the output: RMS dB, carrier (1 kHz) dB, the strongest sideband within 0.5..30 Hz on each side (its offset
+    from the carrier is the modulation rate, its level relative to the carrier is the depth). Writes out_prefix.tsv:
+    step, name, rms dB, carrier dB, rate Hz (mean of both sides), sideband dB (louder side, relative to carrier), dB
+    delta of rms/carrier against the reference."""
+    global SLOT
+    SLOT = TONE_SLOT
+    rows, ref = [], None
+    for c0 in range(0, len(steps), CHUNK):
+        part = steps[c0:c0 + CHUNK]
+        wav = out_prefix.with_name(f"{out_prefix.name}_c{c0 // CHUNK}.wav")
+        render_chunk(chain, [[*pre, *st["set"]] for st in part], wav, stimulus="tone")
+        ch, rate, (L, R) = wavutil.read(wav)
+        x = np.array(L)
+        for i, st in enumerate(part, start=0):
+            m = tone_stats(x, rate, FIRST + (i + 1) * SLOT)          # instance i+1 (instance 0 is the reference)
+            rows.append([c0 + i + 1, st["name"], *m])
+        if c0 == 0:
+            ref = tone_stats(x, rate, FIRST)
+    out = []
+    for r in rows:
+        out.append([r[0], r[1], *[f"{v:.2f}" if isinstance(v, float) else v for v in r[2:]],
+                    f"{r[2] - ref[0]:.2f}", f"{r[3] - ref[1]:.2f}"])
+    tsv = out_prefix.with_suffix(".tsv")
+    hdr = "\t".join(["step", "name", "rms_db", "carrier_db", "rate_hz", "sideband_db", "d_rms_db", "d_carrier_db"])
+    tsv.write_text(hdr + "\n" + "\n".join("\t".join(map(str, r)) for r in out) + "\n")
+    print("ref\t" + "\t".join(f"{v:.2f}" for v in ref))
+    return tsv
+
+
+def tone_stats(x, rate, onset):
+    """(rms dB, carrier dB, rate Hz, sideband dB) of one instance's steady tone, from the sound start after onset."""
+    m = np.abs(x)
+    lo = int(onset * rate)
+    first = lo + int(np.argmax(m[lo:lo + int(SLOT * rate)] > 1e-4))
+    seg = x[first + int(1.0 * rate): first + int(4.0 * rate)]
+    n = len(seg)
+    win = np.hanning(n)
+    spec = np.abs(np.fft.rfft(seg * win)) * 2 / np.sum(win)
+    freqs = np.fft.rfftfreq(n, 1 / rate)
+    rms = 20 * np.log10(np.sqrt(np.mean(seg ** 2)) + 1e-12)
+    carrier = spec[np.argmin(np.abs(freqs - 1000.0))]
+    band = lambda a, b: (freqs >= a) & (freqs <= b)
+    up = np.where(band(1000.5, 1030))[0]
+    dn = np.where(band(970, 999.5))[0]
+    ku, kd = up[np.argmax(spec[up])], dn[np.argmax(spec[dn])]
+    f_up, f_dn = freqs[ku] - 1000.0, 1000.0 - freqs[kd]
+    sb = max(spec[ku], spec[kd])
+    return rms, 20 * np.log10(carrier + 1e-12), (f_up + f_dn) / 2, 20 * np.log10(sb / carrier + 1e-12)
+
+
 def main() -> int:
+    if sys.argv[1] == "tone":
+        spec = json.load(open(sys.argv[2]))
+        print(tone_metrics(spec["chain"], spec.get("pre", []), spec["steps"], Path(sys.argv[3]).resolve()))
+        return 0
     if sys.argv[1] == "levels":
         spec = json.load(open(sys.argv[2]))
         print(level_curve(spec["chain"], spec.get("pre", []), spec["steps"], Path(sys.argv[3]).resolve()))
