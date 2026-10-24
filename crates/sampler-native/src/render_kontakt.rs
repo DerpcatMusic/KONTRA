@@ -268,6 +268,23 @@ pub fn run(
     render(loaded, output, messages)
 }
 
+/// The runtime every native render and `explain` run uses, so both play identically.
+/// Sizing comes from the plan (Limits::for_plan), not a literal: a 64-note literal refused
+/// dense chords with Capacity and their note-offs then failed with StaleHandle.
+pub fn runtime(plan: sampler_core::Prepared) -> io::Result<Runtime> {
+    let limits = Limits::for_plan(&plan, 4096, 512);
+    let mut rt =
+        Runtime::new(plan, limits).map_err(|e| io::Error::other(format!("native core: {e}")))?;
+    // KONTRA_SELECTION_TRACE=1: per note, how many regions each reason rejected and what sounded.
+    rt.record_selections(std::env::var_os("KONTRA_SELECTION_TRACE").is_some());
+    rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
+        rt.sample_rate(),
+        limits.voices,
+    )))
+    .map_err(|e| io::Error::other(format!("native core: {e}")))?;
+    Ok(rt)
+}
+
 pub fn render(
     loaded: sampler_kontakt::Loaded,
     output: &Path,
@@ -302,23 +319,8 @@ pub fn render(
         );
     }
     let mut scripts = loaded.scripts;
-    let plan = loaded.plan;
-    let rate = plan.sample_rate();
-    // The sizing a host gets (Limits::for_plan), not a hand-written literal. The
-    // literal's 64 note slots and 16 script callbacks refused notes with Capacity
-    // (dense Vista and ANALOG STRINGS chords), and their note-offs then failed
-    // with StaleHandle.
-    let limits = Limits::for_plan(&plan, 4096, 512);
-    let mut rt =
-        Runtime::new(plan, limits).map_err(|e| io::Error::other(format!("native core: {e}")))?;
-    // KONTRA_SELECTION_TRACE=1: per note, how many regions each reason rejected and what sounded.
-    let trace = std::env::var_os("KONTRA_SELECTION_TRACE").is_some();
-    rt.record_selections(trace);
-    rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
-        rt.sample_rate(),
-        limits.voices,
-    )))
-    .map_err(|e| io::Error::other(format!("native core: {e}")))?;
+    let rate = loaded.plan.sample_rate();
+    let mut rt = runtime(loaded.plan)?;
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     // MIDI 1.0 channel voice messages as UMP words, in the order given (a
     // stable sort keeps simultaneous messages in file order).
