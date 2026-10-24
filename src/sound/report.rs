@@ -18,6 +18,8 @@ pub enum MissingReason {
     UnknownLaw,
     /// An unverified law prevented a source or route from being translated.
     UnknownLawOmitted,
+    /// A note, not a loss: the instrument already plays as authored.
+    Info,
 }
 
 /// One feature that was not translated or not implemented.
@@ -398,6 +400,7 @@ impl From<&sampler_ir::Unsupported> for Missing {
                 sampler_ir::Reason::InvalidValue => MissingReason::InvalidValue,
                 sampler_ir::Reason::UnknownLaw => MissingReason::UnknownLaw,
                 sampler_ir::Reason::UnknownLawOmitted => MissingReason::UnknownLawOmitted,
+                sampler_ir::Reason::Info => MissingReason::Info,
             },
         }
     }

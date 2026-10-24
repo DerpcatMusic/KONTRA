@@ -107,12 +107,11 @@ fn invalid_identity_mode_aliases_and_initial_homes_are_structural_errors() {
         bad.validate(),
         Err(ValidationError::ZoneRouting { .. })
     ));
-    let mut bad = original.clone();
-    bad.source_indices.zone_catalog[2].id = Some(0);
-    assert!(matches!(
-        bad.validate(),
-        Err(ValidationError::ZoneRouting { .. })
-    ));
+    // A shared identity is valid: Kontakt keeps it on every zone and its
+    // lookup addresses the first.
+    let mut shared = original.clone();
+    shared.source_indices.zone_catalog[2].id = Some(0);
+    shared.validate().unwrap();
     let mut bad = original.clone();
     bad.source_indices.zone_catalog[1].id = None;
     assert!(matches!(

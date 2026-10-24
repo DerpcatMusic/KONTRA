@@ -21,8 +21,10 @@ HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("dump", HERE / "dump.py")
 dump = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dump)
+sys.path.insert(0, str(HERE.parent / "oracle"))
+import slot  # noqa: E402  (oracle-slot environment; see tools/oracle/slot.py)
 
-SINK = "kontra_ref"
+SINK = slot.sink("kontra_ref")
 
 
 def sh(*a):
@@ -68,8 +70,9 @@ def select_device(env):
 
 def trigger(midi=None):
     """One MIDI note into Kontakt (ALSA Midi Through 14:0) starts the probe's KSP sequence."""
-    mid = Path(midi) if midi else Path.home() / ".cache/kontra-oracle/trigger.mid"
-    trk = bytes([0x00, 0x90, 36, 100, 0x60, 0x80, 36, 0, 0x00, 0xFF, 0x2F, 0x00])
+    mid = Path(midi) if midi else slot.work(Path.home() / ".cache/kontra-oracle") / "trigger.mid"
+    first = slot.channel_block()[0]  # this session's MIDI channel block (shared ALSA port)
+    trk = bytes([0x00, 0x90 | first, 36, 100, 0x60, 0x80 | first, 36, 0, 0x00, 0xFF, 0x2F, 0x00])
     if not midi:
         mid.write_bytes(b"MThd" + (6).to_bytes(4, "big") + bytes([0, 0, 0, 1, 0x01, 0xE0]) + b"MTrk" + len(trk).to_bytes(4, "big") + trk)
     port = next((l.split()[0] for l in sh("aplaymidi", "-l").splitlines() if "Midi Through" in l), "14:0")
@@ -79,11 +82,9 @@ def trigger(midi=None):
 def main() -> int:
     lua, out_wav, seconds = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve(), float(sys.argv[3])
     midi = sys.argv[4] if len(sys.argv) > 4 else None
-    if subprocess.run(["pgrep", "-f", "[K]ontakt 8.exe"], capture_output=True).returncode == 0:
+    if slot.kontakt_pids():
         sys.exit("another Kontakt is running; one oracle session at a time")
-    if SINK not in sh("pactl", "list", "short", "sinks"):
-        sh("pactl", "load-module", "module-null-sink", f"sink_name={SINK}",
-           f"sink_properties=device.description={SINK}", "format=float32le", "rate=48000", "channels=2")
+    slot.ensure_sink(SINK)
     dump.WORK.mkdir(parents=True, exist_ok=True)
     raw = dump.WORK / "oracle.jsonl"
     raw.unlink(missing_ok=True)
@@ -91,8 +92,8 @@ def main() -> int:
     script.write_text("ORACLE_INPUTS = {}\nORACLE_OUT = " + dump.lua_str(dump.winpath(raw)) + "\n" + lua.read_text())
     xvfb = subprocess.Popen(["Xvfb", dump.DISPLAY, "-screen", "0", "1600x1000x24"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    env = dict(os.environ, DISPLAY=dump.DISPLAY, WINEDLLOVERRIDES="d3d11,d3d10core,dxgi,d3d9=b",
-               WINEDEBUG="-all", PULSE_SINK=SINK)
+    env = slot.wine_env(dict(os.environ, DISPLAY=dump.DISPLAY, WINEDLLOVERRIDES="d3d11,d3d10core,dxgi,d3d9=b",
+                             WINEDEBUG="-all", PULSE_SINK=SINK))
     kontakt = subprocess.Popen(["wine", "explorer", "/desktop=oracle,1600x1000", dump.EXE, dump.winpath(script)],
                                env=env, stdout=open(dump.WORK / "kontakt.log", "w"), stderr=subprocess.STDOUT,
                                start_new_session=True)
@@ -106,14 +107,18 @@ def main() -> int:
             if not raw.exists() or '"ready"' not in raw.read_text(errors="replace"):
                 sys.exit(f"probe never became ready; see {dump.WORK}")
         # routing guard: Kontakt must feed only the null sink
-        select_device(env)
+        if not slot.active() or os.environ.get("ORACLE_GUI_SETUP"):
+            select_device(env)
         time.sleep(6)
         print(sh("pactl", "list", "short", "sink-inputs"))
         print([l for l in sh("pw-link", "-o").splitlines() if "kontra" not in l][:20])
         ports = [l for l in sh("pw-link", "-o").splitlines() if "Kontakt:output_" in l]
         print("kontakt output ports:", len(ports))
-        for p in ports:
-            sh("pw-link", p, f"{SINK}:playback_{p[-2:]}")
+        if slot.active():  # only this session's nodes (ALSO other slots run their own Kontakt)
+            slot.route_slot(SINK, slot.kontakt_pids(), wait=60)
+        else:
+            for p in ports:
+                sh("pw-link", p, f"{SINK}:playback_{p[-2:]}")
         keep = subprocess.Popen(["pw-cat", "-p", "--raw", "--rate", "48000", "--channels", "2", "--format", "f32",
                                  "--target", SINK, "/dev/zero"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         rec = subprocess.Popen(["pw-record", "--target", SINK, "-P", "{ stream.capture.sink=true }", "--rate", "48000",
@@ -126,8 +131,7 @@ def main() -> int:
     finally:
         if keep:
             keep.terminate()
-        subprocess.run(["pkill", "-f", "[K]ontakt 8.exe"], check=False)
-        time.sleep(2)
+        slot.stop_kontakt()
         os.killpg(kontakt.pid, signal.SIGKILL) if kontakt.poll() is None else None
         xvfb.terminate()
     print(f"{out_wav}: {out_wav.stat().st_size} bytes")

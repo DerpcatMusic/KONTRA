@@ -33,6 +33,10 @@ use sampler_ir::fx::space::{Config, Freeverb, Galois, InputFilter, Network, Topo
 pub(crate) struct Convolution {
     /// Sample-rate decimation factor (1 or negative: none).
     pub decimation: f32,
+    /// Saved block size in frames. Kontakt stores a partition latency only
+    /// when it is positive (docs/re/engine/k-convolution.md).
+    #[serde(default)]
+    pub block: i32,
     pub predelay_ms: f32,
     /// Early and late parts: length ratio, low cut Hz, high cut Hz.
     pub early: [f32; 3],
@@ -88,7 +92,7 @@ pub(super) fn convolution(
     if !c.flags[2] {
         notes.push(("IR preserve length".into(), "off (default on): Kontakt resizes the response on the S.Rate path (IR rate (int)(file_rate/S.Rate), 0x140ab5e00); that path is not modeled, the full response is used".into(), NotModeled));
     }
-    if c.flags[3] {
+    if c.flags[3] && c.block > 0 {
         notes.push(("IR latency compensation bypass".into(), "on (default off): Kontakt leaves the convolution's partition latency uncompensated; the engine is zero-latency, so the wet path stays aligned with dry and this state is not modeled".into(), NotModeled));
     }
     let left: Vec<f32> = frames.iter().map(|f| f[0]).collect();
@@ -315,6 +319,7 @@ mod tests {
     #[test]
     fn convolution_reports_only_non_default_length_and_latency_flags() {
         let c = Convolution {
+            block: 8,
             decimation: 1.0,
             predelay_ms: 0.0,
             early: [1.0, 20.0, 20_000.0],
@@ -343,7 +348,7 @@ mod tests {
         assert!(notes[0].1.starts_with("off (default on)"), "{}", notes[0].1);
         assert_eq!(notes[0].2, NotModeled);
         // Non-default: latency compensation bypass on names the flag and its state.
-        let bypass = Convolution { flags: [false, false, true, true, false], ..c };
+        let bypass = Convolution { flags: [false, false, true, true, false], ..c.clone() };
         let mut notes = Notes::new();
         let mut impulses = Impulses { store: &mut store, recipes: None, load: &mut load };
         convolution(&bypass, request, &mut impulses, &mut notes).unwrap();
@@ -351,6 +356,12 @@ mod tests {
         assert_eq!(names, ["IR latency compensation bypass"]);
         assert!(notes[0].1.starts_with("on (default off)"), "{}", notes[0].1);
         assert_eq!(notes[0].2, NotModeled);
+        // No saved latency (block 0, as in the library instruments): nothing to bypass.
+        let unlatched = Convolution { block: 0, ..bypass };
+        let mut notes = Notes::new();
+        let mut impulses = Impulses { store: &mut store, recipes: None, load: &mut load };
+        convolution(&unlatched, request, &mut impulses, &mut notes).unwrap();
+        assert!(notes.is_empty(), "{:?}", notes.iter().map(|n| &n.0).collect::<Vec<_>>());
     }
 
     #[test]
@@ -379,7 +390,8 @@ mod tests {
     #[test]
     fn convolution_auto_gain_sums_energy_in_f32() {
         let recipe = crate::effects::Convolution {
-            decimation: 1., predelay_ms: 0., early: [1., 20., 20_000.],
+            decimation: 1.,
+            block: 0, predelay_ms: 0., early: [1., 20., 20_000.],
             late: [1., 20., 20_000.], xpoint: 0.5,
             flags: [false, true, false, false, false],
             curve_x: Vec::new(), curve_db: Vec::new(), ir_index: 0,

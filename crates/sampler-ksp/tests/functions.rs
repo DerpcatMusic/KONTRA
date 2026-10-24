@@ -20,6 +20,10 @@ fn compile(source: &str, instructions: usize) -> Result<sampler_ksp::Script, sam
         controls,
     )
 }
+fn compile_err(source: &str) -> String {
+    compile(source, 4096).err().expect("expected a compile error").to_string()
+}
+
 fn runtime(source: &str) -> Runtime {
     let plan = compile(source, 4096)
         .unwrap()
@@ -202,7 +206,7 @@ fn invalid_functions_and_expansion_pressure_fail_during_compilation() {
         "function dead unsupported_command end function on note end on",
         "function dead if (0) call missing end if end function on note end on",
         "function wrong if (1) end function on note end on",
-        "function stray continue end function on note while(1) call stray end while end on",
+        "function stray continue end function on note while(1 = 1) call stray end while end on",
     ] {
         assert!(compile(source, 4096).is_err(), "{source}");
     }
@@ -266,13 +270,15 @@ fn control_context(rt: &sampler_core::Runtime) -> sampler_core::ControlContext {
 
 #[test]
 fn function_exit_init_resumes_nested_and_repeated_callers_but_callback_exit_stops() {
-    let rt = runtime(
+    // Kontakt rejects `call` in on init; the nested-exit semantics are covered by the
+    // runtime test below, which calls from on note.
+    let err = compile_err(
         "on init
             declare $leaf declare $parent declare $caller declare $dead
             call parent call parent inc($caller) exit inc($dead)
          end on
          function leaf
-            while (1)
+            while (1 = 1)
                 select(1) case 1 inc($leaf) exit inc($dead) end select
                 inc($dead)
             end while
@@ -280,9 +286,7 @@ fn function_exit_init_resumes_nested_and_repeated_callers_but_callback_exit_stop
          end function
          function parent call leaf inc($parent) exit inc($dead) end function",
     );
-    for (cell, expected) in [2, 2, 1, 0].into_iter().enumerate() {
-        assert_eq!(rt.script_cell(rt.active_plan(), ScriptInstanceId(0), cell as u32), Ok(expected));
-    }
+    assert!(err.contains("call is not allowed in on init"), "{err}");
     let rt = runtime(
         "on init declare $leaf declare $caller declare $dead end on
          function leaf inc($leaf) exit inc($dead) end function
@@ -298,7 +302,7 @@ fn function_exit_runtime_resumes_callers_without_forwarding_intermediate_pitch()
     let mut rt = runtime(
         "on init declare $leaf declare $parent declare $caller declare $dead end on
          function leaf
-            while (1)
+            while (1 = 1)
                 select($EVENT_NOTE)
                 case 60 change_note($EVENT_ID,61) inc($leaf) exit inc($dead)
                 end select

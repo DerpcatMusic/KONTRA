@@ -331,7 +331,8 @@ fn event_queries_and_arrays_run_without_heap_and_retire_with_the_event() {
     );
     assert_eq!(
         [cell(&rt, 0, 5), cell(&rt, 0, 6), cell(&rt, 0, 7)],
-        [1, 1, i64::from(i32::MIN)]
+        // -2147483648 reads as -2147483647 (conformance `lit_neg_min`)
+        [1, 1, i64::from(i32::MIN + 1)]
     );
     rt.panic();
     rt.flush_behaviors(|_, _, _| true);
@@ -856,7 +857,7 @@ fn conflux_mod_value_selectors_reach_all_marked_events_without_heap() {
     let domain = rt.performance(0).unwrap();
     support::without_heap(|| { rt.dispatch_controller(domain,input(1).channel_address(),1,1,1).unwrap(); });
     assert_eq!([cell(&rt,0,0),cell(&rt,0,1),cell(&rt,0,2)],[1000000,0,1000000]);
-    assert_eq!(cell(&rt,0,3),i64::from(i32::MIN));
+    assert_eq!(cell(&rt,0,3),i64::from(i32::MIN + 1));
 }
 
 #[test]

@@ -277,6 +277,20 @@ impl Runtime {
 }
 
 impl Prepared {
+    /// Purged groups start non-resident, so their zones never start until
+    /// `purge_group`/`load` makes them resident.
+    pub fn with_group_purge(mut self, purged: Vec<bool>) -> Result<Self, Error> {
+        if purged.len() != self.group_count as usize {
+            return Err(Error::InvalidInput);
+        }
+        if purged.iter().any(|p| *p) {
+            // Rebuild residency so purged groups never acquire their assets.
+            self.group_purged = purged.into_boxed_slice();
+            self.residency = Some(crate::residency::Residency::new(&self)?);
+        }
+        Ok(self)
+    }
+
     pub fn with_group_mutes(mut self, muted: Vec<bool>) -> Result<Self, Error> {
         if muted.len() != self.group_count as usize {
             return Err(Error::InvalidInput);

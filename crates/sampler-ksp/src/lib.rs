@@ -234,6 +234,7 @@ impl Script {
             entries: self.entries.clone(),
             listener_drivers: self.listener_drivers.clone(),
             programs: self.programs.len(),
+            owns_release_triggers: self.owns_release_triggers,
         }
     }
 
@@ -259,9 +260,14 @@ pub struct ScriptView {
     entries: Vec<Entry>,
     listener_drivers: Vec<(usize, usize)>,
     programs: usize,
+    owns_release_triggers: bool,
 }
 
 impl ScriptView {
+    /// `SET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)`: native release-trigger groups stay silent.
+    pub fn owns_release_triggers(&self) -> bool {
+        self.owns_release_triggers
+    }
     pub fn setup(&self) -> &setup::SetupLayout {
         &self.setup
     }
@@ -1234,6 +1240,12 @@ fn initialize_inner(
         #[cfg(feature = "scan")]
         scan::initialized(init.is_ok());
         let init = init?;
+        let mut hir = hir;
+        for (ui, params) in hir.uis.iter_mut().zip(&init.ui_params) {
+            if let Some(params) = params {
+                ui.params.clone_from(params);
+            }
+        }
         if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
             eprintln!(
                 "AUDIT {{\"stage\":\"ksp_on_init\",\"ms\":{}}}",

@@ -1,0 +1,2557 @@
+[
+  {
+    "id": "resampler",
+    "title": "Sample-rate conversion: engine kernel (ours) vs rubato sinc",
+    "reference": "none (no Kontakt interpolation capture)",
+    "rate": 48000.0,
+    "block": 0,
+    "sides": [
+      {
+        "label": "sampler-core resample (High)",
+        "quality": {
+          "alias_db": -64.41646718182506,
+          "thd_n_db": -105.20389518458815,
+          "noise_dbfs": -200.0,
+          "subnormal": 0,
+          "denormal_spike": 0.0,
+          "stable": true,
+          "peak_dbfs": -6.018424728887441,
+          "latency": 0,
+          "ns_per_frame": 475.3785487528345,
+          "instr_per_frame": null
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.17 dB; stopband 64.4 dB (worst of 1.02/1.05/1.08 x output Nyquist); impulse peak at frame 0"
+      },
+      {
+        "label": "rubato sinc (async)",
+        "quality": {
+          "alias_db": -57.74623306964515,
+          "thd_n_db": -105.20497913602406,
+          "noise_dbfs": -200.0,
+          "subnormal": 0,
+          "denormal_spike": 0.0,
+          "stable": true,
+          "peak_dbfs": -6.020640295484077,
+          "latency": 0,
+          "ns_per_frame": 275.4039455782313,
+          "instr_per_frame": null
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.04 dB; stopband 57.7 dB (worst of 1.02/1.05/1.08 x output Nyquist); impulse peak at frame 0"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 44100.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -16.49352595892951,
+          "thd_n_db": -105.19072679491148,
+          "noise_dbfs": -200.0,
+          "subnormal": 1560,
+          "denormal_spike": 4.419354838709677,
+          "stable": true,
+          "peak_dbfs": -5.828248743084615,
+          "latency": 4,
+          "ns_per_frame": 10.398140589569161,
+          "instr_per_frame": 148.7464172335601
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -20.288564710022435,
+          "thd_n_db": -105.1987751397023,
+          "noise_dbfs": -200.0,
+          "subnormal": 1553,
+          "denormal_spike": 28.0,
+          "stable": true,
+          "peak_dbfs": -5.850877950687799,
+          "latency": 8,
+          "ns_per_frame": 2.151519274376417,
+          "instr_per_frame": 22.06918367346939
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 44100.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -16.510909273488192,
+          "thd_n_db": -105.19072679491148,
+          "noise_dbfs": -200.0,
+          "subnormal": 1560,
+          "denormal_spike": 5.672131147540983,
+          "stable": true,
+          "peak_dbfs": -5.828213296531796,
+          "latency": 4,
+          "ns_per_frame": 10.514489795918367,
+          "instr_per_frame": 128.82344671201815
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -14.365678790261661,
+          "thd_n_db": -105.1987751397023,
+          "noise_dbfs": -200.0,
+          "subnormal": 1553,
+          "denormal_spike": 17.785714285714285,
+          "stable": true,
+          "peak_dbfs": -4.477170916743403,
+          "latency": 8,
+          "ns_per_frame": 2.2630839002267575,
+          "instr_per_frame": 21.555918367346937
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 44100.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -11.34317398821769,
+          "thd_n_db": -105.19072679491148,
+          "noise_dbfs": -200.0,
+          "subnormal": 1560,
+          "denormal_spike": 1.5696202531645569,
+          "stable": true,
+          "peak_dbfs": -2.1939125608389287,
+          "latency": 4,
+          "ns_per_frame": 9.069342403628118,
+          "instr_per_frame": 128.0577097505669
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -11.541146426397129,
+          "thd_n_db": -105.1987751397023,
+          "noise_dbfs": -200.0,
+          "subnormal": 1553,
+          "denormal_spike": 1.1020408163265305,
+          "stable": true,
+          "peak_dbfs": 3.2226867453473567,
+          "latency": 8,
+          "ns_per_frame": 1.8880272108843537,
+          "instr_per_frame": 21.067891156462586
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 48000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -17.114854498776708,
+          "thd_n_db": -87.81464624045094,
+          "noise_dbfs": -200.0,
+          "subnormal": 1700,
+          "denormal_spike": 90.06,
+          "stable": true,
+          "peak_dbfs": -5.878341256290441,
+          "latency": 4,
+          "ns_per_frame": 9.596645833333334,
+          "instr_per_frame": 148.5055625
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -21.575958166867043,
+          "thd_n_db": -87.81480435243752,
+          "noise_dbfs": -200.0,
+          "subnormal": 1695,
+          "denormal_spike": 2.857142857142857,
+          "stable": true,
+          "peak_dbfs": -5.948325471663438,
+          "latency": 9,
+          "ns_per_frame": 1.9516875,
+          "instr_per_frame": 22.0380625
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 48000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -17.11051171825517,
+          "thd_n_db": -87.81464624045094,
+          "noise_dbfs": -200.0,
+          "subnormal": 1700,
+          "denormal_spike": 9.148148148148149,
+          "stable": true,
+          "peak_dbfs": -5.878428857905915,
+          "latency": 4,
+          "ns_per_frame": 8.126,
+          "instr_per_frame": 128.58327083333333
+        },
+        "fit": {
+          "mag_err_db": 0.004598156968699496,
+          "mag_err_median_db": 0.003774177696061312,
+          "gain_offset_db": 0.0004827355163803383,
+          "identity_mag_err_db": 0.005214324884578607,
+          "phase_err_deg": null,
+          "time_err_pct": null,
+          "cases": 7
+        },
+        "verdict": "Faithful",
+        "note": "identity worst 0.01 dB"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -15.694711040433,
+          "thd_n_db": -87.81480435243752,
+          "noise_dbfs": -200.0,
+          "subnormal": 1695,
+          "denormal_spike": 1.6428571428571428,
+          "stable": true,
+          "peak_dbfs": -5.4574374241838655,
+          "latency": 9,
+          "ns_per_frame": 1.9200416666666666,
+          "instr_per_frame": 21.545041666666666
+        },
+        "fit": {
+          "mag_err_db": 8.731623206098849,
+          "mag_err_median_db": 0.0037321298391569968,
+          "gain_offset_db": 0.8061145635978001,
+          "identity_mag_err_db": null,
+          "phase_err_deg": null,
+          "time_err_pct": null,
+          "cases": 7
+        },
+        "verdict": "Differs",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 48000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -10.270326682214826,
+          "thd_n_db": -87.81464624045094,
+          "noise_dbfs": -200.0,
+          "subnormal": 1700,
+          "denormal_spike": 3.213270142180095,
+          "stable": true,
+          "peak_dbfs": -2.078947724255073,
+          "latency": 4,
+          "ns_per_frame": 8.46975,
+          "instr_per_frame": 127.81664583333334
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -8.19646570408706,
+          "thd_n_db": -87.81480435243752,
+          "noise_dbfs": -200.0,
+          "subnormal": 1695,
+          "denormal_spike": 15.636363636363637,
+          "stable": true,
+          "peak_dbfs": 12.87903807825481,
+          "latency": 9,
+          "ns_per_frame": 2.0691875,
+          "instr_per_frame": 21.071145833333333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 96000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -22.672047280231315,
+          "thd_n_db": -87.81773616791186,
+          "noise_dbfs": -200.0,
+          "subnormal": 3397,
+          "denormal_spike": 10.64864864864865,
+          "stable": true,
+          "peak_dbfs": -6.0048827213890466,
+          "latency": 8,
+          "ns_per_frame": 10.269989583333333,
+          "instr_per_frame": 145.52377083333334
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -29.67567701838515,
+          "thd_n_db": -87.8120266507886,
+          "noise_dbfs": -200.0,
+          "subnormal": 3384,
+          "denormal_spike": 42.2625,
+          "stable": true,
+          "peak_dbfs": -6.035283448986588,
+          "latency": 17,
+          "ns_per_frame": 2.118375,
+          "instr_per_frame": 22.040041666666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 96000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -22.656471180809167,
+          "thd_n_db": -87.81773616791186,
+          "noise_dbfs": -200.0,
+          "subnormal": 3397,
+          "denormal_spike": 9.283018867924529,
+          "stable": true,
+          "peak_dbfs": -6.00484964731468,
+          "latency": 8,
+          "ns_per_frame": 8.505989583333333,
+          "instr_per_frame": 127.3551875
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": -21.769874526566227,
+          "thd_n_db": -87.8120266507886,
+          "noise_dbfs": -200.0,
+          "subnormal": 3384,
+          "denormal_spike": 4.857142857142857,
+          "stable": true,
+          "peak_dbfs": -5.8853909177408115,
+          "latency": 17,
+          "ns_per_frame": 1.96971875,
+          "instr_per_frame": 21.526572916666666
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "filter-lp2",
+    "title": "Filter: Kontakt LP2 legacy (ours) vs biquad crate",
+    "reference": "Kontakt 8 LP2 oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json)",
+    "rate": 96000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core LP2 cascade",
+        "quality": {
+          "alias_db": -7.203021960869794,
+          "thd_n_db": -87.81773616791186,
+          "noise_dbfs": -200.0,
+          "subnormal": 3397,
+          "denormal_spike": 4.0152274093368066,
+          "stable": true,
+          "peak_dbfs": -2.252994952646577,
+          "latency": 8,
+          "ns_per_frame": 9.290489583333333,
+          "instr_per_frame": 126.54419791666666
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not oracle rate)"
+      },
+      {
+        "label": "biquad crate LP (RBJ-style)",
+        "quality": {
+          "alias_db": 1.3307747069172347,
+          "thd_n_db": -87.8120266507886,
+          "noise_dbfs": -200.0,
+          "subnormal": 3384,
+          "denormal_spike": 3.247422680412371,
+          "stable": true,
+          "peak_dbfs": 10.636412835954985,
+          "latency": 17,
+          "ns_per_frame": 1.8844166666666666,
+          "instr_per_frame": 21.072875
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "best mapping: hz, q fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 44100.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -63.74244062977729,
+          "thd_n_db": -53.45567182232266,
+          "noise_dbfs": -200.0,
+          "subnormal": 1566,
+          "denormal_spike": 18.485714285714284,
+          "stable": true,
+          "peak_dbfs": 1.263333396726256,
+          "latency": 0,
+          "ns_per_frame": 15.332267573696145,
+          "instr_per_frame": 168.2599319727891
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -115.17761502741727,
+          "thd_n_db": -102.81824401689455,
+          "noise_dbfs": -200.0,
+          "subnormal": 1344,
+          "denormal_spike": 5.5625,
+          "stable": true,
+          "peak_dbfs": 0.00002102018977891788,
+          "latency": 222,
+          "ns_per_frame": 4.68920634920635,
+          "instr_per_frame": 110.40274376417234
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 44100.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -63.74244062977729,
+          "thd_n_db": -53.45567182232266,
+          "noise_dbfs": -200.0,
+          "subnormal": 1566,
+          "denormal_spike": 5.08955223880597,
+          "stable": true,
+          "peak_dbfs": 1.263333396726256,
+          "latency": 0,
+          "ns_per_frame": 14.063990929705215,
+          "instr_per_frame": 167.61451247165533
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -115.17761502741727,
+          "thd_n_db": -102.81824401689455,
+          "noise_dbfs": -200.0,
+          "subnormal": 1344,
+          "denormal_spike": 7.576923076923077,
+          "stable": true,
+          "peak_dbfs": 0.00002102018977891788,
+          "latency": 222,
+          "ns_per_frame": 4.72390022675737,
+          "instr_per_frame": 109.7421768707483
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 44100.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -63.74244062977729,
+          "thd_n_db": -53.45567182232266,
+          "noise_dbfs": -200.0,
+          "subnormal": 1566,
+          "denormal_spike": 2.560980392156863,
+          "stable": true,
+          "peak_dbfs": 1.263333396726256,
+          "latency": 0,
+          "ns_per_frame": 20.987006802721087,
+          "instr_per_frame": 167.0114058956916
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -115.17761502741727,
+          "thd_n_db": -102.81824401689455,
+          "noise_dbfs": -200.0,
+          "subnormal": 1344,
+          "denormal_spike": 64.9820143884892,
+          "stable": true,
+          "peak_dbfs": 0.00002102018977891788,
+          "latency": 222,
+          "ns_per_frame": 8.168866213151928,
+          "instr_per_frame": 109.10863945578231
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 48000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -56.49007890656957,
+          "thd_n_db": -54.09918853052545,
+          "noise_dbfs": -200.0,
+          "subnormal": 1719,
+          "denormal_spike": 675.1313725490196,
+          "stable": true,
+          "peak_dbfs": 2.259627692678232,
+          "latency": 0,
+          "ns_per_frame": 19.22704166666667,
+          "instr_per_frame": 168.29377083333333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -111.16157939166145,
+          "thd_n_db": -87.81415581620479,
+          "noise_dbfs": -200.0,
+          "subnormal": 1478,
+          "denormal_spike": 10.962962962962964,
+          "stable": true,
+          "peak_dbfs": 0.0,
+          "latency": 241,
+          "ns_per_frame": 4.850083333333333,
+          "instr_per_frame": 110.392125
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 48000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -56.49007890656957,
+          "thd_n_db": -54.09918853052545,
+          "noise_dbfs": -200.0,
+          "subnormal": 1719,
+          "denormal_spike": 4.075757575757576,
+          "stable": true,
+          "peak_dbfs": 2.259627692678232,
+          "latency": 0,
+          "ns_per_frame": 15.259666666666666,
+          "instr_per_frame": 167.61264583333335
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -111.16157939166145,
+          "thd_n_db": -87.81415581620479,
+          "noise_dbfs": -200.0,
+          "subnormal": 1478,
+          "denormal_spike": 5.288461538461538,
+          "stable": true,
+          "peak_dbfs": 0.0,
+          "latency": 241,
+          "ns_per_frame": 8.549125,
+          "instr_per_frame": 109.72089583333333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 48000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -56.49007890656957,
+          "thd_n_db": -54.09918853052545,
+          "noise_dbfs": -200.0,
+          "subnormal": 1719,
+          "denormal_spike": 1.6766256590509665,
+          "stable": true,
+          "peak_dbfs": 2.259627692678232,
+          "latency": 0,
+          "ns_per_frame": 13.948395833333333,
+          "instr_per_frame": 167.0430625
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -111.16157939166145,
+          "thd_n_db": -87.81415581620479,
+          "noise_dbfs": -200.0,
+          "subnormal": 1478,
+          "denormal_spike": 1.635,
+          "stable": true,
+          "peak_dbfs": 0.0,
+          "latency": 241,
+          "ns_per_frame": 4.728625,
+          "instr_per_frame": 109.18641666666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 96000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -62.60840224121968,
+          "thd_n_db": -57.1376447517584,
+          "noise_dbfs": -200.0,
+          "subnormal": 3417,
+          "denormal_spike": 9.941176470588236,
+          "stable": true,
+          "peak_dbfs": 1.7377883267565106,
+          "latency": 0,
+          "ns_per_frame": 20.785395833333332,
+          "instr_per_frame": 168.25741666666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -108.23797947171863,
+          "thd_n_db": -87.81706017719918,
+          "noise_dbfs": -200.0,
+          "subnormal": 2936,
+          "denormal_spike": 12.518518518518519,
+          "stable": true,
+          "peak_dbfs": 0.0,
+          "latency": 481,
+          "ns_per_frame": 7.069197916666667,
+          "instr_per_frame": 110.39207291666666
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 96000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -62.60840224121968,
+          "thd_n_db": -57.1376447517584,
+          "noise_dbfs": -200.0,
+          "subnormal": 3417,
+          "denormal_spike": 5.909090909090909,
+          "stable": true,
+          "peak_dbfs": 1.7377883267565106,
+          "latency": 0,
+          "ns_per_frame": 14.60309375,
+          "instr_per_frame": 167.56992708333334
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -108.23797947171863,
+          "thd_n_db": -87.81706017719918,
+          "noise_dbfs": -200.0,
+          "subnormal": 2936,
+          "denormal_spike": 10.951666666666666,
+          "stable": true,
+          "peak_dbfs": 0.0,
+          "latency": 481,
+          "ns_per_frame": 12.79775,
+          "instr_per_frame": 109.7163125
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "limiter",
+    "title": "Limiter: DbLimiter (ours) vs look-ahead reference",
+    "reference": "none (no Kontakt limiter capture)",
+    "rate": 96000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core DbLimiter",
+        "quality": {
+          "alias_db": -62.60840224121968,
+          "thd_n_db": -57.1376447517584,
+          "noise_dbfs": -200.0,
+          "subnormal": 3417,
+          "denormal_spike": 3.1204842804139816,
+          "stable": true,
+          "peak_dbfs": 1.7377883267565106,
+          "latency": 0,
+          "ns_per_frame": 14.719552083333333,
+          "instr_per_frame": 167.04739583333333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      },
+      {
+        "label": "look-ahead reference (bench)",
+        "quality": {
+          "alias_db": -108.23797947171863,
+          "thd_n_db": -87.81706017719918,
+          "noise_dbfs": -200.0,
+          "subnormal": 2936,
+          "denormal_spike": 2.0644171779141103,
+          "stable": true,
+          "peak_dbfs": 0.0,
+          "latency": 481,
+          "ns_per_frame": 4.32675,
+          "instr_per_frame": 109.09657291666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no Kontakt limiter capture; absolute quality only"
+      }
+    ]
+  },
+  {
+    "id": "eq-bell",
+    "title": "Solid G-EQ bell and shelf: ours vs Signalsmith BiquadStatic",
+    "reference": "Kontakt 8 Solid G-EQ, LL channel, 228 rows x 10 probes (solid-geq-responses.tsv)",
+    "rate": 44100.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core Solid G-EQ designer",
+        "quality": {
+          "alias_db": -21.64151986927814,
+          "thd_n_db": -105.2051867924745,
+          "noise_dbfs": -200.0,
+          "subnormal": 1529,
+          "denormal_spike": 44.25,
+          "stable": true,
+          "peak_dbfs": 0.5125361378910053,
+          "latency": 0,
+          "ns_per_frame": 2.0619501133786846,
+          "instr_per_frame": 25.201609977324264
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not the Kontakt rate)"
+      },
+      {
+        "label": "Signalsmith BiquadStatic (Vicanek)",
+        "quality": {
+          "alias_db": -21.675189056321315,
+          "thd_n_db": -105.20515566685924,
+          "noise_dbfs": -200.0,
+          "subnormal": 1529,
+          "denormal_spike": 5.571428571428571,
+          "stable": true,
+          "peak_dbfs": 0.512750878861781,
+          "latency": 0,
+          "ns_per_frame": 3.9656009070294784,
+          "instr_per_frame": 33.333061224489796
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not the Kontakt rate)"
+      }
+    ]
+  },
+  {
+    "id": "eq-bell",
+    "title": "Solid G-EQ bell and shelf: ours vs Signalsmith BiquadStatic",
+    "reference": "Kontakt 8 Solid G-EQ, LL channel, 228 rows x 10 probes (solid-geq-responses.tsv)",
+    "rate": 44100.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core Solid G-EQ designer",
+        "quality": {
+          "alias_db": -17.77462544214607,
+          "thd_n_db": -105.2051867924745,
+          "noise_dbfs": -200.0,
+          "subnormal": 1529,
+          "denormal_spike": 5.142857142857143,
+          "stable": true,
+          "peak_dbfs": 1.0154797040667765,
+          "latency": 0,
+          "ns_per_frame": 2.016371882086168,
+          "instr_per_frame": 24.593401360544217
+        },
+        "fit": {
+          "mag_err_db": 7.322355183791498,
+          "mag_err_median_db": 0.273462942165886,
+          "gain_offset_db": 0.5291095768613411,
+          "identity_mag_err_db": null,
+          "phase_err_deg": null,
+          "time_err_pct": null,
+          "cases": 228
+        },
+        "verdict": "Differs",
+        "note": "p90 over 228 rows; worst row 19.01 dB"
+      },
+      {
+        "label": "Signalsmith BiquadStatic (Vicanek)",
+        "quality": {
+          "alias_db": -17.815905621538846,
+          "thd_n_db": -105.20515566685924,
+          "noise_dbfs": -200.0,
+          "subnormal": 1529,
+          "denormal_spike": 7.884615384615385,
+          "stable": true,
+          "peak_dbfs": 1.0166909878192723,
+          "latency": 0,
+          "ns_per_frame": 3.891020408163265,
+          "instr_per_frame": 32.71115646258503
+        },
+        "fit": {
+          "mag_err_db": 7.0119450592364005,
+          "mag_err_median_db": 0.5639279544004329,
+          "gain_offset_db": 0.5352437002245085,
+          "identity_mag_err_db": null,
+          "phase_err_deg": null,
+          "time_err_pct": null,
+          "cases": 228
+        },
+        "verdict": "Differs",
+        "note": "p90 over 228 rows; worst row 19.23 dB"
+      }
+    ]
+  },
+  {
+    "id": "eq-bell",
+    "title": "Solid G-EQ bell and shelf: ours vs Signalsmith BiquadStatic",
+    "reference": "Kontakt 8 Solid G-EQ, LL channel, 228 rows x 10 probes (solid-geq-responses.tsv)",
+    "rate": 44100.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core Solid G-EQ designer",
+        "quality": {
+          "alias_db": -22.54096250701415,
+          "thd_n_db": -105.2051867924745,
+          "noise_dbfs": -200.0,
+          "subnormal": 1529,
+          "denormal_spike": 1.6767676767676767,
+          "stable": true,
+          "peak_dbfs": 0.5163616363014917,
+          "latency": 0,
+          "ns_per_frame": 2.0217913832199548,
+          "instr_per_frame": 24.089523809523808
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not the Kontakt rate)"
+      },
+      {
+        "label": "Signalsmith BiquadStatic (Vicanek)",
+        "quality": {
+          "alias_db": -22.465317198840822,
+          "thd_n_db": -105.20515566685924,
+          "noise_dbfs": -200.0,
+          "subnormal": 1529,
+          "denormal_spike": 1.3398058252427185,
+          "stable": true,
+          "peak_dbfs": 0.6116379786021973,
+          "latency": 0,
+          "ns_per_frame": 3.9812471655328796,
+          "instr_per_frame": 32.10190476190476
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not the Kontakt rate)"
+      }
+    ]
+  },
+  {
+    "id": "eq-bell",
+    "title": "Solid G-EQ bell and shelf: ours vs Signalsmith BiquadStatic",
+    "reference": "Kontakt 8 Solid G-EQ, LL channel, 228 rows x 10 probes (solid-geq-responses.tsv)",
+    "rate": 48000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core Solid G-EQ designer",
+        "quality": {
+          "alias_db": -22.623222823169304,
+          "thd_n_db": -87.8137494672803,
+          "noise_dbfs": -200.0,
+          "subnormal": 1662,
+          "denormal_spike": 27.0,
+          "stable": true,
+          "peak_dbfs": 0.4238477130505154,
+          "latency": 0,
+          "ns_per_frame": 1.9481666666666666,
+          "instr_per_frame": 25.176729166666668
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not the Kontakt rate)"
+      },
+      {
+        "label": "Signalsmith BiquadStatic (Vicanek)",
+        "quality": {
+          "alias_db": -22.655935619711855,
+          "thd_n_db": -87.81374830063805,
+          "noise_dbfs": -200.0,
+          "subnormal": 1661,
+          "denormal_spike": 18.0,
+          "stable": true,
+          "peak_dbfs": 0.4259617080277894,
+          "latency": 0,
+          "ns_per_frame": 3.8077916666666667,
+          "instr_per_frame": 33.37983333333333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not the Kontakt rate)"
+      }
+    ]
+  },
+  {
+    "id": "eq-bell",
+    "title": "Solid G-EQ bell and shelf: ours vs Signalsmith BiquadStatic",
+    "reference": "Kontakt 8 Solid G-EQ, LL channel, 228 rows x 10 probes (solid-geq-responses.tsv)",
+    "rate": 48000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core Solid G-EQ designer",
+        "quality": {
+          "alias_db": -18.55745930911755,
+          "thd_n_db": -87.8137494672803,
+          "noise_dbfs": -200.0,
+          "subnormal": 1662,
+          "denormal_spike": 5.5,
+          "stable": true,
+          "peak_dbfs": 0.8876895850184456,
+          "latency": 0,
+          "ns_per_frame": 2.048791666666667,
+          "instr_per_frame": 24.593458333333334
+        },
+        "fit": {
+          "mag_err_db": 7.322692647323323,
+          "mag_err_median_db": 0.2734868878042959,
+          "gain_offset_db": 0.528534594344022,
+          "identity_mag_err_db": null,
+          "phase_err_deg": null,
+          "time_err_pct": null,
+          "cases": 228
+        },
+        "verdict": "Differs",
+        "note": "p90 over 228 rows; worst row 19.02 dB"
+      },
+      {
+        "label": "Signalsmith BiquadStatic (Vicanek)",
+        "quality": {
+          "alias_db": -18.58855357476585,
+          "thd_n_db": -87.81374830063805,
+          "noise_dbfs": -200.0,
+          "subnormal": 1661,
+          "denormal_spike": 21.225925925925925,
+          "stable": true,
+          "peak_dbfs": 0.8901703111778836,
+          "latency": 0,
+          "ns_per_frame": 3.8477916666666667,
+          "instr_per_frame": 32.73860416666667
+        },
+        "fit": {
+          "mag_err_db": 7.010491990207602,
+          "mag_err_median_db": 0.5529050525214245,
+          "gain_offset_db": 0.5349936888006536,
+          "identity_mag_err_db": null,
+          "phase_err_deg": null,
+          "time_err_pct": null,
+          "cases": 228
+        },
+        "verdict": "Differs",
+        "note": "p90 over 228 rows; worst row 19.23 dB"
+      }
+    ]
+  },
+  {
+    "id": "eq-bell",
+    "title": "Solid G-EQ bell and shelf: ours vs Signalsmith BiquadStatic",
+    "reference": "Kontakt 8 Solid G-EQ, LL channel, 228 rows x 10 probes (solid-geq-responses.tsv)",
+    "rate": 48000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core Solid G-EQ designer",
+        "quality": {
+          "alias_db": -22.015591774927007,
+          "thd_n_db": -87.8137494672803,
+          "noise_dbfs": -200.0,
+          "subnormal": 1662,
+          "denormal_spike": 9.4375,
+          "stable": true,
+          "peak_dbfs": 1.758308585223687,
+          "latency": 0,
+          "ns_per_frame": 1.8692083333333334,
+          "instr_per_frame": 24.112520833333335
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not the Kontakt rate)"
+      },
+      {
+        "label": "Signalsmith BiquadStatic (Vicanek)",
+        "quality": {
+          "alias_db": -21.921398577091672,
+          "thd_n_db": -87.81374830063805,
+          "noise_dbfs": -200.0,
+          "subnormal": 1661,
+          "denormal_spike": 2.8958333333333335,
+          "stable": true,
+          "peak_dbfs": 1.9540569824478755,
+          "latency": 0,
+          "ns_per_frame": 3.7121458333333335,
+          "instr_per_frame": 32.1468125
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not the Kontakt rate)"
+      }
+    ]
+  },
+  {
+    "id": "eq-bell",
+    "title": "Solid G-EQ bell and shelf: ours vs Signalsmith BiquadStatic",
+    "reference": "Kontakt 8 Solid G-EQ, LL channel, 228 rows x 10 probes (solid-geq-responses.tsv)",
+    "rate": 96000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core Solid G-EQ designer",
+        "quality": {
+          "alias_db": -30.731683010025847,
+          "thd_n_db": -87.81665596890392,
+          "noise_dbfs": -200.0,
+          "subnormal": 3325,
+          "denormal_spike": 2.375,
+          "stable": true,
+          "peak_dbfs": 0.2542045434064907,
+          "latency": 0,
+          "ns_per_frame": 1.904,
+          "instr_per_frame": 25.125135416666666
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not the Kontakt rate)"
+      },
+      {
+        "label": "Signalsmith BiquadStatic (Vicanek)",
+        "quality": {
+          "alias_db": -30.74772725570042,
+          "thd_n_db": -87.81665371366381,
+          "noise_dbfs": -200.0,
+          "subnormal": 3324,
+          "denormal_spike": 16.076923076923077,
+          "stable": true,
+          "peak_dbfs": 0.2546258688332095,
+          "latency": 0,
+          "ns_per_frame": 3.70434375,
+          "instr_per_frame": 33.33294791666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not the Kontakt rate)"
+      }
+    ]
+  },
+  {
+    "id": "eq-bell",
+    "title": "Solid G-EQ bell and shelf: ours vs Signalsmith BiquadStatic",
+    "reference": "Kontakt 8 Solid G-EQ, LL channel, 228 rows x 10 probes (solid-geq-responses.tsv)",
+    "rate": 96000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core Solid G-EQ designer",
+        "quality": {
+          "alias_db": -23.725129135217166,
+          "thd_n_db": -87.81665596890392,
+          "noise_dbfs": -200.0,
+          "subnormal": 3325,
+          "denormal_spike": 15.285714285714286,
+          "stable": true,
+          "peak_dbfs": 0.4554546139298352,
+          "latency": 0,
+          "ns_per_frame": 1.9501458333333332,
+          "instr_per_frame": 24.584645833333333
+        },
+        "fit": {
+          "mag_err_db": 7.324791470001888,
+          "mag_err_median_db": 0.28748084274117397,
+          "gain_offset_db": 0.5280773193576974,
+          "identity_mag_err_db": null,
+          "phase_err_deg": null,
+          "time_err_pct": null,
+          "cases": 228
+        },
+        "verdict": "Differs",
+        "note": "p90 over 228 rows; worst row 19.02 dB"
+      },
+      {
+        "label": "Signalsmith BiquadStatic (Vicanek)",
+        "quality": {
+          "alias_db": -23.734317028043243,
+          "thd_n_db": -87.81665371366381,
+          "noise_dbfs": -200.0,
+          "subnormal": 3324,
+          "denormal_spike": 15.24,
+          "stable": true,
+          "peak_dbfs": 0.4556098543758897,
+          "latency": 0,
+          "ns_per_frame": 3.851114583333333,
+          "instr_per_frame": 32.670885416666664
+        },
+        "fit": {
+          "mag_err_db": 7.004222248729599,
+          "mag_err_median_db": 0.36966454953960437,
+          "gain_offset_db": 0.5369954767200222,
+          "identity_mag_err_db": null,
+          "phase_err_deg": null,
+          "time_err_pct": null,
+          "cases": 228
+        },
+        "verdict": "Differs",
+        "note": "p90 over 228 rows; worst row 19.23 dB"
+      }
+    ]
+  },
+  {
+    "id": "eq-bell",
+    "title": "Solid G-EQ bell and shelf: ours vs Signalsmith BiquadStatic",
+    "reference": "Kontakt 8 Solid G-EQ, LL channel, 228 rows x 10 probes (solid-geq-responses.tsv)",
+    "rate": 96000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core Solid G-EQ designer",
+        "quality": {
+          "alias_db": -10.219461131340108,
+          "thd_n_db": -87.81665596890392,
+          "noise_dbfs": -200.0,
+          "subnormal": 3325,
+          "denormal_spike": 1.1020408163265305,
+          "stable": true,
+          "peak_dbfs": 5.294805572162664,
+          "latency": 0,
+          "ns_per_frame": 1.8707604166666667,
+          "instr_per_frame": 24.08653125
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not the Kontakt rate)"
+      },
+      {
+        "label": "Signalsmith BiquadStatic (Vicanek)",
+        "quality": {
+          "alias_db": -10.220758640526464,
+          "thd_n_db": -87.81665371366381,
+          "noise_dbfs": -200.0,
+          "subnormal": 3324,
+          "denormal_spike": 1.9948453608247423,
+          "stable": true,
+          "peak_dbfs": 5.302667686890149,
+          "latency": 0,
+          "ns_per_frame": 3.758302083333333,
+          "instr_per_frame": 32.091875
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "no fit (not the Kontakt rate)"
+      }
+    ]
+  },
+  {
+    "id": "oversampler",
+    "title": "2x oversampling: hiir half-band (ours) vs Signalsmith Oversampler2xFIR",
+    "reference": "none (no Kontakt oversampler capture)",
+    "rate": 44100.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core hiir 2x (20 kHz, 78 dB)",
+        "quality": {
+          "alias_db": -88.65292864994612,
+          "thd_n_db": -15.450998172877359,
+          "noise_dbfs": -200.0,
+          "subnormal": 1561,
+          "denormal_spike": 5.975609756097561,
+          "stable": true,
+          "peak_dbfs": -11.182511052461546,
+          "latency": 3,
+          "ns_per_frame": 14.594149659863946,
+          "instr_per_frame": 219.37609977324263
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.011 dB"
+      },
+      {
+        "label": "Signalsmith Oversampler2xFIR",
+        "quality": {
+          "alias_db": -87.62962797457593,
+          "thd_n_db": -15.450533457092252,
+          "noise_dbfs": -200.0,
+          "subnormal": 1533,
+          "denormal_spike": 7.5777777777777775,
+          "stable": true,
+          "peak_dbfs": -12.047504975657459,
+          "latency": 32,
+          "ns_per_frame": 41.5187074829932,
+          "instr_per_frame": 717.4920861678005
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.029 dB"
+      }
+    ]
+  },
+  {
+    "id": "oversampler",
+    "title": "2x oversampling: hiir half-band (ours) vs Signalsmith Oversampler2xFIR",
+    "reference": "none (no Kontakt oversampler capture)",
+    "rate": 44100.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core hiir 2x (20 kHz, 78 dB)",
+        "quality": {
+          "alias_db": -88.65292864994612,
+          "thd_n_db": -15.450998172877359,
+          "noise_dbfs": -200.0,
+          "subnormal": 1561,
+          "denormal_spike": 31.385714285714286,
+          "stable": true,
+          "peak_dbfs": -11.182511052461546,
+          "latency": 3,
+          "ns_per_frame": 14.845419501133787,
+          "instr_per_frame": 215.34514739229024
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.011 dB"
+      },
+      {
+        "label": "Signalsmith Oversampler2xFIR",
+        "quality": {
+          "alias_db": -87.62962797457593,
+          "thd_n_db": -15.450533457092252,
+          "noise_dbfs": -200.0,
+          "subnormal": 1533,
+          "denormal_spike": 2.2209302325581395,
+          "stable": true,
+          "peak_dbfs": -12.047504975657459,
+          "latency": 32,
+          "ns_per_frame": 62.12160997732426,
+          "instr_per_frame": 704.5522222222222
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.029 dB"
+      }
+    ]
+  },
+  {
+    "id": "oversampler",
+    "title": "2x oversampling: hiir half-band (ours) vs Signalsmith Oversampler2xFIR",
+    "reference": "none (no Kontakt oversampler capture)",
+    "rate": 44100.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core hiir 2x (20 kHz, 78 dB)",
+        "quality": {
+          "alias_db": -88.65292864994612,
+          "thd_n_db": -15.450998172877359,
+          "noise_dbfs": -200.0,
+          "subnormal": 1561,
+          "denormal_spike": 245.22502266545783,
+          "stable": true,
+          "peak_dbfs": -11.182511052461546,
+          "latency": 3,
+          "ns_per_frame": 17.851360544217687,
+          "instr_per_frame": 211.5214739229025
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.011 dB"
+      },
+      {
+        "label": "Signalsmith Oversampler2xFIR",
+        "quality": {
+          "alias_db": -87.62962797457593,
+          "thd_n_db": -15.450533457092252,
+          "noise_dbfs": -200.0,
+          "subnormal": 1533,
+          "denormal_spike": 1.4727623897107238,
+          "stable": true,
+          "peak_dbfs": -12.047504975657459,
+          "latency": 32,
+          "ns_per_frame": 61.96648526077097,
+          "instr_per_frame": 693.6298639455782
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.029 dB"
+      }
+    ]
+  },
+  {
+    "id": "oversampler",
+    "title": "2x oversampling: hiir half-band (ours) vs Signalsmith Oversampler2xFIR",
+    "reference": "none (no Kontakt oversampler capture)",
+    "rate": 48000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core hiir 2x (20 kHz, 78 dB)",
+        "quality": {
+          "alias_db": -44.77577488726952,
+          "thd_n_db": -15.445927966388645,
+          "noise_dbfs": -200.0,
+          "subnormal": 1704,
+          "denormal_spike": 9160.836363636363,
+          "stable": true,
+          "peak_dbfs": -11.162213107228919,
+          "latency": 3,
+          "ns_per_frame": 17.508666666666667,
+          "instr_per_frame": 219.315625
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.010 dB"
+      },
+      {
+        "label": "Signalsmith Oversampler2xFIR",
+        "quality": {
+          "alias_db": -41.7520676345692,
+          "thd_n_db": -15.44115678551429,
+          "noise_dbfs": -200.0,
+          "subnormal": 1684,
+          "denormal_spike": 4.547926580557444,
+          "stable": true,
+          "peak_dbfs": -12.181968689225586,
+          "latency": 32,
+          "ns_per_frame": 63.22975,
+          "instr_per_frame": 717.3966666666666
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.020 dB"
+      }
+    ]
+  },
+  {
+    "id": "oversampler",
+    "title": "2x oversampling: hiir half-band (ours) vs Signalsmith Oversampler2xFIR",
+    "reference": "none (no Kontakt oversampler capture)",
+    "rate": 48000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core hiir 2x (20 kHz, 78 dB)",
+        "quality": {
+          "alias_db": -44.77577488726952,
+          "thd_n_db": -15.445927966388645,
+          "noise_dbfs": -200.0,
+          "subnormal": 1704,
+          "denormal_spike": 2.404494382022472,
+          "stable": true,
+          "peak_dbfs": -11.162213107228919,
+          "latency": 3,
+          "ns_per_frame": 17.553875,
+          "instr_per_frame": 215.32829166666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.010 dB"
+      },
+      {
+        "label": "Signalsmith Oversampler2xFIR",
+        "quality": {
+          "alias_db": -41.7520676345692,
+          "thd_n_db": -15.44115678551429,
+          "noise_dbfs": -200.0,
+          "subnormal": 1684,
+          "denormal_spike": 777.0151315789474,
+          "stable": true,
+          "peak_dbfs": -12.181968689225586,
+          "latency": 32,
+          "ns_per_frame": 62.08620833333333,
+          "instr_per_frame": 704.5605208333334
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.020 dB"
+      }
+    ]
+  },
+  {
+    "id": "oversampler",
+    "title": "2x oversampling: hiir half-band (ours) vs Signalsmith Oversampler2xFIR",
+    "reference": "none (no Kontakt oversampler capture)",
+    "rate": 48000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core hiir 2x (20 kHz, 78 dB)",
+        "quality": {
+          "alias_db": -44.77577488726952,
+          "thd_n_db": -15.445927966388645,
+          "noise_dbfs": -200.0,
+          "subnormal": 1704,
+          "denormal_spike": 727.6001447178003,
+          "stable": true,
+          "peak_dbfs": -11.162213107228919,
+          "latency": 3,
+          "ns_per_frame": 17.840770833333334,
+          "instr_per_frame": 211.53502083333333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.010 dB"
+      },
+      {
+        "label": "Signalsmith Oversampler2xFIR",
+        "quality": {
+          "alias_db": -41.7520676345692,
+          "thd_n_db": -15.44115678551429,
+          "noise_dbfs": -200.0,
+          "subnormal": 1684,
+          "denormal_spike": 49.920335144927535,
+          "stable": true,
+          "peak_dbfs": -12.181968689225586,
+          "latency": 32,
+          "ns_per_frame": 59.09072916666667,
+          "instr_per_frame": 693.6121666666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.020 dB"
+      }
+    ]
+  },
+  {
+    "id": "oversampler",
+    "title": "2x oversampling: hiir half-band (ours) vs Signalsmith Oversampler2xFIR",
+    "reference": "none (no Kontakt oversampler capture)",
+    "rate": 96000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core hiir 2x (20 kHz, 78 dB)",
+        "quality": {
+          "alias_db": -86.41528772505083,
+          "thd_n_db": -15.218789958679695,
+          "noise_dbfs": -200.0,
+          "subnormal": 3402,
+          "denormal_spike": 152.93333333333334,
+          "stable": true,
+          "peak_dbfs": -12.218710165661651,
+          "latency": 3,
+          "ns_per_frame": 15.796135416666667,
+          "instr_per_frame": 193.18689583333332
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.000 dB"
+      },
+      {
+        "label": "Signalsmith Oversampler2xFIR",
+        "quality": {
+          "alias_db": -108.24504572743677,
+          "thd_n_db": -15.218340392312603,
+          "noise_dbfs": -200.0,
+          "subnormal": 3383,
+          "denormal_spike": 27.795205479452054,
+          "stable": true,
+          "peak_dbfs": -12.357115787625936,
+          "latency": 32,
+          "ns_per_frame": 64.29488541666667,
+          "instr_per_frame": 717.4034270833333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.002 dB"
+      }
+    ]
+  },
+  {
+    "id": "oversampler",
+    "title": "2x oversampling: hiir half-band (ours) vs Signalsmith Oversampler2xFIR",
+    "reference": "none (no Kontakt oversampler capture)",
+    "rate": 96000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core hiir 2x (20 kHz, 78 dB)",
+        "quality": {
+          "alias_db": -86.41528772505083,
+          "thd_n_db": -15.218789958679695,
+          "noise_dbfs": -200.0,
+          "subnormal": 3402,
+          "denormal_spike": 739.1951807228916,
+          "stable": true,
+          "peak_dbfs": -12.218710165661651,
+          "latency": 3,
+          "ns_per_frame": 15.3739375,
+          "instr_per_frame": 189.10779166666666
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.000 dB"
+      },
+      {
+        "label": "Signalsmith Oversampler2xFIR",
+        "quality": {
+          "alias_db": -108.24504572743677,
+          "thd_n_db": -15.218340392312603,
+          "noise_dbfs": -200.0,
+          "subnormal": 3383,
+          "denormal_spike": 12.392708333333333,
+          "stable": true,
+          "peak_dbfs": -12.357115787625936,
+          "latency": 32,
+          "ns_per_frame": 66.06189583333334,
+          "instr_per_frame": 704.5259375
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.002 dB"
+      }
+    ]
+  },
+  {
+    "id": "oversampler",
+    "title": "2x oversampling: hiir half-band (ours) vs Signalsmith Oversampler2xFIR",
+    "reference": "none (no Kontakt oversampler capture)",
+    "rate": 96000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core hiir 2x (20 kHz, 78 dB)",
+        "quality": {
+          "alias_db": -86.41528772505083,
+          "thd_n_db": -15.218789958679695,
+          "noise_dbfs": -200.0,
+          "subnormal": 3402,
+          "denormal_spike": 1.5767441860465117,
+          "stable": true,
+          "peak_dbfs": -12.218710165661651,
+          "latency": 3,
+          "ns_per_frame": 15.746135416666666,
+          "instr_per_frame": 185.33075
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.000 dB"
+      },
+      {
+        "label": "Signalsmith Oversampler2xFIR",
+        "quality": {
+          "alias_db": -108.24504572743677,
+          "thd_n_db": -15.218340392312603,
+          "noise_dbfs": -200.0,
+          "subnormal": 3383,
+          "denormal_spike": 85.32480161460484,
+          "stable": true,
+          "peak_dbfs": -12.357115787625936,
+          "latency": 32,
+          "ns_per_frame": 72.67608333333334,
+          "instr_per_frame": 693.5695104166666
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "passband ripple 0.002 dB"
+      }
+    ]
+  },
+  {
+    "id": "compressor",
+    "title": "Compressor: generic kernel (ours) vs Giannoulis/Reiss gain computer",
+    "reference": "none for compressors (the committed Kontakt data has the legacy limiter curve only)",
+    "rate": 44100.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core generic compressor kernel",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.47930058414248,
+          "noise_dbfs": -200.0,
+          "subnormal": 1566,
+          "denormal_spike": 5.258620689655173,
+          "stable": true,
+          "peak_dbfs": -13.76483383262772,
+          "latency": 0,
+          "ns_per_frame": 34.545102040816325,
+          "instr_per_frame": 272.58
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms (63 %)"
+      },
+      {
+        "label": "Giannoulis/Massberg/Reiss gain computer (bench)",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.47918341494285,
+          "noise_dbfs": -200.0,
+          "subnormal": 1566,
+          "denormal_spike": 2547.27375,
+          "stable": true,
+          "peak_dbfs": -13.76483446398636,
+          "latency": 0,
+          "ns_per_frame": 32.5559410430839,
+          "instr_per_frame": 238.63965986394558
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms; divergence from ours: max 0.00 dB, mean 0.00 dB"
+      }
+    ]
+  },
+  {
+    "id": "compressor",
+    "title": "Compressor: generic kernel (ours) vs Giannoulis/Reiss gain computer",
+    "reference": "none for compressors (the committed Kontakt data has the legacy limiter curve only)",
+    "rate": 44100.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core generic compressor kernel",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.47930058414248,
+          "noise_dbfs": -200.0,
+          "subnormal": 1566,
+          "denormal_spike": 2212.8220183486237,
+          "stable": true,
+          "peak_dbfs": -13.76483383262772,
+          "latency": 0,
+          "ns_per_frame": 33.722199546485264,
+          "instr_per_frame": 260.5480498866213
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms (63 %)"
+      },
+      {
+        "label": "Giannoulis/Massberg/Reiss gain computer (bench)",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.47918341494285,
+          "noise_dbfs": -200.0,
+          "subnormal": 1566,
+          "denormal_spike": 2.7096774193548385,
+          "stable": true,
+          "peak_dbfs": -13.76483446398636,
+          "latency": 0,
+          "ns_per_frame": 31.08902494331066,
+          "instr_per_frame": 237.62818594104309
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms; divergence from ours: max 0.00 dB, mean 0.00 dB"
+      }
+    ]
+  },
+  {
+    "id": "compressor",
+    "title": "Compressor: generic kernel (ours) vs Giannoulis/Reiss gain computer",
+    "reference": "none for compressors (the committed Kontakt data has the legacy limiter curve only)",
+    "rate": 44100.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core generic compressor kernel",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.47930058414248,
+          "noise_dbfs": -200.0,
+          "subnormal": 1566,
+          "denormal_spike": 2.167127902779449,
+          "stable": true,
+          "peak_dbfs": -13.76483383262772,
+          "latency": 0,
+          "ns_per_frame": 33.99090702947846,
+          "instr_per_frame": 259.6909297052154
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms (63 %)"
+      },
+      {
+        "label": "Giannoulis/Massberg/Reiss gain computer (bench)",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.47918341494285,
+          "noise_dbfs": -200.0,
+          "subnormal": 1566,
+          "denormal_spike": 1.2916428396372845,
+          "stable": true,
+          "peak_dbfs": -13.76483446398636,
+          "latency": 0,
+          "ns_per_frame": 31.33122448979592,
+          "instr_per_frame": 236.75138321995465
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms; divergence from ours: max 0.00 dB, mean 0.00 dB"
+      }
+    ]
+  },
+  {
+    "id": "compressor",
+    "title": "Compressor: generic kernel (ours) vs Giannoulis/Reiss gain computer",
+    "reference": "none for compressors (the committed Kontakt data has the legacy limiter curve only)",
+    "rate": 48000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core generic compressor kernel",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.43116249291322,
+          "noise_dbfs": -200.0,
+          "subnormal": 1719,
+          "denormal_spike": 1761.5245614035089,
+          "stable": true,
+          "peak_dbfs": -13.76970423549701,
+          "latency": 0,
+          "ns_per_frame": 34.150875,
+          "instr_per_frame": 272.22372916666666
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms (63 %)"
+      },
+      {
+        "label": "Giannoulis/Massberg/Reiss gain computer (bench)",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.4310271599953,
+          "noise_dbfs": -200.0,
+          "subnormal": 1719,
+          "denormal_spike": 2561.872151898734,
+          "stable": true,
+          "peak_dbfs": -13.769704867209766,
+          "latency": 0,
+          "ns_per_frame": 32.05125,
+          "instr_per_frame": 238.673625
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms; divergence from ours: max 0.00 dB, mean 0.00 dB"
+      }
+    ]
+  },
+  {
+    "id": "compressor",
+    "title": "Compressor: generic kernel (ours) vs Giannoulis/Reiss gain computer",
+    "reference": "none for compressors (the committed Kontakt data has the legacy limiter curve only)",
+    "rate": 48000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core generic compressor kernel",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.43116249291322,
+          "noise_dbfs": -200.0,
+          "subnormal": 1719,
+          "denormal_spike": 4.616822429906542,
+          "stable": true,
+          "peak_dbfs": -13.76970423549701,
+          "latency": 0,
+          "ns_per_frame": 32.76583333333333,
+          "instr_per_frame": 260.1132083333333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms (63 %)"
+      },
+      {
+        "label": "Giannoulis/Massberg/Reiss gain computer (bench)",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.4310271599953,
+          "noise_dbfs": -200.0,
+          "subnormal": 1719,
+          "denormal_spike": 602.218125,
+          "stable": true,
+          "peak_dbfs": -13.769704867209766,
+          "latency": 0,
+          "ns_per_frame": 31.2945625,
+          "instr_per_frame": 237.62733333333333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms; divergence from ours: max 0.00 dB, mean 0.00 dB"
+      }
+    ]
+  },
+  {
+    "id": "compressor",
+    "title": "Compressor: generic kernel (ours) vs Giannoulis/Reiss gain computer",
+    "reference": "none for compressors (the committed Kontakt data has the legacy limiter curve only)",
+    "rate": 48000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core generic compressor kernel",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.43116249291322,
+          "noise_dbfs": -200.0,
+          "subnormal": 1719,
+          "denormal_spike": 2.041809534343546,
+          "stable": true,
+          "peak_dbfs": -13.76970423549701,
+          "latency": 0,
+          "ns_per_frame": 33.40210416666667,
+          "instr_per_frame": 259.3970625
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms (63 %)"
+      },
+      {
+        "label": "Giannoulis/Massberg/Reiss gain computer (bench)",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.4310271599953,
+          "noise_dbfs": -200.0,
+          "subnormal": 1719,
+          "denormal_spike": 3.709202958093673,
+          "stable": true,
+          "peak_dbfs": -13.769704867209766,
+          "latency": 0,
+          "ns_per_frame": 31.5625,
+          "instr_per_frame": 236.78058333333334
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms; divergence from ours: max 0.00 dB, mean 0.00 dB"
+      }
+    ]
+  },
+  {
+    "id": "compressor",
+    "title": "Compressor: generic kernel (ours) vs Giannoulis/Reiss gain computer",
+    "reference": "none for compressors (the committed Kontakt data has the legacy limiter curve only)",
+    "rate": 96000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core generic compressor kernel",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.46459597551464,
+          "noise_dbfs": -200.0,
+          "subnormal": 3417,
+          "denormal_spike": 468.2719298245614,
+          "stable": true,
+          "peak_dbfs": -13.763378041665081,
+          "latency": 0,
+          "ns_per_frame": 33.71576041666667,
+          "instr_per_frame": 271.24878125
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms (63 %)"
+      },
+      {
+        "label": "Giannoulis/Massberg/Reiss gain computer (bench)",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.46488034748768,
+          "noise_dbfs": -200.0,
+          "subnormal": 3417,
+          "denormal_spike": 67.47625,
+          "stable": true,
+          "peak_dbfs": -13.763378041665081,
+          "latency": 0,
+          "ns_per_frame": 31.5355,
+          "instr_per_frame": 238.66821875
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms; divergence from ours: max 0.00 dB, mean 0.00 dB"
+      }
+    ]
+  },
+  {
+    "id": "compressor",
+    "title": "Compressor: generic kernel (ours) vs Giannoulis/Reiss gain computer",
+    "reference": "none for compressors (the committed Kontakt data has the legacy limiter curve only)",
+    "rate": 96000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core generic compressor kernel",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.46459597551464,
+          "noise_dbfs": -200.0,
+          "subnormal": 3417,
+          "denormal_spike": 132.84537037037038,
+          "stable": true,
+          "peak_dbfs": -13.763378041665081,
+          "latency": 0,
+          "ns_per_frame": 33.02178125,
+          "instr_per_frame": 259.14509375
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms (63 %)"
+      },
+      {
+        "label": "Giannoulis/Massberg/Reiss gain computer (bench)",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.46488034748768,
+          "noise_dbfs": -200.0,
+          "subnormal": 3417,
+          "denormal_spike": 648.5320512820513,
+          "stable": true,
+          "peak_dbfs": -13.763378041665081,
+          "latency": 0,
+          "ns_per_frame": 32.46302083333333,
+          "instr_per_frame": 237.67305208333335
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms; divergence from ours: max 0.00 dB, mean 0.00 dB"
+      }
+    ]
+  },
+  {
+    "id": "compressor",
+    "title": "Compressor: generic kernel (ours) vs Giannoulis/Reiss gain computer",
+    "reference": "none for compressors (the committed Kontakt data has the legacy limiter curve only)",
+    "rate": 96000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core generic compressor kernel",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.46459597551464,
+          "noise_dbfs": -200.0,
+          "subnormal": 3417,
+          "denormal_spike": 298.5086801426873,
+          "stable": true,
+          "peak_dbfs": -13.763378041665081,
+          "latency": 0,
+          "ns_per_frame": 32.845114583333334,
+          "instr_per_frame": 258.37522916666666
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms (63 %)"
+      },
+      {
+        "label": "Giannoulis/Massberg/Reiss gain computer (bench)",
+        "quality": {
+          "alias_db": null,
+          "thd_n_db": -70.46488034748768,
+          "noise_dbfs": -200.0,
+          "subnormal": 3417,
+          "denormal_spike": 140.4657587548638,
+          "stable": true,
+          "peak_dbfs": -13.763378041665081,
+          "latency": 0,
+          "ns_per_frame": 31.358625,
+          "instr_per_frame": 236.7973125
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "static out dB at in -60..0: -60.0 -50.0 -40.0 -30.0 -20.4 -16.5 -13.8; attack 6.6 ms, release 135.8 ms; divergence from ours: max 0.00 dB, mean 0.00 dB"
+      }
+    ]
+  },
+  {
+    "id": "svf-ladder",
+    "title": "Ladder: Kontakt legacy class 17 (ours) vs Zavalishin TPT ladder",
+    "reference": "Kontakt 8 Ladder oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json, class Ladder)",
+    "rate": 44100.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core Ladder (legacy class 17)",
+        "quality": {
+          "alias_db": -11.41486990907001,
+          "thd_n_db": -78.73009060704702,
+          "noise_dbfs": -101.9165887268931,
+          "subnormal": 0,
+          "denormal_spike": 1002.0098591549296,
+          "stable": true,
+          "peak_dbfs": -10.781608601091882,
+          "latency": 24,
+          "ns_per_frame": 66.37748299319728,
+          "instr_per_frame": 331.6719274376417
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "cutoff and resonance fitted per case"
+      },
+      {
+        "label": "Zavalishin TPT ladder, one-sample feedback (bench)",
+        "quality": {
+          "alias_db": -25.150135827228624,
+          "thd_n_db": -105.20482434152994,
+          "noise_dbfs": -200.0,
+          "subnormal": 1633,
+          "denormal_spike": 7007.261290322581,
+          "stable": true,
+          "peak_dbfs": -6.873528340189742,
+          "latency": 21,
+          "ns_per_frame": 9.074784580498866,
+          "instr_per_frame": 35.1546485260771
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "hz and resonance fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "svf-ladder",
+    "title": "Ladder: Kontakt legacy class 17 (ours) vs Zavalishin TPT ladder",
+    "reference": "Kontakt 8 Ladder oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json, class Ladder)",
+    "rate": 44100.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core Ladder (legacy class 17)",
+        "quality": {
+          "alias_db": -11.48641414130411,
+          "thd_n_db": -78.73009060704702,
+          "noise_dbfs": -101.9165887268931,
+          "subnormal": 0,
+          "denormal_spike": 6.123429951690821,
+          "stable": true,
+          "peak_dbfs": -10.791070167039303,
+          "latency": 24,
+          "ns_per_frame": 65.05,
+          "instr_per_frame": 316.6075963718821
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "cutoff and resonance fitted per case"
+      },
+      {
+        "label": "Zavalishin TPT ladder, one-sample feedback (bench)",
+        "quality": {
+          "alias_db": -19.769630438163137,
+          "thd_n_db": -105.20482434152994,
+          "noise_dbfs": -200.0,
+          "subnormal": 1633,
+          "denormal_spike": 369.35172413793106,
+          "stable": true,
+          "peak_dbfs": -6.873528340189742,
+          "latency": 21,
+          "ns_per_frame": 8.830544217687075,
+          "instr_per_frame": 34.616734693877554
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "hz and resonance fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "svf-ladder",
+    "title": "Ladder: Kontakt legacy class 17 (ours) vs Zavalishin TPT ladder",
+    "reference": "Kontakt 8 Ladder oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json, class Ladder)",
+    "rate": 44100.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core Ladder (legacy class 17)",
+        "quality": {
+          "alias_db": -10.979560770671872,
+          "thd_n_db": -78.73009060704702,
+          "noise_dbfs": -101.9165887268931,
+          "subnormal": 0,
+          "denormal_spike": 61.763351445468466,
+          "stable": true,
+          "peak_dbfs": -10.786442946081948,
+          "latency": 24,
+          "ns_per_frame": 65.02394557823129,
+          "instr_per_frame": 314.97426303854877
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "cutoff and resonance fitted per case"
+      },
+      {
+        "label": "Zavalishin TPT ladder, one-sample feedback (bench)",
+        "quality": {
+          "alias_db": -15.349844127544943,
+          "thd_n_db": -105.20482434152994,
+          "noise_dbfs": -200.0,
+          "subnormal": 1633,
+          "denormal_spike": 1.6550976138828633,
+          "stable": true,
+          "peak_dbfs": -6.839724596104027,
+          "latency": 21,
+          "ns_per_frame": 8.936916099773242,
+          "instr_per_frame": 34.05893424036281
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "hz and resonance fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "svf-ladder",
+    "title": "Ladder: Kontakt legacy class 17 (ours) vs Zavalishin TPT ladder",
+    "reference": "Kontakt 8 Ladder oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json, class Ladder)",
+    "rate": 48000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core Ladder (legacy class 17)",
+        "quality": {
+          "alias_db": -12.335860107830436,
+          "thd_n_db": -78.29289291547032,
+          "noise_dbfs": -101.53094161813074,
+          "subnormal": 0,
+          "denormal_spike": 12.420283018867925,
+          "stable": true,
+          "peak_dbfs": -10.640815612851641,
+          "latency": 26,
+          "ns_per_frame": 66.7765,
+          "instr_per_frame": 331.4445416666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "cutoff and resonance fitted per case"
+      },
+      {
+        "label": "Zavalishin TPT ladder, one-sample feedback (bench)",
+        "quality": {
+          "alias_db": -25.502792970059946,
+          "thd_n_db": -87.81375010418822,
+          "noise_dbfs": -200.0,
+          "subnormal": 1774,
+          "denormal_spike": 12.866666666666667,
+          "stable": true,
+          "peak_dbfs": -6.9551740539292055,
+          "latency": 23,
+          "ns_per_frame": 8.962875,
+          "instr_per_frame": 35.13522916666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "hz and resonance fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "svf-ladder",
+    "title": "Ladder: Kontakt legacy class 17 (ours) vs Zavalishin TPT ladder",
+    "reference": "Kontakt 8 Ladder oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json, class Ladder)",
+    "rate": 48000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core Ladder (legacy class 17)",
+        "quality": {
+          "alias_db": -12.34057348812092,
+          "thd_n_db": -78.29289291547032,
+          "noise_dbfs": -101.53094161813074,
+          "subnormal": 0,
+          "denormal_spike": 485.25635491606715,
+          "stable": true,
+          "peak_dbfs": -10.636304721365853,
+          "latency": 26,
+          "ns_per_frame": 64.325625,
+          "instr_per_frame": 315.49839583333335
+        },
+        "fit": {
+          "mag_err_db": 0.03796446859188594,
+          "mag_err_median_db": 0.00507358234775768,
+          "gain_offset_db": 0.010375597295530182,
+          "identity_mag_err_db": null,
+          "phase_err_deg": null,
+          "time_err_pct": null,
+          "cases": 7
+        },
+        "verdict": "FaithfulCleaner",
+        "note": "cutoff and resonance fitted per case"
+      },
+      {
+        "label": "Zavalishin TPT ladder, one-sample feedback (bench)",
+        "quality": {
+          "alias_db": -20.25125793955603,
+          "thd_n_db": -87.81375010418822,
+          "noise_dbfs": -200.0,
+          "subnormal": 1774,
+          "denormal_spike": 5.0,
+          "stable": true,
+          "peak_dbfs": -6.9551740539292055,
+          "latency": 23,
+          "ns_per_frame": 8.864958333333334,
+          "instr_per_frame": 34.5856875
+        },
+        "fit": {
+          "mag_err_db": 5.996082155157756,
+          "mag_err_median_db": 0.12344305775288333,
+          "gain_offset_db": 0.23273893012010588,
+          "identity_mag_err_db": null,
+          "phase_err_deg": null,
+          "time_err_pct": null,
+          "cases": 7
+        },
+        "verdict": "Differs",
+        "note": "hz and resonance fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "svf-ladder",
+    "title": "Ladder: Kontakt legacy class 17 (ours) vs Zavalishin TPT ladder",
+    "reference": "Kontakt 8 Ladder oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json, class Ladder)",
+    "rate": 48000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core Ladder (legacy class 17)",
+        "quality": {
+          "alias_db": -9.320904185126766,
+          "thd_n_db": -78.29289291547032,
+          "noise_dbfs": -101.53094161813074,
+          "subnormal": 0,
+          "denormal_spike": 1.1723023906956709,
+          "stable": true,
+          "peak_dbfs": -10.64771775709767,
+          "latency": 26,
+          "ns_per_frame": 63.32245833333333,
+          "instr_per_frame": 315.6062708333333
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "cutoff and resonance fitted per case"
+      },
+      {
+        "label": "Zavalishin TPT ladder, one-sample feedback (bench)",
+        "quality": {
+          "alias_db": -14.879704518834034,
+          "thd_n_db": -87.81375010418822,
+          "noise_dbfs": -200.0,
+          "subnormal": 1774,
+          "denormal_spike": 1.4126637554585153,
+          "stable": true,
+          "peak_dbfs": -6.9630772844033135,
+          "latency": 23,
+          "ns_per_frame": 8.94225,
+          "instr_per_frame": 34.080104166666665
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "hz and resonance fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "svf-ladder",
+    "title": "Ladder: Kontakt legacy class 17 (ours) vs Zavalishin TPT ladder",
+    "reference": "Kontakt 8 Ladder oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json, class Ladder)",
+    "rate": 96000.0,
+    "block": 32,
+    "sides": [
+      {
+        "label": "sampler-core Ladder (legacy class 17)",
+        "quality": {
+          "alias_db": -18.034150417682365,
+          "thd_n_db": -78.63770595071298,
+          "noise_dbfs": -98.42161225307379,
+          "subnormal": 0,
+          "denormal_spike": 3.391089108910891,
+          "stable": true,
+          "peak_dbfs": -9.724512129642823,
+          "latency": 54,
+          "ns_per_frame": 62.27390625,
+          "instr_per_frame": 329.24265625
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "cutoff and resonance fitted per case"
+      },
+      {
+        "label": "Zavalishin TPT ladder, one-sample feedback (bench)",
+        "quality": {
+          "alias_db": -38.5130069989508,
+          "thd_n_db": -87.81665480190854,
+          "noise_dbfs": -200.0,
+          "subnormal": 3557,
+          "denormal_spike": 9.533333333333333,
+          "stable": true,
+          "peak_dbfs": -7.038667254563622,
+          "latency": 46,
+          "ns_per_frame": 8.856208333333333,
+          "instr_per_frame": 35.16946875
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "hz and resonance fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "svf-ladder",
+    "title": "Ladder: Kontakt legacy class 17 (ours) vs Zavalishin TPT ladder",
+    "reference": "Kontakt 8 Ladder oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json, class Ladder)",
+    "rate": 96000.0,
+    "block": 64,
+    "sides": [
+      {
+        "label": "sampler-core Ladder (legacy class 17)",
+        "quality": {
+          "alias_db": -17.994629517471918,
+          "thd_n_db": -78.63770595071298,
+          "noise_dbfs": -98.42161225307379,
+          "subnormal": 0,
+          "denormal_spike": 2.0052896725440807,
+          "stable": true,
+          "peak_dbfs": -9.716558501862945,
+          "latency": 54,
+          "ns_per_frame": 62.10942708333334,
+          "instr_per_frame": 315.14559375
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "cutoff and resonance fitted per case"
+      },
+      {
+        "label": "Zavalishin TPT ladder, one-sample feedback (bench)",
+        "quality": {
+          "alias_db": -25.51549537981918,
+          "thd_n_db": -87.81665480190854,
+          "noise_dbfs": -200.0,
+          "subnormal": 3557,
+          "denormal_spike": 6.413793103448276,
+          "stable": true,
+          "peak_dbfs": -7.038274345788656,
+          "latency": 46,
+          "ns_per_frame": 8.858614583333333,
+          "instr_per_frame": 34.57547916666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "hz and resonance fitted per case"
+      }
+    ]
+  },
+  {
+    "id": "svf-ladder",
+    "title": "Ladder: Kontakt legacy class 17 (ours) vs Zavalishin TPT ladder",
+    "reference": "Kontakt 8 Ladder oracle, 7 cases x 10 probes at 48000 Hz (cascade_kontakt_oracle.json, class Ladder)",
+    "rate": 96000.0,
+    "block": 512,
+    "sides": [
+      {
+        "label": "sampler-core Ladder (legacy class 17)",
+        "quality": {
+          "alias_db": -8.148620734270738,
+          "thd_n_db": -78.63770595071298,
+          "noise_dbfs": -98.42161225307379,
+          "subnormal": 0,
+          "denormal_spike": 1.1882057716436638,
+          "stable": true,
+          "peak_dbfs": -9.756612193014591,
+          "latency": 54,
+          "ns_per_frame": 61.94869791666667,
+          "instr_per_frame": 313.9180104166667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "cutoff and resonance fitted per case"
+      },
+      {
+        "label": "Zavalishin TPT ladder, one-sample feedback (bench)",
+        "quality": {
+          "alias_db": -12.989609229071315,
+          "thd_n_db": -87.81665480190854,
+          "noise_dbfs": -200.0,
+          "subnormal": 3557,
+          "denormal_spike": 1.5285492112863808,
+          "stable": true,
+          "peak_dbfs": -7.044507683091701,
+          "latency": 46,
+          "ns_per_frame": 8.789958333333333,
+          "instr_per_frame": 34.09107291666667
+        },
+        "fit": null,
+        "verdict": "NoReference",
+        "note": "hz and resonance fitted per case"
+      }
+    ]
+  }
+]

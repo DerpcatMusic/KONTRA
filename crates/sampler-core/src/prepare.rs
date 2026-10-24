@@ -489,6 +489,10 @@ impl Pcm {
         if !self.0.full || self.0.resident_budget.get().is_none() { return Err(Error::InvalidInput); }
         self.0.residency_loader.set(ResidencyLoader::Resident(std::sync::Arc::new(loader))).map_err(|_|Error::InvalidInput)
     }
+    /// A reload recipe exists, so the purged frames can be dropped and later restored.
+    pub(crate) fn can_reload(&self) -> bool {
+        self.0.residency_loader.get().is_some()
+    }
     pub(crate) fn residency_acquire(&self) {
         self.0
             .residency_managed
@@ -770,6 +774,8 @@ pub enum VelocityCurve {
     Power(f64),
     /// Kontakt's velocity-to-volume response at the default route intensity; see `VOLUME_TABLE_DB`.
     VolumeTable,
+    /// `(1 - depth) + depth * v^exponent` for normalized velocity `v`; see `ir::VelocityResponse::Depth`.
+    Depth { depth: f64, exponent: f64 },
 }
 
 impl PreparedRegion {
@@ -792,6 +798,10 @@ impl VelocityCurve {
             Self::Linear => velocity as f32,
             Self::Power(exponent) => velocity.powf(exponent) as f32,
             Self::VolumeTable => volume_table_amplitude(velocity),
+            Self::Depth { depth, exponent } => {
+                let v = velocity.clamp(0.0, 1.0);
+                if v <= 0.0 { 0.0 } else { ((1.0 - depth) + depth * v.powf(exponent)) as f32 }
+            }
         }
     }
 }
@@ -1157,6 +1167,8 @@ crate) source_zone_catalog: Option<zone_routing::SourceZoneCatalog>,
     pub(super) sample_targets: Box<[SampleTarget]>,
     pub(super) sample_limits: Option<SampleRevisionLimits>,
     pub(super) group_mutes: Box<[AtomicBool]>,
+    /// Kontakt-saved purge state per group; purged groups start non-resident.
+    pub(super) group_purged: Box<[bool]>,
     pub(super) residency: Option<super::residency::Residency>,
     pub(super) parameter_registry: super::PreparedParameterRegistry,
     pub(super) signal_trace: Option<crate::trace::TracePrepared>,
@@ -1189,6 +1201,8 @@ crate) source_zone_catalog: Option<zone_routing::SourceZoneCatalog>,
     pub(super) region_groups: Box<[Option<u32>]>,
     pub(super) group_source_ids: Box<[u32]>,
     pub(super) region_zone_ids: Box<[u32]>,
+    /// Each region's native zone identity, from the source zone catalog.
+    pub(super) region_identities: Box<[Option<u32>]>,
     pub(super) native_start: Box<[Box<[sampler_ir::GroupStart]>]>,
     pub(super) native_articulation_keys: Box<[Option<u8>]>,
     pub(super) native_default_key: Option<u8>,
@@ -1324,6 +1338,7 @@ impl Prepared {
         if curves.len() != self.regions.len()
             || curves.iter().any(|curve| {
                 matches!(curve, VelocityCurve::Power(exponent) if !exponent.is_finite() || *exponent <= 0.0)
+                    || matches!(curve, VelocityCurve::Depth { depth, exponent } if !depth.is_finite() || !(0.0..=1.0).contains(depth) || !exponent.is_finite() || *exponent <= 0.0)
             })
         {
             return Err(Error::InvalidInput);
@@ -1378,10 +1393,12 @@ impl Prepared {
     }
     pub fn new_sources_tuned(rate: u32, sources: Vec<crate::SourceStorage>, regions: Vec<Region>,
         max_candidates: usize, tuning: &Tuning) -> Result<Self, Error> {
+        // First-seen order is kept; a set makes each lookup O(1) instead of a scan over every pack.
         let mut pcm = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for source in &sources {
             source.as_source().physical_dependencies(|pack| {
-                if !pcm.iter().any(|old: &Pcm| old.asset_id() == pack.asset_id()) {
+                if seen.insert(pack.asset_id()) {
                     pcm.push(pack.clone());
                 }
             });
@@ -1517,6 +1534,7 @@ impl Prepared {
             source_zone_catalog: None,
             zone_routing: None,
             group_mutes: Box::new([]),
+            group_purged: Box::new([]),
             residency: None,
             initial_residency: Box::new([]),
             parameter_registry: Default::default(),
@@ -1545,6 +1563,7 @@ impl Prepared {
             region_groups: Box::new([]),
             group_source_ids: Box::new([]),
             region_zone_ids: Box::new([]),
+            region_identities: Box::new([]),
             native_start: Box::new([]),
             native_articulation_keys: Box::new([]),
             native_default_key: None,
@@ -1911,16 +1930,27 @@ programs = programs.into_boxed_slice();
                         controls.push((routes.len(), ids));
                     }
                     // Compiled control addresses are private to this preparation call.
-                    routes.push(super::ModRoute {
+                    let span = binding.high - binding.low;
+                    let mut bound = super::ModRoute {
                         target: super::ParameterAddress {
                             scope: super::ParameterScope::Voice,
                             node: u32::try_from(lane).map_err(|_| Error::Capacity)?,
                             parameter: u32::MAX - 13,
                         },
-                        depth: route.depth * (binding.high - binding.low),
-                        live_gain: route.live_gain * (binding.high - binding.low),
+                        depth: route.depth * span,
+                        live_gain: route.live_gain * span,
                         ..*route
-                    });
+                    };
+                    // An intensity unit is depth per normalized intensity: it scales with
+                    // the depth. A zero-width lane leaves no depth, and keeps its unit.
+                    if span != 0.0 {
+                        for scale in bound.scales_mut() {
+                            if let super::ModScaleLaw::KontaktIntensity { unit, .. } = &mut scale.law {
+                                *unit *= span;
+                            }
+                        }
+                    }
+                    routes.push(bound);
                 }
             }
             program.routes = routes;
@@ -2091,6 +2121,17 @@ programs = programs.into_boxed_slice();
             return None;
         }
         self.region_zone_ids.iter().position(|&id| id == zone_id)
+    }
+
+    /// The sample a zone ID plays: a native identity when the instrument has a
+    /// native catalog (as `EventInfo::ZoneId` then reports), else an event ID.
+    pub fn source_zone_sample(&self, zone_id: u32) -> Option<usize> {
+        let region = if self.source_zone_identity_count() != 0 {
+            self.source_zone_identity_region(zone_id)
+        } else {
+            self.source_zone_region(zone_id)
+        };
+        Some(self.regions.get(region?)?.sample)
     }
 
     /// Read an immutable authored home by native zone-command identity.
@@ -2890,6 +2931,8 @@ impl Prepared {
                     VelocityCurve::Power(p) => p,
                     // Not an exponent: the table law (see VOLUME_TABLE_DB).
                     VelocityCurve::VolumeTable => -1.,
+                    // Two-parameter law: the trace shows the exponent, the depth is in the curve.
+                    VelocityCurve::Depth { exponent, .. } => exponent,
                 },
             )))
             .chain(
@@ -3201,6 +3244,20 @@ mod volume_table_tests {
             let rel = 20.0 * (at(v) / at(127.0)).log10();
             assert!((rel - oracle_db).abs() < 0.15, "velocity {v}: {rel:.2} dB, oracle {oracle_db}");
         }
+    }
+
+    #[test]
+    fn depth_law_is_silent_at_zero_unity_at_full_and_monotonic() {
+        let law = VelocityCurve::Depth { depth: 0.787, exponent: 1.285 };
+        let at = |v: f64| law.amplitude(v / 127.0);
+        assert_eq!(at(0.0), 0.0);
+        assert!((at(127.0) - 1.0).abs() < 1e-6);
+        for v in 1..=127 {
+            assert!(at(f64::from(v)) >= at(f64::from(v) - 1.0), "dips at velocity {v}");
+        }
+        // Zero depth is no velocity effect; full depth with exponent 1 is linear.
+        assert!((VelocityCurve::Depth { depth: 0.0, exponent: 2.0 }.amplitude(0.3) - 1.0).abs() < 1e-6);
+        assert!((VelocityCurve::Depth { depth: 1.0, exponent: 1.0 }.amplitude(0.3) - 0.3).abs() < 1e-6);
     }
 
     #[test]

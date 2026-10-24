@@ -6,10 +6,13 @@
 // ponytail: the four tables (static, 0x144f3d900..0x144f3f900) and the reset's settled operating
 // point are dumped under kemu, not re-derived; the reset runs before the knobs are applied.
 use super::super::super::Planar;
-use super::kernel::{DECIMATE, PHASE, V, add, mul, sub};
+use super::kernel::{ld, st, DECIMATE, PHASE, V, add, mul, sub};
 use super::super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
 use super::crywah::rcp;
 
+
+/// Offset 0 of the state array.
+const BASE: isize = 36;
 
 const fn bits(v: [u32; 4]) -> V {
     [f32::from_bits(v[0]), f32::from_bits(v[1]), f32::from_bits(v[2]), f32::from_bits(v[3])]
@@ -39,15 +42,6 @@ fn shape(x: f32, t: &[f32]) -> f32 {
     fr * t[i + 1] + t[i]
 }
 
-fn ld(s: &[f32; 80], o: isize) -> V {
-    let i = (o + 36) as usize;
-    [s[i], s[i + 1], s[i + 2], s[i + 3]]
-}
-
-fn st(s: &mut [f32; 80], o: isize, v: V) {
-    let i = (o + 36) as usize;
-    s[i..i + 4].copy_from_slice(&v);
-}
 
 /// `(x - old) * k + old`
 fn toward(x: V, old: V, k: V) -> V {
@@ -198,50 +192,50 @@ impl Engine {
             *seed = (((n >> 25) ^ n) >> 6 & 1) | n.wrapping_add(n);
             let noise = ((*seed & 2) - 1) as f32;
             // Tone stack, then the interpolated input.
-            let x0 = mul(PHASE[k], ld(s, -36));
-            let x3 = ld(s, -32);
-            let x10 = ld(s, -8);
-            let x11 = ld(s, 12);
-            let x5 = sub([x11[0], x10[0], x3[2], x10[0]], ld(s, 0));
+            let x0 = mul(PHASE[k], ld(s, BASE, -36));
+            let x3 = ld(s, BASE, -32);
+            let x10 = ld(s, BASE, -8);
+            let x11 = ld(s, BASE, 12);
+            let x5 = sub([x11[0], x10[0], x3[2], x10[0]], ld(s, BASE, 0));
             let x7 = mul(r0, x5);
-            st(s, 0, add(mul(x5, self.c340), ld(s, 0)));
-            let old = ld(s, 4);
+            st(s, BASE, 0, add(mul(x5, self.c340), ld(s, BASE, 0)));
+            let old = ld(s, BASE, 4);
             let x5 = sub([x5[0], x5[1], x10[1], x3[3]], old);
             let x2 = add(mul(x5, self.c350), old);
-            st(s, 4, x2);
+            st(s, BASE, 4, x2);
             let x2 = mul(x2, r1);
-            let x4 = ld(s, -4);
+            let x4 = ld(s, BASE, -4);
             let x0b = x2.map(|v| x7[3] + v);
             let x0b = add([x0b[1], x0b[1], x3[2], x3[2]], x7);
             let u = (x0[3] + x0[1]) + (x0[2] + x0[0]);
             let x5 = [x5[2], x5[2], x0b[1], x0b[2]];
-            st(s, -32, x5);
+            st(s, BASE, -32, x5);
             let x5 = sub(x5, x2);
             // Tube stage: Miller-divided grid, table shaper per lane.
             let x7 = add([u, x2[3], x5[0], x5[0]], NOISE.map(|c| noise * c));
-            let old = ld(s, -28);
+            let old = ld(s, BASE, -28);
             let x7 = sub(x7, old);
-            st(s, -28, add(mul(x7, self.c2b0), old));
-            let x7 = add(mul(mul(sub(x7, x4), ld(s, -24)), K2C0), K2D0);
+            st(s, BASE, -28, add(mul(x7, self.c2b0), old));
+            let x7 = add(mul(mul(sub(x7, x4), ld(s, BASE, -24)), K2C0), K2D0);
             let y: V = std::array::from_fn(|l| shape(x7[l], &tab[LANE_TABLE[l] * 512..]));
-            let x3 = ld(s, -20);
+            let x3 = ld(s, BASE, -20);
             let x7 = mul(y, x3);
             let x3 = sub(x3, x7);
             let x2 = toward(x7, x10, self.c310);
-            st(s, -8, x2);
-            st(s, -4, toward(mul(x3, K320), x4, self.c330));
-            let old = ld(s, 8);
+            st(s, BASE, -8, x2);
+            st(s, BASE, -4, toward(mul(x3, K320), x4, self.c330));
+            let old = ld(s, BASE, 8);
             let x2 = sub([x2[2], x2[3], x2[2], x2[3]], old);
-            st(s, 8, add(mul(x2, self.c360), old));
+            st(s, BASE, 8, add(mul(x2, self.c360), old));
             // Push-pull power stage: lanes 0 and 1.
-            let mut x8 = ld(s, 20);
+            let mut x8 = ld(s, BASE, 20);
             let lane = |l: usize| {
                 let x = ((x8[0] * 0.14 + x2[l] * 0.0794) * K380 + K3A0) * s[36 - 16 + l] + K390;
                 shape(x, tab) * s[36 - 12 + l]
             };
             let (a, b) = (lane(0), lane(1));
             let d = a - b;
-            st(s, 12, toward([d; 4], x11, [self.c3c0, 0.0, 0.0, 0.0]));
+            st(s, BASE, 12, toward([d; 4], x11, [self.c3c0, 0.0, 0.0, 0.0]));
             // Supply sag: recharged from the rectified ripple, drained by the stage.
             let mut ph = s[36 + 24] + self.ripple;
             if 1.0 <= ph {
@@ -253,28 +247,28 @@ impl Engine {
             let q = SAG * (ph * ph) + s64;
             let sv = (SAG - q).max(0.0) * self.charge + drawn;
             s[36 + 25] = sv;
-            let x1 = ld(s, 16);
+            let x1 = ld(s, BASE, 16);
             let x2 = sub(mul([sv, 1.0, x8[0], x1[2]], [1.0, 1.0, 0.97, 0.916]), add(mul(x1, [0.84, 1.0, 1.0, 1.0]), x8));
             let x2 = add(mul(x2, self.c3d0), x1);
-            st(s, 16, x2);
+            st(s, BASE, 16, x2);
             let x5 = [sv, sv, x2[2], x2[3]];
             let r = x5.map(rcp);
             x8[0] += x2[0] * self.c3d0[0];
-            st(s, 20, x8);
-            st(s, -20, [x5[3], x5[3], x5[2], x5[2]]);
-            st(s, -24, [r[3], r[3], r[2], r[2]]);
-            st(s, -12, [sv; 4]);
-            st(s, -16, [r[0]; 4]);
+            st(s, BASE, 20, x8);
+            st(s, BASE, -20, [x5[3], x5[3], x5[2], x5[2]]);
+            st(s, BASE, -24, [r[3], r[3], r[2], r[2]]);
+            st(s, BASE, -12, [sv; 4]);
+            st(s, BASE, -16, [r[0]; 4]);
             s[36 + 28 + k] = d * 0.001;
         }
         // 16-tap decimation over the oversampled outputs (offsets 28..43).
-        let (x5, x4, x3) = (ld(s, 28), ld(s, 32), ld(s, 36));
-        let x2 = add(add(add(mul(x4, DECIMATE[1]), mul(x5, DECIMATE[0])), mul(x3, DECIMATE[2])), mul(ld(s, 40), DECIMATE[3]));
-        st(s, 40, x3);
-        st(s, 36, x4);
-        st(s, 32, x5);
-        let i0 = ld(s, -36);
-        st(s, -36, [i0[0], i0[0], i0[1], i0[2]]);
+        let (x5, x4, x3) = (ld(s, BASE, 28), ld(s, BASE, 32), ld(s, BASE, 36));
+        let x2 = add(add(add(mul(x4, DECIMATE[1]), mul(x5, DECIMATE[0])), mul(x3, DECIMATE[2])), mul(ld(s, BASE, 40), DECIMATE[3]));
+        st(s, BASE, 40, x3);
+        st(s, BASE, 36, x4);
+        st(s, BASE, 32, x5);
+        let i0 = ld(s, BASE, -36);
+        st(s, BASE, -36, [i0[0], i0[0], i0[1], i0[2]]);
         (x2[3] + x2[1]) + (x2[2] + x2[0])
     }
 

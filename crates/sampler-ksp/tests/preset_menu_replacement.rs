@@ -21,7 +21,7 @@ const SOURCE: &str = r#"on init
     make_persistent($other)
     declare $saved := 1 make_persistent($saved)
     declare %array[2] := (1,2) make_persistent(%array)
-    declare @text := "initial" make_persistent(@text)
+    declare @text @text := "initial" make_persistent(@text)
     declare $private := 17 make_instr_persistent($private)
     declare $ordinary := 19 declare $calls declare $seen declare $pgs_seen declare @caption
     declare ui_switch $mutate declare ui_switch $label declare ui_switch $select declare ui_switch $roster

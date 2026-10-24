@@ -155,6 +155,11 @@ pub(crate) fn encode(
                 w.u8(2);
                 w.f64(v);
             }
+            ir::VelocityResponse::Depth { depth, exponent } => {
+                w.u8(4);
+                w.f64(depth);
+                w.f64(exponent);
+            }
         }
         w.u64(z.playback.start);
         w.u8(z.playback.end.is_some() as u8);
@@ -273,6 +278,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<(Vec<ir::Zone>, Vec<ir::kontakt::Zo
             1 => ir::VelocityResponse::Linear,
             2 => ir::VelocityResponse::Power(r.f64()?),
             3 => ir::VelocityResponse::VolumeTable,
+            4 => ir::VelocityResponse::Depth { depth: r.f64()?, exponent: r.f64()? },
             _ => return None,
         };
         let start = r.u64()?;
@@ -452,7 +458,9 @@ mod tests {
         a.playback.loop_control_crossfade = Some(ir::Span::Frames(32));
         let mut table = ir::Zone::new(ir::AssetRef(2));
         table.velocity = ir::VelocityResponse::VolumeTable;
-        let zones = [a, ir::Zone::new(ir::AssetRef(1)), table];
+        let mut depth = ir::Zone::new(ir::AssetRef(3));
+        depth.velocity = ir::VelocityResponse::Depth { depth: 0.787, exponent: 1.285 };
+        let zones = [a, ir::Zone::new(ir::AssetRef(1)), table, depth];
         let mut bytes = Vec::new();
         encode(&zones, &[], &mut bytes).unwrap();
         assert_eq!(decode(&bytes).unwrap().0, zones);

@@ -1103,7 +1103,7 @@ fn generated_source_pitch_preflight_preserves_accepted_future_expression() {
                 Event::Expression(
                     root,
                     Expression {
-                        pitch_semitones: 144.0,
+                        pitch_semitones: 140.0,
                         ..Expression::default()
                     },
                 ),
@@ -1129,7 +1129,7 @@ fn generated_source_pitch_preflight_preserves_accepted_future_expression() {
                 rt.expression(rt.expression_id(root).unwrap())
                     .unwrap()
                     .pitch_semitones,
-                if linked { 0.0 } else { 144.0 }
+                if linked { 0.0 } else { 140.0 }
             );
             rt.flush_behaviors(|_, _, _| true);
             rt.key_up(root, None).unwrap();

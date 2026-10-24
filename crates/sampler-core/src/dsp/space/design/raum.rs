@@ -603,4 +603,25 @@ mod tests {
             }
         }
     }
+
+    /// Kontakt 8.13.1, `Small / Boxed In` (Grounded, core values below), impulse capture:
+    /// broadband decay slope over 0.1..1.0 s is 50.8 dB/s; the band slopes (60-250 Hz 49.4,
+    /// 250-1k 48.6, 1-4k 52.8, 4-16k 62.0) agree with ours within 5 %. Pins the broadband
+    /// slope within 10 %; the band split is measured with the oracle, not here.
+    #[test]
+    fn grounded_boxed_in_tail_slope_matches_kontakt() {
+        let p: [f32; 20] = [1.0, 0.20898438, 0.0, 0.25, 0.0625, 0.0, 0.5, 0.12597656, 0.24902344, 0.0, 0.2451613, 0.58, 0.4, 0.12, 0.09277344, 0.85, 0.0, 0.62, 1.0, 1.0];
+        let mut o = Outer::new(&p, 48_000, None);
+        let mut net = super::super::super::network::Network::new(spec(&p, 48_000).unwrap());
+        let (mut l, mut r) = (vec![0f32; 48_000], vec![0f32; 48_000]);
+        l[0] = 0.5;
+        for (l, r) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
+            o.process(l, r, 120.0, |a, b| net.process(a, b));
+        }
+        // 50 ms power windows, dB slope (mean of window-to-window drops) over 0.1..1.0 s.
+        let win = 2400;
+        let db: Vec<f64> = (4800..48_000 - win).step_by(win).map(|i| 10.0 * l[i..i + win].iter().map(|v| f64::from(*v).powi(2)).sum::<f64>().max(1e-30).log10()).collect();
+        let slope = (db[0] - db[db.len() - 1]) / (db.len() - 1) as f64 * 20.0;
+        assert!((slope - 50.8).abs() <= 0.1 * 50.8, "slope {slope:.1} dB/s");
+    }
 }

@@ -96,7 +96,10 @@ impl ResourceContainer {
                 if !entry.valid {
                     return Err(LoadError::Invalid {
                         path: self.path.clone(),
-                        reason: "Invalid resource member".into(),
+                        reason: format!(
+                            "Invalid resource member: {}",
+                            entry.issue.unwrap_or("unchecked")
+                        ),
                     });
                 }
                 if entry.size > 32 << 20 {

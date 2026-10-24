@@ -10,7 +10,7 @@ fn setup() -> (Runtime, ControlClient, ScriptStateBuffer) {
         declare ~r := 1.25 make_persistent(~r)
         declare %nums[3] := (2,3,4) make_persistent(%nums)
         declare ?reals[2] := (0.25,0.75) make_persistent(?reals)
-        declare @text := "first" make_persistent(@text)
+        declare @text @text := "first" make_persistent(@text)
         declare !texts[2] := ("a","b") make_persistent(!texts)
         declare $calls declare $done
         end on
@@ -244,16 +244,14 @@ fn restore_rejection_and_capture_bad_address_leave_buffers_and_live_state_untouc
 }
 
 #[test]
-fn persistence_declared_in_an_init_function_restores_and_enters_native_capture() {
+fn persistence_declared_in_init_restores_and_enters_native_capture() {
+    // Kontakt rejects `call` in on init, so the persistence statements are inline.
     let source = r#"on init
         declare !texts[2] := ("default","default")
         declare $value
-        call register_state
-        end on
-        function register_state
-            make_persistent(!texts)
-            make_instr_persistent($value)
-        end function"#;
+        make_persistent(!texts)
+        make_instr_persistent($value)
+        end on"#;
     let environment = sampler_ksp::Environment {
         persisted: [("$value".into(), sampler_ksp::model::Value::Int(42))].into(),
         persisted_arrays: [(

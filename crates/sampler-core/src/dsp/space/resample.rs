@@ -4,20 +4,7 @@
 //! Reverb runs its core between a pair above 48 kHz (wrapper `0x141aa15c7`,
 //! processing `0x141aa9480`).
 
-/// Bessel `I0` (the Numerical Recipes polynomials, f64).
-fn i0(u: f64) -> f64 {
-    if u < 3.75 {
-        let t = u * u * (1.0 / 14.0625);
-        1.0 + t * (3.515_622_9 + t * (3.089_942_4 + t * (1.206_749_2 + t * (0.265_973_2 + t * (0.036_076_8 + t * 0.004_581_3)))))
-    } else {
-        u.exp() / u.sqrt() * poly(3.75 / u)
-    }
-}
-
-fn poly(y: f64) -> f64 {
-    0.398_942_28
-        + y * (0.013_285_92 + y * (0.002_253_19 + y * (-0.001_575_65 + y * (0.009_162_81 + y * (-0.020_577_06 + y * (0.026_355_37 + y * (-0.016_476_33 + y * 0.003_923_77)))))))
-}
+use super::super::kaiser::{big, i0};
 
 /// The windowed sinc at `x` (`|x| < 8`), rounded to f32.
 pub(super) fn h(x: f32) -> f32 {
@@ -28,7 +15,7 @@ pub(super) fn h(x: f32) -> f32 {
     let t = f64::from((x + x) / 16.0);
     let u = (1.0 - t * t).sqrt() * 8.0;
     // I0(8) as native: f32 expf(8) / f32 sqrtf(8), times the f64 polynomial.
-    let den = f64::from(8f32.exp() / 8f32.sqrt()) * poly(3.75 / 8.0);
+    let den = f64::from(8f32.exp() / 8f32.sqrt()) * big(3.75 / 8.0);
     (px.sin() / px * (i0(u) / den)) as f32
 }
 
@@ -206,3 +193,4 @@ mod tests {
         assert_eq!((peak, y[32]), (32, 0.5), "{:?}", &y[25..45]);
     }
 }
+

@@ -12,6 +12,7 @@
 //! - [`Design::FirstOrder`]: the same construction with one pole and a two-term numerator (DC and
 //!   Nyquist matched).
 use sampler_ir::fx::eq::Kind;
+use super::{Planar, flush};
 use std::f64::consts::{PI, TAU};
 
 /// How a Hertz/Q/dB band becomes coefficients.
@@ -237,7 +238,24 @@ pub(crate) fn first_order(kind: Kind, rate: u32, hz: f64, boost_db: f64) -> Opti
     f.b.iter().all(|v| v.is_finite()).then_some(f)
 }
 
-#[cfg(test)]
+/// Frames `range` of both channels through one direct-form-I section, the native G_EQ cascade
+/// record (`y = b0 x + b1 x1 + b2 x2 - a1 y1 - a2 y2`, process 0x141a595d0). `hist` holds x1, x2,
+/// y1 and y2 for each channel.
+pub(crate) fn run_df1(c: [f64; 5], hist: &mut [f64], block: &mut Planar, range: std::ops::Range<usize>) {
+    for (channel, samples) in block.iter_mut().enumerate() {
+        let h = &mut hist[4 * channel..4 * channel + 4];
+        for x in &mut samples[range.clone()] {
+            let input = *x;
+            let y = flush(c[0] * input + c[1] * h[0] + c[2] * h[1] - c[3] * h[2] - c[4] * h[3]);
+            *x = y;
+            h[1] = h[0];
+            h[0] = input;
+            h[3] = h[2];
+            h[2] = y;
+        }
+    }
+}
+
 /// Analogue prototype magnitude in dB at `f` Hz (tests): the target every kind's design matches.
 #[cfg(test)]
 pub(crate) fn analog_db(kind: Kind, hz: f64, q: f64, boost_db: f64, f: f64) -> f64 {
@@ -342,5 +360,29 @@ mod fingerprints {
         });
         let got = [native, cookbook, matched, first_order, kontakt];
         assert_eq!(got, [0x8eb3_3122_67b6_322b, 0x573e_e65e_842e_3e4b, 0x4bfc_94dc_3f48_85dc, 0x3b58_838f_c2ba_3d5d, 0x396e_3b26_2f76_4695]);
+    }
+
+    /// The G_EQ direct-form-I record written out per sample (the form `run_df1` replaces), and
+    /// the same block fed in split ranges: the history must carry across the splits bit-exactly.
+    #[test]
+    fn run_df1_matches_the_written_recurrence_across_splits() {
+        let c = [0.3, -0.2, 0.1, 0.4, -0.05];
+        let input = |ch: usize| -> [f64; 64] { std::array::from_fn(|i| ((i * 37 % 19) as f64 - 9.) * 0.07 * (1. + ch as f64)) };
+        let mut reference: super::super::Planar = [input(0), input(1)];
+        for samples in reference.iter_mut() {
+            let (mut x1, mut x2, mut y1, mut y2) = (0., 0., 0., 0.);
+            for x in samples.iter_mut() {
+                let y = super::super::flush(c[0] * *x + c[1] * x1 + c[2] * x2 - c[3] * y1 - c[4] * y2);
+                (x2, x1, y2, y1) = (x1, *x, y1, y);
+                *x = y;
+            }
+        }
+        for cut in [0usize, 1, 31, 32, 63, 64] {
+            let mut block: super::super::Planar = [input(0), input(1)];
+            let mut hist = [0.; 8];
+            super::run_df1(c, &mut hist, &mut block, 0..cut);
+            super::run_df1(c, &mut hist, &mut block, cut..64);
+            assert_eq!(block.map(|c| c.map(f64::to_bits)), reference.map(|c| c.map(f64::to_bits)), "cut {cut}");
+        }
     }
 }

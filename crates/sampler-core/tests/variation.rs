@@ -302,7 +302,7 @@ fn failed_admission_does_not_advance_or_publish_partial_mics() {
                 60,
                 1.,
                 Expression {
-                    pitch_semitones: 144.,
+                    pitch_semitones: 140.,
                     ..Expression::default()
                 }
             ),
@@ -1051,7 +1051,7 @@ fn random_admission_failures_preserve_future_history_and_publish_nothing() {
                         60,
                         1.,
                         Expression {
-                            pitch_semitones: 144.,
+                            pitch_semitones: 140.,
                             ..Expression::default()
                         },
                     ),

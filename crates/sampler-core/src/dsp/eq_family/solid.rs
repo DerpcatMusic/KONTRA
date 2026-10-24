@@ -176,6 +176,8 @@ mod curves {
     pub(super) const C_5078: [f64; N] = [1.0, 1.0, 1.0, 1.0833, 1.0833, 1.0, 0.9167, 0.6666, 0.3333, 0.05, 0.0001];
     pub(super) const C_54A8: [f64; N] = [1.0, 0.9742, 1.0209, 1.1408, 1.131, 1.15, 1.1281, 1.1495, 1.1301, 1.1281, 0.9981];
     pub(super) const C_58D8: [f64; N] = [1.0, 0.9895, 0.9791, 0.9791, 0.9791, 0.9791, 0.9791, 0.9791, 0.9791, 0.9895, 1.0];
+    /// HF shelf corner at f = 0.5 per gain knob (11 knots), fitted to the native grids.
+    pub(super) const HF_CORNER_MID: [f64; N] = [3800., 3295., 2790., 2510., 2455., 2400., 2474., 2547., 2815., 3655., 4509.];
     pub(super) const C_5D08: [f64; N] = [-20.0, -18.0, -11.0, -6.0, -2.0, 0.0, 2.0, 6.0, 11.0, 18.0, 20.0];
     pub(super) const C_6138: [f64; N] = [950.0, 1050.0, 1450.0, 2350.0, 3000.0, 3600.0, 4400.0, 5900.0, 7200.0, 8200.0, 8800.0];
     pub(super) const C_6568: [f64; N] = [1.0, 0.8889, 0.6667, 0.5833, 0.5833, 0.5833, 0.5833, 0.5833, 0.6667, 0.8889, 1.0];
@@ -266,7 +268,7 @@ fn orfanidis(w0: f64, gl: f64, gb: f64, dw: f64) -> Coefficients {
     normalize(m + a, [n + b, (g1 - w2) * -2., n - b, (1. - w2) * -2., m - a])
 }
 
-fn peak(fs: f64, f: f64, g: f64, q: f64) -> Coefficients {
+pub(crate) fn peak(fs: f64, f: f64, g: f64, q: f64) -> Coefficients {
     if !(f > f64::EPSILON) || !(g.abs() > f64::EPSILON) {
         return IDENTITY;
     }
@@ -304,7 +306,7 @@ fn angle(fs: f64, f: f64) -> (f64, f64, f64) {
 }
 
 /// RBJ high shelf with slope `slope` (0x141abee60).
-fn high_shelf(fs: f64, f: f64, g: f64, slope: f64) -> Coefficients {
+pub(crate) fn high_shelf(fs: f64, f: f64, g: f64, slope: f64) -> Coefficients {
     let a = 10f64.powf(g * 0.025);
     if f == 0. {
         return IDENTITY;
@@ -321,7 +323,7 @@ fn high_shelf(fs: f64, f: f64, g: f64, slope: f64) -> Coefficients {
 }
 
 /// RBJ low shelf with slope `slope` (0x141ac3480).
-fn low_shelf(fs: f64, f: f64, g: f64, slope: f64) -> Coefficients {
+pub(crate) fn low_shelf(fs: f64, f: f64, g: f64, slope: f64) -> Coefficients {
     let a = 10f64.powf(g * 0.025);
     if f == 0. {
         return IDENTITY;
@@ -364,7 +366,7 @@ fn high_pass_1(fs: f64, f: f64) -> Coefficients {
 pub(super) fn sections(which: SolidSection, kind: Kind) -> usize {
     match (which, kind) {
         (SolidSection::LowFrequency, Kind::LowShelf) => 3,
-        (SolidSection::HighFrequency, Kind::HighShelf) | (SolidSection::HighPass, _) | (SolidSection::LowPass, _) => 2,
+        (SolidSection::HighPass, _) | (SolidSection::LowPass, _) => 2,
         _ => 1,
     }
 }
@@ -383,11 +385,10 @@ pub(super) fn coefficients(
     let (f, qk, g) = (frequency.clamp(0., 1.), q.clamp(0., 1.), gain.clamp(0., 1.));
     let high = rate >= 60000.;
     match (which, kind, index) {
-        (SolidSection::HighFrequency, Kind::HighShelf, 0) => {
-            high_shelf(rate, s(C_6568, g) * s(C_6138, f), s(C_5D08, g), 0.55000000000000004)
-        }
+        // One standard high shelf (KISS). Corner = gain-knob law x 2f; the native DC cut of the earlier
+        // two-biquad model is not modelled. Fit and residuals: docs/re/engine/fx-measured/solid-hfshelf-grid.md.
         (SolidSection::HighFrequency, Kind::HighShelf, _) => {
-            peak(rate, s(C_6BB0, f), s(C_6998, g), 0.69999999999999996)
+            high_shelf(rate, s(HF_CORNER_MID, g) * 2. * f, s(C_5D08, g), 0.55000000000000004)
         }
         (SolidSection::HighFrequency, ..) => peak(
             rate,
@@ -590,7 +591,9 @@ mod tests {
         (LowPass, Kind::LowPass, 0, 192000.0, 0.3646358847618103, 0.0, 0.5, [2.256542908767658, 0.6260684668626794, 0.042029111557291644, 1.4204083721342378, 0.5042321150533913]),
         (LowPass, Kind::LowPass, 1, 192000.0, 0.3646358847618103, 0.0, 0.5, [0.05259061963291927, 0.10518123926583854, 0.05259061963291927, -1.2322122593359668, 0.44257473786764395]),
         ];
-        for (which, kind, index, rate, f, q, g, want) in rows {
+        // HF shelf rows are superseded by the single shelf (`hf_shelf_matches_native_grids`); the Unicorn
+        // values stay in this table as the record of the old two-biquad setter.
+        for (which, kind, index, rate, f, q, g, want) in rows.into_iter().filter(|r| !matches!((r.0, r.1), (HighFrequency, HighShelf))) {
             assert!(index < sections(which, kind));
             let got = coefficients(which, kind, index, rate, f, q, g);
             for (a, b) in got.iter().zip(want) {
@@ -692,5 +695,91 @@ mod tests {
         for (key, (err, _)) in &worst {
             assert!(*err < 0.1, "{key}: worst {err:.3} dB");
         }
+    }
+
+    /// Full native table from a Kontakt 8 sweep (`docs/re/engine/fx-measured/solid-geq.tsv`,
+    /// made by `tools/kontakt-oracle/fxrig.py` + `geq_golden.py`): one band per row, bypass-referenced
+    /// LL dB at 30..15000 Hz. Reports the worst error per section; the shape tolerance is 0.5 dB.
+    #[test]
+    fn native_sweep_table_shape() {
+        use SolidSection::*;
+        const PROBES: [f64; 10] = [30., 60., 100., 200., 500., 1000., 2000., 5000., 10000., 15000.];
+        let table = include_str!("../../../../../docs/re/engine/fx-measured/solid-geq.tsv");
+        let mut worst = std::collections::BTreeMap::<&str, (f64, String, usize)>::new();
+        for line in table.lines().skip(1) {
+            let c: Vec<&str> = line.split('\t').collect();
+            let (name, sec) = (c[1], c[2]);
+            let (f, q, g): (f64, f64, f64) = (c[3].parse().unwrap(), c[4].parse().unwrap(), c[5].parse().unwrap());
+            let want: Vec<f64> = c[6..16].iter().map(|v| v.parse().unwrap()).collect();
+            let sections: Vec<[f64; 5]> = match sec {
+                "LFSHELF" => (0..3).map(|i| coefficients(LowFrequency, Kind::LowShelf, i, 48000., f, q, g)).collect(),
+                "LFBELL" => vec![coefficients(LowFrequency, Kind::Peak, 0, 48000., f, q, g)],
+                "LMF" => vec![coefficients(LowMid, Kind::Peak, 0, 48000., f, q, g)],
+                "HMF" => vec![coefficients(HighMid, Kind::Peak, 0, 48000., f, q, g)],
+                "HFSHELF" => (0..2).map(|i| coefficients(HighFrequency, Kind::HighShelf, i, 48000., f, q, g)).collect(),
+                "HFBELL" => vec![coefficients(HighFrequency, Kind::Peak, 0, 48000., f, q, g)],
+                "HP" => (0..2).map(|i| coefficients(HighPass, Kind::Peak, i, 48000., f, q, g)).collect(),
+                _ => (0..2).map(|i| coefficients(LowPass, Kind::Peak, i, 48000., f, q, g)).collect(),
+            };
+            for (hz, db) in PROBES.iter().zip(&want) {
+                let err = (cascade_db(&sections, *hz, 48000.) - db).abs();
+                let entry = worst.entry(sec).or_insert((0., String::new(), 0));
+                if err > 0.5 {
+                    entry.2 += 1;
+                }
+                if err > entry.0 {
+                    *entry = (err, format!("{name} at {hz} Hz (native {db})"), entry.2);
+                }
+            }
+        }
+        for (sec, (err, at, bad)) in &worst {
+            println!("{sec}: worst {err:.2} dB, probes over 0.5 dB {bad}, at {at}");
+        }
+        // HFSHELF is checked by `hf_shelf_matches_native_grids` (single shelf, median tolerance).
+        for (sec, (err, at, _)) in &worst {
+            if *sec != "HFSHELF" {
+                assert!(*err < 0.5, "{sec}: {err:.2} dB at {at}");
+            }
+        }
+    }
+
+    /// Single HF shelf against the Kontakt 8 grids (`fx-measured/solid-hfshelf-grid{,2,3}.tsv`, bypass-referenced,
+    /// freq 0.40-0.60, gain 0.75-1.0). Error = worst probe at 2 kHz and up, per row. Tolerance: median over rows
+    /// <= 1 dB. Rows above 1 dB are the known outliers and are printed, not hidden.
+    #[test]
+    fn hf_shelf_matches_native_grids() {
+        const PROBES: [f64; 10] = [30., 60., 100., 200., 500., 1000., 2000., 5000., 10000., 15000.];
+        let grids = [
+            include_str!("../../../../../docs/re/engine/fx-measured/solid-hfshelf-grid.tsv"),
+            include_str!("../../../../../docs/re/engine/fx-measured/solid-hfshelf-grid2.tsv"),
+            include_str!("../../../../../docs/re/engine/fx-measured/solid-hfshelf-grid3.tsv"),
+        ];
+        let mut errors = Vec::new();
+        for line in grids.iter().flat_map(|g| g.lines()) {
+            let c: Vec<&str> = line.split('\t').collect();
+            let name = c[1];
+            let knob = |key: &str| -> f64 {
+                let v: f64 = name.split(key).nth(1).unwrap().split_whitespace().next().unwrap().parse().unwrap();
+                v / 1e6
+            };
+            let (f, g) = (knob("freq="), knob("gain="));
+            let want: Vec<f64> = c[2..12].iter().map(|v| v.parse().unwrap()).collect();
+            let shelf = coefficients(SolidSection::HighFrequency, Kind::HighShelf, 0, 48000., f, 0., g);
+            let worst = PROBES
+                .iter()
+                .zip(&want)
+                .filter(|(hz, _)| **hz >= 2000.)
+                .map(|(hz, db)| (cascade_db(&[shelf], *hz, 48000.) - db).abs())
+                .fold(0., f64::max);
+            errors.push((worst, name.to_string()));
+        }
+        let mut sorted: Vec<f64> = errors.iter().map(|e| e.0).collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = sorted[sorted.len() / 2];
+        for (err, name) in errors.iter().filter(|e| e.0 > 1.) {
+            println!("outlier {name}: {err:.2} dB");
+        }
+        println!("HF shelf: {} rows, median {median:.2} dB, max {:.2} dB", sorted.len(), sorted.last().unwrap());
+        assert!(median <= 1.0, "HF shelf median error {median:.2} dB");
     }
 }

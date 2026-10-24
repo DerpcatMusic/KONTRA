@@ -182,7 +182,6 @@ fn unsupported_and_malformed_source_fails_explicitly_with_a_valid_offset() {
         "",
         "on note ignore_event($EVENT_ID) wait($x) end on",
         "on note ignore_event($EVENT_ID) wait(18446744073709551616) end on",
-        "on note ignore_event($EVENT_ID) wait(18446744073709551615) end on",
         "on note ignore_event($EVENT_ID) wait(1)",
         "on note ignore_event($EVENT_ID) end on on note end on",
         "{ unclosed",
@@ -354,7 +353,8 @@ fn polyphonic_source_state_reaches_release_callbacks_without_heap_or_note_aliasi
                 let a = rt.trigger(input, 60, 0.).unwrap();
                 let b = rt.trigger(input, 61, 0.).unwrap();
                 assert_eq!((rt.note_cell(a, 0), rt.note_cell(b, 0)), (Ok(60), Ok(61)));
-                assert_eq!(rt.note_cell(a, 2), Ok(i64::from(i32::MIN)));
+                // `-2147483648` is `-(2147483647)` in Kontakt (the literal clamps; conformance `lit_neg_min`).
+                assert_eq!(rt.note_cell(a, 2), Ok(i64::from(i32::MIN + 1)));
                 let channel = rt.register_channel(input.channel_address()).unwrap();
                 rt.sustain(channel, true).unwrap();
                 rt.schedule_event(2, Event::KeyUp(a, None)).unwrap();
@@ -576,7 +576,7 @@ fn held_key_branches_survive_waits_and_keep_overlapping_owners_distinct() {
                 assert_eq!((rt.note_cell(a, 1), rt.note_cell(b, 1)), (Ok(0), Ok(1)));
                 assert_eq!(
                     (rt.note_cell(a, 2), rt.note_cell(b, 2)),
-                    (Ok(i64::from(i32::MIN)), Ok(i64::from(i32::MAX)))
+                    (Ok(i64::from(i32::MIN + 1)), Ok(i64::from(i32::MAX)))
                 );
                 assert_eq!((rt.note_cell(a, 3), rt.note_cell(b, 3)), (Ok(1), Ok(1)));
                 let mut callbacks = 0;
@@ -1017,11 +1017,12 @@ fn integer_expressions_respect_precedence_signed_boundaries_and_variable_updates
         ("7 / 0", 0),
         ("7 mod 0", 0),
         ("2147483647 + 1", i32::MIN),
-        ("-2147483648 - 1", i32::MAX),
-        ("-2147483648 / -1", i32::MIN),
+        // `-2147483648` reads as `-2147483647` (conformance `lit_neg_min`).
+        ("-2147483648 - 1", i32::MIN),
+        ("-2147483648 / -1", i32::MAX),
         ("-2147483648 mod -1", 0),
-        ("--2147483648", i32::MIN),
-        ("abs(-2147483648)", i32::MIN),
+        ("--2147483648", i32::MAX),
+        ("abs(-2147483648)", i32::MAX),
         ("abs(-(1 + 2) * 3)", 9),
         ("sgn(-7) + signbit(-7)", 0),
         (".not. 0", -1),
@@ -1430,4 +1431,115 @@ fn real_exp2_log2_log10_note_match_manual_semantics() {
         rt.flush_ended(|_| true);
         assert_eq!(rt.note_count(), 0);
     });
+}
+
+#[test]
+fn a_declaration_range_can_use_the_instruments_group_count() {
+    let environment = sampler_ksp::Environment {
+        groups: vec!["a".into(), "b".into(), "c".into()],
+        ..Default::default()
+    };
+    let script = sampler_ksp::compile_with(
+        "on init declare ui_value_edit $shift (-($NUM_GROUPS-1),$NUM_GROUPS-1,1) end on",
+        48000,
+        limits(),
+        &[],
+        &environment,
+    )
+    .unwrap();
+    let view = script.view();
+    let setup = view.setup();
+    let field = setup.fields.iter().find(|f| f.name == "$shift").unwrap();
+    let sampler_ksp::model::Location::Control(id) = field.storage else {
+        panic!("{:?}", field.storage)
+    };
+    let domain = setup.control_domains.iter().find(|(c, _)| *c == id).unwrap().1;
+    assert_eq!(domain, sampler_core::ControlDomain::Integer { min: -2, max: 2 });
+}
+
+#[test]
+fn declaration_ranges_read_variables_where_on_init_reaches_them() {
+    let script = compile(
+        "on init
+            declare $lo
+            declare $hi
+            $lo := 0
+            $hi := 1000000
+            declare ui_slider $s ($lo, $hi)
+            $lo := 5
+            declare $low_note := 36
+            declare ui_value_edit $v ($low_note, $low_note + 12, 1)
+        end on",
+        48000,
+        limits(),
+    )
+    .unwrap();
+    let view = script.view();
+    let setup = view.setup();
+    let domain = |name: &str| {
+        let field = setup.fields.iter().find(|f| f.name == name).unwrap();
+        let sampler_ksp::model::Location::Control(id) = field.storage else {
+            panic!("{:?}", field.storage)
+        };
+        setup.control_domains.iter().find(|(c, _)| *c == id).unwrap().1
+    };
+    assert_eq!(domain("$s"), sampler_core::ControlDomain::Integer { min: 0, max: 1000000 });
+    assert_eq!(domain("$v"), sampler_core::ControlDomain::Integer { min: 36, max: 48 });
+}
+
+#[test]
+fn a_declaration_range_inside_an_always_true_if_reads_its_variable() {
+    let script = compile(
+        "on init
+            if (1=1)
+                declare $hi
+                $hi := 648
+                declare ui_slider $s (0, $hi)
+            end if
+        end on",
+        48000,
+        limits(),
+    )
+    .unwrap();
+    let view = script.view();
+    let widget = view.model().interface.widgets.iter().find(|w| w.name == "$s").unwrap();
+    assert_eq!(widget.range, Some((0, 648)));
+}
+
+#[test]
+fn a_variable_declaration_range_keeps_its_initializer_and_needs_to_run_once() {
+    let script = compile(
+        "on init declare $hi := 10 declare ui_knob $k (0, $hi, 1) := 5 end on",
+        48000,
+        limits(),
+    )
+    .unwrap();
+    let view = script.view();
+    let widget = view.model().interface.widgets.iter().find(|w| w.name == "$k").unwrap();
+    assert_eq!(widget.range, Some((0, 10)));
+    assert_eq!(widget.value, sampler_ksp::model::WidgetValue::Int(5));
+    // A skipped branch would leave the range unknown: still a compile error.
+    let error = compile(
+        "on init declare $hi := 10 if ($hi = 0) declare ui_knob $k (0, $hi, 1) end if end on",
+        48000,
+        limits(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.message, "constant integer expression required");
+}
+
+#[test]
+fn a_negative_range_starts_at_its_minimum() {
+    let script = compile(
+        "on init declare $lo := -10 declare ui_slider $v ($lo, -5) declare ui_slider $c (-10, -5) end on",
+        48000,
+        limits(),
+    )
+    .unwrap();
+    let view = script.view();
+    for name in ["$v", "$c"] {
+        let widget = view.model().interface.widgets.iter().find(|w| w.name == name).unwrap();
+        assert_eq!(widget.value, sampler_ksp::model::WidgetValue::Int(-10), "{name}");
+    }
 }

@@ -1,0 +1,31 @@
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare $a := 3
+  declare $x := 0
+  declare $y := 0
+  if ($a > 2)
+  $x := 1
+  end if
+  if ($a < 2)
+  $y := 1
+  end if
+  $cv := $x
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := $y
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on

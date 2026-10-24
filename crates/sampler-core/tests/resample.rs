@@ -184,6 +184,16 @@ fn mipmapped_sources_follow_analytic_tones_from_octave_levels() {
 
 // Independent direct trigonometric FIR oracle; no coefficient table or runtime
 // cursor logic. The traversal sequences below are authored explicitly.
+/// Modified Bessel I0 by its power series (the Kaiser window's normaliser), for the reference kernel.
+fn bessel_i0(x: f64) -> f64 {
+    let (mut sum, mut term, q) = (1.0, 1.0, x * x / 4.0);
+    for k in 1..200 {
+        term *= q / f64::from(k * k);
+        sum += term;
+    }
+    sum
+}
+
 fn filtered(position: f64, mut read: impl FnMut(i64) -> f64) -> f32 {
     let base = position.floor() as i64;
     let fraction = position - position.floor();
@@ -198,7 +208,8 @@ fn filtered(position: f64, mut read: impl FnMut(i64) -> f64) -> f32 {
             } else {
                 (0.9 * PI * x).sin() / (PI * x)
             };
-            sinc * (0.42 + 0.5 * (PI * x / 48.0).cos() + 0.08 * (2.0 * PI * x / 48.0).cos())
+            let t = x / 48.0;
+            sinc * bessel_i0(10.0 * (1.0 - t * t).sqrt()) / bessel_i0(10.0)
         };
         weight += h;
         value += h * read(base + offset);

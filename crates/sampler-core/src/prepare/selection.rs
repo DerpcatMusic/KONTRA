@@ -974,6 +974,19 @@ input.group>=16||input.channel>=16||input.key>=128
         }
         // Everything below was validated by Prepared and preflight. No callbacks,
         // concurrent writers or newly due work can consume the reserved resources.
+        // The note's shared start delay: one draw, scaled by the widest sample-start range of the
+        // layers that can sound for it, so a mono and a stereo layer of one note never split apart.
+        let (note_range, note_seed) = {
+            let generation = self.plans.get(plan.0).unwrap();
+            let prepared = &generation.prepared;
+            let state = &self.performance_state.states[snapshot];
+            let [first, second] = prepared.active_ranges(begin..end, state.articulation);
+            let range = prepared.candidates[first].iter().chain(&prepared.candidates[second])
+                .map(|c| prepared.voice_modulation.start_range(c.region))
+                .max()
+                .unwrap_or(0);
+            (range, self.now ^ ((note.0.index as u64) << 40))
+        };
         let mut from = begin;
         while from < end {
             let generation = self.plans.get(plan.0).unwrap();
@@ -1061,6 +1074,9 @@ input.group>=16||input.channel>=16||input.key>=128
                         generation.source(sample).expect("admitted logical source").sample_rate())
                 }else{source_cursor};
                 let cursor=if start!=0{cursor.skip(start)}else{cursor};
+                // Zone start randomisation is a delayed onset (see `random_delay`), not a skip.
+                // One draw and one range per note: every layer of the note starts together.
+                let delay = u64::from(prepared.voice_modulation.random_delay(candidate.region, note_range, note_seed));
                 let family = *family.get_or_insert_with(|| {
                     let family = self
                         .create_family_for(note, trigger)
@@ -1077,7 +1093,7 @@ input.group>=16||input.channel>=16||input.key>=128
                 let admitted = self.admit_voice(
                     family,
                     sample,
-                    self.now,
+                    self.now + delay,
                     r.gain * r.velocity_curve.amplitude(velocity) * r.fade_gain(key, velocity),
                     envelope,
                     cursor.with_step(step),
@@ -1113,6 +1129,8 @@ input.group>=16||input.channel>=16||input.key>=128
                     .get(candidate.region)
                     .copied()
                     .unwrap_or(candidate.region as u32 + 1);
+                state.native_zone = self.plans.get(plan.0).unwrap().prepared
+                    .region_identities.get(candidate.region).copied().flatten();
                 if let Some(record) = self.selection_log.as_mut().and_then(|log| log.last_mut()) {
                     if let Some(candidate) = record
                         .candidates

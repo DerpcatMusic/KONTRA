@@ -96,6 +96,8 @@ pub mod bus_amp;
 pub use bus::{Bus, BusMix, BusPeakTap, BusSend, ChannelBus, GroupFader, SourceOwnerControl, SourceOwnerOutputControl, SourceOwnerControlTarget, ScopeControlSite};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
+#[cfg(feature = "dspbench")]
+pub mod dspbench;
 pub use dsp::surround_panner;
 pub use dsp::{
     Biquad, DynamicsSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
@@ -824,6 +826,9 @@ struct Voice {
     /// The region's group, for script group layers.
     group: Option<u32>,
     source_zone: u32,
+    /// The region's native zone identity, which `EventInfo::ZoneId` reports
+    /// when the instrument has a native catalog.
+    native_zone: Option<u32>,
     /// Frames a releasing voice's gain bound has stayed under `render::INAUDIBLE`.
     quiet: u32,
     /// Mono of the voice's previous span (first `follow_len` frames): the audio
@@ -2394,6 +2399,7 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
             follow_len: 0,
             group: None,
             source_zone: 0,
+            native_zone: None,
             quiet: 0,
         })?);
         let generation = self.plans.get_mut(plan.0).unwrap();

@@ -202,6 +202,7 @@ builtins! {
     GroupName "group_name" [I] 0 Str;
     GetNumZones "get_num_zones" [] 0 Int;
     GetZoneId "get_zone_id" [I] 0 Int;
+    GetSampleLength "get_sample_length" [I] 0 Int;
     GetZonePar "get_zone_par" [I I] 0 Int;
     SetZonePar "set_zone_par" [I I I] 0 Int;
     PurgeGroup "purge_group" [I I] 0 Int;
@@ -473,6 +474,11 @@ pub const ALL_EVENTS: i32 = 0x3FFF_FFFE;
 pub const MARKS_FLAG: i32 = 0x2000_0000;
 pub const INST_ICON_ID: i32 = 0x3F00_0001;
 pub const INST_WALLPAPER_ID: i32 = 0x3F00_0002;
+// Library-tab fields (`$INST_LIB_*_ID`): instrument metadata addressed by vendor id, not UI controls.
+pub const INST_LIB_COPYRIGHT_ID: i32 = 0x3F00_0010;
+pub const INST_LIB_DESCRIPTION_ID: i32 = 0x3F00_0011;
+pub const INST_LIB_PIC_ONE_ID: i32 = 0x3F00_0012;
+pub const INST_LIB_PIC_TWO_ID: i32 = 0x3F00_0013;
 pub const FIRST_UI_ID: i32 = 32768;
 pub const HIDE_WHOLE_CONTROL: i32 = 16;
 
@@ -667,6 +673,10 @@ const VALUED: &[(&str, i32)] = &[
     ("$VCC_MONO_AT", VCC_MONO_AT),
     ("$INST_ICON_ID", INST_ICON_ID),
     ("$INST_WALLPAPER_ID", INST_WALLPAPER_ID),
+    ("$INST_LIB_COPYRIGHT_ID", INST_LIB_COPYRIGHT_ID),
+    ("$INST_LIB_DESCRIPTION_ID", INST_LIB_DESCRIPTION_ID),
+    ("$INST_LIB_PIC_ONE_ID", INST_LIB_PIC_ONE_ID),
+    ("$INST_LIB_PIC_TWO_ID", INST_LIB_PIC_TWO_ID),
     ("$EVENT_PAR_VOLUME", event_par::VOLUME),
     ("$EVENT_PAR_TUNE", event_par::TUNE),
     ("$EVENT_PAR_PAN", event_par::PAN),
@@ -836,7 +846,8 @@ pub fn constant(name: &str) -> Option<i32> {
         .strip_prefix("$MARK_")
         .and_then(|n| n.parse::<u32>().ok())
     {
-        return (1..=28).contains(&n).then(|| 1 << (n - 1));
+        // Kontakt 8 value is 2^n (measured: MARK_1=2, _2=4, _3=8, _5=32, _10=1024, _11=2048).
+        return (1..=28).contains(&n).then(|| 1 << n);
     }
     if let Some(n) = name
         .strip_prefix("$EVENT_PAR_")
@@ -952,6 +963,7 @@ pub const CONTROL_PAR_NUM_ITEMS: i32 = SYMBOL_BASE + 15;
 pub const CONTROL_PAR_TYPE: i32 = SYMBOL_BASE + 21;
 pub const CONTROL_PAR_PICTURE: i32 = SYMBOL_BASE + 12;
 pub const CONTROL_PAR_PARENT_PANEL: i32 = SYMBOL_BASE + 28;
+pub const CONTROL_PAR_SELECTED_ITEM_IDX: i32 = SYMBOL_BASE + 14;
 
 impl Builtin {
     pub(crate) fn midi(self) -> Option<sampler_core::MidiAction> {
@@ -1000,7 +1012,7 @@ impl Builtin {
 
 #[cfg(test)]
 mod tests {
-    use super::constant;
+    use super::{CONTROL_PAR_SELECTED_ITEM_IDX, constant, control_par};
 
     #[test]
     fn module_type_constants_use_the_native_values() {
@@ -1050,5 +1062,19 @@ mod tests {
         // 622..=690 with one hole: 652 has no registered name in the PE.
         let expected: Vec<i32> = (622..=690).filter(|v| *v != 652).collect();
         assert_eq!(values, expected);
+    }
+
+    #[test]
+    fn selected_item_index_constant_matches_its_name() {
+        assert_eq!(control_par("$CONTROL_PAR_SELECTED_ITEM_IDX"), Some(CONTROL_PAR_SELECTED_ITEM_IDX));
+    }
+
+    #[test]
+    fn mark_constants_are_kontakt_bit_values() {
+        // Measured on Kontakt 8 through the oracle (ANALOG STRINGS, volume readback).
+        for (n, v) in [(1, 2), (2, 4), (3, 8), (5, 32), (10, 1024), (11, 2048)] {
+            assert_eq!(constant(&format!("$MARK_{n}")), Some(v), "$MARK_{n}");
+        }
+        assert_eq!(constant("$MARK_0"), None);
     }
 }

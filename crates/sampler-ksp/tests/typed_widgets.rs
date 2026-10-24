@@ -310,7 +310,7 @@ fn native_widget_reply_retains_payload_and_reports_authoritative_revision() {
 #[test]
 fn selected_file_keeps_selector_handle_and_fires_native_callback() {
     let mut rt = runtime(
-        "on init declare ui_file_selector $files declare @name declare @stem declare @path declare $event end on on ui_control($files) @name:=fs_get_filename(get_ui_id($files),1) @stem:=fs_get_filename(get_ui_id($files),0) @path:=fs_get_filename(get_ui_id($files),2) $event:=($NI_MOUSE_EVENT_TYPE=$NI_MOUSE_EVENT_TYPE_DROP) end on",
+        "on init declare ui_file_selector $files declare @name declare @stem declare @path declare $event end on on ui_control($files) @name:=fs_get_filename(get_ui_id($files),1) @stem:=fs_get_filename(get_ui_id($files),0) @path:=fs_get_filename(get_ui_id($files),2) $event:=0 if ($NI_MOUSE_EVENT_TYPE=$NI_MOUSE_EVENT_TYPE_DROP) $event:=1 end if end on",
     );
     let plan = rt.active_plan();
     let id = rt.widget_id(plan, 0, 32768).unwrap();

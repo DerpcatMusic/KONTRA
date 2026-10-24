@@ -256,17 +256,29 @@ fn integer_array_equal_compares_all_cells_in_init_and_after_callback_mutation() 
         "on init
         declare %a[3] := (-2147483648, 0, 2147483647)
         declare %b[3] := (-2147483648, 0, 2147483647)
-        declare $initial := array_equal(%a, %b)
+        declare $initial := 0
+        if (array_equal(%a, %b))
+        $initial := 1
+        end if
         declare $same
         declare $different
         declare $self
         end on
         on note
         ignore_event($EVENT_ID)
-        $same := array_equal(%a, %b)
+        $same := 0
+        if (array_equal(%a, %b))
+        $same := 1
+        end if
         %b[2] := 0
-        $different := array_equal(%a, %b)
-        $self := array_equal(%a, %a)
+        $different := 0
+        if (array_equal(%a, %b))
+        $different := 1
+        end if
+        $self := 0
+        if (array_equal(%a, %a))
+        $self := 1
+        end if
         end on",
     );
     assert_eq!(cell(&rt, 6), 1);

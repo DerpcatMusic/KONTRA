@@ -10,6 +10,7 @@ description = "Format coverage census: which installed library files each shippe
 [dependencies]
 ni-file = { path = "../../vendor/ni-file" }
 ncw = { path = "../../vendor/ncw" }
+sampler-ir = { path = "../../crates/sampler-ir" }
 sampler-kontakt = { path = "../../crates/sampler-kontakt", features = ["scan"] }
 sampler-uvi = { path = "../../crates/sampler-uvi", features = ["scan"] }
 

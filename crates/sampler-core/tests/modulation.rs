@@ -238,7 +238,7 @@ fn projected_pitch_participates_in_initial_queued_and_batch_source_preflight() {
             ),
             Err(Error::InvalidInput)
         );
-        // Step 1024 admits the +12 projection (2048) but not +13 (about 2170).
+        // Step 1024 admits the +12 projection (2048 = MAX_STEP) but not +13 (about 2^11.08).
         rt.start_family(
             family,
             0,

@@ -444,10 +444,11 @@ fn domain_and_switch_validation_fail_without_mutating_selection() {
 
 #[test]
 fn known_onset_articulation_filters_dormant_pitch_and_scope_requirements() {
-    // Step 2048 is MAX_STEP; the +12 expression below doubles it past the resampler range.
-    // Only a Current policy can select this region, so only it may reject the expression.
+    // MAX_STEP is 2048 (eleven octaves, d6df81cdb). Transpose 126 is step 1448, under the
+    // ceiling; the +12 expression below doubles it to 2896, past it. Only a Current policy can
+    // select this region, so only it may reject the expression.
     let mut high = region(0);
-    high.playback.transpose_semitones = 132.;
+    high.playback.transpose_semitones = 126.;
     for policy in [SelectionPolicy::Onset, SelectionPolicy::Current] {
         let prepared = Prepared::new(
             48000,
