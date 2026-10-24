@@ -210,10 +210,14 @@ fn judge(ins: &Instrument, zone: &Zone, note: &Note, held: &[u8], scenario: &Sce
 
 /// Volume path in dB, zone to output. Envelope times and insert parameters are not read here.
 fn volume_path(ins: &Instrument, zone: &Zone, velocity: u8) -> Value {
+    let x = f64::from(velocity) / 127.0;
+    // `None` is unknown: VolumeTable reads Kontakt's measured table in sampler-core, not copied here.
     let velocity_db = match zone.velocity {
-        VelocityResponse::None => 0.0,
-        VelocityResponse::Linear => db(f64::from(velocity) / 127.0),
-        VelocityResponse::Power(exponent) => exponent * db(f64::from(velocity) / 127.0),
+        VelocityResponse::None => Some(0.0),
+        VelocityResponse::Linear => Some(db(x)),
+        VelocityResponse::Power(exponent) => Some(exponent * db(x)),
+        VelocityResponse::Depth { depth, exponent } => Some(db((1.0 - depth) + depth * x.powf(exponent))),
+        VelocityResponse::VolumeTable => None,
     };
     let group = zone.group.map(|g| &ins.groups[g.0]);
     let group_db = group.map_or(0.0, |g| gain_db(g.gain));
@@ -225,7 +229,7 @@ fn volume_path(ins: &Instrument, zone: &Zone, velocity: u8) -> Value {
         "zone_db": gain_db(zone.gain),
         "velocity_db": velocity_db,
         "group_db": group_db,
-        "total_db": gain_db(zone.gain) + velocity_db + group_db,
+        "total_db": velocity_db.map(|v| gain_db(zone.gain) + v + group_db),
         "output": output,
         "amp_envelope": zone.amplitude.is_some(),
         "zone_chain": zone.chain.is_some(),
@@ -609,11 +613,11 @@ fn print_table(value: &Value) {
         );
         for c in n["candidates"].as_array().into_iter().flatten().take(40) {
             println!(
-                "  {:<11} zone {:>5} · {} · {:.1} dB · {} ({})",
+                "  {:<11} zone {:>5} · {} · {} dB · {} ({})",
                 c["verdict"]["verdict"].as_str().unwrap_or(""),
                 c["zone"],
                 c["group"],
-                c["volume"]["total_db"].as_f64().unwrap_or(0.0),
+                c["volume"]["total_db"].as_f64().map_or("n/a".into(), |v| format!("{v:.1}")),
                 c["sample"],
                 c["verdict"]["reason"].as_str().unwrap_or("")
             );
