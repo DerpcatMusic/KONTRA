@@ -459,6 +459,15 @@ pub fn render(playback: Playback, output: &Path, messages: &[Message]) -> io::Re
         wave::frames(&mut out, &buffer[..len])?;
     }
     out.flush()?;
+    if horizon.is_some() {
+        // Streamed refusals are silent otherwise: a refused start leaves its note dark.
+        let stats = rt.stats();
+        eprintln!(
+            "stream: refused_starts={} cold_starts={} voice_drops={} stream_capacity_refusals={} stream_disconnected_refusals={}",
+            stats.refused_starts, stats.cold_starts, stats.voice_drops,
+            stats.stream_capacity_refusals, stats.stream_disconnected_refusals
+        );
+    }
     drop(rt);
     if !sampler_core::trace_report::flush(std::time::Duration::from_secs(10)) {
         return Err(io::Error::other("signal trace report flush timed out"));
