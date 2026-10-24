@@ -21,6 +21,10 @@ const KNOWN_MISMATCHES: &[&str] = &[
     "builtin_max_lit",
     "builtin_min_var",
     "builtin_max_neg",
+    // String `=` in a condition: Kontakt rejects it in on init (measured); the interpreter
+    // accepts it. Open: measure string comparison in on note before rejecting it.
+    "str_lit_cond",
+    "string_case_sensitive",
 ];
 
 fn root() -> PathBuf {

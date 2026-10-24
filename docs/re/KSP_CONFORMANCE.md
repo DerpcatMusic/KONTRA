@@ -107,3 +107,23 @@ are errors; decimal literal clamp; no special case for `-2147483648`.
 
 Open: `min`/`max` (known debt in `KNOWN_MISMATCHES`; no corpus library uses them);
 integer `xor` and `.not.` (not probed).
+
+## Slice 4 (107 units)
+
+Probes: integer and boolean `xor`, bitwise `.not.`, `search` and `sort` on arrays, string
+declarations and string `=` in conditions. 107 units in `golden.json`, decoded from Kontakt 8.13.1.
+
+| Rule | Evidence |
+|---|---|
+| Integer `xor` is rejected as a value and as a condition, like integer `and`/`or`. Boolean `xor` works in a condition. | `int_xor_value`, `int_xor_cond` rejected; `bool_xor_cond` = 1, 0 |
+| `.not.` is bitwise: `.not. 5` = -6, `.not. 0` = -1. | `int_bitnot_dot` |
+| `search(%a, v, start, end)` returns the first index in [start, end) or -1; the two-argument form searches the whole array. | `array_search_value`, `array_search_short` (1, 3, -1, 1) |
+| `sort(%a, 0)` sorts ascending, `sort(%a, 1)` descending; the three-argument form `sort(%a, 0, 3)` is rejected. | `sort_asc_two`, `sort_desc_two`; `array_sort_asc` rejected |
+| A scalar string declaration with a literal initializer (`declare @s := "abc"`) is rejected; `declare @s` then `@s := "abc"` compiles. | `str_decl_init` rejected; `str_assign_decl` compiles |
+| String `=` in a condition is rejected in on init (literal and variable forms). | `str_lit_cond`, `str_var_cond`, `string_case_sensitive` rejected |
+
+Interpreter changes (slice 4): `declare @s := "literal"` is an error (sema.rs). Scalar strings only;
+text arrays with literal lists are not measured and still accepted.
+
+Known debt: string `=` in conditions is accepted by the interpreter and rejected by Kontakt in on
+init. The `on note` form is not measured yet; the oracle has no note-trigger probe.
