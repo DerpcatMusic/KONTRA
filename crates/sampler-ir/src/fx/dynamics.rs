@@ -257,9 +257,11 @@ impl Config {
         match self.law {
             Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) => vec![
                 // Universal compressor knob map, fitted to the native Enhanced grid (docs/re/engine/fx-measured/comp-grid.md):
-                // threshold dB = -76 + 66 k, saved ratio = 2^(-4 k). Shared by the three compressor modes.
+                // threshold dB = -76 + 66 k, saved ratio = 0.05^k (the grid's lowest ratio). Shared by the three
+                // compressor modes. A saved value past the knob ends is kept as saved: the lane's domain holds it
+                // (sampler-core lower.rs, NativeControl).
                 Lane::new("ENGINE_PAR_THRESHOLD", P::Threshold, n.threshold_db, L::Linear { a: -76., b: 66. }),
-                Lane::new("ENGINE_PAR_RATIO", P::Ratio, n.ratio, L::Exp { a: 1., r: 1. / 16. }),
+                Lane::new("ENGINE_PAR_RATIO", P::Ratio, n.ratio, L::Exp { a: 1., r: 0.05 }),
                 Lane::new("ENGINE_PAR_COMP_ATTACK", P::Attack, ms(self.attack), L::Table(&tables::COMP_ATTACK))
                     .scaled(seconds(&tables::COMP_ATTACK)),
                 Lane::new("ENGINE_PAR_COMP_DECAY", P::Release, ms(self.release), L::Table(&tables::COMP_DECAY))
@@ -313,6 +315,24 @@ mod tests {
         for (k, ratio) in [(0., 1.), (0.25, 0.5), (0.5, 0.25), (0.75, 0.1), (1.0, 0.05)] {
             let got = stored(lane("ENGINE_PAR_RATIO").law, k);
             assert!((got - ratio).abs() <= 0.05, "ratio knob {k}: {got:.3} vs native {ratio}");
+        }
+    }
+
+    /// Saved compressor values at the extremes (0, past the grid ends such as ANALOG STRINGS' -8.05 dB) are kept as
+    /// saved: the lane holds the value, nothing is clamped. The runtime domain check is covered in sampler-core.
+    #[test]
+    fn compressor_lanes_keep_extreme_saved_values() {
+        let address = crate::SlotAddress { group: 0, slot: 1, generic: 0 };
+        for (threshold_db, ratio) in [(-120., 0.), (-14.15, 0.5), (-8.05, 0.34), (0., 0.01), (6., 1.)] {
+            let lanes = Config {
+                address: Some(address),
+                law: Law::KontaktEnhanced(Native { threshold_db, ratio }),
+                ..Config::generic(0., 1., Time::Seconds(0.1), Time::Seconds(0.3))
+            }
+            .lanes();
+            let value = |name: &str| lanes.iter().find(|l| l.name == name).unwrap().value;
+            assert_eq!(value("ENGINE_PAR_THRESHOLD"), threshold_db);
+            assert_eq!(value("ENGINE_PAR_RATIO"), ratio);
         }
     }
 }

@@ -4,7 +4,7 @@
 //! exactly the scalar stage's arithmetic in the same order: results are
 //! bit-identical to [`super::process`] voice by voice.
 use super::{
-    BLOCK, BatchOp, ProcessorState,
+    BLOCK, BatchOp, Planar, ProcessorState,
     control::ControlRamp,
     flush,
     svf::{CacheRef, FilterBank},
@@ -118,6 +118,24 @@ pub(crate) fn process(
             }
             BatchOp::Eq(eq) => {
                 eq.process_lanes(cells, cell, batch, block, parameters, at);
+            }
+            BatchOp::LiveFormant { knobs, second, rate } => {
+                // Each voice's ramp and filter state runs over its own frames, as the scalar stage.
+                for v in 0..batch.count {
+                    let end = batch.ends[2 * v];
+                    let state = &mut cells[v].as_mut().expect("batch voice")[cell];
+                    let mut planar: Planar = [[0.; BLOCK]; 2];
+                    for (i, x) in block[..end].iter().enumerate() {
+                        (planar[0][i], planar[1][i]) = (x[2 * v], x[2 * v + 1]);
+                    }
+                    super::formant::process_ramp(
+                        &mut state.formant, &mut state.aux, *second, *rate, true, &mut planar, end,
+                        |offset| knobs.map(|k| k.value(parameters, at + offset as u64, None) as f32),
+                    );
+                    for (i, x) in block[..end].iter_mut().enumerate() {
+                        (x[2 * v], x[2 * v + 1]) = (planar[0][i], planar[1][i]);
+                    }
+                }
             }
             BatchOp::ControlGain(lane) => {
                 let ramp = parameters[*lane];

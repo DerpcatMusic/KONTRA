@@ -104,7 +104,9 @@ fn native_lanes(p: ir::Processor) -> Vec<(NativeControl, crate::EngineParameterB
             // The law's values at both write ends (16 at the top of an output gain).
             let (a, b) = (law.decode(if law == SignedNormalized { -1_000_000 } else { 0 }), law.decode(1_000_000));
             (
-                NativeControl { id, min: a.min(b), max: a.max(b), default: value },
+                // A saved value may sit outside the law's write range; widen the domain to hold it so the
+                // instrument loads at its saved level instead of being rejected whole.
+                NativeControl { id, min: a.min(b).min(value), max: a.max(b).max(value), default: value },
                 crate::EngineParameterBinding {
                     address,
                     control: id,
@@ -3883,5 +3885,36 @@ mod logical_source_lower_tests {
         });
         assert!(matches!(result, Err(LowerError::Core { stage: Stage::Regions,
             error: Error::UnsupportedSourceLayout, .. })));
+    }
+}
+
+#[cfg(test)]
+mod saved_lane_domain_tests {
+    use super::*;
+
+    /// A saved lane value can sit outside its law's write range (ANALOG STRINGS saves a compressor threshold of
+    /// -8.05 dB, above the -10 dB top). The control must still define a domain that holds it, so the instrument
+    /// loads at the saved level instead of being rejected whole.
+    #[test]
+    fn saved_lane_value_outside_the_law_range_still_defines_a_valid_control() {
+        let processor = ir::Processor::LadderLP4(ir::LadderLP4 {
+            address: Some(ir::SlotAddress { group: 0, slot: 1, generic: -1 }),
+            gain: 0.,
+            cutoff: 1.5,
+            resonance: 0.,
+            cutoff_path: false,
+            taps: 1,
+            high_quality: false,
+        });
+        let cutoff = native_lanes(processor)
+            .into_iter()
+            .find(|(_, binding)| binding.address.parameter == crate::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap())
+            .expect("cutoff lane")
+            .0
+            .definition();
+        let (ControlDomain::Real { min, max }, ControlValue::Real(value)) = (cutoff.domain, cutoff.default) else {
+            panic!("cutoff is a real control");
+        };
+        assert!((min..=max).contains(&value), "saved cutoff 1.5 must stay in the domain {min}..={max}");
     }
 }

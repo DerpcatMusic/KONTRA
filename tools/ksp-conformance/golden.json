@@ -403,6 +403,113 @@
    0
   ]
  },
+ "ctl_hide_set": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "ctl_knob_default": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "ctl_knob_set_high": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "ctl_knob_set_neg": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "ctl_menu_items": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "ctl_pos_x_set": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "ctl_switch_set": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "diag_decl_switch": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "diag_get_index0": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "diag_get_int": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "diag_get_switch": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "diag_menu_add": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "diag_menu_count": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "diag_menu_count_after_add": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "diag_set_switch": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
  "function_nested_call": {
   "compiled": false,
   "completed": false,
@@ -789,6 +896,34 @@
  "typing_real_assign": {
   "compiled": false,
   "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "ui_var_knob_default": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "ui_var_knob_set_high": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "ui_var_knob_set_neg": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "ui_var_switch_set": {
+  "compiled": true,
+  "completed": true,
   "results": [
    0
   ]
