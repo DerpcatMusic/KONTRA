@@ -1,0 +1,33 @@
+# Workspace -> workspace dependency edges that are allowed (cargo xtask deps-check).
+# Seeded from today's `cargo metadata` graph so the gate passes on v3. Target shape: 01-LAYOUT.md §2.
+# An edge not listed here fails the gate. Remove edges as the split lands; do not add one to pass a gate.
+
+[allowed]
+corpus-health = ["ni-file", "sampler-core", "sampler-ir", "sampler-kontakt", "sampler-ksp", "sampler-midi", "sampler-parity", "sampler-ui-ir", "sampler-uvi"]
+format-census = ["ncw", "ni-file", "sampler-ir", "sampler-kontakt", "sampler-uvi"]
+kontakto = ["buffr-durable-file", "derpcat-flight-recorder", "moose-clap", "moose-vst3", "mui", "ncw", "ni-file", "sampler-ample", "sampler-core", "sampler-ikmpak", "sampler-ir", "sampler-kontakt", "sampler-ksp", "sampler-midi", "sampler-parity", "sampler-ui-ir", "sampler-uvi"]
+kontra-native-host = ["mui"]
+kontra-probe = ["kontakto"]
+moose-clap = ["moose-params"]
+moose-derive = ["moose-params"]
+moose-mui = ["kontra-native-host", "moose-params", "mui"]
+moose-vst3 = ["moose-params"]
+mui = ["mui-vello"]
+mui-vello = ["mui", "vello"]
+ni-file = ["ncw"]
+sampler-ample = ["sampler-ir"]
+sampler-core = ["sampler-ir", "sampler-pool", "sampler-simd"]
+sampler-dspbench = ["sampler-core"]
+sampler-ikmpak = ["sampler-ir"]
+sampler-kontakt = ["ncw", "ni-file", "sampler-core", "sampler-ir", "sampler-ksp", "sampler-parity", "sampler-ui-ir"]
+sampler-ksp = ["sampler-core", "sampler-ir", "sampler-parity", "sampler-script", "sampler-ui-ir"]
+sampler-midi = ["sampler-core"]
+sampler-native = ["sampler-core", "sampler-ir", "sampler-kontakt", "sampler-ksp", "sampler-midi", "sampler-uvi"]
+sampler-perf = ["sampler-core", "sampler-ir", "sampler-kontakt", "sampler-midi", "sampler-uvi"]
+sampler-uvi = ["sampler-core", "sampler-ir", "sampler-kontakt", "sampler-midi", "sampler-parity", "sampler-script", "sampler-ui-ir"]
+
+[forbidden]
+# No GPU or windowing crate may be reachable (transitively) from these packages.
+# `roots`: package directories, relative to the repo root. `crates`: names; a trailing * is a prefix.
+roots = ["crates/base/**", "crates/model/**", "crates/dsp/**", "crates/engine/**", "crates/script/**", "crates/format/**"]
+crates = ["wgpu*", "naga", "ash", "x11rb", "zbus"]
