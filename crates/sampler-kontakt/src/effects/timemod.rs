@@ -631,11 +631,13 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 notes.push(("parameters".into(), format!("{}/{}/{}/{}", f.amount, f.feedback, f.mix, f.rate), Reason::InvalidValue));
                 return None;
             }
-            notes.push(("parameters".into(), "Flair: offset, width, voices, damping, detune, invert and the pitch note not mapped (KISS flanger, base delay 2.5 ms)".into(), Reason::NotModeled));
-            let mut cfg = config(&Unit::Flanger { depth: f.amount, feedback: f.feedback, speed: f.rate, phase: 0., color: 2.5, unit: -1. }, dry, notes)?;
-            cfg.dry = 1. - f64::from(f.mix);
-            cfg.wet = f64::from(f.mix);
-            return Some(cfg);
+            notes.push(("parameters".into(), "Flair: offset, width, voices, damping, detune, invert and the pitch note not mapped (KISS flanger)".into(), Reason::NotModeled));
+            // Measured on Kontakt (fx-measured/phasis-flair-kiss.md): with amount 0 the echo train has a
+            // 3.8125 ms spacing (183 frames at 48 kHz) and no half-delay head; the feedback loop gain
+            // follows sqrt(feedback) (0.25 -> ~0.5, 0.5 -> 0.70, 0.9 -> ~0.95).
+            let mut line = Line::single(DelayTime::Frames(1), 0.);
+            line.native = Native::LegacyModDelay { base_ms: 3.8125, excursion: f64::from(f.amount) * 75., feedback: f.feedback.sqrt(), second_head: false, smoothing: f32::from_bits(0x3f733333) };
+            return Some(Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(f.rate, -1., 0.), dry: 1. - f64::from(f.mix), wet: f64::from(f.mix) });
         }
         Unit::WowFlutter { fields: [wow, flutter, scrape, speed, stereo, age, saturation], gate, mix } => {
             if ![wow, flutter, scrape, speed, stereo, age, saturation, mix].iter().all(|v| unit_interval(&[*v])) {
@@ -1394,6 +1396,9 @@ mod flair_map_tests {
         let mut notes = Vec::new();
         let cfg = config(&Unit::Flair(f.clone()), 0.5, &mut notes).expect("maps onto the flanger");
         assert!((cfg.wet - 0.5).abs() < 1e-6 && (cfg.dry - 0.5).abs() < 1e-6);
+        // Measured base spacing 3.8125 ms (183 frames), one head; feedback loop gain sqrt(0.4).
+        let Some(Native::LegacyModDelay { base_ms, second_head, feedback, .. }) = cfg.line.as_ref().map(|l| l.native) else { panic!("legacy delay") };
+        assert!((base_ms - 3.8125).abs() < 1e-6 && !second_head && (feedback - 0.4f32.sqrt()).abs() < 1e-6);
         assert!(notes.iter().any(|n| n.2 == sampler_ir::Reason::NotModeled));
         let mut out_of_range = f;
         out_of_range.amount = 2.;
