@@ -613,12 +613,13 @@ fn play_note_and_note_off_reach_the_engine_sink() {
     host.set_sink(Box::new(Log(log.clone())));
     host.init().unwrap();
     host.note_on(1, 60, 100.0).unwrap();
-    // Velocity 0 is outside KSP's 1..127 for play_note: refused without a call.
+    // Velocity 0 sounds at velocity 1 (the lowering clamps it the same way).
     assert_eq!(
         *log.borrow(),
         vec![
             Call::Play(Play { parent: 1, key: 61, velocity: 100.0 / 127.0, duration: Duration::Frames(12_000) }),
             Call::Play(Play { parent: 1, key: 63, velocity: 90.0 / 127.0, duration: Duration::Gate }),
+            Call::Play(Play { parent: 1, key: 62, velocity: 1.0 / 127.0, duration: Duration::Frames(48) }),
             Call::NoteOff { event: 1, delay: Some(48) },
         ],
     );
