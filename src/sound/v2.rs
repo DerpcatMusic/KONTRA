@@ -3567,14 +3567,6 @@ fn ram_free() -> Option<(usize, usize)> {
 }
 
 // Port from v1 bank::load_cancelable: reserve 1 GiB + one eighth of RAM.
-/// Shared head budget for cold-streamed attacks: 1/32 of RAM, between 256 MiB
-/// (the floor on small machines) and 4 GiB.
-fn head_budget() -> usize {
-    const FLOOR: usize = 256 << 20;
-    const CEILING: usize = 4 << 30;
-    ram_free().map_or(FLOOR, |(_, total)| (total / 32).clamp(FLOOR, CEILING))
-}
-
 fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
     let resident_budget = (request.streaming == super::Streaming::RamOnly).then(|| {
         // ponytail: v1's /proc/meminfo probe; other systems keep its 8 GiB ceiling.
@@ -3587,7 +3579,7 @@ fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
         // Prepare Auto attacks on the loader worker before publication;
         // any capacity fallback stays explicit in the load report.
         lazy: false,
-        head_budget: resident_budget.unwrap_or_else(head_budget),
+        head_budget: resident_budget.unwrap_or_else(sampler_kontakt::cold_head_budget),
         // Capacity fallback is distinct from a source/decode failure and must
         // remain visible in the load report and diagnostics.
         allow_cold_fallback: true,
