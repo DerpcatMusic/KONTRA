@@ -28,6 +28,9 @@ pub(crate) enum SavedValue {
 /// prefix is format 1.
 const FORMAT_2: &str = "KSS2:";
 
+/// Shared host-state and decompression bound, available without plugin features.
+pub(crate) const MAX_SAVED_STATE: usize = 64 << 20;
+
 fn put_str(out: &mut Vec<u8>, text: &str) {
     out.extend((text.len() as u32).to_le_bytes());
     out.extend(text.as_bytes());
@@ -77,10 +80,10 @@ pub(crate) fn decode(text: &str) -> Option<Saved> {
     // Bounded: a crafted blob must not inflate past the saved-state cap.
     let mut raw = Vec::new();
     flate2::read::DeflateDecoder::new(&packed[..])
-        .take(crate::plugin::MAX_SAVED_STATE as u64 + 1)
+        .take(MAX_SAVED_STATE as u64 + 1)
         .read_to_end(&mut raw)
         .ok()?;
-    if raw.len() > crate::plugin::MAX_SAVED_STATE {
+    if raw.len() > MAX_SAVED_STATE {
         return None;
     }
     let mut at = 0usize;
