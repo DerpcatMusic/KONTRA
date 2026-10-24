@@ -8451,10 +8451,13 @@ mod tests {
         eprintln!("PROBE settle effects={settle}");
         let (mut effects, mut onset_blocks, mut peak) = (0usize, Vec::new(), 0f32);
         // 16ths at 140 bpm: 4-note chords, ~51 blocks of 128 per 16th? (0.107 s = 40 blocks)
+        // KONTRA_PROBE_PATTERN=live: one note per step, like a player; default: DAW-style chords.
+        let live = std::env::var("KONTRA_PROBE_PATTERN").is_ok_and(|p| p == "live");
         let chords = [[48u8, 55, 60, 64], [50, 57, 62, 65], [52, 59, 64, 67], [53, 60, 65, 69]];
         let mut id = 1;
         for step in 0..64 {
-            let keys = chords[(step / 4) % 4];
+            let chord = chords[(step / 4) % 4];
+            let keys = if live { &chord[step % 4..step % 4 + 1] } else { &chord[..] };
             let ons: Vec<_> = keys.iter().map(|&key| { id += 1; on(HostNote { port: 0, channel: 0, key, id, clap: false }) }).collect();
             let mut first = None;
             for b in 0..19 {
@@ -8466,7 +8469,7 @@ mod tests {
             let offs: Vec<_> = keys.iter().map(|&key| Event::NoteOff(HostPattern { port: -1, channel: 0, key: i32::from(key), id: -1, clap: false })).collect();
             for b in 0..20 { effects += block(&mut core, if b == 0 { &offs } else { &[] }).1; }
         }
-        HIST.with(|h| eprintln!("PROBE services {:?}", h.borrow()));
+        HIST.with(|h| eprintln!("PROBE live={live} services {:?}", h.borrow()));
         eprintln!("PROBE effects_during_play={effects} peak={peak} first_audible_block_per_chord={onset_blocks:?}");
         let s = core.runtime_stats(0).unwrap();
         eprintln!("PROBE {s:#?}");
