@@ -1886,13 +1886,18 @@ fn check_multi(item: &Item, path: &Path, ctx: &Ctx) -> Value {
     let mut record = json!({"id": item.id(), "kind": item.kind(), "status": "done", "tier": ctx.tier.name(), "load": load});
     let programs = record["load"]["programs"].as_u64().unwrap_or(0) as usize;
     if record["load"]["ok"] == true {
+        // Only sounding programs are parts (the rack opens the same ones); an empty
+        // or unresolved slot checked as an instrument reads as a silent failure.
+        let indices = sampler_kontakt::sounding_programs(path).unwrap_or_else(|_| (0..programs).collect());
         let cap = match ctx.tier {
             Tier::Full => 16,
             Tier::Quick => 4,
-            Tier::Parse => 1, // each program re-reads the whole multi
+            Tier::Parse => usize::MAX, // lowering only: every part gets its load verdict
         };
-        let subs: Vec<Value> = (0..programs.min(cap))
-            .map(|index| {
+        let subs: Vec<Value> = indices
+            .iter()
+            .take(cap)
+            .map(|&index| {
                 check_one(
                     &Item::MultiProgram {
                         path: path.into(),

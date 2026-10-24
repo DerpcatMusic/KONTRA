@@ -767,7 +767,7 @@ impl Cx<'_> {
     fn add(&mut self, path: String) {
         self.remember(&path);
         let mut slot = 0;
-        for program in 0..program_count(&path) {
+        for program in openable_programs(&path) {
             let part = Part {
                 program,
                 ..new_part(&self.selection, &self.settings, path.clone())
@@ -881,16 +881,20 @@ fn replace_part(part: &mut Part, path: String) {
     };
 }
 
-/// How many rack parts `path` opens as: one per program of a Kontakt multi.
-fn program_count(path: &str) -> u32 {
+/// The programs `path` opens as rack parts: the sounding programs of a Kontakt
+/// multi (see `sampler_kontakt::sounding_programs`), so an empty or unresolved
+/// slot never opens as a silent part.
+fn openable_programs(path: &str) -> Vec<u32> {
     let path = Path::new(path);
     if !path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("nkm"))
     {
-        return 1;
+        return vec![0];
     }
-    sampler_kontakt::read_multi(path).map_or(1, |m| m.programs.len().max(1) as u32)
+    sampler_kontakt::sounding_programs(path)
+        .map(|programs| programs.into_iter().map(|p| p as u32).collect())
+        .unwrap_or_else(|_| vec![0])
 }
 
 /// A part for `path` on the input and output the settings give new parts.
@@ -1164,7 +1168,7 @@ fn native_files(
                 None => {
                     let settings = p.shared.libraries.settings();
                     let mut slot = 0;
-                    for program in 0..program_count(&path) {
+                    for program in openable_programs(&path) {
                         let part = Part {
                             program,
                             ..new_part(&selection, &settings, path.clone())
