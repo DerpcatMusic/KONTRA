@@ -1393,10 +1393,12 @@ impl Prepared {
     }
     pub fn new_sources_tuned(rate: u32, sources: Vec<crate::SourceStorage>, regions: Vec<Region>,
         max_candidates: usize, tuning: &Tuning) -> Result<Self, Error> {
+        // First-seen order is kept; a set makes each lookup O(1) instead of a scan over every pack.
         let mut pcm = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for source in &sources {
             source.as_source().physical_dependencies(|pack| {
-                if !pcm.iter().any(|old: &Pcm| old.asset_id() == pack.asset_id()) {
+                if seen.insert(pack.asset_id()) {
                     pcm.push(pack.clone());
                 }
             });

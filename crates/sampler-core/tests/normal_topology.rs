@@ -1144,8 +1144,8 @@ fn provider_pcm()->Vec<Pcm>{
         let b=((frame*11+member*23)%113)as f32/1024.;[a,b]
     }).collect::<Vec<_>>().into_boxed_slice()).unwrap()).collect()
 }
-fn provider_plan(provided:bool,onset:bool)->sampler_core::Prepared {provider_plan_from(provided,onset,provider_pcm())}
-fn provider_plan_from(provided:bool,onset:bool,sources:Vec<Pcm>)->sampler_core::Prepared {
+fn provider_plan(provided:bool,onset:bool)->sampler_core::Prepared {provider_plan_from(provided,onset,provider_pcm(),64)}
+fn provider_plan_from(provided:bool,onset:bool,sources:Vec<Pcm>,start:u32)->sampler_core::Prepared {
     use sampler_core::{ModProgram,ModRoute,ModSource,ModTarget,ModProvider,ProcessingSourceRef};
     let mut instrument=scoped_modulated_graph();instrument.source_indices.processing[0].routes.clear();
     let plan=sampler_core::lower::lower_with(&instrument,48000,sources,&sampler_core::lower::Options{mpe:None},|_,plan|Ok(plan)).unwrap();
@@ -1154,12 +1154,18 @@ fn provider_plan_from(provided:bool,onset:bool,sources:Vec<Pcm>)->sampler_core::
     let mut routes=vec![ModRoute::new(0,ModTarget::Pitch,3.),ModRoute::new(0,ModTarget::Tone,24.)];
     if onset{routes.push(ModRoute::new(1,ModTarget::SampleStart,1.));}
     let program=ModProgram{sources:if provided{vec![ModSource::Constant,ModSource::Constant]}else{vec![provider_wave(),ModSource::Velocity]},routes,..Default::default()};
-    if provided{plan.with_voice_modulation_providers(vec![program],vec![Some(0);2],vec![64;2],
+    if provided{plan.with_voice_modulation_providers(vec![program],vec![Some(0);2],vec![start;2],
         vec![ModProvider{program:0,source:0,provider:ProcessingSourceRef{scope:0,source:0}},ModProvider{program:0,source:1,provider:ProcessingSourceRef{scope:0,source:1}}]).unwrap()
-    }else{plan.with_voice_modulation(vec![program],vec![Some(0);2],vec![64;2]).unwrap()}
+    }else{plan.with_voice_modulation(vec![program],vec![Some(0);2],vec![start;2]).unwrap()}
 }
 fn provider_runtime(provided:bool,onset:bool)->sampler_core::Runtime {
     let plan=provider_plan(provided,onset);let limits=sampler_core::Limits::for_plan(&plan,4,8);sampler_core::Runtime::new(plan,limits).unwrap()
+}
+// Zone start randomisation is a delayed onset of the whole voice. Ordinary voices retrigger
+// their own LFO at that onset, while the shared owner clock starts with the note, so the
+// equivalence below is checked with no start range; the delay has its own tests.
+fn provider_runtime_undelayed(provided:bool,onset:bool)->sampler_core::Runtime {
+    let plan=provider_plan_from(provided,onset,provider_pcm(),0);let limits=sampler_core::Limits::for_plan(&plan,4,8);sampler_core::Runtime::new(plan,limits).unwrap()
 }
 fn provider_audio_equal(actual:&[[f32;2]],reference:&[[f32;2]]){
     assert_eq!(actual.len(),reference.len());let mut energy=0.;let mut error=0.;let mut largest=0f32;
@@ -1171,7 +1177,7 @@ fn provider_audio_equal(actual:&[[f32;2]],reference:&[[f32;2]]){
 }
 #[test]
 fn provider_shared_sine_pitch_tone_and_pan_matches_independent_ordinary_sources_and_same_frame_reentry(){
-    let mut actual=provider_runtime(true,false);let mut reference=provider_runtime(false,false);
+    let mut actual=provider_runtime_undelayed(true,false);let mut reference=provider_runtime_undelayed(false,false);
     let input=pan_input(601);let note=actual.trigger(input,60,0.75).unwrap();reference.trigger(input,60,0.75).unwrap();
     let mut a=[[0.;2];1025];let mut b=a;let mut at=0;
     support::without_heap(||{for width in [1usize,17,31,63,64,65].into_iter().cycle(){if at==a.len(){break;}let end=(at+width).min(a.len());
@@ -1260,7 +1266,7 @@ fn provider_pending_failed_source_family_cannot_publish_restart_to_existing_owne
 #[test]
 fn provider_cold_onset_commits_once_at_actual_readiness_and_sample_start_is_not_reapplied(){
     let pcm=provider_pcm();let cold:Vec<_>=(0..2).map(|_|Pcm::streamed(48000,8192).unwrap()).collect();
-    let plan=provider_plan_from(true,true,cold.clone());let limits=sampler_core::Limits::for_plan(&plan,4,8);let(cache,_worker)=sampler_core::StreamCache::new(16).unwrap();
+    let plan=provider_plan_from(true,true,cold.clone(),64);let limits=sampler_core::Limits::for_plan(&plan,4,8);let(cache,_worker)=sampler_core::StreamCache::new(16).unwrap();
     let mut actual=sampler_core::Runtime::new(plan,limits).unwrap().with_stream_cache(cache);actual.set_stream_horizon(128).unwrap();actual.set_cold_starts(true);
     let mut reference=provider_runtime(false,true);actual.trigger(pan_input(608),60,0.75).unwrap();
     let mut prefix=[[0.;2];256];support::without_heap(||{for block in prefix.chunks_mut(17){actual.render(block).unwrap();}reference.render(&mut [[0.;2];256]).unwrap();});assert_eq!(prefix,[[0.;2];256]);

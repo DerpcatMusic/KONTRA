@@ -696,7 +696,7 @@ impl Runtime {
             let mut cells = generation.dsp.owner_cells.claim(index);
             let mut delay = generation.dsp.owner_delays.claim(index);
             let filters = &mut generation.dsp.filters.as_mut_slice()[0];
-            filters.clear_source_modulation();
+            filters.clear_source_modulation(generation.prepared.voice_modulation.filter_rows());
             let mut fault = false;
             if let Some(chain) = chain {
                 for &bus in &chain.tap_buses {

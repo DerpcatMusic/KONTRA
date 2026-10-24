@@ -27,7 +27,7 @@ impl Stage {
     /// Whether the unit runs the mode-1 chain at `rate`: index 28 selects path 1, and the rate is 48 kHz or below (the
     /// start is not ported above it, see `ReplikaCore::mode1_start`).
     pub(crate) fn applies(rate: f32, controls: &ReplikaControls) -> bool {
-        super::head::path_for_index(controls.path) == 1 && rate <= 48_000.
+        super::head::path_for_index(controls.path) == 1 && rate <= 48_000. && controls.synced_beats.is_none()
     }
 
     /// Control side only (prepare): builds the core and allocates the chain's rings. `None` when [`Stage::applies`] is false.

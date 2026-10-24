@@ -1052,6 +1052,15 @@ fn facts(cx: &Cx, slot: usize) -> String {
             "{} groups · {} zones",
             r.decoded.groups, r.decoded.zones
         ));
+        // Kontakt's own notice for a part whose samples are not on disk.
+        let missing = r
+            .missing
+            .iter()
+            .filter(|m| m.feature == "missing sample")
+            .count();
+        if missing > 0 {
+            facts.push(format!("{missing} sample{} missing", if missing == 1 { "" } else { "s" }));
+        }
     }
     if v.status.starts_with("Load failed") {
         facts.push("failed to load".into());

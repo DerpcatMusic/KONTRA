@@ -1,0 +1,6 @@
+{"chain": ["Effects/Compressor"], "stimulus": "levels", "pre": [[0, "EFFECT_BYPASS", 0], [0, "COMP_TYPE", 1]],
+ "steps": [
+  {"name": "thr50 ratio50", "set": [[0, "THRESHOLD", 500000], [0, "RATIO", 500000], [0, "ATTACK", 100000], [0, "RELEASE", 300000]]},
+  {"name": "thr25 ratio50", "set": [[0, "THRESHOLD", 250000], [0, "RATIO", 500000], [0, "ATTACK", 100000], [0, "RELEASE", 300000]]},
+  {"name": "thr75 ratio25", "set": [[0, "THRESHOLD", 750000], [0, "RATIO", 250000], [0, "ATTACK", 100000], [0, "RELEASE", 300000]]}
+ ]}

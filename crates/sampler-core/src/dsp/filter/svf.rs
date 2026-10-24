@@ -544,11 +544,14 @@ pub(crate) enum CacheRef {
 }
 
 impl FilterBank {
-    pub(crate) fn clear_source_modulation(&mut self) {
+    /// Resets the per-voice modulation. `rows` are the only rows a modulation program
+    /// can write (`VoiceModulation::filter_rows`); every other row keeps its default, so
+    /// resetting just these is the same state as resetting the whole table.
+    pub(crate) fn clear_source_modulation(&mut self, rows: &[usize]) {
         self.modulation = [1.; 2];
         self.modulation_program = None;
-        for (index, factors) in self.addressed_modulation.iter_mut().enumerate() {
-            *factors = if self.native[index] { [0.; 4] } else { [1., 1., 0., 0.] };
+        for &index in rows {
+            self.addressed_modulation[index] = if self.native[index] { [0.; 4] } else { [1., 1., 0., 0.] };
         }
     }
     pub(crate) fn set_addressed_modulation(
