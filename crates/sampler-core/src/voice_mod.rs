@@ -1137,12 +1137,16 @@ impl VoiceModulation {
     /// Horns KS against the unrandomised render: Kontakt's hits lag it by 1..98 ms (pooled over
     /// 96 hits, three sessions), never early, and not velocity-scaled (velocity 40 and 127 span
     /// the same range). A delayed start, not a skip: a skip moves the playhead forward.
-    pub fn random_delay(&self, region: usize, seed: u64) -> u32 {
-        let range = self.start_ranges.get(region).copied().unwrap_or(0);
-        if range == 0 || self.program(region).is_some_and(|index| self.programs[index as usize].start) {
+    pub fn random_delay(&self, region: usize, note_range: u32, seed: u64) -> u32 {
+        if note_range == 0 || self.program(region).is_some_and(|index| self.programs[index as usize].start) {
             return 0;
         }
-        (uniform(hash(seed, 0, u64::MAX - 1)) * f64::from(range)) as u32
+        (uniform(hash(seed, 0, u64::MAX - 1)) * f64::from(note_range)) as u32
+    }
+
+    /// The zone sample-start range of one region (the widest of a note's layers scales its draw).
+    pub fn start_range(&self, region: usize) -> u32 {
+        self.start_ranges.get(region).copied().unwrap_or(0)
     }
 
     /// The ordinary onset consumer. A provider-dependent onset must use the
@@ -2629,15 +2633,21 @@ pub(crate) fn process_frame_tone(
 mod tests {
     use super::*;
 
-    /// Unrouted start randomisation is a per-voice delay in [0, range); zero-range regions and
-    /// regions with a SampleStart route get none, and the route-based start stays untouched.
+    /// Unrouted start randomisation is one delay per note in [0, note range), shared by every layer
+    /// of the note (a mono and a stereo layer with different sample-start ranges must not split into
+    /// a double hit). Zero note range gives none, and the route-based start stays untouched.
     #[test]
-    fn unrouted_start_range_is_a_per_voice_delay() {
-        let modulation = VoiceModulation::new(vec![], vec![None, None], vec![5120, 0]).unwrap();
-        let delays: Vec<u32> = (0..256u64).map(|seed| modulation.random_delay(0, seed)).collect();
+    fn layers_of_one_note_share_one_delay() {
+        let modulation = VoiceModulation::new(vec![], vec![None, None, None], vec![5120, 0, 2560]).unwrap();
+        let delays: Vec<u32> = (0..256u64).map(|seed| modulation.random_delay(0, 5120, seed)).collect();
         assert!(delays.iter().all(|&d| d < 5120));
         assert!(delays.iter().max().unwrap() - delays.iter().min().unwrap() > 4000);
-        assert!((0..256u64).all(|seed| modulation.random_delay(1, seed) == 0));
+        for seed in 0..256u64 {
+            let widest = modulation.random_delay(0, 5120, seed);
+            assert_eq!(modulation.random_delay(1, 5120, seed), widest);
+            assert_eq!(modulation.random_delay(2, 5120, seed), widest);
+        }
+        assert!((0..256u64).all(|seed| modulation.random_delay(0, 0, seed) == 0));
         assert_eq!(modulation.constant_start_offset(0), Some(0));
     }
 
