@@ -38,9 +38,34 @@ def ksp_for(chain_len: int, sets) -> str:
     return "\\n".join(lines)
 
 
+LEVEL_STEPS_DB = [-40, -30, -24, -18, -12, -6, 0]   # tone levels of the "levels" stimulus (1 kHz sine)
+LEVEL_SEG = 1.0                                        # seconds per level: 0.5 s tone, 0.5 s silence
+LEVEL_LEAD = 0.5                                       # silence before the first level
+
+
+def levels_lua(path: Path) -> str:
+    """Lua that writes the level-stepped tone WAV (stereo, identical channels) inside Kontakt."""
+    n_seg = int(LEVEL_SEG * 48000)
+    frames = int(LEVEL_LEAD * 48000) + len(LEVEL_STEPS_DB) * n_seg
+    levels = ",".join(repr(10 ** (db / 20)) for db in LEVEL_STEPS_DB)
+    return f"""local LF = io.open({json.dumps(str(path))}, "wb")
+local NF, SEG, LEAD = {frames}, {n_seg}, {int(LEVEL_LEAD * 48000)}
+local AMP = {{{levels}}}
+LF:write("RIFF", string.pack("<I4", 36 + NF * 8), "WAVEfmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, 2, 48000, 384000, 8, 32), "data", string.pack("<I4", NF * 8))
+for i = 0, NF - 1 do
+  local j = (i - LEAD) // SEG
+  local v = 0.0
+  if i >= LEAD and j < #AMP and (i - LEAD) % SEG < SEG // 2 then v = AMP[j + 1] * math.sin(2 * math.pi * 1000 * i / 48000) end
+  LF:write(string.pack("<ff", v, v))
+end
+LF:close()
+"""
+
+
 def make_lua(spec, work: Path) -> str:
     """Lua for the whole session: each instance gets its own zone and init script."""
     wav = work / "impulse_lr.wav"  # written by IMPULSE_LUA inside Kontakt
+
     chain_paths = [eqrender.winpath(eqrender.init_preset(c)) for c in spec["chain"]]
     body = []
     for k, inst in enumerate(spec["instances"]):
@@ -59,9 +84,10 @@ end""")
         "local kt = Kontakt\n"
         "local out = assert(io.open(ORACLE_OUT, \"w\"))\n"
         "local function log(t) out:write(t .. \"\\n\") out:flush() end\n"
-        f"local WAV = {json.dumps(eqrender.winpath(wav))}\n"
+        f"local WAV = {json.dumps(eqrender.winpath(work / ('levels_lr.wav' if spec.get('stimulus') == 'levels' else 'impulse_lr.wav')))}\n"
         f"local CHAIN = {{{chain}}}\n"
-        + eqrender.IMPULSE_LUA.replace("@WAV@", json.dumps(eqrender.winpath(wav)))
+        + (levels_lua(work / "levels_lr.wav") if spec.get("stimulus") == "levels" else
+           eqrender.IMPULSE_LUA.replace("@WAV@", json.dumps(eqrender.winpath(wav))))
         + "kt.reset_multi()\n"
         + "".join(body)
         + "\nlog('{\"ready\":true}')\nout:close()\n"
@@ -72,10 +98,10 @@ PROBES = [30, 60, 100, 200, 500, 1000, 2000, 5000, 10000, 15000]
 CHUNK = 15      # MIDI channels 2..16 per session (one reference instance takes channel 1)
 
 
-def render_chunk(chain, sets_list, out_wav: Path):
+def render_chunk(chain, sets_list, out_wav: Path, stimulus=None):
     """One session: instance 0 is the bypassed reference, then one instance per settings list."""
     work = eqrender.scratch_dir()
-    spec = {"chain": chain, "instances": [{"name": "ref", "sets": [[0, "EFFECT_BYPASS", 1]]}]
+    spec = {"chain": chain, "stimulus": stimulus, "instances": [{"name": "ref", "sets": [[0, "EFFECT_BYPASS", 1]]}]
             + [{"name": f"s{i}", "sets": [[0, "EFFECT_BYPASS", 0]] + sets} for i, sets in enumerate(sets_list)]}
     mid, lua = work / "rig.mid", work / "fxrig_gen.lua"
     write_midi(len(spec["instances"]), mid)
@@ -94,6 +120,43 @@ def impulse_fft(x, rate, onset):
     part = x[k - 16:k - 16 + 16384]
     seg[:len(part)] = part
     return 20 * np.log10(np.maximum(np.abs(np.fft.rfft(seg)), 1e-9)), k
+
+
+def level_curve(chain, pre, steps, out_prefix: Path):
+    """Static curve: the level-stepped tone through each setting; per level the output dB and the change against the
+    bypassed reference (gain reduction is negative). Writes out_prefix.tsv: step, name, level, ref dB, out dB, delta dB."""
+    global SLOT
+    SLOT = LEVEL_LEAD + len(LEVEL_STEPS_DB) * LEVEL_SEG + 1.0
+    rows = []
+    for c0 in range(0, len(steps), CHUNK):
+        part = steps[c0:c0 + CHUNK]
+        wav = out_prefix.with_name(f"{out_prefix.name}_c{c0 // CHUNK}.wav")
+        render_chunk(chain, [[*pre, *st["set"]] for st in part], wav, stimulus="levels")
+        ch, rate, (L, R) = wavutil.read(wav)
+        x = np.array(L)
+        for i, st in enumerate(part, start=1):
+            seg = segment_db(x, rate, FIRST + i * SLOT, LEVEL_SEG)
+            ref = segment_db(x, rate, FIRST, LEVEL_SEG) if i == 1 else ref_levels
+            if i == 1:
+                ref_levels = ref
+            for j, db in enumerate(LEVEL_STEPS_DB):
+                rows.append([c0 + i, st["name"], db, f"{ref[j]:.2f}", f"{seg[j]:.2f}", f"{seg[j] - ref[j]:.2f}"])
+    tsv = out_prefix.with_suffix(".tsv")
+    tsv.write_text("\n".join("\t".join(map(str, r)) for r in rows) + "\n")
+    return tsv
+
+
+def segment_db(x, rate, onset, seg_s):
+    """RMS dB of each level segment, measured over the steady half of its tone (after the first half)."""
+    m = np.abs(x)
+    lo = int(onset * rate)
+    first = lo + int(np.argmax(m[lo:lo + int(SLOT * rate)] > 1e-4)) - int(LEVEL_LEAD * rate)  # file start
+    out = []
+    for j in range(len(LEVEL_STEPS_DB)):
+        a = first + int((LEVEL_LEAD + j * LEVEL_SEG + 0.25) * rate)
+        b = a + int(0.25 * rate)
+        out.append(20 * np.log10(np.sqrt(np.mean(x[a:b] ** 2)) + 1e-12))
+    return out
 
 
 def sweep(chain, pre, steps, out_prefix: Path):
@@ -117,6 +180,10 @@ def sweep(chain, pre, steps, out_prefix: Path):
 
 
 def main() -> int:
+    if sys.argv[1] == "levels":
+        spec = json.load(open(sys.argv[2]))
+        print(level_curve(spec["chain"], spec.get("pre", []), spec["steps"], Path(sys.argv[3]).resolve()))
+        return 0
     if sys.argv[1] == "sweep":
         spec = json.load(open(sys.argv[2]))
         print(sweep(spec["chain"], spec.get("pre", []), spec["steps"], Path(sys.argv[3]).resolve()))
