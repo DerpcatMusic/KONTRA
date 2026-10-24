@@ -40,7 +40,7 @@ jobs:
         run: |
           task=$(python3 tools/plan/plan.py task-of "$HEAD_REF" || true)
           if [ -z "$task" ]; then
-            echo "::error::Branch '$HEAD_REF' is not v3/<task id>-<slug>, v3/plan-<slug> or v3/sync-main-<date>. See docs/architecture-v3/12-WORKFLOW.md §3."
+            echo "::error::Branch '$HEAD_REF' is not v3-<task id>-<slug>, v3-plan-<slug> or v3-sync-main-<date>. See docs/architecture-v3/12-WORKFLOW.md §3."
             exit 1
           fi
           if [ "$OVERRIDE" = "true" ]; then

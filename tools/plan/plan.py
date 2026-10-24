@@ -6,10 +6,10 @@
   plan.py brief ID               print the self-contained agent brief (= issue body)
   plan.py ready [--offline]      tasks that can start now, as a conflict-free batch
   plan.py scope ID [--base REF]  fail if the branch changes files outside the task's owns
-  plan.py task-of BRANCH         print the task id encoded in a v3/<id>-slug branch
+  plan.py task-of BRANCH         print the task id encoded in a v3-<id>-slug branch
   plan.py sync [--dry-run]       labels, milestones, epics, issues, sub-issues, deps, project
   plan.py refresh                status:ready / status:blocked labels only (CI-safe, no project access)
-  plan.py on-merge BRANCH        close the task issue of a merged v3/<id> branch, then refresh
+  plan.py on-merge BRANCH        close the task issue of a merged v3-<id> branch, then refresh
 
 Workflow and rules: docs/architecture-v3/12-WORKFLOW.md. Python >= 3.11, stdlib only, `gh` for sync.
 """

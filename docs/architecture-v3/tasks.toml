@@ -5,7 +5,7 @@
 # Format and rules: docs/architecture-v3/12-WORKFLOW.md.
 #
 # Task fields
-#   id      "P<phase>.<n>[letter]"; the branch is v3/<id>-<slug>, the PR title starts with "<id>:"
+#   id      "P<phase>.<n>[letter]"; the branch is v3-<id>-<slug>, the PR title starts with "<id>:"
 #   deps    task ids that must be merged into v3 first
 #   owns    path globs this task may change (relative to repo root). "@lock" pulls in a lock group.
 #           Two open tasks never own overlapping paths (plan.py ready / scope enforce it).
@@ -19,7 +19,7 @@
 
 [meta]
 branch = "v3"
-branch_prefix = "v3/"
+branch_prefix = "v3-"
 docs = "docs/architecture-v3"
 project = "KONTRA v3"
 
