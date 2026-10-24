@@ -302,7 +302,7 @@ fn failed_admission_does_not_advance_or_publish_partial_mics() {
                 60,
                 1.,
                 Expression {
-                    pitch_semitones: 100.,
+                    pitch_semitones: 144.,
                     ..Expression::default()
                 }
             ),
@@ -778,7 +778,7 @@ fn family_capacity_failure_preserves_take_and_selected_pitch_preflight_is_atomic
     });
     let high = Region {
         playback: Playback {
-            transpose_semitones: 96.,
+            transpose_semitones: 132.,
             ..Playback::default()
         },
         ..region(0)
@@ -1051,7 +1051,7 @@ fn random_admission_failures_preserve_future_history_and_publish_nothing() {
                         60,
                         1.,
                         Expression {
-                            pitch_semitones: 100.,
+                            pitch_semitones: 144.,
                             ..Expression::default()
                         },
                     ),

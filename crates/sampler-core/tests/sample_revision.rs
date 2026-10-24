@@ -333,13 +333,16 @@ fn dormant_targets_report_absent_source_and_unsupported_per_key_pitch_honestly()
             sample: DORMANT_SAMPLE,
             key_low: 0,
             key_high: 127,
-            // Key 127 is 107 semitones above this root: step 2^(107/12) exceeds MAX_STEP (256).
-            root_key: Some(20),
+            // Key 127 plus twelve semitones exceeds the supported 132-semitone span.
+            root_key: Some(0),
             velocity_low: 0.,
             velocity_high: 1.,
             gain: 1.,
             envelope: Envelope::default(),
-            playback: Playback::default(),
+            playback: Playback {
+                transpose_semitones: 12.,
+                ..Playback::default()
+            },
         }],
         128,
     )
