@@ -87,7 +87,7 @@ def vlq(n):
     return bytes(out)
 
 
-def make_midi(path, slots, window=None, notes=SCENARIO, per_slot=None):
+def make_midi(path, slots, window=None, notes=SCENARIO, per_slot=None, cc=()):
     """Format 0, 120 bpm, 480 ppq (960 ticks/s). Slot k: `notes` (or `per_slot[k]`) on channel k+1 from k*window.
     With `window`, All Sound Off (CC 120) on channel k+1 closes each slot; without it (the single
     scenario file) only the notes are written."""
@@ -95,6 +95,8 @@ def make_midi(path, slots, window=None, notes=SCENARIO, per_slot=None):
     first = slot.channel_block()[0]  # this session's MIDI channel block (see slot.py)
     for k in range(slots):
         ch, base = first + k, (k * window if window else 0.0)
+        for at, number, value in cc:  # (seconds, controller, value) on this slot's channel
+            events.append((round((base + at) * 960), 1, bytes([0xB0 | ch, number, value])))
         for start, length, key, vel in (per_slot[k] if per_slot else notes):
             on, off = round((base + start) * 960), round((base + start + length) * 960)
             events.append((on, 1, bytes([0x90 | ch, key, vel])))
@@ -239,9 +241,23 @@ def stop_kontakt(timeout=20):
     slot.stop_kontakt(timeout)
 
 
-def run_session(nkis, window, work, midi=None, notes=SCENARIO, per_slot=None):
+def kontakt_ticks():
+    """utime+stime (clock ticks) of this slot's Kontakt process, threads included."""
+    total = 0
+    for pid in slot.kontakt_pids():
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            total += int(fields[11]) + int(fields[12])  # fields 14 and 15 of stat, counted from state
+        except (OSError, IndexError):  # process ended while we looked
+            pass
+    return total
+
+
+def run_session(nkis, window, work, midi=None, notes=SCENARIO, per_slot=None, cpu=None):
     """Loads up to PER_SESSION NKIs, plays the slotted MIDI, records. Returns (wav, t_midi, loaded)
-    where t_midi is the MIDI start on the recording clock and loaded[k] = (ok, error)."""
+    where t_midi is the MIDI start on the recording clock and loaded[k] = (ok, error).
+    `cpu` (a dict, optional): filled with "start" (monotonic, MIDI start) and "samples"
+    [(monotonic, ticks)] of Kontakt's CPU time, sampled every 0.1 s while the slots play."""
     if kontakt_running():
         stop_kontakt()  # left over from the previous group of this batch, or a crashed session
     if kontakt_running():
@@ -302,9 +318,13 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO, per_slot=None):
         player = subprocess.Popen(["aplaymidi", "-p", midi_port(), str(midi)],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         t_midi = time.monotonic() - t_rec
-        end = t_rec + t_midi + len(nkis) * window + 1
+        end = t_rec + t_midi + max(1, len(nkis)) * window + 1  # an empty rack (idle baseline) still runs a window
+        if cpu is not None:
+            cpu["start"], cpu["samples"] = time.monotonic(), []
         while time.monotonic() < end:  # phase 2: keep links pinned while the slots play
             route_kontakt_to_sink()
+            if cpu is not None:
+                cpu["samples"].append((time.monotonic(), kontakt_ticks()))
             time.sleep(0.1)
         time.sleep(0.5)
         log(work, f"session end: sink={sink_state()} links={kontakt_links()}")
