@@ -120,6 +120,13 @@ impl Runtime {
             note.input_down = false;
         }
         if note.key_down() {
+            if note.attack == super::AttackStatus::Pending
+                && self.note_events[id.0.index].routed
+                && !self.note_events[id.0.index].intentional_wait
+                && cause.triggers_key_release()
+            {
+                self.closed_pending_attacks = self.closed_pending_attacks.saturating_add(1);
+            }
             if !cause.musical() {
                 self.stop_held_onsets(id);
             }

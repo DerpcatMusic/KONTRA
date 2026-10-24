@@ -756,7 +756,7 @@ fn parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners() {
 }
 
 #[test]
-fn preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_order() {
+fn preempted_sender_runs_receivers_in_its_transaction_and_preserves_pgs_controller_order() {
     use sampler_ksp::EntryKind as K;
     for send in [false, true] {
         let command = if send { "set_rpn(60,16383)" } else { "" };
@@ -813,26 +813,24 @@ fn preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_o
             }
             assert!(emitted, "bounded fixture must reach its send checkpoint");
             if send {
-                // Both admitted receivers are pc0: send_parameter used deferred
-                // FIFO, rather than the immediate ready LIFO start path.
+                // The resumed sender's receivers run in its own event
+                // transaction (ready stack), not behind it in the FIFO.
                 let mut queued = 0;
                 rt.visit_behavior_progress(|p| {
                     if receivers.contains(&p.program) {
-                        assert_eq!((p.pc, p.waiting, p.outcome), (0, false, None));
+                        assert!(p.pc > 0 && p.waiting && p.outcome.is_none());
                         queued += 1;
                     }
                 });
                 assert_eq!(queued, 2);
-                assert_eq!((cell(&rt, 1, 1), cell(&rt, 2, 1)), (0, 0));
+                assert_eq!((cell(&rt, 1, 1), cell(&rt, 2, 1)), (1, 1));
             }
             for _ in 0..256 {
                 rt.render(&mut [[0.; 2]; 4]).unwrap();
             }
-            // RPN1's LOG write queues new PGS callbacks. The same-plan
-            // requeued tail puts RPN2 behind them: GO is already 1, so PGS
-            // logs 3/4 before RPN2 logs 2. This is notification interleaving,
-            // not pure receiver FIFO (covered separately below).
-            assert_eq!(cell(&rt, 0, 2), if send { 13425 } else { 345 });
+            // Both receivers log 1/2 inside the sender's transaction, then
+            // PGS logs 3/4 in slot order, then the controller logs 5.
+            assert_eq!(cell(&rt, 0, 2), if send { 12345 } else { 345 });
             assert_eq!((cell(&rt, 1, 0), cell(&rt, 2, 0)), (1, 1));
             if send {
                 assert_eq!((cell(&rt, 1, 1), cell(&rt, 2, 1)), (1, 1));
@@ -853,7 +851,7 @@ fn preempted_sender_defers_receivers_fifo_and_preserves_numeric_pgs_controller_o
 }
 
 #[test]
-fn preempted_sender_defers_receivers_fifo_without_notification_interleaving() {
+fn preempted_sender_runs_receivers_in_slot_order_without_notifications() {
     use sampler_ksp::EntryKind as K;
     let sources = [
         "on init pgs_create_key(LOG,1) declare $i declare $sent end on
@@ -869,7 +867,7 @@ fn preempted_sender_defers_receivers_fifo_without_notification_interleaving() {
                 $log:=pgs_get_key_val(LOG,0) wait(100000) end on",
     ];
     // No on pgs_changed bindings: LOG writes cannot insert notification
-    // callbacks between these receivers. This isolates deferred receiver FIFO.
+    // callbacks between these receivers. This isolates receiver slot order.
     let receivers = [entry(&sources, 1, K::Rpn), entry(&sources, 2, K::Rpn)];
     let plan = prepared(&sources);
     let budget = limits(&plan, 16);
@@ -878,7 +876,7 @@ fn preempted_sender_defers_receivers_fifo_without_notification_interleaving() {
         rt.set_behavior_block_fuel(1);
         note(&mut rt, 60);
         assert!(rt.preemptions() > 0);
-        note(&mut rt, 61); // live same-plan yielded work forces deferred=true
+        note(&mut rt, 61); // live same-plan yielded work; receivers still run in-transaction
         rt.set_behavior_block_fuel(8192);
         let mut emitted = false;
         for _ in 0..128 {
@@ -892,16 +890,16 @@ fn preempted_sender_defers_receivers_fifo_without_notification_interleaving() {
         let mut queued = 0;
         rt.visit_behavior_progress(|p| {
             if receivers.contains(&p.program) {
-                assert_eq!((p.pc, p.waiting, p.outcome), (0, false, None));
+                assert!(p.pc > 0 && p.waiting && p.outcome.is_none());
                 queued += 1;
             }
         });
         assert_eq!(queued, 2);
-        assert_eq!((cell(&rt, 1, 0), cell(&rt, 2, 0)), (0, 0));
+        assert_eq!((cell(&rt, 1, 0), cell(&rt, 2, 0)), (1, 1));
         for _ in 0..256 {
             rt.render(&mut [[0.; 2]; 4]).unwrap();
         }
-        assert_eq!(cell(&rt, 2, 3), 12, "ascending deferred receiver order");
+        assert_eq!(cell(&rt, 2, 3), 12, "ascending receiver order");
         assert_eq!((cell(&rt, 1, 0), cell(&rt, 2, 0)), (1, 1));
         for instance in [1, 2] {
             assert_eq!((cell(&rt, instance, 1), cell(&rt, instance, 2)), (60, 16383));
@@ -912,7 +910,7 @@ fn preempted_sender_defers_receivers_fifo_without_notification_interleaving() {
 }
 
 #[test]
-fn deferred_fanout_pressure_faults_atomically_without_heap_or_partial_second_message() {
+fn fanout_pressure_faults_atomically_without_heap_or_partial_second_message() {
     use sampler_ksp::EntryKind as K;
     let sources = [
         "on init declare $i end on on note ignore_event($EVENT_ID)
@@ -946,7 +944,7 @@ fn deferred_fanout_pressure_faults_atomically_without_heap_or_partial_second_mes
             let mut admitted = 0;
             rt.visit_behavior_progress(|p| {
                 if receivers.contains(&p.program) {
-                    assert_eq!((p.pc, p.waiting, p.outcome), (0, false, None));
+                    assert!(p.pc > 0 && p.waiting && p.outcome.is_none());
                     admitted += 1;
                 }
             });

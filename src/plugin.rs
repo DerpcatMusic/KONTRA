@@ -603,7 +603,7 @@ pub(crate) struct PartShared {
     pub(crate) meter: [AtomicU32; 2],
     pub(crate) clip: AtomicBool,
     /// [`RuntimeProblems`] field by field, as the audio thread last saw them.
-    problems: [AtomicU64; 25],
+    problems: crate::sound::report::AtomicRuntimeProblems,
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     engine_meters: Mutex<Vec<EngineMeterCell>>,
@@ -894,91 +894,11 @@ impl PartShared {
     }
 
     pub(crate) fn problems(&self) -> RuntimeProblems {
-        let [
-            a,
-            b,
-            c,
-            d,
-            e,
-            f,
-            g,
-            h,
-            silent_notes,
-            s0,
-            s1,
-            s2,
-            fault_program,
-            fault_error,
-            stream_capacity,
-            stream_disconnected,
-            stream_failed,
-            stream_errors,
-            offline_failures,
-            lua_faults,
-            cold_starts,
-            voice_pool_refusals,
-            waiting_voice_replacements,
-            voice_drops,
-            loop_limits,
-        ] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
-        RuntimeProblems {
-            capacity_drops: a,
-            underruns: b,
-            nonfinite: c,
-            script_overruns: d,
-            narrowed_input: e,
-            ignored_input: f,
-            stolen_voices: g,
-            refused_starts: h,
-            silent_notes,
-            silent: [s0, s1, s2],
-            fault_program,
-            fault_error,
-            stream_capacity,
-            stream_disconnected,
-            stream_failed,
-            stream_errors,
-            offline_failures,
-            lua_faults,
-            cold_starts,
-            voice_pool_refusals,
-            waiting_voice_replacements,
-            voice_drops,
-            loop_limits,
-        }
+        self.problems.load()
     }
 
-    fn store_problems(&self, p: RuntimeProblems) {
-        let values = [
-            p.capacity_drops,
-            p.underruns,
-            p.nonfinite,
-            p.script_overruns,
-            p.narrowed_input,
-            p.ignored_input,
-            p.stolen_voices,
-            p.refused_starts,
-            p.silent_notes,
-            p.silent[0],
-            p.silent[1],
-            p.silent[2],
-            p.fault_program,
-            p.fault_error,
-            p.stream_capacity,
-            p.stream_disconnected,
-            p.stream_failed,
-            p.stream_errors,
-            p.offline_failures,
-            p.lua_faults,
-            p.cold_starts,
-            p.voice_pool_refusals,
-            p.waiting_voice_replacements,
-            p.voice_drops,
-            p.loop_limits,
-        ];
-        for (atom, value) in self.problems.iter().zip(values) {
-            atom.store(value, Ordering::Relaxed);
-        }
+    fn store_problems(&self, problems: RuntimeProblems) {
+        self.problems.store(problems);
     }
 }
 
@@ -3900,6 +3820,13 @@ pub(crate) mod tests {
             cold_starts: 126,
             voice_pool_refusals: 127,
             waiting_voice_replacements: 128,
+            script_preemptions: 129,
+            script_budget_failures: 130,
+            script_service_stalls: 131,
+            late_attacks: 132,
+            max_attack_lateness_frames: 133,
+            closed_pending_attacks: 134,
+            max_onset_wait_frames: 135,
             ..Default::default()
         };
         assert_eq!(

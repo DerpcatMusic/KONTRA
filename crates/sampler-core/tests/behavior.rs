@@ -3,6 +3,29 @@ use sampler_core::{
     Protocol, Region, Runtime,
 };
 mod support;
+
+#[test]
+fn playback_overload_is_terminal_and_never_replays_the_callback() {
+    let mut rt = runtime(
+        vec![Instruction::AddLocal { local: 0, value: 1 }; 10],
+        limits(),
+    );
+    support::without_heap(|| {
+        rt.set_behavior_overload(sampler_core::BehaviorOverload::Abort);
+        rt.begin_behavior_block(1, None);
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        let callback = rt.start_behavior(note, 0).unwrap();
+        assert_eq!(
+            rt.behavior_outcome(callback),
+            Ok(Some(Outcome::FuelExhausted))
+        );
+        rt.begin_behavior_block(64, None);
+        rt.render(&mut []).unwrap();
+        assert_eq!(rt.behavior_local(callback, 0), Ok(1));
+        assert_eq!(rt.preemptions(), 0);
+        assert_eq!(rt.stats().script_budget_failures, 1);
+    });
+}
 fn input() -> Input {
     Input {
         protocol: Protocol::Native,
