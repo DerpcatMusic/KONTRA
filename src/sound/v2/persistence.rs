@@ -696,6 +696,24 @@ impl Part {
         let plan = self.runtime.active_plan();
         let _ = self.runtime.restore_engine_controls(plan, values);
     }
+    /// The player's control positions win over what `on persistence_changed` read back from
+    /// the engine: a slider whose engine mapping is coarser than its position (Una Corda's
+    /// rumble slider holds one engine value above 629961) keeps the position it was saved at.
+    /// A plain control write: no ui_control or persistence callback runs.
+    pub(crate) fn restore_control_positions(&mut self, values: &[(u128, f64)]) {
+        let plan = self.runtime.active_plan();
+        for &(id, value) in values {
+            let id = sampler_core::ControlId(id);
+            let Ok(definition) = self.runtime.control_definition(plan, id) else { continue };
+            // Each write is typed by its control; one rejected value must not drop the rest.
+            let value = match definition.default {
+                sampler_core::ControlValue::Integer(_) => sampler_core::ControlValue::Integer(value.round() as i64),
+                sampler_core::ControlValue::Toggle(_) => sampler_core::ControlValue::Toggle(value != 0.),
+                sampler_core::ControlValue::Real(_) => sampler_core::ControlValue::Real(value),
+            };
+            let _ = self.runtime.edit_controls(plan, None, &[sampler_core::ControlWrite { id, value }]);
+        }
+    }
     pub(crate) fn prepare_persistence(
         &mut self,
         views: &[sampler_ksp::ScriptView],
