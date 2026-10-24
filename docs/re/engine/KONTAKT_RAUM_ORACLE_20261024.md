@@ -35,3 +35,21 @@ no capture varies one control at a time.
 2. Arcadia Dream Hall (Airy, decay 0.599, expected T30 about 4.1 s) and Big Roon (Grounded, decay 0.220, expected
    about 1.0 s) were queued behind other oracle sessions and are not in this note.
 3. Cosmic (type 2) is not measured: Cosmic Keys has decay 0.805, which is beyond an 8 s window.
+
+## Re-measured (2026-10-24, same capture, time-domain bands)
+
+The Grounded LF/HF mismatch above does not reproduce. Boxed In (`impulse8`, Kontakt 8.13.1 via `oracle-slot`) against
+the current engine, 50 ms power windows, 10-biquad-free time-domain band split (RBJ, 2 cascaded per edge):
+
+| Band | Kontakt dB/s, 0.1-1.0 s | Ours dB/s | Dev |
+|---|---|---|---|
+| Full | 50.8 | 53.0 | +4 % |
+| 60-250 Hz | 49.4 | 51.7 | +5 % |
+| 250 Hz-1k | 48.6 | 51.2 | +5 % |
+| 1-4k | 52.8 | 55.6 | +5 % |
+| 4-16k | 62.0 | 62.6 | +1 % |
+
+Over 0.5-3 s the slopes agree within about 1 dB/s in every band. The earlier 28 vs 43 dB/s numbers came from a
+different band split (FFT mask, which leaks a -120 dBFS floor) and are superseded. No low-shelf, high-cut or damping
+law change is supported by this capture. Regression: `grounded_boxed_in_tail_slope_matches_kontakt` (broadband).
+Band-level pinning still needs a band filter in the test; not done.
