@@ -6469,7 +6469,8 @@ mod modulation {
                     parameter: ir::ProcessorParameter::Gain
                 }
             );
-            assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(-0.25));
+            // Band-gain routes carry the measured 12 dB-per-route scale (#645); the identity is the slot, not the depth.
+            assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(eq_gain_route_depth(-0.25)));
         }
     }
 
