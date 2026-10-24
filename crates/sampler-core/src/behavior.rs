@@ -62,6 +62,20 @@ impl FadeCurve {
     }
 }
 
+/// Iterations a `while` loop runs before Kontakt leaves it with a warning.
+pub const LOOP_LIMIT: u32 = 10_000_001;
+/// First iteration count at which [`Instruction::LoopGuard`] compares states;
+/// later checks double it, so a loop pays about 2·log2(iterations) hashes.
+const LOOP_FIRST_CHECK: u32 = 2;
+
+/// The script cells a `while` body writes, when everything in the loop is
+/// plain local and script-cell work (see [`Instruction::LoopGuard`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LoopWatch {
+    pub cells: [u32; 3],
+    pub len: u8,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
     /// Commit/suppress the owner's pending original attack, without another note ID.
@@ -337,6 +351,19 @@ pub enum Instruction {
         local: u16,
         target: usize,
     },
+    /// Top of a `while` body, after its condition held. Counts iterations per
+    /// callback (one count for all its loops, as in Kontakt): past [`LOOP_LIMIT`]
+    /// the loop is left at `exit`, the
+    /// runtime counts it in `loop_limits` and the callback continues. With
+    /// `watch`, an iteration that leaves the callback's locals and the watched
+    /// cells as the one before cannot change anything any more, so it reaches
+    /// the limit at once instead of running ten million times.
+    LoopGuard {
+        exit: u32,
+        watch: Option<LoopWatch>,
+    },
+    /// A `while` loop's exit: the iteration count starts again.
+    LoopReset,
     /// Reals, text, subroutines, keyed state and effects; see `ops`.
     Op(super::ops::Op),
     /// Set (or with `relative`, add to) a script voice parameter. `index` holds
@@ -717,8 +744,13 @@ impl Program {
                 } if !value.is_finite() || !(0.0..=1.0).contains(&value) => {
                     return Err(Error::InvalidInput);
                 }
-                Instruction::Jump { target } | Instruction::JumpIfZero { target, .. }
+                Instruction::Jump { target }
+                | Instruction::JumpIfZero { target, .. }
                     if target > code.len() =>
+                {
+                    return Err(Error::InvalidInput);
+                }
+                Instruction::LoopGuard { exit, .. } if exit as usize > code.len() =>
                 {
                     return Err(Error::InvalidInput);
                 }
@@ -918,6 +950,19 @@ impl Program {
                     .ok_or(Error::Capacity)?;
                 script_cells = script_cells.max(end);
             }
+            if let Instruction::LoopGuard {
+                watch: Some(watch), ..
+            } = *op
+            {
+                let cells = watch.cells.get(..usize::from(watch.len)).ok_or(Error::InvalidInput)?;
+                for &cell in cells {
+                    let end = usize::try_from(cell)
+                        .ok()
+                        .and_then(|cell| cell.checked_add(1))
+                        .ok_or(Error::Capacity)?;
+                    script_cells = script_cells.max(end);
+                }
+            }
             if let Instruction::ReadScriptArray {
                 array,
                 index,
@@ -1102,7 +1147,30 @@ pub(super) struct Continuation {
     pub async_result: Option<(i32, i32)>,
     pub async_wait: Option<i32>,
     pub external: Option<super::receiver::external::ExternalState>,
-    pub external_sequence: u64
+    pub external_sequence: u64,
+    /// `while` iterations since the last loop exit or wait (see `LoopGuard`).
+    pub loop_iterations: u32,
+    /// Iteration count of the next state comparison, and the state hash taken there.
+    pub loop_check: u32,
+    pub loop_hash: u64,
+}
+
+impl Continuation {
+    /// Every suspension: it ends a burst of continuous preemption, and
+    /// Kontakt's loop limit counts iterations without a wait.
+    pub(super) fn suspend(&mut self) {
+        self.waiting = true;
+        self.yielded_at = None;
+        (self.loop_iterations, self.loop_check) = (0, LOOP_FIRST_CHECK);
+    }
+}
+
+/// Hash of a callback's locals and a loop's watched cells, for `LoopGuard`.
+// ponytail: a 64-bit hash, not a copy; an equal hash of different states
+// would end the loop early. Copy the values if that is ever a concern.
+fn loop_hash(locals: &[i64], watched: &[i64]) -> u64 {
+    let mix = |hash: u64, value: i64| (hash ^ value as u64).wrapping_mul(0x100_0000_01b3).rotate_left(29);
+    locals.iter().chain(watched).fold(0xcbf2_9ce4_8422_2325, |hash, &value| mix(hash, value))
 }
 
 #[derive(Clone, Copy)]
@@ -1192,6 +1260,9 @@ impl Runtime {
             async_wait: None,
             external:None,
             external_sequence:0,
+            loop_iterations:0,
+            loop_check:LOOP_FIRST_CHECK,
+            loop_hash:0,
         })?);
         self.notes.get_mut(note.0).unwrap().work = work;
         let begin = id.0.index * self.behavior_stride;
@@ -1288,7 +1359,10 @@ impl Runtime {
             async_result: None,
             async_wait: None,
             external: None,
-            external_sequence: 0
+            external_sequence: 0,
+            loop_iterations: 0,
+            loop_check: LOOP_FIRST_CHECK,
+            loop_hash: 0,
         })?);
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
@@ -1825,6 +1899,45 @@ impl Runtime {
                         at as usize,
                         changed,
                     );
+                }
+                Instruction::LoopReset => {
+                    let c = self.behaviors.get_mut(id.0).unwrap();
+                    (c.loop_iterations, c.loop_check) = (0, LOOP_FIRST_CHECK);
+                }
+                Instruction::LoopGuard { exit, watch } => {
+                    let c = self.behaviors.get_mut(id.0).unwrap();
+                    if c.loop_iterations >= LOOP_LIMIT {
+                        (c.loop_iterations, c.loop_check) = (0, LOOP_FIRST_CHECK);
+                        next = exit as usize;
+                        self.loop_limits += 1;
+                    } else {
+                        c.loop_iterations += 1;
+                        let (count, check) = (c.loop_iterations, c.loop_check);
+                        if let Some(watch) = watch
+                            && (count == check || count == check + 1)
+                        {
+                            let mut watched = [0; 3];
+                            let mut found = true;
+                            for (value, &at) in watched.iter_mut().zip(&watch.cells[..usize::from(watch.len)]) {
+                                match cells.as_deref().and_then(|cells| cells.get(at as usize)) {
+                                    Some(&cell) => *value = cell,
+                                    None => found = false,
+                                }
+                            }
+                            if !found {
+                                break;
+                            }
+                            let hash = loop_hash(locals, &watched[..usize::from(watch.len)]);
+                            let c = self.behaviors.get_mut(id.0).unwrap();
+                            if count == check {
+                                c.loop_hash = hash;
+                            } else if hash == c.loop_hash {
+                                c.loop_iterations = LOOP_LIMIT;
+                            } else {
+                                c.loop_check = check.saturating_mul(2);
+                            }
+                        }
+                    }
                 }
                 _ => break,
             }
@@ -2815,6 +2928,34 @@ outcome.is_none()
                     self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?.pc = target;
                 }
             }
+            Instruction::LoopGuard { exit, watch } => {
+                let c = self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
+                if c.loop_iterations >= LOOP_LIMIT {
+                    (c.loop_iterations, c.loop_check, c.pc) = (0, LOOP_FIRST_CHECK, exit as usize);
+                    self.loop_limits += 1;
+                } else {
+                    c.loop_iterations += 1;
+                    let (count, check) = (c.loop_iterations, c.loop_check);
+                    if let Some(watch) = watch
+                        && (count == check || count == check + 1)
+                    {
+                        let hash = self.loop_state_hash(id, watch)?;
+                        let c = self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
+                        if count == check {
+                            c.loop_hash = hash;
+                        } else if hash == c.loop_hash {
+                            // Every further iteration repeats this one: skip to the limit.
+                            c.loop_iterations = LOOP_LIMIT;
+                        } else {
+                            c.loop_check = check.saturating_mul(2);
+                        }
+                    }
+                }
+            }
+            Instruction::LoopReset => {
+                let c = self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
+                (c.loop_iterations, c.loop_check) = (0, LOOP_FIRST_CHECK);
+            }
             Instruction::End => {
                 self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
                 return Ok(true);
@@ -3038,10 +3179,7 @@ outcome.is_none()
         if self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
-        let c = self.behaviors.get_mut(id.0).unwrap();
-        c.waiting = true;
-        // A scheduled wait ends the current burst of continuous preemption.
-        c.yielded_at = None;
+        self.behaviors.get_mut(id.0).unwrap().suspend();
         self.queue(at, Action::Resume(id));
         Ok(true)
     }
@@ -3175,6 +3313,20 @@ outcome.is_none()
             return Err(Error::InvalidInput);
         }
         Ok(note.0.index * self.note_stride + cell)
+    }
+
+    /// [`loop_hash`] of a callback's locals and a loop's watched cells.
+    fn loop_state_hash(&mut self, id: BehaviorId, watch: LoopWatch) -> Result<u64, Error> {
+        let mut watched = [0; 3];
+        for (value, &cell) in watched.iter_mut().zip(&watch.cells[..usize::from(watch.len)]) {
+            *value = *self.behavior_script_cell(id, cell)?;
+        }
+        let base = id.0.index * self.behavior_stride;
+        let locals = self
+            .behavior_locals
+            .get(base..base + self.behavior_stride)
+            .ok_or(Error::InvalidInput)?;
+        Ok(loop_hash(locals, &watched[..usize::from(watch.len)]))
     }
 
     fn local_cell_mut(&mut self, id: BehaviorId, local: u16) -> Result<&mut i64, Error> {

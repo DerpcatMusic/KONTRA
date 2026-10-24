@@ -7,7 +7,7 @@ use crate::hir::*;
 use crate::sema::fold;
 use sampler_core::{
     Comparison as Cmp, ControlId, Duration, DurationValue, EnvelopeStage, Inheritance,
-    Instruction as I, IntegerBinary as IB, IntegerExtra, IntegerUnary as IU, ModTarget, Op,
+    Instruction as I, IntegerBinary as IB, IntegerExtra, IntegerUnary as IU, LoopWatch, ModTarget, Op,
     ParamScope, Program, RealBinary, RealUnary, ScriptArray, SlotKind, TextPart, TextRef,
     WaitLifetime, real_bits,
 };
@@ -581,6 +581,36 @@ const PROPERTY_KEY: [Key; 4] = [
     Key::Fixed(PROPERTY_TAG),
 ];
 
+/// The script cells a `while` loop writes, when everything from its condition
+/// to its back edge is plain local and script-cell work: then an iteration that
+/// changes neither these cells nor the locals repeats forever (`LoopGuard`).
+fn loop_watch(code: &[I], range: std::ops::Range<usize>, guard: usize) -> Option<LoopWatch> {
+    let mut watch = LoopWatch { cells: [0; 3], len: 0 };
+    for (at, op) in code[range.clone()].iter().enumerate() {
+        match *op {
+            _ if range.start + at == guard => {}
+            I::SetLocal { .. }
+            | I::AddLocal { .. }
+            | I::Binary32 { .. }
+            | I::Unary32 { .. }
+            | I::CompareLocal { .. }
+            | I::ReadScriptCell { .. }
+            | I::ReadScriptArray { .. } => {}
+            I::Jump { target } | I::JumpIfZero { target, .. }
+                if range.contains(&target) || target == range.end => {}
+            I::WriteScriptCell { cell, .. } => {
+                let len = usize::from(watch.len);
+                if !watch.cells[..len].contains(&cell) {
+                    *watch.cells.get_mut(len)? = cell;
+                    watch.len += 1;
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(watch)
+}
+
 fn reg(r: u16, n: u16) -> Result<u16> {
     r.checked_add(n).ok_or_else(|| Fault {
         span: Span::default(),
@@ -786,11 +816,20 @@ impl Gen<'_, '_> {
                 let start = self.here();
                 self.value(cond, 0)?;
                 let branch = self.jump_if_zero(0)?;
+                let guard = self.here();
+                self.emit(I::LoopGuard { exit: 0, watch: None })?;
                 self.loops.push(start);
                 self.block(body)?;
                 self.loops.pop();
                 self.emit(I::Jump { target: start })?;
                 self.land(branch);
+                let exit = self.here();
+                let watch = loop_watch(&self.code, start..exit, guard);
+                let Ok(exit) = u32::try_from(exit) else {
+                    return fault(self.span, "program too long");
+                };
+                self.code[guard] = I::LoopGuard { exit, watch };
+                self.emit(I::LoopReset)?;
                 Ok(())
             }
             StmtKind::Select(selector, cases) => {

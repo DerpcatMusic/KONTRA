@@ -12,6 +12,8 @@ std::thread_local! { static SUM_CELLS: std::cell::Cell<usize> = const { std::cel
 pub struct RuntimeStats {
     /// Voices that ran out of resident stream pages and faded out.
     pub stream_underruns: u64,
+    /// `while` loops left at Kontakt's iteration limit (the callback continued).
+    pub loop_limits: u64,
     /// Starts and rendered chunks using the admitted pinned whole-voice controls.
     pub v1_control_starts: u64,
     pub v1_control_blocks: u64,
@@ -93,6 +95,7 @@ impl Runtime {
     pub fn stats(&self) -> RuntimeStats {
         RuntimeStats {
             stream_underruns: self.stream_underruns,
+            loop_limits: self.loop_limits,
             v1_control_starts: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_starts).sum(),
             v1_control_blocks: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_blocks.load(std::sync::atomic::Ordering::Relaxed)).sum(),
             voice_drops: self.voice_drops,

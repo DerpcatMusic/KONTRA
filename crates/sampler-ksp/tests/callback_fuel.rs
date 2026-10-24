@@ -176,3 +176,84 @@ fn admitted_async_wait_ends_age_but_invalid_or_disabled_wait_keeps_runaway_guard
         });
     }
 }
+
+/// Kontakt leaves a `while` after 10,000,001 iterations without a wait, warns, and
+/// continues the callback. A loop whose iterations cannot change anything reaches
+/// that limit at once here.
+#[test]
+fn a_while_loop_that_cannot_progress_ends_at_kontakts_limit_and_the_callback_continues() {
+    let rate = 48000;
+    let script = sampler_ksp::compile(
+        "on init declare $status declare $id declare $after end on
+         on note
+           $status := 0
+           while ($status = 0)
+             $id := 0
+           end while
+           $after := 1
+         end on",
+        rate,
+        sampler_ksp::Limits::LIBRARY,
+        &[],
+    )
+    .unwrap();
+    let plan = script
+        .bind(Prepared::new(rate, vec![], vec![], 0).unwrap())
+        .unwrap();
+    let limits = Limits::for_plan(&plan, 4, 4);
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    rt.set_behavior_block_fuel(128 * 128);
+    let mut audio = [[0.; 2]; 128];
+    let mut outcomes = Vec::with_capacity(4);
+    support::without_heap(|| {
+        rt.trigger(
+            Input {
+                protocol: Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: None,
+            },
+            60,
+            1.,
+        )
+        .unwrap();
+        rt.render(&mut audio).unwrap();
+        rt.flush_behaviors_at(|_, _, outcome, _| {
+            if outcomes.len() < outcomes.capacity() {
+                outcomes.push(outcome);
+            }
+            true
+        });
+    });
+    assert_eq!(outcomes, [Outcome::Finished], "one block is enough");
+    assert_eq!(
+        rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 2),
+        Ok(1),
+        "the statement after the loop ran"
+    );
+    assert_eq!(rt.stats().loop_limits, 1);
+    assert_eq!(rt.preemptions(), 0);
+}
+
+#[test]
+fn a_while_loop_in_on_init_ends_at_kontakts_limit_and_init_continues() {
+    let script = sampler_ksp::compile(
+        "on init
+            declare $x
+            declare ui_value_edit $after (0, 10, 1)
+            while (1 = 1)
+                $x := 0
+            end while
+            $after := 7
+        end on",
+        48000,
+        sampler_ksp::Limits::LIBRARY,
+        &[],
+    )
+    .expect("Kontakt leaves the loop and finishes init");
+    let view = script.view();
+    let after = view.model().interface.widgets.iter().find(|w| w.name == "$after").unwrap();
+    assert_eq!(after.value, sampler_ksp::model::WidgetValue::Int(7));
+}
