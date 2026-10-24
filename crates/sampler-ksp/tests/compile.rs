@@ -182,7 +182,6 @@ fn unsupported_and_malformed_source_fails_explicitly_with_a_valid_offset() {
         "",
         "on note ignore_event($EVENT_ID) wait($x) end on",
         "on note ignore_event($EVENT_ID) wait(18446744073709551616) end on",
-        "on note ignore_event($EVENT_ID) wait(18446744073709551615) end on",
         "on note ignore_event($EVENT_ID) wait(1)",
         "on note ignore_event($EVENT_ID) end on on note end on",
         "{ unclosed",
@@ -354,7 +353,8 @@ fn polyphonic_source_state_reaches_release_callbacks_without_heap_or_note_aliasi
                 let a = rt.trigger(input, 60, 0.).unwrap();
                 let b = rt.trigger(input, 61, 0.).unwrap();
                 assert_eq!((rt.note_cell(a, 0), rt.note_cell(b, 0)), (Ok(60), Ok(61)));
-                assert_eq!(rt.note_cell(a, 2), Ok(i64::from(i32::MIN)));
+                // `-2147483648` is `-(2147483647)` in Kontakt (the literal clamps; conformance `lit_neg_min`).
+                assert_eq!(rt.note_cell(a, 2), Ok(i64::from(i32::MIN + 1)));
                 let channel = rt.register_channel(input.channel_address()).unwrap();
                 rt.sustain(channel, true).unwrap();
                 rt.schedule_event(2, Event::KeyUp(a, None)).unwrap();
@@ -576,7 +576,7 @@ fn held_key_branches_survive_waits_and_keep_overlapping_owners_distinct() {
                 assert_eq!((rt.note_cell(a, 1), rt.note_cell(b, 1)), (Ok(0), Ok(1)));
                 assert_eq!(
                     (rt.note_cell(a, 2), rt.note_cell(b, 2)),
-                    (Ok(i64::from(i32::MIN)), Ok(i64::from(i32::MAX)))
+                    (Ok(i64::from(i32::MIN + 1)), Ok(i64::from(i32::MAX)))
                 );
                 assert_eq!((rt.note_cell(a, 3), rt.note_cell(b, 3)), (Ok(1), Ok(1)));
                 let mut callbacks = 0;
@@ -1017,11 +1017,12 @@ fn integer_expressions_respect_precedence_signed_boundaries_and_variable_updates
         ("7 / 0", 0),
         ("7 mod 0", 0),
         ("2147483647 + 1", i32::MIN),
-        ("-2147483648 - 1", i32::MAX),
-        ("-2147483648 / -1", i32::MIN),
+        // `-2147483648` reads as `-2147483647` (conformance `lit_neg_min`).
+        ("-2147483648 - 1", i32::MIN),
+        ("-2147483648 / -1", i32::MAX),
         ("-2147483648 mod -1", 0),
-        ("--2147483648", i32::MIN),
-        ("abs(-2147483648)", i32::MIN),
+        ("--2147483648", i32::MAX),
+        ("abs(-2147483648)", i32::MAX),
         ("abs(-(1 + 2) * 3)", 9),
         ("sgn(-7) + signbit(-7)", 0),
         (".not. 0", -1),

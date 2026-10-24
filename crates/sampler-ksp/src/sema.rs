@@ -921,11 +921,9 @@ impl<'a> Sema<'a, '_> {
                 let value = if *hex {
                     *n as u32 as i32
                 } else {
-                    // Kontakt wraps decimal literals up to 2^32 - 1 into 32 bits.
-                    match u32::try_from(*n) {
-                        Ok(v) => v as i32,
-                        Err(_) => return fault(span, "literal exceeds 32-bit range"),
-                    }
+                    // Kontakt clamps a decimal literal above i32::MAX to i32::MAX
+                    // (`lit_int_overflow`: 2147483648 reads back as 2147483647).
+                    i32::try_from(*n).unwrap_or(i32::MAX)
                 };
                 (Ty::Int, ExprKind::Int(value))
             }
@@ -949,13 +947,6 @@ impl<'a> Sema<'a, '_> {
                 (ret, ExprKind::Builtin(b, args))
             }
             A::Unary(UnOp::Neg, inner) => {
-                if let A::Int(2_147_483_648, false) = inner.kind {
-                    return Ok(Expr {
-                        ty: Ty::Int,
-                        span,
-                        kind: ExprKind::Int(i32::MIN),
-                    });
-                }
                 let inner = self.expr(inner)?;
                 let inner = if inner.ty == Ty::Bool {
                     self.coerce(inner, Ty::Int)?

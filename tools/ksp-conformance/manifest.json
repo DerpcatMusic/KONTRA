@@ -418,5 +418,15 @@
   "id": "lit_neg_over",
   "category": "arithmetic",
   "results": 1
+ },
+ {
+  "id": "bool_inrange_arith",
+  "category": "typing",
+  "results": 1
+ },
+ {
+  "id": "bool_pgs_arith",
+  "category": "typing",
+  "results": 1
  }
 ]
