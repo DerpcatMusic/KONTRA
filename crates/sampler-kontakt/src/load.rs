@@ -1679,6 +1679,7 @@ mod native_note_tests {
             None,
             "array index 76 out of bounds for %_legato_event_id (length 72); read returns zero or empty text"
         ));
+        assert!(native_script_note(Kind::Warning, None, "later ui_control callback replaces an earlier one"));
         // Behaviour that may really differ stays a loss, as do other kinds.
         assert!(!native_script_note(Kind::Warning, None, "DurationSixteenth read in on init takes the host transport"));
         assert!(!native_script_note(Kind::Approximate, Some("attach_zone"), "simplified"));
@@ -2149,7 +2150,9 @@ fn native_script_note(kind: sampler_ksp::Kind, builtin: Option<&str>, message: &
     let group_miss = (message.starts_with("find_group(") || message.starts_with("get_group_idx("))
         && message.ends_with("Index will be invalid!");
     let array_read = builtin.is_none() && message.contains("out of bounds for");
-    matches!(builtin, Some("find_group" | "get_group_idx")) || group_miss || array_read
+    // The later ui_control callback replaces the earlier one, as Kontakt does.
+    let ui_replace = message == "later ui_control callback replaces an earlier one";
+    matches!(builtin, Some("find_group" | "get_group_idx")) || group_miss || array_read || ui_replace
 }
 
 fn warning_class(message: &str) -> String {
