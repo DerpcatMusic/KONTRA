@@ -1,0 +1,16 @@
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare ui_switch $s
+  set_control_par($s, $CONTROL_PAR_VALUE, 1)
+  $cv := $s
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
