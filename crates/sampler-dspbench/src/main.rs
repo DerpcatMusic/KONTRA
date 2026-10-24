@@ -15,6 +15,15 @@ fn main() {
     if args.first().map(String::as_str) == Some("--cpu-child") {
         return cpu_child(&args[1..]);
     }
+    if args.first().map(String::as_str) == Some("--stretch") {
+        #[cfg(feature = "candidates")]
+        if args.get(1).map(String::as_str) == Some("identity") {
+            return sampler_dspbench::stretch::identity(48_000.0);
+        }
+        return sampler_dspbench::stretch::run();
+        #[cfg(not(feature = "candidates"))]
+        panic!("--stretch needs --features candidates");
+    }
     let mut out_dir = "docs/research/dspbench".to_string();
     let mut band = Band::default();
     let mut perf = true;
