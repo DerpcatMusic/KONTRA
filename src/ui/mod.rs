@@ -767,11 +767,8 @@ impl Cx<'_> {
     fn add(&mut self, path: String) {
         self.remember(&path);
         let mut slot = 0;
-        for program in openable_programs(&path) {
-            let part = Part {
-                program,
-                ..new_part(&self.selection, &self.settings, path.clone())
-            };
+        for parts in openable_parts(&path) {
+            let part = program_part(&self.selection, &self.settings, path.clone(), parts);
             slot = add_part(&mut self.selection, part);
         }
         self.ensure_parts();
@@ -881,20 +878,57 @@ fn replace_part(part: &mut Part, path: String) {
     };
 }
 
-/// The programs `path` opens as rack parts: the sounding programs of a Kontakt
-/// multi (see `sampler_kontakt::sounding_programs`), so an empty or unresolved
-/// slot never opens as a silent part.
-fn openable_programs(path: &str) -> Vec<u32> {
+/// The rack parts `path` opens as: `(program, channel)`, where `channel` is the
+/// multi's MIDI channel for that part (None for a single instrument, which takes
+/// the next free channel). A multi's empty slots are not parts; a part whose
+/// samples are missing is, so its load report can say so. A multi with no part
+/// that references samples keeps all of its programs.
+fn openable_parts(path: &str) -> Vec<(u32, Option<i16>)> {
     let path = Path::new(path);
     if !path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("nkm"))
     {
-        return vec![0];
+        return vec![(0, None)];
     }
-    sampler_kontakt::sounding_programs(path)
-        .map(|programs| programs.into_iter().map(|p| p as u32).collect())
-        .unwrap_or_else(|_| vec![0])
+    let Ok(multi) = sampler_kontakt::read_multi(path) else {
+        return vec![(0, None)];
+    };
+    let with_samples: Vec<(u32, Option<i16>)> = multi
+        .parts
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| part.has_samples)
+        .map(|(program, part)| (program as u32, Some(part.channel)))
+        .collect();
+    if with_samples.is_empty() {
+        multi
+            .parts
+            .iter()
+            .enumerate()
+            .map(|(program, part)| (program as u32, Some(part.channel)))
+            .collect()
+    } else {
+        with_samples
+    }
+}
+
+/// A new part of `path` for one of its programs, on the multi's channel unless
+/// the settings choose the input.
+fn program_part(
+    selection: &Selection,
+    settings: &crate::library::Settings,
+    path: String,
+    (program, channel): (u32, Option<i16>),
+) -> Part {
+    let mut part = Part {
+        program,
+        ..new_part(selection, settings, path)
+    };
+    if let (Some(channel), None) = (channel, settings.new_input) {
+        part.channel = channel;
+    }
+    part
 }
 
 /// A part for `path` on the input and output the settings give new parts.
@@ -1168,11 +1202,8 @@ fn native_files(
                 None => {
                     let settings = p.shared.libraries.settings();
                     let mut slot = 0;
-                    for program in openable_programs(&path) {
-                        let part = Part {
-                            program,
-                            ..new_part(&selection, &settings, path.clone())
-                        };
+                    for parts in openable_parts(&path) {
+                        let part = program_part(&selection, &settings, path.clone(), parts);
                         slot = add_part(&mut selection, part);
                     }
                     slot
