@@ -845,6 +845,30 @@ impl Runtime {
     pub fn engine_parameter(&mut self, address: EngineParameterAddress) -> Result<i32, Error> {
         self.engine_parameter_in(self.active_plan(), address)
     }
+    /// Load-time restore of engine-bound controls (volume, pan, ...): each saved control value
+    /// is written to its engine address through the binding's law, so the engine holds what
+    /// the control showed when the project was saved. No script callback runs. Ids without a
+    /// binding (script and UI controls) are skipped.
+    pub fn restore_engine_controls(&mut self, plan: PlanId, values: &[(u128, f64)]) -> Result<usize, Error> {
+        let bindings: std::collections::HashMap<u128, EngineParameterBinding> = self
+            .engine_parameter_bindings(plan)?
+            .iter()
+            .map(|binding| (binding.control.0, *binding))
+            .collect();
+        let mut restored = 0;
+        for &(id, value) in values {
+            let Some(binding) = bindings.get(&id) else { continue };
+            let encoded = binding.law.encode(value);
+            // Already holding the saved value: leave it. Re-writing a quantized engine value
+            // would read back as a different control value (144 -> 143.99992).
+            if self.engine_parameter_in(plan, binding.address).is_ok_and(|current| current == encoded) {
+                continue;
+            }
+            self.set_engine_parameter_in(plan, binding.address, encoded)?;
+            restored += 1;
+        }
+        Ok(restored)
+    }
     pub(crate) fn set_engine_parameter_in(
         &mut self,
         plan: PlanId,

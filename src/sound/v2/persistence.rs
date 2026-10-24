@@ -690,6 +690,12 @@ impl Persistence {
 }
 
 impl Part {
+    /// Engine-bound controls carry their engine value: write it before persistence_changed
+    /// reads the engine back into the sliders. Stale or unbound ids are skipped.
+    pub(crate) fn restore_engine_controls(&mut self, values: &[(u128, f64)]) {
+        let plan = self.runtime.active_plan();
+        let _ = self.runtime.restore_engine_controls(plan, values);
+    }
     pub(crate) fn prepare_persistence(
         &mut self,
         views: &[sampler_ksp::ScriptView],
