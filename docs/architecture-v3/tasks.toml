@@ -149,7 +149,7 @@ lane = "tooling"
 size = "M"
 agent = "worker"
 deps = ["P0.2"]
-owns = ["tools/probe/fixtures/**", "tools/probe/src/fixtures.rs", "tools/probe/tests/**"]
+owns = ["tools/probe/**"]
 docs = ["10-TESTING.md#1-playback-contracts-toolsprobe-crate-kontra-probe", "06-FORMATS.md#4-native-format"]
 goal = "Synthetic, redistributable instruments that trigger the same paths as Areia and Vista, so contracts run in CI without vendor libraries."
 steps = [
@@ -316,7 +316,11 @@ deps = ["P1.4"]
 owns = ["docs/architecture-v3/gates/G1.md"]
 docs = ["11-MIGRATION.md#phase-13-playback-users-hear-it"]
 goal = "Prove C1, C3, C6, C9 on Areia, Vista, Conflux, ANALOG; listen-test the original complaints."
-steps = ["Run kontra-probe on the four libraries (live + dense + offsets). Compare with G0.", "Build once, listen in a DAW (Bitwig) to Areia Spiccato Fast and Vista; note the verdict per the plays-correctly rule."]
+steps = [
+  "Run kontra-probe on the four libraries (live + dense + offsets). Compare with G0.",
+  "Explain or file tasks for the open probe findings from P0.2: Areia Spiccato Fast live gives 0 voices on keys 48/50/52/53 (zones cover them: engine drop or a missing condition/articulation gate?); Vista dense chords 0/64 audible while single notes play; dropout counts differ between identical real-time runs (Vista 4 vs 0).",
+  "Build once, listen in a DAW (Bitwig) to Areia Spiccato Fast and Vista; note the verdict per the plays-correctly rule."
+]
 gate = ["kontra-probe runs recorded in G1.md"]
 done = ["G1.md: contracts green or each failure has a follow-up task id."]
 
