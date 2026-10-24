@@ -112,6 +112,8 @@ pub struct CachedInit {
     snapshot_mode: crate::model::SnapshotMode,
     #[serde(default)]
     zone_catalog: Vec<(Option<u32>, u32, u8, u8)>,
+    #[serde(default)]
+    zone_names: Vec<String>,
     state: Box<serde_json::value::RawValue>,
     cells: u32,
     texts: u32,
@@ -238,10 +240,11 @@ impl Initialized {
         }
         Some(CachedInit {
             residency_schema: 1,
-            zone_identity_schema: 1,
+            zone_identity_schema: 2,
             snapshot_mode: self.environment.snapshot_mode,
             zone_catalog: self.environment.zone_catalog.iter().map(|z|
                 (z.id,z.home.group,z.home.low_key,z.home.high_key)).collect(),
+            zone_names: self.environment.zone_names.clone(),
             async_base:self.environment.midi_object.async_id_high_water(),
             async_high:self.init.midi_object.async_id_high_water(),
             residency:self.init.residency.clone(),
@@ -424,7 +427,7 @@ pub fn restore_initialized(
         || home[0]<0 || !(0..=127).contains(&home[1]) || !(0..=127).contains(&home[2]) || home[1]>home[2]) {
         return Err(error("invalid cached native zone homes"));
     }
-    if cached.zone_identity_schema != 1 {
+    if cached.zone_identity_schema != 2 {
         return Err(error("cached zone source identity schema is obsolete"));
     }
     let frontend_begin = std::time::Instant::now();
@@ -538,6 +541,7 @@ pub fn restore_initialized(
         zones: cached.zones.into_iter().collect(),
         zone_catalog: cached.zone_catalog.into_iter().map(|(id,group,low_key,high_key)|
             sampler_ir::SourceZone {id,home:sampler_ir::SourceZoneHome {group,low_key,high_key}}).collect(),
+        zone_names: cached.zone_names,
         ..Default::default()
     };
     #[cfg(feature = "scan")]
