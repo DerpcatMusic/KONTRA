@@ -482,10 +482,22 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
             return None;
         }
     }
-    if unit_set(rep.time_unit).is_some() {
-        notes.push(("time_unit".into(), format!("{}", rep.time_unit), Reason::NotModeled));
-        return None;
-    }
+    // Tempo-synced TIME: the unit's beats per note (the table every `*_UNIT` effect shares,
+    // PROVED in timemod-reads.tsv) times a note count. The count law round(1 + 11 v) is the
+    // legacy Delay's (PROVED there); it is reused for Replika, not measured on Replika.
+    let synced_beats = match unit_set(rep.time_unit) {
+        None => None,
+        Some(unit) => {
+            let factor = crate::time_stretch_writes::SPEED_UNIT_BEATS.get(unit.round() as usize).copied().flatten();
+            match factor {
+                Some(factor) => Some(factor * (1. + 11. * f64::from(rep.time)).round()),
+                None => {
+                    notes.push(("time_unit".into(), format!("{}", rep.time_unit), Reason::NotModeled));
+                    return None;
+                }
+            }
+        }
+    };
     // Reason split (docs/re/engine/k-replika.md): a control whose effect the IR can already
     // represent (feedback matrix, tap pan and level, tap depth, LFO rate, input matrix) but
     // whose source law is unestablished is UnknownLawOmitted. Everything else has no IR
@@ -545,6 +557,7 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
         ducking_amount: rep.ducking_amount,
         ducking_release: rep.ducking_release,
         path,
+        synced_beats,
         ..ReplikaControls::default()
     };
     let mut line = Line::single(DelayTime::Frames(1), 2000.);
@@ -911,6 +924,31 @@ mod tests {
             assert!(built.notes.is_empty(), "{:?}", built.notes);
             let y = render(built.processors, &input);
             assert_ulps(&y, &want, &format!("choral mode {mode}"));
+        }
+    }
+
+    /// A tempo-synced Replika TIME: unit factor (beats per note) x count round(1 + 11 v). Several units.
+    #[test]
+    fn replika_synced_time_is_unit_factor_times_note_count() {
+        for (time, unit, want) in [(0.0f32, 9.0f32, 1.0f64), (0.5, 9.0, 7.0), (0.0, 5.0, 4.0), (1.0, 12.0, 6.0), (0.0, 10.0, 0.6666667)] {
+            let mut public = 0i32.to_le_bytes().to_vec();
+            let mut fields = [0f32; 10];
+            fields[0] = time;
+            for f in fields {
+                public.extend(f.to_le_bytes());
+            }
+            public.extend([0u8; 3]);
+            public.extend(unit.to_le_bytes());
+            public.extend([0u8; 8]);
+            public.push(0);
+            public.extend(std::iter::repeat_n(0u8, 4 * 4 + 1 + 9 * 4 + 1));
+            let mut r = super::super::Reader(&public);
+            let Some(super::Unit::Replika(rep)) = super::read_replika(0x12, &mut r) else { panic!("v0x12 must read") };
+            let mut notes = Vec::new();
+            let cfg = super::replika_config(&rep, 0.5, &mut notes).expect("synced TIME maps");
+            let sampler_ir::fx::timemod::Native::Replika(controls) = cfg.line.expect("delay line").native else { panic!("native") };
+            let got = controls.synced_beats.expect("synced");
+            assert!((got - want).abs() < 1e-6, "time {time} unit {unit}: {got} beats, want {want}");
         }
     }
 
