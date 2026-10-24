@@ -166,6 +166,20 @@ fn sweep() -> Vec<Message> {
     m
 }
 
+/// Shared with the real-Kontakt benchmark (tools/oracle/cpu_bench.py): I-vi-IV-V, 16 voices per chord,
+/// 2 s per chord, so 8 s total with 16 sounding voices at a time.
+fn progression16() -> Vec<Message> {
+    const ROOTS: [u8; 4] = [36, 33, 41, 43];
+    const VOICING: [u8; 16] = [0, 4, 7, 12, 16, 19, 24, 28, 31, 34, 36, 40, 43, 46, 48, 52];
+    let mut m = expression();
+    for (chord, root) in ROOTS.iter().enumerate() {
+        for v in VOICING {
+            on_off(&mut m, root + v, 100, chord as f64 * 2.0, 2.0);
+        }
+    }
+    m
+}
+
 fn pad() -> Vec<Message> {
     let mut m = Vec::new();
     for key in [48, 55, 60, 64] {
@@ -219,6 +233,26 @@ const SCENARIOS: &[Scenario] = &[
         source: Source::Kontakt("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki"),
         seconds: 8.0,
         notes: dense,
+    },
+    Scenario {
+        name: "cpu-conflux",
+        source: Source::Kontakt("Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki"),
+        seconds: 8.0,
+        notes: progression16,
+    },
+    Scenario {
+        name: "cpu-areia-full-ens",
+        source: Source::Kontakt(
+            "Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/07 Full Ens/Areia - 04 Full Ens - Spiccato Slow.nki",
+        ),
+        seconds: 8.0,
+        notes: progression16,
+    },
+    Scenario {
+        name: "cpu-analog-strings",
+        source: Source::Kontakt("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki"),
+        seconds: 8.0,
+        notes: progression16,
     },
     Scenario {
         name: "uvi-scripted-pad",
@@ -942,6 +976,8 @@ fn run_scenario(
                 "p50_us": percentile(&times, 0.5) as f64 / 1e3,
                 "p99_us": percentile(&times, 0.99) as f64 / 1e3,
                 "max_us": *times.last().unwrap() as f64 / 1e3,
+                // Busy time over the whole run as a share of one core: the figure to compare with Kontakt's CPU%.
+                "cpu_pct_mean": times.iter().sum::<u64>() as f64 / (frames as f64 / f64::from(RATE) * 1e9) * 100.0,
                 "service_p99_us": percentile(&service, 0.99) as f64 / 1e3,
                 "service_max_us": service.last().copied().unwrap_or(0) as f64 / 1e3,
                 "misses": times.iter().filter(|&&t| t > deadline).count(),
