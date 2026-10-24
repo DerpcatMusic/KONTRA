@@ -386,7 +386,7 @@ pub struct Selection {
 /// Largest saved UVI/script state blob a project may carry; save and load agree.
 /// Large KSP libraries (Areia, Dolce) hold ~1.3M script values, ~14 MB as JSON; 8 MiB
 /// dropped their script state silently. Measured on the host recall test.
-pub(crate) const MAX_SAVED_STATE: usize = 64 << 20;
+pub(crate) use crate::sound::v2::persistence::MAX_SAVED_STATE;
 
 pub const IDLE_SECONDS: f64 = 30.0;
 
