@@ -1,0 +1,7 @@
+step	attack63_ms	release63_ms	steady_dB	offset_dB
+bypass	136	1	-94.71	2.91
+att0_rel0	137	1	-94.87	2.91
+att0_rel500	137	1	-94.86	2.91
+att0_rel1000	137	1	-94.86	2.91
+att500_rel500	137	1	-94.86	2.91
+att1000_rel500	137	1	-94.87	2.91

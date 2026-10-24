@@ -1,0 +1,6 @@
+name	db_t0_ms	db_tau_ms	db_resid_db	pre_db	post_db	rise10_90_ms	lin_t0_ms	lin_tau_ms	lin_resid	ramp_dur_ms	ramp_resid_db	ramp_lin_dur_ms	ramp_lin_resid	dropout_bins
+ctrl	3.00	1.06	0.000	-1.10	-1.10	n/a	3.75	1.06	0.0000	0.50	0.000	24.00	0.00000	0
+roll_a	-6.00	6.94	0.003	-1.10	0.46	15.08	-5.25	7.14	0.0005	16.00	0.021	17.00	0.00232	362
+roll_b	-13.75	6.94	0.004	-1.10	0.46	14.92	-13.75	7.14	0.0005	16.00	0.021	17.00	0.00228	0
+roll_c	-16.50	6.94	0.004	-1.10	0.46	14.95	-16.00	7.14	0.0005	16.50	0.021	16.50	0.00229	0
+# t0 relative to the scheduled CC20 at 1.5 s. time origin 1.0439 s. bypass-edge timing check (63%, ms): none

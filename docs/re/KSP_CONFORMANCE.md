@@ -127,3 +127,22 @@ text arrays with literal lists are not measured and still accepted.
 
 Known debt: string `=` in conditions is accepted by the interpreter and rejected by Kontakt in on
 init. The `on note` form is not measured yet; the oracle has no note-trigger probe.
+
+## Slice 5 (126 units): control and UI readback in on init
+
+Probes: `set_control_par` on knobs, switches, hide, position and menus; `get_control_par` and
+`get_num_menu_items` read back in on init; `ui_knob` and `ui_switch` variables read back in on init;
+`add_menu_item` in on init. Decoded from Kontakt 8.13.1 (`ctl_*`, `ui_var_*`, `diag_*`).
+
+| Rule | Evidence |
+|---|---|
+| `set_control_par` on a knob, switch, hide, or position compiles in on init. | `ctl_knob_set_high`, `ctl_knob_set_neg`, `ctl_switch_set`, `ctl_hide_set`, `ctl_pos_x_set` compile; `diag_set_switch` compiles |
+| `get_control_par` used as an integer in on init is rejected. | `diag_get_int`, `diag_get_index0`, `diag_get_switch`, `ctl_knob_default` rejected |
+| `get_num_menu_items` in on init is rejected. | `diag_menu_count`, `diag_menu_count_after_add`, `ctl_menu_items` rejected |
+| `add_menu_item` in on init compiles. | `diag_menu_add` compiles |
+| A `ui_knob`/`ui_switch` variable set in on init reads back 0 in on init. | `ui_var_knob_default`, `ui_var_knob_set_high`, `ui_var_knob_set_neg`, `ui_var_switch_set` compile; read as 0 |
+
+Known debt: `get_control_par` and `get_num_menu_items` are accepted by the interpreter and by
+about ten existing tests (on init) that Kontakt rejects. The three `ctl_menu_items`,
+`diag_menu_count` and `diag_menu_count_after_add` units are listed in `KNOWN_MISMATCHES`. Moving
+those tests to on note or on ui_control, then rejecting the calls in on init, is the next step.
