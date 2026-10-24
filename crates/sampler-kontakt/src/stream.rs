@@ -1342,13 +1342,24 @@ fn admit_within_budget<T>(mut items: Vec<(usize, T)>, budget: usize) -> Vec<T> {
     kept
 }
 
-/// The bytes a source's start needs in the head budget: a required-resident source is
-/// all of its frames, anything else is the lowest frame its start ranges reach.
-fn minimum_head_bytes(pcm: &Pcm, ranges: &[Range<usize>]) -> io::Result<usize> {
+/// Smallest stored form of a source's start: 2 bytes a frame (`Packed` never stores less).
+fn head_floor_bytes(pcm: &Pcm, ranges: &[Range<usize>]) -> io::Result<usize> {
+    if pcm.requires_resident() {
+        return head_cost(pcm, ranges);
+    }
+    Ok(range_bounds(pcm, ranges)?.0)
+}
+
+/// The head-budget cost of a source's start, in the one unit the budget and every
+/// admission check share: decoded `Frame` bytes. A required-resident source is all of its
+/// frames; anything else is the full extent of its start ranges. A packed head is stored at
+/// most this wide (`Packed` never exceeds an f32 frame), so the cost never understates a
+/// reservation, and the reservation itself stays the exact check.
+fn head_cost(pcm: &Pcm, ranges: &[Range<usize>]) -> io::Result<usize> {
     if pcm.requires_resident() {
         pcm.frame_count().checked_mul(size_of::<Frame>()).ok_or_else(|| io::Error::other("resident source size overflow"))
     } else {
-        Ok(range_bounds(pcm, ranges)?.0)
+        Ok(range_bounds(pcm, ranges)?.1)
     }
 }
 
@@ -1514,15 +1525,18 @@ pub(crate) fn prepare_head_ranges(
     Ok(builder.finish())
 }
 fn head_prepare_error(recipe: &HeadPreparer, error: sampler_core::Error) -> io::Error {
-    if error == sampler_core::Error::Capacity {
-        if let Some(status) = recipe
-            .budget_status()
-            .filter(|s| s.limit_bytes < usize::MAX)
-        {
-            // A failed exact reservation proves this lower bound; concurrent
-            // transactions may release storage before this diagnostic is read.
-            return head_budget_error(status.limit_bytes, status.limit_bytes + 1);
-        }
+    match recipe.budget_status() {
+        Some(status) => head_budget_capacity(status, error),
+        None => io::Error::new(io::ErrorKind::InvalidData, error),
+    }
+}
+/// A failed exact reservation against the shared head budget is the typed
+/// `HeadBudgetExceeded`, which the cold-fallback ladder degrades on.
+pub(super) fn head_budget_capacity(status: sampler_core::HeadBudgetStatus, error: sampler_core::Error) -> io::Error {
+    if error == sampler_core::Error::Capacity && status.limit_bytes < usize::MAX {
+        // A failed exact reservation proves this lower bound; concurrent
+        // transactions may release storage before this diagnostic is read.
+        return head_budget_error(status.limit_bytes, status.limit_bytes + 1);
     }
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
@@ -2095,7 +2109,7 @@ impl Streamer {
                 let mut pinned_bytes = 0usize;
                 let mut rest = Vec::new();
                 for (index, (pcm, ranges)) in selected.iter().enumerate() {
-                    let bytes = minimum_head_bytes(pcm, ranges)?;
+                    let bytes = head_cost(pcm, ranges)?;
                     if pinned_wavetables.contains(&pcm.asset_id()) {
                         pinned_bytes = pinned_bytes.saturating_add(bytes);
                         keep.push(index);
@@ -2111,8 +2125,10 @@ impl Streamer {
             let audit = std::env::var_os("KONTRA_AUDIT_LOAD").is_some();
             let started = audit.then(Instant::now);
             let result = (|| {
+                // Early out only: even the smallest stored form (2 bytes a frame) cannot
+                // fit. Admission itself is the exact reservation inside `head_prepare`.
                 let minimum = selected.iter().try_fold(0usize, |sum, (pcm, ranges)| {
-                    let min = minimum_head_bytes(pcm, ranges)?;
+                    let min = head_floor_bytes(pcm, ranges)?;
                     sum.checked_add(min).ok_or_else(|| io::Error::other("sample head size overflow"))
                 })?;
                 let minimum = residency_budget.status().held_bytes.checked_add(minimum)
@@ -3757,6 +3773,16 @@ mod tests {
         assert!(bytes > 0 && bytes <= 256, "admitted {bytes} bytes");
         assert!(assets[0].head_frames() > 0);
         assert!(assets[1].resident_frames().is_none());
+    }
+
+    #[test]
+    fn head_floor_and_cost_bracket_the_stored_form_of_a_start() {
+        // Two start ranges of one streamed source: 4288 frames. The floor is the narrowest
+        // stored form (2 bytes a frame), the cost the widest (an f32 frame, 8 bytes).
+        let pcm = Pcm::streamed(48000, 8192).unwrap();
+        let ranges = [2000..4096, 6000..8192];
+        assert_eq!(head_floor_bytes(&pcm, &ranges).unwrap(), 4288 * 2);
+        assert_eq!(head_cost(&pcm, &ranges).unwrap(), 4288 * size_of::<Frame>());
     }
 
     #[test]
