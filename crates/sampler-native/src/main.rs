@@ -1,5 +1,6 @@
 //! Independent offline composition root; no legacy application or engine dependency.
 mod census;
+mod explain;
 mod identify;
 mod kontakt;
 mod render_kontakt;
@@ -315,6 +316,10 @@ fn run() -> io::Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     match args.as_slice() {
         [command, roots @ ..] if command == "census" => census::run(roots),
+        [command, rest @ ..] if command == "explain" => {
+            let rest: Vec<String> = rest.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+            explain::run(&rest)
+        }
         [command, bank, program, output, rest @ ..]
             if command == "render-uvi" && rest.len() <= 1 =>
         {
