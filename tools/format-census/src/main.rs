@@ -506,7 +506,7 @@ fn main() {
         };
         let streamed = load_read_streamed(k, &options, &StreamPolicy::default(), |_| {}).expect("load");
         for u in &streamed.loaded.instrument.unsupported {
-            println!("{:?}\t{}\t{}", u.reason, u.feature, u.value.chars().take(120).collect::<String>());
+            println!("{:?}\t{}\t{}\t{}", u.reason, u.feature, u.value.chars().take(120).collect::<String>(), u.location);
         }
         return;
     }
