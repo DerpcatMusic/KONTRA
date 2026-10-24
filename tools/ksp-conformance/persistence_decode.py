@@ -36,7 +36,15 @@ def decode(run: Path) -> dict:
                 if groups[base + bit] < SET_DB:
                     value |= 1 << bit
             points[point] = value
-        golden[name] = {"source": sources.get(name, ""), "points": points}
+        # Group 64 is written first in on init, 65 last: a missing start marker means Kontakt
+        # did not compile the script; a missing end marker means init stopped early.
+        compiled = groups[64] < SET_DB
+        completed = groups[65] < SET_DB
+        # Group 66 is written first in on persistence_changed. Loads through the Lua API did not
+        # run it (see docs/re/ksp/PERSISTENCE_CENSUS.md), so this stays clear there.
+        golden[name] = {"source": sources.get(name, ""), "compiled": compiled,
+                        "completed": completed, "persistence_changed_ran": groups[66] < SET_DB,
+                        "points": points}
     return golden
 
 

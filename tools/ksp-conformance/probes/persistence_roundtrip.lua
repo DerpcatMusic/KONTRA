@@ -62,12 +62,12 @@ local VARIANTS = {
 -- set when $s = 0, and the value at the end of init (C). persistence_changed shows D.
 local function script(v)
   local e = v.val
-  local src = HEADER .. v.decl
+  local src = "on init\n" .. "set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)\n" .. HEADER:sub(9) .. v.decl
   src = src .. enc(e, 0)
   if v.read ~= "" then src = src .. v.read .. enc(e, 8) end
   src = src .. "if ($s = 0)\n  " .. v.set .. "\n  $s := 1\nend if\n"
-  src = src .. enc(e, 16) .. "end on\n"
-  src = src .. "on persistence_changed\n" .. enc(e, 24) .. "end on\n"
+  src = src .. enc(e, 16) .. "set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)\nend on\n"
+  src = src .. "on persistence_changed\nset_engine_par($ENGINE_PAR_VOLUME, 1000, 66, -1, -1)\n" .. enc(e, 24) .. "end on\n"
   return src
 end
 
@@ -79,19 +79,30 @@ local function instrument(name, src)
   log(string.format('{"case":"%s","source":%s}', name, json_str(src)))
   local i = kt.add_instrument()
   kt.set_instrument_volume(i, 0)
-  for _ = 1, 40 do kt.add_group(i) end
+  for _ = 1, 67 do kt.add_group(i) end
+  local defaults = {}
+  for g = 0, 66 do defaults[g] = kt.get_group_volume(i, g) end
   local ok, err = pcall(kt.set_instrument_script_source, i, 0, src)
   log(string.format('{"%s_compile":%s,"err":"%s"}', name, tostring(ok), tostring(err or ""):gsub('"', "'"):sub(1, 160)))
-  return i
+  return i, defaults
+end
+
+-- The writer's encoded group volumes are part of the saved instrument, so the loader would
+-- read them back as its own. Reset every group to its default before saving.
+local function reset_groups(i, defaults)
+  local t0 = os.time()
+  repeat until os.time() - t0 >= 1
+  for g = 0, 66 do kt.set_group_volume(i, g, defaults[g]) end
 end
 
 local pending = {}
 for _, v in ipairs(VARIANTS) do
-  local a = instrument(v.name .. "_A", script(v))
+  local a, defaults = instrument(v.name .. "_A", script(v))
+  reset_groups(a, defaults)
   local path = DIR .. v.name .. ".nki"
   local ok, err = pcall(kt.save_instrument, a, path, {})
   log(string.format('{"%s_save":%s,"err":"%s"}', v.name, tostring(ok), tostring(err or ""):gsub('"', "'"):sub(1, 160)))
-  local ok2, b = pcall(kt.load_instrument, path, 0)
+  local ok2, b = pcall(kt.load_instrument, path)
   log(string.format('{"%s_load":%s,"index":"%s"}', v.name, tostring(ok2), tostring(b)))
   if ok2 and math.type(b) == "integer" then pending[#pending + 1] = { name = v.name, idx = b } end
 end
@@ -102,7 +113,7 @@ repeat until os.time() - t0 >= 4
 
 for _, p in ipairs(pending) do
   local groups = {}
-  for g = 0, 39 do
+  for g = 0, 66 do
     local ok, db = pcall(kt.get_group_volume, p.idx, g)
     groups[#groups + 1] = string.format("%.9g", ok and db or -999)
   end

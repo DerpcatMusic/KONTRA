@@ -42,12 +42,12 @@ UVI: no `.nki` in the installed UVI folders; no UVI instrument is covered yet.
 | Pattern in corpus | Documented behaviour | Status |
 |---|---|---|
 | `make_persistent` in init (all instruments) | marks the variable, saved with instrument | matches (static marking) |
-| `make_persistent` only inside an untaken `if` | marking happens only if the call executes | mismatch in our code (static). Native check in `persistence_roundtrip.lua` variant `untaken_mp` |
+| `make_persistent` only inside an untaken `if` | the doc said marking happens only if the call executes | **native: Kontakt saved `$z = 4`, so it marks statically, as our code does.** The doc row was wrong (`persistence_native_golden.rs`, case `untaken_mp`) |
 | `make_instr_persistent` (Conflux, Una Corda, Shreddage, ANALOG) | saved with instrument, not snapshots | mismatch: `snapshot.rs` overwrites any named entry regardless of kind. Snapshot-side only |
-| `read_persistent_var` inside init (Afflatus, Pacific, Vista, Dolce, Areia, ANALOG, Chorus) | restores immediately, only in init | partial: no check that the variable is persistent. Native check: variant `int_pers_readvar` |
-| restore at end of init, then `on persistence_changed` (Conflux, Morphology, Dolce, Areia, Una Corda, Shreddage, ANALOG, Chorus) | values restored after init, before `on persistence_changed` | matches the doc. Native check: variants `int_pers_noread`, `real_pers`, `array_pers` |
+| `read_persistent_var` inside init (Afflatus, Pacific, Vista, Dolce, Areia, ANALOG, Chorus) | restores immediately, only in init | native: restores `$p` at the read (B=7). Our code also restores non-persistent variables; native not probed (`persistence_native_golden.rs`, `int_pers_readvar`) |
+| restore at end of init, then `on persistence_changed` (Conflux, Morphology, Dolce, Areia, Una Corda, Shreddage, ANALOG, Chorus) | values restored after init | native: no value is restored before the end of init (C=0 for `int_pers_noread`, `real_pers`, `array_pers`). Verified for init. **`on persistence_changed` did not run on a Lua `load_instrument`** (its marker group stayed clear), so the order against it is not verified; needs a GUI preset load |
 | arrays restored as prefix, cut to declared length (`%` arrays in Dolce, Areia, ANALOG, Chorus) | not documented | unknown: native check `array_pers` covers the same length only; shorter/longer saves not probed yet |
 
-Native values for the rows marked "native check" come from `tools/ksp-conformance/probes/persistence_roundtrip.lua`
-and `multi_slot_roundtrip.lua`, decoded by `tools/ksp-conformance/persistence_decode.py`. They are
-pending (the probe is queued behind Kontakt sessions).
+Native values: `tools/ksp-conformance/probes/persistence_roundtrip.lua`, decoded by
+`tools/ksp-conformance/persistence_decode.py` into `tools/ksp-conformance/persistence_golden.json`, and
+compared by `crates/sampler-ksp/tests/persistence_native_golden.rs`. The multi-slot probe is still to run.
