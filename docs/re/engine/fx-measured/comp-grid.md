@@ -5,6 +5,10 @@ Rig: `tools/kontakt-oracle/fxrig.py levels` through `oracle-slot` (slot pool, no
 Data: `comp-grid.tsv` (step, name, level, reference dB, output dB, delta dB), spec `comp-grid.spec.json`.
 Insert check: every setting moves the output against the reference (deltas 0 to -49 dB), so the insert is applied.
 
+Correction (2026-10-24): this grid wrote `ATTACK`/`RELEASE`, which are not Kontakt parameter names (the compressor's are
+`COMP_ATTACK` and `COMP_DECAY`), so those writes were ignored and the grid ran at the compressor defaults. The threshold and
+ratio names (`THRESHOLD`, `RATIO`) are correct. Attack/release are measured separately in `comp-burst.md`.
+
 ## Grids
 
 - Threshold knob 0 / 0.25 / 0.5 / 0.75 / 1.0 at ratio knob 0.5.
@@ -37,5 +41,4 @@ about -72 dBFS for inputs -40 to -12 dBFS (delta -21 to -49 dB), so the law's sh
   `1/(ratio+0.13) - 0.884` grows from 0 at r=0 to about 4.7 at r=1, so the knob is not linear in the saved ratio.
 
 Not yet done: the live KSP `set_engine_par` path has no compressor map in the code (`sampler-kontakt` consumes saved
-records only), so these maps are measured data, not engine behaviour. Attack and release are not measured here; the
-rig holds them fixed. The 0.25 s steady window is not verified against a 2 s tone yet.
+records only), so these maps are measured data, not engine behaviour. Attack and release: see `comp-burst.md`.

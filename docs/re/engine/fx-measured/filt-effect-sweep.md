@@ -10,4 +10,17 @@ Their responses are plausible (for example SV HP4 cutoff 0.5 at resonance 0.5 ha
 30 Hz and -52 dB at 15 kHz). The HP at cutoff 1.0 reads -124 dB below 1 kHz: a genuine high-pass at the top of the range, not a capture
 fault.
 
-Not compared against the model yet. Parity rows are unchanged.
+Compared 2026-10-24 (SV rows, 56) against the Wine-oracle capture the model is gated on (`sv_response_vectors.tsv`,
+same names, same probes):
+
+- Agree within 0.01 dB: SV LP1, SV HP1, SV BP2 (6 of 7; the res 0.9 row differs), SV HP4 (6 of 7), SV BP4 at cutoff >= 0.5
+  and res 0, SV LP4 and SV LP6 at cutoff >= 0.75 and res 0.
+- Disagree by 7 to 172 dB at the probes: SV LP4 (5 of 7), SV LP6 (7 of 7), SV BP4 (4 of 7), SV NOTCH4 (4 of 7), and the
+  res 0.5 / 0.9 rows of the 4-pole types. The disagreement includes original rows, not only the 23 reruns.
+- The model passes its own gate on the old capture, so the sweep is the suspect side. Likely cause, not verified: the
+  impulse window (`impulse_fft`, first sample above threshold after the onset) on steep responses with long group delay.
+  Next step: re-extract from the raw WAVs with the peak-centred window the capture test uses (`cascade.rs`
+  `sv_responses_match_the_kontakt_capture`), then compare again. The legacy POLE rows (LP1POLE, HP1POLE, LP4POLE, LP6POLE)
+  have no class in the model yet and are not compared.
+
+Parity rows are unchanged.
