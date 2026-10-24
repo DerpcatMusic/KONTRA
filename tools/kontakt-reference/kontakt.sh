@@ -8,6 +8,8 @@
 # One-time: in Kontakt Options > Audio pick device "kontra_ref" (WASAPI shared,
 # 48000 Hz); back up Settings.cfg first. GUI coordinates assume the 1600x1000 desktop.
 set -euo pipefail
+# Daemons (Xvfb, wine) must not keep the oracle lock fds (flock 3-9): an inherited fd keeps the legacy
+# lock after the job exits and stalls the whole queue. Hence the 3>&- ... 9>&- on every long-lived launch.
 RES="${KONTAKT_RES:-1600x1000}"  # GUI click coordinates in setup assume 1600x1000
 export DISPLAY=:77 WINEDLLOVERRIDES="d3d11,d3d10core,dxgi,d3d9=b"  # wined3d: DXVK crashes on Xvfb
 K="${KONTAKT_EXE:-/home/derpcat/.wine/drive_c/Program Files/Common Files/VST3/Portapotty/Kontakt 8/x64/Kontakt 8.exe}"
@@ -17,11 +19,11 @@ click() { xdotool mousemove "$1" "$2"; sleep 0.4; xdotool click 1; sleep "${3:-1
 
 case ${1:-} in
 start)
-  pgrep -x Xvfb -a | grep -q ':77' || { setsid nohup Xvfb :77 -screen 0 ${RES}x24 >/dev/null 2>&1 & sleep 1; }
+  pgrep -x Xvfb -a | grep -q ':77' || { setsid nohup Xvfb :77 -screen 0 ${RES}x24 >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & sleep 1; }
   pactl list short sinks | grep -q kontra_ref || pactl load-module module-null-sink sink_name=kontra_ref \
     sink_properties=device.description=kontra_ref format=float32le rate=48000 channels=2 >/dev/null
   # explorer /desktop: mouse input only works inside a Wine virtual desktop.
-  setsid nohup wine explorer /desktop=k8,$RES "$K" "$(winepath -w "$2")" >"$W/log/kontakt.log" 2>&1 </dev/null &
+  setsid nohup wine explorer /desktop=k8,$RES "$K" "$(winepath -w "$2")" >"$W/log/kontakt.log" 2>&1 </dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
   sleep 15
   for _ in $(seq 150); do   # wait until the loading Progress dialog is gone
     xdotool search --name '^Progress$' >/dev/null 2>&1 || break; sleep 2

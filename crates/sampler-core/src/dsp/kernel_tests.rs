@@ -25,6 +25,10 @@ fn reference(
         let state = &mut states[index];
         index += 1;
         match stage {
+            BatchOp::LiveFormant { knobs, second, rate } => super::formant::process_ramp(
+                &mut state.formant, &mut state.aux, *second, *rate, true, block, len,
+                |offset| knobs.map(|k| k.value(parameters, at + offset as u64, None) as f32),
+            ),
             BatchOp::Gain(gain) => {
                 for channel in block.iter_mut() {
                     for x in &mut channel[..len] {
@@ -228,6 +232,8 @@ fn check(stages: &[BatchOp], filters: &PreparedFilters, parameters: &[ControlRam
                         {
                             assert_eq!(bits(a), bits(e));
                             assert_eq!(bits(b), bits(e));
+                            assert_eq!(format!("{:?}", a.formant), format!("{:?}", e.formant));
+                            assert_eq!(format!("{:?}", b.formant), format!("{:?}", e.formant));
                         }
                     }
                     for i in len..BLOCK {
@@ -323,6 +329,23 @@ fn shared_dispatch_matches_frozen_pcm_and_state_bits() {
         &PreparedFilters::default(),
         &parameters,
     );
+}
+
+#[test]
+fn live_formant_lanes_match_scalar_pcm_and_state_bits() {
+    let parameters = [
+        ControlRamp::test_ramp(0.2, 0.9, 1, 193),
+        ControlRamp::test_ramp(0.6, 0.1, 1, 97),
+        ControlRamp::test_ramp(0.5, 0.5, 1, 1),
+    ];
+    for second in [false, true] {
+        let knobs = [0, 1, 2].map(control::PreparedParameter::Control);
+        check(
+            &[BatchOp::LiveFormant { knobs, second, rate: 48_000 }],
+            &PreparedFilters::default(),
+            &parameters,
+        );
+    }
 }
 
 #[test]
