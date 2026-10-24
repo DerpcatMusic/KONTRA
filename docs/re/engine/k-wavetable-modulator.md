@@ -24,30 +24,34 @@ not used.
 
 | mode | case target | decoded |
 |---|---|---|
-| 0 | 0x141a3e9c1 | not decoded |
+| 0 | 0x141a3e9c1 | advances the pair: `a' = a + base`, `b' = 2·base + b`, each wrapped at `> 0.5`; returns shape(`a'·2π + π`) |
 | 1 | 0x141a3e74e | phase += inc, wrap to [0,1); triangle `|p-0.5|*k - 1`; one-pole smoothed by `+0xc8` |
 | 2 | 0x141a3e7d3 | sine-type shape via `0x141a3e5d0` on `x*c + d` (`x` from the phase pair); sign selects branch |
 | 3 | 0x141a3e819 | sine-type, sign-selected output |
 | 4 | 0x141a3e853 | sine-type on the phase pair |
 | 5 | 0x141a3e891 | sign test on `+0xb8`, then `+0xc` path |
 | 6 | 0x141a3e8af | sine-type on `+0xc` |
-| 7 | 0x141a3e8e1 | not decoded |
-| 8 | 0x141a3e921 | not decoded |
-| 9 | 0x141a3e95e | not decoded |
-| 10 | 0x141a3e971 | not decoded |
-| 11 | 0x141a3e984 | not decoded |
-| 12 | 0x141a3e997 | not decoded |
+| 7 | 0x141a3e8e1 | advance via `0x141a3e6d0`; if `a < 0` return `\|shape(b·2π + π)\|` (abs mask `0x144714b90`), else 0 |
+| 8 | 0x141a3e921 | advance; `v = shape(b·2π + π)`; if `a < 0` return `v²`; else take the zero-return tail at `0x141a3e883` |
+| 9 | 0x141a3e95e | tail call `0x141a3f230` with `rcx = state+0x24` (sub-object, not decoded) |
+| 10 | 0x141a3e971 | tail call `0x141a3f120` with `rcx = state+0x24` (not decoded) |
+| 11 | 0x141a3e984 | same family as 9/10 with `rcx = state+0x24` (not decoded) |
+| 12 | 0x141a3e997 | same family as 9/10/11 (not decoded) |
 
-`0x141a3e5d0` is a polynomial shape: `u = 0.5 - |x - round(x)| * 2` style with a squared and a cubic
-term (decode incomplete). Its constants are in `.rdata` at 0x144fd0d98, 0x144e79a60, 0x144fd0da8,
-0x144fd0da0, 0x144fd0db0, 0x1447149a0.
+`0x141a3e5d0` is `shape(x)`, decoded (constants at `.rdata`, read with radare2):
+
+- `y = x·(1/2π) − 0.25` (`0x144fd0d98` = 1/2π, `0x144e79a60` = 0.25; `x` arrives as `2π·p + π`, so `y = p + 0.25`).
+- `r = round(y)` via `0x1443d107e` (inferred from use), `t = 0.5 − |2(y − r)|`, a triangle in [−0.5, 0.5].
+- `shape = K1·t⁴ − K6·t⁶ − K2·t² + π` with `K1 = 0x144fd0da8` (2.535656), `K6 = 0x144fd0da0` (0.540347), `K2 = 0x144fd0db0` (5.166513), constant `0x1447149a0` (π).
+- Checked in Python against the disassembly: it is not sin/cos. Values: p=0 → π, p=0.25 → 2, p=0.5 → π, p=0.125 → 2√2 (range [2, π]), so it is an unscaled rectified-style curve. Its consumers scale it; the scaling is not decoded.
 
 ## Still open
 
-1. Modes 0 and 7–12 bodies, and the exact polynomial in `0x141a3e5d0`.
+1. Modes 9–12: bodies of `0x141a3f230` and `0x141a3f120` (sub-object at `state+0x24`).
+   The output scaling of `shape` (how the consumer maps [2, π] to a wave) is not decoded.
 2. The mixing kernel `0x140cd5af0` (how amount, the modulator value and `+0x40`, `+0x58`,
    `+0x68`, `+0x70`, `+0x78` combine with the warped phase).
-3. `0x1443d10cc` and `0x1443d107e` (exp and floor/round helpers).
+3. `0x1443d10cc` (exp-like, smoother coefficient) and `0x1443d107e` (round, assumed from use, not confirmed).
 4. Oracle probe: set `ENGINE_PAR_WT_MOD_AMOUNT` from a KSP script and capture a wavetable sweep
    (`oracle-slot`), then compare with the decoded law.
 
