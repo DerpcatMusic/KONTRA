@@ -1,0 +1,270 @@
+{
+ "chain": [
+  "Effects/Compressor"
+ ],
+ "stimulus": "levels",
+ "pre": [
+  [
+   0,
+   "EFFECT_BYPASS",
+   0
+  ],
+  [
+   0,
+   "COMP_TYPE",
+   1
+  ]
+ ],
+ "steps": [
+  {
+   "name": "thr0_ratio50",
+   "set": [
+    [
+     0,
+     "THRESHOLD",
+     0
+    ],
+    [
+     0,
+     "RATIO",
+     500000
+    ],
+    [
+     0,
+     "ATTACK",
+     100000
+    ],
+    [
+     0,
+     "RELEASE",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "thr25_ratio50",
+   "set": [
+    [
+     0,
+     "THRESHOLD",
+     250000
+    ],
+    [
+     0,
+     "RATIO",
+     500000
+    ],
+    [
+     0,
+     "ATTACK",
+     100000
+    ],
+    [
+     0,
+     "RELEASE",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "thr50_ratio50",
+   "set": [
+    [
+     0,
+     "THRESHOLD",
+     500000
+    ],
+    [
+     0,
+     "RATIO",
+     500000
+    ],
+    [
+     0,
+     "ATTACK",
+     100000
+    ],
+    [
+     0,
+     "RELEASE",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "thr75_ratio50",
+   "set": [
+    [
+     0,
+     "THRESHOLD",
+     750000
+    ],
+    [
+     0,
+     "RATIO",
+     500000
+    ],
+    [
+     0,
+     "ATTACK",
+     100000
+    ],
+    [
+     0,
+     "RELEASE",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "thr100_ratio50",
+   "set": [
+    [
+     0,
+     "THRESHOLD",
+     1000000
+    ],
+    [
+     0,
+     "RATIO",
+     500000
+    ],
+    [
+     0,
+     "ATTACK",
+     100000
+    ],
+    [
+     0,
+     "RELEASE",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "thr50_ratio0",
+   "set": [
+    [
+     0,
+     "THRESHOLD",
+     500000
+    ],
+    [
+     0,
+     "RATIO",
+     0
+    ],
+    [
+     0,
+     "ATTACK",
+     100000
+    ],
+    [
+     0,
+     "RELEASE",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "thr50_ratio25",
+   "set": [
+    [
+     0,
+     "THRESHOLD",
+     500000
+    ],
+    [
+     0,
+     "RATIO",
+     250000
+    ],
+    [
+     0,
+     "ATTACK",
+     100000
+    ],
+    [
+     0,
+     "RELEASE",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "thr50_ratio50",
+   "set": [
+    [
+     0,
+     "THRESHOLD",
+     500000
+    ],
+    [
+     0,
+     "RATIO",
+     500000
+    ],
+    [
+     0,
+     "ATTACK",
+     100000
+    ],
+    [
+     0,
+     "RELEASE",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "thr50_ratio75",
+   "set": [
+    [
+     0,
+     "THRESHOLD",
+     500000
+    ],
+    [
+     0,
+     "RATIO",
+     750000
+    ],
+    [
+     0,
+     "ATTACK",
+     100000
+    ],
+    [
+     0,
+     "RELEASE",
+     300000
+    ]
+   ]
+  },
+  {
+   "name": "thr50_ratio100",
+   "set": [
+    [
+     0,
+     "THRESHOLD",
+     500000
+    ],
+    [
+     0,
+     "RATIO",
+     1000000
+    ],
+    [
+     0,
+     "ATTACK",
+     100000
+    ],
+    [
+     0,
+     "RELEASE",
+     300000
+    ]
+   ]
+  }
+ ]
+}
