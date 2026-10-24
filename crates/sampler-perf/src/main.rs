@@ -355,6 +355,10 @@ fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, Stri
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(2048),
                     block_frames: block,
+                    // PERF_RESIDENT_BUDGET=BYTES keeps every sample in RAM (no streaming, no underruns).
+                    resident_budget: std::env::var("PERF_RESIDENT_BUDGET")
+                        .ok()
+                        .and_then(|v| v.parse().ok()),
                     ..Default::default()
                 },
                 |_| {},
@@ -414,7 +418,11 @@ fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, Stri
                     plan.behavior_local_count()
                 );
             }
-            let horizon = (report.head_frames.max(sampler_core::PAGE_FRAMES) + 512) as u32;
+            // PERF_HORIZON=FRAMES widens the streaming runway (default: first window plus 512 frames).
+            let horizon = std::env::var("PERF_HORIZON")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or((report.head_frames.max(sampler_core::PAGE_FRAMES) + 512) as u32);
             eprintln!("stream policy: head_frames {} pool_bytes {} latency_p50_us {} latency_p95_us {} latency_p99_us {} horizon_frames {horizon}", report.head_frames, report.pool_bytes, report.latency_p50.as_micros(), report.latency_p95.as_micros(), report.latency_p99.as_micros());
             let mut rt = Runtime::new(plan, limits)
                 .map_err(fail)?
