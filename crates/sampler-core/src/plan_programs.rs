@@ -219,10 +219,7 @@ impl Runtime {
             .prepared
             .parameter_programs
             .len();
-        let deferred = self
-            .yielded
-            .iter()
-            .any(|&y| self.yielded_plan(y) == Some(plan));
+        let deferred = self.queues_deferred(plan);
         // The ready stack is LIFO; preemption's deferred queue is FIFO.
         // All admissions precede execution; no receiver can mutate this fanout.
         for offset in 0..count {
@@ -272,7 +269,10 @@ impl Runtime {
             .prepared
             .signal_programs
             .len();
-        for i in 0..count {
+        // Ascending binding order, whichever queue `start_plan_context` uses.
+        let deferred = self.queues_deferred(plan);
+        for offset in 0..count {
+            let i = if deferred { offset } else { count - 1 - offset };
             let p = self.plans.get(plan.0).unwrap().prepared.signal_programs[i];
             if p.signal != signal {
                 continue;
