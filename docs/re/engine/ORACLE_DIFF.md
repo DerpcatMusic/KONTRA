@@ -56,6 +56,19 @@ Run every real-Kontakt session through the slot pool, not the old global lock:
     tools/oracle/oracle-slot tools/oracle/capture.py NKI OUT.wav           # any free slot (3 by default)
     tools/oracle/oracle-slot --exclusive CMD...                            # legacy: whole pool, one session
 
+**Deprecated: `flock /tmp/kontra-oracle.lock`.** Use `oracle-slot` for every new job. Legacy jobs still run
+(they take the legacy lock exclusively, which waits for running slots and blocks new ones).
+
+Fairness: slot jobs and legacy jobs compete for the legacy lock in the kernel's wake-up order, which is
+not FIFO. While legacy jobs are queued, slot jobs can wait behind them, and the starvation ends only when
+the legacy queue drains. The guarantee is mutual exclusion, not ordering.
+
+Leaked locks: any process that inherits the legacy lock fd keeps the lock after its job exits. A
+long-running daemon started from a `flock` job (for example an `Xvfb` from a reference-harness run) held
+the exclusive lock for over an hour on 2026-10-24 and stopped the whole queue. Check with
+`lslocks | grep kontra-oracle` (and `ls -l /proc/<pid>/fd | grep kontra-oracle`). Daemons started from
+legacy jobs must close the lock fd (`3>&- 8>&- 9>&-`). `oracle-slot` already does this for its command.
+
 Do not use `flock /tmp/kontra-oracle.lock` for new work. Legacy `flock` jobs still run: they hold the legacy
 lock exclusively, which waits for running slots and blocks new ones, so they never overlap a slot.
 
