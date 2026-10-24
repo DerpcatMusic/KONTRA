@@ -153,3 +153,77 @@ def route_slot(sink_name, pids, wait=0):
         if target is not None:
             subprocess.run(["pw-link", str(i), str(target)], capture_output=True)
     return len(out)
+
+
+def _vlq_read(buf, i):
+    value = 0
+    while True:
+        b = buf[i]
+        i += 1
+        value = (value << 7) | (b & 0x7F)
+        if not b & 0x80:
+            return value, i
+
+
+def _vlq(n):
+    out = [n & 0x7F]
+    n >>= 7
+    while n:
+        out.insert(0, (n & 0x7F) | 0x80)
+        n >>= 7
+    return bytes(out)
+
+
+def remap_midi(src, dst, first):
+    """Writes `dst`: the SMF `src` with every channel-voice event moved from channel c to first + c.
+    A slot's instrument listens only on its own block, so a file written for channel 1 (as --midi
+    files are) reaches it as `first` + 1. Events that would leave channel 15 are dropped (their delta
+    time is kept). Running status is expanded, so the output is explicit. Returns dst."""
+    data = Path(src).read_bytes()
+    if data[:4] != b"MThd":
+        raise ValueError(f"{src}: not a standard MIDI file")
+    hdr_len = int.from_bytes(data[4:8], "big")
+    ntrk = int.from_bytes(data[10:12], "big")
+    out = bytearray(data[:8 + hdr_len])
+    pos = 8 + hdr_len
+    for _ in range(ntrk):
+        if data[pos:pos + 4] != b"MTrk":
+            raise ValueError(f"{src}: bad track header at {pos}")
+        tlen = int.from_bytes(data[pos + 4:pos + 8], "big")
+        trk, body = data[pos + 8:pos + 8 + tlen], bytearray()
+        pos += 8 + tlen
+        i, running, carry = 0, None, 0
+        while i < len(trk):
+            delta, i = _vlq_read(trk, i)
+            delta += carry
+            carry = 0
+            status = trk[i]
+            if status & 0x80:
+                i += 1
+                if status < 0xF0:
+                    running = status
+            else:
+                if running is None:
+                    raise ValueError(f"{src}: running status with no status byte")
+                status = running
+            if status == 0xFF:  # meta: type, length, payload
+                mtype = trk[i]
+                n, i = _vlq_read(trk, i + 1)
+                body += _vlq(delta) + bytes([0xFF, mtype]) + _vlq(n) + trk[i:i + n]
+                i += n
+            elif status in (0xF0, 0xF7):  # sysex: length, payload
+                n, i = _vlq_read(trk, i)
+                body += _vlq(delta) + bytes([status]) + _vlq(n) + trk[i:i + n]
+                i += n
+            else:  # channel voice: one or two data bytes (running status skips the status byte)
+                take = 1 if (status & 0xF0) in (0xC0, 0xD0) else 2
+                args = trk[i:i + take]
+                i += take
+                channel = first + (status & 0x0F)
+                if channel > 15:
+                    carry = delta
+                    continue
+                body += _vlq(delta) + bytes([(status & 0xF0) | channel]) + args
+        out += b"MTrk" + len(body).to_bytes(4, "big") + body
+    Path(dst).write_bytes(bytes(out))
+    return dst
