@@ -866,6 +866,8 @@ fn script_environment_with_zones(
         engine_lookups: sampler_core::lower::source_engine_lookups(source),
         snapshot_mode: Default::default(),
         zone_catalog: source.zone_catalog.clone(),
+        // Copied only for scripts that call find_zone, so other inits pay nothing.
+        zone_names: if behavior.source.contains("find_zone") { source.zone_names.clone() } else { Vec::new() },
         zones: metadata.cloned().unwrap_or_else(|| first_homes(source.zone_catalog.iter().map(|z| (z, true)))),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),
