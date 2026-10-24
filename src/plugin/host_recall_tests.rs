@@ -161,9 +161,10 @@ fn recall_one(path: &str) -> Result<String, String> {
         failures.push(format!("no script state saved (live state {} bytes) {diag}", size.len()));
     }
     // The threaded UVI script host applies commands at whichever block its thread reaches, so two
-    // fresh loads of the same .ufs render differently (measured; see KNOWN_DIVERGENT). Only the
-    // Kontakt renders are compared; UVI is held to controls, script state and re-save.
-    let audio_comparable = !path.ends_with(".ufs");
+    // fresh loads of the same .ufs render differently. An explicit audit seed makes the owner
+    // synchronous per block, so UVI audio is comparable then. Run with
+    // `--features shots` and `KONTRA_UVI_AUDIT_SEED=17` to enable it.
+    let audio_comparable = !path.ends_with(".ufs") || std::env::var_os("KONTRA_UVI_AUDIT_SEED").is_some();
     if audio_comparable && live_hash != fresh_hash {
         failures.push(format!("audio hash {live_hash:x} != reloaded {fresh_hash:x}"));
     }
