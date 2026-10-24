@@ -101,8 +101,7 @@ def make_lua(spec, wav_dir: Path, stimulus: Path = None, extra_lua: str = "") ->
     ksp = ["on init", "  declare $k", f"  declare %cpar[{m}]", f"  declare %cslot[{m}]",
            f"  declare ~cval[{m}]", f"  declare %cstart[{len(starts) + 1}]"]
     for i, (slot, par, val) in enumerate(cmds):
-        ksp += [f"  %cpar[{i}] := $ENGINE_PAR_{par}", f"  %cslot[{i}] := {slot}", f"  ~cval[{i}] := {val if isinstance(val, str) else repr(float(val))}"]
-        ksp += [f"  %cpar[{i}] := $ENGINE_PAR_{par}", f"  %cslot[{i}] := {slot}", f"  %cval[{i}] := {scaled(val)}"]
+        ksp += [f"  %cpar[{i}] := $ENGINE_PAR_{par}", f"  %cslot[{i}] := {slot}", f"  ~cval[{i}] := {val if isinstance(val, str) else scaled(val)}"]
     ksp += [f"  %cstart[{i}] := {s}" for i, s in enumerate(starts)]
     ksp += ["end on", "on controller", "  if ($CC_NUM = 20)", "    $k := %cstart[%CC[20]]",
             "    while ($k < %cstart[%CC[20] + 1])",

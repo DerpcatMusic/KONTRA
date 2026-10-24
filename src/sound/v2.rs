@@ -65,7 +65,7 @@ mod effect_controls;
 mod host_transport;
 #[cfg(test)]
 mod host_transport_tests;
-mod persistence;
+pub(crate) mod persistence;
 pub(crate) mod snapshot_reuse;
 #[cfg(test)]
 mod pressed_tests;
@@ -3529,6 +3529,7 @@ impl Core for V2Core {
             && (control.0>>64)==0x5556490000000000
         {return script.ui().value(control);}
         let rt = &p.runtime;
+        if let Some(value)=rt.script_engine_value(rt.active_plan(),control.0) {return Some(value);}
         rt.control_base_value(rt.active_plan(), sampler_core::ControlId(control.0))
             .ok()
             .map(number)
@@ -3568,6 +3569,9 @@ fn ram_free() -> Option<(usize, usize)> {
 }
 
 // Port from v1 bank::load_cancelable: reserve 1 GiB + one eighth of RAM.
+/// Shared head budget for cold-streamed attacks: 1/32 of RAM, between 256 MiB
+/// (the floor on small machines) and 4 GiB.
+
 fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
     let resident_budget = (request.streaming == super::Streaming::RamOnly).then(|| {
         // ponytail: v1's /proc/meminfo probe; other systems keep its 8 GiB ceiling.
@@ -3580,7 +3584,7 @@ fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
         // Prepare Auto attacks on the loader worker before publication;
         // any capacity fallback stays explicit in the load report.
         lazy: false,
-        head_budget: resident_budget.unwrap_or(256 << 20),
+        head_budget: resident_budget.unwrap_or_else(sampler_kontakt::cold_head_budget),
         // Capacity fallback is distinct from a source/decode failure and must
         // remain visible in the load report and diagnostics.
         allow_cold_fallback: true,
@@ -4303,6 +4307,12 @@ impl V2Loader {
         if let Some(script) = &script {
             controls.extend(script.ui().values());
         }
+        // Script-written group volume/pan/tune: refreshed and saved like controls.
+        controls.extend(
+            sampler_core::script_engine_control_ids(prepared.group_count())
+                .into_iter()
+                .map(|id| (sampler_ui_ir::ControlId(id), 0.0)),
+        );
         let (limits, ceiling) =
             budgeted_limits(&prepared, cache.as_ref().map(StreamCache::voice_budget));
         let per_voice = prepared.voice_state_bytes() + VOICE_OVERHEAD;

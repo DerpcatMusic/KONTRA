@@ -6,9 +6,12 @@
 // ponytail: the table and the phase/decimation matrices do not depend on rate or knobs; they
 // are the native init's output (dumped under kemu), not re-derived here.
 use super::super::super::Planar;
-use super::kernel::{DECIMATE, PHASE, V, add, lookup, mul, zip};
+use super::kernel::{ld, st, run_block, DECIMATE, PHASE, V, add, lookup, mul, zip};
 use super::super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
 
+
+/// Offset 0 of the state array.
+const BASE: isize = 16;
 
 const LO: f32 = -128.0;
 const HI: f32 = 127.0;
@@ -20,15 +23,6 @@ fn shaper() -> &'static [f32] {
     T.get_or_init(|| include_bytes!("cat.f32le").chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
 }
 
-fn ld(s: &[f32; 36], o: isize) -> V {
-    let i = (o + 16) as usize;
-    [s[i], s[i + 1], s[i + 2], s[i + 3]]
-}
-
-fn st(s: &mut [f32; 36], o: isize, v: V) {
-    let i = (o + 16) as usize;
-    s[i..i + 4].copy_from_slice(&v);
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct State {
@@ -101,19 +95,19 @@ impl Engine {
     fn sample(&self, s: &mut [f32; 36], x: f32) -> f32 {
         let tab = shaper();
         s[16 - 12] = x + x;
-        let x5 = ld(s, -12);
-        let m20 = ld(s, -8);
+        let x5 = ld(s, BASE, -12);
+        let m20 = ld(s, BASE, -8);
         let x6 = zip(x5, m20, |a, b| a - b);
-        st(s, -8, add(mul(self.a0, x6), m20));
-        let s0 = ld(s, 0);
-        let m10 = ld(s, -4);
+        st(s, BASE, -8, add(mul(self.a0, x6), m20));
+        let s0 = ld(s, BASE, 0);
+        let m10 = ld(s, BASE, -4);
         let x1 = add(mul(m10, self.c0), [s0[0], s0[1], 0.0, 0.0]);
         let x4 = add(mul(zip([x6[0], x6[1], x6[2], x6[2]], x1, |a, b| a - b), self.b0), m10);
-        st(s, -4, x4);
+        st(s, BASE, -4, x4);
         let x9 = add(mul(x4, self.b0), s0);
-        st(s, 0, x9);
+        st(s, BASE, 0, x9);
         let x6 = mul([x6[1], x4[1], x4[2], x4[3]], self.p);
-        let m = ld(s, -16);
+        let m = ld(s, BASE, -16);
         let x8 = mul([0.1, 0.1, m[1], m[1]], [x5[0], x5[0], m[1], m[1]]);
         let x9 = add([x9[0], x9[0], x6[1], x6[3]], [x8[0], x8[0], x6[0], x6[2]]);
         let x5 = [x9[2], m[1], m[2], m[3]];
@@ -122,32 +116,21 @@ impl Engine {
         let b = [r[2][2] + r[2][0], r[2][3] + r[2][1], r[3][2] + r[3][0], r[3][3] + r[3][1]];
         let v = add([a[1], a[3], b[1], b[3]], [a[0], a[2], b[0], b[2]]);
         let y: V = lookup(tab, v, LO, HI);
-        st(s, 4, y);
-        let x3 = ld(s, 8);
-        let x2 = ld(s, 12);
-        let x1 = add(add(add(mul(y, DECIMATE[0]), mul(DECIMATE[1], x3)), mul(DECIMATE[2], x2)), mul(DECIMATE[3], ld(s, 16)));
-        st(s, 16, x2);
-        st(s, 12, x3);
-        st(s, 8, y);
-        st(s, -16, [x5[0], x5[0], x5[1], x5[2]]);
+        st(s, BASE, 4, y);
+        let x3 = ld(s, BASE, 8);
+        let x2 = ld(s, BASE, 12);
+        let x1 = add(add(add(mul(y, DECIMATE[0]), mul(DECIMATE[1], x3)), mul(DECIMATE[2], x2)), mul(DECIMATE[3], ld(s, BASE, 16)));
+        st(s, BASE, 16, x2);
+        st(s, BASE, 12, x3);
+        st(s, BASE, 8, y);
+        st(s, BASE, -16, [x5[0], x5[0], x5[1], x5[2]]);
         let h = (x1[3] + x1[1]) + (x1[2] + x1[0]);
-        st(s, -12, [x9[0], x9[0], h, x8[2]]);
+        st(s, BASE, -12, [x9[0], x9[0], h, x8[2]]);
         x9[3]
     }
 
     pub(crate) fn process(&self, s: &mut State, block: &mut Planar, len: usize) {
-        for i in 0..len {
-            if self.mono {
-                let x = 0.5 * block[1][i] as f32 + 0.5 * block[0][i] as f32;
-                let y = f64::from(self.sample(&mut s.s[0], x));
-                block[0][i] = y;
-                block[1][i] = y;
-            } else {
-                for c in 0..2 {
-                    block[c][i] = f64::from(self.sample(&mut s.s[c], block[c][i] as f32));
-                }
-            }
-        }
+        run_block(self.mono, block, len, |c, x| self.sample(&mut s.s[c], x));
     }
 }
 

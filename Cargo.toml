@@ -11,7 +11,11 @@ repository = "https://github.com/DerpcatMusic/KONTRA"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
-default = ["plugin", "clap", "vst3", "library-access"]
+default = ["plugin", "clap", "vst3", "library-access", "format-ample", "format-ikmpak"]
+# Optional sample formats. Each is listed by `src/formats.rs`; disabling one removes it from the registry.
+# Kontakt and UVI are still unconditional: the root reads them directly (docs/architecture/MODULARITY_AUDIT.md).
+format-ample = ["dep:sampler-ample"]
+format-ikmpak = ["dep:sampler-ikmpak"]
 # Opens protected Kontakt and UVI library content through native readers.
 library-access = ["sampler-kontakt/library-access", "sampler-uvi/library-access"]
 plugin = ["sampler-kontakt/native-ui", "dep:moose", "dep:mui", "dep:png", "dep:rfd", "dep:mui-native-dialog", "dep:mui-text", "dep:zune-jpeg", "dep:mlua", "dep:image-webp", "dep:resvg"]
@@ -30,6 +34,8 @@ sampler-uvi = { path = "crates/sampler-uvi", default-features = false }
 sampler-ksp = { path = "crates/sampler-ksp" }
 sampler-ui-ir = { path = "crates/sampler-ui-ir" }
 sampler-parity = { path = "crates/sampler-parity" }
+sampler-ample = { path = "crates/sampler-ample", optional = true }
+sampler-ikmpak = { path = "crates/sampler-ikmpak", optional = true }
 rustc-hash = "=2.1.3"
 anyhow = "1"
 png = { version = "0.18", optional = true }
@@ -43,6 +49,8 @@ symphonia = { version = "0.5", default-features = false, features = ["aiff", "wa
 hound = "3.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
+flate2 = "1"
 realfft = "3.5"
 walkdir = "2"
 # Kontakt NKI export compresses the preset the way Kontakt does.
@@ -171,7 +179,7 @@ symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 symphonia-bundle-flac = { path = "vendor/symphonia-bundle-flac" }
 
 [workspace]
-members = ["vendor/mui", "vendor/mui-vello", ".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-perf", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-ui-ir", "crates/sampler-parity", "crates/sampler-ir", "crates/sampler-simd", "crates/sampler-pool", "crates/sampler-uvi", "crates/sampler-script", "crates/sampler-ample", "crates/sampler-ikmpak", "tools/corpus-health", "tools/format-census", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview"]
+members = ["vendor/mui", "vendor/mui-vello", ".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-perf", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-ui-ir", "crates/sampler-parity", "crates/sampler-dspbench", "crates/sampler-ir", "crates/sampler-simd", "crates/sampler-pool", "crates/sampler-uvi", "crates/sampler-script", "crates/sampler-ample", "crates/sampler-ikmpak", "tools/corpus-health", "tools/format-census", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview"]
 exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/moose-baseview", "vendor/xim-rs", "vendor/symphonia-format-riff", "vendor/symphonia-bundle-flac", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
 

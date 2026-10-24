@@ -74,6 +74,14 @@ fn legacy_phase(p: f32) -> [f64; 2] {
 /// Kontakt's legacy 4-point Lagrange read of the 4096 ring at float `position`
 /// (0x140aa0510 / 0x140aa2350): points `p-2 .. p+1`, `t = 0` reads `p-1`.
 #[inline(always)]
+/// Catmull-Rom cubic between `y0` and `y1` at fraction `x`, with `ym1` and `y2` the neighbours. The
+/// stereo-tune and UVI legacy readers both use this native operation order.
+pub(super) fn cubic(ym1: f32, y0: f32, y1: f32, y2: f32, x: f32) -> f32 {
+    let a = ((ym1 - y0 * 2.5) + y1 + y1) - y2 * 0.5;
+    let b = (y0 - y1) * 1.5 + (y2 - ym1) * 0.5;
+    ((a + b * x) * x + (y1 - ym1) * 0.5) * x + y0
+}
+
 fn lagrange(slab: &[[f64; 2]], position: f32, c: usize) -> f32 {
     let whole = position as u32;
     let t = position - whole as f32;
@@ -515,7 +523,7 @@ impl TimeMod {
             state.aux[15] = 1.;
         }
         if let Some(core) = &self.replika {
-            return self.replika_delay(slab, block, len, core, stage);
+            return self.replika_delay(slab, block, len, core, stage, tempo);
         }
         if let Some(law) = &self.bank {
             return law.process(slab, block, len, [cfg.dry, cfg.wet]);
@@ -910,6 +918,7 @@ impl TimeMod {
         len: usize,
         core: &ReplikaCore,
         stage: Option<&mut replika::Stage>,
+        tempo: f64,
     ) -> bool {
         let input = *block;
         let [out_l, out_r] = block;
@@ -918,7 +927,9 @@ impl TimeMod {
         } else {
             let (rings, slots) = slab.split_at_mut(self.cap);
             let mut st = ReplikaState::load(self.rate as f32, slots);
-            core.process(&mut st, rings, [&input[0][..len], &input[1][..len]], [&mut out_l[..len], &mut out_r[..len]]);
+            // A tempo-synced TIME follows the host tempo at each block; the free law uses the core's own delays.
+            let delay = core.synced_beats().map_or_else(|| core.delays(), |beats| core.synced_delays(tempo, beats));
+            core.process_with_delays(delay, &mut st, rings, [&input[0][..len], &input[1][..len]], [&mut out_l[..len], &mut out_r[..len]]);
             st.store(slots);
         }
         out_l[..len].iter().chain(out_r[..len].iter()).any(|x| !x.is_finite())

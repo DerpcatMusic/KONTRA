@@ -1,14 +1,15 @@
 //! The Hertz/Q/decibel band stage of the universal EQ: Rbj-law bands (UVI, scripted inserts, any
 //! format that already knows physical units) and Solid G-EQ bands, whose saved knobs give the
-//! native G_EQ biquads ([`super::solid`]). Both feed the one kernel
-//! ([`super::kernel`]). Controls are read once per block; the TPT sections keep their state across
-//! coefficient changes, and coefficients are redesigned only when a control actually moved.
+//! native G_EQ biquads ([`super::solid`]). Rbj-law bands are realised as TPT sections
+//! ([`super::kernel`]) that keep their state across coefficient changes; Solid bands run the
+//! native direct-form-I section ([`crate::dsp::biquad::run_df1`]). Controls are read once per
+//! block, and coefficients are redesigned only when a control actually moved.
 use super::super::{
     Planar, ProcessorState, flush,
     control::{ControlRamp, PreparedParameter},
 };
 use super::{EqBand, Kind, Law, digital, kernel, solid};
-use crate::dsp::biquad::{self, Design};
+use crate::dsp::biquad::{self, Design, run_df1};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Generic {
@@ -160,22 +161,3 @@ pub(super) fn run(svf: kernel::Svf, state: &mut ProcessorState, block: &mut Plan
     svf.run_stereo(&mut state.z, [&mut left[..len], &mut right[..len]]);
     state.z = state.z.map(|s| s.map(flush));
 }
-
-/// Frames `range` of both channels through one direct-form-I section, the native G_EQ cascade
-/// record (`y = b0 x + b1 x1 + b2 x2 - a1 y1 - a2 y2`, process 0x141a595d0). `hist` holds x1, x2,
-/// y1 and y2 for each channel.
-fn run_df1(c: [f64; 5], hist: &mut [f64], block: &mut Planar, range: std::ops::Range<usize>) {
-    for (channel, samples) in block.iter_mut().enumerate() {
-        let h = &mut hist[4 * channel..4 * channel + 4];
-        for x in &mut samples[range.clone()] {
-            let input = *x;
-            let y = flush(c[0] * input + c[1] * h[0] + c[2] * h[1] - c[3] * h[2] - c[4] * h[3]);
-            *x = y;
-            h[1] = h[0];
-            h[0] = input;
-            h[3] = h[2];
-            h[2] = y;
-        }
-    }
-}
-

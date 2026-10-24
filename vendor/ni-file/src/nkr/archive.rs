@@ -265,9 +265,28 @@ fn directory<R: ReadBytesExt>(
     Ok(())
 }
 
+/// Bytes a stale directory offset can point past its member header.
+const STALE_DIRECTORY_SHIFT: u64 = 0x8000;
+
+/// A member header magic: the three forms `check` accepts.
+fn header_magic_at<R: Read + Seek>(r: &mut R, at: u64) -> Result<bool, Error> {
+    r.seek(SeekFrom::Start(at))?;
+    let mut magic = [0; 4];
+    Ok(r.read(&mut magic)? == 4 && matches!(u32::from_le_bytes(magic), 0x2ae905fa | 0x4916e63c | 0x16ccf80a))
+}
+
 /// Read and validate a member header: one read of the longest header form.
 fn check<R: Read + Seek>(r: &mut R, e: &mut Entry, length: u64) -> Result<(), Error> {
-    let file_offset = e.header_offset;
+    // Areia 1.2.0 `Areia_0.nkx` (17 members of one run): the directory offset is
+    // 0x8000 bytes past the member header, which is valid there. Only when the
+    // declared position holds no header, so correct entries never move.
+    let mut file_offset = e.header_offset;
+    if file_offset >= STALE_DIRECTORY_SHIFT
+        && !header_magic_at(r, file_offset)?
+        && header_magic_at(r, file_offset - STALE_DIRECTORY_SHIFT)?
+    {
+        file_offset -= STALE_DIRECTORY_SHIFT;
+    }
     e.checked = true;
     e.issue = if file_offset + 22 > length {
         Some("Truncated NKX member header")
@@ -450,4 +469,56 @@ fn clear_picture_layout(bytes: &[u8]) -> bool {
         }
     }
     frames && flags
+}
+
+#[cfg(test)]
+mod stale_offset_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// A 22-byte member header (version 0x110, payload size 4) at `at`, padded to `len`.
+    fn archive_with_header_at(at: usize, len: usize) -> Vec<u8> {
+        let mut bytes = vec![0u8; len];
+        bytes[at..at + 4].copy_from_slice(&0x2ae905fau32.to_le_bytes());
+        bytes[at + 4..at + 6].copy_from_slice(&0x110u16.to_le_bytes());
+        bytes[at + 14..at + 18].copy_from_slice(&4u32.to_le_bytes());
+        bytes[at + 22..at + 26].copy_from_slice(&[1, 2, 3, 4]);
+        bytes
+    }
+
+    fn entry(header_offset: u64) -> Entry {
+        Entry {
+            name: "Samples/x.ncw".into(),
+            header_offset,
+            issue: None,
+            offset: header_offset,
+            size: 0,
+            encoded: false,
+            key_index: 0xff,
+            valid: false,
+            checked: false,
+        }
+    }
+
+    #[test]
+    fn stale_directory_offset_recovers_the_header_32_kib_earlier() {
+        let len = 0x8000 + 64;
+        let bytes = archive_with_header_at(0, len);
+        let mut e = entry(0x8000);
+        check(&mut Cursor::new(&bytes), &mut e, len as u64).unwrap();
+        assert!(e.valid, "{:?}", e.issue);
+        assert_eq!((e.offset, e.size), (22, 4));
+    }
+
+    #[test]
+    fn a_correct_offset_is_never_moved() {
+        let len = 0x8000 + 64;
+        let mut bytes = archive_with_header_at(0x8000, len);
+        // A valid header 32 KiB earlier must not win over a valid declared one.
+        bytes[..4].copy_from_slice(&0x2ae905fau32.to_le_bytes());
+        let mut e = entry(0x8000);
+        check(&mut Cursor::new(&bytes), &mut e, len as u64).unwrap();
+        assert!(e.valid);
+        assert_eq!(e.offset, 0x8000 + 22);
+    }
 }

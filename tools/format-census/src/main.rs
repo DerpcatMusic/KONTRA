@@ -80,7 +80,17 @@ fn kontakt(path: &Path, program: Option<usize>) -> (String, String) {
         Ok(s) => {
             let mut features = BTreeMap::<String, usize>::new();
             for u in &s.loaded.instrument.unsupported {
-                *features.entry(u.feature.to_string()).or_default() += 1;
+                // Notes are not losses: they never make an instrument partial.
+                if u.reason == sampler_ir::Reason::Info {
+                    continue;
+                }
+                // Local diagnostics: CENSUS_VALUES adds the value text (not committed).
+                let key = if std::env::var_os("CENSUS_VALUES").is_some() {
+                    format!("{}={}", u.feature, u.value.chars().take(160).collect::<String>())
+                } else {
+                    u.feature.to_string()
+                };
+                *features.entry(key).or_default() += 1;
             }
             if features.is_empty() {
                 ("full".into(), String::new())
@@ -113,11 +123,28 @@ fn judge(path: &Path, ext: &str, h: &[u8; 16]) -> (String, String) {
             }
         },
         "nka" => ("text".into(), "preset-list".into()),
-        "nksn" | "nkc" => match sampler_kontakt::read_chunks(path) {
+        // NKC is an NI stream cache (NICache), not a preset chunk container: judge the
+        // magic only. Its payload is read through the NCW stream path, not here.
+        "nkc" => {
+            let le = [0x7a, 0x10, 0xe1, 0x3f];
+            let be_magic = [0x3f, 0xe1, 0x10, 0x7a];
+            if h.starts_with(&le) || h.starts_with(&be_magic) {
+                ("container-only".into(), "stream-cache".into())
+            } else {
+                ("failed".into(), "not-nicache".into())
+            }
+        }
+        "nksn" => match sampler_kontakt::read_chunks(path) {
             Ok(_) => ("container-only".into(), "chunks".into()),
             Err(e) => ("failed".into(), format!("chunks:{}", class(&e))),
         },
-        "nkx" | "nkr" | "nicnt" => match std::fs::File::open(path)
+        // Monoliths are GB-sized: open the member index only (NIFile::read
+        // validates the whole NIS body and stalls the census on I/O).
+        "nkx" | "nkr" => match sampler_kontakt::ResourceContainer::open(path) {
+            Ok(_) => ("container-only".into(), "archive".into()),
+            Err(e) => ("failed".into(), format!("resource:{}", class(&e))),
+        },
+        "nicnt" => match std::fs::File::open(path)
             .map_err(|e| e.to_string())
             .and_then(|mut f| NIFile::read(&mut f).map_err(|e| format!("{e:?}")))
         {
@@ -202,10 +229,176 @@ fn ser_table() {
     }
 }
 
+/// One line per zone with loop slots: zone index, key range, slot ranges and flags.
+/// Local inspection only (prints the file's own instrument name).
+fn slots(path: &Path) {
+    let k = sampler_kontakt::read(path).expect("read");
+    let options = Options {
+        library: Some(path.into()),
+        ..Options::default()
+    };
+    let s = load_read_streamed(k, &options, &StreamPolicy::default(), |_| {}).expect("load");
+    let inst = &s.loaded.instrument;
+    println!("instrument\t{}", inst.name);
+    println!("scripts\t{}\towns_release\t{:?}\tunsupported\t{:?}", s.loaded.scripts.len(), s.loaded.scripts.iter().map(|v| v.owns_release_triggers()).collect::<Vec<_>>(), inst.unsupported.iter().map(|u| u.feature.to_string()).collect::<Vec<_>>());
+    if std::env::var("CENSUS_GROUPS").is_ok() {
+        for (i, z) in inst.zones.iter().enumerate() {
+            let g = z.group.map(|g| &inst.groups[g.0]);
+            println!("zone{i}\tkeys={:?}\ttrig={:?}\tgroup={:?}\tstart={:?}\tvel={:?}", z.keys, z.trigger, g.map(|g| g.name.clone()), g.map(|g| g.start.iter().map(|s| s.test).collect::<Vec<_>>()), z.velocities);
+        }
+    }
+    let gate = inst.zones.iter().filter(|z| matches!(z.trigger, sampler_ir::Trigger::GateRelease)).count();
+    let counter = format!("{:?}{:?}", inst.modulators, inst.routes).matches("ReleaseCounter").count();
+    println!("gate_release_zones\t{gate}\trelease_counter_refs\t{counter}");
+    for z in inst.zones.iter().filter(|z| matches!(z.trigger, sampler_ir::Trigger::GateRelease)).take(12) {
+        let g = z.group.map(|g| &inst.groups[g.0]);
+        println!("gate_zone\tkeys={:?}\tgroup={:?}\tstart={:?}\tmono={:?}\tzone_trigger={:?}", z.keys, g.map(|g| g.name.clone()), g.map(|g| g.start.clone()), g.map(|g| g.monophonic_release), z.trigger);
+    }
+    for (i, zone) in inst.zones.iter().enumerate() {
+        if let sampler_ir::Looping::Slots(slots) = zone.playback.looping {
+            for slot in slots.iter().flatten() {
+                println!(
+                    "zone{i}\tslot start={} end={} xfade={:?} alt={} count={} until_release={} tuning={}",
+                    slot.range.start,
+                    slot.range.end,
+                    slot.range.crossfade,
+                    slot.range.alternating,
+                    slot.count,
+                    slot.until_release,
+                    slot.tuning
+                );
+            }
+        }
+    }
+}
+
+/// Zone- and slot-level playback-mode tally for every `.nki` under a tree. One line per
+/// mode key: zones, and distinct libraries (top-level folders, counted, never named) using it.
+/// Loop slots are keyed by their own flags (alternating, crossfade, counted, until-release,
+/// tuned). Output carries mode names only, never installed names.
+fn modes(root: &Path) {
+    use sampler_ir::{Looping, Span, Trigger};
+    let mut files = Vec::new();
+    walk(root, &mut files);
+    files.retain(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki")));
+    files.sort();
+    let mut zones = BTreeMap::<String, usize>::new();
+    let mut libs = BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+    let mut failed = 0usize;
+    let mut add = |key: String, lib: &str| {
+        *zones.entry(key.clone()).or_default() += 1;
+        libs.entry(key).or_default().insert(lib.to_string());
+    };
+    for path in &files {
+        let lib = path
+            .strip_prefix(root)
+            .ok()
+            .and_then(|r| r.components().next())
+            .map_or(String::new(), |c| c.as_os_str().to_string_lossy().into_owned());
+        let Ok(k) = sampler_kontakt::read(path) else {
+            failed += 1;
+            continue;
+        };
+        let options = Options {
+            library: Some(path.into()),
+            ..Options::default()
+        };
+        let Ok(s) = load_read_streamed(k, &options, &StreamPolicy::default(), |_| {}) else {
+            failed += 1;
+            continue;
+        };
+        let inst = &s.loaded.instrument;
+        for zone in &inst.zones {
+            let group = zone.group.map(|g| &inst.groups[g.0]);
+            let looping = match zone.playback.looping {
+                Looping::None => "none".to_string(),
+                Looping::OneShot => "one-shot".into(),
+                Looping::Continuous(l) => format!("continuous{}{}", xf(l.crossfade), if l.alternating { "-alt" } else { "" }),
+                Looping::UntilRelease(l) => format!("until-release{}", xf(l.crossfade)),
+                Looping::Slots(slots) => {
+                    for slot in slots.iter().flatten() {
+                        let mut flags = Vec::new();
+                        if slot.range.alternating {
+                            flags.push("alt");
+                        }
+                        if slot.range.crossfade != Span::Frames(0) {
+                            flags.push("xfade");
+                        }
+                        if slot.count > 0 {
+                            flags.push("counted");
+                        }
+                        if slot.until_release {
+                            flags.push("until-release");
+                        }
+                        if slot.tuning != 1.0 {
+                            flags.push("tuned");
+                        }
+                        let key = format!("slot[{}]", if flags.is_empty() { "plain".into() } else { flags.join("+") });
+                        add(key, &lib);
+                    }
+                    let n = slots.iter().flatten().count();
+                    format!("slots{n}")
+                }
+            };
+            let trigger = match zone.trigger {
+                Trigger::Transition { .. } => "transition".to_string(),
+                t => format!("{t:?}").to_lowercase(),
+            };
+            let starts = group.map_or(String::new(), |g| {
+                g.start
+                    .iter()
+                    .map(|st| match st.test {
+                        sampler_ir::StartTest::Key { .. } => "key",
+                        sampler_ir::StartTest::Controller { .. } => "cc",
+                        sampler_ir::StartTest::RoundRobin(_) => "rr",
+                        sampler_ir::StartTest::Random => "random",
+                    })
+                    .collect::<Vec<_>>()
+                    .join("+")
+            });
+            let stretch = group.and_then(|g| g.time_stretch).map_or("-".to_string(), |t| format!("{:?}", t.kind));
+            let machine = group.and_then(|g| g.machine).map_or("-".to_string(), |m| format!("{m:?}").split([' ', '{', '(']).next().unwrap_or("").to_string());
+            add(format!("loop={looping} trigger={trigger} start={starts} stretch={stretch} machine={machine}").replace("  ", " "), &lib);
+        }
+    }
+    for (key, n) in &zones {
+        println!("{n}\t{}\t{key}", libs[key].len());
+    }
+    eprintln!("files={} failed={failed}", files.len());
+
+    fn xf(span: Span) -> &'static str {
+        match span {
+            Span::Frames(0) => "",
+            _ => "-xfade",
+        }
+    }
+}
+
+/// Prints every script's source text (program script chunks, id 6), for reading. Local only.
+fn scripts(path: &Path) {
+    use ni_file::kontakt::objects::{BParScript, Program};
+    let chunks = sampler_kontakt::read_chunks(path).expect("read chunks");
+    let program = Program::try_from(chunks.find_first(0x28).expect("program chunk")).expect("program");
+    for (i, chunk) in program.0.children.iter().filter(|c| c.id == 6).enumerate() {
+        let params = BParScript::try_from(chunk).and_then(|s| s.params()).expect("script params");
+        println!("=== script {i} (bypass={:?}) ===", params.bypass);
+        println!("{}", params.text.unwrap_or_default());
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--ser") {
         return ser_table();
+    }
+    if args.first().is_some_and(|a| a == "--scripts") {
+        return scripts(Path::new(args.get(1).expect("--scripts <nki>")));
+    }
+    if args.first().is_some_and(|a| a == "--slots") {
+        return slots(Path::new(args.get(1).expect("--slots <nki>")));
+    }
+    if args.first().is_some_and(|a| a == "--modes") {
+        return modes(Path::new(args.get(1).expect("--modes <dir>")));
     }
     if args.first().is_some_and(|a| a == "--ncw") {
         // Full NCW decode (not just header) of every .ncw under a directory: one line per file.
@@ -227,6 +420,120 @@ fn main() {
                 Ok(n) => println!("ok\t{n}\t{}", path.display()),
                 Err(e) => println!("ERR\t{e}\t{}", path.display()),
             }
+        }
+        return;
+    }
+    if args.first().is_some_and(|a| a == "--nkx") {
+        // Monolith resolution: every NCW member of every .nkx/.nkr below a directory,
+        // read through the archive index and fully decoded. One line per member.
+        let mut files = Vec::new();
+        let root = Path::new(args.get(1).expect("--nkx <dir|archive>"));
+        if root.is_file() {
+            files.push(root.to_path_buf());
+        } else {
+            walk(root, &mut files);
+        }
+        files.retain(|p| p.extension().is_some_and(|e| e == "nkx" || e == "nkr"));
+        files.sort();
+        for path in &files {
+            let mut container = match sampler_kontakt::ResourceContainer::open(path) {
+                Ok(c) => c,
+                Err(e) => {
+                    println!("archive\tERR\t{e:?}\t{}", path.display());
+                    continue;
+                }
+            };
+            // CENSUS_MEMBERS=a,b,c limits the decode to named members (targeted checks).
+            let wanted: Option<Vec<String>> = std::env::var("CENSUS_MEMBERS")
+                .ok()
+                .map(|v| v.split(',').map(str::to_string).collect());
+            let names: Vec<String> = container
+                .names()
+                .iter()
+                .map(|n| n.to_string())
+                .filter(|n| wanted.as_ref().is_none_or(|w| w.contains(n)))
+                .collect();
+            for name in names {
+                if !name.to_lowercase().ends_with(".ncw") {
+                    continue;
+                }
+                let outcome = match container.read(&name) {
+                    Ok(Some(bytes)) => ncw::NcwReader::read(std::io::Cursor::new(bytes))
+                        .map_err(|e| e.to_string())
+                        .and_then(|mut r| r.decode_samples().map(|s| s.len()).map_err(|e| e.to_string()))
+                        .map(|n| format!("ok\t{n}"))
+                        .unwrap_or_else(|e| format!("ERR\t{e}")),
+                    Ok(None) => "ERR\tabsent".into(),
+                    Err(e) => format!("ERR\t{e:?}"),
+                };
+                if std::env::var_os("CENSUS_PATHS").is_some() {
+                    println!("{outcome}\t{name}\t{}", path.display());
+                } else {
+                    println!("{outcome}");
+                }
+            }
+        }
+        return;
+    }
+    if args.first().is_some_and(|a| a == "--script") {
+        // `--script <nki>`: print the KSP source of each script slot to stdout (local reading only).
+        let k = match args.get(2) {
+            Some(i) => sampler_kontakt::read_program(Path::new(&args[1]), i.parse().expect("index")),
+            None => sampler_kontakt::read(Path::new(&args[1])),
+        }
+        .expect("read");
+        for b in &k.instrument.behaviors {
+            println!("--- {} ({:?})", b.name, b.language);
+            println!("{}", b.source);
+        }
+        return;
+    }
+    if args.first().is_some_and(|a| a == "--state") {
+        // `--state <nkm|nki> [program]`: persisted script variables per script slot (names and kinds only).
+        let k = match args.get(2) {
+            Some(i) => sampler_kontakt::read_program(Path::new(&args[1]), i.parse().expect("index")),
+            None => sampler_kontakt::read(Path::new(&args[1])),
+        }
+        .expect("read");
+        for b in &k.instrument.behaviors {
+            let names: Vec<String> = b
+                .state
+                .iter()
+                .map(|(n, v)| format!("{n}:{}", match v {
+                    sampler_ir::Saved::Int(_) => "int",
+                    sampler_ir::Saved::Real(_) => "real",
+                    sampler_ir::Saved::Text(_) => "text",
+                    sampler_ir::Saved::Ints(_) => "ints",
+                    sampler_ir::Saved::Reals(_) => "reals",
+                    sampler_ir::Saved::Texts(_) => "texts",
+                }))
+                .collect();
+            println!("{} : {}", b.name, names.join(" "));
+        }
+        return;
+    }
+    if args.first().is_some_and(|a| a == "--unsupported") {
+        // `--unsupported <nki>`: every load-report entry for one instrument, with its reason.
+        let k = sampler_kontakt::read(Path::new(&args[1])).expect("read");
+        let options = Options {
+            library: Some(Path::new(&args[1]).into()),
+            ..Options::default()
+        };
+        let streamed = load_read_streamed(k, &options, &StreamPolicy::default(), |_| {}).expect("load");
+        for u in &streamed.loaded.instrument.unsupported {
+            println!("{:?}\t{}\t{}\t{}", u.reason, u.feature, u.value.chars().take(120).collect::<String>(), u.location);
+        }
+        return;
+    }
+    if args.first().is_some_and(|a| a == "--locations") {
+        // `--locations <nki>`: each distinct sample location the instrument uses, with its zone count.
+        let k = sampler_kontakt::read(Path::new(&args[1])).expect("read");
+        let mut counts = BTreeMap::<String, usize>::new();
+        for loc in &k.locations {
+            *counts.entry(loc.display().to_string()).or_default() += 1;
+        }
+        for (loc, n) in &counts {
+            println!("{n}\t{loc}");
         }
         return;
     }
@@ -315,7 +622,12 @@ fn main() {
             }
             _ => judge(path, &ext, &h),
         };
-        println!("{family}\t{outcome}\t{detail}");
+        if std::env::var_os("CENSUS_PATHS").is_some() {
+            // Local diagnostics only: the installed path, never committed.
+            println!("{family}\t{outcome}\t{detail}\t{}", path.display());
+        } else {
+            println!("{family}\t{outcome}\t{detail}");
+        }
         *counts.entry((family, outcome, detail)).or_default() += 1;
     }
     for ((family, outcome, detail), n) in &counts {

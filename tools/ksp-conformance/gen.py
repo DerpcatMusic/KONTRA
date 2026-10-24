@@ -21,11 +21,20 @@ BATCH = 16
 MAX_RESULTS = 2  # 32 groups per result; keep one instrument under 64 groups
 
 
+# Marker groups: START is written first in on init, END last. A unit whose START group does
+# not read back did not compile (Kontakt drops the whole script silently); a missing END means
+# init aborted part-way. Results sit in groups 0..63, markers at 64 and 65.
+START, END = 64, 65
+MARK = "  set_engine_par($ENGINE_PAR_VOLUME, 1000, {g}, -1, -1)\n"
+
+
 def source_of(case):
     _, _, setup, results, top = case
-    body = C.DECLS + "".join(f"  {line.strip()}\n" for line in setup.split("\n") if line.strip())
+    body = C.DECLS + MARK.format(g=START)
+    body += "".join(f"  {line.strip()}\n" for line in setup.split("\n") if line.strip())
     for k, expr in enumerate(results):
         body += C.ENCODER.format(expr=expr, base=32 * k)
+    body += MARK.format(g=END)
     head = top + "\n" if top else ""
     return f"{head}on init\n{body}end on\n"
 
@@ -66,7 +75,7 @@ def lua_batch(batch):
         "for n, c in ipairs(CASES) do",
         "  local i = kt.add_instrument()",
         "  kt.set_instrument_volume(i, 0)",
-        "  for _ = 1, 32 * c.results - 1 do kt.add_group(i) end",
+        "  for _ = 1, 65 do kt.add_group(i) end",
         "  ids[n] = i",
         "  local ok, err = pcall(kt.set_instrument_script_source, i, 0, c.src)",
         "  log(string.format('{\"compile\":\"%s\",\"ok\":%s}', c.id, tostring(ok)))",
@@ -76,6 +85,8 @@ def lua_batch(batch):
         "repeat until os.time() - t0 >= 4",
         "for n, c in ipairs(CASES) do",
         "  local rows = {}",
+        f"  local start = kt.get_group_volume(ids[n], {START}) < -100",
+        f"  local finish = kt.get_group_volume(ids[n], {END}) < -100",
         "  for k = 0, c.results - 1 do",
         "    local bits = {}",
         "    for b = 0, 31 do",
@@ -84,7 +95,7 @@ def lua_batch(batch):
         "    end",
         "    rows[#rows + 1] = '\"' .. table.concat(bits) .. '\"'",
         "  end",
-        "  log(string.format('{\"case\":\"%s\",\"bits\":[%s]}', c.id, table.concat(rows, ',')))",
+        "  log(string.format('{\"case\":\"%s\",\"start\":%s,\"end\":%s,\"bits\":[%s]}', c.id, tostring(start), tostring(finish), table.concat(rows, ',')))",
         "end",
         "log('{\"done\":true}')",
         "out:close()",
@@ -118,7 +129,9 @@ def to_signed(bits):
 
 
 def decode(paths):
-    golden = {}
+    # Merge into the committed golden: a batch run only refreshes the cases it contains.
+    out = HERE / "golden.json"
+    golden = json.loads(out.read_text()) if out.exists() else {}
     compile_errors = []
     lines = [line for path in paths for line in Path(path).read_text().splitlines()]
     for line in lines:
@@ -129,10 +142,13 @@ def decode(paths):
             if '"ok":false' in line or '"error"' in line:
                 compile_errors.append(line)
             continue
-        golden[row["case"]] = {"results": [to_signed(b) for b in row["bits"]]}
+        golden[row["case"]] = {
+            "compiled": row["start"],
+            "completed": row["end"],
+            "results": [to_signed(b) for b in row["bits"]],
+        }
     expected = {u[0] for u in units()}
     missing = sorted(expected - set(golden))
-    out = HERE / "golden.json"
     out.write_text(json.dumps(golden, indent=1, sort_keys=True) + "\n")
     print(f"{len(golden)} golden cases -> {out}")
     if missing:

@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod fx;
+pub mod format;
 /// Authored zones (or scope members) one source-processing owner can address.
 /// This is an engine capacity, not a native UVI law: lowering and the core
 /// topology use the same bound. ponytail: raise if a real keygroup exceeds it.
@@ -306,6 +307,10 @@ pub struct SourceIndices {
     /// Original physical order. Empty for caches without native identity metadata.
     #[cfg_attr(feature = "cache", serde(default))]
     pub zone_catalog: Vec<SourceZone>,
+    /// Kontakt sample name of each physical zone (file stem, as `find_zone` matches it),
+    /// aligned with `zone_catalog`. Empty string: no sample name.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub zone_names: Vec<String>,
     /// Authored sample-player identities, independent of asset renumbering.
     /// An initially empty player retains complete dormant zone recipes.
     #[cfg_attr(feature = "cache", serde(default))]
@@ -733,6 +738,10 @@ pub struct Group {
     /// Saved mute preserves the complete definition for live unmute.
     #[cfg_attr(feature = "cache", serde(default))]
     pub muted: bool,
+    /// Kontakt saved this group as purged (not resident): it must not sound
+    /// until a script or UI makes it resident.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub purged: bool,
     /// Strictly admitted Kontakt cycle oscillator, independent of sample root/rate.
     #[cfg_attr(feature = "cache", serde(default))]
     pub wavetable: Option<Wavetable>,
@@ -1150,7 +1159,10 @@ impl Instrument {
     /// number): the instrument's dynamics or volume sources, so a host can
     /// show "dynamics: CC1" and an expression layer can target it. Counts zones
     /// carrying a route from `Controller(cc)` to [`Target::Amplitude`] with a
-    /// nonzero depth.
+    /// nonzero depth that raises the gain as the controller rises (sign or
+    /// gain above unity, `invert`, and the shape's ends; a shape that rises and
+    /// falls back reads as its ends): a controller that turns a zone down is
+    /// not its dynamics.
     pub fn amplitude_controllers(&self) -> Vec<u8> {
         let mut zones = [0usize; 128];
         for zone in &self.zones {
@@ -1160,9 +1172,14 @@ impl Instrument {
                 else {
                     continue;
                 };
+                let falls = route.shape.and_then(|s| self.shapes.get(s.0)).is_some_and(|s| {
+                    matches!((s.points.first(), s.points.last()), (Some(a), Some(b)) if b.1 < a.1)
+                });
                 let live = match route.depth {
-                    Depth::Normalized(d) => d != 0.0,
-                    Depth::Gain(_) | Depth::Pitch(_) => true,
+                    Depth::Normalized(d) => d != 0.0 && (d > 0.0) != (route.invert != falls),
+                    // gain × g^v rises with the controller when g is above unity.
+                    Depth::Gain(g) => g.linear() != 1.0 && (g.linear() > 1.0) != (route.invert != falls),
+                    Depth::Pitch(_) => true,
                 };
                 if route.target == Target::Amplitude && live && cc < 128 {
                     seen[usize::from(cc)] = true;
@@ -1418,6 +1435,11 @@ pub enum VelocityResponse {
     VolumeTable,
     /// Amplitude is (velocity / 127) ^ exponent.
     Power(f64),
+    /// Kontakt's velocity-to-volume route at an arbitrary intensity: amplitude is
+    /// `(1 - depth) + depth * (velocity / 127) ^ exponent`. `depth` and `exponent` are
+    /// fitted per intensity (`sampler-kontakt` `velocity_volume_law`); the default intensity
+    /// keeps `VolumeTable`.
+    Depth { depth: f64, exponent: f64 },
 }
 
 /// Zone crossfades, in key and velocity steps inside the zone's own ranges.
@@ -3230,6 +3252,9 @@ pub enum Reason {
     /// The law is unverified and the feature was omitted, rather than executed
     /// by an approximation. Preserve that distinction in every host report.
     UnknownLawOmitted,
+    /// Not a loss: the source names something the instrument already plays
+    /// correctly without it. Reported as a note, never as partial.
+    Info,
 }
 
 /// A feature name with its numbers and paths removed, so equal causes group:

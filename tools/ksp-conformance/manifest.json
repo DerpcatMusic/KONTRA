@@ -193,5 +193,440 @@
   "id": "logic_vars_2",
   "category": "logic",
   "results": 2
+ },
+ {
+  "id": "cond_bare_int",
+  "category": "logic",
+  "results": 1
+ },
+ {
+  "id": "cond_int_and",
+  "category": "logic",
+  "results": 1
+ },
+ {
+  "id": "cond_not_compare",
+  "category": "logic",
+  "results": 2
+ },
+ {
+  "id": "cond_compare_ops",
+  "category": "logic",
+  "results": 2
+ },
+ {
+  "id": "typing_bool_assign",
+  "category": "typing",
+  "results": 1
+ },
+ {
+  "id": "typing_real_assign",
+  "category": "typing",
+  "results": 1
+ },
+ {
+  "id": "call_init_empty",
+  "category": "function",
+  "results": 1
+ },
+ {
+  "id": "call_init_global",
+  "category": "function",
+  "results": 1
+ },
+ {
+  "id": "builtin_sgn__0",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_sgn__1",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "builtin_minmax__0",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_minmax__1",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "builtin_msb_lsb",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_msb_zero",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_sh_32",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_sh_negative",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_pow",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_floor_ceil__0",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_floor_ceil__1",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "builtin_round_neg",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_int_conv",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_sqrt",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "builtin_real_literal",
+  "category": "real",
+  "results": 2
+ },
+ {
+  "id": "arith_div_zero",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "arith_mod_zero",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "arith_unary_prec__0",
+  "category": "arithmetic",
+  "results": 2
+ },
+ {
+  "id": "arith_unary_prec__1",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "arith_compound_neg",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_int_max",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_int_overflow",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "intval_and_value",
+  "category": "intvalue",
+  "results": 1
+ },
+ {
+  "id": "intval_or_value",
+  "category": "intvalue",
+  "results": 1
+ },
+ {
+  "id": "intval_bitand",
+  "category": "intvalue",
+  "results": 2
+ },
+ {
+  "id": "intval_not_value",
+  "category": "intvalue",
+  "results": 1
+ },
+ {
+  "id": "typing_bool_arith",
+  "category": "typing",
+  "results": 1
+ },
+ {
+  "id": "builtin_min_lit",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "builtin_max_lit",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "builtin_min_var",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "builtin_max_neg",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "lit_u32_max",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_u32_over",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_3e9",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_hex_top",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_neg_min",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "lit_neg_over",
+  "category": "arithmetic",
+  "results": 1
+ },
+ {
+  "id": "bool_inrange_arith",
+  "category": "typing",
+  "results": 1
+ },
+ {
+  "id": "bool_pgs_arith",
+  "category": "typing",
+  "results": 1
+ },
+ {
+  "id": "int_xor_value",
+  "category": "bitops",
+  "results": 1
+ },
+ {
+  "id": "int_bitnot_dot",
+  "category": "bitops",
+  "results": 2
+ },
+ {
+  "id": "bool_xor_cond",
+  "category": "logic",
+  "results": 2
+ },
+ {
+  "id": "int_xor_cond",
+  "category": "logic",
+  "results": 1
+ },
+ {
+  "id": "array_search_value__0",
+  "category": "array2",
+  "results": 2
+ },
+ {
+  "id": "array_search_value__1",
+  "category": "array2",
+  "results": 1
+ },
+ {
+  "id": "array_search_short",
+  "category": "array2",
+  "results": 1
+ },
+ {
+  "id": "array_sort_asc__0",
+  "category": "array2",
+  "results": 2
+ },
+ {
+  "id": "array_sort_asc__1",
+  "category": "array2",
+  "results": 2
+ },
+ {
+  "id": "string_eq_literal",
+  "category": "string",
+  "results": 1
+ },
+ {
+  "id": "string_ne_literal",
+  "category": "string",
+  "results": 1
+ },
+ {
+  "id": "string_concat_eq",
+  "category": "string",
+  "results": 1
+ },
+ {
+  "id": "string_case_sensitive",
+  "category": "string",
+  "results": 1
+ },
+ {
+  "id": "sort_asc_two__0",
+  "category": "array2",
+  "results": 2
+ },
+ {
+  "id": "sort_asc_two__1",
+  "category": "array2",
+  "results": 2
+ },
+ {
+  "id": "sort_desc_two",
+  "category": "array2",
+  "results": 2
+ },
+ {
+  "id": "str_decl_init",
+  "category": "string",
+  "results": 1
+ },
+ {
+  "id": "str_assign_decl",
+  "category": "string",
+  "results": 1
+ },
+ {
+  "id": "str_lit_cond",
+  "category": "string",
+  "results": 1
+ },
+ {
+  "id": "str_var_cond",
+  "category": "string",
+  "results": 1
+ },
+ {
+  "id": "str_var_ne_cond",
+  "category": "string",
+  "results": 1
+ },
+ {
+  "id": "ctl_knob_default",
+  "category": "control",
+  "results": 2
+ },
+ {
+  "id": "ctl_knob_set_high",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ctl_knob_set_neg",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ctl_switch_set",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ctl_hide_set",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ctl_pos_x_set",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ctl_menu_items",
+  "category": "control",
+  "results": 2
+ },
+ {
+  "id": "diag_decl_switch",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_set_switch",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_get_switch",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_get_int",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ui_var_knob_default",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ui_var_knob_set_high",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ui_var_knob_set_neg",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ui_var_switch_set",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_get_index0",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_menu_add",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_menu_count",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "diag_menu_count_after_add",
+  "category": "control",
+  "results": 1
  }
 ]

@@ -20,19 +20,19 @@ Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in 
 | category | symbols | full | simplified | stub | unsupported | % full | corpus-weighted % full | tested |
 |---|---|---|---|---|---|---|---|---|
 | callback | 17 | 0 | 14 | 0 | 3 | 0.0% | 0.0% | 14 |
-| command | 282 | 24 | 221 | 5 | 32 | 8.5% | 32.3% | 193 |
+| command | 282 | 25 | 222 | 4 | 31 | 8.9% | 32.3% | 200 |
 | keyword | 18 | 2 | 16 | 0 | 0 | 11.1% | - | 18 |
 | datatype | 6 | 0 | 6 | 0 | 0 | 0.0% | - | 0 |
 | ui_control | 16 | 0 | 16 | 0 | 0 | 0.0% | 0.0% | 15 |
 | preprocessor | 5 | 0 | 5 | 0 | 0 | 0.0% | - | 3 |
-| constant | 762 | 0 | 749 | 0 | 13 | 0.0% | 0.0% | 85 |
+| constant | 762 | 1 | 748 | 0 | 13 | 0.1% | 0.0% | 89 |
 | variable | 14 | 0 | 8 | 0 | 6 | 0.0% | 0.0% | 10 |
 | engine_par | 726 | 0 | 726 | 0 | 0 | 0.0% | 0.0% | 36 |
 | control_par | 94 | 0 | 73 | 21 | 0 | 0.0% | 0.0% | 32 |
-| event_par | 31 | 0 | 29 | 0 | 2 | 0.0% | 0.0% | 19 |
+| event_par | 31 | 0 | 29 | 0 | 2 | 0.0% | 0.0% | 20 |
 | zone_par | 19 | 0 | 19 | 0 | 0 | 0.0% | 0.0% | 4 |
 | loop_par | 6 | 0 | 6 | 0 | 0 | 0.0% | - | 0 |
-| **all** | **1996** | **26** | **1888** | **26** | **56** | **1.3%** | **13.0%** | **429** |
+| **all** | **1996** | **28** | **1888** | **25** | **55** | **1.4%** | **13.0%** | **441** |
 
 Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMBOLS.tsv and KSP_MODERN.md; they are excluded from the totals above.
 
@@ -219,10 +219,6 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 
 `make_instr_persistent` (simplified, 5)
 
-### command / Zone Commands (3 symbols, 3 instrument-uses)
-
-`find_zone` (stub, 1), `get_zone_par` (simplified, 1), `set_zone_par` (simplified, 1)
-
 ### zone_par (3 symbols, 3 instrument-uses)
 
 `$ZONE_PAR_GROUP` (simplified, 1), `$ZONE_PAR_HIGH_KEY` (simplified, 1), `$ZONE_PAR_LOW_KEY` (simplified, 1)
@@ -230,6 +226,10 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 ### constants $PLAYED (1 symbols, 2 instrument-uses)
 
 `$PLAYED_VOICES_INST` (simplified, 2)
+
+### command / Zone Commands (2 symbols, 2 instrument-uses)
+
+`get_zone_par` (simplified, 1), `set_zone_par` (simplified, 1)
 
 ### constants $SIGNATURE (2 symbols, 2 instrument-uses)
 

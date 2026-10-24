@@ -9,65 +9,73 @@ Kontakt runs under Wine (`tools/kontakt-oracle/dump.py`, one session under
 
 Readback channels tried (`tools/ksp-conformance/probes/`):
 
-- **Instrument volume/pan/tune from `set_engine_par(...)` values.** Not usable. Values 0, 1, -1
-  and -1000 read back as -inf, -100 (pan) or -36 (tune), and only 1000 moves the level
-  (`readback_calibrate.lua`).
+- **Instrument volume/pan/tune from `set_engine_par(...)` values.** Not usable.
+  `readback_calibrate.lua`: 0, 1, -1 and -1000 read back as -inf, -100 (pan) or -36 (tune).
 - **Group volume, bit channel. Used.** Result `k` bit `b` is written as
-  `set_engine_par($ENGINE_PAR_VOLUME, 1000, 32*k + b, -1, -1)` when the bit is set, and read
-  back as `get_group_volume(i, 32*k + b)`. A set bit reads -167.38 dB; a clear bit keeps its
-  group default (0 dB for group 0, -6 dB for the others). Group addressing is 0-based
-  (`group_bit_calibrate.lua`).
+  `set_engine_par($ENGINE_PAR_VOLUME, 1000, 32*k + b, -1, -1)` when set, and read back as
+  `get_group_volume(i, 32*k + b)`. A set bit reads -167.38 dB; a clear bit keeps its group
+  default. Group addressing is 0-based (`group_bit_calibrate.lua`).
+- **Markers (slice 2).** Group 64 is written first in `on init` and group 65 last. A unit
+  whose start marker does not read back did not compile: Kontakt drops a script it rejects
+  without any error we can read. The end marker shows init ran to the end.
 
 Per unit, `gen.py` wraps the case's results in this encoder (`cases.py: ENCODER`) and emits
 the same `.ksp` text for Kontakt (generated probe, 16 units per session) and for the
-interpreter (`cases/<id>.ksp`). `golden.json` holds the Kontakt values; the test decodes
-the same bits from `init_engine_pars` and compares.
+interpreter (`cases/<id>.ksp`). `golden.json` has `compiled`, `completed` and `results`.
 
-Encoder syntax is KSP: parenthesised conditions, `#` for not-equal, no `then`.
-Real variables are `~name`.
+Encoder syntax is KSP: parenthesised conditions, `#` for not-equal, no `then`, no
+parentheses on `call`/`function` names. Real variables are `~name`.
 
 Run: `tools/ksp-conformance/run.sh` (oracle, all batches), then
 `cargo test -p sampler-ksp --test conformance`.
 
-## Results (39 units from 38 cases)
+## Kontakt rules (measured)
 
-| Category | Units | Kontakt = interpreter | Mismatch |
-|---|---:|---:|---:|
-| arithmetic (wrap, truncating `/`, C-style `mod`, precedence, abs) | 11 | 11 | 0 |
-| real (`round`, `real_to_int`, `~` vars, exact int->real) | 7 | 7 | 0 |
-| array (store/load, `num_elements`, init list, out-of-bounds read/write) | 5 | 5 | 0 |
-| shift (`sh_left`, `sh_right` on negatives) | 3 | 3 | 0 |
-| loop (`while`, nested) | 2 | 2 | 0 |
-| incdec (`inc`, wrap) | 2 | 2 | 0 |
-| logic (`not`, `and`/`or`, comparisons, `in_range`) | 6 | 2 | 4 |
-| function (`call` of user procedures from `on init`) | 2 | 0 | 2 |
-| typing (real assigned to an integer) | 1 | 0 | 1 |
-| **Total** | **39** | **32** | **7** |
+Each rule is backed by a golden unit or a probe whose start marker proves compilation.
 
-The seven mismatching units are listed in `KNOWN_MISMATCHES` in the test. Removing an entry
-is part of the fix that closes it.
+| Rule | Evidence |
+|---|---|
+| A condition must be a comparison or boolean term. `if (1)`, `if (1 and 1)`, `if ($t and $f)` are compile errors. | `cond_bare_int`, `cond_int_and`, `logic_*` rejected |
+| `and`, `or`, `not` of comparisons are boolean and true when the comparison is. | `pL0`–`pL4`, `qN1`, `qB0`, `qB1` |
+| A boolean cannot be assigned to an integer variable. | `typing_bool_assign` rejected |
+| A real cannot be assigned to an integer variable. | `typing_real_assign`, `type_real_to_int_assign` rejected |
+| `call` is not allowed in `on init`, with or without parentheses, whether the function comes before or after. `call` from `on note` compiles. | `call_init_empty`, `call_init_global`, `mA`–`mD` |
+| `#` is not-equal. | `qB0` |
 
-### Mismatches and the Kontakt behaviour observed
+Not probed yet: integer `and`/`or`/`not` used as values (`$x := 1 and 1`). The interpreter
+still allows these, typed as integers.
 
-1. **Logic is condition-only in Kontakt (4 units: `logic_not`, `logic_and_or`, `logic_vars`,
-   `logic_vars_2`).** Measured (`pr_*` probe): a bare variable as a condition is false
-   (`if ($t)`), `if (1 and 1)` and `if ($t and 1)` are false, `if (not ...)` is false in
-   every form tried, and `if (($t = 1) and ($t = 1))` / `or` are true. Only comparison-based
-   terms count as true. The interpreter treats these as numeric truth. Fix in `lower.rs`
-   (`ExprKind::Not`, condition lowering) and `sema.rs` typing.
-2. **Real assigned to an integer (`type_real_to_int_assign`).** Kontakt compiles
-   `$cv := round(2.5)` and `$cv := 7.0 / 2` and yields 0. The interpreter rejects it with
-   "expected integer, found real". Fix: accept and match Kontakt's value; confirm the 0 with
-   a probe before coding it.
-3. **`call` from `on init` (`function_updates_global`, `function_nested_call`).** Kontakt
-   reads 0 for the caller's global after `call` in `on init`; the interpreter applies the
-   call. Not yet probed: whether Kontakt runs the procedure at all in init, or whether
-   `on init` globals are invisible inside procedures. Next probe: a procedure that writes a
-   flag only, and a read of the same global from `on init` after the call.
+## Results (47 units)
 
-Not in this slice: strings, callbacks (`on note`, `on listener`, `wait`), UI controls,
-persistence, polyphonic variables. These need a different readback (note-time and listener
-values) and are the next slices.
+Slice 2 golden set: Kontakt compiles 34 units and rejects 13 (listed above). The interpreter
+now matches all 47 (compile result, completion and bits).
+
+## Interpreter changes (slice 2)
+
+- `sema.rs`: a condition must be boolean (`expected a condition, found integer`).
+- `sema.rs`: `and`/`or`/`not` give a boolean only when both operands are boolean, otherwise an
+  integer.
+- `sema.rs`: assigning a boolean to an integer variable is an error.
+- `sema.rs`: `call` in `on init` is an error (`call is not allowed in on init`).
+
+## Test rewrites (slice 2)
+
+The sema rules made some existing tests invalid KSP. Each was rewritten to valid KSP with
+the same intent, except where noted:
+
+- `luau/tests.rs`: `and`/`or` on integers became `.and.`/`.or.` (bitwise); `while (1)` became
+  `while (1 = 1)`; the function call from `on init` was inlined (function coverage in that test
+  is lost; the call rule is covered by `functions.rs`).
+- `functions.rs`: `while (1)` became `while (1 = 1)`; the init-call part asserts the rejection;
+  the runtime part (`on note`) keeps the `exit` coverage.
+- `array_value_contract.rs`: `array_equal` results are assigned through `if`. Its return type
+  is not verified against Kontakt: the builtin table says boolean, the corpus never uses it.
+- `event_ids.rs`: short-circuit check uses `if` with `play_note(...) = 0`.
+- `select.rs`: the precedence table checks truth through `if (expr # 0)`. It no longer covers
+  the integer value of const folding for these expressions (other tests cover arithmetic).
+- `typed_widgets.rs`: the file-selector drop flag is an `if` assignment.
+- `init_only_commands.rs`, `listener_contract.rs`, `parity.rs`, `script_state.rs`: init-call
+  shapes now assert the rejection or move the call to `on note` / inline it.
 
 ## Notes
 
@@ -75,3 +83,66 @@ values) and are the next slices.
 - `golden.json` comes from one oracle run on Kontakt 8.13.1. Regenerate after any
   generator or case change.
 - Interpreter micro-bench (init and per-note callback cost on corpus scripts): not started.
+
+## Slice 3 (86 units)
+
+Probes added: numeric builtins (`sgn`, `msb`, `lsb`, `sh_*`, `pow`, `floor`, `ceil`, `round`,
+`int`, `sqrt`), literal range, and boolean builtins used as numbers. Results in
+`golden.json` (86 units, all decoded from Kontakt 8.13.1).
+
+| Rule | Evidence |
+|---|---|
+| Integer `and`, `or`, `not` are rejected as values and as conditions; `.and.`/`.or.` are bitwise. | `intval_and_value`, `intval_or_value`, `intval_not_value` rejected; `intval_bitand` = 2, 7 |
+| A boolean is not a number: `(3 > 2) + 0` is rejected. | `typing_bool_arith` rejected |
+| `in_range(...) + 0` and `pgs_key_exists(...) + 0` are rejected. | `bool_inrange_arith`, `bool_pgs_arith` rejected |
+| A decimal literal above 2147483647 clamps to 2147483647. | `lit_int_overflow`, `lit_u32_max`, `lit_u32_over`, `lit_3e9` |
+| `-2147483648` reads as -2147483647 (the literal clamps, then negates). `-2147483649` also reads -2147483647. | `lit_neg_min`, `lit_neg_over` |
+| `80000000h` wraps to -2147483648 (hex literals are 32-bit). | `lit_hex_top` |
+| Division and modulo by zero yield 0 and the script continues. | `arith_div_zero`, `arith_mod_zero` |
+| Shift amounts are masked to 5 bits: `sh_left(1, 32)` = 1, `sh_left(1, -1)` = -2147483648. | `builtin_sh_32`, `builtin_sh_negative` |
+| `min`/`max` with two arguments are rejected in `on init`, with or without variables or negatives. | `builtin_min*`, `builtin_max*` rejected |
+
+Interpreter changes: `sema.rs` boolean-only and/or/xor/not; boolean operands in arithmetic
+are errors; decimal literal clamp; no special case for `-2147483648`.
+
+Open: `min`/`max` (known debt in `KNOWN_MISMATCHES`; no corpus library uses them);
+integer `xor` and `.not.` (not probed).
+
+## Slice 4 (107 units)
+
+Probes: integer and boolean `xor`, bitwise `.not.`, `search` and `sort` on arrays, string
+declarations and string `=` in conditions. 107 units in `golden.json`, decoded from Kontakt 8.13.1.
+
+| Rule | Evidence |
+|---|---|
+| Integer `xor` is rejected as a value and as a condition, like integer `and`/`or`. Boolean `xor` works in a condition. | `int_xor_value`, `int_xor_cond` rejected; `bool_xor_cond` = 1, 0 |
+| `.not.` is bitwise: `.not. 5` = -6, `.not. 0` = -1. | `int_bitnot_dot` |
+| `search(%a, v, start, end)` returns the first index in [start, end) or -1; the two-argument form searches the whole array. | `array_search_value`, `array_search_short` (1, 3, -1, 1) |
+| `sort(%a, 0)` sorts ascending, `sort(%a, 1)` descending; the three-argument form `sort(%a, 0, 3)` is rejected. | `sort_asc_two`, `sort_desc_two`; `array_sort_asc` rejected |
+| A scalar string declaration with a literal initializer (`declare @s := "abc"`) is rejected; `declare @s` then `@s := "abc"` compiles. | `str_decl_init` rejected; `str_assign_decl` compiles |
+| String `=` in a condition is rejected in on init (literal and variable forms). | `str_lit_cond`, `str_var_cond`, `string_case_sensitive` rejected |
+
+Interpreter changes (slice 4): `declare @s := "literal"` is an error (sema.rs). Scalar strings only;
+text arrays with literal lists are not measured and still accepted.
+
+Known debt: string `=` in conditions is accepted by the interpreter and rejected by Kontakt in on
+init. The `on note` form is not measured yet; the oracle has no note-trigger probe.
+
+## Slice 5 (126 units): control and UI readback in on init
+
+Probes: `set_control_par` on knobs, switches, hide, position and menus; `get_control_par` and
+`get_num_menu_items` read back in on init; `ui_knob` and `ui_switch` variables read back in on init;
+`add_menu_item` in on init. Decoded from Kontakt 8.13.1 (`ctl_*`, `ui_var_*`, `diag_*`).
+
+| Rule | Evidence |
+|---|---|
+| `set_control_par` on a knob, switch, hide, or position compiles in on init. | `ctl_knob_set_high`, `ctl_knob_set_neg`, `ctl_switch_set`, `ctl_hide_set`, `ctl_pos_x_set` compile; `diag_set_switch` compiles |
+| `get_control_par` used as an integer in on init is rejected. | `diag_get_int`, `diag_get_index0`, `diag_get_switch`, `ctl_knob_default` rejected |
+| `get_num_menu_items` in on init is rejected. | `diag_menu_count`, `diag_menu_count_after_add`, `ctl_menu_items` rejected |
+| `add_menu_item` in on init compiles. | `diag_menu_add` compiles |
+| A `ui_knob`/`ui_switch` variable set in on init reads back 0 in on init. | `ui_var_knob_default`, `ui_var_knob_set_high`, `ui_var_knob_set_neg`, `ui_var_switch_set` compile; read as 0 |
+
+Known debt: `get_control_par` and `get_num_menu_items` are accepted by the interpreter and by
+about ten existing tests (on init) that Kontakt rejects. The three `ctl_menu_items`,
+`diag_menu_count` and `diag_menu_count_after_add` units are listed in `KNOWN_MISMATCHES`. Moving
+those tests to on note or on ui_control, then rejecting the calls in on init, is the next step.

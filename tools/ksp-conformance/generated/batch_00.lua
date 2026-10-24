@@ -9,6 +9,7 @@ local CASES = {
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := 2147483647
   $cv := $a + 1
   $cb := 0
@@ -18,12 +19,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "arith_sub_wrap", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := -2147483647
   $cv := $a - 2
   $cb := 0
@@ -33,12 +36,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "arith_mul_wrap", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := 65536
   $cv := $a * 65536
   $cb := 0
@@ -48,12 +53,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "arith_mul_neg", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := -46341
   $cv := $a * $a
   $cb := 0
@@ -63,12 +70,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "arith_neg_min", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := -2147483647 - 1
   $cv := -$a
   $cb := 0
@@ -86,12 +95,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "arith_div_trunc_pos", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   $cv := 7 / 2
   $cb := 0
   while ($cb < 32)
@@ -108,12 +119,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "arith_mod_signs", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   $cv := -7 mod 2
   $cb := 0
   while ($cb < 32)
@@ -130,12 +143,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "arith_mod_negneg", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   $cv := -7 mod -2
   $cb := 0
   while ($cb < 32)
@@ -144,12 +159,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "arith_precedence__0", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   $cv := 2 + 3 * 4
   $cb := 0
   while ($cb < 32)
@@ -166,12 +183,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "arith_precedence__1", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   $cv := 2 * 3 mod 4
   $cb := 0
   while ($cb < 32)
@@ -180,12 +199,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "arith_abs", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $a := -2147483647
   $cv := abs($a)
   $cb := 0
@@ -203,12 +224,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "real_round_half", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare ~h := 2.5
   declare ~n := -2.5
   $cv := real_to_int(round(~h))
@@ -227,12 +250,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "real_round_down", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare ~h := 0.49999
   $cv := real_to_int(round(~h))
   $cb := 0
@@ -242,12 +267,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "real_to_int_trunc", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   $cv := real_to_int(3.9)
   $cb := 0
   while ($cb < 32)
@@ -264,12 +291,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "real_to_int_big", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare ~r := 2147483648.0
   $cv := real_to_int(~r)
   $cb := 0
@@ -279,12 +308,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "real_int_real_exact", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   $cv := real_to_int(int_to_real(16777217))
   $cb := 0
   while ($cb < 32)
@@ -293,6 +324,7 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
 }
@@ -300,7 +332,7 @@ local ids = {}
 for n, c in ipairs(CASES) do
   local i = kt.add_instrument()
   kt.set_instrument_volume(i, 0)
-  for _ = 1, 32 * c.results - 1 do kt.add_group(i) end
+  for _ = 1, 65 do kt.add_group(i) end
   ids[n] = i
   local ok, err = pcall(kt.set_instrument_script_source, i, 0, c.src)
   log(string.format('{"compile":"%s","ok":%s}', c.id, tostring(ok)))
@@ -310,6 +342,8 @@ local t0 = os.time()
 repeat until os.time() - t0 >= 4
 for n, c in ipairs(CASES) do
   local rows = {}
+  local start = kt.get_group_volume(ids[n], 64) < -100
+  local finish = kt.get_group_volume(ids[n], 65) < -100
   for k = 0, c.results - 1 do
     local bits = {}
     for b = 0, 31 do
@@ -318,7 +352,7 @@ for n, c in ipairs(CASES) do
     end
     rows[#rows + 1] = '"' .. table.concat(bits) .. '"'
   end
-  log(string.format('{"case":"%s","bits":[%s]}', c.id, table.concat(rows, ',')))
+  log(string.format('{"case":"%s","start":%s,"end":%s,"bits":[%s]}', c.id, tostring(start), tostring(finish), table.concat(rows, ',')))
 end
 log('{"done":true}')
 out:close()

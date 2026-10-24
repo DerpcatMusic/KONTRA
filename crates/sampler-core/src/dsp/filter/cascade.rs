@@ -30,6 +30,8 @@ use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParame
 use super::super::hiir::{Hiir, HiirState};
 use super::super::Planar;
 use super::super::biquad::{self, Coefficients, Shape};
+use super::super::eq_family::digital;
+use sampler_ir::fx::eq::Kind;
 use super::chamberlin::{pro52, versatile, Chamberlin};
 use super::linear::Zdf;
 use super::shaper::{self, Knee};
@@ -1249,21 +1251,18 @@ impl Xpander {
 
 // ----------------------------------------------------------------- UVI section banks + comb
 
-/// Sections a [`Bank`] holds: DigitalFilter's 16th-order band shapes give 16 plus one.
+/// Sections a [`Bank`] holds: DigitalFilter's 16th-order band shapes give 16 (the designer's
+/// `MAX_SECTIONS` is 17).
 const BANK: usize = 17;
-/// Cells: 2 transposed-direct-form-II states per section, then the first-order state.
-const BANK_FIRST: usize = 2 * BANK;
-const _: () = assert!(BANK_FIRST < CELLS);
 
 /// Fixed sections in transposed direct form II, chained or summed, per channel. `wide` runs
-/// DigitalFilter's f64 sections with an f32 store after each (0x141646fb0) and its f32
-/// first-order stage (0x141648c00); otherwise the coefficients and states are f32
-/// (0x141646fa0) and the sections are summed in order and scaled (VowelFilter 0x141345ef0).
+/// DigitalFilter's f64 sections with an f32 store after each (0x141646fb0); otherwise the
+/// coefficients and states are f32 (0x141646fa0) and the sections are summed in order and scaled
+/// (VowelFilter 0x141345ef0).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Bank {
     sections: [[[f64; 5]; BANK]; 2],
     count: usize,
-    first: [Option<[f32; 3]>; 2],
     wide: bool,
     sum: Option<f32>,
 }
@@ -1303,172 +1302,22 @@ pub(crate) fn rbj(mode: u8, fn_: f64, q: f64) -> [f64; 5] {
     Coefficients::normalised(b, d).to_array()
 }
 
-/// `(re, im)` square root, C99 `csqrt` branch cuts (the sign of a zero imaginary part kept).
-fn csqrt((x, y): (f64, f64)) -> (f64, f64) {
-    if x == 0.0 && y == 0.0 {
-        return (0.0, y);
-    }
-    let t = ((x.abs() + x.hypot(y)) * 0.5).sqrt();
-    if x >= 0.0 { (t, y / (t + t)) } else { (y.abs() / (t + t), t.copysign(y)) }
-}
-
-/// 0x141643f60: analog `(p2 s^2 + p3 s + p4) / (s^2 + p5 s + p6)` through the bilinear map.
-fn bilinear(p2: f64, p3: f64, p4: f64, p5: f64, p6: f64, w: f64) -> [f64; 5] {
-    let k = 1.0 / (w * 0.5).tan();
-    let k2 = k * k;
-    let n2 = k2 * p2;
-    let n = 1.0 / (k * p5 + p6 + k2);
-    [
-        (k * p3 + p4 + n2) * n,
-        ((p4 - n2) + (p4 - n2)) * n,
-        ((p4 - k * p3) + n2) * n,
-        ((p6 - k2) + (p6 - k2)) * n,
-        ((p6 - k * p5) + k2) * n,
-    ]
-}
-
-/// 0x1416440a0: analog `(p2 s^2 + p3 s + p4) / (p5 s^2 + p6 s + p7)`.
-fn bilinear2(p2: f64, p3: f64, p4: f64, p5: f64, p6: f64, p7: f64, w: f64) -> [f64; 5] {
-    let k = 1.0 / (w * 0.5).tan();
-    let p5 = k * k * p5;
-    let p2 = k * k * p2;
-    let n = 1.0 / (k * p6 + p5 + p7);
-    [(k * p3 + p2 + p4) * n, ((p4 - p2) + (p4 - p2)) * n, ((p2 - k * p3) + p4) * n, ((p7 - p5) + (p7 - p5)) * n, ((p5 - k * p6) + p7) * n]
-}
-
-/// 0x1412881a0: the four roots of `s^2 + B s + C` under the band transform.
-fn band_roots(b: f64, c: f64) -> [(f64, f64); 4] {
-    let d4 = (b * b - c * 4.0) + 8.0;
-    let (sre, sim) = csqrt((d4, 0.0));
-    let (q8, q10) = (sre * 0.25, sim * 0.25);
-    let d3 = sre * -b * 0.5;
-    let d2 = sim * -b * 0.5;
-    let d7 = (b * b * 0.5 - c) - 2.0;
-    let w1 = csqrt((d7 - d3, -d2));
-    let pb = b * -0.25;
-    let w2 = csqrt((d3 + d7, d2));
-    let z0 = ((-q8 - w1.0 * 0.5) + pb, -q10 - w1.1 * 0.5);
-    let za = ((-q8 + w1.0 * 0.5) + pb, w1.1 * 0.5 + -q10);
-    let zb = ((q8 - w2.0 * 0.5) + pb, q10 - w2.1 * 0.5);
-    let z3 = (w2.0 * 0.5 + q8 + pb, w2.1 * 0.5 + q10);
-    if d4 <= 0.0 { [z0, zb, za, z3] } else { [z0, za, zb, z3] }
-}
-
-fn re_mul(a: (f64, f64), b: (f64, f64)) -> f64 {
-    a.0 * b.0 - a.1 * b.1
-}
-
-/// `DigitalFilter` design (0x1412840f0): kind 0 LP, 1 HP, 2 BP, 3 notch, 4 low shelf, 5 high
-/// shelf, 6 peak; order `n`, `fn_ = fc / rate`. Sections plus the odd orders' first-order stage.
-fn digital_design(kind: u8, n: usize, fn_: f64, gain_db: f32, q: f64, bw: f64) -> (Vec<[f64; 5]>, Option<[f32; 3]>) {
-    use std::f64::consts::PI;
-    let nf = n as f64;
-    let w = fn_ * (2.0 * PI);
-    let r = 0.5 / q;
-    let mut phi = 0.0;
-    let mut k = 1.0;
-    if r >= 1.0 {
-        if r > 1.0 {
-            k = ((r * r - 1.0).sqrt() + r).powf(1.0 / nf + 1.0 / nf);
-        }
-    } else if n / 2 > 0 {
-        phi = r.acos() / (n / 2) as f64;
-    }
-    let r2 = r * r;
-    let g = f64::from((gain_db * 0.115_129_25).exp());
-    let a = g.powf(1.0 / (nf + nf));
-    let a2 = a * a;
-    let d = 2f64.powf(bw * 0.5) - 2f64.powf(bw * -0.5);
-    let (kk, ikk) = (k * k, 1.0 / (k * k));
-    let (mut bs, mut cs) = ([0f64; 16], [0f64; 16]);
-    let pairs = match n % 4 {
-        2 => {
-            let last = n / 2 - 1;
-            let mut i = 0;
-            while i < last {
-                let th = (1.0 - (i + 2) as f64 * (1.0 / nf)) * PI;
-                (bs[i], cs[i]) = ((th + phi).cos() * (k * -2.0), kk);
-                (bs[i + 1], cs[i + 1]) = ((th - phi).cos() * (-2.0 / k), ikk);
-                i += 2;
-            }
-            cs[last] = 1.0;
-            bs[last] = if r >= 1.0 { 1.0 / k + k } else { (PI - phi).cos() * -2.0 };
-            n / 2
-        }
-        0 => {
-            let mut i = 0;
-            while i < n / 2 {
-                let th = (1.0 - (i + 1) as f64 * (1.0 / nf)) * PI;
-                (bs[i], cs[i]) = ((th + phi).cos() * (k * -2.0), kk);
-                (bs[i + 1], cs[i + 1]) = ((th - phi).cos() * (-2.0 / k), ikk);
-                i += 2;
-            }
-            n / 2
-        }
-        _ if n == 3 => {
-            let t = (r2 - 2.0) * r2;
-            let z1 = csqrt((t, 0.0));
-            let zb = csqrt(((r2 - z1.0) - 1.0, -z1.1));
-            let zc = csqrt(((r2 + z1.0) - 1.0, z1.1));
-            bs[0] = zb.0 + zc.0;
-            cs[0] = zb.0 * zc.0 - zb.1 * zc.1;
-            1
-        }
-        _ => n / 2,
+/// The UVI DigitalFilter sections from the shared designer (`eq_family::digital`, the same native
+/// routine 0x1412840f0): `[b0, b1, b2, a1, a2]` per section, the odd order's first-order stage last.
+fn digital_sections(kind: u8, n: u8, fnorm: f64, gain_db: f32, q: f64, bw: f64) -> Vec<[f64; 5]> {
+    let kind = match kind {
+        0 => Kind::LowPass,
+        1 => Kind::HighPass,
+        2 => Kind::BandPass,
+        3 => Kind::Notch,
+        4 => Kind::LowShelf,
+        5 => Kind::HighShelf,
+        _ => Kind::Peak,
     };
-    let mut sections = Vec::with_capacity(BANK);
-    for j in 0..pairs {
-        let (b, c) = (bs[j], cs[j]);
-        match kind {
-            0 => sections.push(bilinear(0.0, 0.0, 1.0, b, c, w)),
-            1 => sections.push(bilinear(1.0, 0.0, 0.0, b, c, w)),
-            4 => sections.push(bilinear(c, b * a, a2, b / a, c / a2, w)),
-            5 => sections.push(bilinear(c * a2 * a2, b * a2 * a, a2, b * a, c * a2, w)),
-            2 | 3 => {
-                let z = band_roots(b * d, c * d * d + 2.0);
-                for (u, v) in [(z[0], z[1]), (z[2], z[3])] {
-                    let (p5, p6) = (-u.0 - v.0, re_mul(u, v));
-                    sections.push(if kind == 2 { bilinear(0.0, d, 0.0, p5, p6, w) } else { bilinear(1.0, 0.0, 1.0, p5, p6, w) });
-                }
-            }
-            _ => {
-                let ic = 1.0 / c;
-                let nz = band_roots(d * a * (b * ic), (d * ic) * (a2 * d) + 2.0);
-                let pz = band_roots((b / a) * d, d * d * (c / a2) + 2.0);
-                for (n0, n1, q0, q1) in [(nz[0], nz[1], pz[0], pz[1]), (nz[2], nz[3], pz[2], pz[3])] {
-                    sections.push(bilinear(1.0, -n0.0 - n1.0, re_mul(n0, n1), -q0.0 - q1.0, re_mul(q0, q1), w));
-                }
-            }
-        }
-    }
-    let mut first = None;
-    if n & 1 == 1 {
-        let k = 1.0 / (w * 0.5).tan();
-        let f3 = |v: [f64; 3]| Some(v.map(|v| v as f32));
-        match kind {
-            0 => {
-                let n = 1.0 / (k + 1.0);
-                first = f3([n, n, (1.0 - k) * n]);
-            }
-            1 => {
-                let n = 1.0 / (k + 1.0);
-                first = f3([k * n, -(k * n), (1.0 - k) * n]);
-            }
-            4 => {
-                let ia = 1.0 / a;
-                let n = 1.0 / (k + ia);
-                first = f3([(k + a) * n, (a - k) * n, (ia - k) * n]);
-            }
-            5 => {
-                let n = 1.0 / (k + a);
-                first = f3([(k * a2 + a) * n, (a - k * a2) * n, (a - k) * n]);
-            }
-            2 => sections.push(bilinear2(0.0, d, 0.0, 1.0, d, 1.0, w)),
-            3 => sections.push(bilinear2(1.0, 0.0, 1.0, 1.0, d, 1.0, w)),
-            _ => sections.push(bilinear2(1.0, d * a, 1.0, 1.0, d / a, 1.0, w)),
-        }
-    }
-    (sections, first)
+    (0..digital::sections(kind, n))
+        .filter_map(|i| digital::section(kind, n, fnorm, f64::from(gain_db), q, bw, i))
+        .map(|b| [b.b[0], b.b[1], b.b[2], b.a[0], b.a[1]])
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -1479,7 +1328,7 @@ enum BankConfig {
 
 impl Bank {
     fn new(config: BankConfig, rate: f32) -> Self {
-        let mut bank = Self { sections: [[[0.0; 5]; BANK]; 2], count: 0, first: [None; 2], wide: false, sum: None };
+        let mut bank = Self { sections: [[[0.0; 5]; BANK]; 2], count: 0, wide: false, sum: None };
         match config {
             BankConfig::Digital { kind, order, hertz, track, spread, q, gain, bandwidth } => {
                 bank.wide = true;
@@ -1490,17 +1339,9 @@ impl Bank {
                     // ponytail: the clamp statics (0x14258bff0/4) are encrypted .data; the Freq
                     // range 10..22000 stands in until a runtime dump.
                     let fc = (e.exp2() * hertz).clamp(10.0, 22_000.0);
-                    let (sections, first) = digital_design(
-                        kind,
-                        usize::from(order),
-                        f64::from(fc / rate),
-                        gain,
-                        f64::from(q),
-                        f64::from(bandwidth),
-                    );
+                    let sections = digital_sections(kind, order, f64::from(fc / rate), gain, f64::from(q), f64::from(bandwidth));
                     bank.count = sections.len().min(BANK);
                     bank.sections[ch][..bank.count].copy_from_slice(&sections[..bank.count]);
-                    bank.first[ch] = first;
                 }
             }
             BankConfig::Vowel { morph, q, formant, a, b, mode, count } => {
@@ -1535,16 +1376,6 @@ impl Bank {
                         y = f64::from(o as f32);
                     }
                     *v = y;
-                }
-                if let Some([b0, b1, a1]) = self.first[ch] {
-                    let mut z = cells[BANK_FIRST][ch] as f32;
-                    for v in x.iter_mut() {
-                        let u = *v as f32;
-                        let y = (u * b0) + z;
-                        z = (u * b1) - (y * a1);
-                        *v = f64::from(y);
-                    }
-                    cells[BANK_FIRST][ch] = flushed(z);
                 }
             } else {
                 let gain = self.sum.unwrap_or(1.0);

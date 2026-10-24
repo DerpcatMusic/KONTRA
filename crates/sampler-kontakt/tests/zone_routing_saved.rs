@@ -167,8 +167,8 @@ fn native_identity_import_names_the_first_duplicate_and_keeps_missing_without_or
         fixture::base(None, 0, [Some(0), Some(7), Some(7)]),
     )
     .unwrap();
-    // Kontakt resolves a shared identity to the first zone that carries it, so the
-    // instrument still loads: the first keeps the identity and later ones have none.
+    // Kontakt keeps a shared identity on every zone that stores it (get_zone_id
+    // reads it) and resolves lookups by identity to the first of them.
     let shared = sampler_kontakt::read(&duplicate).unwrap();
     assert_eq!(
         shared
@@ -178,7 +178,7 @@ fn native_identity_import_names_the_first_duplicate_and_keeps_missing_without_or
             .iter()
             .map(|z| z.id)
             .collect::<Vec<_>>(),
-        [Some(0), Some(7), None]
+        [Some(0), Some(7), Some(7)]
     );
     let missing = f.directory.path().join("missing.nki");
     std::fs::write(

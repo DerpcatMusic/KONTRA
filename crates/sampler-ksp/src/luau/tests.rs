@@ -33,9 +33,9 @@ fn integer_arithmetic_wraps_like_the_interpreter() {
         $f := $b / -1
         $g := $b mod 7
         $h := 7 / 0
-        $i := $a and 1234
-        $j := $b or 5
-        $k := $a xor $b
+        $i := $a .and. 1234
+        $j := $b .or. 5
+        $k := $a .xor. $b
         $l := -$b
         end on",
     );
@@ -80,13 +80,10 @@ fn real_arithmetic_and_truncating_stores() {
 }
 
 #[test]
-fn control_flow_functions_and_inc_dec() {
+fn control_flow_and_inc_dec() {
+    // Kontakt rejects `call` in on init, so the loop body is inlined here.
     assert_init_equivalent(
-        "function bump
-          inc($s)
-          if ($s = 3) exit end if
-        end function
-        on init
+        "on init
         declare $i := 0
         declare $s := 0
         declare $t := 0
@@ -95,8 +92,8 @@ fn control_flow_functions_and_inc_dec() {
           if ($i mod 2 = 0) continue end if
           $t := $t + $i
         end while
-        while (1)
-          call bump()
+        while (1 = 1)
+          inc($s)
           if ($s = 5) exit end if
         end while
         select($t)
@@ -408,7 +405,9 @@ fn pgs_keys_and_script_title_match_the_interpreter() {
         pgs_set_key_val(TEST, 9, 5)
         pgs_set_key_val(TEST, -1, 5)
         $a := pgs_get_key_val(TEST, 2) + pgs_get_key_val(TEST, 9)
-        $b := pgs_get_key_val(MISSING, 0) + pgs_key_exists(TEST) * 10 + pgs_key_exists(MISSING) * 100
+        $b := pgs_get_key_val(MISSING, 0)
+        if (pgs_key_exists(TEST)) $b := $b + 10 end if
+        if (pgs_key_exists(MISSING)) $b := $b + 100 end if
         pgs_create_key(TEST, 99)
         pgs_create_key(BIG, 1000)
         $c := pgs_get_key_val(TEST, 3) + pgs_get_key_val(BIG, 255) + pgs_get_key_val(BIG, 256)
@@ -453,6 +452,8 @@ fn ui_record_builtins_match_the_interpreter() {
 
 #[test]
 fn integer_builtins_match_the_interpreter() {
+    // in_range and pgs_key_exists return booleans: Kontakt rejects them as numbers
+    // (conformance `bool_inrange_arith`, `bool_pgs_arith`), so they are tested with `if`.
     assert_init_equivalent(
         "on init
         declare $a := 0
@@ -473,7 +474,9 @@ fn integer_builtins_match_the_interpreter() {
         $c := sh_left(3, 33) + sh_right(-64, 3) + sh_left(1, -1)
         $d := msb(-1000) * 1000 + lsb(-1000)
         $e := ms_to_ticks(2147483647) + ticks_to_ms(-2000)
-        $f := in_range(5, 1, 5) + in_range(6, 1, 5) * 10 + in_range(-1, -1, 0) * 100
+        if (in_range(5, 1, 5)) $f := $f + 1 end if
+        if (in_range(6, 1, 5)) $f := $f + 10 end if
+        if (in_range(-1, -1, 0)) $f := $f + 100 end if
         $g := min(3, -4) + max(3, -4) * 10
         $h := real_to_int(-7.9) + int(2.5) * 10 + real_to_int(1.0e30)
         $i := num_elements(%t) + 0
@@ -610,12 +613,13 @@ fn play_note_and_note_off_reach_the_engine_sink() {
     host.set_sink(Box::new(Log(log.clone())));
     host.init().unwrap();
     host.note_on(1, 60, 100.0).unwrap();
-    // Velocity 0 is outside KSP's 1..127 for play_note: refused without a call.
+    // Velocity 0 sounds at velocity 1 (the lowering clamps it the same way).
     assert_eq!(
         *log.borrow(),
         vec![
             Call::Play(Play { parent: 1, key: 61, velocity: 100.0 / 127.0, duration: Duration::Frames(12_000) }),
             Call::Play(Play { parent: 1, key: 63, velocity: 90.0 / 127.0, duration: Duration::Gate }),
+            Call::Play(Play { parent: 1, key: 62, velocity: 1.0 / 127.0, duration: Duration::Frames(48) }),
             Call::NoteOff { event: 1, delay: Some(48) },
         ],
     );
@@ -627,7 +631,7 @@ fn persistence_declarations_and_the_load_time_persistence_body_match_the_interpr
     // restore is a no-op there, so the declarations only mark storage.
     assert_init_equivalent(
         "on init declare $a := 3 make_persistent($a) declare ~r := 1.5 make_instr_persistent(~r) \
-         declare @s := \"x\" make_persistent(@s) read_persistent_var($a) $a := $a * 2 end on \
+         declare @s @s := \"x\" make_persistent(@s) read_persistent_var($a) $a := $a * 2 end on \
          on persistence_changed $a := $a + 5 ~r := ~r * 2.0 end on",
     );
 }

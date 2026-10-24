@@ -8,41 +8,53 @@
 use serde_json::Value;
 use std::path::PathBuf;
 
-/// Units whose interpreter result differs from Kontakt today. Remove an entry in the
-/// same change that fixes it. Categories and the Kontakt rule behind each are in
-/// docs/re/KSP_CONFORMANCE.md.
+/// Units whose interpreter result differs from Kontakt today. Add an entry only as tracked
+/// debt, and remove it in the change that fixes it.
+///
+/// `min`/`max` with two arguments: Kontakt rejects every on-init form measured (`builtin_*`),
+/// the interpreter accepts them. No corpus library uses them (survey: no symbol occurrences).
+/// Open: measure them in `on note` and then reject or keep.
 const KNOWN_MISMATCHES: &[&str] = &[
-    // typing: Kontakt accepts a real assigned to an integer and yields 0
-    "type_real_to_int_assign",
-    // logic: and/or/not are condition-only in Kontakt; bare integers are false
-    "logic_not",
-    "logic_and_or",
-    "logic_vars",
-    "logic_vars_2",
-    // function: `call` from on init does not change the caller's global (Kontakt reads 0)
-    "function_updates_global",
-    "function_nested_call",
+    "builtin_minmax__0",
+    "builtin_minmax__1",
+    "builtin_min_lit",
+    "builtin_max_lit",
+    "builtin_min_var",
+    "builtin_max_neg",
+    // String `=` in a condition: Kontakt rejects it in on init (measured); the interpreter
+    // accepts it. Open: measure string comparison in on note before rejecting it.
+    "str_lit_cond",
+    "string_case_sensitive",
+    // get_num_menu_items in on init: Kontakt rejects it (diag_menu_count, diag_menu_count_after_add);
+    // the interpreter and about ten existing tests use it there. Open: move those tests to
+    // on note / on ui_control, then reject the call in on init.
+    "ctl_menu_items",
+    "diag_menu_count",
+    "diag_menu_count_after_add",
 ];
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/ksp-conformance")
 }
 
-/// Decode `results` 32-bit values from the volume engine writes of one unit.
-fn interpreter_results(source: &str, results: usize) -> Result<Vec<i32>, String> {
+/// Marker groups written by tools/ksp-conformance/gen.py: START first in on init, END last.
+const END: i32 = 65;
+
+/// Compile one unit and decode its result bits from the volume engine writes.
+/// `Err` means the interpreter rejects the script.
+fn interpreter_run(source: &str, results: usize) -> Result<(bool, Vec<i32>), String> {
     let pars = sampler_ksp::init_engine_pars(
         source,
         sampler_ksp::Limits::LIBRARY,
         &sampler_ksp::Environment::default(),
     )
     .map_err(|e| format!("compile error: {e}"))?;
-    Ok((0..results)
+    let volume = |par: &&sampler_ksp::EnginePar| par.parameter.ends_with("VOLUME") && par.value == 1000;
+    let completed = pars.iter().filter(volume).any(|p| p.group == END);
+    let values = (0..results)
         .map(|k| {
             let mut bits: u32 = 0;
-            for par in &pars {
-                if !par.parameter.ends_with("VOLUME") || par.value != 1000 {
-                    continue;
-                }
+            for par in pars.iter().filter(volume) {
                 let group = par.group - 32 * k as i32;
                 if (0..32).contains(&group) {
                     bits |= 1 << group;
@@ -50,7 +62,8 @@ fn interpreter_results(source: &str, results: usize) -> Result<Vec<i32>, String>
             }
             bits as i32
         })
-        .collect())
+        .collect();
+    Ok((completed, values))
 }
 
 #[test]
@@ -67,18 +80,31 @@ fn kontakt_golden_results_match_the_interpreter() {
     let mut failures = Vec::new();
     for unit in manifest.as_array().expect("manifest is an array") {
         let id = unit["id"].as_str().expect("unit id");
-        let expected: Vec<i32> = golden[id]["results"]
-            .as_array()
-            .unwrap_or_else(|| panic!("{id} missing from golden.json"))
-            .iter()
-            .map(|v| v.as_i64().expect("golden int") as i32)
-            .collect();
+        let count = unit["results"].as_u64().expect("result count") as usize;
+        let want = &golden[id];
+        let compiled = want["compiled"].as_bool().expect("compiled");
         let source = std::fs::read_to_string(root().join("cases").join(format!("{id}.ksp")))
             .expect("case source");
-        match interpreter_results(&source, expected.len()) {
-            Ok(actual) if actual == expected => {}
-            Ok(actual) => failures.push(format!("{id}: kontakt {expected:?} interpreter {actual:?}")),
-            Err(error) => failures.push(format!("{id}: kontakt {expected:?} {error}")),
+        match (compiled, interpreter_run(&source, count)) {
+            (false, Ok(_)) => failures.push(format!("{id}: kontakt rejects the script, interpreter compiles it")),
+            (false, Err(_)) => {}
+            (true, Err(error)) => failures.push(format!("{id}: kontakt compiles it, {error}")),
+            (true, Ok((completed, actual))) => {
+                let expected_done = want["completed"].as_bool().expect("completed");
+                if completed != expected_done {
+                    failures.push(format!("{id}: init completion kontakt {expected_done} interpreter {completed}"));
+                } else if expected_done {
+                    let expected: Vec<i32> = want["results"]
+                        .as_array()
+                        .expect("results")
+                        .iter()
+                        .map(|v| v.as_i64().expect("golden int") as i32)
+                        .collect();
+                    if actual != expected {
+                        failures.push(format!("{id}: kontakt {expected:?} interpreter {actual:?}"));
+                    }
+                }
+            }
         }
     }
 

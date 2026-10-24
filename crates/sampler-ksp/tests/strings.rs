@@ -368,7 +368,7 @@ fn runtime_menu_add_and_invalid_indexes_follow_native_defaults() {
             @text := \"prefix:\" & get_menu_item_str(get_ui_id($m),0) & get_menu_item_str(get_ui_id($m),5)
         end on", &[]);
     assert_eq!(cell(&rt, 0), 1);
-    assert_eq!(cell(&rt, 1), i64::from(i32::MIN));
+    assert_eq!(cell(&rt, 1), i64::from(i32::MIN + 1));
     assert_eq!(cell(&rt, 2), 0);
     assert_eq!(cell(&rt, 3), 1);
     assert_eq!(

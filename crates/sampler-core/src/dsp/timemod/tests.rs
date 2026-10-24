@@ -103,6 +103,22 @@ fn replika_stage_equals_the_bare_core() {
     assert!(got.iter().any(|f| f[0] != 0.), "the feedback repeats must be audible in the window");
 }
 
+/// A tempo-synced Replika TIME: the first echo lands at beats x 60 / tempo seconds, so it follows the host tempo.
+#[test]
+fn replika_synced_time_follows_the_host_tempo() {
+    use sampler_ir::fx::timemod::ReplikaControls;
+    for (beats, tempo) in [(1.0, 120.0), (0.5, 120.0), (1.0, 60.0), (0.75, 90.0)] {
+        let controls = ReplikaControls { synced_beats: Some(beats), ..ReplikaControls::default() };
+        let mut l = line(&[Tap::at(DelayTime::Frames(1))], 10.);
+        l.native = Native::Replika(controls);
+        let (out, fault) = run(wrap(l, LFO_OFF), 48_000, tempo, &impulse(96_000, [1., 1.]), 64);
+        assert!(!fault);
+        let echo = (64..out.len()).max_by(|&a, &b| out[a][0].abs().total_cmp(&out[b][0].abs())).unwrap();
+        let want = (beats * 60. / tempo * 48_000.) as usize;
+        assert!(echo.abs_diff(want) <= 800, "beats {beats} at {tempo} BPM: echo at {echo}, want {want}");
+    }
+}
+
 #[test]
 fn integer_delay_impulse_and_feedback_repeats() {
     let (out, fault) = run(Config::delay(5, [[0.5, 0.], [0., 0.]], 0., 1.), 48_000, 120., &impulse(20, [1., 2.]), 64);
@@ -552,5 +568,16 @@ fn phaser_filter_matches_kontakt_measurements() {
             let got = 20. * (re * re + im * im).sqrt().log10();
             assert!((got - want).abs() < 0.1, "cutoff {cutoff} res {resonance} at {probe} Hz: {got} dB vs {want}");
         }
+    }
+}
+
+#[test]
+fn shared_cubic_is_the_catmull_rom_reader_bit_for_bit() {
+    // The UVI legacy reader's expression as it was written before the shared `cubic`.
+    for k in 0..256 {
+        let f = k as f32 / 256.;
+        let (p0, p1, p2, p3) = (0.3f32, -1.7 + k as f32 * 0.01, 2.2f32, -0.4f32 + f * 0.9);
+        let want = ((((p0 - p1 * 2.5) + p2 + p2 - p3 * 0.5) + ((p1 - p2) * 1.5 + (p3 - p0) * 0.5) * f) * f + (p2 - p0) * 0.5) * f + p1;
+        assert_eq!(super::cubic(p0, p1, p2, p3, f).to_bits(), want.to_bits(), "k {k}");
     }
 }

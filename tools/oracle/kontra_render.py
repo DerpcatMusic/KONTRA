@@ -18,6 +18,11 @@ sys.path.insert(0, str(HERE))
 import capture  # noqa: E402  (scenario writer, same notes as the Kontakt slots)
 
 
+def capped(cmd):
+    """The render runs in its own 8G cgroup: an instrument that overflows it fails alone, the run goes on."""
+    return ["systemd-run", "--user", "--scope", "-p", "MemoryMax=8G", "nice", "-n", "10", *cmd]
+
+
 def binary():
     env = os.environ.get("SAMPLER_NATIVE")
     if env:
@@ -35,8 +40,9 @@ def main():
     ap.add_argument("out_dir")
     ap.add_argument("--midi")
     ap.add_argument("--scenario", choices=sorted(capture.SCENARIOS), default="base")
+    ap.add_argument("--keyswitch", type=int, metavar="KEY")
     args = ap.parse_args()
-    midi = Path(args.midi) if args.midi else capture.write_scenario(args.scenario)
+    midi = Path(args.midi) if args.midi else capture.write_scenario(args.scenario, args.keyswitch)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     rows = [l.split("\t") for l in Path(args.list).read_text().splitlines() if l.strip() and not l.startswith("#")]

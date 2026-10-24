@@ -966,6 +966,19 @@ input.group>=16||input.channel>=16||input.key>=128
         }
         // Everything below was validated by Prepared and preflight. No callbacks,
         // concurrent writers or newly due work can consume the reserved resources.
+        // The note's shared start delay: one draw, scaled by the widest sample-start range of the
+        // layers that can sound for it, so a mono and a stereo layer of one note never split apart.
+        let (note_range, note_seed) = {
+            let generation = self.plans.get(plan.0).unwrap();
+            let prepared = &generation.prepared;
+            let state = &self.performance_state.states[snapshot];
+            let [first, second] = prepared.active_ranges(begin..end, state.articulation);
+            let range = prepared.candidates[first].iter().chain(&prepared.candidates[second])
+                .map(|c| prepared.voice_modulation.start_range(c.region))
+                .max()
+                .unwrap_or(0);
+            (range, self.start_clock() ^ ((note.0.index as u64) << 40))
+        };
         let mut from = begin;
         while from < end {
             let generation = self.plans.get(plan.0).unwrap();
@@ -1018,7 +1031,7 @@ input.group>=16||input.channel>=16||input.key>=128
                     .flatten();
                 let Some((sample,source_cursor))=self.plans.get(plan.0).unwrap().samples.source(prepared,candidate,note_pitch) else {continue;};
                 let step=source_cursor.step();
-                let seed=self.now^((note.0.index as u64)<<40)^((candidate.region as u64)<<20);
+                let seed=self.start_clock()^((note.0.index as u64)<<40)^((candidate.region as u64)<<20);
                 let provider_scope=prepared.voice_modulation.region_provider_scope(candidate.region);
                 // Claim the real shared owner BEFORE a provider-dependent
                 // SampleStart is read and before the physical cursor offset
@@ -1053,6 +1066,9 @@ input.group>=16||input.channel>=16||input.key>=128
                         generation.source(sample).expect("admitted logical source").sample_rate())
                 }else{source_cursor};
                 let cursor=if start!=0{cursor.skip(start)}else{cursor};
+                // Zone start randomisation is a delayed onset (see `random_delay`), not a skip.
+                // One draw and one range per note: every layer of the note starts together.
+                let delay = u64::from(prepared.voice_modulation.random_delay(candidate.region, note_range, note_seed));
                 let family = *family.get_or_insert_with(|| {
                     let family = self
                         .create_family_for(note, trigger)
@@ -1069,7 +1085,7 @@ input.group>=16||input.channel>=16||input.key>=128
                 let admitted = self.admit_voice(
                     family,
                     sample,
-                    self.now,
+                    self.now + delay,
                     r.gain * r.velocity_curve.amplitude(velocity) * r.fade_gain(key, velocity),
                     envelope,
                     cursor.with_step(step),
@@ -1105,6 +1121,8 @@ input.group>=16||input.channel>=16||input.key>=128
                     .get(candidate.region)
                     .copied()
                     .unwrap_or(candidate.region as u32 + 1);
+                state.native_zone = self.plans.get(plan.0).unwrap().prepared
+                    .region_identities.get(candidate.region).copied().flatten();
                 if let Some(record) = self.selection_log.as_mut().and_then(|log| log.last_mut()) {
                     if let Some(candidate) = record
                         .candidates
@@ -1260,6 +1278,13 @@ input.group>=16||input.channel>=16||input.key>=128
 }
 
 impl Runtime {
+    /// Clock that seeds a note's random start draws. Offline renders use a constant so
+    /// they reproduce bit-for-bit regardless of how far the clock advanced; the
+    /// real-time path keeps the running clock.
+    fn start_clock(&self) -> u64 {
+        if self.offline { 0 } else { self.now }
+    }
+
     fn next_source_selected_candidate(&self,note:Option<NoteId>,matching:&mut super::Matching,plan:PlanId,snapshot:usize,velocity:f64,groups:Option<&[u64]>)->Option<super::Candidate>{
         let generation=self.plans.get(plan.0)?;let prepared=&generation.prepared;
         loop{let candidate=matching.next_in_groups(prepared,&self.performance_state.states[snapshot],velocity,groups,generation.zone_routing.as_ref())?;

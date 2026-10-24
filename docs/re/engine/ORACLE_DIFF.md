@@ -51,6 +51,50 @@ ANALOG STRINGS, Conflux, Morphology Evolved, Shreddage 3.5 E-Upright, 1 each). S
 
 ## How to run
 
+Run every real-Kontakt session through the slot pool, not the old global lock:
+
+    tools/oracle/oracle-slot tools/oracle/capture.py NKI OUT.wav           # any free slot (3 by default)
+    tools/oracle/oracle-slot --exclusive CMD...                            # legacy: whole pool, one session
+
+**Deprecated: `flock /tmp/kontra-oracle.lock`.** Use `oracle-slot` for every new job. Legacy jobs still run
+(they take the legacy lock exclusively, which waits for running slots and blocks new ones).
+
+Fairness: slot jobs and legacy jobs compete for the legacy lock in the kernel's wake-up order, which is
+not FIFO. While legacy jobs are queued, slot jobs can wait behind them, and the starvation ends only when
+the legacy queue drains. The guarantee is mutual exclusion, not ordering.
+
+Leaked locks: any process that inherits the legacy lock fd keeps the lock after its job exits. A
+long-running daemon started from a `flock` job (for example an `Xvfb` from a reference-harness run) held
+the exclusive lock for over an hour on 2026-10-24 and stopped the whole queue. Check with
+`lslocks | grep kontra-oracle` (and `ls -l /proc/<pid>/fd | grep kontra-oracle`). Daemons started from
+legacy jobs must close the lock fd (`3>&- 8>&- 9>&-`). `oracle-slot` already does this for its command.
+
+Channel handling: a `--midi` file is written for channel 1, so `capture.py` remaps it into the slot's MIDI block
+(`slot.remap_midi`). Before this fix, captures in slots 2 and 3 with `--midi` recorded digital silence.
+
+Silence guard: a slice below -100 dBFS is re-run once (the whole session). If it is still silent, the capture
+entry is marked `silent` with the session's reason (sink links, `aplaymidi` exit, instrument channel) and
+`capture.py` exits non-zero. `aplaymidi` delivery itself is not observed.
+`python3 tools/oracle/test_slot.py` checks the remap without Kontakt.
+
+Do not use `flock /tmp/kontra-oracle.lock` for new work. Legacy `flock` jobs still run: they hold the legacy
+lock exclusively, which waits for running slots and blocks new ones, so they never overlap a slot.
+
+Slots (`tools/oracle/slot.py`, `tools/oracle/oracle-slot`): slot N has its own Wine prefix
+(`~/.wine-oracle/slot-N`, a reflink copy of `~/.wine`, so ~0 disk on the same btrfs), Xvfb display `:7N`,
+PipeWire null sink `kontra_ref_N` and work dir `~/.cache/kontra-oracle-slot-N`. Each session runs under
+`nice -n 10` and `systemd-run --user --scope -p MemoryMax=8G`. Kontakt, Xvfb and wineserver of a slot are
+stopped on exit, and a session only touches its own processes and its own sink.
+
+MIDI: all slots share ALSA "Midi Through", so each slot owns a block of MIDI channels
+(`slot.channel_block()`: 16 / 3 = 5 per slot; a batch holds 5 instruments per session). `capture.py`,
+`fxrig.py` and `render.py` use the block; any other channel-hard-coded probe must run with `--exclusive`.
+
+Tools that honour the slot environment: `tools/oracle/capture.py`, `tools/oracle/kontra_render.py` (no Kontakt,
+work dir only), `tools/kontakt-oracle/dump.py` (KSP conformance runner `tools/ksp-conformance/run.sh`),
+`tools/kontakt-oracle/render.py` and `fxrig.py`. Without the slot environment each tool keeps its old single-session behaviour.
+Not slot-aware yet (use `--exclusive`): `eqrender.py`, `probe_fx.py`, `sweep.py` and other hard-coded-channel probes.
+
     tools/oracle/capture NKI MIDI OUT.wav [WINDOW]          # one instrument, MIDI file as given
     tools/oracle/capture.py --batch LIST.tsv OUTDIR         # name<TAB>nki per line; 16 per Kontakt session
     tools/oracle/kontra_render.py LIST.tsv OUTDIR           # same notes through KONTRA

@@ -455,6 +455,7 @@ mod tests {
         let mut instrument = ir::Instrument {
             groups: vec![ir::Group {
                 muted: false,
+                purged: false,
                 wavetable: None,
                 time_stretch: None,
                 machine: None,

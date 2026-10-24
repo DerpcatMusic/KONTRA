@@ -18,16 +18,11 @@
 use super::ring_ramp::Ramp4;
 
 /// Native denormal guard (0x144f385a8) added to each channel's one-pole input.
+use super::timemod::cubic;
+
 const GUARD: f32 = 9.999_999_960_041_972e-13;
 /// Frames per control step (native driver countdown reload `0x20`).
 const CHUNK: u32 = 32;
-
-/// Cubic 4-point read at fraction `x` between `y0` and `y1` (native expression, same operation order).
-fn cubic(ym1: f32, y0: f32, y1: f32, y2: f32, x: f32) -> f32 {
-    let a = ((ym1 - y0 * 2.5) + y1 + y1) - y2 * 0.5;
-    let b = (y0 - y1) * 1.5 + (y2 - ym1) * 0.5;
-    ((a + b * x) * x + (y1 - ym1) * 0.5) * x + y0
-}
 
 /// Ring read of a cubic around `i` (points `i-1` .. `i+2`, wrapping at `n`).
 fn read4(ring: &[f32], i: usize) -> (f32, f32, f32, f32) {

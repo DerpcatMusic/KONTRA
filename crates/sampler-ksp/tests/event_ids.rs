@@ -310,8 +310,12 @@ fn generated_ids_in_arrays_and_expressions_keep_each_original_release_owner() {
 #[test]
 fn event_expressions_remain_bounded_and_short_circuit_does_not_generate_skipped_notes() {
     let source = "on init declare $value end on on note ignore_event($EVENT_ID)
-        $value := 1 or play_note(60,127,0,0)
-        $value := 0 and play_note(60,127,0,0)
+        if ((1 = 1) or (play_note(60,127,0,0) = 0))
+        $value := 1
+        end if
+        if ((0 = 1) and (play_note(60,127,0,0) = 0))
+        $value := 0
+        end if
       end on";
     let mut rt = runtime(source);
     support::without_heap(|| {
@@ -657,9 +661,13 @@ fn unowned_negative_duration_preserves_midi_argument_rejection() {
     let mut rt=runtime_script(script);
     support::without_heap(|| {
         rt.invoke_control(control_context(&rt),rt.active_plan(),None,ControlWrite {id:ControlId(7),value:ControlValue::Integer(1)}).unwrap();
-        for cell in 0..3 { assert_eq!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),cell),Ok(-1)); }
+        // Key -1 and key 128 are refused. Velocity 0 is not: it sounds at velocity 1, so the
+        // unowned note with a negative duration (UntilSilent) starts.
+        assert_eq!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),0),Ok(-1));
+        assert!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),1).unwrap() >= 0);
+        assert_eq!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),2),Ok(-1));
         rt.flush_behaviors(|_,_,outcome|{assert_eq!(outcome,Outcome::Finished);true});
-        assert_eq!((rt.note_count(),rt.voice_count(),rt.pending_commands()),(0,0,0));
+        assert_eq!(rt.note_count(),1);
     });
 }
 
@@ -685,8 +693,8 @@ fn a_release_the_script_asked_for_cannot_be_ignored_by_its_own_release_callback(
 }
 
 #[test]
-fn play_note_outside_the_midi_ranges_is_ignored_and_returns_minus_one() {
-    // Vista plays its "no key held" sentinel -1.
+fn play_note_outside_the_midi_key_range_is_ignored_and_velocity_zero_sounds() {
+    // Vista plays its "no key held" sentinel -1. Velocity 0 sounds at velocity 1.
     let source = "on init declare $a declare $b declare $c end on
       on note
         $a := play_note(-1,100,0,0)
@@ -697,12 +705,9 @@ fn play_note_outside_the_midi_ranges_is_ignored_and_returns_minus_one() {
     rt.trigger(input(60), 60, 1.).unwrap();
     let mut audio = [[0.; 2]; 4];
     rt.render(&mut audio).unwrap();
-    for cell in 0..3 {
-        assert_eq!(
-            rt.script_cell(rt.active_plan(), ScriptInstanceId(0), cell),
-            Ok(-1)
-        );
-    }
+    assert_eq!(rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0), Ok(-1));
+    assert!(rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 1).unwrap() >= 0);
+    assert_eq!(rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 2), Ok(-1));
     rt.flush_behaviors(|_, _, outcome| {
         assert_eq!(outcome, Outcome::Finished);
         true

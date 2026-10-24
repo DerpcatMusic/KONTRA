@@ -4,6 +4,8 @@
     "kontakto": [
       "clap",
       "default",
+      "format-ample",
+      "format-ikmpak",
       "library-access",
       "plugin",
       "vst3"

@@ -232,10 +232,10 @@ fn compare(host: &host::Host, lowered: &Lowered, expected: &crate::eval::Initial
     if host.requests() != want {
         return Err(format!("host requests differ: interpreter {want:?}, luau {:?}", host.requests()));
     }
-    if host.properties() != expected.properties {
+    if host.properties() != expected.properties.iter().map(|(k, v)| (*k, *v)).collect() {
         return Err("control properties differ".into());
     }
-    if host.text_properties() != expected.text_properties {
+    if host.text_properties() != expected.text_properties.iter().map(|(k, v)| (*k, v.clone())).collect() {
         return Err("control text properties differ".into());
     }
     let engine: std::collections::BTreeMap<[i64; 4], i64> = expected
@@ -542,6 +542,10 @@ impl Compiler<'_> {
                 self.line("end");
             }
             StmtKind::Select(value, cases) => self.select(value, cases),
+            // The host has no range setter; the interpreter runs such scripts.
+            StmtKind::UiParams(..) => {
+                self.unsupported("init-time UI declaration range");
+            }
             StmtKind::Call(f) => self.line(&format!("F{}()", f.0)),
             // `exit` leaves the enclosing callback or function, even from inside a
             // loop (interpreter: `Flow::Exit` propagates through `While`).

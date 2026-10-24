@@ -319,6 +319,11 @@ impl ModRoute {
     pub fn scales(&self) -> impl Iterator<Item = ModScale> + '_ {
         self.scale.iter().chain(self.more_scales.iter().flatten()).copied()
     }
+
+    /// [`Self::scales`], to edit in place.
+    pub fn scales_mut(&mut self) -> impl Iterator<Item = &mut ModScale> + '_ {
+        self.scale.iter_mut().chain(self.more_scales.iter_mut().flatten())
+    }
 }
 
 /// One voice modulation program, shared by the regions bound to it.
@@ -429,6 +434,9 @@ struct Program {
 #[derive(Default)]
 pub(crate) struct VoiceModulation {
     programs: Box<[Program]>,
+    /// Sorted union of every program's `filter_indices`: the only filter-table rows any
+    /// program can write, so per-owner clears need to reset only these.
+    filter_rows: Box<[usize]>,
     regions: Box<[Option<u32>]>,
     start_ranges: Box<[u32]>,
     sources: usize,
@@ -532,7 +540,8 @@ impl VoiceModulation {
                     ||route.invert||route.shape.is_some()||route.scale.is_some()||route.more_scales.iter().any(Option::is_some)
                     ||route.lag!=0||route.live_gain!=1.||route.unipolar
                     ||program.controls.iter().any(|(row,_)|*row==gate.route)
-                    ||matches!(gate.velocity,crate::VelocityCurve::Power(p)if !p.is_finite()||p<=0.){return Err(Error::InvalidInput);}
+                    ||matches!(gate.velocity,crate::VelocityCurve::Power(p)if !p.is_finite()||p<=0.)
+                    ||matches!(gate.velocity,crate::VelocityCurve::Depth{depth,exponent}if !(0.0..=1.0).contains(&depth)||!exponent.is_finite()||exponent<=0.){return Err(Error::InvalidInput);}
             }
         }Ok(())
     }
@@ -1089,7 +1098,11 @@ impl VoiceModulation {
                 shapes: shapes.into_boxed_slice(),
             });
         }
+        let mut filter_rows: Vec<usize> = compiled.iter().flat_map(|p| p.filter_indices.iter().copied()).collect();
+        filter_rows.sort_unstable();
+        filter_rows.dedup();
         Ok(Self {
+            filter_rows: filter_rows.into_boxed_slice(),
             sources: compiled.iter().map(|p| p.sources.len()).max().unwrap_or(0),
             envelopes: compiled
                 .iter()
@@ -1122,8 +1135,31 @@ impl VoiceModulation {
         self.programs.is_empty()
     }
 
+    /// Filter-table rows that any program can write; see the `filter_rows` field.
+    pub(crate) fn filter_rows(&self) -> &[usize] {
+        &self.filter_rows
+    }
+
     pub fn program(&self, region: usize) -> Option<u32> {
         self.regions.get(region).copied().flatten()
+    }
+
+    /// Kontakt's start randomisation for a region whose `sample_start_mod_range` is set and
+    /// that has no SampleStart route: the note sounds `delay` frames late, uniform in
+    /// [0, range). The seed is per note, so all layers of one note share the draw. Measured on
+    /// Horns KS against the unrandomised render: Kontakt's hits lag it by 1..98 ms (pooled over
+    /// 96 hits, three sessions), never early, and not velocity-scaled (velocity 40 and 127 span
+    /// the same range). A delayed start, not a skip: a skip moves the playhead forward.
+    pub fn random_delay(&self, region: usize, note_range: u32, seed: u64) -> u32 {
+        if note_range == 0 || self.program(region).is_some_and(|index| self.programs[index as usize].start) {
+            return 0;
+        }
+        (uniform(hash(seed, 0, u64::MAX - 1)) * f64::from(note_range)) as u32
+    }
+
+    /// The zone sample-start range of one region (the widest of a note's layers scales its draw).
+    pub fn start_range(&self, region: usize) -> u32 {
+        self.start_ranges.get(region).copied().unwrap_or(0)
     }
 
     /// The ordinary onset consumer. A provider-dependent onset must use the
@@ -2609,6 +2645,24 @@ pub(crate) fn process_frame_tone(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unrouted start randomisation is one delay per note in [0, note range), shared by every layer
+    /// of the note (a mono and a stereo layer with different sample-start ranges must not split into
+    /// a double hit). Zero note range gives none, and the route-based start stays untouched.
+    #[test]
+    fn layers_of_one_note_share_one_delay() {
+        let modulation = VoiceModulation::new(vec![], vec![None, None, None], vec![5120, 0, 2560]).unwrap();
+        let delays: Vec<u32> = (0..256u64).map(|seed| modulation.random_delay(0, 5120, seed)).collect();
+        assert!(delays.iter().all(|&d| d < 5120));
+        assert!(delays.iter().max().unwrap() - delays.iter().min().unwrap() > 4000);
+        for seed in 0..256u64 {
+            let widest = modulation.random_delay(0, 5120, seed);
+            assert_eq!(modulation.random_delay(1, 5120, seed), widest);
+            assert_eq!(modulation.random_delay(2, 5120, seed), widest);
+        }
+        assert!((0..256u64).all(|seed| modulation.random_delay(0, 0, seed) == 0));
+        assert_eq!(modulation.constant_start_offset(0), Some(0));
+    }
 
     #[test]
     fn uniform_shaper_uses_v1_index_instead_of_binary_search() {

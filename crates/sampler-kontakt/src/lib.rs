@@ -50,7 +50,7 @@ mod stream;
 mod wavetable;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
-pub use container::{Multi, read_chunks, read_multi};
+pub use container::{Multi, Part as MultiPart, read_chunks, read_multi};
 pub use library::{
     Kontakt, read, read_program, read_program_with_controls, read_with_controls,
     read_with_snapshot, read_with_snapshot_and_controls,
@@ -80,7 +80,7 @@ pub use snapshot::{
     snapshot_base_name, snapshot_identity, validate_snapshot_base,
 };
 pub use stream::{
-    LogicalStreamRecipe, logical_stream_source, AssetSource, DynamicSources, HeadBudgetExceeded, HeadReadiness, SourceRegistration, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
+    LogicalStreamRecipe, logical_stream_source, AssetSource, DynamicSources, HeadBudgetExceeded, HeadReadiness, SourceRegistration, DISK_READ, SampleReader, StreamPolicy, cold_head_budget, StreamReport, Streamed, Streamer,
 };
 mod source_identity;
 pub use source_identity::{FileIdentity, SourceChanged};
@@ -651,3 +651,6 @@ mod stage_tests {
         assert_eq!(LoadError::Canceled.at(Stage::Bind).stage(), None);
     }
 }
+
+mod format;
+pub use format::FORMAT;

@@ -123,6 +123,11 @@ pub(crate) fn requirements(hir: &Hir) -> ZoneRoutingRequirements {
                             self.expr(value);
                         }
                     }
+                    StmtKind::UiParams(_, values) => {
+                        for (_, value) in values {
+                            self.expr(value);
+                        }
+                    }
                     StmtKind::If(test, yes, no) => {
                         self.expr(test);
                         self.body(yes);

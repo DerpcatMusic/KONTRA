@@ -9,6 +9,7 @@ local CASES = {
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare %a[3] := (1, 2, 3)
   %a[7] := 9
   $cv := %a[2]
@@ -19,12 +20,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "loop_count", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $i := 0
   declare $s := 0
   while ($i < 10)
@@ -47,12 +50,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "loop_nested", results = 1, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $i := 0
   declare $j := 0
   declare $s := 0
@@ -72,6 +77,7 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "function_updates_global", results = 1, src = [==[
@@ -81,6 +87,7 @@ end function
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $g := 1
   call bump()
   call bump()
@@ -92,6 +99,7 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "function_nested_call", results = 1, src = [==[
@@ -105,6 +113,7 @@ end function
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $g := 2
   call outer()
   $cv := $g
@@ -115,12 +124,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "logic_vars", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $t := 1
   declare $f := 0
   declare $a := 0
@@ -155,12 +166,14 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
   { id = "logic_vars_2", results = 2, src = [==[
 on init
   declare $cv
   declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
   declare $t := 1
   declare $f := 0
   declare $a := 0
@@ -187,6 +200,215 @@ on init
     end if
     inc($cb)
   end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "cond_bare_int", results = 1, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare $a := 0
+  if (1)
+  $a := 1
+  end if
+  $cv := $a
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "cond_int_and", results = 1, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare $a := 0
+  if (1 and 1)
+  $a := 1
+  end if
+  $cv := $a
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "cond_not_compare", results = 2, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare $t := 1
+  declare $f := 0
+  declare $a := 0
+  declare $b := 0
+  if (not ($f = 1))
+  $a := 1
+  end if
+  if (not ($t = 1))
+  $b := 1
+  end if
+  $cv := $a
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := $b
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "cond_compare_ops", results = 2, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare $t := 1
+  declare $a := 0
+  declare $b := 0
+  if ($t # 0)
+  $a := 1
+  end if
+  if ($t > 0)
+  $b := 1
+  end if
+  $cv := $a
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := $b
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "typing_bool_assign", results = 1, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare $t := 1
+  declare $x := 5
+  $x := ($t = 1)
+  $cv := $x
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "typing_real_assign", results = 1, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare $x := 5
+  $x := 7.5 / 2
+  $cv := $x
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "call_init_empty", results = 1, src = [==[
+function f
+end function
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  call f
+  $cv := 0
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "call_init_global", results = 1, src = [==[
+declare $g := 1
+function f
+  $g := 7
+end function
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  call f
+  $cv := $g
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on
+]==] },
+  { id = "builtin_sgn__0", results = 2, src = [==[
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  $cv := sgn(-5)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := sgn(0)
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
 end on
 ]==] },
 }
@@ -194,7 +416,7 @@ local ids = {}
 for n, c in ipairs(CASES) do
   local i = kt.add_instrument()
   kt.set_instrument_volume(i, 0)
-  for _ = 1, 32 * c.results - 1 do kt.add_group(i) end
+  for _ = 1, 65 do kt.add_group(i) end
   ids[n] = i
   local ok, err = pcall(kt.set_instrument_script_source, i, 0, c.src)
   log(string.format('{"compile":"%s","ok":%s}', c.id, tostring(ok)))
@@ -204,6 +426,8 @@ local t0 = os.time()
 repeat until os.time() - t0 >= 4
 for n, c in ipairs(CASES) do
   local rows = {}
+  local start = kt.get_group_volume(ids[n], 64) < -100
+  local finish = kt.get_group_volume(ids[n], 65) < -100
   for k = 0, c.results - 1 do
     local bits = {}
     for b = 0, 31 do
@@ -212,7 +436,7 @@ for n, c in ipairs(CASES) do
     end
     rows[#rows + 1] = '"' .. table.concat(bits) .. '"'
   end
-  log(string.format('{"case":"%s","bits":[%s]}', c.id, table.concat(rows, ',')))
+  log(string.format('{"case":"%s","start":%s,"end":%s,"bits":[%s]}', c.id, tostring(start), tostring(finish), table.concat(rows, ',')))
 end
 log('{"done":true}')
 out:close()

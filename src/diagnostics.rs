@@ -1895,6 +1895,7 @@ impl LoadTrace {
                 "approximated, may sound different",
             ),
             R::UnknownLawOmitted => ("scaling or curve unverified", "plays without it"),
+            R::Info => ("note", "plays as authored"),
         };
         if missing.feature.starts_with("script Warning: ") {
             impact = "compiled with this warning; inspect the reported script slot and line";

@@ -90,7 +90,8 @@ fn kontakt(rich:bool)->Vec<u8> {
     let mut saturation=0.75f32.to_le_bytes().to_vec();saturation.extend(1i32.to_le_bytes());
     let mut filter=52i32.to_le_bytes().repeat(2);filter.extend(0.4f32.to_le_bytes());filter.extend(0.2f32.to_le_bytes());
     for slot in 0..8 {private.push(u8::from(rich&&slot<2));if rich&&slot==0 {private.extend(effect(0x1d,0x80,&saturation));}if rich&&slot==1 {private.extend(effect(0x18,0x90,&filter));}}
-    private.push(1);private.extend([0,6,1]);private.extend(0u32.to_le_bytes());private.extend([0;23]);private.extend([255;22]);
+    // Source flag 0 = loaded; 1 is "purged" at load (1e4c68fa7).
+    private.push(0);private.extend([0,6,1]);private.extend(0u32.to_le_bytes());private.extend([0;23]);private.extend([255;22]);
     let mut groups=1u32.to_le_bytes().to_vec();groups.extend(wire::object(0x95,&private,&group,&wire::chunk(0x38,&0u32.to_le_bytes())));
     let mut zone=vec![0;12];for v in [1i16,127,60,61,0,0,0,0,60] {zone.extend(v.to_le_bytes());}
     for v in [1f32,0.,1.] {zone.extend(v.to_le_bytes());}zone.extend([0,1,0,0,0,0]);

@@ -633,10 +633,17 @@ fn translate(
         return Err(invalid("zone count exceeds the zone list"));
     }
     out.ir.source_indices.zones.resize(count, None);
+    out.ir.source_indices.zone_names.resize(count, String::new());
+    let addressed = addressed(&out.ir.source_indices.zone_catalog);
     for index in 0..count {
         let mut zone =
             raw_zone(&mut r).map_err(|reason| invalid(&format!("zone {index}: {reason}")))?;
-        zone.source_id = out.ir.source_indices.zone_catalog.get(index).and_then(|z| z.id);
+        zone.source_id = out.ir.source_indices.zone_catalog.get(index).and_then(|z| z.id)
+            .filter(|_| addressed.get(index).copied().unwrap_or(false));
+        // Kontakt names a zone by its sample's file stem (`find_zone` matches that name).
+        if let Some(stem) = table.get(&(zone.file as u32)).and_then(|n| std::path::Path::new(n).file_stem()) {
+            out.ir.source_indices.zone_names[index] = stem.to_string_lossy().into_owned();
+        }
         if !zone_metadata.is_empty() {
             if let Some(id)=zone.source_id {
                 zone_routes.apply_initial(id,&mut zone).map_err(|reason|invalid(&reason))?;
@@ -970,6 +977,18 @@ fn wakeable(params: &ni_file::kontakt::objects::InternalModParams) -> bool {
         })
 }
 
+/// Kontakt EQ-gain route depth to IR depth. A Normalized route depth of 1.0 on a band gain moves
+/// the band by 12 dB, not the 36 dB full span of the IR lane (Linear(-18,36)). Measured on Solo
+/// Trumpet Trills (CC1 to the band gains): 17 CC points x 3 notes, KONTRA render minus real Kontakt 8
+/// worst |delta| 0.27 dB at 1/3 and 1.43 dB at 0.35; 1.0 overshoots by 12-27 dB. One instrument, so
+/// a fit (KISS): re-verify on the next EQ-route instrument (docs/architecture-v2/W15_EQ_GAIN.md).
+const EQ_GAIN_ROUTE_SCALE: f64 = 1. / 3.;
+
+/// The IR depth of an EQ band-gain route, given its Kontakt normalized depth.
+fn eq_gain_route_depth(depth: f64) -> f64 {
+    depth * EQ_GAIN_ROUTE_SCALE
+}
+
 fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
     for (prefix, parameter) in [
         ("eqGain", ir::ProcessorParameter::Gain),
@@ -1004,15 +1023,24 @@ fn group_engine_write(writes: &[sampler_ksp::EnginePar], parameter: &str, group:
 }
 
 /// Zone velocity response for a velocity-driven plain volume route, or `None` when the route stays on
-/// the generic modulation path. Full intensity is gain x velocity. Kontakt's default intensity
-/// (50 of 127, the Beat Machine route, oracle session B) follows `VolumeTable`. Other intensities
-/// are not measured and keep the generic path.
+/// the generic modulation path (intensity 0: no effect). Full intensity is gain x velocity. Kontakt's
+/// default intensity (50 of 127, the Beat Machine route, oracle session B) follows `VolumeTable`.
+/// Other intensities use the two-parameter law `(1 - depth) + depth * v^exponent` (`ir::Depth`):
+/// depth = min(1, 2 * intensity) and exponent interpolated from the default point to 1 at full
+/// intensity. At the default intensity (depth 0.787, exponent 1.285) the law is within 0.34 dB rms of
+/// the measured table; the intensity dependence is a hypothesis until a multi-intensity oracle capture
+/// confirms it.
 fn velocity_volume_law(intensity: f64) -> Option<ir::VelocityResponse> {
     const DEFAULT_INTENSITY: f64 = 50.0 / 127.0;
+    const DEFAULT_EXPONENT: f64 = 1.285;
     if intensity == 1.0 {
         Some(ir::VelocityResponse::Linear)
     } else if (intensity - DEFAULT_INTENSITY).abs() < 1e-6 {
         Some(ir::VelocityResponse::VolumeTable)
+    } else if intensity > 0.0 && intensity < 1.0 {
+        let exponent = (1.0 + (DEFAULT_EXPONENT - 1.0) * (1.0 - intensity) / (1.0 - DEFAULT_INTENSITY))
+            .clamp(1.0, 2.5);
+        Some(ir::VelocityResponse::Depth { depth: (2.0 * intensity).min(1.0), exponent })
     } else {
         None
     }
@@ -1839,6 +1867,7 @@ impl Translation {
         }
         self.ir.groups.push(ir::Group {
             muted: v.muted,
+            purged: group.source_identity().is_ok_and(|s| s.flag == 1),
             wavetable,
             time_stretch,
             machine,
@@ -3041,13 +3070,17 @@ impl Translation {
                     .chain(&self.ir.chains[chain.0].post_amplitude)
                     .nth(*index)?;
                 if let Some((_, parameter)) = knob {
+                    let depth = match parameter {
+                        ir::ProcessorParameter::Gain => eq_gain_route_depth(i),
+                        _ => i,
+                    };
                     return matches!(processor, ir::Processor::Eq(_)).then_some((
                         ir::Target::Processor {
                             chain,
                             index: *index,
                             parameter,
                         },
-                        ir::Depth::Normalized(i),
+                        ir::Depth::Normalized(depth),
                     ));
                 }
                 let native = matches!(
@@ -3656,14 +3689,13 @@ fn source_zone_catalog_with_layouts(data:&[u8],groups:usize)->Result<(Vec<ir::So
     let count=u32le(&mut reader).map_err(|e|e.to_string())?;
     if count as usize>data.len()/8 {return Err("zone count exceeds the zone list".into());}
     let mut catalog=Vec::with_capacity(count as usize);
-    let mut identities=std::collections::BTreeSet::new();
     for index in 0..count {
         let zone=raw_zone(&mut reader).map_err(|e|format!("zone {index}: {e}"))?;
         if zone.group>=groups {return Err(format!("zone {index} refers to missing group {}",zone.group));}
         if zone.source_id.is_none() {
             *layouts.entry(zone.identity_layout).or_insert(0usize) += 1;
         }
-        let id=zone.source_id.filter(|id|identities.insert(*id));
+        let id=zone.source_id;
         if !(0..=127).contains(&zone.source.low_key) || !(0..=127).contains(&zone.source.high_key)
             || zone.source.low_key>zone.source.high_key {return Err(format!("zone {index} has invalid source key bounds"));}
         catalog.push(ir::SourceZone {id,home:ir::SourceZoneHome {
@@ -3679,8 +3711,12 @@ fn source_zone_catalog_with_layouts(data:&[u8],groups:usize)->Result<(Vec<ir::So
     Ok((catalog, if omitted > 0 { format!("{summary}; {omitted} more layouts omitted") } else { summary }))
 }
 fn zone_catalog_homes(catalog:&[ir::SourceZone])->std::collections::BTreeMap<u32,[i32;3]> {
-    catalog.iter().filter_map(|z|Some((z.id?,[i32::try_from(z.home.group).ok()?,
-        i32::from(z.home.low_key),i32::from(z.home.high_key)]))).collect()
+    crate::load::first_homes(catalog.iter().map(|z|(z,true)))
+}
+/// Whether each catalog zone is the first with its identity, the one lookups by identity find.
+fn addressed(catalog:&[ir::SourceZone])->Vec<bool> {
+    let mut seen=std::collections::BTreeSet::new();
+    catalog.iter().map(|z|z.id.is_some_and(|id|seen.insert(id))).collect()
 }
 #[cfg(test)]
 fn source_zone_metadata(data:&[u8],groups:usize)->Result<std::collections::BTreeMap<u32,[i32;3]>,String> {
@@ -3749,7 +3785,8 @@ mod empty_zone_tests {
         data.extend(zone_record(0,0,36,48));
         data.extend(zone_record(7,1,80,90));
         let ids:Vec<_>=super::source_zone_catalog(&data,3).unwrap().iter().map(|z|z.id).collect();
-        assert_eq!(ids,[Some(0),None,Some(7)]);
+        // get_zone_id reads each zone's own identity; lookups by identity find the first.
+        assert_eq!(ids,[Some(0),Some(0),Some(7)]);
         assert_eq!(super::source_zone_metadata(&data,3).unwrap(),[(0,[2,60,61]),(7,[1,80,90])].into());
     }
 
@@ -6432,7 +6469,8 @@ mod modulation {
                     parameter: ir::ProcessorParameter::Gain
                 }
             );
-            assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(-0.25));
+            // Band-gain routes carry the measured 12 dB-per-route scale (#645); the identity is the slot, not the depth.
+            assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(eq_gain_route_depth(-0.25)));
         }
     }
 
@@ -7399,7 +7437,34 @@ mod velocity_volume_law_tests {
             velocity_volume_law(f64::from(0.393_700_99_f32)),
             Some(ir::VelocityResponse::VolumeTable)
         );
-        assert_eq!(velocity_volume_law(0.5), None);
         assert_eq!(velocity_volume_law(0.0), None);
+    }
+
+    #[test]
+    fn other_intensities_use_the_depth_law() {
+        // Full depth at half intensity, exponent between the default point and linear.
+        let Some(ir::VelocityResponse::Depth { depth, exponent }) = velocity_volume_law(0.5) else {
+            panic!("0.5 must use the depth law")
+        };
+        assert_eq!(depth, 1.0);
+        assert!(exponent > 1.0 && exponent < 1.285);
+        // Depth scales with intensity below half.
+        let Some(ir::VelocityResponse::Depth { depth, exponent }) = velocity_volume_law(0.3) else {
+            panic!("0.3 must use the depth law")
+        };
+        assert!((depth - 0.6).abs() < 1e-9 && exponent > 1.285);
+    }
+}
+
+#[cfg(test)]
+mod eq_gain_route_depth_tests {
+    use super::eq_gain_route_depth;
+
+    /// The IR lane for an EQ band gain is Linear(-18, 36): one unit of depth is 36 dB.
+    #[test]
+    fn full_depth_eq_gain_route_moves_band_by_12_db() {
+        let lane_span_db = 36.;
+        assert!((eq_gain_route_depth(1.) * lane_span_db - 12.).abs() < 1e-9);
+        assert!((eq_gain_route_depth(0.) * lane_span_db).abs() < 1e-9);
     }
 }

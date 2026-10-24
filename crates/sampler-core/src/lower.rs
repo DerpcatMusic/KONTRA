@@ -104,7 +104,9 @@ fn native_lanes(p: ir::Processor) -> Vec<(NativeControl, crate::EngineParameterB
             // The law's values at both write ends (16 at the top of an output gain).
             let (a, b) = (law.decode(if law == SignedNormalized { -1_000_000 } else { 0 }), law.decode(1_000_000));
             (
-                NativeControl { id, min: a.min(b), max: a.max(b), default: value },
+                // A saved value may sit outside the law's write range; widen the domain to hold it so the
+                // instrument loads at its saved level instead of being rejected whole.
+                NativeControl { id, min: a.min(b).min(value), max: a.max(b).max(value), default: value },
                 crate::EngineParameterBinding {
                     address,
                     control: id,
@@ -937,6 +939,7 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
             })
             .and_then(|p| p.with_group_params(params))
             .and_then(|p| p.with_group_mutes(instrument.groups.iter().map(|g| g.muted).collect()))
+            .and_then(|p| p.with_group_purge(instrument.groups.iter().map(|g| g.purged).collect()))
             .map_err(core(Stage::Regions, "groups"))?;
     }
     // Only source modulators that actually own an amplitude envelope get lanes.
@@ -1111,6 +1114,7 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
                 ir::VelocityResponse::Linear => VelocityCurve::Linear,
                 ir::VelocityResponse::Power(exponent) => VelocityCurve::Power(exponent),
                 ir::VelocityResponse::VolumeTable => VelocityCurve::VolumeTable,
+                ir::VelocityResponse::Depth { depth, exponent } => VelocityCurve::Depth { depth, exponent },
             })
             .collect();
         plan = plan
@@ -2070,7 +2074,7 @@ impl Lowering<'_> {
                 gates[scope]=Some(crate::ProcessingModulationGate{
                     source:*sources.get(&gate.source).ok_or_else(||core(Stage::Modulation,"scope gate source absent")(Error::InvalidInput))?,
                     route:*routes.get(&gate.route).ok_or_else(||core(Stage::Modulation,"scope gate route absent")(Error::InvalidInput))?,
-                    velocity:match gate.velocity{ir::VelocityResponse::None=>crate::VelocityCurve::Constant,ir::VelocityResponse::Linear=>crate::VelocityCurve::Linear,ir::VelocityResponse::Power(p)=>crate::VelocityCurve::Power(p),ir::VelocityResponse::VolumeTable=>crate::VelocityCurve::VolumeTable},
+                    velocity:match gate.velocity{ir::VelocityResponse::None=>crate::VelocityCurve::Constant,ir::VelocityResponse::Linear=>crate::VelocityCurve::Linear,ir::VelocityResponse::Power(p)=>crate::VelocityCurve::Power(p),ir::VelocityResponse::VolumeTable=>crate::VelocityCurve::VolumeTable,ir::VelocityResponse::Depth{depth,exponent}=>crate::VelocityCurve::Depth{depth,exponent}},
                 });
             }
             for (identity,&source)in &sources{
@@ -3881,5 +3885,36 @@ mod logical_source_lower_tests {
         });
         assert!(matches!(result, Err(LowerError::Core { stage: Stage::Regions,
             error: Error::UnsupportedSourceLayout, .. })));
+    }
+}
+
+#[cfg(test)]
+mod saved_lane_domain_tests {
+    use super::*;
+
+    /// A saved lane value can sit outside its law's write range (ANALOG STRINGS saves a compressor threshold of
+    /// -8.05 dB, above the -10 dB top). The control must still define a domain that holds it, so the instrument
+    /// loads at the saved level instead of being rejected whole.
+    #[test]
+    fn saved_lane_value_outside_the_law_range_still_defines_a_valid_control() {
+        let processor = ir::Processor::LadderLP4(ir::LadderLP4 {
+            address: Some(ir::SlotAddress { group: 0, slot: 1, generic: -1 }),
+            gain: 0.,
+            cutoff: 1.5,
+            resonance: 0.,
+            cutoff_path: false,
+            taps: 1,
+            high_quality: false,
+        });
+        let cutoff = native_lanes(processor)
+            .into_iter()
+            .find(|(_, binding)| binding.address.parameter == crate::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap())
+            .expect("cutoff lane")
+            .0
+            .definition();
+        let (ControlDomain::Real { min, max }, ControlValue::Real(value)) = (cutoff.domain, cutoff.default) else {
+            panic!("cutoff is a real control");
+        };
+        assert!((min..=max).contains(&value), "saved cutoff 1.5 must stay in the domain {min}..={max}");
     }
 }

@@ -384,7 +384,9 @@ pub struct Selection {
 
 /// Seconds a streamed sample goes unplayed before the memory budget may drop it.
 /// Largest saved UVI/script state blob a project may carry; save and load agree.
-const MAX_SAVED_STATE: usize = 8 << 20;
+/// Large KSP libraries (Areia, Dolce) hold ~1.3M script values, ~14 MB as JSON; 8 MiB
+/// dropped their script state silently. Measured on the host recall test.
+pub(crate) use crate::sound::v2::persistence::MAX_SAVED_STATE;
 
 pub const IDLE_SECONDS: f64 = 30.0;
 
@@ -2660,7 +2662,12 @@ fn load_part_with(
         {
             let persistence = sampler_kontakt::audit::Span::new("persistence_prepare");
             if let Some(runtime) = loaded.part.as_mut() {
+                // Engine-bound controls carry their engine value: restore it before
+                // persistence_changed reads the engine back into the sliders.
+                let engine: Vec<(u128, f64)> = part.control_values.iter().map(|c| (c.id().0, c.value)).collect();
+                runtime.restore_engine_controls(&engine);
                 runtime.prepare_persistence(&loaded.scripts.views, saved)?;
+                runtime.restore_control_positions(&engine);
                 for (id, value) in &mut loaded.controls {
                     if let Some(current) = runtime.persistent_control_value(*id) {
                         *value = current;
@@ -4956,6 +4963,8 @@ mod pressed_tests;
 mod uvi_save_tests;
 #[cfg(test)]
 mod lifecycle_audit_tests;
+#[cfg(test)]
+mod host_recall_tests;
 
 #[cfg(test)]
 mod settings_parity_tests {

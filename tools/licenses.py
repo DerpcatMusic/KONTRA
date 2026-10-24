@@ -130,6 +130,11 @@ def self_test():
         pass
     else:
         raise AssertionError("Only the documented unresolved parser is exempt")
+    # Patched MPL sources are tarred from the checkout; LF-pinned attributes keep their bytes
+    # identical on Windows (core.autocrlf would otherwise change the covered digest).
+    attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    for name in ("symphonia-format-riff", "symphonia-bundle-flac"):
+        assert f"vendor/{name}/** text=auto eol=lf" in attributes, name
     with tempfile.TemporaryDirectory(prefix="kontra-source-check-") as directory:
         root = Path(directory)
         output = root / "sources"

@@ -9,12 +9,12 @@
 /// Largest factor.
 pub(crate) const MAX: usize = 4;
 
-fn big(y: f64) -> f64 {
+pub(crate) fn big(y: f64) -> f64 {
     let p = (((y * 0.003_923_77 - 0.016_476_33) * y + 0.026_355_37) * y - 0.020_577_06) * y + 0.009_162_81;
     (((p * y - 0.001_575_65) * y + 0.002_253_19) * y + 0.013_285_92) * y + 0.398_942_28
 }
 
-fn i0(x: f64) -> f64 {
+pub(crate) fn i0(x: f64) -> f64 {
     if x >= 3.75 {
         (x.exp() / x.sqrt()) * big(3.75 / x)
     } else {
