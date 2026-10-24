@@ -11,6 +11,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | P0.1 | xtask: size, debt, deps-check, timings | tooling | M | worker | P0.0 |
 | P0.2 | kontra-probe: playback contracts C1–C10 as a tool | tooling | L | worker | P0.0 |
 | P0.3 | Probe fixtures: native-format instruments that reproduce the audited bugs | tooling | M | worker | P0.2 |
+| P0.3b | Probe fixtures that reproduce the bugs: authored KSP (play_note offsets, ignore_event, UI load) | tooling | M | worker | P0.3 |
 | P0.4 | Build profiles: fast profile, workspace-hack, mold | tooling | S | worker | P0.1 |
 | P0.5 | v3 CI: plan checks, scope guard, push CI on v3 | tooling | S | coordinator | – |
 | P0.6 | Gate G0: baseline on v3 | coordinator | S | coordinator | P0.1, P0.2, P0.3, P0.4 |
@@ -20,7 +21,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | Id | Task | Lane | Size | Agent | Deps |
 |---|---|---|---|---|---|
 | P1.1 | Reachable start range per zone (S.Mod, script offsets, CC/RTC → start) | playback | M | worker | P0.3 |
-| P1.2 | Preload law: base + full start range, never shrink below the law | playback | L | worker | P1.1 |
+| P1.2 | Preload law: base + full start range, never shrink below the law | playback | L | worker | P1.1, P0.3b |
 | P1.3 | No cold holds: late data is silence, the cursor keeps time | playback | M | worker | P1.2 |
 | P1.4 | One start batch per callback instant; delete start runway and per-family cohorts | playback | M | worker | P1.3 |
 | P1.5 | Gate G1: on-time start on real libraries | coordinator | S | coordinator | P1.4 |
@@ -29,7 +30,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 
 | Id | Task | Lane | Size | Agent | Deps |
 |---|---|---|---|---|---|
-| P2.1 | Script UI writes go to a latest-value control store, not a queue | script | L | worker | P0.3 |
+| P2.1 | Script UI writes go to a latest-value control store, not a queue | script | L | worker | P0.3b |
 | P2.2 | Delete behavior fuel and BehaviorOverload::Abort; KSP while limit only | script | M | worker | P2.1 |
 | P2.3 | Gate G2: Areia dense chords 64/64 | coordinator | S | coordinator | P2.2, P1.5 |
 
@@ -129,6 +130,7 @@ flowchart LR
     P0_1["P0.1"]
     P0_2["P0.2"]
     P0_3["P0.3"]
+    P0_3b["P0.3b"]
     P0_4["P0.4"]
     P0_5["P0.5"]
     P0_6["P0.6"]
@@ -217,6 +219,7 @@ flowchart LR
   P0_0 --> P0_1
   P0_0 --> P0_2
   P0_2 --> P0_3
+  P0_3 --> P0_3b
   P0_1 --> P0_4
   P0_1 --> P0_6
   P0_2 --> P0_6
@@ -224,10 +227,11 @@ flowchart LR
   P0_4 --> P0_6
   P0_3 --> P1_1
   P1_1 --> P1_2
+  P0_3b --> P1_2
   P1_2 --> P1_3
   P1_3 --> P1_4
   P1_4 --> P1_5
-  P0_3 --> P2_1
+  P0_3b --> P2_1
   P2_1 --> P2_2
   P2_2 --> P2_3
   P1_5 --> P2_3
