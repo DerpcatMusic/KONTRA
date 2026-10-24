@@ -425,7 +425,7 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x5a => "Replika: only the v0x12 reader (0x140d02250) is read; other saved versions are not (docs/re/engine/k-replika.md)",
         0x5b => "Phasis: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but their binding to the core parameter indices and the core's oversampling resamplers (about 96 kHz internal) are not extracted",
-        0x5c => "Flair: fields bound (fx_other.tsv); the pitch note writer (+0x40, no binding row), the internal-rate resampler and the random start phase are not mapped",
+        0x5c => "Flair: fields bound (fx_other.tsv) and mapped onto the legacy flanger (KISS); offset, width, voices, damping, detune and the pitch note are not mapped",
         0x69 => "Vibrato Chorus: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the core's wave-digital LC ladder (the delay line it models) is not extracted",
         0x22 => "Rotator: horn/drum law located (control 0x140a97d30, audio 0x140aae920, output stage 0x140ac21f0 ported) but the runtime-initialised lane vectors at 0x149e6c400..0x149e6c45c and the RT_* setter binding (virtual BParFXRotator, vtable not exported) are not yet verified",
         _ => return None,
@@ -622,9 +622,20 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
         Unit::Replika(ref rep) => return replika_config(rep, dry, notes),
-        Unit::Flair(_) => {
-            notes.push(("parameters".into(), "Flair: bound fields read; core (pitch note writer, resampler, random start phase) not mapped".into(), Reason::NotModeled));
-            return None;
+        // KISS mapping onto the legacy flanger: amount is the depth, feedback the feedback, rate the
+        // speed (free: no sync field in the table), mix the wet share. The base delay is the
+        // flanger default (2.5 ms, unmeasured for Flair); offset, width, voices, damping, detune,
+        // invert and the pitch note writer have no law here and are reported.
+        Unit::Flair(ref f) => {
+            if !(unit_interval(&[f.amount, f.feedback, f.mix]) && f.rate.is_finite() && f.rate >= 0.) {
+                notes.push(("parameters".into(), format!("{}/{}/{}/{}", f.amount, f.feedback, f.mix, f.rate), Reason::InvalidValue));
+                return None;
+            }
+            notes.push(("parameters".into(), "Flair: offset, width, voices, damping, detune, invert and the pitch note not mapped (KISS flanger, base delay 2.5 ms)".into(), Reason::NotModeled));
+            let mut cfg = config(&Unit::Flanger { depth: f.amount, feedback: f.feedback, speed: f.rate, phase: 0., color: 2.5, unit: -1. }, dry, notes)?;
+            cfg.dry = 1. - f64::from(f.mix);
+            cfg.wet = f64::from(f.mix);
+            return Some(cfg);
         }
         Unit::WowFlutter { fields: [wow, flutter, scrape, speed, stereo, age, saturation], gate, mix } => {
             if ![wow, flutter, scrape, speed, stereo, age, saturation, mix].iter().all(|v| unit_interval(&[*v])) {
@@ -1370,5 +1381,22 @@ mod flair_binding_tests {
         );
         assert!(f.invert_phase);
         assert!(read_flair(0x50, &public).is_none());
+    }
+}
+
+#[cfg(test)]
+mod flair_map_tests {
+    use super::*;
+
+    #[test]
+    fn flair_maps_onto_the_legacy_flanger() {
+        let f = Flair { amount: 0.6, rate: 0.3, width: 0., mix: 0.5, voices: 0., feedback: 0.4, damping: 0., detune: 0., offset: 0., invert_phase: false };
+        let mut notes = Vec::new();
+        let cfg = config(&Unit::Flair(f.clone()), 0.5, &mut notes).expect("maps onto the flanger");
+        assert!((cfg.wet - 0.5).abs() < 1e-6 && (cfg.dry - 0.5).abs() < 1e-6);
+        assert!(notes.iter().any(|n| n.2 == sampler_ir::Reason::NotModeled));
+        let mut out_of_range = f;
+        out_of_range.amount = 2.;
+        assert!(config(&Unit::Flair(out_of_range), 0.5, &mut Vec::new()).is_none());
     }
 }
