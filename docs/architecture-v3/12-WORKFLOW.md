@@ -134,6 +134,12 @@ pairs simply run one after the other; that list is the honest parallel width.
 - **`Cargo.lock`:** during a rebase take `v3`'s copy, then let cargo update it:
   `git checkout --ours Cargo.lock && build-slot cargo metadata --format-version 1 >/dev/null && git add Cargo.lock`
   (in a rebase, `--ours` is the branch being rebased onto).
+- **Unrelated lockfile drift:** cargo may re-resolve packages you did not touch
+  (seen in P0.1: `gpu-allocator` moved to `windows 0.56`, breaking CI's DX12
+  check). Your `Cargo.lock` diff must contain only additions your change needs.
+- **Stacked tasks:** a task may start on its parent's PR branch while the parent
+  waits for CI. After the parent squash-merges:
+  `git rebase --onto origin/v3 <old parent head>`.
 - **Append lock (registry list):** keep both sides' lines, sorted.
 - **Anything else:** a conflict outside your `owns` means the plan was wrong.
   Stop and tell the coordinator; do not resolve it by editing their paths.

@@ -267,10 +267,13 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
               f"2. Commit early and often. Conventional Commits, with a `Task: {tid}` trailer.",
               "3. Write Rust per the `beautiful-rust` skill; before the PR run `cargo fmt` and "
               "`build-slot cargo clippy -p <your crates> --all-targets --no-deps -- -D warnings` on the crates you changed (`--no-deps`: some old crates are not clippy-clean yet).",
-              "4. Run only the gate's crate-scoped commands, always through `build-slot`. No workspace builds, corpus runs, "
+              "4. `Cargo.lock`: only additions your change needs. Revert any unrelated version change cargo makes "
+              "(CI checks e.g. that gpu-allocator and wgpu-hal share one `windows` version). Repo tools must never "
+              "require `build-slot`; it exists only on the maintainer's machine.",
+              "5. Run only the gate's crate-scoped commands, always through `build-slot`. No workspace builds, corpus runs, "
               "real-library surveys or plugin bundles: the coordinator does those once per merge batch.",
-              f"5. `git push -u origin HEAD` then `gh pr create --base {branch} --title \"{tid}: {t['title']}\"` and fill in the template.",
-              "6. Report back: PR URL, head SHA, gate output, any deviation from this brief and why."]
+              f"6. `git push -u origin HEAD` then `gh pr create --base {branch} --title \"{tid}: {t['title']}\"` and fill in the template.",
+              "7. Report back: PR URL, head SHA, gate output, any deviation from this brief and why."]
     return "\n".join(lines) + "\n"
 
 
