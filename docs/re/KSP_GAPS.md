@@ -109,6 +109,26 @@ or MIDI-driven oracle run, which is a separate piece of tooling. The find_zone p
 medium-size change (IR, loader, environment, cache) and is recorded here as the next step, not
 implemented in this round.
 
+## Round 4 (2026-10-24): remaining rows, measured or documented
+
+Same probe method as round 3 (volume readback, calibrated in the same session). Compile errors are
+not observable through the oracle's Lua API (`set_instrument_script_source` returns success for an
+undeclared name), so text-level compile rows stay unmeasured.
+
+| row | measurement | decision |
+|---|---|---|
+| 8 `set_menu_item_visibility` out of range | UI state only (menu visibility); no audio effect to read back | documented approximation: out-of-range index is ignored (KONTRA's warning) |
+| 9 `%CC` write lowered as `set_controller` | MIDI controller output; not in the volume readback. `KSP_FRONTEND.md` documents `set_controller(number,value)` as a downstream CC | documented approximation (lowering matches the documented role); a MIDI oracle run is needed to close it |
+| 14 `attach_zone` / `set_ui_wf_property` | waveform UI state; `w5-ksp-v1-parity.md` records "no consumer" | documented approximation, UI only |
+| 7 `$name clamped to its declared range` | measured: `declare ui_knob $k(0,100,1)`; `$k := 500` reads 100, `$k := -20` reads 0; a plain `$p := 500` reads 500 | KONTRA's clamp matches Kontakt for declared ranges; the warning text is ours. Keep (no behaviour change). |
+| 10 host transport reads in `on init` (`$DurationQuarter`, `$DurationSixteenth`, `$SignatureNum/Denom`) | every read gives the default volume (-6 dB): the init does not complete without a host transport | not measurable under the oracle; the warning stays (informational) |
+| 12 `get_ui_id(<plain variable>)` compile error | not observable through the oracle Lua API | FAITHFUL (likely), unverified |
+| 15 later `on ui_control` replaces an earlier one | fires on UI events, not measurable | callback family: wave70 lane |
+| 16, 17 single-use symbols and UI stubs | UI-only or single-use | no action this round |
+
+Remaining rows are either wave70's (find_group, arrays, callbacks) or need a UI or MIDI oracle
+(`%CC` output, menu visibility, waveform UI). Closing them needs that tooling, not another volume probe.
+
 ## Round log
 
 - Round 1 (branch `ksp/corpus-survey-r1`): cluster 13 fixed (`5246a819d`), regression test red then
