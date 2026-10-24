@@ -129,6 +129,28 @@ undeclared name), so text-level compile rows stay unmeasured.
 Remaining rows are either wave70's (find_group, arrays, callbacks) or need a UI or MIDI oracle
 (`%CC` output, menu visibility, waveform UI). Closing them needs that tooling, not another volume probe.
 
+## Round 5 (2026-10-24): fresh gaps from the census, no new PRs
+
+Source: `~/.cache/kontra-ksp-survey/full-r1.jsonl` (1470 records, 481 with `unsupported_ranked`),
+taken before the Round 2-4 merges. Ranked by instruments, not by occurrences. Only the census is
+used (no corpus sweep, no oracle). The census is dominated by Conflux (one library, parked).
+
+| rank | gap | instruments | libraries | reading | decision |
+|---:|---|---:|---|---|---|
+| 1 | `find_group("…")` name not found (warning text) | 229 | Areia, Dolce | the scripts ask for group names the instrument does not have (`4CllChnsw…`, `10VlnsChnsw…`); the lookup is exact and case-sensitive, like Kontakt's | likely faithful (Kontakt would warn too); needs an oracle run to confirm, so not changed |
+| 2 | keyswitch hints without a recognised switch | 104 | Afflatus Chapter II Brass (Brass Shorts family) | `keyswitch.rs:423`: hints exist but the detector finds no switch set in `on note`; articulations do not switch | **top universal real gap**, needs the script source to read the `on note` pattern (no public accessor for raw script text) |
+| 3 | `!name` array index out of bounds | 77 | 1 | reads return empty text, as the warning says | faithful by construction; only the wording differs |
+| 4 | `%name` array index out of bounds | 54 | 1 | same mechanism (`%_legato_aips_post_sustain_event_id`) | faithful by construction |
+| 5 | `$ENGINE_PAR_WT_MOD_AMOUNT` unsupported | 52 | 2 | WT_MOD, parked | parked |
+| 6 | `get_engine_par_disp_ext` unsupported | 51 | Conflux | display text of an engine parameter | ledger Approximate; Conflux only |
+| 7 | `load_array: data/vel_db.nka` not loaded | 51 | Conflux | Conflux ships no `data/` folder; Kontakt would fail the same load | faithful |
+| 8 | `RandomBipolar` external modulation omitted | 51 | Conflux | `library.rs:2254`, `UnknownLawOmitted`: the law is not measured | next real modulation gap; needs a measured law |
+| 9 | modulation target / intensity / module-parameter, effect | 30-51 each | Conflux (almost all) | one library's mod graph | not universal |
+
+Nothing in this round is a universal translation fix that can be measured today. Rank 2 is the one
+to pursue next: it needs a raw script-text accessor (or the NKI script chunk decoded) to read the
+`on note` switch pattern before any change. Rank 8 needs a measured RandomBipolar law.
+
 ## Round log
 
 - Round 1 (branch `ksp/corpus-survey-r1`): cluster 13 fixed (`5246a819d`), regression test red then
