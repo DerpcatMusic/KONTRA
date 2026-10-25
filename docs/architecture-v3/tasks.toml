@@ -336,18 +336,18 @@ lane = "playback"
 size = "L"
 agent = "worker"
 deps = ["P1.1b", "P0.3b"]
-owns = ["crates/sampler-kontakt/src/stream.rs", "crates/sampler-kontakt/src/head_prepare.rs", "crates/sampler-kontakt/src/head_cache.rs", "crates/sampler-core/src/head_budget.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/prepare/**", "crates/sampler-core/tests/stream_start_runway.rs"]
+owns = ["crates/sampler-kontakt/src/stream.rs", "crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs", "crates/sampler-kontakt/src/stream_hint_tests.rs", "crates/sampler-kontakt/src/stream_onset_tests.rs", "crates/sampler-native/examples/stream_report.rs", "crates/sampler-uvi/examples/dynamic_source_witness.rs", "crates/sampler-kontakt/src/head_prepare.rs", "crates/sampler-kontakt/src/head_cache.rs", "crates/sampler-core/src/head_budget.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/prepare/**", "crates/sampler-core/tests/stream_start_runway.rs"]
 docs = ["05-STREAM.md#1-the-preload-law"]
 goal = "Head length = base (60 KB-equivalent per channel, Kontakt DFD default) + the zone's start range from P1.1, instead of measured warm-cache latency; over budget never truncates silently."
 steps = [
-  "Compute `StartRange` (P1.1, P1.1b) for every load. Today `InitialStartHints` is only built when `policy.allow_cold_fallback` is set (crates/sampler-kontakt/src/stream.rs ~3069), and P1.3 deletes cold fallback: build the ranges unconditionally and make the head law read them.",
-  "Replace the head-size computation (`fn head_frames` in sampler-kontakt/src/stream.rs and sampler-core/src/prepare.rs: p95 latency + 10 ms slack) with `PreloadLaw { base, min, max }` applied per zone: frames = base + start_range.max_frames; unbounded → whole sample.",
-  "Remove the budget binary search with `include_offsets = false` in `bounded_attack_anchors`. Over budget: load continues, every zone keeps its law-sized head, and the load report lists the budget excess with the largest contributors. (Purge selection is a later UX task.)",
-  "Replace the ×16 `max_step` scaling with the zone's real maximum pitch step from its mapping/tune range.",
+  "Compute `StartRange` (P1.1, P1.1b) for every load; move the script-offset fold out of `InitialStartHints::with_script_offsets` into one shared function both paths call. Today `InitialStartHints` is only built when `policy.allow_cold_fallback` is set (crates/sampler-kontakt/src/stream.rs ~3069), and P1.3 deletes cold fallback: build the ranges unconditionally and make the head law read them.",
+  "Replace the latency-based head sizing (`fn head_frames(latency, rate, policy)`, stream.rs:814; `Prepared::head_frames` in prepare.rs is a residency readout, leave it) with `PreloadLaw { base, min, max }` per zone in source frames: frames = base + start_range.max_frames; unbounded → whole sample. `base` is Kontakt's DFD default, 60 KB of source data per sample (all channels): frames = 61440 / bytes_per_frame. Take bytes per frame from the reader header (plumb it through `open_required*`); where no header is available use 2 bytes per sample × channels and mark it with a `ponytail:` comment.",
+  "Delete `start_ranges_geometry` and its `include_offsets` flag (stream.rs ~858-900): it re-derives P1.1's sample-start routes; read `StartRange` instead. Remove the budget binary search in `bounded_attack_anchors`. Over budget: load continues, every zone keeps its law-sized head, and the load report lists the budget excess with the largest contributors. (Purge selection is a later UX task.)",
+  "Replace the fixed `StreamPolicy.max_step` cap (default 4.0, used in `zone_step`, stream.rs ~836) with the zone's real maximum pitch step from its mapping/tune range.",
   "Keep heads in their current storage format in this task (format change is P6.1d)."
 ]
 gate = ["build-slot cargo test -p sampler-kontakt stream", "build-slot cargo test -p sampler-core --lib prepare", "build-slot cargo test -p kontra-probe cc_start"]
-done = ["Probe C9 passes on `cc_start` and `key_position` fixtures.", "Coordinator: Areia head frames reported ≥ base + CC113 range."]
+done = ["PR reports total head bytes before/after on the cc_start and key_position fixtures and the coordinator checks Areia/Vista RAM against v1.", "Probe C9 passes on `cc_start` and `key_position` fixtures.", "Coordinator: Areia head frames reported ≥ base + CC113 range."]
 
 [[task]]
 id = "P1.3"
