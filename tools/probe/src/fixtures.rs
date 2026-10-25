@@ -18,7 +18,7 @@ mod ksp;
 mod program;
 
 /// Folder version: bump it when the generated instruments change.
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 /// The natural notes every fixture covers, C2 to A3 (the keys the probe plays).
 const ROOTS: [(u8, &str); 13] = [
     (48, "C2"),
@@ -147,6 +147,7 @@ impl Fixture {
                 seconds: 0.25,
                 groups: groups(self.name(), &[Mic::Close, Mic::Room, Mic::Far], 4),
                 script: Some(ksp::CC_START),
+                start_mod_frames: 3_600,
             },
             Self::UiLoad => Spec {
                 name: "ProbeUiLoad",
@@ -156,6 +157,7 @@ impl Fixture {
                 seconds: 0.25,
                 groups: groups(self.name(), &[Mic::Close], 1),
                 script: Some(ksp::UI_LOAD),
+                start_mod_frames: 0,
             },
             Self::KeyPosition => Spec {
                 name: "ProbeKeyPosition",
@@ -165,6 +167,7 @@ impl Fixture {
                 seconds: 0.25,
                 groups: groups(self.name(), &[Mic::Close], 1),
                 script: Some(ksp::KEY_POSITION),
+                start_mod_frames: 3_600,
             },
             Self::Dense => Spec {
                 name: "ProbeDense",
@@ -174,6 +177,7 @@ impl Fixture {
                 seconds: 0.25,
                 groups: groups(self.name(), &[Mic::Close], 4),
                 script: Some(ksp::DENSE),
+                start_mod_frames: 0,
             },
             Self::Streamed => Spec {
                 name: "ProbeStreamed",
@@ -183,6 +187,7 @@ impl Fixture {
                 seconds: 2.0,
                 groups: groups(self.name(), &[Mic::Close], 1),
                 script: None,
+                start_mod_frames: 0,
             },
         }
     }
@@ -222,6 +227,9 @@ struct Spec {
     groups: Vec<GroupSpec>,
     /// KSP for the instrument's first script slot.
     script: Option<&'static str>,
+    /// S.Mod range of every zone, source frames. Kontakt ignores a `play_note` offset past it
+    /// in DFD mode, so a script that starts at an offset sets the range it needs, as a library does.
+    start_mod_frames: u32,
 }
 
 /// One authored group and the sample set its zones take.

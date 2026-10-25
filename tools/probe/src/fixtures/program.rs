@@ -7,7 +7,7 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 use kontakto::creator::nki::{self, Program, SampleFile};
-use sampler_ir::{AssetRef, Group, GroupRef, KeyRange, KeyTracking, VelocityRange, Zone};
+use sampler_ir::{AssetRef, Group, GroupRef, KeyRange, KeyTracking, Playback, VelocityRange, Zone};
 
 use super::audio::{self, RATE};
 use super::{GroupSpec, ROOTS, Spec};
@@ -112,6 +112,10 @@ pub(super) fn write(spec: &Spec, out: &Path) -> Result<PathBuf> {
                     },
                     velocities: velocities(layer, spec.layers),
                     pitch: KeyTracking::Tracked { root: *midi },
+                    playback: Playback {
+                        start_range: u64::from(spec.start_mod_frames),
+                        ..Playback::default()
+                    },
                     ..Zone::new(AssetRef(files.len() - 1))
                 });
             }
