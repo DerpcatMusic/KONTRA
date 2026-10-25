@@ -603,11 +603,18 @@ GENERATED = {
 }
 
 
+def allowed(plan: dict, tid: str) -> list[str]:
+    """Globs a task's branch may change: its owns, files generated from them, and
+    regenerate-mode locks (Cargo.lock), which any task may touch without serializing."""
+    out = SPECIAL[tid] if tid in SPECIAL else owns(plan, plan["by_id"][tid])
+    out = out + [f for f, (src, _) in GENERATED.items() if overlap(out, [src], [])]
+    return out + [g for lock in plan["locks"].values() if lock["mode"] == "regenerate" for g in lock["paths"]]
+
+
 def scope(plan: dict, tid: str, base: str) -> list[str]:
     diff = subprocess.run(["git", "diff", "--name-only", f"{base}...HEAD"], cwd=ROOT, capture_output=True, text=True, check=True)
-    allowed = SPECIAL[tid] if tid in SPECIAL else owns(plan, plan["by_id"][tid])
-    allowed = allowed + [f for f, (src, _) in GENERATED.items() if overlap(allowed, [src], [])]
-    return [f for f in diff.stdout.split() if not match(f, allowed)]
+    ok = allowed(plan, tid)
+    return [f for f in diff.stdout.split() if not match(f, ok)]
 
 
 # ── cli ─────────────────────────────────────────────────────────────────────

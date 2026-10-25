@@ -114,7 +114,7 @@ Hot shared files are named **locks** in `tasks.toml` and referenced as `@name`:
 | Lock | Paths | Mode |
 |---|---|---|
 | `@manifests` | root `Cargo.toml`, `.cargo/**`, toolchain | exclusive |
-| `@lockfile` | `Cargo.lock` | regenerate: never hand-merged (§6) |
+| `@lockfile` | `Cargo.lock` | regenerate: never hand-merged (§6); any task may change it, so it never serializes tasks |
 | `@ci` | `.github/workflows/**`, `.github/scripts/**` | exclusive |
 | `@v2rs` | `src/sound/v2.rs` | exclusive |
 | `@plugin` | `src/plugin.rs`, `src/plugin/**`, `src/lib.rs` | exclusive |
