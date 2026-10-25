@@ -383,6 +383,7 @@ LABELS = {
     "status:claimed": ("fbca04", "Someone (an agent or person) is working on it"),
     "draft-brief": ("d4c5f9", "Scope/steps are a forecast; coordinator re-checks before dispatch"),
     "scope-override": ("e99695", "Coordinator approved changes outside the task's owned paths"),
+    "size-growth": ("fbca04", "PR may grow production lines; updates tools/xtask/size-baseline.json"),
     "agent:worker": ("c2e0c6", "Self-contained; an agent can do it from the brief"),
     "agent:coordinator": ("bfd4f2", "Merges, measurements, real libraries, settings"),
     "agent:spike": ("fef2c0", "Research with a written verdict"),
@@ -394,7 +395,7 @@ LABELS = {
 
 def managed(name: str) -> bool:
     """Labels sync owns. Claims and overrides are set by people and kept."""
-    if name in ("status:claimed", "scope-override"):
+    if name in ("status:claimed", "scope-override", "size-growth"):
         return False
     return name in LABELS or name.startswith(("phase:", "lane:"))
 

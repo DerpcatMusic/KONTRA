@@ -223,7 +223,7 @@ report or PR before anything is merged or built on it.
 |---|---|
 | Branch `v3` | ruleset "v3 integration": PR required, required checks `CI required` + `v3 plan`, squash (merge commits only for `v3-sync-main-*`), no force push, no deletion, admins may bypass in a PR |
 | Repo | auto-merge allowed; delete head branches on merge |
-| Labels | `v3`, `v3-epic`, `phase:0–8`, `lane:*`, `size:S/M/L`, `agent:*`, `status:ready/blocked/claimed`, `draft-brief`, `scope-override` (`plan.py sync`) |
+| Labels | `v3`, `v3-epic`, `phase:0–8`, `lane:*`, `size:S/M/L`, `agent:*`, `status:ready/blocked/claimed`, `draft-brief`, `scope-override`, `size-growth` (`plan.py sync`) |
 | Milestones | `v3 · P<n> <phase>` per phase |
 | Issues | one per task (type Task), one epic per phase (type Feature) with tasks as sub-issues, task deps as "blocked by" relations |
 | Project | **KONTRA v3** (user project, linked to the repo): fields Phase, Lane, Size, Agent, Task; suggested views: Board by Status, Table grouped by Phase, Roadmap by milestone (views are created in the UI; the API cannot create them) |
