@@ -20,7 +20,7 @@ Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in 
 | category | symbols | full | simplified | stub | unsupported | % full | corpus-weighted % full | tested |
 |---|---|---|---|---|---|---|---|---|
 | callback | 17 | 0 | 14 | 0 | 3 | 0.0% | 0.0% | 14 |
-| command | 282 | 25 | 222 | 4 | 31 | 8.9% | 32.3% | 200 |
+| command | 282 | 25 | 222 | 4 | 31 | 8.9% | 32.3% | 201 |
 | keyword | 18 | 2 | 16 | 0 | 0 | 11.1% | - | 18 |
 | datatype | 6 | 0 | 6 | 0 | 0 | 0.0% | - | 0 |
 | ui_control | 16 | 0 | 16 | 0 | 0 | 0.0% | 0.0% | 15 |
@@ -32,7 +32,7 @@ Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in 
 | event_par | 31 | 0 | 29 | 0 | 2 | 0.0% | 0.0% | 20 |
 | zone_par | 19 | 0 | 19 | 0 | 0 | 0.0% | 0.0% | 4 |
 | loop_par | 6 | 0 | 6 | 0 | 0 | 0.0% | - | 0 |
-| **all** | **1996** | **28** | **1888** | **25** | **55** | **1.4%** | **13.0%** | **441** |
+| **all** | **1996** | **28** | **1888** | **25** | **55** | **1.4%** | **13.0%** | **442** |
 
 Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMBOLS.tsv and KSP_MODERN.md; they are excluded from the totals above.
 
