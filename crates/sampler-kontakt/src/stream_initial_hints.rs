@@ -12,6 +12,44 @@ use sampler_core::Prepared;
 use sampler_ir as ir;
 use std::io;
 
+/// Reachable sample-start offsets of one zone, in source frames past `Playback::start`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct StartRange {
+    /// Furthest offset a source reaches: the zone's S.Mod range, or 0 when no route moves the start.
+    pub(super) max_frames: u64,
+    /// Some offset has no known bound, so the whole zone must be preloaded. The
+    /// instrument IR cannot carry a script `play_note` offset yet, so this stays false.
+    pub(super) unbounded: bool,
+    /// The zone's sample-start routes, in zone order.
+    pub(super) sources: Vec<ir::RouteRef>,
+}
+
+impl StartRange {
+    pub(super) fn of(instrument: &ir::Instrument, zone: &ir::Zone) -> Self {
+        let sources: Vec<ir::RouteRef> = zone
+            .routes
+            .iter()
+            .copied()
+            .filter(|r| {
+                instrument
+                    .routes
+                    .get(r.0)
+                    .is_some_and(|r| r.target == ir::Target::SampleStart)
+            })
+            .collect();
+        let max_frames = if sources.is_empty() {
+            0
+        } else {
+            zone.playback.start_range
+        };
+        Self {
+            max_frames,
+            unbounded: false,
+            sources,
+        }
+    }
+}
+
 pub(super) struct InitialStartHints<'plan> {
     // Retain the immutable preparation boundary, not a runtime or engine epoch.
     _prepared: &'plan Prepared,
@@ -20,6 +58,7 @@ pub(super) struct InitialStartHints<'plan> {
     rate: u32,
     policy: StreamPolicy,
     constant: ConstantStartHints,
+    start_ranges: Vec<StartRange>,
     controllers: Vec<(usize, u32)>,
     pub(super) eligible: usize,
     pub(super) unsupported: usize,
@@ -73,6 +112,11 @@ impl<'plan> InitialStartHints<'plan> {
             policy: *policy,
             eligible: constant.eligible,
             constant,
+            start_ranges: instrument
+                .zones
+                .iter()
+                .map(|zone| StartRange::of(instrument, zone))
+                .collect(),
             controllers: Vec::new(),
             unsupported: 0,
             controller_loops: 0,
@@ -81,12 +125,8 @@ impl<'plan> InitialStartHints<'plan> {
             if canceled() {
                 return Err(canceled_head());
             }
-            if !zone.routes.iter().any(|r| {
-                instrument
-                    .routes
-                    .get(r.0)
-                    .is_some_and(|r| r.target == ir::Target::SampleStart)
-            }) || prepared.constant_start_offset(region).is_some()
+            if this.start_ranges[region].sources.is_empty()
+                || prepared.constant_start_offset(region).is_some()
             {
                 continue;
             }
