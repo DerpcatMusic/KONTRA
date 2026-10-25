@@ -359,6 +359,13 @@ mod tests {
     }
 
     #[test]
+    fn key_position_routes_its_sample_start() {
+        let spec = Fixture::KeyPosition.spec();
+        assert_eq!(spec.start_mod_frames, 3_600);
+        assert!(matches!(spec.start_route, Some(StartSource::KeyPosition)));
+    }
+
+    #[test]
     fn groups_are_round_major_so_the_script_can_index_round_times_mics() {
         let spec = Fixture::CcStart.spec();
         assert_eq!(spec.groups.len(), 12);
