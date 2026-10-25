@@ -85,6 +85,9 @@ impl Shape {
             }
             Self::Db { lo, hi } => {
                 finite_bounds(lo, hi)?;
+                if ![lo, hi].iter().all(|db| 10f32.powf(db / 20.0).is_finite()) {
+                    return Err(LawError::Invalid("db bounds must give a finite gain"));
+                }
                 Ok(Law::Db { lo, hi })
             }
             Self::Table { values } => {
@@ -181,6 +184,10 @@ mod tests {
             (
                 "tolerance_db = 0.1\n[law]\nkind = \"exp\"\nlo = 0.0\nhi = 1.0",
                 "exp bounds",
+            ),
+            (
+                "tolerance_db = 0.1\n[law]\nkind = \"db\"\nlo = 0.0\nhi = 1000.0",
+                "finite gain",
             ),
             (
                 "tolerance_db = 0.1\n[law]\nkind = \"linear\"\nlo = nan\nhi = 1.0",

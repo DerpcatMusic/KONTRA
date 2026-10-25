@@ -48,8 +48,8 @@ Paths are relative to the file that invokes the macro. There is no directory glo
 
 ```rust
 kontra_law::laws!(
-    SOLID_BUS_COMP => "laws/kontakt/solid_bus_comp.toml",
-    FILTER_CUTOFF => "laws/kontakt/filter_cutoff.toml",
+    SOLID_BUS_COMP => "laws/vendor/solid_bus_comp.toml",
+    FILTER_CUTOFF => "laws/vendor/filter_cutoff.toml",
 );
 ```
 
