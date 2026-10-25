@@ -635,9 +635,14 @@ impl Runtime {
                 for (frame, x) in block[..b.len].iter().enumerate() {
                     (planar[0][frame], planar[1][frame]) = (x[2 * lane], x[2 * lane + 1]);
                 }
-                // This lane is the voice's own signal, so its first non-silent frame is exact here.
+                // This lane is the voice's own signal. `finish` writes frames from `held` on,
+                // scaled by the expression gain, so the first audible frame is found on that output.
                 if v.first_frame.is_none() {
-                    if let Some(k) = (0..b.len).find(|&k| planar[0][k] != 0. || planar[1][k] != 0.) {
+                    let audible = |k: usize| {
+                        planar[0][k] as f64 * f64::from(gains[lane][0]) != 0.
+                            || planar[1][k] as f64 * f64::from(gains[lane][1]) != 0.
+                    };
+                    if let Some(k) = (b.held..b.len).find(|&k| audible(k)) {
                         v.first_frame = Some(at + k as u64);
                         self.first_frames.record(v.start_at, at + k as u64);
                     }

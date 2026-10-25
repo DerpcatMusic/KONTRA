@@ -789,6 +789,11 @@ impl FirstFrameLog {
         self.written += 1;
     }
 
+    /// Records the ring has overwritten: a report of the last `FIRST_FRAME_LOG` voices is incomplete.
+    fn dropped(&self) -> usize {
+        self.written.saturating_sub(self.entries.len())
+    }
+
     fn recent(&self) -> Vec<(u64, u64)> {
         let kept = self.written.min(self.entries.len());
         (self.written - kept..self.written)
@@ -1166,9 +1171,8 @@ pub struct Runtime {
     offline: bool,
     stream_fault: Option<StreamError>,
     stream_horizon: u32,
-    /// Lookahead, not a start gate: frames each streamed voice keeps resident
-    /// ahead of its read position. Sized into the stream horizon; see
-    /// [`Runtime::set_stream_start_runway`].
+    /// Lookahead frames each streamed voice keeps resident ahead of its read position,
+    /// and the admission gate for its start; see [`Runtime::set_stream_start_runway`].
     stream_start_runway: u32,
     stream_admission_errors: [u64; 2],
     stream_reserved: usize,
@@ -1571,6 +1575,11 @@ impl Runtime {
     /// first. Probe use: voices that share an authored start must share a first frame.
     pub fn voice_first_frames(&self) -> Vec<(u64, u64)> {
         self.first_frames.recent()
+    }
+
+    /// Voices whose first-frame record the ring overwrote. Zero means `voice_first_frames` is complete.
+    pub fn voice_first_frames_dropped(&self) -> usize {
+        self.first_frames.dropped()
     }
 
     pub fn voice_count(&self) -> usize {

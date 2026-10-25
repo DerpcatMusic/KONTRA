@@ -140,6 +140,8 @@ pub struct Report {
     pub notes: Vec<NoteReport>,
     /// Each recent voice's `(authored start, first non-silent output frame)`, absolute (C3).
     pub first_frames: Vec<(u64, u64)>,
+    /// Voices whose record the engine's ring overwrote; C3 needs this to be zero.
+    pub first_frames_dropped: usize,
     /// Script effects the run drained from the instrument: UI writes, `message`
     /// and other script output, not split by kind. C7 reads it as load evidence.
     pub script_effects: u64,
@@ -353,6 +355,7 @@ impl Session {
             block,
             notes,
             first_frames: core.voice_first_frames(),
+            first_frames_dropped: core.voice_first_frames_dropped(),
             script_effects,
             audio: run.audio,
         })
@@ -694,20 +697,46 @@ pub const C3_TOLERANCE: u64 = 0;
 
 /// C3 on a real-time render: the voices of each note start together. Each
 /// voice's first non-silent frame is read from the engine, so a mic group that
-/// starts alone shows up as a nonzero spread.
+/// starts alone shows up as a nonzero spread, and a configured voice that never
+/// sounds shows up as a missing one.
 fn c3_start_spread(session: &mut Session, pattern: Pattern) -> Result<Verdict> {
     let report = session.play(pattern, Mode::RealTime, BLOCK)?;
-    Ok(c3_verdict(&report, pattern))
+    // Configured attack voices per note: keys a zone plays, times the layers per key.
+    // Keys no zone plays (below the range) expect none. Without a zone map or a
+    // configured count, no per-note count is known and C3 checks spread only.
+    let expected: Vec<Option<usize>> = report
+        .notes
+        .iter()
+        .map(|note| {
+            let zoned = match session.uncovered(note) {
+                Some(keys) => note.keys.len() - keys.len(),
+                None => note.keys.len(),
+            };
+            session.expected.map(|per_key| zoned * per_key)
+        })
+        .collect();
+    Ok(c3_verdict(&report, pattern, &expected))
 }
 
-/// C3 on a rendered run. Voices are grouped by their authored start instant, so a
-/// release-triggered voice (its own instant, inside the same step) never counts
-/// against the attack voices of its note.
-fn c3_verdict(report: &Report, pattern: Pattern) -> Verdict {
+/// C3 on a rendered run. `expected[i]` is the attack voices configured for note `i`,
+/// when known. A voice belongs to a note by its authored start, the note's own instant
+/// (release-triggered voices start later and are never counted as attacks). Voices of
+/// one authored start must share a first frame.
+fn c3_verdict(report: &Report, pattern: Pattern, expected: &[Option<usize>]) -> Verdict {
+    if report.first_frames_dropped > 0 {
+        return Verdict::failed(
+            "C3",
+            pattern,
+            format!(
+                "{} first-frame record(s) overwritten; the report is incomplete",
+                report.first_frames_dropped
+            ),
+        );
+    }
     let mut worst = 0u64;
-    let mut silent = Vec::new();
+    let mut missing = Vec::new();
     let mut voices = 0;
-    for note in &report.notes {
+    for (index, note) in report.notes.iter().enumerate() {
         let window = note.scheduled..note.scheduled + STEP as u64;
         let mut starts: Vec<(u64, u64)> = report
             .first_frames
@@ -715,11 +744,19 @@ fn c3_verdict(report: &Report, pattern: Pattern) -> Verdict {
             .copied()
             .filter(|(start, _)| window.contains(start))
             .collect();
-        if starts.is_empty() {
-            silent.push(note.step);
-            continue;
-        }
         voices += starts.len();
+        let attacks = starts.iter().filter(|(start, _)| *start == note.scheduled).count();
+        match expected.get(index).copied().flatten() {
+            // A note with no configured voice (below the range) has nothing to check.
+            Some(0) => {}
+            Some(n) if attacks != n => {
+                missing.push(format!("step {} keys {:?}: {attacks} of {n} voices sounded", note.step, note.keys));
+            }
+            None if starts.is_empty() => {
+                missing.push(format!("step {} keys {:?}: no voice sounded", note.step, note.keys));
+            }
+            _ => {}
+        }
         starts.sort_unstable();
         for same in starts.chunk_by(|a, b| a.0 == b.0) {
             let lo = same.iter().map(|s| s.1).min().unwrap_or(0);
@@ -728,10 +765,10 @@ fn c3_verdict(report: &Report, pattern: Pattern) -> Verdict {
         }
     }
     let detail = format!(
-        "{} notes, {voices} voices with a first frame; worst spread {worst} frame(s) between voices of one start, tolerance {C3_TOLERANCE}; notes with no voice: {silent:?}",
+        "{} notes, {voices} voices with a first frame; worst spread {worst} frame(s) between voices of one start, tolerance {C3_TOLERANCE}; notes with missing voices: {missing:?}",
         report.notes.len(),
     );
-    if silent.is_empty() && worst <= C3_TOLERANCE {
+    if missing.is_empty() && worst <= C3_TOLERANCE {
         Verdict::passed("C3", pattern, detail)
     } else {
         Verdict::failed("C3", pattern, detail)
@@ -1058,6 +1095,7 @@ mod tests {
             block: BLOCK,
             notes: (0..STEPS).map(|s| note(s, s < audible)).collect(),
             first_frames: Vec::new(),
+            first_frames_dropped: 0,
             script_effects: 0,
             audio: vec![[audio, audio]; 8],
         };
@@ -1126,6 +1164,7 @@ mod c3_tests {
                 dropouts: 0,
             }],
             first_frames,
+            first_frames_dropped: 0,
             script_effects: 0,
             audio: Vec::new(),
         }
@@ -1135,9 +1174,29 @@ mod c3_tests {
     fn c3_compares_only_voices_of_one_authored_start() {
         // A release voice starts at its own instant inside the same step: not a spread.
         let with_release = report(vec![(1000, 1000), (1000, 1000), (1000, 1000), (1500, 1400)]);
-        assert_eq!(c3_verdict(&with_release, Pattern::Live).pass, Some(true));
+        assert_eq!(c3_verdict(&with_release, Pattern::Live, &[Some(3)]).pass, Some(true));
         // Two voices of one instant that sound apart: a split.
         let split = report(vec![(1000, 1000), (1000, 1100)]);
-        assert_eq!(c3_verdict(&split, Pattern::Live).pass, Some(false));
+        assert_eq!(c3_verdict(&split, Pattern::Live, &[Some(2)]).pass, Some(false));
+    }
+
+    #[test]
+    fn c3_fails_a_configured_voice_that_never_sounds() {
+        // Areia's third voice is silent: two of three attack voices sound, aligned.
+        let silent_third = report(vec![(1000, 1000), (1000, 1000)]);
+        assert_eq!(c3_verdict(&silent_third, Pattern::Live, &[Some(3)]).pass, Some(false));
+    }
+
+    #[test]
+    fn c3_skips_a_note_with_no_configured_voice() {
+        // Below the zone range: no voice is configured, and none is expected.
+        let below_range = report(vec![]);
+        assert_eq!(c3_verdict(&below_range, Pattern::Live, &[Some(0)]).pass, Some(true));
+    }
+
+    #[test]
+    fn c3_fails_a_wrapped_log() {
+        let wrapped = Report { first_frames_dropped: 1, ..report(vec![(1000, 1000); 3]) };
+        assert_eq!(c3_verdict(&wrapped, Pattern::Live, &[Some(3)]).pass, Some(false));
     }
 }
