@@ -16,7 +16,8 @@ Reports are claims. Treat every number, "tests pass", "skipped per the brief" an
 ## 1. Re-run at least one claim
 
 - Pick the claim the merge depends on most: the gate output, a timing, a contract
-  verdict. Re-run it, or read the code that produces it.
+  verdict. Runtime claims (tests, timings, verdicts) are re-run and their output
+  read; reading the code is enough only for claims about code.
 - Known failure shapes (all happened):
   - a test filter that matches no tests (`running 0 tests` reported as green);
   - a timing on a no-op edit (comment) instead of the edit the target names;
@@ -61,5 +62,6 @@ Reports are claims. Treat every number, "tests pass", "skipped per the brief" an
   The next worker must not be able to repeat the mistake.
 - Partial delivery: merge what is correct and add a follow-up task (for example
   P1.1 → P1.1b) rather than stretching the PR's scope.
-- Then `gh pr merge <n> --auto --squash`, and after merges
-  `python3 tools/plan/plan.py sync` and `ready`.
+- Only when the verdict is `merge` and every finding and review thread is
+  resolved: `gh pr merge <n> --auto --squash`. After the PR shows `MERGED`,
+  `git fetch origin` and run `python3 tools/plan/plan.py sync` and `ready` on the new `origin/v3`.

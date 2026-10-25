@@ -32,7 +32,9 @@ always compiles the GPU UI.
 4. **`.cargo/fast-linux.toml` (clang + mold) is optional.** Measured in P0.4
    (#787): `fast` rebuild of the root lib after a DSP constant edit 8.2 s with
    the default linker, 11.2 s with mold. No measurable win, so it is not the
-   default; re-measure when the plugin binary link is timed.
+   default; re-measure when the plugin binary link is timed. (The file's header
+   comment names `--profile dsp-dev`; it only sets the linker and works with any
+   profile. The numbers above used `--profile fast`.)
 5. **No workspace-hack crate (decided in P0.4, #787).** Building
    `-p sampler-core` then the root lib recompiled 15 small dependencies
    (serde, syn, rustfft, ...) for a second feature set. Both feature sets

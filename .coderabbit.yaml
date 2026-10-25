@@ -11,6 +11,7 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    auto_pause_after_reviewed_commits: 0  # the ruleset needs every push reviewed before merge
     base_branches:
       - "v3"
     ignore_title_keywords:
