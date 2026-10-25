@@ -256,7 +256,8 @@ fn zones(p: &Program) -> Result<Vec<u8>> {
         let mut public = Vec::new();
         public.extend((z.playback.start as i32).to_le_bytes());
         public.extend(z.playback.end.map_or(-1i32, |e| e as i32).to_le_bytes());
-        public.extend((-1i32).to_le_bytes());
+        // S.Mod: the zone's sample-start modulation range, so offsets land on read-back.
+        public.extend((z.playback.start_range as i32).to_le_bytes());
         for v in [
             z.velocities.low,
             z.velocities.high,
