@@ -161,6 +161,7 @@ pub(super) fn run(args: &[String]) -> i32 {
                             record["rss_ready_kib"] =
                                 json!(super::proc_field("/proc/self/status", "VmRSS:"));
                             record["head_bytes"] = json!(s.report.head_bytes);
+                            record["kontakt_window_bytes"] = json!(s.report.kontakt_window_bytes);
                             record["pool_bytes"] = json!(s.report.pool_bytes);
                             record["sample_full_bytes"] = json!(s.report.full_bytes);
                             record["bound_scripts"] = json!(s.loaded.scripts.len());

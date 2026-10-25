@@ -10,6 +10,16 @@ use std::{
 
 pub const PAGE_FRAMES: usize = 4096;
 
+/// Pages one voice's reach covers: `legs` windows of `frames` output frames at
+/// `step`, each widened by the resampler's guard and one page for alignment.
+/// The single law behind `family_reservation_pages` and the pool sizing that
+/// must cover it (sampler-kontakt `voice_pages`). `frames` must be at least 1.
+pub fn reservation_reach_pages(frames: u32, step: f64, legs: usize) -> usize {
+    let span = ((f64::from(frames - 1) * step).ceil() as usize)
+        .saturating_add((2 * crate::resample::Kernel::radius(step) as usize).saturating_add(1));
+    legs.saturating_mul(span.div_ceil(PAGE_FRAMES).saturating_add(1))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PageKey {
     pub asset: AssetId,

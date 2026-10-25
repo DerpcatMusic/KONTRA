@@ -52,25 +52,21 @@ fn cc_start_has_one_voice_per_mic_group() {
 }
 
 #[test]
-#[ignore = "fails until P1.2: a start offset from play_note lands one block late (C1 worst 128 frames)"]
 fn cc_start_plays_every_note_on_time() {
     assert_passes(&verdict(Fixture::CcStart, "C1", Pattern::Live));
 }
 
 #[test]
-#[ignore = "fails until P1.2: CC113 start offsets land one block late (C9 worst 128 frames)"]
 fn cc_start_start_offsets_play_on_time() {
     assert_passes(&verdict(Fixture::CcStart, "C9", Pattern::Offsets));
 }
 
 #[test]
-#[ignore = "fails until P1.2: 63 of 64 chords miss their first block; likely the same offset lateness as C1, not isolated"]
 fn cc_start_chords_start_in_their_first_block() {
     assert_passes(&verdict(Fixture::CcStart, "C8", Pattern::Dense));
 }
 
 #[test]
-#[ignore = "fails until P1.3: offline and real time differ when play_note offsets are used (null about -3 dB)"]
 fn cc_start_offline_matches_real_time() {
     assert_passes(&verdict(Fixture::CcStart, "C5", Pattern::Live));
 }
@@ -96,7 +92,6 @@ fn key_position_block_size_null_passes() {
 }
 
 #[test]
-#[ignore = "fails until P1.3: offline and real time differ when play_note offsets are used (null -5.3 dB)"]
 fn key_position_offline_matches_real_time() {
     assert_passes(&verdict(Fixture::KeyPosition, "C5", Pattern::Live));
 }

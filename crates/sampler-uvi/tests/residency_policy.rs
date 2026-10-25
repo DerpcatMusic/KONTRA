@@ -98,12 +98,13 @@ fn mixed_full_and_packed_storage_share_cap_and_cold_fallback_streams_oversize_re
         "<SamplePlayer SamplePath='a.wav' AllowStreaming='0'/><SamplePlayer SamplePath='b.wav'/>",
     );
     // Under cold fallback a resident source that no longer fits the shared cap
-    // streams from disk instead of failing the load.
+    // streams from disk instead of failing the load, and the budget is raised to
+    // the law heads (P1.2: never below the law), so the streamed source keeps its head.
     for (lazy, cap, fallback, success, packed, resident) in [
         (true, 128, false, true, 0, true),
         (false, 160, false, true, 32, true),
         (false, 159, false, false, 0, true),
-        (false, 128, true, true, 0, true),
+        (false, 128, true, true, 32, true),
         (false, 127, true, true, 64, false),
     ] {
         let mut policy = policy(lazy, cap);
@@ -135,7 +136,8 @@ fn mixed_full_and_packed_storage_share_cap_and_cold_fallback_streams_oversize_re
             } else {
                 assert!(held <= cap, "streamed fallback stays within the cap");
             }
-            assert_eq!(streamed.report.head_fallback.is_some(), fallback && resident);
+            // The raised budget binds the law heads, so no load here needs the head fallback tier.
+            assert!(streamed.report.head_fallback.is_none());
             assert_eq!(
                 streamed
                     .streamer

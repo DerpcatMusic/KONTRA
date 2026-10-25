@@ -18,7 +18,6 @@ fn main() {
     let policy = sampler_kontakt::StreamPolicy {
         head_budget: args[2].parse().unwrap(),
         decoders: args[3].parse().unwrap(),
-        max_step: 16.,
         block_frames: kontakto::sound::MAX_BLOCK,
         voices: 1024,
         lazy: false,

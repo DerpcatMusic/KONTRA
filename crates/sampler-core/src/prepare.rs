@@ -1169,6 +1169,9 @@ crate) source_zone_catalog: Option<zone_routing::SourceZoneCatalog>,
     pub(super) group_mutes: Box<[AtomicBool]>,
     /// Kontakt-saved purge state per group; purged groups start non-resident.
     pub(super) group_purged: Box<[bool]>,
+    /// Per region: whether a script `play_note` offset past its start range is
+    /// dropped (KSP, DFD). Empty keeps every offset.
+    pub(super) script_offset_gate: Box<[bool]>,
     pub(super) residency: Option<super::residency::Residency>,
     pub(super) parameter_registry: super::PreparedParameterRegistry,
     pub(super) signal_trace: Option<crate::trace::TracePrepared>,
@@ -1535,6 +1538,7 @@ impl Prepared {
             zone_routing: None,
             group_mutes: Box::new([]),
             group_purged: Box::new([]),
+            script_offset_gate: Box::new([]),
             residency: None,
             initial_residency: Box::new([]),
             parameter_registry: Default::default(),

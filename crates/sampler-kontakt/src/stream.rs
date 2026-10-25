@@ -6,7 +6,7 @@ use crate::{
     LoadError, head_cache,
     samples::{FileAt, Source},
 };
-use sampler_core::{AssetId, DecodeFailure, HeadBudget, HeadBudgetStatus, HeadPreparer, PAGE_FRAMES, Pcm, ResidentBuffer, StreamCache, StreamWorker};
+use sampler_core::{AssetId, DecodeFailure, HeadBudget, HeadBudgetStatus, HeadPreparer, PAGE_FRAMES, Pcm, ResidentBuffer, StreamCache, StreamWorker, reservation_reach_pages};
 use sampler_ir as ir;
 use std::{
     collections::{HashMap, HashSet},
@@ -26,7 +26,10 @@ type Frame = [f32; 2];
 mod head_prepare;
 #[path = "stream_initial_hints.rs"]
 mod initial_hints;
-use initial_hints::InitialStartHints;
+use crate::dfd_window;
+use initial_hints::{InitialStartHints, zone_start_ranges};
+#[cfg(test)]
+use initial_hints::StartRange;
 
 /// A sample's bytes as a seekable stream, decrypted on the fly. Reads go
 /// through one buffer: decoders read a few bytes at a time.
@@ -163,6 +166,11 @@ pub trait AssetSource: Send + Sync {
     fn header(&self) -> Option<(u32, usize)> {
         None
     }
+    /// Channel count and sample width, read from the file header without
+    /// counting as an open.
+    fn header_layout(&self) -> Option<FrameLayout> {
+        None
+    }
     /// Playback/reload IO, counted separately from initial loading.
     fn open_stream(&self) -> io::Result<SampleReader> {
         self.open()
@@ -187,6 +195,12 @@ impl AssetSource for Source {
     fn open(&self) -> io::Result<SampleReader> {
         SampleReader::open(self)
     }
+    fn header_layout(&self) -> Option<FrameLayout> {
+        let mut bytes = Bytes::open(self, false).ok()?;
+        let mut head = Vec::new();
+        (&mut bytes).take(1 << 16).read_to_end(&mut head).ok()?;
+        layout_from_head(&head)
+    }
     fn header(&self) -> Option<(u32, usize)> {
         self.header
     }
@@ -197,6 +211,24 @@ impl AssetSource for Source {
 
 /// Original width discovery and new-wide native workspace admission. Legacy
 /// mono/stereo takes its original opener, without imposing this new wide cap.
+/// The layout of a RIFF, FORM (AIFF) or NCW header's leading bytes. FORM goes
+/// through `aiff_reader`, the same branch `open_native_channel_reader` uses, so
+/// a mono 24-bit AIFF is not sized as the 16-bit stereo fallback.
+fn layout_from_head(head: &[u8]) -> Option<FrameLayout> {
+    let wav = if head.starts_with(b"FORM") {
+        crate::samples::aiff_reader(&mut std::io::Cursor::new(head)).ok()?
+    } else if head.starts_with(b"RIFF") {
+        crate::samples::wav_layout(head).ok()?
+    } else {
+        let header = ncw::NcwHeader::read(&mut std::io::Cursor::new(head)).ok()?;
+        return Some(FrameLayout {
+            channels: usize::from(header.channels),
+            bits: usize::from(header.bits_per_sample),
+        });
+    };
+    Some(FrameLayout { channels: wav.channels, bits: wav.width * 8 })
+}
+
 fn open_native_channel_reader(source:&Source,counted:bool,workspace_limit:usize)->io::Result<Option<SampleReader>> {
     let mut bytes=Bytes::open(source,counted)?;let mut head=Vec::new();
     (&mut bytes).take(1<<12).read_to_end(&mut head)?;
@@ -523,6 +555,17 @@ impl SampleReader {
     pub fn original_channels(&self) -> Option<usize> {
         match &self.codec { Codec::Wav(w) => Some(w.channels), Codec::Ncw(n) => Some(usize::from(n.header.channels)), Codec::Encoded(reader)=>Some(reader.channels()), Codec::Custom(_) => None }
     }
+    /// Channel count and sample width from the header; `None` for encoded or custom readers.
+    pub(crate) fn layout(&self) -> Option<FrameLayout> {
+        match &self.codec {
+            Codec::Wav(w) => Some(FrameLayout { channels: w.channels, bits: w.width * 8 }),
+            Codec::Ncw(n) => Some(FrameLayout {
+                channels: usize::from(n.header.channels),
+                bits: usize::from(n.header.bits_per_sample),
+            }),
+            Codec::Encoded(_) | Codec::Custom(_) => None,
+        }
+    }
     pub fn owned_channel_reader_bytes(&self) -> Option<usize> { self.cache_bytes() }
     fn native_workspace_bound(&self) -> Option<usize> {
         let current=self.cache_bytes()?;
@@ -673,16 +716,23 @@ impl SampleReader {
 /// How streamed assets were sized, and what is resident.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StreamReport {
+    /// Frames the law guarantees resident past any permitted start, over the
+    /// streamed resident zones (`runway_frames`). The stream runway and horizon
+    /// are sized from this, not from `head_frames`.
+    pub runway_frames: usize,
     /// Head read latency over the probed assets, open plus first page.
     pub latency_p50: Duration,
     pub latency_p95: Duration,
     pub latency_p99: Duration,
     /// Zero means the latency is unmeasured, not a zero-latency disk.
     pub latency_samples: usize,
-    /// Output frames each start keeps resident (times its zone's step in
-    /// source frames): the measured latency budget.
+    /// Largest zone preload head, in source frames (the preload law).
     pub head_frames: usize,
+    /// Packed (resident source) bytes of the heads, as held.
     pub head_bytes: usize,
+    /// Packed source bytes of Kontakt's DFD windows over the same zones, each sample
+    /// counted once at its largest zone window. `head_bytes` should sit within 10% of it.
+    pub kontakt_window_bytes: usize,
     /// Authored onset/offset/reverse ranges, before any lazy publication. These
     /// bounds describe all mapped starts, including currently muted groups.
     pub head_assets: usize,
@@ -735,8 +785,6 @@ pub struct StreamPolicy {
     /// Pitch a voice may rise above its zone's highest key, in semitones
     /// (bend and modulation headroom), for head sizing.
     pub headroom: f64,
-    /// Ceiling on any zone's estimated step.
-    pub max_step: f64,
     /// Worst wait between a page request and its decode starting (worker poll
     /// and the host's service period), on top of measured read latency.
     pub slack: Duration,
@@ -760,13 +808,15 @@ pub struct StreamPolicy {
     pub allow_cold_fallback: bool,
     /// RAM-only: keep whole samples smallest first within this safe byte budget.
     pub resident_budget: Option<usize>,
+    /// Ceiling on the head budget that cold fallback may raise to the law heads.
+    /// A head above it takes the fallback tiers instead of growing the budget.
+    pub physical_limit: usize,
 }
 
 impl Default for StreamPolicy {
     fn default() -> Self {
         Self {
             headroom: 2.0,
-            max_step: 4.0,
             slack: Duration::from_millis(10),
             block_frames: 64,
             voices: 256,
@@ -777,6 +827,7 @@ impl Default for StreamPolicy {
             lazy: false,
             allow_cold_fallback: true,
             resident_budget: None,
+            physical_limit: usize::MAX,
         }
     }
 }
@@ -804,15 +855,235 @@ fn system_ram_total() -> Option<usize> {
     Some(kib << 10)
 }
 
-/// Pool pages per streaming voice: the page it reads, the next, and one more
-/// for a window or crossfade spanning a page boundary.
+/// Pool pages per streaming voice, at least: the page it reads, the next, and
+/// one more for a window or crossfade spanning a page boundary. The real figure
+/// is the largest zone reach of the voice law, see [`voice_pages`].
 const PAGES_PER_VOICE: usize = 3;
 
-/// Output frames a start plays before the page after its head can arrive:
-/// the wait from the first service after the start (which requests that page,
-/// given a service horizon of at least the head) to its decode.
-pub(crate) fn head_frames(latency: Duration, rate: u32, policy: &StreamPolicy) -> usize {
-    ((latency + policy.slack).as_secs_f64() * f64::from(rate)).ceil() as usize + policy.block_frames
+/// The host's largest render block (`src/sound/mod.rs` `MAX_BLOCK`): the stream
+/// horizon covers one block beyond the largest head.
+const HOST_MAX_BLOCK: usize = 128;
+
+/// Output frames past every permitted start that the window law keeps resident,
+/// over the streamed resident zones. Per zone: the head less its `start_range`
+/// (a start can sit that far into the window), capped at the sample's remaining
+/// frames, then less the resampler guard, divided by the zone's fastest step
+/// (`zone_step`, the same one `start_ranges_geometry` reads at). The runway and
+/// the stream horizon count output frames, so this is the unit that matches
+/// them. A zone whose head covers its whole sample is fully resident and needs
+/// none. Zero when no zone streams.
+fn runway_frames(
+    instrument: &ir::Instrument,
+    geometry: &[(u32, usize)],
+    rate: u32,
+    heads: &[usize],
+    policy: &StreamPolicy,
+) -> usize {
+    instrument
+        .zones
+        .iter()
+        .zip(heads)
+        .filter_map(|(zone, &head)| {
+            let asset = zone.asset?.0;
+            let (sample_rate, length) = geometry[asset];
+            if !zone_resident(instrument, zone) || head >= length {
+                return None;
+            }
+            let start = usize::try_from(zone.playback.start).unwrap_or(usize::MAX).min(length);
+            let remaining = if zone.playback.reverse { start } else { length - start };
+            let guaranteed = head
+                .saturating_sub(usize::try_from(zone.playback.start_range).unwrap_or(usize::MAX))
+                .min(remaining);
+            let ratio = f64::from(sample_rate) / f64::from(rate);
+            let step = zone_step(zone, &instrument.groups, ratio, policy);
+            let guard = sampler_core::read_radius(step) + 1;
+            Some((guaranteed.saturating_sub(guard) as f64 / step).floor() as usize)
+        })
+        .min()
+        .unwrap_or(0)
+}
+
+/// Pool pages one streaming voice can reserve at the host's stream horizon,
+/// which is the largest head plus one block (`src/sound/v2.rs`
+/// `sampler_stream_contract`). Each zone contributes its voice reach at its
+/// fastest step, with the legs its looping adds, capped at its own pages; the
+/// largest zone sets the figure. Sized from the law so admission cannot run out
+/// of pool before voices do.
+fn voice_pages(
+    instrument: &ir::Instrument,
+    geometry: &[(u32, usize)],
+    rate: u32,
+    runway: usize,
+    policy: &StreamPolicy,
+) -> usize {
+    let horizon = u32::try_from(runway.max(PAGE_FRAMES) + policy.block_frames.max(HOST_MAX_BLOCK))
+        .unwrap_or(u32::MAX);
+    instrument
+        .zones
+        .iter()
+        .filter_map(|zone| {
+            let asset = zone.asset?.0;
+            let (sample_rate, length) = geometry[asset];
+            let full = length.div_ceil(PAGE_FRAMES) + 1;
+            if zone.group.is_some_and(|g| instrument.groups[g.0].wavetable.is_some()) {
+                return Some(full);
+            }
+            let legs = match zone.playback.looping {
+                ir::Looping::None | ir::Looping::OneShot => 1,
+                ir::Looping::Continuous(_) | ir::Looping::UntilRelease(_) => 2,
+                ir::Looping::Slots(slots) => 1 + 2 * slots.iter().flatten().count(),
+            };
+            // The runtime cursor's step is this zone's source/engine ratio, pitched.
+            let ratio = f64::from(sample_rate) / f64::from(rate);
+            let step = zone_step(zone, &instrument.groups, ratio, policy);
+            Some(reservation_reach_pages(horizon, step, legs).min(full))
+        })
+        .fold(PAGES_PER_VOICE, usize::max)
+}
+
+/// A source's channel count and sample width, from its header. `bytes_per_frame`
+/// is `F` in the window law: the packed bytes of one frame across all channels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameLayout {
+    pub channels: usize,
+    pub bits: usize,
+}
+
+impl FrameLayout {
+    /// Packed source bytes per frame across all channels.
+    pub fn bytes_per_frame(self) -> usize {
+        self.bits.div_ceil(8) * self.channels
+    }
+}
+
+/// Header layout of a source whose header cannot be read: 16-bit stereo, the
+/// width every unparsed source used before the window law.
+// ponytail: Encoded, Custom and unparsed headers assume 16-bit stereo; read the real header when a format needs it.
+const FALLBACK_LAYOUT: FrameLayout = FrameLayout { channels: 2, bits: 16 };
+
+/// The instrument's DFD preload, bytes per channel: the program's
+/// `dfdChannelPreloadSize`, or Kontakt's init default for a source with no Kontakt program.
+/// Library loads never set the global override, so the authored value applies.
+fn authored_preload(instrument: &ir::Instrument) -> i32 {
+    let authored = instrument
+        .kontakt_objects
+        .as_ref()
+        .map_or(dfd_window::PRELOAD_DEFAULT, |objects| objects.program.dfd_channel_preload_size);
+    dfd_window::effective_preload(authored, None)
+}
+
+/// Kontakt's DFD window for one zone (`dfd_window::window`): its start, reverse
+/// flag and S.Mod range (`playback.start_range`, source frames; 0 when unset),
+/// over its asset's header layout.
+fn zone_window(zone: &ir::Zone, preload: i32, layout: FrameLayout) -> dfd_window::Window {
+    let start = i64::try_from(zone.playback.start).unwrap_or(i64::MAX);
+    dfd_window::window(dfd_window::Input {
+        bits: u32::try_from(layout.bits).unwrap_or(u32::MAX),
+        channels: i64::try_from(layout.channels).unwrap_or(i64::MAX),
+        preload,
+        streamed: true,
+        reverse: zone.playback.reverse,
+        position: start,
+        // A reversed window starts at `-reverse_position`, so both fields name the zone start.
+        reverse_position: -start,
+        offset: i64::try_from(zone.playback.start_range).unwrap_or(i64::MAX),
+        linked: None,
+        blocked: false,
+    })
+}
+
+/// Whether a zone's group is resident at load. Kontakt saves purged groups
+/// (`ir::Group::purged`) non-resident; they get no head until a purge/load request.
+fn zone_resident(instrument: &ir::Instrument, zone: &ir::Zone) -> bool {
+    zone.group.is_none_or(|g| !instrument.groups[g.0].purged)
+}
+
+/// One preload head per resident zone, in source frames: its DFD window in packed
+/// source bytes divided by the frame size, capped at the sample. Zones in purged
+/// groups, and zones without an asset, get 0. `frames` and `layouts` are indexed
+/// by logical asset.
+pub(crate) fn preload_heads(
+    instrument: &ir::Instrument,
+    frames: &[usize],
+    layouts: &[FrameLayout],
+) -> Vec<usize> {
+    heads_where(instrument, frames, layouts, |zone| zone_resident(instrument, zone))
+}
+
+/// Every zone's head, purged groups included: the head a purge reload loads
+/// for its group (the same law as `preload_heads`).
+pub(crate) fn reload_heads(
+    instrument: &ir::Instrument,
+    frames: &[usize],
+    layouts: &[FrameLayout],
+) -> Vec<usize> {
+    heads_where(instrument, frames, layouts, |_| true)
+}
+
+fn heads_where(
+    instrument: &ir::Instrument,
+    frames: &[usize],
+    layouts: &[FrameLayout],
+    include: impl Fn(&ir::Zone) -> bool,
+) -> Vec<usize> {
+    let preload = authored_preload(instrument);
+    instrument
+        .zones
+        .iter()
+        .map(|zone| match zone.asset.map(|a| a.0) {
+            Some(asset) if include(zone) => {
+                let layout = layouts[asset];
+                let bytes = zone_window(zone, preload, layout).bytes.unsigned_abs();
+                let head = usize::try_from(bytes / layout.bytes_per_frame().max(1) as u64).unwrap_or(usize::MAX);
+                head.min(frames[asset])
+            }
+            _ => 0,
+        })
+        .collect()
+}
+
+/// Kontakt's window bytes for the resident zones: per sample, the union of its
+/// zones' window ranges (start `max(pos - off, 0)`, length `|W|`), in packed bytes.
+pub(crate) fn kontakt_window_bytes(instrument: &ir::Instrument, layouts: &[FrameLayout]) -> usize {
+    let preload = authored_preload(instrument);
+    let mut per_asset: Vec<Vec<Range<usize>>> = vec![Vec::new(); layouts.len()];
+    for zone in instrument.zones.iter().filter(|zone| zone_resident(instrument, zone)) {
+        let Some(asset) = zone.asset.map(|a| a.0) else {
+            continue;
+        };
+        let layout = layouts[asset];
+        let window = zone_window(zone, preload, layout);
+        let frames = window.bytes.unsigned_abs() / layout.bytes_per_frame().max(1) as u64;
+        if frames == 0 {
+            continue;
+        }
+        let start = usize::try_from(window.start.max(0)).unwrap_or(usize::MAX);
+        per_asset[asset].push(start..start.saturating_add(frames as usize));
+    }
+    per_asset
+        .iter_mut()
+        .enumerate()
+        .map(|(asset, list)| {
+            merge_start_ranges(list);
+            let frames: usize = list.iter().map(Range::len).sum();
+            frames.saturating_mul(layouts[asset].bytes_per_frame())
+        })
+        .fold(0usize, usize::saturating_add)
+}
+
+/// Test-only law with a chosen base: each zone's `base` frames plus its own start range.
+#[cfg(test)]
+pub(crate) fn law_heads(instrument: &ir::Instrument, base: usize) -> Vec<usize> {
+    instrument
+        .zones
+        .iter()
+        .map(|zone| base.saturating_add(usize::try_from(StartRange::of(instrument, zone).max_frames).unwrap_or(usize::MAX)))
+        .collect()
+}
+
+/// Output frames whose reads at `step` cover `head` source frames.
+fn output_horizon(head: usize, step: f64) -> usize {
+    (head as f64 / step).ceil() as usize
 }
 
 /// Fastest a zone reads its asset, in source frames per output frame: its
@@ -833,42 +1104,66 @@ fn zone_step(zone: &ir::Zone, groups: &[ir::Group], ratio: f64, policy: &StreamP
     };
     let group = zone.group.map_or(0.0, |g| groups[g.0].tune.semitones());
     let semitones = keys + zone.tune.semitones() + group + policy.headroom;
-    (ratio * (semitones / 12.0).exp2()).min(policy.max_step)
+    ratio * (semitones / 12.0).exp2()
 }
 
 /// Frame ranges of each asset that zone starts read before streaming catches
-/// up (`head` output frames at the zone's step, plus a guard): forward from
-/// the start, or back from the end when reversed. Ascending and merged.
+/// up: `heads[zone]` source frames from the start (forward, or back from the
+/// end when reversed), plus the interpolation guard. Ascending and merged.
 pub(crate) fn start_ranges(
     instrument: &ir::Instrument,
     assets: &[Pcm],
     rate: u32,
-    head: usize,
+    heads: &[usize],
     policy: &StreamPolicy,
 ) -> Vec<Vec<Range<usize>>> {
-    start_ranges_with_offsets(instrument, assets, rate, head, policy, true)
+    assets_start_ranges(instrument, assets, rate, heads, policy, |zone| zone_resident(instrument, zone))
 }
 
-fn start_ranges_with_offsets(
+/// The table a purge reload restores from: the start ranges of every zone,
+/// purged groups included, each with its own law head (`reload_heads`).
+pub(crate) fn reload_start_ranges(
     instrument: &ir::Instrument,
     assets: &[Pcm],
     rate: u32,
-    head: usize,
+    reload_heads: &[usize],
     policy: &StreamPolicy,
-    include_offsets: bool,
 ) -> Vec<Vec<Range<usize>>> {
-    let geometry=assets.iter().map(|p|(p.sample_rate(),p.frame_count())).collect::<Vec<_>>();
-    let mut ranges=start_ranges_geometry(instrument,&geometry,rate,head,policy,include_offsets);
-    if let Some(room)=policy.resident_budget {keep_whole(assets,&mut ranges,room);}
+    assets_start_ranges(instrument, assets, rate, reload_heads, policy, |_| true)
+}
+
+fn assets_start_ranges(
+    instrument: &ir::Instrument,
+    assets: &[Pcm],
+    rate: u32,
+    heads: &[usize],
+    policy: &StreamPolicy,
+    include: impl Fn(&ir::Zone) -> bool,
+) -> Vec<Vec<Range<usize>>> {
+    let geometry = assets.iter().map(|p| (p.sample_rate(), p.frame_count())).collect::<Vec<_>>();
+    let mut ranges = start_ranges_geometry(instrument, &geometry, rate, heads, policy, include);
+    if let Some(room) = policy.resident_budget {
+        keep_whole(assets, &mut ranges, room);
+    }
     ranges
 }
-fn start_ranges_geometry(instrument:&ir::Instrument,geometry:&[(u32,usize)],rate:u32,head:usize,
-    policy:&StreamPolicy,include_offsets:bool)->Vec<Vec<Range<usize>>> {
+
+fn start_ranges_geometry(
+    instrument: &ir::Instrument,
+    geometry: &[(u32, usize)],
+    rate: u32,
+    heads: &[usize],
+    policy: &StreamPolicy,
+    include: impl Fn(&ir::Zone) -> bool,
+) -> Vec<Vec<Range<usize>>> {
     let mut ranges = vec![Vec::new(); geometry.len()];
-    for zone in &instrument.zones {
+    for (zone, &head) in instrument.zones.iter().zip(heads) {
         let Some(asset) = zone.asset.map(|a| a.0) else {
             continue;
         };
+        if !include(zone) {
+            continue;
+        }
         let playback = &zone.playback;
         let (sample_rate, frame_count) = geometry[asset];
         if zone
@@ -889,15 +1184,8 @@ fn start_ranges_geometry(instrument:&ir::Instrument,geometry:&[(u32,usize)],rate
         let step = zone_step(zone, &instrument.groups, ratio, policy);
         // The resampling window reads this far either side of the position.
         let guard = sampler_core::read_radius(step) as u64 + 1;
-        // The first read can move throughout the authored sample-start
-        // modulation range. Cover that complete interval, not just offset zero.
-        // The runtime clamps this range to u32; arbitrary script offsets remain
-        // a separate cold-start case rather than an invented static bound.
-        let offset = if include_offsets && zone.routes.iter().any(|route| {
-            instrument.routes.get(route.0).is_some_and(|route| route.target == ir::Target::SampleStart)
-        }) { playback.start_range.min(u64::from(u32::MAX)) } else { 0 };
-        let frames = ((head as f64 * step).ceil() as u64)
-            .saturating_add(2 * guard).saturating_add(offset);
+        // `head` already covers the whole sample-start modulation range (`StartRange`).
+        let frames = (head as u64).saturating_add(2 * guard);
         let length = frame_count as u64;
         let end = playback.end.unwrap_or(length).min(length);
         let (from, to) = if playback.reverse {
@@ -924,92 +1212,38 @@ fn start_ranges_geometry(instrument:&ir::Instrument,geometry:&[(u32,usize)],rate
     ranges
 }
 
-struct AttackAnchors {
-    output_frames: usize,
-    ranges: Vec<Vec<Range<usize>>>,
-    hint_ranges: Option<Vec<Vec<Range<usize>>>>,
-}
-
-struct HintFallback<'a> {
+struct HintFallback {
     head_frames: usize,
     ranges: Vec<Vec<Range<usize>>>,
-    anchors: Option<&'a dyn Fn(usize) -> io::Result<AttackAnchors>>,
 }
 
-/// Control-side geometry only. Optional whole-sample promotion is omitted;
-/// required resident and wavetable sources retain their complete requirements.
-/// Every trial charges the maximum lossless payload (two f32 channels/frame).
-/// Packing and publication still pass the exact shared physical quota once.
-fn bounded_attack_anchors(
-    instrument: &ir::Instrument,
-    assets: &[Pcm],
-    rate: u32,
-    head: usize,
-    policy: &StreamPolicy,
-    pinned: &HashSet<AssetId>,
-    canceled: &(dyn Fn() -> bool + Sync),
-) -> io::Result<AttackAnchors> {
-    bounded_attack_anchors_with_hints(instrument, assets, rate, head, policy, pinned, None, canceled)
+/// Physical bytes the given per-asset ranges occupy: resident sources whole,
+/// streamed sources by the union of their ranges. `None` on overflow.
+pub(crate) fn physical_head_bytes(assets: &[Pcm], ranges: &[Vec<Range<usize>>]) -> Option<usize> {
+    let union = physical_start_ranges(assets, ranges);
+    let physical: HashMap<_, _> = assets.iter().enumerate().map(|(i, p)| (p.asset_id(), i)).collect();
+    physical.values().try_fold(0usize, |sum, &i| {
+        let pcm = &assets[i];
+        let frames = if pcm.requires_resident() && pcm.resident_frames().is_some() { Some(0) }
+            else if pcm.requires_resident() { Some(pcm.frame_count()) }
+            else { union[&pcm.asset_id()].iter().try_fold(0usize, |sum, r| sum.checked_add(r.len())) };
+        sum.checked_add(frames?.checked_mul(size_of::<Frame>())?)
+    })
 }
 
-fn bounded_attack_anchors_with_hints(
-    instrument: &ir::Instrument,
-    assets: &[Pcm],
-    rate: u32,
-    head: usize,
-    policy: &StreamPolicy,
-    pinned: &HashSet<AssetId>,
-    hints: Option<&InitialStartHints<'_>>,
-    canceled: &(dyn Fn() -> bool + Sync),
-) -> io::Result<AttackAnchors> {
-    let mut anchor_policy = *policy;
-    anchor_policy.resident_budget = None;
-    let pinned_ranges=(!pinned.is_empty()).then(||start_ranges(instrument,assets,rate,head,policy));
-    let physical: HashMap<_, _> = assets.iter().enumerate().map(|(i,p)| (p.asset_id(),i)).collect();
-    let trial = |head| -> io::Result<_> {
-        if canceled() { return Err(canceled_head()); }
-        let mut ranges = start_ranges_with_offsets(instrument,assets,rate,head,&anchor_policy,false);
-        if let Some(hints) = hints {
-            let hints = hints.ranges(head, canceled)?;
-            for (base, hints) in ranges.iter_mut().zip(hints) {
-                base.extend(hints);
-                merge_start_ranges(base);
-            }
-        }
-        if let Some(original)=&pinned_ranges {
-            for (i,pcm) in assets.iter().enumerate() {
-                if pinned.contains(&pcm.asset_id()) {ranges[i]=original[i].clone();}
-            }
-        }
-        let union = physical_start_ranges(assets, &ranges);
-        let bytes = physical.values().try_fold(0usize,|sum,&i| {
-            let pcm = &assets[i];
-            let frames = if pcm.requires_resident() && pcm.resident_frames().is_some() {Some(0)}
-                else if pcm.requires_resident() { Some(pcm.frame_count()) }
-                else { union[&pcm.asset_id()].iter().try_fold(0usize,|sum,r|sum.checked_add(r.len())) };
-            sum.checked_add(frames?.checked_mul(size_of::<Frame>())?)
-        });
-        Ok((ranges,bytes))
-    };
-    // Even a zero-output-frame horizon keeps both interpolation guards at each
-    // authored forward/reverse start. These optional anchors still require
-    // exact quota admission before falling back to mandatory residency only.
-    let (mut ranges, minimum) = trial(0)?;
-    let mut low = 0;
-    let mut high = head;
-    if minimum.is_some_and(|n|n<=policy.head_budget) {
-        while low < high {
-            if canceled() { return Err(canceled_head()); }
-            let middle = low + (high-low).div_ceil(2);
-            let (candidate,bytes) = trial(middle)?;
-            if bytes.is_some_and(|n|n<=policy.head_budget) {
-                low=middle; ranges=candidate;
-            } else { high=middle-1; }
-        }
-    }
-    if canceled() { return Err(canceled_head()); }
-    let hint_ranges = hints.map(|h| h.ranges(low, canceled)).transpose()?;
-    Ok(AttackAnchors{output_frames:low,ranges,hint_ranges})
+/// Packed source bytes the ranges hold, each physical sample once: resident samples
+/// whole, streamed ones by their merged ranges, at the header's frame size.
+pub(crate) fn packed_head_bytes(assets: &[Pcm], ranges: &[Vec<Range<usize>>], layouts: &[FrameLayout]) -> Option<usize> {
+    let union = physical_start_ranges(assets, ranges);
+    let mut seen = HashSet::new();
+    assets.iter().enumerate().filter(|(_, pcm)| seen.insert(pcm.asset_id())).try_fold(0usize, |sum, (i, pcm)| {
+        let frames = if pcm.requires_resident() {
+            pcm.frame_count()
+        } else {
+            union[&pcm.asset_id()].iter().try_fold(0usize, |sum, r| sum.checked_add(r.len()))?
+        };
+        sum.checked_add(frames.checked_mul(layouts[i].bytes_per_frame())?)
+    })
 }
 
 /// Opt-in control-side evidence only. The counterfactual removes static start
@@ -1031,7 +1265,8 @@ fn constant_start_window(
         return None;
     }
     let guard = sampler_core::read_radius(step) as u64 + 1;
-    let travel = (head as f64 * step).ceil() as u64;
+    // `head` is source frames (the preload law), so the window travels that far.
+    let travel = head as u64;
     let (from, to) = if playback.reverse {
         let edge = end - offset;
         (edge.saturating_sub(travel).saturating_sub(guard).max(start), edge.saturating_add(guard).min(end))
@@ -1069,7 +1304,8 @@ fn physical_start_ranges(assets: &[Pcm], ranges: &[Vec<Range<usize>>]) -> HashMa
 /// law to prove no transition; unknown starts retain their base coverage.
 struct ConstantStartHints {
     offsets: Box<[Option<u32>]>,
-    requested_head: usize,
+    /// Per-zone heads (source frames) that eligibility was proved at.
+    requested: Box<[usize]>,
     prefixes: HashMap<usize, sampler_core::ConstantStartPrefix>,
     loop_prefix: usize,
     constant: usize,
@@ -1082,13 +1318,15 @@ struct ConstantStartHints {
 }
 impl ConstantStartHints {
     fn new(instrument: &ir::Instrument, prepared: &sampler_core::Prepared, assets: &[Pcm],
-        rate: u32, head: usize, policy: &StreamPolicy,
+        rate: u32, heads: &[usize], policy: &StreamPolicy,
         canceled: &(dyn Fn() -> bool + Sync)) -> io::Result<Self> {
         let mut this = Self { offsets: vec![None; instrument.zones.len()].into_boxed_slice(),
-            requested_head: head, prefixes: HashMap::new(), loop_prefix: 0,
+            requested: heads.into(), prefixes: HashMap::new(), loop_prefix: 0,
             constant: 0, zero: 0, dependent: 0, loops: 0, wavetable: 0, silent: 0, eligible: 0 };
         for (region, zone) in instrument.zones.iter().enumerate() {
             if canceled() { return Err(canceled_head()); }
+            // A purged group's zone gets no start hint at load; its purge reload restores it.
+            if !zone_resident(instrument, zone) { continue; }
             if !zone.routes.iter().any(|r| instrument.routes.get(r.0).is_some_and(|r| r.target == ir::Target::SampleStart)) { continue; }
             let Some(offset) = prepared.constant_start_offset(region) else { this.dependent += 1; continue; };
             this.constant += 1;
@@ -1106,7 +1344,7 @@ impl ConstantStartHints {
                     f64::from(assets[asset].sample_rate()) / f64::from(rate), policy);
                 // Eligibility is fixed at the requested horizon. Shorter quota
                 // candidates cannot introduce a window outside that authority.
-                if prefix.window(head, step).is_none() { this.loops += 1; continue; }
+                if prefix.window(output_horizon(heads[region], step), step).is_none() { this.loops += 1; continue; }
                 this.prefixes.insert(region, prefix);
                 this.loop_prefix += 1;
             }
@@ -1115,9 +1353,9 @@ impl ConstantStartHints {
         }
         Ok(this)
     }
-    fn ranges(&self, instrument: &ir::Instrument, assets: &[Pcm], rate: u32, head: usize,
+    fn ranges(&self, instrument: &ir::Instrument, assets: &[Pcm], rate: u32, heads: &[usize],
         policy: &StreamPolicy, canceled: &(dyn Fn() -> bool + Sync)) -> io::Result<Vec<Vec<Range<usize>>>> {
-        if head > self.requested_head {
+        if heads.iter().zip(self.requested.iter()).any(|(head, requested)| head > requested) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "constant onset horizon exceeds requested authority"));
         }
         let mut hints = vec![Vec::new(); assets.len()];
@@ -1127,8 +1365,9 @@ impl ConstantStartHints {
             let asset = zone.asset.expect("a proved hint owns a source").0;
             let pcm = &assets[asset];
             let step = zone_step(zone, &instrument.groups, f64::from(pcm.sample_rate()) / f64::from(rate), policy);
+            let head = heads[region];
             let range = match self.prefixes.get(&region) {
-                Some(prefix) => prefix.window(head, step),
+                Some(prefix) => prefix.window(output_horizon(head, step), step),
                 None => constant_start_window(&zone.playback, pcm.frame_count(), *offset, step, head),
             };
             if let Some(range) = range {
@@ -1150,12 +1389,12 @@ fn constant_start_geometry(
     base: &[Vec<Range<usize>>],
     pinned: &HashSet<AssetId>,
     rate: u32,
-    head: usize,
+    heads: &[usize],
     policy: &StreamPolicy,
     canceled: &(dyn Fn() -> bool + Sync),
 ) -> io::Result<serde_json::Value> {
-    let recipe = ConstantStartHints::new(instrument, prepared, assets, rate, head, policy, canceled)?;
-    let hints = recipe.ranges(instrument, assets, rate, head, policy, canceled)?;
+    let recipe = ConstantStartHints::new(instrument, prepared, assets, rate, heads, policy, canceled)?;
+    let hints = recipe.ranges(instrument, assets, rate, heads, policy, canceled)?;
     let hints = physical_start_ranges(assets, &hints);
     let mut combined = physical_start_ranges(assets, base);
     let frame_count = |table: &HashMap<AssetId, Vec<Range<usize>>>| {
@@ -1193,6 +1432,9 @@ fn constant_start_geometry(
     }))
 }
 
+/// `KONTRA_AUDIT_LOAD` evidence for the preload law: total physical head bytes,
+/// the excess over the head budget (kept, never truncated), and the zones whose
+/// law heads contribute most. Observation only; it changes nothing.
 fn audit_start_ranges(
     instrument: &ir::Instrument,
     prepared: &sampler_core::Prepared,
@@ -1200,78 +1442,59 @@ fn audit_start_ranges(
     ranges: &[Vec<Range<usize>>],
     pinned: &HashSet<AssetId>,
     rate: u32,
-    head: usize,
+    heads: &[usize],
+    layouts: &[FrameLayout],
+    scripts: &[sampler_ksp::ScriptView],
     policy: &StreamPolicy,
     canceled: &(dyn Fn() -> bool + Sync),
 ) -> io::Result<()> {
     if std::env::var_os("KONTRA_AUDIT_LOAD").is_none() { return Ok(()); }
-    let base = start_ranges_with_offsets(instrument, assets, rate, head, policy, false);
-    let constant_hints = constant_start_geometry(instrument, prepared, assets, &base, pinned, rate, head, policy, canceled)?;
-    let frames = |list: &[Range<usize>]| list.iter().map(|r| r.len() as u64).sum::<u64>();
-    let mut full_assets = 0usize;
-    let mut full_bytes = 0u64;
-    let mut pinned_assets = 0usize;
-    let mut pinned_min = 0u64;
-    let mut optional_assets = 0usize;
-    let mut optional_frames = 0u64;
-    let mut base_frames = 0u64;
-    let mut rows = Vec::new();
-    // Match the startup table's current physical-asset collapse, and expose
-    // aliases separately rather than counting duplicate Pcm handles as RAM.
-    let last: HashMap<_, _> = assets.iter().enumerate().map(|(i,p)| (p.asset_id(),i)).collect();
-    for (i, pcm) in assets.iter().enumerate() {
-        if last[&pcm.asset_id()] != i { continue; }
-        let actual = frames(&ranges[i]);
-        let without_offset = frames(&base[i]);
-        if pcm.requires_resident() {
-            full_assets += 1;
-            full_bytes = full_bytes.saturating_add(pcm.frame_count() as u64 * size_of::<Frame>() as u64);
-        } else if pinned.contains(&pcm.asset_id()) {
-            pinned_assets += 1;
-            pinned_min = pinned_min.saturating_add(actual.saturating_mul(2));
-        } else if actual != 0 {
-            optional_assets += 1;
-            optional_frames = optional_frames.saturating_add(actual);
-            base_frames = base_frames.saturating_add(without_offset);
-        }
-        rows.push((actual.saturating_sub(without_offset), i, actual, without_offset,
-            ranges[i].len(), pcm.frame_count(), pcm.requires_resident(), pinned.contains(&pcm.asset_id())));
-    }
-    rows.sort_unstable_by(|a,b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    let top: Vec<_> = rows.into_iter().take(16).map(|(extra,index,actual,base,count,total,full,pin)|
-        serde_json::json!({"asset_index":index,"offset_extra_frames":extra,"range_frames":actual,
-            "offset_free_range_frames":base,"ranges":count,"source_frames":total,
-            "requires_full_residency":full,"pinned_wavetable":pin})).collect();
-    let mut offset_zones = 0usize;
-    let mut zero_depth_routes = 0usize;
-    let mut max_offset = 0u64;
+    let constant_hints = constant_start_geometry(instrument, prepared, assets, ranges, pinned, rate, heads, policy, canceled)?;
+    // `head_bytes` is packed source bytes, the same unit as `kontakt_window_bytes`; the budget charges decoded f32.
+    let head_bytes = packed_head_bytes(assets, ranges, layouts).unwrap_or(usize::MAX);
+    let decoded_head_bytes = physical_head_bytes(assets, ranges).unwrap_or(usize::MAX);
+    let excess_bytes = decoded_head_bytes.saturating_sub(policy.head_budget);
+    let windows = kontakt_window_bytes(instrument, layouts);
+    let mut zones: Vec<_> = instrument.zones.iter().enumerate().filter_map(|(zone, z)| {
+        let asset = z.asset?.0;
+        let bytes = heads[zone].saturating_mul(layouts[asset].bytes_per_frame());
+        Some((bytes, zone, asset, heads[zone], z.playback.start_range))
+    }).collect();
+    zones.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let top: Vec<_> = zones.iter().take(16).map(|&(bytes, zone, asset, head, start_range)|
+        serde_json::json!({"zone":zone,"asset_index":asset,"head_source_frames":head,"head_bytes":bytes,
+            "sample_start_range_frames":start_range,"source_frames":assets[asset].frame_count()})).collect();
+    let max_head = heads.iter().copied().max().unwrap_or(0);
     let mut reverse_zones = 0usize;
     let mut bounded_end_zones = 0usize;
+    let mut sample_start_zones = 0usize;
+    let mut max_offset = 0u64;
+    let mut ignored_script_offset_zones = 0usize;
+    let script_max_micros = scripts.iter().map(|s| s.start_offsets.max_micros).max().unwrap_or(0);
     for zone in &instrument.zones {
         reverse_zones += usize::from(zone.playback.reverse);
         bounded_end_zones += usize::from(zone.playback.end.is_some());
-        let routes: Vec<_> = zone.routes.iter().filter_map(|r| instrument.routes.get(r.0))
-            .filter(|r| r.target == ir::Target::SampleStart).collect();
-        if !routes.is_empty() {
-            offset_zones += 1;
-            max_offset = max_offset.max(zone.playback.start_range.min(u64::from(u32::MAX)));
-            zero_depth_routes += routes.iter().filter(|r| matches!(r.depth, ir::Depth::Normalized(v) if v == 0.)).count();
+        if zone.routes.iter().any(|r| instrument.routes.get(r.0).is_some_and(|r| r.target == ir::Target::SampleStart)) {
+            sample_start_zones += 1;
+            max_offset = max_offset.max(zone.playback.start_range);
+        }
+        if let Some(asset) = zone.asset {
+            // A script offset past the S.Mod range is ignored at the voice start (KSP play_note, DFD mode).
+            let script_frames = u64::from(script_max_micros) * u64::from(assets[asset.0].sample_rate()) / 1_000_000;
+            ignored_script_offset_zones += usize::from(script_frames > zone.playback.start_range);
         }
     }
-    eprintln!("stream_preload_geometry {}", serde_json::json!({
-        "schema":"kontra-preload-geometry-v1","sample_rate":rate,"head_output_frames":head,
-        "max_step":policy.max_step,"block_frames":policy.block_frames,"head_budget_bytes":policy.head_budget,
-        "logical_assets":assets.len(),"physical_assets":last.len(),"alias_entries":assets.len()-last.len(),
-        "zones":instrument.zones.len(),"reverse_zones":reverse_zones,"bounded_end_zones":bounded_end_zones,
-        "sample_start_route_zones":offset_zones,"sample_start_zero_depth_routes":zero_depth_routes,
-        "max_sample_start_offset_frames":max_offset,"mandatory_full_assets":full_assets,
-        "mandatory_full_pcm_bytes":full_bytes,"mandatory_wavetable_assets":pinned_assets,
-        "mandatory_wavetable_min_packed_bytes":pinned_min,"optional_start_assets":optional_assets,
-        "optional_start_frames":optional_frames,"optional_start_min_packed_bytes":optional_frames.saturating_mul(2),
-        "offset_free_optional_start_frames":base_frames,"offset_free_optional_start_min_packed_bytes":base_frames.saturating_mul(2),
-        "offset_union_extra_frames":optional_frames.saturating_sub(base_frames),"top_offset_assets":top,
+    eprintln!("stream_preload_law {}", serde_json::json!({
+        "schema":"kontra-preload-law-v2","sample_rate":rate,"block_frames":policy.block_frames,
+        "law":"kontakt dfd_window: preload per channel + 2 x S.Mod, 6 KiB granularity","zones":instrument.zones.len(),"max_head_source_frames":max_head,
+        "reverse_zones":reverse_zones,"bounded_end_zones":bounded_end_zones,
+        "sample_start_route_zones":sample_start_zones,"max_sample_start_offset_frames":max_offset,
+        "script_offset_ignored_zones":ignored_script_offset_zones,
+        "head_bytes":head_bytes,"decoded_head_bytes":decoded_head_bytes,"kontakt_window_bytes":windows,
+        "head_budget_bytes":policy.head_budget,
+        "over_budget_excess_bytes":excess_bytes,"top_zones":top,
         "constant_onset_hints":constant_hints,
-        "scope":"request geometry before decode/admission; offset-free and constant hints are attribution only; no payload or source names"
+        "scope":"law heads kept whole even over budget; excess reported; constant hints are attribution only; no payload or source names"
     }));
     Ok(())
 }
@@ -1308,7 +1531,8 @@ pub(crate) struct Opened {
     pub assets: Vec<Pcm>,
     pub sources: HashMap<AssetId, Arc<dyn AssetSource>>,
     pub report: StreamReport,
-    pub head: usize,
+    /// Bytes per source frame of each logical asset (the preload law's input).
+    pub layouts: Vec<FrameLayout>,
     pub rate: u32,
     pub policy: StreamPolicy,
 }
@@ -1379,6 +1603,16 @@ fn head_cost(pcm: &Pcm, ranges: &[Range<usize>]) -> io::Result<usize> {
         pcm.frame_count().checked_mul(size_of::<Frame>()).ok_or_else(|| io::Error::other("resident source size overflow"))
     } else {
         Ok(range_bounds(pcm, ranges)?.1)
+    }
+}
+
+/// The head budget after cold fallback raises it to the law heads, clamped to
+/// `physical_limit`. Strict loads keep the configured budget.
+fn raised_head_budget(policy: &StreamPolicy, head_bytes: usize) -> usize {
+    if policy.allow_cold_fallback {
+        policy.head_budget.max(head_bytes).min(policy.physical_limit)
+    } else {
+        policy.head_budget
     }
 }
 
@@ -1681,8 +1915,6 @@ pub struct Streamer {
     /// Authored onsets without the complete possible start-offset interval.
     /// The full table above remains authoritative for requested coverage reporting.
     onset_ranges: Option<Arc<HashMap<AssetId, Vec<Range<usize>>>>>,
-    anchor_ranges: Option<Arc<HashMap<AssetId, Vec<Range<usize>>>>>,
-    selected_anchor_head_frames: Option<usize>,
     hint_ranges: Option<Arc<StartTable>>,
     selected_hint_ranges: Option<Arc<StartTable>>,
     selected_hint_head_frames: Option<usize>,
@@ -1701,7 +1933,6 @@ impl Streamer {
     /// Decode workspaces and page pools are reported separately.
     pub fn head_budget_status(&self)->HeadBudgetStatus {self.residency_budget.status()}
     pub fn head_fallback(&self)->Option<HeadBudgetExceeded> {self.head_fallback}
-    pub fn selected_anchor_head_frames(&self)->Option<usize> {self.selected_anchor_head_frames}
     pub fn selected_hint_head_frames(&self) -> Option<usize> { self.selected_hint_head_frames }
     /// Physical coverage of startup-predicted Constant/initialized-CC windows
     /// at the original horizon. This is not current engine-state readiness:
@@ -1727,11 +1958,6 @@ impl Streamer {
     /// from covering every possible sample-start modulation offset.
     pub fn onset_readiness(&self, assets: &[Pcm]) -> HeadReadiness {
         self.ranges_readiness_matching(assets, |_| true, self.onset_ranges.as_deref().unwrap_or(&self.ranges))
-    }
-    /// Shorter anchors selected only after the complete requested onset table
-    /// exceeded its quota. This does not certify that original onset horizon.
-    pub fn anchor_readiness(&self, assets: &[Pcm]) -> Option<HeadReadiness> {
-        Some(self.ranges_readiness_matching(assets, |_|true, self.anchor_ranges.as_deref()?))
     }
     /// Coverage of every authored range belonging to the selected asset IDs.
     /// This does not infer script/group/round-robin reachability.
@@ -1806,6 +2032,7 @@ impl Streamer {
         if sources.len()!=requirements.len() {return Err(LoadError::Invalid{path:"logical sources".into(),reason:"source requirement count mismatch".into()});}
         let mut wide=false;
         let mut frames=Vec::with_capacity(sources.len());
+        let mut layouts=Vec::with_capacity(sources.len());
         for (i,(source,path)) in sources.iter().enumerate() {
             if canceled(){return Err(LoadError::Canceled);}
             let reader=source.open_channels(READER_CACHE_BYTES/policy.decoders.clamp(1,8)/2).map_err(|e|LoadError::io(path,e))?;
@@ -1816,12 +2043,17 @@ impl Streamer {
                 (None,None) if requirements[i]==ir::AssetResidency::Resident=>source.open().ok().map(|r|r.frames()),
                 (None,None)=>None,
             });
+            // Mono and stereo sources have no channel reader, so their width comes from the header.
+            // ponytail: Encoded, Custom and unparsed headers keep 4 bytes/frame (16-bit stereo).
+            layouts.push(reader.as_ref().and_then(SampleReader::layout)
+                .or_else(|| source.header_layout())
+                .unwrap_or(FALLBACK_LAYOUT));
             if let Some(reader)=reader {
                 wide |= reader.original_channels().is_some_and(|n|n>2);
             }
         }
         let requirements=&admit_resident_within_budget(requirements,&frames,policy)[..];
-        if !wide {return Self::open_required_stereo(sources,requirements,rate,policy,probe,canceled,progress);}
+        if !wide {return Self::open_required_stereo(sources,requirements,layouts,rate,policy,probe,canceled,progress);}
         if policy.resident_budget.is_some() {return Err(LoadError::Invalid{path:"logical stream".into(),reason:"whole-source promotion requires resident logical producer".into()});}
         let mut logical=Vec::new();let mut assets=Vec::new();let mut registry=HashMap::new();let mut latency=Vec::new();let mut full=0u64;let mut max_packs=1usize;
         for (index,(source,path)) in sources.into_iter().enumerate() {
@@ -1845,14 +2077,13 @@ impl Streamer {
             logical.push(storage);progress(index+1,requirements.len());
         }
         latency.sort_unstable();let at=|q:usize|latency.get((latency.len()*q/100).min(latency.len().saturating_sub(1))).copied().unwrap_or_default();
-        let head=head_frames(at(95),rate,policy);
-        let report=StreamReport{latency_p50:at(50),latency_p95:at(95),latency_p99:at(99),latency_samples:latency.len(),head_frames:head,head_budget:policy.head_budget,
-            full_bytes:full,pool_pages:policy.voices.checked_mul(PAGES_PER_VOICE).and_then(|n|n.checked_mul(max_packs)).ok_or_else(||LoadError::Invalid{path:"logical page pool".into(),reason:"physical pool overflow".into()})?,..Default::default()};
-        Ok(Opened{logical_sources:Some(logical),assets,sources:registry,report,head,rate,policy:*policy})
+        let report=StreamReport{latency_p50:at(50),latency_p95:at(95),latency_p99:at(99),latency_samples:latency.len(),head_budget:policy.head_budget,
+            full_bytes:full,pool_pages:policy.voices.checked_mul(max_packs).ok_or_else(||LoadError::Invalid{path:"logical page pool".into(),reason:"physical pool overflow".into()})?,..Default::default()};
+        Ok(Opened{logical_sources:Some(logical),assets,sources:registry,report,layouts,rate,policy:*policy})
     }
     fn open_required_stereo(
         sources:Vec<(Arc<dyn AssetSource>,&std::path::Path)>,
-        requirements:&[ir::AssetResidency],rate:u32,policy:&StreamPolicy,probe:usize,
+        requirements:&[ir::AssetResidency],layouts:Vec<FrameLayout>,rate:u32,policy:&StreamPolicy,probe:usize,
         canceled:&(dyn Fn()->bool+Sync),progress:&mut dyn FnMut(usize,usize),
     )->Result<Opened,LoadError> {
         if requirements.len()!=sources.len() {return Err(LoadError::Invalid {path:"sample residency".into(),reason:"source requirement count mismatch".into()});}
@@ -1955,14 +2186,15 @@ impl Streamer {
         };
         // p95: a rarer slower read starves a voice briefly (it waits and
         // resumes) rather than failing; heads sized for the tail cost far more.
-        let head = head_frames(at(95), rate, policy);
         let report = StreamReport {
+            runway_frames: 0,
             latency_p50: at(50),
             latency_p95: at(95),
             latency_p99: at(99),
             latency_samples: latencies.len(),
-            head_frames: head,
+            head_frames: 0,
             head_bytes: 0,
+            kontakt_window_bytes: 0,
             head_assets: 0,
             head_ranges: 0,
             head_source_frames: 0,
@@ -1971,7 +2203,7 @@ impl Streamer {
             required_resident_assets: 0,
             required_resident_bytes: 0,
             full_bytes: full,
-            pool_pages: policy.voices * PAGES_PER_VOICE,
+            pool_pages: policy.voices,
             pool_bytes: 0,
         };
         Ok(Opened {
@@ -1979,7 +2211,7 @@ impl Streamer {
             assets,
             sources: registry,
             report,
-            head,
+            layouts,
             rate,
             policy: *policy,
         })
@@ -2040,7 +2272,7 @@ impl Streamer {
         allow_cold_fallback: bool,
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> io::Result<(Self, usize)> {
-        Self::start_with_fallbacks_cancelable(sources,assets,ranges,onsets,None,worker,decoders,
+        Self::start_with_fallbacks_cancelable(sources,assets,ranges,onsets,worker,decoders,
             lazy,head_budget,pinned_wavetables,allow_cold_fallback,canceled)
     }
     fn start_with_fallbacks_cancelable(
@@ -2048,7 +2280,6 @@ impl Streamer {
         assets: &[Pcm],
         ranges: Vec<Vec<Range<usize>>>,
         onsets: Option<Vec<Vec<Range<usize>>>>,
-        anchors: Option<&dyn Fn(usize)->io::Result<AttackAnchors>>,
         worker: StreamWorker,
         decoders: usize,
         lazy: bool,
@@ -2057,7 +2288,7 @@ impl Streamer {
         allow_cold_fallback: bool,
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> io::Result<(Self, usize)> {
-        Self::start_with_hint_fallbacks_cancelable(sources, assets, ranges, onsets, None, anchors,
+        Self::start_with_hint_fallbacks_cancelable(sources, assets, ranges, onsets, None,
             worker, decoders, lazy, head_budget, pinned_wavetables, allow_cold_fallback, canceled)
     }
     fn start_with_hint_fallbacks_cancelable(
@@ -2065,8 +2296,28 @@ impl Streamer {
         assets: &[Pcm],
         ranges: Vec<Vec<Range<usize>>>,
         onsets: Option<Vec<Vec<Range<usize>>>>,
-        hints: Option<HintFallback<'_>>,
-        anchors: Option<&dyn Fn(usize)->io::Result<AttackAnchors>>,
+        hints: Option<HintFallback>,
+        worker: StreamWorker,
+        decoders: usize,
+        lazy: bool,
+        head_budget: usize,
+        pinned_wavetables: HashSet<AssetId>,
+        allow_cold_fallback: bool,
+        canceled: &(dyn Fn() -> bool + Sync),
+    ) -> io::Result<(Self, usize)> {
+        Self::start_with_reload_cancelable(sources, assets, ranges, None, onsets, hints, worker,
+            decoders, lazy, head_budget, pinned_wavetables, allow_cold_fallback, canceled)
+    }
+    /// `reload` is the purge-reload table when some zones sit in purged groups:
+    /// per asset, every zone's start ranges (`reload_start_ranges`). Assets whose
+    /// load table is shorter restore from it, so a purge reload loads the law head.
+    fn start_with_reload_cancelable(
+        sources: HashMap<AssetId, Arc<dyn AssetSource>>,
+        assets: &[Pcm],
+        ranges: Vec<Vec<Range<usize>>>,
+        purge_reload: Option<Vec<Vec<Range<usize>>>>,
+        onsets: Option<Vec<Vec<Range<usize>>>>,
+        hints: Option<HintFallback>,
         worker: StreamWorker,
         decoders: usize,
         lazy: bool,
@@ -2078,10 +2329,11 @@ impl Streamer {
         let span = crate::audit::Span::new("sample_preload");
         let decoders = decoders.clamp(1, 8);
         let table = checked_start_table(assets, ranges, None)?;
+        let reload_table = purge_reload.map(|ranges| checked_start_table(assets, ranges, None)).transpose()?;
         let onset_table = onsets.map(|ranges| checked_start_table(assets, ranges, Some(&table))).transpose()?;
-        let (hint_table, requested_hint_head_frames, hint_anchors) = match hints {
-            Some(hints) => (Some(checked_start_table(assets, hints.ranges, Some(&table))?), Some(hints.head_frames), hints.anchors),
-            None => (None, None, None),
+        let (hint_table, requested_hint_head_frames) = match hints {
+            Some(hints) => (Some(checked_start_table(assets, hints.ranges, Some(&table))?), Some(hints.head_frames)),
+            None => (None, None),
         };
         let hinted_table = hint_table.as_ref().filter(|h| h.values().any(|r| !r.is_empty())).map(|hints| {
             let mut union = onset_table.as_ref().unwrap_or(&table).clone();
@@ -2181,12 +2433,16 @@ impl Streamer {
             for pcm in assets.iter().filter(|p| p.requires_resident() || pinned_wavetables.contains(&p.asset_id())) {
                 restore.insert(pcm.asset_id(), RestoreRange::Admitted(table[&pcm.asset_id()].clone()));
             }
+            // Purged-group zones are not in `table`; their purge reload restores the law head.
+            for (id, full) in reload_table.iter().flat_map(|table| table.iter()) {
+                if table[id] != *full {
+                    restore.insert(*id, RestoreRange::DeferredRequested(full.clone()));
+                }
+            }
             let restore = Arc::new(restore);
             Ok((staged,bytes,selected.into_iter().map(|(pcm,_)|pcm).collect(),restore))
         };
         let mut head_fallback = None;
-        let mut anchor_table = None;
-        let mut selected_anchor_head_frames = None;
         let mut selected_hint_table = None;
         let mut selected_hint_head_frames = if !lazy && hinted_table.is_some() { requested_hint_head_frames } else { None };
         let mut selected_requested_hints = selected_hint_head_frames.is_some();
@@ -2198,44 +2454,6 @@ impl Streamer {
                 selected_requested_hints = false;
                 selected_hint_head_frames = None;
                 let mut accepted = None;
-                // Every start first gets its minimal guaranteed head (anchors: the interpolation
-                // guards of each start, grown with the budget left over). Onset windows only
-                // spend budget afterwards, since they can leave starts without any head.
-                if accepted.is_none() {
-                    for (factory, hinted, phase) in [(hint_anchors.filter(|_|hinted_table.is_some()), true, "initial_state_anchors"),
-                        (anchors, false, "base_anchors")] {
-                        let Some(factory) = factory else { continue; };
-                        let room = head_budget.saturating_sub(residency_budget.status().held_bytes);
-                        let candidate = factory(room)?;
-                        let enclosing = if hinted { hinted_table.as_ref().unwrap() } else { &table };
-                        let ranges = checked_start_table(assets, candidate.ranges, Some(enclosing))?;
-                        let hint_ranges = candidate.hint_ranges.map(|h| checked_start_table(assets,h,hint_table.as_ref())).transpose()?;
-                        if hinted && hint_ranges.is_none() {
-                            return Err(io::Error::new(io::ErrorKind::InvalidInput,"hinted anchors omitted their selected hint ranges"));
-                        }
-                        if let Some(hints) = &hint_ranges {
-                            for (id,hints) in hints {
-                                if hints.iter().any(|r|!ranges[id].iter().any(|full| full.start<=r.start && full.end>=r.end)) {
-                                    return Err(io::Error::new(io::ErrorKind::InvalidInput,"selected hint outside admitted anchor coverage"));
-                                }
-                            }
-                        }
-                        match prepare(Some(&ranges), false, phase, false) {
-                            Ok(staged) => {
-                                selected_anchor_head_frames = Some(candidate.output_frames);
-                                selected_hint_head_frames = hinted.then_some(candidate.output_frames);
-                                anchor_table = Some(ranges);
-                                selected_hint_table = hint_ranges;
-                                accepted = Some(staged);
-                                break;
-                            }
-                            Err(error) if error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()) => {}
-                            Err(error) => return Err(error),
-                        }
-                    }
-                    // Optional anchors may stay cold; the mandatory-only attempt
-                    // below still admits full sources and pinned wavetable ranges.
-                }
                 for (candidate, hinted, phase) in [(hinted_table.as_ref(), true, "initial_state_onsets"),
                     (onset_table.as_ref(), false, "base_onsets")] {
                     if accepted.is_some() { break; }
@@ -2349,8 +2567,6 @@ impl Streamer {
             ranges: Arc::new(table),
             restore_ranges,
             onset_ranges: onset_table.map(Arc::new),
-            anchor_ranges: anchor_table.map(Arc::new),
-            selected_anchor_head_frames,
             hint_ranges,
             selected_hint_ranges,
             selected_hint_head_frames,
@@ -3000,18 +3216,32 @@ impl Streamed {
         if canceled(){return Err(LoadError::Canceled);}
         let invalid=|e:io::Error|if canceled(){LoadError::Canceled}else{LoadError::Invalid{path:"logical stream".into(),reason:e.to_string()}};
         let geometry=kept.iter().map(|s|(s.as_source().sample_rate(),s.as_source().frame_count())).collect::<Vec<_>>();
-        let logical_ranges=start_ranges_geometry(&loaded.instrument,&geometry,opened.rate,opened.head,&opened.policy,true);
-        let mut physical=Vec::new();let mut ranges=Vec::new();
-        for (source,logical_ranges) in kept.iter().zip(logical_ranges) {source.as_source().physical_dependencies(|pack|{physical.push(pack.clone());ranges.push(logical_ranges.clone());});}
+        let frames=geometry.iter().map(|g|g.1).collect::<Vec<_>>();
+        let heads=preload_heads(&loaded.instrument,&frames,&opened.layouts);
+        opened.report.head_frames=heads.iter().copied().max().unwrap_or(0);
+        opened.report.runway_frames=runway_frames(&loaded.instrument,&geometry,opened.rate,&heads,&opened.policy);
+        opened.report.kontakt_window_bytes=kontakt_window_bytes(&loaded.instrument,&opened.layouts);
+        let logical_ranges=start_ranges_geometry(&loaded.instrument,&geometry,opened.rate,&heads,&opened.policy,|zone|zone_resident(&loaded.instrument,zone));
+        // Purged groups are only in the purge-reload table, and only when some group is purged.
+        let logical_reload=loaded.instrument.groups.iter().any(|g|g.purged).then(|| {
+            let reload=reload_heads(&loaded.instrument,&frames,&opened.layouts);
+            start_ranges_geometry(&loaded.instrument,&geometry,opened.rate,&reload,&opened.policy,|_|true)
+        });
+        let mut physical=Vec::new();let mut ranges=Vec::new();let mut reloads=Vec::new();
+        for (index,(source,logical_ranges)) in kept.iter().zip(logical_ranges).enumerate() {source.as_source().physical_dependencies(|pack|{
+            physical.push(pack.clone());ranges.push(logical_ranges.clone());
+            if let Some(reload)=&logical_reload {reloads.push(reload[index].clone());}
+        });}
         let used=physical.iter().map(Pcm::asset_id).collect::<HashSet<_>>();opened.sources.retain(|id,_|used.contains(id));
         let mut pinned=HashSet::new();
         for zone in &loaded.instrument.zones {if zone.group.is_some_and(|g|loaded.instrument.groups[g.0].wavetable.is_some()) {
             if let Some(storage)=zone.asset.and_then(|a|kept.get(a.0)) {storage.as_source().physical_dependencies(|p|{pinned.insert(p.asset_id());});}
         }}
         let mut report=opened.report;
+        report.pool_pages=report.pool_pages.checked_mul(voice_pages(&loaded.instrument,&geometry,opened.rate,report.runway_frames,&opened.policy)).ok_or_else(||invalid(io::Error::other("physical pool overflow")))?;
         let (mut cache,worker)=StreamCache::new(report.pool_pages.max(1)).map_err(|e|invalid(io::Error::other(e)))?;
         report.pool_bytes=cache.bytes();report.head_assets=ranges.iter().filter(|r|!r.is_empty()).count();report.head_ranges=ranges.iter().map(Vec::len).sum();report.head_source_frames=ranges.iter().flatten().map(|r|r.len() as u64).sum();
-        let (streamer,_)=Streamer::start_with_onsets_cancelable(opened.sources,&physical,ranges,None,worker,opened.policy.decoders,opened.policy.lazy,opened.policy.head_budget,pinned,opened.policy.allow_cold_fallback,canceled).map_err(invalid)?;
+        let (streamer,_)=Streamer::start_with_reload_cancelable(opened.sources,&physical,ranges,logical_reload.is_some().then_some(reloads),None,None,worker,opened.policy.decoders,opened.policy.lazy,opened.policy.head_budget,pinned,opened.policy.allow_cold_fallback,canceled).map_err(invalid)?;
         report.head_bytes=physical.iter().map(Pcm::head_bytes).sum();report.head_fallback=streamer.head_fallback();
         report.required_resident_assets=physical.iter().filter(|p|p.requires_resident()).count();report.required_resident_bytes=physical.iter().filter_map(|p|p.resident_frames().map(|f|f.len()*size_of::<Frame>())).sum();
         cache.set_wake(streamer.threads.iter().map(|t|t.thread().clone()).collect());cache.set_reloader(streamer.reloader.as_ref().map(|t|t.thread().clone()));
@@ -3030,7 +3260,7 @@ impl Streamed {
             assets,
             sources,
             mut report,
-            head,
+            layouts,
             rate,
             policy,
         } = opened;
@@ -3038,12 +3268,35 @@ impl Streamed {
             path: "stream cache".into(),
             reason,
         };
+        let rates: Vec<u32> = kept.iter().map(Pcm::sample_rate).collect();
+        let frames: Vec<usize> = kept.iter().map(Pcm::frame_count).collect();
+        let starts = zone_start_ranges(&loaded.instrument, &rates, &loaded.scripts);
+        let heads = preload_heads(&loaded.instrument, &frames, &layouts);
+        report.head_frames = heads.iter().copied().max().unwrap_or(0);
+        let geometry: Vec<(u32, usize)> = kept.iter().map(|p| (p.sample_rate(), p.frame_count())).collect();
+        report.runway_frames = runway_frames(&loaded.instrument, &geometry, rate, &heads, &policy);
+        // The pool holds the voices × packs that `open` counted, each at the
+        // pages its largest reach needs (heads are known only now).
         let pool_span = crate::audit::Span::new("stream_page_pool");
+        report.pool_pages = report.pool_pages
+            .checked_mul(voice_pages(&loaded.instrument, &geometry, rate, report.runway_frames, &policy))
+            .ok_or_else(|| invalid("physical pool overflow".into()))?;
         let (mut cache, worker) =
             StreamCache::new(report.pool_pages.max(1)).map_err(|e| invalid(e.to_string()))?;
         report.pool_bytes = cache.bytes();
         drop(pool_span);
-        let ranges = start_ranges(&loaded.instrument, &kept, rate, head, &policy);
+        report.kontakt_window_bytes = kontakt_window_bytes(&loaded.instrument, &layouts);
+        let ranges = start_ranges(&loaded.instrument, &kept, rate, &heads, &policy);
+        // Purged groups' law heads are restored only by a purge reload (see `reload`).
+        let reload = loaded.instrument.groups.iter().any(|g| g.purged).then(|| {
+            let reload = reload_heads(&loaded.instrument, &frames, &layouts);
+            reload_start_ranges(&loaded.instrument, &kept, rate, &reload, &policy)
+        });
+        // Over budget the law heads are kept whole: the budget is raised to them,
+        // and the excess is reported (KONTRA_AUDIT_LOAD) rather than truncated.
+        let head_bytes = physical_head_bytes(&kept, &ranges).unwrap_or(usize::MAX);
+        // Strict loads (no cold fallback) keep the configured budget and fail over it.
+        let head_budget = raised_head_budget(&policy, head_bytes);
         report.head_assets = ranges.iter().filter(|r| !r.is_empty()).count();
         report.head_ranges = ranges.iter().map(Vec::len).sum();
         report.head_source_frames = ranges.iter().flatten().map(|r| r.len() as u64).sum();
@@ -3057,48 +3310,33 @@ impl Streamed {
             })
             .filter_map(|zone| zone.asset.map(|a| kept[a.0].asset_id()))
             .collect();
-        audit_start_ranges(&loaded.instrument, &loaded.plan, &kept, &ranges, &pinned_wavetables, rate, head, &policy, canceled)
+        audit_start_ranges(&loaded.instrument, &loaded.plan, &kept, &ranges, &pinned_wavetables, rate, &heads, &layouts, &loaded.scripts, &policy, canceled)
             .map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
-        let onsets = policy.allow_cold_fallback.then(||
-            start_ranges_with_offsets(&loaded.instrument, &kept, rate, head, &policy, false));
-        let anchor_pins=pinned_wavetables.clone();
-        let anchors = |room| {
-            let anchor_policy=StreamPolicy{head_budget:room,..policy};
-            bounded_attack_anchors(&loaded.instrument,&kept,rate,head,&anchor_policy,&anchor_pins,canceled)
-        };
-        let hint_recipe = policy.allow_cold_fallback.then(|| InitialStartHints::new(&loaded.instrument, &loaded.plan, &kept, rate, head, &policy, canceled).map(|hints| hints.with_script_offsets(&loaded.scripts)))
-            .transpose().map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
-        if let Some(recipe) = &hint_recipe {
-            if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
-                eprintln!("stream_initial_start_hints {}", serde_json::json!({
-                    "controller_window_zones":recipe.controller_zones(),
-                    "unsupported_start_zones":recipe.unsupported,
-                    "unbounded_script_offsets":recipe.unbounded_scripts,
-                    "controller_loop_zones_omitted":recipe.controller_loops,
-                    "scope":"one-shot bound initial-state prediction; future input uses strict demand"
-                }));
-            }
+        let hint_recipe = InitialStartHints::new(&loaded.instrument, &loaded.plan, &kept, rate, &heads, &starts, &policy, canceled)
+            .map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+            eprintln!("stream_initial_start_hints {}", serde_json::json!({
+                "controller_window_zones":hint_recipe.controller_zones(),
+                "unsupported_start_zones":hint_recipe.unsupported,
+                "unbounded_script_offsets":loaded.scripts.iter().filter(|s| s.unbounded_line.is_some()).count(),
+                "controller_loop_zones_omitted":hint_recipe.controller_loops,
+                "scope":"one-shot bound initial-state prediction; future input uses strict demand"
+            }));
         }
-        let hinted_anchors = |room| {
-            let anchor_policy=StreamPolicy{head_budget:room,..policy};
-            bounded_attack_anchors_with_hints(&loaded.instrument,&kept,rate,head,&anchor_policy,&anchor_pins,hint_recipe.as_ref(),canceled)
-        };
-        let hints = hint_recipe.as_ref().filter(|h| h.eligible != 0).map(|h| {
-            h.ranges(head,canceled).map(|ranges| HintFallback {
-                head_frames:head,ranges,anchors:Some(&hinted_anchors),
-            })
-        }).transpose().map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
-        let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
+        let hints = (hint_recipe.eligible != 0).then(|| hint_recipe.ranges(canceled).map(|ranges| HintFallback {
+            head_frames: report.head_frames, ranges,
+        })).transpose().map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
+        let (streamer, bytes) = Streamer::start_with_reload_cancelable(
             sources,
             &kept,
             ranges,
-            onsets,
+            reload,
+            None,
             hints,
-            policy.allow_cold_fallback.then_some(&anchors as &dyn Fn(usize)->io::Result<AttackAnchors>),
             worker,
             policy.decoders,
             policy.lazy,
-            policy.head_budget,
+            head_budget,
             pinned_wavetables,
             policy.allow_cold_fallback,
             canceled,
@@ -3146,6 +3384,44 @@ mod tests {
         let clipped = intersect_ranges(&[0..100, 150..200], &[50..120, 160..170]);
         assert_eq!(clipped, vec![50..100, 160..170]);
         assert!(intersect_ranges(&[0..10], &[]).is_empty());
+    }
+
+    #[test]
+    fn cold_fallback_head_budget_is_clamped_to_physical_limit() {
+        let mut policy = StreamPolicy { head_budget: 1 << 10, ..Default::default() };
+        // Uncapped: the raise reaches the law heads, as before.
+        assert_eq!(raised_head_budget(&policy, 1 << 20), 1 << 20);
+        // Capped: a head above the limit gets the limit, so it takes the fallback tiers.
+        policy.physical_limit = 1 << 19;
+        assert_eq!(raised_head_budget(&policy, 1 << 20), 1 << 19);
+        // Strict loads never raise.
+        policy.allow_cold_fallback = false;
+        assert_eq!(raised_head_budget(&policy, 1 << 20), 1 << 10);
+    }
+
+    /// A mono 24-bit 48 kHz AIFF with four frames. FORM headers must parse as AIFF,
+    /// not fall through to the 16-bit stereo fallback.
+    #[test]
+    fn aiff_header_layout_is_mono_24_bit() {
+        let frames = 4u32;
+        let mut blob = Vec::new();
+        blob.extend_from_slice(b"FORM");
+        blob.extend_from_slice(&(4 + 8 + 18 + 8 + 8 + frames * 3).to_be_bytes());
+        blob.extend_from_slice(b"AIFF");
+        blob.extend_from_slice(b"COMM");
+        blob.extend_from_slice(&18u32.to_be_bytes());
+        blob.extend_from_slice(&1u16.to_be_bytes()); // channels
+        blob.extend_from_slice(&frames.to_be_bytes());
+        blob.extend_from_slice(&24u16.to_be_bytes()); // sample size
+        // 48000 Hz as an 80-bit IEEE extended float.
+        blob.extend_from_slice(&[0x40, 0x0E, 0xBB, 0x80, 0, 0, 0, 0, 0, 0]);
+        blob.extend_from_slice(b"SSND");
+        blob.extend_from_slice(&(8 + frames * 3).to_be_bytes());
+        blob.extend_from_slice(&0u32.to_be_bytes()); // offset
+        blob.extend_from_slice(&0u32.to_be_bytes()); // block size
+        blob.extend_from_slice(&vec![0u8; (frames * 3) as usize]);
+        let layout = layout_from_head(&blob).expect("AIFF header parses");
+        assert_eq!(layout, FrameLayout { channels: 1, bits: 24 });
     }
 
     #[test]
@@ -3523,6 +3799,27 @@ mod tests {
     }
 
     #[test]
+    fn purged_group_head_is_restored_by_its_purge_reload_not_at_load() {
+        // Asset 0 is used only by a purged group: no load range, a law range for reload.
+        // Asset 1 is resident and loads its head at start.
+        let assets = vec![Pcm::streamed(48000, 8192).unwrap(), Pcm::streamed(48000, 8192).unwrap()];
+        let sources = assets.iter()
+            .map(|p| (p.asset_id(), Arc::new(HeadFixture { opens: Arc::new(AtomicU64::new(0)), cancel: None, frames: 8192, wide: false }) as Arc<dyn AssetSource>))
+            .collect();
+        let (_, worker) = StreamCache::new(1).unwrap();
+        let (streamer, _) = Streamer::start_with_reload_cancelable(
+            sources, &assets, vec![vec![], vec![0..32]], Some(vec![vec![0..64], vec![0..32]]), None, None,
+            worker, 2, false, 1 << 20, HashSet::new(), false, &|| false,
+        ).unwrap();
+        assert_eq!(assets[0].head_bytes(), 0, "a purged group gets no head at load");
+        assert!(assets[1].resident_covers(0..32));
+        // The purge reload restores the purged group's law head from the reload table.
+        assets[0].mark_cold();
+        assert_eq!(streamer.reload(&assets).unwrap(), 1);
+        assert!(assets[0].resident_covers(0..64), "purge reload loads the law head");
+    }
+
+    #[test]
     fn constant_onset_windows_clip_reverse_fractional_guards_and_silent_offsets() {
         for reverse in [false, true] {
             for step in [0.25, 1., 1.78125, 16.] {
@@ -3571,215 +3868,21 @@ mod tests {
                 routes: vec![ModRoute::new(0, ModTarget::SampleStart, 0.25)], ..Default::default() }],
                 vec![Some(0); 3], vec![1000; 3]).unwrap();
         let policy = StreamPolicy { head_budget: 1, ..Default::default() };
-        let base = start_ranges_with_offsets(&instrument, &assets, 48000, 64, &policy, false);
-        let audit = constant_start_geometry(&instrument, &prepared, &assets, &base, &HashSet::new(), 48000, 64, &policy, &||false).unwrap();
+        let base = start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 64), &policy);
+        let audit = constant_start_geometry(&instrument, &prepared, &assets, &base, &HashSet::new(), 48000, &law_heads(&instrument, 64), &policy, &||false).unwrap();
         assert_eq!(audit["constant_offset_zones"], 3);
         assert_eq!(audit["hint_assets"], 2);
         assert_eq!(audit["hint_ranges"], 2);
         assert!(audit["hint_extra_source_frames"].as_u64().unwrap() > 0);
         assert!(audit["base_plus_hint_payload_lower_bytes"].as_u64().unwrap() > 1);
         assert!(assets.iter().all(|p| p.head_bytes() == 0), "audit must not decode/admit even above quota");
-        assert_eq!(constant_start_geometry(&instrument, &prepared, &assets, &base, &HashSet::new(), 48000, 64, &policy, &||true).unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(constant_start_geometry(&instrument, &prepared, &assets, &base, &HashSet::new(), 48000, &law_heads(&instrument, 64), &policy, &||true).unwrap_err().kind(), io::ErrorKind::Interrupted);
         instrument.zones[0].playback.looping = ir::Looping::Continuous(ir::LoopRange { start: 100, end: 1000, crossfade: ir::Span::Frames(0), alternating: true });
-        let audit = constant_start_geometry(&instrument, &prepared, &assets, &base, &HashSet::new(), 48000, 64, &policy, &||false).unwrap();
+        let audit = constant_start_geometry(&instrument, &prepared, &assets, &base, &HashSet::new(), 48000, &law_heads(&instrument, 64), &policy, &||false).unwrap();
         assert_eq!(audit["loop_geometry_omitted_zones"], 1);
         assert_eq!(audit["nonloop_window_zones"], 2);
     }
 
-    #[test]
-    fn adaptive_attack_anchors_keep_shared_quota_and_original_horizon_truthful() {
-        for decoders in [1,4] {
-            let assets=vec![Pcm::streamed(48000,131072).unwrap(),Pcm::streamed(48000,131072).unwrap(),
-                Pcm::streamed(48000,2048).unwrap(),Pcm::pending_resident(48000,64).unwrap()];
-            let mut zones=Vec::new();
-            for (asset,start,end,reverse) in [(0,1024,120000,false),(0,2048,100000,true),
-                (1,4096,125000,false),(2,0,2048,false),(3,0,64,false)] {
-                let mut z=ir::Zone::new(ir::AssetRef(asset));
-                z.playback.start=start;z.playback.end=Some(end);z.playback.reverse=reverse;
-                z.keys=ir::KeyRange{low:95,high:95};
-                z.pitch=ir::KeyTracking::Tracked{root:48};
-                if asset==2 {z.group=Some(ir::GroupRef(0));}
-                zones.push(z);
-            }
-            let instrument=ir::Instrument{zones,groups:vec![ir::Group{wavetable:Some(ir::Wavetable::default()),..Default::default()}],..Default::default()};
-            let policy=StreamPolicy{head_budget:100_000,max_step:16.,resident_budget:None,..Default::default()};
-            let full=start_ranges(&instrument,&assets,48000,4096,&policy);
-            let onsets=start_ranges_with_offsets(&instrument,&assets,48000,4096,&policy,false);
-            let calls=std::cell::Cell::new(0);
-            let pins=HashSet::from([assets[2].asset_id()]);
-            let anchors=|room|{calls.set(calls.get()+1);bounded_attack_anchors(&instrument,&assets,48000,4096,
-                &StreamPolicy{head_budget:room,..policy},&pins,&||false)};
-            let opens=Arc::new(AtomicU64::new(0));
-            let sources=assets.iter().map(|p|(p.asset_id(),Arc::new(HeadFixture{opens:opens.clone(),
-                cancel:None,frames:p.frame_count(),wide:true}) as Arc<dyn AssetSource>)).collect();
-            let (_,worker)=StreamCache::new(4).unwrap();
-            let (streamer,bytes)=Streamer::start_with_fallbacks_cancelable(sources,&assets,full,Some(onsets),
-                Some(&anchors),worker,decoders,false,policy.head_budget,pins.clone(),true,&||false).unwrap();
-            assert_eq!(calls.get(),1,"metadata search, not repeated source decoding");
-            assert_eq!(opens.load(Ordering::Relaxed),4);
-            assert!(bytes<=policy.head_budget && streamer.head_budget_status().peak_bytes<=policy.head_budget);
-            assert!(streamer.selected_anchor_head_frames().is_some_and(|n|n>64 && n<4096),"selected {:?}",streamer.selected_anchor_head_frames());
-            let next=start_ranges_with_offsets(&instrument,&assets,48000,streamer.selected_anchor_head_frames().unwrap()+1,&policy,false);
-            assert!(next.iter().flatten().map(|r|r.len()*size_of::<Frame>()).sum::<usize>()>policy.head_budget,
-                "binary search chooses the largest guaranteed-fit uniform horizon");
-            assert!(streamer.anchor_readiness(&assets).unwrap().complete());
-            assert!(!streamer.onset_readiness(&assets).complete());
-            assert!(!streamer.head_readiness(&assets).complete());
-            assert!(assets[2].resident_covers(0..2048));
-            assert_eq!(assets[3].resident_frames().unwrap().len(),64);
-            for z in instrument.zones.iter().take(3) {
-                let render=|pcm:Pcm| {
-                    let prepared=sampler_core::Prepared::new(48000,vec![pcm],vec![sampler_core::Region{
-                        sample:0,key_low:95,key_high:95,root_key:Some(48),velocity_low:0.,velocity_high:1.,gain:1.,envelope:Default::default(),
-                        playback:sampler_core::Playback{start:z.playback.start as usize,end:z.playback.end.map(|n|n as usize),
-                            direction:if z.playback.reverse {sampler_core::Direction::Reverse}else{sampler_core::Direction::Forward},
-                            ..Default::default()},
-                    }],1).unwrap();
-                    let limits=sampler_core::Limits::for_plan(&prepared,2,1);
-                    let (cache,_)=StreamCache::new(128).unwrap();
-                    let mut runtime=sampler_core::Runtime::new(prepared,limits).unwrap().with_stream_cache(cache);
-                    runtime.set_cold_starts(true);
-                    runtime.trigger(sampler_core::Input{protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:95,external_id:None},95,1.).unwrap();
-                    assert_eq!(runtime.voice_count(),1);assert_eq!(runtime.stats().cold_starts,0);
-                    let mut out=[[0.;2];64];runtime.render(&mut out).unwrap();
-                    assert_eq!(runtime.stats().stream_underruns,0);
-                    out.map(|f|f.map(f32::to_bits))
-                };
-                let value=[f32::from_bits(0x3f123457),f32::from_bits(0x3f234569)];
-                let golden=Pcm::new(48000,vec![value;131072].into()).unwrap();
-                assert_eq!(render(assets[z.asset.unwrap().0].clone()),render(golden));
-            }
-        }
-    }
-
-    #[test]
-    fn zero_horizon_anchors_cover_first_fractional_high_pitch_read_in_both_directions() {
-        for reverse in [false,true] {
-            let pcm=Pcm::streamed(48000,131072).unwrap();
-            let assets=vec![pcm];
-            let mut zone=ir::Zone::new(ir::AssetRef(0));
-            zone.playback.start=4096;zone.playback.end=Some(120000);zone.playback.reverse=reverse;
-            zone.pitch=ir::KeyTracking::Tracked{root:48};zone.keys=ir::KeyRange{low:95,high:95};
-            let instrument=ir::Instrument{zones:vec![zone.clone()],..Default::default()};
-            let policy=StreamPolicy{max_step:16.,head_budget:32768,resident_budget:None,..Default::default()};
-            let anchors=|room|bounded_attack_anchors(&instrument,&assets,48000,0,&StreamPolicy{head_budget:room,..policy},&HashSet::new(),&||false);
-            let original=start_ranges_with_offsets(&instrument,&assets,48000,4096,&policy,false);
-            let sources=HashMap::from([(assets[0].asset_id(),Arc::new(HeadFixture{opens:Arc::new(AtomicU64::new(0)),
-                cancel:None,frames:131072,wide:true}) as Arc<dyn AssetSource>)]);
-            let (_,worker)=StreamCache::new(64).unwrap();
-            let (streamer,_)=Streamer::start_with_fallbacks_cancelable(sources,&assets,original.clone(),Some(original),
-                Some(&anchors),worker,1,false,policy.head_budget,HashSet::new(),true,&||false).unwrap();
-            assert_eq!(streamer.selected_anchor_head_frames(),Some(0));
-            assert!(streamer.anchor_readiness(&assets).unwrap().complete());
-            let prepared=sampler_core::Prepared::new(48000,assets.clone(),vec![sampler_core::Region{
-                sample:0,key_low:95,key_high:95,root_key:Some(48),velocity_low:0.,velocity_high:1.,gain:1.,envelope:Default::default(),
-                playback:sampler_core::Playback{start:4096,end:Some(120000),
-                    direction:if reverse {sampler_core::Direction::Reverse}else{sampler_core::Direction::Forward},..Default::default()},
-            }],1).unwrap();
-            let limits=sampler_core::Limits::for_plan(&prepared,2,1);
-            let (cache,_)=StreamCache::new(128).unwrap();
-            let mut runtime=sampler_core::Runtime::new(prepared,limits).unwrap().with_stream_cache(cache);
-            runtime.set_cold_starts(true);
-            runtime.trigger(sampler_core::Input{protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:95,external_id:None},95,1.).unwrap();
-            assert_eq!(runtime.voice_count(),1);assert_eq!(runtime.stats().cold_starts,0);
-            let mut out=[[0.;2];1];runtime.render(&mut out).unwrap();
-            assert_eq!(runtime.stats().stream_underruns,0);
-            assert!(out.iter().flatten().all(|s|s.is_finite()));
-        }
-    }
-
-    #[test]
-    fn optional_anchor_capacity_falls_back_atomically_to_mandatory_sources() {
-        // Full PCM is 64 * 8 = 512 bytes; the optional lossless stereo-f32
-        // anchor is 32 * 8 = 256. Its mono16 preflight lower bound is 64.
-        for decoders in [1,4] {
-        for budget in [511,512,575,576,767,768] {
-        let assets=vec![Pcm::streamed(48000,8192).unwrap(),Pcm::pending_resident(48000,64).unwrap()];
-        let sources=assets.iter().map(|p|(p.asset_id(),Arc::new(HeadFixture{opens:Arc::new(AtomicU64::new(0)),
-            cancel:None,frames:p.frame_count(),wide:true}) as Arc<dyn AssetSource>)).collect();
-        let anchors=|_room|Ok(AttackAnchors{output_frames:0,ranges:vec![vec![0..32],vec![0..64]],hint_ranges:None});
-        let (_,worker)=StreamCache::new(4).unwrap();
-        let result=Streamer::start_with_fallbacks_cancelable(sources,&assets,vec![vec![0..8192],vec![0..64]],
-            Some(vec![vec![0..4096],vec![0..64]]),Some(&anchors),worker,decoders,false,budget,HashSet::new(),true,&||false);
-        if budget>=512 {
-            let (streamer,bytes)=result.unwrap();
-            let anchored=budget==768;
-            assert_eq!(bytes,if anchored {768}else{512});
-            assert!(streamer.head_fallback().is_some());
-            assert_eq!(streamer.head_budget_status().held_bytes,bytes);
-            assert!(streamer.head_budget_status().peak_bytes<=budget);
-            assert_eq!(assets[0].head_bytes(),if anchored {256}else{0});
-            assert!(assets[0].resident_frames().is_none());
-            let value=[f32::from_bits(0x3f123457),f32::from_bits(0x3f234569)];
-            assert_eq!(&*assets[1].resident_frames().unwrap(),&[value;64]);
-            assert!(assets[1].requires_resident());
-            assert_eq!(streamer.selected_anchor_head_frames(),anchored.then_some(0));
-            assert_eq!(streamer.anchor_readiness(&assets).map(|r|r.complete()),anchored.then_some(true));
-            assert!(!streamer.onset_readiness(&assets).complete());
-            assert!(!streamer.head_readiness(&assets).complete());
-            assert!(matches!(streamer.restore_ranges[&assets[1].asset_id()],RestoreRange::Admitted(_)));
-            if !anchored {
-                assert!(matches!(streamer.restore_ranges[&assets[0].asset_id()],RestoreRange::DeferredRequested(_)));
-                assert_eq!(streamer.restore_ranges[&assets[0].asset_id()].as_ref(),&[0..8192]);
-            }
-        } else {
-            // The 512-byte required source cannot fit at all: it degrades to streaming instead of
-            // failing the load, and nothing over budget is published.
-            let (streamer,bytes)=result.expect("an over-budget required source must degrade, not fail");
-            assert!(bytes<=budget);
-            assert!(streamer.head_fallback().is_some());
-            assert!(streamer.head_budget_status().peak_bytes<=budget);
-            assert!(assets[1].resident_frames().is_none());
-            assert_eq!(assets[0].head_preparer().budget_status().unwrap().held_bytes,0);
-        }
-        }
-        }
-    }
-
-    #[test]
-    fn mandatory_only_after_anchor_capacity_preserves_source_errors_and_cancellation() {
-        struct Failure { cancel: Arc<AtomicBool>, cancel_read: bool, opens: Arc<AtomicU64> }
-        impl AssetSource for Failure {
-            fn open(&self)->io::Result<SampleReader> {
-                self.opens.fetch_add(1,Ordering::Relaxed);
-                let (cancel,cancel_read)=(self.cancel.clone(),self.cancel_read);
-                Ok(SampleReader::custom(48000,16,move|_,out| {
-                    if !cancel_read {return Err(io::Error::new(io::ErrorKind::InvalidData,"mandatory fallback source failure"));}
-                    out.fill([0.25;2]);
-                    cancel.store(true,Ordering::Release);
-                    Ok(())
-                }))
-            }
-        }
-        for cancel_read in [false,true] {
-            let cancel=Arc::new(AtomicBool::new(false));
-            let opens=Arc::new(AtomicU64::new(0));
-            let optional_opens=Arc::new(AtomicU64::new(0));
-            let assets=vec![Pcm::streamed(48000,16).unwrap(),Pcm::pending_resident(48000,16).unwrap()];
-            let sources=HashMap::from([
-                (assets[0].asset_id(),Arc::new(HeadFixture{opens:optional_opens.clone(),cancel:None,frames:16,wide:false}) as Arc<dyn AssetSource>),
-                (assets[1].asset_id(),Arc::new(Failure{cancel:cancel.clone(),cancel_read,opens:opens.clone()}) as Arc<dyn AssetSource>),
-            ]);
-            let anchors=|_room|Ok(AttackAnchors{output_frames:0,ranges:vec![vec![0..16];2],hint_ranges:None});
-            let (_,worker)=StreamCache::new(1).unwrap();
-            // Every optional candidate needs at least 128 + 32 bytes. Only the
-            // mandatory-only attempt fits 128 and reaches the failing reader.
-            let error=Streamer::start_with_fallbacks_cancelable(sources,&assets,vec![vec![0..16];2],
-                Some(vec![vec![0..16];2]),Some(&anchors),worker,1,false,128,HashSet::new(),true,
-                &||cancel.load(Ordering::Acquire)).err().expect("mandatory failure must propagate");
-            assert_eq!(error.kind(),if cancel_read {io::ErrorKind::Interrupted}else{io::ErrorKind::InvalidData});
-            assert!(!error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()));
-            assert_eq!(opens.load(Ordering::Relaxed),1);
-            assert_eq!(optional_opens.load(Ordering::Relaxed),0);
-            assert_eq!(cancel.load(Ordering::Acquire),cancel_read);
-            assert!(assets.iter().all(|p|p.head_bytes()==0 && p.resident_frames().is_none()));
-            assert_eq!(assets[0].head_preparer().budget_status().unwrap().held_bytes,0);
-        }
-    }
-
-    /// A required-resident source larger than the whole head budget used to fail the preload
-    /// ("resident start ranges 0 of N"). The cheapest starts are admitted instead, and the
-    /// oversized source is left to stream on demand.
     #[test]
     fn over_budget_resident_source_degrades_to_the_cheapest_starts() {
         let assets = vec![Pcm::streamed(48000,16).unwrap(), Pcm::pending_resident(48000,64).unwrap()];
@@ -3792,7 +3895,7 @@ mod tests {
         // The resident source needs 512 bytes, the budget is 256: the mandatory-only attempt
         // overflows, and the cheap streamed head (16 frames) is admitted in its place.
         let (_streamer,bytes) = Streamer::start_with_fallbacks_cancelable(sources,&assets,
-            vec![vec![0..16],vec![0..64]],None,None,worker,1,false,256,HashSet::new(),true,&||false)
+            vec![vec![0..16],vec![0..64]],None,worker,1,false,256,HashSet::new(),true,&||false)
             .expect("an over-budget resident source must degrade, not fail the load");
         assert!(bytes > 0 && bytes <= 256, "admitted {bytes} bytes");
         assert!(assets[0].head_frames() > 0);
@@ -4365,8 +4468,6 @@ mod tests {
             restore_ranges: Arc::new(assets.iter()
                 .map(|pcm| (pcm.asset_id(), RestoreRange::Admitted(vec![0..32]))).collect()),
             onset_ranges: None,
-            anchor_ranges: None,
-            selected_anchor_head_frames: None,
             hint_ranges: None,
             selected_hint_ranges: None,
             selected_hint_head_frames: None,
@@ -4736,7 +4837,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            start_ranges(&instrument, &[pcm], 48000, 1, &policy),
+            start_ranges(&instrument, &[pcm], 48000, &law_heads(&instrument, 1), &policy),
             vec![vec![2048..7 * 2048]]
         );
     }

@@ -5,46 +5,28 @@
 //! (see [`Fixture::gaps`](super::Fixture::gaps) for what remains missing).
 
 /// Areia-style: ignore the played note, then start one close, room and far voice
-/// with a source offset taken from CC113 (0..30 % of the sample).
+/// per key. Each group's CC113 sample-start route (see `Fixture::CcStart`) sets the
+/// offset, so the script only chooses the round robin and mic group.
 ///
 /// Groups are `round * 3 + mic`, mic order close, room, far.
 pub(super) const CC_START: &str = r#"on init
   set_script_title("Probe CC start")
   declare $rr := 0
-  declare $offset := 0
   declare $mic := 0
-  declare const $SPAN := 75000
   declare const $MICS := 3
   declare const $ROUNDS := 4
 end on
 
 on note
   ignore_event($EVENT_ID)
-  $offset := (%CC[113] * $SPAN) / 127
   $mic := 0
   while ($mic < $MICS)
     disallow_group($ALL_GROUPS)
     allow_group($rr * $MICS + $mic)
-    play_note($EVENT_NOTE, $EVENT_VELOCITY, $offset, -1)
+    play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, -1)
     inc($mic)
   end while
   $rr := ($rr + 1) mod $ROUNDS
-end on
-"#;
-
-/// Vista-style: ignore the played note and start one voice at a source offset
-/// derived from the key position instead of a KeyPosition modulation route.
-pub(super) const KEY_POSITION: &str = r#"on init
-  set_script_title("Probe key position")
-  declare $offset := 0
-  declare const $LOW := 48
-  declare const $STEP := 800
-end on
-
-on note
-  ignore_event($EVENT_ID)
-  $offset := ($EVENT_NOTE - $LOW) * $STEP
-  play_note($EVENT_NOTE, $EVENT_VELOCITY, $offset, -1)
 end on
 "#;
 

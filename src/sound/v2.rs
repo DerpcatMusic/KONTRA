@@ -3589,8 +3589,10 @@ fn stream_policy_for_memory(
         lazy: false,
         head_budget,
         allow_cold_fallback: true,
+        // Cold fallback may raise the head budget to the law heads, but not past
+        // what physical RAM leaves free.
+        physical_limit: available,
         block_frames: super::MAX_BLOCK,
-        max_step: 16.0,
         voices: MAX_VOICES,
         ..Default::default()
     }
@@ -3600,16 +3602,15 @@ fn stream_policy_for_memory(
 /// wins, then the player's setting; one (the audio thread alone) otherwise.
 /// Preserve the legacy stretch path: sampler taps do not certify grains or
 /// pre-roll. Requested latency and service horizon are checked as one pair.
-fn sampler_stream_contract(head: usize, instrument: Option<&ir::Instrument>)
+fn sampler_stream_contract(runway: usize, instrument: Option<&ir::Instrument>)
     -> Result<(u32, Option<u32>), CoreError>
 {
     let invalid = || CoreError::Invalid("streaming horizon exceeds output-frame domain".into());
-    let horizon = head.max(PAGE_FRAMES).checked_add(MAX_BLOCK).ok_or_else(invalid)?;
+    let horizon = runway.max(PAGE_FRAMES).checked_add(MAX_BLOCK).ok_or_else(invalid)?;
     let horizon = u32::try_from(horizon).map_err(|_| invalid())?;
-    let requested = u32::try_from(head).map_err(|_| invalid())?;
-    if requested == 0 { return Err(invalid()); }
+    let requested = u32::try_from(runway).map_err(|_| invalid())?;
     let sampler = instrument.is_some_and(|i| i.groups.iter().all(|g| g.time_stretch.is_none()));
-    Ok((horizon, sampler.then_some(requested)))
+    Ok((horizon, (sampler && requested > 0).then_some(requested)))
 }
 
 fn render_threads(request: &LoadRequest) -> Threads {
@@ -4372,7 +4373,7 @@ impl V2Loader {
         runtime.set_cold_starts(true);
         let streams = cache.is_some();
         let stream_contract = stream.as_ref().map(|s| sampler_stream_contract(
-            s.report.head_frames, instrument.as_deref())).transpose()?;
+            s.report.runway_frames, instrument.as_deref())).transpose()?;
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
             if let Some((horizon, runway)) = stream_contract {
@@ -9935,7 +9936,9 @@ mod sampler_stream_contract_tests {
     #[test]
     fn both_requested_and_service_horizons_are_checked_without_clamping() {
         let instrument = ir::Instrument::default();
-        assert!(sampler_stream_contract(0, Some(&instrument)).is_err());
+        // Preload 0 gives a zero DFD window (Kontakt computes it so): no runway, same horizon.
+        assert_eq!(sampler_stream_contract(0, Some(&instrument)).unwrap(),
+            ((PAGE_FRAMES + MAX_BLOCK) as u32, None));
         assert!(sampler_stream_contract(usize::MAX, Some(&instrument)).is_err());
         assert!(sampler_stream_contract(u32::MAX as usize, Some(&instrument)).is_err());
         assert_eq!(sampler_stream_contract(1019, Some(&instrument)).unwrap().1, Some(1019));

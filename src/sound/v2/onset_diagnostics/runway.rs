@@ -18,7 +18,6 @@ pub(super) fn loader(part: &Part, startup: Option<&crate::sound::report::StreamS
     json!({
         "at_runtime_frame":part.runtime.now(),
         "requested_output_horizon_frames":report.head_frames,
-        "selected_anchor_output_horizon_frames":stream.streamer.selected_anchor_head_frames(),
         "selected_hint_output_horizon_frames":stream.streamer.selected_hint_head_frames(),
         "service_output_horizon_frames":part.horizon,
         "configured_payload_limit_bytes":budget.limit_bytes,
@@ -30,7 +29,6 @@ pub(super) fn loader(part: &Part, startup: Option<&crate::sound::report::StreamS
         "startup_coverage":startup.map(|s|json!({
             "ranges":s.ranges,"covered_ranges":s.covered_ranges,
             "onset_ranges":s.onset_ranges,"covered_onset_ranges":s.covered_onset_ranges,
-            "anchor_ranges":s.anchor_ranges,"covered_anchor_ranges":s.covered_anchor_ranges,
             "hint_ranges":s.hint_ranges,"covered_hint_ranges":s.covered_hint_ranges,
             "hint_source_frames":s.hint_source_frames,"covered_hint_source_frames":s.covered_hint_source_frames,
             "selected_hint_ranges":s.selected_hint_ranges,"covered_selected_hint_ranges":s.covered_selected_hint_ranges,
