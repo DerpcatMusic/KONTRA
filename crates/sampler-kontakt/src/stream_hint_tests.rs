@@ -68,7 +68,6 @@ fn hinted_preload_uses_exact_packed_cost_and_preserves_base_when_hints_do_not_fi
             let hints = HintFallback {
                 head_frames: 32,
                 ranges: vec![vec![745..777]],
-                anchors: None,
             };
             let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
                 sources(&assets),
@@ -76,7 +75,6 @@ fn hinted_preload_uses_exact_packed_cost_and_preserves_base_when_hints_do_not_fi
                 vec![vec![0..4096]],
                 Some(vec![vec![0..32]]),
                 Some(hints),
-                None,
                 worker,
                 decoders,
                 false,
@@ -123,104 +121,6 @@ fn hinted_preload_uses_exact_packed_cost_and_preserves_base_when_hints_do_not_fi
 }
 
 #[test]
-fn hinted_minimum_failure_keeps_nonempty_base_anchors() {
-    let assets = vec![Pcm::streamed(48000, 4096).unwrap()];
-    let hinted = |_| {
-        Ok(AttackAnchors {
-            output_frames: 0,
-            ranges: vec![vec![0..32, 745..777]],
-            hint_ranges: Some(vec![vec![745..777]]),
-        })
-    };
-    let base = |_| {
-        Ok(AttackAnchors {
-            output_frames: 0,
-            ranges: vec![vec![0..32]],
-            hint_ranges: None,
-        })
-    };
-    let hints = HintFallback {
-        head_frames: 128,
-        ranges: vec![vec![745..873]],
-        anchors: Some(&hinted),
-    };
-    let (_, worker) = StreamCache::new(4).unwrap();
-    let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
-        sources(&assets),
-        &assets,
-        vec![vec![0..4096]],
-        Some(vec![vec![0..128]]),
-        Some(hints),
-        Some(&base),
-        worker,
-        4,
-        false,
-        400,
-        HashSet::new(),
-        true,
-        &|| false,
-    )
-    .unwrap();
-    assert_eq!(bytes, 256);
-    assert_eq!(streamer.selected_anchor_head_frames(), Some(0));
-    assert_eq!(streamer.selected_hint_head_frames(), None);
-    assert!(assets[0].resident_covers(0..32));
-    assert!(!assets[0].resident_covers(745..777));
-    assert!(streamer.anchor_readiness(&assets).unwrap().complete());
-    assert!(!streamer.onset_readiness(&assets).complete());
-}
-
-#[test]
-fn hinted_shorter_anchor_reports_selected_union_separately_from_requested_coverage() {
-    let assets = vec![Pcm::streamed(48000, 4096).unwrap()];
-    let hinted = |_| {
-        Ok(AttackAnchors {
-            output_frames: 16,
-            ranges: vec![vec![0..16, 745..777]],
-            hint_ranges: Some(vec![vec![745..777]]),
-        })
-    };
-    let hints = HintFallback {
-        head_frames: 128,
-        ranges: vec![vec![745..873]],
-        anchors: Some(&hinted),
-    };
-    let (_, worker) = StreamCache::new(4).unwrap();
-    let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
-        sources(&assets),
-        &assets,
-        vec![vec![0..4096]],
-        Some(vec![vec![0..128]]),
-        Some(hints),
-        None,
-        worker,
-        4,
-        false,
-        512,
-        HashSet::new(),
-        true,
-        &|| false,
-    )
-    .unwrap();
-    assert_eq!(bytes, 384);
-    assert_eq!(streamer.selected_hint_head_frames(), Some(16));
-    let requested = streamer.hint_readiness(&assets).unwrap();
-    assert_eq!((requested.ranges, requested.source_frames), (1, 128));
-    assert_eq!(
-        (requested.covered_ranges, requested.covered_source_frames),
-        (0, 32)
-    );
-    let selected = streamer.selected_hint_readiness(&assets).unwrap();
-    assert_eq!((selected.ranges, selected.source_frames), (1, 32));
-    assert_eq!(
-        (selected.covered_ranges, selected.covered_source_frames),
-        (1, 32)
-    );
-    assert!(streamer.anchor_readiness(&assets).unwrap().complete());
-    assert!(!streamer.onset_readiness(&assets).complete());
-}
-
-#[test]
 fn hinted_source_errors_and_cancellation_never_retry_or_publish() {
     for cancel_read in [false, true] {
         let cancel = Arc::new(AtomicBool::new(false));
@@ -240,7 +140,6 @@ fn hinted_source_errors_and_cancellation_never_retry_or_publish() {
         let hints = HintFallback {
             head_frames: 32,
             ranges: vec![vec![745..777]],
-            anchors: None,
         };
         let error = Streamer::start_with_hint_fallbacks_cancelable(
             sources,
@@ -248,7 +147,6 @@ fn hinted_source_errors_and_cancellation_never_retry_or_publish() {
             vec![vec![0..4096]],
             Some(vec![vec![0..32]]),
             Some(hints),
-            None,
             worker,
             4,
             false,
@@ -300,7 +198,6 @@ fn hinted_admission_deduplicates_aliases_and_preserves_required_and_pinned_sourc
                 vec![],
                 vec![],
             ],
-            anchors: None,
         };
         let result = Streamer::start_with_hint_fallbacks_cancelable(
             sources(&assets),
@@ -320,7 +217,6 @@ fn hinted_admission_deduplicates_aliases_and_preserves_required_and_pinned_sourc
                 vec![0..16],
             ]),
             Some(hints),
-            None,
             worker,
             4,
             false,
@@ -352,7 +248,6 @@ fn hinted_coverage_reports_partial_intersections_without_counting_aliases_twice(
     let hints = HintFallback {
         head_frames: 32,
         ranges: vec![vec![745..777]; 2],
-        anchors: None,
     };
     let (streamer, _) = Streamer::start_with_hint_fallbacks_cancelable(
         sources(&assets),
@@ -360,7 +255,6 @@ fn hinted_coverage_reports_partial_intersections_without_counting_aliases_twice(
         vec![vec![0..4096]; 2],
         Some(vec![vec![0..32]; 2]),
         Some(hints),
-        None,
         worker,
         1,
         false,
@@ -476,15 +370,14 @@ fn hinted_alias_view_order_keeps_physical_recipe_and_distinct_forward_reverse_st
         let proof = make(assets.clone());
         let policy = StreamPolicy {
             headroom: 0.,
-            max_step: 16.,
             ..Default::default()
         };
         let recipe =
-            ConstantStartHints::new(&instrument, &proof, &assets, 48000, 128, &policy, &|| false)
+            ConstantStartHints::new(&instrument, &proof, &assets, 48000, &law_heads(&instrument, 128), &policy, &|| false)
                 .unwrap();
-        let base = start_ranges_with_offsets(&instrument, &assets, 48000, 128, &policy, false);
+        let base = start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy);
         let hints = recipe
-            .ranges(&instrument, &assets, 48000, 128, &policy, &|| false)
+            .ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy, &|| false)
             .unwrap();
         let mut union = physical_start_ranges(&assets, &base);
         union
@@ -505,14 +398,12 @@ fn hinted_alias_view_order_keeps_physical_recipe_and_distinct_forward_reverse_st
         let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
             HashMap::from([(pcm.asset_id(), source)]),
             &assets,
-            start_ranges(&instrument, &assets, 48000, 128, &policy),
+            start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy),
             Some(base),
             Some(HintFallback {
                 head_frames: 128,
                 ranges: hints,
-                anchors: None,
             }),
-            None,
             worker,
             4,
             false,
@@ -649,17 +540,16 @@ fn hinted_static_offset_745_matches_resident_pcm_under_reverse_pitch_and_host_pa
             assert_eq!(proof.constant_start_offset(0), Some(745));
             let policy = StreamPolicy {
                 headroom: 0.,
-                max_step: 16.,
                 ..Default::default()
             };
             let recipe =
-                ConstantStartHints::new(&instrument, &proof, &assets, 48000, 128, &policy, &|| {
+                ConstantStartHints::new(&instrument, &proof, &assets, 48000, &law_heads(&instrument, 128), &policy, &|| {
                     false
                 })
                 .unwrap();
-            let base = start_ranges_with_offsets(&instrument, &assets, 48000, 128, &policy, false);
+            let base = start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy);
             let hints = recipe
-                .ranges(&instrument, &assets, 48000, 128, &policy, &|| false)
+                .ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy, &|| false)
                 .unwrap();
             let mut union = base[0].clone();
             union.extend(hints[0].clone());
@@ -669,14 +559,12 @@ fn hinted_static_offset_745_matches_resident_pcm_under_reverse_pitch_and_host_pa
             let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
                 sources(&assets),
                 &assets,
-                start_ranges(&instrument, &assets, 48000, 128, &policy),
+                start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy),
                 Some(base),
                 Some(HintFallback {
                     head_frames: 128,
                     ranges: hints.clone(),
-                    anchors: None,
                 }),
-                None,
                 worker,
                 4,
                 false,
@@ -750,9 +638,7 @@ fn hinted_restore_keeps_selected_physical_recipe_for_all_reload_consumers() {
             Some(HintFallback {
                 head_frames: 32,
                 ranges: vec![vec![745..777]; 2],
-                anchors: None,
             }),
-            None,
             worker,
             1,
             false,
@@ -1016,7 +902,6 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
         let prepared = make(assets[0].clone());
         let policy = StreamPolicy {
             headroom: 0.,
-            max_step: 16.,
             ..Default::default()
         };
         let recipe = ConstantStartHints::new(
@@ -1024,7 +909,7 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
             &prepared,
             &assets,
             48000,
-            128,
+            &law_heads(&instrument, 128),
             &policy,
             &|| false,
         )
@@ -1032,9 +917,9 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
         assert_eq!(recipe.loop_prefix, 1);
         assert_eq!(recipe.loops, 0);
         let hints = recipe
-            .ranges(&instrument, &assets, 48000, 128, &policy, &|| false)
+            .ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy, &|| false)
             .unwrap();
-        let base = start_ranges_with_offsets(&instrument, &assets, 48000, 128, &policy, false);
+        let base = start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy);
         let mut union = base[0].clone();
         union.extend(hints[0].iter().cloned());
         merge_start_ranges(&mut union);
@@ -1043,14 +928,12 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
         let (streamer, _) = Streamer::start_with_hint_fallbacks_cancelable(
             sources(&assets),
             &assets,
-            start_ranges(&instrument, &assets, 48000, 128, &policy),
+            start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy),
             Some(base),
             Some(HintFallback {
                 head_frames: 128,
                 ranges: hints,
-                anchors: None,
             }),
-            None,
             worker,
             1,
             false,
@@ -1102,7 +985,7 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
             &prepared,
             &assets,
             48000,
-            24000,
+            &law_heads(&instrument, 24000),
             &policy,
             &|| false,
         )
@@ -1110,18 +993,18 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
         assert_eq!(crossing.loop_prefix, 0);
         assert_eq!(crossing.loops, 1);
         let zero =
-            ConstantStartHints::new(&instrument, &prepared, &assets, 48000, 0, &policy, &|| {
+            ConstantStartHints::new(&instrument, &prepared, &assets, 48000, &law_heads(&instrument, 0), &policy, &|| {
                 false
             })
             .unwrap();
         assert_eq!(zero.loop_prefix, 1);
         assert!(
-            zero.ranges(&instrument, &assets, 48000, 0, &policy, &|| false)
+            zero.ranges(&instrument, &assets, 48000, &law_heads(&instrument, 0), &policy, &|| false)
                 .unwrap()[0][0]
                 .contains(&745)
         );
         assert_eq!(
-            zero.ranges(&instrument, &assets, 48000, 1, &policy, &|| false)
+            zero.ranges(&instrument, &assets, 48000, &law_heads(&instrument, 1), &policy, &|| false)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidInput
@@ -1129,7 +1012,7 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
         let mut short = instrument.clone();
         short.zones[0].playback.end = Some(700);
         let silent =
-            ConstantStartHints::new(&short, &prepared, &assets, 48000, 128, &policy, &|| false)
+            ConstantStartHints::new(&short, &prepared, &assets, 48000, &law_heads(&short, 128), &policy, &|| false)
                 .unwrap();
         assert_eq!(
             (silent.eligible, silent.loop_prefix, silent.silent),
@@ -1142,7 +1025,7 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
                 &prepared,
                 &wrong_assets,
                 48000,
-                128,
+                &law_heads(&instrument, 128),
                 &policy,
                 &|| false
             )

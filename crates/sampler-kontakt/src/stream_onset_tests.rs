@@ -45,13 +45,12 @@ fn planned_heads_cover_every_admitted_sample_start_offset_in_both_directions() {
     let pcm = Pcm::streamed(48000, 2048).unwrap();
     let policy = StreamPolicy {
         headroom: 0.,
-        max_step: 1.,
         ..Default::default()
     };
     for reverse in [false, true] {
         for range in [0, 32, 512, u64::MAX] {
             let ir = instrument(reverse, range, true);
-            let planned = start_ranges(&ir, std::slice::from_ref(&pcm), 48000, 64, &policy);
+            let planned = start_ranges(&ir, std::slice::from_ref(&pcm), 48000, &law_heads(&ir, 64), &policy);
             for offset in 0..=range.min(1900) {
                 let onset = if reverse { 1999 - offset } else { 100 + offset };
                 if onset >= 2000 {
@@ -68,14 +67,14 @@ fn planned_heads_cover_every_admitted_sample_start_offset_in_both_directions() {
             &instrument(reverse, 0, false),
             std::slice::from_ref(&pcm),
             48000,
-            64,
+            &vec![64; instrument(reverse, 0, false).zones.len()],
             &policy,
         );
         let unused = start_ranges(
             &instrument(reverse, u64::MAX, false),
             std::slice::from_ref(&pcm),
             48000,
-            64,
+            &vec![64; instrument(reverse, 0, false).zones.len()],
             &policy,
         );
         assert_eq!(
@@ -120,7 +119,6 @@ fn actual_streamed_modulated_start_matches_resident_without_waiting_for_tail_pag
             },
             &StreamPolicy {
                 headroom: 0.,
-                max_step: 1.,
                 voices: 2,
                 decoders: 1,
                 head_budget: 32768,
@@ -186,7 +184,6 @@ fn resident_source_over_head_budget_streams_under_cold_fallback() {
     };
     let policy = |allow_cold_fallback| StreamPolicy {
         headroom: 0.,
-        max_step: 1.,
         voices: 2,
         decoders: 1,
         head_budget: 8192,
@@ -243,7 +240,6 @@ fn pinned_wavetables_over_head_budget_stream_under_cold_fallback() {
             sources,
             &assets,
             ranges.clone(),
-            None,
             None,
             worker,
             1,
