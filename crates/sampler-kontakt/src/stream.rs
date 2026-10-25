@@ -892,42 +892,83 @@ fn zone_window(zone: &ir::Zone, preload: i32, layout: FrameLayout) -> dfd_window
     })
 }
 
-/// One preload head per zone, in source frames: its DFD window in packed source
-/// bytes divided by the frame size, capped at the sample. `frames` and `layouts`
-/// are indexed by logical asset. Zones without an asset get 0.
+/// Whether a zone's group is resident at load. Kontakt saves purged groups
+/// (`ir::Group::purged`) non-resident; they get no head until a purge/load request.
+fn zone_resident(instrument: &ir::Instrument, zone: &ir::Zone) -> bool {
+    zone.group.is_none_or(|g| !instrument.groups[g.0].purged)
+}
+
+/// One preload head per resident zone, in source frames: its DFD window in packed
+/// source bytes divided by the frame size, capped at the sample. Zones in purged
+/// groups, and zones without an asset, get 0. `frames` and `layouts` are indexed
+/// by logical asset.
 pub(crate) fn preload_heads(
     instrument: &ir::Instrument,
     frames: &[usize],
     layouts: &[FrameLayout],
+) -> Vec<usize> {
+    heads_where(instrument, frames, layouts, |zone| zone_resident(instrument, zone))
+}
+
+/// Every zone's head, purged groups included: the head a purge reload loads
+/// for its group (the same law as `preload_heads`).
+pub(crate) fn reload_heads(
+    instrument: &ir::Instrument,
+    frames: &[usize],
+    layouts: &[FrameLayout],
+) -> Vec<usize> {
+    heads_where(instrument, frames, layouts, |_| true)
+}
+
+fn heads_where(
+    instrument: &ir::Instrument,
+    frames: &[usize],
+    layouts: &[FrameLayout],
+    include: impl Fn(&ir::Zone) -> bool,
 ) -> Vec<usize> {
     let preload = authored_preload(instrument);
     instrument
         .zones
         .iter()
         .map(|zone| match zone.asset.map(|a| a.0) {
-            Some(asset) => {
+            Some(asset) if include(zone) => {
                 let layout = layouts[asset];
                 let bytes = zone_window(zone, preload, layout).bytes.unsigned_abs();
                 let head = usize::try_from(bytes / layout.bytes_per_frame().max(1) as u64).unwrap_or(usize::MAX);
                 head.min(frames[asset])
             }
-            None => 0,
+            _ => 0,
         })
         .collect()
 }
 
-/// Kontakt's window bytes for the instrument's samples: each sample counted once,
-/// at its largest zone window, as the DFD window routine would hold it.
+/// Kontakt's window bytes for the resident zones: per sample, the union of its
+/// zones' window ranges (start `max(pos - off, 0)`, length `|W|`), in packed bytes.
 pub(crate) fn kontakt_window_bytes(instrument: &ir::Instrument, layouts: &[FrameLayout]) -> usize {
     let preload = authored_preload(instrument);
-    let mut per_asset = vec![0u64; layouts.len()];
-    for zone in &instrument.zones {
-        if let Some(asset) = zone.asset.map(|a| a.0) {
-            let bytes = zone_window(zone, preload, layouts[asset]).bytes.unsigned_abs();
-            per_asset[asset] = per_asset[asset].max(bytes);
+    let mut per_asset: Vec<Vec<Range<usize>>> = vec![Vec::new(); layouts.len()];
+    for zone in instrument.zones.iter().filter(|zone| zone_resident(instrument, zone)) {
+        let Some(asset) = zone.asset.map(|a| a.0) else {
+            continue;
+        };
+        let layout = layouts[asset];
+        let window = zone_window(zone, preload, layout);
+        let frames = window.bytes.unsigned_abs() / layout.bytes_per_frame().max(1) as u64;
+        if frames == 0 {
+            continue;
         }
+        let start = usize::try_from(window.start.max(0)).unwrap_or(usize::MAX);
+        per_asset[asset].push(start..start.saturating_add(frames as usize));
     }
-    usize::try_from(per_asset.iter().sum::<u64>()).unwrap_or(usize::MAX)
+    per_asset
+        .iter_mut()
+        .enumerate()
+        .map(|(asset, list)| {
+            merge_start_ranges(list);
+            let frames: usize = list.iter().map(Range::len).sum();
+            frames.saturating_mul(layouts[asset].bytes_per_frame())
+        })
+        .fold(0usize, usize::saturating_add)
 }
 
 /// Test-only law with a chosen base: each zone's `base` frames plus its own start range.
@@ -976,8 +1017,31 @@ pub(crate) fn start_ranges(
     heads: &[usize],
     policy: &StreamPolicy,
 ) -> Vec<Vec<Range<usize>>> {
+    assets_start_ranges(instrument, assets, rate, heads, policy, |zone| zone_resident(instrument, zone))
+}
+
+/// The table a purge reload restores from: the start ranges of every zone,
+/// purged groups included, each with its own law head (`reload_heads`).
+pub(crate) fn reload_start_ranges(
+    instrument: &ir::Instrument,
+    assets: &[Pcm],
+    rate: u32,
+    reload_heads: &[usize],
+    policy: &StreamPolicy,
+) -> Vec<Vec<Range<usize>>> {
+    assets_start_ranges(instrument, assets, rate, reload_heads, policy, |_| true)
+}
+
+fn assets_start_ranges(
+    instrument: &ir::Instrument,
+    assets: &[Pcm],
+    rate: u32,
+    heads: &[usize],
+    policy: &StreamPolicy,
+    include: impl Fn(&ir::Zone) -> bool,
+) -> Vec<Vec<Range<usize>>> {
     let geometry = assets.iter().map(|p| (p.sample_rate(), p.frame_count())).collect::<Vec<_>>();
-    let mut ranges = start_ranges_geometry(instrument, &geometry, rate, heads, policy);
+    let mut ranges = start_ranges_geometry(instrument, &geometry, rate, heads, policy, include);
     if let Some(room) = policy.resident_budget {
         keep_whole(assets, &mut ranges, room);
     }
@@ -990,12 +1054,16 @@ fn start_ranges_geometry(
     rate: u32,
     heads: &[usize],
     policy: &StreamPolicy,
+    include: impl Fn(&ir::Zone) -> bool,
 ) -> Vec<Vec<Range<usize>>> {
     let mut ranges = vec![Vec::new(); geometry.len()];
     for (zone, &head) in instrument.zones.iter().zip(heads) {
         let Some(asset) = zone.asset.map(|a| a.0) else {
             continue;
         };
+        if !include(zone) {
+            continue;
+        }
         let playback = &zone.playback;
         let (sample_rate, frame_count) = geometry[asset];
         if zone
@@ -1157,6 +1225,8 @@ impl ConstantStartHints {
             constant: 0, zero: 0, dependent: 0, loops: 0, wavetable: 0, silent: 0, eligible: 0 };
         for (region, zone) in instrument.zones.iter().enumerate() {
             if canceled() { return Err(canceled_head()); }
+            // A purged group's zone gets no start hint at load; its purge reload restores it.
+            if !zone_resident(instrument, zone) { continue; }
             if !zone.routes.iter().any(|r| instrument.routes.get(r.0).is_some_and(|r| r.target == ir::Target::SampleStart)) { continue; }
             let Some(offset) = prepared.constant_start_offset(region) else { this.dependent += 1; continue; };
             this.constant += 1;
@@ -2124,9 +2194,31 @@ impl Streamer {
         allow_cold_fallback: bool,
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> io::Result<(Self, usize)> {
+        Self::start_with_reload_cancelable(sources, assets, ranges, None, onsets, hints, worker,
+            decoders, lazy, head_budget, pinned_wavetables, allow_cold_fallback, canceled)
+    }
+    /// `reload` is the purge-reload table when some zones sit in purged groups:
+    /// per asset, every zone's start ranges (`reload_start_ranges`). Assets whose
+    /// load table is shorter restore from it, so a purge reload loads the law head.
+    fn start_with_reload_cancelable(
+        sources: HashMap<AssetId, Arc<dyn AssetSource>>,
+        assets: &[Pcm],
+        ranges: Vec<Vec<Range<usize>>>,
+        purge_reload: Option<Vec<Vec<Range<usize>>>>,
+        onsets: Option<Vec<Vec<Range<usize>>>>,
+        hints: Option<HintFallback>,
+        worker: StreamWorker,
+        decoders: usize,
+        lazy: bool,
+        head_budget: usize,
+        pinned_wavetables: HashSet<AssetId>,
+        allow_cold_fallback: bool,
+        canceled: &(dyn Fn() -> bool + Sync),
+    ) -> io::Result<(Self, usize)> {
         let span = crate::audit::Span::new("sample_preload");
         let decoders = decoders.clamp(1, 8);
         let table = checked_start_table(assets, ranges, None)?;
+        let reload_table = purge_reload.map(|ranges| checked_start_table(assets, ranges, None)).transpose()?;
         let onset_table = onsets.map(|ranges| checked_start_table(assets, ranges, Some(&table))).transpose()?;
         let (hint_table, requested_hint_head_frames) = match hints {
             Some(hints) => (Some(checked_start_table(assets, hints.ranges, Some(&table))?), Some(hints.head_frames)),
@@ -2229,6 +2321,12 @@ impl Streamer {
             // including mandatory entries in otherwise deferred lazy startup.
             for pcm in assets.iter().filter(|p| p.requires_resident() || pinned_wavetables.contains(&p.asset_id())) {
                 restore.insert(pcm.asset_id(), RestoreRange::Admitted(table[&pcm.asset_id()].clone()));
+            }
+            // Purged-group zones are not in `table`; their purge reload restores the law head.
+            for (id, full) in reload_table.iter().flat_map(|table| table.iter()) {
+                if table[id] != *full {
+                    restore.insert(*id, RestoreRange::DeferredRequested(full.clone()));
+                }
             }
             let restore = Arc::new(restore);
             Ok((staged,bytes,selected.into_iter().map(|(pcm,_)|pcm).collect(),restore))
@@ -3011,9 +3109,17 @@ impl Streamed {
         let heads=preload_heads(&loaded.instrument,&frames,&opened.layouts);
         opened.report.head_frames=heads.iter().copied().max().unwrap_or(0);
         opened.report.kontakt_window_bytes=kontakt_window_bytes(&loaded.instrument,&opened.layouts);
-        let logical_ranges=start_ranges_geometry(&loaded.instrument,&geometry,opened.rate,&heads,&opened.policy);
-        let mut physical=Vec::new();let mut ranges=Vec::new();
-        for (source,logical_ranges) in kept.iter().zip(logical_ranges) {source.as_source().physical_dependencies(|pack|{physical.push(pack.clone());ranges.push(logical_ranges.clone());});}
+        let logical_ranges=start_ranges_geometry(&loaded.instrument,&geometry,opened.rate,&heads,&opened.policy,|zone|zone_resident(&loaded.instrument,zone));
+        // Purged groups are only in the purge-reload table, and only when some group is purged.
+        let logical_reload=loaded.instrument.groups.iter().any(|g|g.purged).then(|| {
+            let reload=reload_heads(&loaded.instrument,&frames,&opened.layouts);
+            start_ranges_geometry(&loaded.instrument,&geometry,opened.rate,&reload,&opened.policy,|_|true)
+        });
+        let mut physical=Vec::new();let mut ranges=Vec::new();let mut reloads=Vec::new();
+        for (index,(source,logical_ranges)) in kept.iter().zip(logical_ranges).enumerate() {source.as_source().physical_dependencies(|pack|{
+            physical.push(pack.clone());ranges.push(logical_ranges.clone());
+            if let Some(reload)=&logical_reload {reloads.push(reload[index].clone());}
+        });}
         let used=physical.iter().map(Pcm::asset_id).collect::<HashSet<_>>();opened.sources.retain(|id,_|used.contains(id));
         let mut pinned=HashSet::new();
         for zone in &loaded.instrument.zones {if zone.group.is_some_and(|g|loaded.instrument.groups[g.0].wavetable.is_some()) {
@@ -3022,7 +3128,7 @@ impl Streamed {
         let mut report=opened.report;
         let (mut cache,worker)=StreamCache::new(report.pool_pages.max(1)).map_err(|e|invalid(io::Error::other(e)))?;
         report.pool_bytes=cache.bytes();report.head_assets=ranges.iter().filter(|r|!r.is_empty()).count();report.head_ranges=ranges.iter().map(Vec::len).sum();report.head_source_frames=ranges.iter().flatten().map(|r|r.len() as u64).sum();
-        let (streamer,_)=Streamer::start_with_onsets_cancelable(opened.sources,&physical,ranges,None,worker,opened.policy.decoders,opened.policy.lazy,opened.policy.head_budget,pinned,opened.policy.allow_cold_fallback,canceled).map_err(invalid)?;
+        let (streamer,_)=Streamer::start_with_reload_cancelable(opened.sources,&physical,ranges,logical_reload.is_some().then_some(reloads),None,None,worker,opened.policy.decoders,opened.policy.lazy,opened.policy.head_budget,pinned,opened.policy.allow_cold_fallback,canceled).map_err(invalid)?;
         report.head_bytes=physical.iter().map(Pcm::head_bytes).sum();report.head_fallback=streamer.head_fallback();
         report.required_resident_assets=physical.iter().filter(|p|p.requires_resident()).count();report.required_resident_bytes=physical.iter().filter_map(|p|p.resident_frames().map(|f|f.len()*size_of::<Frame>())).sum();
         cache.set_wake(streamer.threads.iter().map(|t|t.thread().clone()).collect());cache.set_reloader(streamer.reloader.as_ref().map(|t|t.thread().clone()));
@@ -3061,6 +3167,11 @@ impl Streamed {
         report.head_frames = heads.iter().copied().max().unwrap_or(0);
         report.kontakt_window_bytes = kontakt_window_bytes(&loaded.instrument, &layouts);
         let ranges = start_ranges(&loaded.instrument, &kept, rate, &heads, &policy);
+        // Purged groups' law heads are restored only by a purge reload (see `reload`).
+        let reload = loaded.instrument.groups.iter().any(|g| g.purged).then(|| {
+            let reload = reload_heads(&loaded.instrument, &frames, &layouts);
+            reload_start_ranges(&loaded.instrument, &kept, rate, &reload, &policy)
+        });
         // Over budget the law heads are kept whole: the budget is raised to them,
         // and the excess is reported (KONTRA_AUDIT_LOAD) rather than truncated.
         let head_bytes = physical_head_bytes(&kept, &ranges).unwrap_or(usize::MAX);
@@ -3095,10 +3206,11 @@ impl Streamed {
         let hints = (hint_recipe.eligible != 0).then(|| hint_recipe.ranges(canceled).map(|ranges| HintFallback {
             head_frames: report.head_frames, ranges,
         })).transpose().map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
-        let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
+        let (streamer, bytes) = Streamer::start_with_reload_cancelable(
             sources,
             &kept,
             ranges,
+            reload,
             None,
             hints,
             worker,
@@ -3526,6 +3638,27 @@ mod tests {
                 assert!(assets.iter().all(|p|p.head_bytes()==0));
             }
         }
+    }
+
+    #[test]
+    fn purged_group_head_is_restored_by_its_purge_reload_not_at_load() {
+        // Asset 0 is used only by a purged group: no load range, a law range for reload.
+        // Asset 1 is resident and loads its head at start.
+        let assets = vec![Pcm::streamed(48000, 8192).unwrap(), Pcm::streamed(48000, 8192).unwrap()];
+        let sources = assets.iter()
+            .map(|p| (p.asset_id(), Arc::new(HeadFixture { opens: Arc::new(AtomicU64::new(0)), cancel: None, frames: 8192, wide: false }) as Arc<dyn AssetSource>))
+            .collect();
+        let (_, worker) = StreamCache::new(1).unwrap();
+        let (streamer, _) = Streamer::start_with_reload_cancelable(
+            sources, &assets, vec![vec![], vec![0..32]], Some(vec![vec![0..64], vec![0..32]]), None, None,
+            worker, 2, false, 1 << 20, HashSet::new(), false, &|| false,
+        ).unwrap();
+        assert_eq!(assets[0].head_bytes(), 0, "a purged group gets no head at load");
+        assert!(assets[1].resident_covers(0..32));
+        // The purge reload restores the purged group's law head from the reload table.
+        assets[0].mark_cold();
+        assert_eq!(streamer.reload(&assets).unwrap(), 1);
+        assert!(assets[0].resident_covers(0..64), "purge reload loads the law head");
     }
 
     #[test]

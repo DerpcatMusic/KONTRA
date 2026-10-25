@@ -6,7 +6,7 @@
 //! borrowed recipe exists only while startup constructs its physical ranges.
 use super::{
     ConstantStartHints, Pcm, Range, StreamPolicy, canceled_head, constant_start_window,
-    merge_start_ranges, zone_step,
+    merge_start_ranges, zone_resident, zone_step,
 };
 use sampler_core::Prepared;
 use sampler_ir as ir;
@@ -169,6 +169,9 @@ impl<'plan> InitialStartHints<'plan> {
         for (region, zone) in instrument.zones.iter().enumerate() {
             if canceled() {
                 return Err(canceled_head());
+            }
+            if !zone_resident(instrument, zone) {
+                continue;
             }
             if this.start_ranges[region].sources.is_empty()
                 || prepared.constant_start_offset(region).is_some()

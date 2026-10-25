@@ -1,7 +1,8 @@
 //! Source-free regressions for root's coordinated build. No library assets.
 use super::super::{
     AssetSource, Frame, FrameLayout, HintFallback, SampleReader, StreamCache, Streamer,
-    kontakt_window_bytes, law_heads, physical_head_bytes, preload_heads, start_ranges,
+    kontakt_window_bytes, law_heads, physical_head_bytes, preload_heads, reload_heads,
+    start_ranges,
 };
 use super::*;
 use sampler_core as core;
@@ -942,4 +943,41 @@ fn stream_head_is_the_dfd_window_with_start_mod() {
     // Two zones on one sample count its largest window once.
     let two = start_instrument(ir::ModulationSource::Controller(113), 1_000, 2);
     assert_eq!(kontakt_window_bytes(&two, &[mono]), 67_584);
+}
+
+#[test]
+fn purged_group_zones_have_no_head_until_their_purge_reload() {
+    // Zone 0 sits in a purged group, zone 1 in a resident one; S.Mod 1000, mono 16-bit.
+    let mono = FrameLayout {
+        channels: 1,
+        bits: 16,
+    };
+    let mut ir = start_instrument(ir::ModulationSource::Controller(113), 1_000, 2);
+    ir.groups.push(ir::Group {
+        purged: true,
+        ..Default::default()
+    });
+    ir.zones[0].group = Some(ir::GroupRef(0));
+    assert_eq!(preload_heads(&ir, &[100_000], &[mono]), vec![0, 33_792]);
+    assert_eq!(reload_heads(&ir, &[100_000], &[mono]), vec![33_792, 33_792]);
+    // Window bytes count the resident zone only.
+    assert_eq!(kontakt_window_bytes(&ir, &[mono]), 67_584);
+}
+
+#[test]
+fn kontakt_window_bytes_is_the_union_of_each_samples_zone_windows() {
+    // Mono 16-bit, S.Mod 1000. Zone 0 at frame 0 covers [0, 33792). Zone 1 at 10,000
+    // starts at 9000 (= 10000 - 1000) and covers [9000, 42792) (a 33792-frame window,
+    // no shrink). The union is [0, 42792) = 42792 frames = 85584 bytes, not 2 x 67584.
+    let mono = FrameLayout {
+        channels: 1,
+        bits: 16,
+    };
+    let mut ir = start_instrument(ir::ModulationSource::Controller(113), 1_000, 2);
+    ir.zones[1].playback.start = 10_000;
+    assert_eq!(
+        preload_heads(&ir, &[100_000], &[mono]),
+        vec![33_792, 33_792]
+    );
+    assert_eq!(kontakt_window_bytes(&ir, &[mono]), 85_584);
 }
