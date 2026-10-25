@@ -1,0 +1,19 @@
+{
+  "kontakto": 80470,
+  "sampler-ample": 203,
+  "sampler-core": 106432,
+  "sampler-dspbench": 2676,
+  "sampler-ikmpak": 341,
+  "sampler-ir": 9043,
+  "sampler-kontakt": 24541,
+  "sampler-ksp": 21922,
+  "sampler-midi": 1465,
+  "sampler-native": 3227,
+  "sampler-parity": 140,
+  "sampler-perf": 2266,
+  "sampler-pool": 824,
+  "sampler-script": 249,
+  "sampler-simd": 267,
+  "sampler-ui-ir": 1392,
+  "sampler-uvi": 28552
+}
