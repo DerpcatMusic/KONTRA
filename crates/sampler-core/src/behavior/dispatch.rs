@@ -12,6 +12,8 @@ pub enum BehaviorOverload {
     Defer,
     /// Real-time playback: fail and release the callback's owned work now.
     /// Never replay ordinary note processing at a later musical timestamp.
+    /// The one exception is engine-effect outbox back-pressure, which waits for the
+    /// host drain under every policy (UI-only writes never wait or fault; see `OutboxMerge`).
     Abort,
 }
 

@@ -11,7 +11,13 @@ pub const CALL_DEPTH: usize = 32;
 pub const TEXT_CAPACITY: usize = 320;
 pub const EFFECT_ARGS: usize = 6;
 /// Pending effects retained between drains; later emits wait for a drain.
-pub const EFFECT_CAPACITY: usize = 256;
+/// UI-only writes admitted between drains: one slot per distinct target.
+pub const UI_EFFECT_CAPACITY: usize = 2048;
+/// Slots only engine, file and persistence effects may use. A UI flood stops at
+/// `UI_EFFECT_CAPACITY`, so an engine effect in the same block always finds room.
+pub const ENGINE_EFFECT_RESERVE: usize = 256;
+/// Pending effects retained between drains, in script order.
+pub const EFFECT_CAPACITY: usize = UI_EFFECT_CAPACITY + ENGINE_EFFECT_RESERVE;
 
 /// What a full outbox may do with an effect. Only UI-only effects are ever
 /// merged or dropped; everything else waits for the host, as before.
@@ -852,12 +858,13 @@ impl Frames {
 }
 
 pub(crate) struct OpState {
+    /// Pending effects in script order.
     pub effects: std::collections::VecDeque<Effect>,
     /// Emits that found the outbox full and waited for the host to drain it.
     pub stalled_effects: u64,
     /// Set by an emit that found the outbox full; the dispatcher then yields the callback.
     pub outbox_full: bool,
-    /// UI-only effects dropped because the outbox was full and nothing could merge.
+    /// UI-only effects dropped because the UI budget was full and nothing could merge.
     pub ui_effects_dropped: u64,
     /// Text appends cut short at [`TEXT_CAPACITY`].
     pub truncated_texts: u64,
@@ -1908,8 +1915,7 @@ impl Runtime {
                 text,
                 merge,
             } => {
-                let full = self.ops.effects.len() == EFFECT_CAPACITY;
-                if full && merge == OutboxMerge::Wait {
+                if merge == OutboxMerge::Wait && self.ops.effects.len() == EFFECT_CAPACITY {
                     let c = self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
                     c.pc -= 1;
                     // Waiting on the host is not the callback burning fuel.
@@ -1947,17 +1953,20 @@ impl Runtime {
                     count,
                     text,
                 };
-                if let OutboxMerge::Latest { keys } = merge
-                    && let Some(queued) = self
+                let superseded = match merge {
+                    OutboxMerge::Latest { keys } => self
                         .ops
                         .effects
-                        .iter_mut()
-                        .rev()
-                        .find(|queued| same_target(queued, &effect, keys))
-                {
-                    // The newest queued write to a target is the one the host reads last.
-                    *queued = effect;
-                } else if !full {
+                        .iter()
+                        .rposition(|queued| same_target(queued, &effect, keys)),
+                    _ => None,
+                };
+                if let Some(index) = superseded {
+                    // Delete the superseded write and append this one, so the host sees
+                    // script order with only that write removed.
+                    self.ops.effects.remove(index);
+                    self.ops.effects.push_back(effect);
+                } else if merge == OutboxMerge::Wait || self.ops.effects.len() < UI_EFFECT_CAPACITY {
                     self.ops.effects.push_back(effect);
                 } else {
                     // A UI write never delays or faults the callback: drop and count it.

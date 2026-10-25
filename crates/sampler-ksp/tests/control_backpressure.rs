@@ -81,7 +81,8 @@ fn undrained_effects_bound_one_timer_but_repeated_ui_callbacks_fill_the_arena() 
     let revision = rt.control_revision(plan).unwrap();
     let mut rejected = None;
     support::without_heap(|| {
-        for _ in 0..400 {
+        // One listener emit per step: fill the whole outbox, then park 144 more.
+        for _ in 0..EFFECT_CAPACITY + 144 {
             step(&mut rt);
         }
         let mut callbacks = 0;
@@ -152,7 +153,10 @@ fn undrained_effects_bound_one_timer_but_repeated_ui_callbacks_fill_the_arena() 
             (0, 129, 0, 0)
         );
         assert_eq!(failure.yielded_queue, 129);
-        assert_eq!((failure.outbox_used, failure.outbox_capacity), (256, 256));
+        assert_eq!(
+            (failure.outbox_used, failure.outbox_capacity),
+            (EFFECT_CAPACITY, EFFECT_CAPACITY)
+        );
         assert!(failure.stalled_effects > 0);
         assert_eq!(failure.owners_omitted, 121);
         assert!(
