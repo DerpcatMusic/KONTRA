@@ -15,12 +15,15 @@ already ported as `crates/sampler-kontakt/src/dfd_window.rs`:
 ```text
 P = preload bytes per channel (instrument dfdChannelPreloadSize, default 61440; global override)
 C = channels, F = ceil(bits/8) * C bytes per frame, off = the zone's S.Mod range in frames
+d     = pos - off                   (pos = zone start in frames)
 base  = P * C                       (60 KB per channel, not per sample)
+if d < 0: base += F * d             (a start near the sample head has less room behind it)
 total = base + off * F * 2
 W     = ceil(total / 6144) * 6144   (6 KiB granularity); head frames = W / F
+start = max(d, 0)                   (the window starts S.Mod before the zone start)
 ```
 
-- **Preload = `base` + 2 × the zone's S.Mod range**, through `dfd_window::window`.
+- **Preload = `base` + 2 × the zone's S.Mod range**, starting S.Mod before the zone start, exactly as `dfd_window::window` computes it.
   Nothing else extends the head.
 - **Script and CC offsets are bounded by S.Mod.** KSP manual, `play_note()`: "In DFD mode,
   the sample offset is influenced by the Sample Mod (S. Mod) value of the zones. Offsets
