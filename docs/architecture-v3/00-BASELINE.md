@@ -2,6 +2,10 @@
 
 All numbers come from this worktree. Rerun the commands to update them.
 
+The tool-measured baseline on v3 (`xtask size`/`debt`, `kontra-probe` C1–C10 on
+the fixtures and four libraries) is [gates/G0.md](gates/G0.md), commit 9acb0f9c8.
+Later gates compare against G0. The tables below are the earlier hand count.
+
 ## Size
 
 Production vs test lines (test = `*test*.rs`, `tests/`, and trailing
@@ -70,12 +74,12 @@ because the root crate always pulls in the UI. 565 unique external crates.
 
 | Pattern | Count | Where |
 |---|---|---|
-| `Processor::` match sites | 824 in 102 files | two `Processor` enums: `sampler-ir` (~26 kinds) and `sampler-core/src/dsp.rs` (~28 kinds) |
+| `Processor::` match sites | 824 in 102 files (xtask: 885) | two `Processor` enums: `sampler-ir` (~26 kinds) and `sampler-core/src/dsp.rs` (~28 kinds) |
 | Files touched by one effect type (e.g. dynamics/EQ) | ~10 in 5 crates | IR, IR validate, core lower, core dsp, kontakt effects, uvi fx, UI chain, cpu receipt, v2.rs |
 | `Runtime` struct fields | 109 | ~25 are counters; notes, voices, scripts, streaming and stats live side by side |
 | Plugin `Shared` fields | 54 | 7 `ArrayQueue`, 19 `AtomicU64`, 9 `Mutex`: one ad-hoc channel per feature |
-| `#[path]` attributes | 138 | module tree does not match files |
-| `#[allow(...)]` | 127 | |
+| `#[path]` attributes | 138 (xtask: 141) | module tree does not match files |
+| `#[allow(...)]` | 127 (xtask: 111) | |
 | Handwritten `impl Default` | 93 | |
 | Error enums | 25 | |
 | `pub struct` | 1,530 | |
