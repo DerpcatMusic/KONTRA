@@ -264,7 +264,9 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
     lines += ["", "## How to work",
               f"1. Branch from `{branch}`: `wt switch -c {meta['branch_prefix']}{tid}-{slug_} -b {branch}` "
               f"(T3/Claude worktrees: `git switch -c {meta['branch_prefix']}{tid}-{slug_} origin/{branch}`).",
-              f"2. Commit early and often. Conventional Commits, with a `Task: {tid}` trailer.",
+              f"2. Commit early and often. Conventional Commits, with a `Task: {tid}` trailer. After the first commit push and open a "
+              f"**draft** PR (`gh pr create --draft --base {branch} --title \"{tid}: {t['title']}\"`) and keep a `## Progress` list "
+              "in its body; if your session ends, the next agent resumes from it.",
               "3. Write Rust per the `beautiful-rust` skill; before the PR run `cargo fmt` and "
               "`build-slot cargo clippy -p <your crates> --all-targets --no-deps -- -D warnings` on the crates you changed (`--no-deps`: some old crates are not clippy-clean yet).",
               "4. `Cargo.lock`: only additions your change needs. Revert any unrelated version change cargo makes "
@@ -272,7 +274,7 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
               "require `build-slot`; it exists only on the maintainer's machine.",
               "5. Run only the gate's crate-scoped commands, always through `build-slot`. No workspace builds, corpus runs, "
               "real-library surveys or plugin bundles: the coordinator does those once per merge batch.",
-              f"6. `git push -u origin HEAD` then `gh pr create --base {branch} --title \"{tid}: {t['title']}\"` and fill in the template.",
+              "6. Push, fill in the PR template (gate output, scope check, net lines, deviations) and `gh pr ready`.",
               "7. Report back: PR URL, head SHA, gate output, any deviation from this brief and why."]
     return "\n".join(lines) + "\n"
 
