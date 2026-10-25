@@ -251,7 +251,9 @@ impl Playback {
             misses: 0,
             fade_in: 0,
             fade_frames: output_rate.div_ceil(1000),
-            cold_hold: false,
+            dropout_frames: 0,
+            first_stall: None,
+            unsounded: false,
             start_runway: 0,
             bounded_demand: false,
             lead: 0,
@@ -405,7 +407,9 @@ impl CursorTemplate {
             misses: 0,
             fade_in: 0,
             fade_frames: self.fade_frames,
-            cold_hold: false,
+            dropout_frames: 0,
+            first_stall: None,
+            unsounded: false,
             start_runway: 0,
             bounded_demand: false,
             lead: self.lead,
@@ -448,8 +452,14 @@ pub(super) struct Cursor {
     // Remaining fade-in frames after a recovered miss.
     fade_in: u32,
     fade_frames: u32,
-    /// Initial storage hold; lifecycle events still end an unsounded voice.
-    cold_hold: bool,
+    /// Frames rendered as silence (or fade-out) because their source window was
+    /// not resident. The cursor advances through them: storage never holds a voice.
+    dropout_frames: u64,
+    /// Traversal position of the first dropout frame, if any.
+    first_stall: Option<u64>,
+    /// Admitted before any source frame: lifecycle events end it with no tail to
+    /// preserve. Cleared by its first frame; it never gates rendering.
+    unsounded: bool,
     /// Pending first-render runway contract; zero after admission to playback.
     /// Held cursors use it on scalar/batched/parallel source paths.
     start_runway: u32,
@@ -900,10 +910,11 @@ impl Cursor {
     pub(crate) fn pending_start_runway(&self) -> u32 { self.start_runway }
     pub(crate) fn admit_start_runway(&mut self) { self.start_runway = 0; }
 
-    /// Start silent, waiting for its stream window (a cold start).
-    pub(super) fn cold(mut self) -> Self {
+    /// Admitted without its first source window: starts faded out and waiting, and
+    /// its schedule runs through the wait like any other starved voice.
+    pub(super) fn awaiting_first_frame(mut self) -> Self {
         self.starvation = Some(0);
-        self.cold_hold = true;
+        self.unsounded = true;
         self
     }
 
@@ -912,14 +923,27 @@ impl Cursor {
         self.starvation == Some(0)
     }
 
-    pub(super) fn holding_onset(&self) -> bool {
-        self.cold_hold
+    pub(super) fn unsounded(&self) -> bool {
+        self.unsounded
     }
-    /// A complete default-one processing-owner admission cleared only the
-    /// hold. Existing starvation/recovery fade and all source history remain
-    /// owned by the ordinary next source render.
-    pub(crate) fn admit_processing_cold_start(&mut self) {
-        self.cold_hold = false;
+
+    /// Frames rendered without their source window, since creation.
+    pub(crate) fn dropout_frames(&self) -> u64 {
+        self.dropout_frames
+    }
+
+    /// Traversal position where the first dropout began.
+    pub(crate) fn first_stall(&self) -> Option<u64> {
+        self.first_stall
+    }
+
+    /// Books `frames` of silence (or fade-out) that began at traversal position `at`.
+    fn stall(&mut self, frames: usize, at: u64) {
+        if frames == 0 {
+            return;
+        }
+        self.dropout_frames = self.dropout_frames.saturating_add(frames as u64);
+        self.first_stall.get_or_insert(at);
     }
 
     /// One millisecond of native fade from the last complete resampled frame.
@@ -951,6 +975,8 @@ impl Cursor {
 
     /// Fade out, then wait silently (still advancing) until the window at the
     /// cursor is resident again, then fade back in. Probed once per call.
+    /// Missing storage never holds the cursor: every waited frame advances the
+    /// schedule and is counted as a dropout.
     fn render_starved(
         &mut self,
         pcm: &(impl ReadFrames + ?Sized),
@@ -960,22 +986,22 @@ impl Cursor {
         gains: [f32; 2],
         kernel: &Kernel,
     ) -> usize {
-        if self.cold_hold {
-            if self.sample(pcm, kernel).is_some() {
-                self.cold_hold = false;
-            } else {
-                // An unpreloaded onset must keep its requested offset, even
-                // when storage takes longer than the old 50 ms deadline.
-                return output.len();
-            }
-        }
+        let at = self.position;
         let count = if self.starvation != Some(0) {
-            self.render_starvation(output, envelope, gain, gains)
-        } else if self.done() || self.sample(pcm, kernel).is_none() {
+            let count = self.render_starvation(output, envelope, gain, gains);
+            self.stall(count, at);
+            count
+        } else if self.done() {
             self.last = [0.; 2];
             return self.advance_silent(output.len(), envelope);
+        } else if self.sample(pcm, kernel).is_none() {
+            self.last = [0.; 2];
+            let count = self.advance_silent(output.len(), envelope);
+            self.stall(count, at);
+            return count;
         } else {
             self.starvation = None;
+            self.unsounded = false;
             self.fade_in = self.fade_frames;
             0
         };
@@ -2286,6 +2312,47 @@ mod tests {
         pcm.missing.set((at, at + 1));
         cursor.render(&pcm, &mut output, &mut env, 1., [1.; 2], &kernel);
         assert_eq!(cursor.misses(), 2);
+    }
+
+    #[test]
+    fn a_starved_voice_keeps_its_schedule_and_counts_its_dropout() {
+        use std::ops::Range;
+        // The window for the first `missing` frames is absent; the sibling reads a full sample.
+        struct Gappy<'a> { frames: &'a [Frame], missing: Range<usize> }
+        impl ReadFrames for Gappy<'_> {
+            fn frame(&self, index: usize) -> Option<Frame> {
+                (!self.missing.contains(&index)).then(|| self.frames.get(index).copied()).flatten()
+            }
+            fn span(&self, _: Range<usize>) -> Option<&[Frame]> { None }
+        }
+        let frames: Vec<Frame> = (0..8192).map(|i| [(i as f32 * 0.01).sin(); 2]).collect();
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        let missing = 1000;
+        let starved_pcm = Gappy { frames: &frames, missing: 0..missing };
+        let full_pcm = Gappy { frames: &frames, missing: 0..0 };
+        // Unit step: one source frame per output frame, so the stall length is exact.
+        let start = Playback::default().cursor(frames.len(), 48000, 48000).unwrap();
+        let (mut starved, mut sibling) = (start, start);
+        let (mut env_starved, mut env_sibling) = (
+            EnvelopeState::new(crate::Envelope::default()),
+            EnvelopeState::new(crate::Envelope::default()),
+        );
+        let mut out_starved = [[0.; 2]; 64];
+        let mut out_sibling = [[0.; 2]; 64];
+        let mut stall_frames = 0;
+        while starved.position < missing as u64 + 64 {
+            starved.render(&starved_pcm, &mut out_starved, &mut env_starved, 1., [1.; 2], &kernel);
+            sibling.render(&full_pcm, &mut out_sibling, &mut env_sibling, 1., [1.; 2], &kernel);
+            stall_frames += 1;
+            assert_eq!(starved.position, sibling.position, "block {stall_frames}: schedule drifted");
+        }
+        // The stall was counted once, from its first frame, and no frame of the sibling was lost.
+        // The window is probed once per 64-frame block, so recovery lands on the next block edge.
+        assert_eq!(starved.dropout_frames(), missing.div_ceil(64) as u64 * 64);
+        assert_eq!(starved.first_stall(), Some(0));
+        assert_eq!(sibling.dropout_frames(), 0);
+        assert_eq!(sibling.first_stall(), None);
+        assert_eq!(env_starved.remaining(), env_sibling.remaining());
     }
 
     #[test]

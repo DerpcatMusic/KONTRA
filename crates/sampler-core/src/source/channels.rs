@@ -91,12 +91,6 @@ impl Cursor {
                     destination.copy_from_slice(&sample[..destination.len()]);
                 } else { available = false; break; }
             }
-            if self.cold_hold {
-                // The entire logical onset, not just the missing pair, stays at
-                // its requested source offset until every interpolation leg is ready.
-                if !available { break; }
-                self.cold_hold = false;
-            }
             if !available && self.starvation.is_none() { self.starvation = Some(self.fade_frames); }
             if let Some(remaining) = self.starvation {
                 if remaining != 0 {
