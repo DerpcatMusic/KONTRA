@@ -177,7 +177,7 @@ impl Fixture {
                 mics: &[Mic::Close],
                 rounds: 1,
                 layers: 2,
-                seconds: 0.25,
+                seconds: 8.0,
                 groups: groups(self.name(), &[Mic::Close], 1),
                 script: None,
                 start_mod_frames: 3_600,

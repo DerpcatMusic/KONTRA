@@ -1084,8 +1084,13 @@ fn start_ranges_geometry(
         let step = zone_step(zone, &instrument.groups, ratio, policy);
         // The resampling window reads this far either side of the position.
         let guard = sampler_core::read_radius(step) as u64 + 1;
-        // `head` already covers the whole sample-start modulation range (`StartRange`).
-        let frames = (head as u64).saturating_add(2 * guard);
+        // A sample-start route moves the first read up to `start_range` past the
+        // position, so the preload reaches that far before the head. Without it a
+        // streamed first note reads past its ranges: a cold start, one block late.
+        // An unrouted range is never read, so it costs no residency.
+        let routed = zone.routes.iter().any(|r| instrument.routes[r.0].target == ir::Target::SampleStart);
+        let reach = if routed { playback.start_range } else { 0 };
+        let frames = (head as u64).saturating_add(2 * guard).saturating_add(reach);
         let length = frame_count as u64;
         let end = playback.end.unwrap_or(length).min(length);
         let (from, to) = if playback.reverse {
@@ -3715,7 +3720,9 @@ mod tests {
         assert_eq!(audit["constant_offset_zones"], 3);
         assert_eq!(audit["hint_assets"], 2);
         assert_eq!(audit["hint_ranges"], 2);
-        assert!(audit["hint_extra_source_frames"].as_u64().unwrap() > 0);
+        // The routed start range is in the base preload now, so the constant offsets add
+        // no source frames beyond it.
+        assert_eq!(audit["hint_extra_source_frames"].as_u64().unwrap(), 0);
         assert!(audit["base_plus_hint_payload_lower_bytes"].as_u64().unwrap() > 1);
         assert!(assets.iter().all(|p| p.head_bytes() == 0), "audit must not decode/admit even above quota");
         assert_eq!(constant_start_geometry(&instrument, &prepared, &assets, &base, &HashSet::new(), 48000, &law_heads(&instrument, 64), &policy, &||true).unwrap_err().kind(), io::ErrorKind::Interrupted);
