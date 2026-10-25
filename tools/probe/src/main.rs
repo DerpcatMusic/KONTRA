@@ -4,16 +4,19 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail, ensure};
-use kontra_probe::{BLOCK, CONTRACTS, Mode, Pattern, Report, Session, Verdict, check};
+use kontra_probe::{BLOCK, CONTRACTS, Fixture, Mode, Pattern, Report, Session, Verdict, check};
 use serde::Serialize;
 
-const SYNOPSIS: &str = "usage: kontra-probe <instrument> [--pattern live|dense|offsets|cc] \
+const SYNOPSIS: &str = "usage: kontra-probe <instrument> | --fixture <name> [--pattern live|dense|offsets|cc] \
 [--contracts C1,C3,...] [--json <out.json>]";
-const HELP: &str = "usage: kontra-probe <instrument> [--pattern live|dense|offsets|cc] \
+const HELP: &str =
+    "usage: kontra-probe <instrument> | --fixture <name> [--pattern live|dense|offsets|cc] \
 [--contracts C1,C3,...] [--json <out.json>]
 
 Plays <instrument> through the playback contracts C1-C10 and prints one verdict each.
 
+  --fixture NAME   play a synthetic fixture built in the target directory instead of a
+                   file: cc_start, key_position, dense or streamed (see tools/probe/README.md)
   --pattern P      pattern C1 and C6 measure, and the one in the JSON report (default live).
                    C4 and C5 always measure live; C8 always measures dense.
   --contracts IDS  comma-separated contract ids to run (default: all ten)
@@ -24,9 +27,15 @@ exit: 0 every selected contract passed or is unsupported; 1 a contract failed;
       2 usage or load error";
 const RATE: f64 = 48_000.0;
 
+/// What the probe plays: a file, or a fixture built on demand.
+enum Input {
+    File(PathBuf),
+    Fixture(Fixture),
+}
+
 /// Parsed command line.
 struct Args {
-    instrument: PathBuf,
+    input: Input,
     pattern: Pattern,
     contracts: Vec<String>,
     json: Option<PathBuf>,
@@ -44,6 +53,7 @@ struct Out<'a> {
 /// Parses the command line; `None` when help was asked for.
 fn parse(mut raw: impl Iterator<Item = String>) -> Result<Option<Args>> {
     let mut instrument = None;
+    let mut fixture = None;
     let mut pattern = Pattern::Live;
     let mut contracts: Vec<String> = CONTRACTS.iter().map(|id| (*id).to_owned()).collect();
     let mut json = None;
@@ -64,6 +74,12 @@ fn parse(mut raw: impl Iterator<Item = String>) -> Result<Option<Args>> {
                     .collect();
             }
             "--json" => json = Some(PathBuf::from(raw.next().context("--json needs a path")?)),
+            "--fixture" => {
+                let value = raw
+                    .next()
+                    .context("--fixture needs a name, e.g. cc_start")?;
+                fixture = Some(value.parse().map_err(anyhow::Error::msg)?);
+            }
             flag if flag.starts_with("--") => bail!("unknown flag `{flag}`\n{SYNOPSIS}"),
             _ => {
                 ensure!(instrument.is_none(), "one instrument per run\n{SYNOPSIS}");
@@ -71,8 +87,13 @@ fn parse(mut raw: impl Iterator<Item = String>) -> Result<Option<Args>> {
             }
         }
     }
+    let input = match (instrument, fixture) {
+        (Some(path), None) => Input::File(path),
+        (None, Some(fixture)) => Input::Fixture(fixture),
+        _ => bail!("give one instrument or --fixture, not both or neither\n{SYNOPSIS}"),
+    };
     Ok(Some(Args {
-        instrument: instrument.context(SYNOPSIS)?,
+        input,
         pattern,
         contracts,
         json,
@@ -96,7 +117,17 @@ fn run() -> Result<bool> {
         println!("{HELP}");
         return Ok(true);
     };
-    let mut session = Session::load(&args.instrument, RATE)?;
+    let instrument = match args.input {
+        Input::File(path) => path,
+        Input::Fixture(fixture) => {
+            let gaps = fixture.gaps();
+            if !gaps.is_empty() {
+                println!("fixture {fixture} is missing: {gaps}");
+            }
+            fixture.build()?
+        }
+    };
+    let mut session = Session::load(&instrument, RATE)?;
     let report = session.play(args.pattern, Mode::RealTime, BLOCK)?;
     let audible = report
         .notes
@@ -136,7 +167,7 @@ fn run() -> Result<bool> {
 
     if let Some(path) = &args.json {
         let out = Out {
-            instrument: args.instrument.display().to_string(),
+            instrument: instrument.display().to_string(),
             rate: RATE,
             report: &report,
             verdicts: &verdicts,
@@ -170,5 +201,16 @@ mod tests {
         let args = ["song.nki", "--pattern", "dense"].map(str::to_owned);
         let parsed = parse(args.into_iter()).expect("parses").expect("not help");
         assert_eq!(parsed.pattern, Pattern::Dense);
+    }
+
+    #[test]
+    fn fixture_flag_replaces_the_instrument_path() {
+        let args = ["--fixture", "cc_start"].map(str::to_owned);
+        let parsed = parse(args.into_iter()).expect("parses").expect("not help");
+        assert!(matches!(parsed.input, Input::Fixture(Fixture::CcStart)));
+        let both = ["song.nki", "--fixture", "dense"].map(str::to_owned);
+        assert!(parse(both.into_iter()).is_err(), "one input only");
+        let unknown = ["--fixture", "chords"].map(str::to_owned);
+        assert!(parse(unknown.into_iter()).is_err(), "unknown fixture");
     }
 }

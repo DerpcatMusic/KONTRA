@@ -6,6 +6,7 @@ Plays an instrument through the playback contracts C1–C10
 
 ```sh
 kontra-probe <instrument> [--pattern live|dense|offsets|cc] [--contracts C1,C4,...] [--json out.json]
+kontra-probe --fixture cc_start|key_position|dense|streamed [...]
 kontra-probe --help
 ```
 
@@ -18,6 +19,21 @@ kontra-probe --help
 
 Each verdict prints as `C1 FAIL [live] ...`: id, outcome, the pattern it was
 measured on, then the detail.
+
+`--fixture` plays a synthetic instrument instead of a file. It is generated
+from WAVs under the probe binary's folder (`target/<profile>/kontra-probe-fixtures`)
+by the library creator, so no vendor files or audio are committed.
+
+| Fixture | Stands for | Not carried by the creator |
+|---|---|---|
+| `cc_start` | Areia: 3 mic groups x 4 round robins, round-robin script | CC113 start route, 300 UI writes per note |
+| `key_position` | Vista: 2 velocity layers | KeyPosition/RTC start route |
+| `dense` | 4-note chords on 1 mic x 4 round robins | `play_note` per voice, `ignore_event` |
+| `streamed` | 2 s samples, past the head | cold disk reads (the files are in the page cache) |
+
+The probe prints what is missing when a fixture is played. Today every
+measurable contract passes on all four fixtures, so none reproduces the audited
+bugs yet. `tests/fixtures.rs` asserts those passing contracts.
 
 ## Contracts
 
