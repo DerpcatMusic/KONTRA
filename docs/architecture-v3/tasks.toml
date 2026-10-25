@@ -346,7 +346,7 @@ steps = [
   "Over budget: load continues with law-sized heads and the report lists the excess and the largest zones (as in round 2).",
   "Keep heads in their current storage format in this task (format change is P6.1d), but report packed (resident) bytes, not decoded f32 bytes, in `head_bytes`."
 ]
-gate = ["build-slot cargo test -p sampler-kontakt stream", "build-slot cargo test -p sampler-core --lib prepare", "build-slot cargo test -p kontra-probe cc_start"]
+gate = ["build-slot cargo test -p sampler-kontakt stream", "build-slot cargo test -p sampler-core --lib prepare", "build-slot cargo test -p kontra-probe --test fixtures cc_start -- --include-ignored", "build-slot cargo test -p kontra-probe --test fixtures key_position -- --include-ignored", "build-slot cargo test -p kontakto --lib snapshot_reuse"]
 done = ["Probe cc_start and key_position pass every contract they passed in round 4 (C1, C5, C8, C9); fixtures that need offsets set their zones' S.Mod to cover them.", "Coordinator: Areia, Vista and ANALOG resident head bytes within 10% of the sum of Kontakt windows (dfd_window over the same resident zones, groups not purged at load; per sample, the union of its zones' window ranges), and C1 on Areia and Vista no worse than G0."]
 
 [[task]]

@@ -32,7 +32,8 @@ start = max(d, 0)                   (the window starts S.Mod before the zone sta
   Formats without S.Mod pass their declared start-modulation range as `off`.
 - **Only resident groups get heads.** A group saved purged (`ir::Group::purged`) gets no head at load;
   a KSP `purge_group` reload computes the same law head when it loads the group. ANALOG has 481 of
-  483 groups saved purged (138 of 95,624 zones resident), Areia 1,056 of 49,152 zones, Vista 4,152 of 8,304.
+  483 groups saved purged (138 of 95,624 zones resident), Areia 1,056 of 49,152 zones, Vista 4,152 of 8,304 (IR `Group::purged` and zone `group`
+  via the `ir_json` and `nki_tree` examples on the three .nki files, 2026-10-25).
 - **Memory bar.** The resident head bytes for an instrument are within 10% of the sum of
   Kontakt's windows for the same resident zones (per sample, the union of its zones' window ranges, so overlapping windows count once and disjoint ones each count), measured on Areia, Vista and
   ANALOG. P1.2's first attempt (base + script range, unbounded → whole sample, f32 accounting)
