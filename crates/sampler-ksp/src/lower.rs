@@ -7,7 +7,7 @@ use crate::hir::*;
 use crate::sema::fold;
 use sampler_core::{
     Comparison as Cmp, ControlId, Duration, DurationValue, EnvelopeStage, Inheritance,
-    Instruction as I, IntegerBinary as IB, IntegerExtra, IntegerUnary as IU, LoopWatch, ModTarget, Op,
+    Instruction as I, IntegerBinary as IB, IntegerExtra, IntegerUnary as IU, LoopWatch, ModTarget, Op, OutboxMerge,
     ParamScope, Program, RealBinary, RealUnary, ScriptArray, SlotKind, TextPart, TextRef,
     WaitLifetime, real_bits,
 };
@@ -1753,6 +1753,7 @@ impl Gen<'_, '_> {
             args,
             count,
             text,
+            merge: outbox_merge(builtin),
         }))
     }
 
@@ -2813,6 +2814,7 @@ impl Gen<'_, '_> {
                     args: dst,
                     count: 2,
                     text: None,
+                    merge: outbox_merge(builtin),
                 }))?;
                 self.set(dst + 2, 0)?;
                 self.emit(I::Binary32 {
@@ -2845,6 +2847,7 @@ impl Gen<'_, '_> {
                         args: dst,
                         count: 1,
                         text: Some(text),
+                        merge: outbox_merge(builtin),
                     }))?;
                     self.set(dst + 1, i64::from(par))?;
                     self.set(dst + 2, i64::from(PROPERTY_TAG))?;
@@ -4479,6 +4482,26 @@ impl Gen<'_, '_> {
 }
 
 /// Outbox coverage: host-owned services, or engine changes left to the host.
+/// How a full outbox may treat this builtin's effect. Only UI-only state is
+/// merged or dropped; engine, file and persistence effects keep waiting.
+/// `keys` counts the leading arguments that name the target a later write replaces.
+fn outbox_merge(builtin: Builtin) -> OutboxMerge {
+    use Builtin::*;
+    match builtin {
+        SetKeyPressedSupport | SetUiColor | SetSkinOffset => OutboxMerge::Latest { keys: 0 },
+        SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed | SetText | SetKnobLabel
+        | SetKnobUnit | SetKnobDefval | SetControlHelp | HidePart | SetTableStepsShown
+        | MoveControl | MoveControlPx => OutboxMerge::Latest { keys: 1 },
+        SetControlPar | SetControlParReal | SetControlParStr | SetMenuItemStr
+        | SetMenuItemVisibility | SetMenuItemValue => OutboxMerge::Latest { keys: 2 },
+        SetControlParStrArr => OutboxMerge::Latest { keys: 3 },
+        Message | AddTextLine | AddMenuItem => OutboxMerge::Drop,
+        // Index after value (`*_arr` real/int), attach, navigation, key ranges,
+        // waveform, files, persistence and engine effects: keep waiting.
+        _ => OutboxMerge::Wait,
+    }
+}
+
 fn host_service(builtin: Builtin) -> Coverage {
     use Builtin::*;
     match builtin {

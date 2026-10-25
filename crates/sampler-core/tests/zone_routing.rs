@@ -372,6 +372,7 @@ fn zone_reserved_completions_are_exact_instance_and_wait_async_unblocks_at_satur
             args: 5,
             count: 1,
             text: None,
+            merge: Default::default(),
         }),
         Instruction::End,
     ]);
@@ -386,6 +387,7 @@ fn zone_reserved_completions_are_exact_instance_and_wait_async_unblocks_at_satur
                     args: 0,
                     count: 2,
                     text: None,
+                    merge: Default::default(),
                 }),
                 Instruction::End,
             ],

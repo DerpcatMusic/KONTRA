@@ -10,7 +10,7 @@ fn runtime(wait: bool) -> Runtime {
     } else {
         let mut code = vec![Instruction::SetLocal { local: 0, value: 0 }];
         code.extend((0..96).map(|_| Instruction::AddLocal { local: 0, value: 1 }));
-        code.push(Instruction::Op(Op::Emit { service: 99, args: 0, count: 1, text: None }));
+        code.push(Instruction::Op(Op::Emit { service: 99, args: 0, count: 1, text: None, merge: Default::default() }));
         code
     };
     code.push(Instruction::End);
@@ -20,7 +20,7 @@ fn runtime(wait: bool) -> Runtime {
     let completion = callback(vec![
         Instruction::Op(Op::ReadHost { local: 0, slot: 6 }),
         Instruction::Op(Op::ReadHost { local: 1, slot: 7 }),
-        Instruction::Op(Op::Emit { service: 77, args: 0, count: 2, text: None }),
+        Instruction::Op(Op::Emit { service: 77, args: 0, count: 2, text: None, merge: Default::default() }),
         Instruction::End,
     ]);
     let pcm = Pcm::new(48_000, vec![[0.25; 2]; 128].into()).unwrap();

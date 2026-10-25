@@ -285,6 +285,9 @@ pub struct RuntimeProblems {
     pub script_budget_failures: u64,
     #[serde(default)]
     pub script_service_stalls: u64,
+    /// UI-only effects dropped on a full outbox (the callback itself was not delayed).
+    #[serde(default)]
+    pub ui_effects_dropped: u64,
     /// Routed attacks admitted late without an authored wait.
     #[serde(default)]
     pub late_attacks: u64,

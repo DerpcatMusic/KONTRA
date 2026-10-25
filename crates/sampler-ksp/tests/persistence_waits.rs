@@ -320,8 +320,9 @@ fn scheduled_persistence_keeps_ui_effects_before_and_after_the_wait() {
 }
 
 /// A callback that rewrites its interface (Analog Strings' `ui__refresh`: thousands of
-/// `set_control_par`) emits far more effects than the outbox holds between drains. The
-/// tail carries the final hide/show state, so it must wait for the host, never be dropped.
+/// `set_control_par`) emits far more writes than the outbox holds between drains. Writes
+/// to one target keep only the latest value, so the tail's final hide/show state is
+/// delivered and nothing is dropped, and the callback is never delayed.
 #[test]
 fn a_ui_refresh_larger_than_the_outbox_is_delivered_whole() {
     let script = compile(
@@ -339,7 +340,8 @@ fn a_ui_refresh_larger_than_the_outbox_is_delivered_whole() {
             true
         });
     }
-    assert!(rt.stalled_effects() > 0, "the refresh must exceed the outbox");
+    assert_eq!(rt.stalled_effects(), 0, "UI writes never delay the callback");
+    assert_eq!(rt.ui_effects_dropped(), 0, "the final state must not be dropped");
     assert!(view.model().interface.widgets[0].hidden());
 }
 
