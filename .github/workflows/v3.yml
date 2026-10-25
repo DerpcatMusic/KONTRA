@@ -63,7 +63,15 @@ jobs:
           # Any task may commit the baseline, so without the label check against the base's
           # baseline: a raised baseline cannot pass growth through.
           if [ "$KONTRA_ALLOW_GROWTH" != 1 ]; then
-            git show "origin/$BASE_REF:tools/xtask/size-baseline.json" > tools/xtask/size-baseline.json
+            git show "origin/$BASE_REF:tools/xtask/size-baseline.json" > "$RUNNER_TEMP/base-size.json"
+            python3 - "$RUNNER_TEMP/base-size.json" tools/xtask/size-baseline.json <<'PY'
+          import json, sys
+          base, mine = (json.load(open(p)) for p in sys.argv[1:])
+          raised = sorted(k for k, v in mine.items() if v > base.get(k, 0))
+          if raised:
+              sys.exit(f"::error::size baseline raised without the size-growth label: {', '.join(raised)}")
+          PY
+            cp "$RUNNER_TEMP/base-size.json" tools/xtask/size-baseline.json
           fi
           cargo run -p xtask -- debt --check
           cargo run -p xtask -- size --check
