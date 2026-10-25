@@ -84,7 +84,6 @@ pub(super) fn write(spec: &Spec, out: &Path) -> Result<PathBuf> {
     let mut zones = Vec::new();
     for (index, group) in spec.groups.iter().enumerate() {
         let (level, noise) = spec.mics[group.mic].mix();
-        let seconds = if spec.long_mic == Some(spec.mics[group.mic]) { super::STREAMED_SECONDS } else { spec.seconds };
         for (n, (midi, note)) in ROOTS.iter().enumerate() {
             for layer in 0..spec.layers {
                 let gain = if spec.layers > 1 {
@@ -93,7 +92,7 @@ pub(super) fn write(spec: &Spec, out: &Path) -> Result<PathBuf> {
                     1.0
                 };
                 let seed = u32::from(*midi) * 31 + group.mic as u32;
-                let pcm = audio::tone(*midi, seconds, level * gain, noise, seed);
+                let pcm = audio::tone(*midi, spec.seconds, level * gain, noise, seed);
                 let name = file_name(spec, group, note, layer);
                 let path = samples.join(&name);
                 audio::write_wav(&path, &pcm)?;

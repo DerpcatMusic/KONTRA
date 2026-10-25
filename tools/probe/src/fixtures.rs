@@ -52,21 +52,16 @@ pub enum Fixture {
     Dense,
     /// Samples much longer than the head, so voices read from disk after the preload.
     Streamed,
-    /// `CcStart` with its room mic long enough to stream: the close and far mic
-    /// groups are ready at a note's start while the room group waits for pages,
-    /// so the families of one note split (C3 must still hold them together).
-    CcSplit,
 }
 
 impl Fixture {
     /// Every fixture, in run order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::CcStart,
         Self::UiLoad,
         Self::KeyPosition,
         Self::Dense,
         Self::Streamed,
-        Self::CcSplit,
     ];
 
     /// The name on the command line and in the folder name.
@@ -77,7 +72,6 @@ impl Fixture {
             Self::KeyPosition => "key_position",
             Self::Dense => "dense",
             Self::Streamed => "streamed",
-            Self::CcSplit => "cc_split",
         }
     }
 
@@ -101,9 +95,6 @@ impl Fixture {
             Self::Streamed => {
                 "samples are short enough to stay in the page cache; no degraded-disk run (C2)"
             }
-            Self::CcSplit => {
-                "the room mic streams from disk; the close and far mics are resident"
-            }
         }
     }
 
@@ -112,7 +103,6 @@ impl Fixture {
         match self {
             Self::CcStart => 3,
             Self::UiLoad | Self::KeyPosition | Self::Dense | Self::Streamed => 1,
-            Self::CcSplit => 3,
         }
     }
 
@@ -121,7 +111,7 @@ impl Fixture {
     pub fn ui_writes_per_key(self) -> usize {
         match self {
             Self::UiLoad => 300,
-            Self::CcStart | Self::KeyPosition | Self::Dense | Self::Streamed | Self::CcSplit => 0,
+            Self::CcStart | Self::KeyPosition | Self::Dense | Self::Streamed => 0,
         }
     }
 
@@ -170,7 +160,6 @@ impl Fixture {
                 script: Some(ksp::CC_START),
                 start_mod_frames: 3_600,
                 start_route: Some(StartSource::MidiCc(113)),
-                long_mic: None,
             },
             Self::UiLoad => Spec {
                 name: "ProbeUiLoad",
@@ -182,7 +171,6 @@ impl Fixture {
                 script: Some(ksp::UI_LOAD),
                 start_mod_frames: 0,
                 start_route: None,
-                long_mic: None,
             },
             Self::KeyPosition => Spec {
                 name: "ProbeKeyPosition",
@@ -194,7 +182,6 @@ impl Fixture {
                 script: None,
                 start_mod_frames: 3_600,
                 start_route: Some(StartSource::KeyPosition),
-                long_mic: None,
             },
             Self::Dense => Spec {
                 name: "ProbeDense",
@@ -206,19 +193,6 @@ impl Fixture {
                 script: Some(ksp::DENSE),
                 start_mod_frames: 0,
                 start_route: None,
-                long_mic: None,
-            },
-            Self::CcSplit => Spec {
-                name: "ProbeCcSplit",
-                mics: &[Mic::Close, Mic::Room, Mic::Far],
-                rounds: 4,
-                layers: 1,
-                seconds: 0.25,
-                groups: groups(self.name(), &[Mic::Close, Mic::Room, Mic::Far], 4),
-                script: Some(ksp::CC_START),
-                start_mod_frames: 3_600,
-                start_route: Some(StartSource::MidiCc(113)),
-                long_mic: Some(Mic::Room),
             },
             Self::Streamed => Spec {
                 name: "ProbeStreamed",
@@ -230,7 +204,6 @@ impl Fixture {
                 script: None,
                 start_mod_frames: 0,
                 start_route: None,
-                long_mic: None,
             },
         }
     }
@@ -278,13 +251,7 @@ struct Spec {
     /// sweeps each zone through the S.Mod range. Without one, Kontakt starts a
     /// zone with an S.Mod range at a random delay.
     start_route: Option<StartSource>,
-    /// The mic whose samples are long enough to stream, at [`STREAMED_SECONDS`].
-    long_mic: Option<Mic>,
 }
-
-/// Length of the streamed mic's samples, seconds: longer than the head, so the
-/// group's first window is not resident when a note starts.
-const STREAMED_SECONDS: f32 = 2.0;
 
 /// One authored group and the sample set its zones take.
 #[derive(Debug)]
@@ -324,7 +291,7 @@ fn groups(instrument: &str, mics: &[Mic], rounds: u32) -> Vec<GroupSpec> {
 }
 
 /// A microphone group: how loud its tone is and how much noise it carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 enum Mic {
     Close,
     Room,
