@@ -758,25 +758,25 @@ done = ["Net line count negative; tests unchanged and green."]
 
 [[task]]
 id = "P4.8"
-title = "kontra-events from sampler-midi + src/sound/event.rs + held keys"
+title = "kontra-events from src/sound/event.rs and the plain-data receiver wire types"
 phase = 4
 lane = "structure"
 size = "M"
 agent = "worker"
 draft = true
 deps = ["P4.0", "P4.2"]
-owns = ["crates/sampler-midi/**", "@corelib", "docs/architecture-v3/01-LAYOUT.md", "crates/model/events/**", "src/sound/event.rs", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
+owns = ["@corelib", "crates/sampler-core/src/gate.rs", "crates/sampler-core/src/receiver/channel_event.rs", "crates/sampler-core/src/receiver/event_value.rs", "crates/sampler-core/src/receiver/external.rs", "crates/sampler-core/src/receiver/task.rs", "crates/sampler-core/src/receiver/types.rs", "tools/xtask/dag.toml", "docs/architecture-v3/01-LAYOUT.md", "crates/model/events/**", "src/sound/event.rs", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
 docs = ["01-LAYOUT.md#5-current--new-mapping", "02-ENGINE.md#2-one-event-type-one-queue"]
-goal = "One event model crate. Move sampler-midi (git mv + alias), then move src/sound/event.rs types in with a re-export."
+goal = "One event model crate depending on no KONTRA crate except kontra-time: src/sound/event.rs plus the receiver wire types that are plain data, re-exported from their old homes. sampler-midi stays: it is a receiver adapter that owns OwnedReceiver and drives Runtime (closure of 49 sampler-core names, #715 comment 6397657514), so it moves with the engine in P6.4c."
 steps = [
-  "sampler-midi depends on sampler-core for 19 types (`rg -o 'sampler_core::[A-Za-z_]+' crates/sampler-midi/src | sort -u`: ChannelAddress, ChannelScope, ExpressionId, Frame, RuntimeId, Switching, RECEIVER_PER_NOTE_CENTER and the Raw*/Receiver*/WireAdmissionStatus/CapturedLogicalRawAttack admission types). kontra-events must depend on no KONTRA crate, so a plain git mv breaks the DAG. First map the closure: for each type, the sampler-core items it needs (`graft callers <Type> --direction out`). If the closure is more than ~15 types or pulls a module with behaviour (receiver logic, prepare), stop and report the closure on the issue: the coordinator splits the task.",
-  "Move the closure into crates/model/events (kontra-events) as plain data types; leave `pub use kontra_events::{...}` in sampler-core/src/lib.rs so every sampler-core caller compiles unchanged. Pure moves: no behaviour or signature change.",
-  "git mv crates/sampler-midi/src into kontra-events (or make sampler-midi a thin re-export of kontra-events), so sampler-midi callers compile unchanged; sampler-midi then depends on kontra-events, not sampler-core.",
-  "Move src/sound/event.rs content in; leave `pub use kontra_events::*` in src/sound/event.rs.",
-  "held_keys stays in src/plugin until P6.4 (ledger)."
+  "Create crates/model/events (package kontra-events, depends only on kontra-time if anything) and move src/sound/event.rs in; leave `pub use kontra_events::*` in src/sound/event.rs.",
+  "Move the sampler-core receiver wire types whose definitions are plain data (no Runtime, OwnedReceiver, receiver/* or behavior/* references), e.g. ChannelAddress, ChannelScope, ExpressionId, NoteId, NotePitch, RECEIVER_PER_NOTE_CENTER and the Raw*/Receiver* value types. Check each definition (`graft skeleton`) before moving; anything with methods that touch engine state stays. Leave `pub use kontra_events::{...}` in sampler-core/src/lib.rs so every caller compiles unchanged. Pure moves: no behaviour or signature change.",
+  "In tools/xtask/dag.toml [allowed], add `kontra-events = [\"kontra-time\"]` (or `[]`) and the re-export edges `sampler-core -> kontra-events` and `kontakto -> kontra-events` (src/sound/event.rs re-exports it); no other edge.",
+  "Do not touch crates/sampler-midi: it keeps its sampler-core dependency until P6.4c replaces Runtime.",
+  "held_keys stays in src/plugin until P6.4b (ledger)."
 ]
 gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-events"]
-done = ["kontra-events depends on no KONTRA crate (`cargo xtask deps-check`); sampler-core and sampler-midi callers unchanged thanks to re-exports.", "Moves plus re-exports only."]
+done = ["kontra-events depends on no KONTRA crate except kontra-time (`cargo xtask deps-check`); sampler-core and src callers unchanged thanks to re-exports.", "Moves plus re-exports only; list each moved type and why it is plain data in the PR body."]
 
 [[task]]
 id = "P4.9"
@@ -1239,10 +1239,10 @@ size = "L"
 agent = "worker"
 draft = true
 deps = ["P6.4b"]
-owns = ["crates/engine/engine/**", "crates/base/macros/**", "crates/sampler-core/**", "@v2rs"]
+owns = ["crates/engine/engine/**", "crates/base/macros/**", "crates/sampler-core/**", "crates/sampler-midi/**", "crates/model/events/**", "tools/xtask/dag.toml", "@v2rs"]
 docs = ["02-ENGINE.md#1-the-engine-struct"]
 goal = "sampler-core is reduced to re-exports (or deleted); counters live in one Stats."
-steps = ["Move remaining Runtime state into the 10 owners.", "Stats: `RuntimeStats` is one struct today. Add `#[derive(Stats)]` to kontra-macros only if it deletes more lines than it adds across its users (08-MACROS.md rule); otherwise a plain `Copy` struct with `Default`."]
+steps = ["sampler-midi (MIDI1/UMP/MPE receiver adapter over Runtime and OwnedReceiver) moves into kontra-engine once Engine replaces Runtime (it owns receiver state, so not kontra-events, which sits below the engine); any plain-data wire types it still defines go to kontra-events. P4.8 left it in place.", "Move remaining Runtime state into the 10 owners.", "Stats: `RuntimeStats` is one struct today. Add `#[derive(Stats)]` to kontra-macros only if it deletes more lines than it adds across its users (08-MACROS.md rule); otherwise a plain `Copy` struct with `Default`."]
 gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-probe"]
 done = ["sampler-core production lines < 1k."]
 

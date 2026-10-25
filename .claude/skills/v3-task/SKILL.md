@@ -51,6 +51,9 @@ rules. The full manual is `docs/architecture-v3/12-WORKFLOW.md`.
 - No `#[allow]` for unwrap/expect/panic/indexing in test code: clippy.toml already
   allows them, and every new `#[allow]` grows the debt ratchet (P4.1 tripped it).
 - `Cargo.lock`: keep only additions your change needs.
+- New crates declare `license = "Apache-2.0"` (repository policy). Separately, a crate the
+  plugin links with no license declared fails the Website build's notice bundler
+  (tools/licenses.py) with "Missing license text".
 
 ## 3. Proving it
 
