@@ -778,12 +778,13 @@ fn c7_script_load(session: &mut Session, pattern: Pattern) -> Result<Verdict> {
     let keys: usize = realtime.notes.iter().map(|n| n.keys.len()).sum();
     let wanted = (writes * keys) as u64;
     if realtime.script_effects < wanted || offline.script_effects < wanted {
-        return Ok(Verdict::unsupported(
+        // The fixture declares the load, so a shortfall means writes were lost, not unmeasured.
+        return Ok(Verdict::failed(
             "C7",
             pattern,
-            &format!(
-                "load evidence short: {} and {} script effects drained (real time and \
-                 offline), {wanted} expected from {writes} UI writes on each of {keys} keys",
+            format!(
+                "UI writes lost: {} and {} script effects drained (real time and offline), \
+                 {wanted} expected from {writes} UI writes on each of {keys} keys",
                 realtime.script_effects, offline.script_effects
             ),
         ));

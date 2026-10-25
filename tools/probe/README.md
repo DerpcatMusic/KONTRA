@@ -46,7 +46,7 @@ are `#[ignore]`d in `tests/fixtures.rs` with the task that fixes them. Run
 | C4 | measured | live | offline: null test of each block size against 128, < −120 dB |
 | C5 | measured | live | real time vs offline, null test < −120 dB |
 | C6 | measured | selected | offline: voices per key of every note, equal on every note and > 0 (a chord counts per key) |
-| C7 | measured | selected | C1 and C6 under the fixture declared UI load; unsupported when no load is declared or the script effects drained fall short (real instruments declare none) |
+| C7 | measured | selected | C1 and C6 under the fixture declared UI load; fails when fewer script effects drain than the declared writes (writes lost); unsupported when no load is declared (real instruments declare none) |
 | C8 | measured | dense | real time: every chord audible in its first block |
 | C9 | measured | offsets | real time: CC113 0..126 on every note, first audible frame minus scheduled frame |
 | C10 | unsupported | – | render time per block is not instrumented |
