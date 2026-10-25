@@ -1,0 +1,12 @@
+[package]
+name = "kontra-params"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-law = { path = "../../base/law" }
+kontra-macros = { path = "../../base/macros" }

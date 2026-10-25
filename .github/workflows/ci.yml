@@ -36,6 +36,14 @@ env:
     -p kontakto -p sampler-core -p sampler-ir -p sampler-simd -p sampler-pool -p sampler-ksp
     -p sampler-kontakt -p sampler-uvi -p sampler-midi -p sampler-native -p sampler-ui-ir
     -p sampler-perf -p sampler-parity -p corpus-health
+    -p kontra-time -p kontra-law -p kontra-macros -p kontra-params
+    -p kontra-events -p kontra-ui-model -p kontra-protocol -p kontra-dsp-core
+    -p kontra-dsp-filter -p kontra-dsp-eq -p kontra-dsp-dynamics -p kontra-dsp-delay
+    -p kontra-dsp-reverb -p kontra-dsp-drive -p kontra-dsp-spatial -p kontra-dsp-modulators
+    -p kontra-dsp -p kontra-stream -p kontra-voice -p kontra-vm
+    -p kontra-engine -p kontra-ksp -p kontra-lua -p kontra-format
+    -p kontra-format-kontakt -p kontra-format-uvi -p kontra-format-sfz -p kontra-format-native
+    -p kontra-library -p kontra-align -p kontra-ui -p kontra-host
 
 jobs:
   changes:
@@ -208,6 +216,40 @@ jobs:
           path: ui-plugin/
           retention-days: 7
           if-no-files-found: error
+
+  layer-tests:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - layer: base+model
+            crates: "-p kontra-time -p kontra-law -p kontra-macros -p kontra-params -p kontra-events -p kontra-ui-model -p kontra-protocol"
+          - layer: dsp
+            crates: "-p kontra-dsp-core -p kontra-dsp-filter -p kontra-dsp-eq -p kontra-dsp-dynamics -p kontra-dsp-delay -p kontra-dsp-reverb -p kontra-dsp-drive -p kontra-dsp-spatial -p kontra-dsp-modulators -p kontra-dsp"
+          - layer: engine+script
+            crates: "-p kontra-stream -p kontra-voice -p kontra-vm -p kontra-engine -p kontra-ksp -p kontra-lua"
+          - layer: format
+            crates: "-p kontra-format -p kontra-format-kontakt -p kontra-format-uvi -p kontra-format-sfz -p kontra-format-native"
+          - layer: app
+            crates: "-p kontra-library -p kontra-align -p kontra-ui -p kontra-host"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: layer-tests-${{ matrix.layer }}
+      # Plain cargo: GitHub runners have no build-slot. Each layer tests only its own crates (09-BUILD.md §4).
+      - name: Test ${{ matrix.layer }}
+        run: cargo test --locked ${{ matrix.crates }}
 
   shipping-plan:
     needs: changes
@@ -458,7 +500,7 @@ jobs:
   required:
     name: CI required
     if: always()
-    needs: [changes, linux, windows, macos, editor, shipping-plan, shipping-tests, shipping-coverage]
+    needs: [changes, linux, layer-tests, windows, macos, editor, shipping-plan, shipping-tests, shipping-coverage]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -467,6 +509,7 @@ jobs:
           CHANGES: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
           LINUX: ${{ needs.linux.result }}
+          LAYER_TESTS: ${{ needs.layer-tests.result }}
           WINDOWS: ${{ needs.windows.result }}
           MACOS: ${{ needs.macos.result }}
           EDITOR: ${{ needs.editor.result }}
@@ -478,12 +521,14 @@ jobs:
           test "$CHANGES" = success
           if [ "$CODE" = true ]; then
             test "$LINUX" = success
+            test "$LAYER_TESTS" = success
             test "$WINDOWS" = success
             test "$MACOS" = success
             test "$EDITOR" = success
           else
             test "$CODE" = false
             test "$LINUX" = skipped
+            test "$LAYER_TESTS" = skipped
             test "$WINDOWS" = skipped
             test "$MACOS" = skipped
             test "$EDITOR" = skipped

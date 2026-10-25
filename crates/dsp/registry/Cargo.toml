@@ -1,0 +1,20 @@
+[package]
+name = "kontra-dsp"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-dsp-core = { path = "../core" }
+kontra-dsp-filter = { path = "../filter" }
+kontra-dsp-eq = { path = "../eq" }
+kontra-dsp-dynamics = { path = "../dynamics" }
+kontra-dsp-delay = { path = "../delay" }
+kontra-dsp-reverb = { path = "../reverb" }
+kontra-dsp-drive = { path = "../drive" }
+kontra-dsp-spatial = { path = "../spatial" }
+kontra-dsp-modulators = { path = "../modulators" }
+kontra-params = { path = "../../model/params" }

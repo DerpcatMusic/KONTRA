@@ -1,0 +1,26 @@
+[package]
+name = "kontra-host"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-engine = { path = "../../engine/engine" }
+kontra-format = { path = "../../format/common" }
+kontra-format-kontakt = { path = "../../format/kontakt" }
+kontra-format-native = { path = "../../format/native" }
+kontra-format-sfz = { path = "../../format/sfz" }
+kontra-format-uvi = { path = "../../format/uvi" }
+kontra-ksp = { path = "../../script/ksp" }
+kontra-library = { path = "../library" }
+kontra-lua = { path = "../../script/lua" }
+kontra-protocol = { path = "../../model/protocol" }
+kontra-stream = { path = "../../engine/stream" }
+kontra-ui-model = { path = "../../model/ui-model" }
+kontra-align = { path = "../align", optional = true }
+
+[features]
+align = ["dep:kontra-align"]

@@ -336,7 +336,7 @@ lane = "playback"
 size = "L"
 agent = "worker"
 deps = ["P1.1b", "P0.3b"]
-owns = ["crates/sampler-kontakt/src/stream.rs", "crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs", "crates/sampler-kontakt/src/stream_hint_tests.rs", "crates/sampler-kontakt/src/stream_onset_tests.rs", "crates/sampler-native/examples/stream_report.rs", "crates/sampler-uvi/examples/dynamic_source_witness.rs", "crates/sampler-kontakt/src/head_prepare.rs", "crates/sampler-kontakt/src/head_cache.rs", "crates/sampler-core/src/head_budget.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/prepare/**", "crates/sampler-core/tests/stream_start_runway.rs"]
+owns = ["crates/sampler-kontakt/src/stream.rs", "@v2rs", "src/sound/report.rs", "src/sound/v2/onset_diagnostics/runway.rs", "examples/dfd_eager.rs", "crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs", "crates/sampler-kontakt/src/stream_hint_tests.rs", "crates/sampler-kontakt/src/stream_onset_tests.rs", "crates/sampler-native/examples/stream_report.rs", "crates/sampler-uvi/examples/dynamic_source_witness.rs", "crates/sampler-kontakt/src/head_prepare.rs", "crates/sampler-kontakt/src/head_cache.rs", "crates/sampler-core/src/head_budget.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/prepare/**", "crates/sampler-core/tests/stream_start_runway.rs"]
 docs = ["05-STREAM.md#1-the-preload-law"]
 goal = "Head length = base (60 KB-equivalent per channel, Kontakt DFD default) + the zone's start range from P1.1, instead of measured warm-cache latency; over budget never truncates silently."
 steps = [
@@ -419,18 +419,18 @@ lane = "script"
 size = "L"
 agent = "worker"
 deps = ["P0.3b"]
-owns = ["crates/sampler-core/src/control.rs", "crates/sampler-core/src/control/**", "crates/sampler-core/src/ops.rs", "crates/sampler-core/src/midi_object.rs", "crates/sampler-core/src/array_file.rs", "crates/sampler-core/src/widget.rs", "crates/sampler-pool/**", "@corelib", "@plugin"]
+owns = ["crates/sampler-core/src/control.rs", "crates/sampler-core/src/control/**", "crates/sampler-core/src/ops.rs", "crates/sampler-core/src/midi_object.rs", "crates/sampler-core/src/array_file.rs", "crates/sampler-core/src/widget.rs", "crates/sampler-pool/**", "@corelib", "@plugin", "@v2rs", "tools/probe/tests/fixtures.rs"]
 docs = ["04-SCRIPT.md#5-ui-from-scripts", "07-APP.md#2-the-three-channels"]
 goal = "`set_control_par`, `set_key_*`, `message` and similar UI effects write a per-control latest-value cell; the 256-entry effect outbox and the 1024 ArrayQueue drained at 10 Hz in `control_tick` stop carrying UI state."
 steps = [
-  "Map every producer of UI effects (`EFFECT_CAPACITY` users: ops.rs, control/transfer.rs, midi_object.rs, array_file.rs, lib.rs) and the consumer (`control_tick` in src/plugin.rs, `take_effects`).",
+  "Map every producer of UI effects (`EFFECT_CAPACITY` users: ops.rs, control/transfer.rs, midi_object.rs, array_file.rs) and the consumers (`take_effects` in src/plugin.rs and src/sound/v2.rs, read by `control_tick` in src/plugin.rs).",
   "Add `LatestCell<T>` to sampler-pool (seqlock or triple buffer, no allocation after construction, tested with loom-free stress test in tests/) and a `ControlStore` (one cell per declared control, sized at prepare) owned by the script UI declaration.",
   "Route UI-only effects into the store. Keep the queue only for effects that are true events (e.g. file I/O requests); document which remain.",
   "UI side reads the store each frame instead of draining the queue.",
-  "A full effect queue must never release or abort a note: remove that path (`fail_behavior` on outbox full) for UI effects."
+  "Do not edit behavior/**. Routing UI writes into the store means UI traffic no longer fills the queue; the invariant \"a full queue never releases a note\" belongs to P2.2, which deletes `BehaviorOverload::Abort`."
 ]
-gate = ["build-slot cargo test -p sampler-pool", "build-slot cargo test -p sampler-core --lib control", "build-slot cargo test -p kontra-probe cc_start"]
-done = ["Probe C7 passes on `cc_start` (300 UI writes per note).", "Script UI still updates in the editor (coordinator check)."]
+gate = ["build-slot cargo test -p sampler-pool", "build-slot cargo test -p sampler-core --lib control", "build-slot cargo test -p kontra-probe --test fixtures ui_load"]
+done = ["The `ui_load` fixture tests in tools/probe/tests/fixtures.rs (300 UI writes per note) pass with their `#[ignore]` removed.", "Script UI still updates in the editor (coordinator check)."]
 
 [[task]]
 id = "P2.2"
@@ -449,7 +449,7 @@ steps = [
   "Add a test: a callback doing 1M loop iterations inside bounded whiles completes and plays its note at the scheduled sample."
 ]
 gate = ["build-slot cargo test -p sampler-core --test behavior", "build-slot cargo test -p sampler-ksp while", "build-slot cargo test -p kontra-probe"]
-done = ["No `BehaviorOverload` or fuel left (`graft grep BehaviorOverload` empty)."]
+done = ["A full effect queue (true events after P2.1) never releases or aborts a note: a test fills the queue and the note still plays.", "No `BehaviorOverload` or fuel left (`graft grep BehaviorOverload` empty)."]
 
 [[task]]
 id = "P2.3"
@@ -594,7 +594,7 @@ lane = "structure"
 size = "M"
 agent = "worker"
 deps = ["P0.1", "P0.4"]
-owns = ["crates/base/**", "crates/model/**", "crates/dsp/**", "crates/engine/**", "crates/script/**", "crates/format/**", "crates/app/**", "plugin/**", "tools/xtask/dag.toml", "@manifests", "@lockfile", "@ci"]
+owns = ["crates/base/**", "crates/model/**", "crates/dsp/**", "crates/engine/**", "crates/script/**", "crates/format/**", "crates/app/**", "tools/xtask/dag.toml", "@manifests", "@lockfile", "@ci"]
 docs = ["01-LAYOUT.md#1-the-crate-tree", "01-LAYOUT.md#2-dependency-dag"]
 goal = "Create all 38 crates from 01-LAYOUT.md as empty, compiling skeletons with their target dependencies declared, so later tasks only edit inside one crate folder and never touch the root manifest."
 steps = [
@@ -602,9 +602,9 @@ steps = [
   "Add `[workspace.dependencies]` entries for everything later tasks will need: thiserror, smallvec, serde (derive), toml, crossbeam-queue/utils already present, syn/quote/proc-macro2 for kontra-macros. Versions must already be in Cargo.lock where possible.",
   "Register all members in the root Cargo.toml; add them to `CRATES` in .github/workflows/ci.yml.",
   "Add a per-layer test job to CI (09-BUILD.md §4) for the new crates; this was deferred from P0.5.",
-  "Write the target DAG into tools/xtask/dag.toml as `[target]` (deps-check reports target violations as warnings until P8.6 makes them errors).",
+  "In tools/xtask/dag.toml add every new crate's path-dependency edges to `[allowed]` (deps-check fails on any unlisted edge), and write the full target DAG from 01-LAYOUT.md §2 as a `[target]` table. Today's parser ignores `[target]`; it is data for P8.6, which makes it the allow-list. Verify the parser still accepts the file (`cargo xtask deps-check`).",
   "Add `[workspace.lints]` (09-BUILD.md §1.8) and `[lints] workspace = true` in every new crate: no `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`unreachable!` and no slice indexing outside tests, `unsafe_code = \"deny\"` (a module that needs SIMD or FFI allows it locally, with a `// SAFETY:` comment on every block). Add `clippy.toml` with `allow-unwrap-in-tests = true`, `allow-expect-in-tests = true`, `allow-panic-in-tests = true`, `allow-indexing-slicing-in-tests = true`. Old crates keep their lints until they move.",
-  "Skip crates that already exist under the old name (pool, simd, ir, …): their moves are P4.3/P4.4/P4.10."
+  "Skip crates that already exist under the old name (pool, simd, ir, …): their moves are P4.3/P4.4/P4.10. Skip `plugin/` (the root package becomes it in P8.5) and the tools/ crates that are renames (cli, bench, shots). List each skipped crate with its task in the PR."
 ]
 gate = ["build-slot cargo check --workspace", "build-slot cargo xtask deps-check"]
 done = ["Every crate in 01-LAYOUT.md exists or is listed as 'moved by Pn.m'.", "Root Cargo.toml needs no further member edits until P8."]

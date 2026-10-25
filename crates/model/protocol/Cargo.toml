@@ -1,0 +1,12 @@
+[package]
+name = "kontra-protocol"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-events = { path = "../events" }
+kontra-ui-model = { path = "../ui-model" }
