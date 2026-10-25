@@ -120,7 +120,11 @@ pub fn range_bits(low: u8, high: u8) -> u128 {
 /// Preallocated RT-to-loader fault transport; messages are resolved only by the loader.
 #[derive(Debug)]
 pub struct FaultInbox {
-    pub(crate) queue: crossbeam_queue::ArrayQueue<(usize, sampler_core::Outcome, Option<sampler_core::BehaviorFault>)>,
+    pub(crate) queue: crossbeam_queue::ArrayQueue<(
+        usize,
+        sampler_core::Outcome,
+        Option<sampler_core::BehaviorFault>,
+    )>,
     dropped: std::sync::atomic::AtomicU64,
 }
 impl Default for FaultInbox {
@@ -136,7 +140,12 @@ impl FaultInbox {
     pub(crate) fn record(&self, program: usize, outcome: sampler_core::Outcome) {
         self.record_context(program, outcome, None);
     }
-    pub(crate) fn record_context(&self, program: usize, outcome: sampler_core::Outcome, context: Option<sampler_core::BehaviorFault>) {
+    pub(crate) fn record_context(
+        &self,
+        program: usize,
+        outcome: sampler_core::Outcome,
+        context: Option<sampler_core::BehaviorFault>,
+    ) {
         if self.queue.push((program, outcome, context)).is_err() {
             self.dropped
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -147,7 +156,10 @@ impl FaultInbox {
     }
     #[cfg(feature = "shots")]
     pub(crate) fn counts(&self) -> (usize, u64) {
-        (self.queue.len(), self.dropped.load(std::sync::atomic::Ordering::Relaxed))
+        (
+            self.queue.len(),
+            self.dropped.load(std::sync::atomic::Ordering::Relaxed),
+        )
     }
 }
 
@@ -340,7 +352,11 @@ pub struct StreamStartup {
 }
 
 impl StreamStartup {
-    pub fn of(streamer: &sampler_kontakt::Streamer, assets: &[sampler_core::Pcm], report: &sampler_kontakt::StreamReport) -> Self {
+    pub fn of(
+        streamer: &sampler_kontakt::Streamer,
+        assets: &[sampler_core::Pcm],
+        report: &sampler_kontakt::StreamReport,
+    ) -> Self {
         let readiness = streamer.head_readiness(assets);
         let onsets = streamer.onset_readiness(assets);
         let hints = streamer.hint_readiness(assets);
@@ -350,15 +366,17 @@ impl StreamStartup {
             covered_ranges: readiness.covered_ranges,
             onset_ranges: onsets.ranges,
             covered_onset_ranges: onsets.covered_ranges,
-            hint_ranges: hints.as_ref().map_or(0,|r|r.ranges),
-            covered_hint_ranges: hints.as_ref().map_or(0,|r|r.covered_ranges),
-            hint_source_frames: hints.as_ref().map_or(0,|r|r.source_frames),
-            covered_hint_source_frames: hints.as_ref().map_or(0,|r|r.covered_source_frames),
+            hint_ranges: hints.as_ref().map_or(0, |r| r.ranges),
+            covered_hint_ranges: hints.as_ref().map_or(0, |r| r.covered_ranges),
+            hint_source_frames: hints.as_ref().map_or(0, |r| r.source_frames),
+            covered_hint_source_frames: hints.as_ref().map_or(0, |r| r.covered_source_frames),
             selected_hint_head_frames: streamer.selected_hint_head_frames(),
-            selected_hint_ranges: selected_hints.as_ref().map_or(0,|r|r.ranges),
-            covered_selected_hint_ranges: selected_hints.as_ref().map_or(0,|r|r.covered_ranges),
-            selected_hint_source_frames: selected_hints.as_ref().map_or(0,|r|r.source_frames),
-            covered_selected_hint_source_frames: selected_hints.as_ref().map_or(0,|r|r.covered_source_frames),
+            selected_hint_ranges: selected_hints.as_ref().map_or(0, |r| r.ranges),
+            covered_selected_hint_ranges: selected_hints.as_ref().map_or(0, |r| r.covered_ranges),
+            selected_hint_source_frames: selected_hints.as_ref().map_or(0, |r| r.source_frames),
+            covered_selected_hint_source_frames: selected_hints
+                .as_ref()
+                .map_or(0, |r| r.covered_source_frames),
             packed_head_bytes: readiness.packed_bytes,
             head_budget_bytes: readiness.budget_bytes,
             required_resident_assets: report.required_resident_assets,

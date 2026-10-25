@@ -204,8 +204,14 @@ impl<'plan> InitialStartHints<'plan> {
                 f64::from(pcm.sample_rate()) / f64::from(rate),
                 policy,
             );
-            if constant_start_window(&zone.playback, pcm.frame_count(), offset, step, heads[region])
-                .is_some()
+            if constant_start_window(
+                &zone.playback,
+                pcm.frame_count(),
+                offset,
+                step,
+                heads[region],
+            )
+            .is_some()
             {
                 this.controllers.push((region, offset));
                 this.eligible += 1;
@@ -251,9 +257,13 @@ impl<'plan> InitialStartHints<'plan> {
                 f64::from(pcm.sample_rate()) / f64::from(self.rate),
                 &self.policy,
             );
-            if let Some(window) =
-                constant_start_window(&zone.playback, pcm.frame_count(), offset, step, self.heads[region])
-            {
+            if let Some(window) = constant_start_window(
+                &zone.playback,
+                pcm.frame_count(),
+                offset,
+                step,
+                self.heads[region],
+            ) {
                 ranges[asset].push(window);
             }
         }

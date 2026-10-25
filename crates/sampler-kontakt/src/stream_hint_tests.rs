@@ -372,12 +372,32 @@ fn hinted_alias_view_order_keeps_physical_recipe_and_distinct_forward_reverse_st
             headroom: 0.,
             ..Default::default()
         };
-        let recipe =
-            ConstantStartHints::new(&instrument, &proof, &assets, 48000, &law_heads(&instrument, 128), &policy, &|| false)
-                .unwrap();
-        let base = start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy);
+        let recipe = ConstantStartHints::new(
+            &instrument,
+            &proof,
+            &assets,
+            48000,
+            &law_heads(&instrument, 128),
+            &policy,
+            &|| false,
+        )
+        .unwrap();
+        let base = start_ranges(
+            &instrument,
+            &assets,
+            48000,
+            &law_heads(&instrument, 128),
+            &policy,
+        );
         let hints = recipe
-            .ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy, &|| false)
+            .ranges(
+                &instrument,
+                &assets,
+                48000,
+                &law_heads(&instrument, 128),
+                &policy,
+                &|| false,
+            )
             .unwrap();
         let mut union = physical_start_ranges(&assets, &base);
         union
@@ -398,7 +418,13 @@ fn hinted_alias_view_order_keeps_physical_recipe_and_distinct_forward_reverse_st
         let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
             HashMap::from([(pcm.asset_id(), source)]),
             &assets,
-            start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy),
+            start_ranges(
+                &instrument,
+                &assets,
+                48000,
+                &law_heads(&instrument, 128),
+                &policy,
+            ),
             Some(base),
             Some(HintFallback {
                 head_frames: 128,
@@ -542,14 +568,32 @@ fn hinted_static_offset_745_matches_resident_pcm_under_reverse_pitch_and_host_pa
                 headroom: 0.,
                 ..Default::default()
             };
-            let recipe =
-                ConstantStartHints::new(&instrument, &proof, &assets, 48000, &law_heads(&instrument, 128), &policy, &|| {
-                    false
-                })
-                .unwrap();
-            let base = start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy);
+            let recipe = ConstantStartHints::new(
+                &instrument,
+                &proof,
+                &assets,
+                48000,
+                &law_heads(&instrument, 128),
+                &policy,
+                &|| false,
+            )
+            .unwrap();
+            let base = start_ranges(
+                &instrument,
+                &assets,
+                48000,
+                &law_heads(&instrument, 128),
+                &policy,
+            );
             let hints = recipe
-                .ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy, &|| false)
+                .ranges(
+                    &instrument,
+                    &assets,
+                    48000,
+                    &law_heads(&instrument, 128),
+                    &policy,
+                    &|| false,
+                )
                 .unwrap();
             let mut union = base[0].clone();
             union.extend(hints[0].clone());
@@ -559,7 +603,13 @@ fn hinted_static_offset_745_matches_resident_pcm_under_reverse_pitch_and_host_pa
             let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
                 sources(&assets),
                 &assets,
-                start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy),
+                start_ranges(
+                    &instrument,
+                    &assets,
+                    48000,
+                    &law_heads(&instrument, 128),
+                    &policy,
+                ),
                 Some(base),
                 Some(HintFallback {
                     head_frames: 128,
@@ -919,9 +969,22 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
         assert_eq!(recipe.loop_prefix, 1);
         assert_eq!(recipe.loops, 0);
         let hints = recipe
-            .ranges(&instrument, &assets, 48000, &vec![128; instrument.zones.len()], &policy, &|| false)
+            .ranges(
+                &instrument,
+                &assets,
+                48000,
+                &vec![128; instrument.zones.len()],
+                &policy,
+                &|| false,
+            )
             .unwrap();
-        let base = start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy);
+        let base = start_ranges(
+            &instrument,
+            &assets,
+            48000,
+            &law_heads(&instrument, 128),
+            &policy,
+        );
         let mut union = base[0].clone();
         union.extend(hints[0].iter().cloned());
         merge_start_ranges(&mut union);
@@ -930,7 +993,13 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
         let (streamer, _) = Streamer::start_with_hint_fallbacks_cancelable(
             sources(&assets),
             &assets,
-            start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy),
+            start_ranges(
+                &instrument,
+                &assets,
+                48000,
+                &law_heads(&instrument, 128),
+                &policy,
+            ),
             Some(base),
             Some(HintFallback {
                 head_frames: 128,
@@ -994,28 +1063,54 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
         .unwrap();
         assert_eq!(crossing.loop_prefix, 0);
         assert_eq!(crossing.loops, 1);
-        let zero =
-            ConstantStartHints::new(&instrument, &prepared, &assets, 48000, &vec![0; instrument.zones.len()], &policy, &|| {
-                false
-            })
-            .unwrap();
+        let zero = ConstantStartHints::new(
+            &instrument,
+            &prepared,
+            &assets,
+            48000,
+            &vec![0; instrument.zones.len()],
+            &policy,
+            &|| false,
+        )
+        .unwrap();
         assert_eq!(zero.loop_prefix, 1);
         assert!(
-            zero.ranges(&instrument, &assets, 48000, &vec![0; instrument.zones.len()], &policy, &|| false)
-                .unwrap()[0][0]
+            zero.ranges(
+                &instrument,
+                &assets,
+                48000,
+                &vec![0; instrument.zones.len()],
+                &policy,
+                &|| false
+            )
+            .unwrap()[0][0]
                 .contains(&745)
         );
         assert_eq!(
-            zero.ranges(&instrument, &assets, 48000, &law_heads(&instrument, 1), &policy, &|| false)
-                .unwrap_err()
-                .kind(),
+            zero.ranges(
+                &instrument,
+                &assets,
+                48000,
+                &law_heads(&instrument, 1),
+                &policy,
+                &|| false
+            )
+            .unwrap_err()
+            .kind(),
             io::ErrorKind::InvalidInput
         );
         let mut short = instrument.clone();
         short.zones[0].playback.end = Some(700);
-        let silent =
-            ConstantStartHints::new(&short, &prepared, &assets, 48000, &law_heads(&short, 128), &policy, &|| false)
-                .unwrap();
+        let silent = ConstantStartHints::new(
+            &short,
+            &prepared,
+            &assets,
+            48000,
+            &law_heads(&short, 128),
+            &policy,
+            &|| false,
+        )
+        .unwrap();
         assert_eq!(
             (silent.eligible, silent.loop_prefix, silent.silent),
             (0, 0, 1)

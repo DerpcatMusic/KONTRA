@@ -50,7 +50,13 @@ fn planned_heads_cover_every_admitted_sample_start_offset_in_both_directions() {
     for reverse in [false, true] {
         for range in [0, 32, 512, u64::MAX] {
             let ir = instrument(reverse, range, true);
-            let planned = start_ranges(&ir, std::slice::from_ref(&pcm), 48000, &law_heads(&ir, 64), &policy);
+            let planned = start_ranges(
+                &ir,
+                std::slice::from_ref(&pcm),
+                48000,
+                &law_heads(&ir, 64),
+                &policy,
+            );
             for offset in 0..=range.min(1900) {
                 let onset = if reverse { 1999 - offset } else { 100 + offset };
                 if onset >= 2000 {
@@ -227,7 +233,9 @@ fn pinned_wavetables_over_head_budget_stream_under_cold_fallback() {
         }
     }
     // Three pinned wavetables need 3 x 8 KiB of packed heads, over a 12 KB budget.
-    let assets: Vec<Pcm> = (0..3).map(|_| Pcm::streamed(48000, 4096).unwrap()).collect();
+    let assets: Vec<Pcm> = (0..3)
+        .map(|_| Pcm::streamed(48000, 4096).unwrap())
+        .collect();
     let ranges = vec![vec![0..4096]; 3];
     let pins: HashSet<AssetId> = assets.iter().map(Pcm::asset_id).collect();
     for (allow_cold_fallback, admitted) in [(true, true), (false, false)] {
@@ -249,7 +257,11 @@ fn pinned_wavetables_over_head_budget_stream_under_cold_fallback() {
             allow_cold_fallback,
             &|| false,
         );
-        assert_eq!(started.is_ok(), admitted, "cold fallback {allow_cold_fallback}");
+        assert_eq!(
+            started.is_ok(),
+            admitted,
+            "cold fallback {allow_cold_fallback}"
+        );
     }
 }
 
