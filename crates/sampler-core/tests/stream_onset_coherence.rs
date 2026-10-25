@@ -139,7 +139,6 @@ impl Fixture {
 struct CursorReceipt {
     voice: VoiceId,
     source_frame: u64,
-    cold: bool,
     starved: bool,
     resident: bool,
     status: PageStatus,
@@ -155,7 +154,6 @@ fn cursor(f: &Fixture, sample: usize) -> Option<CursorReceipt> {
                     result = Some(CursorReceipt {
                         voice: d.voice,
                         source_frame: d.source_frame,
-                        cold: d.starved,
                         starved: d.starved,
                         resident: d.resident,
                         status: d.status,
@@ -181,6 +179,8 @@ fn render(rt: &mut Runtime, output: &mut [Frame], partition: usize) {
     });
 }
 
+/// Impulses at each sample's onset (`onsets[s]`; at or past `length` means silent)
+/// and 64 frames later. `cold[s]` applies the first-frame recovery fade.
 fn expected(length: usize, onsets: [usize; 2], cold: [bool; 2]) -> Vec<Frame> {
     let mut result = vec![[0.; 2]; length];
     for (sample, (onset, cold)) in onsets.into_iter().zip(cold).enumerate() {
@@ -198,7 +198,7 @@ fn receipt(case: &str, f: &Fixture, audio: &[Frame]) {
     let rt = &f.rt;
     let cursors = [0, 1].map(|sample| {
         cursor(f, sample).map(|c| serde_json::json!({
-        "asset_label": sample, "source_frame": c.source_frame, "cold": c.cold,
+        "asset_label": sample, "source_frame": c.source_frame,
         "starved": c.starved, "resident": c.resident, "page_status": format!("{:?}", c.status)
     }))
     });
@@ -220,6 +220,7 @@ fn receipt(case: &str, f: &Fixture, audio: &[Frame]) {
             "case": case, "sample_rate": RATE, "now": rt.now(),
             "notes": rt.note_count(), "families": rt.family_count(),
             "voices": rt.voice_count(), "cold_starts": rt.stats().cold_starts,
+            "dropout_frames": rt.stats().dropout_frames,
             "cursors": cursors, "distinct_assets": f.assets[0].asset_id() != f.assets[1].asset_id(),
             "underruns": rt.stream_underruns(), "impulses": impulses,
             "policy": "existing_behavior_only", "native_parity": "unverified"
@@ -227,8 +228,12 @@ fn receipt(case: &str, f: &Fixture, audio: &[Frame]) {
     );
 }
 
+// Old -> new contract (P1.3): a starved sibling no longer holds its cursor. It
+// advances through the wait in silence, so siblings started at the same sample
+// stay at the same position, and the frames it waited through are dropouts.
+
 #[test]
-fn one_selection_two_distinct_assets_preserve_independently_delayed_attacks() {
+fn one_selection_two_distinct_assets_stay_coherent_while_one_starves() {
     for hold in [0, 128, HOLD] {
         for early in [0, 1] {
             for partition in [1, 64, 127] {
@@ -239,8 +244,8 @@ fn one_selection_two_distinct_assets_preserve_independently_delayed_attacks() {
                 assert_ne!(before[0].voice, before[1].voice);
                 for c in before {
                     assert_eq!(
-                        (c.source_frame, c.cold, c.starved, c.status),
-                        (0, true, true, PageStatus::Pending)
+                        (c.source_frame, c.starved, c.status),
+                        (0, true, PageStatus::Pending)
                     );
                 }
                 let late = 1 - early;
@@ -248,9 +253,10 @@ fn one_selection_two_distinct_assets_preserve_independently_delayed_attacks() {
                 service(&mut f.rt, false);
                 let mut audio = vec![[0.; 2]; hold + PROBE];
                 render(&mut f.rt, &mut audio[..hold], partition);
-                let waiting = cursor(&f, late).unwrap();
-                assert_eq!(waiting, before[late], "held cursor/voice must not age");
+                // Old: the late cursor stayed at 0 (held). New: both advanced the same hold.
+                assert_eq!(cursor(&f, late).unwrap().source_frame, hold as u64);
                 assert_eq!(cursor(&f, early).unwrap().source_frame, hold as u64);
+                assert_eq!(f.rt.stats().dropout_frames, hold as u64);
                 assert_eq!(f.rt.family_note(family), Ok(note));
                 assert_eq!(f.rt.family_voice_count(family), Ok(2));
                 if partition == 64 {
@@ -263,25 +269,28 @@ fn one_selection_two_distinct_assets_preserve_independently_delayed_attacks() {
                 f.publish(late, jobs[late].take().unwrap());
                 service(&mut f.rt, true);
                 render(&mut f.rt, &mut audio[hold..], partition);
-                let mut onsets = [0, 0];
-                onsets[late] = hold;
+                // Old: the late attack sounded at `hold`. New: its window's impulses were
+                // the stalled frames, so they are gone; only a zero-stall onset sounds.
+                let mut onsets = [audio.len(), audio.len()];
+                onsets[early] = 0;
+                if hold == 0 {
+                    onsets[late] = 0;
+                }
                 assert_eq!(audio, expected(audio.len(), onsets, [true, true]));
                 for (sample, before) in before.into_iter().enumerate() {
                     let c = cursor(&f, sample).unwrap();
                     assert_eq!(c.voice, before.voice);
-                    assert_eq!(
-                        (c.cold, c.starved, c.status),
-                        (false, false, PageStatus::Ready)
-                    );
-                    assert_eq!(c.source_frame, (audio.len() - onsets[sample]) as u64);
+                    assert_eq!((c.starved, c.status), (false, PageStatus::Ready));
+                    assert_eq!(c.source_frame, audio.len() as u64, "siblings stay aligned");
                 }
                 assert_eq!(
                     (
                         f.rt.voice_count(),
                         f.rt.stats().cold_starts,
-                        f.rt.stream_underruns()
+                        f.rt.stream_underruns(),
+                        f.rt.stats().dropout_frames,
                     ),
-                    (2, 2, 0)
+                    (2, 2, 0, hold as u64)
                 );
                 if partition == 64 {
                     receipt(
@@ -318,20 +327,25 @@ fn distinct_note_control_keeps_owners_separate_with_the_same_storage_skew() {
     service(&mut f.rt, false);
     let mut audio = vec![[0.; 2]; HOLD + PROBE];
     render(&mut f.rt, &mut audio[..HOLD], 64);
-    assert_eq!(cursor(&f, 1).unwrap().source_frame, 0);
+    // Old: the late cursor stayed at 0. New: it aged with its ready owner.
+    assert_eq!(cursor(&f, 1).unwrap().source_frame, HOLD as u64);
+    assert_eq!(cursor(&f, 0).unwrap().source_frame, HOLD as u64);
+    assert_eq!(f.rt.stats().dropout_frames, HOLD as u64);
     f.publish(1, b);
     service(&mut f.rt, true);
     render(&mut f.rt, &mut audio[HOLD..], 64);
-    assert_eq!(audio, expected(audio.len(), [0, HOLD], [true, true]));
+    assert_eq!(audio, expected(audio.len(), [0, audio.len()], [true, true]));
+    assert_eq!(cursor(&f, 0).unwrap().source_frame, audio.len() as u64);
+    assert_eq!(cursor(&f, 1).unwrap().source_frame, audio.len() as u64);
     assert_eq!(
         (f.rt.note_count(), f.rt.family_count(), f.rt.voice_count()),
         (2, 2, 2)
     );
-    receipt("distinct_notes_hold_2880", &f, &audio);
+    receipt("distinct_notes_stall_2880", &f, &audio);
 }
 
 #[test]
-fn partial_208_frame_warm_head_sounds_while_its_cold_sibling_waits() {
+fn partial_208_frame_warm_head_sounds_while_its_cold_sibling_starves_in_silence() {
     let mut f = Fixture::new([208, 0], false, Envelope::default());
     f.layered();
     service(&mut f.rt, false);
@@ -343,13 +357,13 @@ fn partial_208_frame_warm_head_sounds_while_its_cold_sibling_waits() {
     );
     let warm = cursor(&f, 0).unwrap();
     assert_eq!(
-        (warm.cold, warm.resident, warm.status),
+        (warm.starved, warm.resident, warm.status),
         (false, true, PageStatus::Missing)
     );
     let mut audio = vec![[0.; 2]; HOLD + PROBE];
     render(&mut f.rt, &mut audio[..128], 64);
     assert_eq!(cursor(&f, 0).unwrap().source_frame, 128);
-    assert_eq!(cursor(&f, 1).unwrap().source_frame, 0);
+    assert_eq!(cursor(&f, 1).unwrap().source_frame, 128);
     service(&mut f.rt, false);
     let a = f.worker.next_job().unwrap();
     assert_eq!(a.key(), f.key(0));
@@ -357,18 +371,29 @@ fn partial_208_frame_warm_head_sounds_while_its_cold_sibling_waits() {
     f.publish(0, a);
     service(&mut f.rt, false);
     render(&mut f.rt, &mut audio[128..HOLD], 64);
+    // Old: the cold sibling held at 0. New: it aged through the wait with the warm voice.
     assert_eq!(
         (
             cursor(&f, 1).unwrap().source_frame,
-            cursor(&f, 1).unwrap().cold
+            cursor(&f, 1).unwrap().starved
         ),
-        (0, true)
+        (HOLD as u64, true)
     );
+    assert_eq!(cursor(&f, 0).unwrap().source_frame, HOLD as u64);
     f.publish(1, b);
     service(&mut f.rt, true);
     render(&mut f.rt, &mut audio[HOLD..], 64);
-    assert_eq!(audio, expected(audio.len(), [0, HOLD], [false, true]));
-    assert_eq!((f.rt.stats().cold_starts, f.rt.stream_underruns()), (1, 0));
+    assert_eq!(audio, expected(audio.len(), [0, audio.len()], [false, true]));
+    assert_eq!(cursor(&f, 0).unwrap().source_frame, audio.len() as u64);
+    assert_eq!(cursor(&f, 1).unwrap().source_frame, audio.len() as u64);
+    assert_eq!(
+        (
+            f.rt.stats().cold_starts,
+            f.rt.stream_underruns(),
+            f.rt.stats().dropout_frames
+        ),
+        (1, 0, HOLD as u64)
+    );
     receipt("208_frame_head_and_cold_sibling", &f, &audio);
 }
 
@@ -413,13 +438,14 @@ fn authored_layer_delay_is_preserved_even_when_both_pages_are_already_ready() {
     let mut audio = [[0.; 2]; 256];
     render(&mut f.rt, &mut audio[..128], 64);
     assert_eq!(cursor(&f, 1).unwrap().source_frame, 0);
-    assert!(!cursor(&f, 1).unwrap().cold);
+    assert!(!cursor(&f, 1).unwrap().starved);
     render(&mut f.rt, &mut audio[128..], 64);
     assert_eq!(
         audio.as_slice(),
         expected(audio.len(), [0, 128], [false, false])
     );
     assert_eq!(f.rt.pending_commands(), 0);
+    assert_eq!(f.rt.stats().dropout_frames, 0, "a delayed start with ready pages starves nothing");
     receipt("authored_128_frame_delay_ready_pages", &f, &audio);
 }
 
@@ -451,11 +477,13 @@ fn terminal_failure_of_one_asset_does_not_end_its_ready_sibling() {
         expected(audio.len(), [0, audio.len()], [true, true])
     );
     assert_eq!(f.rt.stream_underruns(), 0);
-    receipt("terminal_failed_cold_sibling", &f, &audio);
+    // The failed sibling's 128 waited frames stay counted after it is gone.
+    assert_eq!(f.rt.stats().dropout_frames, 128);
+    receipt("terminal_failed_starved_sibling", &f, &audio);
 }
 
 #[test]
-fn unavailable_page_holds_only_its_sibling_until_explicit_request_replacement() {
+fn unavailable_page_starves_only_its_sibling_until_explicit_request_replacement() {
     let mut f = Fixture::new([0, 0], false, Envelope::default());
     let (_, family) = f.layered();
     let [a, b] = f.jobs();
@@ -476,11 +504,13 @@ fn unavailable_page_holds_only_its_sibling_until_explicit_request_replacement() 
     });
     let failed = cursor(&f, 1).unwrap();
     assert_eq!(
-        (failed.source_frame, failed.cold, failed.status),
-        (0, true, PageStatus::Failed(DecodeFailure::Unavailable))
+        (failed.source_frame, failed.starved, failed.status),
+        (128, true, PageStatus::Failed(DecodeFailure::Unavailable))
     );
     render(&mut f.rt, &mut audio[128..256], 64);
-    assert_eq!(cursor(&f, 1), Some(failed));
+    // Old: the failed cursor was frozen. New: it keeps its schedule through the failure.
+    assert_eq!(cursor(&f, 1).unwrap().source_frame, 256);
+    assert_eq!(cursor(&f, 0).unwrap().source_frame, 256);
     assert_eq!(f.rt.family_voice_count(family), Ok(2));
     // Explicit invalidation models control recovery, not automatic retry policy.
     support::without_heap(|| {
@@ -494,13 +524,16 @@ fn unavailable_page_holds_only_its_sibling_until_explicit_request_replacement() 
     render(&mut f.rt, &mut audio[256..], 64);
     assert_eq!(
         audio.as_slice(),
-        expected(audio.len(), [0, 256], [true, true])
+        expected(audio.len(), [0, audio.len()], [true, true])
     );
+    assert_eq!(cursor(&f, 0).unwrap().source_frame, audio.len() as u64);
+    assert_eq!(cursor(&f, 1).unwrap().source_frame, audio.len() as u64);
+    assert_eq!(f.rt.stats().dropout_frames, 256);
     receipt("unavailable_page_explicit_replacement", &f, &audio);
 }
 
 #[test]
-fn invalidated_held_page_discards_stale_completion_before_replacement_onset() {
+fn invalidated_starved_page_discards_stale_completion_before_replacement_onset() {
     let mut f = Fixture::new([0, 0], false, Envelope::default());
     f.layered();
     let [a, obsolete] = f.jobs();
@@ -523,25 +556,29 @@ fn invalidated_held_page_discards_stale_completion_before_replacement_onset() {
     let replacement = f.worker.next_job().unwrap();
     assert_eq!(replacement.key(), key);
     render(&mut f.rt, &mut audio[128..256], 64);
+    // Old: held at 0 until the replacement. New: aged through the discard.
     assert_eq!(
         (
             cursor(&f, 1).unwrap().source_frame,
-            cursor(&f, 1).unwrap().cold
+            cursor(&f, 1).unwrap().starved
         ),
-        (0, true)
+        (256, true)
     );
+    assert_eq!(cursor(&f, 0).unwrap().source_frame, 256);
     f.publish(1, replacement);
     service(&mut f.rt, true);
     render(&mut f.rt, &mut audio[256..], 64);
     assert_eq!(
         audio.as_slice(),
-        expected(audio.len(), [0, 256], [true, true])
+        expected(audio.len(), [0, audio.len()], [true, true])
     );
+    assert_eq!(cursor(&f, 1).unwrap().source_frame, audio.len() as u64);
+    assert_eq!(f.rt.stats().dropout_frames, 256);
     receipt("invalidated_job_discard_then_replacement", &f, &audio);
 }
 
 #[test]
-fn note_off_or_family_release_during_wait_preserves_late_released_attack() {
+fn release_clock_runs_through_the_wait_so_a_late_released_onset_ends_in_silence() {
     for family_release in [false, true] {
         let mut f = Fixture::new([0, 0], false, Envelope::new(0, 0, 0, 1., 128).unwrap());
         let (note, family) = f.layered();
@@ -558,26 +595,25 @@ fn note_off_or_family_release_during_wait_preserves_late_released_attack() {
             }
         });
         render(&mut f.rt, &mut audio[128..HOLD], 64);
-        assert_eq!(f.rt.family_voice_count(family), Ok(1));
-        let waiting = cursor(&f, 1).unwrap();
-        assert_eq!((waiting.source_frame, waiting.cold), (0, true));
-        assert!(
-            cursor(&f, 0).is_none(),
-            "ready sibling's release clock already ended"
-        );
+        // Old: the late voice waited in release and sounded on arrival. New: its
+        // 128-frame release ran on schedule through the wait, so both voices are gone.
+        assert_eq!((f.rt.voice_count(), f.rt.family_count()), (0, 0));
+        assert!(cursor(&f, 1).is_none());
+        // Waited frames: 128 starved before release, 128 more in release.
+        assert_eq!(f.rt.stats().dropout_frames, 256);
         f.publish(1, b);
         service(&mut f.rt, true);
         render(&mut f.rt, &mut audio[HOLD..], 64);
-        let mut want = expected(audio.len(), [0, HOLD], [true, true]);
-        want[HOLD + 64][1] = 0.125; // 0.25 * (1 - 64/128), frozen release PCM.
-        assert_eq!(audio, want);
-        assert_eq!((f.rt.voice_count(), f.rt.family_count()), (0, 0));
+        assert_eq!(
+            audio,
+            expected(audio.len(), [0, audio.len()], [true, true])
+        );
         assert_eq!(f.rt.stream_underruns(), 0);
         receipt(
             if family_release {
-                "family_release_while_waiting"
+                "family_release_while_starved"
             } else {
-                "note_off_while_waiting"
+                "note_off_while_starved"
             },
             &f,
             &audio,
