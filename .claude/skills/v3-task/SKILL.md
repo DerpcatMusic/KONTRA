@@ -49,6 +49,8 @@ rules. The full manual is `docs/architecture-v3/12-WORKFLOW.md`.
   --all-targets --no-deps`; the bar is no new warnings in files you changed.
   Once `cargo xtask ci` exists (task P0.7), run it instead; it does all of this.
 - `Cargo.lock`: keep only additions your change needs.
+- A new crate the plugin links needs `license = "Apache-2.0"` in its Cargo.toml, or the
+  Website build's notice bundler (tools/licenses.py) fails with "Missing license text".
 
 ## 3. Proving it
 
