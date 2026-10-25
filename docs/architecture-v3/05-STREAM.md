@@ -9,20 +9,41 @@ Vista, 100% of starts are cold (PLAYBACK_AUDIT.md).
 
 ## 1. The preload law
 
-```rust
-pub struct PreloadLaw {
-    pub base: Frames,          // Kontakt DFD default: 60 KB of source data per sample (all channels) → 61440 / bytes_per_frame
-    pub cover_start_mod: bool, // always true: the zone's whole start-offset range is resident
-    pub min: Frames, pub max: Frames,
-}
+Kontakt's own law, decompiled (`docs/re/engine/k-sampler-source.md`, `FUN_14082a530`) and
+already ported as `crates/sampler-kontakt/src/dfd_window.rs`:
+
+```text
+P = preload bytes per channel (instrument dfdChannelPreloadSize, default 61440; global override)
+C = channels, F = ceil(bits/8) * C bytes per frame, off = the zone's S.Mod range in frames
+d     = pos - off                   (pos = zone start in frames)
+base  = P * C                       (60 KB per channel, not per sample)
+if d < 0: base += F * d             (a start near the sample head has less room behind it)
+total = base + off * F * 2
+W     = ceil(total / 6144) * 6144   (6 KiB granularity); head frames = |W| / F (reverse zones get a negative W: the sign is the direction)
+start = max(d, 0)                   (the window starts S.Mod before the zone start)
 ```
 
-- **Preload = `base` + the zone's full reachable start range.** The start
-  range is the union of zone `S.Mod` or `playPos` ranges, every script
-  `play_note` offset the KSP or Lua sema can bound, and every CC/RTC route
-  to sample start (Areia's CC113, Vista's KeyPosition). A start range the
-  front end can't bound is a load diagnostic plus a whole-sample preload
-  for that zone. Kontakt does the same.
+- **Preload = `base` + 2 × the zone's S.Mod range**, starting S.Mod before the zone start, exactly as `dfd_window::window` computes it.
+  Nothing else extends the head.
+- **Script and CC offsets are bounded by S.Mod.** KSP manual, `play_note()`: "In DFD mode,
+  the sample offset is influenced by the Sample Mod (S. Mod) value of the zones. Offsets
+  exceeding the zone's S. Mod setting are ignored" (since Kontakt 4.1). KONTRA does the same
+  for streamed zones, so an offset the front end cannot bound never forces a whole-sample head.
+  Formats without S.Mod pass their declared start-modulation range as `off`.
+- **Only resident groups get heads.** A group saved purged (`ir::Group::purged`) gets no head at load;
+  a KSP `purge_group` reload computes the same law head when it loads the group. ANALOG has 481 of
+  483 groups saved purged (138 of 95,624 zones resident), Areia 1,056 of 49,152 zones, Vista 4,152 of 8,304 (IR `Group::purged` and zone `group`
+  via the `ir_json` and `nki_tree` examples on the three .nki files, 2026-10-25).
+- **Memory bar (P1.2: parity).** The resident head bytes for an instrument are at most 5% above the sum of
+  Kontakt's windows (the margin is the interpolation guard frames) for the same resident zones (per sample, the union of its zones' window ranges, so overlapping windows count once and disjoint ones each count), measured on Areia, Vista and
+  ANALOG. P1.2's first attempt (base + script range, unbounded → whole sample, f32 accounting)
+  measured 4.4 GB on Areia, 469 MB on Vista and 50 GB on ANALOG (2026-10-25, PluginArtifacts/v3-gates/P1.2).
+  Round 6 (36ff78c5d): Vista 314.8 MB vs 313.3 MB, Areia 106.2 MB vs 103.8 MB, ANALOG 159.4 MB vs 159.3 MB.
+- **Then beat Kontakt (P6.1c).** Parity is the floor, not the goal. The store holds heads below
+  Kontakt's footprint: compressed heads decoded on read (NCW/FLAC-class, about half of packed PCM),
+  one copy shared by every instance and every zone that reads the same frames, and a measured
+  disk-latency term instead of a fixed 60 KB on fast storage, where on-time starts allow it.
+  Target: at most 60% of Kontakt's windows on Areia, Vista and ANALOG with C1/C8 unchanged.
 - **The budget is never solved by shrinking heads below the law.** Over
   budget, the loader reports which zones exceed it and drops whole
   articulations or mic positions *the user chose to purge*. KONTRA never
