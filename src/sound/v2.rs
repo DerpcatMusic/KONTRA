@@ -9791,6 +9791,54 @@ mod timing_parity_tests {
     }
 
     #[test]
+    fn held_note_still_plays_when_the_transport_stops_mid_hold() {
+        let mut c = aligned_core();
+        c.begin_block(&BlockInfo {
+            frames: 128,
+            offline: true,
+            transport: super::super::Transport {
+                playing: true,
+                tempo: 120.,
+                beats: 0.,
+                signature: (4, 4),
+            },
+            ..Default::default()
+        });
+        let note = HostNote {
+            port: 0,
+            channel: 0,
+            key: 60,
+            id: 17,
+            clap: true,
+        };
+        c.event(
+            0,
+            Event::NoteOn {
+                note,
+                velocity: 0.7654321,
+                tune: 0.123456789,
+            },
+        );
+        c.render(128);
+        c.update_transport(super::super::Transport {
+            playing: false,
+            tempo: 120.,
+            beats: 0.5,
+            signature: (4, 4),
+        });
+        for _ in 0..2 {
+            c.render(128);
+        }
+        assert_eq!(c.voices().active, 0, "256 frames: still inside the 480-frame hold");
+        c.render(128);
+        assert_eq!(
+            c.voices().active,
+            1,
+            "the note plays at its hold even though the transport stopped while it waited"
+        );
+    }
+
+    #[test]
     fn v1_auto_align_reports_real_hold_and_preserves_host_ownership() {
         let mut c = aligned_core();
         c.begin_block(&BlockInfo {
