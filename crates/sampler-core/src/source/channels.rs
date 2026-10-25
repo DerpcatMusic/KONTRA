@@ -100,13 +100,13 @@ impl Cursor {
                     for channel in 0..channels {
                         output.values[channel * output.stride + rendered] = last[channel] * fade;
                     }
-                    self.advance(); rendered += 1; continue;
+                    self.stall(1, self.position); self.advance(); rendered += 1; continue;
                 }
                 if !available {
                     // The existing post-fade streaming law advances silently.
                     // Every original channel shares that one advance.
                     last.fill(0.); self.last = [0.; 2];
-                    self.advance(); rendered += 1; continue;
+                    self.stall(1, self.position); self.advance(); rendered += 1; continue;
                 }
                 self.starvation = None; self.fade_in = self.fade_frames;
             }
