@@ -1,0 +1,16 @@
+[package]
+name = "kontra-engine"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-dsp = { path = "../../dsp/registry" }
+kontra-events = { path = "../../model/events" }
+kontra-stream = { path = "../stream" }
+kontra-time = { path = "../../base/time" }
+kontra-voice = { path = "../voice" }
+kontra-vm = { path = "../vm" }

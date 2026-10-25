@@ -1,0 +1,12 @@
+[package]
+name = "kontra-vm"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-events = { path = "../../model/events" }
+kontra-time = { path = "../../base/time" }

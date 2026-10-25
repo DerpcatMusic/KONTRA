@@ -64,7 +64,7 @@ class Gates(unittest.TestCase):
                            ("success", "success", "skipped", "success"),
                            ("success", "success", "success", "failure")):
                 env = dict(os.environ, CODE=code, CHANGES=changes,
-                           LINUX=native[0], WINDOWS=native[1], MACOS=native[2], EDITOR=native[3],
+                           LINUX=native[0], LAYER_TESTS=native[0], WINDOWS=native[1], MACOS=native[2], EDITOR=native[3],
                            RELEASE_VALIDATION="false", SHIPPING_PLAN="skipped",
                            SHIPPING_TESTS="skipped", SHIPPING_COVERAGE="skipped")
                 result = subprocess.run(["bash", "-e", "-c", gate], env=env)
@@ -79,7 +79,7 @@ class Gates(unittest.TestCase):
         states = ("success", "failure", "cancelled", "skipped")
         for release, code, shipping in itertools.product(("true", "false", ""), ("true", "false"), itertools.product(states, repeat=3)):
             native = "success" if code == "true" else "skipped"
-            env = dict(os.environ, CODE=code, CHANGES="success", LINUX=native,
+            env = dict(os.environ, CODE=code, CHANGES="success", LINUX=native, LAYER_TESTS=native,
                        WINDOWS=native, MACOS=native, EDITOR=native,
                        RELEASE_VALIDATION=release, SHIPPING_PLAN=shipping[0],
                        SHIPPING_TESTS=shipping[1], SHIPPING_COVERAGE=shipping[2])
@@ -124,7 +124,7 @@ class Gates(unittest.TestCase):
         self.assertEqual(ci.count("python3 tools/test_version.py"), 6)
         self.assertEqual(ci.count("python3 tools/version.py nightly-dirty"), 5)
         self.assertEqual(ci.count("if: inputs.release_validation || github.event_name == 'pull_request'"), 5)
-        self.assertIn("    if: always()\n    needs: [changes, linux, windows, macos, editor, shipping-plan, shipping-tests, shipping-coverage]", ci)
+        self.assertIn("    if: always()\n    needs: [changes, linux, layer-tests, windows, macos, editor, shipping-plan, shipping-tests, shipping-coverage]", ci)
         self.assertIn("    uses: ./.github/workflows/plugin-ui.yml", ci)
         self.assertNotIn("cargo test --release --features library-access", ci)
 

@@ -1,0 +1,13 @@
+[package]
+name = "kontra-voice"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-dsp-core = { path = "../../dsp/core" }
+kontra-stream = { path = "../stream" }
+kontra-time = { path = "../../base/time" }
