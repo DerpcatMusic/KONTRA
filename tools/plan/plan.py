@@ -267,8 +267,9 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
               f"2. Commit early and often. Conventional Commits, with a `Task: {tid}` trailer. After the first commit push and open a "
               f"**draft** PR (`gh pr create --draft --base {branch} --title \"{tid}: {t['title']}\"`) and keep a `## Progress` list "
               "in its body; if your session ends, the next agent resumes from it.",
-              "3. Write Rust per the `beautiful-rust` skill; before the PR run `cargo fmt` and "
-              "`build-slot cargo clippy -p <your crates> --all-targets --no-deps -- -D warnings` on the crates you changed (`--no-deps`: some old crates are not clippy-clean yet).",
+              "3. Write Rust per the `beautiful-rust` skill. Before the PR run `rustfmt --edition 2024 <files you changed>` "
+              "(not `cargo fmt`: it reformats unrelated files) and `build-slot cargo clippy -p <your crates> --all-targets --no-deps`; "
+              "old crates are not clippy-clean, so the bar is no new warnings in the files you changed.",
               "4. `Cargo.lock`: only additions your change needs. Revert any unrelated version change cargo makes "
               "(CI checks e.g. that gpu-allocator and wgpu-hal share one `windows` version). Repo tools must never "
               "require `build-slot`; it exists only on the maintainer's machine.",
