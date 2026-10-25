@@ -271,10 +271,10 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
               f"2. Commit early and often. Conventional Commits, with a `Task: {tid}` trailer. After the first commit push and open a "
               f"**draft** PR (`gh pr create --draft --base {branch} --title \"{tid}: {t['title']}\"`) and keep a `## Progress` list "
               "in its body; if your session ends, the next agent resumes from it.",
-              "3. Write Rust per the `beautiful-rust` skill. Before the PR commit, then run "
+              "3. Write Rust per the `beautiful-rust` skill. Commit everything first (the gate sees only committed files), then run "
               "`KONTRA_CARGO='build-slot cargo' cargo xtask ci --base origin/v3` (contributors: plain `cargo xtask ci`): "
               "rustfmt and clippy on the files you changed, tests of their packages, and the deps, debt and size ratchets, "
-              "the same checks CI runs. Never `cargo fmt` (it reformats unrelated files). Test code may unwrap, expect, "
+              "the same checks CI runs. Rerun it after your last commit. Never `cargo fmt` (it reformats unrelated files). Test code may unwrap, expect, "
               "panic and index without `#[allow]` (clippy.toml allows it); every new `#[allow]` grows the debt ratchet.",
               "4. `Cargo.lock`: only additions your change needs. Revert any unrelated version change cargo makes "
               "(CI checks e.g. that gpu-allocator and wgpu-hal share one `windows` version). Repo tools must never "
