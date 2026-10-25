@@ -391,13 +391,33 @@ gate = ["build-slot cargo test -p sampler-core --lib onset", "build-slot cargo t
 done = ["C3 and C6 pass on fixtures; coordinator confirms on Areia Spiccato Fast."]
 
 [[task]]
+id = "P1.4b"
+title = "Silent notes name their cause; fix Areia low keys and dense chords"
+phase = 1
+lane = "playback"
+size = "M"
+agent = "worker"
+deps = ["P1.2"]
+owns = ["tools/probe/src/**", "tools/probe/README.md", "@v2rs", "crates/sampler-core/src/diagnose.rs"]
+docs = ["10-TESTING.md", "gates/G0.md"]
+goal = "Every C6/C8 silent note in the probe says why the engine did not start a voice, and the two G0 silences on Areia are fixed at their cause."
+steps = [
+  "Probe: for each silent note in C6 and C8, report the engine's reason. `sampler_core::why_silent(key, &records, &faults)` (crates/sampler-core/src/diagnose.rs) over the selection records (`take_selection_records`) and script faults. Expose them through the smallest kontakto API (there is already `scan_selections` in src/sound/v2.rs); no new trait. `why_silent` returns None when selection accepted a region but no voice started (start condition, `SourceUnavailable` in sample_revision.rs, voice allocation): extend it to cover those stages so the probe never prints a silent note without a cause.",
+  "Areia `Spiccato Fast` live: keys 48/50/52/53 start 0 voices. The instrument intends them to play: zones keys 0..=54 (root 55) exist, and the script's only ignore_event branch is gated by in_range(55..97), so it never runs for these keys (triage on #696's thread, 2026-10-25). Name the rejection with the probe, then fix it where all formats route through (selection, start conditions or sample binding), not per instrument.",
+  "Areia dense: all 64 chords start 0 voices, including keys 55+, while live plays 63/64. Name the cause with the probe and fix it. If it is a separate mechanism from the low keys, say so in the PR.",
+  "A fix outside owns: post a scope request with the file the probe named."
+]
+gate = ["build-slot cargo test -j 4 -p kontra-probe", "kontra-probe on Areia Spiccato Fast, live and dense (coordinator runs it; paste C6/C8 before and after)"]
+done = ["C6 and C8 print a cause for every silent note.", "Areia live C6 and dense C8 pass, or the remaining failure has a named cause and a follow-up task."]
+
+[[task]]
 id = "P1.5"
 title = "Gate G1: on-time start on real libraries"
 phase = 1
 lane = "coordinator"
 size = "S"
 agent = "coordinator"
-deps = ["P1.4"]
+deps = ["P1.4", "P1.4b"]
 owns = ["docs/architecture-v3/gates/G1.md"]
 docs = ["11-MIGRATION.md#phase-13-playback-users-hear-it"]
 goal = "Prove C1, C3, C6, C9 on Areia, Vista, Conflux, ANALOG; listen-test the original complaints."

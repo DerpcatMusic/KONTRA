@@ -27,7 +27,8 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | P1.2 | Preload law: base + full start range, never shrink below the law | playback | L | worker | P1.1b, P0.3b |
 | P1.3 | No cold holds: late data is silence, the cursor keeps time | playback | M | worker | P1.2 |
 | P1.4 | One start batch per callback instant; delete start runway and per-family cohorts | playback | M | worker | P1.3 |
-| P1.5 | Gate G1: on-time start on real libraries | coordinator | S | coordinator | P1.4 |
+| P1.4b | Silent notes name their cause; fix Areia low keys and dense chords | playback | M | worker | P1.2 |
+| P1.5 | Gate G1: on-time start on real libraries | coordinator | S | coordinator | P1.4, P1.4b |
 
 ## Phase 2: Scripts never stall notes
 
@@ -147,6 +148,7 @@ flowchart LR
     P1_2["P1.2"]
     P1_3["P1.3"]
     P1_4["P1.4"]
+    P1_4b["P1.4b"]
     P1_5["P1.5"]
   end
   subgraph ph2["2. Scripts never stall notes"]
@@ -241,7 +243,9 @@ flowchart LR
   P0_3b --> P1_2
   P1_2 --> P1_3
   P1_3 --> P1_4
+  P1_2 --> P1_4b
   P1_4 --> P1_5
+  P1_4b --> P1_5
   P0_3b --> P2_1
   P2_1 --> P2_2
   P2_2 --> P2_3
