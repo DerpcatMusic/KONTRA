@@ -163,6 +163,11 @@ pub trait AssetSource: Send + Sync {
     fn header(&self) -> Option<(u32, usize)> {
         None
     }
+    /// Source bytes per frame across all channels, read from the file header
+    /// without counting as an open.
+    fn header_bytes_per_frame(&self) -> Option<usize> {
+        None
+    }
     /// Playback/reload IO, counted separately from initial loading.
     fn open_stream(&self) -> io::Result<SampleReader> {
         self.open()
@@ -186,6 +191,17 @@ impl AssetSource for Source {
     }
     fn open(&self) -> io::Result<SampleReader> {
         SampleReader::open(self)
+    }
+    fn header_bytes_per_frame(&self) -> Option<usize> {
+        let mut bytes = Bytes::open(self, false).ok()?;
+        let mut head = Vec::new();
+        (&mut bytes).take(1 << 16).read_to_end(&mut head).ok()?;
+        if head.starts_with(b"RIFF") {
+            let wav = crate::samples::wav_layout(&head).ok()?;
+            return Some(wav.channels * wav.width);
+        }
+        let header = ncw::NcwHeader::read(&mut std::io::Cursor::new(&head)).ok()?;
+        Some(usize::from(header.channels) * usize::from(header.bits_per_sample).div_ceil(8))
     }
     fn header(&self) -> Option<(u32, usize)> {
         self.header
@@ -1750,8 +1766,11 @@ impl Streamer {
                 (None,None) if requirements[i]==ir::AssetResidency::Resident=>source.open().ok().map(|r|r.frames()),
                 (None,None)=>None,
             });
-            // ponytail: no reader means no bit depth or channel count; assume 16-bit stereo (4 bytes/frame).
-            bytes_per_frame.push(reader.as_ref().and_then(SampleReader::bytes_per_frame).unwrap_or(4));
+            // Mono and stereo sources have no channel reader, so their width comes from the header.
+            // ponytail: Encoded, Custom and unparsed headers keep 4 bytes/frame (16-bit stereo).
+            bytes_per_frame.push(reader.as_ref().and_then(SampleReader::bytes_per_frame)
+                .or_else(|| source.header_bytes_per_frame())
+                .unwrap_or(4));
             if let Some(reader)=reader {
                 wide |= reader.original_channels().is_some_and(|n|n>2);
             }
