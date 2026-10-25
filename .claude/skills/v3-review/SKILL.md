@@ -27,6 +27,15 @@ Reports are claims. Treat every number, "tests pass", "skipped per the brief" an
   whether the machine was shared during timing, and whether the conclusion
   follows from the numbers or only from the narrative.
 
+## 1b. Before dispatching a brief
+
+- Check every step against the code it names: does the type exist, is it
+  public to the crate that must use it (P1.1b: `ScriptBank` was `pub(crate)`),
+  is the value still available at that stage (a lowered constant is a register)?
+- A step that adds a field to a struct needs every struct literal in scope:
+  `graft grep "<Struct> {"` and add each file (P1.1b round 1 stopped on two).
+- A gate's test filter must match the module path (`--lib <module>`), or it runs 0 tests.
+
 ## 2. Check the diff
 
 - `gh pr diff <n> --name-only` against the brief's Scope; `plan.py scope` is
