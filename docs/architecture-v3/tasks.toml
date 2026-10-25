@@ -423,14 +423,14 @@ owns = ["crates/sampler-core/src/control.rs", "crates/sampler-core/src/control/*
 docs = ["04-SCRIPT.md#5-ui-from-scripts", "07-APP.md#2-the-three-channels"]
 goal = "`set_control_par`, `set_key_*`, `message` and similar UI effects write a per-control latest-value cell; the 256-entry effect outbox and the 1024 ArrayQueue drained at 10 Hz in `control_tick` stop carrying UI state."
 steps = [
-  "Map every producer of UI effects (`EFFECT_CAPACITY` users: ops.rs, control/transfer.rs, midi_object.rs, array_file.rs, lib.rs) and the consumer (`control_tick` in src/plugin.rs, `take_effects`).",
+  "Map every producer of UI effects (`EFFECT_CAPACITY` users: ops.rs, control/transfer.rs, midi_object.rs, array_file.rs) and the consumers (`take_effects` in src/plugin.rs and src/sound/v2.rs, read by `control_tick` in src/plugin.rs).",
   "Add `LatestCell<T>` to sampler-pool (seqlock or triple buffer, no allocation after construction, tested with loom-free stress test in tests/) and a `ControlStore` (one cell per declared control, sized at prepare) owned by the script UI declaration.",
   "Route UI-only effects into the store. Keep the queue only for effects that are true events (e.g. file I/O requests); document which remain.",
   "UI side reads the store each frame instead of draining the queue.",
-  "A full effect queue must never release or abort a note: remove that path (`fail_behavior` on outbox full) for UI effects."
+  "A full effect queue must never release or abort a note: remove that path (`fail_behavior` / `BehaviorOverload` in crates/sampler-core/src/behavior/dispatch.rs; `behavior.rs` itself is read-only, ask for scope if the fix needs it) for UI effects."
 ]
-gate = ["build-slot cargo test -p sampler-pool", "build-slot cargo test -p sampler-core --lib control", "build-slot cargo test -p kontra-probe cc_start"]
-done = ["Probe C7 passes on `cc_start` (300 UI writes per note).", "Script UI still updates in the editor (coordinator check)."]
+gate = ["build-slot cargo test -p sampler-pool", "build-slot cargo test -p sampler-core --lib control", "build-slot cargo test -p kontra-probe --test fixtures ui_load"]
+done = ["The `ui_load` fixture tests in tools/probe/tests/fixtures.rs (300 UI writes per note) pass with their `#[ignore]` removed.", "Script UI still updates in the editor (coordinator check)."]
 
 [[task]]
 id = "P2.2"
