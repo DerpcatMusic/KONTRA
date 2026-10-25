@@ -967,7 +967,7 @@ struct HintFallback {
 
 /// Physical bytes the given per-asset ranges occupy: resident sources whole,
 /// streamed sources by the union of their ranges. `None` on overflow.
-fn physical_head_bytes(assets: &[Pcm], ranges: &[Vec<Range<usize>>]) -> Option<usize> {
+pub(crate) fn physical_head_bytes(assets: &[Pcm], ranges: &[Vec<Range<usize>>]) -> Option<usize> {
     let union = physical_start_ranges(assets, ranges);
     let physical: HashMap<_, _> = assets.iter().enumerate().map(|(i, p)| (p.asset_id(), i)).collect();
     physical.values().try_fold(0usize, |sum, &i| {
@@ -2947,7 +2947,8 @@ impl Streamed {
         // Over budget the law heads are kept whole: the budget is raised to them,
         // and the excess is reported (KONTRA_AUDIT_LOAD) rather than truncated.
         let head_bytes = physical_head_bytes(&kept, &ranges).unwrap_or(usize::MAX);
-        let head_budget = policy.head_budget.max(head_bytes);
+        // Strict loads (no cold fallback) keep the configured budget and fail over it.
+        let head_budget = if policy.allow_cold_fallback { policy.head_budget.max(head_bytes) } else { policy.head_budget };
         report.head_assets = ranges.iter().filter(|r| !r.is_empty()).count();
         report.head_ranges = ranges.iter().map(Vec::len).sum();
         report.head_source_frames = ranges.iter().flatten().map(|r| r.len() as u64).sum();

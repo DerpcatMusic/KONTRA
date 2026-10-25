@@ -909,7 +909,9 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
             &prepared,
             &assets,
             48000,
-            &law_heads(&instrument, 128),
+            // Hint-window horizon of 128 source frames: the S.Mod range (180479)
+            // would otherwise make the head span the whole sample and cross the loop.
+            &vec![128; instrument.zones.len()],
             &policy,
             &|| false,
         )
@@ -917,7 +919,7 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
         assert_eq!(recipe.loop_prefix, 1);
         assert_eq!(recipe.loops, 0);
         let hints = recipe
-            .ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy, &|| false)
+            .ranges(&instrument, &assets, 48000, &vec![128; instrument.zones.len()], &policy, &|| false)
             .unwrap();
         let base = start_ranges(&instrument, &assets, 48000, &law_heads(&instrument, 128), &policy);
         let mut union = base[0].clone();
@@ -993,13 +995,13 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
         assert_eq!(crossing.loop_prefix, 0);
         assert_eq!(crossing.loops, 1);
         let zero =
-            ConstantStartHints::new(&instrument, &prepared, &assets, 48000, &law_heads(&instrument, 0), &policy, &|| {
+            ConstantStartHints::new(&instrument, &prepared, &assets, 48000, &vec![0; instrument.zones.len()], &policy, &|| {
                 false
             })
             .unwrap();
         assert_eq!(zero.loop_prefix, 1);
         assert!(
-            zero.ranges(&instrument, &assets, 48000, &law_heads(&instrument, 0), &policy, &|| false)
+            zero.ranges(&instrument, &assets, 48000, &vec![0; instrument.zones.len()], &policy, &|| false)
                 .unwrap()[0][0]
                 .contains(&745)
         );
