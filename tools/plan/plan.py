@@ -274,7 +274,7 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
               ("3. Write Rust per the `beautiful-rust` skill. Commit everything first (the gate sees only committed files), then run "
               "`KONTRA_CARGO='build-slot cargo' cargo xtask ci --base origin/v3` (contributors: plain `cargo xtask ci`): "
               "rustfmt and clippy on the files you changed, tests of their packages, and the deps, debt and size ratchets, "
-              "the same checks CI runs. Rerun it after your last commit. Never `cargo fmt` (it reformats unrelated files). Test code may unwrap, expect, "
+              "a local subset of the PR checks. Rerun it after your last commit. Never `cargo fmt` (it reformats unrelated files). Test code may unwrap, expect, "
               "panic and index without `#[allow]` (clippy.toml allows it); every new `#[allow]` grows the debt ratchet."),
               "4. `Cargo.lock`: only additions your change needs. Revert any unrelated version change cargo makes "
               "(CI checks e.g. that gpu-allocator and wgpu-hal share one `windows` version). Repo tools must never "
