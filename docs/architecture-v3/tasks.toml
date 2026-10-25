@@ -342,8 +342,8 @@ goal = "Head length = base (60 KB-equivalent per channel, Kontakt DFD default) +
 steps = [
   "Compute `StartRange` (P1.1, P1.1b) for every load. Today `InitialStartHints` is only built when `policy.allow_cold_fallback` is set (crates/sampler-kontakt/src/stream.rs ~3069), and P1.3 deletes cold fallback: build the ranges unconditionally and make the head law read them.",
   "Replace the head-size computation (`fn head_frames` in sampler-kontakt/src/stream.rs and sampler-core/src/prepare.rs: p95 latency + 10 ms slack) with `PreloadLaw { base, min, max }` applied per zone: frames = base + start_range.max_frames; unbounded → whole sample.",
-  "Remove the budget binary search with `include_offsets = false` in `bounded_attack_anchors`. Over budget: load continues, every zone keeps its law-sized head, and the load report lists the budget excess with the largest contributors. (Purge selection is a later UX task.)",
-  "Replace the ×16 `max_step` scaling with the zone's real maximum pitch step from its mapping/tune range.",
+  "Delete `start_ranges_geometry` and its `include_offsets` flag (stream.rs ~858-900): it re-derives P1.1's sample-start routes; read `StartRange` instead. Remove the budget binary search in `bounded_attack_anchors`. Over budget: load continues, every zone keeps its law-sized head, and the load report lists the budget excess with the largest contributors. (Purge selection is a later UX task.)",
+  "Replace the fixed `StreamPolicy.max_step` cap (default 4.0, used in `zone_step`, stream.rs ~836) with the zone's real maximum pitch step from its mapping/tune range.",
   "Keep heads in their current storage format in this task (format change is P6.1d)."
 ]
 gate = ["build-slot cargo test -p sampler-kontakt stream", "build-slot cargo test -p sampler-core --lib prepare", "build-slot cargo test -p kontra-probe cc_start"]
