@@ -65,3 +65,7 @@ Reports are claims. Treat every number, "tests pass", "skipped per the brief" an
 - Only when the verdict is `merge` and every finding and review thread is
   resolved: `gh pr merge <n> --auto --squash`. After the PR shows `MERGED`,
   `git fetch origin` and run `python3 tools/plan/plan.py sync` and `ready` on the new `origin/v3`.
+- After each merge batch, run `cargo xtask debt --check` and `size --check` on
+  `origin/v3`. Required checks are not strict, so two PRs can each pass and still
+  break the ratchet together (P1.1b merged just before the size baseline did).
+  Fix forward at once with `size --update` in a `size-growth` PR.
