@@ -138,8 +138,8 @@ pub struct Report {
     pub mode: Mode,
     pub block: usize,
     pub notes: Vec<NoteReport>,
-    /// Each recent voice's first non-silent output frame, absolute, in the engine's order (C3).
-    pub first_frames: Vec<u64>,
+    /// Each recent voice's `(authored start, first non-silent output frame)`, absolute (C3).
+    pub first_frames: Vec<(u64, u64)>,
     /// Script effects the run drained from the instrument: UI writes, `message`
     /// and other script output, not split by kind. C7 reads it as load evidence.
     pub script_effects: u64,
@@ -700,22 +700,36 @@ fn c3_start_spread(session: &mut Session, pattern: Pattern) -> Result<Verdict> {
     Ok(c3_verdict(&report, pattern))
 }
 
-/// C3 on a rendered run. A voice belongs to the note whose step window holds its first frame.
+/// C3 on a rendered run. Voices are grouped by their authored start instant, so a
+/// release-triggered voice (its own instant, inside the same step) never counts
+/// against the attack voices of its note.
 fn c3_verdict(report: &Report, pattern: Pattern) -> Verdict {
     let mut worst = 0u64;
     let mut silent = Vec::new();
+    let mut voices = 0;
     for note in &report.notes {
         let window = note.scheduled..note.scheduled + STEP as u64;
-        let starts: Vec<u64> = report.first_frames.iter().copied().filter(|f| window.contains(f)).collect();
-        match (starts.iter().min(), starts.iter().max()) {
-            (Some(&lo), Some(&hi)) => worst = worst.max(hi - lo),
-            _ => silent.push(note.step),
+        let mut starts: Vec<(u64, u64)> = report
+            .first_frames
+            .iter()
+            .copied()
+            .filter(|(start, _)| window.contains(start))
+            .collect();
+        if starts.is_empty() {
+            silent.push(note.step);
+            continue;
+        }
+        voices += starts.len();
+        starts.sort_unstable();
+        for same in starts.chunk_by(|a, b| a.0 == b.0) {
+            let lo = same.iter().map(|s| s.1).min().unwrap_or(0);
+            let hi = same.iter().map(|s| s.1).max().unwrap_or(0);
+            worst = worst.max(hi - lo);
         }
     }
     let detail = format!(
-        "{} notes, {} voices with a first frame; worst spread {worst} frame(s), tolerance {C3_TOLERANCE}; notes with no voice: {silent:?}",
+        "{} notes, {voices} voices with a first frame; worst spread {worst} frame(s) between voices of one start, tolerance {C3_TOLERANCE}; notes with no voice: {silent:?}",
         report.notes.len(),
-        report.first_frames.len(),
     );
     if silent.is_empty() && worst <= C3_TOLERANCE {
         Verdict::passed("C3", pattern, detail)
@@ -1090,5 +1104,40 @@ mod tests {
     fn pattern_parses_its_cli_names() {
         assert_eq!("dense".parse::<Pattern>(), Ok(Pattern::Dense));
         assert!("chords".parse::<Pattern>().is_err());
+    }
+}
+
+#[cfg(test)]
+mod c3_tests {
+    use super::*;
+
+    fn report(first_frames: Vec<(u64, u64)>) -> Report {
+        Report {
+            pattern: Pattern::Live,
+            mode: Mode::RealTime,
+            block: BLOCK,
+            notes: vec![NoteReport {
+                step: 0,
+                keys: vec![60],
+                velocity: 100,
+                scheduled: 1000,
+                first_audible: Some(1000),
+                voices: 3,
+                dropouts: 0,
+            }],
+            first_frames,
+            script_effects: 0,
+            audio: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn c3_compares_only_voices_of_one_authored_start() {
+        // A release voice starts at its own instant inside the same step: not a spread.
+        let with_release = report(vec![(1000, 1000), (1000, 1000), (1000, 1000), (1500, 1400)]);
+        assert_eq!(c3_verdict(&with_release, Pattern::Live).pass, Some(true));
+        // Two voices of one instant that sound apart: a split.
+        let split = report(vec![(1000, 1000), (1000, 1100)]);
+        assert_eq!(c3_verdict(&split, Pattern::Live).pass, Some(false));
     }
 }

@@ -1405,7 +1405,7 @@ fn widget_value(
 
 impl V2Core {
     /// Each recent voice's first non-silent output frame (probe C3).
-    pub fn voice_first_frames(&self) -> Vec<u64> {
+    pub fn voice_first_frames(&self) -> Vec<(u64, u64)> {
         self.parts.iter().flatten().flat_map(|p| p.runtime.voice_first_frames()).collect()
     }
 

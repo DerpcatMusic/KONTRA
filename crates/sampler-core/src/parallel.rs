@@ -328,8 +328,9 @@ impl Runtime {
                 if self.voices.slots[i].value.as_ref().unwrap().first_frame.is_none() {
                     if let Some(k) = scratch[0][..frames].iter().position(|x| *x != [0.; 2]) {
                         let frame = at + k as u64;
-                        self.voices.slots[i].value.as_mut().unwrap().first_frame = Some(frame);
-                        self.first_frames.record(frame);
+                        let v = self.voices.slots[i].value.as_mut().unwrap();
+                        v.first_frame = Some(frame);
+                        self.first_frames.record(v.start_at, frame);
                     }
                 }
                 let v = self.voices.slots[i].value.as_ref().unwrap();
@@ -1025,31 +1026,36 @@ mod tests {
     #[test]
     fn parallel_voices_record_the_same_first_frames_as_serial() {
         // 160 voices at one instant: enough for the parallel path at four threads.
-        let first_frames = |threads| {
-            let mut rt = runtime(threads);
-            for id in 0..NOTES {
-                let input = Input {
-                    protocol: Protocol::Native,
-                    port: 0,
-                    group: 0,
-                    channel: 0,
-                    key: 48 + id as u8,
-                    external_id: Some(id as i32),
-                };
-                rt.trigger(input, 48 + id as u8, 1.).unwrap();
-            }
-            let mut out = [[0.; 2]; 64];
-            rt.render(&mut out).unwrap();
-            let mut frames = rt.voice_first_frames();
-            frames.sort_unstable();
-            (rt.parallel_blocks(), frames)
-        };
-        let (serial_blocks, serial) = first_frames(1);
-        let (parallel_blocks, parallel) = first_frames(4);
-        assert_eq!(serial_blocks, 0);
-        assert!(parallel_blocks > 0, "the parallel path did not run");
-        assert_eq!(parallel.len(), NOTES * LAYERS);
-        assert_eq!(parallel, serial);
+        // Chained voices share one batchable chain, so the serial side runs `render_batch`.
+        for chained in [false, true] {
+            let first_frames = |threads| {
+                let mut rt = runtime_with_chain(threads, chained);
+                for id in 0..NOTES {
+                    let input = Input {
+                        protocol: Protocol::Native,
+                        port: 0,
+                        group: 0,
+                        channel: 0,
+                        key: 48 + id as u8,
+                        external_id: Some(id as i32),
+                    };
+                    rt.trigger(input, 48 + id as u8, 1.).unwrap();
+                }
+                let mut out = [[0.; 2]; 64];
+                rt.render(&mut out).unwrap();
+                let mut frames = rt.voice_first_frames();
+                frames.sort_unstable();
+                (rt.parallel_blocks(), frames)
+            };
+            let (serial_blocks, serial) = first_frames(1);
+            let (parallel_blocks, parallel) = first_frames(4);
+            assert_eq!(serial_blocks, 0);
+            assert!(parallel_blocks > 0, "chained {chained}: the parallel path did not run");
+            // A chained layer with gain 0 is silent by design: it never records a first frame.
+            let audible = if chained { LAYERS - 1 } else { LAYERS };
+            assert_eq!(parallel.len(), NOTES * audible, "chained {chained}");
+            assert_eq!(parallel, serial, "chained {chained}");
+        }
     }
 
     #[test]

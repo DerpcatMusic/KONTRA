@@ -767,29 +767,32 @@ struct StretchLink {
 
 /// Capacity of [`FirstFrameLog`]: the most recent voices kept for probes.
 const FIRST_FRAME_LOG: usize = 4096;
+/// Frames of a render segment a voice's first non-silent frame is searched in. A
+/// longer segment is searched only up to this many frames (a ceiling, not a silence).
+pub(crate) const FIRST_WATCH: usize = 4096;
 
-/// Ring of each voice's first non-silent output frame. The audio thread only
-/// writes into the preallocated slots; [`Runtime::voice_first_frames`] reads them.
+/// Ring of each voice's (authored start, first non-silent output frame). The audio
+/// thread only writes into the preallocated slots; [`Runtime::voice_first_frames`] reads them.
 struct FirstFrameLog {
-    frames: Box<[u64]>,
+    entries: Box<[(u64, u64)]>,
     written: usize,
 }
 
 impl FirstFrameLog {
     fn new() -> Self {
-        Self { frames: vec![0; FIRST_FRAME_LOG].into_boxed_slice(), written: 0 }
+        Self { entries: vec![(0, 0); FIRST_FRAME_LOG].into_boxed_slice(), written: 0 }
     }
 
-    fn record(&mut self, frame: u64) {
-        let slot = self.written % self.frames.len();
-        self.frames[slot] = frame;
+    fn record(&mut self, start: u64, frame: u64) {
+        let slot = self.written % self.entries.len();
+        self.entries[slot] = (start, frame);
         self.written += 1;
     }
 
-    fn recent(&self) -> Vec<u64> {
-        let kept = self.written.min(self.frames.len());
+    fn recent(&self) -> Vec<(u64, u64)> {
+        let kept = self.written.min(self.entries.len());
         (self.written - kept..self.written)
-            .map(|n| self.frames[n % self.frames.len()])
+            .map(|n| self.entries[n % self.entries.len()])
             .collect()
     }
 }
@@ -1145,6 +1148,8 @@ pub struct Runtime {
     pending_onsets: usize,
     /// Fixed ring of voices' first non-silent output frames. Allocated once.
     first_frames: FirstFrameLog,
+    /// Snapshot of a segment before one voice renders into it; see `render_source_voice`.
+    first_watch: Box<[Frame]>,
     stealing: Option<steal::Stealing>,
     stolen: usize,
     /// Voices stolen since the runtime started.
@@ -1429,6 +1434,7 @@ impl Runtime {
             onsets: onset::Storage::new(limits.voices),
             pending_onsets: 0,
             first_frames: FirstFrameLog::new(),
+            first_watch: vec![[0.; 2]; FIRST_WATCH].into_boxed_slice(),
             stealing: None,
             stolen: 0,
             steals: 0,
@@ -1561,9 +1567,9 @@ impl Runtime {
     pub fn note_capacity(&self) -> usize {
         self.notes.slots.len()
     }
-    /// Absolute first non-silent output frame of each recent voice, oldest first.
-    /// Probe use: a note's voices share a start when these agree.
-    pub fn voice_first_frames(&self) -> Vec<u64> {
+    /// `(authored start, first non-silent output frame)` of each recent voice, oldest
+    /// first. Probe use: voices that share an authored start must share a first frame.
+    pub fn voice_first_frames(&self) -> Vec<(u64, u64)> {
         self.first_frames.recent()
     }
 
