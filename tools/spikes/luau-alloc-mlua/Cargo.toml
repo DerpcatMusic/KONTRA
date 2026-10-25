@@ -1,0 +1,22 @@
+[package]
+name = "luau-alloc-mlua"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+# Standalone spike: not a member of the root workspace.
+[workspace]
+
+[dependencies]
+mlua = { version = "=0.12.2", features = ["luau"] }
+# Real UVI bank reader, used only to extract script text for the GC measurement.
+sampler-uvi = { path = "../../../crates/sampler-uvi" }
+serde_json = "1"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
