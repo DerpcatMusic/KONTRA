@@ -32,7 +32,7 @@ Step numbers in the tables below are the original outline. The task ids in
 | 2.1 | UI writes → `LatestCell` control store; delete effect outbox + `BehaviorOverload::Abort` release | C7, C8 (Areia dense 64/64) |
 | 2.2 | Delete fuel; KSP `while` limit only | C7 |
 | 3.1 | Lua inline on audio (arena allocator), delete `ScriptThread` + offline host | C5 on UVI fixture |
-| 3.2 | Auto-align as plan offsets, no transport holds | DAW playback = keyboard timing (C1 with transport on) |
+| 3.2 | Auto-align as latency compensation (slowest patch reported, the rest held to it, live and on playback) | layered patches start together; C1 with transport on |
 
 After phase 3, the original complaints are covered by green contracts:
 double attacks (C3, C6), DAW lag (C1, C5), Areia width (C3) and Vista

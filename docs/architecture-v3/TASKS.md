@@ -46,7 +46,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | P3.1b | Spike: keep mlua's API on an arena, and measure GC on the real UVI corpus | script | M | spike | P3.1 |
 | P3.1c | Spike: Lua GC on the audio thread for large heaps (Augmented Orchestra 360 MB, 15 ms stalls) | script | M | spike | P3.1b |
 | P3.2 | UVI Lua inline on the audio thread; ScriptThread only as a feature fallback (draft) | script | L | worker | P3.1c, P2.2 |
-| P3.3 | Auto-align as per-zone plan offsets; no transport holds | playback | M | worker | P1.2 |
+| P3.3 | Auto-align is latency compensation: report the slowest patch, delay the rest to it | playback | M | worker | P1.2 |
 | P3.4 | Gate G3: original complaints closed | coordinator | S | coordinator | P3.2, P3.3, P2.3 |
 
 ## Phase 4: Base and model crates

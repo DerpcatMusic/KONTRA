@@ -71,8 +71,20 @@ the GPU stack.
 
 ## 6. Auto-align (`app/align`, feature `align`)
 
-Auto-align stays optional. It measures onsets at load and sends a
-per-zone `align_offset` in the plan, which applies as a start offset
-inside the preload range. It no longer holds notes while the transport
-plays. If a sample needs more delay compensation than its preload allows,
-that is a load diagnostic.
+Target state, implemented by P3.3. Auto-align is per-patch latency
+compensation and stays optional. Many
+libraries start their audible attack late on purpose (by the user's ear: Areia ~80 ms,
+some Performance Samples libraries ~120 ms; the load-time measurement is
+what counts) because the lead-in makes the attack sound natural. At load
+each patch's attack delay is measured. The slowest loaded patch sets the
+reported plugin latency, and every other patch's notes are held back by
+the difference, so layered patches start together. The host's delay
+compensation then plays the MIDI early by that latency, and the attacks
+land on the grid.
+
+- Holding is the same live and on playback. Jamming with two patches lines
+  them up too. Live, the felt latency is the slowest patch's, never less.
+- A delay never goes negative. A sample's lead-in is never trimmed to make
+  a slow patch faster.
+- One patch per instance: that instance reports its own delay, and the
+  host aligns instances across tracks.

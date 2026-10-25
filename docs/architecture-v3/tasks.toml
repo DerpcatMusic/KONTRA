@@ -578,22 +578,27 @@ done = ["C5 (offline = real time) passes on a UVI fixture; scripted notes are on
 
 [[task]]
 id = "P3.3"
-title = "Auto-align as per-zone plan offsets; no transport holds"
+title = "Auto-align is latency compensation: report the slowest patch, delay the rest to it"
 phase = 3
 lane = "playback"
 size = "M"
 agent = "worker"
 deps = ["P1.2"]
-owns = ["src/timing.rs", "src/timing/**"]
+owns = ["src/timing.rs", "src/timing/**", "@v2rs", "@plugin", "src/ui/menu.rs", "src/ui/v2_tests.rs"]
 docs = ["07-APP.md#6-auto-align-appalign-feature-align"]
-goal = "Auto-align measures onsets at load and applies them as start offsets inside the preload range; it never holds notes while the transport plays."
+goal = "Auto-align reports the slowest loaded patch's measured attack delay as the plugin latency and holds each note back by the difference to its own, live and on playback alike, so layered patches start together; it never trims a sample's attack."
 steps = [
-  "Read src/timing.rs: notes are held only while the transport plays (off by default).",
-  "Change it to produce `align_offset` per zone at load and feed it into the start range (P1.1) so the preload covers it.",
-  "Delete the hold path and its transport-dependent state."
+  "Read src/timing.rs and plugin.rs `timing_plan`: measure -> `reported_ms` (the latest part) -> `Holds::of` (hold = reported - own). That model is right; keep it.",
+  "Make holding independent of the transport: a note is held whenever auto-align is on, so jamming live with two patches lines them up too. Remove `transport_only` and its state.",
+  "Delays never go negative: the slowest measured cell (part, articulation, legato or first, velocity bucket) sets the latency and is held by 0; every other cell is held by the difference; nothing makes a note sound earlier than its own attack.",
+  "Do not skip or trim a sample's lead-in (the breath, bow noise or scripted wait is the natural attack). Drop `timing::lead_in` from PR #828."
 ]
 gate = ["build-slot cargo test --lib timing"]
-done = ["DAW playback with auto-align on gives C1 in the probe with transport running."]
+done = [
+  "Two patches measured at 80 ms and 120 ms: reported latency is 120 ms, the 80 ms patch's notes start 40 ms after their event and the 120 ms patch's at their event; both attacks land 120 ms after the note-on, with the transport stopped and running.",
+  "One patch alone with one measured delay: latency = that delay, hold 0. With several cells, the slowest cell has hold 0 and the others the difference.",
+  "DAW playback with auto-align on gives C1 in the probe with the transport running."
+]
 
 [[task]]
 id = "P3.4"
