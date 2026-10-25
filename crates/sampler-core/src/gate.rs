@@ -1,13 +1,7 @@
 //! Physical keys and effective gates. Pedal policy is native, not vendor emulation.
-use super::{Error, Handle, Input, NoteId, Protocol, ReleaseCause, Runtime};
+use super::{Error, Handle, NoteId, Protocol, ReleaseCause, Runtime};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ChannelAddress {
-    pub protocol: Protocol,
-    pub port: u16,
-    pub group: u8,
-    pub channel: u8,
-}
+pub use kontra_events::ChannelAddress;
 
 /// A subset of one protocol/port/group's sixteen physical controller channels.
 /// Musical part/articulation selection is independent of this input scope.
@@ -27,16 +21,6 @@ impl ChannelScope {
     }
 }
 
-impl Input {
-    pub fn channel_address(self) -> ChannelAddress {
-        ChannelAddress {
-            protocol: self.protocol,
-            port: self.port,
-            group: self.group,
-            channel: self.channel,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChannelId(pub(super) Handle);

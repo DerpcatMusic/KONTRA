@@ -45,7 +45,7 @@ position (C9).
 | 4.1 | Create `crates/{base,model,dsp,engine,script,format,app}/` folders; `git mv` `sampler-pool` → `base/pool`, `sampler-simd` → `base/simd`; rename packages, re-export old names |
 | 4.2 | `kontra-time`, `kontra-law` (extract from core/ir), `kontra-macros` with `Stats`, `Config` derives |
 | 4.3 | `kontra-params` catalog: all module params with `#[derive(Params)]`; KSP `$ENGINE_PAR_*` table and UVI parameter ids point at it; delete 4 of 5 registries |
-| 4.4 | `kontra-events` (from `sampler-midi`, `src/sound/event.rs`, held keys), `kontra-ui-model` (from `sampler-ui-ir` + core widget/script_params), `kontra-protocol` |
+| 4.4 | `kontra-events` (from `src/sound/event.rs` and the plain-data receiver wire types; the `sampler-midi` adapter moves to `kontra-engine` in P6.4c and held keys become the `NoteLedger` in P6.4b), `kontra-ui-model` (from `sampler-ui-ir` + core widget/script_params), `kontra-protocol` |
 
 Gate: `xtask debt` shows registries 5 → 1 and `#[path]` count falling. All contracts unchanged.
 
