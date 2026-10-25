@@ -129,7 +129,6 @@ pub enum Command {
     MemoryBudget(u32),
     /// Auto-align timing on or off, and only while the transport plays.
     AutoAlign,
-    AlignTransportOnly,
     /// Set how late a part sounds by hand, ms; `None` goes back to what was measured.
     Lateness(usize, Option<f32>),
     ExcludeTiming(usize),
@@ -827,11 +826,6 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                         .load(std::sync::atomic::Ordering::Relaxed),
                 );
                 items.extend([
-                    check(
-                        "Only while the transport plays",
-                        cx.selection.align_transport_only,
-                        Command::AlignTransportOnly,
-                    ),
                     Item::Info(format!("Experimental · {told:.0} ms latency")),
                 ]);
             } else {
@@ -1338,7 +1332,6 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             });
         }
         Command::AutoAlign => cx.selection.auto_align ^= true,
-        Command::AlignTransportOnly => cx.selection.align_transport_only ^= true,
         Command::Lateness(slot, ms) => cx.selection.parts[slot].timing.override_ms = ms,
         Command::ExcludeTiming(slot) => cx.selection.parts[slot].timing.exclude ^= true,
         Command::Remeasure(slot) => cx.selection.parts[slot].timing.source.clear(),

@@ -377,7 +377,6 @@ pub struct Selection {
     /// Ported v1 rack sample mode; changing it reloads affected parts.
     pub streaming: Streaming,
     pub auto_align: bool,
-    pub align_transport_only: bool,
     /// UVI stars retain authored bank UUID/member identity when a locator moves.
     pub uvi_favorites: Vec<UviFavorite>,
 }
@@ -5161,7 +5160,6 @@ fn timing_plan(s: &Selection) -> crate::timing::Plan {
     );
     crate::timing::Plan {
         on: s.auto_align,
-        transport_only: s.align_transport_only,
         latency_ms,
         parts: (0..s.parts.len().max(RACK_SLOTS))
             .map(|n| {
