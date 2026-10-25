@@ -64,15 +64,22 @@ pub fn slots() -> Result<(), String> {
          0 KiB budget."
     );
     println!();
-    println!("| slots | heap KiB | full collect ms | steps/cycle | p50 µs | max µs | ns/slot | slowest step |");
+    println!(
+        "| slots | heap KiB | full collect ms | steps/cycle | p50 µs | max µs | ns/slot | slowest step |"
+    );
     println!("|---:|---:|---:|---:|---:|---:|---:|---|");
-    for slots in [125_000.0, 250_000.0, 500_000.0, 1_000_000.0, 2_000_000.0, 4_000_000.0] {
+    for slots in [
+        125_000.0,
+        250_000.0,
+        500_000.0,
+        1_000_000.0,
+        2_000_000.0,
+        4_000_000.0,
+    ] {
         let lua = Lua::new();
-        lua.load(
-            "function build(n) keep = {} for i = 1, n do keep[i] = { i } end return n end",
-        )
-        .exec()
-        .map_err(|e| format!("load: {e}"))?;
+        lua.load("function build(n) keep = {} for i = 1, n do keep[i] = { i } end return n end")
+            .exec()
+            .map_err(|e| format!("load: {e}"))?;
         let build: Function = lua.globals().get("build").map_err(|e| format!("{e}"))?;
         build.call::<()>(slots).map_err(|e| format!("build: {e}"))?;
         let state = lua.state();
@@ -109,18 +116,25 @@ pub fn shapes() -> Result<(), String> {
          with a 0 KiB budget, i.e. exactly one internal step per call."
     );
     println!();
-    println!("| shape | heap KiB | full collect ms | steps/cycle | p50 µs | max µs | slowest steps µs |");
+    println!(
+        "| shape | heap KiB | full collect ms | steps/cycle | p50 µs | max µs | slowest steps µs |"
+    );
     println!("|---|---:|---:|---:|---:|---:|---|");
     for (name, body) in SHAPES {
         let lua = Lua::new();
         let src = format!("function build(n)\n{body}\nreturn n\nend");
-        lua.load(&src).exec().map_err(|e| format!("load {name}: {e}"))?;
+        lua.load(&src)
+            .exec()
+            .map_err(|e| format!("load {name}: {e}"))?;
         let build: Function = lua.globals().get("build").map_err(|e| format!("{e}"))?;
-        build.call::<()>(TABLES).map_err(|e| format!("build {name}: {e}"))?;
+        build
+            .call::<()>(TABLES)
+            .map_err(|e| format!("build {name}: {e}"))?;
         let state = lua.state();
         let heap = host::used_bytes(state);
         let started = Instant::now();
-        lua.gc_collect().map_err(|e| format!("collect {name}: {e}"))?;
+        lua.gc_collect()
+            .map_err(|e| format!("collect {name}: {e}"))?;
         let collect_ms = started.elapsed().as_secs_f64() * 1000.0;
         let run = gc::step_until_cycles(state, 0, 1, 4_000_000);
         let slow: Vec<String> = run
@@ -148,9 +162,14 @@ pub fn shapes() -> Result<(), String> {
 pub fn run() -> Result<(), String> {
     let lua = Lua::new();
     lua.load(SRC).exec().map_err(|e| format!("load: {e}"))?;
-    let build: Function = lua.globals().get("build").map_err(|e| format!("build: {e}"))?;
+    let build: Function = lua
+        .globals()
+        .get("build")
+        .map_err(|e| format!("build: {e}"))?;
     let started = Instant::now();
-    build.call::<()>(TABLES).map_err(|e| format!("build heap: {e}"))?;
+    build
+        .call::<()>(TABLES)
+        .map_err(|e| format!("build heap: {e}"))?;
     let build_ms = started.elapsed().as_secs_f64() * 1000.0;
     let state = lua.state();
     let after_build = host::used_bytes(state);
@@ -163,14 +182,16 @@ pub fn run() -> Result<(), String> {
     println!();
     println!("## First cycle after the build (collector ran through the build)");
     println!();
-    println!("| step budget KiB | cycles | steps/cycle | p50 µs | p99 µs | max µs | reclaimed KiB |");
+    println!(
+        "| step budget KiB | cycles | steps/cycle | p50 µs | p99 µs | max µs | reclaimed KiB |"
+    );
     println!("|---:|---:|---:|---:|---:|---:|---:|");
     for kb in [0, 64] {
         let run = gc::step_until_cycles(state, kb, 1, 4_000_000);
         println!(
             "| {kb} | {} | {} | {:.1} | {:.1} | {:.1} | {} |",
             run.cycles,
-            if run.cycles == 0 { 0 } else { run.steps / run.cycles },
+            run.steps.checked_div(run.cycles).unwrap_or(0),
             run.p50() as f64 / 1000.0,
             run.p99() as f64 / 1000.0,
             run.max() as f64 / 1000.0,
@@ -197,7 +218,9 @@ pub fn run() -> Result<(), String> {
     println!();
     println!("## Steady-state cycles after one full collect");
     println!();
-    println!("| step budget KiB | cycles | steps/cycle | p50 µs | p99 µs | max µs | max per cycle µs |");
+    println!(
+        "| step budget KiB | cycles | steps/cycle | p50 µs | p99 µs | max µs | max per cycle µs |"
+    );
     println!("|---:|---:|---:|---:|---:|---:|---|");
     let cycles = crate::env_u64("LUAU_GC_CYCLES", 3);
     for kb in [0, 64] {
@@ -211,12 +234,69 @@ pub fn run() -> Result<(), String> {
         println!(
             "| {kb} | {} | {} | {:.1} | {:.1} | {:.1} | {} |",
             run.cycles,
-            if run.cycles == 0 { 0 } else { run.steps / run.cycles },
+            run.steps.checked_div(run.cycles).unwrap_or(0),
             run.p50() as f64 / 1000.0,
             run.p99() as f64 / 1000.0,
             run.max() as f64 / 1000.0,
             per_cycle.join(", "),
         );
+    }
+    Ok(())
+}
+
+/// The atomic phase clears the main thread's unused stack (`clearstack`), so its
+/// cost follows the stack's allocated size, not the live data. This grows the
+/// main stack with a wide call, then times one cycle (steps of 0 KiB) with a
+/// small live heap.
+///
+/// # Errors
+/// Propagates script and collector errors.
+pub fn stack() -> Result<(), String> {
+    println!("# Main-thread stack size vs the worst step (small heap)");
+    println!();
+    println!(
+        "A call with `n` arguments grows the main thread's stack to about `n` slots. The heap is \
+         a 1e5-node linked list, so no single table is large. Each row: one full collect, then \
+         4 cycles at 0 KiB per step."
+    );
+    println!();
+    println!(
+        "| stack grown to (slots) | stack bytes (`lua_gc` heap delta) | cycle | steps | max µs | slowest step µs |"
+    );
+    println!("|---:|---:|---:|---:|---:|---|");
+    for n in [0_u64, 50_000, 200_000, 400_000] {
+        let lua = Lua::new();
+        lua.load(
+            "keep = nil for i = 1, 100000 do keep = { v = i, next = keep } end
+             function spread(...) return select('#', ...) end
+             function grow(n)
+                 local t = table.create(n, 0)
+                 for i = 1, n do t[i] = i end
+                 return spread(table.unpack(t))
+             end",
+        )
+        .exec()
+        .map_err(|e| format!("load: {e}"))?;
+        let state = lua.state();
+        if n > 0 {
+            let grow: Function = lua
+                .globals()
+                .get("grow")
+                .map_err(|e| format!("grow: {e}"))?;
+            grow.call::<i64>(n).map_err(|e| format!("grow {n}: {e}"))?;
+        }
+        lua.gc_collect().map_err(|e| format!("collect: {e}"))?;
+        for cycle in 1..=4 {
+            let run = gc::step_until_cycles(state, 0, 1, 4_000_000);
+            let (index, ns) = run.slowest(1).first().copied().unwrap_or((0, 0));
+            println!(
+                "| {n} | {} | {cycle} | {} | {:.1} | #{index}: {:.1} |",
+                host::used_bytes(state),
+                run.steps,
+                run.max() as f64 / 1000.0,
+                ns as f64 / 1000.0,
+            );
+        }
     }
     Ok(())
 }

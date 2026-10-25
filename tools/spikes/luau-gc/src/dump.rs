@@ -42,25 +42,7 @@ pub struct Largest {
     pub bytes: u64,
 }
 
-impl Totals {
-    /// Bytes of one type, zero when the type is absent.
-    #[must_use]
-    pub fn bytes(&self, kind: &str) -> u64 {
-        self.by_type
-            .iter()
-            .find(|t| t.kind == kind)
-            .map_or(0, |t| t.bytes)
-    }
-
-    /// Objects of one type, zero when the type is absent.
-    #[must_use]
-    pub fn objects(&self, kind: &str) -> u64 {
-        self.by_type
-            .iter()
-            .find(|t| t.kind == kind)
-            .map_or(0, |t| t.objects)
-    }
-}
+impl Totals {}
 
 /// Writes a heap dump for `lua` to `path` and returns its per-type totals.
 ///
@@ -76,7 +58,10 @@ pub fn dump(lua: &Lua, path: &Path) -> Result<Totals, String> {
     // `fopen` returns null on failure, which is checked before use.
     let file = unsafe { libc::fopen(path.as_ptr(), c"w".as_ptr()) };
     if file.is_null() {
-        return Err(format!("cannot create heap dump {}", path.to_string_lossy()));
+        return Err(format!(
+            "cannot create heap dump {}",
+            path.to_string_lossy()
+        ));
     }
     // SAFETY: `file` is a live stream opened above and `lua.state()` is the live
     // state of `lua`. The dump only walks the collector and writes to `file`.
@@ -125,13 +110,17 @@ fn parse(path: &str) -> Result<Totals, String> {
         entry.bytes += bytes;
         totals.objects += 1;
         totals.bytes += bytes;
-        if totals.largest.len() < LARGEST_KEPT || bytes > totals.largest.last().map_or(0, |l| l.bytes) {
+        if totals.largest.len() < LARGEST_KEPT
+            || bytes > totals.largest.last().map_or(0, |l| l.bytes)
+        {
             let at = totals.largest.partition_point(|l| l.bytes >= bytes);
             totals.largest.insert(at, Largest { kind, bytes });
             totals.largest.truncate(LARGEST_KEPT);
         }
     }
-    totals.by_type.sort_unstable_by(|a, b| b.bytes.cmp(&a.bytes));
+    totals
+        .by_type
+        .sort_unstable_by_key(|t| std::cmp::Reverse(t.bytes));
     Ok(totals)
 }
 
@@ -201,7 +190,10 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let sizes: Vec<u64> = totals.largest.iter().map(|l| l.bytes).collect();
-        assert_eq!(sizes, vec![1000, 900, 800, 700, 600, 500, 400, 300, 200, 100]);
+        assert_eq!(
+            sizes,
+            vec![1000, 900, 800, 700, 600, 500, 400, 300, 200, 100]
+        );
         assert_eq!(totals.objects, 12);
     }
 }

@@ -40,25 +40,15 @@ pub fn set_params(lua: &Lua, goal: i32, stepmul: i32, stepsize_kb: i32) {
     }
 }
 
-/// Runs one full collection through mlua's protected path.
-///
-/// # Errors
-/// Propagates a Luau error raised inside a finalizer.
-pub fn collect(lua: &Lua) -> Result<(), String> {
-    lua.gc_collect().map_err(|e| format!("gc_collect: {e}"))
-}
-
 /// One measured run of bounded collector steps.
 #[derive(Debug)]
 pub struct Run {
     pub steps: u64,
     pub cycles: u64,
-    pub elapsed_ns: u64,
     pub samples_ns: Vec<u64>,
     /// Largest single call in each completed cycle.
     pub cycle_max_ns: Vec<u64>,
     /// Calls taken by each completed cycle.
-    pub cycle_steps: Vec<u64>,
     pub memory_before: usize,
     pub memory_after: usize,
 }
@@ -75,11 +65,6 @@ impl Run {
     }
 
     #[must_use]
-    pub fn p999(&self) -> u64 {
-        self.quantile(999)
-    }
-
-    #[must_use]
     pub fn max(&self) -> u64 {
         self.samples_ns.iter().copied().max().unwrap_or(0)
     }
@@ -87,13 +72,8 @@ impl Run {
     /// The `n` slowest calls as `(step index, ns)`, slowest first.
     #[must_use]
     pub fn slowest(&self, n: usize) -> Vec<(usize, u64)> {
-        let mut ranked: Vec<(usize, u64)> = self
-            .samples_ns
-            .iter()
-            .copied()
-            .enumerate()
-            .collect();
-        ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        let mut ranked: Vec<(usize, u64)> = self.samples_ns.iter().copied().enumerate().collect();
+        ranked.sort_unstable_by_key(|a| std::cmp::Reverse(a.1));
         ranked.truncate(n);
         ranked
     }
@@ -130,12 +110,9 @@ pub fn step_until_cycles(
     let memory_before = host::used_bytes(state);
     let mut samples_ns = Vec::new();
     let mut cycle_max_ns = Vec::new();
-    let mut cycle_steps = Vec::new();
     let mut steps = 0;
     let mut done = 0;
     let mut current_max = 0;
-    let mut current_steps = 0;
-    let started = Instant::now();
     while done < cycles && steps < max_steps {
         let begin = Instant::now();
         // SAFETY: `state` is the live state of the host under measurement.
@@ -145,23 +122,18 @@ pub fn step_until_cycles(
         let elapsed = begin.elapsed().as_nanos() as u64;
         samples_ns.push(elapsed);
         current_max = current_max.max(elapsed);
-        current_steps += 1;
         steps += 1;
         if finished {
             done += 1;
             cycle_max_ns.push(current_max);
-            cycle_steps.push(current_steps);
             current_max = 0;
-            current_steps = 0;
         }
     }
     Run {
         steps,
         cycles: done,
-        elapsed_ns: started.elapsed().as_nanos() as u64,
         samples_ns,
         cycle_max_ns,
-        cycle_steps,
         memory_before,
         memory_after: crate::host::used_bytes(state),
     }

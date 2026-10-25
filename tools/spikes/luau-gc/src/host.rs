@@ -4,8 +4,8 @@ use std::path::Path;
 use std::time::Instant;
 
 use mlua::{Lua, Table, Value, ffi};
-use sampler_uvi::script::{Config, ScriptHost};
 use sampler_uvi::Bank;
+use sampler_uvi::script::{Config, ScriptHost};
 
 /// One real bank program running through the sampler's own script host.
 pub struct Loaded {
@@ -150,8 +150,6 @@ impl Collector {
 #[derive(Debug)]
 pub struct Blocks {
     pub collector: String,
-    pub blocks: u64,
-    pub notes: u64,
     pub gc_max_ns: u64,
     pub gc_p99_ns: u64,
     pub script_max_ns: u64,
@@ -220,8 +218,6 @@ pub fn run_blocks(
     }
     Blocks {
         collector: collector.label(),
-        blocks,
-        notes,
         gc_max_ns: max(&gc_ns),
         gc_p99_ns: quantile(&gc_ns, 99),
         script_max_ns: max(&script_ns),
@@ -245,4 +241,38 @@ fn quantile(samples: &[u64], per_mille: usize) -> u64 {
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
     sorted[(sorted.len() * per_mille / 1000).min(sorted.len() - 1)]
+}
+
+/// Replaces `__touched` in every environment table the host keeps in the first
+/// registry slots, and returns `(tables replaced, entries dropped)`.
+///
+/// The per-processor environments hold their own `__touched` (the prelude's
+/// list of touched elements), not the one in `lua.globals()`, so clearing the
+/// globals alone leaves the 84,514-entry list in place.
+///
+/// # Errors
+/// Never fails today; the signature leaves room for a Luau-side check.
+pub fn clear_touched(lua: &Lua) -> Result<(usize, usize), String> {
+    let state = lua.state();
+    let mut tables = 0;
+    let mut entries = 0;
+    for index in 1..=64 {
+        // SAFETY: `state` is the host's live state. Every push below is balanced
+        // by a pop before the next slot, so the stack returns to its entry depth.
+        unsafe {
+            ffi::lua_rawgeti(state, ffi::LUA_REGISTRYINDEX, index);
+            if ffi::lua_istable(state, -1) != 0 {
+                ffi::lua_getfield(state, -1, c"__touched".as_ptr());
+                if ffi::lua_istable(state, -1) != 0 {
+                    tables += 1;
+                    entries += ffi::lua_rawlen(state, -1);
+                    ffi::lua_createtable(state, 0, 0);
+                    ffi::lua_setfield(state, -3, c"__touched".as_ptr());
+                }
+                ffi::lua_pop(state, 1);
+            }
+            ffi::lua_pop(state, 1);
+        }
+    }
+    Ok((tables, entries))
 }

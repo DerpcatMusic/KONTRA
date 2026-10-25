@@ -35,6 +35,7 @@ fn main() {
         "synth" => synth::run(),
         "shapes" => synth::shapes(),
         "slots" => synth::slots(),
+        "stack" => synth::stack(),
         "floor" => {
             println!("timer floor: {} ns", gc::timer_floor_ns());
             Ok(())
@@ -52,7 +53,17 @@ fn main() {
 }
 
 fn usage() {
-    eprintln!("usage: luau-gc host <bank.ufs> <program> | synth | floor");
+    eprintln!("usage: luau-gc host <bank.ufs> <program> | synth | shapes | slots | stack | floor");
+}
+
+/// Scratch output (heap dumps) lives on the dev drive, never under `/tmp`.
+fn scratch_dir() -> PathBuf {
+    let dir = std::env::var_os("LUAU_GC_SCRATCH").map_or_else(
+        || PathBuf::from("/data/dev/workspace/scratch/luau-gc"),
+        PathBuf::from,
+    );
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {
@@ -84,17 +95,10 @@ fn host_command(args: &[String]) -> Result<(), String> {
     println!("# {}", loaded.label);
     println!();
     if std::env::var_os("LUAU_GC_CLEAR_TOUCHED").is_some() {
-        let lua = loaded.host.spike_lua();
-        let touched = lua
-            .globals()
-            .raw_get::<mlua::Table>("__touched")
-            .map_err(|e| format!("read __touched: {e}"))?;
-        let live = touched.raw_len();
-        let fresh = lua.create_table().map_err(|e| format!("create table: {e}"))?;
-        lua.globals()
-            .raw_set("__touched", fresh)
-            .map_err(|e| format!("clear __touched: {e}"))?;
-        println!("- `__touched` had {live} entries and was replaced after prepare");
+        let (tables, entries) = host::clear_touched(loaded.host.spike_lua())?;
+        println!(
+            "- `__touched` replaced in {tables} environment tables, {entries} entries dropped after prepare"
+        );
     }
     println!(
         "- script members: {}, program XML: {} KiB, host init: {:.1} ms",
@@ -116,7 +120,7 @@ fn host_command(args: &[String]) -> Result<(), String> {
     if !skip("notes") {
         notes_section(&mut loaded)?;
     }
-    if !skip("teardown") {
+    if std::env::var_os("LUAU_GC_TEARDOWN").is_some() && !skip("teardown") {
         teardown_section(&loaded)?;
     }
     Ok(())
@@ -147,9 +151,12 @@ fn heap_section(loaded: &Loaded) -> Result<(), String> {
     println!();
     println!("One full collect after init: {collect_ms:.2} ms.");
     println!();
-    let path = std::env::temp_dir().join("kontra-luau-gc-dump.json");
+    let path = scratch_dir().join("heap-dump.json");
     let totals = dump::dump(lua, &path)?;
-    println!("Exact Luau heap split (`lua_memorydump`, {:.1} MiB):", totals.bytes as f64 / (1024.0 * 1024.0));
+    println!(
+        "Exact Luau heap split (`lua_memorydump`, {:.1} MiB):",
+        totals.bytes as f64 / (1024.0 * 1024.0)
+    );
     println!();
     println!("| type | objects | KiB | % of heap | bytes/object |");
     println!("|---|---:|---:|---:|---:|");
@@ -163,7 +170,11 @@ fn heap_section(loaded: &Loaded) -> Result<(), String> {
             total.bytes / total.objects.max(1),
         );
     }
-    println!("| **total** | {} | {} | 100.0 | |", totals.objects, totals.bytes / 1024);
+    println!(
+        "| **total** | {} | {} | 100.0 | |",
+        totals.objects,
+        totals.bytes / 1024
+    );
     println!();
     println!("### Largest single objects");
     println!();
@@ -204,13 +215,17 @@ fn teardown_section(loaded: &Loaded) -> Result<(), String> {
         if row.bytes.abs() < 64 * 1024 {
             continue;
         }
-        println!("| `{}` | {} | {:.1} |", row.path, row.kib(), row.bytes as f64 / (1024.0 * 1024.0));
+        println!(
+            "| `{}` | {} | {:.1} |",
+            row.path,
+            row.kib(),
+            row.bytes as f64 / (1024.0 * 1024.0)
+        );
     }
-    let biggest: Vec<&Freed> = freed.iter().filter(|r| r.bytes > 0).collect();
+    let big = freed.iter().filter(|r| r.bytes.abs() >= 64 * 1024).count();
     println!(
-        "\n{} globals dropped, {} with more than 64 KiB freed.",
+        "\n{} globals dropped, {big} with at least 64 KiB freed.",
         freed.len(),
-        biggest.len()
     );
     println!(
         "heap after teardown: {} KiB",
@@ -233,10 +248,16 @@ fn gc_section(loaded: &Loaded) -> Result<(), String> {
          `max` is the worst single call, i.e. the worst stall an inline host would add."
     );
     println!();
-    println!("| goal % | stepmul % | stepsize KiB | step budget KiB | steps/cycle | p50 µs | p99 µs | max µs | first-cycle max µs | steady max µs | reclaimed KiB |");
+    println!(
+        "| goal % | stepmul % | stepsize KiB | step budget KiB | steps/cycle | p50 µs | p99 µs | max µs | first-cycle max µs | steady max µs | reclaimed KiB |"
+    );
     println!("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     let tunings = [
-        (gc::DEFAULT_GOAL, gc::DEFAULT_STEPMUL, gc::DEFAULT_STEPSIZE_KB),
+        (
+            gc::DEFAULT_GOAL,
+            gc::DEFAULT_STEPMUL,
+            gc::DEFAULT_STEPSIZE_KB,
+        ),
         (1000, gc::DEFAULT_STEPMUL, gc::DEFAULT_STEPSIZE_KB),
         (gc::DEFAULT_GOAL, 100, gc::DEFAULT_STEPSIZE_KB),
         (gc::DEFAULT_GOAL, 400, gc::DEFAULT_STEPSIZE_KB),
@@ -257,11 +278,7 @@ fn gc_section(loaded: &Loaded) -> Result<(), String> {
                 0
             };
             let first = run.cycle_max_ns.first().copied().unwrap_or(0);
-            let per_cycle = if run.cycles == 0 {
-                0
-            } else {
-                run.steps / run.cycles
-            };
+            let per_cycle = run.steps.checked_div(run.cycles).unwrap_or(0);
             println!(
                 "| {goal} | {stepmul} | {stepsize} | {kb} | {per_cycle} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {} |",
                 run.p50() as f64 / 1000.0,
@@ -277,9 +294,15 @@ fn gc_section(loaded: &Loaded) -> Result<(), String> {
                     .iter()
                     .map(|(index, ns)| format!("step {index}: {:.1} µs", *ns as f64 / 1000.0))
                     .collect();
+                let per_cycle: Vec<String> = run
+                    .cycle_max_ns
+                    .iter()
+                    .map(|ns| format!("{:.0}", *ns as f64 / 1000.0))
+                    .collect();
                 println!(
-                    "| | | | | | | | | | | | {} |",
-                    slow.join("; ")
+                    "| | | | | | | | | | | | slowest: {}; worst per cycle µs: {} |",
+                    slow.join("; "),
+                    per_cycle.join(", ")
                 );
             }
         }
@@ -307,7 +330,9 @@ fn notes_section(loaded: &mut Loaded) -> Result<(), String> {
         "`handles_notes` = {handles}; {blocks} blocks of {block_ms:.2} ms, one note every {note_every} blocks."
     );
     println!();
-    println!("| collector | cycles | gc p99 µs | gc max µs | script p99 µs | script max µs | block p99 µs | block max µs | heap change KiB |");
+    println!(
+        "| collector | cycles | gc p99 µs | gc max µs | script p99 µs | script max µs | block p99 µs | block max µs | heap change KiB |"
+    );
     println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|");
     for collector in [
         Collector::Stopped,
