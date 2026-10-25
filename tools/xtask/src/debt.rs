@@ -1,14 +1,16 @@
-//! `cargo xtask debt`: counts of structural debt. With `--baseline` a count may not grow.
+//! `cargo xtask debt`: counts of structural debt. `--check` fails if a count grew against
+//! `tools/xtask/debt-baseline.json`; `--update` rewrites that baseline after a count shrinks.
 
 use crate::Verdict;
 use crate::args;
+use crate::ratchet::{self, Counts};
 use crate::walk::{self, Nesting};
 use crate::workspace;
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-const KNOWN: &[&str] = &["--baseline", "--write-baseline"];
+const KNOWN: &[&str] = &["--check", "--update"];
+const BASELINE: &str = "tools/xtask/debt-baseline.json";
 /// Trees scanned for debt. `tools/xtask` is skipped: it is the checker, and its own
 /// patterns would count against it.
 const SCAN_ROOTS: &[&str] = &["src", "crates", "tools"];
@@ -24,46 +26,54 @@ const PATTERNS: &[(&str, &str)] = &[
 ];
 const COUNT_KEYS: &[&str] = &["cfg-test-in-fn", "mutex-in-realtime"];
 
-pub type Counts = BTreeMap<String, usize>;
-
 pub fn run(args: &[String]) -> Result<Verdict, String> {
     args::reject_unknown(args, KNOWN)?;
-    let baseline_arg = args::value(args, "--baseline")?;
-    let write = args::flag(args, "--write-baseline");
+    let check = args::flag(args, "--check");
+    let update = args::flag(args, "--update");
+    if check && update {
+        return Err("--check and --update cannot be combined".to_string());
+    }
 
     let metadata = workspace::load()?;
     let root = workspace::root(&metadata);
     let counts = count(&root);
+    let baseline_path = root.join(BASELINE);
 
-    let Some(baseline_arg) = baseline_arg else {
-        if write {
-            return Err("--write-baseline needs --baseline <path>".to_string());
-        }
+    if update {
+        ratchet::write(&baseline_path, &counts)?;
         print_table(&counts, None);
+        println!("wrote {BASELINE}");
         return Ok(Verdict::Pass);
-    };
-    let baseline_path = root.join(&baseline_arg);
-    if write {
-        let json = serde_json::to_string_pretty(&counts)
-            .map_err(|error| format!("cannot encode counts: {error}"))?;
-        fs::write(&baseline_path, json + "\n")
-            .map_err(|error| format!("cannot write {}: {error}", baseline_path.display()))?;
+    }
+    if !check {
         print_table(&counts, None);
-        println!("wrote {baseline_arg}");
         return Ok(Verdict::Pass);
     }
 
-    let baseline = read_baseline(&baseline_path)?;
+    let baseline = ratchet::read(&baseline_path)?;
     print_table(&counts, Some(&baseline));
-    let mut grew = false;
-    for (key, &count) in &counts {
-        let before = baseline.get(key).copied().unwrap_or(0);
-        if count > before {
-            grew = true;
-            eprintln!("debt: {key} grew from {before} to {count}");
-        }
+    let grew = ratchet::grown(&counts, &baseline);
+    for change in &grew {
+        eprintln!(
+            "debt: {} grew from {} to {}",
+            change.key, change.before, change.after
+        );
     }
-    Ok(if grew { Verdict::Fail } else { Verdict::Pass })
+    let shrank = ratchet::shrunk(&counts, &baseline);
+    if !shrank.is_empty() {
+        for change in &shrank {
+            println!(
+                "debt: {} shrank from {} to {}",
+                change.key, change.before, change.after
+            );
+        }
+        println!("debt: run `cargo xtask debt --update` to tighten the ratchet");
+    }
+    Ok(if grew.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail
+    })
 }
 
 /// Every debt count in the workspace. Keys with no hits are still present, at zero.
@@ -160,16 +170,6 @@ fn word_count(text: &str, word: &str) -> usize {
     text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
         .filter(|token| *token == word)
         .count()
-}
-
-fn read_baseline(path: &Path) -> Result<Counts, String> {
-    let text = fs::read_to_string(path).map_err(|error| {
-        format!(
-            "cannot read {}: {error} (create it with --write-baseline)",
-            path.display()
-        )
-    })?;
-    serde_json::from_str(&text).map_err(|error| format!("cannot parse {}: {error}", path.display()))
 }
 
 fn print_table(counts: &Counts, baseline: Option<&Counts>) {

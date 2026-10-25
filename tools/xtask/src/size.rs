@@ -1,20 +1,33 @@
 //! `cargo xtask size`: production and test lines per crate under `src/`, counted by the
 //! 00-BASELINE.md rule. Test = a `*test*.rs` file, anything under `tests/`, or a top-level
 //! `#[cfg(test)] mod … { … }` block. Approximate: braces inside string literals are not parsed.
+//! `--check` adds the ratchet: a crate's production lines may not grow against
+//! `tools/xtask/size-baseline.json` (`--update` rewrites it).
 
 use crate::Verdict;
 use crate::args;
+use crate::ratchet::{self, Counts};
 use crate::walk::{self, Nesting};
 use crate::workspace;
 use cargo_metadata::Metadata;
 use std::collections::BTreeSet;
+use std::env;
 use std::fs;
 use std::path::Path;
 
 const DEFAULT_MAX_CRATE: usize = 8_000;
 const DEFAULT_MAX_FILE: usize = 800;
 const DEFAULT_ALLOW: &str = "tools/xtask/size-allow.txt";
-const KNOWN: &[&str] = &["--max-crate", "--max-file", "--allow", "--write-allow"];
+const BASELINE: &str = "tools/xtask/size-baseline.json";
+const ALLOW_GROWTH_ENV: &str = "KONTRA_ALLOW_GROWTH";
+const KNOWN: &[&str] = &[
+    "--max-crate",
+    "--max-file",
+    "--allow",
+    "--write-allow",
+    "--check",
+    "--update",
+];
 
 /// Line counts of one file, one package or the whole workspace.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -73,8 +86,30 @@ pub fn run(args: &[String]) -> Result<Verdict, String> {
         println!("wrote {} entries to {allow_path}", offenders.len());
         return Ok(Verdict::Pass);
     }
+    if args::flag(args, "--update") {
+        ratchet::write(&root.join(BASELINE), &production_counts(&crates))?;
+        println!("wrote {BASELINE}");
+        return Ok(Verdict::Pass);
+    }
 
-    let allowed = load_allow(&allow_file)?;
+    let limits = check_limits(&offenders, &allow_file, &allow_path)?;
+    if !args::flag(args, "--check") {
+        return Ok(limits);
+    }
+    let growth = check_growth(&root, &crates)?;
+    Ok(if limits == Verdict::Pass && growth == Verdict::Pass {
+        Verdict::Pass
+    } else {
+        Verdict::Fail
+    })
+}
+
+fn check_limits(
+    offenders: &[Offender],
+    allow_file: &Path,
+    allow_path: &str,
+) -> Result<Verdict, String> {
+    let allowed = load_allow(allow_file)?;
     let failures: Vec<&Offender> = offenders
         .iter()
         .filter(|offender| !allowed.contains(&offender.entry))
@@ -90,6 +125,47 @@ pub fn run(args: &[String]) -> Result<Verdict, String> {
         );
     }
     Ok(Verdict::Fail)
+}
+
+/// Production lines per crate may not grow against `BASELINE`. CI sets `ALLOW_GROWTH_ENV=1`
+/// when the PR has the `size-growth` label; the PR then also runs `size --update`.
+fn check_growth(root: &Path, crates: &[CrateSize]) -> Result<Verdict, String> {
+    let baseline = ratchet::read(&root.join(BASELINE))?;
+    let current = production_counts(crates);
+    let grew = ratchet::grown(&current, &baseline);
+    for change in &grew {
+        eprintln!(
+            "size: crate {} grew from {} to {} production lines",
+            change.key, change.before, change.after
+        );
+    }
+    let shrank = ratchet::shrunk(&current, &baseline);
+    for change in &shrank {
+        println!(
+            "size: crate {} shrank from {} to {} production lines",
+            change.key, change.before, change.after
+        );
+    }
+    if !shrank.is_empty() {
+        println!("size: run `cargo xtask size --update` to tighten the ratchet");
+    }
+    if grew.is_empty() {
+        println!("size: no crate grew against {BASELINE}");
+        return Ok(Verdict::Pass);
+    }
+    if env::var(ALLOW_GROWTH_ENV).is_ok_and(|value| value == "1") {
+        println!("size: growth allowed by the size-growth label; update {BASELINE} in this PR");
+        return Ok(Verdict::Pass);
+    }
+    eprintln!("size: growth needs the `size-growth` label and an updated {BASELINE}");
+    Ok(Verdict::Fail)
+}
+
+fn production_counts(crates: &[CrateSize]) -> Counts {
+    crates
+        .iter()
+        .map(|krate| (krate.name.clone(), krate.lines.production))
+        .collect()
 }
 
 /// Measures the root package and `crates/*`, counting their `src/` trees only, as

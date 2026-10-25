@@ -2,8 +2,10 @@
 //! Tooling only; not shipped.
 
 mod args;
+mod ci;
 mod debt;
 mod deps;
+mod ratchet;
 mod size;
 mod timings;
 mod walk;
@@ -18,7 +20,7 @@ pub enum Verdict {
     Fail,
 }
 
-const USAGE: &str = "usage: cargo xtask <size|debt|deps-check|timings> [options]";
+const USAGE: &str = "usage: cargo xtask <ci|size|debt|deps-check|timings> [options]";
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -27,6 +29,7 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     let outcome = match command.as_str() {
+        "ci" => ci::run(rest),
         "size" => size::run(rest),
         "debt" => debt::run(rest),
         "deps-check" => deps::run(rest),
