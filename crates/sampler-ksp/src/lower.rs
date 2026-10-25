@@ -1718,7 +1718,12 @@ impl Gen<'_, '_> {
                 continue;
             }
             if array && i == 3 {
-                self.arg(args, i, reg(dst, count)?)?;
+                // The index may use temporaries above its target, which would clobber the
+                // value at dst+3. Lower it above the effect args, then copy it down. The
+                // index is an integer, so the 32-bit copy is exact.
+                let scratch = reg(dst, sampler_core::EFFECT_ARGS as u16)?;
+                self.arg(args, i, scratch)?;
+                self.copy_i32(scratch, reg(dst, count)?)?;
                 count += 2;
                 continue;
             }
