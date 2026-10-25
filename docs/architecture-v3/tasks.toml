@@ -330,24 +330,25 @@ done = ["Areia Spiccato Fast and Vista report non-zero start ranges (coordinator
 
 [[task]]
 id = "P1.2"
-title = "Preload law: base + full start range, never shrink below the law"
+title = "Preload law: Kontakt DFD window (60 KB per channel + 2 × S.Mod), never shrink below it"
 phase = 1
 lane = "playback"
 size = "L"
 agent = "worker"
 deps = ["P1.1b", "P0.3b"]
-owns = ["crates/sampler-kontakt/src/stream.rs", "@v2rs", "src/sound/report.rs", "src/sound/v2/onset_diagnostics/runway.rs", "examples/dfd_eager.rs", "crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs", "crates/sampler-kontakt/src/stream_hint_tests.rs", "crates/sampler-kontakt/src/stream_onset_tests.rs", "crates/sampler-native/examples/stream_report.rs", "crates/sampler-uvi/examples/dynamic_source_witness.rs", "crates/sampler-kontakt/src/head_prepare.rs", "crates/sampler-kontakt/src/head_cache.rs", "crates/sampler-core/src/head_budget.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/prepare/**", "crates/sampler-core/tests/stream_start_runway.rs"]
+owns = ["crates/sampler-kontakt/src/stream.rs", "crates/sampler-kontakt/src/dfd_window.rs", "src/creator/nki.rs", "crates/sampler-kontakt/src/library.rs", "tools/corpus-health/src/load_audit.rs", "tools/probe/src/fixtures/**", "tools/probe/src/fixtures.rs", "tools/probe/tests/fixtures.rs", "@v2rs", "src/sound/report.rs", "src/sound/v2/onset_diagnostics/runway.rs", "examples/dfd_eager.rs", "crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs", "crates/sampler-kontakt/src/stream_hint_tests.rs", "crates/sampler-kontakt/src/stream_onset_tests.rs", "crates/sampler-native/examples/stream_report.rs", "crates/sampler-uvi/examples/dynamic_source_witness.rs", "crates/sampler-kontakt/src/head_prepare.rs", "crates/sampler-kontakt/src/head_cache.rs", "crates/sampler-core/src/head_budget.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/prepare/**", "crates/sampler-core/tests/stream_start_runway.rs"]
 docs = ["05-STREAM.md#1-the-preload-law"]
-goal = "Head length = base (60 KB-equivalent per channel, Kontakt DFD default) + the zone's start range from P1.1, instead of measured warm-cache latency; over budget never truncates silently."
+goal = "Head length = Kontakt's DFD window (dfd_window.rs: 60 KB per channel + 2 × S.Mod, 6 KiB granularity) instead of measured warm-cache latency; script offsets beyond S.Mod are ignored as in Kontakt; over budget never truncates silently; RAM at most 5% above Kontakt's windows (parity floor; P6.1c beats it)."
 steps = [
-  "Compute `StartRange` (P1.1, P1.1b) for every load; move the script-offset fold out of `InitialStartHints::with_script_offsets` into one shared function both paths call. Today `InitialStartHints` is only built when `policy.allow_cold_fallback` is set (crates/sampler-kontakt/src/stream.rs ~3069), and P1.3 deletes cold fallback: build the ranges unconditionally and make the head law read them.",
-  "Replace the latency-based head sizing (`fn head_frames(latency, rate, policy)`, stream.rs:814; `Prepared::head_frames` in prepare.rs is a residency readout, leave it) with `PreloadLaw { base, min, max }` per zone in source frames: frames = base + start_range.max_frames; unbounded → whole sample. `base` is Kontakt's DFD default, 60 KB of source data per sample (all channels): frames = 61440 / bytes_per_frame. Take bytes per frame from the reader header (plumb it through `open_required*`); where no header is available use 2 bytes per sample × channels and mark it with a `ponytail:` comment.",
-  "Delete `start_ranges_geometry` and its `include_offsets` flag (stream.rs ~858-900): it re-derives P1.1's sample-start routes; read `StartRange` instead. Remove the budget binary search in `bounded_attack_anchors`. Over budget: load continues, every zone keeps its law-sized head, and the load report lists the budget excess with the largest contributors. (Purge selection is a later UX task.)",
-  "Replace the fixed `StreamPolicy.max_step` cap (default 4.0, used in `zone_step`, stream.rs ~836) with the zone's real maximum pitch step from its mapping/tune range.",
-  "Keep heads in their current storage format in this task (format change is P6.1d)."
+  "Round 5 rework (PR #811). The round 1-4 law (61440 per sample + script StartRange, unbounded → whole sample) is wrong: measured 4.4 GB heads on Areia, 469 MB on Vista, 50 GB on ANALOG (OOM). Keep the rest of #811 (latency sizing, max_step, anchor tier and budget search deleted; bytes per frame from the header; zone_start_ranges shared fold).",
+  "Head per zone = `dfd_window::window(Input { .. })` (crates/sampler-kontakt/src/dfd_window.rs, today dead code: wire it, do not re-derive it). P = `effective_preload(authored dfd_channel_preload_size, override)`; C, bits from the header; pos = zone start (reversed zones: `reverse_position = -zone start`, because the routine reads `-reverse_position` there); off = the zone's S.Mod range in frames (`sample_start_mod_range`; -1/unset → 0); reverse as authored. Head frames = |W| / F (W is negative for reverse zones; the sign is only the direction). Delete `PRELOAD_BASE_BYTES`/`preload_head` in favour of it. Formats without S.Mod pass their declared start-modulation range as `off` (native/UVI StartRange from the format, not from scripts).",
+  "Script and CC sample offsets on streamed zones: an offset beyond the zone's S.Mod range is ignored (the voice starts at the zone start), as the KSP manual specifies for play_note in DFD mode. Apply it once where every script offset reaches the voice start (find it with `graft ask`; post a scope request naming the file). Script offset bounds (P1.1b) no longer extend heads; keep them only as a load diagnostic for offsets that will be ignored.",
+  "Over budget: load continues with law-sized heads and the report lists the excess and the largest zones (as in round 2).",
+  "Fixture cache: key the generated probe fixtures (tools/probe/src/fixtures.rs) by a hash of their generated inputs, not name + VERSION, so a local edit can never test stale output; a test changes one input and asserts a new directory.",
+  "Keep heads in their current storage format in this task (format change is P6.1c), but report packed (resident) bytes, not decoded f32 bytes, in `head_bytes`."
 ]
-gate = ["build-slot cargo test -p sampler-kontakt stream", "build-slot cargo test -p sampler-core --lib prepare", "build-slot cargo test -p kontra-probe cc_start"]
-done = ["PR reports total head bytes before/after on the cc_start and key_position fixtures and the coordinator checks Areia/Vista RAM against v1.", "Probe C9 passes on `cc_start` and `key_position` fixtures.", "Coordinator: Areia head frames reported ≥ base + CC113 range."]
+gate = ["build-slot cargo test -p sampler-kontakt stream", "build-slot cargo test -p sampler-core --lib prepare", "build-slot cargo test -p kontra-probe --test fixtures cc_start -- --include-ignored", "build-slot cargo test -p kontra-probe --test fixtures key_position -- --include-ignored", "build-slot cargo test -p kontakto --lib snapshot_reuse"]
+done = ["Probe cc_start and key_position pass every contract they passed in round 4 (C1, C5, C8, C9); fixtures that need offsets set their zones' S.Mod to cover them.", "Coordinator: Areia, Vista and ANALOG resident head bytes at most 5% above the sum of Kontakt windows (dfd_window over the same resident zones, groups not purged at load; per sample, the union of its zones' window ranges), and C1 on Areia and Vista no worse than G0."]
 
 [[task]]
 id = "P1.3"
@@ -391,13 +392,34 @@ gate = ["build-slot cargo test -p sampler-core --lib onset", "build-slot cargo t
 done = ["C3 and C6 pass on fixtures; coordinator confirms on Areia Spiccato Fast."]
 
 [[task]]
+id = "P1.4b"
+title = "Silent notes name their cause; fix Areia low keys and dense chords"
+phase = 1
+lane = "playback"
+size = "M"
+agent = "worker"
+deps = ["P1.2"]
+owns = ["tools/probe/src/**", "tools/probe/README.md", "@v2rs", "crates/sampler-core/src/diagnose.rs"]
+docs = ["10-TESTING.md", "gates/G0.md"]
+goal = "Every C6/C8 silent note in the probe says why the engine did not start a voice, and the two G0 silences on Areia are fixed at their cause."
+steps = [
+  "Probe: for each silent note in C6 and C8, report the engine's reason. `sampler_core::why_silent(key, &records, &faults)` (crates/sampler-core/src/diagnose.rs) over the selection records (`take_selection_records`) and script faults. Expose them through the smallest kontakto API (there is already `scan_selections` in src/sound/v2.rs); no new trait. `why_silent` returns None when selection accepted a region but no voice started (start condition, `SourceUnavailable` in sample_revision.rs, voice allocation): extend it to cover those stages so the probe never prints a silent note without a cause.",
+  "Areia `Spiccato Fast` live: keys 48/50/52/53 start 0 voices. The instrument intends them to play: zones keys 0..=54 (root 55) exist, and the script's only ignore_event branch is gated by in_range(55..97), so it never runs for these keys (triage on #696's thread, 2026-10-25). Name the rejection with the probe, then fix it where all formats route through (selection, start conditions or sample binding), not per instrument.",
+  "Areia dense: all 64 chords start 0 voices, including keys 55+, while live plays 63/64. Name the cause with the probe and fix it. If it is a separate mechanism from the low keys, say so in the PR.",
+  "Authored start randomisation: a zone with S.Mod and no SampleStart route starts 0..S.Mod frames late by design (VoiceModulation::random_delay, measured on Horns KS). Vista 4 Violas has S.Mod on most zones and a start route on only 136 of 8,304, and its G0 C1 errors (1,000-3,000 frames, varying between runs) fit that. C1/C9 must report such notes as authored delay (expected window), not as late starts, and must fail only outside it. Confirm on Vista before changing the contract.",
+  "A fix outside owns: post a scope request with the file the probe named."
+]
+gate = ["build-slot cargo test -j 4 -p kontra-probe", "kontra-probe on Areia Spiccato Fast, live and dense (coordinator runs it; paste C6/C8 before and after)"]
+done = ["C6 and C8 print a cause for every silent note.", "A probe unit test: a zone with S.Mod and no SampleStart route passes C1/C9 within its authored delay window and fails outside it; Vista 4 Violas C1/C9 rerun with the result in the PR.", "Areia live C6 and dense C8 pass, or the remaining failure has a named cause and a follow-up task."]
+
+[[task]]
 id = "P1.5"
 title = "Gate G1: on-time start on real libraries"
 phase = 1
 lane = "coordinator"
 size = "S"
 agent = "coordinator"
-deps = ["P1.4"]
+deps = ["P1.4", "P1.4b"]
 owns = ["docs/architecture-v3/gates/G1.md"]
 docs = ["11-MIGRATION.md#phase-13-playback-users-hear-it"]
 goal = "Prove C1, C3, C6, C9 on Areia, Vista, Conflux, ANALOG; listen-test the original complaints."
@@ -1120,7 +1142,7 @@ docs = ["05-STREAM.md#2-the-store", "05-STREAM.md#5-memory-targets"]
 goal = "Two instances share one preload; preloads stored in source format; earliest-deadline I/O; two stream buffers per voice."
 steps = ["Implement Store/Blob/PageCache/IoService; measure memory before/after on Areia (coordinator)."]
 gate = ["build-slot cargo test -p kontra-stream", "build-slot cargo test -p kontra-probe"]
-done = ["Memory table in 05-STREAM.md filled with measurements."]
+done = ["Memory table in 05-STREAM.md filled with measurements.", "Resident head bytes at most 60% of Kontakt's windows on Areia, Vista and ANALOG (05-STREAM §1), with C1 and C8 no worse than before the store.", "Load RSS and per-voice CPU on the same three instruments reported against v1 (~/.cache/kontra-v1) and the P1.2 build; both lower."]
 
 [[task]]
 id = "P6.2"
