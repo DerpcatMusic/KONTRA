@@ -320,15 +320,7 @@ fn translate(
     // The global `overrideInstPreloadSize` replaces it only when the user preference
     // `overrideInstDFD` is on (`FUN_14082a530`), which a library load never sets, so the
     // authored value is in effect and 0 is a zero window, not a policy selector. 0xf000 is
-    // the init default (`FUN_140940000`). The stream head does not use the window yet.
-    if !matches!(params.dfd_channel_preload_size, 0 | 0xf000) {
-        out.unsupported(
-            "instrument",
-            "DFD preload window not applied to stream head",
-            params.dfd_channel_preload_size,
-            ir::Reason::NotModeled,
-        );
-    }
+    // the init default (`FUN_140940000`). The stream head applies this window (stream.rs).
     match crate::program_automation(
         &program.0.private_data,
         program.version(),
