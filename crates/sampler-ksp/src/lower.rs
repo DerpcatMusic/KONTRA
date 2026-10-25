@@ -1708,6 +1708,12 @@ impl Gen<'_, '_> {
             if usize::from(count) == sampler_core::EFFECT_ARGS {
                 break;
             }
+            // Array setters are (id, par, value, index) in source; the effect carries
+            // (id, par, index, value), so the index is the target prefix.
+            let source = match builtin {
+                Builtin::SetControlParArr | Builtin::SetControlParRealArr if i == 2 || i == 3 => 5 - i,
+                _ => i,
+            };
             if i == 0
                 && matches!(
                     builtin,
@@ -1730,10 +1736,10 @@ impl Gen<'_, '_> {
                         i64::from(crate::builtins::FIRST_UI_ID + ui as i32),
                     )?;
                 } else {
-                    self.arg(args, i, reg(dst, count)?)?;
+                    self.arg(args, source, reg(dst, count)?)?;
                 }
             } else {
-                self.arg(args, i, reg(dst, count)?)?;
+                self.arg(args, source, reg(dst, count)?)?;
             }
             count += 1;
         }
@@ -4211,9 +4217,11 @@ impl Gen<'_, '_> {
             builtin,
             Builtin::SetControlParArr | Builtin::SetControlParRealArr
         );
+        // Array setters use the effect layout (id, par, index, value) from effect_args.
+        let (index, value) = if array { (dst + 2, dst + 3) } else { (dst + 3, dst + 2) };
         if par == Some(b::CONTROL_PAR_VALUE) {
             if array {
-                self.indexed_value_at(dst, dst + 3, dst + 2, dst + 8, true)?;
+                self.indexed_value_at(dst, index, value, dst + 8, true)?;
             } else {
                 if let Some(ui) = self.ui_index(args, 0) {
                     let var = self.u.hir.uis[ui as usize].var;
@@ -4240,14 +4248,14 @@ impl Gen<'_, '_> {
         self.copy_i32(dst, dst + 4)?;
         self.copy_i32(dst + 1, dst + 5)?;
         if array {
-            self.copy_i32(dst + 3, dst + 6)?;
+            self.copy_i32(index, dst + 6)?;
         } else {
             self.set(dst + 6, i64::from(PROPERTY_TAG))?;
         }
         self.set(dst + 7, i64::from(PROPERTY_TAG))?;
         self.emit(I::Op(Op::Store {
             key: dst + 4,
-            local: dst + 2,
+            local: value,
             write: true,
         }))?;
         self.emit_prepared_effect(builtin, dst, count, text)?;
@@ -4490,14 +4498,20 @@ fn outbox_merge(builtin: Builtin) -> OutboxMerge {
     match builtin {
         SetKeyPressedSupport | SetUiColor | SetSkinOffset => OutboxMerge::Latest { keys: 0 },
         SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed | SetText | SetKnobLabel
-        | SetKnobUnit | SetKnobDefval | SetControlHelp | HidePart | SetTableStepsShown
-        | MoveControl | MoveControlPx => OutboxMerge::Latest { keys: 1 },
+        | SetKnobUnit | SetKnobDefval | SetControlHelp | HidePart | SetTableStepsShown => {
+            OutboxMerge::Latest { keys: 1 }
+        }
         SetControlPar | SetControlParReal | SetControlParStr | SetMenuItemStr
         | SetMenuItemVisibility | SetMenuItemValue => OutboxMerge::Latest { keys: 2 },
-        SetControlParStrArr => OutboxMerge::Latest { keys: 3 },
-        Message | AddTextLine | AddMenuItem => OutboxMerge::Drop,
-        // Index after value (`*_arr` real/int), attach, navigation, key ranges,
-        // waveform, files, persistence and engine effects: keep waiting.
+        SetControlParStrArr | SetControlParArr | SetControlParRealArr => {
+            OutboxMerge::Latest { keys: 3 }
+        }
+        // Never merged: a move's negative branch hides in place and keeps the old
+        // position, so a later move is not a full replacement of an earlier one.
+        Message | AddTextLine | AddMenuItem | MoveControl | MoveControlPx => OutboxMerge::Drop,
+        // Attach, navigation, key ranges, waveform, files, persistence, engine
+        // effects and move_control_px (its off-grid branch writes only the hide bit,
+        // so it is not a full latest value): keep waiting.
         _ => OutboxMerge::Wait,
     }
 }

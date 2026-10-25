@@ -759,7 +759,8 @@ fn xy_value_read_modify_write_emits_the_same_value_it_stores() {
     assert_eq!(f64::from_bits(cell(&rt, 2) as u64), 0.5);
     let mut effects = 0;
     rt.drain_effects(|effect| {
-        assert_eq!(f64::from_bits(effect.args()[2] as u64), 0.5);
+        // The effect carries (id, par, index, value): the real value is last.
+        assert_eq!(f64::from_bits(effect.args()[3] as u64), 0.5);
         effects += 1;
         true
     });

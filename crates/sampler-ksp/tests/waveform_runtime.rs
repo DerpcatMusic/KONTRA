@@ -234,9 +234,10 @@ fn waveform_runtime_sparse_store_pressure_faults_without_fake_readback_or_effect
 #[test]
 fn waveform_runtime_outbox_pressure_rejects_reset_before_mutating_any_key() {
     let source = format!("{INIT} on ui_control($apply) attach_zone($w,91,0) end on
-        on note message(5) end on");
+        on note set_keyrange(0,127,\"fill\") end on");
     let (mut rt, view) = runtime(&source); let plan = rt.active_plan(); let id = ui(&view, "$w");
-    // Fill with unrelated effects using the actual bound public note callback.
+    // Fill with engine writes (Wait class) using the actual bound public note
+    // callback: UI writes stop at UI_EFFECT_CAPACITY and cannot fill the reserve.
     for n in 0..EFFECT_CAPACITY {
         let note = rt.trigger(Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0,
             key: 60, external_id: Some(n as i32) }, 60, 1.).unwrap();
@@ -253,7 +254,7 @@ fn waveform_runtime_outbox_pressure_rejects_reset_before_mutating_any_key() {
         assert_eq!(stored(&rt, plan, 0, id, Property::Table, 3), Some(77));
     });
     let mut count = 0;
-    rt.drain_effects(|e| { assert_eq!(view.service(e.service), Some("message")); count += 1; true });
+    rt.drain_effects(|e| { assert_eq!(view.service(e.service), Some("set_keyrange")); count += 1; true });
     assert_eq!(count, EFFECT_CAPACITY);
     assert_eq!(rt.stalled_effects(), 0); // waveform rejection is an explicit fault, not silent drop
 }
@@ -636,7 +637,8 @@ fn waveform_full_outbox_matching_tail_replacement_remains_admitted() {
         inc($next) set_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,0,$next) end on",
         INIT.replace("on init", "on init declare $next := 23999"));
     let (mut rt, mut view) = runtime(&source); let plan = rt.active_plan(); let id = ui(&view, "$w");
-    for _ in 0..EFFECT_CAPACITY - 1 { trigger_once(&mut rt, 60); }
+    // A UI flood fills the UI budget; the next UI write is the last admissible slot.
+    for _ in 0..UI_EFFECT_CAPACITY - 1 { trigger_once(&mut rt, 60); }
     invoke(&mut rt, plan, 0, "$apply"); // append last admissible slot
     let apply = sampler_ksp::derived_control_id(0, "$apply");
     support::without_heap(|| { invoke_id(&mut rt, plan, apply); });
@@ -651,7 +653,7 @@ fn waveform_full_outbox_matching_tail_replacement_remains_admitted() {
         }
         true
     });
-    assert_eq!(count, EFFECT_CAPACITY);
+    assert_eq!(count, UI_EFFECT_CAPACITY);
     assert_eq!(rt.stalled_effects(), 0);
     assert_eq!(wave(&view, "$w").cursor_us, 24001);
 }
