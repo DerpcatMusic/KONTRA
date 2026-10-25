@@ -188,6 +188,15 @@ resolver = "3"
 inherits = "release"
 lto = false
 
+# Local "release-like" iteration (09-BUILD.md). Shipping, CI and benchmarks use release/maxperf.
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 256
+incremental = true
+strip = "none"
+debug = "line-tables-only"
+
 [[example]]
 name = "uvi_ui_health"
 required-features = ["shots"]
