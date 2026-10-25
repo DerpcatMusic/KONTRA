@@ -1,0 +1,13 @@
+[package]
+name = "kontra-lua"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-events = { path = "../../model/events" }
+kontra-ui-model = { path = "../../model/ui-model" }
+kontra-vm = { path = "../../engine/vm" }
