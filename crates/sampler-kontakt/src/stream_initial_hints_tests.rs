@@ -818,3 +818,83 @@ fn initialized_start_hint_sample_revision_cannot_reuse_previous_asset_readiness(
         "retained old-source storage is never replacement-source readiness"
     );
 }
+
+/// One zone per entry, each with a route from `source` to sample start over `range` frames.
+/// Mirrors the probe's `cc_start` (CC113) and `key_position` (Key) shapes; the probe
+/// creator writes no sample-start routes, so the routes are authored here.
+fn start_instrument(source: ir::ModulationSource, range: u64, zones: usize) -> ir::Instrument {
+    let zone = |_| {
+        let mut zone = ir::Zone::new(ir::AssetRef(0));
+        zone.keys = ir::KeyRange { low: 60, high: 60 };
+        zone.playback = ir::Playback {
+            start_range: range,
+            ..Default::default()
+        };
+        zone.routes.push(ir::RouteRef(0));
+        zone
+    };
+    ir::Instrument {
+        assets: vec![ir::Asset {
+            location: ir::AssetLocation::Path("start-range".into()),
+            encoding: ir::Encoding::Unknown,
+            residency: ir::AssetResidency::Streamable,
+            root_key: None,
+            loops: vec![],
+        }],
+        zones: (0..zones).map(zone).collect(),
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source,
+        }],
+        routes: vec![ir::Route::new(
+            ir::ModulatorRef(0),
+            ir::Target::SampleStart,
+            ir::Depth::Normalized(1.),
+        )],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn start_range_cc_start_zones_reach_the_s_mod_range() {
+    // Areia pattern: three mic zones, each started by CC113.
+    let instrument = start_instrument(ir::ModulationSource::Controller(113), 4_800, 3);
+    for zone in &instrument.zones {
+        assert_eq!(
+            StartRange::of(&instrument, zone),
+            StartRange {
+                max_frames: 4_800,
+                unbounded: false,
+                sources: vec![ir::RouteRef(0)],
+            }
+        );
+    }
+}
+
+#[test]
+fn start_range_key_position_zones_reach_the_s_mod_range() {
+    // Vista pattern: two velocity layers started by KeyPosition (ModulationSource::Key).
+    let instrument = start_instrument(ir::ModulationSource::Key, 2_400, 2);
+    let ranges: Vec<_> = instrument
+        .zones
+        .iter()
+        .map(|zone| StartRange::of(&instrument, zone))
+        .collect();
+    assert_eq!(
+        ranges.iter().map(|r| r.max_frames).collect::<Vec<_>>(),
+        [2_400, 2_400]
+    );
+    assert!(
+        ranges
+            .iter()
+            .all(|r| !r.unbounded && r.sources == [ir::RouteRef(0)])
+    );
+}
+
+#[test]
+fn start_range_without_a_sample_start_route_is_zero() {
+    let mut instrument = start_instrument(ir::ModulationSource::Controller(113), 4_800, 1);
+    instrument.routes[0].target = ir::Target::Pitch;
+    let range = StartRange::of(&instrument, &instrument.zones[0]);
+    assert_eq!(range, StartRange::default());
+}
