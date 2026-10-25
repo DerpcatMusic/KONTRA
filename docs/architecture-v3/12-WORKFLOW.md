@@ -221,7 +221,7 @@ report or PR before anything is merged or built on it.
 
 | Thing | Setting |
 |---|---|
-| Branch `v3` | ruleset "v3 integration": PR required, required checks `CI required` + `v3 plan`, squash (merge commits only for `v3-sync-main-*`), no force push, no deletion, admins may bypass in a PR |
+| Branch `v3` | ruleset "v3 integration": PR required, required checks `CI required` + `v3 plan` + `CodeRabbit`, squash (merge commits only for `v3-sync-main-*`), no force push, no deletion, admins may bypass in a PR |
 | Repo | auto-merge allowed; delete head branches on merge |
 | Labels | `v3`, `v3-epic`, `phase:0–8`, `lane:*`, `size:S/M/L`, `agent:*`, `status:ready/blocked/claimed`, `draft-brief`, `scope-override`, `size-growth` (`plan.py sync`) |
 | Milestones | `v3 · P<n> <phase>` per phase |
