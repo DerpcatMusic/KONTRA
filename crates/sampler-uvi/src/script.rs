@@ -4011,6 +4011,16 @@ impl ScriptHost {
     pub fn memory(&self) -> usize {
         self.lua.used_memory()
     }
+
+    /// The scripts' Lua state, for the P3.1c collector spike only.
+    ///
+    /// The spike steps the collector, reads `used_memory` and installs Luau's
+    /// allocation callback. Not a stable API: P3.2 deletes it. Borrowed, so a
+    /// spike cannot keep the state alive past the host.
+    #[doc(hidden)]
+    pub fn spike_lua(&self) -> &Lua {
+        &self.lua
+    }
 }
 
 fn resume(lua:&Lua, shared: &Rc<Shared>, thread: Thread, args: MultiValue, creator: PlayCreator, processor:Option<usize>) {
