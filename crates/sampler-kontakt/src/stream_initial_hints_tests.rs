@@ -124,7 +124,6 @@ fn preload(
         assets,
         RATE,
         head,
-        &[],
         policy,
         canceled,
     )?;
@@ -232,7 +231,6 @@ fn initialized_start_hint_uses_actual_63_offset_and_final_bound_assignment() {
         &assets,
         RATE,
         64,
-        &[],
         &policy(4096),
         &|| false,
     )
@@ -397,7 +395,6 @@ fn initialized_start_hint_reverse_resampling_and_bounded_views_match_resident() 
                     &assets,
                     RATE,
                     64,
-                    &[],
                     &policy(65_536),
                     &|| false,
                 )
@@ -455,7 +452,6 @@ fn initialized_start_hint_reverse_resampling_and_bounded_views_match_resident() 
         &assets,
         RATE,
         64,
-        &[],
         &policy(4096),
         &|| false,
     )
@@ -598,7 +594,6 @@ fn initialized_start_hint_rejects_unknown_inputs_even_in_zero_depth_scales_and_l
                 &assets,
                 RATE,
                 64,
-                &[],
                 &policy(4096),
                 &|| false,
             )
@@ -620,7 +615,6 @@ fn initialized_start_hint_rejects_unknown_inputs_even_in_zero_depth_scales_and_l
         &assets,
         RATE,
         64,
-        &[],
         &policy(4096),
         &|| false,
     )
@@ -657,7 +651,6 @@ fn initialized_start_hint_budget_counts_physical_aliases_and_actual_guard_window
                 &assets,
                 RATE,
                 128,
-                &[],
                 &policy(budget),
                 &|| false,
             )
@@ -686,7 +679,6 @@ fn initialized_start_hint_cancellation_leaves_no_partial_publication() {
             &assets,
             RATE,
             64,
-            &[],
             &policy(4096),
             &|| true
         )
@@ -701,7 +693,6 @@ fn initialized_start_hint_cancellation_leaves_no_partial_publication() {
         &assets,
         RATE,
         64,
-        &[],
         &policy(4096),
         &|| false,
     )
@@ -743,10 +734,10 @@ fn initialized_start_hint_rebuilds_for_changed_preparation_and_rejects_source_re
     let old = plan(&ir, assets.clone(), 63);
     let new = plan(&ir, assets.clone(), 127);
     let old_recipe =
-        InitialStartHints::new(&ir, &old, &assets, RATE, 64, &[], &policy(4096), &|| false)
+        InitialStartHints::new(&ir, &old, &assets, RATE, 64, &policy(4096), &|| false)
             .unwrap();
     let new_recipe =
-        InitialStartHints::new(&ir, &new, &assets, RATE, 64, &[], &policy(4096), &|| false)
+        InitialStartHints::new(&ir, &new, &assets, RATE, 64, &policy(4096), &|| false)
             .unwrap();
     let old_ranges = old_recipe.ranges(64, &|| false).unwrap();
     let new_ranges = new_recipe.ranges(64, &|| false).unwrap();
@@ -762,7 +753,6 @@ fn initialized_start_hint_rebuilds_for_changed_preparation_and_rejects_source_re
             &replacement,
             RATE,
             64,
-            &[],
             &policy(4096),
             &|| false
         )
@@ -772,7 +762,7 @@ fn initialized_start_hint_rebuilds_for_changed_preparation_and_rejects_source_re
         io::ErrorKind::InvalidData
     );
     assert_eq!(
-        InitialStartHints::new(&ir, &old, &assets, 44_100, 64, &[], &policy(4096), &|| {
+        InitialStartHints::new(&ir, &old, &assets, 44_100, 64, &policy(4096), &|| {
             false
         })
         .err()
@@ -985,11 +975,11 @@ fn script_offset_bound_widens_every_zone_in_asset_frames() {
         &assets,
         RATE,
         64,
-        &scripts,
         &policy(4096),
         &|| false,
     )
-    .unwrap();
+    .unwrap()
+    .with_script_offsets(&scripts);
     assert!(recipe.start_ranges.iter().all(|r| r.max_frames == 4_800));
     assert!(recipe.start_ranges.iter().all(|r| r.unbounded.is_none()));
     assert_eq!(recipe.unbounded_scripts, 0);
@@ -1010,11 +1000,11 @@ fn script_offset_bound_uses_each_zone_asset_rate() {
         &assets,
         RATE,
         64,
-        &scripts,
         &policy(4096),
         &|| false,
     )
-    .unwrap();
+    .unwrap()
+    .with_script_offsets(&scripts);
     assert_eq!(recipe.start_ranges[0].max_frames, 4_410);
 }
 
@@ -1032,11 +1022,11 @@ fn script_unbounded_offset_flags_every_zone_and_counts_the_script() {
         &assets,
         RATE,
         64,
-        &scripts,
         &policy(4096),
         &|| false,
     )
-    .unwrap();
+    .unwrap()
+    .with_script_offsets(&scripts);
     assert!(recipe.start_ranges.iter().all(|r| r.max_frames == 1_000));
     assert!(
         recipe
@@ -1058,7 +1048,6 @@ fn no_scripts_leave_start_ranges_unchanged() {
         &assets,
         RATE,
         64,
-        &[],
         &policy(4096),
         &|| false,
     )

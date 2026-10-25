@@ -80,14 +80,37 @@ pub(super) struct InitialStartHints<'plan> {
 }
 
 impl<'plan> InitialStartHints<'plan> {
-    #[allow(clippy::too_many_arguments)]
+    /// Widens every zone's start range by the scripts' `play_note` offsets.
+    /// A script's offset may start any zone's group, so every zone takes the largest bound.
+    pub(super) fn with_script_offsets(mut self, scripts: &[sampler_ksp::ScriptView]) -> Self {
+        let max_micros = scripts
+            .iter()
+            .map(|script| script.start_offsets.max_micros)
+            .max()
+            .unwrap_or(0);
+        let unbounded = scripts.iter().enumerate().find_map(|(index, script)| {
+            script
+                .unbounded_line
+                .map(|line| format!("script {index} line {line}"))
+        });
+        for (range, zone) in self.start_ranges.iter_mut().zip(&self.instrument.zones) {
+            if let Some(pcm) = zone.asset.and_then(|asset| self.assets.get(asset.0)) {
+                range.widen(max_micros, pcm.sample_rate(), unbounded.as_deref());
+            }
+        }
+        self.unbounded_scripts = scripts
+            .iter()
+            .filter(|script| script.unbounded_line.is_some())
+            .count();
+        self
+    }
+
     pub(super) fn new(
         instrument: &'plan ir::Instrument,
         prepared: &'plan Prepared,
         assets: &'plan [Pcm],
         rate: u32,
         head: usize,
-        scripts: &[sampler_ksp::ScriptView],
         policy: &StreamPolicy,
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> io::Result<Self> {
@@ -120,28 +143,11 @@ impl<'plan> InitialStartHints<'plan> {
         }
         let constant =
             ConstantStartHints::new(instrument, prepared, assets, rate, head, policy, canceled)?;
-        let mut start_ranges: Vec<StartRange> = instrument
+        let start_ranges: Vec<StartRange> = instrument
             .zones
             .iter()
             .map(|zone| StartRange::of(instrument, zone))
             .collect();
-        // A script's offset may start any zone's group, so every zone takes the largest bound.
-        let max_micros = scripts
-            .iter()
-            .map(|script| script.start_offsets.max_micros)
-            .max()
-            .unwrap_or(0);
-        let unbounded = scripts.iter().enumerate().find_map(|(index, script)| {
-            script
-                .unbounded_line
-                .map(|line| format!("script {index} line {line}"))
-        });
-        for (region, zone) in instrument.zones.iter().enumerate() {
-            if let Some(asset) = zone.asset {
-                let asset_rate = assets[asset.0].sample_rate();
-                start_ranges[region].widen(max_micros, asset_rate, unbounded.as_deref());
-            }
-        }
         let mut this = Self {
             _prepared: prepared,
             instrument,
@@ -153,10 +159,7 @@ impl<'plan> InitialStartHints<'plan> {
             start_ranges,
             controllers: Vec::new(),
             unsupported: 0,
-            unbounded_scripts: scripts
-                .iter()
-                .filter(|script| script.unbounded_line.is_some())
-                .count(),
+            unbounded_scripts: 0,
             controller_loops: 0,
         };
         for (region, zone) in instrument.zones.iter().enumerate() {

@@ -3066,7 +3066,7 @@ impl Streamed {
             let anchor_policy=StreamPolicy{head_budget:room,..policy};
             bounded_attack_anchors(&loaded.instrument,&kept,rate,head,&anchor_policy,&anchor_pins,canceled)
         };
-        let hint_recipe = policy.allow_cold_fallback.then(|| InitialStartHints::new(&loaded.instrument, &loaded.plan, &kept, rate, head, &loaded.scripts, &policy, canceled))
+        let hint_recipe = policy.allow_cold_fallback.then(|| InitialStartHints::new(&loaded.instrument, &loaded.plan, &kept, rate, head, &policy, canceled).map(|hints| hints.with_script_offsets(&loaded.scripts)))
             .transpose().map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
         if let Some(recipe) = &hint_recipe {
             if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
