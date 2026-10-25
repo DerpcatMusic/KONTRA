@@ -112,6 +112,18 @@ pub struct Timing {
     pub override_ms: Option<f32>,
     /// Not aligned: plays as late as the library does.
     pub exclude: bool,
+    /// The sample-start controller the measurement ran with, if the library
+    /// moves its sample start with one ([`Timing::with_start`]).
+    #[serde(default)]
+    pub start: Option<StartControl>,
+}
+
+/// A controller that moves a library's sample start: its CC, and the value
+/// the measurement ran with.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct StartControl {
+    pub cc: u8,
+    pub measured: u8,
 }
 
 /// What a [`Timing`] was measured for.
@@ -142,6 +154,27 @@ impl Timing {
             .ms(legato, velocity)
             .or(self.declared)
             .unwrap_or(0.0)
+    }
+
+    /// This timing with its sample-start controller at `now`. Each measured
+    /// delay moves by the start the controller shifted since the measurement:
+    /// `skip(measured) - skip(now)`, where `skip(cc)` is the library's own
+    /// start-offset query for the measured zones at that value, in frames at
+    /// `rate`. Delays stay at 0 or more. A timing without a start control is
+    /// returned unchanged.
+    pub fn with_start(&self, now: u8, rate: f64, skip: impl Fn(u8) -> u32) -> Self {
+        let Some(StartControl { measured, .. }) = self.start else {
+            return self.clone();
+        };
+        let ms = |cc: u8| f64::from(skip(cc)) * 1000. / rate;
+        let shift = (ms(measured) - ms(now)) as f32;
+        let mut t = self.clone();
+        for d in std::iter::once(&mut t.loaded).chain(&mut t.arts) {
+            for cell in d.first.iter_mut().chain(d.legato.iter_mut()).flatten() {
+                *cell = (*cell + shift).max(0.);
+            }
+        }
+        t
     }
 
     /// The latest any note of the part sounds, as aligned (0 excluded).
@@ -1560,6 +1593,38 @@ mod tests {
             "the 80 ms patch waits 40 ms"
         );
         assert_eq!(fast_part.pop_due(1920), Some((on(1), NO_ART)));
+    }
+
+    #[test]
+    fn a_half_depth_start_controller_moves_the_delay_by_half_its_range() {
+        // A 100 ms start range (4800 frames) at depth 0.5: the start moves
+        // 2400 * cc / 127 frames. Stands in for the library's start-offset query.
+        let skip = |cc: u8| (2400. * f64::from(cc) / 127.).round() as u32;
+        let patch = Timing {
+            loaded: Delay {
+                first: [Some(120.); 3],
+                ..Default::default()
+            },
+            start: Some(StartControl { cc: 113, measured: 0 }),
+            ..Default::default()
+        };
+        let at = |cc| patch.with_start(cc, RATE, skip).latest();
+        assert_eq!(at(0), 120., "measured at 0: unchanged");
+        assert!((at(64) - (120. - 1209. / 48.)).abs() < 1e-3, "{}", at(64));
+        assert!((at(127) - 70.).abs() < 0.1, "L - R/2 at 127: {}", at(127));
+        let short = Timing {
+            loaded: Delay {
+                first: [Some(30.); 3],
+                ..Default::default()
+            },
+            ..patch.clone()
+        };
+        assert_eq!(short.with_start(127, RATE, skip).latest(), 0., "never below 0");
+        let fixed = Timing {
+            start: None,
+            ..patch.clone()
+        };
+        assert_eq!(fixed.with_start(127, RATE, skip), fixed, "no route: unchanged");
     }
 
     #[test]
