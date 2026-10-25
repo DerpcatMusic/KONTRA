@@ -58,7 +58,13 @@ jobs:
         env:
           # The size-growth label lets a PR grow a crate's production lines; it must also run `xtask size --update`.
           KONTRA_ALLOW_GROWTH: ${{ contains(github.event.pull_request.labels.*.name, 'size-growth') && '1' || '' }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
+          # Any task may commit the baseline, so without the label check against the base's
+          # baseline: a raised baseline cannot pass growth through.
+          if [ "$KONTRA_ALLOW_GROWTH" != 1 ]; then
+            git show "origin/$BASE_REF:tools/xtask/size-baseline.json" > tools/xtask/size-baseline.json
+          fi
           cargo run -p xtask -- debt --check
           cargo run -p xtask -- size --check
 
