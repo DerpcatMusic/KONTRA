@@ -27,6 +27,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: v3-plan-xtask
       - name: Manifest
         run: |
           python3 tools/plan/plan.py validate
@@ -48,6 +54,13 @@ jobs:
           else
             python3 tools/plan/plan.py scope "$task" --base "origin/$BASE_REF"
           fi
+      - name: Debt and size ratchets
+        env:
+          # The size-growth label lets a PR grow a crate's production lines; it must also run `xtask size --update`.
+          KONTRA_ALLOW_GROWTH: ${{ contains(github.event.pull_request.labels.*.name, 'size-growth') && '1' || '' }}
+        run: |
+          cargo run -p xtask -- debt --check
+          cargo run -p xtask -- size --check
 
   merged:
     name: close task issue
