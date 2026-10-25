@@ -72,6 +72,18 @@ trigger an automatic version bump. Mark incompatible changes with `!` or a
 `BREAKING CHANGE:` footer and explain the user-visible migration.
 [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) describes the syntax.
 
+For local listening and probe runs use the `fast` profile: release-like code without
+cross-crate LTO and with incremental compilation. Shipping (`release`), `ci`, `maxperf`
+and `corpus` are unchanged, and CPU numbers for the gate come from `release`.
+
+```sh
+build-slot cargo build --profile fast --lib
+build-slot cargo --config .cargo/fast-linux.toml build --profile fast --lib
+```
+
+`.cargo/fast-linux.toml` links with clang and mold, which must be on `PATH`. Without it,
+the default linker is used.
+
 `bacon` watches the library typecheck by default. Its `parity` job runs the existing
 small targeted KSP suite; explicit clippy and nextest jobs are also available. Do not
 run the complete sample-library suite on every edit. For a focused regression:
