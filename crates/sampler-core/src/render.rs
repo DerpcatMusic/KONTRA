@@ -635,6 +635,18 @@ impl Runtime {
                 for (frame, x) in block[..b.len].iter().enumerate() {
                     (planar[0][frame], planar[1][frame]) = (x[2 * lane], x[2 * lane + 1]);
                 }
+                // This lane is the voice's own signal. `finish` writes frames from `held` on,
+                // scaled by the expression gain, so the first audible frame is found on that output.
+                if v.first_frame.is_none() {
+                    let audible = |k: usize| {
+                        planar[0][k] as f64 * f64::from(gains[lane][0]) != 0.
+                            || planar[1][k] as f64 * f64::from(gains[lane][1]) != 0.
+                    };
+                    if let Some(k) = (b.held..b.len).find(|&k| audible(k)) {
+                        v.first_frame = Some(at + k as u64);
+                        self.first_frames.record(v.start_at, at + k as u64);
+                    }
+                }
                 let destination = match v.bus {
                     Some(bus) => dsp.buses.input(bus, output.len()),
                     None => &mut *output,
@@ -1025,6 +1037,13 @@ impl Runtime {
             at,
             feeds: &mut plan.dsp.feeds,
         };
+        // A voice's first non-silent frame is its contribution to the shared bus: the
+        // difference from the segment before it rendered. Watched until found, once per voice.
+        let watch = v.first_frame.is_none();
+        let watched = segment.len().min(crate::FIRST_WATCH);
+        if watch {
+            self.first_watch[..watched].copy_from_slice(&segment[..watched]);
+        }
         let (produced, done, faults, underrun) = if let Some(head) = &self.onsets.heads[i] {
             let source = super::source::PagedFrames {
                 cache: self.stream_cache.as_ref().expect("pinned streamed onset").reader(),
@@ -1061,6 +1080,12 @@ impl Runtime {
             render_source::<TRACE>(v, &source, segment, chain, states, context, &self.kernel)
         };
         drop((claimed, delay, parameter_scratch, native, stretch));
+        if watch {
+            if let Some(k) = (0..watched).find(|&k| segment[k] != self.first_watch[k]) {
+                v.first_frame = Some(at + k as u64);
+                self.first_frames.record(v.start_at, at + k as u64);
+            }
+        }
         if let (Some(ramp), Some(target)) = (points, mixed) {
             let ramp = if chain.is_some() {
                 (*ramp).without_gains()

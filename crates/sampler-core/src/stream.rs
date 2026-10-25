@@ -941,6 +941,10 @@ impl crate::Runtime {
     /// source/envelope/voice DSP state advances while held. Complex geometry
     /// conservatively requires its full source view or fails pool admission.
     /// No waiting, I/O, allocation or cache flush.
+    /// Sets the stream lookahead: how many output frames each streamed voice must
+    /// keep resident ahead of its read position. It is also the admission gate for
+    /// a voice's start: `prepare_onsets` holds a voice until `runway_ready` covers
+    /// this many frames, and a batch (one start instant) waits until all its voices are ready.
     pub fn set_stream_start_runway(&mut self, frames: u32) -> Result<(), Error> {
         if frames == 0 || frames > self.stream_horizon || self.voices.count() != 0 {
             return Err(Error::InvalidInput);
