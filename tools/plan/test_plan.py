@@ -61,6 +61,7 @@ class Manifest(unittest.TestCase):
     def test_sync_keeps_claims(self):
         self.assertFalse(plan.managed("status:claimed"))
         self.assertFalse(plan.managed("scope-override"))
+        self.assertFalse(plan.managed("size-growth"))
         self.assertTrue(plan.managed("status:ready"))
         self.assertTrue(plan.managed("phase:3"))
 

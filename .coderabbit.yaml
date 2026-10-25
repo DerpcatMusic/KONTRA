@@ -1,0 +1,75 @@
+# CodeRabbit review settings. Reference: https://docs.coderabbit.ai/reference/configuration
+# The v3 rules live in docs/architecture-v3 (README rules, 12-WORKFLOW.md); this file points the reviewer at them.
+language: en-US
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  commit_status: true
+  fail_commit_status: true  # an errored review must not leave the required check green
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_pause_after_reviewed_commits: 0  # the ruleset needs every push reviewed before merge
+    base_branches:
+      - "v3"
+  path_filters:
+    - "!Cargo.lock"
+    - "!**/Cargo.lock"
+    - "!docs/architecture-v3/TASKS.md"
+    - "!graft/**"
+    - "!**/*.tsv"
+    - "!**/vectors/**"
+    - "!.claude/skills/beautiful-rust/references/**"
+  path_instructions:
+    - path: "crates/**/*.rs"
+      instructions: |
+        KONTRA is a real-time audio sampler. Apply docs/architecture-v3/README.md (the ten rules) and the beautiful-rust skill.
+        - Audio-thread code (render, process, voice, dsp, engine, stream cursors): flag any allocation, lock (Mutex/RwLock),
+          syscall, logging, unbounded loop, or panic path (unwrap/expect/index/slice/divide-by-zero). These are dropouts.
+        - Flag new `#[path]`, `#[allow(...)]` without a reason comment, `cfg(test)` hooks inside production functions,
+          vendor names (Kontakt, UVI, NI) outside `format-*`/`sampler-kontakt`/`sampler-uvi`, and bool flags where an enum fits.
+        - KISS/YAGNI: a second implementation of an existing DSP class, a trait with one impl, or config for a constant is a defect
+          unless the PR cites a measurement that needs it.
+        - Moves must be pure moves; behaviour changes belong in a separate PR.
+    - path: "crates/dsp/**"
+      instructions: |
+        One class per DSP type (docs/architecture-v3/03-DSP.md). Vendor differences are laws/tables passed in, not new classes.
+        Check denormal handling, parameter smoothing, block-size independence and reset-to-fresh behaviour.
+    - path: "tools/probe/**"
+      instructions: |
+        Contracts C1-C10 (docs/architecture-v3/10-TESTING.md). A contract must fail or report unsupported on a silent reference,
+        never pass vacuously. Flag any verdict that can pass without measuring anything.
+    - path: "tools/plan/**"
+      instructions: |
+        Stdlib-only Python. tasks.toml is the source of truth; TASKS.md and issues are generated. Check that scope/overlap logic
+        cannot let two ready tasks own the same file.
+    - path: "docs/architecture-v3/**"
+      instructions: |
+        Check consistency with tasks.toml (ids, owns, deps) and with the code the PR changes. Short declarative sentences;
+        numbers carry their source.
+    - path: ".github/workflows/**"
+      instructions: |
+        Pinned action SHAs, least-privilege permissions, no secrets in logs, and CI must never require the maintainer-only `build-slot`.
+  tools:
+    shellcheck:
+      enabled: true
+    actionlint:
+      enabled: true
+    ruff:
+      enabled: true
+    markdownlint:
+      enabled: false
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "docs/architecture-v3/README.md"
+      - "docs/architecture-v3/12-WORKFLOW.md"
+      - ".claude/skills/beautiful-rust/SKILL.md"
+      - "CONTRIBUTING.md"
+chat:
+  auto_reply: true
