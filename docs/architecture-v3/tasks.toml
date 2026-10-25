@@ -608,7 +608,7 @@ lane = "playback"
 size = "M"
 agent = "worker"
 deps = ["P3.3"]
-owns = ["src/timing.rs", "src/timing/**", "@v2rs", "@plugin"]
+owns = ["src/timing.rs", "src/timing/**", "@v2rs", "@plugin", "crates/sampler-core/src/prepare.rs", "tools/probe/**"]
 docs = ["07-APP.md#6-auto-align-appalign-feature-align"]
 goal = "When a patch's zones have a controller-driven sample start (Kontakt S.Mod routed from a CC), its auto-align delay follows that controller live: delay = measured + skip(cc at measure) - skip(cc now), never below 0, with no re-render. Audio Imperia's Tight mode then reports 0 ms."
 steps = [
