@@ -1497,6 +1497,10 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         "blocks": block_times.len(),
         "peak_voices": peak_voices,
         "ksp_ui_effects": ksp_ui_effects,
+        "ksp_label_text": views
+            .iter()
+            .flat_map(|v| v.model().interface.widgets.iter())
+            .find_map(|w| w.text("$CONTROL_PAR_TEXT")),
         "ksp_pending_callbacks": pending_callbacks,
         "ksp_engine_successes": engine_successes,
         "ksp_engine_failures": engine_failures,
@@ -3374,6 +3378,7 @@ mod tests {
             source: "on init declare ui_label $label(1,1) declare $i end on
                 on note ignore_event($EVENT_ID) $i:=0
                 while ($i < 1000) inc($i) set_text($label,\"refresh\") end while
+                set_text($label,\"settled\")
                 play_note($EVENT_NOTE,$EVENT_VELOCITY,0,100000) end on"
                 .into(),
             slot: None,
@@ -3408,7 +3413,10 @@ mod tests {
         );
         assert_eq!(sound.stuck_voices, 0);
         assert_eq!(sound.stuck_notes, 0);
-        assert_eq!(sound.perf["ksp_ui_effects"], 1000);
+        // 1001 writes to one label coalesce to the latest value: one delivered
+        // effect, and the final "settled" is what the host sees.
+        assert_eq!(sound.perf["ksp_ui_effects"], 1);
+        assert_eq!(sound.perf["ksp_label_text"], "settled");
         assert!(
             sound.perf["ksp_pending_callbacks"]
                 .as_array()
