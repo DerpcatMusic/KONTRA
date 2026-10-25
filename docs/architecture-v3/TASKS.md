@@ -61,7 +61,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | P4.5 | #[derive(Params)] in kontra-macros | structure | M | worker | P4.1, P4.2 |
 | P4.6 | Parameter catalog: every DSP module's params in kontra-params (draft) | structure | L | worker | P4.5 |
 | P4.7 | Point the 5 parameter registries at the catalog; delete 4 (draft) | structure | L | worker | P4.6 |
-| P4.8 | kontra-events from sampler-midi + src/sound/event.rs + held keys (draft) | structure | M | worker | P4.0, P4.2 |
+| P4.8 | kontra-events from src/sound/event.rs and the plain-data receiver wire types (draft) | structure | M | worker | P4.0, P4.2 |
 | P4.9 | kontra-ui-model from sampler-ui-ir + core widget/script_params + ControlStore (draft) | structure | M | worker | P4.0, P2.1, P4.7 |
 | P4.10 | Move sampler-ir → crates/model/ir (kontra-ir) | structure | S | worker | P4.0, P4.3 |
 | P4.11 | kontra-protocol: Command, Publications, Retired types | structure | S | worker | P4.0, P4.9 |
