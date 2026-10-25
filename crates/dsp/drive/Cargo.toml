@@ -1,0 +1,13 @@
+[package]
+name = "kontra-dsp-drive"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-dsp-core = { path = "../core" }
+kontra-law = { path = "../../base/law" }
+kontra-params = { path = "../../model/params" }

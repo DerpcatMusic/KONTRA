@@ -1,0 +1,12 @@
+[package]
+name = "kontra-ui"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-protocol = { path = "../../model/protocol" }
+kontra-ui-model = { path = "../../model/ui-model" }

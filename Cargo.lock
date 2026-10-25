@@ -2268,6 +2268,214 @@ dependencies = [
 ]
 
 [[package]]
+name = "kontra-align"
+version = "0.0.0"
+
+[[package]]
+name = "kontra-dsp"
+version = "0.0.0"
+dependencies = [
+ "kontra-dsp-core",
+ "kontra-dsp-delay",
+ "kontra-dsp-drive",
+ "kontra-dsp-dynamics",
+ "kontra-dsp-eq",
+ "kontra-dsp-filter",
+ "kontra-dsp-modulators",
+ "kontra-dsp-reverb",
+ "kontra-dsp-spatial",
+ "kontra-params",
+]
+
+[[package]]
+name = "kontra-dsp-core"
+version = "0.0.0"
+dependencies = [
+ "kontra-law",
+ "kontra-time",
+]
+
+[[package]]
+name = "kontra-dsp-delay"
+version = "0.0.0"
+dependencies = [
+ "kontra-dsp-core",
+ "kontra-law",
+ "kontra-params",
+]
+
+[[package]]
+name = "kontra-dsp-drive"
+version = "0.0.0"
+dependencies = [
+ "kontra-dsp-core",
+ "kontra-law",
+ "kontra-params",
+]
+
+[[package]]
+name = "kontra-dsp-dynamics"
+version = "0.0.0"
+dependencies = [
+ "kontra-dsp-core",
+ "kontra-law",
+ "kontra-params",
+]
+
+[[package]]
+name = "kontra-dsp-eq"
+version = "0.0.0"
+dependencies = [
+ "kontra-dsp-core",
+ "kontra-law",
+ "kontra-params",
+]
+
+[[package]]
+name = "kontra-dsp-filter"
+version = "0.0.0"
+dependencies = [
+ "kontra-dsp-core",
+ "kontra-law",
+ "kontra-params",
+]
+
+[[package]]
+name = "kontra-dsp-modulators"
+version = "0.0.0"
+dependencies = [
+ "kontra-dsp-core",
+ "kontra-law",
+ "kontra-params",
+]
+
+[[package]]
+name = "kontra-dsp-reverb"
+version = "0.0.0"
+dependencies = [
+ "kontra-dsp-core",
+ "kontra-law",
+ "kontra-params",
+]
+
+[[package]]
+name = "kontra-dsp-spatial"
+version = "0.0.0"
+dependencies = [
+ "kontra-dsp-core",
+ "kontra-law",
+ "kontra-params",
+]
+
+[[package]]
+name = "kontra-engine"
+version = "0.0.0"
+dependencies = [
+ "kontra-dsp",
+ "kontra-events",
+ "kontra-stream",
+ "kontra-time",
+ "kontra-vm",
+ "kontra-voice",
+]
+
+[[package]]
+name = "kontra-events"
+version = "0.0.0"
+dependencies = [
+ "kontra-time",
+]
+
+[[package]]
+name = "kontra-format"
+version = "0.0.0"
+
+[[package]]
+name = "kontra-format-kontakt"
+version = "0.0.0"
+dependencies = [
+ "kontra-format",
+ "kontra-law",
+ "kontra-params",
+]
+
+[[package]]
+name = "kontra-format-native"
+version = "0.0.0"
+dependencies = [
+ "kontra-format",
+ "kontra-law",
+ "kontra-params",
+]
+
+[[package]]
+name = "kontra-format-sfz"
+version = "0.0.0"
+dependencies = [
+ "kontra-format",
+ "kontra-law",
+ "kontra-params",
+]
+
+[[package]]
+name = "kontra-format-uvi"
+version = "0.0.0"
+dependencies = [
+ "kontra-format",
+ "kontra-law",
+ "kontra-params",
+]
+
+[[package]]
+name = "kontra-host"
+version = "0.0.0"
+dependencies = [
+ "kontra-align",
+ "kontra-engine",
+ "kontra-format",
+ "kontra-format-kontakt",
+ "kontra-format-native",
+ "kontra-format-sfz",
+ "kontra-format-uvi",
+ "kontra-ksp",
+ "kontra-library",
+ "kontra-lua",
+ "kontra-protocol",
+ "kontra-stream",
+ "kontra-ui-model",
+]
+
+[[package]]
+name = "kontra-ksp"
+version = "0.0.0"
+dependencies = [
+ "kontra-events",
+ "kontra-ui-model",
+ "kontra-vm",
+]
+
+[[package]]
+name = "kontra-law"
+version = "0.0.0"
+
+[[package]]
+name = "kontra-library"
+version = "0.0.0"
+
+[[package]]
+name = "kontra-lua"
+version = "0.0.0"
+dependencies = [
+ "kontra-events",
+ "kontra-ui-model",
+ "kontra-vm",
+]
+
+[[package]]
+name = "kontra-macros"
+version = "0.0.0"
+
+[[package]]
 name = "kontra-native-host"
 version = "0.4.0"
 dependencies = [
@@ -2285,6 +2493,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kontra-params"
+version = "0.0.0"
+dependencies = [
+ "kontra-law",
+ "kontra-macros",
+]
+
+[[package]]
 name = "kontra-probe"
 version = "0.1.0"
 dependencies = [
@@ -2292,6 +2508,57 @@ dependencies = [
  "kontakto",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "kontra-protocol"
+version = "0.0.0"
+dependencies = [
+ "kontra-events",
+ "kontra-ui-model",
+]
+
+[[package]]
+name = "kontra-stream"
+version = "0.0.0"
+dependencies = [
+ "kontra-time",
+]
+
+[[package]]
+name = "kontra-time"
+version = "0.0.0"
+
+[[package]]
+name = "kontra-ui"
+version = "0.0.0"
+dependencies = [
+ "kontra-protocol",
+ "kontra-ui-model",
+]
+
+[[package]]
+name = "kontra-ui-model"
+version = "0.0.0"
+dependencies = [
+ "kontra-macros",
+]
+
+[[package]]
+name = "kontra-vm"
+version = "0.0.0"
+dependencies = [
+ "kontra-events",
+ "kontra-time",
+]
+
+[[package]]
+name = "kontra-voice"
+version = "0.0.0"
+dependencies = [
+ "kontra-dsp-core",
+ "kontra-stream",
+ "kontra-time",
 ]
 
 [[package]]
