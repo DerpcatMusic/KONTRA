@@ -69,7 +69,7 @@ Reports are claims. Treat every number, "tests pass", "skipped per the brief" an
   `git fetch origin && git switch --detach origin/v3` (clean tree), then
   `python3 tools/plan/plan.py sync` and `ready`.
 - After each merge batch, on that clean `origin/v3` checkout, run
-  `cargo xtask debt --check` and `size --check`. Required checks are not strict, so two PRs can each pass and still
+  `cargo xtask deps-check`, `debt --check` and `size --check`. Required checks are not strict, so two PRs can each pass and still
   break the ratchet together (P1.1b merged just before the size baseline did).
   Fix forward at once: a PR that carries the `size-growth` label (add it before
   pushing) and the baseline from `size --update`.
