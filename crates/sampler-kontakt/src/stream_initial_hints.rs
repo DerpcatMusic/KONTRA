@@ -16,10 +16,11 @@ use std::io;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct StartRange {
     /// Furthest offset a source reaches: the zone's S.Mod range, or 0 when no route moves the start.
+    /// Script `play_note` offsets raise it too, converted at the zone's asset rate.
     pub(super) max_frames: u64,
-    /// Some offset has no known bound, so the whole zone must be preloaded. The
-    /// instrument IR cannot carry a script `play_note` offset yet, so this stays false.
-    pub(super) unbounded: bool,
+    /// The first script `play_note` offset with no static bound, named by script and line.
+    /// Such a zone would need its whole source; nothing widens the preload from this yet.
+    pub(super) unbounded: Option<String>,
     /// The zone's sample-start routes, in zone order.
     pub(super) sources: Vec<ir::RouteRef>,
 }
@@ -44,9 +45,20 @@ impl StartRange {
         };
         Self {
             max_frames,
-            unbounded: false,
+            unbounded: None,
             sources,
         }
+    }
+
+    /// Raises the range to a script's largest constant `play_note` offset, rounded
+    /// up to frames at `asset_rate` so the window never ends early.
+    pub(super) fn widen(&mut self, max_micros: u32, asset_rate: u32, unbounded: Option<&str>) {
+        let frames = (u64::from(max_micros) * u64::from(asset_rate)).div_ceil(1_000_000);
+        self.max_frames = self.max_frames.max(frames);
+        self.unbounded = self
+            .unbounded
+            .take()
+            .or_else(|| unbounded.map(str::to_owned));
     }
 }
 
@@ -62,10 +74,37 @@ pub(super) struct InitialStartHints<'plan> {
     controllers: Vec<(usize, u32)>,
     pub(super) eligible: usize,
     pub(super) unsupported: usize,
+    /// Scripts with a `play_note` offset that has no static bound, one per script.
+    pub(super) unbounded_scripts: usize,
     pub(super) controller_loops: usize,
 }
 
 impl<'plan> InitialStartHints<'plan> {
+    /// Widens every zone's start range by the scripts' `play_note` offsets.
+    /// A script's offset may start any zone's group, so every zone takes the largest bound.
+    pub(super) fn with_script_offsets(mut self, scripts: &[sampler_ksp::ScriptView]) -> Self {
+        let max_micros = scripts
+            .iter()
+            .map(|script| script.start_offsets.max_micros)
+            .max()
+            .unwrap_or(0);
+        let unbounded = scripts.iter().enumerate().find_map(|(index, script)| {
+            script
+                .unbounded_line
+                .map(|line| format!("script {index} line {line}"))
+        });
+        for (range, zone) in self.start_ranges.iter_mut().zip(&self.instrument.zones) {
+            if let Some(pcm) = zone.asset.and_then(|asset| self.assets.get(asset.0)) {
+                range.widen(max_micros, pcm.sample_rate(), unbounded.as_deref());
+            }
+        }
+        self.unbounded_scripts = scripts
+            .iter()
+            .filter(|script| script.unbounded_line.is_some())
+            .count();
+        self
+    }
+
     pub(super) fn new(
         instrument: &'plan ir::Instrument,
         prepared: &'plan Prepared,
@@ -104,6 +143,11 @@ impl<'plan> InitialStartHints<'plan> {
         }
         let constant =
             ConstantStartHints::new(instrument, prepared, assets, rate, head, policy, canceled)?;
+        let start_ranges: Vec<StartRange> = instrument
+            .zones
+            .iter()
+            .map(|zone| StartRange::of(instrument, zone))
+            .collect();
         let mut this = Self {
             _prepared: prepared,
             instrument,
@@ -112,13 +156,10 @@ impl<'plan> InitialStartHints<'plan> {
             policy: *policy,
             eligible: constant.eligible,
             constant,
-            start_ranges: instrument
-                .zones
-                .iter()
-                .map(|zone| StartRange::of(instrument, zone))
-                .collect(),
+            start_ranges,
             controllers: Vec::new(),
             unsupported: 0,
+            unbounded_scripts: 0,
             controller_loops: 0,
         };
         for (region, zone) in instrument.zones.iter().enumerate() {

@@ -134,6 +134,15 @@ pub struct Module {
     entries: Vec<(usize, Vec<Range<usize>>, i32, Span)>,
 }
 
+/// Sample-start offsets the script's `play_note` calls can pass, in microseconds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StartOffsets {
+    /// The largest constant offset, zero when every call is unoffset.
+    pub max_micros: u32,
+    /// The first call whose offset is not a constant, so it has no static bound.
+    pub unbounded: Option<Span>,
+}
+
 pub struct Unit<'h> {
     pub hir: &'h Hir,
     /// Host control per UI index.
@@ -153,6 +162,7 @@ pub struct Unit<'h> {
     /// Scratch text cells used above `hir.texts`.
     pub scratch: u32,
     pub modules: Vec<(Context, i32, Option<i32>, Module)>,
+    pub start_offsets: StartOffsets,
 }
 
 impl<'h> Unit<'h> {
@@ -3942,7 +3952,13 @@ impl Gen<'_, '_> {
         let (velocity, offset) = (reg(dst, 1)?, reg(dst, 2)?);
         self.arg(args, 0, dst)?;
         self.arg(args, 1, velocity)?;
-        let offset_micros = if self.const_int(args, 2) == Some(0) {
+        let bound = self.const_int(args, 2);
+        let starts = &mut self.u.start_offsets;
+        match bound {
+            Some(micros) => starts.max_micros = starts.max_micros.max(micros.max(0) as u32),
+            None => starts.unbounded = starts.unbounded.or(Some(self.span)),
+        }
+        let offset_micros = if bound == Some(0) {
             None
         } else {
             self.arg(args, 2, offset)?;

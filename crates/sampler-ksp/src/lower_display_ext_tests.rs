@@ -29,6 +29,7 @@ fn emitted(source: &str) -> Vec<I> {
         warnings: Vec::new(),
         scratch: 0,
         modules: Vec::new(),
+        start_offsets: Default::default(),
         inspection: None,
     };
     let callback = hir
