@@ -11,7 +11,7 @@ Vista, 100% of starts are cold (PLAYBACK_AUDIT.md).
 
 ```rust
 pub struct PreloadLaw {
-    pub base: Frames,          // default 60 KB-equivalent per channel at source rate (Kontakt DFD default)
+    pub base: Frames,          // Kontakt DFD default: 60 KB of source data per sample (all channels) → 61440 / bytes_per_frame
     pub cover_start_mod: bool, // always true: the zone's whole start-offset range is resident
     pub min: Frames, pub max: Frames,
 }
