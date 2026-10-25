@@ -72,8 +72,9 @@ the GPU stack.
 ## 6. Auto-align (`app/align`, feature `align`)
 
 Auto-align is per-patch latency compensation and stays optional. Many
-libraries start their audible attack late on purpose (Areia ~80 ms,
-some ~120 ms) because the lead-in makes the attack sound natural. At load
+libraries start their audible attack late on purpose (by the user's ear: Areia ~80 ms,
+some Performance Samples libraries ~120 ms; the load-time measurement is
+what counts) because the lead-in makes the attack sound natural. At load
 each patch's attack delay is measured. The slowest loaded patch sets the
 reported plugin latency, and every other patch's notes are held back by
 the difference, so layered patches start together. The host's delay
