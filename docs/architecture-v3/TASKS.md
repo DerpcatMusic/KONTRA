@@ -14,6 +14,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | P0.3b | Probe fixtures that reproduce the bugs: authored KSP (play_note offsets, ignore_event, UI load) | tooling | M | worker | P0.3 |
 | P0.4 | Build profiles: fast profile, workspace-hack, mold | tooling | S | worker | P0.1 |
 | P0.5 | v3 CI: plan checks, scope guard, push CI on v3 | tooling | S | coordinator | – |
+| P0.7 | xtask ci: one local gate, plus debt and size ratchets in CI | tooling | M | worker | P0.1 |
 | P0.6 | Gate G0: baseline on v3 | coordinator | S | coordinator | P0.1, P0.2, P0.3, P0.4 |
 
 ## Phase 1: On-time start
@@ -134,6 +135,7 @@ flowchart LR
     P0_3b["P0.3b"]
     P0_4["P0.4"]
     P0_5["P0.5"]
+    P0_7["P0.7"]
     P0_6["P0.6"]
   end
   subgraph ph1["1. On-time start"]
@@ -223,6 +225,7 @@ flowchart LR
   P0_2 --> P0_3
   P0_3 --> P0_3b
   P0_1 --> P0_4
+  P0_1 --> P0_7
   P0_1 --> P0_6
   P0_2 --> P0_6
   P0_3 --> P0_6

@@ -39,6 +39,13 @@ always compiles the GPU UI.
    inside the crate that owns the type, not in every downstream crate.
 7. **Cut macro cost.** Proc macros stay in one small crate with
    `syn` features trimmed. `modules!` expands once, in `kontra-dsp`.
+8. **Lints that make the real-time rules mechanical.** New `kontra-*`
+   crates inherit `[workspace.lints]`: clippy denies `unwrap_used`,
+   `expect_used`, `panic`, `todo`, `unimplemented`, `unreachable` and
+   `indexing_slicing` outside tests, and `unsafe_code` is denied (a SIMD or
+   FFI module allows it locally, one `// SAFETY:` comment per block). A
+   panic on the audio thread is a dropout or a crash in the host, so the
+   compiler checks it rather than review.
 
 ## 2. Targets (re-measured at every migration gate)
 
@@ -57,8 +64,13 @@ tools/xtask/  (cargo xtask <cmd>, not shipped)
 ├── deps-check     parse `cargo metadata`; fail on any edge not in 01-LAYOUT.md §2, and on GPU crates under engine/dsp/script/format
 ├── size           production/test lines per crate (00-BASELINE.md table), fails if a crate > 8k or a file > 800 without an allow entry
 ├── timings        cargo build --timings for the gate edits above, writes a table into docs/architecture-v3/00-BASELINE.md
-└── debt           counts: #[path], allow, Processor::, cfg(test) in prod fns, Mutex in RT crates
+├── debt           counts: #[path], allow, Processor::, cfg(test) in prod fns, Mutex in RT crates
+└── ci             the one local gate: rustfmt --check and clippy on changed files, tests of changed packages, deps-check, debt --check
 ```
+
+Debt and size are ratchets: `debt-baseline.toml` is committed, the `v3 plan`
+check fails a PR that grows any counter, and `--update` tightens it when a
+counter falls. Production lines may grow only with the `size-growth` label.
 
 ## 4. CI (GitHub runners, per memory: CI on GitHub runners)
 

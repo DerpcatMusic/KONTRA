@@ -227,6 +227,26 @@ gate = ["python3 tools/plan/plan.py validate", "python3 -m unittest tools/plan/t
 done = ["Ruleset on v3 requires `CI required` and `v3 plan`."]
 
 [[task]]
+id = "P0.7"
+title = "xtask ci: one local gate, plus debt and size ratchets in CI"
+phase = 0
+lane = "tooling"
+size = "M"
+agent = "worker"
+deps = ["P0.1"]
+owns = ["tools/xtask/**", ".github/workflows/v3.yml"]
+docs = ["09-BUILD.md#3-xtask", "12-WORKFLOW.md"]
+goal = "One command proves a change is ready (`cargo xtask ci`), and CI refuses any PR that grows a debt counter, so agents and contributors run the same gate and the codebase only gets smaller."
+steps = [
+  "`cargo xtask ci [--base origin/v3]`: from `git diff --name-only <base>...HEAD` find the changed `.rs` files and their packages; run `rustfmt --check --edition 2024` on the changed files only, `cargo clippy -p <pkgs> --all-targets --no-deps` and fail only on warnings located in changed files (parse `--message-format=json`), `cargo test -p <pkgs>`, `xtask deps-check`, and `xtask debt --check`. Print one PASS/FAIL line per step. It must run with plain `cargo` (no build-slot) so CI and contributors can use it; `KONTRA_CARGO` env var overrides the cargo command (the maintainer sets it to `build-slot cargo`).",
+  "`xtask debt --check`: compare against committed `tools/xtask/debt-baseline.toml`; fail if any counter grew, print the counters that shrank and tell the author to run `cargo xtask debt --update` so the ratchet tightens. Same for `xtask size --check` on production lines per crate group (growth allowed only with a `size-growth` PR label, read from env `KONTRA_ALLOW_GROWTH=1`).",
+  "In .github/workflows/v3.yml `plan` job (no Rust build needed for debt/size, they scan source): add `cargo run -p xtask -- debt --check` and `size --check`; pass `KONTRA_ALLOW_GROWTH=1` when the PR has the `size-growth` label. Keep the job under 3 minutes (cache with Swatinem/rust-cache keyed on tools/xtask).",
+  "Unit tests for the changed-file to package mapping and the ratchet comparison."
+]
+gate = ["build-slot cargo test -p xtask", "build-slot cargo run -p xtask -- debt --check", "build-slot cargo run -p xtask -- ci --base origin/v3"]
+done = ["The brief template's step 3 can say just `cargo xtask ci` (coordinator updates plan.py when this merges).", "A PR that adds one `#[path]` fails the v3 plan check."]
+
+[[task]]
 id = "P0.6"
 title = "Gate G0: baseline on v3"
 phase = 0
@@ -541,6 +561,7 @@ steps = [
   "Register all members in the root Cargo.toml; add them to `CRATES` in .github/workflows/ci.yml.",
   "Add a per-layer test job to CI (09-BUILD.md §4) for the new crates; this was deferred from P0.5.",
   "Write the target DAG into tools/xtask/dag.toml as `[target]` (deps-check reports target violations as warnings until P8.6 makes them errors).",
+  "Add `[workspace.lints]` (09-BUILD.md §1.8) and `[lints] workspace = true` in every new crate: no `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`unreachable!` and no slice indexing outside tests, `unsafe_code = \"deny\"` (a module that needs SIMD or FFI allows it locally, with a `// SAFETY:` comment on every block). Add `clippy.toml` with `allow-unwrap-in-tests = true`, `allow-expect-in-tests = true`, `allow-panic-in-tests = true`, `allow-indexing-slicing-in-tests = true`. Old crates keep their lints until they move.",
   "Skip crates that already exist under the old name (pool, simd, ir, …): their moves are P4.3/P4.4/P4.10."
 ]
 gate = ["build-slot cargo check --workspace", "build-slot cargo xtask deps-check"]
@@ -768,7 +789,7 @@ steps = [
   "Generic `module_tests!` macro (block-size independence, reset = fresh, silence, extremes) applied to `Gain`."
 ]
 gate = ["build-slot cargo test -p kontra-dsp-core -p kontra-dsp -p kontra-macros", "build-slot cargo test -p sampler-core --lib dsp"]
-done = ["Gain runs through the bridge in a sampler-core test; family tasks need no edits outside their folder + one registry line."]
+done = ["CONTRIBUTING.md has an \"Add a DSP module\" checklist (folder, `Module` impl, registry line, `module_tests!`, vectors, laws) that a family task follows without reading P5.0's code.", "Gain runs through the bridge in a sampler-core test; family tasks need no edits outside their folder + one registry line."]
 
 # Family template (all P5.x): port classes per 03-DSP.md §3, vendor variants → laws, move vectors,
 # register the classes in the registry (append lock), A/B against the old implementation in a test,
@@ -1183,9 +1204,9 @@ deps = ["P6.5"]
 owns = ["crates/sampler-ksp/**", "crates/script/ksp/**", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
 docs = ["04-SCRIPT.md#3-kontra-ksp"]
 goal = "One builtin table generates checks, lowering, docs and the unsupported list."
-steps = ["git mv first (pure), then extend builtins!."]
+steps = ["git mv first (pure), then extend builtins!.", "Generate one adversarial test from the `builtins!` table: every builtin called with wrong arity, out-of-range, negative, huge and unset-variable arguments must return a diagnostic, never panic (scripts run on the audio thread)."]
 gate = ["build-slot cargo test -p kontra-ksp"]
-done = ["Scripts tab unsupported list generated from the table."]
+done = ["CONTRIBUTING.md has an \"Add a KSP builtin\" checklist (table row, sema, lowering, test, parity-ledger status).", "Scripts tab unsupported list generated from the table."]
 
 [[task]]
 id = "P7.2"
