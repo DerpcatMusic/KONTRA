@@ -4509,9 +4509,8 @@ fn outbox_merge(builtin: Builtin) -> OutboxMerge {
         // Never merged: a move's negative branch hides in place and keeps the old
         // position, so a later move is not a full replacement of an earlier one.
         Message | AddTextLine | AddMenuItem | MoveControl | MoveControlPx => OutboxMerge::Drop,
-        // Attach, navigation, key ranges, waveform, files, persistence, engine
-        // effects and move_control_px (its off-grid branch writes only the hide bit,
-        // so it is not a full latest value): keep waiting.
+        // Attach, navigation, key ranges, waveform, files, persistence and engine
+        // effects: keep waiting.
         _ => OutboxMerge::Wait,
     }
 }
