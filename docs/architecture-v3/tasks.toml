@@ -768,7 +768,13 @@ deps = ["P4.0", "P4.2"]
 owns = ["crates/sampler-midi/**", "@corelib", "docs/architecture-v3/01-LAYOUT.md", "crates/model/events/**", "src/sound/event.rs", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
 docs = ["01-LAYOUT.md#5-current--new-mapping", "02-ENGINE.md#2-one-event-type-one-queue"]
 goal = "One event model crate. Move sampler-midi (git mv + alias), then move src/sound/event.rs types in with a re-export."
-steps = ["git mv crates/sampler-midi crates/model/events; package kontra-events with alias.", "Move event.rs content; leave `pub use kontra_events::*` in src/sound/event.rs.", "held_keys stays in src/plugin until P6.4 (ledger)."]
+steps = [
+  "sampler-midi depends on sampler-core for 19 types (`rg -o 'sampler_core::[A-Za-z_]+' crates/sampler-midi/src | sort -u`: ChannelAddress, ChannelScope, ExpressionId, Frame, RuntimeId, Switching, RECEIVER_PER_NOTE_CENTER and the Raw*/Receiver*/WireAdmissionStatus/CapturedLogicalRawAttack admission types). kontra-events must depend on no KONTRA crate, so a plain git mv breaks the DAG. First map the closure: for each type, the sampler-core items it needs (`graft callers <Type> --direction out`). If the closure is more than ~15 types or pulls a module with behaviour (receiver logic, prepare), stop and report the closure on the issue: the coordinator splits the task.",
+  "Move the closure into crates/model/events (kontra-events) as plain data types; leave `pub use kontra_events::{...}` in sampler-core/src/lib.rs so every sampler-core caller compiles unchanged. Pure moves: no behaviour or signature change.",
+  "git mv crates/sampler-midi/src into kontra-events (or make sampler-midi a thin re-export of kontra-events), so sampler-midi callers compile unchanged; sampler-midi then depends on kontra-events, not sampler-core.",
+  "Move src/sound/event.rs content in; leave `pub use kontra_events::*` in src/sound/event.rs.",
+  "held_keys stays in src/plugin until P6.4 (ledger)."
+]
 gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-events"]
 done = ["kontra-events depends on no KONTRA crate (`cargo xtask deps-check`); sampler-core and sampler-midi callers unchanged thanks to re-exports.", "Moves plus re-exports only."]
 
