@@ -47,6 +47,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | P3.1c | Spike: Lua GC on the audio thread for large heaps (Augmented Orchestra 360 MB, 15 ms stalls) | script | M | spike | P3.1b |
 | P3.2 | UVI Lua inline on the audio thread; ScriptThread only as a feature fallback (draft) | script | L | worker | P3.1c, P2.2 |
 | P3.3 | Auto-align is latency compensation: report the slowest patch, delay the rest to it | playback | M | worker | P1.2 |
+| P3.3b | Auto-align follows the library's own sample-start (latency) control | playback | M | worker | P3.3 |
 | P3.4 | Gate G3: original complaints closed | coordinator | S | coordinator | P3.2, P3.3, P2.3 |
 
 ## Phase 4: Base and model crates
@@ -162,6 +163,7 @@ flowchart LR
     P3_1c["P3.1c"]
     P3_2["P3.2"]
     P3_3["P3.3"]
+    P3_3b["P3.3b"]
     P3_4["P3.4"]
   end
   subgraph ph4["4. Base and model crates"]
@@ -255,6 +257,7 @@ flowchart LR
   P3_1c --> P3_2
   P2_2 --> P3_2
   P1_2 --> P3_3
+  P3_3 --> P3_3b
   P3_2 --> P3_4
   P3_3 --> P3_4
   P2_3 --> P3_4
