@@ -1,5 +1,5 @@
 {
-  "kontakto": 80440,
+  "kontakto": 80445,
   "kontra-align": 1,
   "kontra-dsp": 1,
   "kontra-dsp-core": 1,
@@ -33,7 +33,7 @@
   "kontra-vm": 1,
   "kontra-voice": 1,
   "sampler-ample": 203,
-  "sampler-core": 106346,
+  "sampler-core": 106411,
   "sampler-dspbench": 2676,
   "sampler-ikmpak": 341,
   "sampler-ir": 9047,
