@@ -722,12 +722,12 @@ size = "M"
 agent = "worker"
 draft = true
 deps = ["P4.0", "P4.2"]
-owns = ["crates/sampler-midi/**", "crates/model/events/**", "src/sound/event.rs", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
+owns = ["crates/sampler-midi/**", "@corelib", "docs/architecture-v3/01-LAYOUT.md", "crates/model/events/**", "src/sound/event.rs", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
 docs = ["01-LAYOUT.md#5-current--new-mapping", "02-ENGINE.md#2-one-event-type-one-queue"]
 goal = "One event model crate. Move sampler-midi (git mv + alias), then move src/sound/event.rs types in with a re-export."
 steps = ["git mv crates/sampler-midi crates/model/events; package kontra-events with alias.", "Move event.rs content; leave `pub use kontra_events::*` in src/sound/event.rs.", "held_keys stays in src/plugin until P6.4 (ledger)."]
 gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-events"]
-done = ["Moves plus re-exports only."]
+done = ["kontra-events depends on no KONTRA crate (`cargo xtask deps-check`); sampler-core and sampler-midi callers unchanged thanks to re-exports.", "Moves plus re-exports only."]
 
 [[task]]
 id = "P4.9"
