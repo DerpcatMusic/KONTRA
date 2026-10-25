@@ -1,5 +1,0 @@
-# Test code may unwrap, expect, panic and index; production code may not (09-BUILD.md §1.8).
-allow-unwrap-in-tests = true
-allow-expect-in-tests = true
-allow-panic-in-tests = true
-allow-indexing-slicing-in-tests = true
