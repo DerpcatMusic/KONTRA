@@ -118,8 +118,16 @@ fn preload(
     source_cancel: Option<Arc<AtomicBool>>,
     canceled: &(dyn Fn() -> bool + Sync),
 ) -> io::Result<(Streamer, StreamCache, usize)> {
-    let recipe =
-        InitialStartHints::new(instrument, prepared, assets, RATE, head, policy, canceled)?;
+    let recipe = InitialStartHints::new(
+        instrument,
+        prepared,
+        assets,
+        RATE,
+        head,
+        &[],
+        policy,
+        canceled,
+    )?;
     let pins = HashSet::new();
     let anchors = |room| {
         bounded_attack_anchors(
@@ -218,9 +226,17 @@ fn initialized_start_hint_uses_actual_63_offset_and_final_bound_assignment() {
     let prepared = plan(&ir, assets.clone(), 63);
     assert_eq!(prepared.constant_start_offset(0), None);
     assert_eq!(prepared.initialized_start_offset(0), Some(5952));
-    let recipe =
-        InitialStartHints::new(&ir, &prepared, &assets, RATE, 64, &policy(4096), &|| false)
-            .unwrap();
+    let recipe = InitialStartHints::new(
+        &ir,
+        &prepared,
+        &assets,
+        RATE,
+        64,
+        &[],
+        &policy(4096),
+        &|| false,
+    )
+    .unwrap();
     assert_eq!(recipe.controller_zones(), 1);
     let ranges = recipe.ranges(64, &|| false).unwrap();
     assert!(ranges[0].iter().any(|range| range.contains(&5952)));
@@ -381,6 +397,7 @@ fn initialized_start_hint_reverse_resampling_and_bounded_views_match_resident() 
                     &assets,
                     RATE,
                     64,
+                    &[],
                     &policy(65_536),
                     &|| false,
                 )
@@ -432,9 +449,17 @@ fn initialized_start_hint_reverse_resampling_and_bounded_views_match_resident() 
     let ir = instrument(false, 1., 1000, Some(2000), 12_000);
     let assets = vec![Pcm::streamed(RATE, LENGTH).unwrap()];
     let prepared = plan(&ir, assets.clone(), 63);
-    let recipe =
-        InitialStartHints::new(&ir, &prepared, &assets, RATE, 64, &policy(4096), &|| false)
-            .unwrap();
+    let recipe = InitialStartHints::new(
+        &ir,
+        &prepared,
+        &assets,
+        RATE,
+        64,
+        &[],
+        &policy(4096),
+        &|| false,
+    )
+    .unwrap();
     assert_eq!(
         recipe.eligible, 0,
         "offset beyond an authored view is silent"
@@ -567,9 +592,17 @@ fn initialized_start_hint_rejects_unknown_inputs_even_in_zero_depth_scales_and_l
                 None,
                 "source={source:?} scale={scale}"
             );
-            let recipe =
-                InitialStartHints::new(&ir, &prepared, &assets, RATE, 64, &policy(4096), &|| false)
-                    .unwrap();
+            let recipe = InitialStartHints::new(
+                &ir,
+                &prepared,
+                &assets,
+                RATE,
+                64,
+                &[],
+                &policy(4096),
+                &|| false,
+            )
+            .unwrap();
             assert_eq!((recipe.eligible, recipe.unsupported), (0, 1));
         }
     }
@@ -587,6 +620,7 @@ fn initialized_start_hint_rejects_unknown_inputs_even_in_zero_depth_scales_and_l
         &assets,
         RATE,
         64,
+        &[],
         &policy(4096),
         &|| false,
     )
@@ -623,6 +657,7 @@ fn initialized_start_hint_budget_counts_physical_aliases_and_actual_guard_window
                 &assets,
                 RATE,
                 128,
+                &[],
                 &policy(budget),
                 &|| false,
             )
@@ -645,15 +680,32 @@ fn initialized_start_hint_cancellation_leaves_no_partial_publication() {
     let assets = vec![Pcm::streamed(RATE, LENGTH).unwrap()];
     let prepared = plan(&ir, assets.clone(), 63);
     assert_eq!(
-        InitialStartHints::new(&ir, &prepared, &assets, RATE, 64, &policy(4096), &|| true)
-            .err()
-            .unwrap()
-            .kind(),
+        InitialStartHints::new(
+            &ir,
+            &prepared,
+            &assets,
+            RATE,
+            64,
+            &[],
+            &policy(4096),
+            &|| true
+        )
+        .err()
+        .unwrap()
+        .kind(),
         io::ErrorKind::Interrupted
     );
-    let recipe =
-        InitialStartHints::new(&ir, &prepared, &assets, RATE, 64, &policy(4096), &|| false)
-            .unwrap();
+    let recipe = InitialStartHints::new(
+        &ir,
+        &prepared,
+        &assets,
+        RATE,
+        64,
+        &[],
+        &policy(4096),
+        &|| false,
+    )
+    .unwrap();
     assert_eq!(
         recipe.ranges(64, &|| true).unwrap_err().kind(),
         io::ErrorKind::Interrupted
@@ -691,9 +743,11 @@ fn initialized_start_hint_rebuilds_for_changed_preparation_and_rejects_source_re
     let old = plan(&ir, assets.clone(), 63);
     let new = plan(&ir, assets.clone(), 127);
     let old_recipe =
-        InitialStartHints::new(&ir, &old, &assets, RATE, 64, &policy(4096), &|| false).unwrap();
+        InitialStartHints::new(&ir, &old, &assets, RATE, 64, &[], &policy(4096), &|| false)
+            .unwrap();
     let new_recipe =
-        InitialStartHints::new(&ir, &new, &assets, RATE, 64, &policy(4096), &|| false).unwrap();
+        InitialStartHints::new(&ir, &new, &assets, RATE, 64, &[], &policy(4096), &|| false)
+            .unwrap();
     let old_ranges = old_recipe.ranges(64, &|| false).unwrap();
     let new_ranges = new_recipe.ranges(64, &|| false).unwrap();
     assert_ne!(old_ranges, new_ranges);
@@ -702,17 +756,28 @@ fn initialized_start_hint_rebuilds_for_changed_preparation_and_rejects_source_re
     let replacement = vec![Pcm::streamed(RATE, LENGTH).unwrap()];
     assert_ne!(assets[0].asset_id(), replacement[0].asset_id());
     assert_eq!(
-        InitialStartHints::new(&ir, &old, &replacement, RATE, 64, &policy(4096), &|| false)
-            .err()
-            .unwrap()
-            .kind(),
+        InitialStartHints::new(
+            &ir,
+            &old,
+            &replacement,
+            RATE,
+            64,
+            &[],
+            &policy(4096),
+            &|| false
+        )
+        .err()
+        .unwrap()
+        .kind(),
         io::ErrorKind::InvalidData
     );
     assert_eq!(
-        InitialStartHints::new(&ir, &old, &assets, 44_100, 64, &policy(4096), &|| false)
-            .err()
-            .unwrap()
-            .kind(),
+        InitialStartHints::new(&ir, &old, &assets, 44_100, 64, &[], &policy(4096), &|| {
+            false
+        })
+        .err()
+        .unwrap()
+        .kind(),
         io::ErrorKind::InvalidData
     );
     assert_eq!(assets[0].head_bytes() + replacement[0].head_bytes(), 0);
@@ -864,7 +929,7 @@ fn start_range_cc_start_zones_reach_the_s_mod_range() {
             StartRange::of(&instrument, zone),
             StartRange {
                 max_frames: 4_800,
-                unbounded: false,
+                unbounded: None,
                 sources: vec![ir::RouteRef(0)],
             }
         );
@@ -887,7 +952,7 @@ fn start_range_key_position_zones_reach_the_s_mod_range() {
     assert!(
         ranges
             .iter()
-            .all(|r| !r.unbounded && r.sources == [ir::RouteRef(0)])
+            .all(|r| r.unbounded.is_none() && r.sources == [ir::RouteRef(0)])
     );
 }
 
@@ -897,4 +962,112 @@ fn start_range_without_a_sample_start_route_is_zero() {
     instrument.routes[0].target = ir::Target::Pitch;
     let range = StartRange::of(&instrument, &instrument.zones[0]);
     assert_eq!(range, StartRange::default());
+}
+
+fn script_view(source: &str) -> sampler_ksp::ScriptView {
+    sampler_ksp::compile(source, RATE, sampler_ksp::Limits::LIBRARY, &[])
+        .unwrap()
+        .view()
+}
+
+#[test]
+fn script_offset_bound_widens_every_zone_in_asset_frames() {
+    // 100 ms at 48 kHz is 4800 frames, raised above P1.1's 1000-frame S.Mod range on every zone.
+    let ir = start_instrument(ir::ModulationSource::Controller(113), 1_000, 3);
+    let assets = vec![Pcm::streamed(RATE, LENGTH).unwrap()];
+    let prepared = plan(&ir, assets.clone(), 0);
+    let scripts = [script_view(
+        "on note\n play_note(60, 100, 100000, 250000)\nend on",
+    )];
+    let recipe = InitialStartHints::new(
+        &ir,
+        &prepared,
+        &assets,
+        RATE,
+        64,
+        &scripts,
+        &policy(4096),
+        &|| false,
+    )
+    .unwrap();
+    assert!(recipe.start_ranges.iter().all(|r| r.max_frames == 4_800));
+    assert!(recipe.start_ranges.iter().all(|r| r.unbounded.is_none()));
+    assert_eq!(recipe.unbounded_scripts, 0);
+}
+
+#[test]
+fn script_offset_bound_uses_each_zone_asset_rate() {
+    // 100 ms at 44.1 kHz is 4410 frames of that asset, not 4800.
+    let ir = start_instrument(ir::ModulationSource::Controller(113), 0, 1);
+    let assets = vec![Pcm::streamed(44_100, LENGTH).unwrap()];
+    let prepared = plan(&ir, assets.clone(), 0);
+    let scripts = [script_view(
+        "on note\n play_note(60, 100, 100000, 250000)\nend on",
+    )];
+    let recipe = InitialStartHints::new(
+        &ir,
+        &prepared,
+        &assets,
+        RATE,
+        64,
+        &scripts,
+        &policy(4096),
+        &|| false,
+    )
+    .unwrap();
+    assert_eq!(recipe.start_ranges[0].max_frames, 4_410);
+}
+
+#[test]
+fn script_unbounded_offset_flags_every_zone_and_counts_the_script() {
+    let ir = start_instrument(ir::ModulationSource::Controller(113), 1_000, 2);
+    let assets = vec![Pcm::streamed(RATE, LENGTH).unwrap()];
+    let prepared = plan(&ir, assets.clone(), 0);
+    let scripts = [script_view(
+        "on init declare $x := 0 end on\non note\n play_note(60, 100, $x, 250000)\nend on",
+    )];
+    let recipe = InitialStartHints::new(
+        &ir,
+        &prepared,
+        &assets,
+        RATE,
+        64,
+        &scripts,
+        &policy(4096),
+        &|| false,
+    )
+    .unwrap();
+    assert!(recipe.start_ranges.iter().all(|r| r.max_frames == 1_000));
+    assert!(
+        recipe
+            .start_ranges
+            .iter()
+            .all(|r| r.unbounded.as_deref() == Some("script 0 line 3"))
+    );
+    assert_eq!(recipe.unbounded_scripts, 1);
+}
+
+#[test]
+fn no_scripts_leave_start_ranges_unchanged() {
+    let ir = start_instrument(ir::ModulationSource::Controller(113), 1_000, 2);
+    let assets = vec![Pcm::streamed(RATE, LENGTH).unwrap()];
+    let prepared = plan(&ir, assets.clone(), 0);
+    let recipe = InitialStartHints::new(
+        &ir,
+        &prepared,
+        &assets,
+        RATE,
+        64,
+        &[],
+        &policy(4096),
+        &|| false,
+    )
+    .unwrap();
+    let expected: Vec<_> = ir
+        .zones
+        .iter()
+        .map(|zone| StartRange::of(&ir, zone))
+        .collect();
+    assert_eq!(recipe.start_ranges, expected);
+    assert_eq!(recipe.unbounded_scripts, 0);
 }
