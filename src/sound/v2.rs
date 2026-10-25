@@ -3589,6 +3589,9 @@ fn stream_policy_for_memory(
         lazy: false,
         head_budget,
         allow_cold_fallback: true,
+        // Cold fallback may raise the head budget to the law heads, but not past
+        // what physical RAM leaves free.
+        physical_limit: available,
         block_frames: super::MAX_BLOCK,
         voices: MAX_VOICES,
         ..Default::default()

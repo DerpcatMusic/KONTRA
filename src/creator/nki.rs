@@ -46,6 +46,7 @@ pub struct Program<'a> {
 
 /// A group's sample-start modulation: `source` moves the start through the
 /// zone's S.Mod range, scaled by `intensity` (Kontakt's Playback Position).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StartRoute {
     /// Index into `Program::groups`.
     pub group: usize,

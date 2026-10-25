@@ -19,9 +19,10 @@ struct Selection {
 }
 
 /// A script `play_note` offset past the region's S.Mod range is ignored, and the
-/// voice starts at the zone start: KSP's rule for `play_note` in DFD mode.
-fn script_start_micros(micros: u32, start_mod_frames: u32, source_rate: u32) -> u32 {
-    if u64::from(micros) * u64::from(source_rate) > u64::from(start_mod_frames) * 1_000_000 {
+/// voice starts at the zone start: KSP's rule for `play_note` in DFD mode. Only
+/// gated regions (DFD) drop it; sampler-mode regions keep the offset.
+fn script_start_micros(micros: u32, start_mod_frames: u32, source_rate: u32, gated: bool) -> u32 {
+    if gated && u64::from(micros) * u64::from(source_rate) > u64::from(start_mod_frames) * 1_000_000 {
         0
     } else {
         micros
@@ -719,7 +720,7 @@ input.group>=16||input.channel>=16||input.key>=128
                                 return Err(Error::UnsupportedSourceLayout);
                             }
                         }
-                        let cursor=cursor.with_offset(script_start_micros(offset_micros,prepared.voice_modulation.start_range(c.region),source.sample_rate()),source.sample_rate()).with_step(step);
+                        let cursor=cursor.with_offset(script_start_micros(offset_micros,prepared.voice_modulation.start_range(c.region),source.sample_rate(),prepared.script_offset_gated(c.region)),source.sample_rate()).with_step(step);
                         let cursor = self.stream_start_cursor(plan, cursor);
                         let envelope=self.region_envelope(r.envelope,r.fallback_envelope);
                         let (cold,streamed)=self.check_logical_source_ready(source,cursor,envelope)?;
@@ -1080,7 +1081,7 @@ input.group>=16||input.channel>=16||input.key>=128
                     self.refused_starts=self.refused_starts.saturating_add(1);continue;
                 }};
                 let cursor=if trigger==Trigger::Attack{
-                    source_cursor.with_offset(script_start_micros(self.note_events[note.0.index].source_offset_micros,prepared.voice_modulation.start_range(candidate.region),generation.source(sample).expect("admitted logical source").sample_rate()),
+                    source_cursor.with_offset(script_start_micros(self.note_events[note.0.index].source_offset_micros,prepared.voice_modulation.start_range(candidate.region),generation.source(sample).expect("admitted logical source").sample_rate(),prepared.script_offset_gated(candidate.region)),
                         generation.source(sample).expect("admitted logical source").sample_rate())
                 }else{source_cursor};
                 let cursor=if start!=0{cursor.skip(start)}else{cursor};
@@ -1431,5 +1432,23 @@ impl Runtime {
             if self.frontier_child_chosen(note,parent,child,stage,channel,true)?{self.record_source_decision(note,crate::variation::DecisionValue::SourceOwner(child))?;}
         }
         self.record_source_decision(note,crate::variation::DecisionValue::SourceFrontier{parent,stage})?;Ok(selected)
+    }
+}
+
+#[cfg(test)]
+mod script_offset_tests {
+    use super::script_start_micros;
+
+    #[test]
+    fn sampler_mode_keeps_a_script_offset_past_the_start_range() {
+        // 1.0 s at 48 kHz is 48000 frames, past a 3600-frame S.Mod range.
+        assert_eq!(script_start_micros(1_000_000, 3_600, 48_000, false), 1_000_000);
+    }
+
+    #[test]
+    fn dfd_drops_a_script_offset_past_the_start_range() {
+        assert_eq!(script_start_micros(1_000_000, 3_600, 48_000, true), 0);
+        // Within the range, the offset stands in either mode.
+        assert_eq!(script_start_micros(50_000, 3_600, 48_000, true), 50_000);
     }
 }

@@ -2133,7 +2133,9 @@ impl Lowering<'_> {
             .iter()
             .map(|z| z.playback.start_range.min(u64::from(u32::MAX)) as u32)
             .collect();
+        let gates = self.ir.zones.iter().map(|z| z.playback.script_offset_gate).collect();
         plan.with_voice_modulation_and_providers(programs, bindings, ranges, native,providers)
+            .map(|plan| plan.with_script_offset_gate(gates))
             .map_err(core(Stage::Modulation, "zones"))
     }
 

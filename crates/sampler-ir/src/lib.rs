@@ -1746,6 +1746,10 @@ pub struct Playback {
     /// Beat Machine slice boundaries of this zone; `None` for a zone played as a sampler.
     #[cfg_attr(feature = "cache", serde(default))]
     pub beat_grid: Option<BeatGrid>,
+    /// KSP drops a script `play_note` offset past `start_range` (DFD sources
+    /// only); sampler-mode zones keep it. `false`, the default, keeps offsets.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub script_offset_gate: bool,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

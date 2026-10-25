@@ -199,15 +199,7 @@ impl AssetSource for Source {
         let mut bytes = Bytes::open(self, false).ok()?;
         let mut head = Vec::new();
         (&mut bytes).take(1 << 16).read_to_end(&mut head).ok()?;
-        if head.starts_with(b"RIFF") {
-            let wav = crate::samples::wav_layout(&head).ok()?;
-            return Some(FrameLayout { channels: wav.channels, bits: wav.width * 8 });
-        }
-        let header = ncw::NcwHeader::read(&mut std::io::Cursor::new(&head)).ok()?;
-        Some(FrameLayout {
-            channels: usize::from(header.channels),
-            bits: usize::from(header.bits_per_sample),
-        })
+        layout_from_head(&head)
     }
     fn header(&self) -> Option<(u32, usize)> {
         self.header
@@ -219,6 +211,24 @@ impl AssetSource for Source {
 
 /// Original width discovery and new-wide native workspace admission. Legacy
 /// mono/stereo takes its original opener, without imposing this new wide cap.
+/// The layout of a RIFF, FORM (AIFF) or NCW header's leading bytes. FORM goes
+/// through `aiff_reader`, the same branch `open_native_channel_reader` uses, so
+/// a mono 24-bit AIFF is not sized as the 16-bit stereo fallback.
+fn layout_from_head(head: &[u8]) -> Option<FrameLayout> {
+    let wav = if head.starts_with(b"FORM") {
+        crate::samples::aiff_reader(&mut std::io::Cursor::new(head)).ok()?
+    } else if head.starts_with(b"RIFF") {
+        crate::samples::wav_layout(head).ok()?
+    } else {
+        let header = ncw::NcwHeader::read(&mut std::io::Cursor::new(head)).ok()?;
+        return Some(FrameLayout {
+            channels: usize::from(header.channels),
+            bits: usize::from(header.bits_per_sample),
+        });
+    };
+    Some(FrameLayout { channels: wav.channels, bits: wav.width * 8 })
+}
+
 fn open_native_channel_reader(source:&Source,counted:bool,workspace_limit:usize)->io::Result<Option<SampleReader>> {
     let mut bytes=Bytes::open(source,counted)?;let mut head=Vec::new();
     (&mut bytes).take(1<<12).read_to_end(&mut head)?;
@@ -798,6 +808,9 @@ pub struct StreamPolicy {
     pub allow_cold_fallback: bool,
     /// RAM-only: keep whole samples smallest first within this safe byte budget.
     pub resident_budget: Option<usize>,
+    /// Ceiling on the head budget that cold fallback may raise to the law heads.
+    /// A head above it takes the fallback tiers instead of growing the budget.
+    pub physical_limit: usize,
 }
 
 impl Default for StreamPolicy {
@@ -814,6 +827,7 @@ impl Default for StreamPolicy {
             lazy: false,
             allow_cold_fallback: true,
             resident_budget: None,
+            physical_limit: usize::MAX,
         }
     }
 }
@@ -1589,6 +1603,16 @@ fn head_cost(pcm: &Pcm, ranges: &[Range<usize>]) -> io::Result<usize> {
         pcm.frame_count().checked_mul(size_of::<Frame>()).ok_or_else(|| io::Error::other("resident source size overflow"))
     } else {
         Ok(range_bounds(pcm, ranges)?.1)
+    }
+}
+
+/// The head budget after cold fallback raises it to the law heads, clamped to
+/// `physical_limit`. Strict loads keep the configured budget.
+fn raised_head_budget(policy: &StreamPolicy, head_bytes: usize) -> usize {
+    if policy.allow_cold_fallback {
+        policy.head_budget.max(head_bytes).min(policy.physical_limit)
+    } else {
+        policy.head_budget
     }
 }
 
@@ -3272,7 +3296,7 @@ impl Streamed {
         // and the excess is reported (KONTRA_AUDIT_LOAD) rather than truncated.
         let head_bytes = physical_head_bytes(&kept, &ranges).unwrap_or(usize::MAX);
         // Strict loads (no cold fallback) keep the configured budget and fail over it.
-        let head_budget = if policy.allow_cold_fallback { policy.head_budget.max(head_bytes) } else { policy.head_budget };
+        let head_budget = raised_head_budget(&policy, head_bytes);
         report.head_assets = ranges.iter().filter(|r| !r.is_empty()).count();
         report.head_ranges = ranges.iter().map(Vec::len).sum();
         report.head_source_frames = ranges.iter().flatten().map(|r| r.len() as u64).sum();
@@ -3360,6 +3384,44 @@ mod tests {
         let clipped = intersect_ranges(&[0..100, 150..200], &[50..120, 160..170]);
         assert_eq!(clipped, vec![50..100, 160..170]);
         assert!(intersect_ranges(&[0..10], &[]).is_empty());
+    }
+
+    #[test]
+    fn cold_fallback_head_budget_is_clamped_to_physical_limit() {
+        let mut policy = StreamPolicy { head_budget: 1 << 10, ..Default::default() };
+        // Uncapped: the raise reaches the law heads, as before.
+        assert_eq!(raised_head_budget(&policy, 1 << 20), 1 << 20);
+        // Capped: a head above the limit gets the limit, so it takes the fallback tiers.
+        policy.physical_limit = 1 << 19;
+        assert_eq!(raised_head_budget(&policy, 1 << 20), 1 << 19);
+        // Strict loads never raise.
+        policy.allow_cold_fallback = false;
+        assert_eq!(raised_head_budget(&policy, 1 << 20), 1 << 10);
+    }
+
+    /// A mono 24-bit 48 kHz AIFF with four frames. FORM headers must parse as AIFF,
+    /// not fall through to the 16-bit stereo fallback.
+    #[test]
+    fn aiff_header_layout_is_mono_24_bit() {
+        let frames = 4u32;
+        let mut blob = Vec::new();
+        blob.extend_from_slice(b"FORM");
+        blob.extend_from_slice(&(4 + 8 + 18 + 8 + 8 + frames * 3).to_be_bytes());
+        blob.extend_from_slice(b"AIFF");
+        blob.extend_from_slice(b"COMM");
+        blob.extend_from_slice(&18u32.to_be_bytes());
+        blob.extend_from_slice(&1u16.to_be_bytes()); // channels
+        blob.extend_from_slice(&frames.to_be_bytes());
+        blob.extend_from_slice(&24u16.to_be_bytes()); // sample size
+        // 48000 Hz as an 80-bit IEEE extended float.
+        blob.extend_from_slice(&[0x40, 0x0E, 0xBB, 0x80, 0, 0, 0, 0, 0, 0]);
+        blob.extend_from_slice(b"SSND");
+        blob.extend_from_slice(&(8 + frames * 3).to_be_bytes());
+        blob.extend_from_slice(&0u32.to_be_bytes()); // offset
+        blob.extend_from_slice(&0u32.to_be_bytes()); // block size
+        blob.extend_from_slice(&vec![0u8; (frames * 3) as usize]);
+        let layout = layout_from_head(&blob).expect("AIFF header parses");
+        assert_eq!(layout, FrameLayout { channels: 1, bits: 24 });
     }
 
     #[test]

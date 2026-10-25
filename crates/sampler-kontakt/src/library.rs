@@ -867,6 +867,8 @@ fn retain_kontakt_source_owners(
 /// Group settings every zone of the group inherits.
 struct GroupInfo {
     index: usize,
+    /// DFD source mode: KSP's `play_note` offset rule applies to its zones.
+    dfd_offset_gate: bool,
     group: ir::GroupRef,
     release: bool,
     tracking: bool,
@@ -2410,6 +2412,7 @@ impl Translation {
         }
         Ok(Some(GroupInfo {
             index,
+            dfd_offset_gate: group.source_identity().is_ok_and(|s| s.mode == SOURCE_MODE_DFD),
             group: runtime_group,
             release: v.release_trigger,
             tracking: v.key_tracking,
@@ -3609,6 +3612,7 @@ impl Translation {
                 reverse: group.reverse,
                 looping,
                 start_range: z.start_mod,
+                script_offset_gate: group.dfd_offset_gate,
                 loop_control_crossfade: if group.routes.iter().any(|r| {
                     matches!(
                         self.ir.routes[r.0].target,
@@ -5099,6 +5103,7 @@ mod modulation {
     fn plain_group(reverse: bool) -> GroupInfo {
         GroupInfo {
             index: 0,
+            dfd_offset_gate: false,
             group: ir::GroupRef(0),
             release: false,
             tracking: true,

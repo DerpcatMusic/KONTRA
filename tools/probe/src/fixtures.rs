@@ -332,6 +332,7 @@ fn digest(spec: &Spec) -> u64 {
     format!("{spec:?}").hash(&mut hasher);
     for source in [
         include_str!("../../../src/creator/nki.rs"),
+        include_str!("fixtures.rs"),
         include_str!("fixtures/program.rs"),
         include_str!("fixtures/audio.rs"),
         include_str!("fixtures/ksp.rs"),
