@@ -1709,11 +1709,19 @@ impl Gen<'_, '_> {
                 break;
             }
             // Array setters are (id, par, value, index) in source; the effect carries
-            // (id, par, index, value), so the index is the target prefix.
-            let source = match builtin {
-                Builtin::SetControlParArr | Builtin::SetControlParRealArr if i == 2 || i == 3 => 5 - i,
-                _ => i,
-            };
+            // (id, par, index, value), so the index is the target prefix. Each argument
+            // is evaluated in source order straight into its effect slot, so side
+            // effects keep their order and real bits are never copied.
+            let array = matches!(builtin, Builtin::SetControlParArr | Builtin::SetControlParRealArr);
+            if array && i == 2 {
+                self.arg(args, i, reg(dst, 3)?)?;
+                continue;
+            }
+            if array && i == 3 {
+                self.arg(args, i, reg(dst, count)?)?;
+                count += 2;
+                continue;
+            }
             if i == 0
                 && matches!(
                     builtin,
@@ -1736,10 +1744,10 @@ impl Gen<'_, '_> {
                         i64::from(crate::builtins::FIRST_UI_ID + ui as i32),
                     )?;
                 } else {
-                    self.arg(args, source, reg(dst, count)?)?;
+                    self.arg(args, i, reg(dst, count)?)?;
                 }
             } else {
-                self.arg(args, source, reg(dst, count)?)?;
+                self.arg(args, i, reg(dst, count)?)?;
             }
             count += 1;
         }
