@@ -24,7 +24,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 |---|---|---|---|---|---|
 | P1.1 | Reachable start range per zone (S.Mod, CC/RTC → start) | playback | M | worker | P0.3 |
 | P1.1b | Script play_note offsets join the zone start range | playback | M | worker | P1.1 |
-| P1.2 | Preload law: base + full start range, never shrink below the law | playback | L | worker | P1.1b, P0.3b |
+| P1.2 | Preload law: Kontakt DFD window (60 KB per channel + 2 × S.Mod), never shrink below it | playback | L | worker | P1.1b, P0.3b |
 | P1.3 | No cold holds: late data is silence, the cursor keeps time | playback | M | worker | P1.2 |
 | P1.4 | One start batch per callback instant; delete start runway and per-family cohorts | playback | M | worker | P1.3 |
 | P1.4b | Silent notes name their cause; fix Areia low keys and dense chords | playback | M | worker | P1.2 |
