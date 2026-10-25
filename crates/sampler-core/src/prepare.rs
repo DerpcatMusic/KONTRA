@@ -1304,6 +1304,48 @@ impl Prepared {
         self.voice_modulation.initialized_start_offset(region, controller)
     }
 
+    /// The controller that moves the sample start of the regions covering
+    /// `key` at `velocity` (0..=1), as `(cc, measured, frames)`: `measured` is
+    /// the value the instrument loads with (0 when it sets none), and
+    /// `frames[v]` the start skipped at value `v`, 0..=127. Where several
+    /// regions share the controller, each value takes the smallest skip (the
+    /// latest-sounding layer). `None` when no covering region has one, or when
+    /// one depends on more than one controller.
+    pub fn start_skip(&self, key: u8, velocity: f64) -> Option<(u8, u8, Vec<u32>)> {
+        let mut found: Option<(u8, u8, Vec<u32>)> = None;
+        for (index, region) in self.regions.iter().enumerate() {
+            let [low, high, ..] = region.bounds;
+            if !(low..=high).contains(&key) || !(region.velocity_low..=region.velocity_high).contains(&velocity) {
+                continue;
+            }
+            // A region whose start depends on several controllers has no single
+            // table: the cell gets none and keeps its measured delay.
+            let depends: Vec<u8> = (0..=127u8)
+                .filter(|&cc| self.start_offset_with(index, |c| (c != cc).then_some(0)).is_none())
+                .collect();
+            let cc = match depends[..] {
+                [] => continue,
+                [cc] => cc,
+                _ => return None,
+            };
+            let frames: Vec<u32> = (0..=127u8)
+                .map(|v| self.start_offset_with(index, |c| (c == cc).then_some(u32::from(v) << 25)).unwrap_or(0))
+                .collect();
+            match &mut found {
+                None => {
+                    let measured = self.initial_controllers.iter().rev()
+                        .find(|&&(c, _)| c == cc).map_or(0, |&(_, value)| (value >> 25) as u8);
+                    found = Some((cc, measured, frames));
+                }
+                Some((kept, _, table)) if *kept == cc => {
+                    for (table, frame) in table.iter_mut().zip(frames) { *table = (*table).min(frame); }
+                }
+                Some(_) => {}
+            }
+        }
+        found
+    }
+
     /// One-time preload prediction for this plan's explicitly initialized
     /// controllers and Constant sources. Uses the voice admission offset law,
     /// including authored shapes, signed depths and intensity assignments.

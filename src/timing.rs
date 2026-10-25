@@ -120,12 +120,32 @@ pub struct Timing {
 }
 
 /// A controller that moves one measured cell's sample start: its CC, the
-/// value the measurement ran with, and the start skipped at that value (frames).
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+/// value the measurement ran with, and the frames skipped at each value 0..=127.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct StartCell {
     pub cc: u8,
     pub value: u8,
-    pub skip: u32,
+    pub table: Vec<u32>,
+}
+
+/// Each velocity bucket's start-skip record, as the loader measured it.
+type Skips = [Option<(u8, u8, Vec<u32>)>; 3];
+
+/// Records the start-skip tables on a measured timing: a cell has one per its
+/// velocity bucket, if its zones have a controller-driven start.
+fn record_starts(d: &mut Delay, skips: &Skips) {
+    for legato in [false, true] {
+        for (bucket, skip) in skips.iter().enumerate() {
+            let measured = if legato { d.legato[bucket] } else { d.first[bucket] };
+            if measured.is_some() {
+                d.start[usize::from(legato)][bucket] = skip.as_ref().map(|(cc, value, table)| StartCell {
+                    cc: *cc,
+                    value: *value,
+                    table: table.clone(),
+                });
+            }
+        }
+    }
 }
 
 /// One measured cell: an articulation row (`None`: as loaded), legato or
@@ -168,28 +188,33 @@ impl Timing {
     }
 
     /// This timing with each cell's sample-start controller at its live value.
-    /// `skip(cell, start)` is the library's start-offset query for that cell's
-    /// zones at the live value of `start.cc`, in frames at `rate`. A cell's
-    /// delay becomes `measured + ms(start.skip) - ms(skip now)`, clamped at 0;
-    /// the latency and the holds follow from these cells. Cells without a
+    /// `live(cc)` is the controller's current MIDI value. A cell's delay becomes
+    /// `measured + ms(table[measured value]) - ms(table[live value])`, clamped at
+    /// 0; the latency and the holds follow from these cells. Cells without a
     /// start record are unchanged.
-    pub fn with_start(&self, rate: f64, skip: impl Fn(Cell, StartCell) -> u32) -> Self {
+    pub fn with_start(&self, rate: f64, live: impl Fn(u8) -> u8) -> Self {
         let ms = |frames: u32| f64::from(frames) * 1000. / rate;
-        let shift = |d: &mut Delay, art: Option<usize>| {
-            for legato in [false, true] {
+        let shift = |d: &mut Delay| {
+            let Delay { first, legato, start, .. } = d;
+            for is_legato in [false, true] {
                 for bucket in 0..3 {
-                    let Some(start) = d.start[usize::from(legato)][bucket] else { continue };
-                    let row = if legato { &mut d.legato } else { &mut d.first };
+                    let Some(cell) = &start[usize::from(is_legato)][bucket] else { continue };
+                    let row = if is_legato { &mut *legato } else { &mut *first };
                     let Some(measured) = row[bucket] else { continue };
-                    let now = skip(Cell { art, legato, bucket }, start);
-                    row[bucket] = Some((f64::from(measured) + ms(start.skip) - ms(now)).max(0.) as f32);
+                    let (Some(&then), Some(&now)) = (
+                        cell.table.get(usize::from(cell.value)),
+                        cell.table.get(usize::from(live(cell.cc))),
+                    ) else {
+                        continue;
+                    };
+                    row[bucket] = Some((f64::from(measured) + ms(then) - ms(now)).max(0.) as f32);
                 }
             }
         };
         let mut t = self.clone();
-        shift(&mut t.loaded, None);
-        for (art, d) in t.arts.iter_mut().enumerate() {
-            shift(d, Some(art));
+        shift(&mut t.loaded);
+        for d in &mut t.arts {
+            shift(d);
         }
         t
     }
@@ -1076,7 +1101,8 @@ pub fn measure_request(
     edits: &crate::sound::edits::Edits,
     canceled: &(dyn Fn() -> bool + Sync),
 ) -> Result<Timing, crate::sound::CoreError> {
-    let loaded = V2Loader.prepare(request, &mut |_| {}, canceled)?;
+    let loaded = V2Loader.prepare_measuring(request, canceled)?;
+    let skips: Skips = loaded.part.as_ref().map(|p| p.start_skips.clone()).unwrap_or_default();
     let declared = declared(&loaded.interfaces, &loaded.controls);
     let instrument = loaded.instrument.clone();
     let mut core = V2Core::with_parts(1, request.sample_rate);
@@ -1093,9 +1119,13 @@ pub fn measure_request(
         canceled,
         stopped: false,
     };
-    let (base, measured) = measure(&mut e, arts, note);
+    let (mut base, mut measured) = measure(&mut e, arts, note);
     if e.stopped || canceled() {
         return Err(crate::sound::CoreError::Canceled);
+    }
+    record_starts(&mut base, &skips);
+    for d in &mut measured {
+        record_starts(d, &skips);
     }
     Ok(Timing {
         source: source(
@@ -1612,38 +1642,43 @@ mod tests {
         assert_eq!(fast_part.pop_due(1920), Some((on(1), NO_ART)));
     }
 
-    /// Every measured cell's start record, all at one controller value.
-    fn start_cells(cc: u8, value: u8) -> [[Option<StartCell>; 3]; 2] {
-        let start = Some(StartCell { cc, value, skip: 0 });
-        [[start; 3]; 2]
+    /// A start table for a zone that moves `range` frames at full controller
+    /// value. Stands in for the loader's start-skip table in these tests.
+    fn table(range: f64) -> Vec<u32> {
+        (0..=127u8).map(|v| (range * f64::from(v) / 127.).round() as u32).collect()
+    }
+
+    /// Every measured cell's start record: one controller, measured at value 0.
+    fn start_cells(range: f64) -> [[Option<StartCell>; 3]; 2] {
+        let start = Some(StartCell { cc: 113, value: 0, table: table(range) });
+        [[start.clone(), start.clone(), start.clone()], [start.clone(), start.clone(), start]]
     }
 
     #[test]
     fn a_half_depth_start_controller_moves_the_delay_by_half_its_range() {
-        // A 100 ms start range (4800 frames) at depth 0.5, read at the live
-        // value: stands in for the library's start-offset query.
-        let skip_at = |now: u8| move |_: Cell, _: StartCell| (2400. * f64::from(now) / 127.).round() as u32;
+        // A 100 ms start range (4800 frames) at depth 0.5: half of it at full value.
+        let half = 2400.;
         let patch = Timing {
             loaded: Delay {
                 first: [Some(120.); 3],
-                start: start_cells(113, 0),
+                start: start_cells(half),
                 ..Default::default()
             },
             ..Default::default()
         };
-        let at = |cc| patch.with_start(RATE, skip_at(cc)).latest();
+        let at = |cc| patch.with_start(RATE, |_| cc).latest();
         assert_eq!(at(0), 120., "measured at 0: unchanged");
         assert!((at(64) - (120. - 1209. / 48.)).abs() < 1e-3, "{}", at(64));
         assert!((at(127) - 70.).abs() < 0.1, "L - R/2 at 127: {}", at(127));
         let short = Timing {
             loaded: Delay {
                 first: [Some(30.); 3],
-                start: start_cells(113, 0),
+                start: start_cells(half),
                 ..Default::default()
             },
             ..Default::default()
         };
-        assert_eq!(short.with_start(RATE, skip_at(127)).latest(), 0., "never below 0");
+        assert_eq!(short.with_start(RATE, |_| 127).latest(), 0., "never below 0");
         let fixed = Timing {
             loaded: Delay {
                 first: [Some(120.); 3],
@@ -1651,30 +1686,31 @@ mod tests {
             },
             ..Default::default()
         };
-        assert_eq!(fixed.with_start(RATE, skip_at(127)), fixed, "no route: unchanged");
+        assert_eq!(fixed.with_start(RATE, |_| 127), fixed, "no route: unchanged");
     }
 
     #[test]
     fn two_cells_with_different_start_ranges_each_follow_their_own_zones() {
-        // First notes sweep 100 ms, legato notes 40 ms: each cell's skip comes
-        // from its own zones. Stands in for the library's start-offset query.
-        let range = |cell: Cell| if cell.legato { 1920. } else { 4800. };
-        let skip_at = |now: u8| move |cell: Cell, _: StartCell| (range(cell) * f64::from(now) / 127.).round() as u32;
+        // First notes sweep 100 ms, legato notes 40 ms: each cell has its own table.
         let patch = Timing {
             loaded: Delay {
                 first: [Some(120.); 3],
                 legato: [Some(90.); 3],
-                start: start_cells(113, 0),
+                start: {
+                    let mut cells = start_cells(4800.);
+                    cells[1] = start_cells(1920.)[1].clone();
+                    cells
+                },
                 ..Default::default()
             },
             ..Default::default()
         };
-        let at_127 = patch.with_start(RATE, skip_at(127));
+        let at_127 = patch.with_start(RATE, |_| 127);
         assert_eq!(at_127.loaded.first[1], Some(20.), "120 - 100");
         assert_eq!(at_127.loaded.legato[1], Some(50.), "90 - 40");
         assert_eq!(at_127.latest(), 50., "the slowest cell sets the latency");
-        assert_eq!(patch.with_start(RATE, skip_at(0)).latest(), 120., "measured at 0");
-        let at_64 = patch.with_start(RATE, skip_at(64));
+        assert_eq!(patch.with_start(RATE, |_| 0).latest(), 120., "measured at 0");
+        let at_64 = patch.with_start(RATE, |_| 64);
         let first = 120. - 2419. / 48.;
         let legato = 90. - 968. / 48.;
         assert!((at_64.loaded.first[1].unwrap() as f64 - first).abs() < 1e-3);
