@@ -1,1 +1,9 @@
-//! Empty skeleton for kontra-events; design in docs/architecture-v3/01-LAYOUT.md §1.
+//! Event model: host notes, host patterns, note expression and the Universal
+//! MIDI Packet event, plus the receiver wire value types. Plain data only; no
+//! KONTRA crate is a dependency.
+
+mod event;
+mod wire;
+
+pub use event::*;
+pub use wire::*;
