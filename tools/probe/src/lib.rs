@@ -689,6 +689,17 @@ fn c6_voices_per_note(session: &mut Session, pattern: Pattern) -> Result<Verdict
     Ok(voices_verdict(session, &report, pattern))
 }
 
+/// C6 on a real-time render, paced like a host. Offline C6 cannot show a double
+/// attack because the cold start is off offline, so the real-time variant is the
+/// one that catches a mic group starting alone.
+///
+/// # Errors
+/// Fails when the render cannot be prepared.
+pub fn check_c6_realtime(session: &mut Session, pattern: Pattern) -> Result<Verdict> {
+    let report = session.play(pattern, Mode::RealTime, BLOCK)?;
+    Ok(voices_verdict(session, &report, pattern))
+}
+
 /// C6 on a rendered run. A note's voices are counted per key: a chord of four
 /// keys that starts one voice per key sounds four voices, which is correct.
 fn voices_verdict(session: &Session, report: &Report, pattern: Pattern) -> Verdict {
