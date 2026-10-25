@@ -43,6 +43,10 @@ paths = ["Cargo.toml", ".cargo/**", "rust-toolchain.toml"]
 [locks.lockfile]
 mode = "regenerate"
 paths = ["Cargo.lock"]
+# Rewritten by `cargo xtask size --update`; growth still needs the `size-growth` label.
+[locks.baselines]
+mode = "regenerate"
+paths = ["tools/xtask/size-baseline.json"]
 [locks.ci]
 mode = "exclusive"
 paths = [".github/workflows/**", ".github/scripts/**"]
