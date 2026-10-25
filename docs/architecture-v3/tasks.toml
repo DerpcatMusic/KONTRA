@@ -336,7 +336,7 @@ lane = "playback"
 size = "L"
 agent = "worker"
 deps = ["P1.1b", "P0.3b"]
-owns = ["crates/sampler-kontakt/src/stream.rs", "crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs", "crates/sampler-kontakt/src/stream_hint_tests.rs", "crates/sampler-kontakt/src/stream_onset_tests.rs", "crates/sampler-native/examples/stream_report.rs", "crates/sampler-uvi/examples/dynamic_source_witness.rs", "crates/sampler-kontakt/src/head_prepare.rs", "crates/sampler-kontakt/src/head_cache.rs", "crates/sampler-core/src/head_budget.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/prepare/**", "crates/sampler-core/tests/stream_start_runway.rs"]
+owns = ["crates/sampler-kontakt/src/stream.rs", "@v2rs", "src/sound/report.rs", "src/sound/v2/onset_diagnostics/runway.rs", "examples/dfd_eager.rs", "crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs", "crates/sampler-kontakt/src/stream_hint_tests.rs", "crates/sampler-kontakt/src/stream_onset_tests.rs", "crates/sampler-native/examples/stream_report.rs", "crates/sampler-uvi/examples/dynamic_source_witness.rs", "crates/sampler-kontakt/src/head_prepare.rs", "crates/sampler-kontakt/src/head_cache.rs", "crates/sampler-core/src/head_budget.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/prepare/**", "crates/sampler-core/tests/stream_start_runway.rs"]
 docs = ["05-STREAM.md#1-the-preload-law"]
 goal = "Head length = base (60 KB-equivalent per channel, Kontakt DFD default) + the zone's start range from P1.1, instead of measured warm-cache latency; over budget never truncates silently."
 steps = [
