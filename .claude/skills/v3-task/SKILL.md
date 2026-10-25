@@ -16,7 +16,7 @@ rules. The full manual is `docs/architecture-v3/12-WORKFLOW.md`.
 ## 0. Resume or start
 
 - First look for an open PR of this task (`--head` matches the exact name, not a prefix):
-  `gh pr list --base v3 --json number,headRefName,isDraft --jq '.[] | select(.headRefName | startswith("v3-<id>-"))'`.
+  `gh pr list --base v3 --limit 500 --json number,headRefName,isDraft --jq '.[] | select(.headRefName | startswith("v3-<id>-"))'`.
   If one exists, you are resuming: read its `## Progress` list and commits, check out its branch, and
   carry on from "next". Do not start over.
 - Otherwise `git fetch origin v3 && git switch -c <branch from the brief> origin/v3`.
