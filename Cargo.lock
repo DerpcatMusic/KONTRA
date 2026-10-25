@@ -2474,6 +2474,12 @@ dependencies = [
 [[package]]
 name = "kontra-macros"
 version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "kontra-native-host"
