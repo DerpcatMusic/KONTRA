@@ -245,6 +245,8 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
     lines += ["", "## Goal", t["goal"], "", "## Read first",
               f"- [README.md]({doc_url('README.md', branch)}): the ten rules",
               f"- [12-WORKFLOW.md]({doc_url('12-WORKFLOW.md', branch)}): how to work on v3 (branching, scope, tests, PR)",
+              "- `.claude/skills/v3-task/SKILL.md`: the step-by-step playbook for a v3 task, including resuming a draft PR "
+              "(load it with the Skill tool as `v3-task`).",
               "- `.claude/skills/beautiful-rust/SKILL.md`: the Rust style every v3 change follows (load it with the Skill tool "
               "as `beautiful-rust`, or read the file). Where it conflicts with these docs or the KISS/real-time rules, the docs win."]
     lines += [f"- [{d}]({doc_url(d, branch)})" for d in t.get("docs", [])]
@@ -579,7 +581,8 @@ def on_merge(plan: dict, branch: str, pr: str) -> None:
 
 # Non-task branches into v3 and what they may touch.
 SPECIAL = {
-    "plan": ["docs/architecture-v3/**", "tools/plan/**", ".github/**", ".claude/skills/**", "AGENTS.md", "CONTRIBUTING.md"],
+    "plan": ["docs/architecture-v3/**", "tools/plan/**", ".github/**", ".claude/skills/**", ".claude/agents/**",
+             ".coderabbit.yaml", "AGENTS.md", "CONTRIBUTING.md"],
     "sync-main": ["**"],
 }
 

@@ -186,6 +186,11 @@ why the brief tells the worker to branch from `origin/v3` itself. Review
 rounds are new `delegate_task` calls with the brief, the review findings and
 the worker's replies (`-r2`, `-r3` …).
 
+Claude Code users (maintainers and contributors) get the same setup from the
+repo: the `v3-worker` agent (`.claude/agents/v3-worker.md`) runs one task with
+the `v3-task` skill; the `v3-reviewer` agent runs the `v3-review` skill on a
+report or PR before anything is merged or built on it.
+
 ## 9. Review checklist (coordinator)
 
 - [ ] `v3 plan` and `CI required` green; scope check clean or `scope-override` justified.
@@ -223,6 +228,7 @@ the worker's replies (`-r2`, `-r3` …).
 | Issues | one per task (type Task), one epic per phase (type Feature) with tasks as sub-issues, task deps as "blocked by" relations |
 | Project | **KONTRA v3** (user project, linked to the repo): fields Phase, Lane, Size, Agent, Task; suggested views: Board by Status, Table grouped by Phase, Roadmap by milestone (views are created in the UI; the API cannot create them) |
 | Templates | `.github/pull_request_template.md`, issue forms for bugs and v3 task proposals |
+| Review | CodeRabbit (`.coderabbit.yaml`) reviews ready PRs into `v3` (drafts skipped) with the README rules and real-time checks as path instructions; the ruleset requires every review thread resolved, so each finding is fixed or answered with a reason before auto-merge |
 | CI | `.github/workflows/v3.yml`: `v3 plan` (validate, index check, unit tests, scope) on PRs into `v3`; issue close on merge; full CI on push to `v3` |
 
 Why `v3-` and not `v3/`: git stores refs as files, so a branch named `v3`
