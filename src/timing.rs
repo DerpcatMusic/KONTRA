@@ -53,6 +53,11 @@ pub struct Delay {
     pub identity: String,
     pub first: [Option<f32>; 3],
     pub legato: [Option<f32>; 3],
+    /// Per measured cell (first, legato; velocity bucket): the sample-start
+    /// controller the cell ran with and the start it skipped then. `None`
+    /// where the cell's zones have no controller-driven sample start.
+    #[serde(default)]
+    pub start: [[Option<StartCell>; 3]; 2],
 }
 
 impl Delay {
@@ -112,18 +117,24 @@ pub struct Timing {
     pub override_ms: Option<f32>,
     /// Not aligned: plays as late as the library does.
     pub exclude: bool,
-    /// The sample-start controller the measurement ran with, if the library
-    /// moves its sample start with one ([`Timing::with_start`]).
-    #[serde(default)]
-    pub start: Option<StartControl>,
 }
 
-/// A controller that moves a library's sample start: its CC, and the value
-/// the measurement ran with.
+/// A controller that moves one measured cell's sample start: its CC, the
+/// value the measurement ran with, and the start skipped at that value (frames).
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
-pub struct StartControl {
+pub struct StartCell {
     pub cc: u8,
-    pub measured: u8,
+    pub value: u8,
+    pub skip: u32,
+}
+
+/// One measured cell: an articulation row (`None`: as loaded), legato or
+/// first, and velocity bucket.
+#[derive(Clone, Copy, Debug)]
+pub struct Cell {
+    pub art: Option<usize>,
+    pub legato: bool,
+    pub bucket: usize,
 }
 
 /// What a [`Timing`] was measured for.
@@ -156,23 +167,29 @@ impl Timing {
             .unwrap_or(0.0)
     }
 
-    /// This timing with its sample-start controller at `now`. Each measured
-    /// delay moves by the start the controller shifted since the measurement:
-    /// `skip(measured) - skip(now)`, where `skip(cc)` is the library's own
-    /// start-offset query for the measured zones at that value, in frames at
-    /// `rate`. Delays stay at 0 or more. A timing without a start control is
-    /// returned unchanged.
-    pub fn with_start(&self, now: u8, rate: f64, skip: impl Fn(u8) -> u32) -> Self {
-        let Some(StartControl { measured, .. }) = self.start else {
-            return self.clone();
-        };
-        let ms = |cc: u8| f64::from(skip(cc)) * 1000. / rate;
-        let shift = (ms(measured) - ms(now)) as f32;
-        let mut t = self.clone();
-        for d in std::iter::once(&mut t.loaded).chain(&mut t.arts) {
-            for cell in d.first.iter_mut().chain(d.legato.iter_mut()).flatten() {
-                *cell = (*cell + shift).max(0.);
+    /// This timing with each cell's sample-start controller at its live value.
+    /// `skip(cell, start)` is the library's start-offset query for that cell's
+    /// zones at the live value of `start.cc`, in frames at `rate`. A cell's
+    /// delay becomes `measured + ms(start.skip) - ms(skip now)`, clamped at 0;
+    /// the latency and the holds follow from these cells. Cells without a
+    /// start record are unchanged.
+    pub fn with_start(&self, rate: f64, skip: impl Fn(Cell, StartCell) -> u32) -> Self {
+        let ms = |frames: u32| f64::from(frames) * 1000. / rate;
+        let shift = |d: &mut Delay, art: Option<usize>| {
+            for legato in [false, true] {
+                for bucket in 0..3 {
+                    let Some(start) = d.start[usize::from(legato)][bucket] else { continue };
+                    let row = if legato { &mut d.legato } else { &mut d.first };
+                    let Some(measured) = row[bucket] else { continue };
+                    let now = skip(Cell { art, legato, bucket }, start);
+                    row[bucket] = Some((f64::from(measured) + ms(start.skip) - ms(now)).max(0.) as f32);
+                }
             }
+        };
+        let mut t = self.clone();
+        shift(&mut t.loaded, None);
+        for (art, d) in t.arts.iter_mut().enumerate() {
+            shift(d, Some(art));
         }
         t
     }
@@ -1595,36 +1612,77 @@ mod tests {
         assert_eq!(fast_part.pop_due(1920), Some((on(1), NO_ART)));
     }
 
+    /// Every measured cell's start record, all at one controller value.
+    fn start_cells(cc: u8, value: u8) -> [[Option<StartCell>; 3]; 2] {
+        let start = Some(StartCell { cc, value, skip: 0 });
+        [[start; 3]; 2]
+    }
+
     #[test]
     fn a_half_depth_start_controller_moves_the_delay_by_half_its_range() {
-        // A 100 ms start range (4800 frames) at depth 0.5: the start moves
-        // 2400 * cc / 127 frames. Stands in for the library's start-offset query.
-        let skip = |cc: u8| (2400. * f64::from(cc) / 127.).round() as u32;
+        // A 100 ms start range (4800 frames) at depth 0.5, read at the live
+        // value: stands in for the library's start-offset query.
+        let skip_at = |now: u8| move |_: Cell, _: StartCell| (2400. * f64::from(now) / 127.).round() as u32;
         let patch = Timing {
             loaded: Delay {
                 first: [Some(120.); 3],
+                start: start_cells(113, 0),
                 ..Default::default()
             },
-            start: Some(StartControl { cc: 113, measured: 0 }),
             ..Default::default()
         };
-        let at = |cc| patch.with_start(cc, RATE, skip).latest();
+        let at = |cc| patch.with_start(RATE, skip_at(cc)).latest();
         assert_eq!(at(0), 120., "measured at 0: unchanged");
         assert!((at(64) - (120. - 1209. / 48.)).abs() < 1e-3, "{}", at(64));
         assert!((at(127) - 70.).abs() < 0.1, "L - R/2 at 127: {}", at(127));
         let short = Timing {
             loaded: Delay {
                 first: [Some(30.); 3],
+                start: start_cells(113, 0),
                 ..Default::default()
             },
-            ..patch.clone()
+            ..Default::default()
         };
-        assert_eq!(short.with_start(127, RATE, skip).latest(), 0., "never below 0");
+        assert_eq!(short.with_start(RATE, skip_at(127)).latest(), 0., "never below 0");
         let fixed = Timing {
-            start: None,
-            ..patch.clone()
+            loaded: Delay {
+                first: [Some(120.); 3],
+                ..Default::default()
+            },
+            ..Default::default()
         };
-        assert_eq!(fixed.with_start(127, RATE, skip), fixed, "no route: unchanged");
+        assert_eq!(fixed.with_start(RATE, skip_at(127)), fixed, "no route: unchanged");
+    }
+
+    #[test]
+    fn two_cells_with_different_start_ranges_each_follow_their_own_zones() {
+        // First notes sweep 100 ms, legato notes 40 ms: each cell's skip comes
+        // from its own zones. Stands in for the library's start-offset query.
+        let range = |cell: Cell| if cell.legato { 1920. } else { 4800. };
+        let skip_at = |now: u8| move |cell: Cell, _: StartCell| (range(cell) * f64::from(now) / 127.).round() as u32;
+        let patch = Timing {
+            loaded: Delay {
+                first: [Some(120.); 3],
+                legato: [Some(90.); 3],
+                start: start_cells(113, 0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let at_127 = patch.with_start(RATE, skip_at(127));
+        assert_eq!(at_127.loaded.first[1], Some(20.), "120 - 100");
+        assert_eq!(at_127.loaded.legato[1], Some(50.), "90 - 40");
+        assert_eq!(at_127.latest(), 50., "the slowest cell sets the latency");
+        assert_eq!(patch.with_start(RATE, skip_at(0)).latest(), 120., "measured at 0");
+        let at_64 = patch.with_start(RATE, skip_at(64));
+        let first = 120. - 2419. / 48.;
+        let legato = 90. - 968. / 48.;
+        assert!((at_64.loaded.first[1].unwrap() as f64 - first).abs() < 1e-3);
+        assert!((at_64.loaded.legato[1].unwrap() as f64 - legato).abs() < 1e-3);
+        assert!((at_64.latest() as f64 - first.max(legato)).abs() < 1e-3);
+        let holds = Holds::of(&at_127, &[], at_127.latest());
+        assert_eq!(holds.frames(LOADED, false, 100, RATE), 30 * 48, "first held 50 - 20");
+        assert_eq!(holds.frames(LOADED, true, 100, RATE), 0, "the slowest cell holds 0");
     }
 
     #[test]

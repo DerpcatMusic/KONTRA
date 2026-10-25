@@ -1294,6 +1294,16 @@ impl Prepared {
         }
     }
 
+    /// The sample-start offset of `region` with each controller at the value
+    /// `controller` gives it (full scale, as the performance stores it), by the
+    /// voice-start law; `None` when a route's controller has no value. Auto-align
+    /// measures a note's start at its live controller values through this.
+    pub fn start_offset_with(&self, region: usize, controller: impl Fn(u8) -> Option<u32>) -> Option<u32> {
+        self.regions.get(region)?;
+        if self.voice_modulation.is_empty() { return Some(0); }
+        self.voice_modulation.initialized_start_offset(region, controller)
+    }
+
     /// One-time preload prediction for this plan's explicitly initialized
     /// controllers and Constant sources. Uses the voice admission offset law,
     /// including authored shapes, signed depths and intensity assignments.
