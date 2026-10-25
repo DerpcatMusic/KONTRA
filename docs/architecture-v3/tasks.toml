@@ -601,6 +601,31 @@ done = [
 ]
 
 [[task]]
+id = "P3.3b"
+title = "Auto-align follows the library's own sample-start (latency) control"
+phase = 3
+lane = "playback"
+size = "M"
+agent = "worker"
+deps = ["P3.3"]
+owns = ["src/timing.rs", "src/timing/**", "@v2rs", "@plugin"]
+docs = ["07-APP.md#6-auto-align-appalign-feature-align"]
+goal = "When a patch's zones have a controller-driven sample start (Kontakt S.Mod routed from a CC), its auto-align delay follows that controller live: delay = measured + skip(cc at measure) - skip(cc now), never below 0, with no re-render. Audio Imperia's Tight mode then reports 0 ms."
+steps = [
+  "Read the case. Areia, Chorus and Dolce (Audio Imperia 'Pyramid' engine) have an S. Start knob (0..1000000, default 500000, help 'Control the latency required to use this instrument. Either -250ms through to -0ms.') and a Tight switch ('Set Sample Start to its highest value'). The script maps the knob to `set_controller(113, 127*knob/1000000)` and labels it 250*(1-knob/1000000) ms; the zones' sample start is modulated by CC113 over their S.Mod range. Dump: `cargo run -p sampler-kontakt --example dump_scripts -- <nki> <dir>`.",
+  "Derive skip(cc) from the IR, not from panel text: for zones whose start is modulated by a MIDI CC, skip = S.Mod range x cc/127 (frames to ms at the zone's rate). Use the zones the measured note plays; if they disagree, use the smallest skip (the latest-sounding layer sets the delay).",
+  "Record at measure time the controller value the measurement ran with. When that controller changes on the live part, recompute the part's delay with the formula above and publish the new latency through the existing settle path (LATENCY_SETTLE). Do not re-measure and do not render on the audio thread.",
+  "Keep `declared()` (a library panel that states a negative offset in ms) as it is; this task adds the IR route, which needs no text matching and works for any Kontakt library with a CC-driven sample start.",
+  "Corpus note for the PR: of the 11 local Kontakt libraries, Areia, Chorus and Dolce have this control; Shreddage 3.5 has a 'Destination Negative Delay' script control; Vista, Pacific, Afflatus, ANALOG STRINGS, Conflux, Morphology and Una Corda show none in their first instrument. List any other CC-to-sample-start route you find in the fixtures."
+]
+gate = ["build-slot cargo test --lib timing"]
+done = [
+  "Unit test on a CC113 sample-start fixture (tools/probe `Streamed` has `start_route: MidiCc(113)`): measured at CC 0 with delay L and S.Mod range R, the delay is L at CC 0, L - R*64/127 at CC 64 and max(0, L - R) at CC 127.",
+  "Areia Spiccato Fast, measured on the real library: reported latency at the default knob and with Tight on. Tight is <= 5 ms; toggling Tight changes the reported latency within the settle time, with no re-measure.",
+  "A patch without a CC-driven sample start reports the same latency as before (P3.3 tests unchanged)."
+]
+
+[[task]]
 id = "P3.4"
 title = "Gate G3: original complaints closed"
 phase = 3
