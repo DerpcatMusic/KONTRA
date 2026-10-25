@@ -43,6 +43,10 @@ paths = ["Cargo.toml", ".cargo/**", "rust-toolchain.toml"]
 [locks.lockfile]
 mode = "regenerate"
 paths = ["Cargo.lock"]
+# Rewritten by `cargo xtask size --update`; growth still needs the `size-growth` label.
+[locks.baselines]
+mode = "regenerate"
+paths = ["tools/xtask/size-baseline.json"]
 [locks.ci]
 mode = "exclusive"
 paths = [".github/workflows/**", ".github/scripts/**"]
@@ -330,24 +334,25 @@ done = ["Areia Spiccato Fast and Vista report non-zero start ranges (coordinator
 
 [[task]]
 id = "P1.2"
-title = "Preload law: base + full start range, never shrink below the law"
+title = "Preload law: Kontakt DFD window (60 KB per channel + 2 × S.Mod), never shrink below it"
 phase = 1
 lane = "playback"
 size = "L"
 agent = "worker"
 deps = ["P1.1b", "P0.3b"]
-owns = ["crates/sampler-kontakt/src/stream.rs", "@v2rs", "src/sound/report.rs", "src/sound/v2/onset_diagnostics/runway.rs", "examples/dfd_eager.rs", "crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs", "crates/sampler-kontakt/src/stream_hint_tests.rs", "crates/sampler-kontakt/src/stream_onset_tests.rs", "crates/sampler-native/examples/stream_report.rs", "crates/sampler-uvi/examples/dynamic_source_witness.rs", "crates/sampler-kontakt/src/head_prepare.rs", "crates/sampler-kontakt/src/head_cache.rs", "crates/sampler-core/src/head_budget.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/prepare/**", "crates/sampler-core/tests/stream_start_runway.rs"]
+owns = ["crates/sampler-kontakt/src/stream.rs", "crates/sampler-kontakt/src/dfd_window.rs", "src/creator/nki.rs", "crates/sampler-kontakt/src/library.rs", "tools/corpus-health/src/load_audit.rs", "tools/probe/src/fixtures/**", "tools/probe/src/fixtures.rs", "tools/probe/tests/fixtures.rs", "@v2rs", "src/sound/report.rs", "src/sound/v2/onset_diagnostics/runway.rs", "examples/dfd_eager.rs", "crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs", "crates/sampler-kontakt/src/stream_hint_tests.rs", "crates/sampler-kontakt/src/stream_onset_tests.rs", "crates/sampler-native/examples/stream_report.rs", "crates/sampler-uvi/examples/dynamic_source_witness.rs", "crates/sampler-kontakt/src/head_prepare.rs", "crates/sampler-kontakt/src/head_cache.rs", "crates/sampler-core/src/head_budget.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/prepare/**", "crates/sampler-core/tests/stream_start_runway.rs"]
 docs = ["05-STREAM.md#1-the-preload-law"]
-goal = "Head length = base (60 KB-equivalent per channel, Kontakt DFD default) + the zone's start range from P1.1, instead of measured warm-cache latency; over budget never truncates silently."
+goal = "Head length = Kontakt's DFD window (dfd_window.rs: 60 KB per channel + 2 × S.Mod, 6 KiB granularity) instead of measured warm-cache latency; script offsets beyond S.Mod are ignored as in Kontakt; over budget never truncates silently; RAM at most 5% above Kontakt's windows (parity floor; P6.1c beats it)."
 steps = [
-  "Compute `StartRange` (P1.1, P1.1b) for every load; move the script-offset fold out of `InitialStartHints::with_script_offsets` into one shared function both paths call. Today `InitialStartHints` is only built when `policy.allow_cold_fallback` is set (crates/sampler-kontakt/src/stream.rs ~3069), and P1.3 deletes cold fallback: build the ranges unconditionally and make the head law read them.",
-  "Replace the latency-based head sizing (`fn head_frames(latency, rate, policy)`, stream.rs:814; `Prepared::head_frames` in prepare.rs is a residency readout, leave it) with `PreloadLaw { base, min, max }` per zone in source frames: frames = base + start_range.max_frames; unbounded → whole sample. `base` is Kontakt's DFD default, 60 KB of source data per sample (all channels): frames = 61440 / bytes_per_frame. Take bytes per frame from the reader header (plumb it through `open_required*`); where no header is available use 2 bytes per sample × channels and mark it with a `ponytail:` comment.",
-  "Delete `start_ranges_geometry` and its `include_offsets` flag (stream.rs ~858-900): it re-derives P1.1's sample-start routes; read `StartRange` instead. Remove the budget binary search in `bounded_attack_anchors`. Over budget: load continues, every zone keeps its law-sized head, and the load report lists the budget excess with the largest contributors. (Purge selection is a later UX task.)",
-  "Replace the fixed `StreamPolicy.max_step` cap (default 4.0, used in `zone_step`, stream.rs ~836) with the zone's real maximum pitch step from its mapping/tune range.",
-  "Keep heads in their current storage format in this task (format change is P6.1d)."
+  "Round 5 rework (PR #811). The round 1-4 law (61440 per sample + script StartRange, unbounded → whole sample) is wrong: measured 4.4 GB heads on Areia, 469 MB on Vista, 50 GB on ANALOG (OOM). Keep the rest of #811 (latency sizing, max_step, anchor tier and budget search deleted; bytes per frame from the header; zone_start_ranges shared fold).",
+  "Head per zone = `dfd_window::window(Input { .. })` (crates/sampler-kontakt/src/dfd_window.rs, today dead code: wire it, do not re-derive it). P = `effective_preload(authored dfd_channel_preload_size, override)`; C, bits from the header; pos = zone start (reversed zones: `reverse_position = -zone start`, because the routine reads `-reverse_position` there); off = the zone's S.Mod range in frames (`sample_start_mod_range`; -1/unset → 0); reverse as authored. Head frames = |W| / F (W is negative for reverse zones; the sign is only the direction). Delete `PRELOAD_BASE_BYTES`/`preload_head` in favour of it. Formats without S.Mod pass their declared start-modulation range as `off` (native/UVI StartRange from the format, not from scripts).",
+  "Script and CC sample offsets on streamed zones: an offset beyond the zone's S.Mod range is ignored (the voice starts at the zone start), as the KSP manual specifies for play_note in DFD mode. Apply it once where every script offset reaches the voice start (find it with `graft ask`; post a scope request naming the file). Script offset bounds (P1.1b) no longer extend heads; keep them only as a load diagnostic for offsets that will be ignored.",
+  "Over budget: load continues with law-sized heads and the report lists the excess and the largest zones (as in round 2).",
+  "Fixture cache: key the generated probe fixtures (tools/probe/src/fixtures.rs) by a hash of their generated inputs, not name + VERSION, so a local edit can never test stale output; a test changes one input and asserts a new directory.",
+  "Keep heads in their current storage format in this task (format change is P6.1c), but report packed (resident) bytes, not decoded f32 bytes, in `head_bytes`."
 ]
-gate = ["build-slot cargo test -p sampler-kontakt stream", "build-slot cargo test -p sampler-core --lib prepare", "build-slot cargo test -p kontra-probe cc_start"]
-done = ["PR reports total head bytes before/after on the cc_start and key_position fixtures and the coordinator checks Areia/Vista RAM against v1.", "Probe C9 passes on `cc_start` and `key_position` fixtures.", "Coordinator: Areia head frames reported ≥ base + CC113 range."]
+gate = ["build-slot cargo test -p sampler-kontakt stream", "build-slot cargo test -p sampler-core --lib prepare", "build-slot cargo test -p kontra-probe --test fixtures cc_start -- --include-ignored", "build-slot cargo test -p kontra-probe --test fixtures key_position -- --include-ignored", "build-slot cargo test -p kontakto --lib snapshot_reuse"]
+done = ["Probe cc_start and key_position pass every contract they passed in round 4 (C1, C5, C8, C9); fixtures that need offsets set their zones' S.Mod to cover them.", "Coordinator: Areia, Vista and ANALOG resident head bytes at most 5% above the sum of Kontakt windows (dfd_window over the same resident zones, groups not purged at load; per sample, the union of its zones' window ranges), and C1 on Areia and Vista no worse than G0."]
 
 [[task]]
 id = "P1.3"
@@ -405,10 +410,11 @@ steps = [
   "Probe: for each silent note in C6 and C8, report the engine's reason. `sampler_core::why_silent(key, &records, &faults)` (crates/sampler-core/src/diagnose.rs) over the selection records (`take_selection_records`) and script faults. Expose them through the smallest kontakto API (there is already `scan_selections` in src/sound/v2.rs); no new trait. `why_silent` returns None when selection accepted a region but no voice started (start condition, `SourceUnavailable` in sample_revision.rs, voice allocation): extend it to cover those stages so the probe never prints a silent note without a cause.",
   "Areia `Spiccato Fast` live: keys 48/50/52/53 start 0 voices. The instrument intends them to play: zones keys 0..=54 (root 55) exist, and the script's only ignore_event branch is gated by in_range(55..97), so it never runs for these keys (triage on #696's thread, 2026-10-25). Name the rejection with the probe, then fix it where all formats route through (selection, start conditions or sample binding), not per instrument.",
   "Areia dense: all 64 chords start 0 voices, including keys 55+, while live plays 63/64. Name the cause with the probe and fix it. If it is a separate mechanism from the low keys, say so in the PR.",
+  "Authored start randomisation: a zone with S.Mod and no SampleStart route starts 0..S.Mod frames late by design (VoiceModulation::random_delay, measured on Horns KS). Vista 4 Violas has S.Mod on most zones and a start route on only 136 of 8,304, and its G0 C1 errors (1,000-3,000 frames, varying between runs) fit that. C1/C9 must report such notes as authored delay (expected window), not as late starts, and must fail only outside it. Confirm on Vista before changing the contract.",
   "A fix outside owns: post a scope request with the file the probe named."
 ]
 gate = ["build-slot cargo test -j 4 -p kontra-probe", "kontra-probe on Areia Spiccato Fast, live and dense (coordinator runs it; paste C6/C8 before and after)"]
-done = ["C6 and C8 print a cause for every silent note.", "Areia live C6 and dense C8 pass, or the remaining failure has a named cause and a follow-up task."]
+done = ["C6 and C8 print a cause for every silent note.", "A probe unit test: a zone with S.Mod and no SampleStart route passes C1/C9 within its authored delay window and fails outside it; Vista 4 Violas C1/C9 rerun with the result in the PR.", "Areia live C6 and dense C8 pass, or the remaining failure has a named cause and a follow-up task."]
 
 [[task]]
 id = "P1.5"
@@ -641,7 +647,7 @@ owns = ["crates/base/macros/**"]
 docs = ["08-MACROS.md#1-inventory", "08-MACROS.md#2-examples"]
 goal = "The first two derives, with trybuild-free tests (expand into a test module and assert behaviour)."
 steps = [
-  "Create the proc-macro crate (`proc-macro = true`, syn/quote/proc-macro2 from `[workspace.dependencies]`) with `vectors!` only (08-MACROS.md §1): `vectors!(\"vectors/*.json\", |v| run(v))` expands to one `#[test]` per matching file, named after the file, reading the tolerance from the file. Glob at compile time relative to `CARGO_MANIFEST_DIR`; a glob matching nothing is a compile error.",
+  "Create the proc-macro crate (`proc-macro = true`, syn/quote/proc-macro2 from `[workspace.dependencies]`) with `vectors!` only (08-MACROS.md §1): `vectors!(\"vectors/*.json\", |v| run(v))` expands to one `#[test]` per matching file, named after the file, reading the tolerance from the file. Glob at compile time relative to `CARGO_MANIFEST_DIR`; a glob matching nothing is a compile error. Embed each file with `include_str!` in the expansion so editing a vector rebuilds the test (adding a new file needs a touch of the calling file; note this in the macro's doc).",
   "Errors via `syn::Error::new_spanned`. Test with `trybuild`-free unit tests of the expansion plus one integration test crate under tests/ that uses it on two tiny JSON files.",
   "Not in this task: `Stats` (P6.4c, where its only user lives), `Config` (dropped: 08-MACROS.md §1), `Params` (P4.5), `modules!` (P5.0)."
 ]
@@ -662,7 +668,7 @@ docs = ["03-DSP.md#4-laws", "01-LAYOUT.md#1-the-crate-tree"]
 goal = "SampleTime/Frames/Tempo types and the Law enum with eval and TOML parsing, written fresh from the docs; existing code adopts them in later tasks."
 steps = [
   "kontra-time: `SampleTime(u64)`, `Frames(u32)`, `Tempo`, `Transport`, beat↔sample conversion; mirror semantics of the existing sampler-core time types (`graft ask \"sample time type\"`).",
-  "kontra-law: `Law` exactly as in 03-DSP.md §4, `eval(x) -> f32`, `ModuleLaw`, TOML schema with `tolerance_db`; property tests: monotonic tapers stay monotonic, tables interpolate endpoints exactly.",
+  "kontra-law: `Law` exactly as in 03-DSP.md §4, `eval(x) -> f32`, `ModuleLaw`, TOML schema with `tolerance_db`; property checks without a new dependency (no proptest; a dense sweep over x in a plain #[test]): monotonic tapers stay monotonic, tables interpolate endpoints exactly. TOML via the workspace `toml` crate.",
   "`laws!` as a `macro_rules!` in kontra-law (not a proc macro): `laws!(\"laws\")`-style list of files → `pub const` ids, `include_str!` loaders and one validation test that parses every law. Each DSP family calls it on its own `laws/` folder.",
   "Do not change existing crates in this task."
 ]
@@ -756,19 +762,25 @@ done = ["Net line count negative; tests unchanged and green."]
 
 [[task]]
 id = "P4.8"
-title = "kontra-events from sampler-midi + src/sound/event.rs + held keys"
+title = "kontra-events from src/sound/event.rs and the plain-data receiver wire types"
 phase = 4
 lane = "structure"
 size = "M"
 agent = "worker"
 draft = true
 deps = ["P4.0", "P4.2"]
-owns = ["crates/sampler-midi/**", "@corelib", "docs/architecture-v3/01-LAYOUT.md", "crates/model/events/**", "src/sound/event.rs", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
+owns = ["@corelib", "crates/sampler-core/src/gate.rs", "crates/sampler-core/src/receiver/channel_event.rs", "crates/sampler-core/src/receiver/event_value.rs", "crates/sampler-core/src/receiver/external.rs", "crates/sampler-core/src/receiver/task.rs", "crates/sampler-core/src/receiver/types.rs", "tools/xtask/dag.toml", "docs/architecture-v3/01-LAYOUT.md", "crates/model/events/**", "src/sound/event.rs", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
 docs = ["01-LAYOUT.md#5-current--new-mapping", "02-ENGINE.md#2-one-event-type-one-queue"]
-goal = "One event model crate. Move sampler-midi (git mv + alias), then move src/sound/event.rs types in with a re-export."
-steps = ["git mv crates/sampler-midi crates/model/events; package kontra-events with alias.", "Move event.rs content; leave `pub use kontra_events::*` in src/sound/event.rs.", "held_keys stays in src/plugin until P6.4 (ledger)."]
+goal = "One event model crate depending on no KONTRA crate except kontra-time: src/sound/event.rs plus the receiver wire types that are plain data, re-exported from their old homes. sampler-midi stays: it is a receiver adapter that owns OwnedReceiver and drives Runtime (closure of 49 sampler-core names, #715 comment 6397657514), so it moves with the engine in P6.4c."
+steps = [
+  "Create crates/model/events (package kontra-events, depends only on kontra-time if anything) and move src/sound/event.rs in; leave `pub use kontra_events::*` in src/sound/event.rs.",
+  "Move the sampler-core receiver wire types whose definitions are plain data (no Runtime, OwnedReceiver, receiver/* or behavior/* references), e.g. ChannelAddress, ChannelScope, ExpressionId, NoteId, NotePitch, RECEIVER_PER_NOTE_CENTER and the Raw*/Receiver* value types. Check each definition (`graft skeleton`) before moving; anything with methods that touch engine state stays. Leave `pub use kontra_events::{...}` in sampler-core/src/lib.rs so every caller compiles unchanged. Pure moves: no behaviour or signature change.",
+  "In tools/xtask/dag.toml [allowed], add `kontra-events = [\"kontra-time\"]` (or `[]`) and the re-export edges `sampler-core -> kontra-events` and `kontakto -> kontra-events` (src/sound/event.rs re-exports it); no other edge.",
+  "Do not touch crates/sampler-midi: it keeps its sampler-core dependency until P6.4c replaces Runtime.",
+  "held_keys stays in src/plugin until P6.4b (ledger)."
+]
 gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-events"]
-done = ["kontra-events depends on no KONTRA crate (`cargo xtask deps-check`); sampler-core and sampler-midi callers unchanged thanks to re-exports.", "Moves plus re-exports only."]
+done = ["kontra-events depends on no KONTRA crate except kontra-time (`cargo xtask deps-check`); sampler-core and src callers unchanged thanks to re-exports.", "Moves plus re-exports only; list each moved type and why it is plain data in the PR body."]
 
 [[task]]
 id = "P4.9"
@@ -1140,7 +1152,7 @@ docs = ["05-STREAM.md#2-the-store", "05-STREAM.md#5-memory-targets"]
 goal = "Two instances share one preload; preloads stored in source format; earliest-deadline I/O; two stream buffers per voice."
 steps = ["Implement Store/Blob/PageCache/IoService; measure memory before/after on Areia (coordinator)."]
 gate = ["build-slot cargo test -p kontra-stream", "build-slot cargo test -p kontra-probe"]
-done = ["Memory table in 05-STREAM.md filled with measurements."]
+done = ["Memory table in 05-STREAM.md filled with measurements.", "Resident head bytes at most 60% of Kontakt's windows on Areia, Vista and ANALOG (05-STREAM §1), with C1 and C8 no worse than before the store.", "Load RSS and per-voice CPU on the same three instruments reported against v1 (~/.cache/kontra-v1) and the P1.2 build; both lower."]
 
 [[task]]
 id = "P6.2"
@@ -1231,10 +1243,10 @@ size = "L"
 agent = "worker"
 draft = true
 deps = ["P6.4b"]
-owns = ["crates/engine/engine/**", "crates/base/macros/**", "crates/sampler-core/**", "@v2rs"]
+owns = ["crates/engine/engine/**", "crates/base/macros/**", "crates/sampler-core/**", "crates/sampler-midi/**", "crates/model/events/**", "tools/xtask/dag.toml", "@v2rs"]
 docs = ["02-ENGINE.md#1-the-engine-struct"]
 goal = "sampler-core is reduced to re-exports (or deleted); counters live in one Stats."
-steps = ["Move remaining Runtime state into the 10 owners.", "Stats: `RuntimeStats` is one struct today. Add `#[derive(Stats)]` to kontra-macros only if it deletes more lines than it adds across its users (08-MACROS.md rule); otherwise a plain `Copy` struct with `Default`."]
+steps = ["sampler-midi (MIDI1/UMP/MPE receiver adapter over Runtime and OwnedReceiver) moves into kontra-engine once Engine replaces Runtime (it owns receiver state, so not kontra-events, which sits below the engine); any plain-data wire types it still defines go to kontra-events. P4.8 left it in place.", "Move remaining Runtime state into the 10 owners.", "Stats: `RuntimeStats` is one struct today. Add `#[derive(Stats)]` to kontra-macros only if it deletes more lines than it adds across its users (08-MACROS.md rule); otherwise a plain `Copy` struct with `Default`."]
 gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-probe"]
 done = ["sampler-core production lines < 1k."]
 

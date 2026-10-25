@@ -24,7 +24,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 |---|---|---|---|---|---|
 | P1.1 | Reachable start range per zone (S.Mod, CC/RTC → start) | playback | M | worker | P0.3 |
 | P1.1b | Script play_note offsets join the zone start range | playback | M | worker | P1.1 |
-| P1.2 | Preload law: base + full start range, never shrink below the law | playback | L | worker | P1.1b, P0.3b |
+| P1.2 | Preload law: Kontakt DFD window (60 KB per channel + 2 × S.Mod), never shrink below it | playback | L | worker | P1.1b, P0.3b |
 | P1.3 | No cold holds: late data is silence, the cursor keeps time | playback | M | worker | P1.2 |
 | P1.4 | One start batch per callback instant; delete start runway and per-family cohorts | playback | M | worker | P1.3 |
 | P1.4b | Silent notes name their cause; fix Areia low keys and dense chords | playback | M | worker | P1.2 |
@@ -61,7 +61,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | P4.5 | #[derive(Params)] in kontra-macros | structure | M | worker | P4.1, P4.2 |
 | P4.6 | Parameter catalog: every DSP module's params in kontra-params (draft) | structure | L | worker | P4.5 |
 | P4.7 | Point the 5 parameter registries at the catalog; delete 4 (draft) | structure | L | worker | P4.6 |
-| P4.8 | kontra-events from sampler-midi + src/sound/event.rs + held keys (draft) | structure | M | worker | P4.0, P4.2 |
+| P4.8 | kontra-events from src/sound/event.rs and the plain-data receiver wire types (draft) | structure | M | worker | P4.0, P4.2 |
 | P4.9 | kontra-ui-model from sampler-ui-ir + core widget/script_params + ControlStore (draft) | structure | M | worker | P4.0, P2.1, P4.7 |
 | P4.10 | Move sampler-ir → crates/model/ir (kontra-ir) | structure | S | worker | P4.0, P4.3 |
 | P4.11 | kontra-protocol: Command, Publications, Retired types | structure | S | worker | P4.0, P4.9 |

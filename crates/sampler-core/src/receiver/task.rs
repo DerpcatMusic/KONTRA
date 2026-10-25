@@ -6,14 +6,7 @@ use crate::controller_event::{CapturedControllerTarget,ControllerEvent};
 use super::external::{ExternalInputId,Phase};
 use sampler_ir::SourceEventProcessorId;
 
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum SourceTaskFamily { Init, Transport, Spawned, Run }
-#[derive(Clone,Copy,Debug,PartialEq)]
-pub struct SourceTaskHostContext {
-    /// Actual Runtime-local execution F; the rack maps its installation origin
-    /// before admission. This is not an alias for the absolute host rack frame.
-    pub frame:u64,pub tempo:f64,pub playing:bool
-}
+pub use kontra_events::{NonMusicalTaskOrigin, SourceTaskCreator, SourceTaskFamily, SourceTaskHostContext};
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub enum SourceTaskReason { Init(SourceTaskHostContext),Transport(SourceTaskHostContext),Spawned,Run }
 impl SourceTaskReason {
@@ -25,13 +18,6 @@ impl SourceTaskReason {
             Ok(())
         },_=>Ok(())}}
 }
-/// A task has no triggering physical note. Event means its invocation genuinely
-/// came from an event callback; it is not a lease or an expression identity.
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum SourceTaskCreator {None,Event,NonMusicalEvent(NonMusicalTaskOrigin)}
-/// Precise nonmusical callback provenance; never a physical Note/Receiver lease.
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum NonMusicalTaskOrigin {RestoredWidget}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum PreparedGlobalTaskOrigin {None,RestoredWidgetEvent}
 impl PreparedGlobalTaskOrigin {
