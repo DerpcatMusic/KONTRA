@@ -17,7 +17,8 @@ fn verdict(fixture: Fixture, id: &str, pattern: Pattern) -> Verdict {
     let path = fixture.build().expect("fixture builds");
     let mut session = Session::load(&path, RATE)
         .expect("fixture loads")
-        .expect_voices(fixture.expected_voices());
+        .expect_voices(fixture.expected_voices())
+        .expect_ui_writes(fixture.ui_writes_per_key());
     check(&mut session, id, pattern).expect("contract runs")
 }
 
@@ -69,7 +70,7 @@ fn cc_start_chords_start_in_their_first_block() {
 }
 
 #[test]
-#[ignore = "fails until P1.2: offline and real time differ when play_note offsets are used (null about -3 dB); no task owns this yet"]
+#[ignore = "fails until P1.3: offline and real time differ when play_note offsets are used (null about -3 dB)"]
 fn cc_start_offline_matches_real_time() {
     assert_passes(&verdict(Fixture::CcStart, "C5", Pattern::Live));
 }
@@ -95,7 +96,7 @@ fn key_position_block_size_null_passes() {
 }
 
 #[test]
-#[ignore = "fails until P1.2: offline and real time differ when play_note offsets are used (null -5.3 dB); no task owns this yet"]
+#[ignore = "fails until P1.3: offline and real time differ when play_note offsets are used (null -5.3 dB)"]
 fn key_position_offline_matches_real_time() {
     assert_passes(&verdict(Fixture::KeyPosition, "C5", Pattern::Live));
 }
@@ -117,6 +118,25 @@ fn dense_has_one_voice_per_key_and_null_passes() {
     assert_passes(&verdict(Fixture::Dense, "C5", Pattern::Live));
 }
 
+/// Four keys per chord, one voice each: C6 counts voices per key, so the chord's
+/// four voices pass. Live C6 alone never exercised a chord.
+#[test]
+fn dense_chords_have_one_voice_per_key() {
+    assert_passes(&verdict(Fixture::Dense, "C6", Pattern::Dense));
+}
+
+/// Dense has no UI load to measure, so C7 is unsupported rather than a pass.
+#[test]
+fn dense_script_load_is_unsupported() {
+    let verdict = verdict(Fixture::Dense, "C7", Pattern::Live);
+    assert_eq!(verdict.pass, None, "{}", verdict.detail);
+    assert!(
+        verdict.detail.starts_with("unsupported"),
+        "{}",
+        verdict.detail
+    );
+}
+
 #[test]
 fn streamed_plays_every_note_on_time() {
     assert_passes(&verdict(Fixture::Streamed, "C1", Pattern::Live));
@@ -126,6 +146,18 @@ fn streamed_plays_every_note_on_time() {
 fn streamed_null_tests_pass() {
     assert_passes(&verdict(Fixture::Streamed, "C4", Pattern::Live));
     assert_passes(&verdict(Fixture::Streamed, "C5", Pattern::Live));
+}
+
+/// Streamed has no script and no UI load: C7 is unsupported, not a fail.
+#[test]
+fn streamed_script_load_is_unsupported() {
+    let verdict = verdict(Fixture::Streamed, "C7", Pattern::Live);
+    assert_eq!(verdict.pass, None, "{}", verdict.detail);
+    assert!(
+        verdict.detail.starts_with("unsupported"),
+        "{}",
+        verdict.detail
+    );
 }
 
 #[test]

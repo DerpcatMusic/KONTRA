@@ -118,19 +118,21 @@ fn run() -> Result<bool> {
         println!("{HELP}");
         return Ok(true);
     };
-    let (instrument, expected) = match args.input {
+    let (instrument, fixture) = match args.input {
         Input::File(path) => (path, None),
         Input::Fixture(fixture) => {
             let gaps = fixture.gaps();
             if !gaps.is_empty() {
                 println!("fixture {fixture} is missing: {gaps}");
             }
-            (fixture.build()?, Some(fixture.expected_voices()))
+            (fixture.build()?, Some(fixture))
         }
     };
     let mut session = Session::load(&instrument, RATE)?;
-    if let Some(count) = expected {
-        session = session.expect_voices(count);
+    if let Some(fixture) = fixture {
+        session = session
+            .expect_voices(fixture.expected_voices())
+            .expect_ui_writes(fixture.ui_writes_per_key());
     }
     let report = session.play(args.pattern, Mode::RealTime, BLOCK)?;
     let audible = report

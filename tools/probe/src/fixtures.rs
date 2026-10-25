@@ -108,6 +108,15 @@ impl Fixture {
         }
     }
 
+    /// UI writes each played key drives, as the authored KSP intends: the
+    /// `set_control_par` count in [`ksp::UI_LOAD`]. Zero when there is no UI load.
+    pub fn ui_writes_per_key(self) -> usize {
+        match self {
+            Self::UiLoad => 300,
+            Self::CcStart | Self::KeyPosition | Self::Dense | Self::Streamed => 0,
+        }
+    }
+
     /// Writes the instrument if it is not there yet and returns its `.nki` path.
     ///
     /// # Errors
