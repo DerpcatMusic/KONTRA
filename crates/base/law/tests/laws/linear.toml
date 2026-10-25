@@ -1,0 +1,6 @@
+tolerance_db = 0.1
+
+[law]
+kind = "linear"
+lo = 0.0
+hi = 1.0
