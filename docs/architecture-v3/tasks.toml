@@ -767,7 +767,7 @@ draft = true
 deps = ["P4.0", "P4.2"]
 owns = ["@corelib", "tools/xtask/dag.toml", "docs/architecture-v3/01-LAYOUT.md", "crates/model/events/**", "src/sound/event.rs", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
 docs = ["01-LAYOUT.md#5-current--new-mapping", "02-ENGINE.md#2-one-event-type-one-queue"]
-goal = "One event model crate with no KONTRA dependency: src/sound/event.rs plus the receiver wire types that are plain data, re-exported from their old homes. sampler-midi stays: it is a receiver adapter that owns OwnedReceiver and drives Runtime (closure of 49 sampler-core names, #715 comment 6397657514), so it moves with the engine in P6.4c."
+goal = "One event model crate depending on no KONTRA crate except kontra-time: src/sound/event.rs plus the receiver wire types that are plain data, re-exported from their old homes. sampler-midi stays: it is a receiver adapter that owns OwnedReceiver and drives Runtime (closure of 49 sampler-core names, #715 comment 6397657514), so it moves with the engine in P6.4c."
 steps = [
   "Create crates/model/events (package kontra-events, depends only on kontra-time if anything) and move src/sound/event.rs in; leave `pub use kontra_events::*` in src/sound/event.rs.",
   "Move the sampler-core receiver wire types whose definitions are plain data (no Runtime, OwnedReceiver, receiver/* or behavior/* references), e.g. ChannelAddress, ChannelScope, ExpressionId, NoteId, NotePitch, RECEIVER_PER_NOTE_CENTER and the Raw*/Receiver* value types. Check each definition (`graft skeleton`) before moving; anything with methods that touch engine state stays. Leave `pub use kontra_events::{...}` in sampler-core/src/lib.rs so every caller compiles unchanged. Pure moves: no behaviour or signature change.",
@@ -1239,10 +1239,10 @@ size = "L"
 agent = "worker"
 draft = true
 deps = ["P6.4b"]
-owns = ["crates/engine/engine/**", "crates/base/macros/**", "crates/sampler-core/**", "crates/sampler-midi/**", "crates/model/events/**", "@v2rs"]
+owns = ["crates/engine/engine/**", "crates/base/macros/**", "crates/sampler-core/**", "crates/sampler-midi/**", "crates/model/events/**", "tools/xtask/dag.toml", "@v2rs"]
 docs = ["02-ENGINE.md#1-the-engine-struct"]
 goal = "sampler-core is reduced to re-exports (or deleted); counters live in one Stats."
-steps = ["sampler-midi (MIDI1/UMP/MPE receiver adapter over Runtime and OwnedReceiver) moves into kontra-events or kontra-engine once Engine replaces Runtime; P4.8 left it in place.", "Move remaining Runtime state into the 10 owners.", "Stats: `RuntimeStats` is one struct today. Add `#[derive(Stats)]` to kontra-macros only if it deletes more lines than it adds across its users (08-MACROS.md rule); otherwise a plain `Copy` struct with `Default`."]
+steps = ["sampler-midi (MIDI1/UMP/MPE receiver adapter over Runtime and OwnedReceiver) moves into kontra-engine once Engine replaces Runtime (it owns receiver state, so not kontra-events, which sits below the engine); any plain-data wire types it still defines go to kontra-events. P4.8 left it in place.", "Move remaining Runtime state into the 10 owners.", "Stats: `RuntimeStats` is one struct today. Add `#[derive(Stats)]` to kontra-macros only if it deletes more lines than it adds across its users (08-MACROS.md rule); otherwise a plain `Copy` struct with `Default`."]
 gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-probe"]
 done = ["sampler-core production lines < 1k."]
 
