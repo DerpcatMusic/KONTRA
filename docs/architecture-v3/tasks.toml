@@ -643,7 +643,7 @@ owns = ["crates/base/macros/**"]
 docs = ["08-MACROS.md#1-inventory", "08-MACROS.md#2-examples"]
 goal = "The first two derives, with trybuild-free tests (expand into a test module and assert behaviour)."
 steps = [
-  "Create the proc-macro crate (`proc-macro = true`, syn/quote/proc-macro2 from `[workspace.dependencies]`) with `vectors!` only (08-MACROS.md §1): `vectors!(\"vectors/*.json\", |v| run(v))` expands to one `#[test]` per matching file, named after the file, reading the tolerance from the file. Glob at compile time relative to `CARGO_MANIFEST_DIR`; a glob matching nothing is a compile error.",
+  "Create the proc-macro crate (`proc-macro = true`, syn/quote/proc-macro2 from `[workspace.dependencies]`) with `vectors!` only (08-MACROS.md §1): `vectors!(\"vectors/*.json\", |v| run(v))` expands to one `#[test]` per matching file, named after the file, reading the tolerance from the file. Glob at compile time relative to `CARGO_MANIFEST_DIR`; a glob matching nothing is a compile error. Embed each file with `include_str!` in the expansion so editing a vector rebuilds the test (adding a new file needs a touch of the calling file; note this in the macro's doc).",
   "Errors via `syn::Error::new_spanned`. Test with `trybuild`-free unit tests of the expansion plus one integration test crate under tests/ that uses it on two tiny JSON files.",
   "Not in this task: `Stats` (P6.4c, where its only user lives), `Config` (dropped: 08-MACROS.md §1), `Params` (P4.5), `modules!` (P5.0)."
 ]
@@ -664,7 +664,7 @@ docs = ["03-DSP.md#4-laws", "01-LAYOUT.md#1-the-crate-tree"]
 goal = "SampleTime/Frames/Tempo types and the Law enum with eval and TOML parsing, written fresh from the docs; existing code adopts them in later tasks."
 steps = [
   "kontra-time: `SampleTime(u64)`, `Frames(u32)`, `Tempo`, `Transport`, beat↔sample conversion; mirror semantics of the existing sampler-core time types (`graft ask \"sample time type\"`).",
-  "kontra-law: `Law` exactly as in 03-DSP.md §4, `eval(x) -> f32`, `ModuleLaw`, TOML schema with `tolerance_db`; property tests: monotonic tapers stay monotonic, tables interpolate endpoints exactly.",
+  "kontra-law: `Law` exactly as in 03-DSP.md §4, `eval(x) -> f32`, `ModuleLaw`, TOML schema with `tolerance_db`; property checks without a new dependency (no proptest; a dense sweep over x in a plain #[test]): monotonic tapers stay monotonic, tables interpolate endpoints exactly. TOML via the workspace `toml` crate.",
   "`laws!` as a `macro_rules!` in kontra-law (not a proc macro): `laws!(\"laws\")`-style list of files → `pub const` ids, `include_str!` loaders and one validation test that parses every law. Each DSP family calls it on its own `laws/` folder.",
   "Do not change existing crates in this task."
 ]

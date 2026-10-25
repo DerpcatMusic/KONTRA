@@ -44,10 +44,12 @@ rules. The full manual is `docs/architecture-v3/12-WORKFLOW.md`.
   plain `cargo`). Never set `CARGO_TARGET_DIR`. Crate-scoped commands only:
   no workspace builds, corpus runs or plugin bundles, except commands the brief's
   gate lists explicitly (for example `cargo check --workspace` in P4.0).
-- Formatting: `rustfmt --edition 2024 <files you changed>`. Never `cargo fmt` on a
-  whole crate; it rewrites unrelated files. Clippy: `cargo clippy -p <crate>
-  --all-targets --no-deps`; the bar is no new warnings in files you changed.
-  Once `cargo xtask ci` exists (task P0.7), run it instead; it does all of this.
+- Local gate: commit, then `KONTRA_CARGO='build-slot cargo' cargo xtask ci --base origin/v3`
+  (contributors: `cargo xtask ci`). It runs rustfmt and clippy on the files you changed,
+  their packages' tests, and the deps, debt and size ratchets, as CI does. Never
+  `cargo fmt` on a whole crate; it rewrites unrelated files.
+- No `#[allow]` for unwrap/expect/panic/indexing in test code: clippy.toml already
+  allows them, and every new `#[allow]` grows the debt ratchet (P4.1 tripped it).
 - `Cargo.lock`: keep only additions your change needs.
 
 ## 3. Proving it

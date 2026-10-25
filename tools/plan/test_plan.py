@@ -70,6 +70,10 @@ class Manifest(unittest.TestCase):
         self.assertIn("ksp_symbols.py sync", brief)
         self.assertNotIn("ksp_symbols.py sync", plan.brief(self.plan, "P0.7"))
 
+    def test_any_task_may_touch_the_lockfile(self):
+        self.assertTrue(plan.match("Cargo.lock", plan.allowed(self.plan, "P4.1")))
+        self.assertFalse(plan.match("Cargo.toml", plan.allowed(self.plan, "P4.1")))
+
     def test_slug(self):
         self.assertEqual(plan.slug("5. Current → new mapping"), "5-current--new-mapping")
         self.assertEqual(plan.slug("Phase 1–3: playback (users hear it)"), "phase-13-playback-users-hear-it")
