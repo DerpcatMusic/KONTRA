@@ -768,7 +768,10 @@ fn c3_verdict(report: &Report, pattern: Pattern, expected: &[Option<usize>]) -> 
         "{} notes, {voices} voices with a first frame; worst spread {worst} frame(s) between voices of one start, tolerance {C3_TOLERANCE}; notes with missing voices: {missing:?}",
         report.notes.len(),
     );
-    if missing.is_empty() && worst <= C3_TOLERANCE {
+    if missing.is_empty() && voices == 0 {
+        // Every note below the range: nothing was measured, so C3 cannot pass.
+        Verdict::unsupported("C3", pattern, &format!("no attack voice to measure; {detail}"))
+    } else if missing.is_empty() && worst <= C3_TOLERANCE {
         Verdict::passed("C3", pattern, detail)
     } else {
         Verdict::failed("C3", pattern, detail)
@@ -1191,7 +1194,12 @@ mod c3_tests {
     fn c3_skips_a_note_with_no_configured_voice() {
         // Below the zone range: no voice is configured, and none is expected.
         let below_range = report(vec![]);
-        assert_eq!(c3_verdict(&below_range, Pattern::Live, &[Some(0)]).pass, Some(true));
+        // Alone it measures nothing, so it is unsupported rather than a pass.
+        assert_eq!(c3_verdict(&below_range, Pattern::Live, &[Some(0)]).pass, None);
+        // Next to a measured note it is skipped and the run passes.
+        let mut mixed = report(vec![(1000, 1000); 3]);
+        mixed.notes.push(NoteReport { step: 1, keys: vec![40], scheduled: 9000, ..mixed.notes[0].clone() });
+        assert_eq!(c3_verdict(&mixed, Pattern::Live, &[Some(3), Some(0)]).pass, Some(true));
     }
 
     #[test]
