@@ -3590,7 +3590,6 @@ fn stream_policy_for_memory(
         head_budget,
         allow_cold_fallback: true,
         block_frames: super::MAX_BLOCK,
-        max_step: 16.0,
         voices: MAX_VOICES,
         ..Default::default()
     }

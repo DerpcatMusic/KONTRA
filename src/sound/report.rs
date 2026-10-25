@@ -318,11 +318,6 @@ pub struct StreamStartup {
     /// Base forward/reverse attacks, excluding the full possible offset union.
     pub onset_ranges: usize,
     pub covered_onset_ranges: usize,
-    /// A quota-selected shorter output horizon, not the originally requested
-    /// storage-latency horizon. None means this fallback was not selected.
-    pub selected_anchor_head_frames: Option<usize>,
-    pub anchor_ranges: usize,
-    pub covered_anchor_ranges: usize,
     /// Proved non-loop Constant onset windows at the original requested horizon.
     pub hint_ranges: usize,
     pub covered_hint_ranges: usize,
@@ -348,7 +343,6 @@ impl StreamStartup {
     pub fn of(streamer: &sampler_kontakt::Streamer, assets: &[sampler_core::Pcm], report: &sampler_kontakt::StreamReport) -> Self {
         let readiness = streamer.head_readiness(assets);
         let onsets = streamer.onset_readiness(assets);
-        let anchors = streamer.anchor_readiness(assets);
         let hints = streamer.hint_readiness(assets);
         let selected_hints = streamer.selected_hint_readiness(assets);
         Self {
@@ -356,9 +350,6 @@ impl StreamStartup {
             covered_ranges: readiness.covered_ranges,
             onset_ranges: onsets.ranges,
             covered_onset_ranges: onsets.covered_ranges,
-            selected_anchor_head_frames: streamer.selected_anchor_head_frames(),
-            anchor_ranges: anchors.as_ref().map_or(0,|r|r.ranges),
-            covered_anchor_ranges: anchors.as_ref().map_or(0,|r|r.covered_ranges),
             hint_ranges: hints.as_ref().map_or(0,|r|r.ranges),
             covered_hint_ranges: hints.as_ref().map_or(0,|r|r.covered_ranges),
             hint_source_frames: hints.as_ref().map_or(0,|r|r.source_frames),
@@ -379,13 +370,10 @@ impl StreamStartup {
 
     pub fn warning(&self) -> Option<String> {
         self.fallback.as_ref().map(|why| {
-            let anchors=self.selected_anchor_head_frames.map(|frames|format!(
-                " Shorter attack anchors: {} of {}, covering {frames} output frames.",
-                self.covered_anchor_ranges,self.anchor_ranges)).unwrap_or_default();
             let hints=self.selected_hint_head_frames.map(|frames|format!(
                 " Constant onset windows: {} of {}, covering {frames} output frames.",
                 self.covered_selected_hint_ranges,self.selected_hint_ranges)).unwrap_or_default();
-            format!("Attack preload budget exceeded: {why}. Resident start ranges: {} of {}. Base attacks: {} of {}.{anchors}{hints} Uncached starts may wait for disk reads.",
+            format!("Attack preload budget exceeded: {why}. Resident start ranges: {} of {}. Base attacks: {} of {}.{hints} Uncached starts may wait for disk reads.",
                 self.covered_ranges,self.ranges,self.covered_onset_ranges,self.onset_ranges)
         })
     }
