@@ -9,14 +9,10 @@ struct Probe {
     voice: usize,
     /// Owning immutable generation, which may become retired before cleanup.
     plan: crate::PlanId,
-    family: (usize, u64),
+    /// Scheduled start sample. Every voice that starts at this instant is one
+    /// batch, whatever its family, mic group or note: they start together or wait together.
     at: u64,
     ready: bool,
-}
-impl Probe {
-    fn cohort(self) -> (usize, u64, u64) {
-        (self.family.0, self.family.1, self.at)
-    }
 }
 
 pub(super) struct Storage {
@@ -117,20 +113,19 @@ impl Runtime {
             self.onsets.probes.push(Probe {
                 voice: i,
                 plan: n.plan,
-                family: (v.family.0.index, v.family.0.generation),
                 at: v.start_at,
                 ready,
             });
         }
-        // In-place worst-case O(V log V), no family-by-voice scans or heap work.
-        // A held family never delays a different deadline, note or release family.
-        self.onsets.probes.sort_unstable_by_key(|p| p.cohort());
+        // In-place worst-case O(V log V), no heap work. A held batch never delays a
+        // different start instant.
+        self.onsets.probes.sort_unstable_by_key(|p| p.at);
         let mut begin = 0;
         while begin < self.onsets.probes.len() {
-            let key = self.onsets.probes[begin].cohort();
+            let key = self.onsets.probes[begin].at;
             let mut end = begin + 1;
             let mut ready = self.onsets.probes[begin].ready;
-            while end < self.onsets.probes.len() && self.onsets.probes[end].cohort() == key {
+            while end < self.onsets.probes.len() && self.onsets.probes[end].at == key {
                 ready &= self.onsets.probes[end].ready;
                 end += 1;
             }
@@ -177,16 +172,15 @@ impl Runtime {
                 }
                 continue;
             }
-            self.onsets.probes.push(Probe { voice: i, plan: n.plan,
-                family: (v.family.0.index, v.family.0.generation), at: v.start_at, ready: !failed });
+            self.onsets.probes.push(Probe { voice: i, plan: n.plan, at: v.start_at, ready: !failed });
         }
-        self.onsets.probes.sort_unstable_by_key(|p| p.cohort());
+        self.onsets.probes.sort_unstable_by_key(|p| p.at);
         let mut begin = 0;
         while begin < self.onsets.probes.len() {
-            let key = self.onsets.probes[begin].cohort();
+            let key = self.onsets.probes[begin].at;
             let mut end = begin + 1;
             let mut failed = !self.onsets.probes[begin].ready;
-            while end < self.onsets.probes.len() && self.onsets.probes[end].cohort() == key {
+            while end < self.onsets.probes.len() && self.onsets.probes[end].at == key {
                 failed |= !self.onsets.probes[end].ready;
                 end += 1;
             }
@@ -257,6 +251,40 @@ mod tests {
                 assert_eq!(rt.stream_underruns(), 0);
                 assert_eq!(rt.pending_onsets, 0);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use crate::*;
+    #[test]
+    fn one_start_instant_is_one_batch_across_families() {
+        // Two mic groups are ready, one is still waiting for its first window.
+        // Their voices start at the same instant, so none may start alone.
+        let resident = Pcm::new(48000, vec![[0.5, 0.]; 4096].into_boxed_slice()).unwrap();
+        resident.residency_acquire();
+        let short = Pcm::headed(48000, 4096, &[[0., 0.5]; 16]).unwrap();
+        let plan = Prepared::new(48000, vec![resident, short], vec![], 4).unwrap();
+        let limits = Limits::for_plan(&plan, 4, 4);
+        let (cache, _worker) = StreamCache::new(8).unwrap();
+        let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+        rt.set_cold_starts(true);
+        rt.set_stream_horizon(1024).unwrap();
+        rt.set_stream_start_runway(1019).unwrap();
+        let mut voices = Vec::new();
+        for (n, sample) in [(1, 0), (2, 1), (3, 0)] {
+            let input = Input { protocol: Protocol::Native, port: 0, group: 0,
+                channel: 0, key: 60, external_id: Some(n) };
+            let note = rt.note_on(input, 60, 1.).unwrap();
+            let family = rt.create_family(note).unwrap();
+            voices.push(rt.start_family(family, sample, 0, 1., Envelope::default(), Playback::default()).unwrap());
+            rt.finish_family(family).unwrap();
+        }
+        rt.prepare_onsets(0, 64);
+        assert_eq!(rt.pending_onsets, 3);
+        for id in voices {
+            assert_eq!(rt.voices.get(id.0).unwrap().cursor.pending_start_runway(), 1019);
         }
     }
 }
