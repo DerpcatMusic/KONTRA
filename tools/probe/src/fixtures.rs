@@ -347,12 +347,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_fixture_names_itself_and_has_a_script_except_streamed() {
+    fn every_fixture_names_itself_and_has_a_script_except_streamed_and_key_position() {
+        // Key position starts from a KeyPosition sample-start route, not a script.
         for fixture in Fixture::ALL {
             assert_eq!(fixture.name().parse::<Fixture>(), Ok(fixture));
             assert_eq!(
                 fixture.spec().script.is_some(),
-                fixture != Fixture::Streamed
+                !matches!(fixture, Fixture::Streamed | Fixture::KeyPosition)
             );
         }
     }
