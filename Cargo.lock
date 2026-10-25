@@ -2457,6 +2457,11 @@ dependencies = [
 [[package]]
 name = "kontra-law"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+ "toml",
+]
 
 [[package]]
 name = "kontra-library"
@@ -2529,6 +2534,9 @@ dependencies = [
 [[package]]
 name = "kontra-time"
 version = "0.0.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "kontra-ui"
