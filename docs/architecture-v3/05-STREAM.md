@@ -19,7 +19,7 @@ d     = pos - off                   (pos = zone start in frames)
 base  = P * C                       (60 KB per channel, not per sample)
 if d < 0: base += F * d             (a start near the sample head has less room behind it)
 total = base + off * F * 2
-W     = ceil(total / 6144) * 6144   (6 KiB granularity); head frames = W / F
+W     = ceil(total / 6144) * 6144   (6 KiB granularity); head frames = |W| / F (reverse zones get a negative W: the sign is the direction)
 start = max(d, 0)                   (the window starts S.Mod before the zone start)
 ```
 
@@ -31,7 +31,7 @@ start = max(d, 0)                   (the window starts S.Mod before the zone sta
   for streamed zones, so an offset the front end cannot bound never forces a whole-sample head.
   Formats without S.Mod pass their declared start-modulation range as `off`.
 - **Memory bar.** The resident head bytes for an instrument are within 10% of the sum of
-  Kontakt's windows for the same zones (deduplicated per sample), measured on Areia, Vista and
+  Kontakt's windows for the same zones (per sample, the union of its zones' window ranges, so overlapping windows count once and disjoint ones each count), measured on Areia, Vista and
   ANALOG. P1.2's first attempt (base + script range, unbounded → whole sample, f32 accounting)
   measured 4.4 GB on Areia, 469 MB on Vista and 50 GB on ANALOG (2026-10-25, PluginArtifacts/v3-gates/P1.2).
 - **The budget is never solved by shrinking heads below the law.** Over
