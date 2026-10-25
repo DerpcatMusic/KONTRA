@@ -295,7 +295,7 @@ lane = "playback"
 size = "M"
 agent = "worker"
 deps = ["P1.1"]
-owns = ["crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs", "crates/sampler-kontakt/src/stream.rs", "crates/sampler-ksp/src/lower.rs", "crates/sampler-ksp/src/lib.rs", "crates/sampler-ksp/tests/start_offsets.rs"]
+owns = ["crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs", "crates/sampler-kontakt/src/stream.rs", "crates/sampler-ksp/src/lower.rs", "crates/sampler-ksp/src/lib.rs", "crates/sampler-ksp/src/parity.rs", "crates/sampler-ksp/src/lower_display_ext_tests.rs", "crates/sampler-ksp/tests/start_offsets.rs"]
 docs = ["05-STREAM.md#1-the-preload-law"]
 goal = "Every KSP `play_note(..., offset, ...)` widens the zone `StartRange` from P1.1; an offset with no static bound sets `unbounded` and emits a load diagnostic."
 steps = [
@@ -590,7 +590,7 @@ done = ["Every crate in 01-LAYOUT.md exists or is listed as 'moved by Pn.m'.", "
 
 [[task]]
 id = "P4.1"
-title = "kontra-macros: #[derive(Stats)] and #[derive(Config)]"
+title = "kontra-macros: crate and vectors!"
 phase = 4
 lane = "structure"
 size = "M"
@@ -600,12 +600,12 @@ owns = ["crates/base/macros/**"]
 docs = ["08-MACROS.md#1-inventory", "08-MACROS.md#2-examples"]
 goal = "The first two derives, with trybuild-free tests (expand into a test module and assert behaviour)."
 steps = [
-  "`Stats`: fields u64/u32; attributes `#[stat(max)]` (keep maximum) default sum; generates `snapshot() -> Self` (Copy), `reset()`, `merge(&other)`, `fields() -> &'static [(&'static str, fn(&Self)->u64)]` for publication/Display.",
-  "`Config`: `#[config(default = expr)]` per field generates `Default`; `#[config(version = N)]` on the struct adds `VERSION` const.",
-  "Errors via `syn::Error::new_spanned` on unsupported field types."
+  "Create the proc-macro crate (`proc-macro = true`, syn/quote/proc-macro2 from `[workspace.dependencies]`) with `vectors!` only (08-MACROS.md §1): `vectors!(\"vectors/*.json\", |v| run(v))` expands to one `#[test]` per matching file, named after the file, reading the tolerance from the file. Glob at compile time relative to `CARGO_MANIFEST_DIR`; a glob matching nothing is a compile error.",
+  "Errors via `syn::Error::new_spanned`. Test with `trybuild`-free unit tests of the expansion plus one integration test crate under tests/ that uses it on two tiny JSON files.",
+  "Not in this task: `Stats` (P6.4c, where its only user lives), `Config` (dropped: 08-MACROS.md §1), `Params` (P4.5), `modules!` (P5.0)."
 ]
 gate = ["build-slot cargo test -p kontra-macros"]
-done = ["Examples in 08-MACROS.md §2 compile verbatim in the crate's tests."]
+done = ["The `vectors!` example in 08-MACROS.md §2 compiles verbatim in the crate's tests."]
 
 [[task]]
 id = "P4.2"
@@ -622,6 +622,7 @@ goal = "SampleTime/Frames/Tempo types and the Law enum with eval and TOML parsin
 steps = [
   "kontra-time: `SampleTime(u64)`, `Frames(u32)`, `Tempo`, `Transport`, beat↔sample conversion; mirror semantics of the existing sampler-core time types (`graft ask \"sample time type\"`).",
   "kontra-law: `Law` exactly as in 03-DSP.md §4, `eval(x) -> f32`, `ModuleLaw`, TOML schema with `tolerance_db`; property tests: monotonic tapers stay monotonic, tables interpolate endpoints exactly.",
+  "`laws!` as a `macro_rules!` in kontra-law (not a proc macro): `laws!(\"laws\")`-style list of files → `pub const` ids, `include_str!` loaders and one validation test that parses every law. Each DSP family calls it on its own `laws/` folder.",
   "Do not change existing crates in this task."
 ]
 gate = ["build-slot cargo test -p kontra-time -p kontra-law"]
@@ -721,12 +722,12 @@ size = "M"
 agent = "worker"
 draft = true
 deps = ["P4.0", "P4.2"]
-owns = ["crates/sampler-midi/**", "crates/model/events/**", "src/sound/event.rs", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
+owns = ["crates/sampler-midi/**", "@corelib", "docs/architecture-v3/01-LAYOUT.md", "crates/model/events/**", "src/sound/event.rs", "crates/*/Cargo.toml", "@manifests", "@lockfile", "@ci"]
 docs = ["01-LAYOUT.md#5-current--new-mapping", "02-ENGINE.md#2-one-event-type-one-queue"]
 goal = "One event model crate. Move sampler-midi (git mv + alias), then move src/sound/event.rs types in with a re-export."
 steps = ["git mv crates/sampler-midi crates/model/events; package kontra-events with alias.", "Move event.rs content; leave `pub use kontra_events::*` in src/sound/event.rs.", "held_keys stays in src/plugin until P6.4 (ledger)."]
 gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-events"]
-done = ["Moves plus re-exports only."]
+done = ["kontra-events depends on no KONTRA crate (`cargo xtask deps-check`); sampler-core and sampler-midi callers unchanged thanks to re-exports.", "Moves plus re-exports only."]
 
 [[task]]
 id = "P4.9"
@@ -1160,7 +1161,7 @@ deps = ["P6.2", "P6.3b"]
 owns = ["crates/engine/engine/**", "crates/sampler-core/src/lib.rs", "crates/sampler-core/src/plans.rs", "crates/sampler-core/src/prepare*", "crates/sampler-core/src/prepare/**", "@v2rs", "@plugin"]
 docs = ["02-ENGINE.md#2-one-event-type-one-queue", "02-ENGINE.md#3-the-render-loop"]
 goal = "The engine splits at queue boundaries; the plugin shell stops splitting blocks."
-steps = ["Implement EventQueue (fixed heap, seq tiebreak); move render loop; remove block splitting in src/plugin.rs."]
+steps = ["Implement EventQueue (fixed heap, seq tiebreak); move render loop; remove block splitting in src/plugin.rs.", "Add `probe!` (macro_rules in kontra-engine, 01-LAYOUT.md): compiled out unless the `probe` feature is on, else a typed record into a fixed probe ring. From here on, every P6 task converts the `cfg(test)` hooks in the files it moves to `probe!`."]
 gate = ["build-slot cargo test -p kontra-engine", "build-slot cargo test -p kontra-probe"]
 done = ["C4, C5 green."]
 
@@ -1189,10 +1190,10 @@ size = "L"
 agent = "worker"
 draft = true
 deps = ["P6.4b"]
-owns = ["crates/engine/engine/**", "crates/sampler-core/**", "@v2rs"]
+owns = ["crates/engine/engine/**", "crates/base/macros/**", "crates/sampler-core/**", "@v2rs"]
 docs = ["02-ENGINE.md#1-the-engine-struct"]
 goal = "sampler-core is reduced to re-exports (or deleted); counters live in one Stats."
-steps = ["Move remaining Runtime state into the 10 owners; #[derive(Stats)]."]
+steps = ["Move remaining Runtime state into the 10 owners.", "Stats: `RuntimeStats` is one struct today. Add `#[derive(Stats)]` to kontra-macros only if it deletes more lines than it adds across its users (08-MACROS.md rule); otherwise a plain `Copy` struct with `Default`."]
 gate = ["build-slot cargo check --workspace", "build-slot cargo test -p kontra-probe"]
 done = ["sampler-core production lines < 1k."]
 
@@ -1209,7 +1210,7 @@ docs = ["11-MIGRATION.md#phase-6-engine-crates"]
 goal = "All contracts green; CPU no worse than G5; fast rebuild after a DSP edit ≤ 25 s."
 steps = ["probe, xtask timings, survey."]
 gate = ["G6.md"]
-done = ["Targets met or follow-ups filed."]
+done = ["`xtask debt` cfg-test-in-fn is 0 for crates/engine/** (hooks became `probe!`).", "Targets met or follow-ups filed."]
 
 # ───────────────────────────── Phase 7: script and format crates (draft) ─────────────────────────────
 
