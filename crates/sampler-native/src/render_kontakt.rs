@@ -314,8 +314,8 @@ pub fn render(playback: Playback, output: &Path, messages: &[Message]) -> io::Re
         Playback::Resident(loaded) => (loaded, None, None, None),
         Playback::Streamed(streamed) => {
             let sampler_kontakt::Streamed { loaded, cache, report, streamer, assets } = streamed;
-            // Heads bound only starts; running voices request a page ahead.
-            let horizon = (report.head_frames.max(PAGE_FRAMES) + 256) as u32;
+            // Production's horizon (`sampler_stream_contract`): the runway plus one host block.
+            let horizon = (report.runway_frames.max(PAGE_FRAMES) + 128) as u32;
             (loaded, Some(cache), Some((streamer, assets)), Some(horizon))
         }
     };

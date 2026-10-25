@@ -834,6 +834,7 @@ pub fn create(options: &Options, progress: &dyn Fn(&str)) -> Result<Created> {
                     zones: &zones,
                     samples: &files,
                     script: plan.script.as_deref(),
+                    start_routes: &[],
                 },
             )?;
             std::fs::write(

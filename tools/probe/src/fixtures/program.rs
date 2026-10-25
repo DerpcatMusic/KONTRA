@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
-use kontakto::creator::nki::{self, Program, SampleFile};
-use sampler_ir::{AssetRef, Group, GroupRef, KeyRange, KeyTracking, VelocityRange, Zone};
+use kontakto::creator::nki::{self, Program, SampleFile, StartRoute};
+use sampler_ir::{AssetRef, Group, GroupRef, KeyRange, KeyTracking, Playback, VelocityRange, Zone};
 
 use super::audio::{self, RATE};
 use super::{GroupSpec, ROOTS, Spec};
@@ -37,14 +37,6 @@ pub(super) fn velocities(layer: usize, count: usize) -> VelocityRange {
     }
 }
 
-fn modified(path: &Path) -> u64 {
-    std::fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |age| age.as_secs())
-}
-
 fn file_name(spec: &Spec, group: &GroupSpec, note: &str, layer: usize) -> String {
     let mut name = format!("{}_{note}_{}", spec.name, spec.mics[group.mic].tag());
     if spec.rounds > 1 {
@@ -54,6 +46,14 @@ fn file_name(spec: &Spec, group: &GroupSpec, note: &str, layer: usize) -> String
         name.push_str(&format!("_v{}", layer + 1));
     }
     name
+}
+
+fn modified(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |age| age.as_secs())
 }
 
 /// Where `<out>/<name> (Kontakt)` keeps the fixture's preset.
@@ -112,12 +112,24 @@ pub(super) fn write(spec: &Spec, out: &Path) -> Result<PathBuf> {
                     },
                     velocities: velocities(layer, spec.layers),
                     pitch: KeyTracking::Tracked { root: *midi },
+                    playback: Playback {
+                        start_range: u64::from(spec.start_mod_frames),
+                        ..Playback::default()
+                    },
                     ..Zone::new(AssetRef(files.len() - 1))
                 });
             }
         }
     }
 
+    let start_routes: Vec<StartRoute> = spec
+        .start_route
+        .map(|source| {
+            (0..groups.len())
+                .map(|group| StartRoute { group, source, intensity: 1.0 })
+                .collect()
+        })
+        .unwrap_or_default();
     let preset = preset(spec, out);
     nki::write(
         &preset,
@@ -128,6 +140,7 @@ pub(super) fn write(spec: &Spec, out: &Path) -> Result<PathBuf> {
             zones: &zones,
             samples: &files,
             script: spec.script,
+            start_routes: &start_routes,
         },
     )?;
     Ok(preset)

@@ -178,6 +178,7 @@ pub(crate) fn encode(
             &z.routes,
             z.playback.loop_control_crossfade,
             z.playback.beat_grid,
+            z.playback.script_offset_gate,
         ))?;
         w.bytes(&extra);
     }
@@ -299,6 +300,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<(Vec<ir::Zone>, Vec<ir::kontakt::Zo
             routes,
             loop_control_crossfade,
             beat_grid,
+            script_offset_gate,
         ) = serde_json::from_slice(r.bytes()?).ok()?;
         zones.push(ir::Zone {
             asset,
@@ -330,6 +332,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<(Vec<ir::Zone>, Vec<ir::kontakt::Zo
                 looping,
                 loop_control_crossfade,
                 beat_grid,
+                script_offset_gate,
             },
             conditions,
             trigger,

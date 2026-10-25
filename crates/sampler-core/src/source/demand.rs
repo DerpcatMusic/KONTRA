@@ -342,9 +342,7 @@ impl Cursor {
             let tuning=loops.slots.iter().flatten().fold(1.0f64,|max,slot|max.max(slot.tuning));
             (self.step*tuning,2*loops.slots.iter().flatten().count()+1)
         } else {(self.step,if self.loop_range.is_some_and(|r|r.shape!=crate::LoopShape::PingPong) {2}else{1})};
-        let span=((f64::from(frames-1)*step).ceil() as usize)
-            .saturating_add((2*crate::resample::Kernel::radius(step) as usize).saturating_add(1));
-        full.min(legs.saturating_mul(span.div_ceil(crate::PAGE_FRAMES).saturating_add(1)))
+        full.min(crate::stream::reservation_reach_pages(frames,step,legs))
     }
 
     /// Output frames until a linear stretch (see `linear_reach`) first reads
