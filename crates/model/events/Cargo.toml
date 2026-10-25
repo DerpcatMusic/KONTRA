@@ -8,5 +8,3 @@ publish = false
 [lints]
 workspace = true
 
-[dependencies]
-kontra-time = { path = "../../base/time" }

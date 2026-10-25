@@ -2383,9 +2383,6 @@ dependencies = [
 [[package]]
 name = "kontra-events"
 version = "0.0.0"
-dependencies = [
- "kontra-time",
-]
 
 [[package]]
 name = "kontra-format"

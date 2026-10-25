@@ -13,7 +13,7 @@ pub enum Protocol {
 /// Input ownership address, never the transposed playback address. Adapters
 /// own wildcard matching and protocol-specific interpretation of IDs. An
 /// adapter mapping host tuples onto an internal wire retains the physical
-/// tuple separately through [`Runtime::set_input_source`].
+/// tuple separately through `sampler_core::Runtime::set_input_source`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Input {
     pub protocol: Protocol,
