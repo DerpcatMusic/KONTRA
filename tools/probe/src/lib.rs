@@ -138,6 +138,8 @@ pub struct Report {
     pub mode: Mode,
     pub block: usize,
     pub notes: Vec<NoteReport>,
+    /// Each recent voice's first non-silent output frame, absolute, in the engine's order (C3).
+    pub first_frames: Vec<u64>,
     /// Script effects the run drained from the instrument: UI writes, `message`
     /// and other script output, not split by kind. C7 reads it as load evidence.
     pub script_effects: u64,
@@ -350,6 +352,7 @@ impl Session {
             mode,
             block,
             notes,
+            first_frames: core.voice_first_frames(),
             script_effects,
             audio: run.audio,
         })
@@ -371,11 +374,7 @@ pub fn check(session: &mut Session, id: &str, pattern: Pattern) -> Result<Verdic
             pattern,
             "no degraded-disk fixture: the probe cannot throttle storage yet",
         ),
-        "C3" => Verdict::unsupported(
-            "C3",
-            pattern,
-            "per-voice first output is not public; only the mixed output is measured",
-        ),
+        "C3" => c3_start_spread(session, pattern)?,
         "C4" => c4_block_size(session)?,
         "C5" => c5_offline_matches_realtime(session)?,
         "C6" => c6_voices_per_note(session, pattern)?,
@@ -687,6 +686,42 @@ fn c5_offline_matches_realtime(session: &mut Session) -> Result<Verdict> {
 fn c6_voices_per_note(session: &mut Session, pattern: Pattern) -> Result<Verdict> {
     let report = session.play(pattern, Mode::Offline, BLOCK)?;
     Ok(voices_verdict(session, &report, pattern))
+}
+
+/// Largest allowed spread, in frames, between the first output frames of the
+/// voices of one note. Zero: every voice of a note starts on one sample.
+pub const C3_TOLERANCE: u64 = 0;
+
+/// C3 on a real-time render: the voices of each note start together. Each
+/// voice's first non-silent frame is read from the engine, so a mic group that
+/// starts alone shows up as a nonzero spread.
+fn c3_start_spread(session: &mut Session, pattern: Pattern) -> Result<Verdict> {
+    let report = session.play(pattern, Mode::RealTime, BLOCK)?;
+    Ok(c3_verdict(&report, pattern))
+}
+
+/// C3 on a rendered run. A voice belongs to the note whose step window holds its first frame.
+fn c3_verdict(report: &Report, pattern: Pattern) -> Verdict {
+    let mut worst = 0u64;
+    let mut silent = Vec::new();
+    for note in &report.notes {
+        let window = note.scheduled..note.scheduled + STEP as u64;
+        let starts: Vec<u64> = report.first_frames.iter().copied().filter(|f| window.contains(f)).collect();
+        match (starts.iter().min(), starts.iter().max()) {
+            (Some(&lo), Some(&hi)) => worst = worst.max(hi - lo),
+            _ => silent.push(note.step),
+        }
+    }
+    let detail = format!(
+        "{} notes, {} voices with a first frame; worst spread {worst} frame(s), tolerance {C3_TOLERANCE}; notes with no voice: {silent:?}",
+        report.notes.len(),
+        report.first_frames.len(),
+    );
+    if silent.is_empty() && worst <= C3_TOLERANCE {
+        Verdict::passed("C3", pattern, detail)
+    } else {
+        Verdict::failed("C3", pattern, detail)
+    }
 }
 
 /// C6 on a real-time render, paced like a host. Offline C6 cannot show a double
@@ -1008,6 +1043,7 @@ mod tests {
             mode: Mode::Offline,
             block: BLOCK,
             notes: (0..STEPS).map(|s| note(s, s < audible)).collect(),
+            first_frames: Vec::new(),
             script_effects: 0,
             audio: vec![[audio, audio]; 8],
         };

@@ -765,6 +765,35 @@ struct StretchLink {
     started: bool,
 }
 
+/// Capacity of [`FirstFrameLog`]: the most recent voices kept for probes.
+const FIRST_FRAME_LOG: usize = 4096;
+
+/// Ring of each voice's first non-silent output frame. The audio thread only
+/// writes into the preallocated slots; [`Runtime::voice_first_frames`] reads them.
+struct FirstFrameLog {
+    frames: Box<[u64]>,
+    written: usize,
+}
+
+impl FirstFrameLog {
+    fn new() -> Self {
+        Self { frames: vec![0; FIRST_FRAME_LOG].into_boxed_slice(), written: 0 }
+    }
+
+    fn record(&mut self, frame: u64) {
+        let slot = self.written % self.frames.len();
+        self.frames[slot] = frame;
+        self.written += 1;
+    }
+
+    fn recent(&self) -> Vec<u64> {
+        let kept = self.written.min(self.frames.len());
+        (self.written - kept..self.written)
+            .map(|n| self.frames[n % self.frames.len()])
+            .collect()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Voice {
     plan: PlanId,
@@ -799,6 +828,8 @@ struct Voice {
     start_at: u64,
     /// Admission order, for oldest-first stealing.
     born: u64,
+    /// Absolute frame of this voice's first non-silent output; set once, read by probes.
+    first_frame: Option<u64>,
     /// Fading out after being stolen; no longer counts against polyphony.
     stolen: bool,
     /// The region's group, for script group layers.
@@ -1112,6 +1143,8 @@ pub struct Runtime {
     voice_activity: Box<[u64]>,
     onsets: onset::Storage,
     pending_onsets: usize,
+    /// Fixed ring of voices' first non-silent output frames. Allocated once.
+    first_frames: FirstFrameLog,
     stealing: Option<steal::Stealing>,
     stolen: usize,
     /// Voices stolen since the runtime started.
@@ -1392,6 +1425,7 @@ impl Runtime {
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
             onsets: onset::Storage::new(limits.voices),
             pending_onsets: 0,
+            first_frames: FirstFrameLog::new(),
             stealing: None,
             stolen: 0,
             steals: 0,
@@ -1524,6 +1558,12 @@ impl Runtime {
     pub fn note_capacity(&self) -> usize {
         self.notes.slots.len()
     }
+    /// Absolute first non-silent output frame of each recent voice, oldest first.
+    /// Probe use: a note's voices share a start when these agree.
+    pub fn voice_first_frames(&self) -> Vec<u64> {
+        self.first_frames.recent()
+    }
+
     pub fn voice_count(&self) -> usize {
         self.voices.count()
     }
@@ -2377,6 +2417,7 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
             started: at == self.now,
             start_at: at,
             born: self.voice_order,
+            first_frame: None,
             stolen: false,
             follow_audio: [0.0; dsp::BLOCK],
             follow_len: 0,

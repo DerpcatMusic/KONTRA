@@ -1025,6 +1025,13 @@ impl Runtime {
             at,
             feeds: &mut plan.dsp.feeds,
         };
+        // A voice's first non-silent frame: its contribution to the shared bus is
+        // the difference from the segment before it rendered. Watched once per voice.
+        let watch = v.first_frame.is_none() && segment.len() <= super::dsp::BLOCK;
+        let mut before = [[0.0; 2]; super::dsp::BLOCK];
+        if watch {
+            before[..segment.len()].copy_from_slice(segment);
+        }
         let (produced, done, faults, underrun) = if let Some(head) = &self.onsets.heads[i] {
             let source = super::source::PagedFrames {
                 cache: self.stream_cache.as_ref().expect("pinned streamed onset").reader(),
@@ -1061,6 +1068,12 @@ impl Runtime {
             render_source::<TRACE>(v, &source, segment, chain, states, context, &self.kernel)
         };
         drop((claimed, delay, parameter_scratch, native, stretch));
+        if watch {
+            if let Some(k) = (0..segment.len()).find(|&k| segment[k] != before[k]) {
+                v.first_frame = Some(at + k as u64);
+                self.first_frames.record(at + k as u64);
+            }
+        }
         if let (Some(ramp), Some(target)) = (points, mixed) {
             let ramp = if chain.is_some() {
                 (*ramp).without_gains()

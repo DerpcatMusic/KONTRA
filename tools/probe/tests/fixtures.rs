@@ -61,6 +61,11 @@ fn cc_start_has_one_voice_per_mic_group_in_real_time() {
 }
 
 #[test]
+fn cc_start_voices_of_a_note_start_together() {
+    assert_passes(&verdict(Fixture::CcStart, "C3", Pattern::Live));
+}
+
+#[test]
 fn cc_start_plays_every_note_on_time() {
     assert_passes(&verdict(Fixture::CcStart, "C1", Pattern::Live));
 }
