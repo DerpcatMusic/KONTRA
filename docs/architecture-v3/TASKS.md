@@ -52,7 +52,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | Id | Task | Lane | Size | Agent | Deps |
 |---|---|---|---|---|---|
 | P4.0 | Scaffold every v3 crate (empty), workspace deps, target DAG | structure | M | worker | P0.1, P0.4 |
-| P4.1 | kontra-macros: #[derive(Stats)] and #[derive(Config)] | structure | M | worker | P4.0 |
+| P4.1 | kontra-macros: crate and vectors! | structure | M | worker | P4.0 |
 | P4.2 | kontra-time and kontra-law (draft) | structure | M | worker | P4.0 |
 | P4.3 | Move sampler-pool → crates/base/pool (kontra-pool) | structure | S | worker | P4.0, P2.1 |
 | P4.4 | Move sampler-simd (+ dsp/lanes.rs) → crates/base/simd (kontra-simd) | structure | S | worker | P4.3 |
