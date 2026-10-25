@@ -1,7 +1,7 @@
 //! Source-free regressions for root's coordinated build. No library assets.
 use super::super::{
-    AssetSource, Frame, HintFallback, SampleReader, StreamCache, Streamer, law_heads,
-    physical_head_bytes, preload_head, start_ranges,
+    AssetSource, Frame, FrameLayout, HintFallback, SampleReader, StreamCache, Streamer,
+    kontakt_window_bytes, law_heads, physical_head_bytes, preload_heads, start_ranges,
 };
 use super::*;
 use sampler_core as core;
@@ -283,7 +283,10 @@ fn initialized_start_hint_loader_uses_real_script_init_binding() {
             .complete()
     );
     assert!(streamed.assets[0].resident_covers(5952..5953));
-    assert!(!streamed.assets[0].resident_covers(31_000..31_001));
+    // The zone's DFD window (30720 base + S.Mod 12000, 4-byte frames) is 43008 frames: resident past
+    // the S.Mod range, nothing beyond the window.
+    assert!(streamed.assets[0].resident_covers(31_000..31_001));
+    assert!(!streamed.assets[0].resident_covers(45_000..45_001));
     let mut actual = runtime(streamed.loaded.plan, streamed.cache);
     assert_eq!(
         actual
@@ -897,8 +900,7 @@ fn script_unbounded_offset_flags_every_zone_and_counts_the_script() {
             .iter()
             .all(|r| r.unbounded.as_deref() == Some("script 0 line 3"))
     );
-    // An unbounded zone preloads its whole sample, whatever the law's base says.
-    assert_eq!(preload_head(&starts[0], 4, LENGTH), LENGTH);
+    // An unbounded offset no longer preloads the whole sample: the head is Kontakt's window (see the wiring test).
 }
 
 #[test]
@@ -911,4 +913,33 @@ fn no_scripts_leave_start_ranges_unchanged() {
         .map(|zone| StartRange::of(&ir, zone))
         .collect();
     assert_eq!(starts, expected);
+}
+
+#[test]
+fn stream_head_is_the_dfd_window_with_start_mod() {
+    // Authored preload 0xf000 (61440 bytes per channel), S.Mod 1000 frames, forward, zone at frame 0.
+    // The routine shrinks the base by F * (offset - start) = F * 1000 when the start is before the
+    // S.Mod range, so the window is base + 1 x S.Mod. Mono 16-bit (F = 2): 59440 + 4000 = 63440,
+    // rounded up to 6 KiB = 67584 bytes = 33792 frames.
+    let mono = FrameLayout {
+        channels: 1,
+        bits: 16,
+    };
+    let ir = start_instrument(ir::ModulationSource::Controller(113), 1_000, 1);
+    assert_eq!(preload_heads(&ir, &[100_000], &[mono]), vec![33_792]);
+    assert_eq!(kontakt_window_bytes(&ir, &[mono]), 67_584);
+    // Stereo 32-bit (F = 8): 114880 + 16000 = 130880, rounded up to 135168 bytes = 16896 frames.
+    let stereo = FrameLayout {
+        channels: 2,
+        bits: 32,
+    };
+    assert_eq!(preload_heads(&ir, &[100_000], &[stereo]), vec![16_896]);
+    // A zone starting at or past its S.Mod range gets base + 2 x S.Mod: 122880 + 16000 = 138880,
+    // rounded up to 141312 bytes = 17664 frames.
+    let mut past = ir.clone();
+    past.zones[0].playback.start = 10_000;
+    assert_eq!(preload_heads(&past, &[100_000], &[stereo]), vec![17_664]);
+    // Two zones on one sample count its largest window once.
+    let two = start_instrument(ir::ModulationSource::Controller(113), 1_000, 2);
+    assert_eq!(kontakt_window_bytes(&two, &[mono]), 67_584);
 }

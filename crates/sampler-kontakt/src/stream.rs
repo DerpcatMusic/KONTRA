@@ -26,7 +26,10 @@ type Frame = [f32; 2];
 mod head_prepare;
 #[path = "stream_initial_hints.rs"]
 mod initial_hints;
-use initial_hints::{InitialStartHints, StartRange, zone_start_ranges};
+use crate::dfd_window;
+use initial_hints::{InitialStartHints, zone_start_ranges};
+#[cfg(test)]
+use initial_hints::StartRange;
 
 /// A sample's bytes as a seekable stream, decrypted on the fly. Reads go
 /// through one buffer: decoders read a few bytes at a time.
@@ -163,9 +166,9 @@ pub trait AssetSource: Send + Sync {
     fn header(&self) -> Option<(u32, usize)> {
         None
     }
-    /// Source bytes per frame across all channels, read from the file header
-    /// without counting as an open.
-    fn header_bytes_per_frame(&self) -> Option<usize> {
+    /// Channel count and sample width, read from the file header without
+    /// counting as an open.
+    fn header_layout(&self) -> Option<FrameLayout> {
         None
     }
     /// Playback/reload IO, counted separately from initial loading.
@@ -192,16 +195,19 @@ impl AssetSource for Source {
     fn open(&self) -> io::Result<SampleReader> {
         SampleReader::open(self)
     }
-    fn header_bytes_per_frame(&self) -> Option<usize> {
+    fn header_layout(&self) -> Option<FrameLayout> {
         let mut bytes = Bytes::open(self, false).ok()?;
         let mut head = Vec::new();
         (&mut bytes).take(1 << 16).read_to_end(&mut head).ok()?;
         if head.starts_with(b"RIFF") {
             let wav = crate::samples::wav_layout(&head).ok()?;
-            return Some(wav.channels * wav.width);
+            return Some(FrameLayout { channels: wav.channels, bits: wav.width * 8 });
         }
         let header = ncw::NcwHeader::read(&mut std::io::Cursor::new(&head)).ok()?;
-        Some(usize::from(header.channels) * usize::from(header.bits_per_sample).div_ceil(8))
+        Some(FrameLayout {
+            channels: usize::from(header.channels),
+            bits: usize::from(header.bits_per_sample),
+        })
     }
     fn header(&self) -> Option<(u32, usize)> {
         self.header
@@ -539,11 +545,14 @@ impl SampleReader {
     pub fn original_channels(&self) -> Option<usize> {
         match &self.codec { Codec::Wav(w) => Some(w.channels), Codec::Ncw(n) => Some(usize::from(n.header.channels)), Codec::Encoded(reader)=>Some(reader.channels()), Codec::Custom(_) => None }
     }
-    /// Source bytes per frame across all channels, from the header's sample width.
-    pub fn bytes_per_frame(&self) -> Option<usize> {
+    /// Channel count and sample width from the header; `None` for encoded or custom readers.
+    pub(crate) fn layout(&self) -> Option<FrameLayout> {
         match &self.codec {
-            Codec::Wav(w) => Some(w.channels * w.width),
-            Codec::Ncw(n) => Some(usize::from(n.header.channels) * usize::from(n.header.bits_per_sample).div_ceil(8)),
+            Codec::Wav(w) => Some(FrameLayout { channels: w.channels, bits: w.width * 8 }),
+            Codec::Ncw(n) => Some(FrameLayout {
+                channels: usize::from(n.header.channels),
+                bits: usize::from(n.header.bits_per_sample),
+            }),
             Codec::Encoded(_) | Codec::Custom(_) => None,
         }
     }
@@ -705,7 +714,11 @@ pub struct StreamReport {
     pub latency_samples: usize,
     /// Largest zone preload head, in source frames (the preload law).
     pub head_frames: usize,
+    /// Packed (resident source) bytes of the heads, as held.
     pub head_bytes: usize,
+    /// Packed source bytes of Kontakt's DFD windows over the same zones, each sample
+    /// counted once at its largest zone window. `head_bytes` should sit within 10% of it.
+    pub kontakt_window_bytes: usize,
     /// Authored onset/offset/reverse ranges, before any lazy publication. These
     /// bounds describe all mapped starts, including currently muted groups.
     pub head_assets: usize,
@@ -828,38 +841,93 @@ fn system_ram_total() -> Option<usize> {
 /// for a window or crossfade spanning a page boundary.
 const PAGES_PER_VOICE: usize = 3;
 
-/// Kontakt's DFD default: 60 KB of source data per sample, all channels.
-const PRELOAD_BASE_BYTES: usize = 61_440;
-
-/// Source frames a zone preloads: the base (`PRELOAD_BASE_BYTES` of source
-/// data) plus the farthest sample-start offset it can reach. An unbounded
-/// script offset preloads the whole sample.
-pub(crate) fn preload_head(start: &StartRange, bytes_per_frame: usize, frame_count: usize) -> usize {
-    if start.unbounded.is_some() {
-        return frame_count;
-    }
-    let base = PRELOAD_BASE_BYTES / bytes_per_frame.max(1);
-    base.saturating_add(usize::try_from(start.max_frames).unwrap_or(usize::MAX)).min(frame_count)
+/// A source's channel count and sample width, from its header. `bytes_per_frame`
+/// is `F` in the window law: the packed bytes of one frame across all channels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameLayout {
+    pub channels: usize,
+    pub bits: usize,
 }
 
-/// One preload head per zone, in source frames, from its start range and its
-/// asset's frame count and bytes per frame (both indexed by logical asset).
-/// Zones without an asset get 0.
+impl FrameLayout {
+    /// Packed source bytes per frame across all channels.
+    pub fn bytes_per_frame(self) -> usize {
+        self.bits.div_ceil(8) * self.channels
+    }
+}
+
+/// Header layout of a source whose header cannot be read: 16-bit stereo, the
+/// width every unparsed source used before the window law.
+// ponytail: Encoded, Custom and unparsed headers assume 16-bit stereo; read the real header when a format needs it.
+const FALLBACK_LAYOUT: FrameLayout = FrameLayout { channels: 2, bits: 16 };
+
+/// The instrument's DFD preload, bytes per channel: the program's
+/// `dfdChannelPreloadSize`, or Kontakt's init default for a source with no Kontakt program.
+/// Library loads never set the global override, so the authored value applies.
+fn authored_preload(instrument: &ir::Instrument) -> i32 {
+    let authored = instrument
+        .kontakt_objects
+        .as_ref()
+        .map_or(dfd_window::PRELOAD_DEFAULT, |objects| objects.program.dfd_channel_preload_size);
+    dfd_window::effective_preload(authored, None)
+}
+
+/// Kontakt's DFD window for one zone (`dfd_window::window`): its start, reverse
+/// flag and S.Mod range (`playback.start_range`, source frames; 0 when unset),
+/// over its asset's header layout.
+fn zone_window(zone: &ir::Zone, preload: i32, layout: FrameLayout) -> dfd_window::Window {
+    let start = i64::try_from(zone.playback.start).unwrap_or(i64::MAX);
+    dfd_window::window(dfd_window::Input {
+        bits: u32::try_from(layout.bits).unwrap_or(u32::MAX),
+        channels: i64::try_from(layout.channels).unwrap_or(i64::MAX),
+        preload,
+        streamed: true,
+        reverse: zone.playback.reverse,
+        position: start,
+        // A reversed window starts at `-reverse_position`, so both fields name the zone start.
+        reverse_position: -start,
+        offset: i64::try_from(zone.playback.start_range).unwrap_or(i64::MAX),
+        linked: None,
+        blocked: false,
+    })
+}
+
+/// One preload head per zone, in source frames: its DFD window in packed source
+/// bytes divided by the frame size, capped at the sample. `frames` and `layouts`
+/// are indexed by logical asset. Zones without an asset get 0.
 pub(crate) fn preload_heads(
     instrument: &ir::Instrument,
-    starts: &[StartRange],
     frames: &[usize],
-    bytes_per_frame: &[usize],
+    layouts: &[FrameLayout],
 ) -> Vec<usize> {
+    let preload = authored_preload(instrument);
     instrument
         .zones
         .iter()
-        .zip(starts)
-        .map(|(zone, start)| match zone.asset.map(|a| a.0) {
-            Some(asset) => preload_head(start, bytes_per_frame[asset], frames[asset]),
+        .map(|zone| match zone.asset.map(|a| a.0) {
+            Some(asset) => {
+                let layout = layouts[asset];
+                let bytes = zone_window(zone, preload, layout).bytes.unsigned_abs();
+                let head = usize::try_from(bytes / layout.bytes_per_frame().max(1) as u64).unwrap_or(usize::MAX);
+                head.min(frames[asset])
+            }
             None => 0,
         })
         .collect()
+}
+
+/// Kontakt's window bytes for the instrument's samples: each sample counted once,
+/// at its largest zone window, as the DFD window routine would hold it.
+pub(crate) fn kontakt_window_bytes(instrument: &ir::Instrument, layouts: &[FrameLayout]) -> usize {
+    let preload = authored_preload(instrument);
+    let mut per_asset = vec![0u64; layouts.len()];
+    for zone in &instrument.zones {
+        if let Some(asset) = zone.asset.map(|a| a.0) {
+            let bytes = zone_window(zone, preload, layouts[asset]).bytes.unsigned_abs();
+            per_asset[asset] = per_asset[asset].max(bytes);
+        }
+    }
+    usize::try_from(per_asset.iter().sum::<u64>()).unwrap_or(usize::MAX)
 }
 
 /// Test-only law with a chosen base: each zone's `base` frames plus its own start range.
@@ -992,6 +1060,21 @@ pub(crate) fn physical_head_bytes(assets: &[Pcm], ranges: &[Vec<Range<usize>>]) 
             else if pcm.requires_resident() { Some(pcm.frame_count()) }
             else { union[&pcm.asset_id()].iter().try_fold(0usize, |sum, r| sum.checked_add(r.len())) };
         sum.checked_add(frames?.checked_mul(size_of::<Frame>())?)
+    })
+}
+
+/// Packed source bytes the ranges hold, each physical sample once: resident samples
+/// whole, streamed ones by their merged ranges, at the header's frame size.
+pub(crate) fn packed_head_bytes(assets: &[Pcm], ranges: &[Vec<Range<usize>>], layouts: &[FrameLayout]) -> Option<usize> {
+    let union = physical_start_ranges(assets, ranges);
+    let mut seen = HashSet::new();
+    assets.iter().enumerate().filter(|(_, pcm)| seen.insert(pcm.asset_id())).try_fold(0usize, |sum, (i, pcm)| {
+        let frames = if pcm.requires_resident() {
+            pcm.frame_count()
+        } else {
+            union[&pcm.asset_id()].iter().try_fold(0usize, |sum, r| sum.checked_add(r.len()))?
+        };
+        sum.checked_add(frames.checked_mul(layouts[i].bytes_per_frame())?)
     })
 }
 
@@ -1190,16 +1273,21 @@ fn audit_start_ranges(
     pinned: &HashSet<AssetId>,
     rate: u32,
     heads: &[usize],
+    layouts: &[FrameLayout],
+    scripts: &[sampler_ksp::ScriptView],
     policy: &StreamPolicy,
     canceled: &(dyn Fn() -> bool + Sync),
 ) -> io::Result<()> {
     if std::env::var_os("KONTRA_AUDIT_LOAD").is_none() { return Ok(()); }
     let constant_hints = constant_start_geometry(instrument, prepared, assets, ranges, pinned, rate, heads, policy, canceled)?;
-    let head_bytes = physical_head_bytes(assets, ranges).unwrap_or(usize::MAX);
-    let excess_bytes = head_bytes.saturating_sub(policy.head_budget);
+    // `head_bytes` is packed source bytes, the same unit as `kontakt_window_bytes`; the budget charges decoded f32.
+    let head_bytes = packed_head_bytes(assets, ranges, layouts).unwrap_or(usize::MAX);
+    let decoded_head_bytes = physical_head_bytes(assets, ranges).unwrap_or(usize::MAX);
+    let excess_bytes = decoded_head_bytes.saturating_sub(policy.head_budget);
+    let windows = kontakt_window_bytes(instrument, layouts);
     let mut zones: Vec<_> = instrument.zones.iter().enumerate().filter_map(|(zone, z)| {
         let asset = z.asset?.0;
-        let bytes = heads[zone].saturating_mul(size_of::<Frame>());
+        let bytes = heads[zone].saturating_mul(layouts[asset].bytes_per_frame());
         Some((bytes, zone, asset, heads[zone], z.playback.start_range))
     }).collect();
     zones.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
@@ -1211,6 +1299,8 @@ fn audit_start_ranges(
     let mut bounded_end_zones = 0usize;
     let mut sample_start_zones = 0usize;
     let mut max_offset = 0u64;
+    let mut ignored_script_offset_zones = 0usize;
+    let script_max_micros = scripts.iter().map(|s| s.start_offsets.max_micros).max().unwrap_or(0);
     for zone in &instrument.zones {
         reverse_zones += usize::from(zone.playback.reverse);
         bounded_end_zones += usize::from(zone.playback.end.is_some());
@@ -1218,13 +1308,20 @@ fn audit_start_ranges(
             sample_start_zones += 1;
             max_offset = max_offset.max(zone.playback.start_range);
         }
+        if let Some(asset) = zone.asset {
+            // A script offset past the S.Mod range is ignored at the voice start (KSP play_note, DFD mode).
+            let script_frames = u64::from(script_max_micros) * u64::from(assets[asset.0].sample_rate()) / 1_000_000;
+            ignored_script_offset_zones += usize::from(script_frames > zone.playback.start_range);
+        }
     }
     eprintln!("stream_preload_law {}", serde_json::json!({
-        "schema":"kontra-preload-law-v1","sample_rate":rate,"block_frames":policy.block_frames,
-        "base_bytes":PRELOAD_BASE_BYTES,"zones":instrument.zones.len(),"max_head_source_frames":max_head,
+        "schema":"kontra-preload-law-v2","sample_rate":rate,"block_frames":policy.block_frames,
+        "law":"kontakt dfd_window: preload per channel + 2 x S.Mod, 6 KiB granularity","zones":instrument.zones.len(),"max_head_source_frames":max_head,
         "reverse_zones":reverse_zones,"bounded_end_zones":bounded_end_zones,
         "sample_start_route_zones":sample_start_zones,"max_sample_start_offset_frames":max_offset,
-        "head_bytes":head_bytes,"head_budget_bytes":policy.head_budget,
+        "script_offset_ignored_zones":ignored_script_offset_zones,
+        "head_bytes":head_bytes,"decoded_head_bytes":decoded_head_bytes,"kontakt_window_bytes":windows,
+        "head_budget_bytes":policy.head_budget,
         "over_budget_excess_bytes":excess_bytes,"top_zones":top,
         "constant_onset_hints":constant_hints,
         "scope":"law heads kept whole even over budget; excess reported; constant hints are attribution only; no payload or source names"
@@ -1265,7 +1362,7 @@ pub(crate) struct Opened {
     pub sources: HashMap<AssetId, Arc<dyn AssetSource>>,
     pub report: StreamReport,
     /// Bytes per source frame of each logical asset (the preload law's input).
-    pub bytes_per_frame: Vec<usize>,
+    pub layouts: Vec<FrameLayout>,
     pub rate: u32,
     pub policy: StreamPolicy,
 }
@@ -1755,7 +1852,7 @@ impl Streamer {
         if sources.len()!=requirements.len() {return Err(LoadError::Invalid{path:"logical sources".into(),reason:"source requirement count mismatch".into()});}
         let mut wide=false;
         let mut frames=Vec::with_capacity(sources.len());
-        let mut bytes_per_frame=Vec::with_capacity(sources.len());
+        let mut layouts=Vec::with_capacity(sources.len());
         for (i,(source,path)) in sources.iter().enumerate() {
             if canceled(){return Err(LoadError::Canceled);}
             let reader=source.open_channels(READER_CACHE_BYTES/policy.decoders.clamp(1,8)/2).map_err(|e|LoadError::io(path,e))?;
@@ -1768,15 +1865,15 @@ impl Streamer {
             });
             // Mono and stereo sources have no channel reader, so their width comes from the header.
             // ponytail: Encoded, Custom and unparsed headers keep 4 bytes/frame (16-bit stereo).
-            bytes_per_frame.push(reader.as_ref().and_then(SampleReader::bytes_per_frame)
-                .or_else(|| source.header_bytes_per_frame())
-                .unwrap_or(4));
+            layouts.push(reader.as_ref().and_then(SampleReader::layout)
+                .or_else(|| source.header_layout())
+                .unwrap_or(FALLBACK_LAYOUT));
             if let Some(reader)=reader {
                 wide |= reader.original_channels().is_some_and(|n|n>2);
             }
         }
         let requirements=&admit_resident_within_budget(requirements,&frames,policy)[..];
-        if !wide {return Self::open_required_stereo(sources,requirements,bytes_per_frame,rate,policy,probe,canceled,progress);}
+        if !wide {return Self::open_required_stereo(sources,requirements,layouts,rate,policy,probe,canceled,progress);}
         if policy.resident_budget.is_some() {return Err(LoadError::Invalid{path:"logical stream".into(),reason:"whole-source promotion requires resident logical producer".into()});}
         let mut logical=Vec::new();let mut assets=Vec::new();let mut registry=HashMap::new();let mut latency=Vec::new();let mut full=0u64;let mut max_packs=1usize;
         for (index,(source,path)) in sources.into_iter().enumerate() {
@@ -1802,11 +1899,11 @@ impl Streamer {
         latency.sort_unstable();let at=|q:usize|latency.get((latency.len()*q/100).min(latency.len().saturating_sub(1))).copied().unwrap_or_default();
         let report=StreamReport{latency_p50:at(50),latency_p95:at(95),latency_p99:at(99),latency_samples:latency.len(),head_budget:policy.head_budget,
             full_bytes:full,pool_pages:policy.voices.checked_mul(PAGES_PER_VOICE).and_then(|n|n.checked_mul(max_packs)).ok_or_else(||LoadError::Invalid{path:"logical page pool".into(),reason:"physical pool overflow".into()})?,..Default::default()};
-        Ok(Opened{logical_sources:Some(logical),assets,sources:registry,report,bytes_per_frame,rate,policy:*policy})
+        Ok(Opened{logical_sources:Some(logical),assets,sources:registry,report,layouts,rate,policy:*policy})
     }
     fn open_required_stereo(
         sources:Vec<(Arc<dyn AssetSource>,&std::path::Path)>,
-        requirements:&[ir::AssetResidency],bytes_per_frame:Vec<usize>,rate:u32,policy:&StreamPolicy,probe:usize,
+        requirements:&[ir::AssetResidency],layouts:Vec<FrameLayout>,rate:u32,policy:&StreamPolicy,probe:usize,
         canceled:&(dyn Fn()->bool+Sync),progress:&mut dyn FnMut(usize,usize),
     )->Result<Opened,LoadError> {
         if requirements.len()!=sources.len() {return Err(LoadError::Invalid {path:"sample residency".into(),reason:"source requirement count mismatch".into()});}
@@ -1916,6 +2013,7 @@ impl Streamer {
             latency_samples: latencies.len(),
             head_frames: 0,
             head_bytes: 0,
+            kontakt_window_bytes: 0,
             head_assets: 0,
             head_ranges: 0,
             head_source_frames: 0,
@@ -1932,7 +2030,7 @@ impl Streamer {
             assets,
             sources: registry,
             report,
-            bytes_per_frame,
+            layouts,
             rate,
             policy: *policy,
         })
@@ -2909,11 +3007,10 @@ impl Streamed {
         if canceled(){return Err(LoadError::Canceled);}
         let invalid=|e:io::Error|if canceled(){LoadError::Canceled}else{LoadError::Invalid{path:"logical stream".into(),reason:e.to_string()}};
         let geometry=kept.iter().map(|s|(s.as_source().sample_rate(),s.as_source().frame_count())).collect::<Vec<_>>();
-        let rates=geometry.iter().map(|g|g.0).collect::<Vec<_>>();
         let frames=geometry.iter().map(|g|g.1).collect::<Vec<_>>();
-        let starts=zone_start_ranges(&loaded.instrument,&rates,&loaded.scripts);
-        let heads=preload_heads(&loaded.instrument,&starts,&frames,&opened.bytes_per_frame);
+        let heads=preload_heads(&loaded.instrument,&frames,&opened.layouts);
         opened.report.head_frames=heads.iter().copied().max().unwrap_or(0);
+        opened.report.kontakt_window_bytes=kontakt_window_bytes(&loaded.instrument,&opened.layouts);
         let logical_ranges=start_ranges_geometry(&loaded.instrument,&geometry,opened.rate,&heads,&opened.policy);
         let mut physical=Vec::new();let mut ranges=Vec::new();
         for (source,logical_ranges) in kept.iter().zip(logical_ranges) {source.as_source().physical_dependencies(|pack|{physical.push(pack.clone());ranges.push(logical_ranges.clone());});}
@@ -2944,7 +3041,7 @@ impl Streamed {
             assets,
             sources,
             mut report,
-            bytes_per_frame,
+            layouts,
             rate,
             policy,
         } = opened;
@@ -2960,8 +3057,9 @@ impl Streamed {
         let rates: Vec<u32> = kept.iter().map(Pcm::sample_rate).collect();
         let frames: Vec<usize> = kept.iter().map(Pcm::frame_count).collect();
         let starts = zone_start_ranges(&loaded.instrument, &rates, &loaded.scripts);
-        let heads = preload_heads(&loaded.instrument, &starts, &frames, &bytes_per_frame);
+        let heads = preload_heads(&loaded.instrument, &frames, &layouts);
         report.head_frames = heads.iter().copied().max().unwrap_or(0);
+        report.kontakt_window_bytes = kontakt_window_bytes(&loaded.instrument, &layouts);
         let ranges = start_ranges(&loaded.instrument, &kept, rate, &heads, &policy);
         // Over budget the law heads are kept whole: the budget is raised to them,
         // and the excess is reported (KONTRA_AUDIT_LOAD) rather than truncated.
@@ -2981,7 +3079,7 @@ impl Streamed {
             })
             .filter_map(|zone| zone.asset.map(|a| kept[a.0].asset_id()))
             .collect();
-        audit_start_ranges(&loaded.instrument, &loaded.plan, &kept, &ranges, &pinned_wavetables, rate, &heads, &policy, canceled)
+        audit_start_ranges(&loaded.instrument, &loaded.plan, &kept, &ranges, &pinned_wavetables, rate, &heads, &layouts, &loaded.scripts, &policy, canceled)
             .map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
         let hint_recipe = InitialStartHints::new(&loaded.instrument, &loaded.plan, &kept, rate, &heads, &starts, &policy, canceled)
             .map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;

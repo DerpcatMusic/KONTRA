@@ -16,10 +16,11 @@ use std::io;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct StartRange {
     /// Furthest offset a source reaches: the zone's S.Mod range, or 0 when no route moves the start.
-    /// Script `play_note` offsets raise it too, converted at the zone's asset rate.
+    /// Script `play_note` offsets raise it too, converted at the zone's asset rate. Diagnostic only:
+    /// heads come from Kontakt's DFD window, and offsets past S.Mod are ignored at the voice start.
     pub(super) max_frames: u64,
     /// The first script `play_note` offset with no static bound, named by script and line.
-    /// Such a zone would need its whole source; nothing widens the preload from this yet.
+    /// Diagnostic only: such an offset is ignored past the zone's S.Mod range.
     pub(super) unbounded: Option<String>,
     /// The zone's sample-start routes, in zone order.
     pub(super) sources: Vec<ir::RouteRef>,

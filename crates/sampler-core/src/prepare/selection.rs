@@ -18,6 +18,16 @@ struct Selection {
     selection_owner:Option<NoteId>,
 }
 
+/// A script `play_note` offset past the region's S.Mod range is ignored, and the
+/// voice starts at the zone start: KSP's rule for `play_note` in DFD mode.
+fn script_start_micros(micros: u32, start_mod_frames: u32, source_rate: u32) -> u32 {
+    if u64::from(micros) * u64::from(source_rate) > u64::from(start_mod_frames) * 1_000_000 {
+        0
+    } else {
+        micros
+    }
+}
+
 impl Runtime {
     /// Select matching native layers, coordinating one family per take sequence
     /// and one for unconditioned layers. Preflight
@@ -709,7 +719,7 @@ input.group>=16||input.channel>=16||input.key>=128
                                 return Err(Error::UnsupportedSourceLayout);
                             }
                         }
-                        let cursor=cursor.with_offset(offset_micros,source.sample_rate()).with_step(step);
+                        let cursor=cursor.with_offset(script_start_micros(offset_micros,prepared.voice_modulation.start_range(c.region),source.sample_rate()),source.sample_rate()).with_step(step);
                         let cursor = self.stream_start_cursor(plan, cursor);
                         let envelope=self.region_envelope(r.envelope,r.fallback_envelope);
                         let (cold,streamed)=self.check_logical_source_ready(source,cursor,envelope)?;
@@ -1070,7 +1080,7 @@ input.group>=16||input.channel>=16||input.key>=128
                     self.refused_starts=self.refused_starts.saturating_add(1);continue;
                 }};
                 let cursor=if trigger==Trigger::Attack{
-                    source_cursor.with_offset(self.note_events[note.0.index].source_offset_micros,
+                    source_cursor.with_offset(script_start_micros(self.note_events[note.0.index].source_offset_micros,prepared.voice_modulation.start_range(candidate.region),generation.source(sample).expect("admitted logical source").sample_rate()),
                         generation.source(sample).expect("admitted logical source").sample_rate())
                 }else{source_cursor};
                 let cursor=if start!=0{cursor.skip(start)}else{cursor};
