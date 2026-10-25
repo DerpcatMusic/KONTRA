@@ -1890,7 +1890,9 @@ impl Runtime {
                     e.plan == plan && e.instance == instance && e.service == service
                         && e.count == 4 && (0..3).all(|i| e.args[i] == i64::from(admitted.args[i]))
                 });
-                if action != Action::Get && !coalesce && self.ops.effects.len() == EFFECT_CAPACITY {
+                // Attach is engine-class and keeps its fault at full capacity. A Set is
+                // a UI mirror: it takes the UI budget and is dropped and counted below.
+                if action == Action::Attach && !coalesce && self.ops.effects.len() == EFFECT_CAPACITY {
                     return Err(Error::Capacity);
                 }
                 let result = crate::waveform::commit(&mut self.behavior_bank_mut(id)?.store, &admitted);
@@ -1903,6 +1905,10 @@ impl Runtime {
                     let effect = Effect { plan, instance, service, args: values, count: count as u8, text: None };
                     if coalesce {
                         if let Some(tail) = self.ops.effects.back_mut() { *tail = effect; }
+                    } else if action == Action::Set && self.ops.effects.len() >= UI_EFFECT_CAPACITY {
+                        // A UI write never delays or faults the callback: the store already
+                        // holds the value, only the mirror is dropped.
+                        self.ops.ui_effects_dropped += 1;
                     } else {
                         self.ops.effects.push_back(effect);
                     }

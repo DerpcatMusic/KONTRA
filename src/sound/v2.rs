@@ -6890,12 +6890,12 @@ mod tests {
             engine += usize::from(effect.text.is_some());
             true
         });
-        let records = core.parts[0].as_mut().unwrap().runtime.take_selection_records();
         assert_eq!(engine, 1, "55's engine effect must reach the host in block 0");
         let problems = core.problems(0);
         assert_eq!(problems.script_service_stalls, 0, "a UI flood stalled an engine effect");
         assert_eq!(problems.ui_effects_dropped, 52, "UI writes past the 2048 queue are counted");
         let records = core.parts[0].as_mut().unwrap().runtime.take_selection_records();
+        assert!(records.iter().any(|r| r.key == 55), "55 must have a selection record");
         assert!(
             records.iter().filter(|r| r.key == 55).all(|r| r.at == 0),
             "55's note start moved out of block 0"
