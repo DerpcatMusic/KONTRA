@@ -1161,6 +1161,9 @@ pub struct Runtime {
     offline: bool,
     stream_fault: Option<StreamError>,
     stream_horizon: u32,
+    /// Lookahead, not a start gate: frames each streamed voice keeps resident
+    /// ahead of its read position. Sized into the stream horizon; see
+    /// [`Runtime::set_stream_start_runway`].
     stream_start_runway: u32,
     stream_admission_errors: [u64; 2],
     stream_reserved: usize,
