@@ -72,6 +72,7 @@ class Manifest(unittest.TestCase):
 
     def test_any_task_may_touch_the_lockfile(self):
         self.assertTrue(plan.match("Cargo.lock", plan.allowed(self.plan, "P4.1")))
+        self.assertTrue(plan.match("tools/xtask/size-baseline.json", plan.allowed(self.plan, "P4.1")))
         self.assertFalse(plan.match("Cargo.toml", plan.allowed(self.plan, "P4.1")))
 
     def test_slug(self):
