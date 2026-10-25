@@ -50,10 +50,12 @@ Reports are claims. Treat every number, "tests pass", "skipped per the brief" an
 
 ## 3. CodeRabbit
 
-- Read every CodeRabbit comment. Real findings: the worker or you fix them.
-  Wrong ones: reply with the reason (a rule, a measurement) and resolve.
-- CodeRabbit does not know the plan. A finding that contradicts tasks.toml or the
-  architecture docs is answered by the doc, not by changing the code.
+- Read every CodeRabbit comment. Real findings go back to the worker (the
+  `v3-reviewer` agent never edits task code; a coordinator may fix a small one
+  itself). Wrong ones: reply with the reason (a rule, a measurement) and resolve.
+- CodeRabbit does not know the plan. A *proposed fix* that contradicts tasks.toml
+  or the architecture docs is answered by the doc. *Code* that contradicts them is
+  a real finding: fix the code, or update the doc in the same PR if the code is right.
 
 ## 4. Close the loop
 
@@ -64,8 +66,10 @@ Reports are claims. Treat every number, "tests pass", "skipped per the brief" an
   P1.1 → P1.1b) rather than stretching the PR's scope.
 - Only when the verdict is `merge` and every finding and review thread is
   resolved: `gh pr merge <n> --auto --squash`. After the PR shows `MERGED`,
-  `git fetch origin` and run `python3 tools/plan/plan.py sync` and `ready` on the new `origin/v3`.
-- After each merge batch, run `cargo xtask debt --check` and `size --check` on
-  `origin/v3`. Required checks are not strict, so two PRs can each pass and still
+  `git fetch origin && git switch --detach origin/v3` (clean tree), then
+  `python3 tools/plan/plan.py sync` and `ready`.
+- After each merge batch, on that clean `origin/v3` checkout, run
+  `cargo xtask debt --check` and `size --check`. Required checks are not strict, so two PRs can each pass and still
   break the ratchet together (P1.1b merged just before the size baseline did).
-  Fix forward at once with `size --update` in a `size-growth` PR.
+  Fix forward at once: a PR that carries the `size-growth` label (add it before
+  pushing) and the baseline from `size --update`.

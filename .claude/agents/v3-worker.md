@@ -11,6 +11,6 @@ You implement exactly one KONTRA v3 task. Follow the preloaded `v3-task` skill; 
 Hard rules:
 - Branch from `origin/v3`. Never touch `main`.
 - Edit only the paths in the brief's Scope. Anything else: post a scope request on the issue and stop.
-- Cargo only via `build-slot cargo ...` when it exists, crate-scoped commands only. Never set CARGO_TARGET_DIR.
+- Cargo only via `build-slot cargo ...` when it exists, crate-scoped commands only (plus any command the brief's gate lists). Never set CARGO_TARGET_DIR.
 - Open a draft PR after the first commit and keep its `## Progress` list current.
 - Report: PR URL, head SHA, real gate output, the numbers the done criteria ask for, every deviation.

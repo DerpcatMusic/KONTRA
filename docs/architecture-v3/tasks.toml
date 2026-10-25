@@ -427,7 +427,7 @@ steps = [
   "Add `LatestCell<T>` to sampler-pool (seqlock or triple buffer, no allocation after construction, tested with loom-free stress test in tests/) and a `ControlStore` (one cell per declared control, sized at prepare) owned by the script UI declaration.",
   "Route UI-only effects into the store. Keep the queue only for effects that are true events (e.g. file I/O requests); document which remain.",
   "UI side reads the store each frame instead of draining the queue.",
-  "A full effect queue must never release or abort a note. P2.2 deletes `BehaviorOverload::Abort` (it owns behavior/dispatch.rs); here, routing UI writes into the store means the queue no longer fills from UI traffic. Do not edit behavior/**."
+  "Do not edit behavior/**. Routing UI writes into the store means UI traffic no longer fills the queue; the invariant \"a full queue never releases a note\" belongs to P2.2, which deletes `BehaviorOverload::Abort`."
 ]
 gate = ["build-slot cargo test -p sampler-pool", "build-slot cargo test -p sampler-core --lib control", "build-slot cargo test -p kontra-probe --test fixtures ui_load"]
 done = ["The `ui_load` fixture tests in tools/probe/tests/fixtures.rs (300 UI writes per note) pass with their `#[ignore]` removed.", "Script UI still updates in the editor (coordinator check)."]
@@ -449,7 +449,7 @@ steps = [
   "Add a test: a callback doing 1M loop iterations inside bounded whiles completes and plays its note at the scheduled sample."
 ]
 gate = ["build-slot cargo test -p sampler-core --test behavior", "build-slot cargo test -p sampler-ksp while", "build-slot cargo test -p kontra-probe"]
-done = ["No `BehaviorOverload` or fuel left (`graft grep BehaviorOverload` empty)."]
+done = ["A full effect queue (true events after P2.1) never releases or aborts a note: a test fills the queue and the note still plays.", "No `BehaviorOverload` or fuel left (`graft grep BehaviorOverload` empty)."]
 
 [[task]]
 id = "P2.3"

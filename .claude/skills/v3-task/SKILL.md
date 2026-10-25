@@ -42,7 +42,8 @@ rules. The full manual is `docs/architecture-v3/12-WORKFLOW.md`.
   Sessions end without warning; the draft PR is how the next agent picks up.
 - Cargo only through `build-slot cargo ...` on the maintainer's machine (contributors:
   plain `cargo`). Never set `CARGO_TARGET_DIR`. Crate-scoped commands only:
-  no workspace builds, corpus runs or plugin bundles.
+  no workspace builds, corpus runs or plugin bundles, except commands the brief's
+  gate lists explicitly (for example `cargo check --workspace` in P4.0).
 - Formatting: `rustfmt --edition 2024 <files you changed>`. Never `cargo fmt` on a
   whole crate; it rewrites unrelated files. Clippy: `cargo clippy -p <crate>
   --all-targets --no-deps`; the bar is no new warnings in files you changed.
