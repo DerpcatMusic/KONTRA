@@ -1195,3 +1195,91 @@ fn hinted_empty_optional_source_defers_original_request_per_physical_asset() {
     assert_eq!(assets[1].head_bytes(), 0);
     assert_eq!(streamer.head_budget_status().held_bytes, bytes);
 }
+
+#[test]
+fn purged_second_group_sounds_on_every_chord_after_its_purge_reload() {
+    use sampler_core::{Envelope, Input, Limits, Playback, Prepared, Protocol, Region, Runtime, ScriptInstanceId};
+    // ANALOG-shaped: nine keys, each with a resident group-0 sample and a purged group-1 sample.
+    const KEYS: [u8; 9] = [52, 53, 59, 60, 62, 64, 65, 67, 69];
+    let assets: Vec<Pcm> = (0..KEYS.len() * 2).map(|_| Pcm::streamed(48000, 4096).unwrap()).collect();
+    let preload: Vec<Vec<std::ops::Range<usize>>> = (0..assets.len())
+        .map(|i| if i % 2 == 0 { vec![0..32] } else { vec![] })
+        .collect();
+    let reload: Vec<Vec<std::ops::Range<usize>>> = vec![vec![0..32]; assets.len()];
+    let (_, worker) = StreamCache::new(4).unwrap();
+    let (streamer, _) = Streamer::start_with_reload_cancelable(
+        sources(&assets),
+        &assets,
+        preload,
+        Some(reload),
+        None,
+        None,
+        worker,
+        2,
+        false,
+        1 << 22,
+        HashSet::new(),
+        false,
+        &|| false,
+    )
+    .unwrap();
+    let mut regions = Vec::new();
+    for (k, key) in KEYS.iter().enumerate() {
+        for group in 0..2 {
+            regions.push(Region {
+                sample: k * 2 + group,
+                key_low: *key,
+                key_high: *key,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::default(),
+                playback: Playback::default(),
+            });
+        }
+    }
+    let groups: Vec<Option<u32>> = (0..regions.len()).map(|r| Some((r % 2) as u32)).collect();
+    let plan = Prepared::new(48000, assets.clone(), regions, 32)
+        .unwrap()
+        .with_groups(2, groups)
+        .unwrap()
+        .with_group_purge(vec![false, true])
+        .unwrap()
+        .with_script_instances(vec![vec![]])
+        .unwrap();
+    let limits = Limits::for_plan(&plan, 128, 512);
+    let (cache, _runtime_worker) = StreamCache::new(4).unwrap();
+    let mut runtime = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    let active = runtime.active_plan();
+    let mut out = [[0.; 2]; 32];
+    let input = |chord: usize| Input {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key: KEYS[chord % KEYS.len()],
+        external_id: None,
+    };
+    runtime.trigger(input(0), KEYS[0], 1.).unwrap();
+    assert_eq!(runtime.voice_count(), 1, "purged group is silent before its reload");
+    runtime.render(&mut out).unwrap();
+    runtime.request_group_residency(active, 1, true, ScriptInstanceId(0)).unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    while runtime.residency_progress(active).unwrap().consumed < 1 {
+        runtime.render(&mut out).unwrap();
+        assert!(Instant::now() < until, "residency restore timed out");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    drop(streamer);
+    for chord in 0..64 {
+        let key = KEYS[chord % KEYS.len()];
+        let before = runtime.voice_count();
+        let chord_input = input(chord);
+        runtime.trigger(chord_input, key, 1.).unwrap();
+        assert_eq!(runtime.voice_count() - before, 2, "chord {chord} key {key} voices");
+        runtime.render(&mut out).unwrap();
+        runtime.note_off(chord_input, None).unwrap();
+        runtime.render(&mut out).unwrap();
+    }
+}
