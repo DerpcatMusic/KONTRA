@@ -713,10 +713,14 @@ fn a_cold_start_waits_silently_for_its_page_then_fades_in() {
     assert_eq!((stats.cold_starts, stats.stream_underruns), (1, 0));
 }
 
+// Old: a lazy start held its attack until the first page arrived. New: the cursor
+// keeps time through the wait, so the transient at source frame 0 is a dropout and
+// the source plays from its scheduled position once data arrives.
 #[test]
-fn a_lazy_start_preserves_its_attack_until_the_first_page_arrives() {
+fn a_lazy_start_loses_its_attack_to_the_schedule_and_plays_from_its_position() {
     let mut data = vec![[0.; 2]; PAGE_FRAMES * 2];
-    data[..128].fill([0.5; 2]); // A transient that a silent advancing cursor loses.
+    data[..128].fill([0.5; 2]); // A transient the waiting cursor advances past.
+    data[256..384].fill([0.5; 2]); // Audible at the scheduled position once data arrives.
     let asset = Pcm::streamed(48000, data.len()).unwrap();
     let (cache, mut worker) = StreamCache::new(4).unwrap();
     let mut r = region(0, Playback::default());
@@ -728,16 +732,20 @@ fn a_lazy_start_preserves_its_attack_until_the_first_page_arrives() {
     rt.service_streaming(PAGE_FRAMES as u32).unwrap();
     support::without_heap(|| rt.render(&mut output).unwrap());
     assert!(output.iter().all(|f| f == &[0.; 2]));
+    assert_eq!(rt.stats().dropout_frames, 256, "the wait is counted, not held");
     let mut job = worker.next_job().unwrap();
     let range = job.range();
     job.frames_mut().copy_from_slice(&data[range]);
     worker.complete(job, Ok(())).unwrap();
     rt.service_streaming(PAGE_FRAMES as u32).unwrap();
     support::without_heap(|| rt.render(&mut output).unwrap());
+    // The scheduled position is 256: the transient at 0..128 is gone, and the
+    // source at 256..384 sounds after the 48-frame recovery fade.
     assert!(
-        output.iter().any(|f| f[0] > 0.4),
-        "the held attack must still play"
+        output[60..128].iter().all(|f| f[0] > 0.4),
+        "the source at its scheduled position must play"
     );
+    assert!(output[128..].iter().all(|f| *f == [0.; 2]));
     assert_eq!(rt.stats().stream_underruns, 0);
 }
 

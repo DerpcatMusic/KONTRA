@@ -817,7 +817,7 @@ struct Voice {
 
 impl Voice {
     fn held_onset(&self) -> bool {
-        self.cursor.holding_onset() || self.cursor.pending_start_runway() > 1
+        self.cursor.unsounded() || self.cursor.pending_start_runway() > 1
     }
     /// Set this block's pitch step. A stretch voice's cursor is the time axis:
     /// it advances at the speed-scaled rate while the engine plays `pitch`.
@@ -1146,6 +1146,8 @@ pub struct Runtime {
     steal_releases: bool,
     cold_starts: bool,
     cold_started: u64,
+    /// Dropout frames of voices that already ended; live voices add theirs in `stats`.
+    retired_dropout_frames: u64,
     /// Last and peak `render` nanoseconds, and the last call's frames.
     render_time: [u64; 3],
     signal_trace: bool,
@@ -1419,6 +1421,7 @@ impl Runtime {
             steal_releases: false,
             cold_starts: false,
             cold_started: 0,
+            retired_dropout_frames: 0,
             render_time: [0; 3],
             families: Arena::new(id, limits.families),
             decisions: Arena::new(id, limits.decisions),
@@ -2357,7 +2360,7 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
                 next: next_sibling,
             },
             sample,
-            cursor: if cold && !self.offline { cursor.cold() } else { cursor },
+            cursor: if cold && !self.offline { cursor.awaiting_first_frame() } else { cursor },
             base_step,
             inherent_step,
             pitch_tracked,

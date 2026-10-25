@@ -114,44 +114,33 @@ fn target(rt: &mut Runtime) {
 }
 
 #[test]
-fn cold_chain_holds_short_finite_envelopes_and_uninitialized_smoothing() {
-    for envelope in [
-        Envelope::default(),
-        Envelope::one_shot(16, 0, 0),
-        Envelope::new(512, 0, 128, 0.5, 64).unwrap(),
-    ] {
-        for (voices, threads) in [(1, 1), (2, 1), (64, 2)] {
-            let (mut immediate, mut iw) = player(envelope, voices);
-            let (mut delayed, mut dw) = player(envelope, voices);
-            immediate.set_threads(Threads::Fixed(threads));
-            delayed.set_threads(Threads::Fixed(threads));
-            let mut silence = [[0.; 2]; 128];
-            support::without_heap(|| delayed.render(&mut silence).unwrap());
-            assert_eq!(silence, [[0.; 2]; 128]);
-            assert_eq!(
-                delayed.voice_count(),
-                voices,
-                "hold must not start an envelope tail"
-            );
-            target(&mut immediate);
-            target(&mut delayed);
-            publish(&mut immediate, &mut iw);
-            publish(&mut delayed, &mut dw);
-            let mut expected = [[0.; 2]; 256];
-            let mut actual = expected;
-            support::without_heap(|| {
-                immediate.render(&mut expected).unwrap();
-                delayed.render(&mut actual).unwrap();
-            });
-            assert!(expected.iter().flatten().any(|x| *x != 0.));
-            assert_eq!(
-                actual, expected,
-                "voice count {voices}: envelope and smoothing must wait"
-            );
-            assert_eq!(delayed.stream_underruns(), 0);
-            if threads > 1 {
-                assert!(delayed.parallel_blocks() > 0);
-            }
+fn a_cold_start_never_waits_for_storage_and_counts_its_silence() {
+    for (voices, threads) in [(1, 1), (2, 1), (64, 2)] {
+        let (mut rt, mut worker) = player(Envelope::default(), voices);
+        rt.set_threads(Threads::Fixed(threads));
+        let mut silence = [[0.; 2]; 128];
+        support::without_heap(|| rt.render(&mut silence).unwrap());
+        assert_eq!(silence, [[0.; 2]; 128]);
+        assert_eq!(
+            rt.voice_count(),
+            voices,
+            "a missing window must not end or hold the voices"
+        );
+        assert_eq!(
+            rt.stats().dropout_frames,
+            (128 * voices) as u64,
+            "voice count {voices}: every silent frame is a counted dropout"
+        );
+        publish(&mut rt, &mut worker);
+        let mut audio = [[0.; 2]; 128];
+        support::without_heap(|| rt.render(&mut audio).unwrap());
+        assert!(
+            audio.iter().flatten().any(|x| *x != 0.),
+            "voice count {voices}: the voices sound once their window arrives"
+        );
+        assert_eq!(rt.stream_underruns(), 0);
+        if threads > 1 {
+            assert!(rt.parallel_blocks() > 0);
         }
     }
 }
@@ -182,30 +171,29 @@ fn choked_cold_chain_ends_immediately_without_waiting_for_storage() {
 }
 
 #[test]
-fn late_cold_chain_starts_its_finite_envelope_only_when_data_arrives() {
+fn a_late_cold_chain_keeps_its_envelope_clock_while_storage_is_missing() {
     let (mut rt, mut worker) = player(Envelope::one_shot(16, 0, 0), 2);
     let mut audio = [[0.; 2]; 2390];
     support::without_heap(|| rt.render(&mut audio).unwrap());
-    let mut boundary = [[0.; 2]; 20];
-    support::without_heap(|| rt.render(&mut boundary).unwrap());
-    assert_eq!(
-        rt.voice_count(),
-        2,
-        "a storage wait consumes no envelope frames"
-    );
-    publish(&mut rt, &mut worker);
-    support::without_heap(|| rt.render(&mut boundary[..15]).unwrap());
-    assert_eq!(
-        rt.voice_count(),
-        2,
-        "fifteen active frames leave one envelope frame"
-    );
-    support::without_heap(|| rt.render(&mut boundary[..1]).unwrap());
     assert_eq!(
         rt.voice_count(),
         0,
-        "finite envelope ends after sixteen active frames"
+        "sixteen frames of a one-shot pass in silence while storage is missing"
     );
+    assert_eq!(
+        rt.stats().dropout_frames,
+        32,
+        "each voice's sixteen envelope frames are counted once"
+    );
+    publish(&mut rt, &mut worker);
+    let mut boundary = [[0.; 2]; 20];
+    support::without_heap(|| rt.render(&mut boundary).unwrap());
+    assert_eq!(
+        boundary,
+        [[0.; 2]; 20],
+        "data that arrives after the envelope ended must not resurrect it"
+    );
+    assert_eq!(rt.voice_count(), 0);
 }
 
 fn held_lifecycle(event: usize) {
@@ -289,7 +277,7 @@ fn held_cold_choke_ends_before_storage_arrives() {
     held_lifecycle(0)
 }
 #[test]
-fn released_cold_note_off_waits_then_sounds_in_release() {
+fn released_cold_note_off_sounds_on_its_schedule_in_release() {
     held_lifecycle(1)
 }
 #[test]
@@ -326,7 +314,7 @@ fn held_cold_terminal_decode_fault_ends_before_storage_arrives() {
 }
 
 #[test]
-fn cold_note_off_follows_sustain_until_pedal_up_then_starts_late_in_release() {
+fn cold_note_off_follows_sustain_until_pedal_up_then_releases_on_schedule() {
     let (mut rt, mut worker) = player(Envelope::new(128, 0, 0, 1., 10000).unwrap(), 2);
     let note = rt.live_notes().next().unwrap();
     let input = Input {
@@ -353,7 +341,7 @@ fn cold_note_off_follows_sustain_until_pedal_up_then_starts_late_in_release() {
         assert_eq!(
             rt.voice_count(),
             2,
-            "storage delay does not clock the release"
+            "the release keeps its clock through the storage delay"
         );
     });
     publish(&mut rt, &mut worker);

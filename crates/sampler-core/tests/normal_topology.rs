@@ -1264,20 +1264,24 @@ fn provider_pending_failed_source_family_cannot_publish_restart_to_existing_owne
 }
 
 #[test]
-fn provider_cold_onset_commits_once_at_actual_readiness_and_sample_start_is_not_reapplied(){
+fn provider_cold_onset_keeps_its_schedule_and_commits_once_at_readiness(){
     let pcm=provider_pcm();let cold:Vec<_>=(0..2).map(|_|Pcm::streamed(48000,8192).unwrap()).collect();
     let plan=provider_plan_from(true,true,cold.clone(),64);let limits=sampler_core::Limits::for_plan(&plan,4,8);let(cache,_worker)=sampler_core::StreamCache::new(16).unwrap();
     let mut actual=sampler_core::Runtime::new(plan,limits).unwrap().with_stream_cache(cache);actual.set_stream_horizon(128).unwrap();actual.set_cold_starts(true);
-    let mut reference=provider_runtime(false,true);actual.trigger(pan_input(608),60,0.75).unwrap();
-    let mut prefix=[[0.;2];256];support::without_heap(||{for block in prefix.chunks_mut(17){actual.render(block).unwrap();}reference.render(&mut [[0.;2];256]).unwrap();});assert_eq!(prefix,[[0.;2];256]);
-    let mut held=0;assert!(actual.visit_onset_voices(|voice|{assert_eq!(voice.cursor.frame,Some(48));assert_eq!(voice.cursor.traversal,48);held+=1;true}));assert_eq!(held,2);assert_eq!(actual.processing_owner_count(),1);
-    // This publication is offaudio; the next real pinned onset attempts atF256.
+    // Both timelines start at time 0; the reference is the ordinary resident path.
+    let mut reference=provider_runtime(false,true);actual.trigger(pan_input(608),60,0.75).unwrap();reference.trigger(pan_input(608),60,0.75).unwrap();
+    let mut prefix=[[0.;2];256];let mut reference_prefix=[[0.;2];256];
+    support::without_heap(||{for block in prefix.chunks_mut(17){actual.render(block).unwrap();}reference.render(&mut reference_prefix).unwrap();});assert_eq!(prefix,[[0.;2];256]);
+    // Old: both cold voices held at frame 48 until data. New: they advance through the wait.
+    let mut waited=0;assert!(actual.visit_onset_voices(|voice|{assert!(voice.cursor.traversal>48,"the cold onset kept its schedule through the wait");waited+=1;true}));assert_eq!(waited,2);assert_eq!(actual.processing_owner_count(),1);
+    assert_eq!(actual.stats().dropout_frames,512,"2 voices x 256 waited frames");
+    // This publication is offaudio; the next real pinned onset attempts at 256.
     for (asset,source)in cold.iter().zip(&pcm){let mut frames=vec![[0.;2];8192];source.copy_resident_range(0,&mut frames).unwrap();drop(asset.set_ranges(vec![(0,frames.into_boxed_slice())]).unwrap());}
-    reference.trigger(pan_input(608),60,0.75).unwrap();let mut a=[[0.;2];1025];let mut b=a;
+    let mut a=[[0.;2];1025];let mut b=[[0.;2];1025];
     support::without_heap(||{let mut at=0;for width in [1usize,17,63,64,65].into_iter().cycle(){if at==a.len(){break;}let end=(at+width).min(a.len());actual.render(&mut a[at..end]).unwrap();reference.render(&mut b[at..end]).unwrap();at=end;}});
-    // Preserve the existing cold-source fade; compare after its actual64-frame
-    // ramp and the ordinary Tone integrators settle, not by moving either cursor.
-    provider_audio_equal(&a[256..],&b[256..]);let mut ac=Vec::new();let mut rc=Vec::new();actual.visit_onset_voices(|v|{ac.push((v.cursor.traversal,v.cursor.frame));true});reference.visit_onset_voices(|v|{rc.push((v.cursor.traversal,v.cursor.frame));true});assert_eq!(ac,rc);
+    // Both timelines are aligned at time 256 (a[0] and b[0]). Preserve the existing
+    // cold-source fade: compare after its 64-frame ramp, not by moving either cursor.
+    provider_audio_equal(&a[64..],&b[64..]);let mut ac=Vec::new();let mut rc=Vec::new();actual.visit_onset_voices(|v|{ac.push((v.cursor.traversal,v.cursor.frame));true});reference.visit_onset_voices(|v|{rc.push((v.cursor.traversal,v.cursor.frame));true});assert_eq!(ac,rc);
     assert_eq!(actual.stats().stream_underruns,0);assert_eq!(actual.stats().refused_starts,0);assert_eq!(actual.stats().nonfinite_frames,0);assert_eq!(actual.processing_owner_count(),1);
 }
 #[test]
