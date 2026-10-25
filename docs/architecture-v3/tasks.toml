@@ -295,17 +295,17 @@ lane = "playback"
 size = "M"
 agent = "worker"
 deps = ["P1.1"]
-owns = ["crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs"]
+owns = ["crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs", "crates/sampler-kontakt/src/stream.rs", "crates/sampler-ksp/src/lower.rs", "crates/sampler-ksp/src/lib.rs", "crates/sampler-ksp/tests/start_offsets.rs"]
 docs = ["05-STREAM.md#1-the-preload-law"]
-goal = "Every KSP `play_note(..., offset, ...)` that can reach a zone widens that zone's `StartRange` (P1.1); an offset with no static bound sets `unbounded` and emits a load diagnostic."
+goal = "Every KSP `play_note(..., offset, ...)` widens the zone `StartRange` from P1.1; an offset with no static bound sets `unbounded` and emits a load diagnostic."
 steps = [
-  "Read `StartRange` in stream_initial_hints.rs (P1.1, #794) and how `play_note` lowers (crates/sampler-ksp/src/lower.rs `play`/`play_checked`, read only) into the script ops the `Prepared` plan holds (crates/sampler-core/src/ops.rs, plans.rs `Generation.scripts`, read only).",
-  "From stream_initial_hints.rs, walk the prepared script ops read-only. A constant offset operand (microseconds) converts to frames at the zone's sample rate and raises `max_frames` for the zones that note can reach (all zones when the target group is unknown). Any non-constant offset sets `unbounded = true`. Add a `StartSource`-style entry naming the script and op so diagnostics can point at it.",
-  "Unbounded zones produce one load diagnostic per script, through the existing hint diagnostics path.",
-  "Tests in stream_initial_hints_tests.rs: a constant 100 ms offset yields the right frames; a variable offset yields `unbounded` and a diagnostic; a script without offsets leaves P1.1's ranges unchanged.",
-  "If the ops types are not reachable from sampler-kontakt without editing another crate, stop and post a scope request on the issue."
+  "Record the bound where it is known: in crates/sampler-ksp/src/lower.rs `play` already checks `self.const_int(args, 2)`. Accumulate on the `Unit` a `StartOffsets { max_micros: u32, unbounded: Option<Span> }`: a constant offset raises `max_micros`, a non-constant one sets `unbounded` to the call's span (first one wins). The lowered ops are not used: by then the offset is a register.",
+  "Carry it out: `compile_with` in crates/sampler-ksp/src/lib.rs copies it onto `ScriptView` as a public field (`start_offsets`).",
+  "Use it: crates/sampler-kontakt/src/stream.rs builds `InitialStartHints::new(&loaded.instrument, &loaded.plan, ...)` next to `loaded.scripts`; pass the scripts' bounds in. In stream_initial_hints.rs convert micros to frames at each zone's asset sample rate and raise every zone's `max_frames` (the target group of a play_note is not known statically, so all zones); `unbounded` sets `StartRange.unbounded` for all zones and adds a source naming the script and line.",
+  "Unbounded produces one load diagnostic per script through the existing hint diagnostics path (count it the way `unsupported` is counted today).",
+  "Tests: crates/sampler-ksp/tests/start_offsets.rs (constant offset 100000 µs → max_micros 100000; `$x` offset → unbounded with the span; no play_note → zero). stream_initial_hints_tests.rs: a 100 ms bound at 48 kHz yields 4800 frames on every zone; unbounded sets the flag; no scripts leaves P1.1's ranges unchanged."
 ]
-gate = ["build-slot cargo test -p sampler-kontakt --lib initial_hints"]
+gate = ["build-slot cargo test -p sampler-ksp --test start_offsets", "build-slot cargo test -p sampler-kontakt --lib initial_hints"]
 done = ["Areia Spiccato Fast and Vista report non-zero start ranges (coordinator confirms on real libraries)."]
 
 [[task]]
