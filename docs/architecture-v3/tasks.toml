@@ -771,7 +771,7 @@ goal = "One event model crate with no KONTRA dependency: src/sound/event.rs plus
 steps = [
   "Create crates/model/events (package kontra-events, depends only on kontra-time if anything) and move src/sound/event.rs in; leave `pub use kontra_events::*` in src/sound/event.rs.",
   "Move the sampler-core receiver wire types whose definitions are plain data (no Runtime, OwnedReceiver, receiver/* or behavior/* references), e.g. ChannelAddress, ChannelScope, ExpressionId, NoteId, NotePitch, RECEIVER_PER_NOTE_CENTER and the Raw*/Receiver* value types. Check each definition (`graft skeleton`) before moving; anything with methods that touch engine state stays. Leave `pub use kontra_events::{...}` in sampler-core/src/lib.rs so every caller compiles unchanged. Pure moves: no behaviour or signature change.",
-  "In tools/xtask/dag.toml [allowed], add `kontra-events = [\"kontra-time\"]` (or `[]`) and the re-export edge `sampler-core -> kontra-events`; no other edge.",
+  "In tools/xtask/dag.toml [allowed], add `kontra-events = [\"kontra-time\"]` (or `[]`) and the re-export edges `sampler-core -> kontra-events` and `kontakto -> kontra-events` (src/sound/event.rs re-exports it); no other edge.",
   "Do not touch crates/sampler-midi: it keeps its sampler-core dependency until P6.4c replaces Runtime.",
   "held_keys stays in src/plugin until P6.4b (ledger)."
 ]
