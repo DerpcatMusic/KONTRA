@@ -3380,10 +3380,17 @@ impl Core for V2Core {
                     .saturating_add(p.problems.capacity_drops)
             },
         );
+        let dropout_frames = self
+            .parts
+            .iter()
+            .flatten()
+            .map(|p| p.runtime.stats().dropout_frames)
+            .sum();
         Voices {
             active,
             audible,
             dropouts,
+            dropout_frames,
         }
     }
 

@@ -118,7 +118,7 @@ impl Fixture {
             assert!(self.rt.visit_stream_demand(1, |d| {
                 if d.key.asset == self.assets[sample].asset_id() {
                     assert!(found.is_none());
-                    found = Some((d.voice, d.source_frame, d.cold, d.starved));
+                    found = Some((d.voice, d.source_frame, d.starved, d.starved));
                 }
                 true
             }).unwrap());
@@ -353,7 +353,9 @@ fn ready_or_started_sources_keep_existing_advancing_starvation_instead_of_replay
     f.render(&mut out, BLOCK);
     assert_eq!(f.rt.stream_underruns(), 2);
     assert_eq!(f.cursor(0).1, (START + 2 * BLOCK) as u64);
-    assert!(!f.cursor(0).2, "a warm/playing source must not become a held onset");
+    // Old: a warm source must never become a held onset. New: losing its pages starves it,
+    // and it keeps advancing (asserted above) rather than replaying.
+    assert!(f.cursor(0).2, "a warm source that lost its pages is starved and keeps advancing");
     for job in held { f.publish(job); }
     assert!(f.service());
     f.render(&mut out, BLOCK);

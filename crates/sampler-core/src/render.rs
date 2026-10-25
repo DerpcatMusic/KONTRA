@@ -37,16 +37,19 @@ pub struct RuntimeStats {
     /// victim could be replaced. Separate from page-pool admission failures.
     pub voice_pool_refusals: u64,
     /// A full voice pool replaced a started voice already waiting silently for
-    /// source data. Includes cold onset holds and faded-out stream starvation.
+    /// source data. Includes faded-out stream starvation.
     pub waiting_voice_replacements: u64,
     /// Voice starts refused after preflight (source not resident, pool full).
     pub refused_starts: u64,
     /// Time-stretch voices that found no free engine and played as a sampler.
     pub stretch_fallbacks: u64,
-    /// Voices started silent because their admitted startup runway was not
-    /// resident (`set_cold_starts`; one frame unless explicitly configured);
-    /// they fade in when the runway is available.
+    /// Voices started while their admitted startup runway was not resident
+    /// (`set_cold_starts`); they render silence for the missing span and keep
+    /// their schedule, so they never wait for storage.
     pub cold_starts: u64,
+    /// Frames rendered as silence or fade-out because their source window was not
+    /// resident. The schedule still advances through them (no voice waits for storage).
+    pub dropout_frames: u64,
     /// Output frames silenced because they were not finite.
     pub nonfinite_frames: u64,
     pub voices: usize,
@@ -100,6 +103,9 @@ impl Runtime {
             refused_starts: self.refused_starts,
             stretch_fallbacks: self.stretch_fallbacks,
             cold_starts: self.cold_started,
+            dropout_frames: self.retired_dropout_frames
+                + self.voices.slots.iter().filter_map(|s| s.value.as_ref())
+                    .map(|v| v.cursor.dropout_frames()).sum::<u64>(),
             nonfinite_frames: self.nonfinite_frames,
             voices: self.voices.count(),
             voice_capacity: self.voices.slots.len(),

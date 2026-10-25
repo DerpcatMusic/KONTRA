@@ -52,6 +52,9 @@ fn player(plan: Prepared) -> Runtime {
     Runtime::new(plan, limits).unwrap()
 }
 
+// Old -> new (P1.3): a starved voice keeps its schedule through the wait instead
+// of holding its start offset, so the wait is counted as dropout frames and
+// the audio after data arrives is the resident note shifted by that wait.
 fn late_offset(note_off_before_data: bool) {
     let data: Vec<Frame> = (0..PAGE_FRAMES * 5 + 137)
         .map(|i| [i as f32 / 32768., -(i as f32) / 32768.])
@@ -89,7 +92,7 @@ fn late_offset(note_off_before_data: bool) {
             );
         }
         let mut silent = [[0.; 2]; 64];
-        // More than the old 50 ms hold: a late page must not skip the onset.
+        // 128 blocks (8192 frames) without storage: the schedule runs in silence.
         support::without_heap(|| {
             for _ in 0..128 {
                 let _ = streamed.service_streaming(128);
@@ -98,43 +101,53 @@ fn late_offset(note_off_before_data: bool) {
                 assert!(silent.iter().all(|f| *f == [0.; 2]));
             }
         });
+        let waited = streamed.stats().dropout_frames;
+        if note_off_before_data {
+            // The release clocks its 128 frames through the wait, so the voice ends
+            // before data arrives: 128 silent frames, then nothing.
+            assert_eq!(waited, 128, "the release counts its frames as dropouts");
+            assert_eq!(
+                streamed.voice_count(),
+                0,
+                "a release before data ends on schedule, not at data arrival"
+            );
+        } else {
+            assert_eq!(waited, 128 * 64, "every waited frame is a dropout");
+        }
         while let Some(mut job) = worker.next_job() {
             let range = job.range();
             job.frames_mut().copy_from_slice(&data[range]);
             worker.complete(job, Ok(())).unwrap();
         }
         let mut actual = [[0.; 2]; 64];
-        let mut expected = [[0.; 2]; 64];
+        let mut expected = vec![[0.; 2]; waited as usize + 64];
         support::without_heap(|| {
             streamed.service_streaming(128).unwrap();
             streamed.render(&mut actual).unwrap();
             resident.render(&mut expected).unwrap();
         });
-        // The recovery fade lasts 48 frames; after it, the very same source
-        // position must match the resident note, rather than a later transient.
-        assert_eq!(
-            &actual[48..],
-            &expected[48..],
-            "{direction:?}: the intended offset must be held"
-        );
-        assert!(actual[48..].iter().any(|f| *f != [0.; 2]));
         if note_off_before_data {
-            support::without_heap(|| streamed.render(&mut actual).unwrap());
+            assert_eq!(actual, [[0.; 2]; 64], "the released voice is gone when data arrives");
+            assert_eq!(streamed.voice_count(), 0);
+        } else {
+            // After the 48-frame recovery fade, the streamed voice sits at the same
+            // source position as the resident note at schedule time `waited`.
             assert_eq!(
-                streamed.voice_count(),
-                0,
-                "release clocks 128 active frames, not the storage wait"
+                &actual[48..],
+                &expected[waited as usize + 48..],
+                "{direction:?}: the start plays the correct offset and direction once data arrives"
             );
+            assert!(actual[48..].iter().any(|f| *f != [0.; 2]));
         }
     }
 }
 
 #[test]
-fn an_unpreloaded_start_offset_waits_without_skipping_or_changing_direction() {
+fn an_unpreloaded_start_offset_keeps_its_schedule_and_direction() {
     late_offset(false)
 }
 
 #[test]
-fn staccato_released_before_late_onset_plays_its_correct_offset_then_releases() {
+fn staccato_released_before_late_data_ends_on_schedule_in_silence() {
     late_offset(true)
 }

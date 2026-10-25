@@ -38,7 +38,6 @@ pub struct StreamDemandSnapshot {
     pub frames: Range<usize>,
     pub deadline: u64,
     pub starved: bool,
-    pub cold: bool,
     pub resident: bool,
     pub status: PageStatus,
 }
@@ -889,7 +888,7 @@ impl crate::Runtime {
                         source_frame:voice.cursor.trace_position(),
                         resident: asset.resident_covers(range.clone()),
                         frames: range, deadline: demand.deadline,
-                        starved: voice.cursor.starved(), cold: voice.cursor.holding_onset(),
+                        starved: voice.cursor.starved(),
                         status: self.stream_cache.as_ref().map_or(PageStatus::Missing, |cache| cache.status(key)),
                     }) { return false; }
                 }

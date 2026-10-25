@@ -157,6 +157,8 @@ pub struct Voices {
     pub audible: usize,
     /// Stream underruns plus dropped commands, cumulative.
     pub dropouts: u64,
+    /// Frames rendered silent while source storage was missing; the schedule kept time.
+    pub dropout_frames: u64,
 }
 
 /// Load progress in thousandths, monotonic per request.
