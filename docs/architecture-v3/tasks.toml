@@ -267,6 +267,26 @@ done = ["G0.md committed; every later gate compares against it."]
 # ───────────────────────────── Phase 1: on-time start ─────────────────────────────
 
 [[task]]
+id = "P0.8"
+title = "One rustfmt pass over the workspace, then cargo fmt --check in CI"
+phase = 0
+lane = "tooling"
+size = "S"
+agent = "coordinator"
+deps = ["P0.7"]
+owns = ["**/*.rs", ".git-blame-ignore-revs", ".github/workflows/v3.yml", "tools/xtask/src/ci.rs", "tools/plan/plan.py", ".claude/skills/v3-task/SKILL.md"]
+docs = ["09-BUILD.md"]
+goal = "603 of 1414 .rs files are not rustfmt-clean, so per-file rustfmt rewrites unrelated code (rustfmt recurses into child modules). Format everything once so `cargo fmt` is safe for every worker and CI can enforce it."
+steps = [
+  "Run when no task PR is open (it touches every crate): `cargo fmt --all` in one commit with only that change; record its SHA in `.git-blame-ignore-revs`.",
+  "Add `cargo fmt --all --check` to the `v3 plan` job; switch `xtask ci`'s rustfmt step to `cargo fmt --all --check`.",
+  "Brief template step 3 and the v3-task skill: run `cargo fmt --all` before the PR (safe once the tree is clean).",
+  "Check the commit is formatting only: `cargo build --workspace` is not needed; `git diff --stat` touches .rs files only, and `cargo test -p xtask` plus the plan check pass."
+]
+gate = ["cargo fmt --all --check", "python3 tools/plan/plan.py scope P0.8 --base origin/v3"]
+done = ["`cargo fmt --all --check` passes on v3 and runs on every PR."]
+
+[[task]]
 id = "P1.1"
 title = "Reachable start range per zone (S.Mod, CC/RTC → start)"
 phase = 1
@@ -320,6 +340,7 @@ owns = ["crates/sampler-kontakt/src/stream.rs", "crates/sampler-kontakt/src/head
 docs = ["05-STREAM.md#1-the-preload-law"]
 goal = "Head length = base (60 KB-equivalent per channel, Kontakt DFD default) + the zone's start range from P1.1, instead of measured warm-cache latency; over budget never truncates silently."
 steps = [
+  "Compute `StartRange` (P1.1, P1.1b) for every load. Today `InitialStartHints` is only built when `policy.allow_cold_fallback` is set (crates/sampler-kontakt/src/stream.rs ~3069), and P1.3 deletes cold fallback: build the ranges unconditionally and make the head law read them.",
   "Replace the head-size computation (`fn head_frames` in sampler-kontakt/src/stream.rs and sampler-core/src/prepare.rs: p95 latency + 10 ms slack) with `PreloadLaw { base, min, max }` applied per zone: frames = base + start_range.max_frames; unbounded → whole sample.",
   "Remove the budget binary search with `include_offsets = false` in `bounded_attack_anchors`. Over budget: load continues, every zone keeps its law-sized head, and the load report lists the budget excess with the largest contributors. (Purge selection is a later UX task.)",
   "Replace the ×16 `max_step` scaling with the zone's real maximum pitch step from its mapping/tune range.",

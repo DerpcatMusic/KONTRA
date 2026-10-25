@@ -16,6 +16,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | P0.5 | v3 CI: plan checks, scope guard, push CI on v3 | tooling | S | coordinator | – |
 | P0.7 | xtask ci: one local gate, plus debt and size ratchets in CI | tooling | M | worker | P0.1 |
 | P0.6 | Gate G0: baseline on v3 | coordinator | S | coordinator | P0.1, P0.2, P0.3, P0.4 |
+| P0.8 | One rustfmt pass over the workspace, then cargo fmt --check in CI | tooling | S | coordinator | P0.7 |
 
 ## Phase 1: On-time start
 
@@ -138,6 +139,7 @@ flowchart LR
     P0_5["P0.5"]
     P0_7["P0.7"]
     P0_6["P0.6"]
+    P0_8["P0.8"]
   end
   subgraph ph1["1. On-time start"]
     P1_1["P1.1"]
@@ -232,6 +234,7 @@ flowchart LR
   P0_2 --> P0_6
   P0_3 --> P0_6
   P0_4 --> P0_6
+  P0_7 --> P0_8
   P0_3 --> P1_1
   P1_1 --> P1_1b
   P1_1b --> P1_2
