@@ -850,26 +850,40 @@ const PAGES_PER_VOICE: usize = 3;
 /// horizon covers one block beyond the largest head.
 const HOST_MAX_BLOCK: usize = 128;
 
-/// Frames past every permitted start that the window law keeps resident, over
-/// the streamed resident zones: the zone's head less its `start_range` (a start
-/// can sit that far into the window), capped at the sample's remaining frames.
-/// A zone whose head covers its whole sample is fully resident and needs none.
-/// Zero when no zone streams.
-fn runway_frames(instrument: &ir::Instrument, frames: &[usize], heads: &[usize]) -> usize {
+/// Output frames past every permitted start that the window law keeps resident,
+/// over the streamed resident zones. Per zone: the head less its `start_range`
+/// (a start can sit that far into the window), capped at the sample's remaining
+/// frames, then less the resampler guard, divided by the zone's fastest step
+/// (`zone_step`, the same one `start_ranges_geometry` reads at). The runway and
+/// the stream horizon count output frames, so this is the unit that matches
+/// them. A zone whose head covers its whole sample is fully resident and needs
+/// none. Zero when no zone streams.
+fn runway_frames(
+    instrument: &ir::Instrument,
+    geometry: &[(u32, usize)],
+    rate: u32,
+    heads: &[usize],
+    policy: &StreamPolicy,
+) -> usize {
     instrument
         .zones
         .iter()
         .zip(heads)
         .filter_map(|(zone, &head)| {
             let asset = zone.asset?.0;
-            if !zone_resident(instrument, zone) || head >= frames[asset] {
+            let (sample_rate, length) = geometry[asset];
+            if !zone_resident(instrument, zone) || head >= length {
                 return None;
             }
-            let length = frames[asset];
             let start = usize::try_from(zone.playback.start).unwrap_or(usize::MAX).min(length);
             let remaining = if zone.playback.reverse { start } else { length - start };
-            let guaranteed = head.saturating_sub(usize::try_from(zone.playback.start_range).unwrap_or(usize::MAX));
-            Some(guaranteed.min(remaining))
+            let guaranteed = head
+                .saturating_sub(usize::try_from(zone.playback.start_range).unwrap_or(usize::MAX))
+                .min(remaining);
+            let ratio = f64::from(sample_rate) / f64::from(rate);
+            let step = zone_step(zone, &instrument.groups, ratio, policy);
+            let guard = sampler_core::read_radius(step) + 1;
+            Some((guaranteed.saturating_sub(guard) as f64 / step).floor() as usize)
         })
         .min()
         .unwrap_or(0)
@@ -881,7 +895,13 @@ fn runway_frames(instrument: &ir::Instrument, frames: &[usize], heads: &[usize])
 /// fastest step, with the legs its looping adds, capped at its own pages; the
 /// largest zone sets the figure. Sized from the law so admission cannot run out
 /// of pool before voices do.
-fn voice_pages(instrument: &ir::Instrument, frames: &[usize], runway: usize, policy: &StreamPolicy) -> usize {
+fn voice_pages(
+    instrument: &ir::Instrument,
+    geometry: &[(u32, usize)],
+    rate: u32,
+    runway: usize,
+    policy: &StreamPolicy,
+) -> usize {
     let horizon = u32::try_from(runway.max(PAGE_FRAMES) + policy.block_frames.max(HOST_MAX_BLOCK))
         .unwrap_or(u32::MAX);
     instrument
@@ -889,7 +909,8 @@ fn voice_pages(instrument: &ir::Instrument, frames: &[usize], runway: usize, pol
         .iter()
         .filter_map(|zone| {
             let asset = zone.asset?.0;
-            let full = frames[asset].div_ceil(PAGE_FRAMES) + 1;
+            let (sample_rate, length) = geometry[asset];
+            let full = length.div_ceil(PAGE_FRAMES) + 1;
             if zone.group.is_some_and(|g| instrument.groups[g.0].wavetable.is_some()) {
                 return Some(full);
             }
@@ -898,7 +919,9 @@ fn voice_pages(instrument: &ir::Instrument, frames: &[usize], runway: usize, pol
                 ir::Looping::Continuous(_) | ir::Looping::UntilRelease(_) => 2,
                 ir::Looping::Slots(slots) => 1 + 2 * slots.iter().flatten().count(),
             };
-            let step = zone_step(zone, &instrument.groups, 1.0, policy);
+            // The runtime cursor's step is this zone's source/engine ratio, pitched.
+            let ratio = f64::from(sample_rate) / f64::from(rate);
+            let step = zone_step(zone, &instrument.groups, ratio, policy);
             Some(reservation_reach_pages(horizon, step, legs).min(full))
         })
         .fold(PAGES_PER_VOICE, usize::max)
@@ -3172,7 +3195,7 @@ impl Streamed {
         let frames=geometry.iter().map(|g|g.1).collect::<Vec<_>>();
         let heads=preload_heads(&loaded.instrument,&frames,&opened.layouts);
         opened.report.head_frames=heads.iter().copied().max().unwrap_or(0);
-        opened.report.runway_frames=runway_frames(&loaded.instrument,&frames,&heads);
+        opened.report.runway_frames=runway_frames(&loaded.instrument,&geometry,opened.rate,&heads,&opened.policy);
         opened.report.kontakt_window_bytes=kontakt_window_bytes(&loaded.instrument,&opened.layouts);
         let logical_ranges=start_ranges_geometry(&loaded.instrument,&geometry,opened.rate,&heads,&opened.policy,|zone|zone_resident(&loaded.instrument,zone));
         // Purged groups are only in the purge-reload table, and only when some group is purged.
@@ -3191,7 +3214,7 @@ impl Streamed {
             if let Some(storage)=zone.asset.and_then(|a|kept.get(a.0)) {storage.as_source().physical_dependencies(|p|{pinned.insert(p.asset_id());});}
         }}
         let mut report=opened.report;
-        report.pool_pages=report.pool_pages.checked_mul(voice_pages(&loaded.instrument,&frames,report.runway_frames,&opened.policy)).ok_or_else(||invalid(io::Error::other("physical pool overflow")))?;
+        report.pool_pages=report.pool_pages.checked_mul(voice_pages(&loaded.instrument,&geometry,opened.rate,report.runway_frames,&opened.policy)).ok_or_else(||invalid(io::Error::other("physical pool overflow")))?;
         let (mut cache,worker)=StreamCache::new(report.pool_pages.max(1)).map_err(|e|invalid(io::Error::other(e)))?;
         report.pool_bytes=cache.bytes();report.head_assets=ranges.iter().filter(|r|!r.is_empty()).count();report.head_ranges=ranges.iter().map(Vec::len).sum();report.head_source_frames=ranges.iter().flatten().map(|r|r.len() as u64).sum();
         let (streamer,_)=Streamer::start_with_reload_cancelable(opened.sources,&physical,ranges,logical_reload.is_some().then_some(reloads),None,None,worker,opened.policy.decoders,opened.policy.lazy,opened.policy.head_budget,pinned,opened.policy.allow_cold_fallback,canceled).map_err(invalid)?;
@@ -3226,12 +3249,13 @@ impl Streamed {
         let starts = zone_start_ranges(&loaded.instrument, &rates, &loaded.scripts);
         let heads = preload_heads(&loaded.instrument, &frames, &layouts);
         report.head_frames = heads.iter().copied().max().unwrap_or(0);
-        report.runway_frames = runway_frames(&loaded.instrument, &frames, &heads);
+        let geometry: Vec<(u32, usize)> = kept.iter().map(|p| (p.sample_rate(), p.frame_count())).collect();
+        report.runway_frames = runway_frames(&loaded.instrument, &geometry, rate, &heads, &policy);
         // The pool holds the voices × packs that `open` counted, each at the
         // pages its largest reach needs (heads are known only now).
         let pool_span = crate::audit::Span::new("stream_page_pool");
         report.pool_pages = report.pool_pages
-            .checked_mul(voice_pages(&loaded.instrument, &frames, report.runway_frames, &policy))
+            .checked_mul(voice_pages(&loaded.instrument, &geometry, rate, report.runway_frames, &policy))
             .ok_or_else(|| invalid("physical pool overflow".into()))?;
         let (mut cache, worker) =
             StreamCache::new(report.pool_pages.max(1)).map_err(|e| invalid(e.to_string()))?;

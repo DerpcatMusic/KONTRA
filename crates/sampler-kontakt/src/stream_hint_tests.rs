@@ -1302,7 +1302,7 @@ fn full_voice_load_at_the_largest_head_never_runs_out_of_pool() {
         ..Default::default()
     };
     let policy = StreamPolicy { voices: VOICES, ..Default::default() };
-    let per_voice = voice_pages(&instrument, &[FRAMES], RUNWAY, &policy);
+    let per_voice = voice_pages(&instrument, &[(48000, FRAMES)], 48000, RUNWAY, &policy);
     assert!(per_voice > PAGES_PER_VOICE, "the head's reach needs more than the three-page floor");
     let (cache, worker) = StreamCache::new(VOICES * per_voice).unwrap();
     let (streamer, _) = Streamer::start_with_reload_cancelable(
@@ -1345,4 +1345,52 @@ fn full_voice_load_at_the_largest_head_never_runs_out_of_pool() {
     }
     assert_eq!(runtime.voice_count(), VOICES);
     drop(streamer);
+}
+
+#[test]
+fn runway_counts_output_frames_at_the_zones_fastest_step() {
+    // A zone pitched an octave up, or sampled at 2x the engine rate, reads two
+    // source frames per output frame: half the guaranteed source frames.
+    const HEAD: usize = 20480;
+    const FRAMES: usize = 1 << 20;
+    let zone = |keys_high: u8, root: u8| ir::Zone {
+        keys: ir::KeyRange { low: 60, high: keys_high },
+        pitch: ir::KeyTracking::Tracked { root },
+        ..ir::Zone::new(ir::AssetRef(0))
+    };
+    let policy = StreamPolicy { headroom: 0.0, ..Default::default() };
+    let runway = |instrument: &ir::Instrument, rate: u32| {
+        runway_frames(instrument, &[(rate, FRAMES)], 48000, &[HEAD], &policy)
+    };
+    // Pitched up: keys 60..=72 over root 60 is a 2x step at source rate 48 kHz.
+    let pitched = ir::Instrument { zones: vec![zone(72, 60)], ..Default::default() };
+    // Sampled at 2x: 96 kHz source, keys 60..=60 on root 60, so a 2x step.
+    let sampled = ir::Instrument { zones: vec![zone(60, 60)], ..Default::default() };
+    for (name, got) in [("pitched up", runway(&pitched, 48000)), ("2x source rate", runway(&sampled, 96000))] {
+        // Source frames guaranteed: HEAD. Output frames: (HEAD - guard) / 2, guard = read_radius(2) + 1.
+        let guard = sampler_core::read_radius(2.0) + 1;
+        assert_eq!(got, (HEAD - guard) / 2, "{name}");
+        assert!(got.abs_diff(HEAD / 2) <= guard, "{name}: {got} is not about head/2");
+    }
+}
+
+#[test]
+fn voice_pages_cover_the_runtime_reach_of_a_96k_asset_at_48k() {
+    // The runtime cursor reads this 96 kHz asset at step 2 (source/engine ratio).
+    // family_reservation_pages is min(full, reservation_reach_pages(horizon, step, legs)).
+    const RUNWAY: usize = 20480;
+    const FRAMES: usize = 1 << 20;
+    let instrument = ir::Instrument {
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Tracked { root: 60 },
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        ..Default::default()
+    };
+    let policy = StreamPolicy::default();
+    let pages = voice_pages(&instrument, &[(96000, FRAMES)], 48000, RUNWAY, &policy);
+    let horizon = u32::try_from(RUNWAY + policy.block_frames.max(HOST_MAX_BLOCK)).unwrap();
+    let runtime = sampler_core::reservation_reach_pages(horizon, 2.0, 1).min(FRAMES.div_ceil(PAGE_FRAMES) + 1);
+    assert!(pages >= runtime, "pool {pages} pages per voice < runtime reach {runtime}");
 }
