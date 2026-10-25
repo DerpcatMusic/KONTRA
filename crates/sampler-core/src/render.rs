@@ -16,6 +16,8 @@ pub struct RuntimeStats {
     pub script_budget_failures: u64,
     /// Bounded host-service outbox pressure, independent of execution fuel.
     pub script_service_stalls: u64,
+    /// UI-only effects dropped because the outbox was full (never deferred or faulted).
+    pub ui_effects_dropped: u64,
     /// Routed attacks committed late without an authored wait.
     pub late_attacks: u64,
     pub max_attack_lateness_frames: u64,
@@ -89,6 +91,7 @@ impl Runtime {
             script_preemptions: self.preemptions,
             script_budget_failures: self.behavior_budget_failures,
             script_service_stalls: self.ops.stalled_effects,
+            ui_effects_dropped: self.ops.ui_effects_dropped,
             late_attacks: self.late_attacks,
             max_attack_lateness_frames: self.max_attack_lateness_frames,
             closed_pending_attacks: self.closed_pending_attacks,

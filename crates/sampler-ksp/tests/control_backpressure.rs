@@ -15,7 +15,7 @@ fn fixture() -> (Runtime, ControlClient, ControlId) {
            declare $seen := 0
            set_listener($NI_SIGNAL_TIMER_MS,1000)
          end on
-         on listener set_text($status, \"tick\") end on
+         on listener fs_navigate(1, 0) end on
          on ui_control($mode) $seen := $mode end on",
         48000,
         sampler_ksp::Limits::LIBRARY,

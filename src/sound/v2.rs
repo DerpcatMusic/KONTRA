@@ -3422,6 +3422,7 @@ impl Core for V2Core {
                 .saturating_add(stats.script_budget_failures),
             script_preemptions: stats.script_preemptions,
             script_service_stalls: stats.script_service_stalls,
+            ui_effects_dropped: stats.ui_effects_dropped,
             script_budget_failures: stats.script_budget_failures,
             late_attacks: stats.late_attacks,
             max_attack_lateness_frames: stats.max_attack_lateness_frames,
@@ -6649,19 +6650,18 @@ mod tests {
 
     #[test]
     fn a_full_effect_outbox_does_not_fault_the_next_note_callback() {
-        // Each note callback emits 200 hide_part effects. The host outbox holds 256
-        // per block, so key 55's callback, which starts after key 48's in the same
-        // block, meets a full outbox on its 57th emit. It must wait for the host to
-        // drain the outbox, not fault and lose the note.
+        // Each note callback emits 200 writes to its own targets (note * 1000 + i).
+        // The host outbox holds 256 per block, so key 55's callback, which starts
+        // after key 48's in the same block, meets a full outbox on its 57th emit. It
+        // must drop that UI write and keep running, not fault and lose the note.
         let script = sampler_ksp::compile(
             "on init
-                declare ui_slider $s (0, 100)
                 declare $i := 0
             end on
             on note
                 $i := 0
                 while ($i < 200)
-                    hide_part($s, 1)
+                    set_key_pressed($EVENT_NOTE * 1000 + $i, 1)
                     $i := $i + 1
                 end while
             end on",
@@ -6702,6 +6702,7 @@ mod tests {
             .set_behavior_overload(sampler_core::BehaviorOverload::Abort);
         let mut core = V2Core::with_parts(1, 48000.);
         core.install(0, Some(Box::new(part)));
+        core.parts[0].as_mut().unwrap().runtime.record_selections(true);
         let mut delivered = 0;
         for block in 0..3 {
             core.begin_block(&BlockInfo {
@@ -6729,8 +6730,108 @@ mod tests {
                 true
             });
         }
-        // Both callbacks emit 200 effects. Key 55 must not lose its tail to a full outbox.
-        assert_eq!(delivered, 400, "effects delivered; a note callback was dropped");
+        // Key 55 finds the outbox full after 56 of its 200 writes; the other 144 are
+        // new targets and are dropped and counted. Both note starts stay in block 0.
+        assert_eq!(delivered, 256, "effects delivered");
+        assert_eq!(core.problems(0).ui_effects_dropped, 144);
+        let records = core.parts[0].as_mut().unwrap().runtime.take_selection_records();
+        let starts: Vec<(u8, u64)> = records.iter().map(|r| (r.key, r.at)).collect();
+        assert!(starts.iter().any(|&(key, _)| key == 55), "55 never selected: {starts:?}");
+        assert!(
+            starts.iter().all(|&(_, at)| at == 0),
+            "note starts differ within one block: {starts:?}"
+        );
+    }
+
+    #[test]
+    fn repeated_key_writes_deliver_each_keys_latest_value() {
+        // 400 set_key_pressed writes to 128 keys in one block. Each key is one
+        // target, so the outbox holds 128 entries and every key's last write wins.
+        let script = sampler_ksp::compile(
+            "on init
+                declare $i := 0
+                declare $k := 0
+                declare $v := 0
+            end on
+            on note
+                $i := 0
+                $k := 0
+                $v := 0
+                while ($i < 400)
+                    set_key_pressed($k, $v)
+                    $k := $k + 1
+                    if ($k = 128)
+                        $k := 0
+                        $v := $v + 1
+                    end if
+                    $i := $i + 1
+                end while
+            end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
+        let regions = vec![Region {
+            sample: 0,
+            key_low: 55,
+            key_high: 127,
+            root_key: Some(55),
+            velocity_low: 0.0,
+            velocity_high: 1.0,
+            gain: 1.0,
+            envelope: Envelope::default(),
+            playback: Playback::default(),
+        }];
+        let prepared = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap()],
+            regions,
+            1024,
+        )
+        .unwrap();
+        let plan = sampler_ksp::bind_modules(vec![script], prepared).unwrap();
+        let runtime_limits = limits(&plan).0;
+        let mut part = Part::new(
+            Runtime::new(plan, runtime_limits).unwrap(),
+            MixTree::instrument("nka"),
+        )
+        .unwrap();
+        part.runtime
+            .set_behavior_overload(sampler_core::BehaviorOverload::Abort);
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        core.begin_block(&BlockInfo {
+            frames: 128,
+            offline: true,
+            ..Default::default()
+        });
+        core.event(
+            0,
+            Event::NoteOn {
+                note: HostNote { port: 0, channel: 0, key: 55, id: 1, clap: false },
+                velocity: 100.0 / 127.0,
+                tune: 0.0,
+            },
+        );
+        core.render(128);
+        core.end_block(128, &mut |_| true);
+        let mut latest = [None; 128];
+        let mut delivered = 0;
+        core.take_effects(0, &mut |_, effect| {
+            delivered += 1;
+            if effect.count == 2 {
+                latest[effect.args[0] as usize] = Some(effect.args[1]);
+            }
+            true
+        });
+        // Write i sets key i % 128 to i / 128, so each key's last write is the one
+        // with the largest i below 400: value 3 for keys 0..16, value 2 for the rest.
+        let expected: Vec<Option<i64>> =
+            (0..128).map(|key| Some(if key < 16 { 3 } else { 2 })).collect();
+        assert_eq!(latest.to_vec(), expected, "a key's latest write was not delivered");
+        assert_eq!(core.problems(0).ui_effects_dropped, 0);
+        assert_eq!(delivered, 128, "one outbox entry per key");
     }
 
     #[test]

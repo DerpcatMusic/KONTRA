@@ -223,6 +223,7 @@ mod tests {
                 args: 0,
                 count: 0,
                 text: None,
+                merge: Default::default(),
             }),
             I::End,
         ])
