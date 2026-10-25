@@ -32,7 +32,7 @@ jobs:
           toolchain: 1.99.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: tools/xtask
+          shared-key: v3-plan-xtask
       - name: Manifest
         run: |
           python3 tools/plan/plan.py validate
