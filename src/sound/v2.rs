@@ -3606,9 +3606,8 @@ fn sampler_stream_contract(head: usize, instrument: Option<&ir::Instrument>)
     let horizon = head.max(PAGE_FRAMES).checked_add(MAX_BLOCK).ok_or_else(invalid)?;
     let horizon = u32::try_from(horizon).map_err(|_| invalid())?;
     let requested = u32::try_from(head).map_err(|_| invalid())?;
-    if requested == 0 { return Err(invalid()); }
     let sampler = instrument.is_some_and(|i| i.groups.iter().all(|g| g.time_stretch.is_none()));
-    Ok((horizon, sampler.then_some(requested)))
+    Ok((horizon, (sampler && requested > 0).then_some(requested)))
 }
 
 fn render_threads(request: &LoadRequest) -> Threads {
@@ -9934,7 +9933,9 @@ mod sampler_stream_contract_tests {
     #[test]
     fn both_requested_and_service_horizons_are_checked_without_clamping() {
         let instrument = ir::Instrument::default();
-        assert!(sampler_stream_contract(0, Some(&instrument)).is_err());
+        // Preload 0 gives a zero DFD window (Kontakt computes it so): no runway, same horizon.
+        assert_eq!(sampler_stream_contract(0, Some(&instrument)).unwrap(),
+            ((PAGE_FRAMES + MAX_BLOCK) as u32, None));
         assert!(sampler_stream_contract(usize::MAX, Some(&instrument)).is_err());
         assert!(sampler_stream_contract(u32::MAX as usize, Some(&instrument)).is_err());
         assert_eq!(sampler_stream_contract(1019, Some(&instrument)).unwrap().1, Some(1019));
