@@ -16,7 +16,8 @@ const HELP: &str =
 Plays <instrument> through the playback contracts C1-C10 and prints one verdict each.
 
   --fixture NAME   play a synthetic fixture built in the target directory instead of a
-                   file: cc_start, key_position, dense or streamed (see tools/probe/README.md)
+                   file: cc_start, ui_load, key_position, dense or streamed
+                   (see tools/probe/README.md)
   --pattern P      pattern C1 and C6 measure, and the one in the JSON report (default live).
                    C4 and C5 always measure live; C8 always measures dense.
   --contracts IDS  comma-separated contract ids to run (default: all ten)
@@ -117,17 +118,22 @@ fn run() -> Result<bool> {
         println!("{HELP}");
         return Ok(true);
     };
-    let instrument = match args.input {
-        Input::File(path) => path,
+    let (instrument, fixture) = match args.input {
+        Input::File(path) => (path, None),
         Input::Fixture(fixture) => {
             let gaps = fixture.gaps();
             if !gaps.is_empty() {
                 println!("fixture {fixture} is missing: {gaps}");
             }
-            fixture.build()?
+            (fixture.build()?, Some(fixture))
         }
     };
     let mut session = Session::load(&instrument, RATE)?;
+    if let Some(fixture) = fixture {
+        session = session
+            .expect_voices(fixture.expected_voices())
+            .expect_ui_writes(fixture.ui_writes_per_key());
+    }
     let report = session.play(args.pattern, Mode::RealTime, BLOCK)?;
     let audible = report
         .notes
@@ -147,9 +153,10 @@ fn run() -> Result<bool> {
         }
     };
     println!(
-        "{:?} pattern: {} steps, {audible} audible, {dropouts} dropouts; {zones}",
+        "{:?} pattern: {} steps, {audible} audible, {dropouts} dropouts, {} script slot(s); {zones}",
         args.pattern,
-        report.notes.len()
+        report.notes.len(),
+        session.scripts()
     );
 
     let mut verdicts = Vec::with_capacity(args.contracts.len());

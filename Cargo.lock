@@ -2290,6 +2290,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "kontakto",
+ "sampler-ir",
  "serde",
  "serde_json",
 ]
