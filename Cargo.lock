@@ -2229,6 +2229,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hound",
  "image-webp",
+ "kontra-events",
  "libc",
  "mlua",
  "moose",
@@ -4565,6 +4566,7 @@ dependencies = [
 name = "sampler-core"
 version = "0.1.0"
 dependencies = [
+ "kontra-events",
  "realfft",
  "rtrb",
  "rustc-hash 2.1.3",

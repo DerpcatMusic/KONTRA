@@ -148,7 +148,7 @@ pub use voice_mod::{
 };
 mod ownership;
 mod receiver;
-pub const RECEIVER_PER_NOTE_CENTER:u32=0x8000_0000;
+pub use kontra_events::{Input, Protocol, RECEIVER_PER_NOTE_CENTER};
 pub use receiver::{PerNoteState as ReceiverPerNoteState,KeyState as ReceiverKeyState,Snapshot as ReceiverSnapshot};
 pub use receiver::{EventValueId,EventPostId,EventValueSnapshot,EventPostOutcome,EventValueMemory,SourceTaskFamily,SourceTaskHostContext,SourceTaskReason,SourceTaskCreator,NonMusicalTaskOrigin,PreparedGlobalTaskOrigin,PreparedGlobalSourceTask,PreparedSourceTaskBinding,SourceTaskEvent,ProgramBankIntent,ProgramSelection,ProgramPlaybackCapability,PhysicalReleaseEvent,
 ExternalInputId, ExternalTurn, ExternalEvent, ExternalOutput, ExternalOutputResult, ExternalTarget,
@@ -346,29 +346,7 @@ pub struct SelectionRecord {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoiceId(Handle);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Protocol {
-    Native,
-    Midi1,
-    Midi2,
-    Clap,
-    Vst3,
-}
 
-/// Input ownership address, never the transposed playback address. Adapters
-/// own wildcard matching and protocol-specific interpretation of IDs. An
-/// adapter mapping host tuples onto an internal wire retains the physical
-/// tuple separately through [`Runtime::set_input_source`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Input {
-    pub protocol: Protocol,
-    pub port: u16,
-    /// UMP group; zero for transports without group addressing.
-    pub group: u8,
-    pub channel: u8,
-    pub key: u8,
-    pub external_id: Option<i32>,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
