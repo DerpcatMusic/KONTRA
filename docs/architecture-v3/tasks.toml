@@ -345,10 +345,10 @@ steps = [
   "Script and CC sample offsets on streamed zones: an offset beyond the zone's S.Mod range is ignored (the voice starts at the zone start), as the KSP manual specifies for play_note in DFD mode. Apply it once where every script offset reaches the voice start (find it with `graft ask`; post a scope request naming the file). Script offset bounds (P1.1b) no longer extend heads; keep them only as a load diagnostic for offsets that will be ignored.",
   "Over budget: load continues with law-sized heads and the report lists the excess and the largest zones (as in round 2).",
   "Fixture cache: key the generated probe fixtures (tools/probe/src/fixtures.rs) by a hash of their generated inputs, not name + VERSION, so a local edit can never test stale output; a test changes one input and asserts a new directory.",
-  "Keep heads in their current storage format in this task (format change is P6.1d), but report packed (resident) bytes, not decoded f32 bytes, in `head_bytes`."
+  "Keep heads in their current storage format in this task (format change is P6.1c), but report packed (resident) bytes, not decoded f32 bytes, in `head_bytes`."
 ]
 gate = ["build-slot cargo test -p sampler-kontakt stream", "build-slot cargo test -p sampler-core --lib prepare", "build-slot cargo test -p kontra-probe --test fixtures cc_start -- --include-ignored", "build-slot cargo test -p kontra-probe --test fixtures key_position -- --include-ignored", "build-slot cargo test -p kontakto --lib snapshot_reuse"]
-done = ["Probe cc_start and key_position pass every contract they passed in round 4 (C1, C5, C8, C9); fixtures that need offsets set their zones' S.Mod to cover them.", "Coordinator: Areia, Vista and ANALOG resident head bytes within 10% of the sum of Kontakt windows (dfd_window over the same resident zones, groups not purged at load; per sample, the union of its zones' window ranges), and C1 on Areia and Vista no worse than G0."]
+done = ["Probe cc_start and key_position pass every contract they passed in round 4 (C1, C5, C8, C9); fixtures that need offsets set their zones' S.Mod to cover them.", "Coordinator: Areia, Vista and ANALOG resident head bytes at most 5% above the sum of Kontakt windows (dfd_window over the same resident zones, groups not purged at load; per sample, the union of its zones' window ranges), and C1 on Areia and Vista no worse than G0."]
 
 [[task]]
 id = "P1.3"
@@ -1142,7 +1142,7 @@ docs = ["05-STREAM.md#2-the-store", "05-STREAM.md#5-memory-targets"]
 goal = "Two instances share one preload; preloads stored in source format; earliest-deadline I/O; two stream buffers per voice."
 steps = ["Implement Store/Blob/PageCache/IoService; measure memory before/after on Areia (coordinator)."]
 gate = ["build-slot cargo test -p kontra-stream", "build-slot cargo test -p kontra-probe"]
-done = ["Memory table in 05-STREAM.md filled with measurements."]
+done = ["Memory table in 05-STREAM.md filled with measurements.", "Resident head bytes at most 60% of Kontakt's windows on Areia, Vista and ANALOG (05-STREAM §1), with C1 and C8 no worse than before the store.", "Load RSS and per-voice CPU on the same three instruments reported against v1 (~/.cache/kontra-v1) and the P1.2 build; both lower."]
 
 [[task]]
 id = "P6.2"

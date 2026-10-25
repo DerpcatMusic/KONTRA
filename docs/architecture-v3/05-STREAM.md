@@ -34,10 +34,16 @@ start = max(d, 0)                   (the window starts S.Mod before the zone sta
   a KSP `purge_group` reload computes the same law head when it loads the group. ANALOG has 481 of
   483 groups saved purged (138 of 95,624 zones resident), Areia 1,056 of 49,152 zones, Vista 4,152 of 8,304 (IR `Group::purged` and zone `group`
   via the `ir_json` and `nki_tree` examples on the three .nki files, 2026-10-25).
-- **Memory bar.** The resident head bytes for an instrument are within 10% of the sum of
-  Kontakt's windows for the same resident zones (per sample, the union of its zones' window ranges, so overlapping windows count once and disjoint ones each count), measured on Areia, Vista and
+- **Memory bar (P1.2: parity).** The resident head bytes for an instrument are at most 5% above the sum of
+  Kontakt's windows (the margin is the interpolation guard frames) for the same resident zones (per sample, the union of its zones' window ranges, so overlapping windows count once and disjoint ones each count), measured on Areia, Vista and
   ANALOG. P1.2's first attempt (base + script range, unbounded → whole sample, f32 accounting)
   measured 4.4 GB on Areia, 469 MB on Vista and 50 GB on ANALOG (2026-10-25, PluginArtifacts/v3-gates/P1.2).
+  Round 6 (36ff78c5d): Vista 314.8 MB vs 313.3 MB, Areia 106.2 MB vs 103.8 MB, ANALOG 159.4 MB vs 159.3 MB.
+- **Then beat Kontakt (P6.1c).** Parity is the floor, not the goal. The store holds heads below
+  Kontakt's footprint: compressed heads decoded on read (NCW/FLAC-class, about half of packed PCM),
+  one copy shared by every instance and every zone that reads the same frames, and a measured
+  disk-latency term instead of a fixed 60 KB on fast storage, where on-time starts allow it.
+  Target: at most 60% of Kontakt's windows on Areia, Vista and ANALOG with C1/C8 unchanged.
 - **The budget is never solved by shrinking heads below the law.** Over
   budget, the loader reports which zones exceed it and drops whole
   articulations or mic positions *the user chose to purge*. KONTRA never
