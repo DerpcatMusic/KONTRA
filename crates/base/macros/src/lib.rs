@@ -78,7 +78,7 @@ fn vector_tests(span: Span, files: &[PathBuf], run: &Expr) -> syn::Result<TokenS
         tests.push(quote! {
             #[test]
             fn #ident() {
-                (#run)(include_str!(#path));
+                let () = (#run)(include_str!(#path));
             }
         });
     }
@@ -198,15 +198,19 @@ mod tests {
         let run: Expr = syn::parse_quote!(|v| run(v));
         let out = vector_tests(Span::call_site(), &files, &run).expect("expands");
         let file: syn::File = syn::parse2(out).expect("items");
-        let names: Vec<String> = file
+        let tests: Vec<(String, String)> = file
             .items
             .iter()
             .map(|item| match item {
-                syn::Item::Fn(f) => f.sig.ident.to_string(),
+                syn::Item::Fn(f) => (f.sig.ident.to_string(), quote!(#f).to_string()),
                 _ => panic!("expected only fn items"),
             })
             .collect();
+        let names: Vec<&str> = tests.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["double_exact", "a"]);
+        // Each test embeds its own file, not a neighbour's.
+        assert!(tests[0].1.contains("\"x/double_exact.json\""));
+        assert!(tests[1].1.contains("\"x/a.json\""));
     }
 
     #[test]
