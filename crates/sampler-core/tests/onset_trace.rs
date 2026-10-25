@@ -118,7 +118,8 @@ fn held_capture(traced: bool) -> (Vec<Frame>, Vec<Birth>, [Option<u64>; 2]) {
     support::without_heap(|| rt.render(&mut output[..128]).unwrap());
     let mut snapshots = Vec::new();
     assert!(rt.visit_onset_voices(|s| { snapshots.push(s); true }));
-    assert!(snapshots.iter().any(|s| s.asset == assets[1].asset_id() && s.cursor.frame == Some(0)));
+    // Old: the late voice held at 0. New: it aged through the 128-frame wait.
+    assert!(snapshots.iter().any(|s| s.asset == assets[1].asset_id() && s.cursor.frame == Some(128)));
     complete(&mut worker, jobs[1].take().unwrap(), 1);
     support::without_heap(|| { rt.service_streaming(128).unwrap(); rt.render(&mut output[128..]).unwrap(); });
     let mut first = [None; 2];
@@ -139,14 +140,16 @@ fn held_capture(traced: bool) -> (Vec<Frame>, Vec<Birth>, [Option<u64>; 2]) {
 }
 
 #[test]
-fn two_assets_one_event_staggered_worker_pages_have_sample_accurate_onsets() {
+fn two_assets_one_event_staggered_worker_pages_keep_their_schedule() {
+    // Old: the late asset's onset sounded at 128 (held). New: its source frame 0 fell
+    // inside the wait, so the impulse is a dropout and the early onset is the only one.
     let (traced, births, onsets) = held_capture(true);
     let (plain, _, _) = held_capture(false);
     assert_eq!(traced, plain);
-    assert_eq!(onsets, [Some(0), Some(128)]);
+    assert_eq!(onsets, [Some(0), None]);
     assert_eq!(births.len(), 2);
     assert_eq!(traced.iter().position(|f| f[0] != 0.), Some(0));
-    assert_eq!(traced.iter().position(|f| f[1] != 0.), Some(128));
+    assert_eq!(traced.iter().position(|f| f[1] != 0.), None);
 }
 
 #[test]
