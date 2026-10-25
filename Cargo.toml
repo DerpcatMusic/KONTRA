@@ -26,6 +26,7 @@ standalone = ["plugin", "dep:moose-standalone"]
 shots = ["plugin", "dep:mui", "sampler-ksp/scan", "sampler-kontakt/scan", "sampler-uvi/scan"]
 
 [dependencies]
+kontra-events = { path = "crates/model/events" }
 sampler-core = { path = "crates/sampler-core" }
 sampler-ir = { path = "crates/sampler-ir" }
 sampler-kontakt = { path = "crates/sampler-kontakt", default-features = false }
