@@ -273,6 +273,8 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
               "4. `Cargo.lock`: only additions your change needs. Revert any unrelated version change cargo makes "
               "(CI checks e.g. that gpu-allocator and wgpu-hal share one `windows` version). Repo tools must never "
               "require `build-slot`; it exists only on the maintainer's machine.",
+              *[f"   Your scope touches the source of `{f}`: regenerate it with `{cmd}` and commit it."
+                for f, (src, cmd) in GENERATED.items() if overlap(owns(plan, t), [src], [])],
               "5. Run only the gate's crate-scoped commands, always through `build-slot`. No workspace builds, corpus runs, "
               "real-library surveys or plugin bundles: the coordinator does those once per merge batch.",
               "6. Push, fill in the PR template (gate output, scope check, net lines, deviations) and `gh pr ready`.",
@@ -591,9 +593,16 @@ def task_of(branch: str, plan: dict) -> str | None:
     return m[1] if m and m[1] in plan["by_id"] else None
 
 
+# Files a tool regenerates from source: any task that owns part of the source may commit them.
+GENERATED = {
+    "docs/re/ksp/SYMBOLS.tsv": ("crates/sampler-ksp/**", "python3 tools/re/ksp_symbols.py sync"),
+}
+
+
 def scope(plan: dict, tid: str, base: str) -> list[str]:
     diff = subprocess.run(["git", "diff", "--name-only", f"{base}...HEAD"], cwd=ROOT, capture_output=True, text=True, check=True)
     allowed = SPECIAL[tid] if tid in SPECIAL else owns(plan, plan["by_id"][tid])
+    allowed = allowed + [f for f, (src, _) in GENERATED.items() if overlap(allowed, [src], [])]
     return [f for f in diff.stdout.split() if not match(f, allowed)]
 
 
