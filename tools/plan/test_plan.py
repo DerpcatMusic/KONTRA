@@ -64,6 +64,11 @@ class Manifest(unittest.TestCase):
         self.assertTrue(plan.managed("status:ready"))
         self.assertTrue(plan.managed("phase:3"))
 
+    def test_generated_files_follow_their_source(self):
+        brief = plan.brief(self.plan, "P1.1b")
+        self.assertIn("ksp_symbols.py sync", brief)
+        self.assertNotIn("ksp_symbols.py sync", plan.brief(self.plan, "P0.7"))
+
     def test_slug(self):
         self.assertEqual(plan.slug("5. Current → new mapping"), "5-current--new-mapping")
         self.assertEqual(plan.slug("Phase 1–3: playback (users hear it)"), "phase-13-playback-users-hear-it")
