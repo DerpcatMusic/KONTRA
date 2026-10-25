@@ -1404,6 +1404,16 @@ fn widget_value(
 }
 
 impl V2Core {
+    /// Each recent voice's first non-silent output frame (probe C3).
+    pub fn voice_first_frames(&self) -> Vec<(u64, u64)> {
+        self.parts.iter().flatten().flat_map(|p| p.runtime.voice_first_frames()).collect()
+    }
+
+    /// Voices whose first-frame record was overwritten, all parts (probe C3).
+    pub fn voice_first_frames_dropped(&self) -> usize {
+        self.parts.iter().flatten().map(|p| p.runtime.voice_first_frames_dropped()).sum()
+    }
+
     #[cfg(any(test, feature = "shots"))]
     pub fn scan_runtime_faults(&mut self, part: usize) -> Vec<(usize, sampler_core::Outcome)> {
         let mut out = Vec::new();

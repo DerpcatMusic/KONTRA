@@ -765,6 +765,43 @@ struct StretchLink {
     started: bool,
 }
 
+/// Capacity of [`FirstFrameLog`]: the most recent voices kept for probes.
+const FIRST_FRAME_LOG: usize = 4096;
+/// Frames of a render segment a voice's first non-silent frame is searched in. A
+/// longer segment is searched only up to this many frames (a ceiling, not a silence).
+pub(crate) const FIRST_WATCH: usize = 4096;
+
+/// Ring of each voice's (authored start, first non-silent output frame). The audio
+/// thread only writes into the preallocated slots; [`Runtime::voice_first_frames`] reads them.
+struct FirstFrameLog {
+    entries: Box<[(u64, u64)]>,
+    written: usize,
+}
+
+impl FirstFrameLog {
+    fn new() -> Self {
+        Self { entries: vec![(0, 0); FIRST_FRAME_LOG].into_boxed_slice(), written: 0 }
+    }
+
+    fn record(&mut self, start: u64, frame: u64) {
+        let slot = self.written % self.entries.len();
+        self.entries[slot] = (start, frame);
+        self.written += 1;
+    }
+
+    /// Records the ring has overwritten: a report of the last `FIRST_FRAME_LOG` voices is incomplete.
+    fn dropped(&self) -> usize {
+        self.written.saturating_sub(self.entries.len())
+    }
+
+    fn recent(&self) -> Vec<(u64, u64)> {
+        let kept = self.written.min(self.entries.len());
+        (self.written - kept..self.written)
+            .map(|n| self.entries[n % self.entries.len()])
+            .collect()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Voice {
     plan: PlanId,
@@ -799,6 +836,8 @@ struct Voice {
     start_at: u64,
     /// Admission order, for oldest-first stealing.
     born: u64,
+    /// Absolute frame of this voice's first non-silent output; set once, read by probes.
+    first_frame: Option<u64>,
     /// Fading out after being stolen; no longer counts against polyphony.
     stolen: bool,
     /// The region's group, for script group layers.
@@ -1112,6 +1151,10 @@ pub struct Runtime {
     voice_activity: Box<[u64]>,
     onsets: onset::Storage,
     pending_onsets: usize,
+    /// Fixed ring of voices' first non-silent output frames. Allocated once.
+    first_frames: FirstFrameLog,
+    /// Snapshot of a segment before one voice renders into it; see `render_source_voice`.
+    first_watch: Box<[Frame]>,
     stealing: Option<steal::Stealing>,
     stolen: usize,
     /// Voices stolen since the runtime started.
@@ -1128,6 +1171,8 @@ pub struct Runtime {
     offline: bool,
     stream_fault: Option<StreamError>,
     stream_horizon: u32,
+    /// Lookahead frames each streamed voice keeps resident ahead of its read position,
+    /// and the admission gate for its start; see [`Runtime::set_stream_start_runway`].
     stream_start_runway: u32,
     stream_admission_errors: [u64; 2],
     stream_reserved: usize,
@@ -1392,6 +1437,8 @@ impl Runtime {
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
             onsets: onset::Storage::new(limits.voices),
             pending_onsets: 0,
+            first_frames: FirstFrameLog::new(),
+            first_watch: vec![[0.; 2]; FIRST_WATCH].into_boxed_slice(),
             stealing: None,
             stolen: 0,
             steals: 0,
@@ -1524,6 +1571,17 @@ impl Runtime {
     pub fn note_capacity(&self) -> usize {
         self.notes.slots.len()
     }
+    /// `(authored start, first non-silent output frame)` of each recent voice, oldest
+    /// first. Probe use: voices that share an authored start must share a first frame.
+    pub fn voice_first_frames(&self) -> Vec<(u64, u64)> {
+        self.first_frames.recent()
+    }
+
+    /// Voices whose first-frame record the ring overwrote. Zero means `voice_first_frames` is complete.
+    pub fn voice_first_frames_dropped(&self) -> usize {
+        self.first_frames.dropped()
+    }
+
     pub fn voice_count(&self) -> usize {
         self.voices.count()
     }
@@ -2377,6 +2435,7 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
             started: at == self.now,
             start_at: at,
             born: self.voice_order,
+            first_frame: None,
             stolen: false,
             follow_audio: [0.0; dsp::BLOCK],
             follow_len: 0,
