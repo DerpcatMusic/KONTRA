@@ -12,7 +12,7 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 | P0.2 | kontra-probe: playback contracts C1–C10 as a tool | tooling | L | worker | P0.0 |
 | P0.3 | Probe fixtures: native-format instruments that reproduce the audited bugs | tooling | M | worker | P0.2 |
 | P0.3b | Probe fixtures that reproduce the bugs: authored KSP (play_note offsets, ignore_event, UI load) | tooling | M | worker | P0.3 |
-| P0.4 | Build profiles: fast profile, workspace-hack, mold | tooling | S | worker | P0.1 |
+| P0.4 | Build profiles: fast profile, mold | tooling | S | worker | P0.1 |
 | P0.5 | v3 CI: plan checks, scope guard, push CI on v3 | tooling | S | coordinator | – |
 | P0.7 | xtask ci: one local gate, plus debt and size ratchets in CI | tooling | M | worker | P0.1 |
 | P0.6 | Gate G0: baseline on v3 | coordinator | S | coordinator | P0.1, P0.2, P0.3, P0.4 |

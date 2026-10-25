@@ -190,18 +190,18 @@ done = ["At least C1 or C9 (offsets), C7/C8 (UI load) and C6 (double attack) fai
 
 [[task]]
 id = "P0.4"
-title = "Build profiles: fast profile, workspace-hack, mold"
+title = "Build profiles: fast profile, mold"
 phase = 0
 lane = "tooling"
 size = "S"
 agent = "worker"
 deps = ["P0.1"]
-owns = ["@manifests", "@lockfile", "crates/workspace-hack/**", "docs/CI.md", "CONTRIBUTING.md"]
+owns = ["@manifests", "@lockfile", "docs/CI.md", "CONTRIBUTING.md"]
 docs = ["09-BUILD.md#1-levers-in-order-of-payoff"]
 goal = "Cut local release-like rebuilds without touching shipping profiles."
 steps = [
   "Add `[profile.fast]` exactly as in 09-BUILD.md §1 item 3. Do not change `release`, `ci`, `maxperf`, `corpus`.",
-  "Add a workspace-hack crate with `cargo hakari` (install with `cargo install cargo-hakari --locked` into the dev drive toolchain if missing; if you cannot install, stop and report). Commit `.config/hakari.toml` and `crates/workspace-hack`.",
+  "Measure whether feature unification across `-p` builds forces rebuilds (no workspace-hack crate unless it does on every edit; see 09-BUILD.md §1.5).",
   "Document in CONTRIBUTING.md (Local workflow) how to use `--profile fast` and `--config .cargo/fast-linux.toml`.",
   "Measure with `cargo xtask timings` before and after; put both tables in the PR."
 ]

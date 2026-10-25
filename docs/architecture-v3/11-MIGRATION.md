@@ -20,7 +20,7 @@ Step numbers in the tables below are the original outline. The task ids in
 |---|---|---|
 | 0.1 | `tools/xtask` with `size`, `debt`, `deps-check` (current DAG as allow-list), `timings` | numbers match 00-BASELINE.md |
 | 0.2 | `kontra-probe` crate from the v2.rs ignored probe; contracts C1–C10 as code, `#[ignore]` where failing today | runs on Areia/Vista locally, reports today's failures |
-| 0.3 | `[profile.fast]`, workspace-hack, CI matrix by crate | CI green, `fast` rebuild timed |
+| 0.3 | `[profile.fast]`, CI matrix by crate | CI green, `fast` rebuild timed |
 
 ## Phase 1–3: playback (users hear it)
 

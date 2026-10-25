@@ -134,9 +134,8 @@ Rules:
 - **No test hooks inside production functions.** Instrumentation goes through
   `kontra_engine::probe!` (compiled out unless the `probe` feature is on).
 - **Features** are for optional *products* (formats, UI, standalone, probe),
-  never for behaviour variants. One feature set per profile, unified by a
-  workspace-hack crate (09-BUILD.md) so dependencies are not rebuilt per
-  feature combination.
+  never for behaviour variants. One feature set per profile, so
+  dependencies are not rebuilt per feature combination (09-BUILD.md §1.5).
 - **Naming**: types say what they are (`Compressor`, `PreloadLaw`,
   `NoteLedger`); no `V2`, `v1_`, `New`, `Legacy` in names. Vendor names only in
   `format-*` and in law tables (`laws/kontakt/*.toml`).
