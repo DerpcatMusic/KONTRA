@@ -117,6 +117,8 @@ impl Cursor {
                     *value *= ramp;
                 }
             }
+            // A complete playable row: the onset has sounded, as in `render_starved`.
+            self.unsounded = false;
             for (channel, value) in row.iter().copied().enumerate() {
                 output.values[channel * output.stride + rendered] = value;
             }
