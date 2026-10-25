@@ -31,9 +31,13 @@ always compiles the GPU UI.
    come from `release`.
 4. **Use the existing `.cargo/fast-linux.toml` (clang + mold) by default
    locally.** Linking the plugin is a large share of the 16.7 s root rebuild.
-5. **A workspace-hack crate** (`cargo hakari`) so feature unification is
-   identical across `-p` invocations and dependencies are never rebuilt
-   because a different package was selected.
+5. **No workspace-hack crate (decided in P0.4, #787).** Building
+   `-p sampler-core` then the root lib recompiled 15 small dependencies
+   (serde, syn, rustfft, ...) for a second feature set. Both feature sets
+   then stay cached in the target dir and in sccache, so it is a one-time
+   cost per target dir. A hakari crate would need regenerating on every
+   dependency change, so it costs more than it saves. Revisit only if
+   `xtask timings` shows feature-set rebuilds on every edit.
 6. **Fewer generics across crate boundaries.** Engine-facing APIs take
    concrete types (`AnyModule`, `&mut Block`). Monomorphization happens
    inside the crate that owns the type, not in every downstream crate.
@@ -76,7 +80,7 @@ counter falls. Production lines may grow only with the `size-growth` label.
 
 - Matrix per layer: `base+model`, `dsp`, `engine+script`, `format`, `app+plugin`.
   Every job runs `cargo test -p <crates>` with `sccache` and the `Swatinem/rust-cache`
-  keyed by the workspace-hack hash.
+  keyed by `Cargo.lock`.
 - `xtask deps-check`, `xtask debt` (must not grow) and the contracts on the
   native-format fixtures (10-TESTING.md) on every PR.
 - The plugin bundle build and real-library surveys stay in nightly, not per-PR.
