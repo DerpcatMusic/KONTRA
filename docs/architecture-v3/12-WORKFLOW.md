@@ -86,7 +86,11 @@ tasks.toml ──sync──▶ issue [status:blocked] ──deps merged──▶
    slots: at most ~6–8 workers, each only running crate-scoped tests).
 3. **Claim.** Assign the issue (or add `status:claimed`) *before* the worker
    starts. Unassign if the worker gives up, with a comment saying where it stopped.
-4. **Work.** Follow the brief. Commit early. Rebase on `origin/v3` before the PR.
+4. **Work.** Follow the brief. Commit early. After the first commit open a
+   **draft** PR and keep a `## Progress` list in its body (done, next,
+   numbers so far). Sessions end without warning (rate limits, context,
+   quota); the next agent resumes from the draft PR, not from anyone's memory.
+   Rebase on `origin/v3` before marking it ready.
 5. **PR.** `gh pr create --base v3 --title "<id>: <title>"`; the template
    asks for the gate output, scope check, net lines and deviations.
 6. **Merge.** Coordinator squash-merges. The `v3 plan / merged` job closes the
@@ -185,7 +189,13 @@ the worker's replies (`-r2`, `-r3` …).
 ## 9. Review checklist (coordinator)
 
 - [ ] `v3 plan` and `CI required` green; scope check clean or `scope-override` justified.
-- [ ] Gate output pasted and plausible; the done criteria hold.
+- [ ] Gate output pasted and plausible; the done criteria hold. **Re-run at
+      least one claim yourself** (a gate command, a number, a file the report
+      says exists). Debunked so far: a gate filter that matched 0 tests (P1.1),
+      a "rebuild after edit" timed on a comment-only edit (P0.4), a brief step
+      reported as "skipped per the brief" when the brief required it (P0.4).
+- [ ] Corrections go back into the plan the same day: `tasks.toml` steps,
+      gates and the brief template, so the next worker does not repeat it.
 - [ ] Net production lines reported; negative unless the task adds a crate.
 - [ ] No new `#[allow]`, `#[path]`, `cfg(test)` hooks in production functions,
       `Mutex` in RT crates, vendor names below `format-*` (README rules).
