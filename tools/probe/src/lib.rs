@@ -42,6 +42,8 @@ pub const NULL_MIN_AUDIBLE: usize = 32;
 pub const NULL_LIMIT_DB: f64 = -120.0;
 /// MIDI velocity of every note the probe sends.
 const VELOCITY: u8 = 100;
+/// CC113 (sample start) value sent before notes of patterns that do not sweep it.
+const DEFAULT_START: u8 = 64;
 /// Chord shapes. A dense step holds one chord; a live step plays one key of it.
 const CHORDS: [[u8; 4]; 4] = [
     [48, 55, 60, 64],
@@ -136,6 +138,9 @@ pub struct Report {
     pub mode: Mode,
     pub block: usize,
     pub notes: Vec<NoteReport>,
+    /// Script effects the run drained from the instrument: UI writes, `message`
+    /// and other script output, not split by kind. C7 reads it as load evidence.
+    pub script_effects: u64,
     /// Mixed stereo output of the whole run, settle included. Not serialized.
     #[serde(skip)]
     pub audio: Vec<[f32; 2]>,
@@ -196,6 +201,13 @@ pub struct Session {
     rate: f64,
     /// The instrument's zones; `None` for a plain audio file.
     zones: Option<Vec<Zone>>,
+    /// Script slots that compiled; a slot that fails to compile is silently absent.
+    scripts: usize,
+    /// Voices one played key should start, when the fixture knows.
+    expected: Option<usize>,
+    /// UI writes one played key drives, when the fixture declares its load.
+    /// `None` for a real instrument: the probe cannot tell those writes apart.
+    ui_writes: Option<usize>,
     primed: Option<Loaded<<V2Core as Core>::Prepared>>,
 }
 
@@ -205,6 +217,9 @@ impl fmt::Debug for Session {
             .field("path", &self.path)
             .field("rate", &self.rate)
             .field("zones", &self.zones.as_ref().map(Vec::len))
+            .field("scripts", &self.scripts)
+            .field("expected", &self.expected)
+            .field("ui_writes", &self.ui_writes)
             .finish_non_exhaustive()
     }
 }
@@ -220,6 +235,9 @@ impl Session {
             path: path.to_path_buf(),
             rate,
             zones: zones_of(&primed),
+            scripts: primed.scripts.views.len(),
+            expected: None,
+            ui_writes: None,
             primed: Some(primed),
         })
     }
@@ -227,6 +245,25 @@ impl Session {
     /// Sample rate the instrument was loaded at.
     pub fn rate(&self) -> f64 {
         self.rate
+    }
+
+    /// Script slots that compiled when the instrument was loaded.
+    pub fn scripts(&self) -> usize {
+        self.scripts
+    }
+
+    /// Sets the voice count one played key is expected to start, which
+    /// [`check`] C6 and C7 compare against.
+    pub fn expect_voices(mut self, count: usize) -> Self {
+        self.expected = Some(count);
+        self
+    }
+
+    /// Declares the UI writes one played key drives, which [`check`] C7 needs as
+    /// evidence that the load ran. Zero means the fixture has no UI load.
+    pub fn expect_ui_writes(mut self, per_key: usize) -> Self {
+        self.ui_writes = Some(per_key);
+        self
     }
 
     /// Lowest and highest key any zone plays; `None` without a zone map.
@@ -277,6 +314,7 @@ impl Session {
             samples: Vec::new(),
         };
         let mut pending = plan.events.iter().peekable();
+        let mut script_effects = 0;
         let mut at = 0;
         while at < plan.frames {
             let frames = block.min(plan.frames - at);
@@ -293,7 +331,10 @@ impl Session {
             }
             run.render_to(&mut core, end);
             core.end_block(frames, &mut |_| true);
-            core.take_effects(0, &mut |_, _| true);
+            core.take_effects(0, &mut |_, _| {
+                script_effects += 1;
+                true
+            });
             if mode == Mode::RealTime {
                 std::thread::sleep(Duration::from_secs_f64(frames as f64 / self.rate));
             }
@@ -309,6 +350,7 @@ impl Session {
             mode,
             block,
             notes,
+            script_effects,
             audio: run.audio,
         })
     }
@@ -337,17 +379,9 @@ pub fn check(session: &mut Session, id: &str, pattern: Pattern) -> Result<Verdic
         "C4" => c4_block_size(session)?,
         "C5" => c5_offline_matches_realtime(session)?,
         "C6" => c6_voices_per_note(session, pattern)?,
-        "C7" => Verdict::unsupported(
-            "C7",
-            pattern,
-            "no script-load fixture: needs 300 UI writes per note (Areia-style)",
-        ),
+        "C7" => c7_script_load(session, pattern)?,
         "C8" => c8_dense_first_block(session)?,
-        "C9" => Verdict::unsupported(
-            "C9",
-            pattern,
-            "start offsets are sent (Pattern::Offsets) but playPos is not observable",
-        ),
+        "C9" => c9_start_offsets(session)?,
         "C10" => Verdict::unsupported(
             "C10",
             pattern,
@@ -418,12 +452,21 @@ fn plan(pattern: Pattern) -> Plan {
             Pattern::Dense => chord.to_vec(),
             Pattern::Live | Pattern::Offsets | Pattern::Cc => vec![chord[step % 4]],
         };
-        let sweep = (step * 2 % 128) as u8;
+        // The sweep starts late, not at zero: a first note at offset zero loads
+        // the instrument's pages and hides the audited start-offset stall.
+        let sweep = ((step * 2 + 96) % 128) as u8;
         let velocity = f64::from(VELOCITY) / 127.0;
+        // CC113 is the start offset of the cc_start fixture: every pattern gives
+        // it a value so a script that reads it never sees a default of 0.
         match pattern {
             Pattern::Offsets => events.push((at, Event::midi1(0xb0, 113, sweep))),
-            Pattern::Cc => events.push((at, Event::midi1(0xb0, 1, sweep))),
-            Pattern::Live | Pattern::Dense => {}
+            Pattern::Cc => {
+                events.push((at, Event::midi1(0xb0, 113, DEFAULT_START)));
+                events.push((at, Event::midi1(0xb0, 1, sweep)));
+            }
+            Pattern::Live | Pattern::Dense => {
+                events.push((at, Event::midi1(0xb0, 113, DEFAULT_START)));
+            }
         }
         for &key in &keys {
             id += 1;
@@ -545,8 +588,28 @@ fn first_audible(audio: &[[f32; 2]], from: usize, to: usize) -> Option<usize> {
 }
 
 fn c1_on_time(session: &mut Session, pattern: Pattern) -> Result<Verdict> {
+    on_time(session, "C1", pattern, "")
+}
+
+/// C9 is C1 with a start offset on every note: CC113 sweeps 0..126, which the
+/// fixture turns into a source offset of up to 30 % of the sample.
+fn c9_start_offsets(session: &mut Session) -> Result<Verdict> {
+    on_time(session, "C9", Pattern::Offsets, "CC113 0..126 every note; ")
+}
+
+fn on_time(
+    session: &mut Session,
+    id: &'static str,
+    pattern: Pattern,
+    note: &str,
+) -> Result<Verdict> {
     let report = session.play(pattern, Mode::RealTime, BLOCK)?;
-    let missing = audible_missing(&report);
+    Ok(on_time_verdict(&report, id, pattern, note))
+}
+
+/// C1 on a real-time render: every note audible at its scheduled frame.
+fn on_time_verdict(report: &Report, id: &'static str, pattern: Pattern, note: &str) -> Verdict {
+    let missing = audible_missing(report);
     let worst = report
         .notes
         .iter()
@@ -555,14 +618,14 @@ fn c1_on_time(session: &mut Session, pattern: Pattern) -> Result<Verdict> {
         .max()
         .unwrap_or(0);
     let detail = format!(
-        "worst start error {worst} frames over {} notes; {missing} never audible",
+        "{note}worst start error {worst} frames over {} notes; {missing} never audible",
         report.notes.len()
     );
-    Ok(if missing == 0 && worst == 0 {
-        Verdict::passed("C1", pattern, detail)
+    if missing == 0 && worst == 0 {
+        Verdict::passed(id, pattern, detail)
     } else {
-        Verdict::failed("C1", pattern, detail)
-    })
+        Verdict::failed(id, pattern, detail)
+    }
 }
 
 /// Null test in C4 and C5 on the live pattern at real-time block size.
@@ -623,13 +686,37 @@ fn c5_offline_matches_realtime(session: &mut Session) -> Result<Verdict> {
 
 fn c6_voices_per_note(session: &mut Session, pattern: Pattern) -> Result<Verdict> {
     let report = session.play(pattern, Mode::Offline, BLOCK)?;
-    let counts: Vec<usize> = report.notes.iter().map(|n| n.voices).collect();
-    let first = counts.first().copied().unwrap_or(0);
-    Ok(if first > 0 && counts.iter().all(|&c| c == first) {
+    Ok(voices_verdict(session, &report, pattern))
+}
+
+/// C6 on a rendered run. A note's voices are counted per key: a chord of four
+/// keys that starts one voice per key sounds four voices, which is correct.
+fn voices_verdict(session: &Session, report: &Report, pattern: Pattern) -> Verdict {
+    // `None` when the voices do not split evenly over the note's keys.
+    let per_key: Vec<Option<usize>> = report
+        .notes
+        .iter()
+        .map(|n| (n.voices % n.keys.len() == 0).then(|| n.voices / n.keys.len()))
+        .collect();
+    let first = per_key.first().copied().flatten().unwrap_or(0);
+    let (ok, expected) = match session.expected {
+        Some(n) => (
+            per_key.iter().all(|&c| c == Some(n)),
+            format!("{n} voice(s) expected per key on every note"),
+        ),
+        None => (
+            first > 0 && per_key.iter().all(|&c| c == Some(first)),
+            "voices per key equal on every note and above zero".to_owned(),
+        ),
+    };
+    if ok {
         Verdict::passed(
             "C6",
             pattern,
-            format!("{first} voice(s) on every one of {} notes", counts.len()),
+            format!(
+                "{first} voice(s) per key on every one of {} notes; {expected}",
+                per_key.len()
+            ),
         )
     } else {
         let silent: Vec<String> = report
@@ -638,16 +725,16 @@ fn c6_voices_per_note(session: &mut Session, pattern: Pattern) -> Result<Verdict
             .filter(|n| n.voices == 0)
             .map(|n| silent_note(session, n))
             .collect();
-        Verdict::failed(
-            "C6",
-            pattern,
-            format!(
-                "voices per note vary: {counts:?}; {} with no voices: {}",
+        let mut detail = format!("{expected}; voices per key: {per_key:?}");
+        if !silent.is_empty() {
+            detail.push_str(&format!(
+                "; {} with no voices: {}",
                 silent.len(),
                 silent.join("; ")
-            ),
-        )
-    })
+            ));
+        }
+        Verdict::failed("C6", pattern, detail)
+    }
 }
 
 /// What was sent for a note that sounded no voices, and whether a zone plays it.
@@ -661,6 +748,61 @@ fn silent_note(session: &Session, note: &NoteReport) -> String {
         "step {} keys {:?} velocity {}: {zones}",
         note.step, note.keys, note.velocity
     )
+}
+
+/// C7 is C1 and C6 under the fixture's UI load. Passing needs evidence that the
+/// load ran: the script must have drained at least its declared writes for every
+/// key played, in both renders. Without that evidence the contract is unsupported,
+/// never a pass.
+fn c7_script_load(session: &mut Session, pattern: Pattern) -> Result<Verdict> {
+    let writes = match session.ui_writes {
+        None => {
+            return Ok(Verdict::unsupported(
+                "C7",
+                pattern,
+                "a real instrument declares no UI load, and the public API cannot tell \
+                 its UI writes from its other script effects",
+            ));
+        }
+        Some(0) => {
+            return Ok(Verdict::unsupported(
+                "C7",
+                pattern,
+                "this fixture declares no UI load",
+            ));
+        }
+        Some(writes) => writes,
+    };
+    let realtime = session.play(pattern, Mode::RealTime, BLOCK)?;
+    let offline = session.play(pattern, Mode::Offline, BLOCK)?;
+    let keys: usize = realtime.notes.iter().map(|n| n.keys.len()).sum();
+    let wanted = (writes * keys) as u64;
+    if realtime.script_effects < wanted || offline.script_effects < wanted {
+        // The fixture declares the load, so a shortfall means writes were lost, not unmeasured.
+        return Ok(Verdict::failed(
+            "C7",
+            pattern,
+            format!(
+                "UI writes lost: {} and {} script effects drained (real time and offline), \
+                 {wanted} expected from {writes} UI writes on each of {keys} keys",
+                realtime.script_effects, offline.script_effects
+            ),
+        ));
+    }
+    let on_time = on_time_verdict(&realtime, "C1", pattern, "");
+    let voices = voices_verdict(session, &offline, pattern);
+    let pass = on_time.pass == Some(true) && voices.pass == Some(true);
+    let detail = format!(
+        "{} script effects drained (at least {wanted} expected); C1: {}; C6: {}",
+        realtime.script_effects.min(offline.script_effects),
+        on_time.detail,
+        voices.detail
+    );
+    Ok(if pass {
+        Verdict::passed("C7", pattern, detail)
+    } else {
+        Verdict::failed("C7", pattern, detail)
+    })
 }
 
 fn c8_dense_first_block(session: &mut Session) -> Result<Verdict> {
@@ -806,11 +948,34 @@ mod tests {
     }
 
     #[test]
+    fn every_live_step_carries_a_start_offset_value() {
+        let live = plan(Pattern::Live);
+        let first_note = live.notes[0].scheduled as usize;
+        let controllers: Vec<(u8, u8)> = live
+            .events
+            .iter()
+            .filter(|(frame, _)| *frame == first_note)
+            .filter_map(|(_, event)| match event {
+                Event::Ump([word, _]) => Some((((word >> 8) & 0x7f) as u8, (word & 0x7f) as u8)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            controllers,
+            vec![(113, DEFAULT_START)],
+            "a script that reads CC113 always sees a value"
+        );
+    }
+
+    #[test]
     fn unknown_contract_is_an_error() {
         let mut session = Session {
             path: PathBuf::new(),
             rate: 48_000.0,
             zones: None,
+            scripts: 0,
+            expected: None,
+            ui_writes: None,
             primed: None,
         };
         assert!(check(&mut session, "C11", Pattern::Live).is_err());
@@ -832,6 +997,7 @@ mod tests {
             mode: Mode::Offline,
             block: BLOCK,
             notes: (0..STEPS).map(|s| note(s, s < audible)).collect(),
+            script_effects: 0,
             audio: vec![[audio, audio]; 8],
         };
         let silent = null_gap(&report(0.0, STEPS)).expect("silence is refused");
@@ -850,6 +1016,9 @@ mod tests {
                 keys: (55, 96),
                 velocities: (1, 127),
             }]),
+            scripts: 0,
+            expected: None,
+            ui_writes: None,
             primed: None,
         };
         let note = NoteReport {
