@@ -1283,3 +1283,66 @@ fn purged_second_group_sounds_on_every_chord_after_its_purge_reload() {
         runtime.render(&mut out).unwrap();
     }
 }
+
+#[test]
+fn full_voice_load_at_the_largest_head_never_runs_out_of_pool() {
+    use sampler_core::{Envelope, Input, Limits, Playback, Prepared, Protocol, Region, Runtime};
+    // One long streamed sample, played by a full voice load at the runway horizon:
+    // 20480 frames is the 24-bit stereo runway (61440 bytes / 6 bytes per frame).
+    const VOICES: usize = 16;
+    const RUNWAY: usize = 20480;
+    const FRAMES: usize = 1 << 20;
+    let assets = vec![Pcm::streamed(48000, FRAMES).unwrap()];
+    let instrument = ir::Instrument {
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 75 },
+            pitch: ir::KeyTracking::Tracked { root: 60 },
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        ..Default::default()
+    };
+    let policy = StreamPolicy { voices: VOICES, ..Default::default() };
+    let per_voice = voice_pages(&instrument, &[FRAMES], RUNWAY, &policy);
+    assert!(per_voice > PAGES_PER_VOICE, "the head's reach needs more than the three-page floor");
+    let (cache, worker) = StreamCache::new(VOICES * per_voice).unwrap();
+    let (streamer, _) = Streamer::start_with_reload_cancelable(
+        sources(&assets),
+        &assets,
+        vec![vec![0..RUNWAY]],
+        None,
+        None,
+        None,
+        worker,
+        2,
+        false,
+        1 << 24,
+        HashSet::new(),
+        false,
+        &|| false,
+    )
+    .unwrap();
+    let regions = vec![Region {
+        sample: 0,
+        key_low: 60,
+        key_high: 75,
+        root_key: Some(60),
+        velocity_low: 0.,
+        velocity_high: 1.,
+        gain: 1.,
+        envelope: Envelope::default(),
+        playback: Playback::default(),
+    }];
+    let plan = Prepared::new(48000, assets.clone(), regions, 128).unwrap();
+    let limits = Limits::for_plan(&plan, 128, VOICES);
+    let mut runtime = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    let horizon = u32::try_from(RUNWAY.max(PAGE_FRAMES) + 128).unwrap();
+    runtime.set_stream_horizon(horizon).expect("the pool holds one head reach per voice");
+    let mut out = [[0.; 2]; 32];
+    for key in 0..VOICES as u8 {
+        let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60 + key, external_id: None };
+        runtime.trigger(input, 60 + key, 1.).expect("a full voice load is admitted");
+        runtime.render(&mut out).unwrap();
+    }
+    assert_eq!(runtime.voice_count(), VOICES);
+    drop(streamer);
+}

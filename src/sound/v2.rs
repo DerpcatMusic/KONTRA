@@ -3599,13 +3599,13 @@ fn stream_policy_for_memory(
 /// wins, then the player's setting; one (the audio thread alone) otherwise.
 /// Preserve the legacy stretch path: sampler taps do not certify grains or
 /// pre-roll. Requested latency and service horizon are checked as one pair.
-fn sampler_stream_contract(head: usize, instrument: Option<&ir::Instrument>)
+fn sampler_stream_contract(runway: usize, instrument: Option<&ir::Instrument>)
     -> Result<(u32, Option<u32>), CoreError>
 {
     let invalid = || CoreError::Invalid("streaming horizon exceeds output-frame domain".into());
-    let horizon = head.max(PAGE_FRAMES).checked_add(MAX_BLOCK).ok_or_else(invalid)?;
+    let horizon = runway.max(PAGE_FRAMES).checked_add(MAX_BLOCK).ok_or_else(invalid)?;
     let horizon = u32::try_from(horizon).map_err(|_| invalid())?;
-    let requested = u32::try_from(head).map_err(|_| invalid())?;
+    let requested = u32::try_from(runway).map_err(|_| invalid())?;
     let sampler = instrument.is_some_and(|i| i.groups.iter().all(|g| g.time_stretch.is_none()));
     Ok((horizon, (sampler && requested > 0).then_some(requested)))
 }
@@ -4370,7 +4370,7 @@ impl V2Loader {
         runtime.set_cold_starts(true);
         let streams = cache.is_some();
         let stream_contract = stream.as_ref().map(|s| sampler_stream_contract(
-            s.report.head_frames, instrument.as_deref())).transpose()?;
+            s.report.runway_frames, instrument.as_deref())).transpose()?;
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
             if let Some((horizon, runway)) = stream_contract {
