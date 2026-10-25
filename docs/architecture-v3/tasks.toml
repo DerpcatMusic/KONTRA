@@ -268,7 +268,7 @@ done = ["G0.md committed; every later gate compares against it."]
 
 [[task]]
 id = "P1.1"
-title = "Reachable start range per zone (S.Mod, script offsets, CC/RTC → start)"
+title = "Reachable start range per zone (S.Mod, CC/RTC → start)"
 phase = 1
 lane = "playback"
 size = "M"
@@ -284,7 +284,28 @@ steps = [
   "Unbounded ranges produce a load diagnostic naming the script line or route.",
   "Tests: the `cc_start` and `key_position` probe fixtures produce the expected ranges; an unbounded `play_note` offset produces `unbounded = true` and a diagnostic."
 ]
-gate = ["build-slot cargo test -p sampler-kontakt stream_initial_hints", "build-slot cargo test -p sampler-ksp sema"]
+gate = ["build-slot cargo test -p sampler-kontakt --lib initial_hints"]
+done = ["Zones with a sample-start route carry `StartRange.max_frames` = their S.Mod range; script offsets moved to P1.1b."]
+
+[[task]]
+id = "P1.1b"
+title = "Script play_note offsets join the zone start range"
+phase = 1
+lane = "playback"
+size = "M"
+agent = "worker"
+deps = ["P1.1"]
+owns = ["crates/sampler-kontakt/src/stream_initial_hints.rs", "crates/sampler-kontakt/src/stream_initial_hints_tests.rs"]
+docs = ["05-STREAM.md#1-the-preload-law"]
+goal = "Every KSP `play_note(..., offset, ...)` that can reach a zone widens that zone's `StartRange` (P1.1); an offset with no static bound sets `unbounded` and emits a load diagnostic."
+steps = [
+  "Read `StartRange` in stream_initial_hints.rs (P1.1, #794) and how `play_note` lowers (crates/sampler-ksp/src/lower.rs `play`/`play_checked`, read only) into the script ops the `Prepared` plan holds (crates/sampler-core/src/ops.rs, plans.rs `Generation.scripts`, read only).",
+  "From stream_initial_hints.rs, walk the prepared script ops read-only. A constant offset operand (microseconds) converts to frames at the zone's sample rate and raises `max_frames` for the zones that note can reach (all zones when the target group is unknown). Any non-constant offset sets `unbounded = true`. Add a `StartSource`-style entry naming the script and op so diagnostics can point at it.",
+  "Unbounded zones produce one load diagnostic per script, through the existing hint diagnostics path.",
+  "Tests in stream_initial_hints_tests.rs: a constant 100 ms offset yields the right frames; a variable offset yields `unbounded` and a diagnostic; a script without offsets leaves P1.1's ranges unchanged.",
+  "If the ops types are not reachable from sampler-kontakt without editing another crate, stop and post a scope request on the issue."
+]
+gate = ["build-slot cargo test -p sampler-kontakt --lib initial_hints"]
 done = ["Areia Spiccato Fast and Vista report non-zero start ranges (coordinator confirms on real libraries)."]
 
 [[task]]
@@ -294,7 +315,7 @@ phase = 1
 lane = "playback"
 size = "L"
 agent = "worker"
-deps = ["P1.1", "P0.3b"]
+deps = ["P1.1b", "P0.3b"]
 owns = ["crates/sampler-kontakt/src/stream.rs", "crates/sampler-kontakt/src/head_prepare.rs", "crates/sampler-kontakt/src/head_cache.rs", "crates/sampler-core/src/head_budget.rs", "crates/sampler-core/src/prepare.rs", "crates/sampler-core/src/prepare/**", "crates/sampler-core/tests/stream_start_runway.rs"]
 docs = ["05-STREAM.md#1-the-preload-law"]
 goal = "Head length = base (60 KB-equivalent per channel, Kontakt DFD default) + the zone's start range from P1.1, instead of measured warm-cache latency; over budget never truncates silently."
