@@ -455,7 +455,8 @@ pub(super) struct Cursor {
     /// Frames rendered as silence (or fade-out) because their source window was
     /// not resident. The cursor advances through them: storage never holds a voice.
     dropout_frames: u64,
-    /// Traversal position of the first dropout frame, if any.
+    /// Traversal position of the first dropout frame, if any. Read by tests only.
+    #[cfg_attr(not(test), allow(dead_code))]
     first_stall: Option<u64>,
     /// Admitted before any source frame: lifecycle events end it with no tail to
     /// preserve. Cleared by its first frame; it never gates rendering.
@@ -933,6 +934,7 @@ impl Cursor {
     }
 
     /// Traversal position where the first dropout began.
+    #[cfg(test)]
     pub(crate) fn first_stall(&self) -> Option<u64> {
         self.first_stall
     }

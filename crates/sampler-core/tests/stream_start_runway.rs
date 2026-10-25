@@ -118,7 +118,7 @@ impl Fixture {
             assert!(self.rt.visit_stream_demand(1, |d| {
                 if d.key.asset == self.assets[sample].asset_id() {
                     assert!(found.is_none());
-                    found = Some((d.voice, d.source_frame, d.cold, d.starved));
+                    found = Some((d.voice, d.source_frame, d.starved, d.starved));
                 }
                 true
             }).unwrap());

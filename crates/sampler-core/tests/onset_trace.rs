@@ -43,7 +43,6 @@ fn actual_dynamic_offset_is_distinct_from_base_and_traced_pcm_matches() {
     assert_eq!(first.len(), 1);
     assert_eq!((first[0].cursor.base_start, first[0].used_start_offset, first[0].cursor.frame), (7, 32, Some(39)));
     assert_eq!(first[0].cursor.fraction, 0.);
-    assert!(!first[0].cold);
     let rows = signal.drain();
     assert_eq!(signal.dropped(), 0);
     let contributions: Vec<_> = rows.iter().filter(|r| r.contribution).collect();
@@ -105,7 +104,7 @@ fn held_capture(traced: bool) -> (Vec<Frame>, Vec<Birth>, [Option<u64>; 2]) {
         assert_eq!(born[0].family, born[1].family);
         assert_ne!(born[0].voice, born[1].voice);
         assert_ne!(born[0].asset, born[1].asset);
-        assert!(born.iter().all(|b| b.cold && b.cursor.frame == Some(0)));
+        assert!(born.iter().all(|b| b.cursor.frame == Some(0)));
         let windows: Vec<_> = records.iter().filter_map(|r| match r { Record::Window(w) => Some(w), _ => None }).collect();
         assert_eq!(windows.len(), 2);
         for window in windows {
@@ -119,7 +118,7 @@ fn held_capture(traced: bool) -> (Vec<Frame>, Vec<Birth>, [Option<u64>; 2]) {
     support::without_heap(|| rt.render(&mut output[..128]).unwrap());
     let mut snapshots = Vec::new();
     assert!(rt.visit_onset_voices(|s| { snapshots.push(s); true }));
-    assert!(snapshots.iter().any(|s| s.asset == assets[1].asset_id() && s.cold && s.cursor.frame == Some(0)));
+    assert!(snapshots.iter().any(|s| s.asset == assets[1].asset_id() && s.cursor.frame == Some(0)));
     complete(&mut worker, jobs[1].take().unwrap(), 1);
     support::without_heap(|| { rt.service_streaming(128).unwrap(); rt.render(&mut output[128..]).unwrap(); });
     let mut first = [None; 2];

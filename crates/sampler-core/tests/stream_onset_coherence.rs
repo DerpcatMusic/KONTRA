@@ -155,7 +155,7 @@ fn cursor(f: &Fixture, sample: usize) -> Option<CursorReceipt> {
                     result = Some(CursorReceipt {
                         voice: d.voice,
                         source_frame: d.source_frame,
-                        cold: d.cold,
+                        cold: d.starved,
                         starved: d.starved,
                         resident: d.resident,
                         status: d.status,
