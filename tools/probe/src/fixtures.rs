@@ -1,23 +1,24 @@
 //! Synthetic instruments that take the paths the audited libraries take, built at
 //! run time so CI needs no vendor files and no audio is committed.
 //!
-//! Each fixture is written as WAV samples under the target directory and compiled
-//! by the library creator into a Kontakt instrument (`.nki`), the format the real
-//! libraries use. What the creator cannot author is listed in [`Fixture::gaps`].
+//! Each fixture is authored as sampler IR (groups, zones, sample table) plus KSP
+//! and written by the library's NKI writer — the same container the real
+//! libraries use. What the writer still cannot carry is listed in
+//! [`Fixture::gaps`].
 
-use std::f32::consts::TAU;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Mutex, PoisonError};
 
-use anyhow::{Context, Result, ensure};
-use kontakto::creator::{self, Options};
+use anyhow::{Context, Result};
 
-/// Sample rate of every fixture's WAV files.
-const RATE: u32 = 48_000;
+mod audio;
+mod ksp;
+mod program;
+
 /// Folder version: bump it when the generated instruments change.
-const VERSION: u32 = 1;
+const VERSION: u32 = 3;
 /// The natural notes every fixture covers, C2 to A3 (the keys the probe plays).
 const ROOTS: [(u8, &str); 13] = [
     (48, "C2"),
@@ -38,11 +39,14 @@ const ROOTS: [(u8, &str); 13] = [
 /// A synthetic instrument, named as on the command line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fixture {
-    /// Areia pattern: three mic groups with round robins and a script on every note.
+    /// Areia pattern: three mic groups with round robins, a played note replaced
+    /// by three `play_note` children whose start comes from CC113.
     CcStart,
-    /// Vista pattern: two layers, standing in for KeyPosition-driven sample start.
+    /// Areia's effect traffic: 300 UI writes per note before the note may sound.
+    UiLoad,
+    /// Vista pattern: two velocity layers, the start offset derived from the key.
     KeyPosition,
-    /// Chord pattern: one mic with round robins, so every chord voice runs a script.
+    /// Chord pattern: one mic with round robins, so every chord key runs a script.
     Dense,
     /// Samples much longer than the head, so voices read from disk after the preload.
     Streamed,
@@ -50,8 +54,9 @@ pub enum Fixture {
 
 impl Fixture {
     /// Every fixture, in run order.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::CcStart,
+        Self::UiLoad,
         Self::KeyPosition,
         Self::Dense,
         Self::Streamed,
@@ -61,35 +66,61 @@ impl Fixture {
     pub fn name(self) -> &'static str {
         match self {
             Self::CcStart => "cc_start",
+            Self::UiLoad => "ui_load",
             Self::KeyPosition => "key_position",
             Self::Dense => "dense",
             Self::Streamed => "streamed",
         }
     }
 
-    /// Parts of the audited pattern the native creator cannot author. Empty when the
+    /// Parts of the audited pattern the instrument does not carry. Empty when the
     /// fixture carries everything it stands for.
     pub fn gaps(self) -> &'static str {
         match self {
             Self::CcStart => {
-                "no CC113 to sample-start route (playPos from CC) and no 300 set_control_par UI writes per note: \
-                 the creator writes neither, its only script is the round-robin one"
+                "no CC113 to S.Mod/playPos route and no preload head over the modulated \
+                 start range: the offset goes through play_note, so the audited disk-start \
+                 path is not exercised"
+            }
+            Self::UiLoad => {
+                "300 UI writes on one knob stand in for Areia's 16,700-line on note; \
+                 one message per note instead of its 67"
             }
             Self::KeyPosition => {
-                "no KeyPosition/RTC to sample-start route: the creator writes no modulation routes"
+                "no KeyPosition/RTC modulation route: the script computes the offset from \
+                 $EVENT_NOTE and passes it to play_note"
             }
             Self::Dense => {
-                "no play_note per voice and no ignore_event on the original attack: the creator's only script \
-                 is the round-robin one"
+                "one play_note per played key, not one per mic layer; no UI traffic \
+                 (ui_load carries that)"
             }
-            Self::Streamed => "",
+            Self::Streamed => {
+                "samples are short enough to stay in the page cache; no degraded-disk run (C2)"
+            }
+        }
+    }
+
+    /// Voices one played key is expected to start, as the authored KSP intends.
+    pub fn expected_voices(self) -> usize {
+        match self {
+            Self::CcStart => 3,
+            Self::UiLoad | Self::KeyPosition | Self::Dense | Self::Streamed => 1,
+        }
+    }
+
+    /// UI writes each played key drives, as the authored KSP intends: the
+    /// `set_control_par` count in [`ksp::UI_LOAD`]. Zero when there is no UI load.
+    pub fn ui_writes_per_key(self) -> usize {
+        match self {
+            Self::UiLoad => 300,
+            Self::CcStart | Self::KeyPosition | Self::Dense | Self::Streamed => 0,
         }
     }
 
     /// Writes the instrument if it is not there yet and returns its `.nki` path.
     ///
     /// # Errors
-    /// Fails when the samples cannot be written or the creator rejects them.
+    /// Fails when the samples cannot be written or the NKI writer rejects them.
     pub fn build(self) -> Result<PathBuf> {
         // Tests share one process: a second caller waits and then finds the folder ready.
         static BUILD: Mutex<()> = Mutex::new(());
@@ -99,31 +130,11 @@ impl Fixture {
         let dir = output_root()?.join(format!("{}-v{VERSION}", self.name()));
         if !dir.join("ready").exists() {
             let _ = std::fs::remove_dir_all(&dir);
-            let samples = dir.join("samples");
-            std::fs::create_dir_all(&samples)
-                .with_context(|| format!("creating {}", samples.display()))?;
-            write_samples(&spec, &samples)?;
-            let options = Options {
-                source: samples,
-                name: spec.name.into(),
-                vendor: "KONTRA probe".into(),
-                out: dir.join("out"),
-            };
-            let created = creator::create(&options, &|_| {})
-                .with_context(|| format!("creating {}", self.name()))?;
-            ensure!(
-                created.instruments.len() == 1,
-                "{} made {} instruments, expected 1",
-                self.name(),
-                created.instruments.len()
-            );
+            std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+            program::write(&spec, &dir)?;
             std::fs::write(dir.join("ready"), "")?;
         }
-        Ok(dir
-            .join("out")
-            .join(format!("{} (Kontakt)", spec.name))
-            .join("Instruments")
-            .join(format!("{}.nki", spec.name)))
+        Ok(program::preset(&spec, &dir))
     }
 
     fn spec(self) -> Spec {
@@ -132,29 +143,46 @@ impl Fixture {
                 name: "ProbeCcStart",
                 mics: &[Mic::Close, Mic::Room, Mic::Far],
                 rounds: 4,
-                layers: 0,
+                layers: 1,
                 seconds: 0.25,
+                groups: groups(self.name(), &[Mic::Close, Mic::Room, Mic::Far], 4),
+                script: Some(ksp::CC_START),
+            },
+            Self::UiLoad => Spec {
+                name: "ProbeUiLoad",
+                mics: &[Mic::Close],
+                rounds: 1,
+                layers: 1,
+                seconds: 0.25,
+                groups: groups(self.name(), &[Mic::Close], 1),
+                script: Some(ksp::UI_LOAD),
             },
             Self::KeyPosition => Spec {
                 name: "ProbeKeyPosition",
                 mics: &[Mic::Close],
-                rounds: 0,
+                rounds: 1,
                 layers: 2,
                 seconds: 0.25,
+                groups: groups(self.name(), &[Mic::Close], 1),
+                script: Some(ksp::KEY_POSITION),
             },
             Self::Dense => Spec {
                 name: "ProbeDense",
                 mics: &[Mic::Close],
                 rounds: 4,
-                layers: 0,
+                layers: 1,
                 seconds: 0.25,
+                groups: groups(self.name(), &[Mic::Close], 4),
+                script: Some(ksp::DENSE),
             },
             Self::Streamed => Spec {
                 name: "ProbeStreamed",
                 mics: &[Mic::Close],
-                rounds: 0,
-                layers: 0,
+                rounds: 1,
+                layers: 1,
                 seconds: 2.0,
+                groups: groups(self.name(), &[Mic::Close], 1),
+                script: None,
             },
         }
     }
@@ -185,11 +213,51 @@ struct Spec {
     /// Instrument name; every sample file name starts with it.
     name: &'static str,
     mics: &'static [Mic],
-    /// Round robins per mic and note; 0 for none.
+    /// Round robins per mic; 1 for none.
     rounds: u32,
-    /// Velocity layers per note; 0 for none.
-    layers: u32,
+    /// Velocity layers per key.
+    layers: usize,
     seconds: f32,
+    /// One group per round robin and mic, in the order the KSP addresses them.
+    groups: Vec<GroupSpec>,
+    /// KSP for the instrument's first script slot.
+    script: Option<&'static str>,
+}
+
+/// One authored group and the sample set its zones take.
+struct GroupSpec {
+    name: String,
+    /// Index into [`Spec::mics`].
+    mic: usize,
+    /// Round robin, zero-based.
+    round: u32,
+}
+
+/// One group per `(round, mic)`, round-major so the KSP can index
+/// `round * mics.len() + mic`.
+fn groups(instrument: &str, mics: &[Mic], rounds: u32) -> Vec<GroupSpec> {
+    let mut groups = Vec::with_capacity(mics.len() * rounds as usize);
+    for round in 0..rounds {
+        for (mic, m) in mics.iter().enumerate() {
+            let mut label = Vec::new();
+            if rounds > 1 {
+                label.push(format!("RR{}", round + 1));
+            }
+            if mics.len() > 1 {
+                label.push(m.tag().to_owned());
+            }
+            groups.push(GroupSpec {
+                name: if label.is_empty() {
+                    instrument.to_owned()
+                } else {
+                    label.join(" ")
+                },
+                mic,
+                round,
+            });
+        }
+    }
+    groups
 }
 
 /// A microphone group: how loud its tone is and how much noise it carries.
@@ -226,82 +294,60 @@ fn output_root() -> Result<PathBuf> {
     Ok(dir.join("kontra-probe-fixtures"))
 }
 
-/// Writes every WAV of `spec` into `dir`, named so the creator reads note, mic,
-/// round robin and layer from the name.
-fn write_samples(spec: &Spec, dir: &Path) -> Result<()> {
-    let rounds: Vec<Option<u32>> = if spec.rounds == 0 {
-        vec![None]
-    } else {
-        (1..=spec.rounds).map(Some).collect()
-    };
-    let layers: Vec<Option<u32>> = if spec.layers == 0 {
-        vec![None]
-    } else {
-        (1..=spec.layers).map(Some).collect()
-    };
-    for (midi, note) in ROOTS {
-        for (m, &mic) in spec.mics.iter().enumerate() {
-            for round in &rounds {
-                for layer in &layers {
-                    let mut name = format!("{}_{note}_{}", spec.name, mic.tag());
-                    if let Some(r) = round {
-                        name.push_str(&format!("_rr{r}"));
-                    }
-                    if let Some(l) = layer {
-                        name.push_str(&format!("_v{l}"));
-                    }
-                    // Layers are told apart by level, so a higher layer plays louder.
-                    let gain = layer.map_or(1.0, |l| 0.2 * l as f32);
-                    let (level, noise) = mic.mix();
-                    let seed = u32::from(midi) * 31 + m as u32;
-                    let samples = tone(midi, spec.seconds, level * gain, noise, seed);
-                    let path = dir.join(format!("{name}.wav"));
-                    std::fs::write(&path, wav(&samples))
-                        .with_context(|| format!("writing {}", path.display()))?;
-                }
-            }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_fixture_names_itself_and_has_a_script_except_streamed() {
+        for fixture in Fixture::ALL {
+            assert_eq!(fixture.name().parse::<Fixture>(), Ok(fixture));
+            assert_eq!(
+                fixture.spec().script.is_some(),
+                fixture != Fixture::Streamed
+            );
         }
     }
-    Ok(())
-}
 
-/// A cosine at the pitch of `midi` (A3 = 69 is 440 Hz; the creator checks names
-/// against what it hears), with `noise` of hiss and a 10 ms release. It starts at
-/// full level on its first frame, so the onset is the first sample.
-fn tone(midi: u8, seconds: f32, amp: f32, noise: f32, seed: u32) -> Vec<f32> {
-    let hz = 440.0 * 2f32.powf((f32::from(midi) - 69.0) / 12.0);
-    let frames = (seconds * RATE as f32) as usize;
-    let release = (RATE / 100) as usize;
-    let mut state = seed;
-    (0..frames)
-        .map(|i| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let hiss = (state >> 8) as f32 / (1 << 23) as f32 - 1.0;
-            let t = i as f32 / RATE as f32;
-            let fade = ((frames - i) as f32 / release as f32).min(1.0);
-            (amp * (TAU * hz * t).cos() + noise * hiss) * fade
-        })
-        .collect()
-}
-
-/// A mono 16-bit PCM WAV file.
-fn wav(samples: &[f32]) -> Vec<u8> {
-    let data = (samples.len() * 2) as u32;
-    let mut out = Vec::with_capacity(44 + data as usize);
-    out.extend(b"RIFF");
-    out.extend((36 + data).to_le_bytes());
-    out.extend(b"WAVEfmt ");
-    out.extend(16u32.to_le_bytes());
-    out.extend(1u16.to_le_bytes()); // PCM
-    out.extend(1u16.to_le_bytes()); // mono
-    out.extend(RATE.to_le_bytes());
-    out.extend((RATE * 2).to_le_bytes());
-    out.extend(2u16.to_le_bytes());
-    out.extend(16u16.to_le_bytes());
-    out.extend(b"data");
-    out.extend(data.to_le_bytes());
-    for s in samples {
-        out.extend(((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+    #[test]
+    fn groups_are_round_major_so_the_script_can_index_round_times_mics() {
+        let spec = Fixture::CcStart.spec();
+        assert_eq!(spec.groups.len(), 12);
+        for (index, group) in spec.groups.iter().enumerate() {
+            assert_eq!(group.round as usize, index / 3);
+            assert_eq!(group.mic, index % 3);
+        }
+        assert_eq!(Fixture::Dense.spec().groups.len(), 4);
+        assert_eq!(Fixture::Streamed.spec().groups.len(), 1);
     }
-    out
+
+    #[test]
+    fn every_root_zone_has_a_key_band_and_the_ends_cover_the_keyboard() {
+        assert_eq!(program::low_key(0), 0);
+        assert_eq!(program::high_key(ROOTS.len() - 1), 127);
+        for n in 1..ROOTS.len() {
+            assert_eq!(program::low_key(n), ROOTS[n - 1].0 + 1);
+            assert_eq!(program::high_key(n - 1), ROOTS[n].0 - 1);
+        }
+    }
+
+    #[test]
+    fn layers_split_the_velocity_range_without_gaps_or_overlap() {
+        assert_eq!(
+            program::velocities(0, 1),
+            sampler_ir::VelocityRange { low: 0, high: 127 }
+        );
+        assert_eq!(
+            program::velocities(0, 2),
+            sampler_ir::VelocityRange { low: 0, high: 63 }
+        );
+        assert_eq!(
+            program::velocities(1, 2),
+            sampler_ir::VelocityRange { low: 64, high: 127 }
+        );
+        assert_eq!(
+            program::velocities(3, 4),
+            sampler_ir::VelocityRange { low: 96, high: 127 }
+        );
+    }
 }
