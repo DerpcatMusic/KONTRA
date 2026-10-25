@@ -6648,6 +6648,92 @@ mod tests {
     }
 
     #[test]
+    fn a_full_effect_outbox_does_not_fault_the_next_note_callback() {
+        // Each note callback emits 200 hide_part effects. The host outbox holds 256
+        // per block, so key 55's callback, which starts after key 48's in the same
+        // block, meets a full outbox on its 57th emit. It must wait for the host to
+        // drain the outbox, not fault and lose the note.
+        let script = sampler_ksp::compile(
+            "on init
+                declare ui_slider $s (0, 100)
+                declare $i := 0
+            end on
+            on note
+                $i := 0
+                while ($i < 200)
+                    hide_part($s, 1)
+                    $i := $i + 1
+                end while
+            end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
+        let regions = (55u8..=127)
+            .map(|key| Region {
+                sample: 0,
+                key_low: key,
+                key_high: key,
+                root_key: Some(key),
+                velocity_low: 0.0,
+                velocity_high: 1.0,
+                gain: 1.0,
+                envelope: Envelope::default(),
+                playback: Playback::default(),
+            })
+            .collect();
+        let prepared = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap()],
+            regions,
+            1024,
+        )
+        .unwrap();
+        let plan = sampler_ksp::bind_modules(vec![script], prepared).unwrap();
+        let runtime_limits = limits(&plan).0;
+        let mut part = Part::new(
+            Runtime::new(plan, runtime_limits).unwrap(),
+            MixTree::instrument("nka"),
+        )
+        .unwrap();
+        // Production policy: the loader aborts callbacks that meet a full outbox.
+        part.runtime
+            .set_behavior_overload(sampler_core::BehaviorOverload::Abort);
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        let mut delivered = 0;
+        for block in 0..3 {
+            core.begin_block(&BlockInfo {
+                frames: 128,
+                offline: true,
+                ..Default::default()
+            });
+            if block == 0 {
+                for (id, key) in [(1, 48u8), (2, 55u8)] {
+                    core.event(
+                        0,
+                        Event::NoteOn {
+                            note: HostNote { port: 0, channel: 0, key, id, clap: false },
+                            velocity: 100.0 / 127.0,
+                            tune: 0.0,
+                        },
+                    );
+                }
+            }
+            core.render(128);
+            core.end_block(128, &mut |_| true);
+            // The host drains effects after each block, as the plugin and probe do.
+            core.take_effects(0, &mut |_, _| {
+                delivered += 1;
+                true
+            });
+        }
+        // Both callbacks emit 200 effects. Key 55 must not lose its tail to a full outbox.
+        assert_eq!(delivered, 400, "effects delivered; a note callback was dropped");
+    }
+
+    #[test]
     fn dense_chords_keep_every_note_under_production_limits() {
         // Two 40-key chords, each sounded then released while its note and
         // release callbacks wait: 160 live callbacks for 80 notes. Base sized
