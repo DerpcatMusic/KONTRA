@@ -30,8 +30,11 @@ start = max(d, 0)                   (the window starts S.Mod before the zone sta
   exceeding the zone's S. Mod setting are ignored" (since Kontakt 4.1). KONTRA does the same
   for streamed zones, so an offset the front end cannot bound never forces a whole-sample head.
   Formats without S.Mod pass their declared start-modulation range as `off`.
+- **Only resident groups get heads.** A group saved purged (`ir::Group::purged`) gets no head at load;
+  a KSP `purge_group` reload computes the same law head when it loads the group. ANALOG has 481 of
+  483 groups saved purged (138 of 95,624 zones resident), Areia 1,056 of 49,152 zones, Vista 4,152 of 8,304.
 - **Memory bar.** The resident head bytes for an instrument are within 10% of the sum of
-  Kontakt's windows for the same zones (per sample, the union of its zones' window ranges, so overlapping windows count once and disjoint ones each count), measured on Areia, Vista and
+  Kontakt's windows for the same resident zones (per sample, the union of its zones' window ranges, so overlapping windows count once and disjoint ones each count), measured on Areia, Vista and
   ANALOG. P1.2's first attempt (base + script range, unbounded → whole sample, f32 accounting)
   measured 4.4 GB on Areia, 469 MB on Vista and 50 GB on ANALOG (2026-10-25, PluginArtifacts/v3-gates/P1.2).
 - **The budget is never solved by shrinking heads below the law.** Over
