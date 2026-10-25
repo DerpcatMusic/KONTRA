@@ -149,7 +149,7 @@ Rules:
 | `sampler-parity` | folded into `tools/probe` (status types) |
 | `sampler-ir` | `model/ir` (fx configs replaced by `params` specs) |
 | `sampler-ui-ir`, `sampler-core/src/{widget,script_params}.rs` | `model/ui-model` |
-| `sampler-midi`, `src/sound/event.rs`, `src/plugin/held_keys*` | `model/events` |
+| `src/sound/event.rs`, plain-data receiver wire types (P4.8); `sampler-midi` receiver adapter (P6.4c); `src/plugin/held_keys*` (P6.4b) | `model/events` |
 | `sampler-core/src/dsp/**` (48.7k) | `dsp/*` families (target ~26k incl. laws) |
 | `sampler-core/src/{blocks,voice_mod*,modulation*,envelope}` | `dsp/modulators` |
 | `sampler-core/src/{stream,residency*,head_*,resident_data,packed*}`, `sampler-kontakt/src/{stream,head_prepare,head_cache,stream_initial_hints,channel_reader}.rs`, `sampler-uvi/src/stream.rs` | `engine/stream` |
