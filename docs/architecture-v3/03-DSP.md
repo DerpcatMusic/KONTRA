@@ -99,7 +99,7 @@ and the class doc comment names that vector.
 pub enum Law {
     Linear { lo: f32, hi: f32 },
     Exp { lo: f32, hi: f32 },                     // frequency-style tapers
-    Db { lo: f32, hi: f32 },
+    Db { lo: f32, hi: f32 },                      // linear in dB, evaluates to gain 10^(dB/20)
     Table(Arc<[f32]>),                            // evenly spaced, interpolated
     Breakpoints(Arc<[(f32, f32, f32)]>),          // x, y, curve
     Formula(FormulaId),                           // a named, tested closed form
