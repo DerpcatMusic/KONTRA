@@ -165,11 +165,6 @@ fn test_name(stem: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests fail loudly by design"
-)]
 mod tests {
     use super::*;
     use quote::quote;
