@@ -243,6 +243,8 @@ pub struct Script {
     pub name: String,
     pub dialect: Dialect,
     pub source: String,
+    /// Saved persistent values in the dialect's own form.
+    pub saved: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

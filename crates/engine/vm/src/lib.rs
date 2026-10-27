@@ -140,6 +140,12 @@ impl Instance {
         }
     }
 
+    pub fn set_text(&mut self, n: usize, value: Text) {
+        if let Some(t) = self.texts.get_mut(n) {
+            *t = value;
+        }
+    }
+
     #[must_use]
     pub fn text(&self, n: usize) -> Option<&Text> {
         self.texts.get(n)

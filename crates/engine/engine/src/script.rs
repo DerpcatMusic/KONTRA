@@ -17,6 +17,21 @@ pub struct ScriptPlan {
     pub callbacks: Callbacks,
     /// Callbacks that may run or wait at once.
     pub coroutines: usize,
+    /// Saved values written after `on init`, before `on persistence_changed`.
+    pub restore: Vec<(u32, i64)>,
+    pub restore_texts: Vec<(u32, Text)>,
+    pub controls: Controls,
+}
+
+/// The script's UI controls as the engine sees them: ids, and where values live.
+#[derive(Clone, Debug, Default)]
+pub struct Controls {
+    /// Id of control 0; control `n` has id `first + n`.
+    pub first: i32,
+    /// The parameter id that means a control's value.
+    pub value_par: i32,
+    /// Each control's value cell, if its value is a number.
+    pub cells: Vec<Option<u32>>,
 }
 
 /// Entry points; a missing callback lets events through unchanged.
@@ -26,6 +41,7 @@ pub struct Callbacks {
     pub note: Option<u32>,
     pub release: Option<u32>,
     pub controller: Option<u32>,
+    pub persistence_changed: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -380,6 +396,9 @@ impl Engine {
 
 impl HostApi for Engine {
     fn call(&mut self, call: HostCall<'_>) -> HostValue {
+        if let Some(n) = self.called.get_mut(usize::from(call.action.id())) {
+            *n += 1;
+        }
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
         let running = self.running.event;
         let current = running.and_then(|r| self.notes.get(r));
@@ -485,6 +504,11 @@ impl HostApi for Engine {
                 flag(marks & int(1) as u32 != 0)
             }
             Action::ByMarks => HostValue::Int(event::BY_MARKS | (int(0) & !event::BY_MARKS)),
+            Action::GetControlPar => HostValue::Int(self.control_par(call.cells, int(0), int(1))),
+            Action::SetControlPar => {
+                self.set_control_par(call.cells, int(0), int(1), int(2));
+                HostValue::Nothing
+            }
             Action::EventStatus => {
                 let live = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
                 HostValue::Int(i32::from(live.is_some()))

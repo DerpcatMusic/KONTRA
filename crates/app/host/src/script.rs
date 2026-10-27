@@ -1,15 +1,17 @@
 //! A compiled KSP script as the engine's [`ScriptPlan`].
 
-use kontra_engine::{Callbacks, ScriptPlan};
-use kontra_ksp::{CallbackKind, Script};
+use kontra_engine::{Callbacks, Controls, ScriptPlan, Text};
+use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 /// Callbacks a KSP instrument may have running or waiting at once.
 const COROUTINES: usize = 64;
 
-/// The engine's view of `script`. UI metadata stays with the caller.
+/// The engine's view of `script` with `saved` persistent values restored.
+/// UI metadata stays with the caller.
 #[must_use]
-pub fn plan(script: &Script) -> ScriptPlan {
+pub fn plan(script: &Script, saved: &[String]) -> ScriptPlan {
     let entry = |kind| script.callback(kind, None);
+    let restore = script.restore(saved);
     ScriptPlan {
         program: script.program.clone(),
         callbacks: Callbacks {
@@ -17,7 +19,38 @@ pub fn plan(script: &Script) -> ScriptPlan {
             note: entry(CallbackKind::Note),
             release: entry(CallbackKind::Release),
             controller: entry(CallbackKind::Controller),
+            persistence_changed: entry(CallbackKind::PersistenceChanged),
         },
         coroutines: COROUTINES,
+        controls: controls(script),
+        restore: restore.ints,
+        restore_texts: restore
+            .texts
+            .iter()
+            .map(|(cell, text)| (*cell, Text::from_str_cut(text).0))
+            .collect(),
+    }
+}
+
+/// Control ids, the value parameter's symbol and each control's value cell.
+fn controls(script: &Script) -> Controls {
+    let value_par = script
+        .symbols
+        .iter()
+        .position(|s| s.eq_ignore_ascii_case("$CONTROL_PAR_VALUE"))
+        .and_then(|n| i32::try_from(n).ok())
+        .map_or(i32::MIN, |n| SYMBOL_BASE + n);
+    let cells = script
+        .controls
+        .iter()
+        .map(|c| match script.variables.get(c.variable as usize)?.cells {
+            Cells::Int { base, .. } | Cells::Real { base, .. } => Some(base),
+            _ => None,
+        })
+        .collect();
+    Controls {
+        first: FIRST_UI_ID,
+        value_par,
+        cells,
     }
 }
