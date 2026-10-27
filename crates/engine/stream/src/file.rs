@@ -102,7 +102,9 @@ pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
             Ok((Arc::new(source), SampleFmt { encoding, channels }))
         }
         Layout::Ncw => {
-            let reader = ncw::NcwReader::read(region.reader()).map_err(invalid)?;
+            // Buffered: the offset table is read four bytes at a time.
+            let buffered = io::BufReader::with_capacity(64 << 10, region.reader());
+            let reader = ncw::NcwReader::read(buffered).map_err(invalid)?;
             let header = reader.header.clone();
             let float = reader.sample_format == ncw::SampleFormat::Float;
             let encoding = match (header.bits_per_sample, float) {
