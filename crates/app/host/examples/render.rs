@@ -114,6 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         at: SampleTime(0),
         body: Event::NoteOff(pattern),
     };
+    let live = std::env::var_os("KONTRA_LIVE").is_some();
     let mut audio = Vec::new();
     let mut block = vec![[0.0f32; 2]; 512];
     let cc = wheel.map(|v| Timed {
@@ -127,9 +128,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             n if n == 2 * RATE as usize / 512 => std::slice::from_ref(&off),
             _ => &[],
         };
-        // A bounce waits for the disk; a live host never would.
-        stream.settle(std::time::Duration::from_secs(5));
+        // A bounce waits for the disk; KONTRA_LIVE=1 plays in real time
+        // without waiting, as a host would, so late pages show as missing frames.
+        let started = std::time::Instant::now();
+        if !live {
+            stream.settle(std::time::Duration::from_secs(5));
+        }
         engine.process(&mut block, input);
+        if live {
+            let period = std::time::Duration::from_secs_f64(512.0 / f64::from(RATE));
+            std::thread::sleep(period.saturating_sub(started.elapsed()));
+        }
         audio.extend_from_slice(&block);
     }
     let peak = audio.iter().flatten().fold(0f32, |p, s| p.max(s.abs()));
