@@ -40,6 +40,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  script {n} data files: {data:?}");
         }
     }
+    // KONTRA_SAMPLES=<part of a name>: those samples' peaks, decoded directly.
+    if let Ok(part) = std::env::var("KONTRA_SAMPLES") {
+        let ir = kontra_format_kontakt::load(&path)?;
+        for s in ir
+            .samples
+            .iter()
+            .filter(|s| s.name.contains(&part))
+            .take(12)
+        {
+            let Ok((source, fmt)) = kontra_stream::open(s) else {
+                println!("  {}: does not open", s.name);
+                continue;
+            };
+            let mut bytes = vec![0u8; s.frames as usize * fmt.bytes_per_frame()];
+            let read = source.read(0, &mut bytes);
+            let width = fmt.encoding.bytes();
+            let peak = bytes.chunks_exact(width).fold(0f32, |p, b| {
+                let x = match b {
+                    [a, b] => f32::from(i16::from_le_bytes([*a, *b])) / 32768.0,
+                    [a, b, c] => (i32::from_le_bytes([0, *a, *b, *c]) >> 8) as f32 / 8_388_608.0,
+                    [a, b, c, d] => f32::from_le_bytes([*a, *b, *c, *d]),
+                    _ => 0.0,
+                };
+                p.max(x.abs())
+            });
+            println!(
+                "  {} {:?} {} frames: peak {peak:.4} {read:?}",
+                s.name, fmt, s.frames
+            );
+        }
+    }
     let t = std::time::Instant::now();
     let mut store = Store::new(StoreConfig::DEFAULT)?;
     let loaded = kontra_host::instrument::load(&path, RATE, &mut store)?;
@@ -84,7 +115,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (what, n) in kinds.iter().take(8) {
         println!("    {n}× {what}");
     }
+    if let Ok(zone) = std::env::var("KONTRA_ZONE") {
+        let plan = &loaded.plan;
+        let z = zone.parse::<usize>().ok().and_then(|z| plan.zones.get(z));
+        if let Some(z) = z {
+            println!(
+                "  zone {zone}: bus {} {:?} envelope {:?}",
+                z.bus,
+                plan.buses.get(z.bus),
+                plan.groups.get(z.group as usize).map(|g| g.envelope)
+            );
+        }
+    }
     let stream = store.client();
+    if let Some(z) = std::env::var("KONTRA_ZONE")
+        .ok()
+        .and_then(|z| loaded.plan.zones.get(z.parse::<usize>().ok()?))
+    {
+        let r = &z.region;
+        let mut frames = vec![[0f32; 2]; 48_000];
+        let read = r.sample.read(&stream, r.start, &mut frames);
+        stream.settle(std::time::Duration::from_secs(5));
+        let read = (read, r.sample.read(&stream, r.start, &mut frames));
+        let peak = frames.iter().flatten().fold(0f32, |p, s| p.max(s.abs()));
+        println!(
+            "  region {}..{} of {} frames, loop {:?}: first second peak {peak:.4}, {read:?}",
+            r.start,
+            r.end,
+            r.sample.frames(),
+            r.looped
+        );
+    }
     let mut engine = Engine::new(Arc::new(loaded.plan), store.client(), RATE);
     println!("init: unanswered {:?}", engine.unhandled_actions());
 
@@ -135,6 +196,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stream.settle(std::time::Duration::from_secs(5));
         }
         engine.process(&mut block, input);
+        if n == 1 || n == RATE as usize / 512 + 1 {
+            println!(
+                "  block {n}: {} voices, {} playing, cc110 {:?} cc111 {:?}",
+                engine.active_voices(),
+                engine.playing_voices(),
+                engine.controller(110),
+                engine.controller(111)
+            );
+            for (zone, at, gain) in engine.voices() {
+                println!("    zone {zone} at {at:.0} gain {gain:?}");
+            }
+        }
         if live {
             let period = std::time::Duration::from_secs_f64(512.0 / f64::from(RATE));
             std::thread::sleep(period.saturating_sub(started.elapsed()));
@@ -153,6 +226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rms(r * 3 / 2, 2 * r)
     );
     println!("peak {peak:.3}, {:?}", engine.stats());
+    println!("stream: {:?}", stream.stats());
     println!("all actions: {:?}", engine.unhandled_actions());
     println!("last message: {}", engine.last_message());
     println!("script faults: {:?}", engine.script_faults());

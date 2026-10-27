@@ -106,6 +106,12 @@ impl Voice {
         self.target = gain;
     }
 
+    /// The gain the voice is moving to, left and right.
+    #[must_use]
+    pub fn gain(&self) -> [f32; 2] {
+        self.target
+    }
+
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.region.is_some()
