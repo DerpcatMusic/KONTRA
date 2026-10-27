@@ -201,6 +201,7 @@ fn zone(
         looped: z.looped.map(|l| Loop {
             start: l.start,
             end: l.end,
+            crossfade: l.crossfade,
         }),
         reverse: z.reverse,
     };

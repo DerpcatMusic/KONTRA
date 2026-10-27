@@ -305,6 +305,7 @@ fn a_cc_crossfade_moves_sounding_voices() {
     looped.looped = Some(kontra_voice::Loop {
         start: 0,
         end: 48_000,
+        crossfade: 0,
     });
     z.region = looped;
     let mut e = engine(&store, Plan::new(vec![z], 8));
