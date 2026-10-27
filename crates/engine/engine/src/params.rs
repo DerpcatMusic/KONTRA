@@ -17,6 +17,31 @@ fn stage_ms(top_ms: f64, x: f64) -> f64 {
 }
 
 /// The inverse of [`stage_ms`]: the 0..=1 setting of a stage `ms` long.
+/// The attack curve knob (raw / 500000 − 1: −1 concave ..= 1 convex) as a
+/// segment shape: the law the Kontakt translator applies to stored curves
+/// (format/kontakt/src/laws.rs, docs/re/engine/k-mod-envelopes.md).
+fn attack_shape(x: f64) -> f32 {
+    let c = (x * 2.0 - 1.0).clamp(-1.0, 1.0);
+    let b = f64::from(((1.0 - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
+    let k = if c > 0.0 {
+        (b / (1.0 + b)).ln()
+    } else {
+        ((1.0 + b) / b).ln()
+    };
+    k as f32
+}
+
+/// Inverse of [`attack_shape`], as a 0..=1 knob.
+fn attack_x(shape: f32) -> f64 {
+    let k = f64::from(shape);
+    if k == 0.0 {
+        return 0.5;
+    }
+    let b = 1.0 / k.abs().exp_m1();
+    let c = (1.0 - (b.ln() + 20_000f64.ln()) / 500_000f64.ln()).clamp(0.0, 1.0);
+    0.5 * (1.0 - k.signum() * c)
+}
+
 fn stage_x(top_ms: f64, ms: f64) -> f64 {
     let (low, high) = (2f64.ln(), (top_ms + 2.0).ln());
     (((ms + 2.0).ln() - low) / (high - low)).clamp(0.0, 1.0)
@@ -115,6 +140,7 @@ impl Engine {
             p if p == pars.decay => stage_x(25_000.0, ms(e.decay)),
             p if p == pars.release => stage_x(25_000.0, ms(e.release)),
             p if p == pars.sustain => f64::from(e.sustain),
+            p if p == pars.attack_curve => attack_x(e.attack_shape),
             _ => return None,
         };
         Some((x * 1e6).round() as i32)
@@ -149,6 +175,7 @@ impl Engine {
                     pars.decay,
                     pars.sustain,
                     pars.release,
+                    pars.attack_curve,
                 ]
                 .contains(&par);
         };
@@ -175,6 +202,12 @@ impl Engine {
             p if p == pars.sustain => {
                 if envelope {
                     e.sustain = x as f32;
+                }
+                return true;
+            }
+            p if p == pars.attack_curve => {
+                if envelope {
+                    e.attack_shape = attack_shape(x);
                 }
                 return true;
             }
@@ -221,7 +254,14 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::{stage_ms, stage_x};
+    use super::{attack_shape, attack_x, stage_ms, stage_x};
+
+    #[test]
+    fn attack_curve_round_trips() {
+        for x in [0.1, 0.3, 0.5, 0.7, 0.95] {
+            assert!((attack_x(attack_shape(x)) - x).abs() < 1e-4, "{x}");
+        }
+    }
 
     #[test]
     fn stage_times_follow_kontakts_shifted_exponential() {
