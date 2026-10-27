@@ -334,32 +334,24 @@ fn start_rules(groups: &mut [ir::Group], criteria: &[Vec<StartCriteriaParams>], 
         .map(|c| c.cycle_class + 1)
         .max()
         .unwrap_or(0);
-    let randoms = criteria
-        .iter()
-        .filter(|g| g.iter().any(|c| c.mode == RANDOM))
-        .count();
+    // One draw over every random row of the instrument (binary 0x140876bd0).
+    let randoms = rows().filter(|c| c.mode == RANDOM).count();
     let mut random_position = 0;
     for (group, rows) in groups.iter_mut().zip(criteria) {
+        // A row's next_criteria joins it to the row after it. ponytail: joins
+        // fold left to right; Kontakt's mixed AND/OR precedence is untraced.
+        let mut join = ir::Join::And;
         for c in rows {
-            if c.next_criteria == 2 && c.mode != 0 {
-                notes.add(
-                    ir::Impact::Audible,
-                    "start options joined by OR",
-                    &group.name,
-                );
-            }
+            let this = join;
+            join = match c.next_criteria {
+                1 => ir::Join::AndNot,
+                2 => ir::Join::Or,
+                _ => ir::Join::And,
+            };
             let rule = match c.mode {
                 0 => continue,
                 ON_KEY => match (midi(c.key_min), midi(c.key_max)) {
-                    (Some(lo), Some(hi)) if lo <= hi => {
-                        if lo != hi {
-                            notes.add(ir::Impact::Audible, "keyswitch key range", &group.name);
-                        }
-                        ir::StartRule::Keyswitch {
-                            key: lo,
-                            range: lo..=hi,
-                        }
-                    }
+                    (Some(lo), Some(hi)) if lo <= hi => ir::StartRule::Keyswitch { range: lo..=hi },
                     _ => continue,
                 },
                 ON_CONTROLLER => match (midi(c.controller), midi(c.cc_min), midi(c.cc_max)) {
@@ -386,7 +378,7 @@ fn start_rules(groups: &mut [ir::Group], criteria: &[Vec<StartCriteriaParams>], 
                     continue;
                 }
             };
-            group.start.push(rule);
+            group.start.push((this, rule));
         }
     }
 }

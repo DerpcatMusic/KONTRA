@@ -110,7 +110,8 @@ pub struct Group {
     pub release_decay_db: f32,
     /// Ignores note-off and plays to the end.
     pub one_shot: bool,
-    pub start: Vec<StartRule>,
+    /// Start rules folded left to right by their joins; empty always starts.
+    pub start: Vec<(Join, StartRule)>,
     /// Voices of this group that may sound at once.
     pub polyphony: Option<u16>,
     /// Voices of this group fade when a voice of that group starts (hi-hat choke).
@@ -262,11 +263,22 @@ pub enum Trigger {
     Legato,
 }
 
-/// A condition every one of which must hold for a group to start.
+/// How a start rule joins the rules before it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Join {
+    #[default]
+    And,
+    AndNot,
+    Or,
+}
+
+/// A condition on which a group starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StartRule {
-    /// The last key pressed in this range was `key`.
-    Keyswitch { key: u8, range: RangeInclusive<u8> },
+    /// A latch over every switch range of the instrument: a key inside their
+    /// span sets the ranges that contain it and clears the rest; a key outside
+    /// the span keeps them. No key is silenced by it.
+    Keyswitch { range: RangeInclusive<u8> },
     /// The controller's value is in range.
     Controller { cc: u8, range: RangeInclusive<u8> },
     /// Step `position` of a cycle of `length`, counted per instrument.

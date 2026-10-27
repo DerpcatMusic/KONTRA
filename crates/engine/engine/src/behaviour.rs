@@ -1,7 +1,9 @@
 //! Live behaviour state: articulation switch, controller values, round-robin
 //! counters. Deterministic: the same input gives the same voices, every run.
 
-use crate::plan::{Control, Plan, RoundRobin, RrCounter, Zone};
+use kontra_ir::Join;
+
+use crate::plan::{Atom, Control, Plan, RoundRobin, RrCounter, Zone};
 
 /// Round-robin state of one counter.
 #[derive(Clone, Copy, Default)]
@@ -24,7 +26,10 @@ pub(crate) struct RrDraw {
 }
 
 pub(crate) struct Behaviour {
+    /// The last key pressed inside a switch range.
     pub(crate) keyswitch: Option<u8>,
+    /// One latch per [`Plan::switches`] range.
+    switches: Vec<bool>,
     cc: [[u8; 128]; 16],
     global: Counter,
     keys: [Counter; 128],
@@ -36,8 +41,12 @@ pub(crate) struct Behaviour {
 impl Behaviour {
     pub(crate) fn new(plan: &Plan) -> Self {
         let mut groups: Vec<(u32, Counter)> = Vec::new();
-        for zone in plan.zones.iter().filter(|z| z.round_robin.is_some()) {
-            if !groups.iter().any(|(g, _)| *g == zone.group) {
+        for zone in &plan.zones {
+            let cycles = zone
+                .start
+                .iter()
+                .any(|(_, a)| matches!(a, Atom::RoundRobin(_)));
+            if cycles && !groups.iter().any(|(g, _)| *g == zone.group) {
                 groups.push((zone.group, Counter::default()));
             }
         }
@@ -47,14 +56,61 @@ impl Behaviour {
             channel[7] = 100;
             channel[11] = 127;
         }
-        Self {
-            keyswitch: plan.default_keyswitch,
+        let mut behaviour = Self {
+            keyswitch: None,
+            switches: vec![false; plan.switches.len()],
             cc,
             global: Counter::default(),
             keys: [Counter::default(); 128],
             groups,
             rng: 0x9E37_79B9_7F4A_7C15,
+        };
+        if let Some(key) = plan.default_keyswitch {
+            behaviour.press(plan, key);
         }
+        behaviour
+    }
+
+    /// Kontakt's key latch (KONTAKT_START_CONDITIONS, 0x144f17d28): a key
+    /// inside the span of all switch ranges sets the ranges holding it and
+    /// clears the rest, even in a gap; a key outside the span changes nothing.
+    pub(crate) fn press(&mut self, plan: &Plan, key: u8) {
+        let lo = plan.switches.iter().map(|r| *r.start()).min();
+        let hi = plan.switches.iter().map(|r| *r.end()).max();
+        if lo.is_none_or(|lo| key < lo) || hi.is_none_or(|hi| key > hi) {
+            return;
+        }
+        for (latch, range) in self.switches.iter_mut().zip(&plan.switches) {
+            *latch = range.contains(&key);
+        }
+        if plan.switches.iter().any(|r| r.contains(&key)) {
+            self.keyswitch = Some(key);
+        }
+    }
+
+    /// Whether `zone`'s start conditions hold for this note.
+    pub(crate) fn starts(
+        &mut self,
+        zone: &Zone,
+        channel: u8,
+        key: u8,
+        draw: RrDraw,
+        step: bool,
+    ) -> bool {
+        let mut result = true;
+        for (join, atom) in &zone.start {
+            let value = match atom {
+                Atom::Switch(i) => self.switches.get(usize::from(*i)).copied() == Some(true),
+                Atom::Cc(cc, range) => range.contains(&self.cc(channel, *cc)),
+                Atom::RoundRobin(rr) => self.round_robin_plays(rr, zone.group, key, draw, step),
+            };
+            result = match join {
+                Join::And => result && value,
+                Join::AndNot => result && !value,
+                Join::Or => result || value,
+            };
+        }
+        result
     }
 
     pub(crate) fn cc(&self, channel: u8, controller: u8) -> u8 {
@@ -93,32 +149,30 @@ impl Behaviour {
         (self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
     }
 
-    fn counter(&mut self, rr: &RoundRobin, zone: &Zone, key: u8) -> Option<&mut Counter> {
+    fn counter(&mut self, rr: &RoundRobin, group: u32, key: u8) -> Option<&mut Counter> {
         match rr.counter {
             RrCounter::Global => Some(&mut self.global),
             RrCounter::Key => self.keys.get_mut(usize::from(key)),
             RrCounter::Group => self
                 .groups
                 .iter_mut()
-                .find(|(g, _)| *g == zone.group)
+                .find(|(g, _)| *g == group)
                 .map(|(_, c)| c),
         }
     }
 
     /// Whether `zone` plays on this draw. With `step`, marks its counter to step
     /// after the note-on; release triggers pass false to re-read the attack's draw.
-    pub(crate) fn round_robin_plays(
+    fn round_robin_plays(
         &mut self,
-        zone: &Zone,
+        rr: &RoundRobin,
+        group: u32,
         key: u8,
         draw: RrDraw,
         step: bool,
     ) -> bool {
-        let Some(rr) = zone.round_robin else {
-            return true;
-        };
         let length = rr.length.max(1);
-        let Some(counter) = self.counter(&rr, zone, key) else {
+        let Some(counter) = self.counter(rr, group, key) else {
             return true;
         };
         let advance = step;

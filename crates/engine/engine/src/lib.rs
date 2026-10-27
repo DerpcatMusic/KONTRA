@@ -33,7 +33,7 @@ pub use kontra_time::SampleTime;
 pub use kontra_vm::{Program, Text};
 pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
-pub use plan::{Bus, Control, Crossfade, Group, Plan, RoundRobin, RrCounter, Trigger, Zone};
+pub use plan::{Atom, Bus, Control, Crossfade, Group, Plan, RoundRobin, RrCounter, Trigger, Zone};
 pub use prepare::{Open, prepare};
 pub use queue::Timed;
 pub use script::{Callbacks, Controls, EnginePars, ScriptPlan};
@@ -353,17 +353,8 @@ impl Engine {
         (FADE_SECONDS * f64::from(self.rate)) as u32
     }
 
-    fn is_keyswitch(&self, key: u8) -> bool {
-        self.plan
-            .keyswitches
-            .as_ref()
-            .is_some_and(|k| k.contains(&key))
-    }
-
     fn note_on(&mut self, host: HostNote, velocity: f64, tune: f64) {
-        if self.is_keyswitch(host.key) {
-            self.behaviour.keyswitch = Some(host.key);
-        }
+        self.behaviour.press(&self.plan, host.key);
         let draw = self.behaviour.draw(host.key);
         let Some(note) = self
             .notes
@@ -384,14 +375,10 @@ impl Engine {
 
     /// Starts every zone `accept`s whose rules match the note, all at now.
     /// `attack` steps round-robin counters; release triggers re-read the attack's draw.
-    /// A keyswitch key sounds nothing; its empty note ends this block.
     fn start_zones(&mut self, note: NoteRef, attack: bool, accept: impl Fn(Trigger) -> bool) {
         let Some(n) = self.notes.get(note).copied() else {
             return;
         };
-        if n.origin == Origin::Host && self.is_keyswitch(n.host.key) {
-            return;
-        }
         let plan = self.plan.clone();
         let held_seconds = (self.now.0 - n.at.0) as f32 / self.rate as f32;
         for (index, zone) in plan.zones.iter().enumerate() {
@@ -399,18 +386,11 @@ impl Engine {
                 && self.masks.allows(note.slot(), zone.group)
                 && zone.keys.contains(&n.key)
                 && zone.velocities.contains(&n.velocity_byte)
-                && zone
-                    .keyswitch
-                    .is_none_or(|k| self.behaviour.keyswitch == Some(k))
-                && zone
-                    .cc_ranges
-                    .iter()
-                    .all(|(cc, range)| range.contains(&self.behaviour.cc(n.host.channel, *cc)))
                 && self.buses.get(zone.bus).is_some_and(|b| b.enabled);
             if !selected
                 || !self
                     .behaviour
-                    .round_robin_plays(zone, n.key, n.draw, attack)
+                    .starts(zone, n.host.channel, n.key, n.draw, attack)
             {
                 continue;
             }
@@ -738,9 +718,10 @@ impl Engine {
                 .iter()
                 .any(|s| s.note == Some(note) && s.voice.is_active());
             let waiting = release_triggers
-                && self.notes.get(note).is_some_and(|n| {
-                    n.origin == Origin::Host && !n.released && !self.is_keyswitch(n.host.key)
-                });
+                && self
+                    .notes
+                    .get(note)
+                    .is_some_and(|n| n.origin == Origin::Host && !n.released);
             if !sounding
                 && !waiting
                 && let Some(n) = self.notes.remove(note)

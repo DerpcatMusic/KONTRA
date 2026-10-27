@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use kontra_engine::{Engine, Event, HostNote, HostPattern, Plan, Region, SampleTime, Timed, Zone};
+use kontra_engine::{
+    Atom, Engine, Event, HostNote, HostPattern, Plan, Region, SampleTime, Timed, Zone,
+};
 use kontra_stream::{BlobKey, Encoding, MemSource, SampleFmt, Store, StoreConfig};
 
 const RATE: u32 = 48_000;
@@ -161,9 +163,9 @@ fn wait_starts_a_note_on_its_exact_sample_at_any_block_size() {
 fn the_controller_callback_sees_and_can_swallow_a_controller() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut low = zone(&mut store, 0.25, 0);
-    low.cc_ranges = vec![(1, 0..=63)];
+    low.start = vec![(kontra_engine::ir::Join::And, Atom::Cc(1, 0..=63))];
     let mut high = zone(&mut store, 0.5, 0);
-    high.cc_ranges = vec![(1, 64..=127)];
+    high.start = vec![(kontra_engine::ir::Join::And, Atom::Cc(1, 64..=127))];
     let mut e = engine(
         &store,
         vec![low, high],
