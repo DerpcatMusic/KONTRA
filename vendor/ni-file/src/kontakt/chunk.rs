@@ -7,9 +7,9 @@ use super::{
         BParamArrayBParFX8, Bank, EffectParameters, EnvelopeAhdsr, EnvelopeDbd, EnvelopeFlex,
         EnvelopeFollower, ExternalMod, ExternalModArray32, FNTableImpl, FXDelay,
         FileNameListPreK51, Glide, GroupDynamics, GroupList, InsertBus, InternalMod,
-        InternalModArray16, Lfo, LoopArray, PrivateRawObject, Program, ProgramContainer,
-        ProgramList, QuickBrowseData, SaveSettings, SlotList, Snapshot, StartCriteria,
-        StartCriteriaList, VoiceGroup, VoiceGroups, ZoneList,
+        InternalModArray16, Lfo, LoopArray, MidiPortMaps, MultiSlots, OutputConfiguration,
+        PrivateRawObject, Program, ProgramContainer, ProgramList, QuickBrowseData, SaveSettings,
+        SlotList, Snapshot, StartCriteria, StartCriteriaList, VoiceGroup, VoiceGroups, ZoneList,
     },
     structured_object::StructuredObject,
 };
@@ -123,7 +123,7 @@ pub enum KontaktObject {
     BParameterArraySerBParFX8(BParamArrayBParFX8),
     BParameterArraySerBParInternalMod16(InternalModArray16),
     BParameterArraySerBParExternalMod32(ExternalModArray32),
-    BOutputConfiguration,
+    BOutputConfiguration(OutputConfiguration),
     FileNameListPreK51(FileNameListPreK51),
     FNTablePreK51,
     BParEnvAhdsr(EnvelopeAhdsr),
@@ -167,6 +167,14 @@ pub enum KontaktObject {
     Unsupported(u16),
     /// Any other `BParFX*` module, decoded by Kontakt's own parameter schema.
     BParFXModule(EffectParameters),
+    /// 0x0F02: Kontakt's UI session (browser search, QuickBrowse, view scale,
+    /// window size): MessagePack plus a binary record. Not decoded: no sound
+    /// depends on it.
+    SessionState,
+    /// 0x48: a multi's per-slot MIDI settings.
+    MultiSlots(MultiSlots),
+    /// 0x49: a multi's four MIDI port channel maps.
+    MidiPortMaps(MidiPortMaps),
 
     Program(Program),
     StructuredObject(StructuredObject),
@@ -265,7 +273,7 @@ impl TryFrom<&Chunk> for KontaktObject {
             0x3b => KontaktObject::BParameterArraySerBParInternalMod16(chunk.try_into()?),
             0x3c => KontaktObject::BParameterArraySerBParExternalMod32(chunk.try_into()?),
             0x3d => KontaktObject::FileNameListPreK51(chunk.try_into()?),
-            0x3e => KontaktObject::BOutputConfiguration,
+            0x3e => KontaktObject::BOutputConfiguration(chunk.try_into()?),
             0x3f => KontaktObject::BParEnvAhdsr(chunk.try_into()?),
             0x40 => KontaktObject::BParEnvFm7(chunk.try_into()?),
             0x41 => KontaktObject::BParEnvDbd(chunk.try_into()?),
@@ -275,6 +283,8 @@ impl TryFrom<&Chunk> for KontaktObject {
             0x45 => KontaktObject::BInsertBus(chunk.try_into()?),
             0x46 => KontaktObject::BParFXSSLGBusComp,
             0x47 => KontaktObject::SaveSettings(chunk.try_into()?),
+            0x48 => KontaktObject::MultiSlots(chunk.try_into()?),
+            0x49 => KontaktObject::MidiPortMaps(chunk.try_into()?),
             0x4a => KontaktObject::BParGroupDynamics(chunk.try_into()?),
             0x4b => KontaktObject::FNTableImpl(chunk.try_into()?),
             0x4c => KontaktObject::BParFXFBComp,
@@ -304,6 +314,7 @@ impl TryFrom<&Chunk> for KontaktObject {
             0x61 => KontaktObject::BParFXBassPro,
             0x63 => KontaktObject::BParFXPsycheDelay,
             0x64 => KontaktObject::BParFXRingModulator,
+            0x0f02 => KontaktObject::SessionState,
             _ => KontaktObject::Unsupported(chunk.id),
         })
     }
