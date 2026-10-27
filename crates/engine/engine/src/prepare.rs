@@ -7,26 +7,14 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use kontra_ir as ir;
-use kontra_stream::{BlobKey, Sample, SampleFmt, Source, Store};
+use kontra_stream::{BlobKey, LoadRequest, Sample, SampleFmt, Source, Store};
 use kontra_voice::{Ahdsr, Loop, Region};
 
 use crate::{Bus, Control, Crossfade, Plan, RoundRobin, RrCounter, Trigger, VelocityCurve, Zone};
 
 /// Opens a sample's audio as the store reads it: decoded to packed PCM.
-pub trait Opener {
-    /// # Errors
-    /// When the sample's file cannot be read or its codec is unsupported.
-    fn open(&mut self, sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)>;
-}
-
-impl<F> Opener for F
-where
-    F: FnMut(&ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)>,
-{
-    fn open(&mut self, sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
-        self(sample)
-    }
-}
+/// Called from several loader threads at once.
+pub type Open = dyn Fn(&ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> + Sync;
 
 /// Builds the plan for `instrument` at the engine `rate`. Samples that fail to
 /// open drop their zones and are reported; the script is left to the caller.
@@ -34,10 +22,10 @@ pub fn prepare(
     instrument: &ir::Instrument,
     rate: u32,
     store: &mut Store,
-    opener: &mut dyn Opener,
+    open: &Open,
 ) -> (Plan, Vec<ir::Diagnostic>) {
     let mut diagnostics = Vec::new();
-    let loaded = load_samples(instrument, store, opener, &mut diagnostics);
+    let loaded = load_samples(instrument, store, open, &mut diagnostics);
     let mut zones = Vec::new();
     let mut plan_switches: Option<(u8, u8)> = None;
     let mut polyphony = Vec::new();
@@ -80,11 +68,12 @@ pub fn prepare(
     (plan, diagnostics)
 }
 
-/// Loads each sample a resident zone plays, pinning the union of its zones' windows.
+/// Loads each sample a resident zone plays, pinning the union of its zones'
+/// windows. Samples open on every core; the store reads their pages likewise.
 fn load_samples(
     instrument: &ir::Instrument,
     store: &mut Store,
-    opener: &mut dyn Opener,
+    open: &Open,
     diagnostics: &mut Vec<ir::Diagnostic>,
 ) -> Vec<Option<Arc<Sample>>> {
     let mut used: HashMap<usize, Vec<&ir::Zone>> = HashMap::new();
@@ -93,34 +82,74 @@ fn load_samples(
             used.entry(z.sample).or_default().push(z);
         }
     }
-    let mut loaded = vec![None; instrument.samples.len()];
-    for (index, zones) in used {
-        let Some(sample) = instrument.samples.get(index) else {
-            diagnostics.push(broken("sample-index", format!("zone names sample {index}")));
+    let used: Vec<_> = used.into_iter().collect();
+    let opened = parallel(&used, |(index, _)| match instrument.samples.get(*index) {
+        Some(sample) => open(sample),
+        None => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("no sample {index}"),
+        )),
+    });
+    let mut requests = Vec::new();
+    let mut slots = Vec::new();
+    for ((index, zones), result) in used.iter().zip(opened) {
+        let name = instrument
+            .samples
+            .get(*index)
+            .map_or("?", |s| s.name.as_str());
+        let (source, fmt) = match result {
+            Ok(opened) => opened,
+            Err(e) => {
+                diagnostics.push(broken("sample-open", format!("{name}: {e}")));
+                continue;
+            }
+        };
+        let Some(sample) = instrument.samples.get(*index) else {
             continue;
         };
-        let result = opener.open(sample).and_then(|(source, fmt)| {
-            let pins: Vec<_> = zones
-                .iter()
-                .map(|z| window(z, sample.frames, fmt, instrument.preload))
-                .collect();
-            let key = BlobKey {
-                file: format!("{}#{}", sample.file.display(), sample.name).into(),
+        requests.push(LoadRequest {
+            key: BlobKey {
+                file: format!("{}#{}", sample.file.display(), sample.offset).into(),
                 offset: sample.offset,
                 fmt,
-            };
-            store.load(&key, source, sample.frames, &pins)
+            },
+            source,
+            frames: sample.frames,
+            pin: zones
+                .iter()
+                .map(|z| window(z, sample.frames, fmt, instrument.preload))
+                .collect(),
         });
+        slots.push(*index);
+    }
+    let mut loaded = vec![None; instrument.samples.len()];
+    for (index, result) in slots.into_iter().zip(store.load_many(requests)) {
         match result {
             Ok(s) => {
                 if let Some(slot) = loaded.get_mut(index) {
                     *slot = Some(s);
                 }
             }
-            Err(e) => diagnostics.push(broken("sample-open", format!("{}: {e}", sample.name))),
+            Err(e) => diagnostics.push(broken("sample-load", format!("sample {index}: {e}"))),
         }
     }
     loaded
+}
+
+/// `f` over `items` on every core, results in order.
+fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let chunk = items.len().div_ceil(workers).max(1);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = items
+            .chunks(chunk)
+            .map(|part| scope.spawn(|| part.iter().map(&f).collect::<Vec<_>>()))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
+    })
 }
 
 /// Kontakt's preload window for one zone, in frames (05-STREAM.md §1).

@@ -103,7 +103,7 @@ fn a_prepared_instrument_plays_its_keyswitched_groups() {
         ..ir::Instrument::default()
     };
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
-    let (plan, diagnostics) = prepare(&instrument, RATE, &mut store, &mut open);
+    let (plan, diagnostics) = prepare(&instrument, RATE, &mut store, &open);
     assert_eq!(plan.zones.len(), 2, "the missing sample's zone is dropped");
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].impact, ir::Impact::Broken);
