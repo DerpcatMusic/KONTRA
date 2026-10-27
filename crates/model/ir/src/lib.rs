@@ -20,6 +20,8 @@ pub struct Instrument {
     pub voice_groups: Vec<VoiceGroup>,
     /// Effects on everything the instrument plays, by slot.
     pub inserts: Vec<Option<Effect>>,
+    /// Responses [`EffectKind::Convolution`] slots play.
+    pub impulses: Vec<Impulse>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -34,8 +36,29 @@ impl Instrument {
         voices: 64,
         voice_groups: Vec::new(),
         inserts: Vec::new(),
+        impulses: Vec::new(),
         diagnostics: Vec::new(),
     };
+}
+
+/// An impulse response: a sample and how to prepare it, in this order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Impulse {
+    /// Index into [`Instrument::samples`].
+    pub sample: usize,
+    pub reverse: bool,
+    pub normalize: Option<Normalize>,
+    /// Silence before the response, truncated to whole frames.
+    pub predelay_ms: f32,
+}
+
+/// Scales a response so its louder channel's energy (sum of squares) is
+/// `energy`, by at most `max_gain`; one at or under `floor` is left alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Normalize {
+    pub energy: f32,
+    pub max_gain: f32,
+    pub floor: f32,
 }
 
 /// One sample: where its file's bytes are. The codec is read from the file's
@@ -366,6 +389,9 @@ pub enum EffectKind {
     Stereo { width: f32, pan: f32 },
     /// Peaking bands in series; a 0 dB band is flat.
     Eq([Bell; 3]),
+    /// The input convolved with [`Instrument::impulses`] at this index (the
+    /// wet path; `dry` mixes the input back).
+    Convolution { impulse: u16 },
     /// Not carried, an insert: audio passes unchanged (its output gain
     /// trims processing that does not run).
     /// The translator reports it.

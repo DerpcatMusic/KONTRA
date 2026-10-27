@@ -38,7 +38,8 @@ pub use kontra_vm::{Action, Faults, Op, Program, Text};
 pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
 pub use plan::{
-    Atom, Bus, Control, Crossfade, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone,
+    Atom, Bus, Control, Crossfade, Group, Level, Plan, Response, RoundRobin, RrCounter, Trigger,
+    Zone,
 };
 pub use prepare::{Open, prepare};
 pub use queue::Timed;

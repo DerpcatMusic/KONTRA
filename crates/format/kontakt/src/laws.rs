@@ -95,3 +95,11 @@ pub(crate) fn eq_band(hz: f32, octaves: f32, db: f32) -> Option<ir::Bell> {
         gain_db: peak,
     })
 }
+
+/// Convolution Auto Gain (0x1419b2bc0): from the louder channel's energy E,
+/// sqrt(0.5 / E) capped at 2; unity at E ≤ 0.001.
+pub(crate) const AUTO_GAIN: ir::Normalize = ir::Normalize {
+    energy: 0.5,
+    max_gain: 2.0,
+    floor: 0.001,
+};

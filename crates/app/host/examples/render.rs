@@ -137,6 +137,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("KONTRA_FX").is_some() {
         let plan = &loaded.plan;
         println!("instrument inserts {:?}", plan.inserts);
+        for (n, i) in plan.impulses.iter().enumerate() {
+            let frames = i.as_ref().map(|r| r.left.len());
+            println!("impulse {n}: {frames:?} frames");
+        }
         let mut seen = Vec::new();
         for (n, g) in plan.groups.iter().enumerate() {
             if !g.inserts.is_empty() && !seen.contains(&&g.inserts) {

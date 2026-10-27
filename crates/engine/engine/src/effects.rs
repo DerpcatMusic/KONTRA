@@ -59,7 +59,8 @@ pub(crate) fn matrix(e: &ir::Effect) -> Gain {
         ir::EffectKind::Other => return IDENTITY,
         // Its bands run on summed audio (filters.rs, racks.rs).
         ir::EffectKind::Eq(_) => IDENTITY,
-        ir::EffectKind::OtherWet => [[0.0; 2]; 2],
+        // Its wet path runs in instrument and bus racks (racks.rs).
+        ir::EffectKind::OtherWet | ir::EffectKind::Convolution { .. } => [[0.0; 2]; 2],
     };
     let (o, d) = (e.output, e.dry);
     [

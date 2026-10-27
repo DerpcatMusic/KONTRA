@@ -19,6 +19,8 @@ pub(crate) enum Layout {
         len: u64,
         channels: u8,
         pcm: Pcm,
+        /// Frames per second; 0 when the header does not say.
+        rate: u32,
     },
     Ncw,
     /// A FLAC stream from the start of the region.
@@ -70,24 +72,19 @@ fn wav(size: u64, read: impl Fn(u64, &mut [u8]) -> io::Result<()>) -> io::Result
                 if tag == 0xFFFE && n >= 26 {
                     tag = u16le(24);
                 }
-                format = Some((tag, u16le(2), u16le(14)));
+                let rate = u32::from_le_bytes(at_n(&f, 4));
+                format = Some((tag, u16le(2), u16le(14), rate));
             }
             Some(b"data") => {
-                let (tag, channels, bits) =
+                let (tag, channels, bits, rate) =
                     format.ok_or_else(|| invalid("WAV data before its format"))?;
                 let float = match tag {
                     1 => false,
                     3 => true,
                     _ => return Err(invalid(&format!("WAV format tag {tag}"))),
                 };
-                return pcm(
-                    pos + 8,
-                    len.min(size - pos - 8),
-                    channels,
-                    bits,
-                    float,
-                    false,
-                );
+                let data = (pos + 8, len.min(size - pos - 8));
+                return pcm(data, channels, bits, (float, false), rate);
             }
             _ => {}
         }
@@ -126,16 +123,16 @@ fn aiff(
                         return Err(unsupported(&format!("AIFC {kind}")));
                     }
                 };
-                comm = Some((channels, bits, float, big_endian));
+                comm = Some((channels, bits, float, big_endian, extended(&c)));
             }
             Some(b"SSND") => {
-                let (channels, bits, float, big_endian) =
+                let (channels, bits, float, big_endian, rate) =
                     comm.ok_or_else(|| invalid("AIFF sound before its format"))?;
                 let mut o = [0; 4];
                 read(pos + 8, &mut o)?;
                 let start = pos + 16 + u64::from(u32::from_be_bytes(o));
                 let len = (pos + 8 + len).min(size).saturating_sub(start);
-                return pcm(start, len, channels, bits, float, big_endian);
+                return pcm((start, len), channels, bits, (float, big_endian), rate);
             }
             _ => {}
         }
@@ -144,13 +141,19 @@ fn aiff(
     Err(invalid("AIFF without sound data"))
 }
 
+/// The COMM chunk's rate, an 80-bit extended float at byte 8.
+fn extended(comm: &[u8]) -> u32 {
+    let exponent = i32::from(u16::from_be_bytes(at_n(comm, 8)) & 0x7FFF) - 16_383 - 63;
+    let mantissa = u64::from_be_bytes(at_n(comm, 10));
+    (mantissa as f64 * 2f64.powi(exponent)) as u32
+}
+
 fn pcm(
-    offset: u64,
-    len: u64,
+    (offset, len): (u64, u64),
     channels: u16,
     bits: u16,
-    float: bool,
-    big_endian: bool,
+    (float, big_endian): (bool, bool),
+    rate: u32,
 ) -> io::Result<Layout> {
     let channels =
         u8::try_from(channels).map_err(|_| unsupported(&format!("{channels} channels")))?;
@@ -159,6 +162,7 @@ fn pcm(
         offset,
         len,
         channels,
+        rate,
         pcm: Pcm {
             bits,
             float,
@@ -215,6 +219,7 @@ mod tests {
             len: 12,
             channels: 2,
             pcm,
+            rate: 44_100,
         };
         assert_eq!(of(&wav).unwrap(), layout);
 
@@ -237,6 +242,7 @@ mod tests {
             len: 4,
             channels: 1,
             pcm,
+            rate: 0,
         };
         assert_eq!(of(&aiff).unwrap(), layout);
     }

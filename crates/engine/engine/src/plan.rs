@@ -238,6 +238,13 @@ pub struct Bus {
     pub enabled: bool,
 }
 
+/// A prepared impulse response.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Response {
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
+}
+
 /// Pool sizes, zones, groups and buses. Growing a pool is a new plan, not a resize.
 #[derive(Clone)]
 pub struct Plan {
@@ -261,6 +268,9 @@ pub struct Plan {
     pub script: Option<ScriptPlan>,
     /// Effects on everything, by slot.
     pub inserts: Vec<Option<ir::Effect>>,
+    /// Convolution responses at the engine's rate, by [`ir::Instrument::impulses`]
+    /// index; `None` when unreadable.
+    pub impulses: Vec<Option<Response>>,
 }
 
 impl Plan {
@@ -291,6 +301,7 @@ impl Plan {
             queue: 1024,
             script: None,
             inserts: Vec::new(),
+            impulses: Vec::new(),
         }
     }
 }
