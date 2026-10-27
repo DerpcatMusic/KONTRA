@@ -11,7 +11,7 @@ const FMT: SampleFmt = SampleFmt {
 };
 
 /// Frame n holds n / 65536 exactly, so interpolation at integer steps is exact.
-fn ramp_region(store: &Store, frames: u64, pinned: u64) -> std::io::Result<Region> {
+fn ramp_region(store: &mut Store, frames: u64, pinned: u64) -> std::io::Result<Region> {
     let bytes = (0..frames)
         .flat_map(|n| (n as f32 / 65_536.0).to_le_bytes())
         .collect();
@@ -54,11 +54,11 @@ fn render(voice: &mut Voice, client: &StreamClient, frames: usize) -> Vec<f32> {
 
 #[test]
 fn unity_pitch_plays_the_sample_frame_for_frame() {
-    let store = Store::new(StoreConfig::default()).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
-    let mut voice = Voice::new();
+    let mut voice = Voice::allocate();
     voice.start(start(
-        ramp_region(&store, 4096, 4096).unwrap(),
+        ramp_region(&mut store, 4096, 4096).unwrap(),
         1.0,
         Ahdsr::GATE,
     ));
@@ -70,11 +70,11 @@ fn unity_pitch_plays_the_sample_frame_for_frame() {
 
 #[test]
 fn an_octave_up_reads_every_second_frame_and_ends_twice_as_fast() {
-    let store = Store::new(StoreConfig::default()).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
-    let mut voice = Voice::new();
+    let mut voice = Voice::allocate();
     voice.start(start(
-        ramp_region(&store, 2048, 2048).unwrap(),
+        ramp_region(&mut store, 2048, 2048).unwrap(),
         2.0,
         Ahdsr::GATE,
     ));
@@ -86,15 +86,15 @@ fn an_octave_up_reads_every_second_frame_and_ends_twice_as_fast() {
 
 #[test]
 fn a_page_not_in_memory_is_silent_and_the_cursor_keeps_time() {
-    let store = Store::new(StoreConfig {
+    let mut store = Store::new(StoreConfig {
         request_capacity: 1,
-        ..StoreConfig::default()
+        ..StoreConfig::DEFAULT
     })
     .unwrap();
     let client = store.client();
-    let mut voice = Voice::new();
+    let mut voice = Voice::allocate();
     voice.start(start(
-        ramp_region(&store, 8 * PAGE_FRAMES, PAGE_FRAMES).unwrap(),
+        ramp_region(&mut store, 8 * PAGE_FRAMES, PAGE_FRAMES).unwrap(),
         1.0,
         Ahdsr::GATE,
     ));
@@ -108,14 +108,14 @@ fn a_page_not_in_memory_is_silent_and_the_cursor_keeps_time() {
 
 #[test]
 fn a_loop_sustains_past_the_sample_end() {
-    let store = Store::new(StoreConfig::default()).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
-    let mut region = ramp_region(&store, 1000, 1000).unwrap();
+    let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
     region.looped = Some(Loop {
         start: 500,
         end: 600,
     });
-    let mut voice = Voice::new();
+    let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let out = render(&mut voice, &client, 5000);
     assert!(voice.is_active());
@@ -125,11 +125,11 @@ fn a_loop_sustains_past_the_sample_end() {
 
 #[test]
 fn reverse_plays_from_the_end() {
-    let store = Store::new(StoreConfig::default()).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
-    let mut region = ramp_region(&store, 1000, 1000).unwrap();
+    let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
     region.reverse = true;
-    let mut voice = Voice::new();
+    let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let out = render(&mut voice, &client, 10);
     assert_eq!(out[0], 999.0 / 65_536.0);
@@ -138,14 +138,14 @@ fn reverse_plays_from_the_end() {
 
 #[test]
 fn release_ends_the_voice() {
-    let store = Store::new(StoreConfig::default()).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
-    let mut region = ramp_region(&store, 1000, 1000).unwrap();
+    let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
     region.looped = Some(Loop {
         start: 0,
         end: 1000,
     });
-    let mut voice = Voice::new();
+    let mut voice = Voice::allocate();
     voice.start(start(
         region,
         1.0,

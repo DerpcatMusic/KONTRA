@@ -35,7 +35,10 @@ pub struct VoiceStart {
 
 pub struct Voice {
     region: Option<Region>,
-    pos: f64,
+    /// Position at `elapsed == 0`; moved only when the step changes, so the
+    /// cursor is the same whatever block sizes rendered it (rule 3).
+    anchor: f64,
+    elapsed: u64,
     step: f64,
     gain: [f32; 2],
     target: [f32; 2],
@@ -44,19 +47,14 @@ pub struct Voice {
     missing: u64,
 }
 
-impl Default for Voice {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Voice {
     /// Allocates the voice's scratch; call at prepare, never on the audio thread.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn allocate() -> Self {
         Self {
             region: None,
-            pos: 0.0,
+            anchor: 0.0,
+            elapsed: 0,
             step: 1.0,
             gain: [0.0; 2],
             target: [0.0; 2],
@@ -70,7 +68,8 @@ impl Voice {
     /// dropped here, so the plan must keep its samples alive until it retires.
     pub fn start(&mut self, start: VoiceStart) {
         self.region = Some(start.region);
-        self.pos = 0.0;
+        self.anchor = 0.0;
+        self.elapsed = 0;
         self.step = clamp_step(start.step);
         self.gain = start.gain;
         self.target = start.gain;
@@ -89,6 +88,8 @@ impl Voice {
 
     /// Changes pitch from the next frame.
     pub fn set_step(&mut self, step: f64) {
+        self.anchor = self.at(0);
+        self.elapsed = 0;
         self.step = clamp_step(step);
     }
 
@@ -111,7 +112,12 @@ impl Voice {
     /// Frames played so far, in source frames from the region start.
     #[must_use]
     pub fn position(&self) -> f64 {
-        self.pos
+        self.at(0)
+    }
+
+    /// Cursor position `ahead` output frames from now.
+    fn at(&self, ahead: u64) -> f64 {
+        self.anchor + (self.elapsed + ahead) as f64 * self.step
     }
 
     /// Mixes the next `out.len()` frames into `out`. `now` is the sample time of
@@ -122,7 +128,7 @@ impl Voice {
         };
         let sample = &region.sample;
         let ahead = (LOOKAHEAD * self.step) as usize;
-        region.runs(self.pos as i64, ahead, |_, first, count| {
+        region.runs(self.at(0) as i64, ahead, |_, first, count| {
             let low = if region.reverse {
                 first + 1 - count as u64
             } else {
@@ -136,8 +142,9 @@ impl Voice {
         while done < out.len() && alive {
             let fit = (((SCRATCH - 4) as f64 / self.step).floor() as usize).max(1);
             let n = fit.min(out.len() - done);
-            let lo = self.pos.floor() as i64 - 1;
-            let span = ((self.pos + (n - 1) as f64 * self.step).floor() as i64 + 3 - lo) as usize;
+            let lo = self.at(0).floor() as i64 - 1;
+            let span = (self.at(n as u64 - 1).floor() as i64 + 3 - lo) as usize;
+            let (anchor, elapsed, step) = (self.anchor, self.elapsed, self.step);
             let Some(window) = self.scratch.get_mut(..span.min(SCRATCH)) else {
                 break;
             };
@@ -156,7 +163,7 @@ impl Voice {
             self.missing += u64::from(missing);
 
             for (i, frame) in out.iter_mut().skip(done).take(n).enumerate() {
-                let x = self.pos + i as f64 * self.step - lo as f64;
+                let x = anchor + (elapsed + i as u64) as f64 * step - lo as f64;
                 let base = x.floor() as usize;
                 let t = (x - base as f64) as f32;
                 let Some(&[y0, y1, y2, y3]) = window.get(base - 1..base + 3) else {
@@ -172,8 +179,8 @@ impl Voice {
                     break;
                 }
             }
-            self.pos += n as f64 * self.step;
-            if region.finished(self.pos) {
+            self.elapsed += n as u64;
+            if region.finished(self.at(0)) {
                 alive = false;
             }
             done += n;

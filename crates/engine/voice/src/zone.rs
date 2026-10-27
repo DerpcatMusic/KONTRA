@@ -87,7 +87,7 @@ mod tests {
             encoding: Encoding::I16,
             channels: 1,
         };
-        let store = Store::new(StoreConfig::default()).unwrap();
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
         let key = BlobKey {
             file: "r".into(),
             offset: 0,
