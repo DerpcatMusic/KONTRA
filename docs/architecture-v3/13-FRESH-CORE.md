@@ -78,21 +78,33 @@ script's note handling bypassed and still play correctly.
 - **Destinations:** any `#[derive(Params)]` parameter, per voice or per bus.
 - **Kontakt:** its modulator list, and UVI's, are rows in this matrix.
 
-## 3. Build order (each step: tests pass, then the next)
+## 3. No bridges
+
+A new crate never depends on a `sampler-*` crate, not even temporarily.
+Correct old code (RE'd laws, decoders, the KSP grammar) is rewritten cleanly
+into the new crate, with its tests. The foundation is built and proven bottom
+up, and only then wired into the plugin. A probe of the old IR on the new
+engine (2026-10-27, not merged) showed why scripts belong in the foundation:
+Areia Spiccato Fast has 3 dynamic layers × 8 round robins per key, and its KSP
+picks one of the 24 groups. Without the script, all 24 sound.
+
+## 4. Build order (each step: tests pass, then the next)
 
 1. ✅ `kontra-stream`: pages, pins, cache, I/O; never waits (#833).
 2. ✅ `kontra-voice`: cursor, loops, reverse, Hermite, AHDSR; any-block-size cursor.
-3. `kontra-engine` base: queue, ledger, VoiceSet, pool and steal law, render
-   loop; contracts C1, C3, C4 and C6 on synthetic plans.
-4. `kontra-ir` v3 behaviour block, and engine behaviour: round robin,
-   crossfades, release triggers, legato, voice groups and mic buses.
-5. `kontra-format-sfz` onto it: the open format proves the behaviours on real
-   SFZ libraries before any vendor code.
-6. Modulation matrix and the DSP families (phase 5 of 11-MIGRATION.md, unchanged).
-7. `kontra-vm` with `HostApi`, then KSP and Lua front ends on it (04-SCRIPT.md).
-8. `kontra-format-kontakt` and `-uvi` onto the IR, reusing the RE'd readers and laws.
-9. Plugin switch on probe parity (Areia, Vista, ANALOG, a UVI library); delete `sampler-core`.
-
-Phases 4–8 of 11-MIGRATION.md (mechanical moves) are superseded for the
-engine, script and format crates. The DSP family work (phase 5) and the
-app/plugin split (phase 8) still apply, built on the new core.
+3. ✅ `kontra-engine`: queue, ledger, owned voices, steal law with fades, render
+   loop; behaviour (round robin, crossfades, triggers, keyswitches, voice
+   groups, choke, mic buses) as plan data.
+4. `kontra-vm`: bytecode, interpreter, coroutine `wait`, fixed memory, `HostApi`.
+5. `kontra-ksp`: lexer, parser, resolver, lowering to `kontra-vm`, rewritten
+   from the KSP manual and the old front end's tests.
+6. Engine script host: callbacks at their sample; `play_note`, `ignore_event`,
+   group allow lists, event parameters, `wait`, engine parameters; UI writes to
+   a latest-value control store.
+7. `kontra-ir`: the format-neutral instrument (zones, groups, behaviour,
+   scripts, buses, modulators); engine prepare compiles it into a `Plan`.
+8. Fresh format crates onto `kontra-ir`: audio decoders (WAV, AIFF, FLAC, NCW),
+   then the Kontakt container (NKI/NKM/NKR, monoliths), then UVI and SFZ.
+9. Modulation matrix and the DSP families.
+10. Wire: host load pipeline, plugin shell, UI on the protocol. Switch on probe
+    parity (Areia, Vista, ANALOG, a UVI library); delete every `sampler-*` crate.
