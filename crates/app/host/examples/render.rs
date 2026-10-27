@@ -36,6 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::path::Path::new(&dir).join(format!("{n}.ksp")),
                 &s.source,
             )?;
+            let data: Vec<_> = s.data.iter().map(|(name, b)| (name, b.len())).collect();
+            println!("  script {n} data files: {data:?}");
         }
     }
     let t = std::time::Instant::now();
@@ -143,6 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("peak {peak:.3}, {:?}", engine.stats());
     println!("all actions: {:?}", engine.unhandled_actions());
     println!("last message: {}", engine.last_message());
+    println!("script faults: {:?}", engine.script_faults());
     write_wav(&out, &audio)?;
     println!("wrote {}", out.display());
     Ok(())

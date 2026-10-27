@@ -31,7 +31,9 @@ pub fn load(
         .filter(|s| s.dialect == ir::Dialect::Ksp);
     if let Some(script) = scripts.next() {
         match kontra_ksp::compile(&script.source, &[]) {
-            Ok(compiled) => plan.script = Some(crate::script::plan(&compiled, &script.saved)),
+            Ok(compiled) => {
+                plan.script = Some(crate::script::plan(&compiled, &script.saved, &script.data))
+            }
             Err(e) => diagnostics.push(ir::Diagnostic {
                 impact: ir::Impact::Broken,
                 feature: "script compile".into(),

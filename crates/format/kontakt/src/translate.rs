@@ -12,6 +12,7 @@ use ni_file::kontakt::objects::{
 };
 
 use crate::Error;
+use crate::resources::Resources;
 use crate::samples::Resolver;
 
 const GROUP_LIST: u16 = 0x33;
@@ -42,6 +43,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         pan: params.pan,
         tune: semitones(params.tune) + f64::from(params.transpose),
     };
+    let mut resources = None;
     for chunk in program.0.children.iter().filter(|c| c.id == SCRIPT) {
         let script = BParScript::try_from(chunk)
             .and_then(|s| s.params())
@@ -51,6 +53,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
             Some(text) if !text.trim().is_empty() => out.scripts.push(ir::Script {
                 name: script.description.unwrap_or_default(),
                 dialect: ir::Dialect::Ksp,
+                data: data_files(&text, path, &mut resources),
                 source: text,
                 saved: script.persistent,
             }),
@@ -231,6 +234,32 @@ fn attack_shape(curve: f32) -> f32 {
         ((1.0 + b) / b).ln()
     };
     k as f32
+}
+
+/// The library data files a script loads with a literal `load_array(%x, 2)`:
+/// `Resources/data/x.nka`, by lowercase array name without its sigil.
+fn data_files(
+    source: &str,
+    path: &Path,
+    resources: &mut Option<Resources>,
+) -> Vec<(String, Vec<u8>)> {
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for call in source.split("load_array(").skip(1) {
+        let Some((array, mode)) = call.split_once(')').and_then(|(a, _)| a.split_once(',')) else {
+            continue;
+        };
+        let stem = array.trim().get(1..).unwrap_or_default().to_lowercase();
+        if mode.trim() != "2" || stem.is_empty() || files.iter().any(|(s, _)| *s == stem) {
+            continue;
+        }
+        let found = resources
+            .get_or_insert_with(|| Resources::open(path))
+            .read(&format!("data/{stem}.nka"));
+        if let Some(bytes) = found {
+            files.push((stem, bytes));
+        }
+    }
+    files
 }
 
 fn translate_group(

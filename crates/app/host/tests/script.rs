@@ -49,7 +49,7 @@ fn engine(store: &Store, zones: Vec<Zone>, source: &str) -> Engine {
     for g in &mut plan.groups {
         g.mods.clear();
     }
-    plan.script = Some(kontra_host::script::plan(&script, &[]));
+    plan.script = Some(kontra_host::script::plan(&script, &[], &[]));
     Engine::new(Arc::new(plan), store.client(), RATE)
 }
 
@@ -222,7 +222,7 @@ fn a_script_reads_its_restored_controls() {
     let script = kontra_ksp::compile(source, &[]).unwrap();
     let store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(Vec::new(), 16);
-    plan.script = Some(kontra_host::script::plan(&script, &["$on 1".into()]));
+    plan.script = Some(kontra_host::script::plan(&script, &["$on 1".into()], &[]));
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     level(&mut e, &[on(60)]);
     assert_eq!(e.last_message(), "0 0");
@@ -251,7 +251,7 @@ fn a_script_finds_a_modulation_by_name_and_drives_it() {
         &[],
     )
     .unwrap();
-    plan.script = Some(kontra_host::script::plan(&script, &[]));
+    plan.script = Some(kontra_host::script::plan(&script, &[], &[]));
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     // Full intensity: the level follows the controller linearly.
     let l = level(&mut e, &[on(60)]);

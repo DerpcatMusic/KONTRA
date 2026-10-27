@@ -414,6 +414,7 @@ impl<'a> Compiler<'a> {
         let (mut ints, mut texts) = (0, 0);
         let mut number: Option<Ty> = None;
         let mut array_len = 0;
+        let mut texts_array = false;
         for (i, kind) in sig.args.iter().enumerate() {
             let Some(e) = args.get(i) else {
                 // Left-out optional arguments pass zero; a left-out search or
@@ -502,6 +503,7 @@ impl<'a> Compiler<'a> {
                             (ty, base, len)
                         }
                     };
+                    texts_array |= ty == Ty::Text;
                     let ty = if ty == Ty::Text { Ty::Int } else { ty };
                     if let Some(&want) = number.as_ref()
                         && want != ty
@@ -516,9 +518,15 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
-        // Builtins over numbers get a trailing 1 when those numbers are real.
+        // Builtins over numbers get a trailing 1 when those numbers are real,
+        // 2 when the array is text (load_array and its kin).
         if sig.args.iter().any(|a| matches!(a, Arg::N | Arg::A)) {
-            self.emit(Op::Int(i32::from(number == Some(Ty::Real))));
+            let kind = if texts_array {
+                2
+            } else {
+                i32::from(number == Some(Ty::Real))
+            };
+            self.emit(Op::Int(kind));
             ints += 1;
         }
         let ty = match sig.ret {
