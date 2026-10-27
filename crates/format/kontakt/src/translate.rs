@@ -76,7 +76,9 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
         out.groups.push(g);
         criteria.push(rows);
+        crate::effects::group(group, index, &mut notes);
     }
+    crate::effects::program(&program, &mut notes);
     start_rules(&mut out.groups, &criteria, &mut notes);
     let limits = program
         .0
@@ -462,10 +464,10 @@ fn translate_zone(
 
 /// Diagnostics folded by feature: one entry with a count and the first detail.
 #[derive(Default)]
-struct Notes(BTreeMap<(ir::Impact, String), (usize, String)>);
+pub(crate) struct Notes(BTreeMap<(ir::Impact, String), (usize, String)>);
 
 impl Notes {
-    fn add(&mut self, impact: ir::Impact, feature: &str, detail: impl ToString) {
+    pub(crate) fn add(&mut self, impact: ir::Impact, feature: &str, detail: impl ToString) {
         let entry = self
             .0
             .entry((impact, feature.into()))

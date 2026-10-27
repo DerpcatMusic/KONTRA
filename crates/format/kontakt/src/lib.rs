@@ -4,6 +4,7 @@
 
 mod access;
 mod container;
+mod effects;
 mod fastlz;
 mod laws;
 mod resources;
