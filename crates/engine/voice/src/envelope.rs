@@ -75,6 +75,12 @@ impl Envelope {
         }
     }
 
+    /// Releases over `frames` (60 dB), whatever the release setting.
+    pub(crate) fn fade(&mut self, frames: u32) {
+        self.settings.release = frames.max(1);
+        self.release();
+    }
+
     pub(crate) fn is_off(&self) -> bool {
         self.stage == Stage::Off
     }
