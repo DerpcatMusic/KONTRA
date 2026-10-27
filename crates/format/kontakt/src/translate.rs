@@ -318,7 +318,22 @@ fn translate_group(
                         kind: ir::ModKind::Envelope,
                     });
                 }
-                _ => notes.add(ir::Impact::Audible, "internal modulator", &p.name),
+                m => {
+                    let kind = match m {
+                        Modulator::Ahdsr(_) => "AHDSR",
+                        Modulator::Flex(_) => "flex envelope",
+                        Modulator::Lfo(_) => "LFO",
+                        Modulator::Dbd(_) => "DBD envelope",
+                        Modulator::Glide(_) => "glide",
+                        Modulator::Follower(_) => "envelope follower",
+                        Modulator::Other { .. } => "other",
+                    };
+                    for t in &p.targets {
+                        let to = if t.slot.is_some() { "module " } else { "" };
+                        let feature = format!("internal modulator {kind} -> {to}{}", t.param);
+                        notes.add(ir::Impact::Audible, &feature, &p.name);
+                    }
+                }
             }
         }
     }
@@ -350,7 +365,14 @@ fn translate_group(
                         },
                     });
                 }
-                _ => notes.add(ir::Impact::Audible, "external modulator", &p.name),
+                (_, targets) => {
+                    for t in targets {
+                        let to = if t.slot.is_some() { "module " } else { "" };
+                        let feature =
+                            format!("external modulator {:?} -> {to}{}", p.source, t.param);
+                        notes.add(ir::Impact::Audible, &feature, &p.name);
+                    }
+                }
             }
         }
     }
