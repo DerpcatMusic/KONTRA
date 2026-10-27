@@ -24,7 +24,8 @@ pub(crate) struct Resolver {
     parent: PathBuf,
     /// Lower-case member path to its bytes, when the instrument is a monolith.
     monolith: HashMap<String, Location>,
-    archives: HashMap<PathBuf, Option<Archive>>,
+    /// Each archive opened once, with its member index.
+    archives: HashMap<PathBuf, Option<(File, Archive)>>,
     /// Lower-case basename to files under `root`, built on the first miss.
     loose: Option<HashMap<String, Vec<PathBuf>>>,
     /// The library's keystream, read on the first encrypted member.
@@ -127,16 +128,16 @@ impl Resolver {
         let index = match self.archives.get(archive) {
             Some(index) => index,
             None => {
-                let index = File::open(archive)
-                    .ok()
-                    .and_then(|f| Archive::read_index(f).ok());
+                let index = File::open(archive).ok().and_then(|f| {
+                    let index = Archive::read_index(&f).ok()?;
+                    Some((f, index))
+                });
                 self.archives.entry(archive.to_path_buf()).or_insert(index)
             }
         };
-        let Some(index) = index else {
+        let Some((file, index)) = index else {
             return Ok(None);
         };
-        let file = File::open(archive).map_err(|e| e.to_string())?;
         let Some(entry) = index.member(file, member).map_err(|e| e.to_string())? else {
             return Ok(None);
         };
