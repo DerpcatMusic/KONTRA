@@ -9,7 +9,7 @@ use kontra_engine::{
 use kontra_events::{Event, HostNote, HostPattern};
 use kontra_stream::{BlobKey, Encoding, MemSource, SampleFmt, Store, StoreConfig};
 use kontra_time::SampleTime;
-use kontra_voice::{Ahdsr, Region};
+use kontra_voice::Region;
 
 const RATE: u32 = 48_000;
 const FMT: SampleFmt = SampleFmt {
@@ -42,16 +42,14 @@ fn region(store: &mut Store, level: f32, frames: u64) -> std::io::Result<Region>
 
 /// A zone whose output level is `level` at full velocity, centre pan, no velocity scaling.
 fn zone(store: &mut Store, level: f32) -> Zone {
-    let mut z = Zone::new(region(store, level, 48_000).unwrap(), 60, RATE);
-    z.velocity = kontra_engine::VelocityCurve::Flat;
-    z.envelope = Ahdsr {
-        release: 64,
-        ..Ahdsr::GATE
-    };
-    z
+    Zone::new(region(store, level, 48_000).unwrap(), 60, RATE)
 }
 
-fn engine(store: &Store, plan: Plan) -> Engine {
+/// The plan's groups ignore velocity.
+fn engine(store: &Store, mut plan: Plan) -> Engine {
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
     Engine::new(Arc::new(plan), store.client(), RATE)
 }
 
@@ -218,15 +216,14 @@ fn a_keyswitch_selects_the_articulation_and_sounds_nothing() {
 #[test]
 fn a_release_trigger_plays_on_key_up_quieter_the_longer_the_key_was_held() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
-    let mut attack = zone(&mut store, 0.5);
-    attack.envelope = Ahdsr {
-        release: 16,
-        ..Ahdsr::GATE
-    };
+    let attack = zone(&mut store, 0.5);
     let mut tail = zone(&mut store, 0.4);
+    tail.group = 1;
     tail.trigger = Trigger::Release;
     tail.release_decay_db = 6.0; // per second held
-    let mut e = engine(&store, Plan::new(vec![attack, tail], 8));
+    let mut plan = Plan::new(vec![attack, tail], 8);
+    plan.groups[0].envelope.release = 16;
+    let mut e = engine(&store, plan);
     level(&mut e, &[on(60, 1.0)]);
     for _ in 0..(RATE as usize / 256) {
         level(&mut e, &[]);

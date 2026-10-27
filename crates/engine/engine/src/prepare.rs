@@ -10,7 +10,7 @@ use kontra_ir as ir;
 use kontra_stream::{BlobKey, LoadRequest, Sample, SampleFmt, Source, Store};
 use kontra_voice::{Ahdsr, Loop, Region};
 
-use crate::{Bus, Control, Crossfade, Plan, RoundRobin, RrCounter, Trigger, VelocityCurve, Zone};
+use crate::{Bus, Control, Crossfade, Group, Plan, RoundRobin, RrCounter, Trigger, Zone};
 
 /// Opens a sample's audio as the store reads it: decoded to packed PCM.
 /// Called from several loader threads at once.
@@ -47,10 +47,18 @@ pub fn prepare(
             let Some(source) = instrument.samples.get(z.sample) else {
                 continue;
             };
-            zones.push(zone(group, group_id, z, source, sample, rate));
+            zones.push(zone(group, group_id, z, source, sample));
         }
     }
     let mut plan = Plan::new(zones, usize::from(instrument.voices));
+    plan.groups = instrument
+        .groups
+        .iter()
+        .map(|g| Group {
+            mods: g.mods.clone(),
+            envelope: envelope(g.envelope, rate),
+        })
+        .collect();
     if !instrument.buses.is_empty() {
         plan.buses = instrument
             .buses
@@ -185,7 +193,6 @@ fn zone(
     z: &ir::Zone,
     source: &ir::Sample,
     sample: &Arc<Sample>,
-    rate: u32,
 ) -> Zone {
     let region = Region {
         sample: Arc::clone(sample),
@@ -240,13 +247,7 @@ fn zone(
     out.tune = group.tune + z.tune;
     out.gain = gain(group.volume_db + z.volume_db);
     out.pan = (group.pan + z.pan).clamp(-1.0, 1.0);
-    out.velocity = match group.velocity {
-        ir::Velocity::Flat => VelocityCurve::Flat,
-        ir::Velocity::Decibels(db) => VelocityCurve::Decibels(db),
-        ir::Velocity::Power { depth, exponent } => VelocityCurve::Power { depth, exponent },
-    };
     out.release_decay_db = group.release_decay_db;
-    out.envelope = envelope(group.envelope, rate);
     out.one_shot = group.one_shot;
     out.bus = group.bus;
     out

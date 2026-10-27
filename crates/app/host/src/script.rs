@@ -1,6 +1,6 @@
 //! A compiled KSP script as the engine's [`ScriptPlan`].
 
-use kontra_engine::{Callbacks, Controls, ScriptPlan, Text};
+use kontra_engine::{Callbacks, Controls, EnginePars, ScriptPlan, Text};
 use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 /// Callbacks a KSP instrument may have running or waiting at once.
@@ -23,6 +23,14 @@ pub fn plan(script: &Script, saved: &[String]) -> ScriptPlan {
         },
         coroutines: COROUTINES,
         controls: controls(script),
+        engine_pars: EnginePars {
+            attack: symbol(script, "$ENGINE_PAR_ATTACK"),
+            hold: symbol(script, "$ENGINE_PAR_HOLD"),
+            decay: symbol(script, "$ENGINE_PAR_DECAY"),
+            sustain: symbol(script, "$ENGINE_PAR_SUSTAIN"),
+            release: symbol(script, "$ENGINE_PAR_RELEASE"),
+            intensity: symbol(script, "$ENGINE_PAR_MOD_TARGET_INTENSITY"),
+        },
         restore: restore.ints,
         restore_texts: restore
             .texts
@@ -34,12 +42,7 @@ pub fn plan(script: &Script, saved: &[String]) -> ScriptPlan {
 
 /// Control ids, the value parameter's symbol and each control's value cell.
 fn controls(script: &Script) -> Controls {
-    let value_par = script
-        .symbols
-        .iter()
-        .position(|s| s.eq_ignore_ascii_case("$CONTROL_PAR_VALUE"))
-        .and_then(|n| i32::try_from(n).ok())
-        .map_or(i32::MIN, |n| SYMBOL_BASE + n);
+    let value_par = symbol(script, "$CONTROL_PAR_VALUE");
     let cells = script
         .controls
         .iter()
@@ -53,4 +56,15 @@ fn controls(script: &Script) -> Controls {
         value_par,
         cells,
     }
+}
+
+/// The value a catalog constant has in `script`; `i32::MIN` (matches nothing)
+/// when the script never names it.
+fn symbol(script: &Script, name: &str) -> i32 {
+    script
+        .symbols
+        .iter()
+        .position(|s| s.eq_ignore_ascii_case(name))
+        .and_then(|n| i32::try_from(n).ok())
+        .map_or(i32::MIN, |n| SYMBOL_BASE + n)
 }

@@ -175,7 +175,6 @@ fn translate_group(
         pan: (v.pan + base.pan).clamp(-1.0, 1.0),
         tune: semitones(v.tune) + base.tune,
         keytrack: if v.key_tracking { 1.0 } else { 0.0 },
-        velocity: ir::Velocity::Flat,
         trigger: if v.release_trigger {
             ir::Trigger::Release
         } else {
@@ -187,8 +186,9 @@ fn translate_group(
     if v.voice_group_index > 0 {
         notes.add(ir::Impact::Audible, "voice group", &v.name);
     }
+    let slot = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
-        for (_, m) in InternalModArray16::try_from(chunk)?.slots()? {
+        for (n, m) in InternalModArray16::try_from(chunk)?.slots()? {
             let p = m.params()?;
             let volume = p
                 .targets
@@ -204,39 +204,41 @@ fn translate_group(
                         sustain: e.sustain.clamp(0.0, 1.0).powi(3),
                         release: e.release_ms.max(0.0) / 1000.0,
                     };
+                    out.mods.push(ir::Mod {
+                        name: p.name.clone(),
+                        slot: slot(n),
+                        kind: ir::ModKind::Envelope,
+                    });
                 }
                 _ => notes.add(ir::Impact::Audible, "internal modulator", &p.name),
             }
         }
     }
     if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
-        for (_, m) in ExternalModArray32::try_from(chunk)?.slots()? {
+        for (n, m) in ExternalModArray32::try_from(chunk)?.slots()? {
             let p = m.params()?;
-            match (&p.source, p.targets.as_slice()) {
-                (ModSource::Velocity, [t]) if t.param == "volume" && t.slot.is_none() => {
-                    out.velocity = velocity(t.signed_intensity());
+            let source = match p.source {
+                ModSource::Velocity => Some(ir::Source::Velocity),
+                ModSource::MidiCc(cc) => Some(ir::Source::Controller(cc)),
+                _ => None,
+            };
+            match (source, p.targets.as_slice()) {
+                (Some(source), [t]) if t.param == "volume" && t.slot.is_none() => {
+                    out.mods.push(ir::Mod {
+                        name: p.name.clone(),
+                        slot: slot(n),
+                        kind: ir::ModKind::Volume {
+                            source,
+                            intensity: t.signed_intensity(),
+                            curve: ir::Curve::Power,
+                        },
+                    });
                 }
                 _ => notes.add(ir::Impact::Audible, "external modulator", &p.name),
             }
         }
     }
     Ok((out, v.start_criteria.items))
-}
-
-/// Kontakt's velocity-to-volume law at modulation `intensity`: gain × velocity
-/// at full intensity, a measured exponent at the default 50/127 (v1 oracle).
-fn velocity(intensity: f32) -> ir::Velocity {
-    const DEFAULT_INTENSITY: f32 = 50.0 / 127.0;
-    const DEFAULT_EXPONENT: f32 = 1.285;
-    if intensity <= 0.0 {
-        return ir::Velocity::Flat;
-    }
-    let i = intensity.min(1.0);
-    let exponent = 1.0 + (DEFAULT_EXPONENT - 1.0) * (1.0 - i) / (1.0 - DEFAULT_INTENSITY);
-    ir::Velocity::Power {
-        depth: (2.0 * i).min(1.0),
-        exponent: exponent.clamp(1.0, 2.5),
-    }
 }
 
 /// Start options: key switches, controller ranges and round robins. Cycles count
