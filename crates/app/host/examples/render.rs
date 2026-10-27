@@ -133,6 +133,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (what, n) in kinds.iter().take(8) {
         println!("    {n}× {what}");
     }
+    // KONTRA_FX=1 prints the effect racks that reach the voices.
+    if std::env::var_os("KONTRA_FX").is_some() {
+        let plan = &loaded.plan;
+        println!("instrument inserts {:?}", plan.inserts);
+        let mut seen = Vec::new();
+        for (n, g) in plan.groups.iter().enumerate() {
+            if !g.inserts.is_empty() && !seen.contains(&&g.inserts) {
+                seen.push(&g.inserts);
+                println!("group {n} inserts {:?}", g.inserts);
+            }
+        }
+    }
     if let Ok(zone) = std::env::var("KONTRA_ZONE") {
         let plan = &loaded.plan;
         let z = zone.parse::<usize>().ok().and_then(|z| plan.zones.get(z));

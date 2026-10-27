@@ -13,6 +13,11 @@ pub const UNDERSTOOD_SYMBOLS: &[&str] = &[
     RELEASE,
     INTENSITY,
     ATTACK_CURVE,
+    EFFECT_BYPASS,
+    EFFECT_OUTPUT,
+    GAINER_GAIN,
+    STEREO_WIDTH,
+    STEREO_PAN,
     VOLUME,
     PAN,
     TUNE,
@@ -25,6 +30,11 @@ const SUSTAIN: &str = "$ENGINE_PAR_SUSTAIN";
 const RELEASE: &str = "$ENGINE_PAR_RELEASE";
 const INTENSITY: &str = "$ENGINE_PAR_MOD_TARGET_INTENSITY";
 const ATTACK_CURVE: &str = "$ENGINE_PAR_ATK_CURVE";
+const EFFECT_BYPASS: &str = "$ENGINE_PAR_EFFECT_BYPASS";
+const EFFECT_OUTPUT: &str = "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN";
+const GAINER_GAIN: &str = "$ENGINE_PAR_GN_GAIN";
+const STEREO_WIDTH: &str = "$ENGINE_PAR_STEREO";
+const STEREO_PAN: &str = "$ENGINE_PAR_STEREO_PAN";
 const VOLUME: &str = "$ENGINE_PAR_VOLUME";
 const PAN: &str = "$ENGINE_PAR_PAN";
 const TUNE: &str = "$ENGINE_PAR_TUNE";
@@ -58,6 +68,11 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             release: symbol(script, RELEASE),
             intensity: symbol(script, INTENSITY),
             attack_curve: symbol(script, ATTACK_CURVE),
+            effect_bypass: symbol(script, EFFECT_BYPASS),
+            effect_output: symbol(script, EFFECT_OUTPUT),
+            gainer_gain: symbol(script, GAINER_GAIN),
+            stereo_width: symbol(script, STEREO_WIDTH),
+            stereo_pan: symbol(script, STEREO_PAN),
             volume: symbol(script, VOLUME),
             pan: symbol(script, PAN),
             tune: symbol(script, TUNE),

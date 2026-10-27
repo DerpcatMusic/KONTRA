@@ -10,6 +10,7 @@
 
 mod behaviour;
 mod controls;
+mod effects;
 mod inspect;
 mod ledger;
 mod params;
@@ -86,6 +87,8 @@ struct Slot {
 struct BusState {
     gain: f32,
     enabled: bool,
+    /// The plan's bus inserts as scripts have changed them.
+    inserts: Box<[Option<ir::Effect>]>,
     mix: Box<[[f32; 2]]>,
 }
 
@@ -121,6 +124,8 @@ pub struct Engine {
     called: Box<[u32]>,
     /// The instrument's level, pan and tune (a script's group -1).
     instrument: Level,
+    /// The plan's instrument inserts as scripts have changed them.
+    inserts: Box<[Option<ir::Effect>]>,
     /// Callbacks run so far (24 bits): the source of `$NI_CALLBACK_ID`.
     callbacks_started: u32,
     /// Per control, parameters the script set other than its value.
@@ -135,6 +140,7 @@ impl Engine {
     #[must_use]
     pub fn new(plan: Arc<Plan>, stream: StreamClient, rate: u32) -> Self {
         let shared: Box<[Group]> = plan.groups.clone().into();
+        let plan_inserts = plan.inserts.clone().into();
         let pool = plan.voices + plan.voices / 4 + 1;
         let voices = (0..pool)
             .map(|_| Slot {
@@ -153,6 +159,7 @@ impl Engine {
             .map(|b| BusState {
                 gain: b.gain,
                 enabled: b.enabled,
+                inserts: b.inserts.clone().into(),
                 mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
             })
             .collect();
@@ -200,6 +207,7 @@ impl Engine {
             control_pars,
             callbacks_started: 0,
             instrument: Level::UNITY,
+            inserts: plan_inserts,
         };
         engine.cc_values[7] = 100;
         engine.cc_values[11] = 127;
@@ -264,7 +272,7 @@ impl Engine {
 
     /// Each sounding voice's zone, position in source frames and gain, for
     /// inspectors (never the audio thread).
-    pub fn voices(&self) -> impl Iterator<Item = (usize, f64, [f32; 2])> + '_ {
+    pub fn voices(&self) -> impl Iterator<Item = (usize, f64, kontra_voice::Gain)> + '_ {
         self.voices
             .iter()
             .filter(|s| s.voice.is_active())

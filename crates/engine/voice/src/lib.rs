@@ -23,13 +23,16 @@ pub const LOOKAHEAD: f64 = 8192.0;
 /// One-pole gain smoothing per frame (~2 ms at 48 kHz).
 const GAIN_SMOOTH: f32 = 0.01;
 
+/// How each output channel (row) takes each source channel (column).
+pub type Gain = [[f32; 2]; 2];
+
 /// Everything a voice needs to start, resolved by the engine from the plan.
 #[derive(Clone)]
 pub struct VoiceStart {
     pub region: Region,
     /// Source frames per output frame: pitch and sample-rate ratio together.
     pub step: f64,
-    pub gain: [f32; 2],
+    pub gain: Gain,
     pub envelope: Ahdsr,
 }
 
@@ -40,8 +43,8 @@ pub struct Voice {
     anchor: f64,
     elapsed: u64,
     step: f64,
-    gain: [f32; 2],
-    target: [f32; 2],
+    gain: Gain,
+    target: Gain,
     env: Envelope,
     scratch: Box<[[f32; 2]]>,
     /// The frames a loop crossfade blends in.
@@ -58,8 +61,8 @@ impl Voice {
             anchor: 0.0,
             elapsed: 0,
             step: 1.0,
-            gain: [0.0; 2],
-            target: [0.0; 2],
+            gain: [[0.0; 2]; 2],
+            target: [[0.0; 2]; 2],
             env: Envelope::new(Ahdsr::GATE),
             scratch: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             partner: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
@@ -102,13 +105,13 @@ impl Voice {
     }
 
     /// Changes gain, smoothed over a few milliseconds.
-    pub fn set_gain(&mut self, gain: [f32; 2]) {
+    pub fn set_gain(&mut self, gain: Gain) {
         self.target = gain;
     }
 
-    /// The gain the voice is moving to, left and right.
+    /// The gain the voice is moving to.
     #[must_use]
-    pub fn target_gain(&self) -> [f32; 2] {
+    pub fn target_gain(&self) -> Gain {
         self.target
     }
 
@@ -201,10 +204,19 @@ impl Voice {
                     break;
                 };
                 let level = self.env.next();
-                self.gain[0] += (self.target[0] - self.gain[0]) * GAIN_SMOOTH;
-                self.gain[1] += (self.target[1] - self.gain[1]) * GAIN_SMOOTH;
-                frame[0] += hermite(y0[0], y1[0], y2[0], y3[0], t) * level * self.gain[0];
-                frame[1] += hermite(y0[1], y1[1], y2[1], y3[1], t) * level * self.gain[1];
+                for (g, target) in self
+                    .gain
+                    .as_flattened_mut()
+                    .iter_mut()
+                    .zip(self.target.as_flattened())
+                {
+                    *g += (target - *g) * GAIN_SMOOTH;
+                }
+                let l = hermite(y0[0], y1[0], y2[0], y3[0], t) * level;
+                let r = hermite(y0[1], y1[1], y2[1], y3[1], t) * level;
+                let [[ll, lr], [rl, rr]] = self.gain;
+                frame[0] += ll * l + lr * r;
+                frame[1] += rl * l + rr * r;
                 if self.env.is_off() {
                     alive = false;
                     break;

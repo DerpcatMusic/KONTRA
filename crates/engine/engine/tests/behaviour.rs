@@ -141,6 +141,8 @@ fn sequential_round_robin_cycles_and_mic_layers_agree() {
     plan.buses.push(Bus {
         name: "Room".into(),
         gain: 1.0,
+        pan: 0.0,
+        inserts: Vec::new(),
         enabled: true,
     });
     let mut e = engine(&store, plan);
@@ -376,6 +378,8 @@ fn a_disabled_mic_bus_starts_no_voices() {
     plan.buses.push(Bus {
         name: "Room".into(),
         gain: 1.0,
+        pan: 0.0,
+        inserts: Vec::new(),
         enabled: true,
     });
     let mut e = engine(&store, plan);

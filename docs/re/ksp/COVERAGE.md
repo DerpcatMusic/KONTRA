@@ -7,8 +7,8 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 ## Summary
 
 - Actions used: 154 (answered 43, missing 94, partial 4, vm 13)
-- Catalog names used: 430, understood by the engine: 11
-- IR gaps: 45 features the translator could not carry
+- Catalog names used: 430, understood by the engine: 16
+- IR gaps: 39 features the translator could not carry
 
 ## IR gaps (translator), worst first
 
@@ -18,10 +18,7 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | Audible | effect Filter | 227 | 10 | 124× (first: group 0 insert slot 0) |
 | Audible | internal modulator | 182 | 10 | 16× (first: ENV_FLEX) |
 | Audible | effect Send Levels | 677 | 8 | 1× (first: instrument insert slot 7) |
-| Audible | effect Stereo Modeller | 361 | 7 | 220× (first: group 0 insert slot 1) |
 | Audible | effect Convolution | 367 | 4 | 1× (first: instrument insert slot 1) |
-| Audible | effect Gainer | 134 | 4 | 1× (first: instrument insert slot 0) |
-| Audible | effect Inverter | 30 | 4 | 90× (first: group 0 insert slot 7) |
 | Audible | effect Reverb | 270 | 3 | 1× (first: instrument send slot 0) |
 | Audible | several loops | 11 | 3 | 1× (first: loop 1) |
 | Audible | effect Saturation | 6 | 2 | 18× (first: group 5 insert slot 7) |
@@ -38,7 +35,6 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | Cosmetic | bypassed effect Filter | 354 | 5 | 72× (first: group 56 insert slot 0) |
 | Cosmetic | bypassed effect Compressor | 5 | 3 | 4× (first: bus 0 slot 1) |
 | Cosmetic | bypassed effect Convolution | 5 | 3 | 1× (first: instrument send slot 2) |
-| Cosmetic | bypassed effect Inverter | 4 | 2 | 240× (first: group 0 insert slot 4) |
 | Cosmetic | bypassed effect Saturation | 4 | 2 | 465× (first: group 0 insert slot 7) |
 | Cosmetic | bypassed effect Delay (legacy) | 2 | 2 | 3× (first: instrument send slot 4) |
 | Cosmetic | bypassed effect Distortion | 2 | 2 | 475× (first: group 0 insert slot 6) |
@@ -49,12 +45,10 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | Cosmetic | bypassed effect Skreamer | 3 | 1 | 2× (first: bus 0 slot 2) |
 | Cosmetic | bypassed effect Solid Bus Comp | 3 | 1 | 1× (first: instrument insert slot 4) |
 | Cosmetic | bypassed effect Solid G-EQ | 3 | 1 | 11× (first: group 94 insert slot 2) |
-| Cosmetic | bypassed effect Stereo Modeller | 3 | 1 | 2× (first: bus 0 slot 6) |
 | Cosmetic | bypassed effect Tape Saturator | 3 | 1 | 3× (first: instrument insert slot 5) |
 | Cosmetic | bypassed effect Transient Master | 3 | 1 | 1× (first: instrument insert slot 1) |
 | Cosmetic | bypassed effect Chorus (legacy) | 1 | 1 | 1× (first: instrument insert slot 4) |
 | Cosmetic | bypassed effect Flanger (legacy) | 1 | 1 | 1× (first: instrument insert slot 5) |
-| Cosmetic | bypassed effect Gainer | 1 | 1 | 4× (first: bus 0 slot 3) |
 | Cosmetic | bypassed effect Jump | 1 | 1 | 4× (first: bus 0 slot 4) |
 | Cosmetic | bypassed effect Reverb | 1 | 1 | 1× (first: instrument send slot 1) |
 | Cosmetic | bypassed effect Reverb (legacy) | 1 | 1 | 4× (first: bus 0 slot 7) |
@@ -65,25 +59,25 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | KSP | Status | Libraries | Scripts | Calls | Unanswered |
 |---|---|---:|---:|---:|---:|
 | `set_script_title` | missing | 11 | 51 | 51 | 51 |
-| `play_note` | answered | 11 | 48 | 102446 | 0 |
+| `play_note` | answered | 11 | 48 | 102450 | 0 |
 | `disallow_group` | answered | 11 | 48 | 102467 | 0 |
-| `set_control_par` | answered | 11 | 47 | 69270 | 0 |
+| `set_control_par` | answered | 11 | 47 | 69169 | 0 |
 | `add_menu_item` | missing | 11 | 47 | 3631 | 3631 |
 | `message` | answered | 11 | 47 | 78 | 0 |
-| `set_control_par_str` | missing | 11 | 46 | 21549 | 21549 |
+| `set_control_par_str` | missing | 11 | 46 | 21523 | 21523 |
 | `set_ui_height_px` | missing | 11 | 45 | 45 | 45 |
 | `abs` | vm | 11 | 44 | 0 | 0 |
 | `get_engine_par_disp` | missing | 11 | 44 | 821 | 821 |
-| `set_engine_par` | partial | 11 | 44 | 13315 | 5030 |
-| `get_control_par` | answered | 11 | 44 | 11547 | 0 |
-| `set_key_color` | missing | 11 | 44 | 9031 | 9031 |
-| `note_off` | answered | 11 | 43 | 61 | 0 |
+| `set_engine_par` | partial | 11 | 44 | 13315 | 2629 |
+| `get_control_par` | answered | 11 | 44 | 11568 | 0 |
+| `set_key_color` | missing | 11 | 44 | 9093 | 9093 |
+| `note_off` | answered | 11 | 43 | 63 | 0 |
 | `purge_group` | answered | 11 | 43 | 906 | 0 |
-| `$EVENT_ID` | answered | 10 | 48 | 102785 | 0 |
-| `$EVENT_NOTE` | answered | 10 | 48 | 1031480 | 0 |
+| `$EVENT_ID` | answered | 10 | 48 | 102789 | 0 |
+| `$EVENT_NOTE` | answered | 10 | 48 | 1031516 | 0 |
 | `in_range` | vm | 10 | 47 | 0 | 0 |
-| `ignore_event` | answered | 10 | 47 | 74 | 0 |
-| `$EVENT_VELOCITY` | answered | 10 | 47 | 61 | 0 |
+| `ignore_event` | answered | 10 | 47 | 76 | 0 |
+| `$EVENT_VELOCITY` | answered | 10 | 47 | 65 | 0 |
 | `allow_group` | answered | 10 | 46 | 523 | 0 |
 | `%CC` | answered | 10 | 45 | 102431 | 0 |
 | `$CC_NUM` | answered | 10 | 40 | 0 | 0 |
@@ -91,7 +85,7 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `search` | vm | 10 | 36 | 0 | 0 |
 | `set_listener` | missing | 10 | 35 | 51 | 51 |
 | `fade_out` | answered | 10 | 34 | 102415 | 0 |
-| `$NUM_GROUPS` | answered | 10 | 25 | 103030 | 0 |
+| `$NUM_GROUPS` | answered | 10 | 25 | 103034 | 0 |
 | `read_persistent_var` | answered | 9 | 44 | 3465 | 0 |
 | `find_mod` | answered | 9 | 42 | 4270 | 0 |
 | `make_perfview` | missing | 9 | 42 | 42 | 42 |
@@ -99,11 +93,11 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `pgs_set_key_val` | missing | 9 | 24 | 303 | 303 |
 | `pgs_create_key` | missing | 9 | 23 | 43 | 43 |
 | `move_control_px` | missing | 8 | 41 | 1975 | 1975 |
-| `change_tune` | answered | 8 | 37 | 102410 | 0 |
+| `change_tune` | answered | 8 | 37 | 102414 | 0 |
 | `set_event_par` | answered | 8 | 34 | 90 | 0 |
 | `set_ui_width_px` | missing | 8 | 33 | 33 | 33 |
-| `set_key_type` | missing | 8 | 33 | 6753 | 6753 |
-| `set_event_par_arr` | partial | 8 | 19 | 32 | 30 |
+| `set_key_type` | missing | 8 | 33 | 6815 | 6815 |
+| `set_event_par_arr` | partial | 8 | 19 | 34 | 32 |
 | `%KEY_DOWN` | answered | 8 | 18 | 4257 | 0 |
 | `random` | answered | 8 | 15 | 2 | 0 |
 | `ignore_controller` | answered | 8 | 13 | 0 | 0 |
@@ -111,20 +105,20 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `set_key_pressed` | missing | 7 | 32 | 3155 | 3155 |
 | `$NI_SIGNAL_TYPE` | missing | 7 | 31 | 0 | 0 |
 | `change_vol` | answered | 7 | 26 | 7 | 0 |
-| `set_menu_item_str` | missing | 7 | 11 | 100 | 100 |
+| `set_menu_item_str` | missing | 7 | 11 | 94 | 94 |
 | `round` | vm | 7 | 10 | 0 | 0 |
-| `set_menu_item_visibility` | missing | 7 | 10 | 948 | 948 |
+| `set_menu_item_visibility` | missing | 7 | 10 | 946 | 946 |
 | `output_channel_name` | missing | 6 | 38 | 0 | 0 |
 | `$NUM_OUTPUT_CHANNELS` | missing | 6 | 38 | 156 | 156 |
 | `set_key_pressed_support` | missing | 6 | 31 | 31 | 31 |
-| `set_text` | missing | 6 | 30 | 1573 | 1573 |
+| `set_text` | missing | 6 | 30 | 1572 | 1572 |
 | `group_name` | answered | 6 | 12 | 333 | 0 |
 | `$NI_CALLBACK_ID` | answered | 6 | 10 | 3 | 0 |
 | `set_key_name` | missing | 5 | 30 | 2900 | 2900 |
 | `load_ir_sample` | missing | 5 | 26 | 24 | 24 |
 | `set_skin_offset` | missing | 5 | 26 | 27 | 27 |
-| `reset_rls_trig_counter` | missing | 5 | 12 | 10 | 10 |
-| `get_engine_par` | partial | 5 | 10 | 23 | 11 |
+| `reset_rls_trig_counter` | missing | 5 | 12 | 11 | 11 |
+| `get_engine_par` | partial | 5 | 10 | 23 | 9 |
 | `$CURRENT_SCRIPT_SLOT` | answered | 5 | 10 | 11 | 0 |
 | `show_library_tab` | missing | 5 | 9 | 9 | 9 |
 | `save_array` | missing | 5 | 8 | 0 | 0 |
@@ -152,7 +146,7 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `disable_logging` | missing | 3 | 6 | 18 | 18 |
 | `%GROUPS_SELECTED` | missing | 3 | 6 | 0 | 0 |
 | `%EVENT_PAR` | answered | 3 | 6 | 8 | 0 |
-| `change_note` | answered | 3 | 5 | 3 | 0 |
+| `change_note` | answered | 3 | 5 | 5 | 0 |
 | `change_pan` | answered | 3 | 4 | 0 | 0 |
 | `wait_async` | missing | 3 | 4 | 303 | 303 |
 | `$PLAYED_VOICES_INST` | answered | 3 | 4 | 3 | 0 |
@@ -242,7 +236,7 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `$ENGINE_PAR_ATTACK` | yes | 10 | 37 |
 | `$ENGINE_PAR_RELEASE` | yes | 10 | 35 |
 | `$ENGINE_PAR_DECAY` | yes | 9 | 37 |
-| `$ENGINE_PAR_EFFECT_BYPASS` | no | 9 | 34 |
+| `$ENGINE_PAR_EFFECT_BYPASS` | yes | 9 | 34 |
 | `$CONTROL_PAR_AUTOMATION_NAME` | no | 8 | 33 |
 | `$CONTROL_PAR_LABEL` | no | 8 | 33 |
 | `$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN` | no | 8 | 33 |
@@ -254,20 +248,20 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `$CONTROL_PAR_PICTURE_STATE` | no | 7 | 32 |
 | `$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL` | no | 7 | 31 |
 | `$CONTROL_PAR_HELP` | no | 7 | 30 |
-| `$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN` | no | 7 | 30 |
+| `$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN` | yes | 7 | 30 |
 | `$ENGINE_PAR_ATK_CURVE` | yes | 7 | 18 |
 | `$CONTROL_PAR_KEY_ALT` | no | 7 | 15 |
 | `$CONTROL_PAR_AUTOMATION_ID` | no | 7 | 11 |
 | `$VALUE_EDIT_MODE_NOTE_NAMES` | no | 6 | 12 |
 | `$ENGINE_PAR_SEND_EFFECT_BYPASS` | no | 6 | 10 |
-| `$ENGINE_PAR_STEREO` | no | 5 | 26 |
+| `$ENGINE_PAR_STEREO` | yes | 5 | 26 |
 | `$CONTROL_PAR_SHOW_ARROWS` | no | 5 | 13 |
 | `$ENGINE_PAR_SENDLEVEL_0` | no | 5 | 9 |
 | `$ENGINE_PAR_EFFECT_TYPE` | no | 5 | 8 |
 | `$ENGINE_PAR_CUTOFF` | no | 5 | 5 |
 | `$ENGINE_PAR_TUNE` | yes | 5 | 5 |
 | `$CONTROL_PAR_KEY_SHIFT` | no | 4 | 12 |
-| `$ENGINE_PAR_GN_GAIN` | no | 4 | 12 |
+| `$ENGINE_PAR_GN_GAIN` | yes | 4 | 12 |
 | `$ENGINE_PAR_SEND_EFFECT_TYPE` | no | 4 | 8 |
 | `$ENGINE_PAR_COMP_ATTACK` | no | 4 | 4 |
 | `$ENGINE_PAR_COMP_DECAY` | no | 4 | 4 |
@@ -300,7 +294,7 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `$ENGINE_PAR_LFO_SAW` | no | 3 | 3 |
 | `$ENGINE_PAR_LFO_SINE` | no | 3 | 3 |
 | `$ENGINE_PAR_LFO_TRI` | no | 3 | 3 |
-| `$ENGINE_PAR_STEREO_PAN` | no | 3 | 3 |
+| `$ENGINE_PAR_STEREO_PAN` | yes | 3 | 3 |
 | `$ENGINE_PAR_TP_GAIN` | no | 3 | 3 |
 | `$ENGINE_PAR_TP_HF_ROLLOFF` | no | 3 | 3 |
 | `$ENGINE_PAR_TP_WARMTH` | no | 3 | 3 |
@@ -660,26 +654,26 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 
 ## Runtime faults (init + one note)
 
+- ANALOG STRINGS: ANALOG STRINGS slot 0 (Analog Strings v0.22): Faults { divide_by_zero: 15, out_of_range: 5189, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Tubas KS slot 0 (Brass MKS Low 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns AccSusCresc slot 0 (Brass ASC 1.00): Faults { divide_by_zero: 0, out_of_range: 2, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns Flutter slot 0 (Brass Flutter 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- Afflatus Chapter II Brass: 2 Horns Legato slot 0 (Brass Legato 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns Marcato slot 0 (Brass Marc Tenuto 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns Repetitions slot 0 (Brass Shorts 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- Afflatus Chapter II Brass: 2 Horns Legato slot 0 (Brass Legato 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns Rips slot 0 (Brass Rips 1.00): Faults { divide_by_zero: 0, out_of_range: 2, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns Trills slot 0 (Brass Trills 1.00): Faults { divide_by_zero: 0, out_of_range: 2, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Tubas Slides slot 0 (Brass Slides 1.00): Faults { divide_by_zero: 0, out_of_range: 2, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- ANALOG STRINGS: ANALOG STRINGS slot 0 (Analog Strings v0.22): Faults { divide_by_zero: 15, out_of_range: 5189, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Mountain Hotel Cup Mute slot 0 (Mountain Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Noir Brass slot 0 (Noir Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: The Chosen One Trombones Swells slot 0 (Chosen One Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Space Horror Brass slot 0 (Horror Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- Afflatus Chapter II Brass: Dark Ambient Pad slot 0 (Brass Experimental 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Iceberg Brass slot 0 (Iceberg Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- Afflatus Chapter II Brass: Dark Ambient Pad slot 0 (Brass Experimental 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Barbarian Brass slot 0 (Barbarian Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Imperial Brass A slot 0 (Imperial Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Phantom Brass slot 0 (Phantom Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Audio Imperia CHORUS: 01 Chorus - Women - Traditional Articulations slot 0 (Pyramid (Tonal and Atonal)): Faults { divide_by_zero: 1, out_of_range: 0, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- Audio Imperia Dolce: Dolce - 04 7 1st Violins - Harmonics slot 0 (Pyramid (Tonal and Atonal)): Faults { divide_by_zero: 0, out_of_range: 36, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- Audio Imperia Dolce: Dolce - 03 7 1st Violins - Sustained Con Sordino slot 0 (Pyramid (Tonal and Atonal)): Faults { divide_by_zero: 0, out_of_range: 36, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Conflux 1.1.0 [Native Instruments]: Conflux slot 1 (Mono & Glide): Faults { divide_by_zero: 2, out_of_range: 0, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Shreddage 3.5 E-Upright 1.0.1 [Impact Soundworks] rutracker.org: Shreddage 3.5 E-Upright slot 0 (Shreddage Engine): Faults { divide_by_zero: 11, out_of_range: 4, stack_overflow: 0, texts_cut: 0, loop_limits: 1, no_coroutine: 0, bad_code: 0 }
