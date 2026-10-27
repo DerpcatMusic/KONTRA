@@ -183,15 +183,15 @@ fn criteria_reverse(group: u32, groups: &GroupList) -> bool {
 fn voice_groups(out: &mut ir::Instrument, groups: &GroupList, limits: Option<&VoiceGroups>) {
     let mut index = [None::<usize>; 128];
     for (g, group) in out.groups.iter_mut().zip(&groups.groups) {
-        let Some(n) = group
+        let Some((n, slot)) = group
             .params()
             .ok()
             .and_then(|p| usize::try_from(p.voice_group_index - 1).ok())
-            .filter(|&n| n < 128)
+            .and_then(|n| Some((n, index.get_mut(n)?)))
         else {
             continue;
         };
-        let at = *index[n].get_or_insert_with(|| {
+        let at = *slot.get_or_insert_with(|| {
             let limit = limits.and_then(|l| l.groups.get(n)?.as_ref());
             out.voice_groups.push(limit.map_or(
                 ir::VoiceGroup {
