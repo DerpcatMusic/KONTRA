@@ -1,11 +1,15 @@
 use crate::{read_bytes::ReadBytesExt, Error};
 
 use super::{
+    native_schema,
     objects::{
-        BParFX, BParFXSendLevels, BParScript, BParamArrayBParFX8, Bank, FNTableImpl, FXDelay,
-        FileNameListPreK51, GroupList, InsertBus, InternalMod, InternalModArray16, LoopArray,
-        PrivateRawObject, Program, ProgramContainer, ProgramList, QuickBrowseData, SaveSettings,
-        SlotList, StartCriteriaList, VoiceGroup, VoiceGroups, ZoneList,
+        snapshot_metadata_names, BParFX, BParFXRotator, BParFXSendLevels, BParScript,
+        BParamArrayBParFX8, Bank, EffectParameters, EnvelopeAhdsr, EnvelopeDbd, EnvelopeFlex,
+        EnvelopeFollower, ExternalMod, ExternalModArray32, FNTableImpl, FXDelay,
+        FileNameListPreK51, Glide, GroupDynamics, GroupList, InsertBus, InternalMod,
+        InternalModArray16, Lfo, LoopArray, PrivateRawObject, Program, ProgramContainer,
+        ProgramList, QuickBrowseData, SaveSettings, SlotList, Snapshot, StartCriteria,
+        StartCriteriaList, VoiceGroup, VoiceGroups, ZoneList,
     },
     structured_object::StructuredObject,
 };
@@ -64,15 +68,16 @@ pub enum KontaktObject {
     BGroup,
     BLoop,
     BParScript(BParScript),
-    BParEnv,
-    BParLFO,
+    /// Wrapper whose only child is the concrete modulator.
+    BParEnv(StructuredObject),
+    BParLFO(Lfo),
     BParArp,
-    BParEnvF,
-    BParGlide,
-    BParExternalMod,
+    BParEnvF(EnvelopeFollower),
+    BParGlide(Glide),
+    BParExternalMod(ExternalMod),
     BParInternalMod(InternalMod),
     BParSrcMode,
-    BParStartCriteria,
+    BParStartCriteria(StartCriteria),
     BParFXDelay(FXDelay),
     BParFXChorus,
     BParFXFlanger,
@@ -92,7 +97,7 @@ pub enum KontaktObject {
     BParFXStereoSpread,
     BParFXLofi,
     BParFXSkreamer,
-    BParFXRotator,
+    BParFXRotator(BParFXRotator),
     BParFXTwang,
     BParFXCabinet,
     BParFX(BParFX),
@@ -117,28 +122,29 @@ pub enum KontaktObject {
     LoopArray(LoopArray),
     BParameterArraySerBParFX8(BParamArrayBParFX8),
     BParameterArraySerBParInternalMod16(InternalModArray16),
-    BParameterArraySerBParExternalMod32,
+    BParameterArraySerBParExternalMod32(ExternalModArray32),
     BOutputConfiguration,
     FileNameListPreK51(FileNameListPreK51),
     FNTablePreK51,
-    BParEnvAhdsr,
-    BParEnvFm7,
-    BParEnvDbd,
+    BParEnvAhdsr(EnvelopeAhdsr),
+    BParEnvFm7(EnvelopeFlex),
+    BParEnvDbd(EnvelopeDbd),
     BParFXTape,
     BParFXTrans,
     BParFXSSLGEQ,
     BInsertBus(InsertBus),
     BParFXSSLGBusComp,
     SaveSettings(SaveSettings),
-    BParGroupDynamics,
+    BParGroupDynamics(GroupDynamics),
     FNTableImpl(FNTableImpl),
     FileNameList,
     BParFXFBComp,
     BParFXJump,
     QuickBrowseData(QuickBrowseData),
-    BSnapshot,
+    BSnapshot(Snapshot),
     BGroupSnapshot,
-    BSnapshotMetaData,
+    /// Stored instrument name and content name.
+    BSnapshotMetaData(String, String),
     BParFXVan51,
     BParFXACBox,
     BParFXHotSolo,
@@ -159,15 +165,43 @@ pub enum KontaktObject {
     BParFXPsycheDelay,
     BParFXRingModulator,
     Unsupported(u16),
+    /// Any other `BParFX*` module, decoded by Kontakt's own parameter schema.
+    BParFXModule(EffectParameters),
 
     Program(Program),
     StructuredObject(StructuredObject),
+}
+
+/// Parameters of a `BParFX*` module, or None when it is not one or the schema
+/// has no layout for its version. The version is peeked first so other chunks
+/// are not parsed twice.
+fn effect_module(chunk: &Chunk) -> Result<Option<EffectParameters>, Error> {
+    let Some(&[0, lo, hi]) = chunk
+        .data
+        .get(..3)
+        .and_then(|b| <&[u8; 3]>::try_from(b).ok())
+    else {
+        return Ok(None);
+    };
+    let fx = native_schema::class_of(chunk.id, u16::from_le_bytes([lo, hi]))
+        .is_some_and(|c| c.starts_with("BParFX") && c != "BParFX");
+    if !fx {
+        return Ok(None);
+    }
+    let object = StructuredObject::try_from(chunk)?;
+    EffectParameters::read(chunk.id, object.version, &object.public_data)
 }
 
 impl TryFrom<&Chunk> for KontaktObject {
     type Error = Error;
 
     fn try_from(chunk: &Chunk) -> Result<KontaktObject, Error> {
+        // Delay, send levels, rotator and the BParFX wrapper keep their own decoders.
+        if !matches!(chunk.id, 0x10 | 0x17 | 0x22 | 0x25) {
+            if let Some(fx) = effect_module(chunk)? {
+                return Ok(KontaktObject::BParFXModule(fx));
+            }
+        }
         Ok(match chunk.id {
             // 0x54 BParFXBassInvader?,
             0x00 => KontaktObject::BParModBase,
@@ -177,15 +211,15 @@ impl TryFrom<&Chunk> for KontaktObject {
             0x04 => KontaktObject::BGroup,
             0x05 => KontaktObject::BLoop,
             0x06 => KontaktObject::BParScript(chunk.try_into()?),
-            0x07 => KontaktObject::BParEnv,
-            0x08 => KontaktObject::BParLFO,
+            0x07 => KontaktObject::BParEnv(chunk.try_into()?),
+            0x08 => KontaktObject::BParLFO(chunk.try_into()?),
             0x09 => KontaktObject::BParArp,
-            0x0a => KontaktObject::BParEnvF,
-            0x0b => KontaktObject::BParGlide,
-            0x0c => KontaktObject::BParExternalMod,
+            0x0a => KontaktObject::BParEnvF(chunk.try_into()?),
+            0x0b => KontaktObject::BParGlide(chunk.try_into()?),
+            0x0c => KontaktObject::BParExternalMod(chunk.try_into()?),
             0x0d => KontaktObject::BParInternalMod(chunk.try_into()?),
             0x0e => KontaktObject::BParSrcMode,
-            0x0f => KontaktObject::BParStartCriteria,
+            0x0f => KontaktObject::BParStartCriteria(chunk.try_into()?),
             0x10 => KontaktObject::BParFXDelay(chunk.try_into()?),
             0x11 => KontaktObject::BParFXChorus,
             0x12 => KontaktObject::BParFXFlanger,
@@ -204,7 +238,7 @@ impl TryFrom<&Chunk> for KontaktObject {
             0x1f => KontaktObject::BParFXStereoSpread,
             0x20 => KontaktObject::BParFXLofi,
             0x21 => KontaktObject::BParFXSkreamer,
-            0x22 => KontaktObject::BParFXRotator,
+            0x22 => KontaktObject::BParFXRotator(chunk.try_into()?),
             0x23 => KontaktObject::BParFXTwang,
             0x24 => KontaktObject::BParFXCabinet,
             0x25 => KontaktObject::BParFX(chunk.try_into()?),
@@ -229,26 +263,29 @@ impl TryFrom<&Chunk> for KontaktObject {
             0x39 => KontaktObject::LoopArray(chunk.try_into()?),
             0x3a => KontaktObject::BParameterArraySerBParFX8(chunk.try_into()?),
             0x3b => KontaktObject::BParameterArraySerBParInternalMod16(chunk.try_into()?),
-            0x3c => KontaktObject::BParameterArraySerBParExternalMod32,
+            0x3c => KontaktObject::BParameterArraySerBParExternalMod32(chunk.try_into()?),
             0x3d => KontaktObject::FileNameListPreK51(chunk.try_into()?),
             0x3e => KontaktObject::BOutputConfiguration,
-            0x3f => KontaktObject::BParEnvAhdsr,
-            0x40 => KontaktObject::BParEnvFm7,
-            0x41 => KontaktObject::BParEnvDbd,
+            0x3f => KontaktObject::BParEnvAhdsr(chunk.try_into()?),
+            0x40 => KontaktObject::BParEnvFm7(chunk.try_into()?),
+            0x41 => KontaktObject::BParEnvDbd(chunk.try_into()?),
             0x42 => KontaktObject::BParFXTape,
             0x43 => KontaktObject::BParFXTrans,
             0x44 => KontaktObject::BParFXSSLGEQ,
             0x45 => KontaktObject::BInsertBus(chunk.try_into()?),
             0x46 => KontaktObject::BParFXSSLGBusComp,
             0x47 => KontaktObject::SaveSettings(chunk.try_into()?),
-            0x4a => KontaktObject::BParGroupDynamics,
+            0x4a => KontaktObject::BParGroupDynamics(chunk.try_into()?),
             0x4b => KontaktObject::FNTableImpl(chunk.try_into()?),
             0x4c => KontaktObject::BParFXFBComp,
             0x4d => KontaktObject::BParFXJump,
             0x4e => KontaktObject::QuickBrowseData(chunk.try_into()?),
-            0x4f => KontaktObject::BSnapshot,
+            0x4f => KontaktObject::BSnapshot(chunk.try_into()?),
             0x50 => KontaktObject::BGroupSnapshot,
-            0x51 => KontaktObject::BSnapshotMetaData,
+            0x51 => {
+                let (name, content) = snapshot_metadata_names(chunk)?;
+                KontaktObject::BSnapshotMetaData(name, content)
+            }
             0x52 => KontaktObject::BParFXVan51,
             0x53 => KontaktObject::BParFXACBox,
             0x54 => KontaktObject::BParFXHotSolo,
