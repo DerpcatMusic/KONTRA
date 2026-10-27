@@ -230,7 +230,9 @@ fn translate_group(
                         kind: ir::ModKind::Volume {
                             source,
                             intensity: t.signed_intensity(),
-                            curve: ir::Curve::Power,
+                            curve: ir::Curve::Kontakt {
+                                cubed: source == ir::Source::Velocity,
+                            },
                         },
                     });
                 }
@@ -357,14 +359,12 @@ fn translate_zone(
             end: from + l.loop_length as u64,
         });
     }
-    if z.fade_low_key > 0 || z.fade_high_key > 0 {
-        notes.add(ir::Impact::Audible, "key crossfade", "");
-    }
     Some(ir::Zone {
         sample,
         keys: midi(lk)..=midi(hk),
         velocities: midi(lv).max(1)..=midi(hv),
         velocity_fade: (midi(z.fade_low_velocity), midi(z.fade_high_velocity)),
+        key_fade: (midi(z.fade_low_key), midi(z.fade_high_key)),
         root: midi(z.root_key),
         tune: semitones(z.zone_tune),
         volume_db: db(z.zone_volume),

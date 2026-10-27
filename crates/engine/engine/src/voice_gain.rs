@@ -15,7 +15,7 @@ impl Engine {
             .map(|x| {
                 x.gain(
                     self.behaviour
-                        .control(x.control, channel, note.velocity_byte),
+                        .control(x.control, channel, note.velocity_byte, note.key),
                 )
             })
             .product();

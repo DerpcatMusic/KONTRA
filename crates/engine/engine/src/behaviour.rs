@@ -159,9 +159,10 @@ impl Behaviour {
     }
 
     /// The value a crossfade or range reads for a note.
-    pub(crate) fn control(&self, control: Control, channel: u8, velocity: u8) -> u8 {
+    pub(crate) fn control(&self, control: Control, channel: u8, velocity: u8, key: u8) -> u8 {
         match control {
             Control::Velocity => velocity,
+            Control::Key => key,
             Control::Cc(n) => self.cc(channel, n),
         }
     }

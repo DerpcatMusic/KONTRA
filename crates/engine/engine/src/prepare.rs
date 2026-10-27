@@ -207,15 +207,20 @@ fn zone(
     let mut out = Zone::new(region, z.root, source.rate);
     out.keys = z.keys.clone();
     out.velocities = z.velocities.clone();
-    let (low, high) = (*z.velocities.start(), *z.velocities.end());
-    let (fade_in, fade_out) = z.velocity_fade;
-    if fade_in > 0 || fade_out > 0 {
-        out.crossfades.push(Crossfade {
-            control: Control::Velocity,
-            fade_in: (fade_in > 0).then(|| (low.saturating_sub(1), low.saturating_add(fade_in))),
-            fade_out: (fade_out > 0)
-                .then(|| (high.saturating_sub(fade_out), high.saturating_add(1))),
-        });
+    for (control, range, (fade_in, fade_out)) in [
+        (Control::Velocity, &z.velocities, z.velocity_fade),
+        (Control::Key, &z.keys, z.key_fade),
+    ] {
+        let (low, high) = (*range.start(), *range.end());
+        if fade_in > 0 || fade_out > 0 {
+            out.crossfades.push(Crossfade {
+                control,
+                fade_in: (fade_in > 0)
+                    .then(|| (low.saturating_sub(1), low.saturating_add(fade_in))),
+                fade_out: (fade_out > 0)
+                    .then(|| (high.saturating_sub(fade_out), high.saturating_add(1))),
+            });
+        }
     }
     out.trigger = match group.trigger {
         ir::Trigger::Attack => Trigger::Attack,
@@ -292,6 +297,7 @@ mod tests {
             keys: 0..=127,
             velocities: 1..=127,
             velocity_fade: (0, 0),
+            key_fade: (0, 0),
             root: 60,
             tune: 0.0,
             volume_db: 0.0,
