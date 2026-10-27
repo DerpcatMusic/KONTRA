@@ -6,6 +6,10 @@ use kontra_ir as ir;
 
 use crate::{Engine, Level};
 
+/// Effect gains are cubic, unity at this value, so 1_000_000 is +24 dB (v1,
+/// fitted to slots whose saved gains follow their scripts' init writes).
+const UNITY_EFFECT_GAIN: f64 = 396_851.0;
+
 /// Volume is cubic in the setting, 0 dB at this value, +12 dB at 1_000_000.
 const UNITY_VOLUME: f64 = 629_960.524_947_436_1;
 
@@ -74,7 +78,90 @@ impl LevelPar {
     }
 }
 
+/// What an effect parameter sets in a slot.
+#[derive(Clone, Copy)]
+enum EffectPar {
+    Bypass,
+    Output,
+    Gain,
+    Width,
+    Pan,
+}
+
+impl EffectPar {
+    /// Sets it from the raw value; false when the slot has no such control.
+    fn set(self, e: &mut ir::Effect, raw: f64) -> bool {
+        let gain = (raw / UNITY_EFFECT_GAIN).powi(3) as f32;
+        match (self, &mut e.kind) {
+            (Self::Bypass, _) => e.bypass = raw != 0.0,
+            (Self::Output, _) => e.output = gain,
+            (Self::Gain, ir::EffectKind::Gain(g)) => *g = gain,
+            // ponytail: width and pan linear in the setting; no measurement yet.
+            (Self::Width, ir::EffectKind::Stereo { width, .. }) => *width = (raw / 1e6) as f32,
+            (Self::Pan, ir::EffectKind::Stereo { pan, .. }) => *pan = (raw / 5e5 - 1.0) as f32,
+            _ => return false,
+        }
+        true
+    }
+
+    fn get(self, e: &ir::Effect) -> Option<f64> {
+        let gain = |g: f32| UNITY_EFFECT_GAIN * f64::from(g.max(0.0)).cbrt();
+        Some(match (self, e.kind) {
+            (Self::Bypass, _) => f64::from(u8::from(e.bypass)),
+            (Self::Output, _) => gain(e.output),
+            (Self::Gain, ir::EffectKind::Gain(g)) => gain(g),
+            (Self::Width, ir::EffectKind::Stereo { width, .. }) => f64::from(width) * 1e6,
+            (Self::Pan, ir::EffectKind::Stereo { pan, .. }) => (f64::from(pan) + 1.0) * 5e5,
+            _ => return None,
+        })
+    }
+}
+
 impl Engine {
+    fn effect_par(&self, par: i32) -> Option<EffectPar> {
+        let pars = self.plan.script.as_ref()?.engine_pars;
+        match par {
+            p if p == pars.effect_bypass => Some(EffectPar::Bypass),
+            p if p == pars.effect_output => Some(EffectPar::Output),
+            p if p == pars.gainer_gain => Some(EffectPar::Gain),
+            p if p == pars.stereo_width => Some(EffectPar::Width),
+            p if p == pars.stereo_pan => Some(EffectPar::Pan),
+            _ => None,
+        }
+    }
+
+    /// A group's insert slot (generic -1), the instrument insert's (group
+    /// -1, generic `$NI_INSERT_BUS` = 1) or a bus's. Send and main racks are
+    /// not carried yet.
+    fn effect_mut(&mut self, group: i32, slot: i32, generic: i32) -> Option<&mut ir::Effect> {
+        let rack = match (usize::try_from(group), generic) {
+            (Ok(g), -1) => &mut self.groups.get_mut(g)?.inserts[..],
+            (Err(_), 1) => &mut self.inserts[..],
+            // `$NI_BUS_OFFSET + n`: bus n is plan bus n + 1 (0 is the main bus).
+            (Err(_), b) if b >= 1000 => {
+                let bus = usize::try_from(b - 999).ok()?;
+                &mut self.buses.get_mut(bus)?.inserts[..]
+            }
+            _ => return None,
+        };
+        rack.get_mut(usize::try_from(slot).ok()?)?.as_mut()
+    }
+
+    /// `set_engine_par` of an effect control; false when not carried.
+    fn set_effect(&mut self, par: i32, value: i32, group: i32, slot: i32, generic: i32) -> bool {
+        let Some(which) = self.effect_par(par) else {
+            return false;
+        };
+        let raw = f64::from(value.clamp(0, 1_000_000));
+        let set = self
+            .effect_mut(group, slot, generic)
+            .is_some_and(|e| which.set(e, raw));
+        if set {
+            self.refresh_all(None);
+        }
+        set
+    }
+
     fn level_par(&self, par: i32) -> Option<LevelPar> {
         let pars = self.plan.script.as_ref()?.engine_pars;
         match par {
@@ -118,6 +205,10 @@ impl Engine {
         slot: i32,
         generic: i32,
     ) -> Option<i32> {
+        if let Some(which) = self.effect_par(par) {
+            let e = *self.effect_mut(group, slot, generic)?;
+            return Some(which.get(&e)?.round().clamp(0.0, 1e6) as i32);
+        }
         if let Some(which) = self.level_par(par) {
             let level = *self.level_mut(group, generic)?;
             return Some(which.get(&level).round().clamp(0.0, 1e6) as i32);
@@ -156,7 +247,9 @@ impl Engine {
         slot: i32,
         generic: i32,
     ) -> bool {
-        if self.set_level(par, value, group, generic) {
+        if self.set_level(par, value, group, generic)
+            || self.set_effect(par, value, group, slot, generic)
+        {
             return true;
         }
         let Some(pars) = self.plan.script.as_ref().map(|s| s.engine_pars) else {

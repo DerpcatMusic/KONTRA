@@ -121,6 +121,8 @@ pub struct Group {
     pub level: Level,
     /// Its samples are unloaded (KSP `purge_group`): its zones do not play.
     pub purged: bool,
+    /// Effects on its voices, by slot.
+    pub inserts: Vec<Option<ir::Effect>>,
     pub mods: Vec<ir::Mod>,
     pub envelope: Ahdsr,
 }
@@ -133,6 +135,7 @@ impl Group {
             name: String::new(),
             level: Level::UNITY,
             purged: false,
+            inserts: Vec::new(),
             mods: vec![ir::Mod {
                 name: String::new(),
                 slot: 0,
@@ -224,6 +227,10 @@ impl Zone {
 pub struct Bus {
     pub name: String,
     pub gain: f32,
+    /// -1..=1 balance.
+    pub pan: f32,
+    /// Effects on what it carries, by slot.
+    pub inserts: Vec<Option<ir::Effect>>,
     /// A disabled bus starts no voices (purged mic): it costs no CPU.
     pub enabled: bool,
 }
@@ -249,6 +256,8 @@ pub struct Plan {
     pub queue: usize,
     /// The instrument script, if any.
     pub script: Option<ScriptPlan>,
+    /// Effects on everything, by slot.
+    pub inserts: Vec<Option<ir::Effect>>,
 }
 
 impl Plan {
@@ -266,6 +275,8 @@ impl Plan {
             buses: vec![Bus {
                 name: "Main".into(),
                 gain: 1.0,
+                pan: 0.0,
+                inserts: Vec::new(),
                 enabled: true,
             }],
             polyphony: Vec::new(),
@@ -276,6 +287,7 @@ impl Plan {
             notes: 128,
             queue: 1024,
             script: None,
+            inserts: Vec::new(),
         }
     }
 }

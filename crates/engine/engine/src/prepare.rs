@@ -65,6 +65,7 @@ pub fn prepare(
                 tune: g.tune,
             },
             purged: g.purged,
+            inserts: g.inserts.clone(),
             mods: g.mods.clone(),
             envelope: envelope(g.envelope, rate),
         })
@@ -76,10 +77,13 @@ pub fn prepare(
             .map(|b| Bus {
                 name: b.name.clone(),
                 gain: gain(b.volume_db),
+                pan: b.pan,
+                inserts: b.inserts.clone(),
                 enabled: true,
             })
             .collect();
     }
+    plan.inserts.clone_from(&instrument.inserts);
     plan.polyphony = polyphony;
     plan.voice_groups.clone_from(&instrument.voice_groups);
     plan.default_keyswitch = switches.iter().map(|r| *r.start()).min();

@@ -39,7 +39,7 @@ fn start(region: Region, step: f64, envelope: Ahdsr) -> VoiceStart {
     VoiceStart {
         region,
         step,
-        gain: [1.0, 1.0],
+        gain: [[1.0, 0.0], [0.0, 1.0]],
         envelope,
     }
 }

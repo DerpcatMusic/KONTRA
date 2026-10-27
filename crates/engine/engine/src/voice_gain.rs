@@ -4,10 +4,13 @@
 use kontra_ir as ir;
 
 use crate::ledger::Note;
+use kontra_voice::Gain;
+
+use crate::effects::{self, product};
 use crate::{Control, Engine, Level, Zone};
 
 impl Engine {
-    pub(crate) fn voice_gain(&self, zone: &Zone, note: &Note, factor: f32) -> [f32; 2] {
+    pub(crate) fn voice_gain(&self, zone: &Zone, note: &Note, factor: f32) -> Gain {
         let channel = note.host.channel;
         let crossfade: f32 = zone
             .crossfades
@@ -44,7 +47,17 @@ impl Engine {
         });
         let [l, r] = gain(zone, note, self.level(zone));
         let g = crossfade * mods * factor;
-        [l * g, r * g]
+        let group = self
+            .groups
+            .get(zone.group as usize)
+            .map_or(effects::IDENTITY, |g| effects::rack(&g.inserts));
+        let amp = [[l * g, 0.0], [0.0, r * g]];
+        let bus = self.buses.get(zone.bus).map_or(effects::IDENTITY, |b| {
+            let pan = self.plan.buses.get(zone.bus).map_or(0.0, |p| p.pan);
+            product(effects::balance(pan), effects::rack(&b.inserts))
+        });
+        let voice = product(bus, product(group, amp));
+        product(effects::rack(&self.inserts), voice)
     }
 
     /// The group's and the instrument's level, combined.

@@ -72,13 +72,32 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         .and_then(|c| GroupList::try_from(c).map_err(decode("group list")))?;
     let mut criteria = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
-        let (g, rows) = translate_group(group, &base, &mut notes)
+        let (mut g, rows) = translate_group(group, &base, &mut notes)
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
+        g.inserts = crate::effects::group(group, index, &mut notes);
         out.groups.push(g);
         criteria.push(rows);
-        crate::effects::group(group, index, &mut notes);
     }
-    crate::effects::program(&program, &mut notes);
+    let (inserts, buses) = crate::effects::program(&program, &mut notes);
+    out.inserts = inserts;
+    // Bus 0 is the main mix; Kontakt's bus n is n + 1.
+    if !buses.is_empty() {
+        out.buses.push(ir::Bus {
+            name: "Main".into(),
+            volume_db: 0.0,
+            pan: 0.0,
+            inserts: Vec::new(),
+        });
+        out.buses.extend(buses);
+        for (g, group) in out.groups.iter_mut().zip(&groups.groups) {
+            if let Some(n) = group
+                .bus_route()
+                .filter(|&n| usize::from(n) + 1 < out.buses.len())
+            {
+                g.bus = usize::from(n) + 1;
+            }
+        }
+    }
     start_rules(&mut out.groups, &criteria, &mut notes);
     let limits = program
         .0
@@ -163,7 +182,7 @@ struct Base {
     preload: i32,
 }
 
-fn db(linear: f32) -> f32 {
+pub(crate) fn db(linear: f32) -> f32 {
     20.0 * linear.max(1e-6).log10()
 }
 

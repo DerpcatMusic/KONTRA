@@ -18,6 +18,8 @@ pub struct Instrument {
     pub voices: u16,
     /// Shared voice limits; [`Group::voice_group`] indexes here.
     pub voice_groups: Vec<VoiceGroup>,
+    /// Effects on everything the instrument plays, by slot.
+    pub inserts: Vec<Option<Effect>>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -31,6 +33,7 @@ impl Instrument {
         scripts: Vec::new(),
         voices: 64,
         voice_groups: Vec::new(),
+        inserts: Vec::new(),
         diagnostics: Vec::new(),
     };
 }
@@ -120,6 +123,8 @@ pub struct Group {
     pub stream: Option<Stream>,
     /// Index into [`Instrument::voice_groups`].
     pub voice_group: Option<usize>,
+    /// Effects on this group's voices, by slot.
+    pub inserts: Vec<Option<Effect>>,
     pub zones: Vec<Zone>,
 }
 
@@ -142,6 +147,7 @@ impl Group {
         purged: false,
         stream: None,
         voice_group: None,
+        inserts: Vec::new(),
         zones: Vec::new(),
     };
 }
@@ -328,10 +334,42 @@ pub struct Loop {
     pub crossfade: u64,
 }
 
+/// An effect slot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Effect {
+    pub kind: EffectKind,
+    pub bypass: bool,
+    /// Linear gain on the slot's output.
+    pub output: f32,
+    /// Linear level of the unprocessed signal mixed back in.
+    pub dry: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EffectKind {
+    /// Linear gain.
+    Gain(f32),
+    /// Polarity flip, then left and right swapped.
+    Invert { phase: bool, swap: bool },
+    /// Width 0..=1 (0 mono, 0.5 unchanged, 1 doubled side), then a -1..=1 balance.
+    Stereo { width: f32, pan: f32 },
+    /// Not carried, an insert: audio passes unchanged (its output gain
+    /// trims processing that does not run).
+    /// The translator reports it.
+    Other,
+    /// Not carried, a parallel path (a reverb, a delay): only the dry level
+    /// passes. The translator reports it.
+    OtherWet,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bus {
     pub name: String,
     pub volume_db: f32,
+    /// -1..=1 balance.
+    pub pan: f32,
+    /// Effects on what the bus carries, by slot.
+    pub inserts: Vec<Option<Effect>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
