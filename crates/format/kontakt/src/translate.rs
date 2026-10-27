@@ -12,7 +12,7 @@ use ni_file::kontakt::objects::{
 };
 
 use crate::Error;
-use crate::samples::{self, Resolver};
+use crate::samples::Resolver;
 
 const GROUP_LIST: u16 = 0x33;
 const ZONE_LIST: u16 = 0x34;
@@ -98,13 +98,21 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         let id = u32::try_from(z.filename_id).unwrap_or(u32::MAX);
         let sample = *sample_of.entry(id).or_insert_with(|| {
             let name = table.get(&id)?;
-            let found = resolver.resolve(name).and_then(|at| {
-                let at = at.ok_or_else(|| "not found".to_string())?;
-                samples::describe(name.clone(), &at)
-            });
+            let found = resolver
+                .resolve(name)
+                .and_then(|at| at.ok_or("not found".into()));
             match found {
-                Ok(s) => {
-                    out.samples.push(s);
+                Ok(at) => {
+                    out.samples.push(ir::Sample {
+                        name: name.clone(),
+                        file: at.file,
+                        offset: at.offset,
+                        len: at.size,
+                        channels: z.num_channels,
+                        frames: u64::try_from(z.num_frames).unwrap_or(0),
+                        rate: u32::try_from(z.sample_rate).unwrap_or(0),
+                        keystream: at.keystream,
+                    });
                     Some(out.samples.len() - 1)
                 }
                 Err(e) => {

@@ -36,16 +36,18 @@ impl Default for Instrument {
     }
 }
 
-/// One sample's audio, where its bytes are and how they are coded.
+/// One sample: where its file's bytes are. The codec is read from the file's
+/// own header when the engine opens it; frames, rate and channels are what
+/// the instrument declares.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sample {
     pub name: String,
     pub file: PathBuf,
-    /// Where the sample's data starts in `file` (members of monoliths).
+    /// Where the sample file starts in `file` (members of monoliths and archives).
     pub offset: u64,
-    /// Bytes of coded data from `offset`.
-    pub len: u64,
-    pub codec: Codec,
+    /// Bytes of the sample file from `offset`, header included; `None` to the
+    /// end of `file`.
+    pub len: Option<u64>,
     pub channels: u8,
     pub frames: u64,
     pub rate: u32,
@@ -68,10 +70,16 @@ impl Keystream {
         if len == 0 {
             return;
         }
-        let mut position = at.wrapping_sub(self.origin) % len;
-        for byte in bytes {
-            *byte ^= self.stream.get(position as usize).copied().unwrap_or(0);
-            position = (position + 1) % len;
+        // Whole runs of the key at a time, so the XOR vectorises.
+        let mut position = (at.wrapping_sub(self.origin) % len) as usize;
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let key = self.stream.get(position..).unwrap_or_default();
+            let n = key.len().min(rest.len());
+            let (head, tail) = std::mem::take(&mut rest).split_at_mut(n);
+            head.iter_mut().zip(key).for_each(|(b, k)| *b ^= k);
+            rest = tail;
+            position = 0;
         }
     }
 }
@@ -80,18 +88,6 @@ impl std::fmt::Debug for Keystream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Keystream(..)")
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Codec {
-    /// Interleaved PCM from the start of the data.
-    Pcm {
-        bits: u8,
-        float: bool,
-        big_endian: bool,
-    },
-    /// Native Instruments' compressed wave.
-    Ncw,
 }
 
 #[derive(Clone, Debug, PartialEq)]

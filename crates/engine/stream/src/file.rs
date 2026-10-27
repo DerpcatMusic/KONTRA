@@ -7,53 +7,74 @@ use std::sync::Arc;
 
 use kontra_ir as ir;
 
+use crate::sniff::{Layout, Pcm, sniff};
 use crate::{Encoding, SampleFmt, Source};
 
 /// Opens `sample` for the store: its source and the packed layout it reads as.
 ///
 /// # Errors
-/// When the file cannot be opened, or its codec or layout is not supported.
+/// When the file cannot be opened, or its header names a layout this cannot read.
 pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
-    let file = Arc::new(File::open(&sample.file)?);
+    let file = File::open(&sample.file)?;
+    let len = match sample.len {
+        Some(len) => len,
+        None => file.metadata()?.len().saturating_sub(sample.offset),
+    };
     let region = Region {
-        file,
+        file: Arc::new(file),
         base: sample.offset,
-        len: sample.len,
+        len,
         keystream: sample.keystream.clone(),
     };
-    match sample.codec {
-        ir::Codec::Pcm {
-            bits,
-            float,
-            big_endian,
+    let size = region.len;
+    match sniff(size, |pos, out| region.read_at(pos, out))? {
+        Layout::Pcm {
+            offset,
+            len,
+            channels,
+            pcm,
         } => {
-            let (encoding, convert) = match (bits, float, big_endian) {
-                (16, false, false) => (Encoding::I16, None),
-                (24, false, false) => (Encoding::I24, None),
-                (32, true, false) => (Encoding::F32, None),
-                (8 | 16 | 24 | 32, false, _) | (32, true, true) => (
-                    Encoding::F32,
-                    Some(Pcm {
-                        bits,
-                        float,
-                        big_endian,
-                    }),
-                ),
-                _ => return Err(unsupported(format!("{bits}-bit PCM"))),
-            };
-            let fmt = SampleFmt {
-                encoding,
-                channels: sample.channels,
+            let (encoding, convert) = match pcm {
+                Pcm {
+                    bits: 16,
+                    float: false,
+                    big_endian: false,
+                } => (Encoding::I16, None),
+                Pcm {
+                    bits: 24,
+                    float: false,
+                    big_endian: false,
+                } => (Encoding::I24, None),
+                Pcm {
+                    bits: 32,
+                    float: true,
+                    big_endian: false,
+                } => (Encoding::F32, None),
+                Pcm {
+                    bits: 8 | 16 | 24 | 32,
+                    float: false,
+                    ..
+                }
+                | Pcm {
+                    bits: 32,
+                    float: true,
+                    ..
+                } => (Encoding::F32, Some(pcm)),
+                Pcm { bits, .. } => return Err(unsupported(format!("{bits}-bit PCM"))),
             };
             let source = PcmSource {
-                region,
-                width: usize::from(bits / 8),
-                channels: usize::from(sample.channels),
+                region: Region {
+                    base: region.base + offset,
+                    len,
+                    ..region
+                },
+                width: usize::from(pcm.bits / 8),
+                channels: usize::from(channels),
                 convert,
             };
-            Ok((Arc::new(source), fmt))
+            Ok((Arc::new(source), SampleFmt { encoding, channels }))
         }
-        ir::Codec::Ncw => {
+        Layout::Ncw => {
             let reader = ncw::NcwReader::read(region.reader()).map_err(invalid)?;
             let header = reader.header.clone();
             let float = reader.sample_format == ncw::SampleFormat::Float;
@@ -159,13 +180,6 @@ impl Seek for RegionReader {
         self.pos = pos.ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
         Ok(self.pos)
     }
-}
-
-#[derive(Clone, Copy)]
-struct Pcm {
-    bits: u8,
-    float: bool,
-    big_endian: bool,
 }
 
 impl Pcm {
@@ -291,16 +305,16 @@ impl Source for NcwSource {
                 .unwrap_or_default();
             ncw::decode_group(&mut group, &self.header, self.format, index, &mut decoded)
                 .map_err(invalid)?;
+            // The part of this block the caller asked for, interleaved into `out`.
             let block_first = index as u64 * per_block;
+            let skip = first.saturating_sub(block_first) as usize;
+            let start = block_first.max(first) - first;
             for (c, samples) in decoded.iter().enumerate() {
-                for (n, &value) in samples.iter().enumerate() {
-                    let at = block_first + n as u64;
-                    if at < first || at >= first + frames {
-                        continue;
-                    }
-                    let offset = (at - first) as usize * frame + c * width;
-                    if let Some(dest) = out.get_mut(offset..offset + width) {
-                        self.write(value, dest);
+                let at = start as usize * frame + c * width;
+                let dest = out.get_mut(at..).unwrap_or_default().chunks_mut(frame);
+                for (&value, d) in samples.get(skip..).unwrap_or_default().iter().zip(dest) {
+                    if let Some(d) = d.get_mut(..width) {
+                        self.write(value, d);
                     }
                 }
             }
@@ -321,19 +335,12 @@ mod tests {
         path
     }
 
-    fn sample(
-        file: std::path::PathBuf,
-        offset: u64,
-        len: u64,
-        codec: ir::Codec,
-        frames: u64,
-    ) -> ir::Sample {
+    fn sample(file: std::path::PathBuf, offset: u64, len: Option<u64>, frames: u64) -> ir::Sample {
         ir::Sample {
             name: "t".into(),
             file,
             offset,
             len,
-            codec,
             channels: 2,
             frames,
             rate: 48_000,
@@ -353,7 +360,7 @@ mod tests {
         let mut monolith = vec![0xAA; 100];
         monolith.extend(&bytes);
         let path = temp("a.ncw", &monolith);
-        let s = sample(path, 100, bytes.len() as u64, ir::Codec::Ncw, 1500);
+        let s = sample(path, 100, Some(bytes.len() as u64), 1500);
         let (source, fmt) = open(&s).unwrap();
         assert_eq!(
             fmt,
@@ -376,18 +383,21 @@ mod tests {
     }
 
     #[test]
-    fn big_endian_pcm_is_converted_to_float() {
-        let frames: Vec<u8> = [0x40i16, 0x00, -0x4000, 0x2000]
-            .iter()
-            .flat_map(|v| v.to_be_bytes())
-            .collect();
-        let path = temp("be.aif", &frames);
-        let codec = ir::Codec::Pcm {
-            bits: 16,
-            float: false,
-            big_endian: true,
-        };
-        let (source, fmt) = open(&sample(path, 0, 8, codec, 2)).unwrap();
+    fn big_endian_aiff_is_converted_to_float() {
+        let mut aiff = b"FORM\0\0\0\0AIFF".to_vec();
+        aiff.extend(b"COMM\0\0\0\x12");
+        aiff.extend(2u16.to_be_bytes());
+        aiff.extend(2u32.to_be_bytes());
+        aiff.extend(16u16.to_be_bytes());
+        aiff.extend([0; 10]);
+        aiff.extend(b"SSND\0\0\0\x10");
+        aiff.extend([0; 8]);
+        aiff.extend(
+            [0x40i16, 0x00, -0x4000, 0x2000]
+                .iter()
+                .flat_map(|v| v.to_be_bytes()),
+        );
+        let (source, fmt) = open(&sample(temp("be.aif", &aiff), 0, None, 2)).unwrap();
         assert_eq!(fmt.encoding, Encoding::F32);
         let mut out = vec![0; 16];
         source.read(1, &mut out).unwrap();
