@@ -6,7 +6,7 @@ use kontra_ir as ir;
 
 use crate::{Engine, Level};
 
-/// Effect gains are cubic, unity at this value, so 1_000_000 is +24 dB (v1,
+/// Effect gains are cubic, unity at this value, so 1_000_000 is +24 dB (v2 sampler-core,
 /// fitted to slots whose saved gains follow their scripts' init writes).
 const UNITY_EFFECT_GAIN: f64 = 396_851.0;
 

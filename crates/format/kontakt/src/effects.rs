@@ -157,10 +157,10 @@ fn slot_effect(chunk: &Chunk) -> Option<(ir::Effect, u16)> {
     };
     // The legacy delay, chorus and flanger, the Gainer and Convolution mix
     // their slot's dry level back in; other modules' stored dry is unused
-    // (trims store 1 there). v1 effects/mod.rs, measured on Una Corda's trims.
+    // (trims store 1 there). v2 sampler-kontakt effects/mod.rs, measured on Una Corda's trims.
     let parallel = matches!(effect.id, 0x10..=0x12 | 0x16);
     // An EQ (Filter kinds 22..=24) has no Output control: ANALOG STRINGS
-    // stores 0 on one that plays in Kontakt (v1 effects/mod.rs, corpus of
+    // stores 0 on one that plays in Kontakt (v2 sampler-kontakt effects/mod.rs, corpus of
     // 12,918 EQ slots).
     let kind_id = public
         .get(..4)

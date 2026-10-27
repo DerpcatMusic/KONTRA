@@ -42,7 +42,7 @@ fn matrix(e: &ir::Effect) -> Gain {
                 [[s, 0.0], [0.0, s]]
             }
         }
-        // Kontakt's Stereo Modeller (v1 dsp/color/stereo.rs): above 0.5 the
+        // Kontakt's Stereo Modeller (v2 sampler-core dsp/color/stereo.rs): above 0.5 the
         // side grows, below it the channels blend; then a balance.
         ir::EffectKind::Stereo { width, pan } => {
             let width = if width >= 0.5 {
