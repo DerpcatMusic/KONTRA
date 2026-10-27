@@ -254,6 +254,14 @@ impl Engine {
             .count()
     }
 
+    /// Groups a script purged: the host may drop their samples.
+    pub fn purged(&self) -> impl Iterator<Item = usize> + '_ {
+        self.groups
+            .iter()
+            .enumerate()
+            .filter_map(|(n, g)| g.purged.then_some(n))
+    }
+
     /// Each sounding voice's zone, position in source frames and gain, for
     /// inspectors (never the audio thread).
     pub fn voices(&self) -> impl Iterator<Item = (usize, f64, [f32; 2])> + '_ {
@@ -406,6 +414,10 @@ impl Engine {
         for (index, zone) in plan.zones.iter().enumerate() {
             let selected = accept(zone.trigger)
                 && self.masks.allows(note.slot(), zone.group)
+                && self
+                    .groups
+                    .get(zone.group as usize)
+                    .is_none_or(|g| !g.purged)
                 && zone.keys.contains(&n.key)
                 && zone.velocities.contains(&n.velocity_byte)
                 && self.buses.get(zone.bus).is_some_and(|b| b.enabled);

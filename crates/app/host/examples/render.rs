@@ -164,8 +164,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             r.looped
         );
     }
-    let mut engine = Engine::new(Arc::new(loaded.plan), store.client(), RATE);
+    let plan = Arc::new(loaded.plan);
+    let mut engine = Engine::new(Arc::clone(&plan), store.client(), RATE);
     println!("init: unanswered {:?}", engine.unhandled_actions());
+    let purged: Vec<usize> = engine.purged().collect();
+    if !purged.is_empty() {
+        let zones = (plan.zones.iter())
+            .filter(|z| purged.contains(&(z.group as usize)))
+            .count();
+        println!(
+            "purged: {} groups, {zones} of {} zones",
+            purged.len(),
+            plan.zones.len()
+        );
+    }
     let before: std::collections::HashMap<_, _> = engine.action_calls().into_iter().collect();
 
     let host = HostNote {
