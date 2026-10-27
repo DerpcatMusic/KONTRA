@@ -35,7 +35,11 @@ impl<R: Read + Seek> NcwReader<R> {
     pub fn workspace_bytes(&self) -> usize {
         self.block_offsets.capacity() * std::mem::size_of::<u32>()
             + self.channels.capacity() * std::mem::size_of::<Vec<i32>>()
-            + self.channels.iter().map(|channel| channel.capacity() * std::mem::size_of::<i32>()).sum::<usize>()
+            + self
+                .channels
+                .iter()
+                .map(|channel| channel.capacity() * std::mem::size_of::<i32>())
+                .sum::<usize>()
     }
 
     /// Parse the file header and block offset table.
@@ -161,8 +165,6 @@ impl<R: Read + Seek> NcwReader<R> {
     /// block's frames. The buffers are reused, so decoding allocates nothing
     /// once warm.
     pub fn decode_block(&mut self, index: usize) -> Result<&[Vec<i32>], Error> {
-        let num_samples = self.header.num_samples as usize;
-        let num_channels = self.header.channels as usize;
         let offset = *self
             .block_offsets
             .get(index)
@@ -184,45 +186,68 @@ impl<R: Read + Seek> NcwReader<R> {
         }
         // A malformed payload must never consume bytes from the next group.
         let mut group = self.reader.by_ref().take(u64::from(end - offset));
-        let channels = &mut self.channels;
-        channels.resize_with(num_channels, Vec::new);
-        let mut mid_side = false;
-        for (channel_index, channel) in channels.iter_mut().enumerate() {
-            let block_header = BlockHeader::read(&mut group).map_err(|error| match error {
-                Error::InvalidBlockSignature => Error::InvalidBlockSignatureAt {
-                    block: index,
-                    channel: channel_index,
-                },
-                other => other,
-            })?;
-            if block_header.sample_format() != self.sample_format {
-                return Err(Error::InvalidHeader("sample format changes between blocks"));
-            }
-            if channel_index == 0 {
-                mid_side = block_header.channel_encoding() == ChannelEncoding::MidSide;
-                if mid_side && num_channels != 2 {
-                    return Err(Error::InvalidHeader(
-                        "mid/side encoding requires exactly two channels",
-                    ));
-                }
-            }
-            channel.clear();
-            read_block(&mut group, &self.header, &block_header, channel)?;
-        }
+        decode_group(
+            &mut group,
+            &self.header,
+            self.sample_format,
+            index,
+            &mut self.channels,
+        )?;
         if group.limit() != 0 {
             return Err(Error::InvalidHeader("unconsumed block bytes"));
         }
         self.position = Some(u64::from(self.header.data_offset) + u64::from(end));
-        if mid_side {
-            let (mid, side) = channels.split_at_mut(1);
-            decode_mid_side(&mut mid[0], &mut side[0], self.sample_format);
-        }
-        let frames = (num_samples.saturating_sub(index * SAMPLES_PER_BLOCK)).min(SAMPLES_PER_BLOCK);
-        for channel in channels.iter_mut() {
-            channel.truncate(frames);
-        }
-        Ok(channels)
+        Ok(&self.channels)
     }
+}
+
+/// Decodes block group `index` (one block per channel) from `group`, which
+/// holds exactly that group's bytes, into per-channel buffers of its frames.
+/// Stateless: a streamer that keeps the block table can decode any group from
+/// bytes it read itself.
+pub fn decode_group<R: Read>(
+    group: &mut R,
+    header: &NcwHeader,
+    format: SampleFormat,
+    index: usize,
+    channels: &mut Vec<Vec<i32>>,
+) -> Result<(), Error> {
+    let num_channels = header.channels as usize;
+    channels.resize_with(num_channels, Vec::new);
+    let mut mid_side = false;
+    for (channel_index, channel) in channels.iter_mut().enumerate() {
+        let block_header = BlockHeader::read(group).map_err(|error| match error {
+            Error::InvalidBlockSignature => Error::InvalidBlockSignatureAt {
+                block: index,
+                channel: channel_index,
+            },
+            other => other,
+        })?;
+        if block_header.sample_format() != format {
+            return Err(Error::InvalidHeader("sample format changes between blocks"));
+        }
+        if channel_index == 0 {
+            mid_side = block_header.channel_encoding() == ChannelEncoding::MidSide;
+            if mid_side && num_channels != 2 {
+                return Err(Error::InvalidHeader(
+                    "mid/side encoding requires exactly two channels",
+                ));
+            }
+        }
+        channel.clear();
+        read_block(group, header, &block_header, channel)?;
+    }
+    if mid_side {
+        let (mid, side) = channels.split_at_mut(1);
+        decode_mid_side(&mut mid[0], &mut side[0], format);
+    }
+    let frames = (header.num_samples as usize)
+        .saturating_sub(index * SAMPLES_PER_BLOCK)
+        .min(SAMPLES_PER_BLOCK);
+    for channel in channels.iter_mut() {
+        channel.truncate(frames);
+    }
+    Ok(())
 }
 
 // Check framing before allocating any decoded sample buffers. Width one is the
@@ -260,7 +285,16 @@ mod workspace_tests {
     #[test]
     fn workspace_accounting_keeps_reused_channel_capacity_after_a_partial_block() {
         let samples: Vec<i32> = (0..513).flat_map(|i| [i * 2, -i * 2]).collect();
-        let data = crate::encode_pcm(&samples, crate::PcmSpec { channels: 2, bits_per_sample: 16, sample_rate: 48000 }, crate::StereoMode::Direct).unwrap();
+        let data = crate::encode_pcm(
+            &samples,
+            crate::PcmSpec {
+                channels: 2,
+                bits_per_sample: 16,
+                sample_rate: 48000,
+            },
+            crate::StereoMode::Direct,
+        )
+        .unwrap();
         let mut reader = NcwReader::read(std::io::Cursor::new(data)).unwrap();
         let index_bytes = reader.workspace_bytes();
         assert!(index_bytes >= reader.block_offsets.len() * 4);

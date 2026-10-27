@@ -8,4 +8,8 @@ publish = false
 workspace = true
 
 [dependencies]
-kontra-time = { path = "../../base/time" }
+bytemuck = { version = "1", features = ["extern_crate_alloc", "zeroable_atomics"] }
+crossbeam-queue.workspace = true
+kontra-ir = { path = "../../model/ir" }
+ncw = { path = "../../../vendor/ncw" }
+symphonia = { version = "0.5", default-features = false, features = ["flac"] }

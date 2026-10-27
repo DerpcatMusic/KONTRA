@@ -2372,8 +2372,8 @@ dependencies = [
 name = "kontra-engine"
 version = "0.0.0"
 dependencies = [
- "kontra-dsp",
  "kontra-events",
+ "kontra-ir",
  "kontra-stream",
  "kontra-time",
  "kontra-vm",
@@ -2392,9 +2392,13 @@ version = "0.0.0"
 name = "kontra-format-kontakt"
 version = "0.0.0"
 dependencies = [
+ "aes",
  "kontra-format",
+ "kontra-ir",
  "kontra-law",
  "kontra-params",
+ "ni-file",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2444,11 +2448,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kontra-ir"
+version = "0.0.0"
+
+[[package]]
 name = "kontra-ksp"
 version = "0.0.0"
 dependencies = [
- "kontra-events",
- "kontra-ui-model",
  "kontra-vm",
 ]
 
@@ -2532,7 +2538,11 @@ dependencies = [
 name = "kontra-stream"
 version = "0.0.0"
 dependencies = [
- "kontra-time",
+ "bytemuck",
+ "crossbeam-queue",
+ "kontra-ir",
+ "ncw",
+ "symphonia",
 ]
 
 [[package]]
@@ -2560,18 +2570,12 @@ dependencies = [
 [[package]]
 name = "kontra-vm"
 version = "0.0.0"
-dependencies = [
- "kontra-events",
- "kontra-time",
-]
 
 [[package]]
 name = "kontra-voice"
 version = "0.0.0"
 dependencies = [
- "kontra-dsp-core",
  "kontra-stream",
- "kontra-time",
 ]
 
 [[package]]

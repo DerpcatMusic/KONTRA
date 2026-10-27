@@ -8,9 +8,9 @@ publish = false
 workspace = true
 
 [dependencies]
-kontra-dsp = { path = "../../dsp/registry" }
 kontra-events = { path = "../../model/events" }
 kontra-stream = { path = "../stream" }
 kontra-time = { path = "../../base/time" }
-kontra-voice = { path = "../voice" }
 kontra-vm = { path = "../vm" }
+kontra-ir = { path = "../../model/ir" }
+kontra-voice = { path = "../voice" }
