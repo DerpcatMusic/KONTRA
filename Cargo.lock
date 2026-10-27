@@ -2532,7 +2532,7 @@ dependencies = [
 name = "kontra-stream"
 version = "0.0.0"
 dependencies = [
- "kontra-time",
+ "crossbeam-queue",
 ]
 
 [[package]]
