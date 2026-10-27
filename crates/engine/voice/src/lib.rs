@@ -108,7 +108,7 @@ impl Voice {
 
     /// The gain the voice is moving to, left and right.
     #[must_use]
-    pub fn gain(&self) -> [f32; 2] {
+    pub fn target_gain(&self) -> [f32; 2] {
         self.target
     }
 
