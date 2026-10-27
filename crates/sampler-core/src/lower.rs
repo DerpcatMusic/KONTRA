@@ -1706,7 +1706,7 @@ impl Lowering<'_> {
             return Ok(if one_shot {
                 Envelope::one_shot(0, u32::MAX, 0)
             } else {
-                Envelope::default()
+                Envelope::GATE
             });
         };
         let modulator = &self.ir.modulators[modulator.0];
@@ -3755,7 +3755,7 @@ mod chain_sharing_tests {
                 root_key: None,
                 loops: vec![],
             }],
-            groups: vec![ir::Group::default()],
+            groups: vec![ir::Group::DEFAULT],
             chains: (0..2)
                 .map(|_| ir::Chain {
                     scope: ir::Scope::Voice,

@@ -327,7 +327,7 @@ mod tests {
                 velocity_low: 0.,
                 velocity_high: 1.,
                 gain: 0.1,
-                envelope: Envelope::default(),
+                envelope: Envelope::GATE,
                 playback: Playback::default(),
             }],
             8,

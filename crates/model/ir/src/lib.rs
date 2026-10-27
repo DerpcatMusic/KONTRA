@@ -21,19 +21,18 @@ pub struct Instrument {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-impl Default for Instrument {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            samples: Vec::new(),
-            groups: Vec::new(),
-            buses: Vec::new(),
-            scripts: Vec::new(),
-            voices: 64,
-            preload: 61_440,
-            diagnostics: Vec::new(),
-        }
-    }
+impl Instrument {
+    /// Nothing yet, with Kontakt's voice and preload defaults.
+    pub const DEFAULT: Self = Self {
+        name: String::new(),
+        samples: Vec::new(),
+        groups: Vec::new(),
+        buses: Vec::new(),
+        scripts: Vec::new(),
+        voices: 64,
+        preload: 61_440,
+        diagnostics: Vec::new(),
+    };
 }
 
 /// One sample: where its file's bytes are. The codec is read from the file's
@@ -117,27 +116,25 @@ pub struct Group {
     pub zones: Vec<Zone>,
 }
 
-impl Default for Group {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            volume_db: 0.0,
-            pan: 0.0,
-            tune: 0.0,
-            keytrack: 1.0,
-            envelope: Envelope::default(),
-            velocity: Velocity::Decibels(24.0),
-            trigger: Trigger::Attack,
-            release_decay_db: 0.0,
-            one_shot: false,
-            start: Vec::new(),
-            polyphony: None,
-            off_by: None,
-            bus: 0,
-            purged: false,
-            zones: Vec::new(),
-        }
-    }
+impl Group {
+    pub const DEFAULT: Self = Self {
+        name: String::new(),
+        volume_db: 0.0,
+        pan: 0.0,
+        tune: 0.0,
+        keytrack: 1.0,
+        envelope: Envelope::GATE,
+        velocity: Velocity::Decibels(24.0),
+        trigger: Trigger::Attack,
+        release_decay_db: 0.0,
+        one_shot: false,
+        start: Vec::new(),
+        polyphony: None,
+        off_by: None,
+        bus: 0,
+        purged: false,
+        zones: Vec::new(),
+    };
 }
 
 /// Times in seconds; decay and release to fall about 60 dB; sustain 0..=1.
@@ -150,17 +147,15 @@ pub struct Envelope {
     pub release: f32,
 }
 
-impl Default for Envelope {
-    /// A gate: full level while held, a short release.
-    fn default() -> Self {
-        Self {
-            attack: 0.0,
-            hold: 0.0,
-            decay: 0.0,
-            sustain: 1.0,
-            release: 0.001_3,
-        }
-    }
+impl Envelope {
+    /// Full level while held, a short release.
+    pub const GATE: Self = Self {
+        attack: 0.0,
+        hold: 0.0,
+        decay: 0.0,
+        sustain: 1.0,
+        release: 0.001_3,
+    };
 }
 
 /// How note velocity scales the level.

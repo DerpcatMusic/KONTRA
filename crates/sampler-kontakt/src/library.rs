@@ -5074,7 +5074,7 @@ mod modulation {
 
     fn translation() -> Translation {
         Translation {
-            ir: ir::Instrument::default(),
+            ir: ir::Instrument::DEFAULT,
             assets: HashMap::new(),
             locations: Vec::new(),
             start_criteria: Vec::new(),
@@ -5667,7 +5667,7 @@ mod modulation {
         // The group's amplitude envelope: an internal AHDSR at slot 0.
         out.ir.modulators.push(ir::Modulator {
             scope: ir::Scope::Voice,
-            source: ir::ModulationSource::Envelope(ir::Envelope::default()),
+            source: ir::ModulationSource::Envelope(ir::Envelope::GATE),
         });
         let envelope = ir::ModulatorRef(out.ir.modulators.len() - 1);
         out.ir.source_indices.modulators.push(ir::SourceModulator {

@@ -391,8 +391,8 @@ mod tests {
         use sampler_ir as ir;
         for (pan, expected) in [(-1., [1., 0.]), (-0.5, [1., 0.5]),
             (0., [1., 1.]), (0.5, [0.5, 1.]), (1., [0., 1.])] {
-            let mut instrument = ir::Instrument::default();
-            instrument.groups.push(ir::Group::default());
+            let mut instrument = ir::Instrument::DEFAULT;
+            instrument.groups.push(ir::Group::DEFAULT);
             let (notes, _) = crate::effects::instrument_buses(&mut instrument, &[],
                 &[crate::effects::BusPlan { index: 0, volume: 1., pan, invert: false, swap: false,
                     groups: vec![ir::GroupRef(0)] }], false, &mut |_| Err("unused".into()));
@@ -411,8 +411,8 @@ mod tests {
     #[test]
     fn script_bus_volume_writes_reach_the_dynamic_bus_fader() {
         use sampler_ir as ir;
-        let mut instrument = ir::Instrument::default();
-        instrument.groups.push(ir::Group::default());
+        let mut instrument = ir::Instrument::DEFAULT;
+        instrument.groups.push(ir::Group::DEFAULT);
         instrument.assets.push(ir::Asset { residency: Default::default(), location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
         let mut zone = ir::Zone::new(ir::AssetRef(0));
         zone.keys = ir::KeyRange { low: 60, high: 60 };
@@ -498,7 +498,7 @@ mod tests {
         instrument.validate().unwrap();
         // A physical return at slot 3 remains addressable even when the
         // instrument level is zero; a group tap can still feed that return.
-        let mut sparse = ir::Instrument::default();
+        let mut sparse = ir::Instrument::DEFAULT;
         let mut return_slot = slot(0x59, racks[1].1[0].public.clone(), 1.0);
         return_slot.slot = 3;
         let mut zero = 4u32.to_le_bytes().to_vec();
@@ -517,7 +517,7 @@ mod tests {
         assert_eq!(returns, vec![(3, ir::BusRef(1))]);
         assert_eq!(sparse.buses[0].sends[0].gain, ir::Gain::Linear(0.0));
         // Nothing to do: no buses.
-        let mut plain = ir::Instrument::default();
+        let mut plain = ir::Instrument::DEFAULT;
         instrument_buses(&mut plain, &[], &[], false, &mut |_| Err("none".into()));
         assert!(plain.buses.is_empty());
         // A routed bus at half volume owns its groups' output; an unrouted one
@@ -589,7 +589,7 @@ mod tests {
         let mut after = slot(0x13, 3.0f32.to_le_bytes().to_vec(), 1.0);
         after.slot = 3;
         after.dry_level = 0.0;
-        let mut ir = ir::Instrument::default();
+        let mut ir = ir::Instrument::DEFAULT;
         instrument_buses(
             &mut ir,
             &[

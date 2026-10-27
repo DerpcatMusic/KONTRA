@@ -273,7 +273,7 @@ fn saved_ksp_source_uses_the_same_native_compiler_and_audio_owners() {
                     velocity_low: 0.,
                     velocity_high: 1.,
                     gain: 1.,
-                    envelope: Envelope::default(),
+                    envelope: Envelope::GATE,
                     playback: Playback::default(),
                 }],
                 1,

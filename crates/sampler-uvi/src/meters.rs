@@ -190,7 +190,7 @@ mod tests {
             .filter(|n| n.has_tag_name("Gain"))
             .map(|n| n.id().get_usize())
             .collect();
-        let mut instrument = ir::Instrument::default();
+        let mut instrument = ir::Instrument::DEFAULT;
         for index in 0..2 {
             instrument.chains.push(ir::Chain {
                 scope: ir::Scope::Bus(ir::BusRef(index)),

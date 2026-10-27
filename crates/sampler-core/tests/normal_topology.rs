@@ -6,7 +6,7 @@ fn owner(id:u32,parent:Option<u32>,kind:ir::SourceOwnerKind,children:&[u32],zone
     ir::SourceOwner{id:ir::SourceOwnerId::UviNode(id),parent:parent.map(ir::SourceOwnerId::UviNode),kind,children:children.iter().map(|id|ir::SourceOwnerId::UviNode(*id)).collect(),groups:if zones.is_empty(){vec![]}else{vec![ir::GroupRef(0)]},zones:zones.iter().map(|z|ir::ZoneRef(*z)).collect(),predicates:vec![],bypass:None,mute:None,event_processors:vec![]}
 }
 fn graph(compiled:bool)->ir::Instrument{
-    let mut instrument=ir::Instrument{source:ir::SourceFormat::Uvi,groups:vec![ir::Group::default()],..Default::default()};
+    let mut instrument=ir::Instrument{source:ir::SourceFormat::Uvi,groups:vec![ir::Group::DEFAULT],..Default::default()};
     for n in 0..2{
         instrument.assets.push(ir::Asset{location:ir::AssetLocation::Path(format!("authored{n}.wav")),encoding:ir::Encoding::Wav,residency:ir::AssetResidency::Resident,root_key:None,loops:vec![]});
         let mut zone=ir::Zone::new(ir::AssetRef(n));zone.keys=ir::KeyRange{low:60,high:60};zone.group=Some(ir::GroupRef(0));instrument.zones.push(zone);
@@ -177,7 +177,7 @@ fn constant_pan_offset_and_base_are_independent_across_sibling_scopes() {
     let mut instrument=scalar_pan_graph(true,0);
     instrument.source_indices.processing.clear();instrument.source_indices.owners.clear();
     let ir::Processor::ExpressionPan(home)=&mut instrument.chains[0].pre_amplitude[0] else{panic!("actual home")};home.offset=0.2;
-    instrument.groups.push(ir::Group::default());
+    instrument.groups.push(ir::Group::DEFAULT);
     for index in 0..2 {let mut asset=instrument.assets[index].clone();asset.location=ir::AssetLocation::Path(format!("sibling{index}.wav"));instrument.assets.push(asset);let mut zone=instrument.zones[index].clone();zone.asset=Some(ir::AssetRef(index+2));zone.group=Some(ir::GroupRef(1));zone.keys=ir::KeyRange{low:61,high:61};zone.pitch=ir::KeyTracking::Fixed;instrument.zones.push(zone);}
     let mut chain=instrument.chains[0].clone();let ir::Processor::ExpressionPan(home)=&mut chain.pre_amplitude[0] else{panic!("actual sibling home")};home.pan.position=-0.25;home.offset=-0.1;instrument.chains.push(chain);
     instrument.controls.push(ir::Control{key:"sibling-pan".into(),label:"Sibling Pan".into(),value:ir::ControlValue::Continuous{min:-1.,max:1.,default:-0.25,unit:ir::ControlUnit::None},automation:ir::Automation::None});
@@ -455,7 +455,7 @@ fn channel_setup_plan(source:bool)->sampler_core::Prepared{
     use sampler_core::{Prepared,Region,Envelope,Playback,Bus,BusSend};
     let samples=vec![Pcm::new(48000,vec![[0.125,-0.25];512].into_boxed_slice()).unwrap()];
     let regions=if source{vec![Region{sample:0,key_low:60,key_high:60,root_key:None,
-        velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::default(),playback:Playback::default()}]}else{vec![]};
+        velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::GATE,playback:Playback::default()}]}else{vec![]};
     Prepared::new(48000,samples,regions,1).unwrap().with_buses(vec![Bus{processors:vec![],
         sends:vec![BusSend{bus:None,gain:1.}],tail_frames:0}],if source{vec![Some(0)]}else{vec![]}).unwrap()
 }
@@ -566,7 +566,7 @@ fn same_schema_new_defaults_preserve_typed_global_controls_and_literal_pcm(){
 fn redirected_pre_chain_runtime()->sampler_core::Runtime {
     use sampler_core::{Bus,BusSend,Prepared,Region,Envelope,Playback,Runtime,Limits,ChannelBus,ChannelCount};
     let source=Pcm::new(48000,vec![[0.125,-0.25];512].into_boxed_slice()).unwrap();
-    let region=Region{sample:0,key_low:60,key_high:60,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::default(),playback:Playback::default()};
+    let region=Region{sample:0,key_low:60,key_high:60,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::GATE,playback:Playback::default()};
     let buses=vec![Bus{processors:vec![],sends:vec![BusSend{bus:Some(1),gain:1.}],tail_frames:0},Bus{processors:vec![],sends:vec![BusSend{bus:Some(2),gain:1.}],tail_frames:0},Bus{processors:vec![],sends:vec![BusSend{bus:None,gain:1.}],tail_frames:0}];
     let matrix=|input:usize,output:usize,cells:Vec<f64>|ir::ProcessingSignalNode::Matrix(ir::ChannelMatrix{input:ir::SignalLayout{channels:input},output:ir::SignalLayout{channels:output},cells,arithmetic:ir::MatrixArithmetic::SeparateMulAddF32});
     let mut expansion=vec![0.;12];expansion[0]=1.;expansion[3]=1.;
@@ -608,7 +608,7 @@ fn channel_builder_accepts_unique_cell_and_preserves_literal_pcm(){
 fn independent_space_fault_runtime(typed:bool)->sampler_core::Runtime {
     use sampler_core::{Bus,BusSend,Prepared,Region,Envelope,Playback,Runtime,Limits,Processor,Impulse,ChannelBus,ChannelCount};
     let samples=vec![Pcm::new(48000,vec![[0.25;2]].into_boxed_slice()).unwrap(),Pcm::new(48000,vec![[0.125;2]].into_boxed_slice()).unwrap()];
-    let regions=(0..2).map(|sample|Region{sample,key_low:60+sample as u8,key_high:60+sample as u8,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::default(),playback:Playback::default()}).collect();
+    let regions=(0..2).map(|sample|Region{sample,key_low:60+sample as u8,key_high:60+sample as u8,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::GATE,playback:Playback::default()}).collect();
     let mut h=vec![0.;513];h[400]=1.;let impulse=Impulse::new(h.clone(),h).unwrap();
     let buses=vec![Bus{processors:vec![Processor::Gain(f64::MAX)],sends:vec![BusSend{bus:None,gain:1.}],tail_frames:0},Bus{processors:vec![Processor::Space(ir::fx::space::Config::convolution(ir::ImpulseRef(0),0.,1.))],sends:vec![BusSend{bus:None,gain:1.}],tail_frames:513}];
     let mut plan=Prepared::new(48000,samples,regions,2).unwrap().with_impulses(vec![impulse]).with_buses(buses,vec![Some(0),Some(1)]).unwrap();
@@ -628,7 +628,7 @@ fn assert_fault_preserves_other_bus(typed:bool){
 #[test]
 fn swapping_long_impulse_keeps_active_upstream_filter_tail_until_delayed_output(){
     use sampler_core::{Bus,BusSend,Prepared,Region,Envelope,Playback,Runtime,Limits,Processor,Impulse,ConvolutionUpload,ChannelBus,ChannelCount};
-    let sample=Pcm::new(48000,vec![[0.25;2]].into_boxed_slice()).unwrap();let region=Region{sample:0,key_low:60,key_high:60,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::default(),playback:Playback::default()};
+    let sample=Pcm::new(48000,vec![[0.25;2]].into_boxed_slice()).unwrap();let region=Region{sample:0,key_low:60,key_high:60,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::GATE,playback:Playback::default()};
     let short=Impulse::new(vec![1.],vec![1.]).unwrap();let plan=Prepared::new(48000,vec![sample],vec![region],1).unwrap().with_impulses(vec![short]).with_buses(vec![Bus{processors:vec![Processor::Space(ir::fx::space::Config::convolution(ir::ImpulseRef(0),0.,1.))],sends:vec![BusSend{bus:None,gain:1.}],tail_frames:1}],vec![Some(0)]).unwrap();
     let definition=ChannelBus{bus:0,owner:None,signal:ir::ProcessingSignal{source_law:ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet,input:ir::SignalLayout{channels:2},nodes:vec![ir::ProcessingSignalNode::OnePole(ir::ChannelOnePole{cutoff_hz:ir::SignalParameter{constant:100.,control:None,expression:None},mode:ir::ChannelOnePoleMode::LowPass,arithmetic:ir::ChannelOnePoleArithmetic::CoreOnePoleF64,tail_frames:1024}),ir::ProcessingSignalNode::BusChain],controls:vec![]},output:ChannelCount::new(2).unwrap()};
     let plan=plan.with_channel_buses(vec![definition],64*1024*1024).unwrap();let limits=Limits::for_plan(&plan,4,8);let mut rt=Runtime::new(plan,limits).unwrap();rt.trigger(pan_input(95),60,1.).unwrap();let mut audio=vec![[0.;2];4096];
@@ -1360,7 +1360,7 @@ fn admission_onset_same_frame_key_up_keeps_closed_birth_source_read_boundary(){
 }
 
 fn native65_kernel_instrument(channels:usize,key:u8,high:bool,tracking:f64)->ir::Instrument{
-    let mut instrument=ir::Instrument::default();
+    let mut instrument=ir::Instrument::DEFAULT;
     instrument.assets.push(ir::Asset{location:ir::AssetLocation::Path("native65-authored.wav".into()),encoding:ir::Encoding::Wav,residency:ir::AssetResidency::Resident,root_key:None,loops:vec![]});
     let mut zone=ir::Zone::new(ir::AssetRef(0));zone.keys=ir::KeyRange{low:key,high:key};zone.pitch=ir::KeyTracking::Fixed;zone.velocity=ir::VelocityResponse::None;instrument.zones.push(zone);
     instrument.controls.push(ir::Control{key:"native65:freq".into(),label:"frequency".into(),value:ir::ControlValue::Continuous{min:20.,max:20000.,default:1800.,unit:ir::ControlUnit::Hertz},automation:ir::Automation::None});

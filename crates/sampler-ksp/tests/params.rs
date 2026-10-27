@@ -52,7 +52,7 @@ fn modules_with(
             } else {
                 1.
             },
-            envelope: Envelope::default(),
+            envelope: Envelope::GATE,
             playback: Playback::default(),
         })
         .collect();
@@ -60,7 +60,7 @@ fn modules_with(
         .unwrap()
         .with_groups(2, vec![Some(0), Some(1)])
         .and_then(|p| p.with_group_params(vec![group0, GroupParams::default()]))
-        .and_then(|p| p.with_group_envelope_parameters(0, 0, 5, Envelope::default()))
+        .and_then(|p| p.with_group_envelope_parameters(0, 0, 5, Envelope::GATE))
         .and_then(|p| {
             let bindings = p.engine_parameter_bindings().to_vec();
             p.with_engine_parameters(

@@ -59,7 +59,7 @@ fn ownership_pressure_render_and_retirement_do_no_heap_work() {
                     0,
                     rt.now() + 1,
                     1.0,
-                    sampler_core::Envelope::default(),
+                    sampler_core::Envelope::GATE,
                     sampler_core::Playback::default(),
                 )
                 .unwrap();
@@ -68,7 +68,7 @@ fn ownership_pressure_render_and_retirement_do_no_heap_work() {
                 0,
                 rt.now() + 2,
                 1.0,
-                sampler_core::Envelope::default(),
+                sampler_core::Envelope::GATE,
                 sampler_core::Playback::default(),
             )
             .unwrap();
@@ -184,7 +184,7 @@ fn prepared_native_selection_and_owned_asset_retirement_do_no_heap_work() {
         vec![
             Region {
                 playback: sampler_core::Playback::default(),
-                envelope: sampler_core::Envelope::default(),
+                envelope: sampler_core::Envelope::GATE,
                 sample: 0,
                 key_low: 0,
                 key_high: 127,

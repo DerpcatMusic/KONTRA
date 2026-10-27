@@ -32,7 +32,7 @@ fn from_script_modulator_values_drive_voice_modulation() {
         velocity_low: 0.,
         velocity_high: 1.,
         gain: 1.,
-        envelope: Envelope::default(),
+        envelope: Envelope::GATE,
         playback: Playback::default(),
     };
     let prepared = Prepared::new(48000, pcm, vec![region], 128)

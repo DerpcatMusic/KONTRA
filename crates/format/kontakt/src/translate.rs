@@ -33,7 +33,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         name: params.name.clone(),
         voices: 256,
         preload: u32::try_from(params.dfd_channel_preload_size).unwrap_or(61_440),
-        ..ir::Instrument::default()
+        ..ir::Instrument::DEFAULT
     };
     // Instrument volume, pan and tune apply to every group.
     let base = Base {
@@ -182,7 +182,7 @@ fn translate_group(
             ir::Trigger::Attack
         },
         purged: group.source_identity().is_ok_and(|s| s.flag == 1),
-        ..ir::Group::default()
+        ..ir::Group::DEFAULT
     };
     if v.voice_group_index > 0 {
         notes.add(ir::Impact::Audible, "voice group", &v.name);

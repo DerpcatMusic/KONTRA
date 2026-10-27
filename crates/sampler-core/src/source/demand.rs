@@ -542,7 +542,7 @@ mod tests {
             cursor.advance();
         }
         let mut pages = [false; 32];
-        cursor.visit_demand(4096, EnvelopeState::new(Envelope::default()), |_, range| {
+        cursor.visit_demand(4096, EnvelopeState::new(Envelope::GATE), |_, range| {
             for page in range.start / crate::PAGE_FRAMES..=(range.end - 1) / crate::PAGE_FRAMES {
                 pages[page] = true;
             }
@@ -595,7 +595,7 @@ mod tests {
                             let mut pages = [false; 8];
                             cursor.visit_demand(
                                 frames,
-                                EnvelopeState::new(Envelope::default()),
+                                EnvelopeState::new(Envelope::GATE),
                                 |_, range| {
                                     for page in range.start / crate::PAGE_FRAMES
                                         ..=(range.end - 1) / crate::PAGE_FRAMES
@@ -650,7 +650,7 @@ mod tests {
                             let mut seen = [false; 8];
                             cursor.visit_demand(
                                 frames,
-                                EnvelopeState::new(crate::Envelope::default()),
+                                EnvelopeState::new(crate::Envelope::GATE),
                                 |_, range| {
                                     for page in
                                         range.start / PAGE_FRAMES..=(range.end - 1) / PAGE_FRAMES
@@ -798,7 +798,7 @@ mod tests {
                 let local = cursor.segment_cursor();
                 let reach = local.loop_reach(frames);
                 let linear = local.linear_reach(frames);
-                let envelope = EnvelopeState::new(Envelope::default());
+                let envelope = EnvelopeState::new(Envelope::GATE);
                 assert!(cursor.visit_demand(frames, envelope, |frame, range| {
                     for index in range {
                         let covered = reach
@@ -902,7 +902,7 @@ mod startup_runway_tests {
 
     #[test]
     fn startup_runway_superset_cannot_certify_a_missing_actual_interpolation_tap() {
-        let envelope = || EnvelopeState::new(Envelope::default());
+        let envelope = || EnvelopeState::new(Envelope::GATE);
         for direction in [Direction::Forward, Direction::Reverse] {
             for step in [0.75f64, 1., 1.5, 4.] {
                 for shape in [None, Some(LoopShape::Wrap), Some(LoopShape::PingPong),
@@ -954,12 +954,12 @@ mod bounded_runway_tests {
                 .cursor(32, 48000, 48000).unwrap().with_start_runway(u32::MAX);
             cursor.release(); // finite exit/reflection cannot use the fast reach
             let mut probes = 0;
-            assert!(!cursor.runway_ready(u32::MAX, EnvelopeState::new(Envelope::default()), |r| {
+            assert!(!cursor.runway_ready(u32::MAX, EnvelopeState::new(Envelope::GATE), |r| {
                 probes += 1; !r.contains(&31)
             }));
             assert_eq!(probes, 1);
             assert_eq!(cursor.reservation_pages(u32::MAX), 1);
-            assert!(cursor.runway_ready(u32::MAX, EnvelopeState::new(Envelope::default()), |_| true));
+            assert!(cursor.runway_ready(u32::MAX, EnvelopeState::new(Envelope::GATE), |_| true));
         }
     }
 
@@ -972,7 +972,7 @@ mod bounded_runway_tests {
             .cursor(64, 48000, 48000).unwrap().with_start_runway(1019);
         let reaches = cursor.runway_reach(1019);
         let mut exact_probes = 0;
-        assert!(cursor.visit_demand(1019, EnvelopeState::new(Envelope::default()), |_, r| {
+        assert!(cursor.visit_demand(1019, EnvelopeState::new(Envelope::GATE), |_, r| {
             exact_probes += 1;
             assert!(reaches.iter().flatten().any(|(span, _)| span.start <= r.start && span.end >= r.end));
             true

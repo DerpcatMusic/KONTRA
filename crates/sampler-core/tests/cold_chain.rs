@@ -116,7 +116,7 @@ fn target(rt: &mut Runtime) {
 #[test]
 fn a_cold_start_never_waits_for_storage_and_counts_its_silence() {
     for (voices, threads) in [(1, 1), (2, 1), (64, 2)] {
-        let (mut rt, mut worker) = player(Envelope::default(), voices);
+        let (mut rt, mut worker) = player(Envelope::GATE, voices);
         rt.set_threads(Threads::Fixed(threads));
         let mut silence = [[0.; 2]; 128];
         support::without_heap(|| rt.render(&mut silence).unwrap());
@@ -147,7 +147,7 @@ fn a_cold_start_never_waits_for_storage_and_counts_its_silence() {
 
 #[test]
 fn choked_cold_chain_ends_immediately_without_waiting_for_storage() {
-    let (mut rt, mut worker) = player(Envelope::default(), 1);
+    let (mut rt, mut worker) = player(Envelope::GATE, 1);
     let note = rt.live_notes().next().unwrap();
     let family = rt.note_families(note).unwrap().next().unwrap();
     support::without_heap(|| rt.choke_family(family, 16).unwrap());

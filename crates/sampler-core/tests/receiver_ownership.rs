@@ -72,7 +72,7 @@ fn external_plan(note:bool)->Prepared {
             residency:Default::default(),root_key:None,loops:vec![]}],
         zones:vec![ir::Zone{keys:ir::KeyRange{low:60,high:60},pitch:ir::KeyTracking::Fixed,
             velocity:ir::VelocityResponse::None,..ir::Zone::new(ir::AssetRef(0))}],
-        ..ir::Instrument::default()
+        ..ir::Instrument::DEFAULT
     };
     instrument.source_indices.owners.push(ir::SourceOwner{id:owner,parent:None,kind:ir::SourceOwnerKind::Instrument,
         children:vec![],groups:vec![],zones:vec![ir::ZoneRef(0)],predicates:vec![],bypass:None,mute:None,
@@ -474,10 +474,10 @@ fn source_frontier_plan(layer_key:u8,external:bool)->Prepared{
         predicates:if at==1{vec![ir::SourceInputPredicate::Keys(ir::KeyRange{low:layer_key,high:layer_key}),ir::SourceInputPredicate::Channel(1)]}else{vec![]},
         bypass:None,mute:None,event_processors:if at==1{vec![ir::SourceEventProcessor{id:processor,owner:ids[at],ordinal:0,kind:"ScriptProcessor".into(),bypass:ir::SourceSwitch{saved:false,control:None}}]}else{vec![]}};
     let mut instrument=ir::Instrument{source:ir::SourceFormat::Uvi,
-        groups:vec![ir::Group::default(),ir::Group::default()],
+        groups:vec![ir::Group::DEFAULT,ir::Group::default()],
         assets:(0..2).map(|index|ir::Asset{location:ir::AssetLocation::Path(format!("authored{index}.wav").into()),encoding:ir::Encoding::Wav,residency:Default::default(),root_key:None,loops:vec![]}).collect(),
         zones:(0..2).map(|index|ir::Zone{keys:ir::KeyRange{low:60,high:60},group:Some(ir::GroupRef(index)),pitch:ir::KeyTracking::Fixed,velocity:ir::VelocityResponse::None,..ir::Zone::new(ir::AssetRef(index))}).collect(),
-        ..ir::Instrument::default()};
+        ..ir::Instrument::DEFAULT};
     instrument.source_indices.owners=vec![
         make_owner(0,None,ir::SourceOwnerKind::Instrument,vec![1],vec![0,1]),
         make_owner(1,Some(0),ir::SourceOwnerKind::Layer,vec![2,3],vec![0,1]),
@@ -543,11 +543,11 @@ fn hierarchy_note_plan(compiled:bool,both_layers:bool)->Prepared{
         predicates:key.map(|key|ir::SourceInputPredicate::Keys(ir::KeyRange{low:key,high:key})).into_iter()
             .chain(channel.map(ir::SourceInputPredicate::Channel)).collect(),bypass:None,mute:None,event_processors};
     let mut instrument=ir::Instrument{source:ir::SourceFormat::Uvi,
-        groups:vec![ir::Group::default();3],
+        groups:vec![ir::Group::DEFAULT;3],
         assets:(0..3).map(|index|ir::Asset{location:ir::AssetLocation::Path(format!("layer{index}.wav").into()),encoding:ir::Encoding::Wav,residency:Default::default(),root_key:None,loops:vec![]}).collect(),
         zones:[62,if both_layers{62}else{60},61].into_iter().enumerate().map(|(index,key)|ir::Zone{
             keys:ir::KeyRange{low:key,high:key},group:Some(ir::GroupRef(index)),pitch:ir::KeyTracking::Fixed,
-            velocity:ir::VelocityResponse::None,..ir::Zone::new(ir::AssetRef(index))}).collect(),..ir::Instrument::default()};
+            velocity:ir::VelocityResponse::None,..ir::Zone::new(ir::AssetRef(index))}).collect(),..ir::Instrument::DEFAULT};
     instrument.source_indices.owners=vec![
         owner(0,None,ir::SourceOwnerKind::Instrument,vec![1,3,5],vec![0,1,2],None,None,
             vec![processor(101,ids[0],0,false),processor(102,ids[0],1,true)]),
@@ -724,9 +724,9 @@ fn hierarchy_two_layer_callbacks()->Prepared{
         predicates:vec![],bypass:None,mute:None,event_processors:script.into_iter().map(|id|ir::SourceEventProcessor{
             id:ir::SourceEventProcessorId::UviNode(id),owner:ids[at],ordinal:0,kind:"ScriptProcessor".into(),
             bypass:ir::SourceSwitch{saved:false,control:None}}).collect()};
-    let mut instrument=ir::Instrument{source:ir::SourceFormat::Uvi,groups:vec![ir::Group::default();2],
+    let mut instrument=ir::Instrument{source:ir::SourceFormat::Uvi,groups:vec![ir::Group::DEFAULT;2],
         assets:(0..2).map(|i|ir::Asset{location:ir::AssetLocation::Path(format!("sibling{i}.wav").into()),encoding:ir::Encoding::Wav,residency:Default::default(),root_key:None,loops:vec![]}).collect(),
-        zones:(0..2).map(|i|ir::Zone{keys:ir::KeyRange{low:60,high:60},group:Some(ir::GroupRef(i)),pitch:ir::KeyTracking::Fixed,velocity:ir::VelocityResponse::None,..ir::Zone::new(ir::AssetRef(i))}).collect(),..ir::Instrument::default()};
+        zones:(0..2).map(|i|ir::Zone{keys:ir::KeyRange{low:60,high:60},group:Some(ir::GroupRef(i)),pitch:ir::KeyTracking::Fixed,velocity:ir::VelocityResponse::None,..ir::Zone::new(ir::AssetRef(i))}).collect(),..ir::Instrument::DEFAULT};
     instrument.source_indices.owners=vec![
         owner(0,None,ir::SourceOwnerKind::Instrument,vec![1,3],vec![0,1],None),
         owner(1,Some(0),ir::SourceOwnerKind::Layer,vec![2],vec![0],Some(201)),
@@ -1398,7 +1398,7 @@ fn task_lookup_roster_plan()->Prepared{
     use sampler_ir as ir;
     use sampler_core::SourceTaskFamily;
         let owner=ir::SourceOwnerId::UviNode(10);
-        let mut instrument=ir::Instrument{source:ir::SourceFormat::Uvi,..ir::Instrument::default()};
+        let mut instrument=ir::Instrument{source:ir::SourceFormat::Uvi,..ir::Instrument::DEFAULT};
         instrument.source_indices.owners.push(ir::SourceOwner{id:owner,parent:None,kind:ir::SourceOwnerKind::Instrument,
             children:vec![],groups:vec![],zones:vec![],predicates:vec![],bypass:None,mute:None,
             event_processors:(0..256).map(|ordinal|ir::SourceEventProcessor{

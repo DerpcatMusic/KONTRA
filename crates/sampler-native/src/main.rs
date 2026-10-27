@@ -45,7 +45,7 @@ fn prepare_sample(sample: Pcm, scripted: bool, demo: bool) -> io::Result<Prepare
                 sampler_core::Envelope::new(rate / 200, 0, rate / 10, 0.8, rate / 20)
                     .map_err(core)?
             } else {
-                sampler_core::Envelope::default()
+                sampler_core::Envelope::GATE
             },
             sample: 0,
             key_low: if scripted { 0 } else { 60 },

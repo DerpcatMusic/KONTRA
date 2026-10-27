@@ -231,7 +231,7 @@ mod tests {
                     channel: 0, key: 60, external_id: Some(1) }, 60, 1.).unwrap();
                 let family = rt.create_family(note).unwrap();
                 for sample in 0..2 {
-                    let id = rt.start_family(family, sample, 0, 1., Envelope::default(), Playback::default()).unwrap();
+                    let id = rt.start_family(family, sample, 0, 1., Envelope::GATE, Playback::default()).unwrap();
                     // Explicit starts have no region to attach the prepared chain.
                     if chain { rt.voices.get_mut(id.0).unwrap().chain = Some(0); }
                 }
@@ -278,7 +278,7 @@ mod batch_tests {
                 channel: 0, key: 60, external_id: Some(n) };
             let note = rt.note_on(input, 60, 1.).unwrap();
             let family = rt.create_family(note).unwrap();
-            voices.push(rt.start_family(family, sample, 0, 1., Envelope::default(), Playback::default()).unwrap());
+            voices.push(rt.start_family(family, sample, 0, 1., Envelope::GATE, Playback::default()).unwrap());
             rt.finish_family(family).unwrap();
         }
         rt.prepare_onsets(0, 64);
@@ -307,7 +307,7 @@ mod plan_scope_tests {
             channel: 0, key: 60, external_id: Some(n) };
         let note = rt.note_on(input(1), 60, 1.).unwrap();
         let family = rt.create_family(note).unwrap();
-        let held = rt.start_family(family, 0, 0, 1., Envelope::default(), Playback::default()).unwrap();
+        let held = rt.start_family(family, 0, 0, 1., Envelope::GATE, Playback::default()).unwrap();
         rt.finish_family(family).unwrap();
         let old_generation = rt.note_plan(note).unwrap();
         let new = Pcm::headed(48000, 4096, &[[0., 0.25]; 2048]).unwrap();
@@ -321,7 +321,7 @@ mod plan_scope_tests {
         assert_eq!(rt.note_plan(note), Ok(old_generation));
         let next_note = rt.note_on(input(2), 60, 1.).unwrap();
         let next_family = rt.create_family(next_note).unwrap();
-        let warm = rt.start_family(next_family, 0, 0, 1., Envelope::default(), Playback::default()).unwrap();
+        let warm = rt.start_family(next_family, 0, 0, 1., Envelope::GATE, Playback::default()).unwrap();
         rt.finish_family(next_family).unwrap();
         assert_eq!(rt.voices.get(warm.0).unwrap().cursor.pending_start_runway(), 0);
         assert!(!rt.voices.get(warm.0).unwrap().cursor.bounded_demand());

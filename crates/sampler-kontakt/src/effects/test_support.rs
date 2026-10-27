@@ -108,7 +108,7 @@ pub(crate) fn raum_payload() -> Vec<u8> {
 }
 
 pub(crate) fn fx_runtime(processors: Vec<sampler_ir::Processor>, tempo: f64, input: &[[f32; 2]]) -> sampler_core::Runtime {
-    let mut instrument = sampler_ir::Instrument::default();
+    let mut instrument = sampler_ir::Instrument::DEFAULT;
     instrument.assets.push(sampler_ir::Asset { residency: Default::default(), location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
     instrument.chains.push(sampler_ir::Chain { scope: sampler_ir::Scope::Voice, pre_amplitude: processors, post_amplitude: vec![] });
     let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));

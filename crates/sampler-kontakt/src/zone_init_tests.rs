@@ -1,7 +1,7 @@
 use super::*;
 
 fn instrument() -> ir::Instrument {
-    let mut instrument = ir::Instrument::default();
+    let mut instrument = ir::Instrument::DEFAULT;
     instrument.behaviors.push(ir::Behavior {
         name: "authored zone initialization".into(),
         language: ir::Language::Ksp,
@@ -28,7 +28,7 @@ fn admit_reordered_sources(instrument: &mut ir::Instrument) {
     ].into_iter().map(|(id, low_key, high_key)| ir::SourceZone {
         id: Some(id), home: ir::SourceZoneHome { group: 2, low_key, high_key },
     }).collect();
-    instrument.groups.push(ir::Group::default());
+    instrument.groups.push(ir::Group::DEFAULT);
     instrument.source_indices.groups = vec![None, None, Some(ir::GroupRef(0))];
     let mut third = ir::Zone::new(ir::AssetRef(0));
     third.group = Some(ir::GroupRef(0));

@@ -3850,7 +3850,7 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[&pcm.asset_id()], [0..30]);
         assert_eq!(merged[&other.asset_id()], [0..20]);
-        let mut instrument = ir::Instrument::default();
+        let mut instrument = ir::Instrument::DEFAULT;
         instrument.zones = (0..3).map(|sample| {
             let mut z = ir::Zone::new(ir::AssetRef(sample));
             z.routes.push(ir::RouteRef(0));
@@ -3862,7 +3862,7 @@ mod tests {
         instrument.modulators.push(ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Constant });
         let regions = (0..3).map(|sample| Region { sample, key_low: 60, key_high: 60,
             root_key: None, velocity_low: 0., velocity_high: 1., gain: 1.,
-            envelope: Envelope::default(), playback: Playback::default() }).collect();
+            envelope: Envelope::GATE, playback: Playback::default() }).collect();
         let prepared = Prepared::new(48000, assets.clone(), regions, 3).unwrap()
             .with_voice_modulation(vec![ModProgram { sources: vec![ModSource::Constant],
                 routes: vec![ModRoute::new(0, ModTarget::SampleStart, 0.25)], ..Default::default() }],

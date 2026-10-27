@@ -65,7 +65,7 @@ fn group(key: u8, zones: Vec<ir::Zone>) -> ir::Group {
             range: 24..=25,
         }],
         zones,
-        ..ir::Group::default()
+        ..ir::Group::DEFAULT
     }
 }
 
@@ -95,7 +95,7 @@ fn a_prepared_instrument_plays_its_keyswitched_groups() {
             sample("missing", 0),
         ],
         groups: vec![group(24, vec![zone(0), zone(2)]), group(25, vec![zone(1)])],
-        ..ir::Instrument::default()
+        ..ir::Instrument::DEFAULT
     };
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let (plan, diagnostics) = prepare(&instrument, RATE, &mut store, &open);

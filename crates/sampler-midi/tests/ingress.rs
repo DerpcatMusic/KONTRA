@@ -16,7 +16,7 @@ fn runtime() -> Runtime {
                 velocity_low: 0.,
                 velocity_high: 1.,
                 gain: 1.,
-                envelope: Envelope::default(),
+                envelope: Envelope::GATE,
                 playback: Playback::default(),
             }],
             1,
@@ -158,7 +158,7 @@ fn midi2_pitch_attribute_overrides_tuning_without_changing_physical_pairing() {
                     velocity_low: 0.0,
                     velocity_high: 1.0,
                     gain: 1.0,
-                    envelope: Envelope::default(),
+                    envelope: Envelope::GATE,
                     playback: Playback {
                         start: 512,
                         ..Playback::default()

@@ -1320,7 +1320,7 @@ impl crate::Runtime {
                     let complete =
                         full.visit_demand(demand.frames,
                             if full.bounded_demand() {
-                                crate::EnvelopeState::new(crate::Envelope::default())
+                                crate::EnvelopeState::new(crate::Envelope::GATE)
                             } else { demand.envelope }, |offset, frames| {
                             visit(frames, demand.at + u64::from(offset))
                         });
