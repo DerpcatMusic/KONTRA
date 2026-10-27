@@ -401,6 +401,7 @@ impl Engine {
             }
             let factor = if zone.trigger == Trigger::Release {
                 10f32.powf(-zone.release_decay_db * held_seconds / 20.0)
+                    * self.release_counter(zone, held_seconds)
             } else {
                 1.0
             };

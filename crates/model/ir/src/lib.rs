@@ -202,6 +202,11 @@ pub enum ModKind {
 pub enum Source {
     Velocity,
     Controller(u8),
+    /// Kontakt's release-trigger counter: `max(T − held, 0)/T` with `T` = `ms`,
+    /// the time the key was held frozen at key-up (binary 0x14084f380).
+    ReleaseCounter {
+        ms: u32,
+    },
 }
 
 /// How a volume modulation turns its source into gain.

@@ -33,6 +33,8 @@ impl Engine {
                             ir::Source::Controller(cc) => {
                                 f32::from(self.behaviour.cc(channel, cc)) / 127.0
                             }
+                            // Fixed at the voice's start: see `release_counter`.
+                            ir::Source::ReleaseCounter { .. } => return 1.0,
                         };
                         curve.gain(intensity, x)
                     }
@@ -43,6 +45,27 @@ impl Engine {
         let [l, r] = gain(zone, note);
         let g = crossfade * mods * factor;
         [l * g, r * g]
+    }
+
+    /// The release-trigger counter's gain for a voice started after the key
+    /// was held `held` seconds.
+    pub(crate) fn release_counter(&self, zone: &Zone, held: f32) -> f32 {
+        self.groups.get(zone.group as usize).map_or(1.0, |g| {
+            g.mods
+                .iter()
+                .map(|m| match m.kind {
+                    ir::ModKind::Volume {
+                        source: ir::Source::ReleaseCounter { ms },
+                        intensity,
+                        curve,
+                    } if ms > 0 => {
+                        let t = ms as f32;
+                        curve.gain(intensity, ((t - held * 1000.0) / t).max(0.0))
+                    }
+                    _ => 1.0,
+                })
+                .product()
+        })
     }
 
     /// Whether moving `cc` changes this zone's level.

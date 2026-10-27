@@ -297,6 +297,14 @@ fn translate_group(
             let source = match p.source {
                 ModSource::Velocity => Some(ir::Source::Velocity),
                 ModSource::MidiCc(cc) => Some(ir::Source::Controller(cc)),
+                // A counter only in a release-trigger group with a time; else a
+                // constant 1, which the volume law leaves at unity.
+                ModSource::ReleaseTriggerCounter if v.release_trigger && v.rls_trig_counter > 0 => {
+                    u32::try_from(v.rls_trig_counter)
+                        .ok()
+                        .map(|ms| ir::Source::ReleaseCounter { ms })
+                }
+                ModSource::ReleaseTriggerCounter => continue,
                 _ => None,
             };
             match (source, p.targets.as_slice()) {
@@ -307,8 +315,9 @@ fn translate_group(
                         kind: ir::ModKind::Volume {
                             source,
                             intensity: t.signed_intensity(),
+                            // Note-time sources cube; controllers do not.
                             curve: ir::Curve::Kontakt {
-                                cubed: source == ir::Source::Velocity,
+                                cubed: !matches!(source, ir::Source::Controller(_)),
                             },
                         },
                     });
