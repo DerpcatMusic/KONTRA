@@ -262,7 +262,15 @@ fn translate_group(
                 .iter()
                 .any(|t| t.param == "volume" && t.slot.is_none());
             match &p.modulator {
-                Modulator::Ahdsr(e) if volume => {
+                // ponytail: one volume envelope per group; Kontakt multiplies a
+                // second one in, which is reported below until a library needs it.
+                Modulator::Ahdsr(e)
+                    if volume
+                        && !out
+                            .mods
+                            .iter()
+                            .any(|m| matches!(m.kind, ir::ModKind::Envelope)) =>
+                {
                     // Stored times are milliseconds; the sustain knob is cubic.
                     out.envelope = ir::Envelope {
                         attack: e.attack_ms.max(0.0) / 1000.0,
