@@ -254,7 +254,7 @@ mod tests {
             requests.push((request, amplitude));
             Ok((48_000, vec![[amplitude; 2]; 16]))
         };
-        let mut instrument = sampler_ir::Instrument::default();
+        let mut instrument = sampler_ir::Instrument::DEFAULT;
         let mut recipes = Vec::new();
         let (notes, _) = crate::effects::instrument_buses_with_recipes(
             &mut instrument,

@@ -173,7 +173,7 @@ fn invalid_levels_and_eof_and_zero_release_have_explicit_outcomes() {
     rt.release(n).unwrap();
     rt.flush_ended(|_| true);
     assert_eq!(rt.note_count(), 0);
-    let mut rt = runtime(Envelope::default(), 64);
+    let mut rt = runtime(Envelope::GATE, 64);
     let n = rt.trigger(input(1), 60, 1.0).unwrap();
     rt.release(n).unwrap();
     assert_eq!(rt.voice_count(), 0);
@@ -319,7 +319,7 @@ fn curved_release_choke_captures_the_next_level_and_never_extends_one_shot_compl
             .with_curves(curve, curve, curve),
         Envelope::one_shot(0, 0, 128).with_curves(curve, curve, curve),
     ] {
-        let mut rt = runtime(Envelope::default(), 512);
+        let mut rt = runtime(Envelope::GATE, 512);
         support::without_heap(|| {
             let note = rt.note_on(input(1), 60, 1.).unwrap();
             let family = rt.create_family(note).unwrap();
@@ -341,7 +341,7 @@ fn curved_release_choke_captures_the_next_level_and_never_extends_one_shot_compl
             assert_eq!(rt.note_count(), 0);
         });
     }
-    let mut rt = runtime(Envelope::default(), 64);
+    let mut rt = runtime(Envelope::GATE, 64);
     let note = rt.note_on(input(1), 60, 1.).unwrap();
     let family = rt.create_family(note).unwrap();
     rt.start_family(

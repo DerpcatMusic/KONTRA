@@ -506,7 +506,7 @@ mod tests {
             for value in [talk, sharp, size] { payload.extend(value.to_le_bytes()); }
             let built = chain(&[slot(0x18, payload, 1.0)], Scope::Voice);
             assert!(built.notes.is_empty(), "{:?}", built.notes);
-            let mut instrument = ir::Instrument::default();
+            let mut instrument = ir::Instrument::DEFAULT;
             instrument.assets.push(ir::Asset { residency: Default::default(), location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: Vec::new() });
             instrument.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: built.processors, post_amplitude: vec![] });
             let mut zone = ir::Zone::new(ir::AssetRef(0));

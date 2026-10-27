@@ -27,7 +27,7 @@ fn runtime(wait: bool) -> Runtime {
     let region = Region {
         sample: 0, key_low: 60, key_high: 60, root_key: None,
         velocity_low: 0., velocity_high: 1., gain: 1.,
-        envelope: Envelope::default(), playback: Playback::default(),
+        envelope: Envelope::GATE, playback: Playback::default(),
     };
     let regions = (0..4).map(|index| Region {
         key_low: 60 + index, key_high: 60 + index, ..region.clone()

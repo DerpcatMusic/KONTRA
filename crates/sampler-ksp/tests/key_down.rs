@@ -34,7 +34,7 @@ fn key_down_array_reads_and_searches_held_keys() {
         velocity_low: 0.,
         velocity_high: 1.,
         gain: 1.,
-        envelope: Envelope::default(),
+        envelope: Envelope::GATE,
         playback: Playback::default(),
     };
     let prepared = Prepared::new(48000, pcm, vec![region], 128).unwrap();

@@ -20,7 +20,7 @@ fn prepared(pcm: Vec<Pcm>, groups: usize) -> Prepared {
                 velocity_low: 0.,
                 velocity_high: 1.,
                 gain: 1.,
-                envelope: Envelope::default(),
+                envelope: Envelope::GATE,
                 playback: Playback::default(),
             })
             .collect(),

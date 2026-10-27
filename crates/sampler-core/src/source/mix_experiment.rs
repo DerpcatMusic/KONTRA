@@ -45,7 +45,7 @@ fn constant_mix_simd_preserves_pcm_and_dynamic_envelope_continuation() {
         2 => [f32::from_bits(1), -f32::from_bits(1)],
         _ => [(i as f32 * 0.731).sin(), (i as f32 * 0.417).cos()],
     }).collect();
-    let shapes = [Envelope::default(),
+    let shapes = [Envelope::GATE,
         Envelope::new(0, 0, 0, 0.8, 17).unwrap(),
         Envelope::new(0, 0, 0, 0., 17).unwrap(),
         Envelope::new(19, 7, 53, 0.8, 37).unwrap(),
@@ -89,8 +89,8 @@ fn constant_mix_simd_stage_evidence() {
     use std::{hint::black_box, time::Instant};
     let input: Vec<Frame> = (0..128).map(|i| [(i as f32 * 0.731).sin(), (i as f32 * 0.417).cos()]).collect();
     for (name, len, shape) in [
-        ("short", 3, Envelope::default()),
-        ("unity", 128, Envelope::default()),
+        ("short", 3, Envelope::GATE),
+        ("unity", 128, Envelope::GATE),
         ("sustain", 128, Envelope::new(0, 0, 0, 0.8, 17).unwrap()),
         ("zero", 128, Envelope::new(0, 0, 0, 0., 17).unwrap()),
         ("moving", 128, Envelope::new(u32::MAX, 0, 0, 0.8, 17).unwrap()),
@@ -212,7 +212,7 @@ fn interleaved_unity_matches_scalar_and_production_edges() {
                         let mut expected = vec![[0.125, -0.25]; 272];
                         let mut current = expected.clone();
                         let mut actual = expected.clone();
-                        let mut scalar_envelope = EnvelopeState::new(Envelope::default());
+                        let mut scalar_envelope = EnvelopeState::new(Envelope::GATE);
                         let mut current_envelope = scalar_envelope;
                         let source = black_box(&input[offset..offset + input_len]);
                         let range = offset + 1..offset + 1 + output_len;
@@ -235,7 +235,7 @@ fn interleaved_unity_matches_scalar_and_production_edges() {
 fn interleaved_unity_preserves_fallback_envelope_continuation() {
     let input: Vec<Frame> = (0..257).map(|i| [(i as f32 * 0.731).sin(),
         (i as f32 * 0.417).cos()]).collect();
-    for shape in [Envelope::default(), Envelope::new(0, 0, 0, 0.8, 17).unwrap(),
+    for shape in [Envelope::GATE, Envelope::new(0, 0, 0, 0.8, 17).unwrap(),
         Envelope::new(0, 0, 0, 0., 17).unwrap(),
         Envelope::new(19, 7, 53, 0.8, 37).unwrap(),
         Envelope::new(19, 7, 53, 0.8, 37).unwrap().with_curves(

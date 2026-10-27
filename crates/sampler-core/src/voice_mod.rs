@@ -1626,7 +1626,7 @@ impl VoiceModState {
             processor_values: crate::dsp::allocate(slots(modulation.routes)?)?,
             previous_processor_values: crate::dsp::allocate(slots(modulation.routes)?)?,
             envelope: std::iter::repeat_n(
-                EnvelopeState::new(Envelope::default()),
+                EnvelopeState::new(Envelope::GATE),
                 slots(modulation.envelopes)?,
             )
             .collect(),

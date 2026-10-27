@@ -346,7 +346,7 @@ fn shared_pcm_keeps_its_buffer_across_plan_adoption_and_control_side_retirement(
                 velocity_low: 0.0,
                 velocity_high: 1.0,
                 gain,
-                envelope: Envelope::default(),
+                envelope: Envelope::GATE,
                 playback: Playback {
                     loop_range: Some(sampler_core::Loop {
                         passes: None,
@@ -425,7 +425,7 @@ fn tuning_adoption_preserves_held_notes_and_later_generated_children() {
                 velocity_low: 0.0,
                 velocity_high: 1.0,
                 gain: 1.0,
-                envelope: Envelope::default(),
+                envelope: Envelope::GATE,
                 playback: Playback {
                     start: 512,
                     transpose_semitones: if tracked { 0.0 } else { offset },

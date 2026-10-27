@@ -230,7 +230,7 @@ fn projected_pitch_participates_in_initial_queued_and_batch_source_preflight() {
                 0,
                 0,
                 1.0,
-                Envelope::default(),
+                Envelope::GATE,
                 Playback {
                     transpose_semitones: 132.0,
                     ..Playback::default()
@@ -244,7 +244,7 @@ fn projected_pitch_participates_in_initial_queued_and_batch_source_preflight() {
             0,
             0,
             1.0,
-            Envelope::default(),
+            Envelope::GATE,
             Playback {
                 transpose_semitones: 120.0,
                 ..Playback::default()

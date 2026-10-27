@@ -19,7 +19,7 @@ fn batched_envelope_schema_has_linear_requested_bytes() {
                 .take()
                 .unwrap()
                 .with_group_envelope_parameters_batch(
-                    (0..groups).map(|g| (g, g as i32, 5, Envelope::default())),
+                    (0..groups).map(|g| (g, g as i32, 5, Envelope::GATE)),
                 )
                 .unwrap(),
         );

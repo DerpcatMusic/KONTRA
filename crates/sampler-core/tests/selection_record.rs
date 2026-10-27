@@ -12,7 +12,7 @@ fn region(velocity_low: f64, velocity_high: f64) -> Region {
         velocity_low,
         velocity_high,
         gain: 1.,
-        envelope: Envelope::default(),
+        envelope: Envelope::GATE,
         playback: Playback::default(),
     }
 }

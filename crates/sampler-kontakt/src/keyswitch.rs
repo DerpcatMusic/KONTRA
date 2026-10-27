@@ -1124,8 +1124,8 @@ end on
             slice_zone_slice_idx: 0,
             sequencer_only: false,
         };
-        let mut ir = ir::Instrument::default();
-        ir.groups = vec![ir::Group::default(); 4];
+        let mut ir = ir::Instrument::DEFAULT;
+        ir.groups = vec![ir::Group::DEFAULT; 4];
         ir.zones = (0..4)
             .map(|g| ir::Zone {
                 group: Some(ir::GroupRef(g)),

@@ -758,7 +758,7 @@ mod logical_source_residency_tests {
     fn region(sample: usize) -> Region {
         Region { sample, key_low: 60, key_high: 60, root_key: None,
             velocity_low: 0., velocity_high: 1., gain: 1.,
-            envelope: Envelope::default(), playback: Playback::default() }
+            envelope: Envelope::GATE, playback: Playback::default() }
     }
     #[test]
     fn pinned_family_dependencies_keep_an_aliased_stereo_group_purge_collectable() {

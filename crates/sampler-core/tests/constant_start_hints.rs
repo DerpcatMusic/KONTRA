@@ -7,7 +7,7 @@ fn prepared(program: ModProgram, start_range: u32, reverse: bool) -> Prepared {
         vec![Pcm::new(48000, (0..8192).map(|i| [i as f32 / 8192.; 2]).collect()).unwrap()],
         vec![Region {
             sample: 0, key_low: 60, key_high: 60, root_key: None,
-            velocity_low: 0., velocity_high: 1., gain: 1., envelope: Envelope::default(),
+            velocity_low: 0., velocity_high: 1., gain: 1., envelope: Envelope::GATE,
             playback: Playback { start: 137, end: Some(7000),
                 direction: if reverse { Direction::Reverse } else { Direction::Forward },
                 ..Playback::default() },
@@ -75,7 +75,7 @@ fn any_dependent_start_route_or_scale_is_unknown_even_at_zero_depth() {
         fade: 0, retrigger: true, shared: false };
     for source in [ModSource::Velocity, ModSource::Key, ModSource::Controller(1), ModSource::Random,
         ModSource::Pressure, ModSource::Timbre, ModSource::PitchBend, ModSource::Script(0),
-        ModSource::ReleaseCounter { frames: 100 }, ModSource::Envelope(Envelope::default()), ModSource::Lfo(lfo)] {
+        ModSource::ReleaseCounter { frames: 100 }, ModSource::Envelope(Envelope::GATE), ModSource::Lfo(lfo)] {
         for depth in [0., 0.5] {
             let p = prepared(program(vec![ModSource::Constant, source], vec![
                 ModRoute::new(0, ModTarget::SampleStart, 0.25),

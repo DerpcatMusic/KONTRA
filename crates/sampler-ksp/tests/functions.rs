@@ -39,7 +39,7 @@ fn runtime(source: &str) -> Runtime {
                     velocity_low: 0.,
                     velocity_high: 1.,
                     gain: 1.,
-                    envelope: Envelope::default(),
+                    envelope: Envelope::GATE,
                     playback: Playback::default(),
                 }],
                 1,
@@ -346,7 +346,7 @@ fn function_exit_plan(sources: &[&str]) -> Prepared {
         velocity_low: 0.,
         velocity_high: 1.,
         gain: 1.,
-        envelope: Envelope::default(),
+        envelope: Envelope::GATE,
         playback: Playback::default(),
     }).collect();
     sampler_ksp::bind_modules(

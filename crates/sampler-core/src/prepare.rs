@@ -3089,7 +3089,7 @@ mod logical_source_tests {
     fn region(sample: usize) -> Region {
         Region { sample, key_low: 60, key_high: 60, root_key: None,
             velocity_low: 0., velocity_high: 1., gain: 1.,
-            envelope: Envelope::default(), playback: Playback::default() }
+            envelope: Envelope::GATE, playback: Playback::default() }
     }
     fn family() -> SourceStorageFamily {
         SourceStorageFamily::new_resident(ChannelCount::new(6).unwrap(), vec![pcm(1.), pcm(2.), pcm(3.)]).unwrap()

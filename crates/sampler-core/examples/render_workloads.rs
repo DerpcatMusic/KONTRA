@@ -67,7 +67,7 @@ fn prepare(
             envelope: if shaped {
                 Envelope::new(4, 2, 8, 0.5, 8).unwrap()
             } else {
-                Envelope::default()
+                Envelope::GATE
             },
             playback: Playback {
                 transpose_semitones: transpose,

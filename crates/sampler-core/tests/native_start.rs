@@ -29,7 +29,7 @@ fn runtime(groups: Vec<Vec<GroupStart>>, default: Option<u8>) -> Runtime {
             velocity_low: 0.,
             velocity_high: 1.,
             gain: 0.1,
-            envelope: Envelope::default(),
+            envelope: Envelope::GATE,
             playback: Playback::default(),
         })
         .collect();

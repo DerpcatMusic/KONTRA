@@ -26,7 +26,7 @@ fn plan(pcm: Pcm, playback: Playback, depth: f64, extra: Vec<ModRoute>) -> Prepa
             velocity_low: 0.,
             velocity_high: 1.,
             gain: 1.,
-            envelope: Envelope::default(),
+            envelope: Envelope::GATE,
             playback,
         }],
         1,

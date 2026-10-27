@@ -36,7 +36,7 @@ impl Fixture {
     }
     fn new_with_pitch(retained: usize, runway: Option<u32>, chain: bool, pitch: f64) -> Self {
         Self::configured([retained; 2], runway,
-            chain.then(|| vec![Processor::Gain(1.)]), Envelope::default(), pitch, 4)
+            chain.then(|| vec![Processor::Gain(1.)]), Envelope::GATE, pitch, 4)
     }
     fn configured(heads: [usize; 2], runway: Option<u32>, processors: Option<Vec<Processor>>,
                   envelope: Envelope, pitch: f64, voices: usize) -> Self {
@@ -204,7 +204,7 @@ fn one_ready_sibling_does_not_split_an_unsounded_family_cohort() {
     for chain in [false, true] {
         // One fully sufficient head and one short head at the SAME deadline.
         let mut f = Fixture::configured([REQUESTED as usize, SELECTED], Some(REQUESTED),
-            chain.then(|| vec![Processor::Gain(1.)]), Envelope::default(), 0., 4);
+            chain.then(|| vec![Processor::Gain(1.)]), Envelope::GATE, 0., 4);
         let (_, family) = f.layered();
         assert_eq!(f.rt.stats().cold_starts, 1);
         let before = [f.cursor(0).1, f.cursor(1).1];
@@ -253,7 +253,7 @@ fn a_ready_first_window_cannot_bypass_explicit_runway_refusal() {
     let note = f.rt.note_on(input(1), 60, 1.).unwrap();
     let family = f.rt.create_family(note).unwrap();
     support::without_heap(|| assert_eq!(f.rt.start_family(
-        family, 0, 0, 1., Envelope::default(),
+        family, 0, 0, 1., Envelope::GATE,
         Playback { start: START, ..Default::default() }), Err(Error::NotReady)));
     assert_eq!(f.rt.voice_count(), 0);
     assert!(!f.assets[0].take_cold());
@@ -332,7 +332,7 @@ fn late_completions_cannot_revive_cancelled_voice_generations() {
         assert_eq!(out, [[0.; 2]; BLOCK]);
         let note = f.rt.note_on(input(2), 60, 1.).unwrap();
         let next_family = f.rt.create_family(note).unwrap();
-        let new = f.rt.start_family(next_family, 0, f.rt.now(), 1., Envelope::default(),
+        let new = f.rt.start_family(next_family, 0, f.rt.now(), 1., Envelope::GATE,
             Playback { start: START, ..Default::default() }).unwrap();
         f.rt.finish_family(next_family).unwrap();
         assert!(!old.contains(&new), "slot reuse keeps generational handles");
@@ -407,7 +407,7 @@ fn delayed_start_keeps_its_exact_offset_until_both_deadline_and_runway_are_ready
     let mut f = Fixture::new(SELECTED, Some(REQUESTED), false);
     let note = f.rt.note_on(input(1), 60, 1.).unwrap();
     let family = f.rt.create_family(note).unwrap();
-    let id = f.rt.start_family(family, 0, 256, 1., Envelope::default(),
+    let id = f.rt.start_family(family, 0, 256, 1., Envelope::GATE,
         Playback { start: START, ..Default::default() }).unwrap();
     f.rt.finish_family(family).unwrap();
     assert!(!f.service());
@@ -434,7 +434,7 @@ fn short_service_fragments_still_request_the_admitted_runway_but_zero_frame_poll
     f.rt.set_expression(expression, Expression { pitch_semitones: 24., ..Default::default() }).unwrap();
     let family = f.rt.create_family(note).unwrap();
     for sample in 0..2 {
-        f.rt.start_family(family, sample, 0, 1., Envelope::default(),
+        f.rt.start_family(family, sample, 0, 1., Envelope::GATE,
             Playback { start: START, ..Default::default() }).unwrap();
     }
     f.rt.finish_family(family).unwrap();
@@ -464,7 +464,7 @@ fn authored_forward_and_reverse_offsets_are_preserved_across_page_handoff() {
                 Direction::Forward => Playback { start: offset, ..Default::default() },
                 Direction::Reverse => Playback { end: Some(offset + 1), direction, ..Default::default() },
             };
-            let id = f.rt.start_family(family, 0, 0, 1., Envelope::default(), playback).unwrap();
+            let id = f.rt.start_family(family, 0, 0, 1., Envelope::GATE, playback).unwrap();
             f.rt.finish_family(family).unwrap();
             assert_eq!(f.cursor(0), (id, offset as u64, true, true));
             assert!(!f.service());
@@ -630,8 +630,8 @@ fn distinct_deadlines_do_not_share_a_hold_but_one_instant_does() {
             f.rt.create_family(other).unwrap()
         } else { a };
         let deadline = if separate_note { 0 } else { 64 };
-        f.rt.start_family(a, 0, 0, 1., Envelope::default(), Playback { start: START, ..Default::default() }).unwrap();
-        f.rt.start_family(b, 1, deadline, 1., Envelope::default(), Playback { start: START, ..Default::default() }).unwrap();
+        f.rt.start_family(a, 0, 0, 1., Envelope::GATE, Playback { start: START, ..Default::default() }).unwrap();
+        f.rt.start_family(b, 1, deadline, 1., Envelope::GATE, Playback { start: START, ..Default::default() }).unwrap();
         f.rt.finish_family(a).unwrap();
         if b != a { f.rt.finish_family(b).unwrap(); }
         let mut held = Vec::new();
@@ -692,7 +692,7 @@ fn near_maximum_ping_pong_contract_admits_services_and_releases_with_one_page() 
         passes: None,
     }), ..Default::default() };
     support::without_heap(|| {
-        f.rt.start_family(family, 0, 0, 1., Envelope::default(), playback).unwrap();
+        f.rt.start_family(family, 0, 0, 1., Envelope::GATE, playback).unwrap();
         f.rt.finish_family(family).unwrap();
         assert_eq!(f.rt.service_streaming(1), Ok(false));
         f.rt.render(&mut [[0.; 2]; BLOCK]).unwrap();
@@ -724,7 +724,7 @@ fn unrequestable_conservative_geometry_fails_admission_instead_of_holding_foreve
     rt.set_stream_start_runway(u32::MAX).unwrap();
     let note = rt.note_on(input(1), 60, 1.).unwrap();
     let family = rt.create_family(note).unwrap();
-    support::without_heap(|| assert_eq!(rt.start_family(family, 0, 0, 1., Envelope::default(),
+    support::without_heap(|| assert_eq!(rt.start_family(family, 0, 0, 1., Envelope::GATE,
         Playback { loop_range: Some(Loop { start: 0, end: 4, mode: LoopMode::Continuous,
             shape: LoopShape::PingPong, passes: None }), ..Default::default() }), Err(Error::Capacity)));
     assert_eq!(rt.voice_count(), 0);
@@ -735,7 +735,7 @@ fn cohort_gate_runs_on_the_actual_parallel_path_and_matches_serial_pcm() {
     let mut baseline = None;
     for threads in [1, 2] {
         let mut f = Fixture::configured([SELECTED; 2], Some(REQUESTED),
-            Some(stateful()), Envelope::default(), 0., 64);
+            Some(stateful()), Envelope::GATE, 0., 64);
         f.rt.set_threads(Threads::Fixed(threads));
         for n in 0..32 { f.rt.trigger(input(n), 60, 1.).unwrap(); }
         assert_eq!(f.rt.voice_count(), 64);
@@ -786,7 +786,7 @@ fn source_ending_before_requested_runway_releases_after_its_finite_footprint() {
     let mut f = Fixture::new(0, Some(REQUESTED), false);
     let note = f.rt.note_on(input(1), 60, 1.).unwrap();
     let family = f.rt.create_family(note).unwrap();
-    let id = f.rt.start_family(family, 0, 0, 1., Envelope::default(),
+    let id = f.rt.start_family(family, 0, 0, 1., Envelope::GATE,
         Playback { start: LENGTH - 8, ..Default::default() }).unwrap();
     f.rt.finish_family(family).unwrap();
     support::without_heap(|| assert_eq!(f.rt.service_streaming(1), Ok(false)));

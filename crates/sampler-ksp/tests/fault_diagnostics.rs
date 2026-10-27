@@ -27,7 +27,7 @@ fn runtime(source: &str) -> Runtime {
                     velocity_low: 0.,
                     velocity_high: 1.,
                     gain: 1.,
-                    envelope: Envelope::default(),
+                    envelope: Envelope::GATE,
                     playback: Playback::default(),
                 }],
                 128,

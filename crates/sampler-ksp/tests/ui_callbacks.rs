@@ -17,7 +17,7 @@ fn runtime(source: &str) -> Runtime {
     // Waveform callbacks use real prepared physical sources, even though the
     // tested UI gestures do not play their key0 regions.
     let region = Region { sample: 0, key_low: 0, key_high: 0, root_key: None,
-        velocity_low: 0., velocity_high: 1., gain: 1., envelope: Envelope::default(), playback: Playback::default() };
+        velocity_low: 0., velocity_high: 1., gain: 1., envelope: Envelope::GATE, playback: Playback::default() };
     let prepared = Prepared::new(48000,
         vec![Pcm::new(48000, Box::from([[0.; 2]; 16])).unwrap()], vec![region, region], 2)
         .unwrap().with_source_zones(vec![27, 91]).unwrap();

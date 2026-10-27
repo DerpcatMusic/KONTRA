@@ -63,7 +63,7 @@ fn runtime(stretch: Option<ir::TimeStretch>, tune: f64) -> Runtime {
             group: Some(ir::GroupRef(0)),
             ..ir::Zone::new(ir::AssetRef(0))
         }],
-        ..ir::Instrument::default()
+        ..ir::Instrument::DEFAULT
     };
     let plan = lower(&instrument, RATE as u32, vec![sine()], no_behaviors).unwrap();
     Runtime::new(plan, limits()).unwrap()
@@ -162,7 +162,7 @@ fn instrument_with(stretch: Option<ir::TimeStretch>) -> ir::Instrument {
             group: Some(ir::GroupRef(0)),
             ..ir::Zone::new(ir::AssetRef(0))
         }],
-        ..ir::Instrument::default()
+        ..ir::Instrument::DEFAULT
     }
 }
 

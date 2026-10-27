@@ -282,7 +282,7 @@ fn invalid_views_are_rejected_before_any_admission() {
     for playback in invalid {
         assert!(prepare(vec![region(playback)]).is_err());
         assert_eq!(
-            rt.start_family(family, 0, 100, 1.0, Envelope::default(), playback),
+            rt.start_family(family, 0, 100, 1.0, Envelope::GATE, playback),
             Err(sampler_core::Error::InvalidInput)
         );
         assert_eq!((rt.voice_count(), rt.pending_commands()), (0, 0));

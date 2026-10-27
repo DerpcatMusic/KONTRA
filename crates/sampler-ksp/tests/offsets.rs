@@ -23,7 +23,7 @@ fn runtime(source: Option<&str>, rate: u32, asset_rate: u32, playback: Playback)
             velocity_low: 0.,
             velocity_high: 1.,
             gain: 1.,
-            envelope: Envelope::default(),
+            envelope: Envelope::GATE,
             playback,
         }],
         1,
