@@ -52,7 +52,7 @@ fn zone(store: &mut Store, level: f32, group: u32) -> Zone {
 fn engine(store: &Store, zones: Vec<Zone>, source: &str) -> Engine {
     let script = kontra_ksp::compile(source, &[]).unwrap();
     let mut plan = Plan::new(zones, 16);
-    plan.script = Some(kontra_host::script::plan(&script));
+    plan.script = Some(kontra_host::script::plan(&script, &[]));
     Engine::new(Arc::new(plan), store.client(), RATE)
 }
 
@@ -206,4 +206,28 @@ fn areia_runs_on_the_engine() {
     eprintln!("areia unhandled: {:?}", e.unhandled_actions());
     assert_eq!(faults.bad_code, 0);
     assert_eq!(faults.stack_overflow, 0);
+}
+
+/// Saved control values are restored after init and read back through the control store.
+#[test]
+fn a_script_reads_its_restored_controls() {
+    let source = "on init
+            declare ui_switch $on
+            declare %ids[1]
+            %ids[0] := get_ui_id($on)
+            make_persistent($on)
+        end on
+        on note
+            message(get_control_par(%ids[0], $CONTROL_PAR_VALUE))
+            set_control_par(%ids[0], $CONTROL_PAR_VALUE, 0)
+            message(get_control_par(%ids[0], $CONTROL_PAR_VALUE) & \" \" & $on)
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.script = Some(kontra_host::script::plan(&script, &["$on 1".into()]));
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "0 0");
+    assert_eq!(e.stats().messages, 2);
 }

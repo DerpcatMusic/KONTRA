@@ -10,11 +10,13 @@ mod compile;
 mod consts;
 mod lex;
 mod parse;
+mod persist;
 
 use std::fmt;
 
 pub use builtins::{Arg, Builtin, Ret, Sig};
 pub use consts::{FIRST_UI_ID, SYMBOL_BASE};
+pub use persist::Restore;
 use kontra_vm::Program;
 
 /// Compiles a script. `conditions` are the `SET_CONDITION` symbols already set

@@ -51,6 +51,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
                 name: script.description.unwrap_or_default(),
                 dialect: ir::Dialect::Ksp,
                 source: text,
+                saved: script.persistent,
             }),
             _ => {
                 if let Some(file) = script.textfile_name.filter(|n| !n.is_empty()) {

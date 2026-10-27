@@ -9,6 +9,7 @@
 //! engine executes, not script code. Nothing allocates after [`Engine::new`].
 
 mod behaviour;
+mod controls;
 mod ledger;
 mod plan;
 mod prepare;
@@ -19,12 +20,13 @@ use std::sync::Arc;
 
 use kontra_stream::StreamClient;
 use kontra_time::Frames;
-use kontra_vm::{Instance, Text};
+use kontra_vm::Instance;
 use kontra_voice::{Voice, VoiceStart};
 
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
+pub use kontra_ir as ir;
 pub use kontra_time::SampleTime;
-pub use kontra_vm::Program;
+pub use kontra_vm::{Program, Text};
 pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
 pub use plan::{
@@ -32,7 +34,7 @@ pub use plan::{
 };
 pub use prepare::{Opener, prepare};
 pub use queue::Timed;
-pub use script::{Callbacks, ScriptPlan};
+pub use script::{Callbacks, Controls, ScriptPlan};
 
 use behaviour::Behaviour;
 use ledger::{Ledger, Note, Origin};
@@ -112,6 +114,9 @@ pub struct Engine {
     last_message: Text,
     /// Calls per action the engine does not implement yet, by action id.
     unhandled: Box<[u32]>,
+    called: Box<[u32]>,
+    /// Per control, parameters the script set other than its value.
+    control_pars: Box<[Vec<(i32, i32)>]>,
 }
 
 impl Engine {
@@ -152,6 +157,11 @@ impl Engine {
             .script
             .as_ref()
             .map(|s| Instance::new(&s.program, s.coroutines.max(1)));
+        let control_pars = plan
+            .script
+            .as_ref()
+            .map(|s| vec![Vec::new(); s.controls.cells.len()].into())
+            .unwrap_or_default();
         let mut engine = Self {
             now: SampleTime(0),
             rate: rate.max(1),
@@ -174,11 +184,27 @@ impl Engine {
             cc_values: [0; 130],
             last_message: Text::EMPTY,
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
+            called: vec![0; kontra_vm::Action::all().len()].into(),
+            control_pars,
         };
         engine.cc_values[7] = 100;
         engine.cc_values[11] = 127;
-        if let Some(init) = engine.plan.script.as_ref().and_then(|s| s.callbacks.init) {
-            engine.run_callback(init, Running::new(Kind::Init, None));
+        let plan = Arc::clone(&engine.plan);
+        if let Some(script) = &plan.script {
+            if let Some(init) = script.callbacks.init {
+                engine.run_callback(init, Running::new(Kind::Init, None));
+            }
+            if let Some(vm) = engine.vm.as_mut() {
+                for &(cell, value) in &script.restore {
+                    vm.set_cell(cell as usize, value);
+                }
+                for &(cell, text) in &script.restore_texts {
+                    vm.set_text(cell as usize, text);
+                }
+            }
+            if let Some(changed) = script.callbacks.persistence_changed {
+                engine.run_callback(changed, Running::new(Kind::Init, None));
+            }
         }
         engine
     }
@@ -192,14 +218,19 @@ impl Engine {
     /// Script actions this engine left unanswered, most called first.
     #[must_use]
     pub fn unhandled_actions(&self) -> Vec<(kontra_vm::Action, u32)> {
-        let mut out: Vec<_> = kontra_vm::Action::all()
-            .iter()
-            .zip(self.unhandled.iter())
-            .filter(|(_, n)| **n > 0)
-            .map(|(a, n)| (*a, *n))
-            .collect();
-        out.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-        out
+        ranked(&self.unhandled)
+    }
+
+    /// Every script action called since load, most called first.
+    #[must_use]
+    pub fn action_calls(&self) -> Vec<(kontra_vm::Action, u32)> {
+        ranked(&self.called)
+    }
+
+    /// A script variable cell, for inspection.
+    #[must_use]
+    pub fn script_cell(&self, n: usize) -> Option<i64> {
+        self.vm.as_ref()?.cell(n)
     }
 
     /// Runtime faults of the script, counted since load.
@@ -769,4 +800,15 @@ fn gain(zone: &Zone, note: &Note) -> [f32; 2] {
     let g = zone.gain * zone.velocity.gain(note.velocity as f32) * note.expression_gain * script;
     let pan = (zone.pan + note.expression_pan + note.script_pan as f32 / 1000.0).clamp(-1.0, 1.0);
     [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
+}
+
+fn ranked(counts: &[u32]) -> Vec<(kontra_vm::Action, u32)> {
+    let mut out: Vec<_> = kontra_vm::Action::all()
+        .iter()
+        .zip(counts)
+        .filter(|(_, n)| **n > 0)
+        .map(|(a, n)| (*a, *n))
+        .collect();
+    out.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    out
 }
