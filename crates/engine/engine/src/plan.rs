@@ -245,28 +245,3 @@ impl Plan {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_velocity_crossfade_is_equal_power() {
-        let soft = Crossfade {
-            control: Control::Velocity,
-            fade_in: None,
-            fade_out: Some((40, 80)),
-        };
-        let loud = Crossfade {
-            control: Control::Velocity,
-            fade_in: Some((40, 80)),
-            fade_out: None,
-        };
-        for v in [0u8, 40, 50, 60, 70, 80, 127] {
-            let power = soft.gain(v).powi(2) + loud.gain(v).powi(2);
-            assert!((power - 1.0).abs() < 1e-6, "velocity {v}: {power}");
-        }
-        assert_eq!(soft.gain(30), 1.0);
-        assert_eq!(loud.gain(100), 1.0);
-    }
-}

@@ -269,6 +269,8 @@ fn envelope(e: ir::Envelope, rate: u32) -> Ahdsr {
         decay: frames(e.decay),
         sustain: e.sustain.clamp(0.0, 1.0),
         release: frames(e.release).max(1),
+        attack_shape: e.attack_shape,
+        fall_shape: e.fall_shape,
     }
 }
 

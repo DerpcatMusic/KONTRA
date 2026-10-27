@@ -153,6 +153,10 @@ pub struct Envelope {
     pub decay: f32,
     pub sustain: f32,
     pub release: f32,
+    /// Attack shape k of `expm1(k·t)/expm1(k)`: 0 is linear, positive starts slowly.
+    pub attack_shape: f32,
+    /// Decay and release shape, the same law.
+    pub fall_shape: f32,
 }
 
 impl Envelope {
@@ -163,7 +167,12 @@ impl Envelope {
         decay: 0.0,
         sustain: 1.0,
         release: 0.001_3,
+        attack_shape: 0.0,
+        fall_shape: Self::KONTAKT_FALL,
     };
+
+    /// Kontakt's decay and release: ln(3/43), silent exactly at the stage end.
+    pub const KONTAKT_FALL: f32 = -2.662_588;
 }
 
 /// One modulation of a group. Scripts find it by `name` and address it by

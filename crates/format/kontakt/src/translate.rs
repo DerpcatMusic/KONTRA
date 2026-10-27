@@ -219,6 +219,20 @@ fn voice_group(v: &VoiceLimit) -> ir::VoiceGroup {
     }
 }
 
+/// Kontakt's attack curve knob (−1 concave ..= 1 convex) as a segment shape.
+/// The engine rounds the base to f32 before taking its log
+/// (docs/re/engine/k-mod-envelopes.md).
+fn attack_shape(curve: f32) -> f32 {
+    let c = f64::from(curve.clamp(-1.0, 1.0));
+    let b = f64::from(((1.0 - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
+    let k = if c > 0.0 {
+        (b / (1.0 + b)).ln()
+    } else {
+        ((1.0 + b) / b).ln()
+    };
+    k as f32
+}
+
 fn translate_group(
     group: &Group,
     base: &Base,
@@ -256,6 +270,8 @@ fn translate_group(
                         decay: e.decay_ms.max(0.0) / 1000.0,
                         sustain: e.sustain.clamp(0.0, 1.0).powi(3),
                         release: e.release_ms.max(0.0) / 1000.0,
+                        attack_shape: attack_shape(e.attack_curve),
+                        fall_shape: ir::Envelope::KONTAKT_FALL,
                     };
                     out.mods.push(ir::Mod {
                         name: p.name.clone(),
