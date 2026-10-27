@@ -8,7 +8,7 @@ use kontra_ir as ir;
 use ni_file::kontakt::KontaktChunks;
 use ni_file::kontakt::objects::{
     BParScript, ExternalModArray32, Group, GroupList, InternalModArray16, LoopArray, ModSource,
-    Modulator, StartCriteriaParams, ZoneList,
+    Modulator, StartCriteriaParams, VoiceGroups, VoiceLimit, ZoneList,
 };
 
 use crate::Error;
@@ -20,6 +20,7 @@ const LOOPS: u16 = 0x39;
 const INTERNAL_MODS: u16 = 0x3b;
 const EXTERNAL_MODS: u16 = 0x3c;
 const SCRIPT: u16 = 6;
+const VOICE_GROUPS: u16 = 0x32;
 
 pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Instrument, Error> {
     let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
@@ -73,6 +74,13 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         criteria.push(rows);
     }
     start_rules(&mut out.groups, &criteria, &mut notes);
+    let limits = program
+        .0
+        .find_first(VOICE_GROUPS)
+        .map(VoiceGroups::try_from)
+        .transpose()
+        .map_err(decode("voice groups"))?;
+    voice_groups(&mut out, &groups, limits.as_ref());
     let muted: Vec<bool> = groups
         .groups
         .iter()
@@ -163,6 +171,54 @@ fn criteria_reverse(group: u32, groups: &GroupList) -> bool {
         .is_some_and(|p| p.reverse)
 }
 
+/// Groups name a voice group 1-based (0 is none). All 128 exist in Kontakt;
+/// the file stores only those changed from the default (1 voice, oldest
+/// first, released first, 10 ms fade).
+fn voice_groups(out: &mut ir::Instrument, groups: &GroupList, limits: Option<&VoiceGroups>) {
+    let mut index = [None::<usize>; 128];
+    for (g, group) in out.groups.iter_mut().zip(&groups.groups) {
+        let Some(n) = group
+            .params()
+            .ok()
+            .and_then(|p| usize::try_from(p.voice_group_index - 1).ok())
+            .filter(|&n| n < 128)
+        else {
+            continue;
+        };
+        let at = *index[n].get_or_insert_with(|| {
+            let limit = limits.and_then(|l| l.groups.get(n)?.as_ref());
+            out.voice_groups.push(limit.map_or(
+                ir::VoiceGroup {
+                    voices: 1,
+                    steal: ir::Steal::Oldest,
+                    prefer_released: true,
+                    fade_ms: 10.0,
+                    exclusive: None,
+                },
+                |l| voice_group(&l.voice_limit),
+            ));
+            out.voice_groups.len() - 1
+        });
+        g.voice_group = Some(at);
+    }
+}
+
+fn voice_group(v: &VoiceLimit) -> ir::VoiceGroup {
+    ir::VoiceGroup {
+        voices: u16::try_from(v.max_num_voices.max(1)).unwrap_or(u16::MAX),
+        // 0 is "Any": the oldest, as Kontakt's default.
+        steal: match v.kill_mode {
+            2 => ir::Steal::Newest,
+            3 => ir::Steal::Highest,
+            4 => ir::Steal::Lowest,
+            _ => ir::Steal::Oldest,
+        },
+        prefer_released: v.prefer_released,
+        fade_ms: v.ms_fade_time.max(0) as f32,
+        exclusive: u8::try_from(v.exclusion_group).ok().filter(|&s| s < 16),
+    }
+}
+
 fn translate_group(
     group: &Group,
     base: &Base,
@@ -183,9 +239,6 @@ fn translate_group(
         purged: group.source_identity().is_ok_and(|s| s.flag == 1),
         ..ir::Group::DEFAULT
     };
-    if v.voice_group_index > 0 {
-        notes.add(ir::Impact::Audible, "voice group", &v.name);
-    }
     let slot = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
         for (n, m) in InternalModArray16::try_from(chunk)?.slots()? {

@@ -71,6 +71,7 @@ pub fn prepare(
             .collect();
     }
     plan.polyphony = polyphony;
+    plan.voice_groups.clone_from(&instrument.voice_groups);
     plan.keyswitches = plan_switches.map(|(lo, hi)| lo..=hi);
     plan.default_keyswitch = plan.zones.iter().filter_map(|z| z.keyswitch).min();
     (plan, diagnostics)
@@ -249,6 +250,7 @@ fn zone(
     }
     out.group = group_id;
     out.off_by = group.off_by.and_then(|g| u32::try_from(g).ok());
+    out.voice_group = group.voice_group.and_then(|g| u32::try_from(g).ok());
     out.keytrack = group.keytrack;
     out.tune = group.tune + z.tune;
     out.gain = gain(group.volume_db + z.volume_db);

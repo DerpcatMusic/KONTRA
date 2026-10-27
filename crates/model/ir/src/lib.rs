@@ -16,6 +16,8 @@ pub struct Instrument {
     pub scripts: Vec<Script>,
     /// Voices the instrument may sound at once.
     pub voices: u16,
+    /// Shared voice limits; [`Group::voice_group`] indexes here.
+    pub voice_groups: Vec<VoiceGroup>,
     /// Preloaded bytes per channel of each resident zone (05-STREAM.md §1).
     pub preload: u32,
     pub diagnostics: Vec<Diagnostic>,
@@ -30,6 +32,7 @@ impl Instrument {
         buses: Vec::new(),
         scripts: Vec::new(),
         voices: 64,
+        voice_groups: Vec::new(),
         preload: 61_440,
         diagnostics: Vec::new(),
     };
@@ -115,6 +118,8 @@ pub struct Group {
     pub bus: usize,
     /// Saved unloaded: no preload until a script loads it.
     pub purged: bool,
+    /// Index into [`Instrument::voice_groups`].
+    pub voice_group: Option<usize>,
     pub zones: Vec<Zone>,
 }
 
@@ -135,6 +140,7 @@ impl Group {
         off_by: None,
         bus: 0,
         purged: false,
+        voice_group: None,
         zones: Vec::new(),
     };
 }
@@ -214,6 +220,28 @@ impl Curve {
             }
         }
     }
+}
+
+/// A voice limit shared by the groups that name it (Kontakt's voice groups).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceGroup {
+    pub voices: u16,
+    pub steal: Steal,
+    /// Steal released voices before held ones.
+    pub prefer_released: bool,
+    /// Fade of a stolen or excluded voice.
+    pub fade_ms: f32,
+    /// Starting a voice fades every voice of the other voice groups in this set.
+    pub exclusive: Option<u8>,
+}
+
+/// Which voice a full voice group gives up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Steal {
+    Oldest,
+    Newest,
+    Highest,
+    Lowest,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
