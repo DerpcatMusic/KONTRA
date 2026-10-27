@@ -48,11 +48,14 @@ pub struct RoundRobin {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
     Velocity,
+    Key,
     /// A MIDI CC, live: moving it changes sounding voices.
     Cc(u8),
 }
 
-/// An equal-power crossfade over 0..=127 values of `control`.
+/// A crossfade over 0..=127 values of `control`: a linear amplitude ramp,
+/// Kontakt's measured zone fade (`(v − L + 1)/(F + 1)` with `fade_in` =
+/// (L − 1, L + F), KONTAKT_REFERENCE.md §11 and §15).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Crossfade {
     pub control: Control,
@@ -74,9 +77,8 @@ impl Crossfade {
                 f32::from(value - lo) / f32::from(hi - lo)
             }
         };
-        let quarter = std::f32::consts::FRAC_PI_2;
-        let fade_in = self.fade_in.map_or(1.0, |r| (ramp(r) * quarter).sin());
-        let fade_out = self.fade_out.map_or(1.0, |r| (ramp(r) * quarter).cos());
+        let fade_in = self.fade_in.map_or(1.0, ramp);
+        let fade_out = self.fade_out.map_or(1.0, |r| 1.0 - ramp(r));
         fade_in * fade_out
     }
 }

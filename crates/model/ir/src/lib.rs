@@ -193,10 +193,12 @@ pub enum Source {
 pub enum Curve {
     /// Linear in dB: `intensity ×` this many dB down at source 0.
     Decibels(f32),
-    /// `1 − depth + depth × x^exponent` with `depth = min(1, 2 × intensity)` and
-    /// the exponent from 1.285 at intensity 50/127 to 1 at 1/2 and above
-    /// (Kontakt's volume modulation, measured against Kontakt by v1's oracle).
-    Power,
+    /// Kontakt's volume law (its "family H"): `1 − (1 − x) × intensity`,
+    /// cubed for velocity, key and the other note-time sources (external
+    /// types 7..=13), plain for controllers. Kontakt 8.13.1's modulation
+    /// compiler `0x140875ac8`/`0x140873120`; the cube at 50/127 matches the
+    /// measured velocity table to 0.03 dB RMS.
+    Kontakt { cubed: bool },
 }
 
 impl Curve {
@@ -206,17 +208,9 @@ impl Curve {
         let x = x.clamp(0.0, 1.0);
         match self {
             Self::Decibels(range) => 10f32.powf(-range * intensity * (1.0 - x) / 20.0),
-            Self::Power => {
-                const DEFAULT_INTENSITY: f32 = 50.0 / 127.0;
-                const DEFAULT_EXPONENT: f32 = 1.285;
-                if intensity <= 0.0 {
-                    return 1.0;
-                }
-                let i = intensity.min(1.0);
-                let exponent =
-                    1.0 + (DEFAULT_EXPONENT - 1.0) * (1.0 - i) / (1.0 - DEFAULT_INTENSITY);
-                let depth = (2.0 * i).min(1.0);
-                1.0 - depth + depth * x.powf(exponent.clamp(1.0, 2.5))
+            Self::Kontakt { cubed } => {
+                let g = (1.0 - (1.0 - x) * intensity).max(0.0);
+                if cubed { g * g * g } else { g }
             }
         }
     }
@@ -253,8 +247,10 @@ pub struct Zone {
     pub keys: RangeInclusive<u8>,
     pub velocities: RangeInclusive<u8>,
     /// Velocity steps over which the zone fades in above its low edge and out
-    /// below its high edge (equal power).
+    /// below its high edge (a linear amplitude ramp, Kontakt's measured law).
     pub velocity_fade: (u8, u8),
+    /// The same over keys.
+    pub key_fade: (u8, u8),
     pub root: u8,
     pub tune: f64,
     pub volume_db: f32,

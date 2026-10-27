@@ -267,7 +267,7 @@ fn group_polyphony_keeps_only_the_newest_voice() {
 }
 
 #[test]
-fn velocity_layers_crossfade_with_equal_power() {
+fn velocity_layers_crossfade_linearly() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut soft = zone(&mut store, 1.0);
     soft.pan = -1.0;
@@ -285,7 +285,10 @@ fn velocity_layers_crossfade_with_equal_power() {
     }];
     let mut e = engine(&store, Plan::new(vec![soft, loud], 8));
     let [l, r] = level(&mut e, &[on(60, 60.0 / 127.0)]);
-    assert!(close(l * l + r * r, 1.0), "{l} {r}");
+    assert!(
+        close(l + r, 1.0),
+        "Kontakt's linear amplitude ramp: {l} {r}"
+    );
     assert!(close(l, r), "midpoint: equal parts");
 }
 
