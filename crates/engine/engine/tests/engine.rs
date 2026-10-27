@@ -4,7 +4,7 @@ use kontra_engine::{Engine, Plan, Timed, Zone};
 use kontra_events::{Event, HostNote, HostPattern};
 use kontra_stream::{BlobKey, Encoding, MemSource, SampleFmt, Store, StoreConfig};
 use kontra_time::SampleTime;
-use kontra_voice::{Ahdsr, Region};
+use kontra_voice::Region;
 
 const RATE: u32 = 48_000;
 const FMT: SampleFmt = SampleFmt {
@@ -40,20 +40,20 @@ fn region(store: &mut Store, name: &str, frames: u64) -> std::io::Result<Region>
 fn zone(region: Region, pan: f32) -> Zone {
     Zone {
         pan,
-        envelope: Ahdsr {
-            release: 2_000,
-            ..Ahdsr::GATE
-        },
         ..Zone::new(region, 60, 44_100)
     }
 }
 
 fn plan(zones: Vec<Zone>, voices: usize) -> Arc<Plan> {
-    Arc::new(Plan {
+    let mut plan = Plan {
         notes: 64,
         queue: 256,
         ..Plan::new(zones, voices)
-    })
+    };
+    for g in &mut plan.groups {
+        g.envelope.release = 2_000;
+    }
+    Arc::new(plan)
 }
 
 fn host(key: u8) -> HostNote {

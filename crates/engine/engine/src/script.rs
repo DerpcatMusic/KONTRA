@@ -21,6 +21,19 @@ pub struct ScriptPlan {
     pub restore: Vec<(u32, i64)>,
     pub restore_texts: Vec<(u32, Text)>,
     pub controls: Controls,
+    pub engine_pars: EnginePars,
+}
+
+/// The script's numbers for the engine parameters the engine answers.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EnginePars {
+    pub attack: i32,
+    pub hold: i32,
+    pub decay: i32,
+    pub sustain: i32,
+    pub release: i32,
+    /// A volume modulation's intensity.
+    pub intensity: i32,
 }
 
 /// The script's UI controls as the engine sees them: ids, and where values live.
@@ -507,6 +520,23 @@ impl HostApi for Engine {
             Action::GetControlPar => HostValue::Int(self.control_par(call.cells, int(0), int(1))),
             Action::SetControlPar => {
                 self.set_control_par(call.cells, int(0), int(1), int(2));
+                HostValue::Nothing
+            }
+            Action::FindMod => {
+                let name = call.texts.first().map_or("", Text::as_str);
+                let found = self.groups.get(int(0) as usize).and_then(|g| {
+                    g.mods
+                        .iter()
+                        .find(|m| m.name == name)
+                        .map(|m| i32::from(m.slot))
+                });
+                HostValue::Int(found.unwrap_or(-1))
+            }
+            Action::SetEnginePar if self.set_engine_par(int(0), int(1), int(2), int(3)) => {
+                HostValue::Nothing
+            }
+            Action::SetController => {
+                self.set_controller(int(0), int(1));
                 HostValue::Nothing
             }
             Action::EventStatus => {

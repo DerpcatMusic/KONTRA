@@ -3,10 +3,7 @@
 
 use std::sync::Arc;
 
-use kontra_engine::{
-    Ahdsr, Engine, Event, HostNote, HostPattern, Plan, Region, SampleTime, Timed, VelocityCurve,
-    Zone,
-};
+use kontra_engine::{Engine, Event, HostNote, HostPattern, Plan, Region, SampleTime, Timed, Zone};
 use kontra_stream::{BlobKey, Encoding, MemSource, SampleFmt, Store, StoreConfig};
 
 const RATE: u32 = 48_000;
@@ -41,17 +38,15 @@ fn zone(store: &mut Store, level: f32, group: u32) -> Zone {
     };
     let mut z = Zone::new(region, 60, RATE);
     z.group = group;
-    z.velocity = VelocityCurve::Flat;
-    z.envelope = Ahdsr {
-        release: 64,
-        ..Ahdsr::GATE
-    };
     z
 }
 
 fn engine(store: &Store, zones: Vec<Zone>, source: &str) -> Engine {
     let script = kontra_ksp::compile(source, &[]).unwrap();
     let mut plan = Plan::new(zones, 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
     plan.script = Some(kontra_host::script::plan(&script, &[]));
     Engine::new(Arc::new(plan), store.client(), RATE)
 }
@@ -230,4 +225,33 @@ fn a_script_reads_its_restored_controls() {
     level(&mut e, &[on(60)]);
     assert_eq!(e.last_message(), "0 0");
     assert_eq!(e.stats().messages, 2);
+}
+
+#[test]
+fn a_script_finds_a_modulation_by_name_and_drives_it() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "Dyn".into(),
+        slot: 3,
+        kind: ir::ModKind::Volume {
+            source: ir::Source::Controller(110),
+            intensity: 0.0,
+            curve: ir::Curve::Power,
+        },
+    }];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY, 1000000, 0, find_mod(0, \"Dyn\"), -1)
+            set_controller(110, 64)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.script = Some(kontra_host::script::plan(&script, &[]));
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // Full intensity: the level follows the controller linearly.
+    let l = level(&mut e, &[on(60)]);
+    assert!((l - 0.5 * 64.0 / 127.0).abs() < 1e-3, "{l}");
 }

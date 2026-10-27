@@ -12,6 +12,7 @@ mod behaviour;
 mod controls;
 mod inspect;
 mod ledger;
+mod params;
 mod plan;
 mod prepare;
 mod queue;
@@ -30,12 +31,10 @@ pub use kontra_time::SampleTime;
 pub use kontra_vm::{Program, Text};
 pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
-pub use plan::{
-    Bus, Control, Crossfade, Plan, RoundRobin, RrCounter, Trigger, VelocityCurve, Zone,
-};
+pub use plan::{Bus, Control, Crossfade, Group, Plan, RoundRobin, RrCounter, Trigger, Zone};
 pub use prepare::{Open, prepare};
 pub use queue::Timed;
-pub use script::{Callbacks, Controls, ScriptPlan};
+pub use script::{Callbacks, Controls, EnginePars, ScriptPlan};
 
 use behaviour::Behaviour;
 use ledger::{Ledger, Note, Origin};
@@ -118,6 +117,8 @@ pub struct Engine {
     called: Box<[u32]>,
     /// Per control, parameters the script set other than its value.
     control_pars: Box<[Vec<(i32, i32)>]>,
+    /// The plan's groups as scripts have changed them.
+    groups: Box<[Group]>,
 }
 
 impl Engine {
@@ -125,6 +126,7 @@ impl Engine {
     /// stolen voices can fade. Not real-time.
     #[must_use]
     pub fn new(plan: Arc<Plan>, stream: StreamClient, rate: u32) -> Self {
+        let shared: Box<[Group]> = plan.groups.clone().into();
         let pool = plan.voices + plan.voices / 4 + 1;
         let voices = (0..pool)
             .map(|_| Slot {
@@ -178,6 +180,7 @@ impl Engine {
             pedal: [false; 16],
             stats: Stats::default(),
             vm,
+            groups: shared,
             running: Running::IDLE,
             pending: Vec::with_capacity(capacity),
             masks: GroupMasks::new(capacity, groups),
@@ -424,7 +427,10 @@ impl Engine {
                 region,
                 step: step(zone, &n, self.rate),
                 gain: self.voice_gain(zone, &n, factor),
-                envelope: zone.envelope,
+                envelope: self
+                    .groups
+                    .get(zone.group as usize)
+                    .map_or(Ahdsr::GATE, |g| g.envelope),
             };
             let now = self.now;
             let Some(slot) = self.free_slot() else {
@@ -635,7 +641,7 @@ impl Engine {
             let Some(zone) = plan.zones.get(slot.zone) else {
                 continue;
             };
-            if cc.is_some_and(|cc| !zone.crossfades.iter().any(|x| x.control == Control::Cc(cc))) {
+            if cc.is_some_and(|cc| !self.follows(zone, cc)) {
                 continue;
             }
             let gain = self.voice_gain(zone, &n, slot.factor);
@@ -740,18 +746,51 @@ impl Engine {
     }
 
     fn voice_gain(&self, zone: &Zone, note: &Note, factor: f32) -> [f32; 2] {
+        let channel = note.host.channel;
         let crossfade: f32 = zone
             .crossfades
             .iter()
             .map(|x| {
                 x.gain(
                     self.behaviour
-                        .control(x.control, note.host.channel, note.velocity_byte),
+                        .control(x.control, channel, note.velocity_byte),
                 )
             })
             .product();
+        let mods: f32 = self.groups.get(zone.group as usize).map_or(1.0, |g| {
+            g.mods
+                .iter()
+                .map(|m| match m.kind {
+                    ir::ModKind::Volume {
+                        source,
+                        intensity,
+                        curve,
+                    } => {
+                        let x = match source {
+                            ir::Source::Velocity => note.velocity as f32,
+                            ir::Source::Controller(cc) => {
+                                f32::from(self.behaviour.cc(channel, cc)) / 127.0
+                            }
+                        };
+                        curve.gain(intensity, x)
+                    }
+                    ir::ModKind::Envelope => 1.0,
+                })
+                .product()
+        });
         let [l, r] = gain(zone, note);
-        [l * crossfade * factor, r * crossfade * factor]
+        let g = crossfade * mods * factor;
+        [l * g, r * g]
+    }
+
+    /// Whether moving `cc` changes this zone's level.
+    fn follows(&self, zone: &Zone, cc: u8) -> bool {
+        zone.crossfades.iter().any(|x| x.control == Control::Cc(cc))
+            || self.groups.get(zone.group as usize).is_some_and(|g| {
+                g.mods.iter().any(|m| {
+                    matches!(m.kind, ir::ModKind::Volume { source: ir::Source::Controller(c), .. } if c == cc)
+                })
+            })
     }
 }
 
@@ -768,7 +807,7 @@ fn step(zone: &Zone, note: &Note, rate: u32) -> f64 {
 // when a library's measured stereo image needs them.
 fn gain(zone: &Zone, note: &Note) -> [f32; 2] {
     let script = 10f32.powf(note.script_volume as f32 / 20_000.0);
-    let g = zone.gain * zone.velocity.gain(note.velocity as f32) * note.expression_gain * script;
+    let g = zone.gain * note.expression_gain * script;
     let pan = (zone.pan + note.expression_pan + note.script_pan as f32 / 1000.0).clamp(-1.0, 1.0);
     [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
 }

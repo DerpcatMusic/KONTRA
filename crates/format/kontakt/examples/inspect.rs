@@ -27,6 +27,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         i.samples.len(),
         i.scripts.len()
     );
+    let mut mods = std::collections::BTreeMap::new();
+    for m in i.groups.iter().filter(|g| !g.purged).flat_map(|g| &g.mods) {
+        *mods
+            .entry(format!("{} @{} {:?}", m.name, m.slot, m.kind))
+            .or_insert(0) += 1;
+    }
+    for (m, n) in mods {
+        println!("  mod {n}× {m}");
+    }
+    // KONTRA_SCRIPT_DIR=<dir> writes each script's source there.
+    if let Some(dir) = std::env::var_os("KONTRA_SCRIPT_DIR") {
+        for (n, script) in i.scripts.iter().enumerate() {
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("{n}.txt")),
+                &script.source,
+            )?;
+        }
+    }
     for d in &i.diagnostics {
         println!("  {:?} {}: {}", d.impact, d.feature, d.detail);
     }

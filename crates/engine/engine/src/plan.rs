@@ -5,6 +5,7 @@
 use crate::ScriptPlan;
 use std::ops::RangeInclusive;
 
+use kontra_ir as ir;
 use kontra_voice::{Ahdsr, Region};
 
 /// When a zone sounds.
@@ -80,25 +81,34 @@ impl Crossfade {
     }
 }
 
-/// How note velocity scales a zone's amplitude.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum VelocityCurve {
-    /// Velocity does not change the level.
-    Flat,
-    /// Linear in dB: this many dB down at velocity 0, 0 dB at full velocity.
-    Decibels(f32),
-    /// `1 − depth + depth × velocity^exponent` (linear: depth 1, exponent 1).
-    Power { depth: f32, exponent: f32 },
+/// What a group's voices share and a script may change while they play.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Group {
+    pub mods: Vec<ir::Mod>,
+    pub envelope: Ahdsr,
 }
 
-impl VelocityCurve {
+impl Group {
+    /// Velocity 24 dB down at zero, a gate envelope.
     #[must_use]
-    pub fn gain(self, velocity: f32) -> f32 {
-        match self {
-            Self::Flat => 1.0,
-            Self::Decibels(range) => 10f32.powf(-range * (1.0 - velocity) / 20.0),
-            Self::Power { depth, exponent } => 1.0 - depth + depth * velocity.powf(exponent),
+    pub fn standard() -> Self {
+        Self {
+            mods: vec![ir::Mod {
+                name: String::new(),
+                slot: 0,
+                kind: ir::ModKind::Volume {
+                    source: ir::Source::Velocity,
+                    intensity: 1.0,
+                    curve: ir::Curve::Decibels(24.0),
+                },
+            }],
+            envelope: Ahdsr::GATE,
         }
+    }
+
+    /// The mod a script addresses by `slot`.
+    pub fn mod_mut(&mut self, slot: i32) -> Option<&mut ir::Mod> {
+        self.mods.iter_mut().find(|m| i32::from(m.slot) == slot)
     }
 }
 
@@ -135,10 +145,8 @@ pub struct Zone {
     pub gain: f32,
     /// −1 (left) ..= 1 (right).
     pub pan: f32,
-    pub velocity: VelocityCurve,
     /// Release triggers: dB lost per second the key was held.
     pub release_decay_db: f32,
-    pub envelope: Ahdsr,
     /// Ignores note-off and plays to the end (drums, one-shots).
     pub one_shot: bool,
     /// Output bus (mic position) index into [`Plan::buses`].
@@ -166,9 +174,7 @@ impl Zone {
             region,
             gain: 1.0,
             pan: 0.0,
-            velocity: VelocityCurve::Decibels(24.0),
             release_decay_db: 0.0,
-            envelope: Ahdsr::GATE,
             one_shot: false,
             bus: 0,
         }
@@ -188,6 +194,8 @@ pub struct Bus {
 #[derive(Clone)]
 pub struct Plan {
     pub zones: Vec<Zone>,
+    /// Indexed by [`Zone::group`].
+    pub groups: Vec<Group>,
     pub buses: Vec<Bus>,
     /// Voice limits per group: (group, polyphony). The oldest voice in the group fades.
     pub polyphony: Vec<(u32, u16)>,
@@ -206,7 +214,13 @@ impl Plan {
     /// One bus, no behaviour beyond the zones.
     #[must_use]
     pub fn new(zones: Vec<Zone>, voices: usize) -> Self {
+        let groups = zones
+            .iter()
+            .map(|z| z.group as usize + 1)
+            .max()
+            .unwrap_or(0);
         Self {
+            groups: vec![Group::standard(); groups],
             zones,
             buses: vec![Bus {
                 name: "Main".into(),

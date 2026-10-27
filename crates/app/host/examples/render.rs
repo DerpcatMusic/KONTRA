@@ -22,6 +22,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|k| k.to_str()?.parse().ok())
         .unwrap_or(60);
     let out: PathBuf = args.next().unwrap_or_else(|| "render.wav".into()).into();
+    // Optional: the mod wheel moves to this value one second in.
+    let wheel: Option<u8> = args.next().and_then(|a| a.to_str()?.parse().ok());
 
     let t = std::time::Instant::now();
     let mut store = Store::new(StoreConfig::DEFAULT)?;
@@ -67,9 +69,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut audio = Vec::new();
     let mut block = vec![[0.0f32; 2]; 512];
+    let cc = wheel.map(|v| Timed {
+        at: SampleTime(0),
+        body: Event::Ump([0x20B0_0100 | u32::from(v), 0]),
+    });
     for n in 0..(4 * RATE as usize / 512) {
         let input: &[Timed<Event>] = match n {
             0 => std::slice::from_ref(&on),
+            n if n == RATE as usize / 512 => cc.as_slice(),
             n if n == 2 * RATE as usize / 512 => std::slice::from_ref(&off),
             _ => &[],
         };
@@ -79,6 +86,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         audio.extend_from_slice(&block);
     }
     let peak = audio.iter().flatten().fold(0f32, |p, s| p.max(s.abs()));
+    let rms = |from: usize, to: usize| {
+        let s = audio.get(from..to).unwrap_or_default();
+        (s.iter().flatten().map(|x| x * x).sum::<f32>() / (2 * s.len().max(1)) as f32).sqrt()
+    };
+    let r = RATE as usize;
+    println!(
+        "rms 0.5-1 s {:.4}, 1.5-2 s {:.4}",
+        rms(r / 2, r),
+        rms(r * 3 / 2, 2 * r)
+    );
     println!("peak {peak:.3}, {:?}", engine.stats());
     println!("all actions: {:?}", engine.unhandled_actions());
     write_wav(&out, &audio)?;

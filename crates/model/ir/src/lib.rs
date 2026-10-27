@@ -98,8 +98,10 @@ pub struct Group {
     pub tune: f64,
     /// Pitch follows the key by this much (1 = a semitone per key).
     pub keytrack: f64,
+    /// The amplitude envelope.
     pub envelope: Envelope,
-    pub velocity: Velocity,
+    /// Modulation of this group's voices; none: velocity leaves the level alone.
+    pub mods: Vec<Mod>,
     pub trigger: Trigger,
     /// Release triggers: dB lost per second the key was held.
     pub release_decay_db: f32,
@@ -124,7 +126,7 @@ impl Group {
         tune: 0.0,
         keytrack: 1.0,
         envelope: Envelope::GATE,
-        velocity: Velocity::Decibels(24.0),
+        mods: Vec::new(),
         trigger: Trigger::Attack,
         release_decay_db: 0.0,
         one_shot: false,
@@ -158,17 +160,66 @@ impl Envelope {
     };
 }
 
-/// How note velocity scales the level.
+/// One modulation of a group. Scripts find it by `name` and address it by
+/// `slot`, the number the format gives it (Kontakt: its modulator slot).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mod {
+    pub name: String,
+    pub slot: u16,
+    pub kind: ModKind,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Velocity {
-    Flat,
-    /// Linear in dB: this many dB down at velocity 0.
-    Decibels(f32),
-    /// `1 − depth + depth × velocity^exponent`.
-    Power {
-        depth: f32,
-        exponent: f32,
+pub enum ModKind {
+    /// The group's [`Group::envelope`], shaping its level.
+    Envelope,
+    /// `source` scales the level along `curve`; `intensity` is −1..=1 and live.
+    Volume {
+        source: Source,
+        intensity: f32,
+        curve: Curve,
     },
+}
+
+/// A per-note modulation source, 0..=1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    Velocity,
+    Controller(u8),
+}
+
+/// How a volume modulation turns its source into gain.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Curve {
+    /// Linear in dB: `intensity ×` this many dB down at source 0.
+    Decibels(f32),
+    /// `1 − depth + depth × x^exponent` with `depth = min(1, 2 × intensity)` and
+    /// the exponent from 1.285 at intensity 50/127 to 1 at 1/2 and above
+    /// (Kontakt's volume modulation, measured against Kontakt by v1's oracle).
+    Power,
+}
+
+impl Curve {
+    /// Linear gain for source value `x` (0..=1) at `intensity`.
+    #[must_use]
+    pub fn gain(self, intensity: f32, x: f32) -> f32 {
+        let x = x.clamp(0.0, 1.0);
+        match self {
+            Self::Decibels(range) => 10f32.powf(-range * intensity * (1.0 - x) / 20.0),
+            Self::Power => {
+                const DEFAULT_INTENSITY: f32 = 50.0 / 127.0;
+                const DEFAULT_EXPONENT: f32 = 1.285;
+                if intensity <= 0.0 {
+                    return 1.0;
+                }
+                let i = intensity.min(1.0);
+                let exponent =
+                    1.0 + (DEFAULT_EXPONENT - 1.0) * (1.0 - i) / (1.0 - DEFAULT_INTENSITY);
+                let depth = (2.0 * i).min(1.0);
+                1.0 - depth + depth * x.powf(exponent.clamp(1.0, 2.5))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -59,7 +59,6 @@ fn zone(sample: usize) -> ir::Zone {
 
 fn group(key: u8, zones: Vec<ir::Zone>) -> ir::Group {
     ir::Group {
-        velocity: ir::Velocity::Flat,
         start: vec![ir::StartRule::Keyswitch {
             key,
             range: 24..=25,
