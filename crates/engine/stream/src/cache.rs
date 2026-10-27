@@ -12,6 +12,10 @@ use crate::fmt::SampleFmt;
 
 pub(crate) struct Cache {
     slots: Box<[Slot]>,
+    /// Every slot's bytes, `slot_bytes` each. Allocated zeroed, so the pages
+    /// of slots that never fill are never made resident.
+    bytes: Box<[AtomicU8]>,
+    slot_bytes: usize,
 }
 
 struct Slot {
@@ -21,7 +25,6 @@ struct Slot {
     owner: AtomicU64,
     /// Set by a read, cleared by the eviction clock: a second chance.
     touched: AtomicBool,
-    bytes: Box<[AtomicU8]>,
 }
 
 /// Owner tag of a page. Never `u64::MAX`, the empty tag.
@@ -33,15 +36,26 @@ const EMPTY: u64 = u64::MAX;
 
 impl Cache {
     pub(crate) fn new(slots: usize, slot_bytes: usize) -> Self {
+        let bytes = bytemuck::zeroed_slice_box(slots * slot_bytes);
         let slots = (0..slots)
             .map(|_| Slot {
                 generation: AtomicU32::new(0),
                 owner: AtomicU64::new(EMPTY),
                 touched: AtomicBool::new(false),
-                bytes: (0..slot_bytes).map(|_| AtomicU8::new(0)).collect(),
             })
             .collect();
-        Self { slots }
+        Self {
+            slots,
+            bytes,
+            slot_bytes,
+        }
+    }
+
+    fn bytes(&self, slot: usize) -> &[AtomicU8] {
+        let start = slot * self.slot_bytes;
+        self.bytes
+            .get(start..start + self.slot_bytes)
+            .unwrap_or_default()
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -61,13 +75,14 @@ impl Cache {
         let Some(s) = self.slots.get(slot as usize) else {
             return false;
         };
+        let bytes = self.bytes(slot as usize);
         let before = s.generation.load(Ordering::Acquire);
         if before & 1 == 1 || s.owner.load(Ordering::Relaxed) != owner {
             out.fill([0.0; 2]);
             return false;
         }
         fmt.decode(
-            |i| s.bytes.get(i).map_or(0, |b| b.load(Ordering::Relaxed)),
+            |i| bytes.get(i).map_or(0, |b| b.load(Ordering::Relaxed)),
             first,
             out,
         );
@@ -89,8 +104,8 @@ impl Cache {
         s.generation.store(g.wrapping_add(1), Ordering::Relaxed);
         fence(Ordering::Release);
         s.owner.store(owner, Ordering::Relaxed);
-        for (cell, value) in s
-            .bytes
+        for (cell, value) in self
+            .bytes(slot as usize)
             .iter()
             .zip(data.iter().copied().chain(std::iter::repeat(0)))
         {

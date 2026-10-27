@@ -2538,6 +2538,7 @@ dependencies = [
 name = "kontra-stream"
 version = "0.0.0"
 dependencies = [
+ "bytemuck",
  "crossbeam-queue",
  "kontra-ir",
  "ncw",

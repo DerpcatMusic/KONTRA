@@ -49,6 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         loaded.plan.zones.len(),
         t.elapsed()
     );
+    println!("  memory: {}", memory());
     if !loaded.plan.switches.is_empty() {
         println!(
             "  switches {:?}, default {:?}",
@@ -149,6 +150,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_wav(&out, &audio)?;
     println!("wrote {}", out.display());
     Ok(())
+}
+
+/// Resident and peak memory from `/proc/self/status`.
+fn memory() -> String {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    status
+        .lines()
+        .filter(|l| l.starts_with("VmRSS") || l.starts_with("VmHWM"))
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn write_wav(path: &std::path::Path, frames: &[[f32; 2]]) -> std::io::Result<()> {
