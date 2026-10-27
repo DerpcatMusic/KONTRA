@@ -39,28 +39,20 @@ fn region(store: &Store, name: &str, frames: u64) -> std::io::Result<Region> {
 
 fn zone(region: Region, pan: f32) -> Zone {
     Zone {
-        keys: 0..=127,
-        velocities: 1..=127,
-        root: 60,
-        tune: 0.0,
-        sample_rate: 44_100,
-        region,
-        gain: 1.0,
         pan,
-        velocity_db: 24.0,
         envelope: Ahdsr {
             release: 2_000,
             ..Ahdsr::GATE
         },
+        ..Zone::new(region, 60, 44_100)
     }
 }
 
 fn plan(zones: Vec<Zone>, voices: usize) -> Arc<Plan> {
     Arc::new(Plan {
-        zones,
-        voices,
         notes: 64,
         queue: 256,
+        ..Plan::new(zones, voices)
     })
 }
 
@@ -214,7 +206,7 @@ fn a_released_note_ends_and_is_reported() {
 }
 
 #[test]
-fn a_full_pool_steals_the_oldest_voice_and_counts_it() {
+fn a_full_pool_fades_the_oldest_voice_and_counts_it() {
     let store = Store::new(StoreConfig::default()).unwrap();
     let mut engine = Engine::new(
         plan(vec![zone(region(&store, "a", 48_000).unwrap(), 0.0)], 2),
@@ -222,6 +214,13 @@ fn a_full_pool_steals_the_oldest_voice_and_counts_it() {
         RATE,
     );
     render(&mut engine, &[on(0, 60), on(10, 62), on(20, 64)], 128, 128);
+    assert_eq!(engine.playing_voices(), 2);
+    assert_eq!(
+        engine.active_voices(),
+        3,
+        "the stolen voice fades out, no click"
+    );
+    render(&mut engine, &[], 1024, 128);
     assert_eq!(engine.active_voices(), 2);
     assert_eq!(engine.stats().voices_stolen, 1);
 }

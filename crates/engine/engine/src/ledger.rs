@@ -2,6 +2,9 @@
 //! A note owns its voices; every operation on voices goes through their note.
 
 use kontra_events::{HostNote, HostPattern};
+use kontra_time::SampleTime;
+
+use crate::behaviour::RrDraw;
 
 /// A note handle. Stale handles (the note ended) match nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,6 +18,11 @@ pub(crate) struct Note {
     pub(crate) host: HostNote,
     /// 0..=1.
     pub(crate) velocity: f64,
+    /// MIDI velocity 1..=127, what zones and crossfades select on.
+    pub(crate) velocity_byte: u8,
+    pub(crate) started: SampleTime,
+    /// The round-robin draw of the attack; release triggers reuse it.
+    pub(crate) draw: RrDraw,
     /// Initial tuning from the host, semitones.
     pub(crate) tune: f64,
     pub(crate) expression_tune: f64,
@@ -27,10 +35,20 @@ pub(crate) struct Note {
 }
 
 impl Note {
-    pub(crate) fn new(host: HostNote, velocity: f64, tune: f64) -> Self {
+    pub(crate) fn new(
+        host: HostNote,
+        velocity: f64,
+        tune: f64,
+        started: SampleTime,
+        draw: RrDraw,
+    ) -> Self {
+        let velocity = velocity.clamp(0.0, 1.0);
         Self {
             host,
             velocity,
+            velocity_byte: (velocity * 127.0).round().max(1.0) as u8,
+            started,
+            draw,
             tune,
             expression_tune: 0.0,
             expression_gain: 1.0,
@@ -119,6 +137,13 @@ impl Ledger {
                 });
             }
         }
+    }
+
+    pub(crate) fn count(&self, keep: impl Fn(&Note) -> bool) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| e.note.as_ref().is_some_and(&keep))
+            .count()
     }
 
     pub(crate) fn matching(&self, pattern: HostPattern, out: &mut Vec<NoteRef>) {

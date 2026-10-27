@@ -81,6 +81,11 @@ impl Voice {
         self.env.release();
     }
 
+    /// Fades out over `frames` (a stolen or choked voice): no click, no tail.
+    pub fn fade(&mut self, frames: u32) {
+        self.env.fade(frames);
+    }
+
     /// Stops at once, without a release.
     pub fn kill(&mut self) {
         self.region = None;
