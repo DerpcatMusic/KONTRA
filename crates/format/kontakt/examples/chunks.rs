@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use ni_file::kontakt::{Chunk, KontaktObject, StructuredObject};
+use ni_file::kontakt::{Chunk, KontaktObject, StructuredObject, objects::read_param_slots};
 
 #[derive(Default)]
 struct Tally {
@@ -64,10 +64,14 @@ fn walk(chunk: &Chunk, by_id: &mut BTreeMap<(u16, u16), Tally>, file: &str, dept
     let object = StructuredObject::read(std::io::Cursor::new(chunk.data.as_slice())).ok();
     let version = object.as_ref().map_or(0, |o| o.version);
     let t = by_id.entry((chunk.id, version)).or_default();
+    let mut nested = Vec::new();
     match chunk.into_object() {
         Ok(KontaktObject::Unsupported(_)) => t.unknown += 1,
         Ok(o) if is_named_only(&o) => t.named += 1,
-        Ok(_) => t.typed += 1,
+        Ok(o) => {
+            t.typed += 1;
+            nested = inner_chunks(o);
+        }
         Err(e) => {
             t.failed += 1;
             if t.example.is_empty() {
@@ -75,12 +79,38 @@ fn walk(chunk: &Chunk, by_id: &mut BTreeMap<(u16, u16), Tally>, file: &str, dept
             }
         }
     }
-    if depth < 16
-        && let Some(o) = object
-    {
-        for c in &o.children {
+    if depth < 16 {
+        nested.extend(object.into_iter().flat_map(|o| o.children));
+        for c in &nested {
             walk(c, by_id, file, depth + 1);
         }
+    }
+}
+
+/// Chunks a decoder holds outside the structured children: parameter-array
+/// slots and a snapshot's group records.
+fn inner_chunks(o: KontaktObject) -> Vec<Chunk> {
+    let slots = |o: &StructuredObject, count: usize| {
+        read_param_slots(o, count)
+            .map_or_else(|_| Vec::new(), |s| s.into_iter().map(|(_, c)| c).collect())
+    };
+    match o {
+        KontaktObject::BParameterArraySerBParFX8(a) => a.items.into_iter().flatten().collect(),
+        KontaktObject::BParameterArraySerBParInternalMod16(a) => slots(&a.0, 16),
+        KontaktObject::BParameterArraySerBParExternalMod32(a) => {
+            slots(&a.0, a.slot_count().unwrap_or(32))
+        }
+        KontaktObject::BSnapshot(s) => {
+            let groups = s.group_snapshots().unwrap_or_default();
+            let mut out = s.effect_children;
+            for (_, g) in groups {
+                for array in [g.fx, g.internal, g.external] {
+                    out.extend(array.items.into_iter().flatten());
+                }
+            }
+            out
+        }
+        _ => Vec::new(),
     }
 }
 
