@@ -20,7 +20,7 @@ fn region(sample: usize) -> Region {
         velocity_low: 0.,
         velocity_high: 1.,
         gain: 1.,
-        envelope: Envelope::GATE,
+        envelope: Envelope::default(),
         playback: Playback {
             loop_range: Some(Loop {
                 start: 0,

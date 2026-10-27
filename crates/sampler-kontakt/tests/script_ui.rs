@@ -2,7 +2,7 @@ use sampler_ir as ir;
 
 #[test]
 fn a_bound_script_hands_back_its_interface() {
-    let mut instrument = ir::Instrument::DEFAULT;
+    let mut instrument = ir::Instrument::default();
     instrument.behaviors.push(ir::Behavior {
         name: "panel".into(),
         language: ir::Language::Ksp,
@@ -25,7 +25,7 @@ fn a_bound_script_hands_back_its_interface() {
 
 #[test]
 fn a_failing_script_leaves_the_others_bound_in_their_slots() {
-    let mut instrument = ir::Instrument::DEFAULT;
+    let mut instrument = ir::Instrument::default();
     instrument.behaviors.push(ir::Behavior {
         name: "bad".into(),
         language: ir::Language::Ksp,

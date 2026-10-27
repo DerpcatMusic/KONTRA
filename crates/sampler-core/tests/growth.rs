@@ -104,7 +104,7 @@ fn note_parameter_pages_grow_without_moving_live_state_or_audio_heap_work() {
                 velocity_low: 0.,
                 velocity_high: 1.,
                 gain: 1.,
-                envelope: Envelope::GATE,
+                envelope: Envelope::default(),
                 playback: Playback::default(),
             }],
             512,

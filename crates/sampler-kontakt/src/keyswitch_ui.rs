@@ -244,7 +244,7 @@ mod tests {
         hidden_overlay.binding = Binding::Control(ControlId(999));
         hidden_overlay.hidden = true;
         ui.widgets.push(hidden_overlay);
-        let mut inst = ir::Instrument::DEFAULT;
+        let mut inst = ir::Instrument::default();
         normalize(&mut inst, &[ui.clone()], &[]);
         assert_eq!(
             inst.articulations.len(),
@@ -275,7 +275,7 @@ mod tests {
                 w.text = "renamed choice".into();
             }
         }
-        let mut reloaded = ir::Instrument::DEFAULT;
+        let mut reloaded = ir::Instrument::default();
         normalize(&mut reloaded, &[ui], &[]);
         assert_eq!(
             source,
@@ -290,7 +290,7 @@ mod tests {
     #[test]
     fn keyswitch_existing_note_labels_use_agreeing_authored_key_names() {
         let script = sampler_ksp::compile("on init\n set_key_name(24,\"Legato\")\n set_key_name(25,\"Legato\")\n set_key_name(26,\"Staccato\")\n set_key_name(27,\"Pizzicato\")\nend on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
-        let mut inst = ir::Instrument::DEFAULT;
+        let mut inst = ir::Instrument::default();
         inst.articulations = [
             ("range", "C0", vec![24, 25]),
             ("single", "D0", vec![26]),
@@ -352,7 +352,7 @@ mod tests {
                 label.text = "C0".into();
                 ui.widgets.push(label);
             }
-            let mut inst = ir::Instrument::DEFAULT;
+            let mut inst = ir::Instrument::default();
             normalize(&mut inst, &[ui], &[]);
             assert_eq!(
                 inst.articulations.len(),

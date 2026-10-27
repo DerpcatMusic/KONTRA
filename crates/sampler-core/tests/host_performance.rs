@@ -14,7 +14,7 @@ fn input() -> Input {
 }
 
 fn source(kind: usize) -> ir::Instrument {
-    let mut i = ir::Instrument::DEFAULT;
+    let mut i = ir::Instrument::default();
     i.assets.push(ir::Asset {
         location: ir::AssetLocation::Path("generated.wav".into()),
         residency: Default::default(),

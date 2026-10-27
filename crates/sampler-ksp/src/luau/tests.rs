@@ -154,7 +154,7 @@ fn runtime(source: &str, rate: u32) -> Runtime {
                     velocity_low: 0.,
                     velocity_high: 1.,
                     gain: 1.,
-                    envelope: Envelope::GATE,
+                    envelope: Envelope::default(),
                     playback: Playback::default(),
                 }],
                 2,

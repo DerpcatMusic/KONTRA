@@ -12,7 +12,7 @@ fn readonly_physical_catalog_exceeds_routing_count_but_keeps_its_own_byte_budget
         low_key: 0,
         high_key: 127,
     };
-    let mut instrument = ir::Instrument::DEFAULT;
+    let mut instrument = ir::Instrument::default();
     instrument.source_indices.zones = vec![None; count];
     instrument.source_indices.zone_catalog = (0..count)
         .map(|n| ir::SourceZone {
@@ -72,7 +72,7 @@ fn authored_inactive_envelope_values_remain_readable_without_a_dsp_write_owner()
         slot: 9,
         generic: -1,
     };
-    let mut instrument = ir::Instrument::DEFAULT;
+    let mut instrument = ir::Instrument::default();
     instrument
         .source_indices
         .engine_values
@@ -114,8 +114,8 @@ fn live_envelope_owner_takes_precedence_over_authored_source_defaults() {
         slot: 9,
         generic: -1,
     };
-    let mut instrument = ir::Instrument::DEFAULT;
-    instrument.groups.push(ir::Group::DEFAULT);
+    let mut instrument = ir::Instrument::default();
+    instrument.groups.push(ir::Group::default());
     instrument
         .source_indices
         .engine_values
@@ -128,7 +128,7 @@ fn live_envelope_owner_takes_precedence_over_authored_source_defaults() {
         });
     let plan = lower(&instrument, 48000, vec![], no_behaviors)
         .unwrap()
-        .with_group_envelope_parameters(0, 7, 9, Envelope::GATE)
+        .with_group_envelope_parameters(0, 7, 9, Envelope::default())
         .unwrap();
     let limits = Limits::for_plan(&plan, 4, 0);
     let mut runtime = Runtime::new(plan, limits).unwrap();
@@ -248,7 +248,7 @@ fn instrument() -> ir::Instrument {
                 ..zone(3, 1, 127)
             },
         ],
-        ..ir::Instrument::DEFAULT
+        ..ir::Instrument::default()
     }
 }
 
@@ -298,7 +298,7 @@ fn one_shot_envelope_bounds_a_looped_release_zone() {
             sustain: 1.0,
             release: ir::Time::Seconds(10.0),
             one_shot: true,
-            ..ir::Envelope::GATE
+            ..ir::Envelope::default()
         }),
     });
     release.amplitude = Some(ir::ModulatorRef(0));
@@ -320,7 +320,7 @@ fn amplitude_envelope_converts_source_time_to_frames() {
         scope: ir::Scope::Voice,
         source: ir::ModulationSource::Envelope(ir::Envelope {
             attack: ir::Time::Milliseconds(1.0),
-            ..ir::Envelope::GATE
+            ..ir::Envelope::default()
         }),
     });
     ir.zones[0].amplitude = Some(ir::ModulatorRef(0));
@@ -604,12 +604,12 @@ fn group_voice_limits_fade_out_the_oldest_member_instead_of_rejecting() {
                 voice_limit: Some(0),
                 ..Default::default()
             },
-            ir::Group::DEFAULT,
+            ir::Group::default(),
         ],
         voice_limit: Some(limit(5, ir::Kill::Oldest)),
         voice_limits: vec![limit(2, ir::Kill::Highest)],
         zones: vec![zone(0), zone(1)],
-        ..ir::Instrument::DEFAULT
+        ..ir::Instrument::default()
     };
     let plan = lower(&ir, 48000, vec![constant(0.1), constant(0.2)], no_behaviors).unwrap();
     let mut rt = Runtime::new(plan, limits()).unwrap();
@@ -771,10 +771,10 @@ fn monophonic_release_groups_cut_the_same_notes_earlier_voices_only() {
                 monophonic_release: true,
                 ..Default::default()
             },
-            ir::Group::DEFAULT,
+            ir::Group::default(),
         ],
         zones: vec![zone(0), zone(1)],
-        ..ir::Instrument::DEFAULT
+        ..ir::Instrument::default()
     };
     let plan = lower(&ir, 48000, vec![constant(0.1), constant(0.2)], no_behaviors).unwrap();
     let mut rt = Runtime::new(plan, limits()).unwrap();
@@ -863,7 +863,7 @@ fn basic_behavior_round_robin_takes_in_order_across_note_ons() {
             counter: ir::CounterScope::Instrument,
         }],
         zones: (0..3).map(zone).collect(),
-        ..ir::Instrument::DEFAULT
+        ..ir::Instrument::default()
     };
     let pcm = vec![constant(0.1), constant(0.2), constant(0.4)];
     let plan = lower(&ir, 48000, pcm, no_behaviors).unwrap();
@@ -893,7 +893,7 @@ fn basic_behavior_transition_range_is_inclusive_and_excludes_outside_intervals()
             zone(0, ir::Trigger::First),
             zone(1, ir::Trigger::Transition { low: 1, high: 12 }),
         ],
-        ..ir::Instrument::DEFAULT
+        ..ir::Instrument::default()
     };
     let build = || lower(&ir, 48000, vec![constant(0.1), constant(0.2)], no_behaviors).unwrap();
     let start = |rt: &mut Runtime, key| {
@@ -934,7 +934,7 @@ fn basic_behavior_alternating_loop_reverses_direction_at_its_end() {
             },
             ..ir::Zone::new(ir::AssetRef(0))
         }],
-        ..ir::Instrument::DEFAULT
+        ..ir::Instrument::default()
     };
     let plan = lower(&ir, 48000, vec![ramp(8)], no_behaviors).unwrap();
     let mut rt = Runtime::new(plan, limits()).unwrap();
@@ -1680,7 +1680,7 @@ fn stale_physical_zone_maps_return_invalid_instead_of_panicking() {
                 if owner == "source zone 1"
         ));
     }
-    let mut holes = ir::Instrument::DEFAULT;
+    let mut holes = ir::Instrument::default();
     holes.source_indices.zones = vec![None, None];
     assert!(lower(&holes, 48000, vec![], no_behaviors).is_ok());
 }
@@ -2848,7 +2848,7 @@ fn authored_zone_getters_keep_physical_group_holes_after_lowering() {
     use sampler_core::ZoneParameter;
     let mut instrument = ir::Instrument {
         assets: vec![asset("tone")],
-        groups: vec![ir::Group::DEFAULT],
+        groups: vec![ir::Group::default()],
         zones: vec![ir::Zone {
             group: Some(ir::GroupRef(0)),
             keys: ir::KeyRange { low: 12, high: 94 },
@@ -3037,7 +3037,7 @@ fn saved_digital_fade_rejects_unproven_clock_state_at_ir_boundary() {
 fn modulation_envelope_stages_are_engine_lanes_read_at_voice_start() {
     let mut ir = ir::Instrument {
         assets: vec![asset("mod-env")],
-        groups: vec![ir::Group::DEFAULT],
+        groups: vec![ir::Group::default()],
         zones: vec![ir::Zone {
             group: Some(ir::GroupRef(0)),
             routes: vec![ir::RouteRef(0)],
@@ -3101,7 +3101,7 @@ fn native_multi_lfo_fade_runs_the_saved_fade_law() {
     let level = |shape: ir::LfoShape| {
         let ir = ir::Instrument {
             assets: vec![asset("multi-fade")],
-            groups: vec![ir::Group::DEFAULT],
+            groups: vec![ir::Group::default()],
             zones: vec![ir::Zone {
                 group: Some(ir::GroupRef(0)),
                 routes: vec![ir::RouteRef(0)],
@@ -3152,7 +3152,7 @@ fn native_multi_lfo_fade_runs_the_saved_fade_law() {
 fn native_primary_fixture() -> ir::Instrument {
     let mut ir = ir::Instrument {
         assets: vec![asset("native-primary")],
-        groups: vec![ir::Group::DEFAULT],
+        groups: vec![ir::Group::default()],
         zones: vec![ir::Zone {
             group: Some(ir::GroupRef(0)),
             amplitude: Some(ir::ModulatorRef(0)),

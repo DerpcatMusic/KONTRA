@@ -1382,7 +1382,7 @@ mod tests {
                 group: Some(ir::GroupRef(0)),
                 ..ir::Zone::new(ir::AssetRef(0))
             }],
-            ..ir::Instrument::DEFAULT
+            ..ir::Instrument::default()
         };
         let pcm = vec![crate::Pcm::new(48000, vec![[0.5; 2]; 4800].into_boxed_slice()).unwrap()];
         let plan = crate::lower::lower(&instrument, 48000, pcm, |_, p| Ok(p)).unwrap();

@@ -1551,7 +1551,7 @@ mod tests {
 
     #[test]
     fn input_tone_marker_names_instrument_insert_entry() {
-        let mut i = sampler_ir::Instrument::DEFAULT;
+        let mut i = sampler_ir::Instrument::default();
         i.groups.push(Default::default());
         instrument_buses(
             &mut i,
@@ -1575,7 +1575,7 @@ mod tests {
     fn dynamic_bypassed_send_returns_add_no_dry_copy() {
         use sampler_ir as ir;
         let render = |dynamic| {
-            let mut instrument = ir::Instrument::DEFAULT;
+            let mut instrument = ir::Instrument::default();
             instrument.assets.push(ir::Asset {
                 location: ir::AssetLocation::Path("probe".into()),
                 residency: Default::default(),
@@ -1583,7 +1583,7 @@ mod tests {
                 root_key: None,
                 loops: Vec::new(),
             });
-            instrument.groups.push(ir::Group::DEFAULT);
+            instrument.groups.push(ir::Group::default());
             let mut zone = ir::Zone::new(ir::AssetRef(0));
             zone.group = Some(ir::GroupRef(0));
             zone.keys = ir::KeyRange { low: 60, high: 60 };
@@ -1875,8 +1875,8 @@ mod tests {
     #[test]
     fn instrument_bus_swap_and_invert_run_before_the_balance() {
         use sampler_ir as ir;
-        let mut instrument = ir::Instrument::DEFAULT;
-        instrument.groups.push(ir::Group::DEFAULT);
+        let mut instrument = ir::Instrument::default();
+        instrument.groups.push(ir::Group::default());
         let (notes, _) = super::instrument_buses(&mut instrument, &[],
             &[super::BusPlan { index: 0, volume: 1., pan: 0.5, invert: true, swap: true,
                 groups: vec![ir::GroupRef(0)] }], false, &mut |_| Err("unused".into()));

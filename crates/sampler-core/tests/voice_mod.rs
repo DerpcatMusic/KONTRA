@@ -87,7 +87,7 @@ fn zero_multi_keeps_bipolar_volume_shape_and_voice_reuse_without_heap() {
             shared: false,
         });
         let p = modulated(
-            plan(1024, Envelope::GATE),
+            plan(1024, Envelope::default()),
             program(
                 vec![source],
                 vec![ModRoute::new(0, ModTarget::Attenuate, 1.)],
@@ -135,7 +135,7 @@ fn addressed_filters_do_not_leak_into_other_voices_without_heap() {
             velocity_low: 0.,
             velocity_high: 1.,
             gain: 1.,
-            envelope: Envelope::GATE,
+            envelope: Envelope::default(),
             playback: Playback::default(),
         };
         let base = Prepared::new(
@@ -206,7 +206,7 @@ fn envelope_attenuation_ramps_exactly_under_any_partition_without_heap() {
     for block in [1, 7, 16, 61, 64, 100] {
         let mut rt = Runtime::new(
             modulated(
-                plan(256, Envelope::GATE),
+                plan(256, Envelope::default()),
                 program(
                     vec![ModSource::Envelope(attack)],
                     vec![ModRoute::new(0, ModTarget::Attenuate, 1.)],
@@ -232,7 +232,7 @@ fn envelope_attenuation_ramps_exactly_under_any_partition_without_heap() {
 fn velocity_scales_gain_and_moves_sample_start() {
     let mut rt = Runtime::new(
         modulated(
-            plan(256, Envelope::GATE),
+            plan(256, Envelope::default()),
             program(
                 vec![ModSource::Velocity],
                 vec![
@@ -261,7 +261,7 @@ fn pitch_and_pan_routes_reach_the_voice() {
     // +12 semitones consumes a 128-frame source in 64 output frames.
     let mut rt = Runtime::new(
         modulated(
-            plan(128, Envelope::GATE),
+            plan(128, Envelope::default()),
             program(
                 vec![ModSource::Constant],
                 vec![
@@ -290,7 +290,7 @@ fn changing_and_held_controller_pitch_matches_expression_without_heap() {
     let build = |source, depth| {
         Runtime::new(
             modulated(
-                plan(1024, Envelope::GATE),
+                plan(1024, Envelope::default()),
                 program(
                     vec![source],
                     vec![ModRoute::new(0, ModTarget::Pitch, depth)],
@@ -355,10 +355,10 @@ fn modulated_cutoff_equals_the_static_filter_at_the_modulated_frequency() {
         .unwrap()
     };
     let mut reference =
-        Runtime::new(chain(plan(256, Envelope::GATE), 750.), limits()).unwrap();
+        Runtime::new(chain(plan(256, Envelope::default()), 750.), limits()).unwrap();
     let mut swept = Runtime::new(
         modulated(
-            chain(plan(256, Envelope::GATE), 12000.),
+            chain(plan(256, Envelope::default()), 12000.),
             program(
                 vec![ModSource::Constant],
                 vec![ModRoute::new(0, ModTarget::Cutoff, -48.)],
@@ -407,7 +407,7 @@ fn modulation_envelopes_release_with_their_family() {
 #[test]
 fn rejects_out_of_range_programs() {
     let bad = |program: ModProgram| {
-        plan(4, Envelope::GATE)
+        plan(4, Envelope::default())
             .with_voice_modulation(vec![program], vec![Some(0)], vec![0])
             .is_err()
     };
@@ -452,7 +452,7 @@ fn measure_modulation_cost_per_voice() {
                 velocity_low: 0.,
                 velocity_high: 1.,
                 gain: 1.,
-                envelope: Envelope::GATE,
+                envelope: Envelope::default(),
                 playback: Playback {
                     loop_range: Some(Loop {
                         start: 0,
@@ -606,7 +606,7 @@ fn a_second_source_scales_route_depth() {
         envelope_controls: vec![],
     };
     let mut rt = Runtime::new(
-        modulated(plan(64, Envelope::GATE), program, 0),
+        modulated(plan(64, Envelope::default()), program, 0),
         limits(),
     )
     .unwrap();
@@ -636,7 +636,7 @@ fn id25_intensity_changes_each_outgoing_depth_in_render_without_heap() {
                             law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags, unit: 1. } }),
                         ..ModRoute::new(0, ModTarget::Attenuate, base)
                     }]);
-                    let mut rt = Runtime::new(modulated(plan(64, Envelope::GATE), p, 0),
+                    let mut rt = Runtime::new(modulated(plan(64, Envelope::default()), p, 0),
                         limits()).unwrap();
                     support::without_heap(|| { rt.trigger(input(1), 60, velocity).unwrap(); });
                     let audio = render(&mut rt, 8, 8);
@@ -660,7 +660,7 @@ fn id25_unverified_init_flags_range_and_live_paths_are_rejected() {
     let route = ModRoute { scale: Some(scale),
         ..ModRoute::new(0, ModTarget::Attenuate, 0.4) };
     let rejected = |source, route| {
-        plan(64, Envelope::GATE).with_voice_modulation(
+        plan(64, Envelope::default()).with_voice_modulation(
             vec![program(vec![ModSource::Constant, source], vec![route])],
             vec![Some(0)], vec![0]).is_err()
     };
@@ -692,7 +692,7 @@ fn id25_additive_depth_converts_normalized_intensity_to_outgoing_units() {
                         law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags, unit } }),
                     ..ModRoute::new(0, ModTarget::Decibels, base * unit)
                 }]);
-                let mut rt = Runtime::new(modulated(plan(64, Envelope::GATE), p, 0),
+                let mut rt = Runtime::new(modulated(plan(64, Envelope::default()), p, 0),
                     limits()).unwrap();
                 support::without_heap(|| { rt.trigger(input(1), 60, 0.25).unwrap(); });
                 let audio = render(&mut rt, 8, 8);
@@ -714,7 +714,7 @@ fn id25_preserves_independent_bases_for_two_outgoing_targets() {
         ..ModRoute::new(0, ModTarget::Decibels, base * unit)
     });
     let p = program(vec![ModSource::Constant, ModSource::Velocity], routes.into());
-    let mut rt = Runtime::new(modulated(plan(64, Envelope::GATE), p, 0),
+    let mut rt = Runtime::new(modulated(plan(64, Envelope::default()), p, 0),
         limits()).unwrap();
     support::without_heap(|| { rt.trigger(input(1), 60, 0.25).unwrap(); });
     let audio = render(&mut rt, 8, 8);
@@ -813,7 +813,7 @@ fn pitch_bend_drives_non_pitch_routes_from_its_raw_position() {
         vec![ModRoute::new(0, ModTarget::Attenuate, 1.)],
     );
     let mut rt = Runtime::new(
-        modulated(plan(4096, Envelope::GATE), program, 0),
+        modulated(plan(4096, Envelope::default()), program, 0),
         limits(),
     )
     .unwrap();
@@ -1067,7 +1067,7 @@ fn source_phase_is_sampled_at_onset_and_reused_without_heap() {
             };
             let make = |meta| {
                 modulated(
-                    plan(1024, Envelope::GATE),
+                    plan(1024, Envelope::default()),
                     program(
                         vec![
                             ModSource::Lfo(if meta {
@@ -1164,7 +1164,7 @@ fn source_phase_rejects_cycles_wrong_owners_and_unmeasured_lag() {
         ),
     ] {
         assert!(
-            plan(128, Envelope::GATE)
+            plan(128, Envelope::default())
                 .with_voice_modulation(vec![program(sources, routes)], vec![Some(0)], vec![0])
                 .is_err()
         );
@@ -1201,7 +1201,7 @@ fn constant_loop_destinations_reach_audio_without_heap_and_reject_unmeasured_sou
                 velocity_low: 0.,
                 velocity_high: 1.,
                 gain: 1.,
-                envelope: Envelope::GATE,
+                envelope: Envelope::default(),
             }],
             1,
         )
@@ -1379,7 +1379,7 @@ fn saved_digital_fade_is_applied_to_the_initial_sample_start_without_heap() {
             shared: false,
         });
         let p = modulated(
-            plan(1024, Envelope::GATE),
+            plan(1024, Envelope::default()),
             program(
                 vec![source],
                 vec![ModRoute::new(0, ModTarget::SampleStart, 1.)],

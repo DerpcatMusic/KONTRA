@@ -377,7 +377,7 @@ mod tests {
             "instrument send",
             false,
             false,
-            &Outcomes::new(&ir::Instrument::DEFAULT, false, &[], &Targets::new()),
+            &Outcomes::new(&ir::Instrument::default(), false, &[], &Targets::new()),
         );
         assert_eq!(row.disposition, D::Dropped(R::NotModeled));
         assert!(!row.enabled);
@@ -401,7 +401,7 @@ mod tests {
                 "instrument insert",
                 false,
                 false,
-                &Outcomes::new(&ir::Instrument::DEFAULT, false, &[], &Targets::new())
+                &Outcomes::new(&ir::Instrument::default(), false, &[], &Targets::new())
             )
             .disposition,
             D::Dropped(R::SavedBypassNotInstantiated)
@@ -412,7 +412,7 @@ mod tests {
                 "instrument insert",
                 false,
                 false,
-                &Outcomes::new(&ir::Instrument::DEFAULT, true, &[], &Targets::new())
+                &Outcomes::new(&ir::Instrument::default(), true, &[], &Targets::new())
             )
             .disposition,
             D::Approximated(R::NativeLawUnverified)
@@ -420,7 +420,7 @@ mod tests {
     }
     #[test]
     fn targets_name_each_lost_route_without_counting_admitted_siblings() {
-        let mut instrument = ir::Instrument::DEFAULT;
+        let mut instrument = ir::Instrument::default();
         instrument
             .source_indices
             .modulators
@@ -482,7 +482,7 @@ mod tests {
             false,
             false,
             true,
-            &Outcomes::new(&ir::Instrument::DEFAULT, false, &[], &Targets::new()),
+            &Outcomes::new(&ir::Instrument::default(), false, &[], &Targets::new()),
             0,
             true,
             &[],
@@ -496,7 +496,7 @@ mod tests {
             false,
             false,
             false,
-            &Outcomes::new(&ir::Instrument::DEFAULT, false, &[], &Targets::new()),
+            &Outcomes::new(&ir::Instrument::default(), false, &[], &Targets::new()),
             0,
             true,
             &[],

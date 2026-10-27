@@ -31,7 +31,7 @@ fn measure(kernel: &Kernel, pcm: &[Frame], voices: usize, step: f64, fraction: f
                 c
             })
             .collect();
-        let mut envs = vec![EnvelopeState::new(Envelope::GATE); voices];
+        let mut envs = vec![EnvelopeState::new(Envelope::default()); voices];
         let mut out = [[0.0_f32; 2]; BLOCK];
         let started = Instant::now();
         for _ in 0..BLOCKS {

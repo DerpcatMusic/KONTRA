@@ -1000,7 +1000,7 @@ impl PreparedVoiceChain {
         let mut unity = EnvelopeState::new(if waiting {
             Envelope::one_shot(0, active.min(BLOCK + 1) as u32, 0)
         } else {
-            Envelope::GATE
+            Envelope::default()
         });
         let remaining = unity.remaining();
         let count = if waiting { frames } else { frames.min(active) };

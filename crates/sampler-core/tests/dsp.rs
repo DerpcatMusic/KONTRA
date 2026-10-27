@@ -82,7 +82,7 @@ fn lofi_voice_state_processes_and_recycles_without_audio_heap_calls() {
         ..sampler_core::ColorSettings::IDENTITY
     });
     let mut rt = Runtime::new(
-        plan(vec![processor], vec![], 0, Envelope::GATE, 128),
+        plan(vec![processor], vec![], 0, Envelope::default(), 128),
         limits(),
     )
     .unwrap();
@@ -142,7 +142,7 @@ fn voice_chain_order_tails_muting_and_slot_reuse_are_sample_exact_without_heap()
             });
         }
         let mut rt = Runtime::new(
-            plan(vec![], vec![filter()], 4, Envelope::GATE, 1),
+            plan(vec![], vec![filter()], 4, Envelope::default(), 1),
             limits(),
         )
         .unwrap();
@@ -184,12 +184,12 @@ fn voice_chain_order_tails_muting_and_slot_reuse_are_sample_exact_without_heap()
 
 #[test]
 fn processor_state_and_tails_retain_original_generation_and_faults_do_not_poison_others() {
-    let old = plan(vec![], vec![filter()], 4, Envelope::GATE, 1);
+    let old = plan(vec![], vec![filter()], 4, Envelope::default(), 1);
     let new = plan(
         vec![],
         vec![Processor::Gain(0.5)],
         0,
-        Envelope::GATE,
+        Envelope::default(),
         1,
     );
     let (mut rt, mut transfer) = Runtime::with_plan_updates(old, limits(), 2, 1).unwrap();
@@ -220,7 +220,7 @@ fn processor_state_and_tails_retain_original_generation_and_faults_do_not_poison
             vec![],
             vec![Processor::Gain(f64::MAX), filter()],
             2,
-            Envelope::GATE,
+            Envelope::default(),
             1,
         ),
         limits(),
@@ -253,7 +253,7 @@ fn processor_state_and_tails_retain_original_generation_and_faults_do_not_poison
 #[test]
 fn overlapping_voices_have_separate_history_and_choke_bounds_the_complete_chain() {
     let mut rt = Runtime::new(
-        plan(vec![], vec![filter()], 8, Envelope::GATE, 1),
+        plan(vec![], vec![filter()], 8, Envelope::default(), 1),
         limits(),
     )
     .unwrap();
@@ -389,7 +389,7 @@ fn batched_source_reads_preserve_filter_and_envelope_phase_at_midblock_release()
 fn dsp_state_capacity_and_chain_bindings_fail_before_runtime_publication() {
     assert!(matches!(
         Runtime::new(
-            plan(vec![filter()], vec![], 0, Envelope::GATE, 1),
+            plan(vec![filter()], vec![], 0, Envelope::default(), 1),
             Limits {
                 voices: usize::MAX,
                 ..limits()
@@ -398,7 +398,7 @@ fn dsp_state_capacity_and_chain_bindings_fail_before_runtime_publication() {
         Err(sampler_core::Error::Capacity)
     ));
     for bindings in [vec![], vec![Some(1)], vec![None, None]] {
-        let result = plan(vec![], vec![], 0, Envelope::GATE, 1).with_voice_chains(
+        let result = plan(vec![], vec![], 0, Envelope::default(), 1).with_voice_chains(
             vec![VoiceChain::new(vec![filter()], vec![], 0).unwrap()],
             bindings,
         );
@@ -428,7 +428,7 @@ fn stereo_matrices_preserve_both_inputs_order_filter_tails_and_voice_reuse() {
                     vec![Processor::StereoMatrix(before), filter()],
                     vec![Processor::StereoMatrix(after)],
                     3,
-                    Envelope::GATE,
+                    Envelope::default(),
                     1,
                 ),
                 limits(),
@@ -464,7 +464,7 @@ fn stereo_matrices_preserve_both_inputs_order_filter_tails_and_voice_reuse() {
             ],
             vec![],
             3,
-            Envelope::GATE,
+            Envelope::default(),
             1,
         ),
         limits(),
@@ -508,7 +508,7 @@ fn held_eq_and_rack_mix_render_and_recycle_without_heap_calls() {
         high: 1.,
         ramp_frames: 0,
     };
-    let p = plan(vec![], vec![], 0, Envelope::GATE, 256)
+    let p = plan(vec![], vec![], 0, Envelope::default(), 256)
         .with_controls(
             [0.2, 0.8, 0.25]
                 .into_iter()

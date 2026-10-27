@@ -1695,7 +1695,7 @@ mod migration_tests {
 
     #[test]
     fn a_switch_without_zones_is_found_but_not_migrated() {
-        let mut ir = ir::Instrument::DEFAULT;
+        let mut ir = ir::Instrument::default();
         let a = |name: &str, keys: Vec<u8>| ir::Articulation {
             name: name.into(),
             switch_keys: keys,
@@ -1711,7 +1711,7 @@ mod migration_tests {
 
     #[test]
     fn unrelated_start_warnings_are_not_articulation_reports() {
-        let mut ir = ir::Instrument::DEFAULT;
+        let mut ir = ir::Instrument::default();
         let report = |feature: &str| ir::Unsupported {
             location: "script slot 1".into(),
             feature: feature.into(),
@@ -1737,7 +1737,7 @@ mod volume_tests {
     /// Peak in dB of a full-scale constant sample, instrument volume saved as
     /// `saved`, CC7 `cc` (`None`: never sent).
     fn peak_db(saved: f64, cc: Option<u8>) -> f64 {
-        let mut ir = ir::Instrument::DEFAULT;
+        let mut ir = ir::Instrument::default();
         ir.assets.push(ir::Asset {
             location: ir::AssetLocation::Path("x".into()),
             residency: Default::default(),
@@ -1817,7 +1817,7 @@ mod dynamics_tests {
     use super::*;
 
     fn cc1_instrument() -> ir::Instrument {
-        let mut ir = ir::Instrument::DEFAULT;
+        let mut ir = ir::Instrument::default();
         ir.modulators.push(ir::Modulator {
             scope: ir::Scope::Voice,
             source: ir::ModulationSource::Controller(1),
@@ -1885,7 +1885,7 @@ mod automation_tests {
     use super::*;
     #[test]
     fn automation_id_binds_the_host_slot_and_runs_the_callback() {
-        let mut instrument = ir::Instrument::DEFAULT;
+        let mut instrument = ir::Instrument::default();
         instrument.behaviors.push(ir::Behavior {
             name: "fixed".into(), language: ir::Language::Ksp, slot: Some(1), state: vec![], requires: vec![],
             source: "on init declare ui_slider $a(0,100) declare ui_slider $b(0,100) declare $seen \
@@ -1909,7 +1909,7 @@ mod automation_tests {
     }
     #[test]
     fn saved_target_counts_only_sliders_in_its_physical_slot() {
-        let mut instrument = ir::Instrument::DEFAULT;
+        let mut instrument = ir::Instrument::default();
         instrument.behaviors.push(ir::Behavior {
             name: "learn".into(), language: ir::Language::Ksp, slot: Some(3), state: vec![], requires: vec![],
             source: "on init declare ui_label $label(1,1) declare ui_slider $unused(0,127) declare ui_knob $knob(0,100,1) declare ui_slider $target(20,100) declare $observed end on on ui_control($target) $observed := $target end on".into(),
@@ -1956,7 +1956,7 @@ mod native_lookup_tests {
     use super::*;
     #[test]
     fn init_envelope_write_reaches_pcm_through_production_prepare() {
-        let mut instrument = ir::Instrument::DEFAULT;
+        let mut instrument = ir::Instrument::default();
         instrument.assets.push(ir::Asset {
             location: ir::AssetLocation::Path("synthetic.wav".into()),
             residency: Default::default(),
@@ -1964,10 +1964,10 @@ mod native_lookup_tests {
             root_key: None,
             loops: vec![],
         });
-        instrument.groups.push(ir::Group::DEFAULT);
+        instrument.groups.push(ir::Group::default());
         instrument.modulators.push(ir::Modulator {
             scope: ir::Scope::Voice,
-            source: ir::ModulationSource::Envelope(ir::Envelope::GATE),
+            source: ir::ModulationSource::Envelope(ir::Envelope::default()),
         });
         let mut zone = ir::Zone::new(ir::AssetRef(0));
         zone.keys = ir::KeyRange { low: 60, high: 60 };
@@ -2036,7 +2036,7 @@ mod native_lookup_tests {
     }
     #[test]
     fn physical_mod_and_target_names_resolve_during_init_and_note() {
-        let mut instrument = ir::Instrument::DEFAULT;
+        let mut instrument = ir::Instrument::default();
         instrument.groups = ["muted", "hole", "live"]
             .into_iter()
             .map(|name| ir::Group {
@@ -2198,7 +2198,7 @@ mod diagnostic_tests {
 
     #[test]
     fn successful_interface_projection_keeps_unsupported_widget_features_in_load_report() {
-        let mut instrument = ir::Instrument::DEFAULT;
+        let mut instrument = ir::Instrument::default();
         instrument.behaviors.push(ir::Behavior {
             name: "Projection".into(),
             language: ir::Language::Ksp,
@@ -2246,7 +2246,7 @@ mod diagnostic_tests {
 
     #[test]
     fn initialization_warnings_keep_physical_script_slot_line_and_index() {
-        let mut instrument = ir::Instrument::DEFAULT;
+        let mut instrument = ir::Instrument::default();
         instrument.groups.push(ir::Group { name: "present".into(), ..Default::default() });
         instrument.behaviors.push(ir::Behavior {
             name: "Lookup".into(), language: ir::Language::Ksp, slot: Some(3),

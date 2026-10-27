@@ -45,7 +45,7 @@ fn run_shaped(
         velocity_low: 0.,
         velocity_high: 1.,
         gain: 1.,
-        envelope: Envelope::GATE,
+        envelope: Envelope::default(),
         playback: Playback::default(),
     };
     let prepared = Prepared::new(48000, pcm, vec![region], 128)
@@ -391,7 +391,7 @@ fn runtime_zone_getter_preserves_source_ids_and_dynamic_parameter_identity() {
         end on", sampler_ksp::Environment::default(), |_| {
             Prepared::new(48000,vec![Pcm::new(48000,Box::from([[1.;2];64])).unwrap()],vec![Region {
                 sample:0,key_low:7,key_high:94,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,
-                envelope:Envelope::GATE,playback:Playback::default()
+                envelope:Envelope::default(),playback:Playback::default()
             }],128)?.with_groups(3,vec![Some(2)])?
                 // A legacy event ID cannot grant a native command identity.
                 .with_source_zones(vec![1])?
@@ -434,7 +434,7 @@ fn runtime_zone_getter_does_not_match_absent_parameter_selectors() {
                     velocity_low: 0.,
                     velocity_high: 1.,
                     gain: 1.,
-                    envelope: Envelope::GATE,
+                    envelope: Envelope::default(),
                     playback: Playback::default(),
                 }],
                 128,

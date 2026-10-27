@@ -601,7 +601,7 @@ mod tests {
         let doc = roxmltree::Document::parse(r#"<Gain Volume="0.5"/>"#).unwrap();
         let node = doc.root_element().id().get_usize();
         let placed = |chain| InsertNode { node, chain: ir::ChainRef(chain), first: 0, count: 1 };
-        let mut ir = ir::Instrument::DEFAULT;
+        let mut ir = ir::Instrument::default();
         register(&mut ir, &doc, &[placed(0), placed(1)]);
         assert_eq!((ir.controls.len(), ir.processor_controls.len()), (1, 2));
     }

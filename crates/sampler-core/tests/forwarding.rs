@@ -38,7 +38,7 @@ fn plan(value: f32) -> Prepared {
         velocity_low: 0.,
         velocity_high: 1.,
         gain: 1.,
-        envelope: Envelope::GATE,
+        envelope: Envelope::default(),
         playback: Playback::default(),
     };
     Prepared::new(
@@ -557,7 +557,7 @@ fn whole_source_lifetime_handles_empty_mapping_layers_muting_and_infinite_loops(
             velocity_low: 0.,
             velocity_high: 1.,
             gain,
-            envelope: Envelope::GATE,
+            envelope: Envelope::default(),
             playback: Playback {
                 loop_range: looping.then_some(Loop {
                     start: 0,

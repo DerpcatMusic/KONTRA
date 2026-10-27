@@ -362,7 +362,7 @@ fn prepared_key_tracking_uses_logical_keys_and_keeps_exact_root_pitch() {
                 velocity_low: 0.0,
                 velocity_high: 1.0,
                 gain: 1.0,
-                envelope: Envelope::GATE,
+                envelope: Envelope::default(),
                 playback: Playback {
                     start: 512,
                     ..Playback::default()
@@ -408,7 +408,7 @@ fn prepared_key_tracking_uses_logical_keys_and_keeps_exact_root_pitch() {
         velocity_low: 0.0,
         velocity_high: 1.0,
         gain: 1.0,
-        envelope: Envelope::GATE,
+        envelope: Envelope::default(),
         playback: Playback {
             transpose_semitones: 132.0,
             ..Playback::default()
@@ -489,7 +489,7 @@ fn native_tuning_tracks_logical_pitch_without_changing_note_identity() {
                             velocity_low: 0.0,
                             velocity_high: 1.0,
                             gain: 1.0,
-                            envelope: Envelope::GATE,
+                            envelope: Envelope::default(),
                             playback: Playback {
                                 start: 512,
                                 ..Playback::default()
@@ -554,7 +554,7 @@ fn native_tuning_tracks_logical_pitch_without_changing_note_identity() {
         velocity_low: 0.0,
         velocity_high: 1.0,
         gain: 1.0,
-        envelope: Envelope::GATE,
+        envelope: Envelope::default(),
         playback: Playback::default(),
     };
     // A later candidate, not only the first key, must pass source-rate validation.
@@ -610,7 +610,7 @@ fn absolute_pitch_overrides_tuning_and_survives_generated_note_transposition() {
                 velocity_low: 0.0,
                 velocity_high: 1.0,
                 gain: 1.0,
-                envelope: Envelope::GATE,
+                envelope: Envelope::default(),
                 playback: Playback {
                     start: 512,
                     ..Playback::default()
@@ -850,7 +850,7 @@ fn pending_pitch_constrains_late_sources_and_detachment_keeps_admission_atomic()
             ..Playback::default()
         };
         assert_eq!(
-            rt.start_family(family, 0, 50, 1.0, Envelope::GATE, at_limit),
+            rt.start_family(family, 0, 50, 1.0, Envelope::default(), at_limit),
             Err(Error::InvalidInput)
         );
         assert_eq!(
@@ -866,7 +866,7 @@ fn pending_pitch_constrains_late_sources_and_detachment_keeps_admission_atomic()
             0,
             50,
             1.0,
-            Envelope::GATE,
+            Envelope::default(),
             Playback {
                 transpose_semitones: 120.0,
                 ..Playback::default()
@@ -889,7 +889,7 @@ fn pending_pitch_constrains_late_sources_and_detachment_keeps_admission_atomic()
         rt.detach_expression(detached).unwrap();
         let detached_family = rt.create_family(detached).unwrap();
         // The queued root expression no longer targets this detached owner.
-        rt.start_family(detached_family, 0, 0, 1.0, Envelope::GATE, at_limit)
+        rt.start_family(detached_family, 0, 0, 1.0, Envelope::default(), at_limit)
             .unwrap();
         rt.finish_family(detached_family).unwrap();
         rt.render(&mut [[0.0; 2]; 128]).unwrap();

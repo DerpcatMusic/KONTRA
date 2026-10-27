@@ -60,7 +60,7 @@ fn family_choke_captures_each_layer_and_preserves_siblings_at_every_partition() 
                 )
                 .unwrap();
             }
-            rt.start_family(family, 0, 12, 1., Envelope::GATE, Playback::default())
+            rt.start_family(family, 0, 12, 1., Envelope::default(), Playback::default())
                 .unwrap();
             let sibling = rt.create_family(note).unwrap();
             rt.start_family(
@@ -68,7 +68,7 @@ fn family_choke_captures_each_layer_and_preserves_siblings_at_every_partition() 
                 0,
                 0,
                 0.125,
-                Envelope::GATE,
+                Envelope::default(),
                 Playback::default(),
             )
             .unwrap();
@@ -135,7 +135,7 @@ fn choke_shortens_a_release_without_restarting_or_extending_it() {
                 0,
                 rt.now(),
                 1.,
-                Envelope::GATE,
+                Envelope::default(),
                 Playback::default()
             ),
             Err(Error::ClosedFamily)
@@ -197,7 +197,7 @@ fn choke_preserves_loop_phase_and_muted_tail_duration() {
                 0,
                 0,
                 gain,
-                Envelope::GATE,
+                Envelope::default(),
                 Playback {
                     loop_range: Some(Loop {
                         passes: None,
@@ -256,7 +256,7 @@ fn natural_completion_cancels_scheduled_choke_without_pinning_or_retargeting() {
             0,
             2,
             1.,
-            Envelope::GATE,
+            Envelope::default(),
             Playback {
                 loop_range: Some(Loop {
                     passes: None,
@@ -294,7 +294,7 @@ fn equal_time_source_start_and_choke_obey_submission_order() {
             if choke_first {
                 rt.schedule_event(4, Event::ChokeFamily(family, 4)).unwrap();
             }
-            rt.start_family(family, 0, 4, 1., Envelope::GATE, Playback::default())
+            rt.start_family(family, 0, 4, 1., Envelope::default(), Playback::default())
                 .unwrap();
             if !choke_first {
                 rt.schedule_event(4, Event::ChokeFamily(family, 4)).unwrap();
@@ -330,7 +330,7 @@ fn immediate_choke_needs_no_queue_capacity_and_failed_scheduling_is_atomic() {
     support::without_heap(|| {
         let note = rt.note_on(input(), 60, 1.).unwrap();
         let family = rt.create_family(note).unwrap();
-        rt.start_family(family, 0, 0, 1., Envelope::GATE, Playback::default())
+        rt.start_family(family, 0, 0, 1., Envelope::default(), Playback::default())
             .unwrap();
         rt.schedule_event(100, Event::Expression(note, Expression::default()))
             .unwrap();
@@ -340,7 +340,7 @@ fn immediate_choke_needs_no_queue_capacity_and_failed_scheduling_is_atomic() {
         );
         assert_eq!(rt.choke_family(other_family, 0), Err(Error::StaleHandle));
         // Failed scheduling did not seal the family or stop its admitted source.
-        rt.start_family(family, 0, 0, 0.5, Envelope::GATE, Playback::default())
+        rt.start_family(family, 0, 0, 0.5, Envelope::default(), Playback::default())
             .unwrap();
         rt.choke_family(family, 0).unwrap();
         assert_eq!(

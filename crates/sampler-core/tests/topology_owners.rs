@@ -557,7 +557,7 @@ fn member_local_tap_retains_note_expression_while_main_is_captured_for_owner() {
     // The legacy source tap is the control; final source output is muted on a
     // normal bus without affecting its explicit source-local send tap.
     ir.processing_scopes.clear();
-    let mut group = ir::Group::DEFAULT;
+    let mut group = ir::Group::default();
     group.output = ir::Output::Bus(ir::BusRef(0));
     ir.groups.push(group);
     ir.zones[0].group = Some(ir::GroupRef(0));
@@ -585,7 +585,7 @@ fn member_local_tap_retains_note_expression_while_main_is_captured_for_owner() {
 fn native_primary_scope_fixture() -> ir::Instrument {
     let mut instrument = ir::Instrument {
         assets: vec![asset(0)],
-        groups: vec![ir::Group::DEFAULT],
+        groups: vec![ir::Group::default()],
         zones: vec![ir::Zone {
             group: Some(ir::GroupRef(0)),
             amplitude: Some(ir::ModulatorRef(0)),

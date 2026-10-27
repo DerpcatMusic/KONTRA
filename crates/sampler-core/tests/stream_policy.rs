@@ -14,7 +14,7 @@ fn player(pages: usize) -> (Runtime, StreamWorker) {
             velocity_low: 0.,
             velocity_high: 1.,
             gain: 1.,
-            envelope: Envelope::GATE,
+            envelope: Envelope::default(),
             playback: Playback::default(),
         }],
         1,
@@ -276,7 +276,7 @@ fn admission_accounts_for_pitch_and_crossfade_source_windows() {
                 0,
                 0,
                 1.,
-                Envelope::GATE,
+                Envelope::default(),
                 Playback {
                     transpose_semitones: 48.,
                     ..Default::default()
@@ -291,7 +291,7 @@ fn admission_accounts_for_pitch_and_crossfade_source_windows() {
                 0,
                 0,
                 1.,
-                Envelope::GATE,
+                Envelope::default(),
                 Playback {
                     start: PAGE_FRAMES - 512,
                     loop_range: Some(Loop {

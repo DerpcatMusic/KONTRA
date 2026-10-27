@@ -26,7 +26,7 @@ fn plan(traced: bool, records: usize) -> Prepared {
             velocity_low: 0.,
             velocity_high: 1.,
             gain: 0.4,
-            envelope: Envelope::GATE,
+            envelope: Envelope::default(),
             playback: Playback::default(),
         }],
         1,
@@ -349,7 +349,7 @@ fn signal_trace_amp_parameters_describe_the_live_envelope_not_its_authored_defau
     let plan = plan(false, 0)
         .with_groups(1, vec![Some(0)])
         .unwrap()
-        .with_group_envelope_parameters(0, 88, 0, Envelope::GATE)
+        .with_group_envelope_parameters(0, 88, 0, Envelope::default())
         .unwrap()
         .with_signal_trace(4096)
         .unwrap();
