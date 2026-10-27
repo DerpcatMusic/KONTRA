@@ -13,7 +13,40 @@ fn stage_ms(top_ms: f64, x: f64) -> f64 {
     ((low + (high - low) * x).exp() - 2.0).max(0.0)
 }
 
+/// The inverse of [`stage_ms`]: the 0..=1 setting of a stage `ms` long.
+fn stage_x(top_ms: f64, ms: f64) -> f64 {
+    let (low, high) = (2f64.ln(), (top_ms + 2.0).ln());
+    (((ms + 2.0).ln() - low) / (high - low)).clamp(0.0, 1.0)
+}
+
 impl Engine {
+    /// Answers `get_engine_par(par, group, slot)` for what
+    /// [`Engine::set_engine_par`] sets, in the same encoding, so a script that
+    /// saves and restores a parameter gets back what it had. `None`: not answered.
+    pub(crate) fn get_engine_par(&self, par: i32, group: i32, slot: i32) -> Option<i32> {
+        let pars = self.plan.script.as_ref()?.engine_pars;
+        let g = usize::try_from(group)
+            .ok()
+            .and_then(|g| self.groups.get(g))?;
+        let ms = |frames: u32| f64::from(frames) * 1000.0 / f64::from(self.rate);
+        let e = &g.envelope;
+        let x = match par {
+            p if p == pars.intensity => {
+                match g.mods.iter().find(|m| i32::from(m.slot) == slot)?.kind {
+                    ir::ModKind::Volume { intensity, .. } => f64::from(intensity),
+                    ir::ModKind::Envelope => return None,
+                }
+            }
+            p if p == pars.attack => stage_x(15_000.0, ms(e.attack)),
+            p if p == pars.hold => stage_x(15_000.0, ms(e.hold)),
+            p if p == pars.decay => stage_x(25_000.0, ms(e.decay)),
+            p if p == pars.release => stage_x(25_000.0, ms(e.release)),
+            p if p == pars.sustain => f64::from(e.sustain),
+            _ => return None,
+        };
+        Some((x * 1e6).round() as i32)
+    }
+
     /// Applies `set_engine_par(par, value, group, slot)`. Returns whether the
     /// engine answers this parameter.
     pub(crate) fn set_engine_par(&mut self, par: i32, value: i32, group: i32, slot: i32) -> bool {
@@ -105,12 +138,15 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::stage_ms;
+    use super::{stage_ms, stage_x};
 
     #[test]
     fn stage_times_follow_kontakts_shifted_exponential() {
         assert!(stage_ms(15_000.0, 0.0).abs() < 1e-9);
         assert!((stage_ms(15_000.0, 1.0) - 15_000.0).abs() < 1e-6);
         assert!((stage_ms(25_000.0, 0.5) - ((2.0f64 * 25_002.0).sqrt() - 2.0)).abs() < 1e-6);
+        for x in [0.0, 0.25, 0.8, 1.0] {
+            assert!((stage_x(25_000.0, stage_ms(25_000.0, x)) - x).abs() < 1e-9);
+        }
     }
 }

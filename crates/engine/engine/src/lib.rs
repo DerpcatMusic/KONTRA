@@ -247,6 +247,21 @@ impl Engine {
             .count()
     }
 
+    /// Each sounding voice's zone, position in source frames and gain, for
+    /// inspectors (never the audio thread).
+    pub fn voices(&self) -> impl Iterator<Item = (usize, f64, [f32; 2])> + '_ {
+        self.voices
+            .iter()
+            .filter(|s| s.voice.is_active())
+            .map(|s| (s.zone, s.voice.position(), s.voice.gain()))
+    }
+
+    /// The controller's current value (128 is aftertouch, 129 pitch bend).
+    #[must_use]
+    pub fn controller(&self, cc: usize) -> Option<u8> {
+        self.cc_values.get(cc).copied()
+    }
+
     /// The current articulation keyswitch.
     #[must_use]
     pub fn keyswitch(&self) -> Option<u8> {

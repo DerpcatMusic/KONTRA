@@ -534,6 +534,11 @@ impl HostApi for Engine {
                 });
                 HostValue::Int(found.unwrap_or(-1))
             }
+            Action::GetEnginePar
+                if let Some(value) = self.get_engine_par(int(0), int(1), int(2)) =>
+            {
+                HostValue::Int(value)
+            }
             Action::SetEnginePar if self.set_engine_par(int(0), int(1), int(2), int(3)) => {
                 HostValue::Nothing
             }
