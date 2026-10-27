@@ -159,6 +159,38 @@ fn sequential_round_robin_cycles_and_mic_layers_agree() {
     );
 }
 
+/// Kontakt steps its round robin on every note-on, before group predicates
+/// (KONTAKT_START_CONDITIONS, 0x144f17ea0): a note that plays no round-robin
+/// zone still moves the cycle on.
+#[test]
+fn the_global_round_robin_steps_on_every_note() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut zones = Vec::new();
+    for (position, level) in [(0u8, 0.1f32), (1, 0.2)] {
+        let mut z = zone(&mut store, level);
+        z.keys = 36..=36;
+        z.round_robin = Some(RoundRobin {
+            counter: RrCounter::Global,
+            position,
+            length: 2,
+            random: false,
+        });
+        zones.push(z);
+    }
+    let mut plain = zone(&mut store, 0.5);
+    plain.keys = 60..=60;
+    zones.push(plain);
+    let mut e = engine(&store, Plan::new(zones, 16));
+    let mut play = |key| {
+        let l = level(&mut e, &[on(key, 1.0)])[0];
+        level(&mut e, &[off(key)]);
+        l
+    };
+    let first = play(36);
+    play(60);
+    assert!(close(play(36), first), "two note-ons later, the same step");
+}
+
 #[test]
 fn random_round_robin_never_repeats_a_step() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();

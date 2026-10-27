@@ -144,8 +144,10 @@ impl Behaviour {
         step == rr.position
     }
 
-    /// Steps every counter a note-on read, once.
+    /// Steps every counter a note-on read, once. The global counter is
+    /// Kontakt's: it steps on every note-on, matched or not.
     pub(crate) fn advance(&mut self) {
+        self.global.used = true;
         let all = std::iter::once(&mut self.global)
             .chain(self.keys.iter_mut())
             .chain(self.groups.iter_mut().map(|(_, c)| c));
