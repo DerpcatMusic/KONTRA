@@ -79,8 +79,8 @@ macro_rules! builtins {
                 match name { $($sname => Some(Self::$sid),)* $($name => Some(Self::$id),)* _ => None }
             }
 
-            #[cfg(test)]
-            const ALL: &[Self] = &[$(Self::$sid,)* $(Self::$id,)*];
+            /// Every builtin.
+            pub const ALL: &[Self] = &[$(Self::$sid,)* $(Self::$id,)*];
         }
     };
 }

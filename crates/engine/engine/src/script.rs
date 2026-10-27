@@ -36,6 +36,9 @@ pub struct EnginePars {
     pub release: i32,
     /// A volume modulation's intensity.
     pub intensity: i32,
+    pub volume: i32,
+    pub pan: i32,
+    pub tune: i32,
 }
 
 /// The script's UI controls as the engine sees them: ids, and where values live.
@@ -77,6 +80,10 @@ pub(crate) struct Running {
     pub(crate) controller: u8,
     pub(crate) ignore_release: bool,
     pub(crate) ignore_controller: bool,
+    /// `$NI_CALLBACK_TYPE` of the callback, kept across waits.
+    pub(crate) callback_type: u8,
+    /// `$NI_CALLBACK_ID`: unique per callback run, kept across waits.
+    pub(crate) callback_id: u32,
 }
 
 impl Running {
@@ -86,12 +93,40 @@ impl Running {
         controller: 0,
         ignore_release: false,
         ignore_controller: false,
+        callback_type: 0,
+        callback_id: 0,
     };
 
     pub(crate) fn new(kind: Kind, event: Option<NoteRef>) -> Self {
+        // KSP's $NI_CB_TYPE_* values.
+        let callback_type = match kind {
+            Kind::Init | Kind::Resumed => 0,
+            Kind::Note => 1,
+            Kind::Release => 2,
+            Kind::Controller => 3,
+        };
         Self {
             kind,
             event,
+            callback_type,
+            ..Self::IDLE
+        }
+    }
+
+    /// The coroutine context: the event in the low 32 bits, then the
+    /// callback type and id, so a resumed callback still knows them.
+    fn context(&self) -> u64 {
+        u64::from(self.event.map_or(0, |n| n.event_id() as u32))
+            | u64::from(self.callback_type) << 32
+            | u64::from(self.callback_id) << 40
+    }
+
+    fn resumed(context: u64) -> Self {
+        Self {
+            kind: Kind::Resumed,
+            event: NoteRef::from_event_id(context as u32 as i32),
+            callback_type: (context >> 32) as u8,
+            callback_id: (context >> 40) as u32,
             ..Self::IDLE
         }
     }
@@ -165,9 +200,11 @@ fn micros_to_frames(micros: i64, rate: u32) -> u64 {
 
 impl Engine {
     /// Runs a callback now. Notes it let through or played start before this returns.
-    pub(crate) fn run_callback(&mut self, entry: u32, running: Running) -> Running {
+    pub(crate) fn run_callback(&mut self, entry: u32, mut running: Running) -> Running {
+        self.callbacks_started = (self.callbacks_started + 1) & 0x00FF_FFFF;
+        running.callback_id = self.callbacks_started;
         self.running = running;
-        let context = running.event.map_or(0, |n| n.event_id() as u64);
+        let context = running.context();
         if let Some(mut vm) = self.vm.take() {
             if let Some(co) = vm.start(entry, context) {
                 self.step_script(&mut vm, co);
@@ -181,10 +218,7 @@ impl Engine {
     /// A waiting callback's time has come.
     pub(crate) fn resume(&mut self, co: kontra_vm::CoId) {
         if let Some(mut vm) = self.vm.take() {
-            let event = vm
-                .context(co)
-                .and_then(|c| NoteRef::from_event_id(c as i32));
-            self.running = Running::new(Kind::Resumed, event);
+            self.running = Running::resumed(vm.context(co).unwrap_or(0));
             self.step_script(&mut vm, co);
             self.vm = Some(vm);
         }
@@ -537,7 +571,38 @@ impl HostApi for Engine {
                 self.set_control_par(call.cells, int(0), int(1), int(2));
                 HostValue::Nothing
             }
-            Action::FindMod => {
+            Action::CurrentScriptSlot => HostValue::Int(0),
+            Action::MidiChannel => HostValue::Int(current.map_or(0, |n| i32::from(n.host.channel))),
+            Action::NoteHeld => flag(current.is_some_and(|n| !n.released)),
+            Action::PlayedVoicesInst | Action::PlayedVoicesTotal => {
+                HostValue::Int(self.active_voices() as i32)
+            }
+            Action::CallbackType => HostValue::Int(i32::from(self.running.callback_type)),
+            Action::CallbackId => HostValue::Int(self.running.callback_id as i32),
+            Action::EventParAt => HostValue::Int(
+                running.map_or(0, |r| self.event_par(r.event_id(), int(0).clamp(0, 3))),
+            ),
+            Action::NumZones | Action::GetNumZones => HostValue::Int(self.plan.zones.len() as i32),
+            // find_group answers 0 for an unknown name, get_group_idx $NI_NOT_FOUND.
+            Action::FindGroup | Action::GetGroupIdx => {
+                let name = call.texts.first().map_or("", Text::as_str);
+                let found = self.plan.groups.iter().position(|g| g.name == name);
+                let missing = if call.action == Action::FindGroup {
+                    0
+                } else {
+                    -1
+                };
+                HostValue::Int(found.map_or(missing, |g| g as i32))
+            }
+            Action::GroupName => {
+                let name = usize::try_from(int(0))
+                    .ok()
+                    .and_then(|g| self.plan.groups.get(g))
+                    .map_or("", |g| g.name.as_str());
+                *call.text_out = Text::from_str_cut(name).0;
+                HostValue::Text
+            }
+            Action::FindMod | Action::GetModIdx => {
                 let name = call.texts.first().map_or("", Text::as_str);
                 let found = self.groups.get(int(0) as usize).and_then(|g| {
                     g.mods
@@ -548,11 +613,11 @@ impl HostApi for Engine {
                 HostValue::Int(found.unwrap_or(-1))
             }
             Action::GetEnginePar
-                if let Some(value) = self.get_engine_par(int(0), int(1), int(2)) =>
+                if let Some(value) = self.get_engine_par(int(0), int(1), int(2), int(3)) =>
             {
                 HostValue::Int(value)
             }
-            Action::SetEnginePar if self.set_engine_par(int(0), int(1), int(2), int(3)) => {
+            Action::SetEnginePar if self.set_engine_par(int(0), int(1), int(2), int(3), int(4)) => {
                 HostValue::Nothing
             }
             Action::SetController => {

@@ -93,9 +93,32 @@ impl Crossfade {
     }
 }
 
+/// Level, pan and pitch a group or the instrument adds to its voices; a
+/// script may change them while they play.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Level {
+    /// Linear.
+    pub gain: f32,
+    /// -1..=1, added to the zone's pan.
+    pub pan: f32,
+    /// Semitones.
+    pub tune: f64,
+}
+
+impl Level {
+    pub const UNITY: Self = Self {
+        gain: 1.0,
+        pan: 0.0,
+        tune: 0.0,
+    };
+}
+
 /// What a group's voices share and a script may change while they play.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
+    /// What scripts find it by (`find_group`, `group_name`).
+    pub name: String,
+    pub level: Level,
     pub mods: Vec<ir::Mod>,
     pub envelope: Ahdsr,
 }
@@ -105,6 +128,8 @@ impl Group {
     #[must_use]
     pub fn standard() -> Self {
         Self {
+            name: String::new(),
+            level: Level::UNITY,
             mods: vec![ir::Mod {
                 name: String::new(),
                 slot: 0,

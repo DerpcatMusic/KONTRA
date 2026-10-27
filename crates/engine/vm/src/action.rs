@@ -55,6 +55,12 @@ impl Action {
     pub fn all() -> &'static [Self] {
         ALL
     }
+
+    /// Whether the VM answers this action itself, without the host.
+    #[must_use]
+    pub fn is_pure(self) -> bool {
+        crate::pure::eval(self, &[0; 8], &mut [0; 16]).is_some()
+    }
 }
 
 actions! {
