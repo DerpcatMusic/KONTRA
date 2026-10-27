@@ -123,7 +123,7 @@ fn an_ignored_note_plays_its_child_until_released() {
         end on
         on note
             ignore_event($EVENT_ID)
-            $child := play_note($EVENT_NOTE + 12, $EVENT_VELOCITY, 0, 0)
+            $child := play_note($EVENT_NOTE + 12, $EVENT_VELOCITY, 0, -1)
         end on
         on release
             message(\"released \" & $EVENT_NOTE)
@@ -131,7 +131,8 @@ fn an_ignored_note_plays_its_child_until_released() {
     );
     assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
     assert_eq!(level(&mut e, &[off(60)]), 0.0);
-    assert_eq!(e.last_message(), "released 60");
+    // The child's own note-off runs the release callback too, after its parent's.
+    assert_eq!(e.last_message(), "released 72");
     assert_eq!(e.active_voices(), 0);
 }
 

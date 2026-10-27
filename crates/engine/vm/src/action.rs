@@ -25,6 +25,8 @@ pub mod event {
     pub const NOTE: i32 = 7;
     pub const VELOCITY: i32 = 8;
     pub const ALLOW_GROUP: i32 = 9;
+    /// Read only: -1 for a note from outside, else the script slot that played it.
+    pub const SOURCE: i32 = 11;
 }
 
 macro_rules! actions {

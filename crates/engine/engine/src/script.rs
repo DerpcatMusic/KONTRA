@@ -288,8 +288,16 @@ impl Engine {
             draw,
         );
         note.offset = offset.max(0) as u32;
+        // -1 ends with the note that started the callback; 0 plays the whole
+        // sample; a positive duration is a note-off after that long.
+        // Once the starting note is released (its release callback), -1 has
+        // nothing left to wait for and the sample plays out.
+        let ending = self.running.kind == Kind::Release
+            || parent
+                .and_then(|p| self.notes.get(p))
+                .is_some_and(|n| n.released);
         note.origin = match (duration, parent) {
-            (0, Some(p)) => Origin::Child(p),
+            (-1, Some(p)) if !ending => Origin::Child(p),
             _ => Origin::Script,
         };
         let Some(r) = self.notes.insert(note) else {
@@ -330,7 +338,7 @@ impl Engine {
         let mut hits = std::mem::take(&mut self.targets_scratch);
         self.targets(id, &mut hits);
         for &note in &hits {
-            self.release(note);
+            self.queue_end(note);
         }
         self.targets_scratch = hits;
     }
@@ -364,6 +372,11 @@ impl Engine {
             event::PAN => n.script_pan,
             event::NOTE => i32::from(n.key),
             event::VELOCITY => i32::from(n.velocity_byte),
+            // ponytail: one script slot runs, so a script note's slot is 0.
+            event::SOURCE => match n.origin {
+                Origin::Host => -1,
+                Origin::Child(_) | Origin::Script => 0,
+            },
             _ => 0,
         }
     }
