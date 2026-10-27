@@ -71,6 +71,8 @@ struct Shared {
     pages_read: AtomicU64,
     read_errors: AtomicU64,
     requests_refused: AtomicU64,
+    /// Requests queued or being read.
+    outstanding: AtomicU64,
 }
 
 /// The audio side's handle: reads the cache and queues requests. Cloning is cheap.
@@ -84,10 +86,26 @@ impl StreamClient {
 
     pub(crate) fn push(&self, request: Request) -> bool {
         let pushed = self.0.requests.push(request).is_ok();
-        if !pushed {
+        if pushed {
+            self.0.outstanding.fetch_add(1, Ordering::AcqRel);
+        } else {
             self.0.requests_refused.fetch_add(1, Ordering::Relaxed);
         }
         pushed
+    }
+
+    /// Offline rendering only (never the audio thread of a live host): waits
+    /// until every page asked for so far is read, or `timeout` passes.
+    /// Returns whether the store settled.
+    pub fn settle(&self, timeout: Duration) -> bool {
+        let start = std::time::Instant::now();
+        while self.0.outstanding.load(Ordering::Acquire) > 0 {
+            if start.elapsed() > timeout {
+                return false;
+            }
+            std::thread::sleep(Duration::from_micros(50));
+        }
+        true
     }
 
     #[must_use]
@@ -125,6 +143,7 @@ impl Store {
             pages_read: AtomicU64::new(0),
             read_errors: AtomicU64::new(0),
             requests_refused: AtomicU64::new(0),
+            outstanding: AtomicU64::new(0),
         });
         let (registered, registrations) = channel();
         let io = {
@@ -158,61 +177,162 @@ impl Store {
         frames: u64,
         pin: &[Range<u64>],
     ) -> io::Result<Arc<Sample>> {
-        let fmt = key.fmt;
-        let frame_bytes = fmt.bytes_per_frame();
-        if fmt.channels == 0 || frame_bytes > self.max_frame_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unsupported sample layout {fmt:?}"),
-            ));
+        let request = LoadRequest {
+            key: key.clone(),
+            source,
+            frames,
+            pin: pin.to_vec(),
+        };
+        self.load_many(vec![request])
+            .pop()
+            .unwrap_or_else(|| Err(io::ErrorKind::InvalidInput.into()))
+    }
+
+    /// [`Store::load`] for many samples, their pages read on every core. Each
+    /// contiguous run of missing pages is one read, so a codec decodes it once.
+    pub fn load_many(&mut self, requests: Vec<LoadRequest>) -> Vec<io::Result<Arc<Sample>>> {
+        self.pinned.retain(|_, page| page.strong_count() > 0);
+        // Pages already held, and the runs each request must read.
+        let mut plans = Vec::with_capacity(requests.len());
+        for r in &requests {
+            let frame_bytes = r.key.fmt.bytes_per_frame();
+            if r.key.fmt.channels == 0 || frame_bytes > self.max_frame_bytes {
+                plans.push(Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unsupported sample layout {:?}", r.key.fmt),
+                )));
+                continue;
+            }
+            let mut pages: Vec<Option<Arc<[u8]>>> = vec![None; page_count(r.frames)];
+            let mut wanted = vec![false; pages.len()];
+            for range in &r.pin {
+                let end = range.end.min(r.frames);
+                if range.start < end {
+                    for page in page_of(range.start)..=page_of(end - 1) {
+                        if let Some(w) = wanted.get_mut(page) {
+                            *w = true;
+                        }
+                    }
+                }
+            }
+            for (page, cell) in pages.iter_mut().enumerate() {
+                if wanted.get(page).copied().unwrap_or(false) {
+                    *cell = self
+                        .pinned
+                        .get(&(r.key.clone(), page))
+                        .and_then(Weak::upgrade);
+                }
+            }
+            let mut runs = Vec::new();
+            let mut page = 0;
+            while page < pages.len() {
+                let missing = |p: usize| {
+                    wanted.get(p).copied().unwrap_or(false)
+                        && pages.get(p).is_some_and(Option::is_none)
+                };
+                if missing(page) {
+                    let start = page;
+                    while missing(page) {
+                        page += 1;
+                    }
+                    runs.push(start..page);
+                } else {
+                    page += 1;
+                }
+            }
+            plans.push(Ok((pages, runs)));
         }
-        let pages = page_count(frames);
-        let mut pinned: Vec<Option<Arc<[u8]>>> = vec![None; pages];
-        {
-            let shared = &mut self.pinned;
-            shared.retain(|_, page| page.strong_count() > 0);
-            for range in pin {
-                let end = range.end.min(frames);
-                if range.start >= end {
+        // Read every run, spread over the machine's cores.
+        let jobs: Vec<(usize, Range<usize>)> = plans
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.as_ref().ok().map(|(_, runs)| (i, runs)))
+            .flat_map(|(i, runs)| runs.iter().map(move |run| (i, run.clone())))
+            .collect();
+        let next = AtomicU32::new(0);
+        let workers = std::thread::available_parallelism()
+            .map_or(4, |n| n.get())
+            .min(jobs.len().max(1));
+        let read: Vec<Vec<RunRead>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..workers)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut done = Vec::new();
+                        loop {
+                            let n = next.fetch_add(1, Ordering::Relaxed) as usize;
+                            let Some((i, run)) = jobs.get(n) else {
+                                break done;
+                            };
+                            let Some(r) = requests.get(*i) else {
+                                continue;
+                            };
+                            let first = run.start as u64 * PAGE_FRAMES;
+                            let end = (run.end as u64 * PAGE_FRAMES).min(r.frames);
+                            let mut buf =
+                                vec![0; (end - first) as usize * r.key.fmt.bytes_per_frame()];
+                            let result = r.source.read(first, &mut buf).map(|()| buf);
+                            done.push((*i, run.clone(), result));
+                        }
+                    })
+                })
+                .collect();
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        });
+        for (i, run, result) in read.into_iter().flatten() {
+            let (Some(Ok((pages, _))), Some(r)) = (plans.get_mut(i), requests.get(i)) else {
+                continue;
+            };
+            let bytes = match result {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    if let Some(plan) = plans.get_mut(i) {
+                        *plan = Err(e);
+                    }
                     continue;
                 }
-                for page in page_of(range.start)..=page_of(end - 1) {
-                    let Some(cell) = pinned.get_mut(page) else {
-                        continue;
-                    };
-                    if cell.is_some() {
-                        continue;
-                    }
-                    let id = (key.clone(), page);
-                    let bytes = match shared.get(&id).and_then(Weak::upgrade) {
-                        Some(bytes) => bytes,
-                        None => {
-                            let first = page as u64 * PAGE_FRAMES;
-                            let mut buf =
-                                vec![0; (PAGE_FRAMES.min(frames - first)) as usize * frame_bytes];
-                            source.read(first, &mut buf)?;
-                            let bytes: Arc<[u8]> = buf.into();
-                            shared.insert(id, Arc::downgrade(&bytes));
-                            bytes
-                        }
-                    };
-                    *cell = Some(bytes);
+            };
+            let page_bytes = PAGE_FRAMES as usize * r.key.fmt.bytes_per_frame();
+            for (page, chunk) in run.zip(bytes.chunks(page_bytes.max(1))) {
+                let shared: Arc<[u8]> = chunk.into();
+                self.pinned
+                    .insert((r.key.clone(), page), Arc::downgrade(&shared));
+                if let Some(cell) = pages.get_mut(page) {
+                    *cell = Some(shared);
                 }
             }
         }
-        let id = SampleId(self.next_id.fetch_add(1, Ordering::Relaxed));
-        let sample = Arc::new(Sample {
-            id,
-            fmt,
-            frames,
-            source,
-            pinned: pinned.into(),
-            streamed: (0..pages).map(|_| AtomicU32::new(ABSENT)).collect(),
-        });
-        // The I/O thread only stops when the store drops, so this cannot fail.
-        let _ = self.registered.send((id, Arc::downgrade(&sample)));
-        Ok(sample)
+        plans
+            .into_iter()
+            .zip(requests)
+            .map(|(plan, r)| {
+                let (pages, _) = plan?;
+                let id = SampleId(self.next_id.fetch_add(1, Ordering::Relaxed));
+                let sample = Arc::new(Sample {
+                    id,
+                    fmt: r.key.fmt,
+                    frames: r.frames,
+                    source: r.source,
+                    streamed: (0..pages.len()).map(|_| AtomicU32::new(ABSENT)).collect(),
+                    pinned: pages.into(),
+                });
+                // The I/O thread only stops when the store drops, so this cannot fail.
+                let _ = self.registered.send((id, Arc::downgrade(&sample)));
+                Ok(sample)
+            })
+            .collect()
     }
+}
+
+/// A run of pages read for request `.0`.
+type RunRead = (usize, Range<usize>, io::Result<Vec<u8>>);
+
+/// One sample for [`Store::load_many`].
+pub struct LoadRequest {
+    pub key: BlobKey,
+    pub source: Arc<dyn Source>,
+    pub frames: u64,
+    /// Frame ranges to hold in memory (the preload law's windows).
+    pub pin: Vec<Range<u64>>,
 }
 
 impl Drop for Store {
@@ -249,26 +369,43 @@ fn serve(shared: &Shared, registrations: &Receiver<(SampleId, Weak<Sample>)>, sl
             std::thread::park_timeout(Duration::from_millis(1));
             continue;
         };
+        serve_page(shared, &samples, &mut owners, &mut hand, &mut buf, id, page);
+        shared.outstanding.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Reads one requested page into the cache, evicting by clock.
+fn serve_page(
+    shared: &Shared,
+    samples: &HashMap<SampleId, Weak<Sample>>,
+    owners: &mut [Option<(Weak<Sample>, usize)>],
+    hand: &mut usize,
+    buf: &mut [u8],
+    id: u32,
+    page: u32,
+) {
+    let cache = &shared.cache;
+    {
         let page = page as usize;
         let sample = samples.get(&SampleId(id)).and_then(Weak::upgrade);
-        let Some(sample) = sample else { continue };
+        let Some(sample) = sample else { return };
         let Some(entry) = sample.streamed.get(page) else {
-            continue;
+            return;
         };
         if entry.load(Ordering::Relaxed) != REQUESTED {
-            continue;
+            return;
         }
         let first = page as u64 * PAGE_FRAMES;
         let len = (PAGE_FRAMES.min(sample.frames - first)) as usize * sample.fmt.bytes_per_frame();
         let Some(data) = buf.get_mut(..len) else {
-            continue;
+            return;
         };
         if sample.source.read(first, data).is_err() {
             shared.read_errors.fetch_add(1, Ordering::Relaxed);
             entry.store(ABSENT, Ordering::Relaxed);
-            continue;
+            return;
         }
-        let victim = clock(cache, &mut hand);
+        let victim = clock(cache, hand);
         if let Some(Some((old, old_page))) = owners.get_mut(victim as usize).map(Option::take)
             && let Some(old_entry) = old
                 .upgrade()

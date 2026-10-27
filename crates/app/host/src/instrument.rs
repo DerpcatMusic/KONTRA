@@ -23,7 +23,7 @@ pub fn load(
     store: &mut Store,
 ) -> Result<Loaded, kontra_format_kontakt::Error> {
     let instrument = kontra_format_kontakt::load(path)?;
-    let (mut plan, mut diagnostics) = prepare(&instrument, rate, store, &mut kontra_stream::open);
+    let (mut plan, mut diagnostics) = prepare(&instrument, rate, store, &kontra_stream::open);
     diagnostics.extend(instrument.diagnostics);
     let mut scripts = instrument
         .scripts

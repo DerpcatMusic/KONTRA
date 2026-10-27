@@ -32,7 +32,7 @@ pub use ledger::NoteRef;
 pub use plan::{
     Bus, Control, Crossfade, Plan, RoundRobin, RrCounter, Trigger, VelocityCurve, Zone,
 };
-pub use prepare::{Opener, prepare};
+pub use prepare::{Open, prepare};
 pub use queue::Timed;
 pub use script::{Callbacks, Controls, ScriptPlan};
 

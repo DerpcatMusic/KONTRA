@@ -54,9 +54,8 @@ pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
             Ok((Arc::new(source), fmt))
         }
         ir::Codec::Ncw => {
-            let reader = ncw::NcwReader::read(region.reader())
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-            let header = &reader.header;
+            let reader = ncw::NcwReader::read(region.reader()).map_err(invalid)?;
+            let header = reader.header.clone();
             let float = reader.sample_format == ncw::SampleFormat::Float;
             let encoding = match (header.bits_per_sample, float) {
                 (16, false) => Encoding::I16,
@@ -68,13 +67,17 @@ pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
             let source = NcwSource {
                 region,
                 encoding,
-                bits: header.bits_per_sample,
-                float,
-                channels: usize::from(channels),
+                format: reader.sample_format,
+                offsets: reader.block_offsets.into(),
+                header,
             };
             Ok((Arc::new(source), SampleFmt { encoding, channels }))
         }
     }
+}
+
+fn invalid(e: ncw::NcwError) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, e.to_string())
 }
 
 fn unsupported(what: String) -> io::Error {
@@ -217,58 +220,90 @@ impl Source for PcmSource {
     }
 }
 
+/// NCW decoded per block group. The block table is read once at open; a read
+/// fetches the bytes of every group it touches in one positional read.
 struct NcwSource {
     region: Region,
     encoding: Encoding,
-    bits: u16,
-    float: bool,
-    channels: usize,
+    format: ncw::SampleFormat,
+    header: ncw::NcwHeader,
+    offsets: Box<[u32]>,
+}
+
+impl NcwSource {
+    /// Byte range of group `index` relative to the data start.
+    fn group(&self, index: usize) -> Option<(u32, u32)> {
+        let start = *self.offsets.get(index)?;
+        let end = self
+            .offsets
+            .get(index + 1)
+            .copied()
+            .unwrap_or(self.header.data_size);
+        (start <= end).then_some((start, end))
+    }
+
+    fn write(&self, value: i32, dest: &mut [u8]) {
+        match self.encoding {
+            Encoding::I16 | Encoding::I24 => {
+                let width = dest.len();
+                dest.copy_from_slice(value.to_le_bytes().get(..width).unwrap_or_default());
+            }
+            Encoding::F32 => {
+                let v = if self.format == ncw::SampleFormat::Float {
+                    f32::from_bits(value as u32)
+                } else {
+                    value as f32 / 2f32.powi(i32::from(self.header.bits_per_sample) - 1)
+                };
+                dest.copy_from_slice(&v.to_le_bytes());
+            }
+        }
+    }
 }
 
 impl Source for NcwSource {
-    // ponytail: re-reads the block table per page (a few KiB); keep the
-    // table per source if page reads show in an I/O profile.
     fn read(&self, first: u64, out: &mut [u8]) -> io::Result<()> {
-        let invalid = |e: ncw::NcwError| io::Error::new(io::ErrorKind::InvalidData, e.to_string());
-        let mut reader = ncw::NcwReader::read(self.region.reader()).map_err(invalid)?;
-        let per_block = ncw::NcwReader::<RegionReader>::FRAMES_PER_BLOCK as u64;
-        let width = self.encoding.bytes();
-        let frame = width * self.channels;
-        let frames = (out.len() / frame) as u64;
         out.fill(0);
-        let scale = 2f32.powi(i32::from(self.bits) - 1);
+        let channels = usize::from(self.header.channels);
+        let width = self.encoding.bytes();
+        let frame = width * channels;
+        let frames = (out.len() / frame.max(1)) as u64;
+        let per_block = ncw::SAMPLES_PER_BLOCK as u64;
+        let last = (first + frames)
+            .div_ceil(per_block)
+            .min(self.offsets.len() as u64);
+        let blocks = (first / per_block) as usize..last as usize;
+        let (Some((from, _)), Some((_, to))) = (
+            self.group(blocks.start),
+            self.group(blocks.end.saturating_sub(1)),
+        ) else {
+            return Ok(());
+        };
+        let mut bytes = vec![0; (to - from) as usize];
+        self.region.read_at(
+            u64::from(self.header.data_offset) + u64::from(from),
+            &mut bytes,
+        )?;
         let mut decoded = Vec::new();
-        let mut block = first / per_block;
-        while block * per_block < first + frames && (block as usize) < reader.block_offsets.len() {
-            decoded.clear();
-            reader
-                .decode_block_into(block as usize, &mut decoded)
+        for index in blocks {
+            let (start, end) = self.group(index).unwrap_or((from, from));
+            let mut group = bytes
+                .get((start - from) as usize..(end - from) as usize)
+                .unwrap_or_default();
+            ncw::decode_group(&mut group, &self.header, self.format, index, &mut decoded)
                 .map_err(invalid)?;
-            let block_first = block * per_block;
-            for (n, value) in decoded.iter().enumerate() {
-                let at = block_first + (n / self.channels) as u64;
-                if at < first || at >= first + frames {
-                    continue;
-                }
-                let offset = (at - first) as usize * frame + (n % self.channels) * width;
-                let Some(dest) = out.get_mut(offset..offset + width) else {
-                    continue;
-                };
-                match self.encoding {
-                    Encoding::I16 | Encoding::I24 => {
-                        dest.copy_from_slice(value.to_le_bytes().get(..width).unwrap_or_default());
+            let block_first = index as u64 * per_block;
+            for (c, samples) in decoded.iter().enumerate() {
+                for (n, &value) in samples.iter().enumerate() {
+                    let at = block_first + n as u64;
+                    if at < first || at >= first + frames {
+                        continue;
                     }
-                    Encoding::F32 => {
-                        let v = if self.float {
-                            f32::from_bits(*value as u32)
-                        } else {
-                            *value as f32 / scale
-                        };
-                        dest.copy_from_slice(&v.to_le_bytes());
+                    let offset = (at - first) as usize * frame + c * width;
+                    if let Some(dest) = out.get_mut(offset..offset + width) {
+                        self.write(value, dest);
                     }
                 }
             }
-            block += 1;
         }
         Ok(())
     }
