@@ -21,7 +21,9 @@ use kontra_time::{Frames, SampleTime};
 use kontra_voice::{Voice, VoiceStart};
 
 pub use ledger::NoteRef;
-pub use plan::{Bus, Control, Crossfade, Plan, RoundRobin, RrCounter, Trigger, Zone};
+pub use plan::{
+    Bus, Control, Crossfade, Plan, RoundRobin, RrCounter, Trigger, VelocityCurve, Zone,
+};
 pub use queue::Timed;
 
 use behaviour::Behaviour;
@@ -94,7 +96,7 @@ impl Engine {
         let pool = plan.voices + plan.voices / 4 + 1;
         let voices = (0..pool)
             .map(|_| Slot {
-                voice: Voice::new(),
+                voice: Voice::allocate(),
                 note: None,
                 zone: 0,
                 started: SampleTime(0),
@@ -632,11 +634,10 @@ fn step(zone: &Zone, note: &Note, rate: u32) -> f64 {
     2f64.powf(semitones / 12.0) * f64::from(zone.sample_rate) / f64::from(rate)
 }
 
-// ponytail: linear-in-dB velocity and a balance pan law; Kontakt's curves come
-// from the law table once a measurement shows they differ audibly.
+// ponytail: balance pan law only; equal-power and Kontakt's raised cosine
+// when a library's measured stereo image needs them.
 fn gain(zone: &Zone, note: &Note) -> [f32; 2] {
-    let db = -zone.velocity_db * (1.0 - note.velocity as f32);
-    let g = zone.gain * 10f32.powf(db / 20.0) * note.expression_gain;
+    let g = zone.gain * zone.velocity.gain(note.velocity as f32) * note.expression_gain;
     let pan = (zone.pan + note.expression_pan).clamp(-1.0, 1.0);
     [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
 }

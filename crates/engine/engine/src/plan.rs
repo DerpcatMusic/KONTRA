@@ -79,6 +79,28 @@ impl Crossfade {
     }
 }
 
+/// How note velocity scales a zone's amplitude.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VelocityCurve {
+    /// Velocity does not change the level.
+    Flat,
+    /// Linear in dB: this many dB down at velocity 0, 0 dB at full velocity.
+    Decibels(f32),
+    /// `1 − depth + depth × velocity^exponent` (linear: depth 1, exponent 1).
+    Power { depth: f32, exponent: f32 },
+}
+
+impl VelocityCurve {
+    #[must_use]
+    pub fn gain(self, velocity: f32) -> f32 {
+        match self {
+            Self::Flat => 1.0,
+            Self::Decibels(range) => 10f32.powf(-range * (1.0 - velocity) / 20.0),
+            Self::Power { depth, exponent } => 1.0 - depth + depth * velocity.powf(exponent),
+        }
+    }
+}
+
 /// One playable zone, resolved: no format knowledge is left here.
 #[derive(Clone)]
 pub struct Zone {
@@ -101,6 +123,8 @@ pub struct Zone {
     // Playback.
     /// The key at which the sample plays at its recorded pitch.
     pub root: u8,
+    /// Semitones of pitch per key away from `root`: 1 tracks the keyboard, 0 is fixed.
+    pub keytrack: f64,
     /// Fine tune in semitones.
     pub tune: f64,
     /// The sample's own rate, for the step against the engine rate.
@@ -110,11 +134,12 @@ pub struct Zone {
     pub gain: f32,
     /// −1 (left) ..= 1 (right).
     pub pan: f32,
-    /// Attenuation in dB at velocity 0, falling linearly to 0 dB at full velocity.
-    pub velocity_db: f32,
+    pub velocity: VelocityCurve,
     /// Release triggers: dB lost per second the key was held.
     pub release_decay_db: f32,
     pub envelope: Ahdsr,
+    /// Ignores note-off and plays to the end (drums, one-shots).
+    pub one_shot: bool,
     /// Output bus (mic position) index into [`Plan::buses`].
     pub bus: usize,
 }
@@ -134,14 +159,16 @@ impl Zone {
             group: 0,
             off_by: None,
             root,
+            keytrack: 1.0,
             tune: 0.0,
             sample_rate,
             region,
             gain: 1.0,
             pan: 0.0,
-            velocity_db: 24.0,
+            velocity: VelocityCurve::Decibels(24.0),
             release_decay_db: 0.0,
             envelope: Ahdsr::GATE,
+            one_shot: false,
             bus: 0,
         }
     }
