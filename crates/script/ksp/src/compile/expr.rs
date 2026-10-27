@@ -218,9 +218,9 @@ impl<'a> Compiler<'a> {
 
     // ---- Builtins ----
 
-    pub(super) fn host(&mut self, b: Builtin, ints: usize, texts: usize, returns: Returns) {
+    pub(super) fn host(&mut self, action: Action, ints: usize, texts: usize, returns: Returns) {
         self.emit(Op::Host {
-            id: b.id(),
+            action,
             ints: ints as u8,
             texts: texts as u8,
             returns,
@@ -350,11 +350,17 @@ impl<'a> Compiler<'a> {
             Builtin::ReadPersistentVar => {
                 let (v, _) = self.named(arg(0)?)?;
                 self.emit(Op::Int(v as i32));
-                self.host(b, 1, 0, Returns::Nothing);
+                self.host(Action::ReadPersistentVar, 1, 0, Returns::Nothing);
                 return Ok(None);
             }
             _ => {}
         }
+        let Some(action) = b.action() else {
+            return Err(Error::new(
+                span,
+                format!("{} cannot be used here", b.name()),
+            ));
+        };
         let (mut ints, mut texts) = (0, 0);
         let mut number: Option<Ty> = None;
         let mut array_len = 0;
@@ -463,7 +469,7 @@ impl<'a> Compiler<'a> {
         if ints > usize::from(u8::MAX) || texts > usize::from(u8::MAX) {
             return Err(Error::new(span, "too many arguments"));
         }
-        self.host(b, ints, texts, returns);
+        self.host(action, ints, texts, returns);
         Ok(ty)
     }
 }

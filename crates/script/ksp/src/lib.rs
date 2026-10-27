@@ -2,15 +2,14 @@
 //! the engine needs to run it (callbacks, UI controls, variables, symbols).
 //!
 //! The pipeline is lexer → condition preprocessor → parser → one compiler pass.
-//! Builtins are host calls whose id is [`Builtin::id`]; arithmetic and array
-//! builtins are implemented once in [`pure`].
+//! Builtins that are not lowered to bytecode become [`kontra_vm::Action`]s,
+//! the front-end-neutral vocabulary the engine implements.
 
 mod builtins;
 mod compile;
 mod consts;
 mod lex;
 mod parse;
-pub mod pure;
 
 use std::fmt;
 

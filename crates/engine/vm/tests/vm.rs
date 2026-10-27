@@ -1,24 +1,26 @@
 #![cfg(test)]
 
-use kontra_vm::{Cmp, HostApi, HostCall, HostValue, Instance, Op, Program, Returns, Step, Text};
+use kontra_vm::{
+    Action, Cmp, HostApi, HostCall, HostValue, Instance, Op, Program, Returns, Step, Text,
+};
 
-/// Records host calls; id 1 returns the sum of its ints, id 2 echoes its text.
+/// Records host calls; `GetEventPar` returns the sum of its ints, `GroupName` echoes its text.
 #[derive(Default)]
 struct Host {
-    calls: Vec<(u16, u64, Vec<i64>, Vec<String>)>,
+    calls: Vec<(Action, u64, Vec<i64>, Vec<String>)>,
 }
 
 impl HostApi for Host {
     fn call(&mut self, call: HostCall<'_>) -> HostValue {
         self.calls.push((
-            call.id,
+            call.action,
             call.context,
             call.ints.to_vec(),
             call.texts.iter().map(|t| t.as_str().to_owned()).collect(),
         ));
-        match call.id {
-            1 => HostValue::Int(call.ints.iter().sum::<i64>() as i32),
-            2 => match call.texts.first() {
+        match call.action {
+            Action::GetEventPar => HostValue::Int(call.ints.iter().sum::<i64>() as i32),
+            Action::GroupName => match call.texts.first() {
                 Some(t) => {
                     *call.text_out = *t;
                     HostValue::Text
@@ -133,7 +135,7 @@ fn host_calls_get_their_arguments_and_context_and_return_values() {
         Op::Int(3),
         Op::Int(4),
         Op::Host {
-            id: 1,
+            action: Action::GetEventPar,
             ints: 2,
             texts: 0,
             returns: Returns::Int,
@@ -144,7 +146,7 @@ fn host_calls_get_their_arguments_and_context_and_return_values() {
         Op::TFromInt,
         Op::TConcat,
         Op::Host {
-            id: 2,
+            action: Action::GroupName,
             ints: 0,
             texts: 1,
             returns: Returns::Text,
@@ -158,7 +160,7 @@ fn host_calls_get_their_arguments_and_context_and_return_values() {
     let (vm, _) = run(&p, &mut host);
     assert_eq!(vm.cell(0), Some(7));
     assert_eq!(vm.text(0).map(Text::as_str), Some("v=42"));
-    assert_eq!(host.calls[0], (1, 7, vec![3, 4], vec![]));
+    assert_eq!(host.calls[0], (Action::GetEventPar, 7, vec![3, 4], vec![]));
 }
 
 #[test]
@@ -209,7 +211,7 @@ fn calls_return_and_exit_ends_from_any_depth() {
 fn polyphonic_cells_belong_to_each_callback() {
     let p = program(vec![
         Op::Host {
-            id: 9,
+            action: Action::IgnoreEvent,
             ints: 0,
             texts: 0,
             returns: Returns::Nothing,

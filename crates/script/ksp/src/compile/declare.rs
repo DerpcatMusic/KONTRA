@@ -265,7 +265,7 @@ impl<'a> Compiler<'a> {
             self.emit(Op::Int(par));
             let got = self.expr(p)?;
             self.convert(got, Ty::Int, p.span)?;
-            self.host(Builtin::SetControlPar, 3, 0, Returns::Nothing);
+            self.host(Action::SetControlPar, 3, 0, Returns::Nothing);
         }
         Ok(())
     }

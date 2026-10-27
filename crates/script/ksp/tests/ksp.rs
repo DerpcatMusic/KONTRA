@@ -1,30 +1,27 @@
 #![cfg(test)]
 //! KSP source compiled and run on the VM with a recording host.
 
-use kontra_ksp::{Builtin, CallbackKind, Cells, FIRST_UI_ID, Persistence, Script, compile, pure};
-use kontra_vm::{HostApi, HostCall, HostValue, Instance, Step};
+use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, Persistence, Script, compile};
+use kontra_vm::{Action, HostApi, HostCall, HostValue, Instance, Step};
 
 #[derive(Default)]
 struct Host {
     messages: Vec<String>,
-    calls: Vec<(Builtin, Vec<i64>)>,
+    calls: Vec<(Action, Vec<i64>)>,
     note: i32,
 }
 
 impl HostApi for Host {
-    fn call(&mut self, mut call: HostCall<'_>) -> HostValue {
-        if let Some(v) = pure::call(&mut call) {
-            return v;
-        }
-        let b = Builtin::from_id(call.id).unwrap();
+    fn call(&mut self, call: HostCall<'_>) -> HostValue {
+        let b = call.action;
         match b {
-            Builtin::Message => {
+            Action::Message => {
                 self.messages.push(call.texts[0].as_str().to_owned());
                 HostValue::Nothing
             }
-            Builtin::EventNote => HostValue::Int(self.note),
-            Builtin::EventId => HostValue::Int(1000),
-            Builtin::PlayNote => {
+            Action::EventNote => HostValue::Int(self.note),
+            Action::EventId => HostValue::Int(1000),
+            Action::PlayNote => {
                 self.calls.push((b, call.ints.to_vec()));
                 HostValue::Int(2000)
             }
@@ -217,7 +214,7 @@ fn controls_ids_callbacks_and_persistence() {
         .unwrap();
     assert_eq!(volume.persistence, Persistence::Snapshot);
     let (b, ints) = &r.host.calls[0];
-    assert_eq!(*b, Builtin::SetControlPar);
+    assert_eq!(*b, Action::SetControlPar);
     assert_eq!(ints[0], i64::from(FIRST_UI_ID + 1));
     assert_eq!(r.script.symbol(ints[1] as i32), Some("$CONTROL_PAR_HIDE"));
     assert_eq!(r.callback(CallbackKind::UiControl, Some(1)), Step::Done);
@@ -246,13 +243,13 @@ fn note_callback_plays_waits_and_reads_event() {
         Step::Wait(5000)
     );
     let names: Vec<_> = r.host.calls.iter().map(|c| c.0).collect();
-    assert_eq!(names, [Builtin::IgnoreEvent, Builtin::PlayNote]);
+    assert_eq!(names, [Action::IgnoreEvent, Action::PlayNote]);
     assert_eq!(r.host.calls[0].1, [1000]);
     assert_eq!(r.host.calls[1].1, [72, 100, 0, -1]);
     assert_eq!(r.vm.run(&r.script.program, co, &mut r.host), Step::Done);
-    assert_eq!(r.host.calls[2], (Builtin::ChangeTune, vec![2000, 100, 0]));
+    assert_eq!(r.host.calls[2], (Action::ChangeTune, vec![2000, 100, 0]));
     // Left-out optional arguments pass zero.
-    assert_eq!(r.host.calls[3], (Builtin::NoteOff, vec![2000, 0]));
+    assert_eq!(r.host.calls[3], (Action::NoteOff, vec![2000, 0]));
 }
 
 #[test]
