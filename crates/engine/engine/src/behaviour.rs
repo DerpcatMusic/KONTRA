@@ -77,16 +77,20 @@ impl Behaviour {
 
     /// One draw per note-on: the counters it reads and a fresh random value.
     pub(crate) fn draw(&mut self, key: u8) -> RrDraw {
-        // xorshift64*: deterministic, allocation-free.
-        self.rng ^= self.rng >> 12;
-        self.rng ^= self.rng << 25;
-        self.rng ^= self.rng >> 27;
-        let random = (self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32;
+        let random = self.random();
         RrDraw {
             global: self.global.count,
             key: self.keys.get(usize::from(key)).map_or(0, |c| c.count),
             random,
         }
+    }
+
+    /// xorshift64*: deterministic, allocation-free.
+    pub(crate) fn random(&mut self) -> u32 {
+        self.rng ^= self.rng >> 12;
+        self.rng ^= self.rng << 25;
+        self.rng ^= self.rng >> 27;
+        (self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
     }
 
     fn counter(&mut self, rr: &RoundRobin, zone: &Zone, key: u8) -> Option<&mut Counter> {

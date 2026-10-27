@@ -2,6 +2,7 @@
 //! format translator (02-ENGINE.md §6). Sampler behaviour is data here
 //! (13-FRESH-CORE.md §2.1): scripts are optional, not where round robin lives.
 
+use crate::ScriptPlan;
 use std::ops::RangeInclusive;
 
 use kontra_voice::{Ahdsr, Region};
@@ -197,6 +198,8 @@ pub struct Plan {
     pub notes: usize,
     /// Pending timed work; also bounds one block's input.
     pub queue: usize,
+    /// The instrument script, if any.
+    pub script: Option<ScriptPlan>,
 }
 
 impl Plan {
@@ -216,6 +219,7 @@ impl Plan {
             voices,
             notes: 128,
             queue: 1024,
+            script: None,
         }
     }
 }

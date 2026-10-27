@@ -5,6 +5,9 @@ use std::collections::BinaryHeap;
 
 use kontra_events::Event;
 use kontra_time::SampleTime;
+use kontra_vm::CoId;
+
+use crate::NoteRef;
 
 /// Something that happens at a sample time.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -13,10 +16,14 @@ pub struct Timed<T> {
     pub body: T,
 }
 
-/// What the queue holds. Script resumes, delayed starts and timers join here.
+/// What the queue holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Work {
     Input(Event),
+    /// A waiting script callback continues.
+    Resume(CoId),
+    /// A script note's duration is up.
+    Release(NoteRef),
 }
 
 struct Entry {

@@ -13,14 +13,49 @@ pub struct NoteRef {
     generation: u32,
 }
 
+impl NoteRef {
+    /// The note's slot in the ledger, for tables kept beside it.
+    pub(crate) fn slot(self) -> usize {
+        self.index as usize
+    }
+
+    /// The script-visible event id: positive, unique among live notes, and
+    /// stale once the note ends. Ledgers hold at most 65536 notes.
+    pub(crate) fn event_id(self) -> i32 {
+        (((self.generation & 0x7FFF) << 16) | (self.index & 0xFFFF)) as i32
+    }
+
+    pub(crate) fn from_event_id(id: i32) -> Option<Self> {
+        let id = u32::try_from(id).ok().filter(|&id| id >> 16 != 0)?;
+        Some(Self {
+            index: id & 0xFFFF,
+            generation: id >> 16,
+        })
+    }
+}
+
+/// Where a note came from and how it ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Origin {
+    /// A host note: released by its note-off.
+    Host,
+    /// A script note released with its parent (`play_note` duration 0).
+    Child(NoteRef),
+    /// A script note released only by the script or its own duration.
+    Script,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Note {
     pub(crate) host: HostNote,
+    pub(crate) origin: Origin,
+    /// The key that sounds (a script may move it before the note starts).
+    pub(crate) key: u8,
     /// 0..=1.
     pub(crate) velocity: f64,
     /// MIDI velocity 1..=127, what zones and crossfades select on.
     pub(crate) velocity_byte: u8,
-    pub(crate) started: SampleTime,
+    pub(crate) at: SampleTime,
     /// The round-robin draw of the attack; release triggers reuse it.
     pub(crate) draw: RrDraw,
     /// Initial tuning from the host, semitones.
@@ -32,6 +67,23 @@ pub(crate) struct Note {
     pub(crate) pedal_held: bool,
     /// Key released (directly or by the pedal coming up).
     pub(crate) released: bool,
+    /// Voices started (or the note was ignored): later script changes move
+    /// sounding voices instead of choosing zones.
+    pub(crate) started: bool,
+    /// A script ignored the event: it starts no voices.
+    pub(crate) ignored: bool,
+    /// Script tuning, millicents.
+    pub(crate) script_tune: i32,
+    /// Script volume, millidecibels.
+    pub(crate) script_volume: i32,
+    /// Script pan, per mille.
+    pub(crate) script_pan: i32,
+    /// Sample start offset a script asked for, microseconds.
+    pub(crate) offset: u32,
+    /// `EVENT_PAR_0..3`, free for the script.
+    pub(crate) custom: [i32; 4],
+    /// Event marks (`set_event_mark`), one bit each.
+    pub(crate) marks: u32,
 }
 
 impl Note {
@@ -39,15 +91,17 @@ impl Note {
         host: HostNote,
         velocity: f64,
         tune: f64,
-        started: SampleTime,
+        at: SampleTime,
         draw: RrDraw,
     ) -> Self {
         let velocity = velocity.clamp(0.0, 1.0);
         Self {
             host,
+            origin: Origin::Host,
+            key: host.key,
             velocity,
             velocity_byte: (velocity * 127.0).round().max(1.0) as u8,
-            started,
+            at,
             draw,
             tune,
             expression_tune: 0.0,
@@ -55,6 +109,14 @@ impl Note {
             expression_pan: 0.0,
             pedal_held: false,
             released: false,
+            started: false,
+            ignored: false,
+            script_tune: 0,
+            script_volume: 0,
+            script_pan: 0,
+            offset: 0,
+            custom: [0; 4],
+            marks: 0,
         }
     }
 }
@@ -146,7 +208,8 @@ impl Ledger {
             .count()
     }
 
+    /// Host notes the pattern addresses; script notes answer only to the script.
     pub(crate) fn matching(&self, pattern: HostPattern, out: &mut Vec<NoteRef>) {
-        self.select(out, |n| pattern.matches(n.host));
+        self.select(out, |n| n.origin == Origin::Host && pattern.matches(n.host));
     }
 }
