@@ -12,6 +12,7 @@ use ni_file::kontakt::objects::{
 };
 
 use crate::Error;
+use crate::laws;
 use crate::resources::Resources;
 use crate::samples::Resolver;
 
@@ -222,20 +223,6 @@ fn voice_group(v: &VoiceLimit) -> ir::VoiceGroup {
     }
 }
 
-/// Kontakt's attack curve knob (−1 concave ..= 1 convex) as a segment shape.
-/// The engine rounds the base to f32 before taking its log
-/// (docs/re/engine/k-mod-envelopes.md).
-fn attack_shape(curve: f32) -> f32 {
-    let c = f64::from(curve.clamp(-1.0, 1.0));
-    let b = f64::from(((1.0 - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
-    let k = if c > 0.0 {
-        (b / (1.0 + b)).ln()
-    } else {
-        ((1.0 + b) / b).ln()
-    };
-    k as f32
-}
-
 /// The library data files a script loads with a literal `load_array(%x, 2)`:
 /// `Resources/data/x.nka`, by lowercase array name without its sigil.
 fn data_files(
@@ -300,16 +287,7 @@ fn translate_group(
                             .iter()
                             .any(|m| matches!(m.kind, ir::ModKind::Envelope)) =>
                 {
-                    // Stored times are milliseconds; the sustain knob is cubic.
-                    out.envelope = ir::Envelope {
-                        attack: e.attack_ms.max(0.0) / 1000.0,
-                        hold: e.hold_ms.max(0.0) / 1000.0,
-                        decay: e.decay_ms.max(0.0) / 1000.0,
-                        sustain: e.sustain.clamp(0.0, 1.0).powi(3),
-                        release: e.release_ms.max(0.0) / 1000.0,
-                        attack_shape: attack_shape(e.attack_curve),
-                        fall_shape: ir::Envelope::KONTAKT_FALL,
-                    };
+                    out.envelope = laws::envelope(e);
                     out.mods.push(ir::Mod {
                         name: p.name.clone(),
                         slot: slot(n),
@@ -326,14 +304,14 @@ fn translate_group(
             let source = match p.source {
                 ModSource::Velocity => Some(ir::Source::Velocity),
                 ModSource::MidiCc(cc) => Some(ir::Source::Controller(cc)),
-                // A counter only in a release-trigger group with a time; else a
-                // constant 1, which the volume law leaves at unity.
-                ModSource::ReleaseTriggerCounter if v.release_trigger && v.rls_trig_counter > 0 => {
-                    u32::try_from(v.rls_trig_counter)
-                        .ok()
-                        .map(|ms| ir::Source::ReleaseCounter { ms })
+                // Outside a timed release-trigger group the counter is a
+                // constant 1, which leaves the volume at unity.
+                ModSource::ReleaseTriggerCounter => {
+                    match laws::release_counter(v.release_trigger, v.rls_trig_counter) {
+                        Some(source) => Some(source),
+                        None => continue,
+                    }
                 }
-                ModSource::ReleaseTriggerCounter => continue,
                 _ => None,
             };
             match (source, p.targets.as_slice()) {
@@ -344,10 +322,7 @@ fn translate_group(
                         kind: ir::ModKind::Volume {
                             source,
                             intensity: t.signed_intensity(),
-                            // Note-time sources cube; controllers do not.
-                            curve: ir::Curve::Kontakt {
-                                cubed: !matches!(source, ir::Source::Controller(_)),
-                            },
+                            curve: laws::volume(source),
                         },
                     });
                 }

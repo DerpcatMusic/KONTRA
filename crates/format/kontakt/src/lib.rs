@@ -5,6 +5,7 @@
 mod access;
 mod container;
 mod fastlz;
+mod laws;
 mod resources;
 mod samples;
 mod translate;
