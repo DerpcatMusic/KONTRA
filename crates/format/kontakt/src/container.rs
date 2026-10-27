@@ -15,7 +15,12 @@ use crate::Error;
 /// A preset larger than this is not a preset.
 const MAX_PRESET: usize = 128 << 20;
 
-pub(crate) fn chunks(path: &Path) -> Result<KontaktChunks, Error> {
+/// The raw Kontakt chunk stream of a preset file (NKI, NKM, snapshot,
+/// monolith), decompressed and decrypted.
+///
+/// # Errors
+/// When the file is not a Kontakt container this reader understands.
+pub fn chunks(path: &Path) -> Result<KontaktChunks, Error> {
     let mut file = std::fs::File::open(path).map_err(|e| Error::new(path, "open", e))?;
     let bytes = payload(&mut file, path, 0)?;
     KontaktChunks::read(Cursor::new(bytes)).map_err(|e| Error::new(path, "Kontakt chunks", e))
