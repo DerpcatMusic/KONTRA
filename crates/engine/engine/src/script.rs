@@ -539,6 +539,18 @@ impl HostApi for Engine {
                 self.set_controller(int(0), int(1));
                 HostValue::Nothing
             }
+            Action::ReadPersistentVar => {
+                let (base, len) = (int(0) as u32, int(1) as u32);
+                let saved = self.plan.script.as_ref().map(|s| s.restore.as_slice());
+                for &(cell, value) in saved.unwrap_or_default() {
+                    if (base..base + len).contains(&cell)
+                        && let Some(c) = call.cells.get_mut(cell as usize)
+                    {
+                        *c = value;
+                    }
+                }
+                HostValue::Nothing
+            }
             Action::EventStatus => {
                 let live = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
                 HostValue::Int(i32::from(live.is_some()))

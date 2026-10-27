@@ -26,7 +26,19 @@ pub fn compile(source: &str, conditions: &[&str]) -> Result<Script, Error> {
     let mut set = conditions.iter().map(|&c| c.to_owned()).collect();
     lex::preprocess(&mut tokens, &mut set)?;
     let items = parse::parse(&tokens)?;
-    compile::compile(&items, set)
+    // A script that loads a performance view uses the view's controls by name
+    // without declaring them.
+    let views = tokens.iter().any(
+        |t| matches!(t.tok, lex::Tok::Word(w) if w.eq_ignore_ascii_case("load_performance_view")),
+    );
+    let view_names = tokens
+        .iter()
+        .filter_map(|t| match t.tok {
+            lex::Tok::Var(v) if views && v.starts_with(['$', '%', '@']) => Some((v, t.span)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    compile::compile(&items, set, &view_names)
 }
 
 /// A compiled script. Immutable; one per loaded script slot.

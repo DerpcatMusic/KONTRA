@@ -35,7 +35,12 @@ pub fn load(
             Err(e) => diagnostics.push(ir::Diagnostic {
                 impact: ir::Impact::Broken,
                 feature: "script compile".into(),
-                detail: format!("{}: {e:?}", script.name),
+                detail: format!(
+                    "{}: {} at `{}`",
+                    script.name,
+                    e.message,
+                    line_at(&script.source, e.span.start as usize).trim()
+                ),
             }),
         }
     }
@@ -51,4 +56,12 @@ pub fn load(
         plan,
         diagnostics,
     })
+}
+
+/// The source line holding byte `at`.
+fn line_at(source: &str, at: usize) -> &str {
+    let at = at.min(source.len());
+    let start = source[..at].rfind('\n').map_or(0, |i| i + 1);
+    let end = source[at..].find('\n').map_or(source.len(), |i| at + i);
+    source.get(start..end).unwrap_or_default()
 }

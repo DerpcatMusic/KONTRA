@@ -218,6 +218,48 @@ impl<'a> Compiler<'a> {
 
     // ---- Builtins ----
 
+    /// A system array passed whole (`search(%KEY_DOWN, 1)`): copied element
+    /// by element into hidden cells, which the builtin then reads.
+    fn system_array(&mut self, e: &Expr<'a>) -> Result<Option<(u32, u32)>, Error> {
+        let ExprKind::Var(name, None) = &e.kind else {
+            return Ok(None);
+        };
+        if self.lookup(name, e.span).is_ok() {
+            return Ok(None);
+        }
+        let Some((action, len)) = Builtin::from_name(name)
+            .filter(|b| b.name().starts_with('%'))
+            .and_then(|b| Some((b.action()?, b.array_len()?)))
+        else {
+            return Ok(None);
+        };
+        let i = Self::cells(&mut self.cells, len + 1, e.span)?;
+        let base = i + 1;
+        self.emit(Op::Int(0));
+        self.emit(Op::Store(i));
+        let top = self.here();
+        self.emit(Op::LoopCheck { exit: 0 });
+        self.emit(Op::Load(i));
+        self.emit(Op::Int(len as i32));
+        self.emit(Op::ICmp(Cmp::Lt));
+        let leave = self.here();
+        self.emit(Op::JumpIfZero(0));
+        self.emit(Op::Load(i));
+        self.emit(Op::Load(i));
+        self.host(action, 1, 0, Returns::Int);
+        self.emit(Op::StoreAt { base, len });
+        self.emit(Op::Load(i));
+        self.emit(Op::Int(1));
+        self.emit(Op::IAdd);
+        self.emit(Op::Store(i));
+        self.emit(Op::Jump(top));
+        let end = self.here();
+        self.emit(Op::LoopExit);
+        self.patch(top, end);
+        self.patch(leave, end);
+        Ok(Some((base, len)))
+    }
+
     pub(super) fn host(&mut self, action: Action, ints: usize, texts: usize, returns: Returns) {
         self.emit(Op::Host {
             action,
@@ -347,10 +389,18 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::Int(len as i32));
                 return Ok(Some(Ty::Int));
             }
+            // The engine copies the variable's saved numbers into its cells now,
+            // mid-init. ponytail: text variables read nothing until a script needs it.
             Builtin::ReadPersistentVar => {
                 let (v, _) = self.named(arg(0)?)?;
-                self.emit(Op::Int(v as i32));
-                self.host(Action::ReadPersistentVar, 1, 0, Returns::Nothing);
+                let (base, len) = match self.var(v)?.home {
+                    Home::Cell(n) => (n, 1),
+                    Home::Cells { base, len } => (base, len),
+                    _ => (0, 0),
+                };
+                self.emit(Op::Int(base as i32));
+                self.emit(Op::Int(len as i32));
+                self.host(Action::ReadPersistentVar, 2, 0, Returns::Nothing);
                 return Ok(None);
             }
             _ => {}
@@ -428,12 +478,31 @@ impl<'a> Compiler<'a> {
                     ints += 1;
                 }
                 Arg::A => {
-                    let (v, _) = self.named(e)?;
-                    let var = self.var(v)?;
-                    let (ty, array) = (var.ty, var.array());
-                    let Some((base, len)) = array.filter(|_| ty != Ty::Text) else {
-                        return Err(Error::new(e.span, "expected an integer or real array"));
+                    // Files hold text arrays too; the other builtins compare numbers.
+                    let files = matches!(
+                        b,
+                        Builtin::LoadArray
+                            | Builtin::SaveArray
+                            | Builtin::LoadArrayStr
+                            | Builtin::SaveArrayStr
+                    );
+                    let (ty, base, len) = match self.system_array(e)? {
+                        Some((base, len)) => (Ty::Int, base, len),
+                        None => {
+                            let (v, _) = self.named(e)?;
+                            let var = self.var(v)?;
+                            let (ty, array) = (var.ty, var.array());
+                            let Some((base, len)) = array.filter(|_| files || ty != Ty::Text)
+                            else {
+                                return Err(Error::new(
+                                    e.span,
+                                    "expected an integer or real array",
+                                ));
+                            };
+                            (ty, base, len)
+                        }
                     };
+                    let ty = if ty == Ty::Text { Ty::Int } else { ty };
                     if let Some(&want) = number.as_ref()
                         && want != ty
                     {
