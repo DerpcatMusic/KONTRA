@@ -11,6 +11,7 @@
 mod behaviour;
 mod ledger;
 mod plan;
+mod prepare;
 mod queue;
 mod script;
 
@@ -29,6 +30,7 @@ pub use ledger::NoteRef;
 pub use plan::{
     Bus, Control, Crossfade, Plan, RoundRobin, RrCounter, Trigger, VelocityCurve, Zone,
 };
+pub use prepare::{Opener, prepare};
 pub use queue::Timed;
 pub use script::{Callbacks, ScriptPlan};
 

@@ -12,4 +12,5 @@ kontra-events = { path = "../../model/events" }
 kontra-stream = { path = "../stream" }
 kontra-time = { path = "../../base/time" }
 kontra-vm = { path = "../vm" }
+kontra-ir = { path = "../../model/ir" }
 kontra-voice = { path = "../voice" }
