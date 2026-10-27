@@ -14,6 +14,5 @@ kontra-format = { path = "../common" }
 kontra-ir = { path = "../../model/ir" }
 kontra-law = { path = "../../base/law" }
 kontra-params = { path = "../../model/params" }
-ncw = { path = "../../../vendor/ncw" }
 ni-file = { path = "../../../vendor/ni-file" }
 thiserror.workspace = true

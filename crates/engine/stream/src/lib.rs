@@ -7,6 +7,7 @@
 
 mod cache;
 mod file;
+mod sniff;
 mod fmt;
 mod sample;
 mod source;
