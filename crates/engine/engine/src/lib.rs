@@ -262,23 +262,6 @@ impl Engine {
             .count()
     }
 
-    /// Groups a script purged: the host may drop their samples.
-    pub fn purged(&self) -> impl Iterator<Item = usize> + '_ {
-        self.groups
-            .iter()
-            .enumerate()
-            .filter_map(|(n, g)| g.purged.then_some(n))
-    }
-
-    /// Each sounding voice's zone, position in source frames and gain, for
-    /// inspectors (never the audio thread).
-    pub fn voices(&self) -> impl Iterator<Item = (usize, f64, kontra_voice::Gain)> + '_ {
-        self.voices
-            .iter()
-            .filter(|s| s.voice.is_active())
-            .map(|s| (s.zone, s.voice.position(), s.voice.target_gain()))
-    }
-
     /// The controller's current value (128 is aftertouch, 129 pitch bend).
     #[must_use]
     pub fn controller(&self, cc: usize) -> Option<u8> {
