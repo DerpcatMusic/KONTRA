@@ -10,7 +10,7 @@ use kontra_ir as ir;
 use kontra_stream::{BlobKey, Sample, SampleFmt, Source, Store};
 use kontra_voice::{Ahdsr, Loop, Region};
 
-use crate::{Bus, Plan, RoundRobin, RrCounter, Trigger, VelocityCurve, Zone};
+use crate::{Bus, Control, Crossfade, Plan, RoundRobin, RrCounter, Trigger, VelocityCurve, Zone};
 
 /// Opens a sample's audio as the store reads it: decoded to packed PCM.
 pub trait Opener {
@@ -171,6 +171,16 @@ fn zone(
     let mut out = Zone::new(region, z.root, source.rate);
     out.keys = z.keys.clone();
     out.velocities = z.velocities.clone();
+    let (low, high) = (*z.velocities.start(), *z.velocities.end());
+    let (fade_in, fade_out) = z.velocity_fade;
+    if fade_in > 0 || fade_out > 0 {
+        out.crossfades.push(Crossfade {
+            control: Control::Velocity,
+            fade_in: (fade_in > 0).then(|| (low.saturating_sub(1), low.saturating_add(fade_in))),
+            fade_out: (fade_out > 0)
+                .then(|| (high.saturating_sub(fade_out), high.saturating_add(1))),
+        });
+    }
     out.trigger = match group.trigger {
         ir::Trigger::Attack => Trigger::Attack,
         ir::Trigger::Release => Trigger::Release,
@@ -251,6 +261,7 @@ mod tests {
             sample: 0,
             keys: 0..=127,
             velocities: 1..=127,
+            velocity_fade: (0, 0),
             root: 60,
             tune: 0.0,
             volume_db: 0.0,

@@ -19,6 +19,7 @@ pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
         file,
         base: sample.offset,
         len: sample.len,
+        keystream: sample.keystream.clone(),
     };
     match sample.codec {
         ir::Codec::Pcm {
@@ -86,6 +87,7 @@ struct Region {
     file: Arc<File>,
     base: u64,
     len: u64,
+    keystream: Option<ir::Keystream>,
 }
 
 impl Region {
@@ -102,6 +104,9 @@ impl Region {
                 break;
             }
             done += n;
+        }
+        if let Some(key) = &self.keystream {
+            key.apply(self.base + at, head);
         }
         Ok(())
     }
@@ -297,6 +302,7 @@ mod tests {
             channels: 2,
             frames,
             rate: 48_000,
+            keystream: None,
         }
     }
 

@@ -4,6 +4,7 @@
 
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct Instrument {
@@ -48,6 +49,37 @@ pub struct Sample {
     pub channels: u8,
     pub frames: u64,
     pub rate: u32,
+    /// Set when the bytes on disk are encrypted.
+    pub keystream: Option<Keystream>,
+}
+
+/// A repeating XOR keystream: file byte `origin + n` is stored XOR `stream[n % len]`.
+/// Held in memory only; `Debug` never prints it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Keystream {
+    pub stream: Arc<[u8]>,
+    pub origin: u64,
+}
+
+impl Keystream {
+    /// Decrypts (or encrypts) `bytes` read from file offset `at`.
+    pub fn apply(&self, at: u64, bytes: &mut [u8]) {
+        let len = self.stream.len() as u64;
+        if len == 0 {
+            return;
+        }
+        let mut position = at.wrapping_sub(self.origin) % len;
+        for byte in bytes {
+            *byte ^= self.stream.get(position as usize).copied().unwrap_or(0);
+            position = (position + 1) % len;
+        }
+    }
+}
+
+impl std::fmt::Debug for Keystream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Keystream(..)")
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,6 +210,9 @@ pub struct Zone {
     pub sample: usize,
     pub keys: RangeInclusive<u8>,
     pub velocities: RangeInclusive<u8>,
+    /// Velocity steps over which the zone fades in above its low edge and out
+    /// below its high edge (equal power).
+    pub velocity_fade: (u8, u8),
     pub root: u8,
     pub tune: f64,
     pub volume_db: f32,
