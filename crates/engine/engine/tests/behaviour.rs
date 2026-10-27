@@ -334,3 +334,41 @@ fn a_disabled_mic_bus_starts_no_voices() {
     assert!(close(level(&mut e, &[on(60, 1.0)])[0], 0.5));
     assert_eq!(e.active_voices(), 1);
 }
+
+#[test]
+fn a_voice_group_steals_by_its_rule_and_an_exclusive_set_silences_the_others() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut keyed = |key: u8, level: f32, vg: u32| {
+        let mut z = zone(&mut store, level);
+        z.keys = key..=key;
+        z.voice_group = Some(vg);
+        z
+    };
+    let zones = vec![
+        keyed(60, 0.1, 0),
+        keyed(64, 0.2, 0),
+        keyed(62, 0.4, 0),
+        keyed(70, 0.8, 1),
+    ];
+    let mut plan = Plan::new(zones, 8);
+    let group = |voices, steal| kontra_ir::VoiceGroup {
+        voices,
+        steal,
+        prefer_released: true,
+        fade_ms: 1.0,
+        exclusive: Some(3),
+    };
+    plan.voice_groups = vec![
+        group(2, kontra_ir::Steal::Highest),
+        group(4, kontra_ir::Steal::Oldest),
+    ];
+    let mut e = engine(&store, plan);
+    level(&mut e, &[on(60, 1.0), on(64, 1.0)]);
+    level(&mut e, &[on(62, 1.0)]);
+    assert!(
+        close(level(&mut e, &[])[0], 0.5),
+        "the highest key (64) gave way"
+    );
+    level(&mut e, &[on(70, 1.0)]);
+    assert!(close(level(&mut e, &[])[0], 0.8), "group 0 was excluded");
+}

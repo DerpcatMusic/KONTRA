@@ -18,6 +18,7 @@ mod prepare;
 mod queue;
 mod script;
 mod voice_gain;
+mod voice_groups;
 
 use std::sync::Arc;
 
@@ -415,6 +416,9 @@ impl Engine {
             }
             self.choke_by(zone.group, note);
             self.limit_group(zone.group);
+            if let Some(vg) = zone.voice_group {
+                self.limit_voice_group(vg);
+            }
             let factor = if zone.trigger == Trigger::Release {
                 10f32.powf(-zone.release_decay_db * held_seconds / 20.0)
             } else {

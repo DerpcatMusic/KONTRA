@@ -133,6 +133,8 @@ pub struct Zone {
     pub group: u32,
     /// A voice of this zone fades when a voice of group `off_by` starts (hi-hat choke).
     pub off_by: Option<u32>,
+    /// Index into [`Plan::voice_groups`].
+    pub voice_group: Option<u32>,
     // Playback.
     /// The key at which the sample plays at its recorded pitch.
     pub root: u8,
@@ -169,6 +171,7 @@ impl Zone {
             crossfades: Vec::new(),
             group: 0,
             off_by: None,
+            voice_group: None,
             root,
             keytrack: 1.0,
             tune: 0.0,
@@ -201,6 +204,8 @@ pub struct Plan {
     pub buses: Vec<Bus>,
     /// Voice limits per group: (group, polyphony). The oldest voice in the group fades.
     pub polyphony: Vec<(u32, u16)>,
+    /// Voice limits shared across groups.
+    pub voice_groups: Vec<ir::VoiceGroup>,
     /// Keys that switch articulation instead of sounding.
     pub keyswitches: Option<RangeInclusive<u8>>,
     pub default_keyswitch: Option<u8>,
@@ -230,6 +235,7 @@ impl Plan {
                 enabled: true,
             }],
             polyphony: Vec::new(),
+            voice_groups: Vec::new(),
             keyswitches: None,
             default_keyswitch: None,
             voices,
