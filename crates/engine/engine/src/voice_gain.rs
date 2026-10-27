@@ -35,7 +35,7 @@ impl Engine {
                         self.source(source, note)
                             .map_or(1.0, |x| curve.gain(intensity, x))
                     }
-                    ir::ModKind::Envelope | ir::ModKind::Pitch { .. } => 1.0,
+                    _ => 1.0,
                 })
                 .product()
         });
@@ -74,6 +74,8 @@ impl Engine {
             ir::Source::Velocity => Some(note.velocity as f32),
             ir::Source::Controller(cc) => Some(f32::from(self.behaviour.cc(channel, cc)) / 127.0),
             ir::Source::PitchBend => Some(self.behaviour.bend(channel)),
+            ir::Source::Key => Some(f32::from(note.key) / 127.0),
+            ir::Source::Constant => Some(1.0),
             ir::Source::HeldTime { .. } => None,
         }
     }
@@ -102,6 +104,30 @@ impl Engine {
         2f64.powf(semitones / 12.0) * f64::from(zone.sample_rate) / f64::from(self.rate)
     }
 
+    /// Frames the zone's start moves for a voice started after the key was
+    /// held `held` seconds, within its start range either way.
+    pub(crate) fn start_offset(&self, zone: &Zone, note: &Note, held: f32) -> i64 {
+        let Some(g) = self.groups.get(zone.group as usize) else {
+            return 0;
+        };
+        let x: f32 = g
+            .mods
+            .iter()
+            .filter_map(|m| match m.kind {
+                ir::ModKind::SampleStart { source, depth } => {
+                    let x = match source {
+                        ir::Source::HeldTime { span_ms } => held_time(span_ms, held),
+                        source => self.source(source, note)?,
+                    };
+                    Some(x * depth)
+                }
+                _ => None,
+            })
+            .sum();
+        let range = zone.start_mod as f64;
+        (f64::from(x) * range).round().clamp(-range, range) as i64
+    }
+
     /// The release-trigger counter's gain for a voice started after the key
     /// was held `held` seconds.
     pub(crate) fn release_counter(&self, zone: &Zone, held: f32) -> f32 {
@@ -113,10 +139,7 @@ impl Engine {
                         source: ir::Source::HeldTime { span_ms: ms },
                         intensity,
                         curve,
-                    } if ms > 0 => {
-                        let t = ms as f32;
-                        curve.gain(intensity, ((t - held * 1000.0) / t).max(0.0))
-                    }
+                    } => curve.gain(intensity, held_time(ms, held)),
                     _ => 1.0,
                 })
                 .product()
@@ -142,4 +165,13 @@ fn gain(zone: &Zone, note: &Note, level: Level) -> [f32; 2] {
     let pan = (zone.pan + level.pan + note.expression_pan + note.script_pan as f32 / 1000.0)
         .clamp(-1.0, 1.0);
     [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
+}
+
+/// 1 at the key's press, falling to 0 once it has been held `span_ms`.
+fn held_time(span_ms: u32, held: f32) -> f32 {
+    if span_ms == 0 {
+        return 1.0;
+    }
+    let t = span_ms as f32;
+    ((t - held * 1000.0) / t).max(0.0)
 }

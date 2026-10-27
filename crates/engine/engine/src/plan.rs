@@ -183,6 +183,8 @@ pub struct Zone {
     /// The sample's own rate, for the step against the engine rate.
     pub sample_rate: u32,
     pub region: Region,
+    /// Frames a [`ir::ModKind::SampleStart`] may move the start either way.
+    pub start_mod: u64,
     /// Linear gain at full velocity.
     pub gain: f32,
     /// −1 (left) ..= 1 (right).
@@ -213,6 +215,7 @@ impl Zone {
             tune: 0.0,
             sample_rate,
             region,
+            start_mod: 0,
             gain: 1.0,
             pan: 0.0,
             release_decay_db: 0.0,

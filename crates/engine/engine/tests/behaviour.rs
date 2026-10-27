@@ -474,3 +474,56 @@ fn pitch_bend_moves_sounding_voices_by_its_route() {
     let down = advance(&mut e, &[bend(0, 0)]);
     assert!((down - 2f64.powf(-2.0 / 12.0)).abs() < 1e-6, "{down}");
 }
+
+#[test]
+fn a_sample_start_route_moves_the_start_within_its_range() {
+    use kontra_engine::ir::{Mod, ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    // A ramp: each frame's value is its index / 4096, so the output names the frame.
+    let frames = 4096u64;
+    let bytes = (0..frames)
+        .flat_map(|i| (i as f32 / 4096.0).to_le_bytes())
+        .collect();
+    let key = BlobKey {
+        file: "ramp".into(),
+        offset: frames,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(FMT, bytes)),
+            frames,
+            std::slice::from_ref(&(0..frames)),
+        )
+        .unwrap();
+    let mut z = Zone::new(
+        Region {
+            sample,
+            start: 0,
+            end: frames,
+            looped: None,
+            reverse: false,
+        },
+        60,
+        RATE,
+    );
+    z.start_mod = 1000;
+    let mut plan = Plan::new(vec![z], 8);
+    for (depth, start) in [(0.5, 500.0), (3.0, 1000.0)] {
+        plan.groups[0].mods = vec![Mod {
+            name: String::new(),
+            slot: 0,
+            kind: ModKind::SampleStart {
+                source: Source::Constant,
+                depth,
+            },
+        }];
+        let mut e = Engine::new(Arc::new(plan.clone()), store.client(), RATE);
+        let frame = level(&mut e, &[on(60, 1.0)])[0] * 4096.0;
+        assert!(
+            (frame - (start + 128.0)).abs() < 1.0,
+            "depth {depth}: {frame}"
+        );
+    }
+}

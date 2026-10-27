@@ -200,6 +200,9 @@ pub enum ModKind {
     },
     /// `source` times `semitones` added to the pitch.
     Pitch { source: Source, semitones: f32 },
+    /// `source × depth` of the zone's [`Zone::start_mod`] frames added to
+    /// where its voices start, read at note-on.
+    SampleStart { source: Source, depth: f32 },
 }
 
 /// A per-note modulation source, 0..=1 unless noted.
@@ -209,6 +212,10 @@ pub enum Source {
     Controller(u8),
     /// The channel's pitch bend, −1..=1.
     PitchBend,
+    /// The note's key over 127.
+    Key,
+    /// Always 1.
+    Constant,
     /// 1 at note-on, falling linearly to 0 after `span_ms` held; frozen at
     /// key-up, so a release sample is quieter the longer its key was held.
     HeldTime {

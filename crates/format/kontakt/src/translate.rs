@@ -344,13 +344,10 @@ fn translate_group(
                 ModSource::Velocity => Some(ir::Source::Velocity),
                 ModSource::MidiCc(cc) => Some(ir::Source::Controller(cc)),
                 ModSource::PitchBend => Some(ir::Source::PitchBend),
-                // Outside a timed release-trigger group the counter is a
-                // constant 1, which leaves the volume at unity.
+                ModSource::KeyPosition => Some(ir::Source::Key),
+                ModSource::Constant => Some(ir::Source::Constant),
                 ModSource::ReleaseTriggerCounter => {
-                    match laws::release_counter(v.release_trigger, v.rls_trig_counter) {
-                        Some(source) => Some(source),
-                        None => continue,
-                    }
+                    Some(laws::release_counter(v.release_trigger, v.rls_trig_counter))
                 }
                 _ => None,
             };
@@ -366,6 +363,10 @@ fn translate_group(
                     (Some(source), "pitch", None) => Some(ir::ModKind::Pitch {
                         source,
                         semitones: laws::PITCH_SEMITONES * t.signed_intensity(),
+                    }),
+                    (Some(source), "playPos", None) => Some(ir::ModKind::SampleStart {
+                        source,
+                        depth: t.signed_intensity(),
                     }),
                     _ => None,
                 };

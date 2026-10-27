@@ -227,6 +227,7 @@ fn zone(
         reverse: z.reverse,
     };
     let mut out = Zone::new(region, z.root, source.rate);
+    out.start_mod = z.start_mod;
     out.keys = z.keys.clone();
     out.velocities = z.velocities.clone();
     for (control, range, (fade_in, fade_out)) in [

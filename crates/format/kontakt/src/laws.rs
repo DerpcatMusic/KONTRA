@@ -54,11 +54,13 @@ pub(crate) fn volume(source: ir::Source) -> ir::Curve {
 
 /// The release-trigger counter: `max(T − held, 0)/T` in a release-trigger
 /// group with a time T, else a constant 1 (binary 0x14084f380).
-pub(crate) fn release_counter(release_trigger: bool, ms: i32) -> Option<ir::Source> {
-    let span_ms = u32::try_from(ms)
+pub(crate) fn release_counter(release_trigger: bool, ms: i32) -> ir::Source {
+    u32::try_from(ms)
         .ok()
-        .filter(|&ms| release_trigger && ms > 0)?;
-    Some(ir::Source::HeldTime { span_ms })
+        .filter(|&ms| release_trigger && ms > 0)
+        .map_or(ir::Source::Constant, |span_ms| ir::Source::HeldTime {
+            span_ms,
+        })
 }
 
 /// Residency by source module (docs/re/engine/k-sampler-source.md): Sampler

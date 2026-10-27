@@ -8,7 +8,7 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 
 - Actions used: 154 (answered 43, missing 94, partial 4, vm 13)
 - Catalog names used: 430, understood by the engine: 16
-- IR gaps: 164 features the translator could not carry
+- IR gaps: 154 features the translator could not carry
 
 ## IR gaps (translator), worst first
 
@@ -16,19 +16,14 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 |---|---|---:|---:|---|
 | Audible | effect Filter | 227 | 10 | 124× (first: group 0 insert slot 0) |
 | Audible | effect Send Levels | 677 | 8 | 1× (first: instrument insert slot 7) |
-| Audible | external modulator PitchBend -> pitch | 619 | 8 | 220× (first: PB_PITCH) |
 | Audible | internal modulator AHDSR -> module filterCutoff | 27 | 7 | 480× (first: ENV_Filter) |
 | Audible | internal modulator flex envelope -> volume | 174 | 5 | 16× (first: ENV_FLEX) |
-| Audible | external modulator Constant -> playPos | 35 | 5 | 480× (first: Sample_Start) |
 | Audible | effect Convolution | 367 | 4 | 1× (first: instrument insert slot 1) |
-| Audible | external modulator ReleaseTriggerCounter -> playPos | 53 | 4 | 63× (first: RTC_PITCH) |
 | Audible | internal modulator LFO -> pitch | 4 | 4 | 480× (first: LFO_Pitch_Retrigger) |
 | Audible | effect Reverb | 270 | 3 | 1× (first: instrument send slot 0) |
-| Audible | external modulator MidiCc(113) -> playPos | 266 | 3 | 1122× (first: CC_PITCH) |
 | Audible | internal modulator AHDSR -> module eqGain2 | 20 | 3 | 48× (first: ENV_AHDSR) |
 | Audible | internal modulator AHDSR -> module eqGain3 | 20 | 3 | 48× (first: ENV_AHDSR) |
 | Audible | external modulator ReleaseTriggerCounter -> module ahdsr_attack | 18 | 3 | 63× (first: RTC_ATTACK) |
-| Audible | external modulator KeyPosition -> playPos | 11 | 3 | 63× (first: KP_PITCH) |
 | Audible | several loops | 11 | 3 | 1× (first: loop 1) |
 | Audible | external modulator Velocity -> module filterCutoff | 5 | 3 | 480× (first: VEL_CUTOFF) |
 | Audible | internal modulator AHDSR -> pitch | 3 | 3 | 483× (first: Pitch_Envelope) |
@@ -46,19 +41,15 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | Audible | external modulator MidiCc(1) -> module eqGain2 | 132 | 1 | 28× (first: CC_EQ_GAIN_2) |
 | Audible | external modulator Velocity -> module eqGain1 | 120 | 1 | 40× (first: CC_EQ_GAIN_1) |
 | Audible | external modulator Script(3) -> volume | 41 | 1 | 56× (first: BALANCE_COMP_HIGHREGDYNRANGE->TARGET) |
-| Audible | external modulator PitchBend -> playPos | 19 | 1 | 14× (first: PB_PITCH) |
 | Audible | external modulator Script(3) -> playPos | 16 | 1 | 20× (first: KP_PITCH) |
 | Audible | external modulator PitchBend -> module ahdsr_attack | 9 | 1 | 14× (first: PB_ATTACK) |
 | Audible | external modulator PitchBend -> module ahdsr_release | 8 | 1 | 14× (first: PB_ATTACK) |
-| Audible | external modulator KeyPosition -> volume | 7 | 1 | 128× (first: BALANCE_COMP_HIGHREGDYNRANGE->TARGET) |
 | Audible | external modulator PitchBend -> volume | 5 | 1 | 4× (first: PB_VOLUME) |
 | Audible | external modulator Velocity -> module eqFreq1 | 4 | 1 | 80× (first: VEL_EQ_FREQ_1) |
 | Audible | alternating loop | 3 | 1 | 28× (first: ) |
 | Audible | effect Solid G-EQ | 3 | 1 | 7× (first: group 98 insert slot 4) |
-| Audible | external modulator Constant -> volume | 3 | 1 | 10× (first: CV_VOLUME) |
 | Audible | external modulator KeyPosition -> module ahdsr_attack | 3 | 1 | 1× (first: KP_ATTACK) |
 | Audible | external modulator MidiCc(1) -> module shaper | 3 | 1 | 12× (first: CC_SATURATION) |
-| Audible | external modulator Velocity -> playPos | 3 | 1 | 3× (first: PB_PITCH) |
 | Audible | external modulator Script(4) -> playPos | 2 | 1 | 16× (first: KSP_PITCH) |
 | Audible | external modulator Velocity -> module shaper | 2 | 1 | 20× (first: VEL_SATURATION) |
 | Audible | effect Chorus (legacy) | 1 | 1 | 1× (first: instrument insert slot 3) |
@@ -82,7 +73,6 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | Audible | external modulator Constant -> module shaper | 1 | 1 | 480× (first: CV_SATURATION) |
 | Audible | external modulator Constant -> module startPhase | 1 | 1 | 1920× (first: Phase_P1_Retrigger) |
 | Audible | external modulator KeyPosition -> module filterCutoff | 1 | 1 | 273× (first: KT -> CUTOFF SV/LDR) |
-| Audible | external modulator KeyPosition -> pitch | 1 | 1 | 237× (first: <none>) |
 | Audible | external modulator MidiCc(1) -> module filterCutoff | 1 | 1 | 91× (first: MW -> CUTOFF) |
 | Audible | external modulator MidiCc(1) -> module filterQ | 1 | 1 | 91× (first: MW -> RESONANCE) |
 | Audible | external modulator MidiCc(1) -> module frequency | 1 | 1 | 182× (first: MW -> LFO 1 RATE) |
@@ -186,23 +176,23 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `set_script_title` | missing | 11 | 51 | 51 | 51 |
 | `play_note` | answered | 11 | 48 | 102448 | 0 |
 | `disallow_group` | answered | 11 | 48 | 102467 | 0 |
-| `set_control_par` | answered | 11 | 47 | 69290 | 0 |
+| `set_control_par` | answered | 11 | 47 | 69288 | 0 |
 | `add_menu_item` | missing | 11 | 47 | 3631 | 3631 |
 | `message` | answered | 11 | 47 | 79 | 0 |
-| `set_control_par_str` | missing | 11 | 46 | 21551 | 21551 |
+| `set_control_par_str` | missing | 11 | 46 | 21549 | 21549 |
 | `set_ui_height_px` | missing | 11 | 45 | 45 | 45 |
 | `abs` | vm | 11 | 44 | 0 | 0 |
 | `get_engine_par_disp` | missing | 11 | 44 | 821 | 821 |
 | `set_engine_par` | partial | 11 | 44 | 13315 | 2629 |
 | `get_control_par` | answered | 11 | 44 | 11565 | 0 |
-| `set_key_color` | missing | 11 | 44 | 9067 | 9067 |
+| `set_key_color` | missing | 11 | 44 | 9045 | 9045 |
 | `note_off` | answered | 11 | 43 | 62 | 0 |
 | `purge_group` | answered | 11 | 43 | 906 | 0 |
 | `$EVENT_ID` | answered | 10 | 48 | 102787 | 0 |
-| `$EVENT_NOTE` | answered | 10 | 48 | 1031496 | 0 |
+| `$EVENT_NOTE` | answered | 10 | 48 | 1031500 | 0 |
 | `in_range` | vm | 10 | 47 | 0 | 0 |
 | `ignore_event` | answered | 10 | 47 | 75 | 0 |
-| `$EVENT_VELOCITY` | answered | 10 | 47 | 61 | 0 |
+| `$EVENT_VELOCITY` | answered | 10 | 47 | 65 | 0 |
 | `allow_group` | answered | 10 | 46 | 523 | 0 |
 | `%CC` | answered | 10 | 45 | 102431 | 0 |
 | `$CC_NUM` | answered | 10 | 40 | 0 | 0 |
@@ -221,8 +211,8 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `change_tune` | answered | 8 | 37 | 102412 | 0 |
 | `set_event_par` | answered | 8 | 34 | 90 | 0 |
 | `set_ui_width_px` | missing | 8 | 33 | 33 | 33 |
-| `set_key_type` | missing | 8 | 33 | 6789 | 6789 |
-| `set_event_par_arr` | partial | 8 | 19 | 32 | 30 |
+| `set_key_type` | missing | 8 | 33 | 6779 | 6779 |
+| `set_event_par_arr` | partial | 8 | 19 | 34 | 32 |
 | `%KEY_DOWN` | answered | 8 | 18 | 4257 | 0 |
 | `random` | answered | 8 | 15 | 2 | 0 |
 | `ignore_controller` | answered | 8 | 13 | 0 | 0 |
@@ -242,7 +232,7 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `set_key_name` | missing | 5 | 30 | 2900 | 2900 |
 | `load_ir_sample` | missing | 5 | 26 | 24 | 24 |
 | `set_skin_offset` | missing | 5 | 26 | 27 | 27 |
-| `reset_rls_trig_counter` | missing | 5 | 12 | 10 | 10 |
+| `reset_rls_trig_counter` | missing | 5 | 12 | 11 | 11 |
 | `get_engine_par` | partial | 5 | 10 | 23 | 9 |
 | `$CURRENT_SCRIPT_SLOT` | answered | 5 | 10 | 11 | 0 |
 | `show_library_tab` | missing | 5 | 9 | 9 | 9 |
@@ -779,26 +769,26 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 
 ## Runtime faults (init + one note)
 
-- Afflatus Chapter II Brass: 2 Tubas KS slot 0 (Brass MKS Low 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- ANALOG STRINGS: ANALOG STRINGS slot 0 (Analog Strings v0.22): Faults { divide_by_zero: 15, out_of_range: 5189, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- Afflatus Chapter II Brass: Bass Trombone Cimbasso Tuba KS slot 0 (Brass MKS Low 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns AccSusCresc slot 0 (Brass ASC 1.00): Faults { divide_by_zero: 0, out_of_range: 2, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns Flutter slot 0 (Brass Flutter 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns Legato slot 0 (Brass Legato 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns Marcato slot 0 (Brass Marc Tenuto 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- Afflatus Chapter II Brass: 2 Horns Repetitions slot 0 (Brass Shorts 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- Afflatus Chapter II Brass: 2 Horns Staccatissimo slot 0 (Brass Shorts 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns Rips slot 0 (Brass Rips 1.00): Faults { divide_by_zero: 0, out_of_range: 2, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- Afflatus Chapter II Brass: 2 Horns Trills slot 0 (Brass Trills 1.00): Faults { divide_by_zero: 0, out_of_range: 2, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- Afflatus Chapter II Brass: 2 Horns Mutes Trills slot 0 (Brass Trills 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Tubas Slides slot 0 (Brass Slides 1.00): Faults { divide_by_zero: 0, out_of_range: 2, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- ANALOG STRINGS: ANALOG STRINGS slot 0 (Analog Strings v0.22): Faults { divide_by_zero: 15, out_of_range: 5189, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Mountain Hotel Cup Mute slot 0 (Mountain Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Noir Brass slot 0 (Noir Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- Afflatus Chapter II Brass: The Chosen One Horns Swells slot 0 (Chosen One Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- Afflatus Chapter II Brass: The Chosen One Trombones Swells slot 0 (Chosen One Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Space Horror Brass slot 0 (Horror Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- Afflatus Chapter II Brass: Iceberg Brass slot 0 (Iceberg Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Dark Ambient Pad slot 0 (Brass Experimental 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- Afflatus Chapter II Brass: Iceberg Brass slot 0 (Iceberg Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Barbarian Brass slot 0 (Barbarian Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Imperial Brass A slot 0 (Imperial Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Phantom Brass slot 0 (Phantom Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Audio Imperia CHORUS: 01 Chorus - Women - Traditional Articulations slot 0 (Pyramid (Tonal and Atonal)): Faults { divide_by_zero: 1, out_of_range: 0, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- Audio Imperia Dolce: Dolce - 04 7 1st Violins - Harmonics slot 0 (Pyramid (Tonal and Atonal)): Faults { divide_by_zero: 0, out_of_range: 36, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- Audio Imperia Dolce: Dolce - 03 7 1st Violins - Sustained Con Sordino slot 0 (Pyramid (Tonal and Atonal)): Faults { divide_by_zero: 0, out_of_range: 36, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Conflux 1.1.0 [Native Instruments]: Conflux slot 1 (Mono & Glide): Faults { divide_by_zero: 2, out_of_range: 0, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Shreddage 3.5 E-Upright 1.0.1 [Impact Soundworks] rutracker.org: Shreddage 3.5 E-Upright slot 0 (Shreddage Engine): Faults { divide_by_zero: 11, out_of_range: 4, stack_overflow: 0, texts_cut: 0, loop_limits: 1, no_coroutine: 0, bad_code: 0 }

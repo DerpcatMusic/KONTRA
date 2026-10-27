@@ -223,7 +223,7 @@ impl Engine {
             p if p == pars.intensity => {
                 match g.mods.iter().find(|m| i32::from(m.slot) == slot)?.kind {
                     ir::ModKind::Volume { intensity, .. } => f64::from(intensity),
-                    ir::ModKind::Envelope | ir::ModKind::Pitch { .. } => return None,
+                    _ => return None,
                 }
             }
             p if p == pars.attack => stage_x(15_000.0, ms(e.attack)),
