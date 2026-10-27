@@ -25,6 +25,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Optional: the mod wheel moves to this value one second in.
     let wheel: Option<u8> = args.next().and_then(|a| a.to_str()?.parse().ok());
 
+    // KONTRA_SCRIPT_DUMP=<dir> writes each script's source there.
+    if let Some(dir) = std::env::var_os("KONTRA_SCRIPT_DUMP") {
+        for (n, s) in kontra_format_kontakt::load(&path)?
+            .scripts
+            .iter()
+            .enumerate()
+        {
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("{n}.ksp")),
+                &s.source,
+            )?;
+        }
+    }
     let t = std::time::Instant::now();
     let mut store = Store::new(StoreConfig::DEFAULT)?;
     let loaded = kontra_host::instrument::load(&path, RATE, &mut store)?;
@@ -34,8 +47,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         loaded.plan.zones.len(),
         t.elapsed()
     );
+    if !loaded.plan.switches.is_empty() {
+        println!(
+            "  switches {:?}, default {:?}",
+            loaded.plan.switches, loaded.plan.default_keyswitch
+        );
+    }
     for d in &loaded.diagnostics {
         println!("  {:?} {}: {}", d.impact, d.feature, d.detail);
+    }
+    // The zones that could answer this key at the played velocity (101), and what they wait on.
+    let candidates: Vec<_> = loaded
+        .plan
+        .zones
+        .iter()
+        .filter(|z| z.keys.contains(&key) && z.velocities.contains(&101))
+        .collect();
+    println!("  key {key}: {} zones", candidates.len());
+    let mut kinds = std::collections::BTreeMap::new();
+    for z in &candidates {
+        let mods: Vec<_> = loaded
+            .plan
+            .groups
+            .get(z.group as usize)
+            .map(|g| g.mods.iter().map(|m| format!("{:?}", m.kind)).collect())
+            .unwrap_or_default();
+        let what = format!(
+            "{:?} {:?} gain {:.2} mods {mods:?}",
+            z.trigger, z.start, z.gain
+        );
+        *kinds.entry(what).or_insert(0) += 1;
+    }
+    for (what, n) in kinds.iter().take(8) {
+        println!("    {n}× {what}");
     }
     let stream = store.client();
     let mut engine = Engine::new(Arc::new(loaded.plan), store.client(), RATE);
@@ -98,6 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("peak {peak:.3}, {:?}", engine.stats());
     println!("all actions: {:?}", engine.unhandled_actions());
+    println!("last message: {}", engine.last_message());
     write_wav(&out, &audio)?;
     println!("wrote {}", out.display());
     Ok(())

@@ -88,7 +88,13 @@ struct Function {
     calls: Vec<usize>,
 }
 
-pub fn compile<'a>(items: &[Item<'a>], conditions: Vec<String>) -> Result<Script, Error> {
+/// `view_names` are the `$`, `%` and `@` names of a script that loads a performance view:
+/// those it never declares are the view's controls.
+pub fn compile<'a>(
+    items: &[Item<'a>],
+    conditions: Vec<String>,
+    view_names: &[(&'a str, Span)],
+) -> Result<Script, Error> {
     let mut c = Compiler::<'a>::default();
     for item in items {
         if let Item::Function { name, span, .. } = item {
@@ -112,6 +118,9 @@ pub fn compile<'a>(items: &[Item<'a>], conditions: Vec<String>) -> Result<Script
             Item::Callback { body, .. } | Item::Function { body, .. } => body,
         };
         c.declarations(body)?;
+    }
+    for &(name, span) in view_names {
+        c.view_control(name, span)?;
     }
     let mut callbacks: Vec<Callback> = Vec::new();
     let mut roots = Vec::new();
@@ -142,23 +151,30 @@ pub fn compile<'a>(items: &[Item<'a>], conditions: Vec<String>) -> Result<Script
                     }
                     (_, None) => None,
                 };
-                if callbacks
-                    .iter()
-                    .any(|cb| cb.kind == kind && cb.control == control)
-                {
-                    return Err(Error::new(
-                        *span,
-                        format!("callback {name} is defined twice"),
-                    ));
-                }
+                // Kontakt compiles a callback defined twice (ANALOG STRINGS ships
+                // several ui_control pairs). ponytail: the later one replaces the
+                // earlier, as a table keyed by control would; unverified in Kontakt.
                 c.block(body)?;
                 c.emit(Op::Exit);
-                callbacks.push(Callback {
+                let callback = Callback {
                     kind,
                     control,
                     entry,
-                });
-                roots.push(std::mem::take(&mut c.called));
+                };
+                let called = std::mem::take(&mut c.called);
+                let at = callbacks
+                    .iter()
+                    .position(|cb| cb.kind == kind && cb.control == control);
+                match at.and_then(|at| Some((callbacks.get_mut(at)?, roots.get_mut(at)?))) {
+                    Some((cb, root)) => {
+                        *cb = callback;
+                        *root = called;
+                    }
+                    None => {
+                        callbacks.push(callback);
+                        roots.push(called);
+                    }
+                }
             }
             Item::Function { name, body, .. } => {
                 let f = c.function_names.get(&name.to_ascii_lowercase()).copied();
@@ -575,6 +591,15 @@ impl<'a> Compiler<'a> {
             return Err(Error::new(target.span, "expected a variable"));
         };
         let Ok(v) = self.lookup(name, target.span) else {
+            // Kontakt takes `%CC[n] := v` as set_controller (Vista ships it).
+            if let (Some(Builtin::Cc), Some(i)) = (Builtin::from_name(name), index) {
+                let got = self.expr(i)?;
+                self.convert(got, Ty::Int, i.span)?;
+                let got = self.expr(value)?;
+                self.convert(got, Ty::Int, value.span)?;
+                self.host(Action::SetController, 2, 0, Returns::Nothing);
+                return Ok(());
+            }
             if Builtin::from_name(name).is_some() || self.named_constant(name).is_some() {
                 return Err(Error::new(target.span, format!("{name} is read-only")));
             }

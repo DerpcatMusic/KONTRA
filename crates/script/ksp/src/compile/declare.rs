@@ -151,6 +151,51 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// A control of the loaded performance view, declared on first sight: a
+    /// knob, a table for a `%` name, a text edit for an `@` name. ponytail: the view's own defaults, ranges
+    /// and table sizes are not read from its `.nckp`; controls start at 0 and
+    /// tables take KSP's largest size.
+    pub(super) fn view_control(&mut self, name: &'a str, span: Span) -> Result<(), Error> {
+        let key = name.to_ascii_lowercase();
+        if self.names.contains_key(&key)
+            || Builtin::from_name(name).is_some()
+            || self.named_constant(name).is_some()
+            || consts::is_catalog(name)
+        {
+            return Ok(());
+        }
+        let (kind, ty, home) = match name.as_bytes().first() {
+            Some(b'%') => {
+                let len = 128;
+                let base = Self::cells(&mut self.cells, len, span)?;
+                (ControlKind::Table, Ty::Int, Home::Cells { base, len })
+            }
+            Some(b'@') => {
+                let n = Self::cells(&mut self.text_cells, 1, span)?;
+                (ControlKind::TextEdit, Ty::Text, Home::Text(n))
+            }
+            _ => {
+                let n = Self::cells(&mut self.cells, 1, span)?;
+                (ControlKind::Knob, Ty::Int, Home::Cell(n))
+            }
+        };
+        let index = self.controls.len() as u32;
+        self.controls.push(Control {
+            kind,
+            variable: self.vars.len() as u32,
+            params: Vec::new(),
+        });
+        self.names.insert(key, self.vars.len());
+        self.vars.push(Var {
+            name: name.into(),
+            ty,
+            home,
+            control: Some(index),
+            persistence: Persistence::None,
+        });
+        Ok(())
+    }
+
     /// The code a declaration runs where `on init` reaches it.
     pub(super) fn declaration(&mut self, d: &Declare<'a>) -> Result<(), Error> {
         let Some(&v) = self.declared.get(&d.span.start) else {
