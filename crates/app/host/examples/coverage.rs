@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let report = report.into_inner().map_err(|_| "a worker panicked")?;
-    std::fs::write(&out, render(&report))?;
+    std::fs::write(&out, render(&report)?)?;
     println!("wrote {}", out.display());
     Ok(())
 }
@@ -259,19 +259,10 @@ fn names(action: Action) -> String {
     }
 }
 
-fn render(r: &Report) -> String {
-    let mut probe = Engine::new(
-        Arc::new(
-            kontra_host::instrument::build(
-                ir::Instrument::DEFAULT,
-                RATE,
-                &mut Store::new(StoreConfig::DEFAULT).expect("store"),
-            )
-            .plan,
-        ),
-        Store::new(StoreConfig::DEFAULT).expect("store").client(),
-        RATE,
-    );
+fn render(r: &Report) -> std::io::Result<String> {
+    let mut store = Store::new(StoreConfig::DEFAULT)?;
+    let plan = kontra_host::instrument::build(ir::Instrument::DEFAULT, RATE, &mut store).plan;
+    let mut probe = Engine::new(Arc::new(plan), store.client(), RATE);
     let mut rows: Vec<_> = r
         .actions
         .iter()
@@ -423,5 +414,5 @@ fn render(r: &Report) -> String {
             let _ = writeln!(s, "- {}: {e}", p.display());
         }
     }
-    s
+    Ok(s)
 }
