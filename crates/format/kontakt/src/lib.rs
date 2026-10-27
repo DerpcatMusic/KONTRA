@@ -8,6 +8,8 @@ mod fastlz;
 mod samples;
 mod translate;
 
+pub use container::chunks;
+
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
