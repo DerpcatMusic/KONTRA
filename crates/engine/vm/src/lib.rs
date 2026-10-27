@@ -7,11 +7,14 @@
 //! and the callback continues; runtime errors are counted, never fatal.
 //! Nothing allocates after [`Instance::new`].
 
+mod action;
 mod program;
+mod pure;
 mod text;
 
 use std::hash::{Hash, Hasher};
 
+pub use action::Action;
 pub use program::{Cmp, Op, Program, Returns};
 pub use text::{TEXT_CAPACITY, Text};
 
@@ -20,10 +23,10 @@ pub const LOOP_LIMIT: u32 = 10_000_001;
 /// First iteration count at which a loop's state is compared; doubles after.
 const LOOP_PROBE: u32 = 1024;
 
-/// One host call: the builtin, its arguments and the instance cells (for
-/// builtins that take arrays by reference as `base, len` pairs).
+/// One host call: the action, its arguments and the instance cells (for
+/// actions that take arrays by reference as `base, len` pairs).
 pub struct HostCall<'a> {
-    pub id: u16,
+    pub action: Action,
     /// Opaque context the engine gave the callback ([`Instance::start`]), e.g. its event.
     pub context: u64,
     pub ints: &'a [i64],
@@ -43,7 +46,7 @@ pub enum HostValue {
     Text,
 }
 
-/// The engine side of every builtin, implemented once (`kontra-engine`).
+/// The engine side of every non-pure action, implemented once (`kontra-engine`).
 pub trait HostApi {
     fn call(&mut self, call: HostCall<'_>) -> HostValue;
 }
@@ -483,7 +486,7 @@ fn execute(
                 return Step::Wait(u64::try_from(micros).unwrap_or(0));
             }
             Op::Host {
-                id,
+                action,
                 ints,
                 texts: text_args,
                 returns,
@@ -496,14 +499,18 @@ fn execute(
                 let mut text_out = Text::EMPTY;
                 let int_from = c.stack.len() - ints;
                 let text_from = c.texts.len() - text_args;
-                let value = host.call(HostCall {
-                    id,
-                    context: c.context,
-                    ints: c.stack.get(int_from..).unwrap_or_default(),
-                    texts: c.texts.get(text_from..).unwrap_or_default(),
-                    cells,
-                    text_out: &mut text_out,
-                });
+                let args = c.stack.get(int_from..).unwrap_or_default();
+                let value = match pure::eval(action, args, cells) {
+                    Some(value) => value,
+                    None => host.call(HostCall {
+                        action,
+                        context: c.context,
+                        ints: args,
+                        texts: c.texts.get(text_from..).unwrap_or_default(),
+                        cells,
+                        text_out: &mut text_out,
+                    }),
+                };
                 c.stack.truncate(int_from);
                 c.texts.truncate(text_from);
                 match (returns, value) {

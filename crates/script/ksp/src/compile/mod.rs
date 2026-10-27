@@ -5,7 +5,7 @@ mod expr;
 
 use std::collections::HashMap;
 
-use kontra_vm::{Cmp, Op, Program, Returns, Text};
+use kontra_vm::{Action, Cmp, Op, Program, Returns, Text};
 
 use crate::builtins::{Arg, Builtin, Ret};
 use crate::consts::{self, FIRST_UI_ID, SYMBOL_BASE};

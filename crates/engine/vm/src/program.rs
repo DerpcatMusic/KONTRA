@@ -1,5 +1,6 @@
 //! Bytecode: what a front end produces and the interpreter runs.
 
+use crate::Action;
 use crate::text::Text;
 
 /// Comparison of two numbers.
@@ -113,9 +114,10 @@ pub enum Op {
     Exit,
     /// Pops microseconds and suspends the callback.
     Wait,
-    /// Calls the host: pops `ints` values and `texts` texts (in push order).
+    /// Runs an action (pure ones in the VM, the rest on the host): pops `ints`
+    /// values and `texts` texts (in push order).
     Host {
-        id: u16,
+        action: Action,
         ints: u8,
         texts: u8,
         returns: Returns,
