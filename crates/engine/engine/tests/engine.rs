@@ -178,6 +178,7 @@ fn the_pedal_holds_released_notes_until_it_lifts() {
     z.region.looped = Some(kontra_voice::Loop {
         start: 0,
         end: 1000,
+        crossfade: 0,
     });
     let mut engine = Engine::new(plan(vec![z], 8), store.client(), RATE);
     render(

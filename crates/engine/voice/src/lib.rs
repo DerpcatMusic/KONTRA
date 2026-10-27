@@ -44,6 +44,8 @@ pub struct Voice {
     target: [f32; 2],
     env: Envelope,
     scratch: Box<[[f32; 2]]>,
+    /// The frames a loop crossfade blends in.
+    partner: Box<[[f32; 2]]>,
     missing: u64,
 }
 
@@ -60,6 +62,7 @@ impl Voice {
             target: [0.0; 2],
             env: Envelope::new(Ahdsr::GATE),
             scratch: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
+            partner: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             missing: 0,
         }
     }
@@ -140,6 +143,9 @@ impl Voice {
                 first
             };
             sample.prefetch(client, low, count as u64, now);
+            if let Some((_, partner, n, _, _)) = region.crossfade(first, count) {
+                sample.prefetch(client, partner, n as u64, now);
+            }
         });
 
         let mut done = 0;
@@ -150,6 +156,7 @@ impl Voice {
             let lo = self.at(0).floor() as i64 - 1;
             let span = (self.at(n as u64 - 1).floor() as i64 + 3 - lo) as usize;
             let (anchor, elapsed, step) = (self.anchor, self.elapsed, self.step);
+            let partner = &mut self.partner;
             let Some(window) = self.scratch.get_mut(..span.min(SCRATCH)) else {
                 break;
             };
@@ -162,6 +169,19 @@ impl Voice {
                         dst.reverse();
                     } else {
                         missing += sample.read(client, first, dst).missing;
+                        if let Some((at, from, n, fade_start, fade)) =
+                            region.crossfade(first, count)
+                            && let (Some(blend), Some(head)) =
+                                (partner.get_mut(..n), dst.get_mut(at..at + n))
+                        {
+                            missing += sample.read(client, from, blend).missing;
+                            let p0 = first + at as u64 - fade_start;
+                            for (k, (d, b)) in head.iter_mut().zip(blend.iter()).enumerate() {
+                                let w = (p0 + k as u64) as f32 / fade as f32;
+                                d[0] += (b[0] - d[0]) * w;
+                                d[1] += (b[1] - d[1]) * w;
+                            }
+                        }
                     }
                 }
             });

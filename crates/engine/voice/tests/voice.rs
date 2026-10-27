@@ -114,6 +114,7 @@ fn a_loop_sustains_past_the_sample_end() {
     region.looped = Some(Loop {
         start: 500,
         end: 600,
+        crossfade: 0,
     });
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
@@ -121,6 +122,33 @@ fn a_loop_sustains_past_the_sample_end() {
     assert!(voice.is_active());
     // Frame 4950 is 4450 past the loop start: 4450 % 100 = 50 → source frame 550.
     assert_eq!(out[4950], 550.0 / 65_536.0);
+}
+
+/// Kontakt's loop X-Fade: the last frames of the loop fade linearly into the
+/// frames before its start, on every pass.
+#[test]
+fn a_loop_crossfade_blends_the_tail_into_the_audio_before_the_start() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
+    region.looped = Some(Loop {
+        start: 500,
+        end: 600,
+        crossfade: 40,
+    });
+    let mut voice = Voice::allocate();
+    voice.start(start(region, 1.0, Ahdsr::GATE));
+    let out = render(&mut voice, &client, 800);
+    let frame = |n: f32| n / 65_536.0;
+    assert_eq!(out[559], frame(559.0), "before the fade");
+    // Halfway through the fade: half of 580, half of 580 - 100.
+    assert_eq!(out[580], frame(530.0));
+    assert_eq!(out[680], frame(530.0), "every pass");
+    assert_eq!(
+        out[600],
+        frame(500.0),
+        "the wrap continues where the fade ended"
+    );
 }
 
 #[test]
@@ -144,6 +172,7 @@ fn release_ends_the_voice() {
     region.looped = Some(Loop {
         start: 0,
         end: 1000,
+        crossfade: 0,
     });
     let mut voice = Voice::allocate();
     voice.start(start(

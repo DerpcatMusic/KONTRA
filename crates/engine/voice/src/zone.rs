@@ -9,6 +9,20 @@ use kontra_stream::Sample;
 pub struct Loop {
     pub start: u64,
     pub end: u64,
+    /// Frames before `end` that fade linearly into the same number before
+    /// `start`, so the wrap is seamless: frame `p` in `end - crossfade..end`
+    /// plays `(1 − w)·s[p] + w·s[p − (end − start)]`, `w` rising from 0.
+    /// Kontakt's loop X-Fade (linear complementary, measured against Kontakt
+    /// to −70 dBFS residual, docs/re/engine/LOOP_XFADE_HOLD_PROBES.md §1).
+    pub crossfade: u64,
+}
+
+impl Loop {
+    /// The fade length that fits: no longer than the loop, nor than the audio
+    /// before its start.
+    fn fade(&self) -> u64 {
+        self.crossfade.min(self.end - self.start).min(self.start)
+    }
 }
 
 /// The playable region of one zone, already resolved by the plan.
@@ -21,7 +35,7 @@ pub struct Region {
     pub end: u64,
     /// Played until the voice ends; ignored when reversed.
     // ponytail: forward loop until end only; alternating and until-release
-    // loops and loop crossfades when a library needs them.
+    // loops when a library needs them.
     pub looped: Option<Loop>,
     /// Plays `end - 1` down to `start`.
     pub reverse: bool,
@@ -38,6 +52,28 @@ impl Region {
     /// and reversal change only the mapping to source frames, never the cursor.
     pub(crate) fn finished(&self, logical: f64) -> bool {
         self.active_loop().is_none() && logical >= self.end.saturating_sub(self.start) as f64
+    }
+
+    /// The part of the run `first..first + count` inside the loop's crossfade:
+    /// `(offset in the run, partner first frame, frames, fade start, fade length)`.
+    pub(crate) fn crossfade(
+        &self,
+        first: u64,
+        count: usize,
+    ) -> Option<(usize, u64, usize, u64, u64)> {
+        let l = self.active_loop()?;
+        let fade = l.fade();
+        let from = (l.end - fade).max(first);
+        let to = l.end.min(first + count as u64);
+        (fade > 0 && from < to).then(|| {
+            (
+                (from - first) as usize,
+                from - (l.end - l.start),
+                (to - from) as usize,
+                l.end - fade,
+                fade,
+            )
+        })
     }
 
     /// Calls `f(offset, first, count)` for each run of consecutive source frames
@@ -124,7 +160,16 @@ mod tests {
 
     #[test]
     fn a_loop_wraps_into_two_runs() {
-        let r = region(0, 50, Some(Loop { start: 10, end: 20 }), false);
+        let r = region(
+            0,
+            50,
+            Some(Loop {
+                start: 10,
+                end: 20,
+                crossfade: 0,
+            }),
+            false,
+        );
         assert_eq!(collect(&r, 15, 12), vec![(0, 15, 5), (5, 10, 7)]);
         assert!(!r.finished(1e9));
     }

@@ -350,13 +350,11 @@ fn translate_zone(
         if l.alternating_loop {
             notes.add(ir::Impact::Audible, "alternating loop", "");
         }
-        if l.x_fade_length > 0 {
-            notes.add(ir::Impact::Audible, "loop crossfade", "");
-        }
         let from = l.loop_start as u64;
         looped = Some(ir::Loop {
             start: from,
             end: from + l.loop_length as u64,
+            crossfade: l.x_fade_length.max(0) as u64,
         });
     }
     Some(ir::Zone {

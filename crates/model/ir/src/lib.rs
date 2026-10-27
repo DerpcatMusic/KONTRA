@@ -268,6 +268,8 @@ pub struct Zone {
 pub struct Loop {
     pub start: u64,
     pub end: u64,
+    /// Frames before `end` that fade linearly into the frames before `start`.
+    pub crossfade: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
