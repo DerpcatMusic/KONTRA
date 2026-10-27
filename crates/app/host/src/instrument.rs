@@ -13,16 +13,26 @@ pub struct Loaded {
     pub diagnostics: Vec<ir::Diagnostic>,
 }
 
+/// Reads the instrument at `path` into the model: a UVI program when the path
+/// lies in a `.ufs` bank (`bank.ufs/Name.uvip`, see `kontra_format_uvi`), a
+/// Kontakt instrument otherwise.
+///
+/// # Errors
+/// When the file is not an instrument this can read.
+pub fn read(path: &Path) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
+    if kontra_format_uvi::is_uvi(path) {
+        Ok(kontra_format_uvi::load(path)?)
+    } else {
+        Ok(kontra_format_kontakt::load(path)?)
+    }
+}
+
 /// Reads the instrument at `path` for an engine at `rate`.
 ///
 /// # Errors
 /// When the file is not an instrument this can read.
-pub fn load(
-    path: &Path,
-    rate: u32,
-    store: &mut Store,
-) -> Result<Loaded, kontra_format_kontakt::Error> {
-    Ok(build(kontra_format_kontakt::load(path)?, rate, store))
+pub fn load(path: &Path, rate: u32, store: &mut Store) -> Result<Loaded, Box<dyn std::error::Error>> {
+    Ok(build(read(path)?, rate, store))
 }
 
 /// Builds the plan for an instrument already read into the IR.
