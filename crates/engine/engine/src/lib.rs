@@ -11,6 +11,7 @@
 mod behaviour;
 mod controls;
 mod effects;
+mod filters;
 mod inspect;
 mod ledger;
 mod midi;
@@ -90,6 +91,8 @@ struct BusState {
     enabled: bool,
     /// The plan's bus inserts as scripts have changed them.
     inserts: Box<[Option<ir::Effect>]>,
+    /// The rack's EQ bands, on what the bus carries.
+    filters: Box<[kontra_dsp::eq::Biquad]>,
     mix: Box<[[f32; 2]]>,
 }
 
@@ -133,6 +136,11 @@ pub struct Engine {
     control_pars: Box<[Vec<(i32, i32)>]>,
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
+    /// Shared EQ chains, and each zone's chain.
+    chains: Vec<filters::Chain>,
+    zone_chain: Box<[Option<u16>]>,
+    /// The instrument rack's EQ bands, on the final mix.
+    filters: Box<[kontra_dsp::eq::Biquad]>,
 }
 
 impl Engine {
@@ -142,6 +150,7 @@ impl Engine {
     pub fn new(plan: Arc<Plan>, stream: StreamClient, rate: u32) -> Self {
         let shared: Box<[Group]> = plan.groups.clone().into();
         let plan_inserts = plan.inserts.clone().into();
+        let instrument_filters = filters::biquads(&filters::bells(&plan.inserts), rate);
         let pool = plan.voices + plan.voices / 4 + 1;
         let voices = (0..pool)
             .map(|_| Slot {
@@ -161,6 +170,7 @@ impl Engine {
                 gain: b.gain,
                 enabled: b.enabled,
                 inserts: b.inserts.clone().into(),
+                filters: filters::biquads(&filters::bells(&b.inserts), rate),
                 mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
             })
             .collect();
@@ -208,7 +218,10 @@ impl Engine {
             control_pars,
             callbacks_started: 0,
             instrument: Level::UNITY,
+            filters: instrument_filters,
             inserts: plan_inserts,
+            chains: Vec::new(),
+            zone_chain: Box::new([]),
         };
         engine.cc_values[7] = 100;
         engine.cc_values[11] = 127;
@@ -229,6 +242,7 @@ impl Engine {
                 engine.run_callback(changed, Running::new(Kind::Init, None));
             }
         }
+        engine.build_chains();
         engine
     }
 
@@ -323,12 +337,16 @@ impl Engine {
             self.render_span(len);
             let from = (self.now.0 - start.0) as usize;
             if let Some(span) = out.get_mut(from..from + len) {
-                for bus in &self.buses {
+                for bus in &mut self.buses {
+                    if let Some(mix) = bus.mix.get_mut(..len) {
+                        filters::run(&mut bus.filters, mix);
+                    }
                     for (o, m) in span.iter_mut().zip(bus.mix.iter()) {
                         o[0] += m[0] * bus.gain;
                         o[1] += m[1] * bus.gain;
                     }
                 }
+                filters::run(&mut self.filters, span);
             }
             self.now = until;
         }
@@ -343,13 +361,22 @@ impl Engine {
         }
         for slot in self.voices.iter_mut().filter(|s| s.voice.is_active()) {
             let bus = self.plan.zones.get(slot.zone).map_or(0, |z| z.bus);
-            let Some(mix) = self.buses.get_mut(bus).and_then(|b| b.mix.get_mut(..len)) else {
+            let chain = self.zone_chain.get(slot.zone).copied().flatten();
+            let mix = match chain.and_then(|c| self.chains.get_mut(usize::from(c))) {
+                Some(chain) => {
+                    chain.live = true;
+                    chain.mix.get_mut(..len)
+                }
+                None => self.buses.get_mut(bus).and_then(|b| b.mix.get_mut(..len)),
+            };
+            let Some(mix) = mix else {
                 continue;
             };
             let before = slot.voice.missing_frames();
             slot.voice.render(&self.stream, self.now.0, mix);
             self.stats.missing_frames += slot.voice.missing_frames() - before;
         }
+        self.mix_chains(len);
     }
 
     fn dispatch(&mut self, work: Work) {

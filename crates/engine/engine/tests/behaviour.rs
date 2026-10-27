@@ -527,3 +527,61 @@ fn a_sample_start_route_moves_the_start_within_its_range() {
         );
     }
 }
+
+#[test]
+fn a_group_eq_shapes_its_voices() {
+    use kontra_engine::ir::{Bell, Effect, EffectKind};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let frames = 48_000u64;
+    let bytes = (0..frames)
+        .flat_map(|i| {
+            let v = (std::f64::consts::TAU * 1000.0 * i as f64 / 48_000.0).sin() as f32 * 0.1;
+            v.to_le_bytes()
+        })
+        .collect();
+    let key = BlobKey {
+        file: "sine".into(),
+        offset: frames,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(FMT, bytes)),
+            frames,
+            std::slice::from_ref(&(0..frames)),
+        )
+        .unwrap();
+    let region = Region {
+        sample,
+        start: 0,
+        end: frames,
+        looped: None,
+        reverse: false,
+    };
+    let peak = |gain_db: f32| {
+        let mut plan = Plan::new(vec![Zone::new(region.clone(), 60, RATE)], 8);
+        plan.groups[0].mods.clear();
+        let bell = Bell {
+            hz: 1000.0,
+            q: 1.0,
+            gain_db,
+        };
+        plan.groups[0].inserts = vec![Some(Effect {
+            kind: EffectKind::Eq([bell, Bell::FLAT, Bell::FLAT]),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let mut out = vec![[0.0; 2]; 4800];
+        e.process(&mut out, &[on(60, 1.0)]);
+        out[2400..].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    let (flat, boosted) = (peak(0.0), peak(12.0));
+    assert!((flat - 0.1).abs() < 0.005, "{flat}");
+    assert!(
+        (boosted / flat - 10f32.powf(0.6)).abs() < 0.05,
+        "{flat} -> {boosted}"
+    );
+}

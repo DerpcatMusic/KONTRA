@@ -189,6 +189,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let plan = Arc::new(loaded.plan);
     let mut engine = Engine::new(Arc::clone(&plan), store.client(), RATE);
     println!("init: unanswered {:?}", engine.unhandled_actions());
+    let (chains, chained) = engine.eq_chains();
+    if chains > 0 {
+        println!("eq: {chains} chains over {chained} zones");
+    }
     let purged: Vec<usize> = engine.purged().collect();
     if !purged.is_empty() {
         let zones = (plan.zones.iter())

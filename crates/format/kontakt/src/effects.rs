@@ -102,7 +102,7 @@ fn rack(array: &BParamArrayBParFX8, at: &str, notes: &mut Notes) -> Vec<Option<i
                     format!("{at} slot {slot}"),
                 );
             }
-            let (effect, module) = effect?;
+            let (effect, module, kind) = effect?;
             if matches!(
                 effect.kind,
                 ir::EffectKind::Other | ir::EffectKind::OtherWet
@@ -112,9 +112,14 @@ fn rack(array: &BParamArrayBParFX8, at: &str, notes: &mut Notes) -> Vec<Option<i
                 } else {
                     (ir::Impact::Audible, "effect")
                 };
+                let kind = if module == 0x18 {
+                    format!(" type {kind}")
+                } else {
+                    String::new()
+                };
                 notes.add(
                     impact,
-                    &format!("{state} {}", name(module)),
+                    &format!("{state} {}{kind}", name(module)),
                     format!("{at} slot {slot}"),
                 );
             }
@@ -131,7 +136,7 @@ fn rack(array: &BParamArrayBParFX8, at: &str, notes: &mut Notes) -> Vec<Option<i
 /// ni-file's effect_parameters.rs): Gainer a linear gain; Inverter phase and
 /// swap bytes; Stereo Modeller signed spread (offset from 100% width), signed
 /// pan and a pseudo-stereo byte.
-fn slot_effect(chunk: &Chunk) -> Option<(ir::Effect, u16)> {
+fn slot_effect(chunk: &Chunk) -> Option<(ir::Effect, u16, i32)> {
     let fx = BParFX::try_from(chunk).ok()?;
     let params = fx.params().ok()?;
     let effect = fx.effect()?;
@@ -141,6 +146,10 @@ fn slot_effect(chunk: &Chunk) -> Option<(ir::Effect, u16)> {
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
     };
     let byte = |n: usize| public.get(n).map(|&b| b != 0);
+    let kind_id = public
+        .get(..4)
+        .and_then(|b| b.try_into().ok())
+        .map(i32::from_le_bytes);
     let kind = match effect.id {
         0x13 => f32_at(0).map(ir::EffectKind::Gain),
         0x1a => byte(0)
@@ -153,6 +162,7 @@ fn slot_effect(chunk: &Chunk) -> Option<(ir::Effect, u16)> {
                 width: (spread.clamp(-1.0, 1.0) + 1.0) * 0.5,
                 pan: pan.clamp(-1.0, 1.0),
             }),
+        0x18 => kind_id.and_then(|k| eq(&public, k)),
         _ => None,
     };
     // The legacy delay, chorus and flanger, the Gainer and Convolution mix
@@ -162,10 +172,6 @@ fn slot_effect(chunk: &Chunk) -> Option<(ir::Effect, u16)> {
     // An EQ (Filter kinds 22..=24) has no Output control: ANALOG STRINGS
     // stores 0 on one that plays in Kontakt (v2 sampler-kontakt effects/mod.rs, corpus of
     // 12,918 EQ slots).
-    let kind_id = public
-        .get(..4)
-        .and_then(|b| b.try_into().ok())
-        .map(i32::from_le_bytes);
     let eq = effect.id == 0x18 && kind_id.is_some_and(|k| (22..=24).contains(&k));
     let effect_out = ir::Effect {
         kind: kind.unwrap_or(if parallel {
@@ -181,7 +187,26 @@ fn slot_effect(chunk: &Chunk) -> Option<(ir::Effect, u16)> {
             0.0
         },
     };
-    Some((effect_out, effect.id))
+    Some((effect_out, effect.id, kind_id.unwrap_or(-1)))
+}
+
+/// The 1/2/3-band EQ (Filter types 22..=24): the record ends with its bands,
+/// each Hz, octaves and dB (layouts in v2 sampler-kontakt effects/mod.rs,
+/// reader 0x140d00db0).
+fn eq(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
+    let count = usize::try_from(kind - 21)
+        .ok()
+        .filter(|n| (1..=3).contains(n))?;
+    let tail = public.get(public.len().checked_sub(count * 12)?..)?;
+    let mut bands = [ir::Bell::FLAT; 3];
+    for (band, raw) in bands.iter_mut().zip(tail.chunks_exact(12)) {
+        let f = |n: usize| {
+            let bytes = raw.get(n..n + 4)?.try_into().ok()?;
+            Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+        };
+        *band = crate::laws::eq_band(f(0)?, f(4)?, f(8)?)?;
+    }
+    Some(ir::EffectKind::Eq(bands))
 }
 
 pub(crate) fn group(group: &Group, index: usize, notes: &mut Notes) -> Vec<Option<ir::Effect>> {

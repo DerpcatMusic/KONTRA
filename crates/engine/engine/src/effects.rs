@@ -17,12 +17,12 @@ pub(crate) fn product(a: Gain, b: Gain) -> Gain {
     ]
 }
 
-/// A rack, slot 0 first, as one matrix; bypassed slots pass.
 /// A -1..=1 balance.
 pub(crate) fn balance(pan: f32) -> Gain {
     [[1.0 - pan.max(0.0), 0.0], [0.0, 1.0 + pan.min(0.0)]]
 }
 
+/// A rack, slot 0 first, as one matrix; bypassed slots pass.
 pub(crate) fn rack(slots: &[Option<ir::Effect>]) -> Gain {
     slots
         .iter()
@@ -57,6 +57,8 @@ fn matrix(e: &ir::Effect) -> Gain {
         // Its output gain trims processing that does not run here (a
         // compressor's makeup: ANALOG STRINGS stores +9 dB), so it passes.
         ir::EffectKind::Other => return IDENTITY,
+        // Its bands run on the summed voices (filters.rs).
+        ir::EffectKind::Eq(_) => IDENTITY,
         ir::EffectKind::OtherWet => [[0.0; 2]; 2],
     };
     let (o, d) = (e.output, e.dry);

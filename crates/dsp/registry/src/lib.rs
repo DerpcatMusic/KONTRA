@@ -1,1 +1,3 @@
-//! Empty skeleton for kontra-dsp; design in docs/architecture-v3/03-DSP.md.
+//! The DSP families the engine runs (03-DSP.md §5).
+
+pub use kontra_dsp_eq as eq;

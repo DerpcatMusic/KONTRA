@@ -13,6 +13,12 @@ impl Engine {
             .filter_map(|(n, g)| g.purged.then_some(n))
     }
 
+    /// EQ chains on summed voices, and the zones each feeds.
+    pub fn eq_chains(&self) -> (usize, usize) {
+        let zones = self.zone_chain.iter().flatten().count();
+        (self.chains.len(), zones)
+    }
+
     /// Each sounding voice's zone, position in source frames and gain, for
     /// inspectors (never the audio thread).
     pub fn voices(&self) -> impl Iterator<Item = (usize, f64, kontra_voice::Gain)> + '_ {

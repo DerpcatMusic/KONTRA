@@ -78,3 +78,20 @@ pub(crate) fn stream(mode: u32, preload: i32) -> Option<ir::Stream> {
 /// Semitones at full intensity of a pitch route. The corpus's pitch-bend
 /// routes store 2/12, 7/12 and 12/12 (bend ranges of 2, 7 and 12 semitones).
 pub(crate) const PITCH_SEMITONES: f32 = 12.0;
+
+/// One band of the 1/2/3-band EQ. The native coefficients (generator
+/// 0x1409591c0) are the cookbook bell with A = 2^(dB/6) and
+/// alpha = sin(w)·sinh(octaves·ln 2): twice the knob's dB at the centre and
+/// twice its octaves of bandwidth, unwarped (docs/re/engine/eq-kontakt.md
+/// §1.1, fitted +12 dB/1 oct → 24.08 dB, Q 0.667).
+pub(crate) fn eq_band(hz: f32, octaves: f32, db: f32) -> Option<ir::Bell> {
+    if !(hz > 0.0 && octaves > 0.0) {
+        return None;
+    }
+    let peak = (2f32.powf(db.clamp(-18.0, 18.0) / 3.0)).log10() * 20.0;
+    Some(ir::Bell {
+        hz: hz.min(20_000.0),
+        q: 1.0 / (2.0 * (octaves * std::f32::consts::LN_2).sinh()),
+        gain_db: peak,
+    })
+}

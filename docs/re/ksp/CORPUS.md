@@ -8,19 +8,19 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 
 - Actions used: 154 (answered 43, missing 94, partial 4, vm 13)
 - Catalog names used: 430, understood by the engine: 16
-- IR gaps: 154 features the translator could not carry
+- IR gaps: 189 features the translator could not carry
 
 ## IR gaps (translator), worst first
 
 | Impact | Feature | Instruments | Libraries | Example |
 |---|---|---:|---:|---|
-| Audible | effect Filter | 227 | 10 | 124× (first: group 0 insert slot 0) |
 | Audible | effect Send Levels | 677 | 8 | 1× (first: instrument insert slot 7) |
 | Audible | internal modulator AHDSR -> module filterCutoff | 27 | 7 | 480× (first: ENV_Filter) |
 | Audible | internal modulator flex envelope -> volume | 174 | 5 | 16× (first: ENV_FLEX) |
 | Audible | effect Convolution | 367 | 4 | 1× (first: instrument insert slot 1) |
 | Audible | internal modulator LFO -> pitch | 4 | 4 | 480× (first: LFO_Pitch_Retrigger) |
 | Audible | effect Reverb | 270 | 3 | 1× (first: instrument send slot 0) |
+| Audible | effect Filter type 3 | 20 | 3 | 48× (first: group 16 insert slot 5) |
 | Audible | internal modulator AHDSR -> module eqGain2 | 20 | 3 | 48× (first: ENV_AHDSR) |
 | Audible | internal modulator AHDSR -> module eqGain3 | 20 | 3 | 48× (first: ENV_AHDSR) |
 | Audible | external modulator ReleaseTriggerCounter -> module ahdsr_attack | 18 | 3 | 63× (first: RTC_ATTACK) |
@@ -35,6 +35,7 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | Audible | external modulator Velocity -> module eqGain3 | 30 | 2 | 40× (first: VEL_EQ_GAIN_3) |
 | Audible | external modulator Velocity -> module ahdsr_attack | 15 | 2 | 14× (first: VEL_ATTACK) |
 | Audible | effect Saturation | 6 | 2 | 18× (first: group 5 insert slot 7) |
+| Audible | effect Filter type 33 | 2 | 2 | 1× (first: group 208 insert slot 0) |
 | Audible | internal modulator LFO -> module filterQ | 2 | 2 | 1920× (first: LFO_P1_Retrigger) |
 | Audible | external modulator MidiCc(1) -> module eqGain1 | 196 | 1 | 68× (first: MAT_EQ_GAIN_1) |
 | Audible | external modulator Unassigned -> volume | 152 | 1 | 306× (first: <none>) |
@@ -47,6 +48,9 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | Audible | external modulator PitchBend -> volume | 5 | 1 | 4× (first: PB_VOLUME) |
 | Audible | external modulator Velocity -> module eqFreq1 | 4 | 1 | 80× (first: VEL_EQ_FREQ_1) |
 | Audible | alternating loop | 3 | 1 | 28× (first: ) |
+| Audible | effect Filter type 52 | 3 | 1 | 1× (first: group 110 insert slot 0) |
+| Audible | effect Filter type 54 | 3 | 1 | 4× (first: group 91 insert slot 2) |
+| Audible | effect Filter type 6 | 3 | 1 | 2× (first: group 92 insert slot 2) |
 | Audible | effect Solid G-EQ | 3 | 1 | 7× (first: group 98 insert slot 4) |
 | Audible | external modulator KeyPosition -> module ahdsr_attack | 3 | 1 | 1× (first: KP_ATTACK) |
 | Audible | external modulator MidiCc(1) -> module shaper | 3 | 1 | 12× (first: CC_SATURATION) |
@@ -56,6 +60,21 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | Audible | effect Compressor | 1 | 1 | 1× (first: instrument insert slot 1) |
 | Audible | effect Delay (legacy) | 1 | 1 | 5× (first: instrument send slot 0) |
 | Audible | effect Distortion | 1 | 1 | 8× (first: group 5 insert slot 6) |
+| Audible | effect Filter type 100 | 1 | 1 | 10× (first: group 5 insert slot 0) |
+| Audible | effect Filter type 102 | 1 | 1 | 2× (first: group 2 insert slot 0) |
+| Audible | effect Filter type 103 | 1 | 1 | 1× (first: group 206 insert slot 0) |
+| Audible | effect Filter type 106 | 1 | 1 | 267× (first: group 9 insert slot 0) |
+| Audible | effect Filter type 2 | 1 | 1 | 4× (first: group 8 insert slot 0) |
+| Audible | effect Filter type 30 | 1 | 1 | 876× (first: group 2 insert slot 0) |
+| Audible | effect Filter type 32 | 1 | 1 | 1× (first: bus 3 slot 2) |
+| Audible | effect Filter type 39 | 1 | 1 | 1× (first: group 348 insert slot 0) |
+| Audible | effect Filter type 41 | 1 | 1 | 1× (first: group 212 insert slot 0) |
+| Audible | effect Filter type 50 | 1 | 1 | 92× (first: group 0 insert slot 0) |
+| Audible | effect Filter type 55 | 1 | 1 | 20× (first: group 0 insert slot 3) |
+| Audible | effect Filter type 57 | 1 | 1 | 20× (first: group 0 insert slot 5) |
+| Audible | effect Filter type 70 | 1 | 1 | 3× (first: group 33 insert slot 0) |
+| Audible | effect Filter type 71 | 1 | 1 | 5× (first: group 13 insert slot 0) |
+| Audible | effect Filter type 90 | 1 | 1 | 291× (first: group 9 insert slot 1) |
 | Audible | effect Limiter | 1 | 1 | 1× (first: instrument insert slot 4) |
 | Audible | effect Lo-Fi | 1 | 1 | 277× (first: group 5 insert slot 5) |
 | Audible | effect Skreamer | 1 | 1 | 80× (first: group 168 insert slot 2) |
@@ -147,22 +166,38 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | Audible | internal modulator LFO -> wavetableModAmount | 1 | 1 | 2× (first: LFO 1) |
 | Audible | internal modulator LFO -> wavetableModFrequency | 1 | 1 | 2× (first: LFO 1) |
 | Audible | internal modulator LFO -> wavetablePosition | 1 | 1 | 2× (first: LFO 1) |
-| Cosmetic | bypassed effect Filter | 354 | 5 | 72× (first: group 56 insert slot 0) |
 | Cosmetic | bypassed effect Compressor | 5 | 3 | 4× (first: bus 0 slot 1) |
 | Cosmetic | bypassed effect Convolution | 5 | 3 | 1× (first: instrument send slot 2) |
 | Cosmetic | bypassed effect Saturation | 4 | 2 | 465× (first: group 0 insert slot 7) |
 | Cosmetic | bypassed effect Delay (legacy) | 2 | 2 | 3× (first: instrument send slot 4) |
 | Cosmetic | bypassed effect Distortion | 2 | 2 | 475× (first: group 0 insert slot 6) |
+| Cosmetic | bypassed effect Filter type 33 | 2 | 2 | 3× (first: group 0 insert slot 0) |
 | Cosmetic | bypassed effect Lo-Fi | 2 | 2 | 206× (first: group 0 insert slot 5) |
 | Cosmetic | bypassed effect Phaser (legacy) | 2 | 2 | 1× (first: instrument insert slot 2) |
 | Cosmetic | bypassed effect Feedback Compressor | 3 | 1 | 1× (first: instrument insert slot 2) |
+| Cosmetic | bypassed effect Filter type 2 | 3 | 1 | 88× (first: group 0 insert slot 0) |
+| Cosmetic | bypassed effect Filter type 50 | 3 | 1 | 2× (first: bus 0 slot 1) |
+| Cosmetic | bypassed effect Filter type 51 | 3 | 1 | 4× (first: group 94 insert slot 1) |
+| Cosmetic | bypassed effect Filter type 6 | 3 | 1 | 6× (first: group 88 insert slot 0) |
 | Cosmetic | bypassed effect Send Levels | 3 | 1 | 1× (first: instrument insert slot 7) |
 | Cosmetic | bypassed effect Skreamer | 3 | 1 | 2× (first: bus 0 slot 2) |
 | Cosmetic | bypassed effect Solid Bus Comp | 3 | 1 | 1× (first: instrument insert slot 4) |
 | Cosmetic | bypassed effect Solid G-EQ | 3 | 1 | 11× (first: group 94 insert slot 2) |
 | Cosmetic | bypassed effect Tape Saturator | 3 | 1 | 3× (first: instrument insert slot 5) |
 | Cosmetic | bypassed effect Transient Master | 3 | 1 | 1× (first: instrument insert slot 1) |
+| Cosmetic | bypassed effect Filter type 19 | 2 | 1 | 1× (first: group 99 insert slot 0) |
 | Cosmetic | bypassed effect Chorus (legacy) | 1 | 1 | 1× (first: instrument insert slot 4) |
+| Cosmetic | bypassed effect Filter type 100 | 1 | 1 | 167× (first: group 0 insert slot 0) |
+| Cosmetic | bypassed effect Filter type 102 | 1 | 1 | 1× (first: instrument insert slot 6) |
+| Cosmetic | bypassed effect Filter type 103 | 1 | 1 | 1× (first: group 428 insert slot 0) |
+| Cosmetic | bypassed effect Filter type 106 | 1 | 1 | 16× (first: group 21 insert slot 0) |
+| Cosmetic | bypassed effect Filter type 13 | 1 | 1 | 10× (first: group 280 insert slot 0) |
+| Cosmetic | bypassed effect Filter type 30 | 1 | 1 | 17× (first: group 1 insert slot 0) |
+| Cosmetic | bypassed effect Filter type 35 | 1 | 1 | 1× (first: group 889 insert slot 0) |
+| Cosmetic | bypassed effect Filter type 41 | 1 | 1 | 4× (first: group 301 insert slot 0) |
+| Cosmetic | bypassed effect Filter type 52 | 1 | 1 | 1× (first: group 14 insert slot 0) |
+| Cosmetic | bypassed effect Filter type 71 | 1 | 1 | 1× (first: group 6 insert slot 0) |
+| Cosmetic | bypassed effect Filter type 90 | 1 | 1 | 192× (first: group 0 insert slot 1) |
 | Cosmetic | bypassed effect Flanger (legacy) | 1 | 1 | 1× (first: instrument insert slot 5) |
 | Cosmetic | bypassed effect Jump | 1 | 1 | 4× (first: bus 0 slot 4) |
 | Cosmetic | bypassed effect Reverb | 1 | 1 | 1× (first: instrument send slot 1) |
@@ -174,25 +209,25 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | KSP | Status | Libraries | Scripts | Calls | Unanswered |
 |---|---|---:|---:|---:|---:|
 | `set_script_title` | missing | 11 | 51 | 51 | 51 |
-| `play_note` | answered | 11 | 48 | 102448 | 0 |
+| `play_note` | answered | 11 | 48 | 102446 | 0 |
 | `disallow_group` | answered | 11 | 48 | 102467 | 0 |
-| `set_control_par` | answered | 11 | 47 | 69288 | 0 |
+| `set_control_par` | answered | 11 | 47 | 69270 | 0 |
 | `add_menu_item` | missing | 11 | 47 | 3631 | 3631 |
-| `message` | answered | 11 | 47 | 79 | 0 |
+| `message` | answered | 11 | 47 | 78 | 0 |
 | `set_control_par_str` | missing | 11 | 46 | 21549 | 21549 |
 | `set_ui_height_px` | missing | 11 | 45 | 45 | 45 |
 | `abs` | vm | 11 | 44 | 0 | 0 |
 | `get_engine_par_disp` | missing | 11 | 44 | 821 | 821 |
 | `set_engine_par` | partial | 11 | 44 | 13315 | 2629 |
-| `get_control_par` | answered | 11 | 44 | 11565 | 0 |
-| `set_key_color` | missing | 11 | 44 | 9045 | 9045 |
-| `note_off` | answered | 11 | 43 | 62 | 0 |
+| `get_control_par` | answered | 11 | 44 | 11547 | 0 |
+| `set_key_color` | missing | 11 | 44 | 9019 | 9019 |
+| `note_off` | answered | 11 | 43 | 61 | 0 |
 | `purge_group` | answered | 11 | 43 | 906 | 0 |
-| `$EVENT_ID` | answered | 10 | 48 | 102787 | 0 |
-| `$EVENT_NOTE` | answered | 10 | 48 | 1031500 | 0 |
+| `$EVENT_ID` | answered | 10 | 48 | 102785 | 0 |
+| `$EVENT_NOTE` | answered | 10 | 48 | 1031468 | 0 |
 | `in_range` | vm | 10 | 47 | 0 | 0 |
-| `ignore_event` | answered | 10 | 47 | 75 | 0 |
-| `$EVENT_VELOCITY` | answered | 10 | 47 | 65 | 0 |
+| `ignore_event` | answered | 10 | 47 | 74 | 0 |
+| `$EVENT_VELOCITY` | answered | 10 | 47 | 61 | 0 |
 | `allow_group` | answered | 10 | 46 | 523 | 0 |
 | `%CC` | answered | 10 | 45 | 102431 | 0 |
 | `$CC_NUM` | answered | 10 | 40 | 0 | 0 |
@@ -200,7 +235,7 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `search` | vm | 10 | 36 | 0 | 0 |
 | `set_listener` | missing | 10 | 35 | 51 | 51 |
 | `fade_out` | answered | 10 | 34 | 102415 | 0 |
-| `$NUM_GROUPS` | answered | 10 | 25 | 103032 | 0 |
+| `$NUM_GROUPS` | answered | 10 | 25 | 103030 | 0 |
 | `read_persistent_var` | answered | 9 | 44 | 3465 | 0 |
 | `find_mod` | answered | 9 | 42 | 4270 | 0 |
 | `make_perfview` | missing | 9 | 42 | 42 | 42 |
@@ -208,15 +243,15 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `pgs_set_key_val` | missing | 9 | 24 | 303 | 303 |
 | `pgs_create_key` | missing | 9 | 23 | 43 | 43 |
 | `move_control_px` | missing | 8 | 41 | 1975 | 1975 |
-| `change_tune` | answered | 8 | 37 | 102412 | 0 |
+| `change_tune` | answered | 8 | 37 | 102410 | 0 |
 | `set_event_par` | answered | 8 | 34 | 90 | 0 |
 | `set_ui_width_px` | missing | 8 | 33 | 33 | 33 |
-| `set_key_type` | missing | 8 | 33 | 6779 | 6779 |
-| `set_event_par_arr` | partial | 8 | 19 | 34 | 32 |
+| `set_key_type` | missing | 8 | 33 | 6753 | 6753 |
+| `set_event_par_arr` | partial | 8 | 19 | 32 | 30 |
 | `%KEY_DOWN` | answered | 8 | 18 | 4257 | 0 |
 | `random` | answered | 8 | 15 | 2 | 0 |
 | `ignore_controller` | answered | 8 | 13 | 0 | 0 |
-| `get_event_par` | answered | 7 | 36 | 698 | 0 |
+| `get_event_par` | answered | 7 | 36 | 686 | 0 |
 | `set_key_pressed` | missing | 7 | 32 | 3155 | 3155 |
 | `$NI_SIGNAL_TYPE` | missing | 7 | 31 | 0 | 0 |
 | `change_vol` | answered | 7 | 26 | 7 | 0 |
@@ -232,7 +267,7 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `set_key_name` | missing | 5 | 30 | 2900 | 2900 |
 | `load_ir_sample` | missing | 5 | 26 | 24 | 24 |
 | `set_skin_offset` | missing | 5 | 26 | 27 | 27 |
-| `reset_rls_trig_counter` | missing | 5 | 12 | 11 | 11 |
+| `reset_rls_trig_counter` | missing | 5 | 12 | 10 | 10 |
 | `get_engine_par` | partial | 5 | 10 | 23 | 9 |
 | `$CURRENT_SCRIPT_SLOT` | answered | 5 | 10 | 11 | 0 |
 | `show_library_tab` | missing | 5 | 9 | 9 | 9 |
@@ -261,7 +296,7 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 | `disable_logging` | missing | 3 | 6 | 18 | 18 |
 | `%GROUPS_SELECTED` | missing | 3 | 6 | 0 | 0 |
 | `%EVENT_PAR` | answered | 3 | 6 | 8 | 0 |
-| `change_note` | answered | 3 | 5 | 4 | 0 |
+| `change_note` | answered | 3 | 5 | 3 | 0 |
 | `change_pan` | answered | 3 | 4 | 0 | 0 |
 | `wait_async` | missing | 3 | 4 | 303 | 303 |
 | `$PLAYED_VOICES_INST` | answered | 3 | 4 | 3 | 0 |
@@ -770,14 +805,14 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 ## Runtime faults (init + one note)
 
 - ANALOG STRINGS: ANALOG STRINGS slot 0 (Analog Strings v0.22): Faults { divide_by_zero: 15, out_of_range: 5189, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- Afflatus Chapter II Brass: Bass Trombone Cimbasso Tuba KS slot 0 (Brass MKS Low 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- Afflatus Chapter II Brass: 2 Tubas KS slot 0 (Brass MKS Low 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns AccSusCresc slot 0 (Brass ASC 1.00): Faults { divide_by_zero: 0, out_of_range: 2, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns Flutter slot 0 (Brass Flutter 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- Afflatus Chapter II Brass: 2 Horns Legato slot 0 (Brass Legato 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns Marcato slot 0 (Brass Marc Tenuto 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- Afflatus Chapter II Brass: 2 Horns Legato slot 0 (Brass Legato 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns Staccatissimo slot 0 (Brass Shorts 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Horns Rips slot 0 (Brass Rips 1.00): Faults { divide_by_zero: 0, out_of_range: 2, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- Afflatus Chapter II Brass: 2 Horns Mutes Trills slot 0 (Brass Trills 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- Afflatus Chapter II Brass: 2 Horns Trills slot 0 (Brass Trills 1.00): Faults { divide_by_zero: 0, out_of_range: 2, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: 2 Tubas Slides slot 0 (Brass Slides 1.00): Faults { divide_by_zero: 0, out_of_range: 2, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Mountain Hotel Cup Mute slot 0 (Mountain Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Noir Brass slot 0 (Noir Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
@@ -789,6 +824,6 @@ Status: `vm` the VM answers it; `answered` the engine answers it and no run left
 - Afflatus Chapter II Brass: Imperial Brass A slot 0 (Imperial Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Afflatus Chapter II Brass: Phantom Brass slot 0 (Phantom Brass 1.00): Faults { divide_by_zero: 0, out_of_range: 1, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Audio Imperia CHORUS: 01 Chorus - Women - Traditional Articulations slot 0 (Pyramid (Tonal and Atonal)): Faults { divide_by_zero: 1, out_of_range: 0, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
-- Audio Imperia Dolce: Dolce - 03 7 1st Violins - Sustained Con Sordino slot 0 (Pyramid (Tonal and Atonal)): Faults { divide_by_zero: 0, out_of_range: 36, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
+- Audio Imperia Dolce: Dolce - 04 7 1st Violins - Harmonics slot 0 (Pyramid (Tonal and Atonal)): Faults { divide_by_zero: 0, out_of_range: 36, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Conflux 1.1.0 [Native Instruments]: Conflux slot 1 (Mono & Glide): Faults { divide_by_zero: 2, out_of_range: 0, stack_overflow: 0, texts_cut: 0, loop_limits: 0, no_coroutine: 0, bad_code: 0 }
 - Shreddage 3.5 E-Upright 1.0.1 [Impact Soundworks] rutracker.org: Shreddage 3.5 E-Upright slot 0 (Shreddage Engine): Faults { divide_by_zero: 11, out_of_range: 4, stack_overflow: 0, texts_cut: 0, loop_limits: 1, no_coroutine: 0, bad_code: 0 }

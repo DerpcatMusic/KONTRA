@@ -364,6 +364,8 @@ pub enum EffectKind {
     Invert { phase: bool, swap: bool },
     /// Width 0..=1 (0 mono, 0.5 unchanged, 1 doubled side), then a -1..=1 balance.
     Stereo { width: f32, pan: f32 },
+    /// Peaking bands in series; a 0 dB band is flat.
+    Eq([Bell; 3]),
     /// Not carried, an insert: audio passes unchanged (its output gain
     /// trims processing that does not run).
     /// The translator reports it.
@@ -371,6 +373,22 @@ pub enum EffectKind {
     /// Not carried, a parallel path (a reverb, a delay): only the dry level
     /// passes. The translator reports it.
     OtherWet,
+}
+
+/// A peaking band: `gain_db` at `hz`, width by `q` (the cookbook bell).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bell {
+    pub hz: f32,
+    pub q: f32,
+    pub gain_db: f32,
+}
+
+impl Bell {
+    pub const FLAT: Self = Self {
+        hz: 1000.0,
+        q: 1.0,
+        gain_db: 0.0,
+    };
 }
 
 #[derive(Clone, Debug, PartialEq)]
