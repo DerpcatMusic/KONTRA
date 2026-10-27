@@ -22,6 +22,7 @@ Read in order:
 | [09-BUILD.md](09-BUILD.md) | Compile-time plan, profiles, CI |
 | [10-TESTING.md](10-TESTING.md) | Contracts, vectors, test layout |
 | [11-MIGRATION.md](11-MIGRATION.md) | PR-by-PR order with gates, and what gets deleted when |
+| [13-FRESH-CORE.md](13-FRESH-CORE.md) | Rebuild the engine fresh, plus the missing behaviour, voice ownership and modulation model |
 
 Background: [../audit-2026-10-24/](../audit-2026-10-24/) (playback audit,
 sampler landscape, one-engine audit, future plan).
