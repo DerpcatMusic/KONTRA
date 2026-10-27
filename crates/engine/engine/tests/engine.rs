@@ -13,7 +13,7 @@ const FMT: SampleFmt = SampleFmt {
 };
 
 /// A 0.5-amplitude noise-like sample, pinned whole, so onsets are unambiguous.
-fn region(store: &Store, name: &str, frames: u64) -> std::io::Result<Region> {
+fn region(store: &mut Store, name: &str, frames: u64) -> std::io::Result<Region> {
     let bytes = (0..frames)
         .flat_map(|n| (0.25 + 0.25 * ((n * 7919 % 101) as f32 / 101.0)).to_le_bytes())
         .collect();
@@ -125,8 +125,11 @@ fn first_sound(out: &[[f32; 2]], channel: usize) -> Option<usize> {
 
 #[test]
 fn output_is_identical_at_every_host_block_size() {
-    let store = Store::new(StoreConfig::default()).unwrap();
-    let plan = plan(vec![zone(region(&store, "a", 20_000).unwrap(), 0.0)], 16);
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let plan = plan(
+        vec![zone(region(&mut store, "a", 20_000).unwrap(), 0.0)],
+        16,
+    );
     let events = [
         on(10, 60),
         on(333, 67),
@@ -156,10 +159,10 @@ fn output_is_identical_at_every_host_block_size() {
 #[test]
 fn every_layer_of_a_note_starts_on_the_notes_sample() {
     // Two mic layers, hard left and hard right: both channels must start on frame 77.
-    let store = Store::new(StoreConfig::default()).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let zones = vec![
-        zone(region(&store, "close", 5000).unwrap(), -1.0),
-        zone(region(&store, "room", 5000).unwrap(), 1.0),
+        zone(region(&mut store, "close", 5000).unwrap(), -1.0),
+        zone(region(&mut store, "room", 5000).unwrap(), 1.0),
     ];
     let mut engine = Engine::new(plan(zones, 8), store.client(), RATE);
     let out = render(&mut engine, &[on(77, 60)], 512, 64);
@@ -170,8 +173,8 @@ fn every_layer_of_a_note_starts_on_the_notes_sample() {
 
 #[test]
 fn the_pedal_holds_released_notes_until_it_lifts() {
-    let store = Store::new(StoreConfig::default()).unwrap();
-    let mut z = zone(region(&store, "loop", 1000).unwrap(), 0.0);
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(region(&mut store, "loop", 1000).unwrap(), 0.0);
     z.region.looped = Some(kontra_voice::Loop {
         start: 0,
         end: 1000,
@@ -190,9 +193,9 @@ fn the_pedal_holds_released_notes_until_it_lifts() {
 
 #[test]
 fn a_released_note_ends_and_is_reported() {
-    let store = Store::new(StoreConfig::default()).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut engine = Engine::new(
-        plan(vec![zone(region(&store, "a", 48_000).unwrap(), 0.0)], 8),
+        plan(vec![zone(region(&mut store, "a", 48_000).unwrap(), 0.0)], 8),
         store.client(),
         RATE,
     );
@@ -207,9 +210,9 @@ fn a_released_note_ends_and_is_reported() {
 
 #[test]
 fn a_full_pool_fades_the_oldest_voice_and_counts_it() {
-    let store = Store::new(StoreConfig::default()).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut engine = Engine::new(
-        plan(vec![zone(region(&store, "a", 48_000).unwrap(), 0.0)], 2),
+        plan(vec![zone(region(&mut store, "a", 48_000).unwrap(), 0.0)], 2),
         store.client(),
         RATE,
     );
@@ -227,8 +230,8 @@ fn a_full_pool_fades_the_oldest_voice_and_counts_it() {
 
 #[test]
 fn a_zone_outside_the_velocity_range_is_silent() {
-    let store = Store::new(StoreConfig::default()).unwrap();
-    let mut z = zone(region(&store, "soft", 1000).unwrap(), 0.0);
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(region(&mut store, "soft", 1000).unwrap(), 0.0);
     z.velocities = 1..=40;
     let mut engine = Engine::new(plan(vec![z], 4), store.client(), RATE);
     let out = render(&mut engine, &[on(0, 60)], 256, 128);

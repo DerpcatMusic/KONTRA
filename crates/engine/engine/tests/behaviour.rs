@@ -18,7 +18,7 @@ const FMT: SampleFmt = SampleFmt {
 };
 
 /// A constant-level sample: its level identifies which zone sounds.
-fn region(store: &Store, level: f32, frames: u64) -> std::io::Result<Region> {
+fn region(store: &mut Store, level: f32, frames: u64) -> std::io::Result<Region> {
     let bytes = (0..frames).flat_map(|_| level.to_le_bytes()).collect();
     let key = BlobKey {
         file: format!("dc{level}").into(),
@@ -41,9 +41,9 @@ fn region(store: &Store, level: f32, frames: u64) -> std::io::Result<Region> {
 }
 
 /// A zone whose output level is `level` at full velocity, centre pan, no velocity scaling.
-fn zone(store: &Store, level: f32) -> Zone {
+fn zone(store: &mut Store, level: f32) -> Zone {
     let mut z = Zone::new(region(store, level, 48_000).unwrap(), 60, RATE);
-    z.velocity_db = 0.0;
+    z.velocity = kontra_engine::VelocityCurve::Flat;
     z.envelope = Ahdsr {
         release: 64,
         ..Ahdsr::GATE
@@ -118,12 +118,12 @@ fn close(a: f32, b: f32) -> bool {
 
 #[test]
 fn sequential_round_robin_cycles_and_mic_layers_agree() {
-    let store = Store::new(StoreConfig::default()).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     // Two RR steps x two mics: close (bus 0) and room (bus 1). Levels name the step.
     let mut zones = Vec::new();
     for (position, level) in [(0u8, 0.1f32), (1, 0.2)] {
         for bus in 0..2 {
-            let mut z = zone(&store, level + bus as f32 * 0.01);
+            let mut z = zone(&mut store, level + bus as f32 * 0.01);
             z.round_robin = Some(RoundRobin {
                 counter: RrCounter::Key,
                 position,
@@ -163,10 +163,10 @@ fn sequential_round_robin_cycles_and_mic_layers_agree() {
 
 #[test]
 fn random_round_robin_never_repeats_a_step() {
-    let store = Store::new(StoreConfig::default()).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let zones = (0..3u8)
         .map(|position| {
-            let mut z = zone(&store, 0.1 * f32::from(position + 1));
+            let mut z = zone(&mut store, 0.1 * f32::from(position + 1));
             z.round_robin = Some(RoundRobin {
                 counter: RrCounter::Global,
                 position,
@@ -192,10 +192,10 @@ fn random_round_robin_never_repeats_a_step() {
 
 #[test]
 fn a_keyswitch_selects_the_articulation_and_sounds_nothing() {
-    let store = Store::new(StoreConfig::default()).unwrap();
-    let mut legato = zone(&store, 0.3);
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut legato = zone(&mut store, 0.3);
     legato.keyswitch = Some(24);
-    let mut staccato = zone(&store, 0.6);
+    let mut staccato = zone(&mut store, 0.6);
     staccato.keyswitch = Some(25);
     let mut plan = Plan::new(vec![legato, staccato], 8);
     plan.keyswitches = Some(24..=35);
@@ -217,13 +217,13 @@ fn a_keyswitch_selects_the_articulation_and_sounds_nothing() {
 
 #[test]
 fn a_release_trigger_plays_on_key_up_quieter_the_longer_the_key_was_held() {
-    let store = Store::new(StoreConfig::default()).unwrap();
-    let mut attack = zone(&store, 0.5);
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut attack = zone(&mut store, 0.5);
     attack.envelope = Ahdsr {
         release: 16,
         ..Ahdsr::GATE
     };
-    let mut tail = zone(&store, 0.4);
+    let mut tail = zone(&mut store, 0.4);
     tail.trigger = Trigger::Release;
     tail.release_decay_db = 6.0; // per second held
     let mut e = engine(&store, Plan::new(vec![attack, tail], 8));
@@ -238,12 +238,12 @@ fn a_release_trigger_plays_on_key_up_quieter_the_longer_the_key_was_held() {
 
 #[test]
 fn a_choke_group_fades_the_open_hat() {
-    let store = Store::new(StoreConfig::default()).unwrap();
-    let mut open = zone(&store, 0.5);
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut open = zone(&mut store, 0.5);
     open.keys = 46..=46;
     open.group = 1;
     open.off_by = Some(2);
-    let mut closed = zone(&store, 0.25);
+    let mut closed = zone(&mut store, 0.25);
     closed.keys = 42..=42;
     closed.group = 2;
     let mut e = engine(&store, Plan::new(vec![open, closed], 8));
@@ -257,8 +257,8 @@ fn a_choke_group_fades_the_open_hat() {
 
 #[test]
 fn group_polyphony_keeps_only_the_newest_voice() {
-    let store = Store::new(StoreConfig::default()).unwrap();
-    let mut mono = zone(&store, 0.5);
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut mono = zone(&mut store, 0.5);
     mono.group = 7;
     let mut plan = Plan::new(vec![mono], 8);
     plan.polyphony = vec![(7, 1)];
@@ -271,15 +271,15 @@ fn group_polyphony_keeps_only_the_newest_voice() {
 
 #[test]
 fn velocity_layers_crossfade_with_equal_power() {
-    let store = Store::new(StoreConfig::default()).unwrap();
-    let mut soft = zone(&store, 1.0);
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut soft = zone(&mut store, 1.0);
     soft.pan = -1.0;
     soft.crossfades = vec![Crossfade {
         control: Control::Velocity,
         fade_in: None,
         fade_out: Some((40, 80)),
     }];
-    let mut loud = zone(&store, 1.0);
+    let mut loud = zone(&mut store, 1.0);
     loud.pan = 1.0;
     loud.crossfades = vec![Crossfade {
         control: Control::Velocity,
@@ -294,8 +294,8 @@ fn velocity_layers_crossfade_with_equal_power() {
 
 #[test]
 fn a_cc_crossfade_moves_sounding_voices() {
-    let store = Store::new(StoreConfig::default()).unwrap();
-    let mut z = zone(&store, 1.0);
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 1.0);
     z.crossfades = vec![Crossfade {
         control: Control::Cc(1),
         fade_in: Some((0, 127)),
@@ -318,9 +318,9 @@ fn a_cc_crossfade_moves_sounding_voices() {
 
 #[test]
 fn a_disabled_mic_bus_starts_no_voices() {
-    let store = Store::new(StoreConfig::default()).unwrap();
-    let close_mic = zone(&store, 0.5);
-    let mut room = zone(&store, 0.25);
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let close_mic = zone(&mut store, 0.5);
+    let mut room = zone(&mut store, 0.25);
     room.bus = 1;
     let mut plan = Plan::new(vec![close_mic, room], 8);
     plan.buses.push(Bus {
