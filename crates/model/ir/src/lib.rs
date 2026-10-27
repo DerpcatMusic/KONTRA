@@ -156,7 +156,8 @@ fn blocks(key: u64, origin: u64, block: u64, at: u64, bytes: &mut [u8]) {
 
 /// The first `len` bytes of the word stream seeded by `key` and `nonce`:
 /// word `j` is the little-endian output of a multiplicative state that steps
-/// once per word. Shared with the vendor's block transform (uvi-file crypto).
+/// once per word. The same generator as uvi-file's `transform`, which the
+/// uvi crate's test checks against.
 fn word_stream(key: u64, nonce: u64, len: usize) -> Vec<u8> {
     const MIX: u64 = 0xc6a4_a793_5bd1_e995;
     const STEP: u64 = 0x5851_f42d_4c95_7f2d;

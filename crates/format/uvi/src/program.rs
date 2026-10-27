@@ -98,8 +98,8 @@ impl<L: Library> Translator<'_, '_, L> {
         }
         let gain = num(layer, "Gain", 1.0)?;
         let pan = num(layer, "Pan", 0.0)?;
-        // ponytail: a zero-gain layer is what a script raises when it plays
-        // this layer's keygroups; without the script it stays silent.
+        // ponytail: a zero-gain layer is silent here. In the VWinds banks a script
+        // raises these layers and plays their keygroups; scripts do not run.
         if gain == 0.0 {
             let keygroups = layer.descendants().filter(|n| n.has_tag_name("Keygroup"));
             for _ in keygroups {
@@ -153,6 +153,15 @@ impl<L: Library> Translator<'_, '_, L> {
             ..ir::Group::DEFAULT
         };
         let placement = placement(kg);
+        let span = Span {
+            keys,
+            velocities,
+            key_fade: (midi_or(kg, "LowKeyFade", 0), midi_or(kg, "HighKeyFade", 0)),
+            velocity_fade: (
+                midi_or(kg, "LowVelocityFade", 0),
+                midi_or(kg, "HighVelocityFade", 0),
+            ),
+        };
         let mut first = true;
         for player in kg
             .descendants()
@@ -173,15 +182,6 @@ impl<L: Library> Translator<'_, '_, L> {
                     "",
                 );
             }
-            let span = Span {
-                keys,
-                velocities,
-                key_fade: (midi_or(kg, "LowKeyFade", 0), midi_or(kg, "HighKeyFade", 0)),
-                velocity_fade: (
-                    midi_or(kg, "LowVelocityFade", 0),
-                    midi_or(kg, "HighVelocityFade", 0),
-                ),
-            };
             let zones = self.player(player, placement, &span)?;
             group.zones.extend(zones);
         }
@@ -236,7 +236,7 @@ impl<L: Library> Translator<'_, '_, L> {
                             // ponytail: no placement: an equal spread, not the program's intent.
                             None => (1.0, 1.0),
                         };
-                        (left != 0.0 || right != 0.0 || placement.is_none()).then(|| {
+                        (left != 0.0 || right != 0.0).then(|| {
                             let spread = if placement.is_none() {
                                 1.0 / (width as f64).sqrt()
                             } else {
@@ -249,15 +249,8 @@ impl<L: Library> Translator<'_, '_, L> {
             }
             [] => Vec::new(),
         };
-        if player
-            .attribute("SampleStart")
-            .is_some_and(|s| s.trim() != "0")
-        {
-            self.notes.add(
-                ir::Impact::Audible,
-                "sample start",
-                player.attribute("SampleStart").unwrap_or_default(),
-            );
+        if let Some(start) = player.attribute("SampleStart").filter(|s| s.trim() != "0") {
+            self.notes.add(ir::Impact::Audible, "sample start", start);
         }
         if player.children().any(|n| n.has_tag_name("PlaybackOptions")) {
             // ponytail: loop and start points of PlaybackOptions are not carried yet.
