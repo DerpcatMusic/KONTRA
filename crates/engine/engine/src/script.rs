@@ -36,6 +36,7 @@ pub struct EnginePars {
     pub release: i32,
     /// A volume modulation's intensity.
     pub intensity: i32,
+    pub attack_curve: i32,
     pub volume: i32,
     pub pan: i32,
     pub tune: i32,

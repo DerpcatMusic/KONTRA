@@ -12,6 +12,7 @@ pub const UNDERSTOOD_SYMBOLS: &[&str] = &[
     SUSTAIN,
     RELEASE,
     INTENSITY,
+    ATTACK_CURVE,
     VOLUME,
     PAN,
     TUNE,
@@ -23,6 +24,7 @@ const DECAY: &str = "$ENGINE_PAR_DECAY";
 const SUSTAIN: &str = "$ENGINE_PAR_SUSTAIN";
 const RELEASE: &str = "$ENGINE_PAR_RELEASE";
 const INTENSITY: &str = "$ENGINE_PAR_MOD_TARGET_INTENSITY";
+const ATTACK_CURVE: &str = "$ENGINE_PAR_ATK_CURVE";
 const VOLUME: &str = "$ENGINE_PAR_VOLUME";
 const PAN: &str = "$ENGINE_PAR_PAN";
 const TUNE: &str = "$ENGINE_PAR_TUNE";
@@ -55,6 +57,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             sustain: symbol(script, SUSTAIN),
             release: symbol(script, RELEASE),
             intensity: symbol(script, INTENSITY),
+            attack_curve: symbol(script, ATTACK_CURVE),
             volume: symbol(script, VOLUME),
             pan: symbol(script, PAN),
             tune: symbol(script, TUNE),
