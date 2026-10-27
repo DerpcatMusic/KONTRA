@@ -1,11 +1,18 @@
 //! Sample files as the store reads them: PCM straight from disk, NCW decoded
-//! per block. Where the bytes are is the format's job ([`ir::Sample`]).
+//! per block, FLAC decoded per read. Where the bytes are is the format's job ([`ir::Sample`]).
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::Arc;
 
 use kontra_ir as ir;
+
+use symphonia::core::audio::{AudioBufferRef, Signal};
+use symphonia::core::codecs::{Decoder, DecoderOptions};
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
+use symphonia::core::io::MediaSourceStream;
+use symphonia::default::codecs::FlacDecoder;
+use symphonia::default::formats::FlacReader;
 
 use crate::sniff::{Layout, Pcm, sniff};
 use crate::{Encoding, SampleFmt, Source};
@@ -72,6 +79,26 @@ pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
                 channels: usize::from(channels),
                 convert,
             };
+            Ok((Arc::new(source), SampleFmt { encoding, channels }))
+        }
+        Layout::Flac => {
+            let (reader, _) = FlacSource::open(&region)?;
+            let params = &reader
+                .default_track()
+                .ok_or_else(|| unsupported("FLAC without a track".into()))?
+                .codec_params;
+            let channels = params.channels.map_or(0, |c| c.count());
+            let encoding = match params.bits_per_sample {
+                Some(16) => Encoding::I16,
+                Some(24) => Encoding::I24,
+                _ => Encoding::F32,
+            };
+            let source = FlacSource {
+                region,
+                encoding,
+                channels,
+            };
+            let channels = u8::try_from(channels).map_err(|_| unsupported("channels".into()))?;
             Ok((Arc::new(source), SampleFmt { encoding, channels }))
         }
         Layout::Ncw => {
@@ -151,6 +178,16 @@ fn read_at(file: &File, out: &mut [u8], at: u64) -> io::Result<usize> {
 #[cfg(windows)]
 fn read_at(file: &File, out: &mut [u8], at: u64) -> io::Result<usize> {
     std::os::windows::fs::FileExt::seek_read(file, out, at)
+}
+
+impl symphonia::core::io::MediaSource for RegionReader {
+    fn is_seekable(&self) -> bool {
+        true
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        Some(self.region.len)
+    }
 }
 
 /// `Read + Seek` over a region, for decoders that want a stream.
@@ -323,6 +360,99 @@ impl Source for NcwSource {
     }
 }
 
+/// FLAC, as UVI banks store it in `.flac`, `.wav` and `.aif` members. A read
+/// opens the stream, seeks to the frame asked for and decodes only what it
+/// covers.
+// ponytail: each read re-reads the metadata and binary-searches for the
+// frame; keep a decoder per sample if FLAC page reads show in profiles.
+struct FlacSource {
+    region: Region,
+    encoding: Encoding,
+    channels: usize,
+}
+
+impl FlacSource {
+    fn open(region: &Region) -> io::Result<(FlacReader, u32)> {
+        let stream = MediaSourceStream::new(Box::new(region.reader()), Default::default());
+        let reader = FlacReader::try_new(stream, &FormatOptions::default()).map_err(flac)?;
+        let track = reader.default_track().map_or(0, |t| t.id);
+        Ok((reader, track))
+    }
+}
+
+fn flac(e: symphonia::core::errors::Error) -> io::Error {
+    match e {
+        symphonia::core::errors::Error::IoError(e) => e,
+        e => io::Error::new(io::ErrorKind::InvalidData, e.to_string()),
+    }
+}
+
+impl Source for FlacSource {
+    fn read(&self, first: u64, out: &mut [u8]) -> io::Result<()> {
+        out.fill(0);
+        let width = self.encoding.bytes();
+        let frame = width * self.channels;
+        let end = first + (out.len() / frame.max(1)) as u64;
+        let (mut reader, track) = Self::open(&self.region)?;
+        let params = reader
+            .default_track()
+            .map(|t| t.codec_params.clone())
+            .unwrap_or_default();
+        let mut decoder =
+            FlacDecoder::try_new(&params, &DecoderOptions::default()).map_err(flac)?;
+        let to = SeekTo::TimeStamp {
+            ts: first,
+            track_id: track,
+        };
+        if reader.seek(SeekMode::Accurate, to).is_err() {
+            // Past the end: the tail stays silent.
+            return Ok(());
+        }
+        loop {
+            let packet = match reader.next_packet() {
+                Ok(p) => p,
+                Err(symphonia::core::errors::Error::IoError(e))
+                    if e.kind() == io::ErrorKind::UnexpectedEof =>
+                {
+                    return Ok(());
+                }
+                Err(e) => return Err(flac(e)),
+            };
+            if packet.ts >= end {
+                return Ok(());
+            }
+            let AudioBufferRef::S32(buf) = decoder.decode(&packet).map_err(flac)? else {
+                return Err(unsupported("FLAC decoded to a non-i32 buffer".into()));
+            };
+            for c in 0..self.channels.min(buf.spec().channels.count()) {
+                for (i, &value) in buf.chan(c).iter().enumerate() {
+                    let t = packet.ts + i as u64;
+                    if t < first {
+                        continue;
+                    }
+                    if t >= end {
+                        break;
+                    }
+                    let at = (t - first) as usize * frame + c * width;
+                    if let Some(d) = out.get_mut(at..at + width) {
+                        write_full_scale(self.encoding, value, d);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Writes a full-scale `i32` sample in `encoding`: the top bytes for integer
+/// layouts, a float in -1..1 otherwise.
+fn write_full_scale(encoding: Encoding, value: i32, dest: &mut [u8]) {
+    match encoding {
+        Encoding::I16 => dest.copy_from_slice(&((value >> 16) as i16).to_le_bytes()),
+        Encoding::I24 => dest.copy_from_slice(&(value >> 8).to_le_bytes()[..3]),
+        Encoding::F32 => dest.copy_from_slice(&(value as f32 / 2_147_483_648.0).to_le_bytes()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,5 +533,36 @@ mod tests {
         source.read(1, &mut out).unwrap();
         let v = f32::from_le_bytes([out[0], out[1], out[2], out[3]]);
         assert_eq!(v, -0.5);
+    }
+
+    /// A 10,000-frame stereo ramp (left `n`, right `-n`) in 1,024-frame FLAC
+    /// blocks, stored after 100 bytes of something else, as in a UFS bank.
+    #[test]
+    fn flac_decodes_the_frames_asked_for_across_blocks() {
+        let flac = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/ramp-16-stereo.flac"
+        ))
+        .unwrap();
+        let mut bank = vec![0xAA; 100];
+        bank.extend(&flac);
+        let len = Some(flac.len() as u64);
+        let (source, fmt) = open(&sample(temp("ramp.ufs", &bank), 100, len, 10_000)).unwrap();
+        assert_eq!((fmt.encoding, fmt.channels), (Encoding::I16, 2));
+        let mut out = vec![0; 2_000 * 4];
+        source.read(1_000, &mut out).unwrap();
+        for (i, f) in out.as_chunks::<4>().0.iter().enumerate() {
+            let n = 1_000 + i as i16;
+            assert_eq!(
+                [
+                    i16::from_le_bytes([f[0], f[1]]),
+                    i16::from_le_bytes([f[2], f[3]])
+                ],
+                [n, -n]
+            );
+        }
+        // Past the end stays silent.
+        source.read(9_990, &mut out).unwrap();
+        assert!(out[10 * 4..].iter().all(|&b| b == 0));
     }
 }

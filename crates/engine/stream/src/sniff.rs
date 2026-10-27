@@ -21,6 +21,8 @@ pub(crate) enum Layout {
         pcm: Pcm,
     },
     Ncw,
+    /// A FLAC stream from the start of the region.
+    Flac,
 }
 
 /// Reads the header through `read(pos, out)` over a region of `size` bytes.
@@ -39,12 +41,13 @@ pub(crate) fn sniff(
     match magic.get(..4) {
         Some(b"RIFF") => wav(size, read),
         Some(b"FORM") => aiff(size, magic.get(8..12) == Some(b"AIFC"), read),
+        Some(b"fLaC") => Ok(Layout::Flac),
         _ => {
             let mut head = [0; 120];
             let n = size.min(120) as usize;
             read(0, head.get_mut(..n).unwrap_or_default())?;
             ncw::NcwHeader::read(&mut head.get(..n).unwrap_or_default())
-                .map_err(|e| invalid(&format!("not WAV, AIFF or NCW: {e}")))?;
+                .map_err(|e| invalid(&format!("not WAV, AIFF, FLAC or NCW: {e}")))?;
             Ok(Layout::Ncw)
         }
     }

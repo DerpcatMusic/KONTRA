@@ -11,3 +11,4 @@ workspace = true
 crossbeam-queue.workspace = true
 kontra-ir = { path = "../../model/ir" }
 ncw = { path = "../../../vendor/ncw" }
+symphonia = { version = "0.5", default-features = false, features = ["flac"] }

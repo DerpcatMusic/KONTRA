@@ -2541,6 +2541,7 @@ dependencies = [
  "crossbeam-queue",
  "kontra-ir",
  "ncw",
+ "symphonia",
 ]
 
 [[package]]
