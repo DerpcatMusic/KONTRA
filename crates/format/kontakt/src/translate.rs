@@ -35,7 +35,6 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     let mut out = ir::Instrument {
         name: params.name.clone(),
         voices: 256,
-        preload: u32::try_from(params.dfd_channel_preload_size).unwrap_or(61_440),
         ..ir::Instrument::DEFAULT
     };
     // Instrument volume, pan and tune apply to every group.
@@ -43,6 +42,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         volume_db: db(params.volume),
         pan: params.pan,
         tune: semitones(params.tune) + f64::from(params.transpose),
+        preload: params.dfd_channel_preload_size,
     };
     let mut resources = None;
     for chunk in program.0.children.iter().filter(|c| c.id == SCRIPT) {
@@ -157,6 +157,8 @@ struct Base {
     volume_db: f32,
     pan: f32,
     tune: f64,
+    /// The program's DFD preload, bytes per channel.
+    preload: i32,
 }
 
 fn db(linear: f32) -> f32 {
@@ -267,6 +269,7 @@ fn translate_group(
             ir::Trigger::Attack
         },
         purged: group.source_identity().is_ok_and(|s| s.flag == 1),
+        stream: laws::stream(group.source_identity().map_or(0, |s| s.mode), base.preload),
         ..ir::Group::DEFAULT
     };
     let slot = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);

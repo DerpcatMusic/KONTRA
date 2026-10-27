@@ -18,13 +18,11 @@ pub struct Instrument {
     pub voices: u16,
     /// Shared voice limits; [`Group::voice_group`] indexes here.
     pub voice_groups: Vec<VoiceGroup>,
-    /// Preloaded bytes per channel of each resident zone (05-STREAM.md §1).
-    pub preload: u32,
     pub diagnostics: Vec<Diagnostic>,
 }
 
 impl Instrument {
-    /// Nothing yet, with Kontakt's voice and preload defaults.
+    /// Nothing yet.
     pub const DEFAULT: Self = Self {
         name: String::new(),
         samples: Vec::new(),
@@ -33,7 +31,6 @@ impl Instrument {
         scripts: Vec::new(),
         voices: 64,
         voice_groups: Vec::new(),
-        preload: 61_440,
         diagnostics: Vec::new(),
     };
 }
@@ -119,6 +116,8 @@ pub struct Group {
     pub bus: usize,
     /// Saved unloaded: no preload until a script loads it.
     pub purged: bool,
+    /// How much of each zone's sample stays in memory; `None` keeps it whole.
+    pub stream: Option<Stream>,
     /// Index into [`Instrument::voice_groups`].
     pub voice_group: Option<usize>,
     pub zones: Vec<Zone>,
@@ -141,6 +140,7 @@ impl Group {
         off_by: None,
         bus: 0,
         purged: false,
+        stream: None,
         voice_group: None,
         zones: Vec::new(),
     };
@@ -228,6 +228,15 @@ impl Curve {
                 .powi(i32::from(power)),
         }
     }
+}
+
+/// A streamed zone's resident head: `bytes_per_channel` of stored audio
+/// from the start, plus twice the start-offset range, rounded up to `grain`
+/// bytes. The rest is read from disk while the voice plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stream {
+    pub bytes_per_channel: u32,
+    pub grain: u32,
 }
 
 /// A voice limit shared by the groups that name it.

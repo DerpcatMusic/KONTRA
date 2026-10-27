@@ -14,13 +14,13 @@ fn areia_violins_load_with_their_samples_and_script() {
     let i = kontra_format_kontakt::load(path).unwrap();
     let zones: usize = i.groups.iter().map(|g| g.zones.len()).sum();
     eprintln!(
-        "{}: {} groups, {} zones, {} samples, {} scripts, preload {}",
+        "{}: {} groups, {} zones, {} samples, {} scripts, stream {:?}",
         i.name,
         i.groups.len(),
         zones,
         i.samples.len(),
         i.scripts.len(),
-        i.preload
+        i.groups.first().and_then(|g| g.stream)
     );
     for d in &i.diagnostics {
         eprintln!("  {:?} {}: {}", d.impact, d.feature, d.detail);
