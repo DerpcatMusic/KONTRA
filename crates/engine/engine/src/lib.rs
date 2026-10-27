@@ -19,6 +19,7 @@ mod params;
 mod plan;
 mod prepare;
 mod queue;
+mod racks;
 mod script;
 mod voice_gain;
 mod voice_groups;
@@ -89,10 +90,10 @@ struct Slot {
 struct BusState {
     gain: f32,
     enabled: bool,
-    /// The plan's bus inserts as scripts have changed them.
-    inserts: Box<[Option<ir::Effect>]>,
-    /// The rack's EQ bands, on what the bus carries.
-    filters: Box<[kontra_dsp::eq::Biquad]>,
+    /// Its rack, on what it carries.
+    rack: racks::Rack,
+    /// -1..=1 balance after the rack.
+    pan: f32,
     mix: Box<[[f32; 2]]>,
 }
 
@@ -128,8 +129,8 @@ pub struct Engine {
     called: Box<[u32]>,
     /// The instrument's level, pan and tune (a script's group -1).
     instrument: Level,
-    /// The plan's instrument inserts as scripts have changed them.
-    inserts: Box<[Option<ir::Effect>]>,
+    /// The instrument rack, on the final mix.
+    rack: racks::Rack,
     /// Callbacks run so far (24 bits): the source of `$NI_CALLBACK_ID`.
     callbacks_started: u32,
     /// Per control, parameters the script set other than its value.
@@ -139,8 +140,6 @@ pub struct Engine {
     /// Shared EQ chains, and each zone's chain.
     chains: Vec<filters::Chain>,
     zone_chain: Box<[Option<u16>]>,
-    /// The instrument rack's EQ bands, on the final mix.
-    filters: Box<[kontra_dsp::eq::Biquad]>,
 }
 
 impl Engine {
@@ -149,8 +148,7 @@ impl Engine {
     #[must_use]
     pub fn new(plan: Arc<Plan>, stream: StreamClient, rate: u32) -> Self {
         let shared: Box<[Group]> = plan.groups.clone().into();
-        let plan_inserts = plan.inserts.clone().into();
-        let instrument_filters = filters::biquads(&filters::bells(&plan.inserts), rate);
+        let rack = racks::Rack::new(&plan.inserts, rate);
         let pool = plan.voices + plan.voices / 4 + 1;
         let voices = (0..pool)
             .map(|_| Slot {
@@ -169,8 +167,8 @@ impl Engine {
             .map(|b| BusState {
                 gain: b.gain,
                 enabled: b.enabled,
-                inserts: b.inserts.clone().into(),
-                filters: filters::biquads(&filters::bells(&b.inserts), rate),
+                rack: racks::Rack::new(&b.inserts, rate),
+                pan: b.pan,
                 mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
             })
             .collect();
@@ -218,8 +216,7 @@ impl Engine {
             control_pars,
             callbacks_started: 0,
             instrument: Level::UNITY,
-            filters: instrument_filters,
-            inserts: plan_inserts,
+            rack,
             chains: Vec::new(),
             zone_chain: Box::new([]),
         };
@@ -339,14 +336,15 @@ impl Engine {
             if let Some(span) = out.get_mut(from..from + len) {
                 for bus in &mut self.buses {
                     if let Some(mix) = bus.mix.get_mut(..len) {
-                        filters::run(&mut bus.filters, mix);
+                        bus.rack.process(mix);
+                        racks::apply(effects::balance(bus.pan), mix);
                     }
                     for (o, m) in span.iter_mut().zip(bus.mix.iter()) {
                         o[0] += m[0] * bus.gain;
                         o[1] += m[1] * bus.gain;
                     }
                 }
-                filters::run(&mut self.filters, span);
+                self.rack.process(span);
             }
             self.now = until;
         }

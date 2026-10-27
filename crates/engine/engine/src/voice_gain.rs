@@ -46,12 +46,7 @@ impl Engine {
             .get(zone.group as usize)
             .map_or(effects::IDENTITY, |g| effects::rack(&g.inserts));
         let amp = [[l * g, 0.0], [0.0, r * g]];
-        let bus = self.buses.get(zone.bus).map_or(effects::IDENTITY, |b| {
-            let pan = self.plan.buses.get(zone.bus).map_or(0.0, |p| p.pan);
-            product(effects::balance(pan), effects::rack(&b.inserts))
-        });
-        let voice = product(bus, product(group, amp));
-        product(effects::rack(&self.inserts), voice)
+        product(group, amp)
     }
 
     /// The group's and the instrument's level, combined.

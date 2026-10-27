@@ -136,11 +136,11 @@ impl Engine {
     fn effect_mut(&mut self, group: i32, slot: i32, generic: i32) -> Option<&mut ir::Effect> {
         let rack = match (usize::try_from(group), generic) {
             (Ok(g), -1) => &mut self.groups.get_mut(g)?.inserts[..],
-            (Err(_), 1) => &mut self.inserts[..],
+            (Err(_), 1) => &mut self.rack.slots[..],
             // `$NI_BUS_OFFSET + n`: bus n is plan bus n + 1 (0 is the main bus).
             (Err(_), b) if b >= 1000 => {
                 let bus = usize::try_from(b - 999).ok()?;
-                &mut self.buses.get_mut(bus)?.inserts[..]
+                &mut self.buses.get_mut(bus)?.rack.slots[..]
             }
             _ => return None,
         };

@@ -31,7 +31,7 @@ pub(crate) fn rack(slots: &[Option<ir::Effect>]) -> Gain {
         .fold(IDENTITY, |m, e| product(matrix(e), m))
 }
 
-fn matrix(e: &ir::Effect) -> Gain {
+pub(crate) fn matrix(e: &ir::Effect) -> Gain {
     let m = match e.kind {
         ir::EffectKind::Gain(g) => [[g, 0.0], [0.0, g]],
         ir::EffectKind::Invert { phase, swap } => {
@@ -57,7 +57,7 @@ fn matrix(e: &ir::Effect) -> Gain {
         // Its output gain trims processing that does not run here (a
         // compressor's makeup: ANALOG STRINGS stores +9 dB), so it passes.
         ir::EffectKind::Other => return IDENTITY,
-        // Its bands run on the summed voices (filters.rs).
+        // Its bands run on summed audio (filters.rs, racks.rs).
         ir::EffectKind::Eq(_) => IDENTITY,
         ir::EffectKind::OtherWet => [[0.0; 2]; 2],
     };
