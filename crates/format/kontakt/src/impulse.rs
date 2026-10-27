@@ -12,7 +12,7 @@ use std::path::Path;
 
 use crate::resources::Resources;
 use crate::samples::Resolver;
-use crate::translate::Notes;
+use kontra_format::Notes;
 
 pub(crate) struct Impulses<'a> {
     files: HashMap<u32, String>,

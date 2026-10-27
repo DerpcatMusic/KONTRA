@@ -2389,6 +2389,9 @@ version = "0.0.0"
 [[package]]
 name = "kontra-format"
 version = "0.0.0"
+dependencies = [
+ "kontra-ir",
+]
 
 [[package]]
 name = "kontra-format-kontakt"

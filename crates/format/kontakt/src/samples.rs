@@ -179,7 +179,7 @@ impl Resolver {
                     Some(key) => key.clone(),
                     None => self.key.insert(crate::access::keystream(archive)?).clone(),
                 };
-                Some(ir::Keystream {
+                Some(ir::Keystream::Repeat {
                     stream,
                     origin: entry.offset,
                 })

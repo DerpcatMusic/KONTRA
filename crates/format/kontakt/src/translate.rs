@@ -1,9 +1,10 @@
 //! A Kontakt program as the instrument model: groups, zones, start rules,
 //! envelopes and scripts. Kontakt stores gains and tunes as ratios.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 
+use kontra_format::Notes;
 use kontra_ir as ir;
 use ni_file::kontakt::KontaktChunks;
 use ni_file::kontakt::objects::{
@@ -683,30 +684,4 @@ fn translate_zone(
         looped,
         reverse,
     })
-}
-
-/// Diagnostics folded by feature: one entry with a count and the first detail.
-#[derive(Default)]
-pub(crate) struct Notes(BTreeMap<(ir::Impact, String), (usize, String)>);
-
-impl Notes {
-    pub(crate) fn add(&mut self, impact: ir::Impact, feature: &str, detail: impl ToString) {
-        let entry = self
-            .0
-            .entry((impact, feature.into()))
-            .or_insert((0, detail.to_string()));
-        entry.0 += 1;
-    }
-
-    fn finish(self) -> Vec<ir::Diagnostic> {
-        self.0
-            .into_iter()
-            .rev()
-            .map(|((impact, feature), (count, first))| ir::Diagnostic {
-                impact,
-                detail: format!("{count}× (first: {first})"),
-                feature,
-            })
-            .collect()
-    }
 }
