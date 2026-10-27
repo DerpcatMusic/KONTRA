@@ -253,7 +253,7 @@ impl Engine {
         self.voices
             .iter()
             .filter(|s| s.voice.is_active())
-            .map(|s| (s.zone, s.voice.position(), s.voice.gain()))
+            .map(|s| (s.zone, s.voice.position(), s.voice.target_gain()))
     }
 
     /// The controller's current value (128 is aftertouch, 129 pitch bend).
