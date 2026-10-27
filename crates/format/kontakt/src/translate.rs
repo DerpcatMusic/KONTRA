@@ -343,6 +343,7 @@ fn translate_group(
             let source = match p.source {
                 ModSource::Velocity => Some(ir::Source::Velocity),
                 ModSource::MidiCc(cc) => Some(ir::Source::Controller(cc)),
+                ModSource::PitchBend => Some(ir::Source::PitchBend),
                 // Outside a timed release-trigger group the counter is a
                 // constant 1, which leaves the volume at unity.
                 ModSource::ReleaseTriggerCounter => {
@@ -353,25 +354,31 @@ fn translate_group(
                 }
                 _ => None,
             };
-            match (source, p.targets.as_slice()) {
-                (Some(source), [t]) if t.param == "volume" && t.slot.is_none() => {
-                    out.mods.push(ir::Mod {
-                        name: p.name.clone(),
-                        slot: slot(n),
-                        kind: ir::ModKind::Volume {
+            for t in &p.targets {
+                let kind = match (source, t.param.as_str(), t.slot) {
+                    (Some(source), "volume", None) if source != ir::Source::PitchBend => {
+                        Some(ir::ModKind::Volume {
                             source,
                             intensity: t.signed_intensity(),
                             curve: laws::volume(source),
-                        },
-                    });
-                }
-                (_, targets) => {
-                    for t in targets {
-                        let to = if t.slot.is_some() { "module " } else { "" };
-                        let feature =
-                            format!("external modulator {:?} -> {to}{}", p.source, t.param);
-                        notes.add(ir::Impact::Audible, &feature, &p.name);
+                        })
                     }
+                    (Some(source), "pitch", None) => Some(ir::ModKind::Pitch {
+                        source,
+                        semitones: laws::PITCH_SEMITONES * t.signed_intensity(),
+                    }),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    out.mods.push(ir::Mod {
+                        name: p.name.clone(),
+                        slot: slot(n),
+                        kind,
+                    });
+                } else {
+                    let to = if t.slot.is_some() { "module " } else { "" };
+                    let feature = format!("external modulator {:?} -> {to}{}", p.source, t.param);
+                    notes.add(ir::Impact::Audible, &feature, &p.name);
                 }
             }
         }

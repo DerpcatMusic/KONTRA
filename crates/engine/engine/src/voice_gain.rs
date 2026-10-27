@@ -31,17 +31,11 @@ impl Engine {
                         intensity,
                         curve,
                     } => {
-                        let x = match source {
-                            ir::Source::Velocity => note.velocity as f32,
-                            ir::Source::Controller(cc) => {
-                                f32::from(self.behaviour.cc(channel, cc)) / 127.0
-                            }
-                            // Fixed at the voice's start: see `release_counter`.
-                            ir::Source::HeldTime { .. } => return 1.0,
-                        };
-                        curve.gain(intensity, x)
+                        // HeldTime is fixed at the voice's start: see `release_counter`.
+                        self.source(source, note)
+                            .map_or(1.0, |x| curve.gain(intensity, x))
                     }
-                    ir::ModKind::Envelope => 1.0,
+                    ir::ModKind::Envelope | ir::ModKind::Pitch { .. } => 1.0,
                 })
                 .product()
         });
@@ -73,8 +67,33 @@ impl Engine {
         }
     }
 
+    /// A live source's value for this note; `None` for one fixed at the voice's start.
+    fn source(&self, source: ir::Source, note: &Note) -> Option<f32> {
+        let channel = note.host.channel;
+        match source {
+            ir::Source::Velocity => Some(note.velocity as f32),
+            ir::Source::Controller(cc) => Some(f32::from(self.behaviour.cc(channel, cc)) / 127.0),
+            ir::Source::PitchBend => Some(self.behaviour.bend(channel)),
+            ir::Source::HeldTime { .. } => None,
+        }
+    }
+
     pub(crate) fn step(&self, zone: &Zone, note: &Note) -> f64 {
-        let semitones = (f64::from(note.key) - f64::from(zone.root)) * zone.keytrack
+        // ponytail: pitch moves at once; Kontakt lags pitch routes (250 ms
+        // default). Add a per-voice step glide when a library's bend steps audibly.
+        let mods: f32 = self.groups.get(zone.group as usize).map_or(0.0, |g| {
+            g.mods
+                .iter()
+                .filter_map(|m| match m.kind {
+                    ir::ModKind::Pitch { source, semitones } => {
+                        Some(self.source(source, note)? * semitones)
+                    }
+                    _ => None,
+                })
+                .sum()
+        });
+        let semitones = f64::from(mods)
+            + (f64::from(note.key) - f64::from(zone.root)) * zone.keytrack
             + zone.tune
             + self.level(zone).tune
             + note.tune

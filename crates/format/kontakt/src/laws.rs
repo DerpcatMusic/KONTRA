@@ -72,3 +72,7 @@ pub(crate) fn stream(mode: u32, preload: i32) -> Option<ir::Stream> {
         grain: 6144,
     })
 }
+
+/// Semitones at full intensity of a pitch route. The corpus's pitch-bend
+/// routes store 2/12, 7/12 and 12/12 (bend ranges of 2, 7 and 12 semitones).
+pub(crate) const PITCH_SEMITONES: f32 = 12.0;

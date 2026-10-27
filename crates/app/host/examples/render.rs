@@ -145,6 +145,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    // KONTRA_MODS=1 prints each distinct group modulation.
+    if std::env::var_os("KONTRA_MODS").is_some() {
+        let mut seen = Vec::new();
+        for m in loaded.plan.groups.iter().flat_map(|g| &g.mods) {
+            if !seen.contains(&m.kind) {
+                seen.push(m.kind);
+                println!("mod {:?}", m.kind);
+            }
+        }
+    }
     if let Ok(zone) = std::env::var("KONTRA_ZONE") {
         let plan = &loaded.plan;
         let z = zone.parse::<usize>().ok().and_then(|z| plan.zones.get(z));

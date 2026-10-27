@@ -439,3 +439,38 @@ fn a_one_shot_ignores_key_up() {
         "still sounding at full level"
     );
 }
+
+#[test]
+fn pitch_bend_moves_sounding_voices_by_its_route() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    plan.groups[0].mods = vec![kontra_engine::ir::Mod {
+        name: String::new(),
+        slot: 0,
+        kind: kontra_engine::ir::ModKind::Pitch {
+            source: kontra_engine::ir::Source::PitchBend,
+            semitones: 2.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let bend = |lsb, msb| Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xE0, lsb, msb),
+    };
+    // Source frames one 256-frame block advances.
+    let advance = |e: &mut Engine, events: &[Timed<Event>]| {
+        let at = |e: &Engine| e.voices().next().map(|(_, p, _)| p).unwrap();
+        let from = at(e);
+        level(e, events);
+        (at(e) - from) / 256.0
+    };
+    level(&mut e, &[on(60, 1.0)]);
+    assert!((advance(&mut e, &[]) - 1.0).abs() < 1e-6);
+    let up = advance(&mut e, &[bend(0x7F, 0x7F)]);
+    assert!(
+        (up - 2f64.powf(2.0 * 8191.0 / 8192.0 / 12.0)).abs() < 1e-6,
+        "{up}"
+    );
+    let down = advance(&mut e, &[bend(0, 0)]);
+    assert!((down - 2f64.powf(-2.0 / 12.0)).abs() < 1e-6, "{down}");
+}

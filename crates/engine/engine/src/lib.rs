@@ -703,10 +703,23 @@ impl Engine {
             return;
         }
         let status = (word >> 16) as u8;
+        let channel = status & 0x0F;
+        if status & 0xF0 == 0xE0 {
+            // 14 bits: LSB in data 1, MSB in data 2; 8192 is centre.
+            let raw = (word & 0x7F) << 7 | (word >> 8 & 0x7F);
+            let bend = (raw as f32 - 8192.0) / 8192.0;
+            self.behaviour.set_bend(channel, bend.max(-1.0));
+            let mut hits = std::mem::take(&mut self.hits);
+            self.notes.select(&mut hits, |n| n.host.channel == channel);
+            for &note in &hits {
+                self.refresh_note(note, None);
+            }
+            self.hits = hits;
+            return;
+        }
         if status & 0xF0 != 0xB0 {
             return;
         }
-        let channel = status & 0x0F;
         let (controller, value) = ((word >> 8) as u8 & 0x7F, word as u8 & 0x7F);
         if let Some(v) = self.cc_values.get_mut(usize::from(controller)) {
             *v = value;
