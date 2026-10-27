@@ -1,5 +1,5 @@
 //! Decodes every bank given: directory, content key, every program's XML and
-//! one sample per extension. Prints one line per bank with stage-tagged
+//! the first bytes of one member per extension. Prints one line per bank with stage-tagged
 //! failures. `cargo run --release --example census -- A.ufs B.ufs ...`
 
 use std::collections::BTreeMap;
@@ -65,12 +65,13 @@ fn bank(path: &Path) -> anyhow::Result<String> {
         }
     }
     let mut samples = Vec::new();
-    for ext in ["wav", "aif", "aiff", "flac", "ogg", "ncw", "uvs"] {
-        if let Some(m) = dir
-            .files
-            .iter()
-            .find(|m| m.name.to_ascii_lowercase().ends_with(&format!(".{ext}")))
-        {
+    for ext in by_ext.keys() {
+        if let Some(m) = dir.files.iter().find(|m| {
+            m.name
+                .to_ascii_lowercase()
+                .rsplit_once('.')
+                .map_or(ext.is_empty(), |(_, e)| e.eq_ignore_ascii_case(ext))
+        }) {
             let (offset, size, k) = ufs.locate(m, dir.metadata_key, key)?;
             let mut head = vec![0; size.min(4096) as usize];
             let mut f = ufs.open_snapshot()?;
@@ -82,7 +83,7 @@ fn bank(path: &Path) -> anyhow::Result<String> {
             }
             samples.push(format!(
                 "{ext}:{}",
-                String::from_utf8_lossy(head.get(..4).unwrap_or_default()).escape_debug()
+                String::from_utf8_lossy(head.get(..12).unwrap_or_default()).escape_debug()
             ));
         }
     }
