@@ -339,6 +339,9 @@ pub struct Script {
     pub source: String,
     /// Saved persistent values in the dialect's own form.
     pub saved: Vec<String>,
+    /// Library data files the script loads (Kontakt `load_array(%x, 2)`:
+    /// `data/x.nka`), by lowercase array name without its sigil.
+    pub data: Vec<(String, Vec<u8>)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

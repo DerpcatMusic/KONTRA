@@ -17,6 +17,8 @@ pub struct ScriptPlan {
     pub callbacks: Callbacks,
     /// Callbacks that may run or wait at once.
     pub coroutines: usize,
+    /// Library data arrays `load_array(%x, 2)` reads: (first cell, values).
+    pub data: Vec<(u32, Vec<i64>)>,
     /// Saved values written after `on init`, before `on persistence_changed`.
     pub restore: Vec<(u32, i64)>,
     pub restore_texts: Vec<(u32, Text)>,
@@ -538,6 +540,21 @@ impl HostApi for Engine {
             Action::SetController => {
                 self.set_controller(int(0), int(1));
                 HostValue::Nothing
+            }
+            // Mode 2 is the library's data folder, read at once (the next line
+            // sees it). ponytail: text arrays and the user-file modes wait for a
+            // text-cell host API and file dialogs.
+            Action::LoadArray if int(2) == 2 && int(3) != 2 => {
+                let (base, len) = (int(0) as u32, int(1) as usize);
+                let data = self.plan.script.as_ref().map(|s| s.data.as_slice());
+                if let Some((_, values)) = data.unwrap_or_default().iter().find(|(b, _)| *b == base)
+                {
+                    let cells = call.cells.get_mut(base as usize..).unwrap_or_default();
+                    for (cell, value) in cells.iter_mut().zip(values).take(len) {
+                        *cell = *value;
+                    }
+                }
+                HostValue::Int(0)
             }
             Action::ReadPersistentVar => {
                 let (base, len) = (int(0) as u32, int(1) as u32);
