@@ -6,7 +6,3 @@ publish = false
 
 [lints]
 workspace = true
-
-[dependencies]
-kontra-events = { path = "../../model/events" }
-kontra-time = { path = "../../base/time" }

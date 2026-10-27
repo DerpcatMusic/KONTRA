@@ -226,7 +226,9 @@ fn changed_rs_files(root: &Path, base: &str) -> Result<Vec<String>, String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
-        .filter(|file| file.ends_with(".rs"))
+        // Vendored forks are their own crates (own edition, style and lints) and
+        // their own repositories; the gate checks the codebase only, as `size` does.
+        .filter(|file| file.ends_with(".rs") && !file.starts_with("vendor/"))
         .map(str::to_string)
         .collect())
 }
