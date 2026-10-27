@@ -2,6 +2,30 @@
 //! (KSP `play_note`, a UVI `playNote`); the engine implements each once.
 //! Pure actions (arithmetic, array search and sort) never reach the host:
 //! the VM evaluates them ([`crate::pure`]).
+//!
+//! Units, whatever the front end: tuning in millicents (100000 = a semitone),
+//! volume in millidecibels, pan in per mille (-1000..=1000), time in
+//! microseconds. An event argument is an event id, [`event::ALL`] or
+//! [`event::BY_MARKS`] with mark bits.
+
+/// Event addressing and parameter ids shared by every front end (KSP's numbering).
+pub mod event {
+    /// Every live event.
+    pub const ALL: i32 = 0x3FFF_FFFE;
+    /// Flag: the low bits are marks; the argument means every event carrying one.
+    pub const BY_MARKS: i32 = 0x2000_0000;
+    /// A group past the last means every group.
+    pub const ALL_GROUPS: i32 = 0x3FFF_FFFF;
+
+    /// `0..=3` are free for the script.
+    pub const CUSTOM_LAST: i32 = 3;
+    pub const VOLUME: i32 = 4;
+    pub const TUNE: i32 = 5;
+    pub const PAN: i32 = 6;
+    pub const NOTE: i32 = 7;
+    pub const VELOCITY: i32 = 8;
+    pub const ALLOW_GROUP: i32 = 9;
+}
 
 macro_rules! actions {
     ($($(#[$doc:meta])* $id:ident,)*) => {

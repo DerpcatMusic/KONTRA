@@ -14,7 +14,7 @@ mod text;
 
 use std::hash::{Hash, Hasher};
 
-pub use action::Action;
+pub use action::{Action, event};
 pub use program::{Cmp, Op, Program, Returns};
 pub use text::{TEXT_CAPACITY, Text};
 

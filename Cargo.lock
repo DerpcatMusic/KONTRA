@@ -2375,6 +2375,7 @@ dependencies = [
  "kontra-events",
  "kontra-stream",
  "kontra-time",
+ "kontra-vm",
  "kontra-voice",
 ]
 

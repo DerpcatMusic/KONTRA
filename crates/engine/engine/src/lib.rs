@@ -12,23 +12,30 @@ mod behaviour;
 mod ledger;
 mod plan;
 mod queue;
+mod script;
 
 use std::sync::Arc;
 
-use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 use kontra_stream::StreamClient;
-use kontra_time::{Frames, SampleTime};
+use kontra_time::Frames;
+use kontra_vm::{Instance, Text};
 use kontra_voice::{Voice, VoiceStart};
 
+pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
+pub use kontra_time::SampleTime;
+pub use kontra_vm::Program;
+pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
 pub use plan::{
     Bus, Control, Crossfade, Plan, RoundRobin, RrCounter, Trigger, VelocityCurve, Zone,
 };
 pub use queue::Timed;
+pub use script::{Callbacks, ScriptPlan};
 
 use behaviour::Behaviour;
-use ledger::{Ledger, Note};
+use ledger::{Ledger, Note, Origin};
 use queue::{EventQueue, Work};
+use script::{GroupMasks, Kind, Running};
 
 /// Frames rendered per inner span; sizes the bus buffers.
 const MAX_SPAN: u64 = 256;
@@ -48,6 +55,10 @@ pub struct Stats {
     pub events_refused: u64,
     /// Source frames voices played as silence because data was late.
     pub missing_frames: u64,
+    /// Script actions this engine does not implement yet (they returned 0).
+    pub actions_unhandled: u64,
+    /// Script `message` calls.
+    pub messages: u64,
 }
 
 struct Slot {
@@ -86,6 +97,19 @@ pub struct Engine {
     hits: Vec<NoteRef>,
     ended: Vec<HostNote>,
     stats: Stats,
+    /// The script's state; taken out while a callback runs.
+    vm: Option<Instance>,
+    running: Running,
+    /// Notes waiting for their callback to return before they start.
+    pending: Vec<NoteRef>,
+    masks: GroupMasks,
+    /// Scratch for script event targets (an action may run inside a ledger query).
+    targets_scratch: Vec<NoteRef>,
+    /// Latest controller values on any channel, as scripts read them.
+    cc_values: [u8; 130],
+    last_message: Text,
+    /// Calls per action the engine does not implement yet, by action id.
+    unhandled: Box<[u32]>,
 }
 
 impl Engine {
@@ -115,7 +139,18 @@ impl Engine {
             })
             .collect();
         let notes = Ledger::new(plan.notes);
-        Self {
+        let capacity = notes.capacity();
+        let groups = plan
+            .zones
+            .iter()
+            .map(|z| z.group as usize + 1)
+            .max()
+            .unwrap_or(0);
+        let vm = plan
+            .script
+            .as_ref()
+            .map(|s| Instance::new(&s.program, s.coroutines.max(1)));
+        let mut engine = Self {
             now: SampleTime(0),
             rate: rate.max(1),
             queue: EventQueue::new(plan.queue),
@@ -129,7 +164,46 @@ impl Engine {
             buses,
             pedal: [false; 16],
             stats: Stats::default(),
+            vm,
+            running: Running::IDLE,
+            pending: Vec::with_capacity(capacity),
+            masks: GroupMasks::new(capacity, groups),
+            targets_scratch: Vec::with_capacity(capacity),
+            cc_values: [0; 130],
+            last_message: Text::EMPTY,
+            unhandled: vec![0; kontra_vm::Action::all().len()].into(),
+        };
+        engine.cc_values[7] = 100;
+        engine.cc_values[11] = 127;
+        if let Some(init) = engine.plan.script.as_ref().and_then(|s| s.callbacks.init) {
+            engine.run_callback(init, Running::new(Kind::Init, None));
         }
+        engine
+    }
+
+    /// The last text a script printed with `message`.
+    #[must_use]
+    pub fn last_message(&self) -> &str {
+        self.last_message.as_str()
+    }
+
+    /// Script actions this engine left unanswered, most called first.
+    #[must_use]
+    pub fn unhandled_actions(&self) -> Vec<(kontra_vm::Action, u32)> {
+        let mut out: Vec<_> = kontra_vm::Action::all()
+            .iter()
+            .zip(self.unhandled.iter())
+            .filter(|(_, n)| **n > 0)
+            .map(|(a, n)| (*a, *n))
+            .collect();
+        out.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        out
+    }
+
+    /// Runtime faults of the script, counted since load.
+    #[must_use]
+    pub fn script_faults(&self) -> Option<kontra_vm::Faults> {
+        self.vm.as_ref().map(Instance::faults)
     }
 
     #[must_use]
@@ -247,7 +321,11 @@ impl Engine {
     }
 
     fn dispatch(&mut self, work: Work) {
-        let Work::Input(event) = work;
+        let event = match work {
+            Work::Input(event) => event,
+            Work::Resume(co) => return self.resume(co),
+            Work::Release(note) => return self.release(note),
+        };
         match event {
             Event::NoteOn {
                 note,
@@ -276,7 +354,6 @@ impl Engine {
         if self.is_keyswitch(host.key) {
             self.behaviour.keyswitch = Some(host.key);
         }
-        let held = self.notes.count(|n| !n.released && !n.pedal_held);
         let draw = self.behaviour.draw(host.key);
         let Some(note) = self
             .notes
@@ -285,13 +362,14 @@ impl Engine {
             self.stats.notes_refused += 1;
             return;
         };
-        self.start_zones(note, true, |trigger| match trigger {
-            Trigger::Attack => true,
-            Trigger::First => held == 0,
-            Trigger::Legato => held > 0,
-            Trigger::Release => false,
-        });
-        self.behaviour.advance();
+        self.masks.reset(note.slot());
+        self.pending.push(note);
+        match self.plan.script.as_ref().and_then(|s| s.callbacks.note) {
+            Some(entry) => {
+                self.run_callback(entry, Running::new(Kind::Note, Some(note)));
+            }
+            None => self.start_pending(),
+        }
     }
 
     /// Starts every zone `accept`s whose rules match the note, all at now.
@@ -301,14 +379,15 @@ impl Engine {
         let Some(n) = self.notes.get(note).copied() else {
             return;
         };
-        if self.is_keyswitch(n.host.key) {
+        if n.origin == Origin::Host && self.is_keyswitch(n.host.key) {
             return;
         }
         let plan = self.plan.clone();
-        let held_seconds = (self.now.0 - n.started.0) as f32 / self.rate as f32;
+        let held_seconds = (self.now.0 - n.at.0) as f32 / self.rate as f32;
         for (index, zone) in plan.zones.iter().enumerate() {
             let selected = accept(zone.trigger)
-                && zone.keys.contains(&n.host.key)
+                && self.masks.allows(note.slot(), zone.group)
+                && zone.keys.contains(&n.key)
                 && zone.velocities.contains(&n.velocity_byte)
                 && zone
                     .keyswitch
@@ -321,7 +400,7 @@ impl Engine {
             if !selected
                 || !self
                     .behaviour
-                    .round_robin_plays(zone, n.host.key, n.draw, attack)
+                    .round_robin_plays(zone, n.key, n.draw, attack)
             {
                 continue;
             }
@@ -332,8 +411,13 @@ impl Engine {
             } else {
                 1.0
             };
+            let mut region = zone.region.clone();
+            if n.offset > 0 && !region.reverse {
+                let frames = u64::from(n.offset) * u64::from(zone.sample_rate) / 1_000_000;
+                region.start = (region.start + frames).min(region.end);
+            }
             let start = VoiceStart {
-                region: zone.region.clone(),
+                region,
                 step: step(zone, &n, self.rate),
                 gain: self.voice_gain(zone, &n, factor),
                 envelope: zone.envelope,
@@ -442,13 +526,23 @@ impl Engine {
             if n.released {
                 continue;
             }
+            let channel = n.host.channel;
+            if let Some(entry) = self.plan.script.as_ref().and_then(|s| s.callbacks.release)
+                && self
+                    .run_callback(entry, Running::new(Kind::Release, Some(note)))
+                    .ignore_release
+            {
+                continue;
+            }
             if self
                 .pedal
-                .get(usize::from(n.host.channel))
+                .get(usize::from(channel))
                 .copied()
                 .unwrap_or(false)
             {
-                n.pedal_held = true;
+                if let Some(n) = self.notes.get_mut(note) {
+                    n.pedal_held = true;
+                }
             } else {
                 self.release(note);
             }
@@ -475,6 +569,14 @@ impl Engine {
             slot.released = true;
         }
         self.start_zones(note, false, |trigger| trigger == Trigger::Release);
+        // Script notes played for the length of this one end with it.
+        let mut children = std::mem::take(&mut self.targets_scratch);
+        self.notes
+            .select(&mut children, |n| n.origin == Origin::Child(note));
+        for &child in &children {
+            self.release(child);
+        }
+        self.targets_scratch = children;
     }
 
     fn choke(&mut self, pattern: HostPattern) {
@@ -555,6 +657,24 @@ impl Engine {
         }
         let channel = status & 0x0F;
         let (controller, value) = ((word >> 8) as u8 & 0x7F, word as u8 & 0x7F);
+        if let Some(v) = self.cc_values.get_mut(usize::from(controller)) {
+            *v = value;
+        }
+        if let Some(entry) = self
+            .plan
+            .script
+            .as_ref()
+            .and_then(|s| s.callbacks.controller)
+        {
+            let running = Running {
+                controller,
+                ..Running::new(Kind::Controller, None)
+            };
+            let ran = self.run_callback(entry, running);
+            if ran.ignore_controller {
+                return;
+            }
+        }
         self.behaviour.set_cc(channel, controller, value);
         let mut hits = std::mem::take(&mut self.hits);
         if controller == 64 {
@@ -580,11 +700,17 @@ impl Engine {
     /// Ends notes with no sounding voice and reports them to the host. A key
     /// still down stays alive while the plan has release triggers to play.
     fn end_silent_notes(&mut self) {
+        // A held key stays a live event while something may still act on its release.
         let release_triggers = self
             .plan
             .zones
             .iter()
-            .any(|z| z.trigger == Trigger::Release);
+            .any(|z| z.trigger == Trigger::Release)
+            || self
+                .plan
+                .script
+                .as_ref()
+                .is_some_and(|s| s.callbacks.release.is_some());
         let mut hits = std::mem::take(&mut self.hits);
         self.notes.select(&mut hits, |_| true);
         for &note in &hits {
@@ -593,10 +719,9 @@ impl Engine {
                 .iter()
                 .any(|s| s.note == Some(note) && s.voice.is_active());
             let waiting = release_triggers
-                && self
-                    .notes
-                    .get(note)
-                    .is_some_and(|n| !n.released && !self.is_keyswitch(n.host.key));
+                && self.notes.get(note).is_some_and(|n| {
+                    n.origin == Origin::Host && !n.released && !self.is_keyswitch(n.host.key)
+                });
             if !sounding
                 && !waiting
                 && let Some(n) = self.notes.remove(note)
@@ -627,17 +752,19 @@ impl Engine {
 }
 
 fn step(zone: &Zone, note: &Note, rate: u32) -> f64 {
-    let semitones = f64::from(note.host.key) - f64::from(zone.root)
+    let semitones = (f64::from(note.key) - f64::from(zone.root)) * zone.keytrack
         + zone.tune
         + note.tune
-        + note.expression_tune;
+        + note.expression_tune
+        + f64::from(note.script_tune) / 100_000.0;
     2f64.powf(semitones / 12.0) * f64::from(zone.sample_rate) / f64::from(rate)
 }
 
 // ponytail: balance pan law only; equal-power and Kontakt's raised cosine
 // when a library's measured stereo image needs them.
 fn gain(zone: &Zone, note: &Note) -> [f32; 2] {
-    let g = zone.gain * zone.velocity.gain(note.velocity as f32) * note.expression_gain;
-    let pan = (zone.pan + note.expression_pan).clamp(-1.0, 1.0);
+    let script = 10f32.powf(note.script_volume as f32 / 20_000.0);
+    let g = zone.gain * zone.velocity.gain(note.velocity as f32) * note.expression_gain * script;
+    let pan = (zone.pan + note.expression_pan + note.script_pan as f32 / 1000.0).clamp(-1.0, 1.0);
     [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
 }
