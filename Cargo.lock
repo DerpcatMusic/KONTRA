@@ -2569,9 +2569,7 @@ dependencies = [
 name = "kontra-voice"
 version = "0.0.0"
 dependencies = [
- "kontra-dsp-core",
  "kontra-stream",
- "kontra-time",
 ]
 
 [[package]]
