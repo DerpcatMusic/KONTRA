@@ -516,7 +516,9 @@ mod tests {
             Ok(ir::Sample {
                 name: reference.into(),
                 file: "bank.ufs".into(),
-                offset: reference.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b))),
+                offset: reference
+                    .bytes()
+                    .fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b))),
                 len: None,
                 channels: 1,
                 frames: 1000,

@@ -31,7 +31,11 @@ pub fn read(path: &Path) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
 ///
 /// # Errors
 /// When the file is not an instrument this can read.
-pub fn load(path: &Path, rate: u32, store: &mut Store) -> Result<Loaded, Box<dyn std::error::Error>> {
+pub fn load(
+    path: &Path,
+    rate: u32,
+    store: &mut Store,
+) -> Result<Loaded, Box<dyn std::error::Error>> {
     Ok(build(read(path)?, rate, store))
 }
 

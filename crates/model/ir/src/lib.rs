@@ -147,7 +147,7 @@ fn blocks(key: u64, origin: u64, block: u64, at: u64, bytes: &mut [u8]) {
         let (head, tail) = std::mem::take(&mut rest).split_at_mut(n);
         let mask = word_stream(key, origin + start, skip + n);
         head.iter_mut()
-            .zip(&mask[skip..])
+            .zip(mask.get(skip..).unwrap_or_default())
             .for_each(|(b, m)| *b ^= m);
         rest = tail;
         into += n as u64;
