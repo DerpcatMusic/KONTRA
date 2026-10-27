@@ -34,7 +34,7 @@ impl Engine {
                                 f32::from(self.behaviour.cc(channel, cc)) / 127.0
                             }
                             // Fixed at the voice's start: see `release_counter`.
-                            ir::Source::ReleaseCounter { .. } => return 1.0,
+                            ir::Source::HeldTime { .. } => return 1.0,
                         };
                         curve.gain(intensity, x)
                     }
@@ -55,7 +55,7 @@ impl Engine {
                 .iter()
                 .map(|m| match m.kind {
                     ir::ModKind::Volume {
-                        source: ir::Source::ReleaseCounter { ms },
+                        source: ir::Source::HeldTime { span_ms: ms },
                         intensity,
                         curve,
                     } if ms > 0 => {

@@ -240,7 +240,7 @@ fn a_script_finds_a_modulation_by_name_and_drives_it() {
         kind: ir::ModKind::Volume {
             source: ir::Source::Controller(110),
             intensity: 0.0,
-            curve: ir::Curve::Kontakt { cubed: false },
+            curve: ir::Curve::Depth { power: 1 },
         },
     }];
     let script = kontra_ksp::compile(

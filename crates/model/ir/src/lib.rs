@@ -169,11 +169,8 @@ impl Envelope {
         sustain: 1.0,
         release: 0.001_3,
         attack_shape: 0.0,
-        fall_shape: Self::KONTAKT_FALL,
+        fall_shape: 0.0,
     };
-
-    /// Kontakt's decay and release: ln(3/43), silent exactly at the stage end.
-    pub const KONTAKT_FALL: f32 = -2.662_588;
 }
 
 /// One modulation of a group. Scripts find it by `name` and address it by
@@ -202,10 +199,10 @@ pub enum ModKind {
 pub enum Source {
     Velocity,
     Controller(u8),
-    /// Kontakt's release-trigger counter: `max(T − held, 0)/T` with `T` = `ms`,
-    /// the time the key was held frozen at key-up (binary 0x14084f380).
-    ReleaseCounter {
-        ms: u32,
+    /// 1 at note-on, falling linearly to 0 after `span_ms` held; frozen at
+    /// key-up, so a release sample is quieter the longer its key was held.
+    HeldTime {
+        span_ms: u32,
     },
 }
 
@@ -214,12 +211,9 @@ pub enum Source {
 pub enum Curve {
     /// Linear in dB: `intensity ×` this many dB down at source 0.
     Decibels(f32),
-    /// Kontakt's volume law (its "family H"): `1 − (1 − x) × intensity`,
-    /// cubed for velocity, key and the other note-time sources (external
-    /// types 7..=13), plain for controllers. Kontakt 8.13.1's modulation
-    /// compiler `0x140875ac8`/`0x140873120`; the cube at 50/127 matches the
-    /// measured velocity table to 0.03 dB RMS.
-    Kontakt { cubed: bool },
+    /// `(1 − (1 − x) × intensity)^power`: the source pulls the gain down from
+    /// unity by its depth; power 1 is linear in amplitude.
+    Depth { power: u8 },
 }
 
 impl Curve {
@@ -229,15 +223,14 @@ impl Curve {
         let x = x.clamp(0.0, 1.0);
         match self {
             Self::Decibels(range) => 10f32.powf(-range * intensity * (1.0 - x) / 20.0),
-            Self::Kontakt { cubed } => {
-                let g = (1.0 - (1.0 - x) * intensity).max(0.0);
-                if cubed { g * g * g } else { g }
-            }
+            Self::Depth { power } => (1.0 - (1.0 - x) * intensity)
+                .max(0.0)
+                .powi(i32::from(power)),
         }
     }
 }
 
-/// A voice limit shared by the groups that name it (Kontakt's voice groups).
+/// A voice limit shared by the groups that name it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VoiceGroup {
     pub voices: u16,

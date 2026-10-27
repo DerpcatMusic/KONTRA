@@ -1,9 +1,8 @@
 //! Amplitude envelope: attack, hold, decay, sustain, release.
 //!
 //! Every moving stage is one segment of a fixed length shaped
-//! `expm1(k·t)/expm1(k)` over t in 0..=1, run as Kontakt's kernel runs it: one
-//! multiply per frame (docs/re/engine/k-mod-envelopes.md). Kontakt's decay and
-//! release fall with k = ln(3/43) and reach their target exactly at the end.
+//! `expm1(k·t)/expm1(k)` over t in 0..=1, one multiply per frame, reaching its
+//! target exactly at the end. Formats choose k (0 is linear).
 
 /// Envelope settings in frames and linear gain.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -22,9 +21,6 @@ pub struct Ahdsr {
 }
 
 impl Ahdsr {
-    /// Kontakt's decay and release shape.
-    pub const FALL: f32 = -2.662_588;
-
     /// No shaping: full level at once, sustain at 1, a short click guard on release.
     pub const GATE: Self = Self {
         attack: 0,
@@ -33,7 +29,7 @@ impl Ahdsr {
         sustain: 1.0,
         release: 64,
         attack_shape: 0.0,
-        fall_shape: Self::FALL,
+        fall_shape: 0.0,
     };
 }
 
@@ -185,12 +181,13 @@ mod tests {
         }
     }
 
-    /// Kontakt's release: `1.075·(3/43)^t − 0.075` of the key-up level,
-    /// silent exactly at the release time.
+    /// A release shaped k = ln(3/43) is `1.075·(3/43)^t − 0.075` of the key-up
+    /// level, silent exactly at the release time.
     #[test]
-    fn release_follows_kontakts_curve_and_ends_on_time() {
+    fn a_shaped_release_follows_its_curve_and_ends_on_time() {
         let mut env = Envelope::new(Ahdsr {
             release: 1000,
+            fall_shape: (3.0f32 / 43.0).ln(),
             ..Ahdsr::GATE
         });
         env.next();
