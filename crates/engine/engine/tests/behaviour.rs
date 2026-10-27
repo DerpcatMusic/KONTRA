@@ -372,3 +372,17 @@ fn a_voice_group_steals_by_its_rule_and_an_exclusive_set_silences_the_others() {
     level(&mut e, &[on(70, 1.0)]);
     assert!(close(level(&mut e, &[])[0], 0.8), "group 0 was excluded");
 }
+
+#[test]
+fn a_one_shot_ignores_key_up() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut hit = zone(&mut store, 0.5);
+    hit.one_shot = true;
+    let mut e = engine(&store, Plan::new(vec![hit], 8));
+    level(&mut e, &[on(60, 1.0)]);
+    level(&mut e, &[off(60)]);
+    assert!(
+        close(level(&mut e, &[])[0], 0.5),
+        "still sounding at full level"
+    );
+}

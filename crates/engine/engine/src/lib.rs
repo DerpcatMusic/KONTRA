@@ -581,7 +581,10 @@ impl Engine {
             .iter_mut()
             .filter(|s| s.note == Some(note) && !s.released)
         {
-            slot.voice.release();
+            // A one-shot plays to its end marker whatever the key does.
+            if !self.plan.zones.get(slot.zone).is_some_and(|z| z.one_shot) {
+                slot.voice.release();
+            }
             slot.released = true;
         }
         self.start_zones(note, false, |trigger| trigger == Trigger::Release);
