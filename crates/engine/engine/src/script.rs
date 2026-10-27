@@ -602,6 +602,19 @@ impl HostApi for Engine {
                 *call.text_out = Text::from_str_cut(name).0;
                 HostValue::Text
             }
+            // ponytail: answered at once, no on async_complete; the samples
+            // stay in memory until the host reloads without the group.
+            Action::PurgeGroup => {
+                if let Some(g) = self.groups.get_mut(int(0) as usize) {
+                    g.purged = int(1) == 0;
+                }
+                HostValue::Int(0)
+            }
+            Action::GetPurgeState => HostValue::Int(
+                self.groups
+                    .get(int(0) as usize)
+                    .map_or(0, |g| i32::from(!g.purged)),
+            ),
             Action::FindMod | Action::GetModIdx => {
                 let name = call.texts.first().map_or("", Text::as_str);
                 let found = self.groups.get(int(0) as usize).and_then(|g| {

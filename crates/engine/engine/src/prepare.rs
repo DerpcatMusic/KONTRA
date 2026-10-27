@@ -64,6 +64,7 @@ pub fn prepare(
                 pan: g.pan,
                 tune: g.tune,
             },
+            purged: false,
             mods: g.mods.clone(),
             envelope: envelope(g.envelope, rate),
         })

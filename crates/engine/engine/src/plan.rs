@@ -119,6 +119,8 @@ pub struct Group {
     /// What scripts find it by (`find_group`, `group_name`).
     pub name: String,
     pub level: Level,
+    /// Its samples are unloaded (KSP `purge_group`): its zones do not play.
+    pub purged: bool,
     pub mods: Vec<ir::Mod>,
     pub envelope: Ahdsr,
 }
@@ -130,6 +132,7 @@ impl Group {
         Self {
             name: String::new(),
             level: Level::UNITY,
+            purged: false,
             mods: vec![ir::Mod {
                 name: String::new(),
                 slot: 0,
