@@ -268,9 +268,15 @@ impl Store {
                             };
                             let first = run.start as u64 * PAGE_FRAMES;
                             let end = (run.end as u64 * PAGE_FRAMES).min(r.frames);
-                            let mut buf =
-                                vec![0; (end - first) as usize * r.key.fmt.bytes_per_frame()];
-                            let result = r.source.read(first, &mut buf).map(|()| buf);
+                            let frame_bytes = r.key.fmt.bytes_per_frame();
+                            let mut buf = vec![0; (end - first) as usize * frame_bytes];
+                            // Split into pages here, so this thread's heap reuses
+                            // the freed run for the pages it keeps.
+                            let page_bytes = (PAGE_FRAMES as usize * frame_bytes).max(1);
+                            let result = r
+                                .source
+                                .read(first, &mut buf)
+                                .map(|()| buf.chunks(page_bytes).map(Arc::<[u8]>::from).collect());
                             done.push((*i, run.clone(), result));
                         }
                     })
@@ -282,8 +288,8 @@ impl Store {
             let (Some(Ok((pages, _))), Some(r)) = (plans.get_mut(i), requests.get(i)) else {
                 continue;
             };
-            let bytes = match result {
-                Ok(bytes) => bytes,
+            let read = match result {
+                Ok(read) => read,
                 Err(e) => {
                     if let Some(plan) = plans.get_mut(i) {
                         *plan = Err(e);
@@ -291,9 +297,7 @@ impl Store {
                     continue;
                 }
             };
-            let page_bytes = PAGE_FRAMES as usize * r.key.fmt.bytes_per_frame();
-            for (page, chunk) in run.zip(bytes.chunks(page_bytes.max(1))) {
-                let shared: Arc<[u8]> = chunk.into();
+            for (page, shared) in run.zip(read) {
                 self.pinned
                     .insert((r.key.clone(), page), Arc::downgrade(&shared));
                 if let Some(cell) = pages.get_mut(page) {
@@ -324,7 +328,7 @@ impl Store {
 }
 
 /// A run of pages read for request `.0`.
-type RunRead = (usize, Range<usize>, io::Result<Vec<u8>>);
+type RunRead = (usize, Range<usize>, io::Result<Vec<Arc<[u8]>>>);
 
 /// One sample for [`Store::load_many`].
 pub struct LoadRequest {

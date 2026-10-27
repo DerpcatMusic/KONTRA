@@ -8,6 +8,7 @@ publish = false
 workspace = true
 
 [dependencies]
+bytemuck = { version = "1", features = ["extern_crate_alloc", "zeroable_atomics"] }
 crossbeam-queue.workspace = true
 kontra-ir = { path = "../../model/ir" }
 ncw = { path = "../../../vendor/ncw" }
