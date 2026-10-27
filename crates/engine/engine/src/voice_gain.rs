@@ -4,7 +4,7 @@
 use kontra_ir as ir;
 
 use crate::ledger::Note;
-use crate::{Control, Engine, Zone};
+use crate::{Control, Engine, Level, Zone};
 
 impl Engine {
     pub(crate) fn voice_gain(&self, zone: &Zone, note: &Note, factor: f32) -> [f32; 2] {
@@ -42,9 +42,32 @@ impl Engine {
                 })
                 .product()
         });
-        let [l, r] = gain(zone, note);
+        let [l, r] = gain(zone, note, self.level(zone));
         let g = crossfade * mods * factor;
         [l * g, r * g]
+    }
+
+    /// The group's and the instrument's level, combined.
+    fn level(&self, zone: &Zone) -> Level {
+        let group = self
+            .groups
+            .get(zone.group as usize)
+            .map_or(Level::UNITY, |g| g.level);
+        Level {
+            gain: group.gain * self.instrument.gain,
+            pan: group.pan + self.instrument.pan,
+            tune: group.tune + self.instrument.tune,
+        }
+    }
+
+    pub(crate) fn step(&self, zone: &Zone, note: &Note) -> f64 {
+        let semitones = (f64::from(note.key) - f64::from(zone.root)) * zone.keytrack
+            + zone.tune
+            + self.level(zone).tune
+            + note.tune
+            + note.expression_tune
+            + f64::from(note.script_tune) / 100_000.0;
+        2f64.powf(semitones / 12.0) * f64::from(zone.sample_rate) / f64::from(self.rate)
     }
 
     /// The release-trigger counter's gain for a voice started after the key
@@ -79,20 +102,12 @@ impl Engine {
     }
 }
 
-pub(crate) fn step(zone: &Zone, note: &Note, rate: u32) -> f64 {
-    let semitones = (f64::from(note.key) - f64::from(zone.root)) * zone.keytrack
-        + zone.tune
-        + note.tune
-        + note.expression_tune
-        + f64::from(note.script_tune) / 100_000.0;
-    2f64.powf(semitones / 12.0) * f64::from(zone.sample_rate) / f64::from(rate)
-}
-
 // ponytail: balance pan law only; equal-power and Kontakt's raised cosine
 // when a library's measured stereo image needs them.
-fn gain(zone: &Zone, note: &Note) -> [f32; 2] {
+fn gain(zone: &Zone, note: &Note, level: Level) -> [f32; 2] {
     let script = 10f32.powf(note.script_volume as f32 / 20_000.0);
-    let g = zone.gain * note.expression_gain * script;
-    let pan = (zone.pan + note.expression_pan + note.script_pan as f32 / 1000.0).clamp(-1.0, 1.0);
+    let g = zone.gain * level.gain * note.expression_gain * script;
+    let pan = (zone.pan + level.pan + note.expression_pan + note.script_pan as f32 / 1000.0)
+        .clamp(-1.0, 1.0);
     [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
 }

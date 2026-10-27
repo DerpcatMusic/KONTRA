@@ -3,6 +3,31 @@
 use kontra_engine::{Callbacks, Controls, EnginePars, ScriptPlan, Text};
 use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
 
+/// The catalog names the engine understands (every other one is an opaque
+/// symbol it cannot act on), for coverage reports.
+pub const UNDERSTOOD_SYMBOLS: &[&str] = &[
+    ATTACK,
+    HOLD,
+    DECAY,
+    SUSTAIN,
+    RELEASE,
+    INTENSITY,
+    VOLUME,
+    PAN,
+    TUNE,
+    CONTROL_VALUE,
+];
+const ATTACK: &str = "$ENGINE_PAR_ATTACK";
+const HOLD: &str = "$ENGINE_PAR_HOLD";
+const DECAY: &str = "$ENGINE_PAR_DECAY";
+const SUSTAIN: &str = "$ENGINE_PAR_SUSTAIN";
+const RELEASE: &str = "$ENGINE_PAR_RELEASE";
+const INTENSITY: &str = "$ENGINE_PAR_MOD_TARGET_INTENSITY";
+const VOLUME: &str = "$ENGINE_PAR_VOLUME";
+const PAN: &str = "$ENGINE_PAR_PAN";
+const TUNE: &str = "$ENGINE_PAR_TUNE";
+const CONTROL_VALUE: &str = "$CONTROL_PAR_VALUE";
+
 /// Callbacks a KSP instrument may have running or waiting at once.
 const COROUTINES: usize = 64;
 
@@ -24,12 +49,15 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
         coroutines: COROUTINES,
         controls: controls(script),
         engine_pars: EnginePars {
-            attack: symbol(script, "$ENGINE_PAR_ATTACK"),
-            hold: symbol(script, "$ENGINE_PAR_HOLD"),
-            decay: symbol(script, "$ENGINE_PAR_DECAY"),
-            sustain: symbol(script, "$ENGINE_PAR_SUSTAIN"),
-            release: symbol(script, "$ENGINE_PAR_RELEASE"),
-            intensity: symbol(script, "$ENGINE_PAR_MOD_TARGET_INTENSITY"),
+            attack: symbol(script, ATTACK),
+            hold: symbol(script, HOLD),
+            decay: symbol(script, DECAY),
+            sustain: symbol(script, SUSTAIN),
+            release: symbol(script, RELEASE),
+            intensity: symbol(script, INTENSITY),
+            volume: symbol(script, VOLUME),
+            pan: symbol(script, PAN),
+            tune: symbol(script, TUNE),
         },
         data: data
             .iter()
@@ -77,7 +105,7 @@ fn data_array(script: &Script, name: &str, bytes: &[u8]) -> Option<(u32, Vec<i64
 
 /// Control ids, the value parameter's symbol and each control's value cell.
 fn controls(script: &Script) -> Controls {
-    let value_par = symbol(script, "$CONTROL_PAR_VALUE");
+    let value_par = symbol(script, CONTROL_VALUE);
     let cells = script
         .controls
         .iter()

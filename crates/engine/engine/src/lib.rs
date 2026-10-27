@@ -30,10 +30,12 @@ use kontra_voice::{Voice, VoiceStart};
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_time::SampleTime;
-pub use kontra_vm::{Program, Text};
+pub use kontra_vm::{Action, Faults, Op, Program, Text};
 pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
-pub use plan::{Atom, Bus, Control, Crossfade, Group, Plan, RoundRobin, RrCounter, Trigger, Zone};
+pub use plan::{
+    Atom, Bus, Control, Crossfade, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone,
+};
 pub use prepare::{Open, prepare};
 pub use queue::Timed;
 pub use script::{Callbacks, Controls, EnginePars, ScriptPlan};
@@ -42,7 +44,6 @@ use behaviour::Behaviour;
 use ledger::{Ledger, Note, Origin};
 use queue::{EventQueue, Work};
 use script::{GroupMasks, Kind, Running};
-use voice_gain::step;
 
 /// Frames rendered per inner span; sizes the bus buffers.
 const MAX_SPAN: u64 = 256;
@@ -118,6 +119,10 @@ pub struct Engine {
     /// Calls per action the engine does not implement yet, by action id.
     unhandled: Box<[u32]>,
     called: Box<[u32]>,
+    /// The instrument's level, pan and tune (a script's group -1).
+    instrument: Level,
+    /// Callbacks run so far (24 bits): the source of `$NI_CALLBACK_ID`.
+    callbacks_started: u32,
     /// Per control, parameters the script set other than its value.
     control_pars: Box<[Vec<(i32, i32)>]>,
     /// The plan's groups as scripts have changed them.
@@ -193,6 +198,8 @@ impl Engine {
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
             control_pars,
+            callbacks_started: 0,
+            instrument: Level::UNITY,
         };
         engine.cc_values[7] = 100;
         engine.cc_values[11] = 127;
@@ -427,7 +434,7 @@ impl Engine {
             }
             let start = VoiceStart {
                 region,
-                step: step(zone, &n, self.rate),
+                step: self.step(zone, &n),
                 gain: self.voice_gain(zone, &n, factor),
                 envelope: self
                     .groups
@@ -676,7 +683,7 @@ impl Engine {
                 continue;
             }
             let gain = self.voice_gain(zone, &n, slot.factor);
-            let step = step(zone, &n, self.rate);
+            let step = self.step(zone, &n);
             if let Some(slot) = self.voices.get_mut(i) {
                 slot.voice.set_gain(gain);
                 if cc.is_none() {

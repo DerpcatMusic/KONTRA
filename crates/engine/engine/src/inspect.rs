@@ -1,6 +1,6 @@
 //! What a script did since load, for diagnostics and the parity tools.
 
-use kontra_vm::Instance;
+use kontra_vm::{Action, HostApi, HostCall, Instance, Text};
 
 use crate::Engine;
 
@@ -21,6 +21,24 @@ impl Engine {
     #[must_use]
     pub fn action_calls(&self) -> Vec<(kontra_vm::Action, u32)> {
         ranked(&self.called)
+    }
+
+    /// Whether this engine answers `action`, called once with zero arguments.
+    /// Coverage tools only: the call acts on this engine (a probe engine).
+    /// An action answered only for some arguments can read as unanswered.
+    pub fn answers(&mut self, action: Action) -> bool {
+        let before = self.unhandled.get(usize::from(action.id())).copied();
+        let mut cells = [0i64; 64];
+        let mut text_out = Text::EMPTY;
+        self.call(HostCall {
+            action,
+            context: 0,
+            ints: &[0; 8],
+            texts: &[Text::EMPTY; 4],
+            cells: &mut cells,
+            text_out: &mut text_out,
+        });
+        self.unhandled.get(usize::from(action.id())).copied() == before
     }
 
     /// A script variable cell, for inspection.

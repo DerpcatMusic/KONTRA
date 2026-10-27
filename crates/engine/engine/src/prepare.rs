@@ -10,7 +10,9 @@ use kontra_ir as ir;
 use kontra_stream::{BlobKey, LoadRequest, Sample, SampleFmt, Source, Store};
 use kontra_voice::{Ahdsr, Loop, Region};
 
-use crate::{Atom, Bus, Control, Crossfade, Group, Plan, RoundRobin, RrCounter, Trigger, Zone};
+use crate::{
+    Atom, Bus, Control, Crossfade, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone,
+};
 
 /// Opens a sample's audio as the store reads it: decoded to packed PCM.
 /// Called from several loader threads at once.
@@ -56,6 +58,12 @@ pub fn prepare(
         .groups
         .iter()
         .map(|g| Group {
+            name: g.name.clone(),
+            level: Level {
+                gain: gain(g.volume_db),
+                pan: g.pan,
+                tune: g.tune,
+            },
             mods: g.mods.clone(),
             envelope: envelope(g.envelope, rate),
         })
@@ -265,9 +273,10 @@ fn zone(
     out.off_by = group.off_by.and_then(|g| u32::try_from(g).ok());
     out.voice_group = group.voice_group.and_then(|g| u32::try_from(g).ok());
     out.keytrack = group.keytrack;
-    out.tune = group.tune + z.tune;
-    out.gain = gain(group.volume_db + z.volume_db);
-    out.pan = (group.pan + z.pan).clamp(-1.0, 1.0);
+    // The group's own level, pan and tune are its plan group's.
+    out.tune = z.tune;
+    out.gain = gain(z.volume_db);
+    out.pan = z.pan;
     out.release_decay_db = group.release_decay_db;
     out.one_shot = group.one_shot;
     out.bus = group.bus;

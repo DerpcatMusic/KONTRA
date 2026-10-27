@@ -4,7 +4,10 @@
 
 use kontra_ir as ir;
 
-use crate::Engine;
+use crate::{Engine, Level};
+
+/// Volume is cubic in the setting, 0 dB at this value, +12 dB at 1_000_000.
+const UNITY_VOLUME: f64 = 629_960.524_947_436_1;
 
 /// Attack and hold run 0..=15 s, decay and release 0..=25 s, exponentially
 /// with a 2 ms shift: `exp(ln 2 + (ln(top + 2) − ln 2) × x) − 2` ms.
@@ -19,11 +22,81 @@ fn stage_x(top_ms: f64, ms: f64) -> f64 {
     (((ms + 2.0).ln() - low) / (high - low)).clamp(0.0, 1.0)
 }
 
+/// Which of a [`Level`]'s settings a parameter is.
+#[derive(Clone, Copy)]
+enum LevelPar {
+    Volume,
+    Pan,
+    Tune,
+}
+
+impl LevelPar {
+    fn set(self, level: &mut Level, raw: f64) {
+        match self {
+            Self::Volume => level.gain = (raw / UNITY_VOLUME).powi(3) as f32,
+            Self::Pan => level.pan = ((raw - 500_000.0) / 500_000.0) as f32,
+            // ±36 semitones.
+            Self::Tune => level.tune = (raw - 500_000.0) * 7.2e-5,
+        }
+    }
+
+    fn get(self, level: &Level) -> f64 {
+        match self {
+            Self::Volume => UNITY_VOLUME * f64::from(level.gain.max(0.0)).cbrt(),
+            Self::Pan => f64::from(level.pan) * 500_000.0 + 500_000.0,
+            Self::Tune => level.tune / 7.2e-5 + 500_000.0,
+        }
+    }
+}
+
 impl Engine {
+    fn level_par(&self, par: i32) -> Option<LevelPar> {
+        let pars = self.plan.script.as_ref()?.engine_pars;
+        match par {
+            p if p == pars.volume => Some(LevelPar::Volume),
+            p if p == pars.pan => Some(LevelPar::Pan),
+            p if p == pars.tune => Some(LevelPar::Tune),
+            _ => None,
+        }
+    }
+
+    /// A group's level, or the instrument's (group -1, generic -1). Buses
+    /// (generic `$NI_BUS_OFFSET + n`) are not answered yet.
+    fn level_mut(&mut self, group: i32, generic: i32) -> Option<&mut Level> {
+        match usize::try_from(group) {
+            Ok(g) => self.groups.get_mut(g).map(|g| &mut g.level),
+            Err(_) if generic == -1 => Some(&mut self.instrument),
+            Err(_) => None,
+        }
+    }
+
+    /// `set_engine_par` of volume, pan or tune; false when not one of them.
+    fn set_level(&mut self, par: i32, value: i32, group: i32, generic: i32) -> bool {
+        let Some(which) = self.level_par(par) else {
+            return false;
+        };
+        let Some(level) = self.level_mut(group, generic) else {
+            return false;
+        };
+        which.set(level, f64::from(value.clamp(0, 1_000_000)));
+        self.refresh_all(None);
+        true
+    }
+
     /// Answers `get_engine_par(par, group, slot)` for what
     /// [`Engine::set_engine_par`] sets, in the same encoding, so a script that
     /// saves and restores a parameter gets back what it had. `None`: not answered.
-    pub(crate) fn get_engine_par(&self, par: i32, group: i32, slot: i32) -> Option<i32> {
+    pub(crate) fn get_engine_par(
+        &mut self,
+        par: i32,
+        group: i32,
+        slot: i32,
+        generic: i32,
+    ) -> Option<i32> {
+        if let Some(which) = self.level_par(par) {
+            let level = *self.level_mut(group, generic)?;
+            return Some(which.get(&level).round().clamp(0.0, 1e6) as i32);
+        }
         let pars = self.plan.script.as_ref()?.engine_pars;
         let g = usize::try_from(group)
             .ok()
@@ -49,7 +122,17 @@ impl Engine {
 
     /// Applies `set_engine_par(par, value, group, slot)`. Returns whether the
     /// engine answers this parameter.
-    pub(crate) fn set_engine_par(&mut self, par: i32, value: i32, group: i32, slot: i32) -> bool {
+    pub(crate) fn set_engine_par(
+        &mut self,
+        par: i32,
+        value: i32,
+        group: i32,
+        slot: i32,
+        generic: i32,
+    ) -> bool {
+        if self.set_level(par, value, group, generic) {
+            return true;
+        }
         let Some(pars) = self.plan.script.as_ref().map(|s| s.engine_pars) else {
             return false;
         };
