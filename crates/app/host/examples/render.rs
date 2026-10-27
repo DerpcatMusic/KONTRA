@@ -36,6 +36,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::path::Path::new(&dir).join(format!("{n}.ksp")),
                 &s.source,
             )?;
+            for (name, bytes) in &s.data {
+                std::fs::write(
+                    std::path::Path::new(&dir).join(format!("{n}-{name}.nka")),
+                    bytes,
+                )?;
+            }
             let data: Vec<_> = s.data.iter().map(|(name, b)| (name, b.len())).collect();
             println!("  script {n} data files: {data:?}");
         }
@@ -73,7 +79,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let t = std::time::Instant::now();
     let mut store = Store::new(StoreConfig::DEFAULT)?;
-    let loaded = kontra_host::instrument::load(&path, RATE, &mut store)?;
+    let mut ir = kontra_format_kontakt::load(&path)?;
+    // KONTRA_SCRIPT_SOURCE=<dir>: script n's source is replaced by <dir>/n.ksp
+    // when that file exists (edit a dump, add messages, render again).
+    if let Some(dir) = std::env::var_os("KONTRA_SCRIPT_SOURCE") {
+        for (n, s) in ir.scripts.iter_mut().enumerate() {
+            if let Ok(source) =
+                std::fs::read_to_string(std::path::Path::new(&dir).join(format!("{n}.ksp")))
+            {
+                s.source = source;
+            }
+        }
+    }
+    let loaded = kontra_host::instrument::build(ir, RATE, &mut store);
     println!(
         "{}: {} zones, loaded in {:?}",
         loaded.name,
@@ -148,6 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut engine = Engine::new(Arc::new(loaded.plan), store.client(), RATE);
     println!("init: unanswered {:?}", engine.unhandled_actions());
+    let before: std::collections::HashMap<_, _> = engine.action_calls().into_iter().collect();
 
     let host = HostNote {
         port: 0,
@@ -196,7 +215,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stream.settle(std::time::Duration::from_secs(5));
         }
         engine.process(&mut block, input);
-        if n == 1 || n == RATE as usize / 512 + 1 {
+        if n == 0 || n == 3 * RATE as usize / 512 {
+            let during: Vec<_> = engine
+                .action_calls()
+                .into_iter()
+                .filter_map(|(a, c)| {
+                    let d = c - before.get(&a).copied().unwrap_or(0);
+                    (d > 0).then_some((a, d))
+                })
+                .collect();
+            println!("  calls by block {n}: {during:?}");
+        }
+        if n == 1 || n == RATE as usize / 512 + 1 || n == 2 * RATE as usize / 512 + 20 {
             println!(
                 "  block {n}: {} voices, {} playing, cc110 {:?} cc111 {:?}",
                 engine.active_voices(),
@@ -221,9 +251,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let r = RATE as usize;
     println!(
-        "rms 0.5-1 s {:.4}, 1.5-2 s {:.4}",
+        "rms 0.5-1 s {:.4}, 1.5-2 s {:.4}, after release 2.1-2.6 s {:.4}",
         rms(r / 2, r),
-        rms(r * 3 / 2, 2 * r)
+        rms(r * 3 / 2, 2 * r),
+        rms(r * 21 / 10, r * 26 / 10)
     );
     println!("peak {peak:.3}, {:?}", engine.stats());
     println!("stream: {:?}", stream.stats());

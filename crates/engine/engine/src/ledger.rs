@@ -39,7 +39,7 @@ impl NoteRef {
 pub(crate) enum Origin {
     /// A host note: released by its note-off.
     Host,
-    /// A script note released with its parent (`play_note` duration 0).
+    /// A script note released with its parent (`play_note` duration -1).
     Child(NoteRef),
     /// A script note released only by the script or its own duration.
     Script,

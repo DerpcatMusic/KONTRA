@@ -22,7 +22,12 @@ pub fn load(
     rate: u32,
     store: &mut Store,
 ) -> Result<Loaded, kontra_format_kontakt::Error> {
-    let instrument = kontra_format_kontakt::load(path)?;
+    Ok(build(kontra_format_kontakt::load(path)?, rate, store))
+}
+
+/// Builds the plan for an instrument already read into the IR.
+#[must_use]
+pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded {
     let (mut plan, mut diagnostics) = prepare(&instrument, rate, store, &kontra_stream::open);
     diagnostics.extend(instrument.diagnostics);
     let mut scripts = instrument
@@ -53,11 +58,11 @@ pub fn load(
             detail: extra.name.clone(),
         });
     }
-    Ok(Loaded {
+    Loaded {
         name: instrument.name,
         plan,
         diagnostics,
-    })
+    }
 }
 
 /// The source line holding byte `at`.

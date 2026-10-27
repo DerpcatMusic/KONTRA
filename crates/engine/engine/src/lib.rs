@@ -349,7 +349,7 @@ impl Engine {
         let event = match work {
             Work::Input(event) => event,
             Work::Resume(co) => return self.resume(co),
-            Work::Release(note) => return self.release(note),
+            Work::Release(note) => return self.end_note(note),
         };
         match event {
             Event::NoteOn {
@@ -562,6 +562,32 @@ impl Engine {
         self.hits = hits;
     }
 
+    /// A script note's note-off (its duration, `note_off`, or its parent's
+    /// release): like a key-up it runs the release callback, which cannot
+    /// ignore it, then releases the note (KSP manual, note_off and play_note).
+    fn end_note(&mut self, note: NoteRef) {
+        let Some(n) = self.notes.get(note) else {
+            return;
+        };
+        if n.released {
+            return;
+        }
+        if n.origin != Origin::Host
+            && let Some(entry) = self.plan.script.as_ref().and_then(|s| s.callbacks.release)
+        {
+            self.run_callback(entry, Running::new(Kind::Release, Some(note)));
+        }
+        self.release(note);
+    }
+
+    /// Ends `note` at the current time, after the running callback returns.
+    pub(crate) fn queue_end(&mut self, note: NoteRef) {
+        if !self.queue.push(self.now, Work::Release(note)) {
+            self.stats.events_refused += 1;
+            self.release(note);
+        }
+    }
+
     /// Releases a note's voices and starts its release triggers.
     fn release(&mut self, note: NoteRef) {
         let Some(n) = self.notes.get_mut(note) else {
@@ -589,7 +615,7 @@ impl Engine {
         self.notes
             .select(&mut children, |n| n.origin == Origin::Child(note));
         for &child in &children {
-            self.release(child);
+            self.queue_end(child);
         }
         self.targets_scratch = children;
     }
