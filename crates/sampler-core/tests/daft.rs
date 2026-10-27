@@ -41,7 +41,7 @@ fn plan(signal: Vec<[f32; 2]>, cutoff: f64, response: f64) -> Prepared {
             velocity_low: 0.,
             velocity_high: 1.,
             gain: 1.,
-            envelope: Envelope::GATE,
+            envelope: Envelope::default(),
             playback: Playback::default(),
         }],
         1,

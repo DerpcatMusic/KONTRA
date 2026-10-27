@@ -154,7 +154,7 @@ fn voice_plan() -> Prepared {
         ((frame % 97) as f32 - 48.) / 256.]).collect();
     Prepared::new(48000, vec![Pcm::new(48000, pcm).unwrap()], vec![Region {
         sample: 0, key_low: 60, key_high: 60, root_key: None, velocity_low: 0., velocity_high: 1.,
-        gain: 1., envelope: Envelope::GATE, playback: Playback::default() }], 1).unwrap()
+        gain: 1., envelope: Envelope::default(), playback: Playback::default() }], 1).unwrap()
         .with_velocity_curves(vec![VelocityCurve::Constant]).unwrap()
         .with_voice_modulation(vec![ModProgram { sources: vec![ModSource::Controller(1), ModSource::Controller(11)],
             routes: vec![ModRoute::new(0, ModTarget::Pitch, 12.), ModRoute::new(1, ModTarget::Attenuate, 0.75)],

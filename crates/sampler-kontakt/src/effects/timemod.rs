@@ -961,7 +961,7 @@ mod tests {
 
     /// Render `input` (48 kHz) through `processors` on a voice chain.
     fn render(processors: Vec<sampler_ir::Processor>, input: &[[f32; 2]]) -> Vec<[f32; 2]> {
-        let mut instrument = sampler_ir::Instrument::DEFAULT;
+        let mut instrument = sampler_ir::Instrument::default();
         instrument.assets.push(sampler_ir::Asset { residency: Default::default(), location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
         instrument.chains.push(sampler_ir::Chain { scope: sampler_ir::Scope::Voice, pre_amplitude: processors, post_amplitude: vec![] });
         let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
@@ -1221,9 +1221,9 @@ mod tests {
         let mut public = replika_stream([0.02, 0., 0., 1., 0., 0., 0., 0., 0., 0.], [0.; 9]);
         public[..4].copy_from_slice(&ty.to_le_bytes());
         let slot = Slot { version: 0x12, ..slot(0x5a, public, 1.) };
-        let mut instrument = sampler_ir::Instrument::DEFAULT;
+        let mut instrument = sampler_ir::Instrument::default();
         instrument.assets.push(sampler_ir::Asset { residency: Default::default(), location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
-        instrument.groups.push(sampler_ir::Group::DEFAULT);
+        instrument.groups.push(sampler_ir::Group::default());
         let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
         zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
         zone.group = Some(sampler_ir::GroupRef(0));

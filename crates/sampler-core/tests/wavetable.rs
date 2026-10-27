@@ -193,7 +193,7 @@ fn incomplete_cycles_are_floored_and_unproved_forms_are_rejected_at_preparation(
         velocity_low: 0.,
         velocity_high: 1.,
         gain: 1.,
-        envelope: Envelope::GATE,
+        envelope: Envelope::default(),
         playback: Playback {
             wavetable: Some(wavetable),
             ..Default::default()

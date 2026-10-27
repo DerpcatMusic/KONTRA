@@ -7,7 +7,7 @@ fn main() {
     const BLOCKS: usize = 2000;
     let mode = std::env::args().nth(1);
     let envelope = match mode.as_deref() {
-        None | Some("--loop" | "--ping-pong") => Envelope::GATE,
+        None | Some("--loop" | "--ping-pong") => Envelope::default(),
         Some("--envelope") => Envelope::new((BLOCK * (BLOCKS + 100)) as u32, 0, 0, 1.0, 0).unwrap(),
         _ => panic!("usage: render_bench [--envelope | --loop | --ping-pong]"),
     };

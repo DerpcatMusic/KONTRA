@@ -2276,7 +2276,7 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
             sample,
             at,
             gain,
-            Envelope::GATE,
+            Envelope::default(),
             Playback::default(),
         );
         self.finish_family(family)?;

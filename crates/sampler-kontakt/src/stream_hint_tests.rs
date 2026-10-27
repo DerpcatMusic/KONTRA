@@ -302,7 +302,7 @@ fn hinted_alias_view_order_keeps_physical_recipe_and_distinct_forward_reverse_st
                     velocity_low: 0.,
                     velocity_high: 1.,
                     gain: 1.,
-                    envelope: core::Envelope::GATE,
+                    envelope: core::Envelope::default(),
                     playback: core::Playback {
                         start,
                         end: Some(end),
@@ -335,7 +335,7 @@ fn hinted_alias_view_order_keeps_physical_recipe_and_distinct_forward_reverse_st
                 )
                 .unwrap()
         };
-        let mut instrument = ir::Instrument::DEFAULT;
+        let mut instrument = ir::Instrument::default();
         instrument.zones = views
             .iter()
             .enumerate()
@@ -509,7 +509,7 @@ fn hinted_static_offset_745_matches_resident_pcm_under_reverse_pitch_and_host_pa
                         velocity_low: 0.,
                         velocity_high: 1.,
                         gain: 1.,
-                        envelope: Envelope::GATE,
+                        envelope: Envelope::default(),
                         playback: Playback {
                             start: 1000,
                             end: Some(32000),
@@ -538,7 +538,7 @@ fn hinted_static_offset_745_matches_resident_pcm_under_reverse_pitch_and_host_pa
                 )
                 .unwrap()
             };
-            let mut instrument = ir::Instrument::DEFAULT;
+            let mut instrument = ir::Instrument::default();
             let mut zone = ir::Zone::new(ir::AssetRef(0));
             zone.keys = ir::KeyRange { low: 60, high: 60 };
             zone.pitch = ir::KeyTracking::Fixed;
@@ -722,7 +722,7 @@ fn hinted_restore_keeps_selected_physical_recipe_for_all_reload_consumers() {
                 velocity_low: 0.,
                 velocity_high: 1.,
                 gain: 1.,
-                envelope: Envelope::GATE,
+                envelope: Envelope::default(),
                 playback: Playback {
                     start: 745,
                     ..Default::default()
@@ -1234,7 +1234,7 @@ fn purged_second_group_sounds_on_every_chord_after_its_purge_reload() {
                 velocity_low: 0.,
                 velocity_high: 1.,
                 gain: 1.,
-                envelope: Envelope::GATE,
+                envelope: Envelope::default(),
                 playback: Playback::default(),
             });
         }
@@ -1329,7 +1329,7 @@ fn full_voice_load_at_the_largest_head_never_runs_out_of_pool() {
         velocity_low: 0.,
         velocity_high: 1.,
         gain: 1.,
-        envelope: Envelope::GATE,
+        envelope: Envelope::default(),
         playback: Playback::default(),
     }];
     let plan = Prepared::new(48000, assets.clone(), regions, 128).unwrap();

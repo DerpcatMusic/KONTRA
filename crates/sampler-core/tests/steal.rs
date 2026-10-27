@@ -54,7 +54,7 @@ fn full_polyphony_steals_quietest_with_a_fade_instead_of_rejecting() {
             0,
             rt.now(),
             gain,
-            Envelope::GATE,
+            Envelope::default(),
             Playback::default(),
         )
     };
@@ -73,7 +73,7 @@ fn full_polyphony_steals_quietest_with_a_fade_instead_of_rejecting() {
             0,
             rt.now(),
             gain,
-            Envelope::GATE,
+            Envelope::default(),
             Playback::default(),
         )
     };

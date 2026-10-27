@@ -62,7 +62,7 @@ fn exact_input_cancellation_stops_delayed_linked_work_and_preserves_pedals_and_s
                 0,
                 128,
                 1.,
-                Envelope::GATE,
+                Envelope::default(),
                 Playback::default(),
             )
             .unwrap();

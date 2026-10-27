@@ -268,7 +268,7 @@ fn a_missing_live_page_fades_out_keeps_time_and_fades_back_in_when_the_page_arri
                     0,
                     0,
                     1.,
-                    Envelope::GATE,
+                    Envelope::default(),
                     Playback {
                         start: PAGE_FRAMES - 2,
                         ..Playback::default()
@@ -332,7 +332,7 @@ fn a_starved_source_drains_its_declared_dsp_tail_once_across_callback_boundaries
         ..Playback::default()
     };
     let mut r = region(0, playback);
-    r.envelope = Envelope::GATE;
+    r.envelope = Envelope::default();
     let plan = Prepared::new(48000, vec![asset], vec![r], 1)
         .unwrap()
         .with_voice_chains(
@@ -401,7 +401,7 @@ fn live_demand_refills_a_small_cache_across_long_forward_reverse_and_resampled_s
                 ..Playback::default()
             };
             let mut mapped = region(0, playback);
-            mapped.envelope = Envelope::GATE;
+            mapped.envelope = Envelope::default();
             let mut rt = runtime(vec![asset.clone()], vec![mapped]).with_stream_cache(cache);
             let mut reference = runtime(vec![Pcm::new(rate, data.clone()).unwrap()], vec![mapped]);
             let (mut actual, mut expected) = ([[0.; 2]; 128], [[0.; 2]; 128]);
@@ -492,7 +492,7 @@ fn starvation_duration_uses_output_rate_and_missing_onsets_do_not_emit_a_fade() 
                 ..Playback::default()
             },
         );
-        r.envelope = Envelope::GATE;
+        r.envelope = Envelope::default();
         let data_asset = asset.asset_id();
         let mut rt = from_plan(Prepared::new(rate, vec![asset], vec![r], 1).unwrap())
             .with_stream_cache(cache);
@@ -543,7 +543,7 @@ fn a_missing_filter_guard_fades_from_the_last_complete_resample_without_partial_
             ..Playback::default()
         },
     );
-    mapped.envelope = Envelope::GATE;
+    mapped.envelope = Envelope::default();
     // The long (High) kernel's guard is what reaches the missing page here.
     let mut rt = runtime(vec![asset], vec![mapped])
         .with_resample_quality(ResampleQuality::High)
@@ -609,7 +609,7 @@ fn a_full_pool_reclaims_a_voice_waiting_on_its_stream_before_dropping_starts() {
                 ..Playback::default()
             };
             let at = rt.now();
-            rt.start_family(family, sample, at, 1., Envelope::GATE, playback)
+            rt.start_family(family, sample, at, 1., Envelope::default(), playback)
         };
         let starved = start(&mut rt, 0, PAGE_FRAMES - 2).unwrap();
         let audible = start(&mut rt, 1, 0).unwrap();
@@ -724,7 +724,7 @@ fn a_lazy_start_loses_its_attack_to_the_schedule_and_plays_from_its_position() {
     let asset = Pcm::streamed(48000, data.len()).unwrap();
     let (cache, mut worker) = StreamCache::new(4).unwrap();
     let mut r = region(0, Playback::default());
-    r.envelope = Envelope::GATE;
+    r.envelope = Envelope::default();
     let mut rt = runtime(vec![asset], vec![r]).with_stream_cache(cache);
     rt.set_cold_starts(true);
     let mut output = [[0.; 2]; 256];

@@ -1569,7 +1569,7 @@ mod tests {
             <Oscillators><SamplePlayer Name="P" SamplePath="a.wav"><Connections>{player}</Connections></SamplePlayer></Oscillators>
             </Keygroup></Keygroups></Layer></Layers></Program>"#);
         let doc=roxmltree::Document::parse(&xml).unwrap();
-        let mut out=crate::Translation{ir:ir::Instrument::DEFAULT,source:crate::Source::Bank,
+        let mut out=crate::Translation{ir:ir::Instrument::default(),source:crate::Source::Bank,
             assets:Default::default(),locations:Vec::new(),envelopes:Default::default(),
             modulator_index:Default::default(),modulator_nodes:Default::default(),route_index:Default::default(),shape_index:Default::default(),
             shared_sources:Default::default(),used:Default::default(),
@@ -2257,7 +2257,7 @@ mod script_event_definition_identity40 {
         let doc=roxmltree::Document::parse(xml).unwrap();
         let player=doc.descendants().find(|node|node.has_tag_name("SamplePlayer")).unwrap();
         let definitions:Vec<_>=doc.descendants().filter(|node|node.has_tag_name("ScriptEventModulation")).map(|node|node.id()).collect();
-        let mut out=crate::Translation{ir:ir::Instrument::DEFAULT,source:crate::Source::Bank,
+        let mut out=crate::Translation{ir:ir::Instrument::default(),source:crate::Source::Bank,
             assets:Default::default(),locations:Vec::new(),envelopes:Default::default(),
             modulator_index:Default::default(),modulator_nodes:Default::default(),route_index:Default::default(),shape_index:Default::default(),
             shared_sources:Default::default(),used:Default::default(),

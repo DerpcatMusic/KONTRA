@@ -158,7 +158,7 @@ fn unsupported_init_address_is_observable_and_later_volume_write_changes_audio()
                     velocity_low: 0.,
                     velocity_high: 1.,
                     gain: 1.,
-                    envelope: Envelope::GATE,
+                    envelope: Envelope::default(),
                     playback: Playback::default(),
                 }],
                 1,

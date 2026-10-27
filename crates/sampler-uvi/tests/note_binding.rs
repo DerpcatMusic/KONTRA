@@ -18,7 +18,7 @@ fn play(body: &str) -> (Vec<[f32; 2]>, usize) {
             velocity_low: 0.,
             velocity_high: 1.,
             gain: 1.,
-            envelope: Envelope::GATE,
+            envelope: Envelope::default(),
             playback: Playback::default(),
         })
         .collect();

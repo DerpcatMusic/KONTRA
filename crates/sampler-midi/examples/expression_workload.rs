@@ -32,7 +32,7 @@ fn main() {
                     velocity_low: 0.0,
                     velocity_high: 1.0,
                     gain: 1.0,
-                    envelope: Envelope::GATE,
+                    envelope: Envelope::default(),
                     playback: Playback::default(),
                 }],
                 1,

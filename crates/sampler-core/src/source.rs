@@ -2185,7 +2185,7 @@ mod tests {
             ..Playback::default()
         };
         let kernel = Kernel::new(crate::ResampleQuality::Realtime);
-        let mut envelope = EnvelopeState::new(crate::Envelope::GATE);
+        let mut envelope = EnvelopeState::new(crate::Envelope::default());
         let mut cursor = playback.cursor(pcm.len(), 48000, 48000).unwrap();
         let mut out = vec![[0.; 2]; 30000];
         let mut total = 0;
@@ -2226,7 +2226,7 @@ mod tests {
         let initial = Playback { loop_range: Some(Loop { start: 64, end: 128, shape: LoopShape::Wrap, mode: LoopMode::Continuous, passes: None }), ..Playback::default() }
             .cursor(pcm.len(), 48000, 48000).unwrap().with_step(1.201);
         let (mut old, mut new) = (initial, initial);
-        let (mut old_env, mut new_env) = (EnvelopeState::new(crate::Envelope::GATE), EnvelopeState::new(crate::Envelope::default()));
+        let (mut old_env, mut new_env) = (EnvelopeState::new(crate::Envelope::default()), EnvelopeState::new(crate::Envelope::default()));
         for iteration in 0..100 {
             let mut expected = [[0.; 2]; 256];
             let mut actual = expected;
@@ -2253,7 +2253,7 @@ mod tests {
                 let mut checksums = [0.; 2];
                 for candidate in [round % 2, 1 - round % 2] {
                     let mut cursors = vec![initial; 300];
-                    let mut envelopes = vec![EnvelopeState::new(crate::Envelope::GATE); 300];
+                    let mut envelopes = vec![EnvelopeState::new(crate::Envelope::default()); 300];
                     let mut output = [[0.; 2]; 256];
                     let started = Instant::now();
                     for iteration in 0..16000 {
@@ -2289,7 +2289,7 @@ mod tests {
         let frames: Vec<Frame> = (0..2048).map(|i| [(i as f32 * 0.01).sin(); 2]).collect();
         let kernel = Kernel::new(crate::ResampleQuality::Realtime);
         let mut cursor = Playback::default().cursor(frames.len(), 48000, 48000).unwrap().with_step(0.731);
-        let mut env = EnvelopeState::new(crate::Envelope::GATE);
+        let mut env = EnvelopeState::new(crate::Envelope::default());
         let pcm = Gappy { frames: &frames, missing: Cell::new((0, 0)) };
         let mut output = [[0.; 2]; 64];
         // Outage 1: blocks render silently while the window is missing.
@@ -2336,8 +2336,8 @@ mod tests {
         let start = Playback::default().cursor(frames.len(), 48000, 48000).unwrap();
         let (mut starved, mut sibling) = (start, start);
         let (mut env_starved, mut env_sibling) = (
-            EnvelopeState::new(crate::Envelope::GATE),
-            EnvelopeState::new(crate::Envelope::GATE),
+            EnvelopeState::new(crate::Envelope::default()),
+            EnvelopeState::new(crate::Envelope::default()),
         );
         let mut out_starved = [[0.; 2]; 64];
         let mut out_sibling = [[0.; 2]; 64];
@@ -2375,7 +2375,7 @@ mod tests {
                 let missing = if direction == Direction::Forward { 80..81 } else { 47..48 };
                 let pcm = Partial { frames: &frames, missing };
                 let mut cursor = initial;
-                let mut env = EnvelopeState::new(crate::Envelope::GATE);
+                let mut env = EnvelopeState::new(crate::Envelope::default());
                 let mut output = [[0.123, -0.567]; 128];
                 assert_eq!(cursor.render_gathered(&pcm, &mut output, &mut env, 0.731, [0.7, -0.2], &kernel), 0);
                 assert_eq!(output, [[0.123, -0.567]; 128]);
@@ -2411,7 +2411,7 @@ mod tests {
             .collect();
         for len in [1, 3, 4, 63, 64, 65] {
             for shape in [
-                Envelope::GATE,
+                Envelope::default(),
                 Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
                     EnvelopeCurve::exponential(2.).unwrap(),
                     EnvelopeCurve::exponential(-3.).unwrap(),
@@ -2598,7 +2598,7 @@ mod tests {
             let bank = kernel.polyphase(step).unwrap();
             for fraction in [0., 0.123456789, 0.999999999] {
                 for len in 0..=65 {
-                    for shape in [Envelope::GATE, Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
+                    for shape in [Envelope::default(), Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
                         EnvelopeCurve::exponential(2.).unwrap(), EnvelopeCurve::exponential(-3.).unwrap(), EnvelopeCurve::default())] {
                         let mut old = Playback::default().cursor(256, 48000, 48000).unwrap();
                         old.step = step; old.fraction = fraction;
@@ -2644,7 +2644,7 @@ mod tests {
             for fraction in [0.0, 0.123456789, 0.999999999] {
                 for len in 0..=65 {
                     for shape in [
-                        Envelope::GATE,
+                        Envelope::default(),
                         Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
                             EnvelopeCurve::exponential(2.0).unwrap(),
                             EnvelopeCurve::exponential(-3.0).unwrap(),

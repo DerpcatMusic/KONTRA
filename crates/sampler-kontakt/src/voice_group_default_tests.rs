@@ -37,7 +37,7 @@ fn limit(voices: i32, kill: i16, fade: i32) -> Vec<u8> {
 #[test]
 fn omitted_voice_group_override_still_binds_its_native_shared_limit() {
     let mut out = Translation {
-        ir: ir::Instrument::DEFAULT,
+        ir: ir::Instrument::default(),
         assets: HashMap::new(),
         locations: vec![],
         start_criteria: vec![],

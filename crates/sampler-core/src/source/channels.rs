@@ -191,7 +191,7 @@ mod tests {
             let frames = pcm.resident_frames().unwrap();
             let mut reference = playback.cursor(64, 48000, 48000).unwrap();
             let mut out = [[0.; 2]; 128];
-            let mut unity = EnvelopeState::new(Envelope::GATE);
+            let mut unity = EnvelopeState::new(Envelope::default());
             assert_eq!(
                 reference.render(&frames[..], &mut out, &mut unity, 1., [1.; 2], &kernel),
                 128

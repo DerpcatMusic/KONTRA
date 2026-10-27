@@ -984,7 +984,7 @@ fn lower_binds_optional_bank_to_physical_roster_after_complete_normal_recipe_pip
     let mut instrument = ir::Instrument {
         assets: vec![asset("sampler.wav"), asset("cycle.wav")],
         groups: vec![
-            ir::Group::DEFAULT,
+            ir::Group::default(),
             ir::Group {
                 wavetable: Some(Wavetable::default()),
                 ..Default::default()
@@ -1298,7 +1298,7 @@ fn source_sized_plan(count: usize) -> Prepared {
             root_key: None,
             loops: vec![],
         }],
-        groups: vec![ir::Group::DEFAULT, ir::Group::default()],
+        groups: vec![ir::Group::default(), ir::Group::default()],
         zone_routing_mode: Some(3),
         ..Default::default()
     };

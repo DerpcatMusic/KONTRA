@@ -772,7 +772,7 @@ fn articulation_switch_on_one_member_routes_all_members_without_changing_express
             velocity_low: 0.,
             velocity_high: 1.,
             gain: 1.,
-            envelope: Envelope::GATE,
+            envelope: Envelope::default(),
             playback: Playback::default(),
         }],
         2,

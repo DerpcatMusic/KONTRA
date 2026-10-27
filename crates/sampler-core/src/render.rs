@@ -1189,7 +1189,7 @@ pub(super) fn render_source<const TRACE: bool>(
         let active = voice.envelope.remaining();
         let mut unity = crate::blocks::envelope::EnvelopeState::new(if waiting {
             crate::Envelope::one_shot(0, active.min(super::dsp::BLOCK + 1) as u32, 0)
-        } else { crate::Envelope::GATE });
+        } else { crate::Envelope::default() });
         let remaining = unity.remaining();
         let count = if waiting { output.len() } else { output.len().min(active) };
         let produced = match (context.stretch.as_deref_mut(), waiting) {
@@ -1250,7 +1250,7 @@ mod cpu_tests {
     fn dormant_sum_graph_skips_cells_but_keeps_events_clock_and_wake_pcm() {
         let plan = Prepared::new(48000, vec![Pcm::new(48000, vec![[1., -0.5]].into_boxed_slice()).unwrap()],
             vec![Region { sample:0, key_low:60, key_high:60, root_key:None, velocity_low:0., velocity_high:1.,
-                gain:1., envelope:Envelope::GATE, playback:Playback::default() }], 1).unwrap()
+                gain:1., envelope:Envelope::default(), playback:Playback::default() }], 1).unwrap()
             .with_buses((0..100).map(|_| Bus { processors:vec![Processor::Gain(1.)],
                 sends:vec![BusSend { bus:None, gain:1. }], tail_frames:0 }).collect(), vec![Some(97)]).unwrap();
         let mut rt = Runtime::new(plan, Limits { notes:4, channels:0, performances:1, families:4,

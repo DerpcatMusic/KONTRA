@@ -30,7 +30,7 @@ fn configured_plan(
     left_knobs: [f32; 5],
     modulation: Option<ir::ProcessorParameter>,
 ) -> Prepared {
-    let mut instrument = ir::Instrument::DEFAULT;
+    let mut instrument = ir::Instrument::default();
     for i in 0..2 {
         instrument.assets.push(ir::Asset {
             location: ir::AssetLocation::Path(format!("authored-signal-{i}")),

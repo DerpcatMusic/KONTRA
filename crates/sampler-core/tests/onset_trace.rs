@@ -8,7 +8,7 @@ fn input(id: i32) -> Input {
 }
 fn region(sample: usize, base: usize) -> Region {
     Region { sample, key_low: 60, key_high: 60, root_key: None, velocity_low: 0.,
-        velocity_high: 1., gain: 1., envelope: Envelope::GATE,
+        velocity_high: 1., gain: 1., envelope: Envelope::default(),
         playback: Playback { start: base, ..Default::default() } }
 }
 fn resident(traced: bool, capacity: usize) -> Runtime {

@@ -246,7 +246,7 @@ fn distinct_authored_targets_are_not_capped_at_the_retired_reply_batch_size() {
             velocity_low: 0.,
             velocity_high: 1.,
             gain: 1.,
-            envelope: Envelope::GATE,
+            envelope: Envelope::default(),
             playback: Playback::default(),
         })
         .collect();
@@ -339,7 +339,7 @@ fn dormant_targets_report_absent_source_and_unsupported_per_key_pitch_honestly()
             velocity_low: 0.,
             velocity_high: 1.,
             gain: 1.,
-            envelope: Envelope::GATE,
+            envelope: Envelope::default(),
             playback: Playback {
                 transpose_semitones: 12.,
                 ..Playback::default()

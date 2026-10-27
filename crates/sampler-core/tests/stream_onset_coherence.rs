@@ -237,7 +237,7 @@ fn one_selection_two_distinct_assets_stay_coherent_while_one_starves() {
     for hold in [0, 128, HOLD] {
         for early in [0, 1] {
             for partition in [1, 64, 127] {
-                let mut f = Fixture::new([0, 0], false, Envelope::GATE);
+                let mut f = Fixture::new([0, 0], false, Envelope::default());
                 let (note, family) = f.layered();
                 let mut jobs = f.jobs().map(Some);
                 let before = [cursor(&f, 0).unwrap(), cursor(&f, 1).unwrap()];
@@ -306,7 +306,7 @@ fn one_selection_two_distinct_assets_stay_coherent_while_one_starves() {
 
 #[test]
 fn distinct_note_control_keeps_owners_separate_with_the_same_storage_skew() {
-    let mut f = Fixture::new([0, 0], true, Envelope::GATE);
+    let mut f = Fixture::new([0, 0], true, Envelope::default());
     let mut notes = [None, None];
     support::without_heap(|| {
         for (sample, note) in notes.iter_mut().enumerate() {
@@ -346,7 +346,7 @@ fn distinct_note_control_keeps_owners_separate_with_the_same_storage_skew() {
 
 #[test]
 fn partial_208_frame_warm_head_sounds_while_its_cold_sibling_starves_in_silence() {
-    let mut f = Fixture::new([208, 0], false, Envelope::GATE);
+    let mut f = Fixture::new([208, 0], false, Envelope::default());
     f.layered();
     service(&mut f.rt, false);
     let b = f.worker.next_job().unwrap();
@@ -399,7 +399,7 @@ fn partial_208_frame_warm_head_sounds_while_its_cold_sibling_starves_in_silence(
 
 #[test]
 fn authored_layer_delay_is_preserved_even_when_both_pages_are_already_ready() {
-    let mut f = Fixture::new([0, 0], false, Envelope::GATE);
+    let mut f = Fixture::new([0, 0], false, Envelope::default());
     // Prime both actual worker pages before admission, without selecting a note.
     for asset in &f.assets {
         f.rt.stream_cache_mut()
@@ -423,7 +423,7 @@ fn authored_layer_delay_is_preserved_even_when_both_pages_are_already_ready() {
                 sample,
                 at,
                 1.,
-                Envelope::GATE,
+                Envelope::default(),
                 Playback::default(),
             )
             .unwrap();
@@ -451,7 +451,7 @@ fn authored_layer_delay_is_preserved_even_when_both_pages_are_already_ready() {
 
 #[test]
 fn terminal_failure_of_one_asset_does_not_end_its_ready_sibling() {
-    let mut f = Fixture::new([0, 0], false, Envelope::GATE);
+    let mut f = Fixture::new([0, 0], false, Envelope::default());
     let (_, family) = f.layered();
     let [a, b] = f.jobs();
     let failed_voice = cursor(&f, 1).unwrap().voice;
@@ -484,7 +484,7 @@ fn terminal_failure_of_one_asset_does_not_end_its_ready_sibling() {
 
 #[test]
 fn unavailable_page_starves_only_its_sibling_until_explicit_request_replacement() {
-    let mut f = Fixture::new([0, 0], false, Envelope::GATE);
+    let mut f = Fixture::new([0, 0], false, Envelope::default());
     let (_, family) = f.layered();
     let [a, b] = f.jobs();
     f.publish(0, a);
@@ -534,7 +534,7 @@ fn unavailable_page_starves_only_its_sibling_until_explicit_request_replacement(
 
 #[test]
 fn invalidated_starved_page_discards_stale_completion_before_replacement_onset() {
-    let mut f = Fixture::new([0, 0], false, Envelope::GATE);
+    let mut f = Fixture::new([0, 0], false, Envelope::default());
     f.layered();
     let [a, obsolete] = f.jobs();
     f.publish(0, a);
@@ -623,7 +623,7 @@ fn release_clock_runs_through_the_wait_so_a_late_released_onset_ends_in_silence(
 
 #[test]
 fn canceling_the_logical_owner_prevents_held_page_completion_from_resurrecting_layers() {
-    let mut f = Fixture::new([0, 0], false, Envelope::GATE);
+    let mut f = Fixture::new([0, 0], false, Envelope::default());
     let (note, _) = f.layered();
     let [a, b] = f.jobs();
     f.publish(0, a);

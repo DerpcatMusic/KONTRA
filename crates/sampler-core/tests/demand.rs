@@ -54,7 +54,7 @@ fn demand_keeps_source_direction_deadlines_and_backpressure_without_advancing_au
         let (_, voice) = start(
             &mut rt,
             0,
-            Envelope::GATE,
+            Envelope::default(),
             Playback {
                 start: 2,
                 end: Some(6),
@@ -140,7 +140,7 @@ fn fractional_and_high_rate_demand_includes_the_actual_two_sided_kernel() {
                 let (_, voice) = start(
                     &mut rt,
                     0,
-                    Envelope::GATE,
+                    Envelope::default(),
                     Playback {
                         direction,
                         transpose_semitones: transpose,
