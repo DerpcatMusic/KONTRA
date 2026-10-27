@@ -86,10 +86,10 @@ fn load_samples(
     open: &Open,
     diagnostics: &mut Vec<ir::Diagnostic>,
 ) -> Vec<Option<Arc<Sample>>> {
-    let mut used: HashMap<usize, Vec<&ir::Zone>> = HashMap::new();
+    let mut used: HashMap<usize, Vec<(&ir::Zone, Option<ir::Stream>)>> = HashMap::new();
     for group in instrument.groups.iter().filter(|g| !g.purged) {
         for z in &group.zones {
-            used.entry(z.sample).or_default().push(z);
+            used.entry(z.sample).or_default().push((z, group.stream));
         }
     }
     let used: Vec<_> = used.into_iter().collect();
@@ -127,7 +127,10 @@ fn load_samples(
             frames: sample.frames,
             pin: zones
                 .iter()
-                .map(|z| window(z, sample.frames, fmt, instrument.preload))
+                .map(|&(z, stream)| match stream {
+                    Some(stream) => window(z, sample.frames, fmt, stream),
+                    None => 0..sample.frames,
+                })
                 .collect(),
         });
         slots.push(*index);
@@ -162,9 +165,11 @@ fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R>
     })
 }
 
-/// Kontakt's preload window for one zone, in frames (05-STREAM.md §1).
-fn window(z: &ir::Zone, frames: u64, fmt: SampleFmt, preload: u32) -> Range<u64> {
-    const GRAIN: u64 = 6144;
+/// A streamed zone's resident window, in frames: its head from where it
+/// may start, room for the start-offset range on both sides, rounded up to
+/// the grain (05-STREAM.md §1).
+fn window(z: &ir::Zone, frames: u64, fmt: SampleFmt, stream: ir::Stream) -> Range<u64> {
+    let grain = u64::from(stream.grain.max(1));
     let frame = fmt.bytes_per_frame().max(1) as i64;
     let off = i64::try_from(z.start_mod).unwrap_or(i64::MAX / 4);
     let pos = i64::try_from(if z.reverse {
@@ -174,12 +179,12 @@ fn window(z: &ir::Zone, frames: u64, fmt: SampleFmt, preload: u32) -> Range<u64>
     })
     .unwrap_or(0);
     let d = pos - off;
-    let mut base = i64::from(preload) * i64::from(fmt.channels);
+    let mut base = i64::from(stream.bytes_per_channel) * i64::from(fmt.channels);
     if d < 0 {
         base += frame * d;
     }
     let total = u64::try_from(base + off * frame * 2).unwrap_or(0);
-    let head = total.div_ceil(GRAIN) * GRAIN / frame.unsigned_abs();
+    let head = total.div_ceil(grain) * grain / frame.unsigned_abs();
     let lo = u64::try_from(d).unwrap_or(0);
     let hi = lo + head;
     if z.reverse {
@@ -323,21 +328,26 @@ mod tests {
         }
     }
 
+    const DFD: ir::Stream = ir::Stream {
+        bytes_per_channel: 61_440,
+        grain: 6144,
+    };
+
     #[test]
     fn the_window_follows_kontakts_preload_law() {
         // 60 KB per channel, stereo 24-bit: 122,880 bytes = 20 grains → 20,480 frames.
-        assert_eq!(window(&at(0, 0), 1_000_000, STEREO_24, 61_440), 0..20_480);
+        assert_eq!(window(&at(0, 0), 1_000_000, STEREO_24, DFD), 0..20_480);
         // S.Mod 1000 from 5000: starts 1000 earlier, 2 × 1000 frames longer, rounded up to a grain.
-        let w = window(&at(5_000, 1_000), 1_000_000, STEREO_24, 61_440);
+        let w = window(&at(5_000, 1_000), 1_000_000, STEREO_24, DFD);
         assert_eq!(w.start, 4_000);
         assert_eq!(
             w.end - w.start,
             (122_880u64 + 12_000).div_ceil(6144) * 6144 / 6
         );
         // A start inside S.Mod of the head has less room behind it.
-        let near = window(&at(100, 1_000), 1_000_000, STEREO_24, 61_440);
+        let near = window(&at(100, 1_000), 1_000_000, STEREO_24, DFD);
         assert_eq!(near.start, 0);
         // A short sample clamps the window.
-        assert_eq!(window(&at(0, 0), 500, STEREO_24, 61_440), 0..500);
+        assert_eq!(window(&at(0, 0), 500, STEREO_24, DFD), 0..500);
     }
 }

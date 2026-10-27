@@ -60,3 +60,15 @@ pub(crate) fn release_counter(release_trigger: bool, ms: i32) -> Option<ir::Sour
         .filter(|&ms| release_trigger && ms > 0)?;
     Some(ir::Source::HeldTime { span_ms })
 }
+
+/// Residency by source module (docs/re/engine/k-sampler-source.md): Sampler
+/// (mode 0) keeps whole samples in memory; DFD (3) and the other modules keep
+/// the program's preload per channel, plus twice the S.Mod range, in 6144-byte
+/// grains. ponytail: a Sampler group whose resident flag is clear streams in
+/// Kontakt too (0x140760000:19175); that flag is not decoded yet.
+pub(crate) fn stream(mode: u32, preload: i32) -> Option<ir::Stream> {
+    (mode != 0).then(|| ir::Stream {
+        bytes_per_channel: u32::try_from(preload).unwrap_or(61_440),
+        grain: 6144,
+    })
+}
