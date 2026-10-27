@@ -5,6 +5,23 @@ use kontra_vm::{Action, HostApi, HostCall, Instance, Text};
 use crate::Engine;
 
 impl Engine {
+    /// Groups a script purged: the host may drop their samples.
+    pub fn purged(&self) -> impl Iterator<Item = usize> + '_ {
+        self.groups
+            .iter()
+            .enumerate()
+            .filter_map(|(n, g)| g.purged.then_some(n))
+    }
+
+    /// Each sounding voice's zone, position in source frames and gain, for
+    /// inspectors (never the audio thread).
+    pub fn voices(&self) -> impl Iterator<Item = (usize, f64, kontra_voice::Gain)> + '_ {
+        self.voices
+            .iter()
+            .filter(|s| s.voice.is_active())
+            .map(|s| (s.zone, s.voice.position(), s.voice.target_gain()))
+    }
+
     /// The last text a script printed with `message`.
     #[must_use]
     pub fn last_message(&self) -> &str {
