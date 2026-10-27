@@ -3,14 +3,14 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 
 use kontra_ir as ir;
 use kontra_stream::{BlobKey, LoadRequest, Sample, SampleFmt, Source, Store};
 use kontra_voice::{Ahdsr, Loop, Region};
 
-use crate::{Bus, Control, Crossfade, Group, Plan, RoundRobin, RrCounter, Trigger, Zone};
+use crate::{Atom, Bus, Control, Crossfade, Group, Plan, RoundRobin, RrCounter, Trigger, Zone};
 
 /// Opens a sample's audio as the store reads it: decoded to packed PCM.
 /// Called from several loader threads at once.
@@ -27,17 +27,18 @@ pub fn prepare(
     let mut diagnostics = Vec::new();
     let loaded = load_samples(instrument, store, open, &mut diagnostics);
     let mut zones = Vec::new();
-    let mut plan_switches: Option<(u8, u8)> = None;
+    let mut switches: Vec<RangeInclusive<u8>> = Vec::new();
     let mut polyphony = Vec::new();
     for (index, group) in instrument.groups.iter().enumerate() {
         let group_id = u32::try_from(index).unwrap_or(u32::MAX);
         if let Some(voices) = group.polyphony {
             polyphony.push((group_id, voices));
         }
-        for rule in &group.start {
-            if let ir::StartRule::Keyswitch { range, .. } = rule {
-                let (lo, hi) = plan_switches.unwrap_or((*range.start(), *range.end()));
-                plan_switches = Some((lo.min(*range.start()), hi.max(*range.end())));
+        for (_, rule) in &group.start {
+            if let ir::StartRule::Keyswitch { range } = rule
+                && !switches.contains(range)
+            {
+                switches.push(range.clone());
             }
         }
         for z in &group.zones {
@@ -47,7 +48,7 @@ pub fn prepare(
             let Some(source) = instrument.samples.get(z.sample) else {
                 continue;
             };
-            zones.push(zone(group, group_id, z, source, sample));
+            zones.push(zone(group, group_id, z, source, sample, &switches));
         }
     }
     let mut plan = Plan::new(zones, usize::from(instrument.voices));
@@ -72,8 +73,8 @@ pub fn prepare(
     }
     plan.polyphony = polyphony;
     plan.voice_groups.clone_from(&instrument.voice_groups);
-    plan.keyswitches = plan_switches.map(|(lo, hi)| lo..=hi);
-    plan.default_keyswitch = plan.zones.iter().filter_map(|z| z.keyswitch).min();
+    plan.default_keyswitch = switches.iter().map(|r| *r.start()).min();
+    plan.switches = switches;
     (plan, diagnostics)
 }
 
@@ -194,6 +195,7 @@ fn zone(
     z: &ir::Zone,
     source: &ir::Sample,
     sample: &Arc<Sample>,
+    switches: &[RangeInclusive<u8>],
 ) -> Zone {
     let region = Region {
         sample: Arc::clone(sample),
@@ -230,24 +232,30 @@ fn zone(
         ir::Trigger::First => Trigger::First,
         ir::Trigger::Legato => Trigger::Legato,
     };
-    for rule in &group.start {
-        match rule {
-            ir::StartRule::Keyswitch { key, .. } => out.keyswitch = Some(*key),
-            ir::StartRule::Controller { cc, range } => out.cc_ranges.push((*cc, range.clone())),
-            ir::StartRule::RoundRobin {
-                position,
-                length,
-                random,
-            } => {
-                out.round_robin = Some(RoundRobin {
+    out.start = group
+        .start
+        .iter()
+        .filter_map(|(join, rule)| {
+            let atom = match rule {
+                ir::StartRule::Keyswitch { range } => {
+                    let i = switches.iter().position(|r| r == range)?;
+                    Atom::Switch(u16::try_from(i).ok()?)
+                }
+                ir::StartRule::Controller { cc, range } => Atom::Cc(*cc, range.clone()),
+                ir::StartRule::RoundRobin {
+                    position,
+                    length,
+                    random,
+                } => Atom::RoundRobin(RoundRobin {
                     counter: RrCounter::Global,
                     position: *position,
                     length: *length,
                     random: *random,
-                });
-            }
-        }
-    }
+                }),
+            };
+            Some((*join, atom))
+        })
+        .collect();
     out.group = group_id;
     out.off_by = group.off_by.and_then(|g| u32::try_from(g).ok());
     out.voice_group = group.voice_group.and_then(|g| u32::try_from(g).ok());

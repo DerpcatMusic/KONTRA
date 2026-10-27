@@ -3,8 +3,9 @@
 
 use std::sync::Arc;
 
+use kontra_engine::ir::Join;
 use kontra_engine::{
-    Bus, Control, Crossfade, Engine, Plan, RoundRobin, RrCounter, Timed, Trigger, Zone,
+    Atom, Bus, Control, Crossfade, Engine, Plan, RoundRobin, RrCounter, Timed, Trigger, Zone,
 };
 use kontra_events::{Event, HostNote, HostPattern};
 use kontra_stream::{BlobKey, Encoding, MemSource, SampleFmt, Store, StoreConfig};
@@ -122,12 +123,15 @@ fn sequential_round_robin_cycles_and_mic_layers_agree() {
     for (position, level) in [(0u8, 0.1f32), (1, 0.2)] {
         for bus in 0..2 {
             let mut z = zone(&mut store, level + bus as f32 * 0.01);
-            z.round_robin = Some(RoundRobin {
-                counter: RrCounter::Key,
-                position,
-                length: 2,
-                random: false,
-            });
+            z.start = vec![(
+                Join::And,
+                Atom::RoundRobin(RoundRobin {
+                    counter: RrCounter::Key,
+                    position,
+                    length: 2,
+                    random: false,
+                }),
+            )];
             z.bus = bus;
             z.pan = if bus == 0 { -1.0 } else { 1.0 };
             zones.push(z);
@@ -169,12 +173,15 @@ fn the_global_round_robin_steps_on_every_note() {
     for (position, level) in [(0u8, 0.1f32), (1, 0.2)] {
         let mut z = zone(&mut store, level);
         z.keys = 36..=36;
-        z.round_robin = Some(RoundRobin {
-            counter: RrCounter::Global,
-            position,
-            length: 2,
-            random: false,
-        });
+        z.start = vec![(
+            Join::And,
+            Atom::RoundRobin(RoundRobin {
+                counter: RrCounter::Global,
+                position,
+                length: 2,
+                random: false,
+            }),
+        )];
         zones.push(z);
     }
     let mut plain = zone(&mut store, 0.5);
@@ -197,12 +204,15 @@ fn random_round_robin_never_repeats_a_step() {
     let zones = (0..3u8)
         .map(|position| {
             let mut z = zone(&mut store, 0.1 * f32::from(position + 1));
-            z.round_robin = Some(RoundRobin {
-                counter: RrCounter::Global,
-                position,
-                length: 3,
-                random: true,
-            });
+            z.start = vec![(
+                Join::And,
+                Atom::RoundRobin(RoundRobin {
+                    counter: RrCounter::Global,
+                    position,
+                    length: 3,
+                    random: true,
+                }),
+            )];
             z
         })
         .collect();
@@ -220,29 +230,36 @@ fn random_round_robin_never_repeats_a_step() {
     }
 }
 
+/// Kontakt's key latch: switch keys select the articulation, a key in a gap
+/// between switches still plays ordinary zones and clears the latch.
 #[test]
-fn a_keyswitch_selects_the_articulation_and_sounds_nothing() {
+fn a_keyswitch_latches_and_a_gap_key_clears_it() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut legato = zone(&mut store, 0.3);
-    legato.keyswitch = Some(24);
+    legato.keys = 40..=127;
+    legato.start = vec![(Join::And, Atom::Switch(0))];
     let mut staccato = zone(&mut store, 0.6);
-    staccato.keyswitch = Some(25);
-    let mut plan = Plan::new(vec![legato, staccato], 8);
-    plan.keyswitches = Some(24..=35);
+    staccato.keys = 40..=127;
+    staccato.start = vec![(Join::And, Atom::Switch(1))];
+    let mut gap = zone(&mut store, 0.1);
+    gap.keys = 30..=30;
+    let mut plan = Plan::new(vec![legato, staccato, gap], 8);
+    plan.switches = vec![24..=24, 36..=36];
     plan.default_keyswitch = Some(24);
     let mut e = engine(&store, plan);
-    assert!(close(level(&mut e, &[on(60, 1.0)])[0], 0.3));
-    level(&mut e, &[off(60)]);
-    for _ in 0..4 {
-        level(&mut e, &[]);
-    }
-    assert_eq!(
-        level(&mut e, &[on(25, 1.0)])[0],
-        0.0,
-        "the switch key is silent"
-    );
-    assert_eq!(e.keyswitch(), Some(25));
-    assert!(close(level(&mut e, &[on(62, 1.0)])[0], 0.6));
+    let mut play = |key| {
+        let l = level(&mut e, &[on(key, 1.0)])[0];
+        level(&mut e, &[off(key)]);
+        for _ in 0..4 {
+            level(&mut e, &[]);
+        }
+        l
+    };
+    assert!(close(play(60), 0.3), "the default articulation");
+    play(36);
+    assert!(close(play(62), 0.6), "switched");
+    assert!(close(play(30), 0.1), "a gap key sounds");
+    assert_eq!(play(64), 0.0, "and cleared the latch");
 }
 
 #[test]

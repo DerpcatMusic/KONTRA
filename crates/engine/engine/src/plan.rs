@@ -44,6 +44,16 @@ pub struct RoundRobin {
     pub random: bool,
 }
 
+/// One start condition of a zone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Atom {
+    /// The latch of [`Plan::switches`] at this index is set.
+    Switch(u16),
+    /// The controller's value is in range.
+    Cc(u8, RangeInclusive<u8>),
+    RoundRobin(RoundRobin),
+}
+
 /// What a crossfade or a range reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
@@ -121,12 +131,9 @@ pub struct Zone {
     pub keys: RangeInclusive<u8>,
     /// MIDI velocities 1..=127 the zone answers.
     pub velocities: RangeInclusive<u8>,
-    /// Every listed CC must be inside its range at note-on.
-    pub cc_ranges: Vec<(u8, RangeInclusive<u8>)>,
-    /// The keyswitch (articulation) that must be active, if any.
-    pub keyswitch: Option<u8>,
+    /// Start conditions folded left to right by their joins; empty always starts.
+    pub start: Vec<(ir::Join, Atom)>,
     pub trigger: Trigger,
-    pub round_robin: Option<RoundRobin>,
     pub crossfades: Vec<Crossfade>,
     // Voice group.
     /// Voice group, for polyphony limits, choke and group round robins.
@@ -164,10 +171,8 @@ impl Zone {
         Self {
             keys: 0..=127,
             velocities: 1..=127,
-            cc_ranges: Vec::new(),
-            keyswitch: None,
+            start: Vec::new(),
             trigger: Trigger::Attack,
-            round_robin: None,
             crossfades: Vec::new(),
             group: 0,
             off_by: None,
@@ -206,8 +211,9 @@ pub struct Plan {
     pub polyphony: Vec<(u32, u16)>,
     /// Voice limits shared across groups.
     pub voice_groups: Vec<ir::VoiceGroup>,
-    /// Keys that switch articulation instead of sounding.
-    pub keyswitches: Option<RangeInclusive<u8>>,
+    /// Key ranges [`Atom::Switch`] latches; distinct.
+    pub switches: Vec<RangeInclusive<u8>>,
+    /// The key the latch starts as if pressed.
     pub default_keyswitch: Option<u8>,
     pub voices: usize,
     pub notes: usize,
@@ -236,7 +242,7 @@ impl Plan {
             }],
             polyphony: Vec::new(),
             voice_groups: Vec::new(),
-            keyswitches: None,
+            switches: Vec::new(),
             default_keyswitch: None,
             voices,
             notes: 128,

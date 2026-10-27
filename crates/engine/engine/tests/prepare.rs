@@ -60,10 +60,7 @@ fn zone(sample: usize) -> ir::Zone {
 
 fn group(key: u8, zones: Vec<ir::Zone>) -> ir::Group {
     ir::Group {
-        start: vec![ir::StartRule::Keyswitch {
-            key,
-            range: 24..=25,
-        }],
+        start: vec![(ir::Join::And, ir::StartRule::Keyswitch { range: key..=key })],
         zones,
         ..ir::Group::DEFAULT
     }
@@ -102,15 +99,17 @@ fn a_prepared_instrument_plays_its_keyswitched_groups() {
     assert_eq!(plan.zones.len(), 2, "the missing sample's zone is dropped");
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].impact, ir::Impact::Broken);
-    assert_eq!(plan.keyswitches, Some(24..=25));
+    assert_eq!(plan.switches, [24..=24, 25..=25]);
 
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let mut out = vec![[0.0; 2]; 256];
     e.process(&mut out, &[on(60)]);
     assert!((out[128][0] - 0.3).abs() < 1e-3, "legato: {:?}", out[128]);
     e.process(&mut out, &[on(25), on(62)]);
+    // The switch key plays the staccato zone mapped on it too: Kontakt's latch
+    // silences no key. Legato 0.3 + two staccato notes.
     assert!(
-        (out[128][0] - 0.9).abs() < 1e-3,
+        (out[128][0] - 1.5).abs() < 1e-3,
         "staccato joins: {:?}",
         out[128]
     );
