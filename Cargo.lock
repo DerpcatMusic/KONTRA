@@ -2392,9 +2392,14 @@ version = "0.0.0"
 name = "kontra-format-kontakt"
 version = "0.0.0"
 dependencies = [
+ "aes",
  "kontra-format",
+ "kontra-ir",
  "kontra-law",
  "kontra-params",
+ "ncw",
+ "ni-file",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

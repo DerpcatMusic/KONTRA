@@ -40,6 +40,7 @@ fn sample(name: &str, level_milli: u64) -> ir::Sample {
         channels: 1,
         frames: 48_000,
         rate: RATE,
+        keystream: None,
     }
 }
 
@@ -48,6 +49,7 @@ fn zone(sample: usize) -> ir::Zone {
         sample,
         keys: 0..=127,
         velocities: 1..=127,
+        velocity_fade: (0, 0),
         root: 60,
         tune: 0.0,
         volume_db: 0.0,
