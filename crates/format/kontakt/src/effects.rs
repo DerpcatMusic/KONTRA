@@ -199,7 +199,7 @@ fn eq(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
         .filter(|n| (1..=3).contains(n))?;
     let tail = public.get(public.len().checked_sub(count * 12)?..)?;
     let mut bands = [ir::Bell::FLAT; 3];
-    for (band, raw) in bands.iter_mut().zip(tail.chunks_exact(12)) {
+    for (band, raw) in bands.iter_mut().zip(tail.as_chunks::<12>().0) {
         let f = |n: usize| {
             let bytes = raw.get(n..n + 4)?.try_into().ok()?;
             Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
