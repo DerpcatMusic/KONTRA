@@ -35,6 +35,7 @@ fn sample(name: &str, level_milli: u64) -> ir::Sample {
         codec: ir::Codec::Pcm {
             bits: 32,
             float: true,
+            big_endian: false,
         },
         channels: 1,
         frames: 48_000,

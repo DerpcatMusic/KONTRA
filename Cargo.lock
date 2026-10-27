@@ -2535,6 +2535,8 @@ name = "kontra-stream"
 version = "0.0.0"
 dependencies = [
  "crossbeam-queue",
+ "kontra-ir",
+ "ncw",
 ]
 
 [[package]]

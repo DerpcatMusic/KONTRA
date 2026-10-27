@@ -6,11 +6,13 @@
 //! memory plays as silence and is counted, so a voice keeps its timeline (rule 4).
 
 mod cache;
+mod file;
 mod fmt;
 mod sample;
 mod source;
 mod store;
 
+pub use file::open;
 pub use fmt::{Encoding, SampleFmt};
 pub use sample::{PAGE_FRAMES, Read, Sample, SampleId};
 pub use source::{MemSource, Source};

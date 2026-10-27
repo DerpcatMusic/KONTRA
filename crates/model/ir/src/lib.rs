@@ -52,8 +52,12 @@ pub struct Sample {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Codec {
-    /// Interleaved little-endian PCM from the start of the data.
-    Pcm { bits: u8, float: bool },
+    /// Interleaved PCM from the start of the data.
+    Pcm {
+        bits: u8,
+        float: bool,
+        big_endian: bool,
+    },
     /// Native Instruments' compressed wave.
     Ncw,
 }
