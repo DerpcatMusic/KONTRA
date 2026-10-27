@@ -2372,11 +2372,9 @@ dependencies = [
 name = "kontra-engine"
 version = "0.0.0"
 dependencies = [
- "kontra-dsp",
  "kontra-events",
  "kontra-stream",
  "kontra-time",
- "kontra-vm",
  "kontra-voice",
 ]
 
