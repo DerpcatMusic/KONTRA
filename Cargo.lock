@@ -2373,6 +2373,7 @@ name = "kontra-engine"
 version = "0.0.0"
 dependencies = [
  "kontra-events",
+ "kontra-ir",
  "kontra-stream",
  "kontra-time",
  "kontra-vm",
@@ -2441,6 +2442,10 @@ dependencies = [
  "kontra-stream",
  "kontra-ui-model",
 ]
+
+[[package]]
+name = "kontra-ir"
+version = "0.0.0"
 
 [[package]]
 name = "kontra-ksp"
