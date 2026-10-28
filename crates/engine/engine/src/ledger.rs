@@ -353,6 +353,17 @@ impl Ledger {
         }
     }
 
+    /// Every live note with its reference.
+    pub(crate) fn live(&self) -> impl Iterator<Item = (NoteRef, &Note)> {
+        self.entries.iter().enumerate().filter_map(|(index, e)| {
+            let r = NoteRef {
+                index: index as u32,
+                generation: e.generation,
+            };
+            e.note.as_ref().map(|n| (r, n))
+        })
+    }
+
     pub(crate) fn count(&self, keep: impl Fn(&Note) -> bool) -> usize {
         self.entries
             .iter()
