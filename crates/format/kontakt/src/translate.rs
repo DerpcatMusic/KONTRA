@@ -107,6 +107,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
             volume_db: 0.0,
             pan: 0.0,
             inserts: Vec::new(),
+            sends: Vec::new(),
         });
         out.buses.extend(buses);
         for (g, group) in out.groups.iter_mut().zip(&groups.groups) {

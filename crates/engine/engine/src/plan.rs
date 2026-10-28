@@ -276,6 +276,8 @@ pub struct Bus {
     pub pan: f32,
     /// Effects on what it carries, by slot.
     pub inserts: Vec<Option<ir::Effect>>,
+    /// Later buses it feeds ([`ir::Bus::sends`]).
+    pub sends: Vec<ir::BusSend>,
     /// A disabled bus starts no voices (purged mic): it costs no CPU.
     pub enabled: bool,
 }
@@ -336,6 +338,7 @@ impl Plan {
                 gain: 1.0,
                 pan: 0.0,
                 inserts: Vec::new(),
+                sends: Vec::new(),
                 enabled: true,
             }],
             polyphony: Vec::new(),
@@ -364,6 +367,7 @@ pub(crate) fn source(kind: &ir::ModKind) -> Option<ir::Source> {
         | K::Cutoff { source, .. }
         | K::Resonance { source, .. }
         | K::EqGain { source, .. }
+        | K::EffectParam { source, .. }
         | K::SampleStart { source, .. }
         | K::Attack { source, .. } => Some(source),
         K::Envelope => None,

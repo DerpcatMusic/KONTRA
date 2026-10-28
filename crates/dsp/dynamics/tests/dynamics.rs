@@ -1,4 +1,7 @@
-use kontra_dsp_dynamics::{Compressor, CompressorSettings, Limiter, LimiterSettings};
+use kontra_dsp_dynamics::{
+    Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
+    TransientSettings,
+};
 
 const RATE: u32 = 48_000;
 
@@ -30,6 +33,7 @@ fn settings() -> CompressorSettings {
         makeup_db: 0.0,
         link: true,
         mix: 1.0,
+        detector: Detector::Input,
     }
 }
 
@@ -119,4 +123,70 @@ fn silence_after_a_loud_tone_releases_to_exactly_zero() {
     assert!(c.reduction()[0] > 1.0);
     c.process(&mut vec![[0.0; 2]; RATE as usize * 4]);
     assert_eq!(c.reduction(), [0.0; 2]);
+}
+
+/// Kontakt 8's Transient Master core under tools/re/kemu.py at 48 kHz,
+/// controls .9 .2 .6 without clip (attack 96, sustain −69, +1.2 dB), on
+/// bursts of 1.2 and 0.05 every 1024 frames (v2 sampler-core dynamics tests).
+#[test]
+fn the_transient_shaper_matches_the_native_core() {
+    let mut io: Vec<[f32; 2]> = (0..4096)
+        .map(|n| {
+            let env = if (n / 1024) % 2 == 0 { 1.2 } else { 0.05 };
+            let n = f64::from(n);
+            [
+                (env * (n * 0.0576).sin()) as f32,
+                (env * 0.5 * (n * 0.1305).cos()) as f32,
+            ]
+        })
+        .collect();
+    let s = TransientSettings {
+        attack: 96.0,
+        sustain: -69.0,
+        gain_db: 1.2,
+        clip: false,
+    };
+    Transient::new(s, RATE).process(&mut io);
+    let native: [(usize, f32, f32); 9] = [
+        (1, 0.369_388_13, 3.176_668_2),
+        (10, 3.247_984_2, 0.756_784),
+        (100, -2.667_317_2, 2.334_353_7),
+        (1000, 3.002_772_6, 0.229_918_15),
+        (1500, -0.117_230_52, 0.009_873_159),
+        (2047, -0.071_667_75, -0.028_402_573),
+        (2500, -0.991_985_9, 0.922_746),
+        (3000, -0.081_362_96, -0.388_658_14),
+        (4095, -0.008_966_117, 0.025_019_621),
+    ];
+    for (n, l, r) in native {
+        for (got, want) in io[n].iter().zip([l, r]) {
+            assert!(
+                (got - want).abs() <= 2e-3 * want.abs().max(0.01),
+                "{n}: {:?} vs {l} {r}",
+                io[n]
+            );
+        }
+    }
+}
+
+#[test]
+fn a_feedback_detector_compresses_less_than_feed_forward_at_the_same_ratio() {
+    let squash = |detector| {
+        let mut c = Compressor::new(
+            CompressorSettings {
+                detector,
+                ..settings()
+            },
+            RATE,
+        );
+        let mut io = sine(1.0, RATE as usize / 2);
+        c.process(&mut io);
+        c.reduction()[0]
+    };
+    let (forward, back) = (squash(Detector::Input), squash(Detector::Output));
+    // 20 dB over at 4:1: 15 dB forward; the output it hears is lower, so less.
+    assert!(
+        (forward - 15.0).abs() < 0.5 && back > 1.0 && back < forward - 3.0,
+        "{forward} {back}"
+    );
 }

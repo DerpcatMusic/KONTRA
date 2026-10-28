@@ -175,6 +175,7 @@ fn sequential_round_robin_cycles_and_mic_layers_agree() {
         gain: 1.0,
         pan: 0.0,
         inserts: Vec::new(),
+        sends: Vec::new(),
         enabled: true,
     });
     let mut e = engine(&store, plan);
@@ -414,12 +415,52 @@ fn a_disabled_mic_bus_starts_no_voices() {
         gain: 1.0,
         pan: 0.0,
         inserts: Vec::new(),
+        sends: Vec::new(),
         enabled: true,
     });
     let mut e = engine(&store, plan);
     e.set_bus_enabled(1, false);
     assert!(close(level(&mut e, &[on(60, 1.0)])[0], 0.5));
     assert_eq!(e.active_voices(), 1);
+}
+
+#[test]
+fn a_bus_sends_before_its_fader() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].bus = 1;
+    // A silent fader still feeds the aux at a pre-fader send's level, and
+    // silences a post-fader one.
+    plan.buses.push(Bus {
+        name: "Layer".into(),
+        gain: 0.0,
+        pan: 0.0,
+        inserts: Vec::new(),
+        sends: vec![
+            ir::BusSend {
+                bus: 2,
+                level: 0.5,
+                post_fader: false,
+            },
+            ir::BusSend {
+                bus: 2,
+                level: 1.0,
+                post_fader: true,
+            },
+        ],
+        enabled: true,
+    });
+    plan.buses.push(Bus {
+        name: "Aux".into(),
+        gain: 1.0,
+        pan: 0.0,
+        inserts: Vec::new(),
+        sends: Vec::new(),
+        enabled: true,
+    });
+    let mut e = engine(&store, plan);
+    assert!(close(level(&mut e, &[on(60, 1.0)])[0], 0.25));
 }
 
 #[test]
@@ -972,22 +1013,29 @@ fn an_instrument_reverb_rings_on_after_the_note() {
         kind: ir::EffectKind::Reverb(ir::Reverb {
             seconds: 2.0,
             size: 1.0,
+            size_curve: [1.0, 0.0],
             damping: 0.5,
             diffusion: 1.0,
             predelay_ms: 0.0,
             high_cut_hz: 20_000.0,
             low_shelf_db: 0.0,
             stereo: 1.0,
+            modulation_ms: 0.0,
+            modulation_hz: 0.0,
         }),
         bypass: false,
         output: 1.0,
         dry: 0.0,
     };
     // The summed level of the last block, a second after key up.
-    let tail = |inserts: Vec<Option<ir::Effect>>| {
+    let tail = |inserts: Vec<Option<ir::Effect>>, group: bool| {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
         let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
-        plan.inserts = inserts;
+        if group {
+            plan.groups[0].inserts = inserts;
+        } else {
+            plan.inserts = inserts;
+        }
         let mut e = engine(&store, plan);
         let first = level(&mut e, &[on(60, 1.0)]);
         let mut buf = vec![[0.0; 2]; 256];
@@ -1001,12 +1049,19 @@ fn an_instrument_reverb_rings_on_after_the_note() {
         let sum: f32 = buf.iter().map(|[l, r]| l.abs() + r.abs()).sum();
         (first, sum)
     };
-    let (dry_first, dry_tail) = tail(Vec::new());
+    let (dry_first, dry_tail) = tail(Vec::new(), false);
     assert!(dry_first[0] > 0.1 && dry_tail == 0.0, "the voice has ended");
-    let (first, wet) = tail(vec![Some(reverb)]);
+    let (first, wet) = tail(vec![Some(reverb)], false);
     // Fully wet: nothing until the shortest line (30 ms) comes round.
     assert_eq!(first, [0.0; 2]);
     assert!(wet > 1e-3 && wet.is_finite(), "tail {wet}");
+    // In a group rack it runs on the group's sum, the same way.
+    let (first, group) = tail(vec![Some(reverb)], true);
+    assert_eq!(first, [0.0; 2]);
+    assert!(
+        (group - wet).abs() < 1e-3 * wet,
+        "group {group} instrument {wet}"
+    );
 }
 
 #[test]
@@ -1026,6 +1081,7 @@ fn a_compressor_slot_mixes_its_dry_level_from_the_input() {
                 makeup_db: 0.0,
                 link: true,
                 mix: 1.0,
+                detector: ir::Detector::Input,
             }),
             bypass: false,
             output,
@@ -1235,4 +1291,70 @@ fn an_lfo_on_a_group_waveshaper_retunes_it_every_32_frames() {
     let mut levels: Vec<f32> = out[512..768].iter().step_by(32).map(|s| s[0]).collect();
     levels.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
     assert!(levels.len() >= 6, "{levels:?}");
+}
+
+#[test]
+fn a_synced_delay_echoes_one_beat_later_at_the_host_tempo() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Delay(ir::Delay {
+            time: ir::DelayTime::Beats(1.0),
+            depth_ms: 0.0,
+            second_head: false,
+            input: [1.0; 2],
+            feedback: 0.0,
+            cross: 0.0,
+            damping_hz: f32::INFINITY,
+            rate: ir::Rate::Hz(0.0),
+            phase: 0.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let mut e = engine(&store, plan);
+    e.set_tempo(240.0);
+    let mut out = Vec::new();
+    let mut buf = vec![[0.0; 2]; 256];
+    e.process(&mut buf, &[on(60, 1.0)]);
+    out.extend_from_slice(&buf);
+    while out.len() < RATE as usize / 2 {
+        e.process(&mut buf, &[]);
+        out.extend_from_slice(&buf);
+    }
+    let first = out.iter().position(|f| f[0].abs() > 1e-6).unwrap();
+    // A quarter note at 240 BPM: 250 ms, within the read's interpolation.
+    assert!(
+        first.abs_diff(RATE as usize / 4) <= 1,
+        "first echo at {first}"
+    );
+}
+
+#[test]
+fn a_group_phaser_without_a_dry_level_plays_on_the_group_sum() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    // The phaser runs on the group's sum: its wet path carries the voice.
+    plan.groups[0].inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Phaser(ir::Phaser {
+            hz: 300.0,
+            spread_hz: 270.0,
+            exponent: 1.5,
+            feedback: 0.5,
+            rate: ir::Rate::Hz(1.0),
+            phase: 0.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let mut e = engine(&store, plan);
+    let [l, r] = level(&mut e, &[on(60, 1.0)]);
+    assert!(
+        l.abs() > 0.05 && r.abs() > 0.05 && !close(l, 0.5),
+        "{l} {r}"
+    );
 }

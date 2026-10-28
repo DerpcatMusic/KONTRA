@@ -15,6 +15,7 @@ mod controls;
 mod effects;
 mod engine_pars;
 mod filters;
+mod group_racks;
 mod inspect;
 mod ledger;
 mod machine;
@@ -110,6 +111,8 @@ struct BusState {
     rack: racks::Rack,
     /// -1..=1 balance after the rack.
     pan: f32,
+    /// Later buses it feeds, and their levels.
+    sends: Box<[ir::BusSend]>,
     mix: Box<[[f32; 2]]>,
 }
 
@@ -178,6 +181,8 @@ pub struct Engine {
     zone_chain: Box<[Option<u16>]>,
     /// Per group, the inserts that run on each voice.
     voice_units: Box<[Arc<[voice_rack::Unit]>]>,
+    /// Per group, the first slot its summed voices run (group_racks.rs).
+    group_split: Box<[Option<usize>]>,
     /// One voice's audio on its way through its filter.
     scratch: Box<[[f32; 2]]>,
 }
@@ -220,6 +225,7 @@ impl Engine {
                 enabled: b.enabled,
                 rack: racks::Rack::new(&b.inserts, rate, &[]),
                 pan: b.pan,
+                sends: b.sends.clone().into(),
                 mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
             })
             .collect();
@@ -285,6 +291,7 @@ impl Engine {
             chains: Vec::new(),
             zone_chain: Box::new([]),
             voice_units: Box::new([]),
+            group_split: Box::new([]),
             scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),
         };
         engine.cc_values[7] = 100;
