@@ -92,7 +92,8 @@ impl Engine {
     /// a transport query. `arg` is the call's first integer.
     pub(crate) fn transport_value(&self, action: Action, arg: i32) -> Option<HostValue> {
         let t = &self.transport;
-        let quarter = 60e6 / f64::from(self.tempo.max(1.0));
+        // set_tempo keeps the tempo finite and positive.
+        let quarter = 60e6 / f64::from(self.tempo);
         let int =
             |v: f64| HostValue::Int(v.round().clamp(-2_147_483_648.0, 2_147_483_647.0) as i32);
         let (num, denom) = t.signature;
