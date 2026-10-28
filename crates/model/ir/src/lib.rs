@@ -12,7 +12,10 @@ mod effects;
 mod mods;
 mod reverb;
 pub use bus::{Bus, BusSend};
-pub use drive::{Crush, Curve as DriveCurve, EffectParam, KnobTarget, Overdrive, Shaper};
+pub use drive::{
+    Crush, Curve as DriveCurve, EffectParam, KnobTarget, Overdrive, RackAt, Shaper, SlotKnob,
+    SlotLaw,
+};
 pub use effects::{
     Compressor, Delay, DelayTime, Detector, IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb,
     Transient,
@@ -41,6 +44,8 @@ pub struct Instrument {
     pub main: Vec<Option<Effect>>,
     /// Responses [`EffectKind::Convolution`] slots play.
     pub impulses: Vec<Impulse>,
+    /// How [`KnobTarget::Slot`] knobs move the effects they address.
+    pub slot_laws: Vec<SlotLaw>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -58,6 +63,7 @@ impl Instrument {
         sends: Vec::new(),
         main: Vec::new(),
         impulses: Vec::new(),
+        slot_laws: Vec::new(),
         diagnostics: Vec::new(),
     };
 }

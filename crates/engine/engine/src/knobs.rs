@@ -27,6 +27,9 @@ impl Engine {
         else {
             return false;
         };
+        if let ir::KnobTarget::Slot(knob) = target {
+            return self.set_slot_knob(knob, y, group, slot, generic);
+        }
         let Some(at) = self.knob_mut(target, group, slot, generic) else {
             return false;
         };
@@ -39,9 +42,76 @@ impl Engine {
     /// the control holds.
     pub(crate) fn knob(&mut self, n: u16, group: i32, slot: i32, generic: i32) -> Option<i32> {
         let target = self.script()?.knobs.get(usize::from(n))?.0;
+        if let ir::KnobTarget::Slot(knob) = target {
+            let law = self.slot_law(knob, group, slot, generic)?;
+            let y = *law
+                .field
+                .field_mut(&mut self.effect_mut(group, slot, generic)?.kind)?;
+            let x = invert(&self.plan.slot_laws.get(law.index)?.law, y);
+            let law = &self.script()?.knobs.get(usize::from(n))?.1;
+            return Some((invert(law, x) * 1e6).round() as i32);
+        }
         let y = *self.knob_mut(target, group, slot, generic)?;
         let law = &self.script()?.knobs.get(usize::from(n))?.1;
         Some((invert(law, y) * 1e6).round() as i32)
+    }
+
+    /// Sets every field slot knob `knob` moves to its law at `x`.
+    fn set_slot_knob(
+        &mut self,
+        knob: ir::SlotKnob,
+        x: f32,
+        group: i32,
+        slot: i32,
+        generic: i32,
+    ) -> bool {
+        let mut hit = false;
+        for index in 0..self.plan.slot_laws.len() {
+            let Some(at) = self.slot_at(index, knob, group, slot, generic) else {
+                continue;
+            };
+            let Some(l) = self.plan.slot_laws.get(at) else {
+                continue;
+            };
+            let (field, y) = (l.field, l.law.eval(x));
+            let effect = self.effect_mut(group, slot, generic);
+            if let Some(v) = effect.and_then(|e| field.field_mut(&mut e.kind)) {
+                *v = y;
+                hit = true;
+            }
+        }
+        if hit {
+            self.refresh_all(None);
+        }
+        hit
+    }
+
+    /// The first law of slot knob `knob` at the addressed slot.
+    fn slot_law(&self, knob: ir::SlotKnob, group: i32, slot: i32, generic: i32) -> Option<Found> {
+        (0..self.plan.slot_laws.len()).find_map(|i| {
+            let index = self.slot_at(i, knob, group, slot, generic)?;
+            let field = self.plan.slot_laws.get(index)?.field;
+            Some(Found { index, field })
+        })
+    }
+
+    /// `index` when that slot law is knob `knob` of the addressed slot: a
+    /// group's insert (`generic` −1) or an instrument insert (`$NI_INSERT_BUS`).
+    fn slot_at(
+        &self,
+        index: usize,
+        knob: ir::SlotKnob,
+        group: i32,
+        slot: i32,
+        generic: i32,
+    ) -> Option<usize> {
+        let l = self.plan.slot_laws.get(index)?;
+        let at = match (u32::try_from(group), generic) {
+            (Ok(g), -1) => ir::RackAt::Group(g),
+            (Err(_), 1) => ir::RackAt::Inserts,
+            _ => return None,
+        };
+        (l.at == at && i32::from(l.slot) == slot && l.knob == knob).then_some(index)
     }
 
     fn knob_mut(
@@ -55,6 +125,7 @@ impl Engine {
             ir::KnobTarget::Effect(p) => {
                 p.field_mut(&mut self.effect_mut(group, slot, generic)?.kind)
             }
+            ir::KnobTarget::Slot(_) => None,
             ir::KnobTarget::LfoRate | ir::KnobTarget::LfoWeight(_) => {
                 let lfo = self
                     .groups
@@ -72,6 +143,12 @@ impl Engine {
             }
         }
     }
+}
+
+/// A slot law found for a knob: its index in the plan and the field it sets.
+struct Found {
+    index: usize,
+    field: ir::EffectParam,
 }
 
 /// The 0..=1 setting `law` maps to `y`, by bisection; the laws are monotonic.

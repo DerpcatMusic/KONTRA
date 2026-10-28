@@ -332,6 +332,8 @@ pub struct Plan {
     /// Convolution responses at the engine's rate, by [`ir::Instrument::impulses`]
     /// index; `None` when unreadable.
     pub impulses: Vec<Option<Response>>,
+    /// How [`ir::KnobTarget::Slot`] knobs move the effects they address.
+    pub slot_laws: Vec<ir::SlotLaw>,
 }
 
 impl Plan {
@@ -367,6 +369,7 @@ impl Plan {
             sends: Vec::new(),
             main: Vec::new(),
             impulses: Vec::new(),
+            slot_laws: Vec::new(),
         }
     }
 }

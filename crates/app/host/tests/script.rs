@@ -541,6 +541,88 @@ fn script_knobs_set_effect_and_lfo_controls_through_their_laws() {
 }
 
 #[test]
+fn slot_knobs_move_a_filters_fields_through_the_slots_own_laws() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let filter = Some(ir::Effect {
+        kind: ir::EffectKind::Filter(ir::Filter {
+            pass: ir::Pass::Low,
+            hz: 300.0,
+            stages: 1,
+            pole: false,
+            damping: [2.0; 3],
+            gain: 1.0,
+            octaves: 0.0,
+            q_octaves: 0.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    });
+    plan.groups[0].inserts = vec![filter];
+    plan.inserts = vec![None, filter];
+    let law = |at, slot, knob, field, law| ir::SlotLaw {
+        at,
+        slot,
+        knob,
+        field,
+        law,
+    };
+    let (group, inserts) = (ir::RackAt::Group(0), ir::RackAt::Inserts);
+    let (cutoff, resonance) = (ir::SlotKnob::Cutoff, ir::SlotKnob::Resonance);
+    plan.slot_laws = vec![
+        law(
+            group,
+            0,
+            cutoff,
+            ir::EffectParam::FilterHz,
+            ir::Law::Exp {
+                lo: 100.0,
+                hi: 10_000.0,
+            },
+        ),
+        law(
+            group,
+            0,
+            resonance,
+            ir::EffectParam::FilterDamping(0),
+            ir::Law::Linear { lo: 2.0, hi: 0.1 },
+        ),
+        law(
+            group,
+            0,
+            resonance,
+            ir::EffectParam::FilterGain,
+            ir::Law::Linear { lo: 1.0, hi: 0.5 },
+        ),
+        law(
+            inserts,
+            1,
+            cutoff,
+            ir::EffectParam::FilterHz,
+            ir::Law::Linear {
+                lo: 20.0,
+                hi: 20_000.0,
+            },
+        ),
+    ];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_CUTOFF, 500000, 0, 0, -1)
+            set_engine_par($ENGINE_PAR_RESONANCE, 250000, 0, 0, -1)
+            set_engine_par($ENGINE_PAR_CUTOFF, 750000, -1, 1, 1)
+            message(get_engine_par($ENGINE_PAR_CUTOFF, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_RESONANCE, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_CUTOFF, -1, 1, 1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "500000 250000 750000");
+}
+
+#[test]
 fn a_script_sends_a_note_its_modulation_value() {
     use kontra_engine::ir;
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
