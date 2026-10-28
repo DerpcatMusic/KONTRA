@@ -21,6 +21,7 @@ mod skreamer;
 mod translate;
 
 pub use container::chunks;
+pub use resources::Resources;
 pub use reverb::{reverb, reverb_laws};
 pub use script_knobs::script_knobs;
 
