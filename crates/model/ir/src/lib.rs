@@ -12,7 +12,7 @@ mod effects;
 mod mods;
 mod reverb;
 pub use bus::{Bus, BusSend};
-pub use drive::{Crush, Curve as DriveCurve, EffectParam, Shaper};
+pub use drive::{Crush, Curve as DriveCurve, EffectParam, Overdrive, Shaper};
 pub use effects::{
     Compressor, Delay, DelayTime, Detector, ImpulseCuts, Limiter, Phaser, Reverb, Transient,
 };
@@ -610,6 +610,8 @@ pub enum EffectKind {
     Shaper(Shaper),
     /// A sample-rate and bit-depth reducer.
     Crush(Crush),
+    /// An overdrive pedal.
+    Overdrive(Overdrive),
     /// Copies its input to the instrument's send slot n at `levels[n]`
     /// (linear) and passes it on unchanged.
     Sends([f32; 8]),

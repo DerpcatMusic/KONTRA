@@ -71,7 +71,9 @@ pub(crate) fn matrix(e: &ir::Effect) -> Gain {
             product(balance(pan), width)
         }
         // Run per voice, their output gain after them (voice_rack.rs).
-        ir::EffectKind::Shaper(_) | ir::EffectKind::Crush(_) => return IDENTITY,
+        ir::EffectKind::Shaper(_) | ir::EffectKind::Crush(_) | ir::EffectKind::Overdrive(_) => {
+            return IDENTITY;
+        }
         // Its output gain trims processing that does not run here (a
         // compressor's makeup: ANALOG STRINGS stores +9 dB), so it passes.
         ir::EffectKind::Other => return IDENTITY,
