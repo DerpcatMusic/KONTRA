@@ -20,7 +20,7 @@ pub use effects::{
     Compressor, Delay, DelayTime, Detector, IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb,
     Transient,
 };
-pub use mods::{Blend, Factor, ModKind, Term};
+pub use mods::{Blend, Factor, ModKind, Term, Transfer};
 pub use reverb::{Law, ReverbPar};
 
 #[derive(Clone, Debug)]
@@ -313,37 +313,6 @@ impl Group {
         routes: Vec::new(),
         zones: Vec::new(),
     };
-}
-
-/// A source through a transfer table: `table` holds the outputs for evenly
-/// spaced inputs 0..=1, read with linear interpolation; an LFO enters as
-/// `(x + 1)/2`. Its source is never itself shaped.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Transfer {
-    pub source: Source,
-    pub table: Vec<f32>,
-}
-
-impl Transfer {
-    /// The table's output for `x`, clamped to 0..=1; an empty table passes
-    /// `x` through.
-    #[must_use]
-    pub fn apply(&self, x: f32) -> f32 {
-        let Some(last) = self.table.len().checked_sub(1) else {
-            return x;
-        };
-        let at = x.clamp(0.0, 1.0) * last as f32;
-        let i = (at as usize).min(last);
-        let (a, b) = (
-            self.table.get(i).copied().unwrap_or(x),
-            self.table
-                .get(i + 1)
-                .or(self.table.get(i))
-                .copied()
-                .unwrap_or(x),
-        );
-        a + (b - a) * (at - i as f32)
-    }
 }
 
 /// A per-voice envelope of free breakpoints, 0..=1. It starts at `start`,
