@@ -695,7 +695,8 @@ impl HostApi for Engine {
             // ponytail: every asynchronous command here succeeds.
             Action::AsyncExitStatus => HostValue::Int(1),
             // Commands finish before the queue reaches the next event.
-            Action::WaitAsync => HostValue::Nothing,
+            Action::WaitAsync | Action::DisableLogging => HostValue::Nothing,
+            Action::NumOutputChannels => HostValue::Int(2), // one stereo pair; Kontakt: its output section (28)
             Action::StopWait => self.stop_wait(int(0), int(1) != 0),
             Action::GetPurgeState => HostValue::Int(
                 self.groups
