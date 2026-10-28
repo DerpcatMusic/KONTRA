@@ -25,12 +25,13 @@ mod prepare;
 mod queue;
 mod racks;
 mod script;
+mod transport;
 mod voice_gain;
 mod voice_groups;
+mod voice_rack;
 
 use std::sync::Arc;
 
-use kontra_dsp::filter::Svf;
 use kontra_stream::StreamClient;
 use kontra_time::Frames;
 use kontra_voice::{Voice, VoiceStart};
@@ -92,10 +93,8 @@ struct Slot {
     fading: bool,
     /// Extra gain fixed at start (release-trigger decay).
     factor: f32,
-    /// Its group's filter whose cutoff or resonance moves, run on this voice alone.
-    filter: Option<Svf>,
-    /// Its group's EQ whose band gains move, run on this voice alone.
-    eq: Option<filters::VoiceEq>,
+    /// Its group's inserts that run on this voice alone.
+    rack: Vec<voice_rack::Unit>,
 }
 
 struct BusState {
@@ -116,6 +115,7 @@ pub struct Engine {
     rate: u32,
     /// Host tempo, quarter notes per minute (tempo-synced LFOs).
     tempo: f32,
+    transport: transport::Transport,
     /// Script modulation values sent to every event, read by notes not sent
     /// their own; while one ramps (until `ramping_until`) voices re-read routes.
     // ponytail: eight indices; a ring when a library sends more.
@@ -171,10 +171,8 @@ pub struct Engine {
     /// Shared EQ chains, and each zone's chain.
     chains: Vec<filters::Chain>,
     zone_chain: Box<[Option<u16>]>,
-    /// Per group, the insert slot of its filter that runs per voice.
-    voice_filters: Box<[Option<u8>]>,
-    /// Per group, the insert slot of its EQ that runs per voice.
-    voice_eqs: Box<[Option<u8>]>,
+    /// Per group, the inserts that run on each voice.
+    voice_units: Box<[Arc<[voice_rack::Unit]>]>,
     /// One voice's audio on its way through its filter.
     scratch: Box<[[f32; 2]]>,
 }
@@ -206,8 +204,7 @@ impl Engine {
                 released: false,
                 fading: false,
                 factor: 1.0,
-                filter: None,
-                eq: None,
+                rack: Vec::new(),
             })
             .collect();
         let buses = plan
@@ -244,6 +241,7 @@ impl Engine {
             now: SampleTime(0),
             rate: rate.max(1),
             tempo: 120.0,
+            transport: transport::Transport::new(plan.scripts.len()),
             script_mods: [None; 8],
             ramping_until: 0,
             queue: EventQueue::new(plan.queue),
@@ -279,8 +277,7 @@ impl Engine {
             main,
             chains: Vec::new(),
             zone_chain: Box::new([]),
-            voice_filters: Box::new([]),
-            voice_eqs: Box::new([]),
+            voice_units: Box::new([]),
             scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),
         };
         engine.cc_values[7] = 100;
@@ -354,14 +351,6 @@ impl Engine {
         self.behaviour.keyswitch
     }
 
-    /// The host's tempo in quarter notes per minute; ignored unless finite
-    /// and positive.
-    pub fn set_tempo(&mut self, bpm: f32) {
-        if bpm.is_finite() && bpm > 0.0 {
-            self.tempo = bpm;
-        }
-    }
-
     pub fn set_bus_gain(&mut self, bus: usize, gain: f32) {
         if let Some(b) = self.buses.get_mut(bus) {
             b.gain = gain;
@@ -410,6 +399,7 @@ impl Engine {
                 .min(SampleTime((self.now.0 / MAX_SPAN + 1) * MAX_SPAN));
             let len = (until.0 - self.now.0) as usize;
             self.render_span(len);
+            self.advance_transport(len);
             let from = (self.now.0 - start.0) as usize;
             if let Some(span) = out.get_mut(from..from + len) {
                 self.mix_out(span);
@@ -517,13 +507,13 @@ impl Engine {
                 envelope: self.envelope(zone, &n, held_seconds),
             };
             let now = self.now;
-            let (filter, eq) = self.voice_fx(zone, &n, self.age(self.now, None));
-            let Some(slot) = self.free_slot() else {
+            let Some(i) = self.free_slot() else {
+                continue;
+            };
+            let Some(slot) = self.voices.get_mut(i) else {
                 continue;
             };
             slot.voice.start(start);
-            slot.filter = filter;
-            slot.eq = eq;
             slot.note = Some(note);
             slot.zone = index;
             slot.started = now;
@@ -531,6 +521,7 @@ impl Engine {
             slot.released_at = None;
             slot.fading = false;
             slot.factor = factor;
+            self.start_rack(i, zone, &n, self.age(now, None));
         }
     }
 
@@ -562,7 +553,7 @@ impl Engine {
 
     /// An idle voice. At the plan's polyphony the oldest playing voice fades
     /// (released ones first) and an idle reserve voice takes the new start.
-    fn free_slot(&mut self) -> Option<&mut Slot> {
+    fn free_slot(&mut self) -> Option<usize> {
         if self.playing_voices() >= self.plan.voices {
             let fade = self.fade_frames();
             if let Some(victim) = self
@@ -589,9 +580,8 @@ impl Engine {
                 i
             }
         };
-        let slot = self.voices.get_mut(index)?;
-        slot.voice.kill();
-        Some(slot)
+        self.voices.get_mut(index)?.voice.kill();
+        Some(index)
     }
 
     fn note_off(&mut self, pattern: HostPattern) {
@@ -743,11 +733,8 @@ impl Engine {
             let gain = self.voice_gain(zone, &n, slot.factor, age);
             let step = self.step(zone, &n, age);
             let pitch = cc.is_none_or(|cc| self.pitch_follows(zone, cc));
-            let tuned = self.voice_filter(zone, &n, age).map(|(_, hz, k)| (hz, k));
-            let bells = self.voice_bells(zone, &n, age);
-            let rate = self.rate;
+            self.retune_rack(i, zone, &n, age);
             if let Some(slot) = self.voices.get_mut(i) {
-                filters::retune(slot, tuned, bells, rate);
                 slot.voice.set_gain(gain);
                 if pitch {
                     slot.voice.set_step(step);

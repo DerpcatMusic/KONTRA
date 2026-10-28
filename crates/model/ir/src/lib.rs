@@ -6,8 +6,10 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod drive;
 mod effects;
 mod reverb;
+pub use drive::{Crush, Curve as DriveCurve, Shaper};
 pub use effects::{Compressor, Limiter};
 pub use reverb::{Law, ReverbPar};
 
@@ -656,6 +658,10 @@ pub enum EffectKind {
     Filter(Filter),
     /// A vowel formant filter.
     Formant(Formant),
+    /// A waveshaper.
+    Shaper(Shaper),
+    /// A sample-rate and bit-depth reducer.
+    Crush(Crush),
     /// Copies its input to the instrument's send slot n at `levels[n]`
     /// (linear) and passes it on unchanged.
     Sends([f32; 8]),
