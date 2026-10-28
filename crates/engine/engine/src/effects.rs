@@ -22,13 +22,23 @@ pub(crate) fn balance(pan: f32) -> Gain {
     [[1.0 - pan.max(0.0), 0.0], [0.0, 1.0 + pan.min(0.0)]]
 }
 
-/// A rack, slot 0 first, as one matrix; bypassed slots pass.
+/// A rack, slot 0 first, as one matrix; bypassed slots pass. A dynamics
+/// slot does not run in a matrix, so its output gain (its make-up) does not
+/// apply either.
 pub(crate) fn rack(slots: &[Option<ir::Effect>]) -> Gain {
     slots
         .iter()
         .flatten()
-        .filter(|e| !e.bypass)
+        .filter(|e| !e.bypass && !dynamics(e.kind))
         .fold(IDENTITY, |m, e| product(matrix(e), m))
+}
+
+/// A compressor or limiter: it runs in instrument and bus racks only.
+pub(crate) fn dynamics(kind: ir::EffectKind) -> bool {
+    matches!(
+        kind,
+        ir::EffectKind::Compressor(_) | ir::EffectKind::Limiter(_)
+    )
 }
 
 pub(crate) fn matrix(e: &ir::Effect) -> Gain {
@@ -63,6 +73,9 @@ pub(crate) fn matrix(e: &ir::Effect) -> Gain {
         ir::EffectKind::Sends(_) => IDENTITY,
         // Its bands run on summed audio (filters.rs, racks.rs).
         ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_) => IDENTITY,
+        // Its wet path runs in instrument and bus racks (racks.rs); a
+        // compressor's or limiter's output is its wet path.
+        ir::EffectKind::Compressor(_) | ir::EffectKind::Limiter(_) => [[0.0; 2]; 2],
         // Its wet path runs in instrument and bus racks (racks.rs).
         ir::EffectKind::OtherWet
         | ir::EffectKind::Convolution { .. }

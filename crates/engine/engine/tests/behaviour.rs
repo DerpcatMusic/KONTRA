@@ -1008,6 +1008,38 @@ fn an_instrument_reverb_rings_on_after_the_note() {
 }
 
 #[test]
+fn a_compressor_slot_mixes_its_dry_level_from_the_input() {
+    use kontra_engine::ir;
+    let render = |output: f32| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+        // Squashes hard; the slot adds its dry signal to `output` of it.
+        plan.inserts = vec![Some(ir::Effect {
+            kind: ir::EffectKind::Compressor(ir::Compressor {
+                threshold_db: -40.0,
+                ratio: 20.0,
+                knee_db: 0.0,
+                attack_ms: 0.0,
+                release_ms: 100.0,
+                makeup_db: 0.0,
+                link: true,
+                mix: 1.0,
+            }),
+            bypass: false,
+            output,
+            dry: 1.0,
+        })];
+        let mut e = engine(&store, plan);
+        level(&mut e, &[on(60, 1.0)])
+    };
+    let [l, r] = render(0.0);
+    assert!(close(l, 0.5) && close(r, 0.5), "{l} {r}");
+    // The compressed path adds a little on top of the dry 0.5.
+    let [l, _] = render(1.0);
+    assert!(l > 0.5 && l < 0.6, "{l}");
+}
+
+#[test]
 fn a_group_waveshaper_clips_each_voice_not_their_sum() {
     use kontra_engine::ir::{DriveCurve, Effect, EffectKind, Shaper};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
