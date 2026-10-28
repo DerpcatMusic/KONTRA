@@ -88,7 +88,7 @@ enum Kind {
     Formant(Formant),
     Shaper(Shaper),
     Crush(Crush),
-    Overdrive(Box<Overdrive>),
+    Overdrive(Overdrive),
 }
 
 fn moved(mods: &[ir::Mod], n: usize) -> bool {
@@ -120,7 +120,7 @@ fn unit(kind: ir::EffectKind, rate: u32) -> Option<Kind> {
             rate,
         )),
         ir::EffectKind::Crush(c) => Kind::Crush(Crush::new(reduction(c, rate), 1)),
-        ir::EffectKind::Overdrive(o) => Kind::Overdrive(Box::new(Overdrive::new(voicing(o), rate))),
+        ir::EffectKind::Overdrive(o) => Kind::Overdrive(Overdrive::new(voicing(o), rate)),
         _ => return None,
     })
 }
