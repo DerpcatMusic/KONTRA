@@ -4,11 +4,10 @@
 //! only while a callback runs (an `mlua` scope borrowing the host), so no
 //! unsafe code holds the engine.
 //!
-//! ponytail: the Luau state allocates from the system heap on the audio
-//! thread (04-SCRIPT.md §4, "Real-time safety"). mlua 0.12 has no allocator
-//! hook (its `memory.rs` allocator is a static over `std::alloc`), so an
-//! arena needs a Luau C-API shim (unsafe) or a real-time global allocator in
-//! the plugin binary.
+//! The Luau heap lives in [`alloc`]'s arena: mlua 0.12 allocates through the
+//! Rust global allocator, so this crate installs [`alloc::Routed`] as that
+//! allocator. A binary linking this crate takes it; a second
+//! `#[global_allocator]` fails to link.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,9 +17,17 @@ use kontra_vm::{Action, CoId, Faults, Foreign, HostApi, HostCall, HostValue, Mac
 use mlua::thread::ThreadStatus;
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread, Value, Variadic};
 
+pub mod alloc;
+
+#[global_allocator]
+static ROUTED: alloc::Routed = alloc::Routed;
+
 const PRELUDE: &str = include_str!("prelude.lua");
 /// Luau heap per script.
 const MEMORY: usize = 64 << 20;
+/// Free arena kept after a load for its callbacks: at least this, or half
+/// the heap the load built (spikes/luau-alloc-mlua.md, "Per-script arena rule").
+const HEADROOM: usize = 8 << 20;
 /// Interrupt checkpoints (calls and loop back-edges) one run may take before
 /// it is stopped: a runaway loop must not hold the audio thread.
 const CHECKPOINTS: u32 = 10_000_000;
@@ -154,12 +161,19 @@ pub fn sample_loads(
 
 impl Foreign for Compiled {
     fn machine(&self) -> Box<dyn Machine> {
+        let load = alloc::Scope::load();
         let machine = state(&self.source, &self.modules, &self.saved).map(|lua| LuaMachine {
             lua: Some(lua),
             slots: (0..COROUTINES).map(|_| Slot::default()).collect(),
             spawned: Vec::with_capacity(COROUTINES),
             faults: Faults::default(),
         });
+        drop(load);
+        if let Ok(m) = &machine
+            && let Some(lua) = &m.lua
+        {
+            alloc::reserve(HEADROOM.max(lua.used_memory() / 2));
+        }
         // `compile` loaded the same source, so this fails only on memory.
         Box::new(machine.unwrap_or_else(|_| LuaMachine::empty()))
     }
@@ -289,6 +303,7 @@ impl LuaMachine {
 
 impl Machine for LuaMachine {
     fn start(&mut self, entry: u32, context: u64) -> Option<CoId> {
+        let _arena = alloc::Scope::audio();
         let lua = self.lua.as_ref()?;
         let callback = lua
             .globals()
@@ -300,6 +315,7 @@ impl Machine for LuaMachine {
     }
 
     fn run(&mut self, co: CoId, host: &mut dyn HostApi) -> Step {
+        let _arena = alloc::Scope::audio();
         let Some(lua) = self.lua.clone() else {
             return Step::Done;
         };
@@ -347,6 +363,7 @@ impl Machine for LuaMachine {
     }
 
     fn cancel(&mut self, co: CoId) {
+        let _arena = alloc::Scope::audio();
         if let Some(slot) = self.slot(co) {
             slot.thread = None;
         }
@@ -454,6 +471,17 @@ mod tests {
     }
 
     /// Two layers; the second's keygroups made engine groups 3 and 4.
+    #[test]
+    fn a_callback_allocates_from_the_arena_without_spilling() {
+        let source = "function onNote(e) local t = {} for i = 1, 20000 do t[i] = {i} end end";
+        let mut m = compile(source, &[], &[]).unwrap().machine();
+        let before = alloc::spills();
+        let co = m.start(Callbacks::NOTE, 0).expect("start");
+        assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
+        assert_eq!(alloc::spills(), before);
+    }
+
     const TREE: &str = "return {params={DisplayName='Horn'},db=0,pan=0,layers={
         {params={DisplayName='FX',Gain='1'},keygroups={{params={},group=0}}},
         {params={DisplayName='Sustain',Gain='0'},sendPre=1,sendPost=0,

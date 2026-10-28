@@ -105,11 +105,12 @@ script/lua/src/
 - **Inline on the audio thread.** A Lua callback runs at its event's
   sample, just like KSP. `ScriptThread`, the 1 ms poll and the separate
   offline host are deleted. Offline and real time run the same path.
-- **Real-time safety.** The Luau state gets a fixed arena allocator sized at
-  prepare, and GC steps run in a bounded slice after the render span. Open
-  item: check whether mlua 0.12 exposes a custom allocator. If not, use a
-  thin Luau C-API shim (ONE_ENGINE.md). Until that is verified, the old
-  thread stays behind a feature flag and is the only fallback allowed.
+- **Real-time safety.** The Luau state lives in a TLSF arena (`alloc.rs`,
+  `rlsf`): `kontra-lua` installs a routing `#[global_allocator]`, since
+  mlua 0.12 allocates through the Rust global allocator (option A of
+  `spikes/luau-alloc-mlua.md`). A load grows the arena; an audio callback
+  never does, and an allocation that does not fit is counted as a spill.
+  GC steps run in a bounded slice after the render span.
 - **Same scheduler.** `wait(ms)` becomes `Work::Resume` at the exact
   sample. Calling `playNote` from Lua creates a ledger child, exactly as KSP
   `play_note` does.

@@ -336,6 +336,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("all actions: {:?}", engine.unhandled_actions());
     println!("last message: {}", engine.last_message());
     println!("script faults: {:?}", engine.script_faults());
+    println!(
+        "script arena spills: {}, memory after render: {}",
+        kontra_lua::alloc::spills(),
+        memory()
+    );
     write_wav(&out, &audio)?;
     println!("wrote {}", out.display());
     Ok(())

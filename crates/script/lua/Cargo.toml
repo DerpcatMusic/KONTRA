@@ -13,3 +13,4 @@ kontra-events = { path = "../../model/events" }
 kontra-ui-model = { path = "../../model/ui-model" }
 kontra-vm = { path = "../../engine/vm" }
 mlua = { version = "=0.12.2", features = ["luau", "send"] }
+rlsf = "0.2.3"
