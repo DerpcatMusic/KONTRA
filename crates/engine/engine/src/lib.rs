@@ -116,12 +116,10 @@ pub struct Engine {
     rate: u32,
     /// Host tempo, quarter notes per minute (tempo-synced LFOs).
     tempo: f32,
-    /// "From script" modulator values sent to every event: what a note
-    /// reads until it is sent its own.
+    /// Script modulation values sent to every event, read by notes not sent
+    /// their own; while one ramps (until `ramping_until`) voices re-read routes.
     // ponytail: eight indices; a ring when a library sends more.
     script_mods: [Option<(u16, ledger::Ramp)>; 8],
-    /// Until this sample a script modulation is ramping: voices re-read
-    /// their routes as timed ones do.
     ramping_until: u64,
     plan: Arc<Plan>,
     stream: StreamClient,
