@@ -739,6 +739,11 @@ impl HostApi for Engine {
             {
                 HostValue::Int(value)
             }
+            action @ (Action::GetEngineParDisp | Action::GetEngineParDispExt)
+                if self.par_text(action == Action::GetEngineParDispExt, int, call.text_out) =>
+            {
+                HostValue::Text
+            }
             Action::SetEnginePar if self.set_engine_par(int(0), int(1), int(2), int(3), int(4)) => {
                 HostValue::Nothing
             }

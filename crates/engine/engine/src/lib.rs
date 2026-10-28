@@ -22,6 +22,7 @@ mod knobs;
 mod ledger;
 mod midi;
 mod modulators;
+mod par_display;
 mod params;
 mod pgs;
 mod plan;
