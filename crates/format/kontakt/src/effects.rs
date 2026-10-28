@@ -229,7 +229,7 @@ fn slot_effect(
                 width: (spread.clamp(-1.0, 1.0) + 1.0) * 0.5,
                 pan: pan.clamp(-1.0, 1.0),
             }),
-        0x18 => kind_id.and_then(|k| eq(&public, k).or_else(|| filter(&public, k, knobs))),
+        0x18 => kind_id.and_then(|k| eq(&public, k, knobs).or_else(|| filter(&public, k, knobs))),
         // Mode (i32), threshold, ratio, attack, release, then the link byte.
         0x19 => kind_id
             .zip(f32_at(4).zip(f32_at(8)))
@@ -342,19 +342,26 @@ fn slot_effect(
 /// The 1/2/3-band EQ (Filter types 22..=24): the record ends with its bands,
 /// each Hz, octaves and dB (layouts in v2 sampler-kontakt effects/mod.rs,
 /// reader 0x140d00db0).
-fn eq(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
+fn eq(
+    public: &[u8],
+    kind: i32,
+    knobs: &mut Vec<crate::script_knobs::SlotKnob>,
+) -> Option<ir::EffectKind> {
     let count = usize::try_from(kind.checked_sub(21)?)
         .ok()
         .filter(|n| (1..=3).contains(n))?;
     let tail = public.get(public.len().checked_sub(count * 12)?..)?;
     let mut bands = [ir::Bell::FLAT; 4];
+    let mut saved = Vec::new();
     for (band, raw) in bands.iter_mut().zip(tail.as_chunks::<12>().0) {
         let f = |n: usize| {
             let bytes = raw.get(n..n + 4)?.try_into().ok()?;
             Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
         };
         *band = crate::laws::eq_band(f(0)?, f(4)?, f(8)?)?;
+        saved.push([f(0)?, f(4)?, f(8)?]);
     }
+    *knobs = crate::script_knobs::eq_knobs(&saved);
     Some(ir::EffectKind::Eq(bands))
 }
 
