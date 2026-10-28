@@ -372,13 +372,10 @@ impl Engine {
             // min/max, not clamp: a NaN limit must not panic on the audio thread.
             b.gain_db = (b.gain_db + s).min(l).max(-l);
         }
-        match self.voice_effect(zone, insert, note, age) {
-            Some(ir::EffectKind::Eq(moved)) => {
-                for (b, m) in bells.iter_mut().zip(moved) {
-                    b.hz = m.hz;
-                }
+        if let Some(ir::EffectKind::Eq(moved)) = self.voice_effect(zone, insert, note, age) {
+            for (b, m) in bells.iter_mut().zip(moved) {
+                b.hz = m.hz;
             }
-            _ => {}
         }
         Some(bells)
     }
