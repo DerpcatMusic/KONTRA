@@ -777,3 +777,28 @@ fn velocity_scales_a_keygroups_gain() {
     );
     assert!(out.diagnostics.iter().all(|d| !d.feature.contains("Gain")));
 }
+
+#[test]
+fn an_amp_envelopes_curves_shape_its_stages() {
+    let xml = r#"<Program Gain="1">
+      <Modulators>
+        <DAHDSR Name="DAHDSR 1" Bypass="0" DelayTime="0" AttackTime="0.1" AttackCurve="0.5" HoldTime="0" DecayTime="0" DecayCurve="-0.97" SustainLevel="1" ReleaseTime="5" ReleaseCurve="-0.97"/>
+      </Modulators>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Connections>
+            <SignalConnection Ratio="1" Source="$Program/DAHDSR 1" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let e = out.groups[0].envelope;
+    // Half way through a stage, (1 − c)/2 of it is done: 1/(1 + e^(k/2)).
+    let half = |k: f32| 1.0 / (1.0 + (k / 2.0).exp());
+    assert!((half(e.attack_shape) - 0.25).abs() < 1e-4, "{e:?}");
+    assert!((half(e.fall_shape) - 0.985).abs() < 1e-4, "{e:?}");
+    assert!(!out.diagnostics.iter().any(|d| d.feature.contains("curve")));
+}
