@@ -81,7 +81,9 @@ impl Engine {
 
     /// Queues `co`'s resume `micros` from now; a full queue ends it.
     fn wake(&mut self, slot: u8, vm: &mut Vm, co: kontra_vm::CoId, micros: u64) {
-        let at = SampleTime(self.now.0 + micros_to_frames(micros as i64, self.rate).max(1));
+        let micros = i64::try_from(micros).unwrap_or(i64::MAX);
+        let frames = micros_to_frames(micros, self.rate).max(1);
+        let at = SampleTime(self.now.0.saturating_add(frames));
         if !self.queue.push(at, Work::Resume(slot, co)) {
             self.stats.events_refused += 1;
             vm.cancel(co);
