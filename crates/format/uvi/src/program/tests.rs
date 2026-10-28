@@ -404,3 +404,49 @@ fn a_step_envelope_bends_pitch_through_a_held_step_table() {
         assert!((shaper.apply((x + 1.0) / 2.0) - level).abs() < 1e-6, "{p}");
     }
 }
+
+#[test]
+fn a_macro_holds_its_crossfade_cells_where_its_mappers_put_them() {
+    // Bipolar Macro 1 at 0 reads its mappers halfway: variant a's bell is 0
+    // there, b's is 0.5 (between 0.4 and 0.6); c rides at half ratio.
+    let xml = r#"<Program Gain="1">
+      <ControlSignalSources>
+        <ConstantModulation Name="Macro 1" Bipolar="1" Value="0"/>
+      </ControlSignalSources>
+      <Mappers>
+        <ControlSignalMapper Name="Mapper 0" Min="0" Max="1">1,0 0,0 0,0</ControlSignalMapper>
+        <ControlSignalMapper Name="Mapper 1" Min="0" Max="1">0,0 0,4 0,6 0,0</ControlSignalMapper>
+      </Mappers>
+      <Layers>
+        <Layer Gain="1" Pan="0">
+          <Keygroups>
+            <Keygroup LowKey="0" HighKey="127">
+              <Inserts>
+                <GainMatrix Bypass="0" Gain_1_1="1" Gain_2_2="1" Gain_3_1="1">
+                  <Connections>
+                    <SignalConnection Ratio="1" Source="$Program/Macro 1" Destination="Gain_1_1" Mapper="Mapper 0"/>
+                    <SignalConnection Ratio="1" Source="$Program/Macro 1" Destination="Gain_2_2" Mapper="Mapper 1"/>
+                    <SignalConnection Ratio="0.5" Source="$Program/Macro 1" Destination="Gain_3_1" Mapper="Mapper 1"/>
+                  </Connections>
+                </GainMatrix>
+              </Inserts>
+              <Oscillators>
+                <SamplePlayer Bypass="0" SamplePath="./v/*a.wav*b.wav*c.wav"/>
+              </Oscillators>
+            </Keygroup>
+          </Keygroups>
+        </Layer>
+      </Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let mixes: Vec<_> = out.groups[0].zones.iter().map(|z| z.mix.clone()).collect();
+    // a is silent and not loaded; b at 0.5; c at 1 - 0.5 + 0.5 * 0.5.
+    assert_eq!(mixes, vec![vec![[0.0, 0.5]], vec![[0.75, 0.0]]]);
+    assert_eq!(out.samples.len(), 2);
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.feature.starts_with("matrix cell"))
+    );
+}
