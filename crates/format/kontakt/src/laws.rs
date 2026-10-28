@@ -48,7 +48,10 @@ pub(crate) fn volume(source: ir::Source) -> ir::Curve {
     ir::Curve::Depth {
         power: if matches!(
             source,
-            ir::Source::Controller(_) | ir::Source::Script(_) | ir::Source::PitchBend
+            ir::Source::Controller(_)
+                | ir::Source::ControllerFrom { .. }
+                | ir::Source::Script(_)
+                | ir::Source::PitchBend
         ) {
             1
         } else {

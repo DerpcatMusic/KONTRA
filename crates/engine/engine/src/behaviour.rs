@@ -31,6 +31,8 @@ pub(crate) struct Behaviour {
     /// One latch per [`Plan::switches`] range.
     switches: Vec<bool>,
     cc: [[u8; 128]; 16],
+    /// Per channel, the controllers a message has set (bit `cc`).
+    cc_set: [u128; 16],
     /// Pitch bend per channel, −1..=1.
     bend: [f32; 16],
     global: Counter,
@@ -62,6 +64,7 @@ impl Behaviour {
             keyswitch: None,
             switches: vec![false; plan.switches.len()],
             cc,
+            cc_set: [0; 16],
             bend: [0.0; 16],
             global: Counter::default(),
             keys: [Counter::default(); 128],
@@ -124,6 +127,13 @@ impl Behaviour {
             .unwrap_or(0)
     }
 
+    /// Whether a message has set `controller` on `channel`.
+    pub(crate) fn cc_arrived(&self, channel: u8, controller: u8) -> bool {
+        self.cc_set
+            .get(usize::from(channel & 15))
+            .is_some_and(|bits| bits >> (controller & 127) & 1 == 1)
+    }
+
     pub(crate) fn bend(&self, channel: u8) -> f32 {
         self.bend
             .get(usize::from(channel & 15))
@@ -144,6 +154,9 @@ impl Behaviour {
             .and_then(|c| c.get_mut(usize::from(controller & 127)))
         {
             *v = value;
+        }
+        if let Some(bits) = self.cc_set.get_mut(usize::from(channel & 15)) {
+            *bits |= 1 << (controller & 127);
         }
     }
 

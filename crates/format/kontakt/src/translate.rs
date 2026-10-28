@@ -298,6 +298,20 @@ struct Translated {
     modulated: Vec<u8>,
 }
 
+/// `source` through a modulation shaper, sampled at 128 even steps.
+fn shaped(
+    shapers: &mut Vec<ir::Transfer>,
+    source: ir::Source,
+    curve: &ni_file::kontakt::objects::ShaperCurve,
+) -> Option<ir::Source> {
+    let n = u8::try_from(shapers.len()).ok()?;
+    shapers.push(ir::Transfer {
+        source,
+        table: (0..128).map(|k| curve.evaluate(k as f32 / 127.0)).collect(),
+    });
+    Some(ir::Source::Shaped(n))
+}
+
 fn translate_group(
     group: &Group,
     base: &Base,
@@ -408,7 +422,10 @@ fn translate_group(
             }
             let source = match p.source {
                 ModSource::Velocity => Some(ir::Source::Velocity),
-                ModSource::MidiCc(cc) => Some(ir::Source::Controller(cc)),
+                ModSource::MidiCc(cc) => Some(match p.cc_start() {
+                    Some(start) => ir::Source::ControllerFrom { cc, start },
+                    None => ir::Source::Controller(cc),
+                }),
                 ModSource::PitchBend => Some(ir::Source::PitchBend),
                 ModSource::KeyPosition => Some(ir::Source::Key),
                 ModSource::Constant => Some(ir::Source::Constant),
@@ -425,11 +442,16 @@ fn translate_group(
                 if matches!(t.param.as_str(), "loopStart" | "loopLength") && out.stream.is_some() {
                     continue;
                 }
+                let raw = source;
+                let source = match (raw, t.shaper.as_ref().filter(|s| s.enabled)) {
+                    (Some(s), Some(shaper)) => shaped(&mut out.shapers, s, &shaper.curve),
+                    _ => raw,
+                };
                 let kind = match (source, t.param.as_str(), t.slot) {
                     (Some(source), "volume", None) => Some(ir::ModKind::Volume {
                         source,
                         intensity: t.signed_intensity(),
-                        curve: laws::volume(source),
+                        curve: laws::volume(raw.unwrap_or(source)),
                     }),
                     (Some(source), "pitch", None) => Some(ir::ModKind::Pitch {
                         source,

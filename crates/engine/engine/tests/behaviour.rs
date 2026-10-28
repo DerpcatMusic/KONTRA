@@ -646,6 +646,37 @@ fn a_group_eq_shapes_its_voices() {
 }
 
 #[test]
+fn a_shaped_controller_reads_its_start_until_a_message_arrives() {
+    use kontra_engine::ir::{Curve, Mod, ModKind, Source, Transfer};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    plan.groups[0].shapers = vec![Transfer {
+        source: Source::ControllerFrom { cc: 1, start: 127 },
+        table: (0..128).map(|k| k as f32 / 254.0).collect(),
+    }];
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Volume {
+            source: Source::Shaped(0),
+            intensity: 1.0,
+            curve: Curve::Depth { power: 1 },
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // No message yet: the wheel reads 127, which the table halves.
+    let start = level(&mut e, &[on(60, 1.0)])[0];
+    level(&mut e, &[cc(1, 0)]);
+    let down = level(&mut e, &[])[0];
+    assert!(
+        (start - 0.5).abs() < 0.01 && down.abs() < 0.05,
+        "{start} {down}"
+    );
+}
+
+#[test]
 fn a_controller_pitch_route_moves_sounding_voices() {
     use kontra_engine::ir::{Mod, ModKind, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
