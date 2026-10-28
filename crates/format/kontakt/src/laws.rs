@@ -620,15 +620,22 @@ pub fn reverb_laws() -> [ir::Law; 8] {
 /// The Compressor (0x19): saved mode, threshold dB, ratio knob, attack and
 /// release ms, link byte. The Pro core's law (docs/re/engine/dyn-compressors.md,
 /// setter 0x140ab9220): the knob `r` is the output slope over the threshold
-/// (ratio `1/r`), a 12 dB knee, attack 0.1..=10 ms as a detector low-pass at
-/// `1000/ms` Hz, release 10..=1000 ms halving the level, and Pro's own
+/// (ratio `1/r`), a 12 dB knee, and Pro's own
 /// make-up `−0.666·(1 − r)·threshold` dB (setter `+0x524`, constant at
 /// 0x144fc4c90, added to the gain exponent in core 0x140ab35d0). Classic and
 /// Enhanced have no make-up (their setters write no offset). The slot's Output
 /// knob applies on top in every mode. Pro always links the channels.
-// ponytail: Classic (mode 0) and Enhanced (mode 1) run the Pro law too; their
-// detectors differ (docs/re/engine/dyn-compressors.md) and no native
-// recording says by how much.
+///
+/// The caller (0x1409619b0) passes the saved attack and release ms unscaled;
+/// each mode turns them into its own ballistics, given here as time
+/// constants: Pro clamps attack to 0.1..=10 ms as a low-pass at `1000/ms` Hz
+/// and release to 10..=1000 ms as a halving time; Enhanced (core 0x140ab2c80)
+/// runs a two-pole detector at `2513.2/max(ms, 1)` rad/s with damping 1.8 and
+/// a peak hold falling by `1778.3/max(ms, 50)` per second; Classic (core
+/// 0x140ab2250) steps by `0.625^(1/n)` and `(1/3)^(1/n)` over the n frames.
+// ponytail: Classic (a trigger and a fixed gain) and Enhanced (a piecewise
+// curve) run the standard soft-knee curve at their own time constants; no
+// native recording says how far apart the curves sound.
 pub(crate) fn compressor(
     mode: i32,
     threshold_db: f32,
@@ -638,12 +645,26 @@ pub(crate) fn compressor(
     link: bool,
 ) -> ir::Compressor {
     let r = r.clamp(0.0, 1.0);
+    let (attack_ms, release_ms) = match mode {
+        0 => (
+            attack_ms.max(0.0) / 1.6f32.ln(),
+            release_ms.max(0.0) / 3f32.ln(),
+        ),
+        1 => (
+            attack_ms.max(1.0) * 1800.0 / 2513.2,
+            release_ms.max(50.0) * 1000.0 / 1778.3,
+        ),
+        _ => (
+            attack_ms.clamp(0.1, 10.0) / std::f32::consts::TAU,
+            release_ms.clamp(10.0, 1000.0) / std::f32::consts::LN_2,
+        ),
+    };
     ir::Compressor {
         threshold_db,
         ratio: 1.0 / r.max(1e-3),
         knee_db: 12.0,
-        attack_ms: attack_ms.clamp(0.1, 10.0) / std::f32::consts::TAU,
-        release_ms: release_ms.clamp(10.0, 1000.0) / std::f32::consts::LN_2,
+        attack_ms,
+        release_ms,
         makeup_db: if mode == 2 {
             -0.666 * (1.0 - r) * threshold_db
         } else {
@@ -721,6 +742,15 @@ mod tests {
         assert!(!compressor(1, -20.0, 0.25, 1.0, 100.0, false).link);
         // Only Pro adds its own make-up.
         assert_eq!(compressor(1, -20.0, 0.25, 1.0, 100.0, false).makeup_db, 0.0);
+        // Classic and Enhanced keep long saved times that Pro clamps.
+        let classic = compressor(0, -20.0, 0.25, 100.0, 300.0, false);
+        assert!(
+            (classic.attack_ms - 212.8).abs() < 0.1 && (classic.release_ms - 273.1).abs() < 0.1
+        );
+        let enhanced = compressor(1, -20.0, 0.25, 100.0, 20.0, false);
+        assert!(
+            (enhanced.attack_ms - 71.6).abs() < 0.1 && (enhanced.release_ms - 28.1).abs() < 0.1
+        );
         // A knob of 1 leaves the signal alone.
         assert!((compressor(0, -20.0, 1.0, 1.0, 100.0, true).ratio - 1.0).abs() < 1e-6);
     }
