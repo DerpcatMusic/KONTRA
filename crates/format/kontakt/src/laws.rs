@@ -615,6 +615,7 @@ pub fn reverb_laws() -> [ir::Law; 8] {
         ir::Law::Linear { lo: 0.0, hi: -12.0 },
         ir::Law::Linear { lo: 0.0, hi: 1.0 },
     ]
+}
 
 /// The Compressor (0x19): saved mode, threshold dB, ratio knob, attack and
 /// release ms, link byte. The Pro core's law (docs/re/engine/dyn-compressors.md,
