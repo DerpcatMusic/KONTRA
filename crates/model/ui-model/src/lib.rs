@@ -108,18 +108,39 @@ pub struct Background {
 
 /// Raw, immutable modifiers from the actual UI input edge. Sources decide
 /// which platform key corresponds to their documented Command convention.
-#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
-pub struct UiModifiers {pub shift:bool,pub ctrl:bool,pub alt:bool,pub cmd:bool}
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum UiActivationOrigin {PointerDown,PointerUp,Keyboard,Accessibility}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UiModifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub cmd: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiActivationOrigin {
+    PointerDown,
+    PointerUp,
+    Keyboard,
+    Accessibility,
+}
 /// A primary UI activation, distinct from a programmatic scalar value write.
 /// This describes input; it is not a Core admission or execution receipt.
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct UiActivation {pub origin:UiActivationOrigin,pub modifiers:Option<UiModifiers>}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UiActivation {
+    pub origin: UiActivationOrigin,
+    pub modifiers: Option<UiModifiers>,
+}
 impl UiActivation {
-    pub fn valid(self)->bool{matches!((self.origin,self.modifiers),
-        (UiActivationOrigin::PointerDown|UiActivationOrigin::PointerUp|UiActivationOrigin::Keyboard,Some(_))|
-        (UiActivationOrigin::Accessibility,None))}
+    pub fn valid(self) -> bool {
+        matches!(
+            (self.origin, self.modifiers),
+            (
+                UiActivationOrigin::PointerDown
+                    | UiActivationOrigin::PointerUp
+                    | UiActivationOrigin::Keyboard,
+                Some(_)
+            ) | (UiActivationOrigin::Accessibility, None)
+        )
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Widget {
@@ -159,7 +180,7 @@ pub struct Widget {
     pub text_shift_on_press: bool,
     /// Source-requested primary pointer activation at press instead of release.
     /// Keyboard and accessibility remain primary actions, not pointer edges.
-    pub activate_on_press:bool,
+    pub activate_on_press: bool,
     pub value_y: Option<i32>,
     /// Shown instead of the formatted value (KSP knob `LABEL`).
     pub value_text: Option<String>,
@@ -232,7 +253,7 @@ impl Widget {
             text: String::new(),
             text_y: None,
             text_shift_on_press: false,
-            activate_on_press:false,
+            activate_on_press: false,
             value_y: None,
             value_text: None,
             tooltip: String::new(),
@@ -408,8 +429,13 @@ pub enum UviWaveViewSample {
 pub enum UviWaveViewBinding {
     #[default]
     Unspecified,
-    Oscillator { element_id: u32, element_node: u32 },
-    Unsupported { type_name: String },
+    Oscillator {
+        element_id: u32,
+        element_node: u32,
+    },
+    Unsupported {
+        type_name: String,
+    },
 }
 
 /// Each unset color leaves that native default unknown. Invalid authored values
@@ -1431,19 +1457,76 @@ mod tests {
     fn kontakt_layers_use_native_type_priority_before_declaration_order() {
         let mut ui = sample();
         ui.widgets = vec![
-            Widget::new("menu", PageRef(0), Rect::new(0, 0, 20, 20), Kind::Menu { items: vec![] }),
-            Widget::new("slider", PageRef(0), Rect::new(0, 0, 20, 20), Kind::Slider { range: Range::default(), orientation: Orientation::Vertical }),
-            Widget::new("first-label", PageRef(0), Rect::new(0, 0, 20, 20), Kind::Label),
-            Widget::new("second-label", PageRef(0), Rect::new(0, 0, 20, 20), Kind::Label),
-            Widget::new("meter", PageRef(0), Rect::new(0, 0, 20, 20), Kind::LevelMeter { orientation: Orientation::Vertical }),
+            Widget::new(
+                "menu",
+                PageRef(0),
+                Rect::new(0, 0, 20, 20),
+                Kind::Menu { items: vec![] },
+            ),
+            Widget::new(
+                "slider",
+                PageRef(0),
+                Rect::new(0, 0, 20, 20),
+                Kind::Slider {
+                    range: Range::default(),
+                    orientation: Orientation::Vertical,
+                },
+            ),
+            Widget::new(
+                "first-label",
+                PageRef(0),
+                Rect::new(0, 0, 20, 20),
+                Kind::Label,
+            ),
+            Widget::new(
+                "second-label",
+                PageRef(0),
+                Rect::new(0, 0, 20, 20),
+                Kind::Label,
+            ),
+            Widget::new(
+                "meter",
+                PageRef(0),
+                Rect::new(0, 0, 20, 20),
+                Kind::LevelMeter {
+                    orientation: Orientation::Vertical,
+                },
+            ),
         ];
         // NI's documented top-to-bottom priority is Menu, Slider, Label, Meter.
         // The two labels retain their declaration-order tie break.
-        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(4), WidgetRef(2), WidgetRef(3), WidgetRef(1), WidgetRef(0)]);
+        assert_eq!(
+            ui.draw_order(PageRef(0)),
+            [
+                WidgetRef(4),
+                WidgetRef(2),
+                WidgetRef(3),
+                WidgetRef(1),
+                WidgetRef(0)
+            ]
+        );
         ui.widgets[4].z = 1;
-        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(2), WidgetRef(3), WidgetRef(1), WidgetRef(0), WidgetRef(4)]);
+        assert_eq!(
+            ui.draw_order(PageRef(0)),
+            [
+                WidgetRef(2),
+                WidgetRef(3),
+                WidgetRef(1),
+                WidgetRef(0),
+                WidgetRef(4)
+            ]
+        );
         ui.source = Source::PerformanceView;
-        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(2), WidgetRef(3), WidgetRef(1), WidgetRef(0), WidgetRef(4)]);
+        assert_eq!(
+            ui.draw_order(PageRef(0)),
+            [
+                WidgetRef(2),
+                WidgetRef(3),
+                WidgetRef(1),
+                WidgetRef(0),
+                WidgetRef(4)
+            ]
+        );
     }
 
     #[test]
