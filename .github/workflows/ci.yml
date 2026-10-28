@@ -5,7 +5,10 @@ name: CI
 # Public main pushes run this exact workflow through Nightly in release mode.
 # PR/merge-group checks remain independent; avoid a second ordinary CI push run.
 on:
+  # Stacked PRs (based on another PR's branch) wait: they run once retargeted
+  # to v3 or main and pushed.
   pull_request:
+    branches: [main, v3]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
   workflow_dispatch:
