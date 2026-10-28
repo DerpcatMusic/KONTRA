@@ -632,7 +632,7 @@ fn a_script_moves_a_group_onto_a_bus() {
     };
     let (l, read) = play("");
     assert!(
-        (l - 0.25).abs() < 1e-3 && read == "1000",
+        (l - 0.25).abs() < 1e-3 && read == "1024",
         "on the bus: {l} {read}"
     );
     let (l, read) = play("set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, -1, 0, -1, -1)");

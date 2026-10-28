@@ -49,8 +49,8 @@ fn attack_x(shape: f32) -> f64 {
 
 /// An LFO's fade-in runs 0..=10 s on the stage law (measured,
 /// probes/mod_par_laws.lua: 500_000 saves 139.45 ms, 1_000_000 10 002 ms).
-/// `$NI_BUS_OFFSET`: bus n is `BUS_OFFSET + n`.
-const BUS_OFFSET: i32 = 1000;
+/// Bus n is `BUS_OFFSET + n` (measured, probes/output_channel.lua).
+const BUS_OFFSET: i32 = 1024;
 const LFO_FADE_TOP_MS: f64 = 10_000.0;
 
 fn stage_x(top_ms: f64, ms: f64) -> f64 {
@@ -394,7 +394,7 @@ impl Engine {
         set
     }
 
-    /// A group's bus as `1000 + n` (plan bus n + 1), −1 for the main bus; a
+    /// A group's bus as `BUS_OFFSET + n` (plan bus n + 1), −1 for the main bus; a
     /// bus's own output is the main output (−1).
     fn output_channel(&self, group: i32, generic: i32) -> Option<i32> {
         let Ok(g) = usize::try_from(group) else {
@@ -406,7 +406,7 @@ impl Engine {
         }
     }
 
-    /// Moves a group to bus `value − 1000` (plan bus `value − 999`); −1 and a
+    /// Moves a group to bus `value − BUS_OFFSET` (plan bus one higher); −1 and a
     /// host output put it on the main bus, since the engine mixes every bus
     /// into one stereo output. Playing voices follow at the next span.
     fn set_output_channel(&mut self, value: i32, group: i32, generic: i32) -> bool {
