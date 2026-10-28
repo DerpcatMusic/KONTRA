@@ -92,6 +92,8 @@ pub fn prepare(
                 sends: b.sends.clone(),
                 to_main: b.to_main,
                 enabled: true,
+                mods: b.mods.clone(),
+                blends: b.blends.clone(),
             })
             .collect();
     }

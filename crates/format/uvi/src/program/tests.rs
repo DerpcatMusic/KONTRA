@@ -128,19 +128,17 @@ fn a_layer_sounds_through_its_aux_chain() {
     assert_eq!((send.bus, send.level, send.post_fader), (2, 0.5, false));
     let aux = &out.buses[2];
     assert!((aux.volume_db - 6.0206).abs() < 1e-3);
-    // The EQ is not carried: its slot passes, and it is reported.
-    assert!(aux.inserts[0].is_none());
+    // An EQ with no bands enabled is flat.
+    assert_eq!(
+        aux.inserts[0].map(|e| e.kind),
+        Some(ir::EffectKind::Eq([ir::Bell::FLAT; 4]))
+    );
     assert!(matches!(aux.inserts[1].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 0.5));
     assert!(matches!(
         aux.inserts[2].map(|e| e.kind),
         Some(ir::EffectKind::Convolution { impulse: 0 })
     ));
     assert_eq!(out.impulses.len(), 1);
-    assert!(
-        out.diagnostics
-            .iter()
-            .any(|d| d.feature == "insert DigitalEq")
-    );
     assert!(
         !out.diagnostics
             .iter()
@@ -518,5 +516,78 @@ fn a_macro_a_controller_moves_crossfades_its_cells_live() {
         !out.diagnostics
             .iter()
             .any(|d| d.feature.starts_with("matrix"))
+    );
+}
+
+#[test]
+fn an_aux_eqs_gain_scale_connections_move_its_bands_live() {
+    let xml = r#"<Program Gain="1">
+      <Modulations>
+        <ScriptEventModulation Name="Script Event Modulation 8" EventId="8" Bipolar="0"/>
+        <ConstantModulation Name="Macro 6" Bipolar="0" Value="0.5"/>
+      </Modulations>
+      <Auxs>
+        <AuxEffect Name="Aux0" Bypass="0" Gain="1" Pan="0" PreInsert="1">
+          <Inserts>
+            <DigitalEq Bypass="0" GainScale="0"
+              Enabled1="1" Type1="6" Slope1="0" Freq1="261.6" Gain1="-6" Bandwidth1="0.4"
+              Enabled2="0" Type2="6" Gain2="-9"
+              Enabled3="1" Type3="5" Slope3="1" Freq3="3139.5" Gain3="-6.5">
+              <Mappers>
+                <ControlSignalMapper Name="Mapper 51" Min="0" Max="1">1,0 0,0 1,0</ControlSignalMapper>
+              </Mappers>
+              <Connections>
+                <SignalConnection Ratio="1" Source="$Program/Script Event Modulation 8" Destination="GainScale" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                <SignalConnection Ratio="0.3" Source="@PitchBend" Destination="GainScale" Mapper="Mapper 51" ConnectionMode="0" Bypass="0" Inverted="0">
+                  <Connections>
+                    <SignalConnection Ratio="1" Source="$Program/Macro 6" Destination="Ratio" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                  </Connections>
+                </SignalConnection>
+              </Connections>
+            </DigitalEq>
+          </Inserts>
+        </AuxEffect>
+      </Auxs>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let aux = out.buses.last().unwrap();
+    let Some(ir::EffectKind::Eq(bells)) = aux.inserts[0].map(|e| e.kind) else {
+        panic!("{:?}", aux.inserts);
+    };
+    // GainScale 0: flat at rest, the enabled bands in order.
+    assert_eq!(
+        (bells[0].shape, bells[1].shape),
+        (ir::Shape::Peak, ir::Shape::HighShelf)
+    );
+    assert!(bells.iter().all(|b| b.gain_db == 0.0));
+    // A 0.4-octave peak: Q 1/(2^0.2 − 2^−0.2).
+    assert!((bells[0].q - 3.596).abs() < 1e-2, "{}", bells[0].q);
+    // One blend of both connections moves each band by its own gain.
+    let depths: Vec<_> = aux
+        .mods
+        .iter()
+        .map(|m| match *m {
+            ir::ModKind::EffectParam {
+                source: ir::Source::Blend(0),
+                insert: 0,
+                param,
+                depth,
+                ..
+            } => (param, depth),
+            _ => panic!("{m:?}"),
+        })
+        .collect();
+    use ir::EffectParam::BellGain;
+    assert_eq!(depths, [(BellGain(0), -6.0), (BellGain(1), -6.5)]);
+    let terms = &aux.blends[0].terms;
+    assert_eq!(terms[0].input.source, ir::Source::Script(8));
+    // The macro at 0.5 halves the bend's ratio.
+    assert_eq!(terms[1].input.source, ir::Source::PitchBend);
+    assert!((terms[1].amount - 0.15).abs() < 1e-6);
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.feature.contains("GainScale"))
     );
 }

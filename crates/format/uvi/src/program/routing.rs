@@ -5,15 +5,16 @@
 //! EffectRack ends a bus: it feeds one bus per chain at the chain's gain,
 //! and the chains feed a bus where the rest of the inserts run. Every strip
 //! ends on the main output ahead of the program's own inserts, as an aux set
-//! `PreInsert` does. Of the effects, Gain, Convolver, SampledReverb,
-//! ThreeBandShelves, DualDelay, Maximizer and SparkVerb are carried; the rest
-//! pass their input and are reported (see `effects`).
+//! `PreInsert` does. Of the effects, Gain, DigitalEq, Convolver,
+//! SampledReverb, ThreeBandShelves, DualDelay, Maximizer and SparkVerb are
+//! carried; the rest pass their input and are reported (see `effects`).
 
 use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::Node;
 
 use super::delay::dual_delay;
+use super::digital_eq::{digital_eq, gain_scale};
 use super::reverb::spark_verb;
 use super::{Library, Translator, db, flag, num};
 
@@ -34,6 +35,7 @@ pub(super) fn carried(node: Node) -> bool {
     let laid = owner.has_tag_name("Layer") || owner.has_tag_name("AuxEffect");
     let kind = [
         "Gain",
+        "DigitalEq",
         "Convolver",
         "SampledReverb",
         "ThreeBandShelves",
@@ -154,6 +156,10 @@ impl<L: Library> Translator<'_, '_, L> {
     /// `owner`'s inserts from bus `at` on; returns the bus they end on.
     fn lay(&mut self, owner: Node, mut at: usize) -> Result<usize, String> {
         for node in children(owner, "Inserts", "") {
+            if node.has_tag_name("DigitalEq") && !flag(node, "Bypass") {
+                self.routed_eq(node, at)?;
+                continue;
+            }
             if !node.has_tag_name("EffectRack") || flag(node, "Bypass") {
                 let slot = self.slot(node)?;
                 if let Some(b) = self.out.buses.get_mut(at) {
@@ -194,6 +200,20 @@ impl<L: Library> Translator<'_, '_, L> {
         Ok(at)
     }
 
+    /// A DigitalEq on bus `at`, its GainScale connections as the bus's routes.
+    fn routed_eq(&mut self, node: Node, at: usize) -> Result<(), String> {
+        let bands = digital_eq(node, &mut self.notes)?;
+        let program = self.program;
+        if let Some(b) = self.out.buses.get_mut(at) {
+            let insert = u8::try_from(b.inserts.len()).map_err(|e| e.to_string())?;
+            b.inserts.push(Some(bands.effect));
+            for c in gain_scale(program, node, &bands, insert, b) {
+                self.carried.insert(c.id());
+            }
+        }
+        Ok(())
+    }
+
     fn feed(&mut self, from: usize, to: usize, level: f64, post_fader: bool) {
         if let Some(b) = self.out.buses.get_mut(from) {
             b.sends.push(ir::BusSend {
@@ -232,6 +252,8 @@ impl<L: Library> Translator<'_, '_, L> {
         } else if node.has_tag_name("Gain") {
             let kind = ir::EffectKind::Gain(num(node, "Volume", 1.0)? as f32);
             Some(effect(kind, 1.0, 0.0))
+        } else if node.has_tag_name("DigitalEq") {
+            Some(digital_eq(node, &mut self.notes)?.effect)
         } else if node.has_tag_name("ThreeBandShelves") {
             Some(shelves(node)?)
         } else if node.has_tag_name("SparkVerb") {

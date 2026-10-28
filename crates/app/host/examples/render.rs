@@ -295,10 +295,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     let mut audio = Vec::new();
     let mut block = vec![[0.0f32; 2]; 512];
-    let cc = wheel.map(|v| Timed {
-        at: SampleTime(0),
-        body: Event::Ump([0x20B0_0100 | u32::from(v), 0]),
-    });
+    // KONTRA_BEND=0: pitch bend (its high 7 bits) sent with the wheel at 1 s.
+    let bend = std::env::var("KONTRA_BEND")
+        .ok()
+        .and_then(|b| b.parse::<u32>().ok());
+    let cc: Vec<_> = (wheel.map(|v| 0x20B0_0100 | u32::from(v)).into_iter())
+        .chain(bend.map(|b| 0x20E0_0000 | (b & 127)))
+        .map(|word| Timed {
+            at: SampleTime(0),
+            body: Event::Ump([word, 0]),
+        })
+        .collect();
     // KONTRA_CC="11=127,1=100": controllers sent with the note-on.
     let mut first: Vec<Timed<Event>> = std::env::var("KONTRA_CC")
         .unwrap_or_default()
