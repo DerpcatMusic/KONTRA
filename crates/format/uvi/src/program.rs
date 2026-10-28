@@ -16,6 +16,7 @@ mod delay;
 mod filters;
 mod load;
 mod modulation;
+mod reverb;
 mod routing;
 mod tree;
 pub use load::Swap;

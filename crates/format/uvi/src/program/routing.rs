@@ -6,14 +6,15 @@
 //! and the chains feed a bus where the rest of the inserts run. Every strip
 //! ends on the main output ahead of the program's own inserts, as an aux set
 //! `PreInsert` does. Of the effects, Gain, Convolver, SampledReverb,
-//! ThreeBandShelves, DualDelay and Maximizer are carried; the rest pass their
-//! input and are reported (see `effects`).
+//! ThreeBandShelves, DualDelay, Maximizer and SparkVerb are carried; the rest
+//! pass their input and are reported (see `effects`).
 
 use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::Node;
 
 use super::delay::dual_delay;
+use super::reverb::spark_verb;
 use super::{Library, Translator, db, flag, num};
 
 /// Effects a keygroup's voices run themselves (see [`Translator::voice_slots`]).
@@ -38,6 +39,7 @@ pub(super) fn carried(node: Node) -> bool {
         "ThreeBandShelves",
         "DualDelay",
         "Maximizer",
+        "SparkVerb",
     ]
     .iter()
     .any(|t| node.has_tag_name(*t));
@@ -232,6 +234,8 @@ impl<L: Library> Translator<'_, '_, L> {
             Some(effect(kind, 1.0, 0.0))
         } else if node.has_tag_name("ThreeBandShelves") {
             Some(shelves(node)?)
+        } else if node.has_tag_name("SparkVerb") {
+            Some(spark_verb(node, &mut self.notes)?)
         } else if node.has_tag_name("Maximizer") {
             Some(maximizer(node, &mut self.notes)?)
         } else if node.has_tag_name("DualDelay") {
@@ -388,9 +392,7 @@ fn maximizer(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
 fn wet_only(node: Node) -> Result<Option<f32>, String> {
     let tag = node.tag_name().name();
     Ok(match tag {
-        "SparkVerb" | "FeedbackMachine" | "Flanger" => {
-            Some(1.0 - num(node, "Mix", 1.0)?.clamp(0.0, 1.0) as f32)
-        }
+        "FeedbackMachine" | "Flanger" => Some(1.0 - num(node, "Mix", 1.0)?.clamp(0.0, 1.0) as f32),
         _ => None,
     })
 }

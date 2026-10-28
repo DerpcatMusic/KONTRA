@@ -176,3 +176,23 @@ fn modulation_moves_the_tail_and_keeps_its_decay() {
         "the swing changes the tail: {apart} vs {level}"
     );
 }
+
+/// The tail's energy per channel, for a unit impulse in both channels, is
+/// `c·m/(1 − m)`, `m` the loop's power gain per pass at the lines' mean length
+/// (51.36 ms at size 1) and `c` = 0.84 (−0.75 dB) within 1 dB over 0.5..4 s.
+/// Translators that match a vendor's level (UVI's SparkVerb) rely on it.
+#[test]
+fn the_tail_energy_follows_the_loop_power() {
+    for seconds in [0.5, 1.0, 2.0, 4.0] {
+        let mut fdn = Fdn::new(settings(seconds), RATE);
+        let mut io = vec![[0.0f32; 2]; (3.0 * seconds) as usize * RATE as usize];
+        io[0] = [1.0, 1.0];
+        for block in io.chunks_mut(97) {
+            fdn.process(block);
+        }
+        let energy: f32 = io.iter().map(|[l, _]| l * l).sum();
+        let m = 10f32.powf(-6.0 * 0.05136 / seconds);
+        let off_db = 10.0 * (energy * (1.0 - m) / m).log10() + 0.75;
+        assert!(off_db.abs() < 1.0, "{seconds} s: {off_db} dB");
+    }
+}
