@@ -11,6 +11,7 @@ use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::Node;
 
+mod filters;
 mod load;
 mod modulation;
 mod routing;
@@ -187,6 +188,7 @@ impl<L: Library> Translator<'_, '_, L> {
             }),
             ..ir::Group::DEFAULT
         };
+        (group.inserts, group.mods) = filters::keygroup(kg);
         let placement = placement(kg);
         let span = Span {
             keys,
@@ -459,6 +461,7 @@ impl<L: Library> Translator<'_, '_, L> {
                     .is_some_and(|p| p.has_tag_name("Keygroup"));
             if parent.is_some_and(|p| p.has_tag_name("Inserts"))
                 && !routing::carried(node)
+                && !filters::carried(node)
                 && !placing
             {
                 self.notes.add(
@@ -489,7 +492,9 @@ impl<L: Library> Translator<'_, '_, L> {
             .descendants()
             .filter(|n| n.has_tag_name("SignalConnection") && !flag(*n, "Bypass"))
         {
-            if modulation::script_route(self.program, connection).is_some() {
+            if modulation::script_route(self.program, connection).is_some()
+                || filters::freq_route(connection).is_some()
+            {
                 continue;
             }
             let dest = connection.attribute("Destination").unwrap_or_default();
@@ -736,6 +741,58 @@ mod tests {
             !out.diagnostics
                 .iter()
                 .any(|d| d.feature.starts_with("silent layer"))
+        );
+    }
+
+    #[test]
+    fn a_keygroup_one_pole_and_its_velocity_route_reach_the_group() {
+        let xml = r#"<Program Gain="1">
+          <Layers><Layer Gain="1" Pan="0"><Keygroups>
+            <Keygroup LowKey="0" HighKey="127">
+              <Inserts>
+                <DigitalEq Bypass="0"/>
+                <OnePole Name="InsertFX1" Bypass="0" Freq="20000" KeyTracking="0" Mode="0">
+                  <Connections>
+                    <SignalConnection Ratio="-0.6" Source="@VoiceParam Velocity" Destination="Freq" Mapper="" ConnectionMode="0" Bypass="0" Inverted="1"/>
+                    <SignalConnection Ratio="-0.6" Source="@MIDI CC 1" Destination="Freq" Mapper="" ConnectionMode="0" Bypass="1" Inverted="1"/>
+                  </Connections>
+                </OnePole>
+              </Inserts>
+              <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+            </Keygroup>
+          </Keygroups></Layer></Layers>
+        </Program>"#;
+        let doc = roxmltree::Document::parse(xml).unwrap();
+        let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+        let g = &out.groups[0];
+        assert!(g.inserts[0].is_none());
+        let Some(ir::EffectKind::Filter(f)) = g.inserts[1].map(|e| e.kind) else {
+            panic!("{:?}", g.inserts);
+        };
+        // Inverted: 20 kHz × 1000^(−0.6(1 − v)), so 20 kHz × 1000^−0.6 at
+        // velocity 0, rising 0.6 of the range's 9.97 octaves to 20 kHz at 1.
+        assert_eq!(f.pass, ir::Pass::Low);
+        assert!(
+            (f.hz - 20_000.0 * 1000f32.powf(-0.6)).abs() < 0.1,
+            "{}",
+            f.hz
+        );
+        assert!((f.octaves - 1000f32.log2()).abs() < 1e-4);
+        assert_eq!(
+            g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
+            [ir::ModKind::Cutoff {
+                source: ir::Source::Velocity,
+                insert: 1,
+                depth: 0.6,
+            }]
+        );
+        let features: Vec<_> = out.diagnostics.iter().map(|d| d.feature.as_str()).collect();
+        assert!(features.contains(&"insert DigitalEq"), "{features:?}");
+        assert!(
+            !features
+                .iter()
+                .any(|f| f.contains("OnePole") || f.contains("Freq")),
+            "{features:?}"
         );
     }
 }
