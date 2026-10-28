@@ -48,7 +48,10 @@ impl Huovilainen {
     #[must_use]
     pub fn new(taps: u8, fat: f32) -> Self {
         Self {
-            weights: WEIGHTS[usize::from(taps.clamp(1, 12) - 1)],
+            weights: WEIGHTS
+                .get(usize::from(taps.clamp(1, 12) - 1))
+                .copied()
+                .unwrap_or_default(),
             fat: f64::from(fat),
             g: 0.0,
             feedback: 0.0,
