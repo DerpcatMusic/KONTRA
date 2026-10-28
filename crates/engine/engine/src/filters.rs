@@ -183,6 +183,7 @@ pub(crate) fn shape(f: &ir::Filter) -> Shape {
         pass,
         hz: f.hz,
         stages: f.stages,
+        pole: f.pole,
         damping: f.damping,
         gain: f.gain,
     }

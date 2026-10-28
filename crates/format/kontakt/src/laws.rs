@@ -310,6 +310,10 @@ fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Fi
         60 => (Band, 3),
         61 => (High, 3),
         62 => (Notch, 3),
+        // Ladder LP3 / HP3: the ladder's third tap, a one-pole ahead of the
+        // resonant stage (filt-ladder-monark.md: taps follow `id − 29`).
+        32 => (Low, 1),
+        36 => (High, 1),
         _ => return None,
     };
     let (u, r) = (cutoff.clamp(0.0, 1.0), resonance.clamp(0.0, 1.0));
@@ -317,6 +321,7 @@ fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Fi
         pass,
         hz: 0.0,
         stages,
+        pole: matches!(kind, 32 | 36),
         damping: [2.0; 3],
         gain: 1.0,
         octaves: 0.0,
