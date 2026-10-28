@@ -228,6 +228,20 @@ def validate(plan: dict) -> tuple[list[str], list[str]]:
 
 # ── briefs ──────────────────────────────────────────────────────────────────
 
+VISION = ROOT / "docs/architecture-v3/VISION.md"
+
+
+def mantra() -> str:
+    """The quote that opens VISION.md, one line: every brief carries it."""
+    quote = []
+    for line in VISION.read_text().splitlines():
+        if line.startswith(">"):
+            quote.append(line.lstrip("> ").strip())
+        elif quote:
+            break
+    return " ".join(quote).replace("**", "")
+
+
 def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
     t = plan["by_id"][tid]
     meta = plan["meta"]
@@ -242,7 +256,13 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
     ]
     if t.get("draft"):
         lines.append("> ⚠️ **Draft brief.** Scope and steps are a forecast. The coordinator re-checks them against the tree and removes `draft` before dispatch.")
-    lines += ["", "## Goal", t["goal"], "", "## Read first",
+    lines += ["", "## Why", f"> **{mantra()}**", "",
+              f"Every change serves [VISION.md]({doc_url('VISION.md', branch)}): one engine every format shares, "
+              "faithful to the original where it is audible, modern everywhere else, and never closing off what goes "
+              "beyond the original (per-note expression, per-voice modulation, sample accuracy, efficiency). "
+              "Your PR answers its design test in the *Vision check* section.",
+              "", "## Goal", t["goal"], "", "## Read first",
+              f"- [VISION.md]({doc_url('VISION.md', branch)}): why v3 exists, what it must keep possible, the design test",
               f"- [README.md]({doc_url('README.md', branch)}): the ten rules",
               f"- [12-WORKFLOW.md]({doc_url('12-WORKFLOW.md', branch)}): how to work on v3 (branching, scope, tests, PR)",
               "- `.claude/skills/v3-task/SKILL.md`: the step-by-step playbook for a v3 task, including resuming a draft PR "
@@ -265,7 +285,8 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
     lines += ["", "## Done when"] + [f"- [ ] {d}" for d in t["done"]]
     lines += [f"- [ ] `python3 tools/plan/plan.py scope {tid}` passes",
               "- [ ] `KONTRA_CARGO='build-slot cargo' cargo xtask ci --base origin/v3` passes (output in the PR)",
-              "- [ ] Net production lines reported (`cargo xtask size`)"]
+              "- [ ] Net production lines reported (`cargo xtask size`)",
+              "- [ ] *Vision check* in the PR answers the five questions of VISION.md's design test"]
     lines += ["", "## How to work",
               f"1. Branch from `{branch}`: `wt switch -c {meta['branch_prefix']}{tid}-{slug_} -b {branch}` "
               f"(T3/Claude worktrees: `git switch -c {meta['branch_prefix']}{tid}-{slug_} origin/{branch}`).",
@@ -284,7 +305,7 @@ def brief(plan: dict, tid: str, numbers: dict[str, int] | None = None) -> str:
                 for f, (src, cmd) in GENERATED.items() if overlap(owns(plan, t), [src], [])],
               "5. Run only the gate's crate-scoped commands, always through `build-slot`. No workspace builds, corpus runs, "
               "real-library surveys or plugin bundles: the coordinator does those once per merge batch.",
-              "6. Push, fill in the PR template (gate output, scope check, net lines, deviations) and `gh pr ready`.",
+              "6. Push, fill in the PR template (gate output, scope check, net lines, deviations, Vision check) and `gh pr ready`.",
               "7. Report back: PR URL, head SHA, gate output, any deviation from this brief and why."]
     return "\n".join(lines) + "\n"
 

@@ -9,6 +9,7 @@ It is enforced by tools (`tools/plan/plan.py`, the `v3 plan` CI check, the
 
 | What | Where | Who edits |
 |---|---|---|
+| Why, and what every change must keep possible | [`VISION.md`](VISION.md) (its opening quote is copied into every brief) | coordinator only |
 | Design | `docs/architecture-v3/00–11` | any PR that changes reality updates the doc in the same PR |
 | Tasks: ids, deps, owned paths, steps, gates | [`tasks.toml`](tasks.toml) | coordinator only (`v3-plan-*` branches) |
 | Task index + dependency graph | [`TASKS.md`](TASKS.md) | generated: `plan.py index` |
