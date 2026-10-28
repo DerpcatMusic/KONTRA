@@ -40,7 +40,7 @@ env:
   # Rc-based Lua hosts cannot take. No package links both. P8 deletes v2.
   CRATES: >-
     -p kontakto -p sampler-core -p sampler-ir -p sampler-simd -p sampler-pool -p sampler-ksp
-    -p sampler-kontakt -p sampler-uvi -p sampler-midi -p sampler-native -p sampler-ui-ir
+    -p sampler-kontakt -p sampler-uvi -p sampler-midi -p sampler-native -p kontra-ui-model
     -p sampler-perf -p sampler-parity -p corpus-health
   V3_CRATES: >-
     -p kontra-time -p kontra-law -p kontra-macros -p kontra-params

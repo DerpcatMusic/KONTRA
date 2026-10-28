@@ -38,7 +38,7 @@
       "default",
       "library-access"
     ],
-    "sampler-ui-ir": [],
+    "kontra-ui-model": [],
     "sampler-perf": [],
     "sampler-parity": [],
     "corpus-health": [
@@ -79,7 +79,7 @@
         "-p",
         "sampler-native",
         "-p",
-        "sampler-ui-ir",
+        "kontra-ui-model",
         "-p",
         "sampler-perf",
         "-p",
@@ -126,7 +126,7 @@
         "-p",
         "sampler-native",
         "-p",
-        "sampler-ui-ir",
+        "kontra-ui-model",
         "-p",
         "sampler-perf",
         "-p",

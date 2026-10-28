@@ -26,7 +26,7 @@ CONTRACT = ROOT / ".github/shipping-test-features.json"
 PACKAGES = (
     "kontakto", "sampler-core", "sampler-ir", "sampler-simd", "sampler-pool",
     "sampler-ksp", "sampler-kontakt", "sampler-uvi", "sampler-midi",
-    "sampler-native", "sampler-ui-ir", "sampler-perf", "sampler-parity", "corpus-health",
+    "sampler-native", "kontra-ui-model", "sampler-perf", "sampler-parity", "corpus-health",
 )
 KINDS = {"lib", "rlib", "staticlib", "cdylib", "dylib", "proc-macro", "bin",
          "test", "bench", "example", "custom-build"}
