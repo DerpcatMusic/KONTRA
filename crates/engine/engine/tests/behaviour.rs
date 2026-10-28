@@ -853,7 +853,7 @@ fn a_group_formant_shapes_its_voices() {
             talk: 0.5,
             sharp: 0.5,
             size: 0.5,
-            second: false,
+            set: kontra_engine::ir::VowelSet::First,
         }),
         bypass: false,
         output: 1.0,

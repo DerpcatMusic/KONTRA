@@ -10,7 +10,7 @@
 //! one EQ per group; a second moved insert of the same kind stays shared.
 
 use kontra_dsp::eq::{Bell, Biquad, Side};
-use kontra_dsp::filter::{Formant, Pass, Shape, Svf, Vowels};
+use kontra_dsp::filter::{Formant, Pass, Shape, Svf, VowelSet, Vowels};
 use kontra_ir as ir;
 
 use crate::ledger::Note;
@@ -155,7 +155,10 @@ pub(crate) fn stages(sections: &[ir::EffectKind], rate: u32) -> Box<[Stage]> {
                     talk: f.talk,
                     sharp: f.sharp,
                     size: f.size,
-                    second: f.second,
+                    set: match f.set {
+                        ir::VowelSet::First => VowelSet::First,
+                        ir::VowelSet::Second => VowelSet::Second,
+                    },
                 };
                 out.push(Stage::Formant(Formant::new(v, rate)));
             }

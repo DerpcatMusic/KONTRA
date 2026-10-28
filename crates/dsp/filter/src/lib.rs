@@ -8,7 +8,7 @@
 
 mod formant;
 
-pub use formant::{Formant, Vowels};
+pub use formant::{Formant, VowelSet, Vowels};
 pub use kontra_dsp_core::Biquad;
 use kontra_dsp_core::flush;
 

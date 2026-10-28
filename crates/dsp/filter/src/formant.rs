@@ -30,13 +30,20 @@ const LEVELS: [[f32; 3]; 10] = [
     [0.40272, 0.68783, 0.77625], [0.16481, 0.63096, 0.56235],
 ];
 
-/// Knobs 0..=1. `second` reads the table's second set of five vowels.
+/// Which five vowels of the table `talk` sweeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VowelSet {
+    First,
+    Second,
+}
+
+/// Knobs 0..=1; `set` picks the five vowels `talk` sweeps.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vowels {
     pub talk: f32,
     pub sharp: f32,
     pub size: f32,
-    pub second: bool,
+    pub set: VowelSet,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -49,7 +56,11 @@ impl Formant {
     pub fn new(v: Vowels, rate: u32) -> Self {
         let [talk, sharp, size] = [v.talk, v.sharp, v.size].map(|x| x.clamp(0.0, 1.0));
         // Five vowels per set, talk sweeping them with linear steps between.
-        let at = (if v.second { 5.0 } else { 0.0 } + 4.0 * talk).min(9.0);
+        let at = (match v.set {
+            VowelSet::First => 0.0,
+            VowelSet::Second => 5.0,
+        } + 4.0 * talk)
+            .min(9.0);
         let row = at as usize;
         let t = at - row as f32;
         let read = |table: &[[f32; 3]; 10], band: usize| {
@@ -65,7 +76,9 @@ impl Formant {
         let level = (1.0 + sharpness * sharpness) * 5.0;
         let scale = std::f32::consts::TAU / rate.max(1) as f32 * (size + size.max(0.5));
         let bands = [0, 1, 2].map(|band| {
-            let w = f64::from(read(&HZ, band) * scale);
+            // Kept below Nyquist: past π, `g` turns negative and the poles leave
+            // the unit circle (low rates, large size).
+            let w = f64::from(read(&HZ, band) * scale).min(0.99 * std::f64::consts::PI);
             let r = f64::from(read(&RADII, band) * radius);
             let g = w.sin() * (1.0 - r);
             let mut b = Biquad::new([g, 0.0, -g, 1.0 + g, -2.0 * w.cos(), 1.0 - g]);

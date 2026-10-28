@@ -1,4 +1,4 @@
-use kontra_dsp_filter::{Formant, Vowels};
+use kontra_dsp_filter::{Formant, VowelSet, Vowels};
 
 /// Kontakt 8's Formant I/II magnitude at 48 kHz (Wine oracle,
 /// tools/kontakt-oracle/eqrender.py, impulse against the bypass reference):
@@ -35,7 +35,11 @@ fn the_formant_matches_kontakt_within_a_tenth_of_a_db() {
             talk,
             sharp,
             size,
-            second,
+            set: if second {
+                VowelSet::Second
+            } else {
+                VowelSet::First
+            },
         };
         let mut f = Formant::new(v, RATE);
         let mut ir = vec![[0.0f32; 2]; 16_384];
@@ -55,4 +59,21 @@ fn the_formant_matches_kontakt_within_a_tenth_of_a_db() {
             );
         }
     }
+}
+
+#[test]
+fn a_band_past_nyquist_stays_stable() {
+    // talk 1, size 1 doubles the top band to 9.5 kHz, past 8 kHz Nyquist.
+    let v = Vowels {
+        talk: 1.0,
+        sharp: 0.5,
+        size: 1.0,
+        set: VowelSet::First,
+    };
+    let mut f = Formant::new(v, 16_000);
+    let mut io = vec![[0.0f32; 2]; 32_000];
+    io[0] = [1.0, 1.0];
+    f.process(&mut io);
+    let tail = io[16_000..].iter().map(|x| x[0].abs()).fold(0.0, f32::max);
+    assert!(tail < 1e-3, "tail {tail}");
 }

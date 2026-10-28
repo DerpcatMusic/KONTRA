@@ -303,7 +303,11 @@ fn filter(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
             talk: f(0)?,
             sharp: f(4)?,
             size: f(8)?,
-            second: kind == 91,
+            set: if kind == 91 {
+                ir::VowelSet::Second
+            } else {
+                ir::VowelSet::First
+            },
         }));
     }
     let (gain, at) = if matches!(kind, 30..=41 | 63..=65 | 70 | 71) {

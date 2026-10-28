@@ -692,13 +692,20 @@ pub struct Reverb {
 
 /// Three resonant band-passes in parallel placed by a vowel table: `talk`
 /// sweeps the vowels, `size` scales the centres, `sharp` narrows and lifts
-/// the bands (each 0..=1); `second` reads the table's second vowel set.
+/// the bands (each 0..=1); `set` picks the vowels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Formant {
     pub talk: f32,
     pub sharp: f32,
     pub size: f32,
-    pub second: bool,
+    pub set: VowelSet,
+}
+
+/// Which five vowels of the table `talk` sweeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VowelSet {
+    First,
+    Second,
 }
 
 /// `stages` two-pole state-variable stages in series at `hz` (none: one
