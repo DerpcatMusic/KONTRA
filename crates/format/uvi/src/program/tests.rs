@@ -318,3 +318,48 @@ fn an_oscillators_bend_and_controller_pitch_routes_reach_its_group() {
         out.diagnostics
     );
 }
+
+#[test]
+fn a_layer_ahd_bends_its_oscillators_pitch_through_breakpoints() {
+    let xml = r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0">
+        <Modulators>
+          <AHD Name="AHD 1" Bypass="0" AttackTime="0" AttackCurve="0" HoldTime="0" DecayTime="0.03" DecayCurve="-0.5" VelocityAmount="0" Retrigger="1"/>
+        </Modulators>
+        <Keygroups><Keygroup LowKey="0" HighKey="127">
+          <Oscillators>
+            <SamplePlayer Bypass="0" SamplePath="./a.wav">
+              <Connections>
+                <SignalConnection Ratio="-2" Source="$Layer/AHD 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+              </Connections>
+            </SamplePlayer>
+          </Oscillators>
+        </Keygroup></Keygroups>
+      </Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    assert_eq!(
+        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        [ir::ModKind::Pitch {
+            source: ir::Source::Envelope(0),
+            semitones: -2.0,
+            depth: 1.0,
+        }]
+    );
+    let e = &g.envelopes[0];
+    let (ms, levels): (Vec<_>, Vec<_>) = e.points.iter().map(|p| (p.ms, p.level)).unzip();
+    assert_eq!(
+        (e.start, ms, levels, e.sustain),
+        (0.0, vec![0.0, 0.0, 30.0], vec![1.0, 1.0, 0.0], None)
+    );
+    // c = −0.5 passes (1 − c)/2 = 3/4 of its fall at half time.
+    let k = e.points[2].curve;
+    assert!(((0.5 * k).exp_m1() / k.exp_m1() - 0.75).abs() < 1e-5, "{k}");
+    assert!(
+        !out.diagnostics.iter().any(|d| d.feature.contains("Pitch")),
+        "{:?}",
+        out.diagnostics
+    );
+}
