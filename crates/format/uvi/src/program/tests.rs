@@ -748,3 +748,32 @@ fn an_aux_eq_past_four_bands_runs_as_eqs_in_series() {
     )));
     assert!(!out.diagnostics.iter().any(|d| d.feature.contains("fourth")));
 }
+
+#[test]
+fn velocity_scales_a_keygroups_gain() {
+    let xml = r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Connections>
+            <SignalConnection Ratio="0.75" Source="@VoiceParam Velocity" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    assert_eq!(
+        out.groups[0]
+            .mods
+            .iter()
+            .map(|m| m.kind)
+            .collect::<Vec<_>>(),
+        [ir::ModKind::Volume {
+            source: ir::Source::Velocity,
+            intensity: 0.75,
+            curve: ir::Curve::Depth { power: 1 },
+        }]
+    );
+    assert!(out.diagnostics.iter().all(|d| !d.feature.contains("Gain")));
+}
