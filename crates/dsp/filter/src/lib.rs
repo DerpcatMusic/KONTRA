@@ -107,16 +107,16 @@ impl Svf {
         for frame in io {
             for (c, x) in frame.iter_mut().enumerate() {
                 let mut v = f64::from(*x);
-                if stages == 0 {
-                    if let Some([s, _]) = self.state.first_mut().and_then(|st| st.get_mut(c)) {
-                        let low = (v - *s) * g / (1.0 + g) + *s;
-                        *s = 2.0 * low - *s;
-                        v = if self.shape.pass == Pass::High {
-                            v - low
-                        } else {
-                            low
-                        };
-                    }
+                if stages == 0
+                    && let Some([s, _]) = self.state.first_mut().and_then(|st| st.get_mut(c))
+                {
+                    let low = (v - *s) * g / (1.0 + g) + *s;
+                    *s = 2.0 * low - *s;
+                    v = if self.shape.pass == Pass::High {
+                        v - low
+                    } else {
+                        low
+                    };
                 }
                 for (st, &k) in self.state.iter_mut().zip(&self.shape.damping).take(stages) {
                     let Some([ic1, ic2]) = st.get_mut(c) else {
