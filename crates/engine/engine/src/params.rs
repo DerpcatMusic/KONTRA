@@ -47,7 +47,7 @@ fn attack_x(shape: f32) -> f64 {
     0.5 * (1.0 - k.signum() * c)
 }
 
-/// An LFO's fade-in runs 0..=10 s on the stage law (real Kontakt 8,
+/// An LFO's fade-in runs 0..=10 s on the stage law (measured,
 /// probes/mod_par_laws.lua: 500_000 saves 139.45 ms, 1_000_000 10 002 ms).
 const LFO_FADE_TOP_MS: f64 = 10_000.0;
 
@@ -365,7 +365,7 @@ impl Engine {
                 }
                 any
             }
-            // Real Kontakt 8 (probes/mod_par_laws.lua): the knob's depth is x²
+            // Measured (probes/mod_par_laws.lua): the knob's depth is x²
             // and the route keeps its sign; the bipolar one writes (2x − 1)³.
             EnginePar::RouteIntensity => g.mod_mut(slot, generic).is_some_and(|m| {
                 let sign = signed(&m.kind).unwrap_or(1.0).signum();
