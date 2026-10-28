@@ -660,6 +660,10 @@ pub enum EffectKind {
     Convolution { impulse: u16 },
     /// An algorithmic reverb (the wet path; `dry` mixes the input back).
     Reverb(Reverb),
+    /// A compressor, in place.
+    Compressor(Compressor),
+    /// A peak limiter, in place.
+    Limiter(Limiter),
     /// Not carried, an insert: audio passes unchanged (its output gain
     /// trims processing that does not run).
     /// The translator reports it.
@@ -667,6 +671,32 @@ pub enum EffectKind {
     /// Not carried, a parallel path (a reverb, a delay): only the dry level
     /// passes. The translator reports it.
     OtherWet,
+}
+
+/// A feed-forward compressor in physical units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Compressor {
+    pub threshold_db: f32,
+    /// Input dB over the threshold per output dB; infinite limits.
+    pub ratio: f32,
+    /// Soft-knee width around the threshold; 0 is hard.
+    pub knee_db: f32,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+    pub makeup_db: f32,
+    /// Both channels follow the louder one.
+    pub link: bool,
+    /// 0..=1: the compressed share of the output.
+    pub mix: f32,
+}
+
+/// A peak limiter: input gain, then nothing past the ceiling.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Limiter {
+    pub input_db: f32,
+    pub ceiling_db: f32,
+    /// Time for the held peak to halve.
+    pub release_ms: f32,
 }
 
 /// An algorithmic reverb in physical units.

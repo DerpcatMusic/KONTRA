@@ -116,6 +116,8 @@ fn rack(
                 ir::EffectKind::Convolution { .. } => Some("group convolution"),
                 ir::EffectKind::Reverb(_) => Some("group reverb"),
                 ir::EffectKind::Sends(_) => Some("group send levels"),
+                ir::EffectKind::Compressor(_) => Some("group compressor"),
+                ir::EffectKind::Limiter(_) => Some("group limiter"),
                 _ => None,
             };
             if let Some(feature) = lost.filter(|_| at.starts_with("group") && !effect.bypass) {
@@ -187,6 +189,36 @@ fn slot_effect(
                 pan: pan.clamp(-1.0, 1.0),
             }),
         0x18 => kind_id.and_then(|k| eq(&public, k).or_else(|| filter(&public, k))),
+        // Mode (i32), threshold, ratio, attack, release, then the link byte.
+        0x19 => kind_id
+            .zip(f32_at(4).zip(f32_at(8)))
+            .zip(f32_at(12).zip(f32_at(16)))
+            .zip(byte(20))
+            .map(|(((mode, (t, r)), (a, rel)), link)| {
+                ir::EffectKind::Compressor(crate::laws::compressor(mode, t, r, a, rel, link))
+            }),
+        0x1c => f32_at(0)
+            .zip(f32_at(4))
+            .map(|(gain, release)| ir::EffectKind::Limiter(crate::laws::limiter(gain, release))),
+        0x5f if object.version == 0x51 => {
+            f32_at(0)
+                .zip(f32_at(4))
+                .zip(f32_at(8))
+                .map(|((drive, release), ceiling)| {
+                    ir::EffectKind::Limiter(crate::laws::transparent_limiter(
+                        drive, release, ceiling,
+                    ))
+                })
+        }
+        // Six floats, then the link byte.
+        0x46 if (0x10..=0x12).contains(&object.version) => (0..6)
+            .map(|i| f32_at(4 * i))
+            .collect::<Option<Vec<_>>>()
+            .and_then(|v| v.try_into().ok())
+            .zip(byte(24))
+            .map(|(knobs, link)| {
+                ir::EffectKind::Compressor(crate::laws::bus_compressor(knobs, link))
+            }),
         0x17 => sends(&public),
         0x44 => solid_eq(object.version, &public, at, notes),
         0x16 => impulses

@@ -615,11 +615,112 @@ pub fn reverb_laws() -> [ir::Law; 8] {
         ir::Law::Linear { lo: 0.0, hi: -12.0 },
         ir::Law::Linear { lo: 0.0, hi: 1.0 },
     ]
+
+/// The Compressor (0x19): saved mode, threshold dB, ratio knob, attack and
+/// release ms, link byte. The Pro core's law (docs/re/engine/dyn-compressors.md,
+/// setter 0x140ab9220): the knob `r` is the output slope over the threshold
+/// (ratio `1/r`), a 12 dB knee, attack 0.1..=10 ms as a detector low-pass at
+/// `1000/ms` Hz, release 10..=1000 ms halving the level, and make-up
+/// `−0.666·(1 − r)·threshold` dB. Pro always links the channels.
+// ponytail: Classic (mode 0) and Enhanced (mode 1) run the Pro law too; their
+// detectors differ (docs/re/engine/dyn-compressors.md) and no native
+// recording says by how much.
+pub(crate) fn compressor(
+    mode: i32,
+    threshold_db: f32,
+    r: f32,
+    attack_ms: f32,
+    release_ms: f32,
+    link: bool,
+) -> ir::Compressor {
+    let r = r.clamp(0.0, 1.0);
+    ir::Compressor {
+        threshold_db,
+        ratio: 1.0 / r.max(1e-3),
+        knee_db: 12.0,
+        attack_ms: attack_ms.clamp(0.1, 10.0) / std::f32::consts::TAU,
+        release_ms: release_ms.clamp(10.0, 1000.0) / std::f32::consts::LN_2,
+        makeup_db: -0.666 * (1.0 - r) * threshold_db,
+        link: link || mode == 2,
+        mix: 1.0,
+    }
+}
+
+/// The Limiter (0x1c): saved input gain (dB, as `2^(x/6)`) and release ms;
+/// the output never passes full scale (docs/re/engine/dyn-limiters-transient.md).
+pub(crate) fn limiter(input_db: f32, release_ms: f32) -> ir::Limiter {
+    ir::Limiter {
+        input_db,
+        ceiling_db: 0.0,
+        release_ms: release_ms.max(0.0),
+    }
+}
+
+/// The Transparent Limiter (0x5f): saved drive, release and ceiling knobs
+/// 0..=1. Drive `(1 − x)·40` dB, release `max(x, 0.001)` s as a one-pole time
+/// constant, ceiling `−0.35 − (1 − x)·39.7` dB.
+pub(crate) fn transparent_limiter(drive: f32, release: f32, ceiling: f32) -> ir::Limiter {
+    let [drive, release, ceiling] = [drive, release, ceiling].map(|x| x.clamp(0.0, 1.0));
+    ir::Limiter {
+        input_db: (1.0 - drive) * 40.0,
+        ceiling_db: -0.35 - (1.0 - ceiling) * 39.7,
+        // A one-pole time constant τ halves in τ·ln 2.
+        release_ms: 1000.0 * release.max(0.001) * std::f32::consts::LN_2,
+    }
+}
+
+/// Solid Bus Comp (0x46): saved threshold, make-up, attack, release, ratio
+/// and mix knobs 0..=1, and the link byte. Ratio, attack and release are
+/// six-step switches (`floor(5x + 0.5)`); the threshold knob spans ±18.6 dB
+/// around −20 dB less a per-ratio offset, make-up −5.25..=21 dB
+/// (tables 0x1479a7e18..0x1479a7ea8, docs/re/engine/dyn-compressors.md).
+// ponytail: the core's detector and curve are unverified; this is the
+// standard compressor at the switch values, the auto release (step 5) at 150 ms.
+pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> ir::Compressor {
+    const RATIO: [f32; 6] = [1.5, 2.0, 3.0, 4.0, 5.0, 10.0];
+    const OFFSET_DB: [f32; 6] = [-12.0, -9.0, -5.0, -4.0, -3.3, -0.2];
+    const ATTACK_MS: [f32; 6] = [0.1, 0.3, 1.0, 3.0, 10.0, 30.0];
+    const RELEASE_MS: [f32; 6] = [12.5, 18.75, 37.5, 50.0, 100.0, 150.0];
+    let [threshold, makeup, attack, release, ratio, mix] = knobs.map(|x| x.clamp(0.0, 1.0));
+    let step = |x: f32| ((x * 5.0 + 0.5).floor() as usize).min(5);
+    let at = |table: [f32; 6], x: f32| table.get(step(x)).copied().unwrap_or(1.0);
+    ir::Compressor {
+        threshold_db: -18.6 + 37.2 * threshold - 20.0 + at(OFFSET_DB, ratio),
+        ratio: at(RATIO, ratio),
+        knee_db: 0.0,
+        attack_ms: at(ATTACK_MS, attack),
+        release_ms: at(RELEASE_MS, release),
+        makeup_db: -5.25 + 26.25 * makeup,
+        link,
+        mix,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_compressor_knob_is_the_output_slope_with_threshold_makeup() {
+        let c = compressor(2, -20.0, 0.25, 6.283, 69.3, false);
+        assert!((c.ratio - 4.0).abs() < 1e-4);
+        assert!((c.makeup_db - 9.99).abs() < 1e-3);
+        assert!((c.attack_ms - 1.0).abs() < 1e-3 && (c.release_ms - 100.0).abs() < 0.1);
+        assert!(c.link);
+        assert!(!compressor(1, -20.0, 0.25, 1.0, 100.0, false).link);
+        // A knob of 1 leaves the signal alone.
+        assert!((compressor(0, -20.0, 1.0, 1.0, 100.0, true).ratio - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_transparent_limiter_and_bus_comp_reach_their_table_ends() {
+        let l = transparent_limiter(0.0, 1.0, 1.0);
+        assert!((l.input_db - 40.0).abs() < 1e-4 && (l.ceiling_db + 0.35).abs() < 1e-4);
+        let b = bus_compressor([0.5, 0.2, 0.0, 1.0, 1.0, 1.0], true);
+        assert!((b.ratio - 10.0).abs() < 1e-6 && (b.threshold_db + 20.2).abs() < 1e-4);
+        assert!((b.attack_ms - 0.1).abs() < 1e-6 && (b.release_ms - 150.0).abs() < 1e-4);
+        assert!(b.makeup_db.abs() < 1e-4);
+    }
 
     #[test]
     fn a_centred_solid_eq_is_flat_and_its_knobs_reach_the_table_ends() {
