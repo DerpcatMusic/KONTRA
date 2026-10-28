@@ -266,13 +266,14 @@ struct Key {
 }
 
 /// The view's controls in its order (the script compiles only those it
-/// names), then the script's own.
+/// names), then the script's own. Names match without regard to case, as
+/// in Kontakt: Shreddage's view says `VibratoPopUp`, its script `VibratoPopup`.
 fn keys(face: &Face) -> Vec<Key> {
-    let script: HashMap<&str, usize> = face
+    let script: HashMap<String, usize> = face
         .controls
         .iter()
         .enumerate()
-        .map(|(n, (_, name, _))| (&**name, n))
+        .map(|(n, (_, name, _))| (name.to_ascii_lowercase(), n))
         .collect();
     let id = |n: usize| {
         let (control, ..) = face.controls.get(n)?;
@@ -283,7 +284,7 @@ fn keys(face: &Face) -> Vec<Key> {
         .clone()
         .enumerate()
         .filter_map(|(v, c)| {
-            let control = script.get(c.name.as_str()).copied();
+            let control = script.get(&c.name.to_ascii_lowercase()).copied();
             Some(Key {
                 // A view control the script never names: an id no control has.
                 id: control.map_or_else(|| Some(-1 - i32::try_from(v).ok()?), id)?,
@@ -292,12 +293,13 @@ fn keys(face: &Face) -> Vec<Key> {
             })
         })
         .collect();
-    let in_view: std::collections::HashSet<&str> = viewed.map(|v| v.name.as_str()).collect();
+    let in_view: std::collections::HashSet<String> =
+        viewed.map(|v| v.name.to_ascii_lowercase()).collect();
     keys.extend(
         face.controls
             .iter()
             .enumerate()
-            .filter(|(_, (_, name, _))| !in_view.contains(&**name))
+            .filter(|(_, (_, name, _))| !in_view.contains(&name.to_ascii_lowercase()))
             .filter_map(|(n, _)| {
                 Some(Key {
                     id: id(n)?,
@@ -517,13 +519,16 @@ fn build(
         page_of(bld, page, face.view.as_ref());
     }
     let by_id: HashMap<i32, usize> = decls.iter().enumerate().map(|(i, d)| (d.id, i)).collect();
-    let by_name: HashMap<&str, i32> = decls.iter().map(|d| (d.name, d.id)).collect();
+    let by_name: HashMap<String, i32> = decls
+        .iter()
+        .map(|d| (d.name.to_ascii_lowercase(), d.id))
+        .collect();
     for (i, d) in decls.iter().enumerate() {
         let props = props(face, d);
         let mut w = widget(bld, slot, d, &props, engine);
         let parent = props.int("$CONTROL_PAR_PARENT_PANEL").or_else(|| {
             let name = d.view?.parent.as_deref()?;
-            by_name.get(name).copied()
+            by_name.get(&name.to_ascii_lowercase()).copied()
         });
         if let Some(parent) = parent {
             match by_id.get(&parent) {
