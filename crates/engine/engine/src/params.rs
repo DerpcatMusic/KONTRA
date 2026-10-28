@@ -391,6 +391,31 @@ impl Engine {
         Some((x * 1e6).round() as i32)
     }
 
+    /// Sets the amount of every route named with `#key` to `micros`
+    /// millionths ([`kontra_vm::Action::RouteAmount`]).
+    pub(crate) fn set_route_amount(&mut self, key: i32, micros: i32) {
+        let word = format!("#{key}");
+        let v = micros as f32 / 1e6;
+        let mut any = false;
+        for m in self
+            .groups
+            .iter_mut()
+            .flat_map(|g| g.mods.iter_mut())
+            .filter(|m| m.name.split_whitespace().any(|w| w == word))
+        {
+            any |= match &mut m.kind {
+                ir::ModKind::Pitch { semitones, .. } => {
+                    *semitones = v;
+                    true
+                }
+                kind => depth(kind).map(|d| *d = v).is_some(),
+            };
+        }
+        if any {
+            self.refresh_all(None);
+        }
+    }
+
     /// Applies `set_engine_par(par, value, group, slot)`. Returns whether it
     /// changed something the engine carries.
     pub(crate) fn set_engine_par(

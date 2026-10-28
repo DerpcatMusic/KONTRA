@@ -591,3 +591,39 @@ fn an_aux_eqs_gain_scale_connections_move_its_bands_live() {
             .any(|d| d.feature.contains("GainScale"))
     );
 }
+
+#[test]
+fn a_step_envelope_pans_its_keygroup() {
+    let xml = r#"<Program Gain="1">
+      <Modulators>
+        <StepEnvelope Name="Step Envelope 1" Bypass="0" SyncToHost="1" NumSteps="2" Freq="0.5" Retrigger="1" Bipolar="1" InterpolationMode="0" Smooth="0" Levels="-1,000000 1,000000"/>
+      </Modulators>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127" Pan="0">
+          <Connections>
+            <SignalConnection Ratio="0.5" Source="$Program/Step Envelope 1" Destination="Pan" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    assert_eq!(
+        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        [ir::ModKind::Pan {
+            source: ir::Source::Shaped(0),
+            amount: 0.5,
+        }]
+    );
+    assert_eq!(
+        (g.lfos[0].rate, g.lfos[0].clock),
+        (ir::Rate::Beats(1.0), ir::Clock::Voice)
+    );
+    assert!(
+        !out.diagnostics.iter().any(|d| d.feature.contains("Pan")),
+        "{:?}",
+        out.diagnostics
+    );
+}

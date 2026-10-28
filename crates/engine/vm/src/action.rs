@@ -150,6 +150,10 @@ actions! {
     /// An output bus's live level: `(bus, millidecibels)`, at most -200 dB
     /// is silence.
     BusVolume,
+    /// A route's live amount: `(key, millionths)`, set on every group route
+    /// whose name holds the word `#key`, in its kind's unit (semitones,
+    /// pan, octaves of depth, ...).
+    RouteAmount,
     // Time.
     WaitTicks,
     WaitAsync,
