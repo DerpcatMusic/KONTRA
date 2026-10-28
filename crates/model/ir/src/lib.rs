@@ -498,6 +498,8 @@ pub enum Curve {
     Depth { power: u8 },
     /// [`Self::Depth`] at power 1 on `x²`; a negative intensity reads `1 − x²`.
     Squared,
+    /// `1 − x × intensity`: the gain falls from unity as the source rises.
+    Falling,
 }
 
 impl Curve {
@@ -514,6 +516,7 @@ impl Curve {
                 let x = if intensity < 0.0 { 1.0 - x * x } else { x * x };
                 (1.0 - (1.0 - x) * intensity.abs()).max(0.0)
             }
+            Self::Falling => (1.0 - x * intensity).max(0.0),
         }
     }
 }

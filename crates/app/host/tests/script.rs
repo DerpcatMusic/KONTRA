@@ -591,6 +591,37 @@ fn a_script_modulation_sent_at_init_scales_notes_that_start_later() {
 }
 
 #[test]
+fn a_script_modulation_ramps_to_its_value() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    for g in &mut plan.groups {
+        g.mods = vec![kontra_engine::ir::Mod {
+            name: "Script Event Modulation 1".into(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            kind: kontra_engine::ir::ModKind::Volume {
+                source: kontra_engine::ir::Source::Script(1),
+                intensity: 1.0,
+                curve: kontra_engine::ir::Curve::Depth { power: 1 },
+            },
+        }];
+    }
+    // Silent at the note, then up to full over 200 ms.
+    let source = "function onNote(e) postEvent(e) sendScriptModulation2(1, 0, 1, 200) end";
+    let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let early = level(&mut e, &[on(60)]);
+    for _ in 0..4 {
+        level(&mut e, &[]);
+    }
+    let late = level(&mut e, &[]);
+    assert!(early < 0.2, "early {early}");
+    assert!((late - 0.5).abs() < 1e-3, "late {late}");
+}
+
+#[test]
 fn a_uvi_note_sounds_only_when_the_script_posts_it() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let held = "function onNote(e) end";

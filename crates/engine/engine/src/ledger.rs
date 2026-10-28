@@ -92,7 +92,7 @@ pub(crate) struct Note {
     pub(crate) zone_slot: i32,
     /// "From script" modulator values, `(index, value)`, ±1 000 000.
     // ponytail: four indices per note; a ring when a library sends more.
-    pub(crate) mod_values: [Option<(u16, i32)>; 4],
+    pub(crate) mod_values: [Option<(u16, Ramp)>; 4],
     /// The first script slot that sees the note: 0 for a host note, one past
     /// the slot that played it.
     pub(crate) first: u8,
@@ -146,25 +146,76 @@ impl Note {
         self.released || self.key_up
     }
 
-    /// The value sent this note for "from script" modulator `index`.
-    pub(crate) fn mod_value(&self, index: u16) -> Option<i32> {
-        self.mod_values
-            .iter()
-            .flatten()
-            .find(|(i, _)| *i == index)
-            .map(|&(_, v)| v)
+    /// The value sent this note for "from script" modulator `index`, at `now`.
+    pub(crate) fn mod_value(&self, index: u16, now: SampleTime) -> Option<i32> {
+        ramp_at(&self.mod_values, index, now)
     }
 
-    /// Keeps `value` for `index` when a slot is free or already holds it.
-    pub(crate) fn set_mod_value(&mut self, index: u16, value: i32) {
-        let value = value.clamp(-1_000_000, 1_000_000);
-        if let Some(slot) = self
-            .mod_values
-            .iter_mut()
-            .find(|m| m.is_none_or(|(i, _)| i == index))
-        {
-            *slot = Some((index, value));
+    /// Moves `index` to `value` over `frames` from `now`, starting where it
+    /// is (`from` when this note was never sent it).
+    pub(crate) fn set_mod_value(
+        &mut self,
+        index: u16,
+        value: i32,
+        now: SampleTime,
+        frames: u64,
+        from: i32,
+    ) {
+        set_ramp(&mut self.mod_values, index, value, now, frames, from);
+    }
+}
+
+/// A script modulation value moving linearly from `from` to `to` over
+/// `frames` from `start`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Ramp {
+    from: i32,
+    to: i32,
+    start: u64,
+    frames: u64,
+}
+
+impl Ramp {
+    fn at(self, now: SampleTime) -> i32 {
+        let done = now.0.saturating_sub(self.start);
+        if done >= self.frames {
+            return self.to;
         }
+        let t = done as f64 / self.frames as f64;
+        (f64::from(self.from) + (f64::from(self.to) - f64::from(self.from)) * t) as i32
+    }
+}
+
+/// The value of `index` among `ramps` at `now`.
+pub(crate) fn ramp_at(ramps: &[Option<(u16, Ramp)>], index: u16, now: SampleTime) -> Option<i32> {
+    ramps
+        .iter()
+        .flatten()
+        .find(|(i, _)| *i == index)
+        .map(|&(_, r)| r.at(now))
+}
+
+/// Starts `index` towards `to` over `frames` from where it is at `now`
+/// (`from` when absent), in a free slot or the one it holds.
+pub(crate) fn set_ramp(
+    ramps: &mut [Option<(u16, Ramp)>],
+    index: u16,
+    to: i32,
+    now: SampleTime,
+    frames: u64,
+    from: i32,
+) {
+    let from = ramp_at(ramps, index, now).unwrap_or(from);
+    if let Some(slot) = ramps.iter_mut().find(|m| m.is_none_or(|(i, _)| i == index)) {
+        *slot = Some((
+            index,
+            Ramp {
+                from,
+                to: to.clamp(-1_000_000, 1_000_000),
+                start: now.0,
+                frames,
+            },
+        ));
     }
 }
 

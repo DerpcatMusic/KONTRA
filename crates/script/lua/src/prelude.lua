@@ -351,12 +351,14 @@ local function layer_groups(layer)
 	return groups
 end
 
+-- Moves script modulation `id` to `value` over `ramp` ms, for one voice or all.
 function sendScriptModulation(id, value, ramp, voice)
-	host_call("SetEventParArr", voice or ALL_EVENTS, MOD_VALUE, math.floor((value or 0) * 1e6), id)
+	local micros = math.floor(math.max(0, ramp or 0) * 1000)
+	host_call("SetEventParArr", voice or ALL_EVENTS, MOD_VALUE, math.floor((value or 0) * 1e6), id, micros)
 end
 
--- ponytail: the ramp from `from` is not drawn; the value lands at `to`.
 function sendScriptModulation2(id, from, to, ramp, voice)
+	sendScriptModulation(id, from, 0, voice)
 	sendScriptModulation(id, to, ramp, voice)
 end
 
@@ -491,6 +493,14 @@ function loadSample(oscillator, path, done)
 	if loads and type(oscillator) == "userdata" and oscillator.parent then
 		table.insert(loads, { oscillator.parent.group, oscillator.index - 1, path, oscillator.params.BaseNote })
 	end
+	if type(done) == "function" then
+		done({ success = true })
+	end
+end
+
+-- ponytail: impulses are not loaded; the callback reports success so a
+-- script that mutes while one loads (VWinds' room) unmutes.
+function loadImpulse(insert, path, done)
 	if type(done) == "function" then
 		done({ success = true })
 	end
@@ -659,7 +669,7 @@ function run(f, ...)
 end
 
 for _, name in ipairs({
-	"loadData", "saveData", "loadState", "saveState", "loadImpulse",
+	"loadData", "saveData", "loadState", "saveState",
 	"setKeyColour", "setSampleOffset", "browseForFile", "setKeyType", "setKeyPressed",
 }) do
 	_G[name] = function() end

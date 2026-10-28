@@ -28,10 +28,15 @@ impl<L: Library> Translator<'_, '_, L> {
                     depth: 1.0,
                 }
             } else {
+                // A negative ratio turns the gain down as the value rises.
                 ir::ModKind::Volume {
                     source,
-                    intensity: ratio,
-                    curve: ir::Curve::Depth { power: 1 },
+                    intensity: ratio.abs(),
+                    curve: if ratio < 0.0 {
+                        ir::Curve::Falling
+                    } else {
+                        ir::Curve::Depth { power: 1 }
+                    },
                 }
             };
             let route = ir::Mod {
@@ -68,8 +73,7 @@ impl<L: Library> Translator<'_, '_, L> {
 
 /// A live connection from a script modulation to the gain of a layer,
 /// keygroup or the program, or to the pitch of those or an oscillator: that
-/// element and the modulation. A gain route with a negative ratio (gain
-/// falling as the value rises) is left to the report.
+/// element and the modulation.
 pub(super) fn script_route<'a, 'input>(
     program: Node<'a, 'input>,
     connection: Node<'a, 'input>,
@@ -81,9 +85,7 @@ pub(super) fn script_route<'a, 'input>(
         return None;
     }
     let owners: &[&str] = match connection.attribute("Destination")? {
-        "Gain" if num(connection, "Ratio", 1.0).is_ok_and(|r| r >= 0.0) => {
-            &["Layer", "Keygroup", "Program"]
-        }
+        "Gain" => &["Layer", "Keygroup", "Program"],
         "Pitch" => &["Layer", "Keygroup", "Program", "SamplePlayer"],
         _ => return None,
     };

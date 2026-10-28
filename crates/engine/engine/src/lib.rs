@@ -119,7 +119,10 @@ pub struct Engine {
     /// "From script" modulator values sent to every event: what a note
     /// reads until it is sent its own.
     // ponytail: eight indices; a ring when a library sends more.
-    script_mods: [Option<(u16, i32)>; 8],
+    script_mods: [Option<(u16, ledger::Ramp)>; 8],
+    /// Until this sample a script modulation is ramping: voices re-read
+    /// their routes as timed ones do.
+    ramping_until: u64,
     plan: Arc<Plan>,
     stream: StreamClient,
     queue: EventQueue,
@@ -244,6 +247,7 @@ impl Engine {
             rate: rate.max(1),
             tempo: 120.0,
             script_mods: [None; 8],
+            ramping_until: 0,
             queue: EventQueue::new(plan.queue),
             hits: Vec::with_capacity(notes.capacity()),
             ended: Vec::with_capacity(notes.capacity()),

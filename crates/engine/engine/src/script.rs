@@ -428,9 +428,7 @@ impl Engine {
 
     /// The value sent every event for "from script" modulator `index`; 0 until sent.
     pub(crate) fn script_mod(&self, index: u16) -> i32 {
-        (self.script_mods.iter().flatten())
-            .find(|(i, _)| *i == index)
-            .map_or(0, |&(_, v)| v)
+        crate::ledger::ramp_at(&self.script_mods, index, self.now).unwrap_or(0)
     }
 
     fn random(&mut self, low: i32, high: i32) -> i32 {
@@ -554,16 +552,28 @@ impl HostApi for Engine {
             }
             Action::SetEventParArr if int(1) == event::MOD_VALUE => {
                 if let Ok(index) = u16::try_from(int(3)) {
-                    let value = int(2).clamp(-1_000_000, 1_000_000);
+                    // An optional fifth argument ramps there over microseconds.
+                    let (value, now) = (int(2), self.now);
+                    let frames =
+                        u64::try_from(int(4)).unwrap_or(0) * u64::from(self.rate) / 1_000_000;
+                    let from = self.script_mod(index);
+                    if frames > 0 {
+                        // A step past the end lands the final value.
+                        let end = now.0 + frames + u64::from(self.rate / 100);
+                        self.ramping_until = self.ramping_until.max(end);
+                    }
                     if int(0) == event::ALL {
                         // Sent to every event: notes that start later read it too.
-                        if let Some(slot) = (self.script_mods.iter_mut())
-                            .find(|m| m.is_none_or(|(i, _)| i == index))
-                        {
-                            *slot = Some((index, value));
-                        }
+                        crate::ledger::set_ramp(
+                            &mut self.script_mods,
+                            index,
+                            value,
+                            now,
+                            frames,
+                            from,
+                        );
                     }
-                    self.each(int(0), |n| n.set_mod_value(index, value));
+                    self.each(int(0), |n| n.set_mod_value(index, value, now, frames, from));
                 }
                 HostValue::Nothing
             }
@@ -571,7 +581,8 @@ impl HostApi for Engine {
                 let note = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
                 let index = u16::try_from(int(2)).ok();
                 HostValue::Int(note.zip(index).map_or(0, |(n, i)| {
-                    n.mod_value(i).unwrap_or_else(|| self.script_mod(i))
+                    n.mod_value(i, self.now)
+                        .unwrap_or_else(|| self.script_mod(i))
                 }))
             }
             Action::GetEventParArr if int(1) == event::ALLOW_GROUP => {
