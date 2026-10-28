@@ -211,8 +211,6 @@ impl Engine {
         if self.now.0.is_multiple_of(MAX_SPAN) {
             self.refresh_timed();
             self.rearm_timers();
-        } else if self.now.0.is_multiple_of(crate::voice_rack::TICK) {
-            self.tick_drives();
         }
         for bus in &mut self.buses {
             if let Some(mix) = bus.mix.get_mut(..len) {
