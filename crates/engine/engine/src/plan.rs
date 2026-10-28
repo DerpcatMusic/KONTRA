@@ -136,6 +136,11 @@ pub struct Group {
     pub bus: usize,
 }
 
+/// The bus `zone`'s group plays into now.
+pub(crate) fn bus(groups: &[Group], zone: &Zone) -> usize {
+    groups.get(zone.group as usize).map_or(0, |g| g.bus)
+}
+
 impl Group {
     /// Velocity 24 dB down at zero, a gate envelope.
     #[must_use]
