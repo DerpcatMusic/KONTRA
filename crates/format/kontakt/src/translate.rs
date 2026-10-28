@@ -666,6 +666,8 @@ fn translate_zone(
             until_release: l.mode == 2,
         });
     }
+    // The slots are in no particular order; the model wants play order.
+    found.sort_by_key(|l| l.end);
     Some(ir::Zone {
         sample,
         keys: midi(lk)..=midi(hk),
