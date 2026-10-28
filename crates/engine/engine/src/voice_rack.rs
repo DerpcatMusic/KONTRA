@@ -383,14 +383,14 @@ impl Engine {
                     insert: i,
                     depth,
                 } if i == insert => {
-                    octaves += self.source(zone, source, note, age).unwrap_or(0.0) * depth;
+                    octaves += self.routed(zone, source, note, age).unwrap_or(0.0) * depth;
                 }
                 ir::ModKind::Resonance {
                     source,
                     insert: i,
                     depth,
                 } if i == insert => {
-                    q += self.source(zone, source, note, age).unwrap_or(0.0) * depth;
+                    q += self.routed(zone, source, note, age).unwrap_or(0.0) * depth;
                 }
                 _ => {}
             }
@@ -430,7 +430,7 @@ impl Engine {
                     ir::Source::Lfo(_) if unipolar => (x + 1.0) * 0.5,
                     _ => x,
                 };
-                let amount = x * depth;
+                let amount = x * depth * self.scale(zone, source, note, age);
                 param.add(&mut kind, amount);
             }
         }
@@ -457,7 +457,7 @@ impl Engine {
             } = m.kind
                 && i == insert
             {
-                let amount = self.source(zone, source, note, age).unwrap_or(0.0) * depth_db;
+                let amount = self.routed(zone, source, note, age).unwrap_or(0.0) * depth_db;
                 if let (Some(s), Some(l)) = (
                     shift.get_mut(usize::from(band)),
                     limit.get_mut(usize::from(band)),

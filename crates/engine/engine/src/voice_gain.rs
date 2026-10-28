@@ -41,6 +41,7 @@ impl Engine {
                             }
                             _ => x,
                         };
+                        let intensity = intensity * self.scale(zone, source, note, age);
                         x.map_or(1.0, |x| curve.gain(intensity, x))
                     }
                     _ => 1.0,
@@ -53,7 +54,7 @@ impl Engine {
                 .filter(|m| !m.bypass)
                 .filter_map(|m| match m.kind {
                     ir::ModKind::Pan { source, amount } => {
-                        Some(self.source(zone, source, note, age)? * amount)
+                        Some(self.routed(zone, source, note, age)? * amount)
                     }
                     _ => None,
                 })
@@ -134,6 +135,45 @@ impl Engine {
         }
     }
 
+    /// A route's source scaled by the [`ir::ModKind::Intensity`] routes on it.
+    pub(crate) fn routed(
+        &self,
+        zone: &Zone,
+        source: ir::Source,
+        note: &Note,
+        age: Age,
+    ) -> Option<f32> {
+        Some(self.source(zone, source, note, age)? * self.scale(zone, source, note, age))
+    }
+
+    /// The product of the [`ir::ModKind::Intensity`] routes on the timed source `of`.
+    pub(crate) fn scale(&self, zone: &Zone, of: ir::Source, note: &Note, age: Age) -> f32 {
+        if !matches!(of, ir::Source::Lfo(_) | ir::Source::Envelope(_)) {
+            return 1.0;
+        }
+        self.groups.get(zone.group as usize).map_or(1.0, |g| {
+            g.mods
+                .iter()
+                .filter(|m| !m.bypass)
+                .filter_map(|m| match m.kind {
+                    ir::ModKind::Intensity {
+                        source,
+                        of: o,
+                        depth,
+                    } if o == of => {
+                        let x = self.source(zone, source, note, age)?;
+                        let x = match source {
+                            ir::Source::Lfo(_) | ir::Source::PitchBend => (x + 1.0) * 0.5,
+                            _ => x,
+                        };
+                        Some(1.0 - (1.0 - x) * depth)
+                    }
+                    _ => None,
+                })
+                .product()
+        })
+    }
+
     pub(crate) fn step(&self, zone: &Zone, note: &Note, age: Age) -> f64 {
         // ponytail: pitch moves at once; Kontakt lags pitch routes (250 ms
         // default). Add a per-voice step glide when a library's bend steps audibly.
@@ -146,7 +186,7 @@ impl Engine {
                         source,
                         semitones,
                         depth,
-                    } => Some(self.source(zone, source, note, age)? * semitones * depth),
+                    } => Some(self.routed(zone, source, note, age)? * semitones * depth),
                     _ => None,
                 })
                 .sum()
@@ -287,9 +327,8 @@ impl Engine {
                     | ir::ModKind::Cutoff { source, .. }
                     | ir::ModKind::Resonance { source, .. }
                     | ir::ModKind::EqGain { source, .. }
-                    | ir::ModKind::EffectParam { source, .. } => {
-                        source == ir::Source::Controller(cc)
-                    }
+                    | ir::ModKind::EffectParam { source, .. }
+                    | ir::ModKind::Intensity { source, .. } => source == ir::Source::Controller(cc),
                     ir::ModKind::Envelope
                     | ir::ModKind::SampleStart { .. }
                     | ir::ModKind::Attack { .. }
@@ -304,7 +343,8 @@ impl Engine {
     pub(crate) fn pitch_follows(&self, zone: &Zone, cc: u8) -> bool {
         self.groups.get(zone.group as usize).is_some_and(|g| {
             g.mods.iter().any(|m| {
-                matches!(m.kind, ir::ModKind::Pitch { source: ir::Source::Controller(c), .. } if c == cc)
+                matches!(m.kind, ir::ModKind::Pitch { source: ir::Source::Controller(c), .. }
+                    | ir::ModKind::Intensity { source: ir::Source::Controller(c), .. } if c == cc)
             })
         })
     }
