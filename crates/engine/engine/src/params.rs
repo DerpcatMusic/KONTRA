@@ -168,7 +168,12 @@ impl Engine {
     /// A group's insert slot (generic -1), the instrument insert's (group
     /// -1, generic `$NI_INSERT_BUS` = 1) or a bus's. Send and main racks are
     /// not carried yet.
-    fn effect_mut(&mut self, group: i32, slot: i32, generic: i32) -> Option<&mut ir::Effect> {
+    pub(crate) fn effect_mut(
+        &mut self,
+        group: i32,
+        slot: i32,
+        generic: i32,
+    ) -> Option<&mut ir::Effect> {
         let rack = match (usize::try_from(group), generic) {
             (Ok(g), -1) => &mut self.groups.get_mut(g)?.inserts[..],
             // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0 (one rack per slot), `$NI_MAIN_BUS` 2.
@@ -301,6 +306,9 @@ impl Engine {
         if par == EnginePar::OutputChannel {
             return self.output_channel(group, generic);
         }
+        if let EnginePar::Knob(n) = par {
+            return self.knob(n, group, slot, generic);
+        }
         if let Some(which) = effect_par(par) {
             let e = *self.effect_mut(group, slot, generic)?;
             return Some(which.get(&e)?.round().clamp(0.0, 1e6) as i32);
@@ -361,6 +369,7 @@ impl Engine {
             return self.set_output_channel(value, group, generic);
         }
         if self.set_level(par, value, group, generic)
+            || self.set_knob(par, value, group, slot, generic)
             || self.set_effect(par, value, group, slot, generic)
             || self.set_reverb(par, value, group, slot, generic)
         {
@@ -498,7 +507,7 @@ impl Engine {
     }
 
     /// Re-reads gain (and pitch, unless `cc` moved) of every sounding note.
-    fn refresh_all(&mut self, cc: Option<u8>) {
+    pub(crate) fn refresh_all(&mut self, cc: Option<u8>) {
         let mut hits = std::mem::take(&mut self.hits);
         self.notes.select(&mut hits, |_| true);
         for &note in &hits {
@@ -528,7 +537,7 @@ fn ahdsr_points(g: &Group, slot: i32) -> Option<usize> {
         _ => None,
     })?;
     let e = g.envelopes.get(n)?;
-    (e.points.len() == 4 && e.sustain == Some(2)).then_some(n)
+    (e.stages && e.points.len() == 4).then_some(n)
 }
 
 /// A route's signed depth; an EQ gain or effect route's is its depth over
