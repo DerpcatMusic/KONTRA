@@ -14,7 +14,7 @@ checks cannot turn the aggregate green.
 | Workflow checks | YAML, expressions, dependency graph, documentation filtering and simulated release safety | `bash .github/scripts/check_workflows.sh` (Linux); `python3 -m unittest discover -s .github/scripts -p 'test_*.py'`; `python3 .github/workflows/check_nightly.py` |
 | rustfmt | Formatting differences, currently advisory because the tree has existing debt | `cargo fmt --all --check` |
 | clippy | Compilation plus Rust lint diagnostics; existing warning policy is unchanged | `cargo clippy --locked --profile ci --all-targets` |
-| Linux tests | Default-feature unit/integration/doc-tests for the root and every first-party workspace package, including the parity ledger and corpus collector | `cargo test --locked --profile ci -p kontakto -p sampler-core -p sampler-ir -p sampler-simd -p sampler-pool -p sampler-ksp -p sampler-kontakt -p sampler-uvi -p sampler-midi -p sampler-native -p sampler-ui-ir -p sampler-perf -p sampler-parity -p corpus-health` |
+| Linux tests | Default-feature unit/integration/doc-tests for the root and every first-party workspace package, including the parity ledger and corpus collector | `cargo test --locked --profile ci -p kontakto -p sampler-core -p sampler-ir -p sampler-simd -p sampler-pool -p sampler-ksp -p sampler-kontakt -p sampler-uvi -p sampler-midi -p sampler-native -p kontra-ui-model -p sampler-perf -p sampler-parity -p corpus-health` |
 | Windows/macOS check | Native API, platform configuration and standalone compilation; this does not execute tests | `cargo check --locked --profile ci --all-targets --features standalone` |
 | CI required | Every applicable job succeeded, or all expensive jobs were deliberately skipped for docs | GitHub Actions job |
 

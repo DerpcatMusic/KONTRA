@@ -57,7 +57,7 @@ file crates/sampler-ksp/src/parity_ledger.rs
 file crates/sampler-ksp/src/sema.rs
 file crates/sampler-ksp/src/ui.rs
 file crates/sampler-perf/src/main.rs
-file crates/sampler-ui-ir/src/lib.rs
+file crates/model/ui-model/src/lib.rs
 file crates/sampler-uvi/src/bank.rs
 file crates/sampler-uvi/src/lib.rs
 file crates/sampler-uvi/src/modulation.rs

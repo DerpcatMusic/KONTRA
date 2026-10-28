@@ -3,9 +3,9 @@
 # An edge not listed here fails the gate. Remove edges as the split lands; do not add one to pass a gate.
 
 [allowed]
-corpus-health = ["ni-file", "sampler-core", "sampler-ir", "sampler-kontakt", "sampler-ksp", "sampler-midi", "sampler-parity", "sampler-ui-ir", "sampler-uvi"]
+corpus-health = ["ni-file", "sampler-core", "sampler-ir", "sampler-kontakt", "sampler-ksp", "sampler-midi", "sampler-parity", "kontra-ui-model", "sampler-uvi"]
 format-census = ["ncw", "ni-file", "sampler-ir", "sampler-kontakt", "sampler-uvi"]
-kontakto = ["buffr-durable-file", "derpcat-flight-recorder", "kontra-events", "moose-clap", "moose-vst3", "mui", "ncw", "ni-file", "sampler-ample", "sampler-core", "sampler-ikmpak", "sampler-ir", "sampler-kontakt", "sampler-ksp", "sampler-midi", "sampler-parity", "sampler-ui-ir", "sampler-uvi"]
+kontakto = ["buffr-durable-file", "derpcat-flight-recorder", "kontra-events", "moose-clap", "moose-vst3", "mui", "ncw", "ni-file", "sampler-ample", "sampler-core", "sampler-ikmpak", "sampler-ir", "sampler-kontakt", "sampler-ksp", "sampler-midi", "sampler-parity", "kontra-ui-model", "sampler-uvi"]
 kontra-dsp = ["kontra-dsp-core", "kontra-dsp-delay", "kontra-dsp-drive", "kontra-dsp-dynamics", "kontra-dsp-eq", "kontra-dsp-filter", "kontra-dsp-modulators", "kontra-dsp-reverb", "kontra-dsp-spatial", "kontra-params"]
 kontra-dsp-core = ["kontra-law", "kontra-time"]
 kontra-dsp-delay = ["kontra-dsp-core", "kontra-law", "kontra-params"]
@@ -47,12 +47,12 @@ sampler-ample = ["sampler-ir"]
 sampler-core = ["kontra-events", "sampler-ir", "sampler-pool", "sampler-simd"]
 sampler-dspbench = ["sampler-core"]
 sampler-ikmpak = ["sampler-ir"]
-sampler-kontakt = ["ncw", "ni-file", "sampler-core", "sampler-ir", "sampler-ksp", "sampler-parity", "sampler-ui-ir"]
-sampler-ksp = ["sampler-core", "sampler-ir", "sampler-parity", "sampler-script", "sampler-ui-ir"]
+sampler-kontakt = ["ncw", "ni-file", "sampler-core", "sampler-ir", "sampler-ksp", "sampler-parity", "kontra-ui-model"]
+sampler-ksp = ["sampler-core", "sampler-ir", "sampler-parity", "sampler-script", "kontra-ui-model"]
 sampler-midi = ["sampler-core"]
 sampler-native = ["sampler-core", "sampler-ir", "sampler-kontakt", "sampler-ksp", "sampler-midi", "sampler-uvi"]
 sampler-perf = ["sampler-core", "sampler-ir", "sampler-kontakt", "sampler-midi", "sampler-uvi"]
-sampler-uvi = ["sampler-core", "sampler-ir", "sampler-kontakt", "sampler-midi", "sampler-parity", "sampler-script", "sampler-ui-ir"]
+sampler-uvi = ["sampler-core", "sampler-ir", "sampler-kontakt", "sampler-midi", "sampler-parity", "sampler-script", "kontra-ui-model"]
 
 # Target DAG (01-LAYOUT.md §2). Not enforced yet: P8.6 turns these into errors.
 # Parenthesised / optional arrows in §2 are listed. Names of crates not yet created (or moved later) are the target names.
