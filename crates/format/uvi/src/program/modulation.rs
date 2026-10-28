@@ -71,12 +71,18 @@ impl<L: Library> Translator<'_, '_, L> {
     }
 }
 
-/// A pitch route: `semitones` per unit of `source`, or of `lfo` (then the
+/// A pitch route: `semitones` per unit of `source`, or of `timed` (then the
 /// group's copy of it is the source).
 pub(super) struct PitchRoute {
     pub source: ir::Source,
-    pub lfo: Option<ir::Lfo>,
+    pub timed: Option<Timed>,
     pub semitones: f32,
+}
+
+/// A program or layer modulator a group carries a copy of.
+pub(super) enum Timed {
+    Lfo(ir::Lfo),
+    Envelope(ir::Breakpoints),
 }
 
 /// The pitch route a connection on an oscillator's `Pitch` makes: `Ratio`
@@ -109,7 +115,7 @@ pub(super) fn pitch_route(program: Node, connection: Node) -> Option<PitchRoute>
     let ratio = num(connection, "Ratio", 0.0).ok()? as f32;
     let fixed = |source| PitchRoute {
         source,
-        lfo: None,
+        timed: None,
         semitones: ratio,
     };
     Some(match connection.attribute("Source")? {
@@ -118,11 +124,22 @@ pub(super) fn pitch_route(program: Node, connection: Node) -> Option<PitchRoute>
             ..fixed(ir::Source::PitchBend)
         },
         s if s.starts_with('$') => {
-            let (lfo, depth) = lfo(source_node(program, connection)?)?;
-            PitchRoute {
-                source: ir::Source::Lfo(0),
-                lfo: Some(lfo),
-                semitones: sign * ratio * depth,
+            let node = source_node(program, connection)?;
+            if node.has_tag_name("AHD") {
+                if sign < 0.0 {
+                    return None;
+                }
+                PitchRoute {
+                    timed: Some(Timed::Envelope(ahd(node)?)),
+                    ..fixed(ir::Source::Envelope(0))
+                }
+            } else {
+                let (lfo, depth) = lfo(node)?;
+                PitchRoute {
+                    source: ir::Source::Lfo(0),
+                    timed: Some(Timed::Lfo(lfo)),
+                    semitones: sign * ratio * depth,
+                }
             }
         }
         _ if sign < 0.0 => return None,
@@ -207,6 +224,39 @@ pub(super) fn lfo(node: Node) -> Option<(ir::Lfo, f32)> {
         lfo,
         sign * num(node, "Depth", 1.0).ok()?.clamp(0.0, 1.0) as f32,
     ))
+}
+
+/// An `AHD` as breakpoints from 0: to 1 over `AttackTime`, holding 1 for
+/// `HoldTime`, to 0 over `DecayTime`, key-up or not. The registry
+/// (UVIWorkstation 0x14113af30) builds these three `(time, level, curve)`
+/// segments with defaults 0, 1 and 0.1 s. A segment's curve `c` passes
+/// `(1 − c)/2` of its way at half its time on an exponential (setup
+/// 0x1410f1220, coefficients 0x141350b70, clamped to 0.0001..=0.9999):
+/// `(1 − q^2t)/(1 − q²)`, `q = (1 + c)/(1 − c)`, the IR's `k = 2·ln q`.
+/// `None` when bypassed or velocity-scaled (not read).
+pub(super) fn ahd(node: Node) -> Option<ir::Breakpoints> {
+    if flag(node, "Bypass") || flag(node, "VelocityAmount") {
+        return None;
+    }
+    let point = |time, default, level, curve| -> Option<ir::Breakpoint> {
+        let c = num(node, curve, 0.0).ok()?.clamp(-0.9998, 0.9998);
+        Some(ir::Breakpoint {
+            ms: (num(node, time, default).ok()?.clamp(0.0, 30.0) * 1000.0) as f32,
+            level,
+            curve: (2.0 * ((1.0 + c) / (1.0 - c)).ln()) as f32,
+        })
+    };
+    Some(ir::Breakpoints {
+        start: 0.0,
+        points: vec![
+            point("AttackTime", 0.0, 1.0, "AttackCurve")?,
+            point("HoldTime", 1.0, 1.0, "")?,
+            point("DecayTime", 0.1, 0.0, "DecayCurve")?,
+        ],
+        sustain: None,
+        loop_from: None,
+        stages: false,
+    })
 }
 
 /// A live connection from a script modulation to the gain of a layer,

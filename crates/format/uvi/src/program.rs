@@ -249,18 +249,15 @@ impl<L: Library> Translator<'_, '_, L> {
                 .filter_map(|c| modulation::pitch_route(self.program, c))
                 .filter(|r| r.semitones != 0.0);
             for r in routes {
-                let mut source = r.source;
-                if let Some(lfo) = r.lfo {
-                    let n = group
-                        .lfos
-                        .iter()
-                        .position(|l| *l == lfo)
-                        .unwrap_or_else(|| {
-                            group.lfos.push(lfo);
-                            group.lfos.len() - 1
-                        });
-                    source = ir::Source::Lfo(u8::try_from(n).unwrap_or(u8::MAX));
-                }
+                let source = match r.timed {
+                    None => r.source,
+                    Some(modulation::Timed::Lfo(lfo)) => {
+                        ir::Source::Lfo(index_of(&mut group.lfos, lfo))
+                    }
+                    Some(modulation::Timed::Envelope(e)) => {
+                        ir::Source::Envelope(index_of(&mut group.envelopes, e))
+                    }
+                };
                 let route = ir::Mod {
                     name: String::new(),
                     slot: 0,
@@ -595,6 +592,15 @@ fn source_node<'a, 'input>(
     scope
         .descendants()
         .find(|n| n.attribute("Name") == Some(name))
+}
+
+/// `item`'s index in `items`, pushed if absent.
+fn index_of<T: PartialEq>(items: &mut Vec<T>, item: T) -> u8 {
+    let n = items.iter().position(|i| *i == item).unwrap_or_else(|| {
+        items.push(item);
+        items.len() - 1
+    });
+    u8::try_from(n).unwrap_or(u8::MAX)
 }
 
 /// A keygroup's GainMatrix: row `k` places member `k` as `[Gain_k_1, Gain_k_2]`.
