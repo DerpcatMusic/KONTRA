@@ -190,6 +190,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 bytes_per_channel: PRELOAD_BYTES,
                 grain: GRAIN_BYTES,
             }),
+            inserts: self.voice_slots(kg)?,
             ..ir::Group::DEFAULT
         };
         let placement = placement(kg);
