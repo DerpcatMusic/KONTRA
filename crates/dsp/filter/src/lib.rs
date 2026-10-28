@@ -7,9 +7,11 @@
 //! filter's energy). One shape, two runners: they agree to 1e-5 at a fixed cutoff.
 
 mod formant;
+mod huovilainen;
 mod ladder;
 
 pub use formant::{Formant, VowelSet, Vowels};
+pub use huovilainen::Huovilainen;
 pub use kontra_dsp_core::Biquad;
 use kontra_dsp_core::flush;
 pub use ladder::Ladder;
@@ -30,11 +32,26 @@ pub struct Shape {
     pub pass: Pass,
     pub hz: f32,
     pub stages: u8,
-    /// A [`Ladder`] tap selector 1..=12 instead of the stages; runs only in
-    /// [`Svf`] (it is not a set of biquads).
-    pub ladder: Option<u8>,
+    /// A ladder instead of the stages; runs only in [`Svf`] (it is not a set
+    /// of biquads).
+    pub ladder: Option<LadderKind>,
     pub damping: [f32; 3],
     pub gain: f32,
+}
+
+/// A ladder by tap selector 1..=12: a [`Ladder`], or a [`Huovilainen`]
+/// with its `fat`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LadderKind {
+    ZeroDelay(u8),
+    Explicit { taps: u8, fat: f32 },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Kernel {
+    ZeroDelay(Ladder),
+    // Boxed: its halfband is several times the zero-delay ladder; built at load.
+    Explicit(Box<Huovilainen>),
 }
 
 /// The shape's sections at `rate`; the cutoff is held below 0.49 of the rate.
@@ -94,7 +111,7 @@ pub struct Svf {
     /// Per stage and channel, the two integrator states.
     state: [[[f64; 2]; 2]; 3],
     rate: f64,
-    ladder: Option<Ladder>,
+    ladder: Option<Kernel>,
 }
 
 impl Svf {
@@ -106,7 +123,12 @@ impl Svf {
             g: 0.0,
             state: [[[0.0; 2]; 2]; 3],
             rate: 1.0,
-            ladder: shape.ladder.map(Ladder::new),
+            ladder: shape.ladder.map(|l| match l {
+                LadderKind::ZeroDelay(taps) => Kernel::ZeroDelay(Ladder::new(taps)),
+                LadderKind::Explicit { taps, fat } => {
+                    Kernel::Explicit(Box::new(Huovilainen::new(taps, fat)))
+                }
+            }),
         }
     }
 
@@ -124,8 +146,17 @@ impl Svf {
         if let Some(ladder) = &mut self.ladder {
             let last = usize::from(self.shape.stages.clamp(1, 3) - 1);
             let k = self.shape.damping.get(last).copied().unwrap_or(2.0);
-            ladder.tune(f64::from(self.hz), self.rate, 1.0 - f64::from(k) / 2.0);
-            ladder.process(io, gain);
+            let (hz, r) = (f64::from(self.hz), 1.0 - f64::from(k) / 2.0);
+            match ladder {
+                Kernel::ZeroDelay(l) => {
+                    l.tune(hz, self.rate, r);
+                    l.process(io, gain);
+                }
+                Kernel::Explicit(l) => {
+                    l.tune(hz, self.rate, r);
+                    l.process(io, gain);
+                }
+            }
             return;
         }
         let stages = usize::from(self.shape.stages);
@@ -186,19 +217,23 @@ impl Svf {
 
     #[must_use]
     pub fn is_silent(&self) -> bool {
-        self.ladder.as_ref().is_none_or(Ladder::is_silent)
-            && self
-                .state
-                .iter()
-                .flatten()
-                .flatten()
-                .all(|s| s.abs() < 1e-10)
+        self.ladder.as_ref().is_none_or(|l| match l {
+            Kernel::ZeroDelay(l) => l.is_silent(),
+            Kernel::Explicit(l) => l.is_silent(),
+        }) && self
+            .state
+            .iter()
+            .flatten()
+            .flatten()
+            .all(|s| s.abs() < 1e-10)
     }
 
     pub fn reset(&mut self) {
         self.state = [[[0.0; 2]; 2]; 3];
-        if let Some(ladder) = &mut self.ladder {
-            ladder.reset();
+        match &mut self.ladder {
+            Some(Kernel::ZeroDelay(l)) => l.reset(),
+            Some(Kernel::Explicit(l)) => l.reset(),
+            None => {}
         }
     }
 }

@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use kontra_dsp::eq::{Bell, Biquad, Side};
-use kontra_dsp::filter::{Formant, Pass, Shape, Svf, VowelSet, Vowels};
+use kontra_dsp::filter::{Formant, LadderKind, Pass, Shape, Svf, VowelSet, Vowels};
 use kontra_ir as ir;
 
 use crate::racks::Rack;
@@ -192,7 +192,10 @@ pub(crate) fn shape(f: &ir::Filter) -> Shape {
         pass,
         hz: f.hz,
         stages: f.stages,
-        ladder: f.ladder,
+        ladder: f.ladder.map(|l| match l {
+            ir::Ladder::ZeroDelay(taps) => LadderKind::ZeroDelay(taps),
+            ir::Ladder::Explicit { taps, fat } => LadderKind::Explicit { taps, fat },
+        }),
         damping: f.damping,
         gain: f.gain,
     }

@@ -4,7 +4,6 @@
 //! into these; a named unit is a law, not a class.
 
 mod crush;
-mod halfband;
 mod overdrive;
 mod shaper;
 

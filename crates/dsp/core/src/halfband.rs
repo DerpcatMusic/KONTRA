@@ -3,8 +3,7 @@
 //! 20 kHz at 44.1 kHz and up, about 78 dB of stopband (v2 sampler-core
 //! dsp/hiir.rs).
 //!
-//! ponytail: lives here while drive is its only user; moves to
-//! `kontra-dsp-core` (03-DSP.md §2 `oversample.rs`) with a second family.
+//! Drive's shaper and the explicit ladder run inside it.
 
 /// Allpass coefficients, at most (6 at any rate: 0.45 of it below 44.1 kHz).
 const MAX: usize = 8;
@@ -16,7 +15,7 @@ const PAIRS: usize = MAX / 2;
 type Lanes = [f32; 4];
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Halfband {
+pub struct Halfband {
     /// Per pair `[c₀, c₀, c₁, c₁]`.
     coefs: [Lanes; PAIRS],
     pairs: usize,
@@ -39,7 +38,8 @@ fn step(coefs: &[Lanes], mem: &mut [[Lanes; 2]], mut v: Lanes) -> Lanes {
 
 impl Halfband {
     /// For a passband to 20 kHz (or 0.45 of the rate, below 44.1 kHz).
-    pub(crate) fn new(rate: u32) -> Self {
+    #[must_use]
+    pub fn new(rate: u32) -> Self {
         let rate = f64::from(rate.max(1));
         let edge = 20_000f64.min(0.45 * rate);
         let (c, count) = design(edge / rate / 2.0, 78.0);
@@ -55,13 +55,15 @@ impl Halfband {
         }
     }
 
-    /// `io` at twice the rate: `f` runs on each of the two samples per frame.
-    pub(crate) fn process(&mut self, io: &mut [[f32; 2]], f: impl Fn(f32) -> f32) {
+    /// `io` at twice the rate: `f` runs on each frame's two stereo samples,
+    /// the earlier first.
+    pub fn process(&mut self, io: &mut [[f32; 2]], mut f: impl FnMut([f32; 2]) -> [f32; 2]) {
         let coefs = self.coefs.get(..self.pairs).unwrap_or_default();
         let (up, down) = (&mut self.up[..], &mut self.down[..]);
         for frame in io.iter_mut() {
             let [l, r] = *frame;
-            let [a0, a1, b0, b1] = step(coefs, up, [l, r, l, r]).map(&f);
+            let [a0, a1, b0, b1] = step(coefs, up, [l, r, l, r]);
+            let ([a0, a1], [b0, b1]) = (f([a0, a1]), f([b0, b1]));
             let [a0, a1, b0, b1] = step(coefs, down, [b0, b1, a0, a1]);
             *frame = [0.5 * (a0 + b0), 0.5 * (a1 + b1)];
         }
@@ -78,7 +80,7 @@ impl Halfband {
         }
     }
 
-    pub(crate) fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.up = [[[0.0; 4]; 2]; PAIRS];
         self.down = [[[0.0; 4]; 2]; PAIRS];
     }

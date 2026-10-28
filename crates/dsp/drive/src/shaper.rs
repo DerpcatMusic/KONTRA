@@ -10,9 +10,7 @@
 //! harmonics, and at −42 dB at 2x (`Soft(1.0)`: −34 and −60 dB), for one
 //! halfband pair of 8 allpasses each way.
 
-use kontra_dsp_core::{Biquad, flush};
-
-use crate::halfband::Halfband;
+use kontra_dsp_core::{Biquad, Halfband, flush};
 
 /// A transfer curve and its amount.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -235,7 +233,8 @@ impl Shaper {
     /// Shapes `io` (frames of `[left, right]`) in place.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let curve = self.curve;
-        self.halfband.process(io, |x| curve.apply(x));
+        self.halfband
+            .process(io, |[l, r]| [curve.apply(l), curve.apply(r)]);
         if let Some((pole, state)) = &mut self.lowpass {
             let b = 0.5 * (1.0 - *pole);
             for frame in io.iter_mut() {

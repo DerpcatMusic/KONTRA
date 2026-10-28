@@ -348,7 +348,8 @@ fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Fi
         stages,
         ladder: u8::try_from(kind - 29)
             .ok()
-            .filter(|_| (30..=41).contains(&kind)),
+            .filter(|_| (30..=41).contains(&kind))
+            .map(ir::Ladder::ZeroDelay),
         damping: [2.0; 3],
         gain: 1.0,
         octaves: 0.0,
