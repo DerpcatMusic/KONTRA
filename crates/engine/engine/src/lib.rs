@@ -509,17 +509,7 @@ impl Engine {
                 envelope: self.envelope(zone, &n, held_seconds),
             };
             let now = self.now;
-            let rate = self.rate;
-            let age = self.age(self.now, None);
-            let filter = self.voice_filter(zone, &n, age).map(|(f, hz, damping)| {
-                let mut svf = Svf::new(filters::shape(&f));
-                svf.set_cutoff(hz, rate);
-                svf.set_damping(damping);
-                svf
-            });
-            let eq = self
-                .voice_bells(zone, &n, age)
-                .map(|bells| filters::VoiceEq::new(bells, rate));
+            let (filter, eq) = self.voice_fx(zone, &n, self.age(self.now, None));
             let Some(slot) = self.free_slot() else {
                 continue;
             };

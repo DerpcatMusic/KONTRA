@@ -10,7 +10,7 @@
 //! one EQ per group; a second moved insert of the same kind stays shared.
 
 use kontra_dsp::eq::{Bell, Biquad, Side};
-use kontra_dsp::filter::{Pass, Shape};
+use kontra_dsp::filter::{Pass, Shape, Svf};
 use kontra_ir as ir;
 
 use crate::ledger::Note;
@@ -183,6 +183,26 @@ impl Engine {
             .damping
             .map(|k| (k * (-f.q_octaves * q).exp2()).max(MIN_DAMPING));
         Some((f, hz, damping))
+    }
+
+    /// The per-voice filter and EQ a note starts with.
+    pub(crate) fn voice_fx(
+        &self,
+        zone: &Zone,
+        note: &Note,
+        age: Age,
+    ) -> (Option<Svf>, Option<VoiceEq>) {
+        let rate = self.rate;
+        let filter = self.voice_filter(zone, note, age).map(|(f, hz, damping)| {
+            let mut svf = Svf::new(shape(&f));
+            svf.set_cutoff(hz, rate);
+            svf.set_damping(damping);
+            svf
+        });
+        let eq = self
+            .voice_bells(zone, note, age)
+            .map(|bells| VoiceEq::new(bells, rate));
+        (filter, eq)
     }
 
     /// The EQ bands of `zone`'s group that run per voice, each gain moved by
