@@ -440,6 +440,7 @@ fn intensity(kind: &ir::ModKind) -> Option<f32> {
             depth_db, span_db, ..
         } => Some((depth_db / span_db).abs()),
         ir::ModKind::EffectParam { depth, span, .. } => Some((depth / span).abs()),
+        ir::ModKind::LfoPhase { depth, .. } => Some((depth + 1.0) * 0.5),
         ref other => depth(&mut other.clone()).map(|d| d.abs()),
     }
 }
@@ -458,6 +459,12 @@ fn set_intensity(kind: &mut ir::ModKind, x: f32) -> bool {
         *depth = (x * *span).abs().copysign(*depth);
         return true;
     }
+    // Bipolar, 0.5 none (the manual's MOD_TARGET_MP_INTENSITY; ANALOG
+    // STRINGS writes 500000 + phase/2 to its phase routes).
+    if let ir::ModKind::LfoPhase { depth, .. } = kind {
+        *depth = 2.0 * x - 1.0;
+        return true;
+    }
     depth(kind).map(|d| *d = x.copysign(*d)).is_some()
 }
 
@@ -471,9 +478,10 @@ fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
         | ir::ModKind::Resonance { depth, .. }
         | ir::ModKind::SampleStart { depth, .. } => Some(depth),
         ir::ModKind::Pan { amount, .. } => Some(amount),
-        ir::ModKind::Envelope | ir::ModKind::EqGain { .. } | ir::ModKind::EffectParam { .. } => {
-            None
-        }
+        ir::ModKind::Envelope
+        | ir::ModKind::EqGain { .. }
+        | ir::ModKind::EffectParam { .. }
+        | ir::ModKind::LfoPhase { .. } => None,
     }
 }
 
@@ -501,6 +509,19 @@ mod tests {
         assert!(set_intensity(&mut kind, 0.25));
         assert!(matches!(kind, ir::ModKind::EqGain { depth_db, .. } if depth_db == -18.0));
         assert_eq!(intensity(&kind), Some(0.25));
+    }
+
+    #[test]
+    fn a_start_phase_route_intensity_is_bipolar() {
+        let mut kind = ir::ModKind::LfoPhase {
+            source: ir::Source::Constant,
+            lfo: 0,
+            depth: -1.0,
+        };
+        assert_eq!(intensity(&kind), Some(0.0));
+        // ANALOG STRINGS: 500000 + phase/2 for a phase of 0.5.
+        assert!(set_intensity(&mut kind, 0.75));
+        assert!(matches!(kind, ir::ModKind::LfoPhase { depth, .. } if depth == 0.5));
     }
 
     #[test]

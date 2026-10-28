@@ -1295,3 +1295,43 @@ fn a_pitch_bend_volume_route_reads_the_wheel_from_zero_to_one() {
     let up = settled(&mut e, &[bend(0x7F, 0x7F)]);
     assert!((up - 1.0).abs() < 1e-3, "{up}");
 }
+
+#[test]
+fn a_constant_start_phase_route_shifts_a_voices_lfo() {
+    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    let first = |phase_route: Option<f32>| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+        plan.groups[0].lfos = vec![Lfo {
+            wave: Wave::Sine,
+            rate: Rate::Hz(0.1),
+            phase: 0.0,
+            fade_ms: 0.0,
+            clock: Clock::Voice,
+        }];
+        let route = |kind| Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind,
+        };
+        plan.groups[0].mods = vec![route(ModKind::Volume {
+            source: Source::Lfo(0),
+            intensity: 1.0,
+            curve: Curve::Depth { power: 1 },
+        })];
+        plan.groups[0].mods.extend(phase_route.map(|depth| {
+            route(ModKind::LfoPhase {
+                source: Source::Constant,
+                lfo: 0,
+                depth,
+            })
+        }));
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        level(&mut e, &[on(60, 1.0)])[0]
+    };
+    // A slow sine at 0 reads 0.5 on the level; a quarter cycle on, its peak.
+    assert!((first(None) - 0.5).abs() < 0.01, "{}", first(None));
+    assert!((first(Some(0.25)) - 1.0).abs() < 0.01, "{}", first(Some(0.25)));
+}
