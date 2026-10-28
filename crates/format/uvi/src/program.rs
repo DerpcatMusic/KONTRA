@@ -534,50 +534,6 @@ impl<L: Library> Translator<'_, '_, L> {
         index
     }
 
-    /// The amplitude envelope: the DAHDSR a keygroup connects to its gain.
-    fn envelope(&mut self, kg: Node) -> Result<Option<ir::Envelope>, String> {
-        let Some(connection) = kg.descendants().find(|c| {
-            c.has_tag_name("SignalConnection")
-                && c.attribute("Destination") == Some("Gain")
-                && num(*c, "Ratio", 0.0).is_ok_and(|r| r == 1.0)
-                && !flag(*c, "Bypass")
-                && source_node(self.program, *c).is_some_and(|n| n.has_tag_name("DAHDSR"))
-        }) else {
-            return Ok(None);
-        };
-        let Some(env) = source_node(self.program, connection) else {
-            return Ok(None);
-        };
-        let source = connection.attribute("Source").unwrap_or_default();
-        let seconds = |name| num(env, name, 0.0).map(|t| t.clamp(0.0, 30.0) as f32);
-        if num(env, "DelayTime", 0.0)? != 0.0 {
-            self.notes.add(ir::Impact::Audible, "envelope delay", "");
-        }
-        // One shape serves decay and release: the release's, and the decay's
-        // when it is what moves (AO's two are equal).
-        let sustain = num(env, "SustainLevel", 1.0)?.clamp(0.0, 1.0) as f32;
-        let shape = |name| modulation::curve(env, name).unwrap_or(0.0);
-        let decays = sustain < 1.0 && seconds("DecayTime")? > 0.0;
-        let fall = shape(if decays && seconds("ReleaseTime")? == 0.0 {
-            "DecayCurve"
-        } else {
-            "ReleaseCurve"
-        });
-        if decays && shape("DecayCurve") != fall {
-            self.notes
-                .add(ir::Impact::Audible, "envelope decay curve", source);
-        }
-        Ok(Some(ir::Envelope {
-            attack: seconds("AttackTime")?,
-            hold: seconds("HoldTime")?,
-            decay: seconds("DecayTime")?,
-            sustain,
-            release: seconds("ReleaseTime")?,
-            attack_shape: shape("AttackCurve"),
-            fall_shape: fall,
-        }))
-    }
-
     /// Each active ScriptProcessor, with the bank's Lua members as its
     /// modules. Its other attributes are its widgets' saved values, by name.
     fn scripts(&mut self) {
