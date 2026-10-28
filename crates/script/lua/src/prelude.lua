@@ -108,12 +108,18 @@ local saved_widgets = {}
 -- runs its `changed`, before `onLoad` (lua.uvi.net, Widget::persistent:
 -- "Persistent widgets will call their changed function on reload"; onLoad:
 -- "after restoring widgets values").
+__restore_errors = {}
 function __restore()
 	local list = saved_widgets
 	saved_widgets = {}
 	for _, w in ipairs(list) do
+		-- Each `changed` runs on its own: one that fails (VWinds' `dynamics`
+		-- names a Macro 7 its Bb Clarinet lacks) leaves the rest restored.
 		if w.persistent ~= false then
-			w:setValue(restored(w.name, w.value))
+			local ok, err = pcall(w.setValue, w, restored(w.name, w.value))
+			if not ok then
+				table.insert(__restore_errors, tostring(w.name) .. ": " .. tostring(err))
+			end
 		end
 	end
 end
