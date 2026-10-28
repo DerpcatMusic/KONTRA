@@ -1,5 +1,5 @@
-//! Nonlinear colour in physical terms: a waveshaper and a reducer. Both run
-//! on each voice when they sit in a group rack. [`EffectParam`] names the
+//! Nonlinear colour in physical terms: a waveshaper, a reducer and an
+//! overdrive. Each runs on each voice when it sits in a group rack. [`EffectParam`] names the
 //! effect controls a route can move.
 
 use crate::EffectKind;
@@ -37,6 +37,23 @@ pub struct Crush {
     pub noise: f32,
     /// The noise's one-pole smoothing per frame, 0..=1 (1 white).
     pub noise_tone: f32,
+}
+
+/// An overdrive pedal (the engine's `drive::Overdrive`): one-pole splits
+/// around a clipping curve at four times the rate, the shaped band fed back
+/// into the input split and mixed with the dry one through a tone low-pass.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Overdrive {
+    /// The input split's one-pole corners in Hz: bass, then two high-passes.
+    pub split_hz: [f32; 3],
+    /// The output smoothers' corners in Hz: envelope, bright, tone.
+    pub smooth_hz: [f32; 3],
+    /// Linear gains into the curve, of the dry band and of the output.
+    pub drive: f32,
+    pub mix: f32,
+    pub level: f32,
+    /// The clipping curve at 256 points over inputs −128..=127.
+    pub curve: &'static [f32; 256],
 }
 
 /// An effect control a route moves, in the effect's own units: a
