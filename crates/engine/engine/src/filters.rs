@@ -10,7 +10,7 @@
 //! one EQ per group; a second moved insert of the same kind stays shared.
 
 use kontra_dsp::eq::{Bell, Biquad, Side};
-use kontra_dsp::filter::{Pass, Shape, Svf};
+use kontra_dsp::filter::{Formant, Pass, Shape, Svf, Vowels};
 use kontra_ir as ir;
 
 use crate::ledger::Note;
@@ -24,7 +24,7 @@ const MIN_DAMPING: f32 = 0.01;
 pub(crate) struct Chain {
     bus: usize,
     sections: Vec<ir::EffectKind>,
-    filters: Box<[Biquad]>,
+    filters: Box<[Stage]>,
     pub(crate) mix: Box<[[f32; 2]]>,
     pub(crate) live: bool,
 }
@@ -36,7 +36,7 @@ pub(crate) fn sections(rack: &[Option<ir::Effect>]) -> Vec<ir::EffectKind> {
         .filter(|e| !e.bypass)
         .filter_map(|e| match e.kind {
             ir::EffectKind::Eq(bands) => bands.iter().any(|b| b.gain_db != 0.0).then_some(e.kind),
-            kind @ ir::EffectKind::Filter(_) => Some(kind),
+            kind @ (ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_)) => Some(kind),
             _ => None,
         })
         .collect()
@@ -78,7 +78,9 @@ impl VoiceEq {
     }
 
     pub(crate) fn process(&mut self, io: &mut [[f32; 2]]) {
-        run(&mut self.biquads, io);
+        for f in &mut self.biquads {
+            f.process(io);
+        }
     }
 }
 
@@ -113,7 +115,22 @@ pub(crate) fn retune(
     }
 }
 
-pub(crate) fn biquads(sections: &[ir::EffectKind], rate: u32) -> Box<[Biquad]> {
+/// A section's runner: biquads in series, or a formant's parallel bands.
+pub(crate) enum Stage {
+    Biquad(Biquad),
+    Formant(Formant),
+}
+
+impl Stage {
+    fn is_silent(&self) -> bool {
+        match self {
+            Self::Biquad(b) => b.is_silent(),
+            Self::Formant(f) => f.is_silent(),
+        }
+    }
+}
+
+pub(crate) fn stages(sections: &[ir::EffectKind], rate: u32) -> Box<[Stage]> {
     let mut out = Vec::new();
     for section in sections {
         match section {
@@ -122,12 +139,25 @@ pub(crate) fn biquads(sections: &[ir::EffectKind], rate: u32) -> Box<[Biquad]> {
                     bands
                         .iter()
                         .filter(|b| b.gain_db != 0.0)
-                        .map(|b| band(b, rate)),
+                        .map(|b| Stage::Biquad(band(b, rate))),
                 );
             }
             ir::EffectKind::Filter(f) => {
                 let shape = shape(f);
-                out.extend(kontra_dsp::filter::sections(&shape, rate));
+                out.extend(
+                    kontra_dsp::filter::sections(&shape, rate)
+                        .into_iter()
+                        .map(Stage::Biquad),
+                );
+            }
+            ir::EffectKind::Formant(f) => {
+                let v = Vowels {
+                    talk: f.talk,
+                    sharp: f.sharp,
+                    size: f.size,
+                    second: f.second,
+                };
+                out.push(Stage::Formant(Formant::new(v, rate)));
             }
             _ => {}
         }
@@ -151,9 +181,12 @@ pub(crate) fn shape(f: &ir::Filter) -> Shape {
     }
 }
 
-pub(crate) fn run(filters: &mut [Biquad], io: &mut [[f32; 2]]) {
-    for f in filters {
-        f.process(io);
+pub(crate) fn run(stages: &mut [Stage], io: &mut [[f32; 2]]) {
+    for stage in stages {
+        match stage {
+            Stage::Biquad(b) => b.process(io),
+            Stage::Formant(f) => f.process(io),
+        }
     }
 }
 
@@ -331,7 +364,7 @@ impl Engine {
                     .unwrap_or_else(|| {
                         chains.push(Chain {
                             bus: z.bus,
-                            filters: biquads(&sections, rate),
+                            filters: stages(&sections, rate),
                             sections,
                             mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
                             live: false,
@@ -394,7 +427,7 @@ impl Engine {
     /// Filters each chain that sounded or still rings, into its bus.
     pub(crate) fn mix_chains(&mut self, len: usize) {
         for chain in &mut self.chains {
-            if !chain.live && chain.filters.iter().all(Biquad::is_silent) {
+            if !chain.live && chain.filters.iter().all(Stage::is_silent) {
                 continue;
             }
             chain.live = false;
