@@ -313,6 +313,9 @@ impl<L: Library> Translator<'_, '_, L> {
                 let source = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
                 ir::Source::Shaped(index_of(&mut group.shapers, ir::Transfer { source, table }))
             }
+            Some(modulation::Timed::Mapped(t)) => {
+                ir::Source::Shaped(index_of(&mut group.shapers, t))
+            }
         };
         let kind = kind(source, r.unit * r.ratio);
         let alike = group.mods.iter().find_map(|m| {

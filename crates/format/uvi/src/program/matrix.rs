@@ -188,7 +188,7 @@ fn mapper(connection: Node) -> Option<Vec<f32>> {
 /// A connection's source through its mapper. A macro with no inputs of
 /// its own is a constant (a one-point table at its value); a bipolar LFO
 /// at depth 1 is a copy of it in `lfos`.
-fn transfer(
+pub(super) fn transfer(
     program: Node,
     connection: Node,
     lfos: Option<&mut Vec<ir::Lfo>>,
