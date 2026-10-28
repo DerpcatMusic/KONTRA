@@ -111,3 +111,12 @@ fn the_limiter_never_passes_its_ceiling_and_releases() {
     let out = peak_db(tail);
     assert!((out - (-40.0 + 12.0)).abs() < 0.5, "quiet tail at {out} dB");
 }
+
+#[test]
+fn silence_after_a_loud_tone_releases_to_exactly_zero() {
+    let mut c = Compressor::new(settings(), RATE);
+    c.process(&mut sine(1.0, RATE as usize / 10));
+    assert!(c.reduction()[0] > 1.0);
+    c.process(&mut vec![[0.0; 2]; RATE as usize * 4]);
+    assert_eq!(c.reduction(), [0.0; 2]);
+}

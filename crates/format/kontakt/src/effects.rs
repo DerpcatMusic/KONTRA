@@ -210,15 +210,32 @@ fn slot_effect(
                     ))
                 })
         }
-        // Six floats, then the link byte.
-        0x46 if (0x10..=0x12).contains(&object.version) => (0..6)
-            .map(|i| f32_at(4 * i))
-            .collect::<Option<Vec<_>>>()
-            .and_then(|v| v.try_into().ok())
-            .zip(byte(24))
-            .map(|(knobs, link)| {
-                ir::EffectKind::Compressor(crate::laws::bus_compressor(knobs, link))
-            }),
+        // Six floats, the link byte, then (0x11 on) the side-chain byte.
+        0x46 if (0x10..=0x12).contains(&object.version) => {
+            if object.version >= 0x11 && byte(25) == Some(true) {
+                notes.add(
+                    ir::Impact::Audible,
+                    "Solid Bus Comp side chain",
+                    at.to_owned(),
+                );
+            }
+            (0..6)
+                .map(|i| f32_at(4 * i))
+                .collect::<Option<Vec<_>>>()
+                .and_then(|v| v.try_into().ok())
+                .zip(byte(24))
+                .map(|(knobs, link)| {
+                    let (c, auto) = crate::laws::bus_compressor(knobs, link);
+                    if auto {
+                        notes.add(
+                            ir::Impact::Audible,
+                            "Solid Bus Comp auto release",
+                            at.to_owned(),
+                        );
+                    }
+                    ir::EffectKind::Compressor(c)
+                })
+        }
         0x17 => sends(&public),
         0x44 => solid_eq(object.version, &public, at, notes),
         0x16 => impulses

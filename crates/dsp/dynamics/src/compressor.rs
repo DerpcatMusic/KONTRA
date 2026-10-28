@@ -66,6 +66,10 @@ impl Compressor {
                     self.release
                 };
                 *reduction += (target - *reduction) * k;
+                // Released to silence: no subnormal tail.
+                if *reduction < 1e-6 {
+                    *reduction = 0.0;
+                }
                 let wet = *x * gain(-*reduction) * self.makeup;
                 *x += (wet - *x) * mix;
             }

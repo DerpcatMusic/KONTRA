@@ -47,6 +47,10 @@ impl Limiter {
             let x = frame.map(|v| v * self.input);
             let level = x[0].abs().max(x[1].abs());
             self.peak = level.max(self.peak * self.fall);
+            // Released to silence: no subnormal tail.
+            if self.peak < 1e-10 {
+                self.peak = 0.0;
+            }
             let g = if self.peak > c { c / self.peak } else { 1.0 };
             *frame = x.map(|v| (v * g).clamp(-c, c));
         }

@@ -621,8 +621,11 @@ pub fn reverb_laws() -> [ir::Law; 8] {
 /// release ms, link byte. The Pro core's law (docs/re/engine/dyn-compressors.md,
 /// setter 0x140ab9220): the knob `r` is the output slope over the threshold
 /// (ratio `1/r`), a 12 dB knee, attack 0.1..=10 ms as a detector low-pass at
-/// `1000/ms` Hz, release 10..=1000 ms halving the level, and make-up
-/// `−0.666·(1 − r)·threshold` dB. Pro always links the channels.
+/// `1000/ms` Hz, release 10..=1000 ms halving the level, and Pro's own
+/// make-up `−0.666·(1 − r)·threshold` dB (setter `+0x524`, constant at
+/// 0x144fc4c90, added to the gain exponent in core 0x140ab35d0). Classic and
+/// Enhanced have no make-up (their setters write no offset). The slot's Output
+/// knob applies on top in every mode. Pro always links the channels.
 // ponytail: Classic (mode 0) and Enhanced (mode 1) run the Pro law too; their
 // detectors differ (docs/re/engine/dyn-compressors.md) and no native
 // recording says by how much.
@@ -641,7 +644,11 @@ pub(crate) fn compressor(
         knee_db: 12.0,
         attack_ms: attack_ms.clamp(0.1, 10.0) / std::f32::consts::TAU,
         release_ms: release_ms.clamp(10.0, 1000.0) / std::f32::consts::LN_2,
-        makeup_db: -0.666 * (1.0 - r) * threshold_db,
+        makeup_db: if mode == 2 {
+            -0.666 * (1.0 - r) * threshold_db
+        } else {
+            0.0
+        },
         link: link || mode == 2,
         mix: 1.0,
     }
@@ -675,17 +682,19 @@ pub(crate) fn transparent_limiter(drive: f32, release: f32, ceiling: f32) -> ir:
 /// six-step switches (`floor(5x + 0.5)`); the threshold knob spans ±18.6 dB
 /// around −20 dB less a per-ratio offset, make-up −5.25..=21 dB
 /// (tables 0x1479a7e18..0x1479a7ea8, docs/re/engine/dyn-compressors.md).
+/// Release step 5 is the auto release on a 75 ms base; the second value is
+/// set then, for the caller to report.
 // ponytail: the core's detector and curve are unverified; this is the
-// standard compressor at the switch values, the auto release (step 5) at 150 ms.
-pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> ir::Compressor {
+// standard compressor at the switch values, auto release as its 75 ms base.
+pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> (ir::Compressor, bool) {
     const RATIO: [f32; 6] = [1.5, 2.0, 3.0, 4.0, 5.0, 10.0];
     const OFFSET_DB: [f32; 6] = [-12.0, -9.0, -5.0, -4.0, -3.3, -0.2];
     const ATTACK_MS: [f32; 6] = [0.1, 0.3, 1.0, 3.0, 10.0, 30.0];
-    const RELEASE_MS: [f32; 6] = [12.5, 18.75, 37.5, 50.0, 100.0, 150.0];
+    const RELEASE_MS: [f32; 6] = [12.5, 18.75, 37.5, 50.0, 100.0, 75.0];
     let [threshold, makeup, attack, release, ratio, mix] = knobs.map(|x| x.clamp(0.0, 1.0));
     let step = |x: f32| ((x * 5.0 + 0.5).floor() as usize).min(5);
     let at = |table: [f32; 6], x: f32| table.get(step(x)).copied().unwrap_or(1.0);
-    ir::Compressor {
+    let c = ir::Compressor {
         threshold_db: -18.6 + 37.2 * threshold - 20.0 + at(OFFSET_DB, ratio),
         ratio: at(RATIO, ratio),
         knee_db: 0.0,
@@ -694,7 +703,8 @@ pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> ir::Compressor {
         makeup_db: -5.25 + 26.25 * makeup,
         link,
         mix,
-    }
+    };
+    (c, step(release) == 5)
 }
 
 #[cfg(test)]
@@ -709,6 +719,8 @@ mod tests {
         assert!((c.attack_ms - 1.0).abs() < 1e-3 && (c.release_ms - 100.0).abs() < 0.1);
         assert!(c.link);
         assert!(!compressor(1, -20.0, 0.25, 1.0, 100.0, false).link);
+        // Only Pro adds its own make-up.
+        assert_eq!(compressor(1, -20.0, 0.25, 1.0, 100.0, false).makeup_db, 0.0);
         // A knob of 1 leaves the signal alone.
         assert!((compressor(0, -20.0, 1.0, 1.0, 100.0, true).ratio - 1.0).abs() < 1e-6);
     }
@@ -717,9 +729,10 @@ mod tests {
     fn the_transparent_limiter_and_bus_comp_reach_their_table_ends() {
         let l = transparent_limiter(0.0, 1.0, 1.0);
         assert!((l.input_db - 40.0).abs() < 1e-4 && (l.ceiling_db + 0.35).abs() < 1e-4);
-        let b = bus_compressor([0.5, 0.2, 0.0, 1.0, 1.0, 1.0], true);
+        let (b, auto) = bus_compressor([0.5, 0.2, 0.0, 1.0, 1.0, 1.0], true);
         assert!((b.ratio - 10.0).abs() < 1e-6 && (b.threshold_db + 20.2).abs() < 1e-4);
-        assert!((b.attack_ms - 0.1).abs() < 1e-6 && (b.release_ms - 150.0).abs() < 1e-4);
+        assert!((b.attack_ms - 0.1).abs() < 1e-6 && (b.release_ms - 75.0).abs() < 1e-4);
+        assert!(auto && !bus_compressor([0.5; 6], true).1);
         assert!(b.makeup_db.abs() < 1e-4);
     }
 
