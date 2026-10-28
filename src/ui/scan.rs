@@ -303,6 +303,8 @@ fn render(
                 let mut ui = theme::ui();
                 let deadline = Instant::now() + Duration::from_secs(15);
                 let mut settled = 0;
+                // The first frame laid out, whatever pictures are still decoding.
+                let mut first: Option<(f64, usize)> = None;
                 while settled < 2 {
                     if Instant::now() > deadline {
                         return Ok(json!({"incomplete":true,"stage":"asset-preparation",
@@ -342,6 +344,7 @@ fn render(
                     let pending = native
                         .as_ref()
                         .map_or_else(|| assets.pending(), |n| n.pending());
+                    first.get_or_insert((start.elapsed().as_secs_f64() * 1000., pending));
                     if pending == 0 {
                         settled += 1;
                     } else {
@@ -349,6 +352,35 @@ fn render(
                         std::thread::sleep(Duration::from_millis(2));
                     }
                 }
+                let settled_ms = start.elapsed().as_secs_f64() * 1000.;
+                // Idle frames once settled: what v2 pays per frame with nothing moving.
+                let mut idle = Vec::with_capacity(60);
+                for _ in 0..60 {
+                    let t = Instant::now();
+                    let el = if let Some(native) = &mut native {
+                        native.view(&mut ui, 0, scale, &face, values, &input)
+                    } else {
+                        ir_view::view(
+                            &mut ui,
+                            &face,
+                            ir::PageRef(p),
+                            &assets,
+                            ir::Presentation::Bitmap,
+                            scale,
+                            values,
+                        )
+                    };
+                    ui.frame(
+                        el,
+                        Some(Size::new(w as f64, h as f64)),
+                        Input::default(),
+                        1. / 60.,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    idle.push(t.elapsed().as_secs_f64() * 1000.);
+                }
+                idle.sort_by(f64::total_cmp);
+                let painting = Instant::now();
                 let mut ctx = vello::vello_cpu::RenderContext::new(w, h);
                 let mut resources = vello::vello_cpu::Resources::default();
                 vello::paint(
@@ -372,6 +404,11 @@ fn render(
                     .collect();
                 let mut report = metrics::pixels(&rgba);
                 report["ui_first_frame_ms"] = json!(first_frame_ms);
+                report["ui_settled_ms"] = json!(settled_ms);
+                report["ui_first_layout_ms"] = json!(first.map(|f| f.0));
+                report["ui_first_pending"] = json!(first.map(|f| f.1));
+                report["ui_paint_ms"] = json!(painting.elapsed().as_secs_f64() * 1000.);
+                report["ui_idle_frame_ms"] = json!(idle.get(idle.len() / 2));
                 let color = face.pages[p].background.color.map(|c| [c.r, c.g, c.b, c.a]);
                 report["background"] = metrics::background(&rgba, color);
                 if std::env::var_os("KONTRA_SCAN_SHOTS").is_some() {
@@ -493,7 +530,12 @@ fn render(
         "oversized":scan.preparation_oversized,"key_budget":scan.preparation_key_budget,
         "evicted":scan.preparation_evicted,"requeued":scan.preparation_requeued,
         "completed_key_bytes":assets.completed_key_bytes()}));
-    json!({"bound_typed":if matches!(face.source,ir::Source::FalconLua){None}else{Some(typed_bound)},"typed_binding_refs":typed_refs,"typed_binding_basis":"installed script model target; live typed edit/readback unmeasured","phantom_free_controls":null,"controls_declared":declared,"controls_bound_declared":declared_bound,
+    let probes = {
+        let p = assets.probes();
+        let sum = |f: fn(&super::pictures::AssetProbe) -> f64| p.iter().map(f).sum::<f64>();
+        json!({"n":p.len(),"read_ms":sum(|p|p.read_ms),"decode_ms":sum(|p|p.decode_ms),"duration_ms":sum(|p|p.duration_ms),"queue_ms":sum(|p|p.queue_ms.unwrap_or(0.)),"permit_wait_ms":sum(|p|p.permit_wait_ms.unwrap_or(0.)),"paths":p.iter().map(|p|&p.path).collect::<std::collections::HashSet<_>>().len()})
+    };
+    let mut out = json!({"bound_typed":if matches!(face.source,ir::Source::FalconLua){None}else{Some(typed_bound)},"typed_binding_refs":typed_refs,"typed_binding_basis":"installed script model target; live typed edit/readback unmeasured","phantom_free_controls":null,"controls_declared":declared,"controls_bound_declared":declared_bound,
         "asset_lookup_requested":resources_known.then_some(scan.lookups),"asset_lookup_ok":resources_known.then_some(scan.lookup_ok),
         "image_preparation":preparation,
         "asset_decode_requested":resources_known.then_some(scan.decodes),"asset_decode_ok":resources_known.then_some(scan.decode_ok),
@@ -510,7 +552,11 @@ fn render(
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
         "kinds":kinds,"placeholder_widgets":placeholders,"unsupported_params":properties,"geometry":geometry,
         "missing_images":missing.len(),"missing_image_hashes":missing,"missing_fonts":missing_fonts,"missing_font_hashes":missing_font_hashes,"assets":face.assets.len(),
-        "decoded_image_bytes":native.as_ref().map_or_else(||assets.bytes(),|n|n.bytes()),"passive_value_changes":passive,"renders":renders})
+        "decoded_image_bytes":native.as_ref().map_or_else(||assets.bytes(),|n|n.bytes()),"passive_value_changes":passive,"renders":renders});
+    if let Some(o) = out.as_object_mut() {
+        o.insert("picture_probes".into(), probes);
+    }
+    out
 }
 
 // NONE is a display type: scripts can recolour mapped notes without changing it.
@@ -1150,7 +1196,8 @@ mod font_observation_tests {
         let dir = tempfile::tempdir().unwrap();
         let array = dir.path().join("data.nka");
         std::fs::write(&array, "%data\n37\n").unwrap();
-        let source = format!(r#"on init
+        let source = format!(
+            r#"on init
             declare %data[1] declare $job declare $done
             declare ui_label $l(1,1) set_text($l,"waiting")
             end on
@@ -1160,16 +1207,33 @@ mod font_observation_tests {
                 wait(200000)
                 set_text($l,%data[0] & " settled")
             end on
-            on async_complete $done := 1 end on"#, array.display());
-        let script = sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
-        let entry = script.entries().iter().find(|e| e.kind == sampler_ksp::EntryKind::PgsChanged).unwrap().program;
-        let mut scripts = crate::sound::ScriptUi { views: vec![script.view()], ..Default::default() };
+            on async_complete $done := 1 end on"#,
+            array.display()
+        );
+        let script =
+            sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let entry = script
+            .entries()
+            .iter()
+            .find(|e| e.kind == sampler_ksp::EntryKind::PgsChanged)
+            .unwrap()
+            .program;
+        let mut scripts = crate::sound::ScriptUi {
+            views: vec![script.view()],
+            ..Default::default()
+        };
         let mut faces = scripts.interfaces();
-        let plan = script.bind(sampler_core::Prepared::new(48000, vec![], vec![], 1).unwrap()).unwrap();
+        let plan = script
+            .bind(sampler_core::Prepared::new(48000, vec![], vec![], 1).unwrap())
+            .unwrap();
         let limits = sampler_core::Limits::for_plan(&plan, 16, 16);
         let mut runtime = sampler_core::Runtime::new(plan, limits).unwrap();
-        runtime.start_plan_behavior(runtime.active_plan(), entry).unwrap();
-        let part = crate::sound::v2::Part::new(runtime, crate::sound::tree::MixTree::instrument("scan")).unwrap();
+        runtime
+            .start_plan_behavior(runtime.active_plan(), entry)
+            .unwrap();
+        let part =
+            crate::sound::v2::Part::new(runtime, crate::sound::tree::MixTree::instrument("scan"))
+                .unwrap();
         let mut core = V2Core::with_parts(1, 48000.);
         core.install(0, Some(Box::new(part)));
         assert!(settle_snapshot(&mut core, &mut scripts, &mut faces).is_empty());
@@ -1191,8 +1255,13 @@ mod font_observation_tests {
             let resources = std::cell::RefCell::new(sampler_kontakt::Resources::of(&path));
             let mut faces = Vec::new();
             for behavior in &loaded.instrument.behaviors {
-                let script = sampler_ksp::compile(&behavior.source, 48000, sampler_ksp::Limits::LIBRARY, &[])
-                    .expect("installed fixture script must compile");
+                let script = sampler_ksp::compile(
+                    &behavior.source,
+                    48000,
+                    sampler_ksp::Limits::LIBRARY,
+                    &[],
+                )
+                .expect("installed fixture script must compile");
                 if script.has_performance_view() {
                     faces.push(script.ui(&|p| resources.borrow_mut().picture(p)).unwrap());
                 }
@@ -1201,21 +1270,40 @@ mod font_observation_tests {
             let face = &faces[0];
             let background = face.pages[0].background.image.expect("authored wallpaper");
             let asset = &face.assets[background.0];
-            let bytes = resources.borrow_mut().read_result(&asset.path).unwrap().unwrap();
+            let bytes = resources
+                .borrow_mut()
+                .read_result(&asset.path)
+                .unwrap()
+                .unwrap();
             assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
             let mut missing = Vec::new();
             for asset in &face.assets {
-                if resources.borrow_mut().read_result(&asset.path).unwrap().is_none() {
+                if resources
+                    .borrow_mut()
+                    .read_result(&asset.path)
+                    .unwrap()
+                    .is_none()
+                {
                     missing.push(asset.path.clone());
                 }
             }
-            println!("fixture={file} size={:?} wallpaper={} missing={missing:?}", face.pages[0].size, asset.path);
+            println!(
+                "fixture={file} size={:?} wallpaper={} missing={missing:?}",
+                face.pages[0].size, asset.path
+            );
             if file.contains("Morphology") {
                 let readout = face.widgets.iter().find(|w| w.name == "$readout").unwrap();
-                println!("Morphology authored readout={:?} hidden={}", readout.text, readout.hidden);
+                println!(
+                    "Morphology authored readout={:?} hidden={}",
+                    readout.text, readout.hidden
+                );
                 assert_eq!(readout.text, "VALUE READOUT");
                 let resolved = ir_view::resolved(face);
-                let shown = resolved.widgets.iter().find(|w| w.name == "$readout").unwrap();
+                let shown = resolved
+                    .widgets
+                    .iter()
+                    .find(|w| w.name == "$readout")
+                    .unwrap();
                 assert_eq!(shown.rect, readout.rect);
             }
         }
