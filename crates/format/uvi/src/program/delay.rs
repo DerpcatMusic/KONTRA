@@ -29,7 +29,7 @@ pub(super) fn dual_delay(node: Node, notes: &mut Notes) -> Result<ir::Effect, St
     let time = num(node, "DelayTime", 0.5)?.max(0.0);
     let feedback = num(node, "Feedback", 0.3)? as f32;
     let ratio = num(node, "FeedbackRatio", 0.0)?.clamp(-1.0, 1.0) as f32;
-    let fb = if ratio <= 0.0 {
+    let [fb0, fb1] = if ratio <= 0.0 {
         [(1.0 + ratio) * feedback, feedback]
     } else {
         [feedback, (1.0 - ratio) * feedback]
@@ -47,7 +47,7 @@ pub(super) fn dual_delay(node: Node, notes: &mut Notes) -> Result<ir::Effect, St
         rotation(angle("OutputRotation", quarter)?),
     );
     let feedback = rotation(angle("Rotation", 1f64.to_radians())?);
-    let scale = |m: ir::Matrix| [0, 1].map(|j| m[j].map(|x| x * fb[j]));
+    let scale = |[top, bottom]: ir::Matrix| [top.map(|x| x * fb0), bottom.map(|x| x * fb1)];
     for (name, rest) in [("DelayRatio", 0.0), ("ModDepth", 0.0), ("PeakGain", 0.0)] {
         if num(node, name, rest)? != rest {
             notes.add(ir::Impact::Audible, &format!("dual delay {name}"), "");
@@ -89,7 +89,8 @@ fn width(w: f32) -> ir::Matrix {
 }
 
 fn mul(a: ir::Matrix, b: ir::Matrix) -> ir::Matrix {
-    a.map(|row| [0, 1].map(|c| row[0] * b[0][c] + row[1] * b[1][c]))
+    let [[b00, b01], [b10, b11]] = b;
+    a.map(|[x, y]| [x * b00 + y * b10, x * b01 + y * b11])
 }
 
 #[cfg(test)]
