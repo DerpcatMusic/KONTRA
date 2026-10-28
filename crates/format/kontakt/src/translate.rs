@@ -327,7 +327,8 @@ fn translate_group(
     let slot = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
     let mut modulated = Vec::new();
     // Each mapped LFO's modulator slot and index, for start-phase routes.
-    let mut lfo_slots = Vec::new();
+    // Each timed modulator's slot and the source it became.
+    let mut timed_slots = Vec::new();
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
         for (n, m) in InternalModArray16::try_from(chunk)?.slots()? {
             let p = m.params()?;
@@ -360,11 +361,16 @@ fn translate_group(
                     });
                 }
                 Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Ahdsr(_) => {
-                    let lfos = out.lfos.len();
+                    let (lfos, envelopes) = (out.lfos.len(), out.envelopes.len());
                     timed(&mut out, &p, slot(n), notes, &mut modulated);
-                    if let Some(lfo) = u8::try_from(lfos).ok().filter(|_| out.lfos.len() > lfos) {
-                        lfo_slots.push((n, lfo));
-                    }
+                    let made = if out.lfos.len() > lfos {
+                        u8::try_from(lfos).ok().map(ir::Source::Lfo)
+                    } else if out.envelopes.len() > envelopes {
+                        u8::try_from(envelopes).ok().map(ir::Source::Envelope)
+                    } else {
+                        None
+                    };
+                    timed_slots.extend(made.map(|s| (n, s)));
                 }
                 m => {
                     let kind = match m {
@@ -481,12 +487,30 @@ fn translate_group(
                     (Some(source), "startPhase", Some(at))
                         if !matches!(source, ir::Source::HeldTime { .. }) =>
                     {
-                        lfo_slots
+                        timed_slots.iter().find_map(|&(n, of)| match of {
+                            ir::Source::Lfo(lfo) if n == usize::from(at) => {
+                                Some(ir::ModKind::LfoPhase {
+                                    source,
+                                    lfo,
+                                    depth: t.signed_intensity(),
+                                })
+                            }
+                            _ => None,
+                        })
+                    }
+                    // Target 0x19 compiles (FUN_140873040, 0x144f1daa0) to
+                    // `$in * (1.0 - (1.0 - $signal) * $intensity)`; flag 4
+                    // picks a screen form (0x144f1daf0) no library uses yet.
+                    (Some(source), "intensity", Some(at))
+                        if t.unknown_flags & 4 == 0
+                            && !matches!(source, ir::Source::HeldTime { .. }) =>
+                    {
+                        timed_slots
                             .iter()
                             .find(|&&(n, _)| n == usize::from(at))
-                            .map(|&(_, lfo)| ir::ModKind::LfoPhase {
+                            .map(|&(_, of)| ir::ModKind::Intensity {
                                 source,
-                                lfo,
+                                of,
                                 depth: t.signed_intensity(),
                             })
                     }
