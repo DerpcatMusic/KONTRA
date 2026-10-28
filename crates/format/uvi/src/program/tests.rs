@@ -821,3 +821,39 @@ fn an_amp_envelopes_curves_shape_its_stages() {
     assert!((half(e.fall_shape) - 0.985).abs() < 1e-4, "{e:?}");
     assert!(!out.diagnostics.iter().any(|d| d.feature.contains("curve")));
 }
+
+#[test]
+fn a_delayed_rising_lfo_reaches_pitch_through_its_rise() {
+    let xml = r#"<Program Gain="1">
+      <Modulators>
+        <LFO Name="LFO 1" Bypass="0" SyncToHost="0" WaveFormType="0" Freq="1.5" Depth="1" Phase="0" Retrigger="1" Bipolar="1" DelayTime="0.5" RiseTime="1"/>
+      </Modulators>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav">
+            <Connections>
+              <SignalConnection Ratio="0.5" Source="$Program/LFO 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            </Connections>
+          </SamplePlayer></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    assert!(g.mods.iter().any(|m| m.kind
+        == ir::ModKind::Intensity {
+            source: ir::Source::Envelope(0),
+            of: ir::Source::Lfo(0),
+            depth: 1.0,
+        }));
+    let levels: Vec<_> = g.envelopes[0]
+        .points
+        .iter()
+        .map(|p| (p.ms, p.level))
+        .collect();
+    assert_eq!(levels, [(500.0, 0.0), (1000.0, 1.0)]);
+    // 1.5 cycles a second, half a second late: three quarters back.
+    assert!((g.lfos[0].phase - 0.25).abs() < 1e-6, "{:?}", g.lfos[0]);
+    assert!(!out.diagnostics.iter().any(|d| d.feature.contains("Pitch")));
+}

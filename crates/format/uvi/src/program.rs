@@ -319,6 +319,25 @@ impl<L: Library> Translator<'_, '_, L> {
         let source = match r.timed {
             None => r.source,
             Some(modulation::Timed::Lfo(lfo)) => ir::Source::Lfo(index_of(&mut group.lfos, lfo)),
+            Some(modulation::Timed::Rising(lfo, rise)) => {
+                let of = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
+                let source = ir::Source::Envelope(index_of(&mut group.envelopes, rise));
+                let kind = ir::ModKind::Intensity {
+                    source,
+                    of,
+                    depth: 1.0,
+                };
+                if !group.mods.iter().any(|m| m.kind == kind) {
+                    group.mods.push(ir::Mod {
+                        name: String::new(),
+                        slot: 0,
+                        target: 0,
+                        bypass: false,
+                        kind,
+                    });
+                }
+                of
+            }
             Some(modulation::Timed::Envelope(e)) => {
                 ir::Source::Envelope(index_of(&mut group.envelopes, e))
             }
