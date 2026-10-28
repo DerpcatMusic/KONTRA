@@ -1343,3 +1343,44 @@ fn a_constant_start_phase_route_shifts_a_voices_lfo() {
         first(Some(0.25))
     );
 }
+
+#[test]
+fn an_intensity_route_scales_its_lfos_routes() {
+    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    let first = |by: Source| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+        plan.groups[0].lfos = vec![Lfo {
+            wave: Wave::Sine,
+            rate: Rate::Hz(0.1),
+            phase: 0.0,
+            fade_ms: 0.0,
+            clock: Clock::Voice,
+        }];
+        let route = |kind| Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind,
+        };
+        plan.groups[0].mods = vec![
+            route(ModKind::Volume {
+                source: Source::Lfo(0),
+                intensity: 1.0,
+                curve: Curve::Depth { power: 1 },
+            }),
+            route(ModKind::Intensity {
+                source: by,
+                of: Source::Lfo(0),
+                depth: 1.0,
+            }),
+        ];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        level(&mut e, &[on(60, 1.0)])[0]
+    };
+    // A slow sine at 0 reads 0.5 at full intensity; a controller at rest
+    // takes the LFO's route away.
+    assert!((first(Source::Constant) - 0.5).abs() < 0.01);
+    assert!((first(Source::Controller(124)) - 1.0).abs() < 0.01);
+}
