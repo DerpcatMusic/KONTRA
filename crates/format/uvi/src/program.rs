@@ -53,6 +53,7 @@ pub(crate) fn translate(
         },
         notes: Notes::default(),
         samples: HashMap::new(),
+        lookups: HashMap::new(),
         base: Base {
             volume_db: db(num(program, "Gain", 1.0)?),
             pan: num(program, "Pan", 0.0)?.clamp(-1.0, 1.0) as f32,
@@ -87,6 +88,9 @@ struct Translator<'a, 'input, L> {
     notes: Notes,
     /// Each sample file and offset to its index in `out.samples`.
     samples: HashMap<(PathBuf, u64), usize>,
+    /// Each sample reference to what the bank made of it: one header read
+    /// per file, however many zones share it.
+    lookups: HashMap<String, Result<ir::Sample, String>>,
     base: Base,
 }
 
@@ -294,7 +298,12 @@ impl<L: Library> Translator<'_, '_, L> {
     /// The sample at `path`, read from the bank, and its index in the
     /// instrument. One file and offset is one entry, however many zones use it.
     fn sample(&mut self, path: &str) -> Result<ir::Sample, String> {
-        self.library.sample(self.program_dir, path)
+        if let Some(found) = self.lookups.get(path) {
+            return found.clone();
+        }
+        let found = self.library.sample(self.program_dir, path);
+        self.lookups.insert(path.into(), found.clone());
+        found
     }
 
     fn sample_index(&mut self, sample: ir::Sample) -> usize {
@@ -476,8 +485,10 @@ fn num(node: Node, name: &str, default: f64) -> Result<f64, String> {
         None => Ok(default),
         Some(text) => text
             .trim()
-            .parse()
-            .map_err(|_| format!("{name}={text:?} is not a number")),
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite())
+            .ok_or_else(|| format!("{name}={text:?} is not a number")),
     }
 }
 

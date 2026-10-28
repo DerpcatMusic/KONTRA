@@ -44,7 +44,8 @@ fn flac(head: &[u8]) -> Option<Format> {
 
 /// The `fmt ` chunk, then the `data` chunk's length in whole frames, clamped to
 /// the bytes the member holds (streamed files may declare more). Only PCM and
-/// float are read; the engine decides the encoding from the same chunk.
+/// float are read (tag 1 or 3, directly or as the extensible subformat), as
+/// the engine's reader.
 fn wav(head: &[u8], size: u64) -> Option<Format> {
     if head.get(8..12)? != b"WAVE" {
         return None;
@@ -56,6 +57,13 @@ fn wav(head: &[u8], size: u64) -> Option<Format> {
         let body = at + 8;
         match head.get(at..at + 4)? {
             b"fmt " => {
+                let tag = match le16(head, body)? {
+                    0xFFFE => le16(head, body + 24)?,
+                    tag => tag,
+                };
+                if tag != 1 && tag != 3 {
+                    return None;
+                }
                 let channels = le16(head, body + 2)?;
                 let rate = le32(head, body + 4)?;
                 let align = le16(head, body + 12)?;
@@ -106,6 +114,10 @@ mod tests {
                 frames: 1000
             })
         );
+        // ADPCM (tag 2) is not a format the engine reads.
+        let mut adpcm = wav.clone();
+        adpcm[20] = 2;
+        assert_eq!(probe(&adpcm, size), None);
         // STREAMINFO: 48 kHz, 2 channels, 16 bits, 12345 frames.
         let packed: u64 = (48_000 << 44) | (1 << 41) | (15 << 36) | 12_345;
         let mut flac = b"fLaC\x00\x00\x00\x22".to_vec();
