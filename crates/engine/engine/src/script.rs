@@ -476,6 +476,16 @@ impl HostApi for Engine {
                 self.set_group_level(call.action, int(0), int(1));
                 HostValue::Nothing
             }
+            Action::BusVolume => {
+                let gain = match int(1) {
+                    ..=-200_000 => 0.0,
+                    mdb => 10f32.powf(mdb as f32 / 20_000.0),
+                };
+                if let Ok(bus) = usize::try_from(int(0)) {
+                    self.set_bus_gain(bus, gain);
+                }
+                HostValue::Nothing
+            }
             Action::Message => {
                 self.last_message = call.texts.first().copied().unwrap_or(Text::EMPTY);
                 self.stats.messages += 1;

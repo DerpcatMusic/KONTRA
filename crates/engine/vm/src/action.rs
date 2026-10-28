@@ -146,6 +146,9 @@ actions! {
     GroupPan,
     /// `(group, millicents)`.
     GroupTune,
+    /// An output bus's live level: `(bus, millidecibels)`, at most -200 dB
+    /// is silence.
+    BusVolume,
     // Time.
     WaitTicks,
     WaitAsync,
