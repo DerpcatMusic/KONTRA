@@ -102,6 +102,12 @@ pub(crate) fn stream(mode: u32, preload: i32) -> Option<ir::Stream> {
 /// routes store 2/12, 7/12 and 12/12 (bend ranges of 2, 7 and 12 semitones).
 pub(crate) const PITCH_SEMITONES: f32 = 12.0;
 
+/// Script index of a group's first external modulator: Kontakt numbers the
+/// 16-slot internal array first, then each external slot after it, empty
+/// slots kept. Real Kontakt 8 (`probes/find_mod_index.lua`, ANALOG STRINGS
+/// group 0): `find_mod` answers 16 for external slot 0, 33 for slot 17.
+pub(crate) const EXTERNAL_MOD_BASE: u16 = 16;
+
 /// One band of the 1/2/3-band EQ. The native coefficients (generator
 /// 0x1409591c0) are the cookbook bell with A = 2^(dB/6) and
 /// alpha = sin(w)·sinh(octaves·ln 2): twice the knob's dB at the centre and
@@ -304,6 +310,10 @@ fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Fi
         60 => (Band, 3),
         61 => (High, 3),
         62 => (Notch, 3),
+        // Ladder LP3 / HP3: the ladder's third tap, a one-pole ahead of the
+        // resonant stage (filt-ladder-monark.md: taps follow `id − 29`).
+        32 => (Low, 1),
+        36 => (High, 1),
         _ => return None,
     };
     let (u, r) = (cutoff.clamp(0.0, 1.0), resonance.clamp(0.0, 1.0));
@@ -311,6 +321,7 @@ fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Fi
         pass,
         hz: 0.0,
         stages,
+        pole: matches!(kind, 32 | 36),
         damping: [2.0; 3],
         gain: 1.0,
         octaves: 0.0,
@@ -567,15 +578,20 @@ pub(crate) fn solid_eq(
 /// stereo. Laws from setter `0x141aea370` (docs/architecture-v2/KONTAKT_DSP_LAWS.md):
 /// time 0.5·e^(3.7x) s, size 3x+1 (2.5 mid, here size 1), damping x^¼,
 /// diffusion 0.5x (here x), predelay 11025x samples at 44.1 kHz,
-/// high cut 19000(1−x)+2000 Hz, low shelf −12x dB, stereo x.
-// ponytail: one FDN for Room and Hall without modulation; Kontakt's network
-// (dispatch 0x141ae2c60) is unrecovered, so the type and modulation are dropped.
-pub(crate) fn reverb(v: [f32; 9]) -> ir::Reverb {
+/// high cut 19000(1−x)+2000 Hz, low shelf −12x dB, stereo x. The Hall type
+/// (saved type 1) has longer lines: from the line-length law `0x141aebb00`
+/// (v2 sampler-core space/design.rs), its mean is `1.553 + 0.208x` times the
+/// Room's at size x, which is `1.4837 + 0.1733·s` at the physical size `s` (a
+/// size curve, so a script's size change keeps it). Modulation swings all but the first line by `10x`
+/// samples at 44.1 kHz, at 2 Hz (`0x141aec0a0`).
+// ponytail: one 8-line FDN for Kontakt's 31-line Room and Hall networks; the
+// Hall's own output taps and allpass units are not copied (unmeasured).
+pub(crate) fn reverb(kind: i32, v: [f32; 9]) -> ir::Reverb {
     let [
         time,
         size,
         damping,
-        _modulation,
+        modulation,
         diffusion,
         predelay,
         high_cut,
@@ -595,12 +611,19 @@ pub(crate) fn reverb(v: [f32; 9]) -> ir::Reverb {
     ir::Reverb {
         seconds: seconds.eval(time),
         size: size_law.eval(size),
+        size_curve: if kind == 1 {
+            [1.483_7, 0.173_3]
+        } else {
+            [1.0, 0.0]
+        },
         damping: damping_law.eval(damping),
         diffusion: diffusion_law.eval(diffusion),
         predelay_ms: predelay_law.eval(predelay),
         high_cut_hz: high_cut_law.eval(high_cut),
         low_shelf_db: low_shelf_law.eval(low_shelf),
         stereo: stereo_law.eval(stereo),
+        modulation_ms: modulation * 10.0 / 44.1,
+        modulation_hz: 2.0,
     }
 }
 
@@ -688,6 +711,7 @@ pub(crate) fn compressor(
         },
         link: link || mode == 2,
         mix: 1.0,
+        detector: ir::Detector::Input,
     }
 }
 
@@ -740,6 +764,7 @@ pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> (ir::Compressor, bo
         makeup_db: -5.25 + 26.25 * makeup,
         link,
         mix,
+        detector: ir::Detector::Input,
     };
     (c, step(release) == 5)
 }
@@ -780,6 +805,22 @@ mod tests {
         assert!((b.attack_ms - 0.1).abs() < 1e-6 && (b.release_ms - 75.0).abs() < 1e-4);
         assert!(auto && !bus_compressor([0.5; 6], true).1);
         assert!(b.makeup_db.abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_hall_has_longer_lines_than_a_room_and_modulation_swings_them() {
+        let mut v = [0.5; 9];
+        let room = reverb(0, v);
+        let hall = reverb(1, v);
+        let scale = |r: ir::Reverb| r.size_curve[0] + r.size_curve[1] * r.size;
+        assert!((scale(hall) / scale(room) - 1.657).abs() < 1e-3);
+        // At the smallest size the Hall is 1.553 times the Room.
+        v[1] = 0.0;
+        assert!((scale(reverb(1, v)) - 1.553).abs() < 1e-3);
+        v[1] = 0.5;
+        assert!((room.modulation_ms - 5.0 / 44.1).abs() < 1e-6 && room.modulation_hz == 2.0);
+        v[3] = 0.0;
+        assert_eq!(reverb(0, v).modulation_ms, 0.0);
     }
 
     #[test]

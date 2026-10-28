@@ -493,9 +493,10 @@ mod tests {
 
     /// Two layers; the second's keygroups made engine groups 3 and 4.
     const TREE: &str = "return {params={DisplayName='Horn'},db=0,pan=0,layers={
-        {params={DisplayName='FX',Gain='1'},keygroups={{params={},group=0}}},
-        {params={DisplayName='Sustain',Gain='0'},sendPre=1,sendPost=0,
-         keygroups={{params={Gain='1'},group=3},{params={},group=nil},{params={},group=4}}}}}";
+        {params={DisplayName='FX',Gain='1'},bus=1,keygroups={{params={},group=0}}},
+        {params={DisplayName='Sustain',Gain='0'},bus=2,
+         keygroups={{params={Gain='1'},group=3},{params={},group=nil},{params={},group=4}}}},
+        auxs={{params={Name='Aux0',Gain='0.5'},bus=3}}}";
 
     fn run(source: &str, entry: u32) -> Log {
         let modules = [("__program.lua".to_string(), TREE.to_string())];
@@ -521,11 +522,7 @@ mod tests {
             .collect();
         assert_eq!(
             groups,
-            [
-                vec![7, 9, 0, 0x3FFF_FFFF],
-                vec![7, 9, 1, 3],
-                vec![7, 9, 1, 4]
-            ]
+            [vec![7, 10, 0, -1], vec![7, 10, 1, 3], vec![7, 10, 1, 4]]
         );
         assert!(
             log.0
@@ -559,17 +556,20 @@ mod tests {
     }
 
     #[test]
-    fn a_layers_gain_sets_its_groups_with_its_aux_send() {
-        // Gain 0 plus a unity pre-fader send is unity; muting silences it.
+    fn a_layers_fader_and_an_auxs_gain_are_bus_volumes() {
+        // The fader leaves the groups at their own gain; muting silences them.
         let log = run("", Callbacks::INIT);
-        let volume = |log: &Log, group: i64| {
+        let set = |log: &Log, action: Action, target: i64| {
             log.0
                 .iter()
                 .rev()
-                .find(|(a, ints)| *a == Action::GroupVolume && ints.first() == Some(&group))
+                .find(|(a, ints)| *a == action && ints.first() == Some(&target))
                 .map(|(_, ints)| ints.get(1).copied())
         };
+        let volume = |log: &Log, group: i64| set(log, Action::GroupVolume, group);
         assert_eq!(volume(&log, 3), Some(Some(0)));
+        assert_eq!(set(&log, Action::BusVolume, 2), Some(Some(-200_000)));
+        assert_eq!(set(&log, Action::BusVolume, 3), Some(Some(-6_021)));
         let muted = "Program.layers[2]:setParameter('Mute', true)";
         assert_eq!(
             volume(&run(muted, Callbacks::INIT), 4),

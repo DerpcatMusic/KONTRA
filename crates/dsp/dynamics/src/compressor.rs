@@ -1,5 +1,6 @@
-//! A feed-forward compressor: peak level in dB, a soft-knee static curve,
-//! attack and release on the gain reduction, make-up and a dry mix.
+//! A compressor: peak level in dB (of the input, or of its own output for a
+//! feedback design), a soft-knee static curve, attack and release on the
+//! gain reduction, make-up and a dry mix.
 
 use crate::{gain, pole};
 
@@ -17,6 +18,16 @@ pub struct Settings {
     pub link: bool,
     /// 0..=1: the compressed share of the output, the rest is the input.
     pub mix: f32,
+    pub detector: Detector,
+}
+
+/// What the level detector reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Detector {
+    /// The input (feed-forward).
+    Input,
+    /// The input at the gain it last got (feedback).
+    Output,
 }
 
 pub struct Compressor {
@@ -55,7 +66,13 @@ impl Compressor {
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let mix = self.s.mix.clamp(0.0, 1.0);
         for frame in io {
-            let [l, r] = frame.map(f32::abs);
+            let [l, r] = match self.s.detector {
+                Detector::Input => frame.map(f32::abs),
+                Detector::Output => {
+                    let ([a, b], [ra, rb]) = (*frame, self.reduction);
+                    [(a * gain(-ra)).abs(), (b * gain(-rb)).abs()]
+                }
+            };
             let levels = if self.s.link { [l.max(r); 2] } else { [l, r] };
             for ((x, level), reduction) in frame.iter_mut().zip(levels).zip(&mut self.reduction) {
                 let db = 20.0 * level.max(1e-9).log10();

@@ -1,4 +1,4 @@
-//! Saturation, Distortion and Lo-Fi onto the engine's waveshaper and
+//! Saturation, Distortion, Lo-Fi and Skreamer onto the engine's waveshaper and
 //! reducer: their saved records (readers 0x140d02c30, 0x140d00c60,
 //! 0x140d01f20, via v2 sampler-kontakt effects/mod.rs) and knob laws.
 //! Group racks only: the engine runs these on each voice.
@@ -40,6 +40,13 @@ pub(crate) fn effect(
             }
             Some(lofi(f(0)?, f(4)?, f(9)?, f(13)?))
         }
+        0x21 => Some(crate::skreamer::skreamer(
+            f(0)?,
+            f(4)?,
+            f(8)?,
+            f(12)?,
+            f(16)?,
+        )),
         _ => None,
     }
 }

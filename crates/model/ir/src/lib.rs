@@ -6,12 +6,16 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod bus;
 mod drive;
 mod effects;
 mod mods;
 mod reverb;
-pub use drive::{Crush, Curve as DriveCurve, EffectParam, Shaper};
-pub use effects::{Compressor, Limiter};
+pub use bus::{Bus, BusSend};
+pub use drive::{Crush, Curve as DriveCurve, EffectParam, Overdrive, Shaper};
+pub use effects::{
+    Compressor, Delay, DelayTime, Detector, ImpulseCuts, Limiter, Phaser, Reverb, Transient,
+};
 pub use mods::ModKind;
 pub use reverb::{Law, ReverbPar};
 
@@ -66,6 +70,9 @@ pub struct Impulse {
     pub normalize: Option<Normalize>,
     /// Silence before the response, truncated to whole frames.
     pub predelay_ms: f32,
+    pub cuts: Option<ImpulseCuts>,
+    /// Eight knots `[time fraction, dB]`, interpolated in amplitude.
+    pub envelope: Option<[[f32; 2]; 8]>,
 }
 
 /// Scales a response so its louder channel's energy (sum of squares) is
@@ -261,8 +268,10 @@ pub struct Group {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Routes {
-    /// The modulator's [`Mod::slot`].
+    /// The modulator's [`Mod::slot`]: one address per group, unique.
     pub slot: u16,
+    /// The modulator's name, what scripts find it by.
+    pub name: String,
     pub names: Vec<String>,
 }
 
@@ -601,11 +610,11 @@ pub enum EffectKind {
     Shaper(Shaper),
     /// A sample-rate and bit-depth reducer.
     Crush(Crush),
-    /// Copies its input to the instrument's send slot n at `levels[n]`
-    /// (linear) and passes it on unchanged.
+    /// An overdrive pedal.
+    Overdrive(Overdrive),
+    /// Copies its input to send slot n at `levels[n]` (linear), passing it on.
     Sends([f32; 8]),
-    /// The input convolved with [`Instrument::impulses`] at this index (the
-    /// wet path; `dry` mixes the input back).
+    /// The input convolved with [`Instrument::impulses`] at this index (wet).
     Convolution { impulse: u16 },
     /// An algorithmic reverb (the wet path; `dry` mixes the input back).
     Reverb(Reverb),
@@ -613,6 +622,12 @@ pub enum EffectKind {
     Compressor(Compressor),
     /// A peak limiter, in place.
     Limiter(Limiter),
+    /// An echo, chorus or flanger (the wet path; `dry` mixes the input back).
+    Delay(Delay),
+    /// A phaser (the wet path; `dry` mixes the input back).
+    Phaser(Phaser),
+    /// A transient shaper, in place.
+    Transient(Transient),
     /// Not carried, an insert: audio passes unchanged (its output gain
     /// trims processing that does not run).
     /// The translator reports it.
@@ -620,25 +635,6 @@ pub enum EffectKind {
     /// Not carried, a parallel path (a reverb, a delay): only the dry level
     /// passes. The translator reports it.
     OtherWet,
-}
-
-/// An algorithmic reverb in physical units.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Reverb {
-    /// Time for the tail to fall 60 dB.
-    pub seconds: f32,
-    /// Delay-line scale, 1 a mid-size room.
-    pub size: f32,
-    /// 0..=1: how much faster the highs die.
-    pub damping: f32,
-    /// 0..=1: the tail's early density.
-    pub diffusion: f32,
-    pub predelay_ms: f32,
-    pub high_cut_hz: f32,
-    /// Gain below 200 Hz.
-    pub low_shelf_db: f32,
-    /// 0 mono, 1 full width.
-    pub stereo: f32,
 }
 
 /// Three resonant band-passes in parallel placed by a vowel table: `talk`
@@ -659,14 +655,16 @@ pub enum VowelSet {
     Second,
 }
 
-/// `stages` two-pole state-variable stages in series at `hz` (none: one
-/// pole), each with its damping `k` (`1/Q`), then `gain`. A band stage is the
+/// `stages` two-pole state-variable stages in series at `hz`, after a
+/// one-pole when `pole` is set or there are none (an odd order), each with
+/// its damping `k` (`1/Q`), then `gain`. A band stage is the
 /// raw band tap `s/(s² + ks + 1)`, peaking at `1/k`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Filter {
     pub pass: Pass,
     pub hz: f32,
     pub stages: u8,
+    pub pole: bool,
     pub damping: [f32; 3],
     pub gain: f32,
     /// Octaves a [`ModKind::Cutoff`] depth of 1 moves the cutoff (the range
@@ -709,16 +707,6 @@ impl Bell {
         q: 1.0,
         gain_db: 0.0,
     };
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Bus {
-    pub name: String,
-    pub volume_db: f32,
-    /// -1..=1 balance.
-    pub pan: f32,
-    /// Effects on what the bus carries, by slot.
-    pub inserts: Vec<Option<Effect>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

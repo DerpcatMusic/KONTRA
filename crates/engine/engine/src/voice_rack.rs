@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use kontra_dsp::drive::{self, Crush, Reduction, Shaper};
+use kontra_dsp::drive::{self, Crush, Overdrive, Reduction, Shaper, Voicing};
 use kontra_dsp::filter::{Formant, Svf, VowelSet, Vowels};
 use kontra_ir as ir;
 
@@ -88,6 +88,7 @@ enum Kind {
     Formant(Formant),
     Shaper(Shaper),
     Crush(Crush),
+    Overdrive(Overdrive),
 }
 
 fn moved(mods: &[ir::Mod], n: usize) -> bool {
@@ -119,6 +120,7 @@ fn unit(kind: ir::EffectKind, rate: u32) -> Option<Kind> {
             rate,
         )),
         ir::EffectKind::Crush(c) => Kind::Crush(Crush::new(reduction(c, rate), 1)),
+        ir::EffectKind::Overdrive(o) => Kind::Overdrive(Overdrive::new(voicing(o), rate)),
         _ => return None,
     })
 }
@@ -143,6 +145,17 @@ fn curve(c: ir::DriveCurve) -> drive::Curve {
     }
 }
 
+fn voicing(o: ir::Overdrive) -> Voicing {
+    Voicing {
+        split_hz: o.split_hz,
+        smooth_hz: o.smooth_hz,
+        drive: o.drive,
+        mix: o.mix,
+        level: o.level,
+        curve: o.curve,
+    }
+}
+
 fn reduction(c: ir::Crush, rate: u32) -> Reduction {
     let hold = if c.rate < 1.0 {
         (1.0 / c.rate.max(1e-6)).min(rate as f32 / 50.0) + 1.0
@@ -160,8 +173,12 @@ fn reduction(c: ir::Crush, rate: u32) -> Reduction {
 /// A group's per-voice units in slot order; empty when all of it is shared.
 fn template(group: &crate::plan::Group, rate: u32) -> Arc<[Unit]> {
     let last_drive = group.inserts.iter().rposition(|e| {
-        e.as_ref()
-            .is_some_and(|e| matches!(e.kind, ir::EffectKind::Shaper(_) | ir::EffectKind::Crush(_)))
+        e.as_ref().is_some_and(|e| {
+            matches!(
+                e.kind,
+                ir::EffectKind::Shaper(_) | ir::EffectKind::Crush(_) | ir::EffectKind::Overdrive(_)
+            )
+        })
     });
     group
         .inserts
@@ -209,6 +226,7 @@ pub(crate) fn process(
                 Kind::Formant(f) => f.process(chunk),
                 Kind::Shaper(s) => drive(chunk, spare, e, |io| s.process(io)),
                 Kind::Crush(c) => drive(chunk, spare, e, |io| c.process(io)),
+                Kind::Overdrive(o) => drive(chunk, spare, e, |io| o.process(io)),
             }
             if let Some(r) = &mut u.ramp
                 && r.at < r.len
@@ -262,6 +280,7 @@ fn tune(kind: &mut Kind, t: Tune, rate: u32) {
         (Kind::Formant(f), Tune::Effect(ir::EffectKind::Formant(v))) => f.set(vowels(v), rate),
         (Kind::Shaper(s), Tune::Effect(ir::EffectKind::Shaper(v))) => s.set_curve(curve(v.curve)),
         (Kind::Crush(c), Tune::Effect(ir::EffectKind::Crush(v))) => c.set(reduction(v, rate)),
+        (Kind::Overdrive(o), Tune::Effect(ir::EffectKind::Overdrive(v))) => o.set(voicing(v), rate),
         _ => {}
     }
 }
@@ -326,7 +345,7 @@ impl Engine {
                     .voice_filter(zone, u.insert, note, age)
                     .map(|(hz, k)| Tune::Filter(hz, k)),
                 Kind::Eq(_) => self.voice_bells(zone, u.insert, note, age).map(Tune::Eq),
-                Kind::Formant(_) => self
+                Kind::Formant(_) | Kind::Overdrive(_) => self
                     .voice_effect(zone, u.insert, note, age)
                     .map(Tune::Effect),
                 Kind::Shaper(_) | Kind::Crush(_) => {
@@ -383,14 +402,14 @@ impl Engine {
                     insert: i,
                     depth,
                 } if i == insert => {
-                    octaves += self.source(zone, source, note, age).unwrap_or(0.0) * depth;
+                    octaves += self.routed(zone, source, note, age).unwrap_or(0.0) * depth;
                 }
                 ir::ModKind::Resonance {
                     source,
                     insert: i,
                     depth,
                 } if i == insert => {
-                    q += self.source(zone, source, note, age).unwrap_or(0.0) * depth;
+                    q += self.routed(zone, source, note, age).unwrap_or(0.0) * depth;
                 }
                 _ => {}
             }
@@ -430,7 +449,7 @@ impl Engine {
                     ir::Source::Lfo(_) if unipolar => (x + 1.0) * 0.5,
                     _ => x,
                 };
-                let amount = x * depth;
+                let amount = x * depth * self.scale(zone, source, note, age);
                 param.add(&mut kind, amount);
             }
         }
@@ -457,7 +476,7 @@ impl Engine {
             } = m.kind
                 && i == insert
             {
-                let amount = self.source(zone, source, note, age).unwrap_or(0.0) * depth_db;
+                let amount = self.routed(zone, source, note, age).unwrap_or(0.0) * depth_db;
                 if let (Some(s), Some(l)) = (
                     shift.get_mut(usize::from(band)),
                     limit.get_mut(usize::from(band)),

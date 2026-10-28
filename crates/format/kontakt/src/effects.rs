@@ -109,20 +109,6 @@ fn rack(
                 );
             }
             let (effect, module, kind) = effect?;
-            // ponytail: a group rack folds into each voice's matrix, so its
-            // convolution passes only the dry level and its sends feed nothing
-            // (per-voice wet paths later).
-            let lost = match effect.kind {
-                ir::EffectKind::Convolution { .. } => Some("group convolution"),
-                ir::EffectKind::Reverb(_) => Some("group reverb"),
-                ir::EffectKind::Sends(_) => Some("group send levels"),
-                ir::EffectKind::Compressor(_) => Some("group compressor"),
-                ir::EffectKind::Limiter(_) => Some("group limiter"),
-                _ => None,
-            };
-            if let Some(feature) = lost.filter(|_| at.starts_with("group") && !effect.bypass) {
-                notes.add(ir::Impact::Audible, feature, format!("{at} slot {slot}"));
-            }
             if matches!(
                 effect.kind,
                 ir::EffectKind::Other | ir::EffectKind::OtherWet
@@ -149,7 +135,42 @@ fn rack(
     while out.last().is_some_and(Option::is_none) {
         out.pop();
     }
+    if at.starts_with("group") {
+        group_wet(&out, at, notes);
+    }
     out
+}
+
+/// A group rack runs its wet slots on the group's sum, except one at or
+/// before a drive effect (which runs on each voice): that one keeps only its
+/// dry level. Group sends feed nothing.
+// ponytail: a filter or EQ a route moves also runs per voice (engine
+// voice_rack.rs); a wet slot before one is not reported.
+fn group_wet(out: &[Option<ir::Effect>], at: &str, notes: &mut Notes) {
+    let drive = |e: &ir::Effect| {
+        !e.bypass && matches!(e.kind, ir::EffectKind::Shaper(_) | ir::EffectKind::Crush(_))
+    };
+    let last_drive = out.iter().rposition(|e| e.as_ref().is_some_and(drive));
+    for (slot, e) in out.iter().enumerate() {
+        let Some(e) = e.as_ref().filter(|e| !e.bypass) else {
+            continue;
+        };
+        let lost = match e.kind {
+            ir::EffectKind::Sends(_) => Some("group send levels"),
+            _ if last_drive.is_none_or(|d| slot > d) => None,
+            ir::EffectKind::Convolution { .. } => Some("group convolution before a drive"),
+            ir::EffectKind::Reverb(_) => Some("group reverb before a drive"),
+            ir::EffectKind::Compressor(_) => Some("group compressor before a drive"),
+            ir::EffectKind::Limiter(_) => Some("group limiter before a drive"),
+            ir::EffectKind::Delay(_) => Some("group delay before a drive"),
+            ir::EffectKind::Phaser(_) => Some("group phaser before a drive"),
+            ir::EffectKind::Transient(_) => Some("group transient master before a drive"),
+            _ => None,
+        };
+        if let Some(feature) = lost {
+            notes.add(ir::Impact::Audible, feature, format!("{at} slot {slot}"));
+        }
+    }
 }
 
 /// A slot's effect and module id. The saved records (reader layouts in
@@ -233,6 +254,19 @@ fn slot_effect(
                     ir::EffectKind::Compressor(c)
                 })
         }
+        0x43 | 0x4c => {
+            crate::dynamics::effect(effect.id, object.version, &public).map(|(kind, lost)| {
+                if let Some(feature) = lost {
+                    let impact = if params.bypass {
+                        ir::Impact::Cosmetic
+                    } else {
+                        ir::Impact::Audible
+                    };
+                    notes.add(impact, feature, at.to_owned());
+                }
+                kind
+            })
+        }
         0x17 => sends(&public),
         0x44 => solid_eq(object.version, &public, at, notes),
         0x16 => impulses
@@ -243,14 +277,17 @@ fn slot_effect(
             .map(|i| f32_at(4 + 4 * i))
             .collect::<Option<Vec<_>>>()
             .and_then(|v| v.try_into().ok())
-            .map(|v| ir::EffectKind::Reverb(crate::laws::reverb(v))),
+            .zip(kind_id)
+            .map(|(v, kind)| ir::EffectKind::Reverb(crate::laws::reverb(kind, v))),
+        0x10..=0x12 | 0x14 => crate::delays::legacy(effect.id, object.version, &public),
+        0x15 => crate::legacy_reverb::effect(object.version, &public),
         id => crate::drive::effect(id, object.version, &public, at, notes),
     };
     // The legacy delay, chorus and flanger, the Gainer and Convolution mix
     // their slot's dry level back in; other modules' stored dry is unused
     // (trims store 1 there). v2 sampler-kontakt effects/mod.rs, measured on Una Corda's trims.
-    // The Reverb core runs fully wet; Return and Dry carry its mix (v2 effects/space.rs).
-    let parallel = matches!(effect.id, 0x10..=0x12 | 0x16 | 0x59);
+    // The reverbs run fully wet; Return and Dry carry their mix (v2 effects/space.rs).
+    let parallel = matches!(effect.id, 0x10..=0x12 | 0x15 | 0x16 | 0x59);
     // An EQ (Filter kinds 22..=24) has no Output control: ANALOG STRINGS
     // stores 0 on one that plays in Kontakt (v2 sampler-kontakt effects/mod.rs, corpus of
     // 12,918 EQ slots).
@@ -265,7 +302,13 @@ fn slot_effect(
             ir::EffectKind::Other
         }),
         bypass: params.bypass,
-        output: if eq { 1.0 } else { params.output_gain },
+        output: if eq {
+            1.0
+        } else if effect.id == 0x15 {
+            params.output_gain * crate::legacy_reverb::WET
+        } else {
+            params.output_gain
+        },
         dry: if parallel || effect.id == 0x13 {
             params.dry_level
         } else {
@@ -432,6 +475,7 @@ pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut No
                         .map_or(0.0, |p| crate::translate::db(p.volume)),
                     pan: params.as_ref().map_or(0.0, |p| p.pan.clamp(-1.0, 1.0)),
                     inserts: Vec::new(),
+                    sends: Vec::new(),
                 });
                 let array = bus.and_then(|bus| {
                     let rack = bus

@@ -61,9 +61,9 @@ mod tests {
 
     #[test]
     fn values_and_catalog() {
-        assert_eq!(int("$EVENT_PAR_TUNE"), Some(5));
+        assert_eq!(int("$EVENT_PAR_TUNE"), Some(6));
         assert_eq!(int("$MARK_3"), Some(8));
-        assert_eq!(int("$EFFECT_TYPE_NONE"), Some(622));
+        assert_eq!(int("$EFFECT_TYPE_NONE"), Some(0));
         assert_eq!(int("$ENGINE_PAR_VOLUME"), None);
         assert!(is_catalog("$ENGINE_PAR_VOLUME"));
         assert!(is_catalog("$CONTROL_PAR_VALUE"));

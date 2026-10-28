@@ -72,6 +72,8 @@ pub fn prepare(
             envelopes: g.envelopes.clone(),
             lfos: g.lfos.clone(),
             routes: g.routes.clone(),
+            release_trigger: g.trigger == ir::Trigger::Release,
+            bus: g.bus,
         })
         .collect();
     if !instrument.buses.is_empty() {
@@ -83,6 +85,7 @@ pub fn prepare(
                 gain: gain(b.volume_db),
                 pan: b.pan,
                 inserts: b.inserts.clone(),
+                sends: b.sends.clone(),
                 enabled: true,
             })
             .collect();
@@ -216,6 +219,18 @@ fn response(
     if impulse.reverse {
         left.reverse();
         right.reverse();
+    }
+    if let Some(c) = impulse.cuts {
+        let c = kontra_dsp::reverb::shape::Cuts {
+            early: c.early,
+            late: c.late,
+            crossover: c.crossover,
+        };
+        left = kontra_dsp::reverb::shape::cut(&left, from, &c);
+        right = kontra_dsp::reverb::shape::cut(&right, from, &c);
+    }
+    if let Some(knots) = impulse.envelope {
+        kontra_dsp::reverb::shape::envelope([&mut left, &mut right], knots);
     }
     if let Some(n) = impulse.normalize {
         let energy = |c: &[f32]| c.iter().map(|&v| f64::from(v * v)).sum::<f64>();
@@ -374,7 +389,6 @@ fn zone(
     out.pan = z.pan;
     out.release_decay_db = group.release_decay_db;
     out.one_shot = group.one_shot;
-    out.bus = group.bus;
     out
 }
 

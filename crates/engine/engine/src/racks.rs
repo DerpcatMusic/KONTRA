@@ -4,7 +4,11 @@
 
 use std::sync::Arc;
 
-use kontra_dsp::dynamics::{Compressor, CompressorSettings, Limiter, LimiterSettings};
+use kontra_dsp::delay::{MAX_MS, ModDelay, Phaser, PhaserSettings};
+use kontra_dsp::dynamics::{
+    Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
+    TransientSettings,
+};
 use kontra_dsp::reverb::{Convolver, Fdn, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
@@ -24,8 +28,9 @@ enum Dsp {
 /// mixes the input back.
 trait Wet: Send {
     fn process(&mut self, io: &mut [[f32; 2]]);
-    /// The slot's reverb settings, before each block. Never allocates.
-    fn set_reverb(&mut self, _reverb: ir::Reverb) {}
+    /// The slot's settings as scripts left them, at the host's tempo,
+    /// before each block. Never allocates.
+    fn set(&mut self, _kind: ir::EffectKind, _tempo: f32) {}
 }
 
 impl Wet for Convolver {
@@ -46,13 +51,45 @@ impl Wet for Limiter {
     }
 }
 
+impl Wet for Transient {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Transient::process(self, io);
+    }
+}
+
 impl Wet for Fdn {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         Fdn::process(self, io);
     }
 
-    fn set_reverb(&mut self, reverb: ir::Reverb) {
-        self.set(settings(reverb));
+    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Reverb(r) = kind {
+            Fdn::set(self, settings(r));
+        }
+    }
+}
+
+impl Wet for ModDelay {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        ModDelay::process(self, io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, tempo: f32) {
+        if let ir::EffectKind::Delay(d) = kind {
+            ModDelay::set(self, delay(d, tempo));
+        }
+    }
+}
+
+impl Wet for Phaser {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Phaser::process(self, io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, tempo: f32) {
+        if let ir::EffectKind::Phaser(p) = kind {
+            Phaser::set(self, phaser(p, tempo));
+        }
     }
 }
 
@@ -95,6 +132,27 @@ impl Rack {
                     wet(Box::new(Compressor::new(compressor(c), rate)))
                 }
                 Some(ir::EffectKind::Limiter(l)) => wet(Box::new(Limiter::new(limiter(l), rate))),
+                // ponytail: an echo gets the longest line, so a script or a
+                // tempo can lengthen it; a swept line only what it needs.
+                Some(ir::EffectKind::Delay(d)) => {
+                    let max_ms = match d.time {
+                        ir::DelayTime::Ms(ms) if d.depth_ms > 0.0 => ms,
+                        _ => MAX_MS,
+                    };
+                    wet(Box::new(ModDelay::new(delay(d, 120.0), rate, max_ms)))
+                }
+                Some(ir::EffectKind::Phaser(p)) => {
+                    wet(Box::new(Phaser::new(phaser(p, 120.0), rate)))
+                }
+                Some(ir::EffectKind::Transient(t)) => wet(Box::new(Transient::new(
+                    TransientSettings {
+                        attack: t.attack,
+                        sustain: t.sustain,
+                        gain_db: t.gain_db,
+                        clip: t.clip,
+                    },
+                    rate,
+                ))),
                 _ => Dsp::None,
             })
             .collect();
@@ -105,7 +163,12 @@ impl Rack {
     }
 
     /// Processes `io`; a send slot adds it to `taps` (one buffer per send slot).
-    pub(crate) fn process(&mut self, io: &mut [[f32; 2]], taps: &mut [Box<[[f32; 2]]>]) {
+    pub(crate) fn process(
+        &mut self,
+        io: &mut [[f32; 2]],
+        taps: &mut [Box<[[f32; 2]]>],
+        tempo: f32,
+    ) {
         for (slot, dsp) in self.slots.iter().zip(self.dsp.iter_mut()) {
             let Some(e) = slot.filter(|e| !e.bypass) else {
                 continue;
@@ -117,10 +180,8 @@ impl Rack {
                     let Some(wet) = wet.get_mut(..io.len()) else {
                         continue;
                     };
-                    // A script may have moved the reverb's controls since the last block.
-                    if let ir::EffectKind::Reverb(r) = kind {
-                        processor.set_reverb(r);
-                    }
+                    // A script or the tempo may have moved it since the last block.
+                    processor.set(kind, tempo);
                     wet.copy_from_slice(io);
                     processor.process(wet);
                     apply(effects::matrix(&e), io);
@@ -160,6 +221,10 @@ fn compressor(c: ir::Compressor) -> CompressorSettings {
         makeup_db: c.makeup_db,
         link: c.link,
         mix: c.mix,
+        detector: match c.detector {
+            ir::Detector::Input => Detector::Input,
+            ir::Detector::Output => Detector::Output,
+        },
     }
 }
 
@@ -171,16 +236,55 @@ fn limiter(l: ir::Limiter) -> LimiterSettings {
     }
 }
 
+/// LFO cycles per second at `tempo`.
+fn hz(rate: ir::Rate, tempo: f32) -> f32 {
+    match rate {
+        ir::Rate::Hz(hz) => hz,
+        ir::Rate::Beats(beats) => tempo / 60.0 / beats.max(1e-3),
+    }
+}
+
+fn delay(d: ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
+    kontra_dsp::delay::Settings {
+        ms: match d.time {
+            ir::DelayTime::Ms(ms) => ms,
+            ir::DelayTime::Beats(beats) => beats * 60_000.0 / tempo.max(1.0),
+        }
+        .clamp(0.0, MAX_MS),
+        depth_ms: d.depth_ms,
+        second_head: d.second_head,
+        input: d.input,
+        feedback: d.feedback,
+        cross: d.cross,
+        damping_hz: d.damping_hz,
+        lfo_hz: hz(d.rate, tempo),
+        phase: d.phase,
+    }
+}
+
+fn phaser(p: ir::Phaser, tempo: f32) -> PhaserSettings {
+    PhaserSettings {
+        hz: p.hz,
+        spread_hz: p.spread_hz,
+        exponent: p.exponent,
+        feedback: p.feedback,
+        lfo_hz: hz(p.rate, tempo),
+        phase: p.phase,
+    }
+}
+
 fn settings(r: ir::Reverb) -> Settings {
     Settings {
         seconds: r.seconds,
-        size: r.size,
+        size: r.size * (r.size_curve[0] + r.size_curve[1] * r.size),
         damping: r.damping,
         diffusion: r.diffusion,
         predelay_ms: r.predelay_ms,
         high_cut_hz: r.high_cut_hz,
         low_shelf_db: r.low_shelf_db,
         stereo: r.stereo,
+        modulation_ms: r.modulation_ms,
+        modulation_hz: r.modulation_hz,
     }
 }
 
@@ -213,13 +317,29 @@ impl Engine {
     /// Adds the buses into `span` through their racks, then runs the
     /// instrument's insert, send and main racks on it.
     pub(crate) fn mix_out(&mut self, span: &mut [[f32; 2]]) {
-        let len = span.len();
+        let (len, tempo) = (span.len(), self.tempo);
         for tap in &mut self.taps {
             tap.fill([0.0; 2]);
         }
-        for bus in &mut self.buses {
+        for at in 0..self.buses.len() {
+            let (done, later) = self.buses.split_at_mut(at + 1);
+            let Some(bus) = done.last_mut() else {
+                continue;
+            };
             if let Some(mix) = bus.mix.get_mut(..len) {
-                bus.rack.process(mix, &mut self.taps);
+                bus.rack.process(mix, &mut self.taps, tempo);
+                // A send to an earlier bus would come a span late: none.
+                for send in &bus.sends {
+                    let level = send.level * if send.post_fader { bus.gain } else { 1.0 };
+                    let Some(to) = send.bus.checked_sub(at + 1).and_then(|k| later.get_mut(k))
+                    else {
+                        continue;
+                    };
+                    for (o, m) in to.mix.iter_mut().zip(mix.iter()) {
+                        o[0] += m[0] * level;
+                        o[1] += m[1] * level;
+                    }
+                }
                 apply(effects::balance(bus.pan), mix);
             }
             for (o, m) in span.iter_mut().zip(bus.mix.iter()) {
@@ -227,16 +347,16 @@ impl Engine {
                 o[1] += m[1] * bus.gain;
             }
         }
-        self.rack.process(span, &mut self.taps);
+        self.rack.process(span, &mut self.taps, tempo);
         for (send, tap) in self.sends.iter_mut().zip(self.taps.iter_mut()) {
             if let Some(tap) = tap.get_mut(..len).filter(|_| send.active()) {
-                send.process(tap, &mut []);
+                send.process(tap, &mut [], tempo);
                 for (o, t) in span.iter_mut().zip(tap.iter()) {
                     o[0] += t[0];
                     o[1] += t[1];
                 }
             }
         }
-        self.main.process(span, &mut []);
+        self.main.process(span, &mut [], tempo);
     }
 }

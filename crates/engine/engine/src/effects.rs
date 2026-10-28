@@ -29,15 +29,21 @@ pub(crate) fn rack(slots: &[Option<ir::Effect>]) -> Gain {
     slots
         .iter()
         .flatten()
-        .filter(|e| !e.bypass && !dynamics(e.kind))
+        .filter(|e| !e.bypass && !rack_only(e.kind))
         .fold(IDENTITY, |m, e| product(matrix(e), m))
 }
 
-/// A compressor or limiter: it runs in instrument and bus racks only.
-pub(crate) fn dynamics(kind: ir::EffectKind) -> bool {
+/// An effect that runs in instrument and bus racks only; a group rack
+/// passes it unprocessed (the translator reports it) rather than keep only
+/// its dry level, which silences an insert with none.
+pub(crate) fn rack_only(kind: ir::EffectKind) -> bool {
     matches!(
         kind,
-        ir::EffectKind::Compressor(_) | ir::EffectKind::Limiter(_)
+        ir::EffectKind::Compressor(_)
+            | ir::EffectKind::Limiter(_)
+            | ir::EffectKind::Delay(_)
+            | ir::EffectKind::Phaser(_)
+            | ir::EffectKind::Transient(_)
     )
 }
 
@@ -65,7 +71,9 @@ pub(crate) fn matrix(e: &ir::Effect) -> Gain {
             product(balance(pan), width)
         }
         // Run per voice, their output gain after them (voice_rack.rs).
-        ir::EffectKind::Shaper(_) | ir::EffectKind::Crush(_) => return IDENTITY,
+        ir::EffectKind::Shaper(_) | ir::EffectKind::Crush(_) | ir::EffectKind::Overdrive(_) => {
+            return IDENTITY;
+        }
         // Its output gain trims processing that does not run here (a
         // compressor's makeup: ANALOG STRINGS stores +9 dB), so it passes.
         ir::EffectKind::Other => return IDENTITY,
@@ -75,11 +83,15 @@ pub(crate) fn matrix(e: &ir::Effect) -> Gain {
         ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_) => IDENTITY,
         // Its wet path runs in instrument and bus racks (racks.rs); a
         // compressor's or limiter's output is its wet path.
-        ir::EffectKind::Compressor(_) | ir::EffectKind::Limiter(_) => [[0.0; 2]; 2],
+        ir::EffectKind::Compressor(_)
+        | ir::EffectKind::Limiter(_)
+        | ir::EffectKind::Transient(_) => [[0.0; 2]; 2],
         // Its wet path runs in instrument and bus racks (racks.rs).
         ir::EffectKind::OtherWet
         | ir::EffectKind::Convolution { .. }
-        | ir::EffectKind::Reverb(_) => [[0.0; 2]; 2],
+        | ir::EffectKind::Reverb(_)
+        | ir::EffectKind::Delay(_)
+        | ir::EffectKind::Phaser(_) => [[0.0; 2]; 2],
     };
     let (o, d) = (e.output, e.dry);
     [

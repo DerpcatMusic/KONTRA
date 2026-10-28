@@ -32,6 +32,11 @@ pub(crate) enum Work {
         signal: u8,
         generation: u16,
     },
+    /// A script slot's asynchronous command `id` has finished.
+    Async {
+        slot: u8,
+        id: i32,
+    },
 }
 
 struct Entry {
