@@ -62,19 +62,7 @@ pub fn compile(
     modules: &[(String, String)],
     saved: &[String],
 ) -> Result<Compiled, String> {
-    let modules: Arc<HashMap<String, String>> = Arc::new(
-        modules
-            .iter()
-            .map(|(name, text)| (module_name(name), text.clone()))
-            .collect(),
-    );
-    let saved: Arc<Vec<(String, String)>> = Arc::new(
-        saved
-            .iter()
-            .filter_map(|s| s.split_once('='))
-            .map(|(name, value)| (name.into(), value.into()))
-            .collect(),
-    );
+    let (modules, saved) = inputs(modules, saved);
     let lua = state(source, &modules, &saved).map_err(|e| e.to_string())?;
     let defined = |name: &str| matches!(lua.globals().get::<Value>(name), Ok(Value::Function(_)));
     let callbacks = Callbacks {
@@ -103,43 +91,63 @@ pub struct SampleLoad {
     pub root: Option<u8>,
 }
 
-impl Compiled {
-    /// Runs the program's load once, off the audio thread (init, then
-    /// `onLoad`), and returns the samples it loads. A script that fails part
-    /// way returns what it loaded before.
-    #[must_use]
-    pub fn sample_loads(&self) -> Vec<SampleLoad> {
-        let Ok(lua) = state(&self.source, &self.modules, &self.saved) else {
-            return Vec::new();
-        };
-        let checkpoints = AtomicU32::new(0);
-        lua.set_interrupt(move |_| {
-            if checkpoints.fetch_add(1, Ordering::Relaxed) > CHECKPOINTS {
-                return Err(mlua::Error::runtime("load ran too long"));
-            }
-            Ok(mlua::VmState::Continue)
-        });
-        let Ok(loads) = lua
-            .globals()
-            .get::<Function>("__record")
-            .and_then(|record| record.call::<Table>(()))
-        else {
-            return Vec::new();
-        };
-        loads
-            .sequence_values::<Table>()
-            .filter_map(|load| {
-                let load = load.ok()?;
-                let int = |i: usize| number(&load.get::<Value>(i).ok()?);
-                Some(SampleLoad {
-                    group: u32::try_from(int(1)? as i64).ok()?,
-                    slot: u16::try_from(int(2)? as i64).ok()?,
-                    path: load.get::<String>(3).ok()?,
-                    root: int(4).and_then(|n| u8::try_from(n as i64).ok()),
-                })
+/// The modules by the name `require` finds them, and the saved widget
+/// values split at `=`.
+type Inputs = (Arc<HashMap<String, String>>, Arc<Vec<(String, String)>>);
+
+fn inputs(modules: &[(String, String)], saved: &[String]) -> Inputs {
+    let modules = modules
+        .iter()
+        .map(|(name, text)| (module_name(name), text.clone()))
+        .collect();
+    let saved = saved
+        .iter()
+        .filter_map(|s| s.split_once('='))
+        .map(|(name, value)| (name.into(), value.into()))
+        .collect();
+    (Arc::new(modules), Arc::new(saved))
+}
+
+/// Runs a program's load once, off the audio thread (init, then `onLoad`),
+/// and returns the samples it loads; arguments as [`compile`]. A script that
+/// fails part way returns what it loaded before.
+#[must_use]
+pub fn sample_loads(
+    source: &str,
+    modules: &[(String, String)],
+    saved: &[String],
+) -> Vec<SampleLoad> {
+    let (modules, saved) = inputs(modules, saved);
+    let Ok(lua) = state(source, &modules, &saved) else {
+        return Vec::new();
+    };
+    let checkpoints = AtomicU32::new(0);
+    lua.set_interrupt(move |_| {
+        if checkpoints.fetch_add(1, Ordering::Relaxed) > CHECKPOINTS {
+            return Err(mlua::Error::runtime("load ran too long"));
+        }
+        Ok(mlua::VmState::Continue)
+    });
+    let Ok(loads) = lua
+        .globals()
+        .get::<Function>("__record")
+        .and_then(|record| record.call::<Table>(()))
+    else {
+        return Vec::new();
+    };
+    loads
+        .sequence_values::<Table>()
+        .filter_map(|load| {
+            let load = load.ok()?;
+            let int = |i: usize| number(&load.get::<Value>(i).ok()?);
+            Some(SampleLoad {
+                group: u32::try_from(int(1)? as i64).ok()?,
+                slot: u16::try_from(int(2)? as i64).ok()?,
+                path: load.get::<String>(3).ok()?,
+                root: int(4).and_then(|n| u8::try_from(n as i64).ok()),
             })
-            .collect()
-    }
+        })
+        .collect()
 }
 
 impl Foreign for Compiled {
@@ -501,14 +509,13 @@ mod tests {
             ("__program.lua".to_string(), tree.to_string()),
             ("__state.lua".to_string(), state.to_string()),
         ];
-        let compiled = compile(source, &modules, &[]).unwrap();
         let load = SampleLoad {
             group: 7,
             slot: 1,
             path: "Crescendo.wav".into(),
             root: Some(36),
         };
-        assert_eq!(compiled.sample_loads(), vec![load]);
+        assert_eq!(sample_loads(source, &modules, &[]), vec![load]);
     }
 
     #[test]

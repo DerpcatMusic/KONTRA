@@ -84,12 +84,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
 
 /// The samples a UVI script loads as its program loads, from one run of it.
 fn script_swaps(script: &ir::Script) -> Vec<kontra_format_uvi::Swap> {
-    let Ok(compiled) = kontra_lua::compile(&script.source, &lua_modules(script), &script.saved)
-    else {
-        return Vec::new();
-    };
-    compiled
-        .sample_loads()
+    kontra_lua::sample_loads(&script.source, &lua_modules(script), &script.saved)
         .into_iter()
         .map(|l| kontra_format_uvi::Swap {
             group: l.group,
