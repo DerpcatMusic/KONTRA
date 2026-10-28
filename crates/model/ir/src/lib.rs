@@ -80,6 +80,9 @@ pub struct Impulse {
     pub cuts: Option<ImpulseCuts>,
     /// Eight knots `[time fraction, dB]`, interpolated in amplitude.
     pub envelope: Option<[[f32; 2]; 8]>,
+    /// The new left and right channels as `[from left, from right]`, after
+    /// the envelope and before normalizing.
+    pub mix: Option<[[f32; 2]; 2]>,
 }
 
 /// Scales a response so its louder channel's energy (sum of squares) is
