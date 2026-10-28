@@ -1,17 +1,21 @@
 //! A transient shaper: a tenth-root level detector, six envelope followers
 //! that split the level into an attack part and a sustain part, a gain in
-//! dB from each, a 5 Hz DC blocker and an optional clip. The followers'
+//! dB from each, a 10 Hz DC blocker and an optional clip. The followers'
 //! rates and thresholds are the shape: no standard design fixes them, so
 //! they are kept as measured (their source is in the translator's law).
 
+/// The shaper's gains and clip switch.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
     /// dB per unit of the attack envelope; negative softens onsets.
     pub attack: f32,
     /// dB per unit of the sustain envelope; negative shortens tails.
     pub sustain: f32,
+    /// Output gain, dB.
     pub gain_db: f32,
-    /// Clip the output just inside full scale.
+    /// Clip the output just inside full scale. ponytail: a hard clamp; the
+    /// native clip's soft peak tracker is not carried, add it if a clipped
+    /// slot measures apart.
     pub clip: bool,
 }
 
@@ -30,17 +34,19 @@ const RATES: [f32; 9] = [
 ];
 /// The followers' state after a reset.
 const START: [f32; 6] = [0.262, 0.425, 0.0, 0.403, 0.403, 0.63];
-/// Detector and output DC blocker corner, and the attack part's, rad/s.
+/// Detector and output DC blocker corner (10 Hz), and the attack part's
+/// (4 Hz), as `π·Hz` for `high_pass`.
 const DC_RAD: f32 = std::f32::consts::PI * 10.0;
 const ATTACK_RAD: f32 = std::f32::consts::PI * 4.0;
 
-/// A first-order high-pass `[b0, b1, a1]` at `w` rad/s.
+/// A first-order high-pass `[b0, b1, a1]` with its corner at `w / π` Hz.
 fn high_pass(w: f32, rate: f32) -> [f32; 3] {
     let t = (w / rate).tan();
     let b = 1.0 / (t + 1.0);
     [b, -b, (t - 1.0) * b]
 }
 
+/// A running shaper.
 pub struct Transient {
     s: Settings,
     k: [f32; 9],
@@ -55,6 +61,7 @@ pub struct Transient {
 }
 
 impl Transient {
+    /// A shaper at `rate` Hz (above zero), followers at rest.
     #[must_use]
     pub fn new(s: Settings, rate: u32) -> Self {
         let rate = rate as f32;
