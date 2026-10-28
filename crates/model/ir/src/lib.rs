@@ -655,16 +655,18 @@ pub enum VowelSet {
     Second,
 }
 
-/// `stages` two-pole state-variable stages in series at `hz`, after a
-/// one-pole when `pole` is set or there are none (an odd order), each with
-/// its damping `k` (`1/Q`), then `gain`. A band stage is the
+/// `stages` two-pole state-variable stages in series at `hz` (none: one
+/// pole), each with its damping `k` (`1/Q`), then `gain`. A band stage is the
 /// raw band tap `s/(s² + ks + 1)`, peaking at `1/k`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Filter {
     pub pass: Pass,
     pub hz: f32,
     pub stages: u8,
-    pub pole: bool,
+    /// A four-pole resonant ladder instead, mixing its taps by selector
+    /// 1..=12 (low 1..4 poles, high 1..4, band 2 and 4, peak, notch); the
+    /// last stage's damping `k` sets its feedback `1 − k/2`.
+    pub ladder: Option<u8>,
     pub damping: [f32; 3],
     pub gain: f32,
     /// Octaves a [`ModKind::Cutoff`] depth of 1 moves the cutoff (the range

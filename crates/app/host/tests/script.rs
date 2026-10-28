@@ -197,7 +197,7 @@ fn a_script_bypass_takes_a_playing_voices_filter_out() {
             pass: ir::Pass::High,
             hz: 1000.0,
             stages: 1,
-            pole: false,
+            ladder: None,
             damping: [1.4, 1.4, 1.4],
             gain: 1.0,
             octaves: 1.0,
