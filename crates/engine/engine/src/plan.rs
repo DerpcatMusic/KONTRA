@@ -131,6 +131,9 @@ pub struct Group {
     pub routes: Vec<ir::Routes>,
     /// It plays on release (scripts read this).
     pub release_trigger: bool,
+    /// The bus its voices play into, an index into [`Plan::buses`]; a
+    /// script may move it while they play.
+    pub bus: usize,
 }
 
 impl Group {
@@ -158,6 +161,7 @@ impl Group {
             lfos: Vec::new(),
             routes: Vec::new(),
             release_trigger: false,
+            bus: 0,
         }
     }
 
@@ -228,8 +232,6 @@ pub struct Zone {
     pub release_decay_db: f32,
     /// Ignores note-off and plays to the end (drums, one-shots).
     pub one_shot: bool,
-    /// Output bus (mic position) index into [`Plan::buses`].
-    pub bus: usize,
 }
 
 impl Zone {
@@ -256,7 +258,6 @@ impl Zone {
             pan: 0.0,
             release_decay_db: 0.0,
             one_shot: false,
-            bus: 0,
         }
     }
 }

@@ -36,6 +36,9 @@ pub enum EnginePar {
     Tune,
     /// Read only: the group plays on release.
     ReleaseTrigger,
+    /// The bus a group plays into: bus n is `1000 + n` (plan bus n + 1),
+    /// −1 the main bus. On a bus (generic `1000 + n`), its own output.
+    OutputChannel,
 }
 
 /// A script's parameter ids: id `first + n` is `by_id[n]`.

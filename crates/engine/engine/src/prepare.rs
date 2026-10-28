@@ -73,6 +73,7 @@ pub fn prepare(
             lfos: g.lfos.clone(),
             routes: g.routes.clone(),
             release_trigger: g.trigger == ir::Trigger::Release,
+            bus: g.bus,
         })
         .collect();
     if !instrument.buses.is_empty() {
@@ -375,7 +376,6 @@ fn zone(
     out.pan = z.pan;
     out.release_decay_db = group.release_decay_db;
     out.one_shot = group.one_shot;
-    out.bus = group.bus;
     out
 }
 
