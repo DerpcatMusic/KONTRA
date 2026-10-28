@@ -3,7 +3,7 @@
 -- Input: ANALOG STRINGS.nki (any instrument with enough groups).
 -- Result (Kontakt 8.13.1, 2026-10-28, 120 BPM): $DURATION_QUARTER 500000, ms_to_ticks of it 960,
 -- ticks_to_ms(960) 500000, ms_to_ticks(1000000) 1920, $DURATION_BAR 0 (clock stopped),
--- $DURATION_EIGHTH_TRIPLET 166666, $DURATION_SIXTEENTH_TRIPLET 83333, $SIGNATURE 4/4,
+-- $DURATION_EIGHTH_TRIPLET 166667 (rounded), $DURATION_SIXTEENTH_TRIPLET 83333, $SIGNATURE 4/4,
 -- $NI_TRANSPORT_RUNNING 0, $NI_SONG_POSITION 0, $NI_SIGNAL_TRANSP_START 1, _STOP 2.
 local kt = Kontakt
 local out = assert(io.open(ORACLE_OUT, "w"))
@@ -22,6 +22,8 @@ local cases = {
   "$NI_SONG_POSITION",
   "$DURATION_SIXTEENTH_TRIPLET / 1000 - 50",
   "ms_to_ticks(1000000) - 1900",
+  "$DURATION_EIGHTH_TRIPLET - 166600",
+  "$DURATION_SIXTEENTH_TRIPLET - 83300",
 }
 local lines = { "on init" }
 for k, c in ipairs(cases) do

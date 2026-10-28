@@ -5,8 +5,12 @@ use kontra_vm::{Action, HostValue};
 
 use crate::Engine;
 
-/// Song-position ticks per quarter note.
+/// Song-position ticks per quarter note (measured, probes/transport_laws.lua).
 const PPQ: f64 = 960.0;
+/// Microseconds in a minute: a tempo in quarters per minute → µs per quarter.
+const MICROS_PER_MINUTE: f64 = 60e6;
+/// Seconds in a minute: a tempo → quarters per second.
+const SECONDS_PER_MINUTE: f64 = 60.0;
 // Measured, probes/callback_constants.lua.
 const TRANSP_START: u8 = 1;
 const TRANSP_STOP: u8 = 2;
@@ -84,8 +88,9 @@ impl Engine {
     /// Moves the song position on by `frames` while the transport runs.
     pub(crate) fn advance_transport(&mut self, frames: usize) {
         if self.transport.playing {
-            self.transport.ticks +=
-                frames as f64 * f64::from(self.tempo) / 60.0 * PPQ / f64::from(self.rate);
+            self.transport.ticks += frames as f64 * f64::from(self.tempo) / SECONDS_PER_MINUTE
+                * PPQ
+                / f64::from(self.rate);
         }
     }
 
@@ -94,7 +99,7 @@ impl Engine {
     pub(crate) fn transport_value(&self, action: Action, arg: i32) -> Option<HostValue> {
         let t = &self.transport;
         // set_tempo keeps the tempo finite and positive.
-        let quarter = 60e6 / f64::from(self.tempo);
+        let quarter = MICROS_PER_MINUTE / f64::from(self.tempo);
         let int =
             |v: f64| HostValue::Int(v.round().clamp(-2_147_483_648.0, 2_147_483_647.0) as i32);
         let (num, denom) = t.signature;
