@@ -71,6 +71,45 @@ impl<L: Library> Translator<'_, '_, L> {
     }
 }
 
+/// The pitch route a connection on an oscillator's `Pitch` makes: `Ratio`
+/// semitones per unit of a pitch-bend (−1..=1), controller or velocity
+/// (0..=1) source, an inverted bend turning the other way (v1's native
+/// renders, crates/sampler-uvi/src/modulation.rs). `None` for anything
+/// else: a mapper, a nested or modulated connection, another source, or an
+/// inverted unipolar source (reported).
+pub(super) fn pitch_route(connection: Node) -> Option<ir::ModKind> {
+    let owner = connection.parent()?.parent()?;
+    if !connection.has_tag_name("SignalConnection")
+        || !owner.has_tag_name("SamplePlayer")
+        || connection.attribute("Destination") != Some("Pitch")
+        || flag(connection, "Bypass")
+        || flag(connection, "ConnectionMode")
+        || !connection
+            .attribute("Mapper")
+            .unwrap_or_default()
+            .is_empty()
+        || connection.children().any(|n| n.is_element())
+    {
+        return None;
+    }
+    let inverted = flag(connection, "Inverted");
+    let ratio = num(connection, "Ratio", 0.0).ok()? as f32;
+    let (source, semitones) = match connection.attribute("Source")? {
+        "@PitchBend" => (ir::Source::PitchBend, if inverted { -ratio } else { ratio }),
+        _ if inverted => return None,
+        "@VoiceParam Velocity" => (ir::Source::Velocity, ratio),
+        s => (
+            ir::Source::Controller(s.strip_prefix("@MIDI CC ")?.trim().parse().ok()?),
+            ratio,
+        ),
+    };
+    Some(ir::ModKind::Pitch {
+        source,
+        semitones,
+        depth: 1.0,
+    })
+}
+
 /// A live connection from a script modulation to the gain of a layer,
 /// keygroup or the program, or to the pitch of those or an oscillator: that
 /// element and the modulation.
