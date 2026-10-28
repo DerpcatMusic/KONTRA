@@ -447,6 +447,9 @@ impl HostApi for Engine {
             return value;
         }
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
+        if let Some(value) = self.transport_value(call.action, int(0)) {
+            return value;
+        }
         let running = self.running.event;
         let current = running.and_then(|r| self.notes.get(r));
         let flag = |b: bool| HostValue::Int(i32::from(b));
@@ -466,26 +469,6 @@ impl HostApi for Engine {
             Action::KeyDown => flag(self.key_down(int(0))),
             Action::EngineUptime => {
                 HostValue::Int((self.now.0 * 1000 / u64::from(self.rate)) as i32)
-            }
-            Action::DurationQuarter
-            | Action::DurationEighth
-            | Action::DurationSixteenth
-            | Action::DurationQuarterTriplet
-            | Action::DurationEighthTriplet
-            | Action::DurationSixteenthTriplet
-            | Action::DurationBar => {
-                let quarter = 60e6 / f64::from(self.tempo.max(1.0));
-                // ponytail: a bar is four quarters; the host's signature is not passed in.
-                let quarters = match call.action {
-                    Action::DurationEighth => 0.5,
-                    Action::DurationSixteenth => 0.25,
-                    Action::DurationQuarterTriplet => 2.0 / 3.0,
-                    Action::DurationEighthTriplet => 1.0 / 3.0,
-                    Action::DurationSixteenthTriplet => 1.0 / 6.0,
-                    Action::DurationBar => 4.0,
-                    _ => 1.0,
-                };
-                HostValue::Int((quarter * quarters).round() as i32)
             }
             Action::NumGroups => HostValue::Int(self.masks.groups as i32),
             Action::Random => HostValue::Int(self.random(int(0), int(1))),

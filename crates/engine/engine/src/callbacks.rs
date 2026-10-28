@@ -202,7 +202,7 @@ const TIMER_BEAT: u8 = 2;
 impl Engine {
     /// `set_listener` and `change_listener_par` for the running slot: a
     /// timer of `par` microseconds (at least 1000) or `par` ticks per quarter
-    /// (1..=24); `par` 0 stops it. Transport signals wait for a transport.
+    /// (1..=24); `par` 0 stops it. Transport signals go to the transport.
     pub(crate) fn set_listener(&mut self, signal: i32, par: i32) {
         let slot = self.running.slot;
         let Ok(signal) = u8::try_from(signal) else {
@@ -211,7 +211,10 @@ impl Engine {
         let every = match signal {
             TIMER_MS => par.max(0).unsigned_abs().max(1000),
             TIMER_BEAT => par.clamp(0, 24).unsigned_abs(),
-            _ => return,
+            _ => {
+                self.listen_transport(slot, signal, par != 0);
+                return;
+            }
         };
         let Some(timer) = self
             .timers
@@ -283,6 +286,17 @@ impl Engine {
         {
             return;
         }
+        self.run_listener(slot, signal);
+        if self
+            .timer(slot, signal)
+            .is_some_and(|t| t.generation == generation)
+        {
+            self.arm(slot, signal);
+        }
+    }
+
+    /// Runs slot `slot`'s listener callback, if it has one, for `signal`.
+    pub(crate) fn run_listener(&mut self, slot: u8, signal: u8) {
         let plan = Arc::clone(&self.plan);
         if let Some(entry) = plan
             .scripts
@@ -294,12 +308,6 @@ impl Engine {
                 ..Running::new(Kind::Listener, None)
             };
             self.run_callback(slot, entry, running);
-        }
-        if self
-            .timer(slot, signal)
-            .is_some_and(|t| t.generation == generation)
-        {
-            self.arm(slot, signal);
         }
     }
 }
