@@ -7,7 +7,7 @@
 mod envelope;
 mod zone;
 
-use kontra_stream::StreamClient;
+use kontra_stream::{Mix, StreamClient};
 
 pub use envelope::Ahdsr;
 pub use zone::{Loop, Region};
@@ -116,6 +116,16 @@ impl Voice {
     /// Changes gain, smoothed over a few milliseconds.
     pub fn set_gain(&mut self, gain: Gain) {
         self.target = gain;
+    }
+
+    /// Changes the channel matrix (live cells) from the next chunk read.
+    ///
+    /// ponytail: a step at each refresh, not smoothed like the gain; ramp it
+    /// per chunk if a fast sweep zippers.
+    pub fn set_mix(&mut self, mix: Mix) {
+        if let Some(r) = self.region.as_mut() {
+            r.mix = Some(mix);
+        }
     }
 
     /// The gain the voice is moving to.

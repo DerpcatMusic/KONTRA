@@ -270,6 +270,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         body: Event::NoteOff(pattern),
     };
     let live = std::env::var_os("KONTRA_LIVE").is_some();
+    // KONTRA_WATCH=102,104: the controllers the block lines print (110, 111).
+    let watched: Vec<usize> = std::env::var("KONTRA_WATCH")
+        .unwrap_or_else(|_| "110,111".into())
+        .split(',')
+        .filter_map(|c| c.trim().parse().ok())
+        .collect();
     let mut audio = Vec::new();
     let mut block = vec![[0.0f32; 2]; 512];
     let cc = wheel.map(|v| Timed {
@@ -317,11 +323,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if n == 1 || n == RATE as usize / 512 + 1 || n == 2 * RATE as usize / 512 + 20 {
             println!(
-                "  block {n}: {} voices, {} playing, cc110 {:?} cc111 {:?}",
+                "  block {n}: {} voices, {} playing, controllers {:?}",
                 engine.active_voices(),
                 engine.playing_voices(),
-                engine.controller(110),
-                engine.controller(111)
+                watched
+                    .iter()
+                    .map(|&cc| (cc, engine.controller(cc)))
+                    .collect::<Vec<_>>()
             );
             for (zone, at, gain) in engine.voices() {
                 println!("    zone {zone} at {at:.0} gain {gain:?}");

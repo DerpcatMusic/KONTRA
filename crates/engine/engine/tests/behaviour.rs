@@ -680,6 +680,53 @@ fn a_shaped_controller_reads_its_start_until_a_message_arrives() {
 }
 
 #[test]
+fn a_blended_macro_moves_one_cell_of_a_sounding_voices_matrix() {
+    use kontra_engine::ir::{Blend, Factor, Mod, ModKind, Source, Term, Transfer};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 1.0);
+    let mut mix = [[0.0; 2]; 16];
+    mix[0] = [1.0, 1.0];
+    z.region.mix = Some(mix);
+    let mut plan = Plan::new(vec![z], 8);
+    let through = |source| Transfer {
+        source,
+        table: Vec::new(),
+    };
+    // Wheel × CC 2, read straight through: the left cell only.
+    plan.groups[0].blends = vec![Blend {
+        base: 0.0,
+        terms: vec![Term {
+            input: through(Source::Controller(1)),
+            amount: 1.0,
+            factors: vec![Factor {
+                input: through(Source::Controller(2)),
+                depth: 1.0,
+            }],
+        }],
+    }];
+    plan.groups[0].shapers = vec![through(Source::Blend(0))];
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Mix {
+            source: Source::Shaped(0),
+            zone: 0,
+            row: 0,
+            side: 0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[cc(1, 127), cc(2, 127)]);
+    let [l, r] = level(&mut e, &[on(60, 1.0)]);
+    assert!(r > 0.1 && close(l, r), "{l} {r}");
+    level(&mut e, &[cc(2, 0)]);
+    let [l, r] = level(&mut e, &[]);
+    assert!(l.abs() < 1e-3 && r > 0.1, "{l} {r}");
+}
+
+#[test]
 fn a_controller_pitch_route_moves_sounding_voices() {
     use kontra_engine::ir::{Mod, ModKind, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();

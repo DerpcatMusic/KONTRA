@@ -1,6 +1,6 @@
 //! What a group modulation moves and by how much.
 
-use crate::{Curve, EffectParam, Source};
+use crate::{Curve, EffectParam, Source, Transfer};
 
 /// What a [`crate::Mod`] does.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,6 +97,16 @@ pub enum ModKind {
         length: bool,
         depth: f32,
     },
+    /// Scales cell `row` (a sample channel), `side` (0 left, 1 right) of
+    /// the [`Zone::mix`](crate::Zone::mix) of the group's zone `zone` (its
+    /// index in [`Group::zones`](crate::Group::zones)) by the live `source`,
+    /// 0..=1: a channel matrix that crossfades variants.
+    Mix {
+        source: Source,
+        zone: u16,
+        row: u8,
+        side: u8,
+    },
     /// Adds `source × depth` (knob × `span`) to `param` of the per-voice
     /// effect in group slot `insert`; `unipolar` reads an LFO as 0..=1.
     EffectParam {
@@ -107,4 +117,41 @@ pub enum ModKind {
         span: f32,
         unipolar: bool,
     },
+}
+
+/// A sum of live sources, as a macro knob and what moves it:
+/// `base + Σ amount × input × Π factors`. [`Source::Blend`] reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Blend {
+    pub base: f32,
+    pub terms: Vec<Term>,
+}
+
+/// One input of a [`Blend`]: its source through a table, scaled.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Term {
+    pub input: Transfer,
+    pub amount: f32,
+    pub factors: Vec<Factor>,
+}
+
+/// A live multiplier: `1 − depth + depth × t` (`1 + depth × t` for a
+/// negative depth), `t` its source through its table.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Factor {
+    pub input: Transfer,
+    pub depth: f32,
+}
+
+impl Factor {
+    /// The multiplier for the table's output `t`.
+    #[must_use]
+    pub fn at(&self, t: f32) -> f32 {
+        let d = self.depth;
+        if d < 0.0 {
+            1.0 + d * t
+        } else {
+            1.0 - d + d * t
+        }
+    }
 }

@@ -20,7 +20,7 @@ pub use effects::{
     Compressor, Delay, DelayTime, Detector, IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb,
     Transient,
 };
-pub use mods::ModKind;
+pub use mods::{Blend, Factor, ModKind, Term};
 pub use reverb::{Law, ReverbPar};
 
 #[derive(Clone, Debug)]
@@ -269,6 +269,8 @@ pub struct Group {
     pub lfos: Vec<Lfo>,
     /// Transfer tables [`Source::Shaped`] reads, by index.
     pub shapers: Vec<Transfer>,
+    /// Sums [`Source::Blend`] reads, by index.
+    pub blends: Vec<Blend>,
     /// Each modulator's route names, in route order, carried or not: what
     /// scripts find routes by.
     pub routes: Vec<Routes>,
@@ -307,6 +309,7 @@ impl Group {
         envelopes: Vec::new(),
         lfos: Vec::new(),
         shapers: Vec::new(),
+        blends: Vec::new(),
         routes: Vec::new(),
         zones: Vec::new(),
     };
@@ -486,6 +489,8 @@ pub enum Source {
     Shaped(u8),
     /// The group's [`Group::lfos`] entry, −1..=1.
     Lfo(u8),
+    /// The group's [`Group::blends`] entry.
+    Blend(u8),
     /// Always 1.
     Constant,
     /// The value a script sent this note for "from script" modulator `id`,
