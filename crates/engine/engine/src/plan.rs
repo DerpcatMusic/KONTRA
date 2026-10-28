@@ -128,6 +128,8 @@ pub struct Group {
     /// Read by `Source::Envelope(n)` and `Source::Lfo(n)`.
     pub envelopes: Vec<ir::Breakpoints>,
     pub lfos: Vec<ir::Lfo>,
+    /// Read by `Source::Shaped(n)`.
+    pub shapers: Vec<ir::Transfer>,
     pub routes: Vec<ir::Routes>,
     /// It plays on release (scripts read this).
     pub release_trigger: bool,
@@ -142,6 +144,14 @@ pub(crate) fn bus(groups: &[Group], zone: &Zone) -> usize {
 }
 
 impl Group {
+    /// The controller `source` reads, through its shaper if it has one.
+    pub(crate) fn controller(&self, source: ir::Source) -> Option<u8> {
+        match source {
+            ir::Source::Shaped(n) => self.shapers.get(usize::from(n))?.source.controller(),
+            s => s.controller(),
+        }
+    }
+
     /// Velocity 24 dB down at zero, a gate envelope.
     #[must_use]
     pub fn standard() -> Self {
@@ -164,6 +174,7 @@ impl Group {
             envelope: Ahdsr::GATE,
             envelopes: Vec::new(),
             lfos: Vec::new(),
+            shapers: Vec::new(),
             routes: Vec::new(),
             release_trigger: false,
             bus: 0,

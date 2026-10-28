@@ -71,6 +71,7 @@ pub fn prepare(
             envelope: envelope(g.envelope, rate),
             envelopes: g.envelopes.clone(),
             lfos: g.lfos.clone(),
+            shapers: g.shapers.clone(),
             routes: g.routes.clone(),
             release_trigger: g.trigger == ir::Trigger::Release,
             bus: g.bus,
