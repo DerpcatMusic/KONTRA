@@ -54,6 +54,10 @@ class Manifest(unittest.TestCase):
         text = plan.brief(self.plan, "P1.2")
         self.assertIn("<!-- v3-task: P1.2 -->", text)
         self.assertIn("crates/sampler-kontakt/src/stream.rs", text)
+        # The mantra comes from VISION.md, so every brief carries the current one.
+        self.assertIn(f"> **{plan.mantra()}**", text)
+        self.assertTrue(plan.mantra().startswith("One gold-standard engine."))
+        self.assertIn("Vision check", text)
         self.assertEqual(plan.task_of("v3-P5.3a-filter-part-a", self.plan), "P5.3a")
         self.assertIsNone(plan.task_of("v3-P9.9-nope", self.plan))
         self.assertIsNone(plan.task_of("fix/other", self.plan))

@@ -11,7 +11,7 @@ You review; you do not implement the task. Follow the preloaded `v3-review` skil
 Return:
 1. Verdict: merge / fix first / split (with a proposed follow-up task).
 2. Each claim you re-ran: the command, what the report said, what you got.
-3. Defects with file:line and the rule or measurement they break.
+3. Defects with file:line and the rule or measurement they break, including VISION.md design-test answers the diff contradicts.
 4. Plan corrections: exact edits to tasks.toml, the brief template or the skills, so the mistake cannot recur.
 
 Do not push to the PR branch unless the dispatcher asks you to.

@@ -7,6 +7,16 @@ See docs/architecture-v3/12-WORKFLOW.md. Other PRs: delete the v3 section.
 
 <!-- The behaviour this changes, in user or engine terms. -->
 
+## Vision check
+
+<!-- One line each: docs/architecture-v3/VISION.md, "The design test". -->
+
+1. One implementation:
+2. Evidence:
+3. Better than the original:
+4. Future (what it keeps possible):
+5. Reported, not dropped:
+
 ## v3 task
 
 Task: <!-- P1.2 --> · Issue: #<!-- n -->

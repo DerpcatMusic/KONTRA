@@ -45,6 +45,12 @@ Reports are claims. Treat every number, "tests pass", "skipped per the brief" an
   production functions, `Mutex` in real-time crates, vendor names below `format-*`.
 - KISS/YAGNI (ENGINE.md): a second implementation, a one-impl trait, or config
   for a constant needs a cited measurement.
+- VISION.md: the PR's *Vision check* answers all five questions, and the answers
+  hold against the diff. Check for vendor branches below the translators, silent
+  drops, per-instrument fixes, and state that can only ever be per group or block
+  rate where a per-voice or per-note version is plausible. A design that closes off
+  an item on VISION.md's list of what the engine must keep possible is
+  "fix first", even when the tests are green.
 - Moves are pure (`git diff -M --stat` shows renames); behaviour changes are separate.
 - Net production lines: negative unless the task adds a crate.
 

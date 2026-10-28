@@ -24,6 +24,11 @@ rules. The full manual is `docs/architecture-v3/12-WORKFLOW.md`.
 
 ## 1. Before writing code
 
+- Read `docs/architecture-v3/VISION.md` first: the mantra, and what every change
+  must keep possible (per-note expression, per-voice modulation, sample accuracy,
+  efficiency). Before choosing a design, answer its five-question design test for
+  your plan. A design that would have to be torn out to add one of those later is
+  the wrong design, even if it is smaller.
 - Read the brief's "Read first" docs and the code you will touch. With graft:
   `graft ask "<question>" --source`, `graft grep "<literal>"`, `graft skeleton <file>`,
   `graft callers <symbol>` before changing a symbol. Otherwise `rg`.
@@ -67,7 +72,7 @@ rules. The full manual is `docs/architecture-v3/12-WORKFLOW.md`.
 
 ## 4. Finishing
 
-- Rebase on `origin/v3`, fill in the template (gate output, scope check, net
+- Rebase on `origin/v3`, fill in the template (Vision check, gate output, scope check, net
   production lines, deviations), `gh pr ready`.
 - CodeRabbit reviews the PR. Fix each real finding in a new commit, or reply
   with the reason it does not apply (a measurement, a doc rule). Do not leave

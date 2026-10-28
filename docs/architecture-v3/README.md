@@ -6,10 +6,14 @@ and code that one person can hold in their head. Every PR in the refactor
 cites the section it implements. When this folder and the code disagree, fix
 one of them in the same PR.
 
+**Start with [VISION.md](VISION.md):** why v3 exists, the one-line mantra,
+and the design test every PR answers. The docs below say how.
+
 Read in order:
 
 | Doc | What it fixes |
 |---|---|
+| [VISION.md](VISION.md) | Why: one engine, every format through one IR, faithful then beyond; the design test |
 | [00-BASELINE.md](00-BASELINE.md) | Measured starting point: sizes, build times, structural debt |
 | [01-LAYOUT.md](01-LAYOUT.md) | Crate tree, folder rules, dependency DAG, who owns what |
 | [02-ENGINE.md](02-ENGINE.md) | Audio-thread runtime: clock, queue, ledger, voices, render |
