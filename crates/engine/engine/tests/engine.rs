@@ -240,3 +240,37 @@ fn a_zone_outside_the_velocity_range_is_silent() {
     let out = render(&mut engine, &[on(0, 60)], 256, 128);
     assert_eq!(first_sound(&out, 0), None);
 }
+
+/// 512 MIDI events in one block at production sizes (128 notes): 256 short
+/// notes over 64 voices. None is refused; only the voice limit steals.
+#[test]
+fn a_burst_of_512_events_in_one_block_loses_no_note() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(
+        vec![zone(region(&mut store, "a", 48_000).unwrap(), 0.0)],
+        64,
+    );
+    for g in &mut plan.groups {
+        g.envelope.release = 200_000;
+    }
+    let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
+    let events: Vec<_> = (0..256u64)
+        .flat_map(|n| {
+            [
+                on(2 * n, 36 + (n % 64) as u8),
+                off(2 * n + 1, 36 + (n % 64) as u8),
+            ]
+        })
+        .collect();
+    render(&mut engine, &events, 512, 512);
+    let stats = engine.stats();
+    assert_eq!(
+        (stats.notes_refused, stats.events_refused),
+        (0, 0),
+        "{stats:?}"
+    );
+    // Only the voice limit steals; a burst past the fade reserve ends some
+    // of those fades early (voices_cut), never a note still owed a voice.
+    assert_eq!(stats.voices_stolen, 256 - 64, "{stats:?}");
+    assert_eq!(engine.playing_voices(), 64);
+}

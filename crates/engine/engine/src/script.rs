@@ -329,7 +329,7 @@ impl Engine {
             (-1, Some(p)) if !ending => Origin::Child(p),
             _ => Origin::Script,
         };
-        let Some(r) = self.notes.insert(note) else {
+        let Some(r) = self.admit(note) else {
             self.stats.notes_refused += 1;
             return 0;
         };
