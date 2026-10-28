@@ -407,6 +407,11 @@ fn translate_group(
                 _ => None,
             };
             for (target, t) in p.targets.iter().enumerate() {
+                // The loop consumer is off for a streamed sample (its preload
+                // budget, sample +0x177c, gates FUN_140d20250): nothing moves.
+                if matches!(t.param.as_str(), "loopStart" | "loopLength") && out.stream.is_some() {
+                    continue;
+                }
                 let kind = match (source, t.param.as_str(), t.slot) {
                     (Some(source), "volume", None) => Some(ir::ModKind::Volume {
                         source,
@@ -418,6 +423,18 @@ fn translate_group(
                         semitones: laws::PITCH_SEMITONES,
                         depth: t.signed_intensity(),
                     }),
+                    // Targets 7 and 8 (FUN_140a6d410); the loop consumer
+                    // FUN_14087b9c0 adds `(int)(frames · x)` to both bounds,
+                    // or to the end, every 32 frames.
+                    (Some(source), param @ ("loopStart" | "loopLength"), None)
+                        if !matches!(source, ir::Source::HeldTime { .. }) =>
+                    {
+                        Some(ir::ModKind::LoopShift {
+                            source,
+                            length: param == "loopLength",
+                            depth: t.signed_intensity(),
+                        })
+                    }
                     (Some(source), "playPos", None) => Some(ir::ModKind::SampleStart {
                         source,
                         depth: t.signed_intensity(),

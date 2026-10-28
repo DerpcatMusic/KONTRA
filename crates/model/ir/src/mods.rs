@@ -72,6 +72,13 @@ pub enum ModKind {
     /// Adds `source × depth` cycles (`depth` −1..=1) to the start phase of
     /// the group's LFO `lfo`, `source` read at note-on.
     LfoPhase { source: Source, lfo: u8, depth: f32 },
+    /// Moves the zone's loops by `source × depth` of the sample's frames,
+    /// read at note-on: start and end together, or the end only (`length`).
+    LoopShift {
+        source: Source,
+        length: bool,
+        depth: f32,
+    },
     /// Adds `source × depth` (knob × `span`) to `param` of the per-voice
     /// effect in group slot `insert`; `unipolar` reads an LFO as 0..=1.
     EffectParam {
