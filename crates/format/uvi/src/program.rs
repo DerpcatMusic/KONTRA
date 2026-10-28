@@ -580,6 +580,17 @@ impl<L: Library> Translator<'_, '_, L> {
             if dest.starts_with("Gain_")
                 && modulation::macro_factor(self.program, connection).is_some()
             {
+                // Held at the macro's saved value; its own inputs (a
+                // script's controller) do not move it yet.
+                if source_node(self.program, connection)
+                    .is_some_and(|m| m.descendants().any(|n| n.has_tag_name("SignalConnection")))
+                {
+                    self.notes.add(
+                        ir::Impact::Audible,
+                        "matrix macro held at its value",
+                        source,
+                    );
+                }
                 continue;
             }
             let feature = if dest.starts_with("Gain_") {
