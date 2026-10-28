@@ -6,12 +6,16 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod bus;
 mod drive;
 mod effects;
 mod mods;
 mod reverb;
+pub use bus::{Bus, BusSend};
 pub use drive::{Crush, Curve as DriveCurve, EffectParam, Shaper};
-pub use effects::{Compressor, Limiter};
+pub use effects::{
+    Compressor, Delay, DelayTime, Detector, ImpulseCuts, Limiter, Phaser, Reverb, Transient,
+};
 pub use mods::ModKind;
 pub use reverb::{Law, ReverbPar};
 
@@ -66,6 +70,9 @@ pub struct Impulse {
     pub normalize: Option<Normalize>,
     /// Silence before the response, truncated to whole frames.
     pub predelay_ms: f32,
+    pub cuts: Option<ImpulseCuts>,
+    /// Eight knots `[time fraction, dB]`, interpolated in amplitude.
+    pub envelope: Option<[[f32; 2]; 8]>,
 }
 
 /// Scales a response so its louder channel's energy (sum of squares) is
@@ -615,6 +622,12 @@ pub enum EffectKind {
     Compressor(Compressor),
     /// A peak limiter, in place.
     Limiter(Limiter),
+    /// An echo, chorus or flanger (the wet path; `dry` mixes the input back).
+    Delay(Delay),
+    /// A phaser (the wet path; `dry` mixes the input back).
+    Phaser(Phaser),
+    /// A transient shaper, in place.
+    Transient(Transient),
     /// Not carried, an insert: audio passes unchanged (its output gain
     /// trims processing that does not run).
     /// The translator reports it.
@@ -622,25 +635,6 @@ pub enum EffectKind {
     /// Not carried, a parallel path (a reverb, a delay): only the dry level
     /// passes. The translator reports it.
     OtherWet,
-}
-
-/// An algorithmic reverb in physical units.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Reverb {
-    /// Time for the tail to fall 60 dB.
-    pub seconds: f32,
-    /// Delay-line scale, 1 a mid-size room.
-    pub size: f32,
-    /// 0..=1: how much faster the highs die.
-    pub damping: f32,
-    /// 0..=1: the tail's early density.
-    pub diffusion: f32,
-    pub predelay_ms: f32,
-    pub high_cut_hz: f32,
-    /// Gain below 200 Hz.
-    pub low_shelf_db: f32,
-    /// 0 mono, 1 full width.
-    pub stereo: f32,
 }
 
 /// Three resonant band-passes in parallel placed by a vowel table: `talk`
@@ -711,16 +705,6 @@ impl Bell {
         q: 1.0,
         gain_db: 0.0,
     };
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Bus {
-    pub name: String,
-    pub volume_db: f32,
-    /// -1..=1 balance.
-    pub pan: f32,
-    /// Effects on what the bus carries, by slot.
-    pub inserts: Vec<Option<Effect>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

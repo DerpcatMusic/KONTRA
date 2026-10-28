@@ -4,11 +4,14 @@
 
 mod access;
 mod container;
+mod delays;
 mod drive;
+mod dynamics;
 mod effects;
 mod fastlz;
 mod impulse;
 mod laws;
+mod legacy_reverb;
 mod resources;
 mod samples;
 mod translate;

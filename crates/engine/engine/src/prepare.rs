@@ -85,6 +85,7 @@ pub fn prepare(
                 gain: gain(b.volume_db),
                 pan: b.pan,
                 inserts: b.inserts.clone(),
+                sends: b.sends.clone(),
                 enabled: true,
             })
             .collect();
@@ -218,6 +219,18 @@ fn response(
     if impulse.reverse {
         left.reverse();
         right.reverse();
+    }
+    if let Some(c) = impulse.cuts {
+        let c = kontra_dsp::reverb::shape::Cuts {
+            early: c.early,
+            late: c.late,
+            crossover: c.crossover,
+        };
+        left = kontra_dsp::reverb::shape::cut(&left, from, &c);
+        right = kontra_dsp::reverb::shape::cut(&right, from, &c);
+    }
+    if let Some(knots) = impulse.envelope {
+        kontra_dsp::reverb::shape::envelope([&mut left, &mut right], knots);
     }
     if let Some(n) = impulse.normalize {
         let energy = |c: &[f32]| c.iter().map(|&v| f64::from(v * v)).sum::<f64>();

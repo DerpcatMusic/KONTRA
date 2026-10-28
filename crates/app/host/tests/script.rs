@@ -703,6 +703,7 @@ fn a_script_moves_a_group_onto_a_bus() {
             gain: 0.5,
             pan: 0.0,
             inserts: Vec::new(),
+            sends: Vec::new(),
             enabled: true,
         });
         let script = kontra_ksp::compile(
@@ -829,12 +830,15 @@ fn reverb_tail(script: &str) -> f32 {
         kind: ir::EffectKind::Reverb(ir::Reverb {
             seconds: 0.5,
             size: 1.0,
+            size_curve: [1.0, 0.0],
             damping: 0.0,
             diffusion: 1.0,
             predelay_ms: 0.0,
             high_cut_hz: 20_000.0,
             low_shelf_db: 0.0,
             stereo: 1.0,
+            modulation_ms: 0.0,
+            modulation_hz: 0.0,
         }),
         bypass: false,
         output: 1.0,

@@ -8,26 +8,43 @@
 //! a route moves, and those up to a group's last drive effect, run on each
 //! voice instead (voice_rack.rs).
 
+use std::sync::Arc;
+
 use kontra_dsp::eq::{Bell, Biquad, Side};
 use kontra_dsp::filter::{Formant, Pass, Shape, VowelSet, Vowels};
 use kontra_ir as ir;
 
-use crate::{Engine, MAX_SPAN};
+use crate::racks::Rack;
+use crate::{Engine, MAX_SPAN, group_racks};
 
 pub(crate) struct Chain {
     bus: usize,
     sections: Vec<ir::EffectKind>,
     filters: Box<[Stage]>,
+    /// A group's own chain, never shared: its rack runs the slots its
+    /// voices leave to the sum (group_racks.rs).
+    group: Option<(usize, Rack)>,
     pub(crate) mix: Box<[[f32; 2]]>,
     pub(crate) live: bool,
 }
 
 impl Chain {
-    fn new(bus: usize, sections: Vec<ir::EffectKind>, rate: u32) -> Self {
+    /// The group whose own chain this is, if any.
+    fn owner(&self) -> Option<usize> {
+        self.group.as_ref().map(|(g, _)| *g)
+    }
+
+    fn new(
+        bus: usize,
+        sections: Vec<ir::EffectKind>,
+        group: Option<(usize, Rack)>,
+        rate: u32,
+    ) -> Self {
         Self {
             bus,
             filters: stages(&sections, rate),
             sections,
+            group,
             mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
             live: false,
         }
@@ -42,7 +59,7 @@ fn on_bus(chains: &[Chain], c: usize, bus: usize) -> Option<usize> {
     }
     chains
         .iter()
-        .position(|t| t.bus == bus && t.sections == chain.sections)
+        .position(|t| t.bus == bus && t.sections == chain.sections && t.owner() == chain.owner())
 }
 
 /// The rack's active EQs (their audible bands) and filters, in slot order.
@@ -185,37 +202,54 @@ impl Engine {
     /// the inserts that run per voice.
     pub(crate) fn build_chains(&mut self) {
         self.build_voice_racks();
+        self.group_split = self
+            .groups
+            .iter()
+            .zip(&self.voice_units)
+            .map(|(g, units)| group_racks::split(g, units))
+            .collect();
         let shared: Vec<Vec<ir::EffectKind>> = self
             .groups
             .iter()
             .zip(&self.voice_units)
-            .map(|(g, units)| {
+            .zip(&self.group_split)
+            .map(|((g, units), split)| {
                 let mut inserts = g.inserts.clone();
                 for u in units.iter() {
                     if let Some(slot) = inserts.get_mut(usize::from(u.insert)) {
                         *slot = None;
                     }
                 }
+                // The group's rack runs these.
+                inserts.truncate(split.unwrap_or(usize::MAX));
                 sections(&inserts)
             })
             .collect();
         let mut chains: Vec<Chain> = Vec::new();
         let rate = self.rate;
+        let plan = Arc::clone(&self.plan);
         self.zone_chain = self
             .plan
             .zones
             .iter()
             .map(|z| {
-                let sections = shared.get(z.group as usize)?.clone();
-                if sections.is_empty() {
+                let g = z.group as usize;
+                let sections = shared.get(g)?.clone();
+                let split = self.group_split.get(g).copied().flatten();
+                if sections.is_empty() && split.is_none() {
                     return None;
                 }
                 let bus = crate::plan::bus(&self.groups, z);
+                let own = split.map(|_| g);
                 let at = chains
                     .iter()
-                    .position(|c| c.bus == bus && c.sections == sections)
+                    .position(|c| c.bus == bus && c.sections == sections && c.owner() == own)
                     .unwrap_or_else(|| {
-                        chains.push(Chain::new(bus, sections, rate));
+                        let group = split.zip(self.groups.get(g)).map(|(from, group)| {
+                            let slots = group_racks::slots(group, from);
+                            (g, Rack::new(&slots, rate, &plan.impulses))
+                        });
+                        chains.push(Chain::new(bus, sections, group, rate));
                         chains.len() - 1
                     });
                 u16::try_from(at).ok()
@@ -224,15 +258,21 @@ impl Engine {
         // A twin of each chain on every other bus, so a script that moves a
         // group to another bus allocates nothing on the audio thread.
         for n in 0..chains.len() {
-            let Some(sections) = chains.get(n).map(|c| c.sections.clone()) else {
+            let Some((sections, own)) = chains.get(n).map(|c| (c.sections.clone(), c.owner()))
+            else {
                 continue;
             };
             for bus in 0..self.buses.len() {
                 if !chains
                     .iter()
-                    .any(|c| c.bus == bus && c.sections == sections)
+                    .any(|c| c.bus == bus && c.sections == sections && c.owner() == own)
                 {
-                    chains.push(Chain::new(bus, sections.clone(), rate));
+                    let group = own.and_then(|g| {
+                        let from = self.group_split.get(g).copied().flatten()?;
+                        let slots = group_racks::slots(self.groups.get(g)?, from);
+                        Some((g, Rack::new(&slots, rate, &plan.impulses)))
+                    });
+                    chains.push(Chain::new(bus, sections.clone(), group, rate));
                 }
             }
         }
@@ -287,8 +327,10 @@ impl Engine {
 
     /// Filters each chain that sounded or still rings, into its bus.
     pub(crate) fn mix_chains(&mut self, len: usize) {
+        let tempo = self.tempo;
         for chain in &mut self.chains {
-            if !chain.live && chain.filters.iter().all(Stage::is_silent) {
+            // A group rack may ring on (a reverb's tail): it always runs.
+            if !chain.live && chain.group.is_none() && chain.filters.iter().all(Stage::is_silent) {
                 continue;
             }
             chain.live = false;
@@ -296,6 +338,17 @@ impl Engine {
                 continue;
             };
             run(&mut chain.filters, mix);
+            if let Some((g, rack)) = &mut chain.group {
+                // A script may have changed the group's slots since.
+                if let Some(group) = self.groups.get(*g) {
+                    for (slot, now) in rack.slots.iter_mut().zip(&group.inserts) {
+                        if slot.is_some() {
+                            *slot = *now;
+                        }
+                    }
+                }
+                rack.process(mix, &mut [], tempo);
+            }
             if let Some(out) = self
                 .buses
                 .get_mut(chain.bus)
