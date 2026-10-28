@@ -14,7 +14,7 @@ mod source;
 mod store;
 
 pub use file::{decode, open};
-pub use fmt::{Encoding, SampleFmt};
+pub use fmt::{Encoding, MAX_CHANNELS, Mix, SampleFmt};
 pub use sample::{PAGE_FRAMES, Read, Sample, SampleId};
 pub use source::{MemSource, Source};
 pub use store::{BlobKey, LoadRequest, Store, StoreConfig, StreamClient, StreamStats};

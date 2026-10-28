@@ -4,13 +4,25 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::cache::tag;
-use crate::fmt::SampleFmt;
+use crate::fmt::{Mix, SampleFmt};
 use crate::source::Source;
 use crate::store::{Request, StreamClient};
 
-/// Frames per page. 1024 frames of 24-bit stereo is 6 KiB, Kontakt's DFD granularity.
+/// Frames per page. 1024 frames of 24-bit stereo is 6 KiB, Kontakt's DFD
+/// granularity. A sample with frames wider than the store's cache slots
+/// allow halves its pages until one fits a slot.
 pub const PAGE_FRAMES: u64 = 1024;
 const PAGE_SHIFT: u32 = PAGE_FRAMES.trailing_zeros();
+
+/// log2 of the frames per page for frames of `frame_bytes` in slots of
+/// `PAGE_FRAMES · max_frame_bytes` bytes.
+pub(crate) fn page_shift(frame_bytes: usize, max_frame_bytes: usize) -> u32 {
+    let mut shift = PAGE_SHIFT;
+    while shift > 0 && (frame_bytes << shift) > (max_frame_bytes << PAGE_SHIFT) {
+        shift -= 1;
+    }
+    shift
+}
 
 /// Store-assigned identity of a loaded sample, used in requests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -25,6 +37,8 @@ pub struct Sample {
     pub(crate) id: SampleId,
     pub(crate) fmt: SampleFmt,
     pub(crate) frames: u64,
+    /// log2 of this sample's frames per page.
+    pub(crate) shift: u32,
     pub(crate) source: Arc<dyn Source>,
     /// Preloaded pages, shared with every other sample of the same blob.
     pub(crate) pinned: Box<[Option<Arc<[u8]>>]>,
@@ -52,13 +66,34 @@ impl Sample {
     /// Whether frame `frame` is preloaded, so a voice starting there plays at once.
     #[must_use]
     pub fn is_pinned(&self, frame: u64) -> bool {
-        self.pinned.get(page_of(frame)).is_some_and(Option::is_some)
+        self.pinned
+            .get(page_of(frame, self.shift))
+            .is_some_and(Option::is_some)
+    }
+
+    /// Frames in each of this sample's pages.
+    pub(crate) fn page_frames(&self) -> u64 {
+        1 << self.shift
     }
 
     /// Audio thread: decodes frames `first..first + out.len()` as stereo. Never
     /// blocks or allocates. Frames past the end are silence; frames not in memory
     /// are silence and counted in [`Read::missing`]. The caller keeps its timeline.
     pub fn read(&self, client: &StreamClient, first: u64, out: &mut [[f32; 2]]) -> Read {
+        self.read_mixed(client, first, out, None)
+    }
+
+    /// As [`Self::read`], each channel reaching the outputs by its row of
+    /// `mix`; `None` plays mono on both sides and two or more channels as
+    /// left and right.
+    pub fn read_mixed(
+        &self,
+        client: &StreamClient,
+        first: u64,
+        out: &mut [[f32; 2]],
+        mix: Option<&Mix>,
+    ) -> Read {
+        let size = self.page_frames();
         let mut read = Read::default();
         let mut pos = first;
         let mut rest = out;
@@ -67,13 +102,13 @@ impl Sample {
                 rest.fill([0.0; 2]);
                 break;
             }
-            let page = page_of(pos);
-            let offset = (pos % PAGE_FRAMES) as usize;
-            let len = (PAGE_FRAMES - pos % PAGE_FRAMES)
+            let page = page_of(pos, self.shift);
+            let offset = (pos % size) as usize;
+            let len = (size - pos % size)
                 .min(self.frames - pos)
                 .min(rest.len() as u64) as usize;
             let (chunk, tail) = rest.split_at_mut(len);
-            if !self.read_page(client, page, offset, chunk) {
+            if !self.read_page(client, page, offset, chunk, mix) {
                 read.missing += len as u32;
             }
             rest = tail;
@@ -88,10 +123,11 @@ impl Sample {
         page: usize,
         offset: usize,
         out: &mut [[f32; 2]],
+        mix: Option<&Mix>,
     ) -> bool {
         if let Some(Some(bytes)) = self.pinned.get(page) {
             self.fmt
-                .decode(|i| bytes.get(i).copied().unwrap_or(0), offset, out);
+                .decode(|i| bytes.get(i).copied().unwrap_or(0), offset, out, mix);
             return true;
         }
         let entry = self
@@ -105,6 +141,7 @@ impl Sample {
                 self.fmt,
                 offset,
                 out,
+                mix,
             );
         }
         out.fill([0.0; 2]);
@@ -120,7 +157,7 @@ impl Sample {
         if first >= end {
             return;
         }
-        for page in page_of(first)..=page_of(end - 1) {
+        for page in page_of(first, self.shift)..=page_of(end - 1, self.shift) {
             if self.pinned.get(page).is_some_and(Option::is_some) {
                 continue;
             }
@@ -144,10 +181,10 @@ impl Sample {
     }
 }
 
-pub(crate) fn page_of(frame: u64) -> usize {
-    (frame >> PAGE_SHIFT) as usize
+pub(crate) fn page_of(frame: u64, shift: u32) -> usize {
+    (frame >> shift) as usize
 }
 
-pub(crate) fn page_count(frames: u64) -> usize {
-    frames.div_ceil(PAGE_FRAMES) as usize
+pub(crate) fn page_count(frames: u64, shift: u32) -> usize {
+    frames.div_ceil(1 << shift) as usize
 }
