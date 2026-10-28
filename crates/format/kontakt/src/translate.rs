@@ -464,11 +464,43 @@ fn translate_group(
             }
         }
     }
+    // The engine runs one moved filter and one moved EQ per group per voice;
+    // a second one plays at its saved setting.
+    for (what, inserts) in [
+        ("filter", moved_inserts(&out, true)),
+        ("EQ", moved_inserts(&out, false)),
+    ] {
+        if inserts.len() > 1 {
+            let feature = format!("second modulated {what} in a group (plays unmodulated)");
+            notes.add(ir::Impact::Audible, &feature, &out.name);
+        }
+    }
     Ok(Translated {
         group: out,
         criteria: v.start_criteria.items,
         modulated,
     })
+}
+
+/// The distinct insert slots routes move: filters' cutoff and resonance, or
+/// EQ band gains.
+fn moved_inserts(group: &ir::Group, filters: bool) -> Vec<u8> {
+    let mut slots: Vec<u8> = group
+        .mods
+        .iter()
+        .filter_map(|m| match m.kind {
+            ir::ModKind::Cutoff { insert, .. } | ir::ModKind::Resonance { insert, .. }
+                if filters =>
+            {
+                Some(insert)
+            }
+            ir::ModKind::EqGain { insert, .. } if !filters => Some(insert),
+            _ => None,
+        })
+        .collect();
+    slots.sort_unstable();
+    slots.dedup();
+    slots
 }
 
 /// Routes an envelope (flex, or an AHDSR that is not the amplitude envelope)

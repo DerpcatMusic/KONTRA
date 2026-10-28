@@ -186,6 +186,55 @@ fn the_controller_callback_sees_and_can_swallow_a_controller() {
     assert_eq!(e.last_message(), "100");
 }
 
+#[test]
+fn a_script_bypass_takes_a_playing_voices_filter_out() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    // A high pass a route moves runs per voice; it blocks the zone's DC.
+    plan.groups[0].inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Filter(ir::Filter {
+            pass: ir::Pass::High,
+            hz: 1000.0,
+            stages: 1,
+            damping: [1.4, 1.4, 1.4],
+            gain: 1.0,
+            octaves: 1.0,
+            q_octaves: 0.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.groups[0].mods = vec![ir::Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Cutoff {
+            source: ir::Source::Controller(74),
+            insert: 0,
+            depth: 0.0,
+        },
+    }];
+    let script = kontra_ksp::compile(
+        "on controller
+            set_engine_par($ENGINE_PAR_EFFECT_BYPASS, 1, 0, 0, -1)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert!(level(&mut e, &[on(60)]).abs() < 1e-3, "filtered");
+    let cc = Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB0, 1, 100),
+    };
+    let open = level(&mut e, &[cc]);
+    assert!((open - 0.5).abs() < 1e-3, "bypassed: {open}");
+}
+
 /// Areia's script runs its init and note callbacks on the engine without faults.
 #[test]
 fn areia_runs_on_the_engine() {
