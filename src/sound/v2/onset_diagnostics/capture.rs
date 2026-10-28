@@ -212,7 +212,7 @@ impl Capture {
             .filter(|(key, row)| {
                 self.voice_samples
                     .get(key)
-                    .is_none_or(|old| old.cold != row.cold || old.starved != row.starved)
+                    .is_none_or(|old| old.starved != row.starved)
             })
             .count()
             + self
@@ -229,7 +229,7 @@ impl Capture {
         for (key, row) in &current {
             self.sampled_voices.insert(*key);
             let previous = self.voice_samples.get(key);
-            if previous.is_none_or(|old| old.cold != row.cold || old.starved != row.starved) {
+            if previous.is_none_or(|old| old.starved != row.starved) {
                 self.voice_edges
                     .push(json!({"kind":"observed_state","voice":id(*key),
                     "previous_observation":previous,"current_observation":row,
