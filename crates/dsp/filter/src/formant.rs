@@ -3,8 +3,9 @@
 //! `size` and `sharp` (docs/re/engine/filt-formant-effect.md). Each band is
 //! `g(1 − z⁻²)/((1 + g) − 2cos(ω)z⁻¹ + (1 − g)z⁻²)` with `g = sin(ω)(1 − r)`.
 //!
-//! ponytail: fixed knobs; a moving talk or size needs the 15 ms target ramp
-//! from the same doc.
+//! A knob change glides there: centre, radius and level move linearly over
+//! `round(15 ms · rate / 32) · 32` frames, the coefficients following every
+//! four frames (the same doc's decompiled ramp).
 
 use crate::Biquad;
 
@@ -46,50 +47,126 @@ pub struct Vowels {
     pub set: VowelSet,
 }
 
+/// Per band: angular centre, pole radius and level.
+type Bands = [[f64; 3]; 3];
+
+/// The bands' settings for these knobs at `rate`.
+fn targets(v: Vowels, rate: u32) -> Bands {
+    let [talk, sharp, size] = [v.talk, v.sharp, v.size].map(|x| x.clamp(0.0, 1.0));
+    // Five vowels per set, talk sweeping them with linear steps between.
+    let at = (match v.set {
+        VowelSet::First => 0.0,
+        VowelSet::Second => 5.0,
+    } + 4.0 * talk)
+        .min(9.0);
+    let row = at as usize;
+    let t = at - row as f32;
+    let read = |table: &[[f32; 3]; 10], band: usize| {
+        let a = table.get(row).and_then(|r| r.get(band)).copied();
+        let b = table.get(row + 1).and_then(|r| r.get(band)).copied();
+        match (a, b) {
+            (Some(a), Some(b)) => a + (b - a) * t,
+            (a, _) => a.unwrap_or(0.0),
+        }
+    };
+    let sharpness = (2.0 - sharp) * sharp;
+    let radius = 0.9 + 0.1 * sharpness;
+    let level = (1.0 + sharpness * sharpness) * 5.0;
+    let scale = std::f32::consts::TAU / rate.max(1) as f32 * (size + size.max(0.5));
+    [0, 1, 2].map(|band| {
+        // Kept below Nyquist: past π, `g` turns negative and the poles leave
+        // the unit circle (low rates, large size).
+        let w = f64::from(read(&HZ, band) * scale).min(0.99 * std::f64::consts::PI);
+        let r = f64::from(read(&RADII, band) * radius);
+        [w, r, f64::from(read(&LEVELS, band) * level)]
+    })
+}
+
+fn band([w, r, level]: [f64; 3]) -> Biquad {
+    let g = w.sin() * (1.0 - r);
+    let mut b = Biquad::new([g, 0.0, -g, 1.0 + g, -2.0 * w.cos(), 1.0 - g]);
+    b.scale(level);
+    b
+}
+
+/// A stereo formant filter with its band states and glide.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Formant {
     bands: [Biquad; 3],
+    now: Bands,
+    target: Bands,
+    /// Per frame, while gliding.
+    step: Bands,
+    left: u32,
+    glide: u32,
+    /// Frames until the next retune, counted across calls.
+    phase: u32,
 }
 
 impl Formant {
+    /// At these knobs from the start.
     #[must_use]
     pub fn new(v: Vowels, rate: u32) -> Self {
-        let [talk, sharp, size] = [v.talk, v.sharp, v.size].map(|x| x.clamp(0.0, 1.0));
-        // Five vowels per set, talk sweeping them with linear steps between.
-        let at = (match v.set {
-            VowelSet::First => 0.0,
-            VowelSet::Second => 5.0,
-        } + 4.0 * talk)
-            .min(9.0);
-        let row = at as usize;
-        let t = at - row as f32;
-        let read = |table: &[[f32; 3]; 10], band: usize| {
-            let a = table.get(row).and_then(|r| r.get(band)).copied();
-            let b = table.get(row + 1).and_then(|r| r.get(band)).copied();
-            match (a, b) {
-                (Some(a), Some(b)) => a + (b - a) * t,
-                (a, _) => a.unwrap_or(0.0),
-            }
-        };
-        let sharpness = (2.0 - sharp) * sharp;
-        let radius = 0.9 + 0.1 * sharpness;
-        let level = (1.0 + sharpness * sharpness) * 5.0;
-        let scale = std::f32::consts::TAU / rate.max(1) as f32 * (size + size.max(0.5));
-        let bands = [0, 1, 2].map(|band| {
-            // Kept below Nyquist: past π, `g` turns negative and the poles leave
-            // the unit circle (low rates, large size).
-            let w = f64::from(read(&HZ, band) * scale).min(0.99 * std::f64::consts::PI);
-            let r = f64::from(read(&RADII, band) * radius);
-            let g = w.sin() * (1.0 - r);
-            let mut b = Biquad::new([g, 0.0, -g, 1.0 + g, -2.0 * w.cos(), 1.0 - g]);
-            b.scale(f64::from(read(&LEVELS, band) * level));
-            b
-        });
-        Self { bands }
+        let now = targets(v, rate);
+        let ticks = (0.015 * rate as f32 / 32.0).round().max(1.0) as u32;
+        Self {
+            bands: now.map(band),
+            now,
+            target: now,
+            step: [[0.0; 3]; 3],
+            left: 0,
+            glide: ticks * 32,
+            phase: 0,
+        }
     }
 
-    /// Filters `io` in place: the sum of the three bands.
+    /// Glides to these knobs; the state carries on.
+    pub fn set(&mut self, v: Vowels, rate: u32) {
+        let target = targets(v, rate);
+        if target == self.target {
+            return;
+        }
+        let frames = f64::from(self.glide);
+        for ((s, t), n) in self.step.iter_mut().zip(&target).zip(&self.now) {
+            for ((s, t), n) in s.iter_mut().zip(t).zip(n) {
+                *s = (t - n) / frames;
+            }
+        }
+        (self.target, self.left, self.phase) = (target, self.glide, 0);
+    }
+
+    /// Filters `io` (frames of `[left, right]`) in place: the sum of the
+    /// three bands.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        let mut io = io;
+        while self.left > 0 && !io.is_empty() {
+            if self.phase == 0 {
+                // Every four frames, the coefficients at the step's end.
+                let n = self.left.min(4);
+                self.left -= n;
+                if self.left == 0 {
+                    self.now = self.target;
+                } else {
+                    for (now, step) in self.now.iter_mut().zip(&self.step) {
+                        for (x, s) in now.iter_mut().zip(step) {
+                            *x += s * f64::from(n);
+                        }
+                    }
+                }
+                for (b, now) in self.bands.iter_mut().zip(self.now) {
+                    b.retune(&band(now));
+                }
+                self.phase = n;
+            }
+            let (chunk, rest) = io.split_at_mut((self.phase as usize).min(io.len()));
+            self.phase -= chunk.len() as u32;
+            self.run(chunk);
+            io = rest;
+        }
+        self.run(io);
+    }
+
+    fn run(&mut self, io: &mut [[f32; 2]]) {
         for frame in io {
             let x = *frame;
             *frame = [0.0; 2];
@@ -102,6 +179,7 @@ impl Formant {
         }
     }
 
+    /// Whether its bands have rung out.
     #[must_use]
     pub fn is_silent(&self) -> bool {
         self.bands.iter().all(Biquad::is_silent)

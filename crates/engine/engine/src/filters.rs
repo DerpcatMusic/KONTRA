@@ -81,7 +81,8 @@ impl VoiceEq {
 /// A section's runner: biquads in series, or a formant's parallel bands.
 pub(crate) enum Stage {
     Biquad(Biquad),
-    Formant(Formant),
+    // Boxed: its glide state is six times a biquad; built at load.
+    Formant(Box<Formant>),
 }
 
 impl Stage {
@@ -123,7 +124,7 @@ pub(crate) fn stages(sections: &[ir::EffectKind], rate: u32) -> Box<[Stage]> {
                         ir::VowelSet::Second => VowelSet::Second,
                     },
                 };
-                out.push(Stage::Formant(Formant::new(v, rate)));
+                out.push(Stage::Formant(Box::new(Formant::new(v, rate))));
             }
             _ => {}
         }
@@ -238,10 +239,10 @@ impl Engine {
                     .and_then(|g| self.groups.get(g))
                     .map(|g| &g.inserts[..])
                     .unwrap_or_default();
-                let (rack, spare) = (&mut slot.rack, &mut *self.scratch);
+                let (rack, spare, rate) = (&mut slot.rack, &mut *self.scratch, self.rate);
                 slot.voice
                     .render_through(&self.stream, self.now.0, mix, |io| {
-                        crate::voice_rack::process(rack, inserts, io, spare);
+                        crate::voice_rack::process(rack, inserts, io, spare, rate);
                     });
             }
             self.stats.missing_frames += slot.voice.missing_frames() - before;

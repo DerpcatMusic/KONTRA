@@ -1099,3 +1099,138 @@ fn a_group_lofis_noise_fades_with_the_voice() {
         .fold(0.0, f32::max);
     assert!(end < 0.02, "{end}");
 }
+
+#[test]
+fn a_route_moves_a_group_waveshapers_amount_per_voice() {
+    use kontra_engine::ir::{
+        DriveCurve, Effect, EffectKind, EffectParam, Mod, ModKind, Shaper, Source,
+    };
+    let peak = |bypass: bool| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+        plan.groups[0].inserts = vec![Some(Effect {
+            kind: EffectKind::Shaper(Shaper {
+                curve: DriveCurve::Soft(0.0),
+                lowpass_hz: None,
+                highpass_hz: None,
+            }),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        plan.groups[0].mods = vec![Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass,
+            kind: ModKind::EffectParam {
+                source: Source::Velocity,
+                insert: 0,
+                param: EffectParam::ShaperAmount,
+                depth: 1.0,
+                span: 1.0,
+                unipolar: false,
+            },
+        }];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let mut out = vec![[0.0f32; 2]; 9600];
+        e.process(&mut out, &[on(60, 1.0)]);
+        out[4800..].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    // Velocity 1 takes the curve from none to full: the 0.1 sine clips to 0.64.
+    assert!((peak(true) - 0.1).abs() < 0.005, "{}", peak(true));
+    assert!((peak(false) - 0.64).abs() < 0.01, "{}", peak(false));
+}
+
+#[test]
+fn a_route_moves_an_eq_bands_centre_per_voice() {
+    use kontra_engine::ir::{Bell, Effect, EffectKind, EffectParam, Mod, ModKind, Shape, Source};
+    let peak = |octaves: f32| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+        let bell = Bell {
+            shape: Shape::Peak,
+            hz: 100.0,
+            q: 2.0,
+            gain_db: 12.0,
+        };
+        plan.groups[0].inserts = vec![Some(Effect {
+            kind: EffectKind::Eq([bell, Bell::FLAT, Bell::FLAT, Bell::FLAT]),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        plan.groups[0].mods = vec![Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind: ModKind::EffectParam {
+                source: Source::Constant,
+                insert: 0,
+                param: EffectParam::BellOctaves(0),
+                depth: octaves,
+                span: 1.0,
+                unipolar: false,
+            },
+        }];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let mut out = vec![[0.0f32; 2]; 4800];
+        e.process(&mut out, &[on(60, 1.0)]);
+        out[2400..].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    // The 1 kHz sine is far from a bell at 100 Hz; moved up 10x it takes the
+    // full 12 dB.
+    let (away, on_it) = (peak(0.0), peak(10f32.log2()));
+    assert!((away - 0.1).abs() < 0.01, "{away}");
+    assert!((on_it / 0.1 - 10f32.powf(0.6)).abs() < 0.1, "{on_it}");
+}
+
+#[test]
+fn an_lfo_on_a_group_waveshaper_retunes_it_every_32_frames() {
+    use kontra_engine::ir::{
+        Clock, DriveCurve, Effect, EffectKind, EffectParam, Lfo, Mod, ModKind, Rate, Shaper,
+        Source, Wave,
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.1)], 8);
+    plan.groups[0].inserts = vec![Some(Effect {
+        kind: EffectKind::Shaper(Shaper {
+            curve: DriveCurve::Soft(0.0),
+            lowpass_hz: None,
+            highpass_hz: None,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.groups[0].lfos = vec![Lfo {
+        wave: Wave::Sine,
+        rate: Rate::Hz(20.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: Clock::Voice,
+    }];
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::EffectParam {
+            source: Source::Lfo(0),
+            insert: 0,
+            param: EffectParam::ShaperAmount,
+            depth: 1.0,
+            span: 1.0,
+            unipolar: false,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0f32; 2]; 1024];
+    e.process(&mut out, &[on(60, 1.0)]);
+    // Within one 256-frame span of the full refresh, the DC through the
+    // curve takes a new level at each of its 32-frame ticks.
+    let mut levels: Vec<f32> = out[512..768].iter().step_by(32).map(|s| s[0]).collect();
+    levels.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+    assert!(levels.len() >= 6, "{levels:?}");
+}
