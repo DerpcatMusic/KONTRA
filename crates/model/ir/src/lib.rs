@@ -603,11 +603,9 @@ pub enum EffectKind {
     Crush(Crush),
     /// An overdrive pedal.
     Overdrive(Overdrive),
-    /// Copies its input to the instrument's send slot n at `levels[n]`
-    /// (linear) and passes it on unchanged.
+    /// Copies its input to send slot n at `levels[n]` (linear), passing it on.
     Sends([f32; 8]),
-    /// The input convolved with [`Instrument::impulses`] at this index (the
-    /// wet path; `dry` mixes the input back).
+    /// The input convolved with [`Instrument::impulses`] at this index (wet).
     Convolution { impulse: u16 },
     /// An algorithmic reverb (the wet path; `dry` mixes the input back).
     Reverb(Reverb),
