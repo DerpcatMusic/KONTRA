@@ -566,16 +566,55 @@ pub(crate) fn reverb(v: [f32; 9]) -> ir::Reverb {
         low_shelf,
         stereo,
     ] = v.map(|x| x.clamp(0.0, 1.0));
+    let [
+        seconds,
+        size_law,
+        damping_law,
+        diffusion_law,
+        predelay_law,
+        high_cut_law,
+        low_shelf_law,
+        stereo_law,
+    ] = reverb_laws();
     ir::Reverb {
-        seconds: 0.5 * (3.7 * time).exp(),
-        size: (3.0 * size + 1.0) / 2.5,
-        damping: damping.powf(0.25),
-        diffusion,
-        predelay_ms: 1000.0 * 11025.0 * predelay / 44100.0,
-        high_cut_hz: 19000.0 * (1.0 - high_cut) + 2000.0,
-        low_shelf_db: -12.0 * low_shelf,
-        stereo,
+        seconds: seconds.eval(time),
+        size: size_law.eval(size),
+        damping: damping_law.eval(damping),
+        diffusion: diffusion_law.eval(diffusion),
+        predelay_ms: predelay_law.eval(predelay),
+        high_cut_hz: high_cut_law.eval(high_cut),
+        low_shelf_db: low_shelf_law.eval(low_shelf),
+        stereo: stereo_law.eval(stereo),
     }
+}
+
+/// The reverb's controls as KSP's `$ENGINE_PAR_RV2_*` set them (value ÷ 1e6 is
+/// the knob x), in `ir::ReverbPar::ALL` order: the same laws as the saved controls.
+pub fn reverb_laws() -> [ir::Law; 8] {
+    [
+        // 0.5·e^(3.7x) s
+        ir::Law::Exp {
+            lo: 0.5,
+            hi: 0.5 * 3.7f32.exp(),
+        },
+        // (3x+1)/2.5: 0.4 at 0, 1.6 at 1
+        ir::Law::Linear { lo: 0.4, hi: 1.6 },
+        ir::Law::Power {
+            lo: 0.0,
+            hi: 1.0,
+            exponent: 0.25,
+        },
+        ir::Law::Linear { lo: 0.0, hi: 1.0 },
+        // 11025x samples at 44.1 kHz
+        ir::Law::Linear { lo: 0.0, hi: 250.0 },
+        // 19000(1−x)+2000 Hz
+        ir::Law::Linear {
+            lo: 21_000.0,
+            hi: 2_000.0,
+        },
+        ir::Law::Linear { lo: 0.0, hi: -12.0 },
+        ir::Law::Linear { lo: 0.0, hi: 1.0 },
+    ]
 }
 
 #[cfg(test)]

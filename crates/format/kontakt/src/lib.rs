@@ -13,6 +13,7 @@ mod samples;
 mod translate;
 
 pub use container::chunks;
+pub use laws::reverb_laws;
 
 use std::fmt::Display;
 use std::path::{Path, PathBuf};

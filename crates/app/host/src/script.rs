@@ -26,6 +26,14 @@ pub const UNDERSTOOD_SYMBOLS: &[&str] = &[
     SEND_LEVELS[5],
     SEND_LEVELS[6],
     SEND_LEVELS[7],
+    REVERB[0],
+    REVERB[1],
+    REVERB[2],
+    REVERB[3],
+    REVERB[4],
+    REVERB[5],
+    REVERB[6],
+    REVERB[7],
     GAINER_GAIN,
     STEREO_WIDTH,
     STEREO_PAN,
@@ -56,6 +64,17 @@ const SEND_LEVELS: [&str; 8] = [
     "$ENGINE_PAR_SENDLEVEL_5",
     "$ENGINE_PAR_SENDLEVEL_6",
     "$ENGINE_PAR_SENDLEVEL_7",
+];
+/// The reverb's controls in `ir::ReverbPar::ALL` order (RV2_MOD is not carried).
+const REVERB: [&str; 8] = [
+    "$ENGINE_PAR_RV2_TIME",
+    "$ENGINE_PAR_RV2_SIZE",
+    "$ENGINE_PAR_RV2_DAMPING",
+    "$ENGINE_PAR_RV2_DIFF",
+    "$ENGINE_PAR_RV2_PREDELAY",
+    "$ENGINE_PAR_RV2_HIGHCUT",
+    "$ENGINE_PAR_RV2_LOWSHELF",
+    "$ENGINE_PAR_RV2_STEREO",
 ];
 const GAINER_GAIN: &str = "$ENGINE_PAR_GN_GAIN";
 const STEREO_WIDTH: &str = "$ENGINE_PAR_STEREO";
@@ -102,6 +121,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             send_output: symbol(script, SEND_OUTPUT),
             send_dry: symbol(script, SEND_DRY),
             send_levels: SEND_LEVELS.map(|name| symbol(script, name)),
+            reverb: REVERB.map(|name| symbol(script, name)),
             gainer_gain: symbol(script, GAINER_GAIN),
             stereo_width: symbol(script, STEREO_WIDTH),
             stereo_pan: symbol(script, STEREO_PAN),
@@ -109,6 +129,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             pan: symbol(script, PAN),
             tune: symbol(script, TUNE),
         },
+        reverb_laws: kontra_format_kontakt::reverb_laws(),
         data: data
             .iter()
             .filter_map(|(name, bytes)| data_array(script, name, bytes))

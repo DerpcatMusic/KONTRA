@@ -206,6 +206,37 @@ impl Engine {
         }
     }
 
+    /// A reverb control's physical value for a raw 0..=1_000_000 setting, through
+    /// the translator's law; `None` when `par` is not one of them.
+    fn reverb_value(&self, par: i32, raw: i32) -> Option<(ir::ReverbPar, f32)> {
+        let plan = self.script()?;
+        let x = raw.clamp(0, 1_000_000) as f32 / 1e6;
+        let (which, law) = plan
+            .engine_pars
+            .reverb
+            .iter()
+            .zip(ir::ReverbPar::ALL)
+            .zip(&plan.reverb_laws)
+            .find(|((id, _), _)| **id == par)
+            .map(|((_, which), law)| (which, law))?;
+        Some((which, law.eval(x)))
+    }
+
+    /// `set_engine_par` of a reverb control on the reverb in that slot. The
+    /// rack's reverb follows from the slot on its next block. False when not one of them.
+    fn set_reverb(&mut self, par: i32, value: i32, group: i32, slot: i32, generic: i32) -> bool {
+        let Some((which, value)) = self.reverb_value(par, value) else {
+            return false;
+        };
+        match self.effect_mut(group, slot, generic).map(|e| &mut e.kind) {
+            Some(ir::EffectKind::Reverb(r)) => {
+                which.set(r, value);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// `set_engine_par` of volume, pan or tune; false when not one of them.
     fn set_level(&mut self, par: i32, value: i32, group: i32, generic: i32) -> bool {
         let Some(which) = self.level_par(par) else {
@@ -275,6 +306,7 @@ impl Engine {
     ) -> bool {
         if self.set_level(par, value, group, generic)
             || self.set_effect(par, value, group, slot, generic)
+            || self.set_reverb(par, value, group, slot, generic)
         {
             return true;
         }
