@@ -68,16 +68,19 @@ pub fn pan(percent: f64) -> f32 {
 }
 
 /// `amp_veltrack` is a percentage, default 100: the level follows velocity as
-/// `1 − (1 − v)·track`, which at 100 % is linear in amplitude. 0 is no tracking.
+/// `1 − (1 − v²)·track` (sfizz RegionStateful.cpp `velocityCurve`; negative
+/// tracking reads `1 − v²`). 0 is no tracking.
 pub fn velocity_track(percent: f64) -> Option<ir::Mod> {
     let intensity = (percent / 100.0).clamp(-1.0, 1.0) as f32;
     (intensity != 0.0).then(|| ir::Mod {
         name: "amp_veltrack".into(),
         slot: 0,
+        target: 0,
+        bypass: false,
         kind: ir::ModKind::Volume {
             source: ir::Source::Velocity,
             intensity,
-            curve: ir::Curve::Depth { power: 1 },
+            curve: ir::Curve::Squared,
         },
     })
 }
@@ -134,6 +137,34 @@ pub fn filter(name: &str) -> Option<Filter> {
         "hpf_6p" => Filter::Hpf6p,
         _ => return None,
     })
+}
+
+/// The voice filter for `shape` at `hz` with damping `k`. Poles beyond two
+/// are two-pole stages in series at the same damping; a band-pass is scaled
+/// to unity at its peak.
+// ponytail: 4- and 6-pole shapes repeat the resonance on every stage.
+pub fn voice_filter(shape: Filter, hz: f64, k: f64) -> ir::Filter {
+    let (pass, stages) = match shape {
+        Filter::Lpf1p => (ir::Pass::Low, 0),
+        Filter::Hpf1p => (ir::Pass::High, 0),
+        Filter::Lpf2p => (ir::Pass::Low, 1),
+        Filter::Hpf2p => (ir::Pass::High, 1),
+        Filter::Bpf2p => (ir::Pass::Band, 1),
+        Filter::Brf2p => (ir::Pass::Notch, 1),
+        Filter::Lpf4p => (ir::Pass::Low, 2),
+        Filter::Hpf4p => (ir::Pass::High, 2),
+        Filter::Lpf6p => (ir::Pass::Low, 3),
+        Filter::Hpf6p => (ir::Pass::High, 3),
+    };
+    let k = k as f32;
+    ir::Filter {
+        pass,
+        hz: hz.clamp(1.0, 22_000.0) as f32,
+        stages,
+        damping: [k; 3],
+        gain: if pass == ir::Pass::Band { k } else { 1.0 },
+        octaves: 0.0,
+    }
 }
 
 /// Damping k = 1/Q for `resonance` in dB, with Q = 10^(dB/20) and at least

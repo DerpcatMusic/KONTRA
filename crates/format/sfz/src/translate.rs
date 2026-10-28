@@ -166,7 +166,6 @@ impl Build {
             reverse: raw(ops, &["direction"]) == Some("reverse"),
         };
 
-        self.filter(ops);
         let settings = self.settings(ops);
         let number = self.number(ops, &["group"]).map_or(0, whole);
         let off_by = self.number(ops, &["off_by"]).map(whole);
@@ -206,6 +205,7 @@ impl Build {
                 .unwrap_or_default(),
             one_shot: raw(ops, &["loop_mode", "loopmode"]) == Some("one_shot"),
             start: self.start_rules(ops),
+            inserts: self.filter(ops).into_iter().map(Some).collect(),
             ..ir::Group::DEFAULT
         }
     }
@@ -285,21 +285,19 @@ impl Build {
         }
     }
 
-    /// `fil_type` and `cutoff`/`resonance`. The IR has no per-zone filter yet,
-    /// so the resolved filter is reported, not played.
-    fn filter(&mut self, ops: &Opcodes) {
-        let Some(cutoff) = self.number(ops, &["cutoff"]) else {
-            return;
-        };
+    /// `fil_type` and `cutoff`/`resonance` as a group insert, which runs per voice.
+    fn filter(&mut self, ops: &Opcodes) -> Option<ir::Effect> {
+        let cutoff = self.number(ops, &["cutoff"])?;
         let shape = self
             .read(ops, &["fil_type"], laws::filter)
             .unwrap_or(laws::Filter::Lpf2p);
         let k = laws::damping(self.number(ops, &["resonance"]).unwrap_or(0.0));
-        self.notes.add(
-            ir::Impact::Audible,
-            "filter",
-            format!("{cutoff} Hz {shape:?}, k {k:.2}"),
-        );
+        Some(ir::Effect {
+            kind: ir::EffectKind::Filter(laws::voice_filter(shape, cutoff, k)),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })
     }
 
     /// The index of the group with these settings, made when new.

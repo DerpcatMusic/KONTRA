@@ -156,12 +156,20 @@ fn ampeg_maps_to_the_envelope() {
 }
 
 #[test]
-fn velocity_tracking_defaults_to_linear() {
+fn velocity_tracking_defaults_to_full_on_the_squared_velocity() {
     let dir = scratch("veltrack");
     wav(&dir.join("a.wav"), 10).expect("wav");
     let inst = parse("<region> sample=a.wav seq_length=3 seq_position=2\n", &dir);
     let group = inst.groups.first().expect("group");
     assert_eq!(group.mods.len(), 1, "amp_veltrack defaults to 100");
+    let ir::ModKind::Volume {
+        intensity, curve, ..
+    } = group.mods[0].kind
+    else {
+        panic!("{:?}", group.mods[0].kind);
+    };
+    // sfizz: half velocity plays at a quarter.
+    assert_eq!(curve.gain(intensity, 0.5), 0.25);
     assert_eq!(
         group.start,
         vec![(
@@ -176,24 +184,22 @@ fn velocity_tracking_defaults_to_linear() {
 }
 
 #[test]
-fn cutoff_and_fil_type_are_reported_with_the_resolved_filter() {
+fn cutoff_and_fil_type_become_a_group_filter() {
     let dir = scratch("filter");
     wav(&dir.join("a.wav"), 10).expect("wav");
     let inst = parse(
         "<region> sample=a.wav cutoff=1200 resonance=6 fil_type=hpf_2p\n",
         &dir,
     );
-    let filter = inst
-        .diagnostics
-        .iter()
-        .find(|d| d.feature == "filter")
-        .expect("filter note");
-    assert_eq!(filter.impact, Impact::Audible);
-    assert!(
-        filter.detail.contains("1200 Hz Hpf2p, k 0.50"),
-        "{}",
-        filter.detail
-    );
+    assert!(inst.diagnostics.iter().all(|d| d.feature != "filter"));
+    let Some(Some(effect)) = inst.groups[0].inserts.first() else {
+        panic!("a filter insert");
+    };
+    let ir::EffectKind::Filter(f) = effect.kind else {
+        panic!("{:?}", effect.kind);
+    };
+    assert_eq!((f.pass, f.hz, f.stages), (ir::Pass::High, 1200.0, 1));
+    assert!((f.damping[0] - 0.5).abs() < 0.01, "{:?}", f.damping);
 }
 
 #[test]
