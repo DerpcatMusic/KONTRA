@@ -20,10 +20,11 @@ fn main() -> anyhow::Result<()> {
     } else {
         None
     };
-    for m in dir
+    for (n, m) in dir
         .files
         .iter()
         .filter(|m| m.name.to_ascii_lowercase().ends_with(suffix.as_str()))
+        .enumerate()
     {
         let (offset, size, k) = ufs.locate(m, dir.metadata_key, key)?;
         let mut buf = vec![0; size as usize];
@@ -33,8 +34,14 @@ fn main() -> anyhow::Result<()> {
         if let Some(k) = k {
             crypto::transform_blocks(&mut buf, k, offset);
         }
-        // The whole path: leaf names repeat across folders.
-        let name = m.path.as_deref().unwrap_or(&m.name).replace(['/', '\\'], "_");
+        // The whole path, numbered: leaf names repeat across folders, and
+        // flattened paths can collide.
+        let name = m
+            .path
+            .as_deref()
+            .unwrap_or(&m.name)
+            .replace(['/', '\\'], "_");
+        let name = format!("{n:04}_{name}");
         std::fs::write(std::path::Path::new(out).join(&name), &buf)?;
         println!("{} {}", m.name, buf.len());
     }

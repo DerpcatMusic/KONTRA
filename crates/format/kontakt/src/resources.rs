@@ -16,7 +16,7 @@ const LIMIT: u64 = 32 << 20;
 /// The member table starts at this marker within the first 4 MiB of a `.nicnt`.
 const MARKER: &[u8] = b"/\\ NI FC MTD  /\\";
 /// The library root is at most this far above an instrument.
-const DEPTH: usize = 8;
+pub(crate) const DEPTH: usize = 8;
 
 enum Source {
     Loose(PathBuf),

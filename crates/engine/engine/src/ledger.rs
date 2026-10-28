@@ -7,6 +7,10 @@ use kontra_time::SampleTime;
 use crate::behaviour::RrDraw;
 
 /// A note handle. Stale handles (the note ended) match nothing.
+/// Generations a slot cycles through: 13 bits, so a note's event ID (the
+/// generation above bit 16) never sets the sign or `event::BY_MARKS`.
+const GENERATIONS: u32 = 0x1FFF;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NoteRef {
     index: u32,
@@ -22,7 +26,7 @@ impl NoteRef {
     /// The script-visible event id: positive, unique among live notes, and
     /// stale once the note ends. Ledgers hold at most 65536 notes.
     pub(crate) fn event_id(self) -> i32 {
-        (((self.generation & 0x7FFF) << 16) | (self.index & 0xFFFF)) as i32
+        (((self.generation & GENERATIONS) << 16) | (self.index & 0xFFFF)) as i32
     }
 
     pub(crate) fn from_event_id(id: i32) -> Option<Self> {
@@ -194,7 +198,7 @@ impl Ledger {
             .enumerate()
             .find(|(_, e)| e.note.is_none())?;
         // event_id carries 15 bits and 0 is invalid: stay in 1..=0x7FFF.
-        entry.generation = entry.generation % 0x7FFF + 1;
+        entry.generation = entry.generation % GENERATIONS + 1;
         entry.note = Some(note);
         Some(NoteRef {
             index: index as u32,

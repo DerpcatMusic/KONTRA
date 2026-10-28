@@ -188,6 +188,7 @@ impl Instance {
             self.faults.no_coroutine += 1;
             return None;
         };
+        let index = u16::try_from(i).ok()?;
         co.busy = true;
         co.generation = co.generation.wrapping_add(1);
         co.pc = entry;
@@ -200,7 +201,7 @@ impl Instance {
         co.loop_hash = 0;
         co.hosted = false;
         Some(CoId {
-            index: u16::try_from(i).ok()?,
+            index,
             generation: co.generation,
         })
     }

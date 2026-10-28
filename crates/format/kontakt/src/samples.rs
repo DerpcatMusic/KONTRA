@@ -49,12 +49,14 @@ fn lexical(path: &Path) -> PathBuf {
 
 impl Resolver {
     pub(crate) fn new(instrument: &Path) -> Result<Self, String> {
-        let parent = instrument.parent().unwrap_or(Path::new(".")).to_path_buf();
+        // Absolute, so an empty or `./` parent still contains its candidates.
+        let instrument = &lexical(&std::path::absolute(instrument).map_err(|e| e.to_string())?);
+        let parent = instrument.parent().unwrap_or(Path::new("/")).to_path_buf();
         // As far up as resources.rs looks: an instrument outside any library
         // must not make the home folder the root.
-        let root = instrument
+        let root = parent
             .ancestors()
-            .take(8)
+            .take(crate::resources::DEPTH)
             .find(|p| p.join("Samples").is_dir())
             .unwrap_or(&parent)
             .to_path_buf();
@@ -88,6 +90,14 @@ impl Resolver {
         })
     }
 
+    /// Whether `file`, symlinks followed, is still under the root.
+    fn inside(&self, file: &Path) -> bool {
+        let real = |p: &Path| p.canonicalize().ok();
+        real(file)
+            .zip(real(&self.root))
+            .is_some_and(|(f, r)| f.starts_with(r))
+    }
+
     /// The bytes of the sample the preset names `name`, if the library has it.
     pub(crate) fn resolve(&mut self, name: &str) -> Result<Option<Location>, String> {
         let name = name.replace(['\\', '|'], "/");
@@ -108,10 +118,12 @@ impl Resolver {
                 continue;
             }
             if let Some((archive, member)) = archive_member(&candidate) {
-                if let Some(found) = self.archive_entry(&archive, &member)? {
+                if self.inside(&archive)
+                    && let Some(found) = self.archive_entry(&archive, &member)?
+                {
                     return Ok(Some(found));
                 }
-            } else if candidate.is_file() {
+            } else if candidate.is_file() && self.inside(&candidate) {
                 return Ok(Some(whole(candidate)));
             }
         }
