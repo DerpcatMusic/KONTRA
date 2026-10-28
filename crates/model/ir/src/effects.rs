@@ -118,3 +118,12 @@ pub struct Reverb {
     pub modulation_ms: f32,
     pub modulation_hz: f32,
 }
+
+/// Low and high cut Hz of a response's early and late parts, and where (a
+/// fraction of its length) the late part takes over; `None`: all late.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImpulseCuts {
+    pub early: [f32; 2],
+    pub late: [f32; 2],
+    pub crossover: Option<f32>,
+}
