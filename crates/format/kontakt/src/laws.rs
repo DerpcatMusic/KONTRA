@@ -248,7 +248,30 @@ pub(crate) fn lfo(l: &Lfo, clock: ir::Clock) -> Option<ir::Lfo> {
 }
 
 /// A legacy (types 2..=12) or SV (50..=62) filter; other kinds are not mapped.
+/// Its `q_octaves` is the damping the sharpest stage gains over the knob's
+/// whole travel, `log2(k(0) / k(1))` by this same law, so a resonance route
+/// of depth 1 spans the knob's range.
 pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Filter> {
+    let mut f = filter_at(kind, cutoff, resonance, gain)?;
+    let Some(stage) = usize::from(f.stages).checked_sub(1) else {
+        return Some(f);
+    };
+    let at = |r: f32| {
+        filter_at(kind, cutoff, r, gain)?
+            .damping
+            .get(stage)
+            .copied()
+    };
+    if let (Some(lo), Some(hi)) = (at(0.0), at(1.0)) {
+        let ratio = lo / hi;
+        if ratio.is_finite() {
+            f.q_octaves = ratio.log2().max(0.0);
+        }
+    }
+    Some(f)
+}
+
+fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Filter> {
     use ir::Pass::{Band, High, Low, Notch};
     let (pass, stages) = match kind {
         2 | 30 | 50 => (Low, 0),
@@ -275,6 +298,7 @@ pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Optio
         damping: [2.0; 3],
         gain: 1.0,
         octaves: 0.0,
+        q_octaves: 0.0,
     };
     match kind {
         ..=17 if kind != 16 => legacy(&mut f, u, r),
@@ -292,6 +316,36 @@ pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Optio
         _ => note(&mut f, 100.0 * u + 20.0, 100.0, r),
     }
     Some(f)
+}
+
+/// A legacy EQ band's GAIN parameter is stored in dB, −18..=18 (eq-kontakt.md
+/// §1.1), and the band's peak is twice the stored value. A route of depth 1
+/// spans the parameter's whole range.
+pub(crate) const EQ_GAIN_STORED_DB: f32 = 18.0;
+pub(crate) const EQ_GAIN_LIMIT_DB: f32 = 2.0 * EQ_GAIN_STORED_DB;
+pub(crate) const EQ_GAIN_SPAN_DB: f32 = 2.0 * EQ_GAIN_LIMIT_DB;
+
+/// The band (0..=2) a legacy EQ's `eqGainN` target moves, N in 1..=3.
+/// The route a modulator's `eqGainN` target makes on EQ `insert`.
+pub(crate) fn eq_gain(
+    source: ir::Source,
+    insert: u8,
+    param: &str,
+    intensity: f32,
+) -> Option<ir::ModKind> {
+    eq_band_index(param).map(|band| ir::ModKind::EqGain {
+        source,
+        insert,
+        band,
+        depth_db: intensity * EQ_GAIN_SPAN_DB,
+        limit_db: EQ_GAIN_LIMIT_DB,
+        span_db: EQ_GAIN_SPAN_DB,
+    })
+}
+
+pub(crate) fn eq_band_index(param: &str) -> Option<u8> {
+    let n: u8 = param.strip_prefix("eqGain")?.parse().ok()?;
+    (1..=3).contains(&n).then(|| n - 1)
 }
 
 /// A cutoff at MIDI note `n` that a knob moves `per_unit` notes; the last
@@ -564,6 +618,28 @@ mod tests {
         assert!((hz(52, 0.0) - 25.96).abs() < 0.01);
         assert!((hz(33, 0.0) - 25.96).abs() < 0.01);
         assert!((hz(103, 0.0) - 8.176).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_resonance_span_is_the_damping_the_knob_moves_by() {
+        // SV LP2 (52): k = 2(1 − R), R = 1 − (1 − r)³, clamped at 0.01 by the
+        // law: the knob's travel is log2(2 / 0.01) octaves of Q.
+        let f = filter(52, 0.5, 0.0, 0.0).unwrap();
+        assert!(
+            (f.q_octaves - 200f32.log2()).abs() < 0.01,
+            "{}",
+            f.q_octaves
+        );
+        // Legacy LP1 has no stage to resonate.
+        assert_eq!(filter(2, 0.5, 0.0, 0.0).map(|f| f.q_octaves), Some(0.0));
+    }
+
+    #[test]
+    fn the_legacy_eq_band_params_map_to_their_band() {
+        assert_eq!(eq_band_index("eqGain1"), Some(0));
+        assert_eq!(eq_band_index("eqGain3"), Some(2));
+        assert_eq!(eq_band_index("eqGain4"), None);
+        assert_eq!(eq_band_index("filterQ"), None);
     }
 
     #[test]

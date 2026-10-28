@@ -167,6 +167,7 @@ pub fn voice_filter(shape: Filter, hz: f64, k: f64) -> ir::Filter {
         damping: [k; 3],
         gain: if pass == ir::Pass::Band { k } else { 1.0 },
         octaves: 0.0,
+        q_octaves: 0.0,
     }
 }
 

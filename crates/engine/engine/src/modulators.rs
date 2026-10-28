@@ -59,12 +59,11 @@ impl Engine {
             let age = self.age(slot.started, slot.released_at);
             let gain = self.voice_gain(zone, &n, slot.factor, age);
             let step = self.step(zone, &n, age);
-            let cutoff = self.cutoff(zone, &n, age).map(|(_, hz)| hz);
+            let tuned = self.voice_filter(zone, &n, age).map(|(_, hz, k)| (hz, k));
+            let bells = self.voice_bells(zone, &n, age);
             let rate = self.rate;
             if let Some(slot) = self.voices.get_mut(i) {
-                if let (Some(f), Some(hz)) = (slot.filter.as_mut(), cutoff) {
-                    f.set_cutoff(hz, rate);
-                }
+                crate::filters::retune(slot, tuned, bells, rate);
                 slot.voice.set_gain(gain);
                 slot.voice.set_step(step);
             }
