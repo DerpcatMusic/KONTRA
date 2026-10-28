@@ -301,7 +301,12 @@ fn slot_effect(
             .zip(kind_id)
             .map(|(v, kind)| ir::EffectKind::Reverb(crate::laws::reverb(kind, v))),
         0x10..=0x12 | 0x14 => crate::delays::legacy(effect.id, object.version, &public),
-        0x15 => crate::legacy_reverb::effect(object.version, &public),
+        0x15 => {
+            if let Some(saved) = crate::legacy_reverb::saved(object.version, &public) {
+                *knobs = crate::script_knobs::legacy_reverb_knobs(saved);
+            }
+            crate::legacy_reverb::effect(object.version, &public)
+        }
         id => crate::drive::effect(id, object.version, &public, at, notes),
     };
     // The legacy delay, chorus and flanger, the Gainer and Convolution mix

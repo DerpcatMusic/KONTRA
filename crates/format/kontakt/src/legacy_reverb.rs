@@ -27,6 +27,12 @@ const FDN_DIFFUSION: f32 = 0.7;
 
 /// The record's reverb, `None` when a field is missing.
 pub(crate) fn effect(version: u16, public: &[u8]) -> Option<ir::EffectKind> {
+    let (predelay_ms, knobs) = saved(version, public)?;
+    Some(ir::EffectKind::Reverb(reverb(predelay_ms, knobs)))
+}
+
+/// The saved predelay ms and size, colour, stereo, damping knobs.
+pub(crate) fn saved(version: u16, public: &[u8]) -> Option<(f32, [f32; 4])> {
     if version != 0x50 {
         return None;
     }
@@ -34,10 +40,7 @@ pub(crate) fn effect(version: u16, public: &[u8]) -> Option<ir::EffectKind> {
         let bytes = public.get(4 * n..4 * n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
     };
-    Some(ir::EffectKind::Reverb(reverb(
-        f(0)?,
-        [f(1)?, f(2)?, f(3)?, f(4)?],
-    )))
+    Some((f(0)?, [f(1)?, f(2)?, f(3)?, f(4)?]))
 }
 
 /// The native network's wet level over the fdn's at the same laws: input
@@ -50,7 +53,7 @@ pub(crate) const WET: f32 = 0.062;
 
 // ponytail: the native lines hold 0x1fff frames, so it drops a predelay past
 // 170 ms at 48 kHz to none; kept as set.
-fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
+pub(crate) fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
     let [size, colour, stereo, damping] = knobs.map(|x| x.clamp(0.0, 1.0));
     let feedback = 0.3 * size + 0.65;
     let x = 0.75 * (1.0 - damping) + 0.25;

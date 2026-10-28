@@ -75,6 +75,43 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
             lin(0.0, 1.0),
         ),
         (
+            "$ENGINE_PAR_RV_PREDELAY",
+            Slot(ir::SlotKnob::ReverbPredelay),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_RV_SIZE",
+            Slot(ir::SlotKnob::ReverbSize),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_RV_COLOUR",
+            Slot(ir::SlotKnob::ReverbColour),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_RV_STEREO",
+            Slot(ir::SlotKnob::ReverbStereo),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_RV_DAMPING",
+            Slot(ir::SlotKnob::ReverbDamping),
+            lin(0.0, 1.0),
+        ),
+        // The Limiter: input −24 + 48x dB, release its saved-ms law
+        // (probes/fx_knob_laws.lua).
+        (
+            "$ENGINE_PAR_LIM_IN_GAIN",
+            Effect(E::LimiterInput),
+            lin(-24.0, 24.0),
+        ),
+        (
+            "$ENGINE_PAR_LIM_RELEASE",
+            Effect(E::LimiterRelease),
+            ir::Law::Breakpoints(LIMITER_RELEASE_MS.into()),
+        ),
+        (
             "$ENGINE_PAR_COMP_ATTACK",
             Slot(ir::SlotKnob::Attack),
             lin(0.0, 1.0),
@@ -267,6 +304,47 @@ pub(crate) fn eq_knobs(saved: &[[f32; 3]]) -> Vec<SlotKnob> {
     out
 }
 
+/// Saved ms for a knob `x`, `lo + (hi − lo)·(e^(kx) − 1)/(e^k − 1)`, fitted
+/// to Kontakt's saves at x = 0, .1, .25, .5, .75, .9, 1 (probes/fx_knob_laws.lua):
+/// the legacy Reverb's predelay 0..180 ms and the Limiter's release
+/// 10..1000 ms, both within 0.01%.
+const REVERB_PREDELAY_MS: [(f32, f32, f32); 2] = [(0.0, 0.0, 4.511), (1.0, 180.0, 0.0)];
+const LIMITER_RELEASE_MS: [(f32, f32, f32); 2] = [(0.0, 10.0, 4.425), (1.0, 1000.0, 0.0)];
+
+/// The legacy Reverb's knobs through [`crate::legacy_reverb::reverb`]: the
+/// predelay knob through its saved-ms law, the others saved as set.
+pub(crate) fn legacy_reverb_knobs((predelay_ms, saved): (f32, [f32; 4])) -> Vec<SlotKnob> {
+    use ir::EffectParam as E;
+    use ir::SlotKnob as K;
+    let build = |p, k: [f32; 4]| Some(ir::EffectKind::Reverb(crate::legacy_reverb::reverb(p, k)));
+    let predelay = ir::Law::Breakpoints(REVERB_PREDELAY_MS.into());
+    let mut out = sampled(K::ReverbPredelay, &[E::ReverbPredelay], &|x| {
+        build(predelay.eval(x), saved)
+    });
+    let fields = [
+        E::ReverbSeconds,
+        E::ReverbDamping,
+        E::ReverbStereo,
+        E::ReverbHighCut,
+    ];
+    for (n, knob) in [
+        K::ReverbSize,
+        K::ReverbColour,
+        K::ReverbStereo,
+        K::ReverbDamping,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        out.extend(sampled(knob, &fields, &|x| {
+            let mut k = saved;
+            *k.get_mut(n)? = x;
+            build(predelay_ms, k)
+        }));
+    }
+    out
+}
+
 /// Each of `fields` that moves in the effect `build` makes for a knob at 65
 /// settings, as a table.
 fn sampled(
@@ -363,6 +441,30 @@ mod tests {
             let want = crate::laws::eq_band(1000.0, 1.0, db).unwrap().gain_db;
             let got = law(ir::SlotKnob::BandGain(0)).eval(x);
             assert!((got - want).abs() < 0.05, "{x}: {got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn the_reverb_and_limiter_knobs_land_on_the_saves_kontakt_writes() {
+        let knobs = legacy_reverb_knobs((10.0, [0.5; 4]));
+        let law = |knob| &knobs.iter().find(|(k, _, _)| *k == knob).unwrap().2;
+        // (x, saved predelay ms), probes/fx_knob_laws.lua.
+        for (x, ms) in [(0.1, 1.140_032_3), (0.5, 17.078_783), (0.9, 113.922_356)] {
+            let got = law(ir::SlotKnob::ReverbPredelay).eval(x);
+            assert!((got / ms - 1.0).abs() < 3e-3, "{x}: {got} vs {ms}");
+        }
+        let size = crate::legacy_reverb::reverb(10.0, [0.25, 0.5, 0.5, 0.5]).seconds;
+        assert!((law(ir::SlotKnob::ReverbSize).eval(0.25) / size - 1.0).abs() < 1e-3);
+        let rows = script_knobs();
+        let row = |name| &rows.iter().find(|(n, _, _)| *n == name).unwrap().2;
+        for (x, db, ms) in [
+            (0.1, -19.2, 16.678_839),
+            (0.5, 0.0, 107.654_01),
+            (0.9, 19.2, 641.722_96),
+        ] {
+            assert!((row("$ENGINE_PAR_LIM_IN_GAIN").eval(x) - db).abs() < 1e-3);
+            let got = row("$ENGINE_PAR_LIM_RELEASE").eval(x);
+            assert!((got / ms - 1.0).abs() < 1e-3, "{x}: {got} vs {ms}");
         }
     }
 }

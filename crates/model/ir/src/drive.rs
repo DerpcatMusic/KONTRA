@@ -90,6 +90,15 @@ pub enum EffectParam {
     BellHz(u8),
     BellQ(u8),
     BellGain(u8),
+    /// A [`crate::Reverb`]'s tail, damping, stereo, high cut and predelay.
+    ReverbSeconds,
+    ReverbDamping,
+    ReverbStereo,
+    ReverbHighCut,
+    ReverbPredelay,
+    /// A [`crate::Limiter`]'s input gain dB and release ms.
+    LimiterInput,
+    LimiterRelease,
     /// A [`crate::Filter`]'s cutoff Hz.
     FilterHz,
     /// One of a [`crate::Filter`]'s stage dampings, by stage.
@@ -129,6 +138,13 @@ impl EffectParam {
             (Self::BellHz(n), EffectKind::Eq(b)) => &mut b.get_mut(usize::from(n))?.hz,
             (Self::BellQ(n), EffectKind::Eq(b)) => &mut b.get_mut(usize::from(n))?.q,
             (Self::BellGain(n), EffectKind::Eq(b)) => &mut b.get_mut(usize::from(n))?.gain_db,
+            (Self::ReverbSeconds, EffectKind::Reverb(r)) => &mut r.seconds,
+            (Self::ReverbDamping, EffectKind::Reverb(r)) => &mut r.damping,
+            (Self::ReverbStereo, EffectKind::Reverb(r)) => &mut r.stereo,
+            (Self::ReverbHighCut, EffectKind::Reverb(r)) => &mut r.high_cut_hz,
+            (Self::ReverbPredelay, EffectKind::Reverb(r)) => &mut r.predelay_ms,
+            (Self::LimiterInput, EffectKind::Limiter(l)) => &mut l.input_db,
+            (Self::LimiterRelease, EffectKind::Limiter(l)) => &mut l.release_ms,
             (Self::FilterHz, EffectKind::Filter(f)) => &mut f.hz,
             (Self::FilterDamping(n), EffectKind::Filter(f)) => f.damping.get_mut(usize::from(n))?,
             (Self::FilterGain, EffectKind::Filter(f)) => &mut f.gain,
@@ -179,6 +195,12 @@ pub enum SlotKnob {
     Resonance,
     Attack,
     Release,
+    /// A reverb's knobs.
+    ReverbPredelay,
+    ReverbSize,
+    ReverbColour,
+    ReverbStereo,
+    ReverbDamping,
     /// An EQ band's frequency, bandwidth and gain knobs, by band.
     BandHz(u8),
     BandWidth(u8),
