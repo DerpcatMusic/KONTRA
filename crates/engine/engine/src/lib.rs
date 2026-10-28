@@ -495,6 +495,12 @@ impl Engine {
                     .saturating_add_signed(frames)
                     .min(region.end);
             }
+            if let [start, length] = self.loop_shift(zone, &n)
+                && (start != 0.0 || length != 0.0)
+                && !region.reverse
+            {
+                region.shift_loops(start, length);
+            }
             let start = VoiceStart {
                 region,
                 step: self.step(zone, &n, self.age(self.now, None)),

@@ -539,7 +539,7 @@ fn signed(kind: &ir::ModKind) -> Option<f32> {
             depth_db, span_db, ..
         } => Some(depth_db / span_db),
         ir::ModKind::EffectParam { depth, span, .. } => Some(depth / span),
-        ir::ModKind::LfoPhase { depth, .. } => Some(depth),
+        ir::ModKind::LfoPhase { depth, .. } | ir::ModKind::LoopShift { depth, .. } => Some(depth),
         ref other => depth(&mut other.clone()).map(|d| *d),
     }
 }
@@ -562,6 +562,12 @@ fn set_signed(kind: &mut ir::ModKind, d: f32) -> bool {
         *depth = d;
         return true;
     }
+    // Signed; scripts set it bipolar and cubed (v1 audits/MODULATION.md:
+    // ANALOG's 751086 lands on the native 0.1266360730).
+    if let ir::ModKind::LoopShift { depth, .. } = kind {
+        *depth = d;
+        return true;
+    }
     depth(kind).map(|v| *v = d).is_some()
 }
 
@@ -578,7 +584,8 @@ fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
         ir::ModKind::Envelope
         | ir::ModKind::EqGain { .. }
         | ir::ModKind::EffectParam { .. }
-        | ir::ModKind::LfoPhase { .. } => None,
+        | ir::ModKind::LfoPhase { .. }
+        | ir::ModKind::LoopShift { .. } => None,
     }
 }
 
@@ -618,6 +625,21 @@ mod tests {
         assert_eq!(signed(&kind), Some(-1.0));
         assert!(set_signed(&mut kind, 0.5));
         assert!(matches!(kind, ir::ModKind::LfoPhase { depth, .. } if depth == 0.5));
+    }
+
+    #[test]
+    fn a_loop_route_depth_is_signed() {
+        let mut kind = ir::ModKind::LoopShift {
+            source: ir::Source::Constant,
+            length: false,
+            depth: 0.0,
+        };
+        // ANALOG STRINGS writes 751086; Kontakt holds 0.1266360730 (v1 audit).
+        assert!(set_signed(&mut kind, (2.0f32 * 0.751_086 - 1.0).powi(3)));
+        let ir::ModKind::LoopShift { depth, .. } = kind else {
+            panic!("a loop route");
+        };
+        assert!((depth - 0.126_636_07).abs() < 1e-6, "{depth}");
     }
 
     #[test]
