@@ -377,6 +377,58 @@ fn route_intensities_follow_kontakts_laws() {
 }
 
 #[test]
+fn a_script_sets_the_stages_of_a_routed_ahdsr() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let point = |ms, level| ir::Breakpoint {
+        ms,
+        level,
+        curve: 0.0,
+    };
+    let g = &mut plan.groups[0];
+    g.envelopes = vec![ir::Breakpoints {
+        start: 0.0,
+        points: vec![
+            point(500.0, 1.0),
+            point(0.0, 1.0),
+            point(500.0, 1.0),
+            point(10.0, 0.0),
+        ],
+        sustain: Some(2),
+        loop_from: None,
+    }];
+    g.mods = vec![ir::Mod {
+        name: "ENV_AHDSR".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Volume {
+            source: ir::Source::Envelope(0),
+            intensity: 1.0,
+            curve: ir::Curve::Depth { power: 1 },
+        },
+    }];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_ATTACK, 0, 0, 0, -1)
+            set_engine_par($ENGINE_PAR_DECAY, 0, 0, 0, -1)
+            set_engine_par($ENGINE_PAR_SUSTAIN, 500000, 0, 0, -1)
+            set_engine_par($ENGINE_PAR_RELEASE, 250000, 0, 0, -1)
+            message(get_engine_par($ENGINE_PAR_SUSTAIN, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_RELEASE, 0, 0, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "500000 250000");
+    // No attack or decay: the note sits at the sustain level, 0.5³.
+    let l = level(&mut e, &[on(60)]);
+    assert!((l - 0.5 * 0.125).abs() < 1e-3, "{l}");
+}
+
+#[test]
 fn a_script_sends_a_note_its_modulation_value() {
     use kontra_engine::ir;
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();

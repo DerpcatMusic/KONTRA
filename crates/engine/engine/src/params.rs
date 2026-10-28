@@ -4,7 +4,7 @@
 
 use kontra_ir as ir;
 
-use crate::plan::addressed;
+use crate::plan::{Group, addressed, source};
 use crate::{Engine, EnginePar, Level};
 
 /// Effect gains are cubic, unity at this value, so 1_000_000 is +24 dB (v2 sampler-core,
@@ -312,6 +312,15 @@ impl Engine {
         let g = usize::try_from(group)
             .ok()
             .and_then(|g| self.groups.get(g))?;
+        if let (Some((i, top)), Some(n)) = (stage_point(par), ahdsr_points(g, slot)) {
+            let p = g.envelopes.get(n)?.points.get(i)?;
+            let x = match par {
+                EnginePar::Sustain => f64::from(p.level).cbrt(),
+                EnginePar::AttackCurve => attack_x(p.curve),
+                _ => stage_x(top, f64::from(p.ms)),
+            };
+            return Some((x * 1e6).round() as i32);
+        }
         let ms = |frames: u32| f64::from(frames) * 1000.0 / f64::from(self.rate);
         let e = &g.envelope;
         let route = || g.mods.iter().find(|m| addressed(m, slot, generic));
@@ -328,7 +337,7 @@ impl Engine {
             EnginePar::Hold => stage_x(15_000.0, ms(e.hold)),
             EnginePar::Decay => stage_x(25_000.0, ms(e.decay)),
             EnginePar::Release => stage_x(25_000.0, ms(e.release)),
-            EnginePar::Sustain => f64::from(e.sustain),
+            EnginePar::Sustain => f64::from(e.sustain).cbrt(),
             EnginePar::AttackCurve => attack_x(e.attack_shape),
             _ => return None,
         };
@@ -430,20 +439,33 @@ impl Engine {
         }
     }
 
-    /// Sets a stage of the group's amplitude envelope (modulator `slot`).
+    /// Sets a stage of the envelope at modulator `slot`: the group's
+    /// amplitude envelope, or breakpoints with an AHDSR's shape. Script
+    /// values are knobs: times through the stage law, sustain level x³
+    /// (docs/re/engine/k-mod-envelopes.md, reader 0x140cffb40).
     fn set_envelope(&mut self, par: EnginePar, x: f64, group: i32, slot: i32) -> bool {
         let rate = self.rate;
         let Some(g) = usize::try_from(group)
             .ok()
             .and_then(|g| self.groups.get_mut(g))
-            .filter(|g| {
-                g.mods
-                    .iter()
-                    .any(|m| i32::from(m.slot) == slot && m.kind == ir::ModKind::Envelope)
-            })
         else {
             return false;
         };
+        if let (Some((i, top)), Some(n)) = (stage_point(par), ahdsr_points(g, slot)) {
+            let Some(p) = g.envelopes.get_mut(n).and_then(|e| e.points.get_mut(i)) else {
+                return false;
+            };
+            match par {
+                EnginePar::Sustain => p.level = x.powi(3) as f32,
+                EnginePar::AttackCurve => p.curve = attack_shape(x),
+                _ => p.ms = stage_ms(top, x) as f32,
+            }
+            return true;
+        }
+        let amplitude = |m: &ir::Mod| i32::from(m.slot) == slot && m.kind == ir::ModKind::Envelope;
+        if !g.mods.iter().any(amplitude) {
+            return false;
+        }
         let frames = |ms: f64| (ms * f64::from(rate) / 1000.0).round() as u32;
         let e = &mut g.envelope;
         match par {
@@ -451,7 +473,7 @@ impl Engine {
             EnginePar::Hold => e.hold = frames(stage_ms(15_000.0, x)),
             EnginePar::Decay => e.decay = frames(stage_ms(25_000.0, x)),
             EnginePar::Release => e.release = frames(stage_ms(25_000.0, x)),
-            EnginePar::Sustain => e.sustain = x as f32,
+            EnginePar::Sustain => e.sustain = x.powi(3) as f32,
             EnginePar::AttackCurve => e.attack_shape = attack_shape(x),
             _ => return false,
         }
@@ -487,6 +509,29 @@ impl Engine {
 }
 
 /// A route's signed depth; an EQ gain route's is its gain over its span.
+/// The point of an AHDSR's breakpoints a stage parameter sets, and the top
+/// of its time law in ms.
+fn stage_point(par: EnginePar) -> Option<(usize, f64)> {
+    Some(match par {
+        EnginePar::Attack | EnginePar::AttackCurve => (0, 15_000.0),
+        EnginePar::Hold => (1, 15_000.0),
+        EnginePar::Decay | EnginePar::Sustain => (2, 25_000.0),
+        EnginePar::Release => (3, 25_000.0),
+        _ => return None,
+    })
+}
+
+/// The breakpoints modulator `slot` of `g` routes from, when they have an
+/// AHDSR's shape: attack, hold, decay to the sustain point, release.
+fn ahdsr_points(g: &Group, slot: i32) -> Option<usize> {
+    let n = g.mods.iter().find_map(|m| match source(&m.kind) {
+        Some(ir::Source::Envelope(n)) if i32::from(m.slot) == slot => Some(usize::from(n)),
+        _ => None,
+    })?;
+    let e = g.envelopes.get(n)?;
+    (e.points.len() == 4 && e.sustain == Some(2)).then_some(n)
+}
+
 fn signed(kind: &ir::ModKind) -> Option<f32> {
     match *kind {
         ir::ModKind::EqGain {
