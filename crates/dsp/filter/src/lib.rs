@@ -7,10 +7,12 @@
 //! filter's energy). One shape, two runners: they agree to 1e-5 at a fixed cutoff.
 
 mod formant;
+mod ladder;
 
 pub use formant::{Formant, VowelSet, Vowels};
 pub use kontra_dsp_core::Biquad;
 use kontra_dsp_core::flush;
+pub use ladder::Ladder;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pass {
@@ -20,16 +22,17 @@ pub enum Pass {
     Notch,
 }
 
-/// `stages` two-pole stages in series at `hz`, each with its damping `k`
-/// (`1/Q`), after a one-pole when `pole` is set or there are none (an odd
-/// order), then `gain`. A band stage passes `s/(s² + ks + 1)`, the raw band
-/// tap: its peak is `1/k`.
+/// `stages` two-pole stages in series (none: one pole) at `hz`, each with
+/// its damping `k` (`1/Q`), then `gain`. A band stage passes `s/(s² + ks + 1)`,
+/// the raw band tap: its peak is `1/k`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shape {
     pub pass: Pass,
     pub hz: f32,
     pub stages: u8,
-    pub pole: bool,
+    /// A [`Ladder`] tap selector 1..=12 instead of the stages; runs only in
+    /// [`Svf`] (it is not a set of biquads).
+    pub ladder: Option<u8>,
     pub damping: [f32; 3],
     pub gain: f32,
 }
@@ -40,22 +43,21 @@ pub fn sections(shape: &Shape, rate: u32) -> Vec<Biquad> {
     let rate = f64::from(rate.max(1));
     let hz = f64::from(shape.hz).max(1.0).min(0.49 * rate);
     let g = (std::f64::consts::PI * hz / rate).tan();
-    let mut out: Vec<Biquad> = Vec::new();
-    if shape.stages == 0 || shape.pole {
+    let mut out: Vec<Biquad> = if shape.stages == 0 {
         // 1/(s + 1) or s/(s + 1).
         let num = match shape.pass {
             Pass::High => [1.0, -1.0],
             _ => [g, g],
         };
-        out.push(Biquad::new([num[0], num[1], 0.0, 1.0 + g, g - 1.0, 0.0]));
-    }
-    out.extend(
+        vec![Biquad::new([num[0], num[1], 0.0, 1.0 + g, g - 1.0, 0.0])]
+    } else {
         shape
             .damping
             .iter()
             .take(usize::from(shape.stages))
-            .map(|&k| stage(shape.pass, f64::from(k), g)),
-    );
+            .map(|&k| stage(shape.pass, f64::from(k), g))
+            .collect()
+    };
     if let Some(first) = out.first_mut() {
         first.scale(f64::from(shape.gain));
     }
@@ -91,8 +93,8 @@ pub struct Svf {
     g: f64,
     /// Per stage and channel, the two integrator states.
     state: [[[f64; 2]; 2]; 3],
-    /// Per channel, the one-pole's state.
-    pole: [f64; 2],
+    rate: f64,
+    ladder: Option<Ladder>,
 }
 
 impl Svf {
@@ -103,7 +105,8 @@ impl Svf {
             hz: 0.0,
             g: 0.0,
             state: [[[0.0; 2]; 2]; 3],
-            pole: [0.0; 2],
+            rate: 1.0,
+            ladder: shape.ladder.map(Ladder::new),
         }
     }
 
@@ -112,11 +115,19 @@ impl Svf {
         let rate = f64::from(rate.max(1));
         let hz = f64::from(hz).max(1.0).min(0.49 * rate);
         self.hz = hz as f32;
+        self.rate = rate;
         self.g = (std::f64::consts::PI * hz / rate).tan();
     }
 
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let (g, gain) = (self.g, f64::from(self.shape.gain));
+        if let Some(ladder) = &mut self.ladder {
+            let last = usize::from(self.shape.stages.clamp(1, 3) - 1);
+            let k = self.shape.damping.get(last).copied().unwrap_or(2.0);
+            ladder.tune(f64::from(self.hz), self.rate, 1.0 - f64::from(k) / 2.0);
+            ladder.process(io, gain);
+            return;
+        }
         let stages = usize::from(self.shape.stages);
         // Per stage: k, then the TPT gains a1, a2, a3.
         let coefficients = self.shape.damping.map(|k| {
@@ -127,8 +138,8 @@ impl Svf {
         for frame in io {
             for (c, x) in frame.iter_mut().enumerate() {
                 let mut v = f64::from(*x);
-                if (stages == 0 || self.shape.pole)
-                    && let Some(s) = self.pole.get_mut(c)
+                if stages == 0
+                    && let Some([s, _]) = self.state.first_mut().and_then(|st| st.get_mut(c))
                 {
                     let low = (v - *s) * g / (1.0 + g) + *s;
                     *s = 2.0 * low - *s;
@@ -160,7 +171,6 @@ impl Svf {
             }
         }
         flush(self.state.as_flattened_mut().as_flattened_mut());
-        flush(&mut self.pole);
     }
 
     /// Moves the stages' damping `k` (`1/Q`) without touching the state.
@@ -174,9 +184,22 @@ impl Svf {
         self.hz
     }
 
+    #[must_use]
+    pub fn is_silent(&self) -> bool {
+        self.ladder.as_ref().is_none_or(Ladder::is_silent)
+            && self
+                .state
+                .iter()
+                .flatten()
+                .flatten()
+                .all(|s| s.abs() < 1e-10)
+    }
+
     pub fn reset(&mut self) {
         self.state = [[[0.0; 2]; 2]; 3];
-        self.pole = [0.0; 2];
+        if let Some(ladder) = &mut self.ladder {
+            ladder.reset();
+        }
     }
 }
 
@@ -206,7 +229,7 @@ mod tests {
             pass,
             hz: 1000.0,
             stages,
-            pole: false,
+            ladder: None,
             damping: [k; 3],
             gain: 1.0,
         }
@@ -223,31 +246,19 @@ mod tests {
             assert!((two + 24.1).abs() < 1.0, "{pass:?} {two}");
         }
         assert!(gain_db(&shape(Pass::Low, 1), 100.0).abs() < 0.05);
-        // A one-pole ahead of a stage: three poles, about 36 dB down two octaves out.
-        let three = gain_db(
-            &Shape {
-                pole: true,
-                ..shape(Pass::Low, 1)
-            },
-            4000.0,
-        );
-        assert!((three + 36.4).abs() < 1.5, "{three}");
     }
 
     #[test]
     fn the_running_filter_matches_its_sections() {
-        for (pass, stages, pole) in [
-            (Pass::Low, 0, false),
-            (Pass::High, 0, false),
-            (Pass::Low, 1, true),
-            (Pass::High, 1, true),
-            (Pass::Band, 2, false),
-            (Pass::Notch, 3, false),
+        for (pass, stages) in [
+            (Pass::Low, 0),
+            (Pass::High, 0),
+            (Pass::Band, 2),
+            (Pass::Notch, 3),
         ] {
             let shape = Shape {
                 damping: [0.7, 1.2, 0.3],
                 gain: 0.8,
-                pole,
                 ..shape(pass, stages)
             };
             let impulse = |n: usize| if n == 0 { [1.0, -0.5] } else { [0.0; 2] };
