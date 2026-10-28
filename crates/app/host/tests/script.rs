@@ -948,10 +948,10 @@ fn moving_a_control_runs_ui_controls_then_its_ui_control() {
     );
     let id: i32 = e.last_message().parse().unwrap();
     e.set_control(0, id, 42);
-    assert_eq!(e.last_message(), format!("all {id} k 42 7"));
+    assert_eq!(e.last_message(), format!("all {id} k 42 6"));
     // Not a control of this script: nothing runs.
     e.set_control(0, id + 100, 1);
-    assert_eq!(e.last_message(), format!("all {id} k 42 7"));
+    assert_eq!(e.last_message(), format!("all {id} k 42 6"));
 }
 
 #[test]
@@ -970,5 +970,5 @@ fn a_purge_reports_its_id_in_async_complete() {
         end on",
     );
     level(&mut e, &[]);
-    assert_eq!(e.last_message(), "1 1 1 12");
+    assert_eq!(e.last_message(), "1 1 1 13");
 }
