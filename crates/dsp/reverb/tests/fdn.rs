@@ -119,3 +119,23 @@ fn a_sweep_of_the_decay_time_keeps_the_wet_level() {
     let (a, b) = (db(&a), db(&b));
     assert!((a - b).abs() < 1.0, "steady {a} dB, swept {b} dB");
 }
+
+#[test]
+fn a_live_low_shelf_change_glides_without_a_step() {
+    let mut same = Fdn::new(settings(2.0), RATE);
+    let mut moved = Fdn::new(settings(2.0), RATE);
+    run(&mut same, RATE as usize / 2, Some(0));
+    run(&mut moved, RATE as usize / 2, Some(0));
+    let mut louder = settings(2.0);
+    louder.low_shelf_db = 12.0;
+    moved.set(louder);
+    let (a, b) = (run(&mut same, 4800, None), run(&mut moved, 4800, None));
+    let diff: Vec<f32> = a.iter().zip(&b).map(|(x, y)| (x[0] - y[0]).abs()).collect();
+    let settled = diff[2400..].iter().fold(0.0f32, |m, &d| m.max(d));
+    // The first sample after the change moves by a sliver of the full step.
+    assert!(
+        diff[0] < 0.05 * settled,
+        "{} at once, {settled} settled",
+        diff[0]
+    );
+}

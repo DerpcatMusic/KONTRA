@@ -107,6 +107,17 @@ pub struct Fdn {
     /// Output filter states, per channel: high cut, shelf.
     out: [[f32; 2]; 2],
     stereo: f32,
+    /// Where the line gains, shelf gain and width glide to: a change that
+    /// keeps the line lengths moves them over about one fade, not at once.
+    to: Glide,
+    ease: f32,
+}
+
+#[derive(Clone, Copy)]
+struct Glide {
+    gains: [f32; 8],
+    shelf_gain: f32,
+    stereo: f32,
 }
 
 impl Fdn {
@@ -139,8 +150,15 @@ impl Fdn {
             shelf_gain: 0.0,
             out: [[0.0; 2]; 2],
             stereo: 0.0,
+            to: Glide {
+                gains: [0.0; 8],
+                shelf_gain: 0.0,
+                stereo: 0.0,
+            },
+            ease: 1.0 - (-1.0 / (FADE_S * rate)).exp(),
         };
         fdn.apply(s);
+        (fdn.gains, fdn.shelf_gain, fdn.stereo) = (fdn.to.gains, fdn.to.shelf_gain, fdn.to.stereo);
         fdn
     }
 
@@ -172,7 +190,7 @@ impl Fdn {
         let rate = self.rate;
         let size = s.size.clamp(0.25, MAX_SIZE);
         let seconds = s.seconds.max(0.05);
-        for ((line, &ms), g) in self.lines.iter_mut().zip(&LINES_MS).zip(&mut self.gains) {
+        for ((line, &ms), g) in self.lines.iter_mut().zip(&LINES_MS).zip(&mut self.to.gains) {
             let len = samples(ms * size, rate);
             line.set_len(len);
             *g = 10f32.powf(-3.0 * len as f32 / (seconds * rate));
@@ -183,8 +201,8 @@ impl Fdn {
         self.damp = 0.85 * s.damping.clamp(0.0, 1.0);
         self.high_cut = pole(s.high_cut_hz, rate);
         self.shelf = pole(SHELF_HZ, rate);
-        self.shelf_gain = 10f32.powf(s.low_shelf_db / 20.0) - 1.0;
-        self.stereo = s.stereo.clamp(0.0, 1.0);
+        self.to.shelf_gain = 10f32.powf(s.low_shelf_db / 20.0) - 1.0;
+        self.to.stereo = s.stereo.clamp(0.0, 1.0);
     }
 
     /// This frame's wet gain. At the bottom of a fade-out the pending settings
@@ -211,6 +229,12 @@ impl Fdn {
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         for frame in io {
             let wet = self.duck();
+            let k = self.ease;
+            for (g, to) in self.gains.iter_mut().zip(self.to.gains) {
+                *g += (to - *g) * k;
+            }
+            self.shelf_gain += (self.to.shelf_gain - self.shelf_gain) * k;
+            self.stereo += (self.to.stereo - self.stereo) * k;
             let [l, r] = *frame;
             let mut x = self.predelay.read();
             self.predelay.write(0.5 * (l + r));
