@@ -100,3 +100,22 @@ fn a_changed_decay_time_changes_the_tail() {
     let long = window(&run(&mut fdn, 2 * RATE as usize, Some(0)));
     assert!(long > short + 20.0, "short {short} dB, long {long} dB");
 }
+
+#[test]
+fn a_sweep_of_the_decay_time_keeps_the_wet_level() {
+    const RATE: u32 = 8_000;
+    let block = RATE as usize / 400;
+    let mut steady = Fdn::new(settings(2.0), RATE);
+    let mut swept = Fdn::new(settings(2.0), RATE);
+    run(&mut steady, RATE as usize / 2, Some(0));
+    run(&mut swept, RATE as usize / 2, Some(0));
+    // A new decay time every 2.5 ms block for a quarter second.
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    for i in 0..100 {
+        a.extend(run(&mut steady, block, None));
+        swept.set(settings(2.0 + i as f32 * 0.002));
+        b.extend(run(&mut swept, block, None));
+    }
+    let (a, b) = (db(&a), db(&b));
+    assert!((a - b).abs() < 1.0, "steady {a} dB, swept {b} dB");
+}

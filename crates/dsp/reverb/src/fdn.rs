@@ -144,16 +144,23 @@ impl Fdn {
         fdn
     }
 
-    /// Changes every setting while it plays. Never allocates. The wet output
-    /// fades out, the new lengths and gains apply in the silence, then it fades
-    /// back in; a repeat of the current settings does nothing. Changes during
-    /// a fade wait for it: only the latest applies, and a fade-in finishes
-    /// before the next fade-out, so a sweep cannot hold the wet output down.
+    /// Changes every setting while it plays. Never allocates. A change that
+    /// keeps the line lengths (size, pre-delay) applies at once. One that
+    /// moves them fades the wet output out, applies in the silence and fades
+    /// back in; changes during a fade wait for it, only the latest applies,
+    /// and a fade-in finishes before the next fade-out. A repeat of the
+    /// current settings does nothing.
     pub fn set(&mut self, s: Settings) {
         if s == self.requested {
             return;
         }
+        let same_lengths =
+            s.size == self.requested.size && s.predelay_ms == self.requested.predelay_ms;
         self.requested = s;
+        if same_lengths && self.pending.is_none() {
+            self.apply(s);
+            return;
+        }
         self.pending = Some(s);
         if self.step == 0.0 {
             self.step = -self.fade_step;
