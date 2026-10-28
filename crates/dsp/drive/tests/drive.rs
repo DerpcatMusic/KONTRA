@@ -17,7 +17,7 @@ fn gain_db(mut s: Shaper, hz: f64, rate: u32) -> f64 {
 
 #[test]
 fn the_curves_match_v1s_measured_transfer_vectors() {
-    // Kontakt Saturation (Classic): shape, x, y.
+    // v1's soft-clip vectors: shape, x, y.
     for (shape, x, y) in [
         (-1.0, 0.5, 0.159_090_909_090_909_1),
         (-0.5, 0.25, 0.173_155_737_704_918_04),
@@ -32,7 +32,7 @@ fn the_curves_match_v1s_measured_transfer_vectors() {
         let got = f64::from(Curve::Soft(shape).transfer(x as f32));
         assert!((got - y).abs() < 2e-7, "soft {shape} at {x}: {got}");
     }
-    // Kontakt Distortion at drive 1: Tube, then Transistor.
+    // v1's tube and power vectors at amount 1.
     let xs = [-0.25, -0.01, 0.0, 0.01, 0.25];
     let tube = [
         -0.109_394_263_170_87,
@@ -133,7 +133,7 @@ fn ramp() -> Vec<[f32; 2]> {
 
 #[test]
 fn the_hold_captures_every_hold_frames() {
-    // Kontakt Lo-Fi at frequency 0.5: period 2, a capture every third frame.
+    // v2's hold vector: a capture every third frame.
     let off = Reduction {
         hold: 3.0,
         bits: None,
@@ -165,7 +165,7 @@ fn the_quantizer_truncates_toward_zero() {
 
 #[test]
 fn the_noise_is_the_lcg_and_its_seed_decides_it() {
-    // Seed 1 → 0x41cce7a0 → u = 0.20163727, white, at Kontakt's level 1 (0.075).
+    // Seed 1 → 0x41cce7a0 → u = 0.20163727, white, at level 0.075 (v2's vector).
     let r = Reduction {
         hold: 1.0,
         bits: None,
@@ -178,4 +178,33 @@ fn the_noise_is_the_lcg_and_its_seed_decides_it() {
     let mut b = vec![[0.0; 2]; 64];
     Crush::new(r, 2).process(&mut b);
     assert_ne!(a, b);
+}
+
+#[test]
+fn nan_settings_stay_finite_and_reset_replays_the_noise() {
+    let mut s = Shaper::new(
+        Curve::Tube(f32::NAN),
+        Tone {
+            lowpass_hz: Some(f32::NAN),
+            highpass_hz: Some(f32::NAN),
+        },
+        48_000,
+    );
+    let mut io = vec![[0.5, -0.5]; 64];
+    s.process(&mut io);
+    assert!(io.iter().flatten().all(|v| v.is_finite()));
+    let r = Reduction {
+        hold: f32::NAN,
+        bits: Some(f32::NAN),
+        noise: 0.075,
+        noise_tone: f32::NAN,
+    };
+    let mut c = Crush::new(r, 7);
+    let mut a = vec![[0.0; 2]; 64];
+    c.process(&mut a);
+    assert!(a.iter().flatten().all(|v| v.is_finite()));
+    c.reset();
+    let mut b = vec![[0.0; 2]; 64];
+    c.process(&mut b);
+    assert_eq!(a, b);
 }

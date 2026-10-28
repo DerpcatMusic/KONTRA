@@ -9,12 +9,32 @@
 /// Allpass coefficients, at most (8 at 44.1 kHz).
 const MAX: usize = 12;
 
+/// Coefficient pairs at most.
+const PAIRS: usize = MAX / 2;
+
+/// Four lanes: branch a left and right, branch b left and right.
+type Lanes = [f32; 4];
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Halfband {
-    coefs: [f32; MAX],
-    count: usize,
-    /// `[x₁, y₁]` per coefficient: up, then down, per channel.
-    state: [[[[f32; 2]; MAX]; 2]; 2],
+    /// Per pair `[c₀, c₀, c₁, c₁]`.
+    coefs: [Lanes; PAIRS],
+    pairs: usize,
+    /// Per pair `[x₁, y₁]`, up then down.
+    up: [[Lanes; 2]; PAIRS],
+    down: [[Lanes; 2]; PAIRS],
+}
+
+/// Every allpass pair one step, all four lanes at once.
+fn step(coefs: &[Lanes], mem: &mut [[Lanes; 2]], mut v: Lanes) -> Lanes {
+    for (c, [x, y]) in coefs.iter().zip(mem) {
+        let mut t = [0.0; 4];
+        for (t, (((v, y), c), x)) in t.iter_mut().zip(v.iter().zip(&*y).zip(c).zip(&*x)) {
+            *t = (v - y) * c + x;
+        }
+        (*x, *y, v) = (v, t, t);
+    }
+    v
 }
 
 impl Halfband {
@@ -22,51 +42,35 @@ impl Halfband {
     pub(crate) fn new(rate: u32) -> Self {
         let rate = f64::from(rate.max(1));
         let edge = 20_000f64.min(0.45 * rate);
-        let (coefs, count) = design(edge / rate / 2.0, 78.0);
+        let (c, count) = design(edge / rate / 2.0, 78.0);
+        let mut coefs = [[0.0; 4]; PAIRS];
+        for (lanes, [c0, c1]) in coefs.iter_mut().zip(c.as_chunks::<2>().0) {
+            *lanes = [*c0, *c0, *c1, *c1];
+        }
         Self {
             coefs,
-            count,
-            state: [[[[0.0; 2]; MAX]; 2]; 2],
+            pairs: count / 2,
+            up: [[[0.0; 4]; 2]; PAIRS],
+            down: [[[0.0; 4]; 2]; PAIRS],
         }
     }
 
-    fn step(&self, mem: &mut [[f32; 2]; MAX], mut a: f32, mut b: f32) -> (f32, f32) {
-        for (pair, c) in mem
-            .as_chunks_mut::<2>()
-            .0
-            .iter_mut()
-            .zip(self.coefs.as_chunks::<2>().0)
-            .take(self.count / 2)
-        {
-            let [m0, m1] = pair;
-            let t0 = (a - m0[1]) * c[0] + m0[0];
-            let t1 = (b - m1[1]) * c[1] + m1[0];
-            *m0 = [a, t0];
-            *m1 = [b, t1];
-            (a, b) = (t0, t1);
+    /// `io` at twice the rate: `f` runs on each of the two samples per frame.
+    pub(crate) fn process(&mut self, io: &mut [[f32; 2]], f: impl Fn(f32) -> f32) {
+        let coefs = self.coefs.get(..self.pairs).unwrap_or_default();
+        let (up, down) = (&mut self.up[..], &mut self.down[..]);
+        for frame in io.iter_mut() {
+            let [l, r] = *frame;
+            let [a0, a1, b0, b1] = step(coefs, up, [l, r, l, r]).map(&f);
+            let [a0, a1, b0, b1] = step(coefs, down, [b0, b1, a0, a1]);
+            *frame = [0.5 * (a0 + b0), 0.5 * (a1 + b1)];
         }
-        (a, b)
-    }
-
-    /// One frame at twice the rate: `f` runs on each of the two samples.
-    pub(crate) fn run(&mut self, frame: &mut [f32; 2], mut f: impl FnMut(f32) -> f32) {
-        let mut state = self.state;
-        for (x, [up, down]) in frame.iter_mut().zip(&mut state) {
-            let (a, b) = self.step(up, *x, *x);
-            let (a, b) = (f(a), f(b));
-            let (a, b) = self.step(down, b, a);
-            *x = (a + b) * 0.5;
-        }
-        self.state = state;
-    }
-
-    /// Clears memories that have decayed into subnormals.
-    pub(crate) fn flush(&mut self) {
         for v in self
-            .state
-            .as_flattened_mut()
-            .as_flattened_mut()
-            .as_flattened_mut()
+            .up
+            .iter_mut()
+            .chain(self.down.iter_mut())
+            .flatten()
+            .flatten()
         {
             if v.abs() < 1e-20 {
                 *v = 0.0;
@@ -75,7 +79,8 @@ impl Halfband {
     }
 
     pub(crate) fn reset(&mut self) {
-        self.state = [[[[0.0; 2]; MAX]; 2]; 2];
+        self.up = [[[0.0; 4]; 2]; PAIRS];
+        self.down = [[[0.0; 4]; 2]; PAIRS];
     }
 }
 

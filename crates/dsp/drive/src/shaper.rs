@@ -1,8 +1,9 @@
 //! The waveshaper: a memoryless curve run at twice the rate, then an
 //! optional one-pole low-pass and a second-order Butterworth high-pass
-//! (its DC blocker). The curves are v2's, decompiled from Kontakt's
-//! Saturation (Classic) and Distortion (Tube, Transistor) and checked
-//! against v1's measured transfer vectors (tests/shaper.rs).
+//! (its DC blocker). The curves are ported from v2 sampler-core
+//! dsp/color/{shaping,distortion}.rs and checked against v1's measured
+//! transfer vectors (tests/drive.rs); the format translators carry their
+//! provenance and knob laws.
 //!
 //! Twice the rate because it is audible and cheap: a full-scale 1.76 kHz
 //! tone through `Tube(1.0)` at 48 kHz aliases at −30 dB under its
@@ -37,13 +38,14 @@ impl Curve {
 /// The filters after the curve.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tone {
-    /// A one-pole low-pass (bilinear, zero at Nyquist).
+    /// A one-pole low-pass (bilinear, zero at Nyquist), its corner in Hz.
     pub lowpass_hz: Option<f32>,
-    /// A second-order Butterworth high-pass.
+    /// A second-order Butterworth high-pass, its corner in Hz.
     pub highpass_hz: Option<f32>,
 }
 
 impl Tone {
+    /// No filters.
     pub const NONE: Self = Self {
         lowpass_hz: None,
         highpass_hz: None,
@@ -84,6 +86,7 @@ impl Prepared {
             Curve::Soft(s) => Self::Clip {
                 amount: 4.0 * s.min(1.0),
             },
+            Curve::Tube(d) if d.is_nan() => Self::Identity,
             Curve::Tube(d) => {
                 let d = d.clamp(0.0, 1.0);
                 let negative = if d > 0.75 {
@@ -184,6 +187,7 @@ fn tube(x: f32, k: f32, negative: f32, positive: f32) -> f32 {
     }
 }
 
+/// A stereo waveshaper with its oversampling and filter state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shaper {
     curve: Prepared,
@@ -194,15 +198,17 @@ pub struct Shaper {
 }
 
 impl Shaper {
+    /// A shaper at `rate`; each corner is held within 1 Hz..=0.49 of the
+    /// rate, and a NaN corner leaves its filter out.
     #[must_use]
     pub fn new(curve: Curve, tone: Tone, rate: u32) -> Self {
         let r = f64::from(rate.max(1));
         let warp = |hz: f32| (std::f64::consts::PI * f64::from(hz).clamp(1.0, 0.49 * r) / r).tan();
-        let lowpass = tone.lowpass_hz.map(|hz| {
+        let lowpass = tone.lowpass_hz.filter(|hz| !hz.is_nan()).map(|hz| {
             let g = warp(hz);
             ((1.0 - g) / (1.0 + g), [[0.0; 2]; 2])
         });
-        let highpass = tone.highpass_hz.map(|hz| {
+        let highpass = tone.highpass_hz.filter(|hz| !hz.is_nan()).map(|hz| {
             let (k, q) = (warp(hz), std::f64::consts::SQRT_2);
             Biquad::new([
                 1.0,
@@ -226,12 +232,10 @@ impl Shaper {
         self.curve = Prepared::new(curve);
     }
 
+    /// Shapes `io` (frames of `[left, right]`) in place.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let curve = self.curve;
-        for frame in io.iter_mut() {
-            self.halfband.run(frame, |x| curve.apply(x));
-        }
-        self.halfband.flush();
+        self.halfband.process(io, |x| curve.apply(x));
         if let Some((pole, state)) = &mut self.lowpass {
             let b = 0.5 * (1.0 - *pole);
             for frame in io.iter_mut() {
@@ -249,15 +253,7 @@ impl Shaper {
         }
     }
 
-    /// Whether its filters have rung out.
-    #[must_use]
-    pub fn is_silent(&self) -> bool {
-        self.highpass.as_ref().is_none_or(Biquad::is_silent)
-            && self
-                .lowpass
-                .is_none_or(|(_, s)| s.iter().flatten().all(|v| v.abs() < 1e-10))
-    }
-
+    /// Clears the halfband and filter state; the curve and tone stay.
     pub fn reset(&mut self) {
         self.halfband.reset();
         if let Some((_, s)) = &mut self.lowpass {

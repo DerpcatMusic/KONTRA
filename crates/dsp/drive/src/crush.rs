@@ -1,7 +1,6 @@
 //! The reducer: a sample hold, a quantizer that truncates toward zero, then
-//! coloured noise (v2 sampler-core dsp/color/lofi.rs, from Kontakt's Lo-Fi
-//! decompile 0x140aad440: hold 0x140aad4e4, quantizer 0x140aad679, LCG
-//! noise 0x140aad8a2).
+//! coloured LCG noise (ported from v2 sampler-core dsp/color/lofi.rs; the
+//! format translators carry the provenance and the knob laws).
 
 /// What it reduces.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -16,6 +15,7 @@ pub struct Reduction {
     pub noise_tone: f32,
 }
 
+/// A stereo reducer with its hold, quantizer and noise state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Crush {
     hold: f32,
@@ -26,6 +26,8 @@ pub struct Crush {
     phase: f32,
     held: [f32; 2],
     seed: u32,
+    /// The seed [`Crush::reset`] restarts from.
+    origin: u32,
     colour: [f32; 2],
 }
 
@@ -41,6 +43,7 @@ impl Crush {
             phase: 0.0,
             held: [0.0; 2],
             seed: seed.max(1),
+            origin: seed.max(1),
             colour: [0.0; 2],
         };
         c.set(r);
@@ -58,10 +61,19 @@ impl Crush {
             let q = b.clamp(1.0, 24.0).exp2();
             (q, 1.0 / q)
         });
-        self.noise = r.noise.max(0.0);
-        self.tone = r.noise_tone.clamp(0.0, 1.0);
+        self.noise = if r.noise.is_nan() {
+            0.0
+        } else {
+            r.noise.max(0.0)
+        };
+        self.tone = if r.noise_tone.is_nan() {
+            1.0
+        } else {
+            r.noise_tone.clamp(0.0, 1.0)
+        };
     }
 
+    /// Reduces `io` (frames of `[left, right]`) in place.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         for frame in io.iter_mut() {
             self.phase += 1.0;
@@ -92,7 +104,15 @@ impl Crush {
         }
     }
 
+    /// Restarts its noise from `seed`, also on later resets.
+    pub fn reseed(&mut self, seed: u32) {
+        (self.seed, self.origin) = (seed.max(1), seed.max(1));
+    }
+
+    /// Clears the hold and noise state and restarts the noise from its seed;
+    /// the settings stay.
     pub fn reset(&mut self) {
         (self.phase, self.held, self.colour) = (0.0, [0.0; 2], [0.0; 2]);
+        self.seed = self.origin;
     }
 }
