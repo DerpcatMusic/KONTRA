@@ -153,6 +153,28 @@ impl Engine {
         2f64.powf(semitones / 12.0) * f64::from(zone.sample_rate) / f64::from(self.rate)
     }
 
+    /// The fractions of the sample its loops' start and end move for a
+    /// voice, read at note-on.
+    pub(crate) fn loop_shift(&self, zone: &Zone, note: &Note) -> [f32; 2] {
+        let mut shift = [0.0; 2];
+        let Some(g) = self.groups.get(zone.group as usize) else {
+            return shift;
+        };
+        for m in g.mods.iter().filter(|m| !m.bypass) {
+            if let ir::ModKind::LoopShift {
+                source,
+                length,
+                depth,
+            } = m.kind
+                && let Some(x) = self.source(zone, source, note, Age::START)
+                && let Some(s) = shift.get_mut(usize::from(length))
+            {
+                *s += x * depth;
+            }
+        }
+        shift
+    }
+
     /// Frames the zone's start moves for a voice started after the key was
     /// held `held` seconds, within its start range either way.
     pub(crate) fn start_offset(&self, zone: &Zone, note: &Note, held: f32) -> i64 {
@@ -262,7 +284,8 @@ impl Engine {
                     | ir::ModKind::SampleStart { .. }
                     | ir::ModKind::Attack { .. }
                     | ir::ModKind::Release { .. }
-                    | ir::ModKind::LfoPhase { .. } => false,
+                    | ir::ModKind::LfoPhase { .. }
+                    | ir::ModKind::LoopShift { .. } => false,
                 })
             })
     }

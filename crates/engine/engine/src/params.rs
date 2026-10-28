@@ -441,6 +441,7 @@ fn intensity(kind: &ir::ModKind) -> Option<f32> {
         } => Some((depth_db / span_db).abs()),
         ir::ModKind::EffectParam { depth, span, .. } => Some((depth / span).abs()),
         ir::ModKind::LfoPhase { depth, .. } => Some((depth + 1.0) * 0.5),
+        ir::ModKind::LoopShift { depth, .. } => Some((depth.cbrt() + 1.0) * 0.5),
         ref other => depth(&mut other.clone()).map(|d| d.abs()),
     }
 }
@@ -465,6 +466,12 @@ fn set_intensity(kind: &mut ir::ModKind, x: f32) -> bool {
         *depth = 2.0 * x - 1.0;
         return true;
     }
+    // Bipolar and cubed (v1 audits/MODULATION.md: ANALOG's 751086 lands on
+    // the native 0.1266360730).
+    if let ir::ModKind::LoopShift { depth, .. } = kind {
+        *depth = (2.0 * x - 1.0).powi(3);
+        return true;
+    }
     depth(kind).map(|d| *d = x.copysign(*d)).is_some()
 }
 
@@ -481,7 +488,8 @@ fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
         ir::ModKind::Envelope
         | ir::ModKind::EqGain { .. }
         | ir::ModKind::EffectParam { .. }
-        | ir::ModKind::LfoPhase { .. } => None,
+        | ir::ModKind::LfoPhase { .. }
+        | ir::ModKind::LoopShift { .. } => None,
     }
 }
 
@@ -522,6 +530,22 @@ mod tests {
         // ANALOG STRINGS: 500000 + phase/2 for a phase of 0.5.
         assert!(set_intensity(&mut kind, 0.75));
         assert!(matches!(kind, ir::ModKind::LfoPhase { depth, .. } if depth == 0.5));
+    }
+
+    #[test]
+    fn a_loop_route_intensity_is_bipolar_and_cubed() {
+        let mut kind = ir::ModKind::LoopShift {
+            source: ir::Source::Constant,
+            length: false,
+            depth: 0.0,
+        };
+        // ANALOG STRINGS writes 751086; Kontakt holds 0.1266360730 (v1 audit).
+        assert!(set_intensity(&mut kind, 0.751_086));
+        let ir::ModKind::LoopShift { depth, .. } = kind else {
+            panic!("a loop route");
+        };
+        assert!((depth - 0.126_636_07).abs() < 1e-6, "{depth}");
+        assert!((intensity(&kind).unwrap_or(0.0) - 0.751_086).abs() < 1e-6);
     }
 
     #[test]
