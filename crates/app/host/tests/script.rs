@@ -712,6 +712,35 @@ fn a_script_modulation_sent_at_init_scales_notes_that_start_later() {
 }
 
 #[test]
+fn a_script_modulation_index_keeps_its_value_after_many_others() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    for g in &mut plan.groups {
+        g.mods = vec![kontra_engine::ir::Mod {
+            name: "Script Event Modulation 20".into(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            kind: kontra_engine::ir::ModKind::Volume {
+                source: kontra_engine::ir::Source::Script(20),
+                intensity: 1.0,
+                curve: kontra_engine::ir::Curve::Depth { power: 1 },
+            },
+        }];
+    }
+    // Twelve indices no route reads go first; the one a route reads still lands.
+    let source = "function onInit()
+            for i = 1, 12 do sendScriptModulation(i, 1) end
+            sendScriptModulation(20, 0.5)
+        end
+        function onNote(e) postEvent(e) end";
+    let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert!((level(&mut e, &[on(60)]) - 0.25).abs() < 1e-3);
+}
+
+#[test]
 fn a_script_modulation_ramps_to_its_value() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);

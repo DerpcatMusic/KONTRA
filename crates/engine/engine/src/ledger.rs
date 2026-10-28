@@ -186,6 +186,39 @@ impl Ramp {
     }
 }
 
+/// One resting ramp for each "from script" index the plan's routes read, so
+/// every index a route reads keeps its value however many a script sends;
+/// an index no route reads finds no entry and is dropped.
+pub(crate) fn script_ramps(plan: &crate::Plan) -> Box<[Option<(u16, Ramp)>]> {
+    use kontra_ir::{ModKind as K, Source};
+    let mut indices: Vec<u16> = (plan.groups.iter().flat_map(|g| &g.mods))
+        .filter_map(|m| match m.kind {
+            K::Volume { source, .. }
+            | K::Pitch { source, .. }
+            | K::Pan { source, .. }
+            | K::Cutoff { source, .. }
+            | K::Resonance { source, .. }
+            | K::EqGain { source, .. }
+            | K::SampleStart { source, .. }
+            | K::Attack { source, .. } => Some(source),
+            K::Envelope => None,
+        })
+        .filter_map(|s| match s {
+            Source::Script(i) => Some(i),
+            _ => None,
+        })
+        .collect();
+    indices.sort_unstable();
+    indices.dedup();
+    let rest = Ramp {
+        from: 0,
+        to: 0,
+        start: 0,
+        frames: 0,
+    };
+    indices.into_iter().map(|i| Some((i, rest))).collect()
+}
+
 /// The value of `index` among `ramps` at `now`.
 pub(crate) fn ramp_at(ramps: &[Option<(u16, Ramp)>], index: u16, now: SampleTime) -> Option<i32> {
     ramps

@@ -118,8 +118,7 @@ pub struct Engine {
     transport: transport::Transport,
     /// Script modulation values sent to every event, read by notes not sent
     /// their own; while one ramps (until `ramping_until`) voices re-read routes.
-    // ponytail: eight indices; a ring when a library sends more.
-    script_mods: [Option<(u16, ledger::Ramp)>; 8],
+    script_mods: Box<[Option<(u16, ledger::Ramp)>]>,
     ramping_until: u64,
     plan: Arc<Plan>,
     stream: StreamClient,
@@ -242,7 +241,7 @@ impl Engine {
             rate: rate.max(1),
             tempo: 120.0,
             transport: transport::Transport::new(plan.scripts.len()),
-            script_mods: [None; 8],
+            script_mods: ledger::script_ramps(&plan),
             ramping_until: 0,
             queue: EventQueue::new(plan.queue),
             hits: Vec::with_capacity(notes.capacity()),
