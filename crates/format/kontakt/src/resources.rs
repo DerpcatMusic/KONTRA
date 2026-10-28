@@ -135,7 +135,7 @@ impl Resources {
         self.sources.iter().find_map(|source| match source {
             Source::Loose(dir) => {
                 let file = dir.join(name);
-                file.is_file().then(|| crate::samples::Location {
+                file.is_file().then_some(crate::samples::Location {
                     file,
                     offset: 0,
                     size: None,
