@@ -22,6 +22,15 @@ use crate::ledger::Note;
 use crate::modulators::Age;
 use crate::{Engine, Zone};
 
+/// Frames between a timed route's retunes of a drive unit: Kontakt's
+/// modulated Saturation and Lo-Fi re-read their controls every 32 frames
+/// (FUN_140aa4d20, FUN_140aa34b0). At the 256-frame refresh a 5 Hz LFO on
+/// Saturation differs from this by −24 dB RMS.
+///
+/// ponytail: Kontakt also smooths Saturation's tick values with a one-pole
+/// (coefficient at +0x1d4, not read); add it if a native render shows it.
+pub(crate) const TICK: u64 = 32;
+
 /// ponytail: the lowest damping (`1/Q`) a resonance route may reach; the
 /// stages go unstable below it.
 const MIN_DAMPING: f32 = 0.01;
@@ -192,6 +201,23 @@ impl Engine {
     pub(crate) fn build_voice_racks(&mut self) {
         let rate = self.rate;
         self.voice_units = self.groups.iter().map(|g| template(g, rate)).collect();
+        self.drive_ticks = self
+            .groups
+            .iter()
+            .zip(&self.voice_units)
+            .map(|(g, units)| {
+                units.iter().any(|u| {
+                    matches!(u.kind, Kind::Shaper(_) | Kind::Crush(_))
+                        && g.mods.iter().any(|m| {
+                            matches!(m.kind, ir::ModKind::EffectParam {
+                                insert,
+                                source: ir::Source::Lfo(_) | ir::Source::Envelope(_),
+                                ..
+                            } if insert == u.insert)
+                        })
+                })
+            })
+            .collect();
         let most = self.voice_units.iter().map(|u| u.len()).max().unwrap_or(0);
         for slot in &mut self.voices {
             slot.rack = Vec::with_capacity(most);
@@ -203,6 +229,42 @@ impl Engine {
             {
                 slot.rack.extend_from_slice(units);
             }
+        }
+    }
+
+    /// The grid spans end on: [`TICK`] while a group needs it.
+    pub(crate) fn grid(&self) -> u64 {
+        if self.drive_ticks.contains(&true) {
+            TICK
+        } else {
+            crate::MAX_SPAN
+        }
+    }
+
+    /// Retunes the racks of voices whose group's drive units a timed route
+    /// moves (between the full refreshes).
+    pub(crate) fn tick_drives(&mut self) {
+        let plan = self.plan.clone();
+        for i in 0..self.voices.len() {
+            let Some(slot) = self.voices.get(i).filter(|s| s.voice.is_active()) else {
+                continue;
+            };
+            let Some(zone) = plan.zones.get(slot.zone) else {
+                continue;
+            };
+            if !self
+                .drive_ticks
+                .get(zone.group as usize)
+                .copied()
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let Some(note) = slot.note.and_then(|n| self.notes.get(n).copied()) else {
+                continue;
+            };
+            let age = self.age(slot.started, slot.released_at);
+            self.retune_rack(i, zone, &note, age);
         }
     }
 
