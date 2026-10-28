@@ -206,14 +206,14 @@ impl<L: Library> Translator<'_, '_, L> {
         } else if node.has_tag_name("Convolver") || node.has_tag_name("SampledReverb") {
             let wet = num(node, "Wet", 1.0)? as f32;
             let dry = num(node, "Dry", 0.0)? as f32;
-            self.impulse(node)?
-                .map(|impulse| effect(ir::EffectKind::Convolution { impulse }, wet, dry))
-        } else if let Some(dry) = wet_only(node)? {
+            Some(match self.impulse(node)? {
+                Some(impulse) => effect(ir::EffectKind::Convolution { impulse }, wet, dry),
+                None => effect(ir::EffectKind::OtherWet, 1.0, dry),
+            })
+        } else {
             // ponytail: an effect with a wet path not carried yet plays only
             // its dry level; passing its input instead would be louder.
-            Some(effect(ir::EffectKind::OtherWet, 1.0, dry))
-        } else {
-            None
+            wet_only(node)?.map(|dry| effect(ir::EffectKind::OtherWet, 1.0, dry))
         })
     }
 
@@ -295,7 +295,6 @@ const SILENT: f32 = -200.0;
 fn wet_only(node: Node) -> Result<Option<f32>, String> {
     let tag = node.tag_name().name();
     Ok(match tag {
-        "SampledReverb" | "Convolver" => Some(num(node, "Dry", 0.0)? as f32),
         "SparkVerb" | "DualDelay" | "FeedbackMachine" | "Flanger" => {
             Some(1.0 - num(node, "Mix", 1.0)?.clamp(0.0, 1.0) as f32)
         }
