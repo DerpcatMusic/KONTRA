@@ -806,6 +806,11 @@ mod tests {
             .filter(|d| d.feature == "modulation Pitch")
             .map(|d| d.detail.as_str())
             .collect();
-        assert_eq!(pitch_notes, ["1× (first: @PitchBend)"], "{:?}", out.diagnostics);
+        assert_eq!(
+            pitch_notes,
+            ["1× (first: @PitchBend)"],
+            "{:?}",
+            out.diagnostics
+        );
     }
 }
