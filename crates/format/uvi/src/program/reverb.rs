@@ -47,6 +47,8 @@ pub(super) fn spark_verb(node: Node, notes: &mut Notes) -> Result<ir::Effect, St
     let m = 10f64.powf(-6.0 * crossing / seconds);
     let level = 2.0 * ((1.0 - m) / ((1.0 + m) * FDN_ENERGY)).sqrt();
     let mut report = |feature: &str| notes.add(ir::Impact::Audible, feature, "");
+    // Carried, but by the one fdn, not SparkVerb's own 8 or 16 lines.
+    report("approximated reverb");
     for name in ["Freeze", "Shape"] {
         if num(node, name, 0.0)? != 0.0 {
             report(&format!("sparkverb {name}"));
