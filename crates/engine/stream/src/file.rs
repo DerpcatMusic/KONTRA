@@ -22,6 +22,42 @@ use crate::{Encoding, SampleFmt, Source};
 /// # Errors
 /// When the file cannot be opened, or its header names a layout this cannot read.
 pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
+    opened(sample).map(|o| (o.source, o.fmt))
+}
+
+/// The whole of `sample` as stereo frames, and its rate; for short files
+/// read once (convolution responses), never for streaming.
+///
+/// # Errors
+/// As [`open`], and when the header names no rate or the file is longer than `max_frames`.
+pub fn decode(sample: &ir::Sample, max_frames: u64) -> io::Result<(u32, Vec<[f32; 2]>)> {
+    let o = opened(sample)?;
+    // 64 MiB holds stereo f32 at any `max_frames` a response asks for.
+    const MAX_BYTES: usize = 64 << 20;
+    if o.rate == 0 || o.frames == 0 || o.frames > max_frames {
+        return Err(unsupported(format!("{} frames at {} Hz", o.frames, o.rate)));
+    }
+    let frames = usize::try_from(o.frames).map_err(|_| unsupported("length".into()))?;
+    let size = frames
+        .checked_mul(o.fmt.bytes_per_frame())
+        .filter(|&n| n <= MAX_BYTES)
+        .ok_or_else(|| unsupported(format!("{frames} frames of {:?}", o.fmt)))?;
+    let mut bytes = vec![0; size];
+    o.source.read(0, &mut bytes)?;
+    let mut out = vec![[0.0; 2]; frames];
+    o.fmt
+        .decode(|i| bytes.get(i).copied().unwrap_or(0), 0, &mut out);
+    Ok((o.rate, out))
+}
+
+struct Opened {
+    source: Arc<dyn Source>,
+    fmt: SampleFmt,
+    rate: u32,
+    frames: u64,
+}
+
+fn opened(sample: &ir::Sample) -> io::Result<Opened> {
     let file = File::open(&sample.file)?;
     let len = match sample.len {
         Some(len) => len,
@@ -40,6 +76,7 @@ pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
             len,
             channels,
             pcm,
+            rate,
         } => {
             let (encoding, convert) = match pcm {
                 Pcm {
@@ -79,7 +116,13 @@ pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
                 channels: usize::from(channels),
                 convert,
             };
-            Ok((Arc::new(source), SampleFmt { encoding, channels }))
+            let frame = u64::from(pcm.bits / 8) * u64::from(channels);
+            Ok(Opened {
+                source: Arc::new(source),
+                fmt: SampleFmt { encoding, channels },
+                rate,
+                frames: len / frame.max(1),
+            })
         }
         Layout::Flac => {
             let (reader, _) = FlacSource::open(&region)?;
@@ -99,13 +142,19 @@ pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
                 channels,
             };
             let channels = u8::try_from(channels).map_err(|_| unsupported("channels".into()))?;
-            Ok((Arc::new(source), SampleFmt { encoding, channels }))
+            Ok(Opened {
+                source: Arc::new(source),
+                fmt: SampleFmt { encoding, channels },
+                rate: params.sample_rate.unwrap_or(0),
+                frames: params.n_frames.unwrap_or(0),
+            })
         }
         Layout::Ncw => {
             // Buffered: the offset table is read four bytes at a time.
             let buffered = io::BufReader::with_capacity(64 << 10, region.reader());
             let reader = ncw::NcwReader::read(buffered).map_err(invalid)?;
             let header = reader.header.clone();
+            let (rate, frames) = (header.sample_rate, u64::from(header.num_samples));
             let float = reader.sample_format == ncw::SampleFormat::Float;
             let encoding = match (header.bits_per_sample, float) {
                 (16, false) => Encoding::I16,
@@ -121,7 +170,12 @@ pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
                 offsets: reader.block_offsets.into(),
                 header,
             };
-            Ok((Arc::new(source), SampleFmt { encoding, channels }))
+            Ok(Opened {
+                source: Arc::new(source),
+                fmt: SampleFmt { encoding, channels },
+                rate,
+                frames,
+            })
         }
     }
 }

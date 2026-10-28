@@ -2372,6 +2372,7 @@ dependencies = [
 name = "kontra-engine"
 version = "0.0.0"
 dependencies = [
+ "kontra-dsp",
  "kontra-events",
  "kontra-ir",
  "kontra-stream",

@@ -17,12 +17,12 @@ pub(crate) fn product(a: Gain, b: Gain) -> Gain {
     ]
 }
 
-/// A rack, slot 0 first, as one matrix; bypassed slots pass.
 /// A -1..=1 balance.
 pub(crate) fn balance(pan: f32) -> Gain {
     [[1.0 - pan.max(0.0), 0.0], [0.0, 1.0 + pan.min(0.0)]]
 }
 
+/// A rack, slot 0 first, as one matrix; bypassed slots pass.
 pub(crate) fn rack(slots: &[Option<ir::Effect>]) -> Gain {
     slots
         .iter()
@@ -31,7 +31,7 @@ pub(crate) fn rack(slots: &[Option<ir::Effect>]) -> Gain {
         .fold(IDENTITY, |m, e| product(matrix(e), m))
 }
 
-fn matrix(e: &ir::Effect) -> Gain {
+pub(crate) fn matrix(e: &ir::Effect) -> Gain {
     let m = match e.kind {
         ir::EffectKind::Gain(g) => [[g, 0.0], [0.0, g]],
         ir::EffectKind::Invert { phase, swap } => {
@@ -57,7 +57,12 @@ fn matrix(e: &ir::Effect) -> Gain {
         // Its output gain trims processing that does not run here (a
         // compressor's makeup: ANALOG STRINGS stores +9 dB), so it passes.
         ir::EffectKind::Other => return IDENTITY,
-        ir::EffectKind::OtherWet => [[0.0; 2]; 2],
+        // Its taps run in the instrument rack (racks.rs).
+        ir::EffectKind::Sends(_) => IDENTITY,
+        // Its bands run on summed audio (filters.rs, racks.rs).
+        ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) => IDENTITY,
+        // Its wet path runs in instrument and bus racks (racks.rs).
+        ir::EffectKind::OtherWet | ir::EffectKind::Convolution { .. } => [[0.0; 2]; 2],
     };
     let (o, d) = (e.output, e.dry);
     [

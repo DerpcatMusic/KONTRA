@@ -4,11 +4,11 @@
 
 use kontra_events::HostNote;
 use kontra_time::SampleTime;
-use kontra_vm::{Action, HostApi, HostCall, HostValue, Program, Step, Text, event};
+use kontra_vm::{Action, HostApi, HostCall, HostValue, Program, Text, event};
 
+use crate::Engine;
 use crate::ledger::{Note, NoteRef, Origin};
 use crate::queue::Work;
-use crate::{Engine, Trigger};
 
 /// A compiled script and where its callbacks start.
 #[derive(Clone, Debug)]
@@ -36,6 +36,8 @@ pub struct EnginePars {
     pub release: i32,
     /// A volume modulation's intensity.
     pub intensity: i32,
+    /// A modulator's bypass.
+    pub mod_bypass: i32,
     pub attack_curve: i32,
     pub effect_bypass: i32,
     pub effect_output: i32,
@@ -50,11 +52,12 @@ pub struct EnginePars {
 /// The script's UI controls as the engine sees them: ids, and where values live.
 #[derive(Clone, Debug, Default)]
 pub struct Controls {
-    /// Id of control 0; control `n` has id `first + n`.
+    /// The UI id of variable 0.
     pub first: i32,
     /// The parameter id that means a control's value.
     pub value_par: i32,
-    /// Each control's value cell, if its value is a number.
+    /// By UI id from `first` (every variable has one), the value cell of
+    /// each control whose value is a number.
     pub cells: Vec<Option<u32>>,
 }
 
@@ -90,6 +93,8 @@ pub(crate) struct Running {
     pub(crate) callback_type: u8,
     /// `$NI_CALLBACK_ID`: unique per callback run, kept across waits.
     pub(crate) callback_id: u32,
+    /// The script slot running it.
+    pub(crate) slot: u8,
 }
 
 impl Running {
@@ -101,6 +106,7 @@ impl Running {
         ignore_controller: false,
         callback_type: 0,
         callback_id: 0,
+        slot: 0,
     };
 
     pub(crate) fn new(kind: Kind, event: Option<NoteRef>) -> Self {
@@ -121,13 +127,13 @@ impl Running {
 
     /// The coroutine context: the event in the low 32 bits, then the
     /// callback type and id, so a resumed callback still knows them.
-    fn context(&self) -> u64 {
+    pub(crate) fn context(&self) -> u64 {
         u64::from(self.event.map_or(0, |n| n.event_id() as u32))
             | u64::from(self.callback_type) << 32
             | u64::from(self.callback_id) << 40
     }
 
-    fn resumed(context: u64) -> Self {
+    pub(crate) fn resumed(context: u64) -> Self {
         Self {
             kind: Kind::Resumed,
             event: NoteRef::from_event_id(context as u32 as i32),
@@ -200,82 +206,11 @@ impl GroupMasks {
     }
 }
 
-fn micros_to_frames(micros: i64, rate: u32) -> u64 {
+pub(crate) fn micros_to_frames(micros: i64, rate: u32) -> u64 {
     (micros.max(0) as u128 * u128::from(rate) / 1_000_000) as u64
 }
 
 impl Engine {
-    /// Runs a callback now. Notes it let through or played start before this returns.
-    pub(crate) fn run_callback(&mut self, entry: u32, mut running: Running) -> Running {
-        self.callbacks_started = (self.callbacks_started + 1) & 0x00FF_FFFF;
-        running.callback_id = self.callbacks_started;
-        self.running = running;
-        let context = running.context();
-        if let Some(mut vm) = self.vm.take() {
-            if let Some(co) = vm.start(entry, context) {
-                self.step_script(&mut vm, co);
-            }
-            self.vm = Some(vm);
-        }
-        self.start_pending();
-        std::mem::replace(&mut self.running, Running::IDLE)
-    }
-
-    /// A waiting callback's time has come.
-    pub(crate) fn resume(&mut self, co: kontra_vm::CoId) {
-        if let Some(mut vm) = self.vm.take() {
-            self.running = Running::resumed(vm.context(co).unwrap_or(0));
-            self.step_script(&mut vm, co);
-            self.vm = Some(vm);
-        }
-        self.start_pending();
-        self.running = Running::IDLE;
-    }
-
-    fn step_script(&mut self, vm: &mut kontra_vm::Instance, co: kontra_vm::CoId) {
-        let plan = self.plan.clone();
-        let Some(script) = plan.script.as_ref() else {
-            return;
-        };
-        if let Step::Wait(micros) = vm.run(&script.program, co, self) {
-            let at = SampleTime(self.now.0 + micros_to_frames(micros as i64, self.rate).max(1));
-            if !self.queue.push(at, Work::Resume(co)) {
-                self.stats.events_refused += 1;
-                vm.cancel(co);
-            }
-        }
-    }
-
-    /// Starts every note waiting for its callback, in arrival order.
-    pub(crate) fn start_pending(&mut self) {
-        let mut pending = std::mem::take(&mut self.pending);
-        for &note in &pending {
-            let Some(n) = self.notes.get_mut(note) else {
-                continue;
-            };
-            if n.started {
-                continue;
-            }
-            n.started = true;
-            if n.ignored || n.released {
-                continue;
-            }
-            let held = self
-                .notes
-                .count(|n| n.started && !n.ignored && !n.released && !n.pedal_held)
-                - 1;
-            self.start_zones(note, true, |trigger| match trigger {
-                Trigger::Attack => true,
-                Trigger::First => held == 0,
-                Trigger::Legato => held > 0,
-                Trigger::Release => false,
-            });
-            self.behaviour.advance();
-        }
-        pending.clear();
-        self.pending = pending;
-    }
-
     /// Fills `out` with the notes an event argument addresses.
     fn targets(&self, id: i32, out: &mut Vec<NoteRef>) {
         out.clear();
@@ -354,8 +289,19 @@ impl Engine {
                 self.stats.events_refused += 1;
             }
         }
-        if self.pending.len() < self.pending.capacity() {
-            self.pending.push(r);
+        // Only the slots after this one see the note.
+        let first = self.running.slot.saturating_add(1);
+        if let Some(n) = self.notes.get_mut(r) {
+            n.first = first;
+            n.pass = first;
+        }
+        let list = if usize::from(first) < self.plan.scripts.len() {
+            &mut self.forward
+        } else {
+            &mut self.pending
+        };
+        if list.len() < list.capacity() {
+            list.push(r);
         }
         r.event_id()
     }
@@ -412,10 +358,9 @@ impl Engine {
             event::PAN => n.script_pan,
             event::NOTE => i32::from(n.key),
             event::VELOCITY => i32::from(n.velocity_byte),
-            // ponytail: one script slot runs, so a script note's slot is 0.
             event::SOURCE => match n.origin {
                 Origin::Host => -1,
-                Origin::Child(_) | Origin::Script => 0,
+                Origin::Child(_) | Origin::Script => i32::from(n.first) - 1,
             },
             _ => 0,
         }
@@ -547,6 +492,18 @@ impl HostApi for Engine {
                 self.set_group(int(0), int(3), int(2) != 0);
                 HostValue::Nothing
             }
+            Action::SetEventParArr if int(1) == event::MOD_VALUE => {
+                if let Ok(index) = u16::try_from(int(3)) {
+                    let value = int(2);
+                    self.each(int(0), |n| n.set_mod_value(index, value));
+                }
+                HostValue::Nothing
+            }
+            Action::GetEventParArr if int(1) == event::MOD_VALUE => {
+                let note = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
+                let index = u16::try_from(int(2)).ok();
+                HostValue::Int(note.zip(index).map_or(0, |(n, i)| n.mod_value(i)))
+            }
             Action::GetEventParArr if int(1) == event::ALLOW_GROUP => {
                 let slot = NoteRef::from_event_id(int(0)).map(NoteRef::slot);
                 flag(slot.is_some_and(|s| self.masks.allows(s, int(2).max(0) as u32)))
@@ -577,7 +534,7 @@ impl HostApi for Engine {
                 self.set_control_par(call.cells, int(0), int(1), int(2));
                 HostValue::Nothing
             }
-            Action::CurrentScriptSlot => HostValue::Int(0),
+            Action::CurrentScriptSlot => HostValue::Int(i32::from(self.running.slot)),
             Action::MidiChannel => HostValue::Int(current.map_or(0, |n| i32::from(n.host.channel))),
             Action::NoteHeld => flag(current.is_some_and(|n| !n.released)),
             Action::PlayedVoicesInst | Action::PlayedVoicesTotal => {
@@ -631,6 +588,14 @@ impl HostApi for Engine {
                 });
                 HostValue::Int(found.unwrap_or(-1))
             }
+            Action::FindTarget | Action::GetTargetIdx => {
+                let name = call.texts.first().map_or("", Text::as_str);
+                let found = self.groups.get(int(0) as usize).and_then(|g| {
+                    let routes = g.routes.iter().find(|r| i32::from(r.slot) == int(1))?;
+                    routes.names.iter().position(|n| n == name)
+                });
+                HostValue::Int(found.map_or(-1, |n| n as i32))
+            }
             Action::GetEnginePar
                 if let Some(value) = self.get_engine_par(int(0), int(1), int(2), int(3)) =>
             {
@@ -648,7 +613,7 @@ impl HostApi for Engine {
             // text-cell host API and file dialogs.
             Action::LoadArray if int(2) == 2 && int(3) != 2 => {
                 let (base, len) = (int(0) as u32, int(1) as usize);
-                let data = self.plan.script.as_ref().map(|s| s.data.as_slice());
+                let data = self.script().map(|s| s.data.as_slice());
                 if let Some((_, values)) = data.unwrap_or_default().iter().find(|(b, _)| *b == base)
                 {
                     let cells = call.cells.get_mut(base as usize..).unwrap_or_default();
@@ -660,7 +625,7 @@ impl HostApi for Engine {
             }
             Action::ReadPersistentVar => {
                 let (base, len) = (int(0) as u32, int(1) as u32);
-                let saved = self.plan.script.as_ref().map(|s| s.restore.as_slice());
+                let saved = self.script().map(|s| s.restore.as_slice());
                 for &(cell, value) in saved.unwrap_or_default() {
                     if (base..base + len).contains(&cell)
                         && let Some(c) = call.cells.get_mut(cell as usize)

@@ -13,6 +13,29 @@ impl Engine {
             .filter_map(|(n, g)| g.purged.then_some(n))
     }
 
+    /// EQ chains on summed voices, and the zones each feeds.
+    pub fn eq_chains(&self) -> (usize, usize) {
+        let zones = self.zone_chain.iter().flatten().count();
+        (self.chains.len(), zones)
+    }
+
+    /// Every group's routes as scripts have left them.
+    pub fn mods(&self) -> impl Iterator<Item = &kontra_ir::Mod> + '_ {
+        self.groups.iter().flat_map(|g| &g.mods)
+    }
+
+    /// Groups whose filter runs per voice, and each sounding voice's cutoff.
+    pub fn voice_filters(&self) -> (usize, Vec<f32>) {
+        let groups = self.voice_filters.iter().flatten().count();
+        let cutoffs = self
+            .voices
+            .iter()
+            .filter(|s| s.voice.is_active())
+            .filter_map(|s| s.filter.as_ref().map(kontra_dsp::filter::Svf::cutoff))
+            .collect();
+        (groups, cutoffs)
+    }
+
     /// Each sounding voice's zone, position in source frames and gain, for
     /// inspectors (never the audio thread).
     pub fn voices(&self) -> impl Iterator<Item = (usize, f64, kontra_voice::Gain)> + '_ {
@@ -61,13 +84,13 @@ impl Engine {
     /// A script variable cell, for inspection.
     #[must_use]
     pub fn script_cell(&self, n: usize) -> Option<i64> {
-        self.vm.as_ref()?.cell(n)
+        self.vms.first()?.as_ref()?.cell(n)
     }
 
-    /// Runtime faults of the script, counted since load.
+    /// Runtime faults of each script slot, counted since load.
     #[must_use]
-    pub fn script_faults(&self) -> Option<kontra_vm::Faults> {
-        self.vm.as_ref().map(Instance::faults)
+    pub fn script_faults(&self) -> Vec<kontra_vm::Faults> {
+        self.vms.iter().flatten().map(Instance::faults).collect()
     }
 }
 

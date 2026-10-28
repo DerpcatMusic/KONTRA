@@ -4,13 +4,14 @@
 use kontra_ir as ir;
 
 use crate::ledger::Note;
-use kontra_voice::Gain;
+use kontra_voice::{Ahdsr, Gain};
 
 use crate::effects::{self, product};
+use crate::modulators::{self, Age};
 use crate::{Control, Engine, Level, Zone};
 
 impl Engine {
-    pub(crate) fn voice_gain(&self, zone: &Zone, note: &Note, factor: f32) -> Gain {
+    pub(crate) fn voice_gain(&self, zone: &Zone, note: &Note, factor: f32, age: Age) -> Gain {
         let channel = note.host.channel;
         let crossfade: f32 = zone
             .crossfades
@@ -25,39 +26,45 @@ impl Engine {
         let mods: f32 = self.groups.get(zone.group as usize).map_or(1.0, |g| {
             g.mods
                 .iter()
+                .filter(|m| !m.bypass)
                 .map(|m| match m.kind {
                     ir::ModKind::Volume {
                         source,
                         intensity,
                         curve,
                     } => {
+                        // HeldTime is fixed at the voice's start: see `release_counter`.
+                        let x = self.source(zone, source, note, age);
                         let x = match source {
-                            ir::Source::Velocity => note.velocity as f32,
-                            ir::Source::Controller(cc) => {
-                                f32::from(self.behaviour.cc(channel, cc)) / 127.0
-                            }
-                            // Fixed at the voice's start: see `release_counter`.
-                            ir::Source::HeldTime { .. } => return 1.0,
+                            ir::Source::Lfo(_) => x.map(|x| (x + 1.0) * 0.5),
+                            _ => x,
                         };
-                        curve.gain(intensity, x)
+                        x.map_or(1.0, |x| curve.gain(intensity, x))
                     }
-                    ir::ModKind::Envelope => 1.0,
+                    _ => 1.0,
                 })
                 .product()
         });
-        let [l, r] = gain(zone, note, self.level(zone));
+        let pan: f32 = self.groups.get(zone.group as usize).map_or(0.0, |g| {
+            g.mods
+                .iter()
+                .filter(|m| !m.bypass)
+                .filter_map(|m| match m.kind {
+                    ir::ModKind::Pan { source, amount } => {
+                        Some(self.source(zone, source, note, age)? * amount)
+                    }
+                    _ => None,
+                })
+                .sum()
+        });
+        let [l, r] = gain(zone, note, self.level(zone), pan);
         let g = crossfade * mods * factor;
         let group = self
             .groups
             .get(zone.group as usize)
             .map_or(effects::IDENTITY, |g| effects::rack(&g.inserts));
         let amp = [[l * g, 0.0], [0.0, r * g]];
-        let bus = self.buses.get(zone.bus).map_or(effects::IDENTITY, |b| {
-            let pan = self.plan.buses.get(zone.bus).map_or(0.0, |p| p.pan);
-            product(effects::balance(pan), effects::rack(&b.inserts))
-        });
-        let voice = product(bus, product(group, amp));
-        product(effects::rack(&self.inserts), voice)
+        product(group, amp)
     }
 
     /// The group's and the instrument's level, combined.
@@ -73,8 +80,54 @@ impl Engine {
         }
     }
 
-    pub(crate) fn step(&self, zone: &Zone, note: &Note) -> f64 {
-        let semitones = (f64::from(note.key) - f64::from(zone.root)) * zone.keytrack
+    /// A live source's value for this note; `None` for one fixed at the voice's start.
+    pub(crate) fn source(
+        &self,
+        zone: &Zone,
+        source: ir::Source,
+        note: &Note,
+        age: Age,
+    ) -> Option<f32> {
+        let channel = note.host.channel;
+        let group = || self.groups.get(zone.group as usize);
+        match source {
+            ir::Source::Envelope(n) => Some(modulators::envelope(
+                group()?.envelopes.get(usize::from(n))?,
+                age,
+            )),
+            ir::Source::Lfo(n) => {
+                let lfo = group()?.lfos.get(usize::from(n))?;
+                Some(modulators::lfo(lfo, age, u32::from(note.key), self.tempo))
+            }
+            ir::Source::Velocity => Some(note.velocity as f32),
+            ir::Source::Controller(cc) => Some(f32::from(self.behaviour.cc(channel, cc)) / 127.0),
+            ir::Source::PitchBend => Some(self.behaviour.bend(channel)),
+            ir::Source::Key => Some(f32::from(note.key) / 127.0),
+            ir::Source::Constant => Some(1.0),
+            ir::Source::Script(index) => Some(note.mod_value(index) as f32 / 1_000_000.0),
+            ir::Source::HeldTime { .. } => None,
+        }
+    }
+
+    pub(crate) fn step(&self, zone: &Zone, note: &Note, age: Age) -> f64 {
+        // ponytail: pitch moves at once; Kontakt lags pitch routes (250 ms
+        // default). Add a per-voice step glide when a library's bend steps audibly.
+        let mods: f32 = self.groups.get(zone.group as usize).map_or(0.0, |g| {
+            g.mods
+                .iter()
+                .filter(|m| !m.bypass)
+                .filter_map(|m| match m.kind {
+                    ir::ModKind::Pitch {
+                        source,
+                        semitones,
+                        depth,
+                    } => Some(self.source(zone, source, note, age)? * semitones * depth),
+                    _ => None,
+                })
+                .sum()
+        });
+        let semitones = f64::from(mods)
+            + (f64::from(note.key) - f64::from(zone.root)) * zone.keytrack
             + zone.tune
             + self.level(zone).tune
             + note.tune
@@ -83,21 +136,79 @@ impl Engine {
         2f64.powf(semitones / 12.0) * f64::from(zone.sample_rate) / f64::from(self.rate)
     }
 
+    /// Frames the zone's start moves for a voice started after the key was
+    /// held `held` seconds, within its start range either way.
+    pub(crate) fn start_offset(&self, zone: &Zone, note: &Note, held: f32) -> i64 {
+        let Some(g) = self.groups.get(zone.group as usize) else {
+            return 0;
+        };
+        let x: f32 = g
+            .mods
+            .iter()
+            .filter(|m| !m.bypass)
+            .filter_map(|m| match m.kind {
+                ir::ModKind::SampleStart { source, depth } => {
+                    let x = match source {
+                        ir::Source::HeldTime { span_ms } => held_time(span_ms, held),
+                        source => self.source(zone, source, note, Age::START)?,
+                    };
+                    Some(x * depth)
+                }
+                _ => None,
+            })
+            .sum();
+        let range = zone.start_mod as f64;
+        (f64::from(x) * range).round().clamp(-range, range) as i64
+    }
+
+    /// The group's envelope for a voice started after the key was held
+    /// `held` seconds, its attack scaled by the group's attack routes.
+    pub(crate) fn envelope(&self, zone: &Zone, note: &Note, held: f32) -> Ahdsr {
+        let Some(g) = self.groups.get(zone.group as usize) else {
+            return Ahdsr::GATE;
+        };
+        let mut e = g.envelope;
+        let rate = self.rate as f32;
+        for m in g.mods.iter().filter(|m| !m.bypass) {
+            let ir::ModKind::Attack {
+                source,
+                intensity,
+                floor_ms,
+            } = m.kind
+            else {
+                continue;
+            };
+            let x = match source {
+                ir::Source::HeldTime { span_ms } => Some(held_time(span_ms, held)),
+                source => self.source(zone, source, note, Age::START),
+            };
+            let Some(x) = x.filter(|_| floor_ms > 0.0) else {
+                continue;
+            };
+            // ponytail: Kontakt cubes the factor for some external source
+            // types (0x140873120); which ones is not proved, so none are.
+            let x = if intensity < 0.0 { 1.0 - x } else { x };
+            let m = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
+            let ms = e.attack as f32 * 1000.0 / rate;
+            let ms = floor_ms * ((ms + floor_ms) / floor_ms).powf(m) - floor_ms;
+            e.attack = (ms.max(0.0) * rate / 1000.0).round() as u32;
+        }
+        e
+    }
+
     /// The release-trigger counter's gain for a voice started after the key
     /// was held `held` seconds.
     pub(crate) fn release_counter(&self, zone: &Zone, held: f32) -> f32 {
         self.groups.get(zone.group as usize).map_or(1.0, |g| {
             g.mods
                 .iter()
+                .filter(|m| !m.bypass)
                 .map(|m| match m.kind {
                     ir::ModKind::Volume {
                         source: ir::Source::HeldTime { span_ms: ms },
                         intensity,
                         curve,
-                    } if ms > 0 => {
-                        let t = ms as f32;
-                        curve.gain(intensity, ((t - held * 1000.0) / t).max(0.0))
-                    }
+                    } => curve.gain(intensity, held_time(ms, held)),
                     _ => 1.0,
                 })
                 .product()
@@ -108,19 +219,44 @@ impl Engine {
     pub(crate) fn follows(&self, zone: &Zone, cc: u8) -> bool {
         zone.crossfades.iter().any(|x| x.control == Control::Cc(cc))
             || self.groups.get(zone.group as usize).is_some_and(|g| {
-                g.mods.iter().any(|m| {
-                    matches!(m.kind, ir::ModKind::Volume { source: ir::Source::Controller(c), .. } if c == cc)
+                g.mods.iter().any(|m| match m.kind {
+                    ir::ModKind::Volume { source, .. }
+                    | ir::ModKind::Pitch { source, .. }
+                    | ir::ModKind::Pan { source, .. }
+                    | ir::ModKind::Cutoff { source, .. } => source == ir::Source::Controller(cc),
+                    ir::ModKind::Envelope
+                    | ir::ModKind::SampleStart { .. }
+                    | ir::ModKind::Attack { .. } => false,
                 })
             })
+    }
+
+    /// Whether moving `cc` changes this zone's pitch.
+    pub(crate) fn pitch_follows(&self, zone: &Zone, cc: u8) -> bool {
+        self.groups.get(zone.group as usize).is_some_and(|g| {
+            g.mods.iter().any(|m| {
+                matches!(m.kind, ir::ModKind::Pitch { source: ir::Source::Controller(c), .. } if c == cc)
+            })
+        })
     }
 }
 
 // ponytail: balance pan law only; equal-power and Kontakt's raised cosine
 // when a library's measured stereo image needs them.
-fn gain(zone: &Zone, note: &Note, level: Level) -> [f32; 2] {
+fn gain(zone: &Zone, note: &Note, level: Level, modulated: f32) -> [f32; 2] {
     let script = 10f32.powf(note.script_volume as f32 / 20_000.0);
     let g = zone.gain * level.gain * note.expression_gain * script;
-    let pan = (zone.pan + level.pan + note.expression_pan + note.script_pan as f32 / 1000.0)
-        .clamp(-1.0, 1.0);
+    let pan =
+        (zone.pan + level.pan + modulated + note.expression_pan + note.script_pan as f32 / 1000.0)
+            .clamp(-1.0, 1.0);
     [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
+}
+
+/// 1 at the key's press, falling to 0 once it has been held `span_ms`.
+fn held_time(span_ms: u32, held: f32) -> f32 {
+    if span_ms == 0 {
+        return 1.0;
+    }
+    let t = span_ms as f32;
+    ((t - held * 1000.0) / t).max(0.0)
 }

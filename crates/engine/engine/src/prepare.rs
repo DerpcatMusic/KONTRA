@@ -11,7 +11,8 @@ use kontra_stream::{BlobKey, LoadRequest, Sample, SampleFmt, Source, Store};
 use kontra_voice::{Ahdsr, Loop, Region};
 
 use crate::{
-    Atom, Bus, Control, Crossfade, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone,
+    Atom, Bus, Control, Crossfade, Group, Level, Plan, Response, RoundRobin, RrCounter, Trigger,
+    Zone,
 };
 
 /// Opens a sample's audio as the store reads it: decoded to packed PCM.
@@ -68,6 +69,9 @@ pub fn prepare(
             inserts: g.inserts.clone(),
             mods: g.mods.clone(),
             envelope: envelope(g.envelope, rate),
+            envelopes: g.envelopes.clone(),
+            lfos: g.lfos.clone(),
+            routes: g.routes.clone(),
         })
         .collect();
     if !instrument.buses.is_empty() {
@@ -84,6 +88,19 @@ pub fn prepare(
             .collect();
     }
     plan.inserts.clone_from(&instrument.inserts);
+    plan.sends.clone_from(&instrument.sends);
+    plan.main.clone_from(&instrument.main);
+    plan.impulses = instrument
+        .impulses
+        .iter()
+        .map(|i| match response(instrument, i, rate) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                diagnostics.push(broken("impulse-open", e));
+                None
+            }
+        })
+        .collect();
     plan.polyphony = polyphony;
     plan.voice_groups.clone_from(&instrument.voice_groups);
     plan.default_keyswitch = switches.iter().map(|r| *r.start()).min();
@@ -178,6 +195,68 @@ fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R>
     })
 }
 
+/// Longest response: 20 s at 192 kHz.
+const MAX_RESPONSE: u64 = 20 * 192_000;
+
+/// `impulse`'s sample decoded, prepared and at `rate`.
+fn response(
+    instrument: &ir::Instrument,
+    impulse: &ir::Impulse,
+    rate: u32,
+) -> Result<Response, String> {
+    let sample = instrument
+        .samples
+        .get(impulse.sample)
+        .ok_or("no response sample")?;
+    let (from, frames) =
+        kontra_stream::decode(sample, MAX_RESPONSE).map_err(|e| format!("{}: {e}", sample.name))?;
+    let (mut left, mut right): (Vec<f32>, Vec<f32>) = frames.iter().map(|f| (f[0], f[1])).unzip();
+    if impulse.reverse {
+        left.reverse();
+        right.reverse();
+    }
+    if let Some(n) = impulse.normalize {
+        let energy = |c: &[f32]| c.iter().map(|&v| f64::from(v * v)).sum::<f64>();
+        let e = energy(&left).max(energy(&right));
+        if e > f64::from(n.floor) {
+            let gain = (n.energy / e as f32).sqrt().min(n.max_gain);
+            left.iter_mut()
+                .chain(right.iter_mut())
+                .for_each(|v| *v *= gain);
+        }
+    }
+    // At most a second of predelay, and never more than a capped response holds.
+    let most = (MAX_RESPONSE * u64::from(from) / u64::from(rate.max(1))) as usize;
+    let delay = ((impulse.predelay_ms.clamp(0.0, 1000.0) * from as f32 * 0.001) as usize).min(most);
+    for c in [&mut left, &mut right] {
+        c.splice(0..0, std::iter::repeat_n(0.0, delay));
+    }
+    Ok(Response {
+        left: resample(&left, from, rate),
+        right: resample(&right, from, rate),
+    })
+}
+
+/// `c` from rate `from` to `to`. ponytail: linear interpolation; a
+/// band-limited resampler when a response's top octave matters.
+fn resample(c: &[f32], from: u32, to: u32) -> Vec<f32> {
+    let ratio = f64::from(from.max(1)) / f64::from(to.max(1));
+    if (ratio - 1.0).abs() < 1e-9 {
+        return c.to_vec();
+    }
+    // A response at an odd rate cannot outgrow the decode cap.
+    let frames = ((c.len() as f64 / ratio) as usize).min(MAX_RESPONSE as usize);
+    (0..frames)
+        .map(|n| {
+            let x = n as f64 * ratio;
+            let (i, t) = (x as usize, (x - x.floor()) as f32);
+            let a = c.get(i).copied().unwrap_or(0.0);
+            let b = c.get(i + 1).copied().unwrap_or(0.0);
+            a + (b - a) * t
+        })
+        .collect()
+}
+
 /// A streamed zone's resident window, in frames: its head from where it
 /// may start, room for the start-offset range on both sides, rounded up to
 /// the grain (05-STREAM.md §1).
@@ -227,6 +306,7 @@ fn zone(
         reverse: z.reverse,
     };
     let mut out = Zone::new(region, z.root, source.rate);
+    out.start_mod = z.start_mod;
     out.keys = z.keys.clone();
     out.velocities = z.velocities.clone();
     for (control, range, (fade_in, fade_out)) in [

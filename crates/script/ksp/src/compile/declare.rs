@@ -306,7 +306,11 @@ impl<'a> Compiler<'a> {
                 return Err(Error::new(p.span, "expected a constant"));
             };
             let par = self.symbol(par);
-            self.emit(Op::Int(FIRST_UI_ID + control as i32));
+            let variable = self
+                .controls
+                .get(control as usize)
+                .map_or(0, |c| c.variable);
+            self.emit(Op::Int(super::ui_id(variable as usize)));
             self.emit(Op::Int(par));
             let got = self.expr(p)?;
             self.convert(got, Ty::Int, p.span)?;

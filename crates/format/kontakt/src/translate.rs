@@ -7,8 +7,8 @@ use std::path::Path;
 use kontra_ir as ir;
 use ni_file::kontakt::KontaktChunks;
 use ni_file::kontakt::objects::{
-    BParScript, ExternalModArray32, Group, GroupList, InternalModArray16, LoopArray, ModSource,
-    Modulator, StartCriteriaParams, VoiceGroups, VoiceLimit, ZoneList,
+    BParScript, ExternalModArray32, Group, GroupList, InternalModArray16, InternalModParams,
+    LoopArray, ModSource, Modulator, StartCriteriaParams, VoiceGroups, VoiceLimit, ZoneList,
 };
 
 use crate::Error;
@@ -70,16 +70,34 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         .find_first(GROUP_LIST)
         .ok_or_else(|| Error::new(path, "group list", "missing"))
         .and_then(|c| GroupList::try_from(c).map_err(decode("group list")))?;
+    let mut resolver = Resolver::new(path).map_err(|e| Error::new(path, "samples", e))?;
+    let mut impulses = crate::impulse::Impulses::new(chunks, &mut resolver, path);
     let mut criteria = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
-        let (mut g, rows) = translate_group(group, &base, &mut notes)
+        let t = translate_group(group, &base, &mut notes)
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
-        g.inserts = crate::effects::group(group, index, &mut notes);
+        let mut g = t.group;
+        g.inserts = crate::effects::group(group, index, &mut impulses, &mut notes);
+        // ponytail: a filter a modulator moves passes unfiltered until filters
+        // run per voice; its routes are reported.
+        for slot in t.modulated {
+            let insert = g
+                .inserts
+                .get_mut(usize::from(slot))
+                .and_then(Option::as_mut);
+            if let Some(e) = insert.filter(|e| matches!(e.kind, ir::EffectKind::Filter(_))) {
+                e.kind = ir::EffectKind::Other;
+            }
+        }
         out.groups.push(g);
-        criteria.push(rows);
+        criteria.push(t.criteria);
     }
-    let (inserts, buses) = crate::effects::program(&program, &mut notes);
-    out.inserts = inserts;
+    let racks = crate::effects::program(&program, &mut impulses, &mut notes);
+    let buses = racks.buses;
+    (out.inserts, out.sends, out.main) = (racks.inserts, racks.sends, racks.main);
+    out.impulses = impulses.out;
+    // Responses are samples after the zones' (indices into the same table).
+    let responses = impulses.samples;
     // Bus 0 is the main mix; Kontakt's bus n is n + 1.
     if !buses.is_empty() {
         out.buses.push(ir::Bus {
@@ -121,7 +139,6 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         .transpose()
         .map_err(decode("sample table"))?
         .unwrap_or_default();
-    let mut resolver = Resolver::new(path).map_err(|e| Error::new(path, "samples", e))?;
     let mut sample_of: HashMap<u32, Option<usize>> = HashMap::new();
     for (zone, &group) in zones.zones().iter().zip(&zones.group_ids) {
         let z = zone.params().map_err(decode("zone"))?;
@@ -170,6 +187,11 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
             g.zones.push(z);
         }
     }
+    let first = out.samples.len();
+    for i in &mut out.impulses {
+        i.sample += first;
+    }
+    out.samples.extend(responses);
     out.diagnostics = notes.finish();
     Ok(out)
 }
@@ -272,11 +294,18 @@ fn data_files(
     files
 }
 
+struct Translated {
+    group: ir::Group,
+    criteria: Vec<StartCriteriaParams>,
+    /// Insert slots whose cutoff a route not carried moves.
+    modulated: Vec<u8>,
+}
+
 fn translate_group(
     group: &Group,
     base: &Base,
     notes: &mut Notes,
-) -> Result<(ir::Group, Vec<StartCriteriaParams>), ni_file::Error> {
+) -> Result<Translated, ni_file::Error> {
     let v = group.params()?;
     let mut out = ir::Group {
         name: v.name.clone(),
@@ -294,16 +323,21 @@ fn translate_group(
         ..ir::Group::DEFAULT
     };
     let slot = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+    let mut modulated = Vec::new();
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
         for (n, m) in InternalModArray16::try_from(chunk)?.slots()? {
             let p = m.params()?;
+            out.routes.push(ir::Routes {
+                slot: slot(n),
+                names: p.targets.iter().map(|t| t.name.clone()).collect(),
+            });
             let volume = p
                 .targets
                 .iter()
                 .any(|t| t.param == "volume" && t.slot.is_none());
             match &p.modulator {
-                // ponytail: one volume envelope per group; Kontakt multiplies a
-                // second one in, which is reported below until a library needs it.
+                // The first volume AHDSR is the amplitude envelope; others route
+                // as breakpoint envelopes (`timed`).
                 Modulator::Ahdsr(e)
                     if volume
                         && !out
@@ -312,49 +346,219 @@ fn translate_group(
                             .any(|m| matches!(m.kind, ir::ModKind::Envelope)) =>
                 {
                     out.envelope = laws::envelope(e);
+                    let target = p.targets.iter().position(|t| t.param == "volume");
                     out.mods.push(ir::Mod {
                         name: p.name.clone(),
                         slot: slot(n),
+                        target: target.map_or(0, slot),
+                        bypass: false,
                         kind: ir::ModKind::Envelope,
                     });
                 }
-                _ => notes.add(ir::Impact::Audible, "internal modulator", &p.name),
+                Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Ahdsr(_) => {
+                    timed(&mut out, &p, slot(n), notes, &mut modulated);
+                }
+                m => {
+                    let kind = match m {
+                        Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Ahdsr(_) => "timed",
+                        Modulator::Dbd(_) => "DBD envelope",
+                        Modulator::Glide(_) => "glide",
+                        Modulator::Follower(_) => "envelope follower",
+                        Modulator::Other { .. } => "other",
+                    };
+                    for t in &p.targets {
+                        if t.param == "filterCutoff" {
+                            modulated.extend(t.slot);
+                        }
+                        let to = if t.slot.is_some() { "module " } else { "" };
+                        let feature = format!("internal modulator {kind} -> {to}{}", t.param);
+                        notes.add(ir::Impact::Audible, &feature, &p.name);
+                    }
+                }
             }
         }
     }
     if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
         for (n, m) in ExternalModArray32::try_from(chunk)?.slots()? {
             let p = m.params()?;
+            out.routes.push(ir::Routes {
+                slot: slot(n),
+                names: p.targets.iter().map(|t| t.name.clone()).collect(),
+            });
             let source = match p.source {
                 ModSource::Velocity => Some(ir::Source::Velocity),
                 ModSource::MidiCc(cc) => Some(ir::Source::Controller(cc)),
-                // Outside a timed release-trigger group the counter is a
-                // constant 1, which leaves the volume at unity.
+                ModSource::PitchBend => Some(ir::Source::PitchBend),
+                ModSource::KeyPosition => Some(ir::Source::Key),
+                ModSource::Constant => Some(ir::Source::Constant),
+                // KSP set_event_par_arr(id, $EVENT_PAR_MOD_VALUE_ID, v, index).
+                ModSource::Script(index) => u16::try_from(index).ok().map(ir::Source::Script),
                 ModSource::ReleaseTriggerCounter => {
-                    match laws::release_counter(v.release_trigger, v.rls_trig_counter) {
-                        Some(source) => Some(source),
-                        None => continue,
-                    }
+                    Some(laws::release_counter(v.release_trigger, v.rls_trig_counter))
                 }
                 _ => None,
             };
-            match (source, p.targets.as_slice()) {
-                (Some(source), [t]) if t.param == "volume" && t.slot.is_none() => {
-                    out.mods.push(ir::Mod {
-                        name: p.name.clone(),
-                        slot: slot(n),
-                        kind: ir::ModKind::Volume {
+            for (target, t) in p.targets.iter().enumerate() {
+                let kind = match (source, t.param.as_str(), t.slot) {
+                    (Some(source), "volume", None) if source != ir::Source::PitchBend => {
+                        Some(ir::ModKind::Volume {
                             source,
                             intensity: t.signed_intensity(),
                             curve: laws::volume(source),
-                        },
+                        })
+                    }
+                    (Some(source), "pitch", None) => Some(ir::ModKind::Pitch {
+                        source,
+                        semitones: laws::PITCH_SEMITONES,
+                        depth: t.signed_intensity(),
+                    }),
+                    (Some(source), "playPos", None) => Some(ir::ModKind::SampleStart {
+                        source,
+                        depth: t.signed_intensity(),
+                    }),
+                    (Some(source), "filterCutoff", Some(insert)) => Some(ir::ModKind::Cutoff {
+                        source,
+                        insert,
+                        depth: t.signed_intensity(),
+                    }),
+                    // Only the amplitude envelope's attack: another AHDSR is
+                    // a breakpoint source with fixed times.
+                    (Some(source), "ahdsr_attack", Some(at))
+                        if out.mods.iter().any(|m| {
+                            m.kind == ir::ModKind::Envelope && m.slot == u16::from(at)
+                        }) =>
+                    {
+                        Some(ir::ModKind::Attack {
+                            source,
+                            intensity: t.signed_intensity(),
+                            floor_ms: laws::ATTACK_FLOOR_MS,
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    out.mods.push(ir::Mod {
+                        name: p.name.clone(),
+                        slot: slot(n),
+                        target: slot(target),
+                        bypass: false,
+                        kind,
                     });
+                } else {
+                    if t.param == "filterCutoff" {
+                        modulated.extend(t.slot);
+                    }
+                    let to = if t.slot.is_some() { "module " } else { "" };
+                    let feature = format!("external modulator {:?} -> {to}{}", p.source, t.param);
+                    notes.add(ir::Impact::Audible, &feature, &p.name);
                 }
-                _ => notes.add(ir::Impact::Audible, "external modulator", &p.name),
             }
         }
     }
-    Ok((out, v.start_criteria.items))
+    Ok(Translated {
+        group: out,
+        criteria: v.start_criteria.items,
+        modulated,
+    })
+}
+
+/// Routes an envelope (flex, or an AHDSR that is not the amplitude envelope)
+/// or an LFO to volume, pitch, pan and filter cutoff; reports the targets and
+/// shapes not mapped, and in `unmapped` the slots of cutoffs it drops.
+fn timed(
+    out: &mut ir::Group,
+    p: &InternalModParams,
+    slot: u16,
+    notes: &mut Notes,
+    unmapped: &mut Vec<u8>,
+) {
+    // The modulator's flags: [router open, bypass, retrigger, unknown].
+    const BYPASS: usize = 1;
+    const RETRIGGER: usize = 2;
+    let report = |notes: &mut Notes, unmapped: &mut Vec<u8>, what: &str| {
+        for t in &p.targets {
+            if t.param == "filterCutoff" {
+                unmapped.extend(t.slot);
+            }
+            let feature = format!("internal modulator {what} -> {}", t.param);
+            notes.add(ir::Impact::Audible, &feature, &p.name);
+        }
+    };
+    let mut envelope = |e: ir::Breakpoints| {
+        let n = u8::try_from(out.envelopes.len()).ok()?;
+        out.envelopes.push(e);
+        Some(ir::Source::Envelope(n))
+    };
+    let (source, what) = match &p.modulator {
+        Modulator::Flex(e) => (envelope(laws::flex(e)), "flex envelope"),
+        Modulator::Ahdsr(e) => (envelope(laws::ahdsr(e)), "AHDSR"),
+        Modulator::Lfo(l) => {
+            let clock = if p.unknown_flags.get(RETRIGGER).is_some_and(|&f| f != 0) {
+                ir::Clock::Voice
+            } else {
+                ir::Clock::Free
+            };
+            let (Some(lfo), Ok(n)) = (laws::lfo(l, clock), u8::try_from(out.lfos.len())) else {
+                return report(notes, unmapped, "LFO (synced fade or unknown wave)");
+            };
+            out.lfos.push(lfo);
+            (Some(ir::Source::Lfo(n)), "LFO")
+        }
+        _ => return,
+    };
+    let Some(source) = source else {
+        return report(notes, unmapped, what);
+    };
+    let flex = what == "flex envelope";
+    let amp = out
+        .mods
+        .iter()
+        .any(|m| matches!(m.kind, ir::ModKind::Envelope));
+    for (target, t) in p.targets.iter().enumerate() {
+        let kind = match (t.param.as_str(), t.slot) {
+            // An LFO's volume route is linear in its unipolar swing (v2
+            // sampler-core v1_voice_controls volume target, frange_uni 0x14071a840).
+            ("volume", None) => ir::ModKind::Volume {
+                source,
+                intensity: t.signed_intensity(),
+                curve: ir::Curve::Depth { power: 1 },
+            },
+            ("pitch", None) => ir::ModKind::Pitch {
+                source,
+                semitones: laws::PITCH_SEMITONES,
+                depth: t.signed_intensity(),
+            },
+            ("pan", None) => ir::ModKind::Pan {
+                source,
+                amount: t.signed_intensity(),
+            },
+            ("filterCutoff", Some(insert)) => ir::ModKind::Cutoff {
+                source,
+                insert,
+                depth: t.signed_intensity(),
+            },
+            _ => {
+                let to = if t.slot.is_some() { "module " } else { "" };
+                let feature = format!("internal modulator {what} -> {to}{}", t.param);
+                notes.add(ir::Impact::Audible, &feature, &p.name);
+                continue;
+            }
+        };
+        if flex
+            && !amp
+            && matches!(kind, ir::ModKind::Volume { .. })
+            && let Some(e) = out.envelopes.last()
+        {
+            out.envelope = laws::flex_gate(e);
+        }
+        out.mods.push(ir::Mod {
+            name: p.name.clone(),
+            slot,
+            target: u16::try_from(target).unwrap_or(u16::MAX),
+            bypass: p.unknown_flags.get(BYPASS).is_some_and(|&f| f != 0),
+            kind,
+        });
+    }
 }
 
 /// Start options: key switches, controller ranges and round robins. Cycles count

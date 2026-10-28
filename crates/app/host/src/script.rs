@@ -29,6 +29,7 @@ const DECAY: &str = "$ENGINE_PAR_DECAY";
 const SUSTAIN: &str = "$ENGINE_PAR_SUSTAIN";
 const RELEASE: &str = "$ENGINE_PAR_RELEASE";
 const INTENSITY: &str = "$ENGINE_PAR_MOD_TARGET_INTENSITY";
+const MOD_BYPASS: &str = "$ENGINE_PAR_INTMOD_BYPASS";
 const ATTACK_CURVE: &str = "$ENGINE_PAR_ATK_CURVE";
 const EFFECT_BYPASS: &str = "$ENGINE_PAR_EFFECT_BYPASS";
 const EFFECT_OUTPUT: &str = "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN";
@@ -67,6 +68,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             sustain: symbol(script, SUSTAIN),
             release: symbol(script, RELEASE),
             intensity: symbol(script, INTENSITY),
+            mod_bypass: symbol(script, MOD_BYPASS),
             attack_curve: symbol(script, ATTACK_CURVE),
             effect_bypass: symbol(script, EFFECT_BYPASS),
             effect_output: symbol(script, EFFECT_OUTPUT),
@@ -121,17 +123,23 @@ fn data_array(script: &Script, name: &str, bytes: &[u8]) -> Option<(u32, Vec<i64
     Some((base, values))
 }
 
-/// Control ids, the value parameter's symbol and each control's value cell.
+/// Control ids, the value parameter's symbol and, by variable (a UI id
+/// counts every variable), each control's value cell.
 fn controls(script: &Script) -> Controls {
     let value_par = symbol(script, CONTROL_VALUE);
-    let cells = script
-        .controls
-        .iter()
-        .map(|c| match script.variables.get(c.variable as usize)?.cells {
-            Cells::Int { base, .. } | Cells::Real { base, .. } => Some(base),
-            _ => None,
-        })
-        .collect();
+    let mut cells = vec![None; script.variables.len()];
+    for c in &script.controls {
+        let value = script
+            .variables
+            .get(c.variable as usize)
+            .and_then(|v| match v.cells {
+                Cells::Int { base, .. } | Cells::Real { base, .. } => Some(base),
+                _ => None,
+            });
+        if let Some(cell) = cells.get_mut(c.variable as usize) {
+            *cell = value;
+        }
+    }
     Controls {
         first: FIRST_UI_ID,
         value_par,

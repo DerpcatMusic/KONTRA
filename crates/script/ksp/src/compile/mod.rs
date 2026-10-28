@@ -64,6 +64,11 @@ enum Home {
     Const(Value),
 }
 
+/// The UI id of variable `v`: ids count every declaration from [`FIRST_UI_ID`].
+fn ui_id(v: usize) -> i32 {
+    FIRST_UI_ID.saturating_add(i32::try_from(v).unwrap_or(i32::MAX))
+}
+
 struct Var {
     name: Box<str>,
     /// Element type.

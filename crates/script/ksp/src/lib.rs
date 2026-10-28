@@ -46,7 +46,8 @@ pub fn compile(source: &str, conditions: &[&str]) -> Result<Script, Error> {
 pub struct Script {
     pub program: Program,
     pub callbacks: Vec<Callback>,
-    /// UI controls in declaration order; control `n` has id `FIRST_UI_ID + n`.
+    /// UI controls in declaration order. Every variable `n` has UI id
+    /// `FIRST_UI_ID + n`; a control's is its variable's.
     pub controls: Vec<Control>,
     pub variables: Vec<Variable>,
     /// Catalog names used by identity; symbol `n` has value `SYMBOL_BASE + n`.

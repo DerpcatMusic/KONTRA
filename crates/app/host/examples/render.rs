@@ -137,11 +137,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("KONTRA_FX").is_some() {
         let plan = &loaded.plan;
         println!("instrument inserts {:?}", plan.inserts);
+        for (n, i) in plan.impulses.iter().enumerate() {
+            let frames = i.as_ref().map(|r| r.left.len());
+            println!("impulse {n}: {frames:?} frames");
+        }
         let mut seen = Vec::new();
         for (n, g) in plan.groups.iter().enumerate() {
             if !g.inserts.is_empty() && !seen.contains(&&g.inserts) {
                 seen.push(&g.inserts);
                 println!("group {n} inserts {:?}", g.inserts);
+            }
+        }
+    }
+    // KONTRA_MODS=1 prints each distinct group modulation.
+    if std::env::var_os("KONTRA_MODS").is_some() {
+        let mut seen = Vec::new();
+        for m in loaded.plan.groups.iter().flat_map(|g| &g.mods) {
+            if !seen.contains(&m.kind) {
+                seen.push(m.kind);
+                println!("mod {:?}", m.kind);
+            }
+        }
+        let mut timed = Vec::new();
+        for g in &loaded.plan.groups {
+            let line = format!("{:?} {:?} {:?}", g.envelopes, g.lfos, g.envelope);
+            if !timed.contains(&line) && (!g.envelopes.is_empty() || !g.lfos.is_empty()) {
+                println!("timed {line} amp {:?}", g.envelope);
+                timed.push(line);
             }
         }
     }
@@ -179,6 +201,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let plan = Arc::new(loaded.plan);
     let mut engine = Engine::new(Arc::clone(&plan), store.client(), RATE);
     println!("init: unanswered {:?}", engine.unhandled_actions());
+    if std::env::var_os("KONTRA_MODS").is_some() {
+        let mut seen = Vec::new();
+        for m in engine.mods().filter(|m| !m.bypass) {
+            let line = format!("{} {:?}", m.name, m.kind);
+            if !seen.contains(&line) {
+                println!("live mod {line}");
+                seen.push(line);
+            }
+        }
+    }
+    let (filtered, cutoffs) = engine.voice_filters();
+    if filtered > 0 {
+        println!("voice filters: {filtered} groups {cutoffs:?}");
+    }
+    let (chains, chained) = engine.eq_chains();
+    if chains > 0 {
+        println!("eq: {chains} chains over {chained} zones");
+    }
     let purged: Vec<usize> = engine.purged().collect();
     if !purged.is_empty() {
         let zones = (plan.zones.iter())
@@ -260,6 +300,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             for (zone, at, gain) in engine.voices() {
                 println!("    zone {zone} at {at:.0} gain {gain:?}");
+            }
+            let (filtered, cutoffs) = engine.voice_filters();
+            if filtered > 0 {
+                println!("    voice filter cutoffs {cutoffs:?}");
             }
         }
         if live {

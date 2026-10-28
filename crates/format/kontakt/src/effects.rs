@@ -8,6 +8,7 @@
 use ni_file::kontakt::objects::{BParFX, BParamArrayBParFX8, Group, InsertBus, Program};
 use ni_file::kontakt::{Chunk, StructuredObject};
 
+use crate::impulse::Impulses;
 use crate::translate::Notes;
 use kontra_ir as ir;
 
@@ -87,14 +88,19 @@ fn name(id: u16) -> String {
 /// A rack's slots as effects. Gainer, Inverter and Stereo Modeller carry
 /// over; every other module passes audio at its output gain and is reported
 /// (bypassed ones as cosmetic: a script may switch them on).
-fn rack(array: &BParamArrayBParFX8, at: &str, notes: &mut Notes) -> Vec<Option<ir::Effect>> {
+fn rack(
+    array: &BParamArrayBParFX8,
+    at: &str,
+    impulses: &mut Impulses,
+    notes: &mut Notes,
+) -> Vec<Option<ir::Effect>> {
     let mut out: Vec<Option<ir::Effect>> = array
         .items
         .iter()
         .enumerate()
         .map(|(slot, chunk)| {
             let chunk = chunk.as_ref()?;
-            let effect = slot_effect(chunk);
+            let effect = slot_effect(chunk, impulses, &format!("{at} slot {slot}"), notes);
             if effect.is_none() {
                 notes.add(
                     ir::Impact::Audible,
@@ -102,7 +108,18 @@ fn rack(array: &BParamArrayBParFX8, at: &str, notes: &mut Notes) -> Vec<Option<i
                     format!("{at} slot {slot}"),
                 );
             }
-            let (effect, module) = effect?;
+            let (effect, module, kind) = effect?;
+            // ponytail: a group rack folds into each voice's matrix, so its
+            // convolution passes only the dry level and its sends feed nothing
+            // (per-voice wet paths later).
+            let lost = match effect.kind {
+                ir::EffectKind::Convolution { .. } => Some("group convolution"),
+                ir::EffectKind::Sends(_) => Some("group send levels"),
+                _ => None,
+            };
+            if let Some(feature) = lost.filter(|_| at.starts_with("group") && !effect.bypass) {
+                notes.add(ir::Impact::Audible, feature, format!("{at} slot {slot}"));
+            }
             if matches!(
                 effect.kind,
                 ir::EffectKind::Other | ir::EffectKind::OtherWet
@@ -112,9 +129,14 @@ fn rack(array: &BParamArrayBParFX8, at: &str, notes: &mut Notes) -> Vec<Option<i
                 } else {
                     (ir::Impact::Audible, "effect")
                 };
+                let kind = if module == 0x18 {
+                    format!(" type {kind}")
+                } else {
+                    String::new()
+                };
                 notes.add(
                     impact,
-                    &format!("{state} {}", name(module)),
+                    &format!("{state} {}{kind}", name(module)),
                     format!("{at} slot {slot}"),
                 );
             }
@@ -131,16 +153,26 @@ fn rack(array: &BParamArrayBParFX8, at: &str, notes: &mut Notes) -> Vec<Option<i
 /// ni-file's effect_parameters.rs): Gainer a linear gain; Inverter phase and
 /// swap bytes; Stereo Modeller signed spread (offset from 100% width), signed
 /// pan and a pseudo-stereo byte.
-fn slot_effect(chunk: &Chunk) -> Option<(ir::Effect, u16)> {
+fn slot_effect(
+    chunk: &Chunk,
+    impulses: &mut Impulses,
+    at: &str,
+    notes: &mut Notes,
+) -> Option<(ir::Effect, u16, i32)> {
     let fx = BParFX::try_from(chunk).ok()?;
     let params = fx.params().ok()?;
     let effect = fx.effect()?;
-    let public = StructuredObject::try_from(effect).ok()?.public_data;
+    let object = StructuredObject::try_from(effect).ok()?;
+    let public = object.public_data;
     let f32_at = |n: usize| {
         let bytes = public.get(n..n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
     };
     let byte = |n: usize| public.get(n).map(|&b| b != 0);
+    let kind_id = public
+        .get(..4)
+        .and_then(|b| b.try_into().ok())
+        .map(i32::from_le_bytes);
     let kind = match effect.id {
         0x13 => f32_at(0).map(ir::EffectKind::Gain),
         0x1a => byte(0)
@@ -153,6 +185,11 @@ fn slot_effect(chunk: &Chunk) -> Option<(ir::Effect, u16)> {
                 width: (spread.clamp(-1.0, 1.0) + 1.0) * 0.5,
                 pan: pan.clamp(-1.0, 1.0),
             }),
+        0x18 => kind_id.and_then(|k| eq(&public, k).or_else(|| filter(&public, k))),
+        0x17 => sends(&public),
+        0x16 => impulses
+            .convolution(object.version, &public, at, notes)
+            .map(|impulse| ir::EffectKind::Convolution { impulse }),
         _ => None,
     };
     // The legacy delay, chorus and flanger, the Gainer and Convolution mix
@@ -162,11 +199,10 @@ fn slot_effect(chunk: &Chunk) -> Option<(ir::Effect, u16)> {
     // An EQ (Filter kinds 22..=24) has no Output control: ANALOG STRINGS
     // stores 0 on one that plays in Kontakt (v2 sampler-kontakt effects/mod.rs, corpus of
     // 12,918 EQ slots).
-    let kind_id = public
-        .get(..4)
-        .and_then(|b| b.try_into().ok())
-        .map(i32::from_le_bytes);
-    let eq = effect.id == 0x18 && kind_id.is_some_and(|k| (22..=24).contains(&k));
+    let eq = matches!(
+        kind,
+        Some(ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_))
+    );
     let effect_out = ir::Effect {
         kind: kind.unwrap_or(if parallel {
             ir::EffectKind::OtherWet
@@ -181,12 +217,77 @@ fn slot_effect(chunk: &Chunk) -> Option<(ir::Effect, u16)> {
             0.0
         },
     };
-    Some((effect_out, effect.id))
+    Some((effect_out, effect.id, kind_id.unwrap_or(-1)))
 }
 
-pub(crate) fn group(group: &Group, index: usize, notes: &mut Notes) -> Vec<Option<ir::Effect>> {
+/// The 1/2/3-band EQ (Filter types 22..=24): the record ends with its bands,
+/// each Hz, octaves and dB (layouts in v2 sampler-kontakt effects/mod.rs,
+/// reader 0x140d00db0).
+fn eq(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
+    let count = usize::try_from(kind.checked_sub(21)?)
+        .ok()
+        .filter(|n| (1..=3).contains(n))?;
+    let tail = public.get(public.len().checked_sub(count * 12)?..)?;
+    let mut bands = [ir::Bell::FLAT; 3];
+    for (band, raw) in bands.iter_mut().zip(tail.as_chunks::<12>().0) {
+        let f = |n: usize| {
+            let bytes = raw.get(n..n + 4)?.try_into().ok()?;
+            Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+        };
+        *band = crate::laws::eq_band(f(0)?, f(4)?, f(8)?)?;
+    }
+    Some(ir::EffectKind::Eq(bands))
+}
+
+/// A filter: the kind, repeated (newer records put a flag byte before a
+/// repeat), a leading gain for Ladder and Daft (the SV Par/Ser bandwidth,
+/// unused), then cutoff and resonance, all 0..=1 (v2 sampler-kontakt
+/// effects/mod.rs, reader 0x140d00db0).
+fn filter(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
+    let k = kind.to_le_bytes();
+    let mut rest = public;
+    loop {
+        if let Some(r) = rest.strip_prefix(&k) {
+            rest = r;
+        } else if let Some(r) = rest.get(1..).and_then(|r| r.strip_prefix(&k)) {
+            rest = r;
+        } else {
+            break;
+        }
+    }
+    let f = |n: usize| {
+        let bytes = rest.get(n..n + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
+    let (gain, at) = if matches!(kind, 30..=41 | 63..=65 | 70 | 71) {
+        (f(0)?, 4)
+    } else {
+        (0.0, 0)
+    };
+    crate::laws::filter(kind, f(at)?, f(at + 4)?, gain).map(ir::EffectKind::Filter)
+}
+
+/// Send Levels: a counted list of send levels, then one of outputs (v2
+/// sampler-kontakt effects/mod.rs reader 0x17).
+fn sends(public: &[u8]) -> Option<ir::EffectKind> {
+    let count = usize::try_from(u32::from_le_bytes(public.get(..4)?.try_into().ok()?)).ok()?;
+    let mut levels = [0.0; 8];
+    for (n, level) in levels.iter_mut().enumerate().take(count) {
+        let at = 4 + n * 4;
+        let value = f32::from_le_bytes(public.get(at..at + 4)?.try_into().ok()?);
+        *level = if value.is_finite() { value } else { 0.0 };
+    }
+    Some(ir::EffectKind::Sends(levels))
+}
+
+pub(crate) fn group(
+    group: &Group,
+    index: usize,
+    impulses: &mut Impulses,
+    notes: &mut Notes,
+) -> Vec<Option<ir::Effect>> {
     match group.insert_fx() {
-        Ok(array) => rack(&array, &format!("group {index} insert"), notes),
+        Ok(array) => rack(&array, &format!("group {index} insert"), impulses, notes),
         Err(e) => {
             notes.add(
                 ir::Impact::Audible,
@@ -198,15 +299,19 @@ pub(crate) fn group(group: &Group, index: usize, notes: &mut Notes) -> Vec<Optio
     }
 }
 
-/// Reports every program rack; returns the instrument insert rack and the
+/// The program's racks: instrument insert, send and main, then the
 /// instrument buses (Kontakt's 0..=15), each with its rack.
-pub(crate) fn program(
-    program: &Program,
-    notes: &mut Notes,
-) -> (Vec<Option<ir::Effect>>, Vec<ir::Bus>) {
+pub(crate) struct Racks {
+    pub inserts: Vec<Option<ir::Effect>>,
+    pub sends: Vec<Option<ir::Effect>>,
+    pub main: Vec<Option<ir::Effect>>,
+    pub buses: Vec<ir::Bus>,
+}
+
+pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut Notes) -> Racks {
     let names = ["instrument insert", "instrument send", "instrument main"];
     let mut racks = 0;
-    let mut inserts = Vec::new();
+    let mut instrument = [Vec::new(), Vec::new(), Vec::new()];
     let mut buses: Vec<ir::Bus> = Vec::new();
     for child in &program.0.children {
         let (at, array) = match child.id {
@@ -244,11 +349,14 @@ pub(crate) fn program(
         };
         match array {
             Ok(array) => {
-                let effects = rack(&array, &at, notes);
+                let effects = rack(&array, &at, impulses, notes);
                 match (child.id, buses.last_mut()) {
                     (BUS, Some(bus)) => bus.inserts = effects,
-                    _ if racks == 1 => inserts = effects,
-                    _ => {}
+                    _ => {
+                        if let Some(rack) = instrument.get_mut(racks - 1) {
+                            *rack = effects;
+                        }
+                    }
                 }
             }
             Err(e) => notes.add(
@@ -258,5 +366,11 @@ pub(crate) fn program(
             ),
         }
     }
-    (inserts, buses)
+    let [inserts, sends, main] = instrument;
+    Racks {
+        inserts,
+        sends,
+        main,
+        buses,
+    }
 }
