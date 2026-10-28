@@ -188,6 +188,7 @@ impl<'a> Impulses<'a> {
             predelay_ms: float(2).unwrap_or(0.0).max(0.0),
             cuts,
             envelope,
+            mix: None,
         });
         u16::try_from(self.out.len() - 1).ok()
     }
