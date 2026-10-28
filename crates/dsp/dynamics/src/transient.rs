@@ -122,10 +122,12 @@ impl Transient {
                 *x = if s.clip { y.clamp(-0.9999, 0.9999) } else { y };
             }
         }
+        // The followers decay toward zero in silence; flush them too.
         for v in self
             .attack_hp
             .iter_mut()
             .chain(self.detect.iter_mut().flatten())
+            .chain(self.e.iter_mut())
         {
             if v.abs() < 1e-20 {
                 *v = 0.0;
