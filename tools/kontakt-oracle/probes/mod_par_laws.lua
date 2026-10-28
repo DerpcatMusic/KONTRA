@@ -3,6 +3,11 @@
 -- route 2 = cutoff; external VEL_VOLUME is index 16, Phase_P1 33). Case k sets one
 -- parameter on group k; the instrument is saved and read back with KONTRA's parser
 -- (route intensity and invert, LFO delay and frequency).
+-- Result (Kontakt 8.13.1, 2026-10-28): MOD_TARGET_INTENSITY depth = x^2, sign kept;
+-- INTMOD_INTENSITY / MOD_TARGET_MP_INTENSITY depth = (2x-1)^3; generic -1 = route 0;
+-- LFO_DELAY ms = stage law to 10 s. INTMOD_FREQUENCY on a synced LFO stores the note count
+-- round(4609 * 21300^-x), at least 1 (x 0, .1, .25, .5, .75, 1 -> 4609, 1704, 385, 32, 3, 1):
+-- the count of a 0.01 * 21300^x Hz rate. Not implemented yet (the IR keeps beats, not the count).
 local kt = Kontakt
 local out = assert(io.open(ORACLE_OUT, "w"))
 local function log(t) out:write(t .. "\n") out:flush() end
