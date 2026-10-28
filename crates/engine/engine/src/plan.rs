@@ -247,6 +247,9 @@ pub struct Bus {
     pub pan: f32,
     /// Effects on what it carries, by slot.
     pub inserts: Vec<Option<ir::Effect>>,
+    /// Later buses it feeds and at what level, after its rack and before its
+    /// pan and gain ([`ir::Bus::sends`]).
+    pub sends: Vec<(usize, f32)>,
     /// A disabled bus starts no voices (purged mic): it costs no CPU.
     pub enabled: bool,
 }
@@ -307,6 +310,7 @@ impl Plan {
                 gain: 1.0,
                 pan: 0.0,
                 inserts: Vec::new(),
+                sends: Vec::new(),
                 enabled: true,
             }],
             polyphony: Vec::new(),

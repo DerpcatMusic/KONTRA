@@ -105,6 +105,8 @@ struct BusState {
     rack: racks::Rack,
     /// -1..=1 balance after the rack.
     pan: f32,
+    /// Later buses it feeds, and their levels.
+    sends: Box<[(usize, f32)]>,
     mix: Box<[[f32; 2]]>,
 }
 
@@ -218,6 +220,7 @@ impl Engine {
                 enabled: b.enabled,
                 rack: racks::Rack::new(&b.inserts, rate, &[]),
                 pan: b.pan,
+                sends: b.sends.clone().into(),
                 mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
             })
             .collect();

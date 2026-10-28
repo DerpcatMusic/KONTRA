@@ -83,6 +83,7 @@ pub fn prepare(
                 gain: gain(b.volume_db),
                 pan: b.pan,
                 inserts: b.inserts.clone(),
+                sends: b.sends.clone(),
                 enabled: true,
             })
             .collect();
