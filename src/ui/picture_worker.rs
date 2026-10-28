@@ -24,6 +24,9 @@ mod default_frame_tests;
 #[path = "picture_worker/retention_tests.rs"]
 mod retention_tests;
 
+/// A prepared asset: its index, picture or font, and plane.
+type Prepared = (usize, Option<Arc<Picture>>, Option<Font>, Plane);
+
 const BUDGET: usize = 64 << 20;
 static REVISION: AtomicU64 = AtomicU64::new(0);
 // Bound aggregate transient decoder memory across rack instances.
@@ -298,6 +301,7 @@ impl Preparation {
     pub fn bytes(&self) -> usize {
         self.bytes
     }
+    #[cfg(any(test, feature = "shots"))]
     pub fn pending(&self) -> usize {
         self.pending.len()
     }
@@ -349,7 +353,7 @@ impl Preparation {
         presentation: ir::Presentation,
         scale: f64,
         values: &Values,
-    ) -> Vec<(usize, Option<Arc<Picture>>, Option<Font>, Plane)> {
+    ) -> Vec<Prepared> {
         // The first call must publish even an empty owner. Later calls are
         // driven by actual input/result changes, not the previous return flag.
         let mut changed = self.tick == 0;
@@ -385,7 +389,7 @@ impl Preparation {
                        target: [u32; 2],
                        window: Option<[u32; 4]>,
                        plane| {
-            if let Some(a) = face.assets.get(asset.0) {
+            if face.assets.get(asset.0).is_some() {
                 wanted.push(Key {
                     asset: asset.0,
                     identity: identities[asset.0].clone(),
@@ -426,7 +430,7 @@ impl Preparation {
                     add(
                         a,
                         p.background.frame as usize,
-                        [w, h].map(|n| (n as f64 * scale.clamp(0.01, 1.)).ceil().max(1.) as u32),
+                        [w, h].map(|n| (n * scale.clamp(0.01, 1.)).ceil().max(1.) as u32),
                         Some([0, y, w.ceil() as u32, h.ceil() as u32]),
                         Plane::Wallpaper,
                     );
@@ -480,7 +484,7 @@ impl Preparation {
                 } else {
                     1.
                 };
-                let target = size.map(|n| (n as f64 * factor).ceil().max(1.) as u32);
+                let target = size.map(|n| (n * factor).ceil().max(1.) as u32);
                 if image.frame.is_none()
                     && image.role == ir::Role::Strip
                     && count >= 6
@@ -1432,6 +1436,7 @@ mod tests {
         let values = Values::default();
         worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
         for request in requests.try_recv().unwrap() {
+            #[cfg(feature = "shots")]
             let asset_index = request.key.asset;
             done.send(Result {
                 bytes: sizes[request.key.asset],
