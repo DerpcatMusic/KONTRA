@@ -78,7 +78,8 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         let t = translate_group(group, &base, &mut notes)
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
         let mut g = t.group;
-        g.inserts = crate::effects::group(group, index, &mut impulses, &mut notes);
+        g.inserts =
+            crate::effects::group(group, index, &mut impulses, &mut notes, &mut out.slot_laws);
         crate::drive::unmoved(&g.inserts, &g.mods, &mut notes);
         // ponytail: a filter a modulator moves passes unfiltered until filters
         // run per voice; its routes are reported.
@@ -97,6 +98,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     let racks = crate::effects::program(&program, &mut impulses, &mut notes);
     let buses = racks.buses;
     (out.inserts, out.sends, out.main) = (racks.inserts, racks.sends, racks.main);
+    out.slot_laws.extend(racks.laws);
     out.impulses = impulses.out;
     // Responses are samples after the zones' (indices into the same table).
     let responses = impulses.samples;

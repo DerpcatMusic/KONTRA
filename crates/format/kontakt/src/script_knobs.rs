@@ -14,10 +14,21 @@ use kontra_ir as ir;
 /// they are not here.
 pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     use ir::EffectParam as E;
-    use ir::KnobTarget::{Effect, LfoRate, LfoWeight};
+    use ir::KnobTarget::{Effect, LfoRate, LfoWeight, Slot};
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let mod_hz = ir::Law::Exp { lo: 0.05, hi: 8.0 };
     vec![
+        // The filter in the slot carries these knobs' laws (filter_knobs).
+        (
+            "$ENGINE_PAR_CUTOFF",
+            Slot(ir::SlotKnob::Cutoff),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_RESONANCE",
+            Slot(ir::SlotKnob::Resonance),
+            lin(0.0, 1.0),
+        ),
         (
             "$ENGINE_PAR_FORMANT_TALK",
             Effect(E::FormantTalk),
@@ -93,4 +104,66 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
         ("$ENGINE_PAR_LFO_RECT", LfoWeight(3), lin(-1.0, 1.0)),
         ("$ENGINE_PAR_LFO_RAND", LfoWeight(4), lin(-1.0, 1.0)),
     ]
+}
+
+/// One field a slot knob moves, and the law it moves it by.
+pub(crate) type SlotKnob = (ir::SlotKnob, ir::EffectParam, ir::Law);
+
+/// The cutoff and resonance knobs of filter `kind`, sampled from
+/// [`crate::laws::filter`] at 65 settings each. Cutoff moves only the Hz and
+/// resonance only the dampings and gain there, so each knob is sampled with
+/// the others at their saved values.
+pub(crate) fn filter_knobs(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Vec<SlotKnob> {
+    const STEPS: u8 = 64;
+    let table = |at: &dyn Fn(f32) -> Option<f32>| {
+        let points = (0..=STEPS).map(|n| at(f32::from(n) / f32::from(STEPS)));
+        points
+            .collect::<Option<Vec<f32>>>()
+            .map(|v| ir::Law::Table(v.into()))
+    };
+    let mut out = Vec::new();
+    let hz = table(&|u| Some(crate::laws::filter(kind, u, resonance, gain)?.hz));
+    out.extend(hz.map(|law| (ir::SlotKnob::Cutoff, ir::EffectParam::FilterHz, law)));
+    let stages = crate::laws::filter(kind, cutoff, resonance, gain).map_or(0, |f| f.stages);
+    for n in 0..stages.min(3) {
+        let at = |r| {
+            crate::laws::filter(kind, cutoff, r, gain)?
+                .damping
+                .get(usize::from(n))
+                .copied()
+        };
+        let law = table(&at);
+        out.extend(law.map(|law| {
+            (
+                ir::SlotKnob::Resonance,
+                ir::EffectParam::FilterDamping(n),
+                law,
+            )
+        }));
+    }
+    let law = table(&|r| Some(crate::laws::filter(kind, cutoff, r, gain)?.gain));
+    out.extend(law.map(|law| (ir::SlotKnob::Resonance, ir::EffectParam::FilterGain, law)));
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_sampled_filter_knobs_land_on_the_filter_law_between_samples() {
+        for kind in [6, 31, 52, 70, 101] {
+            let knobs = filter_knobs(kind, 0.4, 0.3, 0.0);
+            let law = |field| {
+                let (_, _, l) = knobs.iter().find(|(_, f, _)| *f == field).unwrap();
+                l.clone()
+            };
+            let hz = crate::laws::filter(kind, 0.637, 0.3, 0.0).unwrap().hz;
+            let got = law(ir::EffectParam::FilterHz).eval(0.637);
+            assert!((got / hz - 1.0).abs() < 2e-3, "{kind}: {got} vs {hz}");
+            let k = crate::laws::filter(kind, 0.4, 0.711, 0.0).unwrap().damping[0];
+            let got = law(ir::EffectParam::FilterDamping(0)).eval(0.711);
+            assert!((got / k - 1.0).abs() < 2e-2, "{kind}: {got} vs {k}");
+        }
+    }
 }

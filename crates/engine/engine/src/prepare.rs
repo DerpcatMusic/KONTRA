@@ -95,6 +95,7 @@ pub fn prepare(
     plan.inserts.clone_from(&instrument.inserts);
     plan.sends.clone_from(&instrument.sends);
     plan.main.clone_from(&instrument.main);
+    plan.slot_laws.clone_from(&instrument.slot_laws);
     plan.impulses = instrument
         .impulses
         .iter()

@@ -86,6 +86,12 @@ pub enum EffectParam {
     TransientAttack,
     TransientSustain,
     TransientGain,
+    /// A [`crate::Filter`]'s cutoff Hz.
+    FilterHz,
+    /// One of a [`crate::Filter`]'s stage dampings, by stage.
+    FilterDamping(u8),
+    /// A [`crate::Filter`]'s output gain, linear.
+    FilterGain,
 }
 
 impl EffectParam {
@@ -116,6 +122,9 @@ impl EffectParam {
             (Self::TransientAttack, EffectKind::Transient(t)) => &mut t.attack,
             (Self::TransientSustain, EffectKind::Transient(t)) => &mut t.sustain,
             (Self::TransientGain, EffectKind::Transient(t)) => &mut t.gain_db,
+            (Self::FilterHz, EffectKind::Filter(f)) => &mut f.hz,
+            (Self::FilterDamping(n), EffectKind::Filter(f)) => f.damping.get_mut(usize::from(n))?,
+            (Self::FilterGain, EffectKind::Filter(f)) => &mut f.gain,
             _ => return None,
         })
     }
@@ -146,4 +155,34 @@ pub enum KnobTarget {
     LfoRate,
     /// One of a [`crate::Wave::Multi`]'s weights, by its index there.
     LfoWeight(u8),
+    /// A control whose law depends on the slot's effect: the slot's own
+    /// [`SlotLaw`]s map the knob onto its fields.
+    Slot(SlotKnob),
+}
+
+/// A knob whose law the effect in the slot sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotKnob {
+    Cutoff,
+    Resonance,
+}
+
+/// The rack a [`SlotLaw`]'s slot is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RackAt {
+    /// A group's inserts, by group index.
+    Group(u32),
+    /// The instrument's inserts.
+    Inserts,
+}
+
+/// Knob `knob` on slot `slot` of `at` sets the effect's `field` to `law(x)`;
+/// a knob may move several fields.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotLaw {
+    pub at: RackAt,
+    pub slot: u8,
+    pub knob: SlotKnob,
+    pub field: EffectParam,
+    pub law: crate::Law,
 }
