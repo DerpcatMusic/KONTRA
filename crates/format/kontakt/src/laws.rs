@@ -38,15 +38,18 @@ fn attack_shape(curve: f32) -> f32 {
 }
 
 /// The volume law of a modulation source (Kontakt's "family H",
-/// modulation compiler 0x140875ac8/0x140873120): cubed for note-time
-/// sources (velocity, key, the release counter: external types 7..=13),
-/// plain for controllers. The cube at 50/127 matches the measured velocity
-/// table to 0.03 dB RMS.
+/// modulation compiler 0x140875ac8/0x140873120): cubed (`fcubic`) for
+/// internal source types 7..=13, plain otherwise. The loader FUN_140cf0420
+/// maps saved codes to those types: key, velocity, release velocity, the
+/// release counter, constant and the randoms land on 7..=13; pitch bend
+/// (1), controllers (4) and scripts (5) stay plain. The cube at 50/127
+/// matches the measured velocity table to 0.03 dB RMS.
 pub(crate) fn volume(source: ir::Source) -> ir::Curve {
     ir::Curve::Depth {
-        // ponytail: a script value is taken as a controller (linear), not
-        // measured; Conflux sends CC × 7874 to it in place of aftertouch.
-        power: if matches!(source, ir::Source::Controller(_) | ir::Source::Script(_)) {
+        power: if matches!(
+            source,
+            ir::Source::Controller(_) | ir::Source::Script(_) | ir::Source::PitchBend
+        ) {
             1
         } else {
             3
@@ -56,8 +59,21 @@ pub(crate) fn volume(source: ir::Source) -> ir::Curve {
 
 /// A route to an AHDSR attack multiplies its knob `u`, where the time is
 /// `2·e^(8.9228·u) − 2` ms (fconv_u2n_env_a, 0x14071a980), by
-/// `1 − (1 − x)·i` (0x144f1daa0): a power of `(t + 2)/2`.
+/// `1 − (1 − x)·i` (0x144f1daa0): a power of `(t + 2)/2`. The law compiler
+/// (FUN_140873040) gives release (0xbb) the same form through
+/// fconv_u2n_env_d (0x14071a9e0, `2·e^(9.4336·u) − 2`), so the same floor.
 pub(crate) const ATTACK_FLOOR_MS: f32 = 2.0;
+
+/// The knob form and its `fcubic` apply only with the route's byte +0x53d
+/// (the last saved source byte) set (0x1408766dc); clear, the compiler
+/// emits `$in * (1.0 - (1.0 - x) * $intensity)`, a plain time scale (0).
+pub(crate) fn time_floor_ms(source_data: &[u8]) -> f32 {
+    if source_data.last().is_some_and(|&b| b != 0) {
+        ATTACK_FLOOR_MS
+    } else {
+        0.0
+    }
+}
 
 /// The release-trigger counter: `max(T − held, 0)/T` in a release-trigger
 /// group with a time T, else a constant 1 (binary 0x14084f380).

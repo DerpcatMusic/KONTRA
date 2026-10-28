@@ -36,7 +36,9 @@ impl Engine {
                         // HeldTime is fixed at the voice's start: see `release_counter`.
                         let x = self.source(zone, source, note, age);
                         let x = match source {
-                            ir::Source::Lfo(_) => x.map(|x| (x + 1.0) * 0.5),
+                            ir::Source::Lfo(_) | ir::Source::PitchBend => {
+                                x.map(|x| (x + 1.0) * 0.5)
+                            }
                             _ => x,
                         };
                         x.map_or(1.0, |x| curve.gain(intensity, x))
@@ -96,8 +98,19 @@ impl Engine {
                 age,
             )),
             ir::Source::Lfo(n) => {
-                let lfo = group()?.lfos.get(usize::from(n))?;
-                Some(modulators::lfo(lfo, age, u32::from(note.key), self.tempo))
+                let g = group()?;
+                let mut lfo = *g.lfos.get(usize::from(n))?;
+                for m in g.mods.iter().filter(|m| !m.bypass) {
+                    if let ir::ModKind::LfoPhase { source, lfo: l, depth } = m.kind
+                        && l == n
+                        // An LFO source here would recurse.
+                        && !matches!(source, ir::Source::Lfo(_))
+                    {
+                        let x = self.source(zone, source, note, Age::START).unwrap_or(0.0);
+                        lfo.phase += x * depth;
+                    }
+                }
+                Some(modulators::lfo(&lfo, age, u32::from(note.key), self.tempo))
             }
             ir::Source::Velocity => Some(note.velocity as f32),
             ir::Source::Controller(cc) => Some(f32::from(self.behaviour.cc(channel, cc)) / 127.0),
@@ -140,6 +153,28 @@ impl Engine {
         2f64.powf(semitones / 12.0) * f64::from(zone.sample_rate) / f64::from(self.rate)
     }
 
+    /// The fractions of the sample its loops' start and end move for a
+    /// voice, read at note-on.
+    pub(crate) fn loop_shift(&self, zone: &Zone, note: &Note) -> [f32; 2] {
+        let mut shift = [0.0; 2];
+        let Some(g) = self.groups.get(zone.group as usize) else {
+            return shift;
+        };
+        for m in g.mods.iter().filter(|m| !m.bypass) {
+            if let ir::ModKind::LoopShift {
+                source,
+                length,
+                depth,
+            } = m.kind
+                && let Some(x) = self.source(zone, source, note, Age::START)
+                && let Some(s) = shift.get_mut(usize::from(length))
+            {
+                *s += x * depth;
+            }
+        }
+        shift
+    }
+
     /// Frames the zone's start moves for a voice started after the key was
     /// held `held` seconds, within its start range either way.
     pub(crate) fn start_offset(&self, zone: &Zone, note: &Note, held: f32) -> i64 {
@@ -166,7 +201,9 @@ impl Engine {
     }
 
     /// The group's envelope for a voice started after the key was held
-    /// `held` seconds, its attack scaled by the group's attack routes.
+    /// `held` seconds, its attack and release scaled by their routes.
+    /// ponytail: release routes read at note-on too; a source moving
+    /// before note-off is missed, read at release if a library needs it.
     pub(crate) fn envelope(&self, zone: &Zone, note: &Note, held: f32) -> Ahdsr {
         let Some(g) = self.groups.get(zone.group as usize) else {
             return Ahdsr::GATE;
@@ -174,28 +211,40 @@ impl Engine {
         let mut e = g.envelope;
         let rate = self.rate as f32;
         for m in g.mods.iter().filter(|m| !m.bypass) {
-            let ir::ModKind::Attack {
-                source,
-                intensity,
-                floor_ms,
-            } = m.kind
-            else {
-                continue;
+            let (source, intensity, floor_ms, frames) = match m.kind {
+                ir::ModKind::Attack {
+                    source,
+                    intensity,
+                    floor_ms,
+                } => (source, intensity, floor_ms, &mut e.attack),
+                ir::ModKind::Release {
+                    source,
+                    intensity,
+                    floor_ms,
+                } => (source, intensity, floor_ms, &mut e.release),
+                _ => continue,
             };
             let x = match source {
                 ir::Source::HeldTime { span_ms } => Some(held_time(span_ms, held)),
+                // Outside the signed families the law compiler (FUN_140873040)
+                // reads a bipolar source without `frange_bi`: 0..=1.
+                ir::Source::PitchBend | ir::Source::Lfo(_) => self
+                    .source(zone, source, note, Age::START)
+                    .map(|x| (x + 1.0) * 0.5),
                 source => self.source(zone, source, note, Age::START),
             };
-            let Some(x) = x.filter(|_| floor_ms > 0.0) else {
+            let Some(x) = x else {
                 continue;
             };
-            // ponytail: a format may shape the factor per source type; none
-            // is proved yet (docs/re: attack route), so it stays linear.
             let x = if intensity < 0.0 { 1.0 - x } else { x };
             let m = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
-            let ms = e.attack as f32 * 1000.0 / rate;
-            let ms = floor_ms * ((ms + floor_ms) / floor_ms).powf(m) - floor_ms;
-            e.attack = (ms.max(0.0) * rate / 1000.0).round() as u32;
+            let ms = *frames as f32 * 1000.0 / rate;
+            let ms = if floor_ms > 0.0 {
+                floor_ms * ((ms + floor_ms) / floor_ms).powf(m * m * m) - floor_ms
+            } else {
+                ms * m
+            };
+            *frames = (ms.max(0.0) * rate / 1000.0).round() as u32;
         }
         e
     }
@@ -235,7 +284,10 @@ impl Engine {
                     }
                     ir::ModKind::Envelope
                     | ir::ModKind::SampleStart { .. }
-                    | ir::ModKind::Attack { .. } => false,
+                    | ir::ModKind::Attack { .. }
+                    | ir::ModKind::Release { .. }
+                    | ir::ModKind::LfoPhase { .. }
+                    | ir::ModKind::LoopShift { .. } => false,
                 })
             })
     }
