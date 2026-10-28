@@ -352,6 +352,9 @@ pub enum Source {
     Lfo(u8),
     /// Always 1.
     Constant,
+    /// The value a script sent this note for "from script" modulator `id`,
+    /// −1..=1; 0 until sent.
+    Script(u16),
     /// 1 at note-on, falling linearly to 0 after `span_ms` held; frozen at
     /// key-up, so a release sample is quieter the longer its key was held.
     HeldTime {

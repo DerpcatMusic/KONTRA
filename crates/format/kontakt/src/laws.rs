@@ -44,7 +44,9 @@ fn attack_shape(curve: f32) -> f32 {
 /// table to 0.03 dB RMS.
 pub(crate) fn volume(source: ir::Source) -> ir::Curve {
     ir::Curve::Depth {
-        power: if matches!(source, ir::Source::Controller(_)) {
+        // ponytail: a script value is taken as a controller (linear), not
+        // measured; Conflux sends CC × 7874 to it in place of aftertouch.
+        power: if matches!(source, ir::Source::Controller(_) | ir::Source::Script(_)) {
             1
         } else {
             3

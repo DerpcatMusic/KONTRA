@@ -260,3 +260,32 @@ fn a_script_finds_a_modulation_by_name_and_drives_it() {
     let l = level(&mut e, &[on(60)]);
     assert!((l - 0.5 * 64.0 / 127.0).abs() < 1e-3, "{l}");
 }
+
+#[test]
+fn a_script_sends_a_note_its_modulation_value() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "From script".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Volume {
+            source: ir::Source::Script(1),
+            intensity: 1.0,
+            curve: ir::Curve::Depth { power: 1 },
+        },
+    }];
+    let script = kontra_ksp::compile(
+        "on note
+            set_event_par_arr($EVENT_ID, $EVENT_PAR_MOD_VALUE_ID, 250000, 1)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.script = Some(kontra_host::script::plan(&script, &[], &[]));
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let l = level(&mut e, &[on(60)]);
+    assert!((l - 0.5 * 0.25).abs() < 1e-3, "{l}");
+}

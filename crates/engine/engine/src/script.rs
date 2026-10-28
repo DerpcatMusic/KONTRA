@@ -549,6 +549,18 @@ impl HostApi for Engine {
                 self.set_group(int(0), int(3), int(2) != 0);
                 HostValue::Nothing
             }
+            Action::SetEventParArr if int(1) == event::MOD_VALUE => {
+                if let Ok(index) = u16::try_from(int(3)) {
+                    let value = int(2);
+                    self.each(int(0), |n| n.set_mod_value(index, value));
+                }
+                HostValue::Nothing
+            }
+            Action::GetEventParArr if int(1) == event::MOD_VALUE => {
+                let note = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
+                let index = u16::try_from(int(2)).ok();
+                HostValue::Int(note.zip(index).map_or(0, |(n, i)| n.mod_value(i)))
+            }
             Action::GetEventParArr if int(1) == event::ALLOW_GROUP => {
                 let slot = NoteRef::from_event_id(int(0)).map(NoteRef::slot);
                 flag(slot.is_some_and(|s| self.masks.allows(s, int(2).max(0) as u32)))

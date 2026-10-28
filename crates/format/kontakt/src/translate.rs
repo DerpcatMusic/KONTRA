@@ -391,6 +391,8 @@ fn translate_group(
                 ModSource::PitchBend => Some(ir::Source::PitchBend),
                 ModSource::KeyPosition => Some(ir::Source::Key),
                 ModSource::Constant => Some(ir::Source::Constant),
+                // KSP set_event_par_arr(id, $EVENT_PAR_MOD_VALUE_ID, v, index).
+                ModSource::Script(index) => u16::try_from(index).ok().map(ir::Source::Script),
                 ModSource::ReleaseTriggerCounter => {
                     Some(laws::release_counter(v.release_trigger, v.rls_trig_counter))
                 }
