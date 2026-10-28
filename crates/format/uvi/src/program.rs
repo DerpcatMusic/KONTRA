@@ -209,8 +209,7 @@ impl<L: Library> Translator<'_, '_, L> {
             ..ir::Group::DEFAULT
         };
         // Per-voice gain and shelves, else a one-pole filter, slot by slot.
-        let (filters, mods) = filters::keygroup(kg);
-        group.mods = mods;
+        let filters = filters::keygroup(kg);
         group.inserts = (0..group.inserts.len().max(filters.len()))
             .map(|n| {
                 let own = group.inserts.get(n).cloned().flatten();
@@ -218,6 +217,25 @@ impl<L: Library> Translator<'_, '_, L> {
             })
             .collect();
         let program = self.program;
+        let cutoffs = filters::freq_routes(kg)
+            .into_iter()
+            .filter_map(|(insert, c)| {
+                let tag = c.parent()?.parent()?.tag_name().name();
+                let mut r = modulation::reach(program, c, (tag, "Freq"))?;
+                // Bypassed: no amount until a script turns it on.
+                if flag(c, "Bypass") {
+                    r.ratio = 0.0;
+                }
+                Some((insert, c, r))
+            })
+            .collect::<Vec<_>>();
+        for (insert, c, r) in cutoffs {
+            self.add_route(&mut group, c, r, |source, depth| ir::ModKind::Cutoff {
+                source,
+                insert,
+                depth,
+            });
+        }
         let pans = kg
             .children()
             .filter(|c| c.has_tag_name("Connections"))
@@ -677,7 +695,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 continue;
             }
             if modulation::script_route(self.program, connection).is_some()
-                || filters::freq_route(connection).is_some()
+                || self.routed.contains_key(&connection.id())
                 || gain_route(self.program, connection).is_some()
                 || [PITCH, PAN]
                     .into_iter()

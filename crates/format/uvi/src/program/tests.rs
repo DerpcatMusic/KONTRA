@@ -221,20 +221,24 @@ fn a_keygroup_one_pole_and_its_velocity_route_reach_the_group() {
     // Inverted: 20 kHz × 1000^(−0.6(1 − v)), so 20 kHz × 1000^−0.6 at
     // velocity 0, rising 0.6 of the range's 9.97 octaves to 20 kHz at 1.
     assert_eq!(f.pass, ir::Pass::Low);
-    assert!(
-        (f.hz - 20_000.0 * 1000f32.powf(-0.6)).abs() < 0.1,
-        "{}",
-        f.hz
-    );
+    assert_eq!(f.hz, 20_000.0);
     assert!((f.octaves - 1000f32.log2()).abs() < 1e-4);
+    assert_eq!(
+        g.shapers,
+        [ir::Transfer {
+            source: ir::Source::Velocity,
+            table: vec![1.0, 0.0],
+        }]
+    );
     assert_eq!(
         g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
         [ir::ModKind::Cutoff {
-            source: ir::Source::Velocity,
+            source: ir::Source::Shaped(0),
             insert: 1,
-            depth: 0.6,
+            depth: -0.6,
         }]
     );
+    assert!(g.mods[0].name.starts_with('#'), "{:?}", g.mods[0].name);
     let features: Vec<_> = out.diagnostics.iter().map(|d| d.feature.as_str()).collect();
     assert!(features.contains(&"insert DigitalEq"), "{features:?}");
     assert!(
@@ -243,6 +247,69 @@ fn a_keygroup_one_pole_and_its_velocity_route_reach_the_group() {
             .any(|f| f.contains("OnePole") || f.contains("Freq")),
         "{features:?}"
     );
+}
+
+#[test]
+fn a_filters_envelope_and_lfo_routes_are_named_and_a_bypassed_one_waits_for_its_script() {
+    let xml = r#"<Program Gain="1">
+      <Modulators>
+        <LFO Name="LFO 1" Bypass="0" SyncToHost="0" DelayTime="0" RiseTime="0" Freq="2" Depth="1" Phase="0" WaveFormType="0" Retrigger="1" Bipolar="1"/>
+      </Modulators>
+      <Scripts><ScriptProcessor Name="EventProcessor0" Bypass="0" API_version="21"><script><![CDATA[--]]></script></ScriptProcessor></Scripts>
+      <Layers><Layer Gain="1" Pan="0">
+        <Modulators>
+          <DAHDSR Name="DAHDSR 2" Bypass="0" DelayTime="0.1" AttackTime="0.2" AttackCurve="0" HoldTime="0" DecayTime="0.5" DecayCurve="-0.5" SustainLevel="0.25" ReleaseTime="1" ReleaseCurve="0" VelocityAmount="0" VelocitySens="0"/>
+        </Modulators>
+        <Keygroups><Keygroup LowKey="0" HighKey="127">
+          <Inserts>
+            <XpanderFilter Name="InsertFX0" Bypass="0" Freq="500" Q="0" KeyTracking="0" Mode="3" DistortionType="0" Drive="0" Fat="1" Algorithm="0" Oversampling="0">
+              <Connections>
+                <SignalConnection Ratio="0.5" Source="@MIDI CC 1" Destination="Freq" Mapper="" ConnectionMode="0" Bypass="1" Inverted="0"/>
+                <SignalConnection Ratio="0.3" Source="$Program/LFO 1" Destination="Freq" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                <SignalConnection Ratio="1" Source="$Layer/DAHDSR 2" Destination="Freq" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+              </Connections>
+            </XpanderFilter>
+          </Inserts>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup></Keygroups>
+      </Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    let cutoffs: Vec<_> = g
+        .mods
+        .iter()
+        .filter_map(|m| match m.kind {
+            ir::ModKind::Cutoff { source, depth, .. } => {
+                Some((source, depth, m.name.starts_with('#')))
+            }
+            _ => None,
+        })
+        .collect();
+    // The bypassed controller waits at 0 for a script to turn it on.
+    assert_eq!(
+        cutoffs,
+        [
+            (ir::Source::Controller(1), 0.0, true),
+            (ir::Source::Lfo(0), 0.3, true),
+            (ir::Source::Envelope(0), 1.0, true),
+        ]
+    );
+    let e = &g.envelopes[0];
+    assert_eq!(e.sustain, Some(3));
+    assert_eq!(
+        e.points.iter().map(|p| (p.ms, p.level)).collect::<Vec<_>>(),
+        [
+            (100.0, 0.0),
+            (200.0, 1.0),
+            (0.0, 1.0),
+            (500.0, 0.25),
+            (1000.0, 0.0)
+        ]
+    );
+    let features: Vec<_> = out.diagnostics.iter().map(|d| d.feature.as_str()).collect();
+    assert!(!features.iter().any(|f| f.contains("Freq")), "{features:?}");
 }
 
 #[test]
