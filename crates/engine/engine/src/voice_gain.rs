@@ -224,8 +224,9 @@ impl Engine {
             ir::Source::Blend(_) if !shaper => return None,
             s => self.source(zone, s, note, age)?,
         };
-        // An LFO spans the table as `(x + 1)/2`.
-        let x = if matches!(t.source, ir::Source::Lfo(_)) {
+        // An LFO spans the table as `(x + 1)/2`, and pitch bend a table.
+        let bend = t.source == ir::Source::PitchBend && !t.table.is_empty();
+        let x = if bend || matches!(t.source, ir::Source::Lfo(_)) {
             (x + 1.0) / 2.0
         } else {
             x

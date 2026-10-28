@@ -12,6 +12,15 @@ pub struct Bus {
     pub sends: Vec<BusSend>,
     /// Plays on the main output; otherwise it only feeds its sends.
     pub to_main: bool,
+    /// Routes moving its inserts: [`ModKind::EffectParam`], `insert` a slot
+    /// of [`Self::inserts`], from sources no note owns (a controller, pitch
+    /// bend, a script's value for every note, or [`Source::Blend`] of
+    /// [`Self::blends`]).
+    ///
+    /// [`ModKind::EffectParam`]: crate::ModKind::EffectParam
+    /// [`Source::Blend`]: crate::Source::Blend
+    pub mods: Vec<crate::ModKind>,
+    pub blends: Vec<crate::Blend>,
 }
 
 impl Bus {
@@ -24,6 +33,8 @@ impl Bus {
             inserts: Vec::new(),
             sends: Vec::new(),
             to_main: true,
+            mods: Vec::new(),
+            blends: Vec::new(),
         }
     }
 }

@@ -13,6 +13,7 @@ use kontra_ir as ir;
 use roxmltree::Node;
 
 mod delay;
+mod digital_eq;
 mod filters;
 mod load;
 mod matrix;
