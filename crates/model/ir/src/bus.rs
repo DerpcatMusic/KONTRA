@@ -10,6 +10,22 @@ pub struct Bus {
     pub inserts: Vec<Option<crate::Effect>>,
     /// Later buses it feeds, after its effects and before its pan.
     pub sends: Vec<BusSend>,
+    /// Plays on the main output; otherwise it only feeds its sends.
+    pub to_main: bool,
+}
+
+impl Bus {
+    /// A bus at unity on the main output, with no effects or sends.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            volume_db: 0.0,
+            pan: 0.0,
+            inserts: Vec::new(),
+            sends: Vec::new(),
+            to_main: true,
+        }
+    }
 }
 
 /// A bus's feed into a later bus.

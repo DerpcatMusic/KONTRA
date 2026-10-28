@@ -113,6 +113,7 @@ struct BusState {
     pan: f32,
     /// Later buses it feeds, and their levels.
     sends: Box<[ir::BusSend]>,
+    to_main: bool,
     mix: Box<[[f32; 2]]>,
 }
 
@@ -226,6 +227,7 @@ impl Engine {
                 rack: racks::Rack::new(&b.inserts, rate, &[]),
                 pan: b.pan,
                 sends: b.sends.clone().into(),
+                to_main: b.to_main,
                 mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
             })
             .collect();

@@ -55,6 +55,7 @@ pub(crate) fn translate(
         lookups: HashMap::new(),
         made: HashMap::new(),
         bus_of: HashMap::new(),
+        entry: HashMap::new(),
         script_dirs: Vec::new(),
         base: Base {
             volume_db: db(num(program, "Gain", 1.0)?),
@@ -107,8 +108,10 @@ struct Translator<'a, 'input, L> {
     base: Base,
     /// The engine group each keygroup made, for scripts.
     made: HashMap<roxmltree::NodeId, usize>,
-    /// Each layer's and aux's bus.
+    /// Each layer's and aux's fader bus (routing.rs).
     bus_of: HashMap<roxmltree::NodeId, usize>,
+    /// Each layer's first bus, where its voices play.
+    entry: HashMap<roxmltree::NodeId, usize>,
     /// Each script's folder in the bank, relative to the program's.
     script_dirs: Vec<String>,
 }
@@ -121,9 +124,10 @@ impl<L: Library> Translator<'_, '_, L> {
         if flag(layer, "Mute") || flag(layer, "Bypass") {
             return Ok(());
         }
-        let bus = self.bus_of.get(&layer.id()).copied().unwrap_or(0);
+        let bus = self.entry.get(&layer.id()).copied().unwrap_or(0);
+        let end = self.bus_of.get(&layer.id()).copied().unwrap_or(0);
         let fader = num(layer, "Gain", 1.0)?;
-        let feeds = self.out.buses.get(bus).is_some_and(|b| {
+        let feeds = self.out.buses.get(end).is_some_and(|b| {
             b.sends
                 .iter()
                 .any(|s| s.level > 0.0 && (!s.post_fader || fader > 0.0))
@@ -587,155 +591,4 @@ fn midi_or(node: Node, name: &str, default: u8) -> u8 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Every name is a sample of its own, 1000 frames long.
-    struct Stub;
-
-    impl Library for Stub {
-        fn sample(&self, _: &str, reference: &str) -> Result<ir::Sample, String> {
-            if reference.contains("missing") {
-                return Err(format!("{reference}: not in this bank"));
-            }
-            Ok(ir::Sample {
-                name: reference.into(),
-                file: "bank.ufs".into(),
-                offset: reference
-                    .bytes()
-                    .fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b))),
-                len: None,
-                channels: 1,
-                frames: 1000,
-                rate: 48_000,
-                keystream: None,
-            })
-        }
-
-        fn modules(&self) -> Vec<(String, Vec<u8>)> {
-            Vec::new()
-        }
-    }
-
-    #[test]
-    fn keygroups_become_groups_bundles_place_members_and_silent_layers_are_reported() {
-        let xml = r#"<Program DisplayName="Synthetic" Gain="1" Polyphony="4">
-          <Layers>
-            <Layer Gain="1" Pan="0">
-              <Keygroups>
-                <Keygroup Gain="0.5" Pan="0" LowKey="60" HighKey="62" LowVelocity="1" HighVelocity="127">
-                  <Oscillators>
-                    <SamplePlayer Bypass="0" BaseNote="61" CoarseTune="1" SamplePath="./a.wav"/>
-                    <SamplePlayer Bypass="0" BaseNote="61" SamplePath="./missing.wav"/>
-                  </Oscillators>
-                </Keygroup>
-                <Keygroup Gain="1" Pan="0" LowKey="70" HighKey="70" LowVelocity="1" HighVelocity="127">
-                  <Inserts>
-                    <GainMatrix Bypass="0" Gain_1_1="1" Gain_1_2="0" Gain_2_1="0" Gain_2_2="1" Gain_3_1="0" Gain_3_2="0"/>
-                  </Inserts>
-                  <Oscillators>
-                    <SamplePlayer Bypass="0" BaseNote="70" SamplePath="./bundle/*l.wav*r.wav*c.wav"/>
-                  </Oscillators>
-                </Keygroup>
-              </Keygroups>
-            </Layer>
-            <Layer Gain="0" Pan="0">
-              <Keygroups>
-                <Keygroup LowKey="0" HighKey="127">
-                  <Oscillators>
-                    <SamplePlayer Bypass="0" BaseNote="60" SamplePath="./silent.wav"/>
-                  </Oscillators>
-                </Keygroup>
-              </Keygroups>
-            </Layer>
-          </Layers>
-        </Program>"#;
-        let doc = roxmltree::Document::parse(xml).unwrap();
-        let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
-        assert_eq!(out.name, "Synthetic");
-        assert_eq!(out.voices, 4);
-        // One group per enabled keygroup; the silent layer's keygroup makes none.
-        assert_eq!(out.groups.len(), 2);
-        let first = &out.groups[0];
-        assert!((first.volume_db - (-6.0206)).abs() < 1e-3);
-        assert_eq!(first.zones.len(), 1);
-        let zone = &first.zones[0];
-        assert_eq!(
-            (zone.keys.clone(), zone.root, zone.tune),
-            (60..=62, 61, 1.0)
-        );
-        // Bundle: the matrix places L → left, R → right, the third member nowhere.
-        let bundle = &out.groups[1];
-        assert_eq!(bundle.zones.len(), 2);
-        assert!(bundle.zones[0].pan < -0.99 && bundle.zones[1].pan > 0.99);
-        // a.wav, then the two placed bundle members; the unplaced and missing ones add none.
-        assert_eq!(out.samples.len(), 3);
-        assert!(
-            out.diagnostics
-                .iter()
-                .any(|d| d.feature.starts_with("silent layer"))
-        );
-        assert!(
-            out.diagnostics
-                .iter()
-                .any(|d| d.feature == "missing sample")
-        );
-    }
-
-    #[test]
-    fn a_layer_sounds_through_its_aux_chain() {
-        let xml = r#"<Program Gain="1">
-          <Layers>
-            <Layer Name="L" Gain="0" Pan="0">
-              <BusRouters>
-                <BusRouter Bypass="0" Gain="0.5" Destination="../../Aux0" PreFader="1"/>
-              </BusRouters>
-              <Keygroups>
-                <Keygroup LowKey="0" HighKey="127">
-                  <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
-                </Keygroup>
-              </Keygroups>
-            </Layer>
-          </Layers>
-          <Auxs>
-            <AuxEffect Name="Aux0" Bypass="0" Gain="2" Pan="0" PreInsert="1">
-              <Inserts>
-                <DigitalEq Bypass="0"/>
-                <Gain Bypass="0" Volume="0.5"/>
-                <Convolver Bypass="0" Dry="0" Wet="1" SamplePath="./body.flac"/>
-              </Inserts>
-            </AuxEffect>
-          </Auxs>
-        </Program>"#;
-        let doc = roxmltree::Document::parse(xml).unwrap();
-        let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
-        // Main, the layer at its fader, the aux at its gain.
-        assert_eq!(out.buses.len(), 3);
-        assert_eq!(out.groups[0].bus, 1);
-        assert!(out.groups[0].volume_db.abs() < 1e-3);
-        let send = out.buses[1].sends[0];
-        assert_eq!((send.bus, send.level, send.post_fader), (2, 0.5, false));
-        let aux = &out.buses[2];
-        assert!((aux.volume_db - 6.0206).abs() < 1e-3);
-        // The EQ is not carried: its slot passes, and it is reported.
-        assert!(aux.inserts[0].is_none());
-        assert!(
-            matches!(aux.inserts[1].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 0.5)
-        );
-        assert!(matches!(
-            aux.inserts[2].map(|e| e.kind),
-            Some(ir::EffectKind::Convolution { impulse: 0 })
-        ));
-        assert_eq!(out.impulses.len(), 1);
-        assert!(
-            out.diagnostics
-                .iter()
-                .any(|d| d.feature == "insert DigitalEq")
-        );
-        assert!(
-            !out.diagnostics
-                .iter()
-                .any(|d| d.feature.starts_with("silent layer"))
-        );
-    }
-}
+mod tests;

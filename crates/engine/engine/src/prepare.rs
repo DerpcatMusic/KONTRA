@@ -86,6 +86,7 @@ pub fn prepare(
                 pan: b.pan,
                 inserts: b.inserts.clone(),
                 sends: b.sends.clone(),
+                to_main: b.to_main,
                 enabled: true,
             })
             .collect();
