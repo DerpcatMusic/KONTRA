@@ -13,13 +13,27 @@ impl Engine {
     /// Index of the control with `id`, and its value cell if `par` is the value.
     fn control(&self, id: i32, par: i32) -> Option<(usize, Option<usize>)> {
         let controls = &self.script()?.controls;
-        let n = usize::try_from(id.checked_sub(controls.first)?).ok()?;
+        let n = self.control_index_in(self.running.slot, id)?;
         let cell = controls.cells.get(n)?;
         let value = (par == controls.value_par).then_some(*cell).flatten();
         Some((n, value.map(|c| c as usize)))
     }
 
+    /// Index of the control with UI id `id` in script `slot`.
+    pub(crate) fn control_index_in(&self, slot: u8, id: i32) -> Option<usize> {
+        let controls = &self.plan.scripts.get(usize::from(slot))?.controls;
+        let n = usize::try_from(id.checked_sub(controls.first)?).ok()?;
+        (n < controls.cells.len()).then_some(n)
+    }
+
     pub(crate) fn control_par(&self, cells: &[i64], id: i32, par: i32) -> i32 {
+        let value = self.control_par_of(cells, id, par);
+        let menu_value =
+            self.control_par_of(cells, id, self.script().map_or(0, |s| s.controls.value_par));
+        self.menu_par(id, par, menu_value).unwrap_or(value)
+    }
+
+    fn control_par_of(&self, cells: &[i64], id: i32, par: i32) -> i32 {
         match self.control(id, par) {
             Some((_, Some(cell))) => cells.get(cell).map_or(0, |&v| v as i32),
             Some((n, None)) => self

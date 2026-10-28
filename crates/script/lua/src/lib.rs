@@ -521,11 +521,7 @@ mod tests {
             .collect();
         assert_eq!(
             groups,
-            [
-                vec![7, 9, 0, 0x3FFF_FFFF],
-                vec![7, 9, 1, 3],
-                vec![7, 9, 1, 4]
-            ]
+            [vec![7, 10, 0, -1], vec![7, 10, 1, 3], vec![7, 10, 1, 4]]
         );
         assert!(
             log.0

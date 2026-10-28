@@ -9,9 +9,11 @@
 //! engine executes, not script code. Nothing allocates after [`Engine::new`].
 
 mod behaviour;
+mod buses;
 mod callbacks;
 mod controls;
 mod effects;
+mod engine_pars;
 mod filters;
 mod inspect;
 mod ledger;
@@ -26,6 +28,7 @@ mod queue;
 mod racks;
 mod script;
 mod transport;
+mod ui;
 mod voice_gain;
 mod voice_groups;
 mod voice_rack;
@@ -36,6 +39,7 @@ use kontra_stream::StreamClient;
 use kontra_time::Frames;
 use kontra_voice::{Voice, VoiceStart};
 
+pub use engine_pars::{EnginePar, EnginePars};
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_time::SampleTime;
@@ -48,7 +52,9 @@ pub use plan::{
 };
 pub use prepare::{Open, prepare};
 pub use queue::Timed;
-pub use script::{Callbacks, Controls, EnginePars, ScriptPlan};
+pub use script::{Callbacks, Controls, ScriptPlan};
+pub use transport::Play;
+pub use ui::{Key, KeyRange, MenuItem};
 
 use behaviour::Behaviour;
 use ledger::{Ledger, Note, Origin};
@@ -118,8 +124,7 @@ pub struct Engine {
     transport: transport::Transport,
     /// Script modulation values sent to every event, read by notes not sent
     /// their own; while one ramps (until `ramping_until`) voices re-read routes.
-    // ponytail: eight indices; a ring when a library sends more.
-    script_mods: [Option<(u16, ledger::Ramp)>; 8],
+    script_mods: Box<[Option<(u16, ledger::Ramp)>]>,
     ramping_until: u64,
     plan: Arc<Plan>,
     stream: StreamClient,
@@ -162,10 +167,10 @@ pub struct Engine {
     sends: Box<[racks::Rack]>,
     taps: Box<[Box<[[f32; 2]]>]>,
     main: racks::Rack,
-    /// Callbacks run so far (24 bits): the source of `$NI_CALLBACK_ID`.
-    callbacks_started: u32,
+    ids: callbacks::Ids,
     /// Per script slot, its controls' parameters other than the value.
     control_pars: Box<[ControlPars]>,
+    ui: ui::Ui,
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
     /// Shared EQ chains, and each zone's chain.
@@ -237,12 +242,13 @@ impl Engine {
             .iter()
             .map(|s| vec![Vec::new(); s.controls.cells.len()].into())
             .collect();
+        let ui = ui::Ui::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
         let mut engine = Self {
             now: SampleTime(0),
             rate: rate.max(1),
             tempo: 120.0,
             transport: transport::Transport::new(plan.scripts.len()),
-            script_mods: [None; 8],
+            script_mods: ledger::script_ramps(&plan),
             ramping_until: 0,
             queue: EventQueue::new(plan.queue),
             hits: Vec::with_capacity(notes.capacity()),
@@ -269,7 +275,8 @@ impl Engine {
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
             control_pars,
-            callbacks_started: 0,
+            ui,
+            ids: callbacks::Ids::START,
             instrument: Level::UNITY,
             rack,
             sends,
@@ -351,29 +358,6 @@ impl Engine {
         self.behaviour.keyswitch
     }
 
-    pub fn set_bus_gain(&mut self, bus: usize, gain: f32) {
-        if let Some(b) = self.buses.get_mut(bus) {
-            b.gain = gain;
-        }
-    }
-
-    /// A disabled bus (purged mic) fades its voices and starts no new ones.
-    pub fn set_bus_enabled(&mut self, bus: usize, enabled: bool) {
-        if let Some(b) = self.buses.get_mut(bus) {
-            b.enabled = enabled;
-        }
-        if !enabled {
-            let fade = self.fade_frames();
-            let plan = self.plan.clone();
-            for slot in self.voices.iter_mut().filter(|s| s.voice.is_active()) {
-                if plan.zones.get(slot.zone).is_some_and(|z| z.bus == bus) {
-                    slot.voice.fade(fade);
-                    slot.fading = true;
-                }
-            }
-        }
-    }
-
     /// Renders `out.len()` frames from [`Engine::now`], applying each input at
     /// its sample time. Input stamped before now applies at once.
     pub fn process(&mut self, out: &mut [[f32; 2]], input: &[Timed<Event>]) {
@@ -420,6 +404,7 @@ impl Engine {
                 signal,
                 generation,
             } => return self.listen(slot, signal, generation),
+            Work::Async { slot, id } => return self.async_complete(slot, id),
         };
         match event {
             Event::NoteOn {
@@ -471,7 +456,10 @@ impl Engine {
                 && zone.keys.contains(&n.key)
                 && zone.velocities.contains(&n.velocity_byte)
                 && (n.zone_slot < 0 || n.zone_slot == i32::from(zone.slot))
-                && self.buses.get(zone.bus).is_some_and(|b| b.enabled);
+                && self
+                    .buses
+                    .get(plan::bus(&self.groups, zone))
+                    .is_some_and(|b| b.enabled);
             if !selected
                 || !self
                     .behaviour

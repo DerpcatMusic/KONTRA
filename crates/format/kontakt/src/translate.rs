@@ -331,6 +331,7 @@ fn translate_group(
             let p = m.params()?;
             out.routes.push(ir::Routes {
                 slot: slot(n),
+                name: p.name.clone(),
                 names: p.targets.iter().map(|t| t.name.clone()).collect(),
             });
             let volume = p
@@ -383,8 +384,10 @@ fn translate_group(
     if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
         for (n, m) in ExternalModArray32::try_from(chunk)?.slots()? {
             let p = m.params()?;
+            let n = n.saturating_add(usize::from(laws::EXTERNAL_MOD_BASE));
             out.routes.push(ir::Routes {
                 slot: slot(n),
+                name: p.name.clone(),
                 names: p.targets.iter().map(|t| t.name.clone()).collect(),
             });
             let source = match p.source {

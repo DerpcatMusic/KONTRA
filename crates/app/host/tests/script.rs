@@ -349,6 +349,124 @@ fn a_script_finds_a_modulation_by_name_and_drives_it() {
 }
 
 #[test]
+fn a_script_finds_a_modulator_that_carries_no_route() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].routes = vec![ir::Routes {
+        slot: 33,
+        name: "Phase_P1".into(),
+        names: vec![String::new()],
+    }];
+    let script = kontra_ksp::compile(
+        "on init
+            message(find_mod(0, \"Phase_P1\") & \" \" & get_mod_idx(0, \"Phase_P1\") ...
+                & \" \" & find_mod(0, \"none\") & \" \" & get_mod_idx(0, \"none\") ...
+                & \" \" & $NI_NOT_FOUND)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // Real Kontakt 8: a miss is 0 for find_mod, $NI_NOT_FOUND (-100) for get_mod_idx.
+    assert_eq!(e.last_message(), "33 33 0 -100 -100");
+}
+
+#[test]
+fn route_intensities_follow_kontakts_laws() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let route = |target| ir::Mod {
+        name: "LFO".into(),
+        slot: 3,
+        target,
+        bypass: false,
+        kind: ir::ModKind::Volume {
+            source: ir::Source::Controller(110),
+            intensity: 0.5,
+            curve: ir::Curve::Depth { power: 1 },
+        },
+    };
+    plan.groups[0].mods = vec![route(1), route(0)];
+    let script = kontra_ksp::compile(
+        "on init
+            declare $a
+            declare $b
+            set_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY, 500000, 0, 3, 1)
+            $a := get_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY, 0, 3, 1)
+            set_engine_par($ENGINE_PAR_INTMOD_INTENSITY, 250000, 0, 3, -1)
+            $b := get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY, 0, 3, 0)
+            message($a & \" \" & $b & \" \" & get_engine_par($ENGINE_PAR_RELEASE_TRIGGER, 0, 0, -1))
+            set_controller(110, 0)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // Real Kontakt 8 (probes/mod_par_laws.lua): the knob's depth is x², the
+    // bipolar writers' (2x − 1)³; generic -1 is route 0.
+    assert_eq!(e.last_message(), "500000 250000 0");
+    // Route 1 at depth 0.25 and route 0 at -0.125, with the controller at 0.
+    let l = level(&mut e, &[on(60)]);
+    assert!((l - 0.5 * 0.75 * 1.125).abs() < 1e-3, "{l}");
+}
+
+#[test]
+fn a_script_sets_the_stages_of_a_routed_ahdsr() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let point = |ms, level| ir::Breakpoint {
+        ms,
+        level,
+        curve: 0.0,
+    };
+    let g = &mut plan.groups[0];
+    g.envelopes = vec![ir::Breakpoints {
+        start: 0.0,
+        points: vec![
+            point(500.0, 1.0),
+            point(0.0, 1.0),
+            point(500.0, 1.0),
+            point(10.0, 0.0),
+        ],
+        sustain: Some(2),
+        loop_from: None,
+    }];
+    g.mods = vec![ir::Mod {
+        name: "ENV_AHDSR".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Volume {
+            source: ir::Source::Envelope(0),
+            intensity: 1.0,
+            curve: ir::Curve::Depth { power: 1 },
+        },
+    }];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_ATTACK, 0, 0, 0, -1)
+            set_engine_par($ENGINE_PAR_DECAY, 0, 0, 0, -1)
+            set_engine_par($ENGINE_PAR_SUSTAIN, 500000, 0, 0, -1)
+            set_engine_par($ENGINE_PAR_RELEASE, 250000, 0, 0, -1)
+            message(get_engine_par($ENGINE_PAR_SUSTAIN, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_RELEASE, 0, 0, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "500000 250000");
+    // No attack or decay: the note sits at the sustain level, 0.5³.
+    let l = level(&mut e, &[on(60)]);
+    assert!((l - 0.5 * 0.125).abs() < 1e-3, "{l}");
+}
+
+#[test]
 fn a_script_sends_a_note_its_modulation_value() {
     use kontra_engine::ir;
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -463,9 +581,10 @@ fn millisecond_and_beat_timers_run_side_by_side_and_keep_their_signal() {
     assert_eq!(e.last_message(), "8 4");
 }
 
-/// Kontakt's own callback-type and signal numbers (probes/callback_constants.lua).
+/// The callback-type and signal numbers scripts compare against are the
+/// measured ones (probes/callback_constants.lua).
 #[test]
-fn callback_types_and_signals_carry_kontakts_numbers() {
+fn callback_types_and_signals_carry_the_measured_numbers() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let zones = vec![zone(&mut store, 0.5, 0)];
     let mut e = engine(
@@ -501,7 +620,7 @@ fn the_transport_starts_the_listener_and_answers_its_queries() {
         end on",
     );
     // 120 bpm: a quarter is 500 ms and 960 ticks; a 3/4 bar is 1.5 s.
-    e.set_transport(true, 2.0, (3, 4));
+    e.set_transport(kontra_engine::Play::Running, 2.0, (3, 4));
     assert_eq!(e.last_message(), "1 1920 960 250000 3/4 1500000");
     // 4096 frames at 120 bpm move the song on 163.84 ticks.
     level(&mut e, &[]);
@@ -570,6 +689,81 @@ fn a_script_sets_a_send_effects_wet_and_dry_levels() {
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let l = level(&mut e, &[on(60)]);
     assert!((l - 0.5).abs() < 1e-3, "{l}");
+}
+
+/// `$NI_BUS_OFFSET + n` puts a group on bus n; −1 puts it back on the main bus.
+#[test]
+fn a_script_moves_a_group_onto_a_bus() {
+    use kontra_engine::Bus;
+    let play = |set: &str| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+        plan.buses.push(Bus {
+            name: "Room".into(),
+            gain: 0.5,
+            pan: 0.0,
+            inserts: Vec::new(),
+            enabled: true,
+        });
+        let script = kontra_ksp::compile(
+            &format!(
+                "on init
+                    set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, $NI_BUS_OFFSET, 0, -1, -1)
+                    {set}
+                    message(get_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, 0, -1, -1))
+                end on"
+            ),
+            &[],
+        )
+        .unwrap();
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        (level(&mut e, &[on(60)]), e.last_message().to_owned())
+    };
+    let (l, read) = play("");
+    assert!(
+        (l - 0.25).abs() < 1e-3 && read == "1024",
+        "on the bus: {l} {read}"
+    );
+    let (l, read) = play("set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, -1, 0, -1, -1)");
+    assert!(
+        (l - 0.5).abs() < 1e-3 && read == "-1",
+        "on the main bus: {l} {read}"
+    );
+}
+
+/// What a script reads back from its menus, texts and keys (probes/menu_readback.lua).
+#[test]
+fn a_script_reads_back_its_menus_texts_and_keys() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let e = engine(
+        &store,
+        zones,
+        "on init
+            declare ui_menu $m
+            declare ui_label $l(1, 1)
+            declare $id
+            add_menu_item($m, \"a\", 10)
+            add_menu_item($m, \"bb\", 20)
+            add_menu_item($m, \"ccc\", 30)
+            $id := get_ui_id($m)
+            $m := 20
+            set_menu_item_visibility($id, 0, 0)
+            set_menu_item_str($id, 2, \"z\")
+            set_control_par_str(get_ui_id($l), $CONTROL_PAR_TEXT, \"hello\")
+            set_key_color(60, $KEY_COLOR_RED)
+            set_key_name(60, \"C\")
+            message(get_control_par($id, $CONTROL_PAR_NUM_ITEMS) & \" \" ...
+                & get_control_par($id, $CONTROL_PAR_SELECTED_ITEM_IDX) & \" \" ...
+                & get_menu_item_visibility($id, 0) & \" \" & get_menu_item_value($id, 2) & \" \" ...
+                & get_menu_item_str($id, 2) & \" \" ...
+                & get_control_par_str(get_ui_id($l), $CONTROL_PAR_TEXT) & \" \" ...
+                & get_key_color(60) & \" \" & get_key_name(60) & \" \" & get_key_color(61))
+        end on",
+    );
+    assert_eq!(e.last_message(), "3 1 0 30 z hello 4 C 0");
+    assert_eq!(e.keys()[60].color, 4);
 }
 
 #[test]
@@ -696,7 +890,8 @@ fn a_uvi_note_on_an_oscillator_starts_only_that_zone_slot() {
     let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
     plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
-    assert!((level(&mut e, &[on(60)]) - 0.25).abs() < 1e-3);
+    let measured = level(&mut e, &[on(60)]);
+    assert!((measured - 0.25).abs() < 1e-3, "{measured}");
 }
 
 #[test]
@@ -721,7 +916,56 @@ fn a_script_modulation_sent_at_init_scales_notes_that_start_later() {
     let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
     plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
-    assert!((level(&mut e, &[on(60)]) - 0.25).abs() < 1e-3);
+    let measured = level(&mut e, &[on(60)]);
+    assert!((measured - 0.25).abs() < 1e-3, "{measured}");
+}
+
+#[test]
+fn a_script_modulation_index_keeps_its_value_after_many_others() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    for g in &mut plan.groups {
+        g.mods = vec![kontra_engine::ir::Mod {
+            name: "Script Event Modulation 20".into(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            kind: kontra_engine::ir::ModKind::Volume {
+                source: kontra_engine::ir::Source::Script(20),
+                intensity: 1.0,
+                curve: kontra_engine::ir::Curve::Depth { power: 1 },
+            },
+        }];
+    }
+    // Twelve indices no route reads go first; the one a route reads still lands.
+    let source = "function onInit()
+            for i = 1, 12 do sendScriptModulation(i, 1) end
+            sendScriptModulation(20, 0.5)
+        end
+        function onNote(e) postEvent(e) end";
+    let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let measured = level(&mut e, &[on(60)]);
+    assert!((measured - 0.25).abs() < 1e-3, "{measured}");
+}
+
+#[test]
+fn a_modulation_value_no_route_reads_is_still_read_back() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            set_event_par_arr($ALL_EVENTS, $EVENT_PAR_MOD_VALUE_ID, 300000, 7)
+        end on
+        on note
+            message(get_event_par_arr($EVENT_ID, $EVENT_PAR_MOD_VALUE_ID, 7))
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "300000");
 }
 
 #[test]
@@ -844,4 +1088,52 @@ fn a_uvi_script_that_fails_counts_a_fault_and_the_engine_plays_on() {
     let mut e = lua_engine(&mut store, runaway);
     assert_eq!(level(&mut e, &[on(60)]), 0.0);
     assert_eq!(e.script_faults().first().map(|f| f.bad_code), Some(1));
+}
+
+#[test]
+fn moving_a_control_runs_ui_controls_then_its_ui_control() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare ui_knob $k (0, 100, 1)
+            declare ui_switch $s
+            declare @log
+            message(get_ui_id($k))
+        end on
+        on ui_controls
+            @log := @log & \"all \" & $NI_UI_ID & \" \"
+        end on
+        on ui_control ($k)
+            @log := @log & \"k \" & $k & \" \" & $NI_CALLBACK_TYPE
+            message(@log)
+        end on",
+    );
+    let id: i32 = e.last_message().parse().unwrap();
+    e.set_control(0, id, 42);
+    assert_eq!(e.last_message(), format!("all {id} k 42 6"));
+    // Not a control of this script: nothing runs.
+    e.set_control(0, id + 100, 1);
+    assert_eq!(e.last_message(), format!("all {id} k 42 6"));
+}
+
+#[test]
+fn a_purge_reports_its_id_in_async_complete() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $id
+            $id := purge_group(0, 0)
+        end on
+        on async_complete
+            message($NI_ASYNC_ID & \" \" & $id & \" \" & $NI_ASYNC_EXIT_STATUS & \" \" & $NI_CALLBACK_TYPE)
+        end on",
+    );
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "1 1 1 13");
 }
