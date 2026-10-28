@@ -455,10 +455,12 @@ fn timed(out: &mut ir::Group, p: &InternalModParams, slot: u16, notes: &mut Note
                 continue;
             }
         };
-        if flex && !amp && matches!(kind, ir::ModKind::Volume { .. }) {
-            if let Some(e) = out.envelopes.last() {
-                out.envelope = laws::flex_gate(e);
-            }
+        if flex
+            && !amp
+            && matches!(kind, ir::ModKind::Volume { .. })
+            && let Some(e) = out.envelopes.last()
+        {
+            out.envelope = laws::flex_gate(e);
         }
         out.mods.push(ir::Mod {
             name: p.name.clone(),
