@@ -223,7 +223,8 @@ impl<L: Library> Translator<'_, '_, L> {
         } else if node.has_tag_name("ThreeBandShelves") {
             Some(shelves(node)?)
         } else if node.has_tag_name("Convolver") || node.has_tag_name("SampledReverb") {
-            let wet = num(node, "Wet", 1.0)? as f32;
+            let raw = node.has_tag_name("SampledReverb") && !flag(node, "NormalizePower");
+            let wet = num(node, "Wet", 1.0)? as f32 * if raw { RAW_WET } else { 1.0 };
             let dry = num(node, "Dry", 0.0)? as f32;
             Some(match self.impulse(node)? {
                 Some(impulse) => effect(ir::EffectKind::Convolution { impulse }, wet, dry),
@@ -279,6 +280,12 @@ impl<L: Library> Translator<'_, '_, L> {
         Ok(u16::try_from(self.out.impulses.len() - 1).ok())
     }
 }
+
+/// A sampled reverb's wet level when its response is not normalized: UVI's
+/// SampledReverbState audio path scales the convolved signal by 0.1 (−20 dB)
+/// unless NormalizePower is set ([ref], 0.1 at [ref]), before
+/// Wet. The Convolver's paths apply only Wet.
+const RAW_WET: f32 = 0.1;
 
 /// `NormalizePower`: the response scaled to unit energy (sum of squares).
 /// UVI (SampledReverb/Convolver IR build [ref]) divides by the root
