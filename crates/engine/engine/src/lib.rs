@@ -8,6 +8,7 @@
 //! crossfades, release triggers, voice groups, mic buses) is plan data the
 //! engine executes, not script code. Nothing allocates after [`Engine::new`].
 
+mod admit;
 mod behaviour;
 mod buses;
 mod callbacks;
@@ -439,10 +440,7 @@ impl Engine {
     fn note_on(&mut self, host: HostNote, velocity: f64, tune: f64) {
         self.behaviour.play(&self.plan, host.key, host.channel);
         let draw = self.behaviour.draw(host.key);
-        let Some(note) = self
-            .notes
-            .insert(Note::new(host, velocity, tune, self.now, draw))
-        else {
+        let Some(note) = self.admit(Note::new(host, velocity, tune, self.now, draw)) else {
             self.stats.notes_refused += 1;
             return;
         };
