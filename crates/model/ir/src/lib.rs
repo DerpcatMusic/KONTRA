@@ -10,7 +10,7 @@ mod drive;
 mod effects;
 mod reverb;
 pub use drive::{Crush, Curve as DriveCurve, Shaper};
-pub use effects::{Compressor, Limiter};
+pub use effects::{Compressor, Delay, DelayTime, Limiter, Phaser};
 pub use reverb::{Law, ReverbPar};
 
 #[derive(Clone, Debug)]
@@ -674,6 +674,10 @@ pub enum EffectKind {
     Compressor(Compressor),
     /// A peak limiter, in place.
     Limiter(Limiter),
+    /// An echo, chorus or flanger (the wet path; `dry` mixes the input back).
+    Delay(Delay),
+    /// A phaser (the wet path; `dry` mixes the input back).
+    Phaser(Phaser),
     /// Not carried, an insert: audio passes unchanged (its output gain
     /// trims processing that does not run).
     /// The translator reports it.
