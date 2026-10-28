@@ -14,11 +14,13 @@ mod laws;
 mod legacy_reverb;
 mod resources;
 mod samples;
+mod script_knobs;
 mod skreamer;
 mod translate;
 
 pub use container::chunks;
-pub use laws::{reverb_laws, script_knobs};
+pub use laws::reverb_laws;
+pub use script_knobs::script_knobs;
 
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
