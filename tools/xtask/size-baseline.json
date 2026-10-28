@@ -1,5 +1,5 @@
 {
-  "kontakto": 80492,
+  "kontakto": 80493,
   "kontra-align": 1,
   "kontra-dsp": 8,
   "kontra-dsp-core": 69,
@@ -29,7 +29,7 @@
   "kontra-protocol": 1,
   "kontra-stream": 1638,
   "kontra-time": 102,
-  "kontra-ui": 1,
+  "kontra-ui": 568,
   "kontra-ui-model": 1427,
   "kontra-vm": 1476,
   "kontra-voice": 735,
