@@ -40,6 +40,13 @@ fn the_late_part_takes_its_own_cuts_after_the_crossover() {
         },
     );
     assert!(peak(&all[1_000..]) < 0.03);
+    // A 200 Hz low cut, two octaves over a 50 Hz tone.
+    let low = Cuts {
+        late: [200.0, 20_000.0],
+        crossover: None,
+        ..c
+    };
+    assert!(peak(&cut(&tone(50.0, RATE as usize), RATE, &low)[4_800..]) < 0.1);
 }
 
 #[test]

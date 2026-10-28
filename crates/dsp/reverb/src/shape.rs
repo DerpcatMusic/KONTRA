@@ -13,12 +13,15 @@ pub struct Cuts {
     pub crossover: Option<f32>,
 }
 
+/// A low cut at or below this is open.
+const OPEN_LOW_HZ: f32 = 20.0;
+
 /// A bilinear Butterworth low- or high-pass over `x`; a low-pass above
-/// 0.45 of the rate or a high-pass below 0.01 of it passes, as does a
-/// corner that is not a positive number.
+/// 0.45 of the rate or a high-pass at or below 20 Hz (the open setting)
+/// passes, as does a corner that is not a positive number.
 fn butterworth(x: &mut [f32], rate: u32, hz: f32, high_pass: bool) {
     let w = hz / rate.max(1) as f32;
-    if !w.is_finite() || w <= 0.0 || (!high_pass && w > 0.45) || (high_pass && w < 0.01) {
+    if !w.is_finite() || w <= 0.0 || (!high_pass && w > 0.45) || (high_pass && hz <= OPEN_LOW_HZ) {
         return;
     }
     let k = (w * std::f32::consts::PI).tan();
