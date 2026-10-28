@@ -1,5 +1,6 @@
 //! Kontakt's Reverb (0x59) from the translator through the engine, against
 //! the emulated native kernel (`0x141ae2c60`).
+#![cfg(test)]
 
 use std::sync::Arc;
 
