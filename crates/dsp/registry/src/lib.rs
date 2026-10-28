@@ -2,3 +2,4 @@
 
 pub use kontra_dsp_eq as eq;
 pub use kontra_dsp_filter as filter;
+pub use kontra_dsp_reverb as reverb;

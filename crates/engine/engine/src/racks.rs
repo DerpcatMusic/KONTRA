@@ -2,17 +2,22 @@
 //! slot with state (an EQ, a convolution) sits where the format put it.
 //! Group racks fold into each voice's matrix instead (voice_gain.rs).
 
+use std::sync::Arc;
+
 use kontra_dsp::eq::Biquad;
+use kontra_dsp::reverb::Convolver;
 use kontra_ir as ir;
 use kontra_voice::Gain;
 
-use crate::Engine;
 use crate::effects;
 use crate::filters;
+use crate::{Engine, MAX_SPAN, Response};
 
 enum Dsp {
     None,
     Eq(Box<[Biquad]>),
+    /// The convolver and a span of its wet output.
+    Conv(Box<Convolver>, Box<[[f32; 2]]>),
 }
 
 pub(crate) struct Rack {
@@ -22,8 +27,12 @@ pub(crate) struct Rack {
 }
 
 impl Rack {
-    /// Not real-time.
-    pub(crate) fn new(slots: &[Option<ir::Effect>], rate: u32) -> Self {
+    /// `impulses` are the plan's convolution responses. Not real-time.
+    pub(crate) fn new(
+        slots: &[Option<ir::Effect>],
+        rate: u32,
+        impulses: &[Option<Response>],
+    ) -> Self {
         let dsp = slots
             .iter()
             .map(|slot| match slot.map(|e| e.kind) {
@@ -32,6 +41,15 @@ impl Rack {
                     let live = slot.map(|e| ir::Effect { bypass: false, ..e });
                     let sections = filters::sections(&[live]);
                     Dsp::Eq(filters::biquads(&sections, rate))
+                }
+                Some(ir::EffectKind::Convolution { impulse }) => {
+                    match impulses.get(usize::from(impulse)).and_then(Option::as_ref) {
+                        Some(r) => Dsp::Conv(
+                            Box::new(Convolver::new(&r.left, &r.right)),
+                            vec![[0.0; 2]; MAX_SPAN as usize].into(),
+                        ),
+                        None => Dsp::None,
+                    }
                 }
                 _ => Dsp::None,
             })
@@ -50,6 +68,20 @@ impl Rack {
             };
             match (dsp, e.kind) {
                 (Dsp::Eq(f), _) => filters::run(f, io),
+                // The wet path from the input, then the dry level, then the wet at the output gain.
+                (Dsp::Conv(conv, wet), _) => {
+                    let Some(wet) = wet.get_mut(..io.len()) else {
+                        continue;
+                    };
+                    wet.copy_from_slice(io);
+                    conv.process(wet);
+                    apply(effects::matrix(&e), io);
+                    for (x, w) in io.iter_mut().zip(wet.iter()) {
+                        x[0] += w[0] * e.output;
+                        x[1] += w[1] * e.output;
+                    }
+                    continue;
+                }
                 (_, ir::EffectKind::Sends(levels)) => {
                     for (tap, level) in taps.iter_mut().zip(levels) {
                         for (t, x) in tap.iter_mut().zip(io.iter()) {
@@ -86,12 +118,13 @@ impl Engine {
     /// left them. Not real-time.
     pub(crate) fn rebuild_racks(&mut self) {
         let rate = self.rate;
+        let plan = Arc::clone(&self.plan);
         let racks = std::iter::once(&mut self.rack)
             .chain(self.sends.iter_mut())
             .chain(std::iter::once(&mut self.main))
             .chain(self.buses.iter_mut().map(|b| &mut b.rack));
         for rack in racks {
-            *rack = Rack::new(&rack.slots, rate);
+            *rack = Rack::new(&rack.slots, rate, &plan.impulses);
         }
     }
 

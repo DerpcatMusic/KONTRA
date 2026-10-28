@@ -175,16 +175,16 @@ impl Engine {
     #[must_use]
     pub fn new(plan: Arc<Plan>, stream: StreamClient, rate: u32) -> Self {
         let shared: Box<[Group]> = plan.groups.clone().into();
-        let rack = racks::Rack::new(&plan.inserts, rate);
+        let rack = racks::Rack::new(&plan.inserts, rate, &[]);
         let sends: Box<[racks::Rack]> = plan
             .sends
             .iter()
-            .map(|slot| racks::Rack::new(std::slice::from_ref(slot), rate))
+            .map(|slot| racks::Rack::new(std::slice::from_ref(slot), rate, &[]))
             .collect();
         let taps = (0..sends.len())
             .map(|_| vec![[0.0; 2]; MAX_SPAN as usize].into())
             .collect();
-        let main = racks::Rack::new(&plan.main, rate);
+        let main = racks::Rack::new(&plan.main, rate, &[]);
         let pool = plan.voices + plan.voices / 4 + 1;
         let voices = (0..pool)
             .map(|_| Slot {
@@ -205,7 +205,7 @@ impl Engine {
             .map(|b| BusState {
                 gain: b.gain,
                 enabled: b.enabled,
-                rack: racks::Rack::new(&b.inserts, rate),
+                rack: racks::Rack::new(&b.inserts, rate, &[]),
                 pan: b.pan,
                 mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
             })

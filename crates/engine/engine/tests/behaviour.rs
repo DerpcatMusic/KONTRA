@@ -793,3 +793,25 @@ fn timed_modulation_does_not_depend_on_the_block_size() {
         assert_eq!(render(block), reference, "block {block}");
     }
 }
+
+#[test]
+fn an_instrument_convolution_adds_its_wet_path() {
+    use kontra_engine::{Response, ir};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    // A delayed half-level tap: on a constant input the wet path is 0.25.
+    plan.impulses = vec![Some(Response {
+        left: vec![0.0, 0.0, 0.5],
+        right: vec![0.0, 0.0, 0.5],
+    })];
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Convolution { impulse: 0 },
+        bypass: false,
+        output: 1.0,
+        dry: 0.5,
+    })];
+    let mut e = engine(&store, plan);
+    let [l, r] = level(&mut e, &[on(60, 1.0)]);
+    // Dry 0.5 × 0.5 plus wet 0.25.
+    assert!(close(l, 0.5) && close(r, 0.5), "{l} {r}");
+}
