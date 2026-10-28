@@ -702,7 +702,7 @@ mod tests {
 
     #[test]
     fn the_compressor_knob_is_the_output_slope_with_threshold_makeup() {
-        let c = compressor(2, -20.0, 0.25, 6.283, 69.3, false);
+        let c = compressor(2, -20.0, 0.25, std::f32::consts::TAU, 69.3, false);
         assert!((c.ratio - 4.0).abs() < 1e-4);
         assert!((c.makeup_db - 9.99).abs() < 1e-3);
         assert!((c.attack_ms - 1.0).abs() < 1e-3 && (c.release_ms - 100.0).abs() < 0.1);
