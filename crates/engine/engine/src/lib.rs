@@ -106,6 +106,8 @@ struct BusState {
 pub struct Engine {
     now: SampleTime,
     rate: u32,
+    /// Host tempo, quarter notes per minute (tempo-synced LFOs).
+    tempo: f32,
     plan: Arc<Plan>,
     stream: StreamClient,
     queue: EventQueue,
@@ -217,6 +219,7 @@ impl Engine {
         let mut engine = Self {
             now: SampleTime(0),
             rate: rate.max(1),
+            tempo: 120.0,
             queue: EventQueue::new(plan.queue),
             hits: Vec::with_capacity(notes.capacity()),
             ended: Vec::with_capacity(notes.capacity()),
@@ -314,6 +317,14 @@ impl Engine {
     #[must_use]
     pub fn keyswitch(&self) -> Option<u8> {
         self.behaviour.keyswitch
+    }
+
+    /// The host's tempo in quarter notes per minute; ignored unless finite
+    /// and positive.
+    pub fn set_tempo(&mut self, bpm: f32) {
+        if bpm.is_finite() && bpm > 0.0 {
+            self.tempo = bpm;
+        }
     }
 
     pub fn set_bus_gain(&mut self, bus: usize, gain: f32) {

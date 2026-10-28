@@ -124,27 +124,44 @@ fn segment(from: f32, to: f32, x: f32, k: f32) -> f32 {
 }
 
 /// The oscillator's output at `age`, −1..=1, faded in.
-pub(crate) fn lfo(l: &ir::Lfo, age: Age, seed: u32) -> f32 {
+pub(crate) fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
     let t = if l.retrigger { age.held } else { age.now };
-    let cycles = f64::from(l.phase) + f64::from(l.hz) * f64::from(t);
+    let hz = match l.rate {
+        ir::Rate::Hz(hz) => hz,
+        ir::Rate::Beats(beats) => tempo / 60.0 / beats.max(1e-3),
+    };
+    let cycles = f64::from(l.phase) + f64::from(hz) * f64::from(t);
     let p = cycles.rem_euclid(1.0) as f32;
+    let half = (2.0 * cycles).floor();
+    let random = || {
+        // A new draw each half cycle: a hash of the step and the voice.
+        let mut x = (half as i64 as u64) ^ (u64::from(seed) << 32);
+        x = (x ^ (x >> 33)).wrapping_mul(0xff51_afd7_ed55_8ccd);
+        x = (x ^ (x >> 33)).wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        ((x >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
+    };
+    let pulse = |width: f32| if p < width { 1.0 } else { -1.0 };
+    let sine = (std::f32::consts::TAU * p).sin();
     let v = match l.wave {
-        ir::Wave::Sine => (std::f32::consts::TAU * p).sin(),
+        ir::Wave::Sine => sine,
         ir::Wave::Triangle => 1.0 - 4.0 * ((p + 0.25).fract() - 0.5).abs(),
         ir::Wave::Saw => 1.0 - 2.0 * p,
-        ir::Wave::Square { width } => {
-            if p < width {
-                1.0
+        ir::Wave::Square { width } => pulse(width),
+        ir::Wave::Random => random(),
+        ir::Wave::Multi {
+            weights: [w0, w1, w2, w3, w4],
+            width,
+            normalize,
+        } => {
+            let saw = 2.0 * (2.0 * p).fract() - 1.0;
+            let triangle = if p < 0.5 {
+                4.0 * (p - 0.25)
             } else {
-                -1.0
-            }
-        }
-        ir::Wave::Random => {
-            // A new draw each half cycle: a hash of the step and the voice.
-            let mut x = ((2.0 * cycles).floor() as i64 as u64) ^ (u64::from(seed) << 32);
-            x = (x ^ (x >> 33)).wrapping_mul(0xff51_afd7_ed55_8ccd);
-            x = (x ^ (x >> 33)).wrapping_mul(0xc4ce_b9fe_1a85_ec53);
-            ((x >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
+                4.0 * (0.75 - p)
+            };
+            let y = -w0 * sine + w1 * saw + w2 * triangle - w3 * pulse(width) + w4 * random();
+            let sum = w0.abs() + w1.abs() + w2.abs() + w3.abs() + w4.abs();
+            if normalize { y / sum.max(1.0) } else { y }
         }
     };
     // The native fade (0x140b06c90) runs a state from 0.3 to 1.3 by a constant
@@ -224,12 +241,26 @@ mod tests {
     fn an_lfo_cycles_at_its_rate() {
         let l = ir::Lfo {
             wave: ir::Wave::Sine,
-            hz: 5.0,
+            rate: ir::Rate::Hz(5.0),
             phase: 0.0,
             fade_ms: 0.0,
             retrigger: true,
         };
-        assert!((lfo(&l, at(0.05, None), 0) - 1.0).abs() < 1e-4);
-        assert!(lfo(&l, at(0.2, None), 0).abs() < 1e-4);
+        assert!((lfo(&l, at(0.05, None), 0, 120.0) - 1.0).abs() < 1e-4);
+        assert!(lfo(&l, at(0.2, None), 0, 120.0).abs() < 1e-4);
+        // A Multi's sine enters inverted; two full weights normalise to half each.
+        let multi = |weights, normalize| ir::Lfo {
+            wave: ir::Wave::Multi {
+                weights,
+                width: 0.5,
+                normalize,
+            },
+            ..l
+        };
+        let sine = multi([1.0, 0.0, 0.0, 0.0, 0.0], false);
+        assert!((lfo(&sine, at(0.05, None), 0, 120.0) + 1.0).abs() < 1e-4);
+        let both = multi([1.0, 0.0, 1.0, 0.0, 0.0], true);
+        // At a quarter cycle: (−1 + 0) / 2.
+        assert!((lfo(&both, at(0.05, None), 0, 120.0) + 0.5).abs() < 1e-4);
     }
 }

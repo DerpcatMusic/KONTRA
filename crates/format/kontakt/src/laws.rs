@@ -192,8 +192,13 @@ pub(crate) fn flex_gate(e: &ir::Breakpoints) -> ir::Envelope {
 }
 
 /// A free-running (unsynced) LFO. Waveforms by id: sine 0, rectangle 1,
-/// triangle 2, sawtooth 3, random 4; the Multi mixes (5, 6) and tempo sync are
-/// not mapped. Values: fade-in ms, Hz, pulse width, start phase in cycles.
+/// triangle 2, sawtooth 3, random 4, and the Multi mixes 5 and 6, whose stored
+/// weights (sine, rectangle, triangle, saw, random) reach the mixer as sine,
+/// saw, triangle, pulse, random (0x140b07290, 0x140b078d0; the analog tables
+/// play as their exact shapes). Values: fade-in ms, Hz (or a count of the
+/// synced note value), pulse width, start phase in cycles. A synced note value
+/// is in whole notes: the manual's "Whole, 1.0" cycle is one 4/4 bar, and
+/// ANALOG STRINGS stores 1/24 × 24. A synced fade is not mapped.
 pub(crate) fn lfo(l: &Lfo, retrigger: bool) -> Option<ir::Lfo> {
     const FREE: f32 = -1.0;
     let [fade_ms, hz, width, phase] = l.initial_values;
@@ -203,12 +208,26 @@ pub(crate) fn lfo(l: &Lfo, retrigger: bool) -> Option<ir::Lfo> {
         2 => ir::Wave::Triangle,
         3 => ir::Wave::Saw,
         4 => ir::Wave::Random,
+        5 | 6 => {
+            let [sine, pulse, triangle, saw, random] = l.trailing_values?;
+            ir::Wave::Multi {
+                weights: [sine, saw, triangle, pulse, random],
+                width,
+                normalize: l.records[0].flag,
+            }
+        }
         _ => return None,
     };
     let [rate, fade] = &l.records;
-    (rate.values[0] == FREE && fade.values[0] == FREE).then_some(ir::Lfo {
+    let note = rate.values[0];
+    let rate = if note == FREE {
+        ir::Rate::Hz(hz)
+    } else {
+        ir::Rate::Beats(4.0 * note * hz)
+    };
+    (fade.values[0] == FREE).then_some(ir::Lfo {
         wave,
-        hz,
+        rate,
         phase,
         fade_ms,
         retrigger,

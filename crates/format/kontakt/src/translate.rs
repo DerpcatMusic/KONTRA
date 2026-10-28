@@ -464,7 +464,7 @@ fn timed(
         Modulator::Lfo(l) => {
             let retrigger = p.unknown_flags.get(RETRIGGER).is_some_and(|&f| f != 0);
             let (Some(lfo), Ok(n)) = (laws::lfo(l, retrigger), u8::try_from(out.lfos.len())) else {
-                return report(notes, unmapped, "LFO (multi or synced)");
+                return report(notes, unmapped, "LFO (synced fade or unknown wave)");
             };
             out.lfos.push(lfo);
             (Some(ir::Source::Lfo(n)), "LFO")
@@ -481,7 +481,9 @@ fn timed(
         .any(|m| matches!(m.kind, ir::ModKind::Envelope));
     for t in &p.targets {
         let kind = match (t.param.as_str(), t.slot) {
-            ("volume", None) if what != "LFO" => ir::ModKind::Volume {
+            // An LFO's volume route is linear in its unipolar swing (v2
+            // sampler-core v1_voice_controls volume target, frange_uni 0x14071a840).
+            ("volume", None) => ir::ModKind::Volume {
                 source,
                 intensity: t.signed_intensity(),
                 curve: ir::Curve::Depth { power: 1 },

@@ -33,8 +33,12 @@ impl Engine {
                         curve,
                     } => {
                         // HeldTime is fixed at the voice's start: see `release_counter`.
-                        self.source(zone, source, note, age)
-                            .map_or(1.0, |x| curve.gain(intensity, x))
+                        let x = self.source(zone, source, note, age);
+                        let x = match source {
+                            ir::Source::Lfo(_) => x.map(|x| (x + 1.0) * 0.5),
+                            _ => x,
+                        };
+                        x.map_or(1.0, |x| curve.gain(intensity, x))
                     }
                     _ => 1.0,
                 })
@@ -91,7 +95,7 @@ impl Engine {
             )),
             ir::Source::Lfo(n) => {
                 let lfo = group()?.lfos.get(usize::from(n))?;
-                Some(modulators::lfo(lfo, age, u32::from(note.key)))
+                Some(modulators::lfo(lfo, age, u32::from(note.key), self.tempo))
             }
             ir::Source::Velocity => Some(note.velocity as f32),
             ir::Source::Controller(cc) => Some(f32::from(self.behaviour.cc(channel, cc)) / 127.0),

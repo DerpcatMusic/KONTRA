@@ -214,13 +214,20 @@ pub struct Breakpoint {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Lfo {
     pub wave: Wave,
-    pub hz: f32,
+    pub rate: Rate,
     /// Start phase, cycles.
     pub phase: f32,
     /// Ramps the output in from 0 over this long after the voice starts.
     pub fade_ms: f32,
     /// Restarts at each voice; else runs from the engine's start.
     pub retrigger: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Rate {
+    Hz(f32),
+    /// Quarter-note beats per cycle, at the host's tempo.
+    Beats(f32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -235,6 +242,14 @@ pub enum Wave {
     },
     /// A new random level each half cycle.
     Random,
+    /// `−w0·sine + w1·saw(2p) + w2·triangle − w3·pulse(width) + w4·random`,
+    /// the saw rising twice a cycle and the triangle from −1; divided by
+    /// `max(1, Σ|w|)` when `normalize`.
+    Multi {
+        weights: [f32; 5],
+        width: f32,
+        normalize: bool,
+    },
 }
 
 /// Times in seconds; decay and release to fall about 60 dB; sustain 0..=1.
@@ -278,6 +293,8 @@ pub enum ModKind {
     /// The group's [`Group::envelope`], shaping its level.
     Envelope,
     /// `source` scales the level along `curve`; `intensity` is −1..=1 and live.
+    /// A bipolar source (an LFO) enters as `(x + 1)/2`: it swings the level
+    /// down from unity and back.
     Volume {
         source: Source,
         intensity: f32,
