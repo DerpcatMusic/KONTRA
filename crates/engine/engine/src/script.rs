@@ -26,6 +26,8 @@ pub struct ScriptPlan {
     pub engine_pars: EnginePars,
     /// The translator's law for each reverb control, in `ir::ReverbPar::ALL` order.
     pub reverb_laws: [crate::ir::Law; 8],
+    /// Code in another language, run by its own machine instead of `program`.
+    pub foreign: Option<std::sync::Arc<dyn kontra_vm::Foreign>>,
 }
 
 /// The script's numbers for the engine parameters the engine answers.

@@ -105,6 +105,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             pgs_changed: entry(CallbackKind::PgsChanged),
         },
         coroutines: COROUTINES,
+        foreign: None,
         controls: controls(script),
         engine_pars: EnginePars {
             attack: symbol(script, ATTACK),
