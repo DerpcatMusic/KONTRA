@@ -283,6 +283,8 @@ fn settings(r: ir::Reverb) -> Settings {
         high_cut_hz: r.high_cut_hz,
         low_shelf_db: r.low_shelf_db,
         stereo: r.stereo,
+        modulation_ms: r.modulation_ms,
+        modulation_hz: r.modulation_hz,
     }
 }
 

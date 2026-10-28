@@ -20,6 +20,10 @@ pub struct Settings {
     pub low_shelf_db: f32,
     /// 0 mono, 1 full width.
     pub stereo: f32,
+    /// How far the lines' lengths swing (all but the first, half of them a
+    /// quarter cycle apart), and how fast.
+    pub modulation_ms: f32,
+    pub modulation_hz: f32,
 }
 
 /// Mutually prime line lengths at size 1, ms.
@@ -29,6 +33,8 @@ const SHELF_HZ: f32 = 200.0;
 /// The largest size and predelay [`Fdn::set`] accepts; the lines are allocated for them.
 const MAX_SIZE: f32 = 4.0;
 const MAX_PREDELAY_MS: f32 = 1000.0;
+/// The widest line swing [`Fdn::set`] accepts; the lines have room for it.
+const MAX_MODULATION_MS: f32 = 5.0;
 /// The wet output fades out and back in over this long around a change. Lines and
 /// tail keep running, so the change lands in silence and never clicks.
 const FADE_S: f32 = 0.01;
@@ -63,6 +69,16 @@ impl Delay {
             .get((self.at + n - self.len) % n)
             .copied()
             .unwrap_or(0.0)
+    }
+
+    /// `len + offset` samples ago (`offset` ≥ 0), linearly interpolated.
+    fn read_late(&self, offset: f32) -> f32 {
+        let n = self.buf.len();
+        let back = (self.len as f32 + offset).min((n - 2) as f32);
+        let whole = back as usize;
+        let t = back - whole as f32;
+        let at = |k: usize| self.buf.get((self.at + n - k) % n).copied().unwrap_or(0.0);
+        at(whole) + t * (at(whole + 1) - at(whole))
     }
 
     fn write(&mut self, x: f32) {
@@ -102,6 +118,10 @@ pub struct Fdn {
     damp: f32,
     lows: [f32; 8],
     high_cut: f32,
+    /// Line swing in samples (peak to peak), its phase in cycles and step.
+    swing: f32,
+    cycle: f64,
+    cycle_step: f64,
     shelf: f32,
     shelf_gain: f32,
     /// Output filter states, per channel: high cut, shelf.
@@ -140,12 +160,15 @@ impl Fdn {
             diffusion: 0.0,
             lines: LINES_MS
                 .iter()
-                .map(|&ms| Delay::new(samples(ms * MAX_SIZE, rate)))
+                .map(|&ms| Delay::new(samples(ms * MAX_SIZE + 2.0 * MAX_MODULATION_MS, rate)))
                 .collect(),
             gains: [0.0; 8],
             damp: 0.0,
             lows: [0.0; 8],
             high_cut: 0.0,
+            swing: 0.0,
+            cycle: 0.0,
+            cycle_step: 0.0,
             shelf: 0.0,
             shelf_gain: 0.0,
             out: [[0.0; 2]; 2],
@@ -200,6 +223,8 @@ impl Fdn {
         self.diffusion = 0.7 * s.diffusion.clamp(0.0, 1.0);
         self.damp = 0.85 * s.damping.clamp(0.0, 1.0);
         self.high_cut = pole(s.high_cut_hz, rate);
+        self.swing = 2.0 * s.modulation_ms.clamp(0.0, MAX_MODULATION_MS) * 0.001 * rate;
+        self.cycle_step = f64::from(s.modulation_hz.max(0.0) / rate);
         self.shelf = pole(SHELF_HZ, rate);
         self.to.shelf_gain = 10f32.powf(s.low_shelf_db / 20.0) - 1.0;
         self.to.stereo = s.stereo.clamp(0.0, 1.0);
@@ -245,9 +270,18 @@ impl Fdn {
                 x = y;
             }
             let mut y = [0.0f32; 8];
+            // Two quadrature swings, 0..=1 of the peak-to-peak depth.
+            let (sin, cos) = (std::f64::consts::TAU * self.cycle).sin_cos();
+            let swings = [0.0, 0.5 + 0.5 * sin as f32, 0.5 + 0.5 * cos as f32];
+            self.cycle = (self.cycle + self.cycle_step).fract();
             let lines = self.lines.iter().zip(&mut self.lows).zip(self.gains);
-            for (v, ((line, low), g)) in y.iter_mut().zip(lines) {
-                let out = line.read();
+            for (i, (v, ((line, low), g))) in y.iter_mut().zip(lines).enumerate() {
+                let out = if self.swing > 0.0 {
+                    let phase = if i == 0 { 0 } else { 1 + i % 2 };
+                    line.read_late(self.swing * swings.get(phase).copied().unwrap_or(0.0))
+                } else {
+                    line.read()
+                };
                 *low = out + self.damp * (*low - out);
                 *v = *low * g;
             }
