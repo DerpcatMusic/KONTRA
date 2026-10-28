@@ -84,6 +84,39 @@ and one editor scale), so neither touches the tree. What moves from `src/ui`:
 the Original renderer (`ir_view`), `pictures`/`picture_worker`, `theme`,
 `keyboard` and `menu` first; the browser and inspector views follow with P8.4.
 
+### 5.2 The bar: v2's UI on real libraries (2026-10-28)
+
+v1's binaries are gone, so v2 (`src/ui`, release, CPU paint, headless) is
+the bar. Measured with `examples/kontra_scan --worker` (the Original view,
+first page): *settled* is from the page's render start until every picture
+it asked for is decoded and laid out; *paint* is one full CPU paint; *idle*
+is the median `Ui::frame` with nothing moving, once settled. Images are the
+decoded picture bytes. Load and peak RSS cover the whole worker, samples
+included.
+
+| Library | widgets | settled ms | paint ms | idle µs | images MB | load ms | peak RSS MB |
+|---|---|---|---|---|---|---|---|
+| Afflatus Chapter II Brass | 161 | 198 | 17 | 87 | 2.0 | 3118 | 3229 |
+| ANALOG STRINGS | 934 | 847 | 16 | 247 | 4.6 | 10666 | 1837 |
+| Areia 1.2.0 | 847 | 123 | 8 | 64 | 2.1 | 8776 | 1931 |
+| Audio Imperia CHORUS | 572 | 131 | 7 | 57 | 2.1 | 7904 | 1489 |
+| Audio Imperia Dolce | 690 | 104 | 7 | 65 | 2.0 | 5555 | 1185 |
+| Conflux 1.1.0 | 378 | 102 | 30 | 7220 | 7.0 | 5130 | 5245 |
+| Morphology Evolved | 671 | 586 | 21 | 187 | 4.6 | 1086 | 1187 |
+| Pacific Ensemble Strings | 58 | 11 | 4 | 84 | 0.6 | 109 | 162 |
+| Performance Samples Vista | 48 | 10 | 3 | 88 | 0.5 | 644 | 705 |
+| Shreddage 3.5 E-Upright 1.0.1 | 1502 | 492 | 32 | 330 | 12.3 | 1665 | 1082 |
+| Una Corda Library | 118 | 13 | 18 | 16 | 1.3 | 1351 | 546 |
+
+The editor's own frame bench (`ui::frame_cost_bench`, 1180×780, median of
+120 frames, ms): idle 0.18 build + 0.49 layout + 1.34 encode + 1.11 raster;
+hover/drag/wheel ≈ 0.13 + 0.37 + 0.49 + 0.44 (≈1.0 ms CPU, 6% of a core at
+60 fps); resize 1.08 layout (1.7 ms); HiDPI 2× 1.21 raster, 3× 2.29 raster.
+
+v2 waits for every picture before its first frame (ANALOG 847 ms,
+Morphology 586 ms, Shreddage 492 ms). v3 draws the first frame from the
+tree at once and fills pictures in as they decode.
+
 ## 6. Auto-align (`app/align`, feature `align`)
 
 Target state, implemented by P3.3. Auto-align is per-patch latency

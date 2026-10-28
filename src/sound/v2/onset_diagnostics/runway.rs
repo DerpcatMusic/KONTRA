@@ -55,7 +55,6 @@ struct Missing {
     frames: [usize; 2],
     deadline: u64,
     status: u8,
-    cold: bool,
     starved: bool,
 }
 #[derive(Serialize)]
@@ -111,7 +110,6 @@ fn demand(runtime: &Runtime, frames: u32) -> Result<Demand, &'static str> {
                             PageStatus::Failed(sampler_core::DecodeFailure::Unavailable) => 3,
                             PageStatus::Failed(sampler_core::DecodeFailure::InvalidSamples) => 4,
                         },
-                        cold: row.cold,
                         starved: row.starved,
                     });
                 } else {
