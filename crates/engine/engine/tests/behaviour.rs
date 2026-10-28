@@ -610,3 +610,44 @@ fn a_controller_pitch_route_moves_sounding_voices() {
         at(&e) - from
     );
 }
+
+#[test]
+fn an_envelope_pitch_route_rises_holds_and_releases() {
+    use kontra_engine::ir::{Breakpoint, Breakpoints, Mod, ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    let point = |level| Breakpoint {
+        ms: 1.0,
+        level,
+        curve: 0.0,
+    };
+    plan.groups[0].envelopes = vec![Breakpoints {
+        start: 0.0,
+        points: vec![point(1.0), point(0.0)],
+        sustain: Some(0),
+    }];
+    plan.groups[0].envelope.release = RATE;
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        kind: ModKind::Pitch {
+            source: Source::Envelope(0),
+            semitones: 12.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let advance = |e: &mut Engine, events: &[Timed<Event>]| {
+        let at = |e: &Engine| e.voices().next().map(|(_, p, _)| p).unwrap();
+        let from = at(e);
+        level(e, events);
+        (at(e) - from) / 256.0
+    };
+    level(&mut e, &[on(60, 1.0)]);
+    assert!((advance(&mut e, &[]) - 2.0).abs() < 1e-6, "held at the top");
+    level(&mut e, &[off(60)]);
+    let after = advance(&mut e, &[]);
+    assert!(
+        (after - 1.0).abs() < 1e-6,
+        "released to the bottom: {after}"
+    );
+}

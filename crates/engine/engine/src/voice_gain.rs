@@ -7,10 +7,11 @@ use crate::ledger::Note;
 use kontra_voice::Gain;
 
 use crate::effects::{self, product};
+use crate::modulators::{self, Age};
 use crate::{Control, Engine, Level, Zone};
 
 impl Engine {
-    pub(crate) fn voice_gain(&self, zone: &Zone, note: &Note, factor: f32) -> Gain {
+    pub(crate) fn voice_gain(&self, zone: &Zone, note: &Note, factor: f32, age: Age) -> Gain {
         let channel = note.host.channel;
         let crossfade: f32 = zone
             .crossfades
@@ -32,14 +33,25 @@ impl Engine {
                         curve,
                     } => {
                         // HeldTime is fixed at the voice's start: see `release_counter`.
-                        self.source(source, note)
+                        self.source(zone, source, note, age)
                             .map_or(1.0, |x| curve.gain(intensity, x))
                     }
                     _ => 1.0,
                 })
                 .product()
         });
-        let [l, r] = gain(zone, note, self.level(zone));
+        let pan: f32 = self.groups.get(zone.group as usize).map_or(0.0, |g| {
+            g.mods
+                .iter()
+                .filter_map(|m| match m.kind {
+                    ir::ModKind::Pan { source, amount } => {
+                        Some(self.source(zone, source, note, age)? * amount)
+                    }
+                    _ => None,
+                })
+                .sum()
+        });
+        let [l, r] = gain(zone, note, self.level(zone), pan);
         let g = crossfade * mods * factor;
         let group = self
             .groups
@@ -63,9 +75,18 @@ impl Engine {
     }
 
     /// A live source's value for this note; `None` for one fixed at the voice's start.
-    fn source(&self, source: ir::Source, note: &Note) -> Option<f32> {
+    fn source(&self, zone: &Zone, source: ir::Source, note: &Note, age: Age) -> Option<f32> {
         let channel = note.host.channel;
+        let group = || self.groups.get(zone.group as usize);
         match source {
+            ir::Source::Envelope(n) => Some(modulators::envelope(
+                group()?.envelopes.get(usize::from(n))?,
+                age,
+            )),
+            ir::Source::Lfo(n) => {
+                let lfo = group()?.lfos.get(usize::from(n))?;
+                Some(modulators::lfo(lfo, age, u32::from(note.key)))
+            }
             ir::Source::Velocity => Some(note.velocity as f32),
             ir::Source::Controller(cc) => Some(f32::from(self.behaviour.cc(channel, cc)) / 127.0),
             ir::Source::PitchBend => Some(self.behaviour.bend(channel)),
@@ -75,7 +96,7 @@ impl Engine {
         }
     }
 
-    pub(crate) fn step(&self, zone: &Zone, note: &Note) -> f64 {
+    pub(crate) fn step(&self, zone: &Zone, note: &Note, age: Age) -> f64 {
         // ponytail: pitch moves at once; Kontakt lags pitch routes (250 ms
         // default). Add a per-voice step glide when a library's bend steps audibly.
         let mods: f32 = self.groups.get(zone.group as usize).map_or(0.0, |g| {
@@ -83,7 +104,7 @@ impl Engine {
                 .iter()
                 .filter_map(|m| match m.kind {
                     ir::ModKind::Pitch { source, semitones } => {
-                        Some(self.source(source, note)? * semitones)
+                        Some(self.source(zone, source, note, age)? * semitones)
                     }
                     _ => None,
                 })
@@ -112,7 +133,7 @@ impl Engine {
                 ir::ModKind::SampleStart { source, depth } => {
                     let x = match source {
                         ir::Source::HeldTime { span_ms } => held_time(span_ms, held),
-                        source => self.source(source, note)?,
+                        source => self.source(zone, source, note, Age::START)?,
                     };
                     Some(x * depth)
                 }
@@ -164,11 +185,12 @@ impl Engine {
 
 // ponytail: balance pan law only; equal-power and Kontakt's raised cosine
 // when a library's measured stereo image needs them.
-fn gain(zone: &Zone, note: &Note, level: Level) -> [f32; 2] {
+fn gain(zone: &Zone, note: &Note, level: Level, modulated: f32) -> [f32; 2] {
     let script = 10f32.powf(note.script_volume as f32 / 20_000.0);
     let g = zone.gain * level.gain * note.expression_gain * script;
-    let pan = (zone.pan + level.pan + note.expression_pan + note.script_pan as f32 / 1000.0)
-        .clamp(-1.0, 1.0);
+    let pan =
+        (zone.pan + level.pan + modulated + note.expression_pan + note.script_pan as f32 / 1000.0)
+            .clamp(-1.0, 1.0);
     [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
 }
 

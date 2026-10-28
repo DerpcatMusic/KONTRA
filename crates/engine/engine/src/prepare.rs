@@ -69,6 +69,8 @@ pub fn prepare(
             inserts: g.inserts.clone(),
             mods: g.mods.clone(),
             envelope: envelope(g.envelope, rate),
+            envelopes: g.envelopes.clone(),
+            lfos: g.lfos.clone(),
         })
         .collect();
     if !instrument.buses.is_empty() {

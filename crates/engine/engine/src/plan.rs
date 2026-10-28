@@ -125,6 +125,9 @@ pub struct Group {
     pub inserts: Vec<Option<ir::Effect>>,
     pub mods: Vec<ir::Mod>,
     pub envelope: Ahdsr,
+    /// Read by `Source::Envelope(n)` and `Source::Lfo(n)`.
+    pub envelopes: Vec<ir::Breakpoints>,
+    pub lfos: Vec<ir::Lfo>,
 }
 
 impl Group {
@@ -146,6 +149,8 @@ impl Group {
                 },
             }],
             envelope: Ahdsr::GATE,
+            envelopes: Vec::new(),
+            lfos: Vec::new(),
         }
     }
 

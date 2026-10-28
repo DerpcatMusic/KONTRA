@@ -155,6 +155,10 @@ pub struct Group {
     pub voice_group: Option<usize>,
     /// Effects on this group's voices, by slot.
     pub inserts: Vec<Option<Effect>>,
+    /// Shapes [`Source::Envelope`] reads, by index.
+    pub envelopes: Vec<Breakpoints>,
+    /// Oscillators [`Source::Lfo`] reads, by index.
+    pub lfos: Vec<Lfo>,
     pub zones: Vec<Zone>,
 }
 
@@ -178,8 +182,56 @@ impl Group {
         stream: None,
         voice_group: None,
         inserts: Vec::new(),
+        envelopes: Vec::new(),
+        lfos: Vec::new(),
         zones: Vec::new(),
     };
+}
+
+/// A per-voice envelope of free breakpoints, 0..=1. It starts at `start`,
+/// moves through `points` in order and holds at `sustain` while the key is
+/// down; key-up goes on from the level it has to the points after `sustain`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Breakpoints {
+    pub start: f32,
+    pub points: Vec<Breakpoint>,
+    pub sustain: Option<usize>,
+}
+
+/// A segment to `level` over `ms`. It covers `(e^(k·t) − 1)/(e^k − 1)` of
+/// the way at fraction `t`, `k` = `curve`; 0 is a straight line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Breakpoint {
+    pub ms: f32,
+    pub level: f32,
+    pub curve: f32,
+}
+
+/// A per-voice (or free-running) oscillator, −1..=1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lfo {
+    pub wave: Wave,
+    pub hz: f32,
+    /// Start phase, cycles.
+    pub phase: f32,
+    /// Ramps the output in from 0 over this long after the voice starts.
+    pub fade_ms: f32,
+    /// Restarts at each voice; else runs from the engine's start.
+    pub retrigger: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Wave {
+    Sine,
+    Triangle,
+    /// Rising.
+    Saw,
+    /// High for `width` of the cycle.
+    Square {
+        width: f32,
+    },
+    /// A new random level each cycle.
+    Random,
 }
 
 /// Times in seconds; decay and release to fall about 60 dB; sustain 0..=1.
@@ -230,6 +282,8 @@ pub enum ModKind {
     },
     /// `source` times `semitones` added to the pitch.
     Pitch { source: Source, semitones: f32 },
+    /// `source × amount` added to the pan (−1..=1).
+    Pan { source: Source, amount: f32 },
     /// `source × depth` of the zone's [`Zone::start_mod`] frames added to
     /// where its voices start, read at note-on.
     SampleStart { source: Source, depth: f32 },
@@ -244,6 +298,10 @@ pub enum Source {
     PitchBend,
     /// The note's key over 127.
     Key,
+    /// The group's [`Group::envelopes`] entry.
+    Envelope(u8),
+    /// The group's [`Group::lfos`] entry, −1..=1.
+    Lfo(u8),
     /// Always 1.
     Constant,
     /// 1 at note-on, falling linearly to 0 after `span_ms` held; frozen at
