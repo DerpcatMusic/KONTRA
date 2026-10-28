@@ -11,3 +11,4 @@ workspace = true
 kontra-dsp-core = { path = "../core" }
 kontra-law = { path = "../../base/law" }
 kontra-params = { path = "../../model/params" }
+realfft = "3.5"

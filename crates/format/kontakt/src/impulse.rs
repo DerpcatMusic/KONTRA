@@ -70,9 +70,10 @@ impl<'a> Impulses<'a> {
         let name = self.files.get(&index)?.clone();
         let defaults = [3, 6].iter().all(|&n| float(n).is_none_or(|s| s == 1.0))
             && [4, 7].iter().all(|&n| float(n).is_none_or(|hz| hz <= 20.0))
+            // Una Corda stores an open high cut as 19999.992.
             && [5, 8]
                 .iter()
-                .all(|&n| float(n).is_none_or(|hz| hz >= 20_000.0))
+                .all(|&n| float(n).is_none_or(|hz| hz >= 19_999.0))
             && float(0).is_none_or(|d| d <= 1.0)
             && !flag(14);
         if !defaults {

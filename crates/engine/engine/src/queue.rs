@@ -24,6 +24,14 @@ pub(crate) enum Work {
     Resume(u8, CoId),
     /// A script note's duration is up.
     Release(NoteRef),
+    /// Script slots run `on pgs_changed`.
+    PgsChanged,
+    /// A script slot's listener timer fires, if it is still that generation.
+    Listen {
+        slot: u8,
+        signal: u8,
+        generation: u16,
+    },
 }
 
 struct Entry {

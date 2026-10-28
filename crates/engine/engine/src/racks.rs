@@ -2,17 +2,43 @@
 //! slot with state (an EQ, a convolution) sits where the format put it.
 //! Group racks fold into each voice's matrix instead (voice_gain.rs).
 
+use std::sync::Arc;
+
 use kontra_dsp::eq::Biquad;
+use kontra_dsp::reverb::{Convolver, Fdn, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
 
-use crate::Engine;
 use crate::effects;
 use crate::filters;
+use crate::{Engine, MAX_SPAN, Response};
 
 enum Dsp {
     None,
     Eq(Box<[Biquad]>),
+    /// A wet path (convolver or reverb) and a span of its output.
+    Wet(Box<dyn Wet>, Box<[[f32; 2]]>),
+}
+
+/// A parallel processor: replaces its span with the wet signal.
+trait Wet: Send {
+    fn process(&mut self, io: &mut [[f32; 2]]);
+}
+
+impl Wet for Convolver {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Convolver::process(self, io);
+    }
+}
+
+impl Wet for Fdn {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Fdn::process(self, io);
+    }
+}
+
+fn wet(processor: Box<dyn Wet>) -> Dsp {
+    Dsp::Wet(processor, vec![[0.0; 2]; MAX_SPAN as usize].into())
 }
 
 pub(crate) struct Rack {
@@ -22,8 +48,12 @@ pub(crate) struct Rack {
 }
 
 impl Rack {
-    /// Not real-time.
-    pub(crate) fn new(slots: &[Option<ir::Effect>], rate: u32) -> Self {
+    /// `impulses` are the plan's convolution responses. Not real-time.
+    pub(crate) fn new(
+        slots: &[Option<ir::Effect>],
+        rate: u32,
+        impulses: &[Option<Response>],
+    ) -> Self {
         let dsp = slots
             .iter()
             .map(|slot| match slot.map(|e| e.kind) {
@@ -33,6 +63,13 @@ impl Rack {
                     let sections = filters::sections(&[live]);
                     Dsp::Eq(filters::biquads(&sections, rate))
                 }
+                Some(ir::EffectKind::Convolution { impulse }) => {
+                    match impulses.get(usize::from(impulse)).and_then(Option::as_ref) {
+                        Some(r) => wet(Box::new(Convolver::new(&r.left, &r.right))),
+                        None => Dsp::None,
+                    }
+                }
+                Some(ir::EffectKind::Reverb(r)) => wet(Box::new(Fdn::new(settings(r), rate))),
                 _ => Dsp::None,
             })
             .collect();
@@ -50,6 +87,20 @@ impl Rack {
             };
             match (dsp, e.kind) {
                 (Dsp::Eq(f), _) => filters::run(f, io),
+                // The wet path from the input, then the dry level, then the wet at the output gain.
+                (Dsp::Wet(processor, wet), _) => {
+                    let Some(wet) = wet.get_mut(..io.len()) else {
+                        continue;
+                    };
+                    wet.copy_from_slice(io);
+                    processor.process(wet);
+                    apply(effects::matrix(&e), io);
+                    for (x, w) in io.iter_mut().zip(wet.iter()) {
+                        x[0] += w[0] * e.output;
+                        x[1] += w[1] * e.output;
+                    }
+                    continue;
+                }
                 (_, ir::EffectKind::Sends(levels)) => {
                     for (tap, level) in taps.iter_mut().zip(levels) {
                         for (t, x) in tap.iter_mut().zip(io.iter()) {
@@ -70,6 +121,19 @@ impl Rack {
     }
 }
 
+fn settings(r: ir::Reverb) -> Settings {
+    Settings {
+        seconds: r.seconds,
+        size: r.size,
+        damping: r.damping,
+        diffusion: r.diffusion,
+        predelay_ms: r.predelay_ms,
+        high_cut_hz: r.high_cut_hz,
+        low_shelf_db: r.low_shelf_db,
+        stereo: r.stereo,
+    }
+}
+
 pub(crate) fn apply(m: Gain, io: &mut [[f32; 2]]) {
     if m == effects::IDENTITY {
         return;
@@ -86,12 +150,13 @@ impl Engine {
     /// left them. Not real-time.
     pub(crate) fn rebuild_racks(&mut self) {
         let rate = self.rate;
+        let plan = Arc::clone(&self.plan);
         let racks = std::iter::once(&mut self.rack)
             .chain(self.sends.iter_mut())
             .chain(std::iter::once(&mut self.main))
             .chain(self.buses.iter_mut().map(|b| &mut b.rack));
         for rack in racks {
-            *rack = Rack::new(&rack.slots, rate);
+            *rack = Rack::new(&rack.slots, rate, &plan.impulses);
         }
     }
 

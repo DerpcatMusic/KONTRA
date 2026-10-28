@@ -41,6 +41,12 @@ pub struct EnginePars {
     pub attack_curve: i32,
     pub effect_bypass: i32,
     pub effect_output: i32,
+    /// A send effect's bypass, wet (or return) level and dry level.
+    pub send_bypass: i32,
+    pub send_output: i32,
+    pub send_dry: i32,
+    /// A Send Levels slot's level to each send slot.
+    pub send_levels: [i32; 8],
     pub gainer_gain: i32,
     pub stereo_width: i32,
     pub stereo_pan: i32,
@@ -69,6 +75,8 @@ pub struct Callbacks {
     pub release: Option<u32>,
     pub controller: Option<u32>,
     pub persistence_changed: Option<u32>,
+    pub listener: Option<u32>,
+    pub pgs_changed: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +85,8 @@ pub(crate) enum Kind {
     Note,
     Release,
     Controller,
+    Listener,
+    Pgs,
     /// After a wait: what the callback was no longer matters.
     Resumed,
 }
@@ -95,6 +105,8 @@ pub(crate) struct Running {
     pub(crate) callback_id: u32,
     /// The script slot running it.
     pub(crate) slot: u8,
+    /// `$NI_SIGNAL_TYPE` of a listener callback.
+    pub(crate) signal: u8,
 }
 
 impl Running {
@@ -107,6 +119,7 @@ impl Running {
         callback_type: 0,
         callback_id: 0,
         slot: 0,
+        signal: 0,
     };
 
     pub(crate) fn new(kind: Kind, event: Option<NoteRef>) -> Self {
@@ -116,6 +129,8 @@ impl Running {
             Kind::Note => 1,
             Kind::Release => 2,
             Kind::Controller => 3,
+            Kind::Listener => 9,
+            Kind::Pgs => 10,
         };
         Self {
             kind,
@@ -125,12 +140,14 @@ impl Running {
         }
     }
 
-    /// The coroutine context: the event in the low 32 bits, then the
-    /// callback type and id, so a resumed callback still knows them.
+    /// The coroutine context, so a resumed callback still knows its event
+    /// (low 32 bits), callback type (8), callback id (20: a UI id, 32768 plus
+    /// a variable index) and listener signal (4).
     pub(crate) fn context(&self) -> u64 {
         u64::from(self.event.map_or(0, |n| n.event_id() as u32))
             | u64::from(self.callback_type) << 32
-            | u64::from(self.callback_id) << 40
+            | u64::from(self.callback_id & 0xF_FFFF) << 40
+            | u64::from(self.signal & 0xF) << 60
     }
 
     pub(crate) fn resumed(context: u64) -> Self {
@@ -138,7 +155,8 @@ impl Running {
             kind: Kind::Resumed,
             event: NoteRef::from_event_id(context as u32 as i32),
             callback_type: (context >> 32) as u8,
-            callback_id: (context >> 40) as u32,
+            callback_id: (context >> 40) as u32 & 0xF_FFFF,
+            signal: (context >> 60) as u8,
             ..Self::IDLE
         }
     }
@@ -408,9 +426,12 @@ impl Engine {
 }
 
 impl HostApi for Engine {
-    fn call(&mut self, call: HostCall<'_>) -> HostValue {
+    fn call(&mut self, mut call: HostCall<'_>) -> HostValue {
         if let Some(n) = self.called.get_mut(usize::from(call.action.id())) {
             *n += 1;
+        }
+        if let Some(value) = self.pgs_call(&mut call) {
+            return value;
         }
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
         let running = self.running.event;
@@ -532,6 +553,11 @@ impl HostApi for Engine {
             Action::GetControlPar => HostValue::Int(self.control_par(call.cells, int(0), int(1))),
             Action::SetControlPar => {
                 self.set_control_par(call.cells, int(0), int(1), int(2));
+                HostValue::Nothing
+            }
+            Action::SignalType => HostValue::Int(i32::from(self.running.signal)),
+            Action::SetListener | Action::ChangeListenerPar => {
+                self.set_listener(int(0), int(1));
                 HostValue::Nothing
             }
             Action::CurrentScriptSlot => HostValue::Int(i32::from(self.running.slot)),

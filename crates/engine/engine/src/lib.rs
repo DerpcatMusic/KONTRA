@@ -18,6 +18,7 @@ mod ledger;
 mod midi;
 mod modulators;
 mod params;
+mod pgs;
 mod plan;
 mod prepare;
 mod queue;
@@ -133,6 +134,10 @@ pub struct Engine {
     pending: Vec<NoteRef>,
     /// Notes a callback played, still to pass the slots after it.
     forward: Vec<NoteRef>,
+    pgs: pgs::Pgs,
+    /// Each script slot's listener timer.
+    /// Per script slot: the millisecond and beat timers.
+    timers: Box<[callbacks::Timers]>,
     masks: GroupMasks,
     /// Scratch for script event targets (an action may run inside a ledger query).
     targets_scratch: Vec<NoteRef>,
@@ -171,16 +176,16 @@ impl Engine {
     #[must_use]
     pub fn new(plan: Arc<Plan>, stream: StreamClient, rate: u32) -> Self {
         let shared: Box<[Group]> = plan.groups.clone().into();
-        let rack = racks::Rack::new(&plan.inserts, rate);
+        let rack = racks::Rack::new(&plan.inserts, rate, &[]);
         let sends: Box<[racks::Rack]> = plan
             .sends
             .iter()
-            .map(|slot| racks::Rack::new(std::slice::from_ref(slot), rate))
+            .map(|slot| racks::Rack::new(std::slice::from_ref(slot), rate, &[]))
             .collect();
         let taps = (0..sends.len())
             .map(|_| vec![[0.0; 2]; MAX_SPAN as usize].into())
             .collect();
-        let main = racks::Rack::new(&plan.main, rate);
+        let main = racks::Rack::new(&plan.main, rate, &[]);
         let pool = plan.voices + plan.voices / 4 + 1;
         let voices = (0..pool)
             .map(|_| Slot {
@@ -201,7 +206,7 @@ impl Engine {
             .map(|b| BusState {
                 gain: b.gain,
                 enabled: b.enabled,
-                rack: racks::Rack::new(&b.inserts, rate),
+                rack: racks::Rack::new(&b.inserts, rate, &[]),
                 pan: b.pan,
                 mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
             })
@@ -219,6 +224,7 @@ impl Engine {
             .iter()
             .map(|s| Some(Instance::new(&s.program, s.coroutines.max(1))))
             .collect();
+        let timers = vec![[None; 2]; plan.scripts.len()].into();
         let control_pars = plan
             .scripts
             .iter()
@@ -244,6 +250,8 @@ impl Engine {
             running: Running::IDLE,
             pending: Vec::with_capacity(capacity),
             forward: Vec::with_capacity(capacity),
+            pgs: pgs::Pgs::new(),
+            timers,
             masks: GroupMasks::new(capacity, groups),
             targets_scratch: Vec::with_capacity(capacity),
             cc_values: [0; 130],
@@ -403,6 +411,12 @@ impl Engine {
             Work::Input(event) => event,
             Work::Resume(slot, co) => return self.resume(slot, co),
             Work::Release(note) => return self.end_note(note),
+            Work::PgsChanged => return self.run_pgs_changed(),
+            Work::Listen {
+                slot,
+                signal,
+                generation,
+            } => return self.listen(slot, signal, generation),
         };
         match event {
             Event::NoteOn {
@@ -509,26 +523,6 @@ impl Engine {
             slot.released_at = None;
             slot.fading = false;
             slot.factor = factor;
-        }
-    }
-
-    /// Fades voices that a new voice of `group` chokes (`off_by`), except the note's own.
-    fn choke_by(&mut self, group: u32, note: NoteRef) {
-        let fade = self.fade_frames();
-        let plan = self.plan.clone();
-        for slot in self
-            .voices
-            .iter_mut()
-            .filter(|s| s.voice.is_active() && !s.fading && s.note != Some(note))
-        {
-            if plan
-                .zones
-                .get(slot.zone)
-                .is_some_and(|z| z.off_by == Some(group))
-            {
-                slot.voice.fade(fade);
-                slot.fading = true;
-            }
         }
     }
 

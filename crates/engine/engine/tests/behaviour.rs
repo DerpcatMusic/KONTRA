@@ -576,9 +576,10 @@ fn a_group_eq_shapes_its_voices() {
             hz: 1000.0,
             q: 1.0,
             gain_db,
+            ..Bell::FLAT
         };
         plan.groups[0].inserts = vec![Some(Effect {
-            kind: EffectKind::Eq([bell, Bell::FLAT, Bell::FLAT]),
+            kind: EffectKind::Eq([bell, Bell::FLAT, Bell::FLAT, Bell::FLAT]),
             bypass: false,
             output: 1.0,
             dry: 0.0,
@@ -792,4 +793,70 @@ fn timed_modulation_does_not_depend_on_the_block_size() {
     for block in [64, 100, 1000] {
         assert_eq!(render(block), reference, "block {block}");
     }
+}
+
+#[test]
+fn an_instrument_convolution_adds_its_wet_path() {
+    use kontra_engine::{Response, ir};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    // A delayed half-level tap: on a constant input the wet path is 0.25.
+    plan.impulses = vec![Some(Response {
+        left: vec![0.0, 0.0, 0.5],
+        right: vec![0.0, 0.0, 0.5],
+    })];
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Convolution { impulse: 0 },
+        bypass: false,
+        output: 1.0,
+        dry: 0.5,
+    })];
+    let mut e = engine(&store, plan);
+    let [l, r] = level(&mut e, &[on(60, 1.0)]);
+    // Dry 0.5 × 0.5 plus wet 0.25.
+    assert!(close(l, 0.5) && close(r, 0.5), "{l} {r}");
+}
+
+#[test]
+fn an_instrument_reverb_rings_on_after_the_note() {
+    use kontra_engine::ir;
+    let reverb = ir::Effect {
+        kind: ir::EffectKind::Reverb(ir::Reverb {
+            seconds: 2.0,
+            size: 1.0,
+            damping: 0.5,
+            diffusion: 1.0,
+            predelay_ms: 0.0,
+            high_cut_hz: 20_000.0,
+            low_shelf_db: 0.0,
+            stereo: 1.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    // The summed level of the last block, a second after key up.
+    let tail = |inserts: Vec<Option<ir::Effect>>| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+        plan.inserts = inserts;
+        let mut e = engine(&store, plan);
+        let first = level(&mut e, &[on(60, 1.0)]);
+        let mut buf = vec![[0.0; 2]; 256];
+        for _ in 0..50 {
+            e.process(&mut buf, &[]);
+        }
+        level(&mut e, &[off(60)]);
+        for _ in 0..190 {
+            e.process(&mut buf, &[]);
+        }
+        let sum: f32 = buf.iter().map(|[l, r]| l.abs() + r.abs()).sum();
+        (first, sum)
+    };
+    let (dry_first, dry_tail) = tail(Vec::new());
+    assert!(dry_first[0] > 0.1 && dry_tail == 0.0, "the voice has ended");
+    let (first, wet) = tail(vec![Some(reverb)]);
+    // Fully wet: nothing until the shortest line (30 ms) comes round.
+    assert_eq!(first, [0.0; 2]);
+    assert!(wet > 1e-3 && wet.is_finite(), "tail {wet}");
 }
