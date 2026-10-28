@@ -229,15 +229,31 @@ impl<L: Library> Translator<'_, '_, L> {
                 .children()
                 .filter(|c| c.has_tag_name("Connections"))
                 .flat_map(|c| c.children())
-                .filter_map(modulation::pitch_route)
-                .filter(|kind| !matches!(kind, ir::ModKind::Pitch { semitones, .. } if *semitones == 0.0));
-            for kind in routes {
+                .filter_map(|c| modulation::pitch_route(self.program, c))
+                .filter(|r| r.semitones != 0.0);
+            for r in routes {
+                let mut source = r.source;
+                if let Some(lfo) = r.lfo {
+                    let n = group
+                        .lfos
+                        .iter()
+                        .position(|l| *l == lfo)
+                        .unwrap_or_else(|| {
+                            group.lfos.push(lfo);
+                            group.lfos.len() - 1
+                        });
+                    source = ir::Source::Lfo(u8::try_from(n).unwrap_or(u8::MAX));
+                }
                 let route = ir::Mod {
                     name: String::new(),
                     slot: 0,
                     target: 0,
                     bypass: false,
-                    kind,
+                    kind: ir::ModKind::Pitch {
+                        source,
+                        semitones: r.semitones,
+                        depth: 1.0,
+                    },
                 };
                 if !group.mods.contains(&route) {
                     group.mods.push(route);
@@ -510,7 +526,7 @@ impl<L: Library> Translator<'_, '_, L> {
             .filter(|n| n.has_tag_name("SignalConnection") && !flag(*n, "Bypass"))
         {
             if modulation::script_route(self.program, connection).is_some()
-                || modulation::pitch_route(connection).is_some()
+                || modulation::pitch_route(self.program, connection).is_some()
             {
                 continue;
             }
@@ -764,6 +780,10 @@ mod tests {
     #[test]
     fn an_oscillators_bend_and_controller_pitch_routes_reach_its_group() {
         let xml = r#"<Program Gain="1">
+          <Modulators>
+            <LFO Name="LFO 1" Bypass="0" SyncToHost="1" DelayTime="0" RiseTime="0" Freq="0.5" Depth="0.5" Phase="0.25" WaveFormType="0" Retrigger="0" Bipolar="1"/>
+            <MultiLFO Name="Multi LFO 1" Bypass="0" SyncToHost="0" SineDepth="1" TriangleDepth="0.5" SawDepth="0" SquareDepth="0" NoiseDepth="0" RiseTime="0" Freq="1" Depth="1" Retrigger="1" Bipolar="1" Invert="0" NormalizeOutput="1"/>
+          </Modulators>
           <Layers><Layer Gain="1" Pan="0"><Keygroups>
             <Keygroup LowKey="0" HighKey="127">
               <Oscillators>
@@ -774,6 +794,8 @@ mod tests {
                     <SignalConnection Ratio="0.5" Source="@MIDI CC 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
                     <SignalConnection Ratio="0" Source="@MIDI CC 2" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
                     <SignalConnection Ratio="12" Source="@PitchBend" Destination="Pitch" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                    <SignalConnection Ratio="0.6" Source="$Program/LFO 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="1"/>
+                    <SignalConnection Ratio="0.7" Source="$Program/Multi LFO 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
                   </Connections>
                 </SamplePlayer>
               </Oscillators>
@@ -797,7 +819,19 @@ mod tests {
                 pitch(ir::Source::PitchBend, 2.0),
                 pitch(ir::Source::PitchBend, -1.0),
                 pitch(ir::Source::Controller(1), 0.5),
+                // Inverted, at half depth.
+                pitch(ir::Source::Lfo(0), -0.3),
             ]
+        );
+        assert_eq!(
+            out.groups[0].lfos,
+            [ir::Lfo {
+                wave: ir::Wave::Sine,
+                rate: ir::Rate::Beats(0.5),
+                phase: 0.25,
+                fade_ms: 0.0,
+                clock: ir::Clock::Free,
+            }]
         );
         // Only the mapped connection is left to report.
         let pitch_notes: Vec<_> = out
@@ -808,7 +842,8 @@ mod tests {
             .collect();
         assert_eq!(
             pitch_notes,
-            ["1× (first: @PitchBend)"],
+            // The mapped bend and the mixed MultiLFO.
+            ["2× (first: @PitchBend)"],
             "{:?}",
             out.diagnostics
         );
