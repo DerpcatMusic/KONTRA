@@ -320,8 +320,13 @@ impl Engine {
         let g = usize::try_from(group)
             .ok()
             .and_then(|g| self.groups.get(g))?;
-        if let (Some((i, top)), Some(n)) = (stage_point(par), ahdsr_points(g, slot)) {
-            let p = g.envelopes.get(n)?.points.get(i)?;
+        if let (Some((i, top)), Some(e)) = (stage_point(par), routed_envelope(g, slot)) {
+            // Measured (probes/flex_stage_writes.lua): an envelope without
+            // stages (a flex) reads 0.
+            if !e.stages {
+                return Some(0);
+            }
+            let p = e.points.get(i)?;
             let x = match par {
                 EnginePar::Sustain => f64::from(p.level).cbrt(),
                 EnginePar::AttackCurve => attack_x(p.curve),
@@ -460,8 +465,17 @@ impl Engine {
         else {
             return false;
         };
-        if let (Some((i, top)), Some(n)) = (stage_point(par), ahdsr_points(g, slot)) {
-            let Some(p) = g.envelopes.get_mut(n).and_then(|e| e.points.get_mut(i)) else {
+        let routed = routed_envelope(g, slot).map(|e| e.stages);
+        if let (Some((i, top)), Some(stages)) = (stage_point(par), routed) {
+            // Measured (probes/flex_stage_writes.lua): an envelope without
+            // stages (a flex) keeps its points; the write is answered.
+            if !stages {
+                return true;
+            }
+            let Some(p) = routed_index(g, slot)
+                .and_then(|n| g.envelopes.get_mut(n))
+                .and_then(|e| e.points.get_mut(i))
+            else {
                 return false;
             };
             match par {
@@ -529,15 +543,17 @@ fn stage_point(par: EnginePar) -> Option<(usize, f64)> {
     })
 }
 
-/// The breakpoints modulator `slot` of `g` routes from, when they have an
-/// AHDSR's shape: attack, hold, decay to the sustain point, release.
-fn ahdsr_points(g: &Group, slot: i32) -> Option<usize> {
-    let n = g.mods.iter().find_map(|m| match source(&m.kind) {
+/// The index of the breakpoints modulator `slot` of `g` routes from.
+fn routed_index(g: &Group, slot: i32) -> Option<usize> {
+    g.mods.iter().find_map(|m| match source(&m.kind) {
         Some(ir::Source::Envelope(n)) if i32::from(m.slot) == slot => Some(usize::from(n)),
         _ => None,
-    })?;
-    let e = g.envelopes.get(n)?;
-    (e.stages && e.points.len() == 4).then_some(n)
+    })
+}
+
+/// The breakpoints modulator `slot` of `g` routes from.
+fn routed_envelope(g: &Group, slot: i32) -> Option<&ir::Breakpoints> {
+    g.envelopes.get(routed_index(g, slot)?)
 }
 
 /// A route's signed depth; an EQ gain or effect route's is its depth over
