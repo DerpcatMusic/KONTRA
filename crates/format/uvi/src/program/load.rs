@@ -46,7 +46,7 @@ impl<L: Library> Translator<'_, '_, L> {
                     zone.sample = index;
                     zone.start = 0;
                     zone.end = frames;
-                    zone.looped = None;
+                    zone.loops.clear();
                     zone.root = swap.root.unwrap_or(zone.root);
                 }
             }
