@@ -361,6 +361,13 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// Note-table entries for a voice limit: a held or stolen note keeps its
+    /// entry, so at least one per voice, 128 at least. The queue holds four per note.
+    // ponytail: capped at 4096 (per-note group masks); raise if a library plays more.
+    fn notes_for(voices: usize) -> usize {
+        voices.clamp(128, 4096)
+    }
+
     /// One bus, no behaviour beyond the zones.
     #[must_use]
     pub fn new(zones: Vec<Zone>, voices: usize) -> Self {
@@ -388,8 +395,8 @@ impl Plan {
             switches: Vec::new(),
             default_keyswitch: None,
             voices,
-            notes: 128,
-            queue: 1024,
+            notes: Self::notes_for(voices),
+            queue: (4 * Self::notes_for(voices)).max(1024),
             scripts: Vec::new(),
             inserts: Vec::new(),
             sends: Vec::new(),
