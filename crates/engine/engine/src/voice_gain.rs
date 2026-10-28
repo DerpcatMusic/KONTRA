@@ -106,8 +106,19 @@ impl Engine {
                 age,
             )),
             ir::Source::Lfo(n) => {
-                let lfo = group()?.lfos.get(usize::from(n))?;
-                Some(modulators::lfo(lfo, age, u32::from(note.key), self.tempo))
+                let g = group()?;
+                let mut lfo = *g.lfos.get(usize::from(n))?;
+                for m in g.mods.iter().filter(|m| !m.bypass) {
+                    if let ir::ModKind::LfoPhase { source, lfo: l, depth } = m.kind
+                        && l == n
+                        // An LFO source here would recurse.
+                        && !matches!(source, ir::Source::Lfo(_))
+                    {
+                        let x = self.source(zone, source, note, Age::START).unwrap_or(0.0);
+                        lfo.phase += x * depth;
+                    }
+                }
+                Some(modulators::lfo(&lfo, age, u32::from(note.key), self.tempo))
             }
             ir::Source::Velocity => Some(note.velocity as f32),
             ir::Source::Controller(cc) => Some(f32::from(self.behaviour.cc(channel, cc)) / 127.0),
@@ -258,7 +269,8 @@ impl Engine {
                     ir::ModKind::Envelope
                     | ir::ModKind::SampleStart { .. }
                     | ir::ModKind::Attack { .. }
-                    | ir::ModKind::Release { .. } => false,
+                    | ir::ModKind::Release { .. }
+                    | ir::ModKind::LfoPhase { .. } => false,
                 })
             })
     }
