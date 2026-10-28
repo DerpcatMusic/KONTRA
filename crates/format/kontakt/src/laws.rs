@@ -250,8 +250,10 @@ pub(crate) fn lfo_rate(source: ir::Source, lfo: u8, intensity: f32) -> ir::ModKi
 /// saw, triangle, pulse, random (0x140b07290, 0x140b078d0; the analog tables
 /// play as their exact shapes). Values: fade-in ms, Hz (or a count of the
 /// synced note value), pulse width, start phase in cycles. A synced note value
-/// is in whole notes: the manual's "Whole, 1.0" cycle is one 4/4 bar, and
-/// ANALOG STRINGS stores 1/24 × 24. A synced fade is not mapped.
+/// counts quarter notes (beats). Measured in Kontakt 8.13.1 at 120 bpm (ANALOG
+/// STRINGS layer 88, LFO_P1_Retrigger, a saw stored as 1/24 × count): count 96
+/// cycles in 2.0 s and count 32 in 0.667 s, so a cycle is count/24 beats; read
+/// as whole notes it ran 4× slow. A synced fade is not mapped.
 pub(crate) fn lfo(l: &Lfo, clock: ir::Clock) -> Option<ir::Lfo> {
     const FREE: f32 = -1.0;
     let [fade_ms, hz, width, phase] = l.initial_values;
@@ -282,7 +284,7 @@ pub(crate) fn lfo(l: &Lfo, clock: ir::Clock) -> Option<ir::Lfo> {
         ir::Rate::Hz(hz)
     } else {
         ir::Rate::Steps {
-            beats: 4.0 * note,
+            beats: note,
             count: hz,
         }
     };
@@ -718,6 +720,35 @@ pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> (ir::Compressor, bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Measured: a 1/24-note synced saw with count 96 cycles in 2 s at 120 bpm.
+    #[test]
+    fn a_synced_lfos_note_value_counts_quarter_notes() {
+        use ni_file::kontakt::objects::LfoRecord;
+        let record = |v| LfoRecord {
+            flag: false,
+            values: [v, 0.0, 0.0],
+        };
+        let saved = Lfo {
+            structured: false,
+            version: 0x73,
+            waveform: 3,
+            initial_values: [0.0, 96.0, 0.5, 0.0],
+            records: [record(1.0 / 24.0), record(-1.0)],
+            trailing_flag: false,
+            trailing_values: None,
+            additional_flag: None,
+        };
+        let Some(ir::Lfo {
+            rate: ir::Rate::Steps { beats, count },
+            ..
+        }) = lfo(&saved, ir::Clock::Voice)
+        else {
+            panic!("a synced rate");
+        };
+        let seconds = beats * count * 60.0 / 120.0;
+        assert!((seconds - 2.0).abs() < 1e-4, "{seconds}");
+    }
 
     #[test]
     fn the_compressor_knob_is_the_output_slope_with_threshold_makeup() {
