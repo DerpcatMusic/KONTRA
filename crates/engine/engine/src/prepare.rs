@@ -240,6 +240,11 @@ fn response(
     if let Some(knots) = impulse.envelope {
         kontra_dsp::reverb::shape::envelope([&mut left, &mut right], knots);
     }
+    if let Some([l, r]) = impulse.mix {
+        for (a, b) in left.iter_mut().zip(&mut right) {
+            (*a, *b) = (l[0] * *a + l[1] * *b, r[0] * *a + r[1] * *b);
+        }
+    }
     if let Some(n) = impulse.normalize {
         let energy = |c: &[f32]| c.iter().map(|&v| f64::from(v * v)).sum::<f64>();
         let e = energy(&left).max(energy(&right));

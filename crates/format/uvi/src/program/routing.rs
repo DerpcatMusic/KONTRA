@@ -311,7 +311,7 @@ impl<L: Library> Translator<'_, '_, L> {
             }
         };
         let reverb = node.has_tag_name("SampledReverb");
-        for (name, unset) in [("DampingLow", 0.0), ("DampingHigh", 0.0), ("Width", 0.0)] {
+        for (name, unset) in [("DampingLow", 0.0), ("DampingHigh", 0.0)] {
             if reverb && num(node, name, unset)? != unset {
                 let feature = format!("sampled reverb {name}");
                 self.notes.add(ir::Impact::Audible, &feature, path);
@@ -322,6 +322,12 @@ impl<L: Library> Translator<'_, '_, L> {
         } else {
             1.0
         };
+        let width = if reverb {
+            num(node, "Width", 0.0)?.clamp(-1.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        let stereo = sample.channels >= 2;
         let sample = self.sample_index(sample);
         self.out.impulses.push(ir::Impulse {
             sample,
@@ -334,6 +340,7 @@ impl<L: Library> Translator<'_, '_, L> {
             },
             cuts: None,
             envelope: (time < 1.0 || flag(node, "UseWindowAtOriginalSize")).then(|| fade(time)),
+            mix: (width != 0.0 && stereo).then(|| widen(width)),
         });
         Ok(u16::try_from(self.out.impulses.len() - 1).ok())
     }
@@ -369,6 +376,18 @@ fn fade(time: f32) -> [[f32; 2]; 8] {
         *knot = [time * x, 20.0 * gain.max(1e-10).log10()];
     }
     knots
+}
+
+/// A sampled reverb's `Width` (-1..1) on a stereo response: UVI (IR build
+/// 0x141532fe0, from setter 0x14103f8f0) takes `c = -w`, `d = 2 + w` (2.0
+/// at 0x141cfaab8) scaled to unit length, then `L = dL + cR` and
+/// `R = dR + cL` with the new `L`, before NormalizePower. A response with
+/// one channel has no pair and is left alone.
+fn widen(w: f32) -> [[f32; 2]; 2] {
+    let (c, d) = (-w, 2.0 + w);
+    let n = c.hypot(d).recip();
+    let (c, d) = (c * n, d * n);
+    [[d, c], [c * d, d + c * c]]
 }
 
 /// Silence for an envelope knot, dB.
@@ -510,6 +529,27 @@ mod tests {
             (ir::Shape::HighShelf, 5000.0, 5.0)
         );
         assert!((e.output - 0.891).abs() < 1e-3, "{}", e.output);
+    }
+
+    #[test]
+    fn width_is_the_native_sequential_pair_mix() {
+        assert_eq!(widen(0.0), [[1.0, 0.0], [0.0, 1.0]]);
+        // 0x141532fe0's loop on (L, R) = (0.3, -0.7), in its own order.
+        for w in [1.0f32, 0.5, -0.4, -1.0] {
+            let n = (-w).hypot(2.0 + w).recip();
+            let (c, d) = (-w * n, (2.0 + w) * n);
+            let l = c * -0.7 + d * 0.3;
+            let r = l * c + d * -0.7;
+            let [a, b] = widen(w);
+            let (x, y) = (a[0] * 0.3 + a[1] * -0.7, b[0] * 0.3 + b[1] * -0.7);
+            assert!(
+                (x - l).abs() < 1e-6 && (y - r).abs() < 1e-6,
+                "{w}: {x} {y} vs {l} {r}"
+            );
+        }
+        // Full width: the sides lean apart, a quarter of each into the other.
+        let [a, _] = widen(1.0);
+        assert!((a[1] / a[0] + 1.0 / 3.0).abs() < 1e-6);
     }
 
     #[test]
