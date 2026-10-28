@@ -65,9 +65,7 @@ fn an_envelope_ramps_in_amplitude_between_its_knots() {
 
 /// Peak of `x` past its first and last 2000 frames (the kernel's edges).
 fn level(x: &[f32]) -> f32 {
-    x[2000..x.len() - 2000]
-        .iter()
-        .fold(0.0f32, |m, v| m.max(v.abs()))
+    peak(x.get(2000..x.len() - 2000).unwrap_or_default())
 }
 
 fn sine(hz: f32, rate: u32, frames: usize) -> Vec<f32> {
