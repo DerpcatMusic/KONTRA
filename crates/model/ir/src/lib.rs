@@ -230,8 +230,16 @@ pub struct Lfo {
     pub phase: f32,
     /// Ramps the output in from 0 over this long after the voice starts.
     pub fade_ms: f32,
-    /// Restarts at each voice; else runs from the engine's start.
-    pub retrigger: bool,
+    pub clock: Clock,
+}
+
+/// Where an [`Lfo`]'s time starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Clock {
+    /// Restarts at each voice.
+    Voice,
+    /// Runs from the engine's start, shared by every voice.
+    Free,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

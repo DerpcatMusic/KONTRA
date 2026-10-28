@@ -172,7 +172,9 @@ impl Engine {
 
     /// Renders every voice into its chain or bus mix, then the chains.
     pub(crate) fn render_span(&mut self, len: usize) {
-        self.refresh_timed();
+        if self.now.0.is_multiple_of(MAX_SPAN) {
+            self.refresh_timed();
+        }
         for bus in &mut self.buses {
             if let Some(mix) = bus.mix.get_mut(..len) {
                 mix.fill([0.0; 2]);

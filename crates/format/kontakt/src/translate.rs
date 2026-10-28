@@ -493,8 +493,12 @@ fn timed(
         Modulator::Flex(e) => (envelope(laws::flex(e)), "flex envelope"),
         Modulator::Ahdsr(e) => (envelope(laws::ahdsr(e)), "AHDSR"),
         Modulator::Lfo(l) => {
-            let retrigger = p.unknown_flags.get(RETRIGGER).is_some_and(|&f| f != 0);
-            let (Some(lfo), Ok(n)) = (laws::lfo(l, retrigger), u8::try_from(out.lfos.len())) else {
+            let clock = if p.unknown_flags.get(RETRIGGER).is_some_and(|&f| f != 0) {
+                ir::Clock::Voice
+            } else {
+                ir::Clock::Free
+            };
+            let (Some(lfo), Ok(n)) = (laws::lfo(l, clock), u8::try_from(out.lfos.len())) else {
                 return report(notes, unmapped, "LFO (synced fade or unknown wave)");
             };
             out.lfos.push(lfo);

@@ -161,7 +161,7 @@ impl Group {
     /// The route a script addresses by modulator `slot` and `target`; a
     /// negative target is the modulator's first route.
     pub fn mod_mut(&mut self, slot: i32, target: i32) -> Option<&mut ir::Mod> {
-        self.mods.iter_mut().find(|m| m.addressed(slot, target))
+        self.mods.iter_mut().find(|m| addressed(m, slot, target))
     }
 }
 
@@ -322,13 +322,7 @@ impl Plan {
     }
 }
 
-/// How scripts find a route.
-pub(crate) trait Addressed {
-    fn addressed(&self, slot: i32, target: i32) -> bool;
-}
-
-impl Addressed for ir::Mod {
-    fn addressed(&self, slot: i32, target: i32) -> bool {
-        i32::from(self.slot) == slot && (target < 0 || i32::from(self.target) == target)
-    }
+/// Whether scripts address `m` by modulator `slot` and `target` (any when negative).
+pub(crate) fn addressed(m: &ir::Mod, slot: i32, target: i32) -> bool {
+    i32::from(m.slot) == slot && (target < 0 || i32::from(m.target) == target)
 }

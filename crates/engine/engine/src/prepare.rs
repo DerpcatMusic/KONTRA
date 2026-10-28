@@ -225,8 +225,9 @@ fn response(
                 .for_each(|v| *v *= gain);
         }
     }
-    // At most a second of predelay; the frame cap below bounds the rest.
-    let delay = (impulse.predelay_ms.clamp(0.0, 1000.0) * from as f32 * 0.001) as usize;
+    // At most a second of predelay, and never more than a capped response holds.
+    let most = (MAX_RESPONSE * u64::from(from) / u64::from(rate.max(1))) as usize;
+    let delay = ((impulse.predelay_ms.clamp(0.0, 1000.0) * from as f32 * 0.001) as usize).min(most);
     for c in [&mut left, &mut right] {
         c.splice(0..0, std::iter::repeat_n(0.0, delay));
     }

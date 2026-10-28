@@ -16,7 +16,7 @@ pub use kontra_dsp_core::Biquad;
 #[must_use]
 pub fn bell(bell: Bell, rate: u32) -> Biquad {
     let rate = f64::from(rate.max(1));
-    let hz = f64::from(bell.hz).clamp(1.0, 0.49 * rate);
+    let hz = f64::from(bell.hz).max(1.0).min(0.49 * rate);
     let w = std::f64::consts::TAU * hz / rate;
     let a = 10f64.powf(f64::from(bell.gain_db) / 40.0);
     let alpha = w.sin() / (2.0 * f64::from(bell.q).max(1e-3));

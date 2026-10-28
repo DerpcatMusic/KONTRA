@@ -31,6 +31,7 @@ impl Biquad {
                 *x = y as f32;
             }
         }
+        flush(self.state.as_flattened_mut());
     }
 
     /// Whether the state has rung out (below −200 dB).
@@ -48,5 +49,15 @@ impl Biquad {
 
     pub fn reset(&mut self) {
         self.state = [[0.0; 2]; 2];
+    }
+}
+
+/// Zeroes state that has decayed below −400 dB, so a rung-out filter never
+/// feeds subnormals to what follows (no FTZ on the audio thread).
+pub fn flush(state: &mut [f64]) {
+    for s in state {
+        if s.abs() < 1e-20 {
+            *s = 0.0;
+        }
     }
 }

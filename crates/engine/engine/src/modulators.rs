@@ -37,7 +37,8 @@ impl Engine {
         }
     }
 
-    /// Re-reads envelopes and LFOs for voices whose group has any.
+    /// Re-reads envelopes and LFOs for voices whose group has any; once per
+    /// [`MAX_SPAN`] grid step.
     pub(crate) fn refresh_timed(&mut self) {
         let plan = self.plan.clone();
         for i in 0..self.voices.len() {
@@ -55,7 +56,7 @@ impl Engine {
             let (Some(n), true, true) = (n, timed, slot.voice.is_active()) else {
                 continue;
             };
-            let age = self.age(slot.started, slot.released.then_some(slot.released_at));
+            let age = self.age(slot.started, slot.released_at);
             let gain = self.voice_gain(zone, &n, slot.factor, age);
             let step = self.step(zone, &n, age);
             let cutoff = self.cutoff(zone, &n, age).map(|(_, hz)| hz);
@@ -125,7 +126,10 @@ fn segment(from: f32, to: f32, x: f32, k: f32) -> f32 {
 
 /// The oscillator's output at `age`, −1..=1, faded in.
 pub(crate) fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
-    let t = if l.retrigger { age.held } else { age.now };
+    let t = match l.clock {
+        ir::Clock::Voice => age.held,
+        ir::Clock::Free => age.now,
+    };
     let hz = match l.rate {
         ir::Rate::Hz(hz) => hz,
         ir::Rate::Beats(beats) => tempo / 60.0 / beats.max(1e-3),
@@ -244,7 +248,7 @@ mod tests {
             rate: ir::Rate::Hz(5.0),
             phase: 0.0,
             fade_ms: 0.0,
-            retrigger: true,
+            clock: ir::Clock::Voice,
         };
         assert!((lfo(&l, at(0.05, None), 0, 120.0) - 1.0).abs() < 1e-4);
         assert!(lfo(&l, at(0.2, None), 0, 120.0).abs() < 1e-4);

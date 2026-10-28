@@ -750,3 +750,46 @@ fn a_velocity_attack_route_shortens_soft_attacks() {
     let frames = (2.0 * 51f32.sqrt() - 2.0) * 48.0;
     assert!((soft - 0.5 * 128.0 / frames).abs() < 2e-3, "{soft}");
 }
+
+#[test]
+fn timed_modulation_does_not_depend_on_the_block_size() {
+    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].lfos = vec![Lfo {
+        wave: Wave::Sine,
+        rate: Rate::Hz(7.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: Clock::Voice,
+    }];
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Volume {
+            source: Source::Lfo(0),
+            intensity: 1.0,
+            curve: Curve::Depth { power: 1 },
+        },
+    }];
+    let plan = Arc::new(plan);
+    let render = |block: usize| {
+        let mut e = Engine::new(Arc::clone(&plan), store.client(), RATE);
+        let mut out = Vec::new();
+        let mut buf = vec![[0.0; 2]; block];
+        e.process(&mut buf, &[on(60, 1.0)]);
+        out.extend_from_slice(&buf);
+        while out.len() < 9_600 {
+            e.process(&mut buf, &[]);
+            out.extend_from_slice(&buf);
+        }
+        out.truncate(9_600);
+        out
+    };
+    let reference = render(256);
+    for block in [64, 100, 1000] {
+        assert_eq!(render(block), reference, "block {block}");
+    }
+}

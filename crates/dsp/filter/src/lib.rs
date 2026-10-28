@@ -1,8 +1,13 @@
 //! Filters: one state-variable shape per class (03-DSP.md §3). A fixed
 //! state-variable stage is the bilinear transform of its analog prototype, so
 //! it runs as a biquad; formats load their own cutoff, damping and gain laws.
+//! A cutoff that moves runs the same shape as [`Svf`], whose trapezoidal
+//! integrators stay stable and click-free under per-span coefficient changes,
+//! which a direct-form biquad's state does not guarantee (its state is not the
+//! filter's energy). One shape, two runners: they agree to 1e-5 at a fixed cutoff.
 
 pub use kontra_dsp_core::Biquad;
+use kontra_dsp_core::flush;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pass {
@@ -28,7 +33,7 @@ pub struct Shape {
 #[must_use]
 pub fn sections(shape: &Shape, rate: u32) -> Vec<Biquad> {
     let rate = f64::from(rate.max(1));
-    let hz = f64::from(shape.hz).clamp(1.0, 0.49 * rate);
+    let hz = f64::from(shape.hz).max(1.0).min(0.49 * rate);
     let g = (std::f64::consts::PI * hz / rate).tan();
     let mut out: Vec<Biquad> = if shape.stages == 0 {
         // 1/(s + 1) or s/(s + 1).
@@ -96,7 +101,7 @@ impl Svf {
     /// Moves the cutoff to `hz` at `rate`, held below 0.49 of the rate.
     pub fn set_cutoff(&mut self, hz: f32, rate: u32) {
         let rate = f64::from(rate.max(1));
-        let hz = f64::from(hz).clamp(1.0, 0.49 * rate);
+        let hz = f64::from(hz).max(1.0).min(0.49 * rate);
         self.hz = hz as f32;
         self.g = (std::f64::consts::PI * hz / rate).tan();
     }
@@ -104,6 +109,12 @@ impl Svf {
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let (g, gain) = (self.g, f64::from(self.shape.gain));
         let stages = usize::from(self.shape.stages);
+        // Per stage: k, then the TPT gains a1, a2, a3.
+        let coefficients = self.shape.damping.map(|k| {
+            let k = f64::from(k);
+            let a1 = 1.0 / (1.0 + g * (g + k));
+            [k, a1, g * a1, g * g * a1]
+        });
         for frame in io {
             for (c, x) in frame.iter_mut().enumerate() {
                 let mut v = f64::from(*x);
@@ -118,13 +129,11 @@ impl Svf {
                         low
                     };
                 }
-                for (st, &k) in self.state.iter_mut().zip(&self.shape.damping).take(stages) {
+                for (st, &[k, a1, a2, a3]) in self.state.iter_mut().zip(&coefficients).take(stages)
+                {
                     let Some([ic1, ic2]) = st.get_mut(c) else {
                         continue;
                     };
-                    let k = f64::from(k);
-                    let a1 = 1.0 / (1.0 + g * (g + k));
-                    let (a2, a3) = (g * a1, g * g * a1);
                     let v3 = v - *ic2;
                     let band = a1 * *ic1 + a2 * v3;
                     let low = *ic2 + a2 * *ic1 + a3 * v3;
@@ -141,6 +150,7 @@ impl Svf {
                 *x = (v * gain) as f32;
             }
         }
+        flush(self.state.as_flattened_mut().as_flattened_mut());
     }
 
     /// The cutoff as last set, in Hz.
@@ -236,5 +246,44 @@ mod tests {
         };
         assert!((gain_db(&band, 1000.0) - 20.0 * 2f64.log10()).abs() < 0.05);
         assert!(gain_db(&shape(Pass::Notch, 1), 1000.0) < -40.0);
+    }
+
+    #[test]
+    fn the_running_filter_is_block_size_free_resets_clean_and_stays_finite() {
+        let shape = Shape {
+            damping: [0.7, 1.2, 0.3],
+            ..shape(Pass::Low, 3)
+        };
+        let impulse = |n: usize| if n == 0 { [1.0, -0.5] } else { [0.0; 2] };
+        let whole: Vec<[f32; 2]> = {
+            let mut io: Vec<_> = (0..512).map(impulse).collect();
+            let mut svf = Svf::new(shape);
+            svf.set_cutoff(shape.hz, 48_000);
+            svf.process(&mut io);
+            io
+        };
+        let mut svf = Svf::new(shape);
+        svf.set_cutoff(shape.hz, 48_000);
+        for chunk in [1, 7, 512] {
+            svf.reset();
+            let mut io: Vec<_> = (0..512).map(impulse).collect();
+            for part in io.chunks_mut(chunk) {
+                svf.process(part);
+            }
+            assert_eq!(io, whole, "chunks of {chunk}");
+        }
+        for (hz, k, rate) in [(1e9, 0.0, 1), (0.0, 1e9, 384_000), (20.0, 1e-9, 8_000)] {
+            let mut svf = Svf::new(Shape {
+                damping: [k; 3],
+                ..shape
+            });
+            svf.set_cutoff(hz, rate);
+            let mut io: Vec<_> = (0..4096).map(|n| [((n % 7) as f32 - 3.0); 2]).collect();
+            svf.process(&mut io);
+            assert!(
+                io.iter().flatten().all(|v| v.is_finite()),
+                "{hz} {k} {rate}"
+            );
+        }
     }
 }

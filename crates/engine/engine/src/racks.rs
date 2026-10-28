@@ -27,8 +27,10 @@ impl Rack {
         let dsp = slots
             .iter()
             .map(|slot| match slot.map(|e| e.kind) {
+                // Built even while bypassed: a script may enable it later.
                 Some(ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_)) => {
-                    let sections = filters::sections(std::slice::from_ref(slot));
+                    let live = slot.map(|e| ir::Effect { bypass: false, ..e });
+                    let sections = filters::sections(&[live]);
                     Dsp::Eq(filters::biquads(&sections, rate))
                 }
                 _ => Dsp::None,

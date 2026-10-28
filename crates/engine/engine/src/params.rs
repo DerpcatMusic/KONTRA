@@ -4,7 +4,7 @@
 
 use kontra_ir as ir;
 
-use crate::plan::Addressed;
+use crate::plan::addressed;
 use crate::{Engine, Level};
 
 /// Effect gains are cubic, unity at this value, so 1_000_000 is +24 dB (v2 sampler-core,
@@ -232,7 +232,7 @@ impl Engine {
                 return Some(i32::from(m.bypass));
             }
             p if p == pars.intensity => {
-                let m = g.mods.iter().find(|m| m.addressed(slot, generic))?;
+                let m = g.mods.iter().find(|m| addressed(m, slot, generic))?;
                 f64::from(depth(&mut m.kind.clone())?.abs())
             }
             p if p == pars.attack => stage_x(15_000.0, ms(e.attack)),

@@ -206,9 +206,12 @@ pub(crate) fn flex_gate(e: &ir::Breakpoints) -> ir::Envelope {
 /// synced note value), pulse width, start phase in cycles. A synced note value
 /// is in whole notes: the manual's "Whole, 1.0" cycle is one 4/4 bar, and
 /// ANALOG STRINGS stores 1/24 × 24. A synced fade is not mapped.
-pub(crate) fn lfo(l: &Lfo, retrigger: bool) -> Option<ir::Lfo> {
+pub(crate) fn lfo(l: &Lfo, clock: ir::Clock) -> Option<ir::Lfo> {
     const FREE: f32 = -1.0;
     let [fade_ms, hz, width, phase] = l.initial_values;
+    if !l.initial_values.iter().all(|v| v.is_finite()) {
+        return None;
+    }
     let wave = match l.waveform {
         0 => ir::Wave::Sine,
         1 => ir::Wave::Square { width },
@@ -216,7 +219,9 @@ pub(crate) fn lfo(l: &Lfo, retrigger: bool) -> Option<ir::Lfo> {
         3 => ir::Wave::Saw,
         4 => ir::Wave::Random,
         5 | 6 => {
-            let [sine, pulse, triangle, saw, random] = l.trailing_values?;
+            let [sine, pulse, triangle, saw, random] = l
+                .trailing_values
+                .filter(|w| w.iter().all(|v| v.is_finite()))?;
             ir::Wave::Multi {
                 weights: [sine, saw, triangle, pulse, random],
                 width,
@@ -237,7 +242,7 @@ pub(crate) fn lfo(l: &Lfo, retrigger: bool) -> Option<ir::Lfo> {
         rate,
         phase,
         fade_ms,
-        retrigger,
+        clock,
     })
 }
 

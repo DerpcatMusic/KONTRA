@@ -83,9 +83,10 @@ struct Slot {
     note: Option<NoteRef>,
     zone: usize,
     started: SampleTime,
-    /// Key released (the envelope is in release).
+    /// Key released.
     released: bool,
-    released_at: SampleTime,
+    /// When the envelope began its release; a one-shot's never does.
+    released_at: Option<SampleTime>,
     /// Fading out after a steal, choke or group limit; no longer counts as playing.
     fading: bool,
     /// Extra gain fixed at start (release-trigger decay).
@@ -187,7 +188,7 @@ impl Engine {
                 note: None,
                 zone: 0,
                 started: SampleTime(0),
-                released_at: SampleTime(0),
+                released_at: None,
                 released: false,
                 fading: false,
                 factor: 1.0,
@@ -383,7 +384,9 @@ impl Engine {
                 .queue
                 .next_at()
                 .map_or(end, |at| at.min(end))
-                .min(SampleTime(self.now.0 + MAX_SPAN));
+                // Spans end on a fixed grid, so timed modulators move at the
+                // same samples whatever the host's block size.
+                .min(SampleTime((self.now.0 / MAX_SPAN + 1) * MAX_SPAN));
             let len = (until.0 - self.now.0) as usize;
             self.render_span(len);
             let from = (self.now.0 - start.0) as usize;
@@ -503,6 +506,7 @@ impl Engine {
             slot.zone = index;
             slot.started = now;
             slot.released = false;
+            slot.released_at = None;
             slot.fading = false;
             slot.factor = factor;
         }
@@ -657,10 +661,10 @@ impl Engine {
             .iter_mut()
             .filter(|s| s.note == Some(note) && !s.released)
         {
-            slot.released_at = self.now;
             // A one-shot plays to its end marker whatever the key does.
             if !self.plan.zones.get(slot.zone).is_some_and(|z| z.one_shot) {
                 slot.voice.release();
+                slot.released_at = Some(self.now);
             }
             slot.released = true;
         }
@@ -730,7 +734,7 @@ impl Engine {
             if cc.is_some_and(|cc| !self.follows(zone, cc)) {
                 continue;
             }
-            let age = self.age(slot.started, slot.released.then_some(slot.released_at));
+            let age = self.age(slot.started, slot.released_at);
             let gain = self.voice_gain(zone, &n, slot.factor, age);
             let step = self.step(zone, &n, age);
             let pitch = cc.is_none_or(|cc| self.pitch_follows(zone, cc));
