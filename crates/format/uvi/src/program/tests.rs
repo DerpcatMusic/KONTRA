@@ -289,17 +289,36 @@ fn an_oscillators_bend_and_controller_pitch_routes_reach_its_group() {
             pitch(ir::Source::Controller(1), 0.5),
             // Inverted, at half depth.
             pitch(ir::Source::Lfo(0), -0.3),
+            pitch(ir::Source::Lfo(1), 0.7),
         ]
     );
     assert_eq!(
-        out.groups[0].lfos,
-        [ir::Lfo {
+        out.groups[0].lfos[0],
+        ir::Lfo {
             wave: ir::Wave::Sine,
             rate: ir::Rate::Beats(0.5),
             phase: 0.25,
             fade_ms: 0.0,
             clock: ir::Clock::Free,
-        }]
+        }
+    );
+    // Sine and half a triangle, normalized by their peak, 1.0511.
+    let ir::Wave::Multi {
+        weights,
+        normalize: false,
+        ..
+    } = out.groups[0].lfos[1].wave
+    else {
+        panic!("{:?}", out.groups[0].lfos[1]);
+    };
+    let k = 1.0 / 1.051_102;
+    let expected = [-k, 0.0, -0.5 * k, 0.0, 0.0, 0.0];
+    assert!(
+        weights
+            .iter()
+            .zip(expected)
+            .all(|(w, e)| (w - e).abs() < 1e-4),
+        "{weights:?}"
     );
     // Only the mapped connection is left to report.
     let pitch_notes: Vec<_> = out
@@ -310,8 +329,8 @@ fn an_oscillators_bend_and_controller_pitch_routes_reach_its_group() {
         .collect();
     assert_eq!(
         pitch_notes,
-        // The mapped bend and the mixed MultiLFO.
-        ["2× (first: @PitchBend)"],
+        // The mapped bend, its mapper missing.
+        ["1× (first: @PitchBend)"],
         "{:?}",
         out.diagnostics
     );
