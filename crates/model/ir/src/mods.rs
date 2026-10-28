@@ -72,6 +72,14 @@ pub enum ModKind {
     /// Adds `source × depth` cycles (`depth` −1..=1) to the start phase of
     /// the group's LFO `lfo`, `source` read at note-on.
     LfoPhase { source: Source, lfo: u8, depth: f32 },
+    /// Scales every route of the group's timed source `of` (an LFO or an
+    /// envelope) by `1 − (1 − x)·depth`, `x` the live `source`, a bipolar one
+    /// as `(x + 1)/2`.
+    Intensity {
+        source: Source,
+        of: Source,
+        depth: f32,
+    },
     /// Moves the zone's loops by `source × depth` of the sample's frames,
     /// read at note-on: start and end together, or the end only (`length`).
     LoopShift {
