@@ -654,6 +654,11 @@ impl<L: Library> Translator<'_, '_, L> {
             .descendants()
             .filter(|n| n.has_tag_name("SignalConnection") && !flag(*n, "Bypass"))
         {
+            // At ratio 0 a connection moves nothing: what modulates its
+            // ratio scales it (matrix.rs), so 0 stays 0.
+            if num(connection, "Ratio", 1.0).is_ok_and(|r| r == 0.0) {
+                continue;
+            }
             if modulation::script_route(self.program, connection).is_some()
                 || filters::freq_route(connection).is_some()
                 || [PITCH, PAN]
