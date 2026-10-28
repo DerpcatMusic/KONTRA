@@ -40,6 +40,10 @@ pub(crate) fn expand(input: &[u8], expected: usize) -> Result<Vec<u8>, &'static 
                 .len()
                 .checked_sub(distance)
                 .ok_or("FastLZ reference before start")?;
+            // Checked before copying: a crafted run length can be ~255× the input.
+            if count > expected.saturating_sub(out.len()) {
+                return Err("FastLZ output longer than declared");
+            }
             // Forward order: a run may overlap what it is writing.
             for i in from..from + count {
                 let byte = *out.get(i).ok_or("FastLZ reference before start")?;

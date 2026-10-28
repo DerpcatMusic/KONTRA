@@ -32,14 +32,28 @@ pub(crate) struct Resolver {
     key: Option<std::sync::Arc<[u8]>>,
 }
 
+/// `path` with `.` and `..` resolved by name, without touching the disk.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 impl Resolver {
     pub(crate) fn new(instrument: &Path) -> Result<Self, String> {
-        let parent = instrument.parent().unwrap_or(Path::new(".")).to_path_buf();
-        let root = instrument
-            .ancestors()
-            .find(|p| p.join("Samples").is_dir())
-            .unwrap_or(&parent)
-            .to_path_buf();
+        // Canonical, so an empty or `./` parent, `..` or a symlink still
+        // contains its candidates.
+        let instrument = &instrument.canonicalize().map_err(|e| e.to_string())?;
+        let parent = instrument.parent().unwrap_or(Path::new("/")).to_path_buf();
+        let root = crate::resources::root(instrument);
         let mut monolith = HashMap::new();
         let mut file = File::open(instrument).map_err(|e| e.to_string())?;
         let mut magic = [0; 16];
@@ -70,6 +84,14 @@ impl Resolver {
         })
     }
 
+    /// Whether `file`, symlinks followed, is still under the root.
+    fn inside(&self, file: &Path) -> bool {
+        let real = |p: &Path| p.canonicalize().ok();
+        real(file)
+            .zip(real(&self.root))
+            .is_some_and(|(f, r)| f.starts_with(r))
+    }
+
     /// The bytes of the sample the preset names `name`, if the library has it.
     pub(crate) fn resolve(&mut self, name: &str) -> Result<Option<Location>, String> {
         let name = name.replace(['\\', '|'], "/");
@@ -84,12 +106,18 @@ impl Resolver {
             .map(Path::to_path_buf)
             .collect();
         for base in &bases {
-            let candidate = base.join(&name);
+            // `..` is normal in Kontakt's tables, but never past the root.
+            let candidate = lexical(&base.join(&name));
+            if !candidate.starts_with(&self.root) {
+                continue;
+            }
             if let Some((archive, member)) = archive_member(&candidate) {
-                if let Some(found) = self.archive_entry(&archive, &member)? {
+                if self.inside(&archive)
+                    && let Some(found) = self.archive_entry(&archive, &member)?
+                {
                     return Ok(Some(found));
                 }
-            } else if candidate.is_file() {
+            } else if candidate.is_file() && self.inside(&candidate) {
                 return Ok(Some(whole(candidate)));
             }
         }

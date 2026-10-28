@@ -19,14 +19,22 @@ fn main() -> anyhow::Result<()> {
     } else {
         None
     };
-    for m in dir
+    for (n, m) in dir
         .files
         .iter()
         .filter(|m| m.name.to_ascii_lowercase().ends_with(".uvip"))
+        .enumerate()
     {
         let text =
             crypto::decode_program_bytes(&ufs.read_member(m, dir.metadata_key, key)?, &ns.program)?;
-        let name = m.name.replace(['/', '\\'], "_");
+        // The whole path, numbered: leaf names repeat across folders, and
+        // flattened paths can collide.
+        let name = m
+            .path
+            .as_deref()
+            .unwrap_or(&m.name)
+            .replace(['/', '\\'], "_");
+        let name = format!("{n:04}_{name}");
         std::fs::write(std::path::Path::new(out).join(name), text)?;
     }
     Ok(())
