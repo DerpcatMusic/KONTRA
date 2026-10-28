@@ -285,8 +285,14 @@ mod tests {
             c.process(block);
         }
         for n in [0, 63, 64, 1_000, 1_024, 8_191, 8_192, 25_000, 29_999] {
-            let direct: f32 = (0..=n.min(ir.len() - 1)).map(|k| ir[k] * input[n - k]).sum();
-            assert!((io[n][0] - direct).abs() < 1e-4, "{n}: {} vs {direct}", io[n][0]);
+            let direct: f32 = (0..=n.min(ir.len() - 1))
+                .map(|k| ir[k] * input[n - k])
+                .sum();
+            assert!(
+                (io[n][0] - direct).abs() < 1e-4,
+                "{n}: {} vs {direct}",
+                io[n][0]
+            );
         }
     }
 }
