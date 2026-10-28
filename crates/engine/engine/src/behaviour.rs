@@ -35,6 +35,9 @@ pub(crate) struct Behaviour {
     cc_set: [u128; 16],
     /// Pitch bend per channel, −1..=1.
     bend: [f32; 16],
+    /// The channel the latest note, controller or bend came on: what routes
+    /// no note owns read (the engine plays every channel).
+    pub(crate) channel: u8,
     global: Counter,
     keys: [Counter; 128],
     /// (group, counter) for every group a round-robin zone names; built at prepare.
@@ -64,6 +67,7 @@ impl Behaviour {
             cc,
             cc_set: [0; 16],
             bend: [0.0; 16],
+            channel: 0,
             global: Counter::default(),
             keys: [Counter::default(); 128],
             groups,
@@ -78,6 +82,12 @@ impl Behaviour {
     /// Kontakt's key latch (KONTAKT_START_CONDITIONS, 0x144f17d28): a key
     /// inside the span of all switch ranges sets the ranges holding it and
     /// clears the rest, even in a gap; a key outside the span changes nothing.
+    /// A note-on: its channel is the one last played, its key may switch.
+    pub(crate) fn play(&mut self, plan: &Plan, key: u8, channel: u8) {
+        self.channel = channel;
+        self.press(plan, key);
+    }
+
     pub(crate) fn press(&mut self, plan: &Plan, key: u8) {
         let lo = plan.switches.iter().map(|r| *r.start()).min();
         let hi = plan.switches.iter().map(|r| *r.end()).max();

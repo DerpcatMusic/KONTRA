@@ -13,6 +13,9 @@ impl Engine {
         }
         let status = (word >> 16) as u8;
         let channel = status & 0x0F;
+        if matches!(status & 0xF0, 0xB0 | 0xE0) {
+            self.behaviour.channel = channel;
+        }
         if status & 0xF0 == 0xE0 {
             // 14 bits: LSB in data 1, MSB in data 2; 8192 is centre.
             let raw = (word & 0x7F) << 7 | (word >> 8 & 0x7F);
