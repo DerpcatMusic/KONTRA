@@ -185,8 +185,8 @@ impl Engine {
             let Some(x) = x.filter(|_| floor_ms > 0.0) else {
                 continue;
             };
-            // ponytail: Kontakt cubes the factor for some external source
-            // types (0x140873120); which ones is not proved, so none are.
+            // ponytail: a format may shape the factor per source type; none
+            // is proved yet (docs/re: attack route), so it stays linear.
             let x = if intensity < 0.0 { 1.0 - x } else { x };
             let m = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
             let ms = e.attack as f32 * 1000.0 / rate;
