@@ -1,6 +1,6 @@
 //! A compiled KSP script as the engine's [`ScriptPlan`].
 
-use kontra_engine::{Callbacks, Controls, EnginePar, EnginePars, ScriptPlan, Text};
+use kontra_engine::{Callbacks, Controls, EnginePar, EnginePars, LookPars, ScriptPlan, Text};
 use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 /// The engine parameters the engine answers, by KSP name.
@@ -191,6 +191,59 @@ fn controls(script: &Script) -> Controls {
         num_items_par: symbol(script, "$CONTROL_PAR_NUM_ITEMS"),
         selected_item_par: symbol(script, "$CONTROL_PAR_SELECTED_ITEM_IDX"),
         cells,
+        look: look(script),
+    }
+}
+
+/// The parameters the UI-look builtins set, after the script's own symbols:
+/// a script that names one shares its id; `move_control`'s grid and the
+/// table's shown steps have no constant, so always get their own.
+pub(crate) const LOOK: [&str; 13] = [
+    "$CONTROL_PAR_TEXT",
+    "$CONTROL_PAR_LABEL",
+    "$CONTROL_PAR_HELP",
+    "$CONTROL_PAR_UNIT",
+    "$CONTROL_PAR_DEFAULT_VALUE",
+    "$CONTROL_PAR_POS_X",
+    "$CONTROL_PAR_POS_Y",
+    "$CONTROL_PAR_HIDE",
+    "grid_x",
+    "grid_y",
+    "table_steps_shown",
+    "$CONTROL_PAR_PICTURE",
+    "$CONTROL_PAR_PICTURE_STATE",
+];
+
+/// The id the look parameter `name` is stored under.
+pub(crate) fn look_par(script: &Script, name: &str) -> i32 {
+    match symbol(script, name) {
+        i32::MIN => {
+            let k = LOOK.iter().position(|l| *l == name).unwrap_or(LOOK.len());
+            SYMBOL_BASE + (script.symbols.len() + k) as i32
+        }
+        id => id,
+    }
+}
+
+fn look(script: &Script) -> LookPars {
+    let par = |name| look_par(script, name);
+    let id = |name| kontra_ksp::constant(name).unwrap_or(i32::MIN);
+    LookPars {
+        text: par("$CONTROL_PAR_TEXT"),
+        label: par("$CONTROL_PAR_LABEL"),
+        help: par("$CONTROL_PAR_HELP"),
+        unit: par("$CONTROL_PAR_UNIT"),
+        default: par("$CONTROL_PAR_DEFAULT_VALUE"),
+        pos_x: par("$CONTROL_PAR_POS_X"),
+        pos_y: par("$CONTROL_PAR_POS_Y"),
+        hide: par("$CONTROL_PAR_HIDE"),
+        grid_x: par("grid_x"),
+        grid_y: par("grid_y"),
+        steps_shown: par("table_steps_shown"),
+        picture: par("$CONTROL_PAR_PICTURE"),
+        picture_state: par("$CONTROL_PAR_PICTURE_STATE"),
+        wallpaper: id("$INST_WALLPAPER_ID"),
+        icon: id("$INST_ICON_ID"),
     }
 }
 

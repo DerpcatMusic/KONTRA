@@ -3,3 +3,4 @@
 
 pub mod instrument;
 pub mod script;
+pub mod ui;
