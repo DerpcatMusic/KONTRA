@@ -5,7 +5,7 @@ use kontakto::sound::{
     v2::{V2Core, V2Loader},
 };
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use sha2::{Digest,Sha256};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -49,13 +49,11 @@ fn heads(stream: &kontakto::sound::Stream) -> Value {
         ready += usize::from(b > 0);
         source_frames += p.frame_count() as u64;
     }
-    let coverage = |r: sampler_kontakt::HeadReadiness| {
-        json!({
-            "assets":r.assets,"ranges":r.ranges,"source_frames":r.source_frames,
-            "covered_ranges":r.covered_ranges,"covered_source_frames":r.covered_source_frames,
-            "complete":r.complete()
-        })
-    };
+    let coverage = |r: sampler_kontakt::HeadReadiness| json!({
+        "assets":r.assets,"ranges":r.ranges,"source_frames":r.source_frames,
+        "covered_ranges":r.covered_ranges,"covered_source_frames":r.covered_source_frames,
+        "complete":r.complete()
+    });
     let hints = json!({
         "requested":stream.streamer.hint_readiness(&stream.assets).map(coverage),
         "selected":stream.streamer.selected_hint_readiness(&stream.assets).map(coverage),
@@ -85,47 +83,23 @@ fn stats(core: &V2Core) -> Value {
 }
 
 fn guards(core: &V2Core, views: &[sampler_ksp::ScriptView], targets: Option<&Value>) -> Value {
-    let Some(targets) = targets else {
-        return Value::Null;
-    };
-    let generation = core.ui_lifecycle_progress(0)["audio_generation"].as_u64();
-    let mut rows = Vec::new();
-    let mut matches = 0usize;
-    for (instance, view) in views
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| Some(u64::from(v.slot())) == targets["physical_slot"].as_u64())
-    {
-        let source = view
-            .setup()
-            .identity
-            .source
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        if Some(source.as_str()) != targets["script_sha256"].as_str() {
-            rows.push(
-                json!({"physical_slot":view.slot(),"instance":instance,"source_match":false}),
-            );
-            continue;
+    let Some(targets)=targets else {return Value::Null};
+    let generation=core.ui_lifecycle_progress(0)["audio_generation"].as_u64();
+    let mut rows=Vec::new();
+    let mut matches=0usize;
+    for (instance,view) in views.iter().enumerate().filter(|(_,v)|Some(u64::from(v.slot()))==targets["physical_slot"].as_u64()) {
+        let source=view.setup().identity.source.iter().map(|b|format!("{b:02x}")).collect::<String>();
+        if Some(source.as_str())!=targets["script_sha256"].as_str() {
+            rows.push(json!({"physical_slot":view.slot(),"instance":instance,"source_match":false}));continue;
         }
-        matches += 1;
+        matches+=1;
         for target in targets["fields"].as_array().into_iter().flatten() {
-            if target["storage_role"] == "system" {
-                continue;
-            }
-            let Some(id) = target["id"].as_str() else {
-                continue;
-            };
-            if id.len() != 12 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
-                continue;
-            }
-            let field = view.setup().fields.iter().find(|field| {
-                format!("{:x}", Sha256::digest(field.name.as_bytes())).starts_with(id)
-            });
-            let Some(field) = field else {
-                rows.push(json!({"physical_slot":view.slot(),"instance":instance,"id":id,"storage_role":target["storage_role"],"setup_field_present":false}));
-                continue;
+            if target["storage_role"]=="system" {continue;}
+            let Some(id)=target["id"].as_str() else {continue};
+            if id.len()!=12 || !id.bytes().all(|b|b.is_ascii_hexdigit()) {continue;}
+            let field=view.setup().fields.iter().find(|field|format!("{:x}",Sha256::digest(field.name.as_bytes())).starts_with(id));
+            let Some(field)=field else {
+                rows.push(json!({"physical_slot":view.slot(),"instance":instance,"id":id,"storage_role":target["storage_role"],"setup_field_present":false}));continue;
             };
             match field.storage {
                 sampler_ksp::model::Location::Control(control)=>rows.push(json!({"physical_slot":view.slot(),"instance":instance,
@@ -150,71 +124,44 @@ fn guards(core: &V2Core, views: &[sampler_ksp::ScriptView], targets: Option<&Val
         "scope":"Exact SetupLayout storage; SHA12 names and source SHA gate, no source strings or guessed cell packing"})
 }
 
-fn activate(
-    core: &mut V2Core,
-    views: &mut [sampler_ksp::ScriptView],
-    targets: Option<&Value>,
-) -> Value {
+fn activate(core: &mut V2Core, views: &mut [sampler_ksp::ScriptView], targets: Option<&Value>) -> Value {
     // Same read-only effect host as the production offline lifecycle witness.
     // Fixed bounds are evidence, never permission to call an unfinished plan ready.
-    let started = Instant::now();
-    let mut effects = 0usize;
-    let mut frames = 0usize;
-    let mut rows = Vec::new();
-    let mut failure = None;
-    let mut completed = std::collections::BTreeMap::new();
-    while frames < 96_000 && started.elapsed() < Duration::from_secs(5) && effects <= 65_536 {
-        match core.service_ui_read_only(0, views) {
-            Ok(count) => effects += count,
-            Err(error) => {
-                failure = Some(format!("{:?}", error.kind()));
-                break;
-            }
+    let started=Instant::now();
+    let mut effects=0usize;
+    let mut frames=0usize;
+    let mut rows=Vec::new();
+    let mut failure=None;
+    let mut completed=std::collections::BTreeMap::new();
+    while frames<96_000 && started.elapsed()<Duration::from_secs(5) && effects<=65_536 {
+        match core.service_ui_read_only(0,views) {
+            Ok(count)=>effects+=count,
+            Err(error)=>{failure=Some(format!("{:?}",error.kind()));break;}
         }
-        let progress = core.ui_lifecycle_progress(0);
-        if rows.len() < 4 {
-            rows.push(progress.clone());
-        }
-        if frames != 0 && progress["pending_plan_callbacks"].as_u64() == Some(0) {
-            break;
-        }
-        if ["live_callback_failures", "queued_faults", "dropped_faults"]
-            .iter()
-            .any(|k| progress[*k].as_u64().is_some_and(|n| n != 0))
-        {
-            break;
-        }
-        core.begin_block(&BlockInfo {
-            frames: 128,
-            offline: true,
-            ..Default::default()
-        });
-        let _ = core.render(128);
+        let progress=core.ui_lifecycle_progress(0);
+        if rows.len()<4 {rows.push(progress.clone());}
+        if frames!=0 && progress["pending_plan_callbacks"].as_u64()==Some(0) {break;}
+        if ["live_callback_failures","queued_faults","dropped_faults"].iter()
+            .any(|k|progress[*k].as_u64().is_some_and(|n|n!=0)) {break;}
+        core.begin_block(&BlockInfo{frames:128,offline:true,..Default::default()});
+        let _=core.render(128);
         // end_block consumes terminal callback outcomes. Observe exact retained
         // roles before that production drain without consuming outcomes here.
-        let progress = core.ui_lifecycle_progress(0);
+        let progress=core.ui_lifecycle_progress(0);
         for row in progress["callbacks"].as_array().into_iter().flatten() {
-            let Some(program) = row["program"].as_u64() else {
-                continue;
-            };
-            if row["outcome"] == "pending" {
-                continue;
-            }
-            let mut local = program as usize;
+            let Some(program)=row["program"].as_u64() else {continue};
+            if row["outcome"]=="pending" {continue;}
+            let mut local=program as usize;
             for view in views.iter() {
-                if local < view.program_count() {
-                    completed.insert(
-                        program,
-                        json!({"physical_slot":view.slot(),"role":view.program_role(local),
-                        "outcome":row["outcome"],"error_kind":row["error_kind"]}),
-                    );
-                    break;
+                if local<view.program_count() {
+                    completed.insert(program,json!({"physical_slot":view.slot(),"role":view.program_role(local),
+                        "outcome":row["outcome"],"error_kind":row["error_kind"]}));break;
                 }
-                local -= view.program_count();
+                local-=view.program_count();
             }
         }
-        core.end_block(128, &mut |_| true);
-        frames += 128;
+        core.end_block(128,&mut |_|true);
+        frames+=128;
     }
     json!({"frames":frames,"effects_applied":effects,"service_failure":failure,
         "initial_progress":rows,"final_progress":core.ui_lifecycle_progress(0),"runtime":stats(core),
@@ -232,19 +179,12 @@ fn demand(core: &V2Core) -> Value {
         rows.push(json!({"voice":format!("{:?}",d.voice),"asset":format!("{:?}",d.key.asset),
             "zone_source":d.source_zone,"script_source_offset_micros":d.source_offset_micros,"source_frame":d.source_frame,
             "page":d.key.index,"start":d.frames.start,"end":d.frames.end,"deadline":d.deadline,
-            "starved":d.starved,"resident":d.resident,"status":format!("{:?}",d.status)}));
+            "starved":d.starved,"cold":d.cold,"resident":d.resident,"status":format!("{:?}",d.status)}));
         true
     }).unwrap().unwrap();
     json!({"complete":complete,"horizon":1,"rows":rows})
 }
-fn phase(
-    core: &mut V2Core,
-    views: &mut [sampler_ksp::ScriptView],
-    targets: Option<&Value>,
-    stream: &kontakto::sound::Stream,
-    block: usize,
-    round: i32,
-) -> Value {
+fn phase(core: &mut V2Core, views: &mut [sampler_ksp::ScriptView], targets: Option<&Value>, stream: &kontakto::sound::Stream, block: usize, round: i32) -> Value {
     let n = 120usize;
     let mut rows = Vec::new();
     let mut times = Vec::with_capacity(n);
@@ -252,8 +192,8 @@ fn phase(
     let mut peak = 0f32;
     let mut first_signal = None;
     let mut event_us = 0u64;
-    let mut ui_effects = 0usize;
-    let mut ui_errors = 0usize;
+    let mut ui_effects=0usize;
+    let mut ui_errors=0usize;
     let before_heap = HEAP.get();
     let before_io = io();
     let before_stats = stats(core);
@@ -261,10 +201,7 @@ fn phase(
     let mut prior_underruns = core.runtime_stats(0).unwrap().stream_underruns;
     let start = Instant::now();
     for index in 0..n {
-        match core.service_ui_read_only(0, views) {
-            Ok(count) => ui_effects += count,
-            Err(_) => ui_errors += 1,
-        }
+        match core.service_ui_read_only(0,views) {Ok(count)=>ui_effects+=count,Err(_)=>ui_errors+=1}
         ACTIVE.set(true);
         let timer = Instant::now();
         core.begin_block(&BlockInfo {
@@ -329,8 +266,8 @@ fn main() {
     let path = PathBuf::from(&args[1]);
     let block = args[2].parse::<usize>().unwrap();
     assert!([64, 256].contains(&block));
-    let targets: Option<Value> = std::env::var_os("KONTRA_GUARD_TARGETS")
-        .map(|p| serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap());
+    let targets:Option<Value>=std::env::var_os("KONTRA_GUARD_TARGETS")
+        .map(|p|serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap());
     let load_start = Instant::now();
     let loaded = V2Loader
         .prepare(
@@ -372,17 +309,10 @@ fn main() {
     let source = json!({"load_ms":load_ms,"stream_startup":loaded.report.stream_startup,"head_frames":stream.report.head_frames,"head_bytes_reported_at_load":stream.report.head_bytes,"pool_bytes":stream.report.pool_bytes,"full_bytes":stream.report.full_bytes,"read_latency_samples":stream.report.latency_samples,"read_latency_p95_us":stream.report.latency_p95.as_micros(),"heads_after_prepare":heads(&stream),"exact_head_coverage":readiness(&stream, |_|true),"saved_unmuted_asset_coverage":readiness(&stream, |id|enabled.contains(&id)),"static_first_chord_asset_candidates":readiness(&stream, |id|chord.contains(&id)),"candidate_scope":"saved group mute plus authored key/velocity; includes RR/articulation/trigger/controller alternatives, does not infer Lua mutations or exact first-burst reachability","io_after_prepare":io()});
     let mut core = V2Core::with_parts(1, 48000.);
     core.install(0, loaded.part);
-    let mut scripts = loaded.scripts;
-    let before_activation_guards = guards(&core, &scripts.views, targets.as_ref());
-    let activation = activate(&mut core, &mut scripts.views, targets.as_ref());
-    let first = phase(
-        &mut core,
-        &mut scripts.views,
-        targets.as_ref(),
-        &stream,
-        block,
-        1,
-    );
+    let mut scripts=loaded.scripts;
+    let before_activation_guards=guards(&core,&scripts.views,targets.as_ref());
+    let activation=activate(&mut core,&mut scripts.views,targets.as_ref());
+    let first = phase(&mut core, &mut scripts.views, targets.as_ref(), &stream, block, 1);
     for key in 60..68 {
         core.event(
             0,
@@ -397,7 +327,7 @@ fn main() {
     }
     let warm_start = Instant::now();
     for index in 0..20 {
-        let _ = core.service_ui_read_only(0, &mut scripts.views);
+        let _=core.service_ui_read_only(0,&mut scripts.views);
         core.begin_block(&BlockInfo {
             frames: block,
             ..Default::default()
@@ -411,14 +341,7 @@ fn main() {
             std::thread::sleep(wait);
         }
     }
-    let second = phase(
-        &mut core,
-        &mut scripts.views,
-        targets.as_ref(),
-        &stream,
-        block,
-        2,
-    );
+    let second = phase(&mut core, &mut scripts.views, targets.as_ref(), &stream, block, 2);
     println!(
         "{}",
         json!({"policy":"actual V2Loader default Auto","block":block,"cache_scope":"fresh process/source heads; OS/storage cache uncontrolled; no cache eviction requested","diagnostic":true,"source":source,"before_activation_guards":before_activation_guards,"activation":activation,"first_burst":first,"second_burst":second})

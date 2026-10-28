@@ -2581,8 +2581,6 @@ version = "0.0.0"
 dependencies = [
  "kontra-protocol",
  "kontra-ui-model",
- "mui",
- "png 0.18.1",
 ]
 
 [[package]]
