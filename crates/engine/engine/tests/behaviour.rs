@@ -1457,5 +1457,9 @@ fn a_constant_start_phase_route_shifts_a_voices_lfo() {
     };
     // A slow sine at 0 reads 0.5 on the level; a quarter cycle on, its peak.
     assert!((first(None) - 0.5).abs() < 0.01, "{}", first(None));
-    assert!((first(Some(0.25)) - 1.0).abs() < 0.01, "{}", first(Some(0.25)));
+    assert!(
+        (first(Some(0.25)) - 1.0).abs() < 0.01,
+        "{}",
+        first(Some(0.25))
+    );
 }
