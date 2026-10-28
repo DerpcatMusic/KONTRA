@@ -12,7 +12,7 @@ mod effects;
 mod mods;
 mod reverb;
 pub use bus::{Bus, BusSend};
-pub use drive::{Crush, Curve as DriveCurve, EffectParam, Overdrive, Shaper};
+pub use drive::{Crush, Curve as DriveCurve, EffectParam, KnobTarget, Overdrive, Shaper};
 pub use effects::{
     Compressor, Delay, DelayTime, Detector, ImpulseCuts, Limiter, Phaser, Reverb, Transient,
 };
@@ -313,6 +313,9 @@ pub struct Breakpoints {
     /// Instead of holding at `sustain`, cycle back through the points from
     /// this one to `sustain` while the key is down.
     pub loop_from: Option<usize>,
+    /// Its four points are attack, hold, decay to `sustain` and release, so
+    /// scripts may set them by stage.
+    pub stages: bool,
 }
 
 /// A segment to `level` over `ms`. It covers `(e^(k·t) − 1)/(e^k − 1)` of

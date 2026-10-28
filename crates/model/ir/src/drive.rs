@@ -58,8 +58,9 @@ pub struct Overdrive {
     pub curve: &'static [f32; 256],
 }
 
-/// An effect control a route moves, in the effect's own units: a
-/// [`crate::Formant`] knob, a curve's amount, a [`Crush`] rate or bits.
+/// An effect control a route or a script moves, in the effect's own units:
+/// a [`crate::Formant`] knob, a curve's amount, a [`Crush`] rate or bits, a
+/// dynamics or modulation effect's physical setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EffectParam {
     FormantTalk,
@@ -72,12 +73,25 @@ pub enum EffectParam {
     /// Octaves on an [`EffectKind::Eq`] band's centre, kept within 20 Hz to
     /// 20 kHz.
     BellOctaves(u8),
+    CompressorThreshold,
+    CompressorRatio,
+    CompressorAttack,
+    CompressorRelease,
+    /// A free-running [`crate::Delay`] or [`crate::Phaser`] LFO's Hz.
+    ModRate,
+    /// Cycles a [`crate::Delay`]'s or [`crate::Phaser`]'s right LFO runs ahead.
+    ModPhase,
+    PhaserExponent,
+    PhaserFeedback,
+    TransientAttack,
+    TransientSustain,
+    TransientGain,
 }
 
 impl EffectParam {
-    /// Adds `delta` to this control of `kind`; false when `kind` has none.
-    pub fn add(self, kind: &mut EffectKind, delta: f32) -> bool {
-        let at = match (self, kind) {
+    /// This control of `kind`; `None` when `kind` has none.
+    pub fn field_mut(self, kind: &mut EffectKind) -> Option<&mut f32> {
+        Some(match (self, kind) {
             (Self::FormantTalk, EffectKind::Formant(f)) => &mut f.talk,
             (Self::FormantSharp, EffectKind::Formant(f)) => &mut f.sharp,
             (Self::FormantSize, EffectKind::Formant(f)) => &mut f.size,
@@ -86,16 +100,50 @@ impl EffectParam {
             },
             (Self::CrushRate, EffectKind::Crush(c)) => &mut c.rate,
             (Self::CrushBits, EffectKind::Crush(c)) => &mut c.bits,
-            (Self::BellOctaves(band), EffectKind::Eq(bells)) => {
-                let Some(b) = bells.get_mut(usize::from(band)) else {
-                    return false;
-                };
-                b.hz = (b.hz * delta.exp2()).clamp(20.0, 20_000.0);
-                return true;
-            }
-            _ => return false,
+            (Self::CompressorThreshold, EffectKind::Compressor(c)) => &mut c.threshold_db,
+            (Self::CompressorRatio, EffectKind::Compressor(c)) => &mut c.ratio,
+            (Self::CompressorAttack, EffectKind::Compressor(c)) => &mut c.attack_ms,
+            (Self::CompressorRelease, EffectKind::Compressor(c)) => &mut c.release_ms,
+            (Self::ModRate, EffectKind::Delay(crate::Delay { rate, .. }))
+            | (Self::ModRate, EffectKind::Phaser(crate::Phaser { rate, .. })) => match rate {
+                crate::Rate::Hz(hz) => hz,
+                crate::Rate::Beats(_) => return None,
+            },
+            (Self::ModPhase, EffectKind::Delay(d)) => &mut d.phase,
+            (Self::ModPhase, EffectKind::Phaser(p)) => &mut p.phase,
+            (Self::PhaserExponent, EffectKind::Phaser(p)) => &mut p.exponent,
+            (Self::PhaserFeedback, EffectKind::Phaser(p)) => &mut p.feedback,
+            (Self::TransientAttack, EffectKind::Transient(t)) => &mut t.attack,
+            (Self::TransientSustain, EffectKind::Transient(t)) => &mut t.sustain,
+            (Self::TransientGain, EffectKind::Transient(t)) => &mut t.gain_db,
+            _ => return None,
+        })
+    }
+
+    /// Adds `delta` to this control of `kind`; false when `kind` has none.
+    pub fn add(self, kind: &mut EffectKind, delta: f32) -> bool {
+        if let (Self::BellOctaves(band), EffectKind::Eq(bells)) = (self, &mut *kind) {
+            let Some(b) = bells.get_mut(usize::from(band)) else {
+                return false;
+            };
+            b.hz = (b.hz * delta.exp2()).clamp(20.0, 20_000.0);
+            return true;
+        }
+        let Some(at) = self.field_mut(kind) else {
+            return false;
         };
         *at += delta;
         true
     }
+}
+
+/// What a script's 0..=1 knob sets, through its format's law.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KnobTarget {
+    /// A control of the effect in the addressed slot.
+    Effect(EffectParam),
+    /// A free-running LFO's Hz.
+    LfoRate,
+    /// One of a [`crate::Wave::Multi`]'s weights, by its index there.
+    LfoWeight(u8),
 }
