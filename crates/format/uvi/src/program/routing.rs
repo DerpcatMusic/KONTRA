@@ -203,13 +203,14 @@ impl<L: Library> Translator<'_, '_, L> {
         Ok(at)
     }
 
-    /// A DigitalEq on bus `at`, its GainScale connections as the bus's routes.
+    /// A DigitalEq on bus `at` (one slot per four bands), its GainScale
+    /// connections as the bus's routes.
     fn routed_eq(&mut self, node: Node, at: usize) -> Result<(), String> {
         let bands = digital_eq(node, &mut self.notes)?;
         let program = self.program;
         if let Some(b) = self.out.buses.get_mut(at) {
             let insert = u8::try_from(b.inserts.len()).map_err(|e| e.to_string())?;
-            b.inserts.push(Some(bands.effect));
+            b.inserts.extend(bands.effects.iter().copied().map(Some));
             for c in gain_scale(program, node, &bands, insert, b) {
                 self.carried.insert(c.id());
             }
@@ -256,7 +257,13 @@ impl<L: Library> Translator<'_, '_, L> {
             let kind = ir::EffectKind::Gain(num(node, "Volume", 1.0)? as f32);
             Some(effect(kind, 1.0, 0.0))
         } else if node.has_tag_name("DigitalEq") {
-            Some(digital_eq(node, &mut self.notes)?.effect)
+            // Off a bus a slot holds one EQ: its first four bands.
+            let bands = digital_eq(node, &mut self.notes)?;
+            if bands.effects.len() > 1 {
+                self.notes
+                    .add(ir::Impact::Audible, "DigitalEq band past the fourth", "");
+            }
+            bands.effects.first().copied()
         } else if node.has_tag_name("TrackDelay") {
             // A track delay at 0 (every one in VWinds) passes its input.
             if num(node, "DelayTime", 0.0)? != 0.0 {
