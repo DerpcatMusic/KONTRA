@@ -48,11 +48,14 @@ pub struct KeyRange {
     pub name: Text,
 }
 
+/// A control's text parameters, by parameter id.
+type Texts = Vec<(i32, Text)>;
+
 pub(crate) struct Ui {
     /// Per script slot, by control: its menu entries.
     menus: Box<[Box<[Vec<MenuItem>]>]>,
     /// Per script slot, by control: the text parameters it set.
-    texts: Box<[Box<[Vec<(i32, Text)>]>]>,
+    texts: Box<[Box<[Texts]>]>,
     keys: Box<[Key]>,
     ranges: Vec<KeyRange>,
 }
@@ -99,7 +102,7 @@ impl Engine {
         self.ui.menus.get_mut(slot)?.get_mut(n)
     }
 
-    fn texts_mut(&mut self, id: i32) -> Option<&mut Vec<(i32, Text)>> {
+    fn texts_mut(&mut self, id: i32) -> Option<&mut Texts> {
         let slot = usize::from(self.running.slot);
         let n = self.control_index_in(self.running.slot, id)?;
         self.ui.texts.get_mut(slot)?.get_mut(n)
