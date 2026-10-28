@@ -844,6 +844,31 @@ fn an_lfo_moved_resonance_changes_the_response_over_time() {
 }
 
 #[test]
+fn a_group_formant_shapes_its_voices() {
+    use kontra_engine::ir::{Effect, EffectKind, Formant};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+    plan.groups[0].inserts = vec![Some(Effect {
+        kind: EffectKind::Formant(Formant {
+            talk: 0.5,
+            sharp: 0.5,
+            size: 0.5,
+            set: kontra_engine::ir::VowelSet::First,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0f32; 2]; 9600];
+    e.process(&mut out, &[on(60, 1.0)]);
+    let peak = out[4800..].iter().map(|s| s[0].abs()).fold(0.0, f32::max);
+    // Kontakt's Formant I at these knobs: -2.15 dB at 1 kHz.
+    let db = 20.0 * (peak / 0.1).log10();
+    assert!((db - -2.15).abs() < 0.3, "{db} dB");
+}
+
+#[test]
 fn a_velocity_attack_route_shortens_soft_attacks() {
     use kontra_engine::ir;
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();

@@ -6,6 +6,9 @@
 //! which a direct-form biquad's state does not guarantee (its state is not the
 //! filter's energy). One shape, two runners: they agree to 1e-5 at a fixed cutoff.
 
+mod formant;
+
+pub use formant::{Formant, VowelSet, Vowels};
 pub use kontra_dsp_core::Biquad;
 use kontra_dsp_core::flush;
 
