@@ -257,6 +257,13 @@ impl<L: Library> Translator<'_, '_, L> {
                     Some(modulation::Timed::Envelope(e)) => {
                         ir::Source::Envelope(index_of(&mut group.envelopes, e))
                     }
+                    Some(modulation::Timed::Steps(lfo, table)) => {
+                        let source = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
+                        ir::Source::Shaped(index_of(
+                            &mut group.shapers,
+                            ir::Transfer { source, table },
+                        ))
+                    }
                 };
                 let route = ir::Mod {
                     name: String::new(),

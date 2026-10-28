@@ -107,7 +107,14 @@ impl Engine {
                 if matches!(s.source, ir::Source::Shaped(_)) {
                     return None;
                 }
-                Some(s.apply(self.source(zone, s.source, note, age)?))
+                let x = self.source(zone, s.source, note, age)?;
+                // An LFO spans the table as `(x + 1)/2`.
+                let x = if matches!(s.source, ir::Source::Lfo(_)) {
+                    (x + 1.0) / 2.0
+                } else {
+                    x
+                };
+                Some(s.apply(x))
             }
             ir::Source::Envelope(n) => Some(modulators::envelope(
                 group()?.envelopes.get(usize::from(n))?,
