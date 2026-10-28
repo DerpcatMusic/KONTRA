@@ -191,6 +191,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 bytes_per_channel: PRELOAD_BYTES,
                 grain: GRAIN_BYTES,
             }),
+            inserts: self.voice_slots(kg)?,
             ..ir::Group::DEFAULT
         };
         (group.inserts, group.mods) = filters::keygroup(kg);
