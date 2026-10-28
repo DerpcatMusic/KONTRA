@@ -121,20 +121,16 @@ pub(crate) struct Live<'a> {
 }
 
 impl Live<'_> {
-    // ponytail: controllers and pitch bend from MIDI channel 1; a bus has
-    // no note to name one.
+    /// Controllers and pitch bend come from the channel last played.
     fn read(&self, source: ir::Source, blends: &[ir::Blend]) -> Option<f32> {
+        let (b, channel) = (self.behaviour, self.behaviour.channel);
         Some(match source {
-            ir::Source::Controller(cc) => f32::from(self.behaviour.cc(0, cc)) / 127.0,
+            ir::Source::Controller(cc) => f32::from(b.cc(channel, cc)) / 127.0,
             ir::Source::ControllerFrom { cc, start } => {
-                let arrived = self.behaviour.cc_arrived(0, cc);
-                f32::from(if arrived {
-                    self.behaviour.cc(0, cc)
-                } else {
-                    start
-                }) / 127.0
+                let arrived = b.cc_arrived(channel, cc);
+                f32::from(if arrived { b.cc(channel, cc) } else { start }) / 127.0
             }
-            ir::Source::PitchBend => self.behaviour.bend(0),
+            ir::Source::PitchBend => b.bend(channel),
             ir::Source::Script(i) => {
                 ledger::ramp_at(self.scripts, i, self.now).unwrap_or(0) as f32 / 1_000_000.0
             }
