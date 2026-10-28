@@ -250,7 +250,7 @@ impl Engine {
             }
             p if p == pars.intensity => {
                 let m = g.mods.iter().find(|m| addressed(m, slot, generic))?;
-                f64::from(depth(&mut m.kind.clone())?.abs())
+                f64::from(intensity(&m.kind)?)
             }
             p if p == pars.attack => stage_x(15_000.0, ms(e.attack)),
             p if p == pars.hold => stage_x(15_000.0, ms(e.hold)),
@@ -308,8 +308,9 @@ impl Engine {
         }
         if par == pars.intensity {
             // The magnitude is the script's; the route keeps its sign (its invert flag).
-            if let Some(d) = g.mod_mut(slot, generic).and_then(|m| depth(&mut m.kind)) {
-                *d = (x as f32).copysign(*d);
+            if let Some(m) = g.mod_mut(slot, generic)
+                && set_intensity(&mut m.kind, x as f32)
+            {
                 self.refresh_all(None);
             }
             return true;
@@ -378,6 +379,30 @@ impl Engine {
 }
 
 /// A route's live intensity, signed by its invert flag.
+/// A route's intensity knob (0..1). An EQ gain route spans twice its limit
+/// (the knob's full travel moves the band from -limit to +limit).
+fn intensity(kind: &ir::ModKind) -> Option<f32> {
+    match *kind {
+        ir::ModKind::EqGain {
+            depth_db, limit_db, ..
+        } => Some((depth_db / (2.0 * limit_db)).abs()),
+        ref other => depth(&mut other.clone()).map(|d| d.abs()),
+    }
+}
+
+/// Sets a route's intensity knob to `x`, keeping its sign (its invert flag).
+/// Returns whether the route has one.
+fn set_intensity(kind: &mut ir::ModKind, x: f32) -> bool {
+    if let ir::ModKind::EqGain {
+        depth_db, limit_db, ..
+    } = kind
+    {
+        *depth_db = (x * 2.0 * *limit_db).abs().copysign(*depth_db);
+        return true;
+    }
+    depth(kind).map(|d| *d = x.copysign(*d)).is_some()
+}
+
 fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
     match kind {
         ir::ModKind::Volume { intensity, .. } | ir::ModKind::Attack { intensity, .. } => {
@@ -394,7 +419,22 @@ fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{attack_shape, attack_x, stage_ms, stage_x};
+    use super::{attack_shape, attack_x, intensity, set_intensity, stage_ms, stage_x};
+    use kontra_ir as ir;
+
+    #[test]
+    fn an_eq_gain_intensity_spans_twice_its_limit_and_keeps_its_sign() {
+        let mut kind = ir::ModKind::EqGain {
+            source: ir::Source::Velocity,
+            insert: 0,
+            band: 0,
+            depth_db: -36.0,
+            limit_db: 36.0,
+        };
+        assert!(set_intensity(&mut kind, 0.25));
+        assert!(matches!(kind, ir::ModKind::EqGain { depth_db, .. } if depth_db == -18.0));
+        assert_eq!(intensity(&kind), Some(0.25));
+    }
 
     #[test]
     fn attack_curve_round_trips() {

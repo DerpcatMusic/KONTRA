@@ -231,12 +231,13 @@ impl Engine {
                     limit.get_mut(usize::from(band)),
                 ) {
                     *s += amount;
-                    *l = l.min(limit_db);
+                    *l = l.min(limit_db.abs());
                 }
             }
         }
         for ((b, s), l) in bells.iter_mut().zip(shift).zip(limit) {
-            b.gain_db = (b.gain_db + s).clamp(-l, l);
+            // min/max, not clamp: a NaN limit must not panic on the audio thread.
+            b.gain_db = (b.gain_db + s).min(l).max(-l);
         }
         Some(bells)
     }
