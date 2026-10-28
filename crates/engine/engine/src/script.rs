@@ -231,7 +231,7 @@ impl GroupMasks {
 }
 
 /// KSP's `$NI_NOT_FOUND`, what the `get_*_idx` lookups answer for a miss
-/// (real Kontakt 8, `probes/ni_not_found.lua`).
+/// (measured on the oracle: `probes/ni_not_found.lua`).
 const NOT_FOUND: i32 = -100;
 
 pub(crate) fn micros_to_frames(micros: i64, rate: u32) -> u64 {
@@ -651,8 +651,8 @@ impl HostApi for Engine {
                     .get(int(0) as usize)
                     .map_or(0, |g| i32::from(!g.purged)),
             ),
-            // Any modulator, carried or not. A miss: find_mod answers 0 (real
-            // Kontakt 8, probes/find_mod_index.lua), get_mod_idx $NI_NOT_FOUND.
+            // Any modulator, carried or not. A miss: find_mod answers 0 (as
+            // measured: probes/find_mod_index.lua), get_mod_idx $NI_NOT_FOUND.
             Action::FindMod | Action::GetModIdx => {
                 let name = call.texts.first().map_or("", Text::as_str);
                 let found = self.groups.get(int(0) as usize).and_then(|g| {
