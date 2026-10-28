@@ -69,37 +69,43 @@ impl Engine {
 /// The envelope's level at `age`.
 pub(crate) fn envelope(e: &ir::Breakpoints, age: Age) -> f32 {
     let Some((sustain, released)) = e.sustain.zip(age.released) else {
-        return walk(e.start, e.points.iter().enumerate(), age.held, e.sustain);
+        return held(e, age.held);
     };
-    let from = walk(
-        e.start,
-        e.points.iter().enumerate(),
-        released,
-        Some(sustain),
-    );
-    let after = e.points.iter().enumerate().skip(sustain + 1);
-    walk(from, after, age.held - released, None)
+    let after = e.points.get(sustain + 1..).unwrap_or_default();
+    walk(held(e, released), after, age.held - released).0
 }
 
-/// From `level`, through `points` for `t` seconds; holds at `hold`.
-fn walk<'a>(
-    mut level: f32,
-    points: impl Iterator<Item = (usize, &'a ir::Breakpoint)>,
-    mut t: f32,
-    hold: Option<usize>,
-) -> f32 {
-    for (n, p) in points {
+/// The level `t` seconds after the start with the key down: through the
+/// points to the sustain point, then holding there or cycling its loop.
+fn held(e: &ir::Breakpoints, t: f32) -> f32 {
+    let Some(sustain) = e.sustain else {
+        return walk(e.start, &e.points, t).0;
+    };
+    let (level, left) = walk(e.start, e.points.get(..=sustain).unwrap_or(&e.points), t);
+    let cycle = e.loop_from.and_then(|from| e.points.get(from..=sustain));
+    let (Some(left), Some(cycle)) = (left, cycle) else {
+        return level;
+    };
+    let period: f32 = cycle.iter().map(|p| p.ms / 1000.0).sum();
+    if period > 0.0 {
+        walk(level, cycle, left % period).0
+    } else {
+        level
+    }
+}
+
+/// From `level`, through `points` for `t` seconds: the level reached, and the
+/// time left over once past the last point.
+fn walk(mut level: f32, points: &[ir::Breakpoint], mut t: f32) -> (f32, Option<f32>) {
+    for p in points {
         let span = p.ms.max(0.0) / 1000.0;
         if t < span {
-            return segment(level, p.level, t / span, p.curve);
+            return (segment(level, p.level, t / span, p.curve), None);
         }
         t -= span;
         level = p.level;
-        if hold == Some(n) {
-            break;
-        }
     }
-    level
+    (level, Some(t))
 }
 
 fn segment(from: f32, to: f32, x: f32, k: f32) -> f32 {
@@ -129,15 +135,18 @@ pub(crate) fn lfo(l: &ir::Lfo, age: Age, seed: u32) -> f32 {
             }
         }
         ir::Wave::Random => {
-            // One draw per cycle: a hash of the cycle and the voice.
-            let mut x = (cycles.floor() as i64 as u64) ^ (u64::from(seed) << 32);
+            // A new draw each half cycle: a hash of the step and the voice.
+            let mut x = ((2.0 * cycles).floor() as i64 as u64) ^ (u64::from(seed) << 32);
             x = (x ^ (x >> 33)).wrapping_mul(0xff51_afd7_ed55_8ccd);
             x = (x ^ (x >> 33)).wrapping_mul(0xc4ce_b9fe_1a85_ec53);
             ((x >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
         }
     };
+    // The native fade (0x140b06c90) runs a state from 0.3 to 1.3 by a constant
+    // ratio and scales by `state − 0.3`: an exponential rise that ends at 1.
     let fade = if l.fade_ms > 0.0 {
-        (age.held * 1000.0 / l.fade_ms).min(1.0)
+        let x = (age.held * 1000.0 / l.fade_ms).min(1.0);
+        0.3 * ((13.0f32 / 3.0).powf(x) - 1.0)
     } else {
         1.0
     };
@@ -167,6 +176,7 @@ mod tests {
             start: 0.0,
             points: vec![point(100.0, 1.0), point(100.0, 0.5), point(200.0, 0.0)],
             sustain: Some(1),
+            loop_from: None,
         };
         assert!((envelope(&e, at(0.05, None)) - 0.5).abs() < 1e-5);
         assert!((envelope(&e, at(0.15, None)) - 0.75).abs() < 1e-5);
@@ -174,6 +184,28 @@ mod tests {
         // Key-up mid attack: release falls from 0.5 over the last 200 ms.
         assert!((envelope(&e, at(0.15, Some(0.05))) - 0.25).abs() < 1e-5);
         assert!(envelope(&e, at(1.0, Some(0.05))).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_looped_envelope_cycles_while_held() {
+        let point = |ms, level| ir::Breakpoint {
+            ms,
+            level,
+            curve: 0.0,
+        };
+        let e = ir::Breakpoints {
+            start: 0.0,
+            points: vec![point(100.0, 1.0), point(100.0, 0.0), point(100.0, 1.0)],
+            sustain: Some(2),
+            loop_from: Some(1),
+        };
+        assert!((envelope(&e, at(0.25, None)) - 0.5).abs() < 1e-5);
+        assert!(
+            (envelope(&e, at(0.35, None)) - 0.5).abs() < 1e-5,
+            "back down"
+        );
+        assert!((envelope(&e, at(0.45, None)) - 0.5).abs() < 1e-5, "and up");
+        assert!((envelope(&e, at(0.40, None)) - 0.0).abs() < 1e-5);
     }
 
     #[test]

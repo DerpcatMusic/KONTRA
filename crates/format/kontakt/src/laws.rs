@@ -107,7 +107,9 @@ pub(crate) const AUTO_GAIN: ir::Normalize = ir::Normalize {
 /// A flex envelope as breakpoints. Each point's curve knob `c` (0.5 linear)
 /// sets the segment ratio `q` of the native recurrence (0x140ae5a10), whose
 /// closed form is the shape `ln q`. The envelope starts from its last
-/// point's level and holds at the sustain point.
+/// point's level and holds at the sustain point, or with the saved loop flag
+/// (the low byte of the v0x12 tail word) cycles from the point before it
+/// (0x140ae57dd, docs/re/kontakt-flex-loop-jump.md).
 pub(crate) fn flex(e: &EnvelopeFlex) -> ir::Breakpoints {
     let points: Vec<_> = e
         .points
@@ -118,11 +120,17 @@ pub(crate) fn flex(e: &EnvelopeFlex) -> ir::Breakpoints {
             curve: flex_ratio(p.curve).ln(),
         })
         .collect();
+    let sustain = usize::try_from(e.sustain)
+        .ok()
+        .filter(|&s| s < points.len());
+    let looped = e.unknown_version_word().is_some_and(|w| w & 0xFF != 0);
+    let loop_from = usize::try_from(e.unknown_index)
+        .ok()
+        .filter(|&from| looped && sustain.is_some_and(|s| from <= s));
     ir::Breakpoints {
         start: points.last().map_or(0.0, |p| p.level),
-        sustain: usize::try_from(e.sustain)
-            .ok()
-            .filter(|&s| s < points.len()),
+        sustain,
+        loop_from,
         points,
     }
 }

@@ -196,6 +196,9 @@ pub struct Breakpoints {
     pub start: f32,
     pub points: Vec<Breakpoint>,
     pub sustain: Option<usize>,
+    /// Instead of holding at `sustain`, cycle back through the points from
+    /// this one to `sustain` while the key is down.
+    pub loop_from: Option<usize>,
 }
 
 /// A segment to `level` over `ms`. It covers `(e^(k·t) − 1)/(e^k − 1)` of
@@ -230,7 +233,7 @@ pub enum Wave {
     Square {
         width: f32,
     },
-    /// A new random level each cycle.
+    /// A new random level each half cycle.
     Random,
 }
 
