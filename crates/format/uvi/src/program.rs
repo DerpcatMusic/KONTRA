@@ -515,7 +515,7 @@ impl<L: Library> Translator<'_, '_, L> {
             .descendants()
             .filter(|n| n.has_tag_name("SignalConnection") && !flag(*n, "Bypass"))
         {
-            if modulation::script_gain(self.program, connection).is_some() {
+            if modulation::script_route(self.program, connection).is_some() {
                 continue;
             }
             let dest = connection.attribute("Destination").unwrap_or_default();
