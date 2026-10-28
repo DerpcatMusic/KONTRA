@@ -119,7 +119,7 @@ impl Fdn {
             // Schroeder allpasses: y = −g·x + d, d' = x + g·y.
             for d in &mut self.diffusers {
                 let y = d.read() - self.diffusion * x;
-                d.write(x + self.diffusion * y);
+                d.write(flush(x + self.diffusion * y));
                 x = y;
             }
             let mut y = [0.0f32; 8];
@@ -134,8 +134,7 @@ impl Fdn {
             hadamard(&mut y);
             for ((line, v), sign) in self.lines.iter_mut().zip(y).zip([1.0, -1.0].iter().cycle()) {
                 let w = v + sign * x;
-                // The lines feed back: flush what would decay into denormals.
-                line.write(if w.abs() < 1e-20 { 0.0 } else { w });
+                line.write(flush(w));
             }
             let (mid, side) = (0.5 * (left + right), 0.5 * (left - right) * self.stereo);
             for ((o, [cut, low]), v) in frame
@@ -154,6 +153,11 @@ impl Fdn {
             }
         }
     }
+}
+
+/// `x`, or 0 where it would decay into denormals (the lines feed back).
+fn flush(x: f32) -> f32 {
+    if x.abs() < 1e-20 { 0.0 } else { x }
 }
 
 /// The orthonormal 8-point Walsh–Hadamard transform, in place.

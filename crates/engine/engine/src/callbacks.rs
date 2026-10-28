@@ -22,7 +22,7 @@ impl Engine {
     /// Runs slot `slot`'s callback at `entry` now. Notes it let through or
     /// played start before this returns.
     pub(crate) fn run_callback(&mut self, slot: u8, entry: u32, mut running: Running) -> Running {
-        self.callbacks_started = (self.callbacks_started + 1) & 0x00FF_FFFF;
+        self.callbacks_started = (self.callbacks_started + 1) & 0xF_FFFF;
         running.callback_id = self.callbacks_started;
         running.slot = slot;
         let outer = std::mem::replace(&mut self.running, running);
@@ -179,6 +179,9 @@ pub(crate) struct Timer {
     every: u32,
     /// Bumped on every change: a queued firing of an older one is dropped.
     generation: u16,
+    /// Whether its next firing is queued; a full queue leaves it for
+    /// [`Engine::rearm_timers`] to retry.
+    armed: bool,
 }
 
 /// A slot's `$NI_SIGNAL_TIMER_MS` and `$NI_SIGNAL_TIMER_BEAT` timers.
@@ -209,7 +212,11 @@ impl Engine {
             return;
         };
         let generation = timer.map_or(0, |t| t.generation).wrapping_add(1);
-        *timer = (par > 0).then_some(Timer { every, generation });
+        *timer = (par > 0).then_some(Timer {
+            every,
+            generation,
+            armed: false,
+        });
         self.arm(slot, signal);
     }
 
@@ -233,7 +240,29 @@ impl Engine {
             signal,
             generation: timer.generation,
         };
-        self.queue.push(SampleTime(self.now.0 + frames), work);
+        let armed = self.queue.push(SampleTime(self.now.0 + frames), work);
+        let timer = self
+            .timers
+            .get_mut(usize::from(slot))
+            .and_then(|t| t.get_mut(usize::from(signal - 1)))
+            .and_then(Option::as_mut);
+        if let Some(timer) = timer {
+            timer.armed = armed;
+        }
+    }
+
+    /// Retries each timer a full queue refused to arm.
+    pub(crate) fn rearm_timers(&mut self) {
+        for slot in 0..self.timers.len() {
+            for signal in [TIMER_MS, TIMER_BEAT] {
+                let Ok(slot) = u8::try_from(slot) else {
+                    return;
+                };
+                if self.timer(slot, signal).is_some_and(|t| !t.armed) {
+                    self.arm(slot, signal);
+                }
+            }
+        }
     }
 
     /// A slot's timer fired: runs its listener callback, then rearms unless
