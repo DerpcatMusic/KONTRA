@@ -97,6 +97,16 @@ pub enum ModKind {
         length: bool,
         depth: f32,
     },
+    /// Scales cell `row` (a sample channel), `side` (0 left, 1 right) of
+    /// the [`Zone::mix`](crate::Zone::mix) of the group's zone `zone` (its
+    /// index in [`Group::zones`](crate::Group::zones)) by the live `source`,
+    /// 0..=1: a channel matrix that crossfades variants.
+    Mix {
+        source: Source,
+        zone: u16,
+        row: u8,
+        side: u8,
+    },
     /// Adds `source × depth` (knob × `span`) to `param` of the per-voice
     /// effect in group slot `insert`; `unipolar` reads an LFO as 0..=1.
     EffectParam {
@@ -107,4 +117,72 @@ pub enum ModKind {
         span: f32,
         unipolar: bool,
     },
+}
+
+/// A sum of live sources, as a macro knob and what moves it:
+/// `base + Σ amount × input × Π factors`. [`Source::Blend`] reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Blend {
+    pub base: f32,
+    pub terms: Vec<Term>,
+}
+
+/// One input of a [`Blend`]: its source through a table, scaled.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Term {
+    pub input: Transfer,
+    pub amount: f32,
+    pub factors: Vec<Factor>,
+}
+
+/// A live multiplier: `1 − depth + depth × t` (`1 + depth × t` for a
+/// negative depth), `t` its source through its table.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Factor {
+    pub input: Transfer,
+    pub depth: f32,
+}
+
+impl Factor {
+    /// The multiplier for the table's output `t`.
+    #[must_use]
+    pub fn at(&self, t: f32) -> f32 {
+        let d = self.depth;
+        if d < 0.0 {
+            1.0 + d * t
+        } else {
+            1.0 - d + d * t
+        }
+    }
+}
+
+/// A source through a transfer table: `table` holds the outputs for evenly
+/// spaced inputs 0..=1, read with linear interpolation; an LFO enters as
+/// `(x + 1)/2`. Its source is never itself shaped.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Transfer {
+    pub source: Source,
+    pub table: Vec<f32>,
+}
+
+impl Transfer {
+    /// The table's output for `x`, clamped to 0..=1; an empty table passes
+    /// `x` through.
+    #[must_use]
+    pub fn apply(&self, x: f32) -> f32 {
+        let Some(last) = self.table.len().checked_sub(1) else {
+            return x;
+        };
+        let at = x.clamp(0.0, 1.0) * last as f32;
+        let i = (at as usize).min(last);
+        let (a, b) = (
+            self.table.get(i).copied().unwrap_or(x),
+            self.table
+                .get(i + 1)
+                .or(self.table.get(i))
+                .copied()
+                .unwrap_or(x),
+        );
+        a + (b - a) * (at - i as f32)
+    }
 }

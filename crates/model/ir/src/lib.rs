@@ -20,7 +20,7 @@ pub use effects::{
     Compressor, Delay, DelayTime, Detector, IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb,
     Transient,
 };
-pub use mods::ModKind;
+pub use mods::{Blend, Factor, ModKind, Term, Transfer};
 pub use reverb::{Law, ReverbPar};
 
 #[derive(Clone, Debug)]
@@ -269,6 +269,8 @@ pub struct Group {
     pub lfos: Vec<Lfo>,
     /// Transfer tables [`Source::Shaped`] reads, by index.
     pub shapers: Vec<Transfer>,
+    /// Sums [`Source::Blend`] reads, by index.
+    pub blends: Vec<Blend>,
     /// Each modulator's route names, in route order, carried or not: what
     /// scripts find routes by.
     pub routes: Vec<Routes>,
@@ -307,40 +309,10 @@ impl Group {
         envelopes: Vec::new(),
         lfos: Vec::new(),
         shapers: Vec::new(),
+        blends: Vec::new(),
         routes: Vec::new(),
         zones: Vec::new(),
     };
-}
-
-/// A source through a transfer table: `table` holds the outputs for evenly
-/// spaced inputs 0..=1, read with linear interpolation; an LFO enters as
-/// `(x + 1)/2`. Its source is never itself shaped.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Transfer {
-    pub source: Source,
-    pub table: Vec<f32>,
-}
-
-impl Transfer {
-    /// The table's output for `x`, clamped to 0..=1; an empty table passes
-    /// `x` through.
-    #[must_use]
-    pub fn apply(&self, x: f32) -> f32 {
-        let Some(last) = self.table.len().checked_sub(1) else {
-            return x;
-        };
-        let at = x.clamp(0.0, 1.0) * last as f32;
-        let i = (at as usize).min(last);
-        let (a, b) = (
-            self.table.get(i).copied().unwrap_or(x),
-            self.table
-                .get(i + 1)
-                .or(self.table.get(i))
-                .copied()
-                .unwrap_or(x),
-        );
-        a + (b - a) * (at - i as f32)
-    }
 }
 
 /// A per-voice envelope of free breakpoints, 0..=1. It starts at `start`,
@@ -486,6 +458,8 @@ pub enum Source {
     Shaped(u8),
     /// The group's [`Group::lfos`] entry, −1..=1.
     Lfo(u8),
+    /// The group's [`Group::blends`] entry.
+    Blend(u8),
     /// Always 1.
     Constant,
     /// The value a script sent this note for "from script" modulator `id`,

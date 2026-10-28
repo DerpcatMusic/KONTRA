@@ -4,6 +4,7 @@
 use kontra_ir as ir;
 
 use crate::ledger::Note;
+use kontra_stream::Mix;
 use kontra_voice::{Ahdsr, Gain};
 
 use crate::effects::{self, product};
@@ -78,6 +79,31 @@ impl Engine {
         product(group, amp)
     }
 
+    /// The zone's channel matrix with its live cells ([`ir::ModKind::Mix`])
+    /// read for this note; `None` when no route moves it.
+    pub(crate) fn voice_mix(&self, zone: &Zone, note: &Note, age: Age) -> Option<Mix> {
+        let g = self.groups.get(zone.group as usize)?;
+        let mut mix = zone.region.mix?;
+        let mut moved = false;
+        for m in g.mods.iter().filter(|m| !m.bypass) {
+            if let ir::ModKind::Mix {
+                source,
+                zone: z,
+                row,
+                side,
+            } = m.kind
+                && z == zone.member
+                && let Some(cell) = mix
+                    .get_mut(usize::from(row))
+                    .and_then(|r| r.get_mut(usize::from(side)))
+            {
+                *cell *= self.source(zone, source, note, age).unwrap_or(1.0);
+                moved = true;
+            }
+        }
+        moved.then_some(mix)
+    }
+
     /// The group's and the instrument's level, combined.
     fn level(&self, zone: &Zone) -> Level {
         let group = self
@@ -104,17 +130,19 @@ impl Engine {
         match source {
             ir::Source::Shaped(n) => {
                 let s = group()?.shapers.get(usize::from(n))?;
-                if matches!(s.source, ir::Source::Shaped(_)) {
-                    return None;
+                self.through(zone, s, note, age, true)
+            }
+            ir::Source::Blend(n) => {
+                let b = group()?.blends.get(usize::from(n))?;
+                let mut sum = b.base;
+                for t in &b.terms {
+                    let mut x = t.amount * self.through(zone, &t.input, note, age, false)?;
+                    for f in &t.factors {
+                        x *= f.at(self.through(zone, &f.input, note, age, false)?);
+                    }
+                    sum += x;
                 }
-                let x = self.source(zone, s.source, note, age)?;
-                // An LFO spans the table as `(x + 1)/2`.
-                let x = if matches!(s.source, ir::Source::Lfo(_)) {
-                    (x + 1.0) / 2.0
-                } else {
-                    x
-                };
-                Some(s.apply(x))
+                Some(sum)
             }
             ir::Source::Envelope(n) => Some(modulators::envelope(
                 group()?.envelopes.get(usize::from(n))?,
@@ -179,6 +207,30 @@ impl Engine {
             ),
             ir::Source::HeldTime { .. } => None,
         }
+    }
+
+    /// `t`'s source through its table. A shaper may read a blend; a blend's
+    /// inputs read neither (`None`: no recursion).
+    fn through(
+        &self,
+        zone: &Zone,
+        t: &ir::Transfer,
+        note: &Note,
+        age: Age,
+        shaper: bool,
+    ) -> Option<f32> {
+        let x = match t.source {
+            ir::Source::Shaped(_) => return None,
+            ir::Source::Blend(_) if !shaper => return None,
+            s => self.source(zone, s, note, age)?,
+        };
+        // An LFO spans the table as `(x + 1)/2`.
+        let x = if matches!(t.source, ir::Source::Lfo(_)) {
+            (x + 1.0) / 2.0
+        } else {
+            x
+        };
+        Some(t.apply(x))
     }
 
     /// A route's source scaled by the [`ir::ModKind::Intensity`] routes on it.
@@ -374,7 +426,8 @@ impl Engine {
                     | ir::ModKind::Resonance { source, .. }
                     | ir::ModKind::EqGain { source, .. }
                     | ir::ModKind::EffectParam { source, .. }
-                    | ir::ModKind::Intensity { source, .. } => g.controller(source) == Some(cc),
+                    | ir::ModKind::Mix { source, .. }
+                    | ir::ModKind::Intensity { source, .. } => g.reads(source, cc),
                     ir::ModKind::Envelope
                     | ir::ModKind::SampleStart { .. }
                     | ir::ModKind::Attack { .. }
@@ -391,7 +444,7 @@ impl Engine {
         self.groups.get(zone.group as usize).is_some_and(|g| {
             g.mods.iter().any(|m| {
                 matches!(m.kind, ir::ModKind::Pitch { source, .. }
-                    | ir::ModKind::Intensity { source, .. } if g.controller(source) == Some(cc))
+                    | ir::ModKind::Intensity { source, .. } if g.reads(source, cc))
             })
         })
     }
