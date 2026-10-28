@@ -170,7 +170,7 @@ static HALL: LazyLock<ir::ReverbNetwork> = LazyLock::new(|| network(true));
 /// predelay 11025x frames at 44.1 kHz, high cut 19000(1−x)+2000 Hz, low
 /// shelf −12x dB, stereo x. Modulation swings all but the first line by
 /// `10x` frames at 44.1 kHz, at 2 Hz (`0x141aec0a0`).
-pub(crate) fn reverb(kind: i32, v: [f32; 9]) -> ir::Reverb {
+pub fn reverb(kind: i32, v: [f32; 9]) -> ir::Reverb {
     let [
         time,
         size,
@@ -237,61 +237,8 @@ pub fn reverb_laws() -> [ir::Law; 8] {
 }
 
 #[cfg(test)]
-#[path = "reverb_vectors.rs"]
-mod vectors;
-
-#[cfg(test)]
 mod tests {
     use super::*;
-    use kontra_dsp_reverb::{Network, Settings};
-
-    fn engine(kind: i32, v: [f32; 9], rate: u32) -> Network {
-        let r = reverb(kind, v);
-        let s = Settings {
-            seconds: r.seconds,
-            size: r.size,
-            damping: r.damping,
-            diffusion: r.diffusion,
-            predelay_ms: r.predelay_ms,
-            high_cut_hz: r.high_cut_hz,
-            low_shelf_db: r.low_shelf_db,
-            stereo: r.stereo,
-            modulation_ms: r.modulation_ms,
-            modulation_hz: r.modulation_hz,
-        };
-        Network::new(r.network.unwrap(), s, rate)
-    }
-
-    /// The emulated native kernel (`0x141ae2c60`) at 44.1 kHz: left impulse
-    /// 1.0 at 0, right 0.5 at 5, its own mix `m` (`sin(mπ/2)` wet, `cos` dry).
-    #[test]
-    fn room_and_hall_match_the_native_kernel() {
-        for (name, (hall, c, want)) in [
-            ("room a", vectors::ROOM_A),
-            ("hall a", vectors::HALL_A),
-            ("room b", vectors::ROOM_B),
-            ("hall b", vectors::HALL_B),
-        ] {
-            let v = [c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[9]];
-            let (wet, dry) = (c[8] * std::f32::consts::FRAC_PI_2).sin_cos();
-            let mut io = vec![[0.0f32; 2]; 8192];
-            io[0][0] = 1.0;
-            io[5][1] = 0.5;
-            let input = io.clone();
-            engine(i32::from(hall), v, 44_100).process(&mut io);
-            let peak = want.iter().flatten().fold(0f32, |m, v| m.max(v.abs()));
-            let mut worst = 0f32;
-            for ch in 0..2 {
-                for (k, &w) in want[ch].iter().enumerate() {
-                    let g = io[k * 64][ch] * wet + input[k * 64][ch] * dry;
-                    worst = worst.max((g - w).abs() / peak.max(1e-3));
-                }
-            }
-            // The controls pass through physical units (ms, the Exp law), an
-            // ulp off the native's own f32 arithmetic; Room B drifts most.
-            assert!(worst <= 2e-5, "{name}: {worst:e} of peak");
-        }
-    }
 
     #[test]
     fn the_feedback_is_the_m_sequence_and_hall_lines_are_longer() {
