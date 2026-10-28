@@ -44,8 +44,8 @@ fn the_tail_falls_60_db_in_its_time_and_is_stereo_and_finite() {
 
 fn run(fdn: &mut Fdn, frames: usize, impulse_at: Option<usize>) -> Vec<[f32; 2]> {
     let mut io = vec![[0.0f32; 2]; frames];
-    if let Some(at) = impulse_at {
-        io[at] = [1.0, 1.0];
+    if let Some(frame) = impulse_at.and_then(|at| io.get_mut(at)) {
+        *frame = [1.0, 1.0];
     }
     for block in io.chunks_mut(97) {
         fdn.process(block);
