@@ -256,30 +256,11 @@ fn response(
     for c in [&mut left, &mut right] {
         c.splice(0..0, std::iter::repeat_n(0.0, delay));
     }
+    let most = MAX_RESPONSE as usize;
     Ok(Response {
-        left: resample(&left, from, rate),
-        right: resample(&right, from, rate),
+        left: kontra_dsp::reverb::shape::resample(&left, from, rate, most),
+        right: kontra_dsp::reverb::shape::resample(&right, from, rate, most),
     })
-}
-
-/// `c` from rate `from` to `to`. ponytail: linear interpolation; a
-/// band-limited resampler when a response's top octave matters.
-fn resample(c: &[f32], from: u32, to: u32) -> Vec<f32> {
-    let ratio = f64::from(from.max(1)) / f64::from(to.max(1));
-    if (ratio - 1.0).abs() < 1e-9 {
-        return c.to_vec();
-    }
-    // A response at an odd rate cannot outgrow the decode cap.
-    let frames = ((c.len() as f64 / ratio) as usize).min(MAX_RESPONSE as usize);
-    (0..frames)
-        .map(|n| {
-            let x = n as f64 * ratio;
-            let (i, t) = (x as usize, (x - x.floor()) as f32);
-            let a = c.get(i).copied().unwrap_or(0.0);
-            let b = c.get(i + 1).copied().unwrap_or(0.0);
-            a + (b - a) * t
-        })
-        .collect()
 }
 
 /// A streamed zone's resident window, in frames: its head from where it

@@ -76,15 +76,25 @@ impl<'a> Impulses<'a> {
         };
         // The size setter 0x1419b6750 keeps only sizes in 0.5..=1.5.
         let size = |n: usize| float(n).filter(|s| (0.5..=1.5).contains(s)).unwrap_or(1.0);
-        let mut lost = |feature: &str| notes.add(ir::Impact::Audible, feature, at);
         // ponytail: Kontakt stretches by the size with zplane's Élastique
-        // (0x1419b3450) and resamples the wet path by S.Rate; neither runs here.
+        // (0x1419b3450, offline into the response); not copied (one corpus
+        // instrument, 2026-10-28).
         if size(3) != 1.0 || size(6) != 1.0 {
-            lost("impulse response size");
+            let what = format!("{at}: early {} late {}", size(3), size(6));
+            notes.add(ir::Impact::Audible, "impulse response size", what);
         }
-        if float(0).is_some_and(|d| d > 1.0) {
-            lost("impulse response S.Rate");
+        // S.Rate runs the wet path at rate/d between a resampler pair
+        // (0x140ab5e00, 0x140a84580). Auto (d < 0) with Preserve Length keeps
+        // the response's length and picks the largest d of 1, 1.5 .. 8 that
+        // keeps rate/d at or above the response's own rate: it drops only what
+        // the response cannot hold, so the full-rate convolution here is the
+        // same signal. Every corpus use (366 instruments) is that one.
+        let auto_kept = float(0).is_some_and(|d| d < 0.0) && flag(12);
+        if let Some(d) = float(0).filter(|d| (*d > 1.0 || *d < 0.0) && !auto_kept) {
+            let what = format!("{at}: 1/{d}, preserve length {}", flag(12));
+            notes.add(ir::Impact::Audible, "impulse response S.Rate", what);
         }
+        let mut lost = |feature: &str| notes.add(ir::Impact::Audible, feature, at);
         let cut = |low: usize, high: usize| {
             [
                 float(low).unwrap_or(0.0),
