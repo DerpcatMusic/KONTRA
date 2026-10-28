@@ -18,6 +18,7 @@ mod ledger;
 mod midi;
 mod modulators;
 mod params;
+mod pgs;
 mod plan;
 mod prepare;
 mod queue;
@@ -133,6 +134,9 @@ pub struct Engine {
     pending: Vec<NoteRef>,
     /// Notes a callback played, still to pass the slots after it.
     forward: Vec<NoteRef>,
+    pgs: pgs::Pgs,
+    /// Each script slot's listener timer.
+    timers: Box<[Option<callbacks::Timer>]>,
     masks: GroupMasks,
     /// Scratch for script event targets (an action may run inside a ledger query).
     targets_scratch: Vec<NoteRef>,
@@ -219,6 +223,7 @@ impl Engine {
             .iter()
             .map(|s| Some(Instance::new(&s.program, s.coroutines.max(1))))
             .collect();
+        let timers = vec![None; plan.scripts.len()].into();
         let control_pars = plan
             .scripts
             .iter()
@@ -244,6 +249,8 @@ impl Engine {
             running: Running::IDLE,
             pending: Vec::with_capacity(capacity),
             forward: Vec::with_capacity(capacity),
+            pgs: pgs::Pgs::new(),
+            timers,
             masks: GroupMasks::new(capacity, groups),
             targets_scratch: Vec::with_capacity(capacity),
             cc_values: [0; 130],
@@ -403,6 +410,8 @@ impl Engine {
             Work::Input(event) => event,
             Work::Resume(slot, co) => return self.resume(slot, co),
             Work::Release(note) => return self.end_note(note),
+            Work::PgsChanged => return self.run_pgs_changed(),
+            Work::Listen(slot) => return self.listen(slot),
         };
         match event {
             Event::NoteOn {

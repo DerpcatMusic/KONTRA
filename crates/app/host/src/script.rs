@@ -58,6 +58,8 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             release: entry(CallbackKind::Release),
             controller: entry(CallbackKind::Controller),
             persistence_changed: entry(CallbackKind::PersistenceChanged),
+            listener: entry(CallbackKind::Listener),
+            pgs_changed: entry(CallbackKind::PgsChanged),
         },
         coroutines: COROUTINES,
         controls: controls(script),

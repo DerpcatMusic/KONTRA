@@ -171,3 +171,91 @@ impl Engine {
         self.pending = pending;
     }
 }
+
+/// A script slot's listener timer (`set_listener`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Timer {
+    /// `$NI_SIGNAL_TIMER_MS` (1) or `$NI_SIGNAL_TIMER_BEAT` (2).
+    signal: u8,
+    /// Microseconds, or ticks per quarter note.
+    every: u32,
+    /// Its next firing waits in the queue.
+    armed: bool,
+}
+
+const TIMER_MS: i32 = 1;
+const TIMER_BEAT: i32 = 2;
+
+impl Engine {
+    /// `set_listener` and `change_listener_par` for the running slot: a
+    /// timer of `par` microseconds (at least 1000) or `par` ticks per quarter
+    /// (1..=24); `par` 0 stops it. Transport signals wait for a transport.
+    pub(crate) fn set_listener(&mut self, signal: i32, par: i32) {
+        let slot = self.running.slot;
+        let every = match signal {
+            TIMER_MS => par.max(0).unsigned_abs().max(1000),
+            TIMER_BEAT => par.clamp(0, 24).unsigned_abs(),
+            _ => return,
+        };
+        let Some(timer) = self.timers.get_mut(usize::from(slot)) else {
+            return;
+        };
+        let armed = timer.is_some_and(|t| t.armed);
+        *timer = (par > 0).then_some(Timer {
+            signal: signal as u8,
+            every,
+            armed,
+        });
+        if !armed {
+            self.arm(slot);
+        }
+    }
+
+    fn arm(&mut self, slot: u8) {
+        let Some(Some(timer)) = self.timers.get(usize::from(slot)).copied() else {
+            return;
+        };
+        let seconds = if i32::from(timer.signal) == TIMER_MS {
+            f64::from(timer.every) / 1e6
+        } else {
+            60.0 / f64::from(self.tempo.max(1.0)) / f64::from(timer.every.max(1))
+        };
+        let frames = ((seconds * f64::from(self.rate)).round() as u64).max(1);
+        let armed = self
+            .queue
+            .push(SampleTime(self.now.0 + frames), Work::Listen(slot));
+        if let Some(Some(t)) = self.timers.get_mut(usize::from(slot)) {
+            t.armed = armed;
+        }
+    }
+
+    /// A slot's timer fired: runs its listener callback, then rearms.
+    pub(crate) fn listen(&mut self, slot: u8) {
+        let plan = Arc::clone(&self.plan);
+        let Some(Some(timer)) = self.timers.get_mut(usize::from(slot)) else {
+            return;
+        };
+        timer.armed = false;
+        let signal = timer.signal;
+        if let Some(entry) = plan
+            .scripts
+            .get(usize::from(slot))
+            .and_then(|s| s.callbacks.listener)
+        {
+            let running = Running {
+                signal,
+                ..Running::new(Kind::Listener, None)
+            };
+            self.run_callback(slot, entry, running);
+        }
+        if self
+            .timers
+            .get(usize::from(slot))
+            .copied()
+            .flatten()
+            .is_some_and(|t| !t.armed)
+        {
+            self.arm(slot);
+        }
+    }
+}

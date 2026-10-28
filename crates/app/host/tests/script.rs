@@ -321,3 +321,60 @@ fn a_note_played_in_one_slot_passes_the_slots_after_it() {
     // One note sounds, the played one, in the group the second slot chose.
     assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
 }
+
+#[test]
+fn a_listener_timer_runs_its_callback() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $played
+            set_listener($NI_SIGNAL_TIMER_MS, 20000)
+        end on
+        on listener
+            if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TIMER_MS and $played = 0)
+                $played := 1
+                play_note(60, 127, 0, 0)
+            end if
+        end on",
+    );
+    // 4096 frames is 85 ms: the 20 ms timer has fired and its note sounds.
+    assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
+}
+
+#[test]
+fn a_pgs_key_carries_a_value_between_slots() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.25, 0), zone(&mut store, 0.5, 1)];
+    let mut plan = Plan::new(zones, 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    let slot = |source: &str| {
+        kontra_host::script::plan(&kontra_ksp::compile(source, &[]).unwrap(), &[], &[])
+    };
+    plan.scripts = vec![
+        slot(
+            "on init
+                pgs_create_key(GROUP, 1)
+                pgs_set_key_val(GROUP, 0, 1)
+            end on",
+        ),
+        slot(
+            "on init
+                declare $group
+            end on
+            on pgs_changed
+                $group := pgs_get_key_val(GROUP, 0)
+            end on
+            on note
+                disallow_group($ALL_GROUPS)
+                allow_group($group)
+            end on",
+        ),
+    ];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+}
