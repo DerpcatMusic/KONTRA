@@ -36,7 +36,9 @@ impl Engine {
                         // HeldTime is fixed at the voice's start: see `release_counter`.
                         let x = self.source(zone, source, note, age);
                         let x = match source {
-                            ir::Source::Lfo(_) => x.map(|x| (x + 1.0) * 0.5),
+                            ir::Source::Lfo(_) | ir::Source::PitchBend => {
+                                x.map(|x| (x + 1.0) * 0.5)
+                            }
                             _ => x,
                         };
                         x.map_or(1.0, |x| curve.gain(intensity, x))
