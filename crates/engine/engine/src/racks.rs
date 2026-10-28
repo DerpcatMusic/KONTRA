@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use kontra_dsp::dynamics::{Compressor, CompressorSettings, Limiter, LimiterSettings};
 use kontra_dsp::reverb::{Convolver, Fdn, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
@@ -19,7 +20,8 @@ enum Dsp {
     Wet(Box<dyn Wet>, Box<[[f32; 2]]>),
 }
 
-/// A parallel processor: replaces its span with the wet signal.
+/// A processor whose span replaces the slot's output; the slot's dry level
+/// mixes the input back.
 trait Wet: Send {
     fn process(&mut self, io: &mut [[f32; 2]]);
     /// The slot's reverb settings, before each block. Never allocates.
@@ -29,6 +31,18 @@ trait Wet: Send {
 impl Wet for Convolver {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         Convolver::process(self, io);
+    }
+}
+
+impl Wet for Compressor {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Compressor::process(self, io);
+    }
+}
+
+impl Wet for Limiter {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Limiter::process(self, io);
     }
 }
 
@@ -77,6 +91,10 @@ impl Rack {
                     }
                 }
                 Some(ir::EffectKind::Reverb(r)) => wet(Box::new(Fdn::new(settings(r), rate))),
+                Some(ir::EffectKind::Compressor(c)) => {
+                    wet(Box::new(Compressor::new(compressor(c), rate)))
+                }
+                Some(ir::EffectKind::Limiter(l)) => wet(Box::new(Limiter::new(limiter(l), rate))),
                 _ => Dsp::None,
             })
             .collect();
@@ -129,6 +147,27 @@ impl Rack {
     /// Whether any slot is active (a send slot with nothing in it returns nothing).
     pub(crate) fn active(&self) -> bool {
         self.slots.iter().flatten().any(|e| !e.bypass)
+    }
+}
+
+fn compressor(c: ir::Compressor) -> CompressorSettings {
+    CompressorSettings {
+        threshold_db: c.threshold_db,
+        ratio: c.ratio,
+        knee_db: c.knee_db,
+        attack_ms: c.attack_ms,
+        release_ms: c.release_ms,
+        makeup_db: c.makeup_db,
+        link: c.link,
+        mix: c.mix,
+    }
+}
+
+fn limiter(l: ir::Limiter) -> LimiterSettings {
+    LimiterSettings {
+        input_db: l.input_db,
+        ceiling_db: l.ceiling_db,
+        release_ms: l.release_ms,
     }
 }
 

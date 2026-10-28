@@ -7,8 +7,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 mod drive;
+mod effects;
 mod reverb;
 pub use drive::{Crush, Curve as DriveCurve, Shaper};
+pub use effects::{Compressor, Limiter};
 pub use reverb::{Law, ReverbPar};
 
 #[derive(Clone, Debug)]
@@ -668,6 +670,10 @@ pub enum EffectKind {
     Convolution { impulse: u16 },
     /// An algorithmic reverb (the wet path; `dry` mixes the input back).
     Reverb(Reverb),
+    /// A compressor, in place.
+    Compressor(Compressor),
+    /// A peak limiter, in place.
+    Limiter(Limiter),
     /// Not carried, an insert: audio passes unchanged (its output gain
     /// trims processing that does not run).
     /// The translator reports it.
