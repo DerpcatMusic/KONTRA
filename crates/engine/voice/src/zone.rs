@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use kontra_stream::Sample;
+use kontra_stream::{Mix, Sample};
 
 /// A loop over source frames `start..end`, inside the region.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -72,6 +72,9 @@ pub struct Region {
     pub loops: Vec<Loop>,
     /// Plays `end - 1` down to `start`; loops are ignored.
     pub reverse: bool,
+    /// How the sample's channels reach the voice's left and right; `None`
+    /// plays mono on both sides and two or more channels as left and right.
+    pub mix: Option<Mix>,
 }
 
 /// Consecutive source frames the cursor reads under one mapping.
@@ -295,6 +298,7 @@ mod tests {
             end,
             loops,
             reverse,
+            mix: None,
         }
     }
 

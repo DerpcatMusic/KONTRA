@@ -7,7 +7,7 @@ use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 
 use kontra_ir as ir;
-use kontra_stream::{BlobKey, LoadRequest, Sample, SampleFmt, Source, Store};
+use kontra_stream::{BlobKey, LoadRequest, MAX_CHANNELS, Mix, Sample, SampleFmt, Source, Store};
 use kontra_voice::{Ahdsr, Loop, Region};
 
 use crate::{
@@ -305,6 +305,16 @@ fn window(z: &ir::Zone, frames: u64, fmt: SampleFmt, stream: ir::Stream) -> Rang
     }
 }
 
+/// A zone's channel mix as the voice reads it; channels past
+/// [`MAX_CHANNELS`] are dropped.
+fn mix(rows: &[[f32; 2]]) -> Option<Mix> {
+    (!rows.is_empty()).then(|| {
+        let mut mix = [[0.0; 2]; MAX_CHANNELS];
+        mix.iter_mut().zip(rows).for_each(|(m, r)| *m = *r);
+        mix
+    })
+}
+
 fn zone(
     group: &ir::Group,
     group_id: u32,
@@ -330,6 +340,7 @@ fn zone(
             })
             .collect(),
         reverse: z.reverse,
+        mix: mix(&z.mix),
     };
     let mut out = Zone::new(region, z.root, source.rate);
     out.start_mod = z.start_mod;
@@ -431,6 +442,7 @@ mod tests {
 
     fn at(start: u64, start_mod: u64) -> ir::Zone {
         ir::Zone {
+            mix: Vec::new(),
             sample: 0,
             keys: 0..=127,
             velocities: 1..=127,
