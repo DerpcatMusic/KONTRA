@@ -81,7 +81,8 @@ impl VoiceEq {
 /// A section's runner: biquads in series, or a formant's parallel bands.
 pub(crate) enum Stage {
     Biquad(Biquad),
-    Formant(Formant),
+    // Boxed: its glide state is six times a biquad; built at load.
+    Formant(Box<Formant>),
 }
 
 impl Stage {
@@ -123,7 +124,7 @@ pub(crate) fn stages(sections: &[ir::EffectKind], rate: u32) -> Box<[Stage]> {
                         ir::VowelSet::Second => VowelSet::Second,
                     },
                 };
-                out.push(Stage::Formant(Formant::new(v, rate)));
+                out.push(Stage::Formant(Box::new(Formant::new(v, rate))));
             }
             _ => {}
         }

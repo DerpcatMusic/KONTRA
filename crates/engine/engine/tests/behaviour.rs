@@ -1099,3 +1099,43 @@ fn a_group_lofis_noise_fades_with_the_voice() {
         .fold(0.0, f32::max);
     assert!(end < 0.02, "{end}");
 }
+
+#[test]
+fn a_route_moves_a_group_waveshapers_amount_per_voice() {
+    use kontra_engine::ir::{
+        DriveCurve, Effect, EffectKind, EffectParam, Mod, ModKind, Shaper, Source,
+    };
+    let peak = |bypass: bool| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+        plan.groups[0].inserts = vec![Some(Effect {
+            kind: EffectKind::Shaper(Shaper {
+                curve: DriveCurve::Soft(0.0),
+                lowpass_hz: None,
+                highpass_hz: None,
+            }),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        plan.groups[0].mods = vec![Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass,
+            kind: ModKind::EffectParam {
+                source: Source::Velocity,
+                insert: 0,
+                param: EffectParam::ShaperAmount,
+                depth: 1.0,
+            },
+        }];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let mut out = vec![[0.0f32; 2]; 9600];
+        e.process(&mut out, &[on(60, 1.0)]);
+        out[4800..].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    // Velocity 1 takes the curve from none to full: the 0.1 sine clips to 0.64.
+    assert!((peak(true) - 0.1).abs() < 0.005, "{}", peak(true));
+    assert!((peak(false) - 0.64).abs() < 0.01, "{}", peak(false));
+}

@@ -464,7 +464,8 @@ fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
         ir::ModKind::Pitch { depth, .. }
         | ir::ModKind::Cutoff { depth, .. }
         | ir::ModKind::Resonance { depth, .. }
-        | ir::ModKind::SampleStart { depth, .. } => Some(depth),
+        | ir::ModKind::SampleStart { depth, .. }
+        | ir::ModKind::EffectParam { depth, .. } => Some(depth),
         ir::ModKind::Pan { amount, .. } => Some(amount),
         ir::ModKind::Envelope | ir::ModKind::EqGain { .. } => None,
     }
