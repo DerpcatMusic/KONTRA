@@ -1358,3 +1358,32 @@ fn a_group_phaser_without_a_dry_level_plays_on_the_group_sum() {
         "{l} {r}"
     );
 }
+
+#[test]
+fn a_pitch_bend_release_route_reads_the_wheel_from_zero_to_one() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].envelope.release = 48_000; // 1 s
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "PB_ATTACK".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Release {
+            source: ir::Source::PitchBend,
+            intensity: 1.0,
+            floor_ms: 2.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60, 1.0)]);
+    level(&mut e, &[off(60)]);
+    // The wheel at rest reads 0.5: 2·(1002/2)^0.5 − 2 ≈ 42.8 ms, so the
+    // voice is silent 200 ms after the key is let go (a 1 s release is not).
+    let mut tail = [1.0; 2];
+    for _ in 0..40 {
+        tail = level(&mut e, &[]);
+    }
+    assert_eq!(tail, [0.0; 2], "{tail:?}");
+}

@@ -174,7 +174,9 @@ impl Engine {
     }
 
     /// The group's envelope for a voice started after the key was held
-    /// `held` seconds, its attack scaled by the group's attack routes.
+    /// `held` seconds, its attack and release scaled by their routes.
+    /// ponytail: release routes read at note-on too; a source moving
+    /// before note-off is missed, read at release if a library needs it.
     pub(crate) fn envelope(&self, zone: &Zone, note: &Note, held: f32) -> Ahdsr {
         let Some(g) = self.groups.get(zone.group as usize) else {
             return Ahdsr::GATE;
@@ -182,16 +184,26 @@ impl Engine {
         let mut e = g.envelope;
         let rate = self.rate as f32;
         for m in g.mods.iter().filter(|m| !m.bypass) {
-            let ir::ModKind::Attack {
-                source,
-                intensity,
-                floor_ms,
-            } = m.kind
-            else {
-                continue;
+            let (source, intensity, floor_ms, frames) = match m.kind {
+                ir::ModKind::Attack {
+                    source,
+                    intensity,
+                    floor_ms,
+                } => (source, intensity, floor_ms, &mut e.attack),
+                ir::ModKind::Release {
+                    source,
+                    intensity,
+                    floor_ms,
+                } => (source, intensity, floor_ms, &mut e.release),
+                _ => continue,
             };
             let x = match source {
                 ir::Source::HeldTime { span_ms } => Some(held_time(span_ms, held)),
+                // Outside the signed families the law compiler (FUN_140873040)
+                // reads a bipolar source without `frange_bi`: 0..=1.
+                ir::Source::PitchBend | ir::Source::Lfo(_) => self
+                    .source(zone, source, note, Age::START)
+                    .map(|x| (x + 1.0) * 0.5),
                 source => self.source(zone, source, note, Age::START),
             };
             let Some(x) = x.filter(|_| floor_ms > 0.0) else {
@@ -201,9 +213,9 @@ impl Engine {
             // is proved yet (docs/re: attack route), so it stays linear.
             let x = if intensity < 0.0 { 1.0 - x } else { x };
             let m = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
-            let ms = e.attack as f32 * 1000.0 / rate;
+            let ms = *frames as f32 * 1000.0 / rate;
             let ms = floor_ms * ((ms + floor_ms) / floor_ms).powf(m) - floor_ms;
-            e.attack = (ms.max(0.0) * rate / 1000.0).round() as u32;
+            *frames = (ms.max(0.0) * rate / 1000.0).round() as u32;
         }
         e
     }
@@ -243,7 +255,8 @@ impl Engine {
                     }
                     ir::ModKind::Envelope
                     | ir::ModKind::SampleStart { .. }
-                    | ir::ModKind::Attack { .. } => false,
+                    | ir::ModKind::Attack { .. }
+                    | ir::ModKind::Release { .. } => false,
                 })
             })
     }
