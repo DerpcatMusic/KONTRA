@@ -8,6 +8,9 @@ publish = false
 workspace = true
 
 [dependencies]
+hound = "3.5"
 kontra-format = { path = "../common" }
+kontra-ir = { path = "../../model/ir" }
 kontra-law = { path = "../../base/law" }
 kontra-params = { path = "../../model/params" }
+thiserror.workspace = true
