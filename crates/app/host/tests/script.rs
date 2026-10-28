@@ -469,4 +469,23 @@ fn a_script_sets_a_send_level_by_the_volume_law() {
     let l = level(&mut e, &[on(60)]);
     // Dry 0.5 plus the send's return 0.5 × 0.25.
     assert!((l - 0.5 * 1.24997).abs() < 1e-3, "{l}");
+||||||| parent of 58a520b91 (fix: review of #841 — event and coroutine generations, ignored key-ups, loop guard)
+fn an_ignored_release_still_lifts_the_key() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on note
+            message(\"down \" & %KEY_DOWN[60])
+        end on
+        on release
+            ignore_event($EVENT_ID)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    // The voice plays on past its ignored key-up.
+    assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3);
+    level(&mut e, &[on(61)]);
+    assert_eq!(e.last_message(), "down 0");
 }

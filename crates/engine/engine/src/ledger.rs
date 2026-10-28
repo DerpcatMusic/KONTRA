@@ -67,6 +67,8 @@ pub(crate) struct Note {
     pub(crate) pedal_held: bool,
     /// Key released (directly or by the pedal coming up).
     pub(crate) released: bool,
+    /// Key up, but a release callback ignored it: the voices play on.
+    pub(crate) key_up: bool,
     /// Voices started (or the note was ignored): later script changes move
     /// sounding voices instead of choosing zones.
     pub(crate) started: bool,
@@ -117,6 +119,7 @@ impl Note {
             expression_pan: 0.0,
             pedal_held: false,
             released: false,
+            key_up: false,
             started: false,
             ignored: false,
             script_tune: 0,
@@ -129,6 +132,11 @@ impl Note {
             pass: 0,
             marks: 0,
         }
+    }
+
+    /// The key went up, whether or not its release was ignored.
+    pub(crate) fn is_up(&self) -> bool {
+        self.released || self.key_up
     }
 
     /// The value sent for "from script" modulator `index`; 0 until sent.
@@ -185,7 +193,8 @@ impl Ledger {
             .iter_mut()
             .enumerate()
             .find(|(_, e)| e.note.is_none())?;
-        entry.generation = entry.generation.wrapping_add(1);
+        // event_id carries 15 bits and 0 is invalid: stay in 1..=0x7FFF.
+        entry.generation = entry.generation % 0x7FFF + 1;
         entry.note = Some(note);
         Some(NoteRef {
             index: index as u32,

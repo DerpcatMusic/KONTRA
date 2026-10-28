@@ -18,7 +18,9 @@ pub use action::{Action, event};
 pub use program::{Cmp, Op, Program, Returns};
 pub use text::{TEXT_CAPACITY, Text};
 
-/// Iterations a callback's `while` loops run before Kontakt leaves the loop.
+/// Iterations a callback's `while` loops run between waits before Kontakt
+/// leaves the loop. Counted across nested loops, so an inner loop's exit
+/// does not restart a runaway outer loop's count.
 pub const LOOP_LIMIT: u32 = 10_000_001;
 /// First iteration count at which a loop's state is compared; doubles after.
 const LOOP_PROBE: u32 = 1024;
@@ -74,12 +76,17 @@ pub struct Faults {
     pub bad_code: u64,
 }
 
-/// Handle of a running or suspended callback.
+/// Handle of a running or suspended callback: its slot and the slot's
+/// generation, so a handle kept past its callback's end finds nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CoId(u32);
+pub struct CoId {
+    index: u16,
+    generation: u16,
+}
 
 struct Coroutine {
     busy: bool,
+    generation: u16,
     pc: u32,
     context: u64,
     stack: Vec<i64>,
@@ -88,6 +95,8 @@ struct Coroutine {
     poly: Box<[i64]>,
     loop_count: u32,
     loop_hash: u64,
+    /// A host call ran since the last stuck check: state outside the hash moved.
+    hosted: bool,
 }
 
 /// One script's live state: cells, texts and its callback coroutines.
@@ -106,6 +115,7 @@ impl Instance {
         let coroutines = (0..coroutines.max(1))
             .map(|_| Coroutine {
                 busy: false,
+                generation: 0,
                 pc: 0,
                 context: 0,
                 stack: Vec::with_capacity(stack),
@@ -114,6 +124,7 @@ impl Instance {
                 poly: vec![0; program.poly_cells].into(),
                 loop_count: 0,
                 loop_hash: 0,
+                hosted: false,
             })
             .collect();
         Self {
@@ -155,8 +166,8 @@ impl Instance {
     #[must_use]
     pub fn context(&self, co: CoId) -> Option<u64> {
         self.coroutines
-            .get(co.0 as usize)
-            .filter(|c| c.busy)
+            .get(usize::from(co.index))
+            .filter(|c| c.busy && c.generation == co.generation)
             .map(|c| c.context)
     }
 
@@ -178,6 +189,7 @@ impl Instance {
             return None;
         };
         co.busy = true;
+        co.generation = co.generation.wrapping_add(1);
         co.pc = entry;
         co.context = context;
         co.stack.clear();
@@ -186,12 +198,20 @@ impl Instance {
         co.poly.fill(0);
         co.loop_count = 0;
         co.loop_hash = 0;
-        Some(CoId(i as u32))
+        co.hosted = false;
+        Some(CoId {
+            index: u16::try_from(i).ok()?,
+            generation: co.generation,
+        })
     }
 
     /// Ends a suspended callback without running it further (KSP `stop_wait` with kill).
     pub fn cancel(&mut self, co: CoId) {
-        if let Some(c) = self.coroutines.get_mut(co.0 as usize) {
+        if let Some(c) = self
+            .coroutines
+            .get_mut(usize::from(co.index))
+            .filter(|c| c.generation == co.generation)
+        {
             c.busy = false;
         }
     }
@@ -204,7 +224,10 @@ impl Instance {
             coroutines,
             faults,
         } = self;
-        let Some(c) = coroutines.get_mut(co.0 as usize).filter(|c| c.busy) else {
+        let Some(c) = coroutines
+            .get_mut(usize::from(co.index))
+            .filter(|c| c.busy && c.generation == co.generation)
+        else {
             return Step::Done;
         };
         let step = execute(program, cells, texts, c, faults, host);
@@ -460,19 +483,19 @@ fn execute(
             }
             Op::LoopCheck { exit } => {
                 c.loop_count += 1;
-                let stuck = c.loop_count >= LOOP_PROBE && c.loop_count.is_power_of_two() && {
-                    let hash = state_hash(cells, &c.poly, &c.stack);
-                    let same = hash == c.loop_hash;
+                let mut stuck = false;
+                if c.loop_count >= LOOP_PROBE && c.loop_count.is_power_of_two() {
+                    let hash = state_hash(cells, texts, c);
+                    stuck = !std::mem::take(&mut c.hosted) && hash == c.loop_hash;
                     c.loop_hash = hash;
-                    same
-                };
+                }
                 if c.loop_count >= LOOP_LIMIT || stuck {
                     faults.loop_limits += 1;
                     c.loop_count = 0;
                     c.pc = exit;
                 }
             }
-            Op::LoopExit => c.loop_count = 0,
+            Op::LoopExit => c.loop_hash = 0,
             Op::Call(to) => {
                 if c.frames.len() == c.frames.capacity() {
                     faults.stack_overflow += 1;
@@ -508,14 +531,17 @@ fn execute(
                 let args = c.stack.get(int_from..).unwrap_or_default();
                 let value = match pure::eval(action, args, cells) {
                     Some(value) => value,
-                    None => host.call(HostCall {
-                        action,
-                        context: c.context,
-                        ints: args,
-                        texts: c.texts.get(text_from..).unwrap_or_default(),
-                        cells,
-                        text_out: &mut text_out,
-                    }),
+                    None => {
+                        c.hosted = true;
+                        host.call(HostCall {
+                            action,
+                            context: c.context,
+                            ints: args,
+                            texts: c.texts.get(text_from..).unwrap_or_default(),
+                            cells,
+                            text_out: &mut text_out,
+                        })
+                    }
                 };
                 c.stack.truncate(int_from);
                 c.texts.truncate(text_from);
@@ -552,10 +578,13 @@ fn compare(cmp: Cmp, o: std::cmp::Ordering) -> bool {
 
 /// State a loop iteration can change: if equal at two checkpoints, the loop
 /// can never exit and the limit applies now instead of after ten million turns.
-fn state_hash(cells: &[i64], poly: &[i64], stack: &[i64]) -> u64 {
+fn state_hash(cells: &[i64], texts: &[Text], c: &Coroutine) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cells.hash(&mut h);
-    poly.hash(&mut h);
-    stack.hash(&mut h);
+    c.poly.hash(&mut h);
+    c.stack.hash(&mut h);
+    for t in texts.iter().chain(&c.texts) {
+        t.as_str().hash(&mut h);
+    }
     h.finish()
 }

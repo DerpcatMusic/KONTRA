@@ -58,11 +58,11 @@ pub(crate) fn eval(action: Action, ints: &[i64], cells: &mut [i64]) -> Option<Ho
             let (base, len, descending, lo, hi) = (int(0), int(1), int(2) != 0, int(3), int(4));
             if let Some(items) = cells.get_mut(range(base, len, lo, hi)) {
                 if is_real {
-                    items.sort_by(|a, b| {
+                    items.sort_unstable_by(|a, b| {
                         f64::from_bits(*a as u64).total_cmp(&f64::from_bits(*b as u64))
                     });
                 } else {
-                    items.sort_by_key(|&v| v as i32);
+                    items.sort_unstable_by_key(|&v| v as i32);
                 }
                 if descending {
                     items.reverse();
