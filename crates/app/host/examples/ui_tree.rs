@@ -108,6 +108,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "  refresh: {per_frame:?} per settled idle frame, {idle} idle rebuilds in 100 frames (last in frame {last:?}), one knob moved: {moved:?} widgets rebuilt per frame"
             );
+            // The sustain pedal down, then up: what a controller callback lights.
+            let pedal = [127, 0].map(|v| {
+                let cc = kontra_engine::Timed {
+                    at: kontra_engine::SampleTime(0),
+                    body: kontra_engine::Event::midi1(0xB0, 64, v),
+                };
+                engine.process(&mut block, &[cc]);
+                let mut changed = std::collections::BTreeSet::new();
+                for _ in 0..50 {
+                    engine.process(&mut block, &[]);
+                    for w in live.refresh(face, slot as u8, &engine, &|_| None) {
+                        changed.extend(live.tree.widgets.get(w.0).map(|w| w.name.clone()));
+                    }
+                }
+                changed
+            });
+            println!("  pedal down rebuilt {:?}, up {:?}", pedal[0], pedal[1]);
             let page = tree.pages.first().map(|p| (p.size.width, p.size.height));
             println!(
                 "{} slot {slot}: load+init {init:?}, tree {built:?}; {} widgets ({visible} shown), {} pictures, page {page:?}, perfview {}; gaps {gaps:?}",
