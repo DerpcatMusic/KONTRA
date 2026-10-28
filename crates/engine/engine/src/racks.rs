@@ -342,6 +342,9 @@ impl Engine {
                 }
                 apply(effects::balance(bus.pan), mix);
             }
+            if !bus.to_main {
+                continue;
+            }
             for (o, m) in span.iter_mut().zip(bus.mix.iter()) {
                 o[0] += m[0] * bus.gain;
                 o[1] += m[1] * bus.gain;

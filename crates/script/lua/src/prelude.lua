@@ -277,6 +277,18 @@ end
 
 local stale = false
 
+-- Calls `f` on `e` and every element under it that has a bus.
+local function each_bus(e, f)
+	if e.bus then
+		f(e)
+	end
+	for _, key in ipairs(containers) do
+		for _, child in ipairs(e[key] or {}) do
+			each_bus(child, f)
+		end
+	end
+end
+
 local function decibels(gain)
 	return gain and gain > 0 and 20 * math.log10(gain) or -200
 end
@@ -288,18 +300,15 @@ local function apply_levels()
 		return
 	end
 	stale = false
-	-- A layer's fader and an aux's gain are their buses' volumes.
-	for _, aux in ipairs(Program.auxs) do
-		if aux.bus then
-			local db = aux.params.Bypass and -200 or decibels(aux.params.Gain or 1)
-			host_call("BusVolume", aux.bus, math.floor(db * 1000))
-		end
-	end
+	-- A layer's fader and an aux's or rack chain's gain are their buses'
+	-- volumes.
+	each_bus(Program, function(e)
+		local off = e.params.Bypass or e.params.Mute
+		local db = off and -200 or decibels(e.params.Gain or 1)
+		host_call("BusVolume", e.bus, math.floor(db * 1000))
+	end)
 	for _, layer in ipairs(Program.layers) do
 		local lp = layer.params
-		if layer.bus then
-			host_call("BusVolume", layer.bus, math.floor(decibels(lp.Gain or 1) * 1000))
-		end
 		for _, kg in ipairs(layer.keygroups) do
 			if kg.group then
 				local kp = kg.params
@@ -328,11 +337,8 @@ end
 Program = element(tree)
 -- The part the program sits in.
 Program.parent = element({ params = { MidiChannel = "1", MidiInput = "0", Name = "Part 1" } })
-for _, aux in ipairs(Program.auxs) do
-	leveled(aux)
-end
+each_bus(Program, leveled)
 for _, layer in ipairs(Program.layers) do
-	leveled(layer)
 	for _, kg in ipairs(layer.keygroups) do
 		leveled(kg)
 	end

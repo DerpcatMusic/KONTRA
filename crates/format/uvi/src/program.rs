@@ -55,6 +55,7 @@ pub(crate) fn translate(
         lookups: HashMap::new(),
         made: HashMap::new(),
         bus_of: HashMap::new(),
+        entry: HashMap::new(),
         script_dirs: Vec::new(),
         base: Base {
             volume_db: db(num(program, "Gain", 1.0)?),
@@ -107,8 +108,10 @@ struct Translator<'a, 'input, L> {
     base: Base,
     /// The engine group each keygroup made, for scripts.
     made: HashMap<roxmltree::NodeId, usize>,
-    /// Each layer's and aux's bus.
+    /// Each layer's and aux's fader bus (routing.rs).
     bus_of: HashMap<roxmltree::NodeId, usize>,
+    /// Each layer's first bus, where its voices play.
+    entry: HashMap<roxmltree::NodeId, usize>,
     /// Each script's folder in the bank, relative to the program's.
     script_dirs: Vec<String>,
 }
@@ -121,9 +124,10 @@ impl<L: Library> Translator<'_, '_, L> {
         if flag(layer, "Mute") || flag(layer, "Bypass") {
             return Ok(());
         }
-        let bus = self.bus_of.get(&layer.id()).copied().unwrap_or(0);
+        let bus = self.entry.get(&layer.id()).copied().unwrap_or(0);
+        let end = self.bus_of.get(&layer.id()).copied().unwrap_or(0);
         let fader = num(layer, "Gain", 1.0)?;
-        let feeds = self.out.buses.get(bus).is_some_and(|b| {
+        let feeds = self.out.buses.get(end).is_some_and(|b| {
             b.sends
                 .iter()
                 .any(|s| s.level > 0.0 && (!s.post_fader || fader > 0.0))
@@ -736,6 +740,57 @@ mod tests {
             !out.diagnostics
                 .iter()
                 .any(|d| d.feature.starts_with("silent layer"))
+        );
+    }
+
+    #[test]
+    fn an_effect_rack_fans_out_to_its_chains_and_back() {
+        let xml = r#"<Program Gain="1">
+          <Layers><Layer Gain="0.5" Pan="0">
+            <Inserts>
+              <EffectRack Bypass="0"><Chains>
+                <AuxEffect Bypass="0" Gain="0.5" Pan="-1" DisplayName="Dry"/>
+                <AuxEffect Bypass="0" Gain="0.25" Pan="0" DisplayName="Room">
+                  <Inserts><Gain Bypass="0" Volume="2"/></Inserts>
+                </AuxEffect>
+                <AuxEffect Bypass="1" Gain="1" DisplayName="Off"/>
+              </Chains></EffectRack>
+              <Gain Bypass="0" Volume="3"/>
+            </Inserts>
+            <Keygroups><Keygroup>
+              <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+            </Keygroup></Keygroups>
+          </Layer></Layers>
+        </Program>"#;
+        let doc = roxmltree::Document::parse(xml).unwrap();
+        let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+        // Main, the layer's entry, its three chains, then the join.
+        let b = &out.buses;
+        assert_eq!(b.len(), 6);
+        assert_eq!(out.groups[0].bus, 1);
+        assert!(b[1].sends.iter().map(|s| s.bus).eq(2..=4));
+        assert!(!b[1].to_main && !b[2].to_main);
+        // A chain's gain is its fader into the join; a bypassed one is silent.
+        let fader = |n: usize| b[n].volume_db;
+        assert!((fader(2) + 6.0206).abs() < 1e-3 && (fader(3) + 12.0412).abs() < 1e-3);
+        assert!(fader(4) < -100.0);
+        assert!((2..=4).all(|n| b[n].sends[0].bus == 5 && b[n].sends[0].post_fader));
+        // The panned chain ends on a balance; the other runs its own Gain.
+        assert!(
+            matches!(b[2].inserts[0].map(|e| e.kind), Some(ir::EffectKind::Stereo { pan, .. }) if pan == -1.0)
+        );
+        assert!(
+            matches!(b[3].inserts[0].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 2.0)
+        );
+        // The rest of the inserts and the layer's fader are on the join.
+        assert!(
+            matches!(b[5].inserts[0].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 3.0)
+        );
+        assert!(b[5].to_main && (b[5].volume_db + 6.0206).abs() < 1e-3);
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.feature.starts_with("insert"))
         );
     }
 }
