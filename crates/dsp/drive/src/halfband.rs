@@ -6,8 +6,8 @@
 //! ponytail: lives here while drive is its only user; moves to
 //! `kontra-dsp-core` (03-DSP.md §2 `oversample.rs`) with a second family.
 
-/// Allpass coefficients, at most (8 at 44.1 kHz).
-const MAX: usize = 12;
+/// Allpass coefficients, at most (6 at any rate: 0.45 of it below 44.1 kHz).
+const MAX: usize = 8;
 
 /// Coefficient pairs at most.
 const PAIRS: usize = MAX / 2;
