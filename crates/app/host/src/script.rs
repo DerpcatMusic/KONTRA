@@ -20,6 +20,7 @@ const ENGINE_PARS: &[(&str, EnginePar)] = {
         ("$ENGINE_PAR_INTMOD_BYPASS", P::ModBypass),
         ("$ENGINE_PAR_LFO_DELAY", P::LfoFade),
         ("$ENGINE_PAR_RELEASE_TRIGGER", P::ReleaseTrigger),
+        ("$ENGINE_PAR_OUTPUT_CHANNEL", P::OutputChannel),
         ("$ENGINE_PAR_EFFECT_BYPASS", P::EffectBypass),
         ("$ENGINE_PAR_SEND_EFFECT_BYPASS", P::EffectBypass),
         ("$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN", P::EffectOutput),

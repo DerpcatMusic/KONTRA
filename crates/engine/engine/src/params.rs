@@ -49,6 +49,8 @@ fn attack_x(shape: f32) -> f64 {
 
 /// An LFO's fade-in runs 0..=10 s on the stage law (measured,
 /// probes/mod_par_laws.lua: 500_000 saves 139.45 ms, 1_000_000 10 002 ms).
+/// `$NI_BUS_OFFSET`: bus n is `BUS_OFFSET + n`.
+const BUS_OFFSET: i32 = 1000;
 const LFO_FADE_TOP_MS: f64 = 10_000.0;
 
 fn stage_x(top_ms: f64, ms: f64) -> f64 {
@@ -177,8 +179,8 @@ impl Engine {
             }
             (Err(_), 2) => &mut self.main.slots[..],
             // `$NI_BUS_OFFSET + n`: bus n is plan bus n + 1 (0 is the main bus).
-            (Err(_), b) if b >= 1000 => {
-                let bus = usize::try_from(b - 999).ok()?;
+            (Err(_), b) if b >= BUS_OFFSET => {
+                let bus = usize::try_from(b - (BUS_OFFSET - 1)).ok()?;
                 &mut self.buses.get_mut(bus)?.rack.slots[..]
             }
             _ => return None,
@@ -296,6 +298,9 @@ impl Engine {
         generic: i32,
     ) -> Option<i32> {
         let par = self.engine_par(par)?;
+        if par == EnginePar::OutputChannel {
+            return self.output_channel(group, generic);
+        }
         if let Some(which) = effect_par(par) {
             let e = *self.effect_mut(group, slot, generic)?;
             return Some(which.get(&e)?.round().clamp(0.0, 1e6) as i32);
@@ -343,6 +348,9 @@ impl Engine {
         let Some(par) = self.engine_par(par) else {
             return false;
         };
+        if par == EnginePar::OutputChannel {
+            return self.set_output_channel(value, group, generic);
+        }
         if self.set_level(par, value, group, generic)
             || self.set_effect(par, value, group, slot, generic)
             || self.set_reverb(par, value, group, slot, generic)
@@ -384,6 +392,42 @@ impl Engine {
             self.refresh_all(None);
         }
         set
+    }
+
+    /// A group's bus as `1000 + n` (plan bus n + 1), −1 for the main bus; a
+    /// bus's own output is the main output (−1).
+    fn output_channel(&self, group: i32, generic: i32) -> Option<i32> {
+        let Ok(g) = usize::try_from(group) else {
+            return (generic >= BUS_OFFSET).then_some(-1);
+        };
+        match self.groups.get(g)?.bus {
+            0 => Some(-1),
+            bus => i32::try_from(bus).ok()?.checked_add(BUS_OFFSET - 1),
+        }
+    }
+
+    /// Moves a group to bus `value − 1000` (plan bus `value − 999`); −1 and a
+    /// host output put it on the main bus, since the engine mixes every bus
+    /// into one stereo output. Playing voices follow at the next span.
+    fn set_output_channel(&mut self, value: i32, group: i32, generic: i32) -> bool {
+        let bus = match value {
+            v if v >= BUS_OFFSET => usize::try_from(v - (BUS_OFFSET - 1))
+                .ok()
+                .filter(|&b| b < self.buses.len()),
+            -1.. => Some(0),
+            _ => None,
+        };
+        let Ok(g) = usize::try_from(group) else {
+            // A bus's own output: already the one stereo output.
+            return generic >= BUS_OFFSET && bus == Some(0);
+        };
+        match (bus, self.groups.get_mut(g)) {
+            (Some(bus), Some(g)) => {
+                g.bus = bus;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Sets a stage of the group's amplitude envelope (modulator `slot`).

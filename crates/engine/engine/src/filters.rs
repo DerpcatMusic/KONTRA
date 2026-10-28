@@ -22,6 +22,29 @@ pub(crate) struct Chain {
     pub(crate) live: bool,
 }
 
+impl Chain {
+    fn new(bus: usize, sections: Vec<ir::EffectKind>, rate: u32) -> Self {
+        Self {
+            bus,
+            filters: stages(&sections, rate),
+            sections,
+            mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
+            live: false,
+        }
+    }
+}
+
+/// Chain `c`, or its twin on `bus` when a script moved the group there.
+fn on_bus(chains: &[Chain], c: usize, bus: usize) -> Option<usize> {
+    let chain = chains.get(c)?;
+    if chain.bus == bus {
+        return Some(c);
+    }
+    chains
+        .iter()
+        .position(|t| t.bus == bus && t.sections == chain.sections)
+}
+
 /// The rack's active EQs (their audible bands) and filters, in slot order.
 pub(crate) fn sections(rack: &[Option<ir::Effect>]) -> Vec<ir::EffectKind> {
     rack.iter()
@@ -186,22 +209,32 @@ impl Engine {
                 if sections.is_empty() {
                     return None;
                 }
+                let bus = self.groups.get(z.group as usize).map_or(0, |g| g.bus);
                 let at = chains
                     .iter()
-                    .position(|c| c.bus == z.bus && c.sections == sections)
+                    .position(|c| c.bus == bus && c.sections == sections)
                     .unwrap_or_else(|| {
-                        chains.push(Chain {
-                            bus: z.bus,
-                            filters: stages(&sections, rate),
-                            sections,
-                            mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
-                            live: false,
-                        });
+                        chains.push(Chain::new(bus, sections, rate));
                         chains.len() - 1
                     });
                 u16::try_from(at).ok()
             })
             .collect();
+        // A twin of each chain on every other bus, so a script that moves a
+        // group to another bus allocates nothing on the audio thread.
+        for n in 0..chains.len() {
+            let Some(sections) = chains.get(n).map(|c| c.sections.clone()) else {
+                continue;
+            };
+            for bus in 0..self.buses.len() {
+                if !chains
+                    .iter()
+                    .any(|c| c.bus == bus && c.sections == sections)
+                {
+                    chains.push(Chain::new(bus, sections.clone(), rate));
+                }
+            }
+        }
         self.chains = chains;
     }
 
@@ -217,9 +250,11 @@ impl Engine {
             }
         }
         for slot in self.voices.iter_mut().filter(|s| s.voice.is_active()) {
-            let bus = self.plan.zones.get(slot.zone).map_or(0, |z| z.bus);
+            let group = self.plan.zones.get(slot.zone).map(|z| z.group as usize);
+            let bus = group.and_then(|g| self.groups.get(g)).map_or(0, |g| g.bus);
             let chain = self.zone_chain.get(slot.zone).copied().flatten();
-            let mix = match chain.and_then(|c| self.chains.get_mut(usize::from(c))) {
+            let chain = chain.and_then(|c| on_bus(&self.chains, usize::from(c), bus));
+            let mix = match chain.and_then(|c| self.chains.get_mut(c)) {
                 Some(chain) => {
                     chain.live = true;
                     chain.mix.get_mut(..len)

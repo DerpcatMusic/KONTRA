@@ -367,7 +367,11 @@ impl Engine {
             let fade = self.fade_frames();
             let plan = self.plan.clone();
             for slot in self.voices.iter_mut().filter(|s| s.voice.is_active()) {
-                if plan.zones.get(slot.zone).is_some_and(|z| z.bus == bus) {
+                let group = plan.zones.get(slot.zone).map(|z| z.group as usize);
+                if group
+                    .and_then(|g| self.groups.get(g))
+                    .is_some_and(|g| g.bus == bus)
+                {
                     slot.voice.fade(fade);
                     slot.fading = true;
                 }
@@ -473,7 +477,11 @@ impl Engine {
                 && zone.keys.contains(&n.key)
                 && zone.velocities.contains(&n.velocity_byte)
                 && (n.zone_slot < 0 || n.zone_slot == i32::from(zone.slot))
-                && self.buses.get(zone.bus).is_some_and(|b| b.enabled);
+                && self
+                    .groups
+                    .get(zone.group as usize)
+                    .and_then(|g| self.buses.get(g.bus))
+                    .is_some_and(|b| b.enabled);
             if !selected
                 || !self
                     .behaviour

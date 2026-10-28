@@ -601,6 +601,47 @@ fn a_script_sets_a_send_effects_wet_and_dry_levels() {
     assert!((l - 0.5).abs() < 1e-3, "{l}");
 }
 
+/// `$NI_BUS_OFFSET + n` puts a group on bus n; −1 puts it back on the main bus.
+#[test]
+fn a_script_moves_a_group_onto_a_bus() {
+    use kontra_engine::Bus;
+    let play = |set: &str| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+        plan.buses.push(Bus {
+            name: "Room".into(),
+            gain: 0.5,
+            pan: 0.0,
+            inserts: Vec::new(),
+            enabled: true,
+        });
+        let script = kontra_ksp::compile(
+            &format!(
+                "on init
+                    set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, $NI_BUS_OFFSET, 0, -1, -1)
+                    {set}
+                    message(get_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, 0, -1, -1))
+                end on"
+            ),
+            &[],
+        )
+        .unwrap();
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        (level(&mut e, &[on(60)]), e.last_message().to_owned())
+    };
+    let (l, read) = play("");
+    assert!(
+        (l - 0.25).abs() < 1e-3 && read == "1000",
+        "on the bus: {l} {read}"
+    );
+    let (l, read) = play("set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, -1, 0, -1, -1)");
+    assert!(
+        (l - 0.5).abs() < 1e-3 && read == "-1",
+        "on the main bus: {l} {read}"
+    );
+}
+
 #[test]
 fn a_script_sets_a_send_level_by_the_volume_law() {
     use kontra_engine::ir;
