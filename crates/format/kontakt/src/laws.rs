@@ -374,6 +374,38 @@ fn sv(f: &mut ir::Filter, u: f32, r: f32) {
 
 const MIN_DAMPING: f32 = 0.01;
 
+/// Kontakt's Reverb (0x59) from its nine saved controls, each 0..=1:
+/// time, size, damping, modulation, diffusion, predelay, high cut, low shelf,
+/// stereo. Laws from setter `0x141aea370` (docs/architecture-v2/KONTAKT_DSP_LAWS.md):
+/// time 0.5·e^(3.7x) s, size 3x+1 (2.5 mid, here size 1), damping x^¼,
+/// diffusion 0.5x (here x), predelay 11025x samples at 44.1 kHz,
+/// high cut 19000(1−x)+2000 Hz, low shelf −12x dB, stereo x.
+// ponytail: one FDN for Room and Hall without modulation; Kontakt's network
+// (dispatch 0x141ae2c60) is unrecovered, so the type and modulation are dropped.
+pub(crate) fn reverb(v: [f32; 9]) -> ir::Reverb {
+    let [
+        time,
+        size,
+        damping,
+        _modulation,
+        diffusion,
+        predelay,
+        high_cut,
+        low_shelf,
+        stereo,
+    ] = v.map(|x| x.clamp(0.0, 1.0));
+    ir::Reverb {
+        seconds: 0.5 * (3.7 * time).exp(),
+        size: (3.0 * size + 1.0) / 2.5,
+        damping: damping.powf(0.25),
+        diffusion,
+        predelay_ms: 1000.0 * 11025.0 * predelay / 44100.0,
+        high_cut_hz: 19000.0 * (1.0 - high_cut) + 2000.0,
+        low_shelf_db: -12.0 * low_shelf,
+        stereo,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

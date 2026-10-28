@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use kontra_dsp::eq::Biquad;
-use kontra_dsp::reverb::Convolver;
+use kontra_dsp::reverb::{Convolver, Fdn, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
 
@@ -16,8 +16,29 @@ use crate::{Engine, MAX_SPAN, Response};
 enum Dsp {
     None,
     Eq(Box<[Biquad]>),
-    /// The convolver and a span of its wet output.
-    Conv(Box<Convolver>, Box<[[f32; 2]]>),
+    /// A wet path (convolver or reverb) and a span of its output.
+    Wet(Box<dyn Wet>, Box<[[f32; 2]]>),
+}
+
+/// A parallel processor: replaces its span with the wet signal.
+trait Wet: Send {
+    fn process(&mut self, io: &mut [[f32; 2]]);
+}
+
+impl Wet for Convolver {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Convolver::process(self, io);
+    }
+}
+
+impl Wet for Fdn {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Fdn::process(self, io);
+    }
+}
+
+fn wet(processor: Box<dyn Wet>) -> Dsp {
+    Dsp::Wet(processor, vec![[0.0; 2]; MAX_SPAN as usize].into())
 }
 
 pub(crate) struct Rack {
@@ -44,13 +65,11 @@ impl Rack {
                 }
                 Some(ir::EffectKind::Convolution { impulse }) => {
                     match impulses.get(usize::from(impulse)).and_then(Option::as_ref) {
-                        Some(r) => Dsp::Conv(
-                            Box::new(Convolver::new(&r.left, &r.right)),
-                            vec![[0.0; 2]; MAX_SPAN as usize].into(),
-                        ),
+                        Some(r) => wet(Box::new(Convolver::new(&r.left, &r.right))),
                         None => Dsp::None,
                     }
                 }
+                Some(ir::EffectKind::Reverb(r)) => wet(Box::new(Fdn::new(settings(r), rate))),
                 _ => Dsp::None,
             })
             .collect();
@@ -69,12 +88,12 @@ impl Rack {
             match (dsp, e.kind) {
                 (Dsp::Eq(f), _) => filters::run(f, io),
                 // The wet path from the input, then the dry level, then the wet at the output gain.
-                (Dsp::Conv(conv, wet), _) => {
+                (Dsp::Wet(processor, wet), _) => {
                     let Some(wet) = wet.get_mut(..io.len()) else {
                         continue;
                     };
                     wet.copy_from_slice(io);
-                    conv.process(wet);
+                    processor.process(wet);
                     apply(effects::matrix(&e), io);
                     for (x, w) in io.iter_mut().zip(wet.iter()) {
                         x[0] += w[0] * e.output;
@@ -99,6 +118,19 @@ impl Rack {
     /// Whether any slot is active (a send slot with nothing in it returns nothing).
     pub(crate) fn active(&self) -> bool {
         self.slots.iter().flatten().any(|e| !e.bypass)
+    }
+}
+
+fn settings(r: ir::Reverb) -> Settings {
+    Settings {
+        seconds: r.seconds,
+        size: r.size,
+        damping: r.damping,
+        diffusion: r.diffusion,
+        predelay_ms: r.predelay_ms,
+        high_cut_hz: r.high_cut_hz,
+        low_shelf_db: r.low_shelf_db,
+        stereo: r.stereo,
     }
 }
 

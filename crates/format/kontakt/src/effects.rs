@@ -114,6 +114,7 @@ fn rack(
             // (per-voice wet paths later).
             let lost = match effect.kind {
                 ir::EffectKind::Convolution { .. } => Some("group convolution"),
+                ir::EffectKind::Reverb(_) => Some("group reverb"),
                 ir::EffectKind::Sends(_) => Some("group send levels"),
                 _ => None,
             };
@@ -190,12 +191,19 @@ fn slot_effect(
         0x16 => impulses
             .convolution(object.version, &public, at, notes)
             .map(|impulse| ir::EffectKind::Convolution { impulse }),
+        // The room type (i32), then nine floats.
+        0x59 => (0..9)
+            .map(|i| f32_at(4 + 4 * i))
+            .collect::<Option<Vec<_>>>()
+            .and_then(|v| v.try_into().ok())
+            .map(|v| ir::EffectKind::Reverb(crate::laws::reverb(v))),
         _ => None,
     };
     // The legacy delay, chorus and flanger, the Gainer and Convolution mix
     // their slot's dry level back in; other modules' stored dry is unused
     // (trims store 1 there). v2 sampler-kontakt effects/mod.rs, measured on Una Corda's trims.
-    let parallel = matches!(effect.id, 0x10..=0x12 | 0x16);
+    // The Reverb core runs fully wet; Return and Dry carry its mix (v2 effects/space.rs).
+    let parallel = matches!(effect.id, 0x10..=0x12 | 0x16 | 0x59);
     // An EQ (Filter kinds 22..=24) has no Output control: ANALOG STRINGS
     // stores 0 on one that plays in Kontakt (v2 sampler-kontakt effects/mod.rs, corpus of
     // 12,918 EQ slots).
