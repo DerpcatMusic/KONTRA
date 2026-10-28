@@ -4,9 +4,29 @@
 
 use kontra_ir as ir;
 
-use crate::{Engine, Slot};
+use crate::{Engine, NoteRef, Slot};
 
 impl Engine {
+    /// Fades voices that a new voice of `group` chokes (`off_by`), except the note's own.
+    pub(crate) fn choke_by(&mut self, group: u32, note: NoteRef) {
+        let fade = self.fade_frames();
+        let plan = self.plan.clone();
+        for slot in self
+            .voices
+            .iter_mut()
+            .filter(|s| s.voice.is_active() && !s.fading && s.note != Some(note))
+        {
+            if plan
+                .zones
+                .get(slot.zone)
+                .is_some_and(|z| z.off_by == Some(group))
+            {
+                slot.voice.fade(fade);
+                slot.fading = true;
+            }
+        }
+    }
+
     /// Makes room for one more voice in voice group `vg`, before it starts.
     pub(crate) fn limit_voice_group(&mut self, vg: u32) {
         let plan = self.plan.clone();
