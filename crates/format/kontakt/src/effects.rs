@@ -212,12 +212,13 @@ fn slot_effect(
         }
         // Six floats, the link byte, then (0x11 on) the side-chain byte.
         0x46 if (0x10..=0x12).contains(&object.version) => {
+            let impact = if params.bypass {
+                ir::Impact::Cosmetic
+            } else {
+                ir::Impact::Audible
+            };
             if object.version >= 0x11 && byte(25) == Some(true) {
-                notes.add(
-                    ir::Impact::Audible,
-                    "Solid Bus Comp side chain",
-                    at.to_owned(),
-                );
+                notes.add(impact, "Solid Bus Comp side chain", at.to_owned());
             }
             (0..6)
                 .map(|i| f32_at(4 * i))
@@ -227,11 +228,7 @@ fn slot_effect(
                 .map(|(knobs, link)| {
                     let (c, auto) = crate::laws::bus_compressor(knobs, link);
                     if auto {
-                        notes.add(
-                            ir::Impact::Audible,
-                            "Solid Bus Comp auto release",
-                            at.to_owned(),
-                        );
+                        notes.add(impact, "Solid Bus Comp auto release", at.to_owned());
                     }
                     ir::EffectKind::Compressor(c)
                 })

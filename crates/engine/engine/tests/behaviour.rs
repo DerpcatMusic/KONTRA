@@ -981,3 +981,29 @@ fn an_instrument_reverb_rings_on_after_the_note() {
     assert_eq!(first, [0.0; 2]);
     assert!(wet > 1e-3 && wet.is_finite(), "tail {wet}");
 }
+
+#[test]
+fn a_compressor_slot_mixes_its_dry_level_from_the_input() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    // Squashes hard, but the slot keeps only its dry signal.
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Compressor(ir::Compressor {
+            threshold_db: -40.0,
+            ratio: 20.0,
+            knee_db: 0.0,
+            attack_ms: 0.0,
+            release_ms: 100.0,
+            makeup_db: 0.0,
+            link: true,
+            mix: 1.0,
+        }),
+        bypass: false,
+        output: 0.0,
+        dry: 1.0,
+    })];
+    let mut e = engine(&store, plan);
+    let [l, r] = level(&mut e, &[on(60, 1.0)]);
+    assert!(close(l, 0.5) && close(r, 0.5), "{l} {r}");
+}

@@ -19,11 +19,10 @@ enum Dsp {
     Eq(Box<[Biquad]>),
     /// A wet path (convolver or reverb) and a span of its output.
     Wet(Box<dyn Wet>, Box<[[f32; 2]]>),
-    Compressor(Box<Compressor>),
-    Limiter(Box<Limiter>),
 }
 
-/// A parallel processor: replaces its span with the wet signal.
+/// A processor whose span replaces the slot's output; the slot's dry level
+/// mixes the input back.
 trait Wet: Send {
     fn process(&mut self, io: &mut [[f32; 2]]);
     /// The slot's reverb settings, before each block. Never allocates.
@@ -33,6 +32,18 @@ trait Wet: Send {
 impl Wet for Convolver {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         Convolver::process(self, io);
+    }
+}
+
+impl Wet for Compressor {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Compressor::process(self, io);
+    }
+}
+
+impl Wet for Limiter {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Limiter::process(self, io);
     }
 }
 
@@ -80,11 +91,9 @@ impl Rack {
                 }
                 Some(ir::EffectKind::Reverb(r)) => wet(Box::new(Fdn::new(settings(r), rate))),
                 Some(ir::EffectKind::Compressor(c)) => {
-                    Dsp::Compressor(Box::new(Compressor::new(compressor(c), rate)))
+                    wet(Box::new(Compressor::new(compressor(c), rate)))
                 }
-                Some(ir::EffectKind::Limiter(l)) => {
-                    Dsp::Limiter(Box::new(Limiter::new(limiter(l), rate)))
-                }
+                Some(ir::EffectKind::Limiter(l)) => wet(Box::new(Limiter::new(limiter(l), rate))),
                 _ => Dsp::None,
             })
             .collect();
@@ -102,8 +111,6 @@ impl Rack {
             };
             match (dsp, e.kind) {
                 (Dsp::Eq(f), _) => filters::run(f, io),
-                (Dsp::Compressor(c), _) => c.process(io),
-                (Dsp::Limiter(l), _) => l.process(io),
                 // The wet path from the input, then the dry level, then the wet at the output gain.
                 (Dsp::Wet(processor, wet), kind) => {
                     let Some(wet) = wet.get_mut(..io.len()) else {
