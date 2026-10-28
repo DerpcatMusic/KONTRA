@@ -652,6 +652,8 @@ pub enum EffectKind {
     Eq([Bell; 4]),
     /// A state-variable filter.
     Filter(Filter),
+    /// A vowel formant filter.
+    Formant(Formant),
     /// Copies its input to the instrument's send slot n at `levels[n]`
     /// (linear) and passes it on unchanged.
     Sends([f32; 8]),
@@ -716,6 +718,24 @@ pub struct Reverb {
     pub low_shelf_db: f32,
     /// 0 mono, 1 full width.
     pub stereo: f32,
+}
+
+/// Three resonant band-passes in parallel placed by a vowel table: `talk`
+/// sweeps the vowels, `size` scales the centres, `sharp` narrows and lifts
+/// the bands (each 0..=1); `set` picks the vowels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Formant {
+    pub talk: f32,
+    pub sharp: f32,
+    pub size: f32,
+    pub set: VowelSet,
+}
+
+/// Which five vowels of the table `talk` sweeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VowelSet {
+    First,
+    Second,
 }
 
 /// `stages` two-pole state-variable stages in series at `hz` (none: one
