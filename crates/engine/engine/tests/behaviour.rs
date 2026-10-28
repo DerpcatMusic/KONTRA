@@ -1140,3 +1140,46 @@ fn a_route_moves_a_group_waveshapers_amount_per_voice() {
     assert!((peak(true) - 0.1).abs() < 0.005, "{}", peak(true));
     assert!((peak(false) - 0.64).abs() < 0.01, "{}", peak(false));
 }
+
+#[test]
+fn a_route_moves_an_eq_bands_centre_per_voice() {
+    use kontra_engine::ir::{Bell, Effect, EffectKind, EffectParam, Mod, ModKind, Shape, Source};
+    let peak = |octaves: f32| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+        let bell = Bell {
+            shape: Shape::Peak,
+            hz: 100.0,
+            q: 2.0,
+            gain_db: 12.0,
+        };
+        plan.groups[0].inserts = vec![Some(Effect {
+            kind: EffectKind::Eq([bell, Bell::FLAT, Bell::FLAT, Bell::FLAT]),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        plan.groups[0].mods = vec![Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind: ModKind::EffectParam {
+                source: Source::Constant,
+                insert: 0,
+                param: EffectParam::BellOctaves(0),
+                depth: octaves,
+                unipolar: false,
+            },
+        }];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let mut out = vec![[0.0f32; 2]; 4800];
+        e.process(&mut out, &[on(60, 1.0)]);
+        out[2400..].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    // The 1 kHz sine is far from a bell at 100 Hz; moved up 10x it takes the
+    // full 12 dB.
+    let (away, on_it) = (peak(0.0), peak(10f32.log2()));
+    assert!((away - 0.1).abs() < 0.01, "{away}");
+    assert!((on_it / 0.1 - 10f32.powf(0.6)).abs() < 0.1, "{on_it}");
+}

@@ -50,6 +50,9 @@ pub enum EffectParam {
     ShaperAmount,
     CrushRate,
     CrushBits,
+    /// Octaves on an [`EffectKind::Eq`] band's centre, kept within 20 Hz to
+    /// 20 kHz.
+    BellOctaves(u8),
 }
 
 impl EffectParam {
@@ -64,6 +67,13 @@ impl EffectParam {
             },
             (Self::CrushRate, EffectKind::Crush(c)) => &mut c.rate,
             (Self::CrushBits, EffectKind::Crush(c)) => &mut c.bits,
+            (Self::BellOctaves(band), EffectKind::Eq(bells)) => {
+                let Some(b) = bells.get_mut(usize::from(band)) else {
+                    return false;
+                };
+                b.hz = (b.hz * delta.exp2()).clamp(20.0, 20_000.0);
+                return true;
+            }
             _ => return false,
         };
         *at += delta;
