@@ -414,7 +414,7 @@ impl Engine {
 
     fn key_down(&self, key: i32) -> bool {
         self.notes
-            .count(|n| n.origin == Origin::Host && i32::from(n.host.key) == key && !n.released)
+            .count(|n| n.origin == Origin::Host && i32::from(n.host.key) == key && !n.is_up())
             > 0
     }
 
@@ -562,7 +562,7 @@ impl HostApi for Engine {
             }
             Action::CurrentScriptSlot => HostValue::Int(i32::from(self.running.slot)),
             Action::MidiChannel => HostValue::Int(current.map_or(0, |n| i32::from(n.host.channel))),
-            Action::NoteHeld => flag(current.is_some_and(|n| !n.released)),
+            Action::NoteHeld => flag(current.is_some_and(|n| !n.is_up())),
             Action::PlayedVoicesInst | Action::PlayedVoicesTotal => {
                 HostValue::Int(self.active_voices() as i32)
             }
@@ -650,10 +650,11 @@ impl HostApi for Engine {
                 HostValue::Int(0)
             }
             Action::ReadPersistentVar => {
-                let (base, len) = (int(0) as u32, int(1) as u32);
+                let whole = |i| u32::try_from(int(i)).unwrap_or(0);
+                let (base, len) = (whole(0), whole(1));
                 let saved = self.script().map(|s| s.restore.as_slice());
                 for &(cell, value) in saved.unwrap_or_default() {
-                    if (base..base + len).contains(&cell)
+                    if (base..base.saturating_add(len)).contains(&cell)
                         && let Some(c) = call.cells.get_mut(cell as usize)
                     {
                         *c = value;

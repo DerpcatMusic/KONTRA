@@ -138,6 +138,28 @@ fn arithmetic_loops_select_and_text() {
 }
 
 #[test]
+fn a_runaway_loop_stops_even_around_an_inner_loop() {
+    // Each outer turn exits an inner loop and moves $k, so only the turn
+    // count across both loops can end it, wherever the limit lands.
+    for inner in [1, 2] {
+        let r = Run::new(&format!(
+            "on init
+                declare $j
+                declare $k
+                while (1 = 1)
+                    $j := 0
+                    while ($j < {inner})
+                        inc($j)
+                    end while
+                    inc($k)
+                end while
+            end on"
+        ));
+        assert!(r.int("$k") > 0 && r.int("$k") < 10_000_001);
+    }
+}
+
+#[test]
 fn functions_called_before_definition_and_by_name() {
     let r = Run::new(
         "function double
@@ -299,13 +321,18 @@ fn type_and_name_errors() {
     assert_eq!(e.line_column(source), (3, 1));
 }
 
-/// The 275k-line Areia script compiles, when the library dump is present.
+/// Areia's 275k-line script, from `KONTRA_AREIA_KSP` (a library dump; run
+/// with `--ignored`).
+fn areia() -> String {
+    let path = std::env::var("KONTRA_AREIA_KSP").expect("KONTRA_AREIA_KSP names the script");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// The Areia script compiles.
 #[test]
+#[ignore = "needs the Areia library dump in KONTRA_AREIA_KSP"]
 fn areia_compiles() {
-    let path = "/data/dev/workspace/PluginArtifacts/layer-onset-20261024/areia-scripts/778d5bb709976a72.ksp";
-    let Ok(source) = std::fs::read_to_string(path) else {
-        return;
-    };
+    let source = areia();
     let script = compile(&source, &[]).unwrap_or_else(|e| {
         let (line, column) = e.line_column(&source);
         let text = source.lines().nth(line - 1).unwrap_or_default();
@@ -318,11 +345,9 @@ fn areia_compiles() {
 /// Areia's `on init` runs to the end on the VM without faults beyond the
 /// host builtins this recording host leaves unanswered.
 #[test]
+#[ignore = "needs the Areia library dump in KONTRA_AREIA_KSP"]
 fn areia_init_runs() {
-    let path = "/data/dev/workspace/PluginArtifacts/layer-onset-20261024/areia-scripts/778d5bb709976a72.ksp";
-    let Ok(source) = std::fs::read_to_string(path) else {
-        return;
-    };
+    let source = areia();
     let started = std::time::Instant::now();
     let script = compile(&source, &[]).unwrap();
     let compiled = started.elapsed();

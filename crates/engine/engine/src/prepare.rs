@@ -190,7 +190,9 @@ fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R>
             .collect();
         handles
             .into_iter()
-            .flat_map(|h| h.join().unwrap_or_default())
+            // A worker's panic is the loader's: a short result would misalign
+            // every later item with its input.
+            .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
             .collect()
     })
 }

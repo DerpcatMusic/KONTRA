@@ -2,7 +2,7 @@
 
 Decoders for UVI's file formats, extracted from KONTRA:
 
-- **UFS soundbanks** (`.ufs`, v2/v3): header, directory records, decrypted
+- **UFS soundbanks** (`.ufs`, version 3; the `UFS2` magic is the container, not the version): header, directory records, decrypted
   member names and paths, member ranges and protection modes.
 - **Member encryption**: the offset-seeded block transform (metadata and
   content keys), and local content-key recovery verified against PNG CRCs.

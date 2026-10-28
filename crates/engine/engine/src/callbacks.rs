@@ -157,7 +157,7 @@ impl Engine {
             }
             let held = self
                 .notes
-                .count(|n| n.started && !n.ignored && !n.released && !n.pedal_held)
+                .count(|n| n.started && !n.ignored && !n.is_up() && !n.pedal_held)
                 - 1;
             self.start_zones(note, true, |trigger| match trigger {
                 Trigger::Attack => true,

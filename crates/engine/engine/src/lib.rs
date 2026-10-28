@@ -593,11 +593,14 @@ impl Engine {
             let Some(n) = self.notes.get_mut(note) else {
                 continue;
             };
-            if n.released {
+            if n.is_up() {
                 continue;
             }
             let channel = n.host.channel;
             if self.release_callbacks(note) {
+                if let Some(n) = self.notes.get_mut(note) {
+                    n.key_up = true;
+                }
                 continue;
             }
             if self
@@ -771,9 +774,11 @@ impl Engine {
                 && self
                     .notes
                     .get(note)
-                    .is_some_and(|n| n.origin == Origin::Host && !n.released);
+                    .is_some_and(|n| n.origin == Origin::Host && !n.is_up());
             if !sounding
                 && !waiting
+                // A silent parent stays addressable while a child waits on it.
+                && !self.notes.parents(note)
                 && let Some(n) = self.notes.remove(note)
             {
                 self.ended.push(n.host);

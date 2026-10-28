@@ -7,6 +7,10 @@ use kontra_time::SampleTime;
 use crate::behaviour::RrDraw;
 
 /// A note handle. Stale handles (the note ended) match nothing.
+/// Generations a slot cycles through: 13 bits, so a note's event ID (the
+/// generation above bit 16) never sets the sign or `event::BY_MARKS`.
+const GENERATIONS: u32 = 0x1FFF;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NoteRef {
     index: u32,
@@ -22,7 +26,7 @@ impl NoteRef {
     /// The script-visible event id: positive, unique among live notes, and
     /// stale once the note ends. Ledgers hold at most 65536 notes.
     pub(crate) fn event_id(self) -> i32 {
-        (((self.generation & 0x7FFF) << 16) | (self.index & 0xFFFF)) as i32
+        (((self.generation & GENERATIONS) << 16) | (self.index & 0xFFFF)) as i32
     }
 
     pub(crate) fn from_event_id(id: i32) -> Option<Self> {
@@ -67,6 +71,8 @@ pub(crate) struct Note {
     pub(crate) pedal_held: bool,
     /// Key released (directly or by the pedal coming up).
     pub(crate) released: bool,
+    /// Key up, but a release callback ignored it: the voices play on.
+    pub(crate) key_up: bool,
     /// Voices started (or the note was ignored): later script changes move
     /// sounding voices instead of choosing zones.
     pub(crate) started: bool,
@@ -117,6 +123,7 @@ impl Note {
             expression_pan: 0.0,
             pedal_held: false,
             released: false,
+            key_up: false,
             started: false,
             ignored: false,
             script_tune: 0,
@@ -129,6 +136,11 @@ impl Note {
             pass: 0,
             marks: 0,
         }
+    }
+
+    /// The key went up, whether or not its release was ignored.
+    pub(crate) fn is_up(&self) -> bool {
+        self.released || self.key_up
     }
 
     /// The value sent for "from script" modulator `index`; 0 until sent.
@@ -185,7 +197,8 @@ impl Ledger {
             .iter_mut()
             .enumerate()
             .find(|(_, e)| e.note.is_none())?;
-        entry.generation = entry.generation.wrapping_add(1);
+        // event_id carries 13 bits and 0 is invalid: stay in 1..=GENERATIONS.
+        entry.generation = entry.generation % GENERATIONS + 1;
         entry.note = Some(note);
         Some(NoteRef {
             index: index as u32,
@@ -215,6 +228,14 @@ impl Ledger {
             .filter(|e| e.generation == r.generation)?
             .note
             .take()
+    }
+
+    /// Whether a live note is released with `parent`.
+    pub(crate) fn parents(&self, parent: NoteRef) -> bool {
+        let child = Origin::Child(parent);
+        self.entries
+            .iter()
+            .any(|e| e.note.is_some_and(|n| n.origin == child))
     }
 
     /// Fills `out` with the live notes `keep` accepts, oldest slot first.
