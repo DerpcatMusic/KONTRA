@@ -478,9 +478,12 @@ fn pitch_bend_moves_sounding_voices_by_its_route() {
     plan.groups[0].mods = vec![kontra_engine::ir::Mod {
         name: String::new(),
         slot: 0,
+        target: 0,
+        bypass: false,
         kind: kontra_engine::ir::ModKind::Pitch {
             source: kontra_engine::ir::Source::PitchBend,
             semitones: 2.0,
+            depth: 1.0,
         },
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -545,6 +548,8 @@ fn a_sample_start_route_moves_the_start_within_its_range() {
         plan.groups[0].mods = vec![Mod {
             name: String::new(),
             slot: 0,
+            target: 0,
+            bypass: false,
             kind: ModKind::SampleStart {
                 source: Source::Constant,
                 depth,
@@ -599,9 +604,12 @@ fn a_controller_pitch_route_moves_sounding_voices() {
     plan.groups[0].mods = vec![Mod {
         name: String::new(),
         slot: 0,
+        target: 0,
+        bypass: false,
         kind: ModKind::Pitch {
             source: Source::Controller(1),
             semitones: 12.0,
+            depth: 1.0,
         },
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -636,9 +644,12 @@ fn an_envelope_pitch_route_rises_holds_and_releases() {
     plan.groups[0].mods = vec![Mod {
         name: String::new(),
         slot: 0,
+        target: 0,
+        bypass: false,
         kind: ModKind::Pitch {
             source: Source::Envelope(0),
             semitones: 12.0,
+            depth: 1.0,
         },
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -680,6 +691,8 @@ fn a_controller_opens_a_voice_filter() {
     plan.groups[0].mods = vec![Mod {
         name: String::new(),
         slot: 0,
+        target: 0,
+        bypass: false,
         kind: ModKind::Cutoff {
             source: Source::Controller(74),
             insert: 0,

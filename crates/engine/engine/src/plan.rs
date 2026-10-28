@@ -128,6 +128,7 @@ pub struct Group {
     /// Read by `Source::Envelope(n)` and `Source::Lfo(n)`.
     pub envelopes: Vec<ir::Breakpoints>,
     pub lfos: Vec<ir::Lfo>,
+    pub routes: Vec<ir::Routes>,
 }
 
 impl Group {
@@ -142,6 +143,8 @@ impl Group {
             mods: vec![ir::Mod {
                 name: String::new(),
                 slot: 0,
+                target: 0,
+                bypass: false,
                 kind: ir::ModKind::Volume {
                     source: ir::Source::Velocity,
                     intensity: 1.0,
@@ -151,12 +154,14 @@ impl Group {
             envelope: Ahdsr::GATE,
             envelopes: Vec::new(),
             lfos: Vec::new(),
+            routes: Vec::new(),
         }
     }
 
-    /// The mod a script addresses by `slot`.
-    pub fn mod_mut(&mut self, slot: i32) -> Option<&mut ir::Mod> {
-        self.mods.iter_mut().find(|m| i32::from(m.slot) == slot)
+    /// The route a script addresses by modulator `slot` and `target`; a
+    /// negative target is the modulator's first route.
+    pub fn mod_mut(&mut self, slot: i32, target: i32) -> Option<&mut ir::Mod> {
+        self.mods.iter_mut().find(|m| m.addressed(slot, target))
     }
 }
 
@@ -313,5 +318,16 @@ impl Plan {
             main: Vec::new(),
             impulses: Vec::new(),
         }
+    }
+}
+
+/// How scripts find a route.
+pub(crate) trait Addressed {
+    fn addressed(&self, slot: i32, target: i32) -> bool;
+}
+
+impl Addressed for ir::Mod {
+    fn addressed(&self, slot: i32, target: i32) -> bool {
+        i32::from(self.slot) == slot && (target < 0 || i32::from(self.target) == target)
     }
 }

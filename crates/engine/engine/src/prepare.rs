@@ -71,6 +71,7 @@ pub fn prepare(
             envelope: envelope(g.envelope, rate),
             envelopes: g.envelopes.clone(),
             lfos: g.lfos.clone(),
+            routes: g.routes.clone(),
         })
         .collect();
     if !instrument.buses.is_empty() {

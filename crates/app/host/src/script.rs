@@ -29,6 +29,7 @@ const DECAY: &str = "$ENGINE_PAR_DECAY";
 const SUSTAIN: &str = "$ENGINE_PAR_SUSTAIN";
 const RELEASE: &str = "$ENGINE_PAR_RELEASE";
 const INTENSITY: &str = "$ENGINE_PAR_MOD_TARGET_INTENSITY";
+const MOD_BYPASS: &str = "$ENGINE_PAR_INTMOD_BYPASS";
 const ATTACK_CURVE: &str = "$ENGINE_PAR_ATK_CURVE";
 const EFFECT_BYPASS: &str = "$ENGINE_PAR_EFFECT_BYPASS";
 const EFFECT_OUTPUT: &str = "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN";
@@ -67,6 +68,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             sustain: symbol(script, SUSTAIN),
             release: symbol(script, RELEASE),
             intensity: symbol(script, INTENSITY),
+            mod_bypass: symbol(script, MOD_BYPASS),
             attack_curve: symbol(script, ATTACK_CURVE),
             effect_bypass: symbol(script, EFFECT_BYPASS),
             effect_output: symbol(script, EFFECT_OUTPUT),

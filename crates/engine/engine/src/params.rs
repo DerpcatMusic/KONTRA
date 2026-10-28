@@ -4,6 +4,7 @@
 
 use kontra_ir as ir;
 
+use crate::plan::Addressed;
 use crate::{Engine, Level};
 
 /// Effect gains are cubic, unity at this value, so 1_000_000 is +24 dB (v2 sampler-core,
@@ -226,11 +227,13 @@ impl Engine {
         let ms = |frames: u32| f64::from(frames) * 1000.0 / f64::from(self.rate);
         let e = &g.envelope;
         let x = match par {
+            p if p == pars.mod_bypass => {
+                let m = g.mods.iter().find(|m| i32::from(m.slot) == slot)?;
+                return Some(i32::from(m.bypass));
+            }
             p if p == pars.intensity => {
-                match g.mods.iter().find(|m| i32::from(m.slot) == slot)?.kind {
-                    ir::ModKind::Volume { intensity, .. } => f64::from(intensity),
-                    _ => return None,
-                }
+                let m = g.mods.iter().find(|m| m.addressed(slot, generic))?;
+                f64::from(depth(&mut m.kind.clone())?.abs())
             }
             p if p == pars.attack => stage_x(15_000.0, ms(e.attack)),
             p if p == pars.hold => stage_x(15_000.0, ms(e.hold)),
@@ -268,6 +271,7 @@ impl Engine {
             .and_then(|g| self.groups.get_mut(g))
         else {
             return par == pars.intensity
+                || par == pars.mod_bypass
                 || [
                     pars.attack,
                     pars.hold,
@@ -278,20 +282,25 @@ impl Engine {
                 ]
                 .contains(&par);
         };
+        if par == pars.mod_bypass {
+            for m in g.mods.iter_mut().filter(|m| i32::from(m.slot) == slot) {
+                m.bypass = value != 0;
+            }
+            self.refresh_all(None);
+            return true;
+        }
         if par == pars.intensity {
-            if let Some(ir::Mod {
-                kind: ir::ModKind::Volume { intensity, .. },
-                ..
-            }) = g.mod_mut(slot)
-            {
-                *intensity = x as f32;
+            // The magnitude is the script's; the route keeps its sign (its invert flag).
+            if let Some(d) = g.mod_mut(slot, generic).and_then(|m| depth(&mut m.kind)) {
+                *d = (x as f32).copysign(*d);
                 self.refresh_all(None);
             }
             return true;
         }
         let envelope = g
-            .mod_mut(slot)
-            .is_some_and(|m| m.kind == ir::ModKind::Envelope);
+            .mods
+            .iter()
+            .any(|m| i32::from(m.slot) == slot && m.kind == ir::ModKind::Envelope);
         let e = &mut g.envelope;
         let stage = match par {
             p if p == pars.attack => &mut e.attack,
@@ -370,5 +379,17 @@ mod tests {
         for x in [0.0, 0.25, 0.8, 1.0] {
             assert!((stage_x(25_000.0, stage_ms(25_000.0, x)) - x).abs() < 1e-9);
         }
+    }
+}
+
+/// A route's live intensity, signed by its invert flag.
+fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
+    match kind {
+        ir::ModKind::Volume { intensity, .. } => Some(intensity),
+        ir::ModKind::Pitch { depth, .. }
+        | ir::ModKind::Cutoff { depth, .. }
+        | ir::ModKind::SampleStart { depth, .. } => Some(depth),
+        ir::ModKind::Pan { amount, .. } => Some(amount),
+        ir::ModKind::Envelope => None,
     }
 }

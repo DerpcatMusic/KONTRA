@@ -19,6 +19,11 @@ impl Engine {
         (self.chains.len(), zones)
     }
 
+    /// Every group's routes as scripts have left them.
+    pub fn mods(&self) -> impl Iterator<Item = &kontra_ir::Mod> + '_ {
+        self.groups.iter().flat_map(|g| &g.mods)
+    }
+
     /// Groups whose filter runs per voice, and each sounding voice's cutoff.
     pub fn voice_filters(&self) -> (usize, Vec<f32>) {
         let groups = self.voice_filters.iter().flatten().count();

@@ -36,6 +36,8 @@ pub struct EnginePars {
     pub release: i32,
     /// A volume modulation's intensity.
     pub intensity: i32,
+    /// A modulator's bypass.
+    pub mod_bypass: i32,
     pub attack_curve: i32,
     pub effect_bypass: i32,
     pub effect_output: i32,
@@ -630,6 +632,14 @@ impl HostApi for Engine {
                         .map(|m| i32::from(m.slot))
                 });
                 HostValue::Int(found.unwrap_or(-1))
+            }
+            Action::FindTarget | Action::GetTargetIdx => {
+                let name = call.texts.first().map_or("", Text::as_str);
+                let found = self.groups.get(int(0) as usize).and_then(|g| {
+                    let routes = g.routes.iter().find(|r| i32::from(r.slot) == int(1))?;
+                    routes.names.iter().position(|n| n == name)
+                });
+                HostValue::Int(found.map_or(-1, |n| n as i32))
             }
             Action::GetEnginePar
                 if let Some(value) = self.get_engine_par(int(0), int(1), int(2), int(3)) =>

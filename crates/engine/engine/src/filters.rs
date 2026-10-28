@@ -96,6 +96,7 @@ impl Engine {
         let octaves: f32 = group
             .mods
             .iter()
+            .filter(|m| !m.bypass)
             .filter_map(|m| match m.kind {
                 ir::ModKind::Cutoff {
                     source,

@@ -159,7 +159,17 @@ pub struct Group {
     pub envelopes: Vec<Breakpoints>,
     /// Oscillators [`Source::Lfo`] reads, by index.
     pub lfos: Vec<Lfo>,
+    /// Each modulator's route names, in route order, carried or not: what
+    /// scripts find routes by.
+    pub routes: Vec<Routes>,
     pub zones: Vec<Zone>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Routes {
+    /// The modulator's [`Mod::slot`].
+    pub slot: u16,
+    pub names: Vec<String>,
 }
 
 impl Group {
@@ -184,6 +194,7 @@ impl Group {
         inserts: Vec::new(),
         envelopes: Vec::new(),
         lfos: Vec::new(),
+        routes: Vec::new(),
         zones: Vec::new(),
     };
 }
@@ -285,6 +296,11 @@ impl Envelope {
 pub struct Mod {
     pub name: String,
     pub slot: u16,
+    /// Which of its modulator's routes this is: scripts address a route by
+    /// modulator slot and target.
+    pub target: u16,
+    /// Its modulator is switched off (scripts may switch it on).
+    pub bypass: bool,
     pub kind: ModKind,
 }
 
@@ -300,8 +316,13 @@ pub enum ModKind {
         intensity: f32,
         curve: Curve,
     },
-    /// `source` times `semitones` added to the pitch.
-    Pitch { source: Source, semitones: f32 },
+    /// `source × depth × semitones` added to the pitch: `semitones` is the
+    /// route's range, `depth` (−1..=1) its live intensity.
+    Pitch {
+        source: Source,
+        semitones: f32,
+        depth: f32,
+    },
     /// `source × amount` added to the pan (−1..=1).
     Pan { source: Source, amount: f32 },
     /// Moves the cutoff of the [`Filter`] in group insert slot `insert` by

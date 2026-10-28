@@ -327,6 +327,10 @@ fn translate_group(
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
         for (n, m) in InternalModArray16::try_from(chunk)?.slots()? {
             let p = m.params()?;
+            out.routes.push(ir::Routes {
+                slot: slot(n),
+                names: p.targets.iter().map(|t| t.name.clone()).collect(),
+            });
             let volume = p
                 .targets
                 .iter()
@@ -342,9 +346,12 @@ fn translate_group(
                             .any(|m| matches!(m.kind, ir::ModKind::Envelope)) =>
                 {
                     out.envelope = laws::envelope(e);
+                    let target = p.targets.iter().position(|t| t.param == "volume");
                     out.mods.push(ir::Mod {
                         name: p.name.clone(),
                         slot: slot(n),
+                        target: target.map_or(0, slot),
+                        bypass: false,
                         kind: ir::ModKind::Envelope,
                     });
                 }
@@ -374,6 +381,10 @@ fn translate_group(
     if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
         for (n, m) in ExternalModArray32::try_from(chunk)?.slots()? {
             let p = m.params()?;
+            out.routes.push(ir::Routes {
+                slot: slot(n),
+                names: p.targets.iter().map(|t| t.name.clone()).collect(),
+            });
             let source = match p.source {
                 ModSource::Velocity => Some(ir::Source::Velocity),
                 ModSource::MidiCc(cc) => Some(ir::Source::Controller(cc)),
@@ -385,7 +396,7 @@ fn translate_group(
                 }
                 _ => None,
             };
-            for t in &p.targets {
+            for (target, t) in p.targets.iter().enumerate() {
                 let kind = match (source, t.param.as_str(), t.slot) {
                     (Some(source), "volume", None) if source != ir::Source::PitchBend => {
                         Some(ir::ModKind::Volume {
@@ -396,7 +407,8 @@ fn translate_group(
                     }
                     (Some(source), "pitch", None) => Some(ir::ModKind::Pitch {
                         source,
-                        semitones: laws::PITCH_SEMITONES * t.signed_intensity(),
+                        semitones: laws::PITCH_SEMITONES,
+                        depth: t.signed_intensity(),
                     }),
                     (Some(source), "playPos", None) => Some(ir::ModKind::SampleStart {
                         source,
@@ -413,6 +425,8 @@ fn translate_group(
                     out.mods.push(ir::Mod {
                         name: p.name.clone(),
                         slot: slot(n),
+                        target: slot(target),
+                        bypass: false,
                         kind,
                     });
                 } else {
@@ -443,6 +457,8 @@ fn timed(
     notes: &mut Notes,
     unmapped: &mut Vec<u8>,
 ) {
+    // The modulator's flags: [router open, bypass, retrigger, unknown].
+    const BYPASS: usize = 1;
     const RETRIGGER: usize = 2;
     let report = |notes: &mut Notes, unmapped: &mut Vec<u8>, what: &str| {
         for t in &p.targets {
@@ -479,7 +495,7 @@ fn timed(
         .mods
         .iter()
         .any(|m| matches!(m.kind, ir::ModKind::Envelope));
-    for t in &p.targets {
+    for (target, t) in p.targets.iter().enumerate() {
         let kind = match (t.param.as_str(), t.slot) {
             // An LFO's volume route is linear in its unipolar swing (v2
             // sampler-core v1_voice_controls volume target, frange_uni 0x14071a840).
@@ -490,7 +506,8 @@ fn timed(
             },
             ("pitch", None) => ir::ModKind::Pitch {
                 source,
-                semitones: laws::PITCH_SEMITONES * t.signed_intensity(),
+                semitones: laws::PITCH_SEMITONES,
+                depth: t.signed_intensity(),
             },
             ("pan", None) => ir::ModKind::Pan {
                 source,
@@ -518,6 +535,8 @@ fn timed(
         out.mods.push(ir::Mod {
             name: p.name.clone(),
             slot,
+            target: u16::try_from(target).unwrap_or(u16::MAX),
+            bypass: p.unknown_flags.get(BYPASS).is_some_and(|&f| f != 0),
             kind,
         });
     }

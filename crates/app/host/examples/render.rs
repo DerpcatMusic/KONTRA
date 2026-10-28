@@ -201,6 +201,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let plan = Arc::new(loaded.plan);
     let mut engine = Engine::new(Arc::clone(&plan), store.client(), RATE);
     println!("init: unanswered {:?}", engine.unhandled_actions());
+    if std::env::var_os("KONTRA_MODS").is_some() {
+        let mut seen = Vec::new();
+        for m in engine.mods().filter(|m| !m.bypass) {
+            let line = format!("{} {:?}", m.name, m.kind);
+            if !seen.contains(&line) {
+                println!("live mod {line}");
+                seen.push(line);
+            }
+        }
+    }
     let (filtered, cutoffs) = engine.voice_filters();
     if filtered > 0 {
         println!("voice filters: {filtered} groups {cutoffs:?}");

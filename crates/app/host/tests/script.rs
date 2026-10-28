@@ -238,6 +238,8 @@ fn a_script_finds_a_modulation_by_name_and_drives_it() {
     plan.groups[0].mods = vec![ir::Mod {
         name: "Dyn".into(),
         slot: 3,
+        target: 0,
+        bypass: false,
         kind: ir::ModKind::Volume {
             source: ir::Source::Controller(110),
             intensity: 0.0,

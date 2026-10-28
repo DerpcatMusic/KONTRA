@@ -26,6 +26,7 @@ impl Engine {
         let mods: f32 = self.groups.get(zone.group as usize).map_or(1.0, |g| {
             g.mods
                 .iter()
+                .filter(|m| !m.bypass)
                 .map(|m| match m.kind {
                     ir::ModKind::Volume {
                         source,
@@ -47,6 +48,7 @@ impl Engine {
         let pan: f32 = self.groups.get(zone.group as usize).map_or(0.0, |g| {
             g.mods
                 .iter()
+                .filter(|m| !m.bypass)
                 .filter_map(|m| match m.kind {
                     ir::ModKind::Pan { source, amount } => {
                         Some(self.source(zone, source, note, age)? * amount)
@@ -112,10 +114,13 @@ impl Engine {
         let mods: f32 = self.groups.get(zone.group as usize).map_or(0.0, |g| {
             g.mods
                 .iter()
+                .filter(|m| !m.bypass)
                 .filter_map(|m| match m.kind {
-                    ir::ModKind::Pitch { source, semitones } => {
-                        Some(self.source(zone, source, note, age)? * semitones)
-                    }
+                    ir::ModKind::Pitch {
+                        source,
+                        semitones,
+                        depth,
+                    } => Some(self.source(zone, source, note, age)? * semitones * depth),
                     _ => None,
                 })
                 .sum()
@@ -139,6 +144,7 @@ impl Engine {
         let x: f32 = g
             .mods
             .iter()
+            .filter(|m| !m.bypass)
             .filter_map(|m| match m.kind {
                 ir::ModKind::SampleStart { source, depth } => {
                     let x = match source {
@@ -160,6 +166,7 @@ impl Engine {
         self.groups.get(zone.group as usize).map_or(1.0, |g| {
             g.mods
                 .iter()
+                .filter(|m| !m.bypass)
                 .map(|m| match m.kind {
                     ir::ModKind::Volume {
                         source: ir::Source::HeldTime { span_ms: ms },
