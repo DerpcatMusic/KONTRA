@@ -555,6 +555,7 @@ fn render(
         "decoded_image_bytes":native.as_ref().map_or_else(||assets.bytes(),|n|n.bytes()),"passive_value_changes":passive,"renders":renders});
     if let Some(o) = out.as_object_mut() {
         o.insert("picture_probes".into(), probes);
+        o.insert("discovery_us".into(), scan.discovery_us.into());
     }
     out
 }
