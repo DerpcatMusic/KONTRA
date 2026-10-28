@@ -699,8 +699,7 @@ pub fn reverb_laws() -> [ir::Law; 8] {
 /// runs a two-pole detector at `2513.2/max(ms, 1)` rad/s with damping 1.8 and
 /// a peak hold falling by `1778.3/max(ms, 50)` per second; Classic (core
 /// 0x140ab2250) steps by `0.625^(1/n)` and `(1/3)^(1/n)` over the n frames.
-// ponytail: Enhanced (a piecewise curve) runs the soft-knee curve at its own
-// time constants; no native recording says how far apart they sound.
+// ponytail: Enhanced's piecewise curve runs as the soft knee; unmeasured.
 pub(crate) fn compressor(
     mode: i32,
     threshold_db: f32,
