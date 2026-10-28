@@ -79,6 +79,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
         let mut g = t.group;
         g.inserts = crate::effects::group(group, index, &mut impulses, &mut notes);
+        crate::drive::unmoved(&g.inserts, &g.mods, &mut notes);
         // ponytail: a filter a modulator moves passes unfiltered until filters
         // run per voice; its routes are reported.
         for slot in t.modulated {
@@ -443,6 +444,9 @@ fn translate_group(
                             floor_ms: laws::ATTACK_FLOOR_MS,
                         })
                     }
+                    (Some(source), param, Some(insert)) => {
+                        crate::drive::route(source, insert, param, t.signed_intensity())
+                    }
                     _ => None,
                 };
                 if let Some(kind) = kind {
@@ -556,6 +560,12 @@ fn timed(
                     Some(kind) => kind,
                     None => continue,
                 }
+            }
+            (param, Some(insert))
+                if let Some(kind) =
+                    crate::drive::route(source, insert, param, t.signed_intensity()) =>
+            {
+                kind
             }
             _ => {
                 let to = if t.slot.is_some() { "module " } else { "" };

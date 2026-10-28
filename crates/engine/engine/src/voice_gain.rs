@@ -229,7 +229,10 @@ impl Engine {
                     | ir::ModKind::Pan { source, .. }
                     | ir::ModKind::Cutoff { source, .. }
                     | ir::ModKind::Resonance { source, .. }
-                    | ir::ModKind::EqGain { source, .. } => source == ir::Source::Controller(cc),
+                    | ir::ModKind::EqGain { source, .. }
+                    | ir::ModKind::EffectParam { source, .. } => {
+                        source == ir::Source::Controller(cc)
+                    }
                     ir::ModKind::Envelope
                     | ir::ModKind::SampleStart { .. }
                     | ir::ModKind::Attack { .. } => false,

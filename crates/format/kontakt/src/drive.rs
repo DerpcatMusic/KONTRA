@@ -103,6 +103,76 @@ fn lofi(bits: f32, frequency: f32, noise: f32, color: f32) -> ir::EffectKind {
     })
 }
 
+/// A route to module parameter `param` of group insert `insert`, through
+/// the knob law of the effect it moves; none when `param` is not one of
+/// these effects'. The modulation compiler (FUN_140873040) emits
+/// `$in + E·intensity` on the target's own value: Saturation's path
+/// (FUN_140aa4d20) clamps it to the signed shape, Lo-Fi's (FUN_140aa34b0)
+/// reads bits as 16·v and the hold from the frequency knob, both refreshed
+/// every 32 frames. Distortion (0x40) is outside the compiler's signed
+/// families, so it reads an LFO in its unipolar view.
+pub(crate) fn route(
+    source: ir::Source,
+    insert: u8,
+    name: &str,
+    intensity: f32,
+) -> Option<ir::ModKind> {
+    // A release-trigger counter is read at note-on only; a voice's effect
+    // never sees it, so it is reported instead.
+    if matches!(source, ir::Source::HeldTime { .. }) {
+        return None;
+    }
+    let (param, scale) = match name {
+        "formantTalk" => (ir::EffectParam::FormantTalk, 1.0),
+        "formantSize" => (ir::EffectParam::FormantSize, 1.0),
+        "formantSharp" => (ir::EffectParam::FormantSharp, 1.0),
+        "shaper" | "distortionIntensity" => (ir::EffectParam::ShaperAmount, 1.0),
+        "bitdepth" => (ir::EffectParam::CrushBits, 16.0),
+        "downsample" => (ir::EffectParam::CrushRate, 1.0),
+        // The legacy EQ's centre is 20·1000^v (eq-kontakt.md §1.1), its
+        // source scaled by 0.5 (compiler string 0x144f1d6f8).
+        _ => match name
+            .strip_prefix("eqFreq")
+            .and_then(|n| n.parse::<u8>().ok())
+        {
+            Some(n @ 1..=3) => (ir::EffectParam::BellOctaves(n - 1), 0.5 * 1000f32.log2()),
+            _ => return None,
+        },
+    };
+    Some(ir::ModKind::EffectParam {
+        source,
+        insert,
+        param,
+        depth: intensity * scale,
+        span: scale,
+        unipolar: param == ir::EffectParam::ShaperAmount && name == "distortionIntensity",
+    })
+}
+
+/// Reports the routes the engine cannot apply: an effect route to an empty
+/// slot or to an effect without that control, and resonance routes to a
+/// formant (the target table FUN_140a6d410 gives the formant its own
+/// `formantSharp`, 0x26; what `filterQ`, 0x20, does there is not read yet).
+pub(crate) fn unmoved(inserts: &[Option<ir::Effect>], mods: &[ir::Mod], notes: &mut Notes) {
+    let at = |insert: u8| inserts.get(usize::from(insert)).and_then(Option::as_ref);
+    for m in mods {
+        let gap = match m.kind {
+            ir::ModKind::Resonance { insert, .. }
+                if at(insert).is_some_and(|e| matches!(e.kind, ir::EffectKind::Formant(_))) =>
+            {
+                "modulator -> formant filterQ"
+            }
+            ir::ModKind::EffectParam { insert, param, .. }
+                if !at(insert).is_some_and(|e| param.add(&mut e.kind.clone(), 0.0)) =>
+            {
+                "modulator -> effect without that control"
+            }
+            _ => continue,
+        };
+        notes.add(ir::Impact::Audible, gap, &m.name);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +205,23 @@ mod tests {
             panic!()
         };
         assert_eq!((off.rate, off.bits, off.noise), (1.0, 16.0, 0.0));
+    }
+
+    #[test]
+    fn module_routes_move_the_effect_through_its_knob_law() {
+        let depth = |param| match route(ir::Source::Velocity, 2, param, 0.5) {
+            Some(ir::ModKind::EffectParam {
+                insert: 2, depth, ..
+            }) => Some(depth),
+            _ => None,
+        };
+        assert_eq!(depth("shaper"), Some(0.5));
+        assert_eq!(depth("bitdepth"), Some(8.0));
+        assert_eq!(depth("formantTalk"), Some(0.5));
+        assert_eq!(depth("eqFreq1"), Some(0.25 * 1000f32.log2()));
+        assert_eq!(depth("eqFreq4"), None);
+        assert_eq!(depth("volume"), None);
+        let counter = ir::Source::HeldTime { span_ms: 100 };
+        assert_eq!(route(counter, 2, "shaper", 0.5), None);
     }
 }
