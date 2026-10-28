@@ -223,6 +223,26 @@ impl<L: Library> Translator<'_, '_, L> {
                     "",
                 );
             }
+            // ponytail: an oscillator's pitch routes move its whole
+            // keygroup; split groups when a keygroup's players differ.
+            let routes = player
+                .children()
+                .filter(|c| c.has_tag_name("Connections"))
+                .flat_map(|c| c.children())
+                .filter_map(modulation::pitch_route)
+                .filter(|kind| !matches!(kind, ir::ModKind::Pitch { semitones, .. } if *semitones == 0.0));
+            for kind in routes {
+                let route = ir::Mod {
+                    name: String::new(),
+                    slot: 0,
+                    target: 0,
+                    bypass: false,
+                    kind,
+                };
+                if !group.mods.contains(&route) {
+                    group.mods.push(route);
+                }
+            }
             let zones = self.player(player, placement, &span)?;
             group
                 .zones
@@ -489,7 +509,9 @@ impl<L: Library> Translator<'_, '_, L> {
             .descendants()
             .filter(|n| n.has_tag_name("SignalConnection") && !flag(*n, "Bypass"))
         {
-            if modulation::script_route(self.program, connection).is_some() {
+            if modulation::script_route(self.program, connection).is_some()
+                || modulation::pitch_route(connection).is_some()
+            {
                 continue;
             }
             let dest = connection.attribute("Destination").unwrap_or_default();
@@ -737,5 +759,53 @@ mod tests {
                 .iter()
                 .any(|d| d.feature.starts_with("silent layer"))
         );
+    }
+
+    #[test]
+    fn an_oscillators_bend_and_controller_pitch_routes_reach_its_group() {
+        let xml = r#"<Program Gain="1">
+          <Layers><Layer Gain="1" Pan="0"><Keygroups>
+            <Keygroup LowKey="0" HighKey="127">
+              <Oscillators>
+                <SamplePlayer Bypass="0" SamplePath="./a.wav">
+                  <Connections>
+                    <SignalConnection Ratio="2" Source="@PitchBend" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                    <SignalConnection Ratio="1" Source="@PitchBend" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="1"/>
+                    <SignalConnection Ratio="0.5" Source="@MIDI CC 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                    <SignalConnection Ratio="0" Source="@MIDI CC 2" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                    <SignalConnection Ratio="12" Source="@PitchBend" Destination="Pitch" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                  </Connections>
+                </SamplePlayer>
+              </Oscillators>
+            </Keygroup>
+          </Keygroups></Layer></Layers>
+        </Program>"#;
+        let doc = roxmltree::Document::parse(xml).unwrap();
+        let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+        let pitch = |source, semitones| ir::ModKind::Pitch {
+            source,
+            semitones,
+            depth: 1.0,
+        };
+        assert_eq!(
+            out.groups[0]
+                .mods
+                .iter()
+                .map(|m| m.kind)
+                .collect::<Vec<_>>(),
+            [
+                pitch(ir::Source::PitchBend, 2.0),
+                pitch(ir::Source::PitchBend, -1.0),
+                pitch(ir::Source::Controller(1), 0.5),
+            ]
+        );
+        // Only the mapped connection is left to report.
+        let pitch_notes: Vec<_> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.feature == "modulation Pitch")
+            .map(|d| d.detail.as_str())
+            .collect();
+        assert_eq!(pitch_notes, ["1× (first: @PitchBend)"], "{:?}", out.diagnostics);
     }
 }
