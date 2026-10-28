@@ -13,13 +13,14 @@ use roxmltree::Node;
 
 use super::{flag, index_of, matrix, num};
 
-/// The EQ's carried bands, by slot, and each one's `Gain` at GainScale 1.
+/// The EQ's carried bands as EQs of four in series, and each band's
+/// `Gain` at GainScale 1, by its EQ and place there.
 pub(super) struct Bands {
-    pub(super) effect: ir::Effect,
-    pub(super) gains: Vec<(u8, f32)>,
+    pub(super) effects: Vec<ir::Effect>,
+    pub(super) gains: Vec<(u8, u8, f32)>,
 }
 
-/// The enabled peak and shelf bands, at most four.
+/// The enabled peak and shelf bands, four to an EQ.
 pub(super) fn digital_eq(node: Node, notes: &mut Notes) -> Result<Bands, String> {
     for name in ["StereoMode", "Transpose", "KeyTracking", "OverallGain"] {
         if num(node, name, 0.0)? != 0.0 {
@@ -27,7 +28,7 @@ pub(super) fn digital_eq(node: Node, notes: &mut Notes) -> Result<Bands, String>
         }
     }
     let scale = num(node, "GainScale", 1.0)? as f32;
-    let mut bells = [ir::Bell::FLAT; 4];
+    let mut bells: Vec<ir::Bell> = Vec::new();
     let mut gains = Vec::new();
     for n in 1..=16 {
         let at = |name: &str| format!("{name}{n}");
@@ -62,30 +63,41 @@ pub(super) fn digital_eq(node: Node, notes: &mut Notes) -> Result<Bands, String>
                 }
             }
         };
-        let Some(bell) = bells.get_mut(gains.len()) else {
-            notes.add(ir::Impact::Audible, "DigitalEq band past the fourth", "");
-            continue;
-        };
         let gain = num(node, &at("Gain"), 0.0)? as f32;
-        *bell = ir::Bell {
+        // At most 16 bands: four EQs.
+        let n = bells.len() as u8;
+        gains.push((n / 4, n % 4, gain));
+        bells.push(ir::Bell {
             shape,
             hz: num(node, &at("Freq"), 1000.0)?.clamp(20.0, 20_000.0) as f32,
             q,
             gain_db: gain * scale,
-        };
-        gains.push((gains.len() as u8, gain));
+        });
     }
-    let effect = ir::Effect {
-        kind: ir::EffectKind::Eq(bells),
-        bypass: false,
-        output: 1.0,
-        dry: 0.0,
-    };
-    Ok(Bands { effect, gains })
+    if bells.is_empty() {
+        bells.push(ir::Bell::FLAT);
+    }
+    let effects = bells
+        .chunks(4)
+        .map(|chunk| {
+            let mut four = [ir::Bell::FLAT; 4];
+            for (b, c) in four.iter_mut().zip(chunk) {
+                *b = *c;
+            }
+            ir::Effect {
+                kind: ir::EffectKind::Eq(four),
+                bypass: false,
+                output: 1.0,
+                dry: 0.0,
+            }
+        })
+        .collect();
+    Ok(Bands { effects, gains })
 }
 
-/// GainScale's connections as routes on `bus`'s insert `insert`: one blend
-/// of them moving each band by its `Gain`. Returns the connections carried.
+/// GainScale's connections as routes on `bus`'s EQs from insert `insert`
+/// on: one blend of them moving each band by its `Gain`. Returns the
+/// connections carried.
 pub(super) fn gain_scale<'a, 'i>(
     program: Node<'a, 'i>,
     node: Node<'a, 'i>,
@@ -114,10 +126,10 @@ pub(super) fn gain_scale<'a, 'i>(
         return carried;
     }
     let source = ir::Source::Blend(index_of(&mut bus.blends, blend));
-    for &(band, gain) in &bands.gains {
+    for &(eq, band, gain) in &bands.gains {
         bus.mods.push(ir::ModKind::EffectParam {
             source,
-            insert,
+            insert: insert + eq,
             param: ir::EffectParam::BellGain(band),
             depth: gain,
             span: 1.0,

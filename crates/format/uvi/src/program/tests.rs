@@ -710,3 +710,41 @@ fn an_aux_matrix_spreads_the_first_channel_to_both_sides() {
     assert!(aux.inserts[1].is_none());
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
 }
+
+#[test]
+fn an_aux_eq_past_four_bands_runs_as_eqs_in_series() {
+    let bands: String = (1..=6)
+        .map(|n| format!(r#" Enabled{n}="1" Type{n}="6" Slope{n}="0" Freq{n}="{}" Gain{n}="{n}" Bandwidth{n}="0.1""#, n * 500))
+        .collect();
+    let xml = format!(
+        r#"<Program Gain="1"><Auxs><AuxEffect Name="Aux0" Bypass="0" Gain="1" Pan="0" PreInsert="1"><Inserts>
+          <DigitalEq Bypass="0" GainScale="1"{bands}>
+            <Connections>
+              <SignalConnection Ratio="1" Source="@MIDI CC 107" Destination="GainScale" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            </Connections>
+          </DigitalEq>
+          <Gain Bypass="0" Volume="0.5"/>
+        </Inserts></AuxEffect></Auxs></Program>"#
+    );
+    let doc = roxmltree::Document::parse(&xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let aux = out.buses.last().unwrap();
+    let gains: Vec<f32> = aux.inserts[..2]
+        .iter()
+        .flat_map(|e| match e.map(|e| e.kind) {
+            Some(ir::EffectKind::Eq(b)) => b.map(|b| b.gain_db),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(gains, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.0, 0.0]);
+    assert!(matches!(
+        aux.inserts[2].map(|e| e.kind),
+        Some(ir::EffectKind::Gain(_))
+    ));
+    // Band 5 is the second EQ's first.
+    assert!(aux.mods.iter().any(|m| matches!(
+        *m,
+        ir::ModKind::EffectParam { insert: 1, param: ir::EffectParam::BellGain(0), depth, .. } if depth == 5.0
+    )));
+    assert!(!out.diagnostics.iter().any(|d| d.feature.contains("fourth")));
+}
