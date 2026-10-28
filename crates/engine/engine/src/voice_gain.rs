@@ -116,14 +116,35 @@ impl Engine {
             ir::Source::Lfo(n) => {
                 let g = group()?;
                 let mut lfo = *g.lfos.get(usize::from(n))?;
+                // ponytail: phase and rate routes read their source at
+                // note-on (exact for velocity and note-on values); a live
+                // controller moving the rate needs a per-voice phase accumulator.
                 for m in g.mods.iter().filter(|m| !m.bypass) {
-                    if let ir::ModKind::LfoPhase { source, lfo: l, depth } = m.kind
-                        && l == n
+                    match m.kind {
                         // An LFO source here would recurse.
-                        && !matches!(source, ir::Source::Lfo(_))
-                    {
-                        let x = self.source(zone, source, note, Age::START).unwrap_or(0.0);
-                        lfo.phase += x * depth;
+                        ir::ModKind::LfoPhase {
+                            source,
+                            lfo: l,
+                            depth,
+                        } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
+                            let x = self.source(zone, source, note, Age::START).unwrap_or(0.0);
+                            lfo.phase += x * depth;
+                        }
+                        ir::ModKind::LfoRate {
+                            source,
+                            lfo: l,
+                            depth,
+                            octaves,
+                            range_hz: [lo, hi],
+                        } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
+                            let x = self.source(zone, source, note, Age::START).unwrap_or(0.0);
+                            let f = (x * depth * octaves).exp2();
+                            lfo.rate = match lfo.rate {
+                                ir::Rate::Hz(hz) => ir::Rate::Hz((hz * f).clamp(lo, hi.max(lo))),
+                                ir::Rate::Beats(b) => ir::Rate::Beats(b / f),
+                            };
+                        }
+                        _ => {}
                     }
                 }
                 Some(modulators::lfo(&lfo, age, u32::from(note.key), self.tempo))
@@ -349,6 +370,7 @@ impl Engine {
                     | ir::ModKind::Attack { .. }
                     | ir::ModKind::Release { .. }
                     | ir::ModKind::LfoPhase { .. }
+                    | ir::ModKind::LfoRate { .. }
                     | ir::ModKind::LoopShift { .. } => false,
                 })
             })
