@@ -5630,6 +5630,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ui-shots"
+version = "0.0.0"
+dependencies = [
+ "kontra-engine",
+ "kontra-host",
+ "kontra-stream",
+ "kontra-ui",
+ "kontra-ui-model",
+ "mui",
+ "png 0.18.1",
+]
+
+[[package]]
 name = "unicode-bidi"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
