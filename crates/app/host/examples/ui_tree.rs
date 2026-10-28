@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let t = Instant::now();
         let mut store = Store::new(StoreConfig::DEFAULT)?;
         let loaded = kontra_host::instrument::load(&path, 48_000, &mut store)?;
-        let engine = Engine::new(Arc::new(loaded.plan), store.client(), 48_000);
+        let mut engine = Engine::new(Arc::new(loaded.plan), store.client(), 48_000);
         let init = t.elapsed();
         for (slot, face) in loaded.faces.iter().enumerate() {
             let Some(face) = face else { continue };
@@ -60,6 +60,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             }
+            // Idle frames, then one knob moved per frame.
+            let mut live = kontra_host::ui::Live::new(face, slot as u8, &engine, &|_| None)?;
+            let mut block = vec![[0f32; 2]; 512];
+            let (mut idle, mut spent) = (0, std::time::Duration::ZERO);
+            let mut last = None;
+            for frame in 0..100 {
+                engine.process(&mut block, &[]);
+                let t = Instant::now();
+                let changed = live.refresh(face, slot as u8, &engine, &|_| None);
+                if frame >= 10 {
+                    spent += t.elapsed();
+                }
+                if std::env::var_os("KONTRA_UI_IDLE").is_some() && !changed.is_empty() {
+                    let names: Vec<_> = changed
+                        .iter()
+                        .filter_map(|w| live.tree.widgets.get(w.0))
+                        .map(|w| (&w.name, &w.value, &w.text))
+                        .take(8)
+                        .collect();
+                    println!("  idle rebuilt {names:?}");
+                }
+                if !changed.is_empty() {
+                    last = Some(frame);
+                }
+                idle += changed.len();
+            }
+            let per_frame = spent / 90;
+            let knob = tree.widgets.iter().find_map(|w| match w.kind {
+                kontra_ui_model::Kind::Knob { .. } | kontra_ui_model::Kind::Slider { .. }
+                    if !w.hidden =>
+                {
+                    w.source_id
+                }
+                _ => None,
+            });
+            let moved = knob.map(|id| {
+                (1..=10)
+                    .map(|v| {
+                        engine.set_control(slot as u8, id, v);
+                        engine.process(&mut block, &[]);
+                        live.refresh(face, slot as u8, &engine, &|_| None).len()
+                    })
+                    .max()
+                    .unwrap_or(0)
+            });
+            println!(
+                "  refresh: {per_frame:?} per settled idle frame, {idle} idle rebuilds in 100 frames (last in frame {last:?}), one knob moved: {moved:?} widgets rebuilt per frame"
+            );
             let page = tree.pages.first().map(|p| (p.size.width, p.size.height));
             println!(
                 "{} slot {slot}: load+init {init:?}, tree {built:?}; {} widgets ({visible} shown), {} pictures, page {page:?}, perfview {}; gaps {gaps:?}",

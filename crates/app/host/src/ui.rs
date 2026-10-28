@@ -9,7 +9,10 @@ use kontra_engine::{ControlLook, Engine, Page};
 use kontra_ksp::{Cells, Control, ControlKind, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 use crate::perf_view::{View, ViewControl};
+
+mod widget;
 use kontra_ui_model as ui;
+use widget::{Decl, widget};
 
 use crate::script::LOOK;
 
@@ -253,84 +256,237 @@ fn unit(n: i32) -> &'static str {
     }
 }
 
+/// Where a widget comes from: the script's control and/or the view's, by
+/// index into [`Face`], and the id the script addresses it by.
+#[derive(Clone, Copy, Debug)]
+struct Key {
+    id: i32,
+    control: Option<usize>,
+    view: Option<usize>,
+}
+
+/// The view's controls in its order (the script compiles only those it
+/// names), then the script's own.
+fn keys(face: &Face) -> Vec<Key> {
+    let script: HashMap<&str, usize> = face
+        .controls
+        .iter()
+        .enumerate()
+        .map(|(n, (_, name, _))| (&**name, n))
+        .collect();
+    let id = |n: usize| {
+        let (control, ..) = face.controls.get(n)?;
+        Some(FIRST_UI_ID + i32::try_from(control.variable).ok()?)
+    };
+    let viewed = face.view.iter().flat_map(|v| &v.controls);
+    let mut keys: Vec<Key> = viewed
+        .clone()
+        .enumerate()
+        .filter_map(|(v, c)| {
+            let control = script.get(c.name.as_str()).copied();
+            Some(Key {
+                // A view control the script never names: an id no control has.
+                id: control.map_or_else(|| Some(-1 - i32::try_from(v).ok()?), id)?,
+                control,
+                view: Some(v),
+            })
+        })
+        .collect();
+    let in_view: std::collections::HashSet<&str> = viewed.map(|v| v.name.as_str()).collect();
+    keys.extend(
+        face.controls
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, name, _))| !in_view.contains(&**name))
+            .filter_map(|(n, _)| {
+                Some(Key {
+                    id: id(n)?,
+                    control: Some(n),
+                    view: None,
+                })
+            }),
+    );
+    keys
+}
+
+const UNTOUCHED: ControlLook<'static> = ControlLook {
+    value: None,
+    pars: &[],
+    texts: &[],
+    menu: &[],
+    generation: 0,
+};
+
+fn decl<'a>(face: &'a Face, slot: u8, engine: &'a Engine, key: Key) -> Option<Decl<'a>> {
+    let view = key.view.and_then(|v| face.view.as_ref()?.controls.get(v));
+    let control = key.control.and_then(|n| face.controls.get(n));
+    let look = match control {
+        Some(_) => engine.control_look(slot, key.id)?,
+        None => UNTOUCHED,
+    };
+    Some(Decl {
+        kind: view.map(|v| v.kind).or(control.map(|c| c.0.kind))?,
+        params: view.map(|v| &*v.params).or(control.map(|c| &*c.0.params))?,
+        view,
+        name: view.map(|v| &*v.name).or(control.map(|c| &*c.1))?,
+        cells: control.map_or(Cells::Const, |c| c.2),
+        id: key.id,
+        look,
+    })
+}
+
+/// What a widget was last built from: when none of it moved, the widget
+/// stays as it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Seen {
+    generation: u32,
+    value: Option<i64>,
+    /// A hash of an array control's cells (a table's steps).
+    cells: u64,
+}
+
+impl Seen {
+    fn of(d: &Decl<'_>, slot: u8, engine: &Engine) -> Self {
+        let cells = match d.cells {
+            Cells::Int { base, len } | Cells::Real { base, len } if len > 1 => (base..base + len)
+                .fold(0xcbf2_9ce4_8422_2325_u64, |h, c| {
+                    let v = engine.script_cell_in(slot, c as usize).unwrap_or(0) as u64;
+                    (h ^ v).wrapping_mul(0x100_0000_01b3)
+                }),
+            _ => 0,
+        };
+        Self {
+            generation: d.look.generation,
+            value: d.look.value,
+            cells,
+        }
+    }
+}
+
+/// A script's UI tree kept current: built once, then [`Live::refresh`]
+/// rebuilds only the widgets whose control the script or the user changed.
+pub struct Live {
+    pub tree: ui::Interface,
+    keys: Vec<Key>,
+    seen: Vec<Seen>,
+    assets: HashMap<String, ui::AssetRef>,
+    styles: HashMap<(i32, i32), ui::StyleRef>,
+}
+
 /// Script `slot`'s performance view as `on init` left it. `picture` gives the
 /// layout of a library-relative image path; `None` means one plain frame.
 ///
 /// # Errors
 /// When the script built a tree the model rejects (bad nesting).
-pub fn interface<'a>(
-    face: &'a Face,
+pub fn interface(
+    face: &Face,
     slot: u8,
-    engine: &'a Engine,
+    engine: &Engine,
     picture: &dyn Fn(&str) -> Option<ui::ImageMeta>,
 ) -> Result<ui::Interface, ui::Error> {
-    let mut bld = Builder {
-        ui: ui::Interface {
-            source: ui::Source::Ksp { slot },
-            ..Default::default()
-        },
-        assets: HashMap::new(),
-        styles: HashMap::new(),
-        picture,
-    };
-    if let Some(page) = engine.page(slot) {
-        page_of(&mut bld, page, face.view.as_ref());
-    }
-    let declared =
-        |control: &'a Control, name: &'a str, cells: Cells, view: Option<&'a ViewControl>| {
-            let id = FIRST_UI_ID + i32::try_from(control.variable).ok()?;
-            Some(Decl {
-                kind: view.map_or(control.kind, |v| v.kind),
-                params: view.map_or(&control.params, |v| &v.params),
-                view,
-                name,
-                cells,
-                id,
-                look: engine.control_look(slot, id)?,
-            })
-        };
-    let script: HashMap<&str, _> = face
-        .controls
-        .iter()
-        .map(|(control, name, cells)| (&**name, (control, *cells)))
-        .collect();
-    // The view's controls in its order (the script compiles only those it
-    // names), then the script's own.
-    let viewed = face.view.iter().flat_map(|v| &v.controls);
-    let mut decls: Vec<Decl<'_>> = viewed
-        .clone()
-        .enumerate()
-        .filter_map(|(n, v)| match script.get(v.name.as_str()) {
-            Some(&(control, cells)) => declared(control, &v.name, cells, Some(v)),
-            None => Some(Decl {
-                kind: v.kind,
-                params: &v.params,
-                view: Some(v),
-                name: &v.name,
-                cells: Cells::Const,
-                // Not addressable by the script: an id no control has.
-                id: -1 - i32::try_from(n).ok()?,
-                look: ControlLook {
-                    value: None,
-                    pars: &[],
-                    texts: &[],
-                    menu: &[],
-                },
-            }),
-        })
-        .collect();
-    let in_view: std::collections::HashSet<&str> = viewed.map(|v| v.name.as_str()).collect();
-    decls.extend(
-        face.controls
+    Live::new(face, slot, engine, picture).map(|l| l.tree)
+}
+
+impl Live {
+    /// Builds the tree, as [`interface`].
+    ///
+    /// # Errors
+    /// When the script built a tree the model rejects (bad nesting).
+    pub fn new(
+        face: &Face,
+        slot: u8,
+        engine: &Engine,
+        picture: &dyn Fn(&str) -> Option<ui::ImageMeta>,
+    ) -> Result<Self, ui::Error> {
+        let keys = keys(face);
+        let decls: Vec<_> = keys
             .iter()
-            .filter(|(_, name, _)| !in_view.contains(&**name))
-            .filter_map(|(control, name, cells)| declared(control, name, *cells, None)),
-    );
+            .filter_map(|&k| decl(face, slot, engine, k))
+            .collect();
+        let keys = keys
+            .into_iter()
+            .filter(|&k| decl(face, slot, engine, k).is_some())
+            .collect();
+        let seen = decls.iter().map(|d| Seen::of(d, slot, engine)).collect();
+        let mut bld = Builder {
+            ui: ui::Interface {
+                source: ui::Source::Ksp { slot },
+                ..Default::default()
+            },
+            assets: HashMap::new(),
+            styles: HashMap::new(),
+            picture,
+        };
+        build(&mut bld, face, slot, engine, &decls)?;
+        Ok(Self {
+            tree: bld.ui,
+            keys,
+            seen,
+            assets: bld.assets,
+            styles: bld.styles,
+        })
+    }
+
+    /// Rebuilds the widgets whose control changed since the last call, in
+    /// place, and returns them; an idle script returns none. Panel nesting
+    /// is kept from the build.
+    pub fn refresh(
+        &mut self,
+        face: &Face,
+        slot: u8,
+        engine: &Engine,
+        picture: &dyn Fn(&str) -> Option<ui::ImageMeta>,
+    ) -> Vec<ui::WidgetRef> {
+        let mut changed = Vec::new();
+        for (n, (&key, seen)) in self.keys.iter().zip(&mut self.seen).enumerate() {
+            let Some(d) = decl(face, slot, engine, key) else {
+                continue;
+            };
+            let now = Seen::of(&d, slot, engine);
+            if now != *seen {
+                *seen = now;
+                changed.push((n, d));
+            }
+        }
+        if changed.is_empty() {
+            return Vec::new();
+        }
+        let mut bld = Builder {
+            ui: std::mem::take(&mut self.tree),
+            assets: std::mem::take(&mut self.assets),
+            styles: std::mem::take(&mut self.styles),
+            picture,
+        };
+        let mut out = Vec::with_capacity(changed.len());
+        for (n, d) in changed {
+            let props = props(face, &d);
+            let mut w = widget(&mut bld, slot, &d, &props, engine);
+            if let Some(old) = bld.ui.widgets.get_mut(n) {
+                w.parent = old.parent;
+                *old = w;
+                out.push(ui::WidgetRef(n));
+            }
+        }
+        (self.tree, self.assets, self.styles) = (bld.ui, bld.assets, bld.styles);
+        out
+    }
+}
+
+fn build(
+    bld: &mut Builder<'_>,
+    face: &Face,
+    slot: u8,
+    engine: &Engine,
+    decls: &[Decl<'_>],
+) -> Result<(), ui::Error> {
+    if let Some(page) = engine.page(slot) {
+        page_of(bld, page, face.view.as_ref());
+    }
     let by_id: HashMap<i32, usize> = decls.iter().enumerate().map(|(i, d)| (d.id, i)).collect();
     let by_name: HashMap<&str, i32> = decls.iter().map(|d| (d.name, d.id)).collect();
     for (i, d) in decls.iter().enumerate() {
         let props = props(face, d);
-        let mut w = widget(&mut bld, slot, d, &props, engine);
+        let mut w = widget(bld, slot, d, &props, engine);
         let parent = props.int("$CONTROL_PAR_PARENT_PANEL").or_else(|| {
             let name = d.view?.parent.as_deref()?;
             by_name.get(name).copied()
@@ -373,7 +529,7 @@ pub fn interface<'a>(
         );
     }
     bld.ui.validate()?;
-    Ok(bld.ui)
+    Ok(())
 }
 
 /// The page as init left it, over the performance view's when it loads one.
@@ -462,280 +618,4 @@ fn props<'a>(face: &'a Face, d: &'a Decl<'a>) -> Props<'a> {
             )
             .collect(),
     }
-}
-
-/// One declared control and its state after init.
-struct Decl<'a> {
-    kind: ControlKind,
-    /// Declaration parameters (the view's, for a view control).
-    params: &'a [i32],
-    view: Option<&'a ViewControl>,
-    name: &'a str,
-    cells: Cells,
-    id: i32,
-    look: ControlLook<'a>,
-}
-
-fn widget(
-    bld: &mut Builder<'_>,
-    slot: u8,
-    d: &Decl<'_>,
-    p: &Props<'_>,
-    engine: &Engine,
-) -> ui::Widget {
-    let Decl {
-        kind: control_kind,
-        params,
-        view,
-        name,
-        cells,
-        id,
-        look,
-    } = d;
-    let (kind, cells, id, name) = (*control_kind, *cells, *id, *name);
-    let param = |n: usize| params.get(n).copied();
-    let range = |lo: i32, hi: i32| {
-        let lo = p.int("$CONTROL_PAR_MIN_VALUE").unwrap_or(lo);
-        let hi = p.int("$CONTROL_PAR_MAX_VALUE").unwrap_or(hi);
-        ui::Range {
-            min: f64::from(lo),
-            max: f64::from(hi),
-            default: f64::from(p.int("$CONTROL_PAR_DEFAULT_VALUE").unwrap_or(lo)),
-            step: Some(1.0),
-        }
-    };
-    let declared = || range(param(0).unwrap_or(0), param(1).unwrap_or(1_000_000));
-    let display = || ui::Display {
-        ratio: f64::from(param(2).filter(|&r| r != 0).unwrap_or(1)),
-        unit: unit(p.int("$CONTROL_PAR_UNIT").unwrap_or(0)).into(),
-    };
-    let array = match cells {
-        Cells::Int { base, len } | Cells::Real { base, len } if len > 1 => Some((base, len)),
-        _ => None,
-    };
-    let vertical = p.int("$CONTROL_PAR_MOUSE_BEHAVIOUR").is_some_and(|m| m < 0);
-    let ui_kind = match kind {
-        ControlKind::Panel => ui::Kind::Panel,
-        ControlKind::Knob => ui::Kind::Knob {
-            range: declared(),
-            display: display(),
-        },
-        ControlKind::Slider => ui::Kind::Slider {
-            range: declared(),
-            orientation: if vertical {
-                ui::Orientation::Vertical
-            } else {
-                ui::Orientation::Horizontal
-            },
-        },
-        ControlKind::Button => ui::Kind::Button { momentary: false },
-        ControlKind::Switch => ui::Kind::Switch,
-        ControlKind::Menu => ui::Kind::Menu {
-            items: match (look.menu, view) {
-                ([], Some(v)) => v
-                    .menu
-                    .iter()
-                    .map(|(text, value, visible)| ui::MenuItem {
-                        text: text.clone(),
-                        value: *value,
-                        visible: *visible,
-                    })
-                    .collect(),
-                (menu, _) => menu
-                    .iter()
-                    .map(|m| ui::MenuItem {
-                        text: m.text.as_str().into(),
-                        value: m.value,
-                        visible: m.visible,
-                    })
-                    .collect(),
-            },
-        },
-        ControlKind::Label => ui::Kind::Label,
-        ControlKind::ValueEdit => ui::Kind::ValueEdit {
-            range: declared(),
-            display: display(),
-            arrows: p.int("$CONTROL_PAR_SHOW_ARROWS") != Some(0),
-        },
-        ControlKind::Table => {
-            // declare ui_table %t[columns](width, height, range); negative is bipolar.
-            let r = param(2).unwrap_or(100);
-            let (base, len) = array.unwrap_or((0, 0));
-            let cells = (base..base + len)
-                .map(|c| engine.script_cell_in(slot, c as usize).unwrap_or(0) as f64)
-                .collect();
-            ui::Kind::Table {
-                columns: len,
-                range: ui::Range {
-                    min: if r < 0 { f64::from(r) } else { 0.0 },
-                    max: f64::from(r.unsigned_abs()),
-                    default: 0.0,
-                    step: Some(1.0),
-                },
-                bipolar: r < 0,
-                cells,
-                steps_shown: p
-                    .int("table_steps_shown")
-                    .and_then(|n| u32::try_from(n).ok()),
-            }
-        }
-        ControlKind::Xy => ui::Kind::Xy {
-            cursors: array.map_or(0, |(_, len)| len / 2),
-            sensitivity: [
-                "$CONTROL_PAR_MOUSE_BEHAVIOUR_X",
-                "$CONTROL_PAR_MOUSE_BEHAVIOUR_Y",
-            ]
-            .map(|n| p.int(n).map(i32::unsigned_abs)),
-            mouse_mode: p.int("$CONTROL_PAR_MOUSE_MODE"),
-        },
-        ControlKind::Waveform => ui::Kind::Waveform,
-        ControlKind::Wavetable => ui::Kind::Wavetable {
-            view_mode: p.int("$CONTROL_PAR_WT_VIS_MODE"),
-            parallax: ["$CONTROL_PAR_PARALLAX_X", "$CONTROL_PAR_PARALLAX_Y"]
-                .map(|n| p.int(n).unwrap_or(0)),
-        },
-        ControlKind::LevelMeter => ui::Kind::LevelMeter {
-            orientation: if p.int("$CONTROL_PAR_VERTICAL") == Some(1) {
-                ui::Orientation::Vertical
-            } else {
-                ui::Orientation::Horizontal
-            },
-        },
-        ControlKind::FileSelector => ui::Kind::FileSelector {
-            base_path: p.text("$CONTROL_PAR_BASEPATH").map(Into::into),
-            // $NI_FILE_TYPE_MIDI, _AUDIO, _ARRAY.
-            files: match p.int("$CONTROL_PAR_FILE_TYPE") {
-                Some(0) => ui::Files::Midi,
-                Some(1) => ui::Files::Audio,
-                Some(2) => ui::Files::Data,
-                _ => ui::Files::Any,
-            },
-            column_width: p
-                .int("$CONTROL_PAR_COLUMN_WIDTH")
-                .and_then(|n| u32::try_from(n).ok()),
-        },
-        ControlKind::TextEdit => ui::Kind::TextEdit,
-        ControlKind::MouseArea => ui::Kind::MouseArea,
-    };
-    // Missing sizes stay 0: the renderer applies Kontakt's stock sizes.
-    let (width, height) = (p.int("$CONTROL_PAR_WIDTH"), p.int("$CONTROL_PAR_HEIGHT"));
-    let rect = ui::Rect::new(
-        p.int("$CONTROL_PAR_POS_X").unwrap_or(0),
-        p.int("$CONTROL_PAR_POS_Y").unwrap_or(0),
-        width.map_or(0, |v| v.max(0) as u32),
-        height.map_or(0, |v| v.max(0) as u32),
-    );
-    let mut w = ui::Widget::new(name, ui::PageRef(0), rect, ui_kind);
-    w.auto_size = width.is_none() || height.is_none();
-    w.default_axes = [width.is_none(), height.is_none()];
-    w.source_id = (id >= 0).then_some(id);
-    w.active_index = p.int("$CONTROL_PAR_ACTIVE_INDEX");
-    w.value = match &w.kind {
-        ui::Kind::Table { cells, .. } => Some(ui::Value::Integers(
-            cells.iter().map(|n| n.round() as i32).collect(),
-        )),
-        _ => look.value.map(|v| ui::Value::Integer(v as i32)),
-    };
-    if matches!(kind, ControlKind::Waveform | ControlKind::Wavetable) {
-        w.waveform = p.int("$CONTROL_PAR_WT_ZONE").map(|zone| ui::Waveform {
-            zone,
-            flags: 0,
-            cursor_us: 0,
-            table: vec![],
-            highlighted: None,
-            midi_start_note: 60,
-        });
-    }
-    w.z = p.int("$CONTROL_PAR_Z_LAYER").unwrap_or(0);
-    let hide = p.int("$CONTROL_PAR_HIDE").unwrap_or(0);
-    w.hidden = hide & HIDE_WHOLE_CONTROL != 0;
-    // move_control(x, y) places on Kontakt's grid; (0, 0) hides.
-    if let (Some(column), Some(row)) = (p.int("grid_x"), p.int("grid_y")) {
-        match (u32::try_from(column), u32::try_from(row)) {
-            (Ok(column @ 1..), Ok(row @ 1..)) => {
-                w.placement = ui::Placement::Grid { column, row };
-            }
-            _ => w.hidden = true,
-        }
-    }
-    w.hide = ui::Parts {
-        background: hide & HIDE_PART_BG != 0,
-        value: hide & HIDE_PART_VALUE != 0,
-        title: hide & HIDE_PART_TITLE != 0,
-        unit: false,
-    };
-    w.text_y = p.int("$CONTROL_PAR_TEXTPOS_Y");
-    w.text_shift_on_press = p.int("$CONTROL_PAR_DISABLE_TEXT_SHIFTING") != Some(1);
-    w.value_y = p.int("$CONTROL_PAR_VALUEPOS_Y");
-    w.value_text = p.text("$CONTROL_PAR_LABEL").map(Into::into);
-    w.drag = p.int("$CONTROL_PAR_MOUSE_BEHAVIOUR").map(|m| ui::Drag {
-        axis: if m < 0 {
-            ui::Orientation::Vertical
-        } else {
-            ui::Orientation::Horizontal
-        },
-        sensitivity: m.unsigned_abs(),
-    });
-    for (par, slot) in COLORS {
-        if let Some(c) = p.int(par) {
-            *slot(&mut w.colors) = Some(color(c));
-        }
-    }
-    w.binding = match kind {
-        ControlKind::Label | ControlKind::Panel | ControlKind::LevelMeter => ui::Binding::None,
-        _ => ui::Binding::Variable {
-            script: slot,
-            name: name.into(),
-        },
-    };
-    // Kontakt captions a control with its variable name until TEXT is set.
-    w.text = p.text("$CONTROL_PAR_TEXT").map_or_else(
-        || match kind {
-            ControlKind::Knob
-            | ControlKind::Slider
-            | ControlKind::Button
-            | ControlKind::Switch
-            | ControlKind::ValueEdit => name.get(1..).unwrap_or_default().into(),
-            _ => String::new(),
-        },
-        Into::into,
-    );
-    w.tooltip = p.text("$CONTROL_PAR_HELP").unwrap_or_default().into();
-    w.automation = ui::Automation {
-        name: p.text("$CONTROL_PAR_AUTOMATION_NAME").map(Into::into),
-        short_name: p.text("$CONTROL_PAR_SHORT_NAME").map(Into::into),
-        allowed: p.int("$CONTROL_PAR_ALLOW_AUTOMATION") != Some(0),
-        id: p
-            .int("$CONTROL_PAR_AUTOMATION_ID")
-            .and_then(|n| u32::try_from(n).ok()),
-    };
-    let font = p.int("$CONTROL_PAR_FONT_TYPE");
-    let align = p.int("$CONTROL_PAR_TEXT_ALIGNMENT");
-    if font.is_some() || align.is_some() {
-        w.style = Some(bld.style(font.unwrap_or(0), align.unwrap_or(1)));
-    }
-    for (style, par) in w.state_styles.iter_mut().zip(STATE_FONTS) {
-        *style = p
-            .int(par)
-            .filter(|&font| font >= 0)
-            .map(|font| bld.style(font, align.unwrap_or(1)));
-    }
-    if let Some(asset) = p.text("$CONTROL_PAR_PICTURE").and_then(|n| bld.asset(n)) {
-        let role = match kind {
-            ControlKind::Knob
-            | ControlKind::Slider
-            | ControlKind::Button
-            | ControlKind::Switch
-            | ControlKind::Menu
-            | ControlKind::ValueEdit
-            | ControlKind::LevelMeter => ui::Role::Strip,
-            _ => ui::Role::Background,
-        };
-        let mut image = ui::ImageUse::new(asset, role);
-        image.frame = p
-            .int("$CONTROL_PAR_PICTURE_STATE")
-            .and_then(|f| u32::try_from(f).ok());
-        w.images.push(image);
-    }
-    w
 }

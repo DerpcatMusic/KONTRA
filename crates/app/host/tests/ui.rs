@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use kontra_engine::{Engine, Plan};
-use kontra_host::ui::{Face, interface};
+use kontra_host::ui::{Face, Live, interface};
 use kontra_stream::{Store, StoreConfig};
 use kontra_ui_model as ui;
 
@@ -136,4 +136,54 @@ fn a_performance_view_gives_its_controls_type_place_and_parent() {
         !ui.visible(ui::WidgetRef(at)),
         "a hidden view panel hides its children"
     );
+}
+
+#[test]
+fn an_idle_ui_rebuilds_nothing_and_a_moved_knob_rebuilds_what_it_touched() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let script = kontra_ksp::compile(
+        "on init
+            declare ui_knob $k (0, 100, 1)
+            declare ui_label $readout (1, 1)
+            declare ui_switch $other
+            declare ui_table %steps[8] (2, 2, 100)
+            message(get_ui_id($k))
+        end on
+        on ui_control ($k)
+            set_text($readout, $k)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![], 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut engine = Engine::new(Arc::new(plan), store.client(), 48_000);
+    let face = Face::of(&script, &[]);
+    let mut live = Live::new(&face, 0, &engine, &|_| None).unwrap();
+    let k: i32 = engine.last_message().parse().unwrap();
+
+    // A second of 512-frame blocks with nothing moving.
+    let mut out = vec![[0f32; 2]; 512];
+    let mut rebuilt = 0;
+    for _ in 0..94 {
+        engine.process(&mut out, &[]);
+        rebuilt += live.refresh(&face, 0, &engine, &|_| None).len();
+    }
+    assert_eq!(rebuilt, 0, "idle: no widget rebuilds");
+
+    // The knob moves every block: it and the label its callback writes.
+    let names = |ws: &[ui::WidgetRef], ui: &ui::Interface| {
+        ws.iter()
+            .map(|w| ui.widgets[w.0].name.clone())
+            .collect::<Vec<_>>()
+    };
+    for v in 1..=60 {
+        engine.set_control(0, k, v);
+        engine.process(&mut out, &[]);
+        let changed = live.refresh(&face, 0, &engine, &|_| None);
+        assert_eq!(names(&changed, &live.tree), ["$k", "$readout"]);
+    }
+    assert_eq!(widget(&live.tree, "$readout").text, "60");
+    assert_eq!(widget(&live.tree, "$k").value, Some(ui::Value::Integer(60)));
+    assert!(live.refresh(&face, 0, &engine, &|_| None).is_empty());
 }

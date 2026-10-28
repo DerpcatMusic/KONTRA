@@ -60,9 +60,15 @@ impl Engine {
                 let Some(pars) = self.control_pars.get_mut(slot).and_then(|s| s.get_mut(n)) else {
                     return;
                 };
-                match pars.iter_mut().find(|(p, _)| *p == par) {
-                    Some(slot) => slot.1 = value,
-                    None => pars.push((par, value)),
+                let changed = match pars.iter_mut().find(|(p, _)| *p == par) {
+                    Some(slot) => std::mem::replace(&mut slot.1, value) != value,
+                    None => {
+                        pars.push((par, value));
+                        true
+                    }
+                };
+                if changed {
+                    self.touch(n);
                 }
             }
             None => {}
