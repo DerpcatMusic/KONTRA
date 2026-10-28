@@ -1155,11 +1155,11 @@ fn a_synced_delay_echoes_one_beat_later_at_the_host_tempo() {
 }
 
 #[test]
-fn a_group_phaser_without_a_dry_level_passes_its_voices() {
+fn a_group_phaser_without_a_dry_level_plays_on_the_group_sum() {
     use kontra_engine::ir;
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
-    // Group racks run no wet path yet: the voice must not fall silent.
+    // The phaser runs on the group's sum: its wet path carries the voice.
     plan.groups[0].inserts = vec![Some(ir::Effect {
         kind: ir::EffectKind::Phaser(ir::Phaser {
             hz: 300.0,
@@ -1175,5 +1175,8 @@ fn a_group_phaser_without_a_dry_level_passes_its_voices() {
     })];
     let mut e = engine(&store, plan);
     let [l, r] = level(&mut e, &[on(60, 1.0)]);
-    assert!(close(l, 0.5) && close(r, 0.5), "{l} {r}");
+    assert!(
+        l.abs() > 0.05 && r.abs() > 0.05 && !close(l, 0.5),
+        "{l} {r}"
+    );
 }
