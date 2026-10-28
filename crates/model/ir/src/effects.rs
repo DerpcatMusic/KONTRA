@@ -31,6 +31,11 @@ pub enum Detector {
     Input,
     /// Its own output (feedback).
     Output,
+    /// The input past the threshold triggers a hold that the gain follows
+    /// to a fixed depth, `threshold·(1 − 1/ratio)` dB, by the attack; the
+    /// hold falls by the release while nothing retriggers it. Linked, the
+    /// channels' mean triggers both. No knee.
+    Trigger,
 }
 
 /// A transient shaper: a gain in dB from its attack and sustain envelopes.
