@@ -146,14 +146,18 @@ impl Fdn {
 
     /// Changes every setting while it plays. Never allocates. The wet output
     /// fades out, the new lengths and gains apply in the silence, then it fades
-    /// back in; a repeat of the current settings does nothing.
+    /// back in; a repeat of the current settings does nothing. Changes during
+    /// a fade wait for it: only the latest applies, and a fade-in finishes
+    /// before the next fade-out, so a sweep cannot hold the wet output down.
     pub fn set(&mut self, s: Settings) {
         if s == self.requested {
             return;
         }
         self.requested = s;
         self.pending = Some(s);
-        self.step = -self.fade_step;
+        if self.step == 0.0 {
+            self.step = -self.fade_step;
+        }
     }
 
     /// Writes `s` into the lines and coefficients. Never allocates.
@@ -187,7 +191,11 @@ impl Fdn {
             }
             self.step = self.fade_step;
         } else if self.step > 0.0 && self.gain >= 1.0 {
-            self.step = 0.0;
+            self.step = if self.pending.is_some() {
+                -self.fade_step
+            } else {
+                0.0
+            };
         }
         g
     }

@@ -535,6 +535,5 @@ fn a_script_moves_a_playing_reverbs_time() {
             set_engine_par($ENGINE_PAR_RV2_TIME, 500000, -1, 0, $NI_INSERT_BUS)
         end on",
     );
-    println!("short {short} dB, long {long} dB");
     assert!(long > short + 10.0, "short {short} dB, long {long} dB");
 }

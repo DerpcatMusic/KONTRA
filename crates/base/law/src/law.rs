@@ -12,7 +12,7 @@ pub enum Law {
     Exp { lo: f32, hi: f32 },
     /// Linear in decibels from `lo` to `hi`, evaluated as linear gain.
     Db { lo: f32, hi: f32 },
-    /// `lo + (hi − lo) · x^exponent`: a power taper (Kontakt's reverb damping: `x^¼`).
+    /// `lo + (hi − lo) · x^exponent`: a power taper (a reverb damping knob: `x^¼`).
     Power { lo: f32, hi: f32, exponent: f32 },
     /// Evenly spaced values over `0..=1`, linearly interpolated.
     Table(Arc<[f32]>),
