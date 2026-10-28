@@ -621,6 +621,52 @@ fn a_script_modulation_ramps_to_its_value() {
     assert!((late - 0.5).abs() < 1e-3, "late {late}");
 }
 
+/// C5 on a UVI script: waits, spawned notes and a ramp render the same
+/// audio whatever the host's block size.
+#[test]
+fn a_uvi_script_renders_the_same_at_any_block_size() {
+    let source = "function onNote(e)
+            postEvent(e)
+            sendScriptModulation2(1, 0, 1, 50)
+            spawn(function() wait(30) playNote(e.note + 12, 100, 40) end)
+        end";
+    let render = |block: usize| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+        for g in &mut plan.groups {
+            g.mods = vec![kontra_engine::ir::Mod {
+                name: "Script Event Modulation 1".into(),
+                slot: 1,
+                target: 0,
+                bypass: false,
+                kind: kontra_engine::ir::ModKind::Volume {
+                    source: kontra_engine::ir::Source::Script(1),
+                    intensity: 1.0,
+                    curve: kontra_engine::ir::Curve::Depth { power: 1 },
+                },
+            }];
+        }
+        let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
+        plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let mut rendered = Vec::new();
+        let mut input = vec![on(60)];
+        while rendered.len() < 9600 {
+            let mut out = vec![[0.0; 2]; block];
+            e.process(&mut out, &input);
+            input.clear();
+            rendered.extend(out.iter().map(|f| f[0]));
+        }
+        rendered.truncate(9600);
+        rendered
+    };
+    let reference = render(64);
+    assert!(reference.iter().any(|&v| v != 0.0));
+    for block in [100, 480, 1024] {
+        assert_eq!(render(block), reference, "block {block}");
+    }
+}
+
 #[test]
 fn a_uvi_note_sounds_only_when_the_script_posts_it() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
