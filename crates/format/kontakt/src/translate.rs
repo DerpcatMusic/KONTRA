@@ -326,6 +326,8 @@ fn translate_group(
     };
     let slot = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
     let mut modulated = Vec::new();
+    // Each mapped LFO's modulator slot and index, for start-phase routes.
+    let mut lfo_slots = Vec::new();
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
         for (n, m) in InternalModArray16::try_from(chunk)?.slots()? {
             let p = m.params()?;
@@ -358,7 +360,11 @@ fn translate_group(
                     });
                 }
                 Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Ahdsr(_) => {
+                    let lfos = out.lfos.len();
                     timed(&mut out, &p, slot(n), notes, &mut modulated);
+                    if let Some(lfo) = u8::try_from(lfos).ok().filter(|_| out.lfos.len() > lfos) {
+                        lfo_slots.push((n, lfo));
+                    }
                 }
                 m => {
                     let kind = match m {
@@ -450,6 +456,21 @@ fn translate_group(
                                 floor_ms,
                             }
                         })
+                    }
+                    // The target table (FUN_140a6d410) names it 0xb4; the law
+                    // compiler (FUN_140873040) adds `E·intensity` in knob
+                    // units, one cycle.
+                    (Some(source), "startPhase", Some(at))
+                        if !matches!(source, ir::Source::HeldTime { .. }) =>
+                    {
+                        lfo_slots
+                            .iter()
+                            .find(|&&(n, _)| n == usize::from(at))
+                            .map(|&(_, lfo)| ir::ModKind::LfoPhase {
+                                source,
+                                lfo,
+                                depth: t.signed_intensity(),
+                            })
                     }
                     (Some(source), param, Some(insert)) => {
                         crate::drive::route(source, insert, param, t.signed_intensity())
