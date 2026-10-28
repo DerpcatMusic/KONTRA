@@ -8,7 +8,7 @@ pub enum ModKind {
     /// The group's [`Group::envelope`](crate::Group::envelope), shaping its level.
     Envelope,
     /// `source` scales the level along `curve`; `intensity` is −1..=1 and live.
-    /// A bipolar source (an LFO) enters as `(x + 1)/2`: it swings the level
+    /// A bipolar source (an LFO, pitch bend) enters as `(x + 1)/2`: it swings the level
     /// down from unity and back.
     Volume {
         source: Source,
