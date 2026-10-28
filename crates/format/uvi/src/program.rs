@@ -11,6 +11,7 @@ use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::Node;
 
+mod filters;
 mod load;
 mod modulation;
 mod routing;
@@ -191,6 +192,7 @@ impl<L: Library> Translator<'_, '_, L> {
             }),
             ..ir::Group::DEFAULT
         };
+        (group.inserts, group.mods) = filters::keygroup(kg);
         let placement = placement(kg);
         let span = Span {
             keys,
@@ -463,6 +465,7 @@ impl<L: Library> Translator<'_, '_, L> {
                     .is_some_and(|p| p.has_tag_name("Keygroup"));
             if parent.is_some_and(|p| p.has_tag_name("Inserts"))
                 && !routing::carried(node)
+                && !filters::carried(node)
                 && !placing
             {
                 self.notes.add(
@@ -493,7 +496,9 @@ impl<L: Library> Translator<'_, '_, L> {
             .descendants()
             .filter(|n| n.has_tag_name("SignalConnection") && !flag(*n, "Bypass"))
         {
-            if modulation::script_route(self.program, connection).is_some() {
+            if modulation::script_route(self.program, connection).is_some()
+                || filters::freq_route(connection).is_some()
+            {
                 continue;
             }
             let dest = connection.attribute("Destination").unwrap_or_default();
