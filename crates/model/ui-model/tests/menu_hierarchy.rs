@@ -1,4 +1,4 @@
-use sampler_ui_ir::{MenuHierarchyError as Error, MenuItem, menu_hierarchy};
+use kontra_ui_model::{MenuHierarchyError as Error, MenuItem, menu_hierarchy};
 
 fn items(paths: &[&str]) -> Vec<MenuItem> {
     paths

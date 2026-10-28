@@ -918,6 +918,7 @@ name = "corpus-health"
 version = "0.1.0"
 dependencies = [
  "kontakto",
+ "kontra-ui-model",
  "ni-file",
  "sampler-core",
  "sampler-ir",
@@ -925,7 +926,6 @@ dependencies = [
  "sampler-ksp",
  "sampler-midi",
  "sampler-parity",
- "sampler-ui-ir",
  "sampler-uvi",
  "serde_json",
 ]
@@ -2236,6 +2236,7 @@ dependencies = [
  "hound",
  "image-webp",
  "kontra-events",
+ "kontra-ui-model",
  "libc",
  "mlua",
  "moose",
@@ -2261,7 +2262,6 @@ dependencies = [
  "sampler-ksp",
  "sampler-midi",
  "sampler-parity",
- "sampler-ui-ir",
  "sampler-uvi",
  "serde",
  "serde_json",
@@ -4651,6 +4651,7 @@ dependencies = [
  "aes",
  "anyhow",
  "dirs",
+ "kontra-ui-model",
  "ncw",
  "ni-file",
  "rustix",
@@ -4658,7 +4659,6 @@ dependencies = [
  "sampler-ir",
  "sampler-ksp",
  "sampler-parity",
- "sampler-ui-ir",
  "serde",
  "serde_json",
  "sha2",
@@ -4670,13 +4670,13 @@ dependencies = [
 name = "sampler-ksp"
 version = "0.1.0"
 dependencies = [
+ "kontra-ui-model",
  "mlua",
  "rustc-hash 2.1.3",
  "sampler-core",
  "sampler-ir",
  "sampler-parity",
  "sampler-script",
- "sampler-ui-ir",
  "serde",
  "serde_json",
  "sha2",
@@ -4742,10 +4742,6 @@ name = "sampler-simd"
 version = "0.1.0"
 
 [[package]]
-name = "sampler-ui-ir"
-version = "0.1.0"
-
-[[package]]
 name = "sampler-uvi"
 version = "0.1.0"
 dependencies = [
@@ -4754,6 +4750,7 @@ dependencies = [
  "crc32fast",
  "dirs",
  "flate2",
+ "kontra-ui-model",
  "libc",
  "mlua",
  "roxmltree",
@@ -4765,7 +4762,6 @@ dependencies = [
  "sampler-midi",
  "sampler-parity",
  "sampler-script",
- "sampler-ui-ir",
  "serde",
  "serde_json",
  "sha2",

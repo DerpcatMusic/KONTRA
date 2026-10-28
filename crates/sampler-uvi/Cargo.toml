@@ -26,7 +26,7 @@ required-features = ["library-access"]
 
 [dependencies]
 sampler-ir = { path = "../sampler-ir" }
-sampler-ui-ir = { path = "../sampler-ui-ir" }
+sampler-ui-ir = { package = "kontra-ui-model", path = "../../crates/model/ui-model" }
 sampler-core = { path = "../sampler-core" }
 sampler-midi = { path = "../sampler-midi" }
 sampler-parity = { path = "../sampler-parity" }

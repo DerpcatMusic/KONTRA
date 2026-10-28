@@ -69,6 +69,21 @@ edits, and reads meters and stats from `Publications`. That's why a UI
 edit rebuilds only `ui` and `plugin`, and why engine tests never compile
 the GPU stack.
 
+### 5.1 How a library's UI gets on screen (lane D, 2026-10-28)
+
+| Step | Where | Runs |
+|---|---|---|
+| 1. Tree | `kontra-ui-model::Interface` (v2's `sampler-ui-ir`, moved in P4.9) | Plain data: pages, widgets, assets, styles, paint order; 1x source pixels; parent-relative rects. No pixels, no handles. |
+| 2. Build | host, once per load, after `on init` | KSP declarations + the control store as init left it (pos, picture, hide, text, menus) → `Interface`. UVI Lua builds the same tree. |
+| 3. Pictures | `kontra-ui` worker | Decode off the UI thread, once, keyed by content; the first frame draws what is ready and never waits on the full set. |
+| 4. Frames | `kontra-ui` | Retained: the tree is laid out once per load or resize. A script write after init is a control **update** (value or look) with a generation number; the UI repaints the widgets whose generation moved and rebuilds nothing. |
+| 5. Edits | `kontra-ui` → `Command::Ui(ControlId, ControlValue)` | The engine runs `on ui_control`; its writes come back through step 4. |
+
+Scroll and zoom are view state in `kontra-ui` (one transform per scroll area
+and one editor scale), so neither touches the tree. What moves from `src/ui`:
+the Original renderer (`ir_view`), `pictures`/`picture_worker`, `theme`,
+`keyboard` and `menu` first; the browser and inspector views follow with P8.4.
+
 ## 6. Auto-align (`app/align`, feature `align`)
 
 Target state, implemented by P3.3. Auto-align is per-patch latency
