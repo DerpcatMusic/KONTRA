@@ -98,9 +98,10 @@ pub fn trigger(name: &str) -> Option<ir::Trigger> {
     }
 }
 
-/// Whether `loop_mode` loops. `one_shot` and `no_loop` play once; `loop_sustain`
-/// loops like `loop_continuous` (the IR has no release point, as with Kontakt's
-/// loop modes). `None` is a mode SFZ does not name.
+/// Whether `loop_mode` loops. `one_shot` and `no_loop` play once. `loop_continuous`
+/// loops until the note expires, through release; `loop_sustain` loops until
+/// release and then plays on (sfzformat.com/opcodes/loop_mode). `None` is a mode
+/// SFZ does not name.
 pub fn loops(mode: &str) -> Option<bool> {
     match mode {
         "no_loop" | "one_shot" => Some(false),

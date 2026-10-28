@@ -649,23 +649,21 @@ fn translate_zone(
         );
         return None;
     }
-    let mut looped = None;
-    for (n, l) in loops.into_iter().flat_map(|l| &l.items).enumerate() {
+    // Mode 1 is until end, mode 2 until release (docs/re/engine/BASIC_BEHAVIORS.md
+    // row 16; KSP's $LOOP_PAR_MODE numbers differ, docs-txt/ksp.txt:12944).
+    let mut found = Vec::new();
+    for l in loops.into_iter().flat_map(|l| &l.items) {
         if !matches!(l.mode, 1 | 2) || l.loop_length <= 0 || l.loop_start < 0 {
             continue;
         }
-        if looped.is_some() {
-            notes.add(ir::Impact::Audible, "several loops", format!("loop {n}"));
-            continue;
-        }
-        if l.alternating_loop {
-            notes.add(ir::Impact::Audible, "alternating loop", "");
-        }
         let from = l.loop_start as u64;
-        looped = Some(ir::Loop {
+        found.push(ir::Loop {
             start: from,
             end: from + l.loop_length as u64,
             crossfade: l.x_fade_length.max(0) as u64,
+            count: u32::try_from(l.loop_count.max(0)).unwrap_or(0),
+            alternating: l.alternating_loop,
+            until_release: l.mode == 2,
         });
     }
     Some(ir::Zone {
@@ -681,7 +679,7 @@ fn translate_zone(
         start,
         end,
         start_mod: u64::try_from(z.sample_start_mod_range).unwrap_or(0),
-        looped,
+        loops: found,
         reverse,
     })
 }

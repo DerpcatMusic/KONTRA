@@ -36,7 +36,7 @@ fn region(store: &mut Store, level: f32, frames: u64) -> std::io::Result<Region>
         sample,
         start: 0,
         end: frames,
-        looped: None,
+        loops: vec![],
         reverse: false,
     })
 }
@@ -72,7 +72,7 @@ fn sine(store: &mut Store) -> Region {
         sample,
         start: 0,
         end: frames,
-        looped: None,
+        loops: vec![],
         reverse: false,
     }
 }
@@ -384,11 +384,12 @@ fn a_cc_crossfade_moves_sounding_voices() {
         fade_out: None,
     }];
     let mut looped = z.region.clone();
-    looped.looped = Some(kontra_voice::Loop {
+    looped.loops = vec![kontra_voice::Loop {
         start: 0,
         end: 48_000,
         crossfade: 0,
-    });
+        ..Default::default()
+    }];
     z.region = looped;
     let mut e = engine(&store, Plan::new(vec![z], 8));
     let quiet = level(&mut e, &[cc(1, 10), on(60, 1.0)])[0];
@@ -536,7 +537,7 @@ fn a_sample_start_route_moves_the_start_within_its_range() {
             sample,
             start: 0,
             end: frames,
-            looped: None,
+            loops: vec![],
             reverse: false,
         },
         60,

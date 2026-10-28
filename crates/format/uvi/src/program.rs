@@ -288,7 +288,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 start: 0,
                 end: frames,
                 start_mod: 0,
-                looped: None,
+                loops: Vec::new(),
                 reverse: flag(player, "Reverse"),
             });
         }

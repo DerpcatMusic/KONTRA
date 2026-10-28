@@ -251,12 +251,34 @@ fn offset_end_and_loop_use_the_sample_frames() {
         .expect("zone");
     assert_eq!((zone.start, zone.end), (10, 100), "SFZ end is inclusive");
     assert_eq!(
-        zone.looped,
-        Some(Loop {
+        zone.loops,
+        vec![Loop {
             start: 20,
             end: 50,
-            crossfade: 0
-        })
+            ..Loop::default()
+        }]
+    );
+}
+
+#[test]
+fn loop_sustain_loops_until_release() {
+    let dir = scratch("sustain");
+    wav(&dir.join("a.wav"), 1000).expect("wav");
+    let text = "<region> sample=a.wav loop_mode=loop_sustain loop_start=20 loop_end=49\n";
+    let inst = parse(text, &dir);
+    let zone = inst
+        .groups
+        .first()
+        .and_then(|g| g.zones.first())
+        .expect("zone");
+    assert_eq!(
+        zone.loops,
+        vec![Loop {
+            start: 20,
+            end: 50,
+            until_release: true,
+            ..Loop::default()
+        }]
     );
 }
 
