@@ -5,7 +5,7 @@
 use kontra_ir as ir;
 
 use crate::plan::addressed;
-use crate::{Engine, Level};
+use crate::{Engine, EnginePar, Level};
 
 /// Effect gains are cubic, unity at this value, so 1_000_000 is +24 dB (v2 sampler-core,
 /// fitted to slots whose saved gains follow their scripts' init writes).
@@ -46,6 +46,10 @@ fn attack_x(shape: f32) -> f64 {
     let c = (1.0 - (b.ln() + 20_000f64.ln()) / 500_000f64.ln()).clamp(0.0, 1.0);
     0.5 * (1.0 - k.signum() * c)
 }
+
+/// An LFO's fade-in runs 0..=10 s on the stage law (real Kontakt 8,
+/// probes/mod_par_laws.lua: 500_000 saves 139.45 ms, 1_000_000 10 002 ms).
+const LFO_FADE_TOP_MS: f64 = 10_000.0;
 
 fn stage_x(top_ms: f64, ms: f64) -> f64 {
     let (low, high) = (2f64.ln(), (top_ms + 2.0).ln());
@@ -131,21 +135,32 @@ impl EffectPar {
     }
 }
 
+fn effect_par(par: EnginePar) -> Option<EffectPar> {
+    Some(match par {
+        EnginePar::EffectBypass => EffectPar::Bypass,
+        EnginePar::EffectOutput => EffectPar::Output,
+        EnginePar::EffectDry => EffectPar::Dry,
+        EnginePar::SendLevel(n) => EffectPar::Send(usize::from(n)),
+        EnginePar::GainerGain => EffectPar::Gain,
+        EnginePar::StereoWidth => EffectPar::Width,
+        EnginePar::StereoPan => EffectPar::Pan,
+        _ => return None,
+    })
+}
+
+fn level_par(par: EnginePar) -> Option<LevelPar> {
+    Some(match par {
+        EnginePar::Volume => LevelPar::Volume,
+        EnginePar::Pan => LevelPar::Pan,
+        EnginePar::Tune => LevelPar::Tune,
+        _ => return None,
+    })
+}
+
 impl Engine {
-    fn effect_par(&self, par: i32) -> Option<EffectPar> {
-        let pars = self.script()?.engine_pars;
-        match par {
-            p if p == pars.effect_bypass || p == pars.send_bypass => Some(EffectPar::Bypass),
-            p if p == pars.effect_output || p == pars.send_output => Some(EffectPar::Output),
-            p if p == pars.send_dry => Some(EffectPar::Dry),
-            p if let Some(n) = pars.send_levels.iter().position(|&id| id == p) => {
-                Some(EffectPar::Send(n))
-            }
-            p if p == pars.gainer_gain => Some(EffectPar::Gain),
-            p if p == pars.stereo_width => Some(EffectPar::Width),
-            p if p == pars.stereo_pan => Some(EffectPar::Pan),
-            _ => None,
-        }
+    /// What the running script's parameter id `id` changes.
+    fn engine_par(&self, id: i32) -> Option<EnginePar> {
+        self.script()?.engine_pars.get(id)
     }
 
     /// A group's insert slot (generic -1), the instrument insert's (group
@@ -172,8 +187,15 @@ impl Engine {
     }
 
     /// `set_engine_par` of an effect control; false when not carried.
-    fn set_effect(&mut self, par: i32, value: i32, group: i32, slot: i32, generic: i32) -> bool {
-        let Some(which) = self.effect_par(par) else {
+    fn set_effect(
+        &mut self,
+        par: EnginePar,
+        value: i32,
+        group: i32,
+        slot: i32,
+        generic: i32,
+    ) -> bool {
+        let Some(which) = effect_par(par) else {
             return false;
         };
         let raw = f64::from(value.clamp(0, 1_000_000));
@@ -184,16 +206,6 @@ impl Engine {
             self.refresh_all(None);
         }
         set
-    }
-
-    fn level_par(&self, par: i32) -> Option<LevelPar> {
-        let pars = self.script()?.engine_pars;
-        match par {
-            p if p == pars.volume => Some(LevelPar::Volume),
-            p if p == pars.pan => Some(LevelPar::Pan),
-            p if p == pars.tune => Some(LevelPar::Tune),
-            _ => None,
-        }
     }
 
     /// A group's level, or the instrument's (group -1, generic -1). Buses
@@ -208,23 +220,25 @@ impl Engine {
 
     /// A reverb control's physical value for a raw 0..=1_000_000 setting, through
     /// the translator's law; `None` when `par` is not one of them.
-    fn reverb_value(&self, par: i32, raw: i32) -> Option<(ir::ReverbPar, f32)> {
-        let plan = self.script()?;
-        let x = raw.clamp(0, 1_000_000) as f32 / 1e6;
-        let (which, law) = plan
-            .engine_pars
-            .reverb
-            .iter()
-            .zip(ir::ReverbPar::ALL)
-            .zip(&plan.reverb_laws)
-            .find(|((id, _), _)| **id == par)
-            .map(|((_, which), law)| (which, law))?;
-        Some((which, law.eval(x)))
+    fn reverb_value(&self, par: EnginePar, raw: i32) -> Option<(ir::ReverbPar, f32)> {
+        let EnginePar::Reverb(which) = par else {
+            return None;
+        };
+        let n = ir::ReverbPar::ALL.iter().position(|&p| p == which)?;
+        let law = self.script()?.reverb_laws.get(n)?;
+        Some((which, law.eval(raw.clamp(0, 1_000_000) as f32 / 1e6)))
     }
 
     /// `set_engine_par` of a reverb control on the reverb in that slot. The
     /// rack's reverb follows from the slot on its next block. False when not one of them.
-    fn set_reverb(&mut self, par: i32, value: i32, group: i32, slot: i32, generic: i32) -> bool {
+    fn set_reverb(
+        &mut self,
+        par: EnginePar,
+        value: i32,
+        group: i32,
+        slot: i32,
+        generic: i32,
+    ) -> bool {
         let Some((which, value)) = self.reverb_value(par, value) else {
             return false;
         };
@@ -259,8 +273,8 @@ impl Engine {
     }
 
     /// `set_engine_par` of volume, pan or tune; false when not one of them.
-    fn set_level(&mut self, par: i32, value: i32, group: i32, generic: i32) -> bool {
-        let Some(which) = self.level_par(par) else {
+    fn set_level(&mut self, par: EnginePar, value: i32, group: i32, generic: i32) -> bool {
+        let Some(which) = level_par(par) else {
             return false;
         };
         let Some(level) = self.level_mut(group, generic) else {
@@ -281,42 +295,43 @@ impl Engine {
         slot: i32,
         generic: i32,
     ) -> Option<i32> {
-        if let Some(which) = self.effect_par(par) {
+        let par = self.engine_par(par)?;
+        if let Some(which) = effect_par(par) {
             let e = *self.effect_mut(group, slot, generic)?;
             return Some(which.get(&e)?.round().clamp(0.0, 1e6) as i32);
         }
-        if let Some(which) = self.level_par(par) {
+        if let Some(which) = level_par(par) {
             let level = *self.level_mut(group, generic)?;
             return Some(which.get(&level).round().clamp(0.0, 1e6) as i32);
         }
-        let pars = self.script()?.engine_pars;
         let g = usize::try_from(group)
             .ok()
             .and_then(|g| self.groups.get(g))?;
         let ms = |frames: u32| f64::from(frames) * 1000.0 / f64::from(self.rate);
         let e = &g.envelope;
+        let route = || g.mods.iter().find(|m| addressed(m, slot, generic));
         let x = match par {
-            p if p == pars.mod_bypass => {
+            EnginePar::ModBypass => {
                 let m = g.mods.iter().find(|m| i32::from(m.slot) == slot)?;
                 return Some(i32::from(m.bypass));
             }
-            p if p == pars.intensity => {
-                let m = g.mods.iter().find(|m| addressed(m, slot, generic))?;
-                f64::from(intensity(&m.kind)?)
-            }
-            p if p == pars.attack => stage_x(15_000.0, ms(e.attack)),
-            p if p == pars.hold => stage_x(15_000.0, ms(e.hold)),
-            p if p == pars.decay => stage_x(25_000.0, ms(e.decay)),
-            p if p == pars.release => stage_x(25_000.0, ms(e.release)),
-            p if p == pars.sustain => f64::from(e.sustain),
-            p if p == pars.attack_curve => attack_x(e.attack_shape),
+            EnginePar::ReleaseTrigger => return Some(i32::from(g.release_trigger)),
+            EnginePar::RouteIntensity => f64::from(signed(&route()?.kind)?.abs()).sqrt(),
+            EnginePar::RouteDepth => (f64::from(signed(&route()?.kind)?).cbrt() + 1.0) / 2.0,
+            EnginePar::LfoFade => stage_x(LFO_FADE_TOP_MS, f64::from(g.lfo(slot)?.fade_ms)),
+            EnginePar::Attack => stage_x(15_000.0, ms(e.attack)),
+            EnginePar::Hold => stage_x(15_000.0, ms(e.hold)),
+            EnginePar::Decay => stage_x(25_000.0, ms(e.decay)),
+            EnginePar::Release => stage_x(25_000.0, ms(e.release)),
+            EnginePar::Sustain => f64::from(e.sustain),
+            EnginePar::AttackCurve => attack_x(e.attack_shape),
             _ => return None,
         };
         Some((x * 1e6).round() as i32)
     }
 
-    /// Applies `set_engine_par(par, value, group, slot)`. Returns whether the
-    /// engine answers this parameter.
+    /// Applies `set_engine_par(par, value, group, slot)`. Returns whether it
+    /// changed something the engine carries.
     pub(crate) fn set_engine_par(
         &mut self,
         par: i32,
@@ -325,80 +340,76 @@ impl Engine {
         slot: i32,
         generic: i32,
     ) -> bool {
+        let Some(par) = self.engine_par(par) else {
+            return false;
+        };
         if self.set_level(par, value, group, generic)
             || self.set_effect(par, value, group, slot, generic)
             || self.set_reverb(par, value, group, slot, generic)
         {
             return true;
         }
-        let Some(pars) = self.script().map(|s| s.engine_pars) else {
-            return false;
-        };
         let x = f64::from(value.clamp(0, 1_000_000)) / 1e6;
-        let frames = |ms: f64| (ms * f64::from(self.rate) / 1000.0).round() as u32;
         let Some(g) = usize::try_from(group)
             .ok()
             .and_then(|g| self.groups.get_mut(g))
         else {
-            return par == pars.intensity
-                || par == pars.mod_bypass
-                || [
-                    pars.attack,
-                    pars.hold,
-                    pars.decay,
-                    pars.sustain,
-                    pars.release,
-                    pars.attack_curve,
-                ]
-                .contains(&par);
+            return false;
         };
-        if par == pars.mod_bypass {
-            for m in g.mods.iter_mut().filter(|m| i32::from(m.slot) == slot) {
-                m.bypass = value != 0;
+        let set = match par {
+            EnginePar::ModBypass => {
+                let mut any = false;
+                for m in g.mods.iter_mut().filter(|m| i32::from(m.slot) == slot) {
+                    m.bypass = value != 0;
+                    any = true;
+                }
+                any
             }
+            // Real Kontakt 8 (probes/mod_par_laws.lua): the knob's depth is x²
+            // and the route keeps its sign; the bipolar one writes (2x − 1)³.
+            EnginePar::RouteIntensity => g.mod_mut(slot, generic).is_some_and(|m| {
+                let sign = signed(&m.kind).unwrap_or(1.0).signum();
+                set_signed(&mut m.kind, sign * (x * x) as f32)
+            }),
+            EnginePar::RouteDepth => g
+                .mod_mut(slot, generic)
+                .is_some_and(|m| set_signed(&mut m.kind, (2.0 * x - 1.0).powi(3) as f32)),
+            EnginePar::LfoFade => g.lfo_mut(slot).is_some_and(|l| {
+                l.fade_ms = stage_ms(LFO_FADE_TOP_MS, x) as f32;
+                true
+            }),
+            _ => return self.set_envelope(par, x, group, slot),
+        };
+        if set {
             self.refresh_all(None);
-            return true;
         }
-        if par == pars.intensity {
-            // The magnitude is the script's; the route keeps its sign (its invert flag).
-            if let Some(m) = g.mod_mut(slot, generic)
-                && set_intensity(&mut m.kind, x as f32)
-            {
-                self.refresh_all(None);
-            }
-            return true;
-        }
-        let envelope = g
-            .mods
-            .iter()
-            .any(|m| i32::from(m.slot) == slot && m.kind == ir::ModKind::Envelope);
-        let e = &mut g.envelope;
-        let stage = match par {
-            p if p == pars.attack => &mut e.attack,
-            p if p == pars.hold => &mut e.hold,
-            p if p == pars.decay => &mut e.decay,
-            p if p == pars.release => &mut e.release,
-            p if p == pars.sustain => {
-                if envelope {
-                    e.sustain = x as f32;
-                }
-                return true;
-            }
-            p if p == pars.attack_curve => {
-                if envelope {
-                    e.attack_shape = attack_shape(x);
-                }
-                return true;
-            }
-            _ => return false,
+        set
+    }
+
+    /// Sets a stage of the group's amplitude envelope (modulator `slot`).
+    fn set_envelope(&mut self, par: EnginePar, x: f64, group: i32, slot: i32) -> bool {
+        let rate = self.rate;
+        let Some(g) = usize::try_from(group)
+            .ok()
+            .and_then(|g| self.groups.get_mut(g))
+            .filter(|g| {
+                g.mods
+                    .iter()
+                    .any(|m| i32::from(m.slot) == slot && m.kind == ir::ModKind::Envelope)
+            })
+        else {
+            return false;
         };
-        if envelope {
-            let top = if par == pars.attack || par == pars.hold {
-                15_000.0
-            } else {
-                25_000.0
-            };
-            *stage = frames(stage_ms(top, x));
+        let frames = |ms: f64| (ms * f64::from(rate) / 1000.0).round() as u32;
+        let e = &mut g.envelope;
+        match par {
+            EnginePar::Attack => e.attack = frames(stage_ms(15_000.0, x)),
+            EnginePar::Hold => e.hold = frames(stage_ms(15_000.0, x)),
+            EnginePar::Decay => e.decay = frames(stage_ms(25_000.0, x)),
+            EnginePar::Release => e.release = frames(stage_ms(25_000.0, x)),
+            EnginePar::Sustain => e.sustain = x as f32,
+            EnginePar::AttackCurve => e.attack_shape = attack_shape(x),
+            _ => return false,
         }
         true
     }
@@ -431,29 +442,26 @@ impl Engine {
     }
 }
 
-/// A route's live intensity, signed by its invert flag.
-/// A route's intensity knob (0..1); an EQ gain route's depth is the knob
-/// times its span.
-fn intensity(kind: &ir::ModKind) -> Option<f32> {
+/// A route's signed depth; an EQ gain route's is its gain over its span.
+fn signed(kind: &ir::ModKind) -> Option<f32> {
     match *kind {
         ir::ModKind::EqGain {
             depth_db, span_db, ..
-        } => Some((depth_db / span_db).abs()),
-        ref other => depth(&mut other.clone()).map(|d| d.abs()),
+        } => Some(depth_db / span_db),
+        ref other => depth(&mut other.clone()).map(|d| *d),
     }
 }
 
-/// Sets a route's intensity knob to `x`, keeping its sign (its invert flag).
-/// Returns whether the route has one.
-fn set_intensity(kind: &mut ir::ModKind, x: f32) -> bool {
+/// Sets a route's signed depth. Returns whether the route has one.
+fn set_signed(kind: &mut ir::ModKind, d: f32) -> bool {
     if let ir::ModKind::EqGain {
         depth_db, span_db, ..
     } = kind
     {
-        *depth_db = (x * *span_db).abs().copysign(*depth_db);
+        *depth_db = d * *span_db;
         return true;
     }
-    depth(kind).map(|d| *d = x.copysign(*d)).is_some()
+    depth(kind).map(|v| *v = d).is_some()
 }
 
 fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
@@ -472,11 +480,11 @@ fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{attack_shape, attack_x, intensity, set_intensity, stage_ms, stage_x};
+    use super::{attack_shape, attack_x, set_signed, signed, stage_ms, stage_x};
     use kontra_ir as ir;
 
     #[test]
-    fn an_eq_gain_intensity_is_its_depth_over_its_span_and_keeps_its_sign() {
+    fn an_eq_gain_depth_is_its_gain_over_its_span() {
         // A depth past twice the limit survives a read and write back.
         let mut kind = ir::ModKind::EqGain {
             source: ir::Source::Velocity,
@@ -486,14 +494,14 @@ mod tests {
             limit_db: 6.0,
             span_db: 72.0,
         };
-        let x = intensity(&kind).unwrap();
-        assert!(set_intensity(&mut kind, x));
+        let d = signed(&kind).unwrap();
+        assert!(set_signed(&mut kind, d));
         assert!(
             matches!(kind, ir::ModKind::EqGain { depth_db, .. } if (depth_db + 48.0).abs() < 1e-4)
         );
-        assert!(set_intensity(&mut kind, 0.25));
+        assert!(set_signed(&mut kind, -0.25));
         assert!(matches!(kind, ir::ModKind::EqGain { depth_db, .. } if depth_db == -18.0));
-        assert_eq!(intensity(&kind), Some(0.25));
+        assert_eq!(signed(&kind), Some(-0.25));
     }
 
     #[test]

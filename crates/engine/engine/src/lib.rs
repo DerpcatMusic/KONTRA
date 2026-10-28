@@ -12,6 +12,7 @@ mod behaviour;
 mod callbacks;
 mod controls;
 mod effects;
+mod engine_pars;
 mod filters;
 mod inspect;
 mod ledger;
@@ -36,6 +37,7 @@ use kontra_stream::StreamClient;
 use kontra_time::Frames;
 use kontra_voice::{Voice, VoiceStart};
 
+pub use engine_pars::{EnginePar, EnginePars};
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_time::SampleTime;
@@ -48,7 +50,7 @@ pub use plan::{
 };
 pub use prepare::{Open, prepare};
 pub use queue::Timed;
-pub use script::{Callbacks, Controls, EnginePars, ScriptPlan};
+pub use script::{Callbacks, Controls, ScriptPlan};
 
 use behaviour::Behaviour;
 use ledger::{Ledger, Note, Origin};

@@ -190,19 +190,9 @@ impl Ramp {
 /// every index a route reads keeps its value however many a script sends,
 /// and [`SPARE_RAMPS`] free ones that keep values only scripts read back.
 pub(crate) fn script_ramps(plan: &crate::Plan) -> Box<[Option<(u16, Ramp)>]> {
-    use kontra_ir::{ModKind as K, Source};
+    use kontra_ir::Source;
     let mut indices: Vec<u16> = (plan.groups.iter().flat_map(|g| &g.mods))
-        .filter_map(|m| match m.kind {
-            K::Volume { source, .. }
-            | K::Pitch { source, .. }
-            | K::Pan { source, .. }
-            | K::Cutoff { source, .. }
-            | K::Resonance { source, .. }
-            | K::EqGain { source, .. }
-            | K::SampleStart { source, .. }
-            | K::Attack { source, .. } => Some(source),
-            K::Envelope => None,
-        })
+        .filter_map(|m| crate::plan::source(&m.kind))
         .filter_map(|s| match s {
             Source::Script(i) => Some(i),
             _ => None,
