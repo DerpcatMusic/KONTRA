@@ -6,9 +6,9 @@ use kontra_events::HostNote;
 use kontra_time::SampleTime;
 use kontra_vm::{Action, HostApi, HostCall, HostValue, Program, Text, event};
 
-use crate::Engine;
 use crate::ledger::{Note, NoteRef, Origin};
 use crate::queue::Work;
+use crate::{Engine, EnginePars};
 
 /// A compiled script and where its callbacks start.
 #[derive(Clone, Debug)]
@@ -30,37 +30,6 @@ pub struct ScriptPlan {
     pub foreign: Option<std::sync::Arc<dyn kontra_vm::Foreign>>,
 }
 
-/// The script's numbers for the engine parameters the engine answers.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct EnginePars {
-    pub attack: i32,
-    pub hold: i32,
-    pub decay: i32,
-    pub sustain: i32,
-    pub release: i32,
-    /// A volume modulation's intensity.
-    pub intensity: i32,
-    /// A modulator's bypass.
-    pub mod_bypass: i32,
-    pub attack_curve: i32,
-    pub effect_bypass: i32,
-    pub effect_output: i32,
-    /// A send effect's bypass, wet (or return) level and dry level.
-    pub send_bypass: i32,
-    pub send_output: i32,
-    pub send_dry: i32,
-    /// A Send Levels slot's level to each send slot.
-    pub send_levels: [i32; 8],
-    /// A reverb control's id, in `ir::ReverbPar::ALL` order.
-    pub reverb: [i32; 8],
-    pub gainer_gain: i32,
-    pub stereo_width: i32,
-    pub stereo_pan: i32,
-    pub volume: i32,
-    pub pan: i32,
-    pub tune: i32,
-}
-
 /// The script's UI controls as the engine sees them: ids, and where values live.
 #[derive(Clone, Debug, Default)]
 pub struct Controls {
@@ -68,6 +37,9 @@ pub struct Controls {
     pub first: i32,
     /// The parameter id that means a control's value.
     pub value_par: i32,
+    /// The parameter ids of a menu's entry count and selected entry.
+    pub num_items_par: i32,
+    pub selected_item_par: i32,
     /// By UI id from `first` (every variable has one), the value cell of
     /// each control whose value is a number.
     pub cells: Vec<Option<u32>>,
@@ -83,6 +55,11 @@ pub struct Callbacks {
     pub persistence_changed: Option<u32>,
     pub listener: Option<u32>,
     pub pgs_changed: Option<u32>,
+    /// `on ui_controls`, run first when any control moves.
+    pub ui_controls: Option<u32>,
+    pub async_complete: Option<u32>,
+    /// Every control by UI id, with its own `on ui_control` if it has one.
+    pub ui_control: Vec<(i32, Option<u32>)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +70,9 @@ pub(crate) enum Kind {
     Controller,
     Listener,
     Pgs,
+    UiControl,
+    UiControls,
+    AsyncComplete,
     /// After a wait: what the callback was no longer matters.
     Resumed,
 }
@@ -113,7 +93,12 @@ pub(crate) struct Running {
     pub(crate) slot: u8,
     /// `$NI_SIGNAL_TYPE` of a listener callback.
     pub(crate) signal: u8,
+    /// `$NI_UI_ID` of a UI callback; 0 otherwise.
+    pub(crate) ui: i32,
 }
+
+/// Marks a UI id in the low bits of a coroutine context; event ids never set it.
+const UI_BIT: u32 = 1 << 31;
 
 impl Running {
     pub(crate) const IDLE: Self = Self {
@@ -126,6 +111,7 @@ impl Running {
         callback_id: 0,
         slot: 0,
         signal: 0,
+        ui: 0,
     };
 
     pub(crate) fn new(kind: Kind, event: Option<NoteRef>) -> Self {
@@ -137,6 +123,9 @@ impl Running {
             Kind::Controller => 3,
             Kind::Listener => 12,
             Kind::Pgs => 8,
+            Kind::UiControl => 6,
+            Kind::UiControls => 15,
+            Kind::AsyncComplete => 13,
         };
         Self {
             kind,
@@ -147,17 +136,27 @@ impl Running {
     }
 
     /// The coroutine context, so a resumed callback still knows its event
-    /// (low 32 bits), callback type (8), callback id (20: a UI id, 32768 plus
-    /// a variable index) and listener signal (4).
+    /// or UI id (low 32 bits, a UI id with the top bit set), callback type
+    /// (8), callback id (20) and listener signal (4).
     pub(crate) fn context(&self) -> u64 {
-        u64::from(self.event.map_or(0, |n| n.event_id() as u32))
+        let low = match self.event {
+            Some(n) => n.event_id() as u32,
+            None => self.ui as u32 | UI_BIT,
+        };
+        u64::from(low)
             | u64::from(self.callback_type) << 32
             | u64::from(self.callback_id & 0xF_FFFF) << 40
             | u64::from(self.signal & 0xF) << 60
     }
 
     pub(crate) fn resumed(context: u64) -> Self {
+        let low = context as u32;
         Self {
+            ui: if low & UI_BIT != 0 {
+                (low & !UI_BIT) as i32
+            } else {
+                0
+            },
             kind: Kind::Resumed,
             event: NoteRef::from_event_id(context as u32 as i32),
             callback_type: (context >> 32) as u8,
@@ -229,6 +228,10 @@ impl GroupMasks {
             .is_none_or(|word| word & (1 << (g % 64)) != 0)
     }
 }
+
+/// KSP's `$NI_NOT_FOUND`, what the `get_*_idx` lookups answer for a miss
+/// (measured on the oracle: `probes/ni_not_found.lua`).
+const NOT_FOUND: i32 = -100;
 
 pub(crate) fn micros_to_frames(micros: i64, rate: u32) -> u64 {
     (micros.max(0) as u128 * u128::from(rate) / 1_000_000) as u64
@@ -446,6 +449,9 @@ impl HostApi for Engine {
         if let Some(value) = self.pgs_call(&mut call) {
             return value;
         }
+        if let Some(value) = self.ui_call(&mut call) {
+            return value;
+        }
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
         if let Some(value) = self.transport_value(call.action, int(0)) {
             return value;
@@ -610,6 +616,7 @@ impl HostApi for Engine {
                 HostValue::Int(self.active_voices() as i32)
             }
             Action::CallbackType => HostValue::Int(i32::from(self.running.callback_type)),
+            Action::UiIdVar => HostValue::Int(self.running.ui),
             Action::CallbackId => HostValue::Int(self.running.callback_id as i32),
             Action::EventParAt => HostValue::Int(
                 running.map_or(0, |r| self.event_par(r.event_id(), int(0).clamp(0, 3))),
@@ -622,7 +629,7 @@ impl HostApi for Engine {
                 let missing = if call.action == Action::FindGroup {
                     0
                 } else {
-                    -1
+                    NOT_FOUND
                 };
                 HostValue::Int(found.map_or(missing, |g| g as i32))
             }
@@ -634,28 +641,40 @@ impl HostApi for Engine {
                 *call.text_out = Text::from_str_cut(name).0;
                 HostValue::Text
             }
-            // ponytail: answered at once, no on async_complete; the samples
+            // ponytail: answered at once, then on async_complete; the samples
             // stay in memory until the host reloads without the group.
             Action::PurgeGroup => {
                 if let Some(g) = self.groups.get_mut(int(0) as usize) {
                     g.purged = int(1) == 0;
                 }
-                HostValue::Int(0)
+                HostValue::Int(self.start_async())
             }
+            Action::AsyncId => HostValue::Int(self.ids.async_done),
+            // ponytail: every asynchronous command here succeeds.
+            Action::AsyncExitStatus => HostValue::Int(1),
+            // Commands finish before the queue reaches the next event.
+            Action::WaitAsync => HostValue::Nothing,
             Action::GetPurgeState => HostValue::Int(
                 self.groups
                     .get(int(0) as usize)
                     .map_or(0, |g| i32::from(!g.purged)),
             ),
+            // Any modulator, carried or not. A miss: find_mod answers 0 (as
+            // measured: probes/find_mod_index.lua), get_mod_idx $NI_NOT_FOUND.
             Action::FindMod | Action::GetModIdx => {
                 let name = call.texts.first().map_or("", Text::as_str);
                 let found = self.groups.get(int(0) as usize).and_then(|g| {
-                    g.mods
-                        .iter()
-                        .find(|m| m.name == name)
-                        .map(|m| i32::from(m.slot))
+                    let route = g.routes.iter().find(|r| r.name == name);
+                    route
+                        .map(|r| r.slot)
+                        .or_else(|| g.mods.iter().find(|m| m.name == name).map(|m| m.slot))
                 });
-                HostValue::Int(found.unwrap_or(-1))
+                let missing = if call.action == Action::FindMod {
+                    0
+                } else {
+                    NOT_FOUND
+                };
+                HostValue::Int(found.map_or(missing, i32::from))
             }
             Action::FindTarget | Action::GetTargetIdx => {
                 let name = call.texts.first().map_or("", Text::as_str);
@@ -663,7 +682,14 @@ impl HostApi for Engine {
                     let routes = g.routes.iter().find(|r| i32::from(r.slot) == int(1))?;
                     routes.names.iter().position(|n| n == name)
                 });
-                HostValue::Int(found.map_or(-1, |n| n as i32))
+                // get_target_idx misses with $NI_NOT_FOUND (measured); find_target
+                // answers 0 like find_mod and find_group (not measured).
+                let missing = if call.action == Action::FindTarget {
+                    0
+                } else {
+                    NOT_FOUND
+                };
+                HostValue::Int(found.map_or(missing, |n| n as i32))
             }
             Action::GetEnginePar
                 if let Some(value) = self.get_engine_par(int(0), int(1), int(2), int(3)) =>

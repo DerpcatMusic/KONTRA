@@ -288,7 +288,7 @@ fn constants_symbols_and_conditions() {
         END_USE_CODE
     end on";
     let r = Run::new(source);
-    assert_eq!(r.int("$a"), 5);
+    assert_eq!(r.int("$a"), 6);
     assert_eq!(r.script.symbol(r.int("$b")), Some("$ENGINE_PAR_VOLUME"));
     assert_eq!(r.int("$c"), 2);
     let script = compile(source, &["LEGACY"]).unwrap();

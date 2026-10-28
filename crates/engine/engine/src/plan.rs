@@ -129,6 +129,16 @@ pub struct Group {
     pub envelopes: Vec<ir::Breakpoints>,
     pub lfos: Vec<ir::Lfo>,
     pub routes: Vec<ir::Routes>,
+    /// It plays on release (scripts read this).
+    pub release_trigger: bool,
+    /// The bus its voices play into, an index into [`Plan::buses`]; a
+    /// script may move it while they play.
+    pub bus: usize,
+}
+
+/// The bus `zone`'s group plays into now.
+pub(crate) fn bus(groups: &[Group], zone: &Zone) -> usize {
+    groups.get(zone.group as usize).map_or(0, |g| g.bus)
 }
 
 impl Group {
@@ -155,6 +165,8 @@ impl Group {
             envelopes: Vec::new(),
             lfos: Vec::new(),
             routes: Vec::new(),
+            release_trigger: false,
+            bus: 0,
         }
     }
 
@@ -162,6 +174,26 @@ impl Group {
     /// negative target is the modulator's first route.
     pub fn mod_mut(&mut self, slot: i32, target: i32) -> Option<&mut ir::Mod> {
         self.mods.iter_mut().find(|m| addressed(m, slot, target))
+    }
+
+    /// The LFO of modulator `slot`.
+    pub fn lfo(&self, slot: i32) -> Option<&ir::Lfo> {
+        self.lfos.get(self.lfo_index(slot)?)
+    }
+
+    pub fn lfo_mut(&mut self, slot: i32) -> Option<&mut ir::Lfo> {
+        let n = self.lfo_index(slot)?;
+        self.lfos.get_mut(n)
+    }
+
+    fn lfo_index(&self, slot: i32) -> Option<usize> {
+        self.mods
+            .iter()
+            .filter(|m| i32::from(m.slot) == slot)
+            .find_map(|m| match source(&m.kind) {
+                Some(ir::Source::Lfo(n)) => Some(usize::from(n)),
+                _ => None,
+            })
     }
 }
 
@@ -205,8 +237,6 @@ pub struct Zone {
     pub release_decay_db: f32,
     /// Ignores note-off and plays to the end (drums, one-shots).
     pub one_shot: bool,
-    /// Output bus (mic position) index into [`Plan::buses`].
-    pub bus: usize,
 }
 
 impl Zone {
@@ -233,7 +263,6 @@ impl Zone {
             pan: 0.0,
             release_decay_db: 0.0,
             one_shot: false,
-            bus: 0,
         }
     }
 }
@@ -325,7 +354,25 @@ impl Plan {
     }
 }
 
-/// Whether scripts address `m` by modulator `slot` and `target` (any when negative).
+/// What drives a route; the amplitude envelope has no source.
+pub(crate) fn source(kind: &ir::ModKind) -> Option<ir::Source> {
+    use ir::ModKind as K;
+    match *kind {
+        K::Volume { source, .. }
+        | K::Pitch { source, .. }
+        | K::Pan { source, .. }
+        | K::Cutoff { source, .. }
+        | K::Resonance { source, .. }
+        | K::EqGain { source, .. }
+        | K::SampleStart { source, .. }
+        | K::Attack { source, .. } => Some(source),
+        K::Envelope => None,
+    }
+}
+
+/// Whether scripts address `m` by modulator `slot` and `target`. A negative
+/// target is the first route (measured, probes/mod_par_laws.lua: generic
+/// -1 moves route 0 alone).
 pub(crate) fn addressed(m: &ir::Mod, slot: i32, target: i32) -> bool {
-    i32::from(m.slot) == slot && (target < 0 || i32::from(m.target) == target)
+    i32::from(m.slot) == slot && i32::from(m.target) == target.max(0)
 }

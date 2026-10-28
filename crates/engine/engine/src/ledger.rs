@@ -186,6 +186,38 @@ impl Ramp {
     }
 }
 
+/// One resting ramp for each "from script" index the plan's routes read, so
+/// every index a route reads keeps its value however many a script sends,
+/// and [`SPARE_RAMPS`] free ones that keep values only scripts read back.
+pub(crate) fn script_ramps(plan: &crate::Plan) -> Box<[Option<(u16, Ramp)>]> {
+    use kontra_ir::Source;
+    let mut indices: Vec<u16> = (plan.groups.iter().flat_map(|g| &g.mods))
+        .filter_map(|m| crate::plan::source(&m.kind))
+        .filter_map(|s| match s {
+            Source::Script(i) => Some(i),
+            _ => None,
+        })
+        .collect();
+    indices.sort_unstable();
+    indices.dedup();
+    let rest = Ramp {
+        from: 0,
+        to: 0,
+        start: 0,
+        frames: 0,
+    };
+    let spare = std::iter::repeat_n(None, SPARE_RAMPS);
+    indices
+        .into_iter()
+        .map(|i| Some((i, rest)))
+        .chain(spare)
+        .collect()
+}
+
+/// Indices no route reads that keep their all-events value for scripts.
+// ponytail: eight; the ninth such index is dropped.
+const SPARE_RAMPS: usize = 8;
+
 /// The value of `index` among `ramps` at `now`.
 pub(crate) fn ramp_at(ramps: &[Option<(u16, Ramp)>], index: u16, now: SampleTime) -> Option<i32> {
     ramps

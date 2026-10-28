@@ -163,12 +163,13 @@ fn sequential_round_robin_cycles_and_mic_layers_agree() {
                     random: false,
                 }),
             )];
-            z.bus = bus;
+            z.group = bus as u32;
             z.pan = if bus == 0 { -1.0 } else { 1.0 };
             zones.push(z);
         }
     }
     let mut plan = Plan::new(zones, 16);
+    plan.groups[1].bus = 1;
     plan.buses.push(Bus {
         name: "Room".into(),
         gain: 1.0,
@@ -405,8 +406,9 @@ fn a_disabled_mic_bus_starts_no_voices() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let close_mic = zone(&mut store, 0.5);
     let mut room = zone(&mut store, 0.25);
-    room.bus = 1;
+    room.group = 1;
     let mut plan = Plan::new(vec![close_mic, room], 8);
+    plan.groups[1].bus = 1;
     plan.buses.push(Bus {
         name: "Room".into(),
         gain: 1.0,

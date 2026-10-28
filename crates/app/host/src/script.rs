@@ -1,87 +1,71 @@
 //! A compiled KSP script as the engine's [`ScriptPlan`].
 
-use kontra_engine::{Callbacks, Controls, EnginePars, ScriptPlan, Text};
+use kontra_engine::{Callbacks, Controls, EnginePar, EnginePars, ScriptPlan, Text};
 use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
 
-/// The catalog names the engine understands (every other one is an opaque
-/// symbol it cannot act on), for coverage reports.
-pub const UNDERSTOOD_SYMBOLS: &[&str] = &[
-    ATTACK,
-    HOLD,
-    DECAY,
-    SUSTAIN,
-    RELEASE,
-    INTENSITY,
-    ATTACK_CURVE,
-    EFFECT_BYPASS,
-    EFFECT_OUTPUT,
-    SEND_BYPASS,
-    SEND_OUTPUT,
-    SEND_DRY,
-    SEND_LEVELS[0],
-    SEND_LEVELS[1],
-    SEND_LEVELS[2],
-    SEND_LEVELS[3],
-    SEND_LEVELS[4],
-    SEND_LEVELS[5],
-    SEND_LEVELS[6],
-    SEND_LEVELS[7],
-    REVERB[0],
-    REVERB[1],
-    REVERB[2],
-    REVERB[3],
-    REVERB[4],
-    REVERB[5],
-    REVERB[6],
-    REVERB[7],
-    GAINER_GAIN,
-    STEREO_WIDTH,
-    STEREO_PAN,
-    VOLUME,
-    PAN,
-    TUNE,
-    CONTROL_VALUE,
-];
-const ATTACK: &str = "$ENGINE_PAR_ATTACK";
-const HOLD: &str = "$ENGINE_PAR_HOLD";
-const DECAY: &str = "$ENGINE_PAR_DECAY";
-const SUSTAIN: &str = "$ENGINE_PAR_SUSTAIN";
-const RELEASE: &str = "$ENGINE_PAR_RELEASE";
-const INTENSITY: &str = "$ENGINE_PAR_MOD_TARGET_INTENSITY";
-const MOD_BYPASS: &str = "$ENGINE_PAR_INTMOD_BYPASS";
-const ATTACK_CURVE: &str = "$ENGINE_PAR_ATK_CURVE";
-const EFFECT_BYPASS: &str = "$ENGINE_PAR_EFFECT_BYPASS";
-const EFFECT_OUTPUT: &str = "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN";
-const SEND_BYPASS: &str = "$ENGINE_PAR_SEND_EFFECT_BYPASS";
-const SEND_OUTPUT: &str = "$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN";
-const SEND_DRY: &str = "$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL";
-const SEND_LEVELS: [&str; 8] = [
-    "$ENGINE_PAR_SENDLEVEL_0",
-    "$ENGINE_PAR_SENDLEVEL_1",
-    "$ENGINE_PAR_SENDLEVEL_2",
-    "$ENGINE_PAR_SENDLEVEL_3",
-    "$ENGINE_PAR_SENDLEVEL_4",
-    "$ENGINE_PAR_SENDLEVEL_5",
-    "$ENGINE_PAR_SENDLEVEL_6",
-    "$ENGINE_PAR_SENDLEVEL_7",
-];
-/// The reverb's controls in `ir::ReverbPar::ALL` order (RV2_MOD is not carried).
-const REVERB: [&str; 8] = [
-    "$ENGINE_PAR_RV2_TIME",
-    "$ENGINE_PAR_RV2_SIZE",
-    "$ENGINE_PAR_RV2_DAMPING",
-    "$ENGINE_PAR_RV2_DIFF",
-    "$ENGINE_PAR_RV2_PREDELAY",
-    "$ENGINE_PAR_RV2_HIGHCUT",
-    "$ENGINE_PAR_RV2_LOWSHELF",
-    "$ENGINE_PAR_RV2_STEREO",
-];
-const GAINER_GAIN: &str = "$ENGINE_PAR_GN_GAIN";
-const STEREO_WIDTH: &str = "$ENGINE_PAR_STEREO";
-const STEREO_PAN: &str = "$ENGINE_PAR_STEREO_PAN";
-const VOLUME: &str = "$ENGINE_PAR_VOLUME";
-const PAN: &str = "$ENGINE_PAR_PAN";
-const TUNE: &str = "$ENGINE_PAR_TUNE";
+/// The engine parameters the engine answers, by KSP name.
+const ENGINE_PARS: &[(&str, EnginePar)] = {
+    use EnginePar as P;
+    use kontra_engine::ir::ReverbPar as R;
+    &[
+        ("$ENGINE_PAR_ATTACK", P::Attack),
+        ("$ENGINE_PAR_HOLD", P::Hold),
+        ("$ENGINE_PAR_DECAY", P::Decay),
+        ("$ENGINE_PAR_SUSTAIN", P::Sustain),
+        ("$ENGINE_PAR_RELEASE", P::Release),
+        ("$ENGINE_PAR_ATK_CURVE", P::AttackCurve),
+        ("$ENGINE_PAR_MOD_TARGET_INTENSITY", P::RouteIntensity),
+        ("$ENGINE_PAR_MOD_TARGET_MP_INTENSITY", P::RouteDepth),
+        ("$ENGINE_PAR_INTMOD_INTENSITY", P::RouteDepth),
+        ("$ENGINE_PAR_INTMOD_BYPASS", P::ModBypass),
+        ("$ENGINE_PAR_LFO_DELAY", P::LfoFade),
+        ("$ENGINE_PAR_RELEASE_TRIGGER", P::ReleaseTrigger),
+        ("$ENGINE_PAR_OUTPUT_CHANNEL", P::OutputChannel),
+        ("$ENGINE_PAR_EFFECT_BYPASS", P::EffectBypass),
+        ("$ENGINE_PAR_SEND_EFFECT_BYPASS", P::EffectBypass),
+        ("$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN", P::EffectOutput),
+        ("$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN", P::EffectOutput),
+        ("$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL", P::EffectDry),
+        ("$ENGINE_PAR_SENDLEVEL_0", P::SendLevel(0)),
+        ("$ENGINE_PAR_SENDLEVEL_1", P::SendLevel(1)),
+        ("$ENGINE_PAR_SENDLEVEL_2", P::SendLevel(2)),
+        ("$ENGINE_PAR_SENDLEVEL_3", P::SendLevel(3)),
+        ("$ENGINE_PAR_SENDLEVEL_4", P::SendLevel(4)),
+        ("$ENGINE_PAR_SENDLEVEL_5", P::SendLevel(5)),
+        ("$ENGINE_PAR_SENDLEVEL_6", P::SendLevel(6)),
+        ("$ENGINE_PAR_SENDLEVEL_7", P::SendLevel(7)),
+        // RV2_MOD is not carried.
+        ("$ENGINE_PAR_RV2_TIME", P::Reverb(R::Seconds)),
+        ("$ENGINE_PAR_RV2_SIZE", P::Reverb(R::Size)),
+        ("$ENGINE_PAR_RV2_DAMPING", P::Reverb(R::Damping)),
+        ("$ENGINE_PAR_RV2_DIFF", P::Reverb(R::Diffusion)),
+        ("$ENGINE_PAR_RV2_PREDELAY", P::Reverb(R::Predelay)),
+        ("$ENGINE_PAR_RV2_HIGHCUT", P::Reverb(R::HighCut)),
+        ("$ENGINE_PAR_RV2_LOWSHELF", P::Reverb(R::LowShelf)),
+        ("$ENGINE_PAR_RV2_STEREO", P::Reverb(R::Stereo)),
+        ("$ENGINE_PAR_GN_GAIN", P::GainerGain),
+        ("$ENGINE_PAR_STEREO", P::StereoWidth),
+        ("$ENGINE_PAR_STEREO_PAN", P::StereoPan),
+        ("$ENGINE_PAR_VOLUME", P::Volume),
+        ("$ENGINE_PAR_PAN", P::Pan),
+        ("$ENGINE_PAR_TUNE", P::Tune),
+    ]
+};
+
+/// Whether the engine understands catalog name `name` (every other one is
+/// an opaque symbol it cannot act on), for coverage reports.
+#[must_use]
+pub fn understood(name: &str) -> bool {
+    name.eq_ignore_ascii_case(CONTROL_VALUE) || engine_par(name).is_some()
+}
+
+fn engine_par(name: &str) -> Option<EnginePar> {
+    let found = ENGINE_PARS
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name));
+    found.map(|&(_, p)| p)
+}
+
 const CONTROL_VALUE: &str = "$CONTROL_PAR_VALUE";
 
 /// Callbacks a KSP instrument may have running or waiting at once.
@@ -103,32 +87,22 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             persistence_changed: entry(CallbackKind::PersistenceChanged),
             listener: entry(CallbackKind::Listener),
             pgs_changed: entry(CallbackKind::PgsChanged),
+            ui_controls: entry(CallbackKind::UiControls),
+            async_complete: entry(CallbackKind::AsyncComplete),
+            ui_control: (0u32..)
+                .zip(&script.controls)
+                .map(|(n, c)| {
+                    let id = FIRST_UI_ID + c.variable as i32;
+                    (id, script.callback(CallbackKind::UiControl, Some(n)))
+                })
+                .collect(),
         },
         coroutines: COROUTINES,
         foreign: None,
         controls: controls(script),
         engine_pars: EnginePars {
-            attack: symbol(script, ATTACK),
-            hold: symbol(script, HOLD),
-            decay: symbol(script, DECAY),
-            sustain: symbol(script, SUSTAIN),
-            release: symbol(script, RELEASE),
-            intensity: symbol(script, INTENSITY),
-            mod_bypass: symbol(script, MOD_BYPASS),
-            attack_curve: symbol(script, ATTACK_CURVE),
-            effect_bypass: symbol(script, EFFECT_BYPASS),
-            effect_output: symbol(script, EFFECT_OUTPUT),
-            send_bypass: symbol(script, SEND_BYPASS),
-            send_output: symbol(script, SEND_OUTPUT),
-            send_dry: symbol(script, SEND_DRY),
-            send_levels: SEND_LEVELS.map(|name| symbol(script, name)),
-            reverb: REVERB.map(|name| symbol(script, name)),
-            gainer_gain: symbol(script, GAINER_GAIN),
-            stereo_width: symbol(script, STEREO_WIDTH),
-            stereo_pan: symbol(script, STEREO_PAN),
-            volume: symbol(script, VOLUME),
-            pan: symbol(script, PAN),
-            tune: symbol(script, TUNE),
+            first: SYMBOL_BASE,
+            by_id: script.symbols.iter().map(|n| engine_par(n)).collect(),
         },
         reverb_laws: kontra_format_kontakt::reverb_laws(),
         data: data
@@ -195,6 +169,8 @@ fn controls(script: &Script) -> Controls {
     Controls {
         first: FIRST_UI_ID,
         value_par,
+        num_items_par: symbol(script, "$CONTROL_PAR_NUM_ITEMS"),
+        selected_item_par: symbol(script, "$CONTROL_PAR_SELECTED_ITEM_IDX"),
         cells,
     }
 }
@@ -226,6 +202,9 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
             persistence_changed: None,
             listener: None,
             pgs_changed: None,
+            ui_controls: None,
+            async_complete: None,
+            ui_control: Vec::new(),
         },
         coroutines: COROUTINES,
         controls: Controls::default(),
