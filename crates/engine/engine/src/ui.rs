@@ -94,6 +94,9 @@ pub struct ControlLook<'a> {
     /// Text parameters it set, by parameter id.
     pub texts: &'a [(i32, Text)],
     pub menu: &'a [MenuItem],
+    /// Moves on every write to its look (not its value, which lives in a
+    /// script cell): a UI redraws the control when this or the value moved.
+    pub generation: u32,
 }
 
 pub(crate) struct Ui {
@@ -105,6 +108,8 @@ pub(crate) struct Ui {
     ranges: Vec<KeyRange>,
     /// Per script slot.
     pages: Box<[Page]>,
+    /// Per script slot, by control: see [`ControlLook::generation`].
+    generations: Box<[Box<[u32]>]>,
 }
 
 impl Ui {
@@ -121,7 +126,8 @@ impl Ui {
                 .collect(),
             keys: vec![Key::UNTOUCHED; KEYS].into(),
             ranges: Vec::new(),
-            pages: controls.map(|_| Page::UNSET).collect(),
+            pages: controls.clone().map(|_| Page::UNSET).collect(),
+            generations: controls.map(|n| vec![0; n].into()).collect(),
         }
     }
 }
@@ -164,6 +170,7 @@ impl Engine {
             pars: self.control_pars.get(s)?.get(n).map_or(&[], Vec::as_slice),
             texts: self.ui.texts.get(s)?.get(n).map_or(&[], Vec::as_slice),
             menu: self.menu(slot, id),
+            generation: self.ui.generations.get(s)?.get(n).copied().unwrap_or(0),
         })
     }
 
@@ -182,15 +189,39 @@ impl Engine {
         let Some(texts) = self.texts_mut(id) else {
             return;
         };
-        match texts.iter_mut().find(|(p, _)| *p == par) {
+        let changed = match texts.iter_mut().find(|(p, _)| *p == par) {
             Some(t) if line && !t.1.as_str().is_empty() => {
                 // ponytail: a label past 320 bytes keeps its first lines.
-                if t.1.push("\n") {
-                    t.1.push(text.as_str());
-                }
+                t.1.push("\n") && t.1.push(text.as_str())
             }
-            Some(t) => t.1 = text,
-            None => texts.push((par, text)),
+            Some(t) => {
+                let changed = t.1.as_str() != text.as_str();
+                t.1 = text;
+                changed
+            }
+            None => {
+                texts.push((par, text));
+                true
+            }
+        };
+        if changed {
+            self.touch_id(id);
+        }
+    }
+
+    /// Marks control `n` of the running script as changed in look.
+    /// Only a write that changes what is stored counts, so a script that
+    /// sets the same look every tick leaves the UI idle.
+    pub(crate) fn touch(&mut self, n: usize) {
+        let slot = usize::from(self.running.slot);
+        if let Some(g) = self.ui.generations.get_mut(slot).and_then(|g| g.get_mut(n)) {
+            *g = g.wrapping_add(1);
+        }
+    }
+
+    fn touch_id(&mut self, id: i32) {
+        if let Some(n) = self.control_index_in(self.running.slot, id) {
+            self.touch(n);
         }
     }
 
@@ -279,16 +310,25 @@ impl Engine {
                         value,
                         visible: true,
                     });
+                    self.touch_id(id);
                 }
                 HostValue::Nothing
             }
             Action::SetMenuItemStr | Action::SetMenuItemValue | Action::SetMenuItemVisibility => {
                 let (action, value) = (call.action, int(2));
                 if let Some(i) = at.and_then(|n| self.menu_mut(id)?.get_mut(n)) {
+                    let changed = match action {
+                        Action::SetMenuItemStr => i.text.as_str() != text.as_str(),
+                        Action::SetMenuItemValue => i.value != value,
+                        _ => i.visible != (value != 0),
+                    };
                     match action {
                         Action::SetMenuItemStr => i.text = text,
                         Action::SetMenuItemValue => i.value = value,
                         _ => i.visible = value != 0,
+                    }
+                    if changed {
+                        self.touch_id(id);
                     }
                 }
                 HostValue::Nothing
@@ -302,12 +342,7 @@ impl Engine {
             // slot on the audio thread, as `set_control_par` does.
             Action::SetControlParStr => {
                 let par = int(1);
-                if let Some(texts) = self.texts_mut(id) {
-                    match texts.iter_mut().find(|(p, _)| *p == par) {
-                        Some(t) => t.1 = text,
-                        None => texts.push((par, text)),
-                    }
-                }
+                self.set_text_par(id, par, text, false);
                 HostValue::Nothing
             }
             Action::GetControlParStr => {

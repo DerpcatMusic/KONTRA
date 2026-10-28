@@ -11,8 +11,8 @@ use kontra_ksp::{Cells, Control, ControlKind, FIRST_UI_ID, SYMBOL_BASE, Script};
 use crate::perf_view::{View, ViewControl};
 
 mod widget;
-use widget::{Decl, widget};
 use kontra_ui_model as ui;
+use widget::{Decl, widget};
 
 use crate::script::LOOK;
 
@@ -256,84 +256,237 @@ fn unit(n: i32) -> &'static str {
     }
 }
 
+/// Where a widget comes from: the script's control and/or the view's, by
+/// index into [`Face`], and the id the script addresses it by.
+#[derive(Clone, Copy, Debug)]
+struct Key {
+    id: i32,
+    control: Option<usize>,
+    view: Option<usize>,
+}
+
+/// The view's controls in its order (the script compiles only those it
+/// names), then the script's own.
+fn keys(face: &Face) -> Vec<Key> {
+    let script: HashMap<&str, usize> = face
+        .controls
+        .iter()
+        .enumerate()
+        .map(|(n, (_, name, _))| (&**name, n))
+        .collect();
+    let id = |n: usize| {
+        let (control, ..) = face.controls.get(n)?;
+        Some(FIRST_UI_ID + i32::try_from(control.variable).ok()?)
+    };
+    let viewed = face.view.iter().flat_map(|v| &v.controls);
+    let mut keys: Vec<Key> = viewed
+        .clone()
+        .enumerate()
+        .filter_map(|(v, c)| {
+            let control = script.get(c.name.as_str()).copied();
+            Some(Key {
+                // A view control the script never names: an id no control has.
+                id: control.map_or_else(|| Some(-1 - i32::try_from(v).ok()?), id)?,
+                control,
+                view: Some(v),
+            })
+        })
+        .collect();
+    let in_view: std::collections::HashSet<&str> = viewed.map(|v| v.name.as_str()).collect();
+    keys.extend(
+        face.controls
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, name, _))| !in_view.contains(&**name))
+            .filter_map(|(n, _)| {
+                Some(Key {
+                    id: id(n)?,
+                    control: Some(n),
+                    view: None,
+                })
+            }),
+    );
+    keys
+}
+
+const UNTOUCHED: ControlLook<'static> = ControlLook {
+    value: None,
+    pars: &[],
+    texts: &[],
+    menu: &[],
+    generation: 0,
+};
+
+fn decl<'a>(face: &'a Face, slot: u8, engine: &'a Engine, key: Key) -> Option<Decl<'a>> {
+    let view = key.view.and_then(|v| face.view.as_ref()?.controls.get(v));
+    let control = key.control.and_then(|n| face.controls.get(n));
+    let look = match control {
+        Some(_) => engine.control_look(slot, key.id)?,
+        None => UNTOUCHED,
+    };
+    Some(Decl {
+        kind: view.map(|v| v.kind).or(control.map(|c| c.0.kind))?,
+        params: view.map(|v| &*v.params).or(control.map(|c| &*c.0.params))?,
+        view,
+        name: view.map(|v| &*v.name).or(control.map(|c| &*c.1))?,
+        cells: control.map_or(Cells::Const, |c| c.2),
+        id: key.id,
+        look,
+    })
+}
+
+/// What a widget was last built from: when none of it moved, the widget
+/// stays as it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Seen {
+    generation: u32,
+    value: Option<i64>,
+    /// A hash of an array control's cells (a table's steps).
+    cells: u64,
+}
+
+impl Seen {
+    fn of(d: &Decl<'_>, slot: u8, engine: &Engine) -> Self {
+        let cells = match d.cells {
+            Cells::Int { base, len } | Cells::Real { base, len } if len > 1 => (base..base + len)
+                .fold(0xcbf2_9ce4_8422_2325_u64, |h, c| {
+                    let v = engine.script_cell_in(slot, c as usize).unwrap_or(0) as u64;
+                    (h ^ v).wrapping_mul(0x100_0000_01b3)
+                }),
+            _ => 0,
+        };
+        Self {
+            generation: d.look.generation,
+            value: d.look.value,
+            cells,
+        }
+    }
+}
+
+/// A script's UI tree kept current: built once, then [`Live::refresh`]
+/// rebuilds only the widgets whose control the script or the user changed.
+pub struct Live {
+    pub tree: ui::Interface,
+    keys: Vec<Key>,
+    seen: Vec<Seen>,
+    assets: HashMap<String, ui::AssetRef>,
+    styles: HashMap<(i32, i32), ui::StyleRef>,
+}
+
 /// Script `slot`'s performance view as `on init` left it. `picture` gives the
 /// layout of a library-relative image path; `None` means one plain frame.
 ///
 /// # Errors
 /// When the script built a tree the model rejects (bad nesting).
-pub fn interface<'a>(
-    face: &'a Face,
+pub fn interface(
+    face: &Face,
     slot: u8,
-    engine: &'a Engine,
+    engine: &Engine,
     picture: &dyn Fn(&str) -> Option<ui::ImageMeta>,
 ) -> Result<ui::Interface, ui::Error> {
-    let mut bld = Builder {
-        ui: ui::Interface {
-            source: ui::Source::Ksp { slot },
-            ..Default::default()
-        },
-        assets: HashMap::new(),
-        styles: HashMap::new(),
-        picture,
-    };
-    if let Some(page) = engine.page(slot) {
-        page_of(&mut bld, page, face.view.as_ref());
-    }
-    let declared =
-        |control: &'a Control, name: &'a str, cells: Cells, view: Option<&'a ViewControl>| {
-            let id = FIRST_UI_ID + i32::try_from(control.variable).ok()?;
-            Some(Decl {
-                kind: view.map_or(control.kind, |v| v.kind),
-                params: view.map_or(&control.params, |v| &v.params),
-                view,
-                name,
-                cells,
-                id,
-                look: engine.control_look(slot, id)?,
-            })
-        };
-    let script: HashMap<&str, _> = face
-        .controls
-        .iter()
-        .map(|(control, name, cells)| (&**name, (control, *cells)))
-        .collect();
-    // The view's controls in its order (the script compiles only those it
-    // names), then the script's own.
-    let viewed = face.view.iter().flat_map(|v| &v.controls);
-    let mut decls: Vec<Decl<'_>> = viewed
-        .clone()
-        .enumerate()
-        .filter_map(|(n, v)| match script.get(v.name.as_str()) {
-            Some(&(control, cells)) => declared(control, &v.name, cells, Some(v)),
-            None => Some(Decl {
-                kind: v.kind,
-                params: &v.params,
-                view: Some(v),
-                name: &v.name,
-                cells: Cells::Const,
-                // Not addressable by the script: an id no control has.
-                id: -1 - i32::try_from(n).ok()?,
-                look: ControlLook {
-                    value: None,
-                    pars: &[],
-                    texts: &[],
-                    menu: &[],
-                },
-            }),
-        })
-        .collect();
-    let in_view: std::collections::HashSet<&str> = viewed.map(|v| v.name.as_str()).collect();
-    decls.extend(
-        face.controls
+    Live::new(face, slot, engine, picture).map(|l| l.tree)
+}
+
+impl Live {
+    /// Builds the tree, as [`interface`].
+    ///
+    /// # Errors
+    /// When the script built a tree the model rejects (bad nesting).
+    pub fn new(
+        face: &Face,
+        slot: u8,
+        engine: &Engine,
+        picture: &dyn Fn(&str) -> Option<ui::ImageMeta>,
+    ) -> Result<Self, ui::Error> {
+        let keys = keys(face);
+        let decls: Vec<_> = keys
             .iter()
-            .filter(|(_, name, _)| !in_view.contains(&**name))
-            .filter_map(|(control, name, cells)| declared(control, name, *cells, None)),
-    );
+            .filter_map(|&k| decl(face, slot, engine, k))
+            .collect();
+        let keys = keys
+            .into_iter()
+            .filter(|&k| decl(face, slot, engine, k).is_some())
+            .collect();
+        let seen = decls.iter().map(|d| Seen::of(d, slot, engine)).collect();
+        let mut bld = Builder {
+            ui: ui::Interface {
+                source: ui::Source::Ksp { slot },
+                ..Default::default()
+            },
+            assets: HashMap::new(),
+            styles: HashMap::new(),
+            picture,
+        };
+        build(&mut bld, face, slot, engine, &decls)?;
+        Ok(Self {
+            tree: bld.ui,
+            keys,
+            seen,
+            assets: bld.assets,
+            styles: bld.styles,
+        })
+    }
+
+    /// Rebuilds the widgets whose control changed since the last call, in
+    /// place, and returns them; an idle script returns none. Panel nesting
+    /// is kept from the build.
+    pub fn refresh(
+        &mut self,
+        face: &Face,
+        slot: u8,
+        engine: &Engine,
+        picture: &dyn Fn(&str) -> Option<ui::ImageMeta>,
+    ) -> Vec<ui::WidgetRef> {
+        let mut changed = Vec::new();
+        for (n, (&key, seen)) in self.keys.iter().zip(&mut self.seen).enumerate() {
+            let Some(d) = decl(face, slot, engine, key) else {
+                continue;
+            };
+            let now = Seen::of(&d, slot, engine);
+            if now != *seen {
+                *seen = now;
+                changed.push((n, d));
+            }
+        }
+        if changed.is_empty() {
+            return Vec::new();
+        }
+        let mut bld = Builder {
+            ui: std::mem::take(&mut self.tree),
+            assets: std::mem::take(&mut self.assets),
+            styles: std::mem::take(&mut self.styles),
+            picture,
+        };
+        let mut out = Vec::with_capacity(changed.len());
+        for (n, d) in changed {
+            let props = props(face, &d);
+            let mut w = widget(&mut bld, slot, &d, &props, engine);
+            if let Some(old) = bld.ui.widgets.get_mut(n) {
+                w.parent = old.parent;
+                *old = w;
+                out.push(ui::WidgetRef(n));
+            }
+        }
+        (self.tree, self.assets, self.styles) = (bld.ui, bld.assets, bld.styles);
+        out
+    }
+}
+
+fn build(
+    bld: &mut Builder<'_>,
+    face: &Face,
+    slot: u8,
+    engine: &Engine,
+    decls: &[Decl<'_>],
+) -> Result<(), ui::Error> {
+    if let Some(page) = engine.page(slot) {
+        page_of(bld, page, face.view.as_ref());
+    }
     let by_id: HashMap<i32, usize> = decls.iter().enumerate().map(|(i, d)| (d.id, i)).collect();
     let by_name: HashMap<&str, i32> = decls.iter().map(|d| (d.name, d.id)).collect();
     for (i, d) in decls.iter().enumerate() {
         let props = props(face, d);
-        let mut w = widget(&mut bld, slot, d, &props, engine);
+        let mut w = widget(bld, slot, d, &props, engine);
         let parent = props.int("$CONTROL_PAR_PARENT_PANEL").or_else(|| {
             let name = d.view?.parent.as_deref()?;
             by_name.get(name).copied()
@@ -376,7 +529,7 @@ pub fn interface<'a>(
         );
     }
     bld.ui.validate()?;
-    Ok(bld.ui)
+    Ok(())
 }
 
 /// The page as init left it, over the performance view's when it loads one.
@@ -466,4 +619,3 @@ fn props<'a>(face: &'a Face, d: &'a Decl<'a>) -> Props<'a> {
             .collect(),
     }
 }
-
