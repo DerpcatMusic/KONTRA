@@ -241,6 +241,7 @@ fn hz(rate: ir::Rate, tempo: f32) -> f32 {
     match rate {
         ir::Rate::Hz(hz) => hz,
         ir::Rate::Beats(beats) => tempo / 60.0 / beats.max(1e-3),
+        ir::Rate::Steps { beats, count } => tempo / 60.0 / (beats * count).max(1e-3),
     }
 }
 

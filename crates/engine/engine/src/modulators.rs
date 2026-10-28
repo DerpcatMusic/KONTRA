@@ -131,6 +131,7 @@ pub(crate) fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
     let hz = match l.rate {
         ir::Rate::Hz(hz) => hz,
         ir::Rate::Beats(beats) => tempo / 60.0 / beats.max(1e-3),
+        ir::Rate::Steps { beats, count } => tempo / 60.0 / (beats * count).max(1e-3),
     };
     let cycles = f64::from(l.phase) + f64::from(hz) * f64::from(t);
     let p = cycles.rem_euclid(1.0) as f32;

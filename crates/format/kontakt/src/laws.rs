@@ -281,7 +281,10 @@ pub(crate) fn lfo(l: &Lfo, clock: ir::Clock) -> Option<ir::Lfo> {
     let rate = if note == FREE {
         ir::Rate::Hz(hz)
     } else {
-        ir::Rate::Beats(4.0 * note * hz)
+        ir::Rate::Steps {
+            beats: 4.0 * note,
+            count: hz,
+        }
     };
     (fade.values[0] == FREE).then_some(ir::Lfo {
         wave,

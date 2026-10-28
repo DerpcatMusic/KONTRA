@@ -149,6 +149,9 @@ impl Engine {
                             lfo.rate = match lfo.rate {
                                 ir::Rate::Hz(hz) => ir::Rate::Hz((hz * f).clamp(lo, hi.max(lo))),
                                 ir::Rate::Beats(b) => ir::Rate::Beats(b / f),
+                                ir::Rate::Steps { beats, count } => {
+                                    ir::Rate::Beats(beats * count / f)
+                                }
                             };
                         }
                         _ => {}
