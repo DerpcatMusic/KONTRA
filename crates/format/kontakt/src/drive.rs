@@ -117,6 +117,11 @@ pub(crate) fn route(
     name: &str,
     intensity: f32,
 ) -> Option<ir::ModKind> {
+    // A release-trigger counter is read at note-on only; a voice's effect
+    // never sees it, so it is reported instead.
+    if matches!(source, ir::Source::HeldTime { .. }) {
+        return None;
+    }
     let (param, scale) = match name {
         "formantTalk" => (ir::EffectParam::FormantTalk, 1.0),
         "formantSize" => (ir::EffectParam::FormantSize, 1.0),
@@ -216,5 +221,7 @@ mod tests {
         assert_eq!(depth("eqFreq1"), Some(0.25 * 1000f32.log2()));
         assert_eq!(depth("eqFreq4"), None);
         assert_eq!(depth("volume"), None);
+        let counter = ir::Source::HeldTime { span_ms: 100 };
+        assert_eq!(route(counter, 2, "shaper", 0.5), None);
     }
 }
