@@ -4,7 +4,8 @@
 //! of the shaped band into the next frame's input split. Ported from v2
 //! sampler-core dsp/color/skreamer.rs, itself checked against the native
 //! core under emulation; the format translators carry the knob laws and
-//! the curve.
+//! the curve. It is its own class because the native core (FUN_140aaf220)
+//! feeds the shaped band back into the input split, which `Shaper` cannot.
 
 use std::f32::consts::TAU;
 
@@ -30,6 +31,10 @@ const DOWN: [Lanes; 4] = [
 /// Frames per gain step: gains move in 32-frame blocks.
 const BLOCK: u32 = 32;
 
+/// How long the gains take to rise after `new` or `reset`: long enough not
+/// to click.
+const RAMP_SECONDS: f32 = 0.01;
+
 /// The pedal's settings in physical terms.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Voicing {
@@ -39,9 +44,11 @@ pub struct Voicing {
     /// The output smoothers' corners in Hz: an envelope, the feedback band
     /// (bright) and the tone low-pass.
     pub smooth_hz: [f32; 3],
-    /// Linear gains: into the curve, of the dry band, and of the output.
+    /// Linear gain into the curve.
     pub drive: f32,
+    /// Linear gain of the dry band.
     pub mix: f32,
+    /// Linear output gain.
     pub level: f32,
     /// The clipping curve at 256 points over inputs −128..=127.
     pub curve: &'static [f32; 256],
@@ -74,7 +81,7 @@ impl Overdrive {
     /// At `v`, its gains rising from zero over about 10 ms.
     #[must_use]
     pub fn new(v: Voicing, rate: u32) -> Self {
-        let ramp = ((rate as f32 * 0.000_312_5 + 0.5) as u32).max(1);
+        let ramp = ((rate as f32 * RAMP_SECONDS / BLOCK as f32 + 0.5) as u32).max(1);
         let mut o = Self {
             split: [0.0; 4],
             smooth: [0.0; 4],
@@ -118,6 +125,13 @@ impl Overdrive {
                     self.blocks -= 1;
                 }
                 self.frames = BLOCK;
+                // The state feeds back and there is no FTZ on the audio
+                // thread: a decaying tail must not go subnormal.
+                for v in self.ch.as_flattened_mut().as_flattened_mut() {
+                    if v.abs() < f32::MIN_POSITIVE {
+                        *v = 0.0;
+                    }
+                }
             }
             self.frames -= 1;
             for (g, s) in self.gain.iter_mut().zip(self.step) {
@@ -208,6 +222,29 @@ fn sample(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tail_never_goes_subnormal() {
+        static CURVE: std::sync::LazyLock<[f32; 256]> =
+            std::sync::LazyLock::new(|| std::array::from_fn(|i| (i as f32 - 128.0) / 128.0));
+        let v = Voicing {
+            split_hz: [20.0; 3],
+            smooth_hz: [20.0; 3],
+            drive: 0.5,
+            mix: 0.5,
+            level: 0.5,
+            curve: &CURVE,
+        };
+        let mut o = Overdrive::new(v, 48_000);
+        let mut burst = [[0.5f32; 2]; 4800];
+        o.process(&mut burst);
+        let mut silence = [[0.0f32; 2]; 48_000];
+        for _ in 0..2 {
+            o.process(&mut silence);
+        }
+        let flat = o.ch.as_flattened().as_flattened();
+        assert!(flat.iter().all(|v| *v == 0.0 || v.is_normal()));
+    }
 
     /// A 0.5 sine at 200 Hz through the pedal at 48 kHz, frames 960..976,
     /// against the native core under emulation (v2 sampler-core

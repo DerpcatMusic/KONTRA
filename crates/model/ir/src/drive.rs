@@ -48,9 +48,11 @@ pub struct Overdrive {
     pub split_hz: [f32; 3],
     /// The output smoothers' corners in Hz: envelope, bright, tone.
     pub smooth_hz: [f32; 3],
-    /// Linear gains into the curve, of the dry band and of the output.
+    /// Linear gain into the curve.
     pub drive: f32,
+    /// Linear gain of the dry band.
     pub mix: f32,
+    /// Linear output gain.
     pub level: f32,
     /// The clipping curve at 256 points over inputs −128..=127.
     pub curve: &'static [f32; 256],
