@@ -985,10 +985,14 @@ fn an_instrument_reverb_rings_on_after_the_note() {
         dry: 0.0,
     };
     // The summed level of the last block, a second after key up.
-    let tail = |inserts: Vec<Option<ir::Effect>>| {
+    let tail = |inserts: Vec<Option<ir::Effect>>, group: bool| {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
         let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
-        plan.inserts = inserts;
+        if group {
+            plan.groups[0].inserts = inserts;
+        } else {
+            plan.inserts = inserts;
+        }
         let mut e = engine(&store, plan);
         let first = level(&mut e, &[on(60, 1.0)]);
         let mut buf = vec![[0.0; 2]; 256];
@@ -1002,12 +1006,19 @@ fn an_instrument_reverb_rings_on_after_the_note() {
         let sum: f32 = buf.iter().map(|[l, r]| l.abs() + r.abs()).sum();
         (first, sum)
     };
-    let (dry_first, dry_tail) = tail(Vec::new());
+    let (dry_first, dry_tail) = tail(Vec::new(), false);
     assert!(dry_first[0] > 0.1 && dry_tail == 0.0, "the voice has ended");
-    let (first, wet) = tail(vec![Some(reverb)]);
+    let (first, wet) = tail(vec![Some(reverb)], false);
     // Fully wet: nothing until the shortest line (30 ms) comes round.
     assert_eq!(first, [0.0; 2]);
     assert!(wet > 1e-3 && wet.is_finite(), "tail {wet}");
+    // In a group rack it runs on the group's sum, the same way.
+    let (first, group) = tail(vec![Some(reverb)], true);
+    assert_eq!(first, [0.0; 2]);
+    assert!(
+        (group - wet).abs() < 1e-3 * wet,
+        "group {group} instrument {wet}"
+    );
 }
 
 #[test]

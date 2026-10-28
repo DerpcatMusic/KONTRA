@@ -109,23 +109,6 @@ fn rack(
                 );
             }
             let (effect, module, kind) = effect?;
-            // ponytail: a group rack folds into each voice's matrix, so its
-            // convolution passes only the dry level and its sends feed nothing
-            // (per-voice wet paths later).
-            let lost = match effect.kind {
-                ir::EffectKind::Convolution { .. } => Some("group convolution"),
-                ir::EffectKind::Reverb(_) => Some("group reverb"),
-                ir::EffectKind::Sends(_) => Some("group send levels"),
-                ir::EffectKind::Compressor(_) => Some("group compressor"),
-                ir::EffectKind::Limiter(_) => Some("group limiter"),
-                ir::EffectKind::Delay(_) => Some("group delay"),
-                ir::EffectKind::Phaser(_) => Some("group phaser"),
-                ir::EffectKind::Transient(_) => Some("group transient master"),
-                _ => None,
-            };
-            if let Some(feature) = lost.filter(|_| at.starts_with("group") && !effect.bypass) {
-                notes.add(ir::Impact::Audible, feature, format!("{at} slot {slot}"));
-            }
             // ponytail: per-voice racks are built after the init callback, so
             // one enabled later plays dry.
             if effect.bypass
@@ -169,7 +152,42 @@ fn rack(
     while out.last().is_some_and(Option::is_none) {
         out.pop();
     }
+    if at.starts_with("group") {
+        group_wet(&out, at, notes);
+    }
     out
+}
+
+/// A group rack runs its wet slots on the group's sum, except one at or
+/// before a drive effect (which runs on each voice): that one keeps only its
+/// dry level. Group sends feed nothing.
+// ponytail: a filter or EQ a route moves also runs per voice (engine
+// voice_rack.rs); a wet slot before one is not reported.
+fn group_wet(out: &[Option<ir::Effect>], at: &str, notes: &mut Notes) {
+    let drive = |e: &ir::Effect| {
+        !e.bypass && matches!(e.kind, ir::EffectKind::Shaper(_) | ir::EffectKind::Crush(_))
+    };
+    let last_drive = out.iter().rposition(|e| e.as_ref().is_some_and(drive));
+    for (slot, e) in out.iter().enumerate() {
+        let Some(e) = e.as_ref().filter(|e| !e.bypass) else {
+            continue;
+        };
+        let lost = match e.kind {
+            ir::EffectKind::Sends(_) => Some("group send levels"),
+            _ if last_drive.is_none_or(|d| slot > d) => None,
+            ir::EffectKind::Convolution { .. } => Some("group convolution before a drive"),
+            ir::EffectKind::Reverb(_) => Some("group reverb before a drive"),
+            ir::EffectKind::Compressor(_) => Some("group compressor before a drive"),
+            ir::EffectKind::Limiter(_) => Some("group limiter before a drive"),
+            ir::EffectKind::Delay(_) => Some("group delay before a drive"),
+            ir::EffectKind::Phaser(_) => Some("group phaser before a drive"),
+            ir::EffectKind::Transient(_) => Some("group transient master before a drive"),
+            _ => None,
+        };
+        if let Some(feature) = lost {
+            notes.add(ir::Impact::Audible, feature, format!("{at} slot {slot}"));
+        }
+    }
 }
 
 /// A slot's effect and module id. The saved records (reader layouts in
