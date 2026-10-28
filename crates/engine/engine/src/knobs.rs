@@ -20,6 +20,7 @@ impl Engine {
             return false;
         };
         let x = value.clamp(0, 1_000_000) as f32 / 1e6;
+        let n = self.row(n, group, slot);
         let Some((target, y)) = self
             .script()
             .and_then(|s| s.knobs.get(usize::from(n)))
@@ -33,7 +34,11 @@ impl Engine {
         let Some(at) = self.knob_mut(target, group, slot, generic) else {
             return false;
         };
-        *at = y;
+        *at = if target == ir::KnobTarget::LfoSteps {
+            y.round().max(1.0)
+        } else {
+            y
+        };
         self.refresh_all(None);
         true
     }
@@ -41,6 +46,7 @@ impl Engine {
     /// `get_engine_par` of knob `n`: the setting whose law gives the value
     /// the control holds.
     pub(crate) fn knob(&mut self, n: u16, group: i32, slot: i32, generic: i32) -> Option<i32> {
+        let n = self.row(n, group, slot);
         let target = self.script()?.knobs.get(usize::from(n))?.0;
         if let ir::KnobTarget::Slot(knob) = target {
             let law = self.slot_law(knob, group, slot, generic)?;
@@ -54,6 +60,25 @@ impl Engine {
         let y = *self.knob_mut(target, group, slot, generic)?;
         let law = &self.script()?.knobs.get(usize::from(n))?.1;
         Some((invert(law, y) * 1e6).round() as i32)
+    }
+
+    /// Row `n`, or the [`ir::KnobTarget::LfoSteps`] row after it when `n`
+    /// sets the rate of a stepped LFO.
+    fn row(&mut self, n: u16, group: i32, slot: i32) -> u16 {
+        let next = n.saturating_add(1);
+        let target = |e: &Self, k: u16| e.script()?.knobs.get(usize::from(k)).map(|r| r.0);
+        if target(self, n) != Some(ir::KnobTarget::LfoRate)
+            || target(self, next) != Some(ir::KnobTarget::LfoSteps)
+        {
+            return n;
+        }
+        let lfo = usize::try_from(group)
+            .ok()
+            .and_then(|g| self.groups.get_mut(g)?.lfo_mut(slot));
+        match lfo.map(|l| l.rate) {
+            Some(ir::Rate::Steps { .. }) => next,
+            _ => n,
+        }
     }
 
     /// Sets every field slot knob `knob` moves to its law at `x`.
@@ -132,15 +157,22 @@ impl Engine {
                 p.field_mut(&mut self.effect_mut(group, slot, generic)?.kind)
             }
             ir::KnobTarget::Slot(_) => None,
-            ir::KnobTarget::LfoRate | ir::KnobTarget::LfoWeight(_) => {
+            ir::KnobTarget::LfoRate
+            | ir::KnobTarget::LfoSteps
+            | ir::KnobTarget::LfoWidth
+            | ir::KnobTarget::LfoWeight(_) => {
                 let lfo = self
                     .groups
                     .get_mut(usize::try_from(group).ok()?)?
                     .lfo_mut(slot)?;
                 match (target, &mut lfo.rate, &mut lfo.wave) {
-                    // ponytail: a synced LFO's knob is a note count whose law
-                    // is not read; its writes stay unanswered.
                     (ir::KnobTarget::LfoRate, ir::Rate::Hz(hz), _) => Some(hz),
+                    (ir::KnobTarget::LfoSteps, ir::Rate::Steps { count, .. }, _) => Some(count),
+                    (
+                        ir::KnobTarget::LfoWidth,
+                        _,
+                        ir::Wave::Square { width } | ir::Wave::Multi { width, .. },
+                    ) => Some(width),
                     (ir::KnobTarget::LfoWeight(w), _, ir::Wave::Multi { weights, .. }) => {
                         weights.get_mut(usize::from(w))
                     }

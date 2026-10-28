@@ -14,7 +14,7 @@ use kontra_ir as ir;
 /// are the slot's own (`Slot`). The delay's composite knobs are not here.
 pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     use ir::EffectParam as E;
-    use ir::KnobTarget::{Effect, LfoRate, LfoWeight, Slot};
+    use ir::KnobTarget::{Effect, LfoRate, LfoSteps, LfoWeight, LfoWidth, Slot};
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let mod_hz = ir::Law::Exp { lo: 0.05, hi: 8.0 };
     vec![
@@ -107,6 +107,19 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
                 hi: 0.010_415 * 20_465.0,
             },
         ),
+        // A synced LFO's count, 48 over that Hz (probes/mod_par_laws.lua:
+        // x 0, .1, .25, .5, .75, 1 store 4609, 1704, 385, 32, 3, 1).
+        (
+            "$ENGINE_PAR_INTMOD_FREQUENCY",
+            LfoSteps,
+            ir::Law::Exp {
+                lo: 48.0 / 0.010_415,
+                hi: 48.0 / (0.010_415 * 20_465.0),
+            },
+        ),
+        // The saved width for x = 0, .1, .25, .5, .75, .9, 1 is 0.05, 0.14,
+        // 0.275, 0.5, 0.725, 0.86, 0.95 (probes/knob_save_laws.lua).
+        ("$ENGINE_PAR_INTMOD_PULSEWIDTH", LfoWidth, lin(0.05, 0.95)),
         // The Multi weights in the mixer's order: sine, saw, triangle, pulse, random.
         ("$ENGINE_PAR_LFO_SINE", LfoWeight(0), lin(-1.0, 1.0)),
         ("$ENGINE_PAR_LFO_SAW", LfoWeight(1), lin(-1.0, 1.0)),
