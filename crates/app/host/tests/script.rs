@@ -1461,3 +1461,21 @@ fn reset_rls_trig_counter_restarts_the_release_triggers_decay() {
         assert!((got - expected).abs() < 0.02, "reset {reset}: {got}");
     }
 }
+
+/// Output menus see the engine's one stereo pair; `disable_logging` is
+/// answered, not counted as unhandled.
+#[test]
+fn output_channels_and_disable_logging_are_answered() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let e = engine(
+        &store,
+        vec![z],
+        "on init
+            disable_logging($NI_LOG_MESSAGE)
+            message($NUM_OUTPUT_CHANNELS)
+        end on",
+    );
+    assert_eq!(e.last_message(), "2");
+    assert_eq!(e.stats().actions_unhandled, 0);
+}
