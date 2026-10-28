@@ -124,7 +124,15 @@ pub(crate) fn route(
         "shaper" | "distortionIntensity" => (ir::EffectParam::ShaperAmount, 1.0),
         "bitdepth" => (ir::EffectParam::CrushBits, 16.0),
         "downsample" => (ir::EffectParam::CrushRate, 1.0),
-        _ => return None,
+        // The legacy EQ's centre is 20·1000^v (eq-kontakt.md §1.1), its
+        // source scaled by 0.5 (compiler string 0x144f1d6f8).
+        _ => match name
+            .strip_prefix("eqFreq")
+            .and_then(|n| n.parse::<u8>().ok())
+        {
+            Some(n @ 1..=3) => (ir::EffectParam::BellOctaves(n - 1), 0.5 * 1000f32.log2()),
+            _ => return None,
+        },
     };
     Some(ir::ModKind::EffectParam {
         source,
@@ -196,6 +204,8 @@ mod tests {
         assert_eq!(depth("shaper"), Some(0.5));
         assert_eq!(depth("bitdepth"), Some(8.0));
         assert_eq!(depth("formantTalk"), Some(0.5));
+        assert_eq!(depth("eqFreq1"), Some(0.25 * 1000f32.log2()));
+        assert_eq!(depth("eqFreq4"), None);
         assert_eq!(depth("volume"), None);
     }
 }
