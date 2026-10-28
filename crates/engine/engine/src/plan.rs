@@ -278,6 +278,8 @@ pub struct Bus {
     pub inserts: Vec<Option<ir::Effect>>,
     /// Later buses it feeds ([`ir::Bus::sends`]).
     pub sends: Vec<ir::BusSend>,
+    /// Plays on the main output ([`ir::Bus::to_main`]).
+    pub to_main: bool,
     /// A disabled bus starts no voices (purged mic): it costs no CPU.
     pub enabled: bool,
 }
@@ -339,6 +341,7 @@ impl Plan {
                 pan: 0.0,
                 inserts: Vec::new(),
                 sends: Vec::new(),
+                to_main: true,
                 enabled: true,
             }],
             polyphony: Vec::new(),

@@ -176,6 +176,7 @@ fn sequential_round_robin_cycles_and_mic_layers_agree() {
         pan: 0.0,
         inserts: Vec::new(),
         sends: Vec::new(),
+        to_main: true,
         enabled: true,
     });
     let mut e = engine(&store, plan);
@@ -416,6 +417,7 @@ fn a_disabled_mic_bus_starts_no_voices() {
         pan: 0.0,
         inserts: Vec::new(),
         sends: Vec::new(),
+        to_main: true,
         enabled: true,
     });
     let mut e = engine(&store, plan);
@@ -449,6 +451,7 @@ fn a_bus_sends_before_its_fader() {
                 post_fader: true,
             },
         ],
+        to_main: true,
         enabled: true,
     });
     plan.buses.push(Bus {
@@ -457,6 +460,7 @@ fn a_bus_sends_before_its_fader() {
         pan: 0.0,
         inserts: Vec::new(),
         sends: Vec::new(),
+        to_main: true,
         enabled: true,
     });
     let mut e = engine(&store, plan);

@@ -10,6 +10,8 @@ pub struct Bus {
     pub inserts: Vec<Option<crate::Effect>>,
     /// Later buses it feeds, after its effects and before its pan.
     pub sends: Vec<BusSend>,
+    /// Plays on the main output; otherwise it only feeds its sends.
+    pub to_main: bool,
 }
 
 /// A bus's feed into a later bus.
