@@ -54,9 +54,9 @@ pub use plan::{
 };
 pub use prepare::{Open, prepare};
 pub use queue::Timed;
-pub use script::{Callbacks, Controls, ScriptPlan};
+pub use script::{Callbacks, Controls, LookPars, ScriptPlan};
 pub use transport::Play;
-pub use ui::{Key, KeyRange, MenuItem};
+pub use ui::{ControlLook, Key, KeyRange, MenuItem, Page};
 
 use behaviour::Behaviour;
 use ledger::{Ledger, Note, Origin};
