@@ -72,6 +72,7 @@ pub fn prepare(
             envelopes: g.envelopes.clone(),
             lfos: g.lfos.clone(),
             routes: g.routes.clone(),
+            release_trigger: g.trigger == ir::Trigger::Release,
         })
         .collect();
     if !instrument.buses.is_empty() {

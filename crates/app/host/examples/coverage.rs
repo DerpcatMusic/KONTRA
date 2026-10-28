@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use kontra_engine::{Action, Engine, Event, HostNote, HostPattern, SampleTime, Timed, ir};
-use kontra_host::script::UNDERSTOOD_SYMBOLS;
+use kontra_host::script::understood;
 use kontra_ksp::Builtin;
 use kontra_stream::{Store, StoreConfig};
 
@@ -310,7 +310,6 @@ fn render(r: &Report) -> std::io::Result<String> {
             n.as_str(),
         )
     });
-    let understood = |n: &str| UNDERSTOOD_SYMBOLS.iter().any(|u| u.eq_ignore_ascii_case(n));
     let used_understood = symbols.iter().filter(|(n, _)| understood(n)).count();
 
     let mut s = String::new();

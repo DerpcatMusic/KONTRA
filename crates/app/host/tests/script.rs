@@ -336,6 +336,47 @@ fn a_script_finds_a_modulator_that_carries_no_route() {
 }
 
 #[test]
+fn route_intensities_follow_kontakts_laws() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let route = |target| ir::Mod {
+        name: "LFO".into(),
+        slot: 3,
+        target,
+        bypass: false,
+        kind: ir::ModKind::Volume {
+            source: ir::Source::Controller(110),
+            intensity: 0.5,
+            curve: ir::Curve::Depth { power: 1 },
+        },
+    };
+    plan.groups[0].mods = vec![route(1), route(0)];
+    let script = kontra_ksp::compile(
+        "on init
+            declare $a
+            declare $b
+            set_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY, 500000, 0, 3, 1)
+            $a := get_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY, 0, 3, 1)
+            set_engine_par($ENGINE_PAR_INTMOD_INTENSITY, 250000, 0, 3, -1)
+            $b := get_engine_par($ENGINE_PAR_MOD_TARGET_MP_INTENSITY, 0, 3, 0)
+            message($a & \" \" & $b & \" \" & get_engine_par($ENGINE_PAR_RELEASE_TRIGGER, 0, 0, -1))
+            set_controller(110, 0)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // Real Kontakt 8 (probes/mod_par_laws.lua): the knob's depth is x², the
+    // bipolar writers' (2x − 1)³; generic -1 is route 0.
+    assert_eq!(e.last_message(), "500000 250000 0");
+    // Route 1 at depth 0.25 and route 0 at -0.125, with the controller at 0.
+    let l = level(&mut e, &[on(60)]);
+    assert!((l - 0.5 * 0.75 * 1.125).abs() < 1e-3, "{l}");
+}
+
+#[test]
 fn a_script_sends_a_note_its_modulation_value() {
     use kontra_engine::ir;
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();

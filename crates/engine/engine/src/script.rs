@@ -6,9 +6,9 @@ use kontra_events::HostNote;
 use kontra_time::SampleTime;
 use kontra_vm::{Action, HostApi, HostCall, HostValue, Program, Text, event};
 
-use crate::Engine;
 use crate::ledger::{Note, NoteRef, Origin};
 use crate::queue::Work;
+use crate::{Engine, EnginePars};
 
 /// A compiled script and where its callbacks start.
 #[derive(Clone, Debug)]
@@ -28,37 +28,6 @@ pub struct ScriptPlan {
     pub reverb_laws: [crate::ir::Law; 8],
     /// Code in another language, run by its own machine instead of `program`.
     pub foreign: Option<std::sync::Arc<dyn kontra_vm::Foreign>>,
-}
-
-/// The script's numbers for the engine parameters the engine answers.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct EnginePars {
-    pub attack: i32,
-    pub hold: i32,
-    pub decay: i32,
-    pub sustain: i32,
-    pub release: i32,
-    /// A volume modulation's intensity.
-    pub intensity: i32,
-    /// A modulator's bypass.
-    pub mod_bypass: i32,
-    pub attack_curve: i32,
-    pub effect_bypass: i32,
-    pub effect_output: i32,
-    /// A send effect's bypass, wet (or return) level and dry level.
-    pub send_bypass: i32,
-    pub send_output: i32,
-    pub send_dry: i32,
-    /// A Send Levels slot's level to each send slot.
-    pub send_levels: [i32; 8],
-    /// A reverb control's id, in `ir::ReverbPar::ALL` order.
-    pub reverb: [i32; 8],
-    pub gainer_gain: i32,
-    pub stereo_width: i32,
-    pub stereo_pan: i32,
-    pub volume: i32,
-    pub pan: i32,
-    pub tune: i32,
 }
 
 /// The script's UI controls as the engine sees them: ids, and where values live.
