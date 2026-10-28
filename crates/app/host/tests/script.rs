@@ -542,6 +542,31 @@ fn script_knobs_set_effect_and_lfo_controls_through_their_laws() {
 }
 
 #[test]
+fn num_groups_counts_zoneless_groups_and_a_bus_volume_reads_its_gain() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let g = plan.groups[0].clone();
+    plan.groups.extend([g.clone(), g]);
+    let mut bus = plan.buses[0].clone();
+    // ANALOG STRINGS' bus 2 in Kontakt: knob 593624, saved gain 0.8367.
+    bus.gain = (593_624.0f64 / 629_960.524_947_436_1).powi(3) as f32;
+    plan.buses.push(bus);
+    let script = kontra_ksp::compile(
+        "on init
+            declare $before
+            $before := get_engine_par($ENGINE_PAR_VOLUME, -1, -1, 1024)
+            set_engine_par($ENGINE_PAR_VOLUME, 525135, -1, -1, 1024)
+            message($NUM_GROUPS & \" \" & $before & \" \" & get_engine_par($ENGINE_PAR_VOLUME, -1, -1, 1024))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "3 593624 525135");
+}
+
+#[test]
 fn a_stepped_lfos_rate_knob_sets_a_whole_count() {
     use kontra_engine::ir;
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();

@@ -1,0 +1,49 @@
+{ The stage trace that isolates ANALOG STRINGS' instrument compressor (insert 1): holds its LFO
+  volume routes and filter envelope at 0 and bypasses every group, bus and instrument effect
+  but insert 1. Run it in KONTRA (render example, KONTRA_SCRIPT_SOURCE=<dir>/append.ksp) and in
+  Kontakt (slot 1). Kontakt 8.13.1, 2026-10-28, key 60 velocity 100 held 3 s: all effects bypassed,
+  peak 0.451 (ours 0.445); insert 1 alone 0.854 (ours 1.179, +2.8 dB). }
+on init
+  declare $g
+  declare $k
+  declare $s
+  declare !names[6]
+  !names[0] := "LFO_P1"
+  !names[1] := "LFO_P1_Retrigger"
+  !names[2] := "LFO_P2"
+  !names[3] := "LFO_P2_Retrigger"
+  !names[4] := "LFO_Pitch_Retrigger"
+  !names[5] := "ENV_Filter"
+end on
+function freeze
+  $g := 0
+  while ($g < 483)
+    $k := 0
+    while ($k < 6)
+      $s := find_mod($g, !names[$k])
+      set_engine_par($ENGINE_PAR_INTMOD_INTENSITY, 500000, $g, $s, -1)
+      inc($k)
+    end while
+    set_engine_par($ENGINE_PAR_EFFECT_BYPASS, 1, $g, 0, -1)
+    inc($g)
+  end while
+  $k := 0
+  while ($k < 8)
+    if ($k # 1)
+      set_engine_par($ENGINE_PAR_EFFECT_BYPASS, 1, -1, $k, 1)
+    end if
+    set_engine_par($ENGINE_PAR_EFFECT_BYPASS, 1, -1, $k, 2)
+    $s := 0
+    while ($s < 16)
+      set_engine_par($ENGINE_PAR_EFFECT_BYPASS, 1, -1, $k, 1024 + $s)
+      inc($s)
+    end while
+    inc($k)
+  end while
+end function
+on persistence_changed
+  call freeze
+end on
+on note
+  call freeze
+end on
