@@ -82,11 +82,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             frame(&mut ui, &mut pictures, &live)?;
             let settled = start.elapsed();
-            let mut idle = Vec::new();
-            let mut idle_built = 0;
+            // An idle editor tick: the engine runs, the view asks what
+            // changed and frames only when something did.
+            let (mut idle, mut idle_built, mut idle_frames) = (Vec::new(), 0, 0);
             for _ in 0..60 {
+                engine.process(&mut block, &[]);
                 let t = Instant::now();
-                idle_built += frame(&mut ui, &mut pictures, &live)?;
+                let changed = live.refresh(face, slot, &engine, &meta);
+                if pictures.poll() || !changed.is_empty() {
+                    kontra_ui::layout::resolve(&mut live.tree, changed.widgets.iter().map(|w| w.0));
+                    idle_built += frame(&mut ui, &mut pictures, &live)?;
+                    idle_frames += 1;
+                }
                 idle.push(t.elapsed());
             }
             idle.sort();
@@ -123,9 +130,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for _ in 0..50 {
                     engine.process(&mut block, &[]);
                     let changed = live.refresh(face, slot, &engine, &meta);
-                    kontra_ui::layout::resolve(&mut live.tree, changed.widgets.iter().map(|w| w.0));
-                    *built += frame(&mut ui, &mut pictures, &live)?;
-                    pictures.poll();
+                    if pictures.poll() || !changed.is_empty() {
+                        kontra_ui::layout::resolve(
+                            &mut live.tree,
+                            changed.widgets.iter().map(|w| w.0),
+                        );
+                        *built += frame(&mut ui, &mut pictures, &live)?;
+                    }
                 }
                 while pictures.pending() > 0 {
                     pictures.poll();
@@ -146,7 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .count();
             let knob_built = moved.map_or("null".into(), |m: usize| m.to_string());
             println!(
-                "{{\"name\":{:?},\"slot\":{slot},\"widgets\":{},\"shown\":{drawn},\"pictures\":{},\"load_ms\":{:.0},\"tree_ms\":{:.1},\"first_frame_ms\":{:.2},\"first_pending\":{},\"settled_ms\":{:.1},\"paint_ms\":{:.1},\"idle_us\":{},\"idle_built\":{idle_built},\"knob_built\":{knob_built},\"pedal_built\":{pedal:?},\"images_mb\":{:.1},\"rss_mb\":{},\"peak_rss_mb\":{},\"shot\":{:?}}}",
+                "{{\"name\":{:?},\"slot\":{slot},\"widgets\":{},\"shown\":{drawn},\"pictures\":{},\"load_ms\":{:.0},\"tree_ms\":{:.1},\"first_frame_ms\":{:.2},\"first_pending\":{},\"settled_ms\":{:.1},\"paint_ms\":{:.1},\"idle_us\":{},\"idle_built\":{idle_built},\"idle_frames\":{idle_frames},\"knob_built\":{knob_built},\"pedal_built\":{pedal:?},\"images_mb\":{:.1},\"rss_mb\":{},\"peak_rss_mb\":{},\"shot\":{:?}}}",
                 loaded.name,
                 live.tree.widgets.len(),
                 live.tree.assets.len(),
