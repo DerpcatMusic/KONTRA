@@ -150,6 +150,32 @@ not drawn yet.
 |---|---|---|
 | Una Corda's pedal light: `on controller` sets `PICTURE_STATE` on `$T2_lblPedal` when CC64 goes down and back on release (the "moving part"; its 50 ms timer listener drives an audio LFO, not the UI) | not measured yet (v1 redrew on a 33 ms clock while sounding) | pedal down and up each rebuild only `$T2_lblPedal` (`examples/ui_tree`); the renderer must repaint that one widget |
 
+### 5.3 The editor (lane D, 2026-10-29)
+
+v2's look (graphite neutrals, square edges, hairlines, part colours a
+golden angle apart), rebuilt from first principles: one primary action per
+view, fewer controls on screen, details on demand. `kontra-ui::app` draws
+it from a plain `App` the host fills and hands back `Action`s; every piece
+comes from `kit` (button, icon button, tab, latch, knob, fader, field,
+list row, menu, popup, sheet, meter) and `keyboard`. Hover, press, value
+and layout changes ease through mui springs; once they settle the editor
+asks for no frames (`tests/app.rs`), so idle costs nothing.
+
+| v2 | v3 |
+|---|---|
+| Rack · Mixer · Report tabs | the rack alone; Report is a panel opened from the header's warning or the menu; Mixer is dropped until a view needs more than each strip's level, pan, solo and mute |
+| header: CPU, voices, RAM, disk, master, keyboard, MIDI thru, Panic, menu | CPU alone (the rest is its tooltip), master, Panic, a warning when something did not load, menu (Settings, Report, About); MIDI thru moves to Settings |
+| browser: two lists with two searches, A–Z, filter, add, collapse, Favorites and Recent rows | one search, Kontakt/UVI, a star filter and one list that drills from libraries into presets; adding a folder moves to Settings, collapsing to the header |
+| part strip: name, preset step, MIDI, output, pan, volume, tune, S, M, more, close | name (library in its tooltip), preset step, channel (a 4×4 grid), volume and pan knobs with their values as tooltips, S, M, more (Duplicate, Remove) |
+| part tabs: Articulations, Mapping, Sound, Info, Scripts, the current articulation, velocity Auto/64/127 | Interface and Articulations, each shown only when the part has one; Info is the name's tooltip; Scripts goes to the Report; Mapping and Sound come back as they are ported |
+| keyboard: range, a hint line, octave, collapse | range (the hint is its tooltip), octave, collapse; each part's span drawn over its keys |
+
+Measured with `examples/app_shot` (specimen, release, CPU): first frame
+0.3–0.7 ms, a frame when one is due 0.07–0.33 ms, and 0–46 frames of motion
+after an action. Lines: v2's theme, menu, keyboard, header, browser, rack,
+logs and editor are 12,240; v3's theme, kit, keyboard and app are 1,760,
+tests included.
+
 ## 6. Auto-align (`app/align`, feature `align`)
 
 Target state, implemented by P3.3. Auto-align is per-patch latency
