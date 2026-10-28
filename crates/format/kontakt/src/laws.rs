@@ -598,89 +598,6 @@ pub(crate) fn solid_eq(
     [lf, lmf, hmf, hf]
 }
 
-/// Kontakt's Reverb (0x59) from its nine saved controls, each 0..=1:
-/// time, size, damping, modulation, diffusion, predelay, high cut, low shelf,
-/// stereo. Laws from setter `0x141aea370` (docs/architecture-v2/KONTAKT_DSP_LAWS.md):
-/// time 0.5·e^(3.7x) s, size 3x+1 (2.5 mid, here size 1), damping x^¼,
-/// diffusion 0.5x (here x), predelay 11025x samples at 44.1 kHz,
-/// high cut 19000(1−x)+2000 Hz, low shelf −12x dB, stereo x. The Hall type
-/// (saved type 1) has longer lines: from the line-length law `0x141aebb00`
-/// (v2 sampler-core space/design.rs), its mean is `1.553 + 0.208x` times the
-/// Room's at size x, which is `1.4837 + 0.1733·s` at the physical size `s` (a
-/// size curve, so a script's size change keeps it). Modulation swings all but the first line by `10x`
-/// samples at 44.1 kHz, at 2 Hz (`0x141aec0a0`).
-// ponytail: one 8-line FDN for Kontakt's 31-line Room and Hall networks; the
-// Hall's own output taps and allpass units are not copied (unmeasured).
-pub(crate) fn reverb(kind: i32, v: [f32; 9]) -> ir::Reverb {
-    let [
-        time,
-        size,
-        damping,
-        modulation,
-        diffusion,
-        predelay,
-        high_cut,
-        low_shelf,
-        stereo,
-    ] = v.map(|x| x.clamp(0.0, 1.0));
-    let [
-        seconds,
-        size_law,
-        damping_law,
-        diffusion_law,
-        predelay_law,
-        high_cut_law,
-        low_shelf_law,
-        stereo_law,
-    ] = reverb_laws();
-    ir::Reverb {
-        seconds: seconds.eval(time),
-        size: size_law.eval(size),
-        size_curve: if kind == 1 {
-            [1.483_7, 0.173_3]
-        } else {
-            [1.0, 0.0]
-        },
-        damping: damping_law.eval(damping),
-        diffusion: diffusion_law.eval(diffusion),
-        predelay_ms: predelay_law.eval(predelay),
-        high_cut_hz: high_cut_law.eval(high_cut),
-        low_shelf_db: low_shelf_law.eval(low_shelf),
-        stereo: stereo_law.eval(stereo),
-        modulation_ms: modulation * 10.0 / 44.1,
-        modulation_hz: 2.0,
-    }
-}
-
-/// The reverb's controls as KSP's `$ENGINE_PAR_RV2_*` set them (value ÷ 1e6 is
-/// the knob x), in `ir::ReverbPar::ALL` order: the same laws as the saved controls.
-pub fn reverb_laws() -> [ir::Law; 8] {
-    [
-        // 0.5·e^(3.7x) s
-        ir::Law::Exp {
-            lo: 0.5,
-            hi: 0.5 * 3.7f32.exp(),
-        },
-        // (3x+1)/2.5: 0.4 at 0, 1.6 at 1
-        ir::Law::Linear { lo: 0.4, hi: 1.6 },
-        ir::Law::Power {
-            lo: 0.0,
-            hi: 1.0,
-            exponent: 0.25,
-        },
-        ir::Law::Linear { lo: 0.0, hi: 1.0 },
-        // 11025x samples at 44.1 kHz
-        ir::Law::Linear { lo: 0.0, hi: 250.0 },
-        // 19000(1−x)+2000 Hz
-        ir::Law::Linear {
-            lo: 21_000.0,
-            hi: 2_000.0,
-        },
-        ir::Law::Linear { lo: 0.0, hi: -12.0 },
-        ir::Law::Linear { lo: 0.0, hi: 1.0 },
-    ]
-}
-
 /// The Compressor (0x19): saved mode, threshold dB, ratio knob, attack and
 /// release ms, link byte. The Pro core's law (docs/re/engine/dyn-compressors.md,
 /// setter 0x140ab9220): the knob `r` is the output slope over the threshold
@@ -834,22 +751,6 @@ mod tests {
         assert!((b.attack_ms - 0.1).abs() < 1e-6 && (b.release_ms - 75.0).abs() < 1e-4);
         assert!(auto && !bus_compressor([0.5; 6], true).1);
         assert!(b.makeup_db.abs() < 1e-4);
-    }
-
-    #[test]
-    fn a_hall_has_longer_lines_than_a_room_and_modulation_swings_them() {
-        let mut v = [0.5; 9];
-        let room = reverb(0, v);
-        let hall = reverb(1, v);
-        let scale = |r: ir::Reverb| r.size_curve[0] + r.size_curve[1] * r.size;
-        assert!((scale(hall) / scale(room) - 1.657).abs() < 1e-3);
-        // At the smallest size the Hall is 1.553 times the Room.
-        v[1] = 0.0;
-        assert!((scale(reverb(1, v)) - 1.553).abs() < 1e-3);
-        v[1] = 0.5;
-        assert!((room.modulation_ms - 5.0 / 44.1).abs() < 1e-6 && room.modulation_hz == 2.0);
-        v[3] = 0.0;
-        assert_eq!(reverb(0, v).modulation_ms, 0.0);
     }
 
     #[test]

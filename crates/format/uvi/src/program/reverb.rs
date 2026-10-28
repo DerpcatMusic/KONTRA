@@ -92,7 +92,7 @@ pub(super) fn spark_verb(node: Node, notes: &mut Notes) -> Result<ir::Effect, St
         kind: ir::EffectKind::Reverb(ir::Reverb {
             seconds: seconds as f32,
             size: (crossing / LINES_S) as f32,
-            size_curve: [1.0, 0.0],
+            network: None,
             damping: damping.clamp(0.0, 1.0) as f32,
             diffusion: diffusion.clamp(0.0, 1.0) as f32,
             predelay_ms: num(node, "PreDelay", 0.0)?.max(0.0) as f32,

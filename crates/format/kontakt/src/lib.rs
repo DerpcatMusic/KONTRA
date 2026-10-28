@@ -14,13 +14,14 @@ mod impulse;
 mod laws;
 mod legacy_reverb;
 mod resources;
+mod reverb;
 mod samples;
 mod script_knobs;
 mod skreamer;
 mod translate;
 
 pub use container::chunks;
-pub use laws::reverb_laws;
+pub use reverb::reverb_laws;
 pub use script_knobs::script_knobs;
 
 use std::fmt::Display;

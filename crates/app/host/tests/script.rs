@@ -1069,7 +1069,7 @@ fn reverb_tail(script: &str) -> f32 {
         kind: ir::EffectKind::Reverb(ir::Reverb {
             seconds: 0.5,
             size: 1.0,
-            size_curve: [1.0, 0.0],
+            network: None,
             damping: 0.0,
             diffusion: 1.0,
             predelay_ms: 0.0,

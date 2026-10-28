@@ -2404,6 +2404,7 @@ name = "kontra-format-kontakt"
 version = "0.0.0"
 dependencies = [
  "aes",
+ "kontra-dsp-reverb",
  "kontra-format",
  "kontra-ir",
  "kontra-law",
