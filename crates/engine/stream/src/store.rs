@@ -197,7 +197,39 @@ impl Store {
 
     /// [`Store::load`] for many samples, their pages read on every core. Each
     /// contiguous run of missing pages is one read, so a codec decodes it once.
+    /// Requests for the same sample (key and length) load once, their pins
+    /// merged, and share one [`Sample`].
     pub fn load_many(&mut self, requests: Vec<LoadRequest>) -> Vec<io::Result<Arc<Sample>>> {
+        let mut unique: Vec<LoadRequest> = Vec::with_capacity(requests.len());
+        let mut first: HashMap<(BlobKey, u64), usize> = HashMap::new();
+        let slots: Vec<usize> = requests
+            .into_iter()
+            .map(|r| match first.get(&(r.key.clone(), r.frames)) {
+                Some(&i) => {
+                    if let Some(u) = unique.get_mut(i) {
+                        u.pin.extend(r.pin);
+                    }
+                    i
+                }
+                None => {
+                    first.insert((r.key.clone(), r.frames), unique.len());
+                    unique.push(r);
+                    unique.len() - 1
+                }
+            })
+            .collect();
+        let loaded = self.load_unique(unique);
+        slots
+            .iter()
+            .map(|&i| match loaded.get(i) {
+                Some(Ok(sample)) => Ok(Arc::clone(sample)),
+                Some(Err(e)) => Err(io::Error::new(e.kind(), e.to_string())),
+                None => Err(io::ErrorKind::InvalidInput.into()),
+            })
+            .collect()
+    }
+
+    fn load_unique(&mut self, requests: Vec<LoadRequest>) -> Vec<io::Result<Arc<Sample>>> {
         self.pinned.retain(|_, page| page.strong_count() > 0);
         // Pages already held, and the runs each request must read.
         let mut plans = Vec::with_capacity(requests.len());
