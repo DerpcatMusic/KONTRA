@@ -301,7 +301,10 @@ impl Preparation {
     pub fn bytes(&self) -> usize {
         self.bytes
     }
-    #[cfg(any(test, feature = "shots"))]
+    #[cfg_attr(
+        not(any(test, feature = "shots")),
+        expect(dead_code, reason = "only the shots scanner and tests read it")
+    )]
     pub fn pending(&self) -> usize {
         self.pending.len()
     }
