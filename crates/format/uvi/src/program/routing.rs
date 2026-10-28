@@ -13,8 +13,12 @@ use roxmltree::Node;
 
 use super::{Library, Translator, db, flag, num};
 
+/// Effects a keygroup's voices run themselves (see [`Translator::voice_slots`]).
+const PER_VOICE: [&str; 2] = ["Gain", "ThreeBandShelves"];
+
 /// Whether `node` is an effect this module carries: in the program's
-/// inserts, or in a layer's, an aux's or a rack chain's.
+/// inserts, a layer's, an aux's or a rack chain's, or a per-voice one in a
+/// keygroup's.
 pub(super) fn carried(node: Node) -> bool {
     let Some(owner) = node
         .parent()
@@ -24,9 +28,12 @@ pub(super) fn carried(node: Node) -> bool {
         return false;
     };
     let laid = owner.has_tag_name("Layer") || owner.has_tag_name("AuxEffect");
-    let kind = ["Gain", "Convolver", "SampledReverb"]
+    let kind = ["Gain", "Convolver", "SampledReverb", "ThreeBandShelves"]
         .iter()
         .any(|t| node.has_tag_name(*t));
+    if owner.has_tag_name("Keygroup") {
+        return PER_VOICE.iter().any(|t| node.has_tag_name(*t));
+    }
     let in_keygroup = node.ancestors().any(|a| a.has_tag_name("Keygroup"));
     !in_keygroup
         && ((laid && (kind || node.has_tag_name("EffectRack")))
@@ -92,6 +99,19 @@ impl<L: Library> Translator<'_, '_, L> {
             self.out.inserts.push(slot);
         }
         Ok(())
+    }
+
+    /// A keygroup's inserts its voices run, by slot; the rest are empty.
+    pub(super) fn voice_slots(&mut self, kg: Node) -> Result<Vec<Option<ir::Effect>>, String> {
+        let mut slots = Vec::new();
+        for node in children(kg, "Inserts", "") {
+            let per_voice = PER_VOICE.iter().any(|t| node.has_tag_name(*t));
+            slots.push(if per_voice { self.slot(node)? } else { None });
+        }
+        if slots.iter().all(Option::is_none) {
+            slots.clear();
+        }
+        Ok(slots)
     }
 
     /// A new bus named for `owner`, off the main output.
@@ -200,8 +220,11 @@ impl<L: Library> Translator<'_, '_, L> {
         } else if node.has_tag_name("Gain") {
             let kind = ir::EffectKind::Gain(num(node, "Volume", 1.0)? as f32);
             Some(effect(kind, 1.0, 0.0))
+        } else if node.has_tag_name("ThreeBandShelves") {
+            Some(shelves(node)?)
         } else if node.has_tag_name("Convolver") || node.has_tag_name("SampledReverb") {
-            let wet = num(node, "Wet", 1.0)? as f32;
+            let raw = node.has_tag_name("SampledReverb") && !flag(node, "NormalizePower");
+            let wet = num(node, "Wet", 1.0)? as f32 * if raw { RAW_WET } else { 1.0 };
             let dry = num(node, "Dry", 0.0)? as f32;
             Some(match self.impulse(node)? {
                 Some(impulse) => effect(ir::EffectKind::Convolution { impulse }, wet, dry),
@@ -258,6 +281,12 @@ impl<L: Library> Translator<'_, '_, L> {
     }
 }
 
+/// A sampled reverb's wet level when its response is not normalized: UVI's
+/// SampledReverbState audio path scales the convolved signal by 0.1 (−20 dB)
+/// unless NormalizePower is set (0x14103a07f, 0.1 at 0x141cfa9ec), before
+/// Wet. The Convolver's paths (0x1412294c7, 0x14122d2e6) apply only Wet.
+const RAW_WET: f32 = 0.1;
+
 /// `NormalizePower`: the response scaled to unit energy (sum of squares).
 /// UVI (SampledReverb/Convolver IR build 0x141532fe0) divides by the root
 /// of the channels' mean energy, floored at 1e-10 (0x141e6e4f0), after
@@ -286,6 +315,34 @@ fn fade(time: f32) -> [[f32; 2]; 8] {
 
 /// Silence for an envelope knot, dB.
 const SILENT: f32 = -200.0;
+
+/// ThreeBandShelves: UVI's one biquad (0x1412927b0 → 0x141643350) is the
+/// mid gain times a first-order low shelf at FreqLowMid and a first-order
+/// high shelf at FreqMidHigh, each by its band's gain over the mid's
+/// (bilinear, tan-prewarped, 0x141649120). A cookbook shelf at slope 0.5 is
+/// that first-order shelf exactly.
+fn shelves(node: Node) -> Result<ir::Effect, String> {
+    let mid = num(node, "GainMid", 0.0)? as f32;
+    let shelf = |shape, hz: &str, default, gain: &str| -> Result<ir::Bell, String> {
+        Ok(ir::Bell {
+            shape,
+            hz: num(node, hz, default)? as f32,
+            q: 0.5,
+            gain_db: num(node, gain, 0.0)? as f32 - mid,
+        })
+    };
+    let bands = [
+        shelf(ir::Shape::LowShelf, "FreqLowMid", 200.0, "GainLow")?,
+        shelf(ir::Shape::HighShelf, "FreqMidHigh", 4000.0, "GainHigh")?,
+        ir::Bell::FLAT,
+        ir::Bell::FLAT,
+    ];
+    Ok(effect(
+        ir::EffectKind::Eq(bands),
+        10f32.powf(mid / 20.0),
+        0.0,
+    ))
+}
 
 /// The dry level of an effect whose output is mostly a wet path (a reverb,
 /// a delay); `None` for one that processes in place.
@@ -320,6 +377,25 @@ fn effect(kind: ir::EffectKind, output: f32, dry: f32) -> ir::Effect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn three_band_shelves_are_two_half_slope_shelves_around_the_mid_gain() {
+        let xml = r#"<ThreeBandShelves FreqLowMid="250" FreqMidHigh="5000" GainLow="3" GainMid="-1" GainHigh="4"/>"#;
+        let doc = roxmltree::Document::parse(xml).unwrap();
+        let e = shelves(doc.root_element()).unwrap();
+        let ir::EffectKind::Eq([low, high, ..]) = e.kind else {
+            panic!("{e:?}")
+        };
+        assert_eq!(
+            (low.shape, low.hz, low.q, low.gain_db),
+            (ir::Shape::LowShelf, 250.0, 0.5, 4.0)
+        );
+        assert_eq!(
+            (high.shape, high.hz, high.gain_db),
+            (ir::Shape::HighShelf, 5000.0, 5.0)
+        );
+        assert!((e.output - 0.891).abs() < 1e-3, "{}", e.output);
+    }
 
     #[test]
     fn a_shortened_reverb_fades_out_by_its_time() {

@@ -31,6 +31,8 @@ pub(crate) struct Behaviour {
     /// One latch per [`Plan::switches`] range.
     switches: Vec<bool>,
     cc: [[u8; 128]; 16],
+    /// Per channel, the controllers a message has set (bit `cc`).
+    cc_set: [u128; 16],
     /// Pitch bend per channel, −1..=1.
     bend: [f32; 16],
     global: Counter,
@@ -52,16 +54,15 @@ impl Behaviour {
                 groups.push((zone.group, Counter::default()));
             }
         }
-        let mut cc = [[0u8; 128]; 16];
-        for channel in &mut cc {
-            // MIDI defaults a fresh instrument expects: volume 100, expression full.
-            channel[7] = 100;
-            channel[11] = 127;
-        }
+        // Every controller reads 0 until a message sets it, as in a fresh
+        // Kontakt 8 (measured: %CC 1, 2, 7, 10, 11, 21, 64, 100 all 0); a
+        // source that starts elsewhere says so (`Source::ControllerFrom`).
+        let cc = [[0u8; 128]; 16];
         let mut behaviour = Self {
             keyswitch: None,
             switches: vec![false; plan.switches.len()],
             cc,
+            cc_set: [0; 16],
             bend: [0.0; 16],
             global: Counter::default(),
             keys: [Counter::default(); 128],
@@ -124,6 +125,13 @@ impl Behaviour {
             .unwrap_or(0)
     }
 
+    /// Whether a message has set `controller` on `channel`.
+    pub(crate) fn cc_arrived(&self, channel: u8, controller: u8) -> bool {
+        self.cc_set
+            .get(usize::from(channel & 15))
+            .is_some_and(|bits| bits >> (controller & 127) & 1 == 1)
+    }
+
     pub(crate) fn bend(&self, channel: u8) -> f32 {
         self.bend
             .get(usize::from(channel & 15))
@@ -144,6 +152,9 @@ impl Behaviour {
             .and_then(|c| c.get_mut(usize::from(controller & 127)))
         {
             *v = value;
+        }
+        if let Some(bits) = self.cc_set.get_mut(usize::from(channel & 15)) {
+            *bits |= 1 << (controller & 127);
         }
     }
 

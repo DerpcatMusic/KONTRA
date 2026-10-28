@@ -12,7 +12,7 @@ mod effects;
 mod mods;
 mod reverb;
 pub use bus::{Bus, BusSend};
-pub use drive::{Crush, Curve as DriveCurve, EffectParam, Overdrive, Shaper};
+pub use drive::{Crush, Curve as DriveCurve, EffectParam, KnobTarget, Overdrive, Shaper};
 pub use effects::{
     Compressor, Delay, DelayTime, Detector, ImpulseCuts, Limiter, Phaser, Reverb, Transient,
 };
@@ -260,6 +260,8 @@ pub struct Group {
     pub envelopes: Vec<Breakpoints>,
     /// Oscillators [`Source::Lfo`] reads, by index.
     pub lfos: Vec<Lfo>,
+    /// Transfer tables [`Source::Shaped`] reads, by index.
+    pub shapers: Vec<Transfer>,
     /// Each modulator's route names, in route order, carried or not: what
     /// scripts find routes by.
     pub routes: Vec<Routes>,
@@ -297,9 +299,41 @@ impl Group {
         inserts: Vec::new(),
         envelopes: Vec::new(),
         lfos: Vec::new(),
+        shapers: Vec::new(),
         routes: Vec::new(),
         zones: Vec::new(),
     };
+}
+
+/// A source through a transfer table: `table` holds the outputs for evenly
+/// spaced inputs 0..=1, read with linear interpolation. Its source is never
+/// itself shaped.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Transfer {
+    pub source: Source,
+    pub table: Vec<f32>,
+}
+
+impl Transfer {
+    /// The table's output for `x`, clamped to 0..=1; an empty table passes
+    /// `x` through.
+    #[must_use]
+    pub fn apply(&self, x: f32) -> f32 {
+        let Some(last) = self.table.len().checked_sub(1) else {
+            return x;
+        };
+        let at = x.clamp(0.0, 1.0) * last as f32;
+        let i = (at as usize).min(last);
+        let (a, b) = (
+            self.table.get(i).copied().unwrap_or(x),
+            self.table
+                .get(i + 1)
+                .or(self.table.get(i))
+                .copied()
+                .unwrap_or(x),
+        );
+        a + (b - a) * (at - i as f32)
+    }
 }
 
 /// A per-voice envelope of free breakpoints, 0..=1. It starts at `start`,
@@ -313,6 +347,9 @@ pub struct Breakpoints {
     /// Instead of holding at `sustain`, cycle back through the points from
     /// this one to `sustain` while the key is down.
     pub loop_from: Option<usize>,
+    /// Its four points are attack, hold, decay to `sustain` and release, so
+    /// scripts may set them by stage.
+    pub stages: bool,
 }
 
 /// A segment to `level` over `ms`. It covers `(e^(k·t) − 1)/(e^k − 1)` of
@@ -420,12 +457,20 @@ pub struct Mod {
 pub enum Source {
     Velocity,
     Controller(u8),
+    /// Controller `cc`, reading `start` (0..=127) until its first message
+    /// on the channel arrives.
+    ControllerFrom {
+        cc: u8,
+        start: u8,
+    },
     /// The channel's pitch bend, −1..=1.
     PitchBend,
     /// The note's key over 127.
     Key,
     /// The group's [`Group::envelopes`] entry.
     Envelope(u8),
+    /// The group's [`Group::shapers`] entry: its source through its table.
+    Shaped(u8),
     /// The group's [`Group::lfos`] entry, −1..=1.
     Lfo(u8),
     /// Always 1.
@@ -438,6 +483,17 @@ pub enum Source {
     HeldTime {
         span_ms: u32,
     },
+}
+
+impl Source {
+    /// The controller it reads, if any.
+    #[must_use]
+    pub fn controller(self) -> Option<u8> {
+        match self {
+            Self::Controller(cc) | Self::ControllerFrom { cc, .. } => Some(cc),
+            _ => None,
+        }
+    }
 }
 
 /// How a volume modulation turns its source into gain.
@@ -562,6 +618,9 @@ pub struct Zone {
     /// Loops in play order. Each is entered when the playhead reaches its end.
     pub loops: Vec<Loop>,
     pub reverse: bool,
+    /// Each sample channel's left and right gain; empty plays mono on both
+    /// sides and the first two channels as left and right.
+    pub mix: Vec<[f32; 2]>,
     /// The zone's place among the zones of its group that share its keys; a
     /// note that names a slot starts only the zones in it.
     pub slot: u16,
@@ -655,16 +714,18 @@ pub enum VowelSet {
     Second,
 }
 
-/// `stages` two-pole state-variable stages in series at `hz`, after a
-/// one-pole when `pole` is set or there are none (an odd order), each with
-/// its damping `k` (`1/Q`), then `gain`. A band stage is the
+/// `stages` two-pole state-variable stages in series at `hz` (none: one
+/// pole), each with its damping `k` (`1/Q`), then `gain`. A band stage is the
 /// raw band tap `s/(s² + ks + 1)`, peaking at `1/k`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Filter {
     pub pass: Pass,
     pub hz: f32,
     pub stages: u8,
-    pub pole: bool,
+    /// A four-pole resonant ladder instead, mixing its taps by selector
+    /// 1..=12 (low 1..4 poles, high 1..4, band 2 and 4, peak, notch); the
+    /// last stage's damping `k` sets its feedback `1 − k/2`.
+    pub ladder: Option<u8>,
     pub damping: [f32; 3],
     pub gain: f32,
     /// Octaves a [`ModKind::Cutoff`] depth of 1 moves the cutoff (the range

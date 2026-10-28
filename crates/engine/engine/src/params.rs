@@ -168,7 +168,12 @@ impl Engine {
     /// A group's insert slot (generic -1), the instrument insert's (group
     /// -1, generic `$NI_INSERT_BUS` = 1) or a bus's. Send and main racks are
     /// not carried yet.
-    fn effect_mut(&mut self, group: i32, slot: i32, generic: i32) -> Option<&mut ir::Effect> {
+    pub(crate) fn effect_mut(
+        &mut self,
+        group: i32,
+        slot: i32,
+        generic: i32,
+    ) -> Option<&mut ir::Effect> {
         let rack = match (usize::try_from(group), generic) {
             (Ok(g), -1) => &mut self.groups.get_mut(g)?.inserts[..],
             // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0 (one rack per slot), `$NI_MAIN_BUS` 2.
@@ -301,6 +306,9 @@ impl Engine {
         if par == EnginePar::OutputChannel {
             return self.output_channel(group, generic);
         }
+        if let EnginePar::Knob(n) = par {
+            return self.knob(n, group, slot, generic);
+        }
         if let Some(which) = effect_par(par) {
             let e = *self.effect_mut(group, slot, generic)?;
             return Some(which.get(&e)?.round().clamp(0.0, 1e6) as i32);
@@ -312,8 +320,13 @@ impl Engine {
         let g = usize::try_from(group)
             .ok()
             .and_then(|g| self.groups.get(g))?;
-        if let (Some((i, top)), Some(n)) = (stage_point(par), ahdsr_points(g, slot)) {
-            let p = g.envelopes.get(n)?.points.get(i)?;
+        if let (Some((i, top)), Some(e)) = (stage_point(par), routed_envelope(g, slot)) {
+            // Measured (probes/flex_stage_writes.lua): an envelope without
+            // stages (a flex) reads 0.
+            if !e.stages {
+                return Some(0);
+            }
+            let p = e.points.get(i)?;
             let x = match par {
                 EnginePar::Sustain => f64::from(p.level).cbrt(),
                 EnginePar::AttackCurve => attack_x(p.curve),
@@ -361,6 +374,7 @@ impl Engine {
             return self.set_output_channel(value, group, generic);
         }
         if self.set_level(par, value, group, generic)
+            || self.set_knob(par, value, group, slot, generic)
             || self.set_effect(par, value, group, slot, generic)
             || self.set_reverb(par, value, group, slot, generic)
         {
@@ -451,8 +465,17 @@ impl Engine {
         else {
             return false;
         };
-        if let (Some((i, top)), Some(n)) = (stage_point(par), ahdsr_points(g, slot)) {
-            let Some(p) = g.envelopes.get_mut(n).and_then(|e| e.points.get_mut(i)) else {
+        let routed = routed_envelope(g, slot).map(|e| e.stages);
+        if let (Some((i, top)), Some(stages)) = (stage_point(par), routed) {
+            // Measured (probes/flex_stage_writes.lua): an envelope without
+            // stages (a flex) keeps its points; the write is answered.
+            if !stages {
+                return true;
+            }
+            let Some(p) = routed_index(g, slot)
+                .and_then(|n| g.envelopes.get_mut(n))
+                .and_then(|e| e.points.get_mut(i))
+            else {
                 return false;
             };
             match par {
@@ -498,7 +521,7 @@ impl Engine {
     }
 
     /// Re-reads gain (and pitch, unless `cc` moved) of every sounding note.
-    fn refresh_all(&mut self, cc: Option<u8>) {
+    pub(crate) fn refresh_all(&mut self, cc: Option<u8>) {
         let mut hits = std::mem::take(&mut self.hits);
         self.notes.select(&mut hits, |_| true);
         for &note in &hits {
@@ -520,15 +543,17 @@ fn stage_point(par: EnginePar) -> Option<(usize, f64)> {
     })
 }
 
-/// The breakpoints modulator `slot` of `g` routes from, when they have an
-/// AHDSR's shape: attack, hold, decay to the sustain point, release.
-fn ahdsr_points(g: &Group, slot: i32) -> Option<usize> {
-    let n = g.mods.iter().find_map(|m| match source(&m.kind) {
+/// The index of the breakpoints modulator `slot` of `g` routes from.
+fn routed_index(g: &Group, slot: i32) -> Option<usize> {
+    g.mods.iter().find_map(|m| match source(&m.kind) {
         Some(ir::Source::Envelope(n)) if i32::from(m.slot) == slot => Some(usize::from(n)),
         _ => None,
-    })?;
-    let e = g.envelopes.get(n)?;
-    (e.points.len() == 4 && e.sustain == Some(2)).then_some(n)
+    })
+}
+
+/// The breakpoints modulator `slot` of `g` routes from.
+fn routed_envelope(g: &Group, slot: i32) -> Option<&ir::Breakpoints> {
+    g.envelopes.get(routed_index(g, slot)?)
 }
 
 /// A route's signed depth; an EQ gain or effect route's is its depth over
@@ -580,7 +605,8 @@ fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
         | ir::ModKind::Cutoff { depth, .. }
         | ir::ModKind::Resonance { depth, .. }
         | ir::ModKind::SampleStart { depth, .. }
-        | ir::ModKind::Intensity { depth, .. } => Some(depth),
+        | ir::ModKind::Intensity { depth, .. }
+        | ir::ModKind::LfoRate { depth, .. } => Some(depth),
         ir::ModKind::Pan { amount, .. } => Some(amount),
         ir::ModKind::Envelope
         | ir::ModKind::EqGain { .. }

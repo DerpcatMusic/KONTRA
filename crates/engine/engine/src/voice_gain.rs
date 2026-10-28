@@ -102,6 +102,13 @@ impl Engine {
         let channel = note.host.channel;
         let group = || self.groups.get(zone.group as usize);
         match source {
+            ir::Source::Shaped(n) => {
+                let s = group()?.shapers.get(usize::from(n))?;
+                if matches!(s.source, ir::Source::Shaped(_)) {
+                    return None;
+                }
+                Some(s.apply(self.source(zone, s.source, note, age)?))
+            }
             ir::Source::Envelope(n) => Some(modulators::envelope(
                 group()?.envelopes.get(usize::from(n))?,
                 age,
@@ -109,20 +116,49 @@ impl Engine {
             ir::Source::Lfo(n) => {
                 let g = group()?;
                 let mut lfo = *g.lfos.get(usize::from(n))?;
+                // ponytail: phase and rate routes read their source at
+                // note-on (exact for velocity and note-on values); a live
+                // controller moving the rate needs a per-voice phase accumulator.
                 for m in g.mods.iter().filter(|m| !m.bypass) {
-                    if let ir::ModKind::LfoPhase { source, lfo: l, depth } = m.kind
-                        && l == n
+                    match m.kind {
                         // An LFO source here would recurse.
-                        && !matches!(source, ir::Source::Lfo(_))
-                    {
-                        let x = self.source(zone, source, note, Age::START).unwrap_or(0.0);
-                        lfo.phase += x * depth;
+                        ir::ModKind::LfoPhase {
+                            source,
+                            lfo: l,
+                            depth,
+                        } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
+                            let x = self.source(zone, source, note, Age::START).unwrap_or(0.0);
+                            lfo.phase += x * depth;
+                        }
+                        ir::ModKind::LfoRate {
+                            source,
+                            lfo: l,
+                            depth,
+                            octaves,
+                            range_hz: [lo, hi],
+                        } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
+                            let x = self.source(zone, source, note, Age::START).unwrap_or(0.0);
+                            let f = (x * depth * octaves).exp2();
+                            lfo.rate = match lfo.rate {
+                                ir::Rate::Hz(hz) => ir::Rate::Hz((hz * f).clamp(lo, hi.max(lo))),
+                                ir::Rate::Beats(b) => ir::Rate::Beats(b / f),
+                            };
+                        }
+                        _ => {}
                     }
                 }
                 Some(modulators::lfo(&lfo, age, u32::from(note.key), self.tempo))
             }
             ir::Source::Velocity => Some(note.velocity as f32),
             ir::Source::Controller(cc) => Some(f32::from(self.behaviour.cc(channel, cc)) / 127.0),
+            ir::Source::ControllerFrom { cc, start } => {
+                let v = if self.behaviour.cc_arrived(channel, cc) {
+                    self.behaviour.cc(channel, cc)
+                } else {
+                    start
+                };
+                Some(f32::from(v) / 127.0)
+            }
             ir::Source::PitchBend => Some(self.behaviour.bend(channel)),
             ir::Source::Key => Some(f32::from(note.key) / 127.0),
             ir::Source::Constant => Some(1.0),
@@ -328,12 +364,13 @@ impl Engine {
                     | ir::ModKind::Resonance { source, .. }
                     | ir::ModKind::EqGain { source, .. }
                     | ir::ModKind::EffectParam { source, .. }
-                    | ir::ModKind::Intensity { source, .. } => source == ir::Source::Controller(cc),
+                    | ir::ModKind::Intensity { source, .. } => g.controller(source) == Some(cc),
                     ir::ModKind::Envelope
                     | ir::ModKind::SampleStart { .. }
                     | ir::ModKind::Attack { .. }
                     | ir::ModKind::Release { .. }
                     | ir::ModKind::LfoPhase { .. }
+                    | ir::ModKind::LfoRate { .. }
                     | ir::ModKind::LoopShift { .. } => false,
                 })
             })
@@ -343,8 +380,8 @@ impl Engine {
     pub(crate) fn pitch_follows(&self, zone: &Zone, cc: u8) -> bool {
         self.groups.get(zone.group as usize).is_some_and(|g| {
             g.mods.iter().any(|m| {
-                matches!(m.kind, ir::ModKind::Pitch { source: ir::Source::Controller(c), .. }
-                    | ir::ModKind::Intensity { source: ir::Source::Controller(c), .. } if c == cc)
+                matches!(m.kind, ir::ModKind::Pitch { source, .. }
+                    | ir::ModKind::Intensity { source, .. } if g.controller(source) == Some(cc))
             })
         })
     }

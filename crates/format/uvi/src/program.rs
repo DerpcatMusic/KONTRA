@@ -1,16 +1,18 @@
 //! A UVI program as the instrument model. Layers and keygroups become groups,
-//! each enabled oscillator a zone. A bundle (a `SamplePath` with `*` names, one
-//! mono member each) becomes a zone per member, placed by its keygroup's
+//! each enabled oscillator a zone. A bundle (a `SamplePath` with `*` names)
+//! becomes a zone per member, its channels mixed by the keygroup's
 //! GainMatrix. Scripts run on the engine; the samples they load as the
 //! program loads are put on their oscillators here (see [`load`]).
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::PathBuf;
 
 use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::Node;
 
+mod filters;
 mod load;
 mod modulation;
 mod routing;
@@ -189,8 +191,18 @@ impl<L: Library> Translator<'_, '_, L> {
                 bytes_per_channel: PRELOAD_BYTES,
                 grain: GRAIN_BYTES,
             }),
+            inserts: self.voice_slots(kg)?,
             ..ir::Group::DEFAULT
         };
+        // Per-voice gain and shelves, else a one-pole filter, slot by slot.
+        let (filters, mods) = filters::keygroup(kg);
+        group.mods = mods;
+        group.inserts = (0..group.inserts.len().max(filters.len()))
+            .map(|n| {
+                let own = group.inserts.get(n).cloned().flatten();
+                own.or_else(|| filters.get(n).cloned().flatten())
+            })
+            .collect();
         let placement = placement(kg);
         let span = Span {
             keys,
@@ -227,6 +239,42 @@ impl<L: Library> Translator<'_, '_, L> {
                     "",
                 );
             }
+            // ponytail: an oscillator's pitch routes move its whole
+            // keygroup; split groups when a keygroup's players differ.
+            let routes = player
+                .children()
+                .filter(|c| c.has_tag_name("Connections"))
+                .flat_map(|c| c.children())
+                .filter_map(|c| modulation::pitch_route(self.program, c))
+                .filter(|r| r.semitones != 0.0);
+            for r in routes {
+                let mut source = r.source;
+                if let Some(lfo) = r.lfo {
+                    let n = group
+                        .lfos
+                        .iter()
+                        .position(|l| *l == lfo)
+                        .unwrap_or_else(|| {
+                            group.lfos.push(lfo);
+                            group.lfos.len() - 1
+                        });
+                    source = ir::Source::Lfo(u8::try_from(n).unwrap_or(u8::MAX));
+                }
+                let route = ir::Mod {
+                    name: String::new(),
+                    slot: 0,
+                    target: 0,
+                    bypass: false,
+                    kind: ir::ModKind::Pitch {
+                        source,
+                        semitones: r.semitones,
+                        depth: 1.0,
+                    },
+                };
+                if !group.mods.contains(&route) {
+                    group.mods.push(route);
+                }
+            }
             let zones = self.player(player, placement, &span)?;
             group
                 .zones
@@ -251,8 +299,11 @@ impl<L: Library> Translator<'_, '_, L> {
         }
     }
 
-    /// The zones one oscillator plays: one for a single sample, one per placed
-    /// member for a bundle.
+    /// The zones one oscillator plays, one per sample. A bundle
+    /// (`folder*a*b…`) concatenates its members' channels in order, and the
+    /// keygroup's GainMatrix (`Gain_<channel>_<output>`) mixes them to the
+    /// left and right outputs; without one, the first two channels are left
+    /// and right.
     fn player(
         &mut self,
         player: Node,
@@ -260,40 +311,9 @@ impl<L: Library> Translator<'_, '_, L> {
         span: &Span,
     ) -> Result<Vec<ir::Zone>, String> {
         let reference = player.attribute("SamplePath").unwrap_or_default();
-        let parts: Vec<&str> = reference.split('*').collect();
-        let members: Vec<(String, (f64, f64))> = match parts.as_slice() {
-            [single] => vec![((*single).into(), (1.0, 1.0))],
-            [folder, name] => vec![(format!("{folder}{name}"), (1.0, 1.0))],
-            [_, _, _] => {
-                self.notes
-                    .add(ir::Impact::Broken, "bundle of two samples", reference);
-                return Ok(Vec::new());
-            }
-            [folder, names @ ..] => {
-                let width = names.len();
-                names
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(k, name)| {
-                        let (left, right) = match placement {
-                            Some(m) => (
-                                num(m, &format!("Gain_{}_1", k + 1), 0.0).unwrap_or(0.0),
-                                num(m, &format!("Gain_{}_2", k + 1), 0.0).unwrap_or(0.0),
-                            ),
-                            // ponytail: no placement: an equal spread, not the program's intent.
-                            None => (1.0, 1.0),
-                        };
-                        (left != 0.0 || right != 0.0).then(|| {
-                            let spread = if placement.is_none() {
-                                1.0 / (width as f64).sqrt()
-                            } else {
-                                1.0
-                            };
-                            (format!("{folder}{name}"), (left * spread, right * spread))
-                        })
-                    })
-                    .collect()
-            }
+        let members: Vec<String> = match reference.split('*').collect::<Vec<_>>().as_slice() {
+            [single] => vec![(*single).into()],
+            [folder, names @ ..] => names.iter().map(|n| format!("{folder}{n}")).collect(),
             [] => Vec::new(),
         };
         if let Some(start) = player.attribute("SampleStart").filter(|s| s.trim() != "0") {
@@ -305,7 +325,9 @@ impl<L: Library> Translator<'_, '_, L> {
                 .add(ir::Impact::Audible, "playback options (loops, start)", "");
         }
         let mut zones = Vec::new();
-        for (path, (left, right)) in members {
+        // The bundle's channel the next member starts at.
+        let mut first = 0;
+        for path in members {
             let sample = match self.sample(&path) {
                 Ok(sample) => sample,
                 Err(e) => {
@@ -313,10 +335,22 @@ impl<L: Library> Translator<'_, '_, L> {
                     continue;
                 }
             };
-            let frames = sample.frames;
+            let (frames, channels) = (sample.frames, usize::from(sample.channels));
+            let channels = first..first + channels;
+            first = channels.end;
+            let mix = match placement {
+                Some(m) => self.mix(m, channels)?,
+                // Unmixed outputs past the second are not heard.
+                None if channels.start >= 2 => continue,
+                None if channels.start == 1 => vec![[0.0, 1.0]],
+                None => Vec::new(),
+            };
+            if !mix.is_empty() && mix.iter().flatten().all(|g| *g == 0.0) {
+                continue;
+            }
             let index = self.sample_index(sample);
-            let (gain, pan) = placed(left, right);
             zones.push(ir::Zone {
+                mix,
                 sample: index,
                 keys: span.keys.0..=span.keys.1,
                 velocities: span.velocities.0..=span.velocities.1,
@@ -326,8 +360,8 @@ impl<L: Library> Translator<'_, '_, L> {
                 tune: num(player, "CoarseTune", 0.0)?
                     + num(player, "FineTune", 0.0)? / 100.0
                     + num(player, "Pitch", 0.0)?,
-                volume_db: db(num(player, "Gain", 1.0)? * gain),
-                pan: pan as f32,
+                volume_db: db(num(player, "Gain", 1.0)?),
+                pan: 0.0,
                 start: 0,
                 end: frames,
                 start_mod: 0,
@@ -337,6 +371,23 @@ impl<L: Library> Translator<'_, '_, L> {
             });
         }
         Ok(zones)
+    }
+
+    /// The GainMatrix `m`'s left and right rows for bundle `channels`; an
+    /// output past the second is reported.
+    fn mix(&mut self, m: Node, channels: Range<usize>) -> Result<Vec<[f32; 2]>, String> {
+        let mut rows = Vec::new();
+        for c in channels {
+            let gain = |out: usize| num(m, &format!("Gain_{}_{out}", c + 1), 0.0);
+            rows.push([gain(1)? as f32, gain(2)? as f32]);
+            for out in 3..=12 {
+                if gain(out)? != 0.0 {
+                    self.notes
+                        .add(ir::Impact::Audible, "keygroup output past stereo", "");
+                }
+            }
+        }
+        Ok(rows)
     }
 
     /// The sample at `path`, read from the bank, and its index in the
@@ -463,6 +514,7 @@ impl<L: Library> Translator<'_, '_, L> {
                     .is_some_and(|p| p.has_tag_name("Keygroup"));
             if parent.is_some_and(|p| p.has_tag_name("Inserts"))
                 && !routing::carried(node)
+                && !filters::carried(node)
                 && !placing
             {
                 self.notes.add(
@@ -493,7 +545,10 @@ impl<L: Library> Translator<'_, '_, L> {
             .descendants()
             .filter(|n| n.has_tag_name("SignalConnection") && !flag(*n, "Bypass"))
         {
-            if modulation::script_route(self.program, connection).is_some() {
+            if modulation::script_route(self.program, connection).is_some()
+                || filters::freq_route(connection).is_some()
+                || modulation::pitch_route(self.program, connection).is_some()
+            {
                 continue;
             }
             let dest = connection.attribute("Destination").unwrap_or_default();
@@ -547,17 +602,6 @@ fn placement<'a, 'input>(kg: Node<'a, 'input>) -> Option<Node<'a, 'input>> {
         .filter(|n| n.has_tag_name("Inserts"))
         .flat_map(|n| n.children())
         .find(|n| n.has_tag_name("GainMatrix") && !flag(*n, "Bypass"))
-}
-
-/// A bundle member's gain (the louder of its two placements) and balance.
-fn placed(left: f64, right: f64) -> (f64, f64) {
-    let gain = left.max(right);
-    let pan = if left + right > 0.0 {
-        (right - left) / (right + left)
-    } else {
-        0.0
-    };
-    (gain, pan)
 }
 
 /// UVI stores linear gains (a program gain of 1.9952623 is +6 dB).

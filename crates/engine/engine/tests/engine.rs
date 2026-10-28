@@ -29,6 +29,7 @@ fn region(store: &mut Store, name: &str, frames: u64) -> std::io::Result<Region>
         std::slice::from_ref(&(0..frames)),
     )?;
     Ok(Region {
+        mix: None,
         sample,
         start: 0,
         end: frames,

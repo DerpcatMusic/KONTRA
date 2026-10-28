@@ -71,6 +71,7 @@ impl Cache {
         fmt: SampleFmt,
         first: usize,
         out: &mut [[f32; 2]],
+        mix: Option<&crate::fmt::Mix>,
     ) -> bool {
         let Some(s) = self.slots.get(slot as usize) else {
             return false;
@@ -85,6 +86,7 @@ impl Cache {
             |i| bytes.get(i).map_or(0, |b| b.load(Ordering::Relaxed)),
             first,
             out,
+            mix,
         );
         fence(Ordering::Acquire);
         if s.generation.load(Ordering::Relaxed) != before {
@@ -138,9 +140,9 @@ mod tests {
         let cache = Cache::new(1, 4);
         cache.write(0, tag(1, 0), &[0x00, 0x40, 0x00, 0xC0]);
         let mut out = [[1.0; 2]; 2];
-        assert!(cache.read(0, tag(1, 0), FMT, 0, &mut out));
+        assert!(cache.read(0, tag(1, 0), FMT, 0, &mut out, None));
         assert_eq!(out, [[0.5, 0.5], [-0.5, -0.5]]);
-        assert!(!cache.read(0, tag(2, 0), FMT, 0, &mut out));
+        assert!(!cache.read(0, tag(2, 0), FMT, 0, &mut out, None));
         assert_eq!(out, [[0.0; 2]; 2]);
     }
 
@@ -161,7 +163,7 @@ mod tests {
         let mut good = 0;
         while !writer.is_finished() {
             for owner in 0..2 {
-                if cache.read(0, tag(owner, 0), FMT, 0, &mut out) {
+                if cache.read(0, tag(owner, 0), FMT, 0, &mut out, None) {
                     let first = out[0];
                     assert!(out.iter().all(|f| *f == first), "torn page");
                     good += 1;
@@ -169,6 +171,6 @@ mod tests {
             }
         }
         writer.join().unwrap();
-        assert!(good > 0 || cache.read(0, tag(1, 0), FMT, 0, &mut out));
+        assert!(good > 0 || cache.read(0, tag(1, 0), FMT, 0, &mut out, None));
     }
 }

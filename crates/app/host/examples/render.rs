@@ -276,9 +276,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         at: SampleTime(0),
         body: Event::Ump([0x20B0_0100 | u32::from(v), 0]),
     });
+    // KONTRA_CC="11=127,1=100": controllers sent with the note-on.
+    let mut first: Vec<Timed<Event>> = std::env::var("KONTRA_CC")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|pair| {
+            let (cc, v) = pair.split_once('=')?;
+            let (cc, v): (u32, u32) = (cc.trim().parse().ok()?, v.trim().parse().ok()?);
+            Some(Timed {
+                at: SampleTime(0),
+                body: Event::Ump([0x20B0_0000 | (cc & 127) << 8 | (v & 127), 0]),
+            })
+        })
+        .collect();
+    first.push(on);
     for n in 0..(4 * RATE as usize / 512) {
         let input: &[Timed<Event>] = match n {
-            0 => std::slice::from_ref(&on),
+            0 => &first,
             n if n == RATE as usize / 512 => cc.as_slice(),
             n if n == 2 * RATE as usize / 512 => std::slice::from_ref(&off),
             _ => &[],

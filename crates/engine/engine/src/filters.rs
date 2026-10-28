@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use kontra_dsp::eq::{Bell, Biquad, Side};
-use kontra_dsp::filter::{Formant, Pass, Shape, VowelSet, Vowels};
+use kontra_dsp::filter::{Formant, Pass, Shape, Svf, VowelSet, Vowels};
 use kontra_ir as ir;
 
 use crate::racks::Rack;
@@ -118,11 +118,13 @@ impl VoiceEq {
     }
 }
 
-/// A section's runner: biquads in series, or a formant's parallel bands.
+/// A section's runner: biquads in series, a formant's parallel bands, or a
+/// ladder (not a set of biquads).
 pub(crate) enum Stage {
     Biquad(Biquad),
     // Boxed: its glide state is six times a biquad; built at load.
     Formant(Box<Formant>),
+    Running(Box<Svf>),
 }
 
 impl Stage {
@@ -130,6 +132,7 @@ impl Stage {
         match self {
             Self::Biquad(b) => b.is_silent(),
             Self::Formant(f) => f.is_silent(),
+            Self::Running(f) => f.is_silent(),
         }
     }
 }
@@ -148,6 +151,12 @@ pub(crate) fn stages(sections: &[ir::EffectKind], rate: u32) -> Box<[Stage]> {
             }
             ir::EffectKind::Filter(f) => {
                 let shape = shape(f);
+                if shape.ladder.is_some() {
+                    let mut svf = Svf::new(shape);
+                    svf.set_cutoff(shape.hz, rate);
+                    out.push(Stage::Running(Box::new(svf)));
+                    continue;
+                }
                 out.extend(
                     kontra_dsp::filter::sections(&shape, rate)
                         .into_iter()
@@ -183,7 +192,7 @@ pub(crate) fn shape(f: &ir::Filter) -> Shape {
         pass,
         hz: f.hz,
         stages: f.stages,
-        pole: f.pole,
+        ladder: f.ladder,
         damping: f.damping,
         gain: f.gain,
     }
@@ -194,6 +203,7 @@ pub(crate) fn run(stages: &mut [Stage], io: &mut [[f32; 2]]) {
         match stage {
             Stage::Biquad(b) => b.process(io),
             Stage::Formant(f) => f.process(io),
+            Stage::Running(f) => f.process(io),
         }
     }
 }
