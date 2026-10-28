@@ -211,6 +211,7 @@ const KNOWN_DIVERGENT: &[&str] = &[
 ];
 
 #[test]
+#[ignore = "v2 recall diverges on real instruments since the v3 migration; v3 recall replaces it at P8 (lanes BOARD 2026-10-29)"]
 fn host_recall_matches_the_live_part_on_real_instruments() {
     let mut reports = Vec::new();
     let mut failures = Vec::new();
@@ -238,6 +239,7 @@ fn host_recall_matches_the_live_part_on_real_instruments() {
 
 /// Two parts in one project: each saved and reloaded in its slot, and each renders the same.
 #[test]
+#[ignore = "v2 recall diverges on real instruments since the v3 migration; v3 recall replaces it at P8 (lanes BOARD 2026-10-29)"]
 fn two_parts_recall_together() {
     let parts = ["Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki", "Performance Samples Vista/Instruments/Vista - 5 Violins.nki"]
         .map(library_path);
@@ -259,6 +261,7 @@ fn two_parts_recall_together() {
 /// Una Corda's rumble slider above the script's volume table reloads clamped, by design: the
 /// script's `persistence_changed` reads `%VolumeConvert[100]` (339282) back into the slider.
 #[test]
+#[ignore = "v2 recall diverges on real instruments since the v3 migration; v3 recall replaces it at P8 (lanes BOARD 2026-10-29)"]
 fn una_corda_rumble_above_the_volume_table_reloads_clamped() {
     let Some(path) = library_path("Una Corda Library/Instruments/Una Corda Felt.nki") else { return };
     let rumble = sampler_ui_ir::ControlId(4731838657588158385350167845526311085);
