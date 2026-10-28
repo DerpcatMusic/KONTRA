@@ -892,9 +892,9 @@ fn a_velocity_attack_route_shortens_soft_attacks() {
     for _ in 0..40 {
         level(&mut e, &[]);
     }
-    // Half velocity halves the knob: 2·(102/2)^0.5 − 2 ≈ 12.3 ms.
-    let [soft, _] = level(&mut e, &[on(60, 0.5)]);
-    let frames = (2.0 * 51f32.sqrt() - 2.0) * 48.0;
+    // Velocity 0.9 scales the knob by fcubic(0.9): 2·(102/2)^0.729 − 2 ≈ 33 ms.
+    let [soft, _] = level(&mut e, &[on(60, 0.9)]);
+    let frames = (2.0 * 51f32.powf(0.729) - 2.0) * 48.0;
     assert!((soft - 0.5 * 128.0 / frames).abs() < 2e-3, "{soft}");
 }
 
@@ -1249,19 +1249,23 @@ fn a_pitch_bend_release_route_reads_the_wheel_from_zero_to_one() {
         kind: ir::ModKind::Release {
             source: ir::Source::PitchBend,
             intensity: 1.0,
-            floor_ms: 2.0,
+            floor_ms: 0.0,
         },
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     level(&mut e, &[on(60, 1.0)]);
     level(&mut e, &[off(60)]);
-    // The wheel at rest reads 0.5: 2·(1002/2)^0.5 − 2 ≈ 42.8 ms, so the
-    // voice is silent 200 ms after the key is let go (a 1 s release is not).
-    let mut tail = [1.0; 2];
-    for _ in 0..40 {
-        tail = level(&mut e, &[]);
-    }
-    assert_eq!(tail, [0.0; 2], "{tail:?}");
+    // The wheel at rest reads 0.5 and halves the 1 s release: still
+    // sounding 400 ms after the key is let go, silent by 600 ms.
+    let mut tail = |blocks| {
+        let mut tail = [1.0; 2];
+        for _ in 0..blocks {
+            tail = level(&mut e, &[]);
+        }
+        tail
+    };
+    assert!(tail(75)[0] > 0.0);
+    assert_eq!(tail(40), [0.0; 2]);
 }
 
 #[test]

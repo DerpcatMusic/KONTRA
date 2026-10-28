@@ -459,7 +459,8 @@ fn translate_group(
                             m.kind == ir::ModKind::Envelope && m.slot == u16::from(at)
                         }) =>
                     {
-                        let (intensity, floor_ms) = (t.signed_intensity(), laws::ATTACK_FLOOR_MS);
+                        let intensity = t.signed_intensity();
+                        let floor_ms = laws::time_floor_ms(&p.unknown_source_data);
                         Some(if stage == "ahdsr_attack" {
                             ir::ModKind::Attack {
                                 source,
