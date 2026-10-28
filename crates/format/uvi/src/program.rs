@@ -379,13 +379,26 @@ impl<L: Library> Translator<'_, '_, L> {
         Ok(zones)
     }
 
-    /// The GainMatrix `m`'s left and right rows for bundle `channels`; an
-    /// output past the second is reported.
+    /// The GainMatrix `m`'s left and right rows for bundle `channels`, each
+    /// cell held where its macros leave it ([`modulation::macro_factor`]);
+    /// an output past the second is reported.
     fn mix(&mut self, m: Node, channels: Range<usize>) -> Result<Vec<[f32; 2]>, String> {
         let mut rows = Vec::new();
         for c in channels {
             let gain = |out: usize| num(m, &format!("Gain_{}_{out}", c + 1), 0.0);
-            rows.push([gain(1)? as f32, gain(2)? as f32]);
+            let held = |out: usize| -> Result<f32, String> {
+                let cell = format!("Gain_{}_{out}", c + 1);
+                let factor = m
+                    .descendants()
+                    .filter(|n| {
+                        n.has_tag_name("SignalConnection")
+                            && n.attribute("Destination") == Some(cell.as_str())
+                    })
+                    .map(|n| modulation::macro_factor(self.program, n))
+                    .try_fold(1.0, |f, g| Some(f * g?));
+                Ok(gain(out)? as f32 * factor.unwrap_or(1.0))
+            };
+            rows.push([held(1)?, held(2)?]);
             for out in 3..=12 {
                 if gain(out)? != 0.0 {
                     self.notes
@@ -562,6 +575,11 @@ impl<L: Library> Translator<'_, '_, L> {
             let envelope =
                 source_node(self.program, connection).is_some_and(|n| n.has_tag_name("DAHDSR"));
             if dest == "Gain" && envelope && num(connection, "Ratio", 0.0).is_ok_and(|r| r == 1.0) {
+                continue;
+            }
+            if dest.starts_with("Gain_")
+                && modulation::macro_factor(self.program, connection).is_some()
+            {
                 continue;
             }
             let feature = if dest.starts_with("Gain_") {
