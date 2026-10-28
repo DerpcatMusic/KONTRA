@@ -107,3 +107,62 @@ pub fn envelope(channels: [&mut [f32]; 2], knots: [[f32; 2]; 8]) {
         }
     }
 }
+
+/// Taps either side of an output frame, counted at the lower rate.
+const HALF: usize = 32;
+/// Kernel phases per input frame; a tap reads between two of them.
+const PHASES: usize = 512;
+/// The passband edge as a share of the lower Nyquist.
+const CUTOFF: f64 = 0.97;
+/// Kaiser β: stopband about 80 dB down.
+const BETA: f64 = 8.0;
+
+/// `c` at rate `from` to rate `to`, at most `max` frames, through a
+/// Kaiser-windowed sinc that passes up to [`CUTOFF`] of the lower Nyquist.
+/// Not real-time: allocates.
+#[must_use]
+pub fn resample(c: &[f32], from: u32, to: u32, max: usize) -> Vec<f32> {
+    if from == to || from == 0 || to == 0 {
+        return c.iter().copied().take(max).collect();
+    }
+    // Input frames per output frame; the cutoff follows the lower rate.
+    let ratio = f64::from(from) / f64::from(to);
+    let scale = ratio.recip().min(1.0);
+    let band = CUTOFF * scale;
+    let width = HALF as f64 / scale;
+    let den = crate::resample::i0(BETA);
+    let table: Vec<f64> = (0..=(width * PHASES as f64).ceil() as usize + 1)
+        .map(|k| {
+            let t = k as f64 / PHASES as f64;
+            let u = t / width;
+            if u >= 1.0 {
+                return 0.0;
+            }
+            let x = std::f64::consts::PI * band * t;
+            let sinc = if t == 0.0 { 1.0 } else { x.sin() / x };
+            band * sinc * crate::resample::i0(BETA * (1.0 - u * u).sqrt()) / den
+        })
+        .collect();
+    let tap = |t: f64| {
+        let p = t * PHASES as f64;
+        let k = p as usize;
+        let f = p - k as f64;
+        let a = table.get(k).copied().unwrap_or(0.0);
+        let b = table.get(k + 1).copied().unwrap_or(0.0);
+        a + (b - a) * f
+    };
+    let frames = ((c.len() as f64 / ratio) as usize).min(max);
+    (0..frames)
+        .map(|n| {
+            let x = n as f64 * ratio;
+            let lo = (x - width).ceil().max(0.0) as usize;
+            let hi = ((x + width).floor() as usize).min(c.len().saturating_sub(1));
+            c.get(lo..=hi).map_or(0.0, |s| {
+                s.iter()
+                    .zip(lo..)
+                    .map(|(&v, i)| f64::from(v) * tap((x - i as f64).abs()))
+                    .sum::<f64>()
+            }) as f32
+        })
+        .collect()
+}

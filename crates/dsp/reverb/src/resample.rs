@@ -14,7 +14,7 @@ fn big(y: f64) -> f64 {
 }
 
 /// I0(x), the polynomial approximation the native uses.
-fn i0(x: f64) -> f64 {
+pub(crate) fn i0(x: f64) -> f64 {
     if x >= 3.75 {
         (x.exp() / x.sqrt()) * big(3.75 / x)
     } else {

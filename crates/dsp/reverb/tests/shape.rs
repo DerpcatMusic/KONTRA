@@ -1,4 +1,4 @@
-use kontra_dsp_reverb::shape::{Cuts, cut, envelope};
+use kontra_dsp_reverb::shape::{self, Cuts, cut, envelope};
 
 const RATE: u32 = 48_000;
 
@@ -61,4 +61,34 @@ fn an_envelope_ramps_in_amplitude_between_its_knots() {
     );
     // From the half to the end it climbs back to 1.
     assert!((l[750] - 0.75).abs() < 1e-3);
+}
+
+/// Peak of `x` past its first and last 2000 frames (the kernel's edges).
+fn level(x: &[f32]) -> f32 {
+    peak(x.get(2000..x.len() - 2000).unwrap_or_default())
+}
+
+fn sine(hz: f32, rate: u32, frames: usize) -> Vec<f32> {
+    (0..frames)
+        // f64 phase: an f32 one is 0.016 rad coarse by 96k frames.
+        .map(|n| (std::f64::consts::TAU * f64::from(hz) * n as f64 / f64::from(rate)).sin() as f32)
+        .collect()
+}
+
+/// A 44.1 kHz response's top octave keeps its level at 48 kHz (linear
+/// interpolation lost 1.6 dB at 12–16 kHz against Kontakt's own render),
+/// and a 96 kHz one loses what 48 kHz cannot hold instead of folding it.
+#[test]
+fn a_response_changes_rate_band_limited() {
+    for hz in [1000.0, 15_000.0, 20_000.0] {
+        let y = shape::resample(&sine(hz, 44_100, 44_100), 44_100, 48_000, usize::MAX);
+        assert_eq!(y.len(), 48_000);
+        let db = 20.0 * level(&y).log10();
+        assert!(db.abs() < 0.1, "{hz} Hz: {db} dB");
+    }
+    let y = shape::resample(&sine(30_000.0, 96_000, 96_000), 96_000, 48_000, usize::MAX);
+    let db = 20.0 * level(&y).log10();
+    assert!(db < -60.0, "30 kHz folded to {db} dB");
+    let kept = shape::resample(&sine(10_000.0, 96_000, 96_000), 96_000, 48_000, usize::MAX);
+    assert!((20.0 * level(&kept).log10()).abs() < 0.05);
 }
