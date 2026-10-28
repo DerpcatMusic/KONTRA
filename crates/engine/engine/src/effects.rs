@@ -29,15 +29,20 @@ pub(crate) fn rack(slots: &[Option<ir::Effect>]) -> Gain {
     slots
         .iter()
         .flatten()
-        .filter(|e| !e.bypass && !dynamics(e.kind))
+        .filter(|e| !e.bypass && !rack_only(e.kind))
         .fold(IDENTITY, |m, e| product(matrix(e), m))
 }
 
-/// A compressor or limiter: it runs in instrument and bus racks only.
-pub(crate) fn dynamics(kind: ir::EffectKind) -> bool {
+/// An effect that runs in instrument and bus racks only; a group rack
+/// passes it unprocessed (the translator reports it) rather than keep only
+/// its dry level, which silences an insert with none.
+pub(crate) fn rack_only(kind: ir::EffectKind) -> bool {
     matches!(
         kind,
-        ir::EffectKind::Compressor(_) | ir::EffectKind::Limiter(_)
+        ir::EffectKind::Compressor(_)
+            | ir::EffectKind::Limiter(_)
+            | ir::EffectKind::Delay(_)
+            | ir::EffectKind::Phaser(_)
     )
 }
 
