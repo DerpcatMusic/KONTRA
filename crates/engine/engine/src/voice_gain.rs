@@ -149,6 +149,16 @@ impl Engine {
                     matches!(m.kind, ir::ModKind::Volume { source: ir::Source::Controller(c), .. } if c == cc)
                 })
             })
+            || self.pitch_follows(zone, cc)
+    }
+
+    /// Whether moving `cc` changes this zone's pitch.
+    pub(crate) fn pitch_follows(&self, zone: &Zone, cc: u8) -> bool {
+        self.groups.get(zone.group as usize).is_some_and(|g| {
+            g.mods.iter().any(|m| {
+                matches!(m.kind, ir::ModKind::Pitch { source: ir::Source::Controller(c), .. } if c == cc)
+            })
+        })
     }
 }
 

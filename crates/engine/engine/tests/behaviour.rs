@@ -585,3 +585,28 @@ fn a_group_eq_shapes_its_voices() {
         "{flat} -> {boosted}"
     );
 }
+
+#[test]
+fn a_controller_pitch_route_moves_sounding_voices() {
+    use kontra_engine::ir::{Mod, ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        kind: ModKind::Pitch {
+            source: Source::Controller(1),
+            semitones: 12.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let at = |e: &Engine| e.voices().next().map(|(_, p, _)| p).unwrap();
+    level(&mut e, &[on(60, 1.0)]);
+    let from = at(&e);
+    level(&mut e, &[cc(1, 127)]);
+    assert!(
+        (at(&e) - from - 512.0).abs() < 1e-6,
+        "an octave up: {}",
+        at(&e) - from
+    );
+}

@@ -725,9 +725,10 @@ impl Engine {
             }
             let gain = self.voice_gain(zone, &n, slot.factor);
             let step = self.step(zone, &n);
+            let pitch = cc.is_none_or(|cc| self.pitch_follows(zone, cc));
             if let Some(slot) = self.voices.get_mut(i) {
                 slot.voice.set_gain(gain);
-                if cc.is_none() {
+                if pitch {
                     slot.voice.set_step(step);
                 }
             }

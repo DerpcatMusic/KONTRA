@@ -222,7 +222,7 @@ fn slot_effect(
 /// each Hz, octaves and dB (layouts in v2 sampler-kontakt effects/mod.rs,
 /// reader 0x140d00db0).
 fn eq(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
-    let count = usize::try_from(kind - 21)
+    let count = usize::try_from(kind.checked_sub(21)?)
         .ok()
         .filter(|n| (1..=3).contains(n))?;
     let tail = public.get(public.len().checked_sub(count * 12)?..)?;
