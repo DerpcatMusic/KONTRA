@@ -11,9 +11,12 @@ use crate::script::{Kind, Running};
 
 /// Elements a key may hold (KSP manual, PGS).
 const MOST: usize = 256;
+/// Keys of each kind, reserved up front so creating one never allocates.
+const KEYS: usize = 64;
 
 pub(crate) struct Pgs {
-    ints: Vec<(Text, Box<[i32]>)>,
+    /// Key, values, and how many of them the key holds.
+    ints: Vec<(Text, [i32; MOST], usize)>,
     texts: Vec<(Text, Text)>,
     /// An `on pgs_changed` run waits in the queue.
     queued: bool,
@@ -22,8 +25,8 @@ pub(crate) struct Pgs {
 impl Pgs {
     pub(crate) fn new() -> Self {
         Self {
-            ints: Vec::new(),
-            texts: Vec::new(),
+            ints: Vec::with_capacity(KEYS),
+            texts: Vec::with_capacity(KEYS),
             queued: false,
         }
     }
@@ -31,8 +34,8 @@ impl Pgs {
     fn values(&mut self, key: Text) -> Option<&mut [i32]> {
         self.ints
             .iter_mut()
-            .find(|(k, _)| *k == key)
-            .map(|(_, v)| &mut **v)
+            .find(|(k, ..)| *k == key)
+            .and_then(|(_, v, len)| v.get_mut(..*len))
     }
 
     fn text(&mut self, key: Text) -> Option<&mut Text> {
@@ -44,17 +47,17 @@ impl Pgs {
 }
 
 impl Engine {
-    /// Answers a PGS action; `None` for any other.
-    // ponytail: a key first created after init allocates on the audio thread.
+    /// Answers a PGS action; `None` for any other. Keys past [`KEYS`] of a
+    /// kind are not created.
     pub(crate) fn pgs_call(&mut self, call: &mut HostCall<'_>) -> Option<HostValue> {
         let key = call.texts.first().copied().unwrap_or(Text::EMPTY);
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
         let flag = |b: bool| HostValue::Int(i32::from(b));
         Some(match call.action {
             Action::PgsCreateKey => {
-                if self.pgs.values(key).is_none() {
+                if self.pgs.values(key).is_none() && self.pgs.ints.len() < KEYS {
                     let len = usize::try_from(int(0)).unwrap_or(0).clamp(1, MOST);
-                    self.pgs.ints.push((key, vec![0; len].into()));
+                    self.pgs.ints.push((key, [0; MOST], len));
                 }
                 HostValue::Nothing
             }
@@ -77,7 +80,7 @@ impl Engine {
                 HostValue::Int(v.unwrap_or(0))
             }
             Action::PgsCreateStrKey => {
-                if self.pgs.text(key).is_none() {
+                if self.pgs.text(key).is_none() && self.pgs.texts.len() < KEYS {
                     self.pgs.texts.push((key, Text::EMPTY));
                 }
                 HostValue::Nothing
@@ -99,7 +102,8 @@ impl Engine {
         })
     }
 
-    /// Queues one `on pgs_changed` run for the changes so far.
+    /// Queues one `on pgs_changed` run for the changes so far, a sample
+    /// later: a callback that sets a key on every run cannot hold the block.
     fn pgs_changed(&mut self) {
         if !self.pgs.queued
             && self
@@ -108,7 +112,8 @@ impl Engine {
                 .iter()
                 .any(|s| s.callbacks.pgs_changed.is_some())
         {
-            self.pgs.queued = self.queue.push(self.now, Work::PgsChanged);
+            let next = crate::SampleTime(self.now.0 + 1);
+            self.pgs.queued = self.queue.push(next, Work::PgsChanged);
         }
     }
 

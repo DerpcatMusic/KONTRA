@@ -136,7 +136,8 @@ pub struct Engine {
     forward: Vec<NoteRef>,
     pgs: pgs::Pgs,
     /// Each script slot's listener timer.
-    timers: Box<[Option<callbacks::Timer>]>,
+    /// Per script slot: the millisecond and beat timers.
+    timers: Box<[callbacks::Timers]>,
     masks: GroupMasks,
     /// Scratch for script event targets (an action may run inside a ledger query).
     targets_scratch: Vec<NoteRef>,
@@ -223,7 +224,7 @@ impl Engine {
             .iter()
             .map(|s| Some(Instance::new(&s.program, s.coroutines.max(1))))
             .collect();
-        let timers = vec![None; plan.scripts.len()].into();
+        let timers = vec![[None; 2]; plan.scripts.len()].into();
         let control_pars = plan
             .scripts
             .iter()
@@ -411,7 +412,11 @@ impl Engine {
             Work::Resume(slot, co) => return self.resume(slot, co),
             Work::Release(note) => return self.end_note(note),
             Work::PgsChanged => return self.run_pgs_changed(),
-            Work::Listen(slot) => return self.listen(slot),
+            Work::Listen {
+                slot,
+                signal,
+                generation,
+            } => return self.listen(slot, signal, generation),
         };
         match event {
             Event::NoteOn {

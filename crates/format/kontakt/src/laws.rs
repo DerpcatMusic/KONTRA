@@ -439,17 +439,18 @@ mod solid {
 }
 
 /// The Solid G-EQ's four bands from its knobs (each 0..=1): LF gain and Hz,
-/// LMF and HMF gain, Hz and Q, HF gain and Hz.
+/// LMF and HMF gain, Hz and Q, HF gain and Hz. The LF and HF bands are
+/// shelves unless their shape is [`ir::Shape::Peak`] (the bell switch).
 // ponytail: the tables' main curves on standard cookbook bands, linearly
 // interpolated. The core's splines, its Orfanidis peaks, the LF shelf's two
 // shaping peaks and the HF shelf's DC cut are left out (v2 has them all).
 pub(crate) fn solid_eq(
     [lf_gain, lf_hz]: [f32; 2],
-    lf_bell: bool,
+    lf_shape: ir::Shape,
     lmf: [f32; 3],
     hmf: [f32; 3],
     [hf_gain, hf_hz]: [f32; 2],
-    hf_bell: bool,
+    hf_shape: ir::Shape,
 ) -> [ir::Bell; 4] {
     use solid::*;
     let t = |table: [f32; 11], x: f32| kontra_law::Law::Table(table.into()).eval(x);
@@ -459,7 +460,7 @@ pub(crate) fn solid_eq(
         q,
         gain_db,
     };
-    let lf = if lf_bell {
+    let lf = if lf_shape == ir::Shape::Peak {
         peak(
             t(FREQ_LF, lf_hz),
             t(GAIN_LF, lf_gain),
@@ -477,7 +478,7 @@ pub(crate) fn solid_eq(
     let lmf = peak(t(FREQ_LMF, hz), t(GAIN_LMF, g), t(C_71F8, g) * t(Q_LMF, q));
     let [g, hz, q] = hmf;
     let hmf = peak(t(FREQ_HMF, hz), t(GAIN_HMF, g), t(C_71F8, g) * t(Q_HMF, q));
-    let hf = if hf_bell {
+    let hf = if hf_shape == ir::Shape::Peak {
         let q = t(C_4818, hf_gain) * 1.2 * t(C_5078, hf_hz);
         peak(t(FREQ_HF, hf_hz), t(GAIN_HF, hf_gain), q)
     } else {
@@ -530,9 +531,23 @@ mod tests {
     #[test]
     fn a_centred_solid_eq_is_flat_and_its_knobs_reach_the_table_ends() {
         let mid = [0.5; 3];
-        let flat = solid_eq([0.5; 2], false, mid, mid, [0.5; 2], false);
+        let flat = solid_eq(
+            [0.5; 2],
+            ir::Shape::LowShelf,
+            mid,
+            mid,
+            [0.5; 2],
+            ir::Shape::HighShelf,
+        );
         assert!(flat.iter().all(|b| b.gain_db == 0.0));
-        let [lf, lmf, _, hf] = solid_eq([0.0, 0.5], false, [1.0, 0.5, 0.5], mid, [0.5; 2], true);
+        let [lf, lmf, _, hf] = solid_eq(
+            [0.0, 0.5],
+            ir::Shape::LowShelf,
+            [1.0, 0.5, 0.5],
+            mid,
+            [0.5; 2],
+            ir::Shape::Peak,
+        );
         assert_eq!(lf.shape, ir::Shape::LowShelf);
         assert_eq!(lf.gain_db, -20.0);
         assert_eq!((lmf.gain_db, lmf.hz), (21.5, 809.0));

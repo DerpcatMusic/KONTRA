@@ -345,6 +345,38 @@ fn a_listener_timer_runs_its_callback() {
 }
 
 #[test]
+fn millisecond_and_beat_timers_run_side_by_side_and_keep_their_signal() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $ms
+            declare $beat
+            set_listener($NI_SIGNAL_TIMER_MS, 10000)
+            set_listener($NI_SIGNAL_TIMER_BEAT, 24)
+            { Changed before the first firing: one schedule, not two. }
+            change_listener_par($NI_SIGNAL_TIMER_MS, 10000)
+        end on
+        on listener
+            wait(1)
+            if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TIMER_MS)
+                inc($ms)
+            end if
+            if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TIMER_BEAT)
+                inc($beat)
+            end if
+            message($ms & \" \" & $beat)
+        end on",
+    );
+    // 4096 frames is 85 ms: 8 millisecond firings and, at 120 bpm (20.8 ms
+    // per 24th of a quarter), 4 beat firings, each signal surviving the wait.
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "8 4");
+}
+
+#[test]
 fn a_pgs_key_carries_a_value_between_slots() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let zones = vec![zone(&mut store, 0.25, 0), zone(&mut store, 0.5, 1)];
@@ -376,6 +408,8 @@ fn a_pgs_key_carries_a_value_between_slots() {
         ),
     ];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // `on pgs_changed` runs a sample after the write.
+    level(&mut e, &[]);
     assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
 }
 
@@ -385,7 +419,7 @@ fn a_script_sets_a_send_effects_wet_and_dry_levels() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
     plan.inserts = vec![Some(ir::Effect {
-        kind: ir::EffectKind::Gain(1.0),
+        kind: ir::EffectKind::Gain(2.0),
         bypass: false,
         output: 1.0,
         dry: 0.0,

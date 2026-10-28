@@ -257,6 +257,7 @@ fn solid_eq(version: u16, public: &[u8], at: &str, notes: &mut Notes) -> Option<
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
     };
     let flag = |n: usize| public.get(n).map(|&b| b != 0);
+    let bell = |on: bool, shelf| if on { ir::Shape::Peak } else { shelf };
     // ponytail: v0x11's pass filters are reported, not run (no corpus slot uses them yet).
     if version > 0x10 && (flag(50)? || flag(51)?) {
         notes.add(
@@ -267,11 +268,11 @@ fn solid_eq(version: u16, public: &[u8], at: &str, notes: &mut Notes) -> Option<
     }
     Some(ir::EffectKind::Eq(crate::laws::solid_eq(
         [f(0)?, f(4)?],
-        flag(8)?,
+        bell(flag(8)?, ir::Shape::LowShelf),
         [f(9)?, f(13)?, f(17)?],
         [f(21)?, f(25)?, f(29)?],
         [f(33)?, f(37)?],
-        flag(41)?,
+        bell(flag(41)?, ir::Shape::HighShelf),
     )))
 }
 

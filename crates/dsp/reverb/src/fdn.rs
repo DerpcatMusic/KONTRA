@@ -133,7 +133,9 @@ impl Fdn {
             let (left, right) = (a - c + e - g, b - d + f - h);
             hadamard(&mut y);
             for ((line, v), sign) in self.lines.iter_mut().zip(y).zip([1.0, -1.0].iter().cycle()) {
-                line.write(v + sign * x);
+                let w = v + sign * x;
+                // The lines feed back: flush what would decay into denormals.
+                line.write(if w.abs() < 1e-20 { 0.0 } else { w });
             }
             let (mid, side) = (0.5 * (left + right), 0.5 * (left - right) * self.stereo);
             for ((o, [cut, low]), v) in frame

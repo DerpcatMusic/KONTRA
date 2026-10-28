@@ -140,12 +140,14 @@ impl Running {
         }
     }
 
-    /// The coroutine context: the event in the low 32 bits, then the
-    /// callback type and id, so a resumed callback still knows them.
+    /// The coroutine context, so a resumed callback still knows its event
+    /// (low 32 bits), callback type (8), callback id (20: a UI id, 32768 plus
+    /// a variable index) and listener signal (4).
     pub(crate) fn context(&self) -> u64 {
         u64::from(self.event.map_or(0, |n| n.event_id() as u32))
             | u64::from(self.callback_type) << 32
-            | u64::from(self.callback_id) << 40
+            | u64::from(self.callback_id & 0xF_FFFF) << 40
+            | u64::from(self.signal & 0xF) << 60
     }
 
     pub(crate) fn resumed(context: u64) -> Self {
@@ -153,7 +155,8 @@ impl Running {
             kind: Kind::Resumed,
             event: NoteRef::from_event_id(context as u32 as i32),
             callback_type: (context >> 32) as u8,
-            callback_id: (context >> 40) as u32,
+            callback_id: (context >> 40) as u32 & 0xF_FFFF,
+            signal: (context >> 60) as u8,
             ..Self::IDLE
         }
     }

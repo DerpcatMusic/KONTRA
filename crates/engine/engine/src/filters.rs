@@ -7,7 +7,7 @@
 //! ponytail: settings are fixed at load (after the init callback). Live
 //! changes (scripts, per-voice cutoff modulation) need per-voice filters.
 
-use kontra_dsp::eq::{Bell, Biquad};
+use kontra_dsp::eq::{Bell, Biquad, Side};
 use kontra_dsp::filter::{Pass, Shape};
 use kontra_ir as ir;
 
@@ -51,8 +51,12 @@ pub(crate) fn biquads(sections: &[ir::EffectKind], rate: u32) -> Box<[Biquad]> {
                         };
                         kontra_dsp::eq::bell(band, rate)
                     }
-                    ir::Shape::LowShelf => kontra_dsp::eq::shelf(b.hz, b.gain_db, b.q, false, rate),
-                    ir::Shape::HighShelf => kontra_dsp::eq::shelf(b.hz, b.gain_db, b.q, true, rate),
+                    ir::Shape::LowShelf => {
+                        kontra_dsp::eq::shelf(b.hz, b.gain_db, b.q, Side::Low, rate)
+                    }
+                    ir::Shape::HighShelf => {
+                        kontra_dsp::eq::shelf(b.hz, b.gain_db, b.q, Side::High, rate)
+                    }
                 }));
             }
             ir::EffectKind::Filter(f) => {
