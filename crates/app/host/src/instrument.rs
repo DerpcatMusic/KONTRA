@@ -11,6 +11,9 @@ pub struct Loaded {
     pub name: String,
     pub plan: Plan,
     pub diagnostics: Vec<ir::Diagnostic>,
+    /// By script slot, what a KSP script's UI tree is built from
+    /// ([`crate::ui::interface`] once the engine ran `on init`).
+    pub faces: Vec<Option<crate::ui::Face>>,
 }
 
 /// Reads the instrument at `path` into the model: a UVI program when the path
@@ -43,13 +46,17 @@ pub fn load(
 #[must_use]
 pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded {
     let (mut plan, mut diagnostics) = prepare(&instrument, rate, store, &kontra_stream::open);
+    let mut faces = Vec::new();
     diagnostics.extend(instrument.diagnostics);
     // ponytail: a slot that fails to compile is dropped, and the slots after
     // it move up one ($EVENT_PAR_SOURCE then counts from the gap).
     for script in &instrument.scripts {
         if script.dialect == ir::Dialect::Lua {
             match kontra_lua::compile(&script.source, &lua_modules(script), &script.saved) {
-                Ok(compiled) => plan.scripts.push(crate::script::lua_plan(compiled)),
+                Ok(compiled) => {
+                    plan.scripts.push(crate::script::lua_plan(compiled));
+                    faces.push(None);
+                }
                 Err(e) => diagnostics.push(ir::Diagnostic {
                     impact: ir::Impact::Broken,
                     feature: "script compile".into(),
@@ -61,7 +68,8 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
         match kontra_ksp::compile(&script.source, &[]) {
             Ok(compiled) => {
                 plan.scripts
-                    .push(crate::script::plan(&compiled, &script.saved, &script.data))
+                    .push(crate::script::plan(&compiled, &script.saved, &script.data));
+                faces.push(Some(crate::ui::Face::of(&compiled)));
             }
             Err(e) => diagnostics.push(ir::Diagnostic {
                 impact: ir::Impact::Broken,
@@ -79,6 +87,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
         name: instrument.name,
         plan,
         diagnostics,
+        faces,
     }
 }
 
