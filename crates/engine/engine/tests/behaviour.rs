@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use kontra_engine::ir::Join;
+use kontra_engine::ir::{self, Join};
 use kontra_engine::{
     Atom, Bus, Control, Crossfade, Engine, Plan, RoundRobin, RrCounter, Timed, Trigger, Zone,
 };
@@ -180,6 +180,8 @@ fn sequential_round_robin_cycles_and_mic_layers_agree() {
         sends: Vec::new(),
         to_main: true,
         enabled: true,
+        mods: Vec::new(),
+        blends: Vec::new(),
     });
     let mut e = engine(&store, plan);
     let mut steps = Vec::new();
@@ -421,6 +423,8 @@ fn a_disabled_mic_bus_starts_no_voices() {
         sends: Vec::new(),
         to_main: true,
         enabled: true,
+        mods: Vec::new(),
+        blends: Vec::new(),
     });
     let mut e = engine(&store, plan);
     e.set_bus_enabled(1, false);
@@ -455,6 +459,8 @@ fn a_bus_sends_before_its_fader() {
         ],
         to_main: true,
         enabled: true,
+        mods: Vec::new(),
+        blends: Vec::new(),
     });
     plan.buses.push(Bus {
         name: "Aux".into(),
@@ -464,6 +470,8 @@ fn a_bus_sends_before_its_fader() {
         sends: Vec::new(),
         to_main: true,
         enabled: true,
+        mods: Vec::new(),
+        blends: Vec::new(),
     });
     let mut e = engine(&store, plan);
     assert!(close(level(&mut e, &[on(60, 1.0)])[0], 0.25));
@@ -1646,4 +1654,63 @@ fn a_velocity_rate_route_speeds_a_voices_lfo() {
     let doubled = at_half_a_second(1.0);
     assert!((still - 1.0).abs() < 0.03, "{still}");
     assert!((doubled - 0.5).abs() < 0.03, "{doubled}");
+}
+
+#[test]
+fn a_controller_moves_a_bus_eq_band_while_it_plays() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = Zone::new(sine(&mut store), 60, RATE);
+    z.region.loops = vec![kontra_voice::Loop {
+        start: 0,
+        end: 48_000,
+        crossfade: 0,
+        ..Default::default()
+    }];
+    let mut plan = Plan::new(vec![z], 8);
+    plan.groups[0].bus = 1;
+    let bell = ir::Bell {
+        hz: 1000.0,
+        ..ir::Bell::FLAT
+    };
+    let eq = ir::Effect {
+        kind: ir::EffectKind::Eq([bell, ir::Bell::FLAT, ir::Bell::FLAT, ir::Bell::FLAT]),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    plan.buses.push(Bus {
+        name: "Aux".into(),
+        gain: 1.0,
+        pan: 0.0,
+        inserts: vec![Some(eq)],
+        sends: Vec::new(),
+        to_main: true,
+        enabled: true,
+        // CC 7 pulls the 1 kHz band down 20 dB at full travel.
+        mods: vec![ir::ModKind::EffectParam {
+            source: ir::Source::Controller(7),
+            insert: 0,
+            param: ir::EffectParam::BellGain(0),
+            depth: -20.0,
+            span: 1.0,
+            unipolar: false,
+        }],
+        blends: Vec::new(),
+    });
+    let mut e = engine(&store, plan);
+    let mut peak = |e: &mut Engine, events: &[Timed<Event>]| {
+        let mut p = 0.0f32;
+        for n in 0..20 {
+            let mut out = vec![[0.0; 2]; 256];
+            e.process(&mut out, if n == 0 { events } else { &[] });
+            p = out
+                .iter()
+                .fold(if n < 10 { 0.0 } else { p }, |p, f| p.max(f[0].abs()));
+        }
+        p
+    };
+    let open = peak(&mut e, &[cc(7, 0), on(60, 1.0)]);
+    let cut = peak(&mut e, &[cc(7, 127)]);
+    let db = 20.0 * (cut / open).log10();
+    assert!((db - -20.0).abs() < 1.0, "{open} -> {cut}: {db} dB");
 }

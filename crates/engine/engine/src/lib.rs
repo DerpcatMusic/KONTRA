@@ -225,7 +225,7 @@ impl Engine {
             .map(|b| BusState {
                 gain: b.gain,
                 enabled: b.enabled,
-                rack: racks::Rack::new(&b.inserts, rate, &[]),
+                rack: racks::Rack::routed(&b.inserts, rate, &[], &b.mods, &b.blends),
                 pan: b.pan,
                 sends: b.sends.clone().into(),
                 to_main: b.to_main,

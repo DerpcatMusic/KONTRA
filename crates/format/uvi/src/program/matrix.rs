@@ -54,34 +54,9 @@ pub(super) fn live(program: Node, connection: Node, group: &mut ir::Group) -> Op
         if num(input, "Ratio", 1.0).ok()? == 0.0 {
             continue;
         }
-        if flag(input, "Inverted") || flag(input, "ConnectionMode") {
-            return None;
-        }
-        let mut amount = num(input, "Ratio", 1.0).ok()? as f32 * half;
-        let mut factors = Vec::new();
-        for f in children(input).filter(|f| f.attribute("Destination") == Some("Ratio")) {
-            if flag(f, "Inverted") || flag(f, "ConnectionMode") || children(f).next().is_some() {
-                return None;
-            }
-            let depth = (num(f, "Ratio", 1.0).ok()? as f32).clamp(-1.0, 1.0);
-            let factor = ir::Factor {
-                input: transfer(program, f, group)?,
-                depth,
-            };
-            match factor.input.source {
-                ir::Source::Constant => amount *= factor.at(factor.input.apply(1.0)),
-                _ => factors.push(factor),
-            }
-        }
-        let input = transfer(program, input, group)?;
-        if input.source == ir::Source::Constant {
-            return None;
-        }
-        blend.terms.push(ir::Term {
-            input,
-            amount,
-            factors,
-        });
+        let mut term = term(program, input, Some(&mut group.lfos))?;
+        term.amount *= half;
+        blend.terms.push(term);
     }
     let blend = ir::Source::Blend(index_of(&mut group.blends, blend));
     // The cell's factor over the macro's position, at the mapper's points.
@@ -98,6 +73,45 @@ pub(super) fn live(program: Node, connection: Node, group: &mut ir::Group) -> Op
             table,
         },
     )))
+}
+
+/// An additive connection as a blend's term: its source through its
+/// mapper at its ratio, each live connection on that ratio a factor (a
+/// constant one folded in). None for an inverted or multiplicative one, a
+/// constant source, or a source not carried; an LFO only with `lfos`.
+pub(super) fn term(
+    program: Node,
+    input: Node,
+    mut lfos: Option<&mut Vec<ir::Lfo>>,
+) -> Option<ir::Term> {
+    if flag(input, "Inverted") || flag(input, "ConnectionMode") {
+        return None;
+    }
+    let mut amount = num(input, "Ratio", 1.0).ok()? as f32;
+    let mut factors = Vec::new();
+    for f in children(input).filter(|f| f.attribute("Destination") == Some("Ratio")) {
+        if flag(f, "Inverted") || flag(f, "ConnectionMode") || children(f).next().is_some() {
+            return None;
+        }
+        let depth = (num(f, "Ratio", 1.0).ok()? as f32).clamp(-1.0, 1.0);
+        let factor = ir::Factor {
+            input: transfer(program, f, lfos.as_deref_mut())?,
+            depth,
+        };
+        match factor.input.source {
+            ir::Source::Constant => amount *= factor.at(factor.input.apply(1.0)),
+            _ => factors.push(factor),
+        }
+    }
+    let input = transfer(program, input, lfos)?;
+    if input.source == ir::Source::Constant {
+        return None;
+    }
+    Some(ir::Term {
+        input,
+        amount,
+        factors,
+    })
 }
 
 /// The multiplier `m` gives at ratio `r`.
@@ -173,12 +187,18 @@ fn mapper(connection: Node) -> Option<Vec<f32>> {
 
 /// A connection's source through its mapper. A macro with no inputs of
 /// its own is a constant (a one-point table at its value); a bipolar LFO
-/// at depth 1 is the group's copy of it.
-fn transfer(program: Node, connection: Node, group: &mut ir::Group) -> Option<ir::Transfer> {
+/// at depth 1 is a copy of it in `lfos`.
+fn transfer(
+    program: Node,
+    connection: Node,
+    lfos: Option<&mut Vec<ir::Lfo>>,
+) -> Option<ir::Transfer> {
     let table = mapper(connection)?;
     let name = connection.attribute("Source")?;
     let source = if let Some(cc) = name.strip_prefix("@MIDI CC ") {
         ir::Source::Controller(cc.trim().parse().ok()?)
+    } else if name == "@PitchBend" {
+        ir::Source::PitchBend
     } else {
         let node = source_node(program, connection)?;
         if node.has_tag_name("ScriptEventModulation") && !flag(node, "Bipolar") {
@@ -190,8 +210,8 @@ fn transfer(program: Node, connection: Node, group: &mut ir::Group) -> Option<ir
                 source: ir::Source::Constant,
                 table: vec![value],
             });
-        } else if let Some((lfo, 1.0)) = modulation::lfo(node) {
-            ir::Source::Lfo(index_of(&mut group.lfos, lfo))
+        } else if let (Some((lfo, 1.0)), Some(lfos)) = (modulation::lfo(node), lfos) {
+            ir::Source::Lfo(index_of(lfos, lfo))
         } else if node.has_tag_name("LFO") || node.has_tag_name("MultiLFO") {
             // ponytail: an LFO not carried (VWinds' growl: a random wave whose
             // depth a script opens) is held at its rest, 0, read at the

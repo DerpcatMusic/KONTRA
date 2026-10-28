@@ -13,13 +13,17 @@ use kontra_dsp::reverb::{Convolver, Fdn, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
 
+use crate::behaviour::Behaviour;
 use crate::effects;
 use crate::filters;
-use crate::{Engine, MAX_SPAN, Response};
+use crate::ledger::{self, Ramp};
+use crate::{Engine, MAX_SPAN, Response, SampleTime};
 
 enum Dsp {
     None,
     Eq(Box<[filters::Stage]>),
+    /// An EQ routes move: all its bands, retuned each span.
+    Bells(filters::VoiceEq),
     /// A wet path (convolver or reverb) and a span of its output.
     Wet(Box<dyn Wet>, Box<[[f32; 2]]>),
 }
@@ -101,6 +105,63 @@ pub(crate) struct Rack {
     /// The plan's slots as scripts have changed them.
     pub(crate) slots: Box<[Option<ir::Effect>]>,
     dsp: Box<[Dsp]>,
+    /// Routes moving the slots ([`ir::Bus::mods`]), the blends they read,
+    /// and each route's amount for this span.
+    mods: Box<[ir::ModKind]>,
+    blends: Box<[ir::Blend]>,
+    amounts: Box<[f32]>,
+    rate: u32,
+}
+
+/// The sources a rack's routes read: those no note owns.
+pub(crate) struct Live<'a> {
+    pub(crate) behaviour: &'a Behaviour,
+    pub(crate) scripts: &'a [Option<(u16, Ramp)>],
+    pub(crate) now: SampleTime,
+}
+
+impl Live<'_> {
+    // ponytail: controllers and pitch bend from MIDI channel 1; a bus has
+    // no note to name one.
+    fn read(&self, source: ir::Source, blends: &[ir::Blend]) -> Option<f32> {
+        Some(match source {
+            ir::Source::Controller(cc) => f32::from(self.behaviour.cc(0, cc)) / 127.0,
+            ir::Source::ControllerFrom { cc, start } => {
+                let arrived = self.behaviour.cc_arrived(0, cc);
+                f32::from(if arrived {
+                    self.behaviour.cc(0, cc)
+                } else {
+                    start
+                }) / 127.0
+            }
+            ir::Source::PitchBend => self.behaviour.bend(0),
+            ir::Source::Script(i) => {
+                ledger::ramp_at(self.scripts, i, self.now).unwrap_or(0) as f32 / 1_000_000.0
+            }
+            ir::Source::Constant => 1.0,
+            ir::Source::Blend(n) => {
+                let b = blends.get(usize::from(n))?;
+                let mut sum = b.base;
+                for t in &b.terms {
+                    let mut x = t.amount * self.through(&t.input)?;
+                    for f in &t.factors {
+                        x *= f.at(self.through(&f.input)?);
+                    }
+                    sum += x;
+                }
+                sum
+            }
+            _ => return None,
+        })
+    }
+
+    /// `t`'s source through its table; a bipolar source spans a table as
+    /// `(x + 1)/2`. No blend: no recursion.
+    fn through(&self, t: &ir::Transfer) -> Option<f32> {
+        let x = self.read(t.source, &[])?;
+        let bipolar = matches!(t.source, ir::Source::PitchBend) && !t.table.is_empty();
+        Some(t.apply(if bipolar { (x + 1.0) / 2.0 } else { x }))
+    }
 }
 
 impl Rack {
@@ -110,9 +171,29 @@ impl Rack {
         rate: u32,
         impulses: &[Option<Response>],
     ) -> Self {
+        Self::routed(slots, rate, impulses, &[], &[])
+    }
+
+    /// As [`Self::new`], its slots moved by `mods` reading `blends`.
+    pub(crate) fn routed(
+        slots: &[Option<ir::Effect>],
+        rate: u32,
+        impulses: &[Option<Response>],
+        mods: &[ir::ModKind],
+        blends: &[ir::Blend],
+    ) -> Self {
+        let moved = |n: usize| {
+            mods.iter().any(
+                |m| matches!(m, ir::ModKind::EffectParam { insert, .. } if usize::from(*insert) == n),
+            )
+        };
         let dsp = slots
             .iter()
-            .map(|slot| match slot.map(|e| e.kind) {
+            .enumerate()
+            .map(|(n, slot)| match slot.map(|e| e.kind) {
+                Some(ir::EffectKind::Eq(bells)) if moved(n) => {
+                    Dsp::Bells(filters::VoiceEq::new(bells, rate))
+                }
                 // Built even while bypassed: a script may enable it later.
                 Some(
                     ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_),
@@ -159,6 +240,19 @@ impl Rack {
         Self {
             slots: slots.into(),
             dsp,
+            mods: mods.into(),
+            blends: blends.into(),
+            amounts: vec![0.0; mods.len()].into(),
+            rate,
+        }
+    }
+
+    /// Reads its routes' sources for the next span.
+    pub(crate) fn follow(&mut self, live: &Live) {
+        for (m, amount) in self.mods.iter().zip(self.amounts.iter_mut()) {
+            if let ir::ModKind::EffectParam { source, depth, .. } = *m {
+                *amount = live.read(source, &self.blends).unwrap_or(0.0) * depth;
+            }
         }
     }
 
@@ -169,12 +263,24 @@ impl Rack {
         taps: &mut [Box<[[f32; 2]]>],
         tempo: f32,
     ) {
-        for (slot, dsp) in self.slots.iter().zip(self.dsp.iter_mut()) {
-            let Some(e) = slot.filter(|e| !e.bypass) else {
+        for (n, (slot, dsp)) in self.slots.iter().zip(self.dsp.iter_mut()).enumerate() {
+            let Some(mut e) = slot.filter(|e| !e.bypass) else {
                 continue;
             };
+            for (m, &amount) in self.mods.iter().zip(self.amounts.iter()) {
+                if let ir::ModKind::EffectParam { insert, param, .. } = *m
+                    && usize::from(insert) == n
+                {
+                    param.add(&mut e.kind, amount);
+                }
+            }
             match (dsp, e.kind) {
                 (Dsp::Eq(f), _) => filters::run(f, io),
+                // ponytail: retuned once a span; per-sample if a sweep zippers.
+                (Dsp::Bells(eq), ir::EffectKind::Eq(bells)) => {
+                    eq.retune(bells, self.rate);
+                    eq.process(io);
+                }
                 // The wet path from the input, then the dry level, then the wet at the output gain.
                 (Dsp::Wet(processor, wet), kind) => {
                     let Some(wet) = wet.get_mut(..io.len()) else {
@@ -313,7 +419,11 @@ impl Engine {
             .chain(std::iter::once(&mut self.main))
             .chain(self.buses.iter_mut().map(|b| &mut b.rack));
         for rack in racks {
-            *rack = Rack::new(&rack.slots, rate, &plan.impulses);
+            let (mods, blends) = (
+                std::mem::take(&mut rack.mods),
+                std::mem::take(&mut rack.blends),
+            );
+            *rack = Rack::routed(&rack.slots, rate, &plan.impulses, &mods, &blends);
         }
     }
 
@@ -330,6 +440,12 @@ impl Engine {
                 continue;
             };
             if let Some(mix) = bus.mix.get_mut(..len) {
+                let live = Live {
+                    behaviour: &self.behaviour,
+                    scripts: &self.script_mods,
+                    now: self.now,
+                };
+                bus.rack.follow(&live);
                 bus.rack.process(mix, &mut self.taps, tempo);
                 // A send to an earlier bus would come a span late: none.
                 for send in &bus.sends {

@@ -314,6 +314,9 @@ pub struct Bus {
     pub to_main: bool,
     /// A disabled bus starts no voices (purged mic): it costs no CPU.
     pub enabled: bool,
+    /// Routes moving its inserts ([`ir::Bus::mods`]) and the blends they read.
+    pub mods: Vec<ir::ModKind>,
+    pub blends: Vec<ir::Blend>,
 }
 
 /// A prepared impulse response.
@@ -377,6 +380,8 @@ impl Plan {
                 sends: Vec::new(),
                 to_main: true,
                 enabled: true,
+                mods: Vec::new(),
+                blends: Vec::new(),
             }],
             polyphony: Vec::new(),
             voice_groups: Vec::new(),
