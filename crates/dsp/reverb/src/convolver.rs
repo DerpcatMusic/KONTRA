@@ -264,3 +264,29 @@ impl Convolver {
         self.quiet = 0;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_stage_matches_direct_convolution_at_unity() {
+        // A response reaching the last stage, and a noise input.
+        let mut seed = 1u32;
+        let mut noise = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1 << 24) as f32 - 0.5
+        };
+        let ir: Vec<f32> = (0..20_000).map(|_| noise() * 0.01).collect();
+        let input: Vec<f32> = (0..30_000).map(|_| noise()).collect();
+        let mut c = Convolver::new(&ir, &ir);
+        let mut io: Vec<[f32; 2]> = input.iter().map(|&x| [x, x]).collect();
+        for block in io.chunks_mut(256) {
+            c.process(block);
+        }
+        for n in [0, 63, 64, 1_000, 1_024, 8_191, 8_192, 25_000, 29_999] {
+            let direct: f32 = (0..=n.min(ir.len() - 1)).map(|k| ir[k] * input[n - k]).sum();
+            assert!((io[n][0] - direct).abs() < 1e-4, "{n}: {} vs {direct}", io[n][0]);
+        }
+    }
+}
