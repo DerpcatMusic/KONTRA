@@ -422,6 +422,20 @@ fn translate_group(
                         insert,
                         depth: t.signed_intensity(),
                     }),
+                    (Some(source), "filterQ", Some(insert)) => Some(ir::ModKind::Resonance {
+                        source,
+                        insert,
+                        depth: t.signed_intensity(),
+                    }),
+                    (Some(source), param, Some(insert)) if laws::eq_band_index(param).is_some() => {
+                        laws::eq_band_index(param).map(|band| ir::ModKind::EqGain {
+                            source,
+                            insert,
+                            band,
+                            depth_db: t.signed_intensity() * laws::EQ_GAIN_SPAN_DB,
+                            limit_db: laws::EQ_GAIN_LIMIT_DB,
+                        })
+                    }
                     // Only the amplitude envelope's attack: another AHDSR is
                     // a breakpoint source with fixed times.
                     (Some(source), "ahdsr_attack", Some(at))
@@ -534,6 +548,11 @@ fn timed(
                 amount: t.signed_intensity(),
             },
             ("filterCutoff", Some(insert)) => ir::ModKind::Cutoff {
+                source,
+                insert,
+                depth: t.signed_intensity(),
+            },
+            ("filterQ", Some(insert)) => ir::ModKind::Resonance {
                 source,
                 insert,
                 depth: t.signed_intensity(),

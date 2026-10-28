@@ -92,8 +92,10 @@ struct Slot {
     fading: bool,
     /// Extra gain fixed at start (release-trigger decay).
     factor: f32,
-    /// Its group's filter whose cutoff moves, run on this voice alone.
+    /// Its group's filter whose cutoff or resonance moves, run on this voice alone.
     filter: Option<Svf>,
+    /// Its group's EQ whose band gains move, run on this voice alone.
+    eq: Option<filters::VoiceEq>,
 }
 
 struct BusState {
@@ -166,6 +168,8 @@ pub struct Engine {
     zone_chain: Box<[Option<u16>]>,
     /// Per group, the insert slot of its filter that runs per voice.
     voice_filters: Box<[Option<u8>]>,
+    /// Per group, the insert slot of its EQ that runs per voice.
+    voice_eqs: Box<[Option<u8>]>,
     /// One voice's audio on its way through its filter.
     scratch: Box<[[f32; 2]]>,
 }
@@ -198,6 +202,7 @@ impl Engine {
                 fading: false,
                 factor: 1.0,
                 filter: None,
+                eq: None,
             })
             .collect();
         let buses = plan
@@ -268,6 +273,7 @@ impl Engine {
             chains: Vec::new(),
             zone_chain: Box::new([]),
             voice_filters: Box::new([]),
+            voice_eqs: Box::new([]),
             scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),
         };
         engine.cc_values[7] = 100;
@@ -504,18 +510,22 @@ impl Engine {
             };
             let now = self.now;
             let rate = self.rate;
-            let filter = self
-                .cutoff(zone, &n, self.age(self.now, None))
-                .map(|(f, hz)| {
-                    let mut svf = Svf::new(filters::shape(&f));
-                    svf.set_cutoff(hz, rate);
-                    svf
-                });
+            let age = self.age(self.now, None);
+            let filter = self.voice_filter(zone, &n, age).map(|(f, hz, damping)| {
+                let mut svf = Svf::new(filters::shape(&f));
+                svf.set_cutoff(hz, rate);
+                svf.set_damping(damping);
+                svf
+            });
+            let eq = self
+                .voice_bells(zone, &n, age)
+                .map(|bells| filters::VoiceEq::new(bells, rate));
             let Some(slot) = self.free_slot() else {
                 continue;
             };
             slot.voice.start(start);
             slot.filter = filter;
+            slot.eq = eq;
             slot.note = Some(note);
             slot.zone = index;
             slot.started = now;
@@ -735,12 +745,11 @@ impl Engine {
             let gain = self.voice_gain(zone, &n, slot.factor, age);
             let step = self.step(zone, &n, age);
             let pitch = cc.is_none_or(|cc| self.pitch_follows(zone, cc));
-            let cutoff = self.cutoff(zone, &n, age).map(|(_, hz)| hz);
+            let tuned = self.voice_filter(zone, &n, age).map(|(_, hz, k)| (hz, k));
+            let bells = self.voice_bells(zone, &n, age);
             let rate = self.rate;
             if let Some(slot) = self.voices.get_mut(i) {
-                if let (Some(f), Some(hz)) = (slot.filter.as_mut(), cutoff) {
-                    f.set_cutoff(hz, rate);
-                }
+                filters::retune(slot, tuned, bells, rate);
                 slot.voice.set_gain(gain);
                 if pitch {
                     slot.voice.set_step(step);

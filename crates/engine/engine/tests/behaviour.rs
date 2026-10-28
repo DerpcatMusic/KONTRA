@@ -685,6 +685,7 @@ fn a_controller_opens_a_voice_filter() {
             damping: [1.85, 0.77, 0.0],
             gain: 1.0,
             octaves: 6.0,
+            q_octaves: 0.0,
         }),
         bypass: false,
         output: 1.0,
@@ -721,6 +722,124 @@ fn a_controller_opens_a_voice_filter() {
     let open = peak(&mut e, &[]);
     assert!(closed < 0.001, "closed {closed}");
     assert!((open - 0.1).abs() < 0.01, "open {open}");
+}
+
+/// A group with one EQ insert, `eq`, and the given routes.
+fn eq_group(
+    region: Region,
+    eq: [kontra_engine::ir::Bell; 4],
+    mods: Vec<kontra_engine::ir::Mod>,
+) -> Plan {
+    use kontra_engine::ir::{Effect, EffectKind};
+    let mut plan = Plan::new(vec![Zone::new(region, 60, RATE)], 8);
+    plan.groups[0].mods = mods;
+    plan.groups[0].inserts = vec![Some(Effect {
+        kind: EffectKind::Eq(eq),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan
+}
+
+#[test]
+fn a_velocity_moved_eq_band_makes_a_hard_note_louder_at_its_frequency() {
+    use kontra_engine::ir::{Bell, Mod, ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let region = sine(&mut store);
+    // The 1 kHz band moves +24 dB across velocity: 12 dB at 0.5, 24 dB at 1.
+    let route = Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::EqGain {
+            source: Source::Velocity,
+            insert: 0,
+            band: 0,
+            depth_db: 24.0,
+            limit_db: 36.0,
+        },
+    };
+    let bell = Bell {
+        hz: 1000.0,
+        q: 1.0,
+        gain_db: 0.0,
+        ..Bell::FLAT
+    };
+    let peak = |velocity: f64| {
+        let mut e = Engine::new(
+            Arc::new(eq_group(
+                region.clone(),
+                [bell, Bell::FLAT, Bell::FLAT, Bell::FLAT],
+                vec![route.clone()],
+            )),
+            store.client(),
+            RATE,
+        );
+        let mut out = vec![[0.0; 2]; 4800];
+        e.process(&mut out, &[on(60, velocity)]);
+        out[2400..].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    let (soft, hard) = (peak(0.5), peak(1.0));
+    let ratio = hard / soft;
+    assert!(
+        (ratio / 10f32.powf(12.0 / 20.0) - 1.0).abs() < 0.05,
+        "soft {soft} hard {hard} ratio {ratio}"
+    );
+}
+
+#[test]
+fn an_lfo_moved_resonance_changes_the_response_over_time() {
+    use kontra_engine::ir::{
+        Clock, Effect, EffectKind, Filter, Lfo, Mod, ModKind, Pass, Rate, Source, Wave,
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+    // A 1 kHz band pass with unit gain at its peak, its Q moved by a square
+    // LFO at 1 Hz: its damping falls 4× (Q 4×) for one half, rises 4× for the other.
+    plan.groups[0].inserts = vec![Some(Effect {
+        kind: EffectKind::Filter(Filter {
+            pass: Pass::Band,
+            hz: 1000.0,
+            stages: 1,
+            damping: [1.0; 3],
+            gain: 1.0,
+            octaves: 0.0,
+            q_octaves: 2.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.groups[0].lfos = vec![Lfo {
+        wave: Wave::Square { width: 0.5 },
+        rate: Rate::Hz(1.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: Clock::Free,
+    }];
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Resonance {
+            source: Source::Lfo(0),
+            insert: 0,
+            depth: 1.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0f32; 2]; 48_000];
+    e.process(&mut out, &[on(60, 1.0)]);
+    let window = |from: f32, to: f32| {
+        let (a, b) = ((from * 48_000.0) as usize, (to * 48_000.0) as usize);
+        out[a..b].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    let (first, second) = (window(0.1, 0.4), window(0.6, 0.9));
+    let swing = (first / second).max(second / first);
+    assert!(swing > 4.0, "first {first} second {second}");
 }
 
 #[test]

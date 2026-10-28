@@ -425,6 +425,25 @@ pub enum ModKind {
         insert: u8,
         depth: f32,
     },
+    /// Moves the resonance of the [`Filter`] in group insert slot `insert` by
+    /// `source × depth × Filter::q_octaves` octaves of Q; that filter runs per voice.
+    Resonance {
+        source: Source,
+        insert: u8,
+        depth: f32,
+    },
+    /// Moves the gain of band `band` of the [`Eq`] in group insert slot
+    /// `insert` by `source × depth_db` dB, clamped to `±limit_db`; that EQ
+    /// runs per voice.
+    ///
+    /// [`Eq`]: EffectKind::Eq
+    EqGain {
+        source: Source,
+        insert: u8,
+        band: u8,
+        depth_db: f32,
+        limit_db: f32,
+    },
     /// `source × depth` of the zone's [`Zone::start_mod`] frames added to
     /// where its voices start, read at note-on.
     SampleStart { source: Source, depth: f32 },
@@ -671,6 +690,9 @@ pub struct Filter {
     /// Octaves a [`ModKind::Cutoff`] depth of 1 moves the cutoff (the range
     /// of the format's cutoff control).
     pub octaves: f32,
+    /// Octaves of Q a [`ModKind::Resonance`] depth of 1 moves the damping
+    /// (the range of the format's resonance control); 0 when it has none.
+    pub q_octaves: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
