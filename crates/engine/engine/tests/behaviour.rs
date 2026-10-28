@@ -1698,7 +1698,7 @@ fn a_controller_moves_a_bus_eq_band_while_it_plays() {
         blends: Vec::new(),
     });
     let mut e = engine(&store, plan);
-    let mut peak = |e: &mut Engine, events: &[Timed<Event>]| {
+    let peak = |e: &mut Engine, events: &[Timed<Event>]| {
         let mut p = 0.0f32;
         for n in 0..20 {
             let mut out = vec![[0.0; 2]; 256];
