@@ -77,7 +77,8 @@ fn keygroups_become_groups_bundles_place_members_and_silent_layers_are_reported(
     // Bundle: the matrix places L → left, R → right, the third member nowhere.
     let bundle = &out.groups[1];
     assert_eq!(bundle.zones.len(), 2);
-    assert!(bundle.zones[0].pan < -0.99 && bundle.zones[1].pan > 0.99);
+    assert_eq!(bundle.zones[0].mix, vec![[1.0, 0.0]]);
+    assert_eq!(bundle.zones[1].mix, vec![[0.0, 1.0]]);
     // a.wav, then the two placed bundle members; the unplaced and missing ones add none.
     assert_eq!(out.samples.len(), 3);
     assert!(
