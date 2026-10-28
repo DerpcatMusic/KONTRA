@@ -5,7 +5,8 @@ use crate::Rate;
 /// A feed-forward compressor in physical units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Compressor {
-    /// Peak level where gain reduction starts.
+    /// Peak level at the knee's centre: where a hard knee starts reducing;
+    /// a soft knee starts `knee_db / 2` below it.
     pub threshold_db: f32,
     /// Input dB over the threshold per output dB; infinite limits.
     pub ratio: f32,
