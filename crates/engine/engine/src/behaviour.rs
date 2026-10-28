@@ -35,6 +35,9 @@ pub(crate) struct Behaviour {
     cc_set: [u128; 16],
     /// Pitch bend per channel, −1..=1.
     bend: [f32; 16],
+    /// The channel the latest note, controller or bend came on: what routes
+    /// no note owns read (the engine plays every channel).
+    pub(crate) channel: u8,
     global: Counter,
     keys: [Counter; 128],
     /// (group, counter) for every group a round-robin zone names; built at prepare.
@@ -64,6 +67,7 @@ impl Behaviour {
             cc,
             cc_set: [0; 16],
             bend: [0.0; 16],
+            channel: 0,
             global: Counter::default(),
             keys: [Counter::default(); 128],
             groups,

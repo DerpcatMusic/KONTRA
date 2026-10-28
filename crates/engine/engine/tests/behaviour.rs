@@ -1710,7 +1710,12 @@ fn a_controller_moves_a_bus_eq_band_while_it_plays() {
         p
     };
     let open = peak(&mut e, &[cc(7, 0), on(60, 1.0)]);
-    let cut = peak(&mut e, &[cc(7, 127)]);
+    // Played on channel 4 now: the route follows it.
+    let ch4 = Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB3, 7, 127),
+    };
+    let cut = peak(&mut e, &[ch4]);
     let db = 20.0 * (cut / open).log10();
     assert!((db - -20.0).abs() < 1.0, "{open} -> {cut}: {db} dB");
 }
