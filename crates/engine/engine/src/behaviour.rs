@@ -54,12 +54,10 @@ impl Behaviour {
                 groups.push((zone.group, Counter::default()));
             }
         }
-        let mut cc = [[0u8; 128]; 16];
-        for channel in &mut cc {
-            // MIDI defaults a fresh instrument expects: volume 100, expression full.
-            channel[7] = 100;
-            channel[11] = 127;
-        }
+        // Every controller reads 0 until a message sets it, as in a fresh
+        // Kontakt 8 (measured: %CC 1, 2, 7, 10, 11, 21, 64, 100 all 0); a
+        // source that starts elsewhere says so (`Source::ControllerFrom`).
+        let cc = [[0u8; 128]; 16];
         let mut behaviour = Self {
             keyswitch: None,
             switches: vec![false; plan.switches.len()],
