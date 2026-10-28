@@ -365,7 +365,7 @@ pub(crate) fn source(kind: &ir::ModKind) -> Option<ir::Source> {
 }
 
 /// Whether scripts address `m` by modulator `slot` and `target`. A negative
-/// target is the first route (real Kontakt 8, probes/mod_par_laws.lua: generic
+/// target is the first route (measured, probes/mod_par_laws.lua: generic
 /// -1 moves route 0 alone).
 pub(crate) fn addressed(m: &ir::Mod, slot: i32, target: i32) -> bool {
     i32::from(m.slot) == slot && i32::from(m.target) == target.max(0)
