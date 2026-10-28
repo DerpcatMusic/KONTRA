@@ -1,29 +1,32 @@
-//! Zero-latency convolution: a direct FIR head plus a uniform partitioned FFT tail.
+//! Zero-latency convolution: a direct FIR head, then non-uniformly
+//! partitioned FFT stages, each block size covering a later stretch of the
+//! response (Gardner 1995). A stage of block `B` delays by `B`, so it may
+//! start no earlier than `B` into the response.
 
 use std::sync::Arc;
 
 use realfft::num_complex::Complex;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 
-/// Head length and FFT block size, in frames.
-const BLOCK: usize = 64;
+/// Head length, in frames.
+const HEAD: usize = 64;
+/// Each stage's block size and where its stretch of the response ends;
+/// it starts where the one before ends. The last runs to the end.
+const STAGES: [(usize, usize); 3] = [(64, 1024), (512, 8192), (4096, usize::MAX)];
 /// Inputs below this magnitude count as silence.
 const SILENT: f32 = 1e-10;
 
 type Spectrum = Vec<Complex<f32>>;
 
-/// One channel: a direct FIR over the first `BLOCK` taps, and an FFT tail for the rest.
-struct Mono {
-    head: Vec<f32>,
-    /// Last `BLOCK` inputs, stored twice so the window `pos..pos + BLOCK` is contiguous.
-    hist: Vec<f32>,
-    pos: usize,
-    /// `[previous block, current block]`; the current block fills from `BLOCK`.
+/// One uniformly partitioned stretch of the response, block `block`.
+struct Stage {
+    block: usize,
+    /// `[previous block, current block]`; the current block fills from `block`.
     buf: Vec<f32>,
     fill: usize,
-    /// Tail output for the current block, computed when the previous block completed.
+    /// Output for the current block, computed when the previous block completed.
     tail: Vec<f32>,
-    /// Non-zero tail partitions as `(age in blocks, spectrum)`.
+    /// Non-zero partitions as `(age in blocks, spectrum)`.
     parts: Vec<(usize, Spectrum)>,
     /// Spectra of the last `slots.len()` input blocks, newest at `slot`.
     slots: Vec<Spectrum>,
@@ -36,23 +39,26 @@ struct Mono {
     inv_scratch: Spectrum,
 }
 
-impl Mono {
+impl Stage {
+    /// The stage for `ir[from..to]`, `from` a multiple of `block` and at least `block`.
     fn new(
         ir: &[f32],
-        fwd: &Arc<dyn RealToComplex<f32>>,
-        inv: &Arc<dyn ComplexToReal<f32>>,
-    ) -> Self {
-        let mut head = vec![0.0; BLOCK];
-        for (h, t) in head.iter_mut().zip(ir) {
-            *h = *t;
-        }
-
-        let tail_ir = ir.get(BLOCK..).unwrap_or(&[]);
-        let count = tail_ir.len().div_ceil(BLOCK);
+        block: usize,
+        from: usize,
+        to: usize,
+        planner: &mut RealFftPlanner<f32>,
+    ) -> Option<Self> {
+        let fwd = planner.plan_fft_forward(2 * block);
+        let inv = planner.plan_fft_inverse(2 * block);
+        // Partition p holds ir[block + p·block ..]; only those inside from..to.
+        let tail = ir.get(block..to.min(ir.len()))?;
         let mut fft_in = fwd.make_input_vec();
         let mut scratch = fwd.make_scratch_vec();
         let mut parts = Vec::new();
-        for (p, chunk) in tail_ir.chunks(BLOCK).enumerate() {
+        for (p, chunk) in tail.chunks(block).enumerate() {
+            if block + p * block < from {
+                continue;
+            }
             fft_in.fill(0.0);
             for (d, s) in fft_in.iter_mut().zip(chunk) {
                 *d = *s;
@@ -64,56 +70,41 @@ impl Mono {
                 parts.push((p, spec));
             }
         }
-
-        Self {
-            head,
-            hist: vec![0.0; 2 * BLOCK],
-            pos: 0,
-            buf: vec![0.0; 2 * BLOCK],
+        let count = parts.last()?.0 + 1;
+        Some(Self {
+            block,
+            buf: vec![0.0; 2 * block],
             fill: 0,
-            tail: vec![0.0; BLOCK],
+            tail: vec![0.0; block],
             parts,
             slots: (0..count).map(|_| fwd.make_output_vec()).collect(),
             slot: 0,
             acc: fwd.make_output_vec(),
             fft_in,
-            fwd: Arc::clone(fwd),
-            inv: Arc::clone(inv),
             fwd_scratch: scratch,
             inv_scratch: inv.make_scratch_vec(),
-        }
+            fwd,
+            inv,
+        })
     }
 
     fn push(&mut self, x: f32) -> f32 {
-        self.pos = (self.pos + BLOCK - 1) % BLOCK;
-        if let Some(v) = self.hist.get_mut(self.pos) {
-            *v = x;
-        }
-        if let Some(v) = self.hist.get_mut(self.pos + BLOCK) {
-            *v = x;
-        }
-        let head = self
-            .hist
-            .get(self.pos..self.pos + BLOCK)
-            .map_or(0.0, |w| dot(w, &self.head));
-        let y = head + self.tail.get(self.fill).copied().unwrap_or(0.0);
-
-        if let Some(v) = self.buf.get_mut(BLOCK + self.fill) {
+        let y = self.tail.get(self.fill).copied().unwrap_or(0.0);
+        if let Some(v) = self.buf.get_mut(self.block + self.fill) {
             *v = x;
         }
         self.fill += 1;
-        if self.fill == BLOCK {
+        if self.fill == self.block {
             self.fill = 0;
             self.block_done();
         }
         y
     }
 
-    /// Turns the completed block into the tail for the next block.
+    /// Turns the completed block into the output for the next block.
+    // ponytail: a long stage does all its work on the frame its block
+    // completes; spread it over the block if that spike ever misses a deadline.
     fn block_done(&mut self) {
-        if self.parts.is_empty() {
-            return;
-        }
         for (d, s) in self.fft_in.iter_mut().zip(&self.buf) {
             *d = *s;
         }
@@ -145,23 +136,78 @@ impl Mono {
         let _ =
             self.inv
                 .process_with_scratch(&mut self.acc, &mut self.fft_in, &mut self.inv_scratch);
-        let scale = 1.0 / (2 * BLOCK) as f32;
-        for (t, v) in self.tail.iter_mut().zip(self.fft_in.iter().skip(BLOCK)) {
+        let scale = 1.0 / (2 * self.block) as f32;
+        for (t, v) in self
+            .tail
+            .iter_mut()
+            .zip(self.fft_in.iter().skip(self.block))
+        {
             *t = v * scale;
         }
 
-        self.buf.rotate_left(BLOCK);
+        self.buf.rotate_left(self.block);
     }
 
     fn reset(&mut self) {
-        self.pos = 0;
         self.fill = 0;
         self.slot = 0;
-        self.hist.fill(0.0);
         self.buf.fill(0.0);
         self.tail.fill(0.0);
         for s in &mut self.slots {
             s.fill(Complex::default());
+        }
+    }
+}
+
+/// One channel: a direct FIR over the first `HEAD` taps, and the stages for the rest.
+struct Mono {
+    head: Vec<f32>,
+    /// Last `HEAD` inputs, stored twice so the window `pos..pos + HEAD` is contiguous.
+    hist: Vec<f32>,
+    pos: usize,
+    stages: Vec<Stage>,
+}
+
+impl Mono {
+    fn new(ir: &[f32], planner: &mut RealFftPlanner<f32>) -> Self {
+        let mut head = vec![0.0; HEAD];
+        for (h, t) in head.iter_mut().zip(ir) {
+            *h = *t;
+        }
+        let mut from = HEAD;
+        let mut stages = Vec::new();
+        for (block, to) in STAGES {
+            stages.extend(Stage::new(ir, block, from, to, planner));
+            from = to;
+        }
+        Self {
+            head,
+            hist: vec![0.0; 2 * HEAD],
+            pos: 0,
+            stages,
+        }
+    }
+
+    fn push(&mut self, x: f32) -> f32 {
+        self.pos = (self.pos + HEAD - 1) % HEAD;
+        if let Some(v) = self.hist.get_mut(self.pos) {
+            *v = x;
+        }
+        if let Some(v) = self.hist.get_mut(self.pos + HEAD) {
+            *v = x;
+        }
+        let head = self
+            .hist
+            .get(self.pos..self.pos + HEAD)
+            .map_or(0.0, |w| dot(w, &self.head));
+        head + self.stages.iter_mut().map(|s| s.push(x)).sum::<f32>()
+    }
+
+    fn reset(&mut self) {
+        self.pos = 0;
+        self.hist.fill(0.0);
+        for s in &mut self.stages {
+            s.reset();
         }
     }
 }
@@ -183,11 +229,9 @@ impl Convolver {
     /// Builds the convolver from one impulse response per channel. Allocates; not real-time.
     pub fn new(left: &[f32], right: &[f32]) -> Self {
         let mut planner = RealFftPlanner::<f32>::new();
-        let fwd = planner.plan_fft_forward(2 * BLOCK);
-        let inv = planner.plan_fft_inverse(2 * BLOCK);
         Self {
-            left: Mono::new(left, &fwd, &inv),
-            right: Mono::new(right, &fwd, &inv),
+            left: Mono::new(left, &mut planner),
+            right: Mono::new(right, &mut planner),
             taps: left.len().max(right.len()),
             quiet: 0,
         }

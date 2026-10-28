@@ -36,12 +36,13 @@ fn run(conv: &mut Convolver, frames: &[[f32; 2]], sizes: &[usize]) -> Vec<[f32; 
 #[test]
 fn matches_naive_convolution() {
     let mut seed = 0x5eed;
-    for taps in [1, 63, 64, 65, 200, 3000] {
+    // Every stage boundary: 64, 1024 and 8192.
+    for taps in [1, 63, 64, 65, 200, 1023, 1025, 3000, 8191, 12_000] {
         let scale = 1.0 / (taps as f32).sqrt();
         let left = noise(&mut seed, taps, scale);
         let right = noise(&mut seed, taps, scale);
-        let xl = noise(&mut seed, 8000, 1.0);
-        let xr = noise(&mut seed, 8000, 1.0);
+        let xl = noise(&mut seed, 16_000, 1.0);
+        let xr = noise(&mut seed, 16_000, 1.0);
         let frames: Vec<[f32; 2]> = xl.iter().zip(&xr).map(|(l, r)| [*l, *r]).collect();
 
         let mut conv = Convolver::new(&left, &right);
