@@ -102,6 +102,13 @@ impl Engine {
         let channel = note.host.channel;
         let group = || self.groups.get(zone.group as usize);
         match source {
+            ir::Source::Shaped(n) => {
+                let s = group()?.shapers.get(usize::from(n))?;
+                if matches!(s.source, ir::Source::Shaped(_)) {
+                    return None;
+                }
+                Some(s.apply(self.source(zone, s.source, note, age)?))
+            }
             ir::Source::Envelope(n) => Some(modulators::envelope(
                 group()?.envelopes.get(usize::from(n))?,
                 age,
@@ -123,6 +130,14 @@ impl Engine {
             }
             ir::Source::Velocity => Some(note.velocity as f32),
             ir::Source::Controller(cc) => Some(f32::from(self.behaviour.cc(channel, cc)) / 127.0),
+            ir::Source::ControllerFrom { cc, start } => {
+                let v = if self.behaviour.cc_arrived(channel, cc) {
+                    self.behaviour.cc(channel, cc)
+                } else {
+                    start
+                };
+                Some(f32::from(v) / 127.0)
+            }
             ir::Source::PitchBend => Some(self.behaviour.bend(channel)),
             ir::Source::Key => Some(f32::from(note.key) / 127.0),
             ir::Source::Constant => Some(1.0),
@@ -328,7 +343,7 @@ impl Engine {
                     | ir::ModKind::Resonance { source, .. }
                     | ir::ModKind::EqGain { source, .. }
                     | ir::ModKind::EffectParam { source, .. }
-                    | ir::ModKind::Intensity { source, .. } => source == ir::Source::Controller(cc),
+                    | ir::ModKind::Intensity { source, .. } => g.controller(source) == Some(cc),
                     ir::ModKind::Envelope
                     | ir::ModKind::SampleStart { .. }
                     | ir::ModKind::Attack { .. }
@@ -343,8 +358,8 @@ impl Engine {
     pub(crate) fn pitch_follows(&self, zone: &Zone, cc: u8) -> bool {
         self.groups.get(zone.group as usize).is_some_and(|g| {
             g.mods.iter().any(|m| {
-                matches!(m.kind, ir::ModKind::Pitch { source: ir::Source::Controller(c), .. }
-                    | ir::ModKind::Intensity { source: ir::Source::Controller(c), .. } if c == cc)
+                matches!(m.kind, ir::ModKind::Pitch { source, .. }
+                    | ir::ModKind::Intensity { source, .. } if g.controller(source) == Some(cc))
             })
         })
     }

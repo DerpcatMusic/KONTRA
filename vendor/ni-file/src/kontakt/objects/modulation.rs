@@ -6,9 +6,9 @@
 use std::io::Cursor;
 
 use crate::{
+    Error,
     kontakt::{Chunk, KontaktError, StructuredObject},
     read_bytes::ReadBytesExt,
-    Error,
 };
 
 /// Group/source parameters stored without a module slot byte: the native
@@ -202,6 +202,25 @@ pub struct ExternalModParams {
     /// Their semantics are unknown; retain them without treating them as flags.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_tail: Vec<u8>,
+}
+
+impl ExternalModParams {
+    /// A MIDI CC source's start value (0..=127), read until the first
+    /// message arrives; `None` when it starts from the live controller. The
+    /// first two source bytes, a signed 16-bit value (Kontakt 8.13.1 reader
+    /// 0x140d09710 stores it at +0x558; setup 0x1409766da starts the
+    /// modulator at value/127 when it is not negative).
+    pub fn cc_start(&self) -> Option<u8> {
+        if !matches!(self.source, ModSource::MidiCc(_)) {
+            return None;
+        }
+        let [lo, hi, ..] = self.unknown_source_data[..] else {
+            return None;
+        };
+        u8::try_from(i16::from_le_bytes([lo, hi]))
+            .ok()
+            .map(|v| v.min(127))
+    }
 }
 
 impl ExternalMod {
@@ -505,10 +524,7 @@ mod tests {
                 }
                 data.extend([0x7f, 0, 0, 0]);
                 data.extend(17u32.to_le_bytes());
-                data.extend(std::iter::repeat_n(
-                    0xa5,
-                    footer_len(version),
-                ));
+                data.extend(std::iter::repeat_n(0xa5, footer_len(version)));
                 let object = ExternalMod(StructuredObject {
                     version,
                     private_data: data,
@@ -518,7 +534,10 @@ mod tests {
                 let p = object.params().unwrap();
                 assert_eq!(p.targets[0].signed_intensity(), -0.25);
                 assert!(p.targets[0].invert);
-                assert_eq!(p.targets[0].lag_ms, if source % 2 == 0 { -250 } else { 250 });
+                assert_eq!(
+                    p.targets[0].lag_ms,
+                    if source % 2 == 0 { -250 } else { 250 }
+                );
                 let ShaperCurve::Table(table) = &p.targets[0].shaper.as_ref().unwrap().curve else {
                     panic!("table")
                 };
