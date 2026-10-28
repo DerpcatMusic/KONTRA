@@ -43,4 +43,7 @@ pub struct ReverbNetwork {
     /// Above this host rate it runs at `rate / n`, `n = ⌊host / rate⌋`,
     /// between a resampler pair (when `n` divides the host rate).
     pub max_rate: f32,
+    /// A live change glides linearly from where it is: the controls over
+    /// `glide_s[0]` seconds, the line lengths over `glide_s[1]`.
+    pub glide_s: [f32; 2],
 }

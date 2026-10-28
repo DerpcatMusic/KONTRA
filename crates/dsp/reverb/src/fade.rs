@@ -1,4 +1,5 @@
-//! The live-change rule every algorithmic reverb shares: a change that
+//! The generic reverb's live-change rule (a translator's network glides
+//! instead, by its law): a change that
 //! moves the delay lengths lands in silence.
 
 use crate::Settings;
