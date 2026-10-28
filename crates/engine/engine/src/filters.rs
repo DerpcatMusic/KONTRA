@@ -7,7 +7,7 @@
 //! ponytail: settings are fixed at load (after the init callback). Live
 //! changes (scripts, per-voice cutoff modulation) need per-voice filters.
 
-use kontra_dsp::eq::{Bell, Biquad};
+use kontra_dsp::eq::{Bell, Biquad, Side};
 use kontra_dsp::filter::{Pass, Shape};
 use kontra_ir as ir;
 
@@ -42,13 +42,21 @@ pub(crate) fn biquads(sections: &[ir::EffectKind], rate: u32) -> Box<[Biquad]> {
         match section {
             ir::EffectKind::Eq(bands) => {
                 let audible = bands.iter().filter(|b| b.gain_db != 0.0);
-                out.extend(audible.map(|b| {
-                    let band = Bell {
-                        hz: b.hz,
-                        q: b.q,
-                        gain_db: b.gain_db,
-                    };
-                    kontra_dsp::eq::bell(band, rate)
+                out.extend(audible.map(|b| match b.shape {
+                    ir::Shape::Peak => {
+                        let band = Bell {
+                            hz: b.hz,
+                            q: b.q,
+                            gain_db: b.gain_db,
+                        };
+                        kontra_dsp::eq::bell(band, rate)
+                    }
+                    ir::Shape::LowShelf => {
+                        kontra_dsp::eq::shelf(b.hz, b.gain_db, b.q, Side::Low, rate)
+                    }
+                    ir::Shape::HighShelf => {
+                        kontra_dsp::eq::shelf(b.hz, b.gain_db, b.q, Side::High, rate)
+                    }
                 }));
             }
             ir::EffectKind::Filter(f) => {
@@ -174,6 +182,7 @@ impl Engine {
     pub(crate) fn render_span(&mut self, len: usize) {
         if self.now.0.is_multiple_of(MAX_SPAN) {
             self.refresh_timed();
+            self.rearm_timers();
         }
         for bus in &mut self.buses {
             if let Some(mix) = bus.mix.get_mut(..len) {

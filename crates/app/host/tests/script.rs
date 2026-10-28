@@ -321,3 +321,152 @@ fn a_note_played_in_one_slot_passes_the_slots_after_it() {
     // One note sounds, the played one, in the group the second slot chose.
     assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
 }
+
+#[test]
+fn a_listener_timer_runs_its_callback() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $played
+            set_listener($NI_SIGNAL_TIMER_MS, 20000)
+        end on
+        on listener
+            if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TIMER_MS and $played = 0)
+                $played := 1
+                play_note(60, 127, 0, 0)
+            end if
+        end on",
+    );
+    // 4096 frames is 85 ms: the 20 ms timer has fired and its note sounds.
+    assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
+}
+
+#[test]
+fn millisecond_and_beat_timers_run_side_by_side_and_keep_their_signal() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $ms
+            declare $beat
+            set_listener($NI_SIGNAL_TIMER_MS, 10000)
+            set_listener($NI_SIGNAL_TIMER_BEAT, 24)
+            { Changed before the first firing: one schedule, not two. }
+            change_listener_par($NI_SIGNAL_TIMER_MS, 10000)
+        end on
+        on listener
+            wait(1)
+            if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TIMER_MS)
+                inc($ms)
+            end if
+            if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TIMER_BEAT)
+                inc($beat)
+            end if
+            message($ms & \" \" & $beat)
+        end on",
+    );
+    // 4096 frames is 85 ms: 8 millisecond firings and, at 120 bpm (20.8 ms
+    // per 24th of a quarter), 4 beat firings, each signal surviving the wait.
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "8 4");
+}
+
+#[test]
+fn a_pgs_key_carries_a_value_between_slots() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.25, 0), zone(&mut store, 0.5, 1)];
+    let mut plan = Plan::new(zones, 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    let slot = |source: &str| {
+        kontra_host::script::plan(&kontra_ksp::compile(source, &[]).unwrap(), &[], &[])
+    };
+    plan.scripts = vec![
+        slot(
+            "on init
+                pgs_create_key(GROUP, 1)
+                pgs_set_key_val(GROUP, 0, 1)
+            end on",
+        ),
+        slot(
+            "on init
+                declare $group
+            end on
+            on pgs_changed
+                $group := pgs_get_key_val(GROUP, 0)
+            end on
+            on note
+                disallow_group($ALL_GROUPS)
+                allow_group($group)
+            end on",
+        ),
+    ];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // `on pgs_changed` runs a sample after the write.
+    level(&mut e, &[]);
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+}
+
+#[test]
+fn a_script_sets_a_send_effects_wet_and_dry_levels() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Gain(2.0),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    // Wet off, dry at unity (396851): only the dry path passes.
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN, 0, -1, 0, $NI_INSERT_BUS)
+            set_engine_par($ENGINE_PAR_SEND_EFFECT_DRY_LEVEL, 396851, -1, 0, $NI_INSERT_BUS)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let l = level(&mut e, &[on(60)]);
+    assert!((l - 0.5).abs() < 1e-3, "{l}");
+}
+
+#[test]
+fn a_script_sets_a_send_level_by_the_volume_law() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Sends([0.0; 8]),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.sends = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Gain(1.0),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    // Chorus's reverb mix at 80 of 127; its saved level is 0.24994.
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_SENDLEVEL_0, 396821, -1, 0, $NI_INSERT_BUS)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let l = level(&mut e, &[on(60)]);
+    // Dry 0.5 plus the send's return 0.5 × 0.25.
+    assert!((l - 0.5 * 1.24997).abs() < 1e-3, "{l}");
+}

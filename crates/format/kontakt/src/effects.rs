@@ -114,6 +114,7 @@ fn rack(
             // (per-voice wet paths later).
             let lost = match effect.kind {
                 ir::EffectKind::Convolution { .. } => Some("group convolution"),
+                ir::EffectKind::Reverb(_) => Some("group reverb"),
                 ir::EffectKind::Sends(_) => Some("group send levels"),
                 _ => None,
             };
@@ -187,15 +188,23 @@ fn slot_effect(
             }),
         0x18 => kind_id.and_then(|k| eq(&public, k).or_else(|| filter(&public, k))),
         0x17 => sends(&public),
+        0x44 => solid_eq(object.version, &public, at, notes),
         0x16 => impulses
             .convolution(object.version, &public, at, notes)
             .map(|impulse| ir::EffectKind::Convolution { impulse }),
+        // The room type (i32), then nine floats.
+        0x59 => (0..9)
+            .map(|i| f32_at(4 + 4 * i))
+            .collect::<Option<Vec<_>>>()
+            .and_then(|v| v.try_into().ok())
+            .map(|v| ir::EffectKind::Reverb(crate::laws::reverb(v))),
         _ => None,
     };
     // The legacy delay, chorus and flanger, the Gainer and Convolution mix
     // their slot's dry level back in; other modules' stored dry is unused
     // (trims store 1 there). v2 sampler-kontakt effects/mod.rs, measured on Una Corda's trims.
-    let parallel = matches!(effect.id, 0x10..=0x12 | 0x16);
+    // The Reverb core runs fully wet; Return and Dry carry its mix (v2 effects/space.rs).
+    let parallel = matches!(effect.id, 0x10..=0x12 | 0x16 | 0x59);
     // An EQ (Filter kinds 22..=24) has no Output control: ANALOG STRINGS
     // stores 0 on one that plays in Kontakt (v2 sampler-kontakt effects/mod.rs, corpus of
     // 12,918 EQ slots).
@@ -228,7 +237,7 @@ fn eq(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
         .ok()
         .filter(|n| (1..=3).contains(n))?;
     let tail = public.get(public.len().checked_sub(count * 12)?..)?;
-    let mut bands = [ir::Bell::FLAT; 3];
+    let mut bands = [ir::Bell::FLAT; 4];
     for (band, raw) in bands.iter_mut().zip(tail.as_chunks::<12>().0) {
         let f = |n: usize| {
             let bytes = raw.get(n..n + 4)?.try_into().ok()?;
@@ -237,6 +246,34 @@ fn eq(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
         *band = crate::laws::eq_band(f(0)?, f(4)?, f(8)?)?;
     }
     Some(ir::EffectKind::Eq(bands))
+}
+
+/// The Solid G-EQ (0x44) record (reader 0x140d029f0): LF gain, Hz, bell
+/// flag; LMF and HMF gain, Hz, Q; HF gain, Hz, bell flag (knobs 0..=1, flags
+/// a byte each); v0x11 adds high- and low-pass Hz and their switches.
+fn solid_eq(version: u16, public: &[u8], at: &str, notes: &mut Notes) -> Option<ir::EffectKind> {
+    let f = |n: usize| {
+        let bytes = public.get(n..n + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
+    let flag = |n: usize| public.get(n).map(|&b| b != 0);
+    let bell = |on: bool, shelf| if on { ir::Shape::Peak } else { shelf };
+    // ponytail: v0x11's pass filters are reported, not run (no corpus slot uses them yet).
+    if version > 0x10 && (flag(50)? || flag(51)?) {
+        notes.add(
+            ir::Impact::Audible,
+            "Solid G-EQ pass filters",
+            at.to_string(),
+        );
+    }
+    Some(ir::EffectKind::Eq(crate::laws::solid_eq(
+        [f(0)?, f(4)?],
+        bell(flag(8)?, ir::Shape::LowShelf),
+        [f(9)?, f(13)?, f(17)?],
+        [f(21)?, f(25)?, f(29)?],
+        [f(33)?, f(37)?],
+        bell(flag(41)?, ir::Shape::HighShelf),
+    )))
 }
 
 /// A filter: the kind, repeated (newer records put a flag byte before a

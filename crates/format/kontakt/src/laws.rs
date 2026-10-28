@@ -97,6 +97,7 @@ pub(crate) fn eq_band(hz: f32, octaves: f32, db: f32) -> Option<ir::Bell> {
     }
     let peak = (2f32.powf(db.clamp(-18.0, 18.0) / 3.0)).log10() * 20.0;
     Some(ir::Bell {
+        shape: ir::Shape::Peak,
         hz: hz.min(20_000.0),
         q: 1.0 / (2.0 * (octaves * std::f32::consts::LN_2).sinh()),
         gain_db: peak,
@@ -374,9 +375,184 @@ fn sv(f: &mut ir::Filter, u: f32, r: f32) {
 
 const MIN_DAMPING: f32 = 0.01;
 
+/// Solid G-EQ knob tables, 11 knots over 0..=1 (core `G_EQ`, constructor
+/// 0x141a800c0; v2 sampler-core eq_family/solid.rs, proved against the
+/// binary). `C_*` names are the curve's offset in the core.
+mod solid {
+    pub(super) const GAIN_HF: [f32; 11] = [-20.5, -18., -11., -6., -2., 0., 2., 6., 11., 18., 20.5];
+    pub(super) const FREQ_HF: [f32; 11] = [
+        1539., 1710., 2400., 3980., 5460., 6820., 9160., 13100., 17813., 21000., 21800.,
+    ];
+    pub(super) const GAIN_HMF: [f32; 11] =
+        [-20., -17.5, -11., -6., -2., 0., 2., 6., 11., 17.5, 20.];
+    pub(super) const FREQ_HMF: [f32; 11] = [
+        692.48, 730.72, 1022.48, 1614.67, 2112.54, 2619.29, 3291.53, 4544.29, 5634.35, 6444.74,
+        6892.65,
+    ];
+    pub(super) const Q_HMF: [f32; 11] = [
+        0.65, 0.62, 0.58, 0.5, 0.45, 0.4, 0.37, 0.31, 0.26, 0.22, 0.22,
+    ];
+    pub(super) const GAIN_LMF: [f32; 11] =
+        [-21.5, -18., -11., -6., -2., 0., 2., 6., 11., 18., 21.5];
+    pub(super) const FREQ_LMF: [f32; 11] = [
+        223., 239., 323., 494., 668., 809., 1050., 1479., 1841., 2083., 2200.,
+    ];
+    pub(super) const Q_LMF: [f32; 11] =
+        [0.65, 0.62, 0.58, 0.5, 0.45, 0.4, 0.37, 0.3, 0.25, 0.21, 0.2];
+    pub(super) const GAIN_LF: [f32; 11] =
+        [-19.5, -16., -10., -5.3, -2., 0., 2., 5.3, 10., 16., 19.5];
+    pub(super) const FREQ_LF: [f32; 11] = [
+        40.43, 44.64, 63.44, 101.36, 140.21, 183.73, 245.15, 351.55, 513.3, 614.68, 697.34,
+    ];
+    /// Bandwidth by gain: wider for small boosts and cuts.
+    pub(super) const C_4818: [f32; 11] = [
+        1.0, 0.9167, 0.6667, 0.5833, 0.5417, 0.5417, 0.5417, 0.5833, 0.6667, 0.9167, 1.0,
+    ];
+    pub(super) const C_5078: [f32; 11] = [
+        1.0, 1.0, 1.0, 1.0833, 1.0833, 1.0, 0.9167, 0.6666, 0.3333, 0.05, 0.0001,
+    ];
+    /// Q scale by gain for the LMF and HMF (C_71F8; LMF's C_82B8 is the same curve).
+    pub(super) const C_71F8: [f32; 11] = [
+        1.0, 0.8615, 0.6615, 0.5846, 0.5846, 0.5846, 0.5846, 0.5846, 0.6615, 0.8615, 1.0,
+    ];
+    pub(super) const C_9378: [f32; 11] = [
+        1.0, 0.8796, 0.713, 0.6296, 0.6296, 0.6296, 0.6296, 0.6296, 0.713, 0.8796, 1.0,
+    ];
+    /// Shelves: HF corner (× 2 × the Hz knob) and gain by the gain knob; LF
+    /// corner, its gain-knob scale, gain and its Hz-knob scale.
+    pub(super) const HF_CORNER: [f32; 11] = [
+        3800., 3295., 2790., 2510., 2455., 2400., 2474., 2547., 2815., 3655., 4509.,
+    ];
+    pub(super) const HF_SHELF_GAIN: [f32; 11] =
+        [-20., -18., -11., -6., -2., 0., 2., 6., 11., 18., 20.];
+    pub(super) const LF_CORNER: [f32; 11] = [
+        90., 100., 125., 184., 240., 290., 380., 500., 650., 730., 780.,
+    ];
+    pub(super) const C_A868: [f32; 11] = [
+        1.0, 1.1207, 1.2241, 1.2931, 1.2931, 1.2931, 1.2931, 1.2931, 1.2241, 1.1207, 1.0,
+    ];
+    pub(super) const LF_SHELF_GAIN: [f32; 11] =
+        [-20., -15.8, -11., -6.5, -2.6, 0., 2.6, 6.5, 11., 15.8, 20.];
+    pub(super) const C_AC98: [f32; 11] = [
+        0.895, 0.91, 0.925, 0.965, 0.985, 1.0, 1.02, 1.03, 1.035, 1.035, 1.04,
+    ];
+}
+
+/// The Solid G-EQ's four bands from its knobs (each 0..=1): LF gain and Hz,
+/// LMF and HMF gain, Hz and Q, HF gain and Hz. The LF and HF bands are
+/// shelves unless their shape is [`ir::Shape::Peak`] (the bell switch).
+// ponytail: the tables' main curves on standard cookbook bands, linearly
+// interpolated. The core's splines, its Orfanidis peaks, the LF shelf's two
+// shaping peaks and the HF shelf's DC cut are left out (v2 has them all).
+pub(crate) fn solid_eq(
+    [lf_gain, lf_hz]: [f32; 2],
+    lf_shape: ir::Shape,
+    lmf: [f32; 3],
+    hmf: [f32; 3],
+    [hf_gain, hf_hz]: [f32; 2],
+    hf_shape: ir::Shape,
+) -> [ir::Bell; 4] {
+    use solid::*;
+    let t = |table: [f32; 11], x: f32| kontra_law::Law::Table(table.into()).eval(x);
+    let peak = |hz, gain_db, q| ir::Bell {
+        shape: ir::Shape::Peak,
+        hz,
+        q,
+        gain_db,
+    };
+    let lf = if lf_shape == ir::Shape::Peak {
+        peak(
+            t(FREQ_LF, lf_hz),
+            t(GAIN_LF, lf_gain),
+            t(C_9378, lf_gain) * 1.08,
+        )
+    } else {
+        ir::Bell {
+            shape: ir::Shape::LowShelf,
+            hz: t(C_A868, lf_gain) * t(LF_CORNER, lf_hz),
+            q: 0.5,
+            gain_db: t(LF_SHELF_GAIN, lf_gain) * t(C_AC98, lf_hz),
+        }
+    };
+    let [g, hz, q] = lmf;
+    let lmf = peak(t(FREQ_LMF, hz), t(GAIN_LMF, g), t(C_71F8, g) * t(Q_LMF, q));
+    let [g, hz, q] = hmf;
+    let hmf = peak(t(FREQ_HMF, hz), t(GAIN_HMF, g), t(C_71F8, g) * t(Q_HMF, q));
+    let hf = if hf_shape == ir::Shape::Peak {
+        let q = t(C_4818, hf_gain) * 1.2 * t(C_5078, hf_hz);
+        peak(t(FREQ_HF, hf_hz), t(GAIN_HF, hf_gain), q)
+    } else {
+        ir::Bell {
+            shape: ir::Shape::HighShelf,
+            hz: t(HF_CORNER, hf_gain) * 2.0 * hf_hz,
+            q: 0.55,
+            gain_db: t(HF_SHELF_GAIN, hf_gain),
+        }
+    };
+    [lf, lmf, hmf, hf]
+}
+
+/// Kontakt's Reverb (0x59) from its nine saved controls, each 0..=1:
+/// time, size, damping, modulation, diffusion, predelay, high cut, low shelf,
+/// stereo. Laws from setter `0x141aea370` (docs/architecture-v2/KONTAKT_DSP_LAWS.md):
+/// time 0.5·e^(3.7x) s, size 3x+1 (2.5 mid, here size 1), damping x^¼,
+/// diffusion 0.5x (here x), predelay 11025x samples at 44.1 kHz,
+/// high cut 19000(1−x)+2000 Hz, low shelf −12x dB, stereo x.
+// ponytail: one FDN for Room and Hall without modulation; Kontakt's network
+// (dispatch 0x141ae2c60) is unrecovered, so the type and modulation are dropped.
+pub(crate) fn reverb(v: [f32; 9]) -> ir::Reverb {
+    let [
+        time,
+        size,
+        damping,
+        _modulation,
+        diffusion,
+        predelay,
+        high_cut,
+        low_shelf,
+        stereo,
+    ] = v.map(|x| x.clamp(0.0, 1.0));
+    ir::Reverb {
+        seconds: 0.5 * (3.7 * time).exp(),
+        size: (3.0 * size + 1.0) / 2.5,
+        damping: damping.powf(0.25),
+        diffusion,
+        predelay_ms: 1000.0 * 11025.0 * predelay / 44100.0,
+        high_cut_hz: 19000.0 * (1.0 - high_cut) + 2000.0,
+        low_shelf_db: -12.0 * low_shelf,
+        stereo,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_centred_solid_eq_is_flat_and_its_knobs_reach_the_table_ends() {
+        let mid = [0.5; 3];
+        let flat = solid_eq(
+            [0.5; 2],
+            ir::Shape::LowShelf,
+            mid,
+            mid,
+            [0.5; 2],
+            ir::Shape::HighShelf,
+        );
+        assert!(flat.iter().all(|b| b.gain_db == 0.0));
+        let [lf, lmf, _, hf] = solid_eq(
+            [0.0, 0.5],
+            ir::Shape::LowShelf,
+            [1.0, 0.5, 0.5],
+            mid,
+            [0.5; 2],
+            ir::Shape::Peak,
+        );
+        assert_eq!(lf.shape, ir::Shape::LowShelf);
+        assert_eq!(lf.gain_db, -20.0);
+        assert_eq!((lmf.gain_db, lmf.hz), (21.5, 809.0));
+        assert_eq!((hf.shape, hf.hz), (ir::Shape::Peak, 6820.0));
+    }
 
     #[test]
     fn the_cutoff_laws_land_the_measured_corners() {

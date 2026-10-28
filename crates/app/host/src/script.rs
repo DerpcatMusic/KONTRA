@@ -15,6 +15,17 @@ pub const UNDERSTOOD_SYMBOLS: &[&str] = &[
     ATTACK_CURVE,
     EFFECT_BYPASS,
     EFFECT_OUTPUT,
+    SEND_BYPASS,
+    SEND_OUTPUT,
+    SEND_DRY,
+    SEND_LEVELS[0],
+    SEND_LEVELS[1],
+    SEND_LEVELS[2],
+    SEND_LEVELS[3],
+    SEND_LEVELS[4],
+    SEND_LEVELS[5],
+    SEND_LEVELS[6],
+    SEND_LEVELS[7],
     GAINER_GAIN,
     STEREO_WIDTH,
     STEREO_PAN,
@@ -33,6 +44,19 @@ const MOD_BYPASS: &str = "$ENGINE_PAR_INTMOD_BYPASS";
 const ATTACK_CURVE: &str = "$ENGINE_PAR_ATK_CURVE";
 const EFFECT_BYPASS: &str = "$ENGINE_PAR_EFFECT_BYPASS";
 const EFFECT_OUTPUT: &str = "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN";
+const SEND_BYPASS: &str = "$ENGINE_PAR_SEND_EFFECT_BYPASS";
+const SEND_OUTPUT: &str = "$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN";
+const SEND_DRY: &str = "$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL";
+const SEND_LEVELS: [&str; 8] = [
+    "$ENGINE_PAR_SENDLEVEL_0",
+    "$ENGINE_PAR_SENDLEVEL_1",
+    "$ENGINE_PAR_SENDLEVEL_2",
+    "$ENGINE_PAR_SENDLEVEL_3",
+    "$ENGINE_PAR_SENDLEVEL_4",
+    "$ENGINE_PAR_SENDLEVEL_5",
+    "$ENGINE_PAR_SENDLEVEL_6",
+    "$ENGINE_PAR_SENDLEVEL_7",
+];
 const GAINER_GAIN: &str = "$ENGINE_PAR_GN_GAIN";
 const STEREO_WIDTH: &str = "$ENGINE_PAR_STEREO";
 const STEREO_PAN: &str = "$ENGINE_PAR_STEREO_PAN";
@@ -58,6 +82,8 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             release: entry(CallbackKind::Release),
             controller: entry(CallbackKind::Controller),
             persistence_changed: entry(CallbackKind::PersistenceChanged),
+            listener: entry(CallbackKind::Listener),
+            pgs_changed: entry(CallbackKind::PgsChanged),
         },
         coroutines: COROUTINES,
         controls: controls(script),
@@ -72,6 +98,10 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             attack_curve: symbol(script, ATTACK_CURVE),
             effect_bypass: symbol(script, EFFECT_BYPASS),
             effect_output: symbol(script, EFFECT_OUTPUT),
+            send_bypass: symbol(script, SEND_BYPASS),
+            send_output: symbol(script, SEND_OUTPUT),
+            send_dry: symbol(script, SEND_DRY),
+            send_levels: SEND_LEVELS.map(|name| symbol(script, name)),
             gainer_gain: symbol(script, GAINER_GAIN),
             stereo_width: symbol(script, STEREO_WIDTH),
             stereo_pan: symbol(script, STEREO_PAN),
