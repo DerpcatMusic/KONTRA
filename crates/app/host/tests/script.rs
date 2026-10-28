@@ -35,7 +35,7 @@ fn zone(store: &mut Store, level: f32, group: u32) -> Zone {
         sample,
         start: 0,
         end: frames,
-        looped: None,
+        loops: vec![],
         reverse: false,
     };
     let mut z = Zone::new(region, 60, RATE);

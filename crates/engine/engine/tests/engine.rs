@@ -32,7 +32,7 @@ fn region(store: &mut Store, name: &str, frames: u64) -> std::io::Result<Region>
         sample,
         start: 0,
         end: frames,
-        looped: None,
+        loops: vec![],
         reverse: false,
     })
 }
@@ -175,11 +175,12 @@ fn every_layer_of_a_note_starts_on_the_notes_sample() {
 fn the_pedal_holds_released_notes_until_it_lifts() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut z = zone(region(&mut store, "loop", 1000).unwrap(), 0.0);
-    z.region.looped = Some(kontra_voice::Loop {
+    z.region.loops = vec![kontra_voice::Loop {
         start: 0,
         end: 1000,
         crossfade: 0,
-    });
+        ..Default::default()
+    }];
     let mut engine = Engine::new(plan(vec![z], 8), store.client(), RATE);
     render(
         &mut engine,

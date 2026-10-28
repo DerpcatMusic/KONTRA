@@ -300,11 +300,18 @@ fn zone(
         sample: Arc::clone(sample),
         start: z.start,
         end: z.end.min(source.frames),
-        looped: z.looped.map(|l| Loop {
-            start: l.start,
-            end: l.end,
-            crossfade: l.crossfade,
-        }),
+        loops: z
+            .loops
+            .iter()
+            .map(|l| Loop {
+                start: l.start,
+                end: l.end,
+                crossfade: l.crossfade,
+                count: l.count,
+                alternating: l.alternating,
+                until_release: l.until_release,
+            })
+            .collect(),
         reverse: z.reverse,
     };
     let mut out = Zone::new(region, z.root, source.rate);
@@ -419,7 +426,7 @@ mod tests {
             start,
             end: 1_000_000,
             start_mod,
-            looped: None,
+            loops: vec![],
             reverse: false,
         }
     }

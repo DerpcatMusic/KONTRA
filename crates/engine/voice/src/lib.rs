@@ -49,6 +49,8 @@ pub struct Voice {
     scratch: Box<[[f32; 2]]>,
     /// The frames a loop crossfade blends in.
     partner: Box<[[f32; 2]]>,
+    /// Cursor position of the note's release, once it came.
+    released: Option<u64>,
     missing: u64,
 }
 
@@ -66,6 +68,7 @@ impl Voice {
             env: Envelope::new(Ahdsr::GATE),
             scratch: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             partner: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
+            released: None,
             missing: 0,
         }
     }
@@ -80,10 +83,13 @@ impl Voice {
         self.gain = start.gain;
         self.target = start.gain;
         self.env = Envelope::new(start.envelope);
+        self.released = None;
         self.missing = 0;
     }
 
     pub fn release(&mut self) {
+        let at = self.at(0) as u64;
+        self.released = self.released.or(Some(at));
         self.env.release();
     }
 
@@ -144,15 +150,16 @@ impl Voice {
             return;
         };
         let sample = &region.sample;
+        let released = self.released;
         let ahead = (LOOKAHEAD * self.step) as usize;
-        region.runs(self.at(0) as i64, ahead, |_, first, count| {
-            let low = if region.reverse {
-                first + 1 - count as u64
+        region.runs(self.at(0) as i64, ahead, released, |_, run| {
+            let low = if run.descending {
+                run.first + 1 - run.count as u64
             } else {
-                first
+                run.first
             };
-            sample.prefetch(client, low, count as u64, now);
-            if let Some((_, partner, n, _, _)) = region.crossfade(first, count) {
+            sample.prefetch(client, low, run.count as u64, now);
+            if let Some((_, partner, n, _, _)) = run.crossfade() {
                 sample.prefetch(client, partner, n as u64, now);
             }
         });
@@ -171,20 +178,22 @@ impl Voice {
             };
             window.fill([0.0; 2]);
             let mut missing = 0;
-            region.runs(lo, window.len(), |offset, first, count| {
+            region.runs(lo, window.len(), released, |offset, run| {
+                let count = run.count;
                 if let Some(dst) = window.get_mut(offset..offset + count) {
-                    if region.reverse {
-                        missing += sample.read(client, first + 1 - count as u64, dst).missing;
+                    if run.descending {
+                        missing += sample
+                            .read(client, run.first + 1 - count as u64, dst)
+                            .missing;
                         dst.reverse();
                     } else {
-                        missing += sample.read(client, first, dst).missing;
-                        if let Some((at, from, n, fade_start, fade)) =
-                            region.crossfade(first, count)
+                        missing += sample.read(client, run.first, dst).missing;
+                        if let Some((at, from, n, fade_start, fade)) = run.crossfade()
                             && let (Some(blend), Some(head)) =
                                 (partner.get_mut(..n), dst.get_mut(at..at + n))
                         {
                             missing += sample.read(client, from, blend).missing;
-                            let p0 = first + at as u64 - fade_start;
+                            let p0 = run.first + at as u64 - fade_start;
                             for (k, (d, b)) in head.iter_mut().zip(blend.iter()).enumerate() {
                                 let w = (p0 + k as u64) as f32 / fade as f32;
                                 d[0] += (b[0] - d[0]) * w;
@@ -223,7 +232,7 @@ impl Voice {
                 }
             }
             self.elapsed += n as u64;
-            if region.finished(self.at(0)) {
+            if region.finished(self.at(0), released) {
                 alive = false;
             }
             done += n;

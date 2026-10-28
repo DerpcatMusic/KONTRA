@@ -170,7 +170,7 @@ impl Build {
             start: start.min(end),
             end,
             start_mod: 0,
-            looped: self.looped(ops, total),
+            loops: self.looped(ops, total).into_iter().collect(),
             reverse: raw(ops, &["direction"]) == Some("reverse"),
         };
 
@@ -277,7 +277,8 @@ impl Build {
                     Some(ir::Loop {
                         start,
                         end,
-                        crossfade: 0,
+                        until_release: mode == "loop_sustain",
+                        ..ir::Loop::default()
                     })
                 } else {
                     if total > 0 {
