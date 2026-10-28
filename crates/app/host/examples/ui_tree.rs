@@ -135,7 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .enumerate()
                 .filter(|(n, w)| {
-                    matches!(w.kind, kontra_ui_model::Kind::Switch { .. })
+                    matches!(w.kind, kontra_ui_model::Kind::Switch)
                         && live.tree.visible(kontra_ui_model::WidgetRef(*n))
                 })
                 .filter_map(|(_, w)| w.source_id)
