@@ -27,6 +27,7 @@ fn ramp_region(store: &mut Store, frames: u64, pinned: u64) -> std::io::Result<R
         std::slice::from_ref(&(0..pinned)),
     )?;
     Ok(Region {
+        mix: None,
         sample,
         start: 0,
         end: frames,

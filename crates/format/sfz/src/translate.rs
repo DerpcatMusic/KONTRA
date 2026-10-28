@@ -151,6 +151,7 @@ impl Build {
             })
             .min(total);
         let zone = ir::Zone {
+            mix: Vec::new(),
             sample,
             keys,
             velocities,

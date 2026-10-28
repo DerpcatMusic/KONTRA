@@ -562,6 +562,9 @@ pub struct Zone {
     /// Loops in play order. Each is entered when the playhead reaches its end.
     pub loops: Vec<Loop>,
     pub reverse: bool,
+    /// Each sample channel's left and right gain; empty plays mono on both
+    /// sides and the first two channels as left and right.
+    pub mix: Vec<[f32; 2]>,
     /// The zone's place among the zones of its group that share its keys; a
     /// note that names a slot starts only the zones in it.
     pub slot: u16,

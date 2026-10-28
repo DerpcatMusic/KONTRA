@@ -33,6 +33,7 @@ fn region(store: &mut Store, level: f32, frames: u64) -> std::io::Result<Region>
         std::slice::from_ref(&(0..frames)),
     )?;
     Ok(Region {
+        mix: None,
         sample,
         start: 0,
         end: frames,
@@ -69,6 +70,7 @@ fn sine(store: &mut Store) -> Region {
         )
         .unwrap();
     Region {
+        mix: None,
         sample,
         start: 0,
         end: frames,
@@ -581,6 +583,7 @@ fn a_sample_start_route_moves_the_start_within_its_range() {
         .unwrap();
     let mut z = Zone::new(
         Region {
+            mix: None,
             sample,
             start: 0,
             end: frames,
