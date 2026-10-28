@@ -7,6 +7,7 @@
 SPEC: {"chain": [...], "pre": [[slot, "PAR", value], ...], "steps": [...]} as eqrender.py (values may be KSP
 constants such as "$EFFECT_TYPE_LIMITER"), plus "stimulus": one of the builders below.  Step 0 is the
 bypassed chain.  One note per step whose length equals the stimulus; steps 1 s apart plus the stimulus.
+ORACLE_KEEP_WAV=1 keeps OUT_PREFIX.wav, the render Kontakt wrote.
 """
 import json
 import os
@@ -136,7 +137,8 @@ def main():
         lags.append(s - (T0 + int(i * period * RATE)))
     np.savez(prefix.with_suffix(".npz"), x=x, y=np.array(ys), r=np.array(rs),
              names=np.array(["bypass"] + [s["name"] for s in spec["steps"]]))
-    wav.unlink()
+    if not os.environ.get("ORACLE_KEEP_WAV"):  # keep Kontakt's own render as evidence
+        wav.unlink()
     print(prefix.with_suffix(".npz"), "missing:", [i for i, l in enumerate(lags) if l is None])
 
 

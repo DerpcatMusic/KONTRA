@@ -6,6 +6,7 @@ mod convolver;
 mod fade;
 mod fdn;
 mod network;
+mod resample;
 pub mod shape;
 
 pub use convolver::Convolver;
