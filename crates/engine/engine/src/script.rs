@@ -230,6 +230,10 @@ impl GroupMasks {
     }
 }
 
+/// KSP's `$NI_NOT_FOUND`, what the `get_*_idx` lookups answer for a miss
+/// (real Kontakt 8, `probes/ni_not_found.lua`).
+const NOT_FOUND: i32 = -100;
+
 pub(crate) fn micros_to_frames(micros: i64, rate: u32) -> u64 {
     (micros.max(0) as u128 * u128::from(rate) / 1_000_000) as u64
 }
@@ -622,7 +626,7 @@ impl HostApi for Engine {
                 let missing = if call.action == Action::FindGroup {
                     0
                 } else {
-                    -1
+                    NOT_FOUND
                 };
                 HostValue::Int(found.map_or(missing, |g| g as i32))
             }
@@ -647,15 +651,22 @@ impl HostApi for Engine {
                     .get(int(0) as usize)
                     .map_or(0, |g| i32::from(!g.purged)),
             ),
+            // Any modulator, carried or not. A miss: find_mod answers 0 (real
+            // Kontakt 8, probes/find_mod_index.lua), get_mod_idx $NI_NOT_FOUND.
             Action::FindMod | Action::GetModIdx => {
                 let name = call.texts.first().map_or("", Text::as_str);
                 let found = self.groups.get(int(0) as usize).and_then(|g| {
-                    g.mods
-                        .iter()
-                        .find(|m| m.name == name)
-                        .map(|m| i32::from(m.slot))
+                    let route = g.routes.iter().find(|r| r.name == name);
+                    route
+                        .map(|r| r.slot)
+                        .or_else(|| g.mods.iter().find(|m| m.name == name).map(|m| m.slot))
                 });
-                HostValue::Int(found.unwrap_or(-1))
+                let missing = if call.action == Action::FindMod {
+                    0
+                } else {
+                    NOT_FOUND
+                };
+                HostValue::Int(found.map_or(missing, i32::from))
             }
             Action::FindTarget | Action::GetTargetIdx => {
                 let name = call.texts.first().map_or("", Text::as_str);
@@ -663,7 +674,14 @@ impl HostApi for Engine {
                     let routes = g.routes.iter().find(|r| i32::from(r.slot) == int(1))?;
                     routes.names.iter().position(|n| n == name)
                 });
-                HostValue::Int(found.map_or(-1, |n| n as i32))
+                // get_target_idx misses with $NI_NOT_FOUND (measured); find_target
+                // answers 0 like find_mod and find_group (not measured).
+                let missing = if call.action == Action::FindTarget {
+                    0
+                } else {
+                    NOT_FOUND
+                };
+                HostValue::Int(found.map_or(missing, |n| n as i32))
             }
             Action::GetEnginePar
                 if let Some(value) = self.get_engine_par(int(0), int(1), int(2), int(3)) =>

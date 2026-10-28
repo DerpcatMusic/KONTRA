@@ -257,8 +257,10 @@ pub struct Group {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Routes {
-    /// The modulator's [`Mod::slot`].
+    /// The modulator's [`Mod::slot`]: one address per group, unique.
     pub slot: u16,
+    /// The modulator's name, what scripts find it by.
+    pub name: String,
     pub names: Vec<String>,
 }
 
