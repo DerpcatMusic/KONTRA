@@ -12,6 +12,8 @@ pub enum BehaviorOverload {
     Defer,
     /// Real-time playback: fail and release the callback's owned work now.
     /// Never replay ordinary note processing at a later musical timestamp.
+    /// The one exception is engine-effect outbox back-pressure, which waits for the
+    /// host drain under every policy (UI-only writes never wait or fault; see `OutboxMerge`).
     Abort,
 }
 
@@ -273,18 +275,16 @@ impl Runtime {
                         self.behavior_ready.remove(index);
                     }
                     Ok(false) => {
-                        // Host-service backpressure is not exhausted script fuel.
-                        // Cooperative clients retry after draining the outbox;
-                        // a real-time event cannot be replayed later for UI work.
+                        // Host-service backpressure is not exhausted script fuel, and
+                        // UI work can be replayed. The host drains the outbox at block
+                        // end, so the callback waits for the next block under any
+                        // overload policy. Failing it would drop the callback of any
+                        // note that follows an outbox-filling note in the same block.
                         if std::mem::take(&mut self.ops.outbox_full) {
                             self.behavior_ready.remove(index);
-                            if self.behavior_budget.overload == BehaviorOverload::Abort {
-                                self.fail_behavior(id, Outcome::Fault(Error::Capacity));
-                            } else {
-                                let plan = self.behavior_plan(c.owner).unwrap();
-                                self.plans.get_mut(plan.0).unwrap().dispatch_preempted = true;
-                                self.defer_behavior(id);
-                            }
+                            let plan = self.behavior_plan(c.owner).unwrap();
+                            self.plans.get_mut(plan.0).unwrap().dispatch_preempted = true;
+                            self.defer_behavior(id);
                         }
                     }
                     // Kontakt ignores a script's call on a note that already ended

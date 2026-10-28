@@ -143,6 +143,7 @@ fn completion_program() -> Program {
             args: 0,
             count: 4,
             text: None,
+            merge: Default::default(),
         }),
         Instruction::End,
     ])

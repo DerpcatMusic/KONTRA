@@ -86,6 +86,7 @@ fn reals_text_calls_store_controls_and_effects_run_without_heap() {
             args: 8,
             count: 2,
             text: Some(TextRef::Cell(0)),
+            merge: Default::default(),
         }),
         Instruction::End,
         // 20: subroutine: r2 := int(r0 * 2) shifted left by 1

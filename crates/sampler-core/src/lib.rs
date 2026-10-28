@@ -211,8 +211,8 @@ pub use midi_object::{
 };
 mod script;
 pub use ops::{
-    CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, RANDOM_SEED, RealBinary,
-    RealUnary, STORE_KEY, ScriptResources, TEXT_CAPACITY, Text, TextPart, TextRef, name_index,
+    CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, OutboxMerge, RANDOM_SEED, RealBinary,
+    RealUnary, STORE_KEY, ScriptResources, TEXT_CAPACITY, Text, TextPart, TextRef, UI_EFFECT_CAPACITY, name_index,
     random, real, real_bits,
 };
 pub use script::{ScriptArray, ScriptInstanceId};

@@ -3422,6 +3422,7 @@ impl Core for V2Core {
                 .saturating_add(stats.script_budget_failures),
             script_preemptions: stats.script_preemptions,
             script_service_stalls: stats.script_service_stalls,
+            ui_effects_dropped: stats.ui_effects_dropped,
             script_budget_failures: stats.script_budget_failures,
             late_attacks: stats.late_attacks,
             max_attack_lateness_frames: stats.max_attack_lateness_frames,
@@ -6645,6 +6646,422 @@ mod tests {
             core.render(480);
         }
         assert!(!core.scripts_running(0), "wait elapsed, callback finished");
+    }
+
+    #[test]
+    fn a_full_effect_outbox_does_not_fault_the_next_note_callback() {
+        // Each note callback writes 1100 distinct UI targets (note * 10000 + i). The UI
+        // budget holds 2048 per block, so key 55's callback, which starts after key
+        // 48's in the same block, finds it full after 948 writes. It must drop those
+        // UI writes and keep running, not fault and lose the note.
+        let script = sampler_ksp::compile(
+            "on init
+                declare $i := 0
+            end on
+            on note
+                $i := 0
+                while ($i < 1100)
+                    set_key_pressed($EVENT_NOTE * 10000 + $i, 1)
+                    $i := $i + 1
+                end while
+            end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
+        let regions = (55u8..=127)
+            .map(|key| Region {
+                sample: 0,
+                key_low: key,
+                key_high: key,
+                root_key: Some(key),
+                velocity_low: 0.0,
+                velocity_high: 1.0,
+                gain: 1.0,
+                envelope: Envelope::default(),
+                playback: Playback::default(),
+            })
+            .collect();
+        let prepared = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap()],
+            regions,
+            1024,
+        )
+        .unwrap();
+        let plan = sampler_ksp::bind_modules(vec![script], prepared).unwrap();
+        let runtime_limits = limits(&plan).0;
+        let mut part = Part::new(
+            Runtime::new(plan, runtime_limits).unwrap(),
+            MixTree::instrument("nka"),
+        )
+        .unwrap();
+        // Production policy: the loader aborts callbacks that meet a full outbox.
+        part.runtime
+            .set_behavior_overload(sampler_core::BehaviorOverload::Abort);
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        core.parts[0].as_mut().unwrap().runtime.record_selections(true);
+        let mut delivered = 0;
+        for block in 0..3 {
+            core.begin_block(&BlockInfo {
+                frames: 128,
+                offline: true,
+                ..Default::default()
+            });
+            if block == 0 {
+                for (id, key) in [(1, 48u8), (2, 55u8)] {
+                    core.event(
+                        0,
+                        Event::NoteOn {
+                            note: HostNote { port: 0, channel: 0, key, id, clap: false },
+                            velocity: 100.0 / 127.0,
+                            tune: 0.0,
+                        },
+                    );
+                }
+            }
+            core.render(128);
+            core.end_block(128, &mut |_| true);
+            // The host drains effects after each block, as the plugin and probe do.
+            core.take_effects(0, &mut |_, _| {
+                delivered += 1;
+                true
+            });
+        }
+        // Key 55 finds the UI budget full after 948 of its 1100 writes; the other 152
+        // are new targets and are dropped and counted. Both note starts stay in block 0.
+        assert_eq!(delivered, 2048, "effects delivered");
+        assert_eq!(core.problems(0).ui_effects_dropped, 152);
+        let records = core.parts[0].as_mut().unwrap().runtime.take_selection_records();
+        let starts: Vec<(u8, u64)> = records.iter().map(|r| (r.key, r.at)).collect();
+        assert!(starts.iter().any(|&(key, _)| key == 55), "55 never selected: {starts:?}");
+        assert!(
+            starts.iter().all(|&(_, at)| at == 0),
+            "note starts differ within one block: {starts:?}"
+        );
+    }
+
+    #[test]
+    fn a_text_append_between_two_writes_keeps_its_place() {
+        // set_text A, add_text_line B, set_text C on one label: the host must see the
+        // append before the final set, so the label reads "C" and the append is not lost.
+        let script = sampler_ksp::compile(
+            "on init declare ui_label $a(1,1) end on
+            on note
+                set_text($a, \"A\")
+                add_text_line($a, \"B\")
+                set_text($a, \"C\")
+            end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
+        let regions = vec![Region {
+            sample: 0,
+            key_low: 55,
+            key_high: 127,
+            root_key: Some(55),
+            velocity_low: 0.0,
+            velocity_high: 1.0,
+            gain: 1.0,
+            envelope: Envelope::default(),
+            playback: Playback::default(),
+        }];
+        let prepared = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap()],
+            regions,
+            1024,
+        )
+        .unwrap();
+        let plan = sampler_ksp::bind_modules(vec![script], prepared).unwrap();
+        let runtime_limits = limits(&plan).0;
+        let part = Part::new(
+            Runtime::new(plan, runtime_limits).unwrap(),
+            MixTree::instrument("nka"),
+        )
+        .unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        core.begin_block(&BlockInfo {
+            frames: 128,
+            offline: true,
+            ..Default::default()
+        });
+        core.event(
+            0,
+            Event::NoteOn {
+                note: HostNote { port: 0, channel: 0, key: 55, id: 1, clap: false },
+                velocity: 100.0 / 127.0,
+                tune: 0.0,
+            },
+        );
+        core.render(128);
+        core.end_block(128, &mut |_| true);
+        let mut texts = Vec::new();
+        core.take_effects(0, &mut |_, effect| {
+            if let Some(text) = &effect.text {
+                texts.push(text.as_str().to_string());
+            }
+            true
+        });
+        assert_eq!(texts, ["B", "C"], "the append must stay ahead of the final set");
+    }
+
+    #[test]
+    fn a_full_ui_queue_never_delays_an_engine_effect_in_the_same_block() {
+        // Key 48 writes 2100 distinct UI targets, filling the 2048-slot UI queue. Key
+        // 55's set_keyrange is an engine-relevant Wait effect with its own queue: it must
+        // reach the host in block 0 with no stall, and the UI overflow is counted.
+        let script = sampler_ksp::compile(
+            "on init declare $i := 0 end on
+            on note
+                if ($EVENT_NOTE = 48)
+                    $i := 0
+                    while ($i < 2100)
+                        set_key_pressed($i + 10000, 1)
+                        inc($i)
+                    end while
+                end if
+                if ($EVENT_NOTE = 55)
+                    set_keyrange(0, 127, \"engine\")
+                end if
+            end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
+        let regions = (55u8..=127)
+            .map(|key| Region {
+                sample: 0,
+                key_low: key,
+                key_high: key,
+                root_key: Some(key),
+                velocity_low: 0.0,
+                velocity_high: 1.0,
+                gain: 1.0,
+                envelope: Envelope::default(),
+                playback: Playback::default(),
+            })
+            .collect();
+        let prepared = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap()],
+            regions,
+            1024,
+        )
+        .unwrap();
+        let plan = sampler_ksp::bind_modules(vec![script], prepared).unwrap();
+        let runtime_limits = limits(&plan).0;
+        let mut part = Part::new(
+            Runtime::new(plan, runtime_limits).unwrap(),
+            MixTree::instrument("nka"),
+        )
+        .unwrap();
+        part.runtime
+            .set_behavior_overload(sampler_core::BehaviorOverload::Abort);
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        core.parts[0].as_mut().unwrap().runtime.record_selections(true);
+        core.begin_block(&BlockInfo {
+            frames: 128,
+            offline: true,
+            ..Default::default()
+        });
+        for (id, key) in [(1, 48u8), (2, 55u8)] {
+            core.event(
+                0,
+                Event::NoteOn {
+                    note: HostNote { port: 0, channel: 0, key, id, clap: false },
+                    velocity: 100.0 / 127.0,
+                    tune: 0.0,
+                },
+            );
+        }
+        core.render(128);
+        core.end_block(128, &mut |_| true);
+        // set_keyrange is the only effect with a text payload this script emits.
+        let mut engine = 0;
+        core.take_effects(0, &mut |_, effect| {
+            engine += usize::from(effect.text.is_some());
+            true
+        });
+        assert_eq!(engine, 1, "55's engine effect must reach the host in block 0");
+        let problems = core.problems(0);
+        assert_eq!(problems.script_service_stalls, 0, "a UI flood stalled an engine effect");
+        assert_eq!(problems.ui_effects_dropped, 52, "UI writes past the 2048 queue are counted");
+        let records = core.parts[0].as_mut().unwrap().runtime.take_selection_records();
+        assert!(records.iter().any(|r| r.key == 55), "55 must have a selection record");
+        assert!(
+            records.iter().filter(|r| r.key == 55).all(|r| r.at == 0),
+            "55's note start moved out of block 0"
+        );
+    }
+
+    #[test]
+    fn a_superseded_ui_write_is_deleted_not_moved_in_place() {
+        // set_text(a,1), set_text(b,2), set_text(a,3): the host must see b,2 then a,3.
+        // Overwriting a's slot in place would deliver a,3 before b,2.
+        let script = sampler_ksp::compile(
+            "on init
+                declare ui_label $a(1,1)
+                declare ui_label $b(1,2)
+            end on
+            on note
+                set_text($a, \"1\")
+                set_text($b, \"2\")
+                set_text($a, \"3\")
+            end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
+        let regions = vec![Region {
+            sample: 0,
+            key_low: 55,
+            key_high: 127,
+            root_key: Some(55),
+            velocity_low: 0.0,
+            velocity_high: 1.0,
+            gain: 1.0,
+            envelope: Envelope::default(),
+            playback: Playback::default(),
+        }];
+        let prepared = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap()],
+            regions,
+            1024,
+        )
+        .unwrap();
+        let plan = sampler_ksp::bind_modules(vec![script], prepared).unwrap();
+        let runtime_limits = limits(&plan).0;
+        let part = Part::new(
+            Runtime::new(plan, runtime_limits).unwrap(),
+            MixTree::instrument("nka"),
+        )
+        .unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        core.begin_block(&BlockInfo {
+            frames: 128,
+            offline: true,
+            ..Default::default()
+        });
+        core.event(
+            0,
+            Event::NoteOn {
+                note: HostNote { port: 0, channel: 0, key: 55, id: 1, clap: false },
+                velocity: 100.0 / 127.0,
+                tune: 0.0,
+            },
+        );
+        core.render(128);
+        core.end_block(128, &mut |_| true);
+        let mut texts = Vec::new();
+        core.take_effects(0, &mut |_, effect| {
+            if let Some(text) = &effect.text {
+                texts.push(text.as_str().to_string());
+            }
+            true
+        });
+        assert_eq!(texts, ["2", "3"], "a superseded write must be deleted, not moved in place");
+    }
+
+    #[test]
+    fn repeated_key_writes_deliver_each_keys_latest_value() {
+        // 400 set_key_pressed writes to 128 keys in one block. Each key is one
+        // target, so the outbox holds 128 entries and every key's last write wins.
+        let script = sampler_ksp::compile(
+            "on init
+                declare $i := 0
+                declare $k := 0
+                declare $v := 0
+            end on
+            on note
+                $i := 0
+                $k := 0
+                $v := 0
+                while ($i < 400)
+                    set_key_pressed($k, $v)
+                    $k := $k + 1
+                    if ($k = 128)
+                        $k := 0
+                        $v := $v + 1
+                    end if
+                    $i := $i + 1
+                end while
+            end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
+        let regions = vec![Region {
+            sample: 0,
+            key_low: 55,
+            key_high: 127,
+            root_key: Some(55),
+            velocity_low: 0.0,
+            velocity_high: 1.0,
+            gain: 1.0,
+            envelope: Envelope::default(),
+            playback: Playback::default(),
+        }];
+        let prepared = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap()],
+            regions,
+            1024,
+        )
+        .unwrap();
+        let plan = sampler_ksp::bind_modules(vec![script], prepared).unwrap();
+        let runtime_limits = limits(&plan).0;
+        let mut part = Part::new(
+            Runtime::new(plan, runtime_limits).unwrap(),
+            MixTree::instrument("nka"),
+        )
+        .unwrap();
+        part.runtime
+            .set_behavior_overload(sampler_core::BehaviorOverload::Abort);
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        core.begin_block(&BlockInfo {
+            frames: 128,
+            offline: true,
+            ..Default::default()
+        });
+        core.event(
+            0,
+            Event::NoteOn {
+                note: HostNote { port: 0, channel: 0, key: 55, id: 1, clap: false },
+                velocity: 100.0 / 127.0,
+                tune: 0.0,
+            },
+        );
+        core.render(128);
+        core.end_block(128, &mut |_| true);
+        let mut latest = [None; 128];
+        let mut delivered = 0;
+        core.take_effects(0, &mut |_, effect| {
+            delivered += 1;
+            if effect.count == 2 {
+                latest[effect.args[0] as usize] = Some(effect.args[1]);
+            }
+            true
+        });
+        // Write i sets key i % 128 to i / 128, so each key's last write is the one
+        // with the largest i below 400: value 3 for keys 0..16, value 2 for the rest.
+        let expected: Vec<Option<i64>> =
+            (0..128).map(|key| Some(if key < 16 { 3 } else { 2 })).collect();
+        assert_eq!(latest.to_vec(), expected, "a key's latest write was not delivered");
+        assert_eq!(core.problems(0).ui_effects_dropped, 0);
+        assert_eq!(delivered, 128, "one outbox entry per key");
     }
 
     #[test]

@@ -3822,6 +3822,7 @@ pub(crate) mod tests {
             script_preemptions: 129,
             script_budget_failures: 130,
             script_service_stalls: 131,
+            ui_effects_dropped: 136,
             late_attacks: 132,
             max_attack_lateness_frames: 133,
             closed_pending_attacks: 134,

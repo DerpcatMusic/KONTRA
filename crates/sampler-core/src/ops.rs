@@ -11,7 +11,30 @@ pub const CALL_DEPTH: usize = 32;
 pub const TEXT_CAPACITY: usize = 320;
 pub const EFFECT_ARGS: usize = 6;
 /// Pending effects retained between drains; later emits wait for a drain.
-pub const EFFECT_CAPACITY: usize = 256;
+/// UI-only writes admitted between drains: one slot per distinct target.
+pub const UI_EFFECT_CAPACITY: usize = 2048;
+/// Slots only engine, file and persistence effects may use. A UI flood stops at
+/// `UI_EFFECT_CAPACITY`, so an engine effect in the same block always finds room.
+pub const ENGINE_EFFECT_RESERVE: usize = 256;
+/// Pending effects retained between drains, in script order.
+pub const EFFECT_CAPACITY: usize = UI_EFFECT_CAPACITY + ENGINE_EFFECT_RESERVE;
+
+/// What a full outbox may do with an effect. Only UI-only effects are ever
+/// merged or dropped; everything else waits for the host, as before.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OutboxMerge {
+    /// Engine-relevant, file or persistence work: waits for the host to drain.
+    #[default]
+    Wait,
+    /// UI-only latest-value state: a write overwrites the newest queued effect with
+    /// the same service and first `keys` arguments (the target), whether or not the
+    /// outbox is full, so one target never holds more than one slot. A new target
+    /// that finds the outbox full is dropped and counted. `keys: 0` means one value
+    /// per service.
+    Latest { keys: u8 },
+    /// UI-only stream (messages, appended lines): dropped and counted when full.
+    Drop,
+}
 pub const HOST_VALUES: usize = 32;
 /// A store key occupies this many consecutive registers.
 pub const STORE_KEY: usize = 4;
@@ -388,6 +411,7 @@ pub enum Op {
         args: u16,
         count: u8,
         text: Option<TextRef>,
+        merge: OutboxMerge,
     },
 }
 
@@ -834,11 +858,14 @@ impl Frames {
 }
 
 pub(crate) struct OpState {
+    /// Pending effects in script order.
     pub effects: std::collections::VecDeque<Effect>,
     /// Emits that found the outbox full and waited for the host to drain it.
     pub stalled_effects: u64,
     /// Set by an emit that found the outbox full; the dispatcher then yields the callback.
     pub outbox_full: bool,
+    /// UI-only effects dropped because the UI budget was full and nothing could merge.
+    pub ui_effects_dropped: u64,
     /// Text appends cut short at [`TEXT_CAPACITY`].
     pub truncated_texts: u64,
     pub host: [i64; HOST_VALUES],
@@ -857,6 +884,7 @@ impl Default for OpState {
             dropped_engine_outcomes: 0,
             effects: std::collections::VecDeque::with_capacity(EFFECT_CAPACITY),
             stalled_effects: 0,
+            ui_effects_dropped: 0,
             outbox_full: false,
             truncated_texts: 0,
             host: {
@@ -935,6 +963,11 @@ impl Runtime {
     /// Emits that waited a block for the host to drain a full outbox.
     pub fn stalled_effects(&self) -> u64 {
         self.ops.stalled_effects
+    }
+
+    /// UI-only effects dropped because the outbox was full.
+    pub fn ui_effects_dropped(&self) -> u64 {
+        self.ops.ui_effects_dropped
     }
 
     /// Runtime text appends that did not fit a text cell and were cut short.
@@ -1857,7 +1890,9 @@ impl Runtime {
                     e.plan == plan && e.instance == instance && e.service == service
                         && e.count == 4 && (0..3).all(|i| e.args[i] == i64::from(admitted.args[i]))
                 });
-                if action != Action::Get && !coalesce && self.ops.effects.len() == EFFECT_CAPACITY {
+                // Attach is engine-class and keeps its fault at full capacity. A Set is
+                // a UI mirror: it takes the UI budget and is dropped and counted below.
+                if action == Action::Attach && !coalesce && self.ops.effects.len() == EFFECT_CAPACITY {
                     return Err(Error::Capacity);
                 }
                 let result = crate::waveform::commit(&mut self.behavior_bank_mut(id)?.store, &admitted);
@@ -1870,6 +1905,10 @@ impl Runtime {
                     let effect = Effect { plan, instance, service, args: values, count: count as u8, text: None };
                     if coalesce {
                         if let Some(tail) = self.ops.effects.back_mut() { *tail = effect; }
+                    } else if action == Action::Set && self.ops.effects.len() >= UI_EFFECT_CAPACITY {
+                        // A UI write never delays or faults the callback: the store already
+                        // holds the value, only the mirror is dropped.
+                        self.ops.ui_effects_dropped += 1;
                     } else {
                         self.ops.effects.push_back(effect);
                     }
@@ -1880,11 +1919,9 @@ impl Runtime {
                 args,
                 count,
                 text,
+                merge,
             } => {
-                if self.ops.effects.len() == EFFECT_CAPACITY {
-                    // Back-pressure, never loss: a script that rewrites its whole
-                    // interface in one callback (thousands of set_control_par) must
-                    // not lose the tail. Retry this emit once the host drained.
+                if merge == OutboxMerge::Wait && self.ops.effects.len() == EFFECT_CAPACITY {
                     let c = self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
                     c.pc -= 1;
                     // Waiting on the host is not the callback burning fuel.
@@ -1914,14 +1951,33 @@ impl Runtime {
                 let plan = self.behavior_plan(c.owner)?;
                 let instance =
                     self.plans.get(plan.0).unwrap().prepared.programs[c.program].script_instance;
-                self.ops.effects.push_back(Effect {
+                let effect = Effect {
                     plan,
                     instance,
                     service,
                     args: values,
                     count,
                     text,
-                });
+                };
+                let superseded = match merge {
+                    OutboxMerge::Latest { keys } => self
+                        .ops
+                        .effects
+                        .iter()
+                        .rposition(|queued| same_target(queued, &effect, keys)),
+                    _ => None,
+                };
+                if let Some(index) = superseded {
+                    // Delete the superseded write and append this one, so the host sees
+                    // script order with only that write removed.
+                    self.ops.effects.remove(index);
+                    self.ops.effects.push_back(effect);
+                } else if merge == OutboxMerge::Wait || self.ops.effects.len() < UI_EFFECT_CAPACITY {
+                    self.ops.effects.push_back(effect);
+                } else {
+                    // A UI write never delays or faults the callback: drop and count it.
+                    self.ops.ui_effects_dropped += 1;
+                }
             }
         }
         Ok(false)
@@ -1971,4 +2027,14 @@ impl TryFrom<String> for Text {
     fn try_from(value: String) -> Result<Self, Error> {
         Self::try_new(&value)
     }
+}
+
+/// Whether `queued` writes the same target as `next`: same plan, instance and
+/// service, and equal first `keys` arguments (clamped to the arguments `next` has).
+fn same_target(queued: &Effect, next: &Effect, keys: u8) -> bool {
+    let keys = usize::from(keys).min(usize::from(next.count));
+    queued.plan == next.plan
+        && queued.instance == next.instance
+        && queued.service == next.service
+        && queued.args[..keys] == next.args[..keys]
 }

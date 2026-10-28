@@ -556,14 +556,16 @@ fn apply_ui_effect(
             arg(2).map(Value::Int),
             None,
         ),
-        "set_control_par_real" | "set_control_par_real_arr" => (
+        "set_control_par_real" => (
             arg(1).and_then(|p| eval::symbol_in(symbols, p)),
             args.get(2).map(|&b| Value::Real(f64::from_bits(b as u64))),
-            if service.ends_with("_arr") {
-                arg(3)
-            } else {
-                None
-            },
+            None,
+        ),
+        // Effect order is (id, par, index, value): the index is the target prefix.
+        "set_control_par_real_arr" => (
+            arg(1).and_then(|p| eval::symbol_in(symbols, p)),
+            args.get(3).map(|&b| Value::Real(f64::from_bits(b as u64))),
+            arg(2),
         ),
         "set_control_par_str" => (
             arg(1).and_then(|p| eval::symbol_in(symbols, p)),
@@ -572,8 +574,8 @@ fn apply_ui_effect(
         ),
         "set_control_par_arr" => (
             arg(1).and_then(|p| eval::symbol_in(symbols, p)),
-            arg(2).map(Value::Int),
-            arg(3),
+            arg(3).map(Value::Int),
+            arg(2),
         ),
         "set_control_par_str_arr" => (
             arg(1).and_then(|p| eval::symbol_in(symbols, p)),

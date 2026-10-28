@@ -759,7 +759,27 @@ fn xy_value_read_modify_write_emits_the_same_value_it_stores() {
     assert_eq!(f64::from_bits(cell(&rt, 2) as u64), 0.5);
     let mut effects = 0;
     rt.drain_effects(|effect| {
-        assert_eq!(f64::from_bits(effect.args()[2] as u64), 0.5);
+        // The effect carries (id, par, index, value): the real value is last.
+        assert_eq!(f64::from_bits(effect.args()[3] as u64), 0.5);
+        effects += 1;
+        true
+    });
+    assert_eq!(effects, 1);
+}
+
+#[test]
+fn array_setter_compound_index_keeps_the_value_it_was_given() {
+    // The value is lowered before the index; a compound index must not clobber it.
+    let mut rt = run(
+        "on init declare ui_table %table[4] (1,1,100,100) declare $i := 2 end on
+        on note set_control_par_arr(get_ui_id(%table),$CONTROL_PAR_VALUE,42,$i + 1) end on",
+        &[],
+    );
+    let mut effects = 0;
+    rt.drain_effects(|effect| {
+        // The effect carries (id, par, index, value).
+        assert_eq!(effect.args()[2], 3, "index is $i + 1");
+        assert_eq!(effect.args()[3], 42, "value is the literal it was given");
         effects += 1;
         true
     });
