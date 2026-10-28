@@ -437,8 +437,7 @@ impl Engine {
     }
 
     fn note_on(&mut self, host: HostNote, velocity: f64, tune: f64) {
-        self.behaviour.press(&self.plan, host.key);
-        self.behaviour.channel = host.channel;
+        self.behaviour.play(&self.plan, host.key, host.channel);
         let draw = self.behaviour.draw(host.key);
         let Some(note) = self
             .notes

@@ -82,6 +82,12 @@ impl Behaviour {
     /// Kontakt's key latch (KONTAKT_START_CONDITIONS, 0x144f17d28): a key
     /// inside the span of all switch ranges sets the ranges holding it and
     /// clears the rest, even in a gap; a key outside the span changes nothing.
+    /// A note-on: its channel is the one last played, its key may switch.
+    pub(crate) fn play(&mut self, plan: &Plan, key: u8, channel: u8) {
+        self.channel = channel;
+        self.press(plan, key);
+    }
+
     pub(crate) fn press(&mut self, plan: &Plan, key: u8) {
         let lo = plan.switches.iter().map(|r| *r.start()).min();
         let hi = plan.switches.iter().map(|r| *r.end()).max();
