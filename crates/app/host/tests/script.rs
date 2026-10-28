@@ -924,3 +924,51 @@ fn a_uvi_script_that_fails_counts_a_fault_and_the_engine_plays_on() {
     assert_eq!(level(&mut e, &[on(60)]), 0.0);
     assert_eq!(e.script_faults().first().map(|f| f.bad_code), Some(1));
 }
+
+#[test]
+fn moving_a_control_runs_ui_controls_then_its_ui_control() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare ui_knob $k (0, 100, 1)
+            declare ui_switch $s
+            declare @log
+            message(get_ui_id($k))
+        end on
+        on ui_controls
+            @log := @log & \"all \" & $NI_UI_ID & \" \"
+        end on
+        on ui_control ($k)
+            @log := @log & \"k \" & $k & \" \" & $NI_CALLBACK_TYPE
+            message(@log)
+        end on",
+    );
+    let id: i32 = e.last_message().parse().unwrap();
+    e.set_control(0, id, 42);
+    assert_eq!(e.last_message(), format!("all {id} k 42 7"));
+    // Not a control of this script: nothing runs.
+    e.set_control(0, id + 100, 1);
+    assert_eq!(e.last_message(), format!("all {id} k 42 7"));
+}
+
+#[test]
+fn a_purge_reports_its_id_in_async_complete() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $id
+            $id := purge_group(0, 0)
+        end on
+        on async_complete
+            message($NI_ASYNC_ID & \" \" & $id & \" \" & $NI_ASYNC_EXIT_STATUS & \" \" & $NI_CALLBACK_TYPE)
+        end on",
+    );
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "1 1 1 12");
+}
