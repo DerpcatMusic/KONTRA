@@ -296,24 +296,21 @@ pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Optio
 fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Filter> {
     use ir::Pass::{Band, High, Low, Notch};
     let (pass, stages) = match kind {
-        2 | 30 | 50 => (Low, 0),
-        3 | 34 | 51 => (High, 0),
-        4 | 38 | 53 | 101 => (Band, 1),
-        6 | 31 | 52 | 70 | 100 => (Low, 1),
-        7 | 35 | 54 | 71 | 102 => (High, 1),
-        8 | 16 | 17 | 33 | 55 | 103 | 106 => (Low, 2),
-        9 | 37 | 57 | 105 | 108 => (High, 2),
-        10 | 39 | 56 | 104 | 107 => (Band, 2),
+        // The Ladder's selector is `id − 29`; one damping holds its feedback.
+        30..=41 => (Low, 1),
+        2 | 50 => (Low, 0),
+        3 | 51 => (High, 0),
+        4 | 53 | 101 => (Band, 1),
+        6 | 52 | 70 | 100 => (Low, 1),
+        7 | 54 | 71 | 102 => (High, 1),
+        8 | 16 | 17 | 55 | 103 | 106 => (Low, 2),
+        9 | 57 | 105 | 108 => (High, 2),
+        10 | 56 | 104 | 107 => (Band, 2),
         11 | 58 => (Notch, 2),
-        41 => (Notch, 1),
         12 | 59 => (Low, 3),
         60 => (Band, 3),
         61 => (High, 3),
         62 => (Notch, 3),
-        // Ladder LP3 / HP3: the ladder's third tap, a one-pole ahead of the
-        // resonant stage (filt-ladder-monark.md: taps follow `id − 29`).
-        32 => (Low, 1),
-        36 => (High, 1),
         _ => return None,
     };
     let (u, r) = (cutoff.clamp(0.0, 1.0), resonance.clamp(0.0, 1.0));
@@ -321,7 +318,9 @@ fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Fi
         pass,
         hz: 0.0,
         stages,
-        pole: matches!(kind, 32 | 36),
+        ladder: u8::try_from(kind - 29)
+            .ok()
+            .filter(|_| (30..=41).contains(&kind)),
         damping: [2.0; 3],
         gain: 1.0,
         octaves: 0.0,
@@ -379,7 +378,7 @@ pub(crate) fn eq_band_index(param: &str) -> Option<u8> {
 /// stage resonates by `1 − (1 − r)²`, the others stay critically damped.
 ///
 /// ponytail: these families' feedback loops, knees and passband loss
-/// (Ladder, AR, Daft, Pro-53) play as state-variable stages; measure
+/// (AR, Daft, Pro-53) play as state-variable stages; measure
 /// against Kontakt to add the loss where a library needs it.
 fn note(f: &mut ir::Filter, n: f32, per_unit: f32, r: f32) {
     f.hz = 440.0 * 2f32.powf((n.min(160.0) - 69.0) / 12.0);

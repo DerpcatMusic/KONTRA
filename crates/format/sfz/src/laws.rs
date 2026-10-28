@@ -164,7 +164,7 @@ pub fn voice_filter(shape: Filter, hz: f64, k: f64) -> ir::Filter {
         pass,
         hz: hz.clamp(1.0, 22_000.0) as f32,
         stages,
-        pole: false,
+        ladder: None,
         damping: [k; 3],
         gain: if pass == ir::Pass::Band { k } else { 1.0 },
         octaves: 0.0,
