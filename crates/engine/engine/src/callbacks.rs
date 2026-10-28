@@ -97,9 +97,13 @@ impl Engine {
     }
 
     /// A waiting callback's time has come.
-    pub(crate) fn resume(&mut self, slot: u8, co: kontra_vm::CoId) {
+    pub(crate) fn resume(&mut self, slot: u8, co: kontra_vm::CoId, wait: u32) {
         let mark = self.forward.len();
         if let Some(mut vm) = self.take_vm(slot) {
+            if vm.wait_epoch(co) != Some(wait) {
+                // A stopped wait: its callback already went on.
+                return self.put_vm(slot, vm);
+            }
             self.running = Running {
                 slot,
                 ..Running::resumed(vm.context(co).unwrap_or(0))
@@ -116,7 +120,18 @@ impl Engine {
         self.vms.get_mut(usize::from(slot))?.take()
     }
 
-    fn put_vm(&mut self, slot: u8, vm: Vm) {
+    fn put_vm(&mut self, slot: u8, mut vm: Vm) {
+        // `stop_wait` the slot's callbacks asked for while it ran: each goes on now.
+        while let Some(i) = self.stop_waits.iter().position(|s| s.0 == slot) {
+            let (_, id, rest) = self.stop_waits.swap_remove(i);
+            let matches = |context| Running::resumed(context).callback_id == id & 0xF_FFFF;
+            if let Some((co, wait)) = vm.stop_wait(matches, rest)
+                && !self.queue.push(self.now, Work::Resume(slot, co, wait))
+            {
+                self.stats.events_refused += 1;
+                vm.cancel(co);
+            }
+        }
         if let Some(cell) = self.vms.get_mut(usize::from(slot)) {
             *cell = Some(vm);
         }
@@ -140,7 +155,8 @@ impl Engine {
         let micros = i64::try_from(micros).unwrap_or(i64::MAX);
         let frames = micros_to_frames(micros, self.rate).max(1);
         let at = SampleTime(self.now.0.saturating_add(frames));
-        if !self.queue.push(at, Work::Resume(slot, co)) {
+        let wait = vm.wait_epoch(co).unwrap_or(0);
+        if !self.queue.push(at, Work::Resume(slot, co, wait)) {
             self.stats.events_refused += 1;
             vm.cancel(co);
         }

@@ -47,6 +47,29 @@ impl Vm {
         }
     }
 
+    /// A foreign machine's waits are never stopped: always epoch 0.
+    pub(crate) fn wait_epoch(&self, co: CoId) -> Option<u32> {
+        match self {
+            Self::Code(vm) => vm.wait_epoch(co),
+            Self::Foreign(_) => Some(0),
+        }
+    }
+
+    /// `stop_wait` on the callback with this context; the epoch to resume it with.
+    pub(crate) fn stop_wait(
+        &mut self,
+        matches: impl Fn(u64) -> bool,
+        rest: bool,
+    ) -> Option<(CoId, u32)> {
+        match self {
+            Self::Code(vm) => {
+                let co = vm.find(matches)?;
+                Some((co, vm.stop_wait(co, rest)?))
+            }
+            Self::Foreign(_) => None,
+        }
+    }
+
     pub(crate) fn spawned(&mut self) -> Option<(CoId, u64)> {
         match self {
             Self::Code(_) => None,

@@ -137,6 +137,10 @@ struct Coroutine {
     loop_hash: u64,
     /// A host call ran since the last stuck check: state outside the hash moved.
     hosted: bool,
+    /// Counts waits and stops, so a resume queued for a stopped wait is stale.
+    waits: u32,
+    /// `stop_wait` with 1: every later wait passes at once.
+    no_wait: bool,
 }
 
 /// One script's live state: cells, texts and its callback coroutines.
@@ -165,6 +169,8 @@ impl Instance {
                 loop_count: 0,
                 loop_hash: 0,
                 hosted: false,
+                waits: 0,
+                no_wait: false,
             })
             .collect();
         Self {
@@ -240,6 +246,7 @@ impl Instance {
         co.loop_count = 0;
         co.loop_hash = 0;
         co.hosted = false;
+        co.no_wait = false;
         Some(CoId {
             index,
             generation: co.generation,
@@ -255,6 +262,44 @@ impl Instance {
         {
             c.busy = false;
         }
+    }
+
+    /// The current wait of a busy callback: a resume carrying another is stale.
+    #[must_use]
+    pub fn wait_epoch(&self, co: CoId) -> Option<u32> {
+        self.live(co).map(|c| c.waits)
+    }
+
+    /// The busy callback whose context `matches`.
+    #[must_use]
+    pub fn find(&self, matches: impl Fn(u64) -> bool) -> Option<CoId> {
+        let (i, c) = self
+            .coroutines
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.busy && matches(c.context))?;
+        Some(CoId {
+            index: u16::try_from(i).ok()?,
+            generation: c.generation,
+        })
+    }
+
+    /// Ends `co`'s current wait (KSP `stop_wait`); with `rest` its later
+    /// waits pass at once too. Returns the wait to resume it with.
+    pub fn stop_wait(&mut self, co: CoId, rest: bool) -> Option<u32> {
+        let c = self
+            .coroutines
+            .get_mut(usize::from(co.index))
+            .filter(|c| c.busy && c.generation == co.generation)?;
+        c.waits = c.waits.wrapping_add(1);
+        c.no_wait |= rest;
+        Some(c.waits)
+    }
+
+    fn live(&self, co: CoId) -> Option<&Coroutine> {
+        self.coroutines
+            .get(usize::from(co.index))
+            .filter(|c| c.busy && c.generation == co.generation)
     }
 
     /// Runs a callback until it ends or waits.
@@ -558,7 +603,10 @@ fn execute(
             Op::Wait => {
                 let micros = pop!();
                 c.loop_count = 0;
-                return Step::Wait(u64::try_from(micros).unwrap_or(0));
+                if !c.no_wait {
+                    c.waits = c.waits.wrapping_add(1);
+                    return Step::Wait(u64::try_from(micros).unwrap_or(0));
+                }
             }
             Op::Host {
                 action,

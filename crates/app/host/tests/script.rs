@@ -1380,3 +1380,36 @@ fn a_purge_reports_its_id_in_async_complete() {
     level(&mut e, &[]);
     assert_eq!(e.last_message(), "1 1 1 13");
 }
+
+/// `stop_wait` as measured in Kontakt (ANALOG, two `wait(10 s)` then
+/// `play_note`, stopped from `on release`): 0 ends only the current wait,
+/// 1 also lets every later wait pass. The first wait's own resume, still
+/// queued, must not end the second wait early.
+#[test]
+fn stop_wait_ends_the_current_wait_or_every_wait() {
+    for (rest, sounds_at_release) in [(0, false), (1, true)] {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let z = zone(&mut store, 0.5, 0);
+        let source = format!(
+            "on init
+                declare $waiting
+            end on
+            on note
+                ignore_event($EVENT_ID)
+                $waiting := $NI_CALLBACK_ID
+                wait(100000)
+                wait(100000)
+                play_note(60, 127, 0, 0)
+            end on
+            on release
+                stop_wait($waiting, {rest})
+            end on"
+        );
+        let mut e = engine(&store, vec![z], &source);
+        assert_eq!(level(&mut e, &[on(60)]), 0.0);
+        // Key up at 4096; the second wait (4800 frames) runs to 8896.
+        let at_release = level(&mut e, &[off(60)]);
+        assert_eq!(at_release != 0.0, sounds_at_release, "rest {rest}");
+        assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3, "rest {rest}");
+    }
+}

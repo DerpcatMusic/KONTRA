@@ -156,6 +156,8 @@ pub struct Engine {
     /// Each script slot's listener timer.
     /// Per script slot: the millisecond and beat timers.
     timers: Box<[callbacks::Timers]>,
+    /// `stop_wait` calls not yet applied: (slot, callback id, skip later waits).
+    stop_waits: Vec<(u8, u32, bool)>,
     masks: GroupMasks,
     /// Scratch for script event targets (an action may run inside a ledger query).
     targets_scratch: Vec<NoteRef>,
@@ -281,6 +283,7 @@ impl Engine {
             forward: Vec::with_capacity(capacity),
             pgs: pgs::Pgs::new(),
             timers,
+            stop_waits: Vec::with_capacity(16),
             masks: GroupMasks::new(capacity, groups),
             targets_scratch: Vec::with_capacity(capacity),
             cc_values: [0; 130],
@@ -410,7 +413,7 @@ impl Engine {
     fn dispatch(&mut self, work: Work) {
         let event = match work {
             Work::Input(event) => event,
-            Work::Resume(slot, co) => return self.resume(slot, co),
+            Work::Resume(slot, co, wait) => return self.resume(slot, co, wait),
             Work::Release(note) => return self.end_note(note),
             Work::PgsChanged => return self.run_pgs_changed(),
             Work::Listen {

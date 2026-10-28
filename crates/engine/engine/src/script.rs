@@ -695,6 +695,14 @@ impl HostApi for Engine {
             Action::AsyncExitStatus => HostValue::Int(1),
             // Commands finish before the queue reaches the next event.
             Action::WaitAsync => HostValue::Nothing,
+            // Applied when the slot's running callback returns or waits.
+            Action::StopWait => {
+                let stop = (self.running.slot, int(0) as u32, int(1) != 0);
+                if self.stop_waits.len() < self.stop_waits.capacity() {
+                    self.stop_waits.push(stop);
+                }
+                HostValue::Nothing
+            }
             Action::GetPurgeState => HostValue::Int(
                 self.groups
                     .get(int(0) as usize)
