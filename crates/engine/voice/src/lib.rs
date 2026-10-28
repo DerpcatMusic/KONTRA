@@ -49,6 +49,8 @@ pub struct Voice {
     scratch: Box<[[f32; 2]]>,
     /// The frames a loop crossfade blends in.
     partner: Box<[[f32; 2]]>,
+    /// Interpolated frames before the envelope and gain.
+    raw: Box<[[f32; 2]]>,
     /// Cursor position of the note's release, once it came.
     released: Option<u64>,
     missing: u64,
@@ -68,6 +70,7 @@ impl Voice {
             env: Envelope::new(Ahdsr::GATE),
             scratch: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             partner: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
+            raw: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             released: None,
             missing: 0,
         }
@@ -146,6 +149,19 @@ impl Voice {
     /// Mixes the next `out.len()` frames into `out`. `now` is the sample time of
     /// `out[0]`, the deadline for the pages this render asks the store for.
     pub fn render(&mut self, client: &StreamClient, now: u64, out: &mut [[f32; 2]]) {
+        self.render_through(client, now, out, |_| {});
+    }
+
+    /// As [`Self::render`], with `insert` run on the interpolated signal
+    /// before the envelope and gain (a voice's own effects), in chunks of at
+    /// most 512 frames.
+    pub fn render_through(
+        &mut self,
+        client: &StreamClient,
+        now: u64,
+        out: &mut [[f32; 2]],
+        mut insert: impl FnMut(&mut [[f32; 2]]),
+    ) {
         let Some(region) = self.region.take() else {
             return;
         };
@@ -205,13 +221,23 @@ impl Voice {
             });
             self.missing += u64::from(missing);
 
-            for (i, frame) in out.iter_mut().skip(done).take(n).enumerate() {
+            let mut filled = 0;
+            for (i, frame) in self.raw.iter_mut().take(n).enumerate() {
                 let x = anchor + (elapsed + i as u64) as f64 * step - lo as f64;
                 let base = x.floor() as usize;
                 let t = (x - base as f64) as f32;
                 let Some(&[y0, y1, y2, y3]) = window.get(base - 1..base + 3) else {
                     break;
                 };
+                *frame = [
+                    hermite(y0[0], y1[0], y2[0], y3[0], t),
+                    hermite(y0[1], y1[1], y2[1], y3[1], t),
+                ];
+                filled += 1;
+            }
+            let raw = self.raw.get_mut(..filled).unwrap_or_default();
+            insert(raw);
+            for (frame, &[l, r]) in out.iter_mut().skip(done).zip(raw.iter()) {
                 let level = self.env.next();
                 for (g, target) in self
                     .gain
@@ -221,8 +247,7 @@ impl Voice {
                 {
                     *g += (target - *g) * GAIN_SMOOTH;
                 }
-                let l = hermite(y0[0], y1[0], y2[0], y3[0], t) * level;
-                let r = hermite(y0[1], y1[1], y2[1], y3[1], t) * level;
+                let (l, r) = (l * level, r * level);
                 let [[ll, lr], [rl, rr]] = self.gain;
                 frame[0] += ll * l + lr * r;
                 frame[1] += rl * l + rr * r;
