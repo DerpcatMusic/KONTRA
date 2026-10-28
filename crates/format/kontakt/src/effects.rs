@@ -88,11 +88,14 @@ fn name(id: u16) -> String {
 /// A rack's slots as effects. Gainer, Inverter and Stereo Modeller carry
 /// over; every other module passes audio at its output gain and is reported
 /// (bypassed ones as cosmetic: a script may switch them on).
+/// A rack's effects by slot. Slot laws go to `laws` when the rack is one a
+/// script addresses by `rack_at`.
 fn rack(
     array: &BParamArrayBParFX8,
     at: &str,
     impulses: &mut Impulses,
     notes: &mut Notes,
+    mut laws: Option<(ir::RackAt, &mut Vec<ir::SlotLaw>)>,
 ) -> Vec<Option<ir::Effect>> {
     let mut out: Vec<Option<ir::Effect>> = array
         .items
@@ -100,7 +103,23 @@ fn rack(
         .enumerate()
         .map(|(slot, chunk)| {
             let chunk = chunk.as_ref()?;
-            let effect = slot_effect(chunk, impulses, &format!("{at} slot {slot}"), notes);
+            let mut knobs = Vec::new();
+            let effect = slot_effect(
+                chunk,
+                impulses,
+                &format!("{at} slot {slot}"),
+                notes,
+                &mut knobs,
+            );
+            if let (Some((rack_at, laws)), Ok(slot)) = (laws.as_mut(), u8::try_from(slot)) {
+                laws.extend(knobs.into_iter().map(|(knob, field, law)| ir::SlotLaw {
+                    at: *rack_at,
+                    slot,
+                    knob,
+                    field,
+                    law,
+                }));
+            }
             if effect.is_none() {
                 notes.add(
                     ir::Impact::Audible,
@@ -182,6 +201,7 @@ fn slot_effect(
     impulses: &mut Impulses,
     at: &str,
     notes: &mut Notes,
+    knobs: &mut Vec<crate::script_knobs::SlotKnob>,
 ) -> Option<(ir::Effect, u16, i32)> {
     let fx = BParFX::try_from(chunk).ok()?;
     let params = fx.params().ok()?;
@@ -209,7 +229,7 @@ fn slot_effect(
                 width: (spread.clamp(-1.0, 1.0) + 1.0) * 0.5,
                 pan: pan.clamp(-1.0, 1.0),
             }),
-        0x18 => kind_id.and_then(|k| eq(&public, k).or_else(|| filter(&public, k))),
+        0x18 => kind_id.and_then(|k| eq(&public, k).or_else(|| filter(&public, k, knobs))),
         // Mode (i32), threshold, ratio, attack, release, then the link byte.
         0x19 => kind_id
             .zip(f32_at(4).zip(f32_at(8)))
@@ -369,7 +389,11 @@ fn solid_eq(version: u16, public: &[u8], at: &str, notes: &mut Notes) -> Option<
 /// repeat), a leading gain for Ladder and Daft (the SV Par/Ser bandwidth,
 /// unused), then cutoff and resonance, all 0..=1 (v2 sampler-kontakt
 /// effects/mod.rs, reader 0x140d00db0).
-fn filter(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
+fn filter(
+    public: &[u8],
+    kind: i32,
+    knobs: &mut Vec<crate::script_knobs::SlotKnob>,
+) -> Option<ir::EffectKind> {
     let k = kind.to_le_bytes();
     let mut rest = public;
     loop {
@@ -404,7 +428,10 @@ fn filter(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
     } else {
         (0.0, 0)
     };
-    crate::laws::filter(kind, f(at)?, f(at + 4)?, gain).map(ir::EffectKind::Filter)
+    let (cutoff, resonance) = (f(at)?, f(at + 4)?);
+    let filter = crate::laws::filter(kind, cutoff, resonance, gain)?;
+    *knobs = crate::script_knobs::filter_knobs(kind, cutoff, resonance, gain);
+    Some(ir::EffectKind::Filter(filter))
 }
 
 /// Send Levels: a counted list of send levels, then one of outputs (v2
@@ -425,9 +452,19 @@ pub(crate) fn group(
     index: usize,
     impulses: &mut Impulses,
     notes: &mut Notes,
+    laws: &mut Vec<ir::SlotLaw>,
 ) -> Vec<Option<ir::Effect>> {
+    let rack_at = u32::try_from(index)
+        .ok()
+        .map(|g| (ir::RackAt::Group(g), laws));
     match group.insert_fx() {
-        Ok(array) => rack(&array, &format!("group {index} insert"), impulses, notes),
+        Ok(array) => rack(
+            &array,
+            &format!("group {index} insert"),
+            impulses,
+            notes,
+            rack_at,
+        ),
         Err(e) => {
             notes.add(
                 ir::Impact::Audible,
@@ -446,6 +483,8 @@ pub(crate) struct Racks {
     pub sends: Vec<Option<ir::Effect>>,
     pub main: Vec<Option<ir::Effect>>,
     pub buses: Vec<ir::Bus>,
+    /// The instrument inserts' slot laws.
+    pub laws: Vec<ir::SlotLaw>,
 }
 
 pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut Notes) -> Racks {
@@ -453,6 +492,7 @@ pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut No
     let mut racks = 0;
     let mut instrument = [Vec::new(), Vec::new(), Vec::new()];
     let mut buses: Vec<ir::Bus> = Vec::new();
+    let mut laws = Vec::new();
     for child in &program.0.children {
         let (at, array) = match child.id {
             RACK => {
@@ -491,7 +531,11 @@ pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut No
         };
         match array {
             Ok(array) => {
-                let effects = rack(&array, &at, impulses, notes);
+                // ponytail: knobs on send, main and bus slots have no laws
+                // yet; a script's writes there stay unanswered.
+                let to =
+                    (child.id == RACK && racks == 1).then_some((ir::RackAt::Inserts, &mut laws));
+                let effects = rack(&array, &at, impulses, notes, to);
                 match (child.id, buses.last_mut()) {
                     (BUS, Some(bus)) => bus.inserts = effects,
                     _ => {
@@ -514,5 +558,6 @@ pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut No
         sends,
         main,
         buses,
+        laws,
     }
 }
