@@ -424,17 +424,30 @@ fn a_disabled_mic_bus_starts_no_voices() {
 
 #[test]
 fn a_bus_sends_before_its_fader() {
+    use kontra_engine::ir;
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut z = zone(&mut store, 0.5);
     z.bus = 1;
     let mut plan = Plan::new(vec![z], 8);
-    // A silent fader still feeds the aux at the send's level.
+    // A silent fader still feeds the aux at a pre-fader send's level, and
+    // silences a post-fader one.
     plan.buses.push(Bus {
         name: "Layer".into(),
         gain: 0.0,
         pan: 0.0,
         inserts: Vec::new(),
-        sends: vec![(2, 0.5)],
+        sends: vec![
+            ir::BusSend {
+                bus: 2,
+                level: 0.5,
+                post_fader: false,
+            },
+            ir::BusSend {
+                bus: 2,
+                level: 1.0,
+                post_fader: true,
+            },
+        ],
         enabled: true,
     });
     plan.buses.push(Bus {

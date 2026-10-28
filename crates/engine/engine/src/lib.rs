@@ -106,7 +106,7 @@ struct BusState {
     /// -1..=1 balance after the rack.
     pan: f32,
     /// Later buses it feeds, and their levels.
-    sends: Box<[(usize, f32)]>,
+    sends: Box<[ir::BusSend]>,
     mix: Box<[[f32; 2]]>,
 }
 

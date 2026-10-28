@@ -772,9 +772,19 @@ pub struct Bus {
     pub pan: f32,
     /// Effects on what the bus carries, by slot.
     pub inserts: Vec<Option<Effect>>,
-    /// Later buses it feeds, by index into [`Instrument::buses`], and the
-    /// linear level: taken after its effects, before its pan and volume.
-    pub sends: Vec<(usize, f32)>,
+    /// Later buses it feeds, after its effects and before its pan.
+    pub sends: Vec<BusSend>,
+}
+
+/// A bus's feed into a later bus.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BusSend {
+    /// Index into [`Instrument::buses`], above the sender's.
+    pub bus: usize,
+    /// Linear.
+    pub level: f32,
+    /// Scaled by the sender's volume as it changes.
+    pub post_fader: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
