@@ -11,6 +11,7 @@ mod impulse;
 mod laws;
 mod resources;
 mod samples;
+mod skreamer;
 mod translate;
 
 pub use container::chunks;
