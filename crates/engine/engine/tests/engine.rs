@@ -274,3 +274,33 @@ fn a_burst_of_512_events_in_one_block_loses_no_note() {
     assert_eq!(stats.voices_stolen, 256 - 64, "{stats:?}");
     assert_eq!(engine.playing_voices(), 64);
 }
+
+/// An instrument allowing 512 voices holds 300 keys at once: the note
+/// table grows with the voice limit, so none is refused or stolen.
+#[test]
+fn the_note_table_follows_the_instruments_voice_limit() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let plan = Plan::new(
+        vec![zone(region(&mut store, "a", 48_000).unwrap(), 0.0)],
+        512,
+    );
+    let mut engine = Engine::new(Arc::new(plan), store.client(), RATE);
+    // 300 held notes over 16 channels; none is released.
+    let events: Vec<_> = (0..300u64)
+        .map(|n| {
+            let mut e = on(n, 30 + (n % 60) as u8);
+            if let Event::NoteOn { note, .. } = &mut e.body {
+                note.channel = (n / 60) as u8;
+            }
+            e
+        })
+        .collect();
+    render(&mut engine, &events, 512, 512);
+    let stats = engine.stats();
+    assert_eq!(
+        (stats.notes_refused, stats.voices_stolen),
+        (0, 0),
+        "{stats:?}"
+    );
+    assert_eq!(engine.playing_voices(), 300);
+}
