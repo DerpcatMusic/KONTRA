@@ -2,12 +2,16 @@
 name = "kontra-format-uvi"
 version = "0.0.0"
 edition.workspace = true
+license = "Apache-2.0"
 publish = false
 
 [lints]
 workspace = true
 
 [dependencies]
+anyhow = "1"
 kontra-format = { path = "../common" }
-kontra-law = { path = "../../base/law" }
-kontra-params = { path = "../../model/params" }
+kontra-ir = { path = "../../model/ir" }
+roxmltree = "=0.21.1"
+thiserror.workspace = true
+uvi-file = { path = "../../../vendor/uvi-file" }

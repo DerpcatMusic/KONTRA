@@ -87,38 +87,123 @@ pub struct Sample {
     pub keystream: Option<Keystream>,
 }
 
-/// A repeating XOR keystream: file byte `origin + n` is stored XOR `stream[n % len]`.
-/// Held in memory only; `Debug` never prints it.
+/// XOR keying of bytes a sample file stores encrypted: decrypts (or encrypts)
+/// the file's bytes as the engine reads them. Held in memory only; `Debug`
+/// never prints the key.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Keystream {
-    pub stream: Arc<[u8]>,
-    pub origin: u64,
+pub enum Keystream {
+    /// File byte `origin + n` is stored XOR `stream[n % len]`.
+    Repeat { stream: Arc<[u8]>, origin: u64 },
+    /// Each `block` bytes from `origin` are XORed with a stream of 32-bit
+    /// little-endian words. The stream restarts at every block, seeded by `key`
+    /// and the block's file offset, so any read decrypts without its neighbours.
+    Blocks { key: u64, origin: u64, block: u32 },
 }
 
 impl Keystream {
     /// Decrypts (or encrypts) `bytes` read from file offset `at`.
     pub fn apply(&self, at: u64, bytes: &mut [u8]) {
-        let len = self.stream.len() as u64;
-        if len == 0 {
-            return;
-        }
-        // Whole runs of the key at a time, so the XOR vectorises.
-        let mut position = (at.wrapping_sub(self.origin) % len) as usize;
-        let mut rest = bytes;
-        while !rest.is_empty() {
-            let key = self.stream.get(position..).unwrap_or_default();
-            let n = key.len().min(rest.len());
-            let (head, tail) = std::mem::take(&mut rest).split_at_mut(n);
-            head.iter_mut().zip(key).for_each(|(b, k)| *b ^= k);
-            rest = tail;
-            position = 0;
+        match self {
+            Self::Repeat { stream, origin } => repeat(stream, *origin, at, bytes),
+            Self::Blocks { key, origin, block } => {
+                blocks(*key, *origin, u64::from(*block), at, bytes);
+            }
         }
     }
+}
+
+fn repeat(stream: &[u8], origin: u64, at: u64, bytes: &mut [u8]) {
+    let len = stream.len() as u64;
+    if len == 0 {
+        return;
+    }
+    // Whole runs of the key at a time, so the XOR vectorises.
+    let mut position = (at.wrapping_sub(origin) % len) as usize;
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let key = stream.get(position..).unwrap_or_default();
+        let n = key.len().min(rest.len());
+        let (head, tail) = std::mem::take(&mut rest).split_at_mut(n);
+        head.iter_mut().zip(key).for_each(|(b, k)| *b ^= k);
+        rest = tail;
+        position = 0;
+    }
+}
+
+/// The block-restarted word stream: block `n` of `origin` starts at
+/// `origin + n·block`; the stream is the one a whole-block pass would XOR.
+fn blocks(key: u64, origin: u64, block: u64, at: u64, bytes: &mut [u8]) {
+    if block == 0 {
+        return;
+    }
+    let Some(mut into) = at.checked_sub(origin) else {
+        return;
+    };
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let start = into / block * block;
+        let skip = (into - start) as usize;
+        let n = (block as usize - skip).min(rest.len());
+        let (head, tail) = std::mem::take(&mut rest).split_at_mut(n);
+        let mask = word_stream(key, origin + start, skip + n);
+        head.iter_mut()
+            .zip(mask.get(skip..).unwrap_or_default())
+            .for_each(|(b, m)| *b ^= m);
+        rest = tail;
+        into += n as u64;
+    }
+}
+
+/// The first `len` bytes of the word stream seeded by `key` and `nonce`:
+/// word `j` is the little-endian output of a multiplicative state that steps
+/// once per word. The same generator as uvi-file's `transform`, which the
+/// uvi crate's test checks against.
+fn word_stream(key: u64, nonce: u64, len: usize) -> Vec<u8> {
+    const MIX: u64 = 0xc6a4_a793_5bd1_e995;
+    const STEP: u64 = 0x5851_f42d_4c95_7f2d;
+    let mix = |value: u64| {
+        let value = value.wrapping_mul(MIX);
+        (value ^ (value >> 47)).wrapping_mul(MIX)
+    };
+    let mut state = (mix(nonce) ^ key).wrapping_mul(MIX);
+    let mut out = Vec::with_capacity(len + 4);
+    while out.len() < len {
+        let word = (((state >> 22) ^ state) >> (22 + (state >> 61))) as u32;
+        out.extend(word.to_le_bytes());
+        state = state.wrapping_mul(STEP);
+    }
+    out.truncate(len);
+    out
 }
 
 impl std::fmt::Debug for Keystream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Keystream(..)")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_keystream_reads_in_any_piece_and_undoes_itself() {
+        let plain: Vec<u8> = (0..1500u32).map(|i| (i * 7 + 3) as u8).collect();
+        let key = Keystream::Blocks {
+            key: 0x1234_5678_9abc_def0,
+            origin: 4096,
+            block: 512,
+        };
+        let mut whole = plain.clone();
+        key.apply(4096, &mut whole);
+        assert_ne!(whole, plain);
+        // A read that starts mid-block and crosses two block starts decrypts the
+        // same bytes as the whole pass.
+        let mut piece = whole[300..1100].to_vec();
+        key.apply(4096 + 300, &mut piece);
+        assert_eq!(piece, plain[300..1100]);
+        key.apply(4096, &mut whole);
+        assert_eq!(whole, plain);
     }
 }
 

@@ -9,7 +9,7 @@ use ni_file::kontakt::objects::{BParFX, BParamArrayBParFX8, Group, InsertBus, Pr
 use ni_file::kontakt::{Chunk, StructuredObject};
 
 use crate::impulse::Impulses;
-use crate::translate::Notes;
+use kontra_format::Notes;
 use kontra_ir as ir;
 
 const RACK: u16 = 0x3a;

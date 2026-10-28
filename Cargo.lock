@@ -2389,6 +2389,9 @@ version = "0.0.0"
 [[package]]
 name = "kontra-format"
 version = "0.0.0"
+dependencies = [
+ "kontra-ir",
+]
 
 [[package]]
 name = "kontra-format-kontakt"
@@ -2428,9 +2431,12 @@ dependencies = [
 name = "kontra-format-uvi"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "kontra-format",
- "kontra-law",
- "kontra-params",
+ "kontra-ir",
+ "roxmltree",
+ "thiserror 2.0.21",
+ "uvi-file",
 ]
 
 [[package]]
@@ -5727,6 +5733,22 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "uvi-file"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "crc32fast",
+ "dirs",
+ "flate2",
+ "libc",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
