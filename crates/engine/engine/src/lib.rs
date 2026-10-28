@@ -51,6 +51,7 @@ pub use plan::{
 pub use prepare::{Open, prepare};
 pub use queue::Timed;
 pub use script::{Callbacks, Controls, ScriptPlan};
+pub use transport::Play;
 
 use behaviour::Behaviour;
 use ledger::{Ledger, Note, Origin};

@@ -15,6 +15,13 @@ const SECONDS_PER_MINUTE: f64 = 60.0;
 const TRANSP_START: u8 = 1;
 const TRANSP_STOP: u8 = 2;
 
+/// Whether the host's transport runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Play {
+    Stopped,
+    Running,
+}
+
 pub(crate) struct Transport {
     playing: bool,
     ticks: f64,
@@ -47,7 +54,8 @@ impl Engine {
     /// The host's transport at the start of the next block: whether it runs,
     /// the song position in quarter notes and the time signature. Starting or
     /// stopping runs the listener callbacks that asked for it.
-    pub fn set_transport(&mut self, playing: bool, quarters: f64, signature: (u8, u8)) {
+    pub fn set_transport(&mut self, play: Play, quarters: f64, signature: (u8, u8)) {
+        let playing = play == Play::Running;
         if quarters.is_finite() {
             self.transport.ticks = quarters.max(0.0) * PPQ;
         }
