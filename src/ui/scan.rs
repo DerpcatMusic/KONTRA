@@ -530,7 +530,12 @@ fn render(
         "oversized":scan.preparation_oversized,"key_budget":scan.preparation_key_budget,
         "evicted":scan.preparation_evicted,"requeued":scan.preparation_requeued,
         "completed_key_bytes":assets.completed_key_bytes()}));
-    json!({"bound_typed":if matches!(face.source,ir::Source::FalconLua){None}else{Some(typed_bound)},"typed_binding_refs":typed_refs,"typed_binding_basis":"installed script model target; live typed edit/readback unmeasured","phantom_free_controls":null,"controls_declared":declared,"controls_bound_declared":declared_bound,
+    let probes = {
+        let p = assets.probes();
+        let sum = |f: fn(&super::pictures::AssetProbe) -> f64| p.iter().map(f).sum::<f64>();
+        json!({"n":p.len(),"read_ms":sum(|p|p.read_ms),"decode_ms":sum(|p|p.decode_ms),"duration_ms":sum(|p|p.duration_ms),"queue_ms":sum(|p|p.queue_ms.unwrap_or(0.)),"permit_wait_ms":sum(|p|p.permit_wait_ms.unwrap_or(0.)),"paths":p.iter().map(|p|&p.path).collect::<std::collections::HashSet<_>>().len()})
+    };
+    let mut out = json!({"bound_typed":if matches!(face.source,ir::Source::FalconLua){None}else{Some(typed_bound)},"typed_binding_refs":typed_refs,"typed_binding_basis":"installed script model target; live typed edit/readback unmeasured","phantom_free_controls":null,"controls_declared":declared,"controls_bound_declared":declared_bound,
         "asset_lookup_requested":resources_known.then_some(scan.lookups),"asset_lookup_ok":resources_known.then_some(scan.lookup_ok),
         "image_preparation":preparation,
         "asset_decode_requested":resources_known.then_some(scan.decodes),"asset_decode_ok":resources_known.then_some(scan.decode_ok),
@@ -547,7 +552,11 @@ fn render(
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
         "kinds":kinds,"placeholder_widgets":placeholders,"unsupported_params":properties,"geometry":geometry,
         "missing_images":missing.len(),"missing_image_hashes":missing,"missing_fonts":missing_fonts,"missing_font_hashes":missing_font_hashes,"assets":face.assets.len(),
-        "decoded_image_bytes":native.as_ref().map_or_else(||assets.bytes(),|n|n.bytes()),"passive_value_changes":passive,"renders":renders})
+        "decoded_image_bytes":native.as_ref().map_or_else(||assets.bytes(),|n|n.bytes()),"passive_value_changes":passive,"renders":renders});
+    if let Some(o) = out.as_object_mut() {
+        o.insert("picture_probes".into(), probes);
+    }
+    out
 }
 
 // NONE is a display type: scripts can recolour mapped notes without changing it.

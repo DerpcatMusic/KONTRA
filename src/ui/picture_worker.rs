@@ -18,11 +18,11 @@ use std::{
 };
 
 #[cfg(all(test, feature = "shots"))]
-#[path = "picture_worker/retention_tests.rs"]
-mod retention_tests;
-#[cfg(all(test, feature = "shots"))]
 #[path = "picture_worker/default_frame_tests.rs"]
 mod default_frame_tests;
+#[cfg(all(test, feature = "shots"))]
+#[path = "picture_worker/retention_tests.rs"]
+mod retention_tests;
 
 const BUDGET: usize = 64 << 20;
 static REVISION: AtomicU64 = AtomicU64::new(0);
@@ -173,7 +173,10 @@ impl Preparation {
     }
     fn new_owned(path: &Path, program: Option<u32>) -> Self {
         let (jobs, requests) = mpsc::sync_channel::<Vec<Request>>(1);
-        let (done, results) = mpsc::sync_channel(1);
+        // Unbounded: a batch bounds it, and a one-slot channel let one
+        // picture through per UI frame (Morphology: 27 ms of decode, 567 ms
+        // to settle).
+        let (done, results) = mpsc::channel();
         let epoch = Arc::new(AtomicU64::new(0));
         let worker_epoch = epoch.clone();
         let worker_path = path.to_path_buf();
@@ -1254,10 +1257,9 @@ mod tests {
             ir::Rect::new(0, 0, 1, 1),
             ir::Kind::Label,
         );
-        obsolete_widget.images.push(ir::ImageUse::new(
-            ir::AssetRef(1),
-            ir::Role::Background,
-        ));
+        obsolete_widget
+            .images
+            .push(ir::ImageUse::new(ir::AssetRef(1), ir::Role::Background));
         face.widgets.push(obsolete_widget);
         let values = Values::default();
         worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
@@ -1316,7 +1318,9 @@ mod tests {
         );
         complete(obsolete);
         assert!(
-            worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values).is_empty()
+            worker
+                .prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values)
+                .is_empty()
         );
         assert_eq!(
             (worker.pending(), worker.bytes()),
