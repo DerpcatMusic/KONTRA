@@ -236,6 +236,7 @@ fn slot_effect(
             .zip(f32_at(12).zip(f32_at(16)))
             .zip(byte(20))
             .map(|(((mode, (t, r)), (a, rel)), link)| {
+                *knobs = crate::script_knobs::compressor_knobs(mode, [t, r, a, rel], link);
                 ir::EffectKind::Compressor(crate::laws::compressor(mode, t, r, a, rel, link))
             }),
         0x1c => f32_at(0)
@@ -483,7 +484,7 @@ pub(crate) struct Racks {
     pub sends: Vec<Option<ir::Effect>>,
     pub main: Vec<Option<ir::Effect>>,
     pub buses: Vec<ir::Bus>,
-    /// The instrument inserts' slot laws.
+    /// The slot laws of these racks.
     pub laws: Vec<ir::SlotLaw>,
 }
 
@@ -531,10 +532,16 @@ pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut No
         };
         match array {
             Ok(array) => {
-                // ponytail: knobs on send, main and bus slots have no laws
-                // yet; a script's writes there stay unanswered.
-                let to =
-                    (child.id == RACK && racks == 1).then_some((ir::RackAt::Inserts, &mut laws));
+                let to = match (child.id, racks) {
+                    (BUS, _) => u8::try_from(buses.len().saturating_sub(1))
+                        .ok()
+                        .map(ir::RackAt::Bus),
+                    (_, 1) => Some(ir::RackAt::Inserts),
+                    (_, 2) => Some(ir::RackAt::Sends),
+                    (_, 3) => Some(ir::RackAt::Main),
+                    _ => None,
+                };
+                let to = to.map(|at| (at, &mut laws));
                 let effects = rack(&array, &at, impulses, notes, to);
                 match (child.id, buses.last_mut()) {
                     (BUS, Some(bus)) => bus.inserts = effects,

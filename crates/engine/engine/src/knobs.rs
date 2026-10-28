@@ -96,7 +96,7 @@ impl Engine {
     }
 
     /// `index` when that slot law is knob `knob` of the addressed slot: a
-    /// group's insert (`generic` −1) or an instrument insert (`$NI_INSERT_BUS`).
+    /// group's insert (`generic` −1) or an instrument rack slot.
     fn slot_at(
         &self,
         index: usize,
@@ -106,9 +106,15 @@ impl Engine {
         generic: i32,
     ) -> Option<usize> {
         let l = self.plan.slot_laws.get(index)?;
+        // The addressing of `effect_mut`.
         let at = match (u32::try_from(group), generic) {
             (Ok(g), -1) => ir::RackAt::Group(g),
+            (Err(_), 0) => ir::RackAt::Sends,
             (Err(_), 1) => ir::RackAt::Inserts,
+            (Err(_), 2) => ir::RackAt::Main,
+            (Err(_), b) => {
+                ir::RackAt::Bus(u8::try_from(b.checked_sub(crate::params::BUS_OFFSET)?).ok()?)
+            }
             _ => return None,
         };
         (l.at == at && i32::from(l.slot) == slot && l.knob == knob).then_some(index)

@@ -165,6 +165,8 @@ pub enum KnobTarget {
 pub enum SlotKnob {
     Cutoff,
     Resonance,
+    Attack,
+    Release,
 }
 
 /// The rack a [`SlotLaw`]'s slot is in.
@@ -174,6 +176,12 @@ pub enum RackAt {
     Group(u32),
     /// The instrument's inserts.
     Inserts,
+    /// The instrument's send effects, by send slot.
+    Sends,
+    /// The instrument's main rack.
+    Main,
+    /// An instrument bus's inserts, by the format's bus number.
+    Bus(u8),
 }
 
 /// Knob `knob` on slot `slot` of `at` sets the effect's `field` to `law(x)`;
