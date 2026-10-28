@@ -24,6 +24,8 @@ pub struct ScriptPlan {
     pub restore_texts: Vec<(u32, Text)>,
     pub controls: Controls,
     pub engine_pars: EnginePars,
+    /// The translator's law for each reverb control, in `ir::ReverbPar::ALL` order.
+    pub reverb_laws: [crate::ir::Law; 8],
 }
 
 /// The script's numbers for the engine parameters the engine answers.
@@ -47,6 +49,8 @@ pub struct EnginePars {
     pub send_dry: i32,
     /// A Send Levels slot's level to each send slot.
     pub send_levels: [i32; 8],
+    /// A reverb control's id, in `ir::ReverbPar::ALL` order.
+    pub reverb: [i32; 8],
     pub gainer_gain: i32,
     pub stereo_width: i32,
     pub stereo_pan: i32,
