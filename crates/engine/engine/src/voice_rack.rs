@@ -46,7 +46,8 @@ fn moved(mods: &[ir::Mod], n: usize) -> bool {
     mods.iter().any(|m| match m.kind {
         ir::ModKind::Cutoff { insert, .. }
         | ir::ModKind::Resonance { insert, .. }
-        | ir::ModKind::EqGain { insert, .. } => usize::from(insert) == n,
+        | ir::ModKind::EqGain { insert, .. }
+        | ir::ModKind::EffectParam { insert, .. } => usize::from(insert) == n,
         _ => false,
     })
 }
@@ -60,18 +61,7 @@ fn unit(kind: ir::EffectKind, rate: u32) -> Option<Kind> {
             Kind::Filter(svf)
         }
         ir::EffectKind::Eq(bells) => Kind::Eq(VoiceEq::new(bells, rate)),
-        ir::EffectKind::Formant(f) => Kind::Formant(Formant::new(
-            Vowels {
-                talk: f.talk,
-                sharp: f.sharp,
-                size: f.size,
-                set: match f.set {
-                    ir::VowelSet::First => VowelSet::First,
-                    ir::VowelSet::Second => VowelSet::Second,
-                },
-            },
-            rate,
-        )),
+        ir::EffectKind::Formant(f) => Kind::Formant(Formant::new(vowels(f), rate)),
         ir::EffectKind::Shaper(s) => Kind::Shaper(Shaper::new(
             curve(s.curve),
             drive::Tone {
@@ -83,6 +73,18 @@ fn unit(kind: ir::EffectKind, rate: u32) -> Option<Kind> {
         ir::EffectKind::Crush(c) => Kind::Crush(Crush::new(reduction(c, rate), 1)),
         _ => return None,
     })
+}
+
+fn vowels(f: ir::Formant) -> Vowels {
+    Vowels {
+        talk: f.talk,
+        sharp: f.sharp,
+        size: f.size,
+        set: match f.set {
+            ir::VowelSet::First => VowelSet::First,
+            ir::VowelSet::Second => VowelSet::Second,
+        },
+    }
 }
 
 fn curve(c: ir::DriveCurve) -> drive::Curve {
@@ -183,6 +185,7 @@ fn drive(
 enum Tune {
     Filter(f32, [f32; 3]),
     Eq([ir::Bell; 4]),
+    Effect(ir::EffectKind),
 }
 
 impl Engine {
@@ -237,7 +240,9 @@ impl Engine {
                     .voice_filter(zone, u.insert, note, age)
                     .map(|(hz, k)| Tune::Filter(hz, k)),
                 Kind::Eq(_) => self.voice_bells(zone, u.insert, note, age).map(Tune::Eq),
-                _ => None,
+                Kind::Formant(_) | Kind::Shaper(_) | Kind::Crush(_) => self
+                    .voice_effect(zone, u.insert, note, age)
+                    .map(Tune::Effect),
             };
             let unit = self.voices.get_mut(i).and_then(|s| s.rack.get_mut(n));
             match (unit.map(|u| &mut u.kind), tune) {
@@ -246,6 +251,15 @@ impl Engine {
                     f.set_damping(k);
                 }
                 (Some(Kind::Eq(q)), Some(Tune::Eq(bells))) => q.retune(bells, rate),
+                (Some(Kind::Formant(f)), Some(Tune::Effect(ir::EffectKind::Formant(v)))) => {
+                    f.set(vowels(v), rate);
+                }
+                (Some(Kind::Shaper(s)), Some(Tune::Effect(ir::EffectKind::Shaper(v)))) => {
+                    s.set_curve(curve(v.curve));
+                }
+                (Some(Kind::Crush(c)), Some(Tune::Effect(ir::EffectKind::Crush(v)))) => {
+                    c.set(reduction(v, rate));
+                }
                 _ => {}
             }
         }
@@ -290,6 +304,34 @@ impl Engine {
             .damping
             .map(|k| (k * (-f.q_octaves * q).exp2()).max(MIN_DAMPING));
         Some((hz, damping))
+    }
+
+    /// The effect in `insert` of `zone`'s group, its controls moved by their
+    /// routes for this note at `age`; none when nothing routes to it.
+    fn voice_effect(
+        &self,
+        zone: &Zone,
+        insert: u8,
+        note: &Note,
+        age: Age,
+    ) -> Option<ir::EffectKind> {
+        let group = self.groups.get(zone.group as usize)?;
+        let mut kind = group.inserts.get(usize::from(insert))?.as_ref()?.kind;
+        let mut routed = false;
+        for m in group.mods.iter().filter(|m| !m.bypass) {
+            if let ir::ModKind::EffectParam {
+                source,
+                insert: i,
+                param,
+                depth,
+            } = m.kind
+                && i == insert
+            {
+                let amount = self.source(zone, source, note, age).unwrap_or(0.0) * depth;
+                routed |= param.add(&mut kind, amount);
+            }
+        }
+        routed.then_some(kind)
     }
 
     /// The bands of the EQ in `insert` of `zone`'s group, each gain moved by
