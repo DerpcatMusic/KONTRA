@@ -492,6 +492,7 @@ pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut No
                         .map_or(0.0, |p| crate::translate::db(p.volume)),
                     pan: params.as_ref().map_or(0.0, |p| p.pan.clamp(-1.0, 1.0)),
                     inserts: Vec::new(),
+                    sends: Vec::new(),
                 });
                 let array = bus.and_then(|bus| {
                     let rack = bus

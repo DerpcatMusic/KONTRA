@@ -174,6 +174,7 @@ fn sequential_round_robin_cycles_and_mic_layers_agree() {
         gain: 1.0,
         pan: 0.0,
         inserts: Vec::new(),
+        sends: Vec::new(),
         enabled: true,
     });
     let mut e = engine(&store, plan);
@@ -412,12 +413,40 @@ fn a_disabled_mic_bus_starts_no_voices() {
         gain: 1.0,
         pan: 0.0,
         inserts: Vec::new(),
+        sends: Vec::new(),
         enabled: true,
     });
     let mut e = engine(&store, plan);
     e.set_bus_enabled(1, false);
     assert!(close(level(&mut e, &[on(60, 1.0)])[0], 0.5));
     assert_eq!(e.active_voices(), 1);
+}
+
+#[test]
+fn a_bus_sends_before_its_fader() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5);
+    z.bus = 1;
+    let mut plan = Plan::new(vec![z], 8);
+    // A silent fader still feeds the aux at the send's level.
+    plan.buses.push(Bus {
+        name: "Layer".into(),
+        gain: 0.0,
+        pan: 0.0,
+        inserts: Vec::new(),
+        sends: vec![(2, 0.5)],
+        enabled: true,
+    });
+    plan.buses.push(Bus {
+        name: "Aux".into(),
+        gain: 1.0,
+        pan: 0.0,
+        inserts: Vec::new(),
+        sends: Vec::new(),
+        enabled: true,
+    });
+    let mut e = engine(&store, plan);
+    assert!(close(level(&mut e, &[on(60, 1.0)])[0], 0.25));
 }
 
 #[test]
