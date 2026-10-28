@@ -611,6 +611,7 @@ fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
         ir::ModKind::Envelope
         | ir::ModKind::EqGain { .. }
         | ir::ModKind::EffectParam { .. }
+        | ir::ModKind::Mix { .. }
         | ir::ModKind::LfoPhase { .. }
         | ir::ModKind::LoopShift { .. } => None,
     }

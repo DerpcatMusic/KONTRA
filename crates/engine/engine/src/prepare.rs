@@ -44,14 +44,16 @@ pub fn prepare(
                 switches.push(range.clone());
             }
         }
-        for z in &group.zones {
+        for (member, z) in group.zones.iter().enumerate() {
             let Some(Some(sample)) = loaded.get(z.sample) else {
                 continue;
             };
             let Some(source) = instrument.samples.get(z.sample) else {
                 continue;
             };
-            zones.push(zone(group, group_id, z, source, sample, &switches));
+            let mut zone = zone(group, group_id, z, source, sample, &switches);
+            zone.member = u16::try_from(member).unwrap_or(u16::MAX);
+            zones.push(zone);
         }
     }
     let mut plan = Plan::new(zones, usize::from(instrument.voices));
@@ -72,6 +74,7 @@ pub fn prepare(
             envelopes: g.envelopes.clone(),
             lfos: g.lfos.clone(),
             shapers: g.shapers.clone(),
+            blends: g.blends.clone(),
             routes: g.routes.clone(),
             release_trigger: g.trigger == ir::Trigger::Release,
             bus: g.bus,

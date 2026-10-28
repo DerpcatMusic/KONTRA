@@ -130,6 +130,8 @@ pub struct Group {
     pub lfos: Vec<ir::Lfo>,
     /// Read by `Source::Shaped(n)`.
     pub shapers: Vec<ir::Transfer>,
+    /// Read by `Source::Blend(n)`.
+    pub blends: Vec<ir::Blend>,
     pub routes: Vec<ir::Routes>,
     /// It plays on release (scripts read this).
     pub release_trigger: bool,
@@ -144,11 +146,26 @@ pub(crate) fn bus(groups: &[Group], zone: &Zone) -> usize {
 }
 
 impl Group {
-    /// The controller `source` reads, through its shaper if it has one.
-    pub(crate) fn controller(&self, source: ir::Source) -> Option<u8> {
+    /// Whether `source` moves with controller `cc`, through its shaper or
+    /// any input of its blend.
+    pub(crate) fn reads(&self, source: ir::Source, cc: u8) -> bool {
+        let blend = |s: ir::Source| match s {
+            ir::Source::Blend(n) => self.blends.get(usize::from(n)).is_some_and(|b| {
+                b.terms.iter().any(|t| {
+                    t.input.source.controller() == Some(cc)
+                        || t.factors
+                            .iter()
+                            .any(|f| f.input.source.controller() == Some(cc))
+                })
+            }),
+            s => s.controller() == Some(cc),
+        };
         match source {
-            ir::Source::Shaped(n) => self.shapers.get(usize::from(n))?.source.controller(),
-            s => s.controller(),
+            ir::Source::Shaped(n) => self
+                .shapers
+                .get(usize::from(n))
+                .is_some_and(|s| blend(s.source)),
+            s => blend(s),
         }
     }
 
@@ -175,6 +192,7 @@ impl Group {
             envelopes: Vec::new(),
             lfos: Vec::new(),
             shapers: Vec::new(),
+            blends: Vec::new(),
             routes: Vec::new(),
             release_trigger: false,
             bus: 0,
@@ -224,6 +242,8 @@ pub struct Zone {
     // Voice group.
     /// Voice group, for polyphony limits, choke and group round robins.
     pub group: u32,
+    /// Its index among its group's zones ([`ir::ModKind::Mix`] names it).
+    pub member: u16,
     /// A voice of this zone fades when a voice of group `off_by` starts (hi-hat choke).
     pub off_by: Option<u32>,
     /// Index into [`Plan::voice_groups`].
@@ -262,6 +282,7 @@ impl Zone {
             trigger: Trigger::Attack,
             crossfades: Vec::new(),
             group: 0,
+            member: 0,
             off_by: None,
             voice_group: None,
             root,
@@ -385,6 +406,7 @@ pub(crate) fn source(kind: &ir::ModKind) -> Option<ir::Source> {
         | K::Resonance { source, .. }
         | K::EqGain { source, .. }
         | K::EffectParam { source, .. }
+        | K::Mix { source, .. }
         | K::SampleStart { source, .. }
         | K::Attack { source, .. }
         | K::Release { source, .. }

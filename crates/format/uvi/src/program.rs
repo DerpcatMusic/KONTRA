@@ -4,7 +4,7 @@
 //! GainMatrix. Scripts run on the engine; the samples they load as the
 //! program loads are put on their oscillators here (see [`load`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
 
@@ -15,6 +15,7 @@ use roxmltree::Node;
 mod delay;
 mod filters;
 mod load;
+mod matrix;
 mod modulation;
 mod reverb;
 mod routing;
@@ -61,6 +62,7 @@ pub(crate) fn translate(
         bus_of: HashMap::new(),
         entry: HashMap::new(),
         script_dirs: Vec::new(),
+        carried: HashSet::new(),
         base: Base {
             volume_db: db(num(program, "Gain", 1.0)?),
             pan: num(program, "Pan", 0.0)?.clamp(-1.0, 1.0) as f32,
@@ -71,12 +73,13 @@ pub(crate) fn translate(
     };
     t.scripts();
     t.effects();
-    t.connections();
     t.buses()?;
     for layer in program.descendants().filter(|n| n.has_tag_name("Layer")) {
         t.layer(layer)?;
     }
     t.script_routes();
+    // After the layers: they mark the matrix connections they carry.
+    t.connections();
     if !t.out.scripts.is_empty() {
         let tree = t.tree();
         for script in &mut t.out.scripts {
@@ -118,6 +121,8 @@ struct Translator<'a, 'input, L> {
     entry: HashMap<roxmltree::NodeId, usize>,
     /// Each script's folder in the bank, relative to the program's.
     script_dirs: Vec<String>,
+    /// Matrix cell connections carried, held or live (matrix.rs).
+    carried: HashSet<roxmltree::NodeId>,
 }
 
 impl<L: Library> Translator<'_, '_, L> {
@@ -281,10 +286,7 @@ impl<L: Library> Translator<'_, '_, L> {
                     group.mods.push(route);
                 }
             }
-            let zones = self.player(player, placement, &span)?;
-            group
-                .zones
-                .extend(zones.into_iter().map(|z| ir::Zone { slot, ..z }));
+            self.player(player, placement, &span, &mut group, slot)?;
         }
         self.out.groups.push(group);
         Ok(())
@@ -315,7 +317,9 @@ impl<L: Library> Translator<'_, '_, L> {
         player: Node,
         placement: Option<Node>,
         span: &Span,
-    ) -> Result<Vec<ir::Zone>, String> {
+        group: &mut ir::Group,
+        slot: u16,
+    ) -> Result<(), String> {
         let reference = player.attribute("SamplePath").unwrap_or_default();
         let members: Vec<String> = match reference.split('*').collect::<Vec<_>>().as_slice() {
             [single] => vec![(*single).into()],
@@ -330,7 +334,6 @@ impl<L: Library> Translator<'_, '_, L> {
             self.notes
                 .add(ir::Impact::Audible, "playback options (loops, start)", "");
         }
-        let mut zones = Vec::new();
         // The bundle's channel the next member starts at.
         let mut first = 0;
         for path in members {
@@ -344,8 +347,9 @@ impl<L: Library> Translator<'_, '_, L> {
             let (frames, channels) = (sample.frames, usize::from(sample.channels));
             let channels = first..first + channels;
             first = channels.end;
+            let mut routes = Vec::new();
             let mix = match placement {
-                Some(m) => self.mix(m, channels)?,
+                Some(m) => self.mix(m, channels, group, &mut routes)?,
                 // Unmixed outputs past the second are not heard.
                 None if channels.start >= 2 => continue,
                 None if channels.start == 1 => vec![[0.0, 1.0]],
@@ -355,7 +359,22 @@ impl<L: Library> Translator<'_, '_, L> {
                 continue;
             }
             let index = self.sample_index(sample);
-            zones.push(ir::Zone {
+            let member = u16::try_from(group.zones.len()).unwrap_or(u16::MAX);
+            for (source, row, side) in routes {
+                group.mods.push(ir::Mod {
+                    name: String::new(),
+                    slot: 0,
+                    target: 0,
+                    bypass: false,
+                    kind: ir::ModKind::Mix {
+                        source,
+                        zone: member,
+                        row,
+                        side,
+                    },
+                });
+            }
+            group.zones.push(ir::Zone {
                 mix,
                 sample: index,
                 keys: span.keys.0..=span.keys.1,
@@ -373,32 +392,58 @@ impl<L: Library> Translator<'_, '_, L> {
                 start_mod: 0,
                 loops: Vec::new(),
                 reverse: flag(player, "Reverse"),
-                slot: 0,
+                slot,
             });
         }
-        Ok(zones)
+        Ok(())
     }
 
-    /// The GainMatrix `m`'s left and right rows for bundle `channels`, each
-    /// cell held where its macros leave it ([`modulation::macro_factor`]);
-    /// an output past the second is reported.
-    fn mix(&mut self, m: Node, channels: Range<usize>) -> Result<Vec<[f32; 2]>, String> {
+    /// The GainMatrix `m`'s left and right rows for bundle `channels`. A
+    /// cell a macro moves live keeps its saved gain and gets a route
+    /// (`routes`: source, the zone's channel and output side, [`matrix::live`]); one a macro
+    /// holds is scaled to where it holds it ([`matrix::held`]). An output
+    /// past the second is reported.
+    fn mix(
+        &mut self,
+        m: Node,
+        channels: Range<usize>,
+        group: &mut ir::Group,
+        routes: &mut Vec<(ir::Source, u8, u8)>,
+    ) -> Result<Vec<[f32; 2]>, String> {
         let mut rows = Vec::new();
+        let first = channels.start;
         for c in channels {
+            let at = u8::try_from(c - first).unwrap_or(u8::MAX);
             let gain = |out: usize| num(m, &format!("Gain_{}_{out}", c + 1), 0.0);
-            let held = |out: usize| -> Result<f32, String> {
-                let cell = format!("Gain_{}_{out}", c + 1);
-                let factor = m
-                    .descendants()
-                    .filter(|n| {
-                        n.has_tag_name("SignalConnection")
-                            && n.attribute("Destination") == Some(cell.as_str())
-                    })
-                    .map(|n| modulation::macro_factor(self.program, n))
-                    .try_fold(1.0, |f, g| Some(f * g?));
-                Ok(gain(out)? as f32 * factor.unwrap_or(1.0))
-            };
-            rows.push([held(1)?, held(2)?]);
+            let mut row = [0.0; 2];
+            for (side, cell) in (0u8..).zip(row.iter_mut()) {
+                let name = format!("Gain_{}_{}", c + 1, side + 1);
+                *cell = gain(usize::from(side) + 1)? as f32;
+                let on_cell = m.descendants().filter(|n| {
+                    n.has_tag_name("SignalConnection")
+                        && n.attribute("Destination") == Some(name.as_str())
+                });
+                for connection in on_cell {
+                    if let Some(f) = matrix::held(self.program, connection, false) {
+                        *cell *= f;
+                    } else if let Some(source) = matrix::live(self.program, connection, group) {
+                        routes.push((source, at, side));
+                    } else if let Some(f) = matrix::held(self.program, connection, true) {
+                        // Its macro's inputs are not all carried.
+                        *cell *= f;
+                        let source = connection.attribute("Source").unwrap_or_default();
+                        self.notes.add(
+                            ir::Impact::Audible,
+                            "matrix macro held at its value",
+                            source,
+                        );
+                    } else {
+                        continue;
+                    }
+                    self.carried.insert(connection.id());
+                }
+            }
+            rows.push(row);
             for out in 3..=12 {
                 if gain(out)? != 0.0 {
                     self.notes
@@ -577,20 +622,7 @@ impl<L: Library> Translator<'_, '_, L> {
             if dest == "Gain" && envelope && num(connection, "Ratio", 0.0).is_ok_and(|r| r == 1.0) {
                 continue;
             }
-            if dest.starts_with("Gain_")
-                && modulation::macro_factor(self.program, connection).is_some()
-            {
-                // Held at the macro's saved value; its own inputs (a
-                // script's controller) do not move it yet.
-                if source_node(self.program, connection)
-                    .is_some_and(|m| m.descendants().any(|n| n.has_tag_name("SignalConnection")))
-                {
-                    self.notes.add(
-                        ir::Impact::Audible,
-                        "matrix macro held at its value",
-                        source,
-                    );
-                }
+            if self.carried.contains(&connection.id()) {
                 continue;
             }
             let feature = if dest.starts_with("Gain_") {

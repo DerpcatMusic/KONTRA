@@ -60,10 +60,14 @@ impl Engine {
             };
             let age = self.age(slot.started, slot.released_at);
             let gain = self.voice_gain(zone, &n, slot.factor, age);
+            let mix = self.voice_mix(zone, &n, age);
             let step = self.step(zone, &n, age);
             self.retune_rack(i, zone, &n, age);
             if let Some(slot) = self.voices.get_mut(i) {
                 slot.voice.set_gain(gain);
+                if let Some(mix) = mix {
+                    slot.voice.set_mix(mix);
+                }
                 slot.voice.set_step(step);
             }
         }

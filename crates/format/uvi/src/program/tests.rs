@@ -450,3 +450,73 @@ fn a_macro_holds_its_crossfade_cells_where_its_mappers_put_them() {
             .any(|d| d.feature.starts_with("matrix cell"))
     );
 }
+
+#[test]
+fn a_macro_a_controller_moves_crossfades_its_cells_live() {
+    // Macro 1 = 0 + CC 102 × 0.5 (bipolar: position 0.5 + CC × 0.25), its
+    // ratio scaled by CC 104 through a mapper; the cell reads Mapper 0.
+    let xml = r#"<Program Gain="1">
+      <ControlSignalSources>
+        <ConstantModulation Name="Macro 1" Bipolar="1" Value="0">
+          <Connections>
+            <SignalConnection Ratio="0.5" Source="@MIDI CC 102" Destination="Value">
+              <Connections>
+                <SignalConnection Ratio="1" Source="@MIDI CC 104" Destination="Ratio" Mapper="Mapper 1"/>
+              </Connections>
+            </SignalConnection>
+          </Connections>
+        </ConstantModulation>
+      </ControlSignalSources>
+      <Mappers>
+        <ControlSignalMapper Name="Mapper 0" Min="0" Max="1">0,0 1,0</ControlSignalMapper>
+        <ControlSignalMapper Name="Mapper 1" Min="0" Max="1">0,0 0,5 1,0</ControlSignalMapper>
+      </Mappers>
+      <Layers>
+        <Layer Gain="1" Pan="0">
+          <Keygroups>
+            <Keygroup LowKey="0" HighKey="127">
+              <Inserts>
+                <GainMatrix Bypass="0" Gain_1_1="1" Gain_2_2="1">
+                  <Connections>
+                    <SignalConnection Ratio="1" Source="$Program/Macro 1" Destination="Gain_2_2" Mapper="Mapper 0"/>
+                  </Connections>
+                </GainMatrix>
+              </Inserts>
+              <Oscillators>
+                <SamplePlayer Bypass="0" SamplePath="./v/*a.wav*b.wav"/>
+              </Oscillators>
+            </Keygroup>
+          </Keygroups>
+        </Layer>
+      </Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    // b keeps its saved cell; the route moves it.
+    assert_eq!(g.zones[1].mix, vec![[0.0, 1.0]]);
+    let route = g.mods.iter().find_map(|m| match m.kind {
+        ir::ModKind::Mix {
+            source,
+            zone,
+            row,
+            side,
+        } => Some((source, zone, row, side)),
+        _ => None,
+    });
+    assert_eq!(route, Some((ir::Source::Shaped(0), 1, 0, 1)));
+    assert_eq!(g.shapers[0].source, ir::Source::Blend(0));
+    assert_eq!(g.shapers[0].table, vec![0.0, 1.0]);
+    let blend = &g.blends[0];
+    assert_eq!(blend.base, 0.5);
+    let term = &blend.terms[0];
+    assert_eq!(term.input.source, ir::Source::Controller(102));
+    assert_eq!(term.amount, 0.25);
+    assert_eq!(term.factors[0].input.source, ir::Source::Controller(104));
+    assert_eq!(term.factors[0].input.table, vec![0.0, 0.5, 1.0]);
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.feature.starts_with("matrix"))
+    );
+}
