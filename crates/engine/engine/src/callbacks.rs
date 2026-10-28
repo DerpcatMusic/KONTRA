@@ -55,10 +55,9 @@ impl Engine {
         let cell = (id.checked_sub(controls.first))
             .and_then(|n| usize::try_from(n).ok())
             .and_then(|n| controls.cells.get(n).copied().flatten());
-        if let (Some(cell), Some(vm)) = (cell, self.vms.get_mut(usize::from(slot))) {
-            if let Some(vm) = vm.as_mut() {
-                vm.set_cell(cell as usize, value);
-            }
+        let vm = self.vms.get_mut(usize::from(slot)).and_then(Option::as_mut);
+        if let (Some(cell), Some(vm)) = (cell, vm) {
+            vm.set_cell(cell as usize, value);
         }
         for (kind, entry) in [
             (Kind::UiControls, script.callbacks.ui_controls),
