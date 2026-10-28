@@ -30,7 +30,7 @@ fn ramp_region(store: &mut Store, frames: u64, pinned: u64) -> std::io::Result<R
         sample,
         start: 0,
         end: frames,
-        looped: None,
+        loops: vec![],
         reverse: false,
     })
 }
@@ -111,11 +111,12 @@ fn a_loop_sustains_past_the_sample_end() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
     let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
-    region.looped = Some(Loop {
+    region.loops = vec![Loop {
         start: 500,
         end: 600,
         crossfade: 0,
-    });
+        ..Loop::default()
+    }];
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let out = render(&mut voice, &client, 5000);
@@ -131,11 +132,12 @@ fn a_loop_crossfade_blends_the_tail_into_the_audio_before_the_start() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
     let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
-    region.looped = Some(Loop {
+    region.loops = vec![Loop {
         start: 500,
         end: 600,
         crossfade: 40,
-    });
+        ..Loop::default()
+    }];
     let mut voice = Voice::allocate();
     voice.start(start(region, 1.0, Ahdsr::GATE));
     let out = render(&mut voice, &client, 800);
@@ -169,11 +171,12 @@ fn release_ends_the_voice() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
     let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
-    region.looped = Some(Loop {
+    region.loops = vec![Loop {
         start: 0,
         end: 1000,
         crossfade: 0,
-    });
+        ..Loop::default()
+    }];
     let mut voice = Voice::allocate();
     voice.start(start(
         region,
@@ -187,4 +190,142 @@ fn release_ends_the_voice() {
     voice.release();
     render(&mut voice, &client, 4096);
     assert!(!voice.is_active());
+}
+
+/// A 1000-frame ramp region with `loops`, rendered `frames` long.
+fn looped_output(store: &mut Store, loops: Vec<Loop>, frames: usize) -> std::io::Result<Vec<f32>> {
+    let client = store.client();
+    let mut region = ramp_region(store, 1000, 1000)?;
+    region.loops = loops;
+    let mut voice = Voice::allocate();
+    voice.start(start(region, 1.0, Ahdsr::GATE));
+    Ok(render(&mut voice, &client, frames))
+}
+
+/// Source frame `n` as the ramp reads it.
+fn at(n: u32) -> f32 {
+    n as f32 / 65_536.0
+}
+
+#[test]
+fn loops_play_in_sequence() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let out = looped_output(
+        &mut store,
+        vec![
+            Loop {
+                start: 100,
+                end: 200,
+                count: 1,
+                ..Loop::default()
+            },
+            Loop {
+                start: 300,
+                end: 400,
+                count: 1,
+                ..Loop::default()
+            },
+        ],
+        700,
+    )
+    .unwrap();
+    assert_eq!(out[150], at(150), "first pass to the first loop's end");
+    // One repeat of 100..200, then on to the second loop's end at 400.
+    assert_eq!(out[200], at(100), "repeat of the first loop");
+    assert_eq!(out[299], at(199));
+    assert_eq!(
+        out[300],
+        at(200),
+        "after the first loop, forward to the second"
+    );
+    assert_eq!(
+        out[500],
+        at(300),
+        "second loop's repeat starts at its arrival"
+    );
+    assert_eq!(out[600], at(400), "then forward to the region's end");
+}
+
+#[test]
+fn a_counted_loop_repeats_that_many_times() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let out = looped_output(
+        &mut store,
+        vec![Loop {
+            start: 100,
+            end: 200,
+            count: 2,
+            ..Loop::default()
+        }],
+        500,
+    )
+    .unwrap();
+    assert_eq!(out[199], at(199));
+    assert_eq!(out[200], at(100), "first repeat");
+    assert_eq!(out[300], at(100), "second repeat");
+    assert_eq!(out[400], at(200), "then plays on past the loop");
+}
+
+#[test]
+fn an_alternating_loop_plays_backward_on_each_turn() {
+    // Body 100..110: a turn runs 108 down to 101, then 100 up to 109, and the
+    // loop's end frame 109 is not repeated (docs/ALTERNATING_LOOPS.md).
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let out = looped_output(
+        &mut store,
+        vec![Loop {
+            start: 100,
+            end: 110,
+            count: 1,
+            alternating: true,
+            ..Loop::default()
+        }],
+        130,
+    )
+    .unwrap();
+    assert_eq!(out[109], at(109), "the forward arrival");
+    assert_eq!(out[110], at(108), "backward after the arrival");
+    assert_eq!(out[117], at(101));
+    assert_eq!(out[118], at(100), "forward again from the start");
+    assert_eq!(out[127], at(109));
+    assert_eq!(
+        out[128],
+        at(110),
+        "forward past the loop when the turn count ends"
+    );
+}
+
+#[test]
+fn an_until_release_loop_repeats_until_release_then_plays_on() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let mut region = ramp_region(&mut store, 1000, 1000).unwrap();
+    region.loops = vec![Loop {
+        start: 100,
+        end: 200,
+        until_release: true,
+        ..Loop::default()
+    }];
+    let mut voice = Voice::allocate();
+    voice.start(start(
+        region,
+        1.0,
+        Ahdsr {
+            // Long enough that the release fade is far under the tolerance below.
+            release: 1_000_000,
+            ..Ahdsr::GATE
+        },
+    ));
+    let mut out = vec![[0.0; 2]; 1400];
+    voice.render(&client, 0, &mut out[..500]);
+    voice.release();
+    voice.render(&client, 500, &mut out[500..]);
+    let out: Vec<f32> = out.iter().map(|f| f[0]).collect();
+    // Values are checked to 0.2%: the release fade scales them slightly.
+    let near = |got: f32, want: f32| assert!((got - want).abs() <= want * 0.002, "{got} vs {want}");
+    near(out[450], at(150));
+    // The repeat in progress at 500 is the last one: it ends at 500, then 200 on.
+    near(out[499], at(199));
+    near(out[500], at(200));
+    near(out[600], at(300));
 }

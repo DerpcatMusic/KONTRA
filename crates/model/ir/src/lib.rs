@@ -580,16 +580,23 @@ pub struct Zone {
     pub end: u64,
     /// Frames a start offset may move the start (Kontakt's S.Mod).
     pub start_mod: u64,
-    pub looped: Option<Loop>,
+    /// Loops in play order. Each is entered when the playhead reaches its end.
+    pub loops: Vec<Loop>,
     pub reverse: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Loop {
     pub start: u64,
     pub end: u64,
     /// Frames before `end` that fade linearly into the frames before `start`.
     pub crossfade: u64,
+    /// Repeats after the first pass; 0 repeats forever (or until release).
+    pub count: u32,
+    /// Each repeat plays the loop backwards, then forwards again.
+    pub alternating: bool,
+    /// Repeats until the note is released, then plays on past `end`.
+    pub until_release: bool,
 }
 
 /// An effect slot.

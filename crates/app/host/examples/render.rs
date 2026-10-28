@@ -196,7 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             r.start,
             r.end,
             r.sample.frames(),
-            r.looped
+            r.loops
         );
     }
     let plan = Arc::new(loaded.plan);
