@@ -10,3 +10,8 @@ workspace = true
 [dependencies]
 kontra-protocol = { path = "../../model/protocol" }
 kontra-ui-model = { path = "../../model/ui-model" }
+mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a" }
+png = "0.18"
+
+[dev-dependencies]
+mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a", features = ["cpu"] }
