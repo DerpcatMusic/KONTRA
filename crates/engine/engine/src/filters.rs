@@ -230,25 +230,19 @@ impl Engine {
                 continue;
             };
             let before = slot.voice.missing_frames();
-            match self.scratch.get_mut(..len) {
-                Some(scratch) if !slot.rack.is_empty() => {
-                    scratch.fill([0.0; 2]);
-                    slot.voice.render(&self.stream, self.now.0, scratch);
-                    let group = self.plan.zones.get(slot.zone).map(|z| z.group as usize);
-                    let inserts = group
-                        .and_then(|g| self.groups.get(g))
-                        .map(|g| &g.inserts[..]);
-                    crate::voice_rack::process(
-                        &mut slot.rack,
-                        inserts.unwrap_or_default(),
-                        scratch,
-                    );
-                    for (m, x) in mix.iter_mut().zip(scratch.iter()) {
-                        m[0] += x[0];
-                        m[1] += x[1];
-                    }
-                }
-                _ => slot.voice.render(&self.stream, self.now.0, mix),
+            if slot.rack.is_empty() {
+                slot.voice.render(&self.stream, self.now.0, mix);
+            } else {
+                let group = self.plan.zones.get(slot.zone).map(|z| z.group as usize);
+                let inserts = group
+                    .and_then(|g| self.groups.get(g))
+                    .map(|g| &g.inserts[..])
+                    .unwrap_or_default();
+                let (rack, spare) = (&mut slot.rack, &mut *self.scratch);
+                slot.voice
+                    .render_through(&self.stream, self.now.0, mix, |io| {
+                        crate::voice_rack::process(rack, inserts, io, spare);
+                    });
             }
             self.stats.missing_frames += slot.voice.missing_frames() - before;
         }

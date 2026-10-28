@@ -130,9 +130,15 @@ fn template(group: &crate::plan::Group, rate: u32) -> Arc<[Unit]> {
         .collect()
 }
 
-/// Runs a voice's rack on `io`, skipping inserts a script has bypassed; a
-/// drive effect's output gain follows it (filters' fold into the matrix).
-pub(crate) fn process(rack: &mut [Unit], inserts: &[Option<ir::Effect>], io: &mut [[f32; 2]]) {
+/// Runs a voice's rack on `io` (before its envelope and gain), skipping
+/// inserts a script has bypassed; a drive effect's output and dry levels
+/// follow it, `spare` holding the dry (filters' fold into the matrix).
+pub(crate) fn process(
+    rack: &mut [Unit],
+    inserts: &[Option<ir::Effect>],
+    io: &mut [[f32; 2]],
+    spare: &mut [[f32; 2]],
+) {
     for u in rack {
         let Some(e) = inserts.get(usize::from(u.insert)).and_then(Option::as_ref) else {
             continue;
@@ -144,22 +150,31 @@ pub(crate) fn process(rack: &mut [Unit], inserts: &[Option<ir::Effect>], io: &mu
             Kind::Filter(f) => f.process(io),
             Kind::Eq(q) => q.process(io),
             Kind::Formant(f) => f.process(io),
-            Kind::Shaper(s) => {
-                s.process(io);
-                gain(io, e.output);
-            }
-            Kind::Crush(c) => {
-                c.process(io);
-                gain(io, e.output);
-            }
+            Kind::Shaper(s) => drive(io, spare, e, |io| s.process(io)),
+            Kind::Crush(c) => drive(io, spare, e, |io| c.process(io)),
         }
     }
 }
 
-fn gain(io: &mut [[f32; 2]], g: f32) {
-    if g != 1.0 {
+fn drive(
+    io: &mut [[f32; 2]],
+    spare: &mut [[f32; 2]],
+    e: &ir::Effect,
+    f: impl FnOnce(&mut [[f32; 2]]),
+) {
+    let mut dry = spare.get_mut(..io.len()).filter(|_| e.dry != 0.0);
+    if let Some(dry) = &mut dry {
+        dry.copy_from_slice(io);
+    }
+    f(io);
+    if e.output != 1.0 {
         for x in io.iter_mut().flatten() {
-            *x *= g;
+            *x *= e.output;
+        }
+    }
+    if let Some(dry) = dry {
+        for (x, d) in io.iter_mut().flatten().zip(dry.iter().flatten()) {
+            *x += d * e.dry;
         }
     }
 }
@@ -179,6 +194,14 @@ impl Engine {
         let most = self.voice_units.iter().map(|u| u.len()).max().unwrap_or(0);
         for slot in &mut self.voices {
             slot.rack = Vec::with_capacity(most);
+            // A note an init callback started gets its units too; the next
+            // refresh tunes them.
+            let group = self.plan.zones.get(slot.zone).map(|z| z.group as usize);
+            if slot.voice.is_active()
+                && let Some(units) = group.and_then(|g| self.voice_units.get(g))
+            {
+                slot.rack.extend_from_slice(units);
+            }
         }
     }
 
