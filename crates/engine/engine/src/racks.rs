@@ -4,7 +4,6 @@
 
 use std::sync::Arc;
 
-use kontra_dsp::eq::Biquad;
 use kontra_dsp::reverb::{Convolver, Fdn, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
@@ -15,7 +14,7 @@ use crate::{Engine, MAX_SPAN, Response};
 
 enum Dsp {
     None,
-    Eq(Box<[Biquad]>),
+    Eq(Box<[filters::Stage]>),
     /// A wet path (convolver or reverb) and a span of its output.
     Wet(Box<dyn Wet>, Box<[[f32; 2]]>),
 }
@@ -64,10 +63,12 @@ impl Rack {
             .iter()
             .map(|slot| match slot.map(|e| e.kind) {
                 // Built even while bypassed: a script may enable it later.
-                Some(ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_)) => {
+                Some(
+                    ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_),
+                ) => {
                     let live = slot.map(|e| ir::Effect { bypass: false, ..e });
                     let sections = filters::sections(&[live]);
-                    Dsp::Eq(filters::biquads(&sections, rate))
+                    Dsp::Eq(filters::stages(&sections, rate))
                 }
                 Some(ir::EffectKind::Convolution { impulse }) => {
                     match impulses.get(usize::from(impulse)).and_then(Option::as_ref) {

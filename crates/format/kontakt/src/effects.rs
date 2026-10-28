@@ -296,6 +296,20 @@ fn filter(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
         let bytes = rest.get(n..n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
     };
+    // Formant I and II: talk, sharp, size (v2 sampler-kontakt
+    // effects/filter.rs, its response checked against Kontakt within 0.1 dB).
+    if let 90 | 91 = kind {
+        return Some(ir::EffectKind::Formant(ir::Formant {
+            talk: f(0)?,
+            sharp: f(4)?,
+            size: f(8)?,
+            set: if kind == 91 {
+                ir::VowelSet::Second
+            } else {
+                ir::VowelSet::First
+            },
+        }));
+    }
     let (gain, at) = if matches!(kind, 30..=41 | 63..=65 | 70 | 71) {
         (f(0)?, 4)
     } else {
