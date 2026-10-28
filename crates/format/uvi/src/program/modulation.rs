@@ -3,14 +3,18 @@
 use kontra_ir as ir;
 use roxmltree::Node;
 
-use super::{Library, Translator, flag, num, source_node};
+use super::{Library, Translator, flag, matrix, num, source_node};
 
 impl<L: Library> Translator<'_, '_, L> {
     /// A script's modulation (Script Event Modulation) on a gain or pitch:
     /// a route on each group under the element it modulates, driven by the
     /// value the script sends for the source's `EventId`. A gain scales
     /// linearly by the connection's ratio; a pitch moves by ratio semitones.
+    /// A unipolar modulation is read through the connection's mapper.
     /// An oscillator's route goes on its keygroup's group once.
+    /// ponytail: a bipolar one's mapper is not applied (VWinds' legato pitch
+    /// curve, monotone over the same range); add when Script enters a
+    /// table at `(x + 1)/2`.
     pub(super) fn script_routes(&mut self) {
         for connection in self.program.descendants() {
             let Some((owner, source)) = script_route(self.program, connection) else {
@@ -20,26 +24,30 @@ impl<L: Library> Translator<'_, '_, L> {
                 continue;
             };
             let ratio = num(connection, "Ratio", 1.0).unwrap_or(1.0) as f32;
-            let source = ir::Source::Script(id);
-            let kind = if connection.attribute("Destination") == Some("Pitch") {
-                ir::ModKind::Pitch {
-                    source,
-                    semitones: ratio,
-                    depth: 1.0,
-                }
-            } else {
-                // A negative ratio turns the gain down as the value rises.
-                ir::ModKind::Volume {
-                    source,
-                    intensity: ratio.abs(),
-                    curve: if ratio < 0.0 {
-                        ir::Curve::Falling
-                    } else {
-                        ir::Curve::Depth { power: 1 }
-                    },
+            let pitch = connection.attribute("Destination") == Some("Pitch");
+            let kind = |source| {
+                if pitch {
+                    ir::ModKind::Pitch {
+                        source,
+                        semitones: ratio,
+                        depth: 1.0,
+                    }
+                } else {
+                    // A negative ratio turns the gain down as the value rises.
+                    ir::ModKind::Volume {
+                        source,
+                        intensity: ratio.abs(),
+                        curve: if ratio < 0.0 {
+                            ir::Curve::Falling
+                        } else {
+                            ir::Curve::Depth { power: 1 }
+                        },
+                    }
                 }
             };
-            let route = ir::Mod {
+            let mapped = matrix::transfer(self.program, connection, None)
+                .filter(|t| t.source == ir::Source::Script(id) && !t.table.is_empty());
+            let route = |kind| ir::Mod {
                 name: connection
                     .attribute("Source")
                     .and_then(|s| s.rsplit('/').next())
@@ -61,10 +69,16 @@ impl<L: Library> Translator<'_, '_, L> {
                 .filter_map(|n| self.made.get(&n.id()).copied())
                 .collect();
             for group in groups {
-                if let Some(g) = self.out.groups.get_mut(group)
-                    && !g.mods.contains(&route)
-                {
-                    g.mods.push(route.clone());
+                let Some(g) = self.out.groups.get_mut(group) else {
+                    continue;
+                };
+                let source = match &mapped {
+                    Some(t) => ir::Source::Shaped(super::index_of(&mut g.shapers, t.clone())),
+                    None => ir::Source::Script(id),
+                };
+                let route = route(kind(source));
+                if !g.mods.contains(&route) {
+                    g.mods.push(route);
                 }
             }
         }
@@ -86,6 +100,8 @@ pub(super) enum Timed {
     Envelope(ir::Breakpoints),
     /// A saw LFO read through a table ([`steps`]).
     Steps(ir::Lfo, Vec<f32>),
+    /// A source read through the connection's mapper ([`matrix::transfer`]).
+    Mapped(ir::Transfer),
 }
 
 /// The route a connection on `owner`'s `destination` makes, adding `Ratio`
@@ -93,9 +109,11 @@ pub(super) enum Timed {
 /// −1..=1) of a pitch-bend (−1..=1), controller or velocity (0..=1) source,
 /// or of a program or layer modulator ([`lfo`], [`ahd`], [`steps`]); an
 /// inverted bend or LFO turns the other way (v1's native renders,
-/// crates/sampler-uvi/src/modulation.rs). `None` for anything else: a
-/// mapper, a nested or modulated connection, another source, or an
-/// inverted unipolar source (reported).
+/// crates/sampler-uvi/src/modulation.rs). A connection with a mapper adds
+/// `Ratio` per mapper output instead (UVIWorkstation 0x1411390c0: the table
+/// read linearly, scaled by `Max`, or `-Min` below zero). `None` for
+/// anything else: a nested or modulated connection, another source, an
+/// inverted unipolar or mapped source (reported).
 pub(super) fn route(
     program: Node,
     connection: Node,
@@ -106,10 +124,6 @@ pub(super) fn route(
         || connection.attribute("Destination") != Some(destination)
         || flag(connection, "Bypass")
         || flag(connection, "ConnectionMode")
-        || !connection
-            .attribute("Mapper")
-            .unwrap_or_default()
-            .is_empty()
         || connection.children().any(|n| n.is_element())
     {
         return None;
@@ -120,6 +134,20 @@ pub(super) fn route(
         1.0
     };
     let ratio = num(connection, "Ratio", 0.0).ok()? as f32;
+    if connection
+        .attribute("Mapper")
+        .is_some_and(|m| !m.is_empty())
+    {
+        let t = matrix::transfer(program, connection, None)?;
+        // A script's modulation is [`script_route`]'s.
+        let held = matches!(t.source, ir::Source::Constant | ir::Source::Script(_));
+        return (sign > 0.0 && !held).then_some(Route {
+            source: ir::Source::Constant,
+            timed: Some(Timed::Mapped(t)),
+            unit: 1.0,
+            ratio,
+        });
+    }
     let fixed = |source| Route {
         source,
         timed: None,
