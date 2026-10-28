@@ -759,6 +759,7 @@ fn a_velocity_moved_eq_band_makes_a_hard_note_louder_at_its_frequency() {
             band: 0,
             depth_db: 24.0,
             limit_db: 36.0,
+            span_db: 72.0,
         },
     };
     let bell = Bell {

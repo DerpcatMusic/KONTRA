@@ -428,13 +428,7 @@ fn translate_group(
                         depth: t.signed_intensity(),
                     }),
                     (Some(source), param, Some(insert)) if laws::eq_band_index(param).is_some() => {
-                        laws::eq_band_index(param).map(|band| ir::ModKind::EqGain {
-                            source,
-                            insert,
-                            band,
-                            depth_db: t.signed_intensity() * laws::EQ_GAIN_SPAN_DB,
-                            limit_db: laws::EQ_GAIN_LIMIT_DB,
-                        })
+                        laws::eq_gain(source, insert, param, t.signed_intensity())
                     }
                     // Only the amplitude envelope's attack: another AHDSR is
                     // a breakpoint source with fixed times.
@@ -557,6 +551,12 @@ fn timed(
                 insert,
                 depth: t.signed_intensity(),
             },
+            (param, Some(insert)) if laws::eq_band_index(param).is_some() => {
+                match laws::eq_gain(source, insert, param, t.signed_intensity()) {
+                    Some(kind) => kind,
+                    None => continue,
+                }
+            }
             _ => {
                 let to = if t.slot.is_some() { "module " } else { "" };
                 let feature = format!("internal modulator {what} -> {to}{}", t.param);

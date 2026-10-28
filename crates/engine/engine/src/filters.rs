@@ -222,6 +222,7 @@ impl Engine {
                 band,
                 depth_db,
                 limit_db,
+                ..
             } = m.kind
                 && i == insert
             {

@@ -434,7 +434,8 @@ pub enum ModKind {
     },
     /// Moves the gain of band `band` of the [`Eq`] in group insert slot
     /// `insert` by `source × depth_db` dB, clamped to `±limit_db`; that EQ
-    /// runs per voice.
+    /// runs per voice. `span_db` is the depth at the intensity knob's full
+    /// travel.
     ///
     /// [`Eq`]: EffectKind::Eq
     EqGain {
@@ -443,6 +444,7 @@ pub enum ModKind {
         band: u8,
         depth_db: f32,
         limit_db: f32,
+        span_db: f32,
     },
     /// `source × depth` of the zone's [`Zone::start_mod`] frames added to
     /// where its voices start, read at note-on.

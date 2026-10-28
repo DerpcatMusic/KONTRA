@@ -326,6 +326,23 @@ pub(crate) const EQ_GAIN_LIMIT_DB: f32 = 2.0 * EQ_GAIN_STORED_DB;
 pub(crate) const EQ_GAIN_SPAN_DB: f32 = 2.0 * EQ_GAIN_LIMIT_DB;
 
 /// The band (0..=2) a legacy EQ's `eqGainN` target moves, N in 1..=3.
+/// The route a modulator's `eqGainN` target makes on EQ `insert`.
+pub(crate) fn eq_gain(
+    source: ir::Source,
+    insert: u8,
+    param: &str,
+    intensity: f32,
+) -> Option<ir::ModKind> {
+    eq_band_index(param).map(|band| ir::ModKind::EqGain {
+        source,
+        insert,
+        band,
+        depth_db: intensity * EQ_GAIN_SPAN_DB,
+        limit_db: EQ_GAIN_LIMIT_DB,
+        span_db: EQ_GAIN_SPAN_DB,
+    })
+}
+
 pub(crate) fn eq_band_index(param: &str) -> Option<u8> {
     let n: u8 = param.strip_prefix("eqGain")?.parse().ok()?;
     (1..=3).contains(&n).then(|| n - 1)

@@ -379,13 +379,13 @@ impl Engine {
 }
 
 /// A route's live intensity, signed by its invert flag.
-/// A route's intensity knob (0..1). An EQ gain route spans twice its limit
-/// (the knob's full travel moves the band from -limit to +limit).
+/// A route's intensity knob (0..1); an EQ gain route's depth is the knob
+/// times its span.
 fn intensity(kind: &ir::ModKind) -> Option<f32> {
     match *kind {
         ir::ModKind::EqGain {
-            depth_db, limit_db, ..
-        } => Some((depth_db / (2.0 * limit_db)).abs()),
+            depth_db, span_db, ..
+        } => Some((depth_db / span_db).abs()),
         ref other => depth(&mut other.clone()).map(|d| d.abs()),
     }
 }
@@ -394,10 +394,10 @@ fn intensity(kind: &ir::ModKind) -> Option<f32> {
 /// Returns whether the route has one.
 fn set_intensity(kind: &mut ir::ModKind, x: f32) -> bool {
     if let ir::ModKind::EqGain {
-        depth_db, limit_db, ..
+        depth_db, span_db, ..
     } = kind
     {
-        *depth_db = (x * 2.0 * *limit_db).abs().copysign(*depth_db);
+        *depth_db = (x * *span_db).abs().copysign(*depth_db);
         return true;
     }
     depth(kind).map(|d| *d = x.copysign(*d)).is_some()
@@ -423,14 +423,21 @@ mod tests {
     use kontra_ir as ir;
 
     #[test]
-    fn an_eq_gain_intensity_spans_twice_its_limit_and_keeps_its_sign() {
+    fn an_eq_gain_intensity_is_its_depth_over_its_span_and_keeps_its_sign() {
+        // A depth past twice the limit survives a read and write back.
         let mut kind = ir::ModKind::EqGain {
             source: ir::Source::Velocity,
             insert: 0,
             band: 0,
-            depth_db: -36.0,
-            limit_db: 36.0,
+            depth_db: -48.0,
+            limit_db: 6.0,
+            span_db: 72.0,
         };
+        let x = intensity(&kind).unwrap();
+        assert!(set_intensity(&mut kind, x));
+        assert!(
+            matches!(kind, ir::ModKind::EqGain { depth_db, .. } if (depth_db + 48.0).abs() < 1e-4)
+        );
         assert!(set_intensity(&mut kind, 0.25));
         assert!(matches!(kind, ir::ModKind::EqGain { depth_db, .. } if depth_db == -18.0));
         assert_eq!(intensity(&kind), Some(0.25));
