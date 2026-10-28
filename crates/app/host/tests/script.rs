@@ -741,6 +741,24 @@ fn a_script_modulation_index_keeps_its_value_after_many_others() {
 }
 
 #[test]
+fn a_modulation_value_no_route_reads_is_still_read_back() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            set_event_par_arr($ALL_EVENTS, $EVENT_PAR_MOD_VALUE_ID, 300000, 7)
+        end on
+        on note
+            message(get_event_par_arr($EVENT_ID, $EVENT_PAR_MOD_VALUE_ID, 7))
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "300000");
+}
+
+#[test]
 fn a_script_modulation_ramps_to_its_value() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
