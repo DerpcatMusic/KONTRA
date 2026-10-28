@@ -421,6 +421,7 @@ impl Engine {
                 param,
                 depth,
                 unipolar,
+                ..
             } = m.kind
                 && i == insert
             {

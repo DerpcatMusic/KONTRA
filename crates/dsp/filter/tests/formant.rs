@@ -110,3 +110,32 @@ fn a_knob_change_glides_over_15_ms_then_holds_the_target() {
     assert!((early / settled - 1.0).abs() > 0.1, "{early} {settled}");
     assert!((late / settled - 1.0).abs() < 1e-3, "{late} {settled}");
 }
+
+#[test]
+fn a_glide_is_the_same_however_the_calls_split() {
+    let vowels = |talk| Vowels {
+        talk,
+        sharp: 0.5,
+        size: 0.5,
+        set: VowelSet::First,
+    };
+    let input: Vec<[f32; 2]> = (0..2000)
+        .map(|i| [((i * 7919) % 101) as f32 / 50.0 - 1.0; 2])
+        .collect();
+    let render = |splits: &[usize]| {
+        let mut f = Formant::new(vowels(0.0), 48_000);
+        f.set(vowels(1.0), 48_000);
+        let mut io = input.clone();
+        let mut at = 0;
+        for &n in splits.iter().cycle() {
+            let end = (at + n).min(io.len());
+            f.process(&mut io[at..end]);
+            at = end;
+            if at == io.len() {
+                break;
+            }
+        }
+        io
+    };
+    assert_eq!(render(&[2000]), render(&[3, 7, 1, 64, 5]));
+}

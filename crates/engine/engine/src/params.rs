@@ -432,13 +432,14 @@ impl Engine {
 }
 
 /// A route's live intensity, signed by its invert flag.
-/// A route's intensity knob (0..1); an EQ gain route's depth is the knob
-/// times its span.
+/// A route's intensity knob (0..1); an EQ gain or effect route's depth is
+/// the knob times its span.
 fn intensity(kind: &ir::ModKind) -> Option<f32> {
     match *kind {
         ir::ModKind::EqGain {
             depth_db, span_db, ..
         } => Some((depth_db / span_db).abs()),
+        ir::ModKind::EffectParam { depth, span, .. } => Some((depth / span).abs()),
         ref other => depth(&mut other.clone()).map(|d| d.abs()),
     }
 }
@@ -453,6 +454,10 @@ fn set_intensity(kind: &mut ir::ModKind, x: f32) -> bool {
         *depth_db = (x * *span_db).abs().copysign(*depth_db);
         return true;
     }
+    if let ir::ModKind::EffectParam { depth, span, .. } = kind {
+        *depth = (x * *span).abs().copysign(*depth);
+        return true;
+    }
     depth(kind).map(|d| *d = x.copysign(*d)).is_some()
 }
 
@@ -464,10 +469,11 @@ fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
         ir::ModKind::Pitch { depth, .. }
         | ir::ModKind::Cutoff { depth, .. }
         | ir::ModKind::Resonance { depth, .. }
-        | ir::ModKind::SampleStart { depth, .. }
-        | ir::ModKind::EffectParam { depth, .. } => Some(depth),
+        | ir::ModKind::SampleStart { depth, .. } => Some(depth),
         ir::ModKind::Pan { amount, .. } => Some(amount),
-        ir::ModKind::Envelope | ir::ModKind::EqGain { .. } => None,
+        ir::ModKind::Envelope | ir::ModKind::EqGain { .. } | ir::ModKind::EffectParam { .. } => {
+            None
+        }
     }
 }
 
@@ -495,6 +501,21 @@ mod tests {
         assert!(set_intensity(&mut kind, 0.25));
         assert!(matches!(kind, ir::ModKind::EqGain { depth_db, .. } if depth_db == -18.0));
         assert_eq!(intensity(&kind), Some(0.25));
+    }
+
+    #[test]
+    fn an_effect_route_intensity_is_its_depth_over_its_span() {
+        let mut kind = ir::ModKind::EffectParam {
+            source: ir::Source::Velocity,
+            insert: 0,
+            param: ir::EffectParam::CrushBits,
+            depth: -8.0,
+            span: 16.0,
+            unipolar: false,
+        };
+        assert_eq!(intensity(&kind), Some(0.5));
+        assert!(set_intensity(&mut kind, 0.25));
+        assert!(matches!(kind, ir::ModKind::EffectParam { depth, .. } if depth == -4.0));
     }
 
     #[test]

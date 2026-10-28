@@ -1128,6 +1128,7 @@ fn a_route_moves_a_group_waveshapers_amount_per_voice() {
                 insert: 0,
                 param: EffectParam::ShaperAmount,
                 depth: 1.0,
+                span: 1.0,
                 unipolar: false,
             },
         }];
@@ -1169,6 +1170,7 @@ fn a_route_moves_an_eq_bands_centre_per_voice() {
                 insert: 0,
                 param: EffectParam::BellOctaves(0),
                 depth: octaves,
+                span: 1.0,
                 unipolar: false,
             },
         }];
@@ -1219,6 +1221,7 @@ fn an_lfo_on_a_group_waveshaper_retunes_it_every_32_frames() {
             insert: 0,
             param: EffectParam::ShaperAmount,
             depth: 1.0,
+            span: 1.0,
             unipolar: false,
         },
     }];
