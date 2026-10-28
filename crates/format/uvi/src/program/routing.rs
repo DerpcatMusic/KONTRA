@@ -5,9 +5,10 @@
 //! EffectRack ends a bus: it feeds one bus per chain at the chain's gain,
 //! and the chains feed a bus where the rest of the inserts run. Every strip
 //! ends on the main output ahead of the program's own inserts, as an aux set
-//! `PreInsert` does. Of the effects, Gain, DigitalEq, Convolver,
-//! SampledReverb, ThreeBandShelves, DualDelay, Maximizer and SparkVerb are
-//! carried; the rest pass their input and are reported (see `effects`).
+//! `PreInsert` does. Of the effects, Gain, GainMatrix, TrackDelay (at 0),
+//! DigitalEq, Convolver, SampledReverb, ThreeBandShelves, DualDelay,
+//! Maximizer and SparkVerb are carried; the rest pass their input and are
+//! reported (see `effects`).
 
 use kontra_format::Notes;
 use kontra_ir as ir;
@@ -35,6 +36,8 @@ pub(super) fn carried(node: Node) -> bool {
     let laid = owner.has_tag_name("Layer") || owner.has_tag_name("AuxEffect");
     let kind = [
         "Gain",
+        "GainMatrix",
+        "TrackDelay",
         "DigitalEq",
         "Convolver",
         "SampledReverb",
@@ -254,6 +257,14 @@ impl<L: Library> Translator<'_, '_, L> {
             Some(effect(kind, 1.0, 0.0))
         } else if node.has_tag_name("DigitalEq") {
             Some(digital_eq(node, &mut self.notes)?.effect)
+        } else if node.has_tag_name("TrackDelay") {
+            // A track delay at 0 (every one in VWinds) passes its input.
+            if num(node, "DelayTime", 0.0)? != 0.0 {
+                self.notes.add(ir::Impact::Audible, "TrackDelay time", "");
+            }
+            None
+        } else if node.has_tag_name("GainMatrix") {
+            Some(matrix(node, &mut self.notes)?)
         } else if node.has_tag_name("ThreeBandShelves") {
             Some(shelves(node)?)
         } else if node.has_tag_name("SparkVerb") {
@@ -382,6 +393,27 @@ fn shelves(node: Node) -> Result<ir::Effect, String> {
         10f32.powf(mid / 20.0),
         0.0,
     ))
+}
+
+/// A bus GainMatrix: `Gain_i_j` is input channel `i` into output `j`. The
+/// buses carry two channels (a keygroup's matrix sums its sample channels
+/// into the first two), so the top-left block is the whole matrix; a row
+/// past the second feeding them is reported.
+fn matrix(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
+    let cell = |i: u8, j: u8| num(node, &format!("Gain_{i}_{j}"), f64::from(u8::from(i == j)));
+    for i in 3..=12 {
+        if cell(i, 1)? != 0.0 || cell(i, 2)? != 0.0 {
+            notes.add(
+                ir::Impact::Audible,
+                "GainMatrix channel past the second",
+                "",
+            );
+            break;
+        }
+    }
+    let [ll, lr, rl, rr] = [(1, 1), (2, 1), (1, 2), (2, 2)].map(|(i, j)| cell(i, j));
+    let m = [[ll? as f32, lr? as f32], [rl? as f32, rr? as f32]];
+    Ok(effect(ir::EffectKind::Matrix(m), 1.0, 0.0))
 }
 
 /// UVI's Maximizer (engine 0x141665620, parameter ids 0x1427fd2c0..2e4):

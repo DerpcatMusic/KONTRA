@@ -646,6 +646,9 @@ pub enum EffectKind {
     Invert { phase: bool, swap: bool },
     /// Width 0..=1 (0 mono, 0.5 unchanged, 1 doubled side), then a -1..=1 balance.
     Stereo { width: f32, pan: f32 },
+    /// Each output side from both inputs, `[[ll, lr], [rl, rr]]`: left out
+    /// is `ll·left + lr·right`.
+    Matrix([[f32; 2]; 2]),
     /// Bands in series; a 0 dB band is flat.
     Eq([Bell; 4]),
     /// A state-variable filter.
