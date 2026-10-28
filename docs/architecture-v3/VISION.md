@@ -78,7 +78,7 @@ every format can use.
 | **Per-note everything (MPE, CLAP note expressions)** | Every voice knows its note and note id. Modulation sources are per note, and any route can take a per-note source. Never a per-group-only value where a per-voice one is plausible. |
 | **Per-voice anything** | Any effect or parameter a route can move runs per voice when moved, and shared otherwise. The IR can describe a route to any parameter, even when the original could not. |
 | **Sample accuracy** | Events, waits, parameter changes and script actions carry a sample time. Block size never changes the result. |
-| **Efficiency far below the originals** | Share linear work across voices, load each sample once, and stream by a measured preload law. Targets: about 300 voices at about 1% CPU, Kontakt windows at most 60% of Kontakt's CPU, RAM below the original's. Measure on real libraries. |
+| **Efficiency far below the originals** | Share linear work across voices, load each sample once, and stream by a measured preload law. Measured targets: resident sample-head bytes at most 60% of Kontakt's for the same library (P6.1c, 05-STREAM.md); load time and RAM no worse than v1 (00-BASELINE.md). Goal, not yet measured: about 300 voices at about 1% CPU. Measure on real libraries. |
 | **Quality above the originals** | Where a change cannot be heard as different from the original, take the cleaner version: less aliasing, no zipper noise, no denormals. |
 | **Modern scripting** | KSP and UVI Lua behave like the originals and old scripts keep working. Extensions (per-note, MPE-aware, faster) are added on top, never instead. |
 | **An open, native format** | The IR is stable enough that a library can target KONTRA directly (`format-native`). |
