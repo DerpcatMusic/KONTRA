@@ -47,22 +47,35 @@ impl Callbacks {
 pub struct Compiled {
     source: String,
     modules: Arc<HashMap<String, String>>,
+    saved: Arc<Vec<(String, String)>>,
     pub callbacks: Callbacks,
 }
 
-/// Loads `source` once, with `modules` (name, source) for `require`, to
-/// learn its callbacks. Each engine then builds its own state from it.
+/// Loads `source` once, with `modules` (name, source) for `require` and the
+/// widgets' `saved` values (`name=value`), to learn its callbacks. Each
+/// engine then builds its own state from it.
 ///
 /// # Errors
 /// The script's syntax or load-time error, as Luau reports it.
-pub fn compile(source: &str, modules: &[(String, String)]) -> Result<Compiled, String> {
+pub fn compile(
+    source: &str,
+    modules: &[(String, String)],
+    saved: &[String],
+) -> Result<Compiled, String> {
     let modules: Arc<HashMap<String, String>> = Arc::new(
         modules
             .iter()
             .map(|(name, text)| (module_name(name), text.clone()))
             .collect(),
     );
-    let lua = state(source, &modules).map_err(|e| e.to_string())?;
+    let saved: Arc<Vec<(String, String)>> = Arc::new(
+        saved
+            .iter()
+            .filter_map(|s| s.split_once('='))
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect(),
+    );
+    let lua = state(source, &modules, &saved).map_err(|e| e.to_string())?;
     let defined = |name: &str| matches!(lua.globals().get::<Value>(name), Ok(Value::Function(_)));
     let callbacks = Callbacks {
         init: defined("onInit"),
@@ -73,13 +86,14 @@ pub fn compile(source: &str, modules: &[(String, String)]) -> Result<Compiled, S
     Ok(Compiled {
         source: source.into(),
         modules,
+        saved,
         callbacks,
     })
 }
 
 impl Foreign for Compiled {
     fn machine(&self) -> Box<dyn Machine> {
-        let machine = state(&self.source, &self.modules).map(|lua| LuaMachine {
+        let machine = state(&self.source, &self.modules, &self.saved).map(|lua| LuaMachine {
             lua: Some(lua),
             slots: (0..COROUTINES).map(|_| Slot::default()).collect(),
             spawned: Vec::with_capacity(COROUTINES),
@@ -97,7 +111,11 @@ fn module_name(name: &str) -> String {
 }
 
 /// A sandboxed state with the prelude, `require` and `source` loaded.
-fn state(source: &str, modules: &Arc<HashMap<String, String>>) -> mlua::Result<Lua> {
+fn state(
+    source: &str,
+    modules: &Arc<HashMap<String, String>>,
+    saved: &[(String, String)],
+) -> mlua::Result<Lua> {
     let libs = StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::COROUTINE | StdLib::BIT;
     let lua = Lua::new_with(libs, LuaOptions::new())?;
     lua.set_memory_limit(MEMORY)?;
@@ -108,6 +126,7 @@ fn state(source: &str, modules: &Arc<HashMap<String, String>>) -> mlua::Result<L
     let globals = lua.globals();
     globals.set("Action", actions)?;
     globals.set("__spawned", lua.create_table()?)?;
+    globals.set("__saved", lua.create_table_from(saved.iter().cloned())?)?;
     let found = Arc::clone(modules);
     let loaded = lua.create_table()?;
     let require = lua.create_function(move |lua, name: String| {
@@ -356,7 +375,8 @@ mod tests {
 
     #[test]
     fn a_note_callback_reaches_the_host() {
-        let compiled = compile("function onNote(e) playNote(e.note + 7, 100) end", &[]).unwrap();
+        let compiled =
+            compile("function onNote(e) playNote(e.note + 7, 100) end", &[], &[]).unwrap();
         assert!(compiled.callbacks.note);
         let mut m = compiled.machine();
         let co = m.start(Callbacks::NOTE, 0).expect("start");

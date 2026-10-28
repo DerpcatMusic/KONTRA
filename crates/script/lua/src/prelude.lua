@@ -24,7 +24,21 @@ inert.__index = function()
 	return function() end
 end
 
+-- A widget starts at its saved value when the program has one.
+local function restored(name, value)
+	local text = name and __saved[name]
+	if text == nil then
+		return value
+	end
+	local n = tonumber(text)
+	if type(value) == "boolean" then
+		return n ~= nil and n ~= 0
+	end
+	return n or text
+end
+
 local function widget(kind, name, value, ...)
+	value = restored(name, value)
 	local w = setmetatable({ kind = kind, name = name, value = value, changed = nil }, inert)
 	w.setValue = function(self, v, run)
 		self.value = v

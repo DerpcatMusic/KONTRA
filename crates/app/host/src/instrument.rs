@@ -54,7 +54,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 .iter()
                 .map(|(name, bytes)| (name.clone(), String::from_utf8_lossy(bytes).into_owned()))
                 .collect();
-            match kontra_lua::compile(&script.source, &modules) {
+            match kontra_lua::compile(&script.source, &modules, &script.saved) {
                 Ok(compiled) => plan.scripts.push(crate::script::lua_plan(compiled)),
                 Err(e) => diagnostics.push(ir::Diagnostic {
                     impact: ir::Impact::Broken,

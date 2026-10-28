@@ -749,10 +749,11 @@ pub struct Script {
     pub name: String,
     pub dialect: Dialect,
     pub source: String,
-    /// Saved persistent values in the dialect's own form.
+    /// Saved persistent values in the dialect's own form (Lua: `widget=value`).
     pub saved: Vec<String>,
     /// Library data files the script loads (Kontakt `load_array(%x, 2)`:
-    /// `data/x.nka`), by lowercase array name without its sigil.
+    /// `data/x.nka`), by lowercase array name without its sigil. Lua: the
+    /// modules `require` may load, by their path in the library.
     pub data: Vec<(String, Vec<u8>)>,
 }
 

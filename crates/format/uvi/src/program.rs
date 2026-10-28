@@ -14,6 +14,8 @@ use roxmltree::Node;
 pub(crate) trait Library {
     /// The sample `reference` names, relative to the program's folder `program_dir`.
     fn sample(&self, program_dir: &str, reference: &str) -> Result<ir::Sample, String>;
+    /// Every Lua member of the bank, by its path: what `require` may load.
+    fn modules(&self) -> Vec<(String, Vec<u8>)>;
 }
 
 /// Kontakt's streamed head per channel and its grain, the law the other
@@ -355,13 +357,19 @@ impl<L: Library> Translator<'_, '_, L> {
         }))
     }
 
-    /// Scripts (not run): each active ScriptProcessor is reported.
+    /// Each active ScriptProcessor, with the bank's Lua members as its
+    /// modules. Its other attributes are its widgets' saved values, by name.
     fn scripts(&mut self) {
-        for processor in self
+        let processors: Vec<Node> = self
             .program
             .descendants()
             .filter(|n| n.has_tag_name("ScriptProcessor") && !flag(*n, "Bypass"))
-        {
+            .collect();
+        if processors.is_empty() {
+            return;
+        }
+        let modules = self.library.modules();
+        for processor in processors {
             let source = processor
                 .children()
                 .find(|c| c.has_tag_name("script"))
@@ -369,8 +377,18 @@ impl<L: Library> Translator<'_, '_, L> {
                 .unwrap_or_default()
                 .trim()
                 .to_string();
-            self.notes
-                .add(ir::Impact::Broken, "uvi script (not run)", source);
+            let saved = processor
+                .attributes()
+                .filter(|a| !matches!(a.name(), "Name" | "Bypass" | "API_version"))
+                .map(|a| format!("{}={}", a.name(), a.value()))
+                .collect();
+            self.out.scripts.push(ir::Script {
+                name: processor.attribute("Name").unwrap_or_default().into(),
+                dialect: ir::Dialect::Lua,
+                source,
+                saved,
+                data: modules.clone(),
+            });
         }
     }
 
@@ -529,6 +547,10 @@ mod tests {
                 rate: 48_000,
                 keystream: None,
             })
+        }
+
+        fn modules(&self) -> Vec<(String, Vec<u8>)> {
+            Vec::new()
         }
     }
 

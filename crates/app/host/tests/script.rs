@@ -540,7 +540,7 @@ fn a_script_moves_a_playing_reverbs_time() {
 /// One 0.5-level zone under a Lua script.
 fn lua_engine(store: &mut Store, source: &str) -> Engine {
     let zones = vec![zone(store, 0.5, 0)];
-    let compiled = kontra_lua::compile(source, &[]).unwrap();
+    let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
     let mut plan = Plan::new(zones, 16);
     for g in &mut plan.groups {
         g.mods.clear();
