@@ -112,7 +112,7 @@ fn a_performance_view_gives_its_controls_type_place_and_parent() {
     let ui = tree_with(
         "on init
             load_performance_view(\"v\")
-            move_control_px($main_mode, 9, 8)
+            move_control_px($MAIN_Mode, 9, 8)
         end on",
         &[("v.nckp".into(), view.to_vec())],
     );
@@ -127,6 +127,14 @@ fn a_performance_view_gives_its_controls_type_place_and_parent() {
     );
     let main = ui.widgets.iter().position(|w| w.name == "$main");
     assert_eq!(mode.parent.map(|p| p.0), main);
+    assert_eq!(
+        ui.widgets
+            .iter()
+            .filter(|w| w.name.eq_ignore_ascii_case("$main_mode"))
+            .count(),
+        1,
+        "the script's spelling is the view's control, not a second one"
+    );
     let at = ui
         .widgets
         .iter()

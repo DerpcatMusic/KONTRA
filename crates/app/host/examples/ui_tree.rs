@@ -87,6 +87,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 idle += changed.len();
             }
             let per_frame = spent / 90;
+            // Listeners and waits run in the first blocks (Morphology closes
+            // its source drawers there): what a settled editor shows.
+            let settled = (0..live.tree.widgets.len())
+                .filter(|&n| live.tree.visible(kontra_ui_model::WidgetRef(n)))
+                .count();
             let knob = tree.widgets.iter().find_map(|w| match w.kind {
                 kontra_ui_model::Kind::Knob { .. } | kontra_ui_model::Kind::Slider { .. }
                     if !w.hidden =>
@@ -158,7 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             let page = tree.pages.first().map(|p| (p.size.width, p.size.height));
             println!(
-                "{} slot {slot}: load+init {init:?}, tree {built:?}; {} widgets ({visible} shown), {} pictures, page {page:?}, perfview {}; gaps {gaps:?}",
+                "{} slot {slot}: load+init {init:?}, tree {built:?}; {} widgets ({visible} shown after init, {settled} settled), {} pictures, page {page:?}, perfview {}; gaps {gaps:?}",
                 loaded.name,
                 tree.widgets.len(),
                 tree.assets.len(),
