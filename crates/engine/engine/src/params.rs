@@ -539,6 +539,7 @@ fn signed(kind: &ir::ModKind) -> Option<f32> {
             depth_db, span_db, ..
         } => Some(depth_db / span_db),
         ir::ModKind::EffectParam { depth, span, .. } => Some(depth / span),
+        ir::ModKind::LfoPhase { depth, .. } => Some(depth),
         ref other => depth(&mut other.clone()).map(|d| *d),
     }
 }
@@ -556,6 +557,11 @@ fn set_signed(kind: &mut ir::ModKind, d: f32) -> bool {
         *depth = d * *span;
         return true;
     }
+    // Bipolar (measured, probes/mod_par_laws.lua on ANALOG's Phase_P1).
+    if let ir::ModKind::LfoPhase { depth, .. } = kind {
+        *depth = d;
+        return true;
+    }
     depth(kind).map(|v| *v = d).is_some()
 }
 
@@ -569,9 +575,10 @@ fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
         | ir::ModKind::Resonance { depth, .. }
         | ir::ModKind::SampleStart { depth, .. } => Some(depth),
         ir::ModKind::Pan { amount, .. } => Some(amount),
-        ir::ModKind::Envelope | ir::ModKind::EqGain { .. } | ir::ModKind::EffectParam { .. } => {
-            None
-        }
+        ir::ModKind::Envelope
+        | ir::ModKind::EqGain { .. }
+        | ir::ModKind::EffectParam { .. }
+        | ir::ModKind::LfoPhase { .. } => None,
     }
 }
 
@@ -599,6 +606,18 @@ mod tests {
         assert!(set_signed(&mut kind, -0.25));
         assert!(matches!(kind, ir::ModKind::EqGain { depth_db, .. } if depth_db == -18.0));
         assert_eq!(signed(&kind), Some(-0.25));
+    }
+
+    #[test]
+    fn a_start_phase_route_depth_is_signed() {
+        let mut kind = ir::ModKind::LfoPhase {
+            source: ir::Source::Constant,
+            lfo: 0,
+            depth: -1.0,
+        };
+        assert_eq!(signed(&kind), Some(-1.0));
+        assert!(set_signed(&mut kind, 0.5));
+        assert!(matches!(kind, ir::ModKind::LfoPhase { depth, .. } if depth == 0.5));
     }
 
     #[test]
