@@ -50,10 +50,7 @@ impl<L: Library> Translator<'_, '_, L> {
     /// layer's and aux's fader bus. Runs before the layers.
     pub(super) fn buses(&mut self) -> Result<(), String> {
         let program = self.program;
-        self.out.buses.push(ir::Bus {
-            to_main: true,
-            ..bus("Main")
-        });
+        self.out.buses.push(ir::Bus::new("Main"));
         let layers: Vec<Node> = program
             .descendants()
             .filter(|n| n.has_tag_name("Layer"))
@@ -306,12 +303,8 @@ fn wet_only(node: Node) -> Result<Option<f32>, String> {
 /// fader on the main output.
 fn bus(name: &str) -> ir::Bus {
     ir::Bus {
-        name: name.into(),
-        volume_db: 0.0,
-        pan: 0.0,
-        inserts: Vec::new(),
-        sends: Vec::new(),
         to_main: false,
+        ..ir::Bus::new(name)
     }
 }
 
