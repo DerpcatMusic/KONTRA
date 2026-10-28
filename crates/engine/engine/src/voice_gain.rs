@@ -104,7 +104,11 @@ impl Engine {
             ir::Source::PitchBend => Some(self.behaviour.bend(channel)),
             ir::Source::Key => Some(f32::from(note.key) / 127.0),
             ir::Source::Constant => Some(1.0),
-            ir::Source::Script(index) => Some(note.mod_value(index) as f32 / 1_000_000.0),
+            ir::Source::Script(index) => Some(
+                note.mod_value(index, self.now)
+                    .unwrap_or_else(|| self.script_mod(index)) as f32
+                    / 1_000_000.0,
+            ),
             ir::Source::HeldTime { .. } => None,
         }
     }

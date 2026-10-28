@@ -1,7 +1,7 @@
 //! UVI programs (`.uvip`, stored in `.ufs` banks) read into the instrument
 //! model. A program is addressed as `bank.ufs/Folder/Name.uvip`; `bank.ufs`
-//! alone is the bank's first program. Scripts (UVIScript) do not run: a
-//! scripted program keeps its static parts and reports the rest.
+//! alone is the bank's first program. Scripts (UVIScript) run on the engine;
+//! [`load_with`] also takes the samples they load as the program loads.
 
 mod bank;
 mod header;
@@ -10,6 +10,8 @@ mod program;
 use std::path::{Path, PathBuf};
 
 use kontra_ir as ir;
+
+pub use program::Swap;
 
 /// Why an instrument could not be read at all.
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +45,18 @@ pub fn is_uvi(path: &Path) -> bool {
 /// not a program this can read; a sample that is missing or unreadable is a
 /// diagnostic, not an error.
 pub fn load(path: &Path) -> Result<ir::Instrument, Error> {
+    load_with(path, &|_| Vec::new())
+}
+
+/// [`load`], with `swaps` running each script's load and returning the
+/// samples it puts on oscillators.
+///
+/// # Errors
+/// As [`load`].
+pub fn load_with(
+    path: &Path,
+    swaps: &dyn Fn(&ir::Script) -> Vec<Swap>,
+) -> Result<ir::Instrument, Error> {
     let (bank_path, member) =
         split(path).ok_or_else(|| Error::new(path, "address", "no .ufs bank in the path"))?;
     let bank =
@@ -61,7 +75,7 @@ pub fn load(path: &Path) -> Result<ir::Instrument, Error> {
             .ok_or_else(|| Error::new(path, "program XML", "no Program element"))?
     };
     let folder = in_bank.rsplit_once('/').map_or("", |(folder, _)| folder);
-    program::translate(root, folder, &bank).map_err(|e| Error::new(path, "program", e))
+    program::translate(root, folder, &bank, swaps).map_err(|e| Error::new(path, "program", e))
 }
 
 /// The bank a path lies in, and the member inside it (empty: the bank itself).

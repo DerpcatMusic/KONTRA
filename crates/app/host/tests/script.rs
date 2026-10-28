@@ -537,3 +537,178 @@ fn a_script_moves_a_playing_reverbs_time() {
     );
     assert!(long > short + 10.0, "short {short} dB, long {long} dB");
 }
+
+/// One 0.5-level zone under a Lua script.
+fn lua_engine(store: &mut Store, source: &str) -> Engine {
+    let zones = vec![zone(store, 0.5, 0)];
+    let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
+    let mut plan = Plan::new(zones, 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    Engine::new(Arc::new(plan), store.client(), RATE)
+}
+
+#[test]
+fn a_uvi_note_on_an_oscillator_starts_only_that_zone_slot() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut second = zone(&mut store, 0.25, 0);
+    second.slot = 1;
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0), second], 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    let source = "function onNote(e) playNote{note=e.note, velocity=e.velocity, oscIndex=1} end";
+    let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert!((level(&mut e, &[on(60)]) - 0.25).abs() < 1e-3);
+}
+
+#[test]
+fn a_script_modulation_sent_at_init_scales_notes_that_start_later() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    for g in &mut plan.groups {
+        g.mods = vec![kontra_engine::ir::Mod {
+            name: "Script Event Modulation 1".into(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            kind: kontra_engine::ir::ModKind::Volume {
+                source: kontra_engine::ir::Source::Script(1),
+                intensity: 1.0,
+                curve: kontra_engine::ir::Curve::Depth { power: 1 },
+            },
+        }];
+    }
+    let source = "function onInit() sendScriptModulation(1, 0.5) end
+        function onNote(e) postEvent(e) end";
+    let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert!((level(&mut e, &[on(60)]) - 0.25).abs() < 1e-3);
+}
+
+#[test]
+fn a_script_modulation_ramps_to_its_value() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    for g in &mut plan.groups {
+        g.mods = vec![kontra_engine::ir::Mod {
+            name: "Script Event Modulation 1".into(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            kind: kontra_engine::ir::ModKind::Volume {
+                source: kontra_engine::ir::Source::Script(1),
+                intensity: 1.0,
+                curve: kontra_engine::ir::Curve::Depth { power: 1 },
+            },
+        }];
+    }
+    // Silent at the note, then up to full over 200 ms.
+    let source = "function onNote(e) postEvent(e) sendScriptModulation2(1, 0, 1, 200) end";
+    let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let early = level(&mut e, &[on(60)]);
+    for _ in 0..4 {
+        level(&mut e, &[]);
+    }
+    let late = level(&mut e, &[]);
+    assert!(early < 0.2, "early {early}");
+    assert!((late - 0.5).abs() < 1e-3, "late {late}");
+}
+
+/// C5 on a UVI script: waits, spawned notes and a ramp render the same
+/// audio whatever the host's block size.
+#[test]
+fn a_uvi_script_renders_the_same_at_any_block_size() {
+    let source = "function onNote(e)
+            postEvent(e)
+            sendScriptModulation2(1, 0, 1, 50)
+            spawn(function() wait(30) playNote(e.note + 12, 100, 40) end)
+        end";
+    let render = |block: usize| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+        for g in &mut plan.groups {
+            g.mods = vec![kontra_engine::ir::Mod {
+                name: "Script Event Modulation 1".into(),
+                slot: 1,
+                target: 0,
+                bypass: false,
+                kind: kontra_engine::ir::ModKind::Volume {
+                    source: kontra_engine::ir::Source::Script(1),
+                    intensity: 1.0,
+                    curve: kontra_engine::ir::Curve::Depth { power: 1 },
+                },
+            }];
+        }
+        let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
+        plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let mut rendered = Vec::new();
+        let mut input = vec![on(60)];
+        while rendered.len() < 9600 {
+            let mut out = vec![[0.0; 2]; block];
+            e.process(&mut out, &input);
+            input.clear();
+            rendered.extend(out.iter().map(|f| f[0]));
+        }
+        rendered.truncate(9600);
+        rendered
+    };
+    let reference = render(64);
+    assert!(reference.iter().any(|&v| v != 0.0));
+    for block in [100, 480, 1024] {
+        assert_eq!(render(block), reference, "block {block}");
+    }
+}
+
+#[test]
+fn a_uvi_note_sounds_only_when_the_script_posts_it() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let held = "function onNote(e) end";
+    let mut e = lua_engine(&mut store, held);
+    assert_eq!(level(&mut e, &[on(60)]), 0.0);
+    let posted = "function onNote(e) postEvent(e) end
+        function onRelease(e) end";
+    let mut e = lua_engine(&mut store, posted);
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+    // The script keeps the release to itself: the note plays on.
+    assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3);
+}
+
+#[test]
+fn uvi_waits_and_spawned_coroutines_land_on_time() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    // 100 ms is 4800 frames: past the first 4096-frame block.
+    let waited = "function onNote(e) wait(100) postEvent(e) end";
+    let mut e = lua_engine(&mut store, waited);
+    assert_eq!(level(&mut e, &[on(60)]), 0.0);
+    assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
+    let spawned = "function onNote(e)
+            spawn(function() wait(100) playNote(60, 100) end)
+            print('spawned')
+        end";
+    let mut e = lua_engine(&mut store, spawned);
+    assert_eq!(level(&mut e, &[on(60)]), 0.0);
+    assert_eq!(e.last_message(), "spawned");
+    assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
+}
+
+#[test]
+fn a_uvi_script_that_fails_counts_a_fault_and_the_engine_plays_on() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let broken = "function onNote(e) error('no') end";
+    let mut e = lua_engine(&mut store, broken);
+    assert_eq!(level(&mut e, &[on(60)]), 0.0);
+    assert_eq!(e.script_faults().first().map(|f| f.bad_code), Some(1));
+    let runaway = "function onNote(e) while true do end end";
+    let mut e = lua_engine(&mut store, runaway);
+    assert_eq!(level(&mut e, &[on(60)]), 0.0);
+    assert_eq!(e.script_faults().first().map(|f| f.bad_code), Some(1));
+}

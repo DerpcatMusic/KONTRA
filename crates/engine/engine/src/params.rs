@@ -237,6 +237,27 @@ impl Engine {
         }
     }
 
+    /// [`Action::GroupVolume`], `GroupPan` or `GroupTune` in their units.
+    pub(crate) fn set_group_level(&mut self, action: kontra_vm::Action, group: i32, value: i32) {
+        let Some(level) = usize::try_from(group)
+            .ok()
+            .and_then(|g| self.groups.get_mut(g))
+            .map(|g| &mut g.level)
+        else {
+            return;
+        };
+        match action {
+            kontra_vm::Action::GroupVolume if value <= -200_000 => level.gain = 0.0,
+            kontra_vm::Action::GroupVolume => {
+                level.gain = 10f32.powf(value as f32 / 20_000.0);
+            }
+            kontra_vm::Action::GroupPan => level.pan = (value as f32 / 1000.0).clamp(-1.0, 1.0),
+            kontra_vm::Action::GroupTune => level.tune = f64::from(value) / 100_000.0,
+            _ => return,
+        }
+        self.refresh_all(None);
+    }
+
     /// `set_engine_par` of volume, pan or tune; false when not one of them.
     fn set_level(&mut self, par: i32, value: i32, group: i32, generic: i32) -> bool {
         let Some(which) = self.level_par(par) else {

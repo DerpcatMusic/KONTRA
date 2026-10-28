@@ -55,6 +55,7 @@ fn zone(sample: usize) -> ir::Zone {
         start_mod: 0,
         loops: vec![],
         reverse: false,
+        slot: 0,
     }
 }
 

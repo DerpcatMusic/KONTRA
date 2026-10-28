@@ -53,6 +53,28 @@ pub trait HostApi {
     fn call(&mut self, call: HostCall<'_>) -> HostValue;
 }
 
+/// A front end that runs its own language (Lua) on the engine: the same
+/// [`HostApi`], coroutine handles and [`Step`]s as [`Instance`].
+pub trait Machine: Send {
+    /// Takes a coroutine for the callback at `entry`, as [`Instance::start`].
+    fn start(&mut self, entry: u32, context: u64) -> Option<CoId>;
+    /// Runs it until it ends or waits, as [`Instance::run`].
+    fn run(&mut self, co: CoId, host: &mut dyn HostApi) -> Step;
+    fn cancel(&mut self, co: CoId);
+    fn context(&self, co: CoId) -> Option<u64>;
+    /// A callback the last run started beside itself (a front end's
+    /// `spawn`), now waiting this many microseconds: the host schedules it
+    /// like a wait. In the order they were started.
+    fn spawned(&mut self) -> Option<(CoId, u64)>;
+    fn faults(&self) -> Faults;
+}
+
+/// Compiled code a [`Machine`] runs; each engine makes its own machine.
+pub trait Foreign: Send + Sync + std::fmt::Debug {
+    /// Not real-time: builds the language state.
+    fn machine(&self) -> Box<dyn Machine>;
+}
+
 /// How a run ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
@@ -82,6 +104,24 @@ pub struct Faults {
 pub struct CoId {
     index: u16,
     generation: u16,
+}
+
+impl CoId {
+    /// A handle for a [`Machine`]'s own coroutine slots.
+    #[must_use]
+    pub fn new(index: u16, generation: u16) -> Self {
+        Self { index, generation }
+    }
+
+    #[must_use]
+    pub fn index(self) -> u16 {
+        self.index
+    }
+
+    #[must_use]
+    pub fn generation(self) -> u16 {
+        self.generation
+    }
 }
 
 struct Coroutine {

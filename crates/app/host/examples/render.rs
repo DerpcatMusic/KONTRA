@@ -231,6 +231,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             plan.zones.len()
         );
     }
+    // A quarter second after load before the first note, as a player gives
+    // a program: a script may wait while it loads (UVI `onLoad`).
+    let mut silent = vec![[0.0f32; 2]; 512];
+    for _ in 0..RATE as usize / 4 / 512 {
+        engine.process(&mut silent, &[]);
+    }
     let before: std::collections::HashMap<_, _> = engine.action_calls().into_iter().collect();
 
     let host = HostNote {
@@ -330,6 +336,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("all actions: {:?}", engine.unhandled_actions());
     println!("last message: {}", engine.last_message());
     println!("script faults: {:?}", engine.script_faults());
+    println!(
+        "script arena spills: {}, memory after render: {}",
+        kontra_lua::alloc::spills(),
+        memory()
+    );
     write_wav(&out, &audio)?;
     println!("wrote {}", out.display());
     Ok(())

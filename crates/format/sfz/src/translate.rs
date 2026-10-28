@@ -172,6 +172,7 @@ impl Build {
             start_mod: 0,
             loops: self.looped(ops, total).into_iter().collect(),
             reverse: raw(ops, &["direction"]) == Some("reverse"),
+            slot: 0,
         };
 
         let settings = self.settings(ops);
