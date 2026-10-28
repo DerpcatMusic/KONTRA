@@ -19,6 +19,18 @@ impl Engine {
         (self.chains.len(), zones)
     }
 
+    /// Groups whose filter runs per voice, and each sounding voice's cutoff.
+    pub fn voice_filters(&self) -> (usize, Vec<f32>) {
+        let groups = self.voice_filters.iter().flatten().count();
+        let cutoffs = self
+            .voices
+            .iter()
+            .filter(|s| s.voice.is_active())
+            .filter_map(|s| s.filter.as_ref().map(kontra_dsp::filter::Svf::cutoff))
+            .collect();
+        (groups, cutoffs)
+    }
+
     /// Each sounding voice's zone, position in source frames and gain, for
     /// inspectors (never the audio thread).
     pub fn voices(&self) -> impl Iterator<Item = (usize, f64, kontra_voice::Gain)> + '_ {

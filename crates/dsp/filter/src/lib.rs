@@ -70,6 +70,90 @@ fn stage(pass: Pass, k: f64, g: f64) -> Biquad {
     ])
 }
 
+/// The shape run sample by sample as a zero-delay state-variable filter
+/// (trapezoidal integrators), so its cutoff can move every span without
+/// clicks. At a fixed cutoff it equals [`sections`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Svf {
+    shape: Shape,
+    hz: f32,
+    g: f64,
+    /// Per stage and channel, the two integrator states.
+    state: [[[f64; 2]; 2]; 3],
+}
+
+impl Svf {
+    #[must_use]
+    pub fn new(shape: Shape) -> Self {
+        Self {
+            shape,
+            hz: 0.0,
+            g: 0.0,
+            state: [[[0.0; 2]; 2]; 3],
+        }
+    }
+
+    /// Moves the cutoff to `hz` at `rate`, held below 0.49 of the rate.
+    pub fn set_cutoff(&mut self, hz: f32, rate: u32) {
+        let rate = f64::from(rate.max(1));
+        let hz = f64::from(hz).clamp(1.0, 0.49 * rate);
+        self.hz = hz as f32;
+        self.g = (std::f64::consts::PI * hz / rate).tan();
+    }
+
+    pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        let (g, gain) = (self.g, f64::from(self.shape.gain));
+        let stages = usize::from(self.shape.stages);
+        for frame in io {
+            for (c, x) in frame.iter_mut().enumerate() {
+                let mut v = f64::from(*x);
+                if stages == 0 {
+                    if let Some([s, _]) = self.state.first_mut().and_then(|st| st.get_mut(c)) {
+                        let low = (v - *s) * g / (1.0 + g) + *s;
+                        *s = 2.0 * low - *s;
+                        v = if self.shape.pass == Pass::High {
+                            v - low
+                        } else {
+                            low
+                        };
+                    }
+                }
+                for (st, &k) in self.state.iter_mut().zip(&self.shape.damping).take(stages) {
+                    let Some([ic1, ic2]) = st.get_mut(c) else {
+                        continue;
+                    };
+                    let k = f64::from(k);
+                    let a1 = 1.0 / (1.0 + g * (g + k));
+                    let (a2, a3) = (g * a1, g * g * a1);
+                    let v3 = v - *ic2;
+                    let band = a1 * *ic1 + a2 * v3;
+                    let low = *ic2 + a2 * *ic1 + a3 * v3;
+                    *ic1 = 2.0 * band - *ic1;
+                    *ic2 = 2.0 * low - *ic2;
+                    let high = v - k * band - low;
+                    v = match self.shape.pass {
+                        Pass::Low => low,
+                        Pass::High => high,
+                        Pass::Band => band,
+                        Pass::Notch => low + high,
+                    };
+                }
+                *x = (v * gain) as f32;
+            }
+        }
+    }
+
+    /// The cutoff as last set, in Hz.
+    #[must_use]
+    pub fn cutoff(&self) -> f32 {
+        self.hz
+    }
+
+    pub fn reset(&mut self) {
+        self.state = [[[0.0; 2]; 2]; 3];
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +196,36 @@ mod tests {
             assert!((two + 24.1).abs() < 1.0, "{pass:?} {two}");
         }
         assert!(gain_db(&shape(Pass::Low, 1), 100.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn the_running_filter_matches_its_sections() {
+        for (pass, stages) in [
+            (Pass::Low, 0),
+            (Pass::High, 0),
+            (Pass::Band, 2),
+            (Pass::Notch, 3),
+        ] {
+            let shape = Shape {
+                damping: [0.7, 1.2, 0.3],
+                gain: 0.8,
+                ..shape(pass, stages)
+            };
+            let impulse = |n: usize| if n == 0 { [1.0, -0.5] } else { [0.0; 2] };
+            let mut a: Vec<[f32; 2]> = (0..512).map(impulse).collect();
+            let mut b = a.clone();
+            for s in &mut sections(&shape, 48_000) {
+                s.process(&mut a);
+            }
+            let mut svf = Svf::new(shape);
+            svf.set_cutoff(shape.hz, 48_000);
+            svf.process(&mut b);
+            let worst = a
+                .iter()
+                .zip(&b)
+                .map(|(x, y)| (x[0] - y[0]).abs().max((x[1] - y[1]).abs()));
+            assert!(worst.fold(0.0, f32::max) < 1e-5, "{pass:?} {stages}");
+        }
     }
 
     #[test]

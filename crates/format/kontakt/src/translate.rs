@@ -297,7 +297,7 @@ fn data_files(
 struct Translated {
     group: ir::Group,
     criteria: Vec<StartCriteriaParams>,
-    /// Insert slots whose parameters a modulator moves.
+    /// Insert slots whose cutoff a route not carried moves.
     modulated: Vec<u8>,
 }
 
@@ -327,14 +327,13 @@ fn translate_group(
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
         for (n, m) in InternalModArray16::try_from(chunk)?.slots()? {
             let p = m.params()?;
-            modulated.extend(p.targets.iter().filter_map(|t| t.slot));
             let volume = p
                 .targets
                 .iter()
                 .any(|t| t.param == "volume" && t.slot.is_none());
             match &p.modulator {
-                // ponytail: one volume envelope per group; Kontakt multiplies a
-                // second one in, which is reported below until a library needs it.
+                // The first volume AHDSR is the amplitude envelope; others route
+                // as breakpoint envelopes (`timed`).
                 Modulator::Ahdsr(e)
                     if volume
                         && !out
@@ -349,20 +348,21 @@ fn translate_group(
                         kind: ir::ModKind::Envelope,
                     });
                 }
-                Modulator::Flex(_) | Modulator::Lfo(_) => {
-                    timed(&mut out, &p, slot(n), notes);
+                Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Ahdsr(_) => {
+                    timed(&mut out, &p, slot(n), notes, &mut modulated);
                 }
                 m => {
                     let kind = match m {
-                        Modulator::Ahdsr(_) => "AHDSR",
-                        Modulator::Flex(_) => "flex envelope",
-                        Modulator::Lfo(_) => "LFO",
+                        Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Ahdsr(_) => "timed",
                         Modulator::Dbd(_) => "DBD envelope",
                         Modulator::Glide(_) => "glide",
                         Modulator::Follower(_) => "envelope follower",
                         Modulator::Other { .. } => "other",
                     };
                     for t in &p.targets {
+                        if t.param == "filterCutoff" {
+                            modulated.extend(t.slot);
+                        }
                         let to = if t.slot.is_some() { "module " } else { "" };
                         let feature = format!("internal modulator {kind} -> {to}{}", t.param);
                         notes.add(ir::Impact::Audible, &feature, &p.name);
@@ -374,7 +374,6 @@ fn translate_group(
     if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
         for (n, m) in ExternalModArray32::try_from(chunk)?.slots()? {
             let p = m.params()?;
-            modulated.extend(p.targets.iter().filter_map(|t| t.slot));
             let source = match p.source {
                 ModSource::Velocity => Some(ir::Source::Velocity),
                 ModSource::MidiCc(cc) => Some(ir::Source::Controller(cc)),
@@ -403,6 +402,11 @@ fn translate_group(
                         source,
                         depth: t.signed_intensity(),
                     }),
+                    (Some(source), "filterCutoff", Some(insert)) => Some(ir::ModKind::Cutoff {
+                        source,
+                        insert,
+                        depth: t.signed_intensity(),
+                    }),
                     _ => None,
                 };
                 if let Some(kind) = kind {
@@ -412,6 +416,9 @@ fn translate_group(
                         kind,
                     });
                 } else {
+                    if t.param == "filterCutoff" {
+                        modulated.extend(t.slot);
+                    }
                     let to = if t.slot.is_some() { "module " } else { "" };
                     let feature = format!("external modulator {:?} -> {to}{}", p.source, t.param);
                     notes.add(ir::Impact::Audible, &feature, &p.name);
@@ -426,41 +433,55 @@ fn translate_group(
     })
 }
 
-/// Routes a flex envelope or an LFO to volume, pitch and pan; reports the
-/// targets and shapes not mapped.
-fn timed(out: &mut ir::Group, p: &InternalModParams, slot: u16, notes: &mut Notes) {
+/// Routes an envelope (flex, or an AHDSR that is not the amplitude envelope)
+/// or an LFO to volume, pitch, pan and filter cutoff; reports the targets and
+/// shapes not mapped, and in `unmapped` the slots of cutoffs it drops.
+fn timed(
+    out: &mut ir::Group,
+    p: &InternalModParams,
+    slot: u16,
+    notes: &mut Notes,
+    unmapped: &mut Vec<u8>,
+) {
     const RETRIGGER: usize = 2;
-    let report = |notes: &mut Notes, what: &str| {
+    let report = |notes: &mut Notes, unmapped: &mut Vec<u8>, what: &str| {
         for t in &p.targets {
+            if t.param == "filterCutoff" {
+                unmapped.extend(t.slot);
+            }
             let feature = format!("internal modulator {what} -> {}", t.param);
             notes.add(ir::Impact::Audible, &feature, &p.name);
         }
     };
-    let (source, flex) = match &p.modulator {
-        Modulator::Flex(e) => {
-            let Ok(n) = u8::try_from(out.envelopes.len()) else {
-                return;
-            };
-            out.envelopes.push(laws::flex(e));
-            (ir::Source::Envelope(n), true)
-        }
+    let mut envelope = |e: ir::Breakpoints| {
+        let n = u8::try_from(out.envelopes.len()).ok()?;
+        out.envelopes.push(e);
+        Some(ir::Source::Envelope(n))
+    };
+    let (source, what) = match &p.modulator {
+        Modulator::Flex(e) => (envelope(laws::flex(e)), "flex envelope"),
+        Modulator::Ahdsr(e) => (envelope(laws::ahdsr(e)), "AHDSR"),
         Modulator::Lfo(l) => {
             let retrigger = p.unknown_flags.get(RETRIGGER).is_some_and(|&f| f != 0);
             let (Some(lfo), Ok(n)) = (laws::lfo(l, retrigger), u8::try_from(out.lfos.len())) else {
-                return report(notes, "LFO (multi or synced)");
+                return report(notes, unmapped, "LFO (multi or synced)");
             };
             out.lfos.push(lfo);
-            (ir::Source::Lfo(n), false)
+            (Some(ir::Source::Lfo(n)), "LFO")
         }
         _ => return,
     };
+    let Some(source) = source else {
+        return report(notes, unmapped, what);
+    };
+    let flex = what == "flex envelope";
     let amp = out
         .mods
         .iter()
         .any(|m| matches!(m.kind, ir::ModKind::Envelope));
     for t in &p.targets {
         let kind = match (t.param.as_str(), t.slot) {
-            ("volume", None) if flex => ir::ModKind::Volume {
+            ("volume", None) if what != "LFO" => ir::ModKind::Volume {
                 source,
                 intensity: t.signed_intensity(),
                 curve: ir::Curve::Depth { power: 1 },
@@ -473,8 +494,12 @@ fn timed(out: &mut ir::Group, p: &InternalModParams, slot: u16, notes: &mut Note
                 source,
                 amount: t.signed_intensity(),
             },
+            ("filterCutoff", Some(insert)) => ir::ModKind::Cutoff {
+                source,
+                insert,
+                depth: t.signed_intensity(),
+            },
             _ => {
-                let what = if flex { "flex envelope" } else { "LFO" };
                 let to = if t.slot.is_some() { "module " } else { "" };
                 let feature = format!("internal modulator {what} -> {to}{}", t.param);
                 notes.add(ir::Impact::Audible, &feature, &p.name);

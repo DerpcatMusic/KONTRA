@@ -27,6 +27,7 @@ mod voice_groups;
 
 use std::sync::Arc;
 
+use kontra_dsp::filter::Svf;
 use kontra_stream::StreamClient;
 use kontra_time::Frames;
 use kontra_vm::Instance;
@@ -88,6 +89,8 @@ struct Slot {
     fading: bool,
     /// Extra gain fixed at start (release-trigger decay).
     factor: f32,
+    /// Its group's filter whose cutoff moves, run on this voice alone.
+    filter: Option<Svf>,
 }
 
 struct BusState {
@@ -147,6 +150,10 @@ pub struct Engine {
     /// Shared EQ chains, and each zone's chain.
     chains: Vec<filters::Chain>,
     zone_chain: Box<[Option<u16>]>,
+    /// Per group, the insert slot of its filter that runs per voice.
+    voice_filters: Box<[Option<u8>]>,
+    /// One voice's audio on its way through its filter.
+    scratch: Box<[[f32; 2]]>,
 }
 
 impl Engine {
@@ -176,6 +183,7 @@ impl Engine {
                 released: false,
                 fading: false,
                 factor: 1.0,
+                filter: None,
             })
             .collect();
         let buses = plan
@@ -239,6 +247,8 @@ impl Engine {
             main,
             chains: Vec::new(),
             zone_chain: Box::new([]),
+            voice_filters: Box::new([]),
+            scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),
         };
         engine.cc_values[7] = 100;
         engine.cc_values[11] = 127;
@@ -382,7 +392,18 @@ impl Engine {
                 continue;
             };
             let before = slot.voice.missing_frames();
-            slot.voice.render(&self.stream, self.now.0, mix);
+            match (slot.filter.as_mut(), self.scratch.get_mut(..len)) {
+                (Some(filter), Some(scratch)) => {
+                    scratch.fill([0.0; 2]);
+                    slot.voice.render(&self.stream, self.now.0, scratch);
+                    filter.process(scratch);
+                    for (m, x) in mix.iter_mut().zip(scratch.iter()) {
+                        m[0] += x[0];
+                        m[1] += x[1];
+                    }
+                }
+                _ => slot.voice.render(&self.stream, self.now.0, mix),
+            }
             self.stats.missing_frames += slot.voice.missing_frames() - before;
         }
         self.mix_chains(len);
@@ -487,10 +508,19 @@ impl Engine {
                     .map_or(Ahdsr::GATE, |g| g.envelope),
             };
             let now = self.now;
+            let rate = self.rate;
+            let filter = self
+                .cutoff(zone, &n, self.age(self.now, None))
+                .map(|(f, hz)| {
+                    let mut svf = Svf::new(filters::shape(&f));
+                    svf.set_cutoff(hz, rate);
+                    svf
+                });
             let Some(slot) = self.free_slot() else {
                 continue;
             };
             slot.voice.start(start);
+            slot.filter = filter;
             slot.note = Some(note);
             slot.zone = index;
             slot.started = now;
@@ -732,7 +762,12 @@ impl Engine {
             let gain = self.voice_gain(zone, &n, slot.factor, age);
             let step = self.step(zone, &n, age);
             let pitch = cc.is_none_or(|cc| self.pitch_follows(zone, cc));
+            let cutoff = self.cutoff(zone, &n, age).map(|(_, hz)| hz);
+            let rate = self.rate;
             if let Some(slot) = self.voices.get_mut(i) {
+                if let (Some(f), Some(hz)) = (slot.filter.as_mut(), cutoff) {
+                    f.set_cutoff(hz, rate);
+                }
                 slot.voice.set_gain(gain);
                 if pitch {
                     slot.voice.set_step(step);

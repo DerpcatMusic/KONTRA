@@ -201,6 +201,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let plan = Arc::new(loaded.plan);
     let mut engine = Engine::new(Arc::clone(&plan), store.client(), RATE);
     println!("init: unanswered {:?}", engine.unhandled_actions());
+    let (filtered, cutoffs) = engine.voice_filters();
+    if filtered > 0 {
+        println!("voice filters: {filtered} groups {cutoffs:?}");
+    }
     let (chains, chained) = engine.eq_chains();
     if chains > 0 {
         println!("eq: {chains} chains over {chained} zones");
@@ -286,6 +290,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             for (zone, at, gain) in engine.voices() {
                 println!("    zone {zone} at {at:.0} gain {gain:?}");
+            }
+            let (filtered, cutoffs) = engine.voice_filters();
+            if filtered > 0 {
+                println!("    voice filter cutoffs {cutoffs:?}");
             }
         }
         if live {

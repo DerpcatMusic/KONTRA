@@ -58,7 +58,12 @@ impl Engine {
             let age = self.age(slot.started, slot.released.then_some(slot.released_at));
             let gain = self.voice_gain(zone, &n, slot.factor, age);
             let step = self.step(zone, &n, age);
+            let cutoff = self.cutoff(zone, &n, age).map(|(_, hz)| hz);
+            let rate = self.rate;
             if let Some(slot) = self.voices.get_mut(i) {
+                if let (Some(f), Some(hz)) = (slot.filter.as_mut(), cutoff) {
+                    f.set_cutoff(hz, rate);
+                }
                 slot.voice.set_gain(gain);
                 slot.voice.set_step(step);
             }

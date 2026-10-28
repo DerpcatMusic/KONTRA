@@ -287,6 +287,13 @@ pub enum ModKind {
     Pitch { source: Source, semitones: f32 },
     /// `source × amount` added to the pan (−1..=1).
     Pan { source: Source, amount: f32 },
+    /// Moves the cutoff of the [`Filter`] in group insert slot `insert` by
+    /// `source × depth × Filter::octaves` octaves; that filter runs per voice.
+    Cutoff {
+        source: Source,
+        insert: u8,
+        depth: f32,
+    },
     /// `source × depth` of the zone's [`Zone::start_mod`] frames added to
     /// where its voices start, read at note-on.
     SampleStart { source: Source, depth: f32 },
@@ -484,6 +491,9 @@ pub struct Filter {
     pub stages: u8,
     pub damping: [f32; 3],
     pub gain: f32,
+    /// Octaves a [`ModKind::Cutoff`] depth of 1 moves the cutoff (the range
+    /// of the format's cutoff control).
+    pub octaves: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

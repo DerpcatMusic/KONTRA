@@ -46,6 +46,37 @@ fn zone(store: &mut Store, level: f32) -> Zone {
     Zone::new(region(store, level, 48_000).unwrap(), 60, RATE)
 }
 
+/// A second of a 1 kHz sine at 0.1.
+fn sine(store: &mut Store) -> Region {
+    let frames = 48_000u64;
+    let bytes = (0..frames)
+        .flat_map(|i| {
+            let v = (std::f64::consts::TAU * 1000.0 * i as f64 / 48_000.0).sin() as f32 * 0.1;
+            v.to_le_bytes()
+        })
+        .collect();
+    let key = BlobKey {
+        file: "sine".into(),
+        offset: frames,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(FMT, bytes)),
+            frames,
+            std::slice::from_ref(&(0..frames)),
+        )
+        .unwrap();
+    Region {
+        sample,
+        start: 0,
+        end: frames,
+        looped: None,
+        reverse: false,
+    }
+}
+
 /// The plan's groups ignore velocity.
 fn engine(store: &Store, mut plan: Plan) -> Engine {
     for g in &mut plan.groups {
@@ -532,33 +563,7 @@ fn a_sample_start_route_moves_the_start_within_its_range() {
 fn a_group_eq_shapes_its_voices() {
     use kontra_engine::ir::{Bell, Effect, EffectKind};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
-    let frames = 48_000u64;
-    let bytes = (0..frames)
-        .flat_map(|i| {
-            let v = (std::f64::consts::TAU * 1000.0 * i as f64 / 48_000.0).sin() as f32 * 0.1;
-            v.to_le_bytes()
-        })
-        .collect();
-    let key = BlobKey {
-        file: "sine".into(),
-        offset: frames,
-        fmt: FMT,
-    };
-    let sample = store
-        .load(
-            &key,
-            Arc::new(MemSource::new(FMT, bytes)),
-            frames,
-            std::slice::from_ref(&(0..frames)),
-        )
-        .unwrap();
-    let region = Region {
-        sample,
-        start: 0,
-        end: frames,
-        looped: None,
-        reverse: false,
-    };
+    let region = sine(&mut store);
     let peak = |gain_db: f32| {
         let mut plan = Plan::new(vec![Zone::new(region.clone(), 60, RATE)], 8);
         plan.groups[0].mods.clear();
@@ -651,4 +656,54 @@ fn an_envelope_pitch_route_rises_holds_and_releases() {
         (after - 1.0).abs() < 1e-6,
         "released to the bottom: {after}"
     );
+}
+
+#[test]
+fn a_controller_opens_a_voice_filter() {
+    use kontra_engine::ir::{Effect, EffectKind, Filter, Mod, ModKind, Pass, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+    // A 4-pole low pass at 100 Hz that a controller opens by 6 octaves.
+    plan.groups[0].inserts = vec![Some(Effect {
+        kind: EffectKind::Filter(Filter {
+            pass: Pass::Low,
+            hz: 100.0,
+            stages: 2,
+            damping: [1.85, 0.77, 0.0],
+            gain: 1.0,
+            octaves: 6.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        kind: ModKind::Cutoff {
+            source: Source::Controller(74),
+            insert: 0,
+            depth: 1.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let peak = |e: &mut Engine, events: &[Timed<Event>]| {
+        let now = e.now();
+        let input: Vec<_> = events
+            .iter()
+            .map(|ev| Timed {
+                at: now,
+                body: ev.body,
+            })
+            .collect();
+        let mut out = vec![[0.0f32; 2]; 4800];
+        e.process(&mut out, &input);
+        out[2400..].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    peak(&mut e, &[on(60, 1.0)]);
+    let closed = peak(&mut e, &[]);
+    peak(&mut e, &[cc(74, 127)]);
+    let open = peak(&mut e, &[]);
+    assert!(closed < 0.001, "closed {closed}");
+    assert!((open - 0.1).abs() < 0.01, "open {open}");
 }

@@ -104,6 +104,28 @@ pub(crate) const AUTO_GAIN: ir::Normalize = ir::Normalize {
     floor: 0.001,
 };
 
+/// An AHDSR as breakpoints, for targets other than the amplitude: the same
+/// times, shapes and cubed sustain as [`envelope`].
+pub(crate) fn ahdsr(e: &EnvelopeAhdsr) -> ir::Breakpoints {
+    let a = envelope(e);
+    let point = |s: f32, level, curve| ir::Breakpoint {
+        ms: s * 1000.0,
+        level,
+        curve,
+    };
+    ir::Breakpoints {
+        start: 0.0,
+        points: vec![
+            point(a.attack, 1.0, a.attack_shape),
+            point(a.hold, 1.0, 0.0),
+            point(a.decay, a.sustain, a.fall_shape),
+            point(a.release, 0.0, a.fall_shape),
+        ],
+        sustain: Some(2),
+        loop_from: None,
+    }
+}
+
 /// A flex envelope as breakpoints. Each point's curve knob `c` (0.5 linear)
 /// sets the segment ratio `q` of the native recurrence (0x140ae5a10), whose
 /// closed form is the shape `ln q`. The envelope starts from its last
@@ -219,6 +241,7 @@ pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32) -> Option<ir::Filte
         stages,
         damping: [2.0; 3],
         gain: 1.0,
+        octaves: 0.0,
     };
     if kind < 50 {
         legacy(&mut f, u, r);
@@ -240,6 +263,8 @@ pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32) -> Option<ir::Filte
 fn legacy(f: &mut ir::Filter, u: f32, r: f32) {
     let v = ((6.15 * u).exp_m1() * 0.002_572_831_7).clamp(0.0, 1.0);
     f.hz = 21_759.5 * (v + 0.002);
+    // log2(f(1) / f(0)); the law is close to exponential above the bottom.
+    f.octaves = 8.97;
     let poles = 2.0 * f32::from(f.stages);
     for (i, k) in f.damping.iter_mut().take(usize::from(f.stages)).enumerate() {
         *k = 2.0 * ((2.0 * i as f32 + 1.0) * std::f32::consts::PI / (2.0 * poles)).cos();
@@ -263,6 +288,7 @@ fn legacy(f: &mut ir::Filter, u: f32, r: f32) {
 fn sv(f: &mut ir::Filter, u: f32, r: f32) {
     let note = (115.0 * u + 20.0).min(160.0);
     f.hz = 440.0 * 2f32.powf((note - 69.0) / 12.0);
+    f.octaves = 115.0 / 12.0;
     if f.stages == 0 {
         return;
     }

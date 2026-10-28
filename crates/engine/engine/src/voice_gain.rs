@@ -75,7 +75,13 @@ impl Engine {
     }
 
     /// A live source's value for this note; `None` for one fixed at the voice's start.
-    fn source(&self, zone: &Zone, source: ir::Source, note: &Note, age: Age) -> Option<f32> {
+    pub(crate) fn source(
+        &self,
+        zone: &Zone,
+        source: ir::Source,
+        note: &Note,
+        age: Age,
+    ) -> Option<f32> {
         let channel = note.host.channel;
         let group = || self.groups.get(zone.group as usize);
         match source {
@@ -166,11 +172,14 @@ impl Engine {
     pub(crate) fn follows(&self, zone: &Zone, cc: u8) -> bool {
         zone.crossfades.iter().any(|x| x.control == Control::Cc(cc))
             || self.groups.get(zone.group as usize).is_some_and(|g| {
-                g.mods.iter().any(|m| {
-                    matches!(m.kind, ir::ModKind::Volume { source: ir::Source::Controller(c), .. } if c == cc)
+                g.mods.iter().any(|m| match m.kind {
+                    ir::ModKind::Volume { source, .. }
+                    | ir::ModKind::Pitch { source, .. }
+                    | ir::ModKind::Pan { source, .. }
+                    | ir::ModKind::Cutoff { source, .. } => source == ir::Source::Controller(cc),
+                    ir::ModKind::Envelope | ir::ModKind::SampleStart { .. } => false,
                 })
             })
-            || self.pitch_follows(zone, cc)
     }
 
     /// Whether moving `cc` changes this zone's pitch.
