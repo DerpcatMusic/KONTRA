@@ -40,9 +40,16 @@ pub(crate) fn effect(version: u16, public: &[u8]) -> Option<ir::EffectKind> {
     )))
 }
 
+/// The native network's wet level over the fdn's at the same laws: input
+/// ×0.015 (0x144f38664) into the eight combs, their sum through the four
+/// allpasses, written out unscaled. Simulating that network from the
+/// decompile and the fdn on a unit impulse (3 s, 48 kHz) gives tail
+/// amplitudes 0.052..0.068 of the fdn's over size 0..1 and colour 0..1;
+/// this is their geometric mean, within ±1.2 dB of each.
+pub(crate) const WET: f32 = 0.062;
+
 // ponytail: the native lines hold 0x1fff frames, so it drops a predelay past
-// 170 ms at 48 kHz to none; kept as set. Its wet level is uncalibrated
-// against the fdn's: no native capture yet.
+// 170 ms at 48 kHz to none; kept as set.
 fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
     let [size, colour, stereo, damping] = knobs.map(|x| x.clamp(0.0, 1.0));
     let feedback = 0.3 * size + 0.65;
