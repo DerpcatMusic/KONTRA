@@ -1,5 +1,5 @@
-//! A group's inserts that run on each voice alone. Kontakt runs every group
-//! insert per voice; a linear one with fixed settings commutes with the sum,
+//! A group's inserts that run on each voice alone. A group insert acts on
+//! each voice; a linear one with fixed settings commutes with the sum,
 //! so it stays on the shared chain (filters.rs). An insert runs here when a
 //! route moves it (it differs per note), or when it sits at or before the
 //! group's last active drive effect (a nonlinear stage sees one voice, not
