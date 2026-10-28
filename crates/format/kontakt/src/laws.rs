@@ -226,6 +226,24 @@ pub(crate) fn flex_gate(e: &ir::Breakpoints) -> ir::Envelope {
     }
 }
 
+/// The free LFO's rate knob, measured on real Kontakt 8.13.1
+/// (scratch probe lfo_freq.lua: ANALOG STRINGS LFO_P1 unsynced, 14 knob
+/// values saved and read back): Hz = 0.010415 · 20465^x, within 0.4 %,
+/// 0.0104 to 213.14 Hz.
+pub(crate) const LFO_RATE_HZ: [f32; 2] = [0.010_415, 213.14];
+
+/// A route on an LFO's rate knob, `intensity` in knob units.
+pub(crate) fn lfo_rate(source: ir::Source, lfo: u8, intensity: f32) -> ir::ModKind {
+    let [lo, hi] = LFO_RATE_HZ;
+    ir::ModKind::LfoRate {
+        source,
+        lfo,
+        depth: intensity,
+        octaves: (hi / lo).log2(),
+        range_hz: LFO_RATE_HZ,
+    }
+}
+
 /// A free-running (unsynced) LFO. Waveforms by id: sine 0, rectangle 1,
 /// triangle 2, sawtooth 3, random 4, and the Multi mixes 5 and 6, whose stored
 /// weights (sine, rectangle, triangle, saw, random) reach the mixer as sine,

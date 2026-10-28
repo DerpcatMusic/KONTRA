@@ -1546,3 +1546,53 @@ fn an_intensity_route_scales_its_lfos_routes() {
     assert!((first(Source::Constant) - 0.5).abs() < 0.01);
     assert!((first(Source::Controller(124)) - 1.0).abs() < 0.01);
 }
+
+#[test]
+fn a_velocity_rate_route_speeds_a_voices_lfo() {
+    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    let at_half_a_second = |octaves: f32| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+        plan.groups[0].lfos = vec![Lfo {
+            wave: Wave::Sine,
+            rate: Rate::Hz(0.5),
+            phase: 0.0,
+            fade_ms: 0.0,
+            clock: Clock::Voice,
+        }];
+        let route = |kind| Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind,
+        };
+        plan.groups[0].mods = vec![
+            route(ModKind::Volume {
+                source: Source::Lfo(0),
+                intensity: 1.0,
+                curve: Curve::Depth { power: 1 },
+            }),
+            route(ModKind::LfoRate {
+                source: Source::Velocity,
+                lfo: 0,
+                depth: 1.0,
+                octaves,
+                range_hz: [0.01, 213.0],
+            }),
+        ];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let blocks = (f64::from(RATE) / 512.0).round() as usize;
+        let mut last = level(&mut e, &[on(60, 1.0)])[0];
+        for _ in 1..blocks {
+            last = level(&mut e, &[])[0];
+        }
+        last
+    };
+    // Half a second in, a 0.5 Hz sine is at its peak; doubled by full
+    // velocity, half a cycle on, back at the middle.
+    let still = at_half_a_second(0.0);
+    let doubled = at_half_a_second(1.0);
+    assert!((still - 1.0).abs() < 0.03, "{still}");
+    assert!((doubled - 0.5).abs() < 0.03, "{doubled}");
+}

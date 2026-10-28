@@ -145,6 +145,18 @@ pub(crate) fn external(
                             _ => None,
                         })
                     }
+                    // Target 0x1a is in the additive family:
+                    // the knob moves by `signal·intensity`.
+                    (Some(source), "frequency", Some(at))
+                        if !matches!(source, ir::Source::HeldTime { .. }) =>
+                    {
+                        timed_slots.iter().find_map(|&(n, of)| match of {
+                            ir::Source::Lfo(lfo) if n == usize::from(at) => {
+                                Some(laws::lfo_rate(source, lfo, t.signed_intensity()))
+                            }
+                            _ => None,
+                        })
+                    }
                     // Target 0x19 compiles to
                     // `$in * (1.0 - (1.0 - $signal) * $intensity)`; flag 4
                     // picks a screen form no library uses yet.
