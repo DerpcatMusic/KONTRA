@@ -341,6 +341,20 @@ fn slot_effect(
             0.0
         },
     };
+    // Carried, but not as Kontakt builds them (laws.rs, legacy_reverb.rs).
+    let approximated = match (effect.id, kind_id) {
+        (0x59, Some(1)) => Some("Hall: 8-line network, no output taps or allpasses"),
+        (0x59, _) => Some("Room: 8-line network for 31 lines"),
+        (0x15, _) => Some("legacy: combs and allpasses as an 8-line network"),
+        _ => None,
+    };
+    if let Some(what) = approximated.filter(|_| !params.bypass && kind.is_some()) {
+        notes.add(
+            ir::Impact::Audible,
+            "approximated reverb",
+            format!("{at}: {what}"),
+        );
+    }
     Some((effect_out, effect.id, kind_id.unwrap_or(-1)))
 }
 
