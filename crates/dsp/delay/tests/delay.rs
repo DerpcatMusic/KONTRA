@@ -18,7 +18,9 @@ fn echo() -> Settings {
 
 fn impulse(frames: usize) -> Vec<[f32; 2]> {
     let mut io = vec![[0.0; 2]; frames];
-    io[0] = [1.0, 1.0];
+    if let Some(first) = io.first_mut() {
+        *first = [1.0, 1.0];
+    }
     io
 }
 
