@@ -156,6 +156,7 @@ pub(crate) fn ahdsr(e: &EnvelopeAhdsr) -> ir::Breakpoints {
         ],
         sustain: Some(2),
         loop_from: None,
+        stages: true,
     }
 }
 
@@ -187,6 +188,7 @@ pub(crate) fn flex(e: &EnvelopeFlex) -> ir::Breakpoints {
         sustain,
         loop_from,
         points,
+        stages: false,
     }
 }
 

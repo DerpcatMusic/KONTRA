@@ -56,7 +56,20 @@ const ENGINE_PARS: &[(&str, EnginePar)] = {
 /// an opaque symbol it cannot act on), for coverage reports.
 #[must_use]
 pub fn understood(name: &str) -> bool {
-    name.eq_ignore_ascii_case(CONTROL_VALUE) || engine_par(name).is_some()
+    name.eq_ignore_ascii_case(CONTROL_VALUE)
+        || engine_par(name).is_some()
+        || knob(&kontra_format_kontakt::script_knobs(), name).is_some()
+}
+
+/// The knob named `name`, as an index into `knobs`.
+fn knob(
+    knobs: &[(&str, kontra_engine::ir::KnobTarget, kontra_engine::ir::Law)],
+    name: &str,
+) -> Option<EnginePar> {
+    let n = knobs
+        .iter()
+        .position(|(k, ..)| k.eq_ignore_ascii_case(name))?;
+    u16::try_from(n).ok().map(EnginePar::Knob)
 }
 
 fn engine_par(name: &str) -> Option<EnginePar> {
@@ -77,6 +90,7 @@ const COROUTINES: usize = 64;
 pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> ScriptPlan {
     let entry = |kind| script.callback(kind, None);
     let restore = script.restore(saved);
+    let knobs = kontra_format_kontakt::script_knobs();
     ScriptPlan {
         program: script.program.clone(),
         callbacks: Callbacks {
@@ -102,9 +116,14 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
         controls: controls(script),
         engine_pars: EnginePars {
             first: SYMBOL_BASE,
-            by_id: script.symbols.iter().map(|n| engine_par(n)).collect(),
+            by_id: script
+                .symbols
+                .iter()
+                .map(|n| engine_par(n).or_else(|| knob(&knobs, n)))
+                .collect(),
         },
         reverb_laws: kontra_format_kontakt::reverb_laws(),
+        knobs: knobs.iter().map(|(_, t, law)| (*t, law.clone())).collect(),
         data: data
             .iter()
             .filter_map(|(name, bytes)| data_array(script, name, bytes))
@@ -211,6 +230,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         engine_pars: EnginePars::default(),
         // No reverb parameter ids are bound, so these are never read.
         reverb_laws: std::array::from_fn(|_| kontra_engine::ir::Law::Linear { lo: 0.0, hi: 1.0 }),
+        knobs: Vec::new(),
         data: Vec::new(),
         restore: Vec::new(),
         restore_texts: Vec::new(),

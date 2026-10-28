@@ -719,6 +719,7 @@ fn an_envelope_pitch_route_rises_holds_and_releases() {
         points: vec![point(1.0), point(0.0)],
         sustain: Some(0),
         loop_from: None,
+        stages: false,
     }];
     plan.groups[0].envelope.release = RATE;
     plan.groups[0].mods = vec![Mod {

@@ -17,6 +17,7 @@ mod engine_pars;
 mod filters;
 mod group_racks;
 mod inspect;
+mod knobs;
 mod ledger;
 mod machine;
 mod midi;
