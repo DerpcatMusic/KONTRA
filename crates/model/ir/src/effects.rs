@@ -114,4 +114,7 @@ pub struct Reverb {
     pub low_shelf_db: f32,
     /// 0 mono, 1 full width.
     pub stereo: f32,
+    /// How far the lines' lengths swing, and how fast.
+    pub modulation_ms: f32,
+    pub modulation_hz: f32,
 }

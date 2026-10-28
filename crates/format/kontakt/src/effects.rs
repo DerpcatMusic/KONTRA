@@ -276,7 +276,8 @@ fn slot_effect(
             .map(|i| f32_at(4 + 4 * i))
             .collect::<Option<Vec<_>>>()
             .and_then(|v| v.try_into().ok())
-            .map(|v| ir::EffectKind::Reverb(crate::laws::reverb(v))),
+            .zip(kind_id)
+            .map(|(v, kind)| ir::EffectKind::Reverb(crate::laws::reverb(kind, v))),
         0x10..=0x12 | 0x14 => crate::delays::legacy(effect.id, object.version, &public),
         id => crate::drive::effect(id, object.version, &public, at, notes),
     };

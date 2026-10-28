@@ -551,15 +551,19 @@ pub(crate) fn solid_eq(
 /// stereo. Laws from setter `0x141aea370` (docs/architecture-v2/KONTAKT_DSP_LAWS.md):
 /// time 0.5·e^(3.7x) s, size 3x+1 (2.5 mid, here size 1), damping x^¼,
 /// diffusion 0.5x (here x), predelay 11025x samples at 44.1 kHz,
-/// high cut 19000(1−x)+2000 Hz, low shelf −12x dB, stereo x.
-// ponytail: one FDN for Room and Hall without modulation; Kontakt's network
-// (dispatch 0x141ae2c60) is unrecovered, so the type and modulation are dropped.
-pub(crate) fn reverb(v: [f32; 9]) -> ir::Reverb {
+/// high cut 19000(1−x)+2000 Hz, low shelf −12x dB, stereo x. The Hall type
+/// (saved type 1) has longer lines: from the line-length law `0x141aebb00`
+/// (v2 sampler-core space/design.rs), its mean is `1.553 + 0.208x` times the
+/// Room's at size x. Modulation swings all but the first line by `10x`
+/// samples at 44.1 kHz, at 2 Hz (`0x141aec0a0`).
+// ponytail: one 8-line FDN for Kontakt's 31-line Room and Hall networks; the
+// Hall's own output taps and allpass units are not copied (unmeasured).
+pub(crate) fn reverb(kind: i32, v: [f32; 9]) -> ir::Reverb {
     let [
         time,
         size,
         damping,
-        _modulation,
+        modulation,
         diffusion,
         predelay,
         high_cut,
@@ -578,13 +582,15 @@ pub(crate) fn reverb(v: [f32; 9]) -> ir::Reverb {
     ] = reverb_laws();
     ir::Reverb {
         seconds: seconds.eval(time),
-        size: size_law.eval(size),
+        size: size_law.eval(size) * if kind == 1 { 1.553 + 0.208 * size } else { 1.0 },
         damping: damping_law.eval(damping),
         diffusion: diffusion_law.eval(diffusion),
         predelay_ms: predelay_law.eval(predelay),
         high_cut_hz: high_cut_law.eval(high_cut),
         low_shelf_db: low_shelf_law.eval(low_shelf),
         stereo: stereo_law.eval(stereo),
+        modulation_ms: modulation * 10.0 / 44.1,
+        modulation_hz: 2.0,
     }
 }
 
@@ -766,6 +772,17 @@ mod tests {
         assert!((b.attack_ms - 0.1).abs() < 1e-6 && (b.release_ms - 75.0).abs() < 1e-4);
         assert!(auto && !bus_compressor([0.5; 6], true).1);
         assert!(b.makeup_db.abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_hall_has_longer_lines_than_a_room_and_modulation_swings_them() {
+        let mut v = [0.5; 9];
+        let room = reverb(0, v);
+        let hall = reverb(1, v);
+        assert!((hall.size / room.size - 1.657).abs() < 1e-3);
+        assert!((room.modulation_ms - 5.0 / 44.1).abs() < 1e-6 && room.modulation_hz == 2.0);
+        v[3] = 0.0;
+        assert_eq!(reverb(0, v).modulation_ms, 0.0);
     }
 
     #[test]

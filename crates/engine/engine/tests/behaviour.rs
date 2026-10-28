@@ -976,6 +976,8 @@ fn an_instrument_reverb_rings_on_after_the_note() {
             high_cut_hz: 20_000.0,
             low_shelf_db: 0.0,
             stereo: 1.0,
+            modulation_ms: 0.0,
+            modulation_hz: 0.0,
         }),
         bypass: false,
         output: 1.0,
