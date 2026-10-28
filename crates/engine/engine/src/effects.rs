@@ -79,7 +79,9 @@ pub(crate) fn matrix(e: &ir::Effect) -> Gain {
         // Its wet path runs in instrument and bus racks (racks.rs).
         ir::EffectKind::OtherWet
         | ir::EffectKind::Convolution { .. }
-        | ir::EffectKind::Reverb(_) => [[0.0; 2]; 2],
+        | ir::EffectKind::Reverb(_)
+        | ir::EffectKind::Delay(_)
+        | ir::EffectKind::Phaser(_) => [[0.0; 2]; 2],
     };
     let (o, d) = (e.output, e.dry);
     [
