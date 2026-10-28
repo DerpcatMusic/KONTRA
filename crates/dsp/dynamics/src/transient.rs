@@ -2,8 +2,7 @@
 //! that split the level into an attack part and a sustain part, a gain in
 //! dB from each, a 5 Hz DC blocker and an optional clip. The followers'
 //! rates and thresholds are the shape: no standard design fixes them, so
-//! they are kept as measured (Kontakt's Transient Master core, setter
-//! 0x141ac87b0, process 0x141aaac90, reset 0x141aa0b80).
+//! they are kept as measured (their source is in the translator's law).
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
