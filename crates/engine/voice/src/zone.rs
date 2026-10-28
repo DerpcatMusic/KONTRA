@@ -116,22 +116,23 @@ impl Run {
 impl Region {
     /// Moves each loop by `start` of the sample's frames and its end by
     /// `length` more, each truncated to whole frames; a loop stays within the
-    /// sample and at least four frames long, or keeps its place.
+    /// region and at least four frames long, or keeps its place.
     pub fn shift_loops(&mut self, start: f32, length: f32) {
         let n = self.sample.frames() as i64;
         let frames = |x: f32| (n as f32 * x) as i64;
         let (start, length) = (frames(start), frames(length));
-        // Bounds are the region's end, not the sample's: `locate` skips a
-        // loop past it.
+        // Bounds are the region's, not the sample's: `locate` skips a loop
+        // starting before it or ending past it.
         let hi = i64::try_from(self.end).unwrap_or(n).min(n);
+        let lo = i64::try_from(self.start).unwrap_or(hi).min(hi);
         for l in &mut self.loops {
             let mut a = l.start as i64 + start;
             let mut b = l.end as i64 + start + length;
-            if a < 0 {
-                (a, b) = (0, (b - a).min(hi));
+            if a < lo {
+                (a, b) = (lo, (b - a + lo).min(hi));
             }
             if b > hi {
-                (a, b) = ((a + hi - b).max(0), hi);
+                (a, b) = ((a + hi - b).max(lo), hi);
             }
             if b - a < 4 {
                 if a < hi - 4 {
@@ -140,7 +141,7 @@ impl Region {
                     a = b - 4;
                 }
             }
-            if a >= 0 && b <= hi && b - a >= 4 {
+            if a >= lo && b <= hi && b - a >= 4 {
                 (l.start, l.end) = (a as u64, b as u64);
             }
         }
@@ -299,16 +300,17 @@ mod tests {
 
     #[test]
     fn a_loop_shift_stays_in_the_region_and_four_frames_long() {
-        let shifted = |end, start, length| {
+        let shifted_from = |from, end, start, length| {
             let l = Loop {
-                start: 10,
+                start: 10.max(from),
                 end: 70,
                 ..Loop::default()
             };
-            let mut r = region(0, end, vec![l], false);
+            let mut r = region(from, end, vec![l], false);
             r.shift_loops(start, length);
             r.loops.first().map(|l| (l.start, l.end))
         };
+        let shifted = |end, start, length| shifted_from(0, end, start, length);
         // v1's native-checked writes, at a tenth of its 1000-frame sample.
         assert_eq!(shifted(100, 0.126_636_07, -0.917_009_95), Some((22, 26)));
         assert_eq!(shifted(100, -0.2, 0.0), Some((0, 60)));
@@ -316,6 +318,9 @@ mod tests {
         assert_eq!(shifted(100, 0.0, 0.0), Some((10, 70)));
         // A region ending before the sample does keeps the loop inside it.
         assert_eq!(shifted(80, 0.2, 0.0), Some((20, 80)));
+        // And one starting after the sample does: `locate` skips a loop
+        // starting before the region.
+        assert_eq!(shifted_from(30, 100, -0.2, 0.0), Some((30, 70)));
     }
 
     fn collect(r: &Region, from: i64, len: usize) -> Vec<(usize, u64, usize)> {
