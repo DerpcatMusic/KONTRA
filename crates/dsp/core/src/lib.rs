@@ -1,5 +1,9 @@
 //! Building blocks the DSP families share (03-DSP.md).
 
+mod halfband;
+
+pub use halfband::Halfband;
+
 /// One stereo biquad section, transposed direct form II, f64 state so
 /// low bands stay clean at high rates.
 #[derive(Clone, Debug, PartialEq)]

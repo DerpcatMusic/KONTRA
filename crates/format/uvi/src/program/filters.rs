@@ -4,6 +4,13 @@
 //! `Freq × 1000^(Ratio × s)`, `s` the source (0..=1), `1 − s` when
 //! `Inverted` (the parameter tables pair 20 and 20000, 0x14258b220; v1's
 //! native renders, crates/sampler-uvi/src/modulation.rs).
+//!
+//! An `XpanderFilter` on Algorithm 0 with the soft saturator
+//! (DistortionType 0) is the explicit ladder, its `Freq` on the same range:
+//! Mode 0..=11 picks the taps (low 1..4 poles, high 1..4, band 2 and 4,
+//! notch 2 and 4; the table filled by 0x140842a10), `Q` is the resonance
+//! as is and `Drive` the input gain in dB (the setters around
+//! 0x1412bef10, `10^(dB/20)`); `Fat` carries through.
 
 use kontra_ir as ir;
 use roxmltree::Node;
@@ -13,9 +20,14 @@ use super::{flag, num};
 /// Octaves of the `Freq` range a connection's ratio of 1 spans: 20 Hz to 20 kHz.
 const FREQ_OCTAVES: f32 = 9.965_784;
 
-/// A keygroup insert this crate carries: an active `OnePole` with no key tracking.
+/// A keygroup insert this crate carries: an active `OnePole` or `XpanderFilter`
+/// (as above) with no key tracking.
 pub(super) fn carried(node: Node) -> bool {
-    node.has_tag_name("OnePole")
+    let xpander = node.has_tag_name("XpanderFilter")
+        && num(node, "Algorithm", 0.0) == Ok(0.0)
+        && num(node, "DistortionType", 0.0) == Ok(0.0)
+        && num(node, "Mode", 3.0).is_ok_and(|m| (0.0..=11.0).contains(&m) && m.fract() == 0.0);
+    (node.has_tag_name("OnePole") || xpander)
         && !flag(node, "Bypass")
         && !flag(node, "KeyTracking")
         && node
@@ -92,22 +104,33 @@ pub(super) fn keygroup(kg: Node) -> (Vec<Option<ir::Effect>>, Vec<ir::Mod>) {
                 },
             });
         }
-        let pass = if num(node, "Mode", 0.0).unwrap_or(0.0) == 1.0 {
-            ir::Pass::High
-        } else {
-            ir::Pass::Low
+        let mode = num(node, "Mode", 0.0).unwrap_or(0.0);
+        let mut filter = ir::Filter {
+            pass: if mode == 1.0 {
+                ir::Pass::High
+            } else {
+                ir::Pass::Low
+            },
+            hz: hz.clamp(20.0, 20_000.0),
+            stages: 0,
+            ladder: None,
+            damping: [2.0; 3],
+            gain: 1.0,
+            octaves: FREQ_OCTAVES,
+            q_octaves: 0.0,
         };
+        if node.has_tag_name("XpanderFilter") {
+            let q = num(node, "Q", 0.0).unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+            let drive = num(node, "Drive", 0.0).unwrap_or(0.0).clamp(-20.0, 20.0) as f32;
+            filter.ladder = Some(ir::Ladder::Explicit {
+                taps: mode as u8 + 1,
+                fat: num(node, "Fat", 1.0).unwrap_or(1.0).clamp(0.0, 1.0) as f32,
+            });
+            filter.damping = [2.0 * (1.0 - q); 3];
+            filter.gain = 10f32.powf(drive / 20.0);
+        }
         inserts.push(Some(ir::Effect {
-            kind: ir::EffectKind::Filter(ir::Filter {
-                pass,
-                hz: hz.clamp(20.0, 20_000.0),
-                stages: 0,
-                ladder: None,
-                damping: [2.0; 3],
-                gain: 1.0,
-                octaves: FREQ_OCTAVES,
-                q_octaves: 0.0,
-            }),
+            kind: ir::EffectKind::Filter(filter),
             bypass: false,
             output: 1.0,
             dry: 0.0,
