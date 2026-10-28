@@ -241,15 +241,17 @@ impl Engine {
                     .map(|x| (x + 1.0) * 0.5),
                 source => self.source(zone, source, note, Age::START),
             };
-            let Some(x) = x.filter(|_| floor_ms > 0.0) else {
+            let Some(x) = x else {
                 continue;
             };
-            // ponytail: a format may shape the factor per source type; none
-            // is proved yet (docs/re: attack route), so it stays linear.
             let x = if intensity < 0.0 { 1.0 - x } else { x };
             let m = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
             let ms = *frames as f32 * 1000.0 / rate;
-            let ms = floor_ms * ((ms + floor_ms) / floor_ms).powf(m) - floor_ms;
+            let ms = if floor_ms > 0.0 {
+                floor_ms * ((ms + floor_ms) / floor_ms).powf(m * m * m) - floor_ms
+            } else {
+                ms * m
+            };
             *frames = (ms.max(0.0) * rate / 1000.0).round() as u32;
         }
         e

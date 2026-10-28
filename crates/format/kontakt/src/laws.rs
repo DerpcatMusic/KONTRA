@@ -64,6 +64,17 @@ pub(crate) fn volume(source: ir::Source) -> ir::Curve {
 /// fconv_u2n_env_d (0x14071a9e0, `2·e^(9.4336·u) − 2`), so the same floor.
 pub(crate) const ATTACK_FLOOR_MS: f32 = 2.0;
 
+/// The knob form and its `fcubic` apply only with the route's byte +0x53d
+/// (the last saved source byte) set (0x1408766dc); clear, the compiler
+/// emits `$in * (1.0 - (1.0 - x) * $intensity)`, a plain time scale (0).
+pub(crate) fn time_floor_ms(source_data: &[u8]) -> f32 {
+    if source_data.last().is_some_and(|&b| b != 0) {
+        ATTACK_FLOOR_MS
+    } else {
+        0.0
+    }
+}
+
 /// The release-trigger counter: `max(T − held, 0)/T` in a release-trigger
 /// group with a time T, else a constant 1 (binary 0x14084f380).
 pub(crate) fn release_counter(release_trigger: bool, ms: i32) -> ir::Source {
