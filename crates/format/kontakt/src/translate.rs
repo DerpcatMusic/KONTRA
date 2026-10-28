@@ -7,8 +7,8 @@ use std::path::Path;
 use kontra_ir as ir;
 use ni_file::kontakt::KontaktChunks;
 use ni_file::kontakt::objects::{
-    BParScript, ExternalModArray32, Group, GroupList, InternalModArray16, LoopArray, ModSource,
-    Modulator, StartCriteriaParams, VoiceGroups, VoiceLimit, ZoneList,
+    BParScript, ExternalModArray32, Group, GroupList, InternalModArray16, InternalModParams,
+    LoopArray, ModSource, Modulator, StartCriteriaParams, VoiceGroups, VoiceLimit, ZoneList,
 };
 
 use crate::Error;
@@ -328,6 +328,9 @@ fn translate_group(
                         kind: ir::ModKind::Envelope,
                     });
                 }
+                Modulator::Flex(_) | Modulator::Lfo(_) => {
+                    timed(&mut out, &p, slot(n), notes);
+                }
                 m => {
                     let kind = match m {
                         Modulator::Ahdsr(_) => "AHDSR",
@@ -395,6 +398,74 @@ fn translate_group(
         }
     }
     Ok((out, v.start_criteria.items))
+}
+
+/// Routes a flex envelope or an LFO to volume, pitch and pan; reports the
+/// targets and shapes not mapped.
+fn timed(out: &mut ir::Group, p: &InternalModParams, slot: u16, notes: &mut Notes) {
+    const RETRIGGER: usize = 2;
+    let report = |notes: &mut Notes, what: &str| {
+        for t in &p.targets {
+            let feature = format!("internal modulator {what} -> {}", t.param);
+            notes.add(ir::Impact::Audible, &feature, &p.name);
+        }
+    };
+    let (source, flex) = match &p.modulator {
+        Modulator::Flex(e) => {
+            let Ok(n) = u8::try_from(out.envelopes.len()) else {
+                return;
+            };
+            out.envelopes.push(laws::flex(e));
+            (ir::Source::Envelope(n), true)
+        }
+        Modulator::Lfo(l) => {
+            let retrigger = p.unknown_flags.get(RETRIGGER).is_some_and(|&f| f != 0);
+            let (Some(lfo), Ok(n)) = (laws::lfo(l, retrigger), u8::try_from(out.lfos.len())) else {
+                return report(notes, "LFO (multi or synced)");
+            };
+            out.lfos.push(lfo);
+            (ir::Source::Lfo(n), false)
+        }
+        _ => return,
+    };
+    let amp = out
+        .mods
+        .iter()
+        .any(|m| matches!(m.kind, ir::ModKind::Envelope));
+    for t in &p.targets {
+        let kind = match (t.param.as_str(), t.slot) {
+            ("volume", None) if flex => ir::ModKind::Volume {
+                source,
+                intensity: t.signed_intensity(),
+                curve: ir::Curve::Depth { power: 1 },
+            },
+            ("pitch", None) => ir::ModKind::Pitch {
+                source,
+                semitones: laws::PITCH_SEMITONES * t.signed_intensity(),
+            },
+            ("pan", None) => ir::ModKind::Pan {
+                source,
+                amount: t.signed_intensity(),
+            },
+            _ => {
+                let what = if flex { "flex envelope" } else { "LFO" };
+                let to = if t.slot.is_some() { "module " } else { "" };
+                let feature = format!("internal modulator {what} -> {to}{}", t.param);
+                notes.add(ir::Impact::Audible, &feature, &p.name);
+                continue;
+            }
+        };
+        if flex && !amp && matches!(kind, ir::ModKind::Volume { .. }) {
+            if let Some(e) = out.envelopes.last() {
+                out.envelope = laws::flex_gate(e);
+            }
+        }
+        out.mods.push(ir::Mod {
+            name: p.name.clone(),
+            slot,
+            kind,
+        });
+    }
 }
 
 /// Start options: key switches, controller ranges and round robins. Cycles count

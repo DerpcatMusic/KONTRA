@@ -224,7 +224,7 @@ pub struct Lfo {
 pub enum Wave {
     Sine,
     Triangle,
-    /// Rising.
+    /// Falling.
     Saw,
     /// High for `width` of the cycle.
     Square {

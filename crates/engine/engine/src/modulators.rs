@@ -77,7 +77,7 @@ pub(crate) fn lfo(l: &ir::Lfo, age: Age, seed: u32) -> f32 {
     let v = match l.wave {
         ir::Wave::Sine => (std::f32::consts::TAU * p).sin(),
         ir::Wave::Triangle => 1.0 - 4.0 * ((p + 0.25).fract() - 0.5).abs(),
-        ir::Wave::Saw => 2.0 * p - 1.0,
+        ir::Wave::Saw => 1.0 - 2.0 * p,
         ir::Wave::Square { width } => {
             if p < width {
                 1.0

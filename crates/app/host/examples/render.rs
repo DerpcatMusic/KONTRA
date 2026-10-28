@@ -158,6 +158,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("mod {:?}", m.kind);
             }
         }
+        let mut timed = Vec::new();
+        for g in &loaded.plan.groups {
+            let line = format!("{:?} {:?}", g.envelopes, g.lfos);
+            if !timed.contains(&line) && (!g.envelopes.is_empty() || !g.lfos.is_empty()) {
+                println!("timed {line} amp {:?}", g.envelope);
+                timed.push(line);
+            }
+        }
     }
     if let Ok(zone) = std::env::var("KONTRA_ZONE") {
         let plan = &loaded.plan;
