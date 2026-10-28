@@ -8,6 +8,7 @@
 //! Nothing allocates after [`Instance::new`].
 
 mod action;
+mod machine;
 mod program;
 mod pure;
 mod text;
@@ -15,6 +16,7 @@ mod text;
 use std::hash::{Hash, Hasher};
 
 pub use action::{Action, event};
+pub use machine::Vm;
 pub use program::{Cmp, Op, Program, Returns};
 pub use text::{TEXT_CAPACITY, Text};
 

@@ -6,10 +6,9 @@
 use std::sync::Arc;
 
 use kontra_time::SampleTime;
-use kontra_vm::Step;
+use kontra_vm::{HostValue, Step, Vm};
 
 use crate::ledger::NoteRef;
-use crate::machine::Vm;
 use crate::queue::Work;
 use crate::script::{Kind, Running, ScriptPlan, micros_to_frames};
 use crate::{Engine, Trigger};
@@ -114,6 +113,23 @@ impl Engine {
         self.running = Running::IDLE;
         self.forward_from(mark);
         self.start_pending();
+    }
+
+    /// KSP `stop_wait`: applied when the slot's running callback returns or waits.
+    pub(crate) fn stop_wait(&mut self, id: i32, rest: bool) -> HostValue {
+        if self.stop_waits.len() < self.stop_waits.capacity() {
+            self.stop_waits.push((self.running.slot, id as u32, rest));
+        }
+        HostValue::Nothing
+    }
+
+    /// Restarts a key's release-trigger counter; out of 0..=127 Kontakt
+    /// refuses it ("Note number must be between 0 and 127").
+    pub(crate) fn reset_rls_trig_counter(&mut self, key: i32) -> HostValue {
+        if let Some(r) = self.behaviour.rls_reset.get_mut(key as usize) {
+            *r = self.now.0;
+        }
+        HostValue::Nothing
     }
 
     fn take_vm(&mut self, slot: u8) -> Option<Vm> {

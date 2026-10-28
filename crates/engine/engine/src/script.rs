@@ -658,13 +658,7 @@ impl HostApi for Engine {
             }
             Action::CallbackType => HostValue::Int(i32::from(self.running.callback_type)),
             Action::UiIdVar => HostValue::Int(self.running.ui),
-            // Out of 0..=127 Kontakt refuses it ("Note number must be between 0 and 127").
-            Action::ResetRlsTrigCounter => {
-                if let Some(r) = self.behaviour.rls_reset.get_mut(int(0) as usize) {
-                    *r = self.now.0;
-                }
-                HostValue::Nothing
-            }
+            Action::ResetRlsTrigCounter => self.reset_rls_trig_counter(int(0)),
             Action::CallbackId => HostValue::Int(self.running.callback_id as i32),
             Action::EventParAt => HostValue::Int(
                 running.map_or(0, |r| self.event_par(r.event_id(), int(0).clamp(0, 3))),
@@ -702,14 +696,7 @@ impl HostApi for Engine {
             Action::AsyncExitStatus => HostValue::Int(1),
             // Commands finish before the queue reaches the next event.
             Action::WaitAsync => HostValue::Nothing,
-            // Applied when the slot's running callback returns or waits.
-            Action::StopWait => {
-                let stop = (self.running.slot, int(0) as u32, int(1) != 0);
-                if self.stop_waits.len() < self.stop_waits.capacity() {
-                    self.stop_waits.push(stop);
-                }
-                HostValue::Nothing
-            }
+            Action::StopWait => self.stop_wait(int(0), int(1) != 0),
             Action::GetPurgeState => HostValue::Int(
                 self.groups
                     .get(int(0) as usize)

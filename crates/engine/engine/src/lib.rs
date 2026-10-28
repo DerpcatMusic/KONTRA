@@ -20,7 +20,6 @@ mod group_racks;
 mod inspect;
 mod knobs;
 mod ledger;
-mod machine;
 mod midi;
 mod modulators;
 mod params;
@@ -146,7 +145,7 @@ pub struct Engine {
     ended: Vec<HostNote>,
     stats: Stats,
     /// Each script slot's state; taken out while its callback runs.
-    vms: Box<[Option<machine::Vm>]>,
+    vms: Box<[Option<kontra_vm::Vm>]>,
     running: Running,
     /// Notes through every script slot, starting once the callback returns.
     pending: Vec<NoteRef>,
@@ -249,7 +248,13 @@ impl Engine {
         let vms = plan
             .scripts
             .iter()
-            .map(|s| Some(machine::Vm::new(s)))
+            .map(|s| {
+                Some(kontra_vm::Vm::new(
+                    &s.program,
+                    s.coroutines,
+                    s.foreign.as_ref(),
+                ))
+            })
             .collect();
         let timers = vec![[None; 2]; plan.scripts.len()].into();
         let control_pars = plan
@@ -760,47 +765,6 @@ impl Engine {
                     slot.voice.set_step(step);
                 }
             }
-        }
-    }
-
-    /// Ends notes with no sounding voice and reports them to the host. A key
-    /// still down stays alive while the plan has release triggers to play.
-    fn end_silent_notes(&mut self) {
-        // A held key stays a live event while something may still act on its release.
-        let release_triggers = self
-            .plan
-            .zones
-            .iter()
-            .any(|z| z.trigger == Trigger::Release)
-            || self
-                .plan
-                .scripts
-                .iter()
-                .any(|s| s.callbacks.release.is_some());
-        let mut hits = std::mem::take(&mut self.hits);
-        self.notes.select(&mut hits, |_| true);
-        for &note in &hits {
-            let sounding = self
-                .voices
-                .iter()
-                .any(|s| s.note == Some(note) && s.voice.is_active());
-            let waiting = release_triggers
-                && self
-                    .notes
-                    .get(note)
-                    .is_some_and(|n| n.origin == Origin::Host && !n.is_up());
-            if !sounding
-                && !waiting
-                // A silent parent stays addressable while a child waits on it.
-                && !self.notes.parents(note)
-                && let Some(n) = self.notes.remove(note)
-            {
-                self.ended.push(n.host);
-            }
-        }
-        self.hits = hits;
-        for slot in self.voices.iter_mut().filter(|s| !s.voice.is_active()) {
-            slot.note = None;
         }
     }
 }
