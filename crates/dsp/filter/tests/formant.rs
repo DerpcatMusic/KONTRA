@@ -77,3 +77,36 @@ fn a_band_past_nyquist_stays_stable() {
     let tail = io[16_000..].iter().map(|x| x[0].abs()).fold(0.0, f32::max);
     assert!(tail < 1e-3, "tail {tail}");
 }
+
+#[test]
+fn a_knob_change_glides_over_15_ms_then_holds_the_target() {
+    const RATE: u32 = 48_000;
+    let v = |talk| Vowels {
+        talk,
+        sharp: 0.5,
+        size: 0.5,
+        set: VowelSet::First,
+    };
+    let sine = |n: usize| {
+        let x = (std::f64::consts::TAU * 1000.0 * n as f64 / f64::from(RATE)).sin() as f32;
+        [x, x]
+    };
+    let peak = |f: &mut Formant, from: usize, to: usize| {
+        let mut io: Vec<[f32; 2]> = (from..to).map(sine).collect();
+        f.process(&mut io);
+        io.iter().map(|x| x[0].abs()).fold(0.0, f32::max)
+    };
+    let mut target = Formant::new(v(1.0), RATE);
+    peak(&mut target, 0, 4800);
+    let settled = peak(&mut target, 4800, 9600);
+    let mut moving = Formant::new(v(0.0), RATE);
+    peak(&mut moving, 0, 4800);
+    moving.set(v(1.0), RATE);
+    // 23 ticks of 32 frames: 736 frames, then the filter rings out the old
+    // state.
+    let early = peak(&mut moving, 4800, 4900);
+    peak(&mut moving, 4900, 4800 + 736 + 2400);
+    let late = peak(&mut moving, 4800 + 736 + 2400, 9600);
+    assert!((early / settled - 1.0).abs() > 0.1, "{early} {settled}");
+    assert!((late / settled - 1.0).abs() < 1e-3, "{late} {settled}");
+}
