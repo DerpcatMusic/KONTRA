@@ -94,9 +94,14 @@ fn curve(c: ir::DriveCurve) -> drive::Curve {
 }
 
 fn reduction(c: ir::Crush, rate: u32) -> Reduction {
+    let hold = if c.rate < 1.0 {
+        (1.0 / c.rate.max(1e-6)).min(rate as f32 / 50.0) + 1.0
+    } else {
+        1.0
+    };
     Reduction {
-        hold: c.hold.min(rate as f32 / 50.0 + 1.0),
-        bits: c.bits,
+        hold,
+        bits: (c.bits < 16.0).then_some(c.bits.max(1.0)),
         noise: c.noise,
         noise_tone: c.noise_tone,
     }

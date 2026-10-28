@@ -91,16 +91,13 @@ pub(crate) fn damping_hz(damping: f32) -> f32 {
 
 /// Bits, frequency, noise level and colour, each 0..=1.
 fn lofi(bits: f32, frequency: f32, noise: f32, color: f32) -> ir::EffectKind {
-    // A capture after `1/frequency` frames, then one more (decompile
-    // 0x140aad440: `φ < P ? φ += 1 : (φ −= P, capture)`).
-    let hold = if frequency < ACTIVE_BELOW {
-        1.0 / frequency.max(1e-6) + 1.0
-    } else {
-        1.0
-    };
+    // The hold (decompile 0x140aad440: `φ < P ? φ += 1 : (φ −= P,
+    // capture)`, P = 1/frequency): a capture, then P frames held. Each is
+    // off from the native threshold.
+    let off = |x: f32| if x < ACTIVE_BELOW { x } else { 1.0 };
     ir::EffectKind::Crush(ir::Crush {
-        hold,
-        bits: (bits < ACTIVE_BELOW).then(|| (16.0 * bits).max(1.0)),
+        rate: off(frequency),
+        bits: 16.0 * off(bits),
         noise: if noise >= 0.001 { noise * 0.075 } else { 0.0 },
         noise_tone: 1.0 - 0.9 * color.clamp(0.0, 1.0),
     })
@@ -131,12 +128,12 @@ mod tests {
             panic!()
         };
         assert_eq!(
-            (c.hold, c.bits, c.noise, c.noise_tone),
-            (3.0, Some(8.0), 0.075, 1.0)
+            (c.rate, c.bits, c.noise, c.noise_tone),
+            (0.5, 8.0, 0.075, 1.0)
         );
         let ir::EffectKind::Crush(off) = lofi(1.0, 1.0, 0.0, 1.0) else {
             panic!()
         };
-        assert_eq!((off.hold, off.bits, off.noise), (1.0, None, 0.0));
+        assert_eq!((off.rate, off.bits, off.noise), (1.0, 16.0, 0.0));
     }
 }

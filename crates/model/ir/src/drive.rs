@@ -24,11 +24,12 @@ pub struct Shaper {
 /// A sample hold, a quantizer truncating toward zero, then noise.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Crush {
-    /// Frames between held samples at any rate (1: none), never more than a
-    /// fiftieth of a second.
-    pub hold: f32,
-    /// `2^bits` steps per unit; none: off.
-    pub bits: Option<f32>,
+    /// The hold: after each captured frame it holds `1/rate` more (at most
+    /// a fiftieth of a second); 1 or more holds nothing. Routes move it
+    /// linearly.
+    pub rate: f32,
+    /// `2^bits` steps per unit, truncating toward zero; 16 or more is off.
+    pub bits: f32,
     /// Noise level, linear.
     pub noise: f32,
     /// The noise's one-pole smoothing per frame, 0..=1 (1 white).
