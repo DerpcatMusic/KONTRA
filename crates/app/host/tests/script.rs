@@ -642,6 +642,40 @@ fn a_script_moves_a_group_onto_a_bus() {
     );
 }
 
+/// What a script reads back from its menus, texts and keys (probes/menu_readback.lua).
+#[test]
+fn a_script_reads_back_its_menus_texts_and_keys() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let e = engine(
+        &store,
+        zones,
+        "on init
+            declare ui_menu $m
+            declare ui_label $l(1, 1)
+            declare $id
+            add_menu_item($m, \"a\", 10)
+            add_menu_item($m, \"bb\", 20)
+            add_menu_item($m, \"ccc\", 30)
+            $id := get_ui_id($m)
+            $m := 20
+            set_menu_item_visibility($id, 0, 0)
+            set_menu_item_str($id, 2, \"z\")
+            set_control_par_str(get_ui_id($l), $CONTROL_PAR_TEXT, \"hello\")
+            set_key_color(60, $KEY_COLOR_RED)
+            set_key_name(60, \"C\")
+            message(get_control_par($id, $CONTROL_PAR_NUM_ITEMS) & \" \" ...
+                & get_control_par($id, $CONTROL_PAR_SELECTED_ITEM_IDX) & \" \" ...
+                & get_menu_item_visibility($id, 0) & \" \" & get_menu_item_value($id, 2) & \" \" ...
+                & get_menu_item_str($id, 2) & \" \" ...
+                & get_control_par_str(get_ui_id($l), $CONTROL_PAR_TEXT) & \" \" ...
+                & get_key_color(60) & \" \" & get_key_name(60) & \" \" & get_key_color(61))
+        end on",
+    );
+    assert_eq!(e.last_message(), "3 1 0 30 z hello 4 C 0");
+    assert_eq!(e.keys()[60].color, 4);
+}
+
 #[test]
 fn a_script_sets_a_send_level_by_the_volume_law() {
     use kontra_engine::ir;

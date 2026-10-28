@@ -28,6 +28,7 @@ mod queue;
 mod racks;
 mod script;
 mod transport;
+mod ui;
 mod voice_gain;
 mod voice_groups;
 mod voice_rack;
@@ -53,6 +54,7 @@ pub use prepare::{Open, prepare};
 pub use queue::Timed;
 pub use script::{Callbacks, Controls, ScriptPlan};
 pub use transport::Play;
+pub use ui::{Key, KeyRange, MenuItem};
 
 use behaviour::Behaviour;
 use ledger::{Ledger, Note, Origin};
@@ -168,6 +170,7 @@ pub struct Engine {
     ids: callbacks::Ids,
     /// Per script slot, its controls' parameters other than the value.
     control_pars: Box<[ControlPars]>,
+    ui: ui::Ui,
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
     /// Shared EQ chains, and each zone's chain.
@@ -239,6 +242,7 @@ impl Engine {
             .iter()
             .map(|s| vec![Vec::new(); s.controls.cells.len()].into())
             .collect();
+        let ui = ui::Ui::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
         let mut engine = Self {
             now: SampleTime(0),
             rate: rate.max(1),
@@ -271,6 +275,7 @@ impl Engine {
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
             control_pars,
+            ui,
             ids: callbacks::Ids::START,
             instrument: Level::UNITY,
             rack,

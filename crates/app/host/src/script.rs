@@ -169,6 +169,8 @@ fn controls(script: &Script) -> Controls {
     Controls {
         first: FIRST_UI_ID,
         value_par,
+        num_items_par: symbol(script, "$CONTROL_PAR_NUM_ITEMS"),
+        selected_item_par: symbol(script, "$CONTROL_PAR_SELECTED_ITEM_IDX"),
         cells,
     }
 }

@@ -37,6 +37,9 @@ pub struct Controls {
     pub first: i32,
     /// The parameter id that means a control's value.
     pub value_par: i32,
+    /// The parameter ids of a menu's entry count and selected entry.
+    pub num_items_par: i32,
+    pub selected_item_par: i32,
     /// By UI id from `first` (every variable has one), the value cell of
     /// each control whose value is a number.
     pub cells: Vec<Option<u32>>,
@@ -444,6 +447,9 @@ impl HostApi for Engine {
             *n += 1;
         }
         if let Some(value) = self.pgs_call(&mut call) {
+            return value;
+        }
+        if let Some(value) = self.ui_call(&mut call) {
             return value;
         }
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
