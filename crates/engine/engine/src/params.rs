@@ -216,7 +216,7 @@ impl Engine {
     }
 
     /// A group's level, or the instrument's (group -1, generic -1). Buses
-    /// (generic `$NI_BUS_OFFSET + n`) are not answered yet.
+    /// (generic `$NI_BUS_OFFSET + n`) are [`Self::bus_mut`]'s.
     fn level_mut(&mut self, group: i32, generic: i32) -> Option<&mut Level> {
         match usize::try_from(group) {
             Ok(g) => self.groups.get_mut(g).map(|g| &mut g.level),
@@ -284,12 +284,35 @@ impl Engine {
         let Some(which) = level_par(par) else {
             return false;
         };
+        let raw = f64::from(value.clamp(0, 1_000_000));
+        if let Some(b) = self.bus_mut(group, generic) {
+            let mut level = Level {
+                gain: b.gain,
+                pan: b.pan,
+                tune: 0.0,
+            };
+            which.set(&mut level, raw);
+            (b.gain, b.pan) = (level.gain, level.pan);
+            return !matches!(which, LevelPar::Tune);
+        }
         let Some(level) = self.level_mut(group, generic) else {
             return false;
         };
-        which.set(level, f64::from(value.clamp(0, 1_000_000)));
+        which.set(level, raw);
         self.refresh_all(None);
         true
+    }
+
+    /// Instrument bus n's live state for generic `$NI_BUS_OFFSET + n` (plan
+    /// bus n + 1). Its volume reads through the volume law: ANALOG STRINGS'
+    /// buses 2 and 3 answer 593624 and 525135 in Kontakt (probes/bus_volume_readback.lua),
+    /// the knobs of their saved 0.8367 and 0.5793 gains.
+    fn bus_mut(&mut self, group: i32, generic: i32) -> Option<&mut crate::BusState> {
+        if group >= 0 || generic < BUS_OFFSET {
+            return None;
+        }
+        self.buses
+            .get_mut(usize::try_from(generic - (BUS_OFFSET - 1)).ok()?)
     }
 
     /// Answers `get_engine_par(par, group, slot)` for what
@@ -314,6 +337,17 @@ impl Engine {
             return Some(which.get(&e)?.round().clamp(0.0, 1e6) as i32);
         }
         if let Some(which) = level_par(par) {
+            if let Some(b) = self.bus_mut(group, generic) {
+                if matches!(which, LevelPar::Tune) {
+                    return None;
+                }
+                let level = Level {
+                    gain: b.gain,
+                    pan: b.pan,
+                    tune: 0.0,
+                };
+                return Some(which.get(&level).round().clamp(0.0, 1e6) as i32);
+            }
             let level = *self.level_mut(group, generic)?;
             return Some(which.get(&level).round().clamp(0.0, 1e6) as i32);
         }

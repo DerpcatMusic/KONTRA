@@ -91,6 +91,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 s.source = source;
             }
         }
+        // <dir>/append.ksp plays as one more script slot (a probe the oracle runs too).
+        if let Ok(source) = std::fs::read_to_string(std::path::Path::new(&dir).join("append.ksp")) {
+            ir.scripts.push(kontra_engine::ir::Script {
+                name: "append".into(),
+                dialect: kontra_engine::ir::Dialect::Ksp,
+                source,
+                saved: Vec::new(),
+                data: Vec::new(),
+            });
+        }
     }
     let loaded = kontra_host::instrument::build(ir, RATE, &mut store);
     println!(
@@ -250,11 +260,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         id: -1,
         clap: true,
     };
+    // KONTRA_VELOCITY=100 / KONTRA_HOLD=3: the oracle's note (librender.py plays velocity
+    // 100 for 3 s); by default velocity 0.8 held 2 s.
+    let env = |name: &str| std::env::var(name).ok()?.parse::<f32>().ok();
+    let velocity = env("KONTRA_VELOCITY").map_or(0.8, |v| v / 127.0);
+    let hold = env("KONTRA_HOLD").map_or(2 * RATE as usize / 512, |s| {
+        (s * RATE as f32) as usize / 512
+    });
     let on = Timed {
         at: SampleTime(0),
         body: Event::NoteOn {
             note: host,
-            velocity: 0.8,
+            velocity: velocity.into(),
             tune: 0.0,
         },
     };
@@ -296,11 +313,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
     first.push(on);
-    for n in 0..(4 * RATE as usize / 512) {
+    for n in 0..(hold + 2 * RATE as usize / 512) {
         let input: &[Timed<Event>] = match n {
             0 => &first,
             n if n == RATE as usize / 512 => cc.as_slice(),
-            n if n == 2 * RATE as usize / 512 => std::slice::from_ref(&off),
+            n if n == hold => std::slice::from_ref(&off),
             _ => &[],
         };
         // A bounce waits for the disk; KONTRA_LIVE=1 plays in real time

@@ -105,13 +105,13 @@ struct Slot {
     rack: Vec<voice_rack::Unit>,
 }
 
-struct BusState {
-    gain: f32,
+pub(crate) struct BusState {
+    pub(crate) gain: f32,
     enabled: bool,
     /// Its rack, on what it carries.
     rack: racks::Rack,
     /// -1..=1 balance after the rack.
-    pan: f32,
+    pub(crate) pan: f32,
     /// Later buses it feeds, and their levels.
     sends: Box<[ir::BusSend]>,
     to_main: bool,
@@ -234,12 +234,15 @@ impl Engine {
             .collect();
         let notes = Ledger::new(plan.notes);
         let capacity = notes.capacity();
+        // `$NUM_GROUPS` counts every group, those without zones too (ANALOG
+        // STRINGS: 483 in Kontakt; its zones reach group 139).
         let groups = plan
             .zones
             .iter()
             .map(|z| z.group as usize + 1)
             .max()
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .max(plan.groups.len());
         let vms = plan
             .scripts
             .iter()
