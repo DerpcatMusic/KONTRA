@@ -166,6 +166,9 @@ pub struct Engine {
     main: racks::Rack,
     /// Callbacks run so far (24 bits): the source of `$NI_CALLBACK_ID`.
     callbacks_started: u32,
+    /// The last asynchronous command's id, and `$NI_ASYNC_ID` (the last one finished).
+    async_last: i32,
+    async_id: i32,
     /// Per script slot, its controls' parameters other than the value.
     control_pars: Box<[ControlPars]>,
     /// The plan's groups as scripts have changed them.
@@ -272,6 +275,8 @@ impl Engine {
             called: vec![0; kontra_vm::Action::all().len()].into(),
             control_pars,
             callbacks_started: 0,
+            async_last: 0,
+            async_id: 0,
             instrument: Level::UNITY,
             rack,
             sends,
@@ -422,6 +427,7 @@ impl Engine {
                 signal,
                 generation,
             } => return self.listen(slot, signal, generation),
+            Work::Async { slot, id } => return self.async_complete(slot, id),
         };
         match event {
             Event::NoteOn {

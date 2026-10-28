@@ -86,6 +86,15 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             persistence_changed: entry(CallbackKind::PersistenceChanged),
             listener: entry(CallbackKind::Listener),
             pgs_changed: entry(CallbackKind::PgsChanged),
+            ui_controls: entry(CallbackKind::UiControls),
+            async_complete: entry(CallbackKind::AsyncComplete),
+            ui_control: (0u32..)
+                .zip(&script.controls)
+                .map(|(n, c)| {
+                    let id = FIRST_UI_ID + c.variable as i32;
+                    (id, script.callback(CallbackKind::UiControl, Some(n)))
+                })
+                .collect(),
         },
         coroutines: COROUTINES,
         foreign: None,
@@ -190,6 +199,9 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
             persistence_changed: None,
             listener: None,
             pgs_changed: None,
+            ui_controls: None,
+            async_complete: None,
+            ui_control: Vec::new(),
         },
         coroutines: COROUTINES,
         controls: Controls::default(),

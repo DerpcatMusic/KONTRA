@@ -52,6 +52,11 @@ pub struct Callbacks {
     pub persistence_changed: Option<u32>,
     pub listener: Option<u32>,
     pub pgs_changed: Option<u32>,
+    /// `on ui_controls`, run first when any control moves.
+    pub ui_controls: Option<u32>,
+    pub async_complete: Option<u32>,
+    /// Every control by UI id, with its own `on ui_control` if it has one.
+    pub ui_control: Vec<(i32, Option<u32>)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +67,9 @@ pub(crate) enum Kind {
     Controller,
     Listener,
     Pgs,
+    UiControl,
+    UiControls,
+    AsyncComplete,
     /// After a wait: what the callback was no longer matters.
     Resumed,
 }
@@ -82,7 +90,12 @@ pub(crate) struct Running {
     pub(crate) slot: u8,
     /// `$NI_SIGNAL_TYPE` of a listener callback.
     pub(crate) signal: u8,
+    /// `$NI_UI_ID` of a UI callback; 0 otherwise.
+    pub(crate) ui: i32,
 }
+
+/// Marks a UI id in the low bits of a coroutine context; event ids never set it.
+const UI_BIT: u32 = 1 << 31;
 
 impl Running {
     pub(crate) const IDLE: Self = Self {
@@ -95,6 +108,7 @@ impl Running {
         callback_id: 0,
         slot: 0,
         signal: 0,
+        ui: 0,
     };
 
     pub(crate) fn new(kind: Kind, event: Option<NoteRef>) -> Self {
@@ -106,6 +120,9 @@ impl Running {
             Kind::Controller => 3,
             Kind::Listener => 12,
             Kind::Pgs => 8,
+            Kind::UiControl => 6,
+            Kind::UiControls => 15,
+            Kind::AsyncComplete => 13,
         };
         Self {
             kind,
@@ -116,17 +133,27 @@ impl Running {
     }
 
     /// The coroutine context, so a resumed callback still knows its event
-    /// (low 32 bits), callback type (8), callback id (20: a UI id, 32768 plus
-    /// a variable index) and listener signal (4).
+    /// or UI id (low 32 bits, a UI id with the top bit set), callback type
+    /// (8), callback id (20) and listener signal (4).
     pub(crate) fn context(&self) -> u64 {
-        u64::from(self.event.map_or(0, |n| n.event_id() as u32))
+        let low = match self.event {
+            Some(n) => n.event_id() as u32,
+            None => self.ui as u32 | UI_BIT,
+        };
+        u64::from(low)
             | u64::from(self.callback_type) << 32
             | u64::from(self.callback_id & 0xF_FFFF) << 40
             | u64::from(self.signal & 0xF) << 60
     }
 
     pub(crate) fn resumed(context: u64) -> Self {
+        let low = context as u32;
         Self {
+            ui: if low & UI_BIT != 0 {
+                (low & !UI_BIT) as i32
+            } else {
+                0
+            },
             kind: Kind::Resumed,
             event: NoteRef::from_event_id(context as u32 as i32),
             callback_type: (context >> 32) as u8,
@@ -583,6 +610,7 @@ impl HostApi for Engine {
                 HostValue::Int(self.active_voices() as i32)
             }
             Action::CallbackType => HostValue::Int(i32::from(self.running.callback_type)),
+            Action::UiIdVar => HostValue::Int(self.running.ui),
             Action::CallbackId => HostValue::Int(self.running.callback_id as i32),
             Action::EventParAt => HostValue::Int(
                 running.map_or(0, |r| self.event_par(r.event_id(), int(0).clamp(0, 3))),
@@ -607,14 +635,19 @@ impl HostApi for Engine {
                 *call.text_out = Text::from_str_cut(name).0;
                 HostValue::Text
             }
-            // ponytail: answered at once, no on async_complete; the samples
+            // ponytail: answered at once, then on async_complete; the samples
             // stay in memory until the host reloads without the group.
             Action::PurgeGroup => {
                 if let Some(g) = self.groups.get_mut(int(0) as usize) {
                     g.purged = int(1) == 0;
                 }
-                HostValue::Int(0)
+                HostValue::Int(self.start_async())
             }
+            Action::AsyncId => HostValue::Int(self.async_id),
+            // ponytail: every asynchronous command here succeeds.
+            Action::AsyncExitStatus => HostValue::Int(1),
+            // Commands finish before the queue reaches the next event.
+            Action::WaitAsync => HostValue::Nothing,
             Action::GetPurgeState => HostValue::Int(
                 self.groups
                     .get(int(0) as usize)
