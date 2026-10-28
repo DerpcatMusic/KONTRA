@@ -146,6 +146,8 @@ pub(super) enum Timed {
     Steps(ir::Lfo, Vec<f32>),
     /// A source read through the connection's mapper ([`matrix::transfer`]).
     Mapped(ir::Transfer),
+    /// An LFO its routes reach through a delay and rise ([`rising`]).
+    Rising(ir::Lfo, ir::Breakpoints),
 }
 
 /// The route a connection on `owner`'s `destination` makes, adding `Ratio`
@@ -220,10 +222,13 @@ pub(super) fn route(
                     ..fixed(ir::Source::Constant)
                 }
             } else {
-                let (lfo, depth) = lfo(node)?;
+                let (lfo, depth, rise) = rising(node)?;
                 Route {
                     source: ir::Source::Lfo(0),
-                    timed: Some(Timed::Lfo(lfo)),
+                    timed: Some(match rise {
+                        Some(rise) => Timed::Rising(lfo, rise),
+                        None => Timed::Lfo(lfo),
+                    }),
                     unit: sign * depth,
                     ratio,
                 }
@@ -244,11 +249,49 @@ pub(super) fn route(
 /// the cycle's length in beats (v1). ponytail: `Smooth` is not applied (a
 /// lag on the shape; AO's are under 25 ms on cycles of a beat or more).
 pub(super) fn lfo(node: Node) -> Option<(ir::Lfo, f32)> {
+    let still = !flag(node, "DelayTime") && !flag(node, "RiseTime");
+    still.then(|| shape(node)).flatten()
+}
+
+/// [`lfo`], and for one with a `DelayTime` or `RiseTime` the gain its routes
+/// reach it through: 0 for the delay, then linearly to 1 over the rise
+/// (process 0x1410f8ca0, in 32-sample blocks; the wave starts at its
+/// `Phase` once the delay is over). A retriggered LFO's phase is moved back
+/// by the delay; one synced to the host is not carried with a delay (its
+/// shift depends on the tempo). ponytail: an LFO without a delay alike in
+/// every other way shares the delayed one's copy and its rise.
+fn rising(node: Node) -> Option<(ir::Lfo, f32, Option<ir::Breakpoints>)> {
+    let (mut lfo, depth) = shape(node)?;
+    let seconds = |name| num(node, name, 0.0).ok().map(|t| t.clamp(0.0, 30.0) as f32);
+    let (delay, rise) = (seconds("DelayTime")?, seconds("RiseTime")?);
+    if delay == 0.0 && rise == 0.0 {
+        return Some((lfo, depth, None));
+    }
+    if delay > 0.0 && lfo.clock == ir::Clock::Voice {
+        let ir::Rate::Hz(hz) = lfo.rate else {
+            return None;
+        };
+        lfo.phase = (lfo.phase - hz * delay).rem_euclid(1.0);
+    }
+    let point = |s: f32, level| ir::Breakpoint {
+        ms: s * 1000.0,
+        level,
+        curve: 0.0,
+    };
+    let rise = ir::Breakpoints {
+        start: 0.0,
+        points: vec![point(delay, 0.0), point(rise, 1.0)],
+        sustain: None,
+        loop_from: None,
+        stages: false,
+    };
+    Some((lfo, depth, Some(rise)))
+}
+
+/// [`lfo`] whatever its delay and rise.
+fn shape(node: Node) -> Option<(ir::Lfo, f32)> {
     let unset = |name| !flag(node, name);
-    if flag(node, "Bypass")
-        || !(unset("DelayTime") && unset("RiseTime") && unset("ManualTrigger"))
-        || num(node, "Bipolar", 1.0).ok()? != 1.0
-    {
+    if flag(node, "Bypass") || !unset("ManualTrigger") || num(node, "Bipolar", 1.0).ok()? != 1.0 {
         return None;
     }
     let (wave, sign) = if node.has_tag_name("LFO") {
