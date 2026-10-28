@@ -6,10 +6,9 @@
 use std::sync::Arc;
 
 use kontra_time::SampleTime;
-use kontra_vm::Step;
+use kontra_vm::{HostValue, Step, Vm};
 
 use crate::ledger::NoteRef;
-use crate::machine::Vm;
 use crate::queue::Work;
 use crate::script::{Kind, Running, ScriptPlan, micros_to_frames};
 use crate::{Engine, Trigger};
@@ -97,9 +96,13 @@ impl Engine {
     }
 
     /// A waiting callback's time has come.
-    pub(crate) fn resume(&mut self, slot: u8, co: kontra_vm::CoId) {
+    pub(crate) fn resume(&mut self, slot: u8, co: kontra_vm::CoId, wait: u32) {
         let mark = self.forward.len();
         if let Some(mut vm) = self.take_vm(slot) {
+            if vm.wait_epoch(co) != Some(wait) {
+                // A stopped wait: its callback already went on.
+                return self.put_vm(slot, vm);
+            }
             self.running = Running {
                 slot,
                 ..Running::resumed(vm.context(co).unwrap_or(0))
@@ -112,11 +115,39 @@ impl Engine {
         self.start_pending();
     }
 
+    /// KSP `stop_wait`: applied when the slot's running callback returns or waits.
+    pub(crate) fn stop_wait(&mut self, id: i32, rest: bool) -> HostValue {
+        if self.stop_waits.len() < self.stop_waits.capacity() {
+            self.stop_waits.push((self.running.slot, id as u32, rest));
+        }
+        HostValue::Nothing
+    }
+
+    /// Restarts a key's release-trigger counter; out of 0..=127 Kontakt
+    /// refuses it ("Note number must be between 0 and 127").
+    pub(crate) fn reset_rls_trig_counter(&mut self, key: i32) -> HostValue {
+        if let Some(r) = self.behaviour.rls_reset.get_mut(key as usize) {
+            *r = self.now.0;
+        }
+        HostValue::Nothing
+    }
+
     fn take_vm(&mut self, slot: u8) -> Option<Vm> {
         self.vms.get_mut(usize::from(slot))?.take()
     }
 
-    fn put_vm(&mut self, slot: u8, vm: Vm) {
+    fn put_vm(&mut self, slot: u8, mut vm: Vm) {
+        // `stop_wait` the slot's callbacks asked for while it ran: each goes on now.
+        while let Some(i) = self.stop_waits.iter().position(|s| s.0 == slot) {
+            let (_, id, rest) = self.stop_waits.swap_remove(i);
+            let matches = |context| Running::resumed(context).callback_id == id & 0xF_FFFF;
+            if let Some((co, wait)) = vm.stop_wait(matches, rest)
+                && !self.queue.push(self.now, Work::Resume(slot, co, wait))
+            {
+                self.stats.events_refused += 1;
+                vm.cancel(co);
+            }
+        }
         if let Some(cell) = self.vms.get_mut(usize::from(slot)) {
             *cell = Some(vm);
         }
@@ -140,7 +171,8 @@ impl Engine {
         let micros = i64::try_from(micros).unwrap_or(i64::MAX);
         let frames = micros_to_frames(micros, self.rate).max(1);
         let at = SampleTime(self.now.0.saturating_add(frames));
-        if !self.queue.push(at, Work::Resume(slot, co)) {
+        let wait = vm.wait_epoch(co).unwrap_or(0);
+        if !self.queue.push(at, Work::Resume(slot, co, wait)) {
             self.stats.events_refused += 1;
             vm.cancel(co);
         }

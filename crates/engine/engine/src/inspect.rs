@@ -86,7 +86,7 @@ impl Engine {
         self.vms
             .iter()
             .flatten()
-            .map(crate::machine::Vm::faults)
+            .map(kontra_vm::Vm::faults)
             .collect()
     }
 }
