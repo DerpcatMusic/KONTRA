@@ -23,6 +23,8 @@ enum Dsp {
 /// A parallel processor: replaces its span with the wet signal.
 trait Wet: Send {
     fn process(&mut self, io: &mut [[f32; 2]]);
+    /// The slot's reverb settings, before each block. Never allocates.
+    fn set_reverb(&mut self, _reverb: ir::Reverb) {}
 }
 
 impl Wet for Convolver {
@@ -34,6 +36,10 @@ impl Wet for Convolver {
 impl Wet for Fdn {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         Fdn::process(self, io);
+    }
+
+    fn set_reverb(&mut self, reverb: ir::Reverb) {
+        self.set(settings(reverb));
     }
 }
 
@@ -88,10 +94,14 @@ impl Rack {
             match (dsp, e.kind) {
                 (Dsp::Eq(f), _) => filters::run(f, io),
                 // The wet path from the input, then the dry level, then the wet at the output gain.
-                (Dsp::Wet(processor, wet), _) => {
+                (Dsp::Wet(processor, wet), kind) => {
                     let Some(wet) = wet.get_mut(..io.len()) else {
                         continue;
                     };
+                    // A script may have moved the reverb's controls since the last block.
+                    if let ir::EffectKind::Reverb(r) = kind {
+                        processor.set_reverb(r);
+                    }
                     wet.copy_from_slice(io);
                     processor.process(wet);
                     apply(effects::matrix(&e), io);

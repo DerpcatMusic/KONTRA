@@ -491,3 +491,49 @@ fn an_ignored_release_still_lifts_the_key() {
     level(&mut e, &[on(61)]);
     assert_eq!(e.last_message(), "down 0");
 }
+
+/// Level of the reverb tail 0.25 s after a 2 s note, through a reverb in the
+/// instrument insert whose time is 0.5 s unless `script` moves it.
+fn reverb_tail(script: &str) -> f32 {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Reverb(ir::Reverb {
+            seconds: 0.5,
+            size: 1.0,
+            damping: 0.0,
+            diffusion: 1.0,
+            predelay_ms: 0.0,
+            high_cut_hz: 20_000.0,
+            low_shelf_db: 0.0,
+            stereo: 1.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let script = kontra_ksp::compile(script, &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0f32; 2]; 4096];
+    e.process(&mut out, &[on(60)]);
+    // 26 blocks of 4096 frames: the note ends at 96000 frames, the last block starts 0.22 s later.
+    for _ in 0..26 {
+        e.process(&mut out, &[]);
+    }
+    let energy: f32 = out.iter().map(|f| f[0] * f[0]).sum();
+    10.0 * (energy / 4096.0).max(1e-30).log10()
+}
+
+#[test]
+fn a_script_moves_a_playing_reverbs_time() {
+    let short = reverb_tail("on init\nend on");
+    // RV2_TIME 500000 is x = 0.5: 0.5·e^(3.7·0.5) ≈ 3.2 s, set on the note as it plays.
+    let long = reverb_tail(
+        "on note
+            set_engine_par($ENGINE_PAR_RV2_TIME, 500000, -1, 0, $NI_INSERT_BUS)
+        end on",
+    );
+    assert!(long > short + 10.0, "short {short} dB, long {long} dB");
+}

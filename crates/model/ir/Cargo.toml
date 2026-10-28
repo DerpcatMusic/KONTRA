@@ -5,5 +5,8 @@ edition.workspace = true
 license = "Apache-2.0"
 publish = false
 
+[dependencies]
+kontra-law = { path = "../../base/law" }
+
 [lints]
 workspace = true

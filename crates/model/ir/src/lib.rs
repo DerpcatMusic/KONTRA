@@ -6,6 +6,9 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod reverb;
+pub use reverb::{Law, ReverbPar};
+
 #[derive(Clone, Debug)]
 pub struct Instrument {
     pub name: String,

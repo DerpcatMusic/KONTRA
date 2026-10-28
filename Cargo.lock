@@ -2461,6 +2461,9 @@ dependencies = [
 [[package]]
 name = "kontra-ir"
 version = "0.0.0"
+dependencies = [
+ "kontra-law",
+]
 
 [[package]]
 name = "kontra-ksp"

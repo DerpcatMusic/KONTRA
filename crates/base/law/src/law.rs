@@ -12,6 +12,8 @@ pub enum Law {
     Exp { lo: f32, hi: f32 },
     /// Linear in decibels from `lo` to `hi`, evaluated as linear gain.
     Db { lo: f32, hi: f32 },
+    /// `lo + (hi − lo) · x^exponent`: a power taper (a reverb damping knob: `x^¼`).
+    Power { lo: f32, hi: f32, exponent: f32 },
     /// Evenly spaced values over `0..=1`, linearly interpolated.
     Table(Arc<[f32]>),
     /// `(x, y, curve)` points with `x` strictly increasing. `curve` bends the segment that
@@ -40,6 +42,7 @@ impl Law {
             Self::Linear { lo, hi } => lo * (1.0 - x) + hi * x,
             Self::Exp { lo, hi } => lo.powf(1.0 - x) * hi.powf(x),
             Self::Db { lo, hi } => 10f32.powf((lo * (1.0 - x) + hi * x) / 20.0),
+            Self::Power { lo, hi, exponent } => lo + (hi - lo) * x.powf(*exponent),
             Self::Table(values) => table_at(values, x),
             Self::Breakpoints(points) => breakpoints_at(points, x),
             Self::Formula(id) => match *id {},
@@ -174,6 +177,18 @@ mod tests {
         let points = Law::Breakpoints(Arc::from([(0.0, 0.1, 2.0), (1.0, 0.9, 0.0)]));
         assert_eq!(points.eval(0.0), 0.1);
         assert_eq!(points.eval(1.0), 0.9);
+    }
+
+    #[test]
+    fn power_taper_is_x_to_the_exponent() {
+        let law = Law::Power {
+            lo: 0.0,
+            hi: 1.0,
+            exponent: 0.25,
+        };
+        assert_eq!(law.eval(0.0), 0.0);
+        assert!((law.eval(0.0625) - 0.5).abs() < 1e-6);
+        assert_eq!(law.eval(1.0), 1.0);
     }
 
     #[test]
