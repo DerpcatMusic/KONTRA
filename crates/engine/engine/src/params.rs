@@ -360,6 +360,18 @@ impl Engine {
     }
 }
 
+/// A route's live intensity, signed by its invert flag.
+fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
+    match kind {
+        ir::ModKind::Volume { intensity, .. } => Some(intensity),
+        ir::ModKind::Pitch { depth, .. }
+        | ir::ModKind::Cutoff { depth, .. }
+        | ir::ModKind::SampleStart { depth, .. } => Some(depth),
+        ir::ModKind::Pan { amount, .. } => Some(amount),
+        ir::ModKind::Envelope => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{attack_shape, attack_x, stage_ms, stage_x};
@@ -379,17 +391,5 @@ mod tests {
         for x in [0.0, 0.25, 0.8, 1.0] {
             assert!((stage_x(25_000.0, stage_ms(25_000.0, x)) - x).abs() < 1e-9);
         }
-    }
-}
-
-/// A route's live intensity, signed by its invert flag.
-fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
-    match kind {
-        ir::ModKind::Volume { intensity, .. } => Some(intensity),
-        ir::ModKind::Pitch { depth, .. }
-        | ir::ModKind::Cutoff { depth, .. }
-        | ir::ModKind::SampleStart { depth, .. } => Some(depth),
-        ir::ModKind::Pan { amount, .. } => Some(amount),
-        ir::ModKind::Envelope => None,
     }
 }
