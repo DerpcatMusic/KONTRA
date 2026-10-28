@@ -156,6 +156,10 @@ fn network(hall: bool) -> ir::ReverbNetwork {
         level: [4.0, 0.5],
         shelf_hz: 200.0,
         rate: 44_100.0,
+        // Wrapper 0x141aa15c7: above 48 kHz (0x473b8000) the core runs at
+        // rate / ⌊rate·f32(1/44100)⌋ (0x37be37c6); other divisions run at
+        // the host rate (the native quintic mode, not copied).
+        max_rate: 48_000.0,
     }
 }
 

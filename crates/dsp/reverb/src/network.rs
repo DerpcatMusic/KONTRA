@@ -5,6 +5,7 @@
 use crate::Settings;
 use crate::fade::{Fade, flush};
 use crate::fdn::{MAX_PREDELAY_MS, MAX_SIZE};
+use crate::resample::{BLOCK, Pair};
 use kontra_law::{NETWORK_LINES as LINES, ReverbNetwork};
 use std::f64::consts::PI;
 
@@ -98,6 +99,8 @@ impl Unit {
 pub struct Network {
     law: &'static ReverbNetwork,
     fade: Fade,
+    /// Above the law's highest rate, the network runs between this pair.
+    pair: Option<Pair>,
     /// Prime table up to the longest line.
     primes: Box<[u32]>,
     lines: Box<[Line]>,
@@ -129,7 +132,12 @@ impl Network {
     /// Not real-time: allocates the lines for the largest size and predelay.
     #[must_use]
     pub fn new(law: &'static ReverbNetwork, s: Settings, rate: u32) -> Self {
-        let host = rate.max(1) as f32;
+        let rate = rate.max(1);
+        let n = (rate as f32 * (1.0 / law.rate)) as u32;
+        let pair = (rate as f32 > law.max_rate && n > 1 && rate.is_multiple_of(n))
+            .then(|| Pair::new(n as usize));
+        // The rate the lines run at.
+        let host = if pair.is_some() { rate / n } else { rate } as f32;
         let primes = primes(law, MAX_SIZE);
         let longest = lengths(law, &primes, MAX_SIZE);
         let lines = longest
@@ -167,6 +175,7 @@ impl Network {
         let mut n = Self {
             law,
             fade: Fade::new(s, host),
+            pair,
             primes,
             lines,
             row,
@@ -278,6 +287,18 @@ impl Network {
 
     /// Replaces `io` with the reverb (the wet path only).
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        match self.pair.take() {
+            Some(mut pair) => {
+                for chunk in io.chunks_mut(BLOCK) {
+                    pair.process(chunk, |low| self.run(low));
+                }
+                self.pair = Some(pair);
+            }
+            None => self.run(io),
+        }
+    }
+
+    fn run(&mut self, io: &mut [[f32; 2]]) {
         for frame in io {
             let (gain, pending) = self.fade.tick();
             if let Some(s) = pending {

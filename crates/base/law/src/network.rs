@@ -40,4 +40,7 @@ pub struct ReverbNetwork {
     pub shelf_hz: f32,
     /// The rate its frames and filters are designed for.
     pub rate: f32,
+    /// Above this host rate it runs at `rate / n`, `n = ⌊host / rate⌋`,
+    /// between a resampler pair (when `n` divides the host rate).
+    pub max_rate: f32,
 }
