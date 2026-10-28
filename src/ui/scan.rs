@@ -303,6 +303,8 @@ fn render(
                 let mut ui = theme::ui();
                 let deadline = Instant::now() + Duration::from_secs(15);
                 let mut settled = 0;
+                // The first frame laid out, whatever pictures are still decoding.
+                let mut first: Option<(f64, usize)> = None;
                 while settled < 2 {
                     if Instant::now() > deadline {
                         return Ok(json!({"incomplete":true,"stage":"asset-preparation",
@@ -342,6 +344,7 @@ fn render(
                     let pending = native
                         .as_ref()
                         .map_or_else(|| assets.pending(), |n| n.pending());
+                    first.get_or_insert((start.elapsed().as_secs_f64() * 1000., pending));
                     if pending == 0 {
                         settled += 1;
                     } else {
@@ -402,6 +405,8 @@ fn render(
                 let mut report = metrics::pixels(&rgba);
                 report["ui_first_frame_ms"] = json!(first_frame_ms);
                 report["ui_settled_ms"] = json!(settled_ms);
+                report["ui_first_layout_ms"] = json!(first.map(|f| f.0));
+                report["ui_first_pending"] = json!(first.map(|f| f.1));
                 report["ui_paint_ms"] = json!(painting.elapsed().as_secs_f64() * 1000.);
                 report["ui_idle_frame_ms"] = json!(idle.get(idle.len() / 2));
                 let color = face.pages[p].background.color.map(|c| [c.r, c.g, c.b, c.a]);
