@@ -105,19 +105,23 @@ fn lofi(bits: f32, frequency: f32, noise: f32, color: f32) -> ir::EffectKind {
 
 /// A route to module parameter `param` of group insert `insert`, through
 /// the knob law of the effect it moves; none when `param` is not one of
-/// these effects'.
+/// these effects'. The modulation compiler (FUN_140873040) emits
+/// `$in + E·intensity` on the target's own value: Saturation's path
+/// (FUN_140aa4d20) clamps it to the signed shape, Lo-Fi's (FUN_140aa34b0)
+/// reads bits as 16·v and the hold from the frequency knob, both refreshed
+/// every 32 frames. Distortion (0x40) is outside the compiler's signed
+/// families, so it reads an LFO in its unipolar view.
 pub(crate) fn route(
     source: ir::Source,
     insert: u8,
-    param: &str,
+    name: &str,
     intensity: f32,
 ) -> Option<ir::ModKind> {
-    let (param, scale) = match param {
+    let (param, scale) = match name {
         "formantTalk" => (ir::EffectParam::FormantTalk, 1.0),
         "formantSize" => (ir::EffectParam::FormantSize, 1.0),
-        // Saturation's shape is 2v − 1.
-        "shaper" => (ir::EffectParam::ShaperAmount, 2.0),
-        "distortionIntensity" => (ir::EffectParam::ShaperAmount, 1.0),
+        "formantSharp" => (ir::EffectParam::FormantSharp, 1.0),
+        "shaper" | "distortionIntensity" => (ir::EffectParam::ShaperAmount, 1.0),
         "bitdepth" => (ir::EffectParam::CrushBits, 16.0),
         "downsample" => (ir::EffectParam::CrushRate, 1.0),
         _ => return None,
@@ -127,29 +131,22 @@ pub(crate) fn route(
         insert,
         param,
         depth: intensity * scale,
+        unipolar: param == ir::EffectParam::ShaperAmount && name == "distortionIntensity",
     })
 }
 
-/// A resonance route to a formant insert moves its sharpness (Kontakt
-/// names both `filterQ`).
-pub(crate) fn formant_q(inserts: &[Option<ir::Effect>], mods: &mut [ir::Mod]) {
+/// Reports resonance routes to a formant insert: the target table
+/// (FUN_140a6d410) gives the formant its own `formantSharp` (0x26), and
+/// what `filterQ` (0x20) does there is not read yet.
+pub(crate) fn formant_q(inserts: &[Option<ir::Effect>], mods: &[ir::Mod], notes: &mut Notes) {
     for m in mods {
-        if let ir::ModKind::Resonance {
-            source,
-            insert,
-            depth,
-        } = m.kind
+        if let ir::ModKind::Resonance { insert, .. } = m.kind
             && inserts
                 .get(usize::from(insert))
                 .and_then(Option::as_ref)
                 .is_some_and(|e| matches!(e.kind, ir::EffectKind::Formant(_)))
         {
-            m.kind = ir::ModKind::EffectParam {
-                source,
-                insert,
-                param: ir::EffectParam::FormantSharp,
-                depth,
-            };
+            notes.add(ir::Impact::Audible, "modulator -> formant filterQ", &m.name);
         }
     }
 }
@@ -196,7 +193,7 @@ mod tests {
             }) => Some(depth),
             _ => None,
         };
-        assert_eq!(depth("shaper"), Some(1.0));
+        assert_eq!(depth("shaper"), Some(0.5));
         assert_eq!(depth("bitdepth"), Some(8.0));
         assert_eq!(depth("formantTalk"), Some(0.5));
         assert_eq!(depth("volume"), None);
