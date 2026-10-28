@@ -289,7 +289,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
         })
         .collect();
-    first.push(on.clone());
+    first.push(on);
     for n in 0..(4 * RATE as usize / 512) {
         let input: &[Timed<Event>] = match n {
             0 => &first,
