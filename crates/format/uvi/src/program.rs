@@ -229,6 +229,42 @@ impl<L: Library> Translator<'_, '_, L> {
                     "",
                 );
             }
+            // ponytail: an oscillator's pitch routes move its whole
+            // keygroup; split groups when a keygroup's players differ.
+            let routes = player
+                .children()
+                .filter(|c| c.has_tag_name("Connections"))
+                .flat_map(|c| c.children())
+                .filter_map(|c| modulation::pitch_route(self.program, c))
+                .filter(|r| r.semitones != 0.0);
+            for r in routes {
+                let mut source = r.source;
+                if let Some(lfo) = r.lfo {
+                    let n = group
+                        .lfos
+                        .iter()
+                        .position(|l| *l == lfo)
+                        .unwrap_or_else(|| {
+                            group.lfos.push(lfo);
+                            group.lfos.len() - 1
+                        });
+                    source = ir::Source::Lfo(u8::try_from(n).unwrap_or(u8::MAX));
+                }
+                let route = ir::Mod {
+                    name: String::new(),
+                    slot: 0,
+                    target: 0,
+                    bypass: false,
+                    kind: ir::ModKind::Pitch {
+                        source,
+                        semitones: r.semitones,
+                        depth: 1.0,
+                    },
+                };
+                if !group.mods.contains(&route) {
+                    group.mods.push(route);
+                }
+            }
             let zones = self.player(player, placement, &span)?;
             group
                 .zones
@@ -498,6 +534,7 @@ impl<L: Library> Translator<'_, '_, L> {
         {
             if modulation::script_route(self.program, connection).is_some()
                 || filters::freq_route(connection).is_some()
+                || modulation::pitch_route(self.program, connection).is_some()
             {
                 continue;
             }
