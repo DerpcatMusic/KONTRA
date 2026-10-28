@@ -269,7 +269,7 @@ pub(crate) fn lfo(l: &Lfo, clock: ir::Clock) -> Option<ir::Lfo> {
                 .trailing_values
                 .filter(|w| w.iter().all(|v| v.is_finite()))?;
             ir::Wave::Multi {
-                weights: [sine, saw, triangle, pulse, random],
+                weights: [sine, saw, triangle, pulse, random, 0.0],
                 width,
                 normalize: l.records[0].flag,
             }

@@ -237,7 +237,7 @@ pub(super) fn route(
     })
 }
 
-/// A bipolar `LFO`, or a sine-and-noise `MultiLFO`, with no delay or rise, as an LFO
+/// A bipolar `LFO` or `MultiLFO` ([`multi`]), with no delay or rise, as an LFO
 /// and its signed depth: `Depth·x`. The registry (UVIWorkstation 0x1410f5d00)
 /// names `WaveFormType` Sinus, Square, Triangle, RampUp, RampDown, ... and
 /// `Retrigger` No Retrigger, Retrigger, Legato, Song; a synchronized `Freq` is
@@ -260,29 +260,8 @@ pub(super) fn lfo(node: Node) -> Option<(ir::Lfo, f32)> {
             4.0 => (ir::Wave::Saw, 1.0),
             _ => return None,
         }
-    } else if node.has_tag_name("MultiLFO")
-        && num(node, "SineDepth", 0.0).ok()? == 1.0
-        && ["TriangleDepth", "SawDepth", "SquareDepth", "Invert"]
-            .into_iter()
-            .all(unset)
-        && flag(node, "NormalizeOutput")
-    {
-        // Measured (v1, UVI_MULTILFO_ENDPOINT_EVIDENCE.md): `(sin + n·noise)/(1 + n)`,
-        // a new uniform noise value each half cycle.
-        let noise = num(node, "NoiseDepth", 0.0).ok()? as f32;
-        if !(0.0..=1.0).contains(&noise) {
-            return None;
-        }
-        let wave = if noise == 0.0 {
-            ir::Wave::Sine
-        } else {
-            ir::Wave::Multi {
-                weights: [-1.0, 0.0, 0.0, 0.0, noise],
-                width: 0.5,
-                normalize: true,
-            }
-        };
-        (wave, 1.0)
+    } else if node.has_tag_name("MultiLFO") {
+        (multi(node)?, 1.0)
     } else {
         return None;
     };
@@ -311,6 +290,60 @@ pub(super) fn lfo(node: Node) -> Option<(ir::Lfo, f32)> {
         lfo,
         sign * num(node, "Depth", 1.0).ok()?.clamp(0.0, 1.0) as f32,
     ))
+}
+
+/// A `MultiLFO`'s mix at phase `p` (process UVIWorkstation 0x1411497f0):
+/// `s·sin 2πp + t·tri + w·(1 − 2p) + q·pulse + n·noise`, the triangle from
+/// +1 at 0 and the pulse high below `PulseWidth`, the noise a new uniform
+/// draw each half cycle, all negated by `Invert`. `NormalizeOutput` divides
+/// by the mix's peak when it passes 1 (0x14114a7a0 evaluates the waves at
+/// their extrema and adds `|n|`); here that is folded into the weights.
+fn multi(node: Node) -> Option<ir::Wave> {
+    let depth = |name| num(node, name, 0.0).ok().map(|d| d as f32);
+    let (s, t, w, q, n) = (
+        depth("SineDepth")?,
+        depth("TriangleDepth")?,
+        depth("SawDepth")?,
+        depth("SquareDepth")?,
+        depth("NoiseDepth")?,
+    );
+    let width = num(node, "PulseWidth", 0.5).ok()?.clamp(0.0, 1.0) as f32;
+    let at = |p: f32| {
+        let tri = if p < 0.5 {
+            1.0 - 4.0 * p
+        } else {
+            4.0 * p - 3.0
+        };
+        let pulse = if p < width { 1.0 } else { -1.0 };
+        s * (std::f32::consts::TAU * p).sin() + t * tri + w * (1.0 - 2.0 * p) + q * pulse
+    };
+    // Dense phases and both sides of the pulse's edges find the peak.
+    const STEPS: u16 = 4096;
+    let edges = [0.0, width - 1e-6, width, 1.0 - 1e-6];
+    let peak = (0..STEPS)
+        .map(|i| f32::from(i) / f32::from(STEPS))
+        .chain(edges)
+        .map(|p| at(p).abs())
+        .fold(0.0, f32::max)
+        + n.abs();
+    if !peak.is_finite() {
+        return None;
+    }
+    let scale = if flag(node, "NormalizeOutput") {
+        peak.max(1.0)
+    } else {
+        1.0
+    };
+    let k = if flag(node, "Invert") { -1.0 } else { 1.0 } / scale;
+    Some(if (s, t, w, q, n, k) == (1.0, 0.0, 0.0, 0.0, 0.0, 1.0) {
+        ir::Wave::Sine
+    } else {
+        ir::Wave::Multi {
+            weights: [-s * k, 0.0, -t * k, -q * k, n * k, w * k],
+            width,
+            normalize: false,
+        }
+    })
 }
 
 /// An `AHD` as breakpoints from 0: to 1 over `AttackTime`, holding 1 for

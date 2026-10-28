@@ -156,7 +156,7 @@ pub(crate) fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
         ir::Wave::Square { width } => pulse(width),
         ir::Wave::Random => random(),
         ir::Wave::Multi {
-            weights: [w0, w1, w2, w3, w4],
+            weights: [w0, w1, w2, w3, w4, w5],
             width,
             normalize,
         } => {
@@ -166,8 +166,13 @@ pub(crate) fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
             } else {
                 4.0 * (0.75 - p)
             };
-            let y = -w0 * sine + w1 * saw + w2 * triangle - w3 * pulse(width) + w4 * random();
-            let sum = w0.abs() + w1.abs() + w2.abs() + w3.abs() + w4.abs();
+            let y = -w0 * sine + w1 * saw + w2 * triangle - w3 * pulse(width)
+                + w4 * random()
+                + w5 * (1.0 - 2.0 * p);
+            let sum = [w0, w1, w2, w3, w4, w5]
+                .iter()
+                .map(|w| w.abs())
+                .sum::<f32>();
             if normalize { y / sum.max(1.0) } else { y }
         }
     };
@@ -266,9 +271,9 @@ mod tests {
             },
             ..l
         };
-        let sine = multi([1.0, 0.0, 0.0, 0.0, 0.0], false);
+        let sine = multi([1.0, 0.0, 0.0, 0.0, 0.0, 0.0], false);
         assert!((lfo(&sine, at(0.05, None), 0, 120.0) + 1.0).abs() < 1e-4);
-        let both = multi([1.0, 0.0, 1.0, 0.0, 0.0], true);
+        let both = multi([1.0, 0.0, 1.0, 0.0, 0.0, 0.0], true);
         // At a quarter cycle: (−1 + 0) / 2.
         assert!((lfo(&both, at(0.05, None), 0, 120.0) + 0.5).abs() < 1e-4);
     }

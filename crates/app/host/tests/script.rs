@@ -495,7 +495,7 @@ fn script_knobs_set_effect_and_lfo_controls_through_their_laws() {
     let g = &mut plan.groups[0];
     g.lfos = vec![ir::Lfo {
         wave: ir::Wave::Multi {
-            weights: [0.0; 5],
+            weights: [0.0; 6],
             width: 0.5,
             normalize: true,
         },
