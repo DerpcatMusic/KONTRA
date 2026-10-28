@@ -1,6 +1,6 @@
 //! What a script did since load, for diagnostics and the parity tools.
 
-use kontra_vm::{Action, HostApi, HostCall, Instance, Text};
+use kontra_vm::{Action, HostApi, HostCall, Text};
 
 use crate::Engine;
 
@@ -90,7 +90,11 @@ impl Engine {
     /// Runtime faults of each script slot, counted since load.
     #[must_use]
     pub fn script_faults(&self) -> Vec<kontra_vm::Faults> {
-        self.vms.iter().flatten().map(Instance::faults).collect()
+        self.vms
+            .iter()
+            .flatten()
+            .map(crate::machine::Vm::faults)
+            .collect()
     }
 }
 

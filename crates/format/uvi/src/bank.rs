@@ -128,6 +128,16 @@ impl Bank {
 }
 
 impl crate::program::Library for Bank {
+    fn modules(&self) -> Vec<(String, Vec<u8>)> {
+        self.directory
+            .files
+            .iter()
+            .filter_map(|m| Some((m.path.clone()?, m)))
+            .filter(|(path, _)| path.to_ascii_lowercase().ends_with(".lua"))
+            .filter_map(|(path, m)| Some((path, self.read(m).ok()?)))
+            .collect()
+    }
+
     fn sample(&self, program_dir: &str, reference: &str) -> Result<ir::Sample, String> {
         let index = self
             .resolve(program_dir, reference)

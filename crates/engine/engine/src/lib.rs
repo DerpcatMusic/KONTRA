@@ -15,6 +15,7 @@ mod effects;
 mod filters;
 mod inspect;
 mod ledger;
+mod machine;
 mod midi;
 mod modulators;
 mod params;
@@ -32,13 +33,12 @@ use std::sync::Arc;
 use kontra_dsp::filter::Svf;
 use kontra_stream::StreamClient;
 use kontra_time::Frames;
-use kontra_vm::Instance;
 use kontra_voice::{Voice, VoiceStart};
 
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_time::SampleTime;
-pub use kontra_vm::{Action, Faults, Op, Program, Text};
+pub use kontra_vm::{Action, Faults, Foreign, Op, Program, Text};
 pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
 pub use plan::{
@@ -116,6 +116,11 @@ pub struct Engine {
     rate: u32,
     /// Host tempo, quarter notes per minute (tempo-synced LFOs).
     tempo: f32,
+    /// Script modulation values sent to every event, read by notes not sent
+    /// their own; while one ramps (until `ramping_until`) voices re-read routes.
+    // ponytail: eight indices; a ring when a library sends more.
+    script_mods: [Option<(u16, ledger::Ramp)>; 8],
+    ramping_until: u64,
     plan: Arc<Plan>,
     stream: StreamClient,
     queue: EventQueue,
@@ -130,7 +135,7 @@ pub struct Engine {
     ended: Vec<HostNote>,
     stats: Stats,
     /// Each script slot's state; taken out while its callback runs.
-    vms: Box<[Option<Instance>]>,
+    vms: Box<[Option<machine::Vm>]>,
     running: Running,
     /// Notes through every script slot, starting once the callback returns.
     pending: Vec<NoteRef>,
@@ -227,7 +232,7 @@ impl Engine {
         let vms = plan
             .scripts
             .iter()
-            .map(|s| Some(Instance::new(&s.program, s.coroutines.max(1))))
+            .map(|s| Some(machine::Vm::new(s)))
             .collect();
         let timers = vec![[None; 2]; plan.scripts.len()].into();
         let control_pars = plan
@@ -239,6 +244,8 @@ impl Engine {
             now: SampleTime(0),
             rate: rate.max(1),
             tempo: 120.0,
+            script_mods: [None; 8],
+            ramping_until: 0,
             queue: EventQueue::new(plan.queue),
             hits: Vec::with_capacity(notes.capacity()),
             ended: Vec::with_capacity(notes.capacity()),
@@ -473,6 +480,7 @@ impl Engine {
                     .is_none_or(|g| !g.purged)
                 && zone.keys.contains(&n.key)
                 && zone.velocities.contains(&n.velocity_byte)
+                && (n.zone_slot < 0 || n.zone_slot == i32::from(zone.slot))
                 && self.buses.get(zone.bus).is_some_and(|b| b.enabled);
             if !selected
                 || !self

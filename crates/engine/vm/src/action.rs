@@ -29,6 +29,9 @@ pub mod event {
     pub const SOURCE: i32 = 11;
     /// With `*_arr`: the value for a "from script" modulator, ±1 000 000.
     pub const MOD_VALUE: i32 = 14;
+    /// Before the note starts: only zones in this slot start; -1 (the
+    /// default) starts any.
+    pub const ZONE_SLOT: i32 = 15;
 }
 
 macro_rules! actions {
@@ -136,6 +139,13 @@ actions! {
     ResetRlsTrigCounter,
     WillNeverTerminate,
     RedirectOutput,
+    /// A group's live level: `(group, millidecibels)`, at most -200 dB is
+    /// silence. The group's settings, not a note's.
+    GroupVolume,
+    /// `(group, per mille)`.
+    GroupPan,
+    /// `(group, millicents)`.
+    GroupTune,
     // Time.
     WaitTicks,
     WaitAsync,

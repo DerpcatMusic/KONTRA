@@ -9,6 +9,7 @@ use kontra_time::SampleTime;
 use kontra_vm::Step;
 
 use crate::ledger::NoteRef;
+use crate::machine::Vm;
 use crate::queue::Work;
 use crate::script::{Kind, Running, ScriptPlan, micros_to_frames};
 use crate::{Engine, Trigger};
@@ -55,27 +56,35 @@ impl Engine {
         self.start_pending();
     }
 
-    fn take_vm(&mut self, slot: u8) -> Option<kontra_vm::Instance> {
+    fn take_vm(&mut self, slot: u8) -> Option<Vm> {
         self.vms.get_mut(usize::from(slot))?.take()
     }
 
-    fn put_vm(&mut self, slot: u8, vm: kontra_vm::Instance) {
+    fn put_vm(&mut self, slot: u8, vm: Vm) {
         if let Some(cell) = self.vms.get_mut(usize::from(slot)) {
             *cell = Some(vm);
         }
     }
 
-    fn step_script(&mut self, slot: u8, vm: &mut kontra_vm::Instance, co: kontra_vm::CoId) {
+    fn step_script(&mut self, slot: u8, vm: &mut Vm, co: kontra_vm::CoId) {
         let plan = Arc::clone(&self.plan);
         let Some(script) = plan.scripts.get(usize::from(slot)) else {
             return;
         };
         if let Step::Wait(micros) = vm.run(&script.program, co, self) {
-            let at = SampleTime(self.now.0 + micros_to_frames(micros as i64, self.rate).max(1));
-            if !self.queue.push(at, Work::Resume(slot, co)) {
-                self.stats.events_refused += 1;
-                vm.cancel(co);
-            }
+            self.wake(slot, vm, co, micros);
+        }
+        while let Some((spawned, micros)) = vm.spawned() {
+            self.wake(slot, vm, spawned, micros);
+        }
+    }
+
+    /// Queues `co`'s resume `micros` from now; a full queue ends it.
+    fn wake(&mut self, slot: u8, vm: &mut Vm, co: kontra_vm::CoId, micros: u64) {
+        let at = SampleTime(self.now.0 + micros_to_frames(micros as i64, self.rate).max(1));
+        if !self.queue.push(at, Work::Resume(slot, co)) {
+            self.stats.events_refused += 1;
+            vm.cancel(co);
         }
     }
 

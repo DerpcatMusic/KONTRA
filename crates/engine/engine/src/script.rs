@@ -26,6 +26,8 @@ pub struct ScriptPlan {
     pub engine_pars: EnginePars,
     /// The translator's law for each reverb control, in `ir::ReverbPar::ALL` order.
     pub reverb_laws: [crate::ir::Law; 8],
+    /// Code in another language, run by its own machine instead of `program`.
+    pub foreign: Option<std::sync::Arc<dyn kontra_vm::Foreign>>,
 }
 
 /// The script's numbers for the engine parameters the engine answers.
@@ -380,6 +382,7 @@ impl Engine {
             event::PAN => n.script_pan,
             event::NOTE => i32::from(n.key),
             event::VELOCITY => i32::from(n.velocity_byte),
+            event::ZONE_SLOT => n.zone_slot,
             event::SOURCE => match n.origin {
                 Origin::Host => -1,
                 Origin::Child(_) | Origin::Script => i32::from(n.first) - 1,
@@ -399,6 +402,7 @@ impl Engine {
             event::TUNE => n.script_tune = value,
             event::PAN => n.script_pan = value.clamp(-1000, 1000),
             event::NOTE if !n.started => n.key = value.clamp(0, 127) as u8,
+            event::ZONE_SLOT if !n.started => n.zone_slot = value,
             event::VELOCITY if !n.started => {
                 n.velocity_byte = value.clamp(1, 127) as u8;
                 n.velocity = f64::from(n.velocity_byte) / 127.0;
@@ -420,6 +424,11 @@ impl Engine {
         self.notes
             .count(|n| n.origin == Origin::Host && i32::from(n.host.key) == key && !n.is_up())
             > 0
+    }
+
+    /// The value sent every event for "from script" modulator `index`; 0 until sent.
+    pub(crate) fn script_mod(&self, index: u16) -> i32 {
+        crate::ledger::ramp_at(&self.script_mods, index, self.now).unwrap_or(0)
     }
 
     fn random(&mut self, low: i32, high: i32) -> i32 {
@@ -458,8 +467,32 @@ impl HostApi for Engine {
             Action::EngineUptime => {
                 HostValue::Int((self.now.0 * 1000 / u64::from(self.rate)) as i32)
             }
+            Action::DurationQuarter
+            | Action::DurationEighth
+            | Action::DurationSixteenth
+            | Action::DurationQuarterTriplet
+            | Action::DurationEighthTriplet
+            | Action::DurationSixteenthTriplet
+            | Action::DurationBar => {
+                let quarter = 60e6 / f64::from(self.tempo.max(1.0));
+                // ponytail: a bar is four quarters; the host's signature is not passed in.
+                let quarters = match call.action {
+                    Action::DurationEighth => 0.5,
+                    Action::DurationSixteenth => 0.25,
+                    Action::DurationQuarterTriplet => 2.0 / 3.0,
+                    Action::DurationEighthTriplet => 1.0 / 3.0,
+                    Action::DurationSixteenthTriplet => 1.0 / 6.0,
+                    Action::DurationBar => 4.0,
+                    _ => 1.0,
+                };
+                HostValue::Int((quarter * quarters).round() as i32)
+            }
             Action::NumGroups => HostValue::Int(self.masks.groups as i32),
             Action::Random => HostValue::Int(self.random(int(0), int(1))),
+            Action::GroupVolume | Action::GroupPan | Action::GroupTune => {
+                self.set_group_level(call.action, int(0), int(1));
+                HostValue::Nothing
+            }
             Action::Message => {
                 self.last_message = call.texts.first().copied().unwrap_or(Text::EMPTY);
                 self.stats.messages += 1;
@@ -519,15 +552,38 @@ impl HostApi for Engine {
             }
             Action::SetEventParArr if int(1) == event::MOD_VALUE => {
                 if let Ok(index) = u16::try_from(int(3)) {
-                    let value = int(2);
-                    self.each(int(0), |n| n.set_mod_value(index, value));
+                    // An optional fifth argument ramps there over microseconds.
+                    let (value, now) = (int(2), self.now);
+                    let frames =
+                        u64::try_from(int(4)).unwrap_or(0) * u64::from(self.rate) / 1_000_000;
+                    let from = self.script_mod(index);
+                    if frames > 0 {
+                        // A step past the end lands the final value.
+                        let end = now.0 + frames + u64::from(self.rate / 100);
+                        self.ramping_until = self.ramping_until.max(end);
+                    }
+                    if int(0) == event::ALL {
+                        // Sent to every event: notes that start later read it too.
+                        crate::ledger::set_ramp(
+                            &mut self.script_mods,
+                            index,
+                            value,
+                            now,
+                            frames,
+                            from,
+                        );
+                    }
+                    self.each(int(0), |n| n.set_mod_value(index, value, now, frames, from));
                 }
                 HostValue::Nothing
             }
             Action::GetEventParArr if int(1) == event::MOD_VALUE => {
                 let note = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
                 let index = u16::try_from(int(2)).ok();
-                HostValue::Int(note.zip(index).map_or(0, |(n, i)| n.mod_value(i)))
+                HostValue::Int(note.zip(index).map_or(0, |(n, i)| {
+                    n.mod_value(i, self.now)
+                        .unwrap_or_else(|| self.script_mod(i))
+                }))
             }
             Action::GetEventParArr if int(1) == event::ALLOW_GROUP => {
                 let slot = NoteRef::from_event_id(int(0)).map(NoteRef::slot);

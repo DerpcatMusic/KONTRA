@@ -37,10 +37,11 @@ impl Engine {
         }
     }
 
-    /// Re-reads envelopes and LFOs for voices whose group has any; once per
-    /// [`MAX_SPAN`] grid step.
+    /// Re-reads envelopes and LFOs for voices whose group has any, and every
+    /// voice while a script modulation ramps; once per [`MAX_SPAN`] grid step.
     pub(crate) fn refresh_timed(&mut self) {
         let plan = self.plan.clone();
+        let ramping = self.now.0 < self.ramping_until;
         for i in 0..self.voices.len() {
             let Some(slot) = self.voices.get(i) else {
                 continue;
@@ -48,10 +49,11 @@ impl Engine {
             let Some(zone) = plan.zones.get(slot.zone) else {
                 continue;
             };
-            let timed = self
-                .groups
-                .get(zone.group as usize)
-                .is_some_and(|g| !g.envelopes.is_empty() || !g.lfos.is_empty());
+            let timed = ramping
+                || self
+                    .groups
+                    .get(zone.group as usize)
+                    .is_some_and(|g| !g.envelopes.is_empty() || !g.lfos.is_empty());
             let n = slot.note.and_then(|n| self.notes.get(n).copied());
             let (Some(n), true, true) = (n, timed, slot.voice.is_active()) else {
                 continue;

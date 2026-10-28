@@ -3,6 +3,7 @@ name = "kontra-lua"
 version = "0.0.0"
 edition.workspace = true
 publish = false
+license = "Apache-2.0"
 
 [lints]
 workspace = true
@@ -11,3 +12,5 @@ workspace = true
 kontra-events = { path = "../../model/events" }
 kontra-ui-model = { path = "../../model/ui-model" }
 kontra-vm = { path = "../../engine/vm" }
+mlua = { version = "=0.12.2", features = ["luau", "send"] }
+rlsf = "0.2.3"

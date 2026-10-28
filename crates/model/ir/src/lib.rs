@@ -498,6 +498,8 @@ pub enum Curve {
     Depth { power: u8 },
     /// [`Self::Depth`] at power 1 on `x²`; a negative intensity reads `1 − x²`.
     Squared,
+    /// `1 − x × intensity`: the gain falls from unity as the source rises.
+    Falling,
 }
 
 impl Curve {
@@ -514,6 +516,7 @@ impl Curve {
                 let x = if intensity < 0.0 { 1.0 - x * x } else { x * x };
                 (1.0 - (1.0 - x) * intensity.abs()).max(0.0)
             }
+            Self::Falling => (1.0 - x * intensity).max(0.0),
         }
     }
 }
@@ -607,6 +610,9 @@ pub struct Zone {
     /// Loops in play order. Each is entered when the playhead reaches its end.
     pub loops: Vec<Loop>,
     pub reverse: bool,
+    /// The zone's place among the zones of its group that share its keys; a
+    /// note that names a slot starts only the zones in it.
+    pub slot: u16,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -749,10 +755,11 @@ pub struct Script {
     pub name: String,
     pub dialect: Dialect,
     pub source: String,
-    /// Saved persistent values in the dialect's own form.
+    /// Saved persistent values in the dialect's own form (Lua: `widget=value`).
     pub saved: Vec<String>,
     /// Library data files the script loads (Kontakt `load_array(%x, 2)`:
-    /// `data/x.nka`), by lowercase array name without its sigil.
+    /// `data/x.nka`), by lowercase array name without its sigil. Lua: the
+    /// modules `require` may load, by their path in the library.
     pub data: Vec<(String, Vec<u8>)>,
 }
 

@@ -702,5 +702,6 @@ fn translate_zone(
         start_mod: u64::try_from(z.sample_start_mod_range).unwrap_or(0),
         loops: found,
         reverse,
+        slot: 0,
     })
 }
