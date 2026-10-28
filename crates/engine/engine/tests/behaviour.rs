@@ -1128,6 +1128,7 @@ fn a_route_moves_a_group_waveshapers_amount_per_voice() {
                 insert: 0,
                 param: EffectParam::ShaperAmount,
                 depth: 1.0,
+                unipolar: false,
             },
         }];
         let mut e = Engine::new(Arc::new(plan), store.client(), RATE);

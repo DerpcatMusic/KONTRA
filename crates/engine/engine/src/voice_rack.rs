@@ -324,10 +324,16 @@ impl Engine {
                 insert: i,
                 param,
                 depth,
+                unipolar,
             } = m.kind
                 && i == insert
             {
-                let amount = self.source(zone, source, note, age).unwrap_or(0.0) * depth;
+                let x = self.source(zone, source, note, age).unwrap_or(0.0);
+                let x = match source {
+                    ir::Source::Lfo(_) if unipolar => (x + 1.0) * 0.5,
+                    _ => x,
+                };
+                let amount = x * depth;
                 param.add(&mut kind, amount);
             }
         }

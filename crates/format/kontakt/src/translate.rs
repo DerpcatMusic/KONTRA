@@ -79,7 +79,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
         let mut g = t.group;
         g.inserts = crate::effects::group(group, index, &mut impulses, &mut notes);
-        crate::drive::formant_q(&g.inserts, &mut g.mods);
+        crate::drive::formant_q(&g.inserts, &g.mods, &mut notes);
         // ponytail: a filter a modulator moves passes unfiltered until filters
         // run per voice; its routes are reported.
         for slot in t.modulated {
