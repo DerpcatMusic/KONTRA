@@ -536,6 +536,7 @@ fn a_script_moves_a_playing_reverbs_time() {
         end on",
     );
     assert!(long > short + 10.0, "short {short} dB, long {long} dB");
+}
 
 /// One 0.5-level zone under a Lua script.
 fn lua_engine(store: &mut Store, source: &str) -> Engine {

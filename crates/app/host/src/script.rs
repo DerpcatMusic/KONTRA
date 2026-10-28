@@ -230,6 +230,8 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         coroutines: COROUTINES,
         controls: Controls::default(),
         engine_pars: EnginePars::default(),
+        // No reverb parameter ids are bound, so these are never read.
+        reverb_laws: std::array::from_fn(|_| kontra_engine::ir::Law::Linear { lo: 0.0, hi: 1.0 }),
         data: Vec::new(),
         restore: Vec::new(),
         restore_texts: Vec::new(),
