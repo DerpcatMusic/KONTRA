@@ -30,6 +30,51 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
             lin(0.0, 1.0),
         ),
         (
+            "$ENGINE_PAR_FREQ1",
+            Slot(ir::SlotKnob::BandHz(0)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_BW1",
+            Slot(ir::SlotKnob::BandWidth(0)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_GAIN1",
+            Slot(ir::SlotKnob::BandGain(0)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FREQ2",
+            Slot(ir::SlotKnob::BandHz(1)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_BW2",
+            Slot(ir::SlotKnob::BandWidth(1)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_GAIN2",
+            Slot(ir::SlotKnob::BandGain(1)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FREQ3",
+            Slot(ir::SlotKnob::BandHz(2)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_BW3",
+            Slot(ir::SlotKnob::BandWidth(2)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_GAIN3",
+            Slot(ir::SlotKnob::BandGain(2)),
+            lin(0.0, 1.0),
+        ),
+        (
             "$ENGINE_PAR_COMP_ATTACK",
             Slot(ir::SlotKnob::Attack),
             lin(0.0, 1.0),
@@ -177,6 +222,51 @@ pub(crate) fn compressor_knobs(mode: i32, saved: [f32; 4], link: bool) -> Vec<Sl
     out
 }
 
+/// The 1/2/3-band EQ's saved Hz, octaves and dB for a knob `x`: 20·1000^x
+/// Hz, 1/3 + 8x/3 octaves, −18 + 36x dB, exact at x = 0, .1, .25, .5, .75,
+/// .9, 1 (probes/eq_knob_laws.lua).
+const EQ_SAVED: [ir::Law; 3] = [
+    ir::Law::Exp {
+        lo: 20.0,
+        hi: 20_000.0,
+    },
+    ir::Law::Linear {
+        lo: 1.0 / 3.0,
+        hi: 3.0,
+    },
+    ir::Law::Linear {
+        lo: -18.0,
+        hi: 18.0,
+    },
+];
+
+/// Each band's frequency, bandwidth and gain knobs: the saved value through
+/// [`crate::laws::eq_band`], the band's other values held.
+pub(crate) fn eq_knobs(saved: &[[f32; 3]]) -> Vec<SlotKnob> {
+    use ir::EffectParam::{BellGain, BellHz, BellQ};
+    let mut out = Vec::new();
+    for (n, band) in saved.iter().enumerate() {
+        let Ok(b) = u8::try_from(n) else { break };
+        let knobs = [
+            (ir::SlotKnob::BandHz(b), BellHz(b)),
+            (ir::SlotKnob::BandWidth(b), BellQ(b)),
+            (ir::SlotKnob::BandGain(b), BellGain(b)),
+        ];
+        for ((knob, field), (k, law)) in knobs.into_iter().zip(EQ_SAVED.iter().enumerate()) {
+            let eq = |x| {
+                let mut v = *band;
+                *v.get_mut(k)? = law.eval(x);
+                let [hz, octaves, db] = v;
+                let mut bands = [ir::Bell::FLAT; 4];
+                *bands.get_mut(n)? = crate::laws::eq_band(hz, octaves, db)?;
+                Some(ir::EffectKind::Eq(bands))
+            };
+            out.extend(sampled(knob, &[field], &eq));
+        }
+    }
+    out
+}
+
 /// Each of `fields` that moves in the effect `build` makes for a knob at 65
 /// settings, as a table.
 fn sampled(
@@ -251,6 +341,28 @@ mod tests {
                     "{mode} {x}: {got} vs {want}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn the_eq_knobs_land_on_the_bands_kontakt_saves() {
+        let knobs = eq_knobs(&[[1000.0, 1.0, 0.0], [100.0, 2.0, 6.0]]);
+        let law = |knob| &knobs.iter().find(|(k, _, _)| *k == knob).unwrap().2;
+        // (x, saved Hz, octaves, dB), probes/eq_knob_laws.lua.
+        for (x, hz, octaves, db) in [
+            (0.1, 39.905_247, 0.6, -14.4),
+            (0.5, 632.455_5, 1.666_666_7, 0.0),
+            (0.9, 10_023.743, 2.733_333_3, 14.4),
+        ] {
+            let want = crate::laws::eq_band(hz, 2.0, 6.0).unwrap().hz;
+            let got = law(ir::SlotKnob::BandHz(1)).eval(x);
+            assert!((got / want - 1.0).abs() < 3e-3, "{x}: {got} vs {want}");
+            let want = crate::laws::eq_band(1000.0, octaves, 0.0).unwrap().q;
+            let got = law(ir::SlotKnob::BandWidth(0)).eval(x);
+            assert!((got / want - 1.0).abs() < 3e-3, "{x}: {got} vs {want}");
+            let want = crate::laws::eq_band(1000.0, 1.0, db).unwrap().gain_db;
+            let got = law(ir::SlotKnob::BandGain(0)).eval(x);
+            assert!((got - want).abs() < 0.05, "{x}: {got} vs {want}");
         }
     }
 }

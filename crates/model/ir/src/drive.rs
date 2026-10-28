@@ -86,6 +86,10 @@ pub enum EffectParam {
     TransientAttack,
     TransientSustain,
     TransientGain,
+    /// An [`EffectKind::Eq`] band's centre Hz, Q and gain, by band.
+    BellHz(u8),
+    BellQ(u8),
+    BellGain(u8),
     /// A [`crate::Filter`]'s cutoff Hz.
     FilterHz,
     /// One of a [`crate::Filter`]'s stage dampings, by stage.
@@ -122,6 +126,9 @@ impl EffectParam {
             (Self::TransientAttack, EffectKind::Transient(t)) => &mut t.attack,
             (Self::TransientSustain, EffectKind::Transient(t)) => &mut t.sustain,
             (Self::TransientGain, EffectKind::Transient(t)) => &mut t.gain_db,
+            (Self::BellHz(n), EffectKind::Eq(b)) => &mut b.get_mut(usize::from(n))?.hz,
+            (Self::BellQ(n), EffectKind::Eq(b)) => &mut b.get_mut(usize::from(n))?.q,
+            (Self::BellGain(n), EffectKind::Eq(b)) => &mut b.get_mut(usize::from(n))?.gain_db,
             (Self::FilterHz, EffectKind::Filter(f)) => &mut f.hz,
             (Self::FilterDamping(n), EffectKind::Filter(f)) => f.damping.get_mut(usize::from(n))?,
             (Self::FilterGain, EffectKind::Filter(f)) => &mut f.gain,
@@ -172,6 +179,10 @@ pub enum SlotKnob {
     Resonance,
     Attack,
     Release,
+    /// An EQ band's frequency, bandwidth and gain knobs, by band.
+    BandHz(u8),
+    BandWidth(u8),
+    BandGain(u8),
 }
 
 /// The rack a [`SlotLaw`]'s slot is in.
