@@ -123,6 +123,29 @@ decode-bound: 175 frames cut from 49 files on one thread, 302 ms. Next, the
 `kontra-ui` picture store decodes each file once by content, on a small
 pool, visible page first.
 
+The v3 Original view (`kontra-ui`, #936), measured with `tools/ui-shots`
+on the same instruments; v2 → **v3**. *Idle widgets built* counts the
+widget memos an idle frame rebuilt; *knob moved* is one shown knob set
+to 1.
+
+| Library | widgets | first frame ms (pictures pending): v2 → v3 | settled ms: v2 → v2 unbounded → v3 | paint ms | idle µs | idle widgets built | knob moved: widgets built | images MB | peak RSS MB (whole process) |
+|---|---|---|---|---|---|---|---|---|---|
+| Afflatus Chapter II Brass | 161 | 3.0 (75) → **0.6 (24)** | 198 → 16 → **4** | 17 → **2** | 87 → **126** | **0** | 0 | 2.0 → **0.1** | 3229 → **2907** |
+| ANALOG STRINGS | 934 | 4.8 (175) → **0.6 (58)** | 847 → 313 → **134** | 16 → **3** | 247 → **141** | **0** | 4 | 4.6 → **4.5** | 1837 → **344** |
+| Areia 1.2.0 | 847 | 2.8 (53) → **0.8 (28)** | 123 → 14 → **7** | 8 → **2** | 64 → **149** | **0** | 8 | 2.1 → **1.9** | 1931 → **1886** |
+| Audio Imperia CHORUS | 572 | 3.0 (59) → **0.7 (25)** | 131 → 13 → **7** | 7 → **2** | 57 → **119** | **0** | 10 | 2.1 → **1.9** | 1489 → **886** |
+| Audio Imperia Dolce | 690 | 2.4 (48) → **0.6 (20)** | 104 → 13 → **8** | 7 → **2** | 65 → **49** | **0** | 8 | 2.0 → **1.8** | 1185 → **993** |
+| Conflux 1.1.0 | 378 | 1.0 (1) → **2.0 (8)** | 102 → 105 → **4** | 30 → **5** | 7220 → **488** | **0** | 0 | 7.0 → **0.0** | 5245 → **88** |
+| Morphology Evolved | 671 | 3.5 (167) → **0.4 (31)** | 586 → 29 → **19** | 21 → **7** | 187 → **114** | **0** | 2 | 4.6 → **11.9** | 1187 → **76** |
+| Pacific Ensemble Strings | 58 | 2.5 (4) → **1.0 (4)** | 11 → 5 → **2** | 4 → **2** | 84 → **29** | **0** | 0 | 0.6 → **1.2** | 162 → **80** |
+| Performance Samples Vista | 48 | 2.5 (4) → **0.9 (4)** | 10 → 5 → **2** | 3 → **1** | 88 → **33** | **0** | 0 | 0.5 → **0.6** | 705 → **255** |
+| Shreddage 3.5 E-Upright 1.0.1 | 1502 | 5.5 (108) → **0.6 (30)** | 492 → 71 → **25** | 32 → **12** | 330 → **104** | **0** | 3 | 12.3 → **12.1** | 1082 → **770** |
+| Una Corda Library | 118 | 2.2 (6) → **0.2 (6)** | 13 → 8 → **6** | 18 → **2** | 16 → **12** | **0** | 0 | 1.3 → **1.5** | 546 → **265** |
+
+Idle frames still pay mui's resolve (step (b) skips them), v3 decodes at
+source size (Morphology above v2), and Conflux's stock-drawn controls are
+not drawn yet.
+
 | v1 had it | v2 | v3 tree |
 |---|---|---|
 | Una Corda's pedal light: `on controller` sets `PICTURE_STATE` on `$T2_lblPedal` when CC64 goes down and back on release (the "moving part"; its 50 ms timer listener drives an audio LFO, not the UI) | not measured yet (v1 redrew on a 33 ms clock while sounding) | pedal down and up each rebuild only `$T2_lblPedal` (`examples/ui_tree`); the renderer must repaint that one widget |

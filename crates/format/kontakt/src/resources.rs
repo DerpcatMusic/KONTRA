@@ -24,15 +24,18 @@ enum Source {
     Nicnt(File, NIFileContainer, PathBuf),
 }
 
-pub(crate) struct Resources {
+pub struct Resources {
     sources: Vec<Source>,
     instrument: PathBuf,
     key: Option<Arc<dyn LibraryKey>>,
+    /// The key was looked up, found or not: it is looked up once.
+    keyed: bool,
 }
 
 impl Resources {
     /// Every resource source of the library the instrument at `path` belongs to.
-    pub(crate) fn open(path: &Path) -> Self {
+    #[must_use]
+    pub fn open(path: &Path) -> Self {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.into());
         let root = root(&path);
         let mut places = vec![root.clone()];
@@ -65,11 +68,12 @@ impl Resources {
             sources,
             instrument: path,
             key: None,
+            keyed: false,
         }
     }
 
     /// `Resources/<name>` (`data/x.nka`), matched without case; `None` if absent.
-    pub(crate) fn read(&mut self, name: &str) -> Option<Vec<u8>> {
+    pub fn read(&mut self, name: &str) -> Option<Vec<u8>> {
         let want = format!("/{}", name.to_lowercase());
         let matches = |stored: &str| {
             format!("/{}", stored.replace(['|', '\\'], "/").to_lowercase()).ends_with(&want)
@@ -96,12 +100,24 @@ impl Resources {
                     if entry.size > LIMIT {
                         continue;
                     }
-                    if entry.encoded && self.key.is_none() {
+                    if entry.encoded && !self.keyed {
+                        self.keyed = true;
                         self.key = crate::access::library_key(&self.instrument).ok();
                     }
-                    archive
+                    let found = archive
                         .read_entry_with_key(&mut *file, &entry.name, self.key.as_deref())
-                        .ok()
+                        .ok();
+                    // An encrypted archive need not flag its members
+                    // (Afflatus, Dolce): a failed read fetches the key once.
+                    if found.is_none() && !self.keyed {
+                        self.keyed = true;
+                        self.key = crate::access::library_key(&self.instrument).ok();
+                        archive
+                            .read_entry_with_key(&mut *file, &entry.name, self.key.as_deref())
+                            .ok()
+                    } else {
+                        found
+                    }
                 }
             };
             if found.is_some() {
