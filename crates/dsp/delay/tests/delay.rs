@@ -1,16 +1,22 @@
 use kontra_dsp_delay::{ModDelay, Phaser, PhaserSettings, Settings};
 
 const RATE: u32 = 48_000;
+const IDENTITY: [[f32; 2]; 2] = [[1.0, 0.0], [0.0, 1.0]];
+
+fn diagonal(g: f32) -> [[f32; 2]; 2] {
+    [[g, 0.0], [0.0, g]]
+}
 
 fn echo() -> Settings {
     Settings {
         ms: 10.0,
         depth_ms: 0.0,
         second_head: false,
-        input: [1.0, 1.0],
-        feedback: 0.5,
-        cross: 0.0,
+        input: IDENTITY,
+        feedback: diagonal(0.5),
+        output: IDENTITY,
         damping_hz: f32::INFINITY,
+        low_cut_hz: 0.0,
         lfo_hz: 0.0,
         phase: 0.0,
     }
@@ -42,9 +48,9 @@ fn an_echo_repeats_at_its_time_and_falls_by_the_feedback() {
 }
 
 #[test]
-fn cross_feedback_ping_pongs_and_damping_rounds_the_repeats() {
+fn cross_feedback_ping_pongs_and_the_cuts_round_the_repeats() {
     let mut s = echo();
-    (s.input, s.feedback, s.cross) = ([1.0, 0.0], 0.0, 0.5);
+    (s.input, s.feedback) = ([[1.0, 0.0], [0.0, 0.0]], [[0.0, 0.5], [0.5, 0.0]]);
     let mut io = impulse(1000);
     ModDelay::new(s, RATE, 10.0).process(&mut io);
     assert!((io[480][0] - 1.0).abs() < 1e-6 && io[480][1] == 0.0);
@@ -58,6 +64,12 @@ fn cross_feedback_ping_pongs_and_damping_rounds_the_repeats() {
         io[480][0] < 0.5 && (tail - 1.0).abs() < 0.01,
         "a low-pass keeps DC"
     );
+
+    s.low_cut_hz = 50.0;
+    let mut io = impulse(48_000);
+    ModDelay::new(s, RATE, 10.0).process(&mut io);
+    let tail: f32 = io.iter().map(|f| f[0]).sum();
+    assert!(tail.abs() < 0.01, "a high-pass takes DC out: {tail}");
 }
 
 #[test]
@@ -107,10 +119,11 @@ fn legacy_chorus_and_flanger_land_near_the_native_vectors() {
         ms: 0.0,
         depth_ms: 0.0,
         second_head: true,
-        input: [1.0, 1.0],
-        feedback: 0.0,
-        cross: 0.0,
+        input: IDENTITY,
+        feedback: diagonal(0.0),
+        output: IDENTITY,
         damping_hz: 22_885.0,
+        low_cut_hz: 0.0,
         lfo_hz: 1.5,
         phase: 0.3 * 0.25,
     };
@@ -130,10 +143,11 @@ fn legacy_chorus_and_flanger_land_near_the_native_vectors() {
         ms: 2.5,
         depth_ms: 0.7 * 50.0 / 48.0,
         second_head: false,
-        input: [1.0, 1.0],
-        feedback: -0.6 * 0.95,
-        cross: 0.0,
+        input: IDENTITY,
+        feedback: diagonal(-0.6 * 0.95),
+        output: IDENTITY,
         damping_hz: f32::INFINITY,
+        low_cut_hz: 0.0,
         lfo_hz: 0.8,
         phase: 0.4 * 0.25,
     };

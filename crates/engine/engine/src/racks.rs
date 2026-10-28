@@ -255,8 +255,9 @@ fn delay(d: ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
         second_head: d.second_head,
         input: d.input,
         feedback: d.feedback,
-        cross: d.cross,
+        output: d.output,
         damping_hz: d.damping_hz,
+        low_cut_hz: d.low_cut_hz,
         lfo_hz: hz(d.rate, tempo),
         phase: d.phase,
     }
