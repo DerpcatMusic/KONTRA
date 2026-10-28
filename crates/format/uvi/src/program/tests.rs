@@ -686,3 +686,27 @@ fn a_mapped_script_modulation_bends_pitch_through_its_mapper() {
     assert_eq!(g.shapers[0].source, ir::Source::Script(2));
     assert_eq!(g.shapers[0].table, vec![0.0, 0.25, 1.0]);
 }
+
+#[test]
+fn an_aux_matrix_spreads_the_first_channel_to_both_sides() {
+    // VWinds: keygroups sum into channel 1; the aux spreads it at 0.7.
+    let xml = r#"<Program Gain="1">
+      <Auxs>
+        <AuxEffect Name="Aux0" Bypass="0" Gain="1" Pan="0" PreInsert="1">
+          <Inserts>
+            <GainMatrix Bypass="0" Gain_1_1="0.7" Gain_1_2="0.7" Gain_2_2="0" Gain_3_3="1"/>
+            <TrackDelay Bypass="0" SyncToHost="0" DelayTime="0"/>
+          </Inserts>
+        </AuxEffect>
+      </Auxs>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let aux = out.buses.last().unwrap();
+    assert_eq!(
+        aux.inserts[0].map(|e| e.kind),
+        Some(ir::EffectKind::Matrix([[0.7, 0.0], [0.7, 0.0]]))
+    );
+    assert!(aux.inserts[1].is_none());
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+}
