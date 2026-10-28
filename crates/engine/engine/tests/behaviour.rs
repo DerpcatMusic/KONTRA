@@ -970,6 +970,7 @@ fn an_instrument_reverb_rings_on_after_the_note() {
         kind: ir::EffectKind::Reverb(ir::Reverb {
             seconds: 2.0,
             size: 1.0,
+            size_curve: [1.0, 0.0],
             damping: 0.5,
             diffusion: 1.0,
             predelay_ms: 0.0,

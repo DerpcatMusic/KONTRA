@@ -276,7 +276,7 @@ fn phaser(p: ir::Phaser, tempo: f32) -> PhaserSettings {
 fn settings(r: ir::Reverb) -> Settings {
     Settings {
         seconds: r.seconds,
-        size: r.size,
+        size: r.size * (r.size_curve[0] + r.size_curve[1] * r.size),
         damping: r.damping,
         diffusion: r.diffusion,
         predelay_ms: r.predelay_ms,
