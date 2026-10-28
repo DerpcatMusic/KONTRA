@@ -5,8 +5,8 @@
 //! EffectRack ends a bus: it feeds one bus per chain at the chain's gain,
 //! and the chains feed a bus where the rest of the inserts run. Every strip
 //! ends on the main output ahead of the program's own inserts, as an aux set
-//! `PreInsert` does. Of the effects, Gain and Convolver are carried; the
-//! rest pass their input and are reported (see `effects`).
+//! `PreInsert` does. Of the effects, Gain, Convolver and SampledReverb are
+//! carried; the rest pass their input and are reported (see `effects`).
 
 use kontra_ir as ir;
 use roxmltree::Node;
@@ -232,35 +232,63 @@ impl<L: Library> Translator<'_, '_, L> {
                 return Ok(None);
             }
         };
-        // ponytail: power normalization's law and a sampled reverb's time
-        // and damping are not read yet; the response plays as stored.
-        if flag(node, "NormalizePower") {
-            self.notes
-                .add(ir::Impact::Audible, "convolver power normalization", path);
-        }
         let reverb = node.has_tag_name("SampledReverb");
-        for (name, unset) in [("Time", 1.0), ("DampingLow", 0.0), ("DampingHigh", 0.0)] {
+        for (name, unset) in [("DampingLow", 0.0), ("DampingHigh", 0.0), ("Width", 0.0)] {
             if reverb && num(node, name, unset)? != unset {
                 let feature = format!("sampled reverb {name}");
                 self.notes.add(ir::Impact::Audible, &feature, path);
             }
         }
+        let time = if reverb {
+            num(node, "Time", 1.0)?.clamp(0.0, 1.0) as f32
+        } else {
+            1.0
+        };
         let sample = self.sample_index(sample);
         self.out.impulses.push(ir::Impulse {
             sample,
             reverse: false,
-            normalize: None,
+            normalize: flag(node, "NormalizePower").then_some(POWER),
             predelay_ms: if reverb {
                 num(node, "PreDelay", 0.0)?.max(0.0) as f32
             } else {
                 0.0
             },
             cuts: None,
-            envelope: None,
+            envelope: (time < 1.0 || flag(node, "UseWindowAtOriginalSize")).then(|| fade(time)),
         });
         Ok(u16::try_from(self.out.impulses.len() - 1).ok())
     }
 }
+
+/// `NormalizePower`: the response scaled to unit energy (sum of squares).
+/// UVI (SampledReverb/Convolver IR build 0x141532fe0) divides by the root
+/// of the channels' mean energy, floored at 1e-10 (0x141e6e4f0), after
+/// resampling to the host rate. ponytail: here it is the louder channel's
+/// energy at the file's rate, within 0.5 dB on balanced stereo responses
+/// and 0.4 dB at 44.1 kHz into 48 kHz.
+const POWER: ir::Normalize = ir::Normalize {
+    energy: 1.0,
+    max_gain: 1e5,
+    floor: 0.0,
+};
+
+/// A sampled reverb's `Time` window: UVI keeps `time` of the response and
+/// fades it by a half cosine, `(cos(πn/(N+1)) + 1)/2` over the kept `N`
+/// frames (0x141532fe0, π at 0x141cfab4c). Six linear knots trace the
+/// cosine within 2%; the rest is silent.
+fn fade(time: f32) -> [[f32; 2]; 8] {
+    let mut knots = [[1.0, SILENT]; 8];
+    for (k, knot) in knots.iter_mut().take(7).enumerate() {
+        let x = k as f32 / 6.0;
+        let gain = ((std::f32::consts::PI * x).cos() + 1.0) * 0.5;
+        *knot = [time * x, 20.0 * gain.max(1e-10).log10()];
+    }
+    knots
+}
+
+/// Silence for an envelope knot, dB.
+const SILENT: f32 = -200.0;
 
 /// The dry level of an effect whose output is mostly a wet path (a reverb,
 /// a delay); `None` for one that processes in place.
@@ -294,5 +322,24 @@ fn effect(kind: ir::EffectKind, output: f32, dry: f32) -> ir::Effect {
         bypass: false,
         output,
         dry,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_shortened_reverb_fades_out_by_its_time() {
+        let knots = fade(0.6);
+        assert_eq!(knots[0], [0.0, 0.0]);
+        // Halfway through the kept part, the cosine is at half (-6 dB).
+        let [x, db] = knots[3];
+        assert!(
+            (x - 0.3).abs() < 1e-6 && (db + 6.02).abs() < 0.01,
+            "{x} {db}"
+        );
+        assert_eq!(knots[6], [0.6, SILENT]);
+        assert_eq!(knots[7], [1.0, SILENT]);
     }
 }
