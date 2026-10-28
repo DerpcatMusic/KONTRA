@@ -9,7 +9,9 @@ use kontra_ir::{self as ir, Impact, Loop, StartRule};
 /// A fresh folder for one test, under the target dir.
 fn scratch(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
-    // A folder that cannot be made fails the test at its first write.
+    // Cargo keeps this folder between runs: start it empty. A folder that
+    // cannot be made fails the test at its first write.
+    let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -200,6 +202,16 @@ fn cutoff_and_fil_type_become_a_group_filter() {
     };
     assert_eq!((f.pass, f.hz, f.stages), (ir::Pass::High, 1200.0, 1));
     assert!((f.damping[0] - 0.5).abs() < 0.01, "{:?}", f.damping);
+}
+
+#[test]
+fn end_minus_one_is_a_region_that_plays_nothing() {
+    let dir = scratch("silent_end");
+    wav(&dir.join("a.wav"), 10).expect("wav");
+    let inst = parse("<region> sample=a.wav end=-1\n", &dir);
+    let zone = &inst.groups[0].zones[0];
+    assert_eq!(zone.end, 0);
+    assert_eq!(zone.start, 0);
 }
 
 #[test]

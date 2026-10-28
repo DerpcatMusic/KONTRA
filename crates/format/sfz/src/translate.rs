@@ -140,7 +140,9 @@ impl Build {
         let start = self.number(ops, &["offset"]).map_or(0, frames).min(total);
         let end = self
             .number(ops, &["end"])
-            .map_or(total, |end| frames(end) + 1)
+            // -1 is a region that triggers but plays nothing (it can still
+            // choke its off_by targets); end is otherwise inclusive.
+            .map_or(total, |end| if end == -1.0 { 0 } else { frames(end) + 1 })
             .min(total);
         let zone = ir::Zone {
             sample,
