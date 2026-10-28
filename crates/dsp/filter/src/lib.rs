@@ -50,7 +50,8 @@ pub enum LadderKind {
 #[derive(Clone, Debug, PartialEq)]
 enum Kernel {
     ZeroDelay(Ladder),
-    Explicit(Huovilainen),
+    // Boxed: its halfband is several times the zero-delay ladder; built at load.
+    Explicit(Box<Huovilainen>),
 }
 
 /// The shape's sections at `rate`; the cutoff is held below 0.49 of the rate.
@@ -124,7 +125,9 @@ impl Svf {
             rate: 1.0,
             ladder: shape.ladder.map(|l| match l {
                 LadderKind::ZeroDelay(taps) => Kernel::ZeroDelay(Ladder::new(taps)),
-                LadderKind::Explicit { taps, fat } => Kernel::Explicit(Huovilainen::new(taps, fat)),
+                LadderKind::Explicit { taps, fat } => {
+                    Kernel::Explicit(Box::new(Huovilainen::new(taps, fat)))
+                }
             }),
         }
     }
