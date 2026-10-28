@@ -24,9 +24,11 @@ pub struct Settings {
     pub input: [f32; 2],
     /// The heads' output back into the same line, and into the other one.
     pub feedback: f32,
+    /// See `feedback`.
     pub cross: f32,
     /// A one-pole low-pass on each head; `f32::INFINITY` for none.
     pub damping_hz: f32,
+    /// The LFO's speed.
     pub lfo_hz: f32,
     /// Cycles the right LFO runs ahead of the left.
     pub phase: f32,
@@ -47,14 +49,17 @@ fn one_pole(hz: f32, rate: f32) -> f32 {
     1.0 - (-std::f32::consts::TAU * hz.max(0.0) / rate).exp()
 }
 
+/// A stereo delay line with one or two LFO-swept heads, feedback and
+/// cross-feedback; see [`Settings`].
+#[derive(Debug)]
 pub struct ModDelay {
     s: Settings,
     rate: f32,
     ring: Box<[[f32; 2]]>,
     /// Where the next frame goes.
     at: usize,
-    /// The head's delay as it glides, frames; negative until the first frame.
-    delay: f32,
+    /// The head's delay as it glides, frames; `None` until the first frame.
+    delay: Option<f32>,
     glide: f32,
     damping: f32,
     /// The left LFO's phase, cycles.
@@ -76,7 +81,7 @@ impl ModDelay {
             rate,
             ring: vec![[0.0; 2]; frames].into(),
             at: 0,
-            delay: -1.0,
+            delay: None,
             glide: 1.0 - (-1.0 / (GLIDE_S * rate)).exp(),
             damping: 1.0,
             cycle: 0.0,
@@ -96,7 +101,8 @@ impl ModDelay {
     /// The sample `d` frames back (at least 2), 4-point cubic.
     fn read(&self, c: usize, d: f32) -> f32 {
         let n = self.ring.len();
-        let d = d.clamp(2.0, (n - 3) as f32);
+        // `max` maps NaN to the floor, so the index never underflows.
+        let d = d.max(2.0).min(n.saturating_sub(3) as f32);
         let whole = d as usize;
         let t = d - whole as f32;
         let at = |back: usize| {
@@ -118,17 +124,16 @@ impl ModDelay {
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let s = self.s;
         let per_ms = 0.001 * self.rate;
-        let target = s.ms * per_ms;
-        if self.delay < 0.0 {
-            self.delay = target;
-        }
+        let longest = self.ring.len().saturating_sub(3) as f32;
+        let target = (s.ms * per_ms).max(0.0).min(longest);
+        let mut delay = self.delay.unwrap_or(target);
         let swing = s.depth_ms * per_ms;
         let step = f64::from(s.lfo_hz / self.rate);
         let offsets = [0.0, f64::from(s.phase)];
         for frame in io {
-            self.delay += (target - self.delay) * self.glide;
+            delay += (target - delay) * self.glide;
             let mut y = [0.0; 2];
-            let heads = [(self.delay, 0.0), (self.delay * 0.5, SECOND_AHEAD)];
+            let heads = [(delay, 0.0), (delay * 0.5, SECOND_AHEAD)];
             let heads = if s.second_head {
                 &heads[..]
             } else {
@@ -155,6 +160,7 @@ impl ModDelay {
             self.cycle = (self.cycle + step).fract();
             *frame = y;
         }
+        self.delay = Some(delay);
     }
 }
 
@@ -162,16 +168,23 @@ impl ModDelay {
 /// LFO sweeps, `hz + spread_hz·(e^(exponent·lfo) − 1)`, around a feedback loop.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhaserSettings {
+    /// The allpasses' corner with the LFO at its centre.
     pub hz: f32,
+    /// How far the corner moves for an exponent's worth of LFO.
     pub spread_hz: f32,
+    /// The sweep's curvature: the LFO is scaled by it inside `e^x`.
     pub exponent: f32,
     /// The last stage's output back into the first.
     pub feedback: f32,
+    /// The LFO's speed.
     pub lfo_hz: f32,
     /// Cycles the right LFO runs ahead of the left.
     pub phase: f32,
 }
 
+/// Four LFO-swept first-order allpasses around a feedback loop; see
+/// [`PhaserSettings`].
+#[derive(Debug)]
 pub struct Phaser {
     s: PhaserSettings,
     rate: f32,
@@ -182,6 +195,7 @@ pub struct Phaser {
 }
 
 impl Phaser {
+    /// A phaser at `rate` Hz; it never allocates.
     #[must_use]
     pub fn new(s: PhaserSettings, rate: u32) -> Self {
         Self {

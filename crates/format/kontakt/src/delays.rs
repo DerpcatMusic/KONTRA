@@ -11,6 +11,19 @@ use kontra_ir as ir;
 /// 0x144737708).
 const SYNC: f32 = 1e-9;
 const RATE: f32 = 48_000.0;
+/// Legacy Delay: the share of the feedback knob in the loop and the input
+/// (setter case 0x43, 0x144714930), and of the damping knob in the one-pole
+/// (0x144f38804). Raising either lengthens the tail or darkens it more.
+const DELAY_LOOP: f32 = 0.98;
+const DELAY_DAMPING: f32 = 0.7;
+/// The legacy Chorus's per-head smoothing coefficient (0x144737744).
+const CHORUS_SMOOTHING: f32 = 0.95;
+/// The legacy Flanger's and Phaser's feedback scale (0x144737744,
+/// 0x144f389b0); 1 would ring forever.
+const FLANGER_LOOP: f32 = 0.95;
+const PHASER_LOOP: f32 = 0.85;
+/// The legacy LFO phase knob spans a quarter cycle (0x1447148e4).
+const QUARTER: f32 = 0.25;
 
 /// The record's effect, `None` when a field is missing or out of range.
 pub(crate) fn legacy(module: u16, version: u16, public: &[u8]) -> Option<ir::EffectKind> {
@@ -56,7 +69,7 @@ fn corner(c: f32) -> f32 {
 /// `pan·g`; the read is low-passed by `1 − 0.7·damping`.
 fn delay(time: f32, feedback: f32, pan: f32, damping: f32, unit: f32) -> ir::Delay {
     let [feedback, pan, damping] = [feedback, pan, damping].map(|x| x.clamp(0.0, 1.0));
-    let g = 0.98 * feedback;
+    let g = DELAY_LOOP * feedback;
     ir::Delay {
         time: if unit > SYNC {
             ir::DelayTime::Beats(unit * time.max(1.0))
@@ -68,7 +81,7 @@ fn delay(time: f32, feedback: f32, pan: f32, damping: f32, unit: f32) -> ir::Del
         input: [g, (1.0 - pan) * g],
         feedback: (1.0 - pan) * g,
         cross: pan * g,
-        damping_hz: corner(1.0 - 0.7 * damping),
+        damping_hz: corner(1.0 - DELAY_DAMPING * damping),
         rate: ir::Rate::Hz(0.0),
         phase: 0.0,
     }
@@ -86,9 +99,9 @@ fn chorus(speed: f32, phase: f32, unit: f32) -> ir::Delay {
         input: [1.0; 2],
         feedback: 0.0,
         cross: 0.0,
-        damping_hz: corner(0.95),
+        damping_hz: corner(CHORUS_SMOOTHING),
         rate: rate(speed, unit),
-        phase: 0.25 * phase.clamp(0.0, 1.0),
+        phase: QUARTER * phase.clamp(0.0, 1.0),
     }
 }
 
@@ -104,11 +117,11 @@ fn flanger(depth: f32, feedback: f32, speed: f32, phase: f32, colour: f32, unit:
         depth_ms: swing.min((colour - 1000.0 / RATE).max(0.0)),
         second_head: false,
         input: [1.0; 2],
-        feedback: -0.95 * feedback.clamp(0.0, 1.0),
+        feedback: -FLANGER_LOOP * feedback.clamp(0.0, 1.0),
         cross: 0.0,
         damping_hz: f32::INFINITY,
         rate: rate(speed, unit),
-        phase: 0.25 * phase.clamp(0.0, 1.0),
+        phase: QUARTER * phase.clamp(0.0, 1.0),
     }
 }
 
@@ -123,9 +136,9 @@ fn phaser(depth: f32, feedback: f32, speed: f32, phase: f32, unit: f32) -> ir::P
         hz: hz(0.019_166_7),
         spread_hz: hz(0.017_062_7),
         exponent: 3.0 * depth.clamp(0.0, 1.0),
-        feedback: 0.85 * feedback.clamp(0.0, 1.0),
+        feedback: PHASER_LOOP * feedback.clamp(0.0, 1.0),
         rate: rate(speed, unit),
-        phase: 0.25 * phase.clamp(0.0, 1.0),
+        phase: QUARTER * phase.clamp(0.0, 1.0),
     }
 }
 

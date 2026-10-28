@@ -227,7 +227,8 @@ fn delay(d: ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
         ms: match d.time {
             ir::DelayTime::Ms(ms) => ms,
             ir::DelayTime::Beats(beats) => beats * 60_000.0 / tempo.max(1.0),
-        },
+        }
+        .clamp(0.0, MAX_MS),
         depth_ms: d.depth_ms,
         second_head: d.second_head,
         input: d.input,
