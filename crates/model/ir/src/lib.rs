@@ -6,9 +6,11 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod bus;
 mod drive;
 mod effects;
 mod reverb;
+pub use bus::{Bus, BusSend};
 pub use drive::{Crush, Curve as DriveCurve, Shaper};
 pub use effects::{
     Compressor, Delay, DelayTime, Detector, ImpulseCuts, Limiter, Phaser, Reverb, Transient,
@@ -762,29 +764,6 @@ impl Bell {
         q: 1.0,
         gain_db: 0.0,
     };
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Bus {
-    pub name: String,
-    pub volume_db: f32,
-    /// -1..=1 balance.
-    pub pan: f32,
-    /// Effects on what the bus carries, by slot.
-    pub inserts: Vec<Option<Effect>>,
-    /// Later buses it feeds, after its effects and before its pan.
-    pub sends: Vec<BusSend>,
-}
-
-/// A bus's feed into a later bus.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BusSend {
-    /// Index into [`Instrument::buses`], above the sender's.
-    pub bus: usize,
-    /// Linear.
-    pub level: f32,
-    /// Scaled by the sender's volume as it changes.
-    pub post_fader: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
