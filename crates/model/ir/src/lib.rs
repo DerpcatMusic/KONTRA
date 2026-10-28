@@ -10,7 +10,7 @@ mod drive;
 mod effects;
 mod reverb;
 pub use drive::{Crush, Curve as DriveCurve, Shaper};
-pub use effects::{Compressor, Delay, DelayTime, Limiter, Phaser};
+pub use effects::{Compressor, Delay, DelayTime, Limiter, Phaser, Reverb};
 pub use reverb::{Law, ReverbPar};
 
 #[derive(Clone, Debug)]
@@ -685,25 +685,6 @@ pub enum EffectKind {
     /// Not carried, a parallel path (a reverb, a delay): only the dry level
     /// passes. The translator reports it.
     OtherWet,
-}
-
-/// An algorithmic reverb in physical units.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Reverb {
-    /// Time for the tail to fall 60 dB.
-    pub seconds: f32,
-    /// Delay-line scale, 1 a mid-size room.
-    pub size: f32,
-    /// 0..=1: how much faster the highs die.
-    pub damping: f32,
-    /// 0..=1: the tail's early density.
-    pub diffusion: f32,
-    pub predelay_ms: f32,
-    pub high_cut_hz: f32,
-    /// Gain below 200 Hz.
-    pub low_shelf_db: f32,
-    /// 0 mono, 1 full width.
-    pub stereo: f32,
 }
 
 /// Three resonant band-passes in parallel placed by a vowel table: `talk`
