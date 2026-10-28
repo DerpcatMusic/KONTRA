@@ -1,7 +1,7 @@
 //! Draws each instrument's Original view headless, the way the editor will,
 //! and says what it cost: first frame, settled, paint, idle, RAM. Saves the
 //! settled page as `<out>/<name>-<slot>.png`.
-//! `cargo run --release -p ui-shots -- <out dir> <instrument>...`
+//! `cargo run --release -p ui-shots -- [--press <control>] <out dir> <instrument>...`
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -17,10 +17,18 @@ use mui::prelude::{Input, Size, Ui};
 use mui::vello;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args_os().skip(1);
+    let mut args: Vec<_> = std::env::args_os().skip(1).collect();
+    // `--press <control>`: press that control before the pedal, so a page
+    // the source shows on a press is measured too.
+    let press = args.iter().position(|a| a == "--press").map(|i| {
+        let name = args.get(i + 1).map(|n| n.to_string_lossy().into_owned());
+        args.drain(i..(i + 2).min(args.len()));
+        name.unwrap_or_default()
+    });
+    let mut args = args.into_iter();
     let out = PathBuf::from(
         args.next()
-            .ok_or("usage: ui-shots <out dir> <instrument>...")?,
+            .ok_or("usage: ui-shots [--press <control>] <out dir> <instrument>...")?,
     );
     std::fs::create_dir_all(&out)?;
     for path in args.map(PathBuf::from) {
@@ -117,6 +125,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 built += frame(&mut ui, &mut pictures, &live)?;
                 moved = Some(built);
+            }
+            let pressed = press
+                .as_deref()
+                .and_then(|p| live.tree.widgets.iter().find(|w| w.name == p)?.source_id);
+            if let Some(id) = pressed {
+                engine.set_control(slot, id, 1);
+                for _ in 0..10 {
+                    engine.process(&mut block, &[]);
+                    let changed = live.refresh(face, slot, &engine, &meta);
+                    kontra_ui::layout::resolve(&mut live.tree, changed.widgets.iter().map(|w| w.0));
+                }
+                frame(&mut ui, &mut pictures, &live)?;
+                while pictures.pending() > 0 {
+                    pictures.poll();
+                    std::thread::sleep(Duration::from_micros(500));
+                }
+                frame(&mut ui, &mut pictures, &live)?;
             }
             // The sustain pedal down, then up: what a controller callback
             // lights (Una Corda's pedal light), and what that repaints.
