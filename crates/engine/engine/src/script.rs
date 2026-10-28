@@ -462,6 +462,10 @@ impl HostApi for Engine {
             }
             Action::NumGroups => HostValue::Int(self.masks.groups as i32),
             Action::Random => HostValue::Int(self.random(int(0), int(1))),
+            Action::GroupVolume | Action::GroupPan | Action::GroupTune => {
+                self.set_group_level(call.action, int(0), int(1));
+                HostValue::Nothing
+            }
             Action::Message => {
                 self.last_message = call.texts.first().copied().unwrap_or(Text::EMPTY);
                 self.stats.messages += 1;

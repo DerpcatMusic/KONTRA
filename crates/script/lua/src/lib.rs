@@ -78,7 +78,8 @@ pub fn compile(
     let lua = state(source, &modules, &saved).map_err(|e| e.to_string())?;
     let defined = |name: &str| matches!(lua.globals().get::<Value>(name), Ok(Value::Function(_)));
     let callbacks = Callbacks {
-        init: defined("onInit"),
+        // Always: init pushes the levels the program tree sets.
+        init: true,
         note: defined("onNote"),
         release: defined("onRelease"),
         controller: defined("onController"),
@@ -386,5 +387,67 @@ mod tests {
         let actions: Vec<Action> = log.0.iter().map(|c| c.0).collect();
         assert!(actions.contains(&Action::IgnoreEvent), "{actions:?}");
         assert_eq!(log.0.last().map(|c| c.1.clone()), Some(vec![14, 100, 0, 0]));
+    }
+
+    /// Two layers; the second's keygroups made engine groups 3 and 4.
+    const TREE: &str = "return {params={DisplayName='Horn'},db=0,pan=0,layers={
+        {params={DisplayName='FX',Gain='1'},keygroups={{params={},group=0}}},
+        {params={DisplayName='Sustain',Gain='0'},sendPre=1,sendPost=0,
+         keygroups={{params={Gain='1'},group=3},{params={},group=nil},{params={},group=4}}}}}";
+
+    fn run(source: &str, entry: u32) -> Log {
+        let modules = [("__program.lua".to_string(), TREE.to_string())];
+        let compiled = compile(source, &modules, &[]).unwrap();
+        let mut m = compiled.machine();
+        let co = m.start(entry, 0).expect("start");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
+        log
+    }
+
+    #[test]
+    fn play_note_on_a_layer_allows_only_that_layers_groups() {
+        let source = "assert(Program:getParameter('DisplayName') == 'Horn')
+            function onNote(e) playNote{e.note, 90, 0, layer = findLayer('Sustain'), vol = 0.5} end";
+        let log = run(source, Callbacks::NOTE);
+        let groups: Vec<Vec<i64>> = log
+            .0
+            .iter()
+            .filter(|(a, _)| *a == Action::SetEventParArr)
+            .map(|(_, ints)| ints.clone())
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                vec![7, 9, 0, 0x3FFF_FFFF],
+                vec![7, 9, 1, 3],
+                vec![7, 9, 1, 4]
+            ]
+        );
+        assert!(
+            log.0
+                .iter()
+                .any(|(a, ints)| *a == Action::ChangeVol && ints.first() == Some(&7))
+        );
+    }
+
+    #[test]
+    fn a_layers_gain_sets_its_groups_with_its_aux_send() {
+        // Gain 0 plus a unity pre-fader send is unity; muting silences it.
+        let log = run("", Callbacks::INIT);
+        let volume = |log: &Log, group: i64| {
+            log.0
+                .iter()
+                .rev()
+                .find(|(a, ints)| *a == Action::GroupVolume && ints.first() == Some(&group))
+                .map(|(_, ints)| ints.get(1).copied())
+        };
+        assert_eq!(volume(&log, 3), Some(Some(0)));
+        let muted = "Program.layers[2]:setParameter('Mute', true)";
+        assert_eq!(
+            volume(&run(muted, Callbacks::INIT), 4),
+            Some(Some(-200_000))
+        );
     }
 }

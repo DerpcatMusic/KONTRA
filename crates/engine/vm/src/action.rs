@@ -136,6 +136,13 @@ actions! {
     ResetRlsTrigCounter,
     WillNeverTerminate,
     RedirectOutput,
+    /// A group's live level: `(group, millidecibels)`, at most -200 dB is
+    /// silence. The group's settings, not a note's.
+    GroupVolume,
+    /// `(group, per mille)`.
+    GroupPan,
+    /// `(group, millicents)`.
+    GroupTune,
     // Time.
     WaitTicks,
     WaitAsync,
