@@ -69,7 +69,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
             Ok(compiled) => {
                 plan.scripts
                     .push(crate::script::plan(&compiled, &script.saved, &script.data));
-                faces.push(Some(crate::ui::Face::of(&compiled)));
+                faces.push(Some(crate::ui::Face::of(&compiled, &script.data)));
             }
             Err(e) => diagnostics.push(ir::Diagnostic {
                 impact: ir::Impact::Broken,

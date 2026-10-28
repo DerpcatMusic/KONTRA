@@ -7,6 +7,8 @@ use std::collections::HashMap;
 
 use kontra_engine::{ControlLook, Engine, Page};
 use kontra_ksp::{Cells, Control, ControlKind, FIRST_UI_ID, SYMBOL_BASE, Script};
+
+use crate::perf_view::{View, ViewControl};
 use kontra_ui_model as ui;
 
 use crate::script::LOOK;
@@ -22,11 +24,15 @@ const HEADER: u32 = 68;
 pub struct Face {
     controls: Vec<(Control, Box<str>, Cells)>,
     symbols: Vec<Box<str>>,
+    /// The performance view the script loads, if any.
+    view: Option<View>,
 }
 
 impl Face {
     #[must_use]
-    pub fn of(script: &Script) -> Self {
+    /// `data` holds the script's library files; a `<name>.nckp` among
+    /// them is its performance view.
+    pub fn of(script: &Script, data: &[(String, Vec<u8>)]) -> Self {
         let controls = script
             .controls
             .iter()
@@ -38,6 +44,10 @@ impl Face {
         Self {
             controls,
             symbols: script.symbols.clone(),
+            view: data
+                .iter()
+                .find(|(name, _)| name.ends_with(".nckp"))
+                .and_then(|(_, bytes)| crate::perf_view::parse(bytes)),
         }
     }
 
@@ -248,10 +258,10 @@ fn unit(n: i32) -> &'static str {
 ///
 /// # Errors
 /// When the script built a tree the model rejects (bad nesting).
-pub fn interface(
-    face: &Face,
+pub fn interface<'a>(
+    face: &'a Face,
     slot: u8,
-    engine: &Engine,
+    engine: &'a Engine,
     picture: &dyn Fn(&str) -> Option<ui::ImageMeta>,
 ) -> Result<ui::Interface, ui::Error> {
     let mut bld = Builder {
@@ -264,33 +274,71 @@ pub fn interface(
         picture,
     };
     if let Some(page) = engine.page(slot) {
-        page_of(&mut bld, page);
+        page_of(&mut bld, page, face.view.as_ref());
     }
-    let decls: Vec<_> = face
-        .controls
-        .iter()
-        .filter_map(|(control, name, cells)| {
+    let declared =
+        |control: &'a Control, name: &'a str, cells: Cells, view: Option<&'a ViewControl>| {
             let id = FIRST_UI_ID + i32::try_from(control.variable).ok()?;
             Some(Decl {
-                control,
+                kind: view.map_or(control.kind, |v| v.kind),
+                params: view.map_or(&control.params, |v| &v.params),
+                view,
                 name,
-                cells: *cells,
+                cells,
                 id,
                 look: engine.control_look(slot, id)?,
             })
+        };
+    let script: HashMap<&str, _> = face
+        .controls
+        .iter()
+        .map(|(control, name, cells)| (&**name, (control, *cells)))
+        .collect();
+    // The view's controls in its order (the script compiles only those it
+    // names), then the script's own.
+    let viewed = face.view.iter().flat_map(|v| &v.controls);
+    let mut decls: Vec<Decl<'_>> = viewed
+        .clone()
+        .enumerate()
+        .filter_map(|(n, v)| match script.get(v.name.as_str()) {
+            Some(&(control, cells)) => declared(control, &v.name, cells, Some(v)),
+            None => Some(Decl {
+                kind: v.kind,
+                params: &v.params,
+                view: Some(v),
+                name: &v.name,
+                cells: Cells::Const,
+                // Not addressable by the script: an id no control has.
+                id: -1 - i32::try_from(n).ok()?,
+                look: ControlLook {
+                    value: None,
+                    pars: &[],
+                    texts: &[],
+                    menu: &[],
+                },
+            }),
         })
         .collect();
+    let in_view: std::collections::HashSet<&str> = viewed.map(|v| v.name.as_str()).collect();
+    decls.extend(
+        face.controls
+            .iter()
+            .filter(|(_, name, _)| !in_view.contains(&**name))
+            .filter_map(|(control, name, cells)| declared(control, name, *cells, None)),
+    );
     let by_id: HashMap<i32, usize> = decls.iter().enumerate().map(|(i, d)| (d.id, i)).collect();
+    let by_name: HashMap<&str, i32> = decls.iter().map(|d| (d.name, d.id)).collect();
     for (i, d) in decls.iter().enumerate() {
-        let props = props(face, &d.look);
+        let props = props(face, d);
         let mut w = widget(&mut bld, slot, d, &props, engine);
-        if let Some(parent) = props.int("$CONTROL_PAR_PARENT_PANEL") {
+        let parent = props.int("$CONTROL_PAR_PARENT_PANEL").or_else(|| {
+            let name = d.view?.parent.as_deref()?;
+            by_name.get(name).copied()
+        });
+        if let Some(parent) = parent {
             match by_id.get(&parent) {
                 Some(&p)
-                    if p != i
-                        && decls
-                            .get(p)
-                            .is_some_and(|d| d.control.kind == ControlKind::Panel) =>
+                    if p != i && decls.get(p).is_some_and(|d| d.kind == ControlKind::Panel) =>
                 {
                     w.parent = Some(ui::WidgetRef(p));
                 }
@@ -309,6 +357,9 @@ pub fn interface(
         }
         bld.ui.widgets.push(w);
     }
+    for skipped in face.view.iter().flat_map(|v| &v.skipped) {
+        bld.unsupported(None, "performance view control", skipped.clone());
+    }
     // Panels can be nested in any order; break a cycle rather than hand over
     // a malformed tree.
     if let Err(ui::Error::ParentCycle(at)) = bld.ui.validate()
@@ -325,30 +376,48 @@ pub fn interface(
     Ok(bld.ui)
 }
 
-fn page_of(bld: &mut Builder<'_>, page: &Page) {
-    bld.ui.performance = page.performance;
+/// The page as init left it, over the performance view's when it loads one.
+fn page_of(bld: &mut Builder<'_>, page: &Page, view: Option<&View>) {
+    bld.ui.performance = page.performance || view.is_some();
+    let or_view = |set: &str, view: Option<&String>| {
+        let set = (!set.is_empty()).then(|| set.to_owned());
+        set.or_else(|| view.cloned()).unwrap_or_default()
+    };
     let mut background = ui::Background {
         offset_y: page.skin_offset,
         origin_y: HEADER,
-        color: page.color.map(|c| ui::Rgba::rgb(c as u32)),
+        color: page
+            .color
+            .or(view.and_then(|v| v.color))
+            .map(|c| ui::Rgba::rgb(c as u32)),
         frame: u32::try_from(page.wallpaper_frame).unwrap_or(0),
         ..Default::default()
     };
-    background.image = bld.asset(page.wallpaper.as_str());
-    bld.ui.icon = bld.asset(page.icon.as_str());
+    let wallpaper = or_view(
+        page.wallpaper.as_str(),
+        view.and_then(|v| v.wallpaper.as_ref()),
+    );
+    background.image = bld.asset(&wallpaper);
+    let icon = or_view(page.icon.as_str(), view.and_then(|v| v.icon.as_ref()));
+    bld.ui.icon = bld.asset(&icon);
     bld.ui.icon_hidden = page.icon_hide & HIDE_WHOLE_CONTROL != 0;
-    let height_rows = page
-        .height_px
+    let height_px = page.height_px.or(view
+        .and_then(|v| v.height)
+        .filter(|_| page.height_rows.is_none()));
+    let height_rows = height_px
         .is_none()
         .then(|| page.height_rows.map(|r| r.max(1) as u32))
         .flatten();
     // ponytail: 100 px when the script sets no height; Kontakt's own default may differ.
-    let height = match (page.height_px, height_rows) {
+    let height = match (height_px, height_rows) {
         (Some(px), _) => px.max(1) as u32,
         (None, Some(_)) => 0,
         (None, None) => 100,
     };
-    let width = page.width_px.map_or(DEFAULT_WIDTH, |w| w.max(1) as u32);
+    let width = page
+        .width_px
+        .or(view.and_then(|v| v.width))
+        .map_or(DEFAULT_WIDTH, |w| w.max(1) as u32);
     bld.ui.pages.push(ui::Page {
         name: page.title.as_str().into(),
         size: ui::Size {
@@ -366,24 +435,41 @@ const HIDE_PART_TITLE: i32 = 2;
 const HIDE_PART_VALUE: i32 = 4;
 const HIDE_WHOLE_CONTROL: i32 = 16;
 
-fn props<'a>(face: &'a Face, look: &'a ControlLook<'a>) -> Props<'a> {
+/// The view's properties, then what the script set over them.
+fn props<'a>(face: &'a Face, d: &'a Decl<'a>) -> Props<'a> {
+    let view = d.view.into_iter();
+    let ints = view
+        .clone()
+        .flat_map(|v| &v.ints)
+        .map(|(p, v)| (p.as_str(), *v));
+    let texts = view
+        .flat_map(|v| &v.texts)
+        .map(|(p, t)| (p.as_str(), t.as_str()));
+    let look = &d.look;
     Props {
-        ints: look
-            .pars
-            .iter()
-            .filter_map(|&(par, v)| Some((face.par_name(par)?, v)))
+        ints: ints
+            .chain(
+                look.pars
+                    .iter()
+                    .filter_map(|&(par, v)| Some((face.par_name(par)?, v))),
+            )
             .collect(),
-        texts: look
-            .texts
-            .iter()
-            .filter_map(|(par, t)| Some((face.par_name(*par)?, t.as_str())))
+        texts: texts
+            .chain(
+                look.texts
+                    .iter()
+                    .filter_map(|(par, t)| Some((face.par_name(*par)?, t.as_str()))),
+            )
             .collect(),
     }
 }
 
 /// One declared control and its state after init.
 struct Decl<'a> {
-    control: &'a Control,
+    kind: ControlKind,
+    /// Declaration parameters (the view's, for a view control).
+    params: &'a [i32],
+    view: Option<&'a ViewControl>,
     name: &'a str,
     cells: Cells,
     id: i32,
@@ -398,14 +484,16 @@ fn widget(
     engine: &Engine,
 ) -> ui::Widget {
     let Decl {
-        control,
+        kind: control_kind,
+        params,
+        view,
         name,
         cells,
         id,
         look,
     } = d;
-    let (cells, id, name) = (*cells, *id, *name);
-    let param = |n: usize| control.params.get(n).copied();
+    let (kind, cells, id, name) = (*control_kind, *cells, *id, *name);
+    let param = |n: usize| params.get(n).copied();
     let range = |lo: i32, hi: i32| {
         let lo = p.int("$CONTROL_PAR_MIN_VALUE").unwrap_or(lo);
         let hi = p.int("$CONTROL_PAR_MAX_VALUE").unwrap_or(hi);
@@ -426,7 +514,7 @@ fn widget(
         _ => None,
     };
     let vertical = p.int("$CONTROL_PAR_MOUSE_BEHAVIOUR").is_some_and(|m| m < 0);
-    let kind = match control.kind {
+    let ui_kind = match kind {
         ControlKind::Panel => ui::Kind::Panel,
         ControlKind::Knob => ui::Kind::Knob {
             range: declared(),
@@ -443,15 +531,25 @@ fn widget(
         ControlKind::Button => ui::Kind::Button { momentary: false },
         ControlKind::Switch => ui::Kind::Switch,
         ControlKind::Menu => ui::Kind::Menu {
-            items: look
-                .menu
-                .iter()
-                .map(|m| ui::MenuItem {
-                    text: m.text.as_str().into(),
-                    value: m.value,
-                    visible: m.visible,
-                })
-                .collect(),
+            items: match (look.menu, view) {
+                ([], Some(v)) => v
+                    .menu
+                    .iter()
+                    .map(|(text, value, visible)| ui::MenuItem {
+                        text: text.clone(),
+                        value: *value,
+                        visible: *visible,
+                    })
+                    .collect(),
+                (menu, _) => menu
+                    .iter()
+                    .map(|m| ui::MenuItem {
+                        text: m.text.as_str().into(),
+                        value: m.value,
+                        visible: m.visible,
+                    })
+                    .collect(),
+            },
         },
         ControlKind::Label => ui::Kind::Label,
         ControlKind::ValueEdit => ui::Kind::ValueEdit {
@@ -527,10 +625,10 @@ fn widget(
         width.map_or(0, |v| v.max(0) as u32),
         height.map_or(0, |v| v.max(0) as u32),
     );
-    let mut w = ui::Widget::new(name, ui::PageRef(0), rect, kind);
+    let mut w = ui::Widget::new(name, ui::PageRef(0), rect, ui_kind);
     w.auto_size = width.is_none() || height.is_none();
     w.default_axes = [width.is_none(), height.is_none()];
-    w.source_id = Some(id);
+    w.source_id = (id >= 0).then_some(id);
     w.active_index = p.int("$CONTROL_PAR_ACTIVE_INDEX");
     w.value = match &w.kind {
         ui::Kind::Table { cells, .. } => Some(ui::Value::Integers(
@@ -538,7 +636,7 @@ fn widget(
         )),
         _ => look.value.map(|v| ui::Value::Integer(v as i32)),
     };
-    if matches!(control.kind, ControlKind::Waveform | ControlKind::Wavetable) {
+    if matches!(kind, ControlKind::Waveform | ControlKind::Wavetable) {
         w.waveform = p.int("$CONTROL_PAR_WT_ZONE").map(|zone| ui::Waveform {
             zone,
             flags: 0,
@@ -583,7 +681,7 @@ fn widget(
             *slot(&mut w.colors) = Some(color(c));
         }
     }
-    w.binding = match control.kind {
+    w.binding = match kind {
         ControlKind::Label | ControlKind::Panel | ControlKind::LevelMeter => ui::Binding::None,
         _ => ui::Binding::Variable {
             script: slot,
@@ -592,7 +690,7 @@ fn widget(
     };
     // Kontakt captions a control with its variable name until TEXT is set.
     w.text = p.text("$CONTROL_PAR_TEXT").map_or_else(
-        || match control.kind {
+        || match kind {
             ControlKind::Knob
             | ControlKind::Slider
             | ControlKind::Button
@@ -623,7 +721,7 @@ fn widget(
             .map(|font| bld.style(font, align.unwrap_or(1)));
     }
     if let Some(asset) = p.text("$CONTROL_PAR_PICTURE").and_then(|n| bld.asset(n)) {
-        let role = match control.kind {
+        let role = match kind {
             ControlKind::Knob
             | ControlKind::Slider
             | ControlKind::Button
