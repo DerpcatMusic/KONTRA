@@ -12,6 +12,7 @@ use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::Node;
 
+mod delay;
 mod filters;
 mod load;
 mod modulation;

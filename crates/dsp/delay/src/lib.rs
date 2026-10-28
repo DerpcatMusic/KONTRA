@@ -20,14 +20,16 @@ pub struct Settings {
     pub depth_ms: f32,
     /// A second head at half the delay, its LFO slightly ahead.
     pub second_head: bool,
-    /// Gain of each input channel into its line.
-    pub input: [f32; 2],
-    /// The heads' output back into the same line, and into the other one.
-    pub feedback: f32,
-    /// See `feedback`.
-    pub cross: f32,
+    /// The input channels into the lines; row `j` feeds line `j`.
+    pub input: [[f32; 2]; 2],
+    /// The heads back into the lines.
+    pub feedback: [[f32; 2]; 2],
+    /// The heads to the output.
+    pub output: [[f32; 2]; 2],
     /// A one-pole low-pass on each head; `f32::INFINITY` for none.
     pub damping_hz: f32,
+    /// A one-pole high-pass on each head; 0 for none.
+    pub low_cut_hz: f32,
     /// The LFO's speed.
     pub lfo_hz: f32,
     /// Cycles the right LFO runs ahead of the left.
@@ -49,8 +51,13 @@ fn one_pole(hz: f32, rate: f32) -> f32 {
     1.0 - (-std::f32::consts::TAU * hz.max(0.0) / rate).exp()
 }
 
-/// A stereo delay line with one or two LFO-swept heads, feedback and
-/// cross-feedback; see [`Settings`].
+/// `m·x`.
+fn apply(m: [[f32; 2]; 2], x: [f32; 2]) -> [f32; 2] {
+    m.map(|[a, b]| a * x[0] + b * x[1])
+}
+
+/// A stereo delay line with one or two LFO-swept heads whose filtered sum
+/// matrices mix back into the lines and out; see [`Settings`].
 #[derive(Debug)]
 pub struct ModDelay {
     s: Settings,
@@ -62,10 +69,13 @@ pub struct ModDelay {
     delay: Option<f32>,
     glide: f32,
     damping: f32,
+    low_cut: f32,
     /// The left LFO's phase, cycles.
     cycle: f64,
     /// Each head's low-pass state, per channel.
     lp: [[f32; 2]; 2],
+    /// Each head's high-pass (its own low-pass) state, per channel.
+    hp: [[f32; 2]; 2],
 }
 
 impl ModDelay {
@@ -84,8 +94,10 @@ impl ModDelay {
             delay: None,
             glide: 1.0 - (-1.0 / (GLIDE_S * rate)).exp(),
             damping: 1.0,
+            low_cut: 0.0,
             cycle: 0.0,
             lp: [[0.0; 2]; 2],
+            hp: [[0.0; 2]; 2],
         };
         d.set(s);
         d
@@ -96,6 +108,7 @@ impl ModDelay {
     pub fn set(&mut self, s: Settings) {
         self.s = s;
         self.damping = one_pole(s.damping_hz, self.rate).clamp(0.0, 1.0);
+        self.low_cut = one_pole(s.low_cut_hz, self.rate).clamp(0.0, 1.0);
     }
 
     /// The sample `d` frames back (at least 2), 4-point cubic.
@@ -143,22 +156,24 @@ impl ModDelay {
                 for (h, &(base, ahead)) in heads.iter().enumerate() {
                     // The delay grows as the LFO falls.
                     let x = self.read(c, base - swing * lfo(self.cycle + offset + ahead));
-                    if let Some(lp) = self.lp.get_mut(h).and_then(|l| l.get_mut(c)) {
+                    let lp = self.lp.get_mut(h).and_then(|l| l.get_mut(c));
+                    let hp = self.hp.get_mut(h).and_then(|l| l.get_mut(c));
+                    if let (Some(lp), Some(hp)) = (lp, hp) {
                         *lp = flush(*lp + (x - *lp) * self.damping);
-                        *out += *lp;
+                        *hp = flush(*hp + (*lp - *hp) * self.low_cut);
+                        *out += *lp - *hp;
                     }
                 }
             }
-            let line = [
-                frame[0] * s.input[0] + y[0] * s.feedback + y[1] * s.cross,
-                frame[1] * s.input[1] + y[1] * s.feedback + y[0] * s.cross,
-            ];
+            let [a, b] = apply(s.input, *frame);
+            let [c, d] = apply(s.feedback, y);
+            let line = [a + c, b + d];
             if let Some(slot) = self.ring.get_mut(self.at) {
                 *slot = line.map(flush);
             }
             self.at = (self.at + 1) % self.ring.len();
             self.cycle = (self.cycle + step).fract();
-            *frame = y;
+            *frame = apply(s.output, y);
         }
         self.delay = Some(delay);
     }

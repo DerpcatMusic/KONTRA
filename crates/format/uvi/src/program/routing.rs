@@ -5,12 +5,14 @@
 //! EffectRack ends a bus: it feeds one bus per chain at the chain's gain,
 //! and the chains feed a bus where the rest of the inserts run. Every strip
 //! ends on the main output ahead of the program's own inserts, as an aux set
-//! `PreInsert` does. Of the effects, Gain, Convolver and SampledReverb are
-//! carried; the rest pass their input and are reported (see `effects`).
+//! `PreInsert` does. Of the effects, Gain, Convolver, SampledReverb,
+//! ThreeBandShelves and DualDelay are carried; the rest pass their input and
+//! are reported (see `effects`).
 
 use kontra_ir as ir;
 use roxmltree::Node;
 
+use super::delay::dual_delay;
 use super::{Library, Translator, db, flag, num};
 
 /// Effects a keygroup's voices run themselves (see [`Translator::voice_slots`]).
@@ -28,9 +30,15 @@ pub(super) fn carried(node: Node) -> bool {
         return false;
     };
     let laid = owner.has_tag_name("Layer") || owner.has_tag_name("AuxEffect");
-    let kind = ["Gain", "Convolver", "SampledReverb", "ThreeBandShelves"]
-        .iter()
-        .any(|t| node.has_tag_name(*t));
+    let kind = [
+        "Gain",
+        "Convolver",
+        "SampledReverb",
+        "ThreeBandShelves",
+        "DualDelay",
+    ]
+    .iter()
+    .any(|t| node.has_tag_name(*t));
     if owner.has_tag_name("Keygroup") {
         return PER_VOICE.iter().any(|t| node.has_tag_name(*t));
     }
@@ -222,6 +230,8 @@ impl<L: Library> Translator<'_, '_, L> {
             Some(effect(kind, 1.0, 0.0))
         } else if node.has_tag_name("ThreeBandShelves") {
             Some(shelves(node)?)
+        } else if node.has_tag_name("DualDelay") {
+            Some(dual_delay(node, &mut self.notes)?)
         } else if node.has_tag_name("Convolver") || node.has_tag_name("SampledReverb") {
             let raw = node.has_tag_name("SampledReverb") && !flag(node, "NormalizePower");
             let wet = num(node, "Wet", 1.0)? as f32 * if raw { RAW_WET } else { 1.0 };
@@ -349,7 +359,7 @@ fn shelves(node: Node) -> Result<ir::Effect, String> {
 fn wet_only(node: Node) -> Result<Option<f32>, String> {
     let tag = node.tag_name().name();
     Ok(match tag {
-        "SparkVerb" | "DualDelay" | "FeedbackMachine" | "Flanger" => {
+        "SparkVerb" | "FeedbackMachine" | "Flanger" => {
             Some(1.0 - num(node, "Mix", 1.0)?.clamp(0.0, 1.0) as f32)
         }
         _ => None,
