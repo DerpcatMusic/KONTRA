@@ -505,6 +505,18 @@ fn translate_group(
                             _ => None,
                         })
                     }
+                    // Target 0x1a is in the additive family (FUN_140873040):
+                    // the knob moves by `signal·intensity`.
+                    (Some(source), "frequency", Some(at))
+                        if !matches!(source, ir::Source::HeldTime { .. }) =>
+                    {
+                        timed_slots.iter().find_map(|&(n, of)| match of {
+                            ir::Source::Lfo(lfo) if n == usize::from(at) => {
+                                Some(laws::lfo_rate(source, lfo, t.signed_intensity()))
+                            }
+                            _ => None,
+                        })
+                    }
                     // Target 0x19 compiles (FUN_140873040, 0x144f1daa0) to
                     // `$in * (1.0 - (1.0 - $signal) * $intensity)`; flag 4
                     // picks a screen form (0x144f1daf0) no library uses yet.
