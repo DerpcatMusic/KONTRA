@@ -225,7 +225,8 @@ fn response(
                 .for_each(|v| *v *= gain);
         }
     }
-    let delay = (impulse.predelay_ms * from as f32 * 0.001) as usize;
+    // At most a second of predelay; the frame cap below bounds the rest.
+    let delay = (impulse.predelay_ms.clamp(0.0, 1000.0) * from as f32 * 0.001) as usize;
     for c in [&mut left, &mut right] {
         c.splice(0..0, std::iter::repeat_n(0.0, delay));
     }
@@ -242,7 +243,8 @@ fn resample(c: &[f32], from: u32, to: u32) -> Vec<f32> {
     if (ratio - 1.0).abs() < 1e-9 {
         return c.to_vec();
     }
-    let frames = (c.len() as f64 / ratio) as usize;
+    // A response at an odd rate cannot outgrow the decode cap.
+    let frames = ((c.len() as f64 / ratio) as usize).min(MAX_RESPONSE as usize);
     (0..frames)
         .map(|n| {
             let x = n as f64 * ratio;

@@ -160,7 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let mut timed = Vec::new();
         for g in &loaded.plan.groups {
-            let line = format!("{:?} {:?}", g.envelopes, g.lfos);
+            let line = format!("{:?} {:?} {:?}", g.envelopes, g.lfos, g.envelope);
             if !timed.contains(&line) && (!g.envelopes.is_empty() || !g.lfos.is_empty()) {
                 println!("timed {line} amp {:?}", g.envelope);
                 timed.push(line);

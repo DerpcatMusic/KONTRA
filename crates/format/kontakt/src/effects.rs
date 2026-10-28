@@ -110,16 +110,15 @@ fn rack(
             }
             let (effect, module, kind) = effect?;
             // ponytail: a group rack folds into each voice's matrix, so its
-            // convolution passes only the dry level (per-voice wet paths later).
-            if matches!(effect.kind, ir::EffectKind::Convolution { .. })
-                && at.starts_with("group")
-                && !effect.bypass
-            {
-                notes.add(
-                    ir::Impact::Audible,
-                    "group convolution",
-                    format!("{at} slot {slot}"),
-                );
+            // convolution passes only the dry level and its sends feed nothing
+            // (per-voice wet paths later).
+            let lost = match effect.kind {
+                ir::EffectKind::Convolution { .. } => Some("group convolution"),
+                ir::EffectKind::Sends(_) => Some("group send levels"),
+                _ => None,
+            };
+            if let Some(feature) = lost.filter(|_| at.starts_with("group") && !effect.bypass) {
+                notes.add(ir::Impact::Audible, feature, format!("{at} slot {slot}"));
             }
             if matches!(
                 effect.kind,
@@ -262,7 +261,8 @@ fn sends(public: &[u8]) -> Option<ir::EffectKind> {
     let mut levels = [0.0; 8];
     for (n, level) in levels.iter_mut().enumerate().take(count) {
         let at = 4 + n * 4;
-        *level = f32::from_le_bytes(public.get(at..at + 4)?.try_into().ok()?);
+        let value = f32::from_le_bytes(public.get(at..at + 4)?.try_into().ok()?);
+        *level = if value.is_finite() { value } else { 0.0 };
     }
     Some(ir::EffectKind::Sends(levels))
 }

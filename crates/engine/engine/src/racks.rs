@@ -80,6 +80,19 @@ pub(crate) fn apply(m: Gain, io: &mut [[f32; 2]]) {
 }
 
 impl Engine {
+    /// Rebuilds every rack's processors from its slots as the init callback
+    /// left them. Not real-time.
+    pub(crate) fn rebuild_racks(&mut self) {
+        let rate = self.rate;
+        let racks = std::iter::once(&mut self.rack)
+            .chain(self.sends.iter_mut())
+            .chain(std::iter::once(&mut self.main))
+            .chain(self.buses.iter_mut().map(|b| &mut b.rack));
+        for rack in racks {
+            *rack = Rack::new(&rack.slots, rate);
+        }
+    }
+
     /// Adds the buses into `span` through their racks, then runs the
     /// instrument's insert, send and main racks on it.
     pub(crate) fn mix_out(&mut self, span: &mut [[f32; 2]]) {

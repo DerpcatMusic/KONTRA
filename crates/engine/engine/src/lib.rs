@@ -272,6 +272,7 @@ impl Engine {
                 engine.run_callback(changed, Running::new(Kind::Init, None));
             }
         }
+        engine.rebuild_racks();
         engine.build_chains();
         engine
     }

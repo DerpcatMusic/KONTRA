@@ -32,11 +32,17 @@ pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
 /// As [`open`], and when the header names no rate or the file is longer than `max_frames`.
 pub fn decode(sample: &ir::Sample, max_frames: u64) -> io::Result<(u32, Vec<[f32; 2]>)> {
     let o = opened(sample)?;
-    if o.rate == 0 || o.frames > max_frames {
+    // 64 MiB holds stereo f32 at any `max_frames` a response asks for.
+    const MAX_BYTES: usize = 64 << 20;
+    if o.rate == 0 || o.frames == 0 || o.frames > max_frames {
         return Err(unsupported(format!("{} frames at {} Hz", o.frames, o.rate)));
     }
     let frames = usize::try_from(o.frames).map_err(|_| unsupported("length".into()))?;
-    let mut bytes = vec![0; frames * o.fmt.bytes_per_frame()];
+    let size = frames
+        .checked_mul(o.fmt.bytes_per_frame())
+        .filter(|&n| n <= MAX_BYTES)
+        .ok_or_else(|| unsupported(format!("{frames} frames of {:?}", o.fmt)))?;
+    let mut bytes = vec![0; size];
     o.source.read(0, &mut bytes)?;
     let mut out = vec![[0.0; 2]; frames];
     o.fmt
