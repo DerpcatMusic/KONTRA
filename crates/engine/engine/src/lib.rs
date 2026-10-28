@@ -775,15 +775,10 @@ impl Engine {
                     .notes
                     .get(note)
                     .is_some_and(|n| n.origin == Origin::Host && !n.is_up());
-            // A silent parent stays addressable while a child waits on it.
-            let parenting = hits.iter().any(|&c| {
-                self.notes
-                    .get(c)
-                    .is_some_and(|n| n.origin == Origin::Child(note))
-            });
             if !sounding
                 && !waiting
-                && !parenting
+                // A silent parent stays addressable while a child waits on it.
+                && !self.notes.parents(note)
                 && let Some(n) = self.notes.remove(note)
             {
                 self.ended.push(n.host);

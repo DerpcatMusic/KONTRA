@@ -230,6 +230,14 @@ impl Ledger {
             .take()
     }
 
+    /// Whether a live note is released with `parent`.
+    pub(crate) fn parents(&self, parent: NoteRef) -> bool {
+        let child = Origin::Child(parent);
+        self.entries
+            .iter()
+            .any(|e| e.note.is_some_and(|n| n.origin == child))
+    }
+
     /// Fills `out` with the live notes `keep` accepts, oldest slot first.
     pub(crate) fn select(&self, out: &mut Vec<NoteRef>, keep: impl Fn(&Note) -> bool) {
         out.clear();
