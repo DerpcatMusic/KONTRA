@@ -26,7 +26,8 @@ fn main() -> anyhow::Result<()> {
     {
         let text =
             crypto::decode_program_bytes(&ufs.read_member(m, dir.metadata_key, key)?, &ns.program)?;
-        let name = m.name.replace(['/', '\\'], "_");
+        // The whole path: leaf names repeat across folders.
+        let name = m.path.as_deref().unwrap_or(&m.name).replace(['/', '\\'], "_");
         std::fs::write(std::path::Path::new(out).join(name), text)?;
     }
     Ok(())

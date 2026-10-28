@@ -33,7 +33,8 @@ fn main() -> anyhow::Result<()> {
         if let Some(k) = k {
             crypto::transform_blocks(&mut buf, k, offset);
         }
-        let name = m.name.replace(['/', '\\'], "_");
+        // The whole path: leaf names repeat across folders.
+        let name = m.path.as_deref().unwrap_or(&m.name).replace(['/', '\\'], "_");
         std::fs::write(std::path::Path::new(out).join(&name), &buf)?;
         println!("{} {}", m.name, buf.len());
     }
