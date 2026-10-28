@@ -23,7 +23,7 @@ enum Dsp {
     None,
     Eq(Box<[filters::Stage]>),
     /// An EQ routes move: all its bands, retuned each span.
-    Bells(filters::VoiceEq),
+    Bells(Box<filters::VoiceEq>),
     /// A wet path (convolver or reverb) and a span of its output.
     Wet(Box<dyn Wet>, Box<[[f32; 2]]>),
 }
@@ -192,7 +192,7 @@ impl Rack {
             .enumerate()
             .map(|(n, slot)| match slot.map(|e| e.kind) {
                 Some(ir::EffectKind::Eq(bells)) if moved(n) => {
-                    Dsp::Bells(filters::VoiceEq::new(bells, rate))
+                    Dsp::Bells(Box::new(filters::VoiceEq::new(bells, rate)))
                 }
                 // Built even while bypassed: a script may enable it later.
                 Some(
