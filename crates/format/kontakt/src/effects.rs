@@ -319,7 +319,13 @@ fn slot_effect(
             ir::EffectKind::Other
         }),
         bypass: params.bypass,
-        output: if eq { 1.0 } else { params.output_gain },
+        output: if eq {
+            1.0
+        } else if effect.id == 0x15 {
+            params.output_gain * crate::legacy_reverb::WET
+        } else {
+            params.output_gain
+        },
         dry: if parallel || effect.id == 0x13 {
             params.dry_level
         } else {
