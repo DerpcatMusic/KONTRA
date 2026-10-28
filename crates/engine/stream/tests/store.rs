@@ -151,6 +151,41 @@ fn two_loads_of_one_blob_share_pinned_pages() {
     drop(a);
 }
 
+/// Two zones of one load naming the same sample (Areia's pads: 640 zones,
+/// 320 samples) read it once and hold one copy, its windows merged.
+#[test]
+fn one_sample_twice_in_a_load_is_read_and_held_once() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let bytes = (0..2 * PAGE_FRAMES)
+        .flat_map(|n| (n as i16).to_le_bytes())
+        .collect();
+    let source = Arc::new(Counting(MemSource::new(FMT, bytes), AtomicUsize::new(0)));
+    let key = BlobKey {
+        file: "twice".into(),
+        offset: 0,
+        fmt: FMT,
+    };
+    let request = |pin| kontra_stream::LoadRequest {
+        key: key.clone(),
+        source: source.clone(),
+        frames: 2 * PAGE_FRAMES,
+        pin: vec![pin],
+    };
+    let loaded = store.load_many(vec![
+        request(0..PAGE_FRAMES),
+        request(PAGE_FRAMES..2 * PAGE_FRAMES),
+    ]);
+    let [Ok(a), Ok(b)] = &loaded[..] else {
+        panic!("load failed")
+    };
+    assert!(Arc::ptr_eq(a, b));
+    // One read of both pages, both resident for either zone.
+    assert_eq!(source.1.load(Ordering::Relaxed), 1);
+    let client = store.client();
+    let mut out = vec![[0.0; 2]; 10];
+    assert_eq!(a.read(&client, PAGE_FRAMES, &mut out).missing, 0);
+}
+
 #[test]
 fn an_unsupported_layout_is_refused_at_load() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
