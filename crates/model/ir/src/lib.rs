@@ -10,7 +10,9 @@ mod drive;
 mod effects;
 mod reverb;
 pub use drive::{Crush, Curve as DriveCurve, Shaper};
-pub use effects::{Compressor, Delay, DelayTime, Detector, Limiter, Phaser, Reverb, Transient};
+pub use effects::{
+    Compressor, Delay, DelayTime, Detector, ImpulseCuts, Limiter, Phaser, Reverb, Transient,
+};
 pub use reverb::{Law, ReverbPar};
 
 #[derive(Clone, Debug)]
@@ -67,15 +69,6 @@ pub struct Impulse {
     pub cuts: Option<ImpulseCuts>,
     /// Eight knots `[time fraction, dB]`, interpolated in amplitude.
     pub envelope: Option<[[f32; 2]; 8]>,
-}
-
-/// Low and high cut Hz of a response's early and late parts, and where (a
-/// fraction of its length) the late part takes over; `None`: all late.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ImpulseCuts {
-    pub early: [f32; 2],
-    pub late: [f32; 2],
-    pub crossover: Option<f32>,
 }
 
 /// Scales a response so its louder channel's energy (sum of squares) is
