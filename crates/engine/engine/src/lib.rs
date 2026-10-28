@@ -13,6 +13,7 @@ mod callbacks;
 mod controls;
 mod effects;
 mod filters;
+mod group_racks;
 mod inspect;
 mod ledger;
 mod machine;
@@ -173,6 +174,8 @@ pub struct Engine {
     zone_chain: Box<[Option<u16>]>,
     /// Per group, the inserts that run on each voice.
     voice_units: Box<[Arc<[voice_rack::Unit]>]>,
+    /// Per group, the first slot its summed voices run (group_racks.rs).
+    group_split: Box<[Option<usize>]>,
     /// One voice's audio on its way through its filter.
     scratch: Box<[[f32; 2]]>,
 }
@@ -278,6 +281,7 @@ impl Engine {
             chains: Vec::new(),
             zone_chain: Box::new([]),
             voice_units: Box::new([]),
+            group_split: Box::new([]),
             scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),
         };
         engine.cc_values[7] = 100;

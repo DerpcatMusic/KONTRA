@@ -62,7 +62,15 @@ impl Engine {
         let group = self
             .groups
             .get(zone.group as usize)
-            .map_or(effects::IDENTITY, |g| effects::rack(&g.inserts));
+            .map_or(effects::IDENTITY, |g| {
+                // The group's sum runs the slots from its split on.
+                let split = self.group_split.get(zone.group as usize).copied().flatten();
+                effects::rack(
+                    g.inserts
+                        .get(..split.unwrap_or(g.inserts.len()))
+                        .unwrap_or_default(),
+                )
+            });
         let amp = [[l * g, 0.0], [0.0, r * g]];
         product(group, amp)
     }
