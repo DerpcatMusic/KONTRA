@@ -277,4 +277,34 @@ mod tests {
         // At a quarter cycle: (−1 + 0) / 2.
         assert!((lfo(&both, at(0.05, None), 0, 120.0) + 0.5).abs() < 1e-4);
     }
+
+    #[test]
+    fn a_multi_mixes_sine_triangle_ramp_and_pulse_by_sign() {
+        // `s·sin + t·tri + w·(1 − 2p) + q·pulse`, the triangle from +1, as
+        // weights `[−s, 0, −t, −q, 0, w]`.
+        let (s, t, w, q, width) = (0.5, 0.25, 0.75, 0.2, 0.3);
+        let l = ir::Lfo {
+            wave: ir::Wave::Multi {
+                weights: [-s, 0.0, -t, -q, 0.0, w],
+                width,
+                normalize: false,
+            },
+            rate: ir::Rate::Hz(1.0),
+            phase: 0.0,
+            fade_ms: 0.0,
+            clock: ir::Clock::Voice,
+        };
+        for p in [0.0f32, 0.1, 0.29, 0.31, 0.5, 0.7, 0.95] {
+            let tri = if p < 0.5 {
+                1.0 - 4.0 * p
+            } else {
+                4.0 * p - 3.0
+            };
+            let pulse = if p < width { 1.0 } else { -1.0 };
+            let want =
+                s * (std::f32::consts::TAU * p).sin() + t * tri + w * (1.0 - 2.0 * p) + q * pulse;
+            let got = lfo(&l, at(p, None), 0, 120.0);
+            assert!((got - want).abs() < 1e-3, "{p}: {got} {want}");
+        }
+    }
 }
