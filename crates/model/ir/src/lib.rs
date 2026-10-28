@@ -64,6 +64,18 @@ pub struct Impulse {
     pub normalize: Option<Normalize>,
     /// Silence before the response, truncated to whole frames.
     pub predelay_ms: f32,
+    pub cuts: Option<ImpulseCuts>,
+    /// Eight knots `[time fraction, dB]`, interpolated in amplitude.
+    pub envelope: Option<[[f32; 2]; 8]>,
+}
+
+/// Low and high cut Hz of a response's early and late parts, and where (a
+/// fraction of its length) the late part takes over; `None`: all late.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImpulseCuts {
+    pub early: [f32; 2],
+    pub late: [f32; 2],
+    pub crossover: Option<f32>,
 }
 
 /// Scales a response so its louder channel's energy (sum of squares) is

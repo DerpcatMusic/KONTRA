@@ -68,21 +68,55 @@ impl<'a> Impulses<'a> {
             _ => return None,
         };
         let name = self.files.get(&index)?.clone();
-        let defaults = [3, 6].iter().all(|&n| float(n).is_none_or(|s| s == 1.0))
-            && [4, 7].iter().all(|&n| float(n).is_none_or(|hz| hz <= 20.0))
-            // Una Corda stores an open high cut as 19999.992.
-            && [5, 8]
-                .iter()
-                .all(|&n| float(n).is_none_or(|hz| hz >= 19_999.0))
-            && float(0).is_none_or(|d| d <= 1.0)
-            && !flag(14);
-        if !defaults {
-            notes.add(
-                ir::Impact::Audible,
-                "impulse response shaping (size, cuts, S.Rate, envelope)",
-                at,
-            );
+        let floats = |n: usize| match fields.get(n).map(|f| &f.value) {
+            Some(EffectValue::Floats(v)) => <[f32; 8]>::try_from(v.as_slice()).ok(),
+            _ => None,
+        };
+        // The size setter 0x1419b6750 keeps only sizes in 0.5..=1.5.
+        let size = |n: usize| float(n).filter(|s| (0.5..=1.5).contains(s)).unwrap_or(1.0);
+        let mut lost = |feature: &str| notes.add(ir::Impact::Audible, feature, at);
+        // ponytail: Kontakt stretches by the size with zplane's Élastique
+        // (0x1419b3450) and resamples the wet path by S.Rate; neither runs here.
+        if size(3) != 1.0 || size(6) != 1.0 {
+            lost("impulse response size");
         }
+        if float(0).is_some_and(|d| d > 1.0) {
+            lost("impulse response S.Rate");
+        }
+        let cut = |low: usize, high: usize| {
+            [
+                float(low).unwrap_or(0.0),
+                float(high).unwrap_or(f32::INFINITY),
+            ]
+        };
+        let (early, late) = (cut(4, 5), cut(7, 8));
+        let crossover = float(9).filter(|x| *x >= 0.0);
+        if early != late && crossover.is_none() {
+            lost("impulse response early/late crossover");
+        }
+        // Library defaults: 20 Hz and 20 kHz (Una Corda stores 19999.992).
+        let open = |[low, high]: [f32; 2]| low <= 20.0 && high >= 19_999.0;
+        let cuts = (!(open(early) && open(late))).then_some(ir::ImpulseCuts {
+            early,
+            late,
+            crossover,
+        });
+        let envelope = if flag(14) {
+            let knots = floats(15).zip(floats(16)).map(|(x, db)| {
+                std::array::from_fn(|i| {
+                    [
+                        x.get(i).copied().unwrap_or(0.0),
+                        db.get(i).copied().unwrap_or(0.0),
+                    ]
+                })
+            });
+            if knots.is_none() {
+                lost("impulse response envelope");
+            }
+            knots
+        } else {
+            None
+        };
         let sample = match self.samples.iter().position(|s| s.name == name) {
             Some(found) => found,
             None => {
@@ -137,6 +171,8 @@ impl<'a> Impulses<'a> {
             reverse: flag(10),
             normalize: flag(11).then_some(crate::laws::AUTO_GAIN),
             predelay_ms: float(2).unwrap_or(0.0).max(0.0),
+            cuts,
+            envelope,
         });
         u16::try_from(self.out.len() - 1).ok()
     }
