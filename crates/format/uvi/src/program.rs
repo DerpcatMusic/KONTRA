@@ -230,6 +230,19 @@ impl<L: Library> Translator<'_, '_, L> {
                 amount,
             });
         }
+        let gains = kg
+            .children()
+            .filter(|c| c.has_tag_name("Connections"))
+            .flat_map(|c| c.children())
+            .filter_map(|c| Some((c, gain_route(program, c)?)))
+            .collect::<Vec<_>>();
+        for (c, r) in gains {
+            self.add_route(&mut group, c, r, |source, intensity| ir::ModKind::Volume {
+                source,
+                intensity,
+                curve: ir::Curve::Depth { power: 1 },
+            });
+        }
         let placement = placement(kg);
         let span = Span {
             keys,
@@ -661,6 +674,7 @@ impl<L: Library> Translator<'_, '_, L> {
             }
             if modulation::script_route(self.program, connection).is_some()
                 || filters::freq_route(connection).is_some()
+                || gain_route(self.program, connection).is_some()
                 || [PITCH, PAN]
                     .into_iter()
                     .any(|to| modulation::route(self.program, connection, to).is_some())
@@ -718,6 +732,18 @@ fn source_node<'a, 'input>(
 /// The owners and destinations [`modulation::route`] carries.
 const PITCH: (&str, &str) = ("SamplePlayer", "Pitch");
 const PAN: (&str, &str) = ("Keygroup", "Pan");
+
+/// A velocity or controller connection on a keygroup's `Gain`, which
+/// scales it by `1 − r + r·x` (UVIWorkstation 0x141429a80: a source enters
+/// at `(m + 1)/2`, `r` clamped to ±1; below zero `1 + r·x`). ponytail: a
+/// negative ratio and LFO or envelope sources are not carried (AO's are
+/// all ≥ 0 from velocity); add `Curve::Falling` and an LFO shaper when one
+/// turns up.
+fn gain_route(program: Node, connection: Node) -> Option<modulation::Route> {
+    let r = modulation::route(program, connection, ("Keygroup", "Gain"))?;
+    let live = matches!(r.source, ir::Source::Velocity | ir::Source::Controller(_));
+    (live && r.timed.is_none() && (0.0..=1.0).contains(&r.ratio)).then_some(r)
+}
 
 /// `item`'s index in `items`, pushed if absent.
 fn index_of<T: PartialEq>(items: &mut Vec<T>, item: T) -> u8 {
