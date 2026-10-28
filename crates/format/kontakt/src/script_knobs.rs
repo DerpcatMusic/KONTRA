@@ -9,9 +9,9 @@ use kontra_ir as ir;
 /// beside each translator (delays.rs, dynamics.rs, drive.rs), the LFO rate
 /// measured on ANALOG STRINGS (0.010415·20465^x Hz, within 0.4% over 14
 /// knob values), and the Multi weights ANALOG stores for the knobs its
-/// script writes (2x − 1). The Compressor's attack and release, its Pro
-/// make-up and the delay's composite knobs depend on more than the knob;
-/// they are not here.
+/// script writes (2x − 1). The filter's cutoff and resonance and the
+/// Compressor's attack and release depend on the slot's effect: their laws
+/// are the slot's own (`Slot`). The delay's composite knobs are not here.
 pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     use ir::EffectParam as E;
     use ir::KnobTarget::{Effect, LfoRate, LfoWeight, Slot};
@@ -27,6 +27,16 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
         (
             "$ENGINE_PAR_RESONANCE",
             Slot(ir::SlotKnob::Resonance),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_COMP_ATTACK",
+            Slot(ir::SlotKnob::Attack),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_COMP_DECAY",
+            Slot(ir::SlotKnob::Release),
             lin(0.0, 1.0),
         ),
         (
@@ -109,40 +119,76 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
 /// One field a slot knob moves, and the law it moves it by.
 pub(crate) type SlotKnob = (ir::SlotKnob, ir::EffectParam, ir::Law);
 
-/// The cutoff and resonance knobs of filter `kind`, sampled from
-/// [`crate::laws::filter`] at 65 settings each. Cutoff moves only the Hz and
-/// resonance only the dampings and gain there, so each knob is sampled with
-/// the others at their saved values.
+/// The cutoff and resonance knobs of filter `kind` through
+/// [`crate::laws::filter`]. Cutoff moves only the Hz and resonance only the
+/// dampings and gain there, so each knob is sampled with the others at their
+/// saved values.
 pub(crate) fn filter_knobs(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Vec<SlotKnob> {
+    use ir::EffectParam::{FilterDamping, FilterGain, FilterHz};
+    let filter = |u, r| crate::laws::filter(kind, u, r, gain).map(ir::EffectKind::Filter);
+    let mut out = sampled(ir::SlotKnob::Cutoff, &[FilterHz], &|u| filter(u, resonance));
+    let fields = [
+        FilterDamping(0),
+        FilterDamping(1),
+        FilterDamping(2),
+        FilterGain,
+    ];
+    out.extend(sampled(ir::SlotKnob::Resonance, &fields, &|r| {
+        filter(cutoff, r)
+    }));
+    out
+}
+
+/// The Compressor's saved attack and release ms for a knob `x`, `lo + (hi −
+/// lo)·(e^(kx) − 1)/(e^k − 1)`: fitted to the saves Kontakt writes for x = 0,
+/// .1, .25, .5, .75, .9, 1 (probes/knob_save_laws.lua), within 0.01% / 0.02%.
+const COMP_ATTACK_MS: [(f32, f32, f32); 2] = [(0.0, 1.0, 5.811), (1.0, 1000.0, 0.0)];
+const COMP_RELEASE_MS: [(f32, f32, f32); 2] = [(0.0, 50.0, 3.874), (1.0, 2500.0, 0.0)];
+
+/// The Compressor's attack and release knobs: the saved ms through
+/// [`crate::laws::compressor`], whose law depends on the mode.
+pub(crate) fn compressor_knobs(mode: i32, saved: [f32; 4], link: bool) -> Vec<SlotKnob> {
+    use ir::EffectParam::{CompressorAttack, CompressorRelease};
+    let [t, r, a, rel] = saved;
+    let ms = |points: [(f32, f32, f32); 2], x| ir::Law::Breakpoints(points.into()).eval(x);
+    let comp = |a, rel| {
+        let c = crate::laws::compressor(mode, t, r, a, rel, link);
+        Some(ir::EffectKind::Compressor(c))
+    };
+    let mut out = sampled(ir::SlotKnob::Attack, &[CompressorAttack], &|x| {
+        comp(ms(COMP_ATTACK_MS, x), rel)
+    });
+    out.extend(sampled(ir::SlotKnob::Release, &[CompressorRelease], &|x| {
+        comp(a, ms(COMP_RELEASE_MS, x))
+    }));
+    out
+}
+
+/// Each of `fields` that moves in the effect `build` makes for a knob at 65
+/// settings, as a table.
+fn sampled(
+    knob: ir::SlotKnob,
+    fields: &[ir::EffectParam],
+    build: &dyn Fn(f32) -> Option<ir::EffectKind>,
+) -> Vec<SlotKnob> {
     const STEPS: u8 = 64;
-    let table = |at: &dyn Fn(f32) -> Option<f32>| {
-        let points = (0..=STEPS).map(|n| at(f32::from(n) / f32::from(STEPS)));
-        points
-            .collect::<Option<Vec<f32>>>()
-            .map(|v| ir::Law::Table(v.into()))
+    let kinds = (0..=STEPS).map(|n| build(f32::from(n) / f32::from(STEPS)));
+    let Some(mut kinds) = kinds.collect::<Option<Vec<_>>>() else {
+        return Vec::new();
     };
     let mut out = Vec::new();
-    let hz = table(&|u| Some(crate::laws::filter(kind, u, resonance, gain)?.hz));
-    out.extend(hz.map(|law| (ir::SlotKnob::Cutoff, ir::EffectParam::FilterHz, law)));
-    let stages = crate::laws::filter(kind, cutoff, resonance, gain).map_or(0, |f| f.stages);
-    for n in 0..stages.min(3) {
-        let at = |r| {
-            crate::laws::filter(kind, cutoff, r, gain)?
-                .damping
-                .get(usize::from(n))
-                .copied()
+    for &field in fields {
+        let values = kinds.iter_mut().map(|k| field.field_mut(k).copied());
+        let Some(values) = values.collect::<Option<Vec<f32>>>() else {
+            continue;
         };
-        let law = table(&at);
-        out.extend(law.map(|law| {
-            (
-                ir::SlotKnob::Resonance,
-                ir::EffectParam::FilterDamping(n),
-                law,
-            )
-        }));
+        if values
+            .first()
+            .is_some_and(|f| values.iter().any(|v| v != f))
+        {
+            out.push((knob, field, ir::Law::Table(values.into())));
+        }
     }
-    let law = table(&|r| Some(crate::laws::filter(kind, cutoff, r, gain)?.gain));
-    out.extend(law.map(|law| (ir::SlotKnob::Resonance, ir::EffectParam::FilterGain, law)));
     out
 }
 
@@ -164,6 +210,34 @@ mod tests {
             let k = crate::laws::filter(kind, 0.4, 0.711, 0.0).unwrap().damping[0];
             let got = law(ir::EffectParam::FilterDamping(0)).eval(0.711);
             assert!((got / k - 1.0).abs() < 2e-2, "{kind}: {got} vs {k}");
+        }
+    }
+
+    #[test]
+    fn the_compressor_knobs_land_on_the_saves_kontakt_writes() {
+        // (x, saved attack ms, saved release ms), probes/knob_save_laws.lua.
+        let saves = [
+            (0.1, 3.364_088, 74.600_525),
+            (0.5, 52.827, 358.699_37),
+            (0.9, 558.393_4, 1696.474_4),
+        ];
+        for mode in 0..3 {
+            let knobs = compressor_knobs(mode, [-14.0, 0.5, 10.0, 100.0], false);
+            let law = |knob| &knobs.iter().find(|(k, _, _)| *k == knob).unwrap().2;
+            for (x, a, rel) in saves {
+                let want = crate::laws::compressor(mode, -14.0, 0.5, a, 100.0, false).attack_ms;
+                let got = law(ir::SlotKnob::Attack).eval(x);
+                assert!(
+                    (got / want - 1.0).abs() < 3e-3,
+                    "{mode} {x}: {got} vs {want}"
+                );
+                let want = crate::laws::compressor(mode, -14.0, 0.5, 10.0, rel, false).release_ms;
+                let got = law(ir::SlotKnob::Release).eval(x);
+                assert!(
+                    (got / want - 1.0).abs() < 3e-3,
+                    "{mode} {x}: {got} vs {want}"
+                );
+            }
         }
     }
 }
