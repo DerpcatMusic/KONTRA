@@ -87,7 +87,7 @@ struct Key(Arc<[u8]>);
 
 impl LibraryKey for Key {
     fn apply_at(&self, offset: u64, bytes: &mut [u8]) {
-        let key = kontra_ir::Keystream {
+        let key = kontra_ir::Keystream::Repeat {
             stream: Arc::clone(&self.0),
             origin: 0,
         };

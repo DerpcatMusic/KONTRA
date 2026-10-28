@@ -2,6 +2,7 @@
 //! a WAV file, for listening and A/B against other samplers. Prints load time,
 //! gaps and the script actions the engine does not answer yet.
 //! `cargo run --release -p kontra-host --example render -- <file> <key> <out.wav>`
+//! `<file>` is a Kontakt instrument, or a UVI program as `bank.ufs/Name.uvip`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // KONTRA_SCRIPT_DUMP=<dir> writes each script's source there.
     if let Some(dir) = std::env::var_os("KONTRA_SCRIPT_DUMP") {
-        for (n, s) in kontra_format_kontakt::load(&path)?
+        for (n, s) in kontra_host::instrument::read(&path)?
             .scripts
             .iter()
             .enumerate()
@@ -48,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // KONTRA_SAMPLES=<part of a name>: those samples' peaks, decoded directly.
     if let Ok(part) = std::env::var("KONTRA_SAMPLES") {
-        let ir = kontra_format_kontakt::load(&path)?;
+        let ir = kontra_host::instrument::read(&path)?;
         for s in ir
             .samples
             .iter()
@@ -79,7 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let t = std::time::Instant::now();
     let mut store = Store::new(StoreConfig::DEFAULT)?;
-    let mut ir = kontra_format_kontakt::load(&path)?;
+    let mut ir = kontra_host::instrument::read(&path)?;
     // KONTRA_SCRIPT_SOURCE=<dir>: script n's source is replaced by <dir>/n.ksp
     // when that file exists (edit a dump, add messages, render again).
     if let Some(dir) = std::env::var_os("KONTRA_SCRIPT_SOURCE") {
