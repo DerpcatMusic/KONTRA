@@ -10,8 +10,8 @@
 //! `#[global_allocator]` fails to link.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use kontra_vm::{Action, CoId, Faults, Foreign, HostApi, HostCall, HostValue, Machine, Step, Text};
 use mlua::thread::ThreadStatus;
@@ -61,6 +61,9 @@ pub struct Compiled {
     modules: Arc<HashMap<String, String>>,
     saved: Arc<Vec<(String, String)>>,
     pub callbacks: Callbacks,
+    /// The state that load built, for the first machine (a big program's
+    /// state is tens of MB and a second of load).
+    built: Mutex<Option<(Lua, Arc<AtomicU32>)>>,
 }
 
 /// Loads `source` once, with `modules` (name, source) for `require` and the
@@ -75,7 +78,10 @@ pub fn compile(
     saved: &[String],
 ) -> Result<Compiled, String> {
     let (modules, saved) = inputs(modules, saved);
-    let (lua, _) = state(source, &modules, &saved).map_err(|e| e.to_string())?;
+    let load = alloc::Scope::load();
+    let built = state(source, &modules, &saved).map_err(|e| e.to_string());
+    drop(load);
+    let (lua, checkpoints) = built?;
     let defined = |name: &str| matches!(lua.globals().get::<Value>(name), Ok(Value::Function(_)));
     let callbacks = Callbacks {
         // Always: init pushes the levels the program tree sets.
@@ -89,6 +95,7 @@ pub fn compile(
         modules,
         saved,
         callbacks,
+        built: Mutex::new(Some((lua, checkpoints))),
     })
 }
 
@@ -159,8 +166,10 @@ pub fn sample_loads(
 impl Foreign for Compiled {
     fn machine(&self) -> Box<dyn Machine> {
         let load = alloc::Scope::load();
-        let machine =
-            state(&self.source, &self.modules, &self.saved).map(|(lua, checkpoints)| LuaMachine {
+        let built = self.built.lock().ok().and_then(|mut b| b.take());
+        let machine = built
+            .map_or_else(|| state(&self.source, &self.modules, &self.saved), Ok)
+            .map(|(lua, checkpoints)| LuaMachine {
                 lua: Some(lua),
                 checkpoints,
                 slots: (0..COROUTINES).map(|_| Slot::default()).collect(),
