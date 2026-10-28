@@ -50,6 +50,7 @@ pub(crate) fn rack_only(kind: ir::EffectKind) -> bool {
 pub(crate) fn matrix(e: &ir::Effect) -> Gain {
     let m = match e.kind {
         ir::EffectKind::Gain(g) => [[g, 0.0], [0.0, g]],
+        ir::EffectKind::Matrix(m) => m,
         ir::EffectKind::Invert { phase, swap } => {
             let s = if phase { -1.0 } else { 1.0 };
             if swap {
