@@ -102,7 +102,9 @@ impl ModDelay {
         let at = |back: usize| {
             self.ring
                 .get((self.at + n - back) % n)
-                .map_or(0.0, |f| f[c])
+                .and_then(|f| f.get(c))
+                .copied()
+                .unwrap_or(0.0)
         };
         let [ym1, y0, y1, y2] = [at(whole - 1), at(whole), at(whole + 1), at(whole + 2)];
         // Catmull-Rom from y0 (t = 0) to y1 (t = 1).
@@ -126,20 +128,20 @@ impl ModDelay {
         for frame in io {
             self.delay += (target - self.delay) * self.glide;
             let mut y = [0.0; 2];
-            for (c, out) in y.iter_mut().enumerate() {
-                let cycle = self.cycle + offsets[c];
-                let heads = if s.second_head { 2 } else { 1 };
-                for head in 0..heads {
-                    let (base, ahead) = if head == 0 {
-                        (self.delay, 0.0)
-                    } else {
-                        (self.delay * 0.5, SECOND_AHEAD)
-                    };
+            let heads = [(self.delay, 0.0), (self.delay * 0.5, SECOND_AHEAD)];
+            let heads = if s.second_head {
+                &heads[..]
+            } else {
+                &heads[..1]
+            };
+            for (c, (out, offset)) in y.iter_mut().zip(offsets).enumerate() {
+                for (h, &(base, ahead)) in heads.iter().enumerate() {
                     // The delay grows as the LFO falls.
-                    let x = self.read(c, base - swing * lfo(cycle + ahead));
-                    let lp = &mut self.lp[head][c];
-                    *lp = flush(*lp + (x - *lp) * self.damping);
-                    *out += *lp;
+                    let x = self.read(c, base - swing * lfo(self.cycle + offset + ahead));
+                    if let Some(lp) = self.lp.get_mut(h).and_then(|l| l.get_mut(c)) {
+                        *lp = flush(*lp + (x - *lp) * self.damping);
+                        *out += *lp;
+                    }
                 }
             }
             let line = [
@@ -203,11 +205,11 @@ impl Phaser {
         let offsets = [0.0, f64::from(s.phase)];
         let scale = std::f32::consts::PI / self.rate;
         for frame in io {
-            for (c, v) in frame.iter_mut().enumerate() {
-                let sweep = s.spread_hz * ((s.exponent * lfo(self.cycle + offsets[c])).exp() - 1.0);
+            let states = self.x.iter_mut().zip(self.y.iter_mut());
+            for ((v, offset), (xs, ys)) in frame.iter_mut().zip(offsets).zip(states) {
+                let sweep = s.spread_hz * ((s.exponent * lfo(self.cycle + offset)).exp() - 1.0);
                 let w = ((s.hz + sweep) * scale).clamp(1e-5, 0.99);
                 let a = (1.0 - w) / (1.0 + w);
-                let (xs, ys) = (&mut self.x[c], &mut self.y[c]);
                 let mut input = *v + s.feedback * ys[3];
                 for (x, y) in xs.iter_mut().zip(ys.iter_mut()) {
                     let out = flush((input + *y) * a - *x);
