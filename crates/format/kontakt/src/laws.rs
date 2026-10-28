@@ -56,7 +56,9 @@ pub(crate) fn volume(source: ir::Source) -> ir::Curve {
 
 /// A route to an AHDSR attack multiplies its knob `u`, where the time is
 /// `2·e^(8.9228·u) − 2` ms (fconv_u2n_env_a, [ref]), by
-/// `1 − (1 − x)·i`: a power of `(t + 2)/2`.
+/// `1 − (1 − x)·i`: a power of `(t + 2)/2`. The law compiler
+/// gives release (0xbb) the same form through
+/// fconv_u2n_env_d ([ref], `2·e^(9.4336·u) − 2`), so the same floor.
 pub(crate) const ATTACK_FLOOR_MS: f32 = 2.0;
 
 /// The release-trigger counter: `max(T − held, 0)/T` in a release-trigger

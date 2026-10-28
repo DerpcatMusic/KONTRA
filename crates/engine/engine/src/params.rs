@@ -561,9 +561,9 @@ fn set_signed(kind: &mut ir::ModKind, d: f32) -> bool {
 
 fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
     match kind {
-        ir::ModKind::Volume { intensity, .. } | ir::ModKind::Attack { intensity, .. } => {
-            Some(intensity)
-        }
+        ir::ModKind::Volume { intensity, .. }
+        | ir::ModKind::Attack { intensity, .. }
+        | ir::ModKind::Release { intensity, .. } => Some(intensity),
         ir::ModKind::Pitch { depth, .. }
         | ir::ModKind::Cutoff { depth, .. }
         | ir::ModKind::Resonance { depth, .. }
