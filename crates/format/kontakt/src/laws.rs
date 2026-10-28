@@ -193,9 +193,118 @@ pub(crate) fn lfo(l: &Lfo, retrigger: bool) -> Option<ir::Lfo> {
     })
 }
 
+/// A legacy (types 2..=12) or SV (50..=62) filter; other kinds are not mapped.
+pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32) -> Option<ir::Filter> {
+    use ir::Pass::{Band, High, Low, Notch};
+    let (pass, stages) = match kind {
+        2 | 50 => (Low, 0),
+        3 | 51 => (High, 0),
+        4 | 53 => (Band, 1),
+        6 | 52 => (Low, 1),
+        7 | 54 => (High, 1),
+        8 | 55 => (Low, 2),
+        9 | 57 => (High, 2),
+        10 | 56 => (Band, 2),
+        11 | 58 => (Notch, 2),
+        12 | 59 => (Low, 3),
+        60 => (Band, 3),
+        61 => (High, 3),
+        62 => (Notch, 3),
+        _ => return None,
+    };
+    let (u, r) = (cutoff.clamp(0.0, 1.0), resonance.clamp(0.0, 1.0));
+    let mut f = ir::Filter {
+        pass,
+        hz: 0.0,
+        stages,
+        damping: [2.0; 3],
+        gain: 1.0,
+    };
+    if kind < 50 {
+        legacy(&mut f, u, r);
+    } else {
+        sv(&mut f, u, r);
+    }
+    Some(f)
+}
+
+/// The legacy cascade (docs/re/engine/filt-legacy.md): the knob through the
+/// setters' exp series and warp, `(e^(6.15u) − 1) 0.0025728 + 0.002` of
+/// 21759.5 Hz (Kontakt: −3 dB at 249 / 1189 Hz for .25 / .5; this law gives
+/// 248 / 1200), Butterworth stages.
+///
+/// ponytail: resonance is fitted, not the native feedback: the sharpest
+/// stage's Q grows by `e^(6.4 r)` and the passband falls 5.5 / 11 / 24 dB at
+/// full resonance for 2 / 4 / 6 poles, which lands the measured LP4 peaks
+/// (+20.9 / +37.3 dB at .5 / .9) within 2 dB. Measure LP2 and HP to refine.
+fn legacy(f: &mut ir::Filter, u: f32, r: f32) {
+    let v = ((6.15 * u).exp_m1() * 0.002_572_831_7).clamp(0.0, 1.0);
+    f.hz = 21_759.5 * (v + 0.002);
+    let poles = 2.0 * f32::from(f.stages);
+    for (i, k) in f.damping.iter_mut().take(usize::from(f.stages)).enumerate() {
+        *k = 2.0 * ((2.0 * i as f32 + 1.0) * std::f32::consts::PI / (2.0 * poles)).cos();
+    }
+    if let Some(sharpest) = usize::from(f.stages).checked_sub(1) {
+        if let Some(k) = f.damping.get_mut(sharpest) {
+            *k = (*k / (6.4 * r).exp()).max(MIN_DAMPING);
+        }
+        let drop = [5.5, 11.0, 24.0].get(sharpest).copied().unwrap_or(0.0);
+        f.gain = 10f32.powf(-drop * r / 20.0);
+    }
+}
+
+/// The SV filters (docs/re/engine/filt-sv.md): cutoff is the note
+/// `115u + 20` (at most 160), resonance `R = 1 − (1 − r)³` (six poles:
+/// `1 − (1 − 0.9r)³`) damps each stage by `2(1 − R)` (four poles: the second
+/// by `2(1 − 0.666R)`), and the tap's gain falls with `R`.
+///
+/// ponytail: the native state knees (`±2L`) only act on near self-oscillating
+/// states; damping stops at 0.01 instead.
+fn sv(f: &mut ir::Filter, u: f32, r: f32) {
+    let note = (115.0 * u + 20.0).min(160.0);
+    f.hz = 440.0 * 2f32.powf((note - 69.0) / 12.0);
+    if f.stages == 0 {
+        return;
+    }
+    let big = if f.stages == 3 {
+        1.0 - (1.0 - 0.9 * r).powi(3)
+    } else {
+        1.0 - (1.0 - r).powi(3)
+    };
+    f.damping = [2.0 * (1.0 - big); 3];
+    if f.stages == 2 {
+        f.damping[1] = 2.0 * (1.0 - 0.666 * big);
+    }
+    for k in &mut f.damping {
+        *k = k.max(MIN_DAMPING);
+    }
+    let fall = match (f.stages, f.pass) {
+        (1, _) => 0.5 * big.powi(5),
+        (2, ir::Pass::Band) => 0.9334 * big,
+        (2, ir::Pass::Notch) => 0.88 * big,
+        (2, _) => 0.77 * big,
+        (_, ir::Pass::Band) => (2.0 - big) * big * 0.991,
+        (_, ir::Pass::Notch) => (1.482 - 0.494 * big) * big,
+        _ => (1.2125 - 0.2425 * big) * big,
+    };
+    f.gain = 1.0 - fall;
+}
+
+const MIN_DAMPING: f32 = 0.01;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cutoff_laws_land_the_measured_corners() {
+        let hz = |kind, u| filter(kind, u, 0.0).map(|f| f.hz).unwrap_or_default();
+        // Legacy LP1 at .25 / .5: Kontakt −3 dB at 249 / 1189 Hz.
+        assert!((hz(2, 0.25) - 249.0).abs() < 5.0);
+        assert!((hz(2, 0.5) - 1189.0).abs() < 20.0);
+        // SV at 0: 25.96 Hz.
+        assert!((hz(52, 0.0) - 25.96).abs() < 0.01);
+    }
 
     #[test]
     fn the_flex_curve_knob_is_linear_at_half_and_bows_either_side() {

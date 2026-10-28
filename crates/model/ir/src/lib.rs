@@ -457,6 +457,8 @@ pub enum EffectKind {
     Stereo { width: f32, pan: f32 },
     /// Peaking bands in series; a 0 dB band is flat.
     Eq([Bell; 3]),
+    /// A state-variable filter.
+    Filter(Filter),
     /// Copies its input to the instrument's send slot n at `levels[n]`
     /// (linear) and passes it on unchanged.
     Sends([f32; 8]),
@@ -470,6 +472,26 @@ pub enum EffectKind {
     /// Not carried, a parallel path (a reverb, a delay): only the dry level
     /// passes. The translator reports it.
     OtherWet,
+}
+
+/// `stages` two-pole state-variable stages in series at `hz` (none: one
+/// pole), each with its damping `k` (`1/Q`), then `gain`. A band stage is the
+/// raw band tap `s/(s² + ks + 1)`, peaking at `1/k`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Filter {
+    pub pass: Pass,
+    pub hz: f32,
+    pub stages: u8,
+    pub damping: [f32; 3],
+    pub gain: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pass {
+    Low,
+    High,
+    Band,
+    Notch,
 }
 
 /// A peaking band: `gain_db` at `hz`, width by `q` (the cookbook bell).

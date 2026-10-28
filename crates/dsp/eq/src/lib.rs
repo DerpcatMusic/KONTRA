@@ -10,61 +10,24 @@ pub struct Bell {
     pub gain_db: f32,
 }
 
-/// One stereo biquad section, transposed direct form II, f64 state so
-/// low bands stay clean at high rates.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Biquad {
-    /// b0, b1, b2, a1, a2 with a0 = 1.
-    c: [f64; 5],
-    state: [[f64; 2]; 2],
-}
+pub use kontra_dsp_core::Biquad;
 
-impl Biquad {
-    /// The bell at `rate`; its centre is held below 0.49 of the rate.
-    #[must_use]
-    pub fn bell(bell: Bell, rate: u32) -> Self {
-        let rate = f64::from(rate.max(1));
-        let hz = f64::from(bell.hz).clamp(1.0, 0.49 * rate);
-        let w = std::f64::consts::TAU * hz / rate;
-        let a = 10f64.powf(f64::from(bell.gain_db) / 40.0);
-        let alpha = w.sin() / (2.0 * f64::from(bell.q).max(1e-3));
-        let a0 = 1.0 + alpha / a;
-        let c = [
-            (1.0 + alpha * a) / a0,
-            -2.0 * w.cos() / a0,
-            (1.0 - alpha * a) / a0,
-            -2.0 * w.cos() / a0,
-            (1.0 - alpha / a) / a0,
-        ];
-        Self {
-            c,
-            state: [[0.0; 2]; 2],
-        }
-    }
-
-    /// Filters both channels of `io` in place.
-    pub fn process(&mut self, io: &mut [[f32; 2]]) {
-        let [b0, b1, b2, a1, a2] = self.c;
-        for frame in io {
-            for (x, s) in frame.iter_mut().zip(&mut self.state) {
-                let input = f64::from(*x);
-                let y = b0 * input + s[0];
-                s[0] = b1 * input - a1 * y + s[1];
-                s[1] = b2 * input - a2 * y;
-                *x = y as f32;
-            }
-        }
-    }
-
-    /// Whether the state has rung out (below −200 dB).
-    #[must_use]
-    pub fn is_silent(&self) -> bool {
-        self.state.iter().flatten().all(|s| s.abs() < 1e-10)
-    }
-
-    pub fn reset(&mut self) {
-        self.state = [[0.0; 2]; 2];
-    }
+/// The bell at `rate`; its centre is held below 0.49 of the rate.
+#[must_use]
+pub fn bell(bell: Bell, rate: u32) -> Biquad {
+    let rate = f64::from(rate.max(1));
+    let hz = f64::from(bell.hz).clamp(1.0, 0.49 * rate);
+    let w = std::f64::consts::TAU * hz / rate;
+    let a = 10f64.powf(f64::from(bell.gain_db) / 40.0);
+    let alpha = w.sin() / (2.0 * f64::from(bell.q).max(1e-3));
+    Biquad::new([
+        1.0 + alpha * a,
+        -2.0 * w.cos(),
+        1.0 - alpha * a,
+        1.0 + alpha / a,
+        -2.0 * w.cos(),
+        1.0 - alpha / a,
+    ])
 }
 
 #[cfg(test)]
@@ -72,9 +35,9 @@ mod tests {
     use super::*;
 
     /// Steady-state gain of a sine at `hz` through the band, in dB.
-    fn gain_db(bell: Bell, hz: f64) -> f64 {
+    fn gain_db(band: Bell, hz: f64) -> f64 {
         let rate = 48_000;
-        let mut f = Biquad::bell(bell, rate);
+        let mut f = bell(band, rate);
         let mut io: Vec<[f32; 2]> = (0..48_000)
             .map(|n| {
                 let v = (std::f64::consts::TAU * hz * f64::from(n) / 48_000.0).sin() as f32;
@@ -104,7 +67,7 @@ mod tests {
 
     #[test]
     fn a_flat_bell_passes_audio_unchanged() {
-        let mut f = Biquad::bell(
+        let mut f = bell(
             Bell {
                 hz: 500.0,
                 q: 0.7,

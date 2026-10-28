@@ -27,9 +27,9 @@ impl Rack {
         let dsp = slots
             .iter()
             .map(|slot| match slot.map(|e| e.kind) {
-                Some(ir::EffectKind::Eq(_)) => {
-                    let bells = filters::bells(std::slice::from_ref(slot));
-                    Dsp::Eq(filters::biquads(&bells, rate))
+                Some(ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_)) => {
+                    let sections = filters::sections(std::slice::from_ref(slot));
+                    Dsp::Eq(filters::biquads(&sections, rate))
                 }
                 _ => Dsp::None,
             })

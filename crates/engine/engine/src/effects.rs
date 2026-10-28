@@ -60,7 +60,7 @@ pub(crate) fn matrix(e: &ir::Effect) -> Gain {
         // Its taps run in the instrument rack (racks.rs).
         ir::EffectKind::Sends(_) => IDENTITY,
         // Its bands run on summed audio (filters.rs, racks.rs).
-        ir::EffectKind::Eq(_) => IDENTITY,
+        ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) => IDENTITY,
         // Its wet path runs in instrument and bus racks (racks.rs).
         ir::EffectKind::OtherWet | ir::EffectKind::Convolution { .. } => [[0.0; 2]; 2],
     };

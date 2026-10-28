@@ -74,11 +74,23 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     let mut impulses = crate::impulse::Impulses::new(chunks, &mut resolver, path);
     let mut criteria = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
-        let (mut g, rows) = translate_group(group, &base, &mut notes)
+        let t = translate_group(group, &base, &mut notes)
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
+        let mut g = t.group;
         g.inserts = crate::effects::group(group, index, &mut impulses, &mut notes);
+        // ponytail: a filter a modulator moves passes unfiltered until filters
+        // run per voice; its routes are reported.
+        for slot in t.modulated {
+            let insert = g
+                .inserts
+                .get_mut(usize::from(slot))
+                .and_then(Option::as_mut);
+            if let Some(e) = insert.filter(|e| matches!(e.kind, ir::EffectKind::Filter(_))) {
+                e.kind = ir::EffectKind::Other;
+            }
+        }
         out.groups.push(g);
-        criteria.push(rows);
+        criteria.push(t.criteria);
     }
     let racks = crate::effects::program(&program, &mut impulses, &mut notes);
     let buses = racks.buses;
@@ -282,11 +294,18 @@ fn data_files(
     files
 }
 
+struct Translated {
+    group: ir::Group,
+    criteria: Vec<StartCriteriaParams>,
+    /// Insert slots whose parameters a modulator moves.
+    modulated: Vec<u8>,
+}
+
 fn translate_group(
     group: &Group,
     base: &Base,
     notes: &mut Notes,
-) -> Result<(ir::Group, Vec<StartCriteriaParams>), ni_file::Error> {
+) -> Result<Translated, ni_file::Error> {
     let v = group.params()?;
     let mut out = ir::Group {
         name: v.name.clone(),
@@ -304,9 +323,11 @@ fn translate_group(
         ..ir::Group::DEFAULT
     };
     let slot = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+    let mut modulated = Vec::new();
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
         for (n, m) in InternalModArray16::try_from(chunk)?.slots()? {
             let p = m.params()?;
+            modulated.extend(p.targets.iter().filter_map(|t| t.slot));
             let volume = p
                 .targets
                 .iter()
@@ -353,6 +374,7 @@ fn translate_group(
     if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
         for (n, m) in ExternalModArray32::try_from(chunk)?.slots()? {
             let p = m.params()?;
+            modulated.extend(p.targets.iter().filter_map(|t| t.slot));
             let source = match p.source {
                 ModSource::Velocity => Some(ir::Source::Velocity),
                 ModSource::MidiCc(cc) => Some(ir::Source::Controller(cc)),
@@ -397,7 +419,11 @@ fn translate_group(
             }
         }
     }
-    Ok((out, v.start_criteria.items))
+    Ok(Translated {
+        group: out,
+        criteria: v.start_criteria.items,
+        modulated,
+    })
 }
 
 /// Routes a flex envelope or an LFO to volume, pitch and pan; reports the

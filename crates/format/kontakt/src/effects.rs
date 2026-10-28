@@ -186,7 +186,7 @@ fn slot_effect(
                 width: (spread.clamp(-1.0, 1.0) + 1.0) * 0.5,
                 pan: pan.clamp(-1.0, 1.0),
             }),
-        0x18 => kind_id.and_then(|k| eq(&public, k)),
+        0x18 => kind_id.and_then(|k| eq(&public, k).or_else(|| filter(&public, k))),
         0x17 => sends(&public),
         0x16 => impulses
             .convolution(object.version, &public, at, notes)
@@ -200,7 +200,10 @@ fn slot_effect(
     // An EQ (Filter kinds 22..=24) has no Output control: ANALOG STRINGS
     // stores 0 on one that plays in Kontakt (v2 sampler-kontakt effects/mod.rs, corpus of
     // 12,918 EQ slots).
-    let eq = effect.id == 0x18 && kind_id.is_some_and(|k| (22..=24).contains(&k));
+    let eq = matches!(
+        kind,
+        Some(ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_))
+    );
     let effect_out = ir::Effect {
         kind: kind.unwrap_or(if parallel {
             ir::EffectKind::OtherWet
@@ -235,6 +238,21 @@ fn eq(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
         *band = crate::laws::eq_band(f(0)?, f(4)?, f(8)?)?;
     }
     Some(ir::EffectKind::Eq(bands))
+}
+
+/// A legacy or SV filter: the kind (repeated), then cutoff and resonance,
+/// both 0..=1 (v2 sampler-kontakt effects/mod.rs, reader 0x140d00db0).
+fn filter(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
+    let k = kind.to_le_bytes();
+    let mut rest = public;
+    while let Some(r) = rest.strip_prefix(&k) {
+        rest = r;
+    }
+    let f = |n: usize| {
+        let bytes = rest.get(n..n + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
+    crate::laws::filter(kind, f(0)?, f(4)?).map(ir::EffectKind::Filter)
 }
 
 /// Send Levels: a counted list of send levels, then one of outputs (v2

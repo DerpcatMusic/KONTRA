@@ -1,51 +1,74 @@
-//! EQ bands on summed audio. A band with fixed settings is linear and time
-//! invariant, so it commutes with each voice's gain matrix: voices whose
-//! groups carry the same bands on the same bus share one filter chain, run
-//! once per span instead of once per voice. Bus and instrument racks filter
-//! their own sums.
+//! EQ bands and filters on summed audio. A section with fixed settings is
+//! linear and time invariant, so it commutes with each voice's gain matrix:
+//! voices whose groups carry the same sections on the same bus share one
+//! chain, run once per span instead of once per voice. Bus and instrument
+//! racks filter their own sums.
 //!
-//! ponytail: settings are fixed at load (after the init callback). Live band
-//! changes (scripts, per-voice modulation) need per-voice filters.
+//! ponytail: settings are fixed at load (after the init callback). Live
+//! changes (scripts, per-voice cutoff modulation) need per-voice filters.
 
 use kontra_dsp::eq::{Bell, Biquad};
+use kontra_dsp::filter::{Pass, Shape};
 use kontra_ir as ir;
 
 use crate::{Engine, MAX_SPAN};
 
 pub(crate) struct Chain {
     bus: usize,
-    bells: Vec<ir::Bell>,
+    sections: Vec<ir::EffectKind>,
     filters: Box<[Biquad]>,
     pub(crate) mix: Box<[[f32; 2]]>,
     pub(crate) live: bool,
 }
 
-/// The active bands of a rack, in slot order.
-pub(crate) fn bells(rack: &[Option<ir::Effect>]) -> Vec<ir::Bell> {
+/// The rack's active EQs (their audible bands) and filters, in slot order.
+pub(crate) fn sections(rack: &[Option<ir::Effect>]) -> Vec<ir::EffectKind> {
     rack.iter()
         .flatten()
         .filter(|e| !e.bypass)
         .filter_map(|e| match e.kind {
-            ir::EffectKind::Eq(bands) => Some(bands),
+            ir::EffectKind::Eq(bands) => bands.iter().any(|b| b.gain_db != 0.0).then_some(e.kind),
+            kind @ ir::EffectKind::Filter(_) => Some(kind),
             _ => None,
         })
-        .flatten()
-        .filter(|b| b.gain_db != 0.0)
         .collect()
 }
 
-pub(crate) fn biquads(bells: &[ir::Bell], rate: u32) -> Box<[Biquad]> {
-    bells
-        .iter()
-        .map(|b| {
-            let bell = Bell {
-                hz: b.hz,
-                q: b.q,
-                gain_db: b.gain_db,
-            };
-            Biquad::bell(bell, rate)
-        })
-        .collect()
+pub(crate) fn biquads(sections: &[ir::EffectKind], rate: u32) -> Box<[Biquad]> {
+    let mut out = Vec::new();
+    for section in sections {
+        match section {
+            ir::EffectKind::Eq(bands) => {
+                let audible = bands.iter().filter(|b| b.gain_db != 0.0);
+                out.extend(audible.map(|b| {
+                    let band = Bell {
+                        hz: b.hz,
+                        q: b.q,
+                        gain_db: b.gain_db,
+                    };
+                    kontra_dsp::eq::bell(band, rate)
+                }));
+            }
+            ir::EffectKind::Filter(f) => {
+                let pass = match f.pass {
+                    ir::Pass::Low => Pass::Low,
+                    ir::Pass::High => Pass::High,
+                    ir::Pass::Band => Pass::Band,
+                    ir::Pass::Notch => Pass::Notch,
+                };
+                let shape = Shape {
+                    pass,
+                    hz: f.hz,
+                    stages: f.stages,
+                    damping: f.damping,
+                    gain: f.gain,
+                };
+                out.extend(kontra_dsp::filter::sections(&shape, rate));
+            }
+            _ => {}
+        }
+    }
+    out.into()
 }
 
 pub(crate) fn run(filters: &mut [Biquad], io: &mut [[f32; 2]]) {
@@ -55,7 +78,7 @@ pub(crate) fn run(filters: &mut [Biquad], io: &mut [[f32; 2]]) {
 }
 
 impl Engine {
-    /// One chain per distinct (bands, bus) the zones' groups carry.
+    /// One chain per distinct (sections, bus) the zones' groups carry.
     pub(crate) fn build_chains(&mut self) {
         let mut chains: Vec<Chain> = Vec::new();
         let rate = self.rate;
@@ -65,18 +88,18 @@ impl Engine {
             .iter()
             .map(|z| {
                 let group = self.groups.get(z.group as usize)?;
-                let bells = bells(&group.inserts);
-                if bells.is_empty() {
+                let sections = sections(&group.inserts);
+                if sections.is_empty() {
                     return None;
                 }
                 let at = chains
                     .iter()
-                    .position(|c| c.bus == z.bus && c.bells == bells)
+                    .position(|c| c.bus == z.bus && c.sections == sections)
                     .unwrap_or_else(|| {
                         chains.push(Chain {
                             bus: z.bus,
-                            filters: biquads(&bells, rate),
-                            bells,
+                            filters: biquads(&sections, rate),
+                            sections,
                             mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
                             live: false,
                         });
