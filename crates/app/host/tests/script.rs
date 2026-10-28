@@ -550,7 +550,7 @@ fn slot_knobs_move_a_filters_fields_through_the_slots_own_laws() {
             pass: ir::Pass::Low,
             hz: 300.0,
             stages: 1,
-            pole: false,
+            ladder: None,
             damping: [2.0; 3],
             gain: 1.0,
             octaves: 0.0,
