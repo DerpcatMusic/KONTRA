@@ -3,7 +3,7 @@
 //! allpass-unit chains, then a low shelf, a high cut and the width.
 
 use crate::Settings;
-use crate::fade::{Fade, flush};
+use crate::fade::flush;
 use crate::fdn::{MAX_PREDELAY_MS, MAX_SIZE};
 use crate::resample::{BLOCK, Pair};
 use kontra_law::{NETWORK_LINES as LINES, ReverbNetwork};
@@ -96,9 +96,80 @@ impl Unit {
     }
 }
 
+/// The controls that glide, by index: wet level, decay seconds, damping,
+/// modulation depth (frames), unit gain, predelay (frames), the left
+/// predelay's line offset (frames), high cut (Hz), low shelf (dB), width.
+const WET: usize = 0;
+const SECONDS: usize = 1;
+const DAMPING: usize = 2;
+const DEPTH: usize = 3;
+const GAIN: usize = 4;
+const PREDELAY: usize = 5;
+const OFFSET: usize = 6;
+const CUT: usize = 7;
+const SHELF: usize = 8;
+const WIDTH: usize = 9;
+const CONTROLS: usize = 10;
+
+/// Values gliding linearly to a target over a fixed number of frames; a new
+/// target starts again from where they are.
+struct Glide<const N: usize> {
+    now: [f32; N],
+    start: [f32; N],
+    target: [f32; N],
+    phase: f32,
+    step: f32,
+}
+
+impl<const N: usize> Glide<N> {
+    fn new(v: [f32; N], frames: f32) -> Self {
+        Self {
+            now: v,
+            start: v,
+            target: v,
+            phase: 1.0,
+            step: 1.0 / frames.max(1.0),
+        }
+    }
+
+    fn to(&mut self, target: [f32; N]) {
+        (self.start, self.target) = (self.now, target);
+        self.phase = if target == self.now { 1.0 } else { 0.0 };
+    }
+
+    fn moving(&self) -> bool {
+        self.phase < 1.0
+    }
+
+    /// Whether value `i` is on its way.
+    fn moves(&self, i: usize) -> bool {
+        self.moving() && self.start.get(i) != self.target.get(i)
+    }
+
+    /// One frame on; `true` on the frame it arrives.
+    fn tick(&mut self) -> bool {
+        if !self.moving() {
+            return false;
+        }
+        self.phase += self.step;
+        if self.phase >= 1.0 {
+            self.now = self.target;
+            return true;
+        }
+        for ((v, a), b) in self.now.iter_mut().zip(self.start).zip(self.target) {
+            *v = a + (b - a) * self.phase;
+        }
+        false
+    }
+}
+
 pub struct Network {
     law: &'static ReverbNetwork,
-    fade: Fade,
+    requested: Settings,
+    controls: Glide<CONTROLS>,
+    lengths: Glide<LINES>,
+    /// Frames since the network started, for the coarser recomputes.
+    ticks: u32,
     /// Above the law's highest rate, the network runs between this pair.
     pair: Option<Pair>,
     /// Prime table up to the longest line.
@@ -172,9 +243,13 @@ impl Network {
         let a = (16.0 * d - 1.0) / 31.0;
         let (a, b) = (a as f32, (a - d) as f32);
         let w = std::f64::consts::TAU * f64::from(s.modulation_hz.max(0.0)) / f64::from(host);
+        let [glide, glide_lines] = law.glide_s.map(|t| t * host);
         let mut n = Self {
             law,
-            fade: Fade::new(s, host),
+            requested: s,
+            controls: Glide::new([0.0; CONTROLS], glide),
+            lengths: Glide::new([0.0; LINES], glide_lines),
+            ticks: 0,
             pair,
             primes,
             lines,
@@ -199,59 +274,51 @@ impl Network {
             rot: (w.cos(), w.sin()),
             w: 0,
         };
-        n.apply(s);
-        n
-    }
-
-    /// Changes every setting while it plays, by the [`Fade`] rule. Never allocates.
-    pub fn set(&mut self, s: Settings) {
-        if let Some(s) = self.fade.set(s) {
-            self.apply(s);
-        }
-    }
-
-    /// Writes `s` into the lines and coefficients. Never allocates.
-    fn apply(&mut self, s: Settings) {
-        let law = self.law;
-        let rate = law.rate;
-        let len = lengths(law, &self.primes, s.size.clamp(0.0, MAX_SIZE));
-        let flen = len.map(|l| l as f32);
-        // Decay: 60 dB in `t` (frames at `rate`), the highs in `t_hf`.
-        let t = s.seconds.max(0.01);
-        let [h0, h1, h2] = law.hf;
-        let damp = s.damping.clamp(0.0, 1.0);
-        let l = (t + t).ln();
-        let t_hf = ((1.0 - damp * h0) * (1.0 - l * h2) + (1.0 - damp * h1) * l * h2) * t;
-        let k = -3.0 / rate;
-        let base = 10f32.powf(k / t);
-        let ratio = 10f32.powf(k / t_hf) / base;
-        let depth = s.modulation_ms.max(0.0) * 0.001 * rate;
-        let [len0, len1] = [len[0], len[1]];
-        for (i, (line, f)) in self.lines.iter_mut().zip(flen).enumerate() {
-            let p = ratio.powf(f);
-            let r = 1.0 / (p * p);
-            // The one-pole whose highs fall `r` times the lows per pass.
-            let a = if r == 1.0 {
-                0.0
-            } else {
-                ((r * 2.962_758 - 0.768_274_2).sqrt() - (r + 0.481_379_06)) / (1.0 - r)
-            };
-            line.base = f;
-            line.depth = if i == 0 { 0.0 } else { depth };
+        for (i, line) in n.lines.iter_mut().enumerate() {
             line.sin = i % 2 == 0;
-            (line.a, line.b) = ((1.0 - a) * base.powf(f), a);
-            (line.right, line.inject) = (false, 0.0);
         }
         for (ch, taps) in law.inputs.iter().enumerate() {
             for &(i, sign) in taps.iter().filter(|t| t.1 != 0.0) {
-                if let Some(line) = self.lines.get_mut(usize::from(i)) {
+                if let Some(line) = n.lines.get_mut(usize::from(i)) {
                     (line.right, line.inject) = (ch == 1, sign);
                 }
             }
         }
+        let (controls, lengths) = n.targets(s);
+        n.controls.now = controls;
+        n.lengths.now = lengths;
+        n.controls.to(controls);
+        n.lengths.to(lengths);
+        n.arrive();
+        n
+    }
+
+    /// Changes every setting while it plays: the input point and the output
+    /// taps at once, the rest by the law's glides. Never allocates.
+    pub fn set(&mut self, s: Settings) {
+        if s == self.requested {
+            return;
+        }
+        self.requested = s;
+        let (controls, lengths) = self.targets(s);
+        self.controls.to(controls);
+        self.lengths.to(lengths);
+    }
+
+    /// The glide targets for `s`; sets the input point and the output taps.
+    fn targets(&mut self, s: Settings) -> ([f32; CONTROLS], [f32; LINES]) {
+        let law = self.law;
+        let rate = law.rate;
+        let len = lengths(law, &self.primes, s.size.clamp(0.0, MAX_SIZE));
+        let [len0, len1] = [len[0], len[1]];
+        // ponytail: the input point moves at once, as the native's integer
+        // lengths do (+0x6a90); the lines glide behind it.
         self.inject_offset = len0.saturating_sub(law.inject_lead) as usize;
+        let t = s.seconds.max(0.01);
         let g = s.diffusion.clamp(0.0, 1.0) * 0.5;
         let w = g + g;
+        // ponytail: the taps take a new diffusion at once; the native blends
+        // them only in its full recompute (0x141aec0a0), not while it ramps.
         for (out, taps) in self.taps.iter_mut().zip(law.taps) {
             *out = taps.map(|(i, near, far)| {
                 (
@@ -264,7 +331,86 @@ impl Network {
                 )
             });
         }
-        let c = law.unit_feedback;
+        let [l0, l1] = law.level;
+        let mut c = [0.0; CONTROLS];
+        c[WET] = (1.0 - 10f32.powf(-l0 / t)).sqrt() * l1;
+        c[SECONDS] = t;
+        c[DAMPING] = s.damping.clamp(0.0, 1.0);
+        c[DEPTH] = s.modulation_ms.max(0.0) * 0.001 * rate;
+        c[GAIN] = g;
+        c[PREDELAY] = s.predelay_ms.clamp(0.0, MAX_PREDELAY_MS) * 0.001 * rate;
+        c[OFFSET] = (i64::from(len1) - i64::from(len0)) as f32;
+        c[CUT] = s.high_cut_hz;
+        c[SHELF] = s.low_shelf_db;
+        c[WIDTH] = s.stereo.clamp(0.0, 1.0);
+        (c, len.map(|l| l as f32))
+    }
+
+    /// The glides one frame on, and what follows them, as the native
+    /// ramping kernel (0x141ad4f20) does: the filters every frame, the units
+    /// every 8 and the line decay every 32 frames while theirs move.
+    fn glide(&mut self) {
+        let k = self.ticks;
+        self.ticks = k.wrapping_add(1);
+        let arrived = self.controls.tick() | self.lengths.tick();
+        if arrived {
+            return self.arrive();
+        }
+        let c = &self.controls;
+        let filters = c.moves(CUT) || c.moves(SHELF);
+        let units = k.is_multiple_of(8) && c.moves(GAIN);
+        let decay =
+            k.is_multiple_of(32) && (c.moves(SECONDS) || c.moves(DAMPING) || self.lengths.moving());
+        if filters {
+            self.filters();
+        }
+        if units {
+            self.units();
+        }
+        if decay {
+            self.decay();
+        }
+        self.follow();
+    }
+
+    /// Everything at the glides' current values.
+    fn arrive(&mut self) {
+        self.filters();
+        self.units();
+        self.decay();
+        self.follow();
+    }
+
+    /// Each line's damping one-pole and loop gain: 60 dB in the decay
+    /// seconds (frames at the law's rate), the highs in `t_hf`.
+    fn decay(&mut self) {
+        let law = self.law;
+        let c = self.controls.now;
+        let t = c[SECONDS];
+        let [h0, h1, h2] = law.hf;
+        let damp = c[DAMPING];
+        let l = (t + t).ln();
+        let t_hf = ((1.0 - damp * h0) * (1.0 - l * h2) + (1.0 - damp * h1) * l * h2) * t;
+        let k = -3.0 / law.rate;
+        let base = 10f32.powf(k / t);
+        let ratio = 10f32.powf(k / t_hf) / base;
+        for (line, f) in self.lines.iter_mut().zip(self.lengths.now) {
+            let p = ratio.powf(f);
+            let r = 1.0 / (p * p);
+            // The one-pole whose highs fall `r` times the lows per pass.
+            let a = if r == 1.0 {
+                0.0
+            } else {
+                ((r * 2.962_758 - 0.768_274_2).sqrt() - (r + 0.481_379_06)) / (1.0 - r)
+            };
+            (line.a, line.b) = ((1.0 - a) * base.powf(f), a);
+        }
+    }
+
+    /// The allpass units at the current gain.
+    fn units(&mut self) {
+        let g = self.controls.now[GAIN];
+        let c = self.law.unit_feedback;
         for chain in &mut self.units {
             for (k, u) in chain.iter_mut().enumerate() {
                 let p = if k % 2 == 0 { -g } else { g };
@@ -273,16 +419,28 @@ impl Network {
                 (u.b, u.q, u.r) = ([-p, -p, 1.0], -p, 1.0 - p * c * p);
             }
         }
-        let pd = s.predelay_ms.clamp(0.0, MAX_PREDELAY_MS) * 0.001 * rate;
-        self.predelay = [pd + (i64::from(len1) - i64::from(len0)) as f32, pd];
-        (self.shelf_m, self.shelf_a) = shelf(
-            s.low_shelf_db,
-            (f64::from(law.shelf_hz) * PI / f64::from(rate)) as f32,
-        );
-        self.cut = (f64::from(s.high_cut_hz * -2.0) * (PI / f64::from(rate))).exp() as f32;
-        self.width = s.stereo.clamp(0.0, 1.0);
-        let [l0, l1] = law.level;
-        self.wet = (1.0 - 10f32.powf(-l0 / t)).sqrt() * l1;
+    }
+
+    /// The low shelf and the high cut at their current settings.
+    fn filters(&mut self) {
+        let c = self.controls.now;
+        let rate = f64::from(self.law.rate);
+        let f = (f64::from(self.law.shelf_hz) * PI / rate) as f32;
+        (self.shelf_m, self.shelf_a) = shelf(c[SHELF], f);
+        self.cut = (f64::from(c[CUT] * -2.0) * (PI / rate)).exp() as f32;
+    }
+
+    /// The per-frame values: line lengths, modulation depth, predelay,
+    /// width and level.
+    fn follow(&mut self) {
+        let c = self.controls.now;
+        for (i, (line, f)) in self.lines.iter_mut().zip(self.lengths.now).enumerate() {
+            line.base = f;
+            line.depth = if i == 0 { 0.0 } else { c[DEPTH] };
+        }
+        self.predelay = [c[PREDELAY] + c[OFFSET], c[PREDELAY]];
+        self.width = c[WIDTH];
+        self.wet = c[WET];
     }
 
     /// Replaces `io` with the reverb (the wet path only).
@@ -300,11 +458,10 @@ impl Network {
 
     fn run(&mut self, io: &mut [[f32; 2]]) {
         for frame in io {
-            let (gain, pending) = self.fade.tick();
-            if let Some(s) = pending {
-                self.apply(s);
+            if self.controls.moving() || self.lengths.moving() {
+                self.glide();
             }
-            *frame = self.frame(*frame).map(|v| v * gain);
+            *frame = self.frame(*frame);
         }
     }
 

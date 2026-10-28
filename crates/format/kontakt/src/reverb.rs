@@ -160,6 +160,10 @@ fn network(hall: bool) -> ir::ReverbNetwork {
         // rate / ⌊rate·f32(1/44100)⌋ (0x37be37c6); other divisions run at
         // the host rate (the native quintic mode, not copied).
         max_rate: 48_000.0,
+        // Prepare 0x141ae1d40: the control block (+0x6d80) ramps over
+        // 0.05 s (0x1447148c0), the line lengths (+0x6e40) over 0.2 s
+        // (0x1447148e0), each from its current value (0x1409abfb0).
+        glide_s: [0.05, 0.2],
     }
 }
 
