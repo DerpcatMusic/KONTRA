@@ -274,8 +274,9 @@ pub struct Plan {
     pub notes: usize,
     /// Pending timed work; also bounds one block's input.
     pub queue: usize,
-    /// The instrument script, if any.
-    pub script: Option<ScriptPlan>,
+    /// The instrument's scripts in slot order: an event passes through each
+    /// in turn, and a note one plays only through those after it.
+    pub scripts: Vec<ScriptPlan>,
     /// Effects on everything, by slot.
     pub inserts: Vec<Option<ir::Effect>>,
     /// Send effects, by send slot, and the main rack after them.
@@ -312,7 +313,7 @@ impl Plan {
             voices,
             notes: 128,
             queue: 1024,
-            script: None,
+            scripts: Vec::new(),
             inserts: Vec::new(),
             sends: Vec::new(),
             main: Vec::new(),

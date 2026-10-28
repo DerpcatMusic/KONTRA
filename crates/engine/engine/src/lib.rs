@@ -9,6 +9,7 @@
 //! engine executes, not script code. Nothing allocates after [`Engine::new`].
 
 mod behaviour;
+mod callbacks;
 mod controls;
 mod effects;
 mod filters;
@@ -103,6 +104,9 @@ struct BusState {
     mix: Box<[[f32; 2]]>,
 }
 
+/// Per control, the parameters a script set other than its value.
+type ControlPars = Box<[Vec<(i32, i32)>]>;
+
 pub struct Engine {
     now: SampleTime,
     rate: u32,
@@ -121,11 +125,13 @@ pub struct Engine {
     hits: Vec<NoteRef>,
     ended: Vec<HostNote>,
     stats: Stats,
-    /// The script's state; taken out while a callback runs.
-    vm: Option<Instance>,
+    /// Each script slot's state; taken out while its callback runs.
+    vms: Box<[Option<Instance>]>,
     running: Running,
-    /// Notes waiting for their callback to return before they start.
+    /// Notes through every script slot, starting once the callback returns.
     pending: Vec<NoteRef>,
+    /// Notes a callback played, still to pass the slots after it.
+    forward: Vec<NoteRef>,
     masks: GroupMasks,
     /// Scratch for script event targets (an action may run inside a ledger query).
     targets_scratch: Vec<NoteRef>,
@@ -145,8 +151,8 @@ pub struct Engine {
     main: racks::Rack,
     /// Callbacks run so far (24 bits): the source of `$NI_CALLBACK_ID`.
     callbacks_started: u32,
-    /// Per control, parameters the script set other than its value.
-    control_pars: Box<[Vec<(i32, i32)>]>,
+    /// Per script slot, its controls' parameters other than the value.
+    control_pars: Box<[ControlPars]>,
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
     /// Shared EQ chains, and each zone's chain.
@@ -207,15 +213,16 @@ impl Engine {
             .map(|z| z.group as usize + 1)
             .max()
             .unwrap_or(0);
-        let vm = plan
-            .script
-            .as_ref()
-            .map(|s| Instance::new(&s.program, s.coroutines.max(1)));
+        let vms = plan
+            .scripts
+            .iter()
+            .map(|s| Some(Instance::new(&s.program, s.coroutines.max(1))))
+            .collect();
         let control_pars = plan
-            .script
-            .as_ref()
+            .scripts
+            .iter()
             .map(|s| vec![Vec::new(); s.controls.cells.len()].into())
-            .unwrap_or_default();
+            .collect();
         let mut engine = Self {
             now: SampleTime(0),
             rate: rate.max(1),
@@ -231,10 +238,11 @@ impl Engine {
             buses,
             pedal: [false; 16],
             stats: Stats::default(),
-            vm,
+            vms,
             groups: shared,
             running: Running::IDLE,
             pending: Vec::with_capacity(capacity),
+            forward: Vec::with_capacity(capacity),
             masks: GroupMasks::new(capacity, groups),
             targets_scratch: Vec::with_capacity(capacity),
             cc_values: [0; 130],
@@ -256,11 +264,15 @@ impl Engine {
         engine.cc_values[7] = 100;
         engine.cc_values[11] = 127;
         let plan = Arc::clone(&engine.plan);
-        if let Some(script) = &plan.script {
+        for (slot, script) in (0u8..).zip(&plan.scripts) {
             if let Some(init) = script.callbacks.init {
-                engine.run_callback(init, Running::new(Kind::Init, None));
+                engine.run_callback(slot, init, Running::new(Kind::Init, None));
             }
-            if let Some(vm) = engine.vm.as_mut() {
+            if let Some(vm) = engine
+                .vms
+                .get_mut(usize::from(slot))
+                .and_then(Option::as_mut)
+            {
                 for &(cell, value) in &script.restore {
                     vm.set_cell(cell as usize, value);
                 }
@@ -269,7 +281,7 @@ impl Engine {
                 }
             }
             if let Some(changed) = script.callbacks.persistence_changed {
-                engine.run_callback(changed, Running::new(Kind::Init, None));
+                engine.run_callback(slot, changed, Running::new(Kind::Init, None));
             }
         }
         engine.rebuild_racks();
@@ -386,7 +398,7 @@ impl Engine {
     fn dispatch(&mut self, work: Work) {
         let event = match work {
             Work::Input(event) => event,
-            Work::Resume(co) => return self.resume(co),
+            Work::Resume(slot, co) => return self.resume(slot, co),
             Work::Release(note) => return self.end_note(note),
         };
         match event {
@@ -417,13 +429,8 @@ impl Engine {
             return;
         };
         self.masks.reset(note.slot());
-        self.pending.push(note);
-        match self.plan.script.as_ref().and_then(|s| s.callbacks.note) {
-            Some(entry) => {
-                self.run_callback(entry, Running::new(Kind::Note, Some(note)));
-            }
-            None => self.start_pending(),
-        }
+        self.pass_note(note);
+        self.start_pending();
     }
 
     /// Starts every zone `accept`s whose rules match the note, all at now.
@@ -592,11 +599,7 @@ impl Engine {
                 continue;
             }
             let channel = n.host.channel;
-            if let Some(entry) = self.plan.script.as_ref().and_then(|s| s.callbacks.release)
-                && self
-                    .run_callback(entry, Running::new(Kind::Release, Some(note)))
-                    .ignore_release
-            {
+            if self.release_callbacks(note) {
                 continue;
             }
             if self
@@ -625,10 +628,8 @@ impl Engine {
         if n.released {
             return;
         }
-        if n.origin != Origin::Host
-            && let Some(entry) = self.plan.script.as_ref().and_then(|s| s.callbacks.release)
-        {
-            self.run_callback(entry, Running::new(Kind::Release, Some(note)));
+        if n.origin != Origin::Host {
+            self.release_callbacks(note);
         }
         self.release(note);
     }
@@ -758,9 +759,9 @@ impl Engine {
             .any(|z| z.trigger == Trigger::Release)
             || self
                 .plan
-                .script
-                .as_ref()
-                .is_some_and(|s| s.callbacks.release.is_some());
+                .scripts
+                .iter()
+                .any(|s| s.callbacks.release.is_some());
         let mut hits = std::mem::take(&mut self.hits);
         self.notes.select(&mut hits, |_| true);
         for &note in &hits {

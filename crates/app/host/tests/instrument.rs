@@ -49,10 +49,10 @@ fn areia_violins_sound_on_the_fresh_engine() {
     let loaded = kontra_host::instrument::load(path, RATE, &mut store).unwrap();
     let load = t.elapsed();
     eprintln!(
-        "{}: {} zones, script {}, loaded in {load:?}",
+        "{}: {} zones, {} scripts, loaded in {load:?}",
         loaded.name,
         loaded.plan.zones.len(),
-        loaded.plan.script.is_some()
+        loaded.plan.scripts.len()
     );
     for d in &loaded.diagnostics {
         eprintln!("  {:?} {}: {}", d.impact, d.feature, d.detail);

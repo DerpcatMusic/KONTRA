@@ -49,7 +49,7 @@ fn engine(store: &Store, zones: Vec<Zone>, source: &str) -> Engine {
     for g in &mut plan.groups {
         g.mods.clear();
     }
-    plan.script = Some(kontra_host::script::plan(&script, &[], &[]));
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     Engine::new(Arc::new(plan), store.client(), RATE)
 }
 
@@ -199,7 +199,7 @@ fn areia_runs_on_the_engine() {
         level(&mut e, &[on(key)]);
         level(&mut e, &[off(key)]);
     }
-    let faults = e.script_faults().unwrap();
+    let faults = e.script_faults()[0];
     eprintln!("areia: {faults:?}, stats {:?}", e.stats());
     eprintln!("areia unhandled: {:?}", e.unhandled_actions());
     assert_eq!(faults.bad_code, 0);
@@ -223,7 +223,7 @@ fn a_script_reads_its_restored_controls() {
     let script = kontra_ksp::compile(source, &[]).unwrap();
     let store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(Vec::new(), 16);
-    plan.script = Some(kontra_host::script::plan(&script, &["$on 1".into()], &[]));
+    plan.scripts = vec![kontra_host::script::plan(&script, &["$on 1".into()], &[])];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     level(&mut e, &[on(60)]);
     assert_eq!(e.last_message(), "0 0");
@@ -254,7 +254,7 @@ fn a_script_finds_a_modulation_by_name_and_drives_it() {
         &[],
     )
     .unwrap();
-    plan.script = Some(kontra_host::script::plan(&script, &[], &[]));
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     // Full intensity: the level follows the controller linearly.
     let l = level(&mut e, &[on(60)]);
@@ -284,8 +284,40 @@ fn a_script_sends_a_note_its_modulation_value() {
         &[],
     )
     .unwrap();
-    plan.script = Some(kontra_host::script::plan(&script, &[], &[]));
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let l = level(&mut e, &[on(60)]);
     assert!((l - 0.5 * 0.25).abs() < 1e-3, "{l}");
+}
+
+#[test]
+fn a_note_played_in_one_slot_passes_the_slots_after_it() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.25, 0), zone(&mut store, 0.5, 1)];
+    let mut plan = Plan::new(zones, 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    let slot = |source: &str| {
+        kontra_host::script::plan(&kontra_ksp::compile(source, &[]).unwrap(), &[], &[])
+    };
+    plan.scripts = vec![
+        slot(
+            "on note
+                ignore_event($EVENT_ID)
+                play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, -1)
+            end on",
+        ),
+        slot(
+            "on note
+                if (get_event_par($EVENT_ID, $EVENT_PAR_SOURCE) = $CURRENT_SCRIPT_SLOT - 1)
+                    disallow_group($ALL_GROUPS)
+                    allow_group(1)
+                end if
+            end on",
+        ),
+    ];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // One note sounds, the played one, in the group the second slot chose.
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
 }

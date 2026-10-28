@@ -1,5 +1,7 @@
 //! MIDI 1.0 channel messages from the host's Universal MIDI Packets.
 
+use std::sync::Arc;
+
 use crate::{Engine, Kind, Running};
 
 impl Engine {
@@ -31,18 +33,16 @@ impl Engine {
         if let Some(v) = self.cc_values.get_mut(usize::from(controller)) {
             *v = value;
         }
-        if let Some(entry) = self
-            .plan
-            .script
-            .as_ref()
-            .and_then(|s| s.callbacks.controller)
-        {
+        let plan = Arc::clone(&self.plan);
+        for (slot, script) in (0u8..).zip(&plan.scripts) {
+            let Some(entry) = script.callbacks.controller else {
+                continue;
+            };
             let running = Running {
                 controller,
                 ..Running::new(Kind::Controller, None)
             };
-            let ran = self.run_callback(entry, running);
-            if ran.ignore_controller {
+            if self.run_callback(slot, entry, running).ignore_controller {
                 return;
             }
         }

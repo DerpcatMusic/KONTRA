@@ -120,7 +120,7 @@ impl EffectPar {
 
 impl Engine {
     fn effect_par(&self, par: i32) -> Option<EffectPar> {
-        let pars = self.plan.script.as_ref()?.engine_pars;
+        let pars = self.script()?.engine_pars;
         match par {
             p if p == pars.effect_bypass => Some(EffectPar::Bypass),
             p if p == pars.effect_output => Some(EffectPar::Output),
@@ -170,7 +170,7 @@ impl Engine {
     }
 
     fn level_par(&self, par: i32) -> Option<LevelPar> {
-        let pars = self.plan.script.as_ref()?.engine_pars;
+        let pars = self.script()?.engine_pars;
         match par {
             p if p == pars.volume => Some(LevelPar::Volume),
             p if p == pars.pan => Some(LevelPar::Pan),
@@ -220,7 +220,7 @@ impl Engine {
             let level = *self.level_mut(group, generic)?;
             return Some(which.get(&level).round().clamp(0.0, 1e6) as i32);
         }
-        let pars = self.plan.script.as_ref()?.engine_pars;
+        let pars = self.script()?.engine_pars;
         let g = usize::try_from(group)
             .ok()
             .and_then(|g| self.groups.get(g))?;
@@ -261,7 +261,7 @@ impl Engine {
         {
             return true;
         }
-        let Some(pars) = self.plan.script.as_ref().map(|s| s.engine_pars) else {
+        let Some(pars) = self.script().map(|s| s.engine_pars) else {
             return false;
         };
         let x = f64::from(value.clamp(0, 1_000_000)) / 1e6;

@@ -85,6 +85,11 @@ pub(crate) struct Note {
     /// "From script" modulator values, `(index, value)`, ±1 000 000.
     // ponytail: four indices per note; a ring when a library sends more.
     pub(crate) mod_values: [Option<(u16, i32)>; 4],
+    /// The first script slot that sees the note: 0 for a host note, one past
+    /// the slot that played it.
+    pub(crate) first: u8,
+    /// Script slots whose note callback has let it through.
+    pub(crate) pass: u8,
     /// Event marks (`set_event_mark`), one bit each.
     pub(crate) marks: u32,
 }
@@ -120,6 +125,8 @@ impl Note {
             offset: 0,
             custom: [0; 4],
             mod_values: [None; 4],
+            first: 0,
+            pass: 0,
             marks: 0,
         }
     }

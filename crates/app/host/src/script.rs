@@ -123,17 +123,23 @@ fn data_array(script: &Script, name: &str, bytes: &[u8]) -> Option<(u32, Vec<i64
     Some((base, values))
 }
 
-/// Control ids, the value parameter's symbol and each control's value cell.
+/// Control ids, the value parameter's symbol and, by variable (a UI id
+/// counts every variable), each control's value cell.
 fn controls(script: &Script) -> Controls {
     let value_par = symbol(script, CONTROL_VALUE);
-    let cells = script
-        .controls
-        .iter()
-        .map(|c| match script.variables.get(c.variable as usize)?.cells {
-            Cells::Int { base, .. } | Cells::Real { base, .. } => Some(base),
-            _ => None,
-        })
-        .collect();
+    let mut cells = vec![None; script.variables.len()];
+    for c in &script.controls {
+        let value = script
+            .variables
+            .get(c.variable as usize)
+            .and_then(|v| match v.cells {
+                Cells::Int { base, .. } | Cells::Real { base, .. } => Some(base),
+                _ => None,
+            });
+        if let Some(cell) = cells.get_mut(c.variable as usize) {
+            *cell = value;
+        }
+    }
     Controls {
         first: FIRST_UI_ID,
         value_par,
