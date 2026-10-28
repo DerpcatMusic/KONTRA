@@ -90,10 +90,13 @@ impl<'a> Impulses<'a> {
             ]
         };
         let (early, late) = (cut(4, 5), cut(7, 8));
-        let crossover = float(9).filter(|x| *x >= 0.0);
+        // A negative crossover puts CConvolver's fade (0x1419b1e30) before
+        // the first frame, so the late cuts filter all of it.
+        let crossover = float(9);
         if early != late && crossover.is_none() {
             lost("impulse response early/late crossover");
         }
+        let crossover = crossover.filter(|x| *x >= 0.0);
         // Library defaults: 20 Hz and 20 kHz (Una Corda stores 19999.992).
         let open = |[low, high]: [f32; 2]| low <= 20.0 && high >= 19_999.0;
         let cuts = (!(open(early) && open(late))).then_some(ir::ImpulseCuts {
