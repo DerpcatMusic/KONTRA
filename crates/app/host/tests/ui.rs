@@ -9,12 +9,16 @@ use kontra_stream::{Store, StoreConfig};
 use kontra_ui_model as ui;
 
 fn tree(source: &str) -> ui::Interface {
+    tree_with(source, &[])
+}
+
+fn tree_with(source: &str, data: &[(String, Vec<u8>)]) -> ui::Interface {
     let store = Store::new(StoreConfig::DEFAULT).unwrap();
     let script = kontra_ksp::compile(source, &[]).unwrap();
     let mut plan = Plan::new(vec![], 16);
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let engine = Engine::new(Arc::new(plan), store.client(), 48_000);
-    interface(&Face::of(&script), 0, &engine, &|_| None).unwrap()
+    interface(&Face::of(&script, data), 0, &engine, &|_| None).unwrap()
 }
 
 fn widget<'a>(ui: &'a ui::Interface, name: &str) -> &'a ui::Widget {
@@ -97,4 +101,39 @@ fn the_tree_carries_what_init_set() {
         matches!(&widget(&ui, "%curve").kind, ui::Kind::Table { cells, columns: 4, .. } if cells[2] == 55.)
     );
     assert!(ui.unsupported.is_empty(), "{:?}", ui.unsupported);
+}
+
+#[test]
+fn a_performance_view_gives_its_controls_type_place_and_parent() {
+    let view = br#"{"value":{"performanceView":{"size":{"width":700,"height":300},
+        "controls":[{"index":0,"value":{"common":{"id":"main","show":false},"controls":[
+          {"index":6,"value":{"common":{"id":"mode","position":{"x":7,"y":8}},
+            "entries":[{"string":"A","value":0},{"string":"B","value":1}]}}]}}]}}}"#;
+    let ui = tree_with(
+        "on init
+            load_performance_view(\"v\")
+            move_control_px($main_mode, 9, 8)
+        end on",
+        &[("v.nckp".into(), view.to_vec())],
+    );
+    assert!(ui.performance);
+    assert_eq!(ui.pages[0].size.width, 700.);
+    let mode = widget(&ui, "$main_mode");
+    assert!(matches!(&mode.kind, ui::Kind::Menu { items } if items.len() == 2));
+    assert_eq!(
+        (mode.rect.x, mode.rect.y),
+        (9., 8.),
+        "init overrides the view"
+    );
+    let main = ui.widgets.iter().position(|w| w.name == "$main");
+    assert_eq!(mode.parent.map(|p| p.0), main);
+    let at = ui
+        .widgets
+        .iter()
+        .position(|w| w.name == "$main_mode")
+        .unwrap();
+    assert!(
+        !ui.visible(ui::WidgetRef(at)),
+        "a hidden view panel hides its children"
+    );
 }

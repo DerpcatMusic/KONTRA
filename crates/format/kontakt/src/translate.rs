@@ -290,6 +290,29 @@ fn data_files(
             files.push((stem, bytes));
         }
     }
+    // A Creator Tools performance view the script loads by a literal name:
+    // `Resources/performance_view/<name>.nckp`, kept as `<name>.nckp`.
+    for call in source.split("load_performance_view(").skip(1) {
+        let Some(name) = call
+            .split_once(')')
+            .map(|(a, _)| a.trim().trim_matches('"'))
+        else {
+            continue;
+        };
+        let file = format!("{name}.nckp");
+        if name.is_empty()
+            || name.contains(['"', '/', '\\'])
+            || files.iter().any(|(s, _)| *s == file)
+        {
+            continue;
+        }
+        let found = resources
+            .get_or_insert_with(|| Resources::open(path))
+            .read(&format!("performance_view/{file}"));
+        if let Some(bytes) = found {
+            files.push((file, bytes));
+        }
+    }
     files
 }
 
