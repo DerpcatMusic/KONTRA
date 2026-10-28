@@ -5,8 +5,10 @@
 //! unsafe code holds the engine.
 //!
 //! ponytail: the Luau state allocates from the system heap on the audio
-//! thread; a fixed arena allocator sized at prepare is the next step
-//! (04-SCRIPT.md §4, "Real-time safety").
+//! thread (04-SCRIPT.md §4, "Real-time safety"). mlua 0.12 has no allocator
+//! hook (its `memory.rs` allocator is a static over `std::alloc`), so an
+//! arena needs a Luau C-API shim (unsafe) or a real-time global allocator in
+//! the plugin binary.
 
 use std::collections::HashMap;
 use std::sync::Arc;
