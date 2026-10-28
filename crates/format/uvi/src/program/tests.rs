@@ -245,3 +245,75 @@ fn a_keygroup_one_pole_and_its_velocity_route_reach_the_group() {
         "{features:?}"
     );
 }
+
+#[test]
+fn an_oscillators_bend_and_controller_pitch_routes_reach_its_group() {
+    let xml = r#"<Program Gain="1">
+      <Modulators>
+        <LFO Name="LFO 1" Bypass="0" SyncToHost="1" DelayTime="0" RiseTime="0" Freq="0.5" Depth="0.5" Phase="0.25" WaveFormType="0" Retrigger="0" Bipolar="1"/>
+        <MultiLFO Name="Multi LFO 1" Bypass="0" SyncToHost="0" SineDepth="1" TriangleDepth="0.5" SawDepth="0" SquareDepth="0" NoiseDepth="0" RiseTime="0" Freq="1" Depth="1" Retrigger="1" Bipolar="1" Invert="0" NormalizeOutput="1"/>
+      </Modulators>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators>
+            <SamplePlayer Bypass="0" SamplePath="./a.wav">
+              <Connections>
+                <SignalConnection Ratio="2" Source="@PitchBend" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                <SignalConnection Ratio="1" Source="@PitchBend" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="1"/>
+                <SignalConnection Ratio="0.5" Source="@MIDI CC 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                <SignalConnection Ratio="0" Source="@MIDI CC 2" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                <SignalConnection Ratio="12" Source="@PitchBend" Destination="Pitch" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                <SignalConnection Ratio="0.6" Source="$Program/LFO 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="1"/>
+                <SignalConnection Ratio="0.7" Source="$Program/Multi LFO 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+              </Connections>
+            </SamplePlayer>
+          </Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let pitch = |source, semitones| ir::ModKind::Pitch {
+        source,
+        semitones,
+        depth: 1.0,
+    };
+    assert_eq!(
+        out.groups[0]
+            .mods
+            .iter()
+            .map(|m| m.kind)
+            .collect::<Vec<_>>(),
+        [
+            pitch(ir::Source::PitchBend, 2.0),
+            pitch(ir::Source::PitchBend, -1.0),
+            pitch(ir::Source::Controller(1), 0.5),
+            // Inverted, at half depth.
+            pitch(ir::Source::Lfo(0), -0.3),
+        ]
+    );
+    assert_eq!(
+        out.groups[0].lfos,
+        [ir::Lfo {
+            wave: ir::Wave::Sine,
+            rate: ir::Rate::Beats(0.5),
+            phase: 0.25,
+            fade_ms: 0.0,
+            clock: ir::Clock::Free,
+        }]
+    );
+    // Only the mapped connection is left to report.
+    let pitch_notes: Vec<_> = out
+        .diagnostics
+        .iter()
+        .filter(|d| d.feature == "modulation Pitch")
+        .map(|d| d.detail.as_str())
+        .collect();
+    assert_eq!(
+        pitch_notes,
+        // The mapped bend and the mixed MultiLFO.
+        ["2× (first: @PitchBend)"],
+        "{:?}",
+        out.diagnostics
+    );
+}
