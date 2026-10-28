@@ -1006,3 +1006,31 @@ fn an_instrument_reverb_rings_on_after_the_note() {
     assert_eq!(first, [0.0; 2]);
     assert!(wet > 1e-3 && wet.is_finite(), "tail {wet}");
 }
+
+#[test]
+fn a_group_waveshaper_clips_each_voice_not_their_sum() {
+    use kontra_engine::ir::{DriveCurve, Effect, EffectKind, Shaper};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![
+        Zone::new(sine(&mut store), 60, RATE),
+        Zone::new(sine(&mut store), 60, RATE),
+    ];
+    let mut plan = Plan::new(zones, 8);
+    plan.groups[0].inserts = vec![Some(Effect {
+        kind: EffectKind::Shaper(Shaper {
+            curve: DriveCurve::Soft(1.0),
+            lowpass_hz: None,
+            highpass_hz: None,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0f32; 2]; 9600];
+    e.process(&mut out, &[on(60, 1.0)]);
+    let peak = out[4800..].iter().map(|s| s[0].abs()).fold(0.0, f32::max);
+    // Each 0.1 sine clips to 0.64 (4x, then 2|x| − x²): 1.28 together. The
+    // sum through one curve would peak at 0.96.
+    assert!((peak - 1.28).abs() < 0.02, "{peak}");
+}
