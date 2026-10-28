@@ -36,6 +36,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (m, n) in mods {
         println!("  mod {n}× {m}");
     }
+    // KONTRA_GROUPS=<a>..<b> lists those groups' modulations one by one.
+    if let Some((a, b)) = std::env::var("KONTRA_GROUPS")
+        .ok()
+        .and_then(|r| {
+            r.split_once("..")
+                .map(|(a, b)| (a.parse::<usize>(), b.parse::<usize>()))
+        })
+        .and_then(|(a, b)| Some((a.ok()?, b.ok()?)))
+    {
+        for (g, group) in i.groups.iter().enumerate().take(b).skip(a) {
+            for m in &group.mods {
+                println!(
+                    "  group {g} {} @{} bypass {} {:?}",
+                    m.name, m.slot, m.bypass, m.kind
+                );
+            }
+        }
+    }
     // KONTRA_SCRIPT_DIR=<dir> writes each script's source there.
     if let Some(dir) = std::env::var_os("KONTRA_SCRIPT_DIR") {
         for (n, script) in i.scripts.iter().enumerate() {
