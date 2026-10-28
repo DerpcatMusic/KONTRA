@@ -389,11 +389,12 @@ pub enum Wave {
     },
     /// A new random level each half cycle.
     Random,
-    /// `−w0·sine + w1·saw(2p) + w2·triangle − w3·pulse(width) + w4·random`,
-    /// the saw rising twice a cycle and the triangle from −1; divided by
-    /// `max(1, Σ|w|)` when `normalize`.
+    /// `−w0·sine + w1·saw(2p) + w2·triangle − w3·pulse(width) + w4·random
+    /// + w5·ramp`, the saw rising twice a cycle, the triangle from −1 and
+    /// the ramp falling once (`1 − 2p`); divided by `max(1, Σ|w|)` when
+    /// `normalize`.
     Multi {
-        weights: [f32; 5],
+        weights: [f32; 6],
         width: f32,
         normalize: bool,
     },
