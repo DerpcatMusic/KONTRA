@@ -553,22 +553,28 @@ impl<L: Library> Translator<'_, '_, L> {
         if num(env, "DelayTime", 0.0)? != 0.0 {
             self.notes.add(ir::Impact::Audible, "envelope delay", "");
         }
-        if ["AttackCurve", "DecayCurve", "ReleaseCurve"]
-            .iter()
-            .any(|c| num(env, c, 0.0).is_ok_and(|v| v != 0.0))
-        {
-            // ponytail: curves are not carried; the stages are linear.
+        // One shape serves decay and release: the release's, and the decay's
+        // when it is what moves (AO's two are equal).
+        let sustain = num(env, "SustainLevel", 1.0)?.clamp(0.0, 1.0) as f32;
+        let shape = |name| modulation::curve(env, name).unwrap_or(0.0);
+        let decays = sustain < 1.0 && seconds("DecayTime")? > 0.0;
+        let fall = shape(if decays && seconds("ReleaseTime")? == 0.0 {
+            "DecayCurve"
+        } else {
+            "ReleaseCurve"
+        });
+        if decays && shape("DecayCurve") != fall {
             self.notes
-                .add(ir::Impact::Audible, "envelope curve", source);
+                .add(ir::Impact::Audible, "envelope decay curve", source);
         }
         Ok(Some(ir::Envelope {
             attack: seconds("AttackTime")?,
             hold: seconds("HoldTime")?,
             decay: seconds("DecayTime")?,
-            sustain: num(env, "SustainLevel", 1.0)?.clamp(0.0, 1.0) as f32,
+            sustain,
             release: seconds("ReleaseTime")?,
-            attack_shape: 0.0,
-            fall_shape: 0.0,
+            attack_shape: shape("AttackCurve"),
+            fall_shape: fall,
         }))
     }
 

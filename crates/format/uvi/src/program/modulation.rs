@@ -281,12 +281,11 @@ pub(super) fn ahd(node: Node) -> Option<ir::Breakpoints> {
     if flag(node, "Bypass") || flag(node, "VelocityAmount") {
         return None;
     }
-    let point = |time, default, level, curve| -> Option<ir::Breakpoint> {
-        let c = num(node, curve, 0.0).ok()?.clamp(-0.9998, 0.9998);
+    let point = |time, default, level, name| -> Option<ir::Breakpoint> {
         Some(ir::Breakpoint {
             ms: (num(node, time, default).ok()?.clamp(0.0, 30.0) * 1000.0) as f32,
             level,
-            curve: (2.0 * ((1.0 + c) / (1.0 - c)).ln()) as f32,
+            curve: curve(node, name)?,
         })
     };
     Some(ir::Breakpoints {
@@ -300,6 +299,14 @@ pub(super) fn ahd(node: Node) -> Option<ir::Breakpoints> {
         loop_from: None,
         stages: false,
     })
+}
+
+/// An envelope segment's curve attribute `name` as the IR's shape `k`
+/// ([`ahd`]); a DAHDSR's segments run the same law (process
+/// 0x1410f0570 calls setup 0x1410f1220).
+pub(super) fn curve(node: Node, name: &str) -> Option<f32> {
+    let c = num(node, name, 0.0).ok()?.clamp(-0.9998, 0.9998);
+    Some((2.0 * ((1.0 + c) / (1.0 - c)).ln()) as f32)
 }
 
 /// Table entries per step: a step's edge ramps over 1/16 of it.
