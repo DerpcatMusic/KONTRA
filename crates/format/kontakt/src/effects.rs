@@ -239,19 +239,32 @@ fn eq(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
     Some(ir::EffectKind::Eq(bands))
 }
 
-/// A legacy or SV filter: the kind (repeated), then cutoff and resonance,
-/// both 0..=1 (v2 sampler-kontakt effects/mod.rs, reader 0x140d00db0).
+/// A filter: the kind, repeated (newer records put a flag byte before a
+/// repeat), a leading gain for Ladder and Daft (the SV Par/Ser bandwidth,
+/// unused), then cutoff and resonance, all 0..=1 (v2 sampler-kontakt
+/// effects/mod.rs, reader 0x140d00db0).
 fn filter(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
     let k = kind.to_le_bytes();
     let mut rest = public;
-    while let Some(r) = rest.strip_prefix(&k) {
-        rest = r;
+    loop {
+        if let Some(r) = rest.strip_prefix(&k) {
+            rest = r;
+        } else if let Some(r) = rest.get(1..).and_then(|r| r.strip_prefix(&k)) {
+            rest = r;
+        } else {
+            break;
+        }
     }
     let f = |n: usize| {
         let bytes = rest.get(n..n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
     };
-    crate::laws::filter(kind, f(0)?, f(4)?).map(ir::EffectKind::Filter)
+    let (gain, at) = if matches!(kind, 30..=41 | 63..=65 | 70 | 71) {
+        (f(0)?, 4)
+    } else {
+        (0.0, 0)
+    };
+    crate::laws::filter(kind, f(at)?, f(at + 4)?, gain).map(ir::EffectKind::Filter)
 }
 
 /// Send Levels: a counted list of send levels, then one of outputs (v2

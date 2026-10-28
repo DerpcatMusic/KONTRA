@@ -235,18 +235,19 @@ pub(crate) fn lfo(l: &Lfo, retrigger: bool) -> Option<ir::Lfo> {
 }
 
 /// A legacy (types 2..=12) or SV (50..=62) filter; other kinds are not mapped.
-pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32) -> Option<ir::Filter> {
+pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Filter> {
     use ir::Pass::{Band, High, Low, Notch};
     let (pass, stages) = match kind {
-        2 | 50 => (Low, 0),
-        3 | 51 => (High, 0),
-        4 | 53 => (Band, 1),
-        6 | 52 => (Low, 1),
-        7 | 54 => (High, 1),
-        8 | 55 => (Low, 2),
-        9 | 57 => (High, 2),
-        10 | 56 => (Band, 2),
+        2 | 30 | 50 => (Low, 0),
+        3 | 34 | 51 => (High, 0),
+        4 | 38 | 53 | 101 => (Band, 1),
+        6 | 31 | 52 | 70 | 100 => (Low, 1),
+        7 | 35 | 54 | 71 | 102 => (High, 1),
+        8 | 16 | 17 | 33 | 55 | 103 | 106 => (Low, 2),
+        9 | 37 | 57 | 105 | 108 => (High, 2),
+        10 | 39 | 56 | 104 | 107 => (Band, 2),
         11 | 58 => (Notch, 2),
+        41 => (Notch, 1),
         12 | 59 => (Low, 3),
         60 => (Band, 3),
         61 => (High, 3),
@@ -262,12 +263,36 @@ pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32) -> Option<ir::Filte
         gain: 1.0,
         octaves: 0.0,
     };
-    if kind < 50 {
-        legacy(&mut f, u, r);
-    } else {
-        sv(&mut f, u, r);
+    match kind {
+        ..=17 if kind != 16 => legacy(&mut f, u, r),
+        50..=62 => sv(&mut f, u, r),
+        // The note each family's cutoff knob reaches (index `5n + 1381.88`
+        // into the shared 2^(i/60 − 20) table): Ladder `115u + 20`
+        // (filt-ladder-monark.md, its gain `2^(1.993g)`), Daft `125u + 20`
+        // (filt-ar-daft.md), AR `min(145u, 140)`, Pro-53 `100u + 20`.
+        30..=41 => {
+            note(&mut f, 115.0 * u + 20.0, 115.0, r);
+            f.gain = 2f32.powf(1.993 * gain.clamp(-1.0, 1.0));
+        }
+        70 | 71 => note(&mut f, 125.0 * u + 20.0, 125.0, r),
+        100..=108 => note(&mut f, (145.0 * u).min(140.0), 145.0, r),
+        _ => note(&mut f, 100.0 * u + 20.0, 100.0, r),
     }
     Some(f)
+}
+
+/// A cutoff at MIDI note `n` that a knob moves `per_unit` notes; the last
+/// stage resonates by `1 − (1 − r)²`, the others stay critically damped.
+///
+/// ponytail: these families' feedback loops, knees and passband loss
+/// (Ladder, AR, Daft, Pro-53) play as state-variable stages; measure
+/// against Kontakt to add the loss where a library needs it.
+fn note(f: &mut ir::Filter, n: f32, per_unit: f32, r: f32) {
+    f.hz = 440.0 * 2f32.powf((n.min(160.0) - 69.0) / 12.0);
+    f.octaves = per_unit / 12.0;
+    if let Some(last) = f.damping.get_mut(usize::from(f.stages).saturating_sub(1)) {
+        *last = (2.0 * (1.0 - r) * (1.0 - r)).max(MIN_DAMPING);
+    }
 }
 
 /// The legacy cascade (docs/re/engine/filt-legacy.md): the knob through the
@@ -343,12 +368,14 @@ mod tests {
 
     #[test]
     fn the_cutoff_laws_land_the_measured_corners() {
-        let hz = |kind, u| filter(kind, u, 0.0).map(|f| f.hz).unwrap_or_default();
+        let hz = |kind, u| filter(kind, u, 0.0, 0.0).map(|f| f.hz).unwrap_or_default();
         // Legacy LP1 at .25 / .5: Kontakt −3 dB at 249 / 1189 Hz.
         assert!((hz(2, 0.25) - 249.0).abs() < 5.0);
         assert!((hz(2, 0.5) - 1189.0).abs() < 20.0);
-        // SV at 0: 25.96 Hz.
+        // SV and Ladder at 0: 25.96 Hz; AR at 0 is note 0.
         assert!((hz(52, 0.0) - 25.96).abs() < 0.01);
+        assert!((hz(33, 0.0) - 25.96).abs() < 0.01);
+        assert!((hz(103, 0.0) - 8.176).abs() < 0.01);
     }
 
     #[test]
