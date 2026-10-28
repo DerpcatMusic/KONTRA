@@ -2,14 +2,14 @@
 //! each voice; a linear one with fixed settings commutes with the sum,
 //! so it stays on the shared chain (filters.rs). An insert runs here when a
 //! route moves it (it differs per note), or when it sits at or before the
-//! group's last active drive effect (a nonlinear stage sees one voice, not
-//! the sum). Each group's units are built once, after the init callback;
-//! a note copies them into its slot's preallocated rack, so the audio thread
-//! never allocates, and their state ends with the voice.
+//! group's last drive effect (a nonlinear stage sees one voice, not the
+//! sum). A bypassed insert is built too and skipped while bypassed, so a
+//! script may switch it on. Each group's units are built once, after the
+//! init callback; a note copies them into its slot's preallocated rack, so
+//! the audio thread never allocates, and their state ends with the voice.
 //!
-//! ponytail: an insert bypassed at load stays off if a script enables it
-//! later (the translator reports drive ones); gain, inverter and stereo
-//! inserts after a drive effect still fold into the voice's matrix, before it.
+//! ponytail: gain, inverter and stereo inserts after a drive effect still
+//! fold into the voice's matrix, before it.
 
 use std::sync::Arc;
 
@@ -111,10 +111,8 @@ fn reduction(c: ir::Crush, rate: u32) -> Reduction {
 
 /// A group's per-voice units in slot order; empty when all of it is shared.
 fn template(group: &crate::plan::Group, rate: u32) -> Arc<[Unit]> {
-    let active = |e: &&ir::Effect| !e.bypass;
     let last_drive = group.inserts.iter().rposition(|e| {
         e.as_ref()
-            .filter(active)
             .is_some_and(|e| matches!(e.kind, ir::EffectKind::Shaper(_) | ir::EffectKind::Crush(_)))
     });
     group
@@ -123,7 +121,7 @@ fn template(group: &crate::plan::Group, rate: u32) -> Arc<[Unit]> {
         .enumerate()
         .filter(|&(n, _)| last_drive.is_some_and(|l| n <= l) || moved(&group.mods, n))
         .filter_map(|(n, e)| {
-            let e = e.as_ref().filter(active)?;
+            let e = e.as_ref()?;
             Some(Unit {
                 insert: u8::try_from(n).ok()?,
                 kind: unit(e.kind, rate)?,
