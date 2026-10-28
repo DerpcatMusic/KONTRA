@@ -16,7 +16,7 @@ const UNITY_VOLUME: f64 = 629_960.524_947_436_1;
 
 /// Attack and hold run 0..=15 s, decay and release 0..=25 s, exponentially
 /// with a 2 ms shift: `exp(ln 2 + (ln(top + 2) − ln 2) × x) − 2` ms.
-fn stage_ms(top_ms: f64, x: f64) -> f64 {
+pub(crate) fn stage_ms(top_ms: f64, x: f64) -> f64 {
     let (low, high) = (2f64.ln(), (top_ms + 2.0).ln());
     ((low + (high - low) * x).exp() - 2.0).max(0.0)
 }
