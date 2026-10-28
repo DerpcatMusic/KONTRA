@@ -459,7 +459,12 @@ impl Engine {
             return;
         };
         let plan = self.plan.clone();
-        let held_seconds = (self.now.0 - n.at.0) as f32 / self.rate as f32;
+        let key = usize::from(n.key);
+        if attack && let Some(r) = self.behaviour.rls_reset.get_mut(key) {
+            *r = self.now.0;
+        }
+        let since = self.behaviour.rls_reset.get(key).map_or(n.at.0, |&r| r);
+        let held_seconds = self.now.0.saturating_sub(since) as f32 / self.rate as f32;
         for (index, zone) in plan.zones.iter().enumerate() {
             let selected = accept(zone.trigger)
                 && self.masks.allows(note.slot(), zone.group)

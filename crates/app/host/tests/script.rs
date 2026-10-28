@@ -1413,3 +1413,51 @@ fn stop_wait_ends_the_current_wait_or_every_wait() {
         assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3, "rest {rest}");
     }
 }
+
+/// Kontakt keeps one release-trigger counter per key; its system script
+/// restarts it on every attack, and a script that ignores the attack
+/// restarts it with `reset_rls_trig_counter` (string and system script in
+/// Kontakt8.exe at 0x144e8d2f0 / 0x144f17c23). A release trigger decays by
+/// the time since that restart, not since the key went down.
+#[test]
+fn reset_rls_trig_counter_restarts_the_release_triggers_decay() {
+    for (reset, expected) in [(false, 0.2), (true, 0.4)] {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let attack = zone(&mut store, 0.5, 0);
+        let mut tail = zone(&mut store, 0.4, 1);
+        tail.trigger = kontra_engine::Trigger::Release;
+        tail.release_decay_db = 6.0; // per second held
+        let script = kontra_ksp::compile(
+            "on controller
+                reset_rls_trig_counter(60)
+                reset_rls_trig_counter(128)
+            end on",
+            &[],
+        )
+        .unwrap();
+        let mut plan = Plan::new(vec![attack, tail], 16);
+        for g in &mut plan.groups {
+            g.mods.clear();
+            g.envelope.release = 16;
+        }
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        level(&mut e, &[on(60)]);
+        for _ in 0..(RATE as usize / 4096) {
+            level(&mut e, &[]);
+        }
+        let mut up = vec![off(60)];
+        if reset {
+            up.insert(
+                0,
+                Timed {
+                    at: SampleTime(0),
+                    body: Event::midi1(0xB0, 1, 1),
+                },
+            );
+        }
+        // ~1 s held: 0.4 at −6 dB ≈ 0.2, unless the counter restarted at key-up.
+        let got = level(&mut e, &up);
+        assert!((got - expected).abs() < 0.02, "reset {reset}: {got}");
+    }
+}

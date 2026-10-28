@@ -658,6 +658,13 @@ impl HostApi for Engine {
             }
             Action::CallbackType => HostValue::Int(i32::from(self.running.callback_type)),
             Action::UiIdVar => HostValue::Int(self.running.ui),
+            // Out of 0..=127 Kontakt refuses it ("Note number must be between 0 and 127").
+            Action::ResetRlsTrigCounter => {
+                if let Some(r) = self.behaviour.rls_reset.get_mut(int(0) as usize) {
+                    *r = self.now.0;
+                }
+                HostValue::Nothing
+            }
             Action::CallbackId => HostValue::Int(self.running.callback_id as i32),
             Action::EventParAt => HostValue::Int(
                 running.map_or(0, |r| self.event_par(r.event_id(), int(0).clamp(0, 3))),
