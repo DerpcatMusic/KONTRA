@@ -406,13 +406,11 @@ fn translate_group(
             };
             for (target, t) in p.targets.iter().enumerate() {
                 let kind = match (source, t.param.as_str(), t.slot) {
-                    (Some(source), "volume", None) if source != ir::Source::PitchBend => {
-                        Some(ir::ModKind::Volume {
-                            source,
-                            intensity: t.signed_intensity(),
-                            curve: laws::volume(source),
-                        })
-                    }
+                    (Some(source), "volume", None) => Some(ir::ModKind::Volume {
+                        source,
+                        intensity: t.signed_intensity(),
+                        curve: laws::volume(source),
+                    }),
                     (Some(source), "pitch", None) => Some(ir::ModKind::Pitch {
                         source,
                         semitones: laws::PITCH_SEMITONES,

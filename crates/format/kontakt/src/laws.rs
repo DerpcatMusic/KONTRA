@@ -38,15 +38,18 @@ fn attack_shape(curve: f32) -> f32 {
 }
 
 /// The volume law of a modulation source (Kontakt's "family H",
-/// modulation compiler 0x140875ac8/0x140873120): cubed for note-time
-/// sources (velocity, key, the release counter: external types 7..=13),
-/// plain for controllers. The cube at 50/127 matches the measured velocity
-/// table to 0.03 dB RMS.
+/// modulation compiler 0x140875ac8/0x140873120): cubed (`fcubic`) for
+/// internal source types 7..=13, plain otherwise. The loader FUN_140cf0420
+/// maps saved codes to those types: key, velocity, release velocity, the
+/// release counter, constant and the randoms land on 7..=13; pitch bend
+/// (1), controllers (4) and scripts (5) stay plain. The cube at 50/127
+/// matches the measured velocity table to 0.03 dB RMS.
 pub(crate) fn volume(source: ir::Source) -> ir::Curve {
     ir::Curve::Depth {
-        // ponytail: a script value is taken as a controller (linear), not
-        // measured; Conflux sends CC × 7874 to it in place of aftertouch.
-        power: if matches!(source, ir::Source::Controller(_) | ir::Source::Script(_)) {
+        power: if matches!(
+            source,
+            ir::Source::Controller(_) | ir::Source::Script(_) | ir::Source::PitchBend
+        ) {
             1
         } else {
             3

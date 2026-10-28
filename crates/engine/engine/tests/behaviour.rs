@@ -1387,3 +1387,35 @@ fn a_pitch_bend_release_route_reads_the_wheel_from_zero_to_one() {
     }
     assert_eq!(tail, [0.0; 2], "{tail:?}");
 }
+
+#[test]
+fn a_pitch_bend_volume_route_reads_the_wheel_from_zero_to_one() {
+    use kontra_engine::ir::{Curve, Mod, ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    plan.groups[0].mods = vec![Mod {
+        name: "PB_VOLUME".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Volume {
+            source: Source::PitchBend,
+            intensity: 1.0,
+            curve: Curve::Depth { power: 1 },
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let bend = |lsb, msb| Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xE0, lsb, msb),
+    };
+    let settled = |e: &mut Engine, events: &[Timed<Event>]| {
+        level(e, events);
+        (0..8).map(|_| level(e, &[])[0]).last().unwrap_or(0.0)
+    };
+    // At rest the wheel reads 0.5: half level; fully up, all of it.
+    let rest = settled(&mut e, &[on(60, 1.0)]);
+    assert!((rest - 0.5).abs() < 1e-3, "{rest}");
+    let up = settled(&mut e, &[bend(0x7F, 0x7F)]);
+    assert!((up - 1.0).abs() < 1e-3, "{up}");
+}
