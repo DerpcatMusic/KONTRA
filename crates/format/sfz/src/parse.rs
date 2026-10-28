@@ -4,13 +4,16 @@
 
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// Opcodes by name; the last value of a name wins.
 pub(crate) type Opcodes = BTreeMap<String, String>;
 
 /// How deep `#include` may nest.
 const MAX_INCLUDE_DEPTH: u8 = 8;
+/// How many `#include`s one document may read in all, so a file that
+/// includes another many times cannot fan out without bound.
+const MAX_INCLUDES: u16 = 256;
 
 /// The text as the translator reads it.
 pub(crate) struct Document {
@@ -24,14 +27,20 @@ pub(crate) struct Document {
 }
 
 /// Reads a file's text. SFZ files are often Latin-1, so bytes that are not
-/// UTF-8 are replaced rather than failing the read.
+/// UTF-8 are replaced rather than failing the read. A UTF-8 BOM is dropped.
 pub(crate) fn read(path: &Path) -> std::io::Result<String> {
-    std::fs::read(path).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    std::fs::read(path).map(|bytes| {
+        let text = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+        String::from_utf8_lossy(text).into_owned()
+    })
 }
 
 /// Parses `text`; `include` names resolve from `base`.
 pub(crate) fn document(text: &str, base: &Path) -> Document {
-    let mut pre = Preprocess::default();
+    let mut pre = Preprocess {
+        root: lexical(base),
+        ..Preprocess::default()
+    };
     pre.expand(text, base, 0);
     let mut chunks = pre.out.split('<');
     let mut doc = Document {
@@ -122,6 +131,9 @@ struct Preprocess {
     /// `$NAME` to its value, longest name first so `$A` never eats `$AB`.
     defines: Vec<(String, String)>,
     problems: Vec<(String, String)>,
+    /// The document's folder: includes may not leave it.
+    root: PathBuf,
+    includes: u16,
 }
 
 impl Preprocess {
@@ -150,12 +162,19 @@ impl Preprocess {
     }
 
     fn include(&mut self, name: &str, dir: &Path, depth: u8) {
-        let path = dir.join(name.replace('\\', "/"));
-        if depth >= MAX_INCLUDE_DEPTH {
+        let name = name.replace('\\', "/");
+        let path = lexical(&dir.join(&name));
+        if Path::new(&name).has_root() || !path.starts_with(&self.root) {
+            self.problems
+                .push(("#include outside the folder".into(), name));
+            return;
+        }
+        if depth >= MAX_INCLUDE_DEPTH || self.includes >= MAX_INCLUDES {
             self.problems
                 .push(("#include depth".into(), path.display().to_string()));
             return;
         }
+        self.includes += 1;
         match read(&path) {
             Ok(text) => self.expand(&text, path.parent().unwrap_or(dir), depth + 1),
             Err(e) => self
@@ -163,6 +182,21 @@ impl Preprocess {
                 .push(("#include".into(), format!("{}: {e}", path.display()))),
         }
     }
+}
+
+/// `path` with `.` dropped and each `..` taking off the name before it.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Removes `//` and `/* */` comments. An unterminated block comment runs to the end.

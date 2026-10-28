@@ -142,7 +142,13 @@ impl Build {
             .number(ops, &["end"])
             // -1 is a region that triggers but plays nothing (it can still
             // choke its off_by targets); end is otherwise inclusive.
-            .map_or(total, |end| if end == -1.0 { 0 } else { frames(end) + 1 })
+            .map_or(total, |end| {
+                if end == -1.0 {
+                    0
+                } else {
+                    frames(end).saturating_add(1)
+                }
+            })
             .min(total);
         let zone = ir::Zone {
             sample,
@@ -265,7 +271,7 @@ impl Build {
                     .min(total);
                 let end = self
                     .number(ops, &["loop_end", "loopend"])
-                    .map_or(total, |end| frames(end) + 1)
+                    .map_or(total, |end| frames(end).saturating_add(1))
                     .min(total);
                 if end > start {
                     Some(ir::Loop {
@@ -379,7 +385,9 @@ impl Build {
     }
 
     fn number(&mut self, ops: &Opcodes, names: &[&str]) -> Option<f64> {
-        self.read(ops, names, |text| text.parse().ok())
+        self.read(ops, names, |text| {
+            text.parse().ok().filter(|v: &f64| v.is_finite())
+        })
     }
 
     fn finish(self) -> ir::Instrument {

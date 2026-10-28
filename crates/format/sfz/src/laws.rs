@@ -42,9 +42,11 @@ pub fn midi_key(text: &str) -> Option<u8> {
         (0, rest)
     };
     let octave: i32 = digits.parse().ok()?;
-    u8::try_from((octave + 1) * 12 + letter + shift)
-        .ok()
-        .filter(|key| *key <= 127)
+    let key = octave
+        .checked_add(1)?
+        .checked_mul(12)?
+        .checked_add(letter + shift)?;
+    u8::try_from(key).ok().filter(|key| *key <= 127)
 }
 
 /// Envelope times are seconds and never negative.

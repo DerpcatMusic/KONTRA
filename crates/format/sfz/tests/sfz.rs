@@ -96,6 +96,30 @@ fn define_and_include_expand() {
 }
 
 #[test]
+fn includes_drop_a_bom_and_stay_in_the_folder() {
+    let dir = scratch("include-bom");
+    wav(&dir.join("x.wav"), 10).expect("wav");
+    std::fs::write(
+        dir.join("bom.sfz"),
+        "\u{FEFF}<region> sample=x.wav key=10\n",
+    )
+    .expect("bom");
+    let inst = parse("#include \"bom.sfz\"\n", &dir);
+    assert!(inst.diagnostics.is_empty(), "{:?}", inst.diagnostics);
+    assert_eq!(inst.groups.iter().map(|g| g.zones.len()).sum::<usize>(), 1);
+
+    std::fs::write(dir.join("self.sfz"), "#include \"self.sfz\"\n").expect("self");
+    let text = "#include \"../outside.sfz\"\n#include \"/etc/hosts\"\n#include \"self.sfz\"\n";
+    let inst = parse(text, &dir);
+    let report = format!("{:?}", inst.diagnostics);
+    assert!(
+        report.contains("outside the folder\", detail: \"2×"),
+        "{report}"
+    );
+    assert!(report.contains("#include depth"), "{report}");
+}
+
+#[test]
 fn sample_path_with_spaces_and_backslashes() {
     let dir = scratch("spaces");
     wav(&dir.join("Piano Set/C4 soft.wav"), 100).expect("wav");
