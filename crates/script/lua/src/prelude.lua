@@ -365,7 +365,7 @@ function wait(ms)
 end
 
 function getTime()
-	return host_call("EngineUptime")
+	return host_call("EngineUptime") or 0
 end
 
 function getTempo()
@@ -379,6 +379,17 @@ end
 
 function ms2beat(ms)
 	return ms * getTempo() / 60000
+end
+
+-- Beats since the engine started, at the current tempo.
+-- ponytail: the host's song position is not passed in; song time is running time.
+function getRunningBeatTime()
+	return getTime() / beat2ms(1)
+end
+getBeatTime = getRunningBeatTime
+
+function getBeatDuration()
+	return beat2ms(1)
 end
 
 function waitBeat(beats)
@@ -466,9 +477,48 @@ end
 function spawn(f, ...)
 	local co = coroutine.create(f)
 	local ok, waited = coroutine.resume(co, ...)
-	if ok and coroutine.status(co) == "suspended" then
-		table.insert(__spawned, { co, waited or 0 })
+	-- A coroutine that failed is queued too: resuming it counts the fault.
+	if not ok or coroutine.status(co) == "suspended" then
+		table.insert(__spawned, { co, ok and waited or 0 })
 	end
+end
+
+-- loadSample(oscillator, path, done): the samples a script loads were put
+-- on their oscillators when the program loaded (`__record`); here it only
+-- reports success.
+local loads
+function loadSample(oscillator, path, done)
+	if loads and type(oscillator) == "userdata" and oscillator.parent then
+		table.insert(loads, { oscillator.parent.group, oscillator.index - 1, path, oscillator.params.BaseNote })
+	end
+	if type(done) == "function" then
+		done({ success = true })
+	end
+end
+
+-- The program as it loads, run once off the audio thread: init and onLoad,
+-- then what they spawned, every host call answered 0 and every wait
+-- skipped. Returns the samples it loaded: {group, slot, path, base note}.
+function __record()
+	loads = {}
+	__host = function()
+		return 0
+	end
+	local runs = { coroutine.create(__entries[0]) }
+	local i = 1
+	while runs[i] and i <= 256 do
+		local co, steps = runs[i], 0
+		while coroutine.status(co) == "suspended" and steps < 1000 do
+			coroutine.resume(co)
+			steps = steps + 1
+		end
+		for _, spawned in ipairs(__spawned) do
+			table.insert(runs, spawned[1])
+		end
+		table.clear(__spawned)
+		i = i + 1
+	end
+	return loads
 end
 
 local function event(kind)
@@ -492,6 +542,11 @@ __entries = {
 		apply_levels()
 		if onInit then
 			onInit()
+		end
+		-- The state the program saved (`onSave`) comes back after init.
+		local found, state = pcall(require, "__state")
+		if onLoad and found and state ~= true then
+			onLoad(state)
 		end
 	end,
 	[1] = function()
@@ -604,7 +659,7 @@ function run(f, ...)
 end
 
 for _, name in ipairs({
-	"loadData", "saveData", "loadState", "saveState", "loadImpulse", "loadSample",
+	"loadData", "saveData", "loadState", "saveState", "loadImpulse",
 	"setKeyColour", "setSampleOffset", "browseForFile", "setKeyType", "setKeyPressed",
 }) do
 	_G[name] = function() end

@@ -92,6 +92,56 @@ pub fn compile(
     })
 }
 
+/// A sample the script puts on an oscillator as the program loads: the
+/// engine group of the oscillator's keygroup, its slot there, the path the
+/// script names, and the base note it set.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SampleLoad {
+    pub group: u32,
+    pub slot: u16,
+    pub path: String,
+    pub root: Option<u8>,
+}
+
+impl Compiled {
+    /// Runs the program's load once, off the audio thread (init, then
+    /// `onLoad`), and returns the samples it loads. A script that fails part
+    /// way returns what it loaded before.
+    #[must_use]
+    pub fn sample_loads(&self) -> Vec<SampleLoad> {
+        let Ok(lua) = state(&self.source, &self.modules, &self.saved) else {
+            return Vec::new();
+        };
+        let checkpoints = AtomicU32::new(0);
+        lua.set_interrupt(move |_| {
+            if checkpoints.fetch_add(1, Ordering::Relaxed) > CHECKPOINTS {
+                return Err(mlua::Error::runtime("load ran too long"));
+            }
+            Ok(mlua::VmState::Continue)
+        });
+        let Ok(loads) = lua
+            .globals()
+            .get::<Function>("__record")
+            .and_then(|record| record.call::<Table>(()))
+        else {
+            return Vec::new();
+        };
+        loads
+            .sequence_values::<Table>()
+            .filter_map(|load| {
+                let load = load.ok()?;
+                let int = |i: usize| number(&load.get::<Value>(i).ok()?);
+                Some(SampleLoad {
+                    group: u32::try_from(int(1)? as i64).ok()?,
+                    slot: u16::try_from(int(2)? as i64).ok()?,
+                    path: load.get::<String>(3).ok()?,
+                    root: int(4).and_then(|n| u8::try_from(n as i64).ok()),
+                })
+            })
+            .collect()
+    }
+}
+
 impl Foreign for Compiled {
     fn machine(&self) -> Box<dyn Machine> {
         let machine = state(&self.source, &self.modules, &self.saved).map(|lua| LuaMachine {
@@ -434,6 +484,31 @@ mod tests {
                 .iter()
                 .any(|(a, ints)| *a == Action::ChangeVol && ints.first() == Some(&7))
         );
+    }
+
+    #[test]
+    fn the_load_pass_runs_onload_with_the_saved_state_and_records_its_samples() {
+        let tree = "return {params={},db=0,pan=0,layers={{params={},keygroups={
+            {params={},group=7,oscillators={{params={BaseNote='24'}},{params={}}}}}}}}";
+        let state = "return {{name='Crescendo'}}";
+        let source = "function onLoad(data)
+            local osc = Program.layers[1].keygroups[1].oscillators[2]
+            osc:setParameter('BaseNote', 36)
+            wait(50)
+            loadSample(osc, data[1].name .. '.wav')
+        end";
+        let modules = [
+            ("__program.lua".to_string(), tree.to_string()),
+            ("__state.lua".to_string(), state.to_string()),
+        ];
+        let compiled = compile(source, &modules, &[]).unwrap();
+        let load = SampleLoad {
+            group: 7,
+            slot: 1,
+            path: "Crescendo.wav".into(),
+            root: Some(36),
+        };
+        assert_eq!(compiled.sample_loads(), vec![load]);
     }
 
     #[test]

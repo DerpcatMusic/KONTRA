@@ -1,7 +1,8 @@
 //! A UVI program as the instrument model. Layers and keygroups become groups,
 //! each enabled oscillator a zone. A bundle (a `SamplePath` with `*` names, one
 //! mono member each) becomes a zone per member, placed by its keygroup's
-//! GainMatrix. Scripts do not run: what they would drive is reported.
+//! GainMatrix. Scripts run on the engine; the samples they load as the
+//! program loads are put on their oscillators here (see [`load`]).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -9,6 +10,9 @@ use std::path::PathBuf;
 use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::Node;
+
+mod load;
+pub use load::Swap;
 
 /// The samples a program names, looked up in the bank it came from.
 pub(crate) trait Library {
@@ -39,6 +43,7 @@ pub(crate) fn translate(
     program: Node,
     program_dir: &str,
     library: &impl Library,
+    swaps: &dyn Fn(&ir::Script) -> Vec<Swap>,
 ) -> Result<ir::Instrument, String> {
     let mut t = Translator {
         program,
@@ -58,6 +63,7 @@ pub(crate) fn translate(
         lookups: HashMap::new(),
         made: HashMap::new(),
         sent: HashMap::new(),
+        script_dirs: Vec::new(),
         base: Base {
             volume_db: db(num(program, "Gain", 1.0)?),
             pan: num(program, "Pan", 0.0)?.clamp(-1.0, 1.0) as f32,
@@ -79,6 +85,7 @@ pub(crate) fn translate(
                 .data
                 .push(("__program.lua".into(), tree.clone().into_bytes()));
         }
+        t.swap_samples(swaps);
     }
     t.out.diagnostics = t.notes.finish();
     Ok(t.out)
@@ -108,6 +115,8 @@ struct Translator<'a, 'input, L> {
     made: HashMap<roxmltree::NodeId, usize>,
     /// Each layer's aux send levels (before, after its fader), for scripts.
     sent: HashMap<roxmltree::NodeId, (f64, f64)>,
+    /// Each script's folder in the bank, relative to the program's.
+    script_dirs: Vec<String>,
 }
 
 impl<L: Library> Translator<'_, '_, L> {
@@ -407,17 +416,31 @@ impl<L: Library> Translator<'_, '_, L> {
                 .unwrap_or_default()
                 .trim()
                 .to_string();
+            let child = |tag: &str| processor.children().find(|c| c.has_tag_name(tag));
+            // Widget values: on the processor, tables in its ScriptData.
             let saved = processor
                 .attributes()
+                .chain(child("ScriptData").into_iter().flat_map(|d| d.attributes()))
                 .filter(|a| !matches!(a.name(), "Name" | "Bypass" | "API_version"))
                 .map(|a| format!("{}={}", a.name(), a.value()))
                 .collect();
+            let mut data = modules.clone();
+            if let Some(state) = child("state").and_then(|s| s.text()) {
+                data.push(("__state.lua".into(), load::lua_literal(state).into_bytes()));
+            }
+            let script_path = child("Properties").and_then(|p| p.attribute("ScriptPath"));
+            self.script_dirs.push(
+                script_path
+                    .and_then(|p| p.rsplit_once('/'))
+                    .map_or(".", |(dir, _)| dir)
+                    .into(),
+            );
             self.out.scripts.push(ir::Script {
                 name: processor.attribute("Name").unwrap_or_default().into(),
                 dialect: ir::Dialect::Lua,
                 source,
                 saved,
-                data: modules.clone(),
+                data,
             });
         }
     }
@@ -733,7 +756,7 @@ mod tests {
           </Layers>
         </Program>"#;
         let doc = roxmltree::Document::parse(xml).unwrap();
-        let out = translate(doc.root_element(), "Presets", &Stub).unwrap();
+        let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
         assert_eq!(out.name, "Synthetic");
         assert_eq!(out.voices, 4);
         // One group per enabled keygroup; the silent layer's keygroup makes none.

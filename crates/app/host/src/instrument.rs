@@ -21,7 +21,7 @@ pub struct Loaded {
 /// When the file is not an instrument this can read.
 pub fn read(path: &Path) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
     if kontra_format_uvi::is_uvi(path) {
-        Ok(kontra_format_uvi::load(path)?)
+        Ok(kontra_format_uvi::load_with(path, &script_swaps)?)
     } else {
         Ok(kontra_format_kontakt::load(path)?)
     }
@@ -48,13 +48,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
     // it move up one ($EVENT_PAR_SOURCE then counts from the gap).
     for script in &instrument.scripts {
         if script.dialect == ir::Dialect::Lua {
-            // Its data files are the modules `require` finds.
-            let modules: Vec<(String, String)> = script
-                .data
-                .iter()
-                .map(|(name, bytes)| (name.clone(), String::from_utf8_lossy(bytes).into_owned()))
-                .collect();
-            match kontra_lua::compile(&script.source, &modules, &script.saved) {
+            match kontra_lua::compile(&script.source, &lua_modules(script), &script.saved) {
                 Ok(compiled) => plan.scripts.push(crate::script::lua_plan(compiled)),
                 Err(e) => diagnostics.push(ir::Diagnostic {
                     impact: ir::Impact::Broken,
@@ -86,6 +80,33 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
         plan,
         diagnostics,
     }
+}
+
+/// The samples a UVI script loads as its program loads, from one run of it.
+fn script_swaps(script: &ir::Script) -> Vec<kontra_format_uvi::Swap> {
+    let Ok(compiled) = kontra_lua::compile(&script.source, &lua_modules(script), &script.saved)
+    else {
+        return Vec::new();
+    };
+    compiled
+        .sample_loads()
+        .into_iter()
+        .map(|l| kontra_format_uvi::Swap {
+            group: l.group,
+            slot: l.slot,
+            path: l.path,
+            root: l.root,
+        })
+        .collect()
+}
+
+/// A Lua script's data files: the modules `require` finds.
+fn lua_modules(script: &ir::Script) -> Vec<(String, String)> {
+    script
+        .data
+        .iter()
+        .map(|(name, bytes)| (name.clone(), String::from_utf8_lossy(bytes).into_owned()))
+        .collect()
 }
 
 /// The source line holding byte `at`.
