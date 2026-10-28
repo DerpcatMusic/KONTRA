@@ -211,6 +211,18 @@ impl<L: Library> Translator<'_, '_, L> {
                 own.or_else(|| filters.get(n).cloned().flatten())
             })
             .collect();
+        let pans = kg
+            .children()
+            .filter(|c| c.has_tag_name("Connections"))
+            .flat_map(|c| c.children())
+            .filter_map(|c| modulation::route(self.program, c, PAN))
+            .filter(|r| r.amount != 0.0);
+        for r in pans {
+            add_route(&mut group, r, |source, amount| ir::ModKind::Pan {
+                source,
+                amount,
+            });
+        }
         let placement = placement(kg);
         let span = Span {
             keys,
@@ -253,39 +265,14 @@ impl<L: Library> Translator<'_, '_, L> {
                 .children()
                 .filter(|c| c.has_tag_name("Connections"))
                 .flat_map(|c| c.children())
-                .filter_map(|c| modulation::pitch_route(self.program, c))
-                .filter(|r| r.semitones != 0.0);
+                .filter_map(|c| modulation::route(self.program, c, PITCH))
+                .filter(|r| r.amount != 0.0);
             for r in routes {
-                let source = match r.timed {
-                    None => r.source,
-                    Some(modulation::Timed::Lfo(lfo)) => {
-                        ir::Source::Lfo(index_of(&mut group.lfos, lfo))
-                    }
-                    Some(modulation::Timed::Envelope(e)) => {
-                        ir::Source::Envelope(index_of(&mut group.envelopes, e))
-                    }
-                    Some(modulation::Timed::Steps(lfo, table)) => {
-                        let source = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
-                        ir::Source::Shaped(index_of(
-                            &mut group.shapers,
-                            ir::Transfer { source, table },
-                        ))
-                    }
-                };
-                let route = ir::Mod {
-                    name: String::new(),
-                    slot: 0,
-                    target: 0,
-                    bypass: false,
-                    kind: ir::ModKind::Pitch {
-                        source,
-                        semitones: r.semitones,
-                        depth: 1.0,
-                    },
-                };
-                if !group.mods.contains(&route) {
-                    group.mods.push(route);
-                }
+                add_route(&mut group, r, |source, semitones| ir::ModKind::Pitch {
+                    source,
+                    semitones,
+                    depth: 1.0,
+                });
             }
             self.player(player, placement, &span, &mut group, slot)?;
         }
@@ -612,7 +599,9 @@ impl<L: Library> Translator<'_, '_, L> {
         {
             if modulation::script_route(self.program, connection).is_some()
                 || filters::freq_route(connection).is_some()
-                || modulation::pitch_route(self.program, connection).is_some()
+                || [PITCH, PAN]
+                    .into_iter()
+                    .any(|to| modulation::route(self.program, connection, to).is_some())
             {
                 continue;
             }
@@ -662,6 +651,39 @@ fn source_node<'a, 'input>(
     scope
         .descendants()
         .find(|n| n.attribute("Name") == Some(name))
+}
+
+/// The owners and destinations [`modulation::route`] carries.
+const PITCH: (&str, &str) = ("SamplePlayer", "Pitch");
+const PAN: (&str, &str) = ("Keygroup", "Pan");
+
+/// `r` as a route of `kind` on `group`, its modulator copied onto the group.
+fn add_route(
+    group: &mut ir::Group,
+    r: modulation::Route,
+    kind: impl Fn(ir::Source, f32) -> ir::ModKind,
+) {
+    let source = match r.timed {
+        None => r.source,
+        Some(modulation::Timed::Lfo(lfo)) => ir::Source::Lfo(index_of(&mut group.lfos, lfo)),
+        Some(modulation::Timed::Envelope(e)) => {
+            ir::Source::Envelope(index_of(&mut group.envelopes, e))
+        }
+        Some(modulation::Timed::Steps(lfo, table)) => {
+            let source = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
+            ir::Source::Shaped(index_of(&mut group.shapers, ir::Transfer { source, table }))
+        }
+    };
+    let route = ir::Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: kind(source, r.amount),
+    };
+    if !group.mods.contains(&route) {
+        group.mods.push(route);
+    }
 }
 
 /// `item`'s index in `items`, pushed if absent.
