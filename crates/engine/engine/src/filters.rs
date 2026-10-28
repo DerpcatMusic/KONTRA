@@ -239,10 +239,10 @@ impl Engine {
                     .and_then(|g| self.groups.get(g))
                     .map(|g| &g.inserts[..])
                     .unwrap_or_default();
-                let (rack, spare) = (&mut slot.rack, &mut *self.scratch);
+                let (rack, spare, rate) = (&mut slot.rack, &mut *self.scratch, self.rate);
                 slot.voice
                     .render_through(&self.stream, self.now.0, mix, |io| {
-                        crate::voice_rack::process(rack, inserts, io, spare);
+                        crate::voice_rack::process(rack, inserts, io, spare, rate);
                     });
             }
             self.stats.missing_frames += slot.voice.missing_frames() - before;
