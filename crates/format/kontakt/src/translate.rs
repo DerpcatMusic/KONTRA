@@ -327,7 +327,6 @@ fn translate_group(
     };
     let slot = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
     let mut modulated = Vec::new();
-    // Each mapped LFO's modulator slot and index, for start-phase routes.
     // Each timed modulator's slot and the source it became.
     let mut timed_slots = Vec::new();
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
