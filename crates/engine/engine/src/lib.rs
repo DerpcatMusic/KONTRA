@@ -708,44 +708,6 @@ impl Engine {
         self.hits = hits;
     }
 
-    /// A voice's age now, from when it started and when its key went up.
-    fn age(&self, started: SampleTime, released: Option<SampleTime>) -> modulators::Age {
-        let seconds = |t: SampleTime| t.0 as f32 / self.rate as f32;
-        modulators::Age {
-            held: seconds(SampleTime(self.now.0.saturating_sub(started.0))),
-            released: released.map(|r| seconds(SampleTime(r.0.saturating_sub(started.0)))),
-            now: seconds(self.now),
-        }
-    }
-
-    /// Re-reads envelopes and LFOs for voices whose group has any.
-    fn refresh_timed(&mut self) {
-        let plan = self.plan.clone();
-        for i in 0..self.voices.len() {
-            let Some(slot) = self.voices.get(i) else {
-                continue;
-            };
-            let Some(zone) = plan.zones.get(slot.zone) else {
-                continue;
-            };
-            let timed = self
-                .groups
-                .get(zone.group as usize)
-                .is_some_and(|g| !g.envelopes.is_empty() || !g.lfos.is_empty());
-            let n = slot.note.and_then(|n| self.notes.get(n).copied());
-            let (Some(n), true, true) = (n, timed, slot.voice.is_active()) else {
-                continue;
-            };
-            let age = self.age(slot.started, slot.released.then_some(slot.released_at));
-            let gain = self.voice_gain(zone, &n, slot.factor, age);
-            let step = self.step(zone, &n, age);
-            if let Some(slot) = self.voices.get_mut(i) {
-                slot.voice.set_gain(gain);
-                slot.voice.set_step(step);
-            }
-        }
-    }
-
     /// Recomputes pitch and gain of a note's voices; with `cc`, only the gain
     /// of voices whose zone crossfades on that controller.
     fn refresh_note(&mut self, note: NoteRef, cc: Option<u8>) {

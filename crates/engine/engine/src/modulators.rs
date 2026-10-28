@@ -3,6 +3,9 @@
 //! modulator state and a refresh at any time gives the same value.
 
 use kontra_ir as ir;
+use kontra_time::SampleTime;
+
+use crate::Engine;
 
 /// When a voice is being read, in seconds.
 #[derive(Clone, Copy, Debug)]
@@ -21,6 +24,46 @@ impl Age {
         released: None,
         now: 0.0,
     };
+}
+
+impl Engine {
+    /// A voice's age now, from when it started and when its key went up.
+    pub(crate) fn age(&self, started: SampleTime, released: Option<SampleTime>) -> Age {
+        let seconds = |t: SampleTime| t.0 as f32 / self.rate as f32;
+        Age {
+            held: seconds(SampleTime(self.now.0.saturating_sub(started.0))),
+            released: released.map(|r| seconds(SampleTime(r.0.saturating_sub(started.0)))),
+            now: seconds(self.now),
+        }
+    }
+
+    /// Re-reads envelopes and LFOs for voices whose group has any.
+    pub(crate) fn refresh_timed(&mut self) {
+        let plan = self.plan.clone();
+        for i in 0..self.voices.len() {
+            let Some(slot) = self.voices.get(i) else {
+                continue;
+            };
+            let Some(zone) = plan.zones.get(slot.zone) else {
+                continue;
+            };
+            let timed = self
+                .groups
+                .get(zone.group as usize)
+                .is_some_and(|g| !g.envelopes.is_empty() || !g.lfos.is_empty());
+            let n = slot.note.and_then(|n| self.notes.get(n).copied());
+            let (Some(n), true, true) = (n, timed, slot.voice.is_active()) else {
+                continue;
+            };
+            let age = self.age(slot.started, slot.released.then_some(slot.released_at));
+            let gain = self.voice_gain(zone, &n, slot.factor, age);
+            let step = self.step(zone, &n, age);
+            if let Some(slot) = self.voices.get_mut(i) {
+                slot.voice.set_gain(gain);
+                slot.voice.set_step(step);
+            }
+        }
+    }
 }
 
 /// The envelope's level at `age`.
