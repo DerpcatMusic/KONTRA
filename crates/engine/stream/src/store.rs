@@ -169,6 +169,16 @@ impl Store {
         page_shift(fmt.bytes_per_frame(), self.max_frame_bytes)
     }
 
+    /// Bytes of the pages the loaded samples hold in memory, each page once.
+    #[must_use]
+    pub fn pinned_bytes(&self) -> u64 {
+        self.pinned
+            .values()
+            .filter_map(Weak::upgrade)
+            .map(|page| page.len() as u64)
+            .sum()
+    }
+
     #[must_use]
     pub fn client(&self) -> StreamClient {
         StreamClient(self.shared.clone())
