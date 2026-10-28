@@ -329,8 +329,10 @@ impl Engine {
             if let Some(mix) = bus.mix.get_mut(..len) {
                 bus.rack.process(mix, &mut self.taps, tempo);
                 // A send to an earlier bus would come a span late: none.
-                for &(to, level) in &bus.sends {
-                    let Some(to) = to.checked_sub(at + 1).and_then(|k| later.get_mut(k)) else {
+                for send in &bus.sends {
+                    let level = send.level * if send.post_fader { bus.gain } else { 1.0 };
+                    let Some(to) = send.bus.checked_sub(at + 1).and_then(|k| later.get_mut(k))
+                    else {
                         continue;
                     };
                     for (o, m) in to.mix.iter_mut().zip(mix.iter()) {
