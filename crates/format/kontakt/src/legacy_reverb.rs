@@ -62,7 +62,7 @@ pub(crate) fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
         // 60 dB over the loops a comb runs at that feedback.
         seconds: 3.0 * COMB_MS * 0.001 / -feedback.log10(),
         size: COMB_MS / LINES_MS,
-        size_curve: [1.0, 0.0],
+        network: None,
         damping: 0.35 * (1.0 - colour) / FDN_DAMP,
         diffusion: 0.5 / FDN_DIFFUSION,
         predelay_ms: predelay_ms.clamp(0.0, 180.0),

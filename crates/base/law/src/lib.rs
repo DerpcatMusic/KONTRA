@@ -5,9 +5,11 @@
 
 mod file;
 mod law;
+mod network;
 
 pub use file::{LawError, LawSource, LawSpec, parse};
 pub use law::{FormulaId, Law, ModuleLaw};
+pub use network::{LINES as NETWORK_LINES, ReverbNetwork};
 
 /// Declares embedded law files as `pub const` [`LawSource`]s and generates a test that
 /// parses each one.

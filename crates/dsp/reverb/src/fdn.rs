@@ -2,6 +2,8 @@
 //! feedback, a one-pole damping filter per line) behind a predelay and four
 //! input allpasses. Formats load their own laws into [`Settings`].
 
+use crate::fade::{Fade, flush};
+
 /// What a reverb sounds like, in physical units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
@@ -31,13 +33,12 @@ const LINES_MS: [f32; 8] = [29.7, 37.1, 41.1, 43.7, 53.0, 59.9, 67.1, 79.3];
 const DIFFUSERS_MS: [f32; 4] = [4.7, 3.6, 12.7, 9.3];
 const SHELF_HZ: f32 = 200.0;
 /// The largest size and predelay [`Fdn::set`] accepts; the lines are allocated for them.
-const MAX_SIZE: f32 = 4.0;
-const MAX_PREDELAY_MS: f32 = 1000.0;
+pub(crate) const MAX_SIZE: f32 = 4.0;
+pub(crate) const MAX_PREDELAY_MS: f32 = 1000.0;
 /// The widest line swing [`Fdn::set`] accepts; the lines have room for it.
 const MAX_MODULATION_MS: f32 = 5.0;
-/// The wet output fades out and back in over this long around a change. Lines and
-/// tail keep running, so the change lands in silence and never clicks.
-const FADE_S: f32 = 0.01;
+/// Gains, shelf and width glide over about this long.
+const GLIDE_S: f32 = 0.01;
 
 /// A delay line allocated for `max` samples; its read length moves within that.
 struct Delay {
@@ -101,14 +102,7 @@ fn pole(hz: f32, rate: f32) -> f32 {
 
 pub struct Fdn {
     rate: f32,
-    /// The last settings given (to [`Fdn::new`] or [`Fdn::set`]), and the one
-    /// waiting for the wet output to fade out.
-    requested: Settings,
-    pending: Option<Settings>,
-    /// Wet output gain, and its per-sample step: fade-out (−), fade-in (+), 0.
-    gain: f32,
-    step: f32,
-    fade_step: f32,
+    fade: Fade,
     predelay: Delay,
     diffusers: Vec<Delay>,
     diffusion: f32,
@@ -147,11 +141,7 @@ impl Fdn {
         let rate = rate.max(1) as f32;
         let mut fdn = Self {
             rate,
-            requested: s,
-            pending: None,
-            gain: 1.0,
-            step: 0.0,
-            fade_step: 1.0 / (FADE_S * rate),
+            fade: Fade::new(s, rate),
             predelay: Delay::new(samples(MAX_PREDELAY_MS, rate)),
             diffusers: DIFFUSERS_MS
                 .iter()
@@ -178,33 +168,17 @@ impl Fdn {
                 shelf_gain: 0.0,
                 stereo: 0.0,
             },
-            ease: 1.0 - (-1.0 / (FADE_S * rate)).exp(),
+            ease: 1.0 - (-1.0 / (GLIDE_S * rate)).exp(),
         };
         fdn.apply(s);
         (fdn.gains, fdn.shelf_gain, fdn.stereo) = (fdn.to.gains, fdn.to.shelf_gain, fdn.to.stereo);
         fdn
     }
 
-    /// Changes every setting while it plays. Never allocates. A change that
-    /// keeps the line lengths (size, pre-delay) applies at once. One that
-    /// moves them fades the wet output out, applies in the silence and fades
-    /// back in; changes during a fade wait for it, only the latest applies,
-    /// and a fade-in finishes before the next fade-out. A repeat of the
-    /// current settings does nothing.
+    /// Changes every setting while it plays, by the [`Fade`] rule. Never allocates.
     pub fn set(&mut self, s: Settings) {
-        if s == self.requested {
-            return;
-        }
-        let same_lengths =
-            s.size == self.requested.size && s.predelay_ms == self.requested.predelay_ms;
-        self.requested = s;
-        if same_lengths && self.pending.is_none() {
+        if let Some(s) = self.fade.set(s) {
             self.apply(s);
-            return;
-        }
-        self.pending = Some(s);
-        if self.step == 0.0 {
-            self.step = -self.fade_step;
         }
     }
 
@@ -233,19 +207,9 @@ impl Fdn {
     /// This frame's wet gain. At the bottom of a fade-out the pending settings
     /// apply, then the gain climbs back.
     fn duck(&mut self) -> f32 {
-        let g = self.gain;
-        self.gain = (self.gain + self.step).clamp(0.0, 1.0);
-        if self.step < 0.0 && self.gain <= 0.0 {
-            if let Some(s) = self.pending.take() {
-                self.apply(s);
-            }
-            self.step = self.fade_step;
-        } else if self.step > 0.0 && self.gain >= 1.0 {
-            self.step = if self.pending.is_some() {
-                -self.fade_step
-            } else {
-                0.0
-            };
+        let (g, pending) = self.fade.tick();
+        if let Some(s) = pending {
+            self.apply(s);
         }
         g
     }
@@ -309,11 +273,6 @@ impl Fdn {
             }
         }
     }
-}
-
-/// `x`, or 0 where it would decay into denormals (the lines feed back).
-fn flush(x: f32) -> f32 {
-    if x.abs() < 1e-20 { 0.0 } else { x }
 }
 
 /// The orthonormal 8-point Walsh–Hadamard transform, in place.

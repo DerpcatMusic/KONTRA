@@ -2,7 +2,7 @@
 //! control comes from a [`Law`] the translator supplies, so the engine only
 //! ever sees physical units.
 
-pub use kontra_law::Law;
+pub use kontra_law::{Law, NETWORK_LINES, ReverbNetwork};
 
 use crate::Reverb;
 
