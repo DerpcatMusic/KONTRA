@@ -297,13 +297,14 @@ fn slot_effect(
             .zip(kind_id)
             .map(|(v, kind)| ir::EffectKind::Reverb(crate::laws::reverb(kind, v))),
         0x10..=0x12 | 0x14 => crate::delays::legacy(effect.id, object.version, &public),
+        0x15 => crate::legacy_reverb::effect(object.version, &public),
         id => crate::drive::effect(id, object.version, &public, at, notes),
     };
     // The legacy delay, chorus and flanger, the Gainer and Convolution mix
     // their slot's dry level back in; other modules' stored dry is unused
     // (trims store 1 there). v2 sampler-kontakt effects/mod.rs, measured on Una Corda's trims.
-    // The Reverb core runs fully wet; Return and Dry carry its mix (v2 effects/space.rs).
-    let parallel = matches!(effect.id, 0x10..=0x12 | 0x16 | 0x59);
+    // The reverbs run fully wet; Return and Dry carry their mix (v2 effects/space.rs).
+    let parallel = matches!(effect.id, 0x10..=0x12 | 0x15 | 0x16 | 0x59);
     // An EQ (Filter kinds 22..=24) has no Output control: ANALOG STRINGS
     // stores 0 on one that plays in Kontakt (v2 sampler-kontakt effects/mod.rs, corpus of
     // 12,918 EQ slots).
