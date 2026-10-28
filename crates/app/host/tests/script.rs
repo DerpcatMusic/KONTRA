@@ -530,14 +530,55 @@ fn script_knobs_set_effect_and_lfo_controls_through_their_laws() {
             set_engine_par($ENGINE_PAR_LFO_SINE, 865000, 0, 3, -1)
             set_engine_par($ENGINE_PAR_INTMOD_FREQUENCY, 390018, 0, 3, -1)
             set_engine_par($ENGINE_PAR_BITS, 500000, 0, 0, -1)
-            message(get_engine_par($ENGINE_PAR_LFO_SINE, 0, 3, -1) & \" \" & get_engine_par($ENGINE_PAR_INTMOD_FREQUENCY, 0, 3, -1) & \" \" & get_engine_par($ENGINE_PAR_BITS, 0, 0, -1))
+            set_engine_par($ENGINE_PAR_INTMOD_PULSEWIDTH, 193000, 0, 3, -1)
+            message(get_engine_par($ENGINE_PAR_LFO_SINE, 0, 3, -1) & \" \" & get_engine_par($ENGINE_PAR_INTMOD_FREQUENCY, 0, 3, -1) & \" \" & get_engine_par($ENGINE_PAR_BITS, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_INTMOD_PULSEWIDTH, 0, 3, -1))
         end on",
         &[],
     )
     .unwrap();
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let e = Engine::new(Arc::new(plan), store.client(), RATE);
-    assert_eq!(e.last_message(), "865000 390018 500000");
+    assert_eq!(e.last_message(), "865000 390018 500000 193000");
+}
+
+#[test]
+fn a_stepped_lfos_rate_knob_sets_a_whole_count() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let g = &mut plan.groups[0];
+    g.lfos = vec![ir::Lfo {
+        wave: ir::Wave::Sine,
+        rate: ir::Rate::Steps {
+            beats: 1.0 / 6.0,
+            count: 24.0,
+        },
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: ir::Clock::Voice,
+    }];
+    g.mods = vec![ir::Mod {
+        name: "LFO".into(),
+        slot: 3,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Pan {
+            source: ir::Source::Lfo(0),
+            amount: 0.0,
+        },
+    }];
+    // 48 / (0.010415 · 20465^0.5) Hz = 32.2: count 32, read back as 500679.
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_INTMOD_FREQUENCY, 500000, 0, 3, -1)
+            message(get_engine_par($ENGINE_PAR_INTMOD_FREQUENCY, 0, 3, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "500679");
 }
 
 #[test]

@@ -394,6 +394,12 @@ pub enum Rate {
     Hz(f32),
     /// Quarter-note beats per cycle, at the host's tempo.
     Beats(f32),
+    /// `count` steps of `beats` quarter-note beats per cycle: a note value
+    /// and how many of it. A knob moves the count, whole and at least 1.
+    Steps {
+        beats: f32,
+        count: f32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

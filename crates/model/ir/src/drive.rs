@@ -113,7 +113,7 @@ impl EffectParam {
             (Self::ModRate, EffectKind::Delay(crate::Delay { rate, .. }))
             | (Self::ModRate, EffectKind::Phaser(crate::Phaser { rate, .. })) => match rate {
                 crate::Rate::Hz(hz) => hz,
-                crate::Rate::Beats(_) => return None,
+                crate::Rate::Beats(_) | crate::Rate::Steps { .. } => return None,
             },
             (Self::ModPhase, EffectKind::Delay(d)) => &mut d.phase,
             (Self::ModPhase, EffectKind::Phaser(p)) => &mut p.phase,
@@ -151,8 +151,13 @@ impl EffectParam {
 pub enum KnobTarget {
     /// A control of the effect in the addressed slot.
     Effect(EffectParam),
-    /// A free-running LFO's Hz.
+    /// A free-running LFO's Hz. The row after it, when it is
+    /// [`Self::LfoSteps`], sets a stepped LFO instead.
     LfoRate,
+    /// A [`crate::Rate::Steps`] LFO's count.
+    LfoSteps,
+    /// A pulse or Multi LFO's pulse width.
+    LfoWidth,
     /// One of a [`crate::Wave::Multi`]'s weights, by its index there.
     LfoWeight(u8),
     /// A control whose law depends on the slot's effect: the slot's own
