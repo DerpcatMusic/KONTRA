@@ -9,7 +9,7 @@ use std::sync::Arc;
 mod drive;
 mod effects;
 mod reverb;
-pub use drive::{Crush, Curve as DriveCurve, Shaper};
+pub use drive::{Crush, Curve as DriveCurve, EffectParam, Shaper};
 pub use effects::{Compressor, Limiter};
 pub use reverb::{Law, ReverbPar};
 
@@ -464,6 +464,14 @@ pub enum ModKind {
         source: Source,
         intensity: f32,
         floor_ms: f32,
+    },
+    /// Adds `source × depth` to `param` of the effect in group insert slot
+    /// `insert`; that effect runs per voice.
+    EffectParam {
+        source: Source,
+        insert: u8,
+        param: EffectParam,
+        depth: f32,
     },
 }
 
