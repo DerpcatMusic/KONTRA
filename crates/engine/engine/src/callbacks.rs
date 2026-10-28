@@ -81,7 +81,9 @@ impl Engine {
 
     /// Queues `co`'s resume `micros` from now; a full queue ends it.
     fn wake(&mut self, slot: u8, vm: &mut Vm, co: kontra_vm::CoId, micros: u64) {
-        let at = SampleTime(self.now.0 + micros_to_frames(micros as i64, self.rate).max(1));
+        let micros = i64::try_from(micros).unwrap_or(i64::MAX);
+        let frames = micros_to_frames(micros, self.rate).max(1);
+        let at = SampleTime(self.now.0.saturating_add(frames));
         if !self.queue.push(at, Work::Resume(slot, co)) {
             self.stats.events_refused += 1;
             vm.cancel(co);
@@ -196,13 +198,14 @@ pub(crate) struct Timer {
 /// A slot's `$NI_SIGNAL_TIMER_MS` and `$NI_SIGNAL_TIMER_BEAT` timers.
 pub(crate) type Timers = [Option<Timer>; 2];
 
-const TIMER_MS: u8 = 1;
-const TIMER_BEAT: u8 = 2;
+// Measured, probes/callback_constants.lua.
+const TIMER_MS: u8 = 3;
+const TIMER_BEAT: u8 = 4;
 
 impl Engine {
     /// `set_listener` and `change_listener_par` for the running slot: a
     /// timer of `par` microseconds (at least 1000) or `par` ticks per quarter
-    /// (1..=24); `par` 0 stops it. Transport signals wait for a transport.
+    /// (1..=24); `par` 0 stops it. Transport signals go to the transport.
     pub(crate) fn set_listener(&mut self, signal: i32, par: i32) {
         let slot = self.running.slot;
         let Ok(signal) = u8::try_from(signal) else {
@@ -211,12 +214,15 @@ impl Engine {
         let every = match signal {
             TIMER_MS => par.max(0).unsigned_abs().max(1000),
             TIMER_BEAT => par.clamp(0, 24).unsigned_abs(),
-            _ => return,
+            _ => {
+                self.listen_transport(slot, signal, par != 0);
+                return;
+            }
         };
         let Some(timer) = self
             .timers
             .get_mut(usize::from(slot))
-            .and_then(|t| t.get_mut(usize::from(signal - 1)))
+            .and_then(|t| t.get_mut(usize::from(signal - TIMER_MS)))
         else {
             return;
         };
@@ -231,7 +237,7 @@ impl Engine {
 
     fn timer(&self, slot: u8, signal: u8) -> Option<Timer> {
         let timers = self.timers.get(usize::from(slot))?;
-        *timers.get(usize::from(signal.checked_sub(1)?))?
+        *timers.get(usize::from(signal.checked_sub(TIMER_MS)?))?
     }
 
     fn arm(&mut self, slot: u8, signal: u8) {
@@ -253,7 +259,7 @@ impl Engine {
         let timer = self
             .timers
             .get_mut(usize::from(slot))
-            .and_then(|t| t.get_mut(usize::from(signal - 1)))
+            .and_then(|t| t.get_mut(usize::from(signal - TIMER_MS)))
             .and_then(Option::as_mut);
         if let Some(timer) = timer {
             timer.armed = armed;
@@ -283,6 +289,17 @@ impl Engine {
         {
             return;
         }
+        self.run_listener(slot, signal);
+        if self
+            .timer(slot, signal)
+            .is_some_and(|t| t.generation == generation)
+        {
+            self.arm(slot, signal);
+        }
+    }
+
+    /// Runs slot `slot`'s listener callback, if it has one, for `signal`.
+    pub(crate) fn run_listener(&mut self, slot: u8, signal: u8) {
         let plan = Arc::clone(&self.plan);
         if let Some(entry) = plan
             .scripts
@@ -294,12 +311,6 @@ impl Engine {
                 ..Running::new(Kind::Listener, None)
             };
             self.run_callback(slot, entry, running);
-        }
-        if self
-            .timer(slot, signal)
-            .is_some_and(|t| t.generation == generation)
-        {
-            self.arm(slot, signal);
         }
     }
 }
