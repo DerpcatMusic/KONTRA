@@ -425,6 +425,52 @@ fn millisecond_and_beat_timers_run_side_by_side_and_keep_their_signal() {
     assert_eq!(e.last_message(), "8 4");
 }
 
+/// Kontakt's own callback-type and signal numbers (probes/callback_constants.lua).
+#[test]
+fn callback_types_and_signals_carry_kontakts_numbers() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            message($NI_CALLBACK_TYPE & \" \" & $NI_SIGNAL_TIMER_MS & \" \" & $NI_SIGNAL_TRANSP_START & \" \" & $NI_BUS_OFFSET)
+        end on",
+    );
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "5 3 1 1024");
+}
+
+#[test]
+fn the_transport_starts_the_listener_and_answers_its_queries() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            set_listener($NI_SIGNAL_TRANSP_START, 1)
+        end on
+        on listener
+            if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TRANSP_START)
+                message($NI_TRANSPORT_RUNNING & \" \" & $NI_SONG_POSITION & \" \" ...
+                    & ms_to_ticks(500000) & \" \" & ticks_to_ms(480) & \" \" ...
+                    & $SIGNATURE_NUM & \"/\" & $SIGNATURE_DENOM & \" \" & $DURATION_BAR)
+            end if
+        end on
+        on note
+            message($NI_SONG_POSITION)
+        end on",
+    );
+    // 120 bpm: a quarter is 500 ms and 960 ticks; a 3/4 bar is 1.5 s.
+    e.set_transport(true, 2.0, (3, 4));
+    assert_eq!(e.last_message(), "1 1920 960 250000 3/4 1500000");
+    // 4096 frames at 120 bpm move the song on 163.84 ticks.
+    level(&mut e, &[]);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "2083");
+}
+
 #[test]
 fn a_pgs_key_carries_a_value_between_slots() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();

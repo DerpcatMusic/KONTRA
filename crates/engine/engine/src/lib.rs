@@ -25,6 +25,7 @@ mod prepare;
 mod queue;
 mod racks;
 mod script;
+mod transport;
 mod voice_gain;
 mod voice_groups;
 
@@ -116,6 +117,7 @@ pub struct Engine {
     rate: u32,
     /// Host tempo, quarter notes per minute (tempo-synced LFOs).
     tempo: f32,
+    transport: transport::Transport,
     /// Script modulation values sent to every event, read by notes not sent
     /// their own; while one ramps (until `ramping_until`) voices re-read routes.
     // ponytail: eight indices; a ring when a library sends more.
@@ -244,6 +246,7 @@ impl Engine {
             now: SampleTime(0),
             rate: rate.max(1),
             tempo: 120.0,
+            transport: transport::Transport::new(plan.scripts.len()),
             script_mods: [None; 8],
             ramping_until: 0,
             queue: EventQueue::new(plan.queue),
@@ -354,14 +357,6 @@ impl Engine {
         self.behaviour.keyswitch
     }
 
-    /// The host's tempo in quarter notes per minute; ignored unless finite
-    /// and positive.
-    pub fn set_tempo(&mut self, bpm: f32) {
-        if bpm.is_finite() && bpm > 0.0 {
-            self.tempo = bpm;
-        }
-    }
-
     pub fn set_bus_gain(&mut self, bus: usize, gain: f32) {
         if let Some(b) = self.buses.get_mut(bus) {
             b.gain = gain;
@@ -410,6 +405,7 @@ impl Engine {
                 .min(SampleTime((self.now.0 / MAX_SPAN + 1) * MAX_SPAN));
             let len = (until.0 - self.now.0) as usize;
             self.render_span(len);
+            self.advance_transport(len);
             let from = (self.now.0 - start.0) as usize;
             if let Some(span) = out.get_mut(from..from + len) {
                 self.mix_out(span);
