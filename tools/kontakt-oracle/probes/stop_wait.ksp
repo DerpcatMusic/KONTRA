@@ -1,0 +1,22 @@
+{ stop_wait in Kontakt 8.13.1, by when the note plays (measured 2026-10-28).
+  Render a held note (1.5 s) through ANALOG STRINGS with this as an
+  appended slot-1 script (scratch librender2.py APPEND_KSP, APPEND_SLOT=1).
+  Timing only: slot 1 runs before ANALOG's main script, which is fine here.
+    one wait(10 s),  stop_wait(.., 0): note at the release
+    two wait(10 s),  stop_wait(.., 0): note at 12.9 s (release + 10 s)
+    two wait(10 s),  stop_wait(.., 1): note at the release
+  So 0 ends only the current wait; 1 also lets every later wait pass.
+  Pinned by kontra-host tests/script.rs stop_wait_ends_the_current_wait_or_every_wait. }
+on init
+  declare $id
+end on
+on note
+  ignore_event($EVENT_ID)
+  $id := $NI_CALLBACK_ID
+  wait(10000000)
+  wait(10000000)
+  play_note(72, 100, 0, 1000000)
+end on
+on release
+  stop_wait($id, 0)
+end on

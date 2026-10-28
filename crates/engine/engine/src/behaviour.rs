@@ -43,6 +43,10 @@ pub(crate) struct Behaviour {
     /// (group, counter) for every group a round-robin zone names; built at prepare.
     groups: Vec<(u32, Counter)>,
     rng: u64,
+    /// Per key, the sample its release-trigger counter last restarted: every
+    /// attack, and `reset_rls_trig_counter` (Kontakt's system script runs it
+    /// on each note-on that is not a release trigger).
+    pub(crate) rls_reset: [u64; 128],
 }
 
 impl Behaviour {
@@ -72,6 +76,7 @@ impl Behaviour {
             keys: [Counter::default(); 128],
             groups,
             rng: 0x9E37_79B9_7F4A_7C15,
+            rls_reset: [0; 128],
         };
         if let Some(key) = plan.default_keyswitch {
             behaviour.press(plan, key);

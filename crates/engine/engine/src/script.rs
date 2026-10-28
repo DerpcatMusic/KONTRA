@@ -658,6 +658,7 @@ impl HostApi for Engine {
             }
             Action::CallbackType => HostValue::Int(i32::from(self.running.callback_type)),
             Action::UiIdVar => HostValue::Int(self.running.ui),
+            Action::ResetRlsTrigCounter => self.reset_rls_trig_counter(int(0)),
             Action::CallbackId => HostValue::Int(self.running.callback_id as i32),
             Action::EventParAt => HostValue::Int(
                 running.map_or(0, |r| self.event_par(r.event_id(), int(0).clamp(0, 3))),
@@ -695,6 +696,7 @@ impl HostApi for Engine {
             Action::AsyncExitStatus => HostValue::Int(1),
             // Commands finish before the queue reaches the next event.
             Action::WaitAsync => HostValue::Nothing,
+            Action::StopWait => self.stop_wait(int(0), int(1) != 0),
             Action::GetPurgeState => HostValue::Int(
                 self.groups
                     .get(int(0) as usize)
