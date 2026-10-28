@@ -14,9 +14,10 @@ use std::time::Duration;
 use crossbeam_queue::ArrayQueue;
 
 use crate::cache::{Cache, tag};
+use crate::fmt::MAX_CHANNELS;
 use crate::fmt::SampleFmt;
 use crate::sample::{
-    ABSENT, PAGE_FRAMES, REQUESTED, RESIDENT, Sample, SampleId, page_count, page_of,
+    ABSENT, REQUESTED, RESIDENT, Sample, SampleId, page_count, page_of, page_shift,
 };
 use crate::source::Source;
 
@@ -24,7 +25,8 @@ use crate::source::Source;
 pub struct StoreConfig {
     /// Bytes of streamed page cache, shared by every loaded sample.
     pub cache_bytes: usize,
-    /// Largest frame any loaded sample may have; sizes the cache slots.
+    /// Frame bytes a full page is sized for; sizes the cache slots. Wider
+    /// frames (more channels) load in shorter pages.
     pub max_frame_bytes: usize,
     /// Streamed page requests the audio side may queue between I/O wakeups.
     pub request_capacity: usize,
@@ -134,7 +136,7 @@ pub struct Store {
 impl Store {
     /// Allocates the cache and starts the I/O thread.
     pub fn new(config: StoreConfig) -> io::Result<Self> {
-        let slot_bytes = PAGE_FRAMES as usize * config.max_frame_bytes;
+        let slot_bytes = crate::sample::PAGE_FRAMES as usize * config.max_frame_bytes;
         let slots = (config.cache_bytes / slot_bytes.max(1)).max(1);
         let shared = Arc::new(Shared {
             cache: Cache::new(slots, slot_bytes),
@@ -160,6 +162,11 @@ impl Store {
             max_frame_bytes: config.max_frame_bytes,
             io: Some(io),
         })
+    }
+
+    /// log2 of the frames per page for samples in `fmt`.
+    fn shift(&self, fmt: &SampleFmt) -> u32 {
+        page_shift(fmt.bytes_per_frame(), self.max_frame_bytes)
     }
 
     #[must_use]
@@ -195,20 +202,21 @@ impl Store {
         // Pages already held, and the runs each request must read.
         let mut plans = Vec::with_capacity(requests.len());
         for r in &requests {
-            let frame_bytes = r.key.fmt.bytes_per_frame();
-            if r.key.fmt.channels == 0 || frame_bytes > self.max_frame_bytes {
+            let channels = usize::from(r.key.fmt.channels);
+            if channels == 0 || channels > MAX_CHANNELS {
                 plans.push(Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("unsupported sample layout {:?}", r.key.fmt),
                 )));
                 continue;
             }
-            let mut pages: Vec<Option<Arc<[u8]>>> = vec![None; page_count(r.frames)];
+            let shift = self.shift(&r.key.fmt);
+            let mut pages: Vec<Option<Arc<[u8]>>> = vec![None; page_count(r.frames, shift)];
             let mut wanted = vec![false; pages.len()];
             for range in &r.pin {
                 let end = range.end.min(r.frames);
                 if range.start < end {
-                    for page in page_of(range.start)..=page_of(end - 1) {
+                    for page in page_of(range.start, shift)..=page_of(end - 1, shift) {
                         if let Some(w) = wanted.get_mut(page) {
                             *w = true;
                         }
@@ -242,6 +250,7 @@ impl Store {
             }
             plans.push(Ok((pages, runs)));
         }
+        let max_frame_bytes = self.max_frame_bytes;
         // Read every run, spread over the machine's cores.
         let jobs: Vec<(usize, Range<usize>)> = plans
             .iter()
@@ -266,13 +275,15 @@ impl Store {
                             let Some(r) = requests.get(*i) else {
                                 continue;
                             };
-                            let first = run.start as u64 * PAGE_FRAMES;
-                            let end = (run.end as u64 * PAGE_FRAMES).min(r.frames);
+                            let size =
+                                1u64 << page_shift(r.key.fmt.bytes_per_frame(), max_frame_bytes);
+                            let first = run.start as u64 * size;
+                            let end = (run.end as u64 * size).min(r.frames);
                             let frame_bytes = r.key.fmt.bytes_per_frame();
                             let mut buf = vec![0; (end - first) as usize * frame_bytes];
                             // Split into pages here, so this thread's heap reuses
                             // the freed run for the pages it keeps.
-                            let page_bytes = (PAGE_FRAMES as usize * frame_bytes).max(1);
+                            let page_bytes = (size as usize * frame_bytes).max(1);
                             let result = r
                                 .source
                                 .read(first, &mut buf)
@@ -315,6 +326,7 @@ impl Store {
                     id,
                     fmt: r.key.fmt,
                     frames: r.frames,
+                    shift: self.shift(&r.key.fmt),
                     source: r.source,
                     streamed: (0..pages.len()).map(|_| AtomicU32::new(ABSENT)).collect(),
                     pinned: pages.into(),
@@ -399,8 +411,9 @@ fn serve_page(
         if entry.load(Ordering::Relaxed) != REQUESTED {
             return;
         }
-        let first = page as u64 * PAGE_FRAMES;
-        let len = (PAGE_FRAMES.min(sample.frames - first)) as usize * sample.fmt.bytes_per_frame();
+        let size = sample.page_frames();
+        let first = page as u64 * size;
+        let len = (size.min(sample.frames - first)) as usize * sample.fmt.bytes_per_frame();
         let Some(data) = buf.get_mut(..len) else {
             return;
         };

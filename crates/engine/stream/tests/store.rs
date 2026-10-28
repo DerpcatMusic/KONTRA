@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use kontra_stream::{
-    BlobKey, Encoding, MemSource, PAGE_FRAMES, SampleFmt, Source, Store, StoreConfig,
+    BlobKey, Encoding, MAX_CHANNELS, MemSource, PAGE_FRAMES, SampleFmt, Source, Store, StoreConfig,
 };
 
 const FMT: SampleFmt = SampleFmt {
@@ -153,14 +153,10 @@ fn two_loads_of_one_blob_share_pinned_pages() {
 
 #[test]
 fn an_unsupported_layout_is_refused_at_load() {
-    let mut store = Store::new(StoreConfig {
-        max_frame_bytes: 4,
-        ..StoreConfig::DEFAULT
-    })
-    .unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let fmt = SampleFmt {
-        encoding: Encoding::F32,
-        channels: 2,
+        encoding: Encoding::I16,
+        channels: 17,
     };
     let key = BlobKey {
         file: "f".into(),
@@ -169,4 +165,44 @@ fn an_unsupported_layout_is_refused_at_load() {
     };
     let source = Arc::new(MemSource::new(fmt, vec![0; 80]));
     assert!(store.load(&key, source, 10, &[]).is_err());
+}
+
+#[test]
+fn a_six_channel_sample_pins_and_streams_through_its_mix() {
+    let fmt = SampleFmt {
+        encoding: Encoding::I16,
+        channels: 6,
+    };
+    // Channel c of frame n holds n + c, so the mix's picks can be checked.
+    let frames = 4 * PAGE_FRAMES;
+    let bytes = (0..frames)
+        .flat_map(|n| (0..6).flat_map(move |c| (((n + c) % 32_768) as i16).to_le_bytes()))
+        .collect();
+    let key = BlobKey {
+        file: "six".into(),
+        offset: 0,
+        fmt,
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let source = Arc::new(MemSource::new(fmt, bytes));
+    let sample = store.load(&key, source, frames, &[0..PAGE_FRAMES]).unwrap();
+    let mut mix = [[0.0; 2]; MAX_CHANNELS];
+    mix[5] = [1.0, 0.0];
+    mix[2] = [0.0, 1.0];
+    let mut out = vec![[0.0; 2]; PAGE_FRAMES as usize];
+    assert_eq!(
+        sample.read_mixed(&client, 0, &mut out, Some(&mix)).missing,
+        0
+    );
+    assert_eq!(out[7], [value(12), value(9)]);
+    let late = 3 * PAGE_FRAMES;
+    assert!(eventually(|| {
+        sample.prefetch(&client, late, PAGE_FRAMES, 0);
+        sample
+            .read_mixed(&client, late, &mut out, Some(&mix))
+            .missing
+            == 0
+    }));
+    assert_eq!(out[7], [value(late + 12), value(late + 9)]);
 }
