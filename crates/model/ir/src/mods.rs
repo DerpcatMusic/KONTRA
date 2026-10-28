@@ -8,7 +8,7 @@ pub enum ModKind {
     /// The group's [`Group::envelope`](crate::Group::envelope), shaping its level.
     Envelope,
     /// `source` scales the level along `curve`; `intensity` is −1..=1 and live.
-    /// A bipolar source (an LFO) enters as `(x + 1)/2`: it swings the level
+    /// A bipolar source (an LFO, pitch bend) enters as `(x + 1)/2`: it swings the level
     /// down from unity and back.
     Volume {
         source: Source,
@@ -54,14 +54,30 @@ pub enum ModKind {
     /// `source × depth` of the zone's [`Zone::start_mod`](crate::Zone::start_mod) frames added to
     /// where its voices start, read at note-on.
     SampleStart { source: Source, depth: f32 },
-    /// Scales the [`Group::envelope`](crate::Group::envelope) attack `t` at note-on, as a knob
-    /// linear in `ln(t + floor_ms)`: with `m = 1 − (1 − x)·|intensity|` (`x`
-    /// read at note-on, `1 − x` for a negative intensity), the attack becomes
-    /// `floor_ms·((t + floor_ms)/floor_ms)^m − floor_ms`.
+    /// Scales the [`Group::envelope`](crate::Group::envelope) attack `t` at note-on by
+    /// `m = 1 − (1 − x)·|intensity|` (`x` read at note-on, `1 − x` for a
+    /// negative intensity): `t·m` when `floor_ms` is 0, else as a knob linear
+    /// in `ln(t + floor_ms)`, `floor_ms·((t + floor_ms)/floor_ms)^(m³) − floor_ms`.
     Attack {
         source: Source,
         intensity: f32,
         floor_ms: f32,
+    },
+    /// As [`ModKind::Attack`], on the release time.
+    Release {
+        source: Source,
+        intensity: f32,
+        floor_ms: f32,
+    },
+    /// Adds `source × depth` cycles (`depth` −1..=1) to the start phase of
+    /// the group's LFO `lfo`, `source` read at note-on.
+    LfoPhase { source: Source, lfo: u8, depth: f32 },
+    /// Moves the zone's loops by `source × depth` of the sample's frames,
+    /// read at note-on: start and end together, or the end only (`length`).
+    LoopShift {
+        source: Source,
+        length: bool,
+        depth: f32,
     },
     /// Adds `source × depth` (knob × `span`) to `param` of the per-voice
     /// effect in group slot `insert`; `unipolar` reads an LFO as 0..=1.

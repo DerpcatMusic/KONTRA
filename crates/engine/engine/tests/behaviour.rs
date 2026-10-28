@@ -892,9 +892,9 @@ fn a_velocity_attack_route_shortens_soft_attacks() {
     for _ in 0..40 {
         level(&mut e, &[]);
     }
-    // Half velocity halves the knob: 2·(102/2)^0.5 − 2 ≈ 12.3 ms.
-    let [soft, _] = level(&mut e, &[on(60, 0.5)]);
-    let frames = (2.0 * 51f32.sqrt() - 2.0) * 48.0;
+    // Velocity 0.9 scales the knob by fcubic(0.9): 2·(102/2)^0.729 − 2 ≈ 33 ms.
+    let [soft, _] = level(&mut e, &[on(60, 0.9)]);
+    let frames = (2.0 * 51f32.powf(0.729) - 2.0) * 48.0;
     assert!((soft - 0.5 * 128.0 / frames).abs() < 2e-3, "{soft}");
 }
 
@@ -1233,4 +1233,113 @@ fn an_lfo_on_a_group_waveshaper_retunes_it_every_32_frames() {
     let mut levels: Vec<f32> = out[512..768].iter().step_by(32).map(|s| s[0]).collect();
     levels.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
     assert!(levels.len() >= 6, "{levels:?}");
+}
+
+#[test]
+fn a_pitch_bend_release_route_reads_the_wheel_from_zero_to_one() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].envelope.release = 48_000; // 1 s
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "PB_ATTACK".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Release {
+            source: ir::Source::PitchBend,
+            intensity: 1.0,
+            floor_ms: 0.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60, 1.0)]);
+    level(&mut e, &[off(60)]);
+    // The wheel at rest reads 0.5 and halves the 1 s release: still
+    // sounding 400 ms after the key is let go, silent by 600 ms.
+    let mut tail = |blocks| {
+        let mut tail = [1.0; 2];
+        for _ in 0..blocks {
+            tail = level(&mut e, &[]);
+        }
+        tail
+    };
+    assert!(tail(75)[0] > 0.0);
+    assert_eq!(tail(40), [0.0; 2]);
+}
+
+#[test]
+fn a_pitch_bend_volume_route_reads_the_wheel_from_zero_to_one() {
+    use kontra_engine::ir::{Curve, Mod, ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    plan.groups[0].mods = vec![Mod {
+        name: "PB_VOLUME".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Volume {
+            source: Source::PitchBend,
+            intensity: 1.0,
+            curve: Curve::Depth { power: 1 },
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let bend = |lsb, msb| Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xE0, lsb, msb),
+    };
+    let settled = |e: &mut Engine, events: &[Timed<Event>]| {
+        level(e, events);
+        (0..8).map(|_| level(e, &[])[0]).last().unwrap_or(0.0)
+    };
+    // At rest the wheel reads 0.5: half level; fully up, all of it.
+    let rest = settled(&mut e, &[on(60, 1.0)]);
+    assert!((rest - 0.5).abs() < 1e-3, "{rest}");
+    let up = settled(&mut e, &[bend(0x7F, 0x7F)]);
+    assert!((up - 1.0).abs() < 1e-3, "{up}");
+}
+
+#[test]
+fn a_constant_start_phase_route_shifts_a_voices_lfo() {
+    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    let first = |phase_route: Option<f32>| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+        plan.groups[0].lfos = vec![Lfo {
+            wave: Wave::Sine,
+            rate: Rate::Hz(0.1),
+            phase: 0.0,
+            fade_ms: 0.0,
+            clock: Clock::Voice,
+        }];
+        let route = |kind| Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind,
+        };
+        plan.groups[0].mods = vec![route(ModKind::Volume {
+            source: Source::Lfo(0),
+            intensity: 1.0,
+            curve: Curve::Depth { power: 1 },
+        })];
+        plan.groups[0].mods.extend(phase_route.map(|depth| {
+            route(ModKind::LfoPhase {
+                source: Source::Constant,
+                lfo: 0,
+                depth,
+            })
+        }));
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        level(&mut e, &[on(60, 1.0)])[0]
+    };
+    // A slow sine at 0 reads 0.5 on the level; a quarter cycle on, its peak.
+    assert!((first(None) - 0.5).abs() < 0.01, "{}", first(None));
+    assert!(
+        (first(Some(0.25)) - 1.0).abs() < 0.01,
+        "{}",
+        first(Some(0.25))
+    );
 }
