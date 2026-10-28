@@ -122,7 +122,8 @@ impl Svf {
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let (g, gain) = (self.g, f64::from(self.shape.gain));
         if let Some(ladder) = &mut self.ladder {
-            let k = self.shape.damping[usize::from(self.shape.stages.clamp(1, 3) - 1)];
+            let last = usize::from(self.shape.stages.clamp(1, 3) - 1);
+            let k = self.shape.damping.get(last).copied().unwrap_or(2.0);
             ladder.tune(f64::from(self.hz), self.rate, 1.0 - f64::from(k) / 2.0);
             ladder.process(io, gain);
             return;
@@ -185,7 +186,7 @@ impl Svf {
 
     #[must_use]
     pub fn is_silent(&self) -> bool {
-        self.ladder.as_ref().map_or(true, Ladder::is_silent)
+        self.ladder.as_ref().is_none_or(Ladder::is_silent)
             && self
                 .state
                 .iter()
