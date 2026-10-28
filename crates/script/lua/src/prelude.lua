@@ -176,10 +176,11 @@ __PLAYER__ = "Falcon"
 -- The program tree from the format's `__program` module: parameters by
 -- name; a layer's or keygroup's gain, pan, mute and bypass set the levels of
 -- the engine groups its keygroups made.
-local ALL_GROUPS = 0x3FFFFFFF
-local ALL_EVENTS = 0x3FFFFFFE
-local ALLOW_GROUP = 9
-local MOD_VALUE = 14
+-- The engine's event ids (kontra_vm::action::event).
+local ALL_GROUPS = -1
+local ALL_EVENTS = -1
+local ALLOW_GROUP = 10
+local MOD_VALUE = 30
 local ZONE_SLOT = 15
 local found, tree = pcall(require, "__program")
 if not found or type(tree) ~= "table" then

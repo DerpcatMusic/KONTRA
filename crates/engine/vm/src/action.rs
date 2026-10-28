@@ -8,27 +8,28 @@
 //! microseconds. An event argument is an event id, [`event::ALL`] or
 //! [`event::BY_MARKS`] with mark bits.
 
-/// Event addressing and parameter ids shared by every front end (KSP's numbering).
+/// Event addressing and parameter ids shared by every front end: KSP's
+/// numbering, measured in the native oracle (ksp_constants.py).
 pub mod event {
-    /// Every live event.
-    pub const ALL: i32 = 0x3FFF_FFFE;
+    /// Every live event (event ids are positive).
+    pub const ALL: i32 = -1;
     /// Flag: the low bits are marks; the argument means every event carrying one.
     pub const BY_MARKS: i32 = 0x2000_0000;
-    /// A group past the last means every group.
-    pub const ALL_GROUPS: i32 = 0x3FFF_FFFF;
+    /// Every group; so does any group past the last.
+    pub const ALL_GROUPS: i32 = -1;
 
     /// `0..=3` are free for the script.
     pub const CUSTOM_LAST: i32 = 3;
     pub const VOLUME: i32 = 4;
-    pub const TUNE: i32 = 5;
-    pub const PAN: i32 = 6;
+    pub const PAN: i32 = 5;
+    pub const TUNE: i32 = 6;
     pub const NOTE: i32 = 7;
-    pub const VELOCITY: i32 = 8;
-    pub const ALLOW_GROUP: i32 = 9;
     /// Read only: -1 for a note from outside, else the script slot that played it.
-    pub const SOURCE: i32 = 11;
+    pub const SOURCE: i32 = 8;
+    pub const VELOCITY: i32 = 9;
+    pub const ALLOW_GROUP: i32 = 10;
     /// With `*_arr`: the value for a "from script" modulator, ±1 000 000.
-    pub const MOD_VALUE: i32 = 14;
+    pub const MOD_VALUE: i32 = 30;
     /// Before the note starts: only zones in this slot start; -1 (the
     /// default) starts any.
     pub const ZONE_SLOT: i32 = 15;
