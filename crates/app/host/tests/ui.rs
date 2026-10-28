@@ -167,7 +167,7 @@ fn an_idle_ui_rebuilds_nothing_and_a_moved_knob_rebuilds_what_it_touched() {
     let mut rebuilt = 0;
     for _ in 0..94 {
         engine.process(&mut out, &[]);
-        rebuilt += live.refresh(&face, 0, &engine, &|_| None).len();
+        rebuilt += live.refresh(&face, 0, &engine, &|_| None).widgets.len();
     }
     assert_eq!(rebuilt, 0, "idle: no widget rebuilds");
 
@@ -181,9 +181,49 @@ fn an_idle_ui_rebuilds_nothing_and_a_moved_knob_rebuilds_what_it_touched() {
         engine.set_control(0, k, v);
         engine.process(&mut out, &[]);
         let changed = live.refresh(&face, 0, &engine, &|_| None);
-        assert_eq!(names(&changed, &live.tree), ["$k", "$readout"]);
+        assert!(!changed.page);
+        assert_eq!(names(&changed.widgets, &live.tree), ["$k", "$readout"]);
     }
     assert_eq!(widget(&live.tree, "$readout").text, "60");
     assert_eq!(widget(&live.tree, "$k").value, Some(ui::Value::Integer(60)));
     assert!(live.refresh(&face, 0, &engine, &|_| None).is_empty());
+}
+
+#[test]
+fn a_page_the_script_moves_after_init_refreshes_without_rebuilding_widgets() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let script = kontra_ksp::compile(
+        "on init
+            make_perfview
+            set_ui_height_px(300)
+            declare ui_switch $tab
+            message(get_ui_id($tab))
+        end on
+        on ui_control ($tab)
+            set_skin_offset($tab * 300)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![], 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut engine = Engine::new(Arc::new(plan), store.client(), 48_000);
+    let face = Face::of(&script, &[]);
+    let mut live = Live::new(&face, 0, &engine, &|_| None).unwrap();
+    let tab: i32 = engine.last_message().parse().unwrap();
+    let mut out = vec![[0f32; 2]; 512];
+    engine.process(&mut out, &[]);
+    assert!(live.refresh(&face, 0, &engine, &|_| None).is_empty());
+
+    engine.set_control(0, tab, 1);
+    engine.process(&mut out, &[]);
+    let changed = live.refresh(&face, 0, &engine, &|_| None);
+    assert!(changed.page, "the skin offset moved the page");
+    assert_eq!(live.tree.pages[0].background.offset_y, 300);
+    assert_eq!(names_of(&changed.widgets, &live.tree), ["$tab"]);
+    assert!(live.refresh(&face, 0, &engine, &|_| None).is_empty());
+}
+
+fn names_of(ws: &[ui::WidgetRef], ui: &ui::Interface) -> Vec<String> {
+    ws.iter().map(|w| ui.widgets[w.0].name.clone()).collect()
 }

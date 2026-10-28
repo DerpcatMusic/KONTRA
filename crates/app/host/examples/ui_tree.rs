@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for frame in 0..100 {
                 engine.process(&mut block, &[]);
                 let t = Instant::now();
-                let changed = live.refresh(face, slot as u8, &engine, &|_| None);
+                let changed = live.refresh(face, slot as u8, &engine, &|_| None).widgets;
                 if frame >= 10 {
                     spent += t.elapsed();
                 }
@@ -100,13 +100,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|v| {
                         engine.set_control(slot as u8, id, v);
                         engine.process(&mut block, &[]);
-                        live.refresh(face, slot as u8, &engine, &|_| None).len()
+                        live.refresh(face, slot as u8, &engine, &|_| None)
+                            .widgets
+                            .len()
                     })
                     .max()
                     .unwrap_or(0)
             });
             println!(
                 "  refresh: {per_frame:?} per settled idle frame, {idle} idle rebuilds in 100 frames (last in frame {last:?}), one knob moved: {moved:?} widgets rebuilt per frame"
+            );
+            // The sustain pedal down, then up: what a controller callback lights.
+            let pedal = [127, 0].map(|v| {
+                let cc = kontra_engine::Timed {
+                    at: kontra_engine::SampleTime(0),
+                    body: kontra_engine::Event::midi1(0xB0, 64, v),
+                };
+                engine.process(&mut block, &[cc]);
+                let mut changed = std::collections::BTreeSet::new();
+                for _ in 0..50 {
+                    engine.process(&mut block, &[]);
+                    for w in live.refresh(face, slot as u8, &engine, &|_| None).widgets {
+                        changed.extend(live.tree.widgets.get(w.0).map(|w| w.name.clone()));
+                    }
+                }
+                changed
+            });
+            println!("  pedal down rebuilt {:?}, up {:?}", pedal[0], pedal[1]);
+            // Every shown switch pressed once and released: what a tab or a
+            // toggle moves, and what that costs.
+            let switches: Vec<_> = live
+                .tree
+                .widgets
+                .iter()
+                .enumerate()
+                .filter(|(n, w)| {
+                    matches!(w.kind, kontra_ui_model::Kind::Switch)
+                        && live.tree.visible(kontra_ui_model::WidgetRef(*n))
+                })
+                .filter_map(|(_, w)| w.source_id)
+                .collect();
+            let (mut pages, mut most, mut slowest) = (0, 0, std::time::Duration::ZERO);
+            for &id in &switches {
+                for v in [1, 0] {
+                    engine.set_control(slot as u8, id, v);
+                    engine.process(&mut block, &[]);
+                    let t = Instant::now();
+                    let changed = live.refresh(face, slot as u8, &engine, &|_| None);
+                    slowest = slowest.max(t.elapsed());
+                    pages += usize::from(changed.page);
+                    most = most.max(changed.widgets.len());
+                }
+            }
+            println!(
+                "  {} switches pressed and released: {pages} page moves, at most {most} widgets and {slowest:?} per refresh",
+                switches.len()
             );
             let page = tree.pages.first().map(|p| (p.size.width, p.size.height));
             println!(

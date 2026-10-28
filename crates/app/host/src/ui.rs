@@ -369,6 +369,7 @@ pub struct Live {
     pub tree: ui::Interface,
     keys: Vec<Key>,
     seen: Vec<Seen>,
+    page: Option<Page>,
     assets: HashMap<String, ui::AssetRef>,
     styles: HashMap<(i32, i32), ui::StyleRef>,
 }
@@ -422,21 +423,27 @@ impl Live {
             tree: bld.ui,
             keys,
             seen,
+            page: engine.page(slot).copied(),
             assets: bld.assets,
             styles: bld.styles,
         })
     }
 
     /// Rebuilds the widgets whose control changed since the last call, in
-    /// place, and returns them; an idle script returns none. Panel nesting
-    /// is kept from the build.
+    /// place, and the page when it moved, and says which; an idle script
+    /// changes nothing. Panel nesting is kept from the build.
     pub fn refresh(
         &mut self,
         face: &Face,
         slot: u8,
         engine: &Engine,
         picture: &dyn Fn(&str) -> Option<ui::ImageMeta>,
-    ) -> Vec<ui::WidgetRef> {
+    ) -> Changes {
+        let page = engine.page(slot).copied();
+        let page = (page != self.page).then(|| {
+            self.page = page;
+            page
+        });
         let mut changed = Vec::new();
         for (n, (&key, seen)) in self.keys.iter().zip(&mut self.seen).enumerate() {
             let Some(d) = decl(face, slot, engine, key) else {
@@ -448,8 +455,8 @@ impl Live {
                 changed.push((n, d));
             }
         }
-        if changed.is_empty() {
-            return Vec::new();
+        if changed.is_empty() && page.is_none() {
+            return Changes::default();
         }
         let mut bld = Builder {
             ui: std::mem::take(&mut self.tree),
@@ -457,6 +464,14 @@ impl Live {
             styles: std::mem::take(&mut self.styles),
             picture,
         };
+        // The page moved (skin offset, wallpaper frame, size, title): only
+        // it is rebuilt, the widgets keep their places.
+        if let Some(page) = page {
+            bld.ui.pages.clear();
+            if let Some(page) = page {
+                page_of(&mut bld, &page, face.view.as_ref());
+            }
+        }
         let mut out = Vec::with_capacity(changed.len());
         for (n, d) in changed {
             let props = props(face, &d);
@@ -468,7 +483,26 @@ impl Live {
             }
         }
         (self.tree, self.assets, self.styles) = (bld.ui, bld.assets, bld.styles);
-        out
+        Changes {
+            page: page.is_some(),
+            widgets: out,
+        }
+    }
+}
+
+/// What one [`Live::refresh`] changed: the page itself, and the widgets it
+/// rebuilt in place.
+#[derive(Debug, Default, PartialEq)]
+pub struct Changes {
+    pub page: bool,
+    pub widgets: Vec<ui::WidgetRef>,
+}
+
+impl Changes {
+    /// Nothing to repaint.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        !self.page && self.widgets.is_empty()
     }
 }
 

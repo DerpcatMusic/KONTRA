@@ -52,7 +52,7 @@ pub struct KeyRange {
 type Texts = Vec<(i32, Text)>;
 
 /// The script's page as it set it: size, wallpaper, colour, title.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Page {
     pub skin_offset: i32,
     pub color: Option<i32>,
