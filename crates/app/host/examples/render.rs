@@ -109,7 +109,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         loaded.plan.zones.len(),
         t.elapsed()
     );
-    println!("  memory: {}", memory());
+    println!(
+        "  memory: {}, pinned samples {} MB",
+        memory(),
+        store.pinned_bytes() / 1_000_000
+    );
     if !loaded.plan.switches.is_empty() {
         println!(
             "  switches {:?}, default {:?}",
