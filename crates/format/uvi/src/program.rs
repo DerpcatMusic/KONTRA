@@ -12,6 +12,7 @@ use kontra_ir as ir;
 use roxmltree::Node;
 
 mod load;
+mod modulation;
 pub use load::Swap;
 
 /// The samples a program names, looked up in the bank it came from.
@@ -78,6 +79,7 @@ pub(crate) fn translate(
     for layer in program.descendants().filter(|n| n.has_tag_name("Layer")) {
         t.layer(layer)?;
     }
+    t.script_routes();
     if !t.out.scripts.is_empty() {
         let tree = t.tree();
         for script in &mut t.out.scripts {
@@ -513,6 +515,9 @@ impl<L: Library> Translator<'_, '_, L> {
             .descendants()
             .filter(|n| n.has_tag_name("SignalConnection") && !flag(*n, "Bypass"))
         {
+            if modulation::script_gain(self.program, connection).is_some() {
+                continue;
+            }
             let dest = connection.attribute("Destination").unwrap_or_default();
             let source = connection.attribute("Source").unwrap_or_default();
             let envelope =

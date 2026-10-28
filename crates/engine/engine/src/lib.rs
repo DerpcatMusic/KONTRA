@@ -116,6 +116,10 @@ pub struct Engine {
     rate: u32,
     /// Host tempo, quarter notes per minute (tempo-synced LFOs).
     tempo: f32,
+    /// "From script" modulator values sent to every event: what a note
+    /// reads until it is sent its own.
+    // ponytail: eight indices; a ring when a library sends more.
+    script_mods: [Option<(u16, i32)>; 8],
     plan: Arc<Plan>,
     stream: StreamClient,
     queue: EventQueue,
@@ -239,6 +243,7 @@ impl Engine {
             now: SampleTime(0),
             rate: rate.max(1),
             tempo: 120.0,
+            script_mods: [None; 8],
             queue: EventQueue::new(plan.queue),
             hits: Vec::with_capacity(notes.capacity()),
             ended: Vec::with_capacity(notes.capacity()),

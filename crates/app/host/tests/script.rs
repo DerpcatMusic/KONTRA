@@ -566,6 +566,31 @@ fn a_uvi_note_on_an_oscillator_starts_only_that_zone_slot() {
 }
 
 #[test]
+fn a_script_modulation_sent_at_init_scales_notes_that_start_later() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    for g in &mut plan.groups {
+        g.mods = vec![kontra_engine::ir::Mod {
+            name: "Script Event Modulation 1".into(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            kind: kontra_engine::ir::ModKind::Volume {
+                source: kontra_engine::ir::Source::Script(1),
+                intensity: 1.0,
+                curve: kontra_engine::ir::Curve::Depth { power: 1 },
+            },
+        }];
+    }
+    let source = "function onInit() sendScriptModulation(1, 0.5) end
+        function onNote(e) postEvent(e) end";
+    let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert!((level(&mut e, &[on(60)]) - 0.25).abs() < 1e-3);
+}
+
+#[test]
 fn a_uvi_note_sounds_only_when_the_script_posts_it() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let held = "function onNote(e) end";

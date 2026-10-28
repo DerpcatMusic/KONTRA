@@ -426,6 +426,13 @@ impl Engine {
             > 0
     }
 
+    /// The value sent every event for "from script" modulator `index`; 0 until sent.
+    pub(crate) fn script_mod(&self, index: u16) -> i32 {
+        (self.script_mods.iter().flatten())
+            .find(|(i, _)| *i == index)
+            .map_or(0, |&(_, v)| v)
+    }
+
     fn random(&mut self, low: i32, high: i32) -> i32 {
         let (low, high) = (low.min(high), low.max(high));
         let span = (i64::from(high) - i64::from(low) + 1) as u64;
@@ -547,7 +554,15 @@ impl HostApi for Engine {
             }
             Action::SetEventParArr if int(1) == event::MOD_VALUE => {
                 if let Ok(index) = u16::try_from(int(3)) {
-                    let value = int(2);
+                    let value = int(2).clamp(-1_000_000, 1_000_000);
+                    if int(0) == event::ALL {
+                        // Sent to every event: notes that start later read it too.
+                        if let Some(slot) = (self.script_mods.iter_mut())
+                            .find(|m| m.is_none_or(|(i, _)| i == index))
+                        {
+                            *slot = Some((index, value));
+                        }
+                    }
                     self.each(int(0), |n| n.set_mod_value(index, value));
                 }
                 HostValue::Nothing
@@ -555,7 +570,9 @@ impl HostApi for Engine {
             Action::GetEventParArr if int(1) == event::MOD_VALUE => {
                 let note = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
                 let index = u16::try_from(int(2)).ok();
-                HostValue::Int(note.zip(index).map_or(0, |(n, i)| n.mod_value(i)))
+                HostValue::Int(note.zip(index).map_or(0, |(n, i)| {
+                    n.mod_value(i).unwrap_or_else(|| self.script_mod(i))
+                }))
             }
             Action::GetEventParArr if int(1) == event::ALLOW_GROUP => {
                 let slot = NoteRef::from_event_id(int(0)).map(NoteRef::slot);

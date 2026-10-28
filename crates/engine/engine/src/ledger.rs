@@ -146,13 +146,13 @@ impl Note {
         self.released || self.key_up
     }
 
-    /// The value sent for "from script" modulator `index`; 0 until sent.
-    pub(crate) fn mod_value(&self, index: u16) -> i32 {
+    /// The value sent this note for "from script" modulator `index`.
+    pub(crate) fn mod_value(&self, index: u16) -> Option<i32> {
         self.mod_values
             .iter()
             .flatten()
             .find(|(i, _)| *i == index)
-            .map_or(0, |&(_, v)| v)
+            .map(|&(_, v)| v)
     }
 
     /// Keeps `value` for `index` when a slot is free or already holds it.
