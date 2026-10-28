@@ -173,6 +173,9 @@ pub struct Engine {
     zone_chain: Box<[Option<u16>]>,
     /// Per group, the inserts that run on each voice.
     voice_units: Box<[Arc<[voice_rack::Unit]>]>,
+    /// Per group, whether a timed route moves a drive unit: its voices
+    /// retune every [`voice_rack::TICK`] frames, and spans end on that grid.
+    drive_ticks: Box<[bool]>,
     /// One voice's audio on its way through its filter.
     scratch: Box<[[f32; 2]]>,
 }
@@ -278,6 +281,7 @@ impl Engine {
             chains: Vec::new(),
             zone_chain: Box::new([]),
             voice_units: Box::new([]),
+            drive_ticks: Box::new([]),
             scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),
         };
         engine.cc_values[7] = 100;
@@ -396,7 +400,7 @@ impl Engine {
                 .map_or(end, |at| at.min(end))
                 // Spans end on a fixed grid, so timed modulators move at the
                 // same samples whatever the host's block size.
-                .min(SampleTime((self.now.0 / MAX_SPAN + 1) * MAX_SPAN));
+                .min(SampleTime((self.now.0 / self.grid() + 1) * self.grid()));
             let len = (until.0 - self.now.0) as usize;
             self.render_span(len);
             self.advance_transport(len);
