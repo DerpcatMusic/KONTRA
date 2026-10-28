@@ -123,23 +123,6 @@ fn rack(
             if let Some(feature) = lost.filter(|_| at.starts_with("group") && !effect.bypass) {
                 notes.add(ir::Impact::Audible, feature, format!("{at} slot {slot}"));
             }
-            // ponytail: per-voice racks are built after the init callback, so
-            // one enabled later plays dry.
-            if effect.bypass
-                && matches!(
-                    effect.kind,
-                    ir::EffectKind::Shaper(_) | ir::EffectKind::Crush(_)
-                )
-            {
-                notes.add(
-                    ir::Impact::Cosmetic,
-                    &format!(
-                        "bypassed effect {} (stays off if enabled live)",
-                        name(module)
-                    ),
-                    format!("{at} slot {slot}"),
-                );
-            }
             if matches!(
                 effect.kind,
                 ir::EffectKind::Other | ir::EffectKind::OtherWet

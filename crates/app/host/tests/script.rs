@@ -235,6 +235,44 @@ fn a_script_bypass_takes_a_playing_voices_filter_out() {
     assert!((open - 0.5).abs() < 1e-3, "bypassed: {open}");
 }
 
+/// A group waveshaper bypassed at load clips each voice once a script
+/// switches it on.
+#[test]
+fn a_script_switches_on_a_waveshaper_bypassed_at_load() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Shaper(ir::Shaper {
+            curve: ir::DriveCurve::Soft(1.0),
+            lowpass_hz: None,
+            highpass_hz: None,
+        }),
+        bypass: true,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let script = kontra_ksp::compile(
+        "on controller
+            set_engine_par($ENGINE_PAR_EFFECT_BYPASS, 0, 0, 0, -1)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let dry = level(&mut e, &[on(60)]);
+    assert!((dry - 0.5).abs() < 1e-3, "bypassed: {dry}");
+    let cc = Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB0, 1, 100),
+    };
+    level(&mut e, &[cc]);
+    // 0.5 at four times the gain, then `2|x| − x²`: full scale.
+    let on = level(&mut e, &[]);
+    assert!((on - 1.0).abs() < 1e-2, "switched on: {on}");
+}
+
 /// Areia's script runs its init and note callbacks on the engine without faults.
 #[test]
 fn areia_runs_on_the_engine() {
