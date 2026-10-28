@@ -194,7 +194,15 @@ impl<L: Library> Translator<'_, '_, L> {
             inserts: self.voice_slots(kg)?,
             ..ir::Group::DEFAULT
         };
-        (group.inserts, group.mods) = filters::keygroup(kg);
+        // Per-voice gain and shelves, else a one-pole filter, slot by slot.
+        let (filters, mods) = filters::keygroup(kg);
+        group.mods = mods;
+        group.inserts = (0..group.inserts.len().max(filters.len()))
+            .map(|n| {
+                let own = group.inserts.get(n).cloned().flatten();
+                own.or_else(|| filters.get(n).cloned().flatten())
+            })
+            .collect();
         let placement = placement(kg);
         let span = Span {
             keys,

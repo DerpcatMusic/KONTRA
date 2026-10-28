@@ -102,7 +102,7 @@ pub(super) fn keygroup(kg: Node) -> (Vec<Option<ir::Effect>>, Vec<ir::Mod>) {
                 pass,
                 hz: hz.clamp(20.0, 20_000.0),
                 stages: 0,
-                pole: false,
+                ladder: None,
                 damping: [2.0; 3],
                 gain: 1.0,
                 octaves: FREQ_OCTAVES,
