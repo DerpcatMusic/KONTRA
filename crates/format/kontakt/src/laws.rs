@@ -688,7 +688,9 @@ pub fn reverb_laws() -> [ir::Law; 8] {
 /// make-up `−0.666·(1 − r)·threshold` dB (setter `+0x524`, constant at
 /// 0x144fc4c90, added to the gain exponent in core 0x140ab35d0). Classic and
 /// Enhanced have no make-up (their setters write no offset). The slot's Output
-/// knob applies on top in every mode. Pro always links the channels.
+/// knob applies on top in every mode. Pro always links the channels. Every
+/// threshold is `2^(dB/6)`. Classic is a [`ir::Detector::Trigger`] to the
+/// fixed depth `thr^(1 − r)` (setter `+0x2e0`; core in dyn-compressors.md).
 ///
 /// The caller (0x1409619b0) passes the saved attack and release ms unscaled;
 /// each mode turns them into its own ballistics, given here as time
@@ -697,9 +699,7 @@ pub fn reverb_laws() -> [ir::Law; 8] {
 /// runs a two-pole detector at `2513.2/max(ms, 1)` rad/s with damping 1.8 and
 /// a peak hold falling by `1778.3/max(ms, 50)` per second; Classic (core
 /// 0x140ab2250) steps by `0.625^(1/n)` and `(1/3)^(1/n)` over the n frames.
-// ponytail: Classic (a trigger and a fixed gain) and Enhanced (a piecewise
-// curve) run the standard soft-knee curve at their own time constants; no
-// native recording says how far apart the curves sound.
+// ponytail: Enhanced's piecewise curve runs as the soft knee; unmeasured.
 pub(crate) fn compressor(
     mode: i32,
     threshold_db: f32,
@@ -724,7 +724,7 @@ pub(crate) fn compressor(
         ),
     };
     ir::Compressor {
-        threshold_db,
+        threshold_db: threshold_db * 20.0 * 2f32.log10() / 6.0,
         ratio: 1.0 / r.max(1e-3),
         knee_db: 12.0,
         attack_ms,
@@ -736,7 +736,11 @@ pub(crate) fn compressor(
         },
         link: link || mode == 2,
         mix: 1.0,
-        detector: ir::Detector::Input,
+        detector: if mode == 0 {
+            ir::Detector::Trigger
+        } else {
+            ir::Detector::Input
+        },
     }
 }
 

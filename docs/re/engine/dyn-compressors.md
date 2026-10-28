@@ -21,7 +21,7 @@ Saved fields (`BParFXCompressor`): integer mode, threshold dB, saved ratio
 
 | mode | law in engine | evidence |
 |---|---|---|
-| 0 Classic | `KontaktClassic`: trigger, hold/attack/release shaping a fixed gain `thr^(1-ratio)` | `laws.rs` chain row "Kontakt Classic"; `docs/re/kontakt-compressor.md` calls it a proxy *(unverified)* |
+| 0 Classic | trigger, hold/attack/release shaping a fixed gain `thr^(1-r)` | **verified in binary**, v3 `Detector::Trigger`. Setter: thr `2^(dB/6)` (+0x1c4), depth `2^(ln(thr)·−8.6562·(1−r)·−1/6)` (+0x2e0), attack `0.625^(1/n)` (+0x1d0), release `(1/3)^(1/n)` (+0x1d8), n = round(ms·rate/1000) ≥ 1. Core per channel: x = \|linked mean\|; if x ≤ thr or hold ≥ 0.985 the hold falls by release, else it is 1; the envelope drops to the hold at once, else rises by attack, capped at the hold; if hold < 0.97 and (env+1)/(hold+1) < 0.985 the hold restarts at env·1.0152284+0.0152284; gain `1−(1−depth)·env`. Constants 0.985@144fc3fe0, 0.97@144fc3fd8, 1.0152284@144fc4000, 0.0152284@144fc3df8. ANALOG insert 1 alone: ours 0.794 peak vs Kontakt 0.854 (oracle `analog_compressor_stage.ksp`). |
 | 1 Enhanced | `KontaktEnhanced`: signed-mean detector, piecewise curve, attack recurrence, peak hold | **constants verified in binary**: `.0390524`@144fc3330, `.0004`@144fc3088, `2513.2`@144fc4bd4, `.2895294507215381`(f64)@144fc3f58, `35.566`@144fc47f4, `1778.3`@144fc4bb4, `.13`@144fc3608, `.884`@144fc3ce8, `.04`@1447148bc, `1.8`@144714980; all 8 piecewise slope/intercept endpoints present (`.46`…`.198195`, `.08962`…`.832671`) and equal to `computer.rs` table. Test `enhanced_compressor_uses_native_detector_and_integer_selector` uses computed f32 vectors, not native recordings. |
 | 2 Pro | `KontaktPro`: channel max, 33-frame window, dB knee, RBJ low-pass release, 32-frame look-ahead | `laws.rs` `Pro`: floor `1e-12`@144f385a8 and 2π@144f38be0 confirmed in binary; golden-bit test only (self-generated) |
 
@@ -40,7 +40,7 @@ always uses the channel maximum and ignores the byte (`dynamics.rs`).
 |---|---|---|
 | Enhanced detector, curve, ballistics | yes (f32 vectors) | native recording comparison; full branch constants on export |
 | Pro core | yes (constants reproduced) | no native recording; window scheduling and knee confirmed only by the note |
-| Classic core | config and law present | proxy status; no verified constants |
+| Classic core | law from the binary; one oracle stage peak | full-signal native recording comparison |
 | Saved defaults, UI units, smoothing across parameter change | none | export: default block, param update path |
 | Invalid-value handling | yes (`compressor()` rejects non-finite, ratio outside 0..=1, `attack<=0` for Enhanced) | native behaviour on those inputs |
 

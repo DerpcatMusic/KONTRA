@@ -224,6 +224,7 @@ fn compressor(c: ir::Compressor) -> CompressorSettings {
         detector: match c.detector {
             ir::Detector::Input => Detector::Input,
             ir::Detector::Output => Detector::Output,
+            ir::Detector::Trigger => Detector::Trigger,
         },
     }
 }
