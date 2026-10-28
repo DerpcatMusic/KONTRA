@@ -438,6 +438,12 @@ fn a_script_sets_the_stages_of_a_routed_ahdsr() {
         loop_from: None,
         stages: true,
     }];
+    // A flex envelope of the same shape at slot 1: no stages to set.
+    let flex = ir::Breakpoints {
+        stages: false,
+        ..g.envelopes[0].clone()
+    };
+    g.envelopes.push(flex);
     g.mods = vec![ir::Mod {
         name: "ENV_AHDSR".into(),
         slot: 0,
@@ -449,20 +455,32 @@ fn a_script_sets_the_stages_of_a_routed_ahdsr() {
             curve: ir::Curve::Depth { power: 1 },
         },
     }];
+    g.mods.push(ir::Mod {
+        name: "ENV_FLEX".into(),
+        slot: 1,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Pan {
+            source: ir::Source::Envelope(1),
+            amount: 0.0,
+        },
+    });
     let script = kontra_ksp::compile(
         "on init
+            set_engine_par($ENGINE_PAR_ATTACK, 600000, 0, 1, -1)
             set_engine_par($ENGINE_PAR_ATTACK, 0, 0, 0, -1)
             set_engine_par($ENGINE_PAR_DECAY, 0, 0, 0, -1)
             set_engine_par($ENGINE_PAR_SUSTAIN, 500000, 0, 0, -1)
             set_engine_par($ENGINE_PAR_RELEASE, 250000, 0, 0, -1)
-            message(get_engine_par($ENGINE_PAR_SUSTAIN, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_RELEASE, 0, 0, -1))
+            message(get_engine_par($ENGINE_PAR_SUSTAIN, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_RELEASE, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_ATTACK, 0, 1, -1))
         end on",
         &[],
     )
     .unwrap();
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
-    assert_eq!(e.last_message(), "500000 250000");
+    // Real Kontakt (probes/flex_stage_writes.lua): a flex reads 0.
+    assert_eq!(e.last_message(), "500000 250000 0");
     // No attack or decay: the note sits at the sustain level, 0.5³.
     let l = level(&mut e, &[on(60)]);
     assert!((l - 0.5 * 0.125).abs() < 1e-3, "{l}");
