@@ -83,19 +83,33 @@ impl VoiceEq {
 }
 
 /// Moves a voice's filter and EQ to this note's settings at its age: the
-/// filter's cutoff and damping, the EQ's band gains. Coefficients only.
+/// filter's cutoff and damping, the EQ's band gains. Coefficients only; one
+/// now bypassed (`None`) leaves the voice.
+///
+/// ponytail: one bypassed and enabled again comes back on the next notes,
+/// not on the voices already playing.
 pub(crate) fn retune(
     slot: &mut crate::Slot,
     tuned: Option<(f32, [f32; 3])>,
     bells: Option<[ir::Bell; 4]>,
     rate: u32,
 ) {
-    if let (Some(f), Some((hz, damping))) = (slot.filter.as_mut(), tuned) {
-        f.set_cutoff(hz, rate);
-        f.set_damping(damping);
+    match tuned {
+        Some((hz, damping)) => {
+            if let Some(f) = slot.filter.as_mut() {
+                f.set_cutoff(hz, rate);
+                f.set_damping(damping);
+            }
+        }
+        None => slot.filter = None,
     }
-    if let (Some(eq), Some(bells)) = (slot.eq.as_mut(), bells) {
-        eq.retune(bells, rate);
+    match bells {
+        Some(bells) => {
+            if let Some(eq) = slot.eq.as_mut() {
+                eq.retune(bells, rate);
+            }
+        }
+        None => slot.eq = None,
     }
 }
 
@@ -155,6 +169,9 @@ impl Engine {
         let insert = (*self.voice_filters.get(zone.group as usize)?)?;
         let group = self.groups.get(zone.group as usize)?;
         let effect = group.inserts.get(usize::from(insert))?.as_ref()?;
+        if effect.bypass {
+            return None;
+        }
         let ir::EffectKind::Filter(f) = effect.kind else {
             return None;
         };
@@ -211,6 +228,9 @@ impl Engine {
         let insert = (*self.voice_eqs.get(zone.group as usize)?)?;
         let group = self.groups.get(zone.group as usize)?;
         let effect = group.inserts.get(usize::from(insert))?.as_ref()?;
+        if effect.bypass {
+            return None;
+        }
         let ir::EffectKind::Eq(mut bells) = effect.kind else {
             return None;
         };
