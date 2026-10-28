@@ -469,7 +469,9 @@ fn a_script_sets_a_send_level_by_the_volume_law() {
     let l = level(&mut e, &[on(60)]);
     // Dry 0.5 plus the send's return 0.5 × 0.25.
     assert!((l - 0.5 * 1.24997).abs() < 1e-3, "{l}");
-||||||| parent of 58a520b91 (fix: review of #841 — event and coroutine generations, ignored key-ups, loop guard)
+}
+
+#[test]
 fn an_ignored_release_still_lifts_the_key() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let zones = vec![zone(&mut store, 0.5, 0)];
