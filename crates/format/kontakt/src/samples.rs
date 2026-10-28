@@ -32,11 +32,29 @@ pub(crate) struct Resolver {
     key: Option<std::sync::Arc<[u8]>>,
 }
 
+/// `path` with `.` and `..` resolved by name, without touching the disk.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 impl Resolver {
     pub(crate) fn new(instrument: &Path) -> Result<Self, String> {
         let parent = instrument.parent().unwrap_or(Path::new(".")).to_path_buf();
+        // As far up as resources.rs looks: an instrument outside any library
+        // must not make the home folder the root.
         let root = instrument
             .ancestors()
+            .take(8)
             .find(|p| p.join("Samples").is_dir())
             .unwrap_or(&parent)
             .to_path_buf();
@@ -84,7 +102,11 @@ impl Resolver {
             .map(Path::to_path_buf)
             .collect();
         for base in &bases {
-            let candidate = base.join(&name);
+            // `..` is normal in Kontakt's tables, but never past the root.
+            let candidate = lexical(&base.join(&name));
+            if !candidate.starts_with(&self.root) {
+                continue;
+            }
             if let Some((archive, member)) = archive_member(&candidate) {
                 if let Some(found) = self.archive_entry(&archive, &member)? {
                     return Ok(Some(found));
