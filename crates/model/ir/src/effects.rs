@@ -1,6 +1,6 @@
 //! The dynamics and time effects' settings in physical units.
 
-use crate::Rate;
+use crate::{Rate, ReverbNetwork};
 
 /// A feed-forward compressor in physical units.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -118,10 +118,10 @@ pub struct Phaser {
 pub struct Reverb {
     /// Time for the tail to fall 60 dB.
     pub seconds: f32,
-    /// Delay-line scale, 1 a mid-size room.
+    /// Delay-line scale, 1 a mid-size room; a network's own size control.
     pub size: f32,
-    /// The lines grow by `size·(a + b·size)`; `[1, 0]` keeps `size`.
-    pub size_curve: [f32; 2],
+    /// The translator's network; `None` runs the generic eight-line one.
+    pub network: Option<&'static ReverbNetwork>,
     /// 0..=1: how much faster the highs die.
     pub damping: f32,
     /// 0..=1: the tail's early density.

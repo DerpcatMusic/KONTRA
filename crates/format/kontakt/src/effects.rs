@@ -299,7 +299,7 @@ fn slot_effect(
             .collect::<Option<Vec<_>>>()
             .and_then(|v| v.try_into().ok())
             .zip(kind_id)
-            .map(|(v, kind)| ir::EffectKind::Reverb(crate::laws::reverb(kind, v))),
+            .map(|(v, kind)| ir::EffectKind::Reverb(crate::reverb::reverb(kind, v))),
         0x10..=0x12 | 0x14 => crate::delays::legacy(effect.id, object.version, &public),
         0x15 => {
             if let Some(saved) = crate::legacy_reverb::saved(object.version, &public) {
@@ -341,13 +341,9 @@ fn slot_effect(
             0.0
         },
     };
-    // Carried, but not as Kontakt builds them (laws.rs, legacy_reverb.rs).
-    let approximated = match (effect.id, kind_id) {
-        (0x59, Some(1)) => Some("Hall: 8-line network, no output taps or allpasses"),
-        (0x59, _) => Some("Room: 8-line network for 31 lines"),
-        (0x15, _) => Some("legacy: combs and allpasses as an 8-line network"),
-        _ => None,
-    };
+    // Carried, but not as Kontakt builds it (legacy_reverb.rs).
+    let approximated =
+        (effect.id == 0x15).then_some("legacy: combs and allpasses as an 8-line network");
     if let Some(what) = approximated.filter(|_| !params.bypass && kind.is_some()) {
         notes.add(
             ir::Impact::Audible,

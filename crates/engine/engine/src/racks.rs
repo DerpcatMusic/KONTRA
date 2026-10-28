@@ -9,7 +9,7 @@ use kontra_dsp::dynamics::{
     Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
     TransientSettings,
 };
-use kontra_dsp::reverb::{Convolver, Fdn, Settings};
+use kontra_dsp::reverb::{Convolver, Fdn, Network, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
 
@@ -69,6 +69,18 @@ impl Wet for Fdn {
     fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Reverb(r) = kind {
             Fdn::set(self, settings(r));
+        }
+    }
+}
+
+impl Wet for Network {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Network::process(self, io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Reverb(r) = kind {
+            Network::set(self, settings(r));
         }
     }
 }
@@ -204,7 +216,10 @@ impl Rack {
                         None => Dsp::None,
                     }
                 }
-                Some(ir::EffectKind::Reverb(r)) => wet(Box::new(Fdn::new(settings(r), rate))),
+                Some(ir::EffectKind::Reverb(r)) => match r.network {
+                    Some(law) => wet(Box::new(Network::new(law, settings(r), rate))),
+                    None => wet(Box::new(Fdn::new(settings(r), rate))),
+                },
                 Some(ir::EffectKind::Compressor(c)) => {
                     wet(Box::new(Compressor::new(compressor(c), rate)))
                 }
@@ -381,7 +396,7 @@ fn phaser(p: ir::Phaser, tempo: f32) -> PhaserSettings {
 fn settings(r: ir::Reverb) -> Settings {
     Settings {
         seconds: r.seconds,
-        size: r.size * (r.size_curve[0] + r.size_curve[1] * r.size),
+        size: r.size,
         damping: r.damping,
         diffusion: r.diffusion,
         predelay_ms: r.predelay_ms,
