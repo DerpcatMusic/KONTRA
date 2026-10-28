@@ -137,6 +137,10 @@ fn state(
         {
             return Ok(value);
         }
+        // `uvi.*` modules are built in: the prelude defines their globals.
+        if name.starts_with("uvi.") && !found.contains_key(&key) {
+            return Ok(Value::Boolean(true));
+        }
         let text = found
             .get(&key)
             .ok_or_else(|| mlua::Error::runtime(format!("module {name} not found")))?;

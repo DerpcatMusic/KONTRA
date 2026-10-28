@@ -88,6 +88,8 @@ pub(crate) struct Note {
     pub(crate) offset: u32,
     /// `EVENT_PAR_0..3`, free for the script.
     pub(crate) custom: [i32; 4],
+    /// The zone slot the note starts; -1 for any.
+    pub(crate) zone_slot: i32,
     /// "From script" modulator values, `(index, value)`, ±1 000 000.
     // ponytail: four indices per note; a ring when a library sends more.
     pub(crate) mod_values: [Option<(u16, i32)>; 4],
@@ -131,6 +133,7 @@ impl Note {
             script_pan: 0,
             offset: 0,
             custom: [0; 4],
+            zone_slot: -1,
             mod_values: [None; 4],
             first: 0,
             pass: 0,

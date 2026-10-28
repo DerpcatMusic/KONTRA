@@ -473,6 +473,7 @@ impl Engine {
                     .is_none_or(|g| !g.purged)
                 && zone.keys.contains(&n.key)
                 && zone.velocities.contains(&n.velocity_byte)
+                && (n.zone_slot < 0 || n.zone_slot == i32::from(zone.slot))
                 && self.buses.get(zone.bus).is_some_and(|b| b.enabled);
             if !selected
                 || !self

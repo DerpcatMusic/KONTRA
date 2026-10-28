@@ -192,10 +192,14 @@ impl<L: Library> Translator<'_, '_, L> {
             ),
         };
         let mut first = true;
-        for player in kg
+        // A player's slot is its place among the keygroup's oscillators.
+        for (slot, player) in kg
             .descendants()
-            .filter(|n| n.has_tag_name("SamplePlayer") && !flag(*n, "Bypass"))
+            .filter(|n| n.has_tag_name("SamplePlayer"))
+            .enumerate()
+            .filter(|(_, n)| !flag(*n, "Bypass"))
         {
+            let slot = u16::try_from(slot).unwrap_or(u16::MAX);
             if first {
                 // Note tracking of the first enabled player; mixed tracking is reported.
                 group.keytrack = if num(player, "NoteTracking", 1.0)? == 0.0 {
@@ -212,7 +216,9 @@ impl<L: Library> Translator<'_, '_, L> {
                 );
             }
             let zones = self.player(player, placement, &span)?;
-            group.zones.extend(zones);
+            group
+                .zones
+                .extend(zones.into_iter().map(|z| ir::Zone { slot, ..z }));
         }
         self.out.groups.push(group);
         Ok(())
@@ -315,6 +321,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 start_mod: 0,
                 loops: Vec::new(),
                 reverse: flag(player, "Reverse"),
+                slot: 0,
             });
         }
         Ok(zones)

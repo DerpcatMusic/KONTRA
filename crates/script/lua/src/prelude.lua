@@ -3,7 +3,13 @@
 -- Units at the host: time in microseconds, volume in millidecibels, tune in
 -- millicents, pan in per mille.
 
+-- Calls made while the script loads, before any callback, wait for init.
+local pending = {}
 local host_call = function(name, ...)
+	if not __host then
+		table.insert(pending, table.pack(Action[name], ...))
+		return
+	end
 	return __host(Action[name], ...)
 end
 
@@ -50,6 +56,7 @@ end
 local widget
 
 -- A container makes children (`panel:Label{...}`); any other method is inert.
+-- A capitalised key no widget has (`w.Widget`) is nil: scripts test for it.
 local widget_meta = {
 	__index = function(w, key)
 		local items = rawget(w, "items")
@@ -60,6 +67,9 @@ local widget_meta = {
 			return function(_, ...)
 				return widget(key, ...)
 			end
+		end
+		if string.match(key, "^%u") then
+			return nil
 		end
 		return function() end
 	end,
@@ -81,6 +91,7 @@ local function table_widget(w, name, fields)
 	end
 	w.values = values
 	w.size = size
+	w.length = size
 	w.setValue = function(self, index, v)
 		self.values[index] = v
 	end
@@ -92,13 +103,12 @@ end
 
 -- A widget, from `Kind(name, value, ...)` or `Kind{name, value, field=...}`.
 widget = function(kind, name, value, ...)
-	local fields = {}
-	local rest = { ... }
+	local fields = { name, value, ... }
 	if type(name) == "table" then
 		fields = name
 		name, value = fields[1], fields.value or fields[2]
-		rest = { fields[3] }
 	end
+	local rest = { fields[3] }
 	local items
 	if kind == "Menu" then
 		-- Menu(name, items, selected): the value is the item's index.
@@ -106,10 +116,10 @@ widget = function(kind, name, value, ...)
 		value = tonumber(rest[1]) or 1
 	end
 	if type(value) ~= "number" and type(value) ~= "boolean" then
-		value = (kind == "OnOffButton" or kind == "Button") and false or 0
+		value = kind ~= "OnOffButton" and kind ~= "Button" and 0
 	end
 	value = restored(name, value)
-	local w = setmetatable({ kind = kind, name = name }, widget_meta)
+	local w = setmetatable({ kind = kind, name = name, alpha = 1, enabled = true, visible = true }, widget_meta)
 	for k, v in pairs(fields) do
 		if type(k) == "string" then
 			w[k] = v
@@ -170,6 +180,7 @@ local ALL_GROUPS = 0x3FFFFFFF
 local ALL_EVENTS = 0x3FFFFFFE
 local ALLOW_GROUP = 9
 local MOD_VALUE = 14
+local ZONE_SLOT = 15
 local found, tree = pcall(require, "__program")
 if not found or type(tree) ~= "table" then
 	tree = { params = {}, db = 0, pan = 0, layers = {} }
@@ -181,14 +192,40 @@ local containers = { "layers", "keygroups", "inserts", "auxs", "oscillators", "m
 
 -- An element of the program tree, from the format's node: its parameters
 -- and its children by container; modulations also by name.
+-- ponytail: a definition's range is 0..max(1, value); the XML carries no
+-- ranges, and only editor widgets read them.
+local function definitions(e)
+	local list = {}
+	for name, value in pairs(e.params) do
+		local n = type(value) == "number" and value or 0
+		table.insert(list, { name = name, id = name, default = n, min = 0, max = math.max(1, n) })
+	end
+	return list
+end
+
+-- Falcon elements are userdata: scripts tell one element from a list of
+-- elements by type().
 local function element(node)
 	node = node or {}
-	local e = setmetatable({
+	local fields = {
 		params = {},
 		group = node.group or false,
 		sendPre = node.sendPre or 0,
 		sendPost = node.sendPost or 0,
-	}, inert)
+	}
+	local e = newproxy(true)
+	local meta = getmetatable(e)
+	meta.__index = function(_, key)
+		local value = fields[key]
+		if value ~= nil then
+			return value
+		end
+		if key == "parameterDefinitions" then
+			return definitions(fields)
+		end
+		return function() end
+	end
+	meta.__newindex = fields
 	for _, key in ipairs(containers) do
 		local list = {}
 		for i, child in ipairs(node[key] or {}) do
@@ -198,6 +235,7 @@ local function element(node)
 		end
 		e[key] = list
 	end
+	e.sends = e.busRouters
 	for _, m in ipairs(e.modulations) do
 		if m.params.Name then
 			e.modulations[m.params.Name] = m
@@ -228,6 +266,7 @@ local function element(node)
 		return setmetatable({}, {
 			__index = function(list, i)
 				local c = element()
+				c.params.Ratio = 0
 				rawset(list, i, c)
 				return c
 			end,
@@ -302,7 +341,7 @@ end
 
 -- Engine groups a `layer` (index or layer) plays.
 local function layer_groups(layer)
-	local l = type(layer) == "table" and layer or Program.layers[layer]
+	local l = type(layer) == "userdata" and layer or Program.layers[layer]
 	local groups = {}
 	for _, kg in ipairs(l and l.keygroups or {}) do
 		if kg.group then
@@ -331,7 +370,7 @@ end
 
 function getTempo()
 	local quarter = host_call("DurationQuarter")
-	return quarter > 0 and 60e6 / quarter or 120
+	return quarter and quarter > 0 and 60e6 / quarter or 120
 end
 
 function beat2ms(beats)
@@ -350,14 +389,17 @@ function isKeyDown(note)
 	return host_call("KeyDown", note) ~= 0
 end
 
-function playNote(note, velocity, duration, layer, channel, input, vol, pan, tune)
+function playNote(note, velocity, duration, layer, channel, input, vol, pan, tune, oscIndex)
 	if type(note) == "table" then
 		local t = note
-		note, velocity, duration = t[1], t[2], t[3]
-		layer, vol, pan, tune = t.layer or t[4], t.vol, t.pan, t.tune
+		note, velocity, duration = t.note or t[1], t.velocity or t[2], t.duration or t[3]
+		layer, vol, pan, tune, oscIndex = t.layer or t[4], t.vol, t.pan, t.tune, t.oscIndex
 	end
 	local micros = duration and duration > 0 and math.floor(duration * 1000) or 0
 	local id = host_call("PlayNote", note, velocity or 100, 0, micros)
+	if oscIndex and oscIndex >= 0 then
+		host_call("SetEventPar", id, ZONE_SLOT, oscIndex)
+	end
 	if layer ~= nil and layer ~= -1 then
 		host_call("SetEventParArr", id, ALLOW_GROUP, 0, ALL_GROUPS)
 		for _, g in ipairs(layer_groups(layer)) do
@@ -443,6 +485,10 @@ end
 -- Entries by the engine's callback number: init, note, release, controller.
 __entries = {
 	[0] = function()
+		for _, call in ipairs(pending) do
+			__host(table.unpack(call, 1, call.n))
+		end
+		pending = {}
 		apply_levels()
 		if onInit then
 			onInit()
@@ -496,6 +542,60 @@ function fade2(id, from, to, ms, kill)
 		fadeout(id, ms, kill)
 	else
 		changeVolume(id, to, false, true)
+	end
+end
+
+-- class 'Name' or class 'Name' (Base): luabind-style classes. Calling the
+-- class makes an instance and runs its __init.
+local function construct(cls, ...)
+	local object = setmetatable({}, cls)
+	if cls.__init then
+		cls.__init(object, ...)
+	end
+	return object
+end
+
+function class(name)
+	local cls = {}
+	cls.__index = cls
+	setmetatable(cls, { __call = construct })
+	_G[name] = cls
+	return function(base)
+		setmetatable(cls, { __index = base, __call = construct })
+	end
+end
+
+-- uvi.ChordRec: names the chord of sorted notes by pitch-class templates.
+-- Returns root, kind ("" major, "m" minor, ...) and bass pitch classes.
+ChordRec = {}
+local CHORDS = {
+	{ "", { 0, 4, 7 } }, { "m", { 0, 3, 7 } }, { "7", { 0, 4, 7, 10 } },
+	{ "maj7", { 0, 4, 7, 11 } }, { "m7", { 0, 3, 7, 10 } }, { "dim", { 0, 3, 6 } },
+	{ "aug", { 0, 4, 8 } }, { "sus4", { 0, 5, 7 } }, { "sus2", { 0, 2, 7 } },
+	{ "5", { 0, 7 } },
+}
+function ChordRec.chordKind(notes)
+	local classes = {}
+	for _, note in ipairs(notes) do
+		classes[note % 12] = true
+	end
+	local count = 0
+	for _ in pairs(classes) do
+		count = count + 1
+	end
+	for _, chord in ipairs(CHORDS) do
+		local kind, intervals = chord[1], chord[2]
+		if #intervals == count then
+			for root in pairs(classes) do
+				local all = true
+				for _, interval in ipairs(intervals) do
+					all = all and classes[(root + interval) % 12] == true
+				end
+				if all then
+					return root, kind, notes[1] % 12
+				end
+			end
+		end
 	end
 end
 

@@ -172,6 +172,8 @@ pub struct Zone {
     pub keys: RangeInclusive<u8>,
     /// MIDI velocities 1..=127 the zone answers.
     pub velocities: RangeInclusive<u8>,
+    /// See [`ir::Zone::slot`].
+    pub slot: u16,
     /// Start conditions folded left to right by their joins; empty always starts.
     pub start: Vec<(ir::Join, Atom)>,
     pub trigger: Trigger,
@@ -214,6 +216,7 @@ impl Zone {
         Self {
             keys: 0..=127,
             velocities: 1..=127,
+            slot: 0,
             start: Vec::new(),
             trigger: Trigger::Attack,
             crossfades: Vec::new(),

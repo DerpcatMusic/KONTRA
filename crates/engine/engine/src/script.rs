@@ -382,6 +382,7 @@ impl Engine {
             event::PAN => n.script_pan,
             event::NOTE => i32::from(n.key),
             event::VELOCITY => i32::from(n.velocity_byte),
+            event::ZONE_SLOT => n.zone_slot,
             event::SOURCE => match n.origin {
                 Origin::Host => -1,
                 Origin::Child(_) | Origin::Script => i32::from(n.first) - 1,
@@ -401,6 +402,7 @@ impl Engine {
             event::TUNE => n.script_tune = value,
             event::PAN => n.script_pan = value.clamp(-1000, 1000),
             event::NOTE if !n.started => n.key = value.clamp(0, 127) as u8,
+            event::ZONE_SLOT if !n.started => n.zone_slot = value,
             event::VELOCITY if !n.started => {
                 n.velocity_byte = value.clamp(1, 127) as u8;
                 n.velocity = f64::from(n.velocity_byte) / 127.0;
@@ -459,6 +461,26 @@ impl HostApi for Engine {
             Action::KeyDown => flag(self.key_down(int(0))),
             Action::EngineUptime => {
                 HostValue::Int((self.now.0 * 1000 / u64::from(self.rate)) as i32)
+            }
+            Action::DurationQuarter
+            | Action::DurationEighth
+            | Action::DurationSixteenth
+            | Action::DurationQuarterTriplet
+            | Action::DurationEighthTriplet
+            | Action::DurationSixteenthTriplet
+            | Action::DurationBar => {
+                let quarter = 60e6 / f64::from(self.tempo.max(1.0));
+                // ponytail: a bar is four quarters; the host's signature is not passed in.
+                let quarters = match call.action {
+                    Action::DurationEighth => 0.5,
+                    Action::DurationSixteenth => 0.25,
+                    Action::DurationQuarterTriplet => 2.0 / 3.0,
+                    Action::DurationEighthTriplet => 1.0 / 3.0,
+                    Action::DurationSixteenthTriplet => 1.0 / 6.0,
+                    Action::DurationBar => 4.0,
+                    _ => 1.0,
+                };
+                HostValue::Int((quarter * quarters).round() as i32)
             }
             Action::NumGroups => HostValue::Int(self.masks.groups as i32),
             Action::Random => HostValue::Int(self.random(int(0), int(1))),

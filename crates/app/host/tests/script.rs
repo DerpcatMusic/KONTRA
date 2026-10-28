@@ -550,6 +550,22 @@ fn lua_engine(store: &mut Store, source: &str) -> Engine {
 }
 
 #[test]
+fn a_uvi_note_on_an_oscillator_starts_only_that_zone_slot() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut second = zone(&mut store, 0.25, 0);
+    second.slot = 1;
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0), second], 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    let source = "function onNote(e) playNote{note=e.note, velocity=e.velocity, oscIndex=1} end";
+    let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert!((level(&mut e, &[on(60)]) - 0.25).abs() < 1e-3);
+}
+
+#[test]
 fn a_uvi_note_sounds_only_when_the_script_posts_it() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let held = "function onNote(e) end";

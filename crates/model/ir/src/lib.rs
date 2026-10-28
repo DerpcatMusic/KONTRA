@@ -607,6 +607,9 @@ pub struct Zone {
     /// Loops in play order. Each is entered when the playhead reaches its end.
     pub loops: Vec<Loop>,
     pub reverse: bool,
+    /// The zone's place among the zones of its group that share its keys; a
+    /// note that names a slot starts only the zones in it (UVI `oscIndex`).
+    pub slot: u16,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
