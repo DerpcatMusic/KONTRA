@@ -6,9 +6,10 @@
 //! and the chains feed a bus where the rest of the inserts run. Every strip
 //! ends on the main output ahead of the program's own inserts, as an aux set
 //! `PreInsert` does. Of the effects, Gain, Convolver, SampledReverb,
-//! ThreeBandShelves and DualDelay are carried; the rest pass their input and
-//! are reported (see `effects`).
+//! ThreeBandShelves, DualDelay and Maximizer are carried; the rest pass their
+//! input and are reported (see `effects`).
 
+use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::Node;
 
@@ -36,6 +37,7 @@ pub(super) fn carried(node: Node) -> bool {
         "SampledReverb",
         "ThreeBandShelves",
         "DualDelay",
+        "Maximizer",
     ]
     .iter()
     .any(|t| node.has_tag_name(*t));
@@ -230,6 +232,8 @@ impl<L: Library> Translator<'_, '_, L> {
             Some(effect(kind, 1.0, 0.0))
         } else if node.has_tag_name("ThreeBandShelves") {
             Some(shelves(node)?)
+        } else if node.has_tag_name("Maximizer") {
+            Some(maximizer(node, &mut self.notes)?)
         } else if node.has_tag_name("DualDelay") {
             Some(dual_delay(node, &mut self.notes)?)
         } else if node.has_tag_name("Convolver") || node.has_tag_name("SampledReverb") {
@@ -354,6 +358,31 @@ fn shelves(node: Node) -> Result<ir::Effect, String> {
     ))
 }
 
+/// UVI's Maximizer (engine 0x141665620, parameter ids 0x1427fd2c0..2e4):
+/// the peak level in dB floored at Threshold, smoothed, gives a gain of
+/// `Ceiling − level` dB. That is Threshold-to-Ceiling of input gain into a
+/// limiter at Ceiling. Its release falls to a third in Release ms
+/// (`e^(ln(1/3)/frames)`), close to the limiter's halving in the same time.
+///
+/// ponytail: the 2 ms lookahead, ReleaseBlend's slow release (100× longer,
+/// 0.1 in every corpus program) and SlewRate are not carried; Knee and
+/// Attack, 0 in the corpus, are reported when set.
+fn maximizer(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
+    let threshold = num(node, "Threshold", 0.0)? as f32;
+    let ceiling = num(node, "Ceiling", -0.1)? as f32;
+    for name in ["Knee", "Attack"] {
+        if num(node, name, 0.0)? != 0.0 {
+            notes.add(ir::Impact::Audible, &format!("maximizer {name}"), "");
+        }
+    }
+    let kind = ir::EffectKind::Limiter(ir::Limiter {
+        input_db: ceiling - threshold,
+        ceiling_db: ceiling,
+        release_ms: num(node, "Release", 10.0)?.max(0.0) as f32,
+    });
+    Ok(effect(kind, 1.0, 0.0))
+}
+
 /// The dry level of an effect whose output is mostly a wet path (a reverb,
 /// a delay); `None` for one that processes in place.
 fn wet_only(node: Node) -> Result<Option<f32>, String> {
@@ -387,6 +416,19 @@ fn effect(kind: ir::EffectKind, output: f32, dry: f32) -> ir::Effect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_maximizer_lifts_by_its_threshold_into_a_limiter_at_its_ceiling() {
+        // Augmented Orchestra's most common setting (90 programs).
+        let xml = r#"<Maximizer Threshold="-6" Attack="0" Lookahead="2" Release="10" Ceiling="-0.1" Knee="0"/>"#;
+        let doc = roxmltree::Document::parse(xml).unwrap();
+        let e = maximizer(doc.root_element(), &mut Notes::default()).unwrap();
+        let ir::EffectKind::Limiter(l) = e.kind else {
+            panic!("{e:?}")
+        };
+        assert_eq!((l.input_db, l.ceiling_db, l.release_ms), (5.9, -0.1, 10.0));
+        assert_eq!((e.output, e.dry), (1.0, 0.0));
+    }
 
     #[test]
     fn three_band_shelves_are_two_half_slope_shelves_around_the_mid_gain() {
