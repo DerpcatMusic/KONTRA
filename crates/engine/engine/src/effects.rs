@@ -43,6 +43,7 @@ pub(crate) fn rack_only(kind: ir::EffectKind) -> bool {
             | ir::EffectKind::Limiter(_)
             | ir::EffectKind::Delay(_)
             | ir::EffectKind::Phaser(_)
+            | ir::EffectKind::Transient(_)
     )
 }
 
@@ -80,7 +81,9 @@ pub(crate) fn matrix(e: &ir::Effect) -> Gain {
         ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_) => IDENTITY,
         // Its wet path runs in instrument and bus racks (racks.rs); a
         // compressor's or limiter's output is its wet path.
-        ir::EffectKind::Compressor(_) | ir::EffectKind::Limiter(_) => [[0.0; 2]; 2],
+        ir::EffectKind::Compressor(_)
+        | ir::EffectKind::Limiter(_)
+        | ir::EffectKind::Transient(_) => [[0.0; 2]; 2],
         // Its wet path runs in instrument and bus racks (racks.rs).
         ir::EffectKind::OtherWet
         | ir::EffectKind::Convolution { .. }

@@ -10,7 +10,7 @@ mod drive;
 mod effects;
 mod reverb;
 pub use drive::{Crush, Curve as DriveCurve, Shaper};
-pub use effects::{Compressor, Delay, DelayTime, Limiter, Phaser, Reverb};
+pub use effects::{Compressor, Delay, DelayTime, Detector, Limiter, Phaser, Reverb, Transient};
 pub use reverb::{Law, ReverbPar};
 
 #[derive(Clone, Debug)]
@@ -678,6 +678,8 @@ pub enum EffectKind {
     Delay(Delay),
     /// A phaser (the wet path; `dry` mixes the input back).
     Phaser(Phaser),
+    /// A transient shaper, in place.
+    Transient(Transient),
     /// Not carried, an insert: audio passes unchanged (its output gain
     /// trims processing that does not run).
     /// The translator reports it.

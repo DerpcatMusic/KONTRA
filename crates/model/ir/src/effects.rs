@@ -21,6 +21,28 @@ pub struct Compressor {
     pub link: bool,
     /// 0..=1: the compressed share of the output.
     pub mix: f32,
+    pub detector: Detector,
+}
+
+/// What a compressor's level detector reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Detector {
+    /// The input (feed-forward).
+    Input,
+    /// Its own output (feedback).
+    Output,
+}
+
+/// A transient shaper: a gain in dB from its attack and sustain envelopes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transient {
+    /// dB per unit of the attack envelope; negative softens onsets.
+    pub attack: f32,
+    /// dB per unit of the sustain envelope; negative shortens tails.
+    pub sustain: f32,
+    pub gain_db: f32,
+    /// Clip the output just inside full scale.
+    pub clip: bool,
 }
 
 /// A peak limiter: input gain, then nothing past the ceiling.

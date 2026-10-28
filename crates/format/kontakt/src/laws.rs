@@ -672,6 +672,7 @@ pub(crate) fn compressor(
         },
         link: link || mode == 2,
         mix: 1.0,
+        detector: ir::Detector::Input,
     }
 }
 
@@ -724,6 +725,7 @@ pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> (ir::Compressor, bo
         makeup_db: -5.25 + 26.25 * makeup,
         link,
         mix,
+        detector: ir::Detector::Input,
     };
     (c, step(release) == 5)
 }

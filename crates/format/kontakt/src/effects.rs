@@ -120,6 +120,7 @@ fn rack(
                 ir::EffectKind::Limiter(_) => Some("group limiter"),
                 ir::EffectKind::Delay(_) => Some("group delay"),
                 ir::EffectKind::Phaser(_) => Some("group phaser"),
+                ir::EffectKind::Transient(_) => Some("group transient master"),
                 _ => None,
             };
             if let Some(feature) = lost.filter(|_| at.starts_with("group") && !effect.bypass) {
@@ -251,6 +252,19 @@ fn slot_effect(
                     }
                     ir::EffectKind::Compressor(c)
                 })
+        }
+        0x43 | 0x4c => {
+            crate::dynamics::effect(effect.id, object.version, &public).map(|(kind, lost)| {
+                if let Some(feature) = lost {
+                    let impact = if params.bypass {
+                        ir::Impact::Cosmetic
+                    } else {
+                        ir::Impact::Audible
+                    };
+                    notes.add(impact, feature, at.to_owned());
+                }
+                kind
+            })
         }
         0x17 => sends(&public),
         0x44 => solid_eq(object.version, &public, at, notes),
