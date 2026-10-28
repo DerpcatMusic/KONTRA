@@ -474,7 +474,6 @@ mod tests {
         assert_eq!(log.0.last().map(|c| c.1.clone()), Some(vec![14, 100, 0, 0]));
     }
 
-    /// Two layers; the second's keygroups made engine groups 3 and 4.
     #[test]
     fn a_runaway_top_level_loop_fails_the_load() {
         assert!(compile("while true do end", &[], &[]).is_err());
@@ -492,6 +491,7 @@ mod tests {
         assert_eq!(alloc::spills(), before);
     }
 
+    /// Two layers; the second's keygroups made engine groups 3 and 4.
     const TREE: &str = "return {params={DisplayName='Horn'},db=0,pan=0,layers={
         {params={DisplayName='FX',Gain='1'},keygroups={{params={},group=0}}},
         {params={DisplayName='Sustain',Gain='0'},sendPre=1,sendPost=0,
