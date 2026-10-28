@@ -70,6 +70,10 @@ pub(super) fn lua_literal(json: &str) -> String {
                             let hex: String = chars.by_ref().take(4).collect();
                             text.push_str(&format!("\\u{{{hex}}}"));
                         }
+                        // JSON's `\/` is not a Lua escape.
+                        '\\' if chars.peek() == Some(&'/') => {
+                            text.extend(chars.next());
+                        }
                         '\\' => {
                             text.push(c);
                             text.extend(chars.next());
@@ -110,7 +114,7 @@ mod tests {
     #[test]
     fn saved_json_becomes_a_lua_table() {
         assert_eq!(
-            lua_literal(r#"[{"loadedLayer":"A/B \"x\""},{"n":1.5,"u":"\u00e9"},null]"#),
+            lua_literal(r#"[{"loadedLayer":"A\/B \"x\""},{"n":1.5,"u":"\u00e9"},null]"#),
             r#"return {{["loadedLayer"]="A/B \"x\""},{["n"]=1.5,["u"]="\u{00e9}"},nil}"#
         );
     }

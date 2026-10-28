@@ -203,12 +203,14 @@ impl<L: Library> Translator<'_, '_, L> {
             ),
         };
         let mut first = true;
-        // A player's slot is its place among the keygroup's oscillators.
+        // A player's slot is its place among the keygroup's oscillators, of
+        // any kind, as scripts index them.
         for (slot, player) in kg
-            .descendants()
-            .filter(|n| n.has_tag_name("SamplePlayer"))
+            .children()
+            .filter(|n| n.has_tag_name("Oscillators"))
+            .flat_map(|o| o.children().filter(Node::is_element))
             .enumerate()
-            .filter(|(_, n)| !flag(*n, "Bypass"))
+            .filter(|(_, n)| n.has_tag_name("SamplePlayer") && !flag(*n, "Bypass"))
         {
             let slot = u16::try_from(slot).unwrap_or(u16::MAX);
             if first {

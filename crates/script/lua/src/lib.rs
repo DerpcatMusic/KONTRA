@@ -72,7 +72,7 @@ pub fn compile(
     saved: &[String],
 ) -> Result<Compiled, String> {
     let (modules, saved) = inputs(modules, saved);
-    let lua = state(source, &modules, &saved).map_err(|e| e.to_string())?;
+    let (lua, _) = state(source, &modules, &saved).map_err(|e| e.to_string())?;
     let defined = |name: &str| matches!(lua.globals().get::<Value>(name), Ok(Value::Function(_)));
     let callbacks = Callbacks {
         // Always: init pushes the levels the program tree sets.
@@ -127,16 +127,10 @@ pub fn sample_loads(
     saved: &[String],
 ) -> Vec<SampleLoad> {
     let (modules, saved) = inputs(modules, saved);
-    let Ok(lua) = state(source, &modules, &saved) else {
+    let Ok((lua, checkpoints)) = state(source, &modules, &saved) else {
         return Vec::new();
     };
-    let checkpoints = AtomicU32::new(0);
-    lua.set_interrupt(move |_| {
-        if checkpoints.fetch_add(1, Ordering::Relaxed) > CHECKPOINTS {
-            return Err(mlua::Error::runtime("load ran too long"));
-        }
-        Ok(mlua::VmState::Continue)
-    });
+    checkpoints.store(0, Ordering::Relaxed);
     let Ok(loads) = lua
         .globals()
         .get::<Function>("__record")
@@ -162,12 +156,14 @@ pub fn sample_loads(
 impl Foreign for Compiled {
     fn machine(&self) -> Box<dyn Machine> {
         let load = alloc::Scope::load();
-        let machine = state(&self.source, &self.modules, &self.saved).map(|lua| LuaMachine {
-            lua: Some(lua),
-            slots: (0..COROUTINES).map(|_| Slot::default()).collect(),
-            spawned: Vec::with_capacity(COROUTINES),
-            faults: Faults::default(),
-        });
+        let machine =
+            state(&self.source, &self.modules, &self.saved).map(|(lua, checkpoints)| LuaMachine {
+                lua: Some(lua),
+                checkpoints,
+                slots: (0..COROUTINES).map(|_| Slot::default()).collect(),
+                spawned: Vec::with_capacity(COROUTINES),
+                faults: Faults::default(),
+            });
         drop(load);
         if let Ok(m) = &machine
             && let Some(lua) = &m.lua
@@ -185,15 +181,26 @@ fn module_name(name: &str) -> String {
     name.rsplit('.').next().unwrap_or(&name).to_lowercase()
 }
 
-/// A sandboxed state with the prelude, `require` and `source` loaded.
+/// A sandboxed state with the prelude, `require` and `source` loaded, and
+/// the count its interrupt stops at [`CHECKPOINTS`].
 fn state(
     source: &str,
     modules: &Arc<HashMap<String, String>>,
     saved: &[(String, String)],
-) -> mlua::Result<Lua> {
+) -> mlua::Result<(Lua, Arc<AtomicU32>)> {
     let libs = StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::COROUTINE | StdLib::BIT;
     let lua = Lua::new_with(libs, LuaOptions::new())?;
     lua.set_memory_limit(MEMORY)?;
+    // Installed once and bounding the load too: the caller zeroes the count
+    // before each run, so a runaway loop stops the run, not the host.
+    let checkpoints = Arc::new(AtomicU32::new(0));
+    let count = Arc::clone(&checkpoints);
+    lua.set_interrupt(move |_| {
+        if count.fetch_add(1, Ordering::Relaxed) > CHECKPOINTS {
+            return Err(mlua::Error::runtime("script ran too long"));
+        }
+        Ok(mlua::VmState::Continue)
+    });
     let actions = lua.create_table()?;
     for &action in Action::all() {
         actions.set(format!("{action:?}"), action.id())?;
@@ -230,7 +237,7 @@ fn state(
     globals.set("require", require)?;
     lua.load(PRELUDE).set_name("prelude").exec()?;
     lua.load(source).set_name("script").exec()?;
-    Ok(lua)
+    Ok((lua, checkpoints))
 }
 
 #[derive(Default)]
@@ -243,6 +250,8 @@ struct Slot {
 struct LuaMachine {
     /// `None` when the state could not be built: every callback is refused.
     lua: Option<Lua>,
+    /// The interrupt's count for the current run.
+    checkpoints: Arc<AtomicU32>,
     slots: Vec<Slot>,
     spawned: Vec<(CoId, u64)>,
     faults: Faults,
@@ -252,6 +261,7 @@ impl LuaMachine {
     fn empty() -> Self {
         Self {
             lua: None,
+            checkpoints: Arc::default(),
             slots: Vec::new(),
             spawned: Vec::new(),
             faults: Faults::default(),
@@ -326,13 +336,7 @@ impl Machine for LuaMachine {
         let Some(thread) = slot.thread.clone() else {
             return Step::Done;
         };
-        let checkpoints = AtomicU32::new(0);
-        lua.set_interrupt(move |_| {
-            if checkpoints.fetch_add(1, Ordering::Relaxed) > CHECKPOINTS {
-                return Err(mlua::Error::runtime("callback ran too long"));
-            }
-            Ok(mlua::VmState::Continue)
-        });
+        self.checkpoints.store(0, Ordering::Relaxed);
         let resumed = lua.scope(|scope| {
             let call = scope.create_function_mut(|_, args: Variadic<Value>| {
                 Ok(host_call(host, context, &args))
@@ -342,7 +346,6 @@ impl Machine for LuaMachine {
             lua.globals().set("__host", Value::Nil)?;
             result
         });
-        lua.remove_interrupt();
         self.collect_spawned(&lua, context);
         let step = match (resumed, thread.status()) {
             (Ok(waited), ThreadStatus::Resumable) => {
@@ -377,7 +380,8 @@ impl Machine for LuaMachine {
     }
 
     fn spawned(&mut self) -> Option<(CoId, u64)> {
-        self.spawned.pop()
+        // In spawn order; at most `COROUTINES` entries.
+        (!self.spawned.is_empty()).then(|| self.spawned.remove(0))
     }
 
     fn faults(&self) -> Faults {
@@ -471,6 +475,12 @@ mod tests {
     }
 
     /// Two layers; the second's keygroups made engine groups 3 and 4.
+    #[test]
+    fn a_runaway_top_level_loop_fails_the_load() {
+        assert!(compile("while true do end", &[], &[]).is_err());
+        assert!(sample_loads("while true do end", &[], &[]).is_empty());
+    }
+
     #[test]
     fn a_callback_allocates_from_the_arena_without_spilling() {
         let source = "function onNote(e) local t = {} for i = 1, 20000 do t[i] = {i} end end";

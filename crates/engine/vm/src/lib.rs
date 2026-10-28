@@ -62,8 +62,9 @@ pub trait Machine: Send {
     fn run(&mut self, co: CoId, host: &mut dyn HostApi) -> Step;
     fn cancel(&mut self, co: CoId);
     fn context(&self, co: CoId) -> Option<u64>;
-    /// A callback the last run started beside itself (UVI `spawn`), now
-    /// waiting this many microseconds: the host schedules it like a wait.
+    /// A callback the last run started beside itself (a front end's
+    /// `spawn`), now waiting this many microseconds: the host schedules it
+    /// like a wait. In the order they were started.
     fn spawned(&mut self) -> Option<(CoId, u64)>;
     fn faults(&self) -> Faults;
 }

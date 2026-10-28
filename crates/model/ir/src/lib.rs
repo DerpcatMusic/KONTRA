@@ -611,7 +611,7 @@ pub struct Zone {
     pub loops: Vec<Loop>,
     pub reverse: bool,
     /// The zone's place among the zones of its group that share its keys; a
-    /// note that names a slot starts only the zones in it (UVI `oscIndex`).
+    /// note that names a slot starts only the zones in it.
     pub slot: u16,
 }
 
