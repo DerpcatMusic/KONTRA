@@ -190,3 +190,26 @@ fn a_feedback_detector_compresses_less_than_feed_forward_at_the_same_ratio() {
         "{forward} {back}"
     );
 }
+
+#[test]
+fn a_trigger_pulls_any_level_past_the_threshold_to_one_fixed_depth() {
+    // -20 dB at 4:1: a fixed 15 dB, however far past the threshold.
+    let settled = |amplitude: f32| {
+        let mut c = Compressor::new(
+            CompressorSettings {
+                detector: Detector::Trigger,
+                ..settings()
+            },
+            RATE,
+        );
+        let mut io = sine(amplitude, RATE as usize);
+        c.process(&mut io);
+        let tail = io.get(RATE as usize / 2..).unwrap_or_default();
+        peak_db(tail) - 20.0 * amplitude.log10()
+    };
+    let (loud, soft) = (settled(1.0), settled(0.3));
+    assert!(
+        (loud - -15.0).abs() < 1.0 && (soft - -15.0).abs() < 1.0,
+        "{loud} {soft}"
+    );
+}
