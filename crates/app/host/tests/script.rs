@@ -404,3 +404,35 @@ fn a_script_sets_a_send_effects_wet_and_dry_levels() {
     let l = level(&mut e, &[on(60)]);
     assert!((l - 0.5).abs() < 1e-3, "{l}");
 }
+
+#[test]
+fn a_script_sets_a_send_level_by_the_volume_law() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Sends([0.0; 8]),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.sends = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Gain(1.0),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    // Chorus's reverb mix at 80 of 127; its saved level is 0.24994.
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_SENDLEVEL_0, 396821, -1, 0, $NI_INSERT_BUS)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let l = level(&mut e, &[on(60)]);
+    // Dry 0.5 plus the send's return 0.5 × 0.25.
+    assert!((l - 0.5 * 1.24997).abs() < 1e-3, "{l}");
+}

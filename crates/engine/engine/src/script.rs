@@ -45,6 +45,8 @@ pub struct EnginePars {
     pub send_bypass: i32,
     pub send_output: i32,
     pub send_dry: i32,
+    /// A Send Levels slot's level to each send slot.
+    pub send_levels: [i32; 8],
     pub gainer_gain: i32,
     pub stereo_width: i32,
     pub stereo_pan: i32,

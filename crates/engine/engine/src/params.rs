@@ -85,6 +85,8 @@ enum EffectPar {
     Bypass,
     Output,
     Dry,
+    /// A Send Levels slot's level to send slot n.
+    Send(usize),
     Gain,
     Width,
     Pan,
@@ -98,6 +100,11 @@ impl EffectPar {
             (Self::Bypass, _) => e.bypass = raw != 0.0,
             (Self::Output, _) => e.output = gain,
             (Self::Dry, _) => e.dry = gain,
+            // The volume law: Chorus saves 0.24994 for the init write 396821.
+            (Self::Send(n), ir::EffectKind::Sends(levels)) => match levels.get_mut(n) {
+                Some(level) => *level = (raw / UNITY_VOLUME).powi(3) as f32,
+                None => return false,
+            },
             (Self::Gain, ir::EffectKind::Gain(g)) => *g = gain,
             // ponytail: width and pan linear in the setting; no measurement yet.
             (Self::Width, ir::EffectKind::Stereo { width, .. }) => *width = (raw / 1e6) as f32,
@@ -113,6 +120,9 @@ impl EffectPar {
             (Self::Bypass, _) => f64::from(u8::from(e.bypass)),
             (Self::Output, _) => gain(e.output),
             (Self::Dry, _) => gain(e.dry),
+            (Self::Send(n), ir::EffectKind::Sends(levels)) => {
+                UNITY_VOLUME * f64::from(levels.get(n)?.max(0.0)).cbrt()
+            }
             (Self::Gain, ir::EffectKind::Gain(g)) => gain(g),
             (Self::Width, ir::EffectKind::Stereo { width, .. }) => f64::from(width) * 1e6,
             (Self::Pan, ir::EffectKind::Stereo { pan, .. }) => (f64::from(pan) + 1.0) * 5e5,
@@ -128,6 +138,9 @@ impl Engine {
             p if p == pars.effect_bypass || p == pars.send_bypass => Some(EffectPar::Bypass),
             p if p == pars.effect_output || p == pars.send_output => Some(EffectPar::Output),
             p if p == pars.send_dry => Some(EffectPar::Dry),
+            p if let Some(n) = pars.send_levels.iter().position(|&id| id == p) => {
+                Some(EffectPar::Send(n))
+            }
             p if p == pars.gainer_gain => Some(EffectPar::Gain),
             p if p == pars.stereo_width => Some(EffectPar::Width),
             p if p == pars.stereo_pan => Some(EffectPar::Pan),
