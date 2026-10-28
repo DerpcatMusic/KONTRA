@@ -21,6 +21,7 @@ local passes = { { { 1, 4 }, { 5, 9 } }, { { 10, 14 }, { 15, 18 } } }
 for pass, slots in ipairs(passes) do
   kt.reset_multi()
   local i = kt.load_instrument(ORACLE_INPUTS[1])
+  local compiled = {}
   for s, range in ipairs(slots) do
     local lines = { "on init" }
     for k = range[1], range[2] do
@@ -28,12 +29,14 @@ for pass, slots in ipairs(passes) do
     end
     lines[#lines + 1] = "end on"
     local ok, err = pcall(kt.set_instrument_script_source, i, s - 1, table.concat(lines, "\n") .. "\n")
+    compiled[s] = ok
     log(string.format('{"pass":%d,"slot":%d,"compile":%s,"err":"%s"}', pass, s - 1, tostring(ok), tostring(err):gsub('"', "'")))
   end
   local t0 = os.time()
   repeat until os.time() - t0 >= 6
-  for _, range in ipairs(slots) do
-    for k = range[1], range[2] do
+  for s, range in ipairs(slots) do
+    -- A slot whose script did not install measured nothing.
+    for k = range[1], compiled[s] and range[2] or range[1] - 1 do
       log(string.format('{"case":"%s","units":%.2f}', cases[k], kt.get_group_tune(i, k - 1) / 0.36))
     end
   end

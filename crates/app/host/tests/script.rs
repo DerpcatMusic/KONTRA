@@ -491,9 +491,10 @@ fn millisecond_and_beat_timers_run_side_by_side_and_keep_their_signal() {
     assert_eq!(e.last_message(), "8 4");
 }
 
-/// Kontakt's own callback-type and signal numbers (probes/callback_constants.lua).
+/// The callback-type and signal numbers scripts compare against are the
+/// measured ones (probes/callback_constants.lua).
 #[test]
-fn callback_types_and_signals_carry_kontakts_numbers() {
+fn callback_types_and_signals_carry_the_measured_numbers() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let zones = vec![zone(&mut store, 0.5, 0)];
     let mut e = engine(
@@ -529,7 +530,7 @@ fn the_transport_starts_the_listener_and_answers_its_queries() {
         end on",
     );
     // 120 bpm: a quarter is 500 ms and 960 ticks; a 3/4 bar is 1.5 s.
-    e.set_transport(true, 2.0, (3, 4));
+    e.set_transport(kontra_engine::Play::Running, 2.0, (3, 4));
     assert_eq!(e.last_message(), "1 1920 960 250000 3/4 1500000");
     // 4096 frames at 120 bpm move the song on 163.84 ticks.
     level(&mut e, &[]);
@@ -724,7 +725,8 @@ fn a_uvi_note_on_an_oscillator_starts_only_that_zone_slot() {
     let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
     plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
-    assert!((level(&mut e, &[on(60)]) - 0.25).abs() < 1e-3);
+    let measured = level(&mut e, &[on(60)]);
+    assert!((measured - 0.25).abs() < 1e-3, "{measured}");
 }
 
 #[test]
@@ -749,7 +751,8 @@ fn a_script_modulation_sent_at_init_scales_notes_that_start_later() {
     let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
     plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
-    assert!((level(&mut e, &[on(60)]) - 0.25).abs() < 1e-3);
+    let measured = level(&mut e, &[on(60)]);
+    assert!((measured - 0.25).abs() < 1e-3, "{measured}");
 }
 
 #[test]
@@ -778,7 +781,8 @@ fn a_script_modulation_index_keeps_its_value_after_many_others() {
     let compiled = kontra_lua::compile(source, &[], &[]).unwrap();
     plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
-    assert!((level(&mut e, &[on(60)]) - 0.25).abs() < 1e-3);
+    let measured = level(&mut e, &[on(60)]);
+    assert!((measured - 0.25).abs() < 1e-3, "{measured}");
 }
 
 #[test]
