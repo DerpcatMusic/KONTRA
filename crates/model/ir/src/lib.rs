@@ -387,6 +387,8 @@ pub enum Curve {
     /// `(1 − (1 − x) × intensity)^power`: the source pulls the gain down from
     /// unity by its depth; power 1 is linear in amplitude.
     Depth { power: u8 },
+    /// [`Self::Depth`] at power 1 on `x²`; a negative intensity reads `1 − x²`.
+    Squared,
 }
 
 impl Curve {
@@ -399,6 +401,10 @@ impl Curve {
             Self::Depth { power } => (1.0 - (1.0 - x) * intensity)
                 .max(0.0)
                 .powi(i32::from(power)),
+            Self::Squared => {
+                let x = if intensity < 0.0 { 1.0 - x * x } else { x * x };
+                (1.0 - (1.0 - x) * intensity.abs()).max(0.0)
+            }
         }
     }
 }

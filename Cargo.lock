@@ -2415,9 +2415,12 @@ dependencies = [
 name = "kontra-format-sfz"
 version = "0.0.0"
 dependencies = [
+ "hound",
  "kontra-format",
+ "kontra-ir",
  "kontra-law",
  "kontra-params",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
