@@ -110,7 +110,8 @@ script/lua/src/
   mlua 0.12 allocates through the Rust global allocator (option A of
   `spikes/luau-alloc-mlua.md`). A load grows the arena; an audio callback
   never does, and an allocation that does not fit is counted as a spill.
-  GC steps run in a bounded slice after the render span.
+  There is no separate GC step: Luau's incremental collector does its work
+  inside the callback's own allocations, so it is bounded by them.
 - **Same scheduler.** `wait(ms)` becomes `Work::Resume` at the exact
   sample. Calling `playNote` from Lua creates a ledger child, exactly as KSP
   `play_note` does.

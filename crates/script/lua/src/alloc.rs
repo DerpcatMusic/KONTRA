@@ -21,7 +21,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, UnsafeCell};
 use std::hint::spin_loop;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use rlsf::Tlsf;
 
@@ -44,6 +44,9 @@ thread_local! {
     /// This thread's scope. Const-initialised with no destructor, so reading
     /// it never allocates.
     static MODE: Cell<Mode> = const { Cell::new(Mode::Off) };
+    /// This thread's audio-scope spills, so one audio thread's count is not
+    /// moved by another's.
+    static SPILLS: Cell<u64> = const { Cell::new(0) };
 }
 
 fn mode() -> Mode {
@@ -80,7 +83,6 @@ struct Arena {
     count: AtomicUsize,
     pooled: AtomicUsize,
     live: AtomicUsize,
-    spills: AtomicU64,
 }
 
 // SAFETY: `heap` is only reached through `Arena::locked`, which holds `lock`;
@@ -94,7 +96,6 @@ static ARENA: Arena = Arena {
     count: AtomicUsize::new(0),
     pooled: AtomicUsize::new(0),
     live: AtomicUsize::new(0),
-    spills: AtomicU64::new(0),
 };
 
 impl Arena {
@@ -120,27 +121,30 @@ impl Arena {
         })
     }
 
-    /// Adds a pool of at least `bytes`, its pages touched now so the audio
-    /// thread never faults them in. The pool is never freed.
-    fn grow(&self, heap: &mut Heap, bytes: usize) -> bool {
-        let count = self.count.load(Ordering::Relaxed);
-        let Some((start, end)) = self.pools.get(count) else {
-            return false;
-        };
+    /// Allocates a pool of at least `bytes`, its pages touched now so the
+    /// audio thread never faults them in. Runs outside the lock: a load
+    /// growing the arena never stalls the audio thread.
+    fn prepare(bytes: usize) -> Option<(NonNull<u8>, Layout)> {
         let size = bytes.max(GROW).next_multiple_of(PAGE);
-        let Ok(layout) = Layout::from_size_align(size, PAGE) else {
-            return false;
-        };
+        let layout = Layout::from_size_align(size, PAGE).ok()?;
         // SAFETY: `layout` has a non-zero size.
-        let Some(block) = NonNull::new(unsafe { System.alloc(layout) }) else {
-            return false;
-        };
+        let block = NonNull::new(unsafe { System.alloc(layout) })?;
         // Volatile, one write per page: a plain zeroing after `alloc` may be
         // turned into `calloc`, which leaves the pages unmapped.
         for page in (0..size).step_by(PAGE) {
             // SAFETY: `page < size`, inside the block.
             unsafe { ptr::write_volatile(block.as_ptr().add(page), 0) };
         }
+        Some((block, layout))
+    }
+
+    /// Hands a prepared pool to the heap; false when every pool slot is
+    /// taken. The pool is never freed.
+    fn publish(&self, heap: &mut Heap, block: NonNull<u8>, size: usize) -> bool {
+        let count = self.count.load(Ordering::Relaxed);
+        let Some((start, end)) = self.pools.get(count) else {
+            return false;
+        };
         start.store(block.as_ptr() as usize, Ordering::Relaxed);
         end.store(block.as_ptr() as usize + size, Ordering::Relaxed);
         self.count.store(count + 1, Ordering::Release);
@@ -151,25 +155,37 @@ impl Arena {
         true
     }
 
+    fn take(&self, heap: &mut Heap, layout: Layout) -> Option<*mut u8> {
+        let block = heap.allocate(layout)?;
+        self.live.fetch_add(layout.size(), Ordering::Relaxed);
+        Some(block.as_ptr())
+    }
+
     fn alloc(&self, layout: Layout, grow: bool) -> *mut u8 {
-        self.locked(|heap| {
-            let block = heap.allocate(layout).or_else(|| {
-                // Room for the block rounded up to the next size class (TLSF
-                // takes a good fit, up to 1/32 above), its alignment and the
-                // pool's own headers.
-                let room = layout
-                    .size()
-                    .saturating_add(layout.size() / 16)
-                    .saturating_add(layout.align() + PAGE);
-                (grow && self.grow(heap, room))
-                    .then(|| heap.allocate(layout))
-                    .flatten()
-            });
-            if block.is_some() {
-                self.live.fetch_add(layout.size(), Ordering::Relaxed);
+        if let Some(block) = self.locked(|heap| self.take(heap, layout)) {
+            return block;
+        }
+        // Room for the block rounded up to the next size class (TLSF takes a
+        // good fit, up to 1/32 above), its alignment and the pool's headers.
+        let room = layout
+            .size()
+            .saturating_add(layout.size() / 16)
+            .saturating_add(layout.align() + PAGE);
+        let Some((pool, pool_layout)) = grow.then(|| Self::prepare(room)).flatten() else {
+            return ptr::null_mut();
+        };
+        let (block, published) = self.locked(|heap| {
+            if self.publish(heap, pool, pool_layout.size()) {
+                (self.take(heap, layout), true)
+            } else {
+                (None, false)
             }
-            block.map_or(ptr::null_mut(), NonNull::as_ptr)
-        })
+        });
+        if !published {
+            // SAFETY: allocated by `prepare` with this layout and not shared.
+            unsafe { System.dealloc(pool.as_ptr(), pool_layout) };
+        }
+        block.unwrap_or(ptr::null_mut())
     }
 }
 
@@ -187,7 +203,7 @@ unsafe impl GlobalAlloc for Routed {
             if !block.is_null() {
                 return block;
             }
-            ARENA.spills.fetch_add(1, Ordering::Relaxed);
+            let _ = SPILLS.try_with(|n| n.set(n.get() + 1));
         }
         // SAFETY: the caller's layout has a non-zero size.
         unsafe { System.alloc(layout) }
@@ -261,19 +277,24 @@ unsafe impl GlobalAlloc for Routed {
 /// Makes sure the arena has at least `bytes` free (by its count; TLSF
 /// fragmentation is not measured). Called after a load, off the audio thread.
 pub fn reserve(bytes: usize) {
-    ARENA.locked(|heap| {
-        let pooled = ARENA.pooled.load(Ordering::Relaxed);
-        let live = ARENA.live.load(Ordering::Relaxed);
-        if pooled.saturating_sub(live) < bytes {
-            ARENA.grow(heap, bytes);
-        }
-    });
+    let pooled = ARENA.pooled.load(Ordering::Relaxed);
+    let live = ARENA.live.load(Ordering::Relaxed);
+    if pooled.saturating_sub(live) >= bytes {
+        return;
+    }
+    let Some((pool, layout)) = Arena::prepare(bytes) else {
+        return;
+    };
+    if !ARENA.locked(|heap| ARENA.publish(heap, pool, layout.size())) {
+        // SAFETY: allocated by `prepare` with this layout and not shared.
+        unsafe { System.dealloc(pool.as_ptr(), layout) };
+    }
 }
 
-/// Audio-scope allocations that did not fit the arena and went to the system
-/// heap. Zero is the target.
+/// This thread's audio-scope allocations that did not fit the arena and went
+/// to the system heap. Zero is the target.
 pub fn spills() -> u64 {
-    ARENA.spills.load(Ordering::Relaxed)
+    SPILLS.try_with(Cell::get).unwrap_or(0)
 }
 
 #[cfg(test)]
