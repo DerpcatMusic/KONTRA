@@ -34,10 +34,13 @@ impl Limiter {
     /// Changes the settings while it plays.
     pub fn set(&mut self, s: Settings, rate: u32) {
         self.input = gain(s.input_db);
-        // A NaN ceiling would make `clamp` panic: full scale instead.
-        self.ceiling = Some(gain(s.ceiling_db))
-            .filter(|c| c.is_finite() && *c > 0.0)
-            .unwrap_or(1.0);
+        // A NaN ceiling would make `clamp` panic: full scale instead. Any
+        // other dB, infinities included, is a valid linear ceiling.
+        self.ceiling = if s.ceiling_db.is_nan() {
+            1.0
+        } else {
+            gain(s.ceiling_db)
+        };
         // Halves in the release time.
         let frames = (s.release_ms * 0.001 * rate as f32).max(1.0);
         self.fall = (-std::f32::consts::LN_2 / frames).exp();
