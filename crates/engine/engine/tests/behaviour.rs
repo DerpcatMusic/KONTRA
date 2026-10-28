@@ -1024,6 +1024,7 @@ fn a_compressor_slot_mixes_its_dry_level_from_the_input() {
                 makeup_db: 0.0,
                 link: true,
                 mix: 1.0,
+                detector: ir::Detector::Input,
             }),
             bypass: false,
             output,

@@ -6,6 +6,7 @@ mod access;
 mod container;
 mod delays;
 mod drive;
+mod dynamics;
 mod effects;
 mod fastlz;
 mod impulse;

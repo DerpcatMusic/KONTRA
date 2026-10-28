@@ -1,12 +1,14 @@
-//! One compressor and one peak limiter; design in
+//! One compressor, one peak limiter and one transient shaper; design in
 //! docs/architecture-v3/03-DSP.md. Formats load their laws into these
 //! classes.
 
 mod compressor;
 mod limiter;
+mod transient;
 
-pub use compressor::{Compressor, Settings as CompressorSettings};
+pub use compressor::{Compressor, Detector, Settings as CompressorSettings};
 pub use limiter::{Limiter, Settings as LimiterSettings};
+pub use transient::{Settings as TransientSettings, Transient};
 
 /// `db` as a linear gain.
 fn gain(db: f32) -> f32 {

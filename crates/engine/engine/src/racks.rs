@@ -5,7 +5,10 @@
 use std::sync::Arc;
 
 use kontra_dsp::delay::{MAX_MS, ModDelay, Phaser, PhaserSettings};
-use kontra_dsp::dynamics::{Compressor, CompressorSettings, Limiter, LimiterSettings};
+use kontra_dsp::dynamics::{
+    Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
+    TransientSettings,
+};
 use kontra_dsp::reverb::{Convolver, Fdn, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
@@ -45,6 +48,12 @@ impl Wet for Compressor {
 impl Wet for Limiter {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         Limiter::process(self, io);
+    }
+}
+
+impl Wet for Transient {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Transient::process(self, io);
     }
 }
 
@@ -135,6 +144,15 @@ impl Rack {
                 Some(ir::EffectKind::Phaser(p)) => {
                     wet(Box::new(Phaser::new(phaser(p, 120.0), rate)))
                 }
+                Some(ir::EffectKind::Transient(t)) => wet(Box::new(Transient::new(
+                    TransientSettings {
+                        attack: t.attack,
+                        sustain: t.sustain,
+                        gain_db: t.gain_db,
+                        clip: t.clip,
+                    },
+                    rate,
+                ))),
                 _ => Dsp::None,
             })
             .collect();
@@ -203,6 +221,10 @@ fn compressor(c: ir::Compressor) -> CompressorSettings {
         makeup_db: c.makeup_db,
         link: c.link,
         mix: c.mix,
+        detector: match c.detector {
+            ir::Detector::Input => Detector::Input,
+            ir::Detector::Output => Detector::Output,
+        },
     }
 }
 
