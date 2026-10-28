@@ -14,6 +14,20 @@ pub struct Bus {
     pub to_main: bool,
 }
 
+impl Bus {
+    /// A bus at unity on the main output, with no effects or sends.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            volume_db: 0.0,
+            pan: 0.0,
+            inserts: Vec::new(),
+            sends: Vec::new(),
+            to_main: true,
+        }
+    }
+}
+
 /// A bus's feed into a later bus.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BusSend {

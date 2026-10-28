@@ -102,14 +102,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     let responses = impulses.samples;
     // Bus 0 is the main mix; Kontakt's bus n is n + 1.
     if !buses.is_empty() {
-        out.buses.push(ir::Bus {
-            name: "Main".into(),
-            volume_db: 0.0,
-            pan: 0.0,
-            inserts: Vec::new(),
-            sends: Vec::new(),
-            to_main: true,
-        });
+        out.buses.push(ir::Bus::new("Main"));
         out.buses.extend(buses);
         for (g, group) in out.groups.iter_mut().zip(&groups.groups) {
             if let Some(n) = group
