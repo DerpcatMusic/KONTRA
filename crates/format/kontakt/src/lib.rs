@@ -8,6 +8,7 @@ mod delays;
 mod drive;
 mod dynamics;
 mod effects;
+mod external;
 mod fastlz;
 mod impulse;
 mod laws;

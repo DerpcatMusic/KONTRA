@@ -260,6 +260,8 @@ pub struct Group {
     pub envelopes: Vec<Breakpoints>,
     /// Oscillators [`Source::Lfo`] reads, by index.
     pub lfos: Vec<Lfo>,
+    /// Transfer tables [`Source::Shaped`] reads, by index.
+    pub shapers: Vec<Transfer>,
     /// Each modulator's route names, in route order, carried or not: what
     /// scripts find routes by.
     pub routes: Vec<Routes>,
@@ -297,9 +299,41 @@ impl Group {
         inserts: Vec::new(),
         envelopes: Vec::new(),
         lfos: Vec::new(),
+        shapers: Vec::new(),
         routes: Vec::new(),
         zones: Vec::new(),
     };
+}
+
+/// A source through a transfer table: `table` holds the outputs for evenly
+/// spaced inputs 0..=1, read with linear interpolation. Its source is never
+/// itself shaped.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Transfer {
+    pub source: Source,
+    pub table: Vec<f32>,
+}
+
+impl Transfer {
+    /// The table's output for `x`, clamped to 0..=1; an empty table passes
+    /// `x` through.
+    #[must_use]
+    pub fn apply(&self, x: f32) -> f32 {
+        let Some(last) = self.table.len().checked_sub(1) else {
+            return x;
+        };
+        let at = x.clamp(0.0, 1.0) * last as f32;
+        let i = (at as usize).min(last);
+        let (a, b) = (
+            self.table.get(i).copied().unwrap_or(x),
+            self.table
+                .get(i + 1)
+                .or(self.table.get(i))
+                .copied()
+                .unwrap_or(x),
+        );
+        a + (b - a) * (at - i as f32)
+    }
 }
 
 /// A per-voice envelope of free breakpoints, 0..=1. It starts at `start`,
@@ -420,12 +454,20 @@ pub struct Mod {
 pub enum Source {
     Velocity,
     Controller(u8),
+    /// Controller `cc`, reading `start` (0..=127) until its first message
+    /// on the channel arrives.
+    ControllerFrom {
+        cc: u8,
+        start: u8,
+    },
     /// The channel's pitch bend, −1..=1.
     PitchBend,
     /// The note's key over 127.
     Key,
     /// The group's [`Group::envelopes`] entry.
     Envelope(u8),
+    /// The group's [`Group::shapers`] entry: its source through its table.
+    Shaped(u8),
     /// The group's [`Group::lfos`] entry, −1..=1.
     Lfo(u8),
     /// Always 1.
@@ -438,6 +480,17 @@ pub enum Source {
     HeldTime {
         span_ms: u32,
     },
+}
+
+impl Source {
+    /// The controller it reads, if any.
+    #[must_use]
+    pub fn controller(self) -> Option<u8> {
+        match self {
+            Self::Controller(cc) | Self::ControllerFrom { cc, .. } => Some(cc),
+            _ => None,
+        }
+    }
 }
 
 /// How a volume modulation turns its source into gain.
