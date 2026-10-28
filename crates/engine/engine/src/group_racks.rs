@@ -4,8 +4,14 @@
 //! the group's sum: the voices fold just the slots before that point into
 //! their matrix, and the group's own chain runs the rest as a rack.
 //!
-//! ponytail: a wet slot at or before a per-voice unit still folds to its dry
-//! level (the translator reports it); a per-voice tap would carry it.
+//! ponytail: Kontakt runs group inserts per voice, slots before the group's
+//! amp split ahead of its envelope (`fx_idx_amp_split_point`, not carried).
+//! The sum here is exact for a linear slot after the split; one before it
+//! rings on past the voice where Kontakt cuts it with the envelope. A wet
+//! slot at or before a per-voice unit folds to its dry level (reported). A
+//! summed tap cannot model that, because the envelope comes after the slot.
+//! It would need a per-voice instance, and no corpus library (682 nki, 112
+//! libraries, 2026-10-28) has an active group wet slot.
 
 use kontra_ir as ir;
 
