@@ -59,7 +59,7 @@ impl<'a> Impulses<'a> {
     ) -> Option<u16> {
         let fields = EffectParameters::read(0x16, version, public).ok()??.fields;
         let float = |n: usize| match fields.get(n).map(|f| &f.value) {
-            Some(EffectValue::Float(v)) => Some(*v),
+            Some(EffectValue::Float(v)) => Some(*v).filter(|v| v.is_finite()),
             _ => None,
         };
         let flag = |n: usize| matches!(fields.get(n).map(|f| &f.value), Some(EffectValue::Byte(b)) if *b != 0);
@@ -69,7 +69,9 @@ impl<'a> Impulses<'a> {
         };
         let name = self.files.get(&index)?.clone();
         let floats = |n: usize| match fields.get(n).map(|f| &f.value) {
-            Some(EffectValue::Floats(v)) => <[f32; 8]>::try_from(v.as_slice()).ok(),
+            Some(EffectValue::Floats(v)) => <[f32; 8]>::try_from(v.as_slice())
+                .ok()
+                .filter(|v| v.iter().all(|x| x.is_finite())),
             _ => None,
         };
         // The size setter 0x1419b6750 keeps only sizes in 0.5..=1.5.

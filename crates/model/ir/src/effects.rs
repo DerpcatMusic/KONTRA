@@ -104,6 +104,8 @@ pub struct Reverb {
     pub seconds: f32,
     /// Delay-line scale, 1 a mid-size room.
     pub size: f32,
+    /// The lines grow by `size·(a + b·size)`; `[1, 0]` keeps `size`.
+    pub size_curve: [f32; 2],
     /// 0..=1: how much faster the highs die.
     pub damping: f32,
     /// 0..=1: the tail's early density.

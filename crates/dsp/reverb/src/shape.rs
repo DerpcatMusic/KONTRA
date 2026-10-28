@@ -2,9 +2,7 @@
 //! cuts for its early and late parts with a crossfade between them, and a
 //! volume envelope. Every step is linear and time-invariant, so shaping the
 //! response equals shaping the wet path. The filters are second-order
-//! Butterworths run once forward; the crossfade is cos² over 50 ms
-//! (Kontakt's CConvolver `0x1419b27a0`, `0x1419b1e30`, v2 sampler-core
-//! space/shape.rs).
+//! Butterworths run once forward; the crossfade is cos² over 50 ms.
 
 /// Low and high cut Hz of the early and late parts, and where (a fraction
 /// of the length) the late part takes over; `None` filters it all as late.
@@ -16,10 +14,11 @@ pub struct Cuts {
 }
 
 /// A bilinear Butterworth low- or high-pass over `x`; a low-pass above
-/// 0.45 of the rate or a high-pass below 0.01 of it passes.
+/// 0.45 of the rate or a high-pass below 0.01 of it passes, as does a
+/// corner that is not a positive number.
 fn butterworth(x: &mut [f32], rate: u32, hz: f32, high_pass: bool) {
     let w = hz / rate.max(1) as f32;
-    if !w.is_finite() || (!high_pass && w > 0.45) || (high_pass && w < 0.01) {
+    if !w.is_finite() || w <= 0.0 || (!high_pass && w > 0.45) || (high_pass && w < 0.01) {
         return;
     }
     let k = (w * std::f32::consts::PI).tan();

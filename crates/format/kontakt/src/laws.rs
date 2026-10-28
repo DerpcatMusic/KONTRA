@@ -554,7 +554,8 @@ pub(crate) fn solid_eq(
 /// high cut 19000(1−x)+2000 Hz, low shelf −12x dB, stereo x. The Hall type
 /// (saved type 1) has longer lines: from the line-length law `0x141aebb00`
 /// (v2 sampler-core space/design.rs), its mean is `1.553 + 0.208x` times the
-/// Room's at size x. Modulation swings all but the first line by `10x`
+/// Room's at size x, which is `1.4837 + 0.1733·s` at the physical size `s` (a
+/// size curve, so a script's size change keeps it). Modulation swings all but the first line by `10x`
 /// samples at 44.1 kHz, at 2 Hz (`0x141aec0a0`).
 // ponytail: one 8-line FDN for Kontakt's 31-line Room and Hall networks; the
 // Hall's own output taps and allpass units are not copied (unmeasured).
@@ -582,7 +583,12 @@ pub(crate) fn reverb(kind: i32, v: [f32; 9]) -> ir::Reverb {
     ] = reverb_laws();
     ir::Reverb {
         seconds: seconds.eval(time),
-        size: size_law.eval(size) * if kind == 1 { 1.553 + 0.208 * size } else { 1.0 },
+        size: size_law.eval(size),
+        size_curve: if kind == 1 {
+            [1.483_7, 0.173_3]
+        } else {
+            [1.0, 0.0]
+        },
         damping: damping_law.eval(damping),
         diffusion: diffusion_law.eval(diffusion),
         predelay_ms: predelay_law.eval(predelay),
@@ -779,7 +785,12 @@ mod tests {
         let mut v = [0.5; 9];
         let room = reverb(0, v);
         let hall = reverb(1, v);
-        assert!((hall.size / room.size - 1.657).abs() < 1e-3);
+        let scale = |r: ir::Reverb| r.size_curve[0] + r.size_curve[1] * r.size;
+        assert!((scale(hall) / scale(room) - 1.657).abs() < 1e-3);
+        // At the smallest size the Hall is 1.553 times the Room.
+        v[1] = 0.0;
+        assert!((scale(reverb(1, v)) - 1.553).abs() < 1e-3);
+        v[1] = 0.5;
         assert!((room.modulation_ms - 5.0 / 44.1).abs() < 1e-6 && room.modulation_hz == 2.0);
         v[3] = 0.0;
         assert_eq!(reverb(0, v).modulation_ms, 0.0);
