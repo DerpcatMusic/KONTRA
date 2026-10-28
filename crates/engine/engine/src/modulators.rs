@@ -201,6 +201,7 @@ mod tests {
             points: vec![point(100.0, 1.0), point(100.0, 0.5), point(200.0, 0.0)],
             sustain: Some(1),
             loop_from: None,
+            stages: false,
         };
         assert!((envelope(&e, at(0.05, None)) - 0.5).abs() < 1e-5);
         assert!((envelope(&e, at(0.15, None)) - 0.75).abs() < 1e-5);
@@ -222,6 +223,7 @@ mod tests {
             points: vec![point(100.0, 1.0), point(100.0, 0.0), point(100.0, 1.0)],
             sustain: Some(2),
             loop_from: Some(1),
+            stages: false,
         };
         assert!((envelope(&e, at(0.25, None)) - 0.5).abs() < 1e-5);
         assert!(

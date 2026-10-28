@@ -23,6 +23,12 @@ impl Encoding {
     }
 }
 
+/// Most channels a sample may have.
+pub const MAX_CHANNELS: usize = 16;
+
+/// How each source channel (row) reaches the left and right outputs.
+pub type Mix = [[f32; 2]; MAX_CHANNELS];
+
 /// The stored layout of a sample: encoding and interleaved channel count, as recorded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SampleFmt {
@@ -38,9 +44,17 @@ impl SampleFmt {
 
     /// Decodes frames `first..first + out.len()` of a page into stereo.
     /// `byte(i)` reads byte `i` of the page and returns 0 past its end.
-    /// Mono plays on both sides; channels past the second are not played.
+    /// With `mix`, channel `c` adds `mix[c]` times its value to the outputs;
+    /// without, mono plays on both sides and channels past the second are not
+    /// played.
     // ponytail: scalar per-byte decode; SIMD per encoding when C10 shows it in a profile.
-    pub(crate) fn decode(self, byte: impl Fn(usize) -> u8, first: usize, out: &mut [[f32; 2]]) {
+    pub(crate) fn decode(
+        self,
+        byte: impl Fn(usize) -> u8,
+        first: usize,
+        out: &mut [[f32; 2]],
+        mix: Option<&Mix>,
+    ) {
         let width = self.encoding.bytes();
         let frame_bytes = self.bytes_per_frame();
         let value = |at: usize| -> f32 {
@@ -55,6 +69,20 @@ impl SampleFmt {
                 }
             }
         };
+        if let Some(mix) = mix {
+            let rows = mix.iter().take(usize::from(self.channels));
+            for (n, frame) in out.iter_mut().enumerate() {
+                let at = (first + n) * frame_bytes;
+                *frame = rows
+                    .clone()
+                    .enumerate()
+                    .fold([0.0; 2], |[l, r], (c, gain)| {
+                        let v = value(at + c * width);
+                        [l + v * gain[0], r + v * gain[1]]
+                    });
+            }
+            return;
+        }
         for (n, frame) in out.iter_mut().enumerate() {
             let at = (first + n) * frame_bytes;
             let left = value(at);
@@ -74,8 +102,28 @@ mod tests {
 
     fn decode(fmt: SampleFmt, bytes: &[u8], frames: usize) -> Vec<[f32; 2]> {
         let mut out = vec![[9.0; 2]; frames];
-        fmt.decode(|i| bytes.get(i).copied().unwrap_or(0), 0, &mut out);
+        fmt.decode(|i| bytes.get(i).copied().unwrap_or(0), 0, &mut out, None);
         out
+    }
+
+    #[test]
+    fn a_mix_sums_each_channel_into_both_outputs_by_its_row() {
+        let fmt = SampleFmt {
+            encoding: Encoding::I16,
+            channels: 3,
+        };
+        let bytes = [0x00, 0x40, 0x00, 0x20, 0x00, 0xC0]; // 0.5, 0.25, -0.5
+        let mut mix = [[0.0; 2]; MAX_CHANNELS];
+        mix[0] = [1.0, 0.0];
+        mix[2] = [0.5, 1.0];
+        let mut out = [[9.0; 2]];
+        fmt.decode(
+            |i| bytes.get(i).copied().unwrap_or(0),
+            0,
+            &mut out,
+            Some(&mix),
+        );
+        assert_eq!(out, [[0.25, -0.5]]);
     }
 
     #[test]

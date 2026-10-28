@@ -39,6 +39,8 @@ pub enum EnginePar {
     /// The bus a group plays into: bus n is `1024 + n` (plan bus n + 1),
     /// −1 the main bus. On a bus (generic `1024 + n`), its own output.
     OutputChannel,
+    /// Entry n of the script plan's knobs: a 0..=1 knob through its law.
+    Knob(u16),
 }
 
 /// A script's parameter ids: id `first + n` is `by_id[n]`.

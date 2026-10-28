@@ -32,6 +32,7 @@ fn zone(store: &mut Store, level: f32, group: u32) -> Zone {
         )
         .unwrap();
     let region = Region {
+        mix: None,
         sample,
         start: 0,
         end: frames,
@@ -197,7 +198,7 @@ fn a_script_bypass_takes_a_playing_voices_filter_out() {
             pass: ir::Pass::High,
             hz: 1000.0,
             stages: 1,
-            pole: false,
+            ladder: None,
             damping: [1.4, 1.4, 1.4],
             gain: 1.0,
             octaves: 1.0,
@@ -436,7 +437,14 @@ fn a_script_sets_the_stages_of_a_routed_ahdsr() {
         ],
         sustain: Some(2),
         loop_from: None,
+        stages: true,
     }];
+    // A flex envelope of the same shape at slot 1: no stages to set.
+    let flex = ir::Breakpoints {
+        stages: false,
+        ..g.envelopes[0].clone()
+    };
+    g.envelopes.push(flex);
     g.mods = vec![ir::Mod {
         name: "ENV_AHDSR".into(),
         slot: 0,
@@ -448,23 +456,88 @@ fn a_script_sets_the_stages_of_a_routed_ahdsr() {
             curve: ir::Curve::Depth { power: 1 },
         },
     }];
+    g.mods.push(ir::Mod {
+        name: "ENV_FLEX".into(),
+        slot: 1,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Pan {
+            source: ir::Source::Envelope(1),
+            amount: 0.0,
+        },
+    });
     let script = kontra_ksp::compile(
         "on init
+            set_engine_par($ENGINE_PAR_ATTACK, 600000, 0, 1, -1)
             set_engine_par($ENGINE_PAR_ATTACK, 0, 0, 0, -1)
             set_engine_par($ENGINE_PAR_DECAY, 0, 0, 0, -1)
             set_engine_par($ENGINE_PAR_SUSTAIN, 500000, 0, 0, -1)
             set_engine_par($ENGINE_PAR_RELEASE, 250000, 0, 0, -1)
-            message(get_engine_par($ENGINE_PAR_SUSTAIN, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_RELEASE, 0, 0, -1))
+            message(get_engine_par($ENGINE_PAR_SUSTAIN, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_RELEASE, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_ATTACK, 0, 1, -1))
         end on",
         &[],
     )
     .unwrap();
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
-    assert_eq!(e.last_message(), "500000 250000");
+    // Real Kontakt (probes/flex_stage_writes.lua): a flex reads 0.
+    assert_eq!(e.last_message(), "500000 250000 0");
     // No attack or decay: the note sits at the sustain level, 0.5³.
     let l = level(&mut e, &[on(60)]);
     assert!((l - 0.5 * 0.125).abs() < 1e-3, "{l}");
+}
+
+#[test]
+fn script_knobs_set_effect_and_lfo_controls_through_their_laws() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let g = &mut plan.groups[0];
+    g.lfos = vec![ir::Lfo {
+        wave: ir::Wave::Multi {
+            weights: [0.0; 5],
+            width: 0.5,
+            normalize: true,
+        },
+        rate: ir::Rate::Hz(1.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: ir::Clock::Voice,
+    }];
+    g.mods = vec![ir::Mod {
+        name: "LFO".into(),
+        slot: 3,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Pan {
+            source: ir::Source::Lfo(0),
+            amount: 0.0,
+        },
+    }];
+    g.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Crush(ir::Crush {
+            rate: 1.0,
+            bits: 16.0,
+            noise: 0.0,
+            noise_tone: 1.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_LFO_SINE, 865000, 0, 3, -1)
+            set_engine_par($ENGINE_PAR_INTMOD_FREQUENCY, 390018, 0, 3, -1)
+            set_engine_par($ENGINE_PAR_BITS, 500000, 0, 0, -1)
+            message(get_engine_par($ENGINE_PAR_LFO_SINE, 0, 3, -1) & \" \" & get_engine_par($ENGINE_PAR_INTMOD_FREQUENCY, 0, 3, -1) & \" \" & get_engine_par($ENGINE_PAR_BITS, 0, 0, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "865000 390018 500000");
 }
 
 #[test]

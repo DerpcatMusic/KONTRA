@@ -33,6 +33,7 @@ fn region(store: &mut Store, level: f32, frames: u64) -> std::io::Result<Region>
         std::slice::from_ref(&(0..frames)),
     )?;
     Ok(Region {
+        mix: None,
         sample,
         start: 0,
         end: frames,
@@ -69,6 +70,7 @@ fn sine(store: &mut Store) -> Region {
         )
         .unwrap();
     Region {
+        mix: None,
         sample,
         start: 0,
         end: frames,
@@ -581,6 +583,7 @@ fn a_sample_start_route_moves_the_start_within_its_range() {
         .unwrap();
     let mut z = Zone::new(
         Region {
+            mix: None,
             sample,
             start: 0,
             end: frames,
@@ -646,6 +649,37 @@ fn a_group_eq_shapes_its_voices() {
 }
 
 #[test]
+fn a_shaped_controller_reads_its_start_until_a_message_arrives() {
+    use kontra_engine::ir::{Curve, Mod, ModKind, Source, Transfer};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    plan.groups[0].shapers = vec![Transfer {
+        source: Source::ControllerFrom { cc: 1, start: 127 },
+        table: (0..128).map(|k| k as f32 / 254.0).collect(),
+    }];
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Volume {
+            source: Source::Shaped(0),
+            intensity: 1.0,
+            curve: Curve::Depth { power: 1 },
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // No message yet: the wheel reads 127, which the table halves.
+    let start = level(&mut e, &[on(60, 1.0)])[0];
+    level(&mut e, &[cc(1, 0)]);
+    let down = level(&mut e, &[])[0];
+    assert!(
+        (start - 0.5).abs() < 0.01 && down.abs() < 0.05,
+        "{start} {down}"
+    );
+}
+
+#[test]
 fn a_controller_pitch_route_moves_sounding_voices() {
     use kontra_engine::ir::{Mod, ModKind, Source};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -688,6 +722,7 @@ fn an_envelope_pitch_route_rises_holds_and_releases() {
         points: vec![point(1.0), point(0.0)],
         sustain: Some(0),
         loop_from: None,
+        stages: false,
     }];
     plan.groups[0].envelope.release = RATE;
     plan.groups[0].mods = vec![Mod {
@@ -729,7 +764,7 @@ fn a_controller_opens_a_voice_filter() {
             pass: Pass::Low,
             hz: 100.0,
             stages: 2,
-            pole: false,
+            ladder: None,
             damping: [1.85, 0.77, 0.0],
             gain: 1.0,
             octaves: 6.0,
@@ -852,7 +887,7 @@ fn an_lfo_moved_resonance_changes_the_response_over_time() {
             pass: Pass::Band,
             hz: 1000.0,
             stages: 1,
-            pole: false,
+            ladder: None,
             damping: [1.0; 3],
             gain: 1.0,
             octaves: 0.0,
@@ -1513,4 +1548,54 @@ fn an_intensity_route_scales_its_lfos_routes() {
     // takes the LFO's route away.
     assert!((first(Source::Constant) - 0.5).abs() < 0.01);
     assert!((first(Source::Controller(124)) - 1.0).abs() < 0.01);
+}
+
+#[test]
+fn a_velocity_rate_route_speeds_a_voices_lfo() {
+    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    let at_half_a_second = |octaves: f32| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+        plan.groups[0].lfos = vec![Lfo {
+            wave: Wave::Sine,
+            rate: Rate::Hz(0.5),
+            phase: 0.0,
+            fade_ms: 0.0,
+            clock: Clock::Voice,
+        }];
+        let route = |kind| Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind,
+        };
+        plan.groups[0].mods = vec![
+            route(ModKind::Volume {
+                source: Source::Lfo(0),
+                intensity: 1.0,
+                curve: Curve::Depth { power: 1 },
+            }),
+            route(ModKind::LfoRate {
+                source: Source::Velocity,
+                lfo: 0,
+                depth: 1.0,
+                octaves,
+                range_hz: [0.01, 213.0],
+            }),
+        ];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let blocks = (f64::from(RATE) / 512.0).round() as usize;
+        let mut last = level(&mut e, &[on(60, 1.0)])[0];
+        for _ in 1..blocks {
+            last = level(&mut e, &[])[0];
+        }
+        last
+    };
+    // Half a second in, a 0.5 Hz sine is at its peak; doubled by full
+    // velocity, half a cycle on, back at the middle.
+    let still = at_half_a_second(0.0);
+    let doubled = at_half_a_second(1.0);
+    assert!((still - 1.0).abs() < 0.03, "{still}");
+    assert!((doubled - 0.5).abs() < 0.03, "{doubled}");
 }

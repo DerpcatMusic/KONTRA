@@ -166,6 +166,7 @@ impl Voice {
             return;
         };
         let sample = &region.sample;
+        let mix = region.mix.as_ref();
         let released = self.released;
         let ahead = (LOOKAHEAD * self.step) as usize;
         region.runs(self.at(0) as i64, ahead, released, |_, run| {
@@ -199,16 +200,16 @@ impl Voice {
                 if let Some(dst) = window.get_mut(offset..offset + count) {
                     if run.descending {
                         missing += sample
-                            .read(client, run.first + 1 - count as u64, dst)
+                            .read_mixed(client, run.first + 1 - count as u64, dst, mix)
                             .missing;
                         dst.reverse();
                     } else {
-                        missing += sample.read(client, run.first, dst).missing;
+                        missing += sample.read_mixed(client, run.first, dst, mix).missing;
                         if let Some((at, from, n, fade_start, fade)) = run.crossfade()
                             && let (Some(blend), Some(head)) =
                                 (partner.get_mut(..n), dst.get_mut(at..at + n))
                         {
-                            missing += sample.read(client, from, blend).missing;
+                            missing += sample.read_mixed(client, from, blend, mix).missing;
                             let p0 = run.first + at as u64 - fade_start;
                             for (k, (d, b)) in head.iter_mut().zip(blend.iter()).enumerate() {
                                 let w = (p0 + k as u64) as f32 / fade as f32;
