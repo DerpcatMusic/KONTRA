@@ -22,7 +22,7 @@ const FEEDBACK: f64 = 4.16;
 
 /// The correction's fixed gain `R`, its pole at `80/R` Hz.
 fn correction_r() -> f64 {
-    2f64.powf(1196.681_396_5 / 60.0 - 20.0)
+    2f64.powf(1_196.681_396_5 / 60.0 - 20.0)
 }
 
 /// Per selector 1..=12: the weights of the input and the four pole taps.
@@ -57,19 +57,22 @@ fn compensation(q: f64, row: usize) -> f64 {
         return 1.0;
     };
     let p = q * q;
-    let i = if p < knots[1] {
-        0
-    } else if p < knots[2] {
-        1
+    // The interval `p` falls in: its knots and values.
+    let [k0, k1, k2, k3] = knots;
+    let [v0, v1, v2, v3] = values;
+    let ((a, b), (y, z)) = if p < k1 {
+        ((k0, k1), (v0, v1))
+    } else if p < k2 {
+        ((k1, k2), (v1, v2))
     } else {
-        2
+        ((k2, k3), (v2, v3))
     };
-    let t = (p - knots[i]) / (knots[i + 1] - knots[i]);
+    let t = (p - a) / (b - a);
     // Between a smoothstep and an ease-out, by how far the knot sits from 0.
     let s = (1.0 - t) * (1.0 - t);
     let smooth = 1.0 - (2.0 - s) * s;
-    let ease = smooth + values[i].abs() * ((2.0 - t) * t - smooth);
-    2.0 * (values[i] + (values[i + 1] - values[i]) * ease)
+    let ease = smooth + y.abs() * ((2.0 - t) * t - smooth);
+    2.0 * (y + (z - y) * ease)
 }
 
 /// The pole gain for a cutoff at `w` cycles per sample.
