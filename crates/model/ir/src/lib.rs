@@ -20,6 +20,11 @@ pub struct Instrument {
     pub voice_groups: Vec<VoiceGroup>,
     /// Effects on everything the instrument plays, by slot.
     pub inserts: Vec<Option<Effect>>,
+    /// Parallel effects fed by [`EffectKind::Sends`], by send slot; their
+    /// output joins the inserts' before [`Self::main`].
+    pub sends: Vec<Option<Effect>>,
+    /// Effects after the inserts and sends, by slot.
+    pub main: Vec<Option<Effect>>,
     /// Responses [`EffectKind::Convolution`] slots play.
     pub impulses: Vec<Impulse>,
     pub diagnostics: Vec<Diagnostic>,
@@ -36,6 +41,8 @@ impl Instrument {
         voices: 64,
         voice_groups: Vec::new(),
         inserts: Vec::new(),
+        sends: Vec::new(),
+        main: Vec::new(),
         impulses: Vec::new(),
         diagnostics: Vec::new(),
     };
@@ -389,6 +396,9 @@ pub enum EffectKind {
     Stereo { width: f32, pan: f32 },
     /// Peaking bands in series; a 0 dB band is flat.
     Eq([Bell; 3]),
+    /// Copies its input to the instrument's send slot n at `levels[n]`
+    /// (linear) and passes it on unchanged.
+    Sends([f32; 8]),
     /// The input convolved with [`Instrument::impulses`] at this index (the
     /// wet path; `dry` mixes the input back).
     Convolution { impulse: u16 },

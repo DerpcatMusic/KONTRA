@@ -130,8 +130,12 @@ pub struct Engine {
     called: Box<[u32]>,
     /// The instrument's level, pan and tune (a script's group -1).
     instrument: Level,
-    /// The instrument rack, on the final mix.
+    /// The instrument insert rack, on the final mix.
     rack: racks::Rack,
+    /// One single-slot rack per send slot, its input, then the main rack.
+    sends: Box<[racks::Rack]>,
+    taps: Box<[Box<[[f32; 2]]>]>,
+    main: racks::Rack,
     /// Callbacks run so far (24 bits): the source of `$NI_CALLBACK_ID`.
     callbacks_started: u32,
     /// Per control, parameters the script set other than its value.
@@ -150,6 +154,15 @@ impl Engine {
     pub fn new(plan: Arc<Plan>, stream: StreamClient, rate: u32) -> Self {
         let shared: Box<[Group]> = plan.groups.clone().into();
         let rack = racks::Rack::new(&plan.inserts, rate);
+        let sends: Box<[racks::Rack]> = plan
+            .sends
+            .iter()
+            .map(|slot| racks::Rack::new(std::slice::from_ref(slot), rate))
+            .collect();
+        let taps = (0..sends.len())
+            .map(|_| vec![[0.0; 2]; MAX_SPAN as usize].into())
+            .collect();
+        let main = racks::Rack::new(&plan.main, rate);
         let pool = plan.voices + plan.voices / 4 + 1;
         let voices = (0..pool)
             .map(|_| Slot {
@@ -218,6 +231,9 @@ impl Engine {
             callbacks_started: 0,
             instrument: Level::UNITY,
             rack,
+            sends,
+            taps,
+            main,
             chains: Vec::new(),
             zone_chain: Box::new([]),
         };
@@ -335,17 +351,7 @@ impl Engine {
             self.render_span(len);
             let from = (self.now.0 - start.0) as usize;
             if let Some(span) = out.get_mut(from..from + len) {
-                for bus in &mut self.buses {
-                    if let Some(mix) = bus.mix.get_mut(..len) {
-                        bus.rack.process(mix);
-                        racks::apply(effects::balance(bus.pan), mix);
-                    }
-                    for (o, m) in span.iter_mut().zip(bus.mix.iter()) {
-                        o[0] += m[0] * bus.gain;
-                        o[1] += m[1] * bus.gain;
-                    }
-                }
-                self.rack.process(span);
+                self.mix_out(span);
             }
             self.now = until;
         }

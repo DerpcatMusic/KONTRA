@@ -80,8 +80,9 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         out.groups.push(g);
         criteria.push(rows);
     }
-    let (inserts, buses) = crate::effects::program(&program, &mut impulses, &mut notes);
-    out.inserts = inserts;
+    let racks = crate::effects::program(&program, &mut impulses, &mut notes);
+    let buses = racks.buses;
+    (out.inserts, out.sends, out.main) = (racks.inserts, racks.sends, racks.main);
     out.impulses = impulses.out;
     // Responses are samples after the zones' (indices into the same table).
     let responses = impulses.samples;

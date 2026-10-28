@@ -187,6 +187,7 @@ fn slot_effect(
                 pan: pan.clamp(-1.0, 1.0),
             }),
         0x18 => kind_id.and_then(|k| eq(&public, k)),
+        0x17 => sends(&public),
         0x16 => impulses
             .convolution(object.version, &public, at, notes)
             .map(|impulse| ir::EffectKind::Convolution { impulse }),
@@ -236,6 +237,18 @@ fn eq(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
     Some(ir::EffectKind::Eq(bands))
 }
 
+/// Send Levels: a counted list of send levels, then one of outputs (v2
+/// sampler-kontakt effects/mod.rs reader 0x17).
+fn sends(public: &[u8]) -> Option<ir::EffectKind> {
+    let count = usize::try_from(u32::from_le_bytes(public.get(..4)?.try_into().ok()?)).ok()?;
+    let mut levels = [0.0; 8];
+    for (n, level) in levels.iter_mut().enumerate().take(count) {
+        let at = 4 + n * 4;
+        *level = f32::from_le_bytes(public.get(at..at + 4)?.try_into().ok()?);
+    }
+    Some(ir::EffectKind::Sends(levels))
+}
+
 pub(crate) fn group(
     group: &Group,
     index: usize,
@@ -255,16 +268,19 @@ pub(crate) fn group(
     }
 }
 
-/// Reports every program rack; returns the instrument insert rack and the
+/// The program's racks: instrument insert, send and main, then the
 /// instrument buses (Kontakt's 0..=15), each with its rack.
-pub(crate) fn program(
-    program: &Program,
-    impulses: &mut Impulses,
-    notes: &mut Notes,
-) -> (Vec<Option<ir::Effect>>, Vec<ir::Bus>) {
+pub(crate) struct Racks {
+    pub inserts: Vec<Option<ir::Effect>>,
+    pub sends: Vec<Option<ir::Effect>>,
+    pub main: Vec<Option<ir::Effect>>,
+    pub buses: Vec<ir::Bus>,
+}
+
+pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut Notes) -> Racks {
     let names = ["instrument insert", "instrument send", "instrument main"];
     let mut racks = 0;
-    let mut inserts = Vec::new();
+    let mut instrument = [Vec::new(), Vec::new(), Vec::new()];
     let mut buses: Vec<ir::Bus> = Vec::new();
     for child in &program.0.children {
         let (at, array) = match child.id {
@@ -305,8 +321,11 @@ pub(crate) fn program(
                 let effects = rack(&array, &at, impulses, notes);
                 match (child.id, buses.last_mut()) {
                     (BUS, Some(bus)) => bus.inserts = effects,
-                    _ if racks == 1 => inserts = effects,
-                    _ => {}
+                    _ => {
+                        if let Some(rack) = instrument.get_mut(racks - 1) {
+                            *rack = effects;
+                        }
+                    }
                 }
             }
             Err(e) => notes.add(
@@ -316,5 +335,11 @@ pub(crate) fn program(
             ),
         }
     }
-    (inserts, buses)
+    let [inserts, sends, main] = instrument;
+    Racks {
+        inserts,
+        sends,
+        main,
+        buses,
+    }
 }

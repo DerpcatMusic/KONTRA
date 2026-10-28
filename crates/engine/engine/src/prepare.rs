@@ -85,6 +85,8 @@ pub fn prepare(
             .collect();
     }
     plan.inserts.clone_from(&instrument.inserts);
+    plan.sends.clone_from(&instrument.sends);
+    plan.main.clone_from(&instrument.main);
     plan.impulses = instrument
         .impulses
         .iter()

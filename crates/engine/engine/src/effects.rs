@@ -57,6 +57,8 @@ pub(crate) fn matrix(e: &ir::Effect) -> Gain {
         // Its output gain trims processing that does not run here (a
         // compressor's makeup: ANALOG STRINGS stores +9 dB), so it passes.
         ir::EffectKind::Other => return IDENTITY,
+        // Its taps run in the instrument rack (racks.rs).
+        ir::EffectKind::Sends(_) => IDENTITY,
         // Its bands run on summed audio (filters.rs, racks.rs).
         ir::EffectKind::Eq(_) => IDENTITY,
         // Its wet path runs in instrument and bus racks (racks.rs).
