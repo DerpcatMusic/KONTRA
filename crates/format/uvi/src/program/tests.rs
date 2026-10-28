@@ -627,3 +627,62 @@ fn a_step_envelope_pans_its_keygroup() {
         out.diagnostics
     );
 }
+
+#[test]
+fn a_mapped_bend_bends_pitch_through_its_mapper() {
+    let xml = r#"<Program Gain="1">
+      <Mappers><ControlSignalMapper Name="Mapper 1" Min="-1" Max="2" Integer="0" Discrete="0">-1,0 0,0 0,5 1,0</ControlSignalMapper></Mappers>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav">
+            <Connections>
+              <SignalConnection Ratio="2" Source="@PitchBend" Destination="Pitch" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            </Connections>
+          </SamplePlayer></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    assert_eq!(
+        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        [ir::ModKind::Pitch {
+            source: ir::Source::Shaped(0),
+            semitones: 2.0,
+            depth: 1.0,
+        }]
+    );
+    assert_eq!(g.shapers[0].source, ir::Source::PitchBend);
+    assert_eq!(g.shapers[0].table, vec![-1.0, 0.0, 1.0, 2.0]);
+}
+
+#[test]
+fn a_mapped_script_modulation_bends_pitch_through_its_mapper() {
+    let xml = r#"<Program Gain="1">
+      <Modulators><ScriptEventModulation Name="Script Event Modulation 1" EventId="2" Bipolar="0"/></Modulators>
+      <Mappers><ControlSignalMapper Name="Mapper 1" Min="0" Max="1" Integer="0" Discrete="0">0,0 0,25 1,0</ControlSignalMapper></Mappers>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav">
+            <Connections>
+              <SignalConnection Ratio="2" Source="$Program/Script Event Modulation 1" Destination="Pitch" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            </Connections>
+          </SamplePlayer></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    assert_eq!(
+        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        [ir::ModKind::Pitch {
+            source: ir::Source::Shaped(0),
+            semitones: 2.0,
+            depth: 1.0,
+        }]
+    );
+    assert_eq!(g.shapers[0].source, ir::Source::Script(2));
+    assert_eq!(g.shapers[0].table, vec![0.0, 0.25, 1.0]);
+}

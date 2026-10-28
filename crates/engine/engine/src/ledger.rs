@@ -195,7 +195,13 @@ pub(crate) fn script_ramps(plan: &crate::Plan) -> Box<[Option<(u16, Ramp)>]> {
     let inputs = blends
         .flat_map(|b| &b.terms)
         .flat_map(|t| std::iter::once(&t.input).chain(t.factors.iter().map(|f| &f.input)))
-        .map(|t| t.source);
+        .map(|t| t.source)
+        .chain(
+            plan.groups
+                .iter()
+                .flat_map(|g| &g.shapers)
+                .map(|t| t.source),
+        );
     let routes = (plan.groups.iter().flat_map(|g| &g.mods).map(|m| &m.kind))
         .chain(plan.buses.iter().flat_map(|b| &b.mods));
     let mut indices: Vec<u16> = (routes.filter_map(crate::plan::source))
