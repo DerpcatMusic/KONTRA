@@ -536,4 +536,60 @@ fn a_script_moves_a_playing_reverbs_time() {
         end on",
     );
     assert!(long > short + 10.0, "short {short} dB, long {long} dB");
+
+/// One 0.5-level zone under a Lua script.
+fn lua_engine(store: &mut Store, source: &str) -> Engine {
+    let zones = vec![zone(store, 0.5, 0)];
+    let compiled = kontra_lua::compile(source, &[]).unwrap();
+    let mut plan = Plan::new(zones, 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    plan.scripts = vec![kontra_host::script::lua_plan(compiled)];
+    Engine::new(Arc::new(plan), store.client(), RATE)
+}
+
+#[test]
+fn a_uvi_note_sounds_only_when_the_script_posts_it() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let held = "function onNote(e) end";
+    let mut e = lua_engine(&mut store, held);
+    assert_eq!(level(&mut e, &[on(60)]), 0.0);
+    let posted = "function onNote(e) postEvent(e) end
+        function onRelease(e) end";
+    let mut e = lua_engine(&mut store, posted);
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+    // The script keeps the release to itself: the note plays on.
+    assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3);
+}
+
+#[test]
+fn uvi_waits_and_spawned_coroutines_land_on_time() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    // 100 ms is 4800 frames: past the first 4096-frame block.
+    let waited = "function onNote(e) wait(100) postEvent(e) end";
+    let mut e = lua_engine(&mut store, waited);
+    assert_eq!(level(&mut e, &[on(60)]), 0.0);
+    assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
+    let spawned = "function onNote(e)
+            spawn(function() wait(100) playNote(60, 100) end)
+            print('spawned')
+        end";
+    let mut e = lua_engine(&mut store, spawned);
+    assert_eq!(level(&mut e, &[on(60)]), 0.0);
+    assert_eq!(e.last_message(), "spawned");
+    assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
+}
+
+#[test]
+fn a_uvi_script_that_fails_counts_a_fault_and_the_engine_plays_on() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let broken = "function onNote(e) error('no') end";
+    let mut e = lua_engine(&mut store, broken);
+    assert_eq!(level(&mut e, &[on(60)]), 0.0);
+    assert_eq!(e.script_faults().first().map(|f| f.bad_code), Some(1));
+    let runaway = "function onNote(e) while true do end end";
+    let mut e = lua_engine(&mut store, runaway);
+    assert_eq!(level(&mut e, &[on(60)]), 0.0);
+    assert_eq!(e.script_faults().first().map(|f| f.bad_code), Some(1));
 }

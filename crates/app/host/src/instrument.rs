@@ -46,11 +46,24 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
     diagnostics.extend(instrument.diagnostics);
     // ponytail: a slot that fails to compile is dropped, and the slots after
     // it move up one ($EVENT_PAR_SOURCE then counts from the gap).
-    for script in instrument
-        .scripts
-        .iter()
-        .filter(|s| s.dialect == ir::Dialect::Ksp)
-    {
+    for script in &instrument.scripts {
+        if script.dialect == ir::Dialect::Lua {
+            // Its data files are the modules `require` finds.
+            let modules: Vec<(String, String)> = script
+                .data
+                .iter()
+                .map(|(name, bytes)| (name.clone(), String::from_utf8_lossy(bytes).into_owned()))
+                .collect();
+            match kontra_lua::compile(&script.source, &modules) {
+                Ok(compiled) => plan.scripts.push(crate::script::lua_plan(compiled)),
+                Err(e) => diagnostics.push(ir::Diagnostic {
+                    impact: ir::Impact::Broken,
+                    feature: "script compile".into(),
+                    detail: format!("{}: {e}", script.name),
+                }),
+            }
+            continue;
+        }
         match kontra_ksp::compile(&script.source, &[]) {
             Ok(compiled) => {
                 plan.scripts

@@ -2492,6 +2492,7 @@ dependencies = [
  "kontra-events",
  "kontra-ui-model",
  "kontra-vm",
+ "mlua",
 ]
 
 [[package]]

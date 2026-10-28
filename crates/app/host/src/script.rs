@@ -209,3 +209,30 @@ fn symbol(script: &Script, name: &str) -> i32 {
         .and_then(|n| i32::try_from(n).ok())
         .map_or(i32::MIN, |n| SYMBOL_BASE + n)
 }
+
+/// The engine's view of a UVI (Lua) script: its own machine runs it, so the
+/// bytecode program stays empty.
+#[must_use]
+pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
+    let defined = compiled.callbacks;
+    let entry = |on: bool, n: u32| on.then_some(n);
+    ScriptPlan {
+        program: kontra_engine::Program::default(),
+        callbacks: Callbacks {
+            init: entry(defined.init, kontra_lua::Callbacks::INIT),
+            note: entry(defined.note, kontra_lua::Callbacks::NOTE),
+            release: entry(defined.release, kontra_lua::Callbacks::RELEASE),
+            controller: entry(defined.controller, kontra_lua::Callbacks::CONTROLLER),
+            persistence_changed: None,
+            listener: None,
+            pgs_changed: None,
+        },
+        coroutines: COROUTINES,
+        controls: Controls::default(),
+        engine_pars: EnginePars::default(),
+        data: Vec::new(),
+        restore: Vec::new(),
+        restore_texts: Vec::new(),
+        foreign: Some(std::sync::Arc::new(compiled)),
+    }
+}
