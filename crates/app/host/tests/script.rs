@@ -378,3 +378,29 @@ fn a_pgs_key_carries_a_value_between_slots() {
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
 }
+
+#[test]
+fn a_script_sets_a_send_effects_wet_and_dry_levels() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Gain(1.0),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    // Wet off, dry at unity (396851): only the dry path passes.
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN, 0, -1, 0, $NI_INSERT_BUS)
+            set_engine_par($ENGINE_PAR_SEND_EFFECT_DRY_LEVEL, 396851, -1, 0, $NI_INSERT_BUS)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let l = level(&mut e, &[on(60)]);
+    assert!((l - 0.5).abs() < 1e-3, "{l}");
+}

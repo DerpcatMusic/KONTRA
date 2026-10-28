@@ -84,6 +84,7 @@ impl LevelPar {
 enum EffectPar {
     Bypass,
     Output,
+    Dry,
     Gain,
     Width,
     Pan,
@@ -96,6 +97,7 @@ impl EffectPar {
         match (self, &mut e.kind) {
             (Self::Bypass, _) => e.bypass = raw != 0.0,
             (Self::Output, _) => e.output = gain,
+            (Self::Dry, _) => e.dry = gain,
             (Self::Gain, ir::EffectKind::Gain(g)) => *g = gain,
             // ponytail: width and pan linear in the setting; no measurement yet.
             (Self::Width, ir::EffectKind::Stereo { width, .. }) => *width = (raw / 1e6) as f32,
@@ -110,6 +112,7 @@ impl EffectPar {
         Some(match (self, e.kind) {
             (Self::Bypass, _) => f64::from(u8::from(e.bypass)),
             (Self::Output, _) => gain(e.output),
+            (Self::Dry, _) => gain(e.dry),
             (Self::Gain, ir::EffectKind::Gain(g)) => gain(g),
             (Self::Width, ir::EffectKind::Stereo { width, .. }) => f64::from(width) * 1e6,
             (Self::Pan, ir::EffectKind::Stereo { pan, .. }) => (f64::from(pan) + 1.0) * 5e5,
@@ -122,8 +125,9 @@ impl Engine {
     fn effect_par(&self, par: i32) -> Option<EffectPar> {
         let pars = self.script()?.engine_pars;
         match par {
-            p if p == pars.effect_bypass => Some(EffectPar::Bypass),
-            p if p == pars.effect_output => Some(EffectPar::Output),
+            p if p == pars.effect_bypass || p == pars.send_bypass => Some(EffectPar::Bypass),
+            p if p == pars.effect_output || p == pars.send_output => Some(EffectPar::Output),
+            p if p == pars.send_dry => Some(EffectPar::Dry),
             p if p == pars.gainer_gain => Some(EffectPar::Gain),
             p if p == pars.stereo_width => Some(EffectPar::Width),
             p if p == pars.stereo_pan => Some(EffectPar::Pan),

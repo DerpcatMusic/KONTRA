@@ -41,6 +41,10 @@ pub struct EnginePars {
     pub attack_curve: i32,
     pub effect_bypass: i32,
     pub effect_output: i32,
+    /// A send effect's bypass, wet (or return) level and dry level.
+    pub send_bypass: i32,
+    pub send_output: i32,
+    pub send_dry: i32,
     pub gainer_gain: i32,
     pub stereo_width: i32,
     pub stereo_pan: i32,

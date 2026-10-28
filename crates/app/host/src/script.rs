@@ -15,6 +15,9 @@ pub const UNDERSTOOD_SYMBOLS: &[&str] = &[
     ATTACK_CURVE,
     EFFECT_BYPASS,
     EFFECT_OUTPUT,
+    SEND_BYPASS,
+    SEND_OUTPUT,
+    SEND_DRY,
     GAINER_GAIN,
     STEREO_WIDTH,
     STEREO_PAN,
@@ -33,6 +36,9 @@ const MOD_BYPASS: &str = "$ENGINE_PAR_INTMOD_BYPASS";
 const ATTACK_CURVE: &str = "$ENGINE_PAR_ATK_CURVE";
 const EFFECT_BYPASS: &str = "$ENGINE_PAR_EFFECT_BYPASS";
 const EFFECT_OUTPUT: &str = "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN";
+const SEND_BYPASS: &str = "$ENGINE_PAR_SEND_EFFECT_BYPASS";
+const SEND_OUTPUT: &str = "$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN";
+const SEND_DRY: &str = "$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL";
 const GAINER_GAIN: &str = "$ENGINE_PAR_GN_GAIN";
 const STEREO_WIDTH: &str = "$ENGINE_PAR_STEREO";
 const STEREO_PAN: &str = "$ENGINE_PAR_STEREO_PAN";
@@ -74,6 +80,9 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             attack_curve: symbol(script, ATTACK_CURVE),
             effect_bypass: symbol(script, EFFECT_BYPASS),
             effect_output: symbol(script, EFFECT_OUTPUT),
+            send_bypass: symbol(script, SEND_BYPASS),
+            send_output: symbol(script, SEND_OUTPUT),
+            send_dry: symbol(script, SEND_DRY),
             gainer_gain: symbol(script, GAINER_GAIN),
             stereo_width: symbol(script, STEREO_WIDTH),
             stereo_pan: symbol(script, STEREO_PAN),
