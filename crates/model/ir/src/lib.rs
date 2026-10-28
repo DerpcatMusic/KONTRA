@@ -440,9 +440,8 @@ pub enum ModKind {
         depth: f32,
     },
     /// Moves the gain of band `band` of the [`Eq`] in group insert slot
-    /// `insert` by `source × depth_db` dB, clamped to `±limit_db`; that EQ
-    /// runs per voice. `span_db` is the depth at the intensity knob's full
-    /// travel.
+    /// `insert` by `source × depth_db` dB, clamped to `±limit_db`, per voice;
+    /// `span_db` is the depth at the intensity knob's full travel.
     ///
     /// [`Eq`]: EffectKind::Eq
     EqGain {
@@ -465,9 +464,8 @@ pub enum ModKind {
         intensity: f32,
         floor_ms: f32,
     },
-    /// Adds `source × depth` to `param` of the per-voice effect in group
-    /// insert slot `insert`, `depth` being its knob times `span`; `unipolar`
-    /// reads an LFO as 0..=1, not −1..=1.
+    /// Adds `source × depth` (knob × `span`) to `param` of the per-voice
+    /// effect in group slot `insert`; `unipolar` reads an LFO as 0..=1.
     EffectParam {
         source: Source,
         insert: u8,
