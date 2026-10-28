@@ -47,6 +47,8 @@ pub(crate) fn effect(
 
 /// Setter [ref]: attack `2(x − ½)·120` and sustain `2(x − ½)·115` dB
 /// per envelope unit; gain `(x − ½)·12` dB above the centre, `·48` below.
+/// The core's follower rates and thresholds (in `kontra-dsp-dynamics`) come
+/// from process [ref] and reset [ref].
 fn transient(attack: f32, sustain: f32, gain: f32, clip: bool) -> ir::Transient {
     let [attack, sustain, gain] = [attack, sustain, gain].map(|x| x.clamp(0.0, 1.0) - 0.5);
     ir::Transient {
