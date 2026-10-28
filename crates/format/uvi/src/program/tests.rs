@@ -847,10 +847,13 @@ fn a_delayed_rising_lfo_reaches_pitch_through_its_rise() {
             of: ir::Source::Lfo(0),
             depth: 1.0,
         }));
-    let levels: Vec<_> = g.envelopes[0].points.iter().map(|p| (p.ms, p.level)).collect();
+    let levels: Vec<_> = g.envelopes[0]
+        .points
+        .iter()
+        .map(|p| (p.ms, p.level))
+        .collect();
     assert_eq!(levels, [(500.0, 0.0), (1000.0, 1.0)]);
     // 1.5 cycles a second, half a second late: three quarters back.
     assert!((g.lfos[0].phase - 0.25).abs() < 1e-6, "{:?}", g.lfos[0]);
     assert!(!out.diagnostics.iter().any(|d| d.feature.contains("Pitch")));
 }
-
