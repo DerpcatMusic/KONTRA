@@ -403,6 +403,16 @@ fn translate_group(
                 name: p.name.clone(),
                 names: p.targets.iter().map(|t| t.name.clone()).collect(),
             });
+            // The loader reads a source only for category 1 (FUN_140d09620,
+            // +0x538); an unassigned slot has nothing to modulate with.
+            if p.source == ModSource::Unassigned {
+                notes.add(
+                    ir::Impact::Cosmetic,
+                    "unassigned external modulator",
+                    &p.name,
+                );
+                continue;
+            }
             let source = match p.source {
                 ModSource::Velocity => Some(ir::Source::Velocity),
                 ModSource::MidiCc(cc) => Some(ir::Source::Controller(cc)),
