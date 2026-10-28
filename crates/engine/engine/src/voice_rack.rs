@@ -307,7 +307,8 @@ impl Engine {
     }
 
     /// The effect in `insert` of `zone`'s group, its controls moved by their
-    /// routes for this note at `age`; none when nothing routes to it.
+    /// routes for this note at `age` (a script's change to its base follows
+    /// too).
     fn voice_effect(
         &self,
         zone: &Zone,
@@ -317,7 +318,6 @@ impl Engine {
     ) -> Option<ir::EffectKind> {
         let group = self.groups.get(zone.group as usize)?;
         let mut kind = group.inserts.get(usize::from(insert))?.as_ref()?.kind;
-        let mut routed = false;
         for m in group.mods.iter().filter(|m| !m.bypass) {
             if let ir::ModKind::EffectParam {
                 source,
@@ -328,10 +328,10 @@ impl Engine {
                 && i == insert
             {
                 let amount = self.source(zone, source, note, age).unwrap_or(0.0) * depth;
-                routed |= param.add(&mut kind, amount);
+                param.add(&mut kind, amount);
             }
         }
-        routed.then_some(kind)
+        Some(kind)
     }
 
     /// The bands of the EQ in `insert` of `zone`'s group, each gain moved by
