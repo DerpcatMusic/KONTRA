@@ -72,6 +72,16 @@ pub enum ModKind {
     /// Adds `source × depth` cycles (`depth` −1..=1) to the start phase of
     /// the group's LFO `lfo`, `source` read at note-on.
     LfoPhase { source: Source, lfo: u8, depth: f32 },
+    /// Moves the rate of the group's LFO `lfo` along its knob by
+    /// `source × depth` (knob units, `source` read at note-on): the rate
+    /// scales by `2^(source × depth × octaves)`, held within `range_hz`.
+    LfoRate {
+        source: Source,
+        lfo: u8,
+        depth: f32,
+        octaves: f32,
+        range_hz: [f32; 2],
+    },
     /// Scales every route of the group's timed source `of` (an LFO or an
     /// envelope) by `1 − (1 − x)·depth`, `x` the live `source`, a bipolar one
     /// as `(x + 1)/2`.

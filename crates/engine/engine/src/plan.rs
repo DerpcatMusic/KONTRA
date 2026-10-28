@@ -372,6 +372,7 @@ pub(crate) fn source(kind: &ir::ModKind) -> Option<ir::Source> {
         | K::Attack { source, .. }
         | K::Release { source, .. }
         | K::LfoPhase { source, .. }
+        | K::LfoRate { source, .. }
         | K::Intensity { source, .. }
         | K::LoopShift { source, .. } => Some(source),
         K::Envelope => None,
