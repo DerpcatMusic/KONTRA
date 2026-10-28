@@ -6,6 +6,50 @@ use roxmltree::Node;
 use super::{Library, Translator, flag, matrix, num, source_node};
 
 impl<L: Library> Translator<'_, '_, L> {
+    /// The amplitude envelope: the DAHDSR a keygroup connects to its gain.
+    pub(super) fn envelope(&mut self, kg: Node) -> Result<Option<ir::Envelope>, String> {
+        let Some(connection) = kg.descendants().find(|c| {
+            c.has_tag_name("SignalConnection")
+                && c.attribute("Destination") == Some("Gain")
+                && num(*c, "Ratio", 0.0).is_ok_and(|r| r == 1.0)
+                && !flag(*c, "Bypass")
+                && source_node(self.program, *c).is_some_and(|n| n.has_tag_name("DAHDSR"))
+        }) else {
+            return Ok(None);
+        };
+        let Some(env) = source_node(self.program, connection) else {
+            return Ok(None);
+        };
+        let source = connection.attribute("Source").unwrap_or_default();
+        let seconds = |name| num(env, name, 0.0).map(|t| t.clamp(0.0, 30.0) as f32);
+        if num(env, "DelayTime", 0.0)? != 0.0 {
+            self.notes.add(ir::Impact::Audible, "envelope delay", "");
+        }
+        // One shape serves decay and release: the release's, and the decay's
+        // when it is what moves (AO's two are equal).
+        let sustain = num(env, "SustainLevel", 1.0)?.clamp(0.0, 1.0) as f32;
+        let shape = |name| curve(env, name).unwrap_or(0.0);
+        let decays = sustain < 1.0 && seconds("DecayTime")? > 0.0;
+        let fall = shape(if decays && seconds("ReleaseTime")? == 0.0 {
+            "DecayCurve"
+        } else {
+            "ReleaseCurve"
+        });
+        if decays && shape("DecayCurve") != fall {
+            self.notes
+                .add(ir::Impact::Audible, "envelope decay curve", source);
+        }
+        Ok(Some(ir::Envelope {
+            attack: seconds("AttackTime")?,
+            hold: seconds("HoldTime")?,
+            decay: seconds("DecayTime")?,
+            sustain,
+            release: seconds("ReleaseTime")?,
+            attack_shape: shape("AttackCurve"),
+            fall_shape: fall,
+        }))
+    }
+
     /// A script's modulation (Script Event Modulation) on a gain or pitch:
     /// a route on each group under the element it modulates, driven by the
     /// value the script sends for the source's `EventId`. A gain scales
@@ -281,12 +325,11 @@ pub(super) fn ahd(node: Node) -> Option<ir::Breakpoints> {
     if flag(node, "Bypass") || flag(node, "VelocityAmount") {
         return None;
     }
-    let point = |time, default, level, curve| -> Option<ir::Breakpoint> {
-        let c = num(node, curve, 0.0).ok()?.clamp(-0.9998, 0.9998);
+    let point = |time, default, level, name| -> Option<ir::Breakpoint> {
         Some(ir::Breakpoint {
             ms: (num(node, time, default).ok()?.clamp(0.0, 30.0) * 1000.0) as f32,
             level,
-            curve: (2.0 * ((1.0 + c) / (1.0 - c)).ln()) as f32,
+            curve: curve(node, name)?,
         })
     };
     Some(ir::Breakpoints {
@@ -300,6 +343,14 @@ pub(super) fn ahd(node: Node) -> Option<ir::Breakpoints> {
         loop_from: None,
         stages: false,
     })
+}
+
+/// An envelope segment's curve attribute `name` as the IR's shape `k`
+/// ([`ahd`]); a DAHDSR's segments run the same law (process
+/// 0x1410f0570 calls setup 0x1410f1220).
+pub(super) fn curve(node: Node, name: &str) -> Option<f32> {
+    let c = num(node, name, 0.0).ok()?.clamp(-0.9998, 0.9998);
+    Some((2.0 * ((1.0 + c) / (1.0 - c)).ln()) as f32)
 }
 
 /// Table entries per step: a step's edge ramps over 1/16 of it.
