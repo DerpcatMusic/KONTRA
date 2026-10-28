@@ -111,7 +111,10 @@ script/lua/src/
   `spikes/luau-alloc-mlua.md`). A load grows the arena; an audio callback
   never does, and an allocation that does not fit is counted as a spill.
   There is no separate GC step: Luau's incremental collector does its work
-  inside the callback's own allocations, so it is bounded by them.
+  inside the callback's own allocations. Its atomic phase is indivisible and
+  grows with the live heap; its worst-case pause is not measured yet. Each
+  arena operation takes a short spin lock, so a free on another thread can
+  make the audio thread wait for one TLSF operation (growth runs outside it).
 - **Same scheduler.** `wait(ms)` becomes `Work::Resume` at the exact
   sample. Calling `playNote` from Lua creates a ledger child, exactly as KSP
   `play_note` does.
