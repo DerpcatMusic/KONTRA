@@ -371,44 +371,6 @@ impl Engine {
         self.end_silent_notes();
     }
 
-    fn render_span(&mut self, len: usize) {
-        self.refresh_timed();
-        for bus in &mut self.buses {
-            if let Some(mix) = bus.mix.get_mut(..len) {
-                mix.fill([0.0; 2]);
-            }
-        }
-        for slot in self.voices.iter_mut().filter(|s| s.voice.is_active()) {
-            let bus = self.plan.zones.get(slot.zone).map_or(0, |z| z.bus);
-            let chain = self.zone_chain.get(slot.zone).copied().flatten();
-            let mix = match chain.and_then(|c| self.chains.get_mut(usize::from(c))) {
-                Some(chain) => {
-                    chain.live = true;
-                    chain.mix.get_mut(..len)
-                }
-                None => self.buses.get_mut(bus).and_then(|b| b.mix.get_mut(..len)),
-            };
-            let Some(mix) = mix else {
-                continue;
-            };
-            let before = slot.voice.missing_frames();
-            match (slot.filter.as_mut(), self.scratch.get_mut(..len)) {
-                (Some(filter), Some(scratch)) => {
-                    scratch.fill([0.0; 2]);
-                    slot.voice.render(&self.stream, self.now.0, scratch);
-                    filter.process(scratch);
-                    for (m, x) in mix.iter_mut().zip(scratch.iter()) {
-                        m[0] += x[0];
-                        m[1] += x[1];
-                    }
-                }
-                _ => slot.voice.render(&self.stream, self.now.0, mix),
-            }
-            self.stats.missing_frames += slot.voice.missing_frames() - before;
-        }
-        self.mix_chains(len);
-    }
-
     fn dispatch(&mut self, work: Work) {
         let event = match work {
             Work::Input(event) => event,
