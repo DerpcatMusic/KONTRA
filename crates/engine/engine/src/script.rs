@@ -643,7 +643,7 @@ impl HostApi for Engine {
                 }
                 HostValue::Int(self.start_async())
             }
-            Action::AsyncId => HostValue::Int(self.async_id),
+            Action::AsyncId => HostValue::Int(self.ids.async_done),
             // ponytail: every asynchronous command here succeeds.
             Action::AsyncExitStatus => HostValue::Int(1),
             // Commands finish before the queue reaches the next event.

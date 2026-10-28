@@ -23,8 +23,8 @@ impl Engine {
     /// Runs slot `slot`'s callback at `entry` now. Notes it let through or
     /// played start before this returns.
     pub(crate) fn run_callback(&mut self, slot: u8, entry: u32, mut running: Running) -> Running {
-        self.callbacks_started = (self.callbacks_started + 1) & 0xF_FFFF;
-        running.callback_id = self.callbacks_started;
+        self.ids.callbacks = (self.ids.callbacks + 1) & 0xF_FFFF;
+        running.callback_id = self.ids.callbacks;
         running.slot = slot;
         let outer = std::mem::replace(&mut self.running, running);
         let mark = self.forward.len();
@@ -76,8 +76,8 @@ impl Engine {
     /// Starts an asynchronous command for the running slot: its `on
     /// async_complete` runs when the queue reaches it. Returns its id.
     pub(crate) fn start_async(&mut self) -> i32 {
-        self.async_last = self.async_last.wrapping_add(1).max(1);
-        let (slot, id) = (self.running.slot, self.async_last);
+        self.ids.async_last = self.ids.async_last.wrapping_add(1).max(1);
+        let (slot, id) = (self.running.slot, self.ids.async_last);
         if !self.queue.push(self.now, Work::Async { slot, id }) {
             self.stats.events_refused += 1;
         }
@@ -85,7 +85,7 @@ impl Engine {
     }
 
     pub(crate) fn async_complete(&mut self, slot: u8, id: i32) {
-        self.async_id = id;
+        self.ids.async_done = id;
         let plan = Arc::clone(&self.plan);
         let entry = plan
             .scripts
@@ -237,6 +237,24 @@ impl Engine {
         pending.clear();
         self.pending = pending;
     }
+}
+
+/// Ids the script host hands out.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Ids {
+    /// Callbacks run so far (20 bits): the source of `$NI_CALLBACK_ID`.
+    pub(crate) callbacks: u32,
+    /// The last asynchronous command started, and `$NI_ASYNC_ID`: the last finished.
+    pub(crate) async_last: i32,
+    pub(crate) async_done: i32,
+}
+
+impl Ids {
+    pub(crate) const START: Self = Self {
+        callbacks: 0,
+        async_last: 0,
+        async_done: 0,
+    };
 }
 
 /// A script slot's listener timer (`set_listener`).
