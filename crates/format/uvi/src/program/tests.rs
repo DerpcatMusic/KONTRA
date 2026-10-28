@@ -246,6 +246,48 @@ fn a_keygroup_one_pole_and_its_velocity_route_reach_the_group() {
 }
 
 #[test]
+fn a_keygroup_xpander_is_the_explicit_ladder_with_its_taps_q_and_drive() {
+    let xml = r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Inserts>
+            <XpanderFilter Name="InsertFX0" Bypass="0" Freq="1008.4754" Q="0.2" KeyTracking="0" Mode="9" DistortionType="0" Drive="-20" Fat="0" Algorithm="0" Oversampling="0">
+              <Connections>
+                <SignalConnection Ratio="0.5" Source="@MIDI CC 1" Destination="Freq" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+              </Connections>
+            </XpanderFilter>
+            <XpanderFilter Name="InsertFX1" Bypass="0" Freq="500" Q="0" KeyTracking="0" Mode="3" DistortionType="0" Drive="0" Fat="1" Algorithm="1" Oversampling="0"/>
+          </Inserts>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    let Some(ir::EffectKind::Filter(f)) = g.inserts[0].map(|e| e.kind) else {
+        panic!("{:?}", g.inserts);
+    };
+    // Mode 9 is the four-pole band; Q 0.2 is the resonance, so k = 2(1 − 0.2).
+    assert_eq!(f.ladder, Some(ir::Ladder::Explicit { taps: 10, fat: 0.0 }));
+    assert!((f.hz - 1008.4754).abs() < 1e-3);
+    assert!((f.damping[0] - 1.6).abs() < 1e-6);
+    assert!((f.gain - 0.1).abs() < 1e-6);
+    assert_eq!(
+        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        [ir::ModKind::Cutoff {
+            source: ir::Source::Controller(1),
+            insert: 0,
+            depth: 0.5,
+        }]
+    );
+    // Algorithm 1 (the zero-delay ladder) is not carried yet.
+    assert!(g.inserts[1].is_none());
+    let features: Vec<_> = out.diagnostics.iter().map(|d| d.feature.as_str()).collect();
+    assert_eq!(features, ["insert XpanderFilter"], "{features:?}");
+}
+
+#[test]
 fn an_oscillators_bend_and_controller_pitch_routes_reach_its_group() {
     let xml = r#"<Program Gain="1">
       <Modulators>

@@ -716,10 +716,9 @@ pub struct Filter {
     pub pass: Pass,
     pub hz: f32,
     pub stages: u8,
-    /// A four-pole resonant ladder instead, mixing its taps by selector
-    /// 1..=12 (low 1..4 poles, high 1..4, band 2 and 4, peak, notch); the
-    /// last stage's damping `k` sets its feedback `1 − k/2`.
-    pub ladder: Option<u8>,
+    /// A four-pole resonant ladder instead; the last stage's damping `k`
+    /// sets its resonance `1 − k/2`.
+    pub ladder: Option<Ladder>,
     pub damping: [f32; 3],
     pub gain: f32,
     /// Octaves a [`ModKind::Cutoff`] depth of 1 moves the cutoff (the range
@@ -728,6 +727,18 @@ pub struct Filter {
     /// Octaves of Q a [`ModKind::Resonance`] depth of 1 moves the damping
     /// (the range of the format's resonance control); 0 when it has none.
     pub q_octaves: f32,
+}
+
+/// A four-pole ladder mixing its taps by selector 1..=12 (low 1..4 poles,
+/// high 1..4, band 2 and 4, then peak and notch, or notch 2 and 4).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Ladder {
+    /// Zero-delay (trapezoidal) poles, saturating in the loop.
+    ZeroDelay(u8),
+    /// Explicit poles with the feedback a sample late and one saturator on
+    /// the input; `fat` lifts the input with the resonance (1 holds the
+    /// passband). Its input gain is the filter's gain, made up after.
+    Explicit { taps: u8, fat: f32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
