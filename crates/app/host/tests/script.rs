@@ -425,6 +425,22 @@ fn millisecond_and_beat_timers_run_side_by_side_and_keep_their_signal() {
     assert_eq!(e.last_message(), "8 4");
 }
 
+/// Kontakt's own callback-type and signal numbers (probes/callback_constants.lua).
+#[test]
+fn callback_types_and_signals_carry_kontakts_numbers() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            message($NI_CALLBACK_TYPE & \" \" & $NI_SIGNAL_TIMER_MS & \" \" & $NI_SIGNAL_TRANSP_START & \" \" & $NI_BUS_OFFSET)
+        end on",
+    );
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "5 3 1 1024");
+}
+
 #[test]
 fn the_transport_starts_the_listener_and_answers_its_queries() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();

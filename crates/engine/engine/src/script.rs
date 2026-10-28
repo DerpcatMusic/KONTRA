@@ -129,14 +129,14 @@ impl Running {
     };
 
     pub(crate) fn new(kind: Kind, event: Option<NoteRef>) -> Self {
-        // KSP's $NI_CB_TYPE_* values.
+        // KSP's $NI_CB_TYPE_* values (measured, probes/callback_constants.lua).
         let callback_type = match kind {
-            Kind::Init | Kind::Resumed => 0,
+            Kind::Init | Kind::Resumed => 5,
             Kind::Note => 1,
             Kind::Release => 2,
             Kind::Controller => 3,
-            Kind::Listener => 9,
-            Kind::Pgs => 10,
+            Kind::Listener => 12,
+            Kind::Pgs => 8,
         };
         Self {
             kind,

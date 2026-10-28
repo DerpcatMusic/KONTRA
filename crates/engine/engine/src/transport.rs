@@ -7,8 +7,9 @@ use crate::Engine;
 
 /// Song-position ticks per quarter note.
 const PPQ: f64 = 960.0;
-const TRANSP_START: u8 = 3;
-const TRANSP_STOP: u8 = 4;
+// Measured, probes/callback_constants.lua.
+const TRANSP_START: u8 = 1;
+const TRANSP_STOP: u8 = 2;
 
 pub(crate) struct Transport {
     playing: bool,

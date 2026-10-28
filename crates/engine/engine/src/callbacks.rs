@@ -198,8 +198,9 @@ pub(crate) struct Timer {
 /// A slot's `$NI_SIGNAL_TIMER_MS` and `$NI_SIGNAL_TIMER_BEAT` timers.
 pub(crate) type Timers = [Option<Timer>; 2];
 
-const TIMER_MS: u8 = 1;
-const TIMER_BEAT: u8 = 2;
+// Measured, probes/callback_constants.lua.
+const TIMER_MS: u8 = 3;
+const TIMER_BEAT: u8 = 4;
 
 impl Engine {
     /// `set_listener` and `change_listener_par` for the running slot: a
@@ -221,7 +222,7 @@ impl Engine {
         let Some(timer) = self
             .timers
             .get_mut(usize::from(slot))
-            .and_then(|t| t.get_mut(usize::from(signal - 1)))
+            .and_then(|t| t.get_mut(usize::from(signal - TIMER_MS)))
         else {
             return;
         };
@@ -236,7 +237,7 @@ impl Engine {
 
     fn timer(&self, slot: u8, signal: u8) -> Option<Timer> {
         let timers = self.timers.get(usize::from(slot))?;
-        *timers.get(usize::from(signal.checked_sub(1)?))?
+        *timers.get(usize::from(signal.checked_sub(TIMER_MS)?))?
     }
 
     fn arm(&mut self, slot: u8, signal: u8) {
@@ -258,7 +259,7 @@ impl Engine {
         let timer = self
             .timers
             .get_mut(usize::from(slot))
-            .and_then(|t| t.get_mut(usize::from(signal - 1)))
+            .and_then(|t| t.get_mut(usize::from(signal - TIMER_MS)))
             .and_then(Option::as_mut);
         if let Some(timer) = timer {
             timer.armed = armed;
