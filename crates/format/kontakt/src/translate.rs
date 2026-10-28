@@ -79,6 +79,17 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
         let mut g = t.group;
         g.inserts = crate::effects::group(group, index, &mut impulses, &mut notes);
+        // The engine runs one moved filter and one moved EQ per group per voice;
+        // a second one plays at its saved setting.
+        for (what, inserts) in [
+            ("filter", moved_inserts(&g, true)),
+            ("EQ", moved_inserts(&g, false)),
+        ] {
+            if inserts.len() > 1 {
+                let feature = format!("second modulated {what} in a group (plays unmodulated)");
+                notes.add(ir::Impact::Audible, &feature, &g.name);
+            }
+        }
         // ponytail: a filter a modulator moves passes unfiltered until filters
         // run per voice; its routes are reported.
         for slot in t.modulated {
@@ -464,17 +475,6 @@ fn translate_group(
             }
         }
     }
-    // The engine runs one moved filter and one moved EQ per group per voice;
-    // a second one plays at its saved setting.
-    for (what, inserts) in [
-        ("filter", moved_inserts(&out, true)),
-        ("EQ", moved_inserts(&out, false)),
-    ] {
-        if inserts.len() > 1 {
-            let feature = format!("second modulated {what} in a group (plays unmodulated)");
-            notes.add(ir::Impact::Audible, &feature, &out.name);
-        }
-    }
     Ok(Translated {
         group: out,
         criteria: v.start_criteria.items,
@@ -482,12 +482,27 @@ fn translate_group(
     })
 }
 
-/// The distinct insert slots routes move: filters' cutoff and resonance, or
-/// EQ band gains.
+/// The distinct active insert slots live routes move: filters' cutoff and
+/// resonance, or EQ band gains. A bypassed slot or route moves nothing.
 fn moved_inserts(group: &ir::Group, filters: bool) -> Vec<u8> {
+    let active = |slot: u8| {
+        group
+            .inserts
+            .get(usize::from(slot))
+            .and_then(Option::as_ref)
+            .is_some_and(|e| {
+                !e.bypass
+                    && match e.kind {
+                        ir::EffectKind::Filter(_) => filters,
+                        ir::EffectKind::Eq(_) => !filters,
+                        _ => false,
+                    }
+            })
+    };
     let mut slots: Vec<u8> = group
         .mods
         .iter()
+        .filter(|m| !m.bypass)
         .filter_map(|m| match m.kind {
             ir::ModKind::Cutoff { insert, .. } | ir::ModKind::Resonance { insert, .. }
                 if filters =>
@@ -497,6 +512,7 @@ fn moved_inserts(group: &ir::Group, filters: bool) -> Vec<u8> {
             ir::ModKind::EqGain { insert, .. } if !filters => Some(insert),
             _ => None,
         })
+        .filter(|&slot| active(slot))
         .collect();
     slots.sort_unstable();
     slots.dedup();
