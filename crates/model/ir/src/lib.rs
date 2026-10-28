@@ -526,8 +526,8 @@ pub enum EffectKind {
     Invert { phase: bool, swap: bool },
     /// Width 0..=1 (0 mono, 0.5 unchanged, 1 doubled side), then a -1..=1 balance.
     Stereo { width: f32, pan: f32 },
-    /// Peaking bands in series; a 0 dB band is flat.
-    Eq([Bell; 3]),
+    /// Bands in series; a 0 dB band is flat.
+    Eq([Bell; 4]),
     /// A state-variable filter.
     Filter(Filter),
     /// Copies its input to the instrument's send slot n at `levels[n]`
@@ -592,13 +592,23 @@ pub enum Pass {
 /// A peaking band: `gain_db` at `hz`, width by `q` (the cookbook bell).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bell {
+    pub shape: Shape,
     pub hz: f32,
+    /// Q of a peak; a shelf's slope (1 the steepest knee without overshoot).
     pub q: f32,
     pub gain_db: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shape {
+    Peak,
+    LowShelf,
+    HighShelf,
+}
+
 impl Bell {
     pub const FLAT: Self = Self {
+        shape: Shape::Peak,
         hz: 1000.0,
         q: 1.0,
         gain_db: 0.0,

@@ -42,13 +42,17 @@ pub(crate) fn biquads(sections: &[ir::EffectKind], rate: u32) -> Box<[Biquad]> {
         match section {
             ir::EffectKind::Eq(bands) => {
                 let audible = bands.iter().filter(|b| b.gain_db != 0.0);
-                out.extend(audible.map(|b| {
-                    let band = Bell {
-                        hz: b.hz,
-                        q: b.q,
-                        gain_db: b.gain_db,
-                    };
-                    kontra_dsp::eq::bell(band, rate)
+                out.extend(audible.map(|b| match b.shape {
+                    ir::Shape::Peak => {
+                        let band = Bell {
+                            hz: b.hz,
+                            q: b.q,
+                            gain_db: b.gain_db,
+                        };
+                        kontra_dsp::eq::bell(band, rate)
+                    }
+                    ir::Shape::LowShelf => kontra_dsp::eq::shelf(b.hz, b.gain_db, b.q, false, rate),
+                    ir::Shape::HighShelf => kontra_dsp::eq::shelf(b.hz, b.gain_db, b.q, true, rate),
                 }));
             }
             ir::EffectKind::Filter(f) => {

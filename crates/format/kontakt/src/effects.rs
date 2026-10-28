@@ -188,6 +188,7 @@ fn slot_effect(
             }),
         0x18 => kind_id.and_then(|k| eq(&public, k).or_else(|| filter(&public, k))),
         0x17 => sends(&public),
+        0x44 => solid_eq(object.version, &public, at, notes),
         0x16 => impulses
             .convolution(object.version, &public, at, notes)
             .map(|impulse| ir::EffectKind::Convolution { impulse }),
@@ -236,7 +237,7 @@ fn eq(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
         .ok()
         .filter(|n| (1..=3).contains(n))?;
     let tail = public.get(public.len().checked_sub(count * 12)?..)?;
-    let mut bands = [ir::Bell::FLAT; 3];
+    let mut bands = [ir::Bell::FLAT; 4];
     for (band, raw) in bands.iter_mut().zip(tail.as_chunks::<12>().0) {
         let f = |n: usize| {
             let bytes = raw.get(n..n + 4)?.try_into().ok()?;
@@ -245,6 +246,33 @@ fn eq(public: &[u8], kind: i32) -> Option<ir::EffectKind> {
         *band = crate::laws::eq_band(f(0)?, f(4)?, f(8)?)?;
     }
     Some(ir::EffectKind::Eq(bands))
+}
+
+/// The Solid G-EQ (0x44) record (reader 0x140d029f0): LF gain, Hz, bell
+/// flag; LMF and HMF gain, Hz, Q; HF gain, Hz, bell flag (knobs 0..=1, flags
+/// a byte each); v0x11 adds high- and low-pass Hz and their switches.
+fn solid_eq(version: u16, public: &[u8], at: &str, notes: &mut Notes) -> Option<ir::EffectKind> {
+    let f = |n: usize| {
+        let bytes = public.get(n..n + 4)?.try_into().ok()?;
+        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    };
+    let flag = |n: usize| public.get(n).map(|&b| b != 0);
+    // ponytail: v0x11's pass filters are reported, not run (no corpus slot uses them yet).
+    if version > 0x10 && (flag(50)? || flag(51)?) {
+        notes.add(
+            ir::Impact::Audible,
+            "Solid G-EQ pass filters",
+            at.to_string(),
+        );
+    }
+    Some(ir::EffectKind::Eq(crate::laws::solid_eq(
+        [f(0)?, f(4)?],
+        flag(8)?,
+        [f(9)?, f(13)?, f(17)?],
+        [f(21)?, f(25)?, f(29)?],
+        [f(33)?, f(37)?],
+        flag(41)?,
+    )))
 }
 
 /// A filter: the kind, repeated (newer records put a flag byte before a

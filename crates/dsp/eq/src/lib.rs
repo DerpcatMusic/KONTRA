@@ -30,6 +30,29 @@ pub fn bell(bell: Bell, rate: u32) -> Biquad {
     ])
 }
 
+/// A shelf: `gain_db` below (`high` false) or above `hz`, its knee set by
+/// `slope` (the cookbook's S, held to 0.01..=1 so the knee never peaks).
+#[must_use]
+pub fn shelf(hz: f32, gain_db: f32, slope: f32, high: bool, rate: u32) -> Biquad {
+    let rate = f64::from(rate.max(1));
+    let hz = f64::from(hz).max(1.0).min(0.49 * rate);
+    let w = std::f64::consts::TAU * hz / rate;
+    let a = 10f64.powf(f64::from(gain_db) / 40.0);
+    let s = f64::from(slope).clamp(0.01, 1.0);
+    let alpha = w.sin() / 2.0 * ((a + 1.0 / a) * (1.0 / s - 1.0) + 2.0).sqrt();
+    let (cos, root) = (w.cos(), 2.0 * a.sqrt() * alpha);
+    // The high shelf is the low one with cos negated and b1, a1 flipped.
+    let (c, sign) = if high { (-cos, -1.0) } else { (cos, 1.0) };
+    Biquad::new([
+        a * ((a + 1.0) - (a - 1.0) * c + root),
+        sign * 2.0 * a * ((a - 1.0) - (a + 1.0) * c),
+        a * ((a + 1.0) - (a - 1.0) * c - root),
+        (a + 1.0) + (a - 1.0) * c + root,
+        sign * -2.0 * ((a - 1.0) + (a + 1.0) * c),
+        (a + 1.0) + (a - 1.0) * c - root,
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,6 +86,26 @@ mod tests {
             ..bell
         };
         assert!((gain_db(cut, 1000.0) + 12.0).abs() < 0.05);
+    }
+
+    /// Steady-state gain of a sine at `hz` through `f`, in dB.
+    fn through(mut f: Biquad, hz: f64) -> f64 {
+        let mut io: Vec<[f32; 2]> = (0..48_000)
+            .map(|n| [(std::f64::consts::TAU * hz * f64::from(n) / 48_000.0).sin() as f32; 2])
+            .collect();
+        f.process(&mut io);
+        let peak = io[24_000..].iter().map(|s| s[0].abs()).fold(0.0, f32::max);
+        20.0 * f64::from(peak).log10()
+    }
+
+    #[test]
+    fn shelves_lift_their_side_and_leave_the_other() {
+        let low = || shelf(200.0, 6.0, 1.0, false, 48_000);
+        assert!((through(low(), 30.0) - 6.0).abs() < 0.1);
+        assert!(through(low(), 7919.0).abs() < 0.1);
+        let high = || shelf(2000.0, -6.0, 0.5, true, 48_000);
+        assert!((through(high(), 15_000.0) + 6.0).abs() < 0.2);
+        assert!(through(high(), 50.0).abs() < 0.1);
     }
 
     #[test]

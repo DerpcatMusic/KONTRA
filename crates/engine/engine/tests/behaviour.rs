@@ -576,9 +576,10 @@ fn a_group_eq_shapes_its_voices() {
             hz: 1000.0,
             q: 1.0,
             gain_db,
+            ..Bell::FLAT
         };
         plan.groups[0].inserts = vec![Some(Effect {
-            kind: EffectKind::Eq([bell, Bell::FLAT, Bell::FLAT]),
+            kind: EffectKind::Eq([bell, Bell::FLAT, Bell::FLAT, Bell::FLAT]),
             bypass: false,
             output: 1.0,
             dry: 0.0,
