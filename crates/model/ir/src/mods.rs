@@ -63,6 +63,12 @@ pub enum ModKind {
         intensity: f32,
         floor_ms: f32,
     },
+    /// As [`ModKind::Attack`], on the release time.
+    Release {
+        source: Source,
+        intensity: f32,
+        floor_ms: f32,
+    },
     /// Adds `source × depth` (knob × `span`) to `param` of the per-voice
     /// effect in group slot `insert`; `unipolar` reads an LFO as 0..=1.
     EffectParam {

@@ -431,17 +431,26 @@ fn translate_group(
                     (Some(source), param, Some(insert)) if laws::eq_band_index(param).is_some() => {
                         laws::eq_gain(source, insert, param, t.signed_intensity())
                     }
-                    // Only the amplitude envelope's attack: another AHDSR is
+                    // Only the amplitude envelope's times: another AHDSR is
                     // a breakpoint source with fixed times.
-                    (Some(source), "ahdsr_attack", Some(at))
+                    (Some(source), stage @ ("ahdsr_attack" | "ahdsr_release"), Some(at))
                         if out.mods.iter().any(|m| {
                             m.kind == ir::ModKind::Envelope && m.slot == u16::from(at)
                         }) =>
                     {
-                        Some(ir::ModKind::Attack {
-                            source,
-                            intensity: t.signed_intensity(),
-                            floor_ms: laws::ATTACK_FLOOR_MS,
+                        let (intensity, floor_ms) = (t.signed_intensity(), laws::ATTACK_FLOOR_MS);
+                        Some(if stage == "ahdsr_attack" {
+                            ir::ModKind::Attack {
+                                source,
+                                intensity,
+                                floor_ms,
+                            }
+                        } else {
+                            ir::ModKind::Release {
+                                source,
+                                intensity,
+                                floor_ms,
+                            }
                         })
                     }
                     (Some(source), param, Some(insert)) => {
