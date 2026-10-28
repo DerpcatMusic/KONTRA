@@ -562,6 +562,9 @@ fn slot_knobs_move_a_filters_fields_through_the_slots_own_laws() {
     });
     plan.groups[0].inserts = vec![filter];
     plan.inserts = vec![None, filter];
+    let mut bus = plan.buses[0].clone();
+    bus.inserts = vec![filter];
+    plan.buses.push(bus);
     let law = |at, slot, knob, field, law| ir::SlotLaw {
         at,
         slot,
@@ -597,6 +600,16 @@ fn slot_knobs_move_a_filters_fields_through_the_slots_own_laws() {
             ir::Law::Linear { lo: 1.0, hi: 0.5 },
         ),
         law(
+            ir::RackAt::Bus(0),
+            0,
+            cutoff,
+            ir::EffectParam::FilterHz,
+            ir::Law::Linear {
+                lo: 20.0,
+                hi: 20_000.0,
+            },
+        ),
+        law(
             inserts,
             1,
             cutoff,
@@ -612,14 +625,15 @@ fn slot_knobs_move_a_filters_fields_through_the_slots_own_laws() {
             set_engine_par($ENGINE_PAR_CUTOFF, 500000, 0, 0, -1)
             set_engine_par($ENGINE_PAR_RESONANCE, 250000, 0, 0, -1)
             set_engine_par($ENGINE_PAR_CUTOFF, 750000, -1, 1, 1)
-            message(get_engine_par($ENGINE_PAR_CUTOFF, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_RESONANCE, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_CUTOFF, -1, 1, 1))
+            set_engine_par($ENGINE_PAR_CUTOFF, 250000, -1, 0, 1024)
+            message(get_engine_par($ENGINE_PAR_CUTOFF, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_RESONANCE, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_CUTOFF, -1, 1, 1) & \" \" & get_engine_par($ENGINE_PAR_CUTOFF, -1, 0, 1024))
         end on",
         &[],
     )
     .unwrap();
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let e = Engine::new(Arc::new(plan), store.client(), RATE);
-    assert_eq!(e.last_message(), "500000 250000 750000");
+    assert_eq!(e.last_message(), "500000 250000 750000 250000");
 }
 
 #[test]
