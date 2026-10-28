@@ -71,12 +71,13 @@ impl<L: Library> Translator<'_, '_, L> {
     }
 }
 
-/// A pitch route: `semitones` per unit of `source`, or of `timed` (then the
-/// group's copy of it is the source).
-pub(super) struct PitchRoute {
+/// A route: `unit × ratio` per unit of `source`, or of `timed` (then the
+/// group's copy of it is the source). A script may set the ratio.
+pub(super) struct Route {
     pub source: ir::Source,
     pub timed: Option<Timed>,
-    pub semitones: f32,
+    pub unit: f32,
+    pub ratio: f32,
 }
 
 /// A program or layer modulator a group carries a copy of.
@@ -87,18 +88,22 @@ pub(super) enum Timed {
     Steps(ir::Lfo, Vec<f32>),
 }
 
-/// The pitch route a connection on an oscillator's `Pitch` makes: `Ratio`
-/// semitones per unit of a pitch-bend (−1..=1), controller or velocity
-/// (0..=1) source, or of a program or layer LFO ([`lfo`]); an inverted
-/// bend or LFO turns the other way (v1's native renders,
+/// The route a connection on `owner`'s `destination` makes, adding `Ratio`
+/// per unit (an oscillator's `Pitch` in semitones, a keygroup's `Pan` on
+/// −1..=1) of a pitch-bend (−1..=1), controller or velocity (0..=1) source,
+/// or of a program or layer modulator ([`lfo`], [`ahd`], [`steps`]); an
+/// inverted bend or LFO turns the other way (v1's native renders,
 /// crates/sampler-uvi/src/modulation.rs). `None` for anything else: a
 /// mapper, a nested or modulated connection, another source, or an
 /// inverted unipolar source (reported).
-pub(super) fn pitch_route(program: Node, connection: Node) -> Option<PitchRoute> {
-    let owner = connection.parent()?.parent()?;
+pub(super) fn route(
+    program: Node,
+    connection: Node,
+    (owner, destination): (&str, &str),
+) -> Option<Route> {
     if !connection.has_tag_name("SignalConnection")
-        || !owner.has_tag_name("SamplePlayer")
-        || connection.attribute("Destination") != Some("Pitch")
+        || !connection.parent()?.parent()?.has_tag_name(owner)
+        || connection.attribute("Destination") != Some(destination)
         || flag(connection, "Bypass")
         || flag(connection, "ConnectionMode")
         || !connection
@@ -115,14 +120,15 @@ pub(super) fn pitch_route(program: Node, connection: Node) -> Option<PitchRoute>
         1.0
     };
     let ratio = num(connection, "Ratio", 0.0).ok()? as f32;
-    let fixed = |source| PitchRoute {
+    let fixed = |source| Route {
         source,
         timed: None,
-        semitones: ratio,
+        unit: 1.0,
+        ratio,
     };
     Some(match connection.attribute("Source")? {
-        "@PitchBend" => PitchRoute {
-            semitones: sign * ratio,
+        "@PitchBend" => Route {
+            unit: sign,
             ..fixed(ir::Source::PitchBend)
         },
         s if s.starts_with('$') => {
@@ -137,16 +143,17 @@ pub(super) fn pitch_route(program: Node, connection: Node) -> Option<PitchRoute>
                     let (lfo, table) = steps(node)?;
                     Timed::Steps(lfo, table)
                 };
-                PitchRoute {
+                Route {
                     timed: Some(timed),
                     ..fixed(ir::Source::Constant)
                 }
             } else {
                 let (lfo, depth) = lfo(node)?;
-                PitchRoute {
+                Route {
                     source: ir::Source::Lfo(0),
                     timed: Some(Timed::Lfo(lfo)),
-                    semitones: sign * ratio * depth,
+                    unit: sign * depth,
+                    ratio,
                 }
             }
         }

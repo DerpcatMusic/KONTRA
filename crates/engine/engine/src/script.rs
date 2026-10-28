@@ -509,6 +509,10 @@ impl HostApi for Engine {
                 self.set_group_level(call.action, int(0), int(1));
                 HostValue::Nothing
             }
+            Action::RouteAmount => {
+                self.set_route_amount(int(0), int(1));
+                HostValue::Nothing
+            }
             Action::BusVolume => {
                 let gain = match int(1) {
                     ..=-200_000 => 0.0,
