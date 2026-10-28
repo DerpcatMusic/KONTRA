@@ -27,6 +27,8 @@ pub mod event {
     pub const ALLOW_GROUP: i32 = 9;
     /// Read only: -1 for a note from outside, else the script slot that played it.
     pub const SOURCE: i32 = 11;
+    /// With `*_arr`: the value for a "from script" modulator, ±1 000 000.
+    pub const MOD_VALUE: i32 = 14;
 }
 
 macro_rules! actions {

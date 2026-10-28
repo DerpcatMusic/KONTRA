@@ -14,3 +14,4 @@ kontra-time = { path = "../../base/time" }
 kontra-vm = { path = "../vm" }
 kontra-ir = { path = "../../model/ir" }
 kontra-voice = { path = "../voice" }
+kontra-dsp = { path = "../../dsp/registry" }

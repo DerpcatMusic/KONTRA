@@ -20,6 +20,13 @@ pub struct Instrument {
     pub voice_groups: Vec<VoiceGroup>,
     /// Effects on everything the instrument plays, by slot.
     pub inserts: Vec<Option<Effect>>,
+    /// Parallel effects fed by [`EffectKind::Sends`], by send slot; their
+    /// output joins the inserts' before [`Self::main`].
+    pub sends: Vec<Option<Effect>>,
+    /// Effects after the inserts and sends, by slot.
+    pub main: Vec<Option<Effect>>,
+    /// Responses [`EffectKind::Convolution`] slots play.
+    pub impulses: Vec<Impulse>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -34,8 +41,31 @@ impl Instrument {
         voices: 64,
         voice_groups: Vec::new(),
         inserts: Vec::new(),
+        sends: Vec::new(),
+        main: Vec::new(),
+        impulses: Vec::new(),
         diagnostics: Vec::new(),
     };
+}
+
+/// An impulse response: a sample and how to prepare it, in this order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Impulse {
+    /// Index into [`Instrument::samples`].
+    pub sample: usize,
+    pub reverse: bool,
+    pub normalize: Option<Normalize>,
+    /// Silence before the response, truncated to whole frames.
+    pub predelay_ms: f32,
+}
+
+/// Scales a response so its louder channel's energy (sum of squares) is
+/// `energy`, by at most `max_gain`; one at or under `floor` is left alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Normalize {
+    pub energy: f32,
+    pub max_gain: f32,
+    pub floor: f32,
 }
 
 /// One sample: where its file's bytes are. The codec is read from the file's
@@ -125,7 +155,21 @@ pub struct Group {
     pub voice_group: Option<usize>,
     /// Effects on this group's voices, by slot.
     pub inserts: Vec<Option<Effect>>,
+    /// Shapes [`Source::Envelope`] reads, by index.
+    pub envelopes: Vec<Breakpoints>,
+    /// Oscillators [`Source::Lfo`] reads, by index.
+    pub lfos: Vec<Lfo>,
+    /// Each modulator's route names, in route order, carried or not: what
+    /// scripts find routes by.
+    pub routes: Vec<Routes>,
     pub zones: Vec<Zone>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Routes {
+    /// The modulator's [`Mod::slot`].
+    pub slot: u16,
+    pub names: Vec<String>,
 }
 
 impl Group {
@@ -148,8 +192,83 @@ impl Group {
         stream: None,
         voice_group: None,
         inserts: Vec::new(),
+        envelopes: Vec::new(),
+        lfos: Vec::new(),
+        routes: Vec::new(),
         zones: Vec::new(),
     };
+}
+
+/// A per-voice envelope of free breakpoints, 0..=1. It starts at `start`,
+/// moves through `points` in order and holds at `sustain` while the key is
+/// down; key-up goes on from the level it has to the points after `sustain`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Breakpoints {
+    pub start: f32,
+    pub points: Vec<Breakpoint>,
+    pub sustain: Option<usize>,
+    /// Instead of holding at `sustain`, cycle back through the points from
+    /// this one to `sustain` while the key is down.
+    pub loop_from: Option<usize>,
+}
+
+/// A segment to `level` over `ms`. It covers `(e^(k·t) − 1)/(e^k − 1)` of
+/// the way at fraction `t`, `k` = `curve`; 0 is a straight line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Breakpoint {
+    pub ms: f32,
+    pub level: f32,
+    pub curve: f32,
+}
+
+/// A per-voice (or free-running) oscillator, −1..=1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lfo {
+    pub wave: Wave,
+    pub rate: Rate,
+    /// Start phase, cycles.
+    pub phase: f32,
+    /// Ramps the output in from 0 over this long after the voice starts.
+    pub fade_ms: f32,
+    pub clock: Clock,
+}
+
+/// Where an [`Lfo`]'s time starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Clock {
+    /// Restarts at each voice.
+    Voice,
+    /// Runs from the engine's start, shared by every voice.
+    Free,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Rate {
+    Hz(f32),
+    /// Quarter-note beats per cycle, at the host's tempo.
+    Beats(f32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Wave {
+    Sine,
+    Triangle,
+    /// Falling.
+    Saw,
+    /// High for `width` of the cycle.
+    Square {
+        width: f32,
+    },
+    /// A new random level each half cycle.
+    Random,
+    /// `−w0·sine + w1·saw(2p) + w2·triangle − w3·pulse(width) + w4·random`,
+    /// the saw rising twice a cycle and the triangle from −1; divided by
+    /// `max(1, Σ|w|)` when `normalize`.
+    Multi {
+        weights: [f32; 5],
+        width: f32,
+        normalize: bool,
+    },
 }
 
 /// Times in seconds; decay and release to fall about 60 dB; sustain 0..=1.
@@ -185,6 +304,11 @@ impl Envelope {
 pub struct Mod {
     pub name: String,
     pub slot: u16,
+    /// Which of its modulator's routes this is: scripts address a route by
+    /// modulator slot and target.
+    pub target: u16,
+    /// Its modulator is switched off (scripts may switch it on).
+    pub bypass: bool,
     pub kind: ModKind,
 }
 
@@ -193,18 +317,61 @@ pub enum ModKind {
     /// The group's [`Group::envelope`], shaping its level.
     Envelope,
     /// `source` scales the level along `curve`; `intensity` is −1..=1 and live.
+    /// A bipolar source (an LFO) enters as `(x + 1)/2`: it swings the level
+    /// down from unity and back.
     Volume {
         source: Source,
         intensity: f32,
         curve: Curve,
     },
+    /// `source × depth × semitones` added to the pitch: `semitones` is the
+    /// route's range, `depth` (−1..=1) its live intensity.
+    Pitch {
+        source: Source,
+        semitones: f32,
+        depth: f32,
+    },
+    /// `source × amount` added to the pan (−1..=1).
+    Pan { source: Source, amount: f32 },
+    /// Moves the cutoff of the [`Filter`] in group insert slot `insert` by
+    /// `source × depth × Filter::octaves` octaves; that filter runs per voice.
+    Cutoff {
+        source: Source,
+        insert: u8,
+        depth: f32,
+    },
+    /// `source × depth` of the zone's [`Zone::start_mod`] frames added to
+    /// where its voices start, read at note-on.
+    SampleStart { source: Source, depth: f32 },
+    /// Scales the [`Group::envelope`] attack `t` at note-on, as a knob
+    /// linear in `ln(t + floor_ms)`: with `m = 1 − (1 − x)·|intensity|` (`x`
+    /// read at note-on, `1 − x` for a negative intensity), the attack becomes
+    /// `floor_ms·((t + floor_ms)/floor_ms)^m − floor_ms`.
+    Attack {
+        source: Source,
+        intensity: f32,
+        floor_ms: f32,
+    },
 }
 
-/// A per-note modulation source, 0..=1.
+/// A per-note modulation source, 0..=1 unless noted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Velocity,
     Controller(u8),
+    /// The channel's pitch bend, −1..=1.
+    PitchBend,
+    /// The note's key over 127.
+    Key,
+    /// The group's [`Group::envelopes`] entry.
+    Envelope(u8),
+    /// The group's [`Group::lfos`] entry, −1..=1.
+    Lfo(u8),
+    /// Always 1.
+    Constant,
+    /// The value a script sent this note for "from script" modulator `id`,
+    /// −1..=1; 0 until sent.
+    Script(u16),
     /// 1 at note-on, falling linearly to 0 after `span_ms` held; frozen at
     /// key-up, so a release sample is quieter the longer its key was held.
     HeldTime {
@@ -353,6 +520,16 @@ pub enum EffectKind {
     Invert { phase: bool, swap: bool },
     /// Width 0..=1 (0 mono, 0.5 unchanged, 1 doubled side), then a -1..=1 balance.
     Stereo { width: f32, pan: f32 },
+    /// Peaking bands in series; a 0 dB band is flat.
+    Eq([Bell; 3]),
+    /// A state-variable filter.
+    Filter(Filter),
+    /// Copies its input to the instrument's send slot n at `levels[n]`
+    /// (linear) and passes it on unchanged.
+    Sends([f32; 8]),
+    /// The input convolved with [`Instrument::impulses`] at this index (the
+    /// wet path; `dry` mixes the input back).
+    Convolution { impulse: u16 },
     /// Not carried, an insert: audio passes unchanged (its output gain
     /// trims processing that does not run).
     /// The translator reports it.
@@ -360,6 +537,45 @@ pub enum EffectKind {
     /// Not carried, a parallel path (a reverb, a delay): only the dry level
     /// passes. The translator reports it.
     OtherWet,
+}
+
+/// `stages` two-pole state-variable stages in series at `hz` (none: one
+/// pole), each with its damping `k` (`1/Q`), then `gain`. A band stage is the
+/// raw band tap `s/(s² + ks + 1)`, peaking at `1/k`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Filter {
+    pub pass: Pass,
+    pub hz: f32,
+    pub stages: u8,
+    pub damping: [f32; 3],
+    pub gain: f32,
+    /// Octaves a [`ModKind::Cutoff`] depth of 1 moves the cutoff (the range
+    /// of the format's cutoff control).
+    pub octaves: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pass {
+    Low,
+    High,
+    Band,
+    Notch,
+}
+
+/// A peaking band: `gain_db` at `hz`, width by `q` (the cookbook bell).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bell {
+    pub hz: f32,
+    pub q: f32,
+    pub gain_db: f32,
+}
+
+impl Bell {
+    pub const FLAT: Self = Self {
+        hz: 1000.0,
+        q: 1.0,
+        gain_db: 0.0,
+    };
 }
 
 #[derive(Clone, Debug, PartialEq)]

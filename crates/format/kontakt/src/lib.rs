@@ -6,6 +6,7 @@ mod access;
 mod container;
 mod effects;
 mod fastlz;
+mod impulse;
 mod laws;
 mod resources;
 mod samples;

@@ -358,10 +358,11 @@ impl<'a> Compiler<'a> {
                 });
                 return Ok(Some(Ty::Int));
             }
+            // Every variable has a UI id, in declaration order (KSP manual,
+            // get_ui_id); only a control's works with the control commands.
             Builtin::GetUiId => {
-                let (_, control) = self.named(arg(0)?)?;
-                let control = control.ok_or_else(|| Error::new(span, "not a UI control"))?;
-                self.emit(Op::Int(FIRST_UI_ID + control as i32));
+                let (v, _) = self.named(arg(0)?)?;
+                self.emit(Op::Int(ui_id(v)));
                 return Ok(Some(Ty::Int));
             }
             Builtin::MakePersistent | Builtin::MakeInstrPersistent => {
@@ -473,9 +474,9 @@ impl<'a> Compiler<'a> {
                     texts += 1;
                 }
                 Arg::V => {
-                    let (_, control) = self.named(e)?;
-                    let control = control.ok_or_else(|| Error::new(e.span, "not a UI control"))?;
-                    self.emit(Op::Int(FIRST_UI_ID + control as i32));
+                    let (v, control) = self.named(e)?;
+                    control.ok_or_else(|| Error::new(e.span, "not a UI control"))?;
+                    self.emit(Op::Int(ui_id(v)));
                     ints += 1;
                 }
                 Arg::A => {

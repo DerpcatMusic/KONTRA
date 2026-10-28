@@ -201,7 +201,7 @@ fn run(
         g.zones.clear();
     }
     let loaded = kontra_host::instrument::build(ir, RATE, store);
-    loaded.plan.script.as_ref()?;
+    loaded.plan.scripts.first()?;
     let mut engine = Engine::new(Arc::new(loaded.plan), store.client(), RATE);
     let host = HostNote {
         port: 0,
@@ -240,7 +240,8 @@ fn run(
     }
     let faults = engine
         .script_faults()
-        .filter(|f| *f != kontra_engine::Faults::default())
+        .into_iter()
+        .find(|f| *f != kontra_engine::Faults::default())
         .map(|f| format!("{f:?}"));
     Some((engine.action_calls(), engine.unhandled_actions(), faults))
 }

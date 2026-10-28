@@ -46,6 +46,37 @@ fn zone(store: &mut Store, level: f32) -> Zone {
     Zone::new(region(store, level, 48_000).unwrap(), 60, RATE)
 }
 
+/// A second of a 1 kHz sine at 0.1.
+fn sine(store: &mut Store) -> Region {
+    let frames = 48_000u64;
+    let bytes = (0..frames)
+        .flat_map(|i| {
+            let v = (std::f64::consts::TAU * 1000.0 * i as f64 / 48_000.0).sin() as f32 * 0.1;
+            v.to_le_bytes()
+        })
+        .collect();
+    let key = BlobKey {
+        file: "sine".into(),
+        offset: frames,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(FMT, bytes)),
+            frames,
+            std::slice::from_ref(&(0..frames)),
+        )
+        .unwrap();
+    Region {
+        sample,
+        start: 0,
+        end: frames,
+        looped: None,
+        reverse: false,
+    }
+}
+
 /// The plan's groups ignore velocity.
 fn engine(store: &Store, mut plan: Plan) -> Engine {
     for g in &mut plan.groups {
@@ -438,4 +469,327 @@ fn a_one_shot_ignores_key_up() {
         close(level(&mut e, &[])[0], 0.5),
         "still sounding at full level"
     );
+}
+
+#[test]
+fn pitch_bend_moves_sounding_voices_by_its_route() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    plan.groups[0].mods = vec![kontra_engine::ir::Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: kontra_engine::ir::ModKind::Pitch {
+            source: kontra_engine::ir::Source::PitchBend,
+            semitones: 2.0,
+            depth: 1.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let bend = |lsb, msb| Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xE0, lsb, msb),
+    };
+    // Source frames one 256-frame block advances.
+    let advance = |e: &mut Engine, events: &[Timed<Event>]| {
+        let at = |e: &Engine| e.voices().next().map(|(_, p, _)| p).unwrap();
+        let from = at(e);
+        level(e, events);
+        (at(e) - from) / 256.0
+    };
+    level(&mut e, &[on(60, 1.0)]);
+    assert!((advance(&mut e, &[]) - 1.0).abs() < 1e-6);
+    let up = advance(&mut e, &[bend(0x7F, 0x7F)]);
+    assert!(
+        (up - 2f64.powf(2.0 * 8191.0 / 8192.0 / 12.0)).abs() < 1e-6,
+        "{up}"
+    );
+    let down = advance(&mut e, &[bend(0, 0)]);
+    assert!((down - 2f64.powf(-2.0 / 12.0)).abs() < 1e-6, "{down}");
+}
+
+#[test]
+fn a_sample_start_route_moves_the_start_within_its_range() {
+    use kontra_engine::ir::{Mod, ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    // A ramp: each frame's value is its index / 4096, so the output names the frame.
+    let frames = 4096u64;
+    let bytes = (0..frames)
+        .flat_map(|i| (i as f32 / 4096.0).to_le_bytes())
+        .collect();
+    let key = BlobKey {
+        file: "ramp".into(),
+        offset: frames,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(FMT, bytes)),
+            frames,
+            std::slice::from_ref(&(0..frames)),
+        )
+        .unwrap();
+    let mut z = Zone::new(
+        Region {
+            sample,
+            start: 0,
+            end: frames,
+            looped: None,
+            reverse: false,
+        },
+        60,
+        RATE,
+    );
+    z.start_mod = 1000;
+    let mut plan = Plan::new(vec![z], 8);
+    for (depth, start) in [(0.5, 500.0), (3.0, 1000.0)] {
+        plan.groups[0].mods = vec![Mod {
+            name: String::new(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            kind: ModKind::SampleStart {
+                source: Source::Constant,
+                depth,
+            },
+        }];
+        let mut e = Engine::new(Arc::new(plan.clone()), store.client(), RATE);
+        let frame = level(&mut e, &[on(60, 1.0)])[0] * 4096.0;
+        assert!(
+            (frame - (start + 128.0)).abs() < 1.0,
+            "depth {depth}: {frame}"
+        );
+    }
+}
+
+#[test]
+fn a_group_eq_shapes_its_voices() {
+    use kontra_engine::ir::{Bell, Effect, EffectKind};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let region = sine(&mut store);
+    let peak = |gain_db: f32| {
+        let mut plan = Plan::new(vec![Zone::new(region.clone(), 60, RATE)], 8);
+        plan.groups[0].mods.clear();
+        let bell = Bell {
+            hz: 1000.0,
+            q: 1.0,
+            gain_db,
+        };
+        plan.groups[0].inserts = vec![Some(Effect {
+            kind: EffectKind::Eq([bell, Bell::FLAT, Bell::FLAT]),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let mut out = vec![[0.0; 2]; 4800];
+        e.process(&mut out, &[on(60, 1.0)]);
+        out[2400..].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    let (flat, boosted) = (peak(0.0), peak(12.0));
+    assert!((flat - 0.1).abs() < 0.005, "{flat}");
+    assert!(
+        (boosted / flat - 10f32.powf(0.6)).abs() < 0.05,
+        "{flat} -> {boosted}"
+    );
+}
+
+#[test]
+fn a_controller_pitch_route_moves_sounding_voices() {
+    use kontra_engine::ir::{Mod, ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Pitch {
+            source: Source::Controller(1),
+            semitones: 12.0,
+            depth: 1.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let at = |e: &Engine| e.voices().next().map(|(_, p, _)| p).unwrap();
+    level(&mut e, &[on(60, 1.0)]);
+    let from = at(&e);
+    level(&mut e, &[cc(1, 127)]);
+    assert!(
+        (at(&e) - from - 512.0).abs() < 1e-6,
+        "an octave up: {}",
+        at(&e) - from
+    );
+}
+
+#[test]
+fn an_envelope_pitch_route_rises_holds_and_releases() {
+    use kontra_engine::ir::{Breakpoint, Breakpoints, Mod, ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    let point = |level| Breakpoint {
+        ms: 1.0,
+        level,
+        curve: 0.0,
+    };
+    plan.groups[0].envelopes = vec![Breakpoints {
+        start: 0.0,
+        points: vec![point(1.0), point(0.0)],
+        sustain: Some(0),
+        loop_from: None,
+    }];
+    plan.groups[0].envelope.release = RATE;
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Pitch {
+            source: Source::Envelope(0),
+            semitones: 12.0,
+            depth: 1.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let advance = |e: &mut Engine, events: &[Timed<Event>]| {
+        let at = |e: &Engine| e.voices().next().map(|(_, p, _)| p).unwrap();
+        let from = at(e);
+        level(e, events);
+        (at(e) - from) / 256.0
+    };
+    level(&mut e, &[on(60, 1.0)]);
+    assert!((advance(&mut e, &[]) - 2.0).abs() < 1e-6, "held at the top");
+    level(&mut e, &[off(60)]);
+    let after = advance(&mut e, &[]);
+    assert!(
+        (after - 1.0).abs() < 1e-6,
+        "released to the bottom: {after}"
+    );
+}
+
+#[test]
+fn a_controller_opens_a_voice_filter() {
+    use kontra_engine::ir::{Effect, EffectKind, Filter, Mod, ModKind, Pass, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+    // A 4-pole low pass at 100 Hz that a controller opens by 6 octaves.
+    plan.groups[0].inserts = vec![Some(Effect {
+        kind: EffectKind::Filter(Filter {
+            pass: Pass::Low,
+            hz: 100.0,
+            stages: 2,
+            damping: [1.85, 0.77, 0.0],
+            gain: 1.0,
+            octaves: 6.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Cutoff {
+            source: Source::Controller(74),
+            insert: 0,
+            depth: 1.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let peak = |e: &mut Engine, events: &[Timed<Event>]| {
+        let now = e.now();
+        let input: Vec<_> = events
+            .iter()
+            .map(|ev| Timed {
+                at: now,
+                body: ev.body,
+            })
+            .collect();
+        let mut out = vec![[0.0f32; 2]; 4800];
+        e.process(&mut out, &input);
+        out[2400..].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    peak(&mut e, &[on(60, 1.0)]);
+    let closed = peak(&mut e, &[]);
+    peak(&mut e, &[cc(74, 127)]);
+    let open = peak(&mut e, &[]);
+    assert!(closed < 0.001, "closed {closed}");
+    assert!((open - 0.1).abs() < 0.01, "open {open}");
+}
+
+#[test]
+fn a_velocity_attack_route_shortens_soft_attacks() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].envelope.attack = 4800; // 100 ms, linear
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "VEL_ATTACK".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Attack {
+            source: ir::Source::Velocity,
+            intensity: 1.0,
+            floor_ms: 2.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let [hard, _] = level(&mut e, &[on(60, 1.0)]);
+    assert!((hard - 0.5 * 128.0 / 4800.0).abs() < 1e-3, "{hard}");
+    level(&mut e, &[off(60)]);
+    for _ in 0..40 {
+        level(&mut e, &[]);
+    }
+    // Half velocity halves the knob: 2·(102/2)^0.5 − 2 ≈ 12.3 ms.
+    let [soft, _] = level(&mut e, &[on(60, 0.5)]);
+    let frames = (2.0 * 51f32.sqrt() - 2.0) * 48.0;
+    assert!((soft - 0.5 * 128.0 / frames).abs() < 2e-3, "{soft}");
+}
+
+#[test]
+fn timed_modulation_does_not_depend_on_the_block_size() {
+    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].lfos = vec![Lfo {
+        wave: Wave::Sine,
+        rate: Rate::Hz(7.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: Clock::Voice,
+    }];
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Volume {
+            source: Source::Lfo(0),
+            intensity: 1.0,
+            curve: Curve::Depth { power: 1 },
+        },
+    }];
+    let plan = Arc::new(plan);
+    let render = |block: usize| {
+        let mut e = Engine::new(Arc::clone(&plan), store.client(), RATE);
+        let mut out = Vec::new();
+        let mut buf = vec![[0.0; 2]; block];
+        e.process(&mut buf, &[on(60, 1.0)]);
+        out.extend_from_slice(&buf);
+        while out.len() < 9_600 {
+            e.process(&mut buf, &[]);
+            out.extend_from_slice(&buf);
+        }
+        out.truncate(9_600);
+        out
+    };
+    let reference = render(256);
+    for block in [64, 100, 1000] {
+        assert_eq!(render(block), reference, "block {block}");
+    }
 }

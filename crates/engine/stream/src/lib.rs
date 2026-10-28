@@ -13,7 +13,7 @@ mod sniff;
 mod source;
 mod store;
 
-pub use file::open;
+pub use file::{decode, open};
 pub use fmt::{Encoding, SampleFmt};
 pub use sample::{PAGE_FRAMES, Read, Sample, SampleId};
 pub use source::{MemSource, Source};

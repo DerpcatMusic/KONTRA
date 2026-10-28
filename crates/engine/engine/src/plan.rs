@@ -125,6 +125,10 @@ pub struct Group {
     pub inserts: Vec<Option<ir::Effect>>,
     pub mods: Vec<ir::Mod>,
     pub envelope: Ahdsr,
+    /// Read by `Source::Envelope(n)` and `Source::Lfo(n)`.
+    pub envelopes: Vec<ir::Breakpoints>,
+    pub lfos: Vec<ir::Lfo>,
+    pub routes: Vec<ir::Routes>,
 }
 
 impl Group {
@@ -139,6 +143,8 @@ impl Group {
             mods: vec![ir::Mod {
                 name: String::new(),
                 slot: 0,
+                target: 0,
+                bypass: false,
                 kind: ir::ModKind::Volume {
                     source: ir::Source::Velocity,
                     intensity: 1.0,
@@ -146,12 +152,16 @@ impl Group {
                 },
             }],
             envelope: Ahdsr::GATE,
+            envelopes: Vec::new(),
+            lfos: Vec::new(),
+            routes: Vec::new(),
         }
     }
 
-    /// The mod a script addresses by `slot`.
-    pub fn mod_mut(&mut self, slot: i32) -> Option<&mut ir::Mod> {
-        self.mods.iter_mut().find(|m| i32::from(m.slot) == slot)
+    /// The route a script addresses by modulator `slot` and `target`; a
+    /// negative target is the modulator's first route.
+    pub fn mod_mut(&mut self, slot: i32, target: i32) -> Option<&mut ir::Mod> {
+        self.mods.iter_mut().find(|m| addressed(m, slot, target))
     }
 }
 
@@ -183,6 +193,8 @@ pub struct Zone {
     /// The sample's own rate, for the step against the engine rate.
     pub sample_rate: u32,
     pub region: Region,
+    /// Frames a [`ir::ModKind::SampleStart`] may move the start either way.
+    pub start_mod: u64,
     /// Linear gain at full velocity.
     pub gain: f32,
     /// −1 (left) ..= 1 (right).
@@ -213,6 +225,7 @@ impl Zone {
             tune: 0.0,
             sample_rate,
             region,
+            start_mod: 0,
             gain: 1.0,
             pan: 0.0,
             release_decay_db: 0.0,
@@ -235,6 +248,13 @@ pub struct Bus {
     pub enabled: bool,
 }
 
+/// A prepared impulse response.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Response {
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
+}
+
 /// Pool sizes, zones, groups and buses. Growing a pool is a new plan, not a resize.
 #[derive(Clone)]
 pub struct Plan {
@@ -254,10 +274,17 @@ pub struct Plan {
     pub notes: usize,
     /// Pending timed work; also bounds one block's input.
     pub queue: usize,
-    /// The instrument script, if any.
-    pub script: Option<ScriptPlan>,
+    /// The instrument's scripts in slot order: an event passes through each
+    /// in turn, and a note one plays only through those after it.
+    pub scripts: Vec<ScriptPlan>,
     /// Effects on everything, by slot.
     pub inserts: Vec<Option<ir::Effect>>,
+    /// Send effects, by send slot, and the main rack after them.
+    pub sends: Vec<Option<ir::Effect>>,
+    pub main: Vec<Option<ir::Effect>>,
+    /// Convolution responses at the engine's rate, by [`ir::Instrument::impulses`]
+    /// index; `None` when unreadable.
+    pub impulses: Vec<Option<Response>>,
 }
 
 impl Plan {
@@ -286,8 +313,16 @@ impl Plan {
             voices,
             notes: 128,
             queue: 1024,
-            script: None,
+            scripts: Vec::new(),
             inserts: Vec::new(),
+            sends: Vec::new(),
+            main: Vec::new(),
+            impulses: Vec::new(),
         }
     }
+}
+
+/// Whether scripts address `m` by modulator `slot` and `target` (any when negative).
+pub(crate) fn addressed(m: &ir::Mod, slot: i32, target: i32) -> bool {
+    i32::from(m.slot) == slot && (target < 0 || i32::from(m.target) == target)
 }

@@ -82,6 +82,14 @@ pub(crate) struct Note {
     pub(crate) offset: u32,
     /// `EVENT_PAR_0..3`, free for the script.
     pub(crate) custom: [i32; 4],
+    /// "From script" modulator values, `(index, value)`, ±1 000 000.
+    // ponytail: four indices per note; a ring when a library sends more.
+    pub(crate) mod_values: [Option<(u16, i32)>; 4],
+    /// The first script slot that sees the note: 0 for a host note, one past
+    /// the slot that played it.
+    pub(crate) first: u8,
+    /// Script slots whose note callback has let it through.
+    pub(crate) pass: u8,
     /// Event marks (`set_event_mark`), one bit each.
     pub(crate) marks: u32,
 }
@@ -116,7 +124,31 @@ impl Note {
             script_pan: 0,
             offset: 0,
             custom: [0; 4],
+            mod_values: [None; 4],
+            first: 0,
+            pass: 0,
             marks: 0,
+        }
+    }
+
+    /// The value sent for "from script" modulator `index`; 0 until sent.
+    pub(crate) fn mod_value(&self, index: u16) -> i32 {
+        self.mod_values
+            .iter()
+            .flatten()
+            .find(|(i, _)| *i == index)
+            .map_or(0, |&(_, v)| v)
+    }
+
+    /// Keeps `value` for `index` when a slot is free or already holds it.
+    pub(crate) fn set_mod_value(&mut self, index: u16, value: i32) {
+        let value = value.clamp(-1_000_000, 1_000_000);
+        if let Some(slot) = self
+            .mod_values
+            .iter_mut()
+            .find(|m| m.is_none_or(|(i, _)| i == index))
+        {
+            *slot = Some((index, value));
         }
     }
 }

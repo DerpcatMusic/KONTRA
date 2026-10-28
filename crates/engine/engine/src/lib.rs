@@ -9,20 +9,26 @@
 //! engine executes, not script code. Nothing allocates after [`Engine::new`].
 
 mod behaviour;
+mod callbacks;
 mod controls;
 mod effects;
+mod filters;
 mod inspect;
 mod ledger;
+mod midi;
+mod modulators;
 mod params;
 mod plan;
 mod prepare;
 mod queue;
+mod racks;
 mod script;
 mod voice_gain;
 mod voice_groups;
 
 use std::sync::Arc;
 
+use kontra_dsp::filter::Svf;
 use kontra_stream::StreamClient;
 use kontra_time::Frames;
 use kontra_vm::Instance;
@@ -35,7 +41,8 @@ pub use kontra_vm::{Action, Faults, Op, Program, Text};
 pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
 pub use plan::{
-    Atom, Bus, Control, Crossfade, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone,
+    Atom, Bus, Control, Crossfade, Group, Level, Plan, Response, RoundRobin, RrCounter, Trigger,
+    Zone,
 };
 pub use prepare::{Open, prepare};
 pub use queue::Timed;
@@ -76,25 +83,36 @@ struct Slot {
     note: Option<NoteRef>,
     zone: usize,
     started: SampleTime,
-    /// Key released (the envelope is in release).
+    /// Key released.
     released: bool,
+    /// When the envelope began its release; a one-shot's never does.
+    released_at: Option<SampleTime>,
     /// Fading out after a steal, choke or group limit; no longer counts as playing.
     fading: bool,
     /// Extra gain fixed at start (release-trigger decay).
     factor: f32,
+    /// Its group's filter whose cutoff moves, run on this voice alone.
+    filter: Option<Svf>,
 }
 
 struct BusState {
     gain: f32,
     enabled: bool,
-    /// The plan's bus inserts as scripts have changed them.
-    inserts: Box<[Option<ir::Effect>]>,
+    /// Its rack, on what it carries.
+    rack: racks::Rack,
+    /// -1..=1 balance after the rack.
+    pan: f32,
     mix: Box<[[f32; 2]]>,
 }
+
+/// Per control, the parameters a script set other than its value.
+type ControlPars = Box<[Vec<(i32, i32)>]>;
 
 pub struct Engine {
     now: SampleTime,
     rate: u32,
+    /// Host tempo, quarter notes per minute (tempo-synced LFOs).
+    tempo: f32,
     plan: Arc<Plan>,
     stream: StreamClient,
     queue: EventQueue,
@@ -108,11 +126,13 @@ pub struct Engine {
     hits: Vec<NoteRef>,
     ended: Vec<HostNote>,
     stats: Stats,
-    /// The script's state; taken out while a callback runs.
-    vm: Option<Instance>,
+    /// Each script slot's state; taken out while its callback runs.
+    vms: Box<[Option<Instance>]>,
     running: Running,
-    /// Notes waiting for their callback to return before they start.
+    /// Notes through every script slot, starting once the callback returns.
     pending: Vec<NoteRef>,
+    /// Notes a callback played, still to pass the slots after it.
+    forward: Vec<NoteRef>,
     masks: GroupMasks,
     /// Scratch for script event targets (an action may run inside a ledger query).
     targets_scratch: Vec<NoteRef>,
@@ -124,14 +144,25 @@ pub struct Engine {
     called: Box<[u32]>,
     /// The instrument's level, pan and tune (a script's group -1).
     instrument: Level,
-    /// The plan's instrument inserts as scripts have changed them.
-    inserts: Box<[Option<ir::Effect>]>,
+    /// The instrument insert rack, on the final mix.
+    rack: racks::Rack,
+    /// One single-slot rack per send slot, its input, then the main rack.
+    sends: Box<[racks::Rack]>,
+    taps: Box<[Box<[[f32; 2]]>]>,
+    main: racks::Rack,
     /// Callbacks run so far (24 bits): the source of `$NI_CALLBACK_ID`.
     callbacks_started: u32,
-    /// Per control, parameters the script set other than its value.
-    control_pars: Box<[Vec<(i32, i32)>]>,
+    /// Per script slot, its controls' parameters other than the value.
+    control_pars: Box<[ControlPars]>,
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
+    /// Shared EQ chains, and each zone's chain.
+    chains: Vec<filters::Chain>,
+    zone_chain: Box<[Option<u16>]>,
+    /// Per group, the insert slot of its filter that runs per voice.
+    voice_filters: Box<[Option<u8>]>,
+    /// One voice's audio on its way through its filter.
+    scratch: Box<[[f32; 2]]>,
 }
 
 impl Engine {
@@ -140,7 +171,16 @@ impl Engine {
     #[must_use]
     pub fn new(plan: Arc<Plan>, stream: StreamClient, rate: u32) -> Self {
         let shared: Box<[Group]> = plan.groups.clone().into();
-        let plan_inserts = plan.inserts.clone().into();
+        let rack = racks::Rack::new(&plan.inserts, rate);
+        let sends: Box<[racks::Rack]> = plan
+            .sends
+            .iter()
+            .map(|slot| racks::Rack::new(std::slice::from_ref(slot), rate))
+            .collect();
+        let taps = (0..sends.len())
+            .map(|_| vec![[0.0; 2]; MAX_SPAN as usize].into())
+            .collect();
+        let main = racks::Rack::new(&plan.main, rate);
         let pool = plan.voices + plan.voices / 4 + 1;
         let voices = (0..pool)
             .map(|_| Slot {
@@ -148,9 +188,11 @@ impl Engine {
                 note: None,
                 zone: 0,
                 started: SampleTime(0),
+                released_at: None,
                 released: false,
                 fading: false,
                 factor: 1.0,
+                filter: None,
             })
             .collect();
         let buses = plan
@@ -159,7 +201,8 @@ impl Engine {
             .map(|b| BusState {
                 gain: b.gain,
                 enabled: b.enabled,
-                inserts: b.inserts.clone().into(),
+                rack: racks::Rack::new(&b.inserts, rate),
+                pan: b.pan,
                 mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
             })
             .collect();
@@ -171,18 +214,20 @@ impl Engine {
             .map(|z| z.group as usize + 1)
             .max()
             .unwrap_or(0);
-        let vm = plan
-            .script
-            .as_ref()
-            .map(|s| Instance::new(&s.program, s.coroutines.max(1)));
+        let vms = plan
+            .scripts
+            .iter()
+            .map(|s| Some(Instance::new(&s.program, s.coroutines.max(1))))
+            .collect();
         let control_pars = plan
-            .script
-            .as_ref()
+            .scripts
+            .iter()
             .map(|s| vec![Vec::new(); s.controls.cells.len()].into())
-            .unwrap_or_default();
+            .collect();
         let mut engine = Self {
             now: SampleTime(0),
             rate: rate.max(1),
+            tempo: 120.0,
             queue: EventQueue::new(plan.queue),
             hits: Vec::with_capacity(notes.capacity()),
             ended: Vec::with_capacity(notes.capacity()),
@@ -194,10 +239,11 @@ impl Engine {
             buses,
             pedal: [false; 16],
             stats: Stats::default(),
-            vm,
+            vms,
             groups: shared,
             running: Running::IDLE,
             pending: Vec::with_capacity(capacity),
+            forward: Vec::with_capacity(capacity),
             masks: GroupMasks::new(capacity, groups),
             targets_scratch: Vec::with_capacity(capacity),
             cc_values: [0; 130],
@@ -207,16 +253,27 @@ impl Engine {
             control_pars,
             callbacks_started: 0,
             instrument: Level::UNITY,
-            inserts: plan_inserts,
+            rack,
+            sends,
+            taps,
+            main,
+            chains: Vec::new(),
+            zone_chain: Box::new([]),
+            voice_filters: Box::new([]),
+            scratch: vec![[0.0; 2]; MAX_SPAN as usize].into(),
         };
         engine.cc_values[7] = 100;
         engine.cc_values[11] = 127;
         let plan = Arc::clone(&engine.plan);
-        if let Some(script) = &plan.script {
+        for (slot, script) in (0u8..).zip(&plan.scripts) {
             if let Some(init) = script.callbacks.init {
-                engine.run_callback(init, Running::new(Kind::Init, None));
+                engine.run_callback(slot, init, Running::new(Kind::Init, None));
             }
-            if let Some(vm) = engine.vm.as_mut() {
+            if let Some(vm) = engine
+                .vms
+                .get_mut(usize::from(slot))
+                .and_then(Option::as_mut)
+            {
                 for &(cell, value) in &script.restore {
                     vm.set_cell(cell as usize, value);
                 }
@@ -225,9 +282,11 @@ impl Engine {
                 }
             }
             if let Some(changed) = script.callbacks.persistence_changed {
-                engine.run_callback(changed, Running::new(Kind::Init, None));
+                engine.run_callback(slot, changed, Running::new(Kind::Init, None));
             }
         }
+        engine.rebuild_racks();
+        engine.build_chains();
         engine
     }
 
@@ -274,6 +333,14 @@ impl Engine {
         self.behaviour.keyswitch
     }
 
+    /// The host's tempo in quarter notes per minute; ignored unless finite
+    /// and positive.
+    pub fn set_tempo(&mut self, bpm: f32) {
+        if bpm.is_finite() && bpm > 0.0 {
+            self.tempo = bpm;
+        }
+    }
+
     pub fn set_bus_gain(&mut self, bus: usize, gain: f32) {
         if let Some(b) = self.buses.get_mut(bus) {
             b.gain = gain;
@@ -317,44 +384,24 @@ impl Engine {
                 .queue
                 .next_at()
                 .map_or(end, |at| at.min(end))
-                .min(SampleTime(self.now.0 + MAX_SPAN));
+                // Spans end on a fixed grid, so timed modulators move at the
+                // same samples whatever the host's block size.
+                .min(SampleTime((self.now.0 / MAX_SPAN + 1) * MAX_SPAN));
             let len = (until.0 - self.now.0) as usize;
             self.render_span(len);
             let from = (self.now.0 - start.0) as usize;
             if let Some(span) = out.get_mut(from..from + len) {
-                for bus in &self.buses {
-                    for (o, m) in span.iter_mut().zip(bus.mix.iter()) {
-                        o[0] += m[0] * bus.gain;
-                        o[1] += m[1] * bus.gain;
-                    }
-                }
+                self.mix_out(span);
             }
             self.now = until;
         }
         self.end_silent_notes();
     }
 
-    fn render_span(&mut self, len: usize) {
-        for bus in &mut self.buses {
-            if let Some(mix) = bus.mix.get_mut(..len) {
-                mix.fill([0.0; 2]);
-            }
-        }
-        for slot in self.voices.iter_mut().filter(|s| s.voice.is_active()) {
-            let bus = self.plan.zones.get(slot.zone).map_or(0, |z| z.bus);
-            let Some(mix) = self.buses.get_mut(bus).and_then(|b| b.mix.get_mut(..len)) else {
-                continue;
-            };
-            let before = slot.voice.missing_frames();
-            slot.voice.render(&self.stream, self.now.0, mix);
-            self.stats.missing_frames += slot.voice.missing_frames() - before;
-        }
-    }
-
     fn dispatch(&mut self, work: Work) {
         let event = match work {
             Work::Input(event) => event,
-            Work::Resume(co) => return self.resume(co),
+            Work::Resume(slot, co) => return self.resume(slot, co),
             Work::Release(note) => return self.end_note(note),
         };
         match event {
@@ -385,13 +432,8 @@ impl Engine {
             return;
         };
         self.masks.reset(note.slot());
-        self.pending.push(note);
-        match self.plan.script.as_ref().and_then(|s| s.callbacks.note) {
-            Some(entry) => {
-                self.run_callback(entry, Running::new(Kind::Note, Some(note)));
-            }
-            None => self.start_pending(),
-        }
+        self.pass_note(note);
+        self.start_pending();
     }
 
     /// Starts every zone `accept`s whose rules match the note, all at now.
@@ -431,28 +473,40 @@ impl Engine {
                 1.0
             };
             let mut region = zone.region.clone();
-            if n.offset > 0 && !region.reverse {
-                let frames = u64::from(n.offset) * u64::from(zone.sample_rate) / 1_000_000;
-                region.start = (region.start + frames).min(region.end);
+            if !region.reverse {
+                let script = u64::from(n.offset) * u64::from(zone.sample_rate) / 1_000_000;
+                let frames = self.start_offset(zone, &n, held_seconds);
+                region.start = region
+                    .start
+                    .saturating_add(script)
+                    .saturating_add_signed(frames)
+                    .min(region.end);
             }
             let start = VoiceStart {
                 region,
-                step: self.step(zone, &n),
-                gain: self.voice_gain(zone, &n, factor),
-                envelope: self
-                    .groups
-                    .get(zone.group as usize)
-                    .map_or(Ahdsr::GATE, |g| g.envelope),
+                step: self.step(zone, &n, self.age(self.now, None)),
+                gain: self.voice_gain(zone, &n, factor, self.age(self.now, None)),
+                envelope: self.envelope(zone, &n, held_seconds),
             };
             let now = self.now;
+            let rate = self.rate;
+            let filter = self
+                .cutoff(zone, &n, self.age(self.now, None))
+                .map(|(f, hz)| {
+                    let mut svf = Svf::new(filters::shape(&f));
+                    svf.set_cutoff(hz, rate);
+                    svf
+                });
             let Some(slot) = self.free_slot() else {
                 continue;
             };
             slot.voice.start(start);
+            slot.filter = filter;
             slot.note = Some(note);
             slot.zone = index;
             slot.started = now;
             slot.released = false;
+            slot.released_at = None;
             slot.fading = false;
             slot.factor = factor;
         }
@@ -549,11 +603,7 @@ impl Engine {
                 continue;
             }
             let channel = n.host.channel;
-            if let Some(entry) = self.plan.script.as_ref().and_then(|s| s.callbacks.release)
-                && self
-                    .run_callback(entry, Running::new(Kind::Release, Some(note)))
-                    .ignore_release
-            {
+            if self.release_callbacks(note) {
                 continue;
             }
             if self
@@ -582,10 +632,8 @@ impl Engine {
         if n.released {
             return;
         }
-        if n.origin != Origin::Host
-            && let Some(entry) = self.plan.script.as_ref().and_then(|s| s.callbacks.release)
-        {
-            self.run_callback(entry, Running::new(Kind::Release, Some(note)));
+        if n.origin != Origin::Host {
+            self.release_callbacks(note);
         }
         self.release(note);
     }
@@ -616,6 +664,7 @@ impl Engine {
             // A one-shot plays to its end marker whatever the key does.
             if !self.plan.zones.get(slot.zone).is_some_and(|z| z.one_shot) {
                 slot.voice.release();
+                slot.released_at = Some(self.now);
             }
             slot.released = true;
         }
@@ -685,67 +734,22 @@ impl Engine {
             if cc.is_some_and(|cc| !self.follows(zone, cc)) {
                 continue;
             }
-            let gain = self.voice_gain(zone, &n, slot.factor);
-            let step = self.step(zone, &n);
+            let age = self.age(slot.started, slot.released_at);
+            let gain = self.voice_gain(zone, &n, slot.factor, age);
+            let step = self.step(zone, &n, age);
+            let pitch = cc.is_none_or(|cc| self.pitch_follows(zone, cc));
+            let cutoff = self.cutoff(zone, &n, age).map(|(_, hz)| hz);
+            let rate = self.rate;
             if let Some(slot) = self.voices.get_mut(i) {
+                if let (Some(f), Some(hz)) = (slot.filter.as_mut(), cutoff) {
+                    f.set_cutoff(hz, rate);
+                }
                 slot.voice.set_gain(gain);
-                if cc.is_none() {
+                if pitch {
                     slot.voice.set_step(step);
                 }
             }
         }
-    }
-
-    /// MIDI 1.0 channel messages: controllers feed behaviour (ranges, live
-    /// crossfades) and the sustain pedal. Notes arrive as [`Event::NoteOn`].
-    fn ump(&mut self, [word, _]: [u32; 2]) {
-        if word >> 28 != 0x2 {
-            return;
-        }
-        let status = (word >> 16) as u8;
-        if status & 0xF0 != 0xB0 {
-            return;
-        }
-        let channel = status & 0x0F;
-        let (controller, value) = ((word >> 8) as u8 & 0x7F, word as u8 & 0x7F);
-        if let Some(v) = self.cc_values.get_mut(usize::from(controller)) {
-            *v = value;
-        }
-        if let Some(entry) = self
-            .plan
-            .script
-            .as_ref()
-            .and_then(|s| s.callbacks.controller)
-        {
-            let running = Running {
-                controller,
-                ..Running::new(Kind::Controller, None)
-            };
-            let ran = self.run_callback(entry, running);
-            if ran.ignore_controller {
-                return;
-            }
-        }
-        self.behaviour.set_cc(channel, controller, value);
-        let mut hits = std::mem::take(&mut self.hits);
-        if controller == 64 {
-            let down = value >= 64;
-            if let Some(p) = self.pedal.get_mut(usize::from(channel)) {
-                *p = down;
-            }
-            if !down {
-                self.notes
-                    .select(&mut hits, |n| n.pedal_held && n.host.channel == channel);
-                for &note in &hits {
-                    self.release(note);
-                }
-            }
-        }
-        self.notes.select(&mut hits, |n| n.host.channel == channel);
-        for &note in &hits {
-            self.refresh_note(note, Some(controller));
-        }
-        self.hits = hits;
     }
 
     /// Ends notes with no sounding voice and reports them to the host. A key
@@ -759,9 +763,9 @@ impl Engine {
             .any(|z| z.trigger == Trigger::Release)
             || self
                 .plan
-                .script
-                .as_ref()
-                .is_some_and(|s| s.callbacks.release.is_some());
+                .scripts
+                .iter()
+                .any(|s| s.callbacks.release.is_some());
         let mut hits = std::mem::take(&mut self.hits);
         self.notes.select(&mut hits, |_| true);
         for &note in &hits {

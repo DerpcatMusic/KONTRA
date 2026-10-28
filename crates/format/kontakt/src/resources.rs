@@ -20,8 +20,8 @@ const DEPTH: usize = 8;
 
 enum Source {
     Loose(PathBuf),
-    Nkr(File, Archive),
-    Nicnt(File, NIFileContainer),
+    Nkr(File, Archive, PathBuf),
+    Nicnt(File, NIFileContainer, PathBuf),
 }
 
 pub(crate) struct Resources {
@@ -68,7 +68,7 @@ impl Resources {
                 } else if ext.as_deref() == Some("nkr") {
                     let archive = File::open(&p).ok().and_then(|mut f| {
                         let index = Archive::read_index(&mut f).ok()?;
-                        Some(Source::Nkr(f, index))
+                        Some(Source::Nkr(f, index, p.clone()))
                     });
                     sources.extend(archive);
                 } else if ext.as_deref() == Some("nicnt") {
@@ -99,12 +99,12 @@ impl Resources {
                         Some(bytes)
                     })
                 }
-                Source::Nicnt(file, table) => table
+                Source::Nicnt(file, table, _) => table
                     .items
                     .iter()
                     .find(|item| matches(&item.filename))
                     .and_then(|item| table.read_item(&mut *file, item, LIMIT).ok()),
-                Source::Nkr(file, archive) => {
+                Source::Nkr(file, archive, _) => {
                     let Some(entry) = archive.members().find(|e| matches(&e.name)).cloned() else {
                         continue;
                     };
@@ -124,6 +124,51 @@ impl Resources {
             }
         }
         None
+    }
+}
+
+impl Resources {
+    /// Where `Resources/<name>` sits in a loose folder or a `.nicnt`, for a
+    /// reader that opens it itself (a convolution response).
+    pub(crate) fn locate(&self, name: &str) -> Option<crate::samples::Location> {
+        let want = format!("/{}", name.replace(['|', '\\'], "/").to_lowercase());
+        self.sources.iter().find_map(|source| match source {
+            Source::Loose(dir) => {
+                let file = dir.join(name);
+                file.is_file().then_some(crate::samples::Location {
+                    file,
+                    offset: 0,
+                    size: None,
+                    keystream: None,
+                })
+            }
+            Source::Nicnt(_, table, path) => {
+                let item = table.items.iter().find(|item| {
+                    format!(
+                        "/{}",
+                        item.filename.replace(['|', '\\'], "/").to_lowercase()
+                    )
+                    .ends_with(&want)
+                })?;
+                Some(crate::samples::Location {
+                    file: path.clone(),
+                    offset: table
+                        .file_section_offset
+                        .checked_add(item.file_start_offset)?,
+                    size: Some(item.file_size),
+                    keystream: None,
+                })
+            }
+            Source::Nkr(..) => None,
+        })
+    }
+
+    /// The library's `.nkr` archives.
+    pub(crate) fn archives(&self) -> impl Iterator<Item = &Path> {
+        self.sources.iter().filter_map(|s| match s {
+            Source::Nkr(_, _, path) => Some(path.as_path()),
+            _ => None,
+        })
     }
 }
 
@@ -151,5 +196,5 @@ fn nicnt_table(path: &Path) -> Option<Source> {
         .find_map(|(at, bytes)| (bytes == MARKER).then_some(at))?;
     file.seek(SeekFrom::Start(at as u64)).ok()?;
     let (table, _) = NIFileContainer::read_table(&mut file).ok()?;
-    Some(Source::Nicnt(file, table))
+    Some(Source::Nicnt(file, table, path.to_path_buf()))
 }

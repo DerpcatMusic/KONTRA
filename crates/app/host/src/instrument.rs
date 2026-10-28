@@ -30,14 +30,17 @@ pub fn load(
 pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded {
     let (mut plan, mut diagnostics) = prepare(&instrument, rate, store, &kontra_stream::open);
     diagnostics.extend(instrument.diagnostics);
-    let mut scripts = instrument
+    // ponytail: a slot that fails to compile is dropped, and the slots after
+    // it move up one ($EVENT_PAR_SOURCE then counts from the gap).
+    for script in instrument
         .scripts
         .iter()
-        .filter(|s| s.dialect == ir::Dialect::Ksp);
-    if let Some(script) = scripts.next() {
+        .filter(|s| s.dialect == ir::Dialect::Ksp)
+    {
         match kontra_ksp::compile(&script.source, &[]) {
             Ok(compiled) => {
-                plan.script = Some(crate::script::plan(&compiled, &script.saved, &script.data))
+                plan.scripts
+                    .push(crate::script::plan(&compiled, &script.saved, &script.data))
             }
             Err(e) => diagnostics.push(ir::Diagnostic {
                 impact: ir::Impact::Broken,
@@ -50,13 +53,6 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 ),
             }),
         }
-    }
-    for extra in scripts {
-        diagnostics.push(ir::Diagnostic {
-            impact: ir::Impact::Broken,
-            feature: "second script slot".into(),
-            detail: extra.name.clone(),
-        });
     }
     Loaded {
         name: instrument.name,

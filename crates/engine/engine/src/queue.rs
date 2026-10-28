@@ -20,8 +20,8 @@ pub struct Timed<T> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Work {
     Input(Event),
-    /// A waiting script callback continues.
-    Resume(CoId),
+    /// A waiting callback of a script slot continues.
+    Resume(u8, CoId),
     /// A script note's duration is up.
     Release(NoteRef),
 }

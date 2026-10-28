@@ -12,7 +12,7 @@ use crate::Engine;
 impl Engine {
     /// Index of the control with `id`, and its value cell if `par` is the value.
     fn control(&self, id: i32, par: i32) -> Option<(usize, Option<usize>)> {
-        let controls = &self.plan.script.as_ref()?.controls;
+        let controls = &self.script()?.controls;
         let n = usize::try_from(id.checked_sub(controls.first)?).ok()?;
         let cell = controls.cells.get(n)?;
         let value = (par == controls.value_par).then_some(*cell).flatten();
@@ -24,7 +24,8 @@ impl Engine {
             Some((_, Some(cell))) => cells.get(cell).map_or(0, |&v| v as i32),
             Some((n, None)) => self
                 .control_pars
-                .get(n)
+                .get(usize::from(self.running.slot))
+                .and_then(|slot| slot.get(n))
                 .and_then(|pars| pars.iter().find(|(p, _)| *p == par))
                 .map_or(0, |&(_, v)| v),
             None => 0,
@@ -41,7 +42,8 @@ impl Engine {
                 }
             }
             Some((n, None)) => {
-                let Some(pars) = self.control_pars.get_mut(n) else {
+                let slot = usize::from(self.running.slot);
+                let Some(pars) = self.control_pars.get_mut(slot).and_then(|s| s.get_mut(n)) else {
                     return;
                 };
                 match pars.iter_mut().find(|(p, _)| *p == par) {

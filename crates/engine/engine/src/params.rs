@@ -4,6 +4,7 @@
 
 use kontra_ir as ir;
 
+use crate::plan::addressed;
 use crate::{Engine, Level};
 
 /// Effect gains are cubic, unity at this value, so 1_000_000 is +24 dB (v2 sampler-core,
@@ -119,7 +120,7 @@ impl EffectPar {
 
 impl Engine {
     fn effect_par(&self, par: i32) -> Option<EffectPar> {
-        let pars = self.plan.script.as_ref()?.engine_pars;
+        let pars = self.script()?.engine_pars;
         match par {
             p if p == pars.effect_bypass => Some(EffectPar::Bypass),
             p if p == pars.effect_output => Some(EffectPar::Output),
@@ -136,11 +137,17 @@ impl Engine {
     fn effect_mut(&mut self, group: i32, slot: i32, generic: i32) -> Option<&mut ir::Effect> {
         let rack = match (usize::try_from(group), generic) {
             (Ok(g), -1) => &mut self.groups.get_mut(g)?.inserts[..],
-            (Err(_), 1) => &mut self.inserts[..],
+            // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0 (one rack per slot), `$NI_MAIN_BUS` 2.
+            (Err(_), 1) => &mut self.rack.slots[..],
+            (Err(_), 0) => {
+                let send = self.sends.get_mut(usize::try_from(slot).ok()?)?;
+                return send.slots.first_mut()?.as_mut();
+            }
+            (Err(_), 2) => &mut self.main.slots[..],
             // `$NI_BUS_OFFSET + n`: bus n is plan bus n + 1 (0 is the main bus).
             (Err(_), b) if b >= 1000 => {
                 let bus = usize::try_from(b - 999).ok()?;
-                &mut self.buses.get_mut(bus)?.inserts[..]
+                &mut self.buses.get_mut(bus)?.rack.slots[..]
             }
             _ => return None,
         };
@@ -163,7 +170,7 @@ impl Engine {
     }
 
     fn level_par(&self, par: i32) -> Option<LevelPar> {
-        let pars = self.plan.script.as_ref()?.engine_pars;
+        let pars = self.script()?.engine_pars;
         match par {
             p if p == pars.volume => Some(LevelPar::Volume),
             p if p == pars.pan => Some(LevelPar::Pan),
@@ -213,18 +220,20 @@ impl Engine {
             let level = *self.level_mut(group, generic)?;
             return Some(which.get(&level).round().clamp(0.0, 1e6) as i32);
         }
-        let pars = self.plan.script.as_ref()?.engine_pars;
+        let pars = self.script()?.engine_pars;
         let g = usize::try_from(group)
             .ok()
             .and_then(|g| self.groups.get(g))?;
         let ms = |frames: u32| f64::from(frames) * 1000.0 / f64::from(self.rate);
         let e = &g.envelope;
         let x = match par {
+            p if p == pars.mod_bypass => {
+                let m = g.mods.iter().find(|m| i32::from(m.slot) == slot)?;
+                return Some(i32::from(m.bypass));
+            }
             p if p == pars.intensity => {
-                match g.mods.iter().find(|m| i32::from(m.slot) == slot)?.kind {
-                    ir::ModKind::Volume { intensity, .. } => f64::from(intensity),
-                    ir::ModKind::Envelope => return None,
-                }
+                let m = g.mods.iter().find(|m| addressed(m, slot, generic))?;
+                f64::from(depth(&mut m.kind.clone())?.abs())
             }
             p if p == pars.attack => stage_x(15_000.0, ms(e.attack)),
             p if p == pars.hold => stage_x(15_000.0, ms(e.hold)),
@@ -252,7 +261,7 @@ impl Engine {
         {
             return true;
         }
-        let Some(pars) = self.plan.script.as_ref().map(|s| s.engine_pars) else {
+        let Some(pars) = self.script().map(|s| s.engine_pars) else {
             return false;
         };
         let x = f64::from(value.clamp(0, 1_000_000)) / 1e6;
@@ -262,6 +271,7 @@ impl Engine {
             .and_then(|g| self.groups.get_mut(g))
         else {
             return par == pars.intensity
+                || par == pars.mod_bypass
                 || [
                     pars.attack,
                     pars.hold,
@@ -272,20 +282,25 @@ impl Engine {
                 ]
                 .contains(&par);
         };
+        if par == pars.mod_bypass {
+            for m in g.mods.iter_mut().filter(|m| i32::from(m.slot) == slot) {
+                m.bypass = value != 0;
+            }
+            self.refresh_all(None);
+            return true;
+        }
         if par == pars.intensity {
-            if let Some(ir::Mod {
-                kind: ir::ModKind::Volume { intensity, .. },
-                ..
-            }) = g.mod_mut(slot)
-            {
-                *intensity = x as f32;
+            // The magnitude is the script's; the route keeps its sign (its invert flag).
+            if let Some(d) = g.mod_mut(slot, generic).and_then(|m| depth(&mut m.kind)) {
+                *d = (x as f32).copysign(*d);
                 self.refresh_all(None);
             }
             return true;
         }
         let envelope = g
-            .mod_mut(slot)
-            .is_some_and(|m| m.kind == ir::ModKind::Envelope);
+            .mods
+            .iter()
+            .any(|m| i32::from(m.slot) == slot && m.kind == ir::ModKind::Envelope);
         let e = &mut g.envelope;
         let stage = match par {
             p if p == pars.attack => &mut e.attack,
@@ -342,6 +357,20 @@ impl Engine {
             self.refresh_note(note, cc);
         }
         self.hits = hits;
+    }
+}
+
+/// A route's live intensity, signed by its invert flag.
+fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
+    match kind {
+        ir::ModKind::Volume { intensity, .. } | ir::ModKind::Attack { intensity, .. } => {
+            Some(intensity)
+        }
+        ir::ModKind::Pitch { depth, .. }
+        | ir::ModKind::Cutoff { depth, .. }
+        | ir::ModKind::SampleStart { depth, .. } => Some(depth),
+        ir::ModKind::Pan { amount, .. } => Some(amount),
+        ir::ModKind::Envelope => None,
     }
 }
 

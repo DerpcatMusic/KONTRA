@@ -31,6 +31,8 @@ pub(crate) struct Behaviour {
     /// One latch per [`Plan::switches`] range.
     switches: Vec<bool>,
     cc: [[u8; 128]; 16],
+    /// Pitch bend per channel, −1..=1.
+    bend: [f32; 16],
     global: Counter,
     keys: [Counter; 128],
     /// (group, counter) for every group a round-robin zone names; built at prepare.
@@ -60,6 +62,7 @@ impl Behaviour {
             keyswitch: None,
             switches: vec![false; plan.switches.len()],
             cc,
+            bend: [0.0; 16],
             global: Counter::default(),
             keys: [Counter::default(); 128],
             groups,
@@ -119,6 +122,19 @@ impl Behaviour {
             .and_then(|c| c.get(usize::from(controller & 127)))
             .copied()
             .unwrap_or(0)
+    }
+
+    pub(crate) fn bend(&self, channel: u8) -> f32 {
+        self.bend
+            .get(usize::from(channel & 15))
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    pub(crate) fn set_bend(&mut self, channel: u8, value: f32) {
+        if let Some(v) = self.bend.get_mut(usize::from(channel & 15)) {
+            *v = value;
+        }
     }
 
     pub(crate) fn set_cc(&mut self, channel: u8, controller: u8, value: u8) {
