@@ -2,7 +2,9 @@ name: Website
 on:
   push:
     branches: [main]
+  # v3 PRs skip it: the site builds when v3 reaches main.
   pull_request:
+    branches: [main]
     paths: ['website/**', 'tools/corpus-health/**', 'tools/library-inspector.html', 'tools/coverage/**', 'crates/**', 'vendor/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/pages.yml']
   workflow_dispatch:
 permissions:
