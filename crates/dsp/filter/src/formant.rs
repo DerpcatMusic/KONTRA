@@ -99,6 +99,8 @@ pub struct Formant {
     step: Bands,
     left: u32,
     glide: u32,
+    /// Frames until the next retune, counted across calls.
+    phase: u32,
 }
 
 impl Formant {
@@ -114,6 +116,7 @@ impl Formant {
             step: [[0.0; 3]; 3],
             left: 0,
             glide: ticks * 32,
+            phase: 0,
         }
     }
 
@@ -129,18 +132,17 @@ impl Formant {
                 *s = (t - n) / frames;
             }
         }
-        (self.target, self.left) = (target, self.glide);
+        (self.target, self.left, self.phase) = (target, self.glide, 0);
     }
 
     /// Filters `io` (frames of `[left, right]`) in place: the sum of the
     /// three bands.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
-        if self.left == 0 {
-            return self.run(io);
-        }
-        for chunk in io.chunks_mut(4) {
-            if self.left > 0 {
-                let n = (chunk.len() as u32).min(self.left);
+        let mut io = io;
+        while self.left > 0 && !io.is_empty() {
+            if self.phase == 0 {
+                // Every four frames, the coefficients at the step's end.
+                let n = self.left.min(4);
                 self.left -= n;
                 if self.left == 0 {
                     self.now = self.target;
@@ -154,9 +156,14 @@ impl Formant {
                 for (b, now) in self.bands.iter_mut().zip(self.now) {
                     b.retune(&band(now));
                 }
+                self.phase = n;
             }
+            let (chunk, rest) = io.split_at_mut((self.phase as usize).min(io.len()));
+            self.phase -= chunk.len() as u32;
             self.run(chunk);
+            io = rest;
         }
+        self.run(io);
     }
 
     fn run(&mut self, io: &mut [[f32; 2]]) {

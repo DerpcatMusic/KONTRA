@@ -139,23 +139,32 @@ pub(crate) fn route(
         insert,
         param,
         depth: intensity * scale,
+        span: scale,
         unipolar: param == ir::EffectParam::ShaperAmount && name == "distortionIntensity",
     })
 }
 
-/// Reports resonance routes to a formant insert: the target table
-/// (FUN_140a6d410) gives the formant its own `formantSharp` (0x26), and
-/// what `filterQ` (0x20) does there is not read yet.
-pub(crate) fn formant_q(inserts: &[Option<ir::Effect>], mods: &[ir::Mod], notes: &mut Notes) {
+/// Reports the routes the engine cannot apply: an effect route to an empty
+/// slot or to an effect without that control, and resonance routes to a
+/// formant (the target table FUN_140a6d410 gives the formant its own
+/// `formantSharp`, 0x26; what `filterQ`, 0x20, does there is not read yet).
+pub(crate) fn unmoved(inserts: &[Option<ir::Effect>], mods: &[ir::Mod], notes: &mut Notes) {
+    let at = |insert: u8| inserts.get(usize::from(insert)).and_then(Option::as_ref);
     for m in mods {
-        if let ir::ModKind::Resonance { insert, .. } = m.kind
-            && inserts
-                .get(usize::from(insert))
-                .and_then(Option::as_ref)
-                .is_some_and(|e| matches!(e.kind, ir::EffectKind::Formant(_)))
-        {
-            notes.add(ir::Impact::Audible, "modulator -> formant filterQ", &m.name);
-        }
+        let gap = match m.kind {
+            ir::ModKind::Resonance { insert, .. }
+                if at(insert).is_some_and(|e| matches!(e.kind, ir::EffectKind::Formant(_))) =>
+            {
+                "modulator -> formant filterQ"
+            }
+            ir::ModKind::EffectParam { insert, param, .. }
+                if !at(insert).is_some_and(|e| param.add(&mut e.kind.clone(), 0.0)) =>
+            {
+                "modulator -> effect without that control"
+            }
+            _ => continue,
+        };
+        notes.add(ir::Impact::Audible, gap, &m.name);
     }
 }
 

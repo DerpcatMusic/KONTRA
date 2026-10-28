@@ -466,12 +466,14 @@ pub enum ModKind {
         floor_ms: f32,
     },
     /// Adds `source × depth` to `param` of the per-voice effect in group
-    /// insert slot `insert`; `unipolar` reads an LFO as 0..=1, not −1..=1.
+    /// insert slot `insert`, `depth` being its knob times `span`; `unipolar`
+    /// reads an LFO as 0..=1, not −1..=1.
     EffectParam {
         source: Source,
         insert: u8,
         param: EffectParam,
         depth: f32,
+        span: f32,
         unipolar: bool,
     },
 }
