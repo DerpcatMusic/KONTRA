@@ -311,6 +311,31 @@ fn a_script_finds_a_modulation_by_name_and_drives_it() {
 }
 
 #[test]
+fn a_script_finds_a_modulator_that_carries_no_route() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].routes = vec![ir::Routes {
+        slot: 33,
+        name: "Phase_P1".into(),
+        names: vec![String::new()],
+    }];
+    let script = kontra_ksp::compile(
+        "on init
+            message(find_mod(0, \"Phase_P1\") & \" \" & get_mod_idx(0, \"Phase_P1\") ...
+                & \" \" & find_mod(0, \"none\") & \" \" & get_mod_idx(0, \"none\") ...
+                & \" \" & $NI_NOT_FOUND)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // Real Kontakt 8: a miss is 0 for find_mod, $NI_NOT_FOUND (-100) for get_mod_idx.
+    assert_eq!(e.last_message(), "33 33 0 -100 -100");
+}
+
+#[test]
 fn a_script_sends_a_note_its_modulation_value() {
     use kontra_engine::ir;
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();

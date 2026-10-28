@@ -86,6 +86,12 @@ pub(crate) fn stream(mode: u32, preload: i32) -> Option<ir::Stream> {
 /// routes store 2/12, 7/12 and 12/12 (bend ranges of 2, 7 and 12 semitones).
 pub(crate) const PITCH_SEMITONES: f32 = 12.0;
 
+/// Script index of a group's first external modulator: Kontakt numbers the
+/// 16-slot internal array first, then each external slot after it, empty
+/// slots kept. Real Kontakt 8 (`probes/find_mod_index.lua`, ANALOG STRINGS
+/// group 0): `find_mod` answers 16 for external slot 0, 33 for slot 17.
+pub(crate) const EXTERNAL_MOD_BASE: u16 = 16;
+
 /// One band of the 1/2/3-band EQ. The native coefficients (generator
 /// 0x1409591c0) are the cookbook bell with A = 2^(dB/6) and
 /// alpha = sin(w)·sinh(octaves·ln 2): twice the knob's dB at the centre and
