@@ -363,3 +363,44 @@ fn a_layer_ahd_bends_its_oscillators_pitch_through_breakpoints() {
         out.diagnostics
     );
 }
+
+#[test]
+fn a_step_envelope_bends_pitch_through_a_held_step_table() {
+    let xml = r#"<Program Gain="1">
+      <Modulators>
+        <StepEnvelope Name="Step Envelope 1" Bypass="0" SyncToHost="1" NumSteps="4" Freq="0.25" Retrigger="0" Bipolar="0" InterpolationMode="0" Smooth="0" Levels="0,000000 1,000000 0,500000 0,250000"/>
+      </Modulators>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups><Keygroup LowKey="0" HighKey="127">
+        <Oscillators>
+          <SamplePlayer Bypass="0" SamplePath="./a.wav">
+            <Connections>
+              <SignalConnection Ratio="12" Source="$Program/Step Envelope 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            </Connections>
+          </SamplePlayer>
+        </Oscillators>
+      </Keygroup></Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    assert_eq!(
+        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        [ir::ModKind::Pitch {
+            source: ir::Source::Shaped(0),
+            semitones: 12.0,
+            depth: 1.0,
+        }]
+    );
+    // Four sixteenths a cycle, on the song clock.
+    assert_eq!(
+        (g.lfos[0].wave, g.lfos[0].rate, g.lfos[0].clock),
+        (ir::Wave::Saw, ir::Rate::Beats(1.0), ir::Clock::Free)
+    );
+    let shaper = &g.shapers[0];
+    assert_eq!(shaper.source, ir::Source::Lfo(0));
+    // The saw reads 1 − 2p, entering the table at 1 − p: each step's middle.
+    for (p, level) in [(0.125, 0.0), (0.375, 1.0), (0.625, 0.5), (0.875, 0.25)] {
+        let x = 1.0 - 2.0 * p;
+        assert!((shaper.apply((x + 1.0) / 2.0) - level).abs() < 1e-6, "{p}");
+    }
+}
