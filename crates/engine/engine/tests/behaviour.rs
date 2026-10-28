@@ -1099,3 +1099,42 @@ fn a_group_lofis_noise_fades_with_the_voice() {
         .fold(0.0, f32::max);
     assert!(end < 0.02, "{end}");
 }
+
+#[test]
+fn a_synced_delay_echoes_one_beat_later_at_the_host_tempo() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Delay(ir::Delay {
+            time: ir::DelayTime::Beats(1.0),
+            depth_ms: 0.0,
+            second_head: false,
+            input: [1.0; 2],
+            feedback: 0.0,
+            cross: 0.0,
+            damping_hz: f32::INFINITY,
+            rate: ir::Rate::Hz(0.0),
+            phase: 0.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let mut e = engine(&store, plan);
+    e.set_tempo(240.0);
+    let mut out = Vec::new();
+    let mut buf = vec![[0.0; 2]; 256];
+    e.process(&mut buf, &[on(60, 1.0)]);
+    out.extend_from_slice(&buf);
+    while out.len() < RATE as usize / 2 {
+        e.process(&mut buf, &[]);
+        out.extend_from_slice(&buf);
+    }
+    let first = out.iter().position(|f| f[0].abs() > 1e-6).unwrap();
+    // A quarter note at 240 BPM: 250 ms, within the read's interpolation.
+    assert!(
+        first.abs_diff(RATE as usize / 4) <= 1,
+        "first echo at {first}"
+    );
+}
