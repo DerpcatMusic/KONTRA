@@ -49,17 +49,11 @@ fn lexical(path: &Path) -> PathBuf {
 
 impl Resolver {
     pub(crate) fn new(instrument: &Path) -> Result<Self, String> {
-        // Absolute, so an empty or `./` parent still contains its candidates.
-        let instrument = &lexical(&std::path::absolute(instrument).map_err(|e| e.to_string())?);
+        // Canonical, so an empty or `./` parent, `..` or a symlink still
+        // contains its candidates.
+        let instrument = &instrument.canonicalize().map_err(|e| e.to_string())?;
         let parent = instrument.parent().unwrap_or(Path::new("/")).to_path_buf();
-        // As far up as resources.rs looks: an instrument outside any library
-        // must not make the home folder the root.
-        let root = parent
-            .ancestors()
-            .take(crate::resources::DEPTH)
-            .find(|p| p.join("Samples").is_dir())
-            .unwrap_or(&parent)
-            .to_path_buf();
+        let root = crate::resources::root(instrument);
         let mut monolith = HashMap::new();
         let mut file = File::open(instrument).map_err(|e| e.to_string())?;
         let mut magic = [0; 16];

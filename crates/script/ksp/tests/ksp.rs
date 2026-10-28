@@ -140,21 +140,23 @@ fn arithmetic_loops_select_and_text() {
 #[test]
 fn a_runaway_loop_stops_even_around_an_inner_loop() {
     // Each outer turn exits an inner loop and moves $k, so only the turn
-    // count across both loops can end it.
-    let r = Run::new(
-        "on init
-            declare $j
-            declare $k
-            while (1 = 1)
-                $j := 0
-                while ($j < 2)
-                    inc($j)
+    // count across both loops can end it, wherever the limit lands.
+    for inner in [1, 2] {
+        let r = Run::new(&format!(
+            "on init
+                declare $j
+                declare $k
+                while (1 = 1)
+                    $j := 0
+                    while ($j < {inner})
+                        inc($j)
+                    end while
+                    inc($k)
                 end while
-                inc($k)
-            end while
-        end on",
-    );
-    assert!(r.int("$k") > 0 && r.int("$k") < 10_000_001);
+            end on"
+        ));
+        assert!(r.int("$k") > 0 && r.int("$k") < 10_000_001);
+    }
 }
 
 #[test]

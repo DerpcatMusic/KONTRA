@@ -34,22 +34,7 @@ impl Resources {
     /// Every resource source of the library the instrument at `path` belongs to.
     pub(crate) fn open(path: &Path) -> Self {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.into());
-        // The root holds `Samples`, a `.nicnt` or `Resources`; else the instrument's folder.
-        let root = path
-            .ancestors()
-            .skip(1)
-            .take(DEPTH)
-            .find(|dir| {
-                entries(dir).iter().any(|p| {
-                    named(p, "Samples")
-                        || named(p, "Resources")
-                        || p.extension()
-                            .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
-                })
-            })
-            .or_else(|| path.parent())
-            .unwrap_or(Path::new("."))
-            .to_path_buf();
+        let root = root(&path);
         let mut places = vec![root.clone()];
         places.extend(
             entries(&root)
@@ -135,7 +120,12 @@ impl Resources {
         self.sources.iter().find_map(|source| match source {
             Source::Loose(dir) => {
                 let file = dir.join(name);
-                file.is_file().then_some(crate::samples::Location {
+                // Inside the folder, `..` and symlinks resolved.
+                let real = |p: &Path| p.canonicalize().ok();
+                let inside = real(&file)
+                    .zip(real(dir))
+                    .is_some_and(|(f, d)| f.starts_with(d));
+                (inside && file.is_file()).then_some(crate::samples::Location {
                     file,
                     offset: 0,
                     size: None,
@@ -170,6 +160,25 @@ impl Resources {
             _ => None,
         })
     }
+}
+
+/// The library folder of the instrument at absolute `path`: the nearest
+/// ancestor holding `Samples`, a `.nicnt` or `Resources`; else its own folder.
+pub(crate) fn root(path: &Path) -> PathBuf {
+    path.ancestors()
+        .skip(1)
+        .take(DEPTH)
+        .find(|dir| {
+            entries(dir).iter().any(|p| {
+                named(p, "Samples")
+                    || named(p, "Resources")
+                    || p.extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
+            })
+        })
+        .or_else(|| path.parent())
+        .unwrap_or(Path::new("."))
+        .to_path_buf()
 }
 
 fn entries(dir: &Path) -> Vec<PathBuf> {

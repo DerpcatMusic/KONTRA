@@ -197,7 +197,7 @@ impl Ledger {
             .iter_mut()
             .enumerate()
             .find(|(_, e)| e.note.is_none())?;
-        // event_id carries 15 bits and 0 is invalid: stay in 1..=0x7FFF.
+        // event_id carries 13 bits and 0 is invalid: stay in 1..=GENERATIONS.
         entry.generation = entry.generation % GENERATIONS + 1;
         entry.note = Some(note);
         Some(NoteRef {

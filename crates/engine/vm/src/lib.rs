@@ -490,7 +490,12 @@ fn execute(
                     stuck = !std::mem::take(&mut c.hosted) && hash == c.loop_hash;
                     c.loop_hash = hash;
                 }
-                if c.loop_count >= LOOP_LIMIT || stuck {
+                // The limit holds for the rest of the run (every loop exits
+                // until the next wait); a stuck loop frees only itself.
+                if c.loop_count >= LOOP_LIMIT {
+                    faults.loop_limits += 1;
+                    c.pc = exit;
+                } else if stuck {
                     faults.loop_limits += 1;
                     c.loop_count = 0;
                     c.pc = exit;
@@ -533,7 +538,8 @@ fn execute(
                 let value = match pure::eval(action, args, cells) {
                     Some(value) => value,
                     None => {
-                        c.hosted = true;
+                        // A message changes nothing the loop can read.
+                        c.hosted |= action != Action::Message;
                         host.call(HostCall {
                             action,
                             context: c.context,
