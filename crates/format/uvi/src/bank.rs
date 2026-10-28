@@ -79,6 +79,14 @@ impl Bank {
         Ok((member.path.clone().unwrap_or_default(), text))
     }
 
+    /// The bank's program paths, sorted.
+    pub(crate) fn program_paths(&self) -> Vec<String> {
+        self.programs()
+            .into_iter()
+            .filter_map(|i| self.directory.files.get(i)?.path.clone())
+            .collect()
+    }
+
     /// Member indices of the bank's programs, by path.
     fn programs(&self) -> Vec<usize> {
         let mut found: Vec<(&str, usize)> = self
