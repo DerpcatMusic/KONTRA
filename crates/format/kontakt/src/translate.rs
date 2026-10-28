@@ -421,6 +421,19 @@ fn translate_group(
                         insert,
                         depth: t.signed_intensity(),
                     }),
+                    // Only the amplitude envelope's attack: another AHDSR is
+                    // a breakpoint source with fixed times.
+                    (Some(source), "ahdsr_attack", Some(at))
+                        if out.mods.iter().any(|m| {
+                            m.kind == ir::ModKind::Envelope && m.slot == u16::from(at)
+                        }) =>
+                    {
+                        Some(ir::ModKind::Attack {
+                            source,
+                            intensity: t.signed_intensity(),
+                            floor_ms: laws::ATTACK_FLOOR_MS,
+                        })
+                    }
                     _ => None,
                 };
                 if let Some(kind) = kind {

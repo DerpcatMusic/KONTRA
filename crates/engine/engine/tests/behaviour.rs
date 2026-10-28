@@ -720,3 +720,33 @@ fn a_controller_opens_a_voice_filter() {
     assert!(closed < 0.001, "closed {closed}");
     assert!((open - 0.1).abs() < 0.01, "open {open}");
 }
+
+#[test]
+fn a_velocity_attack_route_shortens_soft_attacks() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].envelope.attack = 4800; // 100 ms, linear
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "VEL_ATTACK".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Attack {
+            source: ir::Source::Velocity,
+            intensity: 1.0,
+            floor_ms: 2.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let [hard, _] = level(&mut e, &[on(60, 1.0)]);
+    assert!((hard - 0.5 * 128.0 / 4800.0).abs() < 1e-3, "{hard}");
+    level(&mut e, &[off(60)]);
+    for _ in 0..40 {
+        level(&mut e, &[]);
+    }
+    // Half velocity halves the knob: 2·(102/2)^0.5 − 2 ≈ 12.3 ms.
+    let [soft, _] = level(&mut e, &[on(60, 0.5)]);
+    let frames = (2.0 * 51f32.sqrt() - 2.0) * 48.0;
+    assert!((soft - 0.5 * 128.0 / frames).abs() < 2e-3, "{soft}");
+}

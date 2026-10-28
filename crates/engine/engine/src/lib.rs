@@ -476,10 +476,7 @@ impl Engine {
                 region,
                 step: self.step(zone, &n, self.age(self.now, None)),
                 gain: self.voice_gain(zone, &n, factor, self.age(self.now, None)),
-                envelope: self
-                    .groups
-                    .get(zone.group as usize)
-                    .map_or(Ahdsr::GATE, |g| g.envelope),
+                envelope: self.envelope(zone, &n, held_seconds),
             };
             let now = self.now;
             let rate = self.rate;

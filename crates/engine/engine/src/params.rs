@@ -363,7 +363,9 @@ impl Engine {
 /// A route's live intensity, signed by its invert flag.
 fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
     match kind {
-        ir::ModKind::Volume { intensity, .. } => Some(intensity),
+        ir::ModKind::Volume { intensity, .. } | ir::ModKind::Attack { intensity, .. } => {
+            Some(intensity)
+        }
         ir::ModKind::Pitch { depth, .. }
         | ir::ModKind::Cutoff { depth, .. }
         | ir::ModKind::SampleStart { depth, .. } => Some(depth),

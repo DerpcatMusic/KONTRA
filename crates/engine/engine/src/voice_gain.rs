@@ -4,7 +4,7 @@
 use kontra_ir as ir;
 
 use crate::ledger::Note;
-use kontra_voice::Gain;
+use kontra_voice::{Ahdsr, Gain};
 
 use crate::effects::{self, product};
 use crate::modulators::{self, Age};
@@ -161,6 +161,41 @@ impl Engine {
         (f64::from(x) * range).round().clamp(-range, range) as i64
     }
 
+    /// The group's envelope for a voice started after the key was held
+    /// `held` seconds, its attack scaled by the group's attack routes.
+    pub(crate) fn envelope(&self, zone: &Zone, note: &Note, held: f32) -> Ahdsr {
+        let Some(g) = self.groups.get(zone.group as usize) else {
+            return Ahdsr::GATE;
+        };
+        let mut e = g.envelope;
+        let rate = self.rate as f32;
+        for m in g.mods.iter().filter(|m| !m.bypass) {
+            let ir::ModKind::Attack {
+                source,
+                intensity,
+                floor_ms,
+            } = m.kind
+            else {
+                continue;
+            };
+            let x = match source {
+                ir::Source::HeldTime { span_ms } => Some(held_time(span_ms, held)),
+                source => self.source(zone, source, note, Age::START),
+            };
+            let Some(x) = x.filter(|_| floor_ms > 0.0) else {
+                continue;
+            };
+            // ponytail: Kontakt cubes the factor for some external source
+            // types (0x140873120); which ones is not proved, so none are.
+            let x = if intensity < 0.0 { 1.0 - x } else { x };
+            let m = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
+            let ms = e.attack as f32 * 1000.0 / rate;
+            let ms = floor_ms * ((ms + floor_ms) / floor_ms).powf(m) - floor_ms;
+            e.attack = (ms.max(0.0) * rate / 1000.0).round() as u32;
+        }
+        e
+    }
+
     /// The release-trigger counter's gain for a voice started after the key
     /// was held `held` seconds.
     pub(crate) fn release_counter(&self, zone: &Zone, held: f32) -> f32 {
@@ -189,7 +224,9 @@ impl Engine {
                     | ir::ModKind::Pitch { source, .. }
                     | ir::ModKind::Pan { source, .. }
                     | ir::ModKind::Cutoff { source, .. } => source == ir::Source::Controller(cc),
-                    ir::ModKind::Envelope | ir::ModKind::SampleStart { .. } => false,
+                    ir::ModKind::Envelope
+                    | ir::ModKind::SampleStart { .. }
+                    | ir::ModKind::Attack { .. } => false,
                 })
             })
     }

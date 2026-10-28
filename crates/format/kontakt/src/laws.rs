@@ -54,6 +54,11 @@ pub(crate) fn volume(source: ir::Source) -> ir::Curve {
     }
 }
 
+/// A route to an AHDSR attack multiplies its knob `u`, where the time is
+/// `2·e^(8.9228·u) − 2` ms (fconv_u2n_env_a, 0x14071a980), by
+/// `1 − (1 − x)·i` (0x144f1daa0): a power of `(t + 2)/2`.
+pub(crate) const ATTACK_FLOOR_MS: f32 = 2.0;
+
 /// The release-trigger counter: `max(T − held, 0)/T` in a release-trigger
 /// group with a time T, else a constant 1 (binary 0x14084f380).
 pub(crate) fn release_counter(release_trigger: bool, ms: i32) -> ir::Source {

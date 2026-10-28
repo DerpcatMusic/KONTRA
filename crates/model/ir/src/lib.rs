@@ -335,6 +335,15 @@ pub enum ModKind {
     /// `source × depth` of the zone's [`Zone::start_mod`] frames added to
     /// where its voices start, read at note-on.
     SampleStart { source: Source, depth: f32 },
+    /// Scales the [`Group::envelope`] attack `t` at note-on, as a knob
+    /// linear in `ln(t + floor_ms)`: with `m = 1 − (1 − x)·|intensity|` (`x`
+    /// read at note-on, `1 − x` for a negative intensity), the attack becomes
+    /// `floor_ms·((t + floor_ms)/floor_ms)^m − floor_ms`.
+    Attack {
+        source: Source,
+        intensity: f32,
+        floor_ms: f32,
+    },
 }
 
 /// A per-note modulation source, 0..=1 unless noted.
