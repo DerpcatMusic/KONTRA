@@ -83,6 +83,8 @@ pub(super) struct PitchRoute {
 pub(super) enum Timed {
     Lfo(ir::Lfo),
     Envelope(ir::Breakpoints),
+    /// A saw LFO read through a table ([`steps`]).
+    Steps(ir::Lfo, Vec<f32>),
 }
 
 /// The pitch route a connection on an oscillator's `Pitch` makes: `Ratio`
@@ -125,13 +127,19 @@ pub(super) fn pitch_route(program: Node, connection: Node) -> Option<PitchRoute>
         },
         s if s.starts_with('$') => {
             let node = source_node(program, connection)?;
-            if node.has_tag_name("AHD") {
+            if node.has_tag_name("AHD") || node.has_tag_name("StepEnvelope") {
                 if sign < 0.0 {
                     return None;
                 }
+                let timed = if node.has_tag_name("AHD") {
+                    Timed::Envelope(ahd(node)?)
+                } else {
+                    let (lfo, table) = steps(node)?;
+                    Timed::Steps(lfo, table)
+                };
                 PitchRoute {
-                    timed: Some(Timed::Envelope(ahd(node)?)),
-                    ..fixed(ir::Source::Envelope(0))
+                    timed: Some(timed),
+                    ..fixed(ir::Source::Constant)
                 }
             } else {
                 let (lfo, depth) = lfo(node)?;
@@ -257,6 +265,65 @@ pub(super) fn ahd(node: Node) -> Option<ir::Breakpoints> {
         loop_from: None,
         stages: false,
     })
+}
+
+/// Table entries per step: a step's edge ramps over 1/16 of it.
+const ENTRIES_PER_STEP: usize = 16;
+
+/// A `StepEnvelope` as a cycle of its `Levels`, each held for one step: a
+/// saw LFO (`1 − 2p` at phase `p`, read through a table as `(x + 1)/2`, so
+/// `1 − p`) and that table. UVIWorkstation's process (0x141153460) holds
+/// level `⌊pos⌋ mod NumSteps`, `pos` advancing a step per `Freq` beats when
+/// synced (`Freq` steps a second when not; 1/60 at 0x141e29edc), from the
+/// song position when `Retrigger` is 0 or from the note when 1. `None`
+/// for an interpolated envelope (`InterpolationMode` 1, a cubic) or an
+/// unknown retrigger. ponytail: `Smooth`, a one-pole reaching 2/3 of a step
+/// in `Smooth` s (`(1/3)^(1/(Smooth·rate))` a sample), is not applied; bake
+/// it into the table at the host tempo if steps sound too hard.
+pub(super) fn steps(node: Node) -> Option<(ir::Lfo, Vec<f32>)> {
+    if flag(node, "Bypass") || flag(node, "InterpolationMode") {
+        return None;
+    }
+    let levels: Vec<f32> = node
+        .attribute("Levels")?
+        .split_whitespace()
+        .map(|l| {
+            l.replace(',', ".")
+                .parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite())
+        })
+        .collect::<Option<_>>()?;
+    let n = levels.len();
+    let freq = num(node, "Freq", 0.25).ok()? as f32;
+    if n == 0 || num(node, "NumSteps", 16.0).ok()? != n as f64 || freq <= 0.0 {
+        return None;
+    }
+    let clock = match num(node, "Retrigger", 0.0).ok()? {
+        0.0 => ir::Clock::Free,
+        1.0 => ir::Clock::Voice,
+        _ => return None,
+    };
+    let rate = if flag(node, "SyncToHost") {
+        ir::Rate::Beats(freq * n as f32)
+    } else {
+        ir::Rate::Hz(freq / n as f32)
+    };
+    let last = ENTRIES_PER_STEP * n;
+    let table = (0..=last)
+        .map(|j| {
+            let step = (n * (last - j)).div_euclid(last) % n;
+            levels.get(step).copied().unwrap_or(0.0)
+        })
+        .collect();
+    let lfo = ir::Lfo {
+        wave: ir::Wave::Saw,
+        rate,
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock,
+    };
+    Some((lfo, table))
 }
 
 /// A live connection from a script modulation to the gain of a layer,

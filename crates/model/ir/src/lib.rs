@@ -313,8 +313,8 @@ impl Group {
 }
 
 /// A source through a transfer table: `table` holds the outputs for evenly
-/// spaced inputs 0..=1, read with linear interpolation. Its source is never
-/// itself shaped.
+/// spaced inputs 0..=1, read with linear interpolation; an LFO enters as
+/// `(x + 1)/2`. Its source is never itself shaped.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Transfer {
     pub source: Source,
