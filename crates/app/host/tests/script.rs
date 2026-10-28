@@ -705,6 +705,7 @@ fn a_script_moves_a_group_onto_a_bus() {
             pan: 0.0,
             inserts: Vec::new(),
             sends: Vec::new(),
+            to_main: true,
             enabled: true,
         });
         let script = kontra_ksp::compile(
