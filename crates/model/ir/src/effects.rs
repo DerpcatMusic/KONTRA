@@ -63,8 +63,15 @@ pub enum DelayTime {
     Beats(f32),
 }
 
-/// A modulated delay line in physical units: one or two heads an LFO
-/// sweeps, a low-pass on each, feedback into the same and the other channel.
+/// A 2×2 gain matrix, row `j` the gains of channels 0 and 1 into channel `j`.
+pub type Matrix = [[f32; 2]; 2];
+
+/// Each channel to itself.
+pub const IDENTITY: Matrix = [[1.0, 0.0], [0.0, 1.0]];
+
+/// A modulated stereo delay in physical units: two lines, one or two heads
+/// an LFO sweeps on each, the heads filtered, then mixed back into the lines
+/// and out by matrices.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Delay {
     /// The head's delay at the LFO's centre.
@@ -73,12 +80,16 @@ pub struct Delay {
     pub depth_ms: f32,
     /// A second head at half the delay, its LFO slightly ahead.
     pub second_head: bool,
-    /// Gain of each input channel into its line.
-    pub input: [f32; 2],
-    pub feedback: f32,
-    pub cross: f32,
-    /// The heads' low-pass corner; `f32::INFINITY` for none.
+    /// The input channels into the lines.
+    pub input: Matrix,
+    /// The heads back into the lines.
+    pub feedback: Matrix,
+    /// The heads to the output.
+    pub output: Matrix,
+    /// The heads' one-pole low-pass corner; `f32::INFINITY` for none.
     pub damping_hz: f32,
+    /// The heads' one-pole high-pass corner; 0 for none.
+    pub low_cut_hz: f32,
     pub rate: Rate,
     /// Cycles the right LFO runs ahead of the left.
     pub phase: f32,

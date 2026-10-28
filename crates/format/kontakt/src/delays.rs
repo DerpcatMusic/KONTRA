@@ -78,10 +78,11 @@ fn delay(time: f32, feedback: f32, pan: f32, damping: f32, unit: f32) -> ir::Del
         },
         depth_ms: 0.0,
         second_head: false,
-        input: [g, (1.0 - pan) * g],
-        feedback: (1.0 - pan) * g,
-        cross: pan * g,
+        input: [[g, 0.0], [0.0, (1.0 - pan) * g]],
+        feedback: [[1.0 - pan, pan], [pan, 1.0 - pan]].map(|row| row.map(|x| x * g)),
+        output: ir::IDENTITY,
         damping_hz: corner(1.0 - DELAY_DAMPING * damping),
+        low_cut_hz: 0.0,
         rate: ir::Rate::Hz(0.0),
         phase: 0.0,
     }
@@ -96,10 +97,11 @@ fn chorus(speed: f32, phase: f32, unit: f32) -> ir::Delay {
         time: ir::DelayTime::Ms(0.0),
         depth_ms: 0.0,
         second_head: true,
-        input: [1.0; 2],
-        feedback: 0.0,
-        cross: 0.0,
+        input: ir::IDENTITY,
+        feedback: [[0.0; 2]; 2],
+        output: ir::IDENTITY,
         damping_hz: corner(CHORUS_SMOOTHING),
+        low_cut_hz: 0.0,
         rate: rate(speed, unit),
         phase: QUARTER * phase.clamp(0.0, 1.0),
     }
@@ -116,10 +118,11 @@ fn flanger(depth: f32, feedback: f32, speed: f32, phase: f32, colour: f32, unit:
         time: ir::DelayTime::Ms(colour),
         depth_ms: swing.min((colour - 1000.0 / RATE).max(0.0)),
         second_head: false,
-        input: [1.0; 2],
-        feedback: -FLANGER_LOOP * feedback.clamp(0.0, 1.0),
-        cross: 0.0,
+        input: ir::IDENTITY,
+        feedback: ir::IDENTITY.map(|row| row.map(|x| -FLANGER_LOOP * feedback.clamp(0.0, 1.0) * x)),
+        output: ir::IDENTITY,
         damping_hz: f32::INFINITY,
+        low_cut_hz: 0.0,
         rate: rate(speed, unit),
         phase: QUARTER * phase.clamp(0.0, 1.0),
     }
@@ -158,8 +161,11 @@ mod tests {
             panic!()
         };
         assert_eq!(d.time, ir::DelayTime::Ms(250.0));
-        assert_eq!(d.input, [0.49, 0.75 * 0.49]);
-        assert_eq!((d.feedback, d.cross), (0.75 * 0.49, 0.25 * 0.49));
+        assert_eq!(d.input, [[0.49, 0.0], [0.0, 0.75 * 0.49]]);
+        assert_eq!(
+            d.feedback,
+            [[0.75 * 0.49, 0.25 * 0.49], [0.25 * 0.49, 0.75 * 0.49]]
+        );
         assert_eq!(d.damping_hz, f32::INFINITY);
         let Some(ir::EffectKind::Delay(d)) =
             legacy(0x10, 0x51, &record(&[3.0, 0.5, 0.5, 1.0, 0.5]))
@@ -181,7 +187,7 @@ mod tests {
         assert!((f.depth_ms - (0.5 - 1.0 / 48.0)).abs() < 1e-6);
         assert_eq!(
             (f.feedback, f.rate, f.phase),
-            (-0.475, ir::Rate::Hz(2.0), 0.25)
+            ([[-0.475, -0.0], [-0.0, -0.475]], ir::Rate::Hz(2.0), 0.25)
         );
         let Some(ir::EffectKind::Phaser(p)) =
             legacy(0x14, 0x50, &record(&[0.5, 1.0, 1.0, 0.0, 0.25]))

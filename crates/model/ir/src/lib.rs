@@ -14,7 +14,8 @@ mod reverb;
 pub use bus::{Bus, BusSend};
 pub use drive::{Crush, Curve as DriveCurve, EffectParam, KnobTarget, Overdrive, Shaper};
 pub use effects::{
-    Compressor, Delay, DelayTime, Detector, ImpulseCuts, Limiter, Phaser, Reverb, Transient,
+    Compressor, Delay, DelayTime, Detector, IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb,
+    Transient,
 };
 pub use mods::ModKind;
 pub use reverb::{Law, ReverbPar};
