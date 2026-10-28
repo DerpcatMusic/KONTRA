@@ -118,6 +118,8 @@ fn rack(
                 ir::EffectKind::Sends(_) => Some("group send levels"),
                 ir::EffectKind::Compressor(_) => Some("group compressor"),
                 ir::EffectKind::Limiter(_) => Some("group limiter"),
+                ir::EffectKind::Delay(_) => Some("group delay"),
+                ir::EffectKind::Phaser(_) => Some("group phaser"),
                 _ => None,
             };
             if let Some(feature) = lost.filter(|_| at.starts_with("group") && !effect.bypass) {
@@ -261,6 +263,7 @@ fn slot_effect(
             .collect::<Option<Vec<_>>>()
             .and_then(|v| v.try_into().ok())
             .map(|v| ir::EffectKind::Reverb(crate::laws::reverb(v))),
+        0x10..=0x12 | 0x14 => crate::delays::legacy(effect.id, object.version, &public),
         id => crate::drive::effect(id, object.version, &public, at, notes),
     };
     // The legacy delay, chorus and flanger, the Gainer and Convolution mix

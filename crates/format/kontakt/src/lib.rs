@@ -4,6 +4,7 @@
 
 mod access;
 mod container;
+mod delays;
 mod drive;
 mod effects;
 mod fastlz;
