@@ -1,10 +1,10 @@
 {
   "kontakto": 80438,
   "kontra-align": 1,
-  "kontra-dsp": 5,
+  "kontra-dsp": 6,
   "kontra-dsp-core": 69,
   "kontra-dsp-delay": 1,
-  "kontra-dsp-drive": 1,
+  "kontra-dsp-drive": 520,
   "kontra-dsp-dynamics": 1,
   "kontra-dsp-eq": 66,
   "kontra-dsp-filter": 283,
