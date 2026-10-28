@@ -153,6 +153,11 @@ impl Svf {
         flush(self.state.as_flattened_mut().as_flattened_mut());
     }
 
+    /// Moves the stages' damping `k` (`1/Q`) without touching the state.
+    pub fn set_damping(&mut self, damping: [f32; 3]) {
+        self.shape.damping = damping;
+    }
+
     /// The cutoff as last set, in Hz.
     #[must_use]
     pub fn cutoff(&self) -> f32 {

@@ -5,15 +5,21 @@
 //! racks filter their own sums.
 //!
 //! ponytail: settings are fixed at load (after the init callback). Live
-//! changes (scripts, per-voice cutoff modulation) need per-voice filters.
+//! changes (scripts) need per-voice filters. A group's filter or EQ that a
+//! route moves (cutoff, resonance, band gain) runs per voice, one filter and
+//! one EQ per group; a second moved insert of the same kind stays shared.
 
 use kontra_dsp::eq::{Bell, Biquad, Side};
-use kontra_dsp::filter::{Pass, Shape};
+use kontra_dsp::filter::{Pass, Shape, Svf};
 use kontra_ir as ir;
 
 use crate::ledger::Note;
 use crate::modulators::Age;
 use crate::{Engine, MAX_SPAN, Zone};
+
+/// ponytail: the lowest damping (`1/Q`) a resonance route may reach; the
+/// stages go unstable below it.
+const MIN_DAMPING: f32 = 0.01;
 
 pub(crate) struct Chain {
     bus: usize,
@@ -36,28 +42,74 @@ pub(crate) fn sections(rack: &[Option<ir::Effect>]) -> Vec<ir::EffectKind> {
         .collect()
 }
 
+/// One EQ band as its biquad at `rate`.
+fn band(b: &ir::Bell, rate: u32) -> Biquad {
+    match b.shape {
+        ir::Shape::Peak => {
+            let band = Bell {
+                hz: b.hz,
+                q: b.q,
+                gain_db: b.gain_db,
+            };
+            kontra_dsp::eq::bell(band, rate)
+        }
+        ir::Shape::LowShelf => kontra_dsp::eq::shelf(b.hz, b.gain_db, b.q, Side::Low, rate),
+        ir::Shape::HighShelf => kontra_dsp::eq::shelf(b.hz, b.gain_db, b.q, Side::High, rate),
+    }
+}
+
+/// A group's EQ run on one voice: its four bands, moved by their routes.
+pub(crate) struct VoiceEq {
+    biquads: [Biquad; 4],
+}
+
+impl VoiceEq {
+    pub(crate) fn new(bells: [ir::Bell; 4], rate: u32) -> Self {
+        Self {
+            biquads: bells.map(|b| band(&b, rate)),
+        }
+    }
+
+    /// Moves the bands' coefficients and keeps their state.
+    pub(crate) fn retune(&mut self, bells: [ir::Bell; 4], rate: u32) {
+        for (f, b) in self.biquads.iter_mut().zip(&bells) {
+            f.retune(&band(b, rate));
+        }
+    }
+
+    pub(crate) fn process(&mut self, io: &mut [[f32; 2]]) {
+        run(&mut self.biquads, io);
+    }
+}
+
+/// Moves a voice's filter and EQ to this note's settings at its age: the
+/// filter's cutoff and damping, the EQ's band gains. Coefficients only.
+pub(crate) fn retune(
+    slot: &mut crate::Slot,
+    tuned: Option<(f32, [f32; 3])>,
+    bells: Option<[ir::Bell; 4]>,
+    rate: u32,
+) {
+    if let (Some(f), Some((hz, damping))) = (slot.filter.as_mut(), tuned) {
+        f.set_cutoff(hz, rate);
+        f.set_damping(damping);
+    }
+    if let (Some(eq), Some(bells)) = (slot.eq.as_mut(), bells) {
+        eq.retune(bells, rate);
+    }
+}
+
 pub(crate) fn biquads(sections: &[ir::EffectKind], rate: u32) -> Box<[Biquad]> {
     let mut out = Vec::new();
     for section in sections {
         match section {
             ir::EffectKind::Eq(bands) => {
-                let audible = bands.iter().filter(|b| b.gain_db != 0.0);
-                out.extend(audible.map(|b| match b.shape {
-                    ir::Shape::Peak => {
-                        let band = Bell {
-                            hz: b.hz,
-                            q: b.q,
-                            gain_db: b.gain_db,
-                        };
-                        kontra_dsp::eq::bell(band, rate)
-                    }
-                    ir::Shape::LowShelf => {
-                        kontra_dsp::eq::shelf(b.hz, b.gain_db, b.q, Side::Low, rate)
-                    }
-                    ir::Shape::HighShelf => {
-                        kontra_dsp::eq::shelf(b.hz, b.gain_db, b.q, Side::High, rate)
-                    }
-                }));
+                out.extend(
+                    bands
+                        .iter()
+                        .filter(|b| b.gain_db != 0.0)
+                        .map(|b| band(b, rate)),
+                );
             }
             ir::EffectKind::Filter(f) => {
                 let shape = shape(f);
@@ -92,41 +144,117 @@ pub(crate) fn run(filters: &mut [Biquad], io: &mut [[f32; 2]]) {
 }
 
 impl Engine {
-    /// The filter of `zone`'s group that runs per voice, and its cutoff in Hz
-    /// for this note at `age`.
-    pub(crate) fn cutoff(&self, zone: &Zone, note: &Note, age: Age) -> Option<(ir::Filter, f32)> {
+    /// The filter of `zone`'s group that runs per voice, with its cutoff in
+    /// Hz and damping for this note at `age`.
+    pub(crate) fn voice_filter(
+        &self,
+        zone: &Zone,
+        note: &Note,
+        age: Age,
+    ) -> Option<(ir::Filter, f32, [f32; 3])> {
         let insert = (*self.voice_filters.get(zone.group as usize)?)?;
         let group = self.groups.get(zone.group as usize)?;
         let effect = group.inserts.get(usize::from(insert))?.as_ref()?;
         let ir::EffectKind::Filter(f) = effect.kind else {
             return None;
         };
-        let octaves: f32 = group
-            .mods
-            .iter()
-            .filter(|m| !m.bypass)
-            .filter_map(|m| match m.kind {
+        let (mut octaves, mut q) = (0.0f32, 0.0f32);
+        for m in group.mods.iter().filter(|m| !m.bypass) {
+            match m.kind {
                 ir::ModKind::Cutoff {
                     source,
                     insert: i,
                     depth,
-                } if i == insert => Some(self.source(zone, source, note, age)? * depth),
-                _ => None,
-            })
-            .sum();
-        Some((f, f.hz * (f.octaves * octaves).exp2()))
+                } if i == insert => {
+                    octaves += self.source(zone, source, note, age).unwrap_or(0.0) * depth;
+                }
+                ir::ModKind::Resonance {
+                    source,
+                    insert: i,
+                    depth,
+                } if i == insert => {
+                    q += self.source(zone, source, note, age).unwrap_or(0.0) * depth;
+                }
+                _ => {}
+            }
+        }
+        let hz = f.hz * (f.octaves * octaves).exp2();
+        let damping = f
+            .damping
+            .map(|k| (k * (-f.q_octaves * q).exp2()).max(MIN_DAMPING));
+        Some((f, hz, damping))
+    }
+
+    /// The per-voice filter and EQ a note starts with.
+    pub(crate) fn voice_fx(
+        &self,
+        zone: &Zone,
+        note: &Note,
+        age: Age,
+    ) -> (Option<Svf>, Option<VoiceEq>) {
+        let rate = self.rate;
+        let filter = self.voice_filter(zone, note, age).map(|(f, hz, damping)| {
+            let mut svf = Svf::new(shape(&f));
+            svf.set_cutoff(hz, rate);
+            svf.set_damping(damping);
+            svf
+        });
+        let eq = self
+            .voice_bells(zone, note, age)
+            .map(|bells| VoiceEq::new(bells, rate));
+        (filter, eq)
+    }
+
+    /// The EQ bands of `zone`'s group that run per voice, each gain moved by
+    /// its routes, for this note at `age`.
+    pub(crate) fn voice_bells(&self, zone: &Zone, note: &Note, age: Age) -> Option<[ir::Bell; 4]> {
+        let insert = (*self.voice_eqs.get(zone.group as usize)?)?;
+        let group = self.groups.get(zone.group as usize)?;
+        let effect = group.inserts.get(usize::from(insert))?.as_ref()?;
+        let ir::EffectKind::Eq(mut bells) = effect.kind else {
+            return None;
+        };
+        let (mut shift, mut limit) = ([0.0f32; 4], [f32::INFINITY; 4]);
+        for m in group.mods.iter().filter(|m| !m.bypass) {
+            if let ir::ModKind::EqGain {
+                source,
+                insert: i,
+                band,
+                depth_db,
+                limit_db,
+                ..
+            } = m.kind
+                && i == insert
+            {
+                let amount = self.source(zone, source, note, age).unwrap_or(0.0) * depth_db;
+                if let (Some(s), Some(l)) = (
+                    shift.get_mut(usize::from(band)),
+                    limit.get_mut(usize::from(band)),
+                ) {
+                    *s += amount;
+                    *l = l.min(limit_db.abs());
+                }
+            }
+        }
+        for ((b, s), l) in bells.iter_mut().zip(shift).zip(limit) {
+            // min/max, not clamp: a NaN limit must not panic on the audio thread.
+            b.gain_db = (b.gain_db + s).min(l).max(-l);
+        }
+        Some(bells)
     }
 
     /// One chain per distinct (sections, bus) the zones' groups carry. A
-    /// filter whose cutoff a route moves runs per voice instead.
+    /// filter or EQ whose route moves it runs per voice instead.
     pub(crate) fn build_chains(&mut self) {
         self.voice_filters = self
             .groups
             .iter()
             .map(|g| {
                 let moved = |n: usize| {
-                    g.mods.iter().any(|m| {
-                        matches!(m.kind, ir::ModKind::Cutoff { insert, .. } if usize::from(insert) == n)
+                    g.mods.iter().any(|m| match m.kind {
+                        ir::ModKind::Cutoff { insert, .. }
+                        | ir::ModKind::Resonance { insert, .. } => usize::from(insert) == n,
+                        _ => false,
                     })
                 };
                 let filter = g.inserts.iter().enumerate().position(|(n, e)| {
@@ -136,14 +264,32 @@ impl Engine {
                 u8::try_from(filter).ok()
             })
             .collect();
+        self.voice_eqs = self
+            .groups
+            .iter()
+            .map(|g| {
+                let moved = |n: usize| {
+                    g.mods.iter().any(|m| {
+                        matches!(m.kind, ir::ModKind::EqGain { insert, .. } if usize::from(insert) == n)
+                    })
+                };
+                let eq = g.inserts.iter().enumerate().position(|(n, e)| {
+                    e.is_some_and(|e| matches!(e.kind, ir::EffectKind::Eq(_)) && !e.bypass)
+                        && moved(n)
+                })?;
+                u8::try_from(eq).ok()
+            })
+            .collect();
         let shared: Vec<Vec<ir::EffectKind>> = self
             .groups
             .iter()
-            .zip(self.voice_filters.iter())
-            .map(|(g, own)| {
+            .zip(self.voice_filters.iter().zip(&self.voice_eqs))
+            .map(|(g, (own, voice_eq))| {
                 let mut inserts = g.inserts.clone();
-                if let Some(slot) = own.and_then(|n| inserts.get_mut(usize::from(n))) {
-                    *slot = None;
+                for n in [*own, *voice_eq].into_iter().flatten() {
+                    if let Some(slot) = inserts.get_mut(usize::from(n)) {
+                        *slot = None;
+                    }
                 }
                 sections(&inserts)
             })
@@ -203,11 +349,16 @@ impl Engine {
                 continue;
             };
             let before = slot.voice.missing_frames();
-            match (slot.filter.as_mut(), self.scratch.get_mut(..len)) {
-                (Some(filter), Some(scratch)) => {
+            match self.scratch.get_mut(..len) {
+                Some(scratch) if slot.filter.is_some() || slot.eq.is_some() => {
                     scratch.fill([0.0; 2]);
                     slot.voice.render(&self.stream, self.now.0, scratch);
-                    filter.process(scratch);
+                    if let Some(filter) = slot.filter.as_mut() {
+                        filter.process(scratch);
+                    }
+                    if let Some(eq) = slot.eq.as_mut() {
+                        eq.process(scratch);
+                    }
                     for (m, x) in mix.iter_mut().zip(scratch.iter()) {
                         m[0] += x[0];
                         m[1] += x[1];

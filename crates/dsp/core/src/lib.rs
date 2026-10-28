@@ -40,6 +40,12 @@ impl Biquad {
         self.state.iter().flatten().all(|s| s.abs() < 1e-10)
     }
 
+    /// Takes `from`'s coefficients and keeps this section's state, so a band
+    /// that moves mid-note carries on from where it was.
+    pub fn retune(&mut self, from: &Self) {
+        self.c = from.c;
+    }
+
     /// Multiplies the section's output by `gain`.
     pub fn scale(&mut self, gain: f64) {
         for b in self.c.iter_mut().take(3) {
