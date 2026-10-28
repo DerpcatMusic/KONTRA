@@ -209,7 +209,7 @@ impl Engine {
                 if sections.is_empty() {
                     return None;
                 }
-                let bus = self.groups.get(z.group as usize).map_or(0, |g| g.bus);
+                let bus = crate::plan::bus(&self.groups, z);
                 let at = chains
                     .iter()
                     .position(|c| c.bus == bus && c.sections == sections)
@@ -250,8 +250,8 @@ impl Engine {
             }
         }
         for slot in self.voices.iter_mut().filter(|s| s.voice.is_active()) {
-            let group = self.plan.zones.get(slot.zone).map(|z| z.group as usize);
-            let bus = group.and_then(|g| self.groups.get(g)).map_or(0, |g| g.bus);
+            let zone = self.plan.zones.get(slot.zone);
+            let bus = zone.map_or(0, |z| crate::plan::bus(&self.groups, z));
             let chain = self.zone_chain.get(slot.zone).copied().flatten();
             let chain = chain.and_then(|c| on_bus(&self.chains, usize::from(c), bus));
             let mix = match chain.and_then(|c| self.chains.get_mut(c)) {
