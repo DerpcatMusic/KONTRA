@@ -14,6 +14,7 @@ mod laws;
 mod legacy_reverb;
 mod resources;
 mod samples;
+mod skreamer;
 mod translate;
 
 pub use container::chunks;
