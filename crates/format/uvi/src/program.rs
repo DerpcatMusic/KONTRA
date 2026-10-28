@@ -317,6 +317,7 @@ impl<L: Library> Translator<'_, '_, L> {
             let index = self.sample_index(sample);
             let (gain, pan) = placed(left, right);
             zones.push(ir::Zone {
+                mix: Vec::new(),
                 sample: index,
                 keys: span.keys.0..=span.keys.1,
                 velocities: span.velocities.0..=span.velocities.1,

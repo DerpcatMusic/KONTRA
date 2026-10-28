@@ -775,6 +775,7 @@ fn translate_zone(
     // The slots are in no particular order; the model wants play order.
     found.sort_by_key(|l| l.end);
     Some(ir::Zone {
+        mix: Vec::new(),
         sample,
         keys: midi(lk)..=midi(hk),
         velocities: midi(lv).max(1)..=midi(hv),
