@@ -12,6 +12,8 @@ fn settings(seconds: f32) -> Settings {
         high_cut_hz: 20_000.0,
         low_shelf_db: 0.0,
         stereo: 1.0,
+        modulation_ms: 0.0,
+        modulation_hz: 0.0,
     }
 }
 
@@ -67,6 +69,8 @@ fn set_matches_new_once_the_tail_has_settled() {
         high_cut_hz: 6_000.0,
         low_shelf_db: -6.0,
         stereo: 0.5,
+        modulation_ms: 0.0,
+        modulation_hz: 0.0,
     };
     let mut live = Fdn::new(before, RATE);
     run(&mut live, RATE as usize, Some(0));
@@ -137,5 +141,38 @@ fn a_live_low_shelf_change_glides_without_a_step() {
         diff[0] < 0.05 * settled,
         "{} at once, {settled} settled",
         diff[0]
+    );
+}
+
+#[test]
+fn modulation_moves_the_tail_and_keeps_its_decay() {
+    let tail = |modulation_ms| {
+        let mut fdn = Fdn::new(
+            Settings {
+                modulation_ms,
+                modulation_hz: 2.0,
+                ..settings(1.0)
+            },
+            RATE,
+        );
+        run(&mut fdn, 2 * RATE as usize, Some(0))
+    };
+    let (still, moving) = (tail(0.0), tail(0.25));
+    assert!(moving.iter().flatten().all(|v| v.is_finite()));
+    let window = |io: &[[f32; 2]], s: f32| {
+        let at = (s * RATE as f32) as usize;
+        db(&io[at..at + 4800])
+    };
+    let fall = window(&moving, 0.2) - window(&moving, 1.2);
+    assert!((50.0..70.0).contains(&fall), "fell {fall} dB in 1 s");
+    let apart: f32 = still[RATE as usize..]
+        .iter()
+        .zip(&moving[RATE as usize..])
+        .map(|(a, b)| (a[0] - b[0]).abs())
+        .sum();
+    let level: f32 = still[RATE as usize..].iter().map(|a| a[0].abs()).sum();
+    assert!(
+        apart > 0.2 * level,
+        "the swing changes the tail: {apart} vs {level}"
     );
 }

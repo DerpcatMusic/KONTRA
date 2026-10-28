@@ -1,8 +1,10 @@
-//! Zero-latency stereo convolver and one algorithmic reverb; design in
+//! Zero-latency stereo convolver, its response shaping and one algorithmic
+//! reverb; design in
 //! docs/architecture-v3/03-DSP.md.
 
 mod convolver;
 mod fdn;
+pub mod shape;
 
 pub use convolver::Convolver;
 pub use fdn::{Fdn, Settings};

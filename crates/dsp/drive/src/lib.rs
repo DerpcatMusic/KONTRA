@@ -5,7 +5,9 @@
 
 mod crush;
 mod halfband;
+mod overdrive;
 mod shaper;
 
 pub use crush::{Crush, Reduction};
+pub use overdrive::{Overdrive, Voicing};
 pub use shaper::{Curve, Shaper, Tone};

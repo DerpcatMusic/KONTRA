@@ -13,6 +13,8 @@ use roxmltree::Node;
 
 mod load;
 mod modulation;
+mod routing;
+mod tree;
 pub use load::Swap;
 
 /// The samples a program names, looked up in the bank it came from.
@@ -28,17 +30,6 @@ pub(crate) trait Library {
 /// yet; this is the head a streamed UVI group keeps resident.
 const PRELOAD_BYTES: u32 = 61_440;
 const GRAIN_BYTES: u32 = 6144;
-
-/// Insert effects this crate cannot carry. Each reports as `insert <tag>`.
-const EFFECTS: [&str; 7] = [
-    "OnePole",
-    "DigitalEq",
-    "Convolver",
-    "EffectRack",
-    "ThreeBandShelves",
-    "TrackDelay",
-    "SampledReverb",
-];
 
 pub(crate) fn translate(
     program: Node,
@@ -63,7 +54,7 @@ pub(crate) fn translate(
         samples: HashMap::new(),
         lookups: HashMap::new(),
         made: HashMap::new(),
-        sent: HashMap::new(),
+        bus_of: HashMap::new(),
         script_dirs: Vec::new(),
         base: Base {
             volume_db: db(num(program, "Gain", 1.0)?),
@@ -76,6 +67,7 @@ pub(crate) fn translate(
     t.scripts();
     t.effects();
     t.connections();
+    t.buses()?;
     for layer in program.descendants().filter(|n| n.has_tag_name("Layer")) {
         t.layer(layer)?;
     }
@@ -115,28 +107,30 @@ struct Translator<'a, 'input, L> {
     base: Base,
     /// The engine group each keygroup made, for scripts.
     made: HashMap<roxmltree::NodeId, usize>,
-    /// Each layer's aux send levels (before, after its fader), for scripts.
-    sent: HashMap<roxmltree::NodeId, (f64, f64)>,
+    /// Each layer's and aux's bus.
+    bus_of: HashMap<roxmltree::NodeId, usize>,
     /// Each script's folder in the bank, relative to the program's.
     script_dirs: Vec<String>,
 }
 
 impl<L: Library> Translator<'_, '_, L> {
-    /// A layer's keygroups, by its gain (linear) and pan. Its aux sends add
-    /// their level to the layer's: VWinds layers are silent on the main
-    /// output (gain 0) and sound through a pre-fader send. ponytail: the aux's
-    /// effects are reported, not run.
+    /// A layer's keygroups, by its pan, on its bus (routing.rs: the fader
+    /// and sends). VWinds layers are silent on the main output (gain 0) and
+    /// sound through a pre-fader send.
     fn layer(&mut self, layer: Node) -> Result<(), String> {
         if flag(layer, "Mute") || flag(layer, "Bypass") {
             return Ok(());
         }
-        let (pre, post) = self.sends(layer)?;
-        self.sent.insert(layer.id(), (pre, post));
+        let bus = self.bus_of.get(&layer.id()).copied().unwrap_or(0);
         let fader = num(layer, "Gain", 1.0)?;
-        let gain = fader + pre + fader * post;
+        let feeds = self.out.buses.get(bus).is_some_and(|b| {
+            b.sends
+                .iter()
+                .any(|s| s.level > 0.0 && (!s.post_fader || fader > 0.0))
+        });
         let pan = num(layer, "Pan", 0.0)?;
         // A zero-gain layer sounds only when a script raises it.
-        if gain == 0.0 && self.out.scripts.is_empty() {
+        if fader == 0.0 && !feeds && self.out.scripts.is_empty() {
             let keygroups = layer.descendants().filter(|n| n.has_tag_name("Keygroup"));
             for _ in keygroups {
                 self.notes.add(
@@ -150,8 +144,9 @@ impl<L: Library> Translator<'_, '_, L> {
         let keys = (midi_or(layer, "LowKey", 0), midi_or(layer, "HighKey", 127));
         for keygroup in layer.descendants().filter(|n| n.has_tag_name("Keygroup")) {
             let before = self.out.groups.len();
-            self.keygroup(keygroup, (gain, pan), keys)?;
-            if self.out.groups.len() > before {
+            self.keygroup(keygroup, (1.0, pan), keys)?;
+            if let Some(group) = self.out.groups.get_mut(before) {
+                group.bus = bus;
                 self.made.insert(keygroup.id(), before);
             }
         }
@@ -449,37 +444,6 @@ impl<L: Library> Translator<'_, '_, L> {
         }
     }
 
-    /// A layer's own aux sends, each at its gain times its aux's: the sum
-    /// before the layer's fader, and the sum after it.
-    fn sends(&mut self, layer: Node) -> Result<(f64, f64), String> {
-        let (mut pre, mut post) = (0.0, 0.0);
-        for send in layer
-            .children()
-            .filter(|n| n.has_tag_name("BusRouters"))
-            .flat_map(|n| n.children())
-            .filter(|n| n.has_tag_name("BusRouter") && !flag(*n, "Bypass"))
-        {
-            let target = send
-                .attribute("Destination")
-                .and_then(|d| d.rsplit('/').next())
-                .unwrap_or_default();
-            let aux = self
-                .program
-                .children()
-                .filter(|n| n.has_tag_name("Auxs"))
-                .flat_map(|n| n.children())
-                .find(|n| n.attribute("Name") == Some(target) && !flag(*n, "Bypass"));
-            let Some(aux) = aux else { continue };
-            let level = num(send, "Gain", 1.0)? * num(aux, "Gain", 1.0)?;
-            if flag(send, "PreFader") {
-                pre += level;
-            } else {
-                post += level;
-            }
-        }
-        Ok((pre, post))
-    }
-
     /// Active insert effects and aux sends this crate does not carry.
     fn effects(&mut self) {
         for node in self.program.descendants().filter(|n| n.is_element()) {
@@ -487,19 +451,27 @@ impl<L: Library> Translator<'_, '_, L> {
                 continue;
             }
             let tag = node.tag_name().name();
-            if EFFECTS.contains(&tag) {
+            let parent = node.parent();
+            // A keygroup's GainMatrix places its bundle members (`placement`).
+            let placing = tag == "GainMatrix"
+                && parent
+                    .and_then(|p| p.parent())
+                    .is_some_and(|p| p.has_tag_name("Keygroup"));
+            if parent.is_some_and(|p| p.has_tag_name("Inserts"))
+                && !routing::carried(node)
+                && !placing
+            {
                 self.notes.add(
                     ir::Impact::Audible,
                     &format!("insert {tag}"),
                     node.attribute("Name").unwrap_or_default(),
                 );
-            } else if tag == "Gain" && node.parent().is_some_and(|p| p.has_tag_name("Inserts")) {
-                self.notes.add(
-                    ir::Impact::Audible,
-                    "insert Gain",
-                    node.attribute("Name").unwrap_or_default(),
-                );
-            } else if tag == "BusRouter" && num(node, "Gain", 1.0).is_ok_and(|g| g > 0.0) {
+            } else if tag == "BusRouter"
+                && !parent
+                    .and_then(|p| p.parent())
+                    .is_some_and(|p| p.has_tag_name("Layer"))
+                && num(node, "Gain", 1.0).is_ok_and(|g| g > 0.0)
+            {
                 self.notes.add(
                     ir::Impact::Audible,
                     "aux send",
@@ -536,90 +508,6 @@ impl<L: Library> Translator<'_, '_, L> {
                 .add(ir::Impact::Audible, &format!("{feature} {dest}"), source);
         }
     }
-}
-
-impl<L: Library> Translator<'_, '_, L> {
-    /// The program tree as a Lua module for the script runtime: each element's
-    /// attributes as `params`, its children by container (`layers`,
-    /// `keygroups`, `inserts`, ...), each keygroup's engine group (0-based),
-    /// and the program-wide dB and pan every group adds to its layer's and
-    /// keygroup's.
-    fn tree(&self) -> String {
-        let mut out = String::from("return ");
-        self.lua_node(self.program, &mut out);
-        // Close the program's table with what only it carries.
-        out.pop();
-        out.push_str(&format!(
-            ",db={},pan={}}}",
-            self.base.volume_db, self.base.pan
-        ));
-        out
-    }
-
-    fn lua_node(&self, node: Node, out: &mut String) {
-        out.push_str("{params={");
-        for a in node.attributes() {
-            out.push_str(&format!(
-                "[{}]={},",
-                lua_string(a.name()),
-                lua_string(a.value())
-            ));
-        }
-        out.push('}');
-        if let Some(group) = self.made.get(&node.id()) {
-            out.push_str(&format!(",group={group}"));
-        }
-        if let Some((pre, post)) = self.sent.get(&node.id()) {
-            out.push_str(&format!(",sendPre={pre},sendPost={post}"));
-        }
-        for container in node.children().filter(Node::is_element) {
-            let Some(key) = CONTAINERS
-                .iter()
-                .find(|(tag, _)| container.has_tag_name(*tag))
-                .map(|(_, key)| key)
-            else {
-                continue;
-            };
-            out.push_str(&format!(",{key}={{"));
-            for child in container.children().filter(Node::is_element) {
-                self.lua_node(child, out);
-                out.push(',');
-            }
-            out.push('}');
-        }
-        out.push('}');
-    }
-}
-
-/// XML containers as the script API names their lists.
-const CONTAINERS: [(&str, &str); 9] = [
-    ("Layers", "layers"),
-    ("Keygroups", "keygroups"),
-    ("Inserts", "inserts"),
-    ("Auxs", "auxs"),
-    // An effect rack's chains are its auxs to scripts.
-    ("Chains", "auxs"),
-    ("Oscillators", "oscillators"),
-    ("ControlSignalSources", "modulations"),
-    ("EventProcessors", "eventProcessors"),
-    ("BusRouters", "busRouters"),
-];
-
-/// `text` as a Lua string literal.
-fn lua_string(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('"');
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c if c.is_control() => {}
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 /// The key and velocity range a keygroup's oscillators play, and the fades
@@ -791,6 +679,63 @@ mod tests {
             out.diagnostics
                 .iter()
                 .any(|d| d.feature == "missing sample")
+        );
+    }
+
+    #[test]
+    fn a_layer_sounds_through_its_aux_chain() {
+        let xml = r#"<Program Gain="1">
+          <Layers>
+            <Layer Name="L" Gain="0" Pan="0">
+              <BusRouters>
+                <BusRouter Bypass="0" Gain="0.5" Destination="../../Aux0" PreFader="1"/>
+              </BusRouters>
+              <Keygroups>
+                <Keygroup LowKey="0" HighKey="127">
+                  <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+                </Keygroup>
+              </Keygroups>
+            </Layer>
+          </Layers>
+          <Auxs>
+            <AuxEffect Name="Aux0" Bypass="0" Gain="2" Pan="0" PreInsert="1">
+              <Inserts>
+                <DigitalEq Bypass="0"/>
+                <Gain Bypass="0" Volume="0.5"/>
+                <Convolver Bypass="0" Dry="0" Wet="1" SamplePath="./body.flac"/>
+              </Inserts>
+            </AuxEffect>
+          </Auxs>
+        </Program>"#;
+        let doc = roxmltree::Document::parse(xml).unwrap();
+        let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+        // Main, the layer at its fader, the aux at its gain.
+        assert_eq!(out.buses.len(), 3);
+        assert_eq!(out.groups[0].bus, 1);
+        assert!(out.groups[0].volume_db.abs() < 1e-3);
+        let send = out.buses[1].sends[0];
+        assert_eq!((send.bus, send.level, send.post_fader), (2, 0.5, false));
+        let aux = &out.buses[2];
+        assert!((aux.volume_db - 6.0206).abs() < 1e-3);
+        // The EQ is not carried: its slot passes, and it is reported.
+        assert!(aux.inserts[0].is_none());
+        assert!(
+            matches!(aux.inserts[1].map(|e| e.kind), Some(ir::EffectKind::Gain(g)) if g == 0.5)
+        );
+        assert!(matches!(
+            aux.inserts[2].map(|e| e.kind),
+            Some(ir::EffectKind::Convolution { impulse: 0 })
+        ));
+        assert_eq!(out.impulses.len(), 1);
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.feature == "insert DigitalEq")
+        );
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.feature.starts_with("silent layer"))
         );
     }
 }

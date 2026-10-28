@@ -138,6 +138,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("KONTRA_FX").is_some() {
         let plan = &loaded.plan;
         println!("instrument inserts {:?}", plan.inserts);
+        for (n, b) in plan.buses.iter().enumerate() {
+            println!("bus {n} {b:?}");
+        }
         for (n, i) in plan.impulses.iter().enumerate() {
             let frames = i.as_ref().map(|r| r.left.len());
             println!("impulse {n}: {frames:?} frames");
@@ -171,12 +174,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(zone) = std::env::var("KONTRA_ZONE") {
         let plan = &loaded.plan;
         let z = zone.parse::<usize>().ok().and_then(|z| plan.zones.get(z));
-        if let Some(z) = z {
+        if let Some((z, g)) = z.and_then(|z| Some((z, plan.groups.get(z.group as usize)?))) {
             println!(
-                "  zone {zone}: bus {} {:?} envelope {:?}",
-                z.bus,
-                plan.buses.get(z.bus),
-                plan.groups.get(z.group as usize).map(|g| g.envelope)
+                "  zone {zone}: group {} bus {} {:?} envelope {:?}",
+                z.group,
+                g.bus,
+                plan.buses.get(g.bus),
+                g.envelope
             );
         }
     }
