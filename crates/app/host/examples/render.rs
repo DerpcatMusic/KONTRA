@@ -226,6 +226,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    // The program as its scripts leave it, without playing it.
+    if std::env::var_os("KONTRA_INIT_ONLY").is_some() {
+        return Ok(());
+    }
     let (filtered, cutoffs) = engine.voice_filters();
     if filtered > 0 {
         println!("voice filters: {filtered} groups {cutoffs:?}");

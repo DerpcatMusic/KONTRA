@@ -64,6 +64,8 @@ pub(crate) fn translate(
         entry: HashMap::new(),
         script_dirs: Vec::new(),
         carried: HashSet::new(),
+        routed: HashMap::new(),
+        units: HashMap::new(),
         base: Base {
             volume_db: db(num(program, "Gain", 1.0)?),
             pan: num(program, "Pan", 0.0)?.clamp(-1.0, 1.0) as f32,
@@ -124,6 +126,10 @@ struct Translator<'a, 'input, L> {
     script_dirs: Vec<String>,
     /// Matrix cell connections carried, held or live (matrix.rs).
     carried: HashSet<roxmltree::NodeId>,
+    /// Each connection a route carries, to the route's key, for scripts.
+    routed: HashMap<roxmltree::NodeId, usize>,
+    /// Each route key's amount per unit of ratio.
+    units: HashMap<usize, f32>,
 }
 
 impl<L: Library> Translator<'_, '_, L> {
@@ -211,14 +217,15 @@ impl<L: Library> Translator<'_, '_, L> {
                 own.or_else(|| filters.get(n).cloned().flatten())
             })
             .collect();
+        let program = self.program;
         let pans = kg
             .children()
             .filter(|c| c.has_tag_name("Connections"))
             .flat_map(|c| c.children())
-            .filter_map(|c| modulation::route(self.program, c, PAN))
-            .filter(|r| r.amount != 0.0);
-        for r in pans {
-            add_route(&mut group, r, |source, amount| ir::ModKind::Pan {
+            .filter_map(|c| Some((c, modulation::route(program, c, PAN)?)))
+            .collect::<Vec<_>>();
+        for (c, r) in pans {
+            self.add_route(&mut group, c, r, |source, amount| ir::ModKind::Pan {
                 source,
                 amount,
             });
@@ -265,10 +272,10 @@ impl<L: Library> Translator<'_, '_, L> {
                 .children()
                 .filter(|c| c.has_tag_name("Connections"))
                 .flat_map(|c| c.children())
-                .filter_map(|c| modulation::route(self.program, c, PITCH))
-                .filter(|r| r.amount != 0.0);
-            for r in routes {
-                add_route(&mut group, r, |source, semitones| ir::ModKind::Pitch {
+                .filter_map(|c| Some((c, modulation::route(program, c, PITCH)?)))
+                .collect::<Vec<_>>();
+            for (c, r) in routes {
+                self.add_route(&mut group, c, r, |source, semitones| ir::ModKind::Pitch {
                     source,
                     semitones,
                     depth: 1.0,
@@ -278,6 +285,53 @@ impl<L: Library> Translator<'_, '_, L> {
         }
         self.out.groups.push(group);
         Ok(())
+    }
+
+    /// `r`, from `connection`, as a route of `kind` on `group`, its modulator
+    /// copied onto the group. The route is named `#key` (scripts set its
+    /// amount, [`tree`](Self::tree)); a connection alike in kind and unit
+    /// joins it. A ratio of 0 makes one only in a scripted program.
+    /// ponytail: joined connections share one amount; split them if a
+    /// script sets two players of a keygroup apart.
+    fn add_route(
+        &mut self,
+        group: &mut ir::Group,
+        connection: Node,
+        r: modulation::Route,
+        kind: impl Fn(ir::Source, f32) -> ir::ModKind,
+    ) {
+        if r.ratio == 0.0 && self.out.scripts.is_empty() {
+            return;
+        }
+        let source = match r.timed {
+            None => r.source,
+            Some(modulation::Timed::Lfo(lfo)) => ir::Source::Lfo(index_of(&mut group.lfos, lfo)),
+            Some(modulation::Timed::Envelope(e)) => {
+                ir::Source::Envelope(index_of(&mut group.envelopes, e))
+            }
+            Some(modulation::Timed::Steps(lfo, table)) => {
+                let source = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
+                ir::Source::Shaped(index_of(&mut group.shapers, ir::Transfer { source, table }))
+            }
+        };
+        let kind = kind(source, r.unit * r.ratio);
+        let alike = group.mods.iter().find_map(|m| {
+            let key = m.name.strip_prefix('#')?.parse().ok()?;
+            (m.kind == kind && self.units.get(&key) == Some(&r.unit)).then_some(key)
+        });
+        let key = alike.unwrap_or_else(|| {
+            let key = connection.id().get_usize();
+            self.units.insert(key, r.unit);
+            group.mods.push(ir::Mod {
+                name: format!("#{key}"),
+                slot: 0,
+                target: 0,
+                bypass: false,
+                kind,
+            });
+            key
+        });
+        self.routed.insert(connection.id(), key);
     }
 
     /// Keygroup modes this crate does not carry, each reported with its value.
@@ -656,35 +710,6 @@ fn source_node<'a, 'input>(
 /// The owners and destinations [`modulation::route`] carries.
 const PITCH: (&str, &str) = ("SamplePlayer", "Pitch");
 const PAN: (&str, &str) = ("Keygroup", "Pan");
-
-/// `r` as a route of `kind` on `group`, its modulator copied onto the group.
-fn add_route(
-    group: &mut ir::Group,
-    r: modulation::Route,
-    kind: impl Fn(ir::Source, f32) -> ir::ModKind,
-) {
-    let source = match r.timed {
-        None => r.source,
-        Some(modulation::Timed::Lfo(lfo)) => ir::Source::Lfo(index_of(&mut group.lfos, lfo)),
-        Some(modulation::Timed::Envelope(e)) => {
-            ir::Source::Envelope(index_of(&mut group.envelopes, e))
-        }
-        Some(modulation::Timed::Steps(lfo, table)) => {
-            let source = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
-            ir::Source::Shaped(index_of(&mut group.shapers, ir::Transfer { source, table }))
-        }
-    };
-    let route = ir::Mod {
-        name: String::new(),
-        slot: 0,
-        target: 0,
-        bypass: false,
-        kind: kind(source, r.amount),
-    };
-    if !group.mods.contains(&route) {
-        group.mods.push(route);
-    }
-}
 
 /// `item`'s index in `items`, pushed if absent.
 fn index_of<T: PartialEq>(items: &mut Vec<T>, item: T) -> u8 {

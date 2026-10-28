@@ -30,7 +30,7 @@ inert.__index = function()
 	return function() end
 end
 
--- A widget starts at its saved value when the program has one.
+-- A widget's saved value when the program has one, else `value`.
 local function restored(name, value)
 	local text = name and __saved[name]
 	if text == nil then
@@ -101,6 +101,23 @@ local function table_widget(w, name, fields)
 	return w
 end
 
+-- Widgets with a saved value, in the order the script made them.
+local saved_widgets = {}
+
+-- After the script's body: each persistent widget takes its saved value and
+-- runs its `changed`, before `onLoad` (lua.uvi.net, Widget::persistent:
+-- "Persistent widgets will call their changed function on reload"; onLoad:
+-- "after restoring widgets values").
+function __restore()
+	local list = saved_widgets
+	saved_widgets = {}
+	for _, w in ipairs(list) do
+		if w.persistent ~= false then
+			w:setValue(restored(w.name, w.value))
+		end
+	end
+end
+
 -- A widget, from `Kind(name, value, ...)` or `Kind{name, value, field=...}`.
 widget = function(kind, name, value, ...)
 	local fields = { name, value, ... }
@@ -118,7 +135,6 @@ widget = function(kind, name, value, ...)
 	if type(value) ~= "number" and type(value) ~= "boolean" then
 		value = kind ~= "OnOffButton" and kind ~= "Button" and 0
 	end
-	value = restored(name, value)
 	local w = setmetatable({ kind = kind, name = name, alpha = 1, enabled = true, visible = true }, widget_meta)
 	for k, v in pairs(fields) do
 		if type(k) == "string" then
@@ -127,6 +143,9 @@ widget = function(kind, name, value, ...)
 	end
 	w.value = value
 	w.items = items
+	if name ~= nil and __saved[name] ~= nil and kind ~= "Table" then
+		table.insert(saved_widgets, w)
+	end
 	local pos, size = fields.pos or {}, fields.size or {}
 	local bounds = fields.bounds or {}
 	w.x, w.y = pos[1] or bounds[1] or 0, pos[2] or bounds[2] or 0
@@ -191,6 +210,36 @@ local flags = { Bypass = true, Mute = true, Solo = true, MidiMute = true, Stream
 
 local containers = { "layers", "keygroups", "inserts", "auxs", "oscillators", "modulations", "eventProcessors", "busRouters" }
 
+-- A connection the engine carries, from the format's `{Source, Destination,
+-- Ratio, route key, amount per unit of Ratio}`: setting its Ratio sets its
+-- route's amount. One metatable for all keeps a big program's thousands light.
+local fields_at = { Source = 1, Destination = 2, Ratio = 3 }
+local connection_definitions = {
+	{ name = "Ratio", id = "Ratio", default = 0, min = -1, max = 1 },
+	{ name = "Source", id = "Source", default = 0, min = 0, max = 1 },
+	{ name = "Destination", id = "Destination", default = 0, min = 0, max = 1 },
+}
+local Connection = {}
+Connection.__index = function(c, key)
+	if key == "parameterDefinitions" then
+		return connection_definitions
+	end
+	return Connection[key]
+end
+function Connection.getParameter(c, name)
+	local at = fields_at[name]
+	return at and c[at]
+end
+function Connection.hasParameter(c, name)
+	return fields_at[name] ~= nil
+end
+function Connection.setParameter(c, name, value)
+	if name == "Ratio" and type(value) == "number" then
+		c[3] = value
+		host_call("RouteAmount", c[4], math.floor(value * c[5] * 1e6 + 0.5))
+	end
+end
+
 -- An element of the program tree, from the format's node: its parameters
 -- and its children by container; modulations also by name.
 -- ponytail: a definition's range is 0..max(1, value); the XML carries no
@@ -213,6 +262,7 @@ local function element(node)
 		group = node.group or false,
 		bus = node.bus or false,
 	}
+	local links = node.links or {}
 	local e = newproxy(true)
 	local meta = getmetatable(e)
 	meta.__index = function(_, key)
@@ -260,14 +310,21 @@ local function element(node)
 	e.setParameter = function(self, name, value)
 		self.params[name] = value
 	end
-	-- ponytail: modulation connections are not modelled; each one a script
-	-- reaches is an element that keeps what it is set to.
-	e.getParameterConnections = function()
-		return setmetatable({}, {
-			__index = function(list, i)
+	-- The connections on parameter `name`, in order; one past them is an
+	-- element that keeps what it is set to.
+	e.getParameterConnections = function(_, name)
+		local list = {}
+		for _, i in ipairs(links) do
+			local c = tree.connections and tree.connections[i]
+			if c and c[2] == name then
+				table.insert(list, setmetatable(c, Connection))
+			end
+		end
+		return setmetatable(list, {
+			__index = function(l, i)
 				local c = element()
 				c.params.Ratio = 0
-				rawset(list, i, c)
+				rawset(l, i, c)
 				return c
 			end,
 		})

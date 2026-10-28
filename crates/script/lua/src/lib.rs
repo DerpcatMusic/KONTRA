@@ -23,8 +23,11 @@ pub mod alloc;
 static ROUTED: alloc::Routed = alloc::Routed;
 
 const PRELUDE: &str = include_str!("prelude.lua");
-/// Luau heap per script.
-const MEMORY: usize = 64 << 20;
+/// Luau heap per script. Augmented Orchestra's scripts, once they see their
+/// modulation connections, build about 88 MB (V Strings Pizzicato 2: 61 MB
+/// without them). ponytail: a cap, not a GC budget; past the spike's 0.5 ms
+/// cycle boundary (spikes/luau-alloc-mlua.md) either way.
+const MEMORY: usize = 128 << 20;
 /// Free arena kept after a load for its callbacks: at least this, or half
 /// the heap the load built (spikes/luau-alloc-mlua.md, "Per-script arena rule").
 const HEADROOM: usize = 8 << 20;
@@ -237,6 +240,7 @@ fn state(
     globals.set("require", require)?;
     lua.load(PRELUDE).set_name("prelude").exec()?;
     lua.load(source).set_name("script").exec()?;
+    globals.get::<Function>("__restore")?.call::<()>(())?;
     Ok((lua, checkpoints))
 }
 
@@ -575,5 +579,39 @@ mod tests {
             volume(&run(muted, Callbacks::INIT), 4),
             Some(Some(-200_000))
         );
+    }
+
+    #[test]
+    fn a_saved_widget_restored_after_init_sets_a_connections_route() {
+        let tree = "return {params={},db=0,pan=0,layers={{params={},keygroups={
+            {params={},group=0,links={2,1}}}}},
+            connections={{'@MIDI CC 1','Gain',0,43,1},{'$Program/LFO 1','Pan',1,42,-0.5}}}";
+        let source = "local kg = Program.layers[1].keygroups[1]
+            local pans = kg:getParameterConnections('Pan')
+            assert(#pans == 1 and pans[1]:getParameter('Source') == '$Program/LFO 1')
+            assert(#kg:getParameterConnections('Gain') == 1)
+            local ratio
+            for _, d in ipairs(pans[1].parameterDefinitions) do
+                if d.name == 'Ratio' then ratio = d.id end
+            end
+            -- Built at its default; its saved 0.25 comes back after the body.
+            local amount = Knob('Amount', 0, -1, 1)
+            amount.changed = function(k) pans[1]:setParameter(ratio, k.value) end
+            amount:changed()
+            assert(amount.value == 0)
+            assert(pans[1]:getParameter('Ratio') == 0)";
+        let modules = [("__program.lua".to_string(), tree.to_string())];
+        let saved = ["Amount=0.25".to_string()];
+        let mut m = compile(source, &modules, &saved).unwrap().machine();
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
+        // −0.5 a unit of ratio: at the default 0, then at the saved 0.25.
+        let amounts: Vec<_> = (log.0.iter())
+            .filter(|(a, _)| *a == Action::RouteAmount)
+            .map(|(_, ints)| ints.clone())
+            .collect();
+        assert_eq!(amounts, [vec![42, 0], vec![42, -125_000]]);
     }
 }

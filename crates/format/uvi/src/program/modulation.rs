@@ -71,12 +71,13 @@ impl<L: Library> Translator<'_, '_, L> {
     }
 }
 
-/// A route: `amount` per unit of `source`, or of `timed` (then the group's
-/// copy of it is the source).
+/// A route: `unit × ratio` per unit of `source`, or of `timed` (then the
+/// group's copy of it is the source). A script may set the ratio.
 pub(super) struct Route {
     pub source: ir::Source,
     pub timed: Option<Timed>,
-    pub amount: f32,
+    pub unit: f32,
+    pub ratio: f32,
 }
 
 /// A program or layer modulator a group carries a copy of.
@@ -122,11 +123,12 @@ pub(super) fn route(
     let fixed = |source| Route {
         source,
         timed: None,
-        amount: ratio,
+        unit: 1.0,
+        ratio,
     };
     Some(match connection.attribute("Source")? {
         "@PitchBend" => Route {
-            amount: sign * ratio,
+            unit: sign,
             ..fixed(ir::Source::PitchBend)
         },
         s if s.starts_with('$') => {
@@ -150,7 +152,8 @@ pub(super) fn route(
                 Route {
                     source: ir::Source::Lfo(0),
                     timed: Some(Timed::Lfo(lfo)),
-                    amount: sign * ratio * depth,
+                    unit: sign * depth,
+                    ratio,
                 }
             }
         }
