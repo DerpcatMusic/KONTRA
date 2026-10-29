@@ -274,3 +274,44 @@ fn a_small_window_keeps_the_keyboard_in_it() {
     assert!(bed.x >= 0. && x1 <= window.width + 0.5, "{bed:?}");
     assert!(bed.y >= 0. && y1 <= window.height + 0.5, "{bed:?}");
 }
+
+#[test]
+fn a_face_in_the_rack_takes_the_pointer() {
+    use kontra_ui_model::{Interface, Kind, Page, PageRef, Rect, Size as PageSize, Widget};
+    let mut tree = Interface::default();
+    tree.pages.push(Page {
+        size: PageSize {
+            width: 600.,
+            height: 300.,
+        },
+        ..Page::default()
+    });
+    tree.widgets.push(Widget::new(
+        "$b",
+        PageRef(0),
+        Rect::new(100, 100, 40, 40),
+        Kind::Button { momentary: false },
+    ));
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        parts: vec![Part {
+            name: "Piano".into(),
+            face: Some(Face {
+                tree,
+                pictures: kontra_ui::Pictures::new(Box::new(|_| None)),
+                gesture: kontra_ui::input::Gesture::default(),
+            }),
+            open: true,
+            tab: PartTab::Interface,
+            ..Part::default()
+        }],
+        ..App::default()
+    };
+    settle(&mut ui, &mut app);
+    let id = kontra_ui::input::surface(0, 0);
+    let out = click(&mut ui, &mut app, &id);
+    assert!(
+        out.iter().any(|a| matches!(a, Action::Control { .. })),
+        "{out:?}"
+    );
+}
