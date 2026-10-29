@@ -32,3 +32,10 @@ voice render span before group effects; it is not the level of the final mix.
 Unavailable stages are listed in JSON. The inspector enables a compile-time
 voice trace feature; the normal feature-off voice renderer has no trace state
 or per-frame instrumentation.
+
+Unprepared zones carry `unprepared_reason` and are counted by reason. A sample
+referenced only by purged groups is not requested during initial preparation;
+`resident_sample_unavailable` means preparation requested that sample but it
+did not make the plan. Consult diagnostics for the specific open or load error.
+An invalid sample index is separate. `unknown` means the plan's limited zone
+member index cannot establish the answer.
