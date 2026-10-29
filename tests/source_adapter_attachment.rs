@@ -713,7 +713,7 @@ fn normal_uvi_checked_pcm_streams_retain_original_ordinals_and_match_resident_la
         let homes=resident.instrument.zones.iter().map(|z|z.group).collect::<Vec<_>>();
         let groups=resident.instrument.groups.len();
         let targets=resident.instrument.source_indices.sample_targets.clone();
-        let policy=sampler_kontakt::StreamPolicy{voices:8,decoders:1,slack:std::time::Duration::ZERO,head_budget:128<<10,allow_cold_fallback:true,..Default::default()};
+        let policy=sampler_kontakt::StreamPolicy{voices:16,decoders:1,slack:std::time::Duration::ZERO,head_budget:1<<20,allow_cold_fallback:true,..Default::default()};
         let streamed=sampler_uvi::assemble_translated_streamed(w_uvi_translated(&path,channels),48000,&policy).unwrap();
         assert_eq!(streamed.loaded.instrument.groups.len(),groups);assert_eq!(streamed.loaded.instrument.zones.len(),3);
         assert_eq!(streamed.loaded.instrument.zones.iter().map(|z|z.group).collect::<Vec<_>>(),homes);
@@ -764,7 +764,7 @@ fn normal_uvi_checked_pcm_preserves_file_loop_and_explicit_empty_options_and_pro
 #[test]
 fn normal_uvi_certified_stream_group_purge_reload_preserves_all_real_pack_ids_and_late_pcm() {
     let fixture=Fixture::new();fixture.file("certified.wav",&streamed_wave(5,false));let path=fixture.program("certified.uvip","certified.wav","");
-    let policy=sampler_kontakt::StreamPolicy{voices:8,decoders:1,slack:std::time::Duration::ZERO,head_budget:1<<20,..Default::default()};
+    let policy=sampler_kontakt::StreamPolicy{voices:16,decoders:1,slack:std::time::Duration::ZERO,head_budget:1<<20,..Default::default()};
     let streamed=sampler_uvi::assemble_translated_streamed(w_uvi_translated(&path,5),48000,&policy).unwrap();
     let source=streamed.loaded.plan.source_storage(0).unwrap();let identity=source.id();let family=match source {sampler_core::SourceStorageRef::Channels(f)=>f.clone(),_=>panic!("lost logical family")};
     let mut physical=Vec::new();source.physical_dependencies(|p|physical.push(p.clone()));let ids=physical.iter().map(sampler_core::Pcm::asset_id).collect::<Vec<_>>();
@@ -879,7 +879,7 @@ fn normal_uvi_checked_flac_keeps_original_channels_and_all_players_through_late_
     for channels in [1usize,2,3,5,6,8] {
         let file=format!("owned-{channels}.flac");let path=fixture.file(&file,&f_flac(channels,&vec![512;160],false,&[],value));
         let preset=fixture.program("owned-flac.uvip",&file,"");
-        let policy=sampler_kontakt::StreamPolicy{voices:8,decoders:1,slack:std::time::Duration::ZERO,head_budget:1<<20,..Default::default()};
+        let policy=sampler_kontakt::StreamPolicy{voices:16,decoders:1,slack:std::time::Duration::ZERO,head_budget:1<<20,..Default::default()};
         let translated=w_uvi_translated(&preset,channels);
         let groups=translated.instrument.groups.len();
         let streamed=sampler_uvi::assemble_translated_streamed(translated,48000,&policy).unwrap();
@@ -957,7 +957,7 @@ fn malformed_whole_riff_flac_application_cannot_publish_a_wide_processing_source
 #[test]
 fn normal_uvi_checked_flac_group_reload_reuses_all_real_pack_ids_and_recovers_late_pcm() {
     let fixture=Fixture::new();fixture.file("family.flac",&f_flac(6,&vec![512;160],false,&[],value));let preset=fixture.program("family-flac.uvip","family.flac","");
-    let policy=sampler_kontakt::StreamPolicy{voices:8,decoders:1,slack:std::time::Duration::ZERO,head_budget:1<<20,..Default::default()};
+    let policy=sampler_kontakt::StreamPolicy{voices:16,decoders:1,slack:std::time::Duration::ZERO,head_budget:1<<20,..Default::default()};
     let streamed=sampler_uvi::assemble_translated_streamed(w_uvi_translated(&preset,6),48000,&policy).unwrap();let source=streamed.loaded.plan.source_storage(0).unwrap();let identity=source.id();
     let family=match source {sampler_core::SourceStorageRef::Channels(f)=>f.clone(),_=>panic!("FLAC logical family was narrowed")};let mut packs=Vec::new();source.physical_dependencies(|p|packs.push(p.clone()));let ids=packs.iter().map(sampler_core::Pcm::asset_id).collect::<Vec<_>>();assert_eq!(ids.len(),3);
     let horizon=u32::try_from(streamed.report.head_frames.max(512)).unwrap();let keep=streamed.streamer;let groups=streamed.loaded.plan.group_count();let mut actual=runtime(streamed.loaded).with_stream_cache(streamed.cache);actual.set_stream_horizon(horizon).unwrap();actual.set_cold_starts(true);

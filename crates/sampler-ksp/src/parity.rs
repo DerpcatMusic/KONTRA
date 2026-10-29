@@ -363,6 +363,7 @@ fn parity_report_with_detail(
         warnings: Vec::new(),
         scratch: 0,
         modules: Vec::new(),
+        start_offsets: Default::default(),
         inspection: Some(Inspection {
             record_ops: source_map,
             ..Default::default()

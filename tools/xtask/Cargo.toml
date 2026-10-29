@@ -1,0 +1,13 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+publish = false
+description = "Repository measurements and checks for the v3 refactor (docs/architecture-v3/09-BUILD.md §3)"
+
+[dependencies]
+cargo_metadata = "0.23"
+serde_json = "1"
+toml = "1"

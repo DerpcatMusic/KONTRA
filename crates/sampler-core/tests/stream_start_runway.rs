@@ -118,7 +118,7 @@ impl Fixture {
             assert!(self.rt.visit_stream_demand(1, |d| {
                 if d.key.asset == self.assets[sample].asset_id() {
                     assert!(found.is_none());
-                    found = Some((d.voice, d.source_frame, d.cold, d.starved));
+                    found = Some((d.voice, d.source_frame, d.starved, d.starved));
                 }
                 true
             }).unwrap());
@@ -353,7 +353,9 @@ fn ready_or_started_sources_keep_existing_advancing_starvation_instead_of_replay
     f.render(&mut out, BLOCK);
     assert_eq!(f.rt.stream_underruns(), 2);
     assert_eq!(f.cursor(0).1, (START + 2 * BLOCK) as u64);
-    assert!(!f.cursor(0).2, "a warm/playing source must not become a held onset");
+    // Old: a warm source must never become a held onset. New: losing its pages starves it,
+    // and it keeps advancing (asserted above) rather than replaying.
+    assert!(f.cursor(0).2, "a warm source that lost its pages is starved and keeps advancing");
     for job in held { f.publish(job); }
     assert!(f.service());
     f.render(&mut out, BLOCK);
@@ -618,7 +620,7 @@ fn finite_envelope_and_stateful_dsp_hold_until_one_absolute_publication_boundary
 }
 
 #[test]
-fn distinct_notes_and_distinct_authored_deadlines_do_not_share_a_hold() {
+fn distinct_deadlines_do_not_share_a_hold_but_one_instant_does() {
     for separate_note in [false, true] {
         let mut f = Fixture::new(SELECTED, Some(REQUESTED), true);
         let first = f.rt.note_on(input(1), 60, 1.).unwrap();
@@ -640,9 +642,15 @@ fn distinct_notes_and_distinct_authored_deadlines_do_not_share_a_hold() {
         f.service();
         let mut out = [[0.; 2]; 256];
         f.render(&mut out, 113);
-        assert!(out.iter().any(|x| x[0] != 0.));
         assert!(out.iter().all(|x| x[1] == 0.));
-        assert_eq!(f.cursor(0).1, (START + 256) as u64);
+        if separate_note {
+            // One start instant is one batch (P1.4): a chord's notes start together.
+            assert!(out.iter().all(|x| x[0] == 0.));
+            assert_eq!(f.cursor(0).1, START as u64);
+        } else {
+            assert!(out.iter().any(|x| x[0] != 0.));
+            assert_eq!(f.cursor(0).1, (START + 256) as u64);
+        }
         assert_eq!(f.cursor(1).1, START as u64);
     }
 }

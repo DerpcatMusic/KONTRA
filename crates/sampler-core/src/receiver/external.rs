@@ -35,11 +35,7 @@ pub struct ExternalTurn {
     /// Genuine root event ID for VM mapping only, never implicit creator authority.
     pub event_origin:Option<NoteId>,
 }
-/// An explicit logical destination in the same admitted protocol/port/group.
-/// Adapter input/layer selectors require a separately compiled route; this mask
-/// never changes the immutable physical source tuple.
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ExternalTarget {Captured,Channels(u16)}
+pub use kontra_events::{ExternalAbortReport, ExternalTarget};
 #[derive(Clone,Copy,Debug)]
 pub enum ExternalOutput {
     /// Transparent event: retains original wire precision/provenance.
@@ -459,10 +455,6 @@ min()
     }
 }
 
-/// Diagnostic counts only: actual generational tokens/physical receipts retain
-/// their ordinary APIs and identities through cancellation and host ACK.
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct ExternalAbortReport{pub callbacks_cancelled:usize,pub external_turns_cancelled:usize}
 impl Runtime {
     pub fn external_execution_aborted(&self)->bool{self.external_execution_aborted}
     /// Terminal execution fence at the actual Core frontier. No due dispatch,

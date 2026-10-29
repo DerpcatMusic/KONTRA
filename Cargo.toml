@@ -26,13 +26,14 @@ standalone = ["plugin", "dep:moose-standalone"]
 shots = ["plugin", "dep:mui", "sampler-ksp/scan", "sampler-kontakt/scan", "sampler-uvi/scan"]
 
 [dependencies]
+kontra-events = { path = "crates/model/events" }
 sampler-core = { path = "crates/sampler-core" }
 sampler-ir = { path = "crates/sampler-ir" }
 sampler-kontakt = { path = "crates/sampler-kontakt", default-features = false }
 sampler-midi = { path = "crates/sampler-midi" }
 sampler-uvi = { path = "crates/sampler-uvi", default-features = false }
 sampler-ksp = { path = "crates/sampler-ksp" }
-sampler-ui-ir = { path = "crates/sampler-ui-ir" }
+sampler-ui-ir = { package = "kontra-ui-model", path = "crates/model/ui-model" }
 sampler-parity = { path = "crates/sampler-parity" }
 sampler-ample = { path = "crates/sampler-ample", optional = true }
 sampler-ikmpak = { path = "crates/sampler-ikmpak", optional = true }
@@ -179,14 +180,51 @@ symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 symphonia-bundle-flac = { path = "vendor/symphonia-bundle-flac" }
 
 [workspace]
-members = ["vendor/mui", "vendor/mui-vello", ".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-perf", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-ui-ir", "crates/sampler-parity", "crates/sampler-dspbench", "crates/sampler-ir", "crates/sampler-simd", "crates/sampler-pool", "crates/sampler-uvi", "crates/sampler-script", "crates/sampler-ample", "crates/sampler-ikmpak", "tools/corpus-health", "tools/format-census", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview"]
-exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/moose-baseview", "vendor/xim-rs", "vendor/symphonia-format-riff", "vendor/symphonia-bundle-flac", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
+members = ["vendor/mui", "vendor/mui-vello", ".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-perf", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-parity", "crates/sampler-dspbench", "crates/sampler-ir", "crates/sampler-simd", "crates/sampler-pool", "crates/sampler-uvi", "crates/sampler-script", "crates/sampler-ample", "crates/sampler-ikmpak", "tools/corpus-health", "tools/format-census", "tools/xtask", "tools/probe", "tools/inspect", "tools/ui-shots", "tools/kontra-window", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview", "crates/app/align", "crates/app/host", "crates/app/library", "crates/app/ui", "crates/base/law", "crates/base/macros", "crates/base/time", "crates/dsp/core", "crates/dsp/delay", "crates/dsp/drive", "crates/dsp/dynamics", "crates/dsp/eq", "crates/dsp/filter", "crates/dsp/modulators", "crates/dsp/registry", "crates/dsp/reverb", "crates/dsp/spatial", "crates/engine/effects", "crates/engine/engine", "crates/engine/plan", "crates/engine/prepare", "crates/engine/script-ui", "crates/engine/stream", "crates/engine/trace", "crates/engine/vm", "crates/engine/voice", "crates/format/common", "crates/format/kontakt", "crates/format/native", "crates/format/sfz", "crates/format/uvi", "crates/model/events", "crates/model/ir", "crates/model/params", "crates/model/protocol", "crates/model/ui-model", "crates/script/ksp", "crates/script/lua", "plugin"]
+exclude = ["vendor/ni-file", "vendor/ncw", "vendor/uvi-file", "vendor/vello", "vendor/moose-baseview", "vendor/xim-rs", "vendor/symphonia-format-riff", "vendor/symphonia-bundle-flac", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
+
+[workspace.package]
+edition = "2024"
+
+# Versions match Cargo.lock today. Later v3 tasks depend on these with `workspace = true`.
+[workspace.dependencies]
+thiserror = "2"
+smallvec = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+crossbeam-queue = "0.3"
+crossbeam-utils = "0.8"
+syn = { version = "2", features = ["derive", "parsing", "printing", "proc-macro"] }
+quote = "1"
+proc-macro2 = "1"
+
+# New v3 crates inherit these (`[lints] workspace = true`). Old crates keep their own lints until they move.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
 
 # Optimized CI keeps release semantics while avoiding cross-crate ThinLTO.
 [profile.ci]
 inherits = "release"
 lto = false
+
+# Local "release-like" iteration (09-BUILD.md). Shipping, CI and benchmarks use release/maxperf.
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 256
+incremental = true
+strip = "none"
+debug = "line-tables-only"
 
 [[example]]
 name = "uvi_ui_health"

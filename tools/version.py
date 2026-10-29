@@ -145,8 +145,14 @@ def main():
     p = commands.add_parser('manifest', help='validate and print the exact build.rs package manifest')
     p.add_argument('--file', required=True, type=Path)
     commands.add_parser('self-test', help='check SemVer edge cases and deterministic nightly identity')
+    commands.add_parser('v3-nightly', help='derive the v3 nightly version from git')
     commands.add_parser('nightly-dirty', help='detect source edits beyond the exact Nightly version stamp')
     args = parser.parse_args()
+    if args.command == 'v3-nightly':
+        epoch = int(git('show', '-s', '--format=%ct', 'HEAD'))
+        date = dt.datetime.fromtimestamp(epoch, dt.timezone.utc).strftime('%Y%m%d')
+        print(f"3.0.0-nightly.{date}.{git('rev-list', '--count', 'HEAD')}")
+        return
     if args.command == 'nightly-dirty':
         print(json.dumps(nightly_dirty()))
         return

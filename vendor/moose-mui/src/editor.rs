@@ -134,6 +134,8 @@ pub struct MuiEditor<P: Params> {
     /// [`MuiEditor::hide_pointer`], handed to each window it opens.
     pointer: Option<window::PointerHook>,
     timing: Option<window::NativeTimingHook>,
+    /// [`MuiEditor::on_win32_parent`].
+    win32_parent: Option<Box<dyn FnMut(Option<isize>) + Send>>,
     #[cfg(target_os = "linux")]
     x11_hook: Option<window::X11WindowHook>,
     #[cfg(target_os = "linux")]
@@ -199,6 +201,7 @@ impl<P: Params> MuiEditor<P> {
             keys: None,
             pointer: None,
             timing: None,
+            win32_parent: None,
             #[cfg(target_os = "linux")]
             x11_hook: None,
             #[cfg(target_os = "linux")]
@@ -254,6 +257,15 @@ impl<P: Params> MuiEditor<P> {
         f: impl FnMut(&Ui, &window::KeyEvent) -> bool + Send + 'static,
     ) -> Self {
         self.keys = Some(Arc::new(Mutex::new(f)));
+        self
+    }
+
+    /// Hand `f` the host's Win32 parent window as the editor opens, and
+    /// `None` as it closes, so a native dialog can be modal to the host
+    /// ([`crate::ParentWindow::win32`]). Hosts on other platforms never call it.
+    #[must_use]
+    pub fn on_win32_parent(mut self, f: impl FnMut(Option<isize>) + Send + 'static) -> Self {
+        self.win32_parent = Some(Box::new(f));
         self
     }
 
@@ -374,6 +386,9 @@ impl<P: Params> Editor for MuiEditor<P> {
             .attach(context.with_params(Arc::clone(&self.params)));
         // A request made while closed was for the last window.
         self.requests = Arc::default();
+        if let (Some(f), RawWindowHandle::Win32(hwnd)) = (&mut self.win32_parent, parent) {
+            f(Some(hwnd.expose_provenance().cast_signed()));
+        }
         if let Some(log) = &lock(&self.shared).view.log {
             self.requests.on_log(Arc::clone(log));
         }
@@ -433,6 +448,9 @@ impl<P: Params> Editor for MuiEditor<P> {
     }
 
     fn close(&mut self) {
+        if let Some(f) = &mut self.win32_parent {
+            f(None);
+        }
         {
             // Released before the window closes: on macOS and Windows
             // baseview tears the handler down on this thread, inside

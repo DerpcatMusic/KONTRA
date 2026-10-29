@@ -2,10 +2,13 @@ name: CI
 
 # Keep the workflow present for every PR. Only known documentation-only changes
 # skip expensive jobs; `CI required` still reports success/failure.
-# Public main pushes run this exact workflow through Nightly in release mode.
+# Public main pushes run this workflow before publishing the v3 release.
 # PR/merge-group checks remain independent; avoid a second ordinary CI push run.
 on:
+  # Stacked PRs (based on another PR's branch) wait: they run once retargeted
+  # to v3 or main and pushed.
   pull_request:
+    branches: [main, v3]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
   workflow_dispatch:
@@ -29,13 +32,25 @@ env:
   APP_GIT_REVISION: ${{ github.sha }}
   MUI_REPORTING_DISABLED: "1"
   CARGO_TARGET_DIR: target
-  # Snapshots call this same workflow at their exact source commit, in release mode.
+  # Release builds call this workflow at their exact source commit.
   CI_PROFILE: ${{ inputs.release_validation && 'release' || 'ci' }}
   # First-party crates (cargo test/clippy at the workspace root covers only the root package).
+  # The shipping (v2) crates and the v3 kontra-* crates build in separate cargo runs:
+  # one run unifies features, and v3's Luau needs mlua's `send` feature, which v2's
+  # Rc-based Lua hosts cannot take. No package links both. P8 deletes v2.
   CRATES: >-
     -p kontakto -p sampler-core -p sampler-ir -p sampler-simd -p sampler-pool -p sampler-ksp
-    -p sampler-kontakt -p sampler-uvi -p sampler-midi -p sampler-native -p sampler-ui-ir
+    -p sampler-kontakt -p sampler-uvi -p sampler-midi -p sampler-native -p kontra-ui-model
     -p sampler-perf -p sampler-parity -p corpus-health
+  V3_CRATES: >-
+    -p kontra-time -p kontra-law -p kontra-macros -p kontra-params
+    -p kontra-events -p kontra-ui-model -p kontra-protocol -p kontra-dsp-core
+    -p kontra-dsp-filter -p kontra-dsp-eq -p kontra-dsp-dynamics -p kontra-dsp-delay
+    -p kontra-dsp-reverb -p kontra-dsp-drive -p kontra-dsp-spatial -p kontra-dsp-modulators
+    -p kontra-dsp -p kontra-stream -p kontra-voice -p kontra-vm
+    -p kontra-engine -p kontra-ksp -p kontra-lua -p kontra-format
+    -p kontra-format-kontakt -p kontra-format-uvi -p kontra-format-sfz -p kontra-format-native
+    -p kontra-library -p kontra-align -p kontra-ui -p kontra-host
 
 jobs:
   changes:
@@ -83,7 +98,6 @@ jobs:
       - name: Workflow safety tests
         run: |
           python3 -m unittest discover -s .github/scripts -p 'test_*.py'
-          python3 .github/workflows/check_nightly.py
 
   linux:
     needs: changes
@@ -150,12 +164,16 @@ jobs:
       - name: clippy
         # The root package plus every first-party sampler crate; vendored crates are
         # checked only as dependencies.
-        run: cargo clippy --locked --profile "$CI_PROFILE" --all-targets $CRATES
+        run: |
+          cargo clippy --locked --profile "$CI_PROFILE" --all-targets $CRATES
+          cargo clippy --locked --profile "$CI_PROFILE" --all-targets $V3_CRATES
       - name: test
         if: ${{ !inputs.release_validation }}
         # Ordinary PR CI retains its complete default-target command.
         # library-access is already a default feature; this includes access::*.
-        run: cargo test --locked --profile "$CI_PROFILE" $CRATES
+        run: |
+          cargo test --locked --profile "$CI_PROFILE" $CRATES
+          cargo test --locked --profile "$CI_PROFILE" $V3_CRATES
       - name: Format feature matrix (optional formats off, then each on alone)
         if: ${{ !inputs.release_validation }}
         # Kontakt and UVI are still unconditional in the root; only ample and ikmpak toggle.
@@ -208,6 +226,40 @@ jobs:
           path: ui-plugin/
           retention-days: 7
           if-no-files-found: error
+
+  layer-tests:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - layer: base+model
+            crates: "-p kontra-time -p kontra-law -p kontra-macros -p kontra-params -p kontra-events -p kontra-ui-model -p kontra-protocol"
+          - layer: dsp
+            crates: "-p kontra-dsp-core -p kontra-dsp-filter -p kontra-dsp-eq -p kontra-dsp-dynamics -p kontra-dsp-delay -p kontra-dsp-reverb -p kontra-dsp-drive -p kontra-dsp-spatial -p kontra-dsp-modulators -p kontra-dsp"
+          - layer: engine+script
+            crates: "-p kontra-stream -p kontra-voice -p kontra-vm -p kontra-engine -p kontra-ksp -p kontra-lua"
+          - layer: format
+            crates: "-p kontra-format -p kontra-format-kontakt -p kontra-format-uvi -p kontra-format-sfz -p kontra-format-native"
+          - layer: app
+            crates: "-p kontra-library -p kontra-align -p kontra-ui -p kontra-host"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: layer-tests-${{ matrix.layer }}
+      # Plain cargo: GitHub runners have no build-slot. Each layer tests only its own crates (09-BUILD.md §4).
+      - name: Test ${{ matrix.layer }}
+        run: cargo test --locked ${{ matrix.crates }}
 
   shipping-plan:
     needs: changes
@@ -458,7 +510,7 @@ jobs:
   required:
     name: CI required
     if: always()
-    needs: [changes, linux, windows, macos, editor, shipping-plan, shipping-tests, shipping-coverage]
+    needs: [changes, linux, layer-tests, windows, macos, editor, shipping-plan, shipping-tests, shipping-coverage]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -467,6 +519,7 @@ jobs:
           CHANGES: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
           LINUX: ${{ needs.linux.result }}
+          LAYER_TESTS: ${{ needs.layer-tests.result }}
           WINDOWS: ${{ needs.windows.result }}
           MACOS: ${{ needs.macos.result }}
           EDITOR: ${{ needs.editor.result }}
@@ -478,12 +531,14 @@ jobs:
           test "$CHANGES" = success
           if [ "$CODE" = true ]; then
             test "$LINUX" = success
+            test "$LAYER_TESTS" = success
             test "$WINDOWS" = success
             test "$MACOS" = success
             test "$EDITOR" = success
           else
             test "$CODE" = false
             test "$LINUX" = skipped
+            test "$LAYER_TESTS" = skipped
             test "$WINDOWS" = skipped
             test "$MACOS" = skipped
             test "$EDITOR" = skipped

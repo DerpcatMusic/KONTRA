@@ -10,6 +10,16 @@ use std::{
 
 pub const PAGE_FRAMES: usize = 4096;
 
+/// Pages one voice's reach covers: `legs` windows of `frames` output frames at
+/// `step`, each widened by the resampler's guard and one page for alignment.
+/// The single law behind `family_reservation_pages` and the pool sizing that
+/// must cover it (sampler-kontakt `voice_pages`). `frames` must be at least 1.
+pub fn reservation_reach_pages(frames: u32, step: f64, legs: usize) -> usize {
+    let span = ((f64::from(frames - 1) * step).ceil() as usize)
+        .saturating_add((2 * crate::resample::Kernel::radius(step) as usize).saturating_add(1));
+    legs.saturating_mul(span.div_ceil(PAGE_FRAMES).saturating_add(1))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PageKey {
     pub asset: AssetId,
@@ -28,7 +38,6 @@ pub struct StreamDemandSnapshot {
     pub frames: Range<usize>,
     pub deadline: u64,
     pub starved: bool,
-    pub cold: bool,
     pub resident: bool,
     pub status: PageStatus,
 }
@@ -879,7 +888,7 @@ impl crate::Runtime {
                         source_frame:voice.cursor.trace_position(),
                         resident: asset.resident_covers(range.clone()),
                         frames: range, deadline: demand.deadline,
-                        starved: voice.cursor.starved(), cold: voice.cursor.holding_onset(),
+                        starved: voice.cursor.starved(),
                         status: self.stream_cache.as_ref().map_or(PageStatus::Missing, |cache| cache.status(key)),
                     }) { return false; }
                 }
@@ -932,6 +941,10 @@ impl crate::Runtime {
     /// source/envelope/voice DSP state advances while held. Complex geometry
     /// conservatively requires its full source view or fails pool admission.
     /// No waiting, I/O, allocation or cache flush.
+    /// Sets the stream lookahead: how many output frames each streamed voice must
+    /// keep resident ahead of its read position. It is also the admission gate for
+    /// a voice's start: `prepare_onsets` holds a voice until `runway_ready` covers
+    /// this many frames, and a batch (one start instant) waits until all its voices are ready.
     pub fn set_stream_start_runway(&mut self, frames: u32) -> Result<(), Error> {
         if frames == 0 || frames > self.stream_horizon || self.voices.count() != 0 {
             return Err(Error::InvalidInput);

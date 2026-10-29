@@ -39,6 +39,26 @@ pub struct Program<'a> {
     pub samples: &'a [SampleFile],
     /// KSP source for the first script slot.
     pub script: Option<&'a str>,
+    /// Sample-start routes, one per group at most, that sweep each of the
+    /// group's zones through its S.Mod range (`Zone::playback.start_range`).
+    pub start_routes: &'a [StartRoute],
+}
+
+/// A group's sample-start modulation: `source` moves the start through the
+/// zone's S.Mod range, scaled by `intensity` (Kontakt's Playback Position).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StartRoute {
+    /// Index into `Program::groups`.
+    pub group: usize,
+    pub source: StartSource,
+    pub intensity: f32,
+}
+
+/// The sources a sample-start route can carry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StartSource {
+    MidiCc(u8),
+    KeyPosition,
 }
 
 pub fn write(path: &Path, program: &Program) -> Result<()> {
@@ -110,8 +130,58 @@ const GROUP_TAIL_DEFAULT: &str = "00000401030000000000803f000100000000000080bf00
 /// follow `AHDSR_AT` (attack curve, attack, decay, hold, release, sustain).
 const GROUP_MODS_DEFAULT: &str = "001200010d00c4000000018100460000000100000006000000766f6c756d650000803fffff10000010000000454e565f41484453525f564f4c554d450000000001000000000009000000454e565f414844535202000000000000006f000000070069000000019000000000000400000000000000560000003f0050000000001100000028bd000000001650c34600000000409e48440000803f00000080bf000000000000803f00000080bf000000000000803f00000080bf000000000000803f00000080bf000000000000803f00000000000000000000000000000000";
 const AHDSR_AT: &str = "3f0050000000001100";
-const GROUP_EXTERNAL_MODS: &str =
-    "0012000000000000000000000000000000000000000000000000000000000000000000";
+/// The group's external assignments: an array of 32 slots, each a presence
+/// byte and, when set, the assignment chunk (`ExternalModArray32`, version 0x12).
+fn external_mods(routes: &[&StartRoute]) -> Result<Vec<u8>> {
+    const SLOTS: usize = 32;
+    ensure!(routes.len() <= SLOTS, "Too many external modulations for one group");
+    // Raw (unstructured) array: flag 0, then version 0x12.
+    let mut out = vec![0, 0x12, 0];
+    for slot in 0..SLOTS {
+        match routes.get(slot) {
+            Some(route) => {
+                out.push(1);
+                out.extend(chunk(0x0c, &start_route(route)));
+            }
+            None => out.push(0),
+        }
+    }
+    Ok(out)
+}
+
+/// One sample-start assignment (`ExternalMod`, version 0x104): a single
+/// Playback Position target, unnamed, with the source's own name empty.
+fn start_route(route: &StartRoute) -> Vec<u8> {
+    let mut private = 1u32.to_le_bytes().to_vec();
+    name(&mut private, "playPos");
+    private.extend(route.intensity.to_le_bytes());
+    private.extend((-1i16).to_le_bytes()); // always -1 in local presets
+    private.push(0x10); // target flags: positive depth
+    private.extend(0i16.to_le_bytes()); // lag, ms
+    name(&mut private, ""); // target name: none
+    // `playPos` is a group target, so no module slot byte follows its name.
+    private.push(0); // invert
+    private.push(0); // no shaper
+    name(&mut private, ""); // assignment name: none
+    private.extend(1u32.to_le_bytes()); // an assigned source
+    match route.source {
+        StartSource::MidiCc(cc) => {
+            private.extend(4u32.to_le_bytes());
+            private.push(cc);
+        }
+        StartSource::KeyPosition => private.extend(5u32.to_le_bytes()),
+    }
+    private.extend([0x7f, 0, 0, 0]); // source data of unknown meaning
+    private.extend(0u32.to_le_bytes()); // unknown id
+    private.extend([1, 0]); // footer, two bytes from version 0x103
+    structured(0x104, &private, &[], &[])
+}
+
+/// A length-prefixed 8-bit name, as the modulation readers take it.
+fn name(out: &mut Vec<u8>, text: &str) {
+    out.extend((text.len() as u32).to_le_bytes());
+    out.extend(text.as_bytes());
+}
 const ZONE_PRIVATE_DEFAULT: &str = "ffffffff000000000110040400000040cdcccc3e0000010000000000803fffffffffffffffffffffffffffffffff00000000000000000000000000000000000000000000000000000000000000000001000000b5010000";
 const ZONE_RAW: &str = "00100000ffffffff00000000";
 
@@ -162,7 +232,7 @@ fn program_chunk(p: &Program, total_bytes: u64) -> Result<Vec<u8>> {
     children.extend(chunk(0x4e, &hex(QUICK_BROWSE)));
     children.extend(chunk(0x3a, &hex(EMPTY_FX)));
     children.extend(chunk(0x32, &hex(VOICE_GROUPS_DEFAULT)));
-    children.extend(chunk(0x33, &groups(p.groups)?));
+    children.extend(chunk(0x33, &groups(p.groups, p.start_routes)?));
     children.extend(chunk(0x34, &zones(p)?));
     Ok(chunk(
         0x28,
@@ -184,8 +254,12 @@ fn script(source: &str, title: &str) -> Vec<u8> {
     out
 }
 
-fn groups(groups: &[Group]) -> Result<Vec<u8>> {
+fn groups(groups: &[Group], start_routes: &[StartRoute]) -> Result<Vec<u8>> {
     ensure!(groups.len() <= 4096, "Too many groups for Kontakt");
+    ensure!(
+        start_routes.iter().all(|r| r.group < groups.len()),
+        "Sample-start route names a group that is not in the file"
+    );
     let mut private = Vec::new();
     for flag in GROUP_RECORDS.bytes() {
         private.extend(8u32.to_le_bytes());
@@ -212,7 +286,7 @@ fn groups(groups: &[Group]) -> Result<Vec<u8>> {
         + anchor.len();
 
     let mut out = (groups.len() as u32).to_le_bytes().to_vec();
-    for g in groups {
+    for (index, g) in groups.iter().enumerate() {
         let mut public = Vec::new();
         wstr(&mut public, &g.name);
         public.extend((g.gain.linear() as f32).to_le_bytes());
@@ -232,7 +306,8 @@ fn groups(groups: &[Group]) -> Result<Vec<u8>> {
             mods[at + 4 * n..at + 4 * n + 4].copy_from_slice(&v.to_le_bytes());
         }
         let mut children = chunk(0x3b, &mods);
-        children.extend(chunk(0x3c, &hex(GROUP_EXTERNAL_MODS)));
+        let routes: Vec<&StartRoute> = start_routes.iter().filter(|r| r.group == index).collect();
+        children.extend(chunk(0x3c, &external_mods(&routes)?));
         let mut criteria = Vec::new();
         ni_file::kontakt::objects::StartCriteriaList::default().write(&mut criteria)?;
         children.extend(chunk(0x38, &criteria));
@@ -256,7 +331,8 @@ fn zones(p: &Program) -> Result<Vec<u8>> {
         let mut public = Vec::new();
         public.extend((z.playback.start as i32).to_le_bytes());
         public.extend(z.playback.end.map_or(-1i32, |e| e as i32).to_le_bytes());
-        public.extend((-1i32).to_le_bytes());
+        // S.Mod: the zone's sample-start modulation range, so offsets land on read-back.
+        public.extend((z.playback.start_range as i32).to_le_bytes());
         for v in [
             z.velocities.low,
             z.velocities.high,
@@ -623,16 +699,75 @@ mod tests {
 }
 
 #[cfg(test)]
+mod start_route_tests {
+    use super::*;
+    use ni_file::kontakt::objects::{ExternalModArray32, ExternalModParams, ModSource, ModTarget};
+    use std::io::Cursor;
+
+    /// The first external assignment of group 0 as the reader decodes it.
+    fn read_back(routes: &[StartRoute]) -> Vec<ExternalModParams> {
+        let bytes = groups(&[Group::default()], routes).unwrap();
+        let group = ni_file::kontakt::StructuredObject::read(Cursor::new(&bytes[4..])).unwrap();
+        let array = group
+            .children
+            .iter()
+            .find(|c| c.id == 0x3c)
+            .expect("group has an external modulation array");
+        ExternalModArray32::try_from(array)
+            .unwrap()
+            .slots()
+            .unwrap()
+            .into_iter()
+            .map(|(_, assignment)| assignment.params().unwrap())
+            .collect()
+    }
+
+    fn only_target(params: &ExternalModParams) -> &ModTarget {
+        assert_eq!(params.targets.len(), 1);
+        &params.targets[0]
+    }
+
+    #[test]
+    fn written_start_routes_read_back_as_playback_position_assignments() {
+        let routes = [
+            StartRoute { group: 0, source: StartSource::MidiCc(113), intensity: 1.0 },
+            StartRoute { group: 0, source: StartSource::KeyPosition, intensity: 0.5 },
+        ];
+        let read = read_back(&routes);
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].source, ModSource::MidiCc(113));
+        assert_eq!(read[1].source, ModSource::KeyPosition);
+        for (params, want) in read.iter().zip([1.0, 0.5]) {
+            let target = only_target(params);
+            assert_eq!(target.param, "playPos");
+            assert_eq!(target.intensity, want);
+            assert_eq!(target.slot, None);
+        }
+    }
+
+    #[test]
+    fn no_routes_keep_the_empty_external_array() {
+        assert!(read_back(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_route_names_a_group_in_the_file() {
+        let route = StartRoute { group: 1, source: StartSource::KeyPosition, intensity: 1.0 };
+        assert!(groups(&[Group::default()], &[route]).is_err());
+    }
+}
+
+#[cfg(test)]
 mod doctor_template_tests {
     use super::*;
     #[test]
     fn authored_group_template_has_fixed_native_width_and_rejects_capacity() {
-        let record = groups(&[Group::default()]).unwrap();
+        let record = groups(&[Group::default()], &[]).unwrap();
         assert_eq!(&record[..4], &1_u32.to_le_bytes());
-        assert_eq!(groups(&[]).unwrap(), 0_u32.to_le_bytes());
+        assert_eq!(groups(&[], &[]).unwrap(), 0_u32.to_le_bytes());
         let too_many = vec![Group::default(); 4097];
         assert_eq!(
-            groups(&too_many).unwrap_err().to_string(),
+            groups(&too_many, &[]).unwrap_err().to_string(),
             "Too many groups for Kontakt"
         );
     }

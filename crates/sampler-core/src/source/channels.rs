@@ -91,12 +91,6 @@ impl Cursor {
                     destination.copy_from_slice(&sample[..destination.len()]);
                 } else { available = false; break; }
             }
-            if self.cold_hold {
-                // The entire logical onset, not just the missing pair, stays at
-                // its requested source offset until every interpolation leg is ready.
-                if !available { break; }
-                self.cold_hold = false;
-            }
             if !available && self.starvation.is_none() { self.starvation = Some(self.fade_frames); }
             if let Some(remaining) = self.starvation {
                 if remaining != 0 {
@@ -106,13 +100,13 @@ impl Cursor {
                     for channel in 0..channels {
                         output.values[channel * output.stride + rendered] = last[channel] * fade;
                     }
-                    self.advance(); rendered += 1; continue;
+                    self.stall(1, self.position); self.advance(); rendered += 1; continue;
                 }
                 if !available {
                     // The existing post-fade streaming law advances silently.
                     // Every original channel shares that one advance.
                     last.fill(0.); self.last = [0.; 2];
-                    self.advance(); rendered += 1; continue;
+                    self.stall(1, self.position); self.advance(); rendered += 1; continue;
                 }
                 self.starvation = None; self.fade_in = self.fade_frames;
             }
@@ -123,6 +117,8 @@ impl Cursor {
                     *value *= ramp;
                 }
             }
+            // A complete playable row: the onset has sounded, as in `render_starved`.
+            self.unsounded = false;
             for (channel, value) in row.iter().copied().enumerate() {
                 output.values[channel * output.stride + rendered] = value;
             }

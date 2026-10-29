@@ -279,6 +279,18 @@ impl Runtime {
 impl Prepared {
     /// Purged groups start non-resident, so their zones never start until
     /// `purge_group`/`load` makes them resident.
+    /// Per region, whether a script `play_note` offset past its start range is
+    /// dropped (KSP's DFD rule). `gate[region]` comes from the source translator.
+    pub fn with_script_offset_gate(mut self, gate: Vec<bool>) -> Self {
+        self.script_offset_gate = gate.into_boxed_slice();
+        self
+    }
+
+    /// Whether a script offset past region `region`'s start range is dropped.
+    pub(crate) fn script_offset_gated(&self, region: usize) -> bool {
+        self.script_offset_gate.get(region).copied().unwrap_or(false)
+    }
+
     pub fn with_group_purge(mut self, purged: Vec<bool>) -> Result<Self, Error> {
         if purged.len() != self.group_count as usize {
             return Err(Error::InvalidInput);

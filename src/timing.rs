@@ -244,10 +244,8 @@ impl Holds {
 /// Everything the audio thread aligns by, from the loader.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Plan {
-    /// Auto-align is on.
+    /// Auto-align is on: every note is held, live and on playback alike.
     pub on: bool,
-    /// Hold notes back only while the host's transport plays.
-    pub transport_only: bool,
     /// Reported latency, ms.
     pub latency_ms: f32,
     pub parts: Vec<Arc<Holds>>,
@@ -257,7 +255,6 @@ impl Default for Plan {
     fn default() -> Self {
         Self {
             on: false,
-            transport_only: false,
             latency_ms: 0.0,
             parts: (0..RACK_SLOTS).map(|_| Arc::default()).collect(),
         }
@@ -703,8 +700,8 @@ impl Align {
         }
         std::mem::swap(&mut self.parts, &mut prepared.parts);
     }
-    pub fn holding(&self, playing: bool) -> bool {
-        self.plan.on && (playing || !self.plan.transport_only)
+    pub fn holding(&self) -> bool {
+        self.plan.on
     }
     pub fn next_due(&self) -> Option<u64> {
         self.parts.iter().filter_map(Scheduler::next_due).min()
@@ -1519,6 +1516,66 @@ mod tests {
         t.source = s;
         assert!(t.measured("patch.nki", 2, "snapshot.nksn"));
         assert!(!t.measured("patch.nki", 2, "another.nksn"));
+    }
+
+    #[test]
+    fn two_patches_report_the_slowest_and_hold_each_by_the_difference() {
+        let switching = sampler_core::Switching::default();
+        let router = router(&switching);
+        let patch = |ms: f32| Timing {
+            loaded: Delay {
+                first: [Some(ms); 3],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (slow, fast) = (patch(120.), patch(80.));
+        let reported = reported_ms([slow.latest(), fast.latest()]);
+        assert_eq!(reported, 120.);
+        let fast_holds = Holds::of(&fast, &[], reported);
+        let slow_holds = Holds::of(&slow, &[], reported);
+        let note = |id| HostNote {
+            port: 0,
+            channel: 0,
+            key: 60,
+            id,
+            clap: true,
+        };
+        let on = |id| Event::NoteOn {
+            note: note(id),
+            velocity: 0.7,
+            tune: 0.,
+        };
+        let (mut fast_part, mut slow_part) = (Scheduler::default(), Scheduler::default());
+        assert_eq!(fast_part.arrive(on(1), 0, &fast_holds, RATE, &router), None);
+        assert_eq!(slow_part.arrive(on(2), 0, &slow_holds, RATE, &router), None);
+        assert_eq!(
+            slow_part.pop_due(0),
+            Some((on(2), NO_ART)),
+            "the slowest patch's note starts at its event"
+        );
+        assert_eq!(
+            fast_part.pop_due(1919),
+            None,
+            "the 80 ms patch waits 40 ms"
+        );
+        assert_eq!(fast_part.pop_due(1920), Some((on(1), NO_ART)));
+    }
+
+    #[test]
+    fn a_single_patch_reports_its_own_delay_and_holds_nothing() {
+        let patch = Timing {
+            loaded: Delay {
+                first: [Some(80.); 3],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let reported = reported_ms([patch.latest()]);
+        assert_eq!(reported, 80.);
+        let holds = Holds::of(&patch, &[], reported);
+        assert_eq!(holds.frames(LOADED, false, 100, RATE), 0);
+        assert_eq!(holds.frames(LOADED, true, 100, RATE), 0);
     }
 }
 

@@ -13,11 +13,7 @@ pub enum ProgramBankIntent {
     Select([u8;2]),
 }
 impl ProgramBankIntent {pub(crate) fn valid(self)->bool{!matches!(self,Self::Select(bank) if bank.into_iter().any(|value|value>=128))}}
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct ProgramSelection {pub program:u8,pub bank:[u8;2]}
-/// Protocol state is real, but it must not be advertised as a factory catalog.
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ProgramPlaybackCapability {NoPresetCatalog}
+pub use kontra_events::{ProgramPlaybackCapability, ProgramSelection};
 #[derive(Clone,Copy,Debug)]
 pub(crate) enum ProgramProvenance {Wire(super::Version),Script}
 #[derive(Clone,Copy,Debug)]

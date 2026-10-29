@@ -45,6 +45,30 @@ impl rwh::HasWindowHandle for ParentWindow {
     }
 }
 
+impl ParentWindow {
+    /// The host's Win32 parent window `hwnd`, as [`MuiEditor::on_win32_parent`]
+    /// handed it out: a native dialog owned by it is modal to the host.
+    ///
+    /// [`MuiEditor::on_win32_parent`]: crate::MuiEditor::on_win32_parent
+    #[must_use]
+    pub fn win32(hwnd: isize) -> Self {
+        Self(RawWindowHandle::Win32(
+            std::ptr::with_exposed_provenance_mut(hwnd.cast_unsigned()),
+        ))
+    }
+}
+
+/// A Win32 parent's display is the desktop; other platforms give none
+/// (what a native dialog's `set_parent` asks for besides the window).
+impl rwh::HasDisplayHandle for ParentWindow {
+    fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
+        match self.0 {
+            RawWindowHandle::Win32(_) => Ok(rwh::DisplayHandle::windows()),
+            _ => Err(rwh::HandleError::NotSupported),
+        }
+    }
+}
+
 /// The last scale any host passed to [`HostScale::set`], f64 bits, 0 = never.
 ///
 /// moose's CLAP wrapper builds a new editor on every `gui.create` and tells

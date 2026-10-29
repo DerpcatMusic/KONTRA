@@ -37,16 +37,19 @@ pub struct RuntimeStats {
     /// victim could be replaced. Separate from page-pool admission failures.
     pub voice_pool_refusals: u64,
     /// A full voice pool replaced a started voice already waiting silently for
-    /// source data. Includes cold onset holds and faded-out stream starvation.
+    /// source data. Includes faded-out stream starvation.
     pub waiting_voice_replacements: u64,
     /// Voice starts refused after preflight (source not resident, pool full).
     pub refused_starts: u64,
     /// Time-stretch voices that found no free engine and played as a sampler.
     pub stretch_fallbacks: u64,
-    /// Voices started silent because their admitted startup runway was not
-    /// resident (`set_cold_starts`; one frame unless explicitly configured);
-    /// they fade in when the runway is available.
+    /// Voices started while their admitted startup runway was not resident
+    /// (`set_cold_starts`); they render silence for the missing span and keep
+    /// their schedule, so they never wait for storage.
     pub cold_starts: u64,
+    /// Frames rendered as silence or fade-out because their source window was not
+    /// resident. The schedule still advances through them (no voice waits for storage).
+    pub dropout_frames: u64,
     /// Output frames silenced because they were not finite.
     pub nonfinite_frames: u64,
     pub voices: usize,
@@ -100,6 +103,9 @@ impl Runtime {
             refused_starts: self.refused_starts,
             stretch_fallbacks: self.stretch_fallbacks,
             cold_starts: self.cold_started,
+            dropout_frames: self.retired_dropout_frames
+                + self.voices.slots.iter().filter_map(|s| s.value.as_ref())
+                    .map(|v| v.cursor.dropout_frames()).sum::<u64>(),
             nonfinite_frames: self.nonfinite_frames,
             voices: self.voices.count(),
             voice_capacity: self.voices.slots.len(),
@@ -629,6 +635,18 @@ impl Runtime {
                 for (frame, x) in block[..b.len].iter().enumerate() {
                     (planar[0][frame], planar[1][frame]) = (x[2 * lane], x[2 * lane + 1]);
                 }
+                // This lane is the voice's own signal. `finish` writes frames from `held` on,
+                // scaled by the expression gain, so the first audible frame is found on that output.
+                if v.first_frame.is_none() {
+                    let audible = |k: usize| {
+                        planar[0][k] as f64 * f64::from(gains[lane][0]) != 0.
+                            || planar[1][k] as f64 * f64::from(gains[lane][1]) != 0.
+                    };
+                    if let Some(k) = (b.held..b.len).find(|&k| audible(k)) {
+                        v.first_frame = Some(at + k as u64);
+                        self.first_frames.record(v.start_at, at + k as u64);
+                    }
+                }
                 let destination = match v.bus {
                     Some(bus) => dsp.buses.input(bus, output.len()),
                     None => &mut *output,
@@ -1019,6 +1037,13 @@ impl Runtime {
             at,
             feeds: &mut plan.dsp.feeds,
         };
+        // A voice's first non-silent frame is its contribution to the shared bus: the
+        // difference from the segment before it rendered. Watched until found, once per voice.
+        let watch = v.first_frame.is_none();
+        let watched = segment.len().min(crate::FIRST_WATCH);
+        if watch {
+            self.first_watch[..watched].copy_from_slice(&segment[..watched]);
+        }
         let (produced, done, faults, underrun) = if let Some(head) = &self.onsets.heads[i] {
             let source = super::source::PagedFrames {
                 cache: self.stream_cache.as_ref().expect("pinned streamed onset").reader(),
@@ -1055,6 +1080,12 @@ impl Runtime {
             render_source::<TRACE>(v, &source, segment, chain, states, context, &self.kernel)
         };
         drop((claimed, delay, parameter_scratch, native, stretch));
+        if watch {
+            if let Some(k) = (0..watched).find(|&k| segment[k] != self.first_watch[k]) {
+                v.first_frame = Some(at + k as u64);
+                self.first_frames.record(v.start_at, at + k as u64);
+            }
+        }
         if let (Some(ramp), Some(target)) = (points, mixed) {
             let ramp = if chain.is_some() {
                 (*ramp).without_gains()

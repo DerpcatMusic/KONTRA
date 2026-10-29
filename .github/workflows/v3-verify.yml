@@ -1,0 +1,50 @@
+name: v3 verification
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  tests:
+    name: v3 tests (${{ matrix.layer }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - layer: base-model
+            crates: "-p kontra-time -p kontra-law -p kontra-macros -p kontra-params -p kontra-events -p kontra-ir -p kontra-ui-model -p kontra-protocol"
+          - layer: dsp
+            crates: "-p kontra-dsp-core -p kontra-dsp-filter -p kontra-dsp-eq -p kontra-dsp-dynamics -p kontra-dsp-delay -p kontra-dsp-reverb -p kontra-dsp-drive -p kontra-dsp-spatial -p kontra-dsp-modulators -p kontra-dsp"
+          - layer: engine-script
+            crates: "-p kontra-stream -p kontra-voice -p kontra-vm -p kontra-effects -p kontra-plan -p kontra-prepare -p kontra-trace -p kontra-script-ui -p kontra-engine -p kontra-ksp -p kontra-lua"
+          - layer: formats
+            crates: "-p kontra-format -p kontra-format-kontakt -p kontra-format-uvi -p kontra-format-sfz -p kontra-format-native"
+          - layer: app
+            crates: "-p kontra-library -p kontra-align -p kontra-ui -p kontra-host -p kontra-plugin"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.99.0
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcb-icccm4-dev libxcursor-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev libgl1-mesa-dev \
+            libvulkan-dev libasound2-dev libjack-jackd2-dev
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: v3-verify-${{ matrix.layer }}
+      - name: Test ${{ matrix.layer }}
+        run: cargo test --locked ${{ matrix.crates }}

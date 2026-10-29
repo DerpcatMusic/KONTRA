@@ -2,11 +2,7 @@
 //! in sampler-midi; Core receives an already validated channel-voice value.
 use crate::NoteId;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Version {
-    Midi1,
-    Midi2,
-}
+pub use kontra_events::{Attribute, Controllers, Version};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Value {
@@ -58,17 +54,7 @@ impl Value {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Attribute {
-    pub kind: u8,
-    pub data: u16,
-}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Controllers {
-    Registered,
-    Assignable,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Message {

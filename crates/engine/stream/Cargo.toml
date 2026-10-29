@@ -1,0 +1,18 @@
+[package]
+name = "kontra-stream"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+bytemuck = { version = "1", features = ["extern_crate_alloc", "zeroable_atomics"] }
+crossbeam-queue.workspace = true
+kontra-ir = { path = "../../model/ir" }
+ncw = { path = "../../../vendor/ncw" }
+symphonia = { version = "0.5", default-features = false, features = ["flac"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["fs", "std"] }

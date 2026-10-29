@@ -1,0 +1,18 @@
+[package]
+name = "kontra-format-kontakt"
+version = "0.0.0"
+edition.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+aes = "0.8"
+kontra-format = { path = "../common" }
+kontra-ir = { path = "../../model/ir" }
+kontra-law = { path = "../../base/law" }
+kontra-params = { path = "../../model/params" }
+ni-file = { path = "../../../vendor/ni-file" }
+thiserror.workspace = true

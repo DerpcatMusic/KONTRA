@@ -191,8 +191,7 @@ impl Runtime {
         }count
     }
 }
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct EventValueMemory {pub values:usize,pub posts:usize,pub arena_bytes:usize,pub expression_capture_bytes:usize}
+pub use kontra_events::EventValueMemory;
 impl Runtime {
     pub fn event_value_memory(&self)->Result<EventValueMemory,Error>{
         Ok(EventValueMemory{values:self.event_values.slots.len(),posts:self.event_posts.slots.len(),

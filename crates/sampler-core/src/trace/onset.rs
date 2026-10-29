@@ -68,7 +68,6 @@ pub struct Birth {
     pub source_offset_micros: u32,
     pub seed: u64,
     pub cursor: Cursor,
-    pub cold: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -143,7 +142,6 @@ pub struct VoiceSnapshot {
     pub zone: u32,
     pub asset: AssetId,
     pub cursor: Cursor,
-    pub cold: bool,
     pub starved: bool,
 }
 /// Hard bound on command rows plus provenance metadata inspected per query.
@@ -296,7 +294,7 @@ impl Runtime {
             if !accept(VoiceSnapshot { at: self.now,
                 voice: VoiceId(self.voices.id(index)).into(), zone: voice.source_zone,
                 asset: plan.asset(voice.sample).asset_id(), cursor: voice.cursor.into(),
-                cold: voice.cursor.holding_onset(), starved: voice.cursor.starved() }) { return false; }
+                starved: voice.cursor.starved() }) { return false; }
         }
         true
     }
@@ -322,7 +320,7 @@ impl Runtime {
             asset: asset.asset_id(), source_rate: asset.sample_rate(),
             key: note.pitch.key(), velocity: note.velocity, control_revision: plan.controls.revision,
             used_start_offset, source_offset_micros: self.note_events[family.note.0.index].source_offset_micros,
-            seed, cursor: voice.cursor.into(), cold: voice.cursor.holding_onset() }));
+            seed, cursor: voice.cursor.into() }));
         // Same immutable cursor demand law as admission, one output frame only.
         // No worker polling, cache mutation, allocation, logging, or PCM retained.
         let mut window_rows = 0;

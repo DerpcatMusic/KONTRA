@@ -4986,8 +4986,6 @@ fn v1_auto_align_settings_and_manual_part_timing_are_reachable() {
     pick(&mut h, "Auto-align timing");
     assert!(p.selection.read().unwrap().auto_align);
     h.press("app-menu");
-    pick(&mut h, "Only while the transport plays");
-    assert!(p.selection.read().unwrap().align_transport_only);
     h.press("more-0");
     pick(&mut h, "Play 10 ms earlier");
     assert_eq!(

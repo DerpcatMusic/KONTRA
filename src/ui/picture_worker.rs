@@ -18,11 +18,14 @@ use std::{
 };
 
 #[cfg(all(test, feature = "shots"))]
-#[path = "picture_worker/retention_tests.rs"]
-mod retention_tests;
-#[cfg(all(test, feature = "shots"))]
 #[path = "picture_worker/default_frame_tests.rs"]
 mod default_frame_tests;
+#[cfg(all(test, feature = "shots"))]
+#[path = "picture_worker/retention_tests.rs"]
+mod retention_tests;
+
+/// A prepared asset: its index, picture or font, and plane.
+type Prepared = (usize, Option<Arc<Picture>>, Option<Font>, Plane);
 
 const BUDGET: usize = 64 << 20;
 static REVISION: AtomicU64 = AtomicU64::new(0);
@@ -173,7 +176,10 @@ impl Preparation {
     }
     fn new_owned(path: &Path, program: Option<u32>) -> Self {
         let (jobs, requests) = mpsc::sync_channel::<Vec<Request>>(1);
-        let (done, results) = mpsc::sync_channel(1);
+        // Unbounded: a batch bounds it, and a one-slot channel let one
+        // picture through per UI frame (Morphology: 27 ms of decode, 567 ms
+        // to settle).
+        let (done, results) = mpsc::channel();
         let epoch = Arc::new(AtomicU64::new(0));
         let worker_epoch = epoch.clone();
         let worker_path = path.to_path_buf();
@@ -295,6 +301,10 @@ impl Preparation {
     pub fn bytes(&self) -> usize {
         self.bytes
     }
+    #[cfg_attr(
+        not(any(test, feature = "shots")),
+        expect(dead_code, reason = "only the shots scanner and tests read it")
+    )]
     pub fn pending(&self) -> usize {
         self.pending.len()
     }
@@ -346,7 +356,7 @@ impl Preparation {
         presentation: ir::Presentation,
         scale: f64,
         values: &Values,
-    ) -> Vec<(usize, Option<Arc<Picture>>, Option<Font>, Plane)> {
+    ) -> Vec<Prepared> {
         // The first call must publish even an empty owner. Later calls are
         // driven by actual input/result changes, not the previous return flag.
         let mut changed = self.tick == 0;
@@ -382,7 +392,7 @@ impl Preparation {
                        target: [u32; 2],
                        window: Option<[u32; 4]>,
                        plane| {
-            if let Some(a) = face.assets.get(asset.0) {
+            if face.assets.get(asset.0).is_some() {
                 wanted.push(Key {
                     asset: asset.0,
                     identity: identities[asset.0].clone(),
@@ -423,7 +433,7 @@ impl Preparation {
                     add(
                         a,
                         p.background.frame as usize,
-                        [w, h].map(|n| (n as f64 * scale.clamp(0.01, 1.)).ceil().max(1.) as u32),
+                        [w, h].map(|n| (n * scale.clamp(0.01, 1.)).ceil().max(1.) as u32),
                         Some([0, y, w.ceil() as u32, h.ceil() as u32]),
                         Plane::Wallpaper,
                     );
@@ -477,7 +487,7 @@ impl Preparation {
                 } else {
                     1.
                 };
-                let target = size.map(|n| (n as f64 * factor).ceil().max(1.) as u32);
+                let target = size.map(|n| (n * factor).ceil().max(1.) as u32);
                 if image.frame.is_none()
                     && image.role == ir::Role::Strip
                     && count >= 6
@@ -1254,10 +1264,9 @@ mod tests {
             ir::Rect::new(0, 0, 1, 1),
             ir::Kind::Label,
         );
-        obsolete_widget.images.push(ir::ImageUse::new(
-            ir::AssetRef(1),
-            ir::Role::Background,
-        ));
+        obsolete_widget
+            .images
+            .push(ir::ImageUse::new(ir::AssetRef(1), ir::Role::Background));
         face.widgets.push(obsolete_widget);
         let values = Values::default();
         worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
@@ -1316,7 +1325,9 @@ mod tests {
         );
         complete(obsolete);
         assert!(
-            worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values).is_empty()
+            worker
+                .prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values)
+                .is_empty()
         );
         assert_eq!(
             (worker.pending(), worker.bytes()),
@@ -1428,6 +1439,7 @@ mod tests {
         let values = Values::default();
         worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
         for request in requests.try_recv().unwrap() {
+            #[cfg(feature = "shots")]
             let asset_index = request.key.asset;
             done.send(Result {
                 bytes: sizes[request.key.asset],

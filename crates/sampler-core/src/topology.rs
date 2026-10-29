@@ -569,9 +569,8 @@ impl Runtime {
             // stereo imported chains. No member may advance it alone merely
             // because this owner does not use a wide signal stage.
             if before.failed { self.end_processing_owner(id); continue; }
-            if !self.prepare_processing_cold_start(&before,at,output.len()) {continue;}
             if before.members.iter().flatten().any(|voice|
-                self.voices.get(voice.0).is_some_and(|v| !v.started || v.cursor.holding_onset() || v.cursor.pending_start_runway() > 1)) {
+                self.voices.get(voice.0).is_some_and(|v| !v.started || v.cursor.pending_start_runway() > 1)) {
                 // Processing ownership is independent of take/Family startup
                 // cohorts. Shared envelope and DSP state rest until all members.
                 continue;
