@@ -14,6 +14,19 @@ use crate::resources::Resources;
 use crate::samples::Resolver;
 use kontra_format::Notes;
 
+/// The instrument's sample and other-files tables, read once: a large
+/// library's table holds about 100k names.
+pub(crate) fn file_tables(chunks: &KontaktChunks) -> Option<Result<Tables, ni_file::Error>> {
+    if let Some(c) = chunks.find_first(0x4b) {
+        return Some(FNTableImpl::try_from(c).map(|t| (t.sample_filetable, t.other_filetable)));
+    }
+    let c = chunks.find_first(0x3d)?;
+    Some(FileNameListPreK51::try_from(c).map(|t| (t.sample_filetable, t.other_filetable)))
+}
+
+/// Sample names and other files, by id.
+pub(crate) type Tables = (HashMap<u32, String>, HashMap<u32, String>);
+
 pub(crate) struct Impulses<'a> {
     files: HashMap<u32, String>,
     resolver: &'a mut Resolver,
@@ -26,17 +39,14 @@ pub(crate) struct Impulses<'a> {
 }
 
 impl<'a> Impulses<'a> {
-    pub(crate) fn new(chunks: &KontaktChunks, resolver: &'a mut Resolver, path: &'a Path) -> Self {
-        let files = if let Some(c) = chunks.find_first(0x4b) {
-            FNTableImpl::try_from(c).map(|t| t.other_filetable).ok()
-        } else {
-            chunks
-                .find_first(0x3d)
-                .and_then(|c| FileNameListPreK51::try_from(c).ok())
-                .map(|t| t.other_filetable)
-        };
+    /// `files`: the instrument's other-files table ([`file_tables`]).
+    pub(crate) fn new(
+        files: HashMap<u32, String>,
+        resolver: &'a mut Resolver,
+        path: &'a Path,
+    ) -> Self {
         Self {
-            files: files.unwrap_or_default(),
+            files,
             resolver,
             resources: None,
             path,
