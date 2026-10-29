@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = Path('/data/dev/workspace/PluginArtifacts/v3-survey')
 LIBRARIES = [Path('/data/main/Libraries/Kontakt'), Path('/data/main/Libraries/UVI')]
 SILENT = 1e-4
-COLUMNS = ['library', 'instrument', 'status', 'load_s', 'rss_mb', 'zones', 'key_zones',
+COLUMNS = ['library', 'instrument', 'status', 'load_s', 'rss_mb', 'rtf', 'zones', 'key_zones',
            'peak', 'peak_v30', 'vel_db', 'rms_sustain', 'rms_release', 'broken', 'audible',
            'cosmetic', 'unanswered', 'script_faults', 'stolen', 'cut', 'refused', 'missing_frames',
            'stream_errors', 'error']
@@ -86,6 +86,8 @@ def survey(binary, library, path, timeout):
     row.update(
         load_s=number(r'loaded in ([\d.]+)s', out) or round(number(r'loaded in ([\d.]+)ms', out, default=0) / 1000, 4),
         rss_mb=round(number(r'memory after render: VmHWM: (\d+) kB', out, int, 0) / 1024),
+        # Engine::process time over audio time, one note at velocity 100 (renders run in parallel at nice 19).
+        rtf=number(r'rtf ([\d.]+)', out, default=''),
         zones=number(r': (\d+) zones, loaded', out, int, ''),
         key_zones=number(r'key 60: (\d+) zones', out, int, ''),
         peak=peak,
@@ -186,6 +188,9 @@ def main():
                   f'{median(r["load_s"] for r in rs)} | {max([int(r["rss_mb"] or 0) for r in rs] or [0])} | '
                   f'{sum(int(r["broken"] or 0) for r in rs)} | {sum(int(r["audible"] or 0) for r in rs)} | '
                   f'{median(r["vel_db"] for r in rs)} |')
+    heavy = sorted((r for r in rows if r['rtf'] not in ('', None)), key=lambda r: -float(r['rtf']))[:10]
+    md += ['', '## Heaviest renders (Engine::process time / audio time, one note)', '', '| Library | Instrument | RTF | Zones |', '|---|---|---|---|']
+    md += [f'| {r["library"]} | {Path(r["instrument"]).name} | {r["rtf"]} | {r["zones"]} |' for r in heavy]
     md += ['', '## Top gaps (Broken and Audible, by instruments)', '', '| Impact | Feature | Instruments | Libraries |', '|---|---|---|---|']
     md += [f'| {i} | {f} | {len(ins)} | {len(libs)} |' for (i, f), (ins, libs) in gaps if i != 'Cosmetic'][:30]
     md += ['', '## Top unanswered script actions', '', '| Action | Instruments | Libraries |', '|---|---|---|']

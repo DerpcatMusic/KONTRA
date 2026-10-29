@@ -314,6 +314,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     let mut audio = Vec::new();
     let mut block = vec![[0.0f32; 2]; 512];
+    // Time inside `Engine::process` alone (not disk waits): the render's CPU.
+    let mut busy = std::time::Duration::ZERO;
     // KONTRA_BEND=0: pitch bend (its high 7 bits) sent with the wheel at 1 s.
     let bend = std::env::var("KONTRA_BEND")
         .ok()
@@ -352,7 +354,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !live {
             stream.settle(std::time::Duration::from_secs(5));
         }
+        let processing = std::time::Instant::now();
         engine.process(&mut block, input);
+        busy += processing.elapsed();
         if n == 0 || n == 3 * RATE as usize / 512 {
             let during: Vec<_> = engine
                 .action_calls()
@@ -401,6 +405,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rms(r * 21 / 10, r * 26 / 10)
     );
     println!("peak {peak:.3}, {:?}", engine.stats());
+    let seconds = audio.len() as f64 / f64::from(RATE);
+    println!(
+        "render cpu {:.1} ms for {seconds:.1} s of audio: rtf {:.5}",
+        busy.as_secs_f64() * 1e3,
+        busy.as_secs_f64() / seconds.max(1e-9)
+    );
     println!("stream: {:?}", stream.stats());
     println!("all actions: {:?}", engine.unhandled_actions());
     println!("last message: {}", engine.last_message());
