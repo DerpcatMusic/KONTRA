@@ -12,11 +12,49 @@ use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 const HEAD: usize = 64;
 /// Each stage's block size and where its stretch of the response ends;
 /// it starts where the one before ends. The last runs to the end.
-const STAGES: [(usize, usize); 3] = [(64, 1024), (512, 8192), (4096, usize::MAX)];
+const STAGES: [(usize, usize); 4] = [(64, 512), (256, 2048), (1024, 8192), (8192, usize::MAX)];
 /// Inputs below this magnitude count as silence.
 const SILENT: f32 = 1e-10;
 
 type Spectrum = Vec<Complex<f32>>;
+
+/// A spectrum as its real and imaginary parts apart, so a product of two
+/// runs on whole vector registers without shuffling the parts.
+#[derive(Clone)]
+struct Split {
+    re: Vec<f32>,
+    im: Vec<f32>,
+}
+
+impl Split {
+    fn of(spec: &[Complex<f32>]) -> Self {
+        Self {
+            re: spec.iter().map(|c| c.re).collect(),
+            im: spec.iter().map(|c| c.im).collect(),
+        }
+    }
+
+    fn set(&mut self, spec: &[Complex<f32>]) {
+        for ((re, im), c) in self.re.iter_mut().zip(&mut self.im).zip(spec) {
+            (*re, *im) = (c.re, c.im);
+        }
+    }
+
+    fn clear(&mut self) {
+        self.re.fill(0.0);
+        self.im.fill(0.0);
+    }
+
+    /// Adds `h · x`.
+    fn mac(&mut self, h: &Self, x: &Self) {
+        let acc = self.re.iter_mut().zip(&mut self.im);
+        let hx = h.re.iter().zip(&h.im).zip(x.re.iter().zip(&x.im));
+        for ((ar, ai), ((hr, hi), (xr, xi))) in acc.zip(hx) {
+            *ar += hr * xr - hi * xi;
+            *ai += hr * xi + hi * xr;
+        }
+    }
+}
 
 /// One uniformly partitioned stretch of the response, block `block`.
 struct Stage {
@@ -27,11 +65,13 @@ struct Stage {
     /// Output for the current block, computed when the previous block completed.
     tail: Vec<f32>,
     /// Non-zero partitions as `(age in blocks, spectrum)`.
-    parts: Vec<(usize, Spectrum)>,
+    parts: Vec<(usize, Split)>,
     /// Spectra of the last `slots.len()` input blocks, newest at `slot`.
-    slots: Vec<Spectrum>,
+    slots: Vec<Split>,
     slot: usize,
-    acc: Spectrum,
+    acc: Split,
+    /// The transforms' side of `acc` and the slots.
+    spec: Spectrum,
     fft_in: Vec<f32>,
     fwd: Arc<dyn RealToComplex<f32>>,
     inv: Arc<dyn ComplexToReal<f32>>,
@@ -67,7 +107,7 @@ impl Stage {
             // Lengths are fixed by the plan, so this cannot fail.
             let _ = fwd.process_with_scratch(&mut fft_in, &mut spec, &mut scratch);
             if spec.iter().any(|c| c.norm_sqr() > 0.0) {
-                parts.push((p, spec));
+                parts.push((p, Split::of(&spec)));
             }
         }
         let count = parts.last()?.0 + 1;
@@ -77,9 +117,10 @@ impl Stage {
             fill: 0,
             tail: vec![0.0; block],
             parts,
-            slots: (0..count).map(|_| fwd.make_output_vec()).collect(),
+            slots: vec![Split::of(&fwd.make_output_vec()); count],
             slot: 0,
-            acc: fwd.make_output_vec(),
+            acc: Split::of(&fwd.make_output_vec()),
+            spec: fwd.make_output_vec(),
             fft_in,
             fwd_scratch: scratch,
             inv_scratch: inv.make_scratch_vec(),
@@ -88,17 +129,31 @@ impl Stage {
         })
     }
 
-    fn push(&mut self, x: f32) -> f32 {
-        let y = self.tail.get(self.fill).copied().unwrap_or(0.0);
-        if let Some(v) = self.buf.get_mut(self.block + self.fill) {
-            *v = x;
+    /// Adds this stage's output for the frames `x` to `y`.
+    fn process(&mut self, x: &[f32], y: &mut [f32]) {
+        let mut done = 0;
+        while done < x.len() {
+            let take = (self.block - self.fill).min(x.len() - done);
+            let (from, to) = (self.fill, self.fill + take);
+            let (Some(input), Some(out)) = (x.get(done..done + take), y.get_mut(done..done + take))
+            else {
+                return;
+            };
+            if let Some(b) = self.buf.get_mut(self.block + from..self.block + to) {
+                b.copy_from_slice(input);
+            }
+            for (o, t) in out
+                .iter_mut()
+                .zip(self.tail.get(from..to).unwrap_or_default())
+            {
+                *o += t;
+            }
+            (self.fill, done) = (to, done + take);
+            if self.fill == self.block {
+                self.fill = 0;
+                self.block_done();
+            }
         }
-        self.fill += 1;
-        if self.fill == self.block {
-            self.fill = 0;
-            self.block_done();
-        }
-        y
     }
 
     /// Turns the completed block into the output for the next block.
@@ -110,32 +165,37 @@ impl Stage {
         }
         let n = self.slots.len();
         self.slot = (self.slot + 1) % n;
-        if let Some(spec) = self.slots.get_mut(self.slot) {
-            let _ = self
-                .fwd
-                .process_with_scratch(&mut self.fft_in, spec, &mut self.fwd_scratch);
+        let _ =
+            self.fwd
+                .process_with_scratch(&mut self.fft_in, &mut self.spec, &mut self.fwd_scratch);
+        if let Some(x) = self.slots.get_mut(self.slot) {
+            x.set(&self.spec);
         }
 
-        self.acc.fill(Complex::default());
+        self.acc.clear();
         for (p, h) in &self.parts {
-            let Some(x) = self.slots.get((self.slot + n - p) % n) else {
-                continue;
-            };
-            for (a, (hv, xv)) in self.acc.iter_mut().zip(h.iter().zip(x)) {
-                *a += hv * xv;
+            if let Some(x) = self.slots.get((self.slot + n - p) % n) {
+                self.acc.mac(h, x);
             }
         }
+        for (c, (re, im)) in self
+            .spec
+            .iter_mut()
+            .zip(self.acc.re.iter().zip(&self.acc.im))
+        {
+            *c = Complex::new(*re, *im);
+        }
         // DC and Nyquist are real for a real signal; drop rounding residue so the inverse is clean.
-        if let Some(c) = self.acc.first_mut() {
+        if let Some(c) = self.spec.first_mut() {
             c.im = 0.0;
         }
-        if let Some(c) = self.acc.last_mut() {
+        if let Some(c) = self.spec.last_mut() {
             c.im = 0.0;
         }
 
         let _ =
             self.inv
-                .process_with_scratch(&mut self.acc, &mut self.fft_in, &mut self.inv_scratch);
+                .process_with_scratch(&mut self.spec, &mut self.fft_in, &mut self.inv_scratch);
         let scale = 1.0 / (2 * self.block) as f32;
         for (t, v) in self
             .tail
@@ -154,24 +214,27 @@ impl Stage {
         self.buf.fill(0.0);
         self.tail.fill(0.0);
         for s in &mut self.slots {
-            s.fill(Complex::default());
+            s.clear();
         }
     }
 }
 
+/// Frames a channel takes at once.
+const CHUNK: usize = 64;
+
 /// One channel: a direct FIR over the first `HEAD` taps, and the stages for the rest.
 struct Mono {
-    head: Vec<f32>,
-    /// Last `HEAD` inputs, stored twice so the window `pos..pos + HEAD` is contiguous.
-    hist: Vec<f32>,
-    pos: usize,
+    /// The head taps, last first, so a window of `line` dots with them.
+    head: [f32; HEAD],
+    /// The last `HEAD − 1` inputs, then the chunk being convolved.
+    line: [f32; HEAD - 1 + CHUNK],
     stages: Vec<Stage>,
 }
 
 impl Mono {
     fn new(ir: &[f32], planner: &mut RealFftPlanner<f32>) -> Self {
-        let mut head = vec![0.0; HEAD];
-        for (h, t) in head.iter_mut().zip(ir) {
+        let mut head = [0.0; HEAD];
+        for (h, t) in head.iter_mut().rev().zip(ir) {
             *h = *t;
         }
         let mut from = HEAD;
@@ -182,49 +245,64 @@ impl Mono {
         }
         Self {
             head,
-            hist: vec![0.0; 2 * HEAD],
-            pos: 0,
+            line: [0.0; HEAD - 1 + CHUNK],
             stages,
         }
     }
 
-    fn push(&mut self, x: f32) -> f32 {
-        self.pos = (self.pos + HEAD - 1) % HEAD;
-        if let Some(v) = self.hist.get_mut(self.pos) {
-            *v = x;
+    /// Convolves `io`, at most [`CHUNK`] frames, in place.
+    fn process(&mut self, io: &mut [f32]) {
+        let n = io.len().min(CHUNK);
+        let Some(fresh) = self.line.get_mut(HEAD - 1..HEAD - 1 + n) else {
+            return;
+        };
+        fresh.copy_from_slice(io.get(..n).unwrap_or_default());
+        let mut out = [0.0; CHUNK];
+        for (o, window) in out.iter_mut().zip(self.line.windows(HEAD)).take(n) {
+            *o = dot(window, &self.head);
         }
-        if let Some(v) = self.hist.get_mut(self.pos + HEAD) {
-            *v = x;
+        let out = out.get_mut(..n).unwrap_or_default();
+        for s in &mut self.stages {
+            s.process(io, out);
         }
-        let head = self
-            .hist
-            .get(self.pos..self.pos + HEAD)
-            .map_or(0.0, |w| dot(w, &self.head));
-        head + self.stages.iter_mut().map(|s| s.push(x)).sum::<f32>()
+        io.get_mut(..n).unwrap_or_default().copy_from_slice(out);
+        self.line.copy_within(n..n + HEAD - 1, 0);
     }
 
     fn reset(&mut self) {
-        self.pos = 0;
-        self.hist.fill(0.0);
+        self.line.fill(0.0);
         for s in &mut self.stages {
             s.reset();
         }
     }
 }
 
-/// Eight running sums, so the compiler keeps them in one vector register; a
-/// single serial sum can't vectorize (float addition order).
+/// Sixteen running sums: four vector registers of independent chains, so the
+/// adds overlap instead of waiting on each other (float addition order keeps
+/// the compiler from splitting one sum itself).
 fn dot(a: &[f32], b: &[f32]) -> f32 {
-    let (a8, a_rest) = a.as_chunks::<8>();
-    let (b8, b_rest) = b.as_chunks::<8>();
-    let mut lanes = [0.0f32; 8];
-    for (x, y) in a8.iter().zip(b8) {
+    let (a16, a_rest) = a.as_chunks::<16>();
+    let (b16, b_rest) = b.as_chunks::<16>();
+    let mut lanes = [0.0f32; 16];
+    for (x, y) in a16.iter().zip(b16) {
         for ((l, x), y) in lanes.iter_mut().zip(x).zip(y) {
             *l += x * y;
         }
     }
     let rest: f32 = a_rest.iter().zip(b_rest).map(|(x, y)| x * y).sum();
-    lanes.iter().sum::<f32>() + rest
+    // Halves added as vectors: a short tree, not sixteen scalar adds in a row.
+    let (lo, hi) = lanes.split_at(8);
+    let mut s8 = [0.0f32; 8];
+    for ((s, x), y) in s8.iter_mut().zip(lo).zip(hi) {
+        *s = x + y;
+    }
+    let (lo, hi) = s8.split_at(4);
+    let mut s4 = [0.0f32; 4];
+    for ((s, x), y) in s4.iter_mut().zip(lo).zip(hi) {
+        *s = x + y;
+    }
+    let [a, b, c, d] = s4;
+    (a + c) + (b + d) + rest
 }
 
 /// Stereo convolver: input L is convolved with `left`, input R with `right`.
@@ -250,16 +328,23 @@ impl Convolver {
 
     /// Convolves `io` in place with zero latency. Real-time safe.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
-        for frame in io.iter_mut() {
-            let [l, r] = frame;
-            let silent = l.abs() < SILENT && r.abs() < SILENT;
-            self.quiet = if silent {
-                self.quiet.saturating_add(1)
-            } else {
-                0
-            };
-            *l = self.left.push(*l);
-            *r = self.right.push(*r);
+        for chunk in io.chunks_mut(CHUNK) {
+            let (mut l, mut r) = ([0.0; CHUNK], [0.0; CHUNK]);
+            for ((frame, l), r) in chunk.iter().zip(&mut l).zip(&mut r) {
+                [*l, *r] = *frame;
+                let silent = l.abs() < SILENT && r.abs() < SILENT;
+                self.quiet = if silent {
+                    self.quiet.saturating_add(1)
+                } else {
+                    0
+                };
+            }
+            let n = chunk.len();
+            self.left.process(l.get_mut(..n).unwrap_or_default());
+            self.right.process(r.get_mut(..n).unwrap_or_default());
+            for ((frame, l), r) in chunk.iter_mut().zip(l).zip(r) {
+                *frame = [l, r];
+            }
         }
     }
 
@@ -295,7 +380,7 @@ mod tests {
         for block in io.chunks_mut(256) {
             c.process(block);
         }
-        for n in [0, 63, 64, 1_000, 1_024, 8_191, 8_192, 25_000, 29_999] {
+        for n in [0, 63, 64, 511, 512, 2_047, 2_048, 8_191, 8_192, 25_000, 29_999] {
             let direct: f32 = (0..=n.min(ir.len() - 1))
                 .map(|k| ir[k] * input[n - k])
                 .sum();
