@@ -178,7 +178,18 @@ impl Look {
                 } else {
                     ink(0xfe_fefe)
                 };
-                parts.push(words(caption, ink, model::Align::Center, w, h, scale));
+                if *on && stock && button.is_some() {
+                    parts.push(field_words(
+                        caption,
+                        ink,
+                        model::Align::Center,
+                        (w, h, scale),
+                        glyphs,
+                        model::Rgba::rgb(DARK),
+                    ));
+                } else {
+                    parts.push(words(caption, ink, model::Align::Center, w, h, scale));
+                }
                 parts
             }
             Self::Field { title, value } => {
