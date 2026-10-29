@@ -1,6 +1,7 @@
 //! Inventory the v3 instrument model and the plan prepared from it.
 
-use std::collections::{BTreeMap, HashSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -151,21 +152,56 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         .collect();
     let plan = Arc::new(loaded.plan);
     let engine = Engine::new(Arc::clone(&plan), store.client(), RATE);
+    let library = RefCell::new(kontra_host::ui::Library::open(path));
+    let asset_cache = RefCell::new(HashMap::<String, Option<usize>>::new());
+    let metadata = |name: &str| library.borrow_mut().meta(name);
+    let asset_size = |name: &str| {
+        if let Some(cached) = asset_cache.borrow().get(name) {
+            return *cached;
+        }
+        let size = library.borrow_mut().read(name).map(|bytes| bytes.len());
+        asset_cache.borrow_mut().insert(name.to_owned(), size);
+        size
+    };
     let ui: Vec<_> = loaded.faces.iter().zip(&loaded.pages).enumerate().map(|(slot, (face, page))| {
         if let (Some(face), Ok(slot_id)) = (face, u8::try_from(slot)) {
-            match kontra_host::ui::interface(face, slot_id, &engine, &|_| None) {
-                Ok(tree) => json!({"runtime_slot": slot, "original_slot": mapping.as_ref().and_then(|_| loaded.persist.get(slot)).map(|p| p.script), "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| json!({"path": a.path, "kind": format!("{:?}", a.kind), "found": null})).collect::<Vec<_>>(), "unsupported": tree.unsupported.iter().map(|u| format!("{u:?}")).collect::<Vec<_>>()}),
+            match kontra_host::ui::interface(face, slot_id, &engine, &metadata) {
+                Ok(tree) => json!({"runtime_slot": slot, "original_slot": mapping.as_ref().and_then(|_| loaded.persist.get(slot)).map(|p| p.script), "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| {
+                    let size = asset_size(&a.path);
+                    json!({"path": a.path, "kind": format!("{:?}", a.kind),
+                        "found": size.map(|_| true), "bytes": size,
+                        "read_status": if size.is_some() { "resolved" } else { "not_resolved" }})
+                }).collect::<Vec<_>>(), "unsupported": tree.unsupported.iter().map(|u| format!("{u:?}")).collect::<Vec<_>>()}),
                 Err(e) => json!({"runtime_slot": slot, "error": e.to_string()}),
             }
         } else if let Some(page) = page {
-            let tree = kontra_host::ui::lua::tree(page, &|_| None);
-            json!({"runtime_slot": slot, "original_slot": mapping.as_ref().and_then(|_| loaded.persist.get(slot)).map(|p| p.script), "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| json!({"path": a.path, "kind": format!("{:?}", a.kind), "found": null})).collect::<Vec<_>>(), "unsupported": tree.unsupported.iter().map(|u| format!("{u:?}")).collect::<Vec<_>>()})
+            let tree = kontra_host::ui::lua::tree(page, &metadata);
+            json!({"runtime_slot": slot, "original_slot": mapping.as_ref().and_then(|_| loaded.persist.get(slot)).map(|p| p.script), "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| {
+                    let size = asset_size(&a.path);
+                    json!({"path": a.path, "kind": format!("{:?}", a.kind),
+                        "found": size.map(|_| true), "bytes": size,
+                        "read_status": if size.is_some() { "resolved" } else { "not_resolved" }})
+                }).collect::<Vec<_>>(), "unsupported": tree.unsupported.iter().map(|u| format!("{u:?}")).collect::<Vec<_>>()})
         } else { json!({"runtime_slot": slot, "error": "no UI model"}) }
     }).collect();
+    let (resolved_assets, unresolved_assets) = ui
+        .iter()
+        .filter_map(|model| model.get("assets").and_then(Value::as_array))
+        .flatten()
+        .fold((0usize, 0usize), |(resolved, unresolved), asset| {
+            if asset.get("read_status").and_then(Value::as_str) == Some("resolved") {
+                (resolved + 1, unresolved)
+            } else {
+                (resolved, unresolved + 1)
+            }
+        });
     let callback_count = mapping.as_ref().map(|_| callback_count);
     let callback_summary =
         callback_count.map_or_else(|| "unavailable".to_owned(), |n| n.to_string());
-    let mut unavailable = vec!["translator law IDs and provenance", "asset existence"];
+    let mut unavailable = vec![
+        "translator law IDs and provenance",
+        "reason for unresolved UI assets",
+    ];
     if mapping.is_none() {
         unavailable.extend([
             "original-to-runtime script slot mapping",
@@ -175,7 +211,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     let unanswered = format!("{:?}", engine.unhandled_actions());
     let faults = format!("{:?}", engine.script_faults());
     let summary = format!(
-        "{}\n  samples: {}; groups: {}; zones: {} translated / {} prepared; scripts: {}; UI models: {}\n  unprepared zones by reason: {unprepared_reasons:?}\n  diagnostics: {}; init unanswered: {}; script faults: {}\n  compiled callback/dispatch entries: {callback_summary}; law IDs: unavailable (not recorded by the v3 IR)\n",
+        "{}\n  samples: {}; groups: {}; zones: {} translated / {} prepared; scripts: {}; UI models: {}\n  unprepared zones by reason: {unprepared_reasons:?}\n  diagnostics: {}; init unanswered: {}; script faults: {}\n  compiled callback/dispatch entries: {callback_summary}; referenced UI assets: {resolved_assets} resolved / {unresolved_assets} not resolved\n  law IDs: unavailable (not recorded by the v3 IR)\n",
         loaded.name,
         samples.len(),
         groups.len(),
