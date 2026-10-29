@@ -19,8 +19,8 @@ bin=$1 instrument=$2 out=$3
 tab=${TAB:-563,160}            # part tab Mapping
 interface=${INTERFACE:-458,160}
 preset=${PRESET:-874,114}      # the header's preset field
-knob=${KNOB:-632,804}          # after five wheel steps down
-switch=${SWITCH:-1484,872}
+knob=${KNOB:-746,834}          # after five wheel steps down
+switch=${SWITCH:-1418,886}
 search=${SEARCH:-100,80}       # the browser's search field
 name=${NAME:-Una Corda}        # typed there, so its card comes first
 library=${LIBRARY:-200,260}    # that card
@@ -132,19 +132,15 @@ at 1900,1270; sleep 1; shot 6a-original
 at "$look"; xdotool click 1; sleep 1; at "$vector"; xdotool click 1; sleep 2
 at 1900,1270; sleep 1; shot 6b-vector
 check 6a-original 6b-vector "part look: Vector draws without pictures" 205,100,880,500
-# Una Corda's three picture sliders are below the initial viewport.
-at 1000,600; for _ in 1 2 3 4 5; do xdotool click 5; sleep 0.1; done
-sleep 1.5; shot 6bb-vector-controls
-# The default Una Corda run must show all three slider faces at their authored positions.
+# Fit must show all three Una Corda sliders before any scrolling in Vector.
 if [[ ${name} == "Una Corda" ]]; then
     if python3 -I -c 'import sys; from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB")
-boxes = [(300, 365, 330, 430), (525, 365, 555, 430), (750, 365, 780, 430)]
-sys.exit(0 if all(sum(1 for p in im.crop(box).getdata() if min(p) > 100) >= 10 for box in boxes) else 1)' "$out/6bb-vector-controls.png"; then
-        pass "Vector: all three picture sliders draw"
-    else miss "Vector: all three picture sliders draw"; fi
+boxes = [(360, 430, 386, 466), (528, 430, 554, 466), (696, 430, 722, 466)]
+sys.exit(0 if all(sum(1 for p in im.crop(box).getdata() if min(p) > 100) >= 10 for box in boxes) else 1)' "$out/6b-vector.png"; then
+        pass "Vector: all three sliders visible without scrolling"
+    else miss "Vector: all three sliders visible without scrolling"; fi
 fi
-at 1000,600; for _ in $(seq 1 10); do xdotool click 4; sleep 0.1; done; sleep 1.5
 at "$look"; xdotool click 1; sleep 1; at "$kontra"; xdotool click 1; sleep 2
 at 1900,1270; sleep 1; shot 6c-kontra
 check 6b-vector 6c-kontra "part look: KONTRA lists the controls" 205,100,880,500
