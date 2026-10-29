@@ -1637,3 +1637,91 @@ fn a_gain_one_player_has_alone_scales_its_zones_cells() {
         out.diagnostics
     );
 }
+
+#[test]
+fn a_macro_held_on_a_script_modulations_ratio_scales_its_bend() {
+    // VWinds' release pitch drift: 2 st, scaled by "ReleasePitchDrift" at 0.7.
+    let xml = r#"<Program Gain="1">
+      <Modulators>
+        <ScriptEventModulation Name="Script Event Modulation 1" EventId="2" Bipolar="0"/>
+        <ConstantModulation Name="Macro 2" Bipolar="0" Value="0.7"/>
+      </Modulators>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav">
+            <Connections>
+              <SignalConnection Ratio="2" Source="$Program/Script Event Modulation 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0">
+                <Connections>
+                  <SignalConnection Ratio="1" Source="$Program/Macro 2" Destination="Ratio" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                </Connections>
+              </SignalConnection>
+            </Connections>
+          </SamplePlayer></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let semitones: Vec<_> = out.groups[0]
+        .mods
+        .iter()
+        .filter_map(|m| match m.kind {
+            ir::ModKind::Pitch {
+                source: ir::Source::Script(2),
+                semitones,
+                ..
+            } => Some(semitones),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(semitones.len(), 1);
+    assert!((semitones[0] - 1.4).abs() < 1e-6, "{semitones:?}");
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+}
+
+#[test]
+fn a_discrete_mapper_is_read_at_each_of_its_points() {
+    // VWinds' pitch-bend crossfade mappers are Discrete: 0x1411391a6 reads
+    // point ⌊n·x⌋, at each saved point's own `x` that point.
+    let xml = r#"<Program Gain="1">
+      <Mappers><ControlSignalMapper Name="Mapper 1" Min="0" Max="1" Integer="0" Discrete="1">0,0 0,5 1,0</ControlSignalMapper></Mappers>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Connections>
+            <SignalConnection Ratio="1" Source="@MIDI CC 2" Destination="Gain" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    assert_eq!(out.groups[0].shapers[0].table, [0.0, 0.5, 1.0]);
+}
+
+#[test]
+fn an_inverted_mapped_bend_reads_its_mapper_backwards() {
+    // VWinds V2's bend on its EQ: `−x` before a mapper read at `(x + 1)/2`.
+    let xml = r#"<Program Gain="1">
+      <Auxs>
+        <AuxEffect Name="Aux0" Bypass="0" Gain="1" Pan="0" PreInsert="1">
+          <Inserts>
+            <DigitalEq Bypass="0" GainScale="0" Enabled1="1" Type1="6" Slope1="0" Freq1="261.6" Gain1="-6" Bandwidth1="0.4">
+              <Mappers>
+                <ControlSignalMapper Name="Mapper 51" Min="-1" Max="1">-1,0 0,5 1,0</ControlSignalMapper>
+              </Mappers>
+              <Connections>
+                <SignalConnection Ratio="0.3" Source="@PitchBend" Destination="GainScale" Mapper="Mapper 51" ConnectionMode="0" Bypass="0" Inverted="1"/>
+              </Connections>
+            </DigitalEq>
+          </Inserts>
+        </AuxEffect>
+      </Auxs>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let term = &out.buses.last().unwrap().blends[0].terms[0];
+    assert_eq!(term.input.source, ir::Source::PitchBend);
+    assert_eq!(term.input.table, [1.0, 0.5, -1.0]);
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+}
