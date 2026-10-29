@@ -104,6 +104,8 @@ pub struct LookPars {
     pub grid_x: i32,
     pub grid_y: i32,
     pub steps_shown: i32,
+    /// `attach_level_meter`'s channel (0 left, 1 right).
+    pub meter: i32,
     pub picture: i32,
     pub picture_state: i32,
     /// The UI ids that address the instrument's wallpaper and icon.

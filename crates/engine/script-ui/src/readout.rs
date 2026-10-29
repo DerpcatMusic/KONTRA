@@ -9,8 +9,13 @@ use kontra_vm::Text;
 pub enum Readout {
     /// A gain topping out at this many dB: 6 dB per doubling of the cubed knob.
     Db(f64),
-    /// A time in ms, thousands as `k`.
-    Ms(f64),
+    /// Padded to five places, thousands as `k`: a time in ms, or a route's
+    /// intensity in % (oracle 2026-10-29: 0.5 reads " 25.0", 0 " 0.00").
+    Padded(f64),
+    /// One decimal, signed: a bipolar route depth in % (oracle 2026-10-29 on
+    /// Morphology's routes: depth 100·(2x − 1)³ reads "-0.8" at 0.4; a
+    /// route's intensity is 100·x², [`Readout::Padded`]).
+    Signed(f64),
     /// ±36 semitones.
     Tune,
     Pan,
@@ -22,9 +27,10 @@ pub fn write(readout: Readout, x: f64, out: &mut Text) -> bool {
     match readout {
         Readout::Db(top) if x > 0.0 => out.push_fmt(format_args!("{:.1}", 18.0 * x.log2() + top)),
         Readout::Db(_) => out.push("-inf"),
-        Readout::Ms(ms) if ms < 1.0 => out.push_fmt(format_args!("{ms:5.2}")),
-        Readout::Ms(ms) if ms < 1000.0 => out.push_fmt(format_args!("{ms:5.1}")),
-        Readout::Ms(ms) => out.push_fmt(format_args!("{:5.1}k", ms / 1000.0)),
+        Readout::Padded(ms) if ms < 1.0 => out.push_fmt(format_args!("{ms:5.2}")),
+        Readout::Padded(ms) if ms < 1000.0 => out.push_fmt(format_args!("{ms:5.1}")),
+        Readout::Padded(ms) => out.push_fmt(format_args!("{:5.1}k", ms / 1000.0)),
+        Readout::Signed(v) => out.push_fmt(format_args!("{v:.1}")),
         Readout::Tune => out.push_fmt(format_args!("{:.2}", (2.0 * x - 1.0) * 36.0)),
         Readout::Pan if f64::from(pan.abs()) < 0.0075 => out.push("Center"),
         Readout::Pan => {
@@ -46,7 +52,7 @@ mod tests {
             .iter()
             .map(|x: &f64| {
                 let mut t = Text::EMPTY;
-                write(Readout::Ms(500.0 * (3.7 * x).exp()), 0.0, &mut t);
+                write(Readout::Padded(500.0 * (3.7 * x).exp()), 0.0, &mut t);
                 t.as_str().to_owned()
             })
             .collect();

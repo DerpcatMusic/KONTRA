@@ -164,6 +164,7 @@ const MAPPED: &[&str] = &[
     "grid_x",
     "grid_y",
     "table_steps_shown",
+    "level_meter",
 ];
 
 /// The text style of each picture state, in [`ui::Widget::state_styles`] order.

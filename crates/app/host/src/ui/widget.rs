@@ -139,6 +139,7 @@ pub(super) fn widget(
             } else {
                 ui::Orientation::Horizontal
             },
+            channel: p.int("level_meter").and_then(|c| u8::try_from(c).ok()),
         },
         ControlKind::FileSelector => ui::Kind::FileSelector {
             base_path: p.text("$CONTROL_PAR_BASEPATH").map(Into::into),

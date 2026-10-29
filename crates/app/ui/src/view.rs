@@ -19,14 +19,15 @@ const TEXT: f64 = 11.;
 
 /// `page` of `tree` at `scale` view points per source pixel, and how many
 /// widgets this frame built rather than kept. `face` scopes its ids: each
-/// face drawn in one frame (a rack part) needs its own.
+/// face drawn in one frame (a rack part) needs its own. `level` (0..1, the
+/// part's output peak) lights its level meters.
 pub fn page(
     ui: &mut Ui,
     face: usize,
     tree: &Interface,
     page: PageRef,
     pictures: &mut Pictures,
-    scale: f64,
+    (scale, level): (f64, f64),
 ) -> (El, usize) {
     let Some(p) = tree.pages.get(page.0) else {
         return (block(0., 0.), 0);
@@ -90,7 +91,15 @@ pub fn page(
         let art = picture.as_ref().map(|(_, m)| drawn(r, *m));
         let style = wd.style.and_then(|s| tree.styles.get(s.0));
         let words = caption(wd);
+        let lit = match wd.kind {
+            Kind::LevelMeter {
+                orientation,
+                channel: Some(_),
+            } => Some((orientation, lit(level))),
+            _ => None,
+        };
         let deps = (
+            lit.map(|(o, t)| (o as u8, t.to_bits())),
             [r.x, r.y, r.width, r.height, scale].map(f64::to_bits),
             art.map(|a| [a.width, a.height].map(f64::to_bits)),
             picture.as_ref().map(|(i, _)| Arc::as_ptr(i) as usize),
@@ -109,6 +118,9 @@ pub fn page(
             if !words.is_empty() {
                 parts.push(words_el(words, style, wd, w, h, scale).at(0., 0.));
             }
+            if let Some((o, t)) = lit {
+                parts.push(meter(&wd.colors, o, t, w, h).at(0., 0.));
+            }
             stack(parts).w(w).h(h).opacity(wd.opacity)
         });
         // A control takes the pointer under its own id (crate::input).
@@ -123,6 +135,41 @@ pub fn page(
         layers.push(el.at(r.x * scale, r.y * scale));
     }
     (stack(layers).w(w).h(h).radius(0.).clip(), built)
+}
+
+/// How much of a level meter a peak lights: −60 dB to 0 dB, in steps of a
+/// hundredth so a frame redraws only when the bar moves.
+// ponytail: the scale is ours (Kontakt's meter law is unmeasured), and both
+// channels show the part's peak; per-channel and per-bus peaks when a
+// library needs them apart.
+fn lit(peak: f64) -> f64 {
+    let db = 20. * peak.max(1e-9).log10();
+    ((db + 60.) / 60.).clamp(0., 1.).mul_add(100., 0.).round() / 100.
+}
+
+/// A level meter lit to `t`: its OFF colour behind, its ON colour lit,
+/// from the bottom when vertical, from the left otherwise.
+fn meter(c: &model::Colors, o: model::Orientation, t: f64, w: f64, h: f64) -> El {
+    let off = c
+        .off
+        .or(c.background)
+        .map_or(Color::srgb(0.1, 0.1, 0.1), color);
+    let on = c.on.or(c.bar).map_or(Color::srgb(0.45, 0.8, 0.45), color);
+    let bar = match o {
+        model::Orientation::Vertical => block(w, h * t)
+            .radius(0.)
+            .fill(Fill::from(on))
+            .at(0., h * (1. - t)),
+        model::Orientation::Horizontal => {
+            block(w * t, h).radius(0.).fill(Fill::from(on)).at(0., 0.)
+        }
+    };
+    stack(vec![
+        block(w, h).radius(0.).fill(Fill::from(off)).at(0., 0.),
+        bar,
+    ])
+    .w(w)
+    .h(h)
 }
 
 /// The wallpaper frames a page shows and where each one's top sits on it.

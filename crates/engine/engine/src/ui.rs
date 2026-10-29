@@ -199,6 +199,7 @@ impl Engine {
             Action::SetKnobDefval => &[(look.default, a)],
             Action::HidePart => &[(look.hide, a)],
             Action::SetTableStepsShown => &[(look.steps_shown, a)],
+            Action::AttachLevelMeter => &[(look.meter, int(3))],
             Action::MoveControl => &[(look.grid_x, a), (look.grid_y, b)],
             Action::MoveControlPx => &[(look.pos_x, a), (look.pos_y, b)],
             _ => return None,
