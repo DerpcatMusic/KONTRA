@@ -214,3 +214,7 @@ land on the grid.
   a slow patch faster.
 - One patch per instance: that instance reports its own delay, and the
   host aligns instances across tracks.
+- A library's own latency control counts. Where the zones' sample start
+  is driven by a controller (Kontakt S.Mod from a CC, as in Audio Imperia's
+  S. Start knob and Tight switch), the delay follows that controller live:
+  measured + skip(cc at measure) - skip(cc now), never below 0 (P3.3b).
