@@ -124,7 +124,8 @@ fn read_through(
 ) -> Option<ir::Transfer> {
     let mut t = transfer(program, connection, lfos)?;
     if flag(connection, "Inverted") {
-        if !matches!(t.source, ir::Source::Controller(_) | ir::Source::Script(_)) {
+        let bipolar = source_node(program, connection).is_some_and(|n| flag(n, "Bipolar"));
+        if bipolar || !matches!(t.source, ir::Source::Controller(_) | ir::Source::Script(_)) {
             return None;
         }
         if t.table.is_empty() {
@@ -223,7 +224,10 @@ fn mapper(connection: Node) -> Option<Vec<f32>> {
 
 /// A connection's source through its mapper. A macro with no inputs of
 /// its own is a constant (a one-point table at its value); a bipolar LFO
-/// at depth 1 is a copy of it in `lfos`.
+/// at depth 1 is a copy of it in `lfos`. A bipolar script modulation reads
+/// its table at `(x + 1)/2`: its upper half, exactly for x ≥ 0.
+/// ponytail: a negative value reads the table's middle (VWinds only ramps
+/// 0..1); carry the lower half when a script sends one.
 pub(super) fn transfer(
     program: Node,
     connection: Node,
@@ -237,8 +241,20 @@ pub(super) fn transfer(
         ir::Source::PitchBend
     } else {
         let node = source_node(program, connection)?;
-        if node.has_tag_name("ScriptEventModulation") && !flag(node, "Bipolar") {
-            ir::Source::Script(node.attribute("EventId")?.parse().ok()?)
+        if node.has_tag_name("ScriptEventModulation") {
+            let source = ir::Source::Script(node.attribute("EventId")?.parse().ok()?);
+            if !flag(node, "Bipolar") || table.len() < 2 {
+                return Some(ir::Transfer { source, table });
+            }
+            // Every point lands on a point or a segment's middle: exact.
+            let last = (table.len() - 1) as f32;
+            let half = (0..table.len())
+                .map(|k| read(&table, 0.5 + 0.5 * k as f32 / last))
+                .collect::<Option<_>>()?;
+            return Some(ir::Transfer {
+                source,
+                table: half,
+            });
         } else if node.has_tag_name("ConstantModulation") && inputs(node).next().is_none() {
             let x = position(node, num(node, "Value", 0.0).ok()? as f32)?;
             let value = read(&table, x).unwrap_or(x);
