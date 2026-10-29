@@ -68,3 +68,20 @@ reported for the full output and successive one-second intervals.
 the snapshot, not the instantaneous value of an interpolating effect.
 `shared_effects` shows the current shared rack configurations with the last
 bus route amounts applied. Effect configurations use descriptive debug text.
+
+`kontra-inspect ui INSTRUMENT --json report.json` builds each script's current
+host UI model and moves every knob, slider, value edit, switch, button and
+visible menu choice through that model. Hidden and disabled controls are also
+attempted and identified in the report. Models are refreshed after each control,
+so newly introduced controls are visited; a model that keeps creating controls
+past 10,000 is reported as incomplete. A control without a source ID or without
+selectable menu values is reported with an error.
+
+Each move records callbacks and actions observed after the move, changed
+script cells, group envelope/effect settings, group and bus levels, shared
+rack effects, and modulation settings. It also records newly counted faults or
+unhandled actions. Foreign VM internal variables and the complete engine
+parameter state are unavailable, rather than reported as unchanged. The audio
+comparison retriggers C4 and measures successive 80 ms stereo RMS windows;
+natural time evolution and other callbacks can change the output, so a change
+is evidence for follow-up rather than proof that the moved control caused it.

@@ -20,11 +20,12 @@ mod play;
 mod routes;
 mod scenario;
 mod trace_output;
+mod ui;
 
 /// The engine's sample rate for every subcommand.
 const RATE: u32 = 48_000;
 
-const USAGE: &str = "usage: kontra-inspect load <instrument> [--json FILE] | play <instrument> [--scenario user|FILE] [--json FILE]";
+const USAGE: &str = "usage: kontra-inspect load <instrument> [--json FILE] | ui <instrument> [--json FILE] | play <instrument> [--scenario user|FILE] [--json FILE]";
 
 fn main() -> ExitCode {
     match run() {
@@ -63,6 +64,7 @@ fn run() -> Result<()> {
     let (report, summary) = match command.as_str() {
         "load" => load::run(&path)?,
         "play" => play::run(&path, &scenario)?,
+        "ui" => ui::run(&path)?,
         "--help" | "-h" => {
             println!("{USAGE}");
             return Ok(());
@@ -80,7 +82,7 @@ fn run() -> Result<()> {
             .and_then(|r| r.get("render_complete"))
             .and_then(serde_json::Value::as_bool)
             != Some(false),
-        "inspection incomplete: see trace overflow, missing frames, timeouts and stream errors in report"
+        "inspection incomplete: see report for UI, trace, or render errors"
     );
     Ok(())
 }
