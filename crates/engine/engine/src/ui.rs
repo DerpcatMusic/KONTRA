@@ -33,10 +33,12 @@ impl Engine {
         self.ui.page(slot)
     }
 
-    /// The user clicked control `id` of script `slot` holding `keys`
-    /// (`[shift, alt, control]`); call it before [`Engine::set_control`].
-    pub fn set_click_keys(&mut self, slot: u8, id: i32, keys: [bool; 3]) {
-        self.ui.click(slot, self.control_index_in(slot, id), keys);
+    /// The user clicked cell `cell` (0 but in a table) of control `id` of
+    /// script `slot` holding `keys` (`[shift, alt, control]`); call it
+    /// before [`Engine::set_control`], which then sets that cell.
+    pub fn set_click(&mut self, slot: u8, id: i32, keys: [bool; 3], cell: u32) {
+        self.ui
+            .click(slot, self.control_index_in(slot, id), keys, cell);
     }
 
     /// Script `slot`'s control with UI id `id`, as the script left it.

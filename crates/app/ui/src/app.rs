@@ -343,6 +343,8 @@ pub enum Action {
     Control {
         part: usize,
         widget: usize,
+        /// The cell of a table set; `None` for any other control.
+        cell: Option<u32>,
         value: f64,
         keys: kontra_ui_model::UiModifiers,
     },

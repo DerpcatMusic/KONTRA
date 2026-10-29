@@ -93,6 +93,8 @@ pub enum Command {
         part: usize,
         slot: u8,
         id: i32,
+        /// The cell of a table set, 0 for any other control.
+        cell: u32,
         value: i64,
         keys: UiModifiers,
     },
@@ -431,7 +433,14 @@ impl Rack {
 
     /// The user moved `widget` of `part`'s interface to `value`: the
     /// control's script gets it and runs its callback at the next block.
-    pub fn control(&mut self, part: usize, widget: usize, value: f64, keys: UiModifiers) {
+    pub fn control(
+        &mut self,
+        part: usize,
+        widget: usize,
+        cell: Option<u32>,
+        value: f64,
+        keys: UiModifiers,
+    ) {
         let Some(Some(p)) = self.parts.get(part) else {
             return;
         };
@@ -439,6 +448,10 @@ impl Rack {
             return;
         };
         if let Some((slot, n)) = view.widget(widget) {
+            // ponytail: a Lua page's table cells are not written yet (#1179 wires them).
+            if cell.is_some() {
+                return;
+            }
             self.send(Command::Widget {
                 part,
                 slot,
@@ -450,6 +463,7 @@ impl Rack {
                 part,
                 slot,
                 id,
+                cell: cell.unwrap_or(0),
                 value,
                 keys,
             });
@@ -519,6 +533,7 @@ impl Rack {
             part,
             slot,
             id,
+            cell: 0,
             value,
             keys: UiModifiers::default(),
         });

@@ -134,11 +134,11 @@ pub struct Store {
     generations: Box<[Box<[u32]>]>,
     /// `get_font_id`'s pictures by script slot, in the order first asked.
     fonts: Vec<(u8, Text)>,
-    /// The last click on a control: script slot, control and which of
-    /// `[shift, alt, control]` were held.
+    /// The last click on a control: script slot, control, which of
+    /// `[shift, alt, control]` were held, and the cell of a table clicked.
     // ponytail: only the last click is kept, so another control reads its
     // keys as 0; per control if a library reads keys of an earlier click.
-    click: Option<(u8, usize, [bool; 3])>,
+    click: Option<(u8, usize, [bool; 3], u32)>,
 }
 
 /// One control as the script left it: what the host builds its widget from.
@@ -257,10 +257,18 @@ impl Store {
             .map_or(&[], Vec::as_slice)
     }
 
-    /// The user clicked control `n` of script `slot` holding `keys`
-    /// (`[shift, alt, control]`).
-    pub fn click(&mut self, slot: u8, n: Option<usize>, keys: [bool; 3]) {
-        self.click = n.map(|n| (slot, n, keys));
+    /// The user clicked cell `cell` (0 but in a table) of control `n` of
+    /// script `slot` holding `keys` (`[shift, alt, control]`).
+    pub fn click(&mut self, slot: u8, n: Option<usize>, keys: [bool; 3], cell: u32) {
+        self.click = n.map(|n| (slot, n, keys, cell));
+    }
+
+    /// `$NI_CONTROL_PAR_IDX`: the cell last clicked in control `n` of
+    /// script `slot`, 0 when the last click was elsewhere.
+    #[must_use]
+    pub fn click_cell(&self, slot: u8, n: Option<usize>) -> u32 {
+        let clicked = self.click.filter(|&(s, c, ..)| s == slot && Some(c) == n);
+        clicked.map_or(0, |(.., cell)| cell)
     }
 
     /// `$CONTROL_PAR_KEY_SHIFT`, `_ALT` or `_CONTROL` (`key` 0, 1 or 2) of
@@ -268,8 +276,8 @@ impl Store {
     /// manual), else 0.
     #[must_use]
     pub fn click_key(&self, slot: u8, n: Option<usize>, key: usize) -> i32 {
-        let held = self.click.filter(|&(s, c, _)| s == slot && Some(c) == n);
-        i32::from(held.and_then(|(.., k)| k.get(key).copied()) == Some(true))
+        let held = self.click.filter(|&(s, c, ..)| s == slot && Some(c) == n);
+        i32::from(held.and_then(|(_, _, k, _)| k.get(key).copied()) == Some(true))
     }
 
     /// How often control `n` of script `slot` changed look.

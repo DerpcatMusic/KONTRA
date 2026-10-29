@@ -2756,6 +2756,29 @@ fn a_new_ranged_control_starts_at_its_minimum() {
     assert_eq!(e.last_message(), "2;-9;5;3;50");
 }
 
+/// A click on a table's cell writes that cell, and its callback reads which
+/// one as `$NI_CONTROL_PAR_IDX` (KSP manual, ui_table).
+#[test]
+fn a_table_click_sets_its_cell_and_names_it() {
+    let source = "on init
+            declare ui_table %t[4](2, 2, 100)
+            message(get_ui_id(%t))
+        end on
+        on ui_control(%t)
+            message($NI_CONTROL_PAR_IDX & \",\" & %t[2] & %t[0])
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[]);
+    let id: i32 = e.last_message().parse().unwrap();
+    e.set_click(0, id, [false; 3], 2);
+    e.set_control(0, id, 70);
+    assert_eq!(e.last_message(), "2,700");
+}
+
 /// A click's modifier keys read back as `$CONTROL_PAR_KEY_SHIFT/ALT/CONTROL`
 /// in the control's callback, and a plain click clears them (KSP manual).
 #[test]
@@ -2776,13 +2799,13 @@ fn a_switch_callback_reads_the_keys_held_at_the_click() {
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     level(&mut e, &[]);
     let id: i32 = e.last_message().parse().unwrap();
-    e.set_click_keys(0, id, [false, false, true]);
+    e.set_click(0, id, [false, false, true], 0);
     e.set_control(0, id, 1);
     assert_eq!(e.last_message(), "001");
-    e.set_click_keys(0, id, [true, true, false]);
+    e.set_click(0, id, [true, true, false], 0);
     e.set_control(0, id, 0);
     assert_eq!(e.last_message(), "110");
-    e.set_click_keys(0, id, [false; 3]);
+    e.set_click(0, id, [false; 3], 0);
     e.set_control(0, id, 1);
     assert_eq!(e.last_message(), "000");
 }

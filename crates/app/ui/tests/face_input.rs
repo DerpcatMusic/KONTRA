@@ -1,6 +1,7 @@
 //! A library's own controls played with the pointer, headless: a knob drags
 //! and resets, the wheel turns it, a switch flips, a menu floats its items
-//! and a pick sets the value.
+//! and a pick sets the value, a value edit drags its translator's sweep and
+//! reports its release, a table sets the cells a drag crosses.
 
 use kontra_ui::input::{self, Edit, Gesture};
 use kontra_ui::{Pictures, view};
@@ -63,7 +64,36 @@ impl Face {
                 items: vec![item("Hall", 0), item("Room", 1), item("Plate", 2)],
             },
         );
-        tree.widgets.extend([knob, switch, menu]);
+        let mut edit = Widget::new(
+            "$edit",
+            PageRef(0),
+            Rect::new(10, 100, 60, 18),
+            Kind::ValueEdit {
+                range,
+                display: model::Display::default(),
+                arrows: false,
+            },
+        );
+        edit.value = Some(model::Value::Integer(0));
+        edit.drag = Some(model::Drag {
+            axis: model::Orientation::Vertical,
+            sweep: model::Sweep::PerUnit(4.),
+        });
+        edit.reports_release = true;
+        let mut table = Widget::new(
+            "%table",
+            PageRef(0),
+            Rect::new(10, 150, 80, 40),
+            Kind::Table {
+                columns: 4,
+                range,
+                bipolar: false,
+                cells: vec![0.; 4],
+                steps_shown: None,
+            },
+        );
+        table.value = Some(model::Value::Integers(vec![0; 4]));
+        tree.widgets.extend([knob, switch, menu, edit, table]);
         Self {
             ui: kontra_ui::ui(),
             tree,
@@ -171,6 +201,7 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     assert_eq!(f.value(0), 25.);
     assert!(reset.contains(&Edit {
         widget: WidgetRef(0),
+        cell: None,
         value: 25.,
         keys: kontra_ui_model::UiModifiers {
             ctrl: true,
@@ -198,6 +229,33 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     f.click(&format!("{}-2", input::surface(0, 2)), Mods::default());
     assert_eq!(f.value(2), 2.);
     assert_eq!(f.gesture.menu, None);
+    // A value edit sweeps 4 points a unit: up 20 is 5.
+    let edit = input::surface(0, 3);
+    let start = f.at(&edit);
+    f.pointer(start, true, Mods::default());
+    f.pointer(Point::new(start.x, start.y - 20.), true, Mods::default());
+    f.pointer(Point::new(start.x, start.y - 20.), false, Mods::default());
+    let released = f.frame(Input::default());
+    assert_eq!(f.value(3), 5.);
+    assert_eq!(released.len(), 1, "a moved drag reports its release too");
+    // A click that moves nothing still reports its release.
+    let still = f.click(&edit, Mods::default());
+    assert_eq!(still.iter().map(|e| e.value).collect::<Vec<_>>(), [5.]);
+    // A drag across the table at mid height sets every cell it crosses.
+    let table = input::surface(0, 4);
+    let mid = f.at(&table);
+    let mut crossed = f.pointer(Point::new(mid.x - 35., mid.y), true, Mods::default());
+    crossed.extend(f.pointer(Point::new(mid.x + 35., mid.y), true, Mods::default()));
+    crossed.extend(f.pointer(Point::new(mid.x + 35., mid.y), false, Mods::default()));
+    crossed.extend(f.frame(Input::default()));
+    assert_eq!(
+        crossed.iter().map(|e| e.cell).collect::<Vec<_>>(),
+        [Some(0), Some(1), Some(2), Some(3)]
+    );
+    assert_eq!(
+        f.tree.widgets[4].value,
+        Some(model::Value::Integers(vec![50; 4]))
+    );
     // Then it rests: no frame while nothing moves.
     for _ in 0..30 {
         f.frame(Input::default());

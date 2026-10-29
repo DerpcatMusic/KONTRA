@@ -63,6 +63,7 @@ pub(super) fn view(
             out.extend(edits.iter().map(|e| Action::Control {
                 part: n,
                 widget: e.widget.0,
+                cell: e.cell,
                 value: e.value,
                 keys: e.keys,
             }));

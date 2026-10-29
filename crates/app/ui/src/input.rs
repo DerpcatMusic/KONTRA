@@ -1,30 +1,37 @@
-//! A library's own controls under the pointer, as Kontakt plays them: a
-//! knob or slider drags from where it was pressed (Shift for fine), the
-//! wheel turns it, Ctrl or Cmd with a click puts back its default
-//! (`$CONTROL_PAR_DEFAULT_VALUE`); a button or switch flips; a menu floats
-//! its items. What the user asked comes back as [`Edit`]s for the host to
-//! write into the engine; the caller shows them at once with [`apply`].
+//! A library's own controls under the pointer and the keys, one model for
+//! every format: a continuous control drags from where it was pressed along
+//! the axis and sweep its translator set ([`model::Drag`]; Shift is fine),
+//! the wheel and the arrow keys step it, Ctrl or Cmd with a click puts back
+//! its default, a double click on a value edit types a number; a button or
+//! switch flips at the edge its source asks; a table sets the cells the
+//! pointer crosses; a menu floats its items. What the user asked comes back
+//! as [`Edit`]s for the host to write into the engine; the caller shows them
+//! at once with [`apply`].
 
-use kontra_ui_model::{self as model, Interface, Kind, Orientation, PageRef, WidgetRef};
+use kontra_ui_model::{self as model, Interface, Kind, Orientation, PageRef, Sweep, WidgetRef};
 use mui::prelude::*;
 
 use crate::kit;
+use crate::theme::TEXT;
 
 /// One control set to a value by the user, and the modifier keys held at
 /// the click (a script reads them as `$CONTROL_PAR_KEY_*`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Edit {
     pub widget: WidgetRef,
+    /// The zero-based cell of a table; `None` for any other control.
+    pub cell: Option<u32>,
     pub value: f64,
     pub keys: model::UiModifiers,
 }
 
-/// A page's gesture in flight: the control pressed and its value then, and
-/// the menu floated open.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// A page's gesture in flight: the control pressed and its value then, the
+/// menu floated open, and the number being typed into a value edit.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Gesture {
     press: Option<(usize, f64)>,
     pub menu: Option<usize>,
+    entry: Option<(usize, String)>,
 }
 
 /// The id of widget `n`'s surface on face `face` (a rack part): every
@@ -44,6 +51,7 @@ pub(crate) fn takes_input(w: &model::Widget) -> bool {
                 | Kind::Button { .. }
                 | Kind::Switch
                 | Kind::Menu { .. }
+                | Kind::Table { .. }
         )
 }
 
@@ -56,26 +64,43 @@ pub fn value(w: &model::Widget) -> f64 {
     }
 }
 
+/// Cell `k` of a table's value.
+fn cell(w: &model::Widget, k: u32) -> Option<f64> {
+    let k = k as usize;
+    match &w.value {
+        Some(model::Value::Integers(v)) => v.get(k).map(|&v| f64::from(v)),
+        Some(model::Value::Reals(v)) => v.get(k).copied(),
+        _ => None,
+    }
+}
+
 /// Which way a continuous control drags, and how many view points sweep
-/// its range: KSP's `MOUSE_BEHAVIOUR` is relative to the picture, 1000
-/// sweeping it once; a knob that sets none sweeps in 200 points, a slider
-/// in its own length (v2's law).
-// ponytail: v2's travel law, unmeasured against Kontakt 8; measure with the oracle's pointer.
-fn travel(w: &model::Widget, r: model::Rect, scale: f64) -> (bool, f64) {
-    let vertical = match (&w.kind, w.drag) {
-        (_, Some(d)) => d.axis == Orientation::Vertical,
-        (Kind::Slider { orientation, .. }, None) => {
-            *orientation == Orientation::Vertical || r.height > r.width
-        }
-        _ => true,
-    };
+/// its range. A source that sets no [`model::Drag`] gets the renderer's: a
+/// slider sweeps in its own length along its orientation, anything else in
+/// 200 points up.
+fn travel(w: &model::Widget, r: model::Rect, span: f64, scale: f64) -> (bool, f64) {
+    let drag = w.drag.unwrap_or(match &w.kind {
+        Kind::Slider { orientation, .. } => model::Drag {
+            axis: if *orientation == Orientation::Vertical || r.height > r.width {
+                Orientation::Vertical
+            } else {
+                Orientation::Horizontal
+            },
+            sweep: Sweep::Lengths(1.),
+        },
+        _ => model::Drag {
+            axis: Orientation::Vertical,
+            sweep: Sweep::Points(200.),
+        },
+    });
+    let vertical = drag.axis == Orientation::Vertical;
     let length = if vertical { r.height } else { r.width }.max(1.);
-    let points = match (w.drag.filter(|d| d.sensitivity != 0), &w.kind) {
-        (Some(d), _) => length * 1000. / f64::from(d.sensitivity),
-        (None, Kind::Slider { .. }) => length,
-        (None, _) => 200.,
+    let points = match drag.sweep {
+        Sweep::Points(p) => p,
+        Sweep::Lengths(k) => length * k,
+        Sweep::PerUnit(p) => p * span.abs(),
     };
-    (vertical, points * scale)
+    (vertical, points.max(1.) * scale)
 }
 
 fn range(kind: &Kind) -> Option<model::Range> {
@@ -87,8 +112,26 @@ fn range(kind: &Kind) -> Option<model::Range> {
     }
 }
 
+/// `v` inside `range`, on its step.
+fn snap(range: model::Range, v: f64) -> f64 {
+    let v = v.clamp(range.min.min(range.max), range.max.max(range.min));
+    range
+        .step
+        .filter(|s| *s > 0.)
+        .map_or(v, |s| (v / s).round() * s)
+}
+
+/// How far one arrow key or wheel notch moves a control: its step, or a
+/// hundredth of its range when it has none.
+fn notch(range: model::Range) -> f64 {
+    range
+        .step
+        .filter(|s| *s > 0.)
+        .unwrap_or((range.max - range.min).abs() / 100.)
+}
+
 /// This frame's edits to the controls of `page` drawn at `scale`, and the
-/// open menu's popup, to float over the page.
+/// open menu's or typed entry's popup, to float over the page.
 pub fn read(
     ui: &mut Ui,
     face: usize,
@@ -107,7 +150,6 @@ pub fn read(
         }
         let id = surface(face, n.0);
         let r = ui.get(id.clone());
-        let now = value(w);
         // Menus and value edits don't report keys (KSP manual, KEY_SHIFT).
         let keys = match w.kind {
             Kind::Menu { .. } | Kind::ValueEdit { .. } => model::UiModifiers::default(),
@@ -118,47 +160,75 @@ pub fn read(
                 cmd: r.press_mods.cmd,
             },
         };
+        let edit = |cell, value| Edit {
+            widget: n,
+            cell,
+            value,
+            keys,
+        };
+        if matches!(w.kind, Kind::Table { .. }) {
+            if r.held {
+                edits.extend(cells(ui, &id, r.drag_delta, w, &edit));
+            }
+            continue;
+        }
+        let now = value(w);
+        let before = edits.len();
         let mut set = |v: f64| {
             if v != now {
-                edits.push(Edit {
-                    widget: n,
-                    value: v,
-                    keys,
-                });
+                edits.push(edit(None, v));
             }
         };
         if let Some(range) = range(&w.kind) {
-            let snap = |v: f64| {
-                let v = v.clamp(range.min.min(range.max), range.max.max(range.min));
-                range
-                    .step
-                    .filter(|s| *s > 0.)
-                    .map_or(v, |s| (v / s).round() * s)
-            };
             let span = range.max - range.min;
-            let (vertical, points) = travel(w, tree.page_rect(n), scale);
+            let (vertical, points) = travel(w, tree.page_rect(n), span, scale);
             let along = |d: Vec2| if vertical { -d.y } else { d.x };
+            let reset = r.press_mods.ctrl || r.press_mods.cmd;
             if r.pressed {
                 g.press = Some((n.0, now));
-                if r.press_mods.ctrl || r.press_mods.cmd {
-                    set(snap(range.default));
+                if reset {
+                    set(snap(range, range.default));
                 }
             }
             match g.press {
-                Some((p, start))
-                    if p == n.0 && r.held && !(r.press_mods.ctrl || r.press_mods.cmd) =>
-                {
+                Some((p, start)) if p == n.0 && r.held && !reset => {
+                    // Sub-pixel: the pointer's travel is a float, so a
+                    // high-resolution mouse or trackpad moves it finely.
                     let fine = if r.press_mods.shift { 0.1 } else { 1. };
-                    set(snap(start + along(r.drag_total) / points * span * fine));
+                    set(snap(
+                        range,
+                        start + along(r.drag_total) / points * span * fine,
+                    ));
                 }
                 _ => {}
             }
             // Claimed, so the rack under the knob does not scroll with it.
             if let Some(wheel) = ui.wheel(id.as_str()).filter(|_| !r.held) {
-                set(snap(now - wheel.y / points * span));
+                set(snap(range, now - wheel.y / points * span));
+            }
+            // Keyboard focus steps it, the way the wheel does.
+            let step = ui.keys(id.as_str()).iter().fold(0., |at, k| match k.key {
+                Key::Up | Key::Right => at + 1.,
+                Key::Down | Key::Left => at - 1.,
+                _ => at,
+            });
+            if step != 0. {
+                set(snap(range, now + step * notch(range)));
+            }
+            if matches!(w.kind, Kind::ValueEdit { .. }) && ui.double_click(id.as_str()) {
+                let shown = match &w.kind {
+                    Kind::ValueEdit { display, .. } if display.ratio != 0. => now / display.ratio,
+                    _ => now,
+                };
+                g.entry = Some((n.0, shown.to_string()));
+                ui.focus(format!("{id}-entry"));
             }
             if r.released && g.press.is_some_and(|(p, _)| p == n.0) {
                 g.press = None;
+                // The source runs its callback on release, moved or not.
+                if w.reports_release && edits.len() == before {
+                    edits.push(edit(None, now));
+                }
             }
             continue;
         }
@@ -186,38 +256,167 @@ pub fn read(
             _ => {}
         }
     }
-    let popup = g.menu.and_then(|m| {
-        let w = tree.widgets.get(m)?;
-        let Kind::Menu { items } = &w.kind else {
-            return None;
+    let popup =
+        menu(ui, face, tree, g, &mut edits).or_else(|| entry(ui, face, tree, g, &mut edits));
+    (edits, popup)
+}
+
+/// The cells of a table the pointer crossed this frame, set to its height
+/// there: a fast drag fills every column between, not only where it landed.
+fn cells(
+    ui: &Ui,
+    id: &str,
+    delta: Vec2,
+    w: &model::Widget,
+    edit: &dyn Fn(Option<u32>, f64) -> Edit,
+) -> Vec<Edit> {
+    let Kind::Table {
+        columns,
+        range,
+        steps_shown,
+        ..
+    } = &w.kind
+    else {
+        return Vec::new();
+    };
+    let (columns, range) = (*columns, *range);
+    let shown = steps_shown
+        .filter(|&s| s > 0)
+        .unwrap_or(columns)
+        .min(columns);
+    let size = ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame.size);
+    let (Some(pos), Some(size)) = (ui.local(id), size) else {
+        return Vec::new();
+    };
+    if shown == 0 || size.width <= 0. || size.height <= 0. {
+        return Vec::new();
+    }
+    let at = |x: f64| ((x / size.width * f64::from(shown)).floor().max(0.) as u32).min(shown - 1);
+    let height = |y: f64| {
+        snap(
+            range,
+            range.max - (y / size.height).clamp(0., 1.) * (range.max - range.min),
+        )
+    };
+    let from = pos - delta;
+    let (first, last) = (at(from.x), at(pos.x));
+    let count = first.abs_diff(last);
+    (0..=count)
+        .filter_map(|step| {
+            let k = if count == 0 {
+                1.
+            } else {
+                f64::from(step) / f64::from(count)
+            };
+            let c = if last >= first {
+                first + step
+            } else {
+                first - step
+            };
+            let v = height(from.y + (pos.y - from.y) * k);
+            (cell(w, c) != Some(v)).then(|| edit(Some(c), v))
+        })
+        .collect()
+}
+
+/// The open menu's popup, and the item picked from it.
+fn menu(
+    ui: &mut Ui,
+    face: usize,
+    tree: &Interface,
+    g: &mut Gesture,
+    edits: &mut Vec<Edit>,
+) -> Option<El> {
+    let m = g.menu?;
+    let w = tree.widgets.get(m)?;
+    let Kind::Menu { items } = &w.kind else {
+        return None;
+    };
+    let id = surface(face, m);
+    if ui.dismissed(&[&id, &format!("{id}-popup")]) {
+        g.menu = None;
+        return None;
+    }
+    let shown: Vec<&model::MenuItem> = items.iter().filter(|i| i.visible).collect();
+    let labels: Vec<&str> = shown.iter().map(|i| i.text.as_str()).collect();
+    let now = value(w) as i32;
+    let current = shown.iter().position(|i| i.value == now);
+    let menu = kit::menu(ui, &id, &labels, 1, current);
+    if let Some(item) = menu.changed.and_then(|k| shown.get(k)) {
+        edits.push(Edit {
+            widget: WidgetRef(m),
+            cell: None,
+            value: f64::from(item.value),
+            keys: model::UiModifiers::default(),
+        });
+        g.menu = None;
+    }
+    Some(menu.el)
+}
+
+/// The number being typed into a value edit, in its shown units: Enter
+/// sets it, Escape or a click elsewhere drops it.
+fn entry(
+    ui: &mut Ui,
+    face: usize,
+    tree: &Interface,
+    g: &mut Gesture,
+    edits: &mut Vec<Edit>,
+) -> Option<El> {
+    let (m, mut text) = g.entry.take()?;
+    let w = tree.widgets.get(m)?;
+    let Kind::ValueEdit { range, display, .. } = &w.kind else {
+        return None;
+    };
+    let id = surface(face, m);
+    let field = format!("{id}-entry");
+    if ui.dismissed(&[&id, &format!("{id}-popup")])
+        || ui.keys(field.as_str()).iter().any(|k| k.key == Key::Escape)
+    {
+        return None;
+    }
+    let typed = text_edit(ui, field.as_str(), &mut text, TextOpts::default());
+    if typed.changed.submitted {
+        let ratio = if display.ratio == 0. {
+            1.
+        } else {
+            display.ratio
         };
-        let id = surface(face, m);
-        if ui.dismissed(&[&id, &format!("{id}-popup")]) {
-            g.menu = None;
-            return None;
-        }
-        let shown: Vec<&model::MenuItem> = items.iter().filter(|i| i.visible).collect();
-        let labels: Vec<&str> = shown.iter().map(|i| i.text.as_str()).collect();
-        let now = value(w) as i32;
-        let current = shown.iter().position(|i| i.value == now);
-        let menu = kit::menu(ui, &id, &labels, 1, current);
-        if let Some(item) = menu.changed.and_then(|k| shown.get(k)) {
+        if let Ok(v) = text.trim().parse::<f64>() {
             edits.push(Edit {
                 widget: WidgetRef(m),
-                value: f64::from(item.value),
+                cell: None,
+                value: snap(*range, v * ratio),
                 keys: model::UiModifiers::default(),
             });
-            g.menu = None;
         }
-        Some(menu.el)
-    });
-    (edits, popup)
+        ui.blur();
+        return None;
+    }
+    g.entry = Some((m, text));
+    Some(kit::popup(&id, typed.el.w(TEXT * 6.)))
 }
 
 /// Shows `edits` in `tree` at once, before the host's next refresh.
 pub fn apply(tree: &mut Interface, edits: &[Edit]) {
     for e in edits {
         if let Some(w) = tree.widgets.get_mut(e.widget.0) {
+            if let Some(k) = e.cell {
+                match &mut w.value {
+                    Some(model::Value::Integers(v)) => {
+                        if let Some(c) = v.get_mut(k as usize) {
+                            *c = e.value.round() as i32;
+                        }
+                    }
+                    Some(model::Value::Reals(v)) => {
+                        if let Some(c) = v.get_mut(k as usize) {
+                            *c = e.value;
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             w.value = Some(match w.value {
                 Some(model::Value::Real(_)) => model::Value::Real(e.value),
                 _ => model::Value::Integer(e.value.round() as i32),

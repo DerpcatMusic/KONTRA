@@ -214,14 +214,29 @@ pub(super) fn widget(
     w.activate_on_press = matches!(kind, ControlKind::Switch);
     w.value_y = p.int("$CONTROL_PAR_VALUEPOS_Y");
     w.value_text = p.text("$CONTROL_PAR_LABEL").map(Into::into);
-    w.drag = p.int("$CONTROL_PAR_MOUSE_BEHAVIOUR").map(|m| ui::Drag {
-        axis: if m < 0 {
+    // Kontakt 8's drags, measured (scratch/laneJ/drag/FACTS.md): a knob
+    // sweeps in 350 points up, ignoring MOUSE_BEHAVIOUR; a slider in 172,
+    // or 1000 / |MOUSE_BEHAVIOUR| of its picture along the sign's axis; a
+    // value edit 4 points a unit, up. Each runs its callback again on release.
+    // ponytail: 172 measured on the stock skin only; a picture may scale it.
+    let behaviour = p.int("$CONTROL_PAR_MOUSE_BEHAVIOUR").filter(|&m| m != 0);
+    let sweep = match kind {
+        ControlKind::Knob => Some(ui::Sweep::Points(350.)),
+        ControlKind::Slider => Some(behaviour.map_or(ui::Sweep::Points(172.), |m| {
+            ui::Sweep::Lengths(1000. / f64::from(m.unsigned_abs()))
+        })),
+        ControlKind::ValueEdit => Some(ui::Sweep::PerUnit(4.)),
+        _ => None,
+    };
+    w.drag = sweep.map(|sweep| ui::Drag {
+        axis: if vertical || kind != ControlKind::Slider {
             ui::Orientation::Vertical
         } else {
             ui::Orientation::Horizontal
         },
-        sensitivity: m.unsigned_abs(),
+        sweep,
     });
+    w.reports_release = true;
     for (par, slot) in COLORS {
         if let Some(c) = p.int(par) {
             *slot(&mut w.colors) = Some(color(c));
