@@ -472,6 +472,19 @@ impl<L: Library> Translator<'_, '_, L> {
                 slot,
             });
         }
+        // Rows past the bundle carry no signal: what moves them is moot.
+        for connection in placement.into_iter().flat_map(|m| m.descendants()) {
+            let row = connection.attribute("Destination").and_then(|d| {
+                d.strip_prefix("Gain_")?
+                    .split_once('_')?
+                    .0
+                    .parse::<usize>()
+                    .ok()
+            });
+            if row.is_some_and(|r| r > first) {
+                self.carried.insert(connection.id());
+            }
+        }
         Ok(())
     }
 
@@ -505,6 +518,12 @@ impl<L: Library> Translator<'_, '_, L> {
                         *cell *= f;
                     } else if let Some(source) = matrix::live(self.program, connection, group) {
                         routes.push((source, at, side));
+                        // The macro's inputs ride along in the route.
+                        let inputs = source_node(self.program, connection)
+                            .into_iter()
+                            .flat_map(|n| n.descendants())
+                            .filter(|n| n.has_tag_name("SignalConnection"));
+                        self.carried.extend(inputs.map(|n| n.id()));
                     } else if let Some(f) = matrix::held(self.program, connection, true) {
                         // Its macro's inputs are not all carried.
                         *cell *= f;
@@ -646,8 +665,12 @@ impl<L: Library> Translator<'_, '_, L> {
         for connection in self
             .program
             .descendants()
-            .filter(|n| n.has_tag_name("SignalConnection") && !flag(*n, "Bypass"))
+            .filter(|n| n.has_tag_name("SignalConnection"))
         {
+            // What moves a bypassed module (or through a bypassed connection) is moot.
+            if connection.ancestors().any(|a| flag(a, "Bypass")) {
+                continue;
+            }
             // At ratio 0 a connection moves nothing: what modulates its
             // ratio scales it (matrix.rs), so 0 stays 0.
             if num(connection, "Ratio", 1.0).is_ok_and(|r| r == 0.0) {
