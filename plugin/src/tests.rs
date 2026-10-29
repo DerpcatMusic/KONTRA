@@ -127,7 +127,7 @@ fn move_control(params: &KontraParams) -> Option<(String, i64)> {
         let var = v
             .vars
             .iter()
-            .find(|x| x.control.is_some() && x.len == 1 && !x.real)?;
+            .find(|x| x.control.is_some() && x.len == 1 && !x.real && !x.text)?;
         Some((slot, var.name.to_string(), var.control?, v.script))
     })?;
     let saved = rack.saved_scripts(0);
@@ -405,7 +405,7 @@ fn a_library_control_moved_in_the_editor_reaches_its_script() {
                 let var = vars
                     .vars
                     .iter()
-                    .find(|v| v.control == w.source_id && v.len == 1 && !v.real)?;
+                    .find(|v| v.control == w.source_id && v.len == 1 && !v.real && !v.text)?;
                 let entry = saved
                     .get(vars.script)?
                     .iter()
