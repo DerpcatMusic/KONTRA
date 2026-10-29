@@ -31,7 +31,6 @@ mod pgs;
 mod plan;
 mod queue;
 mod racks;
-mod route_names;
 
 mod script;
 mod transport;
@@ -201,7 +200,7 @@ pub struct Engine {
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
     /// The routes each script `#key` names.
-    route_names: route_names::RouteNames,
+    route_names: ir::RouteNames,
     /// Shared EQ chains, and each zone's chain.
     chains: Vec<filters::Chain>,
     zone_chain: Box<[Option<u16>]>,
@@ -300,7 +299,11 @@ impl Engine {
             pedal: [false; 16],
             stats: Stats::default(),
             vms,
-            route_names: route_names::RouteNames::new(&shared),
+            route_names: ir::RouteNames::of_names(
+                shared
+                    .iter()
+                    .map(|g| g.mods.iter().map(|m| m.name.as_str())),
+            ),
             groups: shared,
             running: Running::IDLE,
             pending: Vec::with_capacity(capacity),
