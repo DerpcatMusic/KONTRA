@@ -19,7 +19,10 @@ pub fn response(sample: &ir::Sample, impulse: &ir::Impulse, rate: u32) -> Result
         let c = kontra_dsp::reverb::shape::Cuts {
             early: c.early,
             late: c.late,
-            crossover: c.crossover,
+            // None: where the response's decay turns diffuse.
+            crossover: c.crossover.or_else(|| {
+                (c.early != c.late).then(|| kontra_dsp::reverb::shape::split([&left, &right], from))
+            }),
         };
         left = kontra_dsp::reverb::shape::cut(&left, from, &c);
         right = kontra_dsp::reverb::shape::cut(&right, from, &c);

@@ -143,7 +143,8 @@ pub struct Reverb {
 }
 
 /// Low and high cut Hz of a response's early and late parts, and where (a
-/// fraction of its length) the late part takes over; `None`: all late.
+/// fraction of its length) the late part takes over; `None`: where the
+/// response's decay turns diffuse, found from the response itself.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImpulseCuts {
     pub early: [f32; 2],

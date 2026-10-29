@@ -82,6 +82,116 @@ pub fn cut(x: &[f32], rate: u32, c: &Cuts) -> Vec<f32> {
         .collect()
 }
 
+/// Where a response's early part ends, as a fraction of its length, as
+/// measured natively: blocks of 2 ms and windows of 0.3 s over the energy
+/// of the mono sum, and the split falls where the windows' spread (their
+/// energies' second moment over the squared mean) settles below its mean
+/// over the first 30 dB of decay. Not real-time: allocates.
+#[must_use]
+pub fn split(channels: [&[f32]; 2], rate: u32) -> f32 {
+    let [l, r] = channels;
+    let len = l.len().min(r.len());
+    let sum: Vec<f32> = l.iter().zip(r).map(|(a, b)| a + b).collect();
+    let mean = sum.iter().map(|&v| f64::from(v)).sum::<f64>() / len.max(1) as f64;
+    let d: Vec<f64> = sum
+        .iter()
+        .map(|&v| ((f64::from(v) - mean) / 2.0).abs())
+        .collect();
+    // From a frame before the first sound to the last.
+    let onset = d
+        .iter()
+        .position(|&v| v != 0.0)
+        .map_or(0, |i| i.saturating_sub(1));
+    let end = d
+        .iter()
+        .rposition(|&v| v != 0.0)
+        .filter(|&i| i > 0)
+        .unwrap_or(len);
+    let y: Vec<f64> = d
+        .get(onset..end)
+        .unwrap_or_default()
+        .iter()
+        .map(|v| v * v)
+        .collect();
+    let span = y.len() as f64;
+    let rate = f64::from(rate);
+    let (hop, window) = (rate * 0.002, rate * 0.3);
+    let (hop_n, window_n) = (hop as usize, window as usize);
+    let scan = ((span - window) / hop).max(0.0) as usize;
+    // Energy decay: what remains from each block on, over the whole.
+    let mut decay: Vec<f64> = if y.len() < hop_n || hop_n == 0 {
+        vec![y.iter().sum()]
+    } else {
+        let blocks = (((span - hop) / hop) as usize).max(1);
+        y.chunks(hop_n)
+            .take(blocks)
+            .map(|b| b.iter().sum())
+            .collect()
+    };
+    let mut rest = 0.0;
+    for v in decay.iter_mut().rev() {
+        rest += *v;
+        *v = rest;
+    }
+    let whole = decay.first().copied().unwrap_or(0.0);
+    let decay = |i: usize| {
+        decay
+            .get(i)
+            .map_or(0.0, |v| if whole > 0.0 { v / whole } else { *v })
+    };
+    // Each window's energies' second moment over their squared mean.
+    let mut sums = vec![(0.0, 0.0)];
+    for v in &y {
+        let (a, b) = sums.last().copied().unwrap_or_default();
+        sums.push((a + v, b + v * v));
+    }
+    let moment = |from: usize, n: usize| {
+        let at = |i: usize| sums.get(i).copied().unwrap_or_default();
+        let ((a0, b0), (a1, b1)) = (at(from), at(from + n));
+        let (s1, s2) = (a1 - a0, b1 - b0);
+        let n = n as f64;
+        if s1 > 0.0 {
+            s2 / ((s1 / n).powi(2) * (n - 1.0).max(1.0))
+        } else {
+            0.0
+        }
+    };
+    let stats: Vec<f64> = if y.len() < hop_n + window_n {
+        vec![moment(0, y.len())]
+    } else {
+        let n = ((span - window) / hop - 1.0).max(0.0) as usize;
+        (0..n).map(|k| moment(k * hop_n, window_n)).collect()
+    };
+    let stat = |i: usize| stats.get(i).copied().unwrap_or(0.0);
+    let to = |floor: f64, from: usize| {
+        (from..scan)
+            .find(|&i| decay(i) <= floor)
+            .unwrap_or(from.max(scan))
+    };
+    let i30 = to(1e-3, 0);
+    let i60 = to(1e-6, i30);
+    let mean = (0..i30).map(stat).sum::<f64>() / i30.max(1) as f64;
+    let settled = (0..i60).find(|&i| stat(i) <= mean).unwrap_or(i60);
+    // Back from -60 dB while the windows stay below the mean.
+    let mut tail = i60;
+    while tail > 0 && stat(tail) < mean {
+        tail -= 1;
+    }
+    let block = |t: f64| (t * hop + 0.5) as usize;
+    let at = if i30 < settled {
+        if i30 < tail {
+            (len / 2).saturating_sub(onset)
+        } else {
+            block(tail as f64)
+        }
+    } else if tail < i30 {
+        block((tail + settled) as f64 / 2.0)
+    } else {
+        block(settled as f64)
+    };
+    (at + onset) as f32 / len.max(1) as f32
+}
+
 /// Scales `channels` by eight knots `[time fraction, dB]`, interpolated in
 /// amplitude between neighbours in time; frames outside the knots keep
 /// their level.
