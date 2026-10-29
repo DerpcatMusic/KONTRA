@@ -15,6 +15,7 @@ use roxmltree::Node;
 mod blend;
 mod delay;
 mod digital_eq;
+mod fade;
 mod filters;
 mod gains;
 mod lfo_routes;
@@ -285,15 +286,13 @@ impl<L: Library> Translator<'_, '_, L> {
             });
         }
         self.gain_routes(&mut group, kg);
+        fade::apply(kg, &mut group)?;
         let placement = placement(kg);
         let span = Span {
             keys,
             velocities,
-            key_fade: (midi_or(kg, "LowKeyFade", 0), midi_or(kg, "HighKeyFade", 0)),
-            velocity_fade: (
-                midi_or(kg, "LowVelocityFade", 0),
-                midi_or(kg, "HighVelocityFade", 0),
-            ),
+            key_fade: (0, 0),
+            velocity_fade: (0, 0),
         };
         let mut first = true;
         // A player's slot is its place among the keygroup's oscillators, of
