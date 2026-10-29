@@ -4,6 +4,28 @@ use kontra_vm::{Action, HostApi, HostCall, Text};
 
 use crate::Engine;
 
+/// An active voice as [`Engine::voice_states`] sees it.
+#[derive(Clone, Copy, Debug)]
+pub struct VoiceState {
+    pub zone: usize,
+    /// Its note's key, origin (host, child, script) and whether the note
+    /// was released, the pedal holding it; None once the note is gone.
+    pub key: Option<u8>,
+    pub origin: Option<&'static str>,
+    /// A child's parent note as (key, released, from the host); `Some(None)` once gone.
+    pub parent: Option<Option<(u8, bool, bool)>>,
+    pub note_released: Option<bool>,
+    pub pedal_held: bool,
+    /// The voice itself released, or fading after a steal.
+    pub released: bool,
+    pub fading: bool,
+    /// Its envelope's stage and level.
+    pub stage: &'static str,
+    pub level: f32,
+    pub gain: kontra_voice::Gain,
+    pub position: f64,
+}
+
 impl Engine {
     /// Groups a script purged: the host may drop their samples.
     pub fn purged(&self) -> impl Iterator<Item = usize> + '_ {
@@ -48,6 +70,40 @@ impl Engine {
             .iter()
             .filter(|s| s.voice.is_active())
             .map(|s| (s.zone, s.voice.position(), s.voice.target_gain()))
+    }
+
+    /// Each active voice's state, for inspectors (never the audio thread):
+    /// why a voice still plays after every key is up.
+    pub fn voice_states(&self) -> impl Iterator<Item = VoiceState> + '_ {
+        self.voices.iter().filter(|s| s.voice.is_active()).map(|s| {
+            let note = s.note.and_then(|r| self.notes.get(r));
+            let (stage, level) = s.voice.envelope();
+            VoiceState {
+                zone: s.zone,
+                key: note.map(|n| n.key),
+                origin: note.map(|n| match n.origin {
+                    crate::ledger::Origin::Host => "host",
+                    crate::ledger::Origin::Child(_) => "child",
+                    crate::ledger::Origin::Script => "script",
+                }),
+                parent: note.and_then(|n| match n.origin {
+                    crate::ledger::Origin::Child(p) => Some(
+                        self.notes
+                            .get(p)
+                            .map(|p| (p.key, p.released, p.origin == crate::ledger::Origin::Host)),
+                    ),
+                    _ => None,
+                }),
+                note_released: note.map(|n| n.released),
+                pedal_held: note.is_some_and(|n| n.pedal_held),
+                released: s.released,
+                fading: s.fading,
+                stage,
+                level,
+                gain: s.voice.target_gain(),
+                position: s.voice.position(),
+            }
+        })
     }
 
     /// The last text a script printed with `message`.

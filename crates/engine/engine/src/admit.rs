@@ -130,7 +130,7 @@ impl Engine {
                 && self
                     .notes
                     .get(note)
-                    .is_some_and(|n| n.origin == Origin::Host && !n.is_up());
+                    .is_some_and(|n| n.origin == Origin::Host && (!n.is_up() || n.pedal_held));
             if !sounding
                 && !waiting
                 // A silent parent stays addressable while a child waits on it.

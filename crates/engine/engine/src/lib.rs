@@ -20,6 +20,7 @@ mod group_masks;
 mod group_racks;
 mod impulse_knobs;
 mod inspect;
+pub use inspect::VoiceState;
 mod knobs;
 mod ledger;
 mod midi;
@@ -570,6 +571,10 @@ impl Engine {
                 if let Some(n) = self.notes.get_mut(note) {
                     n.key_up = true;
                 }
+                // The key is up whatever the script does with its event:
+                // a `play_note(.., -1)` child still ends (KSP manual,
+                // play_note), through its own release callbacks.
+                self.end_children(note);
                 continue;
             }
             if self
@@ -578,8 +583,11 @@ impl Engine {
                 .copied()
                 .unwrap_or(false)
             {
+                // The key is up (%KEY_DOWN reads 0, KSP manual): only its
+                // sound is held.
                 if let Some(n) = self.notes.get_mut(note) {
                     n.pedal_held = true;
+                    n.key_up = true;
                 }
             } else {
                 self.release(note);
@@ -635,7 +643,11 @@ impl Engine {
             slot.released = true;
         }
         self.start_zones(note, false, |trigger| trigger == Trigger::Release);
-        // Script notes played for the length of this one end with it.
+        self.end_children(note);
+    }
+
+    /// Ends the script notes played for the length of `note`.
+    fn end_children(&mut self, note: NoteRef) {
         let mut children = std::mem::take(&mut self.targets_scratch);
         self.notes
             .select(&mut children, |n| n.origin == Origin::Child(note));

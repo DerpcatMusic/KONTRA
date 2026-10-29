@@ -447,7 +447,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let chords = std::env::var_os("KONTRA_CHORDS").is_some();
     let hold = if chords { 64 * 12 + 24 } else { hold };
     let keys = |step: usize| (0..4).map(move |i| 36 + ((step * 7 + i * 5) % 60) as u8);
-    for n in 0..(hold + 2 * RATE as usize / 512) {
+    // KONTRA_TAIL: seconds rendered after the key-up (2); the voices left
+    // at the end are printed with their state.
+    let tail = env("KONTRA_TAIL").unwrap_or(2.0);
+    let tail_blocks = (tail * RATE as f32 / 512.0) as usize;
+    for n in 0..(hold + tail_blocks) {
         let step = n / 12;
         let chord: Vec<Timed<Event>> = if chords && n % 12 == 0 && step < 64 {
             let offs = (step.checked_sub(2).into_iter().flat_map(keys)).map(|k| {
@@ -537,6 +541,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         audio.extend_from_slice(&block);
     }
+    for v in engine.voice_states() {
+        println!("  left: {v:?}");
+    }
     let peak = audio.iter().flatten().fold(0f32, |p, s| p.max(s.abs()));
     let rms = |from: usize, to: usize| {
         let s = audio.get(from..to).unwrap_or_default();
@@ -566,6 +573,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("stream: {:?}", stream.stats());
     println!("all actions: {:?}", engine.unhandled_actions());
     println!("last message: {}", engine.last_message());
+    println!("calls: {:?}", engine.action_calls());
     println!("script faults: {:?}", engine.script_faults());
     println!(
         "script arena spills: {}, memory after render: {}",

@@ -201,6 +201,12 @@ impl Voice {
         self.target.map(|row| row.map(|g| g * self.lag.gain))
     }
 
+    /// Its envelope's stage and level, for inspectors.
+    #[must_use]
+    pub fn envelope(&self) -> (&'static str, f32) {
+        (self.env.stage(), self.env.level())
+    }
+
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.region.is_some()
