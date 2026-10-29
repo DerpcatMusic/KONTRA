@@ -596,3 +596,35 @@ fn a_held_part_hears_the_song_position_where_its_notes_land() {
     let late = after_hold(4.5, &[(0, note(0))]);
     assert!(late > 0.1, "the held note never sounded: {late}");
 }
+
+#[test]
+fn a_held_part_hears_the_host_stop_its_hold_later() {
+    let (mut rack, mut audio) = rack();
+    let mut plan = plan_of(rack.store_mut(), 0.5);
+    let script = kontra_ksp::compile(
+        "on note
+            if ($NI_TRANSPORT_RUNNING = 0)
+                ignore_event($EVENT_ID)
+            end if
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Box::new(Engine::new(Arc::new(plan), rack.store_mut().client(), RATE));
+    rack.install(0, e, part("a"));
+    rack.set_hold(0, Hold::flat(RATE / 2));
+    // Played while the song runs; the host stops a block later. The held
+    // note lands half a second on, when the part has not heard the stop yet.
+    audio.set_transport(true, 0.0, (4, 4));
+    audio.process(BLOCK, &[(0, note(0))]);
+    audio.set_transport(false, 0.0, (4, 4));
+    for _ in 0..(RATE as usize / 2 / BLOCK + 2) {
+        audio.process(BLOCK, &[]);
+    }
+    let level = level(&audio, 0);
+    assert!(
+        level > 0.1,
+        "the held part heard the stop before its note: {level}"
+    );
+}
