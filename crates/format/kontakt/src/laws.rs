@@ -324,11 +324,13 @@ pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Optio
 /// The shapes filter `kind` may switch to with its knob laws unchanged
 /// (ids: docs/re/kontakt-bindings/filter-type-ids.tsv): within the AR
 /// family (100..=108) and the Daft pair (70, 71), which share one cutoff and
-/// last-stage resonance law (filt-ar-daft.md), and the Ladder (30..=41),
-/// whose types differ only in the taps it mixes (filt-ladder-monark.md).
-/// SV and legacy types damp by stages and pass, so they switch to nothing.
+/// last-stage resonance law (filt-ar-daft.md), the Ladder (30..=41),
+/// whose types differ only in the taps it mixes (filt-ladder-monark.md),
+/// and the SV types (50..=62), which share a cutoff law but damp by stages
+/// and pass, so each brings its own resonance laws
+/// ([`crate::script_knobs::shape_laws`]). Legacy types switch to nothing.
 pub(crate) fn filter_shapes(kind: i32) -> impl Iterator<Item = (i32, ir::Filter)> {
-    let family = [100..=108, 70..=71, 30..=41]
+    let family = [100..=108, 70..=71, 30..=41, 50..=62]
         .into_iter()
         .find(|f| f.contains(&kind))
         .into_iter()
@@ -742,7 +744,16 @@ mod tests {
         let ids = |kind| filter_shapes(kind).map(|(id, _)| id).collect::<Vec<_>>();
         assert_eq!(ids(103), (100..=108).collect::<Vec<_>>());
         assert_eq!(ids(70), [70, 71]);
-        assert!(ids(52).is_empty() && ids(6).is_empty());
+        assert_eq!(ids(52), (50..=62).collect::<Vec<_>>());
+        assert!(ids(6).is_empty());
+        let notch = crate::script_knobs::shape_laws(58);
+        let gain = notch
+            .iter()
+            .find(|l| l.1 == ir::EffectParam::FilterGain)
+            .unwrap();
+        let want = filter(58, 0.5, 0.7, 0.0).unwrap().gain;
+        assert!((gain.2.eval(0.7) - want).abs() < 1e-3);
+        assert!(crate::script_knobs::shape_laws(103).is_empty());
         let (_, notch) = filter_shapes(31).find(|(id, _)| *id == 41).unwrap();
         assert_eq!(notch.ladder, Some(ir::Ladder::ZeroDelay(12)));
     }

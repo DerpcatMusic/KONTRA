@@ -737,21 +737,44 @@ fn effect_subtype_switches_a_filter_to_its_slots_shape() {
             ir::EffectParam::FilterLastDamping,
             ir::Law::Linear { lo: 2.0, hi: 0.1 },
         ),
-        // Reads the first stage back.
+        // Read the first stage and the gain back.
         law(
             ir::SlotKnob::Attack,
             ir::EffectParam::FilterDamping(0),
             ir::Law::Linear { lo: 2.0, hi: 0.0 },
+        ),
+        law(
+            ir::SlotKnob::Release,
+            ir::EffectParam::FilterGain,
+            ir::Law::Linear { lo: 0.0, hi: 1.0 },
         ),
     ];
     plan.slot_shapes = vec![ir::SlotShape {
         at: ir::RackAt::Group(0),
         slot: 0,
         id: 103,
-        pass: ir::Pass::Low,
-        stages: 2,
-        ladder: None,
+        filter: ir::Filter {
+            pass: ir::Pass::Low,
+            hz: 300.0,
+            stages: 2,
+            ladder: None,
+            damping: [2.0; 3],
+            gain: 1.0,
+            octaves: 0.0,
+            q_octaves: 0.0,
+        },
+        laws: Vec::new().into(),
     }];
+    // A shape with its own resonance law: the gain falls as it rises.
+    let mut own = plan.slot_shapes[0].clone();
+    own.id = 58;
+    own.laws = vec![(
+        ir::SlotKnob::Resonance,
+        ir::EffectParam::FilterGain,
+        ir::Law::Linear { lo: 1.0, hi: 0.0 },
+    )]
+    .into();
+    plan.slot_shapes.push(own);
     let script = kontra_ksp::compile(
         "on init
             set_engine_par($ENGINE_PAR_RESONANCE, 250000, 0, 0, -1)
@@ -760,14 +783,16 @@ fn effect_subtype_switches_a_filter_to_its_slots_shape() {
             set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, 999, 0, 0, -1)
             @s := @s & get_engine_par($ENGINE_PAR_COMP_ATTACK, 0, 0, -1) & \" \"
             set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, 103, 0, 0, -1)
-            message(@s & get_engine_par($ENGINE_PAR_COMP_ATTACK, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_RESONANCE, 0, 0, -1))
+            @s := @s & get_engine_par($ENGINE_PAR_COMP_ATTACK, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_RESONANCE, 0, 0, -1) & \" \"
+            set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, 58, 0, 0, -1)
+            message(@s & get_engine_par($ENGINE_PAR_RESONANCE, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_COMP_DECAY, 0, 0, -1))
         end on",
         &[],
     )
     .unwrap();
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let e = Engine::new(Arc::new(plan), store.client(), RATE);
-    assert_eq!(e.last_message(), "237500 237500 0 250000");
+    assert_eq!(e.last_message(), "237500 237500 0 250000 250000 750000");
 }
 
 #[test]

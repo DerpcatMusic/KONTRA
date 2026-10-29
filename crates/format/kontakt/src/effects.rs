@@ -126,9 +126,8 @@ fn rack(
                         at: *rack_at,
                         slot,
                         id,
-                        pass: f.pass,
-                        stages: f.stages,
-                        ladder: f.ladder,
+                        filter: f,
+                        laws: crate::script_knobs::shape_laws(id),
                     }));
                 }
             }
