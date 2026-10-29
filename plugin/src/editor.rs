@@ -152,14 +152,18 @@ impl Snapshot {
             let same = (app.libraries.iter().map(|l| &l.art)).eq(fresh.iter().map(|l| &l.art));
             if app.covers.is_none() || !same {
                 app.covers = Some(Pictures::new(Box::new(cover)));
+                app.banners = Some(Pictures::with_look(
+                    Box::new(cover),
+                    kontra_ui::artwork::banner,
+                ));
             }
             app.libraries = fresh.clone();
             app.recent.clone_from(&self.recent);
             app.folders.clone_from(&self.folders);
             shown.browser = self.libraries.0;
         }
-        if let Some(covers) = &mut app.covers {
-            covers.poll();
+        for pictures in [&mut app.covers, &mut app.banners].into_iter().flatten() {
+            pictures.poll();
         }
         let shown = &mut shown.parts;
         let mut old = std::mem::take(&mut app.parts);
@@ -465,6 +469,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         let decoding = faces
             .map(|f| &f.pictures)
             .chain(&app.covers)
+            .chain(&app.banners)
             .any(|p| p.pending() > 0);
         p.shared.decoding.store(decoding, Ordering::Release);
         app.master = f64::from(p.volume.value());
