@@ -17,14 +17,14 @@ Under the hood it is **one engine**: a single universal set of sampler, synthesi
 ## Downloads
 
 [![Download for Windows x64](https://img.shields.io/badge/Download-Windows%20x64-0078D4?style=for-the-badge)](https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-nightly-windows-x86_64.zip)
-[![Download for macOS, Apple Silicon and Intel](https://img.shields.io/badge/Download-macOS%20Universal-222222?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-nightly-macos-universal.pkg)
+[![Download for macOS, Apple Silicon](https://img.shields.io/badge/Download-macOS%20Apple%20Silicon-222222?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-nightly-macos-arm64.zip)
 [![Download for Linux x64](https://img.shields.io/badge/Download-Linux%20x64-E8A317?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-nightly-linux-x86_64.zip)
 
-Nightly alpha builds · CLAP, VST3 and standalone · [All downloads & release notes](https://github.com/DerpcatMusic/KONTRA/releases/latest)
+Built from every change to main · CLAP and VST3 · [All downloads & release notes](https://github.com/DerpcatMusic/KONTRA/releases/latest)
 
 **Alpha software, under heavy development.** Features, UI, compatibility and saved-state formats may change substantially between builds. Expect incomplete behavior and regressions; this is not yet a dependable replacement for Kontakt or Falcon.
 
-Rust. Custom UI framework. Windows, macOS, Linux. CLAP, VST3, standalone.
+Rust. Custom UI framework. Windows, macOS, Linux. CLAP and VST3.
 
 | Feature | Works | Missing |
 | :--- | :--- | :--- |

@@ -1,14 +1,20 @@
 name: Release
 
+# Every change to main publishes the newest build as the Latest release; older
+# nightly releases are removed (their tags stay, so notes still diff from them).
+# Downloads use stable names, so releases/latest/download/<name> always works.
 on:
-  schedule:
-    - cron: '0 3 * * *'
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'website/**'
+      - '**/*.md'
   workflow_dispatch:
 
 concurrency:
   group: v3-release
-  cancel-in-progress: false
-  queue: max
+  cancel-in-progress: true  # a newer main supersedes a build still running
 
 permissions:
   contents: read
@@ -90,8 +96,7 @@ jobs:
       - name: Archive bundles
         shell: bash
         run: |
-          version=$(python3 tools/version.py v3-nightly)
-          archive="KONTRA-${version}-${{ matrix.name }}.zip"
+          archive="KONTRA-nightly-${{ matrix.name }}.zip"
           cd "target/bundles/${{ matrix.target }}"
           test -e KONTRA.clap && test -e KONTRA.vst3
           if [ "$RUNNER_OS" = Windows ]; then
@@ -102,7 +107,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ matrix.name }}
-          path: KONTRA-*.zip
+          path: KONTRA-nightly-*.zip
           if-no-files-found: error
           retention-days: 1
 
@@ -121,6 +126,29 @@ jobs:
         with:
           pattern: release-*
           merge-multiple: true
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.99.0
+      - name: Licenses and MPL covered source
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          cargo install cargo-about --version 0.9.2 --features cli --locked
+          lic="$RUNNER_TEMP/licenses"
+          python3 tools/licenses.py --output "$lic"
+          {
+            echo "KONTRA redistribution notices and license texts."
+            echo "MPL covered source: KONTRA-nightly-covered-source.zip on the same release."
+            for f in LICENSE NOTICE THIRD_PARTY.md "$lic/THIRD_PARTY_NOTICES.txt"; do
+              printf '\n===== %s =====\n' "$f"; cat "$f"
+            done
+            find "$lic" -type f ! -path "$lic/sources/*" ! -name THIRD_PARTY_NOTICES.txt | sort | while read -r f; do
+              printf '\n===== licenses/%s =====\n' "${f#"$lic"/}"; cat "$f"
+            done
+          } > LICENSES.txt
+          for z in KONTRA-nightly-*.zip; do zip -qj "$z" LICENSES.txt; done
+          (cd "$lic" && zip -qr "$GITHUB_WORKSPACE/KONTRA-nightly-covered-source.zip" sources)
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -134,4 +162,8 @@ jobs:
           done
           version=$(python3 tools/version.py v3-nightly)
           python3 tools/release/notes.py > notes.md
-          gh release create "v$version" --target "$GITHUB_SHA" --prerelease --title "KONTRA $version" --notes-file notes.md KONTRA-*.zip
+          gh release create "v$version" --target "$GITHUB_SHA" --latest --title "KONTRA $version" --notes-file notes.md KONTRA-nightly-*.zip
+          # Only the newest nightly stays published; the tags keep the history.
+          gh release list --limit 200 --json tagName --jq '.[].tagName' \
+            | grep '^v3\.0\.0-nightly\.' | grep -vxF "v$version" \
+            | xargs -r -n1 gh release delete --yes
