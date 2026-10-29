@@ -141,3 +141,15 @@ For a timed update the controller identifies one received since the previous
 span; multiple CCs may therefore appear for the same evaluated value. Buffer
 capacity is fixed before processing; any dropped record makes the report
 incomplete. With the trace feature off these hooks and their state are absent.
+
+## Seven-library oracle report
+
+From any directory, `tools/inspect/oracle-diff.sh` builds the current checkout
+with `build-slot`, runs continuous and fresh-state user scenarios on the seven
+registered Kontakt programs with up to three isolated `oracle-slot` sessions,
+and regenerates `/data/dev/workspace/scratch/laneG/ORACLE-DIFF.md`. Each run
+uses a timestamped artifact directory and records the source revision. RMS and
+band flags are separate; unavailable comparisons stay unknown and make the
+command fail after the report is written. `--jobs 1..3`, `--output PATH`, and
+`--library-root PATH` override defaults. `--reuse RUN_DIR` regenerates a report
+from a prior run without launching Wine or rebuilding.
