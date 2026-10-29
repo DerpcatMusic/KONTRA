@@ -5,6 +5,7 @@
 -- (`KONTRA_GROUPS=0..12 cargo run -p kontra-format-kontakt --example inspect`).
 -- Result (Kontakt 8.13.1, 2026-10-29): both store (2x-1)^3: -1, -0.125, 0, 0.008,
 -- 0.125, 1. Pitch routes share the volume law; 500000 is no depth.
+local kt = Kontakt
 local out = assert(io.open(ORACLE_OUT, "w"))
 local function log(t) out:write(t .. "\n") out:flush() end
 local dir = ORACLE_OUT:match("^(.*[\\/])")

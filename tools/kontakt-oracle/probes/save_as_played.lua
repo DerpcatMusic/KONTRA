@@ -4,6 +4,7 @@
 -- Result (Kontakt 8.13.1, 2026-10-29), group 88: LFO_P1_Retrigger @1 and
 -- LFO_P2_Retrigger @4 active, LFO_P1 @3 and LFO_P2 @5 bypassed, all at intensity
 -- 0.5714: the same state KONTRA's run of the script reaches.
+local kt = Kontakt
 local out = assert(io.open(ORACLE_OUT, "w"))
 local function log(t) out:write(t .. "\n") out:flush() end
 local dir = ORACLE_OUT:match("^(.*[\\/])")

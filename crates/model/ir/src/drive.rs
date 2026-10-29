@@ -263,7 +263,7 @@ pub struct SlotLaw {
 }
 
 /// Shape `id` a script may switch the filter in slot `slot` of `at` to: its
-/// pass and stages, the slot's knob laws unchanged. The resonance moves to
+/// pass, stages and ladder taps, the slot's knob laws unchanged. The resonance moves to
 /// the new last stage; the others stay critically damped.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SlotShape {
@@ -272,6 +272,7 @@ pub struct SlotShape {
     pub id: i32,
     pub pass: crate::Pass,
     pub stages: u8,
+    pub ladder: Option<crate::Ladder>,
 }
 
 impl SlotShape {
@@ -281,6 +282,7 @@ impl SlotShape {
         let resonance = last(filter).and_then(|n| filter.damping.get(n).copied());
         filter.pass = self.pass;
         filter.stages = self.stages;
+        filter.ladder = self.ladder;
         filter.damping = [2.0; 3];
         if let Some((n, k)) = last(filter).zip(resonance)
             && let Some(d) = filter.damping.get_mut(n)

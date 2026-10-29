@@ -321,14 +321,19 @@ pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Optio
     Some(f)
 }
 
-/// The shapes (id, pass, stages) filter `kind` may switch to with its knob
-/// laws unchanged: the AR family (100..=108, `$FILTER_TYPE_AR_*`,
-/// docs/re/kontakt-bindings/filter-type-ids.tsv) shares one cutoff and
-/// resonance law (filt-ar-daft.md); other kinds switch to nothing here.
-pub(crate) fn filter_shapes(kind: i32) -> impl Iterator<Item = (i32, ir::Pass, u8)> {
-    const AR: std::ops::RangeInclusive<i32> = 100..=108;
-    AR.filter(move |_| AR.contains(&kind))
-        .filter_map(|id| filter_at(id, 0.5, 0.5, 0.0).map(|f| (id, f.pass, f.stages)))
+/// The shapes filter `kind` may switch to with its knob laws unchanged
+/// (ids: docs/re/kontakt-bindings/filter-type-ids.tsv): within the AR
+/// family (100..=108) and the Daft pair (70, 71), which share one cutoff and
+/// last-stage resonance law (filt-ar-daft.md), and the Ladder (30..=41),
+/// whose types differ only in the taps it mixes (filt-ladder-monark.md).
+/// SV and legacy types damp by stages and pass, so they switch to nothing.
+pub(crate) fn filter_shapes(kind: i32) -> impl Iterator<Item = (i32, ir::Filter)> {
+    let family = [100..=108, 70..=71, 30..=41]
+        .into_iter()
+        .find(|f| f.contains(&kind))
+        .into_iter()
+        .flatten();
+    family.filter_map(|id| filter_at(id, 0.5, 0.5, 0.0).map(|f| (id, f)))
 }
 
 fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Filter> {
@@ -731,6 +736,16 @@ pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> (ir::Compressor, bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_filter_switches_only_within_its_family() {
+        let ids = |kind| filter_shapes(kind).map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(ids(103), (100..=108).collect::<Vec<_>>());
+        assert_eq!(ids(70), [70, 71]);
+        assert!(ids(52).is_empty() && ids(6).is_empty());
+        let (_, notch) = filter_shapes(31).find(|(id, _)| *id == 41).unwrap();
+        assert_eq!(notch.ladder, Some(ir::Ladder::ZeroDelay(12)));
+    }
 
     /// Measured: a 1/24-note synced saw with count 96 cycles in 2 s at 120 bpm.
     #[test]

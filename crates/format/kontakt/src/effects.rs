@@ -122,14 +122,14 @@ fn rack(
                     }));
                 if let Some((_, 0x18, kind)) = &effect {
                     let shapes = crate::laws::filter_shapes(*kind);
-                    laws.shapes
-                        .extend(shapes.map(|(id, pass, stages)| ir::SlotShape {
-                            at: *rack_at,
-                            slot,
-                            id,
-                            pass,
-                            stages,
-                        }));
+                    laws.shapes.extend(shapes.map(|(id, f)| ir::SlotShape {
+                        at: *rack_at,
+                        slot,
+                        id,
+                        pass: f.pass,
+                        stages: f.stages,
+                        ladder: f.ladder,
+                    }));
                 }
             }
             if effect.is_none() {

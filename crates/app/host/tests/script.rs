@@ -750,6 +750,7 @@ fn effect_subtype_switches_a_filter_to_its_slots_shape() {
         id: 103,
         pass: ir::Pass::Low,
         stages: 2,
+        ladder: None,
     }];
     let script = kontra_ksp::compile(
         "on init
