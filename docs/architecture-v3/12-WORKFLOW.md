@@ -91,7 +91,7 @@ tasks.toml ──sync──▶ issue [status:blocked] ──deps merged──▶
    **draft** PR and keep a `## Progress` list in its body (done, next,
    numbers so far). Sessions end without warning (rate limits, context,
    quota); the next agent resumes from the draft PR, not from anyone's memory.
-   Rebase on `origin/v3` before marking it ready.
+   Rebase on `origin/main` before marking it ready.
 5. **PR.** `gh pr create --base v3 --title "<id>: <title>"`; the template
    asks for the gate output, scope check, net lines and deviations.
 6. **Merge.** Coordinator squash-merges. The `v3 plan / merged` job closes the
@@ -140,7 +140,7 @@ pairs simply run one after the other; that list is the honest parallel width.
 
 ## 6. Conflicts and rebases
 
-- Rebase the task branch on `origin/v3` (`git fetch && git rebase origin/v3`).
+- Rebase the task branch on `origin/main` (`git fetch && git rebase origin/main`).
   Never rebase or force-push `v3`.
 - **`Cargo.lock`:** during a rebase take `v3`'s copy, then let cargo update it:
   `git checkout --ours Cargo.lock && build-slot cargo metadata --format-version 1 >/dev/null && git add Cargo.lock`
@@ -150,7 +150,7 @@ pairs simply run one after the other; that list is the honest parallel width.
   check). Your `Cargo.lock` diff must contain only additions your change needs.
 - **Stacked tasks:** a task may start on its parent's PR branch while the parent
   waits for CI. After the parent squash-merges:
-  `git rebase --onto origin/v3 <old parent head>`.
+  `git rebase --onto origin/main <old parent head>`.
 - **Append lock (registry list):** keep both sides' lines, sorted.
 - **Anything else:** a conflict outside your `owns` means the plan was wrong.
   Stop and tell the coordinator; do not resolve it by editing their paths.
@@ -176,14 +176,14 @@ For a T3 delegated worker:
 ```text
 delegate_task(
   task = <output of `python3 tools/plan/plan.py brief P5.2`>
-         + "Issue: #<n>. Work in your worktree; first run `git fetch origin && git switch -c v3-P5.2-<slug> origin/v3`.",
+         + "Issue: #<n>. Work in your worktree; first run `git fetch origin && git switch -c v3-P5.2-<slug> origin/main`.",
   target = { model: <the coordinator's standing worker model> },
   isolation = "worktree",
   clientRequestId = "v3-P5.2-r1")
 ```
 
 A `delegate_task` worktree starts from the coordinator's local commit, which is
-why the brief tells the worker to branch from `origin/v3` itself. Review
+why the brief tells the worker to branch from `origin/main` itself. Review
 rounds are new `delegate_task` calls with the brief, the review findings and
 the worker's replies (`-r2`, `-r3` …).
 

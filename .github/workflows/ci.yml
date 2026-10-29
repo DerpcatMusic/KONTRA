@@ -2,7 +2,7 @@ name: CI
 
 # Keep the workflow present for every PR. Only known documentation-only changes
 # skip expensive jobs; `CI required` still reports success/failure.
-# Public main pushes run this exact workflow through Nightly in release mode.
+# Public main pushes run this workflow before publishing the v3 release.
 # PR/merge-group checks remain independent; avoid a second ordinary CI push run.
 on:
   # Stacked PRs (based on another PR's branch) wait: they run once retargeted
@@ -32,7 +32,7 @@ env:
   APP_GIT_REVISION: ${{ github.sha }}
   MUI_REPORTING_DISABLED: "1"
   CARGO_TARGET_DIR: target
-  # Snapshots call this same workflow at their exact source commit, in release mode.
+  # Release builds call this workflow at their exact source commit.
   CI_PROFILE: ${{ inputs.release_validation && 'release' || 'ci' }}
   # First-party crates (cargo test/clippy at the workspace root covers only the root package).
   # The shipping (v2) crates and the v3 kontra-* crates build in separate cargo runs:
@@ -98,7 +98,6 @@ jobs:
       - name: Workflow safety tests
         run: |
           python3 -m unittest discover -s .github/scripts -p 'test_*.py'
-          python3 .github/workflows/check_nightly.py
 
   linux:
     needs: changes
