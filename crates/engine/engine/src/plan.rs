@@ -356,9 +356,10 @@ pub struct Plan {
     /// Convolution responses at the engine's rate, by [`ir::Instrument::impulses`]
     /// index; `None` when unreadable.
     pub impulses: Vec<Option<Response>>,
-    /// How each of [`Self::impulses`] was prepared from its file: a script
-    /// loading another file into its slot keeps that.
-    pub impulse_laws: Vec<ir::Impulse>,
+    /// Each of [`Self::impulses`]' file (as [`Self::responses`] names it)
+    /// and how it was prepared: a script loading another file into its
+    /// slot keeps that.
+    pub impulse_laws: Vec<(String, ir::Impulse)>,
     /// Response files a script may load by name ([`ir::Instrument::responses`]).
     pub responses: Vec<(String, ir::Sample)>,
     /// How [`ir::KnobTarget::Slot`] knobs move the effects they address.

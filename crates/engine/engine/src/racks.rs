@@ -191,19 +191,18 @@ impl Responses<'_> {
 impl Engine {
     /// `load_ir_sample`: the library response `name` (its extension and
     /// folder dropped) into the convolution at `slot` of the `generic` rack,
-    /// prepared as the response it replaces. Only in the init callback:
-    /// decoding is not real-time, and the racks are rebuilt after it.
+    /// prepared as the response it replaces. Only in the init callback
+    /// (decoding is not real-time, and the racks are rebuilt after it);
+    /// later, reloading the response a slot plays is answered as done.
     pub(crate) fn load_ir_sample(&mut self, name: &str, slot: i32, generic: i32) -> bool {
-        if self.running.kind != crate::script::Kind::Init {
-            return false;
-        }
-        let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
-        let stem = file
-            .rsplit_once('.')
-            .map_or(file, |(s, _)| s)
-            .to_lowercase();
+        // Borrowed, matched without case: this may run on the audio thread.
+        let stem = stem(name);
         let plan = Arc::clone(&self.plan);
-        let Some((_, sample)) = plan.responses.iter().find(|(n, _)| *n == stem) else {
+        let Some((_, sample)) = plan
+            .responses
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(stem))
+        else {
             return false;
         };
         let Some(&ir::Effect {
@@ -214,22 +213,26 @@ impl Engine {
             return false;
         };
         let at = usize::from(impulse);
-        let law = match at.checked_sub(plan.impulses.len()) {
-            None => plan.impulse_laws.get(at).copied(),
-            Some(j) => self.loaded.get(j).map(|(_, law, _)| *law),
-        };
-        let Some(law) = law else {
+        let (playing, law) = match at.checked_sub(plan.impulses.len()) {
+            None => plan.impulse_laws.get(at).map(|(n, law)| (n, *law)),
+            Some(j) => self.loaded.get(j).map(|(n, law, _)| (n, *law)),
+        }
+        .unzip();
+        if playing.is_some_and(|n| n.eq_ignore_ascii_case(stem)) {
+            return true;
+        }
+        let (Some(law), crate::script::Kind::Init) = (law, self.running.kind) else {
             return false;
         };
         let known = self
             .loaded
             .iter()
-            .position(|(n, l, _)| *n == stem && *l == law);
+            .position(|(n, l, _)| n.eq_ignore_ascii_case(stem) && *l == law);
         let index = match known {
             Some(j) => j,
             None => match crate::prepare::response(sample, &law, self.rate) {
                 Ok(r) => {
-                    self.loaded.push((stem, law, r));
+                    self.loaded.push((stem.to_lowercase(), law, r));
                     self.loaded.len() - 1
                 }
                 Err(_) => return false,
@@ -243,6 +246,13 @@ impl Engine {
         }
         true
     }
+}
+
+/// A response file's name as [`Plan::responses`] keys it (there in
+/// lowercase): without its folder and extension.
+pub(crate) fn stem(name: &str) -> &str {
+    let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    file.rsplit_once('.').map_or(file, |(s, _)| s)
 }
 
 impl Rack {

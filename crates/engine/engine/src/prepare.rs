@@ -120,7 +120,17 @@ pub fn prepare(
             }
         })
         .collect();
-    plan.impulse_laws.clone_from(&instrument.impulses);
+    plan.impulse_laws = instrument
+        .impulses
+        .iter()
+        .map(|i| {
+            let name = instrument
+                .samples
+                .get(i.sample)
+                .map_or("", |s| s.name.as_str());
+            (crate::racks::stem(name).to_lowercase(), *i)
+        })
+        .collect();
     plan.responses = instrument
         .responses
         .iter()

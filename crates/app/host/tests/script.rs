@@ -1580,15 +1580,18 @@ fn a_script_loads_a_library_response_into_a_convolution() {
         left: vec![1.0],
         right: vec![1.0],
     })];
-    plan.impulse_laws = vec![ir::Impulse {
-        sample: 0,
-        reverse: false,
-        normalize: None,
-        predelay_ms: 0.0,
-        cuts: None,
-        envelope: None,
-        mix: None,
-    }];
+    plan.impulse_laws = vec![(
+        "room".into(),
+        ir::Impulse {
+            sample: 0,
+            reverse: false,
+            normalize: None,
+            predelay_ms: 0.0,
+            cuts: None,
+            envelope: None,
+            mix: None,
+        },
+    )];
     plan.responses = vec![(
         "half".into(),
         ir::Sample {
