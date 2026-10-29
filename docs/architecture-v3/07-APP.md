@@ -18,22 +18,21 @@ audio thread talks to the rest of the process through three channels.
 ## 2. The three channels
 
 ```rust
-// kontra-protocol
-pub enum Command {                  // control/UI/loader → audio. SPSC ring, fixed capacity, never dropped silently
-    Plan(Arc<Plan>), Purge(PurgeSet), SetParam(ParamAddr, f32), Ui(ControlId, ControlValue),
-    Transport(TransportCmd), Panic, ...
-}
-pub struct Publications {           // audio → others. Latest value only, no queue
-    meters: LatestCell<Meters>, voices: LatestCell<VoiceTaps>, controls: ControlStore,   // LatestCell per script control
-    params: LatestCell<ParamSnapshot>, stats: LatestCell<StatsSnapshot>, messages: LatestCell<MessageRef>,
-}
-pub enum Retired { Plan(Arc<Plan>), Buffers(Box<[f32]>), ... }   // audio → control, dropped off-audio
+// kontra-protocol: the channels and what the UI reads
+pub struct Ring<T>     // SPSC/MPSC, fixed capacity: send() -> Err(value) when full, never blocks
+pub struct Latest<T>   // latest value only, no queue; a slow reader skips values
+pub struct Meters { master, parts: [[f32; 2]; MAX_PARTS] }
+pub struct Stats  { load, voices, voices_stolen, notes_refused, missing_frames, dropped }
+
+// kontra-host::rack: the payloads (they carry engine types protocol must not see)
+pub enum Command { Install { part, engine: Box<Engine>, .. }, Remove(part), Mix(part, Mix), Master(f32), Panic, .. }
+pub enum Retired { Engine(Box<Engine>), .. }   // audio → control, dropped off-audio
 ```
 
 - **Commands** are the only way into the engine. When the ring is full, the
-  sender gets `Err(Full)` and retries next tick. The audio side never blocks.
-- **Publications** are latest-value cells (`kontra-pool::LatestCell`, a
-  triple buffer or seqlock). A slow UI skips frames and never builds up a
+  sender gets its value back and retries next tick. The audio side never blocks.
+- **Publications** are latest-value cells (`kontra_protocol::Latest`, a
+  one-slot lock-free queue the writer overwrites). A slow UI skips frames and never builds up a
   backlog. That removes the UI effect outbox and the 10 Hz `control_tick`
   drain.
 - **Retirements** carry anything the audio thread lets go of, so it can be
