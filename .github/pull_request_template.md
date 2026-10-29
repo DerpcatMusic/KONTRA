@@ -41,3 +41,7 @@ Task: <!-- P1.2 --> · Issue: #<!-- n -->
 ## Checks run
 
 <!-- Exact commands and results. Say what was not run. -->
+
+<!-- Use one plain sentence for musicians, or "none" for internal work. -->
+Release note: none
+Area: <!-- sound | interface | libraries | performance | fix -->
