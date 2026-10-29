@@ -33,6 +33,10 @@ pub struct SavedPart {
     /// empty for a part saved before scripts were.
     #[serde(default)]
     pub scripts: Vec<Vec<String>>,
+    /// Its attack delay as auto-align measured it, so a reload need not
+    /// measure again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_ms: Option<f32>,
 }
 
 impl Saved {
@@ -78,6 +82,7 @@ impl Rack {
                     solo: p.solo,
                     mute: p.mute,
                     scripts: self.saved_scripts(part),
+                    delay_ms: p.delay_ms,
                 })
             })
             .collect();
@@ -108,6 +113,9 @@ impl Rack {
                         },
                     );
                     self.set_solo_mute(p.part, p.solo, p.mute);
+                    if let Some(ms) = p.delay_ms {
+                        self.set_delay(p.part, ms);
+                    }
                 }
                 Err(e) => failed.push((p.part, e.to_string())),
             }

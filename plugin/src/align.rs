@@ -3,7 +3,7 @@
 //! other part is held by the difference, so all of them sound on the beat
 //! in playback. Attacks are never trimmed.
 
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use kontra_host::align::Measured;
 use kontra_host::rack::{Plan, Rack};
@@ -13,71 +13,36 @@ use kontra_protocol::MAX_PARTS;
 // ponytail: one probe key; a patch silent on C4 measures as on time.
 const PROBE_KEY: u8 = 60;
 
-/// What the control tick knows of each part's timing.
-#[derive(Default)]
-pub struct Align {
-    /// By part: the plan measured and the latest it sounds, in ms.
-    measured: Vec<Option<(Weak<Plan>, f32)>>,
-    /// By part: the hold last sent, in frames.
-    holds: Vec<u32>,
-}
-
-impl Align {
-    /// Measures parts loaded since the last call and sends each its hold;
-    /// with `on` false, nothing is held. The latency to report, in frames.
-    pub fn update(&mut self, on: bool, rack: &mut Rack) -> u32 {
-        self.measured.resize_with(MAX_PARTS, || None);
-        self.holds.resize(MAX_PARTS, 0);
-        let rate = f64::from(rack.rate());
-        let plans: Vec<Option<Arc<Plan>>> = (0..MAX_PARTS)
-            .map(|n| rack.parts().get(n)?.as_ref()?.plan.clone())
-            .collect();
-        let mut latest = [0.0f32; MAX_PARTS];
-        for (n, plan) in plans.into_iter().enumerate() {
-            let (Some(plan), Some(slot), Some(ms)) =
-                (plan, self.measured.get_mut(n), latest.get_mut(n))
-            else {
-                continue;
-            };
-            if !on {
-                continue;
+/// Measures the parts not measured yet and sends each its hold; with `on`
+/// false, nothing is held. The latency to report, in frames.
+// ponytail: every hold is sent each tick (the audio side ignores unchanged
+// ones), so a part swapped in is never left with a stale hold.
+pub fn update(on: bool, rack: &mut Rack) -> u32 {
+    let rate = f64::from(rack.rate());
+    // None: an empty part.
+    let mut latest: [Option<f32>; MAX_PARTS] = [None; MAX_PARTS];
+    for (n, ms) in latest.iter_mut().enumerate() {
+        let Some(Some(part)) = rack.parts().get(n) else {
+            continue;
+        };
+        *ms = Some(match (part.delay_ms, part.plan.clone()) {
+            (Some(ms), _) => ms,
+            (None, Some(plan)) if on => {
+                let ms = measure(plan, rack);
+                rack.set_delay(n, ms);
+                ms
             }
-            let fresh = slot
-                .as_ref()
-                .and_then(|(seen, _)| seen.upgrade())
-                .is_some_and(|seen| Arc::ptr_eq(&seen, &plan));
-            if !fresh {
-                *slot = Some((Arc::downgrade(&plan), measure(plan, rack)));
-            }
-            *ms = slot.as_ref().map_or(0.0, |(_, ms)| *ms);
-        }
-        let present: Vec<bool> = (0..MAX_PARTS)
-            .map(|n| rack.parts().get(n).is_some_and(Option::is_some))
-            .collect();
-        let reported = kontra_align::reported_ms(
-            latest
-                .iter()
-                .zip(&present)
-                .filter(|(_, p)| **p)
-                .map(|(ms, _)| *ms),
-        );
-        for (n, (ms, sent)) in latest.iter().zip(&mut self.holds).enumerate() {
-            let hold = if on {
-                (f64::from(reported - ms) * rate / 1000.0).round() as u32
-            } else {
-                0
-            };
-            if hold != *sent {
-                rack.set_hold(n, hold);
-                *sent = hold;
-            }
-        }
-        if on {
-            (f64::from(reported) * rate / 1000.0).round() as u32
-        } else {
-            0
+            _ => 0.0,
+        });
+    }
+    let reported = kontra_align::reported_ms(latest.iter().flatten().copied());
+    let frames = |ms: f32| (f64::from(ms) * rate / 1000.0).round() as u32;
+    for (n, ms) in latest.iter().enumerate() {
+        if let Some(ms) = ms {
+            rack.set_hold(n, if on { frames(reported - ms) } else { 0 });
         }
     }
+    if on { frames(reported) } else { 0 }
 }
 
 /// How late `plan` sounds at its latest, in ms; it plays a fresh engine of
