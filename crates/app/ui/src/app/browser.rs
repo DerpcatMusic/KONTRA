@@ -336,5 +336,5 @@ const COVERS: usize = 4;
 fn cover(covers: &mut Pictures, lib: usize, art: &[String]) -> Option<Arc<Image>> {
     let meta = ImageMeta::default();
     (art.iter().take(COVERS).enumerate())
-        .find_map(|(k, path)| covers.frame(AssetRef(lib * COVERS + k), path, meta, 0))
+        .find_map(|(k, path)| covers.frame(AssetRef(lib * COVERS + k), path, meta, 0, 1.))
 }

@@ -6,6 +6,10 @@
 //! same picture that arrived last (a knob keeps its old frame while the new
 //! one decodes), else nothing. [`Pictures::poll`] takes what the worker
 //! finished. No frame ever waits on a decode.
+//!
+//! Frames decode at the scale they are drawn at on the device, in quarter
+//! steps, so the painter maps them pixel for pixel; a new scale drops the
+//! frames of the old one.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -23,9 +27,10 @@ struct Job {
     frame: u32,
     path: String,
     meta: ImageMeta,
+    scale: f32,
 }
 
-type Done = (AssetRef, u32, Option<Arc<Image>>);
+type Done = (AssetRef, u32, f32, Option<Arc<Image>>);
 
 /// The decoded frames of one tree's pictures, by asset and frame.
 pub struct Pictures {
@@ -34,6 +39,8 @@ pub struct Pictures {
     ready: HashMap<(AssetRef, u32), Option<Arc<Image>>>,
     last: HashMap<AssetRef, Arc<Image>>,
     pending: usize,
+    /// The scale the frames in `ready` decoded at.
+    scale: f32,
 }
 
 impl Pictures {
@@ -46,7 +53,12 @@ impl Pictures {
             // The same frame of the same bytes decodes once, whatever path
             // or asset asks for it.
             let mut decoded = HashMap::<u64, Option<Arc<Image>>>::new();
+            let mut scale = 1.;
             for job in inbox {
+                if job.scale != scale {
+                    decoded.clear();
+                    scale = job.scale;
+                }
                 let image = read(&job.path).and_then(|bytes| {
                     let mut h = std::hash::DefaultHasher::new();
                     bytes.hash(&mut h);
@@ -54,10 +66,16 @@ impl Pictures {
                     (job.frame, job.meta.frames, axis).hash(&mut h);
                     decoded
                         .entry(h.finish())
-                        .or_insert_with(|| decode(&bytes, job.meta, job.frame).map(Arc::new))
+                        .or_insert_with(|| {
+                            let image = decode(&bytes, job.meta, job.frame)?;
+                            at(image, job.scale).map(Arc::new)
+                        })
                         .clone()
                 });
-                if outbox.send((job.asset, job.frame, image)).is_err() {
+                if outbox
+                    .send((job.asset, job.frame, job.scale, image))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -68,18 +86,27 @@ impl Pictures {
             ready: HashMap::new(),
             last: HashMap::new(),
             pending: 0,
+            scale: 1.,
         }
     }
 
-    /// Frame `n` of the picture `asset` at `path`, or what stands in for it
-    /// until it is decoded; asks for it the first time.
+    /// Frame `n` of the picture `asset` at `path`, decoded for `scale` device
+    /// pixels a picture pixel, or what stands in for it until it is; asks
+    /// for it the first time.
     pub fn frame(
         &mut self,
         asset: AssetRef,
         path: &str,
         meta: ImageMeta,
         n: usize,
+        scale: f64,
     ) -> Option<Arc<Image>> {
+        let scale = quarter(scale);
+        if scale != self.scale {
+            // The old frames stand in (`last`) until the new ones arrive.
+            self.ready.clear();
+            self.scale = scale;
+        }
         let n = u32::try_from(n)
             .unwrap_or(u32::MAX)
             .min(meta.frames.saturating_sub(1));
@@ -93,6 +120,7 @@ impl Pictures {
                     frame: n,
                     path: path.to_owned(),
                     meta,
+                    scale,
                 };
                 if self.jobs.send(job).is_ok() {
                     self.pending += 1;
@@ -106,13 +134,15 @@ impl Pictures {
     /// view should be drawn again.
     pub fn poll(&mut self) -> bool {
         let mut arrived = false;
-        while let Ok((asset, n, image)) = self.done.try_recv() {
+        while let Ok((asset, n, scale, image)) = self.done.try_recv() {
             self.pending = self.pending.saturating_sub(1);
             if let Some(image) = &image {
                 self.last.insert(asset, image.clone());
                 arrived = true;
             }
-            self.ready.insert((asset, n), image);
+            if scale == self.scale {
+                self.ready.insert((asset, n), image);
+            }
         }
         arrived
     }
@@ -218,6 +248,117 @@ fn decode(bytes: &[u8], meta: ImageMeta, n: u32) -> Option<Image> {
     Image::rgba(fw as u32, fh as u32, out)
 }
 
+/// `scale` up to the next quarter, between a quarter and four.
+fn quarter(scale: f64) -> f32 {
+    let q = (scale * 4.).ceil() / 4.;
+    if q.is_finite() {
+        q.clamp(0.25, 4.) as f32
+    } else {
+        1.
+    }
+}
+
+/// `image` at `scale`, unchanged at 1.
+fn at(image: Image, scale: f32) -> Option<Image> {
+    if scale == 1. {
+        return Some(image);
+    }
+    let size = |n: u32| ((f64::from(n) * f64::from(scale)).round() as u32).max(1);
+    resample(&image, size(image.width), size(image.height))
+}
+
+/// `img` at `w` × `h` through a Catmull-Rom filter, widened when it
+/// shrinks, in premultiplied alpha so an edge keeps its colour.
+fn resample(img: &Image, w: u32, h: u32) -> Option<Image> {
+    let (sw, sh) = (img.width as usize, img.height as usize);
+    let (w, h) = (w as usize, h as usize);
+    let src: Vec<[f32; 4]> = img
+        .rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&[r, g, b, a]| {
+            let k = f32::from(a) / 255.;
+            [
+                f32::from(r) * k,
+                f32::from(g) * k,
+                f32::from(b) * k,
+                f32::from(a),
+            ]
+        })
+        .collect();
+    if src.len() != sw * sh {
+        return None;
+    }
+    let mut across = Vec::with_capacity(w * sh);
+    let taps = weights(sw, w);
+    for row in src.chunks_exact(sw.max(1)) {
+        for (lo, ws) in &taps {
+            across.push(mix(row.iter().skip(*lo), ws));
+        }
+    }
+    let mut out = Vec::with_capacity(w * h * 4);
+    for (lo, ws) in weights(sh, h) {
+        let rows: Vec<&[[f32; 4]]> = across
+            .chunks_exact(w.max(1))
+            .skip(lo)
+            .take(ws.len())
+            .collect();
+        for x in 0..w {
+            let px = mix(rows.iter().filter_map(|r| r.get(x)), &ws);
+            let k = if px[3] > 0. { 255. / px[3] } else { 0. };
+            let [r, g, b, a] = px;
+            out.extend([r * k, g * k, b * k, a].map(|c| c.round().clamp(0., 255.) as u8));
+        }
+    }
+    Image::rgba(w as u32, h as u32, out)
+}
+
+/// The weighted sum of `px`.
+fn mix<'a>(px: impl Iterator<Item = &'a [f32; 4]>, ws: &[f32]) -> [f32; 4] {
+    let mut sum = [0.; 4];
+    for (p, &w) in px.zip(ws) {
+        for (s, c) in sum.iter_mut().zip(p) {
+            *s += c * w;
+        }
+    }
+    sum
+}
+
+/// For each of `to` samples across `from`: its first source sample and the
+/// weights from there.
+fn weights(from: usize, to: usize) -> Vec<(usize, Vec<f32>)> {
+    let ratio = to as f64 / from.max(1) as f64;
+    let stretch = (1. / ratio).max(1.);
+    let last = from.saturating_sub(1) as f64;
+    (0..to)
+        .map(|i| {
+            let c = (i as f64 + 0.5) / ratio - 0.5;
+            let lo = (c - 2. * stretch).ceil().clamp(0., last);
+            let hi = (c + 2. * stretch).floor().clamp(lo, last);
+            let mut ws: Vec<f32> = (lo as usize..=hi as usize)
+                .map(|s| catmull_rom((s as f64 - c) / stretch) as f32)
+                .collect();
+            let sum: f32 = ws.iter().sum();
+            if sum != 0. {
+                ws.iter_mut().for_each(|w| *w /= sum);
+            }
+            (lo as usize, ws)
+        })
+        .collect()
+}
+
+fn catmull_rom(x: f64) -> f64 {
+    let x = x.abs();
+    if x < 1. {
+        (1.5 * x - 2.5) * x * x + 1.
+    } else if x < 2. {
+        ((-0.5 * x + 2.5) * x - 4.) * x + 2.
+    } else {
+        0.
+    }
+}
+
 /// A JPEG (a library's cover), whole, as RGBA8: JPEGs are stills.
 fn jpeg(bytes: &[u8]) -> Option<Image> {
     use zune_jpeg::zune_core::bytestream::ZCursor;
@@ -311,9 +452,9 @@ mod tests {
         };
         let ask = |p: &mut Pictures| {
             [
-                p.frame(AssetRef(0), "a.png", meta, 0),
-                p.frame(AssetRef(1), "b.png", meta, 0),
-                p.frame(AssetRef(2), "missing.png", meta, 0),
+                p.frame(AssetRef(0), "a.png", meta, 0, 1.),
+                p.frame(AssetRef(1), "b.png", meta, 0, 1.),
+                p.frame(AssetRef(2), "missing.png", meta, 0, 1.),
             ]
         };
         assert!(
@@ -335,7 +476,33 @@ mod tests {
         assert!(a.zip(b).is_some_and(|(a, b)| Arc::ptr_eq(&a, &b)));
         assert_eq!(pictures.bytes(), 4);
         // The other frame is asked for; the one shown stands in meanwhile.
-        assert!(pictures.frame(AssetRef(0), "a.png", meta, 1).is_some());
+        assert!(pictures.frame(AssetRef(0), "a.png", meta, 1, 1.).is_some());
         assert_eq!(pictures.pending(), 1);
+    }
+
+    #[test]
+    fn a_frame_decodes_at_its_device_scale_and_keeps_its_edges() {
+        // A white pixel beside a clear one.
+        let img = Image::rgba(2, 1, vec![255, 255, 255, 255, 0, 0, 0, 0]);
+        let big = img.and_then(|i| at(i, quarter(1.9)));
+        assert_eq!(big.as_ref().map(|i| (i.width, i.height)), Some((4, 2)));
+        // Premultiplied: what is not clear stays white, never grey.
+        let px: Vec<[u8; 4]> = big
+            .map(|i| i.rgba.as_chunks::<4>().0.to_vec())
+            .unwrap_or_default();
+        assert_eq!(px.first(), Some(&[255, 255, 255, 255]));
+        assert!(
+            px.iter().all(|p| p[3] == 0 || p[..3] == [255, 255, 255]),
+            "{px:?}"
+        );
+        assert_eq!(quarter(1.23), 1.25);
+        assert_eq!(quarter(1.), 1.);
+        // Shrunk by half, a flat picture stays flat.
+        let grey = Image::rgba(4, 4, [90u8, 90, 90, 255].repeat(16));
+        let small = grey.and_then(|i| at(i, 0.5));
+        assert_eq!(
+            small.map(|i| i.rgba.to_vec()),
+            Some([90u8, 90, 90, 255].repeat(4))
+        );
     }
 }
