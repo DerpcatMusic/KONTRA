@@ -504,12 +504,12 @@ fn filter(
         *knobs = crate::versatile::knobs();
         return Some(ir::EffectKind::Cascade(crate::versatile::cascade(saved)));
     }
-    let (gain, at) = if matches!(kind, 30..=41 | 63..=65 | 70 | 71) {
+    let (gain, offset) = if matches!(kind, 30..=41 | 63..=65 | 70 | 71) {
         (f(0)?, 4)
     } else {
         (0.0, 0)
     };
-    let (cutoff, resonance) = (f(at)?, f(at + 4)?);
+    let (cutoff, resonance) = (f(offset)?, f(offset + 4)?);
     let result = crate::laws::filter(kind, cutoff, resonance, gain);
     kontra_law::record(|| kontra_law::Application {
         id: kontra_law::LawId("kontakt.filter.v1"),
