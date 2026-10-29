@@ -38,6 +38,12 @@ pub(super) fn apply(kg: Node, group: &mut ir::Group) -> Result<(), String> {
                     * edge(f32::from(high) - n as f32, high_fade)
             })
             .collect();
+        super::provenance::record(
+            "uvi.key_velocity_fade.v1",
+            kg,
+            &(source, curve, low, high, low_fade, high_fade),
+            &table,
+        );
         let shaped = index_of(&mut group.shapers, ir::Transfer { source, table });
         group.mods.push(ir::Mod {
             name: String::new(),

@@ -2127,3 +2127,29 @@ fn a_wheel_opens_a_phasor_through_its_power_law() {
             .all(|d| d.feature != "modulation Depth")
     );
 }
+
+#[test]
+fn provenance_is_opt_in_and_keeps_actual_group_and_zone_results() {
+    let xml = r#"<Program Gain="1"><Layers><Layer Gain="1" Pan="0"><Keygroups><Keygroup Gain="0.5" Pan="0.25"><Oscillators><SamplePlayer Gain="1" CoarseTune="2" SamplePath="./a.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let plain = translate(doc.root_element(), "", &Stub, &|_| Vec::new()).unwrap();
+    let (observed, records) =
+        kontra_law::collect(|| translate(doc.root_element(), "", &Stub, &|_| Vec::new()));
+    let observed = observed.unwrap();
+    assert_eq!(
+        format!("{:?}", plain.groups),
+        format!("{:?}", observed.groups)
+    );
+    let group = records
+        .iter()
+        .find(|r| r.id.0 == "uvi.keygroup_gain_pan_tune.v1")
+        .unwrap();
+    assert!(group.location.ends_with("/Keygroup"));
+    assert!(group.input.contains("0.25"));
+    assert!(group.output.contains("0.25"));
+    assert!(
+        records
+            .iter()
+            .any(|r| r.id.0 == "uvi.zone_gain_pan_tune.v1" && r.output.contains("2.0"))
+    );
+}

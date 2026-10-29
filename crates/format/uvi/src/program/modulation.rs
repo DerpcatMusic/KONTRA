@@ -42,7 +42,7 @@ impl<L: Library> Translator<'_, '_, L> {
             self.notes
                 .add(ir::Impact::Audible, "envelope decay curve", source);
         }
-        Ok(Some(ir::Envelope {
+        let result = ir::Envelope {
             attack: seconds("AttackTime")?,
             hold: seconds("HoldTime")?,
             decay: seconds("DecayTime")?,
@@ -50,7 +50,9 @@ impl<L: Library> Translator<'_, '_, L> {
             release: seconds("ReleaseTime")?,
             attack_shape: shape("AttackCurve"),
             fall_shape: fall,
-        }))
+        };
+        super::provenance::record("uvi.amp_envelope.v1", env, &source, &result);
+        Ok(Some(result))
     }
 
     /// A script's modulation (Script Event Modulation) on a gain or pitch:
@@ -458,6 +460,12 @@ fn rising(node: Node) -> Option<(ir::Lfo, f32, Option<ir::Breakpoints>)> {
 
 /// [`lfo`] whatever its delay and rise.
 pub(super) fn shape(node: Node, user: bool) -> Option<(ir::Lfo, f32)> {
+    let result = shape_value(node, user);
+    super::provenance::record("uvi.lfo_shape.v1", node, &user, &result);
+    result
+}
+
+fn shape_value(node: Node, user: bool) -> Option<(ir::Lfo, f32)> {
     let unset = |name| !flag(node, name);
     if flag(node, "Bypass") || !unset("ManualTrigger") {
         return None;
@@ -613,6 +621,12 @@ fn multi(node: Node) -> Option<ir::Wave> {
 /// `(1 − q^2t)/(1 − q²)`, `q = (1 + c)/(1 − c)`, the IR's `k = 2·ln q`.
 /// `None` when bypassed or velocity-scaled (not read).
 pub(super) fn ahd(node: Node) -> Option<ir::Breakpoints> {
+    let result = ahd_value(node);
+    super::provenance::record("uvi.ahd_envelope.v1", node, &(), &result);
+    result
+}
+
+fn ahd_value(node: Node) -> Option<ir::Breakpoints> {
     if flag(node, "Bypass") || flag(node, "VelocityAmount") {
         return None;
     }
