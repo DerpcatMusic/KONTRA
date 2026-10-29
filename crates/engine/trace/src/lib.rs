@@ -88,6 +88,7 @@ pub enum RouteUnit {
     IntensityMultiplier,
     PhaseCycles,
     RateMultiplier,
+    LfoHertz,
 }
 
 /// A route value as evaluated in a controller-triggered voice refresh.
@@ -104,6 +105,8 @@ pub struct RouteValue {
     pub value: f32,
     pub unit: RouteUnit,
     pub direct_controller_source: bool,
+    pub timed_refresh: bool,
+    pub script_callback: Option<(u8, u32)>,
 }
 
 /// A bounded, preallocated route buffer. Interior mutation permits observation
@@ -112,7 +115,7 @@ pub struct RouteBuffer {
     events: Box<[std::cell::Cell<Option<RouteValue>>]>,
     len: std::cell::Cell<usize>,
     dropped: std::cell::Cell<u64>,
-    context: std::cell::Cell<Option<(usize, usize, u8)>>,
+    context: std::cell::Cell<Option<(usize, usize, u128, bool)>>,
 }
 
 impl RouteBuffer {
@@ -126,14 +129,18 @@ impl RouteBuffer {
         }
     }
     pub fn begin(&self, voice: usize, zone: usize, controller: u8) {
-        self.context.set(Some((voice, zone, controller)));
+        self.context
+            .set(Some((voice, zone, 1u128 << controller, false)));
+    }
+    pub fn begin_mask(&self, voice: usize, zone: usize, controllers: u128) {
+        self.context.set(Some((voice, zone, controllers, true)));
     }
     pub fn end(&self) {
         self.context.set(None);
     }
     #[must_use]
-    pub fn controller(&self) -> Option<u8> {
-        self.context.get().map(|x| x.2)
+    pub fn controllers(&self) -> u128 {
+        self.context.get().map_or(0, |x| x.2)
     }
     pub fn push(
         &self,
@@ -143,8 +150,10 @@ impl RouteBuffer {
         value: f32,
         unit: RouteUnit,
         direct: bool,
+        controller: u8,
+        script_callback: Option<(u8, u32)>,
     ) {
-        let Some((voice_slot, zone, controller)) = self.context.get() else {
+        let Some((voice_slot, zone, _, timed_refresh)) = self.context.get() else {
             return;
         };
         let at = self.len.get();
@@ -161,6 +170,8 @@ impl RouteBuffer {
                 value,
                 unit,
                 direct_controller_source: direct,
+                timed_refresh,
+                script_callback,
             }));
             self.len.set(at + 1);
         } else {

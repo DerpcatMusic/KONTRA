@@ -152,6 +152,8 @@ impl Engine {
             slot.pan = [pan; 2];
             slot.warp = [0.0; modulators::WARPS];
             slot.chaos = [modulators::CHAOS_START; modulators::WARPS];
+            #[cfg(feature = "trace")]
+            slot.pending_trace_cc.set(0);
             self.start_rack(i, zone, &n, self.age(now, None));
         }
     }

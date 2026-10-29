@@ -46,10 +46,18 @@ impl Engine {
                     .groups
                     .get(zone.group as usize)
                     .is_some_and(|g| !g.envelopes.is_empty() || !g.lfos.is_empty());
+            #[cfg(feature = "trace")]
+            let pending = slot.pending_trace_cc.replace(0);
             let n = slot.note.and_then(|n| self.notes.get(n).copied());
             let (Some(n), true, true) = (n, timed, slot.voice.is_active()) else {
                 continue;
             };
+            #[cfg(feature = "trace")]
+            if pending != 0
+                && let Some(trace) = &self.trace
+            {
+                trace.routes.begin_mask(i, slot.zone, pending);
+            }
             let rate = self.rate;
             let span = (MAX_SPAN - self.now.0 % MAX_SPAN) as f32 / rate as f32;
             let chaos = self.chaos(zone, slot.chaos, span);
@@ -66,6 +74,10 @@ impl Engine {
             let (step, bend) = self.step(zone, &n, age);
             let law = self.plan.route_pitch;
             self.retune_rack(i, zone, &n, age);
+            #[cfg(feature = "trace")]
+            if let Some(trace) = &self.trace {
+                trace.routes.end();
+            }
             if let Some(slot) = self.voices.get_mut(i) {
                 slot.voice.set_gain(gain);
                 slot.voice.set_lag(lag);
@@ -109,7 +121,11 @@ impl Engine {
             } = m.kind
                 && let Some((hz, range)) = added.get_mut(usize::from(lfo))
             {
-                *hz += self.source(zone, source, note, age).unwrap_or(0.0) * depth * (hi - lo);
+                let input = self.source(zone, source, note, age);
+                let value = input.unwrap_or(0.0) * depth * (hi - lo);
+                #[cfg(feature = "trace")]
+                self.trace_route(zone, m, input, value, crate::RouteUnit::LfoHertz);
+                *hz += value;
                 *range = Some([lo, hi.max(lo)]);
             }
         }

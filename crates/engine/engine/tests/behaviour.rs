@@ -2116,3 +2116,126 @@ fn voice_snapshot_reports_the_playing_envelope_and_pitch() {
     assert_eq!(after.envelope_stage, "release");
     assert!(after.last_peak > 0.0);
 }
+
+#[cfg(feature = "trace")]
+#[test]
+fn controller_route_trace_is_the_value_used_and_preserves_audio() {
+    use kontra_engine::RouteUnit;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].mods = vec![
+        ir::Mod {
+            name: "volume".into(),
+            slot: 1,
+            target: 0,
+            bypass: false,
+            kind: ir::ModKind::Volume {
+                source: ir::Source::Controller(1),
+                intensity: 1.0,
+                curve: ir::Curve::Depth { power: 1 },
+                tau_ms: 0.0,
+            },
+        },
+        ir::Mod {
+            name: "pan".into(),
+            slot: 2,
+            target: 0,
+            bypass: false,
+            kind: ir::ModKind::Pan {
+                source: ir::Source::Controller(1),
+                amount: 0.5,
+            },
+        },
+        ir::Mod {
+            name: "pitch".into(),
+            slot: 3,
+            target: 0,
+            bypass: false,
+            kind: ir::ModKind::Pitch {
+                source: ir::Source::Controller(1),
+                semitones: 12.0,
+                depth: 1.0,
+                tau_ms: 0.0,
+            },
+        },
+    ];
+    let plan = Arc::new(plan);
+    let mut normal = Engine::new(Arc::clone(&plan), store.client(), RATE);
+    let mut traced = Engine::new_traced(plan, store.client(), RATE, 128);
+    for events in [&[on(60, 1.0)][..], &[cc(1, 64)][..]] {
+        let mut a = [[0.0; 2]; 256];
+        let mut b = [[0.0; 2]; 256];
+        let input: Vec<_> = events
+            .iter()
+            .map(|e| Timed {
+                at: normal.now(),
+                body: e.body,
+            })
+            .collect();
+        normal.process(&mut a, &input);
+        traced.process(&mut b, &input);
+        assert_eq!(a, b, "observer changed the audio");
+    }
+    let routes: Vec<_> = traced
+        .trace_route_values()
+        .filter(|v| v.controller == 1 && !v.timed_refresh)
+        .collect();
+    let input = 64.0 / 127.0;
+    assert!(
+        routes
+            .iter()
+            .any(|v| matches!(v.unit, RouteUnit::GainMultiplier)
+                && (v.value - input).abs() < 1e-5
+                && v.direct_controller_source)
+    );
+    assert!(routes.iter().any(|v| matches!(v.unit, RouteUnit::Pan)
+        && (v.value - input * 0.5).abs() < 1e-5
+        && v.direct_controller_source));
+    assert!(routes.iter().any(|v| matches!(v.unit, RouteUnit::Semitones)
+        && (v.value - input * 12.0).abs() < 1e-5
+        && v.direct_controller_source));
+    assert_eq!(traced.trace_dropped(), 0);
+}
+
+#[cfg(feature = "trace")]
+#[test]
+fn timed_lfo_route_retains_all_ccs_received_before_the_span() {
+    use kontra_engine::RouteUnit;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].lfos.push(ir::Lfo {
+        wave: ir::Wave::Sine,
+        rate: ir::Rate::Hz(2.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: ir::Clock::Voice,
+    });
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "rate".into(),
+        slot: 9,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::LfoHz {
+            source: ir::Source::Controller(1),
+            lfo: 0,
+            depth: 1.0,
+            range_hz: [1.0, 5.0],
+        },
+    }];
+    let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
+    level(&mut engine, &[on(60, 1.0)]);
+    level(&mut engine, &[cc(1, 64), cc(11, 127)]);
+    let routes: Vec<_> = engine
+        .trace_route_values()
+        .filter(|v| matches!(v.unit, RouteUnit::LfoHertz))
+        .collect();
+    assert!(routes.iter().any(|v| v.controller == 1
+        && v.timed_refresh
+        && v.direct_controller_source
+        && (v.value - (64.0 / 127.0 * 4.0)).abs() < 1e-5));
+    assert!(
+        routes
+            .iter()
+            .any(|v| v.controller == 11 && v.timed_refresh && !v.direct_controller_source)
+    );
+}

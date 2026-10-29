@@ -130,6 +130,8 @@ struct Slot {
     warp: [f32; modulators::WARPS],
     /// Its chaotic LFOs' states ([`modulators::Chaos`]).
     chaos: [modulators::Chaos; modulators::WARPS],
+    #[cfg(feature = "trace")]
+    pending_trace_cc: std::cell::Cell<u128>,
 }
 
 /// Per control, the parameters a script set other than its value.
@@ -272,6 +274,8 @@ impl Engine {
                 pan: [0.0; 2],
                 warp: [0.0; modulators::WARPS],
                 chaos: [modulators::CHAOS_START; modulators::WARPS],
+                #[cfg(feature = "trace")]
+                pending_trace_cc: std::cell::Cell::new(0),
             })
             .collect();
         let buses = plan.buses.iter().map(|b| BusState::new(b, rate)).collect();
@@ -707,6 +711,17 @@ impl Engine {
             if slot.note != Some(note) || !slot.voice.is_active() {
                 continue;
             }
+            #[cfg(feature = "trace")]
+            let trace_cc = cc.or_else(|| {
+                (self.running.kind == Kind::Controller).then_some(self.running.controller)
+            });
+            #[cfg(feature = "trace")]
+            if self.trace.is_some()
+                && let Some(cc) = trace_cc
+            {
+                slot.pending_trace_cc
+                    .set(slot.pending_trace_cc.get() | (1u128 << cc));
+            }
             let Some(zone) = plan.zones.get(slot.zone) else {
                 continue;
             };
@@ -719,7 +734,7 @@ impl Engine {
                 ..self.age(slot.started, slot.released_at)
             };
             #[cfg(feature = "trace")]
-            if let (Some(trace), Some(cc)) = (&self.trace, cc) {
+            if let (Some(trace), Some(cc)) = (&self.trace, trace_cc) {
                 trace.routes.begin(i, slot.zone, cc);
             }
             let pan = [slot.pan[0], self.group_pan(zone)];

@@ -131,7 +131,8 @@ pub fn route(value: &RouteValue, plan: &Plan, samples: &[Option<String>]) -> Val
         _ => "raw source",
     };
     json!({"frame":value.frame,"voice_slot":value.voice_slot,"zone":value.zone,"sample":samples.get(value.zone),
-        "controller":value.controller,"direct_controller_source":value.direct_controller_source,
+        "controller":value.controller,"direct_controller_source":value.direct_controller_source,"script_callback":value.script_callback,
+        "evaluation":if value.timed_refresh {"timed_span_after_controller"} else {"controller_refresh"},
         "mod_slot":value.mod_slot,"target":value.target,"name":name,"route":super::routes::route(value.kind),
         "input":value.source,"input_domain":input_domain,"contribution":value.value,"unit":format!("{:?}",value.unit),
         "meaning":"contribution evaluated in controller-triggered voice refresh; before smoothing, combining and final clamping"})

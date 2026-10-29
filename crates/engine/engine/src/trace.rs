@@ -128,15 +128,18 @@ impl crate::Engine {
         unit: RouteUnit,
     ) {
         let Some(trace) = &self.trace else { return };
-        let Some(cc) = trace.routes.controller() else {
-            return;
-        };
-        let direct = self
-            .groups
-            .get(zone.group as usize)
-            .is_some_and(|g| kontra_plan::route_source(route.kind).is_some_and(|s| g.reads(s, cc)));
-        trace
-            .routes
-            .push(self.now.0, route, source, value, unit, direct);
+        let mut controllers = trace.routes.controllers();
+        while controllers != 0 {
+            let cc = controllers.trailing_zeros() as u8;
+            controllers &= controllers - 1;
+            let direct = self.groups.get(zone.group as usize).is_some_and(|g| {
+                kontra_plan::route_source(route.kind).is_some_and(|s| g.reads(s, cc))
+            });
+            let callback = (self.running.kind == crate::Kind::Controller)
+                .then_some((self.running.slot, self.running.callback_id));
+            trace
+                .routes
+                .push(self.now.0, route, source, value, unit, direct, cc, callback);
+        }
     }
 }
