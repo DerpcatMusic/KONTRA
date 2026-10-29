@@ -4,7 +4,7 @@
 //! reports its release, a table sets the cells a drag crosses, a text edit
 //! takes typed text.
 
-use kontra_ui::input::{self, Edit, Gesture};
+use kontra_ui::input::{self, Edit, Gesture, Set};
 use kontra_ui::{Pictures, view};
 use kontra_ui_model::{
     self as model, Interface, Kind, MenuItem, Page, PageRef, Range, Rect, Size, Widget, WidgetRef,
@@ -210,13 +210,11 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     assert_eq!(f.value(0), 25.);
     assert!(reset.contains(&Edit {
         widget: WidgetRef(0),
-        cell: None,
-        value: 25.,
+        to: Set::Value(25.),
         keys: kontra_ui_model::UiModifiers {
             ctrl: true,
             ..Default::default()
         },
-        text: None,
     }));
     // The wheel down turns it down.
     f.frame(Input {
@@ -250,7 +248,10 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     assert_eq!(released.len(), 1, "a moved drag reports its release too");
     // A click that moves nothing still reports its release.
     let still = f.click(&edit, Mods::default());
-    assert_eq!(still.iter().map(|e| e.value).collect::<Vec<_>>(), [5.]);
+    assert_eq!(
+        still.iter().map(|e| &e.to).collect::<Vec<_>>(),
+        [&Set::Value(5.)]
+    );
     // That was a double click: what is typed replaces the number, Enter sets it.
     let key = |key| Input {
         keys: vec![KeyPress {
@@ -274,8 +275,8 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     crossed.extend(f.pointer(Point::new(mid.x + 35., mid.y), false, Mods::default()));
     crossed.extend(f.frame(Input::default()));
     assert_eq!(
-        crossed.iter().map(|e| e.cell).collect::<Vec<_>>(),
-        [Some(0), Some(1), Some(2), Some(3)]
+        crossed.iter().map(|e| e.to.clone()).collect::<Vec<_>>(),
+        [0, 1, 2, 3].map(|k| Set::Cell(k, 50.))
     );
     assert_eq!(
         f.tree.widgets[4].value,
@@ -290,7 +291,7 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     let mut typed = f.frame(key(Key::Enter));
     typed.extend(f.frame(Input::default()));
     assert_eq!(typed.len(), 1);
-    assert_eq!(typed[0].text.as_deref(), Some("Hi"));
+    assert_eq!(typed[0].to, Set::Text("Hi".into()));
     assert_eq!(f.tree.widgets[5].text, "Hi");
     // Then it rests: no frame while nothing moves.
     for _ in 0..30 {

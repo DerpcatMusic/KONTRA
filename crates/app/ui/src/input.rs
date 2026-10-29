@@ -14,17 +14,24 @@ use mui::prelude::*;
 use crate::kit;
 use crate::theme::TEXT;
 
-/// One control set to a value by the user, and the modifier keys held at
-/// the click (a script reads them as `$CONTROL_PAR_KEY_*`).
+/// One control set by the user, and the modifier keys held at the click
+/// (a script reads them as `$CONTROL_PAR_KEY_*`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Edit {
     pub widget: WidgetRef,
-    /// The zero-based cell of a table; `None` for any other control.
-    pub cell: Option<u32>,
-    pub value: f64,
+    pub to: Set,
     pub keys: model::UiModifiers,
-    /// The text typed into a text edit; `None` for any other control.
-    pub text: Option<String>,
+}
+
+/// What an [`Edit`] sets.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Set {
+    /// The control's value.
+    Value(f64),
+    /// One zero-based cell of a table.
+    Cell(u32, f64),
+    /// A text edit's text.
+    Text(String),
 }
 
 /// A page's gesture in flight: the control pressed and its value then, the
@@ -168,12 +175,10 @@ pub fn read(
                 cmd: r.press_mods.cmd,
             },
         };
-        let edit = |cell, value| Edit {
+        let edit = |to| Edit {
             widget: n,
-            cell,
-            value,
+            to,
             keys,
-            text: None,
         };
         if matches!(w.kind, Kind::Table { .. }) {
             if r.held {
@@ -185,7 +190,7 @@ pub fn read(
         let before = edits.len();
         let mut set = |v: f64| {
             if v != now {
-                edits.push(edit(None, v));
+                edits.push(edit(Set::Value(v)));
             }
         };
         if let Some(range) = range(&w.kind) {
@@ -235,7 +240,7 @@ pub fn read(
                 g.press = None;
                 // The source runs its callback on release, moved or not.
                 if w.reports_release && edits.len() == before {
-                    edits.push(edit(None, now));
+                    edits.push(edit(Set::Value(now)));
                 }
             }
             continue;
@@ -279,7 +284,7 @@ fn cells(
     id: &str,
     delta: Vec2,
     w: &model::Widget,
-    edit: &dyn Fn(Option<u32>, f64) -> Edit,
+    edit: &dyn Fn(Set) -> Edit,
 ) -> Vec<Edit> {
     let Kind::Table {
         columns,
@@ -325,7 +330,7 @@ fn cells(
                 first - step
             };
             let v = height(from.y + (pos.y - from.y) * k);
-            (cell(w, c) != Some(v)).then(|| edit(Some(c), v))
+            (cell(w, c) != Some(v)).then(|| edit(Set::Cell(c, v)))
         })
         .collect()
 }
@@ -356,10 +361,8 @@ fn menu(
     if let Some(item) = menu.changed.and_then(|k| shown.get(k)) {
         edits.push(Edit {
             widget: WidgetRef(m),
-            cell: None,
-            value: f64::from(item.value),
+            to: Set::Value(f64::from(item.value)),
             keys: model::UiModifiers::default(),
-            text: None,
         });
         g.menu = None;
     }
@@ -402,12 +405,10 @@ fn entry(
         return Some(kit::popup(&id, row![typed.el.w(TEXT * 6.)]));
     }
     ui.blur();
-    let set = |value, text| Edit {
+    let set = |to| Edit {
         widget: WidgetRef(m),
-        cell: None,
-        value,
+        to,
         keys: model::UiModifiers::default(),
-        text,
     };
     match &w.kind {
         Kind::ValueEdit { range, display, .. } => {
@@ -417,9 +418,9 @@ fn entry(
                 display.ratio
             };
             let typed = text.trim().parse::<f64>().ok().filter(|v| v.is_finite());
-            edits.extend(typed.map(|v| set(snap(*range, v * ratio), None)));
+            edits.extend(typed.map(|v| set(Set::Value(snap(*range, v * ratio)))));
         }
-        Kind::TextEdit => edits.push(set(0., Some(text))),
+        Kind::TextEdit => edits.push(set(Set::Text(text))),
         _ => {}
     }
     None
@@ -428,31 +429,24 @@ fn entry(
 /// Shows `edits` in `tree` at once, before the host's next refresh.
 pub fn apply(tree: &mut Interface, edits: &[Edit]) {
     for e in edits {
-        if let Some(w) = tree.widgets.get_mut(e.widget.0) {
-            if let Some(text) = &e.text {
-                w.text.clone_from(text);
-                continue;
-            }
-            if let Some(k) = e.cell {
-                match &mut w.value {
-                    Some(model::Value::Integers(v)) => {
-                        if let Some(c) = v.get_mut(k as usize) {
-                            *c = e.value.round() as i32;
-                        }
-                    }
-                    Some(model::Value::Reals(v)) => {
-                        if let Some(c) = v.get_mut(k as usize) {
-                            *c = e.value;
-                        }
-                    }
-                    _ => {}
+        let Some(w) = tree.widgets.get_mut(e.widget.0) else {
+            continue;
+        };
+        match (&e.to, &mut w.value) {
+            (Set::Text(text), _) => w.text.clone_from(text),
+            (&Set::Cell(k, v), Some(model::Value::Integers(cells))) => {
+                if let Some(c) = cells.get_mut(k as usize) {
+                    *c = v.round() as i32;
                 }
-                continue;
             }
-            w.value = Some(match w.value {
-                Some(model::Value::Real(_)) => model::Value::Real(e.value),
-                _ => model::Value::Integer(e.value.round() as i32),
-            });
+            (&Set::Cell(k, v), Some(model::Value::Reals(cells))) => {
+                if let Some(c) = cells.get_mut(k as usize) {
+                    *c = v;
+                }
+            }
+            (Set::Cell(..), _) => {}
+            (&Set::Value(v), Some(model::Value::Real(_))) => w.value = Some(model::Value::Real(v)),
+            (&Set::Value(v), _) => w.value = Some(model::Value::Integer(v.round() as i32)),
         }
     }
 }
