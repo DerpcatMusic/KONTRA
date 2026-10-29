@@ -429,7 +429,7 @@ fn solid_eq(
         bell(flag(8)?, ir::Shape::LowShelf),
         bell(flag(41)?, ir::Shape::HighShelf),
     ];
-    *knobs = crate::script_knobs::solid_knobs(saved, shapes);
+    *knobs = crate::solid_knobs::solid_knobs(saved, shapes);
     let [lg, lh, mg, mh, mq, hg, hh, hq, fg, fh] = saved;
     let [lf, hf] = shapes;
     Some(ir::EffectKind::Eq(crate::laws::solid_eq(
