@@ -17,8 +17,8 @@ pub use drive::{
     SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
-    Compressor, Delay, DelayTime, Detector, IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb,
-    Transient,
+    Compressor, Delay, DelayTime, Detector, Formant, IDENTITY, ImpulseCuts, Limiter, Matrix,
+    Phaser, Reverb, Transient, VowelSet,
 };
 pub use mods::{Blend, Factor, ModKind, Term, Transfer};
 pub use reverb::{CombNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar};
@@ -703,24 +703,6 @@ pub enum EffectKind {
     /// Not carried, a parallel path (a reverb, a delay): only the dry level
     /// passes. The translator reports it.
     OtherWet,
-}
-
-/// Three resonant band-passes in parallel placed by a vowel table: `talk`
-/// sweeps the vowels, `size` scales the centres, `sharp` narrows and lifts
-/// the bands (each 0..=1); `set` picks the vowels.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Formant {
-    pub talk: f32,
-    pub sharp: f32,
-    pub size: f32,
-    pub set: VowelSet,
-}
-
-/// Which five vowels of the table `talk` sweeps.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VowelSet {
-    First,
-    Second,
 }
 
 /// `stages` two-pole state-variable stages in series at `hz` (none: one
