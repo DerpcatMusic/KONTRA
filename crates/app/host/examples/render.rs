@@ -105,6 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 source,
                 saved: Vec::new(),
                 data: Vec::new(),
+                links: Vec::new(),
             });
         }
     }

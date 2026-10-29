@@ -62,6 +62,7 @@ pub(crate) fn instrument(
         preload: params.dfd_channel_preload_size,
     };
     let mut resources = None;
+    let links = crate::links::links(&program.0.private_data);
     for (slot, chunk) in (program.0.children.iter().filter(|c| c.id == SCRIPT)).enumerate() {
         let script = BParScript::try_from(chunk)
             .and_then(|s| s.params())
@@ -75,6 +76,10 @@ pub(crate) fn instrument(
                 source: text,
                 saved: (saved.get(slot).filter(|s| !s.is_empty()).cloned())
                     .unwrap_or(script.persistent),
+                links: (links.iter())
+                    .filter(|(s, _)| usize::from(*s) == slot)
+                    .map(|&(_, l)| l)
+                    .collect(),
             }),
             _ => {
                 if let Some(file) = script.textfile_name.filter(|n| !n.is_empty()) {

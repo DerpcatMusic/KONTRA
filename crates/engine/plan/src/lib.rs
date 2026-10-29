@@ -11,7 +11,7 @@ mod slots;
 
 pub use engine_pars::{EnginePar, EnginePars};
 pub use route::{held_time, route_source};
-pub use script::{Callbacks, Controls, LookPars, ScriptPlan};
+pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
 
 use std::ops::RangeInclusive;
 

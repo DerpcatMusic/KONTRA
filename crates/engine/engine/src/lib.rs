@@ -69,7 +69,7 @@ pub use plan::{
     Zone,
 };
 pub use queue::Timed;
-pub use script::{Callbacks, Controls, LookPars, ScriptPlan};
+pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
 #[cfg(feature = "trace")]
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;

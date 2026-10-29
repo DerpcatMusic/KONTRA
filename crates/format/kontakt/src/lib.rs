@@ -14,6 +14,7 @@ mod fastlz;
 mod impulse;
 mod laws;
 mod legacy_reverb;
+mod links;
 mod replika;
 mod resources;
 mod reverb;

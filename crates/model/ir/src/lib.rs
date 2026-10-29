@@ -9,6 +9,7 @@ use std::sync::Arc;
 mod bus;
 mod drive;
 mod effects;
+mod link;
 mod mods;
 mod output;
 mod reverb;
@@ -23,6 +24,7 @@ pub use effects::{
     Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
     IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
 };
+pub use link::{CcLink, Linked};
 pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Term, Transfer, Wave};
 pub use output::{Balance, Output, OutputControllers};
 pub use reverb::{
@@ -738,7 +740,7 @@ impl Bell {
     };
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Script {
     pub name: String,
     pub dialect: Dialect,
@@ -749,6 +751,8 @@ pub struct Script {
     /// `data/x.nka`), by lowercase array name without its sigil. Lua: the
     /// modules `require` may load, by their path in the library.
     pub data: Vec<(String, Vec<u8>)>,
+    /// MIDI controllers that move this script's controls.
+    pub links: Vec<CcLink>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -625,6 +625,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 source,
                 saved,
                 data,
+                links: Vec::new(),
             });
         }
     }

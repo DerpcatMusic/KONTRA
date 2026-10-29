@@ -327,6 +327,8 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO, per_slot=None, cp
                 cpu["samples"].append((time.monotonic(), kontakt_ticks()))
             time.sleep(0.1)
         time.sleep(0.5)
+        if os.environ.get("ORACLE_SHOT"):  # the screen as the MIDI left it (e.g. a script control a CC moved)
+            subprocess.run(["import", "-window", "root", os.environ["ORACLE_SHOT"]], env=env, check=False)
         log(work, f"session end: sink={sink_state()} links={kontakt_links()}")
     finally:
         diag["links_end"] = kontakt_links()
