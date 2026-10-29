@@ -110,6 +110,8 @@ pub struct VoiceObservation {
     pub position: f64,
     pub released: bool,
     pub gain: kontra_voice::Gain,
+    /// Source frames this voice read as silence because data was unavailable.
+    pub missing_frames: u64,
     /// Peak of the last voice render, before group effects.
     #[cfg(feature = "trace")]
     pub last_peak: f32,
@@ -128,6 +130,24 @@ pub struct EqRouteObservation {
 }
 
 impl Engine {
+    /// Enable blocking page waits in every voice for offline rendering only.
+    #[cfg(feature = "trace")]
+    pub fn set_offline_wait(&mut self, enabled: bool) {
+        for slot in &mut self.voices {
+            slot.voice.set_offline_wait(enabled);
+        }
+    }
+
+    /// Count offline waits that timed out across all voice slots.
+    #[cfg(feature = "trace")]
+    #[must_use]
+    pub fn offline_wait_timeouts(&self) -> u64 {
+        self.voices
+            .iter()
+            .map(|s| s.voice.offline_wait_timeouts())
+            .sum()
+    }
+
     /// Samples active voices between process calls; gain is not isolated audio level.
     pub fn inspect_voices(&self) -> impl Iterator<Item = VoiceObservation> + '_ {
         self.voices
@@ -138,6 +158,7 @@ impl Engine {
                 position: s.voice.position(),
                 released: s.released,
                 gain: s.voice.current_gain(),
+                missing_frames: s.voice.missing_frames(),
                 #[cfg(feature = "trace")]
                 last_peak: s.voice.last_peak(),
             })
