@@ -68,6 +68,31 @@ check() { if differ "$1" "$2" "${4:-}"; then pass "$3"; else miss "$3"; fi; }
 still() { if differ "$1" "$2" "${4:-}"; then miss "$3"; else pass "$3"; fi; }
 
 shot 0-open
+# UVI's script page font styling; UVI_FONT_BEFORE can name a pre-change
+# capture to check that the page actually changed in the real window.
+if [[ ${UVI_FONT_ONLY:-0} == 1 ]]; then
+    if [[ -n ${UVI_FONT_BEFORE:-} ]]; then
+        if python3 -I -c 'import sys; from PIL import Image, ImageChops
+a, b = (Image.open(p).convert("RGB").crop((790,478,840,495)) for p in sys.argv[1:])
+sys.exit(0 if ImageChops.difference(a,b).getbbox() else 1)' "$UVI_FONT_BEFORE" "$out/0-open.png"; then
+            pass "UVI script font styling changes the page"
+        else miss "UVI script font styling changes the page"; fi
+    fi
+    ticks_uvi() {
+        local sum=0 t
+        for t in /proc/"$editor"/task/*; do
+            [[ $(<"$t/comm") == cpal* ]] && continue
+            sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+        done
+        echo "$sum"
+    }
+    at 1900,1270; sleep 2
+    span=${IDLE_S:-60}; t0=$(ticks_uvi); sleep "$span"; t1=$(ticks_uvi)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
 # Pacific's unpictured knob: the top ring is lit and the bottom is shadowed.
 # STOCK_ONLY is a short, real-window check for that stock skin.
 if [[ ${STOCK_ONLY:-0} == 1 ]]; then

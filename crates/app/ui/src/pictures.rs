@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
 use kontra_ui_model::{AssetRef, ImageMeta, Orientation};
-use mui::prelude::Image;
+use mui::prelude::{Font, Image};
 
 /// Reads a library-relative path; `None` when there is no such file.
 pub type Read = dyn Fn(&str) -> Option<Vec<u8>> + Send;
@@ -31,9 +31,13 @@ struct Job {
     scale: f32,
     /// A picture font: decoded at its own pixels, its glyphs cut by marker.
     font: bool,
+    outline: bool,
 }
 
-type Done = (AssetRef, u32, f32, bool, Option<Arc<Image>>);
+enum Done {
+    Image(AssetRef, u32, f32, bool, Option<Arc<Image>>),
+    Outline(AssetRef, Option<Font>),
+}
 
 /// A picture font's 256 glyphs, in Windows-1252 order.
 pub type Glyphs = Arc<[Arc<Image>]>;
@@ -57,6 +61,7 @@ pub struct Pictures {
     ready: HashMap<(AssetRef, u32), Option<Arc<Image>>>,
     last: HashMap<AssetRef, Arc<Image>>,
     fonts: HashMap<AssetRef, Option<Glyphs>>,
+    outlines: HashMap<AssetRef, Option<Font>>,
     pending: usize,
     /// The scale the frames in `ready` decoded at.
     scale: f32,
@@ -81,6 +86,14 @@ impl Pictures {
             let mut decoded = HashMap::<u64, Option<Arc<Image>>>::new();
             let mut scale = 1.;
             for job in inbox {
+                if job.outline {
+                    let font = read(&job.path).and_then(|bytes| Font::new(bytes).ok());
+                    if outbox.send(Done::Outline(job.asset, font)).is_err() {
+                        break;
+                    }
+                    ARRIVED.store(true, Ordering::Release);
+                    continue;
+                }
                 if !job.font && job.scale != scale {
                     decoded.clear();
                     scale = job.scale;
@@ -103,7 +116,9 @@ impl Pictures {
                         .clone()
                 });
                 if outbox
-                    .send((job.asset, job.frame, job.scale, job.font, image))
+                    .send(Done::Image(
+                        job.asset, job.frame, job.scale, job.font, image,
+                    ))
                     .is_err()
                 {
                     break;
@@ -117,6 +132,7 @@ impl Pictures {
             ready: HashMap::new(),
             last: HashMap::new(),
             fonts: HashMap::new(),
+            outlines: HashMap::new(),
             pending: 0,
             scale: 1.,
         }
@@ -154,6 +170,7 @@ impl Pictures {
                     meta,
                     scale,
                     font: false,
+                    outline: false,
                 };
                 if self.jobs.send(job).is_ok() {
                     self.pending += 1;
@@ -167,8 +184,16 @@ impl Pictures {
     /// view should be drawn again.
     pub fn poll(&mut self) -> bool {
         let mut arrived = false;
-        while let Ok((asset, n, scale, font, image)) = self.done.try_recv() {
+        while let Ok(done) = self.done.try_recv() {
             self.pending = self.pending.saturating_sub(1);
+            let (asset, n, scale, font, image) = match done {
+                Done::Image(asset, n, scale, font, image) => (asset, n, scale, font, image),
+                Done::Outline(asset, font) => {
+                    arrived |= font.is_some();
+                    self.outlines.insert(asset, font);
+                    continue;
+                }
+            };
             if font {
                 let glyphs = image.as_deref().and_then(glyphs);
                 arrived |= glyphs.is_some();
@@ -201,6 +226,28 @@ impl Pictures {
             meta: ImageMeta::default(),
             scale: 1.,
             font: true,
+            outline: false,
+        };
+        if self.jobs.send(job).is_ok() {
+            self.pending += 1;
+        }
+        None
+    }
+
+    /// A library outline face, read and parsed on the worker.
+    pub fn outline_font(&mut self, asset: AssetRef, path: &str) -> Option<Font> {
+        if let Some(font) = self.outlines.get(&asset) {
+            return font.clone();
+        }
+        self.outlines.insert(asset, None);
+        let job = Job {
+            asset,
+            frame: 0,
+            path: path.to_owned(),
+            meta: ImageMeta::default(),
+            scale: 1.,
+            font: false,
+            outline: true,
         };
         if self.jobs.send(job).is_ok() {
             self.pending += 1;
@@ -486,6 +533,35 @@ mod tests {
 
     /// A picture font cut at its red markers: 256 glyphs of their own
     /// widths, the marker row dropped; characters map by Windows-1252.
+    #[test]
+    fn outline_font_is_read_once_off_thread_and_missing_fonts_settle() {
+        let mut pictures = Pictures::new(Box::new(|path| {
+            (path == "font.ttf").then(|| crate::theme::NOTO_SANS.to_vec())
+        }));
+        assert!(pictures.outline_font(AssetRef(0), "font.ttf").is_none());
+        assert!(pictures.outline_font(AssetRef(1), "missing.ttf").is_none());
+        assert!(pictures.outline_font(AssetRef(0), "font.ttf").is_none());
+        assert_eq!(pictures.pending(), 2);
+        for _ in 0..1000 {
+            pictures.poll();
+            if pictures.pending() == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let font = pictures.outline_font(AssetRef(0), "font.ttf");
+        assert!(font.is_some());
+        assert_eq!(
+            font.as_ref().map(Font::id),
+            pictures
+                .outline_font(AssetRef(0), "font.ttf")
+                .as_ref()
+                .map(Font::id)
+        );
+        assert!(pictures.outline_font(AssetRef(1), "missing.ttf").is_none());
+        assert_eq!(pictures.pending(), 0);
+    }
+
     #[test]
     fn a_picture_font_cuts_into_its_256_glyphs() {
         // Glyph n is n % 3 + 1 pixels wide, two rows tall under the markers.

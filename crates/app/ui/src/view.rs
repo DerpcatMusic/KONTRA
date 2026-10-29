@@ -132,6 +132,13 @@ fn drawn_page(
             }
             _ => None,
         };
+        let outline = match style.map(|s| &s.font) {
+            Some(&model::Font::File(a)) if !words.is_empty() => tree
+                .assets
+                .get(a.0)
+                .and_then(|asset| pictures.outline_font(a, &asset.path)),
+            _ => None,
+        };
         let lit = match wd.kind {
             Kind::LevelMeter {
                 orientation,
@@ -154,6 +161,7 @@ fn drawn_page(
             glyphs
                 .as_ref()
                 .map(|g| Arc::as_ptr(g).cast::<()>() as usize),
+            outline.as_ref().map(Font::id),
             wd.text_y,
             style.map(|s| (s.color, s.align as u8, s.size.map(f32::to_bits))),
             wd.opacity.to_bits(),
@@ -171,7 +179,18 @@ fn drawn_page(
             if let Some(glyphs) = &glyphs {
                 parts.push(bitmap_words(&words, style, wd, (w, h), scale, glyphs).at(0., 0.));
             } else if !words.is_empty() {
-                parts.push(words_el(&words, style, wd, (w, h), scale, wd.text_y).at(0., 0.));
+                parts.push(
+                    words_el(
+                        &words,
+                        style,
+                        wd,
+                        (w, h),
+                        scale,
+                        wd.text_y,
+                        outline.as_ref(),
+                    )
+                    .at(0., 0.),
+                );
             }
             if let Some((o, t)) = lit {
                 parts.push(meter(&wd.colors, o, t, w, h).at(0., 0.));
@@ -384,6 +403,7 @@ fn words_el(
     (width, height): (f64, f64),
     scale: f64,
     text_y: Option<i32>,
+    font: Option<&Font>,
 ) -> El {
     let size = style.and_then(|s| s.size).map_or(TEXT, f64::from) * scale;
     let ink = style.map_or(Color::srgb(1., 1., 1.), |s| color(s.color));
@@ -407,9 +427,13 @@ fn words_el(
     // Kontakt's factory faces run narrower than ours: a label sized for
     // them steps down to fit rather than cut its words (v1 `TextFont::fit`).
     let said = |k: f64| {
-        text(words.to_owned())
+        let el = text(words.to_owned())
             .text_size(size * k)
-            .fill(Fill::from(ink))
+            .fill(Fill::from(ink));
+        match font {
+            Some(font) => el.font(font.clone()),
+            None => el,
+        }
     };
     // A candidate that wraps is taller than the line, so it loses.
     let el = row([fits([
