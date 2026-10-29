@@ -2410,10 +2410,13 @@ dependencies = [
 name = "kontra-ui"
 version = "0.0.0"
 dependencies = [
+ "dirs",
  "kontra-protocol",
  "kontra-ui-model",
  "mui",
  "png",
+ "sha2",
+ "tempfile",
  "zune-jpeg",
 ]
 

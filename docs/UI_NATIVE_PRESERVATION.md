@@ -81,4 +81,4 @@ larger migration, an application speedup or full framework runtime parity.
 
 ## Optional Kontakt stock artwork
 
-Set `KONTAKT_STOCK_EXECUTABLE` in the host process to the full path of an installed Kontakt 8.13.1 executable before starting the host. KONTRA reads the stock knob artwork on its picture worker; it does not copy or redistribute the artwork. If the path is missing, unreadable, or its image fingerprints do not match, the existing vector stock skin is used. Restart the host after changing the variable. The matching bitmap font is read from the same executable; unavailable artwork or font uses the existing fallback.
+KONTRA looks for installed Kontakt executables in the usual Windows and macOS locations and, on Linux, under Wine prefixes. `KONTAKT_STOCK_EXECUTABLE` overrides discovery. Discovery, extraction and decoding run on a background worker when the editor is created. Decoded artwork is cached in the user's cache directory under the executable's SHA-256; unchanged installs reuse that cache. No artwork is bundled. Unknown or unreadable versions use the vector fallback. Restart the host after changing the override.

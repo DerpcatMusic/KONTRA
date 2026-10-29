@@ -19,7 +19,9 @@ use std::sync::{Arc, mpsc};
 
 use kontra_ui_model::{AssetRef, ImageMeta, Orientation};
 
-mod stock;
+mod cache;
+mod discovery;
+pub(crate) mod stock;
 use mui::prelude::{Font, Image};
 
 /// Reads a library-relative path; `None` when there is no such file.
@@ -100,28 +102,34 @@ impl Pictures {
                     decoded.clear();
                     scale = job.scale;
                 }
-                let image = (if job.path.starts_with("@stock/") {
-                    stock::read(&job.path)
-                } else {
-                    read(&job.path)
-                })
-                .and_then(|bytes| {
-                    let mut h = std::hash::DefaultHasher::new();
-                    bytes.hash(&mut h);
-                    let axis = job.meta.axis == Orientation::Vertical;
-                    (job.frame, job.meta.frames, axis, job.font).hash(&mut h);
-                    decoded
-                        .entry(h.finish())
-                        .or_insert_with(|| {
-                            let image = decode(&bytes, job.meta, job.frame)?;
-                            if job.font {
-                                return Some(Arc::new(image));
-                            }
+                let image = if job.path.starts_with("@stock/") {
+                    stock::frame(&job.path, job.meta, job.frame).and_then(|image| {
+                        if job.font {
+                            Some(Arc::new(image))
+                        } else {
                             let image = look(&image).unwrap_or(image);
                             at(image, job.scale).map(Arc::new)
-                        })
-                        .clone()
-                });
+                        }
+                    })
+                } else {
+                    read(&job.path).and_then(|bytes| {
+                        let mut h = std::hash::DefaultHasher::new();
+                        bytes.hash(&mut h);
+                        let axis = job.meta.axis == Orientation::Vertical;
+                        (job.frame, job.meta.frames, axis, job.font).hash(&mut h);
+                        decoded
+                            .entry(h.finish())
+                            .or_insert_with(|| {
+                                let image = decode(&bytes, job.meta, job.frame)?;
+                                if job.font {
+                                    return Some(Arc::new(image));
+                                }
+                                let image = look(&image).unwrap_or(image);
+                                at(image, job.scale).map(Arc::new)
+                            })
+                            .clone()
+                    })
+                };
                 if outbox
                     .send(Done::Image(
                         job.asset, job.frame, job.scale, job.font, image,
