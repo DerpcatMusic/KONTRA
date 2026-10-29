@@ -241,11 +241,10 @@ fn drawn_page(
                 parts.extend(look.draw(
                     wd,
                     style,
-                    (w, h, scale),
+                    ((w, h, scale), (r.x, r.y, density)),
                     bare,
                     stock_art.as_ref(),
                     stock_glyphs.as_ref(),
-                    (r.x, r.y, density),
                 ));
                 look.size(w, h, scale)
             });

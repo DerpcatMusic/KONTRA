@@ -135,11 +135,10 @@ impl Look {
         &self,
         wd: &Widget,
         style: Option<&TextStyle>,
-        (w, h, scale): (f64, f64, f64),
+        ((w, h, scale), pixels): ((f64, f64, f64), (f64, f64, f64)),
         bare: bool,
         artwork: Option<&[Arc<Image>; 3]>,
         glyphs: Option<&crate::pictures::Glyphs>,
-        pixels: (f64, f64, f64),
     ) -> Vec<El> {
         let bg = bare || !wd.hide.background;
         let ink = |default: u32| style.map_or(rgb(default), |s| super::color(s.color));
