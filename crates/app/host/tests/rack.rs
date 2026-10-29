@@ -283,3 +283,20 @@ fn a_held_part_sounds_its_hold_later_and_its_notes_still_end() {
     let [off, _] = play(&mut audio, &[]);
     assert!(off.abs() < 1e-4, "a note outlived its hold change: {off}");
 }
+
+#[test]
+fn hold_changes_before_one_block_keep_the_latest_release() {
+    let (mut rack, mut audio) = rack();
+    let a = engine(rack.store_mut(), 0.5);
+    rack.install(0, a, part("a"));
+    rack.set_hold(0, 8 * BLOCK as u32);
+    audio.process(BLOCK, &[(0, note(0))]);
+    // The note is due at 8 blocks; both changes land before one block.
+    rack.set_hold(0, 0);
+    rack.set_hold(0, 1);
+    let [off, _] = play(&mut audio, &[]);
+    assert!(
+        off.abs() < 1e-4,
+        "the held note outlived its release: {off}"
+    );
+}

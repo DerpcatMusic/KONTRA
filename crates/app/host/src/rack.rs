@@ -663,7 +663,7 @@ impl RackAudio {
                 Command::Mix(part, mix) => {
                     if let Some(Some(p)) = self.parts.get_mut(part) {
                         if p.mix.channel != mix.channel {
-                            p.release = Some(p.hold);
+                            p.release = p.release.max(Some(p.hold));
                         }
                         p.mix = mix;
                     }
@@ -674,7 +674,9 @@ impl RackAudio {
                     if let Some(Some(p)) = self.parts.get_mut(part)
                         && p.hold != frames
                     {
-                        p.release = Some(p.hold.max(frames));
+                        // The latest release asked for wins: several changes
+                        // may come before one block.
+                        p.release = p.release.max(Some(p.hold.max(frames)));
                         p.hold = frames;
                     }
                 }
