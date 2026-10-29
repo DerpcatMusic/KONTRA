@@ -408,35 +408,21 @@ impl Engine {
                     source,
                     insert: i,
                     depth,
-                } if i == insert && f.ladder.is_some() => {
-                    let Some(x) = self.source(zone, source, note, age) else {
-                        continue;
-                    };
-                    let x = match source {
-                        ir::Source::Lfo(_) | ir::Source::PitchBend => (x + 1.0) * 0.5,
-                        _ => x,
-                    };
-                    let depth = depth * self.scale(zone, source, note, age);
-                    resonance *= ir::Curve::Signed.gain(depth, x);
-                }
-                ir::ModKind::Resonance {
-                    source,
-                    insert: i,
-                    depth,
-                } if i == insert => {
-                    q += self.routed(zone, source, note, age).unwrap_or(0.0) * depth;
-                }
+                } if i == insert => match f.ladder {
+                    Some(_) => {
+                        let depth = depth * self.scale(zone, source, note, age);
+                        let x = self.unit(zone, source, note, age);
+                        resonance *= x.map_or(1.0, |x| ir::Curve::Signed.gain(depth, x));
+                    }
+                    None => q += self.routed(zone, source, note, age).unwrap_or(0.0) * depth,
+                },
                 _ => {}
             }
         }
         let hz = f.hz * (f.octaves * octaves).exp2();
-        let damping = f.damping.map(|k| {
-            let k = match f.ladder {
-                Some(_) => 2.0 * (1.0 - (1.0 - k / 2.0) * resonance),
-                None => k * (-f.q_octaves * q).exp2(),
-            };
-            k.max(MIN_DAMPING)
-        });
+        let damping = f
+            .damping
+            .map(|k| ((2.0 - (2.0 - k) * resonance) * (-f.q_octaves * q).exp2()).max(MIN_DAMPING));
         Some((hz, damping))
     }
 

@@ -35,15 +35,9 @@ impl Engine {
                         curve,
                     } => {
                         // HeldTime is fixed at the voice's start: see `release_counter`.
-                        let x = self.source(zone, source, note, age);
-                        let x = match source {
-                            ir::Source::Lfo(_) | ir::Source::PitchBend => {
-                                x.map(|x| (x + 1.0) * 0.5)
-                            }
-                            _ => x,
-                        };
                         let intensity = intensity * self.scale(zone, source, note, age);
-                        x.map_or(1.0, |x| curve.gain(intensity, x))
+                        self.unit(zone, source, note, age)
+                            .map_or(1.0, |x| curve.gain(intensity, x))
                     }
                     _ => 1.0,
                 })
@@ -245,6 +239,15 @@ impl Engine {
         Some(self.source(zone, source, note, age)? * self.scale(zone, source, note, age))
     }
 
+    /// `s` on 0..=1: a bipolar source read as `(x + 1)/2`.
+    pub(crate) fn unit(&self, zone: &Zone, s: ir::Source, note: &Note, age: Age) -> Option<f32> {
+        let x = self.source(zone, s, note, age)?;
+        Some(match s {
+            ir::Source::Lfo(_) | ir::Source::PitchBend => (x + 1.0) * 0.5,
+            _ => x,
+        })
+    }
+
     /// The product of the [`ir::ModKind::Intensity`] routes on the timed source `of`.
     pub(crate) fn scale(&self, zone: &Zone, of: ir::Source, note: &Note, age: Age) -> f32 {
         if !matches!(of, ir::Source::Lfo(_) | ir::Source::Envelope(_)) {
@@ -259,14 +262,7 @@ impl Engine {
                         source,
                         of: o,
                         depth,
-                    } if o == of => {
-                        let x = self.source(zone, source, note, age)?;
-                        let x = match source {
-                            ir::Source::Lfo(_) | ir::Source::PitchBend => (x + 1.0) * 0.5,
-                            _ => x,
-                        };
-                        Some(1.0 - (1.0 - x) * depth)
-                    }
+                    } if o == of => Some(1.0 - (1.0 - self.unit(zone, source, note, age)?) * depth),
                     _ => None,
                 })
                 .product()
@@ -375,10 +371,7 @@ impl Engine {
                 ir::Source::HeldTime { span_ms } => Some(held_time(span_ms, held)),
                 // Outside the signed families the law compiler (FUN_140873040)
                 // reads a bipolar source without `frange_bi`: 0..=1.
-                ir::Source::PitchBend | ir::Source::Lfo(_) => self
-                    .source(zone, source, note, Age::START)
-                    .map(|x| (x + 1.0) * 0.5),
-                source => self.source(zone, source, note, Age::START),
+                source => self.unit(zone, source, note, Age::START),
             };
             let Some(x) = x else {
                 continue;
