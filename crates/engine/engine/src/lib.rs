@@ -116,6 +116,8 @@ struct Slot {
     bend: [f32; 2],
     /// Its group's pan, gliding the same way.
     pan: [f32; 2],
+    /// Cycles its LFOs' live rate routes added ([`modulators::Age::warp`]).
+    warp: [f32; modulators::WARPS],
 }
 
 /// Per control, the parameters a script set other than its value.
@@ -234,6 +236,7 @@ impl Engine {
                 rack: Vec::new(),
                 bend: [0.0; 2],
                 pan: [0.0; 2],
+                warp: [0.0; modulators::WARPS],
             })
             .collect();
         let buses = plan.buses.iter().map(|b| BusState::new(b, rate)).collect();
@@ -564,6 +567,7 @@ impl Engine {
             slot.factor = factor;
             slot.bend = [bend.semitones; 2];
             slot.pan = [pan; 2];
+            slot.warp = [0.0; modulators::WARPS];
             self.start_rack(i, zone, &n, self.age(now, None));
         }
     }
@@ -739,7 +743,10 @@ impl Engine {
             if cc.is_some_and(|cc| !self.follows(zone, cc)) {
                 continue;
             }
-            let age = self.age(slot.started, slot.released_at);
+            let age = modulators::Age {
+                warp: slot.warp,
+                ..self.age(slot.started, slot.released_at)
+            };
             let pan = [slot.pan[0], self.group_pan(zone)];
             let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age, pan[0]);
             let mix = self.voice_mix(zone, &n, age);
