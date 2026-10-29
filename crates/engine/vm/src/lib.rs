@@ -147,6 +147,11 @@ pub struct Faults {
     pub no_coroutine: u64,
     /// Ill-formed bytecode (a front-end bug): the callback ended.
     pub bad_code: u64,
+    /// The first index out of range: the array's first cell, whether it
+    /// holds texts, and the index, for diagnostics.
+    pub first_out_of_range: Option<(u32, bool, i32)>,
+    /// Where the first division by zero was, as a code position.
+    pub first_divide_by_zero: Option<u32>,
 }
 
 /// Handle of a running or suspended callback: its slot and the slot's
@@ -494,6 +499,7 @@ fn execute(
                     Some(at) => push!(cells.get(at).copied().unwrap_or(0)),
                     None => {
                         faults.out_of_range += 1;
+                        faults.first_out_of_range.get_or_insert((base, false, i));
                         push!(0);
                     }
                 }
@@ -503,7 +509,10 @@ fn execute(
                 let i = int(pop!());
                 match element(base, len, i).and_then(|at| cells.get_mut(at)) {
                     Some(cell) => *cell = v,
-                    None => faults.out_of_range += 1,
+                    None => {
+                        faults.out_of_range += 1;
+                        faults.first_out_of_range.get_or_insert((base, false, i));
+                    }
                 }
             }
             Op::LoadPoly(n) => push!(poly.get(usize::from(n)).copied().unwrap_or(0)),
@@ -526,6 +535,7 @@ fn execute(
                     Some(at) => push_text!(texts.get(at).copied().unwrap_or(Text::EMPTY)),
                     None => {
                         faults.out_of_range += 1;
+                        faults.first_out_of_range.get_or_insert((base, true, i));
                         push_text!(Text::EMPTY);
                     }
                 }
@@ -535,7 +545,10 @@ fn execute(
                 let i = int(pop!());
                 match element(base, len, i).and_then(|at| texts.get_mut(at)) {
                     Some(cell) => *cell = t,
-                    None => faults.out_of_range += 1,
+                    None => {
+                        faults.out_of_range += 1;
+                        faults.first_out_of_range.get_or_insert((base, true, i));
+                    }
                 }
             }
             Op::TFromInt => {
@@ -579,6 +592,7 @@ fn execute(
                     Op::IMul => a.wrapping_mul(b),
                     Op::IDiv | Op::IMod if b == 0 => {
                         faults.divide_by_zero += 1;
+                        faults.first_divide_by_zero.get_or_insert(c.pc - 1);
                         0
                     }
                     Op::IDiv => a.wrapping_div(b),

@@ -703,6 +703,7 @@ fn a_lua_state_restored_after_a_wait_saves_as_restored() {
             source: source.into(),
             saved,
             data: Vec::new(),
+            links: Vec::new(),
         }],
         ..ir::Instrument::DEFAULT
     };

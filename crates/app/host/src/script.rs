@@ -1,6 +1,7 @@
 //! A compiled KSP script as the engine's [`ScriptPlan`].
 
 use kontra_engine::{Callbacks, Controls, EnginePar, EnginePars, LookPars, ScriptPlan, Text};
+use kontra_ksp::ControlKind;
 use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 /// The engine parameters the engine answers, by KSP name.
@@ -135,6 +136,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
         foreign: None,
         hears_own_releases: true,
         held_release_ends_children: true,
+        links: Vec::new(),
         controls: controls(script),
         engine_pars: EnginePars {
             first: SYMBOL_BASE,
@@ -158,6 +160,42 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             .map(|(cell, text)| (*cell, Text::from_str_cut(text).0))
             .collect(),
     }
+}
+
+/// `links` as the engine applies them: each on its control's UI id and
+/// declared range (a switch's is 0..=1); a link to a control the script
+/// lacks is dropped.
+#[must_use]
+pub fn links(script: &Script, links: &[kontra_engine::ir::CcLink]) -> Vec<kontra_engine::CcLink> {
+    use kontra_engine::ir::Linked;
+    links
+        .iter()
+        .filter_map(|l| {
+            let (kind, n) = match l.control {
+                Linked::Knob(n) => (ControlKind::Knob, n),
+                Linked::Slider(n) => (ControlKind::Slider, n),
+                Linked::Switch(n) => (ControlKind::Switch, n),
+            };
+            let c = script
+                .controls
+                .iter()
+                .filter(|c| c.kind == kind)
+                .nth(usize::from(n))?;
+            let (lo, hi) = match (kind, c.params.as_slice()) {
+                (ControlKind::Switch, _) => (0, 1),
+                (_, [lo, hi, ..]) => (i64::from(*lo), i64::from(*hi)),
+                _ => return None,
+            };
+            Some(kontra_engine::CcLink {
+                cc: l.cc,
+                id: FIRST_UI_ID + i32::try_from(c.variable).ok()?,
+                lo,
+                hi,
+                from: l.from,
+                to: l.to,
+            })
+        })
+        .collect()
 }
 
 /// A data file (`.nka`: a name line, then one value per line) as the cells of
@@ -336,5 +374,6 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         hears_own_releases: false,
         // A held-back NoteOff keeps the posted note (`_onRelease` posts it).
         held_release_ends_children: false,
+        links: Vec::new(),
     }
 }

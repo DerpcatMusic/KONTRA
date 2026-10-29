@@ -1808,6 +1808,43 @@ fn a_uvi_script_that_fails_counts_a_fault_and_the_engine_plays_on() {
     assert_eq!(e.script_faults().first().map(|f| f.bad_code), Some(1));
 }
 
+/// Kontakt's MIDI automation (Dolce Legato ties CC 1 to its second slider,
+/// `pts_script_slider_2_40` style): the controller moves the control as an
+/// edit would, over the assignment's range, and its callback runs.
+#[test]
+fn a_controller_tied_to_a_slider_moves_it_and_runs_its_callback() {
+    use kontra_engine::ir::{CcLink, Linked};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = "on init
+            declare ui_slider $a (0, 10)
+            declare ui_knob $k (0, 5, 1)
+            declare ui_slider $dynamics (0, 1000)
+        end on
+        on ui_control ($dynamics)
+            message($dynamics)
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let mut planned = kontra_host::script::plan(&script, &[], &[]);
+    let link = CcLink {
+        cc: 1,
+        control: Linked::Slider(1),
+        from: 0.0,
+        to: 0.5,
+    };
+    planned.links = kontra_host::script::links(&script, &[link]);
+    plan.scripts = vec![planned];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let cc = |v| Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB0, 1, v),
+    };
+    level(&mut e, &[cc(127)]);
+    assert_eq!(e.last_message(), "500");
+    level(&mut e, &[cc(0)]);
+    assert_eq!(e.last_message(), "0");
+}
+
 #[test]
 fn moving_a_control_runs_ui_controls_then_its_ui_control() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();

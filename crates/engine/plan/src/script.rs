@@ -35,6 +35,29 @@ pub struct ScriptPlan {
     /// the key's length (KSP `play_note(.., -1)`); otherwise they play on
     /// until the script ends them (UVI `postEvent`).
     pub held_release_ends_children: bool,
+    /// MIDI controllers that move this script's controls.
+    pub links: Vec<CcLink>,
+}
+
+/// A MIDI controller tied to control `id` (a UI id): its value `v` sets
+/// the control to `lo + (from + (to − from)·v/127)·(hi − lo)`, rounded.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CcLink {
+    pub cc: u8,
+    pub id: i32,
+    pub lo: i64,
+    pub hi: i64,
+    pub from: f32,
+    pub to: f32,
+}
+
+impl CcLink {
+    /// The control's value at controller value `v`.
+    #[must_use]
+    pub fn value(&self, v: u8) -> i64 {
+        let t = f64::from(self.from) + f64::from(self.to - self.from) * f64::from(v) / 127.0;
+        self.lo + (t * (self.hi - self.lo) as f64).round() as i64
+    }
 }
 
 /// The script's UI controls as the engine sees them: ids, and where values live.

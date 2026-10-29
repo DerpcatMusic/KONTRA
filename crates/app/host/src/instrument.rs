@@ -97,8 +97,9 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
         }
         match kontra_ksp::compile(&script.source, &[]) {
             Ok(compiled) => {
-                plan.scripts
-                    .push(crate::script::plan(&compiled, &script.saved, &script.data));
+                let mut planned = crate::script::plan(&compiled, &script.saved, &script.data);
+                planned.links = crate::script::links(&compiled, &script.links);
+                plan.scripts.push(planned);
                 faces.push(Some(crate::ui::Face::of(&compiled, &script.data)));
                 pages.push(None);
                 persist.push(crate::persist::Vars::of(n, &compiled));

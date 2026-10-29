@@ -10,7 +10,7 @@ use crate::ledger::{Note, NoteRef, Origin};
 use crate::queue::Work;
 use crate::{Engine, EnginePar};
 
-pub use kontra_plan::{Callbacks, Controls, LookPars, ScriptPlan};
+pub use kontra_plan::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
