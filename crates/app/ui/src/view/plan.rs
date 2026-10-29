@@ -151,6 +151,63 @@ pub(super) fn text(
     }
 }
 
+/// One bitmap glyph and its page-local destination, in view points.
+pub(super) struct Glyph {
+    pub index: usize,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+}
+
+/// Places a picture font's glyphs by their own advances, including empty
+/// explicit lines. `width_of` reads only the already-decoded font metrics.
+pub(super) fn glyphs(
+    words: &str,
+    style: Option<&model::TextStyle>,
+    widget: &model::Widget,
+    (width, height): (f64, f64),
+    (scale, line): (f64, f64),
+    width_of: impl Fn(usize) -> Option<u32>,
+) -> Vec<Glyph> {
+    let align = style.map_or(
+        if matches!(widget.kind, model::Kind::Label) {
+            model::Align::Left
+        } else {
+            model::Align::Center
+        },
+        |s| s.align,
+    );
+    let multiline = words.contains('\n');
+    let top = widget
+        .text_y
+        .map_or(if multiline { 0. } else { (height - line) / 2. }, |y| {
+            f64::from(y) * scale
+        });
+    let advance = |c| width_of(crate::pictures::glyph(c)).map_or(0., |w| f64::from(w) * scale);
+    let mut result = Vec::new();
+    for (n, row) in words.split('\n').enumerate() {
+        let wide: f64 = row.chars().map(advance).sum();
+        let mut x = match align {
+            model::Align::Left => 2. * scale,
+            model::Align::Center => (width - wide) / 2.,
+            model::Align::Right => width - 2. * scale - wide,
+        };
+        for c in row.chars() {
+            let index = crate::pictures::glyph(c);
+            let Some(w) = width_of(index) else { continue };
+            let glyph_width = f64::from(w) * scale;
+            result.push(Glyph {
+                index,
+                x,
+                y: top + n as f64 * line,
+                width: glyph_width,
+            });
+            x += glyph_width;
+        }
+    }
+    result
+}
+
 /// A rectangular source piece and its destination, in view points.
 pub(super) struct Slice {
     pub source: [u32; 4],

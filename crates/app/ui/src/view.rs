@@ -534,39 +534,14 @@ fn bitmap_words(
     scale: f64,
     glyphs: &crate::pictures::Glyphs,
 ) -> El {
-    let glyph = |c: char| glyphs.get(crate::pictures::glyph(c));
-    let advance = |c: char| glyph(c).map_or(0., |g| f64::from(g.width) * scale);
     let line = glyphs.first().map_or(0., |g| f64::from(g.height) * scale);
-    let align = style.map_or(
-        if matches!(w.kind, Kind::Label) {
-            model::Align::Left
-        } else {
-            model::Align::Center
-        },
-        |s| s.align,
-    );
-    let multiline = words.contains('\n');
-    let top = w
-        .text_y
-        .map_or(if multiline { 0. } else { (height - line) / 2. }, |y| {
-            f64::from(y) * scale
-        });
-    let mut layers = Vec::new();
-    for (n, words) in words.split('\n').enumerate() {
-        let wide: f64 = words.chars().map(advance).sum();
-        let mut x = match align {
-            model::Align::Left => 2. * scale,
-            model::Align::Center => (width - wide) / 2.,
-            model::Align::Right => width - 2. * scale - wide,
-        };
-        let y = top + n as f64 * line;
-        for c in words.chars() {
-            let Some(g) = glyph(c) else { continue };
-            let gw = f64::from(g.width) * scale;
-            layers.push(image(g, gw, line).at(x, y));
-            x += gw;
-        }
-    }
+    let placements = plan::glyphs(words, style, w, (width, height), (scale, line), |n| {
+        glyphs.get(n).map(|g| g.width)
+    });
+    let layers = placements
+        .into_iter()
+        .filter_map(|p| Some(image(glyphs.get(p.index)?, p.width, line).at(p.x, p.y)))
+        .collect::<Vec<_>>();
     stack(layers).w(width).h(height).radius(0.).clip()
 }
 
