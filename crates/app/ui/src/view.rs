@@ -60,7 +60,27 @@ fn drawn_page(
     (scale, level): (f64, f64),
     bare: bool,
 ) -> (El, usize) {
-    let Some(plan) = plan::page(tree, page, bare, scale) else {
+    // Pointer state is an input to the otherwise pure draw projection.
+    // Only source buttons and switches use Kontakt's held picture frame.
+    let pressed: Vec<_> = tree
+        .widgets
+        .iter()
+        .enumerate()
+        .filter_map(|(n, w)| {
+            if !matches!(
+                tree.source,
+                model::Source::Ksp { .. } | model::Source::PerformanceView
+            ) || !matches!(w.kind, Kind::Button { .. } | Kind::Switch)
+                || !tree.visible(model::WidgetRef(n))
+            {
+                return None;
+            }
+            let response = ui.get(crate::input::surface(face, n));
+            (response.held && response.button == Some(Button::Primary))
+                .then_some(model::WidgetRef(n))
+        })
+        .collect();
+    let Some(plan) = plan::page(tree, page, bare, scale, &pressed) else {
         return (block(0., 0.), 0);
     };
     let p = plan.source;
@@ -281,7 +301,7 @@ fn wallpaper(
 
 /// The frame `w` shows of a picture with `frames`: the script's
 /// `PICTURE_STATE`, else the one its value selects.
-fn frame(w: &model::Widget, u: &ImageUse, frames: usize) -> usize {
+fn frame(w: &model::Widget, u: &ImageUse, frames: usize, held: bool) -> usize {
     if let Some(f) = u.frame {
         return f as usize;
     }
@@ -290,7 +310,7 @@ fn frame(w: &model::Widget, u: &ImageUse, frames: usize) -> usize {
             (position(w) * frames.saturating_sub(1) as f64).round() as usize
         }
         (Kind::Button { .. } | Kind::Switch, Role::Strip) => {
-            kontakt_picture_frame(value(w) != 0., false, false, frames)
+            kontakt_picture_frame(value(w) != 0., held, false, frames)
         }
         _ => 0,
     }

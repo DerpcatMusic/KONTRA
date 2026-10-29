@@ -37,7 +37,13 @@ pub(super) struct Widget<'a> {
 
 /// Project `page` from `tree` using its resolved geometry. `bare` selects
 /// the Vector presentation; the same bounds, stacking and visibility apply.
-pub(super) fn page(tree: &Interface, page: PageRef, bare: bool, scale: f64) -> Option<Page<'_>> {
+pub(super) fn page<'a>(
+    tree: &'a Interface,
+    page: PageRef,
+    bare: bool,
+    scale: f64,
+    pressed: &[WidgetRef],
+) -> Option<Page<'a>> {
     let source = tree.pages.get(page.0)?;
     let on_page = |r: model::Rect| {
         r.width > 0.
@@ -62,7 +68,12 @@ pub(super) fn page(tree: &Interface, page: PageRef, bare: bool, scale: f64) -> O
                     use_: *use_,
                     path,
                     meta,
-                    frame: frame(w, use_, meta.frames as usize),
+                    frame: frame(
+                        w,
+                        use_,
+                        meta.frames as usize,
+                        pressed.binary_search(&index).is_ok(),
+                    ),
                     size: {
                         let size = drawn(raw, meta);
                         model::Size {
@@ -314,4 +325,46 @@ pub(super) fn cuts(
     .into_iter()
     .filter(|&(_, n, d)| n > 0 && d > 0.)
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_held_button_selects_its_pressed_picture_in_the_plan() {
+        let mut tree = Interface {
+            source: model::Source::Ksp { slot: 0 },
+            ..Default::default()
+        };
+        tree.pages.push(model::Page {
+            size: model::Size {
+                width: 100.,
+                height: 100.,
+            },
+            ..Default::default()
+        });
+        tree.assets.push(model::Asset {
+            path: "button.png".into(),
+            kind: model::AssetKind::Image(model::ImageMeta {
+                frames: 6,
+                ..Default::default()
+            }),
+        });
+        let mut w = model::Widget::new(
+            "$button",
+            PageRef(0),
+            model::Rect::new(1, 2, 40, 30),
+            model::Kind::Button { momentary: false },
+        );
+        w.images
+            .push(model::ImageUse::new(model::AssetRef(0), model::Role::Strip));
+        tree.widgets.push(w);
+        let frame = |pressed: &[WidgetRef]| {
+            page(&tree, PageRef(0), false, 1., pressed)
+                .and_then(|p| p.widgets.into_iter().next()?.picture.map(|p| p.frame))
+        };
+        assert_eq!(frame(&[]), Some(0));
+        assert_eq!(frame(&[WidgetRef(0)]), Some(2));
+    }
 }
