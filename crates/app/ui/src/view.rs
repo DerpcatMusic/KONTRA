@@ -109,6 +109,15 @@ pub fn page(
             }
             stack(parts).w(w).h(h).opacity(wd.opacity)
         });
+        // A control takes the pointer under its own id (crate::input).
+        let el = if crate::input::takes_input(wd) {
+            el.id(crate::input::surface(n.0))
+                .focusable()
+                .cursor(Cursor::Hand)
+                .named(wd.name.clone())
+        } else {
+            el
+        };
         layers.push(el.at(r.x * scale, r.y * scale));
     }
     (stack(layers).w(w).h(h).radius(0.).clip(), built)

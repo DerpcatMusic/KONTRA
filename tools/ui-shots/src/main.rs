@@ -230,7 +230,11 @@ fn in_rack(
             channel: 1,
             output: 1,
             keys: (21, 108),
-            face: Some(Face { tree, pictures }),
+            face: Some(Face {
+                tree,
+                pictures,
+                gesture: kontra_ui::input::Gesture::default(),
+            }),
             open: true,
             tab: PartTab::Interface,
             ..Part::default()
