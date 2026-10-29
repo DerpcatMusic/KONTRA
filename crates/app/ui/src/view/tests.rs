@@ -482,3 +482,34 @@ fn vector_draws_a_picture_slider_even_when_its_background_is_hidden() {
     let pixels = paint(&mut ui, el, 20, 10);
     assert!(pixels.iter().any(|p| *p != [128, 128, 128, 255]));
 }
+
+#[test]
+fn original_stock_knob_has_a_lit_upper_ring_and_shadow_below() {
+    let mut tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 90.,
+            height: 40.,
+        },
+        ..Page::default()
+    });
+    tree.widgets.push(Widget::new(
+        "$gain",
+        PageRef(0),
+        Rect::new(0, 0, 38, 40),
+        Kind::Knob {
+            range: Range::default(),
+            display: model::Display::default(),
+        },
+    ));
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(|_| None));
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 0.));
+    let pixels = paint(&mut ui, el, 90, 40);
+    let upper = pixels[4 * 90 + 19][0];
+    let lower = pixels[34 * 90 + 19][0];
+    assert!(upper > lower + 10, "upper ring {upper}, lower ring {lower}");
+}

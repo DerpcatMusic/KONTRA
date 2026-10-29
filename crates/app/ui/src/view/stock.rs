@@ -144,17 +144,32 @@ impl Look {
                 parts.extend(arrow(ink, w, h, scale));
                 parts
             }
-            Self::Knob { title, value, turn } => knob(wd, title, value, *turn, scale),
+            Self::Knob { title, value, turn } => knob(wd, title, value, *turn, scale, bare),
         }
     }
 }
 
-fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64) -> Vec<El> {
+fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64, bare: bool) -> Vec<El> {
     let light = rgb(0xfe_fefe);
+    // Pacific's unpictured knobs have a lit upper ring and a dark lower edge.
+    // Vector keeps the flat stock skin; both use the existing measured palette.
+    let ring: Fill = if bare {
+        rgb(0x2e_2e2e).into()
+    } else {
+        Gradient::linear(
+            180.,
+            [
+                (0., rgb(0x5f_5f5f)),
+                (0.5, rgb(0x2e_2e2e)),
+                (1., rgb(0x14_1414)),
+            ],
+        )
+        .into()
+    };
     let mut parts = vec![
         block(38. * s, 38. * s)
             .pill()
-            .fill(rgb(0x2e_2e2e))
+            .fill(ring)
             .stroke(rgb(0x14_1414))
             .stroke_width(s)
             .at(0., s),
