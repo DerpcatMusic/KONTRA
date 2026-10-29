@@ -43,8 +43,7 @@ pub fn is_uvi(path: &Path) -> bool {
 /// # Errors
 /// When the bank cannot be opened.
 pub fn programs(bank: &Path) -> Result<Vec<String>, Error> {
-    let opened = bank::Bank::open(bank).map_err(|e| Error::new(bank, "bank", format!("{e:#}")))?;
-    Ok(opened.program_paths())
+    bank::Bank::program_paths(bank).map_err(|e| Error::new(bank, "bank", format!("{e:#}")))
 }
 
 /// Reads the program at `path` (see the module docs for the addressing).
