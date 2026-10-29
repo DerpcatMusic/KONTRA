@@ -102,3 +102,87 @@ fn ranked(counts: &[u32]) -> Vec<(kontra_vm::Action, u32)> {
     out.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     out
 }
+
+/// A voice's current gain, before its sample and effects, sampled between blocks.
+#[derive(Clone, Copy, Debug)]
+pub struct VoiceObservation {
+    pub zone: usize,
+    pub position: f64,
+    pub released: bool,
+    pub gain: kontra_voice::Gain,
+}
+
+/// A live EQ route, sampled from the same source and law used by the engine.
+#[derive(Clone, Debug)]
+pub struct EqRouteObservation {
+    pub zone: usize,
+    pub name: String,
+    pub insert: u8,
+    pub band: u8,
+    pub source: Option<f32>,
+    pub contribution_db: Option<f32>,
+    pub band_gain_db: Option<f32>,
+}
+
+impl Engine {
+    /// Samples active voices between process calls; gain is not isolated audio level.
+    pub fn inspect_voices(&self) -> impl Iterator<Item = VoiceObservation> + '_ {
+        self.voices
+            .iter()
+            .filter(|s| s.voice.is_active())
+            .map(|s| VoiceObservation {
+                zone: s.zone,
+                position: s.voice.position(),
+                released: s.released,
+                gain: s.voice.current_gain(),
+            })
+    }
+
+    /// Samples active voices' EQ routes without changing the processing path.
+    pub fn inspect_eq_routes(&self) -> Vec<EqRouteObservation> {
+        let mut result = Vec::new();
+        for slot in self.voices.iter().filter(|s| s.voice.is_active()) {
+            let Some((zone, note)) = self
+                .plan
+                .zones
+                .get(slot.zone)
+                .zip(slot.note.and_then(|n| self.notes.get(n)))
+            else {
+                continue;
+            };
+            let Some(group) = self.groups.get(zone.group as usize) else {
+                continue;
+            };
+            let age = crate::modulators::Age {
+                warp: slot.warp,
+                chaos: slot.chaos.map(|c| c[3]),
+                ..self.age(slot.started, slot.released_at)
+            };
+            for m in group.mods.iter().filter(|m| !m.bypass) {
+                if let kontra_ir::ModKind::EqGain {
+                    source,
+                    insert,
+                    band,
+                    depth_db,
+                    ..
+                } = m.kind
+                {
+                    let x = self.routed(zone, source, note, age);
+                    let band_gain_db = self
+                        .voice_bells(zone, insert, note, age)
+                        .and_then(|bells| bells.get(usize::from(band)).map(|b| b.gain_db));
+                    result.push(EqRouteObservation {
+                        zone: slot.zone,
+                        name: m.name.clone(),
+                        insert,
+                        band,
+                        source: x,
+                        contribution_db: x.map(|v| v * depth_db),
+                        band_gain_db,
+                    });
+                }
+            }
+        }
+        result
+    }
+}

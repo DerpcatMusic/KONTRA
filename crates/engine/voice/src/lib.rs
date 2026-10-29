@@ -172,6 +172,13 @@ impl Voice {
         }
     }
 
+    /// Current gain matrix including its envelope and lag, before sample and effects.
+    #[must_use]
+    pub fn current_gain(&self) -> Gain {
+        let level = self.lagged * self.env.level();
+        self.gain.map(|row| row.map(|gain| gain * level))
+    }
+
     /// The gain the voice is moving to, its lagging gain included.
     #[must_use]
     pub fn target_gain(&self) -> Gain {
