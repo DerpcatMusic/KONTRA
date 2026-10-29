@@ -92,3 +92,40 @@ fn versatile_matches_the_native_code() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// A cutoff jump glides on the clock: through a 1 kHz sine, the output's
+/// curvature (second difference) never spikes above what the settled sine
+/// has, as an instant jump of the state's gains would make it; and the corner
+/// lands on the new setting.
+#[test]
+fn a_cutoff_jump_glides_without_a_step() {
+    let mut c = Cascade::new(versatile(0.2, [0.0; 3]), 48_000);
+    let sine = |n: usize| (n as f32 * std::f32::consts::TAU * 1000.0 / 48_000.0).sin();
+    let mut run = |c: &mut Cascade, from: usize, frames: usize| -> Vec<f32> {
+        (from..from + frames)
+            .map(|n| {
+                let mut io = [[sine(n); 2]];
+                c.process(&mut io);
+                io[0][0]
+            })
+            .collect()
+    };
+    let mut out = run(&mut c, 0, 4_800);
+    c.set(versatile(0.9, [0.0; 3]));
+    out.extend(run(&mut c, 4_800, 24_000));
+    let mut settled = Cascade::new(versatile(0.9, [0.0; 3]), 48_000);
+    let reference = run(&mut settled, 0, 28_800);
+    let curvature = |y: &[f32]| {
+        y.windows(3)
+            .map(|w| (w[2] - 2.0 * w[1] + w[0]).abs())
+            .fold(0.0, f32::max)
+    };
+    let (spike, steady) = (curvature(&out), curvature(&reference[4_800..]));
+    assert!(spike <= 1.05 * steady, "curvature {spike} against {steady}");
+    let err = out[24_000..]
+        .iter()
+        .zip(&reference[24_000..])
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f32::max);
+    assert!(err < 1e-3, "settled error {err}");
+}

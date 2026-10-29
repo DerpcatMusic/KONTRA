@@ -11,7 +11,9 @@
 //! slot at or before a per-voice unit folds to its dry level (reported). A
 //! summed tap cannot model that, because the envelope comes after the slot.
 //! It would need a per-voice instance, and no corpus library (682 nki, 112
-//! libraries, 2026-10-28) has an active group wet slot.
+//! libraries, 2026-10-28) has an active group wet slot. Two save a 3x2
+//! Versatile in a group (Una Corda Cotton and Felt, the room-hiss group),
+//! bypassed and never enabled by their script (2026-10-29).
 
 use kontra_ir as ir;
 
@@ -29,6 +31,7 @@ fn wet(kind: ir::EffectKind) -> bool {
             | ir::EffectKind::Compressor(_)
             | ir::EffectKind::Limiter(_)
             | ir::EffectKind::Transient(_)
+            | ir::EffectKind::Cascade(_)
     )
 }
 
