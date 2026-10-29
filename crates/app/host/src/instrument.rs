@@ -48,15 +48,38 @@ pub fn load(
 /// Builds the plan for an instrument already read into the IR.
 #[must_use]
 pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded {
-    let (mut plan, mut diagnostics) = prepare(&instrument, rate, store, &kontra_stream::open);
+    // The Lua scripts compile on their own thread while `prepare` reads the
+    // sample heads; on a big UVI program each takes a few hundred ms.
+    let is_lua = |script: &ir::Script| script.dialect == ir::Dialect::Lua;
+    let ((mut plan, mut diagnostics), lua) = std::thread::scope(|s| {
+        let lua = s.spawn(|| {
+            (instrument.scripts.iter())
+                .map(|script| {
+                    is_lua(script).then(|| {
+                        kontra_lua::compile(&script.source, &lua_modules(script), &script.saved)
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+        let prepared = prepare(&instrument, rate, store, &kontra_stream::open);
+        let lua = lua.join().unwrap_or_else(|_| {
+            let failed = || Err("the compile thread panicked".to_string());
+            instrument
+                .scripts
+                .iter()
+                .map(|s| is_lua(s).then(failed))
+                .collect()
+        });
+        (prepared, lua)
+    });
     let mut faces = Vec::new();
     let mut persist = Vec::new();
     diagnostics.extend(instrument.diagnostics);
     // ponytail: a slot that fails to compile is dropped, and the slots after
     // it move up one ($EVENT_PAR_SOURCE then counts from the gap).
-    for (n, script) in instrument.scripts.iter().enumerate() {
-        if script.dialect == ir::Dialect::Lua {
-            match kontra_lua::compile(&script.source, &lua_modules(script), &script.saved) {
+    for ((n, script), compiled) in instrument.scripts.iter().enumerate().zip(lua) {
+        if let Some(compiled) = compiled {
+            match compiled {
                 Ok(compiled) => {
                     plan.scripts.push(crate::script::lua_plan(compiled));
                     faces.push(None);
