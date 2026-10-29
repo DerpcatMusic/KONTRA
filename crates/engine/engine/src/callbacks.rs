@@ -41,19 +41,22 @@ impl Engine {
 
     /// The UI or the host moved control `id` (its UI id) of script `slot` to
     /// `value`: it is stored, then `on ui_controls` runs and then the
-    /// control's own `on ui_control`, as in Kontakt.
+    /// control's own `on ui_control`, as in Kontakt; a control without one
+    /// still stores and runs `on ui_controls`.
     pub fn set_control(&mut self, slot: u8, id: i32, value: i64) {
         let plan = Arc::clone(&self.plan);
         let Some(script) = plan.scripts.get(usize::from(slot)) else {
             return;
         };
-        let Some(&(_, own)) = script.callbacks.ui_control.iter().find(|(i, _)| *i == id) else {
-            return;
-        };
+        let own = script.callbacks.ui_control.iter().find(|(i, _)| *i == id);
+        let own = own.and_then(|&(_, own)| own);
         let controls = &script.controls;
         let cell = (id.checked_sub(controls.first))
             .and_then(|n| usize::try_from(n).ok())
             .and_then(|n| controls.cells.get(n).copied().flatten());
+        if cell.is_none() && own.is_none() {
+            return;
+        }
         let vm = self.vms.get_mut(usize::from(slot)).and_then(Option::as_mut);
         if let (Some(cell), Some(vm)) = (cell, vm) {
             vm.set_cell(cell as usize, value);

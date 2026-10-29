@@ -1502,22 +1502,29 @@ fn moving_a_control_runs_ui_controls_then_its_ui_control() {
             declare ui_knob $k (0, 100, 1)
             declare ui_switch $s
             declare @log
-            message(get_ui_id($k))
+            message(get_ui_id($k) & \" \" & get_ui_id($s))
         end on
         on ui_controls
             @log := @log & \"all \" & $NI_UI_ID & \" \"
+            message(@log & $s)
         end on
         on ui_control ($k)
             @log := @log & \"k \" & $k & \" \" & $NI_CALLBACK_TYPE
             message(@log)
         end on",
     );
-    let id: i32 = e.last_message().parse().unwrap();
+    let ids = e.last_message();
+    let (id, s) = ids.split_once(' ').unwrap();
+    let (id, s): (i32, i32) = (id.parse().unwrap(), s.parse().unwrap());
     e.set_control(0, id, 42);
     assert_eq!(e.last_message(), format!("all {id} k 42 6"));
     // Not a control of this script: nothing runs.
     e.set_control(0, id + 100, 1);
     assert_eq!(e.last_message(), format!("all {id} k 42 6"));
+    // Without its own callback the switch still stores, and `on ui_controls`
+    // runs (KSP manual: on any widget).
+    e.set_control(0, s, 1);
+    assert_eq!(e.last_message(), format!("all {id} k 42 6all {s} 1"));
 }
 
 #[test]
