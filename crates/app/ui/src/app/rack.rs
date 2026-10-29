@@ -314,7 +314,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         .gap(TIGHT)
         .align(Align::Center)
         .pad(kit::edges(0., SPACE, 0., 0.))
-        .fill(Role::Raised)
+        .fill(Role::Surface)
         .shrink(0)
 }
 
@@ -403,5 +403,6 @@ fn tabs(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         .gap(TIGHT)
         .align(Align::Center)
         .pad(kit::edges(0., SPACE, 0., 0.))
+        .fill(Role::Surface)
         .shrink(0)
 }
