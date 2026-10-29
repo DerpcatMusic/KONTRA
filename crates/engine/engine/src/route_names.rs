@@ -11,16 +11,25 @@ impl RouteNames {
     /// The `#key` words of `groups`' routes. The engine never adds or
     /// removes a route, so the positions hold for its life.
     pub(crate) fn new(groups: &[Group]) -> Self {
-        let mut keys: Vec<(i32, usize, usize)> = (groups.iter().enumerate())
-            .flat_map(|(g, group)| (group.mods.iter().enumerate()).map(move |(m, r)| (g, m, r)))
-            .flat_map(|(g, m, r)| {
-                r.name
-                    .split_whitespace()
-                    .filter_map(key)
-                    .map(move |k| (k, g, m))
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+        Self::of_names(
+            groups
+                .iter()
+                .map(|g| g.mods.iter().map(|m| m.name.as_str())),
+        )
+    }
+
+    /// From each group's route names, in order.
+    fn of_names<'a, G, R>(groups: G) -> Self
+    where
+        G: IntoIterator<Item = R>,
+        R: IntoIterator<Item = &'a str>,
+    {
+        let mut keys: Vec<(i32, usize, usize)> = Vec::new();
+        for (g, names) in groups.into_iter().enumerate() {
+            for (m, name) in names.into_iter().enumerate() {
+                keys.extend(name.split_whitespace().filter_map(key).map(|k| (k, g, m)));
+            }
+        }
         keys.sort_unstable();
         keys.dedup();
         Self(keys.into())
@@ -54,5 +63,14 @@ mod tests {
         assert_eq!(key("#+1"), None);
         assert_eq!(key("12"), None);
         assert_eq!(key("#x"), None);
+    }
+
+    #[test]
+    fn a_key_finds_every_route_named_with_it_and_no_other() {
+        let names = RouteNames::of_names([vec!["Cutoff #5 #7", "#50"], vec!["", "#5", "#5 #5"]]);
+        assert_eq!(names.of(5).collect::<Vec<_>>(), [(0, 0), (1, 1), (1, 2)]);
+        assert_eq!(names.of(7).collect::<Vec<_>>(), [(0, 0)]);
+        assert_eq!(names.of(50).collect::<Vec<_>>(), [(0, 1)]);
+        assert_eq!(names.of(6).count(), 0);
     }
 }
