@@ -149,7 +149,7 @@ impl Rack {
             meters: MeterCells::default(),
             stats: StatCells::default(),
         });
-        let audio = RackAudio::new(Arc::clone(&channels), max_block);
+        let audio = RackAudio::new(Arc::clone(&channels), store.client(), max_block);
         let rack = Self {
             channels,
             rate,
@@ -441,6 +441,7 @@ struct Playing {
 /// The audio side: renders every part into its output pair.
 pub struct RackAudio {
     channels: Arc<Channels>,
+    stream: kontra_stream::StreamClient,
     parts: Vec<Option<Playing>>,
     outputs: Vec<Box<[[f32; 2]]>>,
     scratch: Box<[[f32; 2]]>,
@@ -455,10 +456,11 @@ pub struct RackAudio {
 }
 
 impl RackAudio {
-    fn new(channels: Arc<Channels>, max_block: usize) -> Self {
+    fn new(channels: Arc<Channels>, stream: kontra_stream::StreamClient, max_block: usize) -> Self {
         let block = max_block.max(1);
         Self {
             channels,
+            stream,
             parts: (0..MAX_PARTS).map(|_| None).collect(),
             outputs: (0..OUTPUTS)
                 .map(|_| vec![[0.0; 2]; block].into_boxed_slice())
@@ -472,6 +474,13 @@ impl RackAudio {
             meters: Meters::default(),
             dropped: 0,
         }
+    }
+
+    /// Waits until the sample pages the parts asked for are read, so an
+    /// offline bounce misses none. Offline rendering only: it blocks.
+    pub fn settle(&self) {
+        // ponytail: a fixed 5 s cap; a disk slower than that drops frames.
+        self.stream.settle(std::time::Duration::from_secs(5));
     }
 
     /// The host's tempo from the next block on, in quarter notes per minute;

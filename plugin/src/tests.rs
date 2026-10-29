@@ -44,7 +44,9 @@ fn block(params: &KontraParams, dsp: &mut Dsp, events: &[moose::prelude::Event])
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outs, BLOCK);
         let transport = TransportInfo::default();
         let mut out_events = EventList::with_capacity(16);
-        let mut cx = ProcessContext::new(&transport, RATE, BLOCK, &mut out_events);
+        // A bounce, as the host renders offline: every page read in time.
+        let mut cx = ProcessContext::new(&transport, RATE, BLOCK, &mut out_events)
+            .with_process_mode(ProcessMode::Offline);
         <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
     }
     channels[0]
@@ -146,6 +148,10 @@ fn recall(path: PathBuf) -> Result<String, String> {
     let (live, mut live_dsp) = activate(&saved.write());
     let load = t.elapsed();
     let before = play(&live, &mut live_dsp);
+    let missing = crate::lock(&live.shared.rack)
+        .as_ref()
+        .and_then(kontra_host::rack::Rack::stats)
+        .map_or(0, |s| s.missing_frames);
     // A host's plain reset at the same rate keeps the part: it plays at once,
     // without a control tick to reload it.
     <Kontra as PluginLogic>::reset(&mut live_dsp, &live, &AudioConfig::new(RATE, BLOCK));
@@ -184,6 +190,9 @@ fn recall(path: PathBuf) -> Result<String, String> {
         wrong.push(format!(
             "a reset at the same rate lost the part: rms {after_reset}"
         ));
+    }
+    if missing > 0 {
+        wrong.push(format!("the bounce missed {missing} frames"));
     }
     if before < 1e-4 {
         wrong.push(format!("silent: rms {before}"));

@@ -253,6 +253,10 @@ impl PluginLogic for Kontra {
                 s.input.push((e.sample_offset, event));
             }
         }
+        // A bounce waits for the disk; a live block never does.
+        if cx.process_mode.is_offline() {
+            audio.settle();
+        }
         audio.process(frames, &s.input);
         // The master ramps from the last block's gain to this one's.
         let target = db_to_linear(p.volume.value());
