@@ -39,7 +39,7 @@ fn distance(a: Rect, b: Rect) -> Option<f64> {
 
 fn clean(name: &str) -> String {
     let name = name.trim_start_matches(['$', '~', '@', '%', '?', '!']);
-    let tail = name.rsplit('_').next().unwrap_or(name);
+    let last = name.rsplit('_').next().unwrap_or(name);
     let tail = [
         "slider", "knob", "button", "switch", "menu", "value", "sli", "kno", "btn", "swi",
     ]
@@ -98,5 +98,6 @@ mod tests {
         tree.widgets[1].hidden = true;
         assert_eq!(label(&tree, WidgetRef(0)), "Color");
         assert_eq!(clean("$Mas_sliFilterCutoff"), "Filter Cutoff");
+        assert_eq!(clean("$filter_cutoff"), "filter cutoff");
     }
 }
