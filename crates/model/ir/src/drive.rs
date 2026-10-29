@@ -324,6 +324,8 @@ pub struct SlotShapes {
     /// Filter slots that may switch to any of [`Self::shapes`].
     pub slots: Vec<(RackAt, u8)>,
     pub types: Vec<SlotType>,
+    /// Each filter slot's saved subtype, as a script reads it back.
+    pub subtypes: Vec<(RackAt, u8, i32)>,
 }
 
 impl SlotShapes {
@@ -331,6 +333,7 @@ impl SlotShapes {
         shapes: Vec::new(),
         slots: Vec::new(),
         types: Vec::new(),
+        subtypes: Vec::new(),
     };
 }
 
@@ -341,6 +344,8 @@ impl SlotShapes {
 pub struct SlotType {
     pub id: i32,
     pub subtype: bool,
+    /// The subtype a script reads back from the loaded slot.
+    pub reads: i32,
     pub effect: Option<crate::Effect>,
     pub laws: std::sync::Arc<[(SlotKnob, EffectParam, crate::Law)]>,
 }

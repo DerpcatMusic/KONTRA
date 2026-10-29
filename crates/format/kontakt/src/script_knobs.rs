@@ -391,21 +391,19 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     for (band, &[hz, octaves, db]) in bands.iter_mut().zip(&saved) {
         *band = crate::laws::eq_band(hz, octaves, db).unwrap_or(ir::Bell::FLAT);
     }
-    let ty = |id, subtype, effect, laws| ir::SlotType {
+    let ty = |id, subtype, reads, effect, laws| ir::SlotType {
         id,
         subtype,
+        reads,
         effect,
         laws,
     };
+    let eq = Some(unit(ir::EffectKind::Eq(bands)));
+    // ponytail: an empty slot's subtype readback is unmeasured; 0.
     vec![
-        ty(0, false, None, [].into()),
-        ty(7, false, filter, shape_laws(100)),
-        ty(
-            24,
-            true,
-            Some(unit(ir::EffectKind::Eq(bands))),
-            eq_knobs(&saved).into(),
-        ),
+        ty(0, false, 0, None, [].into()),
+        ty(7, false, 100, filter, shape_laws(100)),
+        ty(24, true, 24, eq, eq_knobs(&saved).into()),
     ]
 }
 

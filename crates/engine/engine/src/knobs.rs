@@ -253,7 +253,7 @@ fn laws<'p>(
 }
 
 /// The index of slot `slot` of `at` in [`ir::SlotShapes::slots`].
-fn shape_slot(plan: &Plan, at: ir::RackAt, slot: i32) -> Option<usize> {
+pub(crate) fn shape_slot(plan: &Plan, at: ir::RackAt, slot: i32) -> Option<usize> {
     let here = |&(a, s): &(ir::RackAt, u8)| a == at && i32::from(s) == slot;
     plan.slot_shapes.slots.iter().position(here)
 }

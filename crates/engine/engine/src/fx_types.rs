@@ -167,7 +167,35 @@ impl Engine {
         self.behaviour.loaded.iter().find(here).map(|l| l.2)
     }
 
+    /// `get_engine_par($ENGINE_PAR_EFFECT_SUBTYPE)`: the shape the slot last
+    /// switched to, else what its loaded type reads, else its saved subtype.
+    pub(crate) fn subtype(&self, group: i32, slot: i32, generic: i32) -> Option<i32> {
+        let (plan, at) = (&self.plan, crate::knobs::rack_at(group, generic)?);
+        let shapes = &plan.slot_shapes;
+        let switched = crate::knobs::shape_slot(plan, at, slot)
+            .and_then(|n| self.behaviour.shapes.get(n).copied().flatten())
+            .and_then(|on| shapes.shapes.get(usize::from(on)));
+        if let Some(shape) = switched {
+            return Some(shape.id);
+        }
+        if let Some(ty) = self.loaded_type(at, slot) {
+            return shapes.types.get(usize::from(ty)).map(|t| t.reads);
+        }
+        // ponytail: a linear scan, run only by scripts that read it.
+        let saved = shapes
+            .subtypes
+            .iter()
+            .find(|s| s.0 == at && i32::from(s.1) == slot);
+        saved.map(|s| s.2)
+    }
+
     fn mark_loaded(&mut self, at: ir::RackAt, slot: u8, ty: u16) {
+        // A load replaces the unit a shape switch changed.
+        if let Some(n) = crate::knobs::shape_slot(&self.plan, at, i32::from(slot))
+            && let Some(on) = self.behaviour.shapes.get_mut(n)
+        {
+            *on = None;
+        }
         let loaded = &mut self.behaviour.loaded;
         loaded.retain(|&(a, s, _)| (a, s) != (at, slot));
         if loaded.len() < loaded.capacity() {

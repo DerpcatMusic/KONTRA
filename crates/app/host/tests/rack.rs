@@ -328,6 +328,7 @@ fn effect_loading(store: &mut Store) -> Box<Engine> {
     let ty = |id, effect| ir::SlotType {
         id,
         subtype: false,
+        reads: 0,
         effect,
         laws: Vec::new().into(),
     };
