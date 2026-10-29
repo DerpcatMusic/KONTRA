@@ -167,10 +167,8 @@ fn ratio(program: Node, connection: Node, keys: bool) -> Option<f32> {
 /// key read through a table exact at each MIDI key `x` (VoiceParam evaluate
 /// 0x14138ab10, `x` the note clamped to 0..=127): `Key` `x/127`, `KeyFollow`
 /// `(x/60)² − 1` below 60, else `√((min(x, 120) − 60)/60)`, `LinearKeyFollow`
-/// `(x − 60)/60` within ±1. A bipolar one is read at `(k + 1)/2`, and its
-/// mapper's output `y` (0x141139193) at `(y + 1)/2` again: the law takes a
-/// bipolar source there through a mapper too (VWinds' pitch-bend crossfade
-/// mappers swing −1..=1 and give 0..=1 only so). None for any other connection.
+/// `(x − 60)/60` within ±1. A bipolar one is read at `(k + 1)/2`, its
+/// mapper's output as [`centred`]. None for any other connection.
 pub(super) fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> {
     if flag(connection, "Inverted") || flag(connection, "ConnectionMode") {
         return None;
@@ -189,12 +187,8 @@ pub(super) fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> 
         "@VoiceParam LinearKeyFollow" => |x| (((x - 60.0) / 60.0).clamp(-1.0, 1.0) + 1.0) / 2.0,
         _ => return None,
     };
-    let table = mapper(connection)?;
-    let bipolar = source != "@VoiceParam Key";
-    let at = |x: f32| match read(&table, key(x)) {
-        Some(y) if bipolar => (y + 1.0) / 2.0,
-        y => y.unwrap_or(key(x)),
-    };
+    let table = centred(connection, mapper(connection)?);
+    let at = |x: f32| read(&table, key(x)).unwrap_or(key(x));
     Some(ir::Factor {
         input: ir::Transfer {
             source: ir::Source::Key,
@@ -228,7 +222,7 @@ fn cell_law(connection: Node) -> Option<(f32, Vec<f32>)> {
         return None;
     }
     let r = (num(connection, "Ratio", 1.0).ok()? as f32).clamp(-1.0, 1.0);
-    Some((r, mapper(connection)?))
+    Some((r, centred(connection, mapper(connection)?)))
 }
 
 /// `x` (0..=1) on a mapper table, linearly between points; None for no table.
@@ -254,14 +248,10 @@ fn position(source: Node, value: f32) -> Option<f32> {
 /// The connection's mapper as a table scaled by `Max` (or `-Min` below
 /// zero); empty for none, None for one not found or stepped.
 fn mapper(connection: Node) -> Option<Vec<f32>> {
-    let Some(name) = connection.attribute("Mapper").filter(|m| !m.is_empty()) else {
+    if connection.attribute("Mapper").is_none_or(str::is_empty) {
         return Some(Vec::new());
-    };
-    let mapper = connection
-        .ancestors()
-        .filter_map(|a| a.children().find(|n| n.has_tag_name("Mappers")))
-        .flat_map(|m| m.children())
-        .find(|n| n.attribute("Name") == Some(name))?;
+    }
+    let mapper = mapper_node(connection)?;
     if flag(mapper, "Discrete") || flag(mapper, "Integer") {
         return None;
     }
@@ -278,6 +268,33 @@ fn mapper(connection: Node) -> Option<Vec<f32>> {
             Some(if v >= 0.0 { v * max } else { -v * min })
         })
         .collect()
+}
+
+fn mapper_node<'a, 'i>(connection: Node<'a, 'i>) -> Option<Node<'a, 'i>> {
+    let name = connection.attribute("Mapper").filter(|m| !m.is_empty())?;
+    connection
+        .ancestors()
+        .filter_map(|a| a.children().find(|n| n.has_tag_name("Mappers")))
+        .flat_map(|m| m.children())
+        .find(|n| n.attribute("Name") == Some(name))
+}
+
+/// `table`, a connection's mapper output on a multiplicative destination,
+/// as the law reads it: a bipolar mapper's (`Min` < 0) at `(y + 1)/2`, any
+/// other's as it is, whatever its source. Read from the libraries, not the
+/// binary: VWinds' brightness bells (`Min` 0, a bipolar macro) sum to ~1
+/// only as they are; its pitch-bend crossfade (`Min` −1) to 1 and its
+/// AttacksMapper (`Min` −1, mostly −1) to an attack that opens only so.
+pub(super) fn centred(connection: Node, mut table: Vec<f32>) -> Vec<f32> {
+    if centres(connection) {
+        table.iter_mut().for_each(|v| *v = (*v + 1.0) / 2.0);
+    }
+    table
+}
+
+/// Whether [`centred`] re-centres the connection's mapper output.
+pub(super) fn centres(connection: Node) -> bool {
+    mapper_node(connection).is_some_and(|m| num(m, "Min", 0.0).is_ok_and(|v| v < 0.0))
 }
 
 /// A connection's source through its mapper. A macro with no inputs of

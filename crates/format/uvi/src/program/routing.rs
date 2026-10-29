@@ -630,7 +630,7 @@ pub(super) fn player_gains<'a, 'i>(
             let twins = rest.iter().map(twin).collect::<Option<Vec<_>>>()?;
             let amp = source_node(program, c).is_some_and(|n| n.has_tag_name("DAHDSR"));
             let r = modulation::route(program, c, ("SamplePlayer", "Gain")).filter(|_| !amp)?;
-            Some((c, modulation::factor(r)?, twins))
+            Some((c, modulation::factor(r, c)?, twins))
         })
         .collect()
 }

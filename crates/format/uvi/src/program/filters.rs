@@ -39,7 +39,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 let tag = c.parent()?.parent()?.tag_name().name();
                 let q = c.attribute("Destination") == Some("Q") && tag != "OnePole";
                 let mut r = if q {
-                    modulation::factor(modulation::reach(program, c, (tag, "Q"))?)?
+                    modulation::factor(modulation::reach(program, c, (tag, "Q"))?, c)?
                 } else {
                     modulation::reach(program, c, (tag, "Freq"))?
                 };

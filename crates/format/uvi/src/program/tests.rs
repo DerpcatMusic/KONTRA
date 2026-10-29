@@ -1491,3 +1491,63 @@ fn a_mapped_bend_on_a_keygroups_gain_enters_at_half_past_its_mapper() {
     assert_eq!(g.shapers[0].source, ir::Source::PitchBend);
     assert_eq!(g.shapers[0].table, [0.0, 1.0, 1.0]);
 }
+
+#[test]
+fn a_mapped_gain_enters_at_half_past_its_mapper_only_when_the_mapper_is_bipolar() {
+    // VWinds' AttacksMapper (`Min` −1) opens 0..=1 only re-centred; its
+    // brightness bells (`Min` 0) sum to ~1 only as they are.
+    let xml = r#"<Program Gain="1">
+      <Mappers>
+        <ControlSignalMapper Name="Mapper 1" Min="-1" Max="1">-1,0 1,0</ControlSignalMapper>
+        <ControlSignalMapper Name="Mapper 2" Min="0" Max="1">0,5 1,0</ControlSignalMapper>
+      </Mappers>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Connections>
+            <SignalConnection Ratio="1" Source="@MIDI CC 1" Destination="Gain" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            <SignalConnection Ratio="1" Source="@MIDI CC 2" Destination="Gain" Mapper="Mapper 2" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let tables: Vec<_> = out.groups[0]
+        .shapers
+        .iter()
+        .map(|s| (s.source, s.table.clone()))
+        .collect();
+    assert_eq!(
+        tables,
+        [
+            (ir::Source::Controller(1), vec![0.0, 1.0]),
+            (ir::Source::Controller(2), vec![0.5, 1.0]),
+        ]
+    );
+}
+
+#[test]
+fn a_mapped_key_follow_on_a_ratio_reads_a_unipolar_mapper_as_it_is() {
+    // VWinds' clarinet: KeyFollow through Mapper 28 (`Min` 0) on CC 103's ratio.
+    let xml = r#"<Program Gain="1">
+      <Mappers><ControlSignalMapper Name="Mapper 1" Min="0" Max="1">0,0 1,0</ControlSignalMapper></Mappers>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav">
+            <Connections>
+              <SignalConnection Ratio="3" Source="@MIDI CC 103" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0">
+                <Connections>
+                  <SignalConnection Ratio="1" Source="@VoiceParam KeyFollow" Destination="Ratio" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                </Connections>
+              </SignalConnection>
+            </Connections>
+          </SamplePlayer></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let t = &out.groups[0].blends[0].terms[0].factors[0].input.table;
+    assert_eq!((t[0], t[60], t[120]), (0.0, 0.5, 1.0));
+}
