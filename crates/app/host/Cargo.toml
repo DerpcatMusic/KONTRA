@@ -26,3 +26,7 @@ kontra-align = { path = "../align", optional = true }
 
 [features]
 align = ["dep:kontra-align"]
+
+[[example]]
+name = "align"
+required-features = ["align"]

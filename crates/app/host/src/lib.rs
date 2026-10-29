@@ -6,3 +6,5 @@ pub mod perf_view;
 pub mod rack;
 pub mod script;
 pub mod ui;
+#[cfg(feature = "align")]
+pub mod align;
