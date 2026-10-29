@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The plugin's real editor under Xvfb, driven with real pointer events:
 # the face drawn untouched, a part tab, the header's library art, the browser's library cards, the preset field, a library knob
-# dragged and a switch clicked, a browser row clicked (selects), double-
+# dragged and a switch clicked, the part's look switched, a browser row clicked (selects), double-
 # clicked (adds a part) and dragged onto a part (replaces it), the
 # browser's edge dragged, then idle
 # for a minute.
@@ -29,6 +29,9 @@ third=${THIRD:-94,847}         # Una Corda Pure
 edge=${EDGE:-200,578}          # the edge between libraries and presets
 header=${HEADER:-760,114}      # part 0's header, to drop on
 fold=${FOLD:-426,114}          # part 0's fold, so a new part shows below it
+look=${LOOK:-900,164}          # the part's look: Original, Vector, KONTRA
+vector=${VECTOR:-805,242}      # its menu's Vector
+kontra=${KONTRA:-812,280}      # and KONTRA
 mkdir -p "$out"
 display=${XDISPLAY:-:97}
 # A server still shutting down holds the display for a moment; one still
@@ -100,6 +103,24 @@ check 4-face 5-knob "library knob: drag turns it"
 at "$switch"; xdotool click 1; sleep 1.5; shot 6-switch
 check 5-knob 6-switch "library switch: click flips it"
 at 1000,600; for _ in $(seq 1 10); do xdotool click 4; sleep 0.1; done; sleep 1.5
+# The part's look: Vector drops the pictures, KONTRA lists the controls.
+at 1900,1270; sleep 1; shot 6a-original
+at "$look"; xdotool click 1; sleep 1; at "$vector"; xdotool click 1; sleep 2
+at 1900,1270; sleep 1; shot 6b-vector
+check 6a-original 6b-vector "part look: Vector draws without pictures" 205,100,880,500
+at "$look"; xdotool click 1; sleep 1; at "$kontra"; xdotool click 1; sleep 2
+at 1900,1270; sleep 1; shot 6c-kontra
+check 6b-vector 6c-kontra "part look: KONTRA lists the controls" 205,100,880,500
+at "$look"; xdotool click 1; sleep 1; at "$look"; sleep 0.2
+xdotool mousemove_relative -- -90 40; xdotool click 1; sleep 2
+at 1900,1270; sleep 1; shot 6d-back
+# The pictures decode again: the same, but for a little resampling.
+if python3 -I -c 'import sys; from PIL import Image, ImageChops
+a, b = (Image.open(p).convert("RGB").crop((205, 100, 880, 500)) for p in sys.argv[1:3])
+sys.exit(0 if max(map(max, ImageChops.difference(a, b).getextrema())) <= 40 else 1)' \
+    "$out/6a-original.png" "$out/6d-back.png"; then
+    pass "part look: Original comes back"
+else miss "part look: Original comes back"; fi
 
 at "$fold"; xdotool click 1; sleep 1.5
 at "$search"; xdotool click 1; xdotool type --delay 60 "$name"; sleep 1.5

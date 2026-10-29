@@ -2,7 +2,7 @@
 //! back when the editor opens, saved again whenever it changes.
 
 use kontra_host::state::{SavedPartView, SavedView};
-use kontra_ui::app::{App, Format, PartTab, Shelf, Tab, View};
+use kontra_ui::app::{App, FaceLook, Format, PartTab, Shelf, Tab, View};
 
 const TABS: [Tab; 3] = [Tab::Rack, Tab::Mixer, Tab::Report];
 const PART_TABS: [PartTab; 6] = [
@@ -43,11 +43,13 @@ pub fn saved(app: &App, slots: &[usize]) -> SavedView {
         shelf: index(&SHELVES, &v.shelf),
         descending: v.descending,
         split: v.split as f32,
+        look: index(&FaceLook::ALL, &v.face_look),
         parts: (app.parts.iter().zip(slots))
             .map(|(p, &part)| SavedPartView {
                 part,
                 open: p.open,
                 tab: index(&PART_TABS, &p.tab),
+                look: p.look.map_or(0, |l| index(&FaceLook::ALL, &l) + 1),
             })
             .collect(),
     }
@@ -69,6 +71,7 @@ pub fn apply(app: &mut App, s: &SavedView) {
         shelf: pick(&SHELVES, s.shelf),
         descending: s.descending,
         split: f64::from(s.split),
+        face_look: pick(&FaceLook::ALL, s.look),
         ..View::default()
     };
 }
@@ -83,6 +86,7 @@ pub fn parts(app: &mut App, slots: &[usize], waiting: &mut Vec<SavedPartView>) {
         };
         p.open = w.open;
         p.tab = pick(&PART_TABS, w.tab);
+        p.look = w.look.checked_sub(1).map(|l| pick(&FaceLook::ALL, l));
         false
     });
 }
@@ -99,9 +103,11 @@ mod tests {
         app.view.octave = -1;
         app.view.scale = 2;
         app.view.split = 0.3;
+        app.view.face_look = FaceLook::Vector;
         app.parts = vec![kontra_ui::app::Part {
             open: false,
             tab: PartTab::Mapping,
+            look: Some(FaceLook::Kontra),
             ..Default::default()
         }];
         let saved = SavedView::read(&saved(&app, &[3]).write());
@@ -113,6 +119,7 @@ mod tests {
         );
         assert_eq!((again.view.octave, again.view.scale), (-1, 2));
         assert!((again.view.split - 0.3).abs() < 1e-6, "the browser's split");
+        assert_eq!(again.view.face_look, FaceLook::Vector);
         let mut waiting = saved.parts.clone();
         again.parts = vec![kontra_ui::app::Part::default()];
         parts(&mut again, &[0], &mut waiting);
@@ -120,8 +127,8 @@ mod tests {
         parts(&mut again, &[3], &mut waiting);
         assert!(waiting.is_empty());
         assert_eq!(
-            (again.parts[0].open, again.parts[0].tab),
-            (false, PartTab::Mapping)
+            (again.parts[0].open, again.parts[0].tab, again.parts[0].look),
+            (false, PartTab::Mapping, Some(FaceLook::Kontra))
         );
     }
 }

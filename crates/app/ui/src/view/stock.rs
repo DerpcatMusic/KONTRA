@@ -38,15 +38,17 @@ impl Look {
     /// The stock look of `w` at `t` (0..1 of its range), when Kontakt
     /// draws one: a script button, switch, menu, value edit or knob whose
     /// picture is unset or absent from the library. `shown` is its value
-    /// as the script shows it, `name` a knob's title.
+    /// as the script shows it, `name` a knob's title; `bare`, it draws
+    /// whatever pictures the control has.
     pub(super) fn of(
         tree: &Interface,
         w: &Widget,
         t: f64,
         shown: String,
         name: String,
+        bare: bool,
     ) -> Option<Self> {
-        if !unpictured(tree, w) {
+        if !bare && !unpictured(tree, w) {
             return None;
         }
         Some(match &w.kind {
@@ -274,9 +276,9 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> Path {
 
 /// Whether `w` draws a stock fader, text field or table: an unpictured
 /// script one whose background the script has not hidden.
-pub(super) fn shows(tree: &Interface, w: &Widget) -> bool {
+pub(super) fn shows(tree: &Interface, w: &Widget, bare: bool) -> bool {
     !w.hide.background
-        && unpictured(tree, w)
+        && (bare || unpictured(tree, w))
         && matches!(
             w.kind,
             Kind::Slider { .. } | Kind::TextEdit | Kind::Table { .. }

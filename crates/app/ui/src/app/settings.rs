@@ -2,7 +2,7 @@
 
 use mui::prelude::*;
 
-use super::{Action, App, SCALES};
+use super::{Action, App, FaceLook, SCALES};
 use crate::kit::{self, Icon, button, icon_button, latch, rule, section};
 use crate::theme::{SPACE, TIGHT};
 
@@ -49,6 +49,24 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     );
     if let Some(n) = face.changed {
         app.view.face_scale = n;
+    }
+    let at = FaceLook::ALL.iter().position(|l| *l == app.view.face_look);
+    let look = kit::dropdown(
+        ui,
+        &mut app.view.menu,
+        "face-look",
+        (
+            None,
+            at.and_then(|a| FaceLook::LABELS.get(a))
+                .copied()
+                .unwrap_or("Original"),
+            "How a library's view is drawn, unless its part chose",
+        ),
+        &FaceLook::LABELS,
+        at,
+    );
+    if let Some(&l) = look.changed.and_then(|a| FaceLook::ALL.get(a)) {
+        app.view.face_look = l;
     }
     let add = button(ui, "add-folder", "Add folder…", false);
     if add.changed {
@@ -112,6 +130,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         section("Interface"),
         line("Size", size.el),
         line("Library view", face.el),
+        line("Library look", look.el),
         rule(),
         section("MIDI / Output"),
         line("MIDI thru", thru.el),

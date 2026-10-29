@@ -205,6 +205,23 @@ fn a_page_draws_its_wallpaper_from_the_skin_offset_and_a_knob_at_its_value() {
 }
 
 #[test]
+fn a_vector_page_draws_its_controls_without_their_pictures() {
+    let (tree, wall, knob) = tree();
+    let mut ui = crate::ui();
+    let mut pictures = pictures(wall, knob);
+    settle(&mut ui, &tree, &mut pictures, 1.);
+    let (el, _) = vector_page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 0.));
+    let px = paint(&mut ui, el, 20, 10);
+    let at = |x: usize, y: usize| px.get(y * 20 + x).copied();
+    assert_eq!(at(0, 0), Some([128, 128, 128, 255]), "no wallpaper");
+    assert!(!px.contains(&[255; 4]), "no knob strip");
+    assert!(
+        px.iter().any(|p| *p != [128, 128, 128, 255]),
+        "a stock knob"
+    );
+}
+
+#[test]
 fn an_idle_frame_builds_no_widget_and_a_moved_knob_builds_one() {
     let (mut tree, wall, knob) = tree();
     let mut second = tree
