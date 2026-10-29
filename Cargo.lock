@@ -2554,8 +2554,7 @@ dependencies = [
 name = "kontra-protocol"
 version = "0.0.0"
 dependencies = [
- "kontra-events",
- "kontra-ui-model",
+ "crossbeam-queue",
 ]
 
 [[package]]

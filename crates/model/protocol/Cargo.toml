@@ -8,5 +8,4 @@ publish = false
 workspace = true
 
 [dependencies]
-kontra-events = { path = "../events" }
-kontra-ui-model = { path = "../ui-model" }
+crossbeam-queue.workspace = true
