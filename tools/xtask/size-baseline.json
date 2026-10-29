@@ -11,10 +11,10 @@
   "kontra-dsp-reverb": 2379,
   "kontra-dsp-spatial": 1,
   "kontra-effects": 798,
-  "kontra-engine": 7997,
+  "kontra-engine": 7999,
   "kontra-events": 270,
   "kontra-format": 33,
-  "kontra-format-kontakt": 6522,
+  "kontra-format-kontakt": 6521,
   "kontra-format-native": 1,
   "kontra-format-sfz": 951,
   "kontra-format-uvi": 5169,
@@ -36,5 +36,5 @@
   "kontra-ui": 7578,
   "kontra-ui-model": 1434,
   "kontra-vm": 1710,
-  "kontra-voice": 1226
+  "kontra-voice": 1229
 }
