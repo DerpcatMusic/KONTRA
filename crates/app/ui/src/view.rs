@@ -86,7 +86,8 @@ fn drawn_page(
     let mut built = 0;
     let (w, h) = (plan.size.width, plan.size.height);
     // Pictures decode at the pixels they cover on the device.
-    let device = scale * ui.scale().unwrap_or(1.);
+    let density = ui.scale().unwrap_or(1.);
+    let device = scale * density;
     let mut layers = vec![
         block(w, h)
             .radius(0.)
@@ -174,7 +175,7 @@ fn drawn_page(
         };
         let deps = (
             lit.map(|(o, t)| (o as u8, t.to_bits())),
-            [r.x, r.y, r.width, r.height, scale].map(f64::to_bits),
+            [r.x, r.y, r.width, r.height, scale, density].map(f64::to_bits),
             art.map(|a| [a.width, a.height].map(f64::to_bits)),
             picture.as_ref().map(|(i, _)| Arc::as_ptr(i) as usize),
             (
@@ -244,6 +245,7 @@ fn drawn_page(
                     bare,
                     stock_art.as_ref(),
                     stock_glyphs.as_ref(),
+                    (r.x, r.y, density),
                 ));
                 look.size(w, h, scale)
             });

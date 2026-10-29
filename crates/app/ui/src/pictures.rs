@@ -108,7 +108,7 @@ impl Pictures {
                             Some(Arc::new(image))
                         } else {
                             let image = look(&image).unwrap_or(image);
-                            at(image, job.scale).map(Arc::new)
+                            at_stock(image, job.scale).map(Arc::new)
                         }
                     })
                 } else {
@@ -434,6 +434,27 @@ fn at(image: Image, scale: f32) -> Option<Image> {
     resample(&image, size(image.width), size(image.height))
 }
 
+/// Scale stock sprites without interpolating upscaled pixels. Downscaling
+/// keeps the area filter to avoid aliasing.
+fn at_stock(image: Image, scale: f32) -> Option<Image> {
+    if scale <= 1. {
+        return at(image, scale);
+    }
+    let size = |n: u32| ((f64::from(n) * f64::from(scale)).round() as u32).max(1);
+    let (w, h) = (size(image.width), size(image.height));
+    let pixels = image.rgba.as_chunks::<4>().0;
+    let mut out = Vec::with_capacity(w as usize * h as usize * 4);
+    for y in 0..h {
+        let sy = u64::from(y) * u64::from(image.height) / u64::from(h);
+        for x in 0..w {
+            let sx = u64::from(x) * u64::from(image.width) / u64::from(w);
+            let index = usize::try_from(sy * u64::from(image.width) + sx).ok()?;
+            out.extend_from_slice(pixels.get(index)?);
+        }
+    }
+    Image::rgba(w, h, out)
+}
+
 /// `img` at `w` × `h` through a Catmull-Rom filter, widened when it
 /// shrinks, in premultiplied alpha so an edge keeps its colour.
 pub(crate) fn resample(img: &Image, w: u32, h: u32) -> Option<Image> {
@@ -702,6 +723,19 @@ mod tests {
         // The other frame is asked for; the one shown stands in meanwhile.
         assert!(pictures.frame(AssetRef(0), "a.png", meta, 1, 1.).is_some());
         assert_eq!(pictures.pending(), 1);
+    }
+
+    #[test]
+    fn stock_upscaling_preserves_source_pixels() {
+        let source = Image::rgba(2, 1, vec![255, 255, 255, 255, 0, 0, 0, 0]);
+        let scaled = source.and_then(|image| at_stock(image, 2.));
+        assert_eq!(
+            scaled.map(|image| image.rgba.to_vec()),
+            Some(vec![
+                255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255,
+                255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0,
+            ])
+        );
     }
 
     #[test]
