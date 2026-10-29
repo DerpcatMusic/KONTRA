@@ -390,18 +390,22 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::Int(len as i32));
                 return Ok(Some(Ty::Int));
             }
-            // The engine copies the variable's saved numbers into its cells now,
-            // mid-init. ponytail: text variables read nothing until a script needs it.
+            // The engine copies the variable's saved values into it now,
+            // mid-init ("instantly reloads", KSP manual): numbers into its
+            // cells, texts (the third argument 1) into its text cells.
             Builtin::ReadPersistentVar => {
                 let (v, _) = self.named(arg(0)?)?;
-                let (base, len) = match self.var(v)?.home {
-                    Home::Cell(n) => (n, 1),
-                    Home::Cells { base, len } => (base, len),
-                    _ => (0, 0),
+                let (base, len, text) = match self.var(v)?.home {
+                    Home::Cell(n) => (n, 1, 0),
+                    Home::Cells { base, len } => (base, len, 0),
+                    Home::Text(n) => (n, 1, 1),
+                    Home::Texts { base, len } => (base, len, 1),
+                    _ => (0, 0, 0),
                 };
                 self.emit(Op::Int(base as i32));
                 self.emit(Op::Int(len as i32));
-                self.host(Action::ReadPersistentVar, 2, 0, Returns::Nothing);
+                self.emit(Op::Int(text));
+                self.host(Action::ReadPersistentVar, 3, 0, Returns::Nothing);
                 return Ok(None);
             }
             _ => {}

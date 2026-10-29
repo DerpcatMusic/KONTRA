@@ -69,6 +69,7 @@ impl Engine {
             ints: &[0; 8],
             texts: &[Text::EMPTY; 4],
             cells: &mut cells,
+            text_cells: &mut [],
             text_out: &mut text_out,
         });
         self.unhandled.get(usize::from(action.id())).copied() == before

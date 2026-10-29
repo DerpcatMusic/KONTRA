@@ -36,6 +36,8 @@ pub struct HostCall<'a> {
     pub ints: &'a [i64],
     pub texts: &'a [Text],
     pub cells: &'a mut [i64],
+    /// The script's text variables (a saved text read back mid-init).
+    pub text_cells: &'a mut [Text],
     /// Where a builtin that returns text writes it (then returns [`HostValue::Text`]).
     pub text_out: &'a mut Text,
 }
@@ -645,6 +647,7 @@ fn execute(
                             ints: args,
                             texts: c.texts.get(text_from..).unwrap_or_default(),
                             cells,
+                            text_cells: texts,
                             text_out: &mut text_out,
                         })
                     }

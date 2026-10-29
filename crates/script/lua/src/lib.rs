@@ -483,6 +483,7 @@ fn host_call(host: &mut dyn HostApi, context: u64, args: &[Value]) -> Value {
         ints: ints.get(..n_int).unwrap_or_default(),
         texts: texts.get(..n_text).unwrap_or_default(),
         cells: &mut [],
+        text_cells: &mut [],
         text_out: &mut text_out,
     });
     match value {
