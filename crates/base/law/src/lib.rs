@@ -6,10 +6,12 @@
 mod file;
 mod law;
 mod network;
+mod trace;
 
 pub use file::{LawError, LawSource, LawSpec, parse};
 pub use law::{FormulaId, Law, ModuleLaw};
 pub use network::{CombNetwork, HadamardNetwork, LINES as NETWORK_LINES, ReverbNetwork};
+pub use trace::{Application, LawId, collect, record};
 
 /// A sine-shaped crossfade, with an adjustable power and a normalized input.
 #[must_use]
@@ -38,6 +40,7 @@ macro_rules! laws {
             #[doc = concat!("Law file `", $path, "`.")]
             pub const $name: $crate::LawSource = $crate::LawSource {
                 path: $path,
+                id: $crate::LawId(concat!(module_path!(), "::", stringify!($name))),
                 text: include_str!($path),
             };
         )*
