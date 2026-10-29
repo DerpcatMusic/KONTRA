@@ -109,7 +109,7 @@ pub(crate) fn timed(
     for (target, t) in p.targets.iter().enumerate() {
         let kind = match (t.param.as_str(), t.slot) {
             // An LFO's volume route is linear in its unipolar swing (v2
-            // sampler-core v1_voice_controls volume target, frange_uni 0x14071a840).
+            // sampler-core v1_voice_controls volume target; the range conversion is not yet isolated).
             ("volume", None) => ir::ModKind::Volume {
                 source,
                 intensity: t.signed_intensity(),

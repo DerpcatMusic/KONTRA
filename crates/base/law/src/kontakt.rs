@@ -23,6 +23,9 @@ pub const VOICE_VOLUME: Law = Law::Power {
     exponent: VOICE_VOLUME_POWER as f32,
 };
 
+/// Maps normalized input to a bipolar value (0x14071a840 on 0..=1).
+pub const BIPOLAR: Law = Law::Linear { lo: -1.0, hi: 1.0 };
+
 /// Saved modulation-shaper points as an evaluator law.
 ///
 /// Curvature uses the existing measured approximation; its exact binary law
@@ -41,4 +44,16 @@ pub fn modulation_shaper(points: &[(f32, f32, f32)]) -> Law {
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bipolar_curve_maps_normalized_endpoints_and_midpoint() {
+        for (x, expected) in [(0.0, -1.0), (0.5, 0.0), (1.0, 1.0)] {
+            assert_eq!(BIPOLAR.eval(x), expected, "input {x}");
+        }
+    }
 }
