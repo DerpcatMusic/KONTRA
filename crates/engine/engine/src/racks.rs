@@ -11,7 +11,7 @@ use kontra_dsp::dynamics::{
     TransientSettings,
 };
 use kontra_dsp::filter::{Cascade, CascadeSettings, CascadeStage};
-use kontra_dsp::reverb::{Combs, Convolver, Fdn, Network, Settings};
+use kontra_dsp::reverb::{Combs, Convolver, Fdn, Hadamard, Network, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
 
@@ -96,6 +96,18 @@ impl Wet for Combs {
     fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Reverb(r) = kind {
             Combs::set(self, settings(r));
+        }
+    }
+}
+
+impl Wet for Hadamard {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Hadamard::process(self, io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Reverb(r) = kind {
+            Hadamard::set(self, settings(r));
         }
     }
 }
@@ -542,6 +554,9 @@ pub(crate) fn processor(
         Some(ir::EffectKind::Reverb(r)) => match r.network {
             Some(ir::Network::Lines(law)) => wet(Box::new(Network::new(law, settings(r), rate))),
             Some(ir::Network::Combs(law)) => wet(Box::new(Combs::new(law, settings(r), rate))),
+            Some(ir::Network::Hadamard(law)) => {
+                wet(Box::new(Hadamard::new(law, settings(r), rate)))
+            }
             None => wet(Box::new(Fdn::new(settings(r), rate))),
         },
         Some(ir::EffectKind::Compressor(c)) => wet(Box::new(Compressor::new(compressor(c), rate))),
