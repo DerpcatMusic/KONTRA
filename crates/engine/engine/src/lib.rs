@@ -45,6 +45,7 @@ use kontra_voice::{Voice, VoiceStart};
 pub use engine_pars::{EnginePar, EnginePars};
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
+pub use kontra_script_ui::{Key, KeyRange, MenuItem, Page};
 pub use kontra_time::SampleTime;
 pub use kontra_vm::{Action, Faults, Foreign, Op, Program, Text};
 pub use kontra_voice::{Ahdsr, Loop, Region};
@@ -57,7 +58,7 @@ pub use prepare::{Open, prepare};
 pub use queue::Timed;
 pub use script::{Callbacks, Controls, LookPars, ScriptPlan};
 pub use transport::Play;
-pub use ui::{ControlLook, Key, KeyRange, MenuItem, Page};
+pub use ui::ControlLook;
 
 use behaviour::Behaviour;
 use ledger::{Ledger, Note, Origin};
@@ -178,7 +179,7 @@ pub struct Engine {
     ids: callbacks::Ids,
     /// Per script slot, its controls' parameters other than the value.
     control_pars: Box<[ControlPars]>,
-    ui: ui::Ui,
+    ui: kontra_script_ui::Store,
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
     /// Shared EQ chains, and each zone's chain.
@@ -263,7 +264,7 @@ impl Engine {
             .iter()
             .map(|s| vec![Vec::new(); s.controls.cells.len()].into())
             .collect();
-        let ui = ui::Ui::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
+        let ui = kontra_script_ui::Store::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
         let mut engine = Self {
             now: SampleTime(0),
             rate: rate.max(1),

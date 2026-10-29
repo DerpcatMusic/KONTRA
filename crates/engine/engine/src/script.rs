@@ -49,28 +49,7 @@ pub struct Controls {
     pub look: LookPars,
 }
 
-/// The parameter ids `set_text`, `move_control_px`, `hide_part` and the like
-/// store under, so the host can read a control's look back (07-APP.md §5.1).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct LookPars {
-    pub text: i32,
-    pub label: i32,
-    pub help: i32,
-    pub unit: i32,
-    pub default: i32,
-    pub pos_x: i32,
-    pub pos_y: i32,
-    pub hide: i32,
-    /// `move_control`'s grid cell.
-    pub grid_x: i32,
-    pub grid_y: i32,
-    pub steps_shown: i32,
-    pub picture: i32,
-    pub picture_state: i32,
-    /// The UI ids that address the instrument's wallpaper and icon.
-    pub wallpaper: i32,
-    pub icon: i32,
-}
+pub use kontra_script_ui::LookPars;
 
 /// Entry points; a missing callback lets events through unchanged.
 #[derive(Clone, Debug, Default)]
