@@ -37,6 +37,9 @@ pub struct App {
     pub midi_thru: bool,
     /// The folders the browser scans.
     pub folders: Vec<String>,
+    /// The editor's width in points, as the host frames it: a library's
+    /// view fits what the rack has of it. 0 while unknown.
+    pub width: f64,
     pub view: View,
 }
 
@@ -185,10 +188,16 @@ pub struct View {
     pub modulation: f64,
     /// Which of [`SCALES`] the editor is drawn at.
     pub scale: usize,
+    /// Which of [`FACE_SCALES`] a library's own view is drawn at.
+    pub face_scale: usize,
 }
 
 /// The editor sizes on offer.
 pub const SCALES: [f64; 4] = [1., 1.25, 1.5, 2.];
+
+/// A library's view sizes on offer: as wide as the rack (0, the default),
+/// or a fixed scale that scrolls when it is wider.
+pub const FACE_SCALES: [f64; 4] = [0., 1., 1.5, 2.];
 
 /// A panel opened on demand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -459,6 +468,22 @@ fn settings(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         app.view.scale = n;
         out.extend(SCALES.get(n).map(|&s| Action::Scale(s)));
     }
+    let faces = ["Fit", "100%", "150%", "200%"];
+    let face = kit::dropdown(
+        ui,
+        &mut app.view.menu,
+        "face-scale",
+        (
+            None,
+            faces.get(app.view.face_scale).copied().unwrap_or("Fit"),
+            "How large a library's own view is drawn",
+        ),
+        &faces,
+        Some(app.view.face_scale),
+    );
+    if let Some(n) = face.changed {
+        app.view.face_scale = n;
+    }
     let add = button(ui, "add-folder", "Add folder…", false);
     if add.changed {
         out.push(Action::AddFolder);
@@ -481,6 +506,7 @@ fn settings(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         rule(),
         section("Interface"),
         line("Size", size.el),
+        line("Library view", face.el),
         rule(),
         section("MIDI / Output"),
         line("MIDI thru", thru.el),
