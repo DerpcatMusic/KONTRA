@@ -4,7 +4,11 @@
 //! Kontakt 8.13.1. Unknown versions safely use the built-in vector fallback;
 //! no vendor artwork is distributed with KONTRA.
 
+use kontra_ui_model::{ImageMeta, Orientation};
+use mui::prelude::Image;
+use sha2::{Digest, Sha256};
 use std::io::Read;
+use std::path::Path;
 use std::sync::OnceLock;
 
 const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
@@ -15,16 +19,69 @@ const KEYS: [(&str, usize, u32, u32, u32); 4] = [
     ("@stock/font", 2363, 1402, 13, 0xc762_083f),
 ];
 
-pub(super) fn read(path: &str) -> Option<Vec<u8>> {
-    static ART: OnceLock<Option<[Vec<u8>; 4]>> = OnceLock::new();
-    let i = KEYS.iter().position(|(key, ..)| *key == path)?;
-    ART.get_or_init(load).as_ref()?.get(i).cloned()
+static ART: OnceLock<Option<[Image; 4]>> = OnceLock::new();
+
+/// Start discovery, hashing and decoding before the editor's first frame.
+pub(crate) fn prewarm() {
+    static START: OnceLock<()> = OnceLock::new();
+    START.get_or_init(|| {
+        std::thread::spawn(|| {
+            let _ = ART.get_or_init(load);
+        });
+    });
 }
 
-fn load() -> Option<[Vec<u8>; 4]> {
-    let path = std::env::var_os("KONTAKT_STOCK_EXECUTABLE")?;
+pub(super) fn frame(path: &str, meta: ImageMeta, n: u32) -> Option<Image> {
+    let i = KEYS.iter().position(|(key, ..)| *key == path)?;
+    let image = ART.get_or_init(load).as_ref()?.get(i)?;
+    let frames = meta.frames.max(1);
+    let (x, y, width, height) = match meta.axis {
+        Orientation::Horizontal => (
+            n.checked_mul(image.width / frames)?,
+            0,
+            image.width / frames,
+            image.height,
+        ),
+        Orientation::Vertical => (
+            0,
+            n.checked_mul(image.height / frames)?,
+            image.width,
+            image.height / frames,
+        ),
+    };
+    if width == 0
+        || height == 0
+        || x.checked_add(width)? > image.width
+        || y.checked_add(height)? > image.height
+    {
+        return None;
+    }
+    let mut pixels = Vec::with_capacity((width as usize) * (height as usize) * 4);
+    for row in y..y + height {
+        let start = ((row as usize) * (image.width as usize) + x as usize) * 4;
+        pixels.extend_from_slice(image.rgba.get(start..start + (width as usize) * 4)?);
+    }
+    Image::rgba(width, height, pixels)
+}
+
+fn load() -> Option<[Image; 4]> {
+    super::discovery::candidates()
+        .into_iter()
+        .find_map(|path| load_from(&path))
+}
+
+fn load_from(path: &Path) -> Option<[Image; 4]> {
+    let before = path.metadata().ok()?;
+    if !before.is_file() || before.len() > 512 << 20 {
+        return None;
+    }
+    let dims = KEYS.map(|(_, _, w, h, _)| (w, h));
+    if let Some(images) = super::cache::load(path, &dims) {
+        return Some(images);
+    }
     let mut file = std::fs::File::open(path).ok()?;
     let mut found: [Option<Vec<u8>>; 4] = [None, None, None, None];
+    let mut hash = Sha256::new();
     // Keep an overlap large enough for the longest candidate PNG.
     let overlap = 37604;
     let mut data = vec![0; 1 << 20];
@@ -34,7 +91,13 @@ fn load() -> Option<[Vec<u8>; 4]> {
         if n == 0 {
             break;
         }
-        carry.extend_from_slice(data.get(..n)?);
+        let bytes = data.get(..n)?;
+        hash.update(bytes);
+        // Continue hashing the complete executable after finding the artwork.
+        if found.iter().all(Option::is_some) {
+            continue;
+        }
+        carry.extend_from_slice(bytes);
         for (at, sig) in carry.windows(SIGNATURE.len()).enumerate() {
             if sig != SIGNATURE {
                 continue;
@@ -56,14 +119,23 @@ fn load() -> Option<[Vec<u8>; 4]> {
                 *found.get_mut(i)? = Some(png.to_vec());
             }
         }
-        if found.iter().all(Option::is_some) {
-            break;
-        }
         let keep = carry.len().saturating_sub(overlap);
         carry.drain(..keep);
     }
     let [base, cap, light, font] = found;
-    Some([base?, cap?, light?, font?])
+    let decode = |png: Vec<u8>| super::decode(&png, ImageMeta::default(), 0);
+    let images = [
+        decode(base?)?,
+        decode(cap?)?,
+        decode(light?)?,
+        decode(font?)?,
+    ];
+    let after = path.metadata().ok()?;
+    if before.len() != after.len() || before.modified().ok()? != after.modified().ok()? {
+        return None;
+    }
+    super::cache::save(path, &format!("{:x}", hash.finalize()), &images);
+    Some(images)
 }
 
 fn crc32(bytes: &[u8]) -> u32 {

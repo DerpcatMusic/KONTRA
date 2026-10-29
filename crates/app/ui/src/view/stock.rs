@@ -205,9 +205,9 @@ fn bitmap_knob(
 ) -> Vec<El> {
     let [base, cap, light] = art;
     vec![
-        super::image(base, 87. * s, 39. * s),
+        super::image(base, 87. * s, 39. * s).at(0., 0.),
         super::image(cap, 25. * s, 29. * s).at(7. * s, 5. * s),
-        super::image(light, 39. * s, 39. * s),
+        super::image(light, 39. * s, 39. * s).at(0., 0.),
         stock_words(title, s, glyphs).at(42. * s, 2. * s),
         stock_words(value, s, glyphs).at(42. * s, 22. * s),
     ]
