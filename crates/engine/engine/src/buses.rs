@@ -59,16 +59,13 @@ impl Engine {
         if !enabled {
             let fade = self.fade_frames();
             let plan = self.plan.clone();
-            for slot in self.voices.iter_mut().filter(|s| s.voice.is_active()) {
-                if plan
-                    .zones
-                    .get(slot.zone)
-                    .is_some_and(|z| plan::bus(&self.groups, z) == bus)
-                {
-                    slot.voice.fade(fade);
-                    slot.fading = true;
-                }
-            }
+            let groups = std::mem::take(&mut self.groups);
+            self.fade_where(fade, |s| {
+                plan.zones
+                    .get(s.zone)
+                    .is_some_and(|z| plan::bus(&groups, z) == bus)
+            });
+            self.groups = groups;
         }
     }
 }

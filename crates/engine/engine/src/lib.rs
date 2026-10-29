@@ -83,8 +83,8 @@ use script::{Kind, Running};
 
 use kontra_effects::MAX_SPAN;
 use kontra_effects::matrix as effects;
-/// A stolen, choked or limited voice fades over this long instead of clicking.
-const FADE_SECONDS: f64 = 0.005;
+/// A voice ended early outside a voice group fades this long, a cut that never clicks.
+const FADE_SECONDS: f64 = 0.010;
 
 /// Counters since the engine was created. Each names a refusal or a loss.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -649,10 +649,7 @@ impl Engine {
             if let Some(n) = self.notes.get_mut(note) {
                 n.released = true;
             }
-            for slot in self.voices.iter_mut().filter(|s| s.note == Some(note)) {
-                slot.voice.fade(fade);
-                slot.fading = true;
-            }
+            self.fade_where(fade, |s| s.note == Some(note));
         }
         self.hits = hits;
     }
