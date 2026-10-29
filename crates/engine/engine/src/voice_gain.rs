@@ -237,6 +237,9 @@ impl Engine {
                         _ => {}
                     }
                 }
+                if let ir::Wave::Chaos { .. } = lfo.wave {
+                    return age.chaos.get(usize::from(n)).copied();
+                }
                 lfo.phase += age.warp.get(usize::from(n)).copied().unwrap_or(0.0);
                 Some(modulators::lfo(&lfo, age, u32::from(note.key), self.tempo))
             }

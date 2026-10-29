@@ -442,6 +442,34 @@ pub(super) fn shape(node: Node, user: bool) -> Option<(ir::Lfo, f32)> {
             // Random S&H: a uniform −1..=1 draw each time its 32-bit phase
             // wraps (0x1410f95b0), once a cycle (the random wave's half cycle).
             6.0 => (ir::Wave::Random, 1.0),
+            // Chaos Lorenz and Rossler from (1, 1, 1), stepped once a
+            // 32-sample block (process 0x1410f90cb, 0x1410f924d; constants
+            // set at 0x1410f593b): Lorenz at Freq time units a second, its
+            // x × 0.0511; Rossler at 2.91 × Freq, its x × 0.0576.
+            7.0 => (
+                ir::Wave::Chaos {
+                    attractor: ir::Attractor::Lorenz {
+                        sigma: 10.0,
+                        rho: 28.0,
+                        beta: f32::from_bits(0x402a_9fbe),
+                    },
+                    step: 1.0,
+                    scale: f32::from_bits(0x3d51_2ec7),
+                },
+                1.0,
+            ),
+            8.0 => (
+                ir::Wave::Chaos {
+                    attractor: ir::Attractor::Rossler {
+                        a: f32::from_bits(0x3e19_999a),
+                        b: f32::from_bits(0x3e4c_cccd),
+                        c: 10.0,
+                    },
+                    step: f32::from_bits(0x403a_3d71),
+                    scale: f32::from_bits(0x3d6b_ce85),
+                },
+                1.0,
+            ),
             // A user table, read through it ([`blend::table`]).
             9.0 if user => (ir::Wave::Saw, 1.0),
             _ => return None,
