@@ -89,6 +89,8 @@ pub struct Voice {
     /// Cursor position of the note's release, once it came.
     released: Option<u64>,
     missing: u64,
+    #[cfg(feature = "trace")]
+    last_peak: f32,
 }
 
 impl Voice {
@@ -110,6 +112,8 @@ impl Voice {
             raw: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             released: None,
             missing: 0,
+            #[cfg(feature = "trace")]
+            last_peak: 0.0,
         }
     }
 
@@ -127,6 +131,10 @@ impl Voice {
         self.env = Envelope::new(start.envelope);
         self.released = None;
         self.missing = 0;
+        #[cfg(feature = "trace")]
+        {
+            self.last_peak = 0.0;
+        }
     }
 
     pub fn release(&mut self) {
@@ -190,6 +198,13 @@ impl Voice {
         self.region.is_some()
     }
 
+    /// Peak of this voice's last render call before group effects, when tracing is enabled.
+    #[cfg(feature = "trace")]
+    #[must_use]
+    pub fn last_peak(&self) -> f32 {
+        self.last_peak
+    }
+
     /// Source frames this voice read while their data was not in memory.
     #[must_use]
     pub fn missing_frames(&self) -> u64 {
@@ -223,6 +238,10 @@ impl Voice {
         out: &mut [[f32; 2]],
         mut insert: impl FnMut(&mut [[f32; 2]]),
     ) {
+        #[cfg(feature = "trace")]
+        {
+            self.last_peak = 0.0;
+        }
         let Some(region) = self.region.take() else {
             return;
         };
@@ -280,8 +299,14 @@ impl Voice {
                 }
                 let (l, r) = (l * level, r * level);
                 let [[ll, lr], [rl, rr]] = self.gain;
-                frame[0] += ll * l + lr * r;
-                frame[1] += rl * l + rr * r;
+                let left = ll * l + lr * r;
+                let right = rl * l + rr * r;
+                #[cfg(feature = "trace")]
+                {
+                    self.last_peak = self.last_peak.max(left.abs()).max(right.abs());
+                }
+                frame[0] += left;
+                frame[1] += right;
                 if self.env.is_off() {
                     alive = false;
                     break;

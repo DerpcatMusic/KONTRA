@@ -134,3 +134,23 @@ pub fn file(path: &Path) -> Result<Vec<Input>> {
     out.sort_by_key(|e| e.frame);
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_scenario_is_ordered_and_sweeps_both_controllers() {
+        let events = user();
+        assert!(events.windows(2).all(|w| w[0].frame <= w[1].frame));
+        for controller in [1, 11] {
+            let values: Vec<_> = events
+                .iter()
+                .filter(|e| e.description["cc"] == controller)
+                .filter_map(|e| e.description["value"].as_u64())
+                .collect();
+            assert!(values.contains(&0) && values.contains(&127));
+        }
+        assert!(events.iter().any(|e| e.description["type"] == "note_off"));
+    }
+}

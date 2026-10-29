@@ -18,3 +18,17 @@ original-to-runtime script slot mapping, and asset existence are not yet exposed
 as unavailable. Script inventory slots are original file slots; UI slots are runtime slots, which can differ after a compile failure. Slot laws and route curves that are already in the IR are shown.
 
 `kontra-inspect` does not run the existing v2 `kontra-probe` contracts.
+
+`kontra-inspect play <instrument> --scenario user --json <report.json>` runs
+legato, chords and repeats with slow and fast CC1/CC11 sweeps, then 20 seconds
+past the last note-off. A file scenario is `{"events":[{"frame":0,
+"type":"note_on","key":60},{"frame":28800,"type":"note_off","key":60}]}`;
+`cc` events use `cc` and `value` fields. Frames are at 48 kHz and note-on
+velocity is 100. Reports include inputs, block-boundary EQ route/voice snapshots,
+peak, clipped samples, maximum adjacent sample jump and the stereo second-
+difference energy in a ±5 ms window around each CC event. This energy is a
+measurement, not by itself a click verdict. The per-voice peak is the last
+voice render span before group effects; it is not the level of the final mix.
+Unavailable stages are listed in JSON. The inspector enables a compile-time
+voice trace feature; the normal feature-off voice renderer has no trace state
+or per-frame instrumentation.

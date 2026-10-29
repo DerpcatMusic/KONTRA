@@ -110,6 +110,9 @@ pub struct VoiceObservation {
     pub position: f64,
     pub released: bool,
     pub gain: kontra_voice::Gain,
+    /// Peak of the last voice render, before group effects.
+    #[cfg(feature = "trace")]
+    pub last_peak: f32,
 }
 
 /// A live EQ route, sampled from the same source and law used by the engine.
@@ -135,6 +138,8 @@ impl Engine {
                 position: s.voice.position(),
                 released: s.released,
                 gain: s.voice.current_gain(),
+                #[cfg(feature = "trace")]
+                last_peak: s.voice.last_peak(),
             })
     }
 

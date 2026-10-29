@@ -67,6 +67,7 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
     let mut clipped = 0u64;
     let mut prior = [0f32; 2];
     let mut audio = [[0f32; 2]; BLOCK];
+    let mut rendered = Vec::new();
     while at < stop {
         let frames = usize::try_from((stop - at).min(BLOCK as u64))?;
         let until = at + frames as u64;
@@ -87,6 +88,7 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         for request in requests {
             engine.install(Prepared::new(request, Some(&plan), RATE));
         }
+        rendered.extend_from_slice(&audio[..frames]);
         for frame in &audio[..frames] {
             for (sample, previous) in frame.iter().zip(&mut prior) {
                 peak = peak.max(sample.abs());
@@ -102,7 +104,7 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
                 .map(|v| {
                     json!({
                         "zone":v.zone, "sample":zone_samples.get(v.zone), "position":v.position,
-                        "released":v.released, "gain_before_sample_and_fx":v.gain,
+                        "released":v.released, "gain_before_sample_and_fx":v.gain, "last_render_peak_before_group_fx":v.last_peak,
                     })
                 })
                 .collect();
@@ -121,22 +123,49 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         .map(|v| {
             json!({"zone":v.zone,
         "sample":zone_samples.get(v.zone), "position":v.position, "released":v.released,
-        "gain_before_sample_and_fx":v.gain})
+        "gain_before_sample_and_fx":v.gain, "last_render_peak_before_group_fx":v.last_peak})
         })
         .collect();
+    // Five milliseconds around each controller event, using the second
+    // difference as a reproducible high-frequency burst measure.
+    let window = usize::try_from(RATE / 200).unwrap_or(0);
+    let bursts: Vec<_> = events.iter().filter(|e| e.description.get("type").and_then(Value::as_str) == Some("cc"))
+        .filter_map(|e| {
+            let frame = usize::try_from(e.frame).ok()?;
+            let end = frame.saturating_add(window).min(rendered.len());
+            let samples = rendered.get(frame.saturating_sub(window)..end)?;
+            let energy: f64 = samples.windows(3).map(|w| {
+                let [a, b, c] = w else { return 0.0 };
+                a.iter().zip(b).zip(c).map(|((&x, &y), &z)| {
+                    let d = f64::from(z - 2.0 * y + x);
+                    d * d
+                }).sum::<f64>()
+            }).sum();
+            Some(json!({"frame": e.frame, "event": e.description, "hf_second_difference_energy": energy}))
+        }).collect();
+    let loudest_remaining = engine
+        .inspect_voices()
+        .map(|v| v.last_peak)
+        .fold(0.0_f32, f32::max);
+    let burst_peak = bursts
+        .iter()
+        .filter_map(|b| b.get("hf_second_difference_energy")?.as_f64())
+        .fold(0.0_f64, f64::max);
+    let stats = engine.stats();
     let summary = format!(
-        "{}: scenario {scenario_name}, {} input events\n  peak {peak:.6}, clipped samples {clipped}, max sample jump {jump:.6}\n  {} voices active {:.3} s after last note-off (per-voice gain in JSON; not isolated audio level)\n  EQ route snapshots: {}\n",
+        "{}: scenario {scenario_name}, {} input events\n  peak {peak:.6}, clipped samples {clipped}, max sample jump {jump:.6}\n  {} voices active {:.3} s after last note-off (per-voice last-render peak before group FX in JSON)\n  loudest remaining voice peak {loudest_remaining:.8}; EQ route snapshots: {}; max CC-window HF energy {burst_peak:.8}\n  missing sample frames: {}\n",
         loaded.name,
         events.len(),
         left.len(),
         (stop - last_off) as f64 / f64::from(RATE),
-        trace.len()
+        trace.len(),
+        stats.missing_frames
     );
     Ok((
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
-        "trace":trace,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump},
-        "diagnostics":diagnostics,"unavailable":["script callbacks and commands by event","voice lifecycle events","isolated voice audio levels","non-EQ route values","octave bands","HF burst energy"]}}),
+        "trace":trace,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts},
+        "diagnostics":diagnostics,"engine_stats":format!("{stats:?}"),"unavailable":["script callbacks and commands by event","voice lifecycle events","non-EQ route values","octave bands"]}}),
         summary,
     ))
 }

@@ -401,3 +401,23 @@ fn a_table_plays_its_cycle_at_the_step_and_morphs_by_position() {
         "the second cycle is the negated sine"
     );
 }
+
+#[cfg(feature = "trace")]
+#[test]
+fn trace_peak_is_isolated_from_existing_mix_and_resets_each_render() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let mut voice = Voice::allocate();
+    voice.start(start(
+        ramp_region(&mut store, 4096, 4096).unwrap(),
+        1.0,
+        Ahdsr::GATE,
+    ));
+    let mut block = [[1.0; 2]; 128];
+    voice.render(&client, 0, &mut block);
+    let expected = 127.0 / 65_536.0;
+    assert!((voice.last_peak() - expected).abs() < 1e-7);
+    let mut next = [[0.0; 2]; 128];
+    voice.render(&client, 128, &mut next);
+    assert!((voice.last_peak() - 255.0 / 65_536.0).abs() < 1e-7);
+}
