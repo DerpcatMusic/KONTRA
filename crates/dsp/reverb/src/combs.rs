@@ -1,13 +1,14 @@
 //! A [`CombNetwork`]: per channel, eight combs with a one-pole in their
 //! loop summed into four allpasses in series. The channels are first
-//! mixed toward their mean as the width narrows, scaled, low-passed and
-//! delayed. Settings read physically: `seconds` the combs' 60 dB time over
+//! mixed toward their mean as the width narrows, scaled, low-passed by a
+//! two-pole Butterworth at `high_cut_hz` and delayed. Settings read physically: `seconds` the combs' 60 dB time over
 //! their mean length, `damping` the share of each new comb sample its
 //! one-pole drops, `diffusion` the allpass gain; `size` is not used.
 
 use crate::Settings;
 use crate::fade::flush;
 use crate::fdn::MAX_PREDELAY_MS;
+use kontra_dsp_core::Biquad;
 use kontra_law::CombNetwork;
 
 /// A power-of-two ring with one read head `delay` frames behind its write.
@@ -45,7 +46,6 @@ struct Channel {
     pre: Line,
     combs: [(Line, f32); 8],
     allpasses: [Line; 4],
-    low: f32,
 }
 
 pub struct Combs {
@@ -56,7 +56,7 @@ pub struct Combs {
     keep: f32,
     gain: f32,
     narrow: f32,
-    pole: f32,
+    input: Biquad,
     w: usize,
 }
 
@@ -74,7 +74,6 @@ impl Combs {
                 pre,
                 combs: law.combs_ms.map(|ms| (Line::new(frames(ms + spread)), 0.0)),
                 allpasses: law.allpasses_ms.map(|ms| Line::new(frames(ms + spread))),
-                low: 0.0,
             }
         };
         let mut combs = Self {
@@ -85,7 +84,7 @@ impl Combs {
             keep: 1.0,
             gain: 0.0,
             narrow: 0.0,
-            pole: 0.0,
+            input: Biquad::new([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
             w: 0,
         };
         combs.set(s);
@@ -98,8 +97,8 @@ impl Combs {
         self.keep = 1.0 - s.damping.clamp(0.0, 1.0);
         self.gain = s.diffusion.clamp(0.0, 0.99);
         self.narrow = 1.0 - s.stereo.clamp(0.0, 1.0);
-        let hz = s.high_cut_hz.clamp(1.0, 0.49 * self.rate);
-        self.pole = (-std::f32::consts::TAU * hz / self.rate).exp();
+        let hz = f64::from(s.high_cut_hz.clamp(1.0, 0.495 * self.rate));
+        self.input.retune(&butterworth(hz / f64::from(self.rate)));
         let pre = (s.predelay_ms.clamp(0.0, MAX_PREDELAY_MS) * 0.001 * self.rate) as usize;
         for c in &mut self.channels {
             c.pre.delay = pre.min(c.pre.buf.len() - 1);
@@ -108,14 +107,16 @@ impl Combs {
 
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let (feedback, keep, g) = (self.feedback, self.keep, self.gain);
+        let (narrow, input_gain) = (self.narrow, self.law.input_gain);
+        for frame in io.iter_mut() {
+            let mean = 0.5 * (frame[0] + frame[1]);
+            *frame = frame.map(|x| input_gain * (narrow * mean + (1.0 - narrow) * x));
+        }
+        self.input.process(io);
         for frame in io {
-            let [l, r] = *frame;
-            let mean = 0.5 * (l + r);
             let w = self.w;
             for (x, c) in frame.iter_mut().zip(&mut self.channels) {
-                let mixed = self.narrow * mean + (1.0 - self.narrow) * *x;
-                c.low = flush(c.low + (1.0 - self.pole) * (self.law.input_gain * mixed - c.low));
-                c.pre.write(w, c.low);
+                c.pre.write(w, *x);
                 let input = c.pre.read(w);
                 let mut sum = 0.0;
                 for (line, f) in &mut c.combs {
@@ -134,4 +135,12 @@ impl Combs {
             self.w = w.wrapping_add(1);
         }
     }
+}
+
+/// The two-pole Butterworth low-pass at `fc` of the rate (−3 dB there).
+fn butterworth(fc: f64) -> Biquad {
+    let (sin, cos) = (std::f64::consts::TAU * fc).sin_cos();
+    let alpha = sin * std::f64::consts::FRAC_1_SQRT_2;
+    let b = 0.5 * (1.0 - cos);
+    Biquad::new([b, 2.0 * b, b, 1.0 + alpha, -2.0 * cos, 1.0 - alpha])
 }

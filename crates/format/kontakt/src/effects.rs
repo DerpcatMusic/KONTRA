@@ -348,15 +348,6 @@ fn slot_effect(
             0.0
         },
     };
-    // Its comb network is Kontakt's; its input low-pass, a biquad there, a
-    // one-pole here (legacy_reverb.rs).
-    if effect.id == 0x15 && !params.bypass && kind.is_some() {
-        notes.add(
-            ir::Impact::Audible,
-            "reverb input filter as a one-pole",
-            format!("{at}: legacy reverb"),
-        );
-    }
     Some((effect_out, effect.id, kind_id.unwrap_or(-1)))
 }
 
