@@ -249,15 +249,13 @@ pub(crate) type SlotKnob = (ir::SlotKnob, ir::EffectParam, ir::Law);
 /// dampings and gain there, so each knob is sampled with the others at their
 /// saved values.
 pub(crate) fn filter_knobs(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Vec<SlotKnob> {
-    use ir::EffectParam::{FilterDamping, FilterGain, FilterHz};
+    use ir::EffectParam::{FilterDamping, FilterGain, FilterHz, FilterLastDamping};
     let filter = |u, r| crate::laws::filter(kind, u, r, gain).map(ir::EffectKind::Filter);
     let mut out = sampled(ir::SlotKnob::Cutoff, &[FilterHz], &|u| filter(u, resonance));
-    let fields = [
-        FilterDamping(0),
-        FilterDamping(1),
-        FilterDamping(2),
-        FilterGain,
-    ];
+    // The last stage by position, so the knob follows a switch of shape.
+    let stages = crate::laws::filter(kind, cutoff, resonance, gain).map_or(0, |f| f.stages);
+    let mut fields = vec![FilterLastDamping, FilterGain];
+    fields.extend((0..3).filter(|&n| n + 1 != stages).map(FilterDamping));
     out.extend(sampled(ir::SlotKnob::Resonance, &fields, &|r| {
         filter(cutoff, r)
     }));
@@ -456,7 +454,7 @@ mod tests {
             let got = law(ir::EffectParam::FilterHz).eval(0.637);
             assert!((got / hz - 1.0).abs() < 2e-3, "{kind}: {got} vs {hz}");
             let k = crate::laws::filter(kind, 0.4, 0.711, 0.0).unwrap().damping[0];
-            let got = law(ir::EffectParam::FilterDamping(0)).eval(0.711);
+            let got = law(ir::EffectParam::FilterLastDamping).eval(0.711);
             assert!((got / k - 1.0).abs() < 2e-2, "{kind}: {got} vs {k}");
         }
     }

@@ -22,6 +22,7 @@ const ENGINE_PARS: &[(&str, EnginePar)] = {
         ("$ENGINE_PAR_RELEASE_TRIGGER", P::ReleaseTrigger),
         ("$ENGINE_PAR_OUTPUT_CHANNEL", P::OutputChannel),
         ("$ENGINE_PAR_EFFECT_BYPASS", P::EffectBypass),
+        ("$ENGINE_PAR_EFFECT_SUBTYPE", P::EffectSubtype),
         ("$ENGINE_PAR_SEND_EFFECT_BYPASS", P::EffectBypass),
         ("$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN", P::EffectOutput),
         ("$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN", P::EffectOutput),

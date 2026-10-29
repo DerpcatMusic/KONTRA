@@ -31,6 +31,8 @@ pub enum EnginePar {
     GainerGain,
     StereoWidth,
     StereoPan,
+    /// The shape a filter slot switches to ([`ir::SlotShape::id`]).
+    EffectSubtype,
     Volume,
     Pan,
     Tune,
