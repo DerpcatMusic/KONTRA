@@ -11,6 +11,9 @@ mod mixer;
 mod part;
 mod rack;
 mod report;
+mod sound;
+
+pub use sound::{Envelope, Filter, Lower, Param, Pass, Sound};
 
 use kontra_ui_model::Interface;
 use mui::prelude::*;
@@ -103,6 +106,8 @@ pub struct Part {
     /// Its groups' names, and its zones.
     pub groups: Vec<String>,
     pub zones: Vec<Zone>,
+    /// Each group's sound, by group.
+    pub sounds: Vec<Sound>,
     /// The library's own interface, when it has one.
     pub face: Option<Face>,
     /// Shown below its header.
@@ -211,6 +216,14 @@ pub struct View {
     pub mapping_search: String,
     pub mapping_cell: Option<(u8, u8)>,
     pub mapping_zone: Option<usize>,
+    /// The Sound tab: the group shown, whether edits set it alone, what
+    /// shows under the graphs, the handle held (graph, handle, the axis
+    /// it was pressed on) and each graph's last handle.
+    pub sound_group: usize,
+    pub sound_one: bool,
+    pub sound_lower: Lower,
+    pub sound_grab: Option<(usize, usize, f64)>,
+    pub sound_focus: [usize; 2],
     /// Articulations listed without their keys.
     pub keys_hidden: bool,
     pub keyboard_hidden: bool,
@@ -271,6 +284,13 @@ pub enum Action {
     Control {
         part: usize,
         widget: usize,
+        value: f64,
+    },
+    /// A value of a part's sound, for one group or all of them.
+    Sound {
+        part: usize,
+        group: Option<usize>,
+        param: Param,
         value: f64,
     },
     /// Play a zone of a part's mapping.

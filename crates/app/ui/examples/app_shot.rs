@@ -8,7 +8,9 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use kontra_ui::app::{self, Action, App, Format, Library, Part, PartTab, Stats, Zone};
+use kontra_ui::app::{
+    self, Action, App, Envelope, Filter, Format, Library, Part, PartTab, Pass, Sound, Stats, Zone,
+};
 use mui::prelude::{Buttons, Input, Point, PointerInput, Size, Ui};
 use mui::vello;
 
@@ -165,6 +167,27 @@ fn parts() -> Vec<Part> {
                     })
                 })
                 .collect(),
+            sounds: (0..4u8)
+                .map(|g| Sound {
+                    envelope: Some(Envelope {
+                        attack: 0.02 + 0.03 * f64::from(g),
+                        hold: 0.,
+                        decay: 0.6,
+                        sustain: 0.7,
+                        release: 0.45,
+                    }),
+                    filters: vec![
+                        Filter { pass: Pass::Low, hz: 6000., q: 1.4, poles: 4, ..Filter::default() },
+                        Filter { pass: Pass::Peak, hz: 400., q: 1., gain_db: -4., ..Filter::default() },
+                        Filter { pass: Pass::HighShelf, hz: 9000., q: 0.7, gain_db: 3., ..Filter::default() },
+                    ],
+                    mods: vec![
+                        ("Velocity".into(), "Volume".into(), "-12 dB".into()),
+                        ("CC 1".into(), "Cutoff".into(), "+3 oct".into()),
+                    ],
+                    effects: vec!["Filter".into(), "EQ".into()],
+                })
+                .collect(),
             open: true,
             tab: PartTab::Articulations,
             level: 0.3,
@@ -236,6 +259,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         s.click("part-0-grid")?;
         s.save("mapping-picked")?;
+        s.click("part-0-tab-Sound")?;
+        s.save("sound")?;
+        s.click("part-0-sound-Modulation")?;
+        s.save("sound-modulation")?;
         s.click("part-0-tab-Articulations")?;
         s.click("tab-Mixer")?;
         s.save("mixer")?;

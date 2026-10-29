@@ -2,7 +2,7 @@
 //! library, a click on a preset asks to load it, a menu pick lands, and
 //! once motion settles the editor asks for no more frames.
 
-use kontra_ui::app::{self, Action, App, Format, Library, Part};
+use kontra_ui::app::{self, Action, App, Envelope, Format, Library, Param, Part, PartTab, Sound};
 use mui::prelude::{Buttons, Input, Point, PointerInput, Size, Ui};
 
 fn frame(ui: &mut Ui, app: &mut App, input: Input) -> (Vec<Action>, bool) {
@@ -106,4 +106,70 @@ fn clicks_drive_the_editor_and_idle_costs_no_frames() {
         !frame(&mut ui, &mut app, Input::default()).1,
         "settled: the host draws nothing until something changes"
     );
+}
+
+#[test]
+fn a_dragged_envelope_handle_sets_every_group() {
+    let mut ui = kontra_ui::ui();
+    let sound = Sound {
+        envelope: Some(Envelope {
+            attack: 0.1,
+            decay: 0.5,
+            sustain: 0.5,
+            release: 0.4,
+            ..Envelope::default()
+        }),
+        ..Sound::default()
+    };
+    let mut app = App {
+        parts: vec![Part {
+            name: "Violins".into(),
+            groups: vec!["Long".into(), "Short".into()],
+            sounds: vec![sound.clone(), sound],
+            open: true,
+            tab: PartTab::Sound,
+            ..Part::default()
+        }],
+        ..App::default()
+    };
+    settle(&mut ui, &mut app);
+    let f = ui
+        .scene()
+        .and_then(|s| s.surface("part-0-envelope"))
+        .map(|s| s.frame);
+    assert!(f.is_some(), "the envelope graph is on screen");
+    let Some(f) = f else { return };
+    // The decay handle: 0.6 s of a 1.25 s span, at the sustain; the graph
+    // is inset by 8 points.
+    let (w, h) = (f.size.width - 16., f.size.height - 16.);
+    let at = |x: f64, y: f64| Point::new(f.x + 8. + x * w, f.y + 8. + (1. - y) * h);
+    let press = |pos, buttons| Input {
+        pointer: PointerInput {
+            pos: Some(pos),
+            buttons,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let start = at(0.6 / 1.25, 0.5);
+    let mut out = Vec::new();
+    for (pos, b) in [
+        (start, Buttons::PRIMARY),
+        (at(0.8 / 1.25, 0.25), Buttons::PRIMARY),
+        (at(0.8 / 1.25, 0.25), Buttons::PRIMARY),
+        (at(0.8 / 1.25, 0.25), Buttons::default()),
+    ] {
+        out.extend(frame(&mut ui, &mut app, press(pos, b)).0);
+    }
+    out.extend(settle(&mut ui, &mut app));
+    let sustain = |g: usize| {
+        app.parts
+            .first()
+            .and_then(|p| p.sounds.get(g))
+            .and_then(|s| s.envelope)
+            .map(|e| e.sustain)
+    };
+    assert!(out.iter().any(|a| matches!(a, Action::Sound { group: None, param: Param::Decay, value, .. } if (value - 0.7).abs() < 0.02)), "{out:?}");
+    assert!((sustain(0).unwrap_or(0.) - 0.25).abs() < 0.02);
+    assert_eq!(sustain(0), sustain(1), "All groups: both move");
 }
