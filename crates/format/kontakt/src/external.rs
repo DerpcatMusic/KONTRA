@@ -63,7 +63,24 @@ pub(crate) fn external(
                 }
                 let raw = source;
                 let source = match (raw, t.shaper.as_ref().filter(|s| s.enabled)) {
-                    (Some(s), Some(shaper)) => shaped(&mut out.shapers, s, &shaper.curve),
+                    (Some(s), Some(shaper)) => {
+                        let result = shaped(&mut out.shapers, s, &shaper.curve);
+                        kontra_law::record(|| kontra_law::Application {
+                            id: kontra_law::LawId("kontakt.mod_shaper.v1"),
+                            location: format!(
+                                "groups/{group_index}/routes/{n}/targets/{target}/shaper"
+                            ),
+                            input: format!("source={s:?}, curve={:?}", shaper.curve),
+                            output: format!(
+                                "source={result:?}, transfer={:?}",
+                                result.and_then(|id| match id {
+                                    ir::Source::Shaped(i) => out.shapers.get(usize::from(i)),
+                                    _ => None,
+                                })
+                            ),
+                        });
+                        result
+                    }
                     _ => raw,
                 };
                 let kind = match (source, t.param.as_str(), t.slot) {
@@ -106,7 +123,17 @@ pub(crate) fn external(
                         depth: t.signed_intensity(),
                     }),
                     (Some(source), param, Some(insert)) if laws::eq_band_index(param).is_some() => {
-                        laws::eq_gain(source, insert, param, t.signed_intensity())
+                        let result = laws::eq_gain(source, insert, param, t.signed_intensity());
+                        kontra_law::record(|| kontra_law::Application {
+                            id: kontra_law::LawId("kontakt.eq_gain_route.v1"),
+                            location: format!("groups/{group_index}/routes/{n}/targets/{target}"),
+                            input: format!(
+                                "source={source:?}, insert={insert}, param={param}, intensity={:?}",
+                                t.signed_intensity()
+                            ),
+                            output: format!("{result:?}"),
+                        });
+                        result
                     }
                     // Only the amplitude envelope's times: another AHDSR is
                     // a breakpoint source with fixed times.
@@ -155,7 +182,19 @@ pub(crate) fn external(
                     {
                         timed_slots.iter().find_map(|&(n, of)| match of {
                             ir::Source::Lfo(lfo) if n == usize::from(at) => {
-                                Some(laws::lfo_rate(source, lfo, t.signed_intensity()))
+                                let result = laws::lfo_rate(source, lfo, t.signed_intensity());
+                                kontra_law::record(|| kontra_law::Application {
+                                    id: kontra_law::LawId("kontakt.lfo_rate_route.v1"),
+                                    location: format!(
+                                        "groups/{group_index}/routes/{n}/targets/{target}"
+                                    ),
+                                    input: format!(
+                                        "source={source:?}, lfo={lfo}, intensity={:?}",
+                                        t.signed_intensity()
+                                    ),
+                                    output: format!("{result:?}"),
+                                });
+                                Some(result)
                             }
                             _ => None,
                         })
