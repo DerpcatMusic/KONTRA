@@ -364,10 +364,15 @@ impl<L: Library> Translator<'_, '_, L> {
             return;
         }
         let source = modulation::group_source(group, r.source, r.timed);
-        if matches!(source, ir::Source::Lfo(_))
+        // An LFO read through a table (a gain's `factor`) scales the same way.
+        let lfo = match source {
+            ir::Source::Shaped(n) => group.shapers.get(usize::from(n)).map(|t| t.source),
+            s => Some(s),
+        };
+        if let Some(of @ ir::Source::Lfo(_)) = lfo
             && connection.attribute("Destination") != Some("Depth")
         {
-            self.depth_scales(group, connection, source);
+            self.depth_scales(group, connection, of);
         }
         let kind = kind(source, r.unit * r.ratio);
         let alike = group.mods.iter().find_map(|m| {

@@ -315,6 +315,13 @@ pub(super) fn gain_route(program: Node, connection: Node) -> Option<Route> {
 /// (1 + d)/2]`. Not a rising LFO (its rise scales the source, not the ratio).
 pub(super) fn factor(mut r: Route) -> Option<Route> {
     r.ratio = r.ratio.clamp(-1.0, 1.0);
+    // ponytail: a rise done within 5 ms (AO Meadows: 3.1 ms on a 0.5-beat
+    // tremolo) is read as none; carry it under an Intensity if one is longer.
+    if let Some(Timed::Rising(lfo, rise)) = &r.timed
+        && rise.points.iter().map(|p| p.ms).sum::<f32>() <= 5.0
+    {
+        r.timed = Some(Timed::Lfo(lfo.clone()));
+    }
     match r.timed.take() {
         Some(Timed::Rising(..)) => return None,
         Some(Timed::Lfo(lfo)) => {
