@@ -28,14 +28,32 @@ fn io_mb() -> (u64, u64) {
     (field("rchar:") >> 20, field("read_bytes:") >> 20)
 }
 
+/// CPU seconds this process has used, user + system, all threads: stable
+/// under machine load, unlike wall time.
+fn cpu_s() -> f64 {
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+    let fields: Vec<&str> = stat
+        .rsplit_once(')')
+        .map_or("", |(_, rest)| rest)
+        .split_whitespace()
+        .collect();
+    let ticks = |i: usize| {
+        fields
+            .get(i)
+            .and_then(|f| f.parse::<f64>().ok())
+            .unwrap_or(0.0)
+    };
+    (ticks(11) + ticks(12)) / 100.0
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     for path in std::env::args().skip(1) {
         let before = rss_mb();
         let io = io_mb();
-        let start = std::time::Instant::now();
+        let (start, cpu) = (std::time::Instant::now(), cpu_s());
         let mut store = Store::new(StoreConfig::DEFAULT)?;
         let ir = kontra_host::instrument::read(path.as_ref())?;
-        let read = start.elapsed();
+        let (read, read_cpu) = (start.elapsed(), cpu_s() - cpu);
         let read_io = io_mb();
         let (samples, zones) = (
             ir.samples.len(),
@@ -69,10 +87,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let loaded = kontra_host::instrument::build(ir, 48_000, &mut store);
         let pinned = store.pinned_bytes() as f64 / 1e6;
         println!(
-            "{}: read {:.2} s, load {:.2} s; {samples} samples, {zones} zones ({} planned); pinned {pinned:.1} MB; rss +{} MB",
+            "{}: read {:.2} s (cpu {:.2} s), load {:.2} s (cpu {:.2} s); {samples} samples, {zones} zones ({} planned); pinned {pinned:.1} MB; rss +{} MB",
             loaded.name,
             read.as_secs_f64(),
+            read_cpu,
             start.elapsed().as_secs_f64(),
+            cpu_s() - cpu,
             loaded.plan.zones.len(),
             rss_mb().saturating_sub(before)
         );
