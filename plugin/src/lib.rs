@@ -16,7 +16,7 @@ mod look;
 #[cfg(test)]
 mod tests;
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock};
 
 use kontra_host::rack::{Event, Rack, RackAudio, Store, StoreConfig};
@@ -79,6 +79,10 @@ pub struct Shared {
     /// Pictures the editor asked for and has not shown yet: it keeps
     /// drawing until they arrive.
     decoding: std::sync::atomic::AtomicBool,
+    /// Loads asked for and loads carried out: the editor shows one loading
+    /// while the first is ahead.
+    asked: AtomicU64,
+    done: AtomicU64,
     /// The latency to report, in frames; the audio thread reads it.
     latency: AtomicU32,
     /// Moves when the host loads a state: the editor reads its view again.
@@ -104,7 +108,33 @@ pub enum Request {
 
 impl Shared {
     pub fn request(&self, r: Request) {
+        if r.loads() {
+            self.asked.fetch_add(1, Ordering::AcqRel);
+        }
         lock(&self.requests).push(r);
+    }
+
+    /// Whether a load asked for is not carried out yet.
+    fn loading(&self) -> bool {
+        self.asked.load(Ordering::Acquire) > self.done.load(Ordering::Acquire)
+    }
+}
+
+impl Request {
+    /// Whether it loads an instrument into a part.
+    fn loads(&self) -> bool {
+        use kontra_ui::app::Action;
+        match self {
+            Self::Load { .. } => true,
+            Self::Browse(a) => matches!(
+                a,
+                Action::Load { .. }
+                    | Action::Replace { .. }
+                    | Action::Switch { .. }
+                    | Action::Step { .. }
+            ),
+            _ => false,
+        }
     }
 }
 
@@ -199,6 +229,7 @@ impl BackgroundTask for Tick {
         let browser = browser.get_or_insert_with(browse);
         browser.poll();
         for r in requests {
+            let loads = r.loads();
             match r {
                 Request::Load { part, path } => {
                     let loaded = match part.or_else(|| rack.free()) {
@@ -217,6 +248,9 @@ impl BackgroundTask for Tick {
                 Request::Ui(edit) => editor::apply(rack, edit),
                 Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
                 Request::AddRoot(path) => browser.add_root(path),
+            }
+            if loads {
+                p.shared.done.fetch_add(1, Ordering::AcqRel);
             }
         }
         if let Some(path) = p.shared.folder.picked() {

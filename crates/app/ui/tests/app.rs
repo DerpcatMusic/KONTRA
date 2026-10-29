@@ -28,13 +28,19 @@ fn settle(ui: &mut Ui, app: &mut App) -> Vec<Action> {
 }
 
 fn click(ui: &mut Ui, app: &mut App, id: &str) -> Vec<Action> {
+    clicks(ui, app, id, 1)
+}
+
+/// `n` clicks on `id` in quick succession (2: a double-click).
+fn clicks(ui: &mut Ui, app: &mut App, id: &str, n: usize) -> Vec<Action> {
     // A missing target clicks nothing, and the asserts after it say so.
     let Some(s) = ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame) else {
         return Vec::new();
     };
     let at = Point::new(s.x + s.size.width / 2., s.y + s.size.height / 2.);
     let mut out = Vec::new();
-    for buttons in [Buttons::PRIMARY, Buttons::default()] {
+    let presses = [Buttons::PRIMARY, Buttons::default()].repeat(n);
+    for buttons in presses {
         let pointer = PointerInput {
             pos: Some(at),
             buttons,
@@ -72,8 +78,11 @@ fn clicks_drive_the_editor_and_idle_costs_no_frames() {
     settle(&mut ui, &mut app);
     assert!(click(&mut ui, &mut app, "library-0").is_empty());
     assert_eq!(app.view.library, Some(0));
+    // A click selects; a double-click loads.
+    assert!(click(&mut ui, &mut app, "preset-0").is_empty());
+    assert_eq!(app.view.picked, Some((0, 0)));
     assert_eq!(
-        click(&mut ui, &mut app, "preset-0"),
+        clicks(&mut ui, &mut app, "preset-0", 2),
         vec![Action::Load {
             library: 0,
             preset: 0
@@ -313,5 +322,81 @@ fn a_face_in_the_rack_takes_the_pointer() {
     assert!(
         out.iter().any(|a| matches!(a, Action::Control { .. })),
         "{out:?}"
+    );
+}
+
+/// Pointer frames pressing on `from`, moving to `to` and releasing there.
+fn drag(ui: &mut Ui, app: &mut App, from: &str, to: &str) -> Vec<Action> {
+    let centre = |ui: &Ui, id: &str| {
+        let f = ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame)?;
+        Some(Point::new(
+            f.x + f.size.width / 2.,
+            f.y + f.size.height / 2.,
+        ))
+    };
+    let (Some(a), Some(b)) = (centre(ui, from), centre(ui, to)) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let steps = 8;
+    for k in 0..=steps + 1 {
+        let t = f64::from(k.min(steps)) / f64::from(steps);
+        let at = Point::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+        let buttons = if k <= steps {
+            Buttons::PRIMARY
+        } else {
+            Buttons::default()
+        };
+        let pointer = PointerInput {
+            pos: Some(at),
+            buttons,
+            ..Default::default()
+        };
+        let input = Input {
+            pointer,
+            ..Default::default()
+        };
+        out.extend(frame(ui, app, input).0);
+    }
+    out.extend(settle(ui, app));
+    out
+}
+
+#[test]
+fn a_preset_dragged_onto_a_part_replaces_it_and_onto_free_space_adds_one() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        libraries: vec![Library {
+            name: "Areia".into(),
+            format: Format::Kontakt,
+            presets: vec!["Violins".into(), "Violas".into()],
+            starred: false,
+            art: Vec::new(),
+        }],
+        parts: vec![Part {
+            name: "Violins".into(),
+            library: "Areia".into(),
+            ..Part::default()
+        }],
+        ..App::default()
+    };
+    settle(&mut ui, &mut app);
+    click(&mut ui, &mut app, "library-0");
+    let onto_part = drag(&mut ui, &mut app, "preset-1", "part-0-band");
+    assert!(
+        onto_part.contains(&Action::Replace {
+            part: 0,
+            library: 0,
+            preset: 1
+        }),
+        "{onto_part:?}"
+    );
+    let onto_rack = drag(&mut ui, &mut app, "preset-1", "rack");
+    assert!(
+        onto_rack.contains(&Action::Load {
+            library: 0,
+            preset: 1
+        }),
+        "{onto_rack:?}"
     );
 }

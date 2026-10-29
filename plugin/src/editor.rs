@@ -146,10 +146,16 @@ impl Snapshot {
     /// is which load of each part the editor's faces are of.
     fn fill(&self, app: &mut App, shown: &mut Shown) {
         if shown.browser != self.libraries.0 {
-            app.libraries = self.libraries.1.as_ref().clone();
+            let fresh = self.libraries.1.as_ref();
+            // A load or a star changes the list, not its art: the covers
+            // decoded so far stay (they are keyed by library and art).
+            let same = (app.libraries.iter().map(|l| &l.art)).eq(fresh.iter().map(|l| &l.art));
+            if app.covers.is_none() || !same {
+                app.covers = Some(Pictures::new(Box::new(cover)));
+            }
+            app.libraries = fresh.clone();
             app.recent.clone_from(&self.recent);
             app.folders.clone_from(&self.folders);
-            app.covers = Some(Pictures::new(Box::new(cover)));
             shown.browser = self.libraries.0;
         }
         if let Some(covers) = &mut app.covers {
@@ -309,6 +315,19 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
                 Err(e) => report.push(format!("{}: {e}", path.display())),
             }
         }
+        Action::Replace {
+            part,
+            library,
+            preset,
+        } => {
+            let Some(path) = browser.preset(library, preset) else {
+                return;
+            };
+            match rack.load(part, &path) {
+                Ok(()) => browser.loaded(&path),
+                Err(e) => report.push(format!("{}: {e}", path.display())),
+            }
+        }
         Action::Step { part, by } => {
             let found = (rack.parts().get(part).and_then(Option::as_ref))
                 .and_then(|p| browser.find(p.path.as_deref()?));
@@ -425,6 +444,8 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let mut look = SavedView::default();
     let mut waiting = Vec::new();
     let mut restored = None;
+    // Where the last load the editor asked for lands.
+    let mut target = app::Loading::New;
     MuiEditor::new(params, kontra_ui::ui(), (1180, 780), move |ui, bridge| {
         // On opening, and whenever the host loads a state: its view.
         let now = p.shared.restored.load(Ordering::Acquire);
@@ -447,8 +468,21 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             .any(|p| p.pending() > 0);
         p.shared.decoding.store(decoding, Ordering::Release);
         app.master = f64::from(p.volume.value());
+        app.loading = p.shared.loading().then_some(target);
         let response = kontra_ui::app::view(ui, &mut app);
         for action in response.changed {
+            let asked = match action {
+                Action::Load { .. } => Some(app::Loading::New),
+                Action::Replace { part, .. }
+                | Action::Switch { part, .. }
+                | Action::Step { part, .. } => Some(app::Loading::Part(part)),
+                _ => None,
+            };
+            if let Some(t) = asked {
+                // One more frame, so the chip shows before the load ends.
+                target = t;
+                p.shared.dirty.store(true, Ordering::Release);
+            }
             if let Action::Master(db) = action {
                 bridge.drag_gesture(P::Volume, db);
                 continue;
@@ -479,6 +513,15 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                     row(part).map(|part| Action::Switch { part, preset })
                 }
                 Action::Step { part, by } => row(part).map(|part| Action::Step { part, by }),
+                Action::Replace {
+                    part,
+                    library,
+                    preset,
+                } => row(part).map(|part| Action::Replace {
+                    part,
+                    library,
+                    preset,
+                }),
                 _ => None,
             };
             if let Some(action) = slotted {
@@ -516,7 +559,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     })
     .changed(move || {
         let s = &watched.shared;
-        s.dirty.swap(false, Ordering::AcqRel) | s.decoding.load(Ordering::Acquire)
+        s.dirty.swap(false, Ordering::AcqRel) | s.decoding.load(Ordering::Acquire) | s.loading()
     })
     // Add folder's picker is owned by the host's window (Windows).
     .on_win32_parent(move |hwnd| owner.shared.folder.set_owner(hwnd))

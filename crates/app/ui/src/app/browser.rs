@@ -5,6 +5,7 @@
 use mui::prelude::*;
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use kontra_ui_model::{AssetRef, ImageMeta};
 
@@ -176,7 +177,8 @@ fn library_list(ui: &mut Ui, app: &mut App) -> El {
     col(rows).gap(1).pad(TIGHT).scroll().min_h(0)
 }
 
-fn recent(ui: &mut Ui, app: &App, out: &mut Vec<Action>) -> El {
+fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
+    let view = &mut app.view;
     let rows: Vec<El> = app
         .recent
         .iter()
@@ -184,10 +186,16 @@ fn recent(ui: &mut Ui, app: &App, out: &mut Vec<Action>) -> El {
         .filter_map(|(n, &(library, preset))| {
             let l = app.libraries.get(library)?;
             let name = l.presets.get(preset)?;
-            let r = list_row(ui, format!("recent-{n}"), (name, &l.name), None, false);
-            if r.changed {
-                out.push(Action::Load { library, preset });
-            }
+            let id = format!("recent-{n}");
+            let at = (library, preset);
+            let r = list_row(
+                ui,
+                id.clone(),
+                (name, &l.name),
+                None,
+                view.picked == Some(at),
+            );
+            pick(ui, &id, (&mut view.picked, &mut view.clicked), at, out);
             Some(r.el)
         })
         .collect();
@@ -201,6 +209,7 @@ fn recent(ui: &mut Ui, app: &App, out: &mut Vec<Action>) -> El {
 
 /// The chosen library's instruments, foldered by the path inside it.
 fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
+    let loading = app.loading.is_some();
     let v = &mut app.view;
     let search = field(
         ui,
@@ -281,19 +290,18 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             continue;
         }
         for &(n, name) in items {
+            let id = format!("preset-{n}");
+            let at = (lib, n);
+            let shown = loaded.contains(&name) || v.picked == Some(at);
+            let busy = loading && v.picked == Some(at);
             let r = list_row(
                 ui,
-                format!("preset-{n}"),
-                (name, ""),
+                id.clone(),
+                (name, if busy { "Loading…" } else { "" }),
                 None,
-                loaded.contains(&name),
+                shown,
             );
-            if r.changed {
-                out.push(Action::Load {
-                    library: lib,
-                    preset: n,
-                });
-            }
+            pick(ui, &id, (&mut v.picked, &mut v.clicked), at, out);
             rows.push(r.el.pad(kit::edges(0., 0., 0., SPACE)));
         }
     }
@@ -326,6 +334,45 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     ]
 }
 
+/// A preset on its way from the browser to the rack.
+pub(super) struct Carried {
+    pub library: usize,
+    pub preset: usize,
+}
+
+/// mui's double-click window.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// A preset row's pointer, as v2 read it: a click selects it, a
+/// double-click or Enter loads it into a new part, a drag carries it to
+/// the rack (onto a part to replace it, onto free space to add one).
+fn pick(
+    ui: &mut Ui,
+    id: &str,
+    (picked, clicked): (&mut Option<(usize, usize)>, &mut Option<Instant>),
+    (library, preset): (usize, usize),
+    out: &mut Vec<Action>,
+) {
+    let r = ui.get(id);
+    // The second click on the selected row is the double-click: mui's own
+    // flag lives for one input intake, which a real host's release clears
+    // before the next build reads it.
+    let again = r.clicked
+        && *picked == Some((library, preset))
+        && clicked.is_some_and(|t| t.elapsed() < DOUBLE_CLICK);
+    if again || r.key_activated {
+        *clicked = None;
+        out.push(Action::Load { library, preset });
+    } else if r.clicked {
+        *picked = Some((library, preset));
+        *clicked = Some(Instant::now());
+    }
+    if r.dragged && ui.dragging::<Carried>().is_none() {
+        *picked = Some((library, preset));
+        ui.start_drag(id, Carried { library, preset });
+    }
+}
+
 /// A library-browser banner's width over its height (Kontakt's 905 × 99).
 const BANNER: f64 = 905. / 99.;
 /// The most cover pictures of one library tried.
@@ -333,7 +380,7 @@ const COVERS: usize = 4;
 
 /// The first of a library's cover pictures that has decoded; asks for the
 /// rest meanwhile.
-fn cover(covers: &mut Pictures, lib: usize, art: &[String]) -> Option<Arc<Image>> {
+pub(super) fn cover(covers: &mut Pictures, lib: usize, art: &[String]) -> Option<Arc<Image>> {
     let meta = ImageMeta::default();
     (art.iter().take(COVERS).enumerate())
         .find_map(|(k, path)| covers.frame(AssetRef(lib * COVERS + k), path, meta, 0, 1.))
