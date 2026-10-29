@@ -116,6 +116,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
         },
         coroutines: COROUTINES,
         foreign: None,
+        hears_own_releases: true,
         controls: controls(script),
         engine_pars: EnginePars {
             first: SYMBOL_BASE,
@@ -291,5 +292,9 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         restore: Vec::new(),
         restore_texts: Vec::new(),
         foreign: Some(std::sync::Arc::new(compiled)),
+        // A UVI script never sees the notes it plays: they go to the next
+        // script (Augmented Orchestra's arpeggiator and layers release the
+        // held key's notes from `onRelease`, so their own gates must not reach it).
+        hears_own_releases: false,
     }
 }

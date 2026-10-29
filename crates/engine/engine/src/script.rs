@@ -30,6 +30,10 @@ pub struct ScriptPlan {
     pub knobs: Vec<(crate::ir::KnobTarget, crate::ir::Law)>,
     /// Code in another language, run by its own machine instead of `program`.
     pub foreign: Option<std::sync::Arc<dyn kontra_vm::Foreign>>,
+    /// The release of a note this script played runs its own release
+    /// callback, as a key-up would (KSP: `note_off` triggers `on release`);
+    /// otherwise only the slots after it see the release.
+    pub hears_own_releases: bool,
 }
 
 /// The script's UI controls as the engine sees them: ids, and where values live.
