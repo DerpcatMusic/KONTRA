@@ -3,7 +3,6 @@
 //! sample's rate; its position morphs between neighbouring cycles, and two
 //! phase warps bend where in the cycle it reads.
 
-use kontra_ir::{Side, Warp, WarpShape as Shape, Wavetable};
 use kontra_stream::{Mix, Sample, StreamClient};
 
 /// Frames in one cycle.
@@ -11,6 +10,59 @@ pub const CYCLE: u64 = 2048;
 /// Cursor frames a voice moves per cycle played: a table zone's rate is
 /// `PERIOD` times the frequency at its root, so pitch steps stay small.
 pub const PERIOD: f64 = 64.0;
+
+/// Where a voice reads its table.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Read {
+    /// 0 the first cycle ..= 1 the last; between two, a linear morph.
+    pub position: f32,
+    /// Where in the cycle a note starts, 0..1.
+    pub phase: f32,
+    /// Applied in order.
+    pub warps: [Warp; 2],
+}
+
+/// One bend of the read phase by `amount`, 0..1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Warp {
+    pub shape: Shape,
+    pub amount: f32,
+}
+
+impl Warp {
+    pub const OFF: Self = Self {
+        shape: Shape::Off,
+        amount: 0.0,
+    };
+}
+
+/// Which way a warp leans as its amount rises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Minus,
+    Plus,
+    Both,
+}
+
+/// The model's warp shapes (`kontra_ir::WarpShape` documents each).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Shape {
+    Off,
+    Sync,
+    Cosine,
+    Arcsine,
+    CosineArcsine,
+    Pulse,
+    Skew { reach: f32, side: Side },
+    Flip,
+    Mirror,
+    Quantize,
+    Seesaw,
+    Exp,
+    Log,
+    LogExp,
+    Bend { side: Side },
+}
 
 /// The phase warp `w` reads at phase `p`, both in 0..1.
 #[must_use]
@@ -92,13 +144,13 @@ pub struct Table {
     pub first: u64,
     /// Whole cycles from `first`; a trailing part cycle is not read.
     pub cycles: u64,
-    pub read: Wavetable,
+    pub read: Read,
 }
 
 impl Table {
     /// The cycles of `first..end`; `None` under one cycle.
     #[must_use]
-    pub fn new(first: u64, end: u64, read: Wavetable) -> Option<Self> {
+    pub fn new(first: u64, end: u64, read: Read) -> Option<Self> {
         let cycles = end.checked_sub(first)? / CYCLE;
         (cycles > 0).then_some(Self {
             first,
@@ -248,12 +300,15 @@ mod tests {
 
     #[test]
     fn a_part_cycle_is_not_read() {
-        let read = Wavetable {
+        let read = Read {
             position: 0.0,
             phase: 0.0,
             warps: [Warp::OFF; 2],
         };
-        assert_eq!(Table::new(0, 3 * CYCLE + 100, read).map(|t| t.cycles), Some(3));
+        assert_eq!(
+            Table::new(0, 3 * CYCLE + 100, read).map(|t| t.cycles),
+            Some(3)
+        );
         assert!(Table::new(0, 100, read).is_none());
     }
 }

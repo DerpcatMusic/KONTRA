@@ -337,8 +337,7 @@ fn an_until_release_loop_repeats_until_release_then_plays_on() {
 /// frequency for any sample length, and a position halfway cancels them.
 #[test]
 fn a_table_plays_its_cycle_at_the_step_and_morphs_by_position() {
-    use kontra_ir::{Warp, Wavetable};
-    use kontra_voice::{CYCLE, PERIOD, Table};
+    use kontra_voice::{CYCLE, PERIOD, Read, Table, Warp};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
     let frames = 2 * CYCLE;
@@ -362,7 +361,7 @@ fn a_table_plays_its_cycle_at_the_step_and_morphs_by_position() {
         )
         .unwrap();
     let play = |position| {
-        let read = Wavetable {
+        let read = Read {
             position,
             phase: 0.0,
             warps: [Warp::OFF; 2],
