@@ -41,6 +41,11 @@ fn lfo(cycles: f64) -> f32 {
     -(TAU * cycles).sin() as f32
 }
 
+/// A triangle at `cycles` that falls first, as [`lfo`].
+fn triangle(cycles: f64) -> f32 {
+    (4.0 * ((cycles + 0.25).rem_euclid(1.0) - 0.5).abs() - 1.0) as f32
+}
+
 /// Flushes a value that would decay into the subnormal range.
 fn flush(x: f32) -> f32 {
     if x.abs() < 1e-20 { 0.0 } else { x }
@@ -179,10 +184,18 @@ impl ModDelay {
     }
 }
 
-/// A phaser in physical units: four first-order allpasses whose corner the
-/// LFO sweeps, `hz + spread_hz·(e^(exponent·lfo) − 1)`, around a feedback loop.
+/// The most allpasses a [`Phaser`] runs.
+pub const MAX_STAGES: usize = 24;
+
+/// A phaser in physical units: `stages` first-order allpasses whose corner
+/// the LFO sweeps, `hz + spread_hz·(e^(exponent·lfo) − 1)`, around a feedback
+/// loop.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhaserSettings {
+    /// 1..=[`MAX_STAGES`].
+    pub stages: u8,
+    /// A triangle LFO instead of the sine (both fall first).
+    pub triangle: bool,
     /// The allpasses' corner with the LFO at its centre.
     pub hz: f32,
     /// How far the corner moves for an exponent's worth of LFO.
@@ -197,7 +210,7 @@ pub struct PhaserSettings {
     pub phase: f32,
 }
 
-/// Four LFO-swept first-order allpasses around a feedback loop; see
+/// LFO-swept first-order allpasses around a feedback loop; see
 /// [`PhaserSettings`].
 #[derive(Debug)]
 pub struct Phaser {
@@ -205,8 +218,8 @@ pub struct Phaser {
     rate: f32,
     cycle: f64,
     /// Each stage's last input and output, per channel.
-    x: [[f32; 4]; 2],
-    y: [[f32; 4]; 2],
+    x: [[f32; MAX_STAGES]; 2],
+    y: [[f32; MAX_STAGES]; 2],
 }
 
 impl Phaser {
@@ -217,8 +230,8 @@ impl Phaser {
             s,
             rate: rate as f32,
             cycle: 0.0,
-            x: [[0.0; 4]; 2],
-            y: [[0.0; 4]; 2],
+            x: [[0.0; MAX_STAGES]; 2],
+            y: [[0.0; MAX_STAGES]; 2],
         }
     }
 
@@ -233,13 +246,18 @@ impl Phaser {
         let step = f64::from(s.lfo_hz / self.rate);
         let offsets = [0.0, f64::from(s.phase)];
         let scale = std::f32::consts::PI / self.rate;
+        let stages = usize::from(s.stages).clamp(1, MAX_STAGES);
+        let shape = if s.triangle { triangle } else { lfo };
         for frame in io {
             let states = self.x.iter_mut().zip(self.y.iter_mut());
             for ((v, offset), (xs, ys)) in frame.iter_mut().zip(offsets).zip(states) {
-                let sweep = s.spread_hz * ((s.exponent * lfo(self.cycle + offset)).exp() - 1.0);
+                let sweep = s.spread_hz * ((s.exponent * shape(self.cycle + offset)).exp() - 1.0);
                 let w = ((s.hz + sweep) * scale).clamp(1e-5, 0.99);
                 let a = (1.0 - w) / (1.0 + w);
-                let mut input = *v + s.feedback * ys[3];
+                let (Some(xs), Some(ys)) = (xs.get_mut(..stages), ys.get_mut(..stages)) else {
+                    continue;
+                };
+                let mut input = *v + s.feedback * ys.last().copied().unwrap_or(0.0);
                 for (x, y) in xs.iter_mut().zip(ys.iter_mut()) {
                     let out = flush((input + *y) * a - *x);
                     *x = input;

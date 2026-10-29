@@ -168,6 +168,8 @@ fn legacy_chorus_and_flanger_land_near_the_native_vectors() {
 #[test]
 fn a_phaser_with_feedback_notches_and_stays_bounded() {
     let s = PhaserSettings {
+        stages: 4,
+        triangle: false,
         hz: 292.8,
         spread_hz: 260.7,
         exponent: 1.5,
@@ -180,4 +182,30 @@ fn a_phaser_with_feedback_notches_and_stays_bounded() {
     p.process(&mut y);
     let peak = y.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs()));
     assert!(peak.is_finite() && peak < 4.0 && peak > 0.1, "peak {peak}");
+}
+
+#[test]
+fn a_long_triangle_swept_chain_without_feedback_passes_every_frequency() {
+    let s = PhaserSettings {
+        stages: 24,
+        triangle: true,
+        hz: 3000.0,
+        spread_hz: 3000.0,
+        exponent: 1.35,
+        feedback: 0.0,
+        lfo_hz: 0.0,
+        phase: 0.0,
+    };
+    // A frozen LFO: the chain is an allpass, so a steady sine keeps its level.
+    for hz in [200.0f32, 2000.0, 9000.0] {
+        let mut y: Vec<[f32; 2]> = (0..RATE as usize)
+            .map(|i| [(std::f32::consts::TAU * hz * i as f32 / RATE as f32).sin(); 2])
+            .collect();
+        Phaser::new(s, RATE).process(&mut y);
+        let peak = y
+            .iter()
+            .skip(RATE as usize / 2)
+            .fold(0.0f32, |m, v| m.max(v[0].abs()));
+        assert!((peak - 1.0).abs() < 0.01, "{hz} Hz: {peak}");
+    }
 }

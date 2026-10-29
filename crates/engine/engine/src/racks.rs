@@ -517,6 +517,8 @@ fn delay(d: ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
 
 fn phaser(p: ir::Phaser, tempo: f32) -> PhaserSettings {
     PhaserSettings {
+        stages: p.stages,
+        triangle: p.triangle,
         hz: p.hz,
         spread_hz: p.spread_hz,
         exponent: p.exponent,

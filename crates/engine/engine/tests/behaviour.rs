@@ -1440,6 +1440,8 @@ fn a_group_phaser_without_a_dry_level_plays_on_the_group_sum() {
     // The phaser runs on the group's sum: its wet path carries the voice.
     plan.groups[0].inserts = vec![Some(ir::Effect {
         kind: ir::EffectKind::Phaser(ir::Phaser {
+            stages: 4,
+            triangle: false,
             hz: 300.0,
             spread_hz: 270.0,
             exponent: 1.5,
