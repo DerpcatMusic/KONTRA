@@ -135,7 +135,7 @@ impl Look {
         &self,
         wd: &Widget,
         style: Option<&TextStyle>,
-        ((w, h, scale), pixels): ((f64, f64, f64), (f64, f64, f64)),
+        (w, h, scale): (f64, f64, f64),
         bare: bool,
         artwork: Option<&[Arc<Image>; 3]>,
         glyphs: Option<&crate::pictures::Glyphs>,
@@ -208,7 +208,7 @@ impl Look {
             }
             Self::Knob { title, value, turn } => {
                 if let Some(art) = artwork.filter(|_| !wd.hide.title && !wd.hide.value) {
-                    bitmap_knob(title, value, scale, art, glyphs, pixels)
+                    bitmap_knob(title, value, scale, art, glyphs)
                 } else {
                     knob(wd, title, value, *turn, scale, bare)
                 }
@@ -280,32 +280,15 @@ fn bitmap_knob(
     s: f64,
     art: &[Arc<Image>; 3],
     glyphs: Option<&crate::pictures::Glyphs>,
-    pixels: (f64, f64, f64),
 ) -> Vec<El> {
     let [base, cap, light] = art;
     vec![
-        sprite(base, (0., 0., 87., 39.), s, pixels),
-        sprite(cap, (7., 7., 25., 29.), s, pixels),
-        sprite(light, (0., 0., 39., 39.), s, pixels),
+        super::image(base, 87. * s, 39. * s).at(0., 0.),
+        super::image(cap, 25. * s, 29. * s).at(7. * s, 7. * s),
+        super::image(light, 39. * s, 39. * s).at(0., 0.),
         stock_words(title, s, glyphs).at(42. * s, 2. * s),
         stock_words(value, s, glyphs).at(42. * s, 22. * s),
     ]
-}
-
-/// Align both edges to device pixels so the GPU never magnifies a
-/// fractional destination rectangle after the worker scales the sprite.
-fn sprite(
-    image: &Arc<Image>,
-    (x, y, w, h): (f64, f64, f64, f64),
-    scale: f64,
-    (ox, oy, density): (f64, f64, f64),
-) -> El {
-    let snap = |v: f64| (v * density).round() / density;
-    let left = snap(ox + x * scale);
-    let top = snap(oy + y * scale);
-    let right = snap(ox + (x + w) * scale);
-    let bottom = snap(oy + (y + h) * scale);
-    super::image(image, right - left, bottom - top).at(left - ox, top - oy)
 }
 
 fn stock_words(text: &str, scale: f64, glyphs: Option<&crate::pictures::Glyphs>) -> El {
