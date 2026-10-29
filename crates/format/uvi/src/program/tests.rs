@@ -521,6 +521,7 @@ fn a_macro_a_controller_moves_crossfades_its_cells_live() {
             <SignalConnection Ratio="0.5" Source="@MIDI CC 102" Destination="Value">
               <Connections>
                 <SignalConnection Ratio="1" Source="@MIDI CC 104" Destination="Ratio" Mapper="Mapper 1"/>
+                <SignalConnection Ratio="1" Source="@MIDI CC 106" Destination="Ratio" Mapper="Mapper 0" Inverted="1"/>
                 <SignalConnection Ratio="0.6" Source="@PitchBend" Destination="Ratio">
                   <Connections>
                     <SignalConnection Ratio="1" Source="$Program/Macro 6" Destination="Ratio"/>
@@ -585,9 +586,12 @@ fn a_macro_a_controller_moves_crossfades_its_cells_live() {
     assert_eq!(term.amount, 0.25);
     assert_eq!(term.factors[0].input.source, ir::Source::Controller(104));
     assert_eq!(term.factors[0].input.table, vec![0.0, 0.5, 1.0]);
+    // An inverted controller reads its mapper at `1 − x`.
+    assert_eq!(term.factors[1].input.source, ir::Source::Controller(106));
+    assert_eq!(term.factors[1].input.table, vec![1.0, 0.0]);
     // Macro 6 holds the bend's ratio at half: 0.6 × 0.5.
-    assert_eq!(term.factors[1].input.source, ir::Source::PitchBend);
-    assert!((term.factors[1].depth - 0.3).abs() < 1e-6);
+    assert_eq!(term.factors[2].input.source, ir::Source::PitchBend);
+    assert!((term.factors[2].depth - 0.3).abs() < 1e-6);
     // A row past the two-channel bundle and a bypassed matrix move nothing.
     assert!(
         !out.diagnostics
