@@ -152,6 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("KONTRA_FX").is_some() {
         let plan = &loaded.plan;
         println!("instrument inserts {:?}", plan.inserts);
+        println!("sends {:?}", plan.sends);
         for (n, b) in plan.buses.iter().enumerate() {
             println!("bus {n} {b:?}");
         }

@@ -35,12 +35,28 @@ pub(crate) fn legacy(module: u16, version: u16, public: &[u8]) -> Option<ir::Eff
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
     };
     Some(match module {
-        0x10 => ir::EffectKind::Delay(delay(f(0)?, f(1)?, f(2)?, f(3)?, f(4)?)),
+        0x10 => {
+            let [time, feedback, pan, damping, unit] = saved(version, public)?;
+            ir::EffectKind::Delay(delay(time, feedback, pan, damping, unit))
+        }
         0x11 => ir::EffectKind::Delay(chorus(f(1)?, f(2)?, f(3)?)),
         0x12 => ir::EffectKind::Delay(flanger(f(0)?, f(1)?, f(2)?, f(3)?, f(4)?, f(5)?)),
         0x14 => ir::EffectKind::Phaser(phaser(f(0)?, f(1)?, f(2)?, f(3)?, f(4)?)),
         _ => return None,
     })
+}
+
+/// The legacy Delay's saved time, feedback, pan, damping and unit.
+pub(crate) fn saved(version: u16, public: &[u8]) -> Option<[f32; 5]> {
+    if !matches!(version, 0x50 | 0x51) {
+        return None;
+    }
+    let mut out = [0.0; 5];
+    for (n, v) in out.iter_mut().enumerate() {
+        let bytes = public.get(4 * n..4 * n + 4)?.try_into().ok()?;
+        *v = Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())?;
+    }
+    Some(out)
 }
 
 /// The LFO speed: Hz, or synced, `unit·max(speed, 1)` beats per cycle
@@ -67,7 +83,7 @@ fn corner(c: f32) -> f32 {
 /// 0x140aa1130: `g = 0.98·feedback` scales the input as well as the loop, the
 /// right input by `1 − pan`; the loop keeps `(1 − pan)·g` and crosses
 /// `pan·g`; the read is low-passed by `1 − 0.7·damping`.
-fn delay(time: f32, feedback: f32, pan: f32, damping: f32, unit: f32) -> ir::Delay {
+pub(crate) fn delay(time: f32, feedback: f32, pan: f32, damping: f32, unit: f32) -> ir::Delay {
     let [feedback, pan, damping] = [feedback, pan, damping].map(|x| x.clamp(0.0, 1.0));
     let g = DELAY_LOOP * feedback;
     ir::Delay {

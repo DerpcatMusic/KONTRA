@@ -66,8 +66,9 @@ pub enum EffectParam {
     FormantTalk,
     FormantSharp,
     FormantSize,
-    /// A [`Shaper`]'s curve amount.
+    /// A [`Shaper`]'s curve amount and low-pass corner.
     ShaperAmount,
+    ShaperLowpassHz,
     CrushRate,
     CrushBits,
     /// Octaves on an [`EffectKind::Eq`] band's centre, kept within 20 Hz to
@@ -105,6 +106,12 @@ pub enum EffectParam {
     FilterDamping(u8),
     /// A [`crate::Filter`]'s output gain, linear.
     FilterGain,
+    /// A [`crate::Delay`]'s time in ms (not a synced one), its input and
+    /// feedback matrix cells (row-major, 0..4) and its damping corner.
+    DelayMs,
+    DelayInput(u8),
+    DelayLoop(u8),
+    DelayDampingHz,
 }
 
 impl EffectParam {
@@ -117,6 +124,7 @@ impl EffectParam {
             (Self::ShaperAmount, EffectKind::Shaper(s)) => match &mut s.curve {
                 Curve::Soft(x) | Curve::Tube(x) | Curve::Power(x) => x,
             },
+            (Self::ShaperLowpassHz, EffectKind::Shaper(s)) => s.lowpass_hz.as_mut()?,
             (Self::CrushRate, EffectKind::Crush(c)) => &mut c.rate,
             (Self::CrushBits, EffectKind::Crush(c)) => &mut c.bits,
             (Self::CompressorThreshold, EffectKind::Compressor(c)) => &mut c.threshold_db,
@@ -148,6 +156,17 @@ impl EffectParam {
             (Self::FilterHz, EffectKind::Filter(f)) => &mut f.hz,
             (Self::FilterDamping(n), EffectKind::Filter(f)) => f.damping.get_mut(usize::from(n))?,
             (Self::FilterGain, EffectKind::Filter(f)) => &mut f.gain,
+            (Self::DelayMs, EffectKind::Delay(d)) => match &mut d.time {
+                crate::DelayTime::Ms(ms) => ms,
+                crate::DelayTime::Beats(_) => return None,
+            },
+            (Self::DelayInput(n), EffectKind::Delay(d)) => {
+                d.input.as_flattened_mut().get_mut(usize::from(n))?
+            }
+            (Self::DelayLoop(n), EffectKind::Delay(d)) => {
+                d.feedback.as_flattened_mut().get_mut(usize::from(n))?
+            }
+            (Self::DelayDampingHz, EffectKind::Delay(d)) => &mut d.damping_hz,
             _ => return None,
         })
     }
@@ -205,6 +224,11 @@ pub enum SlotKnob {
     BandHz(u8),
     BandWidth(u8),
     BandGain(u8),
+    /// A delay's time, feedback, pan and damping knobs.
+    DelayTime,
+    DelayFeedback,
+    DelayPan,
+    DelayDamping,
 }
 
 /// The rack a [`SlotLaw`]'s slot is in.

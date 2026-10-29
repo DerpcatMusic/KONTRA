@@ -11,7 +11,7 @@ use kontra_ir as ir;
 /// knob values), and the Multi weights ANALOG stores for the knobs its
 /// script writes (2x − 1). The filter's cutoff and resonance and the
 /// Compressor's attack and release depend on the slot's effect: their laws
-/// are the slot's own (`Slot`). The delay's composite knobs are not here.
+/// are the slot's own (`Slot`), as are the legacy Delay's.
 pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     use ir::EffectParam as E;
     use ir::KnobTarget::{Effect, LfoRate, LfoSteps, LfoWeight, LfoWidth, Slot};
@@ -99,6 +99,26 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
             Slot(ir::SlotKnob::ReverbDamping),
             lin(0.0, 1.0),
         ),
+        (
+            "$ENGINE_PAR_DL_TIME",
+            Slot(ir::SlotKnob::DelayTime),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_DL_FEEDBACK",
+            Slot(ir::SlotKnob::DelayFeedback),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_DL_PAN",
+            Slot(ir::SlotKnob::DelayPan),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_DL_DAMPING",
+            Slot(ir::SlotKnob::DelayDamping),
+            lin(0.0, 1.0),
+        ),
         // The Limiter: input −24 + 48x dB, release its saved-ms law
         // (probes/fx_knob_laws.lua).
         (
@@ -138,6 +158,16 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
         ),
         ("$ENGINE_PAR_SHAPE", Effect(E::ShaperAmount), lin(-1.0, 1.0)),
         ("$ENGINE_PAR_DRIVE", Effect(E::ShaperAmount), lin(0.0, 1.0)),
+        // The Distortion saves damping as set (fx_dynamics_dist_tape.tsv).
+        (
+            "$ENGINE_PAR_DAMPING",
+            Effect(E::ShaperLowpassHz),
+            ir::Law::Table(
+                (0..=64u8)
+                    .map(|n| crate::drive::damping_hz(f32::from(n) / 64.0))
+                    .collect(),
+            ),
+        ),
         ("$ENGINE_PAR_BITS", Effect(E::CrushBits), lin(0.0, 16.0)),
         ("$ENGINE_PAR_FREQUENCY", Effect(E::CrushRate), lin(0.0, 1.0)),
         (
@@ -345,6 +375,43 @@ pub(crate) fn legacy_reverb_knobs((predelay_ms, saved): (f32, [f32; 4])) -> Vec<
     out
 }
 
+/// The legacy Delay's saved ms for a knob `x`, 5..2900 ms through the
+/// curve above: fitted to Kontakt's saves at x = .1 .. .9
+/// (docs/re/kontakt-bindings/fx_legacy_delay_reverb_mod.tsv), within 0.001%.
+/// Feedback, pan and damping save as set.
+const DELAY_MS: [(f32, f32, f32); 2] = [(0.0, 5.0, 6.027), (1.0, 2900.0, 0.0)];
+
+/// The legacy Delay's time, feedback, pan and damping knobs through
+/// [`crate::delays::delay`], the others held at their saved values.
+/// ponytail: feedback and pan both scale the matrices, so each knob's table
+/// holds the other at its saved value; build the matrices at run time if a
+/// script moves both.
+pub(crate) fn delay_knobs(saved: [f32; 5]) -> Vec<SlotKnob> {
+    use ir::EffectParam as E;
+    use ir::SlotKnob as K;
+    let time = ir::Law::Breakpoints(DELAY_MS.into());
+    let cells: Vec<_> = (0..4)
+        .flat_map(|n| [E::DelayInput(n), E::DelayLoop(n)])
+        .collect();
+    let knobs = [
+        (K::DelayTime, &[E::DelayMs][..]),
+        (K::DelayFeedback, &cells[..]),
+        (K::DelayPan, &cells[..]),
+        (K::DelayDamping, &[E::DelayDampingHz][..]),
+    ];
+    let mut out = Vec::new();
+    for (n, (knob, fields)) in knobs.into_iter().enumerate() {
+        out.extend(sampled(knob, fields, &|x| {
+            let mut k = saved;
+            *k.get_mut(n)? = if n == 0 { time.eval(x) } else { x };
+            let [ms, feedback, pan, damping, unit] = k;
+            let d = crate::delays::delay(ms, feedback, pan, damping, unit);
+            Some(ir::EffectKind::Delay(d))
+        }));
+    }
+    out
+}
+
 /// Each of `fields` that moves in the effect `build` makes for a knob at 65
 /// settings, as a table.
 fn sampled(
@@ -445,6 +512,35 @@ mod tests {
     }
 
     #[test]
+    fn the_delay_knobs_land_on_the_saves_kontakt_writes() {
+        // ANALOG STRINGS' send delay: 250 ms, feedback .31459, pan 1, damping .5.
+        let knobs = delay_knobs([250.0, 0.314_59, 1.0, 0.5, 0.0]);
+        let law = |knob, field| {
+            let row = knobs.iter().find(|(k, f, _)| *k == knob && *f == field);
+            &row.unwrap().2
+        };
+        // (x, saved ms), fx_legacy_delay_reverb_mod.tsv; ANALOG writes 0.594553 for its 250.
+        for (x, ms) in [
+            (0.1, 10.789_63),
+            (0.5, 140.527_2),
+            (0.9, 1_586.318),
+            (0.594_553, 250.0),
+        ] {
+            let got = law(ir::SlotKnob::DelayTime, ir::EffectParam::DelayMs).eval(x);
+            assert!((got / ms - 1.0).abs() < 2e-3, "{x}: {got} vs {ms}");
+        }
+        let fed = law(ir::SlotKnob::DelayFeedback, ir::EffectParam::DelayInput(0)).eval(0.4);
+        assert!((fed - 0.98 * 0.4).abs() < 1e-5, "{fed}");
+        let crossed = law(ir::SlotKnob::DelayPan, ir::EffectParam::DelayLoop(1)).eval(0.25);
+        assert!((crossed - 0.25 * 0.98 * 0.314_59).abs() < 1e-5, "{crossed}");
+        assert!(
+            delay_knobs([1.0, 0.5, 0.5, 0.5, 0.25])
+                .iter()
+                .all(|(k, _, _)| *k != ir::SlotKnob::DelayTime)
+        );
+    }
+
+    #[test]
     fn the_reverb_and_limiter_knobs_land_on_the_saves_kontakt_writes() {
         let knobs = legacy_reverb_knobs((10.0, [0.5; 4]));
         let law = |knob| &knobs.iter().find(|(k, _, _)| *k == knob).unwrap().2;
@@ -457,6 +553,10 @@ mod tests {
         assert!((law(ir::SlotKnob::ReverbSize).eval(0.25) / size - 1.0).abs() < 1e-3);
         let rows = script_knobs();
         let row = |name| &rows.iter().find(|(n, _, _)| *n == name).unwrap().2;
+        for x in [0.0, 0.3, 0.754_65, 1.0] {
+            let hz = crate::drive::damping_hz(x);
+            assert!((row("$ENGINE_PAR_DAMPING").eval(x) / hz - 1.0).abs() < 2e-3);
+        }
         for (x, db, ms) in [
             (0.1, -19.2, 16.678_839),
             (0.5, 0.0, 107.654_01),
