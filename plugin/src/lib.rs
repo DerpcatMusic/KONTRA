@@ -125,7 +125,13 @@ impl KontraParams {
         if loading {
             Tick.run(self);
         }
-        if let Some(rack) = lock(&self.shared.rack).as_ref() {
+        // A tick holds the rack through a whole load (seconds on a big
+        // program): the host's thread does not wait for it, and saves the
+        // state the last tick that changed the rack left.
+        let Ok(rack) = self.shared.rack.try_lock() else {
+            return;
+        };
+        if let Some(rack) = rack.as_ref() {
             *self.saved.write().unwrap_or_else(PoisonError::into_inner) = rack.save().write();
         }
     }
@@ -187,6 +193,7 @@ impl BackgroundTask for Tick {
             return;
         };
         let requests = std::mem::take(&mut *lock(&p.shared.requests));
+        let changed = !requests.is_empty();
         let mut report = Vec::new();
         let mut browser = lock(&p.shared.browser);
         let browser = browser.get_or_insert_with(browse);
@@ -218,12 +225,23 @@ impl BackgroundTask for Tick {
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
         rack.tick();
+        // What a save while the next tick is busy writes (`capture`).
+        if changed && !requests_restoring(p) {
+            *p.saved.write().unwrap_or_else(PoisonError::into_inner) = rack.save().write();
+        }
         if lock(&p.shared.view).refresh(rack, browser, report) {
             p.shared
                 .dirty
                 .store(true, std::sync::atomic::Ordering::Release);
         }
     }
+}
+
+/// A host state is waiting to load: what `saved` holds is that state.
+fn requests_restoring(p: &KontraParams) -> bool {
+    lock(&p.shared.requests)
+        .iter()
+        .any(|r| matches!(r, Request::Restore(_)))
 }
 
 pub struct Kontra;

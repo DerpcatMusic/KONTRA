@@ -937,3 +937,26 @@ fn an_augmented_orchestra_knob_moved_on_its_page_changes_the_sound_and_survives_
         0.25,
     );
 }
+
+#[test]
+fn a_host_save_during_a_long_load_does_not_wait_for_it() {
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    params
+        .shared
+        .request(crate::Request::Browse(kontra_ui::app::Action::Panic));
+    Tick.run(&params);
+    block(&params, &mut dsp, &[]);
+    let before = params.saved.read().unwrap().clone();
+    assert!(before.contains("parts"), "the tick left no state: {before}");
+    // A tick loading a program holds the rack for seconds.
+    let held = crate::lock(&params.shared.rack);
+    let t = std::time::Instant::now();
+    params.capture();
+    assert!(
+        t.elapsed() < std::time::Duration::from_millis(50),
+        "{:?}",
+        t.elapsed()
+    );
+    drop(held);
+    assert_eq!(*params.saved.read().unwrap(), before);
+}
