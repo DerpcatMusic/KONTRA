@@ -261,10 +261,7 @@ impl Engine {
         // Borrowed, matched without case: this may run on the audio thread.
         let stem = stem(name);
         let plan = Arc::clone(&self.plan);
-        let found = plan
-            .responses
-            .iter()
-            .position(|(n, _)| n.eq_ignore_ascii_case(stem))?;
+        let found = (plan.responses.iter()).position(|(n, _)| n.eq_ignore_ascii_case(stem))?;
         let (_, sample) = plan.responses.get(found)?;
         let &ir::Effect {
             kind: ir::EffectKind::Convolution { impulse },
@@ -287,10 +284,8 @@ impl Engine {
             let index = u16::try_from(found).ok()?;
             return self.request_response(slot, generic, index, law);
         }
-        let known = self
-            .loaded
-            .iter()
-            .position(|(n, l, _)| n.eq_ignore_ascii_case(stem) && *l == law);
+        let known =
+            (self.loaded.iter()).position(|(n, l, _)| n.eq_ignore_ascii_case(stem) && *l == law);
         let index = match known {
             Some(j) => j,
             None => {
