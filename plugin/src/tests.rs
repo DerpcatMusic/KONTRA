@@ -549,6 +549,16 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
     browse(kontra_ui::app::Action::Switch { part: 0, preset });
     let back = path(&params).unwrap();
     assert!(back.ends_with("Una Corda Felt.nki"), "{back:?}");
+    // With the settings on, a second part takes its own channel and output.
+    browse(kontra_ui::app::Action::NewParts {
+        next_channel: true,
+        own_output: true,
+    });
+    browse(kontra_ui::app::Action::Load { library, preset });
+    let mix = crate::lock(&params.shared.rack).as_ref().unwrap().parts()[1]
+        .as_ref()
+        .map(|p| (p.mix.channel, p.mix.output));
+    assert_eq!(mix, Some((1, 1)));
 }
 
 const SHREDDAGE: &str = "Shreddage 3.5 E-Upright 1.0.1 [Impact Soundworks] rutracker.org/Instruments/Shreddage 3.5 E-Upright.nki";

@@ -69,6 +69,10 @@ pub struct StreamStats {
     pub read_errors: u64,
     /// Page requests refused because the request ring was full (asked again later).
     pub requests_refused: u64,
+    /// Bytes the I/O thread read from disk.
+    pub bytes_read: u64,
+    /// The streamed page cache's size.
+    pub cache_bytes: u64,
 }
 
 struct Shared {
@@ -78,6 +82,7 @@ struct Shared {
     pages_read: AtomicU64,
     read_errors: AtomicU64,
     requests_refused: AtomicU64,
+    bytes_read: AtomicU64,
     /// Requests queued or being read.
     outstanding: AtomicU64,
 }
@@ -121,6 +126,8 @@ impl StreamClient {
             pages_read: self.0.pages_read.load(Ordering::Relaxed),
             read_errors: self.0.read_errors.load(Ordering::Relaxed),
             requests_refused: self.0.requests_refused.load(Ordering::Relaxed),
+            bytes_read: self.0.bytes_read.load(Ordering::Relaxed),
+            cache_bytes: self.0.cache.size() as u64,
         }
     }
 }
@@ -151,6 +158,7 @@ impl Store {
             pages_read: AtomicU64::new(0),
             read_errors: AtomicU64::new(0),
             requests_refused: AtomicU64::new(0),
+            bytes_read: AtomicU64::new(0),
             outstanding: AtomicU64::new(0),
         });
         let (registered, registrations) = channel();
@@ -183,6 +191,12 @@ impl Store {
             .filter_map(|(page, _)| page.upgrade())
             .map(|page| page.len() as u64)
             .sum()
+    }
+
+    /// The I/O thread's counters ([`StreamClient::stats`]).
+    #[must_use]
+    pub fn stats(&self) -> StreamStats {
+        self.client().stats()
     }
 
     #[must_use]
@@ -649,6 +663,9 @@ fn land(
     let sample = &read.sample;
     let size = sample.page_frames() as usize * sample.fmt.bytes_per_frame();
     let data = read.buf.get(..read.len).unwrap_or_default();
+    if read.ok {
+        (shared.bytes_read).fetch_add(data.len() as u64, Ordering::Relaxed);
+    }
     let pages = data.len().div_ceil(size.max(1));
     for (p, chunk) in (read.page..read.page + pages).zip(data.chunks(size.max(1))) {
         let waiting = flying.remove(&(read.id, p)).unwrap_or(0);

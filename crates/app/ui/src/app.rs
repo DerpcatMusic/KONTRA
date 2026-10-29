@@ -11,6 +11,7 @@ mod mixer;
 mod part;
 mod rack;
 mod report;
+mod settings;
 mod sound;
 
 pub use sound::{Envelope, Filter, Lower, Param, Pass, Sound};
@@ -20,7 +21,7 @@ use mui::prelude::*;
 
 use crate::Pictures;
 use crate::keyboard::{self, Keys, note_name};
-use crate::kit::{self, Icon, button, icon_button, latch, rule, section, sheet, strip, tab, vrule};
+use crate::kit::{self, Icon, button, icon_button, rule, section, sheet, strip, tab, vrule};
 use crate::theme::{CONTROL, SIDEBAR, SPACE, TEXT, TIGHT, quick, secondary};
 
 /// Everything the editor shows. The host fills the data; `view` is the
@@ -39,6 +40,11 @@ pub struct App {
     /// first line is its summary.
     pub report: Vec<String>,
     pub midi_thru: bool,
+    /// Where new parts listen and play ([`Action::NewParts`]).
+    pub next_channel: bool,
+    pub own_output: bool,
+    /// The build, for About: its version and source revision.
+    pub build: String,
     /// The folders the browser scans.
     pub folders: Vec<String>,
     /// The editor's width in points, as the host frames it: a library's
@@ -175,8 +181,13 @@ pub enum PartTab {
 pub struct Stats {
     pub cpu: f64,
     pub voices: u32,
+    /// The whole process; 0 where the host cannot read it.
     pub ram_mb: u32,
+    /// The samples' preloaded pages.
+    pub samples_mb: u32,
     pub disk_mbs: f64,
+    /// The streamed page cache's size.
+    pub cache_mb: u32,
 }
 
 /// The main area's tabs.
@@ -338,6 +349,13 @@ pub enum Action {
     MidiThru(bool),
     Star(usize, bool),
     AddFolder,
+    /// New parts take the next free MIDI channel; their own output pair.
+    NewParts {
+        next_channel: bool,
+        own_output: bool,
+    },
+    /// Stop scanning the browser's folder `n`.
+    RemoveFolder(usize),
     Scale(f64),
     CopyDiagnostics,
     ExportReport,
@@ -441,17 +459,43 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         app.view.browser_hidden = !app.view.browser_hidden;
     }
     let s = app.stats;
-    let stat = |label: &str, value: String, widest: &str| {
+    let stat = |label: &str, value: String, widest: &str, tip: String| {
         row![section(label), caption(value).reserve(widest)]
             .gap(TIGHT)
             .align(Align::Center)
             .shrink(0)
+            .tip(tip)
+            .id(format!("stat-{label}"))
     };
+    let ram = if s.ram_mb > 0 { s.ram_mb } else { s.samples_mb };
     let load = row![
-        stat("CPU", format!("{:.0}%", s.cpu), "100%"),
-        stat("Voices", s.voices.to_string(), "000"),
-        stat("RAM", format!("{} MB", s.ram_mb), "00000 MB"),
-        stat("Disk", format!("{:.1} MB/s", s.disk_mbs), "000.0 MB/s"),
+        stat(
+            "CPU",
+            format!("{:.0}%", s.cpu),
+            "100%",
+            "The audio thread's time spent rendering".into()
+        ),
+        stat(
+            "Voices",
+            s.voices.to_string(),
+            "000",
+            "Voices playing".into()
+        ),
+        stat(
+            "RAM",
+            format!("{ram} MB"),
+            "00000 MB",
+            format!(
+                "{} MB of samples in memory, of {ram} MB in all",
+                s.samples_mb
+            )
+        ),
+        stat(
+            "Disk",
+            format!("{:.1} MB/s", s.disk_mbs),
+            "000.0 MB/s",
+            format!("Streamed from disk, through a {} MB cache", s.cache_mb)
+        ),
     ]
     .gap(SPACE * 1.5)
     .shrink(0)
@@ -537,11 +581,12 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 
 fn sheet_view(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -> El {
     let (title, content) = match which {
-        Sheet::Settings => ("Settings", settings(ui, app, out)),
+        Sheet::Settings => ("Settings", settings::view(ui, app, out)),
         Sheet::About => (
             "About",
             col![
                 title("KONTRA"),
+                body(app.build.clone()).id("about-build"),
                 caption(
                     "One engine that plays Kontakt, UVI and SFZ libraries as they were written."
                 )
@@ -555,79 +600,6 @@ fn sheet_view(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -
         app.view.sheet = None;
     }
     r.el
-}
-
-fn settings(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
-    let thru = latch(
-        ui,
-        "settings-thru",
-        if app.midi_thru { "On" } else { "Off" },
-        "Pass MIDI through to the host",
-        app.midi_thru,
-    );
-    if thru.changed {
-        app.midi_thru = !app.midi_thru;
-        out.push(Action::MidiThru(app.midi_thru));
-    }
-    let labels: Vec<String> = SCALES.iter().map(|s| format!("{:.0}%", s * 100.)).collect();
-    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-    let current = refs.get(app.view.scale).copied().unwrap_or("100%");
-    let size = kit::dropdown(
-        ui,
-        &mut app.view.menu,
-        "scale",
-        (None, current, "Editor size"),
-        &refs,
-        Some(app.view.scale),
-    );
-    if let Some(n) = size.changed {
-        app.view.scale = n;
-        out.extend(SCALES.get(n).map(|&s| Action::Scale(s)));
-    }
-    let faces = ["Fit", "100%", "150%", "200%"];
-    let face = kit::dropdown(
-        ui,
-        &mut app.view.menu,
-        "face-scale",
-        (
-            None,
-            faces.get(app.view.face_scale).copied().unwrap_or("Fit"),
-            "How large a library's own view is drawn",
-        ),
-        &faces,
-        Some(app.view.face_scale),
-    );
-    if let Some(n) = face.changed {
-        app.view.face_scale = n;
-    }
-    let add = button(ui, "add-folder", "Add folder…", false);
-    if add.changed {
-        out.push(Action::AddFolder);
-    }
-    let folders: Vec<El> = app
-        .folders
-        .iter()
-        .map(|f| caption(f.clone()).lines(1).min_w(0).tip(f.clone()))
-        .collect();
-    let folders = col(folders)
-        .gap(TIGHT)
-        .align(Align::Start)
-        .w(Len::Pct(100.));
-    let line = |label: &str, control: El| {
-        row![body(label.to_owned()), spacer(), control].align(Align::Center)
-    };
-    col![
-        row![section("Library folders"), spacer(), add.el].align(Align::Center),
-        folders,
-        rule(),
-        section("Interface"),
-        line("Size", size.el),
-        line("Library view", face.el),
-        rule(),
-        section("MIDI / Output"),
-        line("MIDI thru", thru.el),
-    ]
-    .gap(SPACE)
 }
 
 fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {

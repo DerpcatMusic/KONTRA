@@ -58,6 +58,11 @@ impl Cache {
             .unwrap_or_default()
     }
 
+    /// Bytes of every slot.
+    pub(crate) fn size(&self) -> usize {
+        self.bytes.len()
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.slots.len()
     }
