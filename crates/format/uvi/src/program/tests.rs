@@ -225,13 +225,10 @@ fn a_keygroup_one_pole_and_its_velocity_route_reach_the_group() {
     assert_eq!(f.ladder, Some(ir::Ladder::OnePole));
     assert_eq!(f.hz, 20_000.0);
     assert!((f.octaves - 1000f32.log2()).abs() < 1e-4);
-    assert_eq!(
-        g.shapers,
-        [ir::Transfer {
-            source: ir::Source::Velocity,
-            table: vec![1.0, 0.0],
-        }]
-    );
+    assert_eq!(g.shapers[0].source, ir::Source::Velocity);
+    assert_eq!(g.shapers[0].apply(1.0 / 127.0), 1.0);
+    assert_eq!(g.shapers[0].apply(64.0 / 127.0), 0.5);
+    assert_eq!(g.shapers[0].apply(1.0), 0.0);
     assert_eq!(
         g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
         [ir::ModKind::Cutoff {
@@ -1083,6 +1080,22 @@ fn an_aux_eq_past_four_bands_runs_as_eqs_in_series() {
 }
 
 #[test]
+fn a_velocity_gain_route_reads_the_native_midi_velocity_range() {
+    let xml = r#"<Program Gain="1"><Layers><Layer Gain="1" Pan="0"><Keygroups>
+      <Keygroup LowKey="0" HighKey="127"><Connections>
+        <SignalConnection Ratio="1" Source="@VoiceParam Velocity" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+      </Connections><Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators></Keygroup>
+    </Keygroups></Layer></Layers></Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let transfer = &out.groups[0].shapers[0];
+    assert_eq!(transfer.source, ir::Source::Velocity);
+    for (velocity, native) in [(1, 0.0), (64, 0.5), (100, 0.785_714_3), (127, 1.0)] {
+        assert!((transfer.apply(velocity as f32 / 127.0) - native).abs() < 1e-6);
+    }
+}
+
+#[test]
 fn velocity_controllers_and_lfos_scale_a_keygroups_gain_by_the_signed_law() {
     let xml = r#"<Program Gain="1">
       <Modulators>
@@ -1111,14 +1124,14 @@ fn velocity_controllers_and_lfos_scale_a_keygroups_gain_by_the_signed_law() {
     assert_eq!(
         g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
         [
-            volume(ir::Source::Velocity, 0.75),
+            volume(ir::Source::Shaped(0), 0.75),
             volume(ir::Source::Controller(1), -0.4),
-            volume(ir::Source::Shaped(0), 0.6),
+            volume(ir::Source::Shaped(1), 0.6),
         ]
     );
     // Depth 0.5 inside `(m + 1)/2`: 0.25 at the trough, 0.75 at the crest.
-    assert_eq!(g.shapers[0].table, [0.25, 0.75]);
-    assert_eq!(g.shapers[0].source, ir::Source::Lfo(0));
+    assert_eq!(g.shapers[1].table, [0.25, 0.75]);
+    assert_eq!(g.shapers[1].source, ir::Source::Lfo(0));
     // −0.4 at CC 1 = 1: 1 − 0.4; 0.75 at velocity 0: 1 − 0.75.
     assert!((ir::Curve::Signed.gain(-0.4, 1.0) - 0.6).abs() < 1e-6);
     assert!((ir::Curve::Signed.gain(0.75, 0.0) - 0.25).abs() < 1e-6);
@@ -1234,7 +1247,9 @@ fn a_controller_on_an_lfos_depth_scales_its_routes_by_the_connection_law() {
         panic!("{falling:?}")
     };
     assert_eq!(g.shapers[usize::from(n)].source, ir::Source::Velocity);
-    assert_eq!(g.shapers[usize::from(n)].table, [1.0, 0.0]);
+    assert_eq!(g.shapers[usize::from(n)].apply(1.0 / 127.0), 1.0);
+    assert_eq!(g.shapers[usize::from(n)].apply(64.0 / 127.0), 0.5);
+    assert_eq!(g.shapers[usize::from(n)].apply(1.0), 0.0);
     // LFO 2 (depth 0.5) enters at (0.5·x + 1)/2.
     let wobble = scales
         .iter()
