@@ -114,7 +114,7 @@ pub(crate) fn delay(time: f32, feedback: f32, pan: f32, damping: f32, unit: f32)
 fn chorus(depth: f32, speed: f32, phase: f32, unit: f32) -> ir::Delay {
     ir::Delay {
         time: ir::DelayTime::Ms(20.0),
-        depth_ms: Law::Linear {
+        depth_ms: kontra_law::Law::Linear {
             lo: 0.0,
             hi: 75.0 / RATE * 1000.0,
         }
