@@ -331,6 +331,11 @@ impl RackAudio {
         }
     }
 
+    /// The host's tempo for the next block, in quarter notes per minute.
+    pub fn set_tempo(&mut self, bpm: f32) {
+        self.tempo = Some(bpm);
+    }
+
     /// The largest block [`RackAudio::process`] renders at once.
     #[must_use]
     pub fn max_block(&self) -> usize {

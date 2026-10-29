@@ -19,3 +19,15 @@ midi_output_ports = 1
 # Per-note events: CLAP note expressions reach each key (MPE).
 midi2_input = true
 
+
+# The v3 plugin (kontra-host + kontra-ui) ships beside v2 until the release gate (P8.6).
+[[plugin]]
+name = "KONTRA v3"
+bundle_id = "kontra-v3"
+crate = "kontra-plugin"
+category = "instrument"
+fourcc = "Knt3"
+vst3_subcategory = "Sampler"
+
+midi_input = true
+midi_output = false
