@@ -59,6 +59,7 @@ fn part(name: &str) -> Part {
         solo: false,
         mute: false,
         script: Default::default(),
+        plan: None,
     }
 }
 
@@ -260,4 +261,24 @@ fn a_panic_ends_what_was_played_before_it_and_the_player_needs_no_rack() {
         level > 0.1,
         "the note played after the panic is gone: {level}"
     );
+}
+
+#[test]
+fn a_held_part_sounds_its_hold_later_and_its_notes_still_end() {
+    let (mut rack, mut audio) = rack();
+    let a = engine(rack.store_mut(), 0.5);
+    rack.install(0, a, part("a"));
+    rack.set_hold(0, 3 * BLOCK as u32);
+    audio.process(BLOCK, &[(0, note(0))]);
+    for _ in 0..2 {
+        assert!(level(&audio, 0).abs() < 1e-4, "the held note sounds early");
+        audio.process(BLOCK, &[]);
+    }
+    assert!(level(&audio, 0).abs() < 1e-4, "the held note sounds early");
+    let [on, _] = play(&mut audio, &[]);
+    assert!(on > 0.1, "the held note never sounds: {on}");
+    // A shorter hold lets the notes held under the longer one go.
+    rack.set_hold(0, 0);
+    let [off, _] = play(&mut audio, &[]);
+    assert!(off.abs() < 1e-4, "a note outlived its hold change: {off}");
 }
