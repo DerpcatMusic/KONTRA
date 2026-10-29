@@ -1,3 +1,6 @@
+//! The library scan on folders made for each test.
+#![cfg(test)]
+
 use std::path::{Path, PathBuf};
 
 use kontra_library::{Cache, Folder, Format, Prefs, Progress, Root, clean_name, natural, scan};
