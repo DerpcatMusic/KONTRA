@@ -1,5 +1,6 @@
 //! The DSP families the engine runs (03-DSP.md §5).
 
+pub use kontra_dsp_core as core;
 pub use kontra_dsp_delay as delay;
 pub use kontra_dsp_drive as drive;
 pub use kontra_dsp_dynamics as dynamics;

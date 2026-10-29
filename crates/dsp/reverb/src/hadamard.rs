@@ -183,7 +183,9 @@ impl Hadamard {
         h
     }
 
-    /// Never allocates.
+    /// Never allocates. The gains step (natively they ramp 10 ms): nothing
+    /// moves a network's settings after load, as the translator gives
+    /// scripts no SparkVerb control; its wet and dry levels glide in the rack.
     pub fn set(&mut self, s: Settings) {
         if self.last == Some(s) {
             return;
