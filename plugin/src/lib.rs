@@ -87,6 +87,13 @@ impl KontraParams {
         if waiting {
             return;
         }
+        // A drop not loaded yet is saved too: load it now.
+        let loading = lock(&self.shared.requests)
+            .iter()
+            .any(|r| matches!(r, Request::Load { .. }));
+        if loading {
+            Tick.run(self);
+        }
         if let Some(rack) = lock(&self.shared.rack).as_ref() {
             *self.saved.write().unwrap_or_else(PoisonError::into_inner) = rack.save().write();
         }

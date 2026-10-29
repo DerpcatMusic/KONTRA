@@ -394,10 +394,9 @@ impl Rack {
         self.parts
             .get(part)
             .and_then(|p| p.as_ref().map(|p| p.mix))
-            .unwrap_or(Mix {
-                output: u8::try_from(part).unwrap_or(0),
-                ..Mix::DEFAULT
-            })
+            // A new part plays on the main output: a host often has only
+            // that one active.
+            .unwrap_or(Mix::DEFAULT)
     }
 
     fn silent(&self, part: usize) -> bool {
