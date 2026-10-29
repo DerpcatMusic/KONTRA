@@ -14,14 +14,19 @@ and appends one line to <out>/ledger.tsv.
 
 Build first (once):
   build-slot cargo build --release -p kontra-host --example render --example uvi_programs
+A run copies both binaries to /data/dev/workspace/scratch/survey-bin/<UTC>-<sha>/
+and plays only that copy, removed when the run ends: build-reap deletes a target dir
+idle for 30 min, and another build in the same worktree replaces the binary, either
+of which would change or break a run that takes over an hour.
   tools/v3-survey/survey.py [--jobs 3] [--only TEXT] [--libraries DIR ...]
 """
-import argparse, concurrent.futures as cf, math, os, re, statistics, subprocess, sys, tempfile, time
+import argparse, concurrent.futures as cf, math, os, re, shutil, statistics, subprocess, sys, tempfile, time
 from collections import Counter, defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = Path('/data/dev/workspace/PluginArtifacts/v3-survey')
+BIN = Path('/data/dev/workspace/scratch/survey-bin')
 LIBRARIES = [Path('/data/main/Libraries/Kontakt'), Path('/data/main/Libraries/UVI')]
 SILENT = 1e-4
 KEYS = (60, 48, 72, 36, 84)
@@ -143,13 +148,19 @@ def main():
     ap.add_argument('--timeout', type=int, default=180)
     args = ap.parse_args()
 
-    bin_dir = examples()
-    binary = bin_dir / 'render'
-    if not binary.exists():
-        sys.exit(f'{binary} missing: build it first (see --help)')
-    todo = [(l, p) for l, p in instruments(args.libraries, bin_dir) if not args.only or args.only in p]
+    built = examples()
+    for name in ('render', 'uvi_programs'):
+        if not (built / name).exists():
+            sys.exit(f'{built / name} missing: build it first (see --help)')
     sha = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+    # The run's own copy: the target dir may be reaped or rebuilt meanwhile.
+    bin_dir = BIN / f'{stamp}-{sha}'
+    bin_dir.mkdir(parents=True)
+    for name in ('render', 'uvi_programs'):
+        shutil.copy2(built / name, bin_dir / name)
+    binary = bin_dir / 'render'
+    todo = [(l, p) for l, p in instruments(args.libraries, bin_dir) if not args.only or args.only in p]
     run = args.out / f'{stamp}-{sha}'
     run.mkdir(parents=True)
     print(f'{len(todo)} instruments → {run}', flush=True)
@@ -242,6 +253,7 @@ def main():
                 f'{sum(int(r["audible"] or 0) for r in rows)}\t{median(r["load_s"] for r in rows)}\t'
                 f'{median(r["rss_mb"] for r in rows)}\n')
     print((run / 'summary.md').read_text())
+    shutil.rmtree(bin_dir, ignore_errors=True)
 
 
 if __name__ == '__main__':
