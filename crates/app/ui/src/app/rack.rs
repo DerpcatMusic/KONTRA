@@ -5,7 +5,7 @@ use mui::prelude::*;
 
 use super::{Action, App, Part, PartTab, db, part};
 use crate::kit::{self, Icon, icon_button, knob, latch, nudge, rule, tab};
-use crate::theme::{CONTROL, SPACE, TEXT, TIGHT, part_color, secondary};
+use crate::theme::{CONTROL, SIDEBAR, SPACE, TEXT, TIGHT, part_color, secondary};
 
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if app.parts.is_empty() {
@@ -20,13 +20,20 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .w(Len::Pct(100.))
         .h(Len::Pct(100.));
     }
+    // What the rack has of the editor's width for a library's view.
+    let browser = if app.view.browser_hidden {
+        0.
+    } else {
+        SIDEBAR + 1.
+    };
+    let room = (app.width - browser - 2. * SPACE).max(0.);
     let mut strips = Vec::new();
     for n in 0..app.parts.len() {
         strips.push(header(ui, app, n, out));
         if app.parts.get(n).is_some_and(|p| p.open) {
             strips.push(tabs(ui, app, n, out));
             if let Some(p) = app.parts.get_mut(n) {
-                strips.push(part::view(ui, p, n, &mut app.view, out));
+                strips.push(part::view(ui, p, n, room, &mut app.view, out));
             }
         }
         strips.push(rule());
