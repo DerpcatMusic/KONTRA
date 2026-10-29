@@ -10,6 +10,19 @@ pub const CONTROLLER_VOLUME_POWER: u8 = 1;
 /// Normalized voice source used by a volume route.
 pub const VOICE_VOLUME_POWER: u8 = 3;
 
+/// Controller source taper in a volume route.
+pub const CONTROLLER_VOLUME: Law = Law::Power {
+    lo: 0.0,
+    hi: 1.0,
+    exponent: CONTROLLER_VOLUME_POWER as f32,
+};
+/// Voice source taper in a volume route.
+pub const VOICE_VOLUME: Law = Law::Power {
+    lo: 0.0,
+    hi: 1.0,
+    exponent: VOICE_VOLUME_POWER as f32,
+};
+
 /// Saved modulation-shaper points as an evaluator law.
 ///
 /// Curvature uses the existing measured approximation; its exact binary law
