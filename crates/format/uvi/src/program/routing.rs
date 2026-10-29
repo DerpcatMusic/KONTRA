@@ -609,6 +609,28 @@ impl<L: Library> Translator<'_, '_, L> {
     }
 }
 
+/// The voices a program sounds: `Polyphony` times the most zones a keygroup
+/// makes, one per oscillator or bundle member. A UVI voice is a keygroup's,
+/// all of them (VWinds' Alto Flute 2: 8 voices, a note's 10 sustain zones
+/// beside its chiff, air and key click); here each zone is a voice.
+pub(super) fn voices(program: Node) -> Result<u16, String> {
+    let zones = |p: Node| {
+        p.attribute("SamplePath")
+            .map_or(1, |s| s.split('*').count().max(2) - 1)
+    };
+    let players = |o: Node| {
+        o.children()
+            .filter(Node::is_element)
+            .map(zones)
+            .sum::<usize>()
+    };
+    let oscillators = program
+        .descendants()
+        .filter(|n| n.has_tag_name("Oscillators"));
+    let widest = oscillators.map(players).max().unwrap_or(1).max(1) as f64;
+    Ok((num(program, "Polyphony", 64.0)? * widest).clamp(1.0, 1024.0) as u16)
+}
+
 /// The connections on the `Gain` of a keygroup's enabled players that every
 /// one of them has alike, each as the route it makes (the keygroup's gain
 /// law, a voice playing one player) and the other players' copies. One that
