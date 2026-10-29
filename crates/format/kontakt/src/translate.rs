@@ -133,6 +133,25 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
                 rack.resize(SLOTS, None);
             }
         }
+        // A filter a script loads into an empty slot switches shapes as a
+        // saved one does (group slots load in `on init` only).
+        let empty = |at, rack: &[Option<ir::Effect>]| {
+            let slots = (0u8..).zip(rack.iter());
+            slots
+                .filter(|(_, s)| s.is_none())
+                .map(move |(n, _)| (at, n))
+                .collect::<Vec<_>>()
+        };
+        let mut open = empty(ir::RackAt::Inserts, &out.inserts);
+        open.extend(empty(ir::RackAt::Sends, &out.sends));
+        open.extend(empty(ir::RackAt::Main, &out.main));
+        for (b, bus) in (0u8..).zip(&buses) {
+            open.extend(empty(ir::RackAt::Bus(b), &bus.inserts));
+        }
+        if !open.is_empty() && out.slot_shapes.shapes.is_empty() {
+            out.slot_shapes.shapes = crate::laws::filter_shapes();
+        }
+        out.slot_shapes.slots.extend(open);
         out.slot_shapes.types = crate::script_knobs::slot_types();
         out.slot_shapes.subtypes = std::mem::take(&mut slots.subtypes);
     }

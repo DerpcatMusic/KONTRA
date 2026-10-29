@@ -212,6 +212,10 @@ impl Rack {
             }
             match (dsp, e.kind) {
                 (Dsp::Eq(f), _) => filters::run(f, io),
+                (Dsp::Filter(svf), ir::EffectKind::Filter(f)) => {
+                    svf.retune(filters::shape(&f), self.rate);
+                    svf.process(io);
+                }
                 // ponytail: retuned once a span; per-sample if a sweep zippers.
                 (Dsp::Bells(eq), ir::EffectKind::Eq(bells)) => {
                     eq.retune(bells, self.rate);
