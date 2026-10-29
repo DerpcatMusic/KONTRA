@@ -2034,6 +2034,38 @@ fn a_bus_pan_glides_in_a_line_over_50_ms() {
 }
 
 #[test]
+fn a_scripts_group_pan_glides_as_a_one_pole() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    let source = "on controller\n  set_engine_par($ENGINE_PAR_PAN, 1000000, 0, -1, -1)\nend on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0f32; 2]; 48_000];
+    e.process(&mut out, &[on(60)]);
+    let centre = out[47_999][0];
+    e.process(
+        &mut out,
+        &[Timed {
+            at: SampleTime(0),
+            body: Event::midi1(0xB0, 20, 1),
+        }],
+    );
+    // Hard right: the left side falls as a one-pole of 37.5 ms.
+    let left = |ms: f32| out[(ms * 48.0) as usize][0] / centre;
+    assert!(left(1.0) > 0.9, "{}", left(1.0));
+    assert!(
+        (left(37.5) - (-1.0f32).exp()).abs() < 0.05,
+        "{}",
+        left(37.5)
+    );
+    assert!(left(150.0) < 0.03, "{}", left(150.0));
+}
+
+#[test]
 fn volume_and_pan_controllers_set_the_output_unless_a_script_ignores_them() {
     use kontra_engine::ir;
     let run = |source: &str| {

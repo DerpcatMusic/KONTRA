@@ -24,19 +24,19 @@ impl Bend {
         semitones: 0.0,
         tau_ms: 0.0,
     };
-
-    /// Semitones `at` moves to in `frames` toward these, as a one-pole;
-    /// there once within a hundredth of a cent.
-    pub(crate) fn from(self, at: f32, frames: f32, rate: u32) -> f32 {
-        let tau = self.tau_ms * rate as f32 / 1000.0;
-        let next = at + (self.semitones - at) * (1.0 - (-frames / tau).exp());
-        if (self.semitones - next).abs() < 1e-4 {
-            self.semitones
-        } else {
-            next
-        }
-    }
 }
+
+/// `at` moved `frames` toward `to` as a one-pole of `tau_ms` (0: at once);
+/// there once within 1e-4.
+pub(crate) fn glide(at: f32, to: f32, tau_ms: f32, frames: f32, rate: u32) -> f32 {
+    let tau = tau_ms * rate as f32 / 1000.0;
+    let next = at + (to - at) * (1.0 - (-frames / tau).exp());
+    if (to - next).abs() < 1e-4 { to } else { next }
+}
+
+/// A script's group pan glides as a one-pole of this time constant
+/// (measured natively: τ 37.5 ms, as the instrument's volume and pan).
+pub(crate) const GROUP_PAN_TAU_MS: f32 = 37.5;
 
 /// `step` raised by `semitones`.
 pub(crate) fn bent(step: f64, semitones: f32) -> f64 {
@@ -46,12 +46,14 @@ pub(crate) fn bent(step: f64, semitones: f32) -> f64 {
 impl Engine {
     /// The voice's gain, and the slower gain of its routes that lag (their
     /// product, at the longest time constant among them).
+    /// `group_pan` is where the voice's glide of its group's pan is.
     pub(crate) fn voice_gain(
         &self,
         zone: &Zone,
         note: &Note,
         factor: f32,
         age: Age,
+        group_pan: f32,
     ) -> (Gain, Lag) {
         let channel = note.host.channel;
         let crossfade: f32 = zone
@@ -99,7 +101,11 @@ impl Engine {
                 })
                 .sum()
         });
-        let [l, r] = gain(zone, note, self.level(zone), pan);
+        let level = Level {
+            pan: group_pan,
+            ..self.level(zone)
+        };
+        let [l, r] = gain(zone, note, level, pan);
         let g = crossfade * mods * factor;
         let group = self
             .groups
@@ -140,6 +146,11 @@ impl Engine {
             }
         }
         moved.then_some(mix)
+    }
+
+    /// The pan the zone's group is set to.
+    pub(crate) fn group_pan(&self, zone: &Zone) -> f32 {
+        self.level(zone).pan
     }
 
     /// The group's level, with the instrument's tune (its level and pan
