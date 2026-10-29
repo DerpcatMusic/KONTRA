@@ -68,6 +68,31 @@ check() { if differ "$1" "$2" "${4:-}"; then pass "$3"; else miss "$3"; fi; }
 still() { if differ "$1" "$2" "${4:-}"; then miss "$3"; else pass "$3"; fi; }
 
 shot 0-open
+# Open VWinds' preferences page, where the authored tables live.
+if [[ ${UVI_TABLE_ONLY:-0} == 1 ]]; then
+    at "${UVI_PREFS:-1310,944}"; xdotool click 1; sleep 3; shot 1-prefs
+    if [[ -n ${UVI_TABLE_TAB:-} ]]; then
+        at "$UVI_TABLE_TAB"; xdotool click 1; sleep 3; shot 2-table
+        if [[ -n ${UVI_TABLE_BEFORE:-} ]]; then
+            if python3 -I -c 'import sys; from PIL import Image, ImageChops
+a, b = (Image.open(p).convert("RGB").crop((385,160,697,305)) for p in sys.argv[1:])
+d = ImageChops.difference(a,b)
+sys.exit(0 if sum(1 for p in d.getdata() if max(p) > 8) > 100 else 1)' "$UVI_TABLE_BEFORE" "$out/2-table.png"; then
+                pass "UVI auto-vibrato table draws its bars"
+            else miss "UVI auto-vibrato table draws its bars"; fi
+        fi
+    fi
+    at 1900,1270; sleep 2
+    ticks_table() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    span=${IDLE_S:-60}; t0=$(ticks_table); sleep "$span"; t1=$(ticks_table)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
 # UVI's script page font styling; UVI_FONT_BEFORE can name a pre-change
 # capture to check that the page actually changed in the real window.
 if [[ ${UVI_FONT_ONLY:-0} == 1 ]]; then

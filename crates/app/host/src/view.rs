@@ -177,6 +177,9 @@ struct Look {
     menu: Vec<MenuItem>,
 }
 
+/// A widget number, whether its array was read, and its preallocated cells.
+type ArrayRead = (u32, bool, Box<[f64]>);
+
 /// What a part's [`Live`] reads of its script, copied out of the engine on
 /// the audio thread ([`LookFrame::fill`]) for the control side to refresh
 /// the tree from. Its ids and cells are sorted.
@@ -192,6 +195,7 @@ pub struct LookFrame {
     widgets: Box<[Option<WidgetLook>]>,
     reads: Vec<u32>,
     texts: Box<[(u32, bool, Text)]>,
+    arrays: Box<[ArrayRead]>,
     /// The script's bitmap fonts from [`FIRST_FONT`] on; `on init` names
     /// them all, so they are copied once.
     fonts: Arc<[String]>,
@@ -248,6 +252,7 @@ impl LookFrame {
             widgets: Box::default(),
             reads: Vec::new(),
             texts: Box::default(),
+            arrays: Box::default(),
             fonts: (FIRST_FONT..)
                 .map_while(|id| now.font(slot, id).map(str::to_owned))
                 .collect(),
@@ -270,6 +275,21 @@ impl LookFrame {
             widgets: vec![None; tree.widgets.len()].into(),
             reads: readable(tree),
             texts: labels.collect(),
+            arrays: tree
+                .widgets
+                .iter()
+                .enumerate()
+                .filter_map(|(n, w)| {
+                    let model::Kind::Table { cells, .. } = &w.kind else {
+                        return None;
+                    };
+                    Some((
+                        u32::try_from(n).ok()?,
+                        false,
+                        cells.clone().into_boxed_slice(),
+                    ))
+                })
+                .collect(),
             fonts: Arc::from([]),
             state: Filled::No,
         })
@@ -284,6 +304,15 @@ impl LookFrame {
             let text = texts.next_if(|t| t.0 as usize == n).map(|t| t.2.as_str());
             if let Some(look) = look.take() {
                 changed |= crate::ui::lua::apply(tree, n, look, text);
+            }
+        }
+        for (n, has, cells) in &self.arrays {
+            if *has
+                && let Some(w) = tree.widgets.get_mut(*n as usize)
+                && !matches!(&w.value, Some(model::Value::Reals(old)) if old.as_slice() == cells.as_ref())
+            {
+                w.value = Some(model::Value::Reals(cells.to_vec()));
+                changed = true;
             }
         }
         // Within the room it was made with: every widget fits.
@@ -326,6 +355,12 @@ impl LookFrame {
         for (n, has, text) in &mut *self.texts {
             *has = self.reads.binary_search(n).is_ok() && engine.widget_text(self.slot, *n, text);
         }
+        for (n, has, cells) in &mut *self.arrays {
+            *has = self.reads.binary_search(n).is_ok()
+                && engine
+                    .vm(self.slot)
+                    .is_some_and(|vm| vm.widget_cells(*n, cells));
+        }
         self.state = if whole {
             Filled::Whole
         } else {
@@ -351,6 +386,7 @@ impl LookFrame {
             cells: self.cells.clone(),
             widgets: self.widgets.clone(),
             reads: self.reads.clone(),
+            arrays: self.arrays.clone(),
             texts: self.texts.clone(),
             fonts: Arc::clone(&self.fonts),
             state: Filled::No,
@@ -415,5 +451,27 @@ impl Looks for LookFrame {
     fn font(&self, slot: u8, id: i32) -> Option<&str> {
         let n = usize::try_from(id.checked_sub(FIRST_FONT)?).ok()?;
         (self.fonts.get(n).filter(|_| slot == self.slot)).map(String::as_str)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copied_table_cells_update_the_live_tree() {
+        let page = kontra_lua::compile(r#"Table{"curve", 2, 0, 0, 1, false}"#, &[], &[])
+            .unwrap()
+            .ui;
+        let mut tree = crate::ui::lua::tree(&page, &|_| None);
+        let mut frame = LookFrame::lua(0, &tree);
+        frame.arrays[0].1 = true;
+        frame.arrays[0].2.copy_from_slice(&[0.25, 0.75]);
+        assert!(frame.apply(&mut tree));
+        assert_eq!(
+            tree.widgets[0].value,
+            Some(model::Value::Reals(vec![0.25, 0.75]))
+        );
+        assert!(!frame.apply(&mut tree));
     }
 }
