@@ -2660,6 +2660,7 @@ version = "0.0.0"
 name = "kontra-voice"
 version = "0.0.0"
 dependencies = [
+ "kontra-ir",
  "kontra-stream",
 ]
 

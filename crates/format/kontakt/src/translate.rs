@@ -431,6 +431,11 @@ fn translate_group(
         stream: laws::stream(group.source_identity().map_or(0, |s| s.mode), base.preload),
         ..ir::Group::DEFAULT
     };
+    if let Ok(Some(source)) = group.wavetable_source() {
+        out.wavetable = Some(crate::wavetable::wavetable(&source, &v.name, notes));
+        // A voice reads anywhere in its table at once.
+        out.stream = None;
+    }
     let slot = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
     let mut modulated = Vec::new();
     let release_counter = laws::release_counter(v.release_trigger, v.rls_trig_counter);

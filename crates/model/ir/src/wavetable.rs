@@ -52,7 +52,10 @@ pub enum WarpShape {
     /// Reads the cycle in `1 − 0.9375a` of the phase, then silence.
     Pulse,
     /// Moves the cycle's midpoint by up to `reach` of a half.
-    Skew { reach: f32, side: Side },
+    Skew {
+        reach: f32,
+        side: Side,
+    },
     /// Reverses the phase before (or, past `a = ½`, after) a point.
     Flip,
     /// Folds at the midpoint, then skews.
@@ -68,5 +71,7 @@ pub enum WarpShape {
     /// Log below `a = ½`, exp above, both up to the power 10.
     LogExp,
     /// A rational bend about the midpoint, by up to 0.9.
-    Bend { side: Side },
+    Bend {
+        side: Side,
+    },
 }

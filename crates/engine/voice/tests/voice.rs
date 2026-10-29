@@ -332,3 +332,63 @@ fn an_until_release_loop_repeats_until_release_then_plays_on() {
     near(out[500], at(200));
     near(out[600], at(300));
 }
+
+/// Two cycles, a sine then its negation: a table voice plays the sine's
+/// frequency for any sample length, and a position halfway cancels them.
+#[test]
+fn a_table_plays_its_cycle_at_the_step_and_morphs_by_position() {
+    use kontra_ir::{Warp, Wavetable};
+    use kontra_voice::{CYCLE, PERIOD, Table};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let frames = 2 * CYCLE;
+    let bytes = (0..frames)
+        .flat_map(|n| {
+            let sine = (std::f32::consts::TAU * (n % CYCLE) as f32 / CYCLE as f32).sin();
+            if n < CYCLE { sine } else { -sine }.to_le_bytes()
+        })
+        .collect();
+    let key = BlobKey {
+        file: "table".into(),
+        offset: 0,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(FMT, bytes)),
+            frames,
+            &[0..frames],
+        )
+        .unwrap();
+    let play = |position| {
+        let read = Wavetable {
+            position,
+            phase: 0.0,
+            warps: [Warp::OFF; 2],
+        };
+        let region = Region {
+            mix: None,
+            table: Table::new(0, frames, read),
+            sample: Arc::clone(&sample),
+            start: 0,
+            end: frames,
+            loops: vec![],
+            reverse: false,
+        };
+        let mut voice = Voice::allocate();
+        // 480 Hz at 48 kHz: a cycle each 100 frames.
+        voice.start(start(region, PERIOD / 100.0, Ahdsr::GATE));
+        render(&mut voice, &client, 10_000)
+    };
+    let first = play(0.0);
+    for (n, v) in first.iter().enumerate() {
+        let want = (std::f32::consts::TAU * n as f32 / 100.0).sin();
+        assert!((v - want).abs() < 1e-3, "frame {n}: {v} vs {want}");
+    }
+    assert!(play(0.5).iter().all(|v| v.abs() < 1e-6));
+    assert!(
+        (play(1.0)[25] + 1.0).abs() < 1e-3,
+        "the second cycle is the negated sine"
+    );
+}

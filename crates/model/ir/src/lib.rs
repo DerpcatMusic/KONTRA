@@ -24,10 +24,10 @@ pub use effects::{
 };
 pub use mods::{Blend, Curve, Exp2, Factor, ModKind, Term, Transfer};
 pub use output::{Balance, Output, OutputControllers};
-pub use wavetable::{Side, Warp, WarpShape, Wavetable};
 pub use reverb::{
     CombNetwork, HadamardNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar,
 };
+pub use wavetable::{Side, Warp, WarpShape, Wavetable};
 
 #[derive(Clone, Debug)]
 pub struct Instrument {

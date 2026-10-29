@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use kontra_ir as ir;
 use kontra_stream::{BlobKey, LoadRequest, MAX_CHANNELS, Mix, Sample, SampleFmt, Source, Store};
-use kontra_voice::{Ahdsr, Loop, Region};
+use kontra_voice::{Ahdsr, Loop, PERIOD, Region, Table};
 
 use kontra_engine::{
     Atom, Bus, Control, Crossfade, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone,
@@ -329,8 +329,18 @@ fn zone(
             .collect(),
         reverse: z.reverse,
         mix: mix(&z.mix),
+        table: group
+            .wavetable
+            .and_then(|w| Table::new(z.start, z.end.min(source.frames), w)),
     };
-    let mut out = Zone::new(region, z.root, source.rate);
+    // A table plays its cycle at 440 Hz on A4, whatever the zone's root and
+    // the sample's rate.
+    let (root, rate) = if region.table.is_some() {
+        (69, (440.0 * PERIOD) as u32)
+    } else {
+        (z.root, source.rate)
+    };
+    let mut out = Zone::new(region, root, rate);
     out.start_mod = z.start_mod;
     out.slot = z.slot;
     out.keys = z.keys.clone();
