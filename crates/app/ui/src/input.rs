@@ -121,13 +121,15 @@ fn snap(range: model::Range, v: f64) -> f64 {
         .map_or(v, |s| (v / s).round() * s)
 }
 
-/// How far one arrow key or wheel notch moves a control: its step, or a
-/// hundredth of its range when it has none.
-fn notch(range: model::Range) -> f64 {
-    range
-        .step
-        .filter(|s| *s > 0.)
-        .unwrap_or((range.max - range.min).abs() / 100.)
+/// How far one arrow key moves a control: a value edit by its step (one,
+/// as its arrows do), anything else by a hundredth of its range or its
+/// step when coarser.
+fn notch(kind: &Kind, range: model::Range) -> f64 {
+    let step = range.step.filter(|s| *s > 0.).unwrap_or(0.);
+    match kind {
+        Kind::ValueEdit { .. } if step > 0. => step,
+        _ => step.max((range.max - range.min).abs() / 100.),
+    }
 }
 
 /// This frame's edits to the controls of `page` drawn at `scale`, and the
@@ -213,7 +215,7 @@ pub fn read(
                 _ => at,
             });
             if step != 0. {
-                set(snap(range, now + step * notch(range)));
+                set(snap(range, now + step * notch(&w.kind, range)));
             }
             if matches!(w.kind, Kind::ValueEdit { .. }) && ui.double_click(id.as_str()) {
                 let shown = match &w.kind {
