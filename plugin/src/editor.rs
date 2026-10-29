@@ -316,10 +316,18 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let dropping = Arc::clone(&params);
     let mut app = App::default();
     let mut shown = Shown::default();
-    let mut look = SavedView::read(&p.look.read().unwrap_or_else(PoisonError::into_inner));
-    crate::look::apply(&mut app, &look);
-    let mut waiting = look.parts.clone();
+    let mut look = SavedView::default();
+    let mut waiting = Vec::new();
+    let mut restored = None;
     MuiEditor::new(params, kontra_ui::ui(), (1180, 780), move |ui, bridge| {
+        // On opening, and whenever the host loads a state: its view.
+        let now = p.shared.restored.load(Ordering::Acquire);
+        if restored != Some(now) {
+            restored = Some(now);
+            look = SavedView::read(&p.look.read().unwrap_or_else(PoisonError::into_inner));
+            crate::look::apply(&mut app, &look);
+            waiting.clone_from(&look.parts);
+        }
         let slots: Vec<usize> = {
             let view = lock(&p.shared.view);
             view.fill(&mut app, &mut shown);

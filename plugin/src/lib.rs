@@ -77,6 +77,8 @@ pub struct Shared {
     dirty: std::sync::atomic::AtomicBool,
     /// The latency to report, in frames; the audio thread reads it.
     latency: AtomicU32,
+    /// Moves when the host loads a state: the editor reads its view again.
+    restored: AtomicU32,
 }
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
@@ -129,6 +131,7 @@ impl KontraParams {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
+        self.shared.restored.fetch_add(1, Ordering::Release);
         let mut requests = lock(&self.shared.requests);
         requests.retain(|r| !matches!(r, Request::Restore(_)));
         requests.push(Request::Restore(Saved::read(&json)));
