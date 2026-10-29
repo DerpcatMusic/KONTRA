@@ -92,6 +92,9 @@ const WIRE: ChannelAddress = ChannelAddress {
 /// One playable part: its runtime, the MIDI zone in front of it and its tree.
 pub struct Part {
     runtime: Runtime,
+    /// Measurement only: per velocity bucket, the controller that moves the
+    /// sample start there ([`sampler_core::Prepared::start_skip`]).
+    pub(crate) start_skips: [Option<(u8, u8, Vec<u32>)>; 3],
     persistence: Option<persistence::Persistence>,
     /// Changes to typed widget values, published by the audio owner.
     widget_revision: Arc<AtomicU64>,
@@ -370,6 +373,7 @@ impl Part {
             .map_err(core)?;
         let tone = sampler_core::OutputLowPass::new(runtime.sample_rate()).map_err(core)?;
         let mut part = Self {
+            start_skips: Default::default(),
             epoch: 0,
             engine_bindings,
             uvi_meter_buses: Arc::default(),
@@ -4225,6 +4229,8 @@ const LOADER_STACK: usize = 16 << 20;
 enum PrepareOption {
     #[default]
     Normal,
+    /// Auto-align's measurement: also records the start-skip tables.
+    Measure,
     #[cfg(feature = "shots")]
     SignalTrace { capacity: usize, scope: sampler_core::trace::SignalTraceScope },
 }
@@ -4356,8 +4362,14 @@ impl V2Loader {
                 }
             }
         }
+        let start_skips: [Option<(u8, u8, Vec<u32>)>; 3] = if matches!(option, PrepareOption::Measure) {
+            let key = instrument.as_ref().map_or(60, |i| crate::timing::probe_note(i, &i.articulations));
+            crate::timing::VELOCITIES.map(|v| prepared.start_skip(key, f64::from(v) / 127.))
+        } else {
+            Default::default()
+        };
         let (prepared, trace_reader) = match option {
-            PrepareOption::Normal => (prepared, None),
+            PrepareOption::Normal | PrepareOption::Measure => (prepared, None),
             #[cfg(feature = "shots")]
             PrepareOption::SignalTrace { capacity, scope } => {
                 let (prepared, reader) = prepared.with_scoped_signal_trace_reader(capacity, scope).map_err(core)?;
@@ -4428,6 +4440,7 @@ impl V2Loader {
         let mut part = Part::new_profile(runtime, tree.clone(),if request.mpe_upper{Zone::Upper}else{Zone::Lower}, &power)?;
         part.install_uvi_meter_buses(scripts.uvi_meter_buses.clone(), &interfaces);
         part.waveform_sources = waveform_sources;
+        part.start_skips = start_skips;
         part.mpe
             .set_timbre_controller(&mut part.runtime, timbre)
             .map_err(core)?;
@@ -4490,6 +4503,17 @@ impl V2Loader {
             scripts,
             stream,
         }, trace_reader))
+    }
+}
+
+impl V2Loader {
+    /// A load for auto-align's measurement: the part also carries its start-skip tables.
+    pub(crate) fn prepare_measuring(
+        &self,
+        request: &LoadRequest,
+        canceled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
+        self.prepare_waiting(request, &mut |_| {}, canceled, None, PrepareOption::Measure).map(|loaded| loaded.0)
     }
 }
 
