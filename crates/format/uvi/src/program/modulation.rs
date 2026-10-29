@@ -302,7 +302,14 @@ pub(super) fn gain_route(program: Node, connection: Node) -> Option<Route> {
     if source_node(program, connection).is_some_and(|n| n.has_tag_name("DAHDSR")) {
         return None;
     }
-    let mut r = route(program, connection, ("Keygroup", "Gain"))?;
+    factor(route(program, connection, ("Keygroup", "Gain"))?)
+}
+
+/// `r` for a destination the connection law scales by `1 − r + r·x`, or
+/// `1 + r·x` below zero ([`ir::Curve::Signed`], `r` clamped to ±1): an LFO's
+/// own depth `d` is inside the source, so it enters through `[(1 − d)/2,
+/// (1 + d)/2]`. Not a rising LFO (its rise scales the source, not the ratio).
+pub(super) fn factor(mut r: Route) -> Option<Route> {
     r.ratio = r.ratio.clamp(-1.0, 1.0);
     match r.timed.take() {
         Some(Timed::Rising(..)) => return None,
