@@ -535,32 +535,44 @@ impl Source for FlacSource {
             let AudioBufferRef::S32(buf) = decoder.decode(&packet).map_err(flac)? else {
                 return Err(unsupported("FLAC decoded to a non-i32 buffer".into()));
             };
+            // The packet's frames inside `first..end`, then one channel at a time.
+            let skip = first.saturating_sub(packet.ts) as usize;
+            let at = packet.ts.saturating_sub(first) as usize * frame;
+            let Some(dest) = out.get_mut(at..) else {
+                continue;
+            };
             for c in 0..self.channels.min(buf.spec().channels.count()) {
-                for (i, &value) in buf.chan(c).iter().enumerate() {
-                    let t = packet.ts + i as u64;
-                    if t < first {
-                        continue;
-                    }
-                    if t >= end {
-                        break;
-                    }
-                    let at = (t - first) as usize * frame + c * width;
-                    if let Some(d) = out.get_mut(at..at + width) {
-                        write_full_scale(self.encoding, value, d);
-                    }
+                let (values, at) = (buf.chan(c).get(skip..).unwrap_or_default(), c * width);
+                match self.encoding {
+                    Encoding::I16 => put(dest, frame, at, values, |v| {
+                        ((v >> 16) as i16).to_le_bytes()
+                    }),
+                    Encoding::I24 => put(dest, frame, at, values, |v| {
+                        let [_, a, b, c] = v.to_le_bytes();
+                        [a, b, c]
+                    }),
+                    Encoding::F32 => put(dest, frame, at, values, |v| {
+                        (v as f32 / 2_147_483_648.0).to_le_bytes()
+                    }),
                 }
             }
         }
     }
 }
 
-/// Writes a full-scale `i32` sample in `encoding`: the top bytes for integer
-/// layouts, a float in -1..1 otherwise.
-fn write_full_scale(encoding: Encoding, value: i32, dest: &mut [u8]) {
-    match encoding {
-        Encoding::I16 => dest.copy_from_slice(&((value >> 16) as i16).to_le_bytes()),
-        Encoding::I24 => dest.copy_from_slice(&(value >> 8).to_le_bytes()[..3]),
-        Encoding::F32 => dest.copy_from_slice(&(value as f32 / 2_147_483_648.0).to_le_bytes()),
+/// Writes full-scale `i32`s into one channel of interleaved frames: the top
+/// bytes for integer layouts, a float in -1..1 otherwise.
+fn put<const N: usize>(
+    dest: &mut [u8],
+    frame: usize,
+    at: usize,
+    values: &[i32],
+    bytes: impl Fn(i32) -> [u8; N],
+) {
+    for (f, &v) in dest.chunks_exact_mut(frame).zip(values) {
+        if let Some(d) = f.get_mut(at..).and_then(|d| d.first_chunk_mut::<N>()) {
+            *d = bytes(v);
+        }
     }
 }
 
