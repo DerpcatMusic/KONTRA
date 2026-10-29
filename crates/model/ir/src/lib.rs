@@ -22,7 +22,7 @@ pub use effects::{
     IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
 };
 pub use mods::{Blend, Curve, Exp2, Factor, ModKind, Term, Transfer};
-pub use output::{Output, OutputControllers};
+pub use output::{Balance, Output, OutputControllers};
 pub use reverb::{
     CombNetwork, HadamardNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar,
 };
