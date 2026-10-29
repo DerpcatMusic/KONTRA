@@ -254,8 +254,22 @@ pub(crate) fn instrument(
         let loops = loops.map_err(decode("zone loops"))?;
         let reverse =
             g.zones.first().is_some_and(|z| z.reverse) || criteria_reverse(group, &groups);
-        if let Some(z) = translate_zone(&z, loops.as_ref(), sample, frames, reverse, &mut notes) {
-            g.zones.push(z);
+        if let Some(translated) =
+            translate_zone(&z, loops.as_ref(), sample, frames, reverse, &mut notes)
+        {
+            kontra_law::record(|| kontra_law::Application {
+                id: kontra_law::LawId("kontakt.zone_gain_pan_tune.v1"),
+                location: format!("groups/{group}/zones/{}", g.zones.len()),
+                input: format!(
+                    "volume={:?}, pan={:?}, tune_ratio={:?}",
+                    z.zone_volume, z.zone_pan, z.zone_tune
+                ),
+                output: format!(
+                    "volume_db={:?}, pan={:?}, tune={:?}",
+                    translated.volume_db, translated.pan, translated.tune
+                ),
+            });
+            g.zones.push(translated);
         }
     }
     let first = out.samples.len();
@@ -445,6 +459,18 @@ fn translate_group(
         stream: laws::stream(group.source_identity().map_or(0, |s| s.mode), base.preload),
         ..ir::Group::DEFAULT
     };
+    kontra_law::record(|| kontra_law::Application {
+        id: kontra_law::LawId("kontakt.group_gain_pan_tune.v1"),
+        location: format!("groups/{group_index}"),
+        input: format!(
+            "volume={:?}, pan={:?}, tune_ratio={:?}, base_tune={:?}",
+            v.volume, v.pan, v.tune, base.tune
+        ),
+        output: format!(
+            "volume_db={:?}, pan={:?}, tune={:?}",
+            out.volume_db, out.pan, out.tune
+        ),
+    });
     if let Ok(Some(source)) = group.wavetable_source() {
         out.wavetable = Some(crate::wavetable::wavetable(&source, &v.name, notes));
         // A voice reads anywhere in its table at once.
@@ -504,7 +530,7 @@ fn translate_group(
                 }
                 Modulator::Flex(_) | Modulator::Lfo(_) | Modulator::Ahdsr(_) => {
                     let (lfos, envelopes) = (out.lfos.len(), out.envelopes.len());
-                    timed(&mut out, &p, slot(n), notes, &mut modulated);
+                    timed(&mut out, &p, group_index, slot(n), notes, &mut modulated);
                     let made = if out.lfos.len() > lfos {
                         u8::try_from(lfos).ok().map(ir::Source::Lfo)
                     } else if out.envelopes.len() > envelopes {
@@ -553,9 +579,26 @@ fn translate_group(
 /// Routes an envelope (flex, or an AHDSR that is not the amplitude envelope)
 /// or an LFO to volume, pitch, pan and filter cutoff; reports the targets and
 /// shapes not mapped, and in `unmapped` the slots of cutoffs it drops.
+fn trace_timed(
+    id: &'static str,
+    group: usize,
+    slot: u16,
+    field: &str,
+    input: &impl std::fmt::Debug,
+    output: &impl std::fmt::Debug,
+) {
+    kontra_law::record(|| kontra_law::Application {
+        id: kontra_law::LawId(id),
+        location: format!("groups/{group}/routes/{slot}/{field}"),
+        input: format!("{input:?}"),
+        output: format!("{output:?}"),
+    });
+}
+
 fn timed(
     out: &mut ir::Group,
     p: &InternalModParams,
+    group_index: usize,
     slot: u16,
     notes: &mut Notes,
     unmapped: &mut Vec<u8>,
@@ -578,15 +621,46 @@ fn timed(
         Some(ir::Source::Envelope(n))
     };
     let (source, what) = match &p.modulator {
-        Modulator::Flex(e) => (envelope(laws::flex(e)), "flex envelope"),
-        Modulator::Ahdsr(e) => (envelope(laws::ahdsr(e)), "AHDSR"),
+        Modulator::Flex(e) => {
+            let result = laws::flex(e);
+            trace_timed(
+                "kontakt.flex_envelope.v1",
+                group_index,
+                slot,
+                "envelope",
+                e,
+                &result,
+            );
+            (envelope(result), "flex envelope")
+        }
+        Modulator::Ahdsr(e) => {
+            let result = laws::ahdsr(e);
+            trace_timed(
+                "kontakt.breakpoint_ahdsr.v1",
+                group_index,
+                slot,
+                "envelope",
+                e,
+                &result,
+            );
+            (envelope(result), "AHDSR")
+        }
         Modulator::Lfo(l) => {
             let clock = if p.unknown_flags.get(RETRIGGER).is_some_and(|&f| f != 0) {
                 ir::Clock::Voice
             } else {
                 ir::Clock::Free
             };
-            let (Some(lfo), Ok(n)) = (laws::lfo(l, clock), u8::try_from(out.lfos.len())) else {
+            let result = laws::lfo(l, clock);
+            trace_timed(
+                "kontakt.lfo.v1",
+                group_index,
+                slot,
+                "lfo",
+                &(l, clock),
+                &result,
+            );
+            let (Some(lfo), Ok(n)) = (result, u8::try_from(out.lfos.len())) else {
                 return report(notes, unmapped, "LFO (synced fade or unknown wave)");
             };
             out.lfos.push(lfo);
@@ -635,7 +709,14 @@ fn timed(
                 depth: t.signed_intensity(),
             },
             (param, Some(insert)) if laws::eq_band_index(param).is_some() => {
-                match laws::eq_gain(source, insert, param, t.signed_intensity()) {
+                let result = laws::eq_gain(source, insert, param, t.signed_intensity());
+                kontra_law::record(|| kontra_law::Application {
+                    id: kontra_law::LawId("kontakt.eq_gain_route.v1"),
+                    location: format!("groups/{group_index}/routes/{slot}/targets/{target}"),
+                    input: format!("{:?}", (source, insert, param, t.signed_intensity())),
+                    output: format!("{result:?}"),
+                });
+                match result {
                     Some(kind) => kind,
                     None => continue,
                 }
@@ -659,6 +740,14 @@ fn timed(
             && let Some(e) = out.envelopes.last()
         {
             out.envelope = laws::flex_gate(e);
+            trace_timed(
+                "kontakt.flex_gate.v1",
+                group_index,
+                slot,
+                "amp_envelope",
+                e,
+                &out.envelope,
+            );
         }
         out.mods.push(ir::Mod {
             name: p.name.clone(),

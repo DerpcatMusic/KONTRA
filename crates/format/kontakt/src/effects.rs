@@ -243,7 +243,8 @@ fn slot_effect(
                 width: (spread.clamp(-1.0, 1.0) + 1.0) * 0.5,
                 pan: pan.clamp(-1.0, 1.0),
             }),
-        0x18 => kind_id.and_then(|k| eq(&public, k, knobs).or_else(|| filter(&public, k, knobs))),
+        0x18 => kind_id
+            .and_then(|k| eq(&public, k, at, knobs).or_else(|| filter(&public, k, at, knobs))),
         // Mode (i32), threshold, ratio, attack, release, then the link byte.
         0x19 => kind_id
             .zip(f32_at(4).zip(f32_at(8)))
@@ -378,6 +379,7 @@ fn slot_effect(
 fn eq(
     public: &[u8],
     kind: i32,
+    at: &str,
     knobs: &mut Vec<crate::script_knobs::SlotKnob>,
 ) -> Option<ir::EffectKind> {
     let count = usize::try_from(kind.checked_sub(21)?)
@@ -386,13 +388,22 @@ fn eq(
     let tail = public.get(public.len().checked_sub(count * 12)?..)?;
     let mut bands = [ir::Bell::FLAT; 4];
     let mut saved = Vec::new();
-    for (band, raw) in bands.iter_mut().zip(tail.as_chunks::<12>().0) {
+    for (index, (band, raw)) in bands.iter_mut().zip(tail.as_chunks::<12>().0).enumerate() {
         let f = |n: usize| {
             let bytes = raw.get(n..n + 4)?.try_into().ok()?;
             Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
         };
-        *band = crate::laws::eq_band(f(0)?, f(4)?, f(8)?)?;
-        saved.push([f(0)?, f(4)?, f(8)?]);
+        let values = [f(0)?, f(4)?, f(8)?];
+        let [hz, octaves, db] = values;
+        let result = crate::laws::eq_band(hz, octaves, db);
+        kontra_law::record(|| kontra_law::Application {
+            id: kontra_law::LawId("kontakt.eq_band.v1"),
+            location: format!("{at}/eq/{index}"),
+            input: format!("{values:?}"),
+            output: format!("{result:?}"),
+        });
+        *band = result?;
+        saved.push(values);
     }
     *knobs = crate::script_knobs::eq_knobs(&saved);
     Some(ir::EffectKind::Eq(bands))
@@ -432,14 +443,14 @@ fn solid_eq(
     *knobs = crate::solid_knobs::solid_knobs(saved, shapes);
     let [lg, lh, mg, mh, mq, hg, hh, hq, fg, fh] = saved;
     let [lf, hf] = shapes;
-    Some(ir::EffectKind::Eq(crate::laws::solid_eq(
-        [lg, lh],
-        lf,
-        [mg, mh, mq],
-        [hg, hh, hq],
-        [fg, fh],
-        hf,
-    )))
+    let bands = crate::laws::solid_eq([lg, lh], lf, [mg, mh, mq], [hg, hh, hq], [fg, fh], hf);
+    kontra_law::record(|| kontra_law::Application {
+        id: kontra_law::LawId("kontakt.solid_eq.v1"),
+        location: format!("{at}/solid_eq"),
+        input: format!("saved={saved:?}, shapes={shapes:?}"),
+        output: format!("{bands:?}"),
+    });
+    Some(ir::EffectKind::Eq(bands))
 }
 
 /// A filter: the kind, repeated (newer records put a flag byte before a
@@ -449,6 +460,7 @@ fn solid_eq(
 fn filter(
     public: &[u8],
     kind: i32,
+    at: &str,
     knobs: &mut Vec<crate::script_knobs::SlotKnob>,
 ) -> Option<ir::EffectKind> {
     let k = kind.to_le_bytes();
@@ -498,7 +510,14 @@ fn filter(
         (0.0, 0)
     };
     let (cutoff, resonance) = (f(at)?, f(at + 4)?);
-    let filter = crate::laws::filter(kind, cutoff, resonance, gain)?;
+    let result = crate::laws::filter(kind, cutoff, resonance, gain);
+    kontra_law::record(|| kontra_law::Application {
+        id: kontra_law::LawId("kontakt.filter.v1"),
+        location: format!("{at}/filter"),
+        input: format!("kind={kind}, cutoff={cutoff:?}, resonance={resonance:?}, gain={gain:?}"),
+        output: format!("{result:?}"),
+    });
+    let filter = result?;
     *knobs = crate::script_knobs::filter_knobs(kind, cutoff, resonance, gain);
     Some(ir::EffectKind::Filter(filter))
 }
