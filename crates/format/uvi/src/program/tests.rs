@@ -795,7 +795,7 @@ fn an_aux_eqs_gain_scale_connections_move_its_bands_live() {
               Enabled2="0" Type2="6" Gain2="-9"
               Enabled3="1" Type3="5" Slope3="1" Freq3="3139.5" Gain3="-6.5">
               <Mappers>
-                <ControlSignalMapper Name="Mapper 51" Min="0" Max="1">1,0 0,0 1,0</ControlSignalMapper>
+                <ControlSignalMapper Name="Mapper 51" Min="-1" Max="1">-1,0 0,0 1,0</ControlSignalMapper>
               </Mappers>
               <Connections>
                 <SignalConnection Ratio="1" Source="$Program/Script Event Modulation 8" Destination="GainScale" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
@@ -846,6 +846,9 @@ fn an_aux_eqs_gain_scale_connections_move_its_bands_live() {
     // The macro at 0.5 halves the bend's ratio.
     assert_eq!(terms[1].input.source, ir::Source::PitchBend);
     assert!((terms[1].amount - 0.15).abs() < 1e-6);
+    // GainScale adds the mapper's output as it is (0x141429650): a bipolar
+    // mapper is not re-centred, so the bend rests at 0.
+    assert_eq!(terms[1].input.table, [-1.0, 0.0, 1.0]);
     assert!(
         !out.diagnostics
             .iter()

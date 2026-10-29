@@ -5,7 +5,10 @@
 //! 6 peak. A first-order peak is RBJ's with `alpha = tan(Δω/2)`,
 //! `Δω = ω0·(2^(BW/2) − 2^(−BW/2))`; a second-order shelf has Q 1.
 //! Connections on GainScale add to it (0x141429650: `value + r·m`), so
-//! each moves every band's gain by its own `Gain` dB per unit.
+//! each moves every band's gain by its own `Gain` dB per unit. `m` is the
+//! mapper's output as it is: the additive law has no `(m + 1)/2`, so a
+//! bipolar mapper is not [`matrix::centred`] here (VWinds' PitchBend
+//! Mapper 51 rests at 0; its CC107 VibratoTimbreMapper runs 1 → −1).
 
 use kontra_format::Notes;
 use kontra_ir as ir;
