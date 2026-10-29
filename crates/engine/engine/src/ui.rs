@@ -79,8 +79,10 @@ impl Engine {
         self.ui.touch(self.running.slot, n);
     }
 
-    /// `$CONTROL_PAR_NUM_ITEMS` and `$CONTROL_PAR_SELECTED_ITEM_IDX` of a menu
-    /// whose value is `value`; `None` for other parameters.
+    /// `$CONTROL_PAR_NUM_ITEMS`, and `$CONTROL_PAR_SELECTED_ITEM_IDX` or
+    /// `$CONTROL_PAR_VALUE` (both the selected index, KSP manual
+    /// `add_menu_item`) of a menu whose value is `value`: the first entry
+    /// with it. `None` for other parameters.
     pub(crate) fn menu_par(&self, id: i32, par: i32, value: i32) -> Option<i32> {
         let controls = &self.script()?.controls;
         let items = self.menu(self.running.slot, id);
@@ -90,11 +92,13 @@ impl Engine {
         if par == controls.num_items_par {
             return i32::try_from(items.len()).ok();
         }
-        if par != controls.selected_item_par {
+        if par != controls.selected_item_par && par != controls.value_par {
             return None;
         }
+        // ponytail: for a value no entry has, Kontakt keeps the last
+        // selection (oracle, 2026-10-29); 0 until selections are tracked.
         let at = items.iter().position(|i| i.value == value);
-        Some(at.and_then(|n| i32::try_from(n).ok()).unwrap_or(-1))
+        Some(at.and_then(|n| i32::try_from(n).ok()).unwrap_or(0))
     }
 
     /// Answers the menu, control-text, look and keyboard actions; `None` for others.
@@ -104,7 +108,13 @@ impl Engine {
         let slot = self.running.slot;
         let n = self.control_index_in(slot, id);
         let look = self.script().map(|s| s.controls.look);
+        // A menu selects its first entry as it gets it (Kontakt 8.13 oracle).
+        let first = call.action == Action::AddMenuItem && self.menu(slot, id).is_empty();
         if let Some(value) = self.ui.call(slot, n, look.as_ref(), call) {
+            if first && !self.menu(slot, id).is_empty() {
+                let par = self.script().map_or(-1, |s| s.controls.value_par);
+                self.set_control_par(call.cells, id, par, 0);
+            }
             return Some(value);
         }
         let look = look?;
