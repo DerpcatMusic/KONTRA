@@ -33,9 +33,14 @@ pub struct StoreConfig {
 }
 
 impl StoreConfig {
-    /// 64 MiB of cache, frames up to 8 bytes (24-bit stereo uses 6).
+    /// 128 MiB of cache, frames up to 8 bytes (24-bit stereo uses 6). The
+    /// cache holds what every voice reads next: about 300 voices × (8192
+    /// frames ahead + a loop's crossfade partner + the pages just played) ×
+    /// 8 bytes, with room for the clock. At 64 MiB, 64 steps of 4-note chords
+    /// on Areia 16 Violins (309 voices) re-read 70% of their pages and missed
+    /// 34,566 frames; at 128 MiB, none. The OS commits pages as they're used.
     pub const DEFAULT: Self = Self {
-        cache_bytes: 64 << 20,
+        cache_bytes: 128 << 20,
         max_frame_bytes: 8,
         request_capacity: 4096,
     };
