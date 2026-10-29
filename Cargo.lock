@@ -2554,8 +2554,10 @@ name = "kontra-plugin"
 version = "0.0.0"
 dependencies = [
  "clap-sys",
+ "dirs",
  "kontra-align",
  "kontra-host",
+ "kontra-library",
  "kontra-protocol",
  "kontra-ui",
  "kontra-ui-model",

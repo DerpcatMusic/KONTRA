@@ -3,6 +3,7 @@
 
 #[cfg(feature = "align")]
 pub mod align;
+pub mod browser;
 pub mod instrument;
 pub mod perf_view;
 pub mod persist;

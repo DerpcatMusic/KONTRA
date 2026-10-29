@@ -64,6 +64,9 @@ pub struct Shared {
     /// The editor's keyboard into the rack, without the rack's lock.
     player: Mutex<Option<kontra_host::rack::Player>>,
     requests: Mutex<Vec<Request>>,
+    /// Opened on the first tick, so a plugin made and dropped by a host
+    /// scanning plug-ins never scans libraries.
+    browser: Mutex<Option<kontra_host::browser::Browser>>,
     /// The editor's copy of the rack, refreshed by [`Tick`].
     view: Mutex<editor::Snapshot>,
     dirty: std::sync::atomic::AtomicBool,
@@ -80,6 +83,10 @@ pub enum Request {
     },
     Restore(Saved),
     Ui(editor::Edit),
+    /// The browser's own actions: load a preset, star, rescan.
+    Browse(kontra_ui::app::Action),
+    /// A folder the player dropped, to scan for libraries.
+    AddRoot(std::path::PathBuf),
 }
 
 impl Shared {
@@ -123,6 +130,17 @@ impl KontraParams {
     }
 }
 
+/// The player's library browser, its prefs in the user's settings; tests
+/// keep nothing on disk.
+fn browse() -> kontra_host::browser::Browser {
+    let (config, cache) = if cfg!(test) {
+        (None, None)
+    } else {
+        (dirs::config_dir(), dirs::cache_dir())
+    };
+    kontra_host::browser::Browser::open(config.as_deref(), cache.as_deref())
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -156,6 +174,9 @@ impl BackgroundTask for Tick {
         };
         let requests = std::mem::take(&mut *lock(&p.shared.requests));
         let mut report = Vec::new();
+        let mut browser = lock(&p.shared.browser);
+        let browser = browser.get_or_insert_with(browse);
+        browser.poll();
         for r in requests {
             match r {
                 Request::Load { part, path } => {
@@ -173,12 +194,14 @@ impl BackgroundTask for Tick {
                     }
                 }
                 Request::Ui(edit) => editor::apply(rack, edit),
+                Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
+                Request::AddRoot(path) => browser.add_root(path),
             }
         }
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
         rack.tick();
-        lock(&p.shared.view).refresh(rack, report);
+        lock(&p.shared.view).refresh(rack, browser, report);
         p.shared
             .dirty
             .store(true, std::sync::atomic::Ordering::Release);

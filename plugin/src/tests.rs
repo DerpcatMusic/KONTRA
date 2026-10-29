@@ -429,3 +429,56 @@ fn a_library_control_moved_in_the_editor_reaches_its_script() {
     );
     println!("widget {widget}: {var} → {to} kept");
 }
+
+#[test]
+fn a_preset_picked_in_the_browser_loads_and_plays() {
+    if library("Una Corda Library/Instruments/Una Corda Felt.nki").is_none() {
+        return;
+    }
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    params
+        .shared
+        .request(crate::Request::AddRoot(PathBuf::from(KONTAKT)));
+    let t = std::time::Instant::now();
+    let found = loop {
+        Tick.run(&params);
+        let guard = crate::lock(&params.shared.browser);
+        let b = guard.as_ref().unwrap();
+        if !b.scanning() && !b.catalog.libraries.is_empty() {
+            let at = b.catalog.libraries.iter().enumerate().find_map(|(n, l)| {
+                let p = l
+                    .presets
+                    .iter()
+                    .position(|p| p.ends_with("Una Corda Felt.nki"))?;
+                Some((n, p))
+            });
+            break (at, b.catalog.libraries.len());
+        }
+        drop(guard);
+        assert!(t.elapsed().as_secs() < 300, "the scan never finished");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let scan = t.elapsed();
+    let ((library, preset), libraries) = (found.0.expect("Una Corda in the catalog"), found.1);
+    params
+        .shared
+        .request(crate::Request::Browse(kontra_ui::app::Action::Load {
+            library,
+            preset,
+        }));
+    Tick.run(&params);
+    let name = crate::lock(&params.shared.rack).as_ref().unwrap().parts()[0]
+        .as_ref()
+        .map(|p| p.name.clone());
+    let recent = crate::lock(&params.shared.browser)
+        .as_ref()
+        .unwrap()
+        .recent();
+    let rms = play(&params, &mut dsp);
+    println!(
+        "scan {scan:.1?}: {libraries} libraries; loaded {name:?}, rms {rms:.4}, recent {recent:?}"
+    );
+    assert!(name.is_some(), "nothing loaded");
+    assert_eq!(recent, [(library, preset)]);
+    assert!(rms > 1e-4, "silent: {rms}");
+}
