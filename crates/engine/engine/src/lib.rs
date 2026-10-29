@@ -29,6 +29,7 @@ mod params;
 mod pgs;
 mod queue;
 mod racks;
+mod recall;
 
 mod script;
 mod start;
@@ -69,6 +70,7 @@ pub use plan::{
     Zone,
 };
 pub use queue::Timed;
+pub use recall::{Recall, Saved};
 pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
 #[cfg(feature = "trace")]
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
@@ -186,6 +188,8 @@ pub struct Engine {
     /// Latest controller values on any channel, as scripts read them.
     cc_values: [u8; 130],
     last_message: Text,
+    /// What a recall of saved values does to the scripts.
+    recall: recall::Recall,
     /// Calls per action the engine does not implement yet, by action id.
     unhandled: Box<[u32]>,
     called: Box<[u32]>,
@@ -347,6 +351,7 @@ impl Engine {
             targets_scratch: Vec::with_capacity(capacity),
             cc_values: [0; 130],
             last_message: Text::EMPTY,
+            recall: recall::Recall::Restart,
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
             control_pars,
@@ -377,24 +382,7 @@ impl Engine {
             if let Some(init) = script.callbacks.init {
                 engine.run_callback(slot, init, Running::new(Kind::Init, None));
             }
-            let restore: Vec<_> = (script.restore.iter())
-                .map(|&(cell, value)| (cell, engine.saved_value(slot, cell, value)))
-                .collect();
-            if let Some(vm) = engine
-                .vms
-                .get_mut(usize::from(slot))
-                .and_then(Option::as_mut)
-            {
-                for (cell, value) in restore {
-                    vm.set_cell(cell as usize, value);
-                }
-                for &(cell, text) in &script.restore_texts {
-                    vm.set_text(cell as usize, text);
-                }
-            }
-            if let Some(changed) = script.callbacks.persistence_changed {
-                engine.run_callback(slot, changed, Running::new(Kind::Init, None));
-            }
+            engine.restore(slot, &script.restore, &script.restore_texts);
         }
         engine.rebuild_racks();
         engine.build_chains();

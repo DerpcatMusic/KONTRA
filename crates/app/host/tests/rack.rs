@@ -59,6 +59,8 @@ fn plan_of(store: &mut Store, level: f32) -> Plan {
 fn part(name: &str) -> Part {
     Part {
         path: None,
+        source: None,
+        recall: kontra_engine::Recall::Restart,
         name: name.into(),
         diagnostics: vec![],
         faces: vec![],
@@ -721,4 +723,74 @@ fn a_lua_state_restored_after_a_wait_saves_as_restored() {
     }
     rack.tick();
     assert_eq!(state(&rack), Some(saved[0].clone()));
+}
+
+/// An instrument read from "a.nki" whose one script keeps `$knob` and
+/// counts, in `$marker`, init (5) and each persistence-changed (+1); its
+/// snapshot type is `kind`, its saved values `saved`.
+fn snapshot_of(kind: u8, saved: &[&str]) -> kontra_engine::ir::Instrument {
+    use kontra_engine::ir;
+    let source = format!(
+        "on init
+            set_snapshot_type({kind})
+            declare ui_knob $knob (0, 127, 1)
+            make_persistent($knob)
+            declare $marker
+            make_persistent($marker)
+            $marker := 5
+        end on
+        on persistence_changed
+            $marker := $marker + 1
+        end on"
+    );
+    ir::Instrument {
+        source_path: Some("a.nki".into()),
+        scripts: vec![ir::Script {
+            name: "s".into(),
+            dialect: ir::Dialect::Ksp,
+            source,
+            saved: saved.iter().map(|&s| s.to_owned()).collect(),
+            data: Vec::new(),
+            links: Vec::new(),
+        }],
+        ..ir::Instrument::DEFAULT
+    }
+}
+
+/// Part 0's saved script values, as of a capture taken now.
+fn saved_now(rack: &mut Rack, audio: &mut RackAudio) -> Vec<String> {
+    rack.tick();
+    audio.process(BLOCK, &[]);
+    rack.tick();
+    rack.saved_scripts(0).concat()
+}
+
+/// KSP manual, `set_snapshot_type`: type 1 recalls without `on init` (the
+/// running script keeps its state), type 0 runs `on init` again; both run
+/// `on persistence_changed` after the values land. Neither reads or
+/// prepares the instrument again.
+#[test]
+fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
+    for (kind, marker, rebuilt) in [(1, "$marker 7", false), (0, "$marker 6", true)] {
+        let (mut rack, mut audio) = rack();
+        rack.load_ir(0, snapshot_of(kind, &[]), Some("a.nki".into()))
+            .unwrap();
+        audio.process(BLOCK, &[]);
+        let p = rack.parts()[0].as_ref().unwrap();
+        let (generation, plan) = (p.script.generation(), p.plan.clone().unwrap());
+        rack.load_ir(0, snapshot_of(kind, &["$knob 42"]), Some("b.nksn".into()))
+            .unwrap();
+        let saved = saved_now(&mut rack, &mut audio);
+        let p = rack.parts()[0].as_ref().unwrap();
+        assert!(
+            saved.contains(&"$knob 42".to_owned()),
+            "type {kind}: {saved:?}"
+        );
+        assert!(saved.contains(&marker.to_owned()), "type {kind}: {saved:?}");
+        assert_eq!(p.path.as_deref(), Some(std::path::Path::new("b.nksn")));
+        assert_eq!(p.script.generation() != generation, rebuilt, "type {kind}");
+        // The plan is kept or copied, never prepared again from the file.
+        let same = Arc::ptr_eq(p.plan.as_ref().unwrap(), &plan);
+        assert_eq!(same, !rebuilt, "type {kind}");
+    }
 }
