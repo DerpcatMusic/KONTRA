@@ -357,7 +357,7 @@ fn a_table_plays_its_cycle_at_the_step_and_morphs_by_position() {
             &key,
             Arc::new(MemSource::new(FMT, bytes)),
             frames,
-            &[0..frames],
+            std::slice::from_ref(&(0..frames)),
         )
         .unwrap();
     let play = |position| {
