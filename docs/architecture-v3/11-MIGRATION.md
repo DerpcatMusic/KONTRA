@@ -90,12 +90,19 @@ regressions, and every unsupported feature appears as a diagnostic.
 
 ## Phase 8: app and plugin
 
+v3 replaces v2 rather than moving it (fresh-engine decision, 2026-10-27).
+The `sampler-*` crates, `src/sound`, `src/ui` and v2's `Shared` are not
+moved into the new crates; they keep shipping as the root `kontakto`
+package until the release gate, then they are deleted.
+
 | PR | Does |
 |---|---|
-| 8.1 | `kontra-protocol` channels replace `Shared`'s 54 fields |
-| 8.2 | `app/host`, `app/library`, `app/align` from `src/` |
-| 8.3 | `app/ui` depends on protocol only; `xtask deps-check` enforces no engine edge |
-| 8.4 | `plugin/` thin shell; root crate becomes the plugin package only |
+| 8.1 | `kontra-protocol`: commands in, publications and retirements out (07-APP.md §2) |
+| 8.2 | `kontra-host` rack: N parts over `kontra-engine`, loads off the audio thread, MIDI channel routing, outputs, master, panic |
+| 8.3 | `app/library` and `app/align` written for v3 (browser data, presets, favourites, latency compensation) |
+| 8.4 | `app/ui` depends on protocol only; `xtask deps-check` enforces no engine edge |
+| 8.5 | `plugin/` (`kontra-plugin`, bundle "KONTRA v3"): moose shell over host + ui, parameters, latency, editor, state recall tested headless on real instruments; ships beside v2 |
+| 8.6 | Release gate; then v2 is deleted and `plugin/` becomes the KONTRA bundle |
 
 Gate: v1 UX parity checks (memory: v1 UX parity), every README target, and
 `xtask deps-check` with the final DAG.
