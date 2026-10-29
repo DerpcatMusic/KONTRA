@@ -34,6 +34,9 @@ struct PartView {
     /// its script changes it ([`kontra_host::view::View::revision`]).
     tree: Option<Arc<Interface>>,
     revision: u64,
+    /// Each group's sound, copied when an edit moves it
+    /// ([`kontra_host::sound::Sounds::revision`]).
+    sounds: (u64, Arc<Vec<app::Sound>>),
     name: String,
     /// Its library's name in the browser, if the browser lists it.
     library: String,
@@ -83,6 +86,10 @@ impl Snapshot {
                     Some(v) if v.revision == revision => v.tree.clone(),
                     _ => p.view.as_ref().map(|v| Arc::new(v.tree().clone())),
                 };
+                let sounds = match same {
+                    Some(v) if v.sounds.0 == p.sounds.revision => v.sounds.clone(),
+                    _ => (p.sounds.revision, Arc::new(sounds(&p.sounds))),
+                };
                 let library = match same {
                     Some(v) if !rescanned => v.library.clone(),
                     _ => (p.path.as_deref())
@@ -97,6 +104,7 @@ impl Snapshot {
                     path: p.path.clone(),
                     tree,
                     revision,
+                    sounds,
                     name: p.name.clone(),
                     library,
                     mix: p.mix,
@@ -165,14 +173,25 @@ impl Snapshot {
         for pictures in [&mut app.covers, &mut app.banners].into_iter().flatten() {
             pictures.poll();
         }
-        let shown = &mut shown.parts;
+        let Shown {
+            parts: shown,
+            sounds: sounds_shown,
+            ..
+        } = shown;
+        let heard = std::mem::take(sounds_shown);
         let mut old = std::mem::take(&mut app.parts);
         let parts = self.parts.iter().enumerate().map(|(n, p)| {
-            let old = old.get_mut(n);
+            let mut old = old.get_mut(n);
             let (open, tab) = old
                 .as_ref()
                 .map_or((true, Default::default()), |old| (old.open, old.tab));
             let now = (p.generation, p.revision);
+            let sound_now = (p.generation, p.sounds.0);
+            // The editor's own edit shows at once; the rack's copy once it moved.
+            let sounds = match old.as_mut() {
+                Some(old) if heard.get(n) == Some(&sound_now) => std::mem::take(&mut old.sounds),
+                _ => p.sounds.1.as_ref().clone(),
+            };
             let face = match old {
                 Some(old) if shown.get(n) == Some(&now) => old.face.take(),
                 // The script changed its look: a new tree, the same pictures.
@@ -199,6 +218,7 @@ impl Snapshot {
                 keys: (0, 127),
                 open,
                 tab,
+                sounds,
                 ..Part::default()
             }
         });
@@ -212,6 +232,8 @@ impl Snapshot {
             .iter()
             .map(|p| (p.generation, p.revision))
             .collect();
+        let heard = self.parts.iter().map(|p| (p.generation, p.sounds.0));
+        sounds_shown.extend(heard);
         app.level = f64::from(self.level);
         app.stats.cpu = f64::from(self.stats.load) * 100.0;
         app.stats.voices = self.stats.voices;
@@ -224,6 +246,8 @@ impl Snapshot {
 struct Shown {
     /// By part: its load and its interface's revision.
     parts: Vec<(u64, u64)>,
+    /// By part: its load and its sound's revision.
+    sounds: Vec<(u64, u64)>,
     browser: u64,
 }
 
@@ -418,9 +442,64 @@ pub fn apply(rack: &mut Rack, edit: Edit) {
         Action::Mute(_, on) => return rack.set_solo_mute(slot, solo, on),
         Action::Remove(_) => return rack.remove(slot),
         Action::Control { widget, value, .. } => return rack.control(slot, widget, value),
+        Action::Sound {
+            group,
+            param,
+            value,
+            ..
+        } => return rack.set_sound(slot, group, param_of(param), value),
         _ => return,
     }
     rack.set_mix(slot, m);
+}
+
+/// Each group's sound as the Sound tab draws it.
+fn sounds(s: &kontra_host::sound::Sounds) -> Vec<app::Sound> {
+    use kontra_host::sound::BandKind;
+    let filter = |b: kontra_host::sound::Band| app::Filter {
+        pass: match b.kind {
+            BandKind::Low => app::Pass::Low,
+            BandKind::High => app::Pass::High,
+            BandKind::Band => app::Pass::Band,
+            BandKind::Notch => app::Pass::Notch,
+            BandKind::Peak => app::Pass::Peak,
+            BandKind::LowShelf => app::Pass::LowShelf,
+            BandKind::HighShelf => app::Pass::HighShelf,
+        },
+        hz: b.hz,
+        q: b.q,
+        gain_db: b.gain_db,
+        poles: b.poles,
+    };
+    (0..s.len())
+        .map(|g| app::Sound {
+            envelope: s
+                .envelope(g)
+                .map(|[attack, hold, decay, sustain, release]| app::Envelope {
+                    attack,
+                    hold,
+                    decay,
+                    sustain,
+                    release,
+                }),
+            filters: s.bands(g).into_iter().map(filter).collect(),
+            ..app::Sound::default()
+        })
+        .collect()
+}
+
+fn param_of(p: app::Param) -> kontra_host::sound::Param {
+    use kontra_host::sound::Param as H;
+    match p {
+        app::Param::Attack => H::Attack,
+        app::Param::Hold => H::Hold,
+        app::Param::Decay => H::Decay,
+        app::Param::Sustain => H::Sustain,
+        app::Param::Release => H::Release,
+        app::Param::Hz(n) => H::Hz(n),
+        app::Param::Q(n) => H::Q(n),
+        app::Param::Gain(n) => H::Gain(n),
+    }
 }
 
 /// The rack part an action names, by its place in the editor's list.
@@ -433,7 +512,8 @@ fn part_of(action: &Action) -> Option<usize> {
         | Action::Solo(n, _)
         | Action::Mute(n, _)
         | Action::Remove(n)
-        | Action::Control { part: n, .. } => Some(n),
+        | Action::Control { part: n, .. }
+        | Action::Sound { part: n, .. } => Some(n),
         _ => None,
     }
 }
