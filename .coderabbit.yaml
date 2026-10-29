@@ -3,7 +3,7 @@
 language: en-US
 reviews:
   profile: assertive
-  request_changes_workflow: false
+  request_changes_workflow: true  # findings block until fixed or answered
   high_level_summary: true
   poem: false
   review_status: true
@@ -15,7 +15,7 @@ reviews:
     drafts: false
     auto_pause_after_reviewed_commits: 0  # the ruleset needs every push reviewed before merge
     base_branches:
-      - "v3"
+      - "main"
   path_filters:
     - "!Cargo.lock"
     - "!**/Cargo.lock"
@@ -25,16 +25,22 @@ reviews:
     - "!**/vectors/**"
     - "!.claude/skills/beautiful-rust/references/**"
   path_instructions:
-    - path: "crates/**/*.rs"
+    - path: "**/*.rs"
       instructions: |
-        KONTRA is a real-time audio sampler. Apply docs/architecture-v3/README.md (the ten rules) and the beautiful-rust skill.
+        KONTRA is a real-time audio sampler. Apply docs/architecture-v3/README.md (the ten rules), docs/architecture-v3/VISION.md (the design test) and the beautiful-rust skill (.claude/skills/beautiful-rust/SKILL.md): naming, error types, ownership, iterators over indexing, small functions, docs on public items.
         - Audio-thread code (render, process, voice, dsp, engine, stream cursors): flag any allocation, lock (Mutex/RwLock),
           syscall, logging, unbounded loop, or panic path (unwrap/expect/index/slice/divide-by-zero). These are dropouts.
         - Flag new `#[path]`, `#[allow(...)]` without a reason comment, `cfg(test)` hooks inside production functions,
-          vendor names (Kontakt, UVI, NI) outside `format-*`/`sampler-kontakt`/`sampler-uvi`, and bool flags where an enum fits.
+          vendor names (Kontakt, UVI, NI) outside `crates/format/**`, `crates/script/**` and `crates/base/law`, and bool flags where an enum fits.
         - KISS/YAGNI: a second implementation of an existing DSP class, a trait with one impl, or config for a constant is a defect
           unless the PR cites a measurement that needs it.
         - Moves must be pure moves; behaviour changes belong in a separate PR.
+        - Decode the what, design the how: code reverse-engineered from a vendor binary must match only observable
+          behaviour (audible, visible, script-visible). Flag mirrored vendor structure: classes, flags, internal ids,
+          block-rate steps or fixed buffers where sample-accurate, per-voice or allocation-free is possible.
+        - Push for the stronger design: question any approach a cleaner, more general or more future-proof one would
+          replace (per-note expression, per-voice modulation, sample accuracy, one implementation for every format).
+          Check the PR's "Vision check" answers "Better?" with substance; flag it when missing.
     - path: "crates/dsp/**"
       instructions: |
         One class per DSP type (docs/architecture-v3/03-DSP.md). Vendor differences are laws/tables passed in, not new classes.
@@ -68,6 +74,7 @@ knowledge_base:
     enabled: true
     filePatterns:
       - "docs/architecture-v3/README.md"
+      - "docs/architecture-v3/VISION.md"
       - "docs/architecture-v3/12-WORKFLOW.md"
       - ".claude/skills/beautiful-rust/SKILL.md"
       - "CONTRIBUTING.md"
