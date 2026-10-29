@@ -263,6 +263,15 @@ fn shaped(
     Some(ir::Source::Shaped(n))
 }
 
+fn record_lag(group: usize, route: usize, target: usize, lag: i16, tau: f32) {
+    kontra_law::record(|| kontra_law::Application {
+        id: kontra_law::LawId("kontakt.route_tau_ms.v1"),
+        location: format!("groups/{group}/routes/{route}/targets/{target}/tau_ms"),
+        input: format!("lag_ms={lag}"),
+        output: format!("{tau:?}"),
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,13 +291,4 @@ mod tests {
             assert!((actual - native).abs() < 0.035, "{actual} vs {native}");
         }
     }
-}
-
-fn record_lag(group: usize, route: usize, target: usize, lag: i16, tau: f32) {
-    kontra_law::record(|| kontra_law::Application {
-        id: kontra_law::LawId("kontakt.route_tau_ms.v1"),
-        location: format!("groups/{group}/routes/{route}/targets/{target}/tau_ms"),
-        input: format!("lag_ms={lag}"),
-        output: format!("{tau:?}"),
-    });
 }
