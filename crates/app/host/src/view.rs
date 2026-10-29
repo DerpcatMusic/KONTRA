@@ -6,8 +6,9 @@
 
 use std::cell::RefCell;
 use std::path::Path;
+use std::sync::Arc;
 
-use kontra_engine::{ControlLook, Engine, MenuItem, Page, Text, WidgetLook};
+use kontra_engine::{ControlLook, Engine, FIRST_FONT, MenuItem, Page, Text, WidgetLook};
 use kontra_ui_model as model;
 
 use crate::ui::lua::Page as _;
@@ -185,6 +186,9 @@ pub struct LookFrame {
     widgets: Box<[Option<WidgetLook>]>,
     reads: Vec<u32>,
     texts: Box<[(u32, bool, Text)]>,
+    /// The script's bitmap fonts from [`FIRST_FONT`] on; `on init` names
+    /// them all, so they are copied once.
+    fonts: Arc<[String]>,
     state: Filled,
 }
 
@@ -238,6 +242,9 @@ impl LookFrame {
             widgets: Box::default(),
             reads: Vec::new(),
             texts: Box::default(),
+            fonts: (FIRST_FONT..)
+                .map_while(|id| now.font(slot, id).map(str::to_owned))
+                .collect(),
             state: Filled::No,
         })
     }
@@ -257,6 +264,7 @@ impl LookFrame {
             widgets: vec![None; tree.widgets.len()].into(),
             reads: readable(tree),
             texts: labels.collect(),
+            fonts: Arc::from([]),
             state: Filled::No,
         })
     }
@@ -338,6 +346,7 @@ impl LookFrame {
             widgets: self.widgets.clone(),
             reads: self.reads.clone(),
             texts: self.texts.clone(),
+            fonts: Arc::clone(&self.fonts),
             state: Filled::No,
             ..*self
         })
@@ -395,5 +404,10 @@ impl Looks for LookFrame {
 
     fn page(&self, slot: u8) -> Option<&Page> {
         self.page.as_ref().filter(|_| slot == self.slot)
+    }
+
+    fn font(&self, slot: u8, id: i32) -> Option<&str> {
+        let n = usize::try_from(id.checked_sub(FIRST_FONT)?).ok()?;
+        (self.fonts.get(n).filter(|_| slot == self.slot)).map(String::as_str)
     }
 }

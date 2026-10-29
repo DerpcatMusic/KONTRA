@@ -82,6 +82,8 @@ pub trait Looks {
     fn control_look(&self, slot: u8, id: i32) -> Option<ControlLook<'_>>;
     fn script_cell_in(&self, slot: u8, n: usize) -> Option<i64>;
     fn page(&self, slot: u8) -> Option<&Page>;
+    /// The bitmap font behind font id `id` (`get_font_id`), by picture name.
+    fn font(&self, slot: u8, id: i32) -> Option<&str>;
 }
 
 impl Looks for Engine {
@@ -95,6 +97,10 @@ impl Looks for Engine {
 
     fn page(&self, slot: u8) -> Option<&Page> {
         Engine::page(self, slot)
+    }
+
+    fn font(&self, slot: u8, id: i32) -> Option<&str> {
+        Engine::font(self, slot, id)
     }
 }
 
@@ -221,7 +227,29 @@ impl Builder<'_> {
         Some(a)
     }
 
-    fn style(&mut self, font: i32, align: i32) -> ui::StyleRef {
+    /// The style of font id `font`: a factory font, or the bitmap font
+    /// `bitmap` names (a `get_font_id` picture).
+    /// The bitmap font asset of picture `name`.
+    fn font_asset(&mut self, name: &str) -> ui::AssetRef {
+        let path = picture_path(name);
+        if let Some(&a) = self.assets.get(&path) {
+            return a;
+        }
+        let a = ui::AssetRef(self.ui.assets.len());
+        let kind = ui::AssetKind::BitmapFont;
+        self.ui.assets.push(ui::Asset {
+            path: path.clone(),
+            kind,
+        });
+        self.assets.insert(path, a);
+        a
+    }
+
+    fn style(&mut self, font: i32, align: i32, bitmap: Option<&str>) -> ui::StyleRef {
+        if let Some(&s) = self.styles.get(&(font, align)) {
+            return s;
+        }
+        let bitmap = bitmap.map(|name| self.font_asset(name));
         let styles = &mut self.ui.styles;
         *self.styles.entry((font, align)).or_insert_with(|| {
             // Kontakt's factory fonts carry their own colour and size, from
@@ -236,7 +264,7 @@ impl Builder<'_> {
                 .ok()
                 .and_then(|f| COLORS.get(f).map(|&c| (f, c)));
             styles.push(ui::TextStyle {
-                font: ui::Font::Stock(font),
+                font: bitmap.map_or(ui::Font::Stock(font), ui::Font::Bitmap),
                 size: factory
                     .filter(|(f, _)| matches!(f, 1 | 5 | 7 | 16 | 17 | 20))
                     .map(|_| 13.),

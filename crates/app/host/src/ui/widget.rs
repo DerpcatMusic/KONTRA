@@ -251,13 +251,14 @@ pub(super) fn widget(
     let font = p.int("$CONTROL_PAR_FONT_TYPE");
     let align = p.int("$CONTROL_PAR_TEXT_ALIGNMENT");
     if font.is_some() || align.is_some() {
-        w.style = Some(bld.style(font.unwrap_or(0), align.unwrap_or(1)));
+        let font = font.unwrap_or(0);
+        w.style = Some(bld.style(font, align.unwrap_or(1), engine.font(slot, font)));
     }
     for (style, par) in w.state_styles.iter_mut().zip(STATE_FONTS) {
         *style = p
             .int(par)
             .filter(|&font| font >= 0)
-            .map(|font| bld.style(font, align.unwrap_or(1)));
+            .map(|font| bld.style(font, align.unwrap_or(1), engine.font(slot, font)));
     }
     if let Some(asset) = p.text("$CONTROL_PAR_PICTURE").and_then(|n| bld.asset(n)) {
         let role = match kind {

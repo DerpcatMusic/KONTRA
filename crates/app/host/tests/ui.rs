@@ -239,3 +239,28 @@ fn a_page_the_script_moves_after_init_refreshes_without_rebuilding_widgets() {
 fn names_of(ws: &[ui::WidgetRef], ui: &ui::Interface) -> Vec<String> {
     ws.iter().map(|w| ui.widgets[w.0].name.clone()).collect()
 }
+
+/// A font from `get_font_id` is the bitmap font of its picture; a factory
+/// font stays stock.
+#[test]
+fn a_picture_font_id_is_a_bitmap_font() {
+    let ui = tree(
+        "on init
+            declare ui_label $a (1, 1)
+            set_control_par(get_ui_id($a), $CONTROL_PAR_FONT_TYPE, get_font_id(\"digits\"))
+            declare ui_label $b (1, 1)
+            set_control_par(get_ui_id($b), $CONTROL_PAR_FONT_TYPE, 4)
+        end on",
+    );
+    let font = |name| {
+        let style = widget(&ui, name).style.unwrap();
+        ui.styles[style.0].font.clone()
+    };
+    let ui::Font::Bitmap(asset) = font("$a") else {
+        panic!("{:?}", font("$a"));
+    };
+    let asset = &ui.assets[asset.0];
+    assert_eq!(asset.path, "Resources/pictures/digits.png");
+    assert_eq!(asset.kind, ui::AssetKind::BitmapFont);
+    assert_eq!(font("$b"), ui::Font::Stock(4));
+}
