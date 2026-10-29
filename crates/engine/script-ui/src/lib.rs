@@ -139,6 +139,9 @@ pub struct Store {
     // ponytail: only the last click is kept, so another control reads its
     // keys as 0; per control if a library reads keys of an earlier click.
     click: Option<(u8, usize, [bool; 3], u32)>,
+    /// That click's cell, until the control write it came with takes it: a
+    /// later write from elsewhere (MIDI learn, a host) sets the first cell.
+    pending: Option<(u8, usize, u32)>,
 }
 
 /// One control as the script left it: what the host builds its widget from.
@@ -178,6 +181,7 @@ impl Store {
             generations: controls.map(|n| vec![0; n].into()).collect(),
             fonts: Vec::with_capacity(64),
             click: None,
+            pending: None,
         }
     }
 
@@ -261,6 +265,7 @@ impl Store {
     /// script `slot` holding `keys` (`[shift, alt, control]`).
     pub fn click(&mut self, slot: u8, n: Option<usize>, keys: [bool; 3], cell: u32) {
         self.click = n.map(|n| (slot, n, keys, cell));
+        self.pending = n.map(|n| (slot, n, cell));
     }
 
     /// `$NI_CONTROL_PAR_IDX`: the cell of script `slot`'s last click (the
@@ -272,11 +277,14 @@ impl Store {
             .map_or(0, |(.., cell)| cell)
     }
 
-    /// The cell last clicked in control `n` of script `slot` (0 when the
-    /// last click was elsewhere), if inside its `len` cells (a table's; 0 is one).
-    #[must_use]
-    pub fn click_cell(&self, slot: u8, n: Option<usize>, len: u32) -> Option<u32> {
-        let clicked = self.click.filter(|&(s, c, ..)| s == slot && Some(c) == n);
+    /// Takes the cell just clicked in control `n` of script `slot` for its
+    /// write (0 for a write with no click), if inside its `len` cells (a
+    /// table's; 0 is one).
+    pub fn take_cell(&mut self, slot: u8, n: Option<usize>, len: u32) -> Option<u32> {
+        let clicked = self
+            .pending
+            .take()
+            .filter(|&(s, c, _)| s == slot && Some(c) == n);
         Some(clicked.map_or(0, |(.., cell)| cell)).filter(|&cell| cell < len.max(1))
     }
 

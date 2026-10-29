@@ -2804,6 +2804,9 @@ fn a_table_click_sets_its_cell_and_names_it() {
     e.set_click(0, id, [false; 3], 2);
     e.set_control(0, id, 70);
     assert_eq!(e.last_message(), "2,700");
+    // A write with no click of its own (MIDI learn) sets the first cell.
+    e.set_control(0, id, 30);
+    assert_eq!(e.last_message(), "2,7030");
 }
 
 /// A click's modifier keys read back as `$CONTROL_PAR_KEY_SHIFT/ALT/CONTROL`

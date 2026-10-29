@@ -124,14 +124,19 @@ fn range(kind: &Kind) -> Option<model::Range> {
     }
 }
 
-/// `v` inside `range`, on its step (still inside when the top is off it).
+/// `v` inside `range`, on its step grid.
 fn snap(range: model::Range, v: f64) -> f64 {
     let (lo, hi) = (range.min.min(range.max), range.max.max(range.min));
     let v = v.clamp(lo, hi);
-    range
-        .step
-        .filter(|s| *s > 0.)
-        .map_or(v, |s| ((v / s).round() * s).clamp(lo, hi))
+    range.step.filter(|s| *s > 0.).map_or(v, |s| {
+        // The nearest grid point inside: a top off the grid snaps below it.
+        let (first, last) = ((lo / s).ceil(), (hi / s).floor());
+        if first > last {
+            v
+        } else {
+            (v / s).round().clamp(first, last) * s
+        }
+    })
 }
 
 /// How far one arrow key moves a control: a value edit by its step, or
