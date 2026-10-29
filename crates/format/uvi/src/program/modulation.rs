@@ -27,6 +27,13 @@ impl<L: Library> Translator<'_, '_, L> {
         let Some(lfo) = source_node(self.program, connection) else {
             return;
         };
+        // ponytail: an Intensity scales the wave around 0, a unipolar LFO's
+        // depth its `m`; carried when a library routes one (none does).
+        if lfo.has_tag_name("LFO") && !bipolar(lfo) {
+            self.notes
+                .add(ir::Impact::Audible, "unipolar LFO depth route", "");
+            return;
+        }
         let owner = lfo.tag_name().name();
         let depths = lfo
             .children()
@@ -185,8 +192,9 @@ pub(super) enum Timed {
     Steps(ir::Lfo, Vec<f32>),
     /// A source read through the connection's mapper ([`matrix::transfer`]).
     Mapped(ir::Transfer),
-    /// An LFO its routes reach through a delay and rise ([`rising`]).
-    Rising(ir::Lfo, ir::Breakpoints),
+    /// An LFO its routes reach through a delay and rise ([`rising`]), read
+    /// through a table unless it is empty.
+    Rising(ir::Lfo, ir::Breakpoints, Vec<f32>),
 }
 
 /// The route a connection on `owner`'s `destination` makes, adding `Ratio`
@@ -269,12 +277,17 @@ pub(super) fn reach(
                     timed: Some(timed),
                     ..fixed(ir::Source::Constant)
                 }
+            } else if let Some(steps) = unipolar(node, sign < 0.0) {
+                Route {
+                    timed: Some(steps?),
+                    ..fixed(ir::Source::Constant)
+                }
             } else {
                 let (lfo, depth, rise) = rising(node)?;
                 Route {
                     source: ir::Source::Lfo(0),
                     timed: Some(match rise {
-                        Some(rise) => Timed::Rising(lfo, rise),
+                        Some(rise) => Timed::Rising(lfo, rise, Vec::new()),
                         None => Timed::Lfo(lfo),
                     }),
                     unit: sign * depth,
@@ -304,11 +317,13 @@ pub(super) fn reach(
 }
 
 /// A connection on a keygroup's `Gain`, which scales it by `1 − r + r·x`,
-/// or `1 + r·x` below zero ([`ir::Curve::Signed`]; UVIWorkstation
-/// 0x141429a80: the source enters at `(m + 1)/2`, `r` clamped to ±1). An
-/// LFO's own depth `d` is inside `m`, so it enters through `[(1 − d)/2,
-/// (1 + d)/2]`. Not the amplitude DAHDSR ([`Translator::envelope`]) nor a
-/// rising LFO (its rise scales `m`, not the ratio).
+/// or `1 + r·x` below zero ([`ir::Curve::Signed`], `r` clamped to ±1;
+/// UVIWorkstation 0x141429a80, its constants −1 at 0x141cfac24 and 0.5 at
+/// 0x141cfaa20). A bipolar source enters at `x = (m + 1)/2` (0x141429b19 on,
+/// per sample at 0x141429e30), a unipolar one at `x = m` (0x14142a3e8). An
+/// LFO's own depth `d` is inside `m` (0x1410f9b11), so a bipolar LFO enters
+/// through `[(1 − d)/2, (1 + d)/2]` and rests at `1 − |r|/2` (AO Meadows:
+/// −6 dB with the wheel down). Not the amplitude DAHDSR ([`Translator::envelope`]).
 pub(super) fn gain_route(program: Node, connection: Node) -> Option<Route> {
     if source_node(program, connection).is_some_and(|n| n.has_tag_name("DAHDSR")) {
         return None;
@@ -319,21 +334,19 @@ pub(super) fn gain_route(program: Node, connection: Node) -> Option<Route> {
 /// `r` for a destination the connection law scales by `1 − r + r·x`, or
 /// `1 + r·x` below zero ([`ir::Curve::Signed`], `r` clamped to ±1): an LFO's
 /// own depth `d` is inside the source, so it enters through `[(1 − d)/2,
-/// (1 + d)/2]`. Not a rising LFO (its rise scales the source, not the ratio).
+/// (1 + d)/2]`; a rise scales the LFO under that table, so the source is
+/// `(1 + ρ·d·w)/2` (0x1410f9767).
 pub(super) fn factor(mut r: Route) -> Option<Route> {
     r.ratio = r.ratio.clamp(-1.0, 1.0);
-    // ponytail: a rise done within 5 ms (AO Meadows: 3.1 ms on a 0.5-beat
-    // tremolo) is read as none; carry it under an Intensity if one is longer.
-    if let Some(Timed::Rising(lfo, rise)) = &r.timed
-        && rise.points.iter().map(|p| p.ms).sum::<f32>() <= 5.0
-    {
-        r.timed = Some(Timed::Lfo(*lfo));
-    }
+    let d = r.unit;
+    let table = vec![(1.0 - d) / 2.0, (1.0 + d) / 2.0];
     match r.timed.take() {
-        Some(Timed::Rising(..)) => return None,
+        Some(Timed::Rising(lfo, rise, t)) if t.is_empty() => {
+            r.timed = Some(Timed::Rising(lfo, rise, table));
+            r.unit = 1.0;
+        }
         Some(Timed::Lfo(lfo)) => {
-            let d = r.unit;
-            r.timed = Some(Timed::Steps(lfo, vec![(1.0 - d) / 2.0, (1.0 + d) / 2.0]));
+            r.timed = Some(Timed::Steps(lfo, table));
             r.unit = 1.0;
         }
         timed => r.timed = timed,
@@ -398,7 +411,7 @@ pub(super) fn group_source(
     match timed {
         None => source,
         Some(Timed::Lfo(lfo)) => ir::Source::Lfo(index_of(&mut group.lfos, lfo)),
-        Some(Timed::Rising(lfo, rise)) => {
+        Some(Timed::Rising(lfo, rise, table)) => {
             let of = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
             let source = ir::Source::Envelope(index_of(&mut group.envelopes, rise));
             let kind = ir::ModKind::Intensity {
@@ -415,7 +428,12 @@ pub(super) fn group_source(
                     kind,
                 });
             }
-            of
+            if table.is_empty() {
+                of
+            } else {
+                let t = ir::Transfer { source: of, table };
+                ir::Source::Shaped(index_of(&mut group.shapers, t))
+            }
         }
         Some(Timed::Envelope(e)) => ir::Source::Envelope(index_of(&mut group.envelopes, e)),
         Some(Timed::Steps(lfo, table)) => {
@@ -434,7 +452,30 @@ pub(super) fn group_source(
 /// lag on the shape; AO's are under 25 ms on cycles of a beat or more).
 pub(super) fn lfo(node: Node) -> Option<(ir::Lfo, f32)> {
     let still = !flag(node, "DelayTime") && !flag(node, "RiseTime");
-    still.then(|| shape(node)).flatten()
+    (still && bipolar(node)).then(|| shape(node)).flatten()
+}
+
+fn bipolar(node: Node) -> bool {
+    num(node, "Bipolar", 1.0).is_ok_and(|b| b != 0.0)
+}
+
+/// `None` for a bipolar LFO, else what the route reads of a unipolar one:
+/// the LFO and a table over its wave giving `m = (w + 1)·d/2` (process
+/// 0x1410f9b50, `Depth` `d`). A route takes `m` itself, inverted `1 − m`
+/// (0x141429a80). ponytail: none with a delay or rise (it holds the wave
+/// at −1, then pulls it up from there: 0x1410f8ff0, 0x1410f98a0), which no
+/// library routes; carry it when one does.
+fn unipolar(node: Node, inverted: bool) -> Option<Option<Timed>> {
+    if bipolar(node) || !node.has_tag_name("LFO") {
+        return None;
+    }
+    let still = !flag(node, "DelayTime") && !flag(node, "RiseTime");
+    Some(still.then(|| shape(node)).flatten().map(|(lfo, d)| {
+        // A negative depth is a rising saw read backwards ([`shape`]).
+        let flip = |v: f32| if inverted { 1.0 - v } else { v };
+        let (lo, hi) = if d < 0.0 { (-d, 0.0) } else { (0.0, d) };
+        Timed::Steps(lfo, vec![flip(lo), flip(hi)])
+    }))
 }
 
 /// [`lfo`], and for one with a `DelayTime` or `RiseTime` the gain its routes
@@ -445,6 +486,7 @@ pub(super) fn lfo(node: Node) -> Option<(ir::Lfo, f32)> {
 /// shift depends on the tempo). ponytail: an LFO without a delay alike in
 /// every other way shares the delayed one's copy and its rise.
 fn rising(node: Node) -> Option<(ir::Lfo, f32, Option<ir::Breakpoints>)> {
+    bipolar(node).then_some(())?;
     let (mut lfo, depth) = shape(node)?;
     let seconds = |name| num(node, name, 0.0).ok().map(|t| t.clamp(0.0, 30.0) as f32);
     let (delay, rise) = (seconds("DelayTime")?, seconds("RiseTime")?);
@@ -475,7 +517,7 @@ fn rising(node: Node) -> Option<(ir::Lfo, f32, Option<ir::Breakpoints>)> {
 /// [`lfo`] whatever its delay and rise.
 fn shape(node: Node) -> Option<(ir::Lfo, f32)> {
     let unset = |name| !flag(node, name);
-    if flag(node, "Bypass") || !unset("ManualTrigger") || num(node, "Bipolar", 1.0).ok()? != 1.0 {
+    if flag(node, "Bypass") || !unset("ManualTrigger") {
         return None;
     }
     let (wave, sign) = if node.has_tag_name("LFO") {

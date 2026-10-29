@@ -1213,3 +1213,94 @@ fn an_effect_on_an_aux_no_send_reaches_is_latent() {
         );
     }
 }
+
+#[test]
+fn a_unipolar_lfo_scales_a_keygroups_gain_by_its_own_m() {
+    // `m = (w + 1)·d/2` takes the plain law; inverted `1 − m`; a rising saw
+    // runs the table backwards. Its depth routes are reported.
+    let xml = r#"<Program Gain="1">
+      <Modulators>
+        <LFO Name="LFO 1" Bypass="0" SyncToHost="0" DelayTime="0" RiseTime="0" Freq="2" Depth="0.5" Phase="0" WaveFormType="0" Retrigger="1" Bipolar="0">
+          <Connections>
+            <SignalConnection Ratio="1" Source="@MIDI CC 1" Destination="Depth" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+        </LFO>
+        <LFO Name="LFO 2" Bypass="0" SyncToHost="0" DelayTime="0" RiseTime="0" Freq="2" Depth="0.25" Phase="0" WaveFormType="3" Retrigger="1" Bipolar="0"/>
+      </Modulators>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Connections>
+            <SignalConnection Ratio="-1" Source="$Program/LFO 1" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            <SignalConnection Ratio="0.5" Source="$Program/LFO 1" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="1"/>
+            <SignalConnection Ratio="0.5" Source="$Program/LFO 2" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    let tables: Vec<_> = g
+        .shapers
+        .iter()
+        .map(|t| (t.source, t.table.clone()))
+        .collect();
+    assert_eq!(
+        tables,
+        [
+            (ir::Source::Lfo(0), vec![0.0, 0.5]),
+            (ir::Source::Lfo(0), vec![1.0, 0.5]),
+            (ir::Source::Lfo(1), vec![0.25, 0.0]),
+        ]
+    );
+    // At rest (wave −1) the first route leaves the gain alone: `1 + r·0`.
+    assert!((ir::Curve::Signed.gain(-1.0, tables[0].1[0]) - 1.0).abs() < 1e-6);
+    assert!(
+        !g.mods
+            .iter()
+            .any(|m| matches!(m.kind, ir::ModKind::Intensity { .. }))
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .any(|d| d.feature == "unipolar LFO depth route")
+    );
+}
+
+#[test]
+fn a_rising_lfo_scales_a_keygroups_gain_through_its_rise() {
+    // The rise scales the wave under the gain's table: `(1 + ρ·d·w)/2`.
+    let xml = r#"<Program Gain="1">
+      <Modulators>
+        <LFO Name="LFO 1" Bypass="0" SyncToHost="0" DelayTime="0" RiseTime="0.5" Freq="2" Depth="0.5" Phase="0" WaveFormType="0" Retrigger="1" Bipolar="1"/>
+      </Modulators>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Connections>
+            <SignalConnection Ratio="-1" Source="$Program/LFO 1" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    assert_eq!(g.shapers[0].source, ir::Source::Lfo(0));
+    assert_eq!(g.shapers[0].table, [0.25, 0.75]);
+    assert_eq!(
+        g.envelopes[0].points.last().map(|p| (p.ms, p.level)),
+        Some((500.0, 1.0))
+    );
+    let kinds: Vec<_> = g.mods.iter().map(|m| m.kind).collect();
+    assert!(kinds.contains(&ir::ModKind::Intensity {
+        source: ir::Source::Envelope(0),
+        of: ir::Source::Lfo(0),
+        depth: 1.0,
+    }));
+    assert!(kinds.iter().any(|k| matches!(
+        k,
+        ir::ModKind::Volume { source: ir::Source::Shaped(0), intensity, .. } if *intensity == -1.0
+    )));
+}
