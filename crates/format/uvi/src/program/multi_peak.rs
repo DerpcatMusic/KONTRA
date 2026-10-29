@@ -38,7 +38,7 @@ pub(super) fn peak(s: f32, t: f32, w: f32, q: f32, width: f32) -> f32 {
         static PEAKS: RefCell<HashMap<[u32; 5], f32>> = RefCell::new(HashMap::new());
     }
     let key = [s, t, w, q, width].map(f32::to_bits);
-    let wave = PEAKS.with_borrow_mut(|peaks| {
+    PEAKS.with_borrow_mut(|peaks| {
         *peaks.entry(key).or_insert_with(|| {
             let a = extrema(4.0 * (td + wd));
             let b = extrema(4.0 * (wd - td));
@@ -58,6 +58,5 @@ pub(super) fn peak(s: f32, t: f32, w: f32, q: f32, width: f32) -> f32 {
             .map(|p| at(p).abs())
             .fold(0.0, f64::max) as f32
         })
-    });
-    wave
+    })
 }
