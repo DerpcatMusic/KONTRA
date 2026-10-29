@@ -83,3 +83,52 @@ mod tests {
         assert!(midi.windows(3).any(|w| w == [0x90, 60, 100]));
     }
 }
+
+#[cfg(test)]
+mod roundtrip_tests {
+    use super::*;
+    #[test]
+    fn midi_round_trip_keeps_every_event_at_its_source_frame() {
+        let events = crate::scenario::user();
+        let midi = write(&events).unwrap();
+        let data = &midi[22..];
+        let mut at = 7usize; // initial tempo meta event
+        let mut frame = 0u64;
+        let mut decoded = Vec::new();
+        loop {
+            let mut delta = 0u64;
+            loop {
+                let byte = data[at];
+                at += 1;
+                delta = (delta << 7) | u64::from(byte & 0x7f);
+                if byte & 0x80 == 0 {
+                    break;
+                }
+            }
+            frame += delta;
+            let status = data[at];
+            at += 1;
+            if status == 0xff {
+                break;
+            }
+            let a = data[at];
+            let b = data[at + 1];
+            at += 2;
+            decoded.push((frame, status, a, b));
+        }
+        let expected: Vec<_> = events
+            .iter()
+            .map(|e| match e.event {
+                Event::NoteOn { note, velocity, .. } => {
+                    (e.frame, 0x90, note.key, (velocity * 127.0).round() as u8)
+                }
+                Event::NoteOff(note) => (e.frame, 0x80, note.key as u8, 0),
+                Event::Ump([word, _]) => {
+                    (e.frame, (word >> 16) as u8, (word >> 8) as u8, word as u8)
+                }
+                _ => panic!("unexpected scenario event"),
+            })
+            .collect();
+        assert_eq!(decoded, expected);
+    }
+}

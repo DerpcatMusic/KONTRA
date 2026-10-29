@@ -44,10 +44,10 @@ def metrics(audio, rate, events, shift):
         frame = int(event["frame"] + shift)
         lo, hi = max(0, frame - radius), min(audio.shape[1], frame + radius)
         if hi - lo < 3:
-            bursts.append({"frame": event["frame"], "energy": None})
+            bursts.append({"frame": event["frame"], "event": event["event"], "energy": None})
             continue
         d2 = np.diff(audio[:, lo:hi], n=2, axis=1)
-        bursts.append({"frame": event["frame"], "energy": float(np.square(d2).sum())})
+        bursts.append({"frame": event["frame"], "event": event["event"], "energy": float(np.square(d2).sum())})
     return {"peak": float(np.abs(audio).max()),
             "clipped_samples": int(np.count_nonzero(np.abs(audio) > 1.0)),
             "max_sample_jump": float(np.abs(diff).max()) if diff.size else 0.0,
@@ -76,7 +76,7 @@ def main():
             "clipped_samples": native_metrics["clipped_samples"] - v3_metrics["clipped_samples"],
             "max_sample_jump": delta(native_metrics["max_sample_jump"], v3_metrics["max_sample_jump"]),
             "octave_band_rms_db": [delta(a, b) for a, b in zip(native_metrics["octave_band_rms_dbfs"], v3_metrics["octave_band_rms_dbfs"])],
-            "cc_hf_bursts": [{"frame": a["frame"], "energy": delta(a["energy"], b["energy"])}
+            "cc_hf_bursts": [{"frame": a["frame"], "event": a["event"], "energy": delta(a["energy"], b["energy"])}
                              for a, b in zip(native_metrics["cc_hf_bursts"], v3_metrics["cc_hf_bursts"])]}
     print(json.dumps({"status": "ok", "comparison": row,
         "native_metrics": native_metrics, "v3_metrics": v3_metrics, "native_minus_v3": diff,
