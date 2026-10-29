@@ -2485,6 +2485,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kontra-inspect"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "kontra-engine",
+ "kontra-host",
+ "kontra-stream",
+ "serde_json",
+]
+
+[[package]]
 name = "kontra-ir"
 version = "0.0.0"
 dependencies = [
