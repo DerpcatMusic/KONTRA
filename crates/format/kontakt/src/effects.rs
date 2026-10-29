@@ -304,7 +304,7 @@ fn slot_effect(
             })
         }
         0x17 => sends(&public),
-        0x44 => solid_eq(object.version, &public, at, notes),
+        0x44 => solid_eq(object.version, &public, at, notes, knobs),
         0x16 => impulses
             .convolution(object.version, &public, at, notes)
             .map(|impulse| ir::EffectKind::Convolution { impulse }),
@@ -401,7 +401,13 @@ fn eq(
 /// The Solid G-EQ (0x44) record (reader 0x140d029f0): LF gain, Hz, bell
 /// flag; LMF and HMF gain, Hz, Q; HF gain, Hz, bell flag (knobs 0..=1, flags
 /// a byte each); v0x11 adds high- and low-pass Hz and their switches.
-fn solid_eq(version: u16, public: &[u8], at: &str, notes: &mut Notes) -> Option<ir::EffectKind> {
+fn solid_eq(
+    version: u16,
+    public: &[u8],
+    at: &str,
+    notes: &mut Notes,
+    knobs: &mut Vec<crate::script_knobs::SlotKnob>,
+) -> Option<ir::EffectKind> {
     let f = |n: usize| {
         let bytes = public.get(n..n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
@@ -416,13 +422,23 @@ fn solid_eq(version: u16, public: &[u8], at: &str, notes: &mut Notes) -> Option<
             at.to_string(),
         );
     }
-    Some(ir::EffectKind::Eq(crate::laws::solid_eq(
-        [f(0)?, f(4)?],
+    let saved = [0, 4, 9, 13, 17, 21, 25, 29, 33, 37].map(f);
+    let [lg, lh, mg, mh, mq, hg, hh, hq, fg, fh] = saved;
+    let saved = [lg?, lh?, mg?, mh?, mq?, hg?, hh?, hq?, fg?, fh?];
+    let shapes = [
         bell(flag(8)?, ir::Shape::LowShelf),
-        [f(9)?, f(13)?, f(17)?],
-        [f(21)?, f(25)?, f(29)?],
-        [f(33)?, f(37)?],
         bell(flag(41)?, ir::Shape::HighShelf),
+    ];
+    *knobs = crate::solid_knobs::solid_knobs(saved, shapes);
+    let [lg, lh, mg, mh, mq, hg, hh, hq, fg, fh] = saved;
+    let [lf, hf] = shapes;
+    Some(ir::EffectKind::Eq(crate::laws::solid_eq(
+        [lg, lh],
+        lf,
+        [mg, mh, mq],
+        [hg, hh, hq],
+        [fg, fh],
+        hf,
     )))
 }
 
