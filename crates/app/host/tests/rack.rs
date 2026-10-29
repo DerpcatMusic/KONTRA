@@ -13,6 +13,12 @@ const BLOCK: usize = 256;
 
 /// An engine whose one zone plays a constant `level` on every key.
 fn engine(store: &mut Store, level: f32) -> Box<Engine> {
+    let plan = plan_of(store, level);
+    Box::new(Engine::new(Arc::new(plan), store.client(), RATE))
+}
+
+/// The plan of [`engine`].
+fn plan_of(store: &mut Store, level: f32) -> Plan {
     let fmt = SampleFmt {
         encoding: Encoding::F32,
         channels: 1,
@@ -46,7 +52,7 @@ fn engine(store: &mut Store, level: f32) -> Box<Engine> {
     for g in &mut plan.groups {
         g.mods.clear();
     }
-    Box::new(Engine::new(Arc::new(plan), store.client(), RATE))
+    plan
 }
 
 fn part(name: &str) -> Part {
@@ -62,6 +68,7 @@ fn part(name: &str) -> Part {
         plan: None,
         delay_ms: None,
         view: None,
+        slot_types: Vec::new(),
     }
 }
 
@@ -300,4 +307,79 @@ fn hold_changes_before_one_block_keep_the_latest_release() {
         off.abs() < 1e-4,
         "the held note outlived its release: {off}"
     );
+}
+
+/// A DC part whose script loads a high-pass into insert 0 in `on init`
+/// and empties the slot again from `on note`, as Shreddage loads an EQ.
+fn effect_loading(store: &mut Store) -> Box<Engine> {
+    use kontra_engine::ir;
+    let mut plan = plan_of(store, 0.5);
+    plan.inserts = vec![None];
+    let high = ir::Filter {
+        pass: ir::Pass::High,
+        hz: 10_000.0,
+        stages: 1,
+        ladder: None,
+        damping: [2.0; 3],
+        gain: 1.0,
+        octaves: 0.0,
+        q_octaves: 0.0,
+    };
+    let ty = |id, effect| ir::SlotType {
+        id,
+        subtype: false,
+        effect,
+        laws: Vec::new().into(),
+    };
+    let effect = ir::Effect {
+        kind: ir::EffectKind::Filter(high),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    plan.slot_shapes.types = vec![ty(0, None), ty(7, Some(effect))];
+    let script = kontra_ksp::compile(
+        "on init
+            declare $a
+            $a := set_engine_par($ENGINE_PAR_EFFECT_TYPE, 7, -1, 0, 1)
+        end on
+        on note
+            $a := set_engine_par($ENGINE_PAR_EFFECT_TYPE, 0, -1, 0, 1)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    Box::new(Engine::new(Arc::new(plan), store.client(), RATE))
+}
+
+#[test]
+fn an_effect_type_a_script_loads_is_built_off_audio_swapped_in_and_saved() {
+    let (mut rack, mut audio) = rack();
+    let e = effect_loading(rack.store_mut());
+    rack.install(
+        0,
+        e,
+        Part {
+            path: Some("dc.nki".into()),
+            ..part("a")
+        },
+    );
+    // The high-pass from init holds the DC back; the note asks to empty it.
+    let [held, _] = play(&mut audio, &[(0, note(0))]);
+    assert!(held.abs() < 1e-3, "the init high-pass is not in: {held}");
+    rack.tick();
+    let [open, _] = play(&mut audio, &[]);
+    assert!(
+        (open - 0.5).abs() < 1e-3,
+        "the emptied slot did not swap in: {open}"
+    );
+    let p = rack.parts()[0].as_ref().unwrap();
+    assert_eq!(p.slot_types, [(kontra_engine::ir::RackAt::Inserts, 0, 0)]);
+    // The old unit comes back to be freed here; the save carries the type.
+    rack.tick();
+    let saved = rack.save();
+    let json = saved.write();
+    assert_eq!(kontra_host::state::Saved::read(&json), saved);
+    assert_eq!(saved.parts[0].slot_types.len(), 1, "{json}");
 }
