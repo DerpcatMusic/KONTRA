@@ -227,3 +227,15 @@ fn an_idle_frame_builds_no_widget_and_a_moved_knob_builds_one() {
     }
     assert_eq!(settle(&mut ui, &tree, &mut pictures, 2.), 1);
 }
+
+#[test]
+fn a_skin_offset_runs_through_the_wallpaper_across_its_frames() {
+    // Una Corda: four 569-pixel frames, a 68-pixel header, the second tab
+    // at a skin offset of 1138: the page starts 68 rows into frame 2.
+    assert_eq!(wallpaper((0, 68, 1138), 569., 4), [(2, -68.), (3, 501.)]);
+    // No offset: frame 0 from the header down, frame 1 under it.
+    assert_eq!(wallpaper((0, 68, 0), 569., 4), [(0, -68.), (1, 501.)]);
+    // A picture state picks the frame; a one-frame file shows only it.
+    assert_eq!(wallpaper((1, 0, 0), 500., 2), [(1, 0.)]);
+    assert_eq!(wallpaper((0, 68, 0), 569., 1), [(0, -68.)]);
+}
