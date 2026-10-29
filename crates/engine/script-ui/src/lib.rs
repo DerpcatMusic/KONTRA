@@ -7,7 +7,8 @@
 //! are indexed in the order the script added them; `$CONTROL_PAR_NUM_ITEMS`
 //! counts them all, hidden or not; `$CONTROL_PAR_SELECTED_ITEM_IDX` is the
 //! index of the entry holding the menu's value; an untouched key reads colour
-//! and type 0.
+//! and type 0; `set_key_pressed` is ignored, and `get_key_triggerstate`
+//! reads 0, unless `set_key_pressed_support` is on (any nonzero mode).
 
 use kontra_vm::{Action, HostCall, HostValue, Text};
 
@@ -117,6 +118,9 @@ pub struct Store {
     /// Per script slot, by control: the text parameters it set.
     texts: Box<[Box<[Texts]>]>,
     keys: Box<[Key]>,
+    /// `set_key_pressed_support`: on, the keyboard shows only the keys
+    /// scripts press; off (the default), it shows the keys played.
+    pressed_support: bool,
     ranges: Vec<KeyRange>,
     /// Per script slot.
     pages: Box<[Page]>,
@@ -137,6 +141,7 @@ impl Store {
                 .map(|n| vec![Vec::new(); n].into())
                 .collect(),
             keys: vec![Key::UNTOUCHED; KEYS].into(),
+            pressed_support: false,
             ranges: Vec::new(),
             pages: controls.clone().map(|_| Page::UNSET).collect(),
             generations: controls.map(|n| vec![0; n].into()).collect(),
@@ -147,6 +152,13 @@ impl Store {
     #[must_use]
     pub fn keys(&self) -> &[Key] {
         &self.keys
+    }
+
+    /// Whether the keyboard shows only the keys scripts press
+    /// ([`Key::pressed`]) rather than the keys played.
+    #[must_use]
+    pub fn pressed_support(&self) -> bool {
+        self.pressed_support
     }
 
     /// The named key ranges, in the order they were set.
@@ -345,15 +357,21 @@ impl Store {
             | Action::SetKeyType
             | Action::SetKeyName
             | Action::SetKeyPressed => {
-                let (action, value) = (call.action, int(1));
+                let (action, value, support) = (call.action, int(1), self.pressed_support);
                 if let Some(k) = key.and_then(|k| self.keys.get_mut(k)) {
                     match action {
                         Action::SetKeyColor => k.color = value,
                         Action::SetKeyType => k.kind = value,
                         Action::SetKeyName => k.name = text,
-                        _ => k.pressed = value != 0,
+                        // Measured: ignored, and not kept, unless support is on.
+                        _ if support => k.pressed = value != 0,
+                        _ => {}
                     }
                 }
+                HostValue::Nothing
+            }
+            Action::SetKeyPressedSupport => {
+                self.pressed_support = int(0) != 0;
                 HostValue::Nothing
             }
             Action::GetKeyColor | Action::GetKeyType | Action::GetKeyTriggerstate => {
@@ -362,7 +380,7 @@ impl Store {
                 HostValue::Int(match call.action {
                     Action::GetKeyColor => k.color,
                     Action::GetKeyType => k.kind,
-                    _ => i32::from(k.pressed),
+                    _ => i32::from(k.pressed && self.pressed_support),
                 })
             }
             Action::GetKeyName => out(key
@@ -421,5 +439,72 @@ impl Store {
             }
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Kontakt 8's answers to `get_key_triggerstate(60), (61), (62)` after
+    /// each sequence (oracle probe, 2026-10-29).
+    #[test]
+    fn key_presses_count_only_with_support_on() {
+        let call = |s: &mut Store, action: Action, ints: &[i64]| {
+            let (mut cells, mut out) = ([0; 0], Text::EMPTY);
+            let mut c = HostCall {
+                action,
+                context: 0,
+                ints,
+                texts: &[],
+                cells: &mut cells,
+                text_out: &mut out,
+            };
+            s.call(0, None, None, &mut c)
+        };
+        type Steps<'a> = &'a [(Action, &'a [i64])];
+        let cases: &[(Steps<'_>, [i32; 3])] = &[
+            (&[(Action::SetKeyPressed, &[60, 1])], [0, 0, 0]),
+            (
+                &[
+                    (Action::SetKeyPressedSupport, &[1]),
+                    (Action::SetKeyPressed, &[61, 1]),
+                ],
+                [0, 1, 0],
+            ),
+            (
+                &[
+                    (Action::SetKeyPressedSupport, &[1]),
+                    (Action::SetKeyPressed, &[62, 1]),
+                    (Action::SetKeyPressedSupport, &[0]),
+                ],
+                [0, 0, 0],
+            ),
+            (
+                &[
+                    (Action::SetKeyPressed, &[60, 1]),
+                    (Action::SetKeyPressedSupport, &[1]),
+                ],
+                [0, 0, 0],
+            ),
+            (
+                &[
+                    (Action::SetKeyPressedSupport, &[2]),
+                    (Action::SetKeyPressed, &[61, 1]),
+                ],
+                [0, 1, 0],
+            ),
+        ];
+        for (steps, want) in cases {
+            let mut s = Store::new([1].into_iter());
+            for &(action, ints) in *steps {
+                assert_eq!(call(&mut s, action, ints), Some(HostValue::Nothing));
+            }
+            let got = [60, 61, 62].map(|k| match call(&mut s, Action::GetKeyTriggerstate, &[k]) {
+                Some(HostValue::Int(v)) => v,
+                _ => -1,
+            });
+            assert_eq!(&got, want, "{steps:?}");
+        }
     }
 }
