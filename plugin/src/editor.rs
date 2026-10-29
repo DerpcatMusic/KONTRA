@@ -372,7 +372,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             if action == Action::AddFolder {
                 // The browser's first folder, from the editor's own copy.
                 let from = app.folders.first().map(PathBuf::from);
-                crate::folder::ask(&p.shared, from);
+                p.shared.folder.ask(from);
                 continue;
             }
             if let Some(event) = played(&action) {
