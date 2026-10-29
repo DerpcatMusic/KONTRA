@@ -292,9 +292,14 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         restore: Vec::new(),
         restore_texts: Vec::new(),
         foreign: Some(std::sync::Arc::new(compiled)),
-        // A UVI script never sees the notes it plays: they go to the next
-        // script (Augmented Orchestra's arpeggiator and layers release the
-        // held key's notes from `onRelease`, so their own gates must not reach it).
+        // A UVI script never sees the notes it plays. In UVIWorkstation's
+        // built-in Lua (0x1425676a0) `releaseVoice` and a `playNote` duration
+        // post a NoteOff with `postEvent`, which only appends to the
+        // manager's outgoing events (0x141397330 → 0x1413889b0), and a
+        // script without `onRelease` forwards each NoteOff by `postEvent`
+        // (`_onRelease`): fed back, every pass-through script would loop. A
+        // host note-off still reaches it. (Augmented Orchestra's arpeggiator
+        // releases the held key's notes from `onRelease`.)
         hears_own_releases: false,
     }
 }
