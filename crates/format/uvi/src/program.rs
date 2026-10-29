@@ -217,25 +217,7 @@ impl<L: Library> Translator<'_, '_, L> {
             })
             .collect();
         let program = self.program;
-        let cutoffs = filters::freq_routes(kg)
-            .into_iter()
-            .filter_map(|(insert, c)| {
-                let tag = c.parent()?.parent()?.tag_name().name();
-                let mut r = modulation::reach(program, c, (tag, "Freq"))?;
-                // Bypassed: no amount until a script turns it on.
-                if flag(c, "Bypass") {
-                    r.ratio = 0.0;
-                }
-                Some((insert, c, r))
-            })
-            .collect::<Vec<_>>();
-        for (insert, c, r) in cutoffs {
-            self.add_route(&mut group, c, r, |source, depth| ir::ModKind::Cutoff {
-                source,
-                insert,
-                depth,
-            });
-        }
+        self.cutoff_routes(&mut group, kg);
         let pans = kg
             .children()
             .filter(|c| c.has_tag_name("Connections"))
@@ -324,7 +306,7 @@ impl<L: Library> Translator<'_, '_, L> {
     /// joins it. A ratio of 0 makes one only in a scripted program.
     /// ponytail: joined connections share one amount; split them if a
     /// script sets two players of a keygroup apart.
-    fn add_route(
+    pub(super) fn add_route(
         &mut self,
         group: &mut ir::Group,
         connection: Node,

@@ -16,7 +16,33 @@
 use kontra_ir as ir;
 use roxmltree::Node;
 
-use super::{flag, num};
+use super::{Library, Translator, flag, modulation, num};
+
+impl<L: Library> Translator<'_, '_, L> {
+    /// The routes on a keygroup's carried filters' `Freq`, as cutoffs. A
+    /// bypassed one moves nothing until a script turns it on.
+    pub(super) fn cutoff_routes(&mut self, group: &mut ir::Group, kg: Node) {
+        let program = self.program;
+        let cutoffs = freq_routes(kg)
+            .into_iter()
+            .filter_map(|(insert, c)| {
+                let tag = c.parent()?.parent()?.tag_name().name();
+                let mut r = modulation::reach(program, c, (tag, "Freq"))?;
+                if flag(c, "Bypass") {
+                    r.ratio = 0.0;
+                }
+                Some((insert, c, r))
+            })
+            .collect::<Vec<_>>();
+        for (insert, c, r) in cutoffs {
+            self.add_route(group, c, r, |source, depth| ir::ModKind::Cutoff {
+                source,
+                insert,
+                depth,
+            });
+        }
+    }
+}
 
 /// Octaves of the `Freq` range a connection's ratio of 1 spans: 20 Hz to 20 kHz.
 const FREQ_OCTAVES: f32 = 9.965_784;
@@ -39,7 +65,7 @@ pub(super) fn carried(node: Node) -> bool {
 }
 
 /// A keygroup's carried filters' connections, each with its filter's slot.
-pub(super) fn freq_routes<'a, 'i>(kg: Node<'a, 'i>) -> Vec<(u8, Node<'a, 'i>)> {
+fn freq_routes<'a, 'i>(kg: Node<'a, 'i>) -> Vec<(u8, Node<'a, 'i>)> {
     kg.children()
         .filter(|n| n.has_tag_name("Inserts"))
         .flat_map(|n| n.children())
