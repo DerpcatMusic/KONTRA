@@ -7,14 +7,17 @@
 
 use std::sync::Arc;
 
-use kontra_ui_model::{
-    self as model, ImageUse, Interface, Kind, PageRef, Role, kontakt_picture_frame,
-};
+use kontra_ui_model::{self as model, Interface, Kind, PageRef};
 use mui::prelude::*;
 
 use crate::Pictures;
 
+mod plan;
 mod stock;
+
+use plan::caption;
+#[cfg(test)]
+use plan::cuts;
 
 /// Text size where the source sets none, in source pixels.
 const TEXT: f64 = 11.;
@@ -56,11 +59,32 @@ fn drawn_page(
     (scale, level): (f64, f64),
     bare: bool,
 ) -> (El, usize) {
-    let Some(p) = tree.pages.get(page.0) else {
+    // Pointer state is an input to the otherwise pure draw projection.
+    // Only source buttons and switches use Kontakt's held picture frame.
+    let pressed: Vec<_> = tree
+        .widgets
+        .iter()
+        .enumerate()
+        .filter_map(|(n, w)| {
+            if !matches!(
+                tree.source,
+                model::Source::Ksp { .. } | model::Source::PerformanceView
+            ) || !matches!(w.kind, Kind::Button { .. } | Kind::Switch)
+                || !tree.visible(model::WidgetRef(n))
+            {
+                return None;
+            }
+            let response = ui.get(crate::input::surface(face, n));
+            (response.held && response.button == Some(Button::Primary))
+                .then_some(model::WidgetRef(n))
+        })
+        .collect();
+    let Some(plan) = plan::page(tree, page, bare, scale, &pressed) else {
         return (block(0., 0.), 0);
     };
+    let p = plan.source;
     let mut built = 0;
-    let (w, h) = (p.size.width * scale, p.size.height * scale);
+    let (w, h) = (plan.size.width, plan.size.height);
     // Pictures decode at the pixels they cover on the device.
     let device = scale * ui.scale().unwrap_or(1.);
     let mut layers = vec![
@@ -95,37 +119,24 @@ fn drawn_page(
             layers.push(image(&img, size.width * scale, size.height * scale).at(0., y * scale));
         }
     }
-    let on_page = |r: model::Rect| {
-        r.width > 0.
-            && r.height > 0.
-            && r.x < p.size.width
-            && r.y < p.size.height
-            && r.x + r.width > 0.
-            && r.y + r.height > 0.
-    };
-    for n in tree.draw_order(page) {
-        let r = tree.page_rect(n);
-        if !tree.visible(n) || !on_page(r) {
-            continue;
-        }
-        let Some(wd) = tree.widgets.get(n.0) else {
-            continue;
-        };
-        let picture = wd.images.first().filter(|_| !bare).and_then(|u| {
-            let (path, meta) = image_asset(tree, u.asset)?;
-            let f = frame(wd, u, meta.frames as usize);
-            Some((pictures.frame(u.asset, path, meta, f, device)?, meta))
+    for item in plan.widgets {
+        let n = item.index;
+        let r = item.rect;
+        let wd = item.source;
+        let picture = item.picture.as_ref().and_then(|p| {
+            Some((
+                pictures.frame(p.use_.asset, p.path, p.meta, p.frame, device)?,
+                p.meta,
+            ))
         });
-        let art = picture.as_ref().map(|(_, m)| drawn(r, *m));
-        let style = wd.style.and_then(|s| tree.styles.get(s.0));
-        let t = position(wd);
-        let look = stock::Look::of(tree, wd, t, readout(wd, tree.source), knob_name(wd), bare);
-        let stock = look.is_none() && stock::shows(tree, wd, bare);
-        let words = if look.is_some() {
-            String::new()
-        } else {
-            caption(wd, tree.source)
-        };
+        let art = picture
+            .as_ref()
+            .and_then(|_| item.picture.as_ref().map(|p| p.size));
+        let style = item.style;
+        let t = item.position;
+        let look = item.look;
+        let stock = item.stock;
+        let words = item.words;
         let glyphs = match style.map(|s| &s.font) {
             Some(&model::Font::Bitmap(a)) if !words.is_empty() => {
                 (tree.assets.get(a.0)).and_then(|asset| pictures.font(a, &asset.path))
@@ -180,11 +191,10 @@ fn drawn_page(
         );
         let el = ui.memo(format!("kontra-ui-{face}-{}", n.0), deps, |_| {
             built += 1;
-            let (w, h) = (r.width * scale, r.height * scale);
+            let (w, h) = (r.width, r.height);
             let mut parts = Vec::new();
             if let (Some((img, meta)), Some(a)) = (&picture, art) {
-                parts
-                    .push(sliced(img, meta, (a.width * scale, a.height * scale), scale).at(0., 0.));
+                parts.push(sliced(img, meta, (a.width, a.height), scale).at(0., 0.));
             } else if stock {
                 parts.push(
                     stock::face(
@@ -200,18 +210,7 @@ fn drawn_page(
             if let Some(glyphs) = &glyphs {
                 parts.push(bitmap_words(&words, style, wd, (w, h), scale, glyphs).at(0., 0.));
             } else if !words.is_empty() {
-                parts.push(
-                    words_el(
-                        &words,
-                        style,
-                        wd,
-                        (w, h),
-                        scale,
-                        wd.text_y,
-                        outline.as_ref(),
-                    )
-                    .at(0., 0.),
-                );
+                parts.push(words_el(&words, style, wd, (w, h), scale, outline.as_ref()).at(0., 0.));
             }
             if let Some((o, t)) = lit {
                 parts.push(meter(&wd.colors, o, t, w, h).at(0., 0.));
@@ -238,7 +237,7 @@ fn drawn_page(
         } else {
             el
         };
-        layers.push(el.at(r.x * scale, r.y * scale));
+        layers.push(el.at(r.x, r.y));
     }
     (stack(layers).w(w).h(h).radius(0.).clip(), built)
 }
@@ -299,44 +298,12 @@ fn wallpaper(
         .collect()
 }
 
-/// The frame `w` shows of a picture with `frames`: the script's
-/// `PICTURE_STATE`, else the one its value selects.
-fn frame(w: &model::Widget, u: &ImageUse, frames: usize) -> usize {
-    if let Some(f) = u.frame {
-        return f as usize;
-    }
-    match (&w.kind, u.role) {
-        (Kind::Knob { .. } | Kind::Slider { .. } | Kind::ValueEdit { .. }, Role::Strip) => {
-            (position(w) * frames.saturating_sub(1) as f64).round() as usize
-        }
-        (Kind::Button { .. } | Kind::Switch, Role::Strip) => {
-            kontakt_picture_frame(value(w) != 0., false, false, frames)
-        }
-        _ => 0,
-    }
-}
-
 /// `w`'s value, or its initial one before the script sets it.
 fn value(w: &model::Widget) -> f64 {
     match w.value {
         Some(model::Value::Integer(v)) => f64::from(v),
         Some(model::Value::Real(v)) => v,
         _ => w.initial_value,
-    }
-}
-
-/// Where `w`'s value lies in its range, 0..1; a switch is 0 or 1.
-fn position(w: &model::Widget) -> f64 {
-    match &w.kind {
-        Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. } => {
-            let span = range.max - range.min;
-            if span == 0. {
-                0.
-            } else {
-                ((value(w) - range.min) / span).clamp(0., 1.)
-            }
-        }
-        _ => f64::from(u8::from(value(w) != 0.)),
     }
 }
 
@@ -373,19 +340,6 @@ pub(crate) fn knob_name(w: &model::Widget) -> String {
     }
 }
 
-/// A picture takes its frame's own size along each axis it does not
-/// stretch, whatever size the widget has (a label's text keeps its bounds).
-fn drawn(r: model::Rect, m: model::ImageMeta) -> model::Size {
-    let own = m.size.unwrap_or(model::Size {
-        width: r.width,
-        height: r.height,
-    });
-    model::Size {
-        width: if m.stretch[0] { r.width } else { own.width },
-        height: if m.stretch[1] { r.height } else { own.height },
-    }
-}
-
 /// An image asset's path and layout.
 fn image_asset(tree: &Interface, a: model::AssetRef) -> Option<(&str, model::ImageMeta)> {
     let asset = tree.assets.get(a.0)?;
@@ -395,70 +349,22 @@ fn image_asset(tree: &Interface, a: model::AssetRef) -> Option<(&str, model::Ima
     }
 }
 
-/// The words a widget shows: a label's or button's text, a menu's item,
-/// a value edit's title and value.
-fn caption(w: &model::Widget, source: model::Source) -> String {
-    if w.label_in_image() {
-        return String::new();
-    }
-    if let Kind::ValueEdit { .. } = w.kind {
-        let title = if w.hide.title { "" } else { w.text.trim() };
-        return format!("{title} {}", readout(w, source)).trim().to_owned();
-    }
-    if w.hide.title {
-        return String::new();
-    }
-    match &w.kind {
-        Kind::Label | Kind::Button { .. } | Kind::Switch | Kind::TextEdit => w.text.clone(),
-        Kind::Menu { items } => {
-            let at = match w.value {
-                Some(model::Value::Integer(v)) => v,
-                _ => w.initial_value as i32,
-            };
-            items
-                .iter()
-                .find(|i| i.value == at)
-                .map_or(String::new(), |i| i.text.clone())
-        }
-        _ => String::new(),
-    }
-}
-
 fn words_el(
     words: &str,
     style: Option<&model::TextStyle>,
     w: &model::Widget,
     (width, height): (f64, f64),
     scale: f64,
-    text_y: Option<i32>,
     font: Option<&Font>,
 ) -> El {
-    let size = style.and_then(|s| s.size).map_or(TEXT, f64::from) * scale;
-    let ink = style.map_or(Color::srgb(1., 1., 1.), |s| color(s.color));
-    let align = style.map_or(
-        if matches!(w.kind, Kind::Label) {
-            model::Align::Left
-        } else {
-            model::Align::Center
-        },
-        |s| s.align,
-    );
-    // Kontakt sets a label's words 7 px in from its side (oracle: Areia
-    // 6.7, Pacific 7.7 px at 150%).
-    let inset = if matches!(w.kind, Kind::Label) {
-        7.
-    } else {
-        2.
-    };
-    let line = size * 1.25;
-    let top = text_y.map_or(((height - line) / 2.).max(0.), |y| f64::from(y) * scale);
-    // A script can build a label a line at a time. Keep empty lines: they
-    // set the spacing between the key names on Afflatus' keyswitch page.
-    if words.contains('\n') {
-        // Afflatus' keyswitch labels are 26 source pixels apart with an
-        // empty line between them: 13 pixels at the 11-pixel stock size.
-        let line = size * (13. / 11.);
-        let top = text_y.map_or(0., |y| f64::from(y) * scale);
+    let geometry = plan::text(words, style, w, height, scale);
+    let size = geometry.size;
+    let ink = geometry.color.map_or(Color::srgb(1., 1., 1.), color);
+    let align = geometry.align;
+    let line = geometry.line;
+    let top = geometry.top;
+    let inset = geometry.inset;
+    if geometry.multiline {
         let lines = words
             .split('\n')
             .enumerate()
@@ -479,7 +385,7 @@ fn words_el(
                     })
                     .w(width)
                     .h(line)
-                    .pad((inset * scale, 0.))
+                    .pad((inset, 0.))
                     .at(0., top + n as f64 * line)
             })
             .collect::<Vec<_>>();
@@ -512,7 +418,7 @@ fn words_el(
     })
     .w(width)
     .h(line)
-    .pad((inset * scale, 0.))
+    .pad((inset, 0.))
     .at(0., top);
     stack([el]).w(width).h(height).radius(0.).clip()
 }
@@ -529,74 +435,20 @@ fn sliced(
     (w, h): (f64, f64),
     scale: f64,
 ) -> El {
-    let m = meta.margins;
-    let own = meta
-        .size
-        .map_or((f64::from(img.width), f64::from(img.height)), |s| {
-            (s.width, s.height)
-        });
-    let across = cuts(
-        meta.stretch[0],
-        (m.left, m.right),
-        (own.0, img.width),
-        w,
-        scale,
-    );
-    let down = cuts(
-        meta.stretch[1],
-        (m.top, m.bottom),
-        (own.1, img.height),
-        h,
-        scale,
-    );
-    if across.len() == 1 && down.len() == 1 {
-        return image(img, w, h);
-    }
-    let mut pieces = Vec::new();
-    let mut y = 0.;
-    for &(sy, sh, dh) in &down {
-        let mut x = 0.;
-        for &(sx, sw, dw) in &across {
-            if let Some(piece) = crop(img, (sx, sy), (sw, sh)) {
-                pieces.push(image(&piece, dw, dh).at(x, y));
-            }
-            x += dw;
+    match plan::slices(meta, (img.width, img.height), (w, h), scale) {
+        plan::Slices::Whole => image(img, w, h),
+        plan::Slices::Pieces(slices) => {
+            let pieces: Vec<El> = slices
+                .into_iter()
+                .filter_map(|slice| {
+                    let [sx, sy, sw, sh] = slice.source;
+                    let [x, y, width, height] = slice.destination;
+                    Some(image(&crop(img, (sx, sy), (sw, sh))?, width, height).at(x, y))
+                })
+                .collect();
+            stack(pieces).w(w).h(h)
         }
-        y += dh;
     }
-    stack(pieces).w(w).h(h)
-}
-
-/// One axis of a nine-slice: (decoded start, decoded length, drawn points)
-/// per piece. The fixed ends `lo`/`hi` (picture pixels) keep their size;
-/// a control shorter than both shrinks them alike and drops the middle.
-fn cuts(
-    on: bool,
-    (lo, hi): (u32, u32),
-    (own, decoded): (f64, u32),
-    to: f64,
-    scale: f64,
-) -> Vec<(u32, u32, f64)> {
-    let ends = f64::from(lo + hi);
-    if !on || lo + hi == 0 || ends >= own {
-        return vec![(0, decoded, to)];
-    }
-    let k = f64::from(decoded) / own.max(1.);
-    let (a, b) = (
-        (f64::from(lo) * k).round() as u32,
-        (f64::from(hi) * k).round() as u32,
-    );
-    let mid = decoded.saturating_sub(a + b);
-    let fit = (to / (ends * scale)).min(1.);
-    let (dl, dh) = (f64::from(lo) * scale * fit, f64::from(hi) * scale * fit);
-    vec![
-        (0, a, dl),
-        (a, mid, (to - dl - dh).max(0.)),
-        (a + mid, b, dh),
-    ]
-    .into_iter()
-    .filter(|&(_, n, d)| n > 0 && d > 0.)
-    .collect()
 }
 
 /// The `size` pixels of `img` from `at`.
@@ -626,39 +478,14 @@ fn bitmap_words(
     scale: f64,
     glyphs: &crate::pictures::Glyphs,
 ) -> El {
-    let glyph = |c: char| glyphs.get(crate::pictures::glyph(c));
-    let advance = |c: char| glyph(c).map_or(0., |g| f64::from(g.width) * scale);
     let line = glyphs.first().map_or(0., |g| f64::from(g.height) * scale);
-    let align = style.map_or(
-        if matches!(w.kind, Kind::Label) {
-            model::Align::Left
-        } else {
-            model::Align::Center
-        },
-        |s| s.align,
-    );
-    let multiline = words.contains('\n');
-    let top = w
-        .text_y
-        .map_or(if multiline { 0. } else { (height - line) / 2. }, |y| {
-            f64::from(y) * scale
-        });
-    let mut layers = Vec::new();
-    for (n, words) in words.split('\n').enumerate() {
-        let wide: f64 = words.chars().map(advance).sum();
-        let mut x = match align {
-            model::Align::Left => 2. * scale,
-            model::Align::Center => (width - wide) / 2.,
-            model::Align::Right => width - 2. * scale - wide,
-        };
-        let y = top + n as f64 * line;
-        for c in words.chars() {
-            let Some(g) = glyph(c) else { continue };
-            let gw = f64::from(g.width) * scale;
-            layers.push(image(g, gw, line).at(x, y));
-            x += gw;
-        }
-    }
+    let placements = plan::glyphs(words, style, w, (width, height), (scale, line), |n| {
+        glyphs.get(n).map(|g| g.width)
+    });
+    let layers = placements
+        .into_iter()
+        .filter_map(|p| Some(image(glyphs.get(p.index)?, p.width, line).at(p.x, p.y)))
+        .collect::<Vec<_>>();
     stack(layers).w(width).h(height).radius(0.).clip()
 }
 

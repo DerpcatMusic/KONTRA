@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use kontra_ui_model::{
-    Asset, AssetKind, AssetRef, ImageMeta, ImageUse, Page, Range, Rect, Rgba, Size, Widget,
+    Asset, AssetKind, AssetRef, ImageMeta, ImageUse, Page, Range, Rect, Rgba, Role, Size, Widget,
 };
 use mui::prelude::{Input, Size as ViewSize};
 use mui::vello;

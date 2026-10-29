@@ -68,6 +68,24 @@ check() { if differ "$1" "$2" "${4:-}"; then pass "$3"; else miss "$3"; fi; }
 still() { if differ "$1" "$2" "${4:-}"; then miss "$3"; else pass "$3"; fi; }
 
 shot 0-open
+# The Afflatus keyswitch tab has a six-frame picture. Its held frame is
+# visible before the button's release opens the keyswitch page.
+if [[ ${PRESSED_ONLY:-0} == 1 ]]; then
+    at "${MULTILINE_TAB:-1652,260}"; sleep 1; shot 1-hover
+    xdotool mousedown 1; sleep 2; shot 2-held
+    check 1-hover 2-held "Kontakt button: held picture frame" 800,110,850,155
+    xdotool mouseup 1; sleep 2; shot 3-released
+    ticks_pressed() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    at 1900,1270; sleep 2
+    span=${IDLE_S:-60}; t0=$(ticks_pressed); sleep "$span"; t1=$(ticks_pressed)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
 # Afflatus' keyswitch page uses add_text_line for its note-name list.
 if [[ ${MULTILINE_ONLY:-0} == 1 ]]; then
     at "${MULTILINE_TAB:-1652,260}"; xdotool click 1; sleep 3; at 1900,1270; shot 1-keyswitches
