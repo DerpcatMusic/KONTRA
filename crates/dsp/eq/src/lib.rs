@@ -10,7 +10,7 @@ pub struct Bell {
     pub gain_db: f32,
 }
 
-pub use kontra_dsp_core::Biquad;
+pub use kontra_dsp_core::{Biquad, Side, shelf};
 
 /// The bell at `rate`; its centre is held below 0.49 of the rate.
 #[must_use]
@@ -27,40 +27,6 @@ pub fn bell(bell: Bell, rate: u32) -> Biquad {
         1.0 + alpha / a,
         -2.0 * w.cos(),
         1.0 - alpha / a,
-    ])
-}
-
-/// Which side of its corner a shelf moves.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Side {
-    Low,
-    High,
-}
-
-/// A shelf: `gain_db` on `side` of `hz`, its knee set by `slope` (the
-/// cookbook's S, held to 0.01..=1 so the knee never peaks).
-#[must_use]
-pub fn shelf(hz: f32, gain_db: f32, slope: f32, side: Side, rate: u32) -> Biquad {
-    let rate = f64::from(rate.max(1));
-    let hz = f64::from(hz).max(1.0).min(0.49 * rate);
-    let w = std::f64::consts::TAU * hz / rate;
-    let a = 10f64.powf(f64::from(gain_db) / 40.0);
-    let s = f64::from(slope).clamp(0.01, 1.0);
-    let alpha = w.sin() / 2.0 * ((a + 1.0 / a) * (1.0 / s - 1.0) + 2.0).sqrt();
-    let (cos, root) = (w.cos(), 2.0 * a.sqrt() * alpha);
-    // The high shelf is the low one with cos negated and b1, a1 flipped.
-    let (c, sign) = if side == Side::High {
-        (-cos, -1.0)
-    } else {
-        (cos, 1.0)
-    };
-    Biquad::new([
-        a * ((a + 1.0) - (a - 1.0) * c + root),
-        sign * 2.0 * a * ((a - 1.0) - (a + 1.0) * c),
-        a * ((a + 1.0) - (a - 1.0) * c - root),
-        (a + 1.0) + (a - 1.0) * c + root,
-        sign * -2.0 * ((a - 1.0) + (a + 1.0) * c),
-        (a + 1.0) + (a - 1.0) * c - root,
     ])
 }
 

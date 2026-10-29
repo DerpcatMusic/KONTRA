@@ -4,6 +4,8 @@
 
 use std::f64::consts::TAU;
 
+use kontra_dsp_core::{Biquad, Side, high_pass, shelf};
+
 /// The longest line [`ModDelay::new`] allocates, ms.
 pub const MAX_MS: f32 = 6000.0;
 /// The time a line takes to glide to a new length, so a change never clicks.
@@ -30,10 +32,24 @@ pub struct Settings {
     pub damping_hz: f32,
     /// A one-pole high-pass on each head; 0 for none.
     pub low_cut_hz: f32,
+    /// The low cut is a second-order high-pass, Q ½, not the one-pole.
+    pub steep_low_cut: bool,
+    /// A high shelf on the heads, inside the loop.
+    pub high_shelf: Option<Shelf>,
+    /// How much shorter the left line runs and longer the right, ms.
+    pub spread_ms: f32,
     /// The LFO's speed.
     pub lfo_hz: f32,
     /// Cycles the right LFO runs ahead of the left.
     pub phase: f32,
+}
+
+/// A high shelf: `gain_db` above `hz`, its knee the cookbook's S.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shelf {
+    pub hz: f32,
+    pub gain_db: f32,
+    pub slope: f32,
 }
 
 /// The LFO at `cycles`: a sine that falls first.
@@ -101,6 +117,9 @@ pub struct ModDelay {
     lp: [[f32; 2]; 2],
     /// Each head's high-pass (its own low-pass) state, per channel.
     hp: [[f32; 2]; 2],
+    /// The steep low cut and the shelf, on the heads' sum.
+    cut: Option<Biquad>,
+    shelf: Option<Biquad>,
 }
 
 impl ModDelay {
@@ -109,7 +128,7 @@ impl ModDelay {
     #[must_use]
     pub fn new(s: Settings, rate: u32, max_ms: f32) -> Self {
         let rate = rate as f32;
-        let ms = (max_ms.max(s.ms) + s.depth_ms.abs()).clamp(0.0, MAX_MS);
+        let ms = (max_ms.max(s.ms) + s.depth_ms.abs() + s.spread_ms.abs()).clamp(0.0, MAX_MS);
         let frames = (ms * 0.001 * rate) as usize + 8;
         let mut d = Self {
             s,
@@ -123,6 +142,8 @@ impl ModDelay {
             cycle: 0.0,
             lp: [[0.0; 2]; 2],
             hp: [[0.0; 2]; 2],
+            cut: None,
+            shelf: None,
         };
         d.set(s);
         d
@@ -133,7 +154,21 @@ impl ModDelay {
     pub fn set(&mut self, s: Settings) {
         self.s = s;
         self.damping = one_pole(s.damping_hz, self.rate).clamp(0.0, 1.0);
-        self.low_cut = one_pole(s.low_cut_hz, self.rate).clamp(0.0, 1.0);
+        let rate = self.rate as u32;
+        let steep = s.steep_low_cut && s.low_cut_hz > 0.0;
+        let one_pole_hz = if s.steep_low_cut { 0.0 } else { s.low_cut_hz };
+        self.low_cut = one_pole(one_pole_hz, self.rate).clamp(0.0, 1.0);
+        let cut = steep.then(|| high_pass(s.low_cut_hz, 0.5, rate));
+        let tone = s
+            .high_shelf
+            .map(|t| shelf(t.hz, t.gain_db, t.slope, Side::High, rate));
+        // A moved filter keeps its state, so a sweep never clicks.
+        for (old, new) in [(&mut self.cut, cut), (&mut self.shelf, tone)] {
+            match (old, new) {
+                (Some(old), Some(new)) => old.retune(&new),
+                (old, new) => *old = new,
+            }
+        }
     }
 
     /// The sample `d` frames back (at least 2), 4-point cubic.
@@ -168,6 +203,7 @@ impl ModDelay {
         let target = (s.ms * per_ms).max(0.0).min(longest);
         let mut delay = self.delay.unwrap_or(target);
         let swing = s.depth_ms * per_ms;
+        let spread = [-s.spread_ms * per_ms, s.spread_ms * per_ms];
         let step = f64::from(s.lfo_hz / self.rate);
         let offsets = [0.0, f64::from(s.phase)];
         for frame in io {
@@ -179,10 +215,10 @@ impl ModDelay {
             } else {
                 &heads[..1]
             };
-            for (c, (out, offset)) in y.iter_mut().zip(offsets).enumerate() {
+            for (c, ((out, offset), spread)) in y.iter_mut().zip(offsets).zip(spread).enumerate() {
                 for (h, &(base, ahead)) in heads.iter().enumerate() {
                     // The delay grows as the LFO falls.
-                    let x = self.read(c, base - swing * lfo(self.cycle + offset + ahead));
+                    let x = self.read(c, base + spread - swing * lfo(self.cycle + offset + ahead));
                     let lp = self.lp.get_mut(h).and_then(|l| l.get_mut(c));
                     let hp = self.hp.get_mut(h).and_then(|l| l.get_mut(c));
                     if let (Some(lp), Some(hp)) = (lp, hp) {
@@ -191,6 +227,9 @@ impl ModDelay {
                         *out += *lp - *hp;
                     }
                 }
+            }
+            for filter in [&mut self.cut, &mut self.shelf].into_iter().flatten() {
+                filter.process(std::slice::from_mut(&mut y));
             }
             let [a, b] = apply(s.input, *frame);
             let [c, d] = apply(s.feedback, y);

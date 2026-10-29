@@ -174,6 +174,11 @@ pub enum EffectParam {
     DelayInput(u8),
     DelayLoop(u8),
     DelayDampingHz,
+    /// A [`crate::Delay`]'s high-pass corner, and its high shelf's corner
+    /// and gain.
+    DelayLowCutHz,
+    DelayShelfHz,
+    DelayShelfDb,
 }
 
 impl EffectParam {
@@ -232,6 +237,9 @@ impl EffectParam {
                 d.feedback.as_flattened_mut().get_mut(usize::from(n))?
             }
             (Self::DelayDampingHz, EffectKind::Delay(d)) => &mut d.damping_hz,
+            (Self::DelayLowCutHz, EffectKind::Delay(d)) => &mut d.low_cut_hz,
+            (Self::DelayShelfHz, EffectKind::Delay(d)) => &mut d.high_shelf.as_mut()?.hz,
+            (Self::DelayShelfDb, EffectKind::Delay(d)) => &mut d.high_shelf.as_mut()?.gain_db,
             (Self::CascadeHz, EffectKind::Cascade(c)) => &mut c.hz,
             (Self::CascadeShift(n), EffectKind::Cascade(c)) => c.shifts.get_mut(usize::from(n))?,
             (Self::CascadeGain, EffectKind::Cascade(c)) => &mut c.gain,
@@ -316,11 +324,13 @@ pub enum SlotKnob {
     BandHz(u8),
     BandWidth(u8),
     BandGain(u8),
-    /// A delay's time, feedback, pan and damping knobs.
+    /// A delay's time, feedback, pan, damping, low-cut and high-cut knobs.
     DelayTime,
     DelayFeedback,
     DelayPan,
     DelayDamping,
+    DelayLowCut,
+    DelayHighCut,
     /// A [`crate::Cascade`]'s knobs: by stage its shift (stages 1 and 2),
     /// resonance (stages 1 and 2; stage 0 is [`Self::Resonance`]), morph and
     /// wet; its output gain.
