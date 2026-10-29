@@ -183,6 +183,11 @@ impl Rack {
         }
     }
 
+    /// Route values last applied to this rack, for offline inspection.
+    pub(crate) fn route_amounts(&self) -> impl Iterator<Item = (ir::ModKind, f32)> + '_ {
+        self.mods.iter().copied().zip(self.amounts.iter().copied())
+    }
+
     /// What its routes scale send `n`'s level by this span.
     pub(crate) fn send_scale(&self, n: usize) -> f32 {
         self.mods

@@ -149,7 +149,14 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
                     })
                 })
                 .collect();
-            trace.push(json!({"frame":at, "cc1":engine.controller(1), "cc11":engine.controller(11), "voices":voices, "eq_routes":routes, "all_routes":all_routes}));
+            let bus_routes: Vec<_> = engine
+                .inspect_bus_routes()
+                .map(|r| {
+                    json!({"bus":r.bus,
+                "route":super::routes::route(r.kind), "last_applied_amount":r.amount})
+                })
+                .collect();
+            trace.push(json!({"frame":at, "cc1":engine.controller(1), "cc11":engine.controller(11), "voices":voices, "eq_routes":routes, "all_routes":all_routes, "bus_routes":bus_routes}));
             if at >= next_tail && at >= last_off {
                 next_tail += u64::from(RATE);
             }

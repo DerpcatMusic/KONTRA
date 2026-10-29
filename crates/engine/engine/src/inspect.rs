@@ -329,3 +329,23 @@ impl Engine {
         out
     }
 }
+
+/// One bus route's last applied amount.
+#[derive(Clone, Copy, Debug)]
+pub struct BusRouteObservation {
+    pub bus: usize,
+    pub kind: kontra_ir::ModKind,
+    pub amount: f32,
+}
+
+impl Engine {
+    /// Read bus route amounts as last applied by the rack.
+    pub fn inspect_bus_routes(&self) -> impl Iterator<Item = BusRouteObservation> + '_ {
+        self.buses.iter().enumerate().flat_map(|(bus, state)| {
+            state
+                .rack
+                .route_amounts()
+                .map(move |(kind, amount)| BusRouteObservation { bus, kind, amount })
+        })
+    }
+}
