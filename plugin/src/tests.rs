@@ -609,10 +609,21 @@ fn shreddage_eq() -> Option<(KontraParams, Dsp, f32)> {
 }
 
 /// Part 0's effect types loaded after init, as `[(rack, slot, type)]`.
+/// The effect types part 0's scripts loaded after `on init`, as (rack,
+/// slot, Kontakt type id, subtype).
 fn slot_types(params: &KontraParams) -> String {
     let guard = crate::lock(&params.shared.rack);
     let part = guard.as_ref().and_then(|r| r.parts()[0].as_ref());
-    format!("{:?}", part.map(|p| &p.slot_types))
+    let loaded = part.map(|p| {
+        let types = p.plan.as_ref().map(|plan| &plan.slot_shapes.types);
+        (p.slot_types.iter())
+            .map(|&(at, slot, ty)| {
+                let ty = types.and_then(|t| t.get(usize::from(ty)));
+                (at, slot, ty.map(|t| (t.id, t.subtype)))
+            })
+            .collect::<Vec<_>>()
+    });
+    format!("{loaded:?}")
 }
 
 #[test]
@@ -620,7 +631,8 @@ fn shreddage_loads_an_eq_from_its_console_and_a_reload_keeps_it() {
     let Some((live, mut live_dsp, _)) = shreddage_eq() else {
         return;
     };
-    let eq = "Some([(Bus(1), 0, 2)])";
+    // EQ3BAND is the EQ subtype 24.
+    let eq = "Some([(Bus(1), 0, Some((24, true)))])";
     assert_eq!(slot_types(&live), eq, "the console's menu loads EQ3BAND");
     settle(&live, &mut live_dsp);
     live.capture();
