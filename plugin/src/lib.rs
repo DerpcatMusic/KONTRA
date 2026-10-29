@@ -13,6 +13,7 @@ mod editor;
 mod folder;
 mod input;
 mod look;
+mod readout;
 #[cfg(test)]
 mod tests;
 
@@ -23,6 +24,14 @@ use kontra_host::rack::{Event, Rack, RackAudio, Store, StoreConfig};
 use kontra_host::state::Saved;
 use moose::core::LosslessEventRef;
 use moose::prelude::*;
+
+/// The build as About shows it: the version and its source revision.
+pub const BUILD: &str = concat!(
+    "Version ",
+    env!("CARGO_PKG_VERSION"),
+    " · ",
+    env!("KONTRA_REVISION")
+);
 
 /// Stereo outputs the plugin offers: one per rack part.
 pub const OUTPUTS: usize = kontra_host::rack::OUTPUTS;
@@ -233,9 +242,12 @@ impl BackgroundTask for Tick {
             let loads = r.loads();
             match r {
                 Request::Load { part, path } => {
-                    let loaded = match part.or_else(|| rack.free()) {
-                        Some(part) => rack.load(part, &path),
-                        None => Err("every part is in use".into()),
+                    let loaded = match (part, rack.free()) {
+                        (Some(part), _) => rack.load(part, &path),
+                        (None, Some(new)) => {
+                            (rack.load(new, &path)).map(|()| editor::place(rack, browser, new))
+                        }
+                        (None, None) => Err("every part is in use".into()),
                     };
                     if let Err(e) = loaded {
                         report.push(format!("{}: {e}", path.display()));

@@ -58,8 +58,11 @@ pub struct Meters {
 /// What the engine is doing, for the header and the report.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stats {
-    /// Time spent rendering over the block's real time, 0..1 and above.
-    pub load: f32,
+    /// Time spent rendering, and the real time of what it rendered, in
+    /// nanoseconds since the plugin started: their growth between two
+    /// looks is the audio thread's load over that span.
+    pub busy_ns: u64,
+    pub span_ns: u64,
     pub voices: u32,
     /// Since the plugin started, across parts.
     pub voices_stolen: u64,
@@ -109,7 +112,8 @@ impl MeterCells {
 /// field is whole.
 #[derive(Default)]
 pub struct StatCells {
-    load: AtomicU32,
+    busy_ns: AtomicU64,
+    span_ns: AtomicU64,
     voices: AtomicU32,
     voices_stolen: AtomicU64,
     notes_refused: AtomicU64,
@@ -120,7 +124,8 @@ pub struct StatCells {
 
 impl StatCells {
     pub fn publish(&self, s: &Stats) {
-        self.load.store(s.load.to_bits(), Ordering::Relaxed);
+        self.busy_ns.store(s.busy_ns, Ordering::Relaxed);
+        self.span_ns.store(s.span_ns, Ordering::Relaxed);
         self.voices.store(s.voices, Ordering::Relaxed);
         self.voices_stolen.store(s.voices_stolen, Ordering::Relaxed);
         self.notes_refused.store(s.notes_refused, Ordering::Relaxed);
@@ -133,7 +138,8 @@ impl StatCells {
     /// The stats, if published since the last take.
     pub fn take(&self) -> Option<Stats> {
         self.fresh.swap(false, Ordering::Acquire).then(|| Stats {
-            load: f32::from_bits(self.load.load(Ordering::Relaxed)),
+            busy_ns: self.busy_ns.load(Ordering::Relaxed),
+            span_ns: self.span_ns.load(Ordering::Relaxed),
             voices: self.voices.load(Ordering::Relaxed),
             voices_stolen: self.voices_stolen.load(Ordering::Relaxed),
             notes_refused: self.notes_refused.load(Ordering::Relaxed),

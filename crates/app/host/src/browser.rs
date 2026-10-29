@@ -128,6 +128,21 @@ impl Browser {
         self.rescan();
     }
 
+    /// Where new parts listen and play ([`Prefs::next_channel`]).
+    pub fn new_parts(&mut self, next_channel: bool, own_output: bool) {
+        (self.prefs.next_channel, self.prefs.own_output) = (next_channel, own_output);
+        self.changed();
+    }
+
+    /// Stops scanning folder `n`, and scans again.
+    pub fn remove_root(&mut self, n: usize) {
+        if n < self.prefs.roots.len() {
+            self.prefs.roots.remove(n);
+            self.changed();
+            self.rescan();
+        }
+    }
+
     /// Recent instruments as (library, preset) in the catalog.
     #[must_use]
     pub fn recent(&self) -> Vec<(usize, usize)> {
@@ -195,6 +210,10 @@ mod tests {
         assert_eq!(again.prefs.roots.len(), 2, "v3 keeps its own prefs");
         let v2_after = std::fs::read_to_string(v2.join("settings.json")).unwrap();
         assert!(!v2_after.contains("UVI"), "v2's settings are never written");
+        b.remove_root(0);
+        let roots = Browser::open(Some(&dir), None).prefs.roots;
+        assert_eq!(roots.len(), 1, "a removed folder stays removed");
+        assert_eq!(roots[0].path, Path::new("/nowhere/UVI"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -18,6 +18,7 @@ use kontra_ui_model::Interface;
 use moose::mui::MuiEditor;
 use moose::prelude::*;
 
+use crate::readout::Readout;
 use crate::{KontraParams, P, Request, lock};
 
 /// Report lines kept; older ones scroll away.
@@ -54,8 +55,11 @@ pub struct Snapshot {
     libraries: (u64, Arc<Vec<app::Library>>),
     recent: Vec<(usize, usize)>,
     folders: Vec<String>,
+    /// [`kontra_library::Prefs::next_channel`] and `own_output`.
+    new_parts: (bool, bool),
     level: f32,
     stats: Stats,
+    readout: Readout,
     report: Vec<String>,
 }
 
@@ -72,6 +76,7 @@ impl Snapshot {
             self.folders = (browser.prefs.roots.iter())
                 .map(|r| r.path.display().to_string())
                 .collect();
+            self.new_parts = (browser.prefs.next_channel, browser.prefs.own_output);
         }
         let meters = rack.meters();
         let level = |slot: usize| meters.parts.get(slot).map_or(0.0, |[l, r]| l.max(*r));
@@ -118,6 +123,7 @@ impl Snapshot {
         if let Some(s) = rack.stats() {
             self.stats = s;
         }
+        self.readout.sample(&self.stats, rack);
         self.report.extend(report);
         let over = self.report.len().saturating_sub(REPORT);
         self.report.drain(..over);
@@ -140,12 +146,11 @@ impl Snapshot {
                 )
             })
             .collect();
-        let load = (self.stats.load * 100.).round() as i32;
         (
             self.libraries.0,
             parts,
             self.level.to_bits(),
-            load,
+            self.readout.shown(),
             self.stats.voices,
         )
     }
@@ -168,6 +173,7 @@ impl Snapshot {
             app.libraries = fresh.clone();
             app.recent.clone_from(&self.recent);
             app.folders.clone_from(&self.folders);
+            (app.next_channel, app.own_output) = self.new_parts;
             shown.browser = self.libraries.0;
         }
         for pictures in [&mut app.covers, &mut app.banners].into_iter().flatten() {
@@ -235,8 +241,15 @@ impl Snapshot {
         let heard = self.parts.iter().map(|p| (p.generation, p.sounds.0));
         sounds_shown.extend(heard);
         app.level = f64::from(self.level);
-        app.stats.cpu = f64::from(self.stats.load) * 100.0;
-        app.stats.voices = self.stats.voices;
+        let r = &self.readout;
+        app.stats = app::Stats {
+            cpu: r.cpu,
+            voices: self.stats.voices,
+            ram_mb: r.process_mb.unwrap_or(0),
+            samples_mb: r.samples_mb,
+            disk_mbs: r.disk_mbs,
+            cache_mb: r.cache_mb,
+        };
         app.report.clone_from(&self.report);
     }
 }
@@ -312,6 +325,26 @@ pub(crate) fn cover(key: &str) -> Option<Vec<u8>> {
     }
 }
 
+/// Places a part the browser added where the player's prefs say: the
+/// lowest MIDI channel no other part has, its own output pair.
+pub fn place(rack: &mut Rack, browser: &Browser, part: usize) {
+    let parts = rack.parts();
+    let Some(mut mix) = parts.get(part).and_then(Option::as_ref).map(|p| p.mix) else {
+        return;
+    };
+    if browser.prefs.next_channel {
+        let taken = |c: &u8| {
+            (parts.iter().enumerate())
+                .any(|(n, p)| n != part && p.as_ref().is_some_and(|p| p.mix.channel == *c))
+        };
+        mix.channel = (1..=16).find(|c| !taken(c)).unwrap_or(0);
+    }
+    if browser.prefs.own_output {
+        mix.output = u8::try_from(part.min(crate::OUTPUTS - 1)).unwrap_or(0);
+    }
+    rack.set_mix(part, mix);
+}
+
 /// The largest cover file read.
 const COVER_BYTES: u64 = 32 << 20;
 
@@ -323,7 +356,7 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
                 return;
             };
             let loaded = match rack.free() {
-                Some(part) => rack.load(part, &path),
+                Some(part) => rack.load(part, &path).map(|()| place(rack, browser, part)),
                 None => Err("every part is in use".into()),
             };
             match loaded {
@@ -385,6 +418,11 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
         }
         Action::Star(library, on) => browser.star(library, on),
         Action::Refresh => browser.rescan(),
+        Action::RemoveFolder(n) => browser.remove_root(n),
+        Action::NewParts {
+            next_channel,
+            own_output,
+        } => browser.new_parts(next_channel, own_output),
         _ => {}
     }
 }
@@ -523,7 +561,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let watched = Arc::clone(&params);
     let dropping = Arc::clone(&params);
     let owner = Arc::clone(&params);
-    let mut app = App::default();
+    let mut app = App {
+        build: crate::BUILD.into(),
+        ..App::default()
+    };
     let mut shown = Shown::default();
     let mut look = SavedView::default();
     let mut waiting = Vec::new();
@@ -587,7 +628,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             }
             if matches!(
                 action,
-                Action::Load { .. } | Action::Star(..) | Action::Refresh
+                Action::Load { .. }
+                    | Action::Star(..)
+                    | Action::Refresh
+                    | Action::RemoveFolder(_)
+                    | Action::NewParts { .. }
             ) {
                 p.shared.request(Request::Browse(action));
                 continue;

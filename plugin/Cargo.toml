@@ -1,6 +1,6 @@
 [package]
 name = "kontra-plugin"
-version = "0.0.0"
+version = "3.0.0-dev"
 edition.workspace = true
 license = "Apache-2.0"
 description = "KONTRA v3: the plugin shell over kontra-host and kontra-ui (CLAP, VST3)"
