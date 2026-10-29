@@ -58,7 +58,7 @@ pub use kontra_effects::response;
 pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
-pub use kontra_plan::{EnginePar, EnginePars};
+pub use kontra_plan::{EnginePar, EnginePars, Recall, Saved};
 pub use kontra_script_ui::FIRST_FONT;
 pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
 pub use kontra_time::SampleTime;
@@ -70,7 +70,6 @@ pub use plan::{
     Zone,
 };
 pub use queue::Timed;
-pub use recall::{Recall, Saved};
 pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
 #[cfg(feature = "trace")]
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
@@ -189,7 +188,7 @@ pub struct Engine {
     cc_values: [u8; 130],
     last_message: Text,
     /// What a recall of saved values does to the scripts.
-    recall: recall::Recall,
+    recall: Recall,
     /// Calls per action the engine does not implement yet, by action id.
     unhandled: Box<[u32]>,
     called: Box<[u32]>,
@@ -351,7 +350,7 @@ impl Engine {
             targets_scratch: Vec::with_capacity(capacity),
             cc_values: [0; 130],
             last_message: Text::EMPTY,
-            recall: recall::Recall::Restart,
+            recall: Recall::Restart,
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
             control_pars,

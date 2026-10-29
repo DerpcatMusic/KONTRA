@@ -750,7 +750,7 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             Action::SetSnapshotType => {
-                self.set_snapshot_type(i64::from(int(0)));
+                self.recall = kontra_plan::Recall::of_type(i64::from(int(0)));
                 HostValue::Nothing
             }
             Action::EventStatus => {
