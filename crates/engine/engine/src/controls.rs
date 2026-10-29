@@ -49,6 +49,16 @@ impl Engine {
     // ponytail: a parameter first set after init allocates its slot on the
     // audio thread; preallocate per control if a script does that per note.
     pub(crate) fn set_control_par(&mut self, cells: &mut [i64], id: i32, par: i32, value: i32) {
+        // A menu's value selects by index: its variable takes that entry's
+        // value, 0 past the end (Kontakt 8.13 oracle, 2026-10-29).
+        let items = self.menu(self.running.slot, id);
+        let value =
+            if par == self.script().map_or(-1, |s| s.controls.value_par) && !items.is_empty() {
+                let entry = usize::try_from(value).ok().and_then(|n| items.get(n));
+                entry.map_or(0, |i| i.value)
+            } else {
+                value
+            };
         match self.control(id, par) {
             Some((_, Some(cell))) => {
                 if let Some(c) = cells.get_mut(cell) {
