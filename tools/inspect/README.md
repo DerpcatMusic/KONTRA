@@ -37,7 +37,7 @@ curve data from the IR/plan; the debug slot-law text and route curves are also
 shown. These are available law definitions, not a claim that every translator
 application or law ID was recorded.
 
-`kontra-inspect` does not run the existing v2 `kontra-probe` contracts.
+`kontra-inspect` reports v3 playback observations.
 
 `kontra-inspect play <instrument> --scenario user --json <report.json>` runs
 legato, chords and repeats with slow and fast CC1/CC11 sweeps, then 20 seconds
