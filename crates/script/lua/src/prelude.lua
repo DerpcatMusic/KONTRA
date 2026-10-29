@@ -521,13 +521,10 @@ local function set_level(self, name, value)
 	end
 end
 
--- A live macro's `Value` goes to the engine as script modulation `mod`, a
--- bipolar one as its position (x + 1)/2.
+-- A live macro's `Value` goes to the engine as script modulation `mod`:
+-- its position, bipolar or not (kontra-format-uvi matrix.rs).
 local function send_macro(e)
 	local v = tonumber(e.params.Value) or 0
-	if e.params.Bipolar == 1 or e.params.Bipolar == true then
-		v = (v + 1) / 2
-	end
 	host_call("SetEventParArr", ALL_EVENTS, MOD_VALUE, math.floor(v * 1e6 + 0.5), e.mod, 0)
 end
 function set_macro(self, name, value)
