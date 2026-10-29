@@ -343,7 +343,7 @@ fn lua_page(
     let knob = (knobs.iter()).find(|k| wanted.as_deref().is_none_or(|w| k.1 == w));
     let mut moved = String::from("null");
     if let Some((n, knob, top)) = knob {
-        engine.set_widget(slot, *n as u32, *top);
+        engine.set_widget(slot, *n as u32, *top, None);
         settle(engine, &mut tree);
         let now = tree.widgets.get(*n).and_then(|w| w.value.clone());
         moved = format!("{{\"knob\":{knob:?},\"to\":{top},\"now\":{now:?}}}");

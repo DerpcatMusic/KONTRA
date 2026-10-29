@@ -15,6 +15,8 @@ use crate::kit;
 pub struct Edit {
     pub widget: WidgetRef,
     pub value: f64,
+    /// The zero-based cell of an array widget; absent for a scalar.
+    pub cell: Option<u32>,
 }
 
 /// A page's gesture in flight: the control pressed and its value then, and
@@ -42,6 +44,7 @@ pub(crate) fn takes_input(w: &model::Widget) -> bool {
                 | Kind::Button { .. }
                 | Kind::Switch
                 | Kind::Menu { .. }
+                | Kind::Table { .. }
         )
 }
 
@@ -105,12 +108,68 @@ pub fn read(
         }
         let id = surface(face, n.0);
         let r = ui.get(id.clone());
+        if let Kind::Table { columns, range, .. } = &w.kind {
+            if !matches!(tree.source, model::Source::FalconLua) || !r.held || *columns == 0 {
+                continue;
+            }
+            let Some(pos) = ui.local(&id) else {
+                continue;
+            };
+            let Some(size) = ui
+                .scene()
+                .and_then(|scene| scene.surface(&id))
+                .map(|surface| surface.frame.size)
+            else {
+                continue;
+            };
+            if size.width <= 0. || size.height <= 0. {
+                continue;
+            }
+            let cell_at =
+                |x: f64| ((x / size.width * f64::from(*columns)).floor() as u32).min(columns - 1);
+            let val_at = |y: f64| {
+                let v = range.min + (1. - y / size.height).clamp(0., 1.) * (range.max - range.min);
+                range
+                    .step
+                    .filter(|s| *s > 0.)
+                    .map_or(v, |s| range.min + ((v - range.min) / s).round() * s)
+            };
+            let previous = pos - r.drag_delta;
+            let (first, last) = (cell_at(previous.x), cell_at(pos.x));
+            let count = first.abs_diff(last);
+            for step in 0..=count {
+                let k = if count == 0 {
+                    1.
+                } else {
+                    f64::from(step) / f64::from(count)
+                };
+                let cell = if last >= first {
+                    first + step
+                } else {
+                    first - step
+                };
+                let value = val_at(previous.y + (pos.y - previous.y) * k);
+                let old = match &w.value {
+                    Some(model::Value::Reals(v)) => v.get(cell as usize).copied(),
+                    _ => None,
+                };
+                if old != Some(value) {
+                    edits.push(Edit {
+                        widget: n,
+                        value,
+                        cell: Some(cell),
+                    });
+                }
+            }
+            continue;
+        }
         let now = value(w);
         let mut set = |v: f64| {
             if v != now {
                 edits.push(Edit {
                     widget: n,
                     value: v,
+                    cell: None,
                 });
             }
         };
@@ -192,6 +251,7 @@ pub fn read(
             edits.push(Edit {
                 widget: WidgetRef(m),
                 value: f64::from(item.value),
+                cell: None,
             });
             g.menu = None;
         }
@@ -204,6 +264,14 @@ pub fn read(
 pub fn apply(tree: &mut Interface, edits: &[Edit]) {
     for e in edits {
         if let Some(w) = tree.widgets.get_mut(e.widget.0) {
+            if let Some(cell) = e.cell {
+                if let Some(model::Value::Reals(values)) = &mut w.value
+                    && let Some(value) = values.get_mut(cell as usize)
+                {
+                    *value = e.value;
+                }
+                continue;
+            }
             w.value = Some(match w.value {
                 Some(model::Value::Real(_)) => model::Value::Real(e.value),
                 _ => model::Value::Integer(e.value.round() as i32),

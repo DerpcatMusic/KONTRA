@@ -483,6 +483,12 @@ pub fn apply(rack: &mut Rack, edit: Edit) {
         Action::Mute(_, on) => return rack.set_solo_mute(slot, solo, on),
         Action::Remove(_) => return rack.remove(slot),
         Action::Control { widget, value, .. } => return rack.control(slot, widget, value),
+        Action::TableCell {
+            widget,
+            cell,
+            value,
+            ..
+        } => return rack.table_cell(slot, widget, cell, value),
         Action::Sound {
             group,
             param,
@@ -554,6 +560,7 @@ fn part_of(action: &Action) -> Option<usize> {
         | Action::Mute(n, _)
         | Action::Remove(n)
         | Action::Control { part: n, .. }
+        | Action::TableCell { part: n, .. }
         | Action::Sound { part: n, .. } => Some(n),
         _ => None,
     }

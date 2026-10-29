@@ -223,7 +223,10 @@ fn drawn_page(
             stack(parts).w(w).h(h).opacity(wd.opacity)
         });
         // A control takes the pointer under its own id (crate::input).
-        let el = if crate::input::takes_input(wd) {
+        let el = if crate::input::takes_input(wd)
+            && (!matches!(wd.kind, Kind::Table { .. })
+                || matches!(tree.source, model::Source::FalconLua))
+        {
             el.id(crate::input::surface(face, n.0))
                 .focusable()
                 .cursor(Cursor::Hand)

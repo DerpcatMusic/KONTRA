@@ -99,6 +99,7 @@ pub enum Command {
         slot: u8,
         n: u32,
         value: f64,
+        cell: Option<u32>,
     },
     /// The user edited a group's sound (the Sound tab).
     Sound {
@@ -441,10 +442,31 @@ impl Rack {
                 slot,
                 n,
                 value,
+                cell: None,
             });
         } else if let Some((slot, id, value)) = view.control(widget, value) {
             self.set_control(part, slot, id, value);
         }
+    }
+
+    /// The user edited a cell of a script-owned table.
+    pub fn table_cell(&mut self, part: usize, widget: usize, cell: u32, value: f64) {
+        let Some((slot, n)) = self
+            .parts
+            .get(part)
+            .and_then(Option::as_ref)
+            .and_then(|p| p.view.as_ref())
+            .and_then(|v| v.widget(widget))
+        else {
+            return;
+        };
+        self.send(Command::Widget {
+            part,
+            slot,
+            n,
+            value,
+            cell: Some(cell),
+        });
     }
 
     /// The user set `param` of `part`'s group `group` (every group when

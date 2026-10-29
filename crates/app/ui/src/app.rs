@@ -344,6 +344,13 @@ pub enum Action {
         widget: usize,
         value: f64,
     },
+    /// One cell of a script-owned table.
+    TableCell {
+        part: usize,
+        widget: usize,
+        cell: u32,
+        value: f64,
+    },
     /// A value of a part's sound, for one group or all of them.
     Sound {
         part: usize,
