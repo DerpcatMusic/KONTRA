@@ -21,7 +21,7 @@ use kontra_engine::{
 
 /// Opens a sample's audio as the store reads it: decoded to packed PCM.
 /// Called from several loader threads at once.
-pub type Open = dyn Fn(&ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> + Sync;
+pub type Open<'a> = dyn Fn(&ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> + Sync + 'a;
 
 /// Builds the plan for `instrument` at the engine `rate`. Samples that fail to
 /// open drop their zones and are reported; the script is left to the caller.
@@ -29,7 +29,7 @@ pub fn prepare(
     instrument: &ir::Instrument,
     rate: u32,
     store: &mut Store,
-    open: &Open,
+    open: &Open<'_>,
 ) -> (Plan, Vec<ir::Diagnostic>) {
     let mut diagnostics = Vec::new();
     let loaded = load_samples(instrument, store, open, &mut diagnostics);
@@ -164,7 +164,7 @@ pub fn prepare(
 fn load_samples(
     instrument: &ir::Instrument,
     store: &mut Store,
-    open: &Open,
+    open: &Open<'_>,
     diagnostics: &mut Vec<ir::Diagnostic>,
 ) -> Vec<Option<Arc<Sample>>> {
     let mut used: HashMap<usize, Vec<(&ir::Zone, Option<ir::Stream>)>> = HashMap::new();
