@@ -18,29 +18,38 @@ use kontra_ir as ir;
 /// Source kind 1: a MIDI controller (every assignment in the corpus).
 const MIDI: i32 = 1;
 
-/// The script-control assignments in a program's private data, each with
-/// its script slot.
+/// The MIDI assignments in a program's private data: those on script
+/// controls, each with its script slot, and the parameter names of the rest.
 // ponytail: finds the objects by their own framing instead of decoding
 // the program's private fields before them; decode those when another
 // field there is needed.
-pub(crate) fn links(private: &[u8]) -> Vec<(u8, ir::CcLink)> {
-    let mut out = Vec::new();
+pub(crate) fn links(private: &[u8]) -> (Vec<(u8, ir::CcLink)>, Vec<String>) {
+    let (mut links, mut others) = (Vec::new(), Vec::new());
     let mut at = 0;
     while at < private.len() {
         match record(private.get(at..).unwrap_or_default()) {
-            Some((len, link)) => {
-                out.extend(link);
+            Some((len, found)) => {
+                match found {
+                    Some(Ok(link)) => links.push(link),
+                    Some(Err(name)) => others.push(name),
+                    None => {}
+                }
                 at += len;
             }
             None => at += 1,
         }
     }
-    out
+    (links, others)
 }
 
-/// One BAutomationObject at the start of `b`: its length, and the link
-/// when it is a MIDI controller on a script control.
-fn record(b: &[u8]) -> Option<(usize, Option<(u8, ir::CcLink)>)> {
+/// A MIDI assignment: on a script control (its slot and link), or the
+/// name of the parameter it moves.
+type Found = Result<(u8, ir::CcLink), String>;
+
+/// One BAutomationObject at the start of `b`: its length and, when it is
+/// a MIDI controller, the link on a script control or else the name of
+/// the parameter it moves.
+fn record(b: &[u8]) -> Option<(usize, Option<Found>)> {
     let mut r = Reader(b, 0);
     let version = match (r.u8()?, r.u16()?) {
         (0, v @ (0x70 | 0x71)) => v,
@@ -65,21 +74,24 @@ fn record(b: &[u8]) -> Option<(usize, Option<(u8, ir::CcLink)>)> {
     if !name.bytes().all(|c| c.is_ascii_graphic()) {
         return None;
     }
-    let link = (kind == MIDI)
-        .then(|| script_control(name))
-        .flatten()
-        .and_then(|(slot, control)| {
-            Some((
-                slot,
-                ir::CcLink {
-                    cc: u8::try_from(cc).ok().filter(|&c| c < 128)?,
-                    control,
-                    from,
-                    to,
-                },
-            ))
-        });
-    Some((r.1, link))
+    let link = |(slot, control)| {
+        let cc = u8::try_from(cc).ok().filter(|&c| c < 128)?;
+        Some((
+            slot,
+            ir::CcLink {
+                cc,
+                control,
+                from,
+                to,
+            },
+        ))
+    };
+    let found = (kind == MIDI).then(|| {
+        script_control(name)
+            .and_then(link)
+            .ok_or_else(|| name.to_owned())
+    });
+    Some((r.1, found))
 }
 
 /// `pts_script_slider_2_40` → slot 2, the 41st slider.
@@ -141,7 +153,8 @@ mod tests {
             b.extend(u32::try_from(name.len()).unwrap_or(0).to_le_bytes());
             b.extend(name.bytes());
         }
-        let links = super::links(&b);
+        let (links, others) = super::links(&b);
+        assert!(others.is_empty());
         let got: Vec<_> = links
             .iter()
             .map(|(s, l)| (*s, l.cc, l.control, l.from, l.to))
