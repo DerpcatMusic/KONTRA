@@ -90,7 +90,10 @@ class Gates(unittest.TestCase):
 
     def test_snapshot_graph(self):
         release = (ROOT / ".github/workflows/release.yml").read_text()
-        self.assertIn("  push:\n    branches: [main]", release)
+        self.assertIn("    - cron: '0 3 * * *'", release)
+        self.assertNotIn("  push:", release)
+        self.assertIn("uses: ./.github/workflows/v3-verify.yml", release)
+        self.assertIn("needs.check.outputs.released == 'false'", release)
         self.assertIn("    needs: [verify, bundle]", release)
         self.assertIn("cargo moose build --clap --vst3 -p kontra-plugin", release)
         self.assertIn("gh release create", release)

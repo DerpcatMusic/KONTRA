@@ -1,8 +1,8 @@
 name: Release
 
 on:
-  push:
-    branches: [main]
+  schedule:
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -20,14 +20,33 @@ env:
   MOOSE_REV: bffa4677d0b82119d38566ce7e932dc5c463d497
 
 jobs:
-  verify:
+  check:
     if: github.ref == 'refs/heads/main' && !github.event.repository.private
-    uses: ./.github/workflows/ci.yml
-    with:
-      release_validation: false
+    runs-on: ubuntu-24.04
+    outputs:
+      released: ${{ steps.check.outputs.released }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > releases.json
+          git tag --points-at HEAD > head-tags.txt
+          python3 tools/release/already_released.py
+
+  verify:
+    needs: check
+    if: needs.check.outputs.released == 'false'
+    uses: ./.github/workflows/v3-verify.yml
 
   bundle:
-    if: github.ref == 'refs/heads/main' && !github.event.repository.private
+    needs: check
+    if: needs.check.outputs.released == 'false'
     strategy:
       fail-fast: false
       matrix:
@@ -89,6 +108,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

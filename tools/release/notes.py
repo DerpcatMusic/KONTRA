@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Create concise release notes from first-parent merged PRs."""
 import argparse
+import json
 import re
 import subprocess
 
@@ -24,47 +25,55 @@ def previous(head):
     raise ValueError('No previous v3 tag or v2 baseline is an ancestor')
 
 
-def clean(title):
-    title = re.sub(r'\s*\(#\d+\)\s*$', '', title)
-    title = re.sub(r'^(?:(?:P\d+(?:\.\d+)+[a-z]*|(?:feat|fix|perf|refactor|chore|docs|test|ci|build)(?:\([^)]*\))?)\s*:\s*)+', '', title, flags=re.I)
-    title = ' '.join(title.split()).strip(' .')
-    return title[:1].upper() + title[1:]
+AREAS = dict(sound='Sound & playing', interface='Interface', libraries='Libraries & loading',
+             performance='Performance', fix='Fixes')
 
 
-def section(title, paths):
+def fields(body):
+    note = re.search(r'^Release note:[ \t]*(.*?)[ \t]*$', body or '', re.I | re.M)
+    area = re.search(r'^Area:[ \t]*(.*?)[ \t]*$', body or '', re.I | re.M)
+    text = note.group(1).strip() if note else ''
+    if text.lower() == 'none':
+        text = ''
+    name = AREAS.get(area.group(1).strip().lower()) if area else None
+    return text, name
+
+
+def section(paths):
     def internal(path):
         return (path.startswith(('tools/', '.github/', 'docs/', 'tests/'))
-                or '/tests/' in path or path.endswith(('_test.rs', '/test.rs', '/tests.rs'))
-                or path.endswith('size-baseline.json'))
-    paths = [p for p in paths if p]
-    if paths and all(internal(p) for p in paths):
+                or '/tests/' in path or '/playtest' in path or '/survey' in path
+                or path.endswith(('_test.rs', '/test.rs', '/tests.rs', 'size-baseline.json')))
+    paths = [p for p in paths if p and not internal(p)]
+    if not paths:
         return None
-    if re.search(r'\b(perf(?:ormance)?|faster|speed|cache|latency|memory|cpu)\b', title, re.I):
-        return 'Performance'
     if any(p.startswith(('crates/app/ui/', 'plugin/src/editor')) for p in paths):
         return 'Interface'
-    if any(p.startswith(('crates/format/', 'crates/stream/', 'crates/app/library/')) for p in paths):
+    if any(p.startswith(('crates/format/', 'crates/engine/stream/', 'crates/app/library/')) for p in paths):
         return 'Libraries & loading'
-    if any(p.startswith(('crates/dsp/', 'crates/engine/', 'crates/voice/')) for p in paths):
+    if any(p.startswith(('crates/dsp/', 'crates/engine/', 'crates/script/', 'crates/model/', 'crates/app/host/')) for p in paths):
         return 'Sound & playing'
-    if re.search(r'\b(ui|interface|knob|label|draw|view)\b', title, re.I):
-        return 'Interface'
-    if re.search(r'\b(librar(?:y|ies)|load|sample|preset)\b', title, re.I):
-        return 'Libraries & loading'
-    if re.search(r'\b(fix|correct|resolve|prevent)\b', title, re.I):
-        return 'Fixes'
-    return 'Sound & playing'
+    return None
+
+
+def pull_body(number):
+    data = subprocess.check_output(['gh', 'api', f'repos/DerpcatMusic/KONTRA/pulls/{number}'], text=True)
+    return json.loads(data).get('body') or ''
 
 
 def render(entries):
     groups = {name: [] for name in SECTIONS}
     internal = 0
-    for title, number, paths in entries:
-        name = section(title, paths)
-        if name is None:
+    for body, number, paths in entries:
+        note, explicit_area = fields(body)
+        name = explicit_area or section(paths)
+        if not note or not name:
             internal += 1
         else:
-            groups[name].append(f'- {clean(title)}. ([#{number}]({REPO}/pull/{number}))')
+            note = note.rstrip()
+            if note[-1] not in '.!?':
+                note += '.'
+            groups[name].append(f'- {note} ([#{number}]({REPO}/pull/{number}))')
     lines = []
     for name, changes in groups.items():
         if changes:
@@ -87,7 +96,7 @@ def main():
         match = re.search(r'\(#(\d+)\)\s*$', title)
         if match:
             paths = git('diff-tree', '--root', '--first-parent', '-m', '--no-commit-id', '--name-only', '-r', sha).splitlines()
-            entries.append((title, match.group(1), paths))
+            entries.append((pull_body(match.group(1)), match.group(1), paths))
     print(render(entries))
 
 
