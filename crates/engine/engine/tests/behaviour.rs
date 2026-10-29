@@ -542,6 +542,7 @@ fn pitch_bend_moves_sounding_voices_by_its_route() {
             source: kontra_engine::ir::Source::PitchBend,
             semitones: 2.0,
             depth: 1.0,
+            tau_ms: 0.0,
         },
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -749,6 +750,7 @@ fn a_controller_pitch_route_moves_sounding_voices() {
             source: Source::Controller(1),
             semitones: 12.0,
             depth: 1.0,
+            tau_ms: 0.0,
         },
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -790,6 +792,7 @@ fn an_envelope_pitch_route_rises_holds_and_releases() {
             source: Source::Envelope(0),
             semitones: 12.0,
             depth: 1.0,
+            tau_ms: 0.0,
         },
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -1620,6 +1623,56 @@ fn a_lagging_controller_route_glides_as_a_one_pole() {
         left(tau_ms)
     );
     assert!(left(4.0 * tau_ms) < 0.02 && left(0.1) > 0.99, "{from} {to}");
+}
+
+#[test]
+fn a_lagging_pitch_route_glides_its_semitones() {
+    use kontra_engine::ir::{Mod, ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    // Kontakt's pitch-bend route, lag 250 ms: τ = 250 / ln 100.
+    let tau_ms = 250.0 / 100f64.ln();
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Pitch {
+            source: Source::PitchBend,
+            semitones: 2.0,
+            depth: 1.0,
+            tau_ms: tau_ms as f32,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60, 1.0)]);
+    // Semitones the voice plays over each 256-frame block from the bend on.
+    let at = |e: &Engine| e.voices().next().map(|(_, p, _)| p).unwrap();
+    let mut semitones = Vec::new();
+    for n in 0..48 {
+        let from = at(&e);
+        let bend = Timed {
+            at: SampleTime(0),
+            body: Event::midi1(0xE0, 0, 0x60),
+        };
+        level(
+            &mut e,
+            if n == 0 {
+                std::slice::from_ref(&bend)
+            } else {
+                &[]
+            },
+        );
+        semitones.push(12.0 * ((at(&e) - from) / 256.0).log2());
+    }
+    // Half the range: a third of the way left after τ, under 2% after 4τ.
+    let left = |ms: f64| 1.0 - semitones[(ms * 48.0 / 256.0) as usize];
+    assert!(left(0.0) > 0.85, "{semitones:?}");
+    assert!(
+        (left(tau_ms) - (-1.0f64).exp()).abs() < 0.05,
+        "{semitones:?}"
+    );
+    assert!(left(4.0 * tau_ms) < 0.02, "{semitones:?}");
 }
 
 #[test]

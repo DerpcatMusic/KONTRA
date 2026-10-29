@@ -5,7 +5,7 @@
 use kontra_ir as ir;
 use kontra_time::SampleTime;
 
-use crate::Engine;
+use crate::{Engine, MAX_SPAN, voice_gain};
 
 /// When a voice is being read, in seconds.
 #[derive(Clone, Copy, Debug)]
@@ -37,8 +37,9 @@ impl Engine {
         }
     }
 
-    /// Re-reads envelopes and LFOs for voices whose group has any, and every
-    /// voice while a script modulation ramps; once per [`MAX_SPAN`] grid step.
+    /// Re-reads envelopes and LFOs for voices whose group has any, gliding
+    /// voices' lagging pitch, and every voice while a script modulation
+    /// ramps; once per [`MAX_SPAN`] grid step.
     pub(crate) fn refresh_timed(&mut self) {
         let plan = self.plan.clone();
         let ramping = self.now.0 < self.ramping_until;
@@ -49,7 +50,9 @@ impl Engine {
             let Some(zone) = plan.zones.get(slot.zone) else {
                 continue;
             };
+            let gliding = slot.bend[0] != slot.bend[1];
             let timed = ramping
+                || gliding
                 || self
                     .groups
                     .get(zone.group as usize)
@@ -61,7 +64,8 @@ impl Engine {
             let age = self.age(slot.started, slot.released_at);
             let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age);
             let mix = self.voice_mix(zone, &n, age);
-            let step = self.step(zone, &n, age);
+            let (step, bend) = self.step(zone, &n, age);
+            let rate = self.rate;
             self.retune_rack(i, zone, &n, age);
             if let Some(slot) = self.voices.get_mut(i) {
                 slot.voice.set_gain(gain);
@@ -69,7 +73,9 @@ impl Engine {
                 if let Some(mix) = mix {
                     slot.voice.set_mix(mix);
                 }
-                slot.voice.set_step(step);
+                let at = bend.from(slot.bend[0], MAX_SPAN as f32, rate);
+                slot.bend = [at, bend.semitones];
+                slot.voice.set_step(voice_gain::bent(step, at));
             }
         }
     }

@@ -337,6 +337,7 @@ impl<L: Library> Translator<'_, '_, L> {
                     source,
                     semitones,
                     depth: 1.0,
+                    tau_ms: 0.0,
                 });
             }
             self.player(player, placement, &span, &mut group, slot)?;

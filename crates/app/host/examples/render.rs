@@ -369,16 +369,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
     // KONTRA_CC="11=127,1=100": controllers sent with the note-on;
-    // "7:64@1.5" (or "7=64@1.5") sends one 1.5 s into the render, on its frame.
+    // "7:64@1.5" (or "7=64@1.5") sends one 1.5 s into the render, on its frame;
+    // "pb:16383@1" is a 14-bit pitch bend.
     let rides: Vec<(usize, Event)> = std::env::var("KONTRA_CC")
         .unwrap_or_default()
         .split(',')
         .filter_map(|entry| {
             let (cc, rest) = entry.split_once(['=', ':'])?;
             let (v, at) = rest.split_once('@').unwrap_or((rest, "0"));
-            let (cc, v): (u32, u32) = (cc.trim().parse().ok()?, v.trim().parse().ok()?);
+            let v: u32 = v.trim().parse().ok()?;
             let at: f32 = at.trim().parse().ok()?;
-            let word = 0x20B0_0000 | (cc & 127) << 8 | (v & 127);
+            let word = match cc.trim() {
+                "pb" => 0x20E0_0000 | (v & 127) << 8 | (v >> 7 & 127),
+                cc => 0x20B0_0000 | (cc.parse::<u32>().ok()? & 127) << 8 | (v & 127),
+            };
             Some(((at * RATE as f32) as usize, Event::Ump([word, 0])))
         })
         .collect();

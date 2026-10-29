@@ -11,6 +11,38 @@ use crate::effects::{self, product};
 use crate::modulators::{self, Age};
 use crate::{Control, Engine, Level, Zone};
 
+/// A voice's lagging pitch routes: their semitones and longest time constant.
+/// The voice glides toward them a control step at a time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Bend {
+    pub(crate) semitones: f32,
+    pub(crate) tau_ms: f32,
+}
+
+impl Bend {
+    pub(crate) const NONE: Self = Self {
+        semitones: 0.0,
+        tau_ms: 0.0,
+    };
+
+    /// Semitones `at` moves to in `frames` toward these, as a one-pole;
+    /// there once within a hundredth of a cent.
+    pub(crate) fn from(self, at: f32, frames: f32, rate: u32) -> f32 {
+        let tau = self.tau_ms * rate as f32 / 1000.0;
+        let next = at + (self.semitones - at) * (1.0 - (-frames / tau).exp());
+        if (self.semitones - next).abs() < 1e-4 {
+            self.semitones
+        } else {
+            next
+        }
+    }
+}
+
+/// `step` raised by `semitones`.
+pub(crate) fn bent(step: f64, semitones: f32) -> f64 {
+    step * 2f64.powf(f64::from(semitones) / 12.0)
+}
+
 impl Engine {
     /// The voice's gain, and the slower gain of its routes that lag (their
     /// product, at the longest time constant among them).
@@ -281,23 +313,28 @@ impl Engine {
         })
     }
 
-    pub(crate) fn step(&self, zone: &Zone, note: &Note, age: Age) -> f64 {
-        // ponytail: pitch moves at once; Kontakt lags pitch routes (250 ms
-        // default). Add a per-voice step glide when a library's bend steps audibly.
-        let mods: f32 = self.groups.get(zone.group as usize).map_or(0.0, |g| {
-            g.mods
-                .iter()
-                .filter(|m| !m.bypass)
-                .filter_map(|m| match m.kind {
-                    ir::ModKind::Pitch {
-                        source,
-                        semitones,
-                        depth,
-                    } => Some(self.routed(zone, source, note, age)? * semitones * depth),
-                    _ => None,
-                })
-                .sum()
-        });
+    /// The voice's step without its lagging pitch routes, and those routes:
+    /// the voice glides toward them ([`Bend`]).
+    pub(crate) fn step(&self, zone: &Zone, note: &Note, age: Age) -> (f64, Bend) {
+        let (mut mods, mut bend) = (0.0f32, Bend::NONE);
+        let groups = self.groups.get(zone.group as usize);
+        for m in groups.iter().flat_map(|g| &g.mods).filter(|m| !m.bypass) {
+            if let ir::ModKind::Pitch {
+                source,
+                semitones,
+                depth,
+                tau_ms,
+            } = m.kind
+            {
+                let st = self.routed(zone, source, note, age).unwrap_or(0.0) * semitones * depth;
+                if tau_ms > 0.0 {
+                    bend.semitones += st;
+                    bend.tau_ms = bend.tau_ms.max(tau_ms);
+                } else {
+                    mods += st;
+                }
+            }
+        }
         let semitones = f64::from(mods)
             + (f64::from(note.key) - f64::from(zone.root)) * zone.keytrack
             + zone.tune
@@ -305,7 +342,8 @@ impl Engine {
             + note.tune
             + note.expression_tune
             + f64::from(note.script_tune) / 100_000.0;
-        2f64.powf(semitones / 12.0) * f64::from(zone.sample_rate) / f64::from(self.rate)
+        let step = 2f64.powf(semitones / 12.0) * f64::from(zone.sample_rate) / f64::from(self.rate);
+        (step, bend)
     }
 
     /// The fractions of the sample its loops' start and end move for a

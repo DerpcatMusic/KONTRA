@@ -18,11 +18,13 @@ pub enum ModKind {
         tau_ms: f32,
     },
     /// `source × depth × semitones` added to the pitch: `semitones` is the
-    /// route's range, `depth` (−1..=1) its live intensity.
+    /// route's range, `depth` (−1..=1) its live intensity. The semitones
+    /// follow as a one-pole with time constant `tau_ms` (0: at once).
     Pitch {
         source: Source,
         semitones: f32,
         depth: f32,
+        tau_ms: f32,
     },
     /// `source × amount` added to the pan (−1..=1).
     Pan { source: Source, amount: f32 },

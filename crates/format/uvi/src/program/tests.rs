@@ -427,6 +427,7 @@ fn an_oscillators_bend_and_controller_pitch_routes_reach_its_group() {
         source,
         semitones,
         depth: 1.0,
+        tau_ms: 0.0,
     };
     assert_eq!(
         out.groups[0]
@@ -566,6 +567,7 @@ fn a_layer_ahd_bends_its_oscillators_pitch_through_breakpoints() {
             source: ir::Source::Envelope(0),
             semitones: -2.0,
             depth: 1.0,
+            tau_ms: 0.0,
         }]
     );
     let e = &g.envelopes[0];
@@ -609,6 +611,7 @@ fn a_step_envelope_bends_pitch_through_a_held_step_table() {
             source: ir::Source::Shaped(0),
             semitones: 12.0,
             depth: 1.0,
+            tau_ms: 0.0,
         }]
     );
     // Four sixteenths a cycle, on the song clock.
@@ -908,6 +911,7 @@ fn a_mapped_bend_bends_pitch_through_its_mapper() {
             source: ir::Source::Shaped(0),
             semitones: 2.0,
             depth: 1.0,
+            tau_ms: 0.0,
         }]
     );
     assert_eq!(g.shapers[0].source, ir::Source::PitchBend);
@@ -938,6 +942,7 @@ fn a_mapped_script_modulation_bends_pitch_through_its_mapper() {
             source: ir::Source::Shaped(0),
             semitones: 2.0,
             depth: 1.0,
+            tau_ms: 0.0,
         }]
     );
     assert_eq!(g.shapers[0].source, ir::Source::Script(2));
