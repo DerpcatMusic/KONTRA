@@ -213,6 +213,37 @@ fn a_released_note_ends_and_is_reported() {
 }
 
 #[test]
+fn a_note_off_among_controllers_in_one_block_still_releases_the_note() {
+    // Controllers at the note-off's own sample and either side of it, all
+    // in the block that carries it: the note must still end.
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut engine = Engine::new(
+        plan(
+            vec![zone(region(&mut store, "a", 480_000).unwrap(), 0.0)],
+            8,
+        ),
+        store.client(),
+        RATE,
+    );
+    let events = [
+        on(0, 60),
+        cc(599, 1, 64),
+        cc(600, 11, 100),
+        off(600, 60),
+        cc(600, 7, 90),
+        cc(601, 74, 20),
+    ];
+    render(&mut engine, &events, 1024, 1024);
+    let mut ended = Vec::new();
+    for _ in 0..400 {
+        engine.process(&mut [[0.0; 2]; 128], &[]);
+        ended.extend_from_slice(engine.ended());
+    }
+    assert_eq!(engine.active_voices(), 0);
+    assert_eq!(ended, vec![host(60)]);
+}
+
+#[test]
 fn a_full_pool_fades_the_oldest_voice_and_counts_it() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut engine = Engine::new(
