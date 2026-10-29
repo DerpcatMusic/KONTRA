@@ -1,4 +1,5 @@
-//! UVI's WaveShaper onto `ir::Shaper`. The laws are UVIWorkstation's
+//! UVI's WaveShaper onto `ir::Shaper` and its DiodeClipper onto
+//! `ir::Clipper`. The laws are UVIWorkstation's
 //! WaveShaper (parameters registered by 0x14126e2b0, the audio method
 //! 0x141271fd0 behind vtable 0x141e71108):
 //! - the wet path takes `InputGain` (dB), a one-pole low-pass at `PreFreq`
@@ -13,6 +14,12 @@
 //! `Knee` (`10^(Knee/10)`, a power on `|x|` around the curve) is 0 in every
 //! corpus program and reported when set. UVI runs the curve at `2^Oversampling`
 //! times the rate; the engine always runs it at twice.
+//!
+//! The DiodeClipper (audio method 0x1412584e0, the circuit 0x141258040,
+//! constants at 0x141e6ec40..68): `Drive` dB into a 4.5 V `tanh` limit, a
+//! `HighPass` Hz coupling capacitor into a `Tone` Hz low-pass shunted by a
+//! diode pair (`5.5462e-6`, `22.075`/V, the reverse side `10^Asymmetry`
+//! steeper), a 1 Hz DC blocker (0x141257ee0), then `OutputGain` dB.
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -24,7 +31,7 @@ use super::num;
 
 /// The WaveShaper at `node`; `None` (reported) for a mode not carried.
 pub(super) fn wave_shaper(node: Node, notes: &mut Notes) -> Result<Option<ir::Effect>, String> {
-    let gain = |name| Ok::<_, String>(10f32.powf(num(node, name, 0.0)? as f32 / 20.0));
+    let gain = |name| Ok::<_, String>(gain_of(num(node, name, 0.0)?));
     let input = gain("InputGain")?;
     let d = (8.0 * num(node, "Amount", 0.0)?.clamp(0.0, 1.0) as f32).exp2();
     let mode = num(node, "Mode", 0.0)?;
@@ -54,6 +61,31 @@ pub(super) fn wave_shaper(node: Node, notes: &mut Notes) -> Result<Option<ir::Ef
         output: mix * gain("OutputGain")? * scale,
         dry: 1.0 - mix,
     }))
+}
+
+/// The DiodeClipper at `node`.
+pub(super) fn diode_clipper(node: Node) -> Result<ir::Effect, String> {
+    let clipper = ir::Clipper {
+        drive: gain_of(num(node, "Drive", 0.0)?),
+        limit: 4.5,
+        tone_hz: num(node, "Tone", 20_000.0)? as f32,
+        coupling_hz: num(node, "HighPass", 1.0)? as f32,
+        saturation: 5.5462e-6,
+        slope: 22.075_055,
+        asymmetry: 10f32.powf(num(node, "Asymmetry", 0.0)? as f32),
+        dc_hz: 1.0,
+    };
+    Ok(ir::Effect {
+        kind: ir::EffectKind::Clipper(clipper),
+        bypass: false,
+        output: gain_of(num(node, "OutputGain", 0.0)?),
+        dry: 0.0,
+    })
+}
+
+/// Linear gain of `dB`.
+fn gain_of(db: f64) -> f32 {
+    10f32.powf(db as f32 / 20.0)
 }
 
 fn unsupported(notes: &mut Notes, mode: f64) -> Result<Option<ir::Effect>, String> {

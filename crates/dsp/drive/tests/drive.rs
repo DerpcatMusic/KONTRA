@@ -1,4 +1,4 @@
-use kontra_dsp_drive::{Crush, Curve, Reduction, Shaper, Tone};
+use kontra_dsp_drive::{Circuit, Clipper, Crush, Curve, Reduction, Shaper, Tone};
 
 /// Steady-state peak of a sine at `hz` through `s`, in dB.
 fn gain_db(mut s: Shaper, hz: f64, rate: u32) -> f64 {
@@ -234,4 +234,32 @@ fn nan_settings_stay_finite_and_reset_replays_the_noise() {
     let mut b = vec![[0.0; 2]; 64];
     c.process(&mut b);
     assert_eq!(a, b);
+}
+
+#[test]
+fn the_diode_clipper_passes_small_signals_and_holds_loud_ones_under_a_volt() {
+    let circuit = Circuit {
+        drive: 1.0,
+        limit: 4.5,
+        tone_hz: 20_000.0,
+        coupling_hz: 1.0,
+        saturation: 5.5462e-6,
+        slope: 22.075,
+        asymmetry: 1.0,
+        dc_hz: 1.0,
+    };
+    let peak = |level: f32| {
+        let mut io: Vec<[f32; 2]> = (0..48_000)
+            .map(|i| [(std::f32::consts::TAU * 1000.0 * i as f32 / 48_000.0).sin() * level; 2])
+            .collect();
+        Clipper::new(circuit, 48_000).process(&mut io);
+        io.iter()
+            .skip(24_000)
+            .map(|x| x[0].abs())
+            .fold(0.0, f32::max)
+            / level
+    };
+    assert!((peak(0.01) - 1.0).abs() < 0.05, "{}", peak(0.01));
+    let loud = peak(1.0);
+    assert!((0.3..0.8).contains(&loud), "{loud}");
 }

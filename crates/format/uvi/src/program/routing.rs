@@ -7,7 +7,7 @@
 //! ends on the main output ahead of the program's own inserts, as an aux set
 //! `PreInsert` does. Of the effects, Gain, GainMatrix, TrackDelay (at 0),
 //! DigitalEq, Convolver, SampledReverb, ThreeBandShelves, DualDelay,
-//! Maximizer, SparkVerb and WaveShaper are carried; the rest pass their input and are
+//! Maximizer, SparkVerb, WaveShaper and DiodeClipper are carried; the rest pass their input and are
 //! reported (see `effects`).
 
 use kontra_format::Notes;
@@ -17,7 +17,7 @@ use roxmltree::Node;
 use super::delay::dual_delay;
 use super::digital_eq::{digital_eq, gain_scale};
 use super::reverb::spark_verb;
-use super::shaper::wave_shaper;
+use super::shaper::{diode_clipper, wave_shaper};
 use super::{Library, Translator, db, flag, num};
 
 /// Effects a keygroup's voices run themselves (see [`Translator::voice_slots`]).
@@ -47,6 +47,7 @@ pub(super) fn carried(node: Node) -> bool {
         "Maximizer",
         "SparkVerb",
         "WaveShaper",
+        "DiodeClipper",
     ]
     .iter()
     .any(|t| node.has_tag_name(*t));
@@ -282,6 +283,8 @@ impl<L: Library> Translator<'_, '_, L> {
             Some(maximizer(node, &mut self.notes)?)
         } else if node.has_tag_name("WaveShaper") {
             wave_shaper(node, &mut self.notes)?
+        } else if node.has_tag_name("DiodeClipper") {
+            Some(diode_clipper(node)?)
         } else if node.has_tag_name("DualDelay") {
             Some(dual_delay(node, &mut self.notes)?)
         } else if node.has_tag_name("Convolver") || node.has_tag_name("SampledReverb") {

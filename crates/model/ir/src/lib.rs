@@ -13,8 +13,8 @@ mod mods;
 mod reverb;
 pub use bus::{Bus, BusSend};
 pub use drive::{
-    Crush, Curve as DriveCurve, EffectParam, KnobTarget, Overdrive, RackAt, Shaper, SlotKnob,
-    SlotLaw, SlotShape,
+    Clipper, Crush, Curve as DriveCurve, EffectParam, KnobTarget, Overdrive, RackAt, Shaper,
+    SlotKnob, SlotLaw, SlotShape,
 };
 pub use effects::{
     Compressor, Delay, DelayTime, Detector, IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb,
@@ -672,6 +672,8 @@ pub enum EffectKind {
     Crush(Crush),
     /// An overdrive pedal.
     Overdrive(Overdrive),
+    /// A diode clipper circuit (the wet path; `dry` mixes the input back).
+    Clipper(Clipper),
     /// Copies its input to send slot n at `levels[n]` (linear), passing it on.
     Sends([f32; 8]),
     /// The input convolved with [`Instrument::impulses`] at this index (wet).

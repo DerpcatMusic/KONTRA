@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use kontra_dsp::delay::{MAX_MS, ModDelay, Phaser, PhaserSettings};
-use kontra_dsp::drive::Shaper;
+use kontra_dsp::drive::{Circuit, Clipper, Shaper};
 use kontra_dsp::dynamics::{
     Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
     TransientSettings,
@@ -132,6 +132,12 @@ impl Wet for Shaper {
         if let ir::EffectKind::Shaper(s) = kind {
             self.set_curve(voice_rack::curve(s.curve));
         }
+    }
+}
+
+impl Wet for Clipper {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Clipper::process(self, io);
     }
 }
 
@@ -351,6 +357,19 @@ impl Rack {
                     wet(Box::new(Phaser::new(phaser(p, 120.0), rate)))
                 }
                 Some(ir::EffectKind::Shaper(s)) => wet(Box::new(voice_rack::shaper(s, rate))),
+                Some(ir::EffectKind::Clipper(c)) => wet(Box::new(Clipper::new(
+                    Circuit {
+                        drive: c.drive,
+                        limit: c.limit,
+                        tone_hz: c.tone_hz,
+                        coupling_hz: c.coupling_hz,
+                        saturation: c.saturation,
+                        slope: c.slope,
+                        asymmetry: c.asymmetry,
+                        dc_hz: c.dc_hz,
+                    },
+                    rate,
+                ))),
                 Some(ir::EffectKind::Transient(t)) => wet(Box::new(Transient::new(
                     TransientSettings {
                         attack: t.attack,

@@ -84,6 +84,24 @@ pub struct Overdrive {
     pub curve: &'static [f32; 256],
 }
 
+/// A diode clipper circuit (the engine's `drive::Clipper`), solved per
+/// frame: the input soft-limited to `limit·tanh(drive·x/limit)`, a coupling
+/// high-pass at `coupling_hz` into a low-pass at `tone_hz` across an
+/// antiparallel diode pair conducting `saturation·(e^(slope·v) −
+/// e^(−asymmetry·slope·v))` (in units of the tone resistor's current), then
+/// a one-pole DC blocker at `dc_hz`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clipper {
+    pub drive: f32,
+    pub limit: f32,
+    pub tone_hz: f32,
+    pub coupling_hz: f32,
+    pub saturation: f32,
+    pub slope: f32,
+    pub asymmetry: f32,
+    pub dc_hz: f32,
+}
+
 /// An effect control a route or a script moves, in the effect's own units:
 /// a [`crate::Formant`] knob, a curve's amount, a [`Crush`] rate or bits, a
 /// dynamics or modulation effect's physical setting.
