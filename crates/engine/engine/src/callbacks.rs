@@ -35,20 +35,20 @@ impl Engine {
         self.ids.callbacks = (self.ids.callbacks + 1) & 0xF_FFFF;
         running.callback_id = self.ids.callbacks;
         running.slot = slot;
-        #[cfg(feature = "trace")]
-        if let Some(trace) = &mut self.trace {
-            trace.push(crate::TraceEvent::Callback {
-                frame: self.now.0,
-                slot,
-                kind: running.callback_type,
-                id: running.callback_id,
-                resume: false,
-            });
-        }
         let outer = std::mem::replace(&mut self.running, running);
         let mark = self.forward.len();
         if let Some(mut vm) = self.take_vm(slot) {
             if let Some(co) = start(&mut vm, running.context()) {
+                #[cfg(feature = "trace")]
+                if let Some(trace) = &mut self.trace {
+                    trace.push(crate::TraceEvent::Callback {
+                        frame: self.now.0,
+                        slot,
+                        kind: running.callback_type,
+                        id: running.callback_id,
+                        resume: false,
+                    });
+                }
                 self.step_script(slot, &mut vm, co);
             }
             self.put_vm(slot, vm);
