@@ -1988,3 +1988,48 @@ fn a_bus_pan_glides_in_a_line_over_50_ms() {
         &rest[1916..]
     );
 }
+
+#[test]
+fn volume_and_pan_controllers_set_the_output_unless_a_script_ignores_them() {
+    use kontra_engine::ir;
+    let run = |source: &str| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+        for g in &mut plan.groups {
+            g.mods.clear();
+        }
+        // Saved at -6 dB; CC 7 replaces it, CC 10 pans.
+        plan.output = ir::Output {
+            volume_db: -6.0,
+            controllers: Some(ir::OutputControllers {
+                volume: 7,
+                pan: 10,
+                top_db: 0.0,
+            }),
+            ..ir::Output::UNITY
+        };
+        let script = kontra_ksp::compile(source, &[]).unwrap();
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let cc = |n: u8, v: u8| Timed {
+            at: SampleTime(0),
+            body: Event::midi1(0xB0, n, v),
+        };
+        let mut out = vec![[0.0f32; 2]; 48_000];
+        e.process(&mut out, &[on(60)]);
+        let saved = out[47_999];
+        e.process(&mut out, &[cc(7, 64), cc(10, 32)]);
+        (saved, out[47_999])
+    };
+    let (saved, moved) = run("on init\nend on");
+    let half = 10f32.powf(-6.0 / 20.0);
+    assert!((saved[0] - 0.5 * half).abs() < 1e-4, "{saved:?}");
+    let cubed = (64.0f32 / 127.0).powi(3);
+    assert!((moved[0] - 0.5 * cubed).abs() < 1e-4, "{moved:?}");
+    assert!(
+        (moved[1] - 0.5 * cubed * 32.0 / 63.5).abs() < 1e-4,
+        "{moved:?}"
+    );
+    let (saved, ignored) = run("on controller\n  ignore_controller\nend on");
+    assert_eq!(saved, ignored);
+}

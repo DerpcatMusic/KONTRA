@@ -3,7 +3,7 @@
 mod glide;
 mod halfband;
 
-pub use glide::Levels;
+pub use glide::{Fader, Levels};
 pub use halfband::Halfband;
 
 /// One stereo biquad section, transposed direct form II, f64 state so

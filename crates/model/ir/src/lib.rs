@@ -10,6 +10,7 @@ mod bus;
 mod drive;
 mod effects;
 mod mods;
+mod output;
 mod reverb;
 pub use bus::{Bus, BusSend};
 pub use drive::{
@@ -21,6 +22,7 @@ pub use effects::{
     IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
 };
 pub use mods::{Blend, Factor, ModKind, Term, Transfer};
+pub use output::{Output, OutputControllers};
 pub use reverb::{
     CombNetwork, HadamardNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar,
 };
@@ -44,6 +46,8 @@ pub struct Instrument {
     pub sends: Vec<Option<Effect>>,
     /// Effects after the inserts and sends, by slot.
     pub main: Vec<Option<Effect>>,
+    /// The fader and pan after every effect.
+    pub output: Output,
     /// Responses [`EffectKind::Convolution`] slots play.
     pub impulses: Vec<Impulse>,
     /// Responses a script may load into a convolution slot by name
@@ -69,6 +73,7 @@ impl Instrument {
         inserts: Vec::new(),
         sends: Vec::new(),
         main: Vec::new(),
+        output: Output::UNITY,
         impulses: Vec::new(),
         responses: Vec::new(),
         slot_laws: Vec::new(),
