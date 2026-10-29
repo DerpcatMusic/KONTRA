@@ -93,9 +93,7 @@ impl Engine {
         let own = script.callbacks.ui_control.iter().find(|(i, _)| *i == id);
         let own = own.and_then(|&(_, own)| own);
         let controls = &script.controls;
-        let n = id
-            .checked_sub(controls.first)
-            .and_then(|n| usize::try_from(n).ok());
+        let n = self.control_index_in(slot, id);
         let cell = n.and_then(|n| controls.cells.get(n).copied().flatten());
         if cell.is_none() && own.is_none() {
             return;
