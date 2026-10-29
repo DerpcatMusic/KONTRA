@@ -319,12 +319,7 @@ pub struct Bus {
     pub blends: Vec<ir::Blend>,
 }
 
-/// A prepared impulse response.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Response {
-    pub left: Vec<f32>,
-    pub right: Vec<f32>,
-}
+pub use kontra_effects::Response;
 
 /// Pool sizes, zones, groups and buses. Growing a pool is a new plan, not a resize.
 #[derive(Clone)]

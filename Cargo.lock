@@ -2379,10 +2379,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "kontra-effects"
+version = "0.0.0"
+dependencies = [
+ "kontra-dsp",
+ "kontra-ir",
+ "kontra-stream",
+ "kontra-voice",
+]
+
+[[package]]
 name = "kontra-engine"
 version = "0.0.0"
 dependencies = [
  "kontra-dsp",
+ "kontra-effects",
  "kontra-events",
  "kontra-ir",
  "kontra-script-ui",

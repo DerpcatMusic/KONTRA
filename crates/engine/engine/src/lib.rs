@@ -13,7 +13,7 @@ mod behaviour;
 mod buses;
 mod callbacks;
 mod controls;
-mod effects;
+
 mod engine_pars;
 mod filters;
 mod fx_types;
@@ -30,7 +30,7 @@ mod pgs;
 mod plan;
 mod queue;
 mod racks;
-mod response;
+
 mod script;
 mod transport;
 mod ui;
@@ -46,6 +46,8 @@ use kontra_voice::{Voice, VoiceStart};
 
 pub use engine_pars::{EnginePar, EnginePars};
 pub use fx_types::{EffectRequest, Prepared};
+pub use kontra_effects::response;
+pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_script_ui::{Key, KeyRange, MenuItem, Page};
@@ -58,8 +60,6 @@ pub use plan::{
     Zone,
 };
 pub use queue::Timed;
-pub use racks::stem;
-pub use response::response;
 pub use script::{Callbacks, Controls, LookPars, ScriptPlan};
 pub use transport::Play;
 pub use ui::ControlLook;
@@ -70,8 +70,8 @@ use ledger::{Ledger, Note, Origin};
 use queue::{EventQueue, Work};
 use script::{Kind, Running};
 
-/// Frames rendered per inner span; sizes the bus buffers.
-const MAX_SPAN: u64 = 256;
+use kontra_effects::MAX_SPAN;
+use kontra_effects::matrix as effects;
 /// A stolen, choked or limited voice fades over this long instead of clicking.
 const FADE_SECONDS: f64 = 0.005;
 
