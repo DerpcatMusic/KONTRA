@@ -237,7 +237,7 @@ impl Engine {
 
     /// A reverb control's physical value for a raw 0..=1_000_000 setting, through
     /// the translator's law; `None` when `par` is not one of them.
-    fn reverb_value(&self, par: EnginePar, raw: i32) -> Option<(ir::ReverbPar, f32)> {
+    pub(crate) fn reverb_value(&self, par: EnginePar, raw: i32) -> Option<(ir::ReverbPar, f32)> {
         let EnginePar::Reverb(which) = par else {
             return None;
         };
