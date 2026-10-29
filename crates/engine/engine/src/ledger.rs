@@ -78,6 +78,10 @@ pub(crate) struct Note {
     pub(crate) started: bool,
     /// A script ignored the event: it starts no voices.
     pub(crate) ignored: bool,
+    /// Played by a release callback: starts its release-trigger zones too.
+    pub(crate) from_release: bool,
+    /// Its player ended it with `note_off`: only the slots after hear it.
+    pub(crate) noted_off: bool,
     /// Script tuning, millicents.
     pub(crate) script_tune: i32,
     /// Script volume, millidecibels.
@@ -128,6 +132,8 @@ impl Note {
             key_up: false,
             started: false,
             ignored: false,
+            from_release: false,
+            noted_off: false,
             script_tune: 0,
             script_volume: 0,
             script_pan: 0,

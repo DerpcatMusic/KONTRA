@@ -656,7 +656,29 @@ fn real_performances_sound_on_time_end_and_never_burst() {
     // KONTRA_PLAYTEST=<part of a path> plays just the programs it names.
     let only = std::env::var("KONTRA_PLAYTEST").unwrap_or_default();
     let out = std::env::var_os("KONTRA_PLAYTEST_OUT").map(PathBuf::from);
-    for program in PROGRAMS.iter().filter(|p| p.contains(&only)) {
+    // KONTRA_PLAYTEST_LIST=<file>: plays the programs it lists, one path a
+    // line, instead of the user's ten; KONTRA_PLAYTEST_SHARD=i/n plays every
+    // nth from the ith, so n processes share a corpus.
+    let list = std::env::var_os("KONTRA_PLAYTEST_LIST")
+        .map(|f| std::fs::read_to_string(f).expect("KONTRA_PLAYTEST_LIST"));
+    let programs: Vec<&str> = match &list {
+        Some(l) => l.lines().filter(|l| !l.is_empty()).collect(),
+        None => PROGRAMS.to_vec(),
+    };
+    let (shard, shards) = std::env::var("KONTRA_PLAYTEST_SHARD")
+        .ok()
+        .and_then(|s| {
+            let (i, n) = s.split_once('/')?;
+            Some((i.parse::<usize>().ok()?, n.parse::<usize>().ok()?.max(1)))
+        })
+        .unwrap_or((0, 1));
+    let programs = programs
+        .into_iter()
+        .filter(|p| p.contains(&only))
+        .enumerate()
+        .filter(|(n, _)| n % shards == shard)
+        .map(|(_, p)| p);
+    for program in programs {
         let path = match program.strip_prefix("UVI:") {
             Some(p) => Path::new(UVI).join(p),
             None => Path::new(KONTAKT).join(program),
@@ -666,7 +688,12 @@ fn real_performances_sound_on_time_end_and_never_burst() {
             eprintln!("skipped: no {}", path.display());
             continue;
         }
-        let report = perform(path.clone());
+        // One program's panic is its fail, not the run's.
+        let Ok(report) = std::panic::catch_unwind(|| perform(path.clone())) else {
+            failed.push(format!("{}: panicked", path.display()));
+            eprintln!("panicked: {}", path.display());
+            continue;
+        };
         if let Some(out) = &out {
             use std::io::Write;
             let line = touch::row(&path.to_string_lossy(), &report);
@@ -682,5 +709,6 @@ fn real_performances_sound_on_time_end_and_never_burst() {
         }
         failed.extend(report.failed);
     }
-    assert!(failed.is_empty(), "{}", failed.join("\n"));
+    // A corpus run records its rows; the user's ten must pass.
+    assert!(list.is_some() || failed.is_empty(), "{}", failed.join("\n"));
 }

@@ -11,20 +11,13 @@ impl Engine {
     pub(crate) fn choke_by(&mut self, group: u32, note: NoteRef) {
         let fade = self.fade_frames();
         let plan = self.plan.clone();
-        for slot in self
-            .voices
-            .iter_mut()
-            .filter(|s| s.voice.is_active() && !s.fading && s.note != Some(note))
-        {
-            if plan
-                .zones
-                .get(slot.zone)
-                .is_some_and(|z| z.off_by == Some(group))
-            {
-                slot.voice.fade(fade);
-                slot.fading = true;
-            }
-        }
+        self.steal_where(fade, |s| {
+            s.note != Some(note)
+                && plan
+                    .zones
+                    .get(s.zone)
+                    .is_some_and(|z| z.off_by == Some(group))
+        });
     }
 
     /// Makes room for one more voice in voice group `vg`, before it starts.
@@ -40,15 +33,12 @@ impl Engine {
                 .flatten()
         };
         if let Some(set) = group.exclusive {
-            for slot in self.voices.iter_mut() {
-                let other = voice_group(slot)
+            self.steal_where(fade, |s| {
+                let other = voice_group(s)
                     .filter(|&o| o != vg)
                     .and_then(|o| plan.voice_groups.get(o as usize));
-                if other.is_some_and(|o| o.exclusive == Some(set)) {
-                    slot.voice.fade(fade);
-                    slot.fading = true;
-                }
-            }
+                other.is_some_and(|o| o.exclusive == Some(set))
+            });
         }
         let playing = self
             .voices
@@ -78,13 +68,8 @@ impl Engine {
                 (!(group.prefer_released && s.released), order)
             })
             .map(|(i, _)| i);
-        if let Some((_index, slot)) = victim.and_then(|i| self.voices.get_mut(i).map(|s| (i, s))) {
-            #[cfg(feature = "trace")]
-            if let Some(trace) = &mut self.trace {
-                trace.voice(self.now.0, _index, slot, crate::VoiceEvent::Steal);
-            }
-            slot.voice.fade(fade);
-            slot.fading = true;
+        if let Some(index) = victim {
+            self.steal(index, fade);
         }
     }
 }

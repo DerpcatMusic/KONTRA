@@ -294,15 +294,18 @@ impl Engine {
 
     /// Runs the release callbacks of the slots that see `note`'s release,
     /// from the slot that played it (after it, unless it
-    /// [hears its own](crate::ScriptPlan::hears_own_releases)); the slot that ignored it, if
-    /// one did (which stops it reaching the slots after).
+    /// [hears its own](crate::ScriptPlan::hears_own_releases) and did not
+    /// `note_off` it itself: Shreddage plays from its trigger note's end,
+    /// Pacific's release sample sounds once natively); the slot that ignored
+    /// it, if one did (which stops it reaching the slots after).
     pub(crate) fn release_callbacks(&mut self, note: NoteRef) -> Option<u8> {
         let plan = Arc::clone(&self.plan);
         let first = self.notes.get(note).map_or(0, |n| {
             let player = n.first.checked_sub(1);
-            let hears = player
-                .and_then(|p| plan.scripts.get(usize::from(p)))
-                .is_none_or(|s| s.hears_own_releases);
+            let hears = !n.noted_off
+                && player
+                    .and_then(|p| plan.scripts.get(usize::from(p)))
+                    .is_none_or(|s| s.hears_own_releases);
             usize::from(if hears { player.unwrap_or(0) } else { n.first })
         });
         for (slot, script) in (0u8..).zip(&plan.scripts).skip(first) {
@@ -341,6 +344,9 @@ impl Engine {
                 Trigger::Legato => held > 0,
                 Trigger::Release => false,
             });
+            if self.notes.get(note).is_some_and(|n| n.from_release) {
+                self.start_zones(note, false, |trigger| trigger == Trigger::Release);
+            }
             self.behaviour.advance();
         }
         pending.clear();
