@@ -1,6 +1,7 @@
 //! The laws KSP's engine-parameter knobs go through.
 
 use kontra_ir as ir;
+use kontra_law::kontakt::BIPOLAR;
 
 /// What KSP's `$ENGINE_PAR_*` knobs set (value ÷ 1e6 is the knob x), each
 /// through Kontakt's law from the knob to the physical value. Sources: the
@@ -259,7 +260,7 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
             Effect(E::FormantSize),
             lin(0.0, 1.0),
         ),
-        ("$ENGINE_PAR_SHAPE", Effect(E::ShaperAmount), lin(-1.0, 1.0)),
+        ("$ENGINE_PAR_SHAPE", Effect(E::ShaperAmount), BIPOLAR),
         ("$ENGINE_PAR_DRIVE", Effect(E::ShaperAmount), lin(0.0, 1.0)),
         // The Distortion saves damping as set (fx_dynamics_dist_tape.tsv).
         (
@@ -336,11 +337,11 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
         // 0.275, 0.5, 0.725, 0.86, 0.95 (probes/knob_save_laws.lua).
         ("$ENGINE_PAR_INTMOD_PULSEWIDTH", LfoWidth, lin(0.05, 0.95)),
         // The Multi weights in the mixer's order: sine, saw, triangle, pulse, random.
-        ("$ENGINE_PAR_LFO_SINE", LfoWeight(0), lin(-1.0, 1.0)),
-        ("$ENGINE_PAR_LFO_SAW", LfoWeight(1), lin(-1.0, 1.0)),
-        ("$ENGINE_PAR_LFO_TRI", LfoWeight(2), lin(-1.0, 1.0)),
-        ("$ENGINE_PAR_LFO_RECT", LfoWeight(3), lin(-1.0, 1.0)),
-        ("$ENGINE_PAR_LFO_RAND", LfoWeight(4), lin(-1.0, 1.0)),
+        ("$ENGINE_PAR_LFO_SINE", LfoWeight(0), BIPOLAR),
+        ("$ENGINE_PAR_LFO_SAW", LfoWeight(1), BIPOLAR),
+        ("$ENGINE_PAR_LFO_TRI", LfoWeight(2), BIPOLAR),
+        ("$ENGINE_PAR_LFO_RECT", LfoWeight(3), BIPOLAR),
+        ("$ENGINE_PAR_LFO_RAND", LfoWeight(4), BIPOLAR),
         (
             "$ENGINE_PAR_FILTER_SHIFTB",
             Slot(ir::SlotKnob::StageShift(1)),
