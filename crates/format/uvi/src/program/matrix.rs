@@ -158,7 +158,22 @@ fn ratio(program: Node, connection: Node, keys: bool) -> Option<f32> {
         if keys && key_factor(program, f).is_some() {
             continue;
         }
-        let input = transfer(program, f, None)?;
+        // ponytail: a live macro on a ratio holds its saved value (the
+        // ratio is folded here); a blend factor would carry a script moving it.
+        let input = match transfer(program, f, None)? {
+            ir::Transfer {
+                source: ir::Source::Script(id),
+                table,
+            } if id >= MACROS => {
+                let node = source_node(program, f)?;
+                let x = position(node, num(node, "Value", 0.0).ok()? as f32)?;
+                ir::Transfer {
+                    source: ir::Source::Constant,
+                    table: vec![read(&table, x).unwrap_or(x)],
+                }
+            }
+            t => t,
+        };
         if flag(f, "Inverted") || flag(f, "ConnectionMode") || input.source != ir::Source::Constant
         {
             return None;
@@ -340,6 +355,9 @@ pub(super) fn transfer(
                 source,
                 table: half,
             });
+        } else if let Some(id) = live_macro(program, node) {
+            // Its script sends its position ([`live_macro`]).
+            ir::Source::Script(id)
         } else if node.has_tag_name("ConstantModulation") && inputs(node).next().is_none() {
             let x = position(node, num(node, "Value", 0.0).ok()? as f32)?;
             let value = read(&table, x).unwrap_or(x);
@@ -362,6 +380,45 @@ pub(super) fn transfer(
         }
     };
     Some(ir::Transfer { source, table })
+}
+
+/// The first script modulation id [`live_macro`] gives.
+const MACROS: u16 = 0x8000;
+
+/// The script modulation a macro with no inputs of its own is read live
+/// as, in a program a script runs: its scripts set its `Value`
+/// (`setParameter`), sent as its table position, the saved one at init.
+/// `MACROS + 128·owner + n`, `n` its place among its container's macros and
+/// `owner` 0 for the program's, `k + 1` for layer `k`'s; None for one a
+/// keygroup holds.
+pub(super) fn live_macro(program: Node, node: Node) -> Option<u16> {
+    if !node.has_tag_name("ConstantModulation") || inputs(node).next().is_some() {
+        return None;
+    }
+    let scripted = |owner: Node| {
+        owner
+            .children()
+            .filter(|c| c.has_tag_name("EventProcessors") || c.has_tag_name("Scripts"))
+            .flat_map(|c| c.children())
+            .any(|p| p.has_tag_name("ScriptProcessor") && !flag(p, "Bypass"))
+    };
+    let layers = || {
+        program
+            .children()
+            .filter(|c| c.has_tag_name("Layers"))
+            .flat_map(|c| c.children())
+            .filter(Node::is_element)
+    };
+    (scripted(program) || layers().any(scripted)).then_some(())?;
+    let owner = node.parent()?.parent()?;
+    let owner = if owner == program {
+        0
+    } else {
+        1 + layers().position(|l| l == owner)?
+    };
+    let n = node.prev_siblings().filter(Node::is_element).count();
+    let id = (n < 128 && owner < 256).then(|| 0x8000 + 128 * owner as u16 + n as u16);
+    id
 }
 
 /// A macro's live inputs: connections onto its `Value`.

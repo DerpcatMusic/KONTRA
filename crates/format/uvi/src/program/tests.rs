@@ -1240,6 +1240,64 @@ fn an_lfo_on_an_lfos_freq_moves_its_rate_live() {
 }
 
 #[test]
+fn a_macro_a_script_can_set_is_read_live_but_held_on_a_ratio() {
+    let xml = r#"<Program Gain="1">
+      <ControlSignalSources>
+        <ConstantModulation Name="Macro 6" Bypass="0" Bipolar="0" Value="0.5"/>
+        <ConstantModulation Name="Macro 7" Bypass="0" Bipolar="0" Value="0"/>
+        <LFO Name="LFO 1" Bypass="0" SyncToHost="0" WaveFormType="9" Freq="5" Depth="1" Phase="0" Retrigger="1" Bipolar="1" DelayTime="0" RiseTime="0">
+          <Connections>
+            <SignalConnection Ratio="1" Source="$Program/Macro 7" Destination="Depth" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+          <UserTable>0 1 0 -1</UserTable>
+        </LFO>
+      </ControlSignalSources>
+      <Scripts><ScriptProcessor Name="EventProcessor0" Bypass="0" API_version="21"><script><![CDATA[--]]></script></ScriptProcessor></Scripts>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav">
+            <Connections>
+              <SignalConnection Ratio="0.5" Source="$Program/LFO 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+              <SignalConnection Ratio="2" Source="@MIDI CC 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0">
+                <Connections>
+                  <SignalConnection Ratio="1" Source="$Program/Macro 6" Destination="Ratio" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                </Connections>
+              </SignalConnection>
+            </Connections>
+          </SamplePlayer></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    // Macro 7 scales the (user table) LFO's depth live.
+    let live = g
+        .blends
+        .iter()
+        .flat_map(|b| &b.terms)
+        .flat_map(|t| &t.factors);
+    let sources: Vec<_> = live.map(|f| f.input.source).collect();
+    let [ir::Source::Script(id)] = sources[..] else {
+        panic!("{sources:?}")
+    };
+    assert!(id >= 0x8000, "{id:#x}");
+    // The tree the script sees names it; Macro 6 on the wheel's ratio holds 0.5.
+    assert!(out.scripts[0].data.iter().any(|(name, text)| {
+        name == "__program.lua" && String::from_utf8_lossy(text).contains(&format!("mod={id}"))
+    }));
+    let wheel = g.mods.iter().find_map(|m| match m.kind {
+        ir::ModKind::Pitch {
+            source: ir::Source::Controller(1),
+            semitones,
+            ..
+        } => Some(semitones),
+        _ => None,
+    });
+    assert_eq!(wheel, Some(1.0));
+}
+
+#[test]
 fn an_effect_on_an_aux_no_send_reaches_is_latent() {
     let program = |gain: &str| {
         format!(

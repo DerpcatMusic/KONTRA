@@ -104,6 +104,21 @@ end
 -- Widgets with a saved value, in the order the script made them.
 local saved_widgets = {}
 
+-- What a user or host can move, by name: each live macro as the program
+-- tree makes it, then each named widget as the script does.
+__controls = {}
+
+-- Control `id` (0-based in `__controls`) moves to `value` and runs its
+-- `changed`, as a user's edit would; a button reads nonzero as on.
+function __control(id, value)
+	local c = __controls[id + 1]
+	if c and type(c.value) == "boolean" then
+		c:setValue(value ~= 0)
+	elseif c then
+		c:setValue(value)
+	end
+end
+
 -- After the script's body: each persistent widget takes its saved value and
 -- runs its `changed`, before `onLoad` (lua.uvi.net, Widget::persistent:
 -- "Persistent widgets will call their changed function on reload"; onLoad:
@@ -167,6 +182,9 @@ widget = function(kind, name, value, ...)
 	end
 	w.getValue = function(self)
 		return self.value
+	end
+	if name ~= nil then
+		table.insert(__controls, w)
 	end
 	return w
 end
@@ -357,6 +375,8 @@ local function element_index(e, key)
 	return Element[key] or noop
 end
 
+-- Macros the engine reads live, and their setter ([`set_macro`]).
+local macros, set_macro = {}, nil
 function element(node)
 	node = node or {}
 	-- The format's params, converted in place.
@@ -375,6 +395,7 @@ function element(node)
 		bus = node.bus or false,
 		name = params.Name,
 		displayName = params.DisplayName,
+		mod = node.mod,
 		[LINKS] = node.links,
 	}
 	local e = newproxy(true)
@@ -398,6 +419,16 @@ function element(node)
 		if m.params.Name then
 			fields.modulations[m.params.Name] = m
 		end
+	end
+	if node.mod then
+		fields.setParameter = set_macro
+		table.insert(macros, e)
+		table.insert(__controls, {
+			name = params.Name,
+			setValue = function(_, v)
+				e:setParameter("Value", v)
+			end,
+		})
 	end
 	return e
 end
@@ -456,6 +487,23 @@ local function set_level(self, name, value)
 	self.params[name] = value
 	if levels[name] then
 		apply_levels()
+	end
+end
+
+-- A live macro's `Value` goes to the engine as script modulation `mod`, a
+-- bipolar one as its position (x + 1)/2.
+local function send_macro(e)
+	local v = tonumber(e.params.Value) or 0
+	if e.params.Bipolar == 1 or e.params.Bipolar == true then
+		v = (v + 1) / 2
+	end
+	host_call("SetEventParArr", ALL_EVENTS, MOD_VALUE, math.floor(v * 1e6 + 0.5), e.mod, 0)
+end
+function set_macro(self, name, value)
+	self.params[name] = value
+	-- Before init only the last value counts: init sends every macro's.
+	if name == "Value" and __host then
+		send_macro(self)
 	end
 end
 
@@ -700,6 +748,9 @@ __entries = {
 		end
 		pending_routes = {}
 		apply_levels()
+		for _, m in ipairs(macros) do
+			send_macro(m)
+		end
 		if onInit then
 			onInit()
 		end

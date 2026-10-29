@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use roxmltree::{Node, NodeId};
 
-use super::{Library, Translator, flag};
+use super::{Library, Translator, flag, matrix};
 
 impl<L: Library> Translator<'_, '_, L> {
     /// The program tree as a Lua module for the script runtime: each element's
@@ -89,6 +89,9 @@ impl<L: Library> Translator<'_, '_, L> {
         }
         if let Some(bus) = self.bus_of.get(&node.id()) {
             out.push_str(&format!(",bus={bus}"));
+        }
+        if let Some(id) = matrix::live_macro(self.program, node) {
+            out.push_str(&format!(",mod={id}"));
         }
         // The connections a route carries: their places in `connections`.
         let linked: Vec<String> = node
