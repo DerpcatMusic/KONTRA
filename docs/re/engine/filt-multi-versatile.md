@@ -73,8 +73,19 @@ each stage's output is `y += (mode - y) * wet`, so stage 2 receives stage 1's bl
 is no parallel bank. The "x2" in the name is the two extra stages (B and C), not stereo. Stereo is
 one core per channel.
 
-**Defaults.** None are stated in the repo. The mapping takes all 11 knobs from the saved record;
-the zero placeholders in `VERSATILE_UNSET` are replaced in `map`.
+**Defaults.** A unit a script loads (`set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE,
+$FILTER_TYPE_VERSATILE, ...)` in `on init`) reads back cutoff, resonance, shifts, stage
+resonances, types and BYP all 0 and FILTER_GAIN 0.5 (Kontakt 8.13 oracle, ANALOG STRINGS
+insert slot 6, 2026-10-29). BYP is a wet amount, not a bypass switch: Una Corda's presets
+set BYPA..C to 1 for their HP filters and to 0 where the slot only shapes level.
+
+**Oracle A/B (v3, 2026-10-29).** Una Corda Pure, note 60 (velocity 100, held 1.5 s), probe in
+script slot 4 loading Versatile into bus 0 and 1 slot 1 with two of the instrument's own presets,
+each against an empty probe in the same engine. "Warmed Up" (LP blend): Kontakt −2.26 dB RMS,
+v3 −2.22 dB; every octave band 31 Hz..16 kHz within 0.1 dB. "Charmer" (resonant HP, all wet):
+Kontakt −4.85 dB, v3 −4.81 dB; 125 Hz..8 kHz within 0.1 dB, 62 Hz +1.3 dB, 31 Hz −0.7 dB (the
+resonant stage; the empty baselines already differ there by +2.8 / +0.9 dB, and the knee is
+level-dependent).
 
 **Evidence.**
 - Recorded vectors: `cascade_stage_vectors.json`, keys `VERS-lp` and `VERS-mixed` (cutoff 0.5,

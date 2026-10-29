@@ -49,6 +49,8 @@ pub struct Cascade {
     stages: [Coefficients; 3],
     gain: f32,
     glide: f32,
+    /// Radians per sample per Hz.
+    per_hz: f32,
     /// Per channel: band and low state per stage, then the glided gain.
     state: [[f32; 7]; 2],
 }
@@ -61,9 +63,10 @@ impl Cascade {
             stages: [Coefficients::default(); 3],
             gain: 0.0,
             glide: GLIDE / rate.max(1) as f32,
+            per_hz: std::f32::consts::TAU / rate.max(1) as f32,
             state: [[0.0; 7]; 2],
         };
-        c.set(settings, rate);
+        c.set(settings);
         for s in &mut c.state {
             s[6] = c.gain;
         }
@@ -71,8 +74,8 @@ impl Cascade {
     }
 
     /// Retunes to `settings`; the gain glides there. No allocation.
-    pub fn set(&mut self, s: CascadeSettings, rate: u32) {
-        let per_hz = std::f32::consts::TAU / rate.max(1) as f32;
+    pub fn set(&mut self, s: CascadeSettings) {
+        let per_hz = self.per_hz;
         let [s1, s2] = s.shifts;
         let hz = [s.hz, s.hz * s1.exp2(), s.hz * (s1 + s2).exp2()];
         let mut comp = [0.0f32; 3];

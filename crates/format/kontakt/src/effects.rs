@@ -190,6 +190,7 @@ fn group_wet(out: &[Option<ir::Effect>], at: &str, notes: &mut Notes) {
             ir::EffectKind::Limiter(_) => Some("group limiter before a drive"),
             ir::EffectKind::Delay(_) => Some("group delay before a drive"),
             ir::EffectKind::Phaser(_) => Some("group phaser before a drive"),
+            ir::EffectKind::Cascade(_) => Some("group 3x2 Versatile before a drive"),
             ir::EffectKind::Transient(_) => Some("group transient master before a drive"),
             _ => None,
         };
@@ -443,6 +444,14 @@ fn filter(
                 ir::VowelSet::First
             },
         }));
+    }
+    if kind == 19 {
+        let mut saved = crate::versatile::DEFAULT;
+        for (n, v) in saved.iter_mut().enumerate() {
+            *v = f(n * 4)?;
+        }
+        *knobs = crate::versatile::knobs();
+        return Some(ir::EffectKind::Cascade(crate::versatile::cascade(saved)));
     }
     let (gain, at) = if matches!(kind, 30..=41 | 63..=65 | 70 | 71) {
         (f(0)?, 4)
