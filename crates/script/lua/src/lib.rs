@@ -510,7 +510,8 @@ mod tests {
 
     /// Two layers; the second's keygroups made engine groups 3 and 4.
     const TREE: &str = "return {params={DisplayName='Horn'},db=0,pan=0,layers={
-        {params={DisplayName='FX',Gain='1'},bus=1,keygroups={{params={},group=0}}},
+        {params={DisplayName='FX',Gain='1'},bus=1,keygroups={{params={},group=0}},
+         busRouters={{params={Name='Send0',Gain='0.5'}}}},
         {params={DisplayName='Sustain',Gain='0'},bus=2,
          keygroups={{params={Gain='1'},group=3},{params={},group=nil},{params={},group=4}}}},
         auxs={{params={Name='Aux0',Gain='0.5'},bus=3}}}";
@@ -570,6 +571,21 @@ mod tests {
             root: Some(36),
         };
         assert_eq!(sample_loads(source, &modules, &[]), vec![load]);
+    }
+
+    #[test]
+    fn elements_keep_their_shape_when_their_containers_are_made_on_use() {
+        // AO's _Engine/Part sets `layer.sends[i]`; an empty container is one table.
+        let source = "local fx, sustain = Program.layers[1], Program.layers[2]
+            assert(type(fx) == 'userdata' and fx.sends == fx.busRouters)
+            fx.sends[1]:setParameter('Gain', 0.25)
+            assert(fx.busRouters[1]:getParameter('Gain') == 0.25 and fx.busRouters[1].parent == fx)
+            assert(#sustain.sends == 0 and #sustain.inserts == 0)
+            assert(sustain.inserts == sustain.inserts and sustain:noSuchMethod() == nil)
+            local list = sustain:getParameterConnections('Gain')
+            assert(#list == 0 and list[1]:getParameter('Ratio') == 0)
+            assert(sustain:getParameterConnections('Gain') == list)";
+        run(source, Callbacks::INIT);
     }
 
     #[test]

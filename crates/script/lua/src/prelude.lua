@@ -334,7 +334,7 @@ local function element_index(e, key)
 		return value
 	end
 	if key == "sends" then
-		key = "busRouters"
+		return e.busRouters
 	end
 	if is_container[key] then
 		local list = {}
