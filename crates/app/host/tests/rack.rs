@@ -69,6 +69,7 @@ fn part(name: &str) -> Part {
         delays: None,
         view: None,
         slot_types: Vec::new(),
+        slot_responses: Vec::new(),
     }
 }
 
@@ -403,6 +404,95 @@ fn an_effect_type_a_script_loads_is_built_off_audio_swapped_in_and_saved() {
     let json = saved.write();
     assert_eq!(kontra_host::state::Saved::read(&json), saved);
     assert_eq!(saved.parts[0].slot_types.len(), 1, "{json}");
+}
+
+#[test]
+fn a_response_a_script_loads_later_is_decoded_off_audio_swapped_in_and_saved() {
+    use kontra_engine::{Response, ir};
+    // One frame at half scale, 16-bit stereo.
+    let half = 16_384i16.to_le_bytes();
+    let mut wav = b"RIFF".to_vec();
+    wav.extend(40u32.to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend([1, 0, 2, 0]);
+    wav.extend(RATE.to_le_bytes());
+    wav.extend((RATE * 4).to_le_bytes());
+    wav.extend([4, 0, 16, 0]);
+    wav.extend(b"data");
+    wav.extend(4u32.to_le_bytes());
+    wav.extend(half.iter().chain(&half));
+    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("rack-half.wav");
+    std::fs::write(&file, wav).unwrap();
+    let (mut rack, mut audio) = rack();
+    let mut plan = plan_of(rack.store_mut(), 0.5);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Convolution { impulse: 0 },
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.impulses = vec![Some(Response {
+        left: vec![1.0],
+        right: vec![1.0],
+    })];
+    let law = ir::Impulse {
+        sample: 0,
+        reverse: false,
+        normalize: None,
+        predelay_ms: 0.0,
+        cuts: None,
+        envelope: None,
+        mix: None,
+    };
+    plan.impulse_laws = vec![("room".into(), law)];
+    let sample = ir::Sample {
+        name: "Half.wav".into(),
+        file,
+        offset: 0,
+        len: None,
+        channels: 0,
+        frames: 0,
+        rate: 0,
+        keystream: None,
+    };
+    plan.responses = vec![("half".into(), sample)];
+    let script = kontra_ksp::compile(
+        "on note
+            load_ir_sample(\"Half.ncw\", 0, $NI_INSERT_BUS)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let plan = Arc::new(plan);
+    let e = Box::new(Engine::new(
+        Arc::clone(&plan),
+        rack.store_mut().client(),
+        RATE,
+    ));
+    let info = Part {
+        path: Some("ir.nki".into()),
+        plan: Some(plan),
+        ..part("a")
+    };
+    rack.install(0, e, info);
+    let [room, _] = play(&mut audio, &[(0, note(0))]);
+    assert!((room - 0.5).abs() < 1e-3, "{room}");
+    rack.tick();
+    let [half, _] = play(&mut audio, &[]);
+    assert!(
+        (half - 0.25).abs() < 1e-3,
+        "the response did not swap in: {half}"
+    );
+    let p = rack.parts()[0].as_ref().unwrap();
+    assert_eq!(p.slot_responses, [(ir::RackAt::Inserts, 0, "half".into())]);
+    assert!(p.slot_types.is_empty(), "a response is no type");
+    rack.tick();
+    let saved = rack.save();
+    let json = saved.write();
+    assert_eq!(kontra_host::state::Saved::read(&json), saved);
+    assert_eq!(saved.parts[0].slot_responses[0].name, "half", "{json}");
 }
 
 #[test]

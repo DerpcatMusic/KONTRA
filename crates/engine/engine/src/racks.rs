@@ -166,6 +166,11 @@ impl Wet for Clipper {
     }
 }
 
+/// A convolution playing `r`. Not real-time.
+pub(crate) fn convolver(r: &Response) -> Dsp {
+    wet(Box::new(Convolver::new(&r.left, &r.right)))
+}
+
 fn wet(processor: Box<dyn Wet>) -> Dsp {
     Dsp::Wet(processor, vec![[0.0; 2]; MAX_SPAN as usize].into())
 }
@@ -248,26 +253,25 @@ impl Responses<'_> {
 impl Engine {
     /// `load_ir_sample`: the library response `name` (its extension and
     /// folder dropped) into the convolution at `slot` of the `generic` rack,
-    /// prepared as the response it replaces. Only in the init callback
-    /// (decoding is not real-time, and the racks are rebuilt after it);
-    /// later, reloading the response a slot plays is answered as done.
-    pub(crate) fn load_ir_sample(&mut self, name: &str, slot: i32, generic: i32) -> bool {
+    /// prepared as the response it replaces. The answer: 0 when it plays now
+    /// (in the init callback, decoded at once: the racks are rebuilt after
+    /// it), or the async id of a load the host decodes off the audio thread
+    /// ([`Engine::request_response`]); `None` when it cannot load.
+    pub(crate) fn load_ir_sample(&mut self, name: &str, slot: i32, generic: i32) -> Option<i32> {
         // Borrowed, matched without case: this may run on the audio thread.
         let stem = stem(name);
         let plan = Arc::clone(&self.plan);
-        let Some((_, sample)) = plan
+        let found = plan
             .responses
             .iter()
-            .find(|(n, _)| n.eq_ignore_ascii_case(stem))
-        else {
-            return false;
-        };
-        let Some(&ir::Effect {
+            .position(|(n, _)| n.eq_ignore_ascii_case(stem))?;
+        let (_, sample) = plan.responses.get(found)?;
+        let &ir::Effect {
             kind: ir::EffectKind::Convolution { impulse },
             ..
-        }) = self.effect_mut(-1, slot, generic).map(|e| &*e)
+        } = self.effect_mut(-1, slot, generic).map(|e| &*e)?
         else {
-            return false;
+            return None;
         };
         let at = usize::from(impulse);
         let (playing, law) = match at.checked_sub(plan.impulses.len()) {
@@ -276,32 +280,32 @@ impl Engine {
         }
         .unzip();
         if playing.is_some_and(|n| n.eq_ignore_ascii_case(stem)) {
-            return true;
+            return Some(0);
         }
-        let (Some(law), crate::script::Kind::Init) = (law, self.running.kind) else {
-            return false;
-        };
+        let law = law?;
+        if self.running.kind != crate::script::Kind::Init {
+            let index = u16::try_from(found).ok()?;
+            return self.request_response(slot, generic, index, law);
+        }
         let known = self
             .loaded
             .iter()
             .position(|(n, l, _)| n.eq_ignore_ascii_case(stem) && *l == law);
         let index = match known {
             Some(j) => j,
-            None => match crate::response(sample, &law, self.rate) {
-                Ok(r) => {
-                    self.loaded.push((stem.to_lowercase(), law, r));
-                    self.loaded.len() - 1
-                }
-                Err(_) => return false,
-            },
+            None => {
+                let r = crate::response(sample, &law, self.rate).ok()?;
+                self.loaded.push((stem.to_lowercase(), law, r));
+                // Room for loads after init, which must not allocate.
+                self.loaded.reserve(crate::fx_types::REQUESTS);
+                self.loaded.len() - 1
+            }
         };
-        let Ok(index) = u16::try_from(plan.impulses.len() + index) else {
-            return false;
-        };
+        let index = u16::try_from(plan.impulses.len() + index).ok()?;
         if let Some(e) = self.effect_mut(-1, slot, generic) {
             e.kind = ir::EffectKind::Convolution { impulse: index };
         }
-        true
+        Some(0)
     }
 }
 
@@ -548,7 +552,7 @@ pub(crate) fn processor(
             Dsp::Eq(filters::stages(&sections, rate))
         }
         Some(ir::EffectKind::Convolution { impulse }) => match impulses.get(usize::from(impulse)) {
-            Some(r) => wet(Box::new(Convolver::new(&r.left, &r.right))),
+            Some(r) => convolver(r),
             None => Dsp::None,
         },
         Some(ir::EffectKind::Reverb(r)) => match r.network {
