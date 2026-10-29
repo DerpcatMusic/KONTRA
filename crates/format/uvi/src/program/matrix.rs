@@ -16,7 +16,6 @@
 use kontra_ir as ir;
 use roxmltree::Node;
 
-use super::modulation::{Route, Timed};
 use super::{flag, index_of, modulation, num, source_node};
 
 /// The factor a cell's connection holds it at: a macro at its saved value,
@@ -143,7 +142,7 @@ pub(super) fn held_ratio(program: Node, connection: Node) -> Option<f32> {
     ratio(program, connection, false)
 }
 
-/// [`held_ratio`] passing over the key connections [`keyed`] carries.
+/// [`held_ratio`] passing over the key connections [`super::blend::keyed`] carries.
 pub(super) fn unkeyed_ratio(program: Node, connection: Node) -> Option<f32> {
     ratio(program, connection, true)
 }
@@ -164,50 +163,20 @@ fn ratio(program: Node, connection: Node, keys: bool) -> Option<f32> {
     Some(r)
 }
 
-/// `route` with the key connections on its ratio ([`key_factor`]) scaling
-/// it per voice: a blend of its source alone, times each. None when the
-/// route is not a source through a table.
-pub(super) fn keyed(program: Node, connection: Node, route: Route) -> Option<Route> {
-    let ratio = children(connection).filter(|f| f.attribute("Destination") == Some("Ratio"));
-    let factors: Vec<_> = ratio.filter_map(|f| key_factor(program, f)).collect();
-    if factors.is_empty() {
-        return Some(route);
-    }
-    let input = match route.timed {
-        Some(Timed::Mapped(t)) if route.unit == 1.0 => t,
-        None if route.unit == 1.0 => ir::Transfer {
-            source: route.source,
-            table: Vec::new(),
-        },
-        _ => return None,
-    };
-    let term = ir::Term {
-        input,
-        amount: 1.0,
-        factors,
-    };
-    Some(Route {
-        source: ir::Source::Constant,
-        timed: Some(Timed::Blend(ir::Blend {
-            base: 0.0,
-            terms: vec![term],
-        })),
-        ..route
-    })
-}
-
 /// A connection from a key on a ratio, as the factor it scales it by: the
 /// key read through a table exact at each MIDI key `x` (VoiceParam evaluate
 /// 0x14138ab10, `x` the note clamped to 0..=127): `Key` `x/127`, `KeyFollow`
 /// `(x/60)² − 1` below 60, else `√((min(x, 120) − 60)/60)`, `LinearKeyFollow`
-/// `(x − 60)/60` within ±1. A bipolar one is read at `(k + 1)/2` (through its
-/// mapper, 0x141139193); its mapper's output is taken as it is. None for any
-/// other connection.
-fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> {
+/// `(x − 60)/60` within ±1. A bipolar one is read at `(k + 1)/2`, and its
+/// mapper's output `y` (0x141139193) at `(y + 1)/2` again: the law takes a
+/// bipolar source there through a mapper too (VWinds' pitch-bend crossfade
+/// mappers swing −1..=1 and give 0..=1 only so). None for any other connection.
+pub(super) fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> {
     if flag(connection, "Inverted") || flag(connection, "ConnectionMode") {
         return None;
     }
-    let key: fn(f32) -> f32 = match connection.attribute("Source")? {
+    let source = connection.attribute("Source")?;
+    let key: fn(f32) -> f32 = match source {
         "@VoiceParam Key" => |x| x / 127.0,
         "@VoiceParam KeyFollow" => |x| {
             let k = if x < 60.0 {
@@ -221,7 +190,11 @@ fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> {
         _ => return None,
     };
     let table = mapper(connection)?;
-    let at = |x: f32| read(&table, key(x)).unwrap_or(key(x));
+    let bipolar = source != "@VoiceParam Key";
+    let at = |x: f32| match read(&table, key(x)) {
+        Some(y) if bipolar => (y + 1.0) / 2.0,
+        y => y.unwrap_or(key(x)),
+    };
     Some(ir::Factor {
         input: ir::Transfer {
             source: ir::Source::Key,
@@ -370,7 +343,9 @@ fn inputs<'a, 'input>(source: Node<'a, 'input>) -> impl Iterator<Item = Node<'a,
 }
 
 /// A node's active connections.
-fn children<'a, 'input>(node: Node<'a, 'input>) -> impl Iterator<Item = Node<'a, 'input>> {
+pub(super) fn children<'a, 'input>(
+    node: Node<'a, 'input>,
+) -> impl Iterator<Item = Node<'a, 'input>> {
     node.children()
         .filter(|c| c.has_tag_name("Connections"))
         .flat_map(|c| c.children())

@@ -12,6 +12,7 @@ use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::Node;
 
+mod blend;
 mod delay;
 mod digital_eq;
 mod filters;
@@ -280,20 +281,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 amount,
             });
         }
-        let gains = kg
-            .children()
-            .filter(|c| c.has_tag_name("Connections"))
-            .flat_map(|c| c.children())
-            .filter_map(|c| Some((c, modulation::gain_route(program, c)?)))
-            .collect::<Vec<_>>();
-        for (c, r) in gains {
-            self.add_route(&mut group, c, r, |source, intensity| ir::ModKind::Volume {
-                source,
-                intensity,
-                curve: ir::Curve::Signed,
-                tau_ms: 0.0,
-            });
-        }
+        self.gain_routes(&mut group, kg);
         let placement = placement(kg);
         let span = Span {
             keys,
@@ -368,6 +356,7 @@ impl<L: Library> Translator<'_, '_, L> {
         if r.ratio == 0.0 && self.out.scripts.is_empty() {
             return;
         }
+        self.carried.extend(blend::carries(connection, &r));
         let source = modulation::group_source(group, r.source, r.timed);
         if connection.attribute("Destination") != Some("Depth") {
             self.depth_scales(group, connection, source);
