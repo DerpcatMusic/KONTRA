@@ -24,15 +24,14 @@
 
 use kontra_format::Notes;
 use kontra_ir as ir;
-use roxmltree::Node;
 
-use super::{flag, num};
+use super::{Params, flag};
 
 /// The Flanger at `node`.
-pub(super) fn flanger(node: Node) -> Result<ir::Effect, String> {
-    let depth = num(node, "Depth", 0.5)?.clamp(0.0, 1.0) as f32;
-    let time = num(node, "DelayTime", 0.0)?.clamp(0.0, 1.0) as f32;
-    let feedback = num(node, "Feedback", 0.0)? as f32;
+pub(super) fn flanger(p: Params) -> Result<ir::Effect, String> {
+    let depth = p.num("Depth", 0.5)?.clamp(0.0, 1.0) as f32;
+    let time = p.num("DelayTime", 0.0)?.clamp(0.0, 1.0) as f32;
+    let feedback = p.num("Feedback", 0.0)? as f32;
     let delay = ir::Delay {
         time: ir::DelayTime::Ms(20.0 * (time + depth / 2.0)),
         depth_ms: 10.0 * depth,
@@ -45,23 +44,23 @@ pub(super) fn flanger(node: Node) -> Result<ir::Effect, String> {
         steep_low_cut: false,
         high_shelf: None,
         spread_ms: 0.0,
-        rate: rate(node, f32::INFINITY)?,
+        rate: rate(p, f32::INFINITY)?,
         phase: 0.0,
     };
     Ok(ir::Effect {
         kind: ir::EffectKind::Delay(delay),
         bypass: false,
-        output: num(node, "Mix", 1.0)?.clamp(0.0, 1.0) as f32,
+        output: p.num("Mix", 1.0)?.clamp(0.0, 1.0) as f32,
         dry: 1.0,
     })
 }
 
 /// The Phasor at `node`.
-pub(super) fn phasor(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
-    let order = num(node, "Order", 4.0)?.round().clamp(1.0, 12.0) as f32;
-    let low = num(node, "MinFreq", 200.0)?.max(1.0) as f32;
-    let high = num(node, "MaxFreq", 3000.0)?.max(1.0) as f32;
-    let shape = num(node, "LFOSHape", 0.0)?;
+pub(super) fn phasor(p: Params, notes: &mut Notes) -> Result<ir::Effect, String> {
+    let order = p.num("Order", 4.0)?.round().clamp(1.0, 12.0) as f32;
+    let low = p.num("MinFreq", 200.0)?.max(1.0) as f32;
+    let high = p.num("MaxFreq", 3000.0)?.max(1.0) as f32;
+    let shape = p.num("LFOSHape", 0.0)?;
     if shape > 1.0 {
         notes.add(ir::Impact::Audible, "Phasor LFO shape", shape);
     }
@@ -72,11 +71,11 @@ pub(super) fn phasor(node: Node, notes: &mut Notes) -> Result<ir::Effect, String
         hz,
         spread_hz: hz,
         exponent: 0.5 * (high / low).ln(),
-        feedback: num(node, "Feedback", 0.0)? as f32,
-        rate: rate(node, 10.0)?,
-        phase: num(node, "Spread", 1.0)?.clamp(0.0, 1.0) as f32 / 4.0,
+        feedback: p.num("Feedback", 0.0)? as f32,
+        rate: rate(p, 10.0)?,
+        phase: p.num("Spread", 1.0)?.clamp(0.0, 1.0) as f32 / 4.0,
     };
-    let depth = num(node, "Depth", 1.0)?.clamp(0.0, 1.0) as f32;
+    let depth = p.num("Depth", 1.0)?.clamp(0.0, 1.0) as f32;
     let norm = (1.0 + depth * depth).sqrt();
     Ok(ir::Effect {
         kind: ir::EffectKind::Phaser(phaser),
@@ -87,9 +86,9 @@ pub(super) fn phasor(node: Node, notes: &mut Notes) -> Result<ir::Effect, String
 }
 
 /// `Speed` in Hz up to `max_hz`, or quarter notes per cycle when synced.
-fn rate(node: Node, max_hz: f32) -> Result<ir::Rate, String> {
-    let speed = num(node, "Speed", 1.0)?.max(1e-3) as f32;
-    Ok(if flag(node, "SyncToHost") {
+fn rate(p: Params, max_hz: f32) -> Result<ir::Rate, String> {
+    let speed = p.num("Speed", 1.0)?.max(1e-3) as f32;
+    Ok(if flag(p.node, "SyncToHost") {
         ir::Rate::Beats(speed)
     } else {
         ir::Rate::Hz(speed.min(max_hz))
@@ -99,6 +98,7 @@ fn rate(node: Node, max_hz: f32) -> Result<ir::Rate, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use roxmltree::Node;
 
     fn node<T>(xml: &str, f: impl FnOnce(Node) -> T) -> Option<T> {
         let doc = roxmltree::Document::parse(xml).ok()?;
@@ -108,7 +108,7 @@ mod tests {
     #[test]
     fn a_flanger_keeps_its_input_and_sweeps_from_its_delay_time() {
         let xml = r#"<Flanger SyncToHost="0" Speed="0.4" Feedback="0.4" DelayTime="0.2" Depth="0.5" Mix="0.9"/>"#;
-        let Some(Ok(e)) = node(xml, flanger) else {
+        let Some(Ok(e)) = node(xml, |n| flanger(Params::of(n))) else {
             panic!("not carried");
         };
         let ir::EffectKind::Delay(d) = e.kind else {
@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn a_phasor_runs_two_allpasses_per_order_between_its_frequencies() {
         let xml = r#"<Phasor SyncToHost="0" Speed="0.5" MinFreq="200" MaxFreq="3000" Feedback="0.4" Depth="1" Spread="1" Order="5" LFOSHape="0"/>"#;
-        let Some(Ok(e)) = node(xml, |n| phasor(n, &mut Notes::default())) else {
+        let Some(Ok(e)) = node(xml, |n| phasor(Params::of(n), &mut Notes::default())) else {
             panic!("not carried");
         };
         let ir::EffectKind::Phaser(p) = e.kind else {

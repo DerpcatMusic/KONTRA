@@ -209,7 +209,7 @@ impl Rack {
                 if let ir::ModKind::EffectParam { insert, param, .. } = *m
                     && usize::from(insert) == n
                 {
-                    param.add(&mut e.kind, amount);
+                    param.add_to(&mut e, amount);
                 }
             }
             match (dsp, e.kind) {
