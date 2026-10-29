@@ -44,10 +44,20 @@ check 2-face 3-knob "library knob: drag turns it"
 xdotool mousemove "${switch%,*}" "${switch#*,}" click 1; sleep 1.5; shot 4-switch
 check 3-knob 4-switch "library switch: click flips it"
 
-# Idle: the pointer parked, nothing playing. CPU over 10 s, in % of a core.
+# Idle: the pointer parked, nothing playing. CPU over 10 s, in % of a core,
+# of every thread but the audio callback's: the null device has no clock, so
+# cpal's thread spins there, where a real device would pace it.
+ticks() {
+    local sum=0 t
+    for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$(( sum + $(awk '{print $14 + $15}' "$t/stat") ))
+    done
+    echo "$sum"
+}
 xdotool mousemove 1900 1270; sleep 2
-t0=$(awk '{print $14 + $15}' "/proc/$editor/stat"); sleep 10
-t1=$(awk '{print $14 + $15}' "/proc/$editor/stat")
+t0=$(ticks); sleep 10
+t1=$(ticks)
 idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / 10 ))
 echo "idle CPU: ${idle}% of a core"
 if (( idle > 5 )); then echo "FAIL idle CPU"; fail=1; else echo "PASS idle CPU"; fi

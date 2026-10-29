@@ -76,6 +76,9 @@ pub struct Shared {
     /// The editor's copy of the rack, refreshed by [`Tick`].
     view: Mutex<editor::Snapshot>,
     dirty: std::sync::atomic::AtomicBool,
+    /// Pictures the editor asked for and has not shown yet: it keeps
+    /// drawing until they arrive.
+    decoding: std::sync::atomic::AtomicBool,
     /// The latency to report, in frames; the audio thread reads it.
     latency: AtomicU32,
     /// Moves when the host loads a state: the editor reads its view again.
@@ -215,10 +218,11 @@ impl BackgroundTask for Tick {
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
         rack.tick();
-        lock(&p.shared.view).refresh(rack, browser, report);
-        p.shared
-            .dirty
-            .store(true, std::sync::atomic::Ordering::Release);
+        if lock(&p.shared.view).refresh(rack, browser, report) {
+            p.shared
+                .dirty
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
     }
 }
 
