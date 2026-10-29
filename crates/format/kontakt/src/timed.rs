@@ -138,7 +138,15 @@ pub(crate) fn timed(
                 insert,
                 depth: t.signed_intensity(),
             },
-            (param, Some(insert)) if laws::eq_band_index(param).is_some() => {
+            (param, Some(insert))
+                if crate::provenance::eq_band_index(
+                    param,
+                    group_index,
+                    usize::from(slot),
+                    target,
+                )
+                .is_some() =>
+            {
                 let result = laws::eq_gain(source, insert, param, t.signed_intensity());
                 kontra_law::record(|| kontra_law::Application {
                     id: kontra_law::LawId("kontakt.eq_gain_route.v1"),
