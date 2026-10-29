@@ -13,8 +13,11 @@ A zone not prepared is not necessarily an error: for example, a saved purged
 group can defer sample loading. See diagnostics and group `purged` state.
 Effect and some model details use Rust debug text; they are descriptive, not a
 stable machine-readable schema. The versioned envelope reserves `null` for
-unavailable data. Translator law IDs and provenance and asset existence are
-not yet exposed by this path and are explicitly listed as unavailable. Script
+unavailable data. Translator law IDs and provenance are not yet exposed by this path and are
+explicitly listed as unavailable. Referenced UI assets are read through the host
+resource resolver: `resolved` includes their byte length; `not_resolved` does
+not distinguish missing, inaccessible, or unsupported resources. This inventory
+contains assets referenced by the initialized UI, not every file in the library. Script
 inventory includes original and runtime slots, compilation status, and compiled
 callback entries. Entries are bytecode offsets or foreign dispatcher IDs; the
 foreign widget dispatcher is generic and does not prove a script defines every
