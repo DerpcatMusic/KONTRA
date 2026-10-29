@@ -104,4 +104,12 @@ impl Vm {
             vm.set_text(n, value);
         }
     }
+
+    #[must_use]
+    pub fn text(&self, n: usize) -> Option<&Text> {
+        match self {
+            Self::Code(vm) => vm.text(n),
+            Self::Foreign(_) => None,
+        }
+    }
 }
