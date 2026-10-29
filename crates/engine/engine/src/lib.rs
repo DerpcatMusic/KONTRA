@@ -14,7 +14,6 @@ mod buses;
 mod callbacks;
 mod controls;
 
-mod engine_pars;
 mod filters;
 mod fx_types;
 mod group_masks;
@@ -28,7 +27,6 @@ mod modulators;
 mod par_display;
 mod params;
 mod pgs;
-mod plan;
 mod queue;
 mod racks;
 
@@ -41,16 +39,18 @@ mod voice_rack;
 
 use std::sync::Arc;
 
+use kontra_plan as plan;
+
 use kontra_stream::StreamClient;
 use kontra_time::Frames;
 use kontra_voice::{Voice, VoiceStart};
 
-pub use engine_pars::{EnginePar, EnginePars};
 pub use fx_types::{EffectRequest, Prepared};
 pub use kontra_effects::response;
 pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
+pub use kontra_plan::{EnginePar, EnginePars};
 pub use kontra_script_ui::FIRST_FONT;
 pub use kontra_script_ui::{Key, KeyRange, MenuItem, Page};
 pub use kontra_time::SampleTime;

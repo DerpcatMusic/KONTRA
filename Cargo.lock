@@ -2396,6 +2396,7 @@ dependencies = [
  "kontra-effects",
  "kontra-events",
  "kontra-ir",
+ "kontra-plan",
  "kontra-script-ui",
  "kontra-stream",
  "kontra-time",
@@ -2558,6 +2559,17 @@ version = "0.0.0"
 dependencies = [
  "kontra-law",
  "kontra-macros",
+]
+
+[[package]]
+name = "kontra-plan"
+version = "0.0.0"
+dependencies = [
+ "kontra-effects",
+ "kontra-ir",
+ "kontra-script-ui",
+ "kontra-vm",
+ "kontra-voice",
 ]
 
 [[package]]
