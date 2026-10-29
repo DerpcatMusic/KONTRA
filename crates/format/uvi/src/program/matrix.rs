@@ -20,7 +20,7 @@ use super::{flag, index_of, modulation, num, source_node};
 
 /// The factor a cell's connection holds it at: a macro at its saved value,
 /// one with live inputs only when `saved` ([`live`] carries those). None
-/// for any other source, a modulated or inverted connection, or a stepped
+/// for any other source, a modulated or inverted connection, or an integer
 /// mapper.
 pub(super) fn held(program: Node, connection: Node, saved: bool) -> Option<f32> {
     if flag(connection, "Bypass") {
@@ -115,8 +115,10 @@ pub(super) fn term(
 }
 
 /// `connection`'s [`transfer`], an inverted one read at `1 − x`: UVI flips
-/// a unipolar source before its mapper (0x14142ac00: `1 − x`; a bipolar
-/// one `−x`, not carried here).
+/// a unipolar source before its mapper (0x14142ac00: `1 − x`), a bipolar
+/// one to `−x`, which its mapper reads at `(1 − x)/2`: its table reversed
+/// too (VWinds' V2 bend on its EQ). Not an unmapped bipolar one, nor a
+/// held macro or bipolar script modulation.
 fn read_through(
     program: Node,
     connection: Node,
@@ -125,7 +127,10 @@ fn read_through(
     let mut t = transfer(program, connection, lfos)?;
     if flag(connection, "Inverted") {
         let bipolar = source_node(program, connection).is_some_and(|n| flag(n, "Bipolar"));
-        if bipolar || !matches!(t.source, ir::Source::Controller(_) | ir::Source::Script(_)) {
+        let swing = matches!(t.source, ir::Source::PitchBend | ir::Source::Lfo(_));
+        let unipolar =
+            !bipolar && matches!(t.source, ir::Source::Controller(_) | ir::Source::Script(_));
+        if !unipolar && !(swing && !t.table.is_empty()) {
             return None;
         }
         if t.table.is_empty() {
@@ -213,7 +218,7 @@ fn scale(r: f32, m: f32) -> f32 {
 }
 
 /// A cell connection's clamped ratio and mapper table (empty: none). None
-/// for an inverted, additive or modulated connection or a stepped mapper.
+/// for an inverted, additive or modulated connection or an integer mapper.
 fn cell_law(connection: Node) -> Option<(f32, Vec<f32>)> {
     if flag(connection, "Inverted")
         || flag(connection, "ConnectionMode")
@@ -246,13 +251,18 @@ fn position(source: Node, value: f32) -> Option<f32> {
 }
 
 /// The connection's mapper as a table scaled by `Max` (or `-Min` below
-/// zero); empty for none, None for one not found or stepped.
+/// zero); empty for none, None for one not found or rounding to integers.
+/// A `Discrete` one reads point `⌊(len − 1)·x⌋` of its in-memory table, not
+/// between two (0x1411391a6, the flag at +0x130): at each saved point's own
+/// `x` that is the point (`⌊n·j/(n − 1)⌋ = j`), so its table is read as it is,
+/// exact at every MIDI controller value for the usual 128. ponytail: read
+/// linearly between points (a 14-bit bend), within a step of the stepped read.
 fn mapper(connection: Node) -> Option<Vec<f32>> {
     if connection.attribute("Mapper").is_none_or(str::is_empty) {
         return Some(Vec::new());
     }
     let mapper = mapper_node(connection)?;
-    if flag(mapper, "Discrete") || flag(mapper, "Integer") {
+    if flag(mapper, "Integer") {
         return None;
     }
     let (max, min) = (
