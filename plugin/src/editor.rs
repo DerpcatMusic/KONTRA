@@ -223,12 +223,11 @@ pub(crate) fn art(paths: &[PathBuf]) -> Vec<String> {
         let ext = path.extension().map(|e| e.to_ascii_lowercase());
         let name = path.to_string_lossy();
         match ext.as_ref().and_then(|e| e.to_str()) {
-            Some("png") => keys.push(name.into_owned()),
+            Some("png" | "jpg" | "jpeg") => keys.push(name.into_owned()),
             Some("nicnt" | "nkr") if !held => {
                 held = true;
                 keys.extend(HELD.iter().map(|n| format!("{name}\0{n}")));
             }
-            // ponytail: JPEG covers (UVI sidecars) need a JPEG decoder in Pictures.
             _ => {}
         }
     }
