@@ -135,7 +135,7 @@ impl Look {
         &self,
         wd: &Widget,
         style: Option<&TextStyle>,
-        (w, h, scale): (f64, f64, f64),
+        (w, h, scale, device): (f64, f64, f64, f64),
         bare: bool,
         (artwork, button): (Option<&[Arc<Image>; 3]>, Option<&Arc<Image>>),
         glyphs: Option<&crate::pictures::Glyphs>,
@@ -195,7 +195,7 @@ impl Look {
                         &caption,
                         ink,
                         model::Align::Center,
-                        (w, h, scale),
+                        (w, h, scale, device),
                         glyphs,
                         style.map_or(model::Rgba::rgb(DARK), |s| s.color),
                     ));
@@ -221,7 +221,7 @@ impl Look {
                     title,
                     ink,
                     model::Align::Left,
-                    (w, h, scale),
+                    (w, h, scale, device),
                     font,
                     color,
                 ));
@@ -230,7 +230,7 @@ impl Look {
                         value,
                         ink,
                         model::Align::Right,
-                        (w, h, scale),
+                        (w, h, scale, device),
                         font,
                         color,
                     ));
@@ -262,7 +262,7 @@ fn field_words(
     text: &str,
     ink: Color,
     align: model::Align,
-    (w, h, s): (f64, f64, f64),
+    (w, h, s, device): (f64, f64, f64, f64),
     glyphs: Option<&crate::pictures::Glyphs>,
     color: model::Rgba,
 ) -> El {
@@ -304,7 +304,9 @@ fn field_words(
                     ]
                 })
                 .collect();
-            if let Some(image) = Image::rgba(glyph.width, glyph.height, pixels) {
+            if let Some(image) = Image::rgba(glyph.width, glyph.height, pixels)
+                .and_then(|image| crate::pictures::at_stock(image, device as f32))
+            {
                 layers.push(
                     super::image(&Arc::new(image), width, height).at(x, (h - height) / 2. - s),
                 );

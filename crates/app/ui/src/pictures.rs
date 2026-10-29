@@ -436,7 +436,7 @@ fn at(image: Image, scale: f32) -> Option<Image> {
 
 /// Integer-enlarge stock sprites without interpolating; the painter then
 /// downsamples to the snapped device rectangle. Shrinking uses the area filter.
-fn at_stock(image: Image, scale: f32) -> Option<Image> {
+pub(crate) fn at_stock(image: Image, scale: f32) -> Option<Image> {
     if scale <= 1. {
         return at(image, scale);
     }

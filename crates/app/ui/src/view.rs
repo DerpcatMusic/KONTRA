@@ -268,7 +268,7 @@ fn drawn_page(
                 parts.extend(look.draw(
                     wd,
                     style,
-                    (w, h, scale),
+                    (w, h, scale, device),
                     bare,
                     (stock_art.as_ref(), button_art.as_ref()),
                     stock_glyphs.as_ref(),
