@@ -10,7 +10,7 @@ use std::sync::Arc;
 use kontra_engine::{Engine, SampleTime, Timed, ir};
 
 use crate::persist::Capture;
-pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression};
+pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan};
 use kontra_protocol::{MAX_PARTS, MeterCells, Meters, Ring, StatCells, Stats};
 pub use kontra_stream::{Store, StoreConfig};
 
@@ -60,6 +60,8 @@ pub enum Command {
     /// Play `Event` on every part at the next block (the editor's keyboard
     /// and wheels).
     Play(Event),
+    /// Hold every event into `part` this many frames: auto-align.
+    Hold(usize, u32),
     /// Read a part's persistent script cells and send them back.
     Capture(Box<Capture>),
     /// The user moved control `id` of script `slot` to `value`.
@@ -92,6 +94,9 @@ pub struct Part {
     pub solo: bool,
     pub mute: bool,
     pub script: ScriptState,
+    /// What the engine plays, to measure it again (auto-align); None for
+    /// an engine built elsewhere.
+    pub plan: Option<Arc<Plan>>,
 }
 
 /// What the rack keeps to save a part's scripts.
@@ -244,8 +249,10 @@ impl Rack {
         }
         let saved = instrument.scripts.iter().map(|s| s.saved.clone()).collect();
         let loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
-        let engine = Engine::new(Arc::new(loaded.plan), self.store.client(), self.rate);
+        let plan = Arc::new(loaded.plan);
+        let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
         let part_info = Part {
+            plan: Some(plan),
             path,
             name: loaded.name,
             diagnostics: loaded.diagnostics,
@@ -313,6 +320,12 @@ impl Rack {
             p.mute = mute;
             self.resend_mix();
         }
+    }
+
+    /// Holds every event into `part` by `frames` from the next block on,
+    /// so it sounds in time with a later part (auto-align).
+    pub fn set_hold(&mut self, part: usize, frames: u32) {
+        self.send(Command::Hold(part, frames));
     }
 
     pub fn set_master(&mut self, gain: f32) {
@@ -434,8 +447,11 @@ struct Playing {
     engine: Box<Engine>,
     mix: Mix,
     /// Its channel changed: the notes and pedal it held on the old one are
-    /// let go at the next block, since their note-offs no longer reach it.
-    release: bool,
+    /// let go at the next block, since their note-offs no longer reach it;
+    /// or its hold changed. The frames past the block start to let go at.
+    release: Option<u32>,
+    /// Frames every event into it waits (auto-align).
+    hold: u32,
 }
 
 /// The audio side: renders every part into its output pair.
@@ -524,19 +540,25 @@ impl RackAudio {
                 continue;
             };
             let now = p.engine.now();
+            let held = SampleTime(now.0 + u64::from(p.hold));
             let channel = p.mix.channel;
             self.events.clear();
             if self.panic {
+                // What sounds ends now; what is held ends as it comes due.
                 self.events
                     .extend(PANIC.map(|body| Timed { at: now, body }));
+                if p.hold > 0 {
+                    self.events
+                        .extend(PANIC.map(|body| Timed { at: held, body }));
+                }
             }
             // What the old channel held lets go before this block's notes.
-            if std::mem::take(&mut p.release) {
-                self.events
-                    .extend(release().map(|body| Timed { at: now, body }));
+            if let Some(after) = p.release.take() {
+                let at = SampleTime(now.0 + u64::from(after));
+                self.events.extend(release().map(|body| Timed { at, body }));
             }
             self.events
-                .extend(self.played.iter().map(|&body| Timed { at: now, body }));
+                .extend(self.played.iter().map(|&body| Timed { at: held, body }));
             let room = self.events.capacity() - self.events.len();
             self.events.extend(
                 input
@@ -544,7 +566,7 @@ impl RackAudio {
                     .filter(|(_, e)| channel == 0 || e.channel().is_none_or(|c| c + 1 == channel))
                     .take(room)
                     .map(|&(at, body)| Timed {
-                        at: SampleTime(now.0 + u64::from(at)),
+                        at: SampleTime(held.0 + u64::from(at)),
                         body,
                     }),
             );
@@ -611,14 +633,16 @@ impl RackAudio {
                         let old = slot.replace(Playing {
                             engine,
                             mix,
-                            release: false,
+                            release: None,
+                            hold: 0,
                         });
                         self.retire(old);
                     } else {
                         self.retire(Some(Playing {
                             engine,
                             mix,
-                            release: false,
+                            release: None,
+                            hold: 0,
                         }));
                     }
                 }
@@ -628,8 +652,20 @@ impl RackAudio {
                 }
                 Command::Mix(part, mix) => {
                     if let Some(Some(p)) = self.parts.get_mut(part) {
-                        p.release |= p.mix.channel != mix.channel;
+                        if p.mix.channel != mix.channel {
+                            p.release = Some(p.hold);
+                        }
                         p.mix = mix;
+                    }
+                }
+                // Notes held under the old hold let go after the later of
+                // the two, so no note-off overtakes its note-on.
+                Command::Hold(part, frames) => {
+                    if let Some(Some(p)) = self.parts.get_mut(part)
+                        && p.hold != frames
+                    {
+                        p.release = Some(p.hold.max(frames));
+                        p.hold = frames;
                     }
                 }
                 Command::Master(gain) => self.master = gain,

@@ -8,11 +8,13 @@
 //! [`Tick`] runs on moose's task pool and owns the rack's control side
 //! behind a mutex the audio thread never sees.
 
+mod align;
 mod editor;
 mod input;
 #[cfg(test)]
 mod tests;
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock};
 
 use kontra_host::rack::{Event, Rack, RackAudio, Store, StoreConfig};
@@ -24,6 +26,9 @@ pub const OUTPUTS: usize = kontra_host::rack::OUTPUTS;
 
 /// Host events one block takes; more in one block are dropped and counted.
 const EVENTS: usize = 4096;
+
+/// Frames rendered at once, well inside the engine's look-ahead.
+const CHUNK: usize = 1024;
 
 #[derive(Params)]
 #[params(pre_save = "capture", post_load = "restore")]
@@ -37,6 +42,10 @@ pub struct KontraParams {
         smooth = "exp(5)"
     )]
     pub volume: FloatParam,
+    /// Holds the earlier parts so every part sounds on the beat, and
+    /// reports the latest part's attack delay as the plugin's latency.
+    #[param(id = 1, name = "Auto-align", default = false)]
+    pub align: BoolParam,
     /// The rack as JSON ([`Saved`]): parts, presets, mix.
     #[persist = "rack"]
     pub saved: RwLock<String>,
@@ -48,7 +57,7 @@ pub struct KontraParams {
 
 use KontraParamsParamId as P;
 
-/// What the control threads share. The audio thread never touches it.
+/// What the control threads share. The audio thread reads only `latency`.
 #[derive(Default)]
 pub struct Shared {
     rack: Mutex<Option<Rack>>,
@@ -58,6 +67,9 @@ pub struct Shared {
     /// The editor's copy of the rack, refreshed by [`Tick`].
     view: Mutex<editor::Snapshot>,
     dirty: std::sync::atomic::AtomicBool,
+    align: Mutex<align::Align>,
+    /// The latency to report, in frames; the audio thread reads it.
+    latency: AtomicU32,
 }
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
@@ -121,9 +133,12 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub struct Dsp {
     audio: Option<RackAudio>,
     input: Vec<(u32, Event)>,
+    /// This chunk's share of `input`.
+    chunk: Vec<(u32, Event)>,
     gain: f32,
     rate: f64,
     until_tick: usize,
+    latency: u32,
 }
 
 /// The control tick: carries out requests, frees what audio retired and
@@ -161,6 +176,8 @@ impl BackgroundTask for Tick {
                 Request::Ui(edit) => editor::apply(rack, edit),
             }
         }
+        let latency = lock(&p.shared.align).update(p.align.value(), rack);
+        p.shared.latency.store(latency, Ordering::Relaxed);
         rack.tick();
         lock(&p.shared.view).refresh(rack, report);
         p.shared
@@ -201,6 +218,7 @@ impl PluginLogic for Kontra {
         s.rate = c.sample_rate;
         s.gain = db_to_linear(p.volume.value());
         s.input = Vec::with_capacity(EVENTS);
+        s.chunk = Vec::with_capacity(EVENTS);
         s.until_tick = 0;
         let rate = c.sample_rate.round() as u32;
         let Ok(store) = Store::new(StoreConfig::DEFAULT) else {
@@ -209,6 +227,7 @@ impl PluginLogic for Kontra {
         };
         let (rack, audio) = Rack::new(rate, store, c.max_block_size);
         *lock(&p.shared.player) = Some(rack.player());
+        *lock(&p.shared.align) = align::Align::default();
         let previous = lock(&p.shared.rack).replace(rack).map(|r| r.save());
         if let Some(saved) = previous.filter(|s| !s.parts.is_empty()) {
             let mut requests = lock(&p.shared.requests);
@@ -241,6 +260,7 @@ impl PluginLogic for Kontra {
             }
             return ProcessStatus::Normal;
         };
+        s.latency = p.shared.latency.load(Ordering::Relaxed);
         s.input.clear();
         // VST3 hosts give the tempo only here; CLAP may also send events.
         audio.set_tempo(cx.transport.tempo as f32);
@@ -253,28 +273,49 @@ impl PluginLogic for Kontra {
                 s.input.push((e.sample_offset, event));
             }
         }
-        // A bounce waits for the disk; a live block never does.
-        if cx.process_mode.is_offline() {
-            audio.settle();
-        }
-        audio.process(frames, &s.input);
         // The master ramps from the last block's gain to this one's.
         let target = db_to_linear(p.volume.value());
         let step = (target - s.gain) / frames.max(1) as f32;
         let mut peak = 0.0f32;
         for ch in 0..b.num_output_channels() {
-            let pair = audio.output(ch / 2, frames);
-            let out = b.output(ch);
-            out.fill(0.0);
-            for (n, (o, frame)) in out.iter_mut().zip(pair).enumerate() {
-                let x = frame.get(ch % 2).copied().unwrap_or(0.0);
-                *o = x * (s.gain + step * n as f32);
-                peak = peak.max(o.abs());
+            b.output(ch).fill(0.0);
+        }
+        // Rendered in chunks, so a long offline block never reads past what
+        // the engine looked ahead for.
+        let chunk = CHUNK.min(audio.max_block()).max(1);
+        for start in (0..frames).step_by(chunk) {
+            let len = chunk.min(frames - start);
+            let end = (start + len) as u32;
+            s.chunk.clear();
+            s.chunk.extend(
+                (s.input.iter())
+                    .filter(|(at, _)| (start as u32..end).contains(at))
+                    .map(|&(at, e)| (at - start as u32, e)),
+            );
+            // A bounce waits for the disk; a live block never does.
+            if cx.process_mode.is_offline() {
+                audio.settle();
+            }
+            audio.process(len, &s.chunk);
+            for ch in 0..b.num_output_channels() {
+                let pair = audio.output(ch / 2, len);
+                let Some(out) = b.output(ch).get_mut(start..start + len) else {
+                    continue;
+                };
+                for (n, (o, frame)) in out.iter_mut().zip(pair).enumerate() {
+                    let x = frame.get(ch % 2).copied().unwrap_or(0.0);
+                    *o = x * (s.gain + step * (start + n) as f32);
+                    peak = peak.max(o.abs());
+                }
             }
         }
         s.gain = target;
         cx.set_meter(&p.level, peak.min(1.0));
         ProcessStatus::Normal
+    }
+
+    fn latency(s: &Dsp) -> u32 {
+        s.latency
     }
 
     fn editor(params: std::sync::Arc<KontraParams>) -> Box<dyn Editor> {
