@@ -370,8 +370,12 @@ impl RackAudio {
                     slot,
                     id,
                     value,
+                    keys,
                 } => {
                     if let Some(Some(p)) = self.parts.get_mut(part) {
+                        let control = keys.ctrl || keys.cmd;
+                        p.engine
+                            .set_click_keys(slot, id, [keys.shift, keys.alt, control]);
                         p.engine.set_control(slot, id, value);
                     }
                 }

@@ -171,7 +171,11 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     assert_eq!(f.value(0), 25.);
     assert!(reset.contains(&Edit {
         widget: WidgetRef(0),
-        value: 25.
+        value: 25.,
+        keys: kontra_ui_model::UiModifiers {
+            ctrl: true,
+            ..Default::default()
+        },
     }));
     // The wheel down turns it down.
     f.frame(Input {

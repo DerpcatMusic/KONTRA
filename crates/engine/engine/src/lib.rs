@@ -59,7 +59,7 @@ pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_plan::{EnginePar, EnginePars};
 pub use kontra_script_ui::FIRST_FONT;
-pub use kontra_script_ui::{Key, KeyRange, MenuItem, Page};
+pub use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
 pub use kontra_time::SampleTime;
 pub use kontra_vm::{Action, Faults, Foreign, Op, Program, Text, Vm, WidgetLook};
 pub use kontra_voice::{Ahdsr, Loop, Region};
@@ -73,7 +73,6 @@ pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
 #[cfg(feature = "trace")]
 pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;
-pub use ui::ControlLook;
 
 use behaviour::Behaviour;
 use buses::BusState;

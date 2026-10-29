@@ -2673,3 +2673,34 @@ fn a_new_ranged_control_starts_at_its_minimum() {
     level(&mut e, &[on(60)]);
     assert_eq!(e.last_message(), "2;-9;5;3;50");
 }
+
+/// A click's modifier keys read back as `$CONTROL_PAR_KEY_SHIFT/ALT/CONTROL`
+/// in the control's callback, and a plain click clears them (KSP manual).
+#[test]
+fn a_switch_callback_reads_the_keys_held_at_the_click() {
+    let source = "on init
+            declare ui_switch $s
+            message(get_ui_id($s))
+        end on
+        on ui_control($s)
+            declare $id
+            $id := get_ui_id($s)
+            message(get_control_par($id, $CONTROL_PAR_KEY_SHIFT) & get_control_par($id, $CONTROL_PAR_KEY_ALT) & get_control_par($id, $CONTROL_PAR_KEY_CONTROL))
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[]);
+    let id: i32 = e.last_message().parse().unwrap();
+    e.set_click_keys(0, id, [false, false, true]);
+    e.set_control(0, id, 1);
+    assert_eq!(e.last_message(), "001");
+    e.set_click_keys(0, id, [true, true, false]);
+    e.set_control(0, id, 0);
+    assert_eq!(e.last_message(), "110");
+    e.set_click_keys(0, id, [false; 3]);
+    e.set_control(0, id, 1);
+    assert_eq!(e.last_message(), "000");
+}

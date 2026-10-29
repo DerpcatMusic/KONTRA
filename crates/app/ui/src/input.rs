@@ -10,11 +10,13 @@ use mui::prelude::*;
 
 use crate::kit;
 
-/// One control set to a value by the user.
+/// One control set to a value by the user, and the modifier keys held at
+/// the click (a script reads them as `$CONTROL_PAR_KEY_*`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Edit {
     pub widget: WidgetRef,
     pub value: f64,
+    pub keys: model::UiModifiers,
 }
 
 /// A page's gesture in flight: the control pressed and its value then, and
@@ -106,11 +108,22 @@ pub fn read(
         let id = surface(face, n.0);
         let r = ui.get(id.clone());
         let now = value(w);
+        // Menus and value edits don't report keys (KSP manual, KEY_SHIFT).
+        let keys = match w.kind {
+            Kind::Menu { .. } | Kind::ValueEdit { .. } => model::UiModifiers::default(),
+            _ => model::UiModifiers {
+                shift: r.press_mods.shift,
+                ctrl: r.press_mods.ctrl,
+                alt: r.press_mods.alt,
+                cmd: r.press_mods.cmd,
+            },
+        };
         let mut set = |v: f64| {
             if v != now {
                 edits.push(Edit {
                     widget: n,
                     value: v,
+                    keys,
                 });
             }
         };
@@ -192,6 +205,7 @@ pub fn read(
             edits.push(Edit {
                 widget: WidgetRef(m),
                 value: f64::from(item.value),
+                keys: model::UiModifiers::default(),
             });
             g.menu = None;
         }
