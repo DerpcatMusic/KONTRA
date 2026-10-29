@@ -2355,6 +2355,7 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         restore_texts: vec![],
         controls: Controls::default(),
         engine_pars: EnginePars::default(),
+        links: vec![],
         reverb_laws: std::array::from_fn(|_| ir::Law::Linear { lo: 0.0, hi: 1.0 }),
         reverb_networks: vec![],
         knobs: vec![],
