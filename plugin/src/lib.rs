@@ -16,7 +16,7 @@ mod look;
 #[cfg(test)]
 mod tests;
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock};
 
 use kontra_host::rack::{Event, Rack, RackAudio, Store, StoreConfig};
@@ -83,6 +83,9 @@ pub struct Shared {
     /// while the first is ahead.
     asked: AtomicU64,
     done: AtomicU64,
+    /// A host's state is loading (a project opened, an undo): shown as a
+    /// load too.
+    restoring: AtomicBool,
     /// The latency to report, in frames; the audio thread reads it.
     latency: AtomicU32,
     /// Moves when the host loads a state: the editor reads its view again.
@@ -117,6 +120,7 @@ impl Shared {
     /// Whether a load asked for is not carried out yet.
     fn loading(&self) -> bool {
         self.asked.load(Ordering::Acquire) > self.done.load(Ordering::Acquire)
+            || self.restoring.load(Ordering::Acquire)
     }
 }
 
@@ -241,9 +245,11 @@ impl BackgroundTask for Tick {
                     }
                 }
                 Request::Restore(saved) => {
+                    p.shared.restoring.store(true, Ordering::Release);
                     for (part, e) in rack.restore(&saved) {
                         report.push(format!("part {}: {e}", part + 1));
                     }
+                    p.shared.restoring.store(false, Ordering::Release);
                 }
                 Request::Ui(edit) => editor::apply(rack, edit),
                 Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
