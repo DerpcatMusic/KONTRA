@@ -469,22 +469,18 @@ impl Rack {
                 continue;
             }
             let here = (request.at, request.slot);
-            match request.response {
-                None => {
-                    p.slot_types.retain(|&(at, slot, _)| (at, slot) != here);
-                    p.slot_types.push((here.0, here.1, request.ty));
-                    p.slot_responses.retain(|&(at, slot, _)| (at, slot) != here);
-                }
-                Some((index, _)) => {
-                    let plan = p.plan.as_deref();
-                    if let Some((name, _)) = plan.and_then(|q| q.responses.get(usize::from(index)))
-                    {
-                        p.slot_responses.retain(|&(at, slot, _)| (at, slot) != here);
-                        p.slot_responses.push((here.0, here.1, name.clone()));
-                    }
-                }
-            }
+            let (asked, ty) = (request.response.is_some(), request.ty);
             let unit = Prepared::new(request, p.plan.as_deref(), self.rate);
+            // A response that fails to decode leaves the slot playing what it
+            // had, so the save keeps what it had too.
+            if let Some(name) = unit.response_name() {
+                p.slot_responses.retain(|&(at, slot, _)| (at, slot) != here);
+                p.slot_responses.push((here.0, here.1, name.to_owned()));
+            } else if !asked {
+                p.slot_types.retain(|&(at, slot, _)| (at, slot) != here);
+                p.slot_types.push((here.0, here.1, ty));
+                p.slot_responses.retain(|&(at, slot, _)| (at, slot) != here);
+            }
             let unit = Box::new(Some(unit));
             self.send(Command::Effect {
                 part,

@@ -72,6 +72,13 @@ impl Prepared {
     pub fn request(&self) -> &EffectRequest {
         &self.request
     }
+
+    /// The plan's name of the response it decoded; `None` when it asked for
+    /// none or the decode failed (the slot then keeps what it plays).
+    #[must_use]
+    pub fn response_name(&self) -> Option<&str> {
+        self.response.as_ref().map(|(name, ..)| name.as_str())
+    }
 }
 
 impl Plan {
