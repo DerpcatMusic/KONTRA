@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The plugin's real editor under Xvfb, driven with real pointer events:
-# a part tab, the header's library art, the browser's library cards, the preset field, a library knob
+# the face drawn untouched, a part tab, the header's library art, the browser's library cards, the preset field, a library knob
 # dragged and a switch clicked, a browser row clicked (selects), double-
 # clicked (adds a part) and dragged onto a part (replaces it), then idle.
 # Each step must change the window as it says; idle must cost ~0 CPU.
@@ -50,6 +50,13 @@ check() { if differ "$1" "$2" "${4:-}"; then pass "$3"; else miss "$3"; fi; }
 still() { if differ "$1" "$2" "${4:-}"; then miss "$3"; else pass "$3"; fi; }
 
 shot 0-open
+# Nothing has been clicked yet: the face draws on its own once its
+# pictures decode, not on the first input.
+if python3 -I -c 'import sys; from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB").crop((210, 100, 875, 495))
+sys.exit(0 if len(set(im.getdata())) > 64 else 1)' "$out/0-open.png"; then
+    pass "face draws without any click"
+else miss "face draws without any click"; fi
 # The header's left end shows the library's art: many colours, not one fill.
 if python3 -I -c 'import sys; from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB").crop((205, 46, 420, 92))

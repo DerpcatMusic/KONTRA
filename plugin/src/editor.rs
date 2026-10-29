@@ -545,6 +545,12 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             view.parts.iter().map(|v| v.slot).collect()
         };
         crate::look::parts(&mut app, &slots, &mut waiting);
+        app.master = f64::from(p.volume.value());
+        app.loading = p.shared.loading().then_some(target);
+        let response = kontra_ui::app::view(ui, &mut app);
+        // After the view: drawing a picture the first time is what asks the
+        // worker for it, so the frame that first shows a face has to count
+        // its requests, or no frame follows to take the decoded pictures.
         let faces = app.parts.iter().filter_map(|p| p.face.as_ref());
         let decoding = faces
             .map(|f| &f.pictures)
@@ -552,9 +558,6 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             .chain(&app.banners)
             .any(|p| p.pending() > 0);
         p.shared.decoding.store(decoding, Ordering::Release);
-        app.master = f64::from(p.volume.value());
-        app.loading = p.shared.loading().then_some(target);
-        let response = kontra_ui::app::view(ui, &mut app);
         for action in response.changed {
             let asked = match action {
                 Action::Load { .. } => Some(app::Loading::New),
