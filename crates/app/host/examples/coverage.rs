@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use kontra_engine::{Action, Engine, Event, HostNote, HostPattern, SampleTime, Timed, ir};
-use kontra_host::script::understood;
+use kontra_host::script::{runs, understood};
 use kontra_ksp::Builtin;
 use kontra_stream::{Store, StoreConfig};
 
@@ -40,6 +40,13 @@ struct Report {
     faults: Vec<(String, String)>,
     /// (impact, feature) -> instruments, libraries, an example.
     gaps: BTreeMap<(ir::Impact, String), (usize, BTreeSet<String>, String)>,
+    /// `on <callback>` -> its use.
+    callbacks: BTreeMap<String, Use>,
+    /// What each distinct script uses: features keyed as the ranked list
+    /// keys them (`a:<action id>`, `s:<name>`, `c:<callback>`, `x:...`).
+    script_uses: BTreeMap<u64, BTreeSet<String>>,
+    /// Each instrument: its library, its scripts, its IR gap keys.
+    instruments_seen: Vec<(String, Vec<u64>, BTreeSet<String>)>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -111,9 +118,25 @@ fn survey(path: &Path, store: &mut Store, report: &Mutex<Report>) {
             return;
         }
     };
+    let hashes: Vec<u64> = ir
+        .scripts
+        .iter()
+        .filter(|s| s.dialect == ir::Dialect::Ksp)
+        .map(|s| {
+            let mut h = DefaultHasher::new();
+            s.source.hash(&mut h);
+            h.finish()
+        })
+        .collect();
     {
         let Ok(mut r) = report.lock() else { return };
         r.instruments += 1;
+        let gaps = ir
+            .diagnostics
+            .iter()
+            .map(|d| format!("g:{:?}:{}", d.impact, d.feature))
+            .collect();
+        r.instruments_seen.push((lib.clone(), hashes, gaps));
         for d in &ir.diagnostics {
             let gap = r
                 .gaps
@@ -140,6 +163,7 @@ fn survey(path: &Path, store: &mut Store, report: &Mutex<Report>) {
             Err(e) => {
                 if let Ok(mut r) = report.lock() {
                     r.compile_failures.push((name, e.message.to_string()));
+                    r.script_uses.insert(hash, ["x:compile".to_string()].into());
                 }
                 continue;
             }
@@ -155,6 +179,23 @@ fn survey(path: &Path, store: &mut Store, report: &Mutex<Report>) {
             .collect();
         let run = run(&ir, slot, store);
         let Ok(mut r) = report.lock() else { return };
+        let mut uses: BTreeSet<String> = actions.iter().map(|a| format!("a:{a}")).collect();
+        uses.extend(compiled.symbols.iter().map(|n| format!("s:{n}")));
+        let kinds: BTreeSet<String> = compiled
+            .callbacks
+            .iter()
+            .map(|c| format!("{:?}", c.kind))
+            .collect();
+        for name in kinds {
+            uses.insert(format!("c:{name}"));
+            let u = r.callbacks.entry(name).or_default();
+            u.scripts += 1;
+            u.libraries.insert(lib.clone());
+        }
+        if run.as_ref().is_some_and(|(_, _, f)| f.is_some()) {
+            uses.insert("x:fault".into());
+        }
+        r.script_uses.insert(hash, uses);
         for a in actions {
             let u = r.actions.entry(a).or_default();
             u.scripts += 1;
@@ -278,22 +319,24 @@ fn render(r: &Report) -> std::io::Result<String> {
     });
     let mut table = String::new();
     let mut tally: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut status_of: BTreeMap<u16, &str> = BTreeMap::new();
     for (a, u) in &rows {
         let (calls, unanswered) = r.calls.get(&a.id()).copied().unwrap_or_default();
+        // Real calls decide; the zero-argument probe only speaks for an
+        // action no run reached.
         let status = if a.is_pure() {
             "vm"
-        } else if probe.answers(*a) {
-            if unanswered == 0 {
-                "answered"
-            } else {
-                "partial"
-            }
+        } else if calls > 0 && unanswered == 0 {
+            "answered"
         } else if calls > unanswered {
             "partial"
+        } else if calls == 0 && probe.answers(*a) {
+            "answered"
         } else {
             "missing"
         };
         *tally.entry(status).or_default() += 1;
+        status_of.insert(a.id(), status);
         let _ = writeln!(
             table,
             "| `{}` | {status} | {} | {} | {calls} | {unanswered} |",
@@ -324,8 +367,9 @@ fn render(r: &Report) -> std::io::Result<String> {
     );
     let _ = writeln!(
         s,
-        "Status: `vm` the VM answers it; `answered` the engine answers it and no run left a call unanswered; `partial` some calls or arguments go unanswered; `missing` the engine never answers it. Calls are summed over init, one note on (key 60) and off, once per distinct script.\n"
+        "Status: `vm` the VM answers it; `answered` every call in the runs was answered (or, never reached, the engine answers a bare probe); `partial` some calls or arguments go unanswered; `missing` the engine never answers it. Calls are summed over init, one note on (key 60) and off, once per distinct script.\n"
     );
+    s.push_str(&headline(r, &status_of));
     let _ = writeln!(s, "## Summary\n");
     let _ = writeln!(
         s,
@@ -415,4 +459,116 @@ fn render(r: &Report) -> std::io::Result<String> {
         }
     }
     Ok(s)
+}
+
+/// Whether feature `key` (as [`Report::script_uses`] keys it) is answered,
+/// and its kind, status and weight (how much a user meets it).
+fn judge(key: &str, status_of: &BTreeMap<u16, &str>) -> (bool, &'static str, String, u32) {
+    let (kind, name) = key.split_once(':').unwrap_or(("?", key));
+    match kind {
+        "a" => {
+            let status = name
+                .parse()
+                .ok()
+                .and_then(|id: u16| status_of.get(&id))
+                .copied()
+                .unwrap_or("missing");
+            let good = matches!(status, "vm" | "answered");
+            (
+                good,
+                "command",
+                status.into(),
+                if status == "missing" { 3 } else { 2 },
+            )
+        }
+        "s" => (understood(name), "name", "unused by engine".into(), 1),
+        "c" => {
+            let good = kontra_ksp::CallbackKind::ALL
+                .iter()
+                .find(|k| format!("{k:?}") == name)
+                .is_some_and(|&k| runs(k));
+            (good, "callback", "never runs".into(), 3)
+        }
+        "g" => {
+            let impact = name.split(':').next().unwrap_or("");
+            let w = match impact {
+                "Broken" => 4,
+                "Audible" => 3,
+                "Latent" => 2,
+                _ => 1,
+            };
+            (false, "IR gap", impact.into(), w)
+        }
+        _ => (false, "script", name.into(), 4),
+    }
+}
+
+/// The headline (answered features, clean instruments and libraries) and
+/// every open feature ranked by libraries x weight.
+fn headline(r: &Report, status_of: &BTreeMap<u16, &str>) -> String {
+    // feature -> (libraries, instruments)
+    let mut seen: BTreeMap<String, (BTreeSet<&str>, usize)> = BTreeMap::new();
+    let mut libraries: BTreeMap<&str, bool> = BTreeMap::new();
+    let mut clean = 0;
+    for (lib, hashes, gaps) in &r.instruments_seen {
+        let mut used: BTreeSet<&String> = gaps.iter().collect();
+        for h in hashes {
+            used.extend(r.script_uses.get(h).into_iter().flatten());
+        }
+        let mut ok = true;
+        for f in used {
+            let e = seen.entry(f.clone()).or_default();
+            e.0.insert(lib);
+            e.1 += 1;
+            ok &= judge(f, status_of).0;
+        }
+        clean += usize::from(ok);
+        *libraries.entry(lib).or_insert(true) &= ok;
+    }
+    let answered = seen.keys().filter(|f| judge(f, status_of).0).count();
+    let mut open: Vec<_> = seen
+        .iter()
+        .filter_map(|(f, (libs, n))| {
+            let (good, kind, status, w) = judge(f, status_of);
+            (!good).then(|| (libs.len() as u32 * w, f, kind, status, libs.len(), *n))
+        })
+        .collect();
+    open.sort_by(|a, b| b.0.cmp(&a.0).then(b.5.cmp(&a.5)).then(a.1.cmp(b.1)));
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "## Headline\n\n**{answered} of {} features answered; {clean} of {} instruments and {} of {} libraries fully clean.**\n",
+        seen.len(),
+        r.instruments_seen.len(),
+        libraries.values().filter(|&&c| c).count(),
+        libraries.len()
+    );
+    let _ = writeln!(
+        s,
+        "A feature is a KSP command, a catalog name, a callback a script uses, or a translator (IR) gap. A command is answered when the engine (or the VM) answers every call; a name when the engine or the UI tree acts on it; a callback when the engine runs it. A gap is never answered. An instrument is clean when every feature it uses is answered.\n"
+    );
+    let _ = writeln!(
+        s,
+        "## Open features, ranked (libraries x weight)\n\nWeight: 4 broken or script failure, 3 audible gap / missing command / dead callback, 2 partial command or latent gap, 1 unused name or cosmetic gap.\n\n| Rank | Score | Kind | Feature | Status | Libraries | Instruments |\n|---:|---:|---|---|---|---:|---:|"
+    );
+    for (n, (score, f, kind, status, libs, inst)) in open.iter().enumerate() {
+        let name = match f.split_once(':') {
+            Some(("a", id)) => id
+                .parse()
+                .ok()
+                .and_then(Action::from_id)
+                .map_or(f.to_string(), names),
+            Some(("g", rest)) => rest.split_once(':').map_or(rest, |(_, g)| g).to_string(),
+            Some((_, n)) => n.to_string(),
+            None => f.to_string(),
+        };
+        let _ = writeln!(
+            s,
+            "| {} | {score} | {kind} | `{}` | {status} | {libs} | {inst} |",
+            n + 1,
+            name.replace('|', "/")
+        );
+    }
+    s.push('\n');
+    s
 }
