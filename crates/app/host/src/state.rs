@@ -204,17 +204,36 @@ impl Rack {
         Saved::new(parts)
     }
 
-    /// Empties the rack and loads `saved` into it, part by part. A part
-    /// that fails to load is left empty; its error is returned.
+    /// Makes the rack `saved`, part by part. A part already as saved stays
+    /// as it is, so a host that hands over the same state again (at
+    /// creation, then again on activation) loads nothing twice. A part that
+    /// fails to load is left empty; its error is returned.
     pub fn restore(&mut self, saved: &Saved) -> Vec<(usize, String)> {
+        let now = self.save().parts;
+        // A state saved before auto-align measured a part still matches it.
+        let same = |p: &SavedPart| {
+            now.iter().any(|n| {
+                n.part == p.part
+                    && *n
+                        == SavedPart {
+                            delays: p.delays.clone().or_else(|| n.delays.clone()),
+                            ..p.clone()
+                        }
+            })
+        };
+        let kept: Vec<usize> = (saved.parts.iter())
+            .filter(|p| same(p))
+            .map(|p| p.part)
+            .collect();
         let loaded: Vec<usize> = (self.parts().iter().enumerate())
             .filter_map(|(n, p)| p.as_ref().map(|_| n))
+            .filter(|n| !kept.contains(n))
             .collect();
         for part in loaded {
             self.remove(part);
         }
         let mut failed = Vec::new();
-        for p in &saved.parts {
+        for p in saved.parts.iter().filter(|p| !kept.contains(&p.part)) {
             let types: Vec<_> = (p.slot_types.iter())
                 .map(|t| (t.rack.into(), t.slot, t.ty))
                 .collect();

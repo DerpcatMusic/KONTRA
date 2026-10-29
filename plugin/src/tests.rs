@@ -772,3 +772,42 @@ fn a_librarys_cover_reads_from_its_resource_container() {
         assert!(png.is_some_and(|b| b.starts_with(b"\x89PNG")), "no {key:?}");
     }
 }
+
+/// A host that hands back the state it saved (Bitwig: at creation, then
+/// again as it activates) loads the instrument once, not again.
+#[test]
+fn the_same_state_restored_again_loads_nothing_twice() {
+    let Some(path) = library("Una Corda Library/Instruments/Una Corda Felt.nki") else {
+        return;
+    };
+    let saved = Saved::new(vec![SavedPart {
+        part: 0,
+        path,
+        channel: 0,
+        output: 0,
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+        delays: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+    }]);
+    let (params, mut dsp) = activate(&saved.write());
+    settle(&params, &mut dsp);
+    let load = |params: &KontraParams| {
+        let rack = crate::lock(&params.shared.rack);
+        let part = rack
+            .as_ref()
+            .and_then(|r| r.parts().first()?.as_ref().map(|p| p.script.generation()));
+        part.expect("Una Corda loaded")
+    };
+    let first = load(&params);
+    params.capture();
+    for _ in 0..2 {
+        params.restore();
+        settle(&params, &mut dsp);
+        assert_eq!(load(&params), first, "the same state loaded the part again");
+    }
+}
