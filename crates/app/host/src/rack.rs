@@ -57,6 +57,9 @@ pub enum Command {
     Tempo(f32),
     /// End every note on every part at once.
     Panic,
+    /// Play `Event` on every part at the next block (the editor's keyboard
+    /// and wheels).
+    Play(Event),
     /// Read a part's persistent script cells and send them back.
     Capture(Box<Capture>),
     /// The user moved control `id` of script `slot` to `value`.
@@ -103,6 +106,25 @@ pub struct ScriptState {
     asked: bool,
 }
 
+/// Plays events on every part from any thread, straight into the audio
+/// side's command ring: it needs no lock on the [`Rack`], so the editor's
+/// keyboard is not held up by a load.
+#[derive(Clone)]
+pub struct Player(Arc<Channels>);
+
+impl Player {
+    /// Plays `event` on every part at the next block; false when the ring
+    /// is full.
+    pub fn play(&self, event: Event) -> bool {
+        self.0.commands.send(Command::Play(event)).is_ok()
+    }
+
+    /// Ends every note; false when the ring is full.
+    pub fn panic(&self) -> bool {
+        self.0.commands.send(Command::Panic).is_ok()
+    }
+}
+
 /// The control side: loads parts, sets the mix and asks the audio side.
 pub struct Rack {
     channels: Arc<Channels>,
@@ -137,6 +159,12 @@ impl Rack {
             generation: 0,
         };
         (rack, audio)
+    }
+
+    /// A [`Player`] for this rack.
+    #[must_use]
+    pub fn player(&self) -> Player {
+        Player(Arc::clone(&self.channels))
     }
 
     #[must_use]
@@ -299,6 +327,11 @@ impl Rack {
         self.send(Command::Panic);
     }
 
+    /// Plays `event` on every part at the next block, whatever its channel.
+    pub fn play(&mut self, event: Event) {
+        self.send(Command::Play(event));
+    }
+
     /// Moves control `id` of `part`'s script `slot` to `value`, as the user
     /// turning it: its callbacks run on the audio thread.
     pub fn set_control(&mut self, part: usize, slot: u8, id: i32, value: i64) {
@@ -361,10 +394,9 @@ impl Rack {
         self.parts
             .get(part)
             .and_then(|p| p.as_ref().map(|p| p.mix))
-            .unwrap_or(Mix {
-                output: u8::try_from(part).unwrap_or(0),
-                ..Mix::DEFAULT
-            })
+            // A new part plays on the main output: a host often has only
+            // that one active.
+            .unwrap_or(Mix::DEFAULT)
     }
 
     fn silent(&self, part: usize) -> bool {
@@ -416,6 +448,8 @@ pub struct RackAudio {
     master: f32,
     tempo: Option<f32>,
     panic: bool,
+    /// Events from [`Command::Play`] for the next block; a fixed capacity.
+    played: Vec<Event>,
     meters: Meters,
     dropped: u64,
 }
@@ -434,6 +468,7 @@ impl RackAudio {
             master: 1.0,
             tempo: None,
             panic: false,
+            played: Vec::with_capacity(PLAYED),
             meters: Meters::default(),
             dropped: 0,
         }
@@ -486,10 +521,13 @@ impl RackAudio {
                 self.events
                     .extend(PANIC.map(|body| Timed { at: now, body }));
             }
+            // What the old channel held lets go before this block's notes.
             if std::mem::take(&mut p.release) {
                 self.events
                     .extend(release().map(|body| Timed { at: now, body }));
             }
+            self.events
+                .extend(self.played.iter().map(|&body| Timed { at: now, body }));
             let room = self.events.capacity() - self.events.len();
             self.events.extend(
                 input
@@ -531,6 +569,7 @@ impl RackAudio {
             }
         }
         self.panic = false;
+        self.played.clear();
         for o in self.outputs.iter().filter_map(|o| o.get(..frames)) {
             for s in o {
                 self.meters.master[0] = self.meters.master[0].max(s[0].abs());
@@ -586,7 +625,18 @@ impl RackAudio {
                 }
                 Command::Master(gain) => self.master = gain,
                 Command::Tempo(bpm) => self.set_tempo(bpm),
-                Command::Panic => self.panic = true,
+                // What was played before the panic ends with it.
+                Command::Panic => {
+                    self.panic = true;
+                    self.played.clear();
+                }
+                Command::Play(event) => {
+                    if self.played.len() < self.played.capacity() {
+                        self.played.push(event);
+                    } else {
+                        self.dropped += 1;
+                    }
+                }
                 Command::Capture(mut c) => {
                     if let Some(Some(p)) = self.parts.get(c.part) {
                         c.read(&p.engine);
@@ -641,6 +691,9 @@ fn release() -> [Event; 18] {
         _ => off(n == 16),
     })
 }
+
+/// Events [`Command::Play`] holds for one block.
+const PLAYED: usize = 64;
 
 /// Every note, CLAP-addressed or not.
 const PANIC: [Event; 2] = [Event::Choke(wildcard(true)), Event::Choke(wildcard(false))];

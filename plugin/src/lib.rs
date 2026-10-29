@@ -52,6 +52,8 @@ use KontraParamsParamId as P;
 #[derive(Default)]
 pub struct Shared {
     rack: Mutex<Option<Rack>>,
+    /// The editor's keyboard into the rack, without the rack's lock.
+    player: Mutex<Option<kontra_host::rack::Player>>,
     requests: Mutex<Vec<Request>>,
     /// The editor's copy of the rack, refreshed by [`Tick`].
     view: Mutex<editor::Snapshot>,
@@ -60,8 +62,9 @@ pub struct Shared {
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
 pub enum Request {
+    /// Load `path` into `part`, or into the first free part.
     Load {
-        part: usize,
+        part: Option<usize>,
         path: std::path::PathBuf,
     },
     Restore(Saved),
@@ -83,6 +86,13 @@ impl KontraParams {
             .any(|r| matches!(r, Request::Restore(_)));
         if waiting {
             return;
+        }
+        // A drop not loaded yet is saved too: load it now.
+        let loading = lock(&self.shared.requests)
+            .iter()
+            .any(|r| matches!(r, Request::Load { .. }));
+        if loading {
+            Tick.run(self);
         }
         if let Some(rack) = lock(&self.shared.rack).as_ref() {
             *self.saved.write().unwrap_or_else(PoisonError::into_inner) = rack.save().write();
@@ -135,7 +145,11 @@ impl BackgroundTask for Tick {
         for r in requests {
             match r {
                 Request::Load { part, path } => {
-                    if let Err(e) = rack.load(part, &path) {
+                    let loaded = match part.or_else(|| rack.free()) {
+                        Some(part) => rack.load(part, &path),
+                        None => Err("every part is in use".into()),
+                    };
+                    if let Err(e) = loaded {
                         report.push(format!("{}: {e}", path.display()));
                     }
                 }
@@ -194,6 +208,7 @@ impl PluginLogic for Kontra {
             return;
         };
         let (rack, audio) = Rack::new(rate, store, c.max_block_size);
+        *lock(&p.shared.player) = Some(rack.player());
         let previous = lock(&p.shared.rack).replace(rack).map(|r| r.save());
         if let Some(saved) = previous.filter(|s| !s.parts.is_empty()) {
             let mut requests = lock(&p.shared.requests);
