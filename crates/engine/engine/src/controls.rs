@@ -29,7 +29,7 @@ impl Engine {
             .scripts
             .get(usize::from(slot))
             .map(|s| &s.controls);
-        let n = controls.and_then(|c| c.cells.iter().position(|&c| c == Some(cell)));
+        let n = controls.and_then(|c| c.of_cell(cell));
         let index = usize::try_from(value).ok();
         n.zip(index)
             .and_then(|(n, index)| self.ui.pick(slot, n, index))

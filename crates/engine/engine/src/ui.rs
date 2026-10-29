@@ -86,8 +86,7 @@ impl Engine {
     pub fn script_saved_in(&self, slot: u8, n: usize) -> Option<i64> {
         let value = self.script_cell_in(slot, n)?;
         let controls = &self.plan.scripts.get(usize::from(slot))?.controls;
-        let cell = u32::try_from(n).ok();
-        let control = (controls.cells.iter()).position(|&c| c.is_some() && c == cell);
+        let control = u32::try_from(n).ok().and_then(|c| controls.of_cell(c));
         let index = control.and_then(|c| self.ui.saved_index(slot, c, value));
         Some(index.map_or(value, |i| i as i64))
     }
