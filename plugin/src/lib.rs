@@ -52,6 +52,8 @@ use KontraParamsParamId as P;
 #[derive(Default)]
 pub struct Shared {
     rack: Mutex<Option<Rack>>,
+    /// The editor's keyboard into the rack, without the rack's lock.
+    player: Mutex<Option<kontra_host::rack::Player>>,
     requests: Mutex<Vec<Request>>,
     /// The editor's copy of the rack, refreshed by [`Tick`].
     view: Mutex<editor::Snapshot>,
@@ -199,6 +201,7 @@ impl PluginLogic for Kontra {
             return;
         };
         let (rack, audio) = Rack::new(rate, store, c.max_block_size);
+        *lock(&p.shared.player) = Some(rack.player());
         let previous = lock(&p.shared.rack).replace(rack).map(|r| r.save());
         if let Some(saved) = previous.filter(|s| !s.parts.is_empty()) {
             let mut requests = lock(&p.shared.requests);

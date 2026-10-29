@@ -106,6 +106,25 @@ pub struct ScriptState {
     asked: bool,
 }
 
+/// Plays events on every part from any thread, straight into the audio
+/// side's command ring: it needs no lock on the [`Rack`], so the editor's
+/// keyboard is not held up by a load.
+#[derive(Clone)]
+pub struct Player(Arc<Channels>);
+
+impl Player {
+    /// Plays `event` on every part at the next block; false when the ring
+    /// is full.
+    pub fn play(&self, event: Event) -> bool {
+        self.0.commands.send(Command::Play(event)).is_ok()
+    }
+
+    /// Ends every note; false when the ring is full.
+    pub fn panic(&self) -> bool {
+        self.0.commands.send(Command::Panic).is_ok()
+    }
+}
+
 /// The control side: loads parts, sets the mix and asks the audio side.
 pub struct Rack {
     channels: Arc<Channels>,
@@ -140,6 +159,12 @@ impl Rack {
             generation: 0,
         };
         (rack, audio)
+    }
+
+    /// A [`Player`] for this rack.
+    #[must_use]
+    pub fn player(&self) -> Player {
+        Player(Arc::clone(&self.channels))
     }
 
     #[must_use]
@@ -601,7 +626,11 @@ impl RackAudio {
                 }
                 Command::Master(gain) => self.master = gain,
                 Command::Tempo(bpm) => self.set_tempo(bpm),
-                Command::Panic => self.panic = true,
+                // What was played before the panic ends with it.
+                Command::Panic => {
+                    self.panic = true;
+                    self.played.clear();
+                }
                 Command::Play(event) => {
                     if self.played.len() < self.played.capacity() {
                         self.played.push(event);

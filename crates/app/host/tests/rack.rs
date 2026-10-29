@@ -236,3 +236,28 @@ fn played_events_reach_every_part_whatever_its_channel() {
     let [level, _] = play(&mut audio, &[]);
     assert!(level > 0.1, "{level}");
 }
+
+#[test]
+fn a_panic_ends_what_was_played_before_it_and_the_player_needs_no_rack() {
+    let (mut rack, mut audio) = rack();
+    let a = engine(rack.store_mut(), 0.5);
+    rack.install(0, a, part("a"));
+    let player = rack.player();
+    let held = std::thread::spawn(move || {
+        player.play(note(0));
+        player.panic();
+    });
+    held.join().unwrap();
+    let [level, _] = play(&mut audio, &[]);
+    assert!(
+        level.abs() < 1e-4,
+        "the note played before the panic sounds: {level}"
+    );
+    rack.panic();
+    rack.play(note(0));
+    let [level, _] = play(&mut audio, &[]);
+    assert!(
+        level > 0.1,
+        "the note played after the panic is gone: {level}"
+    );
+}

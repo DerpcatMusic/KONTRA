@@ -107,9 +107,7 @@ pub fn apply(rack: &mut Rack, edit: Edit) {
         .and_then(|s| Some((s, rack.parts().get(s)?.as_ref()?)));
     let mix = |(slot, p): (usize, &kontra_host::rack::Part)| (slot, p.mix, p.solo, p.mute);
     let Some((slot, mut m, solo, mute)) = part.map(mix) else {
-        if let Some(event) = played(&edit.action) {
-            rack.play(event);
-        } else if edit.action == Action::Panic {
+        if edit.action == Action::Panic {
             rack.panic();
         }
         return;
@@ -160,6 +158,12 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 bridge.drag_gesture(P::Volume, db);
                 continue;
             }
+            if let Some(event) = played(&action) {
+                if let Some(player) = lock(&p.shared.player).as_ref() {
+                    player.play(event);
+                }
+                continue;
+            }
             let slot = part_of(&action).and_then(|n| slots.get(n).copied());
             p.shared.request(Request::Ui(Edit { slot, action }));
         }
@@ -182,12 +186,16 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     .into_editor()
 }
 
+/// The port the editor's notes come from: no host port, so a host note-off
+/// never ends a key the editor holds, nor the other way round.
+const EDITOR_PORT: u8 = 255;
+
 /// What the editor's keyboard and wheels play, on channel 1 of every part.
 fn played(action: &Action) -> Option<Event> {
     Some(match *action {
         Action::Note(key, true) => Event::NoteOn {
             note: HostNote {
-                port: 0,
+                port: EDITOR_PORT,
                 channel: 0,
                 key,
                 id: -1,
@@ -197,7 +205,7 @@ fn played(action: &Action) -> Option<Event> {
             tune: 0.0,
         },
         Action::Note(key, false) => Event::NoteOff(HostPattern {
-            port: 0,
+            port: i32::from(EDITOR_PORT),
             channel: 0,
             key: i32::from(key),
             id: -1,
