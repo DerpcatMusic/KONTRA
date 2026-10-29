@@ -497,13 +497,13 @@ const RAW_WET: f32 = 0.1;
 /// `NormalizePower`: the response scaled to unit energy (sum of squares).
 /// UVI (SampledReverb/Convolver IR build 0x141532fe0) divides by the root
 /// of the channels' mean energy, floored at 1e-10 (0x141e6e4f0), after
-/// resampling to the host rate. ponytail: here it is the louder channel's
-/// energy at the file's rate, within 0.5 dB on balanced stereo responses
-/// and 0.4 dB at 44.1 kHz into 48 kHz.
+/// resampling to the host rate. ponytail: here energy is measured at the
+/// file's rate, within 0.4 dB at 44.1 kHz into 48 kHz.
 const POWER: ir::Normalize = ir::Normalize {
     energy: 1.0,
     max_gain: 1e5,
     floor: 0.0,
+    channels: ir::EnergyChannels::Mean,
 };
 
 /// A sampled reverb's `Time` window: UVI keeps `time` of the response and
