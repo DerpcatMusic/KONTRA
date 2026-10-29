@@ -250,6 +250,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 grain: GRAIN_BYTES,
             }),
             inserts: self.voice_slots(kg)?,
+            cycle: self.cycle(kg),
             ..ir::Group::DEFAULT
         };
         // Per-voice gain and shelves, else a one-pole filter, slot by slot.
@@ -388,11 +389,26 @@ impl<L: Library> Translator<'_, '_, L> {
         self.routed.insert(connection.id(), key);
     }
 
+    /// A keygroup's TriggerRule: every oscillator (0), one per note in turn
+    /// (1, "Cycle") or at random (2, "Random Cycle"); the names follow the
+    /// keygroup's trigger parameters in UVIWorkstation's string table
+    /// (0x141e1ef00, beside TriggerSync's "Immediate"/"Next Beat"/"Next Bar").
+    fn cycle(&mut self, kg: Node) -> Option<ir::Cycle> {
+        match kg.attribute("TriggerRule").unwrap_or("0") {
+            "0" => None,
+            "1" => Some(ir::Cycle::InTurn),
+            "2" => Some(ir::Cycle::Random),
+            other => {
+                self.notes.add(ir::Impact::Audible, "trigger rule", other);
+                None
+            }
+        }
+    }
+
     /// Keygroup modes this crate does not carry, each reported with its value.
     fn keygroup_effects_and_modes(&mut self, kg: Node) {
         for (name, feature) in [
             ("ExclusiveGroup", "exclusive group"),
-            ("TriggerRule", "trigger rule"),
             ("TriggerMode", "trigger mode"),
             ("LatchTrigger", "latch trigger"),
         ] {

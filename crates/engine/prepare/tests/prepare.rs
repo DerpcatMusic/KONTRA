@@ -117,3 +117,26 @@ fn a_prepared_instrument_plays_its_keyswitched_groups() {
         out[128]
     );
 }
+
+#[test]
+fn a_cycling_group_plays_one_slot_per_note_in_turn() {
+    let slotted = |sample, slot| ir::Zone { slot, ..zone(sample) };
+    let instrument = ir::Instrument {
+        samples: vec![sample("a", 100), sample("b", 200), sample("c", 400)],
+        groups: vec![ir::Group {
+            cycle: Some(ir::Cycle::InTurn),
+            zones: vec![slotted(0, 0), slotted(1, 3), slotted(2, 5)],
+            ..ir::Group::DEFAULT
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let (plan, _) = prepare(&instrument, RATE, &mut store, &open);
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0; 2]; 256];
+    // Each note adds one slot's level to the held ones: a, then b, then c, then a.
+    for (key, sum) in [(60, 0.1), (62, 0.3), (64, 0.7), (65, 0.8)] {
+        e.process(&mut out, &[on(key)]);
+        assert!((out[128][0] - sum).abs() < 1e-3, "{key}: {:?}", out[128]);
+    }
+}

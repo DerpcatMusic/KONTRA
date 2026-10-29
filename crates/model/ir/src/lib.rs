@@ -267,6 +267,8 @@ pub struct Group {
     pub one_shot: bool,
     /// Start rules folded left to right by their joins; empty always starts.
     pub start: Vec<(Join, StartRule)>,
+    /// Plays one of its zone slots per note instead of all of them.
+    pub cycle: Option<Cycle>,
     /// Voices of this group that may sound at once.
     pub polyphony: Option<u16>,
     /// Voices of this group fade when a voice of that group starts (hi-hat choke).
@@ -316,6 +318,7 @@ impl Group {
         release_decay_db: 0.0,
         one_shot: false,
         start: Vec::new(),
+        cycle: None,
         polyphony: None,
         off_by: None,
         bus: 0,
@@ -578,6 +581,14 @@ pub enum Trigger {
     Release,
     First,
     Legato,
+}
+
+/// How a [`Group::cycle`] picks the slot a note plays, counted per group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cycle {
+    InTurn,
+    /// Never the same slot twice running.
+    Random,
 }
 
 /// How a start rule joins the rules before it.
