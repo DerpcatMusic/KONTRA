@@ -2,7 +2,8 @@
 # The plugin's real editor under Xvfb, driven with real pointer events:
 # the face drawn untouched, a part tab, the header's library art, the browser's library cards, the preset field, a library knob
 # dragged and a switch clicked, a browser row clicked (selects), double-
-# clicked (adds a part) and dragged onto a part (replaces it), then idle.
+# clicked (adds a part) and dragged onto a part (replaces it), then idle
+# for a minute.
 # Each step must change the window as it says; idle must cost ~0 CPU.
 #
 #   tools/kontra-window/drive.sh <kontra-window binary> <instrument> <out dir>
@@ -95,7 +96,12 @@ check 5-knob 6-switch "library switch: click flips it"
 at 1000,600; for _ in $(seq 1 10); do xdotool click 4; sleep 0.1; done; sleep 1.5
 
 at "$fold"; xdotool click 1; sleep 1.5
-at "$library"; xdotool click 1; at 1000,600; sleep 1.5; shot 7-library
+# The pointer rests on the card, then a click and no more input: what the
+# click opened must show by itself, not on the next move.
+at "$library"; sleep 1.5; shot 7a-hover
+xdotool click 1; sleep 1.5; shot 7b-clicked
+check 7a-hover 7b-clicked "a click shows without a second input" 0,110,198,500
+at 1000,600; sleep 1.5; shot 7-library
 at "$second"; xdotool click 1; sleep 3; shot 8-selected
 # A click selects the row; the rack (right of the browser) stays as it was.
 still 7-library 8-selected "browser: a click only selects" 205,30,880,500
@@ -107,7 +113,8 @@ for k in $(seq 1 12); do xdotool mousemove_relative -- 55 -70; sleep 0.04; done
 at "$header"; sleep 0.3; xdotool mouseup 1; sleep 8; shot 11-replaced
 check 10-added 11-replaced "browser: a preset dropped on a part replaces it" 205,40,880,70
 
-# Idle: the pointer parked, nothing playing. CPU over 10 s, in % of a core,
+# Idle: the pointer parked, nothing playing, a Kontakt face open. CPU over
+# 60 s (IDLE_S), in % of a core,
 # of every thread but the audio callback's: the null device has no clock, so
 # cpal's thread spins there, where a real device would pace it.
 ticks() {
@@ -119,9 +126,10 @@ ticks() {
     echo "$sum"
 }
 at 1900,1270; sleep 2
-t0=$(ticks); sleep 10
+span=${IDLE_S:-60}
+t0=$(ticks); sleep "$span"
 t1=$(ticks)
-idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / 10 ))
-echo "idle CPU: ${idle}% of a core"
+idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+echo "idle CPU: ${idle}% of a core over ${span} s"
 if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
 exit $fail

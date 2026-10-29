@@ -76,9 +76,6 @@ pub struct Shared {
     /// The editor's copy of the rack, refreshed by [`Tick`].
     view: Mutex<editor::Snapshot>,
     dirty: std::sync::atomic::AtomicBool,
-    /// Pictures the editor asked for and has not shown yet: it keeps
-    /// drawing until they arrive.
-    decoding: std::sync::atomic::AtomicBool,
     /// Loads asked for and loads carried out: the editor shows one loading
     /// while the first is ahead.
     asked: AtomicU64,
