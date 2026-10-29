@@ -253,6 +253,8 @@ fn output_controllers(version: u16, private: &[u8]) -> Option<ir::OutputControll
         volume: 7,
         pan: 10,
         top_db,
+        power: 3,
+        expression: None,
     })
 }
 

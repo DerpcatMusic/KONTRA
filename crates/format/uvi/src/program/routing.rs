@@ -551,6 +551,22 @@ fn effect(kind: ir::EffectKind, output: f32, dry: f32) -> ir::Effect {
     }
 }
 
+/// The part a program plays in: UVIWorkstation builds each part
+/// (0x140f0f290, always with defaults on) with three connections
+/// (0x140f106e5..0x140f108c6): `@MIDI CC 7` and `@MIDI CC 10` in Edition mode
+/// (ConnectionMode 1: the controller sets the knob) on the part's Gain
+/// (linear 0..10^(6/20), 0x140ecfce1) and Pan (−1..1, 0x140ed007e), and
+/// `@MIDI CC 11` in Modulation mode at ratio 1 on Gain, `(1 − r) + r·v/127`.
+/// The script MIDI state starts CC 11 at 127. Smoothing is not read yet:
+/// the output's measured glide stands in.
+pub(super) const PART_CONTROLLERS: ir::OutputControllers = ir::OutputControllers {
+    volume: 7,
+    pan: 10,
+    top_db: 6.0,
+    power: 1,
+    expression: Some(11),
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

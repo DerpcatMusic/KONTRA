@@ -79,7 +79,10 @@ impl Engine {
         };
         let v = f32::from(value);
         if cc == c.volume {
-            self.instrument.gain = 10f32.powf(c.top_db / 20.0) * (v / 127.0).powi(3);
+            self.instrument.gain = 10f32.powf(c.top_db / 20.0) * (v / 127.0).powi(c.power);
+        }
+        if Some(cc) == c.expression {
+            self.expression = v / 127.0;
         }
         if cc == c.pan {
             self.instrument.pan = ((v - 63.5) / 63.5).clamp(-1.0, 1.0);
