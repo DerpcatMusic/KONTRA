@@ -636,12 +636,13 @@ mod tests {
         let mut log = Log(Vec::new());
         assert_eq!(m.run(co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
-        // −0.5 a unit of ratio: at the default 0, then at the saved 0.25.
+        // −0.5 a unit of ratio at the saved 0.25: the default 0 it was built
+        // at was set before init too, so only the last amount reaches the host.
         let amounts: Vec<_> = (log.0.iter())
             .filter(|(a, _)| *a == Action::RouteAmount)
             .map(|(_, ints)| ints.clone())
             .collect();
-        assert_eq!(amounts, [vec![42, 0], vec![42, -125_000]]);
+        assert_eq!(amounts, [vec![42, -125_000]]);
     }
 
     #[test]
@@ -662,6 +663,18 @@ mod tests {
         let mut log = Log(Vec::new());
         assert_eq!(m.run(co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
+        let amounts: Vec<_> = (log.0.iter())
+            .filter(|(a, _)| *a == Action::RouteAmount)
+            .map(|(_, ints)| ints.clone())
+            .collect();
+        // Set while loading: the route's last amount, bypassed, arrives at init.
+        assert_eq!(amounts, [vec![7, 0]]);
+        let live = "function onInit() c[2]:setParameter('Bypass', false) c[2]:setParameter('Bypass', true) end";
+        let source = format!("{source}\n{live}");
+        let mut m = compile(&source, &modules, &[]).unwrap().machine();
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(co, &mut log), Step::Done);
         let amounts: Vec<_> = (log.0.iter())
             .filter(|(a, _)| *a == Action::RouteAmount)
             .map(|(_, ints)| ints.clone())

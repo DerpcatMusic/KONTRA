@@ -4,7 +4,7 @@
 -- millicents, pan in per mille.
 
 -- Calls made while the script loads, before any callback, wait for init.
-local pending = {}
+local pending, pending_routes = {}, {}
 local host_call = function(name, ...)
 	if not __host then
 		table.insert(pending, table.pack(Action[name], ...))
@@ -250,7 +250,14 @@ function Connection.setParameter(c, name, value)
 		return
 	end
 	if c[4] >= 0 then
-		host_call("RouteAmount", c[4], c[6] and 0 or math.floor(c[3] * c[5] * 1e6 + 0.5))
+		local amount = c[6] and 0 or math.floor(c[3] * c[5] * 1e6 + 0.5)
+		if __host then
+			host_call("RouteAmount", c[4], amount)
+		else
+			-- Before init only a route's last amount is kept: AO's knobs set
+			-- the same routes hundreds of times while they load.
+			pending_routes[c[4]] = amount
+		end
 	end
 end
 
@@ -685,6 +692,10 @@ __entries = {
 			__host(table.unpack(call, 1, call.n))
 		end
 		pending = {}
+		for route, amount in pairs(pending_routes) do
+			__host(Action.RouteAmount, route, amount)
+		end
+		pending_routes = {}
 		apply_levels()
 		if onInit then
 			onInit()
