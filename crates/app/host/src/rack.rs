@@ -244,6 +244,11 @@ impl Rack {
         self.rate
     }
 
+    #[must_use]
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
     pub fn store_mut(&mut self) -> &mut Store {
         &mut self.store
     }

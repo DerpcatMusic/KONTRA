@@ -18,6 +18,7 @@ use kontra_ui_model::Interface;
 use moose::mui::MuiEditor;
 use moose::prelude::*;
 
+use crate::readout::Readout;
 use crate::{KontraParams, P, Request, lock};
 
 /// Report lines kept; older ones scroll away.
@@ -56,6 +57,7 @@ pub struct Snapshot {
     folders: Vec<String>,
     level: f32,
     stats: Stats,
+    readout: Readout,
     report: Vec<String>,
 }
 
@@ -118,6 +120,7 @@ impl Snapshot {
         if let Some(s) = rack.stats() {
             self.stats = s;
         }
+        self.readout.sample(&self.stats, rack);
         self.report.extend(report);
         let over = self.report.len().saturating_sub(REPORT);
         self.report.drain(..over);
@@ -140,12 +143,11 @@ impl Snapshot {
                 )
             })
             .collect();
-        let load = (self.stats.load * 100.).round() as i32;
         (
             self.libraries.0,
             parts,
             self.level.to_bits(),
-            load,
+            self.readout.shown(),
             self.stats.voices,
         )
     }
@@ -235,8 +237,15 @@ impl Snapshot {
         let heard = self.parts.iter().map(|p| (p.generation, p.sounds.0));
         sounds_shown.extend(heard);
         app.level = f64::from(self.level);
-        app.stats.cpu = f64::from(self.stats.load) * 100.0;
-        app.stats.voices = self.stats.voices;
+        let r = &self.readout;
+        app.stats = app::Stats {
+            cpu: r.cpu,
+            voices: self.stats.voices,
+            ram_mb: r.process_mb.unwrap_or(0),
+            samples_mb: r.samples_mb,
+            disk_mbs: r.disk_mbs,
+            cache_mb: r.cache_mb,
+        };
         app.report.clone_from(&self.report);
     }
 }
@@ -523,7 +532,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let watched = Arc::clone(&params);
     let dropping = Arc::clone(&params);
     let owner = Arc::clone(&params);
-    let mut app = App::default();
+    let mut app = App {
+        build: crate::BUILD.into(),
+        ..App::default()
+    };
     let mut shown = Shown::default();
     let mut look = SavedView::default();
     let mut waiting = Vec::new();

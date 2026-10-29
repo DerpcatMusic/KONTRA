@@ -13,6 +13,7 @@ mod editor;
 mod folder;
 mod input;
 mod look;
+mod readout;
 #[cfg(test)]
 mod tests;
 
@@ -23,6 +24,14 @@ use kontra_host::rack::{Event, Rack, RackAudio, Store, StoreConfig};
 use kontra_host::state::Saved;
 use moose::core::LosslessEventRef;
 use moose::prelude::*;
+
+/// The build as About shows it: the version and its source revision.
+pub const BUILD: &str = concat!(
+    "Version ",
+    env!("CARGO_PKG_VERSION"),
+    " · ",
+    env!("KONTRA_REVISION")
+);
 
 /// Stereo outputs the plugin offers: one per rack part.
 pub const OUTPUTS: usize = kontra_host::rack::OUTPUTS;

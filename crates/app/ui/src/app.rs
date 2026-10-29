@@ -39,6 +39,8 @@ pub struct App {
     /// first line is its summary.
     pub report: Vec<String>,
     pub midi_thru: bool,
+    /// The build, for About: its version and source revision.
+    pub build: String,
     /// The folders the browser scans.
     pub folders: Vec<String>,
     /// The editor's width in points, as the host frames it: a library's
@@ -175,8 +177,13 @@ pub enum PartTab {
 pub struct Stats {
     pub cpu: f64,
     pub voices: u32,
+    /// The whole process; 0 where the host cannot read it.
     pub ram_mb: u32,
+    /// The samples' preloaded pages.
+    pub samples_mb: u32,
     pub disk_mbs: f64,
+    /// The streamed page cache's size.
+    pub cache_mb: u32,
 }
 
 /// The main area's tabs.
@@ -441,17 +448,42 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         app.view.browser_hidden = !app.view.browser_hidden;
     }
     let s = app.stats;
-    let stat = |label: &str, value: String, widest: &str| {
+    let stat = |label: &str, value: String, widest: &str, tip: String| {
         row![section(label), caption(value).reserve(widest)]
             .gap(TIGHT)
             .align(Align::Center)
             .shrink(0)
+            .tip(tip)
     };
+    let ram = if s.ram_mb > 0 { s.ram_mb } else { s.samples_mb };
     let load = row![
-        stat("CPU", format!("{:.0}%", s.cpu), "100%"),
-        stat("Voices", s.voices.to_string(), "000"),
-        stat("RAM", format!("{} MB", s.ram_mb), "00000 MB"),
-        stat("Disk", format!("{:.1} MB/s", s.disk_mbs), "000.0 MB/s"),
+        stat(
+            "CPU",
+            format!("{:.0}%", s.cpu),
+            "100%",
+            "The audio thread's time spent rendering".into()
+        ),
+        stat(
+            "Voices",
+            s.voices.to_string(),
+            "000",
+            "Voices playing".into()
+        ),
+        stat(
+            "RAM",
+            format!("{ram} MB"),
+            "00000 MB",
+            format!(
+                "{} MB of samples in memory, of {ram} MB in all",
+                s.samples_mb
+            )
+        ),
+        stat(
+            "Disk",
+            format!("{:.1} MB/s", s.disk_mbs),
+            "000.0 MB/s",
+            format!("Streamed from disk, through a {} MB cache", s.cache_mb)
+        ),
     ]
     .gap(SPACE * 1.5)
     .shrink(0)
@@ -542,6 +574,7 @@ fn sheet_view(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -
             "About",
             col![
                 title("KONTRA"),
+                body(app.build.clone()).id("about-build"),
                 caption(
                     "One engine that plays Kontakt, UVI and SFZ libraries as they were written."
                 )

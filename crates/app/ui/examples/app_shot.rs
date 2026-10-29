@@ -108,7 +108,7 @@ fn specimen() -> App {
             library("Falcon Factory", Format::Uvi, &["Analog Pad", "Glass Keys"], false),
         ],
         recent: vec![(0, 0), (2, 0), (4, 0)],
-        stats: Stats { cpu: 3., voices: 12, ram_mb: 412, disk_mbs: 1.4 },
+        stats: Stats { cpu: 3., voices: 12, ram_mb: 412, samples_mb: 180, disk_mbs: 1.4, cache_mb: 128 },
         level: 0.4,
         report: vec![
             "Areia 16 Violins: the convolution reverb's impulse is not in the library\nThe library names Hall.wav in its reverb, and no file of that name ships with it; the dry signal plays.".into(),

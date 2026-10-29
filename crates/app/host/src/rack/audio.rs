@@ -43,6 +43,9 @@ pub struct RackAudio {
     played: Vec<Event>,
     meters: Meters,
     dropped: u64,
+    /// Time in [`RackAudio::process`] and the real time it rendered, in ns.
+    busy_ns: u64,
+    span_ns: u64,
 }
 
 impl RackAudio {
@@ -70,6 +73,8 @@ impl RackAudio {
             played: Vec::with_capacity(PLAYED),
             meters: Meters::default(),
             dropped: 0,
+            busy_ns: 0,
+            span_ns: 0,
         }
     }
 
@@ -129,6 +134,7 @@ impl RackAudio {
     /// `input` is (frame offset in this block, event), in time order; each
     /// part gets the events on its channel.
     pub fn process(&mut self, frames: usize, input: &[(u32, Event)]) {
+        let start = std::time::Instant::now();
         let frames = frames.min(self.scratch.len());
         self.apply_commands();
         for out in &mut self.outputs {
@@ -225,6 +231,10 @@ impl RackAudio {
             }
         }
         stats.dropped = self.dropped;
+        let busy = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.busy_ns = self.busy_ns.saturating_add(busy);
+        self.span_ns += (frames as f64 * 1e9 / self.rate) as u64;
+        (stats.busy_ns, stats.span_ns) = (self.busy_ns, self.span_ns);
         self.channels.meters.publish(&self.meters);
         self.channels.stats.publish(&stats);
         self.meters = Meters::default();
