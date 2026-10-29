@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 
 mod load;
 mod play;
@@ -72,5 +72,13 @@ fn run() -> Result<()> {
         let text = serde_json::to_string_pretty(&report)?;
         std::fs::write(&json, text).with_context(|| format!("writing {}", json.display()))?;
     }
+    ensure!(
+        report
+            .get("result")
+            .and_then(|r| r.get("render_complete"))
+            .and_then(serde_json::Value::as_bool)
+            != Some(false),
+        "offline render incomplete: see missing frames, timeouts and stream errors in report"
+    );
     Ok(())
 }

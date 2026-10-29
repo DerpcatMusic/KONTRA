@@ -39,3 +39,12 @@ referenced only by purged groups is not requested during initial preparation;
 did not make the plan. Consult diagnostics for the specific open or load error.
 An invalid sample index is separate. `unknown` means the plan's limited zone
 member index cannot establish the answer.
+
+Offline playback requests and waits for every voice's actual interpolation
+window, including loop crossfades. If a wait times out, a page request is
+refused, a read fails, or frames are missing, `render_complete` is false and
+`play` exits with an error after writing its JSON report. Missing blocks and
+stream counters are included for diagnosis. The wait is enabled only by the
+inspector's trace build and is never enabled for live playback.
+The `audio_fnv1a64` field fingerprints the exact little-endian stereo f32
+output bits, allowing repeat runs to be checked for differences.
