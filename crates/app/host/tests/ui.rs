@@ -323,3 +323,21 @@ fn a_switch_fires_on_press_and_a_button_on_release() {
     assert!(widget(&ui, "$s").activate_on_press);
     assert!(!widget(&ui, "$b").activate_on_press);
 }
+
+/// `set_key_color` reaches the keyboard in Kontakt 8's measured colours
+/// (CHORUS, Dolce, Areia, Afflatus colour their keyswitch ranges).
+#[test]
+fn script_key_colours_reach_the_keybed() {
+    let ui = tree(
+        "on init
+            make_perfview
+            set_key_color(36, $KEY_COLOR_RED)
+            set_key_color(37, $KEY_COLOR_RED)
+            set_key_color(38, $KEY_COLOR_NONE)
+        end on",
+    );
+    assert_eq!(
+        ui.keybed,
+        [(36, ui::Rgba::rgb(0xDA918F)), (37, ui::Rgba::rgb(0x782F2D))]
+    );
+}
