@@ -265,7 +265,7 @@ pub struct RouteObservation {
     pub routed: Option<f32>,
 }
 
-fn route_source(kind: kontra_ir::ModKind) -> Option<kontra_ir::Source> {
+pub(crate) fn route_source(kind: kontra_ir::ModKind) -> Option<kontra_ir::Source> {
     use kontra_ir::ModKind;
     match kind {
         ModKind::Envelope => None,

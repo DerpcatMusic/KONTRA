@@ -599,6 +599,37 @@ impl Engine {
             let Some(i) = self.free_slot() else {
                 continue;
             };
+            #[cfg(feature = "trace")]
+            if self.trace.is_some() {
+                if let Some(group) = self.groups.get(zone.group as usize) {
+                    for m in group.mods.iter().filter(|m| {
+                        !m.bypass
+                            && matches!(
+                                m.kind,
+                                ir::ModKind::SampleStart { .. }
+                                    | ir::ModKind::Attack { .. }
+                                    | ir::ModKind::Release { .. }
+                                    | ir::ModKind::LoopShift { .. }
+                                    | ir::ModKind::LfoPhase { .. }
+                                    | ir::ModKind::LfoRate { .. }
+                            )
+                    }) {
+                        let source = inspect::route_source(m.kind)
+                            .and_then(|s| self.source(zone, s, &n, modulators::Age::START));
+                        if let Some(trace) = &mut self.trace {
+                            trace.push(TraceEvent::RouteOnset {
+                                frame: now.0,
+                                voice_slot: i,
+                                zone: index,
+                                mod_slot: m.slot,
+                                target: m.target,
+                                kind: m.kind,
+                                source,
+                            });
+                        }
+                    }
+                }
+            }
             let Some(slot) = self.voices.get_mut(i) else {
                 continue;
             };

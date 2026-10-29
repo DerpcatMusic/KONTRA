@@ -2025,3 +2025,39 @@ fn bounded_trace_captures_voice_start_steal_and_end_without_changing_audio() {
     assert!(transitions.contains(&VoiceEvent::End), "{transitions:?}");
     assert_eq!(traced.trace_dropped(), 0);
 }
+
+#[cfg(feature = "trace")]
+#[test]
+fn note_on_route_trace_keeps_the_controller_value_at_start() {
+    use kontra_engine::TraceEvent;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5);
+    z.start_mod = 1000;
+    let mut plan = Plan::new(vec![z], 8);
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "start".into(),
+        slot: 3,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::SampleStart {
+            source: ir::Source::Controller(1),
+            depth: 1.0,
+        },
+    }];
+    let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
+    level(&mut engine, &[cc(1, 64), on(60, 1.0)]);
+    level(&mut engine, &[cc(1, 127)]);
+    let source = engine
+        .trace_events()
+        .iter()
+        .find_map(|event| match event {
+            TraceEvent::RouteOnset {
+                mod_slot: 3,
+                source,
+                ..
+            } => *source,
+            _ => None,
+        })
+        .unwrap();
+    assert!((source - 64.0 / 127.0).abs() < 0.001, "{source}");
+}

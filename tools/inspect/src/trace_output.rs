@@ -44,6 +44,18 @@ pub fn event(e: &TraceEvent, plan: &Plan, samples: &[Option<String>], rate: u32)
         } => {
             json!({"type":"script_action_text", "call_id":call_id, "index":index, "value":value.as_str()})
         }
+        TraceEvent::RouteOnset {
+            frame,
+            voice_slot,
+            zone,
+            mod_slot,
+            target,
+            kind,
+            source,
+        } => json!({
+            "type":"route_onset", "frame":frame, "voice_slot":voice_slot, "zone":zone,
+            "mod_slot":mod_slot, "target":target, "route":super::routes::route(*kind), "source_at_onset":source,
+        }),
         TraceEvent::Voice {
             frame,
             slot,

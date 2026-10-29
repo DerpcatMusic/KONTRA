@@ -40,6 +40,16 @@ pub enum TraceEvent {
         index: usize,
         value: Text,
     },
+    /// Source sampled at voice start for a note-on-only route.
+    RouteOnset {
+        frame: u64,
+        voice_slot: usize,
+        zone: usize,
+        mod_slot: u16,
+        target: u16,
+        kind: kontra_ir::ModKind,
+        source: Option<f32>,
+    },
     /// A voice was started, stolen, cut or ended.
     Voice {
         frame: u64,

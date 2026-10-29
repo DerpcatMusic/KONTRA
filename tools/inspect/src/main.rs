@@ -80,7 +80,7 @@ fn run() -> Result<()> {
             .and_then(|r| r.get("render_complete"))
             .and_then(serde_json::Value::as_bool)
             != Some(false),
-        "offline render incomplete: see missing frames, timeouts and stream errors in report"
+        "inspection incomplete: see trace overflow, missing frames, timeouts and stream errors in report"
     );
     Ok(())
 }
