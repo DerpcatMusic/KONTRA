@@ -91,7 +91,7 @@ jobs:
           clap-validator validate "target/bundles/${{ matrix.target }}/KONTRA v3.clap"
       - name: Plugin tests
         if: runner.os == 'Linux'
-        run: cargo test --locked -p kontra-plugin --lib -- v3_has_its_own_identity input::
+        run: cargo test --locked -p kontra-plugin --lib -- v3_has_its_own_identity input::tests
       # A tar keeps the bundles' executable bits; the artifact alone does not.
       - name: Archive bundles
         shell: bash
