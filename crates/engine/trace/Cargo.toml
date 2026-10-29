@@ -1,0 +1,13 @@
+[package]
+name = "kontra-trace"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-ir = { path = "../../model/ir" }
+kontra-vm = { path = "../vm" }
+kontra-voice = { path = "../voice" }

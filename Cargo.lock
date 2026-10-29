@@ -2400,6 +2400,7 @@ dependencies = [
  "kontra-script-ui",
  "kontra-stream",
  "kontra-time",
+ "kontra-trace",
  "kontra-vm",
  "kontra-voice",
 ]
@@ -2657,6 +2658,15 @@ name = "kontra-time"
 version = "0.0.0"
 dependencies = [
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "kontra-trace"
+version = "0.0.0"
+dependencies = [
+ "kontra-ir",
+ "kontra-vm",
+ "kontra-voice",
 ]
 
 [[package]]
