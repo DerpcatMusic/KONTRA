@@ -51,7 +51,7 @@ impl In {
 
 /// The loudest 5 ms of high-frequency energy (the second difference, a
 /// click's signature) over the median 5 ms, in dB.
-pub(super) fn hf_burst_db(audio: &[f32]) -> f32 {
+fn hf_burst_db(audio: &[f32]) -> f32 {
     let n = at(0.005);
     let mut frames: Vec<f32> = audio
         .windows(3)
@@ -75,14 +75,14 @@ const CLICK_DB: f32 = 10.0;
 
 /// What a program's performance left: its failures and, by segment,
 /// (name, peak voices, stolen, peak dBFS, HF burst dB).
-pub(super) struct Report {
-    pub name: String,
-    pub load_s: f64,
-    pub hold_ms: f32,
-    pub failed: Vec<String>,
-    pub segments: Vec<(&'static str, u32, u64, f32, f32)>,
-    pub ui: touch::Touched,
-    pub diagnostics: (usize, usize, usize, Vec<String>),
+struct Report {
+    name: String,
+    load_s: f64,
+    hold_ms: f32,
+    failed: Vec<String>,
+    segments: Vec<(&'static str, u32, u64, f32, f32)>,
+    ui: touch::Touched,
+    diagnostics: (usize, usize, usize, Vec<String>),
 }
 
 fn on(key: u8) -> In {
@@ -396,7 +396,7 @@ fn perform(path: PathBuf) -> Report {
                 .collect();
             last = block(&params, &mut dsp, &inside, &last);
             blocks += 1;
-            if blocks % 10 == 0 {
+            if blocks.is_multiple_of(10) {
                 Tick.run(&params);
             }
             peaks.push(last.audio.iter().fold(0.0f32, |p, x| p.max(x.abs())));

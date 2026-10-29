@@ -110,7 +110,7 @@ pub(super) fn touch(
     };
     let mut before = Vec::new();
     for (i, (widget, name, to)) in targets.into_iter().enumerate() {
-        if i % 16 == 0 {
+        if i.is_multiple_of(16) {
             run(&[(0, off(60))], 0.2, last);
             before = run(&[(0, on(60)), (0, cc(1, 127)), (0, cc(11, 127))], 0.4, last);
         }
