@@ -384,3 +384,34 @@ fn an_effect_type_a_script_loads_is_built_off_audio_swapped_in_and_saved() {
     assert_eq!(kontra_host::state::Saved::read(&json), saved);
     assert_eq!(saved.parts[0].slot_types.len(), 1, "{json}");
 }
+
+#[test]
+fn the_hosts_transport_reaches_every_parts_scripts() {
+    let (mut rack, mut audio) = rack();
+    let mut plan = plan_of(rack.store_mut(), 0.5);
+    let script = kontra_ksp::compile(
+        "on note
+            if ($NI_TRANSPORT_RUNNING = 0 or $NI_SONG_POSITION < 960 * 4)
+                ignore_event($EVENT_ID)
+            end if
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Box::new(Engine::new(Arc::new(plan), rack.store_mut().client(), RATE));
+    rack.install(0, e, part("a"));
+    audio.set_transport(false, 8.0, (4, 4));
+    let [stopped, _] = play(&mut audio, &[(0, note(0))]);
+    assert!(
+        stopped.abs() < 1e-4,
+        "played with the transport stopped: {stopped}"
+    );
+    // Running, at bar 3 of 4/4: the script lets the note through.
+    audio.set_transport(true, 8.0, (4, 4));
+    let [running, _] = play(&mut audio, &[(0, note(0))]);
+    assert!(
+        running > 0.1,
+        "the running transport did not reach the script: {running}"
+    );
+}

@@ -285,9 +285,20 @@ impl PluginLogic for Kontra {
         s.input.clear();
         // VST3 hosts give the tempo only here; CLAP may also send events.
         audio.set_tempo(cx.transport.tempo as f32);
+        let t = cx.transport;
+        audio.set_transport(
+            t.playing,
+            t.position_beats,
+            (t.time_sig_num, t.time_sig_den),
+        );
         for e in events.iter() {
             if let EventBody::Transport(t) = e.body {
                 audio.set_tempo(t.tempo as f32);
+                audio.set_transport(
+                    t.playing,
+                    t.position_beats,
+                    (t.time_sig_num, t.time_sig_den),
+                );
             } else if let Some(event) = input::event(e)
                 && s.input.len() < s.input.capacity()
             {
