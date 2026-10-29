@@ -557,6 +557,7 @@ fn timed(
                 source,
                 semitones: laws::PITCH_SEMITONES,
                 depth: t.signed_intensity(),
+                tau_ms: 0.0,
             },
             ("pan", None) => ir::ModKind::Pan {
                 source,

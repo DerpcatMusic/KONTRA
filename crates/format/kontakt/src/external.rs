@@ -76,6 +76,7 @@ pub(crate) fn external(
                         source,
                         semitones: laws::PITCH_SEMITONES,
                         depth: t.signed_intensity(),
+                        tau_ms: laws::route_tau_ms(t.lag_ms),
                     }),
                     // Targets 7 and 8 (FUN_140a6d410); the loop consumer
                     // FUN_14087b9c0 adds `(int)(frames · x)` to both bounds,
