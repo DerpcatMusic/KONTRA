@@ -2,7 +2,7 @@
 use kontra_engine::ir::{ModKind, Source};
 use serde_json::{Value, json};
 
-fn source(s: Source) -> Value {
+pub fn source(s: Source) -> Value {
     match s {
         Source::Controller(cc) => json!({"type": "controller", "cc": cc}),
         Source::ControllerFrom { cc, start } => {

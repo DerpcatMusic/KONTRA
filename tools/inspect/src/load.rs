@@ -1,5 +1,6 @@
 //! Inventory the v3 instrument model and the plan prepared from it.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -24,7 +25,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
             })
         })
         .collect();
-    let groups: Vec<_> = instrument
+    let mut groups: Vec<_> = instrument
         .groups
         .iter()
         .enumerate()
@@ -44,7 +45,8 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
                     "name": m.name, "slot": m.slot, "target": m.target,
                     "bypass": m.bypass, "route": super::routes::route(m.kind),
                 })).collect::<Vec<_>>(),
-                "route_names": format!("{:?}", g.routes), "shapers": format!("{:?}", g.shapers),
+                "route_names": g.routes.iter().map(|r| json!({"slot":r.slot, "name":r.name, "names":r.names})).collect::<Vec<_>>(),
+                "shapers": g.shapers.iter().map(|s| json!({"source":super::routes::source(s.source), "table":s.table})).collect::<Vec<_>>(),
                 "blends": format!("{:?}", g.blends), "effects": format!("{:?}", g.inserts),
             })
         })
@@ -60,6 +62,25 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     let mut store = Store::new(StoreConfig::DEFAULT).context("creating sample store")?;
     let loaded = kontra_host::instrument::build(instrument, RATE, &mut store);
     let zones = loaded.plan.zones.len();
+    let prepared: HashSet<_> = loaded
+        .plan
+        .zones
+        .iter()
+        .filter_map(|z| Some((usize::try_from(z.group).ok()?, usize::from(z.member))))
+        .collect();
+    let mut input_zones = 0usize;
+    for (group_id, group) in groups.iter_mut().enumerate() {
+        if let Some(items) = group.get_mut("zones").and_then(Value::as_array_mut) {
+            input_zones += items.len();
+            for (member, zone) in items.iter_mut().enumerate() {
+                if let Some(fields) = zone.as_object_mut() {
+                    let present = (member < usize::from(u16::MAX))
+                        .then(|| prepared.contains(&(group_id, member)));
+                    fields.insert("prepared".into(), json!(present));
+                }
+            }
+        }
+    }
     let diagnostics: Vec<_> = loaded
         .diagnostics
         .iter()
@@ -85,10 +106,11 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     let unanswered = format!("{:?}", engine.unhandled_actions());
     let faults = format!("{:?}", engine.script_faults());
     let summary = format!(
-        "{}\n  samples: {}; groups: {}; zones prepared: {}; scripts: {}; UI models: {}\n  diagnostics: {}; init unanswered: {}; script faults: {}\n  law IDs and callbacks: unavailable (not recorded by the v3 IR)\n",
+        "{}\n  samples: {}; groups: {}; zones: {} translated / {} prepared; scripts: {}; UI models: {}\n  diagnostics: {}; init unanswered: {}; script faults: {}\n  law IDs and callbacks: unavailable (not recorded by the v3 IR)\n",
         loaded.name,
         samples.len(),
         groups.len(),
+        input_zones,
         zones,
         scripts.len(),
         ui.len(),
@@ -99,7 +121,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     Ok((
         json!({"schema_version": 1, "command": "load", "instrument": path,
         "engine": "v3", "result": {"name": loaded.name, "samples": samples, "groups": groups,
-        "prepared_zones": zones, "effects": effects, "scripts": scripts, "ui": ui,
+        "translated_zones": input_zones, "prepared_zones": zones, "effects": effects, "scripts": scripts, "ui": ui,
         "diagnostics": diagnostics, "init_unanswered": unanswered, "script_faults": faults,
         "laws": null, "unavailable": ["translator law IDs and provenance", "script callbacks", "asset existence"]}}),
         summary,
