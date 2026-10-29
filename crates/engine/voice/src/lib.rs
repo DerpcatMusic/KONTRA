@@ -91,6 +91,10 @@ pub struct Voice {
     missing: u64,
     #[cfg(feature = "trace")]
     last_peak: f32,
+    #[cfg(feature = "trace")]
+    offline_wait: bool,
+    #[cfg(feature = "trace")]
+    offline_wait_timeouts: u64,
 }
 
 impl Voice {
@@ -114,6 +118,10 @@ impl Voice {
             missing: 0,
             #[cfg(feature = "trace")]
             last_peak: 0.0,
+            #[cfg(feature = "trace")]
+            offline_wait: false,
+            #[cfg(feature = "trace")]
+            offline_wait_timeouts: 0,
         }
     }
 
@@ -203,6 +211,19 @@ impl Voice {
     #[must_use]
     pub fn last_peak(&self) -> f32 {
         self.last_peak
+    }
+
+    /// Enable blocking page waits for an offline renderer; never call from a live host.
+    #[cfg(feature = "trace")]
+    pub fn set_offline_wait(&mut self, enabled: bool) {
+        self.offline_wait = enabled;
+    }
+
+    /// How many offline page waits timed out, including previous notes in this slot.
+    #[cfg(feature = "trace")]
+    #[must_use]
+    pub fn offline_wait_timeouts(&self) -> u64 {
+        self.offline_wait_timeouts
     }
 
     /// Source frames this voice read while their data was not in memory.
@@ -337,6 +358,23 @@ impl Voice {
             return 0;
         };
         window.fill([0.0; 2]);
+        #[cfg(feature = "trace")]
+        if self.offline_wait {
+            region.runs(lo, window.len(), released, |_, run| {
+                let low = if run.descending {
+                    run.first + 1 - run.count as u64
+                } else {
+                    run.first
+                };
+                sample.prefetch(client, low, run.count as u64, 0, step, run.descending);
+                if let Some((_, partner, n, _, _)) = run.crossfade() {
+                    sample.prefetch(client, partner, n as u64, 0, step, false);
+                }
+            });
+            if !client.settle(std::time::Duration::from_secs(5)) {
+                self.offline_wait_timeouts += 1;
+            }
+        }
         let mut missing = 0;
         region.runs(lo, window.len(), released, |offset, run| {
             let count = run.count;

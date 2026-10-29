@@ -58,10 +58,13 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         .collect();
     let stream = store.client();
     let mut engine = Engine::new(Arc::clone(&plan), stream.clone(), RATE);
+    engine.set_offline_wait(true);
     let mut at = 0u64;
     let mut next = 0usize;
     let mut next_tail = last_off;
     let mut trace = Vec::new();
+    let mut missing_blocks = Vec::new();
+    let mut settle_timeouts = 0u64;
     let mut peak = 0f32;
     let mut jump = 0f32;
     let mut clipped = 0u64;
@@ -81,8 +84,19 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
             });
             next += 1;
         }
-        stream.settle(Duration::from_secs(5));
+        if !stream.settle(Duration::from_secs(5)) {
+            settle_timeouts += 1;
+        }
+        let before = engine.stats().missing_frames;
+        let stream_before = stream.stats();
         engine.process(&mut audio[..frames], &timed);
+        let missed = engine.stats().missing_frames.saturating_sub(before);
+        if missed > 0 {
+            missing_blocks.push(json!({"start_frame":at, "missing_frames":missed,
+                "events":format!("{timed:?}"), "stream_before":format!("{stream_before:?}"),
+                "stream_after":format!("{:?}",stream.stats()),
+                "voices":engine.inspect_voices().filter(|v| v.missing_frames > 0).map(|v| json!({"zone":v.zone,"sample":zone_samples.get(v.zone),"position":v.position,"missing_frames":v.missing_frames})).collect::<Vec<_>>() }));
+        }
         let mut requests = Vec::new();
         engine.drain_requests(|r| requests.push(r));
         for request in requests {
@@ -152,8 +166,14 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         .filter_map(|b| b.get("hf_second_difference_energy")?.as_f64())
         .fold(0.0_f64, f64::max);
     let stats = engine.stats();
+    let wait_timeouts = engine.offline_wait_timeouts() + settle_timeouts;
+    let stream_stats = stream.stats();
+    let complete = stats.missing_frames == 0
+        && wait_timeouts == 0
+        && stream_stats.read_errors == 0
+        && stream_stats.requests_refused == 0;
     let summary = format!(
-        "{}: scenario {scenario_name}, {} input events\n  peak {peak:.6}, clipped samples {clipped}, max sample jump {jump:.6}\n  {} voices active {:.3} s after last note-off (per-voice last-render peak before group FX in JSON)\n  loudest remaining voice peak {loudest_remaining:.8}; EQ route snapshots: {}; max CC-window HF energy {burst_peak:.8}\n  missing sample frames: {}\n",
+        "{}: scenario {scenario_name}, {} input events\n  peak {peak:.6}, clipped samples {clipped}, max sample jump {jump:.6}\n  {} voices active {:.3} s after last note-off (per-voice last-render peak before group FX in JSON)\n  loudest remaining voice peak {loudest_remaining:.8}; EQ route snapshots: {}; max CC-window HF energy {burst_peak:.8}\n  missing sample frames: {}; offline wait timeouts: {wait_timeouts}; render complete: {complete}\n",
         loaded.name,
         events.len(),
         left.len(),
@@ -165,7 +185,7 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
         "trace":trace,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts},
-        "diagnostics":diagnostics,"engine_stats":format!("{stats:?}"),"unavailable":["script callbacks and commands by event","voice lifecycle events","non-EQ route values","octave bands"]}}),
+        "diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"unavailable":["script callbacks and commands by event","voice lifecycle events","non-EQ route values","octave bands"]}}),
         summary,
     ))
 }
