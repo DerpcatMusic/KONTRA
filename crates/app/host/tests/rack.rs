@@ -684,3 +684,40 @@ fn a_sound_tab_decay_edit_is_heard_from_the_next_note() {
         "the decay edit was not heard: {decayed}"
     );
 }
+
+/// A Lua script's state comes back on reload even when restoring it waits:
+/// `onLoad` here, as UVI's layer loads do, finishes in a task after a
+/// `wait`. The save must hold what the task set, not what was there before.
+#[test]
+fn a_lua_state_restored_after_a_wait_saves_as_restored() {
+    use kontra_engine::ir;
+    let source = r#"
+        local layer = "default"
+        function onSave() return {layer = layer} end
+        function onLoad(data) run(function() wait(50) layer = data.layer end) end
+    "#;
+    let instrument = |saved: Vec<String>| ir::Instrument {
+        scripts: vec![ir::Script {
+            name: "state".into(),
+            dialect: ir::Dialect::Lua,
+            source: source.into(),
+            saved,
+            data: Vec::new(),
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let state = |rack: &Rack| {
+        let saved = rack.saved_scripts(0);
+        saved[0].iter().find(|s| s.starts_with("__state=")).cloned()
+    };
+    let saved = vec![r#"__state={["layer"]="chosen",}"#.to_owned()];
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, instrument(saved.clone()), None).unwrap();
+    // A save asked for every block, over 200 ms: the wait ends inside it.
+    for _ in 0..40 {
+        rack.tick();
+        audio.process(BLOCK, &[]);
+    }
+    rack.tick();
+    assert_eq!(state(&rack), Some(saved[0].clone()));
+}

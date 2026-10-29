@@ -102,8 +102,8 @@ pub trait Machine: Send {
     fn own_page(&self) -> Option<Box<dyn std::any::Any + Send>> {
         None
     }
-    /// How many callbacks it has started, wrapping: unchanged, its state
-    /// is as it was.
+    /// How many times it ran a callback, each resume of one counted,
+    /// wrapping: unchanged, its state is as it was.
     fn runs(&self) -> u32 {
         0
     }
