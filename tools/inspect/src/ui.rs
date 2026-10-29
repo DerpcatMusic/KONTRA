@@ -1,4 +1,5 @@
 //! Exercise script controls through the host's UI model, under a held note.
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -195,22 +196,53 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
     engine.clear_trace();
     let mut controls = Vec::new();
     let mut models = Vec::new();
+    let mut model_errors = Vec::new();
     for slot in 0..loaded.faces.len().max(loaded.pages.len()) {
-        let Some(model) = tree(&loaded, &engine, slot)? else {
-            continue;
+        let model = match tree(&loaded, &engine, slot) {
+            Ok(Some(model)) => model,
+            Ok(None) => continue,
+            Err(error) => {
+                model_errors.push(json!({"slot":slot,"error":error.to_string()}));
+                continue;
+            }
         };
         models.push(json!({"slot":slot, "widgets":model.widgets.iter().map(|w| format!("{w:?}")).collect::<Vec<_>>(), "assets":format!("{:?}",model.assets), "unsupported":format!("{:?}",model.unsupported)}));
         let lua = loaded.pages.get(slot).is_some_and(Option::is_some);
         let slot_id = u8::try_from(slot).context("too many script slots")?;
-        let mut index = 0;
-        while let Some(widget) =
-            tree(&loaded, &engine, slot)?.and_then(|t| t.widgets.get(index).cloned())
-        {
-            let widget_index = index;
-            index += 1;
-            let Some(values) = targets(&widget) else {
-                continue;
+        let mut seen = HashSet::new();
+        loop {
+            let current = match tree(&loaded, &engine, slot) {
+                Ok(Some(tree)) => tree,
+                Ok(None) => break,
+                Err(error) => {
+                    model_errors.push(json!({"slot":slot,"error":error.to_string()}));
+                    break;
+                }
             };
+            let next = current
+                .widgets
+                .iter()
+                .enumerate()
+                .find_map(|(index, widget)| {
+                    let key = (
+                        widget.source_id,
+                        widget.name.clone(),
+                        widget.source_id.is_none().then_some(index),
+                    );
+                    (!seen.contains(&key))
+                        .then(|| targets(widget).map(|values| (index, widget.clone(), key, values)))
+                        .flatten()
+                });
+            let Some((widget_index, widget, key, values)) = next else {
+                break;
+            };
+            if seen.len() >= 10_000 {
+                model_errors.push(
+                    json!({"slot":slot,"error":"UI continued creating controls beyond 10000"}),
+                );
+                break;
+            }
+            seen.insert(key);
             let mut moves = Vec::new();
             if values.is_empty() {
                 moves.push(json!({"error":"control has no selectable values"}));
@@ -317,23 +349,54 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     .filter(|(_, (a, b))| a != b)
                     .map(|(i, (a, b))| json!({"index":i,"before":a,"after":b}))
                     .collect();
-                moves.push(json!({"value":value,"script_cells_changed":cell_diff(&before,&after), "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,
-                    "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":format!("{:?}",engine.script_faults()),
-                    "unhandled_before":before_unhandled,"unhandled_after":format!("{:?}",engine.unhandled_actions()),"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready}));
+                let after_faults = format!("{:?}", engine.script_faults());
+                let after_unhandled = format!("{:?}", engine.unhandled_actions());
+                let mut errors = Vec::new();
+                if before_faults != after_faults {
+                    errors.push("script fault count changed");
+                }
+                if before_unhandled != after_unhandled {
+                    errors.push("unhandled action count changed");
+                }
+                if !ready {
+                    errors.push("stream settle timed out");
+                }
+                if engine.stats().missing_frames > before_missing {
+                    errors.push("sample frames missing");
+                }
+                moves.push(json!({"value":value,"errors":errors,"script_cells_changed":cell_diff(&before,&after), "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,
+                    "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":after_faults,
+                    "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready}));
             }
             controls.push(json!({"slot":slot,"widget":widget_index,"name":widget.name,"kind":format!("{:?}",widget.kind),"hidden":widget.hidden,"enabled":widget.enabled,"moves":moves}));
         }
     }
     let stats = engine.stats();
     let stream_stats = stream.stats();
-    let complete = settled
+    let complete = model_errors.is_empty()
+        && settled
         && engine.offline_wait_timeouts() == 0
         && stats.missing_frames == 0
         && stream_stats.read_errors == 0
         && stream_stats.requests_refused == 0
         && engine.trace_dropped() == 0;
+    let failed = controls
+        .iter()
+        .flat_map(|c| {
+            c.get("moves")
+                .and_then(Json::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter(|m| {
+            m.get("error").is_some()
+                || m.get("errors")
+                    .and_then(Json::as_array)
+                    .is_some_and(|e| !e.is_empty())
+        })
+        .count();
     let summary = format!(
-        "{}: {} UI models, {} controls exercised\n  missing sample frames {}; offline wait timeouts {}; dropped trace events {}; complete {complete}\n",
+        "{}: {} UI models, {} controls, {failed} moves with errors\n  missing sample frames {}; offline wait timeouts {}; dropped trace events {}; complete {complete}\n",
         loaded.name,
         models.len(),
         controls.len(),
@@ -342,7 +405,66 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
         engine.trace_dropped()
     );
     Ok((
-        json!({"schema_version":1,"command":"ui","instrument":path,"engine":"v3","result":{"models":models,"controls":controls,"render_complete":complete,"diagnostics":format!("{:?}",loaded.diagnostics),"unavailable":["foreign VM internal script variables", "complete engine parameter state"],"measurement":"sequential 80ms stereo RMS under held C4; time evolution can change output without a control effect"}}),
+        json!({"schema_version":1,"command":"ui","instrument":path,"engine":"v3","result":{"models":models,"model_errors":model_errors,"controls":controls,"render_complete":complete,"diagnostics":format!("{:?}",loaded.diagnostics),"unavailable":["foreign VM internal script variables", "complete engine parameter state"],"measurement":"sequential 80ms stereo RMS under held C4; time evolution can change output without a control effect"}}),
         summary,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kontra_ui_model::{Display, MenuItem, PageRef, Range, Rect};
+
+    #[test]
+    fn targets_use_the_model_range_and_visible_menu_values() {
+        let knob = Widget::new(
+            "gain",
+            PageRef(0),
+            Rect::default(),
+            Kind::Knob {
+                range: Range {
+                    min: -2.0,
+                    max: 3.0,
+                    default: 0.0,
+                    step: None,
+                },
+                display: Display::default(),
+            },
+        );
+        assert_eq!(targets(&knob), Some(vec![-2.0, 3.0]));
+        let menu = Widget::new(
+            "menu",
+            PageRef(0),
+            Rect::default(),
+            Kind::Menu {
+                items: vec![
+                    MenuItem {
+                        text: "a".into(),
+                        value: 42,
+                        visible: true,
+                    },
+                    MenuItem {
+                        text: "b".into(),
+                        value: 99,
+                        visible: false,
+                    },
+                ],
+            },
+        );
+        assert_eq!(targets(&menu), Some(vec![42.0]));
+    }
+
+    #[test]
+    fn cell_changes_include_old_and_new_values() {
+        let before = vec![(2, vec![Some(1), Some(3)], vec![Some("old".into())])];
+        let after = vec![(2, vec![Some(1), Some(4)], vec![Some("new".into())])];
+        let changes = cell_diff(&before, &after);
+        assert_eq!(
+            changes,
+            vec![
+                json!({"slot":2,"cell":1,"before":3,"after":4}),
+                json!({"slot":2,"text_cell":0,"before":"old","after":"new"})
+            ]
+        );
+    }
 }
