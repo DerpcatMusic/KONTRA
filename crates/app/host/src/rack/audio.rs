@@ -89,6 +89,15 @@ impl RackAudio {
         } else {
             Play::Stopped
         };
+        // The host stopped: what its notes held lets go (tails and release
+        // callbacks stay), as a part's old channel does. A host that sends
+        // no note-off at stop leaves nothing sounding (v2's
+        // `host_playing_transition`, src/plugin.rs).
+        if !playing && self.transport.is_some_and(|(p, ..)| p == Play::Running) {
+            for p in self.parts.iter_mut().flatten() {
+                p.release = p.release.max(Some(p.held.hold.max()));
+            }
+        }
         self.transport = Some((play, quarters, signature));
     }
 
