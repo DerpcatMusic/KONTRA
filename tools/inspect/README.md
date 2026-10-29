@@ -106,6 +106,14 @@ maximum sample jumps, clipping, and per-CC second-difference energy. Native
 capture timing has millisecond uncertainty; envelope alignment is in 10 ms
 steps, so the narrow CC windows are indicative rather than sample-aligned.
 Native script/voice/route/FX internal values are explicitly unavailable.
+
+Add `--fresh-state` to run each of the six user-scenario segments in its own
+new engine and oracle session. Reports contain six nested `play` results. The
+oracle detects each first onset from 10 ms envelope bins and compares two
+seconds after each onset; detected onset times and unavailable or silent captures
+are reported explicitly. Segment input events are rebased exactly; fast sweeps
+therefore begin 0.5 seconds after their first notes. Separate starts change
+round-robin and script state relative to the continuous scenario.
 A native UVI capture path is not implemented. A failed or silent oracle writes
 an error/uncomparable status and exits nonzero after writing JSON.
 

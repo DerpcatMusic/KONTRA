@@ -53,7 +53,7 @@ fn wav(path: &Path, audio: &[[f32; 2]]) -> Result<()> {
     Ok(())
 }
 
-pub fn run(path: &Path, events: &[Input], audio: &[[f32; 2]]) -> Result<Value> {
+pub fn run(path: &Path, events: &[Input], audio: &[[f32; 2]], first_onset: bool) -> Result<Value> {
     if !path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
@@ -131,6 +131,11 @@ pub fn run(path: &Path, events: &[Input], audio: &[[f32; 2]]) -> Result<Value> {
         .arg(&ours)
         .arg(&event_path)
         .arg(format!("{window:.9}"))
+        .arg(if first_onset {
+            "first-onset"
+        } else {
+            "envelope"
+        })
         .env("OPENBLAS_NUM_THREADS", "1")
         .env("OMP_NUM_THREADS", "1")
         .output()
@@ -156,7 +161,7 @@ mod tests {
     use super::*;
     #[test]
     fn uvi_reference_is_reported_unavailable_before_starting_wine() {
-        let err = run(Path::new("example.uvip"), &[], &[]).unwrap_err();
+        let err = run(Path::new("example.uvip"), &[], &[], false).unwrap_err();
         assert!(
             err.to_string()
                 .contains("UVI native capture is unavailable")

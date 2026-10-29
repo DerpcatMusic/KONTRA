@@ -19,6 +19,31 @@ pub fn run(path: &Path, scenario_name: &str, oracle: bool) -> Result<(Value, Str
     } else {
         scenario::file(Path::new(scenario_name))?
     };
+    run_events(path, scenario_name, events, oracle, false)
+}
+
+pub fn segment(path: &Path, part: u64, oracle: bool) -> Result<(Value, String)> {
+    let names = [
+        "legato slow",
+        "legato fast",
+        "chord slow",
+        "chord fast",
+        "repeat slow",
+        "repeat fast",
+    ];
+    let name = names
+        .get(usize::try_from(part)?)
+        .context("invalid segment")?;
+    run_events(path, name, scenario::user_segment(part), oracle, true)
+}
+
+fn run_events(
+    path: &Path,
+    scenario_name: &str,
+    events: Vec<scenario::Input>,
+    oracle: bool,
+    first_onset: bool,
+) -> Result<(Value, String)> {
     let end = events.last().map_or(0, |e| e.frame);
     ensure!(end <= u64::from(RATE) * 3600, "scenario exceeds one hour");
     let last_off = events
@@ -239,10 +264,12 @@ pub fn run(path: &Path, scenario_name: &str, oracle: bool) -> Result<(Value, Str
         && stream_stats.requests_refused == 0;
     let reference = if oracle {
         if complete {
-            Some(match super::oracle::run(path, &events, &rendered) {
-                Ok(value) => value,
-                Err(error) => json!({"status":"error", "reason":format!("{error:#}")}),
-            })
+            Some(
+                match super::oracle::run(path, &events, &rendered, first_onset) {
+                    Ok(value) => value,
+                    Err(error) => json!({"status":"error", "reason":format!("{error:#}")}),
+                },
+            )
         } else {
             Some(
                 json!({"status":"error", "reason":"v3 render incomplete; oracle comparison skipped"}),

@@ -55,9 +55,47 @@ def metrics(audio, rate, events, shift):
 
 
 def main():
-    compare_path, native_path, v3_path, events_path, window = sys.argv[1:]
+    compare_path, native_path, v3_path, events_path, window, alignment = sys.argv[1:]
     compare = module(Path(compare_path))
     events = json.loads(Path(events_path).read_text())
+    if alignment == "first-onset":
+        rate = compare.RATE
+        native = compare.load(Path(native_path))[:, int(compare.PRE * rate):]
+        v3 = compare.load(Path(v3_path))
+        # Look only in the two-second segment; tails cannot set the threshold.
+        nenv = compare.envelope(native[:, :2 * rate])
+        venv = compare.envelope(v3[:, :2 * rate])
+        if (not nenv.size or not venv.size or nenv.max() < compare.SILENT_DB
+                or venv.max() < compare.SILENT_DB):
+            print(json.dumps({"status":"uncomparable", "reason":"silent first segment", "alignment":"first onset"}))
+            return
+        no, vo = compare.onsets(nenv), compare.onsets(venv)
+        if not no or not vo:
+            print(json.dumps({"status":"uncomparable", "reason":"first onset not detected", "alignment":"first onset"}))
+            return
+        nf, vf = no[0] * rate // 100, vo[0] * rate // 100
+        length = min(2 * rate, native.shape[1] - nf, v3.shape[1] - vf)
+        if length < 4096:
+            print(json.dumps({"status":"uncomparable", "reason":"insufficient aligned audio", "alignment":"first onset"}))
+            return
+        native, v3 = native[:, nf:nf + length], v3[:, vf:vf + length]
+        nm, vm = metrics(native, rate, events, -nf), metrics(v3, rate, events, -vf)
+        def db(value):
+            return None if value <= 1e-12 else 20 * math.log10(value)
+        def delta(a, b):
+            return None if a is None or b is None else a - b
+        nr = db(float(np.sqrt(np.mean(native * native))))
+        vr = db(float(np.sqrt(np.mean(v3 * v3))))
+        npk, vpk = db(nm["peak"]), db(vm["peak"])
+        print(json.dumps({"status":"ok", "alignment":"first onset, 10 ms envelope bins; 2 s after each onset",
+            "native_onset_ms": no[0] * 10, "v3_onset_ms": vo[0] * 10,
+            "comparison":{"kontakt_rms_db":nr, "kontra_rms_db":vr, "level_diff_db":delta(nr,vr),
+                          "kontakt_peak_db":npk, "kontra_peak_db":vpk, "peak_diff_db":delta(npk,vpk)},
+            "native_metrics":nm, "v3_metrics":vm,
+            "native_minus_v3":{"octave_band_rms_db":[delta(a,b) for a,b in zip(nm["octave_band_rms_dbfs"], vm["octave_band_rms_dbfs"])]},
+            "octave_centers_hz":[31.25,62.5,125,250,500,1000,2000,4000,8000,16000],
+            "unavailable":["native script callbacks and commands", "native voice lifecycle and levels", "native per-route values", "native effect parameters", "native active voice count"]}, allow_nan=False))
+        return
     row = compare.compare_one("scenario", Path(native_path), Path(v3_path), float(window))
     if row.get("silent"):
         print(json.dumps({"status": "uncomparable", "reason": "silent " + row["silent"], "comparison": row}))
