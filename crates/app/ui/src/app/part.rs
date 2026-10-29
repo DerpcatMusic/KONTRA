@@ -92,7 +92,7 @@ fn fit(chosen: f64, room: (f64, f64), size: (f64, f64)) -> f64 {
     } else {
         width
     };
-    width.min(height).clamp(0.5, 2.)
+    width.min(height).min(2.)
 }
 
 fn listing(title: &str, lines: &[String], empty: &str) -> El {
