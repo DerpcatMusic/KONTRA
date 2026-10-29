@@ -92,12 +92,14 @@ pub fn page(
         });
         let art = picture.as_ref().map(|(_, m)| drawn(r, *m));
         let style = wd.style.and_then(|s| tree.styles.get(s.0));
-        let stock = picture.is_none() && stock::shows(wd, tree.source);
         let t = position(wd);
-        let words = caption(wd, tree.source);
-        // Kontakt's stock dial: its name over it, its value under it.
-        let dial = (stock && matches!(wd.kind, Kind::Knob { .. }))
-            .then(|| (knob_name(wd), readout(wd, tree.source)));
+        let look = stock::Look::of(tree, wd, t, readout(wd, tree.source), knob_name(wd));
+        let stock = look.is_none() && stock::shows(tree, wd);
+        let words = if look.is_some() {
+            String::new()
+        } else {
+            caption(wd, tree.source)
+        };
         let lit = match wd.kind {
             Kind::LevelMeter {
                 orientation,
@@ -110,7 +112,12 @@ pub fn page(
             [r.x, r.y, r.width, r.height, scale].map(f64::to_bits),
             art.map(|a| [a.width, a.height].map(f64::to_bits)),
             picture.as_ref().map(|(i, _)| Arc::as_ptr(i) as usize),
-            (&words, &dial, stock.then_some(t.to_bits())),
+            (
+                &words,
+                &look,
+                stock.then_some(t.to_bits()),
+                wd.hide.background,
+            ),
             wd.text_y,
             style.map(|s| (s.color, s.align as u8, s.size.map(f32::to_bits))),
             wd.opacity.to_bits(),
@@ -119,27 +126,22 @@ pub fn page(
             built += 1;
             let (w, h) = (r.width * scale, r.height * scale);
             let mut parts = Vec::new();
-            let size = style.and_then(|s| s.size).map_or(TEXT, f64::from) * scale;
             if let (Some((img, meta)), Some(a)) = (&picture, art) {
                 parts
                     .push(sliced(img, meta, (a.width * scale, a.height * scale), scale).at(0., 0.));
             } else if stock {
-                parts.push(stock::face(wd, t, (w, h), size * 1.25).at(0., 0.));
+                parts.push(stock::face(wd, t, (w, h)).at(0., 0.));
             }
             if !words.is_empty() {
                 parts.push(words_el(&words, style, wd, (w, h), scale, wd.text_y).at(0., 0.));
             }
-            if let Some((name, value)) = &dial {
-                let under = Some(((h - size * 1.25) / scale) as i32);
-                for (said, y) in [(name, Some(0)), (value, under)] {
-                    if !said.is_empty() {
-                        parts.push(words_el(said, style, wd, (w, h), scale, y).at(0., 0.));
-                    }
-                }
-            }
             if let Some((o, t)) = lit {
                 parts.push(meter(&wd.colors, o, t, w, h).at(0., 0.));
             }
+            let (w, h) = look.as_ref().map_or((w, h), |look| {
+                parts.extend(look.draw(wd, style, (w, h, scale)));
+                look.size(w, h, scale)
+            });
             stack(parts).w(w).h(h).opacity(wd.opacity)
         });
         // A control takes the pointer under its own id (crate::input).

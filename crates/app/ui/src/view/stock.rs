@@ -1,15 +1,264 @@
-//! A script control with no picture of its own draws the host's stock
-//! face, as Kontakt does: a dark field under its words, a dial with its
-//! name over it and its value under it, a fader, the bars of a table.
-//! Ported from v1 `0cb7a8a0:src/ui/perf_view.rs` (`face`).
+//! Kontakt's own drawing of a script control with no picture: a dark
+//! button that turns light when on, a dark field reading `Title:  value`,
+//! a dark menu box with its arrow, the round knob with its title and value
+//! boxes beside it (shades measured on Kontakt 8's Pacific page), and a
+//! fader, a text field and the bars of a table (v1 `0cb7a8a0:src/ui/perf_view.rs`).
 
-use kontra_ui_model::{self as model, Kind};
+use kontra_ui_model::{self as model, Interface, Kind, Source, TextStyle, Widget};
 use mui::prelude::*;
 
-/// Kontakt's stock graphite: the field, its edge, a lit switch, the value.
+/// A stock knob's own size: the knob, its title and value boxes. Kontakt
+/// draws it so whatever width and height the script sets.
+const KNOB: (f64, f64) = (87., 40.);
+/// Kontakt's default ink on a light (on) button.
+const DARK: u32 = 0x18_1818;
+
+/// What a stock control shows; the memo key of its drawing.
+#[derive(Hash)]
+pub(super) enum Look {
+    Button {
+        on: bool,
+        caption: String,
+    },
+    Field {
+        title: String,
+        value: String,
+    },
+    Menu {
+        caption: String,
+    },
+    Knob {
+        title: String,
+        value: String,
+        turn: u16,
+    },
+}
+
+impl Look {
+    /// The stock look of `w` at `t` (0..1 of its range), when Kontakt
+    /// draws one: a script button, switch, menu, value edit or knob whose
+    /// picture is unset or absent from the library. `shown` is its value
+    /// as the script shows it, `name` a knob's title.
+    pub(super) fn of(
+        tree: &Interface,
+        w: &Widget,
+        t: f64,
+        shown: String,
+        name: String,
+    ) -> Option<Self> {
+        if !unpictured(tree, w) {
+            return None;
+        }
+        Some(match &w.kind {
+            Kind::Button { .. } | Kind::Switch => Self::Button {
+                on: t >= 1.,
+                caption: super::caption(w, tree.source),
+            },
+            Kind::Menu { .. } => Self::Menu {
+                caption: super::caption(w, tree.source),
+            },
+            Kind::ValueEdit { .. } => Self::Field {
+                title: if w.hide.title {
+                    String::new()
+                } else {
+                    format!("{}:", w.text.trim())
+                },
+                value: shown,
+            },
+            Kind::Knob { display, .. } => Self::Knob {
+                title: name,
+                // A script's label leaves the unit to Kontakt ("25.0k ms").
+                value: match &w.value_text {
+                    Some(_) if !shown.is_empty() => format!("{} {}", shown.trim(), display.unit)
+                        .trim_end()
+                        .into(),
+                    _ => shown,
+                },
+                turn: (t * 1000.) as u16,
+            },
+            _ => return None,
+        })
+    }
+
+    /// The area it draws on: a knob takes its own size.
+    pub(super) fn size(&self, w: f64, h: f64, scale: f64) -> (f64, f64) {
+        match self {
+            Self::Knob { .. } => (KNOB.0 * scale, KNOB.1 * scale),
+            _ => (w, h),
+        }
+    }
+
+    /// Its parts on a `w`×`h` widget at `scale`, and the ink and side
+    /// its caption takes.
+    pub(super) fn draw(
+        &self,
+        wd: &Widget,
+        style: Option<&TextStyle>,
+        (w, h, scale): (f64, f64, f64),
+    ) -> Vec<El> {
+        let bg = !wd.hide.background;
+        let ink = |default: u32| style.map_or(rgb(default), |s| super::color(s.color));
+        match self {
+            Self::Button { on, caption } => {
+                let mut parts = Vec::new();
+                if bg {
+                    let fill: Fill = if *on {
+                        Gradient::linear(180., [(0., rgb(0xfe_fefe)), (1., rgb(0xe1_e1e1))]).into()
+                    } else {
+                        rgb(0x5f_5f5f).into()
+                    };
+                    parts.push(boxed(w, h, scale, fill, 0x2d_2d2d));
+                }
+                // The default font darkens on a lit button; a chosen one keeps its ink.
+                let stock = style.is_none_or(|s| s.font == model::Font::Stock(0));
+                let ink = if *on && stock {
+                    rgb(DARK)
+                } else {
+                    ink(0xfe_fefe)
+                };
+                parts.push(words(caption, ink, model::Align::Center, w, h, scale));
+                parts
+            }
+            Self::Field { title, value } => {
+                let mut parts = Vec::new();
+                if bg {
+                    parts.push(boxed(w, h, scale, rgb(0x3f_3f3f).into(), 0x2c_2c2c));
+                }
+                let ink = ink(0xfe_fefe);
+                parts.push(words(title, ink, model::Align::Left, w, h, scale));
+                if !wd.hide.value {
+                    parts.push(words(value, ink, model::Align::Right, w, h, scale));
+                }
+                parts
+            }
+            Self::Menu { caption } => {
+                let mut parts = Vec::new();
+                if bg {
+                    parts.push(boxed(w, h, scale, rgb(0x5f_5f5f).into(), 0x2d_2d2d));
+                }
+                let ink = ink(0xfe_fefe);
+                parts.push(words(caption, ink, model::Align::Left, w, h, scale));
+                parts.extend(arrow(ink, w, h, scale));
+                parts
+            }
+            Self::Knob { title, value, turn } => knob(wd, title, value, *turn, scale),
+        }
+    }
+}
+
+fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64) -> Vec<El> {
+    let light = rgb(0xfe_fefe);
+    let mut parts = vec![
+        block(38. * s, 38. * s)
+            .pill()
+            .fill(rgb(0x2e_2e2e))
+            .stroke(rgb(0x14_1414))
+            .stroke_width(s)
+            .at(0., s),
+        block(22. * s, 22. * s)
+            .pill()
+            .fill(Gradient::linear(
+                160.,
+                [(0., rgb(0xff_ffff)), (1., rgb(0xc8_c8c3))],
+            ))
+            .at(8. * s, 9. * s),
+    ];
+    // The pointer: a dot on the cap, from 7 o'clock (0) to 5 o'clock (1).
+    let a = (f64::from(turn) / 1000.).mul_add(270., -135.).to_radians();
+    let (x, y) = (19. + 7. * a.sin(), 20. - 7. * a.cos());
+    parts.push(
+        block(3. * s, 3. * s)
+            .pill()
+            .fill(rgb(0x2a_2a2a))
+            .at((x - 1.5) * s, (y - 1.5) * s),
+    );
+    let side = (KNOB.0 - 36.) * s;
+    if !wd.hide.title {
+        parts.push(
+            stack([words(title, light, model::Align::Left, side, 16. * s, s)])
+                .w(side)
+                .h(16. * s)
+                .radius(3. * s)
+                .fill(rgb(0x8f_8e88))
+                .at(36. * s, s),
+        );
+    }
+    if !wd.hide.value {
+        parts.push(
+            stack([words(
+                value,
+                rgb(0xed_f0f0),
+                model::Align::Left,
+                side,
+                17. * s,
+                s,
+            )])
+            .w(side)
+            .h(17. * s)
+            .radius(3. * s)
+            .fill(rgb(0x5f_5f5a))
+            .at(36. * s, 21. * s),
+        );
+    }
+    parts
+}
+
+/// A menu's arrow: a small triangle pointing down at the right.
+fn arrow(ink: Color, w: f64, h: f64, s: f64) -> Vec<El> {
+    let (x, y) = (w - 11. * s, h / 2. - 1.5 * s);
+    (0..3)
+        .map(|row| {
+            let r = f64::from(row);
+            block((6. - 2. * r) * s, s)
+                .radius(0.)
+                .fill(ink)
+                .at(x + r * s, y + r * s)
+        })
+        .collect()
+}
+
+/// A stock box: `fill` inside a one-pixel `edge`.
+fn boxed(w: f64, h: f64, s: f64, fill: Fill, edge: u32) -> El {
+    block(w, h)
+        .radius(2. * s)
+        .fill(fill)
+        .stroke(rgb(edge))
+        .stroke_width(s)
+        .at(0., 0.)
+}
+
+/// One line of `text` across the box, padded from its sides.
+fn words(text: &str, ink: Color, align: model::Align, w: f64, h: f64, s: f64) -> El {
+    // Kontakt's stock font runs a size under a label's.
+    let size = (super::TEXT - 1.) * s;
+    row([text_el(text, size, ink)])
+        .align(Align::Center)
+        .justify(match align {
+            model::Align::Left => Justify::Start,
+            model::Align::Center => Justify::Center,
+            model::Align::Right => Justify::End,
+        })
+        .w(w)
+        .h(h)
+        .pad((4. * s, 0.))
+        .at(0., 0.)
+}
+
+fn text_el(t: &str, size: f64, ink: Color) -> El {
+    text(t.to_owned())
+        .text_size(size)
+        .fill(Fill::from(ink))
+        .lines(1)
+        .min_w(0.)
+}
+
+fn rgb(c: u32) -> Color {
+    super::color(model::Rgba::rgb(c))
+}
+
+/// The stock graphite: the field, its edge, the value.
 const FIELD: f32 = 0.16;
 const EDGE: f32 = 0.32;
-const ON: f32 = 0.36;
 const VALUE: f32 = 0.85;
 
 fn grey(l: f32) -> Fill {
@@ -23,43 +272,33 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> Path {
     )
 }
 
-/// The arc of a circle at `c` of radius `r` from `from` to `to` of a
-/// Kontakt dial's 270° sweep.
-fn sweep(c: Point, r: f64, from: f64, to: f64) -> Path {
-    let steps = 32;
-    Path::polyline(
-        (0..=steps).map(|n| {
-            let a =
-                (135. + 270. * (from + (to - from) * f64::from(n) / f64::from(steps))).to_radians();
-            Point::new(c.x + r * a.cos(), c.y + r * a.sin())
-        }),
-        false,
-    )
-}
-
-/// Whether `w` draws a stock face: a script control without a picture
-/// whose background the script has not hidden.
-pub(super) fn shows(w: &model::Widget, source: model::Source) -> bool {
-    // ponytail: KSP's stock look only; UVI's own once a Lua library needs it.
-    matches!(source, model::Source::Ksp { .. })
-        && !w.hide.background
+/// Whether `w` draws a stock fader, text field or table: an unpictured
+/// script one whose background the script has not hidden.
+pub(super) fn shows(tree: &Interface, w: &Widget) -> bool {
+    !w.hide.background
+        && unpictured(tree, w)
         && matches!(
             w.kind,
-            Kind::Knob { .. }
-                | Kind::Slider { .. }
-                | Kind::Button { .. }
-                | Kind::Switch
-                | Kind::Menu { .. }
-                | Kind::ValueEdit { .. }
-                | Kind::TextEdit
-                | Kind::Table { .. }
+            Kind::Slider { .. } | Kind::TextEdit | Kind::Table { .. }
         )
 }
 
+/// A KSP control with no picture, or one the library lacks; `false` for
+/// one still decoding.
+// ponytail: KSP's stock look only; UVI's own once a Lua library needs it.
+fn unpictured(tree: &Interface, w: &Widget) -> bool {
+    matches!(tree.source, Source::Ksp { .. })
+        && !w.images.first().is_some_and(|u| {
+            tree.assets.get(u.asset.0).is_some_and(|a| match a.kind {
+                model::AssetKind::Image(m) => m.size.is_some(),
+                _ => true,
+            })
+        })
+}
+
 /// `w`'s stock face at `t` (0..1 of its range), `width` by `height`
-/// view points; a knob leaves `text` points above and below its dial.
-pub(super) fn face(w: &model::Widget, t: f64, (width, height): (f64, f64), text: f64) -> El {
-    let on = t >= 1.;
+/// view points.
+pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64)) -> El {
     let kind = w.kind.clone();
     let bars: Vec<f64> = match (&w.kind, &w.value) {
         (Kind::Table { range, .. }, Some(model::Value::Integers(v))) => {
@@ -78,24 +317,6 @@ pub(super) fn face(w: &model::Widget, t: f64, (width, height): (f64, f64), text:
         };
         let mut d = Vec::new();
         match kind {
-            Kind::Knob { .. } => {
-                let c = Point::new(w / 2., h / 2.);
-                let r = ((h - 2. * text).min(w) / 2. - 2.).max(2.);
-                d.push(Draw::stroke(sweep(c, r, 0., 1.), grey(EDGE), 2.));
-                d.push(Draw::stroke(sweep(c, r, 0., t), grey(VALUE), 2.));
-                let a = (135. + 270. * t).to_radians();
-                d.push(Draw::stroke(
-                    Path::polyline(
-                        [
-                            Point::new(c.x + r * 0.2 * a.cos(), c.y + r * 0.2 * a.sin()),
-                            Point::new(c.x + r * 0.75 * a.cos(), c.y + r * 0.75 * a.sin()),
-                        ],
-                        false,
-                    ),
-                    grey(VALUE),
-                    1.5,
-                ));
-            }
             Kind::Slider { .. } => {
                 let vertical = h > w;
                 let (len, across) = if vertical { (h, w) } else { (w, h) };
@@ -123,7 +344,6 @@ pub(super) fn face(w: &model::Widget, t: f64, (width, height): (f64, f64), text:
                     grey(VALUE),
                 ));
             }
-            Kind::Button { .. } | Kind::Switch => field(&mut d, if on { ON } else { FIELD }),
             Kind::Table { .. } => {
                 field(&mut d, FIELD);
                 let bw = w / bars.len().max(1) as f64;
