@@ -400,3 +400,45 @@ fn a_script_switch_with_no_picture_draws_kontakts_stock_button() {
     assert_eq!(shade(0), Some([0x5f, 0x5f, 0x5f, 255]));
     assert!(shade(1).is_some_and(|p| p[0] > 0xe0));
 }
+
+/// A label in a library picture font draws that font's glyph pixels, not
+/// an outline face (Shreddage's RoadGeek FX labels).
+#[test]
+fn a_picture_font_label_draws_its_glyphs() {
+    // 256 one-pixel glyphs under a row of red markers; 'A' is green.
+    let mut rgba = vec![[255, 0, 0, 255]; 256];
+    rgba.extend((0..256).map(|n| if n == 65 { [0, 255, 0, 255] } else { [0; 4] }));
+    let font = png(256, 2, rgba.as_flattened());
+    let mut tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 8.,
+            height: 1.,
+        },
+        ..Page::default()
+    });
+    tree.assets.push(Asset {
+        path: "font.png".into(),
+        kind: AssetKind::BitmapFont,
+    });
+    tree.styles.push(model::TextStyle {
+        font: model::Font::Bitmap(AssetRef(0)),
+        size: None,
+        color: Rgba::rgb(0xffffff),
+        align: model::Align::Left,
+    });
+    let mut label = Widget::new("$l", PageRef(0), Rect::new(0, 0, 8, 1), Kind::Label);
+    label.text = "AA".into();
+    label.style = Some(model::StyleRef(0));
+    tree.widgets.push(label);
+    let mut pictures = Pictures::new(Box::new(move |p| (p == "font.png").then(|| font.clone())));
+    let mut ui = crate::ui();
+    settle(&mut ui, &tree, &mut pictures, 1.);
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 0.));
+    let px = paint(&mut ui, el, 8, 1);
+    // Left-aligned two pixels in: one green pixel per 'A'.
+    assert_eq!(px.get(2..4), Some(&[[0, 255, 0, 255]; 2][..]), "{px:?}");
+}

@@ -100,6 +100,12 @@ pub fn page(
         } else {
             caption(wd, tree.source)
         };
+        let glyphs = match style.map(|s| &s.font) {
+            Some(&model::Font::Bitmap(a)) if !words.is_empty() => {
+                (tree.assets.get(a.0)).and_then(|asset| pictures.font(a, &asset.path))
+            }
+            _ => None,
+        };
         let lit = match wd.kind {
             Kind::LevelMeter {
                 orientation,
@@ -118,6 +124,9 @@ pub fn page(
                 stock.then_some(t.to_bits()),
                 wd.hide.background,
             ),
+            glyphs
+                .as_ref()
+                .map(|g| Arc::as_ptr(g).cast::<()>() as usize),
             wd.text_y,
             style.map(|s| (s.color, s.align as u8, s.size.map(f32::to_bits))),
             wd.opacity.to_bits(),
@@ -132,7 +141,9 @@ pub fn page(
             } else if stock {
                 parts.push(stock::face(wd, t, (w, h)).at(0., 0.));
             }
-            if !words.is_empty() {
+            if let Some(glyphs) = &glyphs {
+                parts.push(bitmap_words(&words, style, wd, (w, h), scale, glyphs).at(0., 0.));
+            } else if !words.is_empty() {
                 parts.push(words_el(&words, style, wd, (w, h), scale, wd.text_y).at(0., 0.));
             }
             if let Some((o, t)) = lit {
@@ -472,6 +483,48 @@ fn crop(
         rgba.extend_from_slice(img.rgba.get(at..at + w as usize * 4)?);
     }
     mui::prelude::Image::rgba(w, h, rgba).map(Arc::new)
+}
+
+/// Words in a library's picture font, as v1 drew them (`src/ui/perf_view.rs`
+/// `bitmap_words`): each glyph its own advance, pixels and alpha, scaled
+/// with the face, never refitted through an outline font; one line.
+// ponytail: one line; break long label text the way v1 did if a library wraps it.
+fn bitmap_words(
+    words: &str,
+    style: Option<&model::TextStyle>,
+    w: &model::Widget,
+    (width, height): (f64, f64),
+    scale: f64,
+    glyphs: &crate::pictures::Glyphs,
+) -> El {
+    let glyph = |c: char| glyphs.get(crate::pictures::glyph(c));
+    let advance = |c: char| glyph(c).map_or(0., |g| f64::from(g.width) * scale);
+    let line = glyphs.first().map_or(0., |g| f64::from(g.height) * scale);
+    let wide: f64 = words.chars().map(advance).sum();
+    let align = style.map_or(
+        if matches!(w.kind, Kind::Label) {
+            model::Align::Left
+        } else {
+            model::Align::Center
+        },
+        |s| s.align,
+    );
+    let mut x = match align {
+        model::Align::Left => 2. * scale,
+        model::Align::Center => (width - wide) / 2.,
+        model::Align::Right => width - 2. * scale - wide,
+    };
+    let y = w
+        .text_y
+        .map_or((height - line) / 2., |y| f64::from(y) * scale);
+    let mut layers = Vec::new();
+    for c in words.chars() {
+        let Some(g) = glyph(c) else { continue };
+        let gw = f64::from(g.width) * scale;
+        layers.push(image(g, gw, line).at(x, y));
+        x += gw;
+    }
+    stack(layers).w(width).h(height).radius(0.).clip()
 }
 
 fn image(img: &Arc<mui::prelude::Image>, w: f64, h: f64) -> El {
