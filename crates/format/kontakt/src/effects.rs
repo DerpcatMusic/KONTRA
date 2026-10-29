@@ -300,7 +300,14 @@ fn slot_effect(
             .and_then(|v| v.try_into().ok())
             .zip(kind_id)
             .map(|(v, kind)| ir::EffectKind::Reverb(crate::reverb::reverb(kind, v))),
-        0x10..=0x12 | 0x14 => crate::delays::legacy(effect.id, object.version, &public),
+        0x10..=0x12 | 0x14 => {
+            if let Some(saved) =
+                crate::delays::saved(object.version, &public).filter(|_| effect.id == 0x10)
+            {
+                *knobs = crate::script_knobs::delay_knobs(saved);
+            }
+            crate::delays::legacy(effect.id, object.version, &public)
+        }
         0x15 => {
             if let Some(saved) = crate::legacy_reverb::saved(object.version, &public) {
                 *knobs = crate::script_knobs::legacy_reverb_knobs(saved);
