@@ -40,6 +40,8 @@ pub struct Instrument {
     pub name: String,
     /// Source file, when this instrument was loaded from a path.
     pub source_path: Option<std::path::PathBuf>,
+    /// Library root discovered when loading, when known.
+    pub library_path: Option<std::path::PathBuf>,
     pub samples: Vec<Sample>,
     pub groups: Vec<Group>,
     /// Output buses; group `bus` indexes here. Empty means one main bus.
@@ -80,6 +82,7 @@ impl Instrument {
     pub const DEFAULT: Self = Self {
         name: String::new(),
         source_path: None,
+        library_path: None,
         samples: Vec::new(),
         groups: Vec::new(),
         buses: Vec::new(),

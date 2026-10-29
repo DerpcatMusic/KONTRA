@@ -233,6 +233,33 @@ impl Resources {
 /// The library folder of the instrument at absolute `path`: the nearest
 /// ancestor holding `Samples`, a `.nicnt` or `Resources`; else its own folder.
 pub(crate) fn root(path: &Path) -> PathBuf {
+    find_root(path)
+        .or_else(|| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// A library root supported by one unambiguous NICNT ancestor.
+pub(crate) fn known_root(path: &Path) -> Option<PathBuf> {
+    let mut root = None;
+    for dir in path.ancestors().skip(1).take(DEPTH) {
+        let count = entries(dir)
+            .iter()
+            .filter(|p| {
+                p.is_file()
+                    && p.extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
+            })
+            .count();
+        match count {
+            0 => {}
+            1 if root.is_none() => root = Some(dir.to_path_buf()),
+            _ => return None,
+        }
+    }
+    root
+}
+
+fn find_root(path: &Path) -> Option<PathBuf> {
     path.ancestors()
         .skip(1)
         .take(DEPTH)
@@ -244,9 +271,7 @@ pub(crate) fn root(path: &Path) -> PathBuf {
                         .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
             })
         })
-        .or_else(|| path.parent())
-        .unwrap_or(Path::new("."))
-        .to_path_buf()
+        .map(Path::to_path_buf)
 }
 
 fn entries(dir: &Path) -> Vec<PathBuf> {
@@ -294,4 +319,35 @@ fn nicnt_table(path: &Path) -> Option<Source> {
     file.seek(SeekFrom::Start(at as u64)).ok()?;
     let (table, _) = NIFileContainer::read_table(&mut file).ok()?;
     Some(Source::Nicnt(file, table, path.to_path_buf()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn library_root_requires_one_unambiguous_nicnt() {
+        let base = std::env::current_dir()
+            .unwrap()
+            .join(format!(".library-root-test-{}", std::process::id()));
+        let scratch = Scratch(base.clone());
+        let instrument_dir = base.join("Instruments");
+        std::fs::create_dir_all(instrument_dir.join("Resources")).unwrap();
+        std::fs::write(base.join("Library.nicnt"), []).unwrap();
+        let instrument = instrument_dir.join("Patch.nki");
+        assert_eq!(super::known_root(&instrument), Some(base.clone()));
+        std::fs::write(base.join("Other.nicnt"), []).unwrap();
+        assert_eq!(super::known_root(&instrument), None);
+        std::fs::remove_file(base.join("Library.nicnt")).unwrap();
+        std::fs::remove_file(base.join("Other.nicnt")).unwrap();
+        assert_eq!(super::known_root(&instrument), None);
+        drop(scratch);
+    }
 }
