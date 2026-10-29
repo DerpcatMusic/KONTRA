@@ -2,7 +2,9 @@
 //! library, a click on a preset asks to load it, a menu pick lands, and
 //! once motion settles the editor asks for no more frames.
 
-use kontra_ui::app::{self, Action, App, Envelope, Format, Library, Param, Part, PartTab, Sound};
+use kontra_ui::app::{
+    self, Action, App, Envelope, Face, Format, Library, Param, Part, PartTab, Sound,
+};
 use mui::prelude::{Buttons, Input, Point, PointerInput, Size, Ui};
 
 fn frame(ui: &mut Ui, app: &mut App, input: Input) -> (Vec<Action>, bool) {
@@ -172,4 +174,62 @@ fn a_dragged_envelope_handle_sets_every_group() {
     assert!(out.iter().any(|a| matches!(a, Action::Sound { group: None, param: Param::Decay, value, .. } if (value - 0.7).abs() < 0.02)), "{out:?}");
     assert!((sustain(0).unwrap_or(0.) - 0.25).abs() < 0.02);
     assert_eq!(sustain(0), sustain(1), "All groups: both move");
+}
+
+/// Two rack parts showing their libraries' faces in one frame: each control
+/// takes its own surface, and the frame lays out (two faces once shared
+/// their ids, and the Rack stopped drawing: "two nodes share the id").
+#[test]
+fn two_open_faces_lay_out_side_by_side() {
+    use kontra_ui_model::{Interface, Kind, Page, PageRef, Range, Rect, Size as PageSize, Widget};
+    let mut tree = Interface::default();
+    tree.pages.push(Page {
+        size: PageSize {
+            width: 300.,
+            height: 100.,
+        },
+        ..Page::default()
+    });
+    let range = Range {
+        max: 1.,
+        ..Range::default()
+    };
+    let knob = Kind::Knob {
+        range,
+        display: kontra_ui_model::Display::default(),
+    };
+    tree.widgets.push(Widget::new(
+        "$k",
+        PageRef(0),
+        Rect::new(10, 10, 40, 40),
+        knob,
+    ));
+    let part = || Part {
+        name: "Strings".into(),
+        face: Some(Face {
+            tree: tree.clone(),
+            pictures: kontra_ui::Pictures::new(Box::new(|_| None)),
+            gesture: kontra_ui::input::Gesture::default(),
+        }),
+        open: true,
+        tab: PartTab::Interface,
+        ..Part::default()
+    };
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        parts: vec![part(), part()],
+        ..App::default()
+    };
+    let r = app::view(&mut ui, &mut app);
+    let laid = ui.frame(
+        r.el,
+        Some(Size::new(900., 900.)),
+        Input::default(),
+        1. / 60.,
+    );
+    assert!(laid.is_ok(), "{:?}", laid.err());
+    for n in 0..2 {
+        let id = kontra_ui::input::surface(n, 0);
+        assert!(ui.scene().and_then(|s| s.surface(&id)).is_some(), "{id}");
+    }
 }

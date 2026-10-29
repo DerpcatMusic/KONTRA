@@ -18,9 +18,11 @@ use crate::Pictures;
 const TEXT: f64 = 11.;
 
 /// `page` of `tree` at `scale` view points per source pixel, and how many
-/// widgets this frame built rather than kept.
+/// widgets this frame built rather than kept. `face` scopes its ids: each
+/// face drawn in one frame (a rack part) needs its own.
 pub fn page(
     ui: &mut Ui,
+    face: usize,
     tree: &Interface,
     page: PageRef,
     pictures: &mut Pictures,
@@ -97,7 +99,7 @@ pub fn page(
             style.map(|s| (s.color, s.align as u8, s.size.map(f32::to_bits))),
             wd.opacity.to_bits(),
         );
-        let el = ui.memo(format!("kontra-ui-{}", n.0), deps, |_| {
+        let el = ui.memo(format!("kontra-ui-{face}-{}", n.0), deps, |_| {
             built += 1;
             let (w, h) = (r.width * scale, r.height * scale);
             let mut parts = Vec::new();
@@ -111,7 +113,7 @@ pub fn page(
         });
         // A control takes the pointer under its own id (crate::input).
         let el = if crate::input::takes_input(wd) {
-            el.id(crate::input::surface(n.0))
+            el.id(crate::input::surface(face, n.0))
                 .focusable()
                 .cursor(Cursor::Hand)
                 .named(wd.name.clone())

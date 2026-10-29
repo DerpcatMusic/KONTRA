@@ -25,9 +25,10 @@ pub struct Gesture {
     pub menu: Option<usize>,
 }
 
-/// The id of widget `n`'s surface.
-pub fn surface(n: usize) -> String {
-    format!("kontra-w-{n}")
+/// The id of widget `n`'s surface on face `face` (a rack part): every
+/// face's ids are its own, so two open parts never share one.
+pub fn surface(face: usize, n: usize) -> String {
+    format!("kontra-w-{face}-{n}")
 }
 
 /// Whether a widget of `kind` takes the pointer.
@@ -88,6 +89,7 @@ fn range(kind: &Kind) -> Option<model::Range> {
 /// open menu's popup, to float over the page.
 pub fn read(
     ui: &mut Ui,
+    face: usize,
     tree: &Interface,
     page: PageRef,
     scale: f64,
@@ -101,7 +103,7 @@ pub fn read(
         if !tree.visible(n) {
             continue;
         }
-        let id = surface(n.0);
+        let id = surface(face, n.0);
         let r = ui.get(id.clone());
         let now = value(w);
         let mut set = |v: f64| {
@@ -176,7 +178,7 @@ pub fn read(
         let Kind::Menu { items } = &w.kind else {
             return None;
         };
-        let id = surface(m);
+        let id = surface(face, m);
         if ui.dismissed(&[&id, &format!("{id}-popup")]) {
             g.menu = None;
             return None;

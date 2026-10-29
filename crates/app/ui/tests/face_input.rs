@@ -75,10 +75,23 @@ impl Face {
 
     /// One frame with `input`; the edits it carried.
     fn frame(&mut self, input: Input) -> Vec<Edit> {
-        let (edits, popup) =
-            input::read(&mut self.ui, &self.tree, PageRef(0), 1., &mut self.gesture);
+        let (edits, popup) = input::read(
+            &mut self.ui,
+            0,
+            &self.tree,
+            PageRef(0),
+            1.,
+            &mut self.gesture,
+        );
         input::apply(&mut self.tree, &edits);
-        let (page, _) = view::page(&mut self.ui, &self.tree, PageRef(0), &mut self.pictures, 1.);
+        let (page, _) = view::page(
+            &mut self.ui,
+            0,
+            &self.tree,
+            PageRef(0),
+            &mut self.pictures,
+            1.,
+        );
         let el = match popup {
             Some(menu) => mui::prelude::stack([page, menu]),
             None => page,
@@ -140,7 +153,7 @@ impl Face {
 fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     let mut f = Face::new();
     f.frame(Input::default());
-    let knob = input::surface(0);
+    let knob = input::surface(0, 0);
     // A knob with no drag behaviour sweeps its range in 200 points: up 100 is half.
     let start = f.at(&knob);
     f.pointer(start, true, Mods::default());
@@ -173,12 +186,12 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     f.frame(Input::default());
     assert_eq!(f.value(0), 15.);
     // A switch flips on a click.
-    f.click(&input::surface(1), Mods::default());
+    f.click(&input::surface(0, 1), Mods::default());
     assert_eq!(f.value(1), 1.);
     // A menu floats its items; a pick sets the value and closes it.
-    f.click(&input::surface(2), Mods::default());
+    f.click(&input::surface(0, 2), Mods::default());
     assert_eq!(f.gesture.menu, Some(2));
-    f.click(&format!("{}-2", input::surface(2)), Mods::default());
+    f.click(&format!("{}-2", input::surface(0, 2)), Mods::default());
     assert_eq!(f.value(2), 2.);
     assert_eq!(f.gesture.menu, None);
     // Then it rests: no frame while nothing moves.
