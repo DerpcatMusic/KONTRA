@@ -933,12 +933,17 @@ fn an_aux_eq_past_four_bands_runs_as_eqs_in_series() {
 }
 
 #[test]
-fn velocity_scales_a_keygroups_gain() {
+fn velocity_controllers_and_lfos_scale_a_keygroups_gain_by_the_signed_law() {
     let xml = r#"<Program Gain="1">
+      <Modulators>
+        <LFO Name="LFO 1" Bypass="0" SyncToHost="0" DelayTime="0" RiseTime="0" Freq="2" Depth="0.5" Phase="0" WaveFormType="0" Retrigger="1" Bipolar="1"/>
+      </Modulators>
       <Layers><Layer Gain="1" Pan="0"><Keygroups>
         <Keygroup LowKey="0" HighKey="127">
           <Connections>
             <SignalConnection Ratio="0.75" Source="@VoiceParam Velocity" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            <SignalConnection Ratio="-0.4" Source="@MIDI CC 1" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            <SignalConnection Ratio="0.6" Source="$Program/LFO 1" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
           </Connections>
           <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
         </Keygroup>
@@ -946,18 +951,26 @@ fn velocity_scales_a_keygroups_gain() {
     </Program>"#;
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    let volume = |source, intensity| ir::ModKind::Volume {
+        source,
+        intensity,
+        curve: ir::Curve::Signed,
+    };
     assert_eq!(
-        out.groups[0]
-            .mods
-            .iter()
-            .map(|m| m.kind)
-            .collect::<Vec<_>>(),
-        [ir::ModKind::Volume {
-            source: ir::Source::Velocity,
-            intensity: 0.75,
-            curve: ir::Curve::Depth { power: 1 },
-        }]
+        g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        [
+            volume(ir::Source::Velocity, 0.75),
+            volume(ir::Source::Controller(1), -0.4),
+            volume(ir::Source::Shaped(0), 0.6),
+        ]
     );
+    // Depth 0.5 inside `(m + 1)/2`: 0.25 at the trough, 0.75 at the crest.
+    assert_eq!(g.shapers[0].table, [0.25, 0.75]);
+    assert_eq!(g.shapers[0].source, ir::Source::Lfo(0));
+    // −0.4 at CC 1 = 1: 1 − 0.4; 0.75 at velocity 0: 1 − 0.75.
+    assert!((ir::Curve::Signed.gain(-0.4, 1.0) - 0.6).abs() < 1e-6);
+    assert!((ir::Curve::Signed.gain(0.75, 0.0) - 0.25).abs() < 1e-6);
     assert!(out.diagnostics.iter().all(|d| !d.feature.contains("Gain")));
 }
 

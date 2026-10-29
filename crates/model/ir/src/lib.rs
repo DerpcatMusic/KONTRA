@@ -506,6 +506,10 @@ pub enum Curve {
     Squared,
     /// `1 − x × intensity`: the gain falls from unity as the source rises.
     Falling,
+    /// [`Self::Depth`] at power 1 for an intensity of 0 or more, and
+    /// `1 + x × intensity` below: the sign of the depth picks whether the
+    /// gain falls as the source falls or as it rises.
+    Signed,
 }
 
 impl Curve {
@@ -523,6 +527,8 @@ impl Curve {
                 (1.0 - (1.0 - x) * intensity.abs()).max(0.0)
             }
             Self::Falling => (1.0 - x * intensity).max(0.0),
+            Self::Signed if intensity < 0.0 => (1.0 + x * intensity).max(0.0),
+            Self::Signed => (1.0 - (1.0 - x) * intensity).max(0.0),
         }
     }
 }
