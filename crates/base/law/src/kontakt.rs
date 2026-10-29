@@ -28,8 +28,9 @@ pub const BIPOLAR: Law = Law::Linear { lo: -1.0, hi: 1.0 };
 
 /// Saved modulation-shaper points as an evaluator law.
 ///
-/// Curvature uses the existing measured approximation; its exact binary law
-/// is not established. Falling segments reverse its geometric direction.
+/// Kontakt 0x14087c7f0 scales curvature by 16 and reverses it on a falling
+/// segment. The evaluator uses the exponential curve without native's fast
+/// exponential approximation.
 #[must_use]
 pub fn modulation_shaper(points: &[(f32, f32, f32)]) -> Law {
     Law::Breakpoints(
@@ -40,7 +41,7 @@ pub fn modulation_shaper(points: &[(f32, f32, f32)]) -> Law {
                 let direction = points
                     .get(i + 1)
                     .map_or(1.0, |next| if next.1 < y { -1.0 } else { 1.0 });
-                (x, y, 17.0 * curve * direction)
+                (x, y, 16.0 * curve * direction)
             })
             .collect(),
     )
@@ -50,7 +51,7 @@ pub fn modulation_shaper(points: &[(f32, f32, f32)]) -> Law {
 mod tests {
     use super::*;
 
-    /// The normalized bipolar mapping agrees with the binary at MIDI endpoints and midpoint.
+    /// The normalized bipolar mapping agrees with native endpoints and midpoint.
     #[test]
     fn bipolar_curve_maps_normalized_endpoints_and_midpoint() {
         for (x, expected) in [(0.0, -1.0), (0.5, 0.0), (1.0, 1.0)] {
