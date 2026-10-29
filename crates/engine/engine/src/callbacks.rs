@@ -227,14 +227,18 @@ impl Engine {
     }
 
     /// Runs the release callbacks of the slots that see `note`'s release,
-    /// from the slot that played it; whether one ignored it (which stops it
+    /// from the slot that played it (after it, unless it
+    /// [hears its own](crate::ScriptPlan::hears_own_releases)); whether one ignored it (which stops it
     /// reaching the slots after).
     pub(crate) fn release_callbacks(&mut self, note: NoteRef) -> bool {
         let plan = Arc::clone(&self.plan);
-        let first = self
-            .notes
-            .get(note)
-            .map_or(0, |n| usize::from(n.first.saturating_sub(1)));
+        let first = self.notes.get(note).map_or(0, |n| {
+            let player = n.first.checked_sub(1);
+            let hears = player
+                .and_then(|p| plan.scripts.get(usize::from(p)))
+                .is_none_or(|s| s.hears_own_releases);
+            usize::from(if hears { player.unwrap_or(0) } else { n.first })
+        });
         for (slot, script) in (0u8..).zip(&plan.scripts).skip(first) {
             if let Some(entry) = script.callbacks.release
                 && self

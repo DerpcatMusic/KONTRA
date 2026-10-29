@@ -1460,6 +1460,24 @@ fn a_uvi_note_sounds_only_when_the_script_posts_it() {
     assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3);
 }
 
+/// A UVI script's own gated note ends without reaching its `onRelease`
+/// (Augmented Orchestra's arpeggiator: a step's gate on the held key once
+/// released every layer's held note and stopped the arpeggio).
+#[test]
+fn a_uvi_scripts_own_note_ending_does_not_run_its_release() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = "local held
+        function onNote(e) held = playNote(e.note, 100) playNote(e.note, 100, 10) end
+        function onRelease(e) releaseVoice(held) end";
+    let mut e = lua_engine(&mut store, source);
+    level(&mut e, &[on(60)]);
+    let after_gate = level(&mut e, &[]);
+    assert!((after_gate - 0.5).abs() < 1e-3, "{after_gate}");
+    // The key-up still reaches it.
+    level(&mut e, &[off(60)]);
+    assert_eq!(level(&mut e, &[]), 0.0);
+}
+
 #[test]
 fn uvi_waits_and_spawned_coroutines_land_on_time() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
