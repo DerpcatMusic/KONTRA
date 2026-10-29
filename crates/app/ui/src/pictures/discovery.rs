@@ -12,15 +12,27 @@ pub(super) fn candidates() -> Vec<PathBuf> {
         return vec![PathBuf::from(path)];
     }
     let mut roots = Vec::new();
+    let mut direct = Vec::new();
     if cfg!(target_os = "windows") {
+        if let Some(programs) = std::env::var_os("ProgramFiles") {
+            let programs = PathBuf::from(programs).join("Native Instruments");
+            direct.push(programs.join("Kontakt 8/Kontakt 8.exe"));
+            direct.push(programs.join("Kontakt 7/Kontakt 7.exe"));
+        }
+        if let Some(common) = std::env::var_os("CommonProgramFiles") {
+            direct.push(
+                PathBuf::from(common)
+                    .join("VST3/Kontakt 8.vst3/Contents/x86_64-win/Kontakt 8.vst3"),
+            );
+        }
         if let Some(mut drive) = std::env::var_os("SystemDrive") {
             drive.push("\\");
             roots.push(PathBuf::from(drive));
         }
     } else if cfg!(target_os = "macos") {
-        return vec![PathBuf::from(
-            "/Applications/Native Instruments/Kontakt 8/Kontakt 8.app/Contents/MacOS/Kontakt 8",
-        )];
+        return ["8", "7"].into_iter().map(|version| PathBuf::from(format!(
+            "/Applications/Native Instruments/Kontakt {version}/Kontakt {version}.app/Contents/MacOS/Kontakt {version}"
+        ))).filter(|path| path.is_file()).collect();
     } else {
         if let Some(prefix) = std::env::var_os("WINEPREFIX") {
             roots.push(PathBuf::from(prefix).join("drive_c"));
@@ -54,9 +66,13 @@ pub(super) fn candidates() -> Vec<PathBuf> {
             }
         }
     }
-    roots
+    direct
         .into_iter()
-        .flat_map(|root| paths(&root).collect::<Vec<_>>())
+        .chain(
+            roots
+                .into_iter()
+                .flat_map(|root| paths(&root).collect::<Vec<_>>()),
+        )
         .filter(|path| path.is_file())
         .collect()
 }
