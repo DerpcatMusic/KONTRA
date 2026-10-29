@@ -292,6 +292,12 @@ fn scale(r: f32, m: f32) -> f32 {
 /// A cell connection's clamped ratio and mapper table (empty: none). None
 /// for an inverted, additive or modulated connection or an integer mapper.
 fn cell_law(connection: Node) -> Option<(f32, Vec<f32>)> {
+    let result = cell_law_value(connection);
+    super::provenance::record("uvi.matrix_cell.v1", connection, &(), &result);
+    result
+}
+
+fn cell_law_value(connection: Node) -> Option<(f32, Vec<f32>)> {
     if flag(connection, "Inverted")
         || flag(connection, "ConnectionMode")
         || children(connection).next().is_some()
