@@ -1616,6 +1616,7 @@ fn a_script_loads_an_effect_type_into_a_slot() {
     let ty = |id, effect| ir::SlotType {
         id,
         subtype: false,
+        reads: id * 10,
         effect,
         laws: Vec::new().into(),
     };
@@ -1626,11 +1627,14 @@ fn a_script_loads_an_effect_type_into_a_slot() {
         dry: 0.0,
     };
     plan.slot_shapes.types = vec![ty(0, None), ty(7, Some(effect))];
+    plan.inserts.push(None);
+    plan.slot_shapes.subtypes = vec![(ir::RackAt::Inserts, 1, 90)];
     let script = kontra_ksp::compile(
         "on init
             declare $a
             declare $b
             $a := set_engine_par($ENGINE_PAR_EFFECT_TYPE, 7, -1, 0, 1)
+            message(get_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, -1, 0, 1) & \" \" & get_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, -1, 1, 1))
         end on
         on note
             $b := set_engine_par($ENGINE_PAR_EFFECT_TYPE, 0, -1, 0, 1)
@@ -1643,13 +1647,15 @@ fn a_script_loads_an_effect_type_into_a_slot() {
     .unwrap();
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // The loaded type's subtype, and slot 1's saved one.
+    assert_eq!(e.last_message(), "70 90");
     // The high-pass loaded in init holds the DC back.
     assert!(level(&mut e, &[on(60)]).abs() < 1e-3);
     let mut requests = Vec::new();
     e.drain_requests(|r| requests.push(r));
     assert_eq!(requests.len(), 1);
     assert!(level(&mut e, &[]).abs() < 1e-3, "nothing until installed");
-    assert_eq!(e.last_message(), "");
+    assert_eq!(e.last_message(), "70 90");
     let old = e.install(Prepared::new(requests[0], RATE));
     assert!(old.request().effect.is_some(), "the high-pass comes back");
     assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);

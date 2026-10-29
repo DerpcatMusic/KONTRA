@@ -120,10 +120,11 @@ fn rack(
                         field,
                         law,
                     }));
-                if let Some((_, 0x18, kind)) = &effect
-                    && crate::laws::switches(*kind)
-                {
-                    laws.shape_slots.push((*rack_at, slot));
+                if let Some((_, 0x18, kind)) = &effect {
+                    laws.subtypes.push((*rack_at, slot, *kind));
+                    if crate::laws::switches(*kind) {
+                        laws.shape_slots.push((*rack_at, slot));
+                    }
                 }
             }
             if effect.is_none() {
@@ -513,6 +514,8 @@ pub(crate) struct Slots {
     pub laws: Vec<ir::SlotLaw>,
     /// Filter slots that may switch to [`crate::laws::filter_shapes`].
     pub shape_slots: Vec<(ir::RackAt, u8)>,
+    /// Filter slots and the subtype each was saved with.
+    pub subtypes: Vec<(ir::RackAt, u8, i32)>,
 }
 
 pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut Notes) -> Racks {
