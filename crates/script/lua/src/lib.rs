@@ -18,6 +18,7 @@ use mlua::thread::ThreadStatus;
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread, Value, Variadic};
 
 pub mod alloc;
+mod literal;
 
 #[global_allocator]
 static ROUTED: alloc::Routed = alloc::Routed;
@@ -241,7 +242,10 @@ fn state(
         let text = found
             .get(&key)
             .ok_or_else(|| mlua::Error::runtime(format!("module {name} not found")))?;
-        let value: Value = lua.load(text.as_str()).set_name(&name).call(())?;
+        let value = match literal::read(lua, text) {
+            Some(value) => value,
+            None => lua.load(text.as_str()).set_name(&name).call(())?,
+        };
         let value = if value.is_nil() {
             Value::Boolean(true)
         } else {

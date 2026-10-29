@@ -3,9 +3,13 @@
 //! (`loadSample` from `onLoad`); the caller runs the script once and hands
 //! back the samples it loaded, which go on their oscillators' zones here.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use kontra_format::Notes;
 use kontra_ir as ir;
 
-use super::{Library, Translator};
+use super::{Library, lookup, sample_entry};
 
 /// A sample a script puts on an oscillator as the program loads: the engine
 /// group of the oscillator's keygroup, the oscillator's slot there, the path
@@ -18,9 +22,30 @@ pub struct Swap {
     pub root: Option<u8>,
 }
 
-impl<L: Library> Translator<'_, '_, L> {
-    /// Puts the samples each script loads on the zones of their oscillators.
-    pub(super) fn swap_samples(&mut self, swaps: &dyn Fn(&ir::Script) -> Vec<Swap>) {
+/// A program translated but for its scripts' load pass: the model and what
+/// the pass needs to put samples on it, without the program's document (a
+/// big program's DOM would otherwise stay resident while the pass builds a
+/// whole script state).
+pub(crate) struct Unfinished<'a, L> {
+    pub(super) program_dir: &'a str,
+    pub(super) library: &'a L,
+    pub(super) out: ir::Instrument,
+    pub(super) notes: Notes,
+    pub(super) samples: HashMap<(PathBuf, u64), usize>,
+    pub(super) lookups: HashMap<String, Result<ir::Sample, String>>,
+    pub(super) script_dirs: Vec<String>,
+}
+
+impl<L: Library> Unfinished<'_, L> {
+    /// Runs each script's load through `swaps`, puts the samples it loads on
+    /// the zones of their oscillators, and closes the diagnostics.
+    pub(crate) fn finish(mut self, swaps: &dyn Fn(&ir::Script) -> Vec<Swap>) -> ir::Instrument {
+        self.swap_samples(swaps);
+        self.out.diagnostics = self.notes.finish();
+        self.out
+    }
+
+    fn swap_samples(&mut self, swaps: &dyn Fn(&ir::Script) -> Vec<Swap>) {
         let runs: Vec<(String, Vec<Swap>)> = self
             .out
             .scripts
@@ -30,7 +55,9 @@ impl<L: Library> Translator<'_, '_, L> {
             .collect();
         for (dir, list) in runs {
             for swap in list {
-                let sample = match self.sample(&format!("{dir}/{}", swap.path)) {
+                let path = format!("{dir}/{}", swap.path);
+                let sample = match lookup(&mut self.lookups, self.library, self.program_dir, &path)
+                {
                     Ok(sample) => sample,
                     Err(e) => {
                         self.notes.add(ir::Impact::Broken, "script sample", e);
@@ -38,7 +65,7 @@ impl<L: Library> Translator<'_, '_, L> {
                     }
                 };
                 let frames = sample.frames;
-                let index = self.sample_index(sample);
+                let index = sample_entry(&mut self.samples, &mut self.out.samples, sample);
                 let Some(group) = self.out.groups.get_mut(swap.group as usize) else {
                     continue;
                 };
