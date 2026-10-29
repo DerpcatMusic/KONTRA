@@ -31,7 +31,9 @@ reviews:
         - Audio-thread code (render, process, voice, dsp, engine, stream cursors): flag any allocation, lock (Mutex/RwLock),
           syscall, logging, unbounded loop, or panic path (unwrap/expect/index/slice/divide-by-zero). These are dropouts.
         - Flag new `#[path]`, `#[allow(...)]` without a reason comment, `cfg(test)` hooks inside production functions,
-          vendor names (Kontakt, UVI, NI) outside `crates/format/**`, `crates/script/**` and `crates/base/law`, and bool flags where an enum fits.
+          vendor names (Kontakt, UVI, NI) below the format translators, i.e. in `crates/model/**`, `crates/engine/**`,
+          `crates/dsp/**` or `crates/base/**` other than `crates/base/law` (README rule 2; `crates/app/**`, `plugin/` and
+          `tools/` sit above the translators and may name vendors), and bool flags where an enum fits.
         - KISS/YAGNI: a second implementation of an existing DSP class, a trait with one impl, or config for a constant is a defect
           unless the PR cites a measurement that needs it.
         - Moves must be pure moves; behaviour changes belong in a separate PR.
