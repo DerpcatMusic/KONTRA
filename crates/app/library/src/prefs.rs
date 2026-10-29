@@ -20,6 +20,11 @@ pub struct Prefs {
     pub starred: Vec<PathBuf>,
     /// Instruments loaded lately, newest first.
     pub recent: Vec<PathBuf>,
+    /// Where a part the browser adds listens and plays: the lowest MIDI
+    /// channel no other part has (Kontakt's auto-increment), else every
+    /// channel; its own output pair, else the main one.
+    pub next_channel: bool,
+    pub own_output: bool,
 }
 
 impl Prefs {

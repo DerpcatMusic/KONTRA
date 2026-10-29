@@ -40,6 +40,9 @@ pub struct App {
     /// first line is its summary.
     pub report: Vec<String>,
     pub midi_thru: bool,
+    /// Where new parts listen and play ([`Action::NewParts`]).
+    pub next_channel: bool,
+    pub own_output: bool,
     /// The build, for About: its version and source revision.
     pub build: String,
     /// The folders the browser scans.
@@ -346,6 +349,11 @@ pub enum Action {
     MidiThru(bool),
     Star(usize, bool),
     AddFolder,
+    /// New parts take the next free MIDI channel; their own output pair.
+    NewParts {
+        next_channel: bool,
+        own_output: bool,
+    },
     /// Stop scanning the browser's folder `n`.
     RemoveFolder(usize),
     Scale(f64),

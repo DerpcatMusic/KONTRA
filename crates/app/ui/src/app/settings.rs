@@ -58,6 +58,29 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if rescan.changed {
         out.push(Action::Refresh);
     }
+    let on = |b: bool| if b { "On" } else { "Off" };
+    let next = latch(
+        ui,
+        "settings-next-channel",
+        on(app.next_channel),
+        "A new part listens on the lowest MIDI channel no other part has",
+        app.next_channel,
+    );
+    let own = latch(
+        ui,
+        "settings-own-output",
+        on(app.own_output),
+        "A new part plays into its own output pair",
+        app.own_output,
+    );
+    if next.changed || own.changed {
+        app.next_channel ^= next.changed;
+        app.own_output ^= own.changed;
+        out.push(Action::NewParts {
+            next_channel: app.next_channel,
+            own_output: app.own_output,
+        });
+    }
     let mut folders = Vec::new();
     for (n, f) in app.folders.iter().enumerate() {
         let remove = icon_button(
@@ -92,6 +115,8 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         rule(),
         section("MIDI / Output"),
         line("MIDI thru", thru.el),
+        line("New parts: next free channel", next.el),
+        line("New parts: own output", own.el),
     ]
     .gap(SPACE)
 }

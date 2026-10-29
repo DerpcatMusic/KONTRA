@@ -128,6 +128,12 @@ impl Browser {
         self.rescan();
     }
 
+    /// Where new parts listen and play ([`Prefs::next_channel`]).
+    pub fn new_parts(&mut self, next_channel: bool, own_output: bool) {
+        (self.prefs.next_channel, self.prefs.own_output) = (next_channel, own_output);
+        self.changed();
+    }
+
     /// Stops scanning folder `n`, and scans again.
     pub fn remove_root(&mut self, n: usize) {
         if n < self.prefs.roots.len() {

@@ -242,9 +242,12 @@ impl BackgroundTask for Tick {
             let loads = r.loads();
             match r {
                 Request::Load { part, path } => {
-                    let loaded = match part.or_else(|| rack.free()) {
-                        Some(part) => rack.load(part, &path),
-                        None => Err("every part is in use".into()),
+                    let loaded = match (part, rack.free()) {
+                        (Some(part), _) => rack.load(part, &path),
+                        (None, Some(new)) => {
+                            (rack.load(new, &path)).map(|()| editor::place(rack, browser, new))
+                        }
+                        (None, None) => Err("every part is in use".into()),
                     };
                     if let Err(e) = loaded {
                         report.push(format!("{}: {e}", path.display()));
