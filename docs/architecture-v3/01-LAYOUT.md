@@ -34,7 +34,8 @@ crates/
 │   ├── stream/        kontra-stream     sample store, preload law, page cache, I/O service      ~4k
 │   ├── voice/         kontra-voice      source cursor, resampling, loops, voice chain run       ~4k
 │   ├── vm/            kontra-vm         bytecode, interpreter, coroutine scheduler, HostApi     ~6k
-│   └── engine/        kontra-engine     Engine: queue, ledger, allocator, buses, prepare, render ~8k
+│   ├── engine/        kontra-engine     Engine: queue, ledger, allocator, buses, render          ~8k
+│   └── prepare/       kontra-prepare    IR → Plan off the audio thread, sample preloads          ~0.5k
 ├── script/                       L5: script front ends (compile to kontra-vm)
 │   ├── ksp/           kontra-ksp        lexer, parser, sema, lowering, KSP UI mapping           ~10k
 │   └── lua/           kontra-lua        Luau host binding to HostApi, UVIScript surface         ~6k

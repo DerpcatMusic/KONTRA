@@ -262,7 +262,7 @@ impl Engine {
             .position(|(n, l, _)| n.eq_ignore_ascii_case(stem) && *l == law);
         let index = match known {
             Some(j) => j,
-            None => match crate::prepare::response(sample, &law, self.rate) {
+            None => match crate::response(sample, &law, self.rate) {
                 Ok(r) => {
                     self.loaded.push((stem.to_lowercase(), law, r));
                     self.loaded.len() - 1
@@ -282,7 +282,7 @@ impl Engine {
 
 /// A response file's name as [`Plan::responses`] keys it (there in
 /// lowercase): without its folder and extension.
-pub(crate) fn stem(name: &str) -> &str {
+pub fn stem(name: &str) -> &str {
     let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
     file.rsplit_once('.').map_or(file, |(s, _)| s)
 }
