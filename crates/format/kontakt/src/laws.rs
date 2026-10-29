@@ -330,11 +330,22 @@ pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Optio
 pub(crate) const SWITCHABLE: [std::ops::RangeInclusive<i32>; 4] =
     [100..=108, 70..=71, 30..=41, 50..=62];
 
-/// The shapes filter `kind` may switch to.
-pub(crate) fn filter_shapes(kind: i32) -> impl Iterator<Item = (i32, ir::Filter)> {
-    let any = SWITCHABLE.iter().any(|f| f.contains(&kind));
-    let ids = SWITCHABLE.into_iter().flatten().filter(move |_| any);
-    ids.filter_map(|id| filter_at(id, 0.5, 0.5, 0.0).map(|f| (id, f)))
+/// Whether a filter of `kind` may switch to [`filter_shapes`].
+pub(crate) fn switches(kind: i32) -> bool {
+    SWITCHABLE.iter().any(|f| f.contains(&kind))
+}
+
+/// The shapes a [`switches`] filter may switch to.
+pub(crate) fn filter_shapes() -> Vec<ir::SlotShape> {
+    let ids = SWITCHABLE.into_iter().flatten();
+    ids.filter_map(|id| {
+        Some(ir::SlotShape {
+            id,
+            filter: filter_at(id, 0.5, 0.5, 0.0)?,
+            laws: crate::script_knobs::shape_laws(id),
+        })
+    })
+    .collect()
 }
 
 fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Filter> {
@@ -740,11 +751,9 @@ mod tests {
 
     #[test]
     fn a_filter_switches_to_any_modern_type_with_its_laws() {
-        let ids = |kind| filter_shapes(kind).map(|(id, _)| id).collect::<Vec<_>>();
-        let all: Vec<i32> = SWITCHABLE.into_iter().flatten().collect();
-        assert_eq!(ids(103), all);
-        assert_eq!(ids(52), all);
-        assert!(ids(6).is_empty());
+        let ids: Vec<i32> = filter_shapes().iter().map(|s| s.id).collect();
+        assert_eq!(ids, SWITCHABLE.into_iter().flatten().collect::<Vec<_>>());
+        assert!(switches(103) && switches(52) && !switches(6));
         let law = |kind, field| {
             let laws = crate::script_knobs::shape_laws(kind);
             laws.iter()
@@ -761,7 +770,8 @@ mod tests {
             let want = filter(kind, 0.375, 0.5, 0.0).unwrap().hz;
             assert!((hz / want - 1.0).abs() < 1e-3, "{kind}: {hz} vs {want}");
         }
-        let (_, notch) = filter_shapes(31).find(|(id, _)| *id == 41).unwrap();
+        let shapes = filter_shapes();
+        let notch = &shapes.iter().find(|s| s.id == 41).unwrap().filter;
         assert_eq!(notch.ladder, Some(ir::Ladder::ZeroDelay(12)));
     }
 

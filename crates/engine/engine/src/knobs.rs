@@ -118,9 +118,10 @@ impl Engine {
 
     /// The shape the addressed slot last switched to, when it brings laws.
     fn shape_on<'p>(&self, plan: &'p Plan, at: ir::RackAt, slot: i32) -> Option<&'p ir::SlotShape> {
-        let mut on = plan.slot_shapes.iter().zip(&self.behaviour.shapes);
-        on.find(|(s, on)| **on && s.at == at && i32::from(s.slot) == slot)
-            .map(|(s, _)| s)
+        let n = shape_slot(plan, at, slot)?;
+        let on = self.behaviour.shapes.get(n).copied().flatten()?;
+        plan.slot_shapes
+            .get(usize::from(on))
             .filter(|s| !s.laws.is_empty())
     }
 
@@ -132,9 +133,11 @@ impl Engine {
         let Some(at) = rack_at(group, generic) else {
             return false;
         };
-        let here = |s: &ir::SlotShape| s.at == at && i32::from(s.slot) == slot;
         let shapes = &plan.slot_shapes;
-        let Some(n) = shapes.iter().position(|s| here(s) && s.id == id) else {
+        let (Some(at_slot), Some(n)) = (
+            shape_slot(&plan, at, slot),
+            shapes.iter().position(|s| s.id == id),
+        ) else {
             return false;
         };
         let knobs = [ir::SlotKnob::Cutoff, ir::SlotKnob::Resonance];
@@ -147,10 +150,8 @@ impl Engine {
         if let Some(shape) = shapes.get(n) {
             shape.apply(f);
         }
-        for (k, (on, s)) in self.behaviour.shapes.iter_mut().zip(shapes).enumerate() {
-            if here(s) {
-                *on = k == n;
-            }
+        if let Some(on) = self.behaviour.shapes.get_mut(at_slot) {
+            *on = u16::try_from(n).ok();
         }
         for (knob, x) in knobs.into_iter().zip(settings) {
             if let Some(x) = x {
@@ -231,6 +232,12 @@ fn laws<'p>(
         .filter(move |l| !has && l.at == at && i32::from(l.slot) == slot && l.knob == knob);
     let own = own.map(|(_, f, l)| (*f, l));
     own.chain(slots.map(|l| (l.field, &l.law)))
+}
+
+/// The index of slot `slot` of `at` in [`Plan::shape_slots`].
+fn shape_slot(plan: &Plan, at: ir::RackAt, slot: i32) -> Option<usize> {
+    let here = |&(a, s): &(ir::RackAt, u8)| a == at && i32::from(s) == slot;
+    plan.shape_slots.iter().position(here)
 }
 
 /// The 0..=1 setting `law` maps to `y`, by bisection; the laws are monotonic.

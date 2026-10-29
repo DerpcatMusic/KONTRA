@@ -750,9 +750,8 @@ fn effect_subtype_switches_a_filter_to_its_slots_shape() {
             ir::Law::Linear { lo: 0.0, hi: 1.0 },
         ),
     ];
+    plan.shape_slots = vec![(ir::RackAt::Group(0), 0)];
     plan.slot_shapes = vec![ir::SlotShape {
-        at: ir::RackAt::Group(0),
-        slot: 0,
         id: 103,
         filter: ir::Filter {
             pass: ir::Pass::Low,
@@ -839,9 +838,8 @@ fn effect_subtype_keeps_the_cutoff_setting_through_the_new_law() {
             hi: 2000.0,
         },
     );
+    plan.shape_slots = vec![(ir::RackAt::Group(0), 0)];
     plan.slot_shapes = vec![ir::SlotShape {
-        at: ir::RackAt::Group(0),
-        slot: 0,
         id: 70,
         filter,
         laws: vec![own].into(),

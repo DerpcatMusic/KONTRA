@@ -102,6 +102,7 @@ pub fn prepare(
     plan.main.clone_from(&instrument.main);
     plan.slot_laws.clone_from(&instrument.slot_laws);
     plan.slot_shapes.clone_from(&instrument.slot_shapes);
+    plan.shape_slots.clone_from(&instrument.shape_slots);
     plan.impulses = instrument
         .impulses
         .iter()

@@ -304,13 +304,12 @@ pub struct SlotLaw {
     pub law: crate::Law,
 }
 
-/// Shape `id` a script may switch the filter in slot `slot` of `at` to:
-/// its pass, stages, ladder taps and ranges come from `filter`. The
-/// resonance moves to the new last stage, the others stay critically damped.
+/// Shape `id` a script may switch a filter slot
+/// ([`crate::Instrument::shape_slots`]) to: its pass, stages, ladder taps and
+/// ranges come from `filter`. The resonance moves to the new last stage, the
+/// others stay critically damped.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SlotShape {
-    pub at: RackAt,
-    pub slot: u8,
     pub id: i32,
     pub filter: crate::Filter,
     /// The shape's own laws for the slot's knobs; empty when the slot's hold.

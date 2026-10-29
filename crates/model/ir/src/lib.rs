@@ -49,8 +49,10 @@ pub struct Instrument {
     pub responses: Vec<(String, usize)>,
     /// How [`KnobTarget::Slot`] knobs move the effects they address.
     pub slot_laws: Vec<SlotLaw>,
-    /// The filter shapes a script may switch slots to.
+    /// The filter shapes a script may switch [`Self::shape_slots`] to.
     pub slot_shapes: Vec<SlotShape>,
+    /// The filter slots a script may switch to [`Self::slot_shapes`].
+    pub shape_slots: Vec<(RackAt, u8)>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -71,6 +73,7 @@ impl Instrument {
         responses: Vec::new(),
         slot_laws: Vec::new(),
         slot_shapes: Vec::new(),
+        shape_slots: Vec::new(),
         diagnostics: Vec::new(),
     };
 }
