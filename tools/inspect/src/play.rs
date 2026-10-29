@@ -156,7 +156,13 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
                 "route":super::routes::route(r.kind), "last_applied_amount":r.amount})
                 })
                 .collect();
-            trace.push(json!({"frame":at, "cc1":engine.controller(1), "cc11":engine.controller(11), "voices":voices, "eq_routes":routes, "all_routes":all_routes, "bus_routes":bus_routes}));
+            let voice_effect_targets: Vec<_> = engine.inspect_voice_effects().iter().map(|v| json!({
+                "voice_slot":v.voice_slot, "zone":v.zone, "insert":v.insert, "target":format!("{:?}",v.target),
+            })).collect();
+            let shared_effects: Vec<_> = engine.inspect_shared_effects().iter().map(|v| json!({
+                "scope":v.scope, "owner":v.owner, "slot":v.slot, "effect":format!("{:?}",v.effect),
+            })).collect();
+            trace.push(json!({"frame":at, "cc1":engine.controller(1), "cc11":engine.controller(11), "voices":voices, "eq_routes":routes, "all_routes":all_routes, "bus_routes":bus_routes, "voice_effect_targets":voice_effect_targets, "shared_effects":shared_effects}));
             if at >= next_tail && at >= last_off {
                 next_tail += u64::from(RATE);
             }

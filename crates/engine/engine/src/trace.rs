@@ -11,6 +11,9 @@ pub enum TraceEvent {
         slot: u8,
         kind: u8,
         id: u32,
+        note_id: Option<i32>,
+        controller: u8,
+        control: i32,
         resume: bool,
     },
     /// A script called an engine action; extra integer and all text arguments follow.
@@ -100,6 +103,9 @@ mod tests {
             slot: 0,
             kind: 1,
             id: 1,
+            note_id: None,
+            controller: 0,
+            control: 0,
             resume: false,
         };
         trace.push(event);

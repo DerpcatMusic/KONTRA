@@ -350,3 +350,113 @@ impl Engine {
         })
     }
 }
+
+/// Target parameters for one per-voice effect, sampled between spans.
+#[derive(Clone, Copy, Debug)]
+pub struct VoiceEffectObservation {
+    pub voice_slot: usize,
+    pub zone: usize,
+    pub insert: u8,
+    pub target: kontra_ir::EffectKind,
+}
+
+impl Engine {
+    /// Effect targets calculated by the same functions the voice rack uses.
+    pub fn inspect_voice_effects(&self) -> Vec<VoiceEffectObservation> {
+        let mut out = Vec::new();
+        for (voice_slot, slot) in self
+            .voices
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.voice.is_active())
+        {
+            let Some((zone, note)) = self
+                .plan
+                .zones
+                .get(slot.zone)
+                .zip(slot.note.and_then(|n| self.notes.get(n)))
+            else {
+                continue;
+            };
+            let age = crate::modulators::Age {
+                warp: slot.warp,
+                chaos: slot.chaos.map(|c| c[3]),
+                ..self.age(slot.started, slot.released_at)
+            };
+            for unit in &slot.rack {
+                let Some(mut target) = self.voice_effect(zone, unit.insert, note, age) else {
+                    continue;
+                };
+                match &mut target {
+                    kontra_ir::EffectKind::Eq(bells) => {
+                        if let Some(v) = self.voice_bells(zone, unit.insert, note, age) {
+                            *bells = v;
+                        }
+                    }
+                    kontra_ir::EffectKind::Filter(f) => {
+                        if let Some(kontra_ir::EffectKind::Filter(base)) = self
+                            .groups
+                            .get(zone.group as usize)
+                            .and_then(|g| g.inserts.get(usize::from(unit.insert)))
+                            .and_then(Option::as_ref)
+                            .map(|e| e.kind)
+                        {
+                            *f = base;
+                        }
+                        if let Some((hz, damping)) = self.voice_filter(zone, unit.insert, note, age)
+                        {
+                            f.hz = hz;
+                            f.damping = damping;
+                        }
+                    }
+                    _ => {}
+                }
+                out.push(VoiceEffectObservation {
+                    voice_slot,
+                    zone: slot.zone,
+                    insert: unit.insert,
+                    target,
+                });
+            }
+        }
+        out
+    }
+}
+
+/// An instrument, main, send or bus effect after its last route update.
+#[derive(Clone, Copy, Debug)]
+pub struct SharedEffectObservation {
+    pub scope: &'static str,
+    pub owner: usize,
+    pub slot: usize,
+    pub effect: Option<kontra_ir::Effect>,
+}
+
+impl Engine {
+    /// Snapshot shared rack settings, including the last applied bus routes.
+    pub fn inspect_shared_effects(&self) -> Vec<SharedEffectObservation> {
+        let mut out = Vec::new();
+        let mut add = |scope, owner, rack: &crate::racks::Rack| {
+            out.extend(
+                rack.inspect_slots()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(slot, effect)| SharedEffectObservation {
+                        scope,
+                        owner,
+                        slot,
+                        effect,
+                    }),
+            );
+        };
+        add("instrument", 0, &self.rack);
+        add("main", 0, &self.main);
+        for (owner, rack) in self.sends.iter().enumerate() {
+            add("send", owner, rack);
+        }
+        for (owner, bus) in self.buses.iter().enumerate() {
+            add("bus", owner, &bus.rack);
+        }
+        out
+    }
+}

@@ -46,6 +46,9 @@ impl Engine {
                         slot,
                         kind: running.callback_type,
                         id: running.callback_id,
+                        note_id: running.event.map(crate::NoteRef::event_id),
+                        controller: running.controller,
+                        control: running.ui,
                         resume: false,
                     });
                 }
@@ -171,6 +174,9 @@ impl Engine {
                     slot,
                     kind: self.running.callback_type,
                     id: self.running.callback_id,
+                    note_id: self.running.event.map(crate::NoteRef::event_id),
+                    controller: self.running.controller,
+                    control: self.running.ui,
                     resume: true,
                 });
             }
