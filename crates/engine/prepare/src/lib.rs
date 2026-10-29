@@ -366,23 +366,21 @@ fn zone(
                     length: *length,
                     random: *random,
                 }),
+                ir::StartRule::Cycle { random } => {
+                    let slots: std::collections::BTreeSet<u16> =
+                        group.zones.iter().map(|z| z.slot).collect();
+                    let count = |n: usize| u8::try_from(n).unwrap_or(u8::MAX);
+                    Atom::RoundRobin(RoundRobin {
+                        counter: RrCounter::Group,
+                        position: count(slots.range(..z.slot).count()),
+                        length: count(slots.len()),
+                        random: *random,
+                    })
+                }
             };
             Some((*join, atom))
         })
         .collect();
-    if let Some(cycle) = group.cycle {
-        let slots: std::collections::BTreeSet<u16> = group.zones.iter().map(|z| z.slot).collect();
-        let count = |n: usize| u8::try_from(n).unwrap_or(u8::MAX);
-        out.start.push((
-            ir::Join::And,
-            Atom::RoundRobin(RoundRobin {
-                counter: RrCounter::Group,
-                position: count(slots.range(..z.slot).count()),
-                length: count(slots.len()),
-                random: cycle == ir::Cycle::Random,
-            }),
-        ));
-    }
     out.group = group_id;
     out.off_by = group.off_by.and_then(|g| u32::try_from(g).ok());
     out.voice_group = group.voice_group.and_then(|g| u32::try_from(g).ok());

@@ -120,11 +120,14 @@ fn a_prepared_instrument_plays_its_keyswitched_groups() {
 
 #[test]
 fn a_cycling_group_plays_one_slot_per_note_in_turn() {
-    let slotted = |sample, slot| ir::Zone { slot, ..zone(sample) };
+    let slotted = |sample, slot| ir::Zone {
+        slot,
+        ..zone(sample)
+    };
     let instrument = ir::Instrument {
         samples: vec![sample("a", 100), sample("b", 200), sample("c", 400)],
         groups: vec![ir::Group {
-            cycle: Some(ir::Cycle::InTurn),
+            start: vec![(ir::Join::And, ir::StartRule::Cycle { random: false })],
             zones: vec![slotted(0, 0), slotted(1, 3), slotted(2, 5)],
             ..ir::Group::DEFAULT
         }],

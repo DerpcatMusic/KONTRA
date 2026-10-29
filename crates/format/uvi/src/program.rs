@@ -250,7 +250,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 grain: GRAIN_BYTES,
             }),
             inserts: self.voice_slots(kg)?,
-            cycle: self.cycle(kg),
+            start: routing::cycle(kg).into_iter().collect(),
             ..ir::Group::DEFAULT
         };
         // Per-voice gain and shelves, else a one-pole filter, slot by slot.
@@ -364,15 +364,8 @@ impl<L: Library> Translator<'_, '_, L> {
             return;
         }
         let source = modulation::group_source(group, r.source, r.timed);
-        // An LFO read through a table (a gain's `factor`) scales the same way.
-        let lfo = match source {
-            ir::Source::Shaped(n) => group.shapers.get(usize::from(n)).map(|t| t.source),
-            s => Some(s),
-        };
-        if let Some(of @ ir::Source::Lfo(_)) = lfo
-            && connection.attribute("Destination") != Some("Depth")
-        {
-            self.depth_scales(group, connection, of);
+        if connection.attribute("Destination") != Some("Depth") {
+            self.depth_scales(group, connection, source);
         }
         let kind = kind(source, r.unit * r.ratio);
         let alike = group.mods.iter().find_map(|m| {
@@ -394,31 +387,16 @@ impl<L: Library> Translator<'_, '_, L> {
         self.routed.insert(connection.id(), key);
     }
 
-    /// A keygroup's TriggerRule: every oscillator (0), one per note in turn
-    /// (1, "Cycle") or at random (2, "Random Cycle"); the names follow the
-    /// keygroup's trigger parameters in UVIWorkstation's string table
-    /// (0x141e1ef00, beside TriggerSync's "Immediate"/"Next Beat"/"Next Bar").
-    fn cycle(&mut self, kg: Node) -> Option<ir::Cycle> {
-        match kg.attribute("TriggerRule").unwrap_or("0") {
-            "0" => None,
-            "1" => Some(ir::Cycle::InTurn),
-            "2" => Some(ir::Cycle::Random),
-            other => {
-                self.notes.add(ir::Impact::Audible, "trigger rule", other);
-                None
-            }
-        }
-    }
-
     /// Keygroup modes this crate does not carry, each reported with its value.
     fn keygroup_effects_and_modes(&mut self, kg: Node) {
         for (name, feature) in [
             ("ExclusiveGroup", "exclusive group"),
+            ("TriggerRule", "trigger rule"),
             ("TriggerMode", "trigger mode"),
             ("LatchTrigger", "latch trigger"),
         ] {
             let value = kg.attribute(name).unwrap_or("0");
-            if value != "0" {
+            if value != "0" && (name != "TriggerRule" || routing::cycle(kg).is_none()) {
                 self.notes.add(ir::Impact::Audible, feature, value);
             }
         }
@@ -668,7 +646,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 && !placing
             {
                 self.notes.add(
-                    self.impact(node),
+                    routing::impact(self.program, node),
                     &format!("insert {tag}"),
                     node.attribute("Name").unwrap_or_default(),
                 );
@@ -728,17 +706,8 @@ impl<L: Library> Translator<'_, '_, L> {
             } else {
                 "modulation"
             };
-            let impact = self.impact(connection);
+            let impact = routing::impact(self.program, connection);
             self.notes.add(impact, &format!("{feature} {dest}"), source);
-        }
-    }
-
-    /// Audible, or latent behind an aux closed at load ([`routing::closed`]).
-    fn impact(&self, node: Node) -> ir::Impact {
-        if routing::closed(self.program, node) {
-            ir::Impact::Latent
-        } else {
-            ir::Impact::Audible
         }
     }
 }

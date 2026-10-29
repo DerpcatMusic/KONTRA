@@ -1201,7 +1201,15 @@ fn an_effect_on_an_aux_no_send_reaches_is_latent() {
         let xml = program(gain);
         let doc = roxmltree::Document::parse(&xml).unwrap();
         let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
-        let comb = out.diagnostics.iter().find(|d| d.feature == "insert CombFilter");
-        assert_eq!(comb.map(|d| d.impact), Some(impact), "{gain}: {:?}", out.diagnostics);
+        let comb = out
+            .diagnostics
+            .iter()
+            .find(|d| d.feature == "insert CombFilter");
+        assert_eq!(
+            comb.map(|d| d.impact),
+            Some(impact),
+            "{gain}: {:?}",
+            out.diagnostics
+        );
     }
 }
