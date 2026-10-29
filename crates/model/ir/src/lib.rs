@@ -122,6 +122,8 @@ pub struct Normalize {
     pub max_gain: f32,
     pub floor: f32,
     pub channels: EnergyChannels,
+    /// Apply after converting the response to the host rate.
+    pub after_resample: bool,
 }
 
 /// How stereo channel energies are combined when normalizing an impulse.
