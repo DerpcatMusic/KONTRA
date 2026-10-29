@@ -394,6 +394,13 @@ fn words_el(
         },
         |s| s.align,
     );
+    // Kontakt sets a label's words 7 px in from its side (oracle: Areia
+    // 6.7, Pacific 7.7 px at 150%).
+    let inset = if matches!(w.kind, Kind::Label) {
+        7.
+    } else {
+        2.
+    };
     let line = size * 1.25;
     let top = text_y.map_or(((height - line) / 2.).max(0.), |y| f64::from(y) * scale);
     // Kontakt's factory faces run narrower than ours: a label sized for
@@ -419,7 +426,7 @@ fn words_el(
     })
     .w(width)
     .h(line)
-    .pad((2. * scale, 0.))
+    .pad((inset * scale, 0.))
     .at(0., top);
     stack([el]).w(width).h(height).radius(0.).clip()
 }
