@@ -1387,35 +1387,33 @@ done = ["Gap log generated from diagnostics."]
 
 [[task]]
 id = "P8.1"
-title = "Protocol channels replace Shared's 54 fields"
+title = "kontra-protocol: commands in, publications and retirements out"
 phase = 8
 lane = "app"
-size = "L"
+size = "M"
 agent = "worker"
-draft = true
 deps = ["P7.7"]
-owns = ["@plugin", "@v2rs", "crates/model/protocol/**"]
+owns = ["crates/model/protocol/**"]
 docs = ["07-APP.md#2-the-three-channels"]
-goal = "Commands in, publications out, retirements out; no Mutex reachable from audio."
-steps = ["Replace each Shared field family with a protocol channel; delete control_tick drains."]
-gate = ["build-slot cargo test --lib plugin", "build-slot cargo test -p kontra-probe"]
-done = ["Shared struct gone."]
+goal = "The three channels of 07-APP.md §2 as plain types over lock-free rings and latest-value cells; no Mutex reachable from audio. v2's Shared is not touched: it is deleted with the rest of v2 at P8.6."
+steps = ["Command ring (SPSC, fixed capacity, Err(Full) on a full ring), latest-value Publications, Retired ring.", "Test: a full ring refuses without blocking; a slow reader sees only the latest value."]
+gate = ["build-slot cargo test -p kontra-protocol"]
+done = ["API matches 07-APP.md §2 or the doc is updated in the same PR."]
 
 [[task]]
 id = "P8.2"
-title = "app/host from src/sound, src/plugin.rs (non-UI), routing, support"
+title = "kontra-host rack: parts, load off the audio thread, routing, master, panic"
 phase = 8
 lane = "app"
 size = "L"
 agent = "worker"
-draft = true
 deps = ["P8.1"]
-owns = ["crates/app/host/**", "src/sound/**", "src/routing.rs", "src/support/**", "src/support.rs", "@plugin", "@v2rs"]
+owns = ["crates/app/host/**"]
 docs = ["07-APP.md#4-host-apphost"]
-goal = "Host crate owns rack, load pipeline, state."
-steps = ["Move with re-exports, then delete the re-exports when the plugin uses kontra-host directly."]
-gate = ["build-slot cargo check --workspace"]
-done = ["src/sound gone."]
+goal = "A Rack of N parts, each one loaded instrument and its kontra Engine. Loads build off the audio thread and swap in through a Command; MIDI routes per part channel; parts sum to their output pair with master volume; panic ends every note."
+steps = ["Rack (control side) + RackAudio (audio side) joined by kontra-protocol.", "Test: a load swaps in while audio keeps running; channel routing; panic."]
+gate = ["build-slot cargo test -p kontra-host"]
+done = ["The rack plays a real instrument headless through the protocol."]
 
 [[task]]
 id = "P8.3"
@@ -1426,12 +1424,12 @@ size = "M"
 agent = "worker"
 draft = true
 deps = ["P8.1"]
-owns = ["crates/app/library/**", "crates/app/align/**", "src/library*", "src/library/**", "src/artwork.rs", "src/creator*", "src/creator/**", "src/timing.rs"]
-docs = ["01-LAYOUT.md#5-current--new-mapping"]
-goal = "Library scanning and auto-align as their own crates."
-steps = ["Moves with re-exports."]
+owns = ["crates/app/library/**", "crates/app/align/**"]
+docs = ["07-APP.md#6-auto-align-appalign-feature-align", "01-LAYOUT.md#5-current--new-mapping"]
+goal = "Library scanning, browser data, presets, favourites and auto-align (latency compensation) as their own crates, written for v3 (v2's src/library* is prior art)."
+steps = ["Scan + catalog types the UI browser reads; align measures attack delay per part."]
 gate = ["build-slot cargo test -p kontra-library -p kontra-align"]
-done = ["Moves only."]
+done = ["The plugin fills the browser and reports latency from these crates."]
 
 [[task]]
 id = "P8.4"
@@ -1440,42 +1438,40 @@ phase = 8
 lane = "app"
 size = "L"
 agent = "worker"
-draft = true
-deps = ["P8.2"]
-owns = ["crates/app/ui/**", "src/ui/**"]
+deps = ["P8.1"]
+owns = ["crates/app/ui/**"]
 docs = ["07-APP.md#5-ui-boundary"]
-goal = "UI crate never depends on engine/vm/dsp; engine tests never build GPU crates."
-steps = ["Move src/ui; replace engine reads with publications; trim v2_tests.rs per 10-TESTING.md §4."]
+goal = "kontra-ui draws the v2-look editor and libraries' Original views from data the host fills; it never depends on engine/vm/dsp."
+steps = ["Editor views, pictures, damage repaint; the plugin feeds App and carries out Actions."]
 gate = ["build-slot cargo xtask deps-check"]
 done = ["deps-check forbidden table enforced as errors."]
 
 [[task]]
 id = "P8.5"
-title = "plugin/ thin shell; tools moves; final DAG enforcement"
+title = "plugin/: the v3 plugin shell (KONTRA v3) beside v2"
 phase = 8
 lane = "app"
 size = "M"
 agent = "worker"
-draft = true
-deps = ["P8.3", "P8.4"]
-owns = ["plugin/**", "src/**", "tools/**", "crates/sampler-perf/**", "crates/sampler-dspbench/**", "crates/sampler-parity/**", "@manifests", "@lockfile", "@ci"]
+deps = ["P8.2", "P8.4"]
+owns = ["plugin/**", "@manifests", "@lockfile"]
 docs = ["07-APP.md#3-plugin-shell-plugin-15k", "01-LAYOUT.md#2-dependency-dag"]
-goal = "Root package is the ~1.5k plugin shell; every README target measured."
-steps = ["Move entry + moose glue; move perf/dspbench/parity/create_library into tools; make deps-check target DAG an error."]
-gate = ["build-slot cargo xtask deps-check", "build-slot cargo xtask size --max-crate 8000 --max-file 800"]
-done = ["README targets table filled with measured values."]
+goal = "A new package plugin/ (kontra-plugin, bundle name \"KONTRA v3\") over kontra-host + kontra-ui through moose: CLAP/VST3 entry, events at sample offsets, parameters, latency, the editor, and state recall (parts, presets, script persistent values, control values, UI state) tested headless on real instruments. v2 (the root kontakto package) keeps shipping beside it until P8.6."
+steps = ["Shell: ports, events → rack, master param, latency, editor.", "State: one versioned serde struct; recall tests on ANALOG, Una Corda, Shreddage, Conflux; re-save after load is idempotent."]
+gate = ["build-slot cargo test -p kontra-plugin"]
+done = ["The v3 plugin loads, plays, saves and reloads real instruments headless."]
 
 [[task]]
 id = "P8.6"
-title = "Gate G8: v3 complete, merge to main"
+title = "Gate G8: v3 complete, v2 deleted, merge to main"
 phase = 8
 lane = "coordinator"
 size = "S"
 agent = "coordinator"
 deps = ["P8.5"]
-owns = ["docs/architecture-v3/gates/G8.md"]
+owns = ["docs/architecture-v3/gates/G8.md", "src/**", "crates/sampler-*/**", "@plugin", "@v2rs", "@manifests", "@lockfile"]
 docs = ["README.md#targets", "11-MIGRATION.md#phase-8-app-and-plugin"]
 goal = "Release gate: v1 UX parity, all contracts, surveys, CPU, memory; user decides the merge to main."
-steps = ["Full gate run per the v2 release gate rules; write G8.md; open v3 → main PR for the user."]
+steps = ["Full gate run per the v2 release gate rules; write G8.md.", "With the user's release gate: delete v2 (root kontakto package: src/sound, src/ui, src/plugin*, the sampler-* crates), make plugin/ the shipped KONTRA bundle, make the deps-check target DAG an error; open v3 → main PR for the user."]
 gate = ["G8.md"]
 done = ["User approves."]
