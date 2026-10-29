@@ -102,3 +102,21 @@ Artifacts (MIDI, v3 and native WAVs, logs) are written under
 `/data/dev/workspace/PluginArtifacts/inspect-oracle`; override the root with
 `KONTRA_INSPECT_ORACLE_DIR`. To locate the existing oracle scripts outside a
 checkout, set `KONTRA_ORACLE_DIR`.
+
+`route_events` records the actual contribution evaluated by the engine at a
+note onset, a controller-triggered voice update, or the first timed span after
+controller changes. Units identify gain multipliers, pan, semitones, filter and
+EQ contributions, effect amounts, LFO rate/phase, sample/loop fractions and
+resulting envelope frame counts. They are recorded before route combining,
+smoothing and final clamping; the existing voice and effect snapshots show
+resulting state. Bus routes report their last applied amount separately.
+
+`direct_controller_source` means the route source reads that controller;
+`controller_can_affect` also includes the engine's structural intensity and
+LFO rate/phase dependencies. Script callback IDs link evaluations made while a
+controller callback was executing. Arbitrary dependencies hidden in script
+state and an individual route's instantaneous smoothed value remain unavailable.
+For a timed update the controller identifies one received since the previous
+span; multiple CCs may therefore appear for the same evaluated value. Buffer
+capacity is fixed before processing; any dropped record makes the report
+incomplete. With the trace feature off these hooks and their state are absent.

@@ -130,28 +130,6 @@ pub fn route(kind: ModKind) -> Value {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn controller_to_eq_retains_its_target_and_units() {
-        let out = route(ModKind::EqGain {
-            source: Source::Controller(1),
-            insert: 2,
-            band: 1,
-            depth_db: 3.0,
-            limit_db: 12.0,
-            span_db: 12.0,
-        });
-        assert_eq!(out["source"]["cc"], 1);
-        assert_eq!(out["target"], "eq_gain");
-        assert_eq!(out["insert"], 2);
-        assert_eq!(out["band"], 1);
-        assert_eq!(out["depth_db"], 3.0);
-    }
-}
-
 /// Concise controller-driven contribution ranges from exact engine records.
 pub fn summary(events: &[Value]) -> String {
     use std::collections::BTreeMap;
@@ -194,4 +172,26 @@ pub fn summary(events: &[Value]) -> String {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controller_to_eq_retains_its_target_and_units() {
+        let out = route(ModKind::EqGain {
+            source: Source::Controller(1),
+            insert: 2,
+            band: 1,
+            depth_db: 3.0,
+            limit_db: 12.0,
+            span_db: 12.0,
+        });
+        assert_eq!(out["source"]["cc"], 1);
+        assert_eq!(out["target"], "eq_gain");
+        assert_eq!(out["insert"], 2);
+        assert_eq!(out["band"], 1);
+        assert_eq!(out["depth_db"], 3.0);
+    }
 }

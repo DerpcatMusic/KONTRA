@@ -2307,3 +2307,68 @@ fn onset_route_trace_records_sample_and_envelope_values() {
     );
     assert_eq!(engine.trace_dropped(), 0);
 }
+
+#[cfg(feature = "trace")]
+#[test]
+fn script_controller_callback_links_indirect_route_evaluations() {
+    use kontra_engine::{
+        Action, Callbacks, Controls, EnginePars, Op, Program, RouteUnit, ScriptPlan,
+    };
+    use kontra_vm::Returns;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "velocity".into(),
+        slot: 2,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::Volume {
+            source: ir::Source::Velocity,
+            intensity: 1.0,
+            curve: ir::Curve::Depth { power: 1 },
+            tau_ms: 0.0,
+        },
+    }];
+    plan.scripts.push(ScriptPlan {
+        program: Program {
+            code: vec![
+                Op::Int(0),
+                Op::Int(-6000),
+                Op::Host {
+                    action: Action::GroupVolume,
+                    ints: 2,
+                    texts: 0,
+                    returns: Returns::Nothing,
+                },
+                Op::Exit,
+            ],
+            max_stack: 4,
+            ..Program::default()
+        },
+        callbacks: Callbacks {
+            controller: Some(0),
+            ..Callbacks::default()
+        },
+        coroutines: 4,
+        data: vec![],
+        restore: vec![],
+        restore_texts: vec![],
+        controls: Controls::default(),
+        engine_pars: EnginePars::default(),
+        reverb_laws: std::array::from_fn(|_| ir::Law::Linear { lo: 0.0, hi: 1.0 }),
+        reverb_networks: vec![],
+        knobs: vec![],
+        foreign: None,
+        hears_own_releases: false,
+        held_release_ends_children: false,
+    });
+    let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 256);
+    level(&mut engine, &[on(60, 1.0)]);
+    engine.clear_trace();
+    level(&mut engine, &[cc(1, 64)]);
+    assert!(engine.trace_route_values().any(|v| v.controller == 1
+        && v.script_callback.is_some()
+        && !v.direct_controller_source
+        && !v.controller_can_affect
+        && matches!(v.unit, RouteUnit::GainMultiplier)));
+}
