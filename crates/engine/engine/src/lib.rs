@@ -51,6 +51,7 @@ pub use kontra_effects::response;
 pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
+pub use kontra_script_ui::FIRST_FONT;
 pub use kontra_script_ui::{Key, KeyRange, MenuItem, Page};
 pub use kontra_time::SampleTime;
 pub use kontra_vm::{Action, Faults, Foreign, Op, Program, Text, Vm, WidgetLook};
@@ -63,7 +64,7 @@ pub use plan::{
 pub use queue::Timed;
 pub use script::{Callbacks, Controls, LookPars, ScriptPlan};
 pub use transport::Play;
-pub use ui::{ControlLook, FIRST_FONT};
+pub use ui::ControlLook;
 
 use behaviour::Behaviour;
 use buses::BusState;
@@ -196,7 +197,6 @@ pub struct Engine {
     ui: kontra_script_ui::Store,
     /// The picture names scripts asked a font id for, by script slot, in
     /// the order asked.
-    fonts: Vec<(u8, Text)>,
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
     /// The routes each script `#key` names.
@@ -319,7 +319,6 @@ impl Engine {
             called: vec![0; kontra_vm::Action::all().len()].into(),
             control_pars,
             ui,
-            fonts: Vec::with_capacity(64),
             ids: callbacks::Ids::START,
             instrument: Level {
                 gain: 10f32.powf(out.volume_db / 20.0),

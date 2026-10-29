@@ -63,6 +63,42 @@ impl Engine {
         }
     }
 
+    /// The cell of step `at` of the int array control `id` when `par` is its value.
+    fn table_step(&self, id: i32, par: i32, at: i32) -> Option<usize> {
+        let (n, cell) = self.control(id, par)?;
+        let len = *self.script()?.controls.steps.get(n)?;
+        let at = u32::try_from(at).ok().filter(|&at| at < len)?;
+        Some(cell? + at as usize)
+    }
+
+    /// `set_control_par_arr`: a table's step, else index 0 as `set_control_par`.
+    pub(crate) fn set_control_par_at(
+        &mut self,
+        cells: &mut [i64],
+        id: i32,
+        par: i32,
+        value: i32,
+        at: i32,
+    ) {
+        match self.table_step(id, par, at) {
+            Some(c) => {
+                if let Some(v) = cells.get_mut(c) {
+                    *v = i64::from(value);
+                }
+            }
+            None if at == 0 => self.set_control_par(cells, id, par, value),
+            None => {}
+        }
+    }
+
+    /// `get_control_par_arr`: a table's step, else the parameter itself.
+    pub(crate) fn control_par_at(&mut self, cells: &[i64], id: i32, par: i32, at: i32) -> i32 {
+        match self.table_step(id, par, at) {
+            Some(c) => cells.get(c).map_or(0, |&v| v as i32),
+            None => self.control_par(cells, id, par),
+        }
+    }
+
     // ponytail: a parameter first set after init allocates its slot on the
     // audio thread; preallocate per control if a script does that per note.
     pub(crate) fn set_control_par(&mut self, cells: &mut [i64], id: i32, par: i32, value: i32) {

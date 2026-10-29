@@ -387,6 +387,49 @@ fn a_saved_text_array_reads_back_mid_init_and_fonts_get_ids() {
     assert_eq!(e.font(0, 27), Some("font_b"));
 }
 
+/// `set_control_par_arr` writes a table's step and `get_control_par_arr`
+/// reads it back (Shreddage draws its velocity curve so); a step past the
+/// table writes nothing.
+#[test]
+fn a_script_draws_a_table_step_by_step() {
+    let source = "on init
+            declare ui_table %t[4] (2, 2, 100)
+            set_control_par_arr(get_ui_id(%t), $CONTROL_PAR_VALUE, 42, 2)
+            set_control_par_arr(get_ui_id(%t), $CONTROL_PAR_VALUE, 9, 4)
+            declare $back
+            $back := get_control_par_arr(get_ui_id(%t), $CONTROL_PAR_VALUE, 2)
+        end on
+        on note
+            message(%t[2] & \" \" & $back & \" \" & %t[3])
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "42 42 0");
+}
+
+/// An output menu lists the engine's outputs by Kontakt's names.
+#[test]
+fn output_channels_have_kontakts_names() {
+    let source = "on init
+            declare @names
+            @names := output_channel_name(0) & \"|\" & output_channel_name(1) & \"|\" & output_channel_name(-1)
+        end on
+        on note
+            message(@names)
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "Out 1|Out 2|");
+}
+
 /// A new menu holds its first entry's value (Kontakt 8.13 oracle: entries
 /// 10, 20, 30 read 10; Mono & Glide's "Off" -1 reads -1).
 #[test]
