@@ -29,6 +29,10 @@ pub struct SavedPart {
     pub pan: f32,
     pub solo: bool,
     pub mute: bool,
+    /// By instrument script, its saved values (Kontakt's `"<name> <value…>"`);
+    /// empty for a part saved before scripts were.
+    #[serde(default)]
+    pub scripts: Vec<Vec<String>>,
 }
 
 impl Saved {
@@ -73,6 +77,7 @@ impl Rack {
                     pan: p.mix.pan,
                     solo: p.solo,
                     mute: p.mute,
+                    scripts: self.saved_scripts(part),
                 })
             })
             .collect();
@@ -90,7 +95,7 @@ impl Rack {
         }
         let mut failed = Vec::new();
         for p in &saved.parts {
-            match self.load(p.part, &p.path) {
+            match self.load_saved(p.part, &p.path, &p.scripts) {
                 Ok(()) => {
                     self.set_mix(
                         p.part,

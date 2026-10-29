@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kontra_engine::{Engine, SampleTime, Timed, ir};
+
+use crate::persist::Capture;
 pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression};
 use kontra_protocol::{Latest, MAX_PARTS, Meters, Ring, Stats};
 pub use kontra_stream::{Store, StoreConfig};
@@ -55,12 +57,22 @@ pub enum Command {
     Tempo(f32),
     /// End every note on every part at once.
     Panic,
+    /// Read a part's persistent script cells and send them back.
+    Capture(Box<Capture>),
+    /// The user moved control `id` of script `slot` to `value`.
+    Control {
+        part: usize,
+        slot: u8,
+        id: i32,
+        value: i64,
+    },
 }
 
 /// The channels between [`Rack`] and [`RackAudio`].
 pub struct Channels {
     pub commands: Ring<Command>,
     pub retired: Ring<Box<Engine>>,
+    pub captured: Ring<Box<Capture>>,
     pub meters: Latest<Meters>,
     pub stats: Latest<Stats>,
 }
@@ -76,6 +88,19 @@ pub struct Part {
     pub mix: Mix,
     pub solo: bool,
     pub mute: bool,
+    pub script: ScriptState,
+}
+
+/// What the rack keeps to save a part's scripts.
+#[derive(Default)]
+pub struct ScriptState {
+    /// By script slot, its persistent variables.
+    pub vars: Vec<crate::persist::Vars>,
+    /// By instrument script, the saved values it loaded with.
+    pub loaded: Vec<Vec<String>>,
+    generation: u64,
+    latest: Option<Box<Capture>>,
+    asked: bool,
 }
 
 /// The control side: loads parts, sets the mix and asks the audio side.
@@ -86,6 +111,9 @@ pub struct Rack {
     parts: Vec<Option<Part>>,
     /// Commands the ring refused, sent again on the next [`Rack::tick`].
     pending: std::collections::VecDeque<Command>,
+    /// Counts installs, so a capture of a replaced engine is not taken for
+    /// its successor's.
+    generation: u64,
 }
 
 impl Rack {
@@ -95,6 +123,7 @@ impl Rack {
         let channels = Arc::new(Channels {
             commands: Ring::new(256),
             retired: Ring::new(64),
+            captured: Ring::new(2 * MAX_PARTS),
             meters: Latest::new(),
             stats: Latest::new(),
         });
@@ -105,6 +134,7 @@ impl Rack {
             store,
             parts: (0..MAX_PARTS).map(|_| None).collect(),
             pending: std::collections::VecDeque::new(),
+            generation: 0,
         };
         (rack, audio)
     }
@@ -139,6 +169,38 @@ impl Rack {
         self.load_ir(part, crate::instrument::read(path)?, Some(path.to_owned()))
     }
 
+    /// [`Rack::load`], with each instrument script's saved values replaced
+    /// by `scripts` (as [`Rack::saved_scripts`] gave them).
+    ///
+    /// # Errors
+    /// As [`Rack::load`].
+    pub fn load_saved(
+        &mut self,
+        part: usize,
+        path: &Path,
+        scripts: &[Vec<String>],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut instrument = crate::instrument::read(path)?;
+        for (script, saved) in instrument.scripts.iter_mut().zip(scripts) {
+            script.saved.clone_from(saved);
+        }
+        self.load_ir(part, instrument, Some(path.to_owned()))
+    }
+
+    /// By instrument script, the saved values that bring `part`'s scripts
+    /// back as they are now (as of the last [`Rack::tick`]).
+    #[must_use]
+    pub fn saved_scripts(&self, part: usize) -> Vec<Vec<String>> {
+        let Some(Some(p)) = self.parts.get(part) else {
+            return Vec::new();
+        };
+        let s = &p.script;
+        match &s.latest {
+            Some(capture) => crate::persist::saved(&s.loaded, &s.vars, capture),
+            None => s.loaded.clone(),
+        }
+    }
+
     /// [`Rack::load`] for an instrument already read into the IR.
     ///
     /// # Errors
@@ -152,6 +214,7 @@ impl Rack {
         if part >= MAX_PARTS {
             return Err(format!("part {part} is past the rack's {MAX_PARTS}").into());
         }
+        let saved = instrument.scripts.iter().map(|s| s.saved.clone()).collect();
         let loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
         let engine = Engine::new(Arc::new(loaded.plan), self.store.client(), self.rate);
         let part_info = Part {
@@ -162,6 +225,11 @@ impl Rack {
             mix: self.mix_of(part),
             solo: false,
             mute: false,
+            script: ScriptState {
+                vars: loaded.persist,
+                loaded: saved,
+                ..ScriptState::default()
+            },
         };
         self.install(part, Box::new(engine), part_info);
         Ok(())
@@ -172,6 +240,9 @@ impl Rack {
         let Some(slot) = self.parts.get_mut(part) else {
             return;
         };
+        self.generation += 1;
+        let mut info = info;
+        info.script.generation = self.generation;
         let (solo, mute, mix) = slot.as_ref().map_or((info.solo, info.mute, info.mix), |p| {
             (p.solo, p.mute, p.mix)
         });
@@ -228,10 +299,44 @@ impl Rack {
         self.send(Command::Panic);
     }
 
+    /// Moves control `id` of `part`'s script `slot` to `value`, as the user
+    /// turning it: its callbacks run on the audio thread.
+    pub fn set_control(&mut self, part: usize, slot: u8, id: i32, value: i64) {
+        self.send(Command::Control {
+            part,
+            slot,
+            id,
+            value,
+        });
+    }
+
     /// Frees what the audio thread let go of and resends refused commands.
     /// Call it from the control thread now and then.
     pub fn tick(&mut self) {
         while self.channels.retired.recv().is_some() {}
+        while let Some(c) = self.channels.captured.recv() {
+            if let Some(Some(p)) = self.parts.get_mut(c.part)
+                && p.script.generation == c.generation
+            {
+                p.script.asked = false;
+                p.script.latest = Some(c);
+            }
+        }
+        // Ask again for every part with persistent values: what a save
+        // writes is at most one tick old.
+        let ask: Vec<_> = (self.parts.iter_mut().enumerate())
+            .filter_map(|(n, p)| {
+                let s = &mut p.as_mut()?.script;
+                if s.asked || s.vars.iter().all(|v| v.vars.is_empty()) {
+                    return None;
+                }
+                s.asked = true;
+                Some(Capture::new(n, s.generation, &s.vars))
+            })
+            .collect();
+        for c in ask {
+            self.send(Command::Capture(c));
+        }
         while let Some(c) = self.pending.pop_front() {
             if let Err(c) = self.channels.commands.send(c) {
                 self.pending.push_front(c);
@@ -431,7 +536,7 @@ impl RackAudio {
     fn apply_commands(&mut self) {
         // An install retires the engine it replaces; with no room to retire
         // it, the command waits for the next block rather than free here.
-        while !self.channels.retired.is_full() {
+        while !self.channels.retired.is_full() && !self.channels.captured.is_full() {
             let Some(command) = self.channels.commands.recv() else {
                 break;
             };
@@ -456,6 +561,25 @@ impl RackAudio {
                 Command::Master(gain) => self.master = gain,
                 Command::Tempo(bpm) => self.tempo = Some(bpm),
                 Command::Panic => self.panic = true,
+                Command::Capture(mut c) => {
+                    if let Some(Some(p)) = self.parts.get(c.part) {
+                        c.read(&p.engine);
+                    }
+                    if let Err(c) = self.channels.captured.send(c) {
+                        self.dropped += 1;
+                        drop(c);
+                    }
+                }
+                Command::Control {
+                    part,
+                    slot,
+                    id,
+                    value,
+                } => {
+                    if let Some(Some(p)) = self.parts.get_mut(part) {
+                        p.engine.set_control(slot, id, value);
+                    }
+                }
             }
         }
     }
