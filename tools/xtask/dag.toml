@@ -58,6 +58,7 @@ sampler-native = ["sampler-core", "sampler-ir", "sampler-kontakt", "sampler-ksp"
 sampler-perf = ["sampler-core", "sampler-ir", "sampler-kontakt", "sampler-midi", "sampler-uvi"]
 sampler-uvi = ["sampler-core", "sampler-ir", "sampler-kontakt", "sampler-midi", "sampler-parity", "sampler-script", "kontra-ui-model"]
 ui-shots = ["kontra-engine", "kontra-host", "kontra-stream", "kontra-ui", "kontra-ui-model", "mui"]
+kontra-window = ["kontra-host", "kontra-plugin"]
 
 # Target DAG (01-LAYOUT.md §2). Not enforced yet: P8.6 turns these into errors.
 # Parenthesised / optional arrows in §2 are listed. Names of crates not yet created (or moved later) are the target names.

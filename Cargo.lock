@@ -2665,6 +2665,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kontra-window"
+version = "0.0.0"
+dependencies = [
+ "kontra-host",
+ "kontra-plugin",
+ "moose",
+ "moose-standalone",
+]
+
+[[package]]
 name = "kurbo"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

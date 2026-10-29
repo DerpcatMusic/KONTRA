@@ -47,6 +47,8 @@ fn the_tree_carries_what_init_set() {
             set_control_par(get_ui_id($cutoff), $CONTROL_PAR_PICTURE_STATE, 3)
             $cutoff := 700
             declare ui_label $title (1, 1)
+            set_control_par_str(get_ui_id($title), $CONTROL_PAR_PICTURE, \"plate\")
+            set_control_par(get_ui_id($title), $CONTROL_PAR_PICTURE_STATE, 2)
             set_text($title, \"Hello\")
             add_text_line($title, \"World\")
             hide_part($title, $HIDE_PART_BG)
@@ -84,13 +86,15 @@ fn the_tree_carries_what_init_set() {
         40.,
         "child rects are panel-relative"
     );
-    assert_eq!(knob.images[0].frame, Some(3));
+    // A knob's value picks its frame; PICTURE_STATE is a label's.
+    assert_eq!(knob.images[0].frame, None);
     assert_eq!(
         ui.assets[knob.images[0].asset.0].path,
         "Resources/pictures/knob.png"
     );
 
     let label = widget(&ui, "$title");
+    assert_eq!(label.images[0].frame, Some(2));
     assert_eq!(label.text, "Hello\nWorld");
     assert!(label.hide.background && !label.hide.title);
     assert!(widget(&ui, "$gone").hidden);

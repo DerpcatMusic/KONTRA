@@ -271,8 +271,16 @@ pub(super) fn widget(
             _ => ui::Role::Background,
         };
         let mut image = ui::ImageUse::new(asset, role);
+        // KSP: PICTURE_STATE picks the frame of a label, table, value edit
+        // or XY pad only. Any other control's value picks its frame; read for
+        // all, an unset 0 pinned every knob and switch to its first frame.
+        let fixed = matches!(
+            kind,
+            ControlKind::Label | ControlKind::Table | ControlKind::ValueEdit | ControlKind::Xy
+        );
         image.frame = p
             .int("$CONTROL_PAR_PICTURE_STATE")
+            .filter(|_| fixed)
             .and_then(|f| u32::try_from(f).ok());
         w.images.push(image);
     }
