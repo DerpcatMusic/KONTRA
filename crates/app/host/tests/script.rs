@@ -2865,3 +2865,22 @@ fn a_shorter_fade_out_ends_a_stolen_voice_sooner() {
     assert!((out[63][0] - 0.5).abs() < 1e-3, "{}", out[63][0]);
     assert_eq!(e.stats().voices_stolen, 1);
 }
+
+#[test]
+fn get_folder_factory_returns_prepared_path_or_empty() {
+    let script = kontra_ksp::compile(
+        "on init\n message(get_folder($GET_FOLDER_FACTORY_DIR))\nend on",
+        &[],
+    )
+    .unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    for (folder, expected) in [(Some("/factory/"), "/factory/"), (None, "")] {
+        let mut plan = Plan::new(vec![], 4);
+        let mut script_plan = kontra_host::script::plan(&script, &[], &[]);
+        script_plan.factory_folder = folder.map(|f| kontra_engine::Text::from_str_cut(f).0);
+        plan.scripts.push(script_plan);
+        let engine = Engine::new(Arc::new(plan), store.client(), RATE);
+        assert_eq!(engine.last_message(), expected);
+        assert_eq!(engine.stats().actions_unhandled, 0);
+    }
+}
