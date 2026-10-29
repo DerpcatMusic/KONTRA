@@ -293,7 +293,7 @@ impl Engine {
                 // Pre-fader sends, the fader's glide, post-fader sends, the pan.
                 for post in [false, true] {
                     if post {
-                        bus.fader.matrix(mix, [[bus.gain, 0.0], [0.0, bus.gain]]);
+                        bus.fader.process(mix, bus.gain, [1.0; 2]);
                     }
                     for send in bus.sends.iter().filter(|s| s.post_fader == post) {
                         let Some(to) = send.bus.checked_sub(at + 1).and_then(|k| later.get_mut(k))
@@ -306,7 +306,8 @@ impl Engine {
                         }
                     }
                 }
-                bus.balance.matrix(mix, effects::balance(bus.pan));
+                let [[l, _], [_, r]] = effects::balance(bus.pan);
+                bus.balance.process(mix, 1.0, [l, r]);
             }
             if !bus.to_main {
                 continue;
@@ -327,5 +328,8 @@ impl Engine {
             }
         }
         self.main.process(span, &mut [], tempo);
+        let (gain, pan) = (self.instrument.gain, self.instrument.pan);
+        let [[l, _], [_, r]] = effects::balance(pan);
+        self.output.process(span, gain, [l, r]);
     }
 }

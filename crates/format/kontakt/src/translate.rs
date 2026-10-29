@@ -36,12 +36,16 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     let mut out = ir::Instrument {
         name: params.name.clone(),
         voices: 256,
+        output: ir::Output {
+            volume_db: db(params.volume),
+            pan: params.pan.clamp(-1.0, 1.0),
+            controllers: output_controllers(program.version(), &program.0.private_data),
+            ..ir::Output::UNITY
+        },
         ..ir::Instrument::DEFAULT
     };
-    // Instrument volume, pan and tune apply to every group.
+    // The instrument's tune applies to every group.
     let base = Base {
-        volume_db: db(params.volume),
-        pan: params.pan,
         tune: semitones(params.tune) + f64::from(params.transpose),
         preload: params.dfd_channel_preload_size,
     };
@@ -229,9 +233,30 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     Ok(out)
 }
 
+/// "Accept standard controllers for Volume and Pan" (MIDI CC 7 and 10; the
+/// program's private byte 4) and the top of the CC 7 range in dB (an i32 at
+/// byte 6): Kontakt 8.13's instrument options saved and read back, program
+/// versions 0xa8..=0xb5 (400 corpus instruments: all on, top 0 dB). Earlier
+/// versions keep those defaults. Measured: CC 7 sets the fader to
+/// `top·(v/127)³` in place of the saved volume, CC 10 the balance
+/// `(v − 63.5)/63.5`; a script's `ignore_controller` stops both.
+fn output_controllers(version: u16, private: &[u8]) -> Option<ir::OutputControllers> {
+    let saved = (version >= 0xa8).then(|| {
+        let top = private.get(6..10).and_then(|b| b.try_into().ok());
+        (private.get(4).copied(), top.map(i32::from_le_bytes))
+    });
+    let (on, top_db) = match saved {
+        Some((Some(on), Some(top))) => (on != 0, top as f32),
+        _ => (true, 0.0),
+    };
+    on.then_some(ir::OutputControllers {
+        volume: 7,
+        pan: 10,
+        top_db,
+    })
+}
+
 struct Base {
-    volume_db: f32,
-    pan: f32,
     tune: f64,
     /// The program's DFD preload, bytes per channel.
     preload: i32,
@@ -367,8 +392,8 @@ fn translate_group(
     let v = group.params()?;
     let mut out = ir::Group {
         name: v.name.clone(),
-        volume_db: db(v.volume) + base.volume_db,
-        pan: (v.pan + base.pan).clamp(-1.0, 1.0),
+        volume_db: db(v.volume),
+        pan: v.pan.clamp(-1.0, 1.0),
         tune: semitones(v.tune) + base.tune,
         keytrack: if v.key_tracking { 1.0 } else { 0.0 },
         trigger: if v.release_trigger {

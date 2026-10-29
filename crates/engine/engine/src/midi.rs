@@ -50,6 +50,7 @@ impl Engine {
             }
         }
         self.behaviour.set_cc(channel, controller, value);
+        self.output_controller(controller, value);
         let mut hits = std::mem::take(&mut self.hits);
         if controller == 64 {
             let down = value >= 64;
@@ -69,5 +70,19 @@ impl Engine {
             self.refresh_note(note, Some(controller));
         }
         self.hits = hits;
+    }
+
+    /// The output's controllers set the instrument's fader and pan.
+    fn output_controller(&mut self, cc: u8, value: u8) {
+        let Some(c) = self.plan.output.controllers else {
+            return;
+        };
+        let v = f32::from(value);
+        if cc == c.volume {
+            self.instrument.gain = 10f32.powf(c.top_db / 20.0) * (v / 127.0).powi(3);
+        }
+        if cc == c.pan {
+            self.instrument.pan = ((v - 63.5) / 63.5).clamp(-1.0, 1.0);
+        }
     }
 }
