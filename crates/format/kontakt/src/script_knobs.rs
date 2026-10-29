@@ -238,6 +238,61 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
         ("$ENGINE_PAR_LFO_TRI", LfoWeight(2), lin(-1.0, 1.0)),
         ("$ENGINE_PAR_LFO_RECT", LfoWeight(3), lin(-1.0, 1.0)),
         ("$ENGINE_PAR_LFO_RAND", LfoWeight(4), lin(-1.0, 1.0)),
+        (
+            "$ENGINE_PAR_FILTER_SHIFTB",
+            Slot(ir::SlotKnob::StageShift(1)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FILTER_SHIFTC",
+            Slot(ir::SlotKnob::StageShift(2)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FILTER_RESB",
+            Slot(ir::SlotKnob::StageResonance(1)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FILTER_RESC",
+            Slot(ir::SlotKnob::StageResonance(2)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FILTER_TYPEA",
+            Slot(ir::SlotKnob::StageMorph(0)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FILTER_TYPEB",
+            Slot(ir::SlotKnob::StageMorph(1)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FILTER_TYPEC",
+            Slot(ir::SlotKnob::StageMorph(2)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FILTER_BYPA",
+            Slot(ir::SlotKnob::StageWet(0)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FILTER_BYPB",
+            Slot(ir::SlotKnob::StageWet(1)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FILTER_BYPC",
+            Slot(ir::SlotKnob::StageWet(2)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_FILTER_GAIN",
+            Slot(ir::SlotKnob::OutputGain),
+            lin(0.0, 1.0),
+        ),
     ]
 }
 
@@ -374,7 +429,8 @@ pub(crate) fn eq_knobs(saved: &[[f32; 3]]) -> Vec<SlotKnob> {
 /// oracle probe fxdef): nothing for `$EFFECT_TYPE_NONE` (0); for
 /// `$EFFECT_TYPE_FILTER` (7) an AR LP2 (100), cutoff and resonance 0; for
 /// `$FILTER_TYPE_EQ3BAND` (24) bands at knobs .3656, .6201 and .858 (250 Hz,
-/// 1.45 kHz, 7.5 kHz), gain .5 (0 dB), bandwidth .0625 (0.5 octaves).
+/// 1.45 kHz, 7.5 kHz), gain .5 (0 dB), bandwidth .0625 (0.5 octaves); for
+/// `$FILTER_TYPE_VERSATILE` (19) [`crate::versatile::DEFAULT`].
 pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     let unit = |kind| ir::Effect {
         kind,
@@ -399,11 +455,15 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         laws,
     };
     let eq = Some(unit(ir::EffectKind::Eq(bands)));
+    let versatile = Some(unit(ir::EffectKind::Cascade(crate::versatile::cascade(
+        crate::versatile::DEFAULT,
+    ))));
     // ponytail: an empty slot's subtype readback is unmeasured; 0.
     vec![
         ty(0, false, 0, None, [].into()),
         ty(7, false, 100, filter, shape_laws(100)),
         ty(24, true, 24, eq, eq_knobs(&saved).into()),
+        ty(19, true, 19, versatile, crate::versatile::knobs().into()),
     ]
 }
 

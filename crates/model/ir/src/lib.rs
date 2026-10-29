@@ -17,8 +17,8 @@ pub use drive::{
     SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
-    Compressor, Delay, DelayTime, Detector, Formant, IDENTITY, ImpulseCuts, Limiter, Matrix,
-    Phaser, Reverb, Transient, VowelSet,
+    Cascade, CascadeStage, Compressor, Delay, DelayTime, Detector, Formant, IDENTITY, ImpulseCuts,
+    Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
 };
 pub use mods::{Blend, Factor, ModKind, Term, Transfer};
 pub use reverb::{CombNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar};
@@ -672,6 +672,8 @@ pub enum EffectKind {
     Filter(Filter),
     /// A vowel formant filter.
     Formant(Formant),
+    /// Three morphing filter stages in series.
+    Cascade(Cascade),
     /// A waveshaper.
     Shaper(Shaper),
     /// A sample-rate and bit-depth reducer.
