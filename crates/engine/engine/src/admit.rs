@@ -81,32 +81,43 @@ impl Engine {
         Some(index)
     }
 
-    /// Steals voice `index`: it fades out over `fade` frames and stops
-    /// counting toward any limit. Every limit, choke and table eviction
-    /// ends voices here.
-    pub(crate) fn steal(&mut self, index: usize, fade: u32) {
-        let Some(slot) = self.voices.get_mut(index) else {
-            return;
+    /// Fades voice `index` out over `fade` frames (a running fade ends at the
+    /// sooner of the two), after which it is free; `true` the first time only.
+    fn fade_voice(&mut self, index: usize, fade: u32) -> bool {
+        let Some(slot) = self.voices.get_mut(index).filter(|s| s.voice.is_active()) else {
+            return false;
         };
-        if !slot.voice.is_active() || slot.fading {
-            return;
-        }
-        #[cfg(feature = "trace")]
-        if let Some(trace) = &mut self.trace {
-            trace.voice(self.now.0, index, slot, crate::VoiceEvent::Steal);
-        }
         slot.voice.fade(fade);
-        slot.fading = true;
-        self.stats.voices_stolen += 1;
+        !std::mem::replace(&mut slot.fading, true)
+    }
+
+    /// Calls `act` on each voice `pick` chooses.
+    fn each_voice(&mut self, pick: impl Fn(&Slot) -> bool, mut act: impl FnMut(&mut Self, usize)) {
+        for index in 0..self.voices.len() {
+            if self.voices.get(index).is_some_and(&pick) {
+                act(self, index);
+            }
+        }
+    }
+
+    /// Fades every playing voice `pick` chooses, ended on request, not stolen.
+    pub(crate) fn fade_where(&mut self, fade: u32, pick: impl Fn(&Slot) -> bool) {
+        self.each_voice(pick, |engine, index| _ = engine.fade_voice(index, fade));
     }
 
     /// Steals every playing voice `pick` chooses.
     pub(crate) fn steal_where(&mut self, fade: u32, pick: impl Fn(&Slot) -> bool) {
-        for index in 0..self.voices.len() {
-            if self.voices.get(index).is_some_and(&pick) {
-                self.steal(index, fade);
-            }
+        self.each_voice(pick, |engine, index| engine.steal(index, fade));
+    }
+
+    /// Steals voice `index` to make room: a counted, traced [`Self::fade_voice`].
+    pub(crate) fn steal(&mut self, index: usize, fade: u32) {
+        let stolen = self.fade_voice(index, fade);
+        #[cfg(feature = "trace")]
+        if let (true, Some(trace), Some(slot)) = (stolen, &mut self.trace, self.voices.get(index)) {
+            trace.voice(self.now.0, index, slot, crate::VoiceEvent::Steal);
         }
+        self.stats.voices_stolen += u64::from(stolen);
     }
 
     /// Ends notes with no sounding voice and reports them to the host. A key

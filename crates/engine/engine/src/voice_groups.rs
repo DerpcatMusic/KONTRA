@@ -1,6 +1,5 @@
-//! Voice limits shared across groups (Kontakt's voice groups): a full group
-//! gives up a voice by its steal rule, and an exclusive set silences the
-//! other voice groups in it.
+//! Voice limits shared across groups: a full group gives up a voice by its
+//! steal rule, and an exclusive set silences the other voice groups in it.
 
 use kontra_ir as ir;
 
@@ -26,7 +25,8 @@ impl Engine {
         let Some(group) = plan.voice_groups.get(vg as usize) else {
             return;
         };
-        let fade = (group.fade_ms * self.rate as f32 / 1000.0).round().max(1.0) as u32;
+        // A stolen voice fades over its group's time, at least 1 ms.
+        let fade = (group.fade_ms.max(1.0) * self.rate as f32 / 1000.0).round() as u32;
         let voice_group = |s: &Slot| {
             (s.voice.is_active() && !s.fading)
                 .then(|| plan.zones.get(s.zone)?.voice_group)

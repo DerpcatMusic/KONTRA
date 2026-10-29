@@ -2829,3 +2829,39 @@ fn get_folder_patch_returns_prepared_directory() {
     assert_eq!(e.last_message(), "/library//library/Instruments/");
     assert_eq!(e.stats().actions_unhandled, 0);
 }
+
+/// A script's shorter `fade_out` on a voice already fading from a steal ends
+/// it sooner, and the steal still counts once.
+#[test]
+fn a_shorter_fade_out_ends_a_stolen_voice_sooner() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let script = kontra_ksp::compile(
+        "on init
+            declare $first := 0
+        end on
+        on note
+            if ($EVENT_NOTE = 60)
+                $first := $EVENT_ID
+            else
+                wait(100)
+                fade_out($first, 100, 1)
+            end if
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(zones, 1);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    // The steal alone fades over 10 ms (480 frames); the 100 µs fade ends it
+    // within the first 64 frames, leaving the new note's 0.5.
+    let mut out = vec![[0.0; 2]; 64];
+    e.process(&mut out, &[on(61)]);
+    assert!((out[63][0] - 0.5).abs() < 1e-3, "{}", out[63][0]);
+    assert_eq!(e.stats().voices_stolen, 1);
+}
