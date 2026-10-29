@@ -56,13 +56,18 @@ const ENGINE_PARS: &[(&str, EnginePar)] = {
     ]
 };
 
-/// Whether the engine understands catalog name `name` (every other one is
-/// an opaque symbol it cannot act on), for coverage reports.
+/// Whether the engine or the UI tree understands catalog name `name`
+/// (every other one is an opaque symbol nothing acts on), for coverage
+/// reports.
 #[must_use]
 pub fn understood(name: &str) -> bool {
-    name.eq_ignore_ascii_case(CONTROL_VALUE)
+    let upper = name.to_ascii_uppercase();
+    upper == CONTROL_VALUE
         || engine_par(name).is_some()
         || knob(&kontra_format_kontakt::script_knobs(), name).is_some()
+        || crate::ui::mapped(&upper)
+        || LOOK.contains(&upper.as_str())
+        || ["$CONTROL_PAR_NUM_ITEMS", "$CONTROL_PAR_SELECTED_ITEM_IDX"].contains(&upper.as_str())
 }
 
 /// The knob named `name`, as an index into `knobs`.
@@ -87,6 +92,16 @@ const CONTROL_VALUE: &str = "$CONTROL_PAR_VALUE";
 
 /// Callbacks a KSP instrument may have running or waiting at once.
 const COROUTINES: usize = 64;
+
+/// Whether the engine runs callbacks of `kind` (the ones [`plan`] wires),
+/// for coverage reports.
+#[must_use]
+pub fn runs(kind: CallbackKind) -> bool {
+    !matches!(
+        kind,
+        CallbackKind::PolyAt | CallbackKind::UiUpdate | CallbackKind::Rpn | CallbackKind::Nrpn
+    )
+}
 
 /// The engine's view of `script` with `saved` persistent values restored and
 /// the library `data` files it loads. UI metadata stays with the caller.

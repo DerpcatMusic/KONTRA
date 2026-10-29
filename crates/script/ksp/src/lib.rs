@@ -92,6 +92,26 @@ pub enum CallbackKind {
     Nrpn,
 }
 
+impl CallbackKind {
+    /// Every callback, for coverage reports.
+    pub const ALL: [Self; 14] = [
+        Self::Init,
+        Self::Note,
+        Self::Release,
+        Self::Controller,
+        Self::PolyAt,
+        Self::UiControl,
+        Self::UiControls,
+        Self::UiUpdate,
+        Self::Listener,
+        Self::PgsChanged,
+        Self::PersistenceChanged,
+        Self::AsyncComplete,
+        Self::Rpn,
+        Self::Nrpn,
+    ];
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Callback {
     pub kind: CallbackKind,

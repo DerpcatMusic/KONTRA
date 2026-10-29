@@ -179,7 +179,7 @@ const STATE_FONTS: [&str; 6] = [
 
 /// Carried, or accepted without effect: NKS properties map a control for
 /// Komplete Kontrol hardware and have no view or sound of their own.
-fn mapped(par: &str) -> bool {
+pub(crate) fn mapped(par: &str) -> bool {
     MAPPED.contains(&par)
         || STATE_FONTS.contains(&par)
         || COLORS.iter().any(|(c, _)| *c == par)
