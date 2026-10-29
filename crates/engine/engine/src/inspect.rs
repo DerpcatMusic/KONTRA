@@ -8,6 +8,8 @@ use crate::Engine;
 #[derive(Clone, Copy, Debug)]
 pub struct VoiceState {
     pub zone: usize,
+    /// Its note's script event id, 0 without a note.
+    pub id: i32,
     /// Its note's key, origin (host, child, script) and whether the note
     /// was released, the pedal holding it; None once the note is gone.
     pub key: Option<u8>,
@@ -80,6 +82,7 @@ impl Engine {
             let (stage, level) = s.voice.envelope();
             VoiceState {
                 zone: s.zone,
+                id: s.note.map_or(0, |r| r.event_id()),
                 key: note.map(|n| n.key),
                 origin: note.map(|n| match n.origin {
                     crate::ledger::Origin::Host => "host",

@@ -211,12 +211,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let z = zone.parse::<usize>().ok().and_then(|z| plan.zones.get(z));
         if let Some((z, g)) = z.and_then(|z| Some((z, plan.groups.get(z.group as usize)?))) {
             println!(
-                "  zone {zone}: keys {:?} root {} keytrack {} tune {} group {} bus {} {:?} envelope {:?}",
+                "  zone {zone}: keys {:?} root {} keytrack {} tune {} group {} {:?} bus {} {:?} envelope {:?}",
                 z.keys,
                 z.root,
                 z.keytrack,
                 z.tune,
                 z.group,
+                g.name,
                 g.bus,
                 plan.buses.get(g.bus),
                 g.envelope
@@ -418,7 +419,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // KONTRA_CC="11=127,1=100": controllers sent with the note-on;
     // "7:64@1.5" (or "7=64@1.5") sends one 1.5 s into the render, on its frame;
     // "pb:16383@1" is a 14-bit pitch bend.
-    let rides: Vec<(usize, Event)> = std::env::var("KONTRA_CC")
+    let mut rides: Vec<(usize, Event)> = std::env::var("KONTRA_CC")
         .unwrap_or_default()
         .split(',')
         .filter_map(|entry| {
@@ -433,6 +434,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(((at * RATE as f32) as usize, Event::Ump([word, 0])))
         })
         .collect();
+    // KONTRA_REPEATS=62:16:70:45: after the note, 16 notes on key 62, one
+    // every 70 ms from 0.1 s, each 45 ms long (a fast repeat).
+    if let Some([k, count, period, len]) = std::env::var("KONTRA_REPEATS").ok().and_then(|r| {
+        let v: Vec<u32> = r.split(':').filter_map(|x| x.parse().ok()).collect();
+        <[u32; 4]>::try_from(v).ok()
+    }) {
+        let frames = |ms: u32| ms as usize * RATE as usize / 1000;
+        for i in 0..count {
+            let at = frames(100 + i * period);
+            let note = HostNote {
+                key: k as u8,
+                ..host
+            };
+            rides.push((
+                at,
+                Event::NoteOn {
+                    note,
+                    velocity: velocity.into(),
+                    tune: 0.0,
+                },
+            ));
+            let off = HostPattern {
+                key: k as i32,
+                ..pattern
+            };
+            rides.push((at + frames(len), Event::NoteOff(off)));
+        }
+        rides.sort_by_key(|r| r.0);
+    }
     let mut first: Vec<Timed<Event>> = (rides.iter().filter(|r| r.0 == 0))
         .map(|&(_, body)| Timed {
             at: SampleTime(0),
