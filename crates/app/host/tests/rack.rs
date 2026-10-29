@@ -233,6 +233,25 @@ fn a_part_moved_to_another_channel_lets_go_of_the_old_channels_notes() {
     );
 }
 
+/// The host stopping lets go of what it played, pedal down or not, as v2
+/// did: a host that sends no note-off at stop leaves nothing sounding.
+#[test]
+fn the_host_stopping_lets_go_of_its_notes_and_the_pedal() {
+    let (mut rack, mut audio) = rack();
+    let a = engine(rack.store_mut(), 0.5);
+    rack.install(0, a, part("a"));
+    audio.set_transport(true, 0.0, (4, 4));
+    let pedal = Event::midi1(0xB0, 64, 127);
+    let [held, _] = play(&mut audio, &[(0, pedal), (0, note(0))]);
+    assert!(held > 0.1, "{held}");
+    audio.set_transport(true, 1.0, (4, 4));
+    let [running, _] = play(&mut audio, &[]);
+    assert!(running > 0.1, "a running song let go: {running}");
+    audio.set_transport(false, 1.0, (4, 4));
+    let [stopped, _] = play(&mut audio, &[]);
+    assert!(stopped.abs() < 1e-4, "the note still sounds: {stopped}");
+}
+
 #[test]
 fn played_events_reach_every_part_whatever_its_channel() {
     let (mut rack, mut audio) = rack();
@@ -621,10 +640,13 @@ fn a_held_part_hears_the_host_stop_its_hold_later() {
     audio.set_transport(true, 0.0, (4, 4));
     audio.process(BLOCK, &[(0, note(0))]);
     audio.set_transport(false, 0.0, (4, 4));
+    // The stop lets the note go a hold later too, so it sounds a while.
+    let mut loudest = 0f32;
     for _ in 0..(RATE as usize / 2 / BLOCK + 2) {
         audio.process(BLOCK, &[]);
+        loudest = loudest.max(level(&audio, 0));
     }
-    let level = level(&audio, 0);
+    let level = loudest;
     assert!(
         level > 0.1,
         "the held part heard the stop before its note: {level}"
