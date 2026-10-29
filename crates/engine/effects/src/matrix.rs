@@ -5,10 +5,10 @@
 use kontra_ir as ir;
 use kontra_voice::Gain;
 
-pub(crate) const IDENTITY: Gain = [[1.0, 0.0], [0.0, 1.0]];
+pub const IDENTITY: Gain = [[1.0, 0.0], [0.0, 1.0]];
 
 /// `a` after `b`.
-pub(crate) fn product(a: Gain, b: Gain) -> Gain {
+pub fn product(a: Gain, b: Gain) -> Gain {
     let [[a00, a01], [a10, a11]] = a;
     let [[b00, b01], [b10, b11]] = b;
     [
@@ -18,14 +18,14 @@ pub(crate) fn product(a: Gain, b: Gain) -> Gain {
 }
 
 /// A -1..=1 balance.
-pub(crate) fn balance(pan: f32) -> Gain {
+pub fn balance(pan: f32) -> Gain {
     [[1.0 - pan.max(0.0), 0.0], [0.0, 1.0 + pan.min(0.0)]]
 }
 
 /// A rack, slot 0 first, as one matrix; bypassed slots pass. A dynamics
 /// slot does not run in a matrix, so its output gain (its make-up) does not
 /// apply either.
-pub(crate) fn rack(slots: &[Option<ir::Effect>]) -> Gain {
+pub fn rack(slots: &[Option<ir::Effect>]) -> Gain {
     slots
         .iter()
         .flatten()
@@ -36,7 +36,7 @@ pub(crate) fn rack(slots: &[Option<ir::Effect>]) -> Gain {
 /// An effect that runs in instrument and bus racks only; a group rack
 /// passes it unprocessed (the translator reports it) rather than keep only
 /// its dry level, which silences an insert with none.
-pub(crate) fn rack_only(kind: ir::EffectKind) -> bool {
+pub fn rack_only(kind: ir::EffectKind) -> bool {
     matches!(
         kind,
         ir::EffectKind::Compressor(_)
@@ -48,7 +48,7 @@ pub(crate) fn rack_only(kind: ir::EffectKind) -> bool {
     )
 }
 
-pub(crate) fn matrix(e: &ir::Effect) -> Gain {
+pub fn matrix(e: &ir::Effect) -> Gain {
     let m = match e.kind {
         ir::EffectKind::Gain(g) => [[g, 0.0], [0.0, g]],
         ir::EffectKind::Matrix(m) => m,

@@ -2,8 +2,6 @@
 
 use kontra_ir as ir;
 
-use crate::Response;
-
 /// Longest response: 20 s at 192 kHz.
 const MAX_RESPONSE: u64 = 20 * 192_000;
 
@@ -55,4 +53,11 @@ pub fn response(sample: &ir::Sample, impulse: &ir::Impulse, rate: u32) -> Result
         left: kontra_dsp::reverb::shape::resample(&left, from, rate, most),
         right: kontra_dsp::reverb::shape::resample(&right, from, rate, most),
     })
+}
+
+/// A prepared impulse response.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Response {
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
 }
