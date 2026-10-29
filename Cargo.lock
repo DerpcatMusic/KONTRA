@@ -2594,6 +2594,7 @@ dependencies = [
  "crossbeam-queue",
  "kontra-ir",
  "ncw",
+ "rustix",
  "symphonia",
 ]
 
