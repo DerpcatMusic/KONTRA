@@ -13,6 +13,7 @@ use kontra_ui_model as ui;
 #[must_use]
 pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::Interface {
     let mut assets = HashMap::new();
+    let mut fonts = HashMap::new();
     let mut tree = ui::Interface {
         source: ui::Source::FalconLua,
         performance: page.performance,
@@ -101,6 +102,40 @@ pub fn tree(page: &Ui, picture: &dyn Fn(&str) -> Option<ui::ImageMeta>) -> ui::I
                 ui::Kind::Label | ui::Kind::Button { .. } => out.text.clone_from(&w.name),
                 _ => {}
             }
+        }
+        if w.font.is_some() || w.font_size.is_some() || w.align.is_some() || w.colours[1].is_some()
+        {
+            let font = w.font.as_ref().map_or(ui::Font::Default, |path| {
+                if path.to_ascii_lowercase().ends_with(".ttf")
+                    || path.to_ascii_lowercase().ends_with(".otf")
+                {
+                    let at = *fonts.entry(path.clone()).or_insert_with(|| {
+                        tree.assets.push(ui::Asset {
+                            path: path.clone(),
+                            kind: ui::AssetKind::TrueTypeFont,
+                        });
+                        tree.assets.len() - 1
+                    });
+                    ui::Font::File(ui::AssetRef(at))
+                } else {
+                    ui::Font::Named(path.clone())
+                }
+            });
+            let align = match w.align.as_deref() {
+                Some("left") => ui::Align::Left,
+                Some("right") => ui::Align::Right,
+                _ => ui::Align::Center,
+            };
+            out.style = Some(ui::StyleRef(tree.styles.len()));
+            tree.styles.push(ui::TextStyle {
+                font,
+                size: w.font_size.map(|n| n as f32),
+                color: w.colours[1]
+                    .as_deref()
+                    .and_then(colour)
+                    .unwrap_or(ui::Rgba::rgb(0xffffff)),
+                align,
+            });
         }
         swap(&mut out);
         tree.widgets.push(out);
@@ -275,6 +310,28 @@ impl Page for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn script_font_properties_survive_to_the_page() {
+        let page = kontra_lua::compile(
+            r##"Label{"caption", bounds={0,0,100,20}, font="../art/DIN.ttf", fontSize=13, align="right", textColour="#c8c9ca"}"##,
+            &[], &[],
+        ).unwrap().ui;
+        let tree = tree(&page, &|_| None);
+        let widget = &tree.widgets[0];
+        let style = &tree.styles[widget.style.unwrap().0];
+        assert_eq!(style.size, Some(13.));
+        assert_eq!(style.align, ui::Align::Right);
+        assert_eq!(style.color, ui::Rgba::rgb(0xc8c9ca));
+        let ui::Font::File(font) = style.font else {
+            panic!("font file was lost")
+        };
+        assert_eq!(tree.assets[font.0].path, "../art/DIN.ttf");
+        assert!(matches!(
+            tree.assets[font.0].kind,
+            ui::AssetKind::TrueTypeFont
+        ));
+    }
 
     #[test]
     fn a_page_takes_its_pictures_and_a_button_shows_pressed_while_on() {
