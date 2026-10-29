@@ -1,6 +1,6 @@
-//! The waveshaper: a memoryless curve run at twice the rate, then an
-//! optional one-pole low-pass and a second-order Butterworth high-pass
-//! (its DC blocker). The curves are ported from v2 sampler-core
+//! The waveshaper: an optional one-pole low-pass, a memoryless curve run
+//! at twice the rate, then an optional one-pole low-pass and a
+//! second-order Butterworth high-pass (its DC blocker). The curves are ported from v2 sampler-core
 //! dsp/color/{shaping,distortion}.rs and checked against v1's measured
 //! transfer vectors (tests/drive.rs); the format translators carry their
 //! provenance and knob laws.
@@ -23,6 +23,14 @@ pub enum Curve {
     /// 0..=1: a power law on small signals (|x| < 0.25) that thins the
     /// negative half and thickens the positive one.
     Power(f32),
+    /// The drive `d`: `sin(d·x)`.
+    Sine(f32),
+    /// The drive `d`: `asin(sin(d·x))`, a triangle fold.
+    Fold(f32),
+    /// The drive `d`: `tanh(d·x)`.
+    Tanh(f32),
+    /// The drive `d`: `atan(d·x)`.
+    Atan(f32),
 }
 
 impl Curve {
@@ -33,9 +41,11 @@ impl Curve {
     }
 }
 
-/// The filters after the curve.
+/// The filters around the curve.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tone {
+    /// A one-pole low-pass before the curve, pole `e^(−2π·hz/rate)`.
+    pub pre_lowpass_hz: Option<f32>,
     /// A one-pole low-pass (bilinear, zero at Nyquist), its corner in Hz.
     pub lowpass_hz: Option<f32>,
     /// A second-order Butterworth high-pass, its corner in Hz.
@@ -45,6 +55,7 @@ pub struct Tone {
 impl Tone {
     /// No filters.
     pub const NONE: Self = Self {
+        pre_lowpass_hz: None,
         lowpass_hz: None,
         highpass_hz: None,
     };
@@ -72,6 +83,10 @@ enum Prepared {
         scale: f32,
         inverse: f64,
     },
+    Sine(f32),
+    Fold(f32),
+    Tanh(f32),
+    Atan(f32),
 }
 
 impl Prepared {
@@ -103,6 +118,10 @@ impl Prepared {
                     positive,
                 }
             }
+            Curve::Sine(d) => Self::Sine(d),
+            Curve::Fold(d) => Self::Fold(d),
+            Curve::Tanh(d) => Self::Tanh(d),
+            Curve::Atan(d) => Self::Atan(d),
             Curve::Power(d) if d.is_nan() || d <= 0.0 => Self::Identity,
             Curve::Power(d) => {
                 let d = d.min(1.0);
@@ -132,6 +151,10 @@ impl Prepared {
                 }
             }
             Self::Expand { q } => (x * x + q) * x / (1.0 + q),
+            Self::Sine(d) => (d * x).sin(),
+            Self::Fold(d) => (d * x).sin().asin(),
+            Self::Tanh(d) => (d * x).tanh(),
+            Self::Atan(d) => (d * x).atan(),
             Self::Tube {
                 k,
                 negative,
@@ -188,6 +211,8 @@ fn tube(x: f32, k: f32, negative: f32, positive: f32) -> f32 {
 /// A stereo waveshaper with its oversampling and filter state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shaper {
+    /// The pre-curve low-pass's pole and per channel state.
+    pre: Option<(f64, [f64; 2])>,
     curve: Prepared,
     halfband: Halfband,
     /// The low-pass pole and per channel `[x₁, y₁]`.
@@ -217,7 +242,12 @@ impl Shaper {
                 1.0 - q * k + k * k,
             ])
         });
+        let pre = tone.pre_lowpass_hz.filter(|hz| !hz.is_nan()).map(|hz| {
+            let pole = (-std::f64::consts::TAU * f64::from(hz.max(0.0)) / r).exp();
+            (pole, [0.0; 2])
+        });
         Self {
+            pre,
             curve: Prepared::new(curve),
             halfband: Halfband::new(rate),
             lowpass,
@@ -232,6 +262,15 @@ impl Shaper {
 
     /// Shapes `io` (frames of `[left, right]`) in place.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        if let Some((pole, state)) = &mut self.pre {
+            for frame in io.iter_mut() {
+                for (x, y) in frame.iter_mut().zip(state.iter_mut()) {
+                    *y += (f64::from(*x) - *y) * (1.0 - *pole);
+                    *x = *y as f32;
+                }
+            }
+            flush(state);
+        }
         let curve = self.curve;
         self.halfband
             .process(io, |[l, r]| [curve.apply(l), curve.apply(r)]);
@@ -255,6 +294,9 @@ impl Shaper {
     /// Clears the halfband and filter state; the curve and tone stay.
     pub fn reset(&mut self) {
         self.halfband.reset();
+        if let Some((_, s)) = &mut self.pre {
+            *s = [0.0; 2];
+        }
         if let Some((_, s)) = &mut self.lowpass {
             *s = [[0.0; 2]; 2];
         }

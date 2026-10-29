@@ -152,6 +152,8 @@ fn flanger(depth: f32, feedback: f32, speed: f32, phase: f32, colour: f32, unit:
 fn phaser(depth: f32, feedback: f32, speed: f32, phase: f32, unit: f32) -> ir::Phaser {
     let hz = |w: f32| w * RATE / std::f32::consts::PI;
     ir::Phaser {
+        stages: 4,
+        triangle: false,
         hz: hz(0.019_166_7),
         spread_hz: hz(0.017_062_7),
         exponent: 3.0 * depth.clamp(0.0, 1.0),
