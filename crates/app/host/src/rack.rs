@@ -100,6 +100,13 @@ pub enum Command {
         n: u32,
         value: f64,
     },
+    /// The user edited a group's sound (the Sound tab).
+    Sound {
+        part: usize,
+        group: usize,
+        envelope: kontra_engine::Ahdsr,
+        insert: Option<(usize, ir::Effect)>,
+    },
 }
 
 /// The channels between [`Rack`] and [`RackAudio`].
@@ -136,6 +143,8 @@ pub struct Part {
     pub delays: Option<Delays>,
     /// Its library's interface, as `on init` left it.
     pub view: Option<crate::view::View>,
+    /// Each group's envelope and filters, as the editor edits them.
+    pub sounds: crate::sound::Sounds,
     /// Effect types its scripts loaded into slots after `on init`, as
     /// (rack, slot, type); a reload puts them back before `on init`.
     pub slot_types: Vec<(ir::RackAt, u8, u16)>,
@@ -333,8 +342,10 @@ impl Rack {
         let plan = Arc::new(loaded.plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
         let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref());
+        let sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
         let part_info = Part {
             view,
+            sounds,
             slot_types,
             slot_responses,
             plan: Some(plan),
@@ -428,6 +439,32 @@ impl Rack {
             });
         } else if let Some((slot, id, value)) = view.control(widget, value) {
             self.set_control(part, slot, id, value);
+        }
+    }
+
+    /// The user set `param` of `part`'s group `group` (every group when
+    /// `None`) to `value`, in the Sound tab's units: the next notes play it.
+    pub fn set_sound(
+        &mut self,
+        part: usize,
+        group: Option<usize>,
+        param: crate::sound::Param,
+        value: f64,
+    ) {
+        let Some(Some(p)) = self.parts.get_mut(part) else {
+            return;
+        };
+        let groups = group.map_or(0..p.sounds.len(), |g| g..g + 1);
+        let edits: Vec<_> = groups
+            .filter_map(|g| Some((g, p.sounds.set(g, param, value)?)))
+            .collect();
+        for (group, (envelope, insert)) in edits {
+            self.send(Command::Sound {
+                part,
+                group,
+                envelope,
+                insert,
+            });
         }
     }
 

@@ -71,6 +71,7 @@ fn part(name: &str) -> Part {
         view: None,
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
+        sounds: Default::default(),
     }
 }
 
@@ -627,5 +628,37 @@ fn a_held_part_hears_the_host_stop_its_hold_later() {
     assert!(
         level > 0.1,
         "the held part heard the stop before its note: {level}"
+    );
+}
+
+#[test]
+fn a_sound_tab_decay_edit_is_heard_from_the_next_note() {
+    use kontra_host::sound::{Param, Sounds};
+    let (mut rack, mut audio) = rack();
+    let e = engine(rack.store_mut(), 0.5);
+    let sounds = Sounds::new(RATE, e.group_sounds());
+    rack.install(
+        0,
+        e,
+        Part {
+            sounds,
+            ..part("a")
+        },
+    );
+    let [held, _] = play(&mut audio, &[(0, note(0))]);
+    assert!(held > 0.4, "the held note is not heard: {held}");
+    rack.panic();
+    play(&mut audio, &[]);
+    rack.set_sound(0, None, Param::Sustain, 0.0);
+    rack.set_sound(0, None, Param::Decay, 0.02);
+    let p = rack.parts().first().and_then(Option::as_ref).unwrap();
+    assert_eq!(
+        p.sounds.envelope(0).map(|e| (e[2], e[3])),
+        Some((0.02, 0.0))
+    );
+    let [decayed, _] = play(&mut audio, &[(0, note(0))]);
+    assert!(
+        decayed.abs() < 1e-3,
+        "the decay edit was not heard: {decayed}"
     );
 }

@@ -336,6 +336,16 @@ impl RackAudio {
                         drop(frame);
                     }
                 }
+                Command::Sound {
+                    part,
+                    group,
+                    envelope,
+                    insert,
+                } => {
+                    if let Some(Some(p)) = self.parts.get_mut(part) {
+                        p.engine.set_group_sound(group, envelope, insert);
+                    }
+                }
                 Command::Control {
                     part,
                     slot,

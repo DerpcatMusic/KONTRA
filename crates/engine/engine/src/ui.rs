@@ -100,6 +100,36 @@ impl Engine {
         self.vms.get_mut(usize::from(slot))?.as_mut()
     }
 
+    /// Every group's amplitude envelope and inserts as they play now (after
+    /// init, as its scripts left them). Not real-time.
+    #[must_use]
+    pub fn group_sounds(&self) -> Vec<(kontra_voice::Ahdsr, Vec<Option<kontra_ir::Effect>>)> {
+        (self.groups.iter())
+            .map(|g| (g.envelope, g.inserts.clone()))
+            .collect()
+    }
+
+    /// The editor set group `group`'s amplitude envelope and, when given,
+    /// one of its inserts: notes from the next one on take them, and
+    /// sounding notes re-read what they can (as a script's write).
+    pub fn set_group_sound(
+        &mut self,
+        group: usize,
+        envelope: kontra_voice::Ahdsr,
+        insert: Option<(usize, kontra_ir::Effect)>,
+    ) {
+        let Some(g) = self.groups.get_mut(group) else {
+            return;
+        };
+        g.envelope = envelope;
+        if let Some((slot, effect)) = insert
+            && let Some(at) = g.inserts.get_mut(slot)
+        {
+            *at = Some(effect);
+        }
+        self.refresh_all(None);
+    }
+
     /// Text cell `n` of script `slot` (a persistent `@` variable, say).
     #[must_use]
     pub fn script_text_in(&self, slot: u8, n: usize) -> Option<Text> {
