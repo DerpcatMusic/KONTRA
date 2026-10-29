@@ -182,10 +182,13 @@ impl Engine {
         // sample; a positive duration is a note-off after that long.
         // Once the starting note is released (its release callback), -1 has
         // nothing left to wait for and the sample plays out.
-        let ending = self.running.kind == Kind::Release
+        // A release callback stays one across its waits; what it plays
+        // sounds its release zones (Pacific's release samples).
+        let ending = self.running.callback_type == Running::new(Kind::Release, None).callback_type
             || parent
                 .and_then(|p| self.notes.get(p))
                 .is_some_and(|n| n.released);
+        note.from_release = ending;
         note.origin = match (duration, parent) {
             (-1, Some(p)) if !ending => Origin::Child(p),
             _ => Origin::Script,
@@ -238,7 +241,11 @@ impl Engine {
     fn script_note_off(&mut self, id: i32) {
         let mut hits = std::mem::take(&mut self.targets_scratch);
         self.targets(id, &mut hits);
+        let player = self.running.slot + 1;
         for &note in &hits {
+            if let Some(n) = self.notes.get_mut(note) {
+                n.noted_off |= n.first == player;
+            }
             self.queue_end(note);
         }
         self.targets_scratch = hits;

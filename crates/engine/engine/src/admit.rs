@@ -27,20 +27,7 @@ impl Engine {
             })
             .map(|(r, _)| r)?;
         let fade = self.fade_frames();
-        for (_index, slot) in self
-            .voices
-            .iter_mut()
-            .enumerate()
-            .filter(|(_, s)| s.note == Some(victim) && s.voice.is_active() && !s.fading)
-        {
-            #[cfg(feature = "trace")]
-            if let Some(trace) = &mut self.trace {
-                trace.voice(self.now.0, _index, slot, crate::VoiceEvent::Steal);
-            }
-            slot.voice.fade(fade);
-            slot.fading = true;
-            self.stats.voices_stolen += 1;
-        }
+        self.steal_where(fade, |s| s.note == Some(victim));
         if let Some(n) = self.notes.remove(victim) {
             self.ended.push(n.host);
         }
@@ -64,20 +51,9 @@ impl Engine {
                 .min_by_key(|(_, s)| (!s.released, s.started))
                 .map(|(i, s)| (i, s.note, group(s)));
             if let Some((v, note, of)) = victim {
-                for (i, s) in self.voices.iter_mut().enumerate() {
-                    let sibling = plan.steal_whole_groups
-                        && note.is_some()
-                        && s.note == note
-                        && group(s) == of;
-                    if playing(s) && (i == v || sibling) {
-                        #[cfg(feature = "trace")]
-                        if let Some(trace) = &mut self.trace {
-                            trace.voice(self.now.0, i, s, crate::VoiceEvent::Steal);
-                        }
-                        s.voice.fade(fade);
-                        s.fading = true;
-                        self.stats.voices_stolen += 1;
-                    }
+                self.steal(v, fade);
+                if plan.steal_whole_groups && note.is_some() {
+                    self.steal_where(fade, |s| s.note == note && group(s) == of);
                 }
             }
         }
@@ -103,6 +79,34 @@ impl Engine {
         }
         slot.voice.kill();
         Some(index)
+    }
+
+    /// Steals voice `index`: it fades out over `fade` frames and stops
+    /// counting toward any limit. Every limit, choke and table eviction
+    /// ends voices here.
+    pub(crate) fn steal(&mut self, index: usize, fade: u32) {
+        let Some(slot) = self.voices.get_mut(index) else {
+            return;
+        };
+        if !slot.voice.is_active() || slot.fading {
+            return;
+        }
+        #[cfg(feature = "trace")]
+        if let Some(trace) = &mut self.trace {
+            trace.voice(self.now.0, index, slot, crate::VoiceEvent::Steal);
+        }
+        slot.voice.fade(fade);
+        slot.fading = true;
+        self.stats.voices_stolen += 1;
+    }
+
+    /// Steals every playing voice `pick` chooses.
+    pub(crate) fn steal_where(&mut self, fade: u32, pick: impl Fn(&Slot) -> bool) {
+        for index in 0..self.voices.len() {
+            if self.voices.get(index).is_some_and(&pick) {
+                self.steal(index, fade);
+            }
+        }
     }
 
     /// Ends notes with no sounding voice and reports them to the host. A key

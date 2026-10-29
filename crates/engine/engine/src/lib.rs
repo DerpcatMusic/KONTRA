@@ -537,20 +537,11 @@ impl Engine {
         if self.voices.iter().filter(|s| in_group(s)).count() < usize::from(limit) {
             return;
         }
-        let fade = self.fade_frames();
-        if let Some((_index, oldest)) = self
-            .voices
-            .iter_mut()
-            .enumerate()
+        let oldest = (self.voices.iter().enumerate())
             .filter(|(_, s)| in_group(s))
-            .min_by_key(|(_, s)| (!s.released, s.started))
-        {
-            #[cfg(feature = "trace")]
-            if let Some(trace) = &mut self.trace {
-                trace.voice(self.now.0, _index, oldest, VoiceEvent::Steal);
-            }
-            oldest.voice.fade(fade);
-            oldest.fading = true;
+            .min_by_key(|(_, s)| (!s.released, s.started));
+        if let Some((index, _)) = oldest {
+            self.steal(index, self.fade_frames());
         }
     }
 
@@ -565,33 +556,22 @@ impl Engine {
                 continue;
             }
             let channel = n.host.channel;
+            // `%KEY_DOWN` reads 0 in the key's own `on release` (Pacific).
+            n.key_up = true;
             if let Some(slot) = self.release_callbacks(note) {
-                if let Some(n) = self.notes.get_mut(note) {
-                    n.key_up = true;
-                }
                 // The key is up whatever the script does with its event:
                 // a `play_note(.., -1)` child still ends (KSP manual,
                 // play_note), through its own release callbacks.
-                let plan = &self.plan.scripts;
-                if plan
-                    .get(usize::from(slot))
-                    .is_some_and(|s| s.held_release_ends_children)
-                {
+                let script = self.plan.scripts.get(usize::from(slot));
+                if script.is_some_and(|s| s.held_release_ends_children) {
                     self.end_children(note);
                 }
                 continue;
             }
-            if self
-                .pedal
-                .get(usize::from(channel))
-                .copied()
-                .unwrap_or(false)
-            {
-                // The key is up (%KEY_DOWN reads 0, KSP manual): only its
-                // sound is held.
+            if self.pedal.get(usize::from(channel)) == Some(&true) {
+                // The key is up (KSP manual): only its sound is held.
                 if let Some(n) = self.notes.get_mut(note) {
                     n.pedal_held = true;
-                    n.key_up = true;
                 }
             } else {
                 self.release(note);
