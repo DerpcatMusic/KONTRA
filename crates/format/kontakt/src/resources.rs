@@ -93,7 +93,7 @@ impl Resources {
         for i in 0..self.sources.len() {
             let found = match self.sources.get_mut(i)? {
                 Source::Loose(dir) => {
-                    let file = File::open(dir.join(name)).ok();
+                    let file = loose_path(dir, name).and_then(|path| File::open(path).ok());
                     file.and_then(|f| {
                         let mut bytes = Vec::new();
                         f.take(LIMIT).read_to_end(&mut bytes).ok()?;
@@ -147,7 +147,7 @@ impl Resources {
         let want = format!("/{}", name.replace(['|', '\\'], "/").to_lowercase());
         self.sources.iter().find_map(|source| match source {
             Source::Loose(dir) => {
-                let file = dir.join(name);
+                let file = loose_path(dir, name)?;
                 // Inside the folder, `..` and symlinks resolved.
                 let real = |p: &Path| p.canonicalize().ok();
                 let inside = real(&file)
@@ -255,6 +255,26 @@ fn entries(dir: &Path) -> Vec<PathBuf> {
         .unwrap_or_default();
     found.sort();
     found
+}
+
+/// Match every component of a loose resource as archive members are matched.
+fn loose_path(root: &Path, name: &str) -> Option<PathBuf> {
+    let normalized = name.replace(['|', '\\'], "/");
+    let mut path = root.to_path_buf();
+    for component in Path::new(&normalized).components() {
+        let std::path::Component::Normal(part) = component else {
+            return None;
+        };
+        let exact = path.join(part);
+        path = if exact.exists() {
+            exact
+        } else {
+            entries(&path)
+                .into_iter()
+                .find(|p| p.file_name().is_some_and(|n| n.eq_ignore_ascii_case(part)))?
+        };
+    }
+    Some(path)
 }
 
 fn named(path: &Path, name: &str) -> bool {
