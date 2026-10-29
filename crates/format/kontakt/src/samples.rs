@@ -21,7 +21,8 @@ pub(crate) struct Location {
 
 pub(crate) struct Resolver {
     root: PathBuf,
-    parent: PathBuf,
+    /// The instrument's folder and each folder above it inside the root.
+    bases: Vec<PathBuf>,
     /// Lower-case member path to its bytes, when the instrument is a monolith.
     monolith: HashMap<String, Location>,
     /// Each archive opened once, with its member index.
@@ -30,6 +31,8 @@ pub(crate) struct Resolver {
     loose: Option<HashMap<String, Vec<PathBuf>>>,
     /// The library's keystream, read on the first encrypted member.
     key: Option<std::sync::Arc<[u8]>>,
+    /// Each name resolved once: a large table names the same file many times.
+    resolved: HashMap<String, Option<Location>>,
 }
 
 /// `path` with `.` and `..` resolved by name, without touching the disk.
@@ -52,8 +55,13 @@ impl Resolver {
         // Canonical, so an empty or `./` parent, `..` or a symlink still
         // contains its candidates.
         let instrument = &instrument.canonicalize().map_err(|e| e.to_string())?;
-        let parent = instrument.parent().unwrap_or(Path::new("/")).to_path_buf();
+        let parent = instrument.parent().unwrap_or(Path::new("/"));
         let root = crate::resources::root(instrument);
+        let root = root.canonicalize().unwrap_or(root);
+        let bases = (parent.ancestors())
+            .take_while(|a| a.starts_with(&root))
+            .map(Path::to_path_buf)
+            .collect();
         let mut monolith = HashMap::new();
         let mut file = File::open(instrument).map_err(|e| e.to_string())?;
         let mut magic = [0; 16];
@@ -76,43 +84,47 @@ impl Resolver {
         }
         Ok(Self {
             root,
-            parent,
+            bases,
             monolith,
             archives: HashMap::new(),
             loose: None,
             key: None,
+            resolved: HashMap::new(),
         })
     }
 
-    /// Whether `file`, symlinks followed, is still under the root.
+    /// Whether `file`, symlinks followed, is still under the (canonical) root.
     fn inside(&self, file: &Path) -> bool {
-        let real = |p: &Path| p.canonicalize().ok();
-        real(file)
-            .zip(real(&self.root))
-            .is_some_and(|(f, r)| f.starts_with(r))
+        file.canonicalize().is_ok_and(|f| f.starts_with(&self.root))
     }
 
     /// The bytes of the sample the preset names `name`, if the library has it.
     pub(crate) fn resolve(&mut self, name: &str) -> Result<Option<Location>, String> {
+        if let Some(found) = self.resolved.get(name) {
+            return Ok(found.clone());
+        }
+        let found = self.find(name)?;
+        self.resolved.insert(name.to_owned(), found.clone());
+        Ok(found)
+    }
+
+    fn find(&mut self, name: &str) -> Result<Option<Location>, String> {
         let name = name.replace(['\\', '|'], "/");
         if let Some(found) = self.member(&name)? {
             return Ok(Some(found));
         }
         // Relative to the instrument folder, then each folder above it in the library.
-        let bases: Vec<PathBuf> = self
-            .parent
-            .ancestors()
-            .take_while(|a| a.starts_with(&self.root))
-            .map(Path::to_path_buf)
-            .collect();
-        for base in &bases {
+        for at in 0..self.bases.len() {
             // `..` is normal in Kontakt's tables, but never past the root.
-            let candidate = lexical(&base.join(&name));
+            let Some(candidate) = self.bases.get(at).map(|b| lexical(&b.join(&name))) else {
+                break;
+            };
             if !candidate.starts_with(&self.root) {
                 continue;
             }
             if let Some((archive, member)) = archive_member(&candidate) {
-                if self.inside(&archive)
+                // An archive already opened was checked when it was.
+                if (self.archives.contains_key(&archive) || self.inside(&archive))
                     && let Some(found) = self.archive_entry(&archive, &member)?
                 {
                     return Ok(Some(found));
@@ -135,6 +147,9 @@ impl Resolver {
 
     /// A monolith member: the exact path, else a unique match of its basename.
     fn member(&self, name: &str) -> Result<Option<Location>, String> {
+        if self.monolith.is_empty() {
+            return Ok(None);
+        }
         let name = name.to_lowercase();
         if let Some(found) = self.monolith.get(&name) {
             return Ok(Some(found.clone()));

@@ -217,20 +217,15 @@ pub trait ReadBytesExt: Read + Seek {
         }
 
         let buf = self.read_bytes(size_field as usize * 2)?;
-
-        let bytes: Vec<u16> = buf
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-            .collect();
-
-        // String::from_utf16(bytes.as_slice())
-        //     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-
-        String::from_utf16(bytes.as_slice()).map_err(|e| {
-            ReadBytesError::Generic(format!("Error converting bytes to UTF16: {e}, {bytes:?}"))
-        })
+        let pairs = buf.as_chunks::<2>().0;
+        // Most names are ASCII: one byte per unit, no decoding.
+        if pairs.iter().all(|&[low, high]| high == 0 && low < 0x80) {
+            let ascii = pairs.iter().map(|&[low, _]| low).collect();
+            return String::from_utf8(ascii).map_err(|e| ReadBytesError::Generic(e.to_string()));
+        }
+        char::decode_utf16(pairs.iter().map(|&pair| u16::from_le_bytes(pair)))
+            .collect::<Result<String, _>>()
+            .map_err(|e| ReadBytesError::Generic(format!("Error converting bytes to UTF16: {e}")))
     }
 }
 impl<R: Read + Seek + ?Sized> ReadBytesExt for R {}

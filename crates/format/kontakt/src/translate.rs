@@ -72,7 +72,11 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         .ok_or_else(|| Error::new(path, "group list", "missing"))
         .and_then(|c| GroupList::try_from(c).map_err(decode("group list")))?;
     let mut resolver = Resolver::new(path).map_err(|e| Error::new(path, "samples", e))?;
-    let mut impulses = crate::impulse::Impulses::new(chunks, &mut resolver, path);
+    let (table, others) = crate::impulse::file_tables(chunks)
+        .transpose()
+        .map_err(decode("sample table"))?
+        .unwrap_or_default();
+    let mut impulses = crate::impulse::Impulses::new(others, &mut resolver, path);
     let mut criteria = Vec::new();
     let mut slots = crate::effects::Slots::default();
     for (index, group) in groups.groups.iter().enumerate() {
@@ -150,11 +154,6 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         .find_first(ZONE_LIST)
         .ok_or_else(|| Error::new(path, "zone list", "missing"))
         .and_then(|c| ZoneList::try_from(c).map_err(decode("zone list")))?;
-    let table = chunks
-        .filename_table()
-        .transpose()
-        .map_err(decode("sample table"))?
-        .unwrap_or_default();
     let mut sample_of: HashMap<u32, Option<usize>> = HashMap::new();
     for (zone, &group) in zones.zones().iter().zip(&zones.group_ids) {
         let z = zone.params().map_err(decode("zone"))?;
