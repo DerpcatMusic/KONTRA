@@ -146,6 +146,10 @@ fn recall(path: PathBuf) -> Result<String, String> {
     let (live, mut live_dsp) = activate(&saved.write());
     let load = t.elapsed();
     let before = play(&live, &mut live_dsp);
+    // A host's plain reset at the same rate keeps the part: it plays at once,
+    // without a control tick to reload it.
+    <Kontra as PluginLogic>::reset(&mut live_dsp, &live, &AudioConfig::new(RATE, BLOCK));
+    let after_reset = play(&live, &mut live_dsp);
     settle(&live, &mut live_dsp);
     let moved = move_control(&live);
     settle(&live, &mut live_dsp);
@@ -175,6 +179,11 @@ fn recall(path: PathBuf) -> Result<String, String> {
             .take(5)
             .collect();
         wrong.push(format!("re-save after reload differs: {diff:?}"));
+    }
+    if after_reset < before * 0.5 {
+        wrong.push(format!(
+            "a reset at the same rate lost the part: rms {after_reset}"
+        ));
     }
     if before < 1e-4 {
         wrong.push(format!("silent: rms {before}"));

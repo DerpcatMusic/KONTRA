@@ -41,10 +41,7 @@ impl Snapshot {
     /// Copies what the editor shows from `rack`, with this tick's `report`.
     pub fn refresh(&mut self, rack: &Rack, report: Vec<String>) {
         let meters = rack.meters();
-        let level = |slot: usize| {
-            let m = meters.and_then(|m| m.parts.get(slot).copied());
-            m.map_or(0.0, |[l, r]| l.max(r))
-        };
+        let level = |slot: usize| meters.parts.get(slot).map_or(0.0, |[l, r]| l.max(*r));
         self.parts = (rack.parts().iter().enumerate())
             .filter_map(|(slot, p)| {
                 let p = p.as_ref()?;
@@ -58,9 +55,7 @@ impl Snapshot {
                 })
             })
             .collect();
-        if let Some(m) = meters {
-            self.level = m.master[0].max(m.master[1]);
-        }
+        self.level = meters.master[0].max(meters.master[1]);
         if let Some(s) = rack.stats() {
             self.stats = s;
         }
