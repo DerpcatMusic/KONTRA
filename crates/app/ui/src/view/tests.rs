@@ -329,3 +329,24 @@ fn an_unpictured_script_control_draws_its_stock_field() {
         Some(&[0xee, 0xee, 0xe4, 255])
     );
 }
+
+/// A resizable picture keeps its fixed ends and stretches the rest
+/// (CHORUS's selected-row glow: 26 px, 12 px fixed each side, on a 260
+/// point row); a control shorter than both ends shrinks them alike.
+#[test]
+fn a_resizable_picture_keeps_its_fixed_ends() {
+    assert_eq!(
+        cuts(true, (12, 12), (26., 26), 260., 1.),
+        [(0, 12, 12.), (12, 2, 236.), (14, 12, 12.)]
+    );
+    assert_eq!(
+        cuts(true, (12, 12), (26., 39), 390., 1.5),
+        [(0, 18, 18.), (18, 3, 354.), (21, 18, 18.)],
+        "decoded at 1.5x, drawn at 1.5 points a pixel"
+    );
+    assert_eq!(
+        cuts(true, (12, 12), (26., 26), 12., 1.),
+        [(0, 12, 6.), (14, 12, 6.)]
+    );
+    assert_eq!(cuts(false, (12, 12), (26., 26), 260., 1.), [(0, 26, 260.)]);
+}
