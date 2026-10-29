@@ -4,6 +4,10 @@
 //! velocity-0 note-ons, CLAP note-offs with a wildcard id), played on real
 //! libraries. Every note must sound on time, every note must end, nothing
 //! may sound late, and voices are stolen only where the plan sets a limit.
+//! Repeats, legato and chords play again under a slow and a fast sweep of the
+//! wheel and expression: no clicks, no clipping, no jump no note explains.
+//! Then every script control is moved under a held note ([`touch`]), and one
+//! row per program goes to `$KONTRA_PLAYTEST_OUT` (JSON lines).
 
 use std::path::{Path, PathBuf};
 
@@ -13,6 +17,8 @@ use moose::prelude::*;
 
 use super::tests::{BLOCK, KONTAKT, RATE, activate};
 use crate::{Dsp, Kontra, KontraParams, Tick};
+
+mod touch;
 
 const UVI: &str = "/data/main/Libraries/UVI";
 
@@ -34,6 +40,49 @@ impl In {
             _ => false,
         }
     }
+
+    fn is_note(self) -> bool {
+        matches!(
+            self,
+            In::Midi(EventBody::NoteOn { .. } | EventBody::NoteOff { .. }) | In::Clap(_)
+        )
+    }
+}
+
+/// The loudest 5 ms of high-frequency energy (the second difference, a
+/// click's signature) over the median 5 ms, in dB.
+pub(super) fn hf_burst_db(audio: &[f32]) -> f32 {
+    let n = at(0.005);
+    let mut frames: Vec<f32> = audio
+        .windows(3)
+        .map(|w| (w[2] - 2.0 * w[1] + w[0]).powi(2))
+        .collect::<Vec<_>>()
+        .chunks_exact(n)
+        .map(|c| c.iter().sum())
+        .collect();
+    if frames.is_empty() {
+        return 0.0;
+    }
+    let loudest = frames.iter().copied().fold(0.0f32, f32::max);
+    frames.sort_by(f32::total_cmp);
+    let median = frames[frames.len() / 2];
+    10.0 * (loudest.max(1e-20) / median.max(1e-20)).log10()
+}
+
+/// The most a sweep may add to its notes' high-frequency burst before it
+/// counts as clicking (Afflatus before #1124: +17.7 dB; after: +2.3 dB).
+const CLICK_DB: f32 = 10.0;
+
+/// What a program's performance left: its failures and, by segment,
+/// (name, peak voices, stolen, peak dBFS, HF burst dB).
+pub(super) struct Report {
+    pub name: String,
+    pub load_s: f64,
+    pub hold_ms: f32,
+    pub failed: Vec<String>,
+    pub segments: Vec<(&'static str, u32, u64, f32, f32)>,
+    pub ui: touch::Touched,
+    pub diagnostics: (usize, usize, usize, Vec<String>),
 }
 
 fn on(key: u8) -> In {
@@ -82,6 +131,51 @@ fn clap(kind: ExactNoteKind, key: u8, id: i32) -> In {
 /// Seconds as frames.
 fn at(s: f64) -> usize {
     (s * RATE) as usize
+}
+
+/// `events` with the wheel (CC1) swept from full to 0 and back, and
+/// expression (CC11) from full to 40 and back, over frames `from..to`.
+fn wheel(mut events: Vec<(usize, In)>, from: usize, to: usize) -> Vec<(usize, In)> {
+    const STEPS: usize = 64;
+    for i in 0..=STEPS {
+        let x = i as f64 / STEPS as f64;
+        let depth = 1.0 - (2.0 * x - 1.0).abs();
+        let frame = from + ((to - from) as f64 * x) as usize;
+        events.push((frame, cc(1, (127.0 * (1.0 - depth)).round() as u8)));
+        events.push((frame, cc(11, (127.0 - 87.0 * depth).round() as u8)));
+    }
+    // Stable: a note keeps its place before a controller on its frame.
+    events.sort_by_key(|e| e.0);
+    events
+}
+
+/// `events`, then the same under a slow (whole segment) and a fast (0.25 s,
+/// mid-segment) sweep of the wheel and expression.
+fn swept(
+    name: &'static str,
+    slow: &'static str,
+    fast: &'static str,
+    events: Vec<(usize, In)>,
+) -> [(&'static str, Vec<(usize, In)>); 3] {
+    let end = events.iter().map(|e| e.0).max().unwrap_or(0);
+    let mid = end / 2;
+    [
+        (slow, wheel(events.clone(), 0, end)),
+        (
+            fast,
+            wheel(
+                events.clone(),
+                mid.saturating_sub(at(0.125)),
+                mid + at(0.125),
+            ),
+        ),
+        (name, events),
+    ]
+}
+
+/// The segment a swept one is compared with: the same notes, no sweep.
+fn plain(segment: &str) -> Option<&str> {
+    segment.split_once(" + wheel").map(|s| s.0)
 }
 
 /// The performance, a segment at a time: (name, [(frame, event)]).
@@ -139,12 +233,36 @@ fn performance() -> Vec<(&'static str, Vec<(usize, In)>)> {
         (at(0.4), clap(ExactNoteKind::Off, 67, -1)),
         (at(0.4), off(69)),
     ];
+    let [repeats_slow, repeats_fast, repeats] = swept(
+        "fast repeats",
+        "fast repeats + wheel slow",
+        "fast repeats + wheel fast",
+        repeats,
+    );
+    let [legato_slow, legato_fast, legato] = swept(
+        "overlapping legato",
+        "overlapping legato + wheel slow",
+        "overlapping legato + wheel fast",
+        legato,
+    );
+    let [chord_slow, chord_fast, chord] = swept(
+        "8-note chord",
+        "8-note chord + wheel slow",
+        "8-note chord + wheel fast",
+        chord,
+    );
     vec![
         ("probe", probe.clone()),
-        ("fast repeats", repeats),
-        ("overlapping legato", legato),
+        repeats,
+        repeats_slow,
+        repeats_fast,
+        legato,
+        legato_slow,
+        legato_fast,
         ("sustain pedal", pedal),
-        ("8-note chord", chord),
+        chord,
+        chord_slow,
+        chord_fast,
         ("note-off beside CC and bend", same),
         ("velocity-0 note-on", zero),
         ("CLAP note-off id -1", native),
@@ -215,8 +333,8 @@ fn limited(params: &KontraParams) -> (bool, usize) {
     })
 }
 
-/// Plays the performance on `path`; what failed.
-fn perform(path: PathBuf) -> Vec<String> {
+/// Plays the performance on `path`, then touches its controls.
+fn perform(path: PathBuf) -> Report {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -237,7 +355,8 @@ fn perform(path: PathBuf) -> Vec<String> {
     }]);
     let started = std::time::Instant::now();
     let (params, mut dsp) = activate(&saved.write());
-    eprintln!("{name}: loaded in {:.1?}", started.elapsed());
+    let load_s = started.elapsed().as_secs_f64();
+    eprintln!("{name}: loaded in {load_s:.1} s");
     params.align.set_value(true);
     Tick.run(&params);
     let mut failed = Vec::new();
@@ -257,6 +376,7 @@ fn perform(path: PathBuf) -> Vec<String> {
     let latency_ms = <Kontra as PluginLogic>::latency(&dsp) as f32 * 1000.0 / RATE as f32;
     let (limited, pool) = limited(&params);
     let mut onsets = Vec::new();
+    let mut segments = Vec::new();
     let mut blocks = 0usize;
     for (segment, events) in performance() {
         let (stolen, refused) = (last.stolen, last.refused);
@@ -326,8 +446,12 @@ fn perform(path: PathBuf) -> Vec<String> {
                 None => fail(format!("{segment}: no onset")),
             }
         }
-        // No late bursts: a jump of 12 dB or more with no input near it.
-        let inputs: Vec<usize> = events.iter().map(|e| e.0).collect();
+        // No late bursts: a jump of 12 dB or more with no note near it (a
+        // controller may move the level, never jump it).
+        let inputs: Vec<usize> = (events.iter())
+            .filter(|e| e.1.is_note())
+            .map(|e| e.0)
+            .collect();
         for (b, w) in peaks.windows(5).enumerate() {
             let (before, now) = (w[..4].iter().copied().fold(0.0, f32::max), w[4]);
             let start = (b + 4) * BLOCK;
@@ -347,6 +471,24 @@ fn perform(path: PathBuf) -> Vec<String> {
                 last.refused - refused
             ));
         }
+        let loudest_db = 20.0 * loudest.max(1e-9).log10();
+        if loudest > 1.0 {
+            fail(format!("{segment}: clips at {loudest_db:+.1} dBFS"));
+        }
+        let hf = hf_burst_db(&audio);
+        let base = plain(segment).and_then(|p| {
+            segments
+                .iter()
+                .find(|s: &&(&str, u32, u64, f32, f32)| s.0 == p)
+        });
+        if let Some(&(_, _, _, _, base)) = base
+            && hf - base > CLICK_DB
+        {
+            fail(format!(
+                "{segment}: clicks, HF burst {:+.1} dB over the same notes unswept",
+                hf - base
+            ));
+        }
         let steals = last.stolen - stolen;
         if steals > 0 && !limited && (peak_voices as usize) < pool {
             fail(format!(
@@ -354,45 +496,86 @@ fn perform(path: PathBuf) -> Vec<String> {
             ));
         }
         eprintln!(
-            "{name}: {segment} ({:.1?}): peak {peak_voices} voices, {steals} stolen",
+            "{name}: {segment} ({:.1?}): peak {peak_voices} voices, {steals} stolen, {loudest_db:.1} dBFS, HF burst {hf:.1} dB",
             started.elapsed()
         );
+        segments.push((segment, peak_voices, steals, loudest_db, hf));
     }
     if let [first, .., again] = onsets[..]
         && (first - again).abs() > 10.0
     {
         fail(format!("probe onset moved: {first:.1} -> {again:.1} ms"));
     }
-    println!("{name}: hold {latency_ms:.1} ms, probe onsets {onsets:?} ms");
-    failed
+    let ui = touch::touch(&params, &mut dsp, &mut last, &mut fail);
+    let diagnostics = touch::diagnostics(&params);
+    println!(
+        "{name}: hold {latency_ms:.1} ms, probe onsets {onsets:?} ms; touched {} of {} controls, {} reached the sound, {} clicked; diagnostics {} broken, {} audible",
+        ui.touched,
+        ui.shown,
+        ui.reached,
+        ui.clicks.len(),
+        diagnostics.0,
+        diagnostics.1
+    );
+    Report {
+        name,
+        load_s,
+        hold_ms: latency_ms,
+        failed,
+        segments,
+        ui,
+        diagnostics,
+    }
 }
 
-/// The programs a build must play: polyphonic variables (CHORUS), pedal
-/// and resonance (Una Corda), legato scripts (Areia), one Augmented
-/// Orchestra and one VWinds program.
+/// The ten programs the user plays: one per library (legato scripts,
+/// polyphonic variables, pedal and resonance, wheel-driven dynamics, a big
+/// script face, two UVI engines).
+const PROGRAMS: [&str; 10] = [
+    "Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/3 Trumpets/3 Trumpets Legato.nki",
+    "Pacific Ensemble Strings/Instruments/10 Cellos/Pacific - Ens Strings - 10 Cellos - Legato Sustains.nki",
+    "Audio Imperia CHORUS/Instruments/01 Multi Patches/01 Chorus - Women - Traditional Articulations.nki",
+    "Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/01 Areia - 16 Violins - Core Techniques.nki",
+    "Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 01 7 1st Violins - Legato.nki",
+    "Una Corda Library/Instruments/Una Corda Felt.nki",
+    "ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
+    "Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
+    "UVI:VWinds - Clarinets/VWinds-AClarinet.ufs/Presets/Clarinet A.uvip",
+    "UVI:UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs/Presets/00 Orchestra/01 Strings/W Strings Harmonic.uvip",
+];
+
 #[test]
-#[ignore = "real libraries, minutes in debug: run with --ignored before offering a build"]
+#[ignore = "real libraries, minutes: run with --ignored (release) before offering a build"]
 fn real_performances_sound_on_time_end_and_never_burst() {
-    let programs = [
-        Path::new(KONTAKT).join("Audio Imperia CHORUS/Instruments/01 Multi Patches/01 Chorus - Women - Traditional Articulations.nki"),
-        Path::new(KONTAKT).join("Una Corda Library/Instruments/Una Corda Felt.nki"),
-        Path::new(KONTAKT).join("Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/01 Areia - 16 Violins - Core Techniques.nki"),
-        Path::new(UVI).join("UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs/Presets/00 Orchestra/01 Strings/W Strings Harmonic.uvip"),
-        Path::new(UVI).join("VWinds - Flutes/VWinds-C_Flute.ufs/Presets/Flute.uvip"),
-    ];
     let mut failed = Vec::new();
-    // KONTRA_PLAYTEST=<part of a path> plays just that program.
+    // KONTRA_PLAYTEST=<part of a path> plays just the programs it names.
     let only = std::env::var("KONTRA_PLAYTEST").unwrap_or_default();
-    for path in programs
-        .into_iter()
-        .filter(|p| p.to_string_lossy().contains(&only))
-    {
+    let out = std::env::var_os("KONTRA_PLAYTEST_OUT").map(PathBuf::from);
+    for program in PROGRAMS.iter().filter(|p| p.contains(&only)) {
+        let path = match program.strip_prefix("UVI:") {
+            Some(p) => Path::new(UVI).join(p),
+            None => Path::new(KONTAKT).join(program),
+        };
         // A .ufs is a file; the program is inside it.
         if !path.ancestors().any(Path::is_file) {
             eprintln!("skipped: no {}", path.display());
             continue;
         }
-        failed.extend(perform(path));
+        let report = perform(path.clone());
+        if let Some(out) = &out {
+            use std::io::Write;
+            let line = touch::row(&path.to_string_lossy(), &report);
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(out);
+            assert!(
+                file.and_then(|mut f| writeln!(f, "{line}")).is_ok(),
+                "cannot write {}",
+                out.display()
+            );
+        }
+        failed.extend(report.failed);
     }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
