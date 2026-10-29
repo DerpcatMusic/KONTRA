@@ -6,10 +6,10 @@ name: v3 plan
 # branch), and v3 itself gets full CI after every merge.
 on:
   pull_request:
-    branches: [v3, main]
+    branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, closed]
   push:
-    branches: [v3, main]
+    branches: [main]
 
 permissions:
   contents: read
