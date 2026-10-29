@@ -1447,6 +1447,27 @@ gate = ["build-slot cargo xtask deps-check"]
 done = ["deps-check forbidden table enforced as errors."]
 
 [[task]]
+id = "P8.4b"
+title = "NI Native UI (.nui) into the UI tree"
+phase = 8
+lane = "app"
+size = "L"
+agent = "worker"
+deps = ["P8.4"]
+owns = ["crates/format/native-ui/**", "crates/app/host/src/ui/**", "crates/app/ui/**", "tools/ui-shots/**", "@manifests", "@lockfile", "tools/xtask/dag.toml"]
+docs = ["07-APP.md#5-ui-boundary", "VISION.md"]
+goal = "A library whose interface is NI Native UI (Kontakt 8: Lua .nui modules with SVG and WebP art in its .nkr) shows that interface in the Original view, drawn by the same components and damage path as every other source, with its controls bound to the hidden KSP controls they drive. Corpus 2026-10-29: 1 of 11 Kontakt libraries ships .nui modules (Conflux, 134 modules); Shreddage's archive has an empty native_ui folder. Today Conflux shows its 368 hidden KSP controls on top of each other."
+steps = [
+  "Read before building: the .nui modules and component library in Conflux.nkr, NI's Native UI documentation, and the Kontakt 8 binary (REA) for the native_ui API (components, layout, computed values, contexts, connections to KSP parameters).",
+  "Port from v2's runtime (src/ui/native_runtime*.rs, native_ui.rs: 6.6k lines on mlua) only what is verified against Kontakt 8; aim for far fewer lines. The runtime translates into kontra-ui-model's Interface (a new format crate, crates/format/native-ui), so kontra-ui draws it with no Native UI code of its own.",
+  "Art: SVG and WebP through the Pictures worker, off the UI thread, at device scale.",
+  "Bindings: connect.parameter(...) reads and writes the KSP controls the scripts declare; a change repaints only the widgets that read it.",
+  "Measure with ui-shots --app on Conflux at nice 19: every page against Kontakt 8 screenshots, first frame, settled, idle frames 0.",
+]
+gate = ["build-slot cargo test -p kontra-format-native-ui", "nice -n 19 ui-shots --app on Conflux: pages match Kontakt 8"]
+done = ["Conflux shows its Native UI pages, plays from its own controls, and idles at 0 frames; v3's Native UI code is far below v2's 6.6k lines."]
+
+[[task]]
 id = "P8.5"
 title = "plugin/: the v3 plugin shell (KONTRA v3) beside v2"
 phase = 8
@@ -1468,7 +1489,7 @@ phase = 8
 lane = "coordinator"
 size = "S"
 agent = "coordinator"
-deps = ["P8.5"]
+deps = ["P8.5", "P8.4b"]
 owns = ["docs/architecture-v3/gates/G8.md", "src/**", "crates/sampler-*/**", "@plugin", "@v2rs", "@manifests", "@lockfile"]
 docs = ["README.md#targets", "11-MIGRATION.md#phase-8-app-and-plugin"]
 goal = "Release gate: v1 UX parity, all contracts, surveys, CPU, memory; user decides the merge to main."
