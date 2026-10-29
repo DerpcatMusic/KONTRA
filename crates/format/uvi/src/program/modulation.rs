@@ -209,7 +209,6 @@ pub(super) fn reach(
         || !connection.parent()?.parent()?.has_tag_name(owner)
         || connection.attribute("Destination") != Some(destination)
         || flag(connection, "ConnectionMode")
-        || connection.children().any(|n| n.is_element())
     {
         return None;
     }
@@ -218,7 +217,7 @@ pub(super) fn reach(
     } else {
         1.0
     };
-    let ratio = num(connection, "Ratio", 0.0).ok()? as f32;
+    let ratio = matrix::held_ratio(program, connection)?;
     if connection
         .attribute("Mapper")
         .is_some_and(|m| !m.is_empty())
