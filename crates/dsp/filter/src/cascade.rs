@@ -51,8 +51,8 @@ pub struct Cascade {
     glide: f32,
     /// Radians per sample per Hz.
     per_hz: f32,
-    /// Per channel: band and low state per stage, then the glided gain.
-    state: [[f32; 7]; 2],
+    /// Per channel: band and low state per stage, and the glided gain.
+    state: [([[f32; 2]; 3], f32); 2],
 }
 
 impl Cascade {
@@ -64,11 +64,11 @@ impl Cascade {
             gain: 0.0,
             glide: GLIDE / rate.max(1) as f32,
             per_hz: std::f32::consts::TAU / rate.max(1) as f32,
-            state: [[0.0; 7]; 2],
+            state: [([[0.0; 2]; 3], 0.0); 2],
         };
         c.set(settings);
         for s in &mut c.state {
-            s[6] = c.gain;
+            s.1 = c.gain;
         }
         c
     }
@@ -79,8 +79,9 @@ impl Cascade {
         let [s1, s2] = s.shifts;
         let hz = [s.hz, s.hz * s1.exp2(), s.hz * (s1 + s2).exp2()];
         let mut comp = [0.0f32; 3];
-        for (n, (st, c)) in s.stages.iter().zip(&mut self.stages).enumerate() {
-            let g = (hz[n] * per_hz).min(st.limit).max(f32::MIN_POSITIVE);
+        let stages = s.stages.iter().zip(&mut self.stages);
+        for (((st, c), hz), comp) in stages.zip(hz).zip(&mut comp) {
+            let g = (hz * per_hz).min(st.limit).max(f32::MIN_POSITIVE);
             let t = st.morph.clamp(0.0, 1.0);
             let weights = if t < 0.5 {
                 [1.0 - 2.0 * t, 2.0 * t, 0.0]
@@ -94,7 +95,7 @@ impl Cascade {
                 weights,
                 wet,
             };
-            comp[n] = wet * st.peak + (1.0 - wet);
+            *comp = wet * st.peak + (1.0 - wet);
         }
         // Pairs of stages whose peaks meet: each term shrinks as their
         // corners part (by `6·ratio − 5`).
@@ -114,21 +115,20 @@ impl Cascade {
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let (stages, gain, glide) = (self.stages, self.gain, self.glide);
         for frame in io.iter_mut() {
-            for (x, s) in frame.iter_mut().zip(&mut self.state) {
+            for (x, (s, glided)) in frame.iter_mut().zip(&mut self.state) {
                 let mut y = *x;
-                for (c, st) in stages.iter().zip(s.chunks_exact_mut(2)) {
-                    let (b, l) = (st[0], st[1]);
+                for (c, st) in stages.iter().zip(s.iter_mut()) {
+                    let [b, l] = *st;
                     let knee = b.clamp(-4.0, 4.0);
                     let hp = (KNEE.0 - knee.abs() * KNEE.1) * knee + (y - (b * c.d + l));
                     let b = hp * c.g + b;
                     let l = b * c.g + l;
-                    st[0] = flush(b);
-                    st[1] = flush(l);
+                    *st = [flush(b), flush(l)];
                     let mode = b * c.weights[1] + hp * c.weights[2] + l * c.weights[0];
                     y += (mode - y) * c.wet;
                 }
-                s[6] += (gain - s[6]) * glide;
-                *x = s[6] * y;
+                *glided += (gain - *glided) * glide;
+                *x = *glided * y;
             }
         }
     }
