@@ -2786,3 +2786,22 @@ fn a_switch_callback_reads_the_keys_held_at_the_click() {
     e.set_control(0, id, 1);
     assert_eq!(e.last_message(), "000");
 }
+
+#[test]
+fn load_array_mode_two_restores_text_from_library_data() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = "on init\n declare !names[3]\n load_array(!names, 2)\n message(!names[0] & \":\" & !names[1])\nend on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let data = vec![("names".into(), b"!names\nfirst\nsecond\n".to_vec())];
+    let mut plan = Plan::new(vec![], 4);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &data)];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "first:second");
+    assert_eq!(e.stats().actions_unhandled, 0);
+
+    let wrong_name = vec![("names".into(), b"!other\nfirst\n".to_vec())];
+    let mut plan = Plan::new(vec![], 4);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &wrong_name)];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.stats().actions_unhandled, 1);
+}

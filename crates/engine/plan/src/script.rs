@@ -14,6 +14,8 @@ pub struct ScriptPlan {
     pub coroutines: usize,
     /// Library data arrays `load_array(%x, 2)` reads: (first cell, values).
     pub data: Vec<(u32, Vec<i64>)>,
+    /// Text array data prepared from library resources.
+    pub text_data: Vec<(u32, Vec<Text>)>,
     /// Saved values written after `on init`, before `on persistence_changed`.
     pub restore: Vec<(u32, i64)>,
     pub restore_texts: Vec<(u32, Text)>,
@@ -37,6 +39,20 @@ pub struct ScriptPlan {
     pub held_release_ends_children: bool,
     /// MIDI controllers that move this script's controls.
     pub links: Vec<CcLink>,
+}
+
+impl ScriptPlan {
+    /// Copies a prepared text array into its cells. Returns false when the resource was not found.
+    pub fn load_text_data(&self, base: u32, len: usize, cells: &mut [Text]) -> bool {
+        let Some((_, values)) = self.text_data.iter().find(|(b, _)| *b == base) else {
+            return false;
+        };
+        let cells = cells.get_mut(base as usize..).unwrap_or_default();
+        for (cell, value) in cells.iter_mut().zip(values).take(len) {
+            *cell = *value;
+        }
+        true
+    }
 }
 
 /// A MIDI controller tied to control `id` (a UI id): its value `v` sets

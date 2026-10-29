@@ -164,6 +164,10 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             .iter()
             .filter_map(|(name, bytes)| data_array(script, name, bytes))
             .collect(),
+        text_data: data
+            .iter()
+            .filter_map(|(name, bytes)| text_data_array(script, name, bytes))
+            .collect(),
         restore: restore.ints,
         restore_texts: restore
             .texts
@@ -236,6 +240,28 @@ fn data_array(script: &Script, name: &str, bytes: &[u8]) -> Option<(u32, Vec<i64
                 line.parse::<i32>().ok().map(i64::from)
             }
         })
+        .collect();
+    Some((base, values))
+}
+
+/// A resource NKA's string values, prepared before script execution.
+fn text_data_array(script: &Script, name: &str, bytes: &[u8]) -> Option<(u32, Vec<Text>)> {
+    let var = script.variables.iter().find(|v| {
+        v.name
+            .get(1..)
+            .is_some_and(|n| n.eq_ignore_ascii_case(name))
+    })?;
+    let Cells::Text { base, len } = var.cells else {
+        return None;
+    };
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut lines = text.lines();
+    if lines.next()?.trim() != &*var.name {
+        return None;
+    }
+    let values = lines
+        .take(len as usize)
+        .map(|line| Text::from_str_cut(line).0)
         .collect();
     Some((base, values))
 }
@@ -377,6 +403,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         reverb_networks: Vec::new(),
         knobs: Vec::new(),
         data: Vec::new(),
+        text_data: Vec::new(),
         restore: Vec::new(),
         restore_texts: Vec::new(),
         foreign: Some(std::sync::Arc::new(compiled)),

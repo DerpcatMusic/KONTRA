@@ -697,8 +697,17 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             // Mode 2 is the library's data folder, read at once (the next line
-            // sees it). ponytail: text arrays and the user-file modes wait for a
-            // text-cell host API and file dialogs.
+            // sees it). User-file modes and async text loads remain unsupported.
+            Action::LoadArray if int(2) == 2 && int(3) == 2 && self.running.kind == Kind::Init => {
+                if self.script().is_some_and(|s| {
+                    s.load_text_data(int(0) as u32, int(1) as usize, call.text_cells)
+                }) {
+                    HostValue::Int(0)
+                } else {
+                    self.count_unhandled(Action::LoadArray);
+                    HostValue::Nothing
+                }
+            }
             Action::LoadArray if int(2) == 2 && int(3) != 2 => {
                 let (base, len) = (int(0) as u32, int(1) as usize);
                 let data = self.script().map(|s| s.data.as_slice());
