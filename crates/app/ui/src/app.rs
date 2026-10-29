@@ -6,6 +6,7 @@
 //! tooltip, choices are dropdowns, menus and panels float.
 
 mod browser;
+mod mapping;
 mod mixer;
 mod part;
 mod rack;
@@ -93,11 +94,30 @@ pub struct Part {
     pub info: Vec<(String, String)>,
     /// Its scripts' names.
     pub scripts: Vec<String>,
+    /// Its groups' names, and its zones.
+    pub groups: Vec<String>,
+    pub zones: Vec<Zone>,
     /// The library's own interface, when it has one.
     pub face: Option<Face>,
     /// Shown below its header.
     pub open: bool,
     pub tab: PartTab,
+}
+
+/// One zone of a part's mapping.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Zone {
+    /// Index into the part's groups.
+    pub group: usize,
+    pub sample: String,
+    /// The keys and velocities it plays, inclusive, and its root key.
+    pub keys: (u8, u8),
+    pub velocities: (u8, u8),
+    pub root: u8,
+    /// Tune in cents, volume in dB, pan from -1 to 1.
+    pub tune: f64,
+    pub volume: f64,
+    pub pan: f64,
 }
 
 /// A library's interface and its decoded pictures.
@@ -177,6 +197,13 @@ pub struct View {
     pub report_open: Option<usize>,
     /// The articulation grip being dragged, and the row it started on.
     pub grip: Option<(String, usize)>,
+    /// The Mapping tab: the group shown (all when none), the group filter,
+    /// the cell last picked on the grid (key, velocity) and the zone picked.
+    // ponytail: one mapping state for the editor; per part if two open at once matters.
+    pub mapping_group: Option<usize>,
+    pub mapping_search: String,
+    pub mapping_cell: Option<(u8, u8)>,
+    pub mapping_zone: Option<usize>,
     /// Articulations listed without their keys.
     pub keys_hidden: bool,
     pub keyboard_hidden: bool,
@@ -232,6 +259,11 @@ pub enum Action {
     Output(usize, u8),
     Velocity(usize, u8),
     Articulation(usize, usize),
+    /// Play a zone of a part's mapping.
+    Audition {
+        part: usize,
+        zone: usize,
+    },
     DefaultArticulation(usize, usize),
     /// Move an articulation from one place in the list to another.
     MoveArticulation {

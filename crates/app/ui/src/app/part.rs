@@ -41,7 +41,7 @@ pub(super) fn view(
         (PartTab::Articulations, _) => articulations(ui, p, n, v, out),
         (PartTab::Info, _) => info(p),
         (PartTab::Scripts, _) => listing("Scripts", &p.scripts, "This instrument runs no scripts."),
-        (PartTab::Mapping, _) => listing("Mapping", &[], "The mapping editor comes next."),
+        (PartTab::Mapping, _) => super::mapping::view(ui, p, n, v, out),
         _ => listing("Sound", &[], "The sound editor comes next."),
     };
     el.w(Len::Pct(100.))
