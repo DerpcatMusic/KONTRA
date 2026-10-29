@@ -173,8 +173,9 @@ pub const SIZE: [u32; LEVELS] = [
 #[derive(Clone, Debug, PartialEq)]
 pub struct Table {
     pub cycles: usize,
-    /// Every cycle's levels.
-    pub data: std::sync::Arc<[f32]>,
+    /// Every cycle's levels, as 16-bit steps of `scale`.
+    pub data: std::sync::Arc<[i16]>,
+    pub scale: f32,
     /// Where in `data` level `k` of cycle `c` lies, at `c * LEVELS + k`:
     /// its first frame and its length, a power of two.
     pub spans: std::sync::Arc<[(u32, u32)]>,
@@ -185,7 +186,7 @@ impl Table {
     /// `None` without a cycle, or unless every cycle has its levels.
     #[must_use]
     pub fn new(
-        data: std::sync::Arc<[f32]>,
+        (data, scale): (std::sync::Arc<[i16]>, f32),
         spans: std::sync::Arc<[(u32, u32)]>,
         read: Read,
     ) -> Option<Self> {
@@ -196,6 +197,7 @@ impl Table {
         (cycles > 0 && spans.len() == cycles * LEVELS && fits).then_some(Self {
             cycles,
             data,
+            scale,
             spans,
             read,
         })
@@ -240,7 +242,7 @@ impl Table {
         let i = at as u32;
         let tap = |k: u32| {
             let at = first + (i.wrapping_add(k).wrapping_sub(1) & (len - 1));
-            self.data.get(at as usize).copied().unwrap_or(0.0)
+            f32::from(self.data.get(at as usize).copied().unwrap_or(0)) * self.scale
         };
         crate::hermite(tap(0), tap(1), tap(2), tap(3), at.fract())
     }
@@ -400,8 +402,8 @@ mod tests {
             warps: [Warp::OFF; 2],
         };
         let spans: std::sync::Arc<[_]> = vec![(0, 8); LEVELS].into();
-        assert!(Table::new(vec![0.0; 8].into(), spans.clone(), read).is_some());
-        assert!(Table::new(vec![0.0; 4].into(), spans, read).is_none());
-        assert!(Table::new(vec![0.0; 8].into(), vec![(0, 8); 3].into(), read).is_none());
+        assert!(Table::new((vec![0; 8].into(), 1.0), spans.clone(), read).is_some());
+        assert!(Table::new((vec![0; 4].into(), 1.0), spans, read).is_none());
+        assert!(Table::new((vec![0; 8].into(), 1.0), vec![(0, 8); 3].into(), read).is_none());
     }
 }

@@ -1,9 +1,7 @@
 //! A wavetable zone's cycles, band-limited at every level a voice may read.
 
-use std::sync::Arc;
-
 use kontra_stream::{Sample, StreamClient};
-use kontra_voice::{CYCLE, LEVELS, SIZE, TOP};
+use kontra_voice::{CYCLE, LEVELS, Read, SIZE, TOP, Table};
 use realfft::RealFftPlanner;
 use realfft::num_complex::Complex;
 
@@ -12,16 +10,17 @@ use realfft::num_complex::Complex;
 /// would differ only below 16-bit noise.
 const QUIET: f32 = 3.16e-5;
 
-/// Every level of each whole cycle in `first..end` and where each lies (see
-/// [`kontra_voice::Table`]). Level `k` keeps a cycle's harmonics up to
+/// The table of each whole cycle in `first..end`, read by `read`, at every
+/// level. Level `k` keeps a cycle's harmonics up to
 /// `TOP[k] / 2`, resynthesised at `SIZE[k]` frames; Kontakt builds the same
-/// levels at the same sizes. `None` under one cycle in memory.
-pub(crate) fn levels(
+/// levels at the same sizes, but keeps them as 16-bit steps of the table's
+/// peak, half its memory. `None` under one cycle in memory.
+pub(crate) fn table(
     sample: &Sample,
     client: &StreamClient,
-    first: u64,
-    end: u64,
-) -> Option<(Arc<[f32]>, Arc<[(u32, u32)]>)> {
+    (first, end): (u64, u64),
+    read: Read,
+) -> Option<Table> {
     let cycles = end.checked_sub(first)? / CYCLE;
     let mut planner = RealFftPlanner::<f32>::new();
     let forward = planner.plan_fft_forward(CYCLE as usize);
@@ -65,7 +64,15 @@ pub(crate) fn levels(
             spans.push(span);
         }
     }
-    (cycles > 0).then(|| (data.into(), spans.into()))
+    let peak = data
+        .iter()
+        .fold(0.0f32, |m, x| m.max(x.abs()))
+        .max(f32::MIN_POSITIVE);
+    let steps = data
+        .iter()
+        .map(|x| (x / peak * 32767.0).round() as i16)
+        .collect();
+    Table::new((steps, peak / 32767.0), spans.into(), read)
 }
 
 /// The harmonics of `spectrum` (a [`CYCLE`]-frame transform) up to

@@ -12,7 +12,7 @@ use kontra_ir as ir;
 use kontra_stream::{
     BlobKey, LoadRequest, MAX_CHANNELS, Mix, Sample, SampleFmt, Source, Store, StreamClient,
 };
-use kontra_voice::{Ahdsr, Loop, PERIOD, Read, Region, Shape, Shaper, Side, Table, Warp};
+use kontra_voice::{Ahdsr, Loop, PERIOD, Read, Region, Shape, Shaper, Side, Warp};
 
 use kontra_engine::{
     Atom, Bus, Control, Crossfade, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone,
@@ -383,9 +383,8 @@ fn zone(
             .collect(),
         reverse: z.reverse,
         mix: mix(&z.mix),
-        table: group.wavetable.and_then(|w| {
-            let (data, spans) = levels::levels(sample, client, z.start, z.end.min(source.frames))?;
-            Table::new(data, spans, read(w))
+        table: (group.wavetable).and_then(|w| {
+            levels::table(sample, client, (z.start, z.end.min(source.frames)), read(w))
         }),
     };
     // A table plays its cycle at 440 Hz on A4, whatever the zone's root and
