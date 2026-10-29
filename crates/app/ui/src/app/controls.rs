@@ -7,7 +7,9 @@ use mui::prelude::*;
 use crate::input::{Edit, takes_input, value};
 use crate::kit::{self, knob, latch};
 use crate::theme::{SPACE, TEXT, TIGHT, secondary};
-use crate::view::{knob_name, readout};
+use crate::view::readout;
+
+mod name;
 
 /// The controls of `page`, and this frame's edits to them. `menu` is the
 /// editor's one open dropdown.
@@ -28,10 +30,7 @@ pub(super) fn view(
             continue;
         }
         let id = format!("kontra-c-{face}-{}", n.0);
-        let name = match knob_name(w) {
-            s if s.trim().is_empty() => w.name.trim_start_matches(['$', '~']).to_owned(),
-            s => s,
-        };
+        let name = name::label(tree, n);
         let now = value(w);
         let (picked, el) = match &w.kind {
             Kind::Knob { range, .. }

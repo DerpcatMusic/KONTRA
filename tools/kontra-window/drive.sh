@@ -111,6 +111,14 @@ check 6a-original 6b-vector "part look: Vector draws without pictures" 205,100,8
 at "$look"; xdotool click 1; sleep 1; at "$kontra"; xdotool click 1; sleep 2
 at 1900,1270; sleep 1; shot 6c-kontra
 check 6b-vector 6c-kontra "part look: KONTRA lists the controls" 205,100,880,500
+# When comparing an earlier build, check the generated control captions too.
+if [[ -n ${LABEL_BEFORE:-} ]]; then
+    if python3 -I -c 'import sys; from PIL import Image, ImageChops
+a, b = (Image.open(p).convert("RGB").crop((205, 115, 760, 130)) for p in sys.argv[1:])
+sys.exit(0 if ImageChops.difference(a, b).getbbox() else 1)' "$LABEL_BEFORE" "$out/6c-kontra.png"; then
+        pass "KONTRA control captions changed"
+    else miss "KONTRA control captions changed"; fi
+fi
 at "$look"; xdotool click 1; sleep 1; at "$look"; sleep 0.2
 xdotool mousemove_relative -- -90 40; xdotool click 1; sleep 2
 at 1900,1270; sleep 1; shot 6d-back
