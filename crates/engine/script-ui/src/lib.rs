@@ -263,8 +263,17 @@ impl Store {
         self.click = n.map(|n| (slot, n, keys, cell));
     }
 
-    /// `$NI_CONTROL_PAR_IDX`: the cell last clicked in control `n` of
-    /// script `slot`, 0 when the last click was elsewhere.
+    /// `$NI_CONTROL_PAR_IDX`: the cell of script `slot`'s last click (the
+    /// table whose `on ui_control` reads it).
+    #[must_use]
+    pub fn last_cell(&self, slot: u8) -> u32 {
+        self.click
+            .filter(|c| c.0 == slot)
+            .map_or(0, |(.., cell)| cell)
+    }
+
+    /// The cell last clicked in control `n` of script `slot`, 0 when the
+    /// last click was elsewhere.
     #[must_use]
     pub fn click_cell(&self, slot: u8, n: Option<usize>) -> u32 {
         let clicked = self.click.filter(|&(s, c, ..)| s == slot && Some(c) == n);
