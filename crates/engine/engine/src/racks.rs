@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use kontra_dsp::core::Levels;
 use kontra_dsp::delay::{MAX_MS, ModDelay, Phaser, PhaserSettings};
 use kontra_dsp::drive::{Circuit, Clipper, Shaper};
 use kontra_dsp::dynamics::{
@@ -184,6 +185,8 @@ pub(crate) struct Rack {
     mods: Box<[ir::ModKind]>,
     blends: Box<[ir::Blend]>,
     amounts: Box<[f32]>,
+    /// Each slot's levels, gliding where its settings move.
+    levels: Box<[Levels]>,
     rate: u32,
 }
 
@@ -345,6 +348,7 @@ impl Rack {
             mods: mods.into(),
             blends: blends.into(),
             amounts: vec![0.0; mods.len()].into(),
+            levels: vec![Levels::new(rate); slots.len()].into(),
             rate,
         }
     }
@@ -378,7 +382,8 @@ impl Rack {
         taps: &mut [Box<[[f32; 2]]>],
         tempo: f32,
     ) {
-        for (n, (slot, dsp)) in self.slots.iter().zip(self.dsp.iter_mut()).enumerate() {
+        let slots = self.slots.iter().zip(self.dsp.iter_mut());
+        for (n, ((slot, dsp), levels)) in slots.zip(self.levels.iter_mut()).enumerate() {
             let Some(mut e) = slot.filter(|e| !e.bypass) else {
                 continue;
             };
@@ -405,10 +410,7 @@ impl Rack {
                     processor.set(kind, tempo);
                     wet.copy_from_slice(io);
                     processor.process(wet);
-                    for (x, w) in io.iter_mut().zip(wet.iter()) {
-                        x[0] = x[0] * e.dry + w[0] * e.output;
-                        x[1] = x[1] * e.dry + w[1] * e.output;
-                    }
+                    levels.mix(io, wet, e.dry, e.output);
                     continue;
                 }
                 (_, ir::EffectKind::Sends(levels)) => {
@@ -421,7 +423,7 @@ impl Rack {
                 }
                 _ => {}
             }
-            apply(effects::matrix(&e), io);
+            levels.matrix(io, effects::matrix(&e));
         }
     }
 
