@@ -194,10 +194,8 @@ fn blocks(key: u64, origin: u64, block: u64, at: u64, bytes: &mut [u8]) {
     }
 }
 
-/// The first `len` bytes of the word stream seeded by `key` and `nonce`:
-/// word `j` is the little-endian output of a multiplicative state that steps
-/// once per word. The same generator as uvi-file's `transform`, which the
-/// uvi crate's test checks against.
+/// The first `len` bytes of the word stream seeded by `key` and `nonce`, a
+/// multiplicative state stepped per word (uvi-file's `transform`; uvi tests it).
 fn word_stream(key: u64, nonce: u64, len: usize) -> Vec<u8> {
     const MIX: u64 = 0xc6a4_a793_5bd1_e995;
     const STEP: u64 = 0x5851_f42d_4c95_7f2d;
@@ -604,6 +602,8 @@ pub enum StartRule {
         length: u8,
         random: bool,
     },
+    /// One zone slot of the group per note, in turn or at random (no repeat), per group.
+    Cycle { random: bool },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -707,9 +707,8 @@ pub enum EffectKind {
     Phaser(Phaser),
     /// A transient shaper, in place.
     Transient(Transient),
-    /// Not carried, an insert: audio passes unchanged (its output gain
-    /// trims processing that does not run).
-    /// The translator reports it.
+    /// Not carried, an insert: audio passes unchanged (its output gain trims
+    /// processing that does not run); the translator reports it.
     Other,
     /// Not carried, a parallel path (a reverb, a delay): only the dry level
     /// passes. The translator reports it.
@@ -816,6 +815,8 @@ pub struct Diagnostic {
 pub enum Impact {
     /// Nothing audible.
     Cosmetic,
+    /// Audible once a script opens what load leaves closed (an aux no send reaches).
+    Latent,
     /// Sound differs (a missing effect, a wrong curve).
     Audible,
     /// Notes are missing or wrong.

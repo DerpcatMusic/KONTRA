@@ -14,9 +14,16 @@ impl<L: Library> Translator<'_, '_, L> {
     /// connection law (UVIWorkstation 0x141429a80) scales the depth by
     /// `1 − r(1 − x)`, or `1 + r·x` below zero, where Intensity reads `1 − x`
     /// at `−r` (unit −1, so a script's ratio keeps its sign). ponytail: a
-    /// depth-moved LFO's gain routes ([`gain_route`]) are not scaled, and a
     /// script turning a depth ratio's sign keeps its inversion.
     pub(super) fn depth_scales(&mut self, group: &mut ir::Group, connection: Node, of: ir::Source) {
+        // An LFO read through a table (a gain's `factor`) scales the same way.
+        let of = match of {
+            ir::Source::Shaped(n) => group.shapers.get(usize::from(n)).map_or(of, |t| t.source),
+            of => of,
+        };
+        if !matches!(of, ir::Source::Lfo(_)) {
+            return;
+        }
         let Some(lfo) = source_node(self.program, connection) else {
             return;
         };
@@ -315,6 +322,13 @@ pub(super) fn gain_route(program: Node, connection: Node) -> Option<Route> {
 /// (1 + d)/2]`. Not a rising LFO (its rise scales the source, not the ratio).
 pub(super) fn factor(mut r: Route) -> Option<Route> {
     r.ratio = r.ratio.clamp(-1.0, 1.0);
+    // ponytail: a rise done within 5 ms (AO Meadows: 3.1 ms on a 0.5-beat
+    // tremolo) is read as none; carry it under an Intensity if one is longer.
+    if let Some(Timed::Rising(lfo, rise)) = &r.timed
+        && rise.points.iter().map(|p| p.ms).sum::<f32>() <= 5.0
+    {
+        r.timed = Some(Timed::Lfo(*lfo));
+    }
     match r.timed.take() {
         Some(Timed::Rising(..)) => return None,
         Some(Timed::Lfo(lfo)) => {

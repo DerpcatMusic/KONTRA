@@ -366,6 +366,17 @@ fn zone(
                     length: *length,
                     random: *random,
                 }),
+                ir::StartRule::Cycle { random } => {
+                    let slots: std::collections::BTreeSet<u16> =
+                        group.zones.iter().map(|z| z.slot).collect();
+                    let count = |n: usize| u8::try_from(n).unwrap_or(u8::MAX);
+                    Atom::RoundRobin(RoundRobin {
+                        counter: RrCounter::Group,
+                        position: count(slots.range(..z.slot).count()),
+                        length: count(slots.len()),
+                        random: *random,
+                    })
+                }
             };
             Some((*join, atom))
         })

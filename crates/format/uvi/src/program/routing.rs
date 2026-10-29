@@ -66,6 +66,45 @@ pub(super) fn carried(node: Node) -> bool {
             || (owner.has_tag_name("Program") && kind))
 }
 
+/// A keygroup's TriggerRule as a start rule: every oscillator (0), one per
+/// note in turn (1, "Cycle") or at random (2, "Random Cycle"). The names
+/// follow the keygroup's trigger parameters in UVIWorkstation's string table
+/// (0x141e1ef00, before TriggerSync's "Immediate"/"Next Beat"/"Next Bar").
+pub(super) fn cycle(kg: Node) -> Option<(ir::Join, ir::StartRule)> {
+    let random = match kg.attribute("TriggerRule")? {
+        "1" => false,
+        "2" => true,
+        _ => return None,
+    };
+    Some((ir::Join::And, ir::StartRule::Cycle { random }))
+}
+
+/// Latent for `node` on a program aux no open send reaches at load (by the
+/// name [`Translator::sends_of`] resolves: AO's Feedback aux, its sends off
+/// until a script turns one on); else Audible.
+pub(super) fn impact(program: Node, node: Node) -> ir::Impact {
+    let aux = node
+        .ancestors()
+        .filter(|a| a.has_tag_name("AuxEffect"))
+        .last();
+    let open = |aux: Node| {
+        program.descendants().any(|s| {
+            s.has_tag_name("BusRouter")
+                && !flag(s, "Bypass")
+                && s.attribute("Destination")
+                    .and_then(|d| d.rsplit('/').next())
+                    == aux.attribute("Name")
+                && num(s, "Gain", 1.0).is_ok_and(|g| g > 0.0)
+        })
+    };
+    match aux {
+        Some(aux) if aux.parent().and_then(|p| p.parent()) == Some(program) && !open(aux) => {
+            ir::Impact::Latent
+        }
+        _ => ir::Impact::Audible,
+    }
+}
+
 fn children<'a, 'input>(
     owner: Node<'a, 'input>,
     container: &'static str,
