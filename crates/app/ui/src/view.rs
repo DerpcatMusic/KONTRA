@@ -191,18 +191,7 @@ fn drawn_page(
             if let Some(glyphs) = &glyphs {
                 parts.push(bitmap_words(&words, style, wd, (w, h), scale, glyphs).at(0., 0.));
             } else if !words.is_empty() {
-                parts.push(
-                    words_el(
-                        &words,
-                        style,
-                        wd,
-                        (w, h),
-                        scale,
-                        wd.text_y,
-                        outline.as_ref(),
-                    )
-                    .at(0., 0.),
-                );
+                parts.push(words_el(&words, style, wd, (w, h), scale, outline.as_ref()).at(0., 0.));
             }
             if let Some((o, t)) = lit {
                 parts.push(meter(&wd.colors, o, t, w, h).at(0., 0.));
@@ -421,35 +410,16 @@ fn words_el(
     w: &model::Widget,
     (width, height): (f64, f64),
     scale: f64,
-    text_y: Option<i32>,
     font: Option<&Font>,
 ) -> El {
-    let size = style.and_then(|s| s.size).map_or(TEXT, f64::from) * scale;
-    let ink = style.map_or(Color::srgb(1., 1., 1.), |s| color(s.color));
-    let align = style.map_or(
-        if matches!(w.kind, Kind::Label) {
-            model::Align::Left
-        } else {
-            model::Align::Center
-        },
-        |s| s.align,
-    );
-    // Kontakt sets a label's words 7 px in from its side (oracle: Areia
-    // 6.7, Pacific 7.7 px at 150%).
-    let inset = if matches!(w.kind, Kind::Label) {
-        7.
-    } else {
-        2.
-    };
-    let line = size * 1.25;
-    let top = text_y.map_or(((height - line) / 2.).max(0.), |y| f64::from(y) * scale);
-    // A script can build a label a line at a time. Keep empty lines: they
-    // set the spacing between the key names on Afflatus' keyswitch page.
-    if words.contains('\n') {
-        // Afflatus' keyswitch labels are 26 source pixels apart with an
-        // empty line between them: 13 pixels at the 11-pixel stock size.
-        let line = size * (13. / 11.);
-        let top = text_y.map_or(0., |y| f64::from(y) * scale);
+    let geometry = plan::text(words, style, w, height, scale);
+    let size = geometry.size;
+    let ink = geometry.color.map_or(Color::srgb(1., 1., 1.), color);
+    let align = geometry.align;
+    let line = geometry.line;
+    let top = geometry.top;
+    let inset = geometry.inset;
+    if geometry.multiline {
         let lines = words
             .split('\n')
             .enumerate()
@@ -470,7 +440,7 @@ fn words_el(
                     })
                     .w(width)
                     .h(line)
-                    .pad((inset * scale, 0.))
+                    .pad((inset, 0.))
                     .at(0., top + n as f64 * line)
             })
             .collect::<Vec<_>>();
@@ -503,7 +473,7 @@ fn words_el(
     })
     .w(width)
     .h(line)
-    .pad((inset * scale, 0.))
+    .pad((inset, 0.))
     .at(0., top);
     stack([el]).w(width).h(height).radius(0.).clip()
 }

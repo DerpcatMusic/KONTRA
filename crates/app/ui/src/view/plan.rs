@@ -97,6 +97,60 @@ pub(super) fn page(tree: &Interface, page: PageRef, bare: bool) -> Option<Page<'
     Some(Page { source, widgets })
 }
 
+/// Geometry and ink of a label, in view points. Explicit line breaks keep
+/// their empty rows and use the source's measured line pitch.
+pub(super) struct Text {
+    pub size: f64,
+    pub line: f64,
+    pub top: f64,
+    pub inset: f64,
+    pub align: model::Align,
+    pub color: Option<model::Rgba>,
+    pub multiline: bool,
+}
+
+pub(super) fn text(
+    words: &str,
+    style: Option<&model::TextStyle>,
+    widget: &model::Widget,
+    height: f64,
+    scale: f64,
+) -> Text {
+    let size = style.and_then(|s| s.size).map_or(super::TEXT, f64::from) * scale;
+    let multiline = words.contains('\n');
+    let line = size * if multiline { 13. / 11. } else { 1.25 };
+    let top = widget.text_y.map_or_else(
+        || {
+            if multiline {
+                0.
+            } else {
+                ((height - line) / 2.).max(0.)
+            }
+        },
+        |y| f64::from(y) * scale,
+    );
+    Text {
+        size,
+        line,
+        top,
+        inset: if matches!(widget.kind, model::Kind::Label) {
+            7. * scale
+        } else {
+            2. * scale
+        },
+        align: style.map_or(
+            if matches!(widget.kind, model::Kind::Label) {
+                model::Align::Left
+            } else {
+                model::Align::Center
+            },
+            |s| s.align,
+        ),
+        color: style.map(|s| s.color),
+        multiline,
+    }
+}
+
 /// One source axis, mapped to decoded pixels and destination points.
 /// Fixed ends keep their size, shrinking together when the destination is
 /// shorter than the two ends.
