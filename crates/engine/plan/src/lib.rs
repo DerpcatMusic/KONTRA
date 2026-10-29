@@ -3,10 +3,12 @@
 //! (13-FRESH-CORE.md §2.1): scripts are optional, not where round robin lives.
 
 mod engine_pars;
+mod route;
 mod script;
 mod slots;
 
 pub use engine_pars::{EnginePar, EnginePars};
+pub use route::route_source;
 pub use script::{Callbacks, Controls, LookPars, ScriptPlan};
 
 use std::ops::RangeInclusive;

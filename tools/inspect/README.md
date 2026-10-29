@@ -57,8 +57,10 @@ steals, cuts and ends include slot, zone, sample, pitch step and gain. Voice
 ends are timed to the end of the render span, not the precise sample. The
 bounded engine event buffer is drained between blocks; an overflow is counted
 and makes the report incomplete. `all_routes` gives current source and routed
-source for each active voice, while note-on-only routes additionally emit
-`route_onset` events with the source sampled at voice start. `bus_routes` gives
+source for each active voice, while start-sensitive routes additionally emit
+`route_onset` events with the source sampled at voice start. LFO phase and rate
+routes can be re-read later using the then-current controller state; the onset
+event does not imply that their value remains fixed. `bus_routes` gives
 the last applied bus amount. Non-EQ applied per-voice target values are not yet available; `null`
 sources are not zero. Octave-band RMS uses Hann-windowed stereo FFTs and is
 reported for the full output and successive one-second intervals.
