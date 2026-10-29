@@ -13,8 +13,9 @@ use serde_json::{Value, json};
 use super::RATE;
 
 pub fn run(path: &Path) -> Result<(Value, String)> {
-    let instrument = kontra_host::instrument::read(path)
-        .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+    let (instrument, law_applications) =
+        kontra_law::collect(|| kontra_host::instrument::read(path));
+    let instrument = instrument.map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
     // Prepare requests samples referenced by at least one non-purged group.
     let resident_samples: HashSet<usize> = instrument
         .groups
@@ -225,7 +226,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     let callback_summary =
         callback_count.map_or_else(|| "unavailable".to_owned(), |n| n.to_string());
     let mut unavailable = vec![
-        "translator law IDs and provenance",
+        "law application provenance outside instrumented Kontakt envelope and release counter",
         "reason for unresolved UI assets",
     ];
     if mapping.is_none() {
@@ -237,7 +238,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     let unanswered = format!("{:?}", engine.unhandled_actions());
     let faults = format!("{:?}", engine.script_faults());
     let summary = format!(
-        "{}\n  samples: {}; groups: {}; zones: {} translated / {} prepared; scripts: {}; UI models: {}\n  unprepared zones by reason: {unprepared_reasons:?}\n  diagnostics: {}; init unanswered: {}; script faults: {}\n  compiled callback/dispatch entries: {callback_summary}; referenced UI assets: {resolved_assets} resolved / {unresolved_assets} not resolved\n  law IDs: unavailable (not recorded by the v3 IR)\n",
+        "{}\n  samples: {}; groups: {}; zones: {} translated / {} prepared; scripts: {}; UI models: {}\n  unprepared zones by reason: {unprepared_reasons:?}\n  diagnostics: {}; init unanswered: {}; script faults: {}\n  compiled callback/dispatch entries: {callback_summary}; referenced UI assets: {resolved_assets} resolved / {unresolved_assets} not resolved\n  recorded translator law applications: {}; other law provenance unavailable\n",
         loaded.name,
         samples.len(),
         groups.len(),
@@ -247,14 +248,15 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         ui.len(),
         diagnostics.len(),
         unanswered,
-        faults
+        faults,
+        law_applications.len()
     );
     Ok((
         json!({"schema_version": 1, "command": "load", "instrument": path,
         "engine": "v3", "result": {"name": loaded.name, "samples": samples, "groups": groups,
         "translated_zones": input_zones, "prepared_zones": zones, "unprepared_reasons": unprepared_reasons, "effects": effects, "slot_parameter_laws": parameter_laws, "scripts": scripts, "ui": ui,
         "diagnostics": diagnostics, "init_unanswered": unanswered, "script_faults": faults,
-        "laws": null, "compiled_callback_count": callback_count, "script_mapping_available": mapping.is_some(), "unavailable": unavailable}}),
+        "laws": null, "law_applications": law_applications.iter().map(|a| json!({"law_id":a.id.0, "location":a.location, "input":a.input, "output":a.output})).collect::<Vec<_>>(), "law_coverage":"partial: Kontakt group envelope and release counter", "compiled_callback_count": callback_count, "script_mapping_available": mapping.is_some(), "unavailable": unavailable}}),
         summary,
     ))
 }

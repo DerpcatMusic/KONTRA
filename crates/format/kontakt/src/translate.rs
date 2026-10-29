@@ -102,7 +102,7 @@ pub(crate) fn instrument(
     let mut criteria = Vec::new();
     let mut slots = crate::effects::Slots::default();
     for (index, group) in groups.groups.iter().enumerate() {
-        let t = translate_group(group, &base, &mut notes)
+        let t = translate_group(group, index, &base, &mut notes)
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
         let mut g = t.group;
         g.inserts = crate::effects::group(group, index, &mut impulses, &mut notes, &mut slots);
@@ -425,6 +425,7 @@ struct Translated {
 
 fn translate_group(
     group: &Group,
+    group_index: usize,
     base: &Base,
     notes: &mut Notes,
 ) -> Result<Translated, ni_file::Error> {
@@ -452,6 +453,15 @@ fn translate_group(
     let slot = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
     let mut modulated = Vec::new();
     let release_counter = laws::release_counter(v.release_trigger, v.rls_trig_counter);
+    kontra_law::record(|| kontra_law::Application {
+        id: kontra_law::LawId("kontakt.release_counter.v1"),
+        location: format!("groups/{group_index}/release_counter"),
+        input: format!(
+            "release_trigger={:?}, time_ms={:?}",
+            v.release_trigger, v.rls_trig_counter
+        ),
+        output: format!("{release_counter:?}"),
+    });
     // Each timed modulator's slot and the source it became.
     let mut timed_slots = Vec::new();
     if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
@@ -477,6 +487,12 @@ fn translate_group(
                             .any(|m| matches!(m.kind, ir::ModKind::Envelope)) =>
                 {
                     out.envelope = laws::envelope(e);
+                    kontra_law::record(|| kontra_law::Application {
+                        id: kontra_law::LawId("kontakt.ahdsr_envelope.v1"),
+                        location: format!("groups/{group_index}/envelope"),
+                        input: format!("{e:?}"),
+                        output: format!("{:?}", out.envelope),
+                    });
                     let target = p.targets.iter().position(|t| t.param == "volume");
                     out.mods.push(ir::Mod {
                         name: p.name.clone(),
