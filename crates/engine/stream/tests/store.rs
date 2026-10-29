@@ -241,3 +241,63 @@ fn a_six_channel_sample_pins_and_streams_through_its_mix() {
     }));
     assert_eq!(out[7], [value(late + 12), value(late + 9)]);
 }
+
+#[test]
+fn an_ncw_head_stays_compressed_and_plays_exactly() {
+    let frames = 3000u64;
+    let samples: Vec<i32> = (0..frames as i32)
+        .flat_map(|n| [n * 40 - 60_000, 1000 - n * 7])
+        .collect();
+    let spec = ncw::PcmSpec {
+        channels: 2,
+        bits_per_sample: 24,
+        sample_rate: 48_000,
+    };
+    let data = ncw::encode_pcm(&samples, spec, ncw::StereoMode::Auto).unwrap();
+    let path = std::env::temp_dir().join(format!("kontra-stream-{}.ncw", std::process::id()));
+    std::fs::write(&path, &data).unwrap();
+    let sample = kontra_ir::Sample {
+        name: "ncw".into(),
+        file: path.clone(),
+        offset: 0,
+        len: None,
+        channels: 2,
+        frames,
+        rate: 48_000,
+        keystream: None,
+    };
+    let (source, fmt) = kontra_stream::open(&sample).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let key = BlobKey {
+        file: "ncw".into(),
+        offset: 0,
+        fmt,
+    };
+    let loaded = store.load(&key, source, frames, &[0..frames]).unwrap();
+    // Held as stored: under the packed 24-bit PCM it decodes to.
+    assert!(
+        store.pinned_bytes() < frames * 6 / 2,
+        "{}",
+        store.pinned_bytes()
+    );
+    // Read in odd pieces across block and page edges.
+    let client = store.client();
+    let mut at = 0;
+    for len in [1usize, 511, 2, 700, 1000, 786].into_iter().cycle() {
+        if at >= frames {
+            break;
+        }
+        let mut out = vec![[9.0; 2]; len];
+        assert_eq!(loaded.read(&client, at, &mut out).missing, 0);
+        for (n, frame) in out.iter().enumerate() {
+            let i = at as usize + n;
+            let expect = match samples.get(2 * i..2 * i + 2) {
+                Some([l, r]) => [*l as f32 / 8_388_608.0, *r as f32 / 8_388_608.0],
+                _ => [0.0; 2],
+            };
+            assert_eq!(*frame, expect, "frame {i}");
+        }
+        at += len as u64;
+    }
+    std::fs::remove_file(path).unwrap();
+}

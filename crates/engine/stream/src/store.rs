@@ -17,7 +17,7 @@ use crate::cache::{Cache, tag};
 use crate::fmt::MAX_CHANNELS;
 use crate::fmt::SampleFmt;
 use crate::sample::{
-    ABSENT, REQUESTED, RESIDENT, Sample, SampleId, page_count, page_of, page_shift,
+    ABSENT, Page, REQUESTED, RESIDENT, Sample, SampleId, page_count, page_of, page_shift,
 };
 use crate::source::Source;
 
@@ -121,7 +121,8 @@ impl StreamClient {
 }
 
 /// Pinned pages by (blob, page), shared while any sample holds them.
-type PinnedPages = HashMap<(BlobKey, usize), Weak<[u8]>>;
+/// Pinned pages by sample and page; `true` for a page of stored blocks.
+type PinnedPages = HashMap<(BlobKey, usize), (Weak<[u8]>, bool)>;
 
 pub struct Store {
     shared: Arc<Shared>,
@@ -174,7 +175,7 @@ impl Store {
     pub fn pinned_bytes(&self) -> u64 {
         self.pinned
             .values()
-            .filter_map(Weak::upgrade)
+            .filter_map(|(page, _)| page.upgrade())
             .map(|page| page.len() as u64)
             .sum()
     }
@@ -240,7 +241,7 @@ impl Store {
     }
 
     fn load_unique(&mut self, requests: Vec<LoadRequest>) -> Vec<io::Result<Arc<Sample>>> {
-        self.pinned.retain(|_, page| page.strong_count() > 0);
+        self.pinned.retain(|_, (page, _)| page.strong_count() > 0);
         // Pages already held, and the runs each request must read.
         let mut plans = Vec::with_capacity(requests.len());
         for r in &requests {
@@ -253,7 +254,7 @@ impl Store {
                 continue;
             }
             let shift = self.shift(&r.key.fmt);
-            let mut pages: Vec<Option<Arc<[u8]>>> = vec![None; page_count(r.frames, shift)];
+            let mut pages: Vec<Option<Page>> = vec![None; page_count(r.frames, shift)];
             let mut wanted = vec![false; pages.len()];
             for range in &r.pin {
                 let end = range.end.min(r.frames);
@@ -270,7 +271,14 @@ impl Store {
                     *cell = self
                         .pinned
                         .get(&(r.key.clone(), page))
-                        .and_then(Weak::upgrade);
+                        .and_then(|(b, blocks)| {
+                            let b = b.upgrade()?;
+                            Some(if *blocks {
+                                Page::Blocks(b)
+                            } else {
+                                Page::Pcm(b)
+                            })
+                        });
                 }
             }
             let mut runs = Vec::new();
@@ -322,14 +330,19 @@ impl Store {
                             let first = run.start as u64 * size;
                             let end = (run.end as u64 * size).min(r.frames);
                             let frame_bytes = r.key.fmt.bytes_per_frame();
-                            let mut buf = vec![0; (end - first) as usize * frame_bytes];
-                            // Split into pages here, so this thread's heap reuses
-                            // the freed run for the pages it keeps.
-                            let page_bytes = (size as usize * frame_bytes).max(1);
-                            let result = r
-                                .source
-                                .read(first, &mut buf)
-                                .map(|()| buf.chunks(page_bytes).map(Arc::<[u8]>::from).collect());
+                            let result = if let Some(per) = blocks_per_page(&*r.source, size) {
+                                read_blocks(&*r.source, r.frames, run, per)
+                            } else {
+                                let mut buf = vec![0; (end - first) as usize * frame_bytes];
+                                // Split into pages here, so this thread's heap reuses
+                                // the freed run for the pages it keeps.
+                                let page_bytes = (size as usize * frame_bytes).max(1);
+                                r.source.read(first, &mut buf).map(|()| {
+                                    buf.chunks(page_bytes)
+                                        .map(|c| Page::Pcm(c.into()))
+                                        .collect()
+                                })
+                            };
                             done.push((*i, run.clone(), result));
                         }
                     })
@@ -351,8 +364,11 @@ impl Store {
                 }
             };
             for (page, shared) in run.zip(read) {
-                self.pinned
-                    .insert((r.key.clone(), page), Arc::downgrade(&shared));
+                let blocks = matches!(shared, Page::Blocks(_));
+                self.pinned.insert(
+                    (r.key.clone(), page),
+                    (Arc::downgrade(shared.bytes()), blocks),
+                );
                 if let Some(cell) = pages.get_mut(page) {
                     *cell = Some(shared);
                 }
@@ -382,7 +398,45 @@ impl Store {
 }
 
 /// A run of pages read for request `.0`.
-type RunRead = (usize, Range<usize>, io::Result<Vec<Arc<[u8]>>>);
+type RunRead = (usize, Range<usize>, io::Result<Vec<Page>>);
+
+/// Codec blocks in a page of `size` frames, when `source` keeps its pages
+/// as stored blocks: a page must hold whole blocks.
+fn blocks_per_page(source: &dyn Source, size: u64) -> Option<usize> {
+    source.packing()?;
+    let block = ncw::SAMPLES_PER_BLOCK as u64;
+    (size >= block && size.is_multiple_of(block)).then_some((size / block) as usize)
+}
+
+/// Pages `run` of a `frames`-long `source` as stored blocks, `per` blocks a
+/// page; the sample's last page may hold fewer.
+fn read_blocks(
+    source: &dyn Source,
+    frames: u64,
+    run: &Range<usize>,
+    per: usize,
+) -> io::Result<Vec<Page>> {
+    let total = frames.div_ceil(ncw::SAMPLES_PER_BLOCK as u64) as usize;
+    let (bytes, starts) = source.read_blocks(run.start * per..(run.end * per).min(total))?;
+    let blocks = starts.len().saturating_sub(1);
+    Ok((0..blocks.div_ceil(per))
+        .map(|p| {
+            let (lo, hi) = (p * per, ((p + 1) * per).min(blocks));
+            let from = starts.get(lo).copied().unwrap_or(0);
+            let to = starts.get(hi).copied().unwrap_or(from);
+            let rebased: Vec<u32> = starts
+                .get(lo..=hi)
+                .unwrap_or_default()
+                .iter()
+                .map(|s| s - from)
+                .collect();
+            Page::blocks(
+                bytes.get(from as usize..to as usize).unwrap_or_default(),
+                &rebased,
+            )
+        })
+        .collect())
+}
 
 /// One sample for [`Store::load_many`].
 pub struct LoadRequest {
