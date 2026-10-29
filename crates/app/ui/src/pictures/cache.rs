@@ -132,6 +132,10 @@ mod tests {
             panic!("no cached images")
         };
         assert_eq!(&*cached.main[0].rgba, &[1, 2, 3, 255]);
+        assert_eq!(
+            cached.font13.as_ref().map(|font| &*font.rgba),
+            Some(&[1, 2, 3, 255][..])
+        );
         let fallback = dir.path().join("fallback.exe");
         std::fs::write(&fallback, b"no font13").unwrap();
         let without_font = super::Art {

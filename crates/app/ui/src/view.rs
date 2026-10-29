@@ -138,14 +138,17 @@ fn drawn_page(
         let stock_art = look
             .as_ref()
             .and_then(|look| look.pictures(pictures, device));
-        let stock_glyphs = look.as_ref().and_then(|look| {
-            let field_font = matches!(look, stock::Look::Field { .. })
-                && style.is_some_and(|s| s.font == model::Font::Stock(13));
-            if field_font {
+        let stock_glyphs = look.as_ref().and_then(|look| match look {
+            stock::Look::Field { .. }
+                if style.is_some_and(|s| s.font == model::Font::Stock(13))
+                    && matches!(wd.kind, Kind::ValueEdit { arrows: true, .. }) =>
+            {
                 pictures.font(model::AssetRef(usize::MAX - 4), "@stock/font13")
-            } else {
+            }
+            stock::Look::Knob { .. } if stock_art.is_some() => {
                 pictures.font(model::AssetRef(usize::MAX - 3), "@stock/font")
             }
+            _ => None,
         });
         let stock = item.stock;
         let words = item.words;
