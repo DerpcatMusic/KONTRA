@@ -18,9 +18,13 @@ A run copies both binaries to /data/dev/workspace/scratch/survey-bin/<UTC>-<sha>
 and plays only that copy, removed when the run ends: build-reap deletes a target dir
 idle for 30 min, and another build in the same worktree replaces the binary, either
 of which would change or break a run that takes over an hour.
-  tools/v3-survey/survey.py [--jobs 3] [--only TEXT] [--libraries DIR ...]
+Each finished instrument is appended to <run>/rows.jsonl. A stopped run continues with
+  tools/v3-survey/survey.py --resume <out>/<UTC>-<sha>
+which plays only what is missing or failed, with the run's own binary copy if it is still
+there (else a fresh copy, only from the same sha), and then writes the reports.
+  tools/v3-survey/survey.py [--jobs 1] [--resume RUN] [--only TEXT] [--libraries DIR ...]
 """
-import argparse, concurrent.futures as cf, math, os, re, shutil, statistics, subprocess, sys, tempfile, time
+import argparse, concurrent.futures as cf, json, math, os, re, shutil, statistics, subprocess, sys, tempfile, time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -141,7 +145,8 @@ def median(values):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--jobs', type=int, default=3, help='parallel renders, each at nice 19 (keep the desktop and DAW responsive)')
+    ap.add_argument('--jobs', type=int, default=1, help='parallel renders, each at nice 19 (the CPU budget: 1)')
+    ap.add_argument('--resume', type=Path, help='a stopped run directory to finish')
     ap.add_argument('--only', help='only instruments whose path contains this')
     ap.add_argument('--libraries', nargs='*', type=Path, default=LIBRARIES)
     ap.add_argument('--out', type=Path, default=OUT)
@@ -153,30 +158,51 @@ def main():
         if not (built / name).exists():
             sys.exit(f'{built / name} missing: build it first (see --help)')
     sha = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+    if args.resume:
+        run = args.resume
+        stamp, _, run_sha = run.name.partition('-')
+        if run_sha != sha:
+            sys.exit(f'{run} is {run_sha}; check out {run_sha} to finish it')
+    else:
+        stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+        run = args.out / f'{stamp}-{sha}'
+        run.mkdir(parents=True)
     # The run's own copy: the target dir may be reaped or rebuilt meanwhile.
-    bin_dir = BIN / f'{stamp}-{sha}'
-    bin_dir.mkdir(parents=True)
-    for name in ('render', 'uvi_programs'):
-        shutil.copy2(built / name, bin_dir / name)
+    bin_dir = BIN / run.name
+    if not (bin_dir / 'render').exists():
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        for name in ('render', 'uvi_programs'):
+            shutil.copy2(built / name, bin_dir / name)
     binary = bin_dir / 'render'
-    todo = [(l, p) for l, p in instruments(args.libraries, bin_dir) if not args.only or args.only in p]
-    run = args.out / f'{stamp}-{sha}'
-    run.mkdir(parents=True)
-    print(f'{len(todo)} instruments → {run}', flush=True)
+    journal = run / 'rows.jsonl'
+    done = {}
+    if journal.exists():
+        for line in journal.read_text().splitlines():
+            row, gaps, actions = json.loads(line)
+            if row['status'] in ('ok', 'silent'):
+                done[row['instrument']] = (row, [tuple(g) for g in gaps], actions)
+    found = [(l, p) for l, p in instruments(args.libraries, bin_dir) if not args.only or args.only in p]
+    todo = [(l, p) for l, p in found if p not in done]
+    print(f'{len(found)} instruments, {len(todo)} to play → {run}', flush=True)
 
     rows, gap_use, action_use = [], defaultdict(lambda: [set(), set()]), defaultdict(lambda: [set(), set()])
-    with cf.ThreadPoolExecutor(args.jobs) as pool:
+    with cf.ThreadPoolExecutor(args.jobs) as pool, open(journal, 'a') as log:
         jobs = {pool.submit(survey, binary, l, p, args.timeout): (l, p) for l, p in todo}
-        for n, job in enumerate(cf.as_completed(jobs), 1):
+        finished = [cf.Future() for _ in done]
+        for f, result in zip(finished, done.values()):
+            f.set_result(result)
+        for n, job in enumerate(cf.as_completed([*finished, *jobs]), 1):
             row, gaps, actions = job.result()
+            if job in jobs:
+                log.write(json.dumps([row, gaps, actions]) + '\n')
+                log.flush()
             rows.append(row)
             for gap in gaps:
                 gap_use[gap][0].add(row['instrument']); gap_use[gap][1].add(row['library'])
             for a in actions:
                 action_use[a][0].add(row['instrument']); action_use[a][1].add(row['library'])
-            if n % 25 == 0 or n == len(todo):
-                print(f'  {n}/{len(todo)}', flush=True)
+            if n % 25 == 0 or n == len(found):
+                print(f'  {n}/{len(found)}', flush=True)
     rows.sort(key=lambda r: (r['library'], r['instrument']))
     write_tsv(run / 'results.tsv', COLUMNS, rows)
 
