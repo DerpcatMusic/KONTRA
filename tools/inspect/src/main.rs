@@ -16,6 +16,8 @@ use anyhow::{Context, Result, bail, ensure};
 
 mod bands;
 mod load;
+mod midi;
+mod oracle;
 mod play;
 mod routes;
 mod scenario;
@@ -25,7 +27,7 @@ mod ui;
 /// The engine's sample rate for every subcommand.
 const RATE: u32 = 48_000;
 
-const USAGE: &str = "usage: kontra-inspect load <instrument> [--json FILE] | ui <instrument> [--json FILE] | play <instrument> [--scenario user|FILE] [--json FILE]";
+const USAGE: &str = "usage: kontra-inspect load <instrument> [--json FILE] | ui <instrument> [--json FILE] | play <instrument> [--scenario user|FILE] [--oracle] [--json FILE]";
 
 fn main() -> ExitCode {
     match run() {
@@ -47,8 +49,10 @@ fn run() -> Result<()> {
     let mut path = None;
     let mut json = None;
     let mut scenario = String::from("user");
+    let mut oracle = false;
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--oracle" => oracle = true,
             "--scenario" => scenario = args.next().context("--scenario needs a value")?,
             "--json" => json = Some(PathBuf::from(args.next().context("--json needs a file")?)),
             "--help" | "-h" => {
@@ -61,9 +65,13 @@ fn run() -> Result<()> {
         }
     }
     let path = path.context(USAGE)?;
+    ensure!(
+        !oracle || command == "play",
+        "--oracle is only available for play"
+    );
     let (report, summary) = match command.as_str() {
         "load" => load::run(&path)?,
-        "play" => play::run(&path, &scenario)?,
+        "play" => play::run(&path, &scenario, oracle)?,
         "ui" => ui::run(&path)?,
         "--help" | "-h" => {
             println!("{USAGE}");
@@ -84,5 +92,16 @@ fn run() -> Result<()> {
             != Some(false),
         "inspection incomplete: see report for UI, trace, or render errors"
     );
+    if oracle {
+        let status = report
+            .get("result")
+            .and_then(|r| r.get("oracle"))
+            .and_then(|r| r.get("status"))
+            .and_then(serde_json::Value::as_str);
+        ensure!(
+            status == Some("ok"),
+            "oracle comparison unavailable: see report for the reason"
+        );
+    }
     Ok(())
 }

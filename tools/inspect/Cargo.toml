@@ -9,6 +9,7 @@ description = "Inspect v3 instrument loads and playback"
 
 [dependencies]
 anyhow = "1"
+hound = "3"
 kontra-engine = { path = "../../crates/engine/engine", features = ["trace"] }
 kontra-lua = { path = "../../crates/script/lua" }
 kontra-ui-model = { path = "../../crates/model/ui-model" }

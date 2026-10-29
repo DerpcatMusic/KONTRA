@@ -13,7 +13,7 @@ use super::{RATE, scenario};
 const BLOCK: usize = 128;
 const TAIL_SECONDS: u64 = 20;
 
-pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
+pub fn run(path: &Path, scenario_name: &str, oracle: bool) -> Result<(Value, String)> {
     let events = if scenario_name == "user" {
         scenario::user()
     } else {
@@ -231,7 +231,21 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         && wait_timeouts == 0
         && stream_stats.read_errors == 0
         && stream_stats.requests_refused == 0;
-    let summary = format!(
+    let reference = if oracle {
+        if complete {
+            Some(match super::oracle::run(path, &events, &rendered) {
+                Ok(value) => value,
+                Err(error) => json!({"status":"error", "reason":format!("{error:#}")}),
+            })
+        } else {
+            Some(
+                json!({"status":"error", "reason":"v3 render incomplete; oracle comparison skipped"}),
+            )
+        }
+    } else {
+        None
+    };
+    let mut summary = format!(
         "{}: scenario {scenario_name}, {} input events\n  peak {peak:.6}, clipped samples {clipped}, max sample jump {jump:.6}\n  {} voices active {:.3} s after last note-off (per-voice last-render peak before group FX in JSON)\n  loudest remaining voice peak {loudest_remaining:.8}; EQ route snapshots: {}; max CC-window HF energy {burst_peak:.8}\n  missing sample frames: {}; offline wait timeouts: {wait_timeouts}; render complete: {complete}; audio FNV-1a: {fingerprint}\n",
         loaded.name,
         events.len(),
@@ -240,11 +254,28 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         trace.len(),
         stats.missing_frames
     );
+    if let Some(reference) = &reference {
+        let status = reference
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("error");
+        let detail = reference
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let difference = reference
+            .get("comparison")
+            .and_then(|r| r.get("level_diff_db"))
+            .and_then(Value::as_f64);
+        summary.push_str(&format!(
+            "  oracle: {status}; level difference (native minus v3) {difference:?} dB {detail}\n"
+        ));
+    }
     Ok((
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
         "trace":trace,"stage_events":stage_events,"trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
-        "diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["non-EQ applied route values"]}}),
+        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["non-EQ applied route values"]}}),
         summary,
     ))
 }
