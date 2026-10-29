@@ -53,11 +53,11 @@ impl Engine {
         if let ir::KnobTarget::Slot(knob) = target {
             let x = self.slot_x(knob, group, slot, generic)?;
             let law = &self.script()?.knobs.get(usize::from(n))?.1;
-            return Some((invert(law, x) * 1e6).round() as i32);
+            return Some((law.invert(x) * 1e6).round() as i32);
         }
         let y = *self.knob_mut(target, group, slot, generic)?;
         let law = &self.script()?.knobs.get(usize::from(n))?.1;
-        Some((invert(law, y) * 1e6).round() as i32)
+        Some((law.invert(y) * 1e6).round() as i32)
     }
 
     /// Row `n`, or the [`ir::KnobTarget::LfoSteps`] row after it when `n`
@@ -113,7 +113,7 @@ impl Engine {
         let at = rack_at(group, generic)?;
         let (field, law) = laws(&plan, self.own_laws(&plan, at, slot), knob, at, slot).next()?;
         let y = *field.field_mut(&mut self.effect_mut(group, slot, generic)?.kind)?;
-        Some(invert(law, y))
+        Some(law.invert(y))
     }
 
     /// The addressed slot's own laws: those of the shape it last switched
@@ -256,19 +256,4 @@ fn laws<'p>(
 pub(crate) fn shape_slot(plan: &Plan, at: ir::RackAt, slot: i32) -> Option<usize> {
     let here = |&(a, s): &(ir::RackAt, u8)| a == at && i32::from(s) == slot;
     plan.slot_shapes.slots.iter().position(here)
-}
-
-/// The 0..=1 setting `law` maps to `y`, by bisection; the laws are monotonic.
-fn invert(law: &ir::Law, y: f32) -> f32 {
-    let rising = law.eval(1.0) >= law.eval(0.0);
-    let (mut lo, mut hi) = (0.0f32, 1.0f32);
-    for _ in 0..32 {
-        let mid = 0.5 * (lo + hi);
-        if (law.eval(mid) < y) == rising {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    0.5 * (lo + hi)
 }

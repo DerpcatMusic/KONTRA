@@ -34,6 +34,23 @@ const CURVE_LIMIT: f32 = 16.0;
 const CURVE_EPSILON: f32 = 1e-3;
 
 impl Law {
+    /// The 0..=1 position this law maps to `y`, by bisection (for a
+    /// monotonic law).
+    #[must_use]
+    pub fn invert(&self, y: f32) -> f32 {
+        let rising = self.eval(1.0) >= self.eval(0.0);
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..32 {
+            let mid = 0.5 * (lo + hi);
+            if (self.eval(mid) < y) == rising {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        0.5 * (lo + hi)
+    }
+
     /// Maps a normalized position to the parameter value.
     #[must_use]
     pub fn eval(&self, x: f32) -> f32 {
