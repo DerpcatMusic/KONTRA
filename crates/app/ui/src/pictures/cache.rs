@@ -73,10 +73,10 @@ fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 4]) -> Option<Cached> {
 
 /// Record only a complete, stable scan; bump the cache version when fingerprints change.
 pub(super) fn missing(path: &Path) {
-    if let Some(root) = root() {
-        if std::fs::create_dir_all(&root).is_ok() {
-            write_index(&root, path, "missing");
-        }
+    if let Some(root) = root()
+        && std::fs::create_dir_all(&root).is_ok()
+    {
+        write_index(&root, path, "missing");
     }
 }
 
