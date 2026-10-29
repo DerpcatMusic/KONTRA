@@ -14,7 +14,7 @@ mod reverb;
 pub use bus::{Bus, BusSend};
 pub use drive::{
     Clipper, Crush, Curve as DriveCurve, EffectParam, KnobTarget, Overdrive, RackAt, Shaper,
-    SlotKnob, SlotLaw, SlotShape, SlotShapes,
+    SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
     Compressor, Delay, DelayTime, Detector, IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb,

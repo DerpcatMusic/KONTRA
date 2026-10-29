@@ -1568,6 +1568,69 @@ fn an_effect_type_change_outside_init_completes_asynchronously() {
     assert_eq!(e.last_message(), "-1 -1 1 1");
 }
 
+/// An effect type loads into an empty slot: at once in `on init`; later the
+/// host builds it off the audio thread, and `on async_complete` follows its
+/// install.
+#[test]
+fn a_script_loads_an_effect_type_into_a_slot() {
+    use kontra_engine::{Prepared, ir};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].mods.clear();
+    plan.inserts = vec![None];
+    let high = ir::Filter {
+        pass: ir::Pass::High,
+        hz: 10_000.0,
+        stages: 1,
+        ladder: None,
+        damping: [2.0; 3],
+        gain: 1.0,
+        octaves: 0.0,
+        q_octaves: 0.0,
+    };
+    let ty = |id, effect| ir::SlotType {
+        id,
+        subtype: false,
+        effect,
+        laws: Vec::new().into(),
+    };
+    let effect = ir::Effect {
+        kind: ir::EffectKind::Filter(high),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    plan.slot_shapes.types = vec![ty(0, None), ty(7, Some(effect))];
+    let script = kontra_ksp::compile(
+        "on init
+            declare $a
+            declare $b
+            $a := set_engine_par($ENGINE_PAR_EFFECT_TYPE, 7, -1, 0, 1)
+        end on
+        on note
+            $b := set_engine_par($ENGINE_PAR_EFFECT_TYPE, 0, -1, 0, 1)
+        end on
+        on async_complete
+            message($a & \" \" & $b & \" \" & $NI_ASYNC_ID)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    // The high-pass loaded in init holds the DC back.
+    assert!(level(&mut e, &[on(60)]).abs() < 1e-3);
+    let mut requests = Vec::new();
+    e.drain_requests(|r| requests.push(r));
+    assert_eq!(requests.len(), 1);
+    assert!(level(&mut e, &[]).abs() < 1e-3, "nothing until installed");
+    assert_eq!(e.last_message(), "");
+    let old = e.install(Prepared::new(requests[0], RATE));
+    assert!(old.request().effect.is_some(), "the high-pass comes back");
+    assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
+    assert_eq!(e.last_message(), "-1 1 1");
+}
+
 /// `stop_wait` as measured in Kontakt (ANALOG, two `wait(10 s)` then
 /// `play_note`, stopped from `on release`): 0 ends only the current wait,
 /// 1 also lets every later wait pass. The first wait's own resume, still

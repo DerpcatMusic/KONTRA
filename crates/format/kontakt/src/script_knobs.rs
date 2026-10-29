@@ -368,6 +368,47 @@ pub(crate) fn eq_knobs(saved: &[[f32; 3]]) -> Vec<SlotKnob> {
     out
 }
 
+/// What `set_engine_par` of `$ENGINE_PAR_EFFECT_TYPE`, or of an
+/// `EFFECT_SUBTYPE` no filter switches to, loads into a slot: Kontakt 8.13's
+/// new units, read back from an empty insert slot in `on init` (ANALOG,
+/// oracle probe fxdef): nothing for `$EFFECT_TYPE_NONE` (0); for
+/// `$EFFECT_TYPE_FILTER` (7) an AR LP2 (100), cutoff and resonance 0; for
+/// `$FILTER_TYPE_EQ3BAND` (24) bands at knobs .3656, .6201 and .858 (250 Hz,
+/// 1.45 kHz, 7.5 kHz), gain .5 (0 dB), bandwidth .0625 (0.5 octaves).
+pub(crate) fn slot_types() -> Vec<ir::SlotType> {
+    let unit = |kind| ir::Effect {
+        kind,
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    let filter = crate::laws::filter(100, 0.0, 0.0, 0.0).map(|f| unit(ir::EffectKind::Filter(f)));
+    let saved = [0.3656, 0.6201, 0.858].map(|x| {
+        let [hz, octaves, db] = &EQ_SAVED;
+        [hz.eval(x), octaves.eval(0.0625), db.eval(0.5)]
+    });
+    let mut bands = [ir::Bell::FLAT; 4];
+    for (band, &[hz, octaves, db]) in bands.iter_mut().zip(&saved) {
+        *band = crate::laws::eq_band(hz, octaves, db).unwrap_or(ir::Bell::FLAT);
+    }
+    let ty = |id, subtype, effect, laws| ir::SlotType {
+        id,
+        subtype,
+        effect,
+        laws,
+    };
+    vec![
+        ty(0, false, None, [].into()),
+        ty(7, false, filter, shape_laws(100)),
+        ty(
+            24,
+            true,
+            Some(unit(ir::EffectKind::Eq(bands))),
+            eq_knobs(&saved).into(),
+        ),
+    ]
+}
+
 /// Saved ms for a knob `x`, `lo + (hi − lo)·(e^(kx) − 1)/(e^k − 1)`, fitted
 /// to Kontakt's saves at x = 0, .1, .25, .5, .75, .9, 1 (probes/fx_knob_laws.lua):
 /// the legacy Reverb's predelay 0..180 ms and the Limiter's release

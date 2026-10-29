@@ -93,7 +93,7 @@ impl Engine {
             return false;
         };
         let mut hit = false;
-        for (field, law) in laws(&plan, self.shape_on(&plan, at, slot), knob, at, slot) {
+        for (field, law) in laws(&plan, self.own_laws(&plan, at, slot), knob, at, slot) {
             let effect = self.effect_mut(group, slot, generic);
             if let Some(v) = effect.and_then(|e| field.field_mut(&mut e.kind)) {
                 *v = law.eval(x);
@@ -111,19 +111,31 @@ impl Engine {
     fn slot_x(&mut self, knob: ir::SlotKnob, group: i32, slot: i32, generic: i32) -> Option<f32> {
         let plan = Arc::clone(&self.plan);
         let at = rack_at(group, generic)?;
-        let (field, law) = laws(&plan, self.shape_on(&plan, at, slot), knob, at, slot).next()?;
+        let (field, law) = laws(&plan, self.own_laws(&plan, at, slot), knob, at, slot).next()?;
         let y = *field.field_mut(&mut self.effect_mut(group, slot, generic)?.kind)?;
         Some(invert(law, y))
     }
 
-    /// The shape the addressed slot last switched to, when it brings laws.
-    fn shape_on<'p>(&self, plan: &'p Plan, at: ir::RackAt, slot: i32) -> Option<&'p ir::SlotShape> {
-        let n = shape_slot(plan, at, slot)?;
-        let on = self.behaviour.shapes.get(n).copied().flatten()?;
+    /// The addressed slot's own laws: those of the shape it last switched
+    /// to, else (exclusive, true) those of the type it was loaded with.
+    fn own_laws<'p>(
+        &self,
+        plan: &'p Plan,
+        at: ir::RackAt,
+        slot: i32,
+    ) -> Option<(&'p [OwnLaw], bool)> {
+        let shape = shape_slot(plan, at, slot)
+            .and_then(|n| self.behaviour.shapes.get(n).copied().flatten())
+            .and_then(|on| plan.slot_shapes.shapes.get(usize::from(on)))
+            .filter(|s| !s.laws.is_empty());
+        if let Some(shape) = shape {
+            return Some((&shape.laws, false));
+        }
+        let ty = self.loaded_type(at, slot)?;
         plan.slot_shapes
-            .shapes
-            .get(usize::from(on))
-            .filter(|s| !s.laws.is_empty())
+            .types
+            .get(usize::from(ty))
+            .map(|t| (&t.laws[..], true))
     }
 
     /// `set_engine_par` of a filter slot's shape `id`; false when the slot
@@ -202,7 +214,7 @@ impl Engine {
 }
 
 /// The rack `group` and `generic` address, as `effect_mut` reads them.
-fn rack_at(group: i32, generic: i32) -> Option<ir::RackAt> {
+pub(crate) fn rack_at(group: i32, generic: i32) -> Option<ir::RackAt> {
     Some(match (u32::try_from(group), generic) {
         (Ok(g), -1) => ir::RackAt::Group(g),
         (Err(_), 0) => ir::RackAt::Sends,
@@ -217,16 +229,21 @@ fn rack_at(group: i32, generic: i32) -> Option<ir::RackAt> {
 
 /// The fields slot knob `knob` of slot `slot` in `at` moves, with their
 /// laws: `shape`'s when it has them, else the slot's.
+type OwnLaw = (ir::SlotKnob, ir::EffectParam, ir::Law);
+
+/// How `knob` moves slot `slot` of `at`: its `own` laws, else (unless they
+/// are exclusive) the plan's.
 fn laws<'p>(
     plan: &'p Plan,
-    shape: Option<&'p ir::SlotShape>,
+    own: Option<(&'p [OwnLaw], bool)>,
     knob: ir::SlotKnob,
     at: ir::RackAt,
     slot: i32,
 ) -> impl Iterator<Item = (ir::EffectParam, &'p ir::Law)> {
-    let own = shape.into_iter().flat_map(|s| s.laws.iter());
+    let exclusive = own.is_some_and(|o| o.1);
+    let own = own.into_iter().flat_map(|o| o.0.iter());
     let own = own.filter(move |l| l.0 == knob);
-    let has = own.clone().next().is_some();
+    let has = exclusive || own.clone().next().is_some();
     let slots = plan
         .slot_laws
         .iter()

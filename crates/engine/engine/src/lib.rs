@@ -16,6 +16,7 @@ mod controls;
 mod effects;
 mod engine_pars;
 mod filters;
+mod fx_types;
 mod group_masks;
 mod group_racks;
 mod inspect;
@@ -44,6 +45,7 @@ use kontra_time::Frames;
 use kontra_voice::{Voice, VoiceStart};
 
 pub use engine_pars::{EnginePar, EnginePars};
+pub use fx_types::{EffectRequest, Prepared};
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_script_ui::{Key, KeyRange, MenuItem, Page};
@@ -140,6 +142,8 @@ pub struct Engine {
     /// Responses scripts loaded while loading (`load_ir_sample`): name,
     /// how prepared, the response. Convolution indices past the plan's.
     loaded: Vec<(String, ir::Impulse, Response)>,
+    /// Effects scripts asked to load since the host last drained them.
+    requests: Vec<fx_types::EffectRequest>,
     stream: StreamClient,
     queue: EventQueue,
     notes: Ledger,
@@ -291,6 +295,7 @@ impl Engine {
             notes,
             plan,
             loaded: Vec::new(),
+            requests: Vec::with_capacity(fx_types::REQUESTS),
             stream,
             voices,
             buses,

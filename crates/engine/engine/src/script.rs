@@ -665,18 +665,22 @@ impl HostApi for Engine {
             // Kontakt answers −1; an effect type or subtype set outside `on
             // init` runs asynchronously: its id, then `on async_complete`
             // (measured, probes/async_engine_par.ksp).
+            // A type the slot cannot switch to in place loads (fx_types).
             Action::SetEnginePar => {
-                if !self.set_engine_par(int(0), int(1), int(2), int(3), int(4)) {
+                let par = self.engine_par(int(0));
+                let swap = matches!(par, Some(EnginePar::EffectType | EnginePar::EffectSubtype));
+                let set = self.set_engine_par(int(0), int(1), int(2), int(3), int(4));
+                let subtype = par == Some(EnginePar::EffectSubtype);
+                let loaded = (swap && !set)
+                    .then(|| self.load_type(int(1), subtype, int(2), int(3), int(4)))
+                    .flatten();
+                if !set && loaded.is_none() {
                     self.count_unhandled(Action::SetEnginePar);
                 }
-                let swap = matches!(
-                    self.engine_par(int(0)),
-                    Some(EnginePar::EffectType | EnginePar::EffectSubtype)
-                );
-                HostValue::Int(if swap && self.running.kind != Kind::Init {
-                    self.start_async()
-                } else {
-                    -1
+                HostValue::Int(match loaded {
+                    Some(answer) => answer,
+                    None if swap && self.running.kind != Kind::Init => self.start_async(),
+                    None => -1,
                 })
             }
             Action::LoadIrSample
