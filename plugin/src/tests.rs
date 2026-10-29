@@ -978,3 +978,63 @@ fn a_load_shows_until_the_tick_is_done_with_it() {
     Tick.run(&params);
     assert!(!params.shared.loading(), "the tick left it loading");
 }
+
+/// Areia's timer hides "Host not connected" on its first tick, with the
+/// transport stopped and nothing clicked; the audio thread never stalls on
+/// the control tick's capture of its persistent cells (it scanned every
+/// control per cell: about 9 s per capture, so no timer ran and a page
+/// switch showed the panel).
+#[test]
+fn a_script_timer_runs_with_the_transport_stopped_and_no_block_stalls() {
+    let Some(path) = library(
+        "Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/01 Areia - 16 Violins - Core Techniques.nki",
+    ) else {
+        return;
+    };
+    let saved = Saved::new(vec![SavedPart {
+        part: 0,
+        path,
+        channel: 0,
+        output: 0,
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+        delays: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+    }]);
+    let (params, mut dsp) = activate(&saved.write());
+    let panel = |params: &KontraParams| {
+        let guard = crate::lock(&params.shared.rack);
+        let part = guard.as_ref().unwrap().parts()[0].as_ref().unwrap();
+        let t = part.view.as_ref().unwrap().tree();
+        let n = (t.widgets.iter()).position(|w| &*w.name == "$label_no_audio_connected_text");
+        t.visible(kontra_ui_model::WidgetRef(n.expect("Areia's panel")))
+    };
+    assert!(panel(&params), "init shows the panel until the timer runs");
+    let mut slowest = std::time::Duration::ZERO;
+    for _ in 0..10 {
+        Tick.run(&params);
+        let t = std::time::Instant::now();
+        live_block(&params, &mut dsp);
+        slowest = slowest.max(t.elapsed());
+    }
+    Tick.run(&params);
+    assert!(!panel(&params), "the timer never hid the panel");
+    assert!(slowest.as_secs_f64() < 2.0, "a live block took {slowest:?}");
+}
+
+/// One live block with no events and the transport stopped, as a host
+/// plays a part nobody is playing.
+fn live_block(params: &KontraParams, dsp: &mut Dsp) {
+    let list = EventList::with_capacity(16);
+    let mut channels = vec![vec![0.0f32; BLOCK]; 2 * crate::OUTPUTS];
+    let mut outs: Vec<&mut [f32]> = channels.iter_mut().map(Vec::as_mut_slice).collect();
+    let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outs, BLOCK);
+    let transport = TransportInfo::default();
+    let mut out_events = EventList::with_capacity(16);
+    let mut cx = ProcessContext::new(&transport, RATE, BLOCK, &mut out_events);
+    <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
+}

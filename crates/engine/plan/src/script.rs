@@ -49,8 +49,21 @@ pub struct Controls {
     /// By UI id, the steps of each control whose value is an int array (a
     /// table's): `set_control_par_arr` writes them from its cell on.
     pub steps: Vec<u32>,
+    /// (value cell, control) for every control with a value cell, sorted by
+    /// cell: a save finds each cell's control in log time instead of
+    /// scanning every control per cell (Areia: seconds on the audio thread).
+    pub by_cell: Vec<(u32, u32)>,
     /// Where the UI-look builtins store what they set.
     pub look: LookPars,
+}
+
+impl Controls {
+    /// The control whose value lives in `cell`.
+    #[must_use]
+    pub fn of_cell(&self, cell: u32) -> Option<usize> {
+        let at = self.by_cell.binary_search_by_key(&cell, |&(c, _)| c).ok()?;
+        self.by_cell.get(at).map(|&(_, n)| n as usize)
+    }
 }
 
 pub use kontra_script_ui::LookPars;
@@ -72,4 +85,21 @@ pub struct Callbacks {
     pub ui_control: Vec<(i32, Option<u32>)>,
     /// A front end's own widget moved ([`kontra_vm::Machine::stage_widget`]).
     pub widget: Option<u32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Controls;
+
+    #[test]
+    fn a_cell_finds_the_first_control_on_it() {
+        let c = Controls {
+            by_cell: vec![(3, 0), (7, 2), (9, 1)],
+            ..Controls::default()
+        };
+        assert_eq!(
+            [3, 7, 9, 4].map(|cell| c.of_cell(cell)),
+            [Some(0), Some(2), Some(1), None]
+        );
+    }
 }

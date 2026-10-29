@@ -194,8 +194,15 @@ fn controls(script: &Script) -> Controls {
             *n = len;
         }
     }
+    let mut by_cell: Vec<(u32, u32)> = (cells.iter().zip(0u32..))
+        .filter_map(|(c, n)| Some(((*c)?, n)))
+        .collect();
+    // The first control on a cell wins, as the scan it replaces found it.
+    by_cell.sort_unstable();
+    by_cell.dedup_by_key(|&mut (c, _)| c);
     Controls {
         first: FIRST_UI_ID,
+        by_cell,
         value_par,
         num_items_par: symbol(script, "$CONTROL_PAR_NUM_ITEMS"),
         selected_item_par: symbol(script, "$CONTROL_PAR_SELECTED_ITEM_IDX"),
