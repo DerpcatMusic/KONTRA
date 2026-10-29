@@ -411,9 +411,8 @@ fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Fi
 }
 
 /// A legacy EQ band's GAIN is stored in dB, −18..=18, its peak twice that (eq-kontakt.md
-/// §1.1). A route of depth 1 moves the stored value by 12 dB and the peak by 24 dB:
-/// an Afflatus CC1 route-on/off comparison measured 11.37 dB at 4 kHz versus
-/// 5.68 dB with a 12 dB peak span.
+/// §1.1). A route of depth 1 moves the stored value by 12 dB and the peak by 24 dB.
+/// Afflatus CC1 route-on/off: 4 kHz lift 11.37 dB native, 5.68 with a 12 dB span.
 pub(crate) const EQ_GAIN_STORED_DB: f32 = 18.0;
 pub(crate) const EQ_GAIN_LIMIT_DB: f32 = 2.0 * EQ_GAIN_STORED_DB;
 pub(crate) const EQ_GAIN_SPAN_DB: f32 = 24.0;
