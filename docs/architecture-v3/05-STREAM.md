@@ -107,3 +107,22 @@ once per page.
 | Preload bytes per stereo 24-bit zone, default law | f32 stereo × max_step 16 head | i24 packed × (60 KB + start range) |
 | Same library in two instances | 2× | 1× |
 | Areia full load vs 1.5 GB budget | exceeded, heads shrunk to 611 frames | under budget at full law (measure in phase 3) |
+
+**Measured 2026-10-29 (P6.1c, NCW heads kept as stored).** Pinned pages of an
+NCW sample hold its blocks as stored and decode on read (`Page::Blocks`,
+`ncw::decode_group_fixed`, no allocation); other codecs keep packed PCM.
+Kontakt: `tools/kontakt-oracle/memprobe.py` (RSS rise, peak; load time).
+KONTRA: `kontra-host --example memory` (RSS rise; load from a warm page
+cache, so load times are a floor). Renders are bit-identical either way.
+
+| Instrument | Kontakt RAM / load | v3, PCM heads | v3, NCW heads | v3 / Kontakt RAM |
+|---|---|---|---|---|
+| Areia 01 Pads (whole samples pinned: S.Mod = length) | 2473 MB / 2.6 s | 3085 MB | **2350 MB** / 1.4 s | 95% |
+| Afflatus Mega Brass | 5635 MB / 34.3 s | 5355 MB | **3448 MB** / 5.0 s | 61% |
+| Vista 5 Violins | 857 MB / 45.3 s | 475 MB | **348 MB** / 0.4 s | 41% |
+| ANALOG STRINGS | — | 312 MB | **245 MB** / 3.0 s | — |
+| Areia 16 Violins Performance Legato | — | 1056 MB | **816 MB** / 1.8 s | — |
+
+Kontakt also keeps Pads' NCW as stored: it read 2215 MB (the stored size) and
+rose 2473 MB. Decode-on-read cost (perf, Pads held 30 s): about 14 ms of
+block decoding for 32 s of audio.
