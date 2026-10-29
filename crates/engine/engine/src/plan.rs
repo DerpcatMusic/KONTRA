@@ -352,6 +352,8 @@ pub struct Plan {
     /// The fader and pan after every effect.
     pub output: ir::Output,
     pub route_pitch: ir::Exp2,
+    /// [`ir::Instrument::steal_whole_groups`].
+    pub steal_whole_groups: bool,
     /// Convolution responses at the engine's rate, by [`ir::Instrument::impulses`]
     /// index; `None` when unreadable.
     pub impulses: Vec<Option<Response>>,
@@ -412,6 +414,7 @@ impl Plan {
             main: Vec::new(),
             output: ir::Output::UNITY,
             route_pitch: ir::Exp2::Exact,
+            steal_whole_groups: false,
             impulses: Vec::new(),
             impulse_laws: Vec::new(),
             responses: Vec::new(),

@@ -1590,3 +1590,50 @@ fn a_live_macro_on_a_players_gain_scales_it_through_its_bipolar_mapper() {
         ir::Source::Controller(102)
     );
 }
+
+#[test]
+fn a_gain_one_player_has_alone_scales_its_zones_cells() {
+    // VWinds' noise crossfade: CC 102 on each player through its own mapper.
+    let xml = r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators>
+            <SamplePlayer Bypass="0" SamplePath="./a.wav">
+              <Connections>
+                <SignalConnection Ratio="0.5" Source="@MIDI CC 102" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+              </Connections>
+            </SamplePlayer>
+            <SamplePlayer Bypass="0" SamplePath="./b.wav"/>
+          </Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    let cells: Vec<_> = g
+        .mods
+        .iter()
+        .filter_map(|m| match m.kind {
+            ir::ModKind::Mix {
+                source,
+                zone,
+                row,
+                side,
+            } => Some((source, zone, row, side)),
+            _ => None,
+        })
+        .collect();
+    let s = ir::Source::Shaped(0);
+    assert_eq!(cells, [(s, 0, 0, 0), (s, 0, 0, 1)], "{:?}", g.zones[0].mix);
+    assert_eq!(g.zones[0].mix, [[1.0, 1.0]]);
+    assert!(g.zones[1].mix.is_empty());
+    // `1 − 0.5 + 0.5·x` over the controller.
+    assert_eq!(g.shapers[0].source, ir::Source::Controller(102));
+    assert_eq!(g.shapers[0].table, [0.5, 1.0]);
+    assert!(
+        out.diagnostics.iter().all(|d| !d.feature.contains("Gain")),
+        "{:?}",
+        out.diagnostics
+    );
+}
