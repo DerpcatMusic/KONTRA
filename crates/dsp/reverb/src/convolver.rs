@@ -380,7 +380,9 @@ mod tests {
         for block in io.chunks_mut(256) {
             c.process(block);
         }
-        for n in [0, 63, 64, 511, 512, 2_047, 2_048, 8_191, 8_192, 25_000, 29_999] {
+        for n in [
+            0, 63, 64, 511, 512, 2_047, 2_048, 8_191, 8_192, 25_000, 29_999,
+        ] {
             let direct: f32 = (0..=n.min(ir.len() - 1))
                 .map(|k| ir[k] * input[n - k])
                 .sum();
