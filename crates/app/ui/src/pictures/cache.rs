@@ -18,8 +18,13 @@ fn index(root: &Path, path: &Path) -> Option<PathBuf> {
     Some(root.join(format!("index-{:016x}", h.finish())))
 }
 
+pub(super) struct Art {
+    pub(super) main: [Image; 4],
+    pub(super) font13: Option<Image>,
+}
+
 pub(super) enum Cached {
-    Images(Box<[Image; 5]>),
+    Images(Box<Art>),
     Missing,
 }
 
@@ -63,13 +68,10 @@ fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 5]) -> Option<Cached> {
         }
         Image::rgba(w, h, data)
     };
-    Some(Cached::Images(Box::new([
-        image(0)?,
-        image(1)?,
-        image(2)?,
-        image(3)?,
-        image(4)?,
-    ])))
+    Some(Cached::Images(Box::new(Art {
+        main: [image(0)?, image(1)?, image(2)?, image(3)?],
+        font13: image(4),
+    })))
 }
 
 /// Record only a complete, stable scan; bump the cache version when fingerprints change.
@@ -81,17 +83,17 @@ pub(super) fn missing(path: &Path) {
     }
 }
 
-pub(super) fn save(path: &Path, hash: &str, images: &[Image; 5]) {
+pub(super) fn save(path: &Path, hash: &str, images: &Art) {
     let Some(root) = root() else { return };
     save_at(&root, path, hash, images);
 }
 
-fn save_at(root: &Path, path: &Path, hash: &str, images: &[Image; 5]) {
+fn save_at(root: &Path, path: &Path, hash: &str, images: &Art) {
     let dir = root.join(hash);
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    for (i, image) in images.iter().enumerate() {
+    for (i, image) in images.main.iter().chain(images.font13.iter()).enumerate() {
         let target = dir.join(format!("{i}.rgba"));
         let temporary = dir.join(format!("{i}.{}.tmp", std::process::id()));
         if std::fs::write(&temporary, &image.rgba).is_err()
@@ -120,13 +122,28 @@ mod tests {
         let exe = dir.path().join("kontakt.exe");
         std::fs::write(&exe, b"first").unwrap();
         let image = || mui::prelude::Image::rgba(1, 1, vec![1, 2, 3, 255]).unwrap();
-        let images = [image(), image(), image(), image(), image()];
+        let images = super::Art {
+            main: [image(), image(), image(), image()],
+            font13: Some(image()),
+        };
         let root = dir.path().join("cache");
         super::save_at(&root, &exe, &"a".repeat(64), &images);
         let Some(super::Cached::Images(cached)) = super::load_at(&root, &exe, &[(1, 1); 5]) else {
             panic!("no cached images")
         };
-        assert_eq!(&*cached[0].rgba, &[1, 2, 3, 255]);
+        assert_eq!(&*cached.main[0].rgba, &[1, 2, 3, 255]);
+        let fallback = dir.path().join("fallback.exe");
+        std::fs::write(&fallback, b"no font13").unwrap();
+        let without_font = super::Art {
+            main: [image(), image(), image(), image()],
+            font13: None,
+        };
+        super::save_at(&root, &fallback, &"b".repeat(64), &without_font);
+        let Some(super::Cached::Images(cached)) = super::load_at(&root, &fallback, &[(1, 1); 5])
+        else {
+            panic!("base artwork must remain available without the optional font");
+        };
+        assert!(cached.font13.is_none());
         let unsupported = dir.path().join("other.exe");
         std::fs::write(&unsupported, b"unsupported").unwrap();
         super::write_index(&root, &unsupported, "missing");

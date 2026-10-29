@@ -23,7 +23,7 @@ const KEYS: [(&str, usize, u32, u32, u32); 5] = [
     ("@stock/font13", 6034, 699, 13, 0xe3d1_56e4),
 ];
 
-static ART: OnceLock<Option<[Image; 5]>> = OnceLock::new();
+static ART: OnceLock<Option<super::cache::Art>> = OnceLock::new();
 
 /// Start discovery, hashing and decoding before the editor's first frame.
 pub(crate) fn prewarm() {
@@ -37,7 +37,12 @@ pub(crate) fn prewarm() {
 
 pub(super) fn frame(path: &str, meta: ImageMeta, n: u32) -> Option<Image> {
     let i = KEYS.iter().position(|(key, ..)| *key == path)?;
-    let image = ART.get_or_init(load).as_ref()?.get(i)?;
+    let art = ART.get_or_init(load).as_ref()?;
+    let image = if i == 4 {
+        art.font13.as_ref()?
+    } else {
+        art.main.get(i)?
+    };
     let frames = meta.frames.max(1);
     let (x, y, width, height) = match meta.axis {
         Orientation::Horizontal => (
@@ -68,13 +73,13 @@ pub(super) fn frame(path: &str, meta: ImageMeta, n: u32) -> Option<Image> {
     Image::rgba(width, height, pixels)
 }
 
-fn load() -> Option<[Image; 5]> {
+fn load() -> Option<super::cache::Art> {
     super::discovery::candidates()
         .into_iter()
         .find_map(|path| load_from(&path))
 }
 
-fn load_from(path: &Path) -> Option<[Image; 5]> {
+fn load_from(path: &Path) -> Option<super::cache::Art> {
     let before = path.metadata().ok()?;
     if !before.is_file() || before.len() > MAX_EXECUTABLE {
         return None;
@@ -132,19 +137,21 @@ fn load_from(path: &Path) -> Option<[Image; 5]> {
     if before.len() != after.len() || before.modified().ok()? != after.modified().ok()? {
         return None;
     }
-    if found.iter().any(Option::is_none) {
+    if found.get(..4)?.iter().any(Option::is_none) {
         super::cache::missing(path);
         return None;
     }
     let [base, cap, light, font, font13] = found;
     let decode = |png: Vec<u8>| super::decode(&png, ImageMeta::default(), 0);
-    let images = [
-        decode(base?)?,
-        decode(cap?)?,
-        decode(light?)?,
-        decode(font?)?,
-        decode(font13?)?,
-    ];
+    let images = super::cache::Art {
+        main: [
+            decode(base?)?,
+            decode(cap?)?,
+            decode(light?)?,
+            decode(font?)?,
+        ],
+        font13: font13.and_then(decode),
+    };
     super::cache::save(path, &format!("{:x}", hash.finalize()), &images);
     Some(images)
 }

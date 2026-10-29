@@ -169,6 +169,8 @@ impl Look {
                     parts.push(boxed(w, h, scale, rgb(0x3f_3f3f).into(), 0x2c_2c2c));
                 }
                 let ink = ink(0xfe_fefe);
+                // Kontakt 8's font-13 value edit uses the 699×13 atlas at
+                // 0x145b1c310 and reserves its right edge for the arrows.
                 let font = glyphs.filter(|_| {
                     style.is_some_and(|s| s.font == model::Font::Stock(13))
                         && matches!(wd.kind, Kind::ValueEdit { arrows: true, .. })
