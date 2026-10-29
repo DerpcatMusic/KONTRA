@@ -58,6 +58,7 @@ fn part(name: &str) -> Part {
         mix: Mix::DEFAULT,
         solo: false,
         mute: false,
+        script: Default::default(),
     }
 }
 

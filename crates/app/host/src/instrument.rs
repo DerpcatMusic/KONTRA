@@ -14,6 +14,8 @@ pub struct Loaded {
     /// By script slot, what a KSP script's UI tree is built from
     /// ([`crate::ui::interface`] once the engine ran `on init`).
     pub faces: Vec<Option<crate::ui::Face>>,
+    /// By script slot, its persistent variables ([`crate::persist`]).
+    pub persist: Vec<crate::persist::Vars>,
 }
 
 /// Reads the instrument at `path` into the model: a UVI program when the path
@@ -47,15 +49,20 @@ pub fn load(
 pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded {
     let (mut plan, mut diagnostics) = prepare(&instrument, rate, store, &kontra_stream::open);
     let mut faces = Vec::new();
+    let mut persist = Vec::new();
     diagnostics.extend(instrument.diagnostics);
     // ponytail: a slot that fails to compile is dropped, and the slots after
     // it move up one ($EVENT_PAR_SOURCE then counts from the gap).
-    for script in &instrument.scripts {
+    for (n, script) in instrument.scripts.iter().enumerate() {
         if script.dialect == ir::Dialect::Lua {
             match kontra_lua::compile(&script.source, &lua_modules(script), &script.saved) {
                 Ok(compiled) => {
                     plan.scripts.push(crate::script::lua_plan(compiled));
                     faces.push(None);
+                    persist.push(crate::persist::Vars {
+                        script: n,
+                        vars: Vec::new(),
+                    });
                 }
                 Err(e) => diagnostics.push(ir::Diagnostic {
                     impact: ir::Impact::Broken,
@@ -70,6 +77,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 plan.scripts
                     .push(crate::script::plan(&compiled, &script.saved, &script.data));
                 faces.push(Some(crate::ui::Face::of(&compiled, &script.data)));
+                persist.push(crate::persist::Vars::of(n, &compiled));
             }
             Err(e) => diagnostics.push(ir::Diagnostic {
                 impact: ir::Impact::Broken,
@@ -88,6 +96,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
         plan,
         diagnostics,
         faces,
+        persist,
     }
 }
 

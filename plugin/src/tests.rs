@@ -93,8 +93,43 @@ fn library(path: &str) -> Option<PathBuf> {
     path.exists().then_some(path)
 }
 
-/// Loads `path` into part 0 through the state, plays, saves, reloads into
-/// a fresh plugin, plays again and saves again.
+/// Lets the commands sent so far reach the audio side and a capture of the
+/// scripts' persistent values taken after them come back, as the control
+/// tick does between blocks (a capture already on its way is read first).
+fn settle(params: &KontraParams, dsp: &mut Dsp) {
+    for _ in 0..2 {
+        Tick.run(params);
+        block(params, dsp, &[]);
+    }
+    Tick.run(params);
+}
+
+/// Turns part 0's first integer control one step, as the user would; the
+/// variable and the value it was turned to.
+fn move_control(params: &KontraParams) -> Option<(String, i64)> {
+    let mut guard = crate::lock(&params.shared.rack);
+    let rack = guard.as_mut()?;
+    let script = &rack.parts().first()?.as_ref()?.script;
+    let (slot, var, id, script_index) = script.vars.iter().enumerate().find_map(|(slot, v)| {
+        let var = v
+            .vars
+            .iter()
+            .find(|x| x.control.is_some() && x.len == 1 && !x.real)?;
+        Some((slot, var.name.to_string(), var.control?, v.script))
+    })?;
+    let saved = rack.saved_scripts(0);
+    let entry = saved
+        .get(script_index)?
+        .iter()
+        .find(|e| e.split(' ').next() == Some(&*var))?;
+    let now: i64 = entry.split(' ').nth(1)?.parse().ok()?;
+    let to = if now > 0 { now - 1 } else { now + 1 };
+    rack.set_control(0, u8::try_from(slot).ok()?, id, to);
+    Some((var, to))
+}
+
+/// Loads `path` into part 0 through the state, plays, turns a control,
+/// saves, reloads into a fresh plugin, plays again and saves again.
 fn recall(path: PathBuf) -> Result<String, String> {
     let saved = Saved::new(vec![SavedPart {
         part: 0,
@@ -105,23 +140,41 @@ fn recall(path: PathBuf) -> Result<String, String> {
         pan: 0.25,
         solo: false,
         mute: false,
+        scripts: Vec::new(),
     }]);
     let t = std::time::Instant::now();
     let (live, mut live_dsp) = activate(&saved.write());
     let load = t.elapsed();
     let before = play(&live, &mut live_dsp);
+    settle(&live, &mut live_dsp);
+    let moved = move_control(&live);
+    settle(&live, &mut live_dsp);
     live.capture();
     let first = live.saved.read().unwrap().clone();
     let (again, mut again_dsp) = activate(&first);
     let after = play(&again, &mut again_dsp);
+    settle(&again, &mut again_dsp);
     again.capture();
     let second = again.saved.read().unwrap().clone();
     let mut wrong = Vec::new();
-    if Saved::read(&first) != saved {
-        wrong.push(format!("save differs from what loaded: {first}"));
+    let mut read = Saved::read(&first);
+    let scripts = read
+        .parts
+        .first_mut()
+        .map(|p| std::mem::take(&mut p.scripts));
+    let values: Vec<String> = scripts.unwrap_or_default().into_iter().flatten().collect();
+    if read != saved {
+        wrong.push(format!("the mix saved differs from what loaded: {first}"));
     }
     if first != second {
-        wrong.push(format!("re-save differs:\n{first}\n{second}"));
+        let (a, b) = (Saved::read(&first), Saved::read(&second));
+        let (a, b) = (&a.parts[0].scripts, &b.parts[0].scripts);
+        let diff: Vec<_> = (a.iter().flatten())
+            .zip(b.iter().flatten())
+            .filter(|(x, y)| x != y)
+            .take(5)
+            .collect();
+        wrong.push(format!("re-save after reload differs: {diff:?}"));
     }
     if before < 1e-4 {
         wrong.push(format!("silent: rms {before}"));
@@ -130,8 +183,16 @@ fn recall(path: PathBuf) -> Result<String, String> {
     if db.abs() > 1.0 {
         wrong.push(format!("reload plays {db:.2} dB from the live part"));
     }
+    let turned = match &moved {
+        Some((var, to)) if values.contains(&format!("{var} {to}")) => format!("{var} → {to} kept"),
+        Some((var, to)) => format!("{var} → {to} not kept (the script set it back)"),
+        None => "no integer control".to_owned(),
+    };
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let line = format!("{name}: loaded in {load:.1?}, rms {before:.4} → {after:.4}");
+    let line = format!(
+        "{name}: loaded in {load:.1?}, rms {before:.4} → {after:.4}, {} persistent values, {turned}",
+        values.len()
+    );
     if wrong.is_empty() {
         Ok(line)
     } else {
