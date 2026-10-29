@@ -37,12 +37,23 @@ pub(crate) trait Library {
 const PRELOAD_BYTES: u32 = 61_440;
 const GRAIN_BYTES: u32 = 6144;
 
+#[cfg(test)]
 pub(crate) fn translate(
     program: Node,
     program_dir: &str,
     library: &impl Library,
     swaps: &dyn Fn(&ir::Script) -> Vec<Swap>,
 ) -> Result<ir::Instrument, String> {
+    Ok(unfinished(program, program_dir, library)?.finish(swaps))
+}
+
+/// The program translated up to its scripts' load pass, which
+/// [`Unfinished::finish`] runs once the caller has dropped the document.
+pub(crate) fn unfinished<'a, L: Library>(
+    program: Node,
+    program_dir: &'a str,
+    library: &'a L,
+) -> Result<load::Unfinished<'a, L>, String> {
     let mut t = Translator {
         program,
         program_dir,
@@ -90,10 +101,43 @@ pub(crate) fn translate(
                 .data
                 .push(("__program.lua".into(), tree.clone().into_bytes()));
         }
-        t.swap_samples(swaps);
     }
-    t.out.diagnostics = t.notes.finish();
-    Ok(t.out)
+    Ok(load::Unfinished {
+        program_dir,
+        library,
+        out: t.out,
+        notes: t.notes,
+        samples: t.samples,
+        lookups: t.lookups,
+        script_dirs: t.script_dirs,
+    })
+}
+
+/// The sample `path` names, one bank read per reference.
+fn lookup(
+    lookups: &mut HashMap<String, Result<ir::Sample, String>>,
+    library: &impl Library,
+    program_dir: &str,
+    path: &str,
+) -> Result<ir::Sample, String> {
+    lookups
+        .entry(path.into())
+        .or_insert_with(|| library.sample(program_dir, path))
+        .clone()
+}
+
+/// `sample`'s index in `out`, one entry per file and offset.
+fn sample_entry(
+    index: &mut HashMap<(PathBuf, u64), usize>,
+    out: &mut Vec<ir::Sample>,
+    sample: ir::Sample,
+) -> usize {
+    *index
+        .entry((sample.file.clone(), sample.offset))
+        .or_insert_with(|| {
+            out.push(sample);
+            out.len() - 1
+        })
 }
 
 /// What a program sets for every group.
@@ -526,23 +570,11 @@ impl<L: Library> Translator<'_, '_, L> {
     /// The sample at `path`, read from the bank, and its index in the
     /// instrument. One file and offset is one entry, however many zones use it.
     fn sample(&mut self, path: &str) -> Result<ir::Sample, String> {
-        if let Some(found) = self.lookups.get(path) {
-            return found.clone();
-        }
-        let found = self.library.sample(self.program_dir, path);
-        self.lookups.insert(path.into(), found.clone());
-        found
+        lookup(&mut self.lookups, self.library, self.program_dir, path)
     }
 
     fn sample_index(&mut self, sample: ir::Sample) -> usize {
-        let key = (sample.file.clone(), sample.offset);
-        if let Some(&index) = self.samples.get(&key) {
-            return index;
-        }
-        self.out.samples.push(sample);
-        let index = self.out.samples.len() - 1;
-        self.samples.insert(key, index);
-        index
+        sample_entry(&mut self.samples, &mut self.out.samples, sample)
     }
 
     /// Each active ScriptProcessor, with the bank's Lua members as its
