@@ -254,17 +254,41 @@ impl Engine {
         self.targets_scratch = hits;
     }
 
-    fn fade_out(&mut self, id: i32, micros: i32) {
-        let frames = micros_to_frames(i64::from(micros), self.rate).max(1) as u32;
+    /// Fades the event's voices out; with `stop` they end at silence,
+    /// else they play on silent until a fade in.
+    fn fade_out(&mut self, id: i32, micros: i32, stop: bool) {
+        let frames = micros_to_frames(i64::from(micros), self.rate) as u32;
+        let mut hits = std::mem::take(&mut self.targets_scratch);
+        self.targets(id, &mut hits);
+        for &note in &hits {
+            if !stop {
+                self.each_voice(
+                    |s| s.note == Some(note),
+                    |e, i| e.voices[i].voice.fade_to(0.0, frames),
+                );
+                continue;
+            }
+            if let Some(n) = self.notes.get_mut(note) {
+                n.released = true;
+            }
+            self.fade_where(frames, |s| s.note == Some(note));
+        }
+        self.targets_scratch = hits;
+    }
+
+    /// Fades the event's voices in, from silence for those yet to start.
+    fn fade_in(&mut self, id: i32, micros: i32) {
+        let frames = (micros_to_frames(i64::from(micros), self.rate) as u32).max(1);
         let mut hits = std::mem::take(&mut self.targets_scratch);
         self.targets(id, &mut hits);
         for &note in &hits {
             if let Some(n) = self.notes.get_mut(note) {
-                // ponytail: a fade always ends the voices (KSP stop_voice = 1);
-                // fade_out without stopping, and fade_in, wait for the gain ramp API.
-                n.released = true;
+                n.fade_in = frames;
             }
-            self.fade_where(frames, |s| s.note == Some(note));
+            self.each_voice(
+                |s| s.note == Some(note),
+                |e, i| e.voices[i].voice.fade_in(frames),
+            );
         }
         self.targets_scratch = hits;
     }
@@ -447,7 +471,11 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             Action::FadeOut => {
-                self.fade_out(int(0), int(1));
+                self.fade_out(int(0), int(1), int(2) != 0);
+                HostValue::Nothing
+            }
+            Action::FadeIn => {
+                self.fade_in(int(0), int(1));
                 HostValue::Nothing
             }
             Action::ChangeTune | Action::ChangeVol | Action::ChangePan => {

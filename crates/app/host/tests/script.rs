@@ -3090,3 +3090,43 @@ fn get_folder_factory_returns_prepared_path_or_empty() {
         assert_eq!(engine.stats().actions_unhandled, 0);
     }
 }
+
+/// `fade_out` without stopping leaves the voice playing silent until
+/// `fade_in` brings it back (the manual's stutter), and `fade_in` on a new
+/// note starts its voices from silence.
+#[test]
+fn a_fade_out_without_stop_comes_back_with_a_fade_in() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $id := 0
+        end on
+        on note
+            select ($EVENT_NOTE)
+                case 60
+                    $id := $EVENT_ID
+                case 61
+                    ignore_event($EVENT_ID)
+                    fade_out($id, 1000, 0)
+                case 62
+                    ignore_event($EVENT_ID)
+                    fade_in($id, 1000)
+            end select
+        end on",
+    );
+    let full = level(&mut e, &[on(60)]);
+    assert!(full > 0.1, "{full}");
+    assert_eq!(level(&mut e, &[on(61)]), 0.0);
+    assert!((level(&mut e, &[on(62)]) - full).abs() < 1e-4);
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on note\n fade_in($EVENT_ID, 1000000)\nend on",
+    );
+    let rising = level(&mut e, &[on(63)]);
+    assert!(rising > 0.0 && rising < full / 4.0, "{rising} of {full}");
+}

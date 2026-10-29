@@ -92,6 +92,8 @@ pub(crate) struct Note {
     pub(crate) releases: Releases,
     /// Its player ended it with `note_off`: only the slots after hear it.
     pub(crate) noted_off: bool,
+    /// A script faded it in over this many frames: its voices start silent.
+    pub(crate) fade_in: u32,
     /// Script tuning, millicents.
     pub(crate) script_tune: i32,
     /// Script volume, millidecibels.
@@ -144,6 +146,7 @@ impl Note {
             ignored: false,
             releases: Releases::OnRelease,
             noted_off: false,
+            fade_in: 0,
             script_tune: 0,
             script_volume: 0,
             script_pan: 0,

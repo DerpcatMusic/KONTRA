@@ -92,7 +92,11 @@ impl Engine {
     }
 
     /// Calls `act` on each voice `pick` chooses.
-    fn each_voice(&mut self, pick: impl Fn(&Slot) -> bool, mut act: impl FnMut(&mut Self, usize)) {
+    pub(crate) fn each_voice(
+        &mut self,
+        pick: impl Fn(&Slot) -> bool,
+        mut act: impl FnMut(&mut Self, usize),
+    ) {
         for index in 0..self.voices.len() {
             if self.voices.get(index).is_some_and(&pick) {
                 act(self, index);

@@ -153,6 +153,9 @@ impl Engine {
                 });
             }
             slot.voice.start(start);
+            if n.fade_in > 0 {
+                slot.voice.fade_in(n.fade_in);
+            }
             slot.note = Some(note);
             slot.zone = index;
             slot.started = now;
