@@ -29,7 +29,7 @@ pub struct View {
 /// A KSP script's tree and what keeps it current, or a Lua script's tree.
 enum Shown {
     Ksp(Box<Live>),
-    Lua(model::Interface),
+    Lua(Box<model::Interface>),
 }
 
 impl View {
@@ -71,7 +71,7 @@ impl View {
                 crate::ui::lua::apply(&mut tree, w, look, words.then(|| text.as_str()));
             }
             let frame = LookFrame::lua(at, &tree);
-            Some(Self::new(at, Shown::Lua(tree), frame))
+            Some(Self::new(at, Shown::Lua(Box::new(tree)), frame))
         })?;
         view.library = library.map(RefCell::into_inner);
         Some(view)
