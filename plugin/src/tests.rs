@@ -576,8 +576,11 @@ fn console(params: &KontraParams, dsp: &mut Dsp, name: &str, value: i64) {
     }
 }
 
-/// Shreddage with its first channel's FX slot set to EQ3BAND from its own
-/// console menu, the slot shown, and that band's gain moved; the plugin.
+/// Shreddage with its second channel's first FX slot (slot index 8, `Bus(1)`
+/// slot 0) set to EQ3BAND from its own console menu, the slot shown, and
+/// that band's gain cut fully (a boost clips); the plugin. The first
+/// channel (Neck) is saved at volume 0 (`%_channel_data` 1 1 0 …), so an
+/// EQ there is silent in Kontakt too.
 fn shreddage_eq() -> Option<(KontraParams, Dsp, f32)> {
     let path = library(SHREDDAGE)?;
     let saved = Saved::new(vec![SavedPart {
@@ -598,10 +601,10 @@ fn shreddage_eq() -> Option<(KontraParams, Dsp, f32)> {
     settle(&params, &mut dsp);
     let dry = band(&params, &mut dsp);
     // The menu's items hold unit ids; 1 is EQ3BAND (`%fx_unit_engine_par`).
-    console(&params, &mut dsp, "$_ChannelFxSlotType0", 1);
-    console(&params, &mut dsp, "$_ChannelFxSlotSelect0", 1);
+    console(&params, &mut dsp, "$_ChannelFxSlotType8", 1);
+    console(&params, &mut dsp, "$_ChannelFxSlotSelect8", 1);
     // Edit pane control 5 is the EQ's second band gain (1.45 kHz).
-    console(&params, &mut dsp, "$EditPaneSlider5", 1_000_000);
+    console(&params, &mut dsp, "$EditPaneSlider5", 0);
     Some((params, dsp, dry))
 }
 
@@ -617,7 +620,7 @@ fn shreddage_loads_an_eq_from_its_console_and_a_reload_keeps_it() {
     let Some((live, mut live_dsp, _)) = shreddage_eq() else {
         return;
     };
-    let eq = "Some([(Bus(0), 0, 2)])";
+    let eq = "Some([(Bus(1), 0, 2)])";
     assert_eq!(slot_types(&live), eq, "the console's menu loads EQ3BAND");
     settle(&live, &mut live_dsp);
     live.capture();
@@ -637,7 +640,9 @@ fn shreddage_loads_an_eq_from_its_console_and_a_reload_keeps_it() {
             .find(|e| e.starts_with("%_rack_unit_id "))
             .cloned()
     };
-    assert!(units(&first).is_some_and(|u| u.starts_with("%_rack_unit_id 1 ")));
+    // Channel 1's first slot (index 8) holds unit 1, EQ3BAND.
+    let unit = |u: &String| u.split(' ').nth(9) == Some("1");
+    assert!(units(&first).is_some_and(|u| unit(&u)));
     assert_eq!(
         units(&first),
         units(&second),
@@ -646,18 +651,17 @@ fn shreddage_loads_an_eq_from_its_console_and_a_reload_keeps_it() {
     assert_eq!(first, second, "re-save after reload is identical");
 }
 
-/// Ignored until a script's knob writes reach an effect loaded after init
-/// (board, lane B, 2026-10-29): today the band moves 0.0 dB.
 #[test]
-#[ignore]
 fn shreddage_eq_band_gain_is_audible_and_survives_reload() {
     let Some((live, mut live_dsp, dry)) = shreddage_eq() else {
         return;
     };
     let wet = band(&live, &mut live_dsp);
+    // C4 here −1.8 dB (C3 in the render example −3.1); the round robins
+    // move it ±0.04 dB.
     assert!(
-        wet - dry > 3.0,
-        "band 2 at full boost moved {:.2} dB",
+        dry - wet > 1.0,
+        "band 2 fully cut moved {:.2} dB",
         wet - dry
     );
     live.capture();

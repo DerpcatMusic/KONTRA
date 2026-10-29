@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Optional: the mod wheel moves to this value one second in.
     let wheel: Option<u8> = args.next().and_then(|a| a.to_str()?.parse().ok());
 
-    // KONTRA_SCRIPT_DUMP=<dir> writes each script's source there.
+    // KONTRA_SCRIPT_DUMP=<dir> writes each script's source, data and saved values there.
     if let Some(dir) = std::env::var_os("KONTRA_SCRIPT_DUMP") {
         for (n, s) in kontra_host::instrument::read(&path)?
             .scripts
@@ -43,6 +43,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     bytes,
                 )?;
             }
+            // Its saved persistent values, one per line.
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("{n}-saved.txt")),
+                s.saved.join("\n"),
+            )?;
             let data: Vec<_> = s.data.iter().map(|(name, b)| (name, b.len())).collect();
             println!("  script {n} data files: {data:?}");
         }
