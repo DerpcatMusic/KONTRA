@@ -434,14 +434,17 @@ fn at(image: Image, scale: f32) -> Option<Image> {
     resample(&image, size(image.width), size(image.height))
 }
 
-/// Scale stock sprites without interpolating upscaled pixels. Downscaling
-/// keeps the area filter to avoid aliasing.
+/// Integer-enlarge stock sprites without interpolating; the painter then
+/// downsamples to the snapped device rectangle. Shrinking uses the area filter.
 fn at_stock(image: Image, scale: f32) -> Option<Image> {
     if scale <= 1. {
         return at(image, scale);
     }
-    let size = |n: u32| ((f64::from(n) * f64::from(scale)).round() as u32).max(1);
-    let (w, h) = (size(image.width), size(image.height));
+    let factor = scale.ceil() as u32;
+    let (w, h) = (
+        image.width.checked_mul(factor)?,
+        image.height.checked_mul(factor)?,
+    );
     let pixels = image.rgba.as_chunks::<4>().0;
     let mut out = Vec::with_capacity(w as usize * h as usize * 4);
     for y in 0..h {
@@ -728,7 +731,7 @@ mod tests {
     #[test]
     fn stock_upscaling_preserves_source_pixels() {
         let source = Image::rgba(2, 1, vec![255, 255, 255, 255, 0, 0, 0, 0]);
-        let scaled = source.and_then(|image| at_stock(image, 2.));
+        let scaled = source.and_then(|image| at_stock(image, 1.5));
         assert_eq!(
             scaled.map(|image| image.rgba.to_vec()),
             Some(vec![
