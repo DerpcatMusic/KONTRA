@@ -99,8 +99,19 @@ impl Engine {
                                 | ir::ModKind::LfoRate { .. }
                         )
                 }) {
-                    let source = inspect::route_source(m.kind)
-                        .and_then(|s| self.source(zone, s, &n, modulators::Age::START));
+                    let source = plan::route_source(m.kind).and_then(|s| match (m.kind, s) {
+                        (
+                            ir::ModKind::SampleStart { .. }
+                            | ir::ModKind::Attack { .. }
+                            | ir::ModKind::Release { .. },
+                            ir::Source::HeldTime { span_ms },
+                        ) => Some(voice_gain::held_time(span_ms, held_seconds)),
+                        (
+                            ir::ModKind::LfoPhase { .. } | ir::ModKind::LfoRate { .. },
+                            ir::Source::Lfo(_),
+                        ) => None,
+                        _ => self.source(zone, s, &n, modulators::Age::START),
+                    });
                     if let Some(trace) = &mut self.trace {
                         trace.push(TraceEvent::RouteOnset {
                             frame: now.0,

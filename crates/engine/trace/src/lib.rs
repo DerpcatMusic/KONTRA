@@ -42,7 +42,7 @@ pub enum TraceEvent {
         len: u8,
         value: [u8; 96],
     },
-    /// Source sampled at voice start for a note-on-only route.
+    /// Source sampled at voice start; some routes are subsequently re-read.
     RouteOnset {
         frame: u64,
         voice_slot: usize,
