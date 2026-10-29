@@ -98,6 +98,8 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
         match kontra_ksp::compile(&script.source, &[]) {
             Ok(compiled) => {
                 let mut planned = crate::script::plan(&compiled, &script.saved, &script.data);
+                planned.source_folder =
+                    crate::script::source_folder(instrument.source_path.as_deref());
                 planned.links = crate::script::links(&compiled, &script.links);
                 if planned.links.len() < script.links.len() {
                     diagnostics.push(ir::Diagnostic {

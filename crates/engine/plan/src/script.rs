@@ -16,6 +16,8 @@ pub struct ScriptPlan {
     pub data: Vec<(u32, Vec<i64>)>,
     /// Text array data prepared from library resources.
     pub text_data: Vec<(u32, Vec<Text>)>,
+    /// Absolute folder of the instrument file, when known.
+    pub source_folder: Option<Text>,
     /// Saved values written after `on init`, before `on persistence_changed`.
     pub restore: Vec<(u32, i64)>,
     pub restore_texts: Vec<(u32, Text)>,
@@ -42,6 +44,16 @@ pub struct ScriptPlan {
 }
 
 impl ScriptPlan {
+    /// Copies a prepared numeric array into its cells.
+    pub fn load_number_data(&self, base: u32, len: usize, cells: &mut [i64]) {
+        if let Some((_, values)) = self.data.iter().find(|(b, _)| *b == base) {
+            let cells = cells.get_mut(base as usize..).unwrap_or_default();
+            for (cell, value) in cells.iter_mut().zip(values).take(len) {
+                *cell = *value;
+            }
+        }
+    }
+
     /// Copies a prepared text array into its cells. Returns false when the resource was not found.
     pub fn load_text_data(&self, base: u32, len: usize, cells: &mut [Text]) -> bool {
         let Some((_, values)) = self.text_data.iter().find(|(b, _)| *b == base) else {

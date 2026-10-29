@@ -587,6 +587,15 @@ impl HostApi for Engine {
                 };
                 HostValue::Int(found.map_or(missing, |g| g as i32))
             }
+            Action::GetFolder
+                if int(0) == 2 && self.script().is_some_and(|s| s.source_folder.is_some()) =>
+            {
+                *call.text_out = self
+                    .script()
+                    .and_then(|s| s.source_folder)
+                    .unwrap_or(Text::EMPTY);
+                HostValue::Text
+            }
             Action::GroupName => {
                 let name = usize::try_from(int(0))
                     .ok()
@@ -709,14 +718,8 @@ impl HostApi for Engine {
                 }
             }
             Action::LoadArray if int(2) == 2 && int(3) != 2 => {
-                let (base, len) = (int(0) as u32, int(1) as usize);
-                let data = self.script().map(|s| s.data.as_slice());
-                if let Some((_, values)) = data.unwrap_or_default().iter().find(|(b, _)| *b == base)
-                {
-                    let cells = call.cells.get_mut(base as usize..).unwrap_or_default();
-                    for (cell, value) in cells.iter_mut().zip(values).take(len) {
-                        *cell = *value;
-                    }
+                if let Some(s) = self.script() {
+                    s.load_number_data(int(0) as u32, int(1) as usize, call.cells);
                 }
                 HostValue::Int(0)
             }
