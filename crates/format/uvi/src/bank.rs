@@ -79,26 +79,19 @@ impl Bank {
         Ok((member.path.clone().unwrap_or_default(), text))
     }
 
-    /// The bank's program paths, sorted.
-    pub(crate) fn program_paths(&self) -> Vec<String> {
-        self.programs()
+    /// The program paths of the bank at `path`, sorted, from its directory
+    /// alone: no content key is recovered, so listing a protected bank costs
+    /// what listing a clear one does.
+    pub(crate) fn program_paths(path: &Path) -> Result<Vec<String>> {
+        let directory = Ufs::open(path)?.decode_directory(&Namespaces::native().metadata)?;
+        Ok(programs(&directory)
             .into_iter()
-            .filter_map(|i| self.directory.files.get(i)?.path.clone())
-            .collect()
+            .filter_map(|i| directory.files.get(i)?.path.clone())
+            .collect())
     }
 
-    /// Member indices of the bank's programs, by path.
     fn programs(&self) -> Vec<usize> {
-        let mut found: Vec<(&str, usize)> = self
-            .directory
-            .files
-            .iter()
-            .enumerate()
-            .filter_map(|(i, m)| Some((m.path.as_deref()?, i)))
-            .filter(|(p, _)| p.to_ascii_lowercase().ends_with(".uvip"))
-            .collect();
-        found.sort();
-        found.into_iter().map(|(_, i)| i).collect()
+        programs(&self.directory)
     }
 
     fn lookup(&self, path: &str) -> Option<usize> {
@@ -195,6 +188,19 @@ impl Bank {
 
 /// Collapses `.`, `..` and empty parts of a bank path; `..` above the root is
 /// dropped (a bank has no parent to climb to).
+/// Member indices of a bank's programs, by path.
+fn programs(directory: &Directory) -> Vec<usize> {
+    let mut found: Vec<(&str, usize)> = directory
+        .files
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| Some((m.path.as_deref()?, i)))
+        .filter(|(p, _)| p.to_ascii_lowercase().ends_with(".uvip"))
+        .collect();
+    found.sort();
+    found.into_iter().map(|(_, i)| i).collect()
+}
+
 fn normalize(path: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
     for part in path.split('/') {
