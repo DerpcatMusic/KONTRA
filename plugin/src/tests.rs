@@ -700,3 +700,44 @@ fn band(params: &KontraParams, dsp: &mut Dsp) -> f32 {
     }
     (10.0 * (band / all.max(1e-12)).log10()) as f32
 }
+
+/// HOW-TO-TRY-V3's first run, headless: v2's folders and a UVI folder the
+/// player adds are scanned, and a preset of each library loads, plays,
+/// saves and reloads.
+#[test]
+#[ignore = "about 80 s in debug: run with --ignored before offering a build"]
+fn a_first_run_lists_v2s_libraries_and_their_presets_play_and_recall() {
+    const UVI: &str = "/data/main/Libraries/UVI";
+    let v2 = dirs::config_dir().map(|c| c.join("kontra").join("settings.json"));
+    let Some(v2) = v2.filter(|p| p.exists() && Path::new(UVI).exists()) else {
+        eprintln!("skipped: no v2 settings or no {UVI}");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("kontra-first-run-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("kontra")).unwrap();
+    std::fs::copy(&v2, dir.join("kontra").join("settings.json")).unwrap();
+    let mut browser = kontra_host::browser::Browser::open(Some(&dir), Some(&dir));
+    browser.add_root(UVI.into());
+    let t = std::time::Instant::now();
+    while browser.scanning() && t.elapsed().as_secs() < 300 {
+        browser.poll();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    println!("scanned in {:.1?}", t.elapsed());
+    let mut failed = Vec::new();
+    for name in ["Una Corda", "ANALOG STRINGS", "Augmented Orchestra"] {
+        let libraries = &browser.catalog.libraries;
+        let Some(n) = libraries.iter().position(|l| l.name.contains(name)) else {
+            failed.push(format!("{name}: not listed"));
+            continue;
+        };
+        println!("{name}: {} presets", libraries[n].presets.len());
+        match browser.preset(n, 0).map(recall) {
+            Some(Ok(line)) => println!("{line}"),
+            Some(Err(e)) => failed.push(e),
+            None => failed.push(format!("{name}: no presets")),
+        }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
