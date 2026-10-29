@@ -131,6 +131,12 @@ pub(crate) fn instrument(
     out.slot_laws = slots.laws;
     if !slots.shape_slots.is_empty() {
         out.slot_shapes.shapes = crate::laws::filter_shapes();
+        kontra_law::record(|| kontra_law::Application {
+            id: kontra_law::LawId("kontakt.filter_shapes.v1"),
+            location: "slot_shapes/shapes".into(),
+            input: "()".into(),
+            output: format!("{:?}", out.slot_shapes.shapes),
+        });
         out.slot_shapes.slots = slots.shape_slots;
     }
     let loads = |s: &ir::Script| s.source.contains("$ENGINE_PAR_EFFECT_");
@@ -164,6 +170,12 @@ pub(crate) fn instrument(
         }
         if !open.is_empty() && out.slot_shapes.shapes.is_empty() {
             out.slot_shapes.shapes = crate::laws::filter_shapes();
+            kontra_law::record(|| kontra_law::Application {
+                id: kontra_law::LawId("kontakt.filter_shapes.v1"),
+                location: "slot_shapes/shapes".into(),
+                input: "()".into(),
+                output: format!("{:?}", out.slot_shapes.shapes),
+            });
         }
         out.slot_shapes.slots.extend(open);
         out.slot_shapes.types = crate::script_knobs::slot_types();
@@ -445,6 +457,7 @@ fn translate_group(
     notes: &mut Notes,
 ) -> Result<Translated, ni_file::Error> {
     let v = group.params()?;
+    let stream_mode = group.source_identity().map_or(0, |s| s.mode);
     let mut out = ir::Group {
         name: v.name.clone(),
         volume_db: db(v.volume),
@@ -457,9 +470,15 @@ fn translate_group(
             ir::Trigger::Attack
         },
         purged: group.source_identity().is_ok_and(|s| s.flag == 1),
-        stream: laws::stream(group.source_identity().map_or(0, |s| s.mode), base.preload),
+        stream: laws::stream(stream_mode, base.preload),
         ..ir::Group::DEFAULT
     };
+    kontra_law::record(|| kontra_law::Application {
+        id: kontra_law::LawId("kontakt.stream.v1"),
+        location: format!("groups/{group_index}/stream"),
+        input: format!("mode={stream_mode:?}, preload={:?}", base.preload),
+        output: format!("{:?}", out.stream),
+    });
     kontra_law::record(|| kontra_law::Application {
         id: kontra_law::LawId("kontakt.group_gain_pan_tune.v1"),
         location: format!("groups/{group_index}"),

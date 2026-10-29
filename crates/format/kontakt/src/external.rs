@@ -122,7 +122,10 @@ pub(crate) fn external(
                         insert,
                         depth: t.signed_intensity(),
                     }),
-                    (Some(source), param, Some(insert)) if laws::eq_band_index(param).is_some() => {
+                    (Some(source), param, Some(insert))
+                        if crate::provenance::eq_band_index(param, group_index, n, target)
+                            .is_some() =>
+                    {
                         let result = laws::eq_gain(source, insert, param, t.signed_intensity());
                         kontra_law::record(|| kontra_law::Application {
                             id: kontra_law::LawId("kontakt.eq_gain_route.v1"),
@@ -144,6 +147,14 @@ pub(crate) fn external(
                     {
                         let intensity = t.signed_intensity();
                         let floor_ms = laws::time_floor_ms(&p.unknown_source_data);
+                        kontra_law::record(|| kontra_law::Application {
+                            id: kontra_law::LawId("kontakt.time_floor_ms.v1"),
+                            location: format!(
+                                "groups/{group_index}/routes/{n}/targets/{target}/floor_ms"
+                            ),
+                            input: format!("{:?}", p.unknown_source_data),
+                            output: format!("{floor_ms:?}"),
+                        });
                         Some(if stage == "ahdsr_attack" {
                             ir::ModKind::Attack {
                                 source,

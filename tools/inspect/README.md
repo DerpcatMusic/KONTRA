@@ -16,7 +16,8 @@ stable machine-readable schema. The versioned envelope reserves `null` for
 unavailable data. The `law_applications` list records IDs, locations, inputs and outputs for
 Kontakt group envelopes, release counters, timed envelopes and LFOs, EQ routes,
 volume source curves, route lag, LFO-rate routes, modulation shapers, saved
-filter/EQ parameters and group/zone gain, pan and tuning at translation time.
+filter/EQ, compressors/limiters, route time floor, streaming and group/zone
+gain, pan and tuning at translation time.
 For UVI it records keygroup/zone gain, pan and tuning, amplitude and AHD
 envelopes, LFO shapes, matrix cells, filters and key/velocity fades, identified
 by XML byte offset and tag.

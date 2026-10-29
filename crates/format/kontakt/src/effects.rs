@@ -122,7 +122,14 @@ fn rack(
                     }));
                 if let Some((_, 0x18, kind)) = &effect {
                     laws.subtypes.push((*rack_at, slot, *kind));
-                    if crate::laws::switches(*kind) {
+                    let switches = crate::laws::switches(*kind);
+                    kontra_law::record(|| kontra_law::Application {
+                        id: kontra_law::LawId("kontakt.filter_switches.v1"),
+                        location: format!("{rack_at:?}/slot/{slot}/switches"),
+                        input: format!("{kind:?}"),
+                        output: format!("{switches:?}"),
+                    });
+                    if switches {
                         laws.shape_slots.push((*rack_at, slot));
                     }
                 }
@@ -252,19 +259,38 @@ fn slot_effect(
             .zip(byte(20))
             .map(|(((mode, (t, r)), (a, rel)), link)| {
                 *knobs = crate::script_knobs::compressor_knobs(mode, [t, r, a, rel], link);
-                ir::EffectKind::Compressor(crate::laws::compressor(mode, t, r, a, rel, link))
+                let value = crate::laws::compressor(mode, t, r, a, rel, link);
+                kontra_law::record(|| kontra_law::Application {
+                    id: kontra_law::LawId("kontakt.compressor.v1"),
+                    location: format!("{at}/compressor"),
+                    input: format!("{:?}", (mode, t, r, a, rel, link)),
+                    output: format!("{value:?}"),
+                });
+                ir::EffectKind::Compressor(value)
             }),
-        0x1c => f32_at(0)
-            .zip(f32_at(4))
-            .map(|(gain, release)| ir::EffectKind::Limiter(crate::laws::limiter(gain, release))),
+        0x1c => f32_at(0).zip(f32_at(4)).map(|(gain, release)| {
+            let value = crate::laws::limiter(gain, release);
+            kontra_law::record(|| kontra_law::Application {
+                id: kontra_law::LawId("kontakt.limiter.v1"),
+                location: format!("{at}/limiter"),
+                input: format!("{:?}", (gain, release)),
+                output: format!("{value:?}"),
+            });
+            ir::EffectKind::Limiter(value)
+        }),
         0x5f if object.version == 0x51 => {
             f32_at(0)
                 .zip(f32_at(4))
                 .zip(f32_at(8))
                 .map(|((drive, release), ceiling)| {
-                    ir::EffectKind::Limiter(crate::laws::transparent_limiter(
-                        drive, release, ceiling,
-                    ))
+                    let value = crate::laws::transparent_limiter(drive, release, ceiling);
+                    kontra_law::record(|| kontra_law::Application {
+                        id: kontra_law::LawId("kontakt.transparent_limiter.v1"),
+                        location: format!("{at}/limiter"),
+                        input: format!("{:?}", (drive, release, ceiling)),
+                        output: format!("{value:?}"),
+                    });
+                    ir::EffectKind::Limiter(value)
                 })
         }
         // Six floats, the link byte, then (0x11 on) the side-chain byte.
@@ -285,6 +311,12 @@ fn slot_effect(
                 .map(|(saved, link)| {
                     *knobs = crate::script_knobs::bus_knobs(saved, link);
                     let (c, auto) = crate::laws::bus_compressor(saved, link);
+                    kontra_law::record(|| kontra_law::Application {
+                        id: kontra_law::LawId("kontakt.bus_compressor.v1"),
+                        location: format!("{at}/compressor"),
+                        input: format!("{:?}", (saved, link)),
+                        output: format!("{:?}", (&c, auto)),
+                    });
                     if auto {
                         notes.add(impact, "Solid Bus Comp auto release", at.to_owned());
                     }
