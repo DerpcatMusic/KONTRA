@@ -210,6 +210,8 @@ pub(super) fn widget(
     };
     w.text_y = p.int("$CONTROL_PAR_TEXTPOS_Y");
     w.text_shift_on_press = p.int("$CONTROL_PAR_DISABLE_TEXT_SHIFTING") != Some(1);
+    // A switch fires on mouse down, a button on mouse up (KSP manual, ui_switch).
+    w.activate_on_press = matches!(kind, ControlKind::Switch);
     w.value_y = p.int("$CONTROL_PAR_VALUEPOS_Y");
     w.value_text = p.text("$CONTROL_PAR_LABEL").map(Into::into);
     w.drag = p.int("$CONTROL_PAR_MOUSE_BEHAVIOUR").map(|m| ui::Drag {
