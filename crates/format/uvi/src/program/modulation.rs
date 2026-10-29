@@ -538,7 +538,7 @@ pub(super) fn shape(node: Node, user: bool) -> Option<(ir::Lfo, f32)> {
 }
 
 /// A `MultiLFO`'s mix at phase `p` (process UVIWorkstation 0x1411497f0):
-/// `s·sin 2πp + t·tri + w·(1 − 2p) + q·pulse + n·noise`, the triangle from
+/// `s·sin 2πp + t·tri + w·(1 − 2·fract(2p)) + q·pulse + n·noise`, the triangle from
 /// +1 at 0 and the pulse high below `PulseWidth`, the noise a new uniform
 /// draw each half cycle, all negated by `Invert`. `NormalizeOutput` divides
 /// by the mix's peak when it passes 1 (0x14114a7a0 evaluates the waves at
@@ -560,7 +560,10 @@ fn multi(node: Node) -> Option<ir::Wave> {
             4.0 * p - 3.0
         };
         let pulse = if p < width { 1.0 } else { -1.0 };
-        s * (std::f32::consts::TAU * p).sin() + t * tri + w * (1.0 - 2.0 * p) + q * pulse
+        s * (std::f32::consts::TAU * p).sin()
+            + t * tri
+            + w * (1.0 - 2.0 * (2.0 * p).fract())
+            + q * pulse
     };
     // Dense phases and both sides of the pulse's edges find the peak.
     const STEPS: u16 = 4096;
@@ -594,7 +597,7 @@ fn multi(node: Node) -> Option<ir::Wave> {
         ir::Wave::Sine
     } else {
         ir::Wave::Multi {
-            weights: [-s * k, 0.0, -t * k, -q * k, n * k, w * k],
+            weights: [-s * k, -w * k, -t * k, -q * k, n * k, 0.0],
             width,
             normalize: false,
         }

@@ -1,5 +1,22 @@
 use super::*;
 
+#[test]
+fn a_multi_lfo_saw_uses_the_native_two_cycle_wave() {
+    let doc = roxmltree::Document::parse(
+        r#"<MultiLFO SawDepth="1" Freq="1" Retrigger="1" Bipolar="1"/>"#,
+    )
+    .unwrap();
+    let (lfo, _) = modulation::shape(doc.root_element(), false).unwrap();
+    let ir::Wave::Multi { weights, .. } = lfo.wave else {
+        panic!("expected a mixed wave");
+    };
+    // The native 0x14114a5d0 returns 1, 0, 1 at phases 0, 1/4, 1/2.
+    // In the neutral mixed wave the two-cycle saw is slot 1, inverted;
+    // slot 5 is the one-cycle saw.
+    assert_eq!(weights[1], -1.0);
+    assert_eq!(weights[5], 0.0);
+}
+
 /// Every name is a sample of its own, 1000 frames long.
 struct Stub;
 
