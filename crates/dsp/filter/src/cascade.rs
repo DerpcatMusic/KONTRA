@@ -2,6 +2,9 @@
 //! morphs from low through band to high pass and blends into the signal by
 //! its wet amount; its band state passes a soft knee in the loop. The output
 //! is normalised by the stages' resonant peaks and glides to its gain.
+//! Stage 0's corner and resonance follow a control clock: every 32 frames
+//! they move 0.015 of the way to their settings (Kontakt 8's
+//! `FUN_140aea690`, about 44 ms at 48 kHz), so a sweep does not zipper.
 
 /// One stage: q (damping `2 − 2q`), the highest integrator gain it runs at,
 /// its resonant peak at full wet, morph (0 low, 0.5 band, 1 high) and wet.
@@ -38,6 +41,13 @@ const KNEE: (f32, f32) = (0.06, 0.0075);
 /// The output gain's glide, per second.
 const GLIDE: f32 = 20.0;
 
+/// The control clock's period in frames, and how far each tick moves.
+const TICK: u32 = 32;
+const STEP: f32 = 0.015;
+/// Below these the clock stops: a ten-thousandth of the cutoff knob's
+/// 111 semitones, in octaves, and of the resonance knob's flatter q slope.
+const STILL: (f32, f32) = (1e-4 * 111.0 / 12.0, 1e-4 * 0.66);
+
 /// Zero for a denormal-range state, so a decaying tail stays cheap.
 fn flush(v: f32) -> f32 {
     if v.abs() < 1e-20 { 0.0 } else { v }
@@ -47,6 +57,11 @@ fn flush(v: f32) -> f32 {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Cascade {
     stages: [Coefficients; 3],
+    target: CascadeSettings,
+    /// Stage 0 as the clock has it: octaves above 1 Hz, q, limit, peak.
+    now: [f32; 4],
+    /// Frames to the next tick.
+    left: u32,
     gain: f32,
     glide: f32,
     /// Radians per sample per Hz.
@@ -61,20 +76,61 @@ impl Cascade {
     pub fn new(settings: CascadeSettings, rate: u32) -> Self {
         let mut c = Self {
             stages: [Coefficients::default(); 3],
+            target: settings,
+            now: start(&settings),
+            left: 0,
             gain: 0.0,
             glide: GLIDE / rate.max(1) as f32,
             per_hz: std::f32::consts::TAU / rate.max(1) as f32,
             state: [([[0.0; 2]; 3], 0.0); 2],
         };
-        c.set(settings);
+        c.retune();
         for s in &mut c.state {
             s.1 = c.gain;
         }
         c
     }
 
-    /// Retunes to `settings`; the gain glides there. No allocation.
+    /// Retunes to `settings`: stage 0's corner and resonance on the clock,
+    /// the rest at once; the gain glides there. No allocation.
     pub fn set(&mut self, s: CascadeSettings) {
+        if s != self.target {
+            self.target = s;
+            self.retune();
+        }
+    }
+
+    /// One clock tick.
+    fn tick(&mut self) {
+        let [octave, q, ..] = start(&self.target);
+        let mut moved = false;
+        if (octave - self.now[0]).abs() > STILL.0 {
+            self.now[0] += (octave - self.now[0]) * STEP;
+            moved = true;
+        }
+        if (q - self.now[1]).abs() > STILL.1 {
+            let to = start(&self.target);
+            for (now, to) in self.now.iter_mut().zip(to).skip(1) {
+                *now += (to - *now) * STEP;
+            }
+            moved = true;
+        }
+        if moved {
+            self.retune();
+        }
+    }
+
+    /// The coefficients for the target with stage 0 where the clock has it.
+    fn retune(&mut self) {
+        let mut s = self.target;
+        let [octave, q, limit, peak] = self.now;
+        s.hz = octave.exp2();
+        s.stages[0] = CascadeStage {
+            q,
+            limit,
+            peak,
+            ..s.stages[0]
+        };
         let per_hz = self.per_hz;
         let [s1, s2] = s.shifts;
         let hz = [s.hz, s.hz * s1.exp2(), s.hz * (s1 + s2).exp2()];
@@ -112,7 +168,21 @@ impl Cascade {
     }
 
     /// Filters `io` in place.
-    pub fn process(&mut self, io: &mut [[f32; 2]]) {
+    pub fn process(&mut self, mut io: &mut [[f32; 2]]) {
+        while !io.is_empty() {
+            if self.left == 0 {
+                self.left = TICK;
+                self.tick();
+            }
+            let n = io.len().min(self.left as usize);
+            let (chunk, rest) = io.split_at_mut(n);
+            self.run(chunk);
+            self.left -= n as u32;
+            io = rest;
+        }
+    }
+
+    fn run(&mut self, io: &mut [[f32; 2]]) {
         let (stages, gain, glide) = (self.stages, self.gain, self.glide);
         for frame in io.iter_mut() {
             for (x, (s, glided)) in frame.iter_mut().zip(&mut self.state) {
@@ -132,4 +202,10 @@ impl Cascade {
             }
         }
     }
+}
+
+/// Stage 0 of `s` in the clock's terms.
+fn start(s: &CascadeSettings) -> [f32; 4] {
+    let st = s.stages[0];
+    [s.hz.max(1e-3).log2(), st.q, st.limit, st.peak]
 }
