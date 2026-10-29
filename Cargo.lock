@@ -2611,17 +2611,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kontra-probe"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "kontakto",
- "sampler-ir",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "kontra-protocol"
 version = "0.0.0"
 dependencies = [
