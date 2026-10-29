@@ -1317,6 +1317,48 @@ fn chaos_lfos_are_their_attractors() {
 }
 
 #[test]
+fn a_wheel_on_a_send_scales_its_level_live() {
+    // AO Crusader MW: CC 1 at ratio 1 on the send's Gain; the step
+    // envelope (a note's) stays reported.
+    let xml = r#"<Program Gain="1">
+      <Modulators><StepModulator Name="Step Envelope 1" Bypass="0"/></Modulators>
+      <Layers><Layer Gain="1" Pan="0">
+        <BusRouters><BusRouter Bypass="0" Gain="0.5" Destination="../../Aux0" PreFader="0">
+          <Connections>
+            <SignalConnection Ratio="1" Source="@MIDI CC 1" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            <SignalConnection Ratio="1" Source="$Program/Step Envelope 1" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+        </BusRouter></BusRouters>
+        <Keygroups><Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup></Keygroups>
+      </Layer></Layers>
+      <Auxs><AuxEffect Name="Aux0" Bypass="0" Gain="1" PreInsert="1"/></Auxs>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let layer = &out.buses[1];
+    assert_eq!(layer.sends[0].level, 0.5);
+    let [ir::ModKind::Send { source, send: 0 }] = layer.mods[..] else {
+        panic!("{:?}", layer.mods);
+    };
+    assert_eq!(source, ir::Source::Blend(0));
+    let factor = &layer.blends[0].terms[0].factors[0];
+    assert_eq!(
+        (factor.input.source, factor.depth),
+        (ir::Source::Controller(1), 1.0)
+    );
+    let gaps = out
+        .diagnostics
+        .iter()
+        .filter(|d| d.feature == "modulation Gain");
+    assert_eq!(
+        gaps.map(|d| d.detail.as_str()).collect::<Vec<_>>(),
+        ["1× (first: $Program/Step Envelope 1)"]
+    );
+}
+
+#[test]
 fn an_effect_on_an_aux_no_send_reaches_is_latent() {
     let program = |gain: &str| {
         format!(

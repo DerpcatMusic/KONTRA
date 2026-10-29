@@ -90,14 +90,7 @@ pub(super) fn term(
     let mut amount = num(input, "Ratio", 1.0).ok()? as f32;
     let mut factors = Vec::new();
     for f in children(input).filter(|f| f.attribute("Destination") == Some("Ratio")) {
-        if flag(f, "ConnectionMode") {
-            return None;
-        }
-        let depth = held_ratio(program, f)?.clamp(-1.0, 1.0);
-        let factor = ir::Factor {
-            input: read_through(program, f, lfos.as_deref_mut())?,
-            depth,
-        };
+        let factor = factor(program, f, lfos.as_deref_mut())?;
         match factor.input.source {
             ir::Source::Constant => amount *= factor.at(factor.input.apply(1.0)),
             _ => factors.push(factor),
@@ -111,6 +104,24 @@ pub(super) fn term(
         input,
         amount,
         factors,
+    })
+}
+
+/// A connection on a multiplicative parameter as the factor it scales it
+/// by (0x141429a80): its source through its mapper at its ratio. None for
+/// one with `ConnectionMode` set, or a source not carried.
+pub(super) fn factor(
+    program: Node,
+    connection: Node,
+    lfos: Option<&mut Vec<ir::Lfo>>,
+) -> Option<ir::Factor> {
+    if flag(connection, "ConnectionMode") {
+        return None;
+    }
+    let depth = held_ratio(program, connection)?.clamp(-1.0, 1.0);
+    Some(ir::Factor {
+        input: read_through(program, connection, lfos)?,
+        depth,
     })
 }
 
