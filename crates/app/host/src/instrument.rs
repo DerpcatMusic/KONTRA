@@ -99,6 +99,13 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
             Ok(compiled) => {
                 let mut planned = crate::script::plan(&compiled, &script.saved, &script.data);
                 planned.links = crate::script::links(&compiled, &script.links);
+                if planned.links.len() < script.links.len() {
+                    diagnostics.push(ir::Diagnostic {
+                        impact: ir::Impact::Audible,
+                        feature: "MIDI automation of a missing script control".into(),
+                        detail: script.name.clone(),
+                    });
+                }
                 plan.scripts.push(planned);
                 faces.push(Some(crate::ui::Face::of(&compiled, &script.data)));
                 pages.push(None);
