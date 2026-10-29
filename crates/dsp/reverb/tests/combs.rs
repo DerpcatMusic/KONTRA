@@ -70,7 +70,12 @@ fn through(hz: f64, cut: f32) -> f64 {
         .map(|n| [(std::f64::consts::TAU * hz * f64::from(n) / 48_000.0).sin() as f32; 2])
         .collect();
     r.process(&mut io);
-    (io[48_000..].iter().map(|f| f64::from(f[0]).powi(2)).sum::<f64>() / 48_000.0).sqrt()
+    (io[48_000..]
+        .iter()
+        .map(|f| f64::from(f[0]).powi(2))
+        .sum::<f64>()
+        / 48_000.0)
+        .sqrt()
 }
 
 #[test]
