@@ -592,19 +592,33 @@ impl Engine {
     }
 
     /// An idle voice. At the plan's polyphony the oldest playing voice fades
-    /// (released ones first) and an idle reserve voice takes the new start.
+    /// (released ones first), with its note's others in its group when the
+    /// plan steals whole groups, and an idle reserve voice takes the new start.
     fn free_slot(&mut self) -> Option<usize> {
         if self.playing_voices() >= self.plan.voices {
             let fade = self.fade_frames();
-            if let Some(victim) = self
+            let plan = self.plan.clone();
+            let group = |s: &Slot| plan.zones.get(s.zone).map(|z| z.group);
+            let playing = |s: &Slot| s.voice.is_active() && !s.fading;
+            let victim = self
                 .voices
-                .iter_mut()
-                .filter(|s| s.voice.is_active() && !s.fading)
-                .min_by_key(|s| (!s.released, s.started))
-            {
-                victim.voice.fade(fade);
-                victim.fading = true;
-                self.stats.voices_stolen += 1;
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| playing(s))
+                .min_by_key(|(_, s)| (!s.released, s.started))
+                .map(|(i, s)| (i, s.note, group(s)));
+            if let Some((v, note, of)) = victim {
+                for (i, s) in self.voices.iter_mut().enumerate() {
+                    let sibling = plan.steal_whole_groups
+                        && note.is_some()
+                        && s.note == note
+                        && group(s) == of;
+                    if playing(s) && (i == v || sibling) {
+                        s.voice.fade(fade);
+                        s.fading = true;
+                        self.stats.voices_stolen += 1;
+                    }
+                }
             }
         }
         let index = match self.voices.iter().position(|s| !s.voice.is_active()) {

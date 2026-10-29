@@ -66,6 +66,7 @@ pub(crate) fn unfinished<'a, L: Library>(
                 .unwrap_or_default()
                 .into(),
             voices: routing::voices(program)?,
+            steal_whole_groups: true,
             output: ir::Output {
                 controllers: Some(routing::PART_CONTROLLERS),
                 balance: routing::PART_BALANCE,
