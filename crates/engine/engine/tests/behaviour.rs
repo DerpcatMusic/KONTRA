@@ -2351,6 +2351,7 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         },
         coroutines: 4,
         data: vec![],
+        text_data: vec![],
         restore: vec![],
         restore_texts: vec![],
         controls: Controls::default(),
