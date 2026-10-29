@@ -321,3 +321,53 @@ fn an_ncw_head_stays_compressed_and_plays_exactly() {
     }
     std::fs::remove_file(path).unwrap();
 }
+
+/// A monolith's samples read through one handle on its file: the file is
+/// opened once per load, not once per sample.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_samples_of_one_file_open_it_once() {
+    let frames = 1000u64;
+    let samples: Vec<i32> = (0..frames as i32).flat_map(|n| [n, -n]).collect();
+    let spec = ncw::PcmSpec {
+        channels: 2,
+        bits_per_sample: 24,
+        sample_rate: 48_000,
+    };
+    let one = ncw::encode_pcm(&samples, spec, ncw::StereoMode::Auto).unwrap();
+    let path = std::env::temp_dir().join(format!("kontra-monolith-{}.nkx", std::process::id()));
+    std::fs::write(&path, [one.as_slice(), one.as_slice()].concat()).unwrap();
+    let at = |offset: u64| kontra_ir::Sample {
+        name: format!("at {offset}"),
+        file: path.clone(),
+        offset,
+        len: Some(one.len() as u64),
+        channels: 2,
+        frames,
+        rate: 48_000,
+        keystream: None,
+    };
+    let handles = || {
+        (std::fs::read_dir("/proc/self/fd").unwrap().flatten())
+            .filter(|fd| std::fs::read_link(fd.path()).is_ok_and(|p| p == path))
+            .count()
+    };
+    let files = kontra_stream::Files::new([path.as_path()]);
+    let opened = [at(0), at(one.len() as u64)].map(|s| files.open(&s).unwrap());
+    drop(files);
+    assert_eq!(handles(), 1);
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    for (n, (source, fmt)) in opened.into_iter().enumerate() {
+        let key = BlobKey {
+            file: format!("monolith {n}").into(),
+            offset: 0,
+            fmt,
+        };
+        let loaded = store.load(&key, source, frames, &[0..frames]).unwrap();
+        let mut out = vec![[0.0; 2]; 4];
+        loaded.read(&store.client(), 500, &mut out);
+        assert_eq!(out[1][0], -out[1][1], "sample {n} reads its own bytes");
+        assert!(out[1][0] > 0.0);
+    }
+    std::fs::remove_file(&path).unwrap();
+}

@@ -92,7 +92,7 @@ pub(crate) fn instrument(
         .transpose()
         .map_err(decode("sample table"))?
         .unwrap_or_default();
-    let mut impulses = crate::impulse::Impulses::new(others, &mut resolver, path);
+    let mut impulses = crate::impulse::Impulses::new(others, &mut resolver, path, resources);
     let mut criteria = Vec::new();
     let mut slots = crate::effects::Slots::default();
     for (index, group) in groups.groups.iter().enumerate() {

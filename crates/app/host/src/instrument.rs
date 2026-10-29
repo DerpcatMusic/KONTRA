@@ -69,7 +69,9 @@ pub fn load(
 /// Builds the plan for an instrument already read into the IR.
 #[must_use]
 pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded {
-    let (mut plan, mut diagnostics) = prepare(&instrument, rate, store, &kontra_stream::open);
+    // Each file once, however many samples it holds.
+    let files = kontra_stream::Files::new(instrument.samples.iter().map(|s| s.file.as_path()));
+    let (mut plan, mut diagnostics) = prepare(&instrument, rate, store, &|s| files.open(s));
     let mut faces = Vec::new();
     let mut pages = Vec::new();
     let mut persist = Vec::new();

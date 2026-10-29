@@ -3,7 +3,6 @@
 //! key recovered from its PNG members.
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
@@ -182,9 +181,7 @@ impl Bank {
             block: BLOCK,
         });
         let mut head = vec![0; size.min(HEADER_BYTES) as usize];
-        let mut file = self.ufs.open_snapshot()?;
-        file.seek(SeekFrom::Start(offset))?;
-        file.read_exact(&mut head)?;
+        self.ufs.read_exact_at(offset, &mut head)?;
         if let Some(keystream) = &keystream {
             keystream.apply(offset, &mut head);
         }
