@@ -104,6 +104,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     (out.inserts, out.sends, out.main) = (racks.inserts, racks.sends, racks.main);
     slots.laws.extend(racks.laws.laws);
     slots.shape_slots.extend(racks.laws.shape_slots);
+    slots.subtypes.extend(racks.laws.subtypes);
     out.slot_laws = slots.laws;
     if !slots.shape_slots.is_empty() {
         out.slot_shapes.shapes = crate::laws::filter_shapes();
@@ -112,6 +113,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     let loads = |s: &ir::Script| s.source.contains("$ENGINE_PAR_EFFECT_");
     if out.scripts.iter().any(loads) {
         out.slot_shapes.types = crate::script_knobs::slot_types();
+        out.slot_shapes.subtypes = std::mem::take(&mut slots.subtypes);
     }
     // A script may load any response of the library's `ir_samples` by name.
     if out
