@@ -16,6 +16,7 @@
 use kontra_ir as ir;
 use roxmltree::Node;
 
+use super::modulation::{Route, Timed};
 use super::{flag, index_of, modulation, num, source_node};
 
 /// The factor a cell's connection holds it at: a macro at its saved value,
@@ -139,8 +140,20 @@ fn read_through(
 /// A connection's ratio with each connection on it scaling it the same
 /// multiplicative way; None when one of those is live (not a constant).
 pub(super) fn held_ratio(program: Node, connection: Node) -> Option<f32> {
+    ratio(program, connection, false)
+}
+
+/// [`held_ratio`] passing over the key connections [`keyed`] carries.
+pub(super) fn unkeyed_ratio(program: Node, connection: Node) -> Option<f32> {
+    ratio(program, connection, true)
+}
+
+fn ratio(program: Node, connection: Node, keys: bool) -> Option<f32> {
     let mut r = num(connection, "Ratio", 1.0).ok()? as f32;
     for f in children(connection).filter(|f| f.attribute("Destination") == Some("Ratio")) {
+        if keys && key_factor(program, f).is_some() {
+            continue;
+        }
         let input = transfer(program, f, None)?;
         if flag(f, "Inverted") || flag(f, "ConnectionMode") || input.source != ir::Source::Constant
         {
@@ -149,6 +162,78 @@ pub(super) fn held_ratio(program: Node, connection: Node) -> Option<f32> {
         r *= scale(held_ratio(program, f)?.clamp(-1.0, 1.0), input.apply(1.0));
     }
     Some(r)
+}
+
+/// `route` with the key connections on its ratio ([`key_factor`]) scaling
+/// it per voice: a blend of its source alone, times each. None when the
+/// route is not a source through a table.
+pub(super) fn keyed(program: Node, connection: Node, route: Route) -> Option<Route> {
+    let ratio = children(connection).filter(|f| f.attribute("Destination") == Some("Ratio"));
+    let factors: Vec<_> = ratio.filter_map(|f| key_factor(program, f)).collect();
+    if factors.is_empty() {
+        return Some(route);
+    }
+    let input = match route.timed {
+        Some(Timed::Mapped(t)) if route.unit == 1.0 => t,
+        None if route.unit == 1.0 => ir::Transfer {
+            source: route.source,
+            table: Vec::new(),
+        },
+        _ => return None,
+    };
+    let term = ir::Term {
+        input,
+        amount: 1.0,
+        factors,
+    };
+    Some(Route {
+        source: ir::Source::Constant,
+        timed: Some(Timed::Blend(ir::Blend {
+            base: 0.0,
+            terms: vec![term],
+        })),
+        ..route
+    })
+}
+
+/// A connection from a key on a ratio, as the factor it scales it by: the
+/// key read through a table exact at each MIDI key `x` (VoiceParam evaluate
+/// 0x14138ab10, `x` the note clamped to 0..=127): `Key` `x/127`, `KeyFollow`
+/// `(x/60)² − 1` below 60, else `√((min(x, 120) − 60)/60)`, `LinearKeyFollow`
+/// `(x − 60)/60` within ±1. A bipolar one is read at `(k + 1)/2` (through its
+/// mapper, 0x141139193); its mapper's output is taken as it is. None for any
+/// other connection.
+fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> {
+    if flag(connection, "Inverted") || flag(connection, "ConnectionMode") {
+        return None;
+    }
+    let key: fn(f32) -> f32 = match connection.attribute("Source")? {
+        "@VoiceParam Key" => |x| x / 127.0,
+        "@VoiceParam KeyFollow" => |x| {
+            let k = if x < 60.0 {
+                (x / 60.0).powi(2) - 1.0
+            } else {
+                ((x.min(120.0) - 60.0) / 60.0).sqrt()
+            };
+            (k + 1.0) / 2.0
+        },
+        "@VoiceParam LinearKeyFollow" => |x| (((x - 60.0) / 60.0).clamp(-1.0, 1.0) + 1.0) / 2.0,
+        _ => return None,
+    };
+    let table = mapper(connection)?;
+    let at = |x: f32| read(&table, key(x)).unwrap_or(key(x));
+    Some(ir::Factor {
+        input: ir::Transfer {
+            source: ir::Source::Key,
+            table: (0..128u8).map(|x| at(f32::from(x))).collect(),
+        },
+        depth: held_ratio(program, connection)?.clamp(-1.0, 1.0),
+    })
+}
+
+/// Whether a modulator is bipolar (an LFO is unless it says not).
+pub(super) fn bipolar(node: Node) -> bool {
+    num(node, "Bipolar", 1.0).is_ok_and(|b| b != 0.0)
 }
 
 /// The multiplier `m` gives at ratio `r`.

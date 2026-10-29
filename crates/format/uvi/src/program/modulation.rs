@@ -29,7 +29,7 @@ impl<L: Library> Translator<'_, '_, L> {
         };
         // ponytail: an Intensity scales the wave around 0, a unipolar LFO's
         // depth its `m`; carried when a library routes one (none does).
-        if lfo.has_tag_name("LFO") && !bipolar(lfo) {
+        if lfo.has_tag_name("LFO") && !matrix::bipolar(lfo) {
             self.notes
                 .add(ir::Impact::Audible, "unipolar LFO depth route", "");
             return;
@@ -195,6 +195,8 @@ pub(super) enum Timed {
     /// An LFO its routes reach through a delay and rise ([`rising`]), read
     /// through a table unless it is empty.
     Rising(ir::Lfo, ir::Breakpoints, Vec<f32>),
+    /// A source scaled per voice by its key ([`matrix::keyed`]).
+    Blend(ir::Blend),
 }
 
 /// The route a connection on `owner`'s `destination` makes, adding `Ratio`
@@ -233,7 +235,8 @@ pub(super) fn reach(
     } else {
         1.0
     };
-    let ratio = matrix::held_ratio(program, connection)?;
+    let ratio = matrix::unkeyed_ratio(program, connection)?;
+    let keyed = |r| matrix::keyed(program, connection, r);
     if connection
         .attribute("Mapper")
         .is_some_and(|m| !m.is_empty())
@@ -241,12 +244,13 @@ pub(super) fn reach(
         let t = matrix::transfer(program, connection, None)?;
         // A script's modulation is [`script_route`]'s.
         let held = matches!(t.source, ir::Source::Constant | ir::Source::Script(_));
-        return (sign > 0.0 && !held).then_some(Route {
+        let route = Route {
             source: ir::Source::Constant,
             timed: Some(Timed::Mapped(t)),
             unit: 1.0,
             ratio,
-        });
+        };
+        return (sign > 0.0 && !held).then(|| keyed(route)).flatten();
     }
     let fixed = |source| Route {
         source,
@@ -254,7 +258,7 @@ pub(super) fn reach(
         unit: 1.0,
         ratio,
     };
-    Some(match connection.attribute("Source")? {
+    keyed(match connection.attribute("Source")? {
         "@PitchBend" => Route {
             unit: sign,
             ..fixed(ir::Source::PitchBend)
@@ -390,7 +394,7 @@ fn depth_route(program: Node, connection: Node, owner: &str) -> Option<Route> {
             table: vec![1.0, 0.0],
         })),
         None => None,
-        Some(Timed::Envelope(_) | Timed::Rising(..)) if falling => return None,
+        Some(Timed::Envelope(_) | Timed::Rising(..) | Timed::Blend(_)) if falling => return None,
         timed => timed,
     };
     if r.timed.is_some() {
@@ -441,6 +445,7 @@ pub(super) fn group_source(
             ir::Source::Shaped(index_of(&mut group.shapers, ir::Transfer { source, table }))
         }
         Some(Timed::Mapped(t)) => ir::Source::Shaped(index_of(&mut group.shapers, t)),
+        Some(Timed::Blend(b)) => ir::Source::Blend(index_of(&mut group.blends, b)),
     }
 }
 
@@ -452,11 +457,9 @@ pub(super) fn group_source(
 /// lag on the shape; AO's are under 25 ms on cycles of a beat or more).
 pub(super) fn lfo(node: Node) -> Option<(ir::Lfo, f32)> {
     let still = !flag(node, "DelayTime") && !flag(node, "RiseTime");
-    (still && bipolar(node)).then(|| shape(node)).flatten()
-}
-
-fn bipolar(node: Node) -> bool {
-    num(node, "Bipolar", 1.0).is_ok_and(|b| b != 0.0)
+    (still && matrix::bipolar(node))
+        .then(|| shape(node))
+        .flatten()
 }
 
 /// `None` for a bipolar LFO, else what the route reads of a unipolar one:
@@ -466,7 +469,7 @@ fn bipolar(node: Node) -> bool {
 /// at −1, then pulls it up from there: 0x1410f8ff0, 0x1410f98a0), which no
 /// library routes; carry it when one does.
 fn unipolar(node: Node, inverted: bool) -> Option<Option<Timed>> {
-    if bipolar(node) || !node.has_tag_name("LFO") {
+    if matrix::bipolar(node) || !node.has_tag_name("LFO") {
         return None;
     }
     let still = !flag(node, "DelayTime") && !flag(node, "RiseTime");
@@ -486,7 +489,7 @@ fn unipolar(node: Node, inverted: bool) -> Option<Option<Timed>> {
 /// shift depends on the tempo). ponytail: an LFO without a delay alike in
 /// every other way shares the delayed one's copy and its rise.
 fn rising(node: Node) -> Option<(ir::Lfo, f32, Option<ir::Breakpoints>)> {
-    bipolar(node).then_some(())?;
+    matrix::bipolar(node).then_some(())?;
     let (mut lfo, depth) = shape(node)?;
     let seconds = |name| num(node, name, 0.0).ok().map(|t| t.clamp(0.0, 30.0) as f32);
     let (delay, rise) = (seconds("DelayTime")?, seconds("RiseTime")?);
