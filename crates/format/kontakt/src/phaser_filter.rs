@@ -56,3 +56,20 @@ pub(crate) fn knobs() -> Vec<SlotKnob> {
         ),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    /// The corner is Kontakt's `f` at 48 kHz: `f` from the series written
+    /// out term by term (filt-phaser.md).
+    #[test]
+    fn the_corner_is_kontakts_coefficient_at_48k() {
+        for c in [0.0f32, 0.25, 0.5, 1.0] {
+            let v = 3.0 * c;
+            let e = 1.0 + v + v * v / 2.0 + v.powi(3) / 6.0 + v.powi(4) / 24.0;
+            let e = e + v.powi(5) / 120.0 + v.powi(6) / 720.0;
+            let f = (e - 1.0) * 0.054_310_93 * 0.33 + 0.02;
+            let ours = super::hz(c) * std::f32::consts::PI / 48_000.0;
+            assert!((ours - f).abs() < 1e-6 * f.max(1.0), "{c}: {ours} {f}");
+        }
+    }
+}
