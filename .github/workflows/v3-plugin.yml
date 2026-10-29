@@ -1,7 +1,7 @@
 name: v3 plugin
 
 # The KONTRA v3 plugin (kontra-plugin, "KONTRA", audio.matari.kontra-v3)
-# as CLAP and VST3 bundles beside v2's: built on free runners, validated,
+# as CLAP and VST3 bundles: built on free runners, validated,
 # uploaded as artifacts. Nothing is installed anywhere but the runner.
 
 on:
