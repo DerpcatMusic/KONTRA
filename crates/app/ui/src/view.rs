@@ -7,9 +7,7 @@
 
 use std::sync::Arc;
 
-use kontra_ui_model::{
-    self as model, ImageUse, Interface, Kind, PageRef, Role, kontakt_picture_frame,
-};
+use kontra_ui_model::{self as model, Interface, Kind, PageRef};
 use mui::prelude::*;
 
 use crate::Pictures;
@@ -17,6 +15,7 @@ use crate::Pictures;
 mod plan;
 mod stock;
 
+use plan::caption;
 #[cfg(test)]
 use plan::cuts;
 
@@ -299,44 +298,12 @@ fn wallpaper(
         .collect()
 }
 
-/// The frame `w` shows of a picture with `frames`: the script's
-/// `PICTURE_STATE`, else the one its value selects.
-fn frame(w: &model::Widget, u: &ImageUse, frames: usize, held: bool) -> usize {
-    if let Some(f) = u.frame {
-        return f as usize;
-    }
-    match (&w.kind, u.role) {
-        (Kind::Knob { .. } | Kind::Slider { .. } | Kind::ValueEdit { .. }, Role::Strip) => {
-            (position(w) * frames.saturating_sub(1) as f64).round() as usize
-        }
-        (Kind::Button { .. } | Kind::Switch, Role::Strip) => {
-            kontakt_picture_frame(value(w) != 0., held, false, frames)
-        }
-        _ => 0,
-    }
-}
-
 /// `w`'s value, or its initial one before the script sets it.
 fn value(w: &model::Widget) -> f64 {
     match w.value {
         Some(model::Value::Integer(v)) => f64::from(v),
         Some(model::Value::Real(v)) => v,
         _ => w.initial_value,
-    }
-}
-
-/// Where `w`'s value lies in its range, 0..1; a switch is 0 or 1.
-fn position(w: &model::Widget) -> f64 {
-    match &w.kind {
-        Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. } => {
-            let span = range.max - range.min;
-            if span == 0. {
-                0.
-            } else {
-                ((value(w) - range.min) / span).clamp(0., 1.)
-            }
-        }
-        _ => f64::from(u8::from(value(w) != 0.)),
     }
 }
 
@@ -373,54 +340,12 @@ pub(crate) fn knob_name(w: &model::Widget) -> String {
     }
 }
 
-/// A picture takes its frame's own size along each axis it does not
-/// stretch, whatever size the widget has (a label's text keeps its bounds).
-fn drawn(r: model::Rect, m: model::ImageMeta) -> model::Size {
-    let own = m.size.unwrap_or(model::Size {
-        width: r.width,
-        height: r.height,
-    });
-    model::Size {
-        width: if m.stretch[0] { r.width } else { own.width },
-        height: if m.stretch[1] { r.height } else { own.height },
-    }
-}
-
 /// An image asset's path and layout.
 fn image_asset(tree: &Interface, a: model::AssetRef) -> Option<(&str, model::ImageMeta)> {
     let asset = tree.assets.get(a.0)?;
     match asset.kind {
         model::AssetKind::Image(m) => Some((asset.path.as_str(), m)),
         _ => None,
-    }
-}
-
-/// The words a widget shows: a label's or button's text, a menu's item,
-/// a value edit's title and value.
-fn caption(w: &model::Widget, source: model::Source) -> String {
-    if w.label_in_image() {
-        return String::new();
-    }
-    if let Kind::ValueEdit { .. } = w.kind {
-        let title = if w.hide.title { "" } else { w.text.trim() };
-        return format!("{title} {}", readout(w, source)).trim().to_owned();
-    }
-    if w.hide.title {
-        return String::new();
-    }
-    match &w.kind {
-        Kind::Label | Kind::Button { .. } | Kind::Switch | Kind::TextEdit => w.text.clone(),
-        Kind::Menu { items } => {
-            let at = match w.value {
-                Some(model::Value::Integer(v)) => v,
-                _ => w.initial_value as i32,
-            };
-            items
-                .iter()
-                .find(|i| i.value == at)
-                .map_or(String::new(), |i| i.text.clone())
-        }
-        _ => String::new(),
     }
 }
 

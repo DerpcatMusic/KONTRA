@@ -2,9 +2,11 @@
 //! runtime supplies a settled interface; resolving it does no I/O and does
 //! not depend on decoded pictures or the window.
 
-use kontra_ui_model::{self as model, ImageUse, Interface, PageRef, WidgetRef};
+use kontra_ui_model::{
+    self as model, ImageUse, Interface, Kind, PageRef, Role, WidgetRef, kontakt_picture_frame,
+};
 
-use super::{caption, drawn, frame, image_asset, knob_name, position, readout, stock};
+use super::{image_asset, knob_name, readout, stock, value};
 
 /// One page, including the source page's background and its visible controls.
 pub(super) struct Page<'a> {
@@ -125,6 +127,80 @@ pub(super) fn page<'a>(
         },
         widgets,
     })
+}
+
+/// The frame `w` shows of a picture with `frames`: the script's
+/// `PICTURE_STATE`, else the one its value selects.
+fn frame(w: &model::Widget, u: &ImageUse, frames: usize, held: bool) -> usize {
+    if let Some(f) = u.frame {
+        return f as usize;
+    }
+    match (&w.kind, u.role) {
+        (Kind::Knob { .. } | Kind::Slider { .. } | Kind::ValueEdit { .. }, Role::Strip) => {
+            (position(w) * frames.saturating_sub(1) as f64).round() as usize
+        }
+        (Kind::Button { .. } | Kind::Switch, Role::Strip) => {
+            kontakt_picture_frame(value(w) != 0., held, false, frames)
+        }
+        _ => 0,
+    }
+}
+
+/// Where `w`'s value lies in its range, 0..1; a switch is 0 or 1.
+fn position(w: &model::Widget) -> f64 {
+    match &w.kind {
+        Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. } => {
+            let span = range.max - range.min;
+            if span == 0. {
+                0.
+            } else {
+                ((value(w) - range.min) / span).clamp(0., 1.)
+            }
+        }
+        _ => f64::from(u8::from(value(w) != 0.)),
+    }
+}
+
+/// A picture takes its frame's own size along each axis it does not
+/// stretch, whatever size the widget has (a label's text keeps its bounds).
+fn drawn(r: model::Rect, m: model::ImageMeta) -> model::Size {
+    let own = m.size.unwrap_or(model::Size {
+        width: r.width,
+        height: r.height,
+    });
+    model::Size {
+        width: if m.stretch[0] { r.width } else { own.width },
+        height: if m.stretch[1] { r.height } else { own.height },
+    }
+}
+
+/// The words a widget shows: a label's or button's text, a menu's item,
+/// a value edit's title and value.
+pub(super) fn caption(w: &model::Widget, source: model::Source) -> String {
+    if w.label_in_image() {
+        return String::new();
+    }
+    if let Kind::ValueEdit { .. } = w.kind {
+        let title = if w.hide.title { "" } else { w.text.trim() };
+        return format!("{title} {}", readout(w, source)).trim().to_owned();
+    }
+    if w.hide.title {
+        return String::new();
+    }
+    match &w.kind {
+        Kind::Label | Kind::Button { .. } | Kind::Switch | Kind::TextEdit => w.text.clone(),
+        Kind::Menu { items } => {
+            let at = match w.value {
+                Some(model::Value::Integer(v)) => v,
+                _ => w.initial_value as i32,
+            };
+            items
+                .iter()
+                .find(|i| i.value == at)
+                .map_or(String::new(), |i| i.text.clone())
+        }
+        _ => String::new(),
+    }
 }
 
 /// Geometry and ink of a label, in view points. Explicit line breaks keep
