@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 fn root() -> Option<PathBuf> {
-    Some(dirs::cache_dir()?.join("kontra/stock-art-v2"))
+    Some(dirs::cache_dir()?.join("kontra/stock-art-v3"))
 }
 
 fn index(root: &Path, path: &Path) -> Option<PathBuf> {
@@ -21,6 +21,7 @@ fn index(root: &Path, path: &Path) -> Option<PathBuf> {
 pub(super) struct Art {
     pub(super) main: [Image; 4],
     pub(super) font13: Option<Image>,
+    pub(super) button: Option<Image>,
 }
 
 pub(super) enum Cached {
@@ -28,11 +29,11 @@ pub(super) enum Cached {
     Missing,
 }
 
-pub(super) fn load(path: &Path, dims: &[(u32, u32); 5]) -> Option<Cached> {
+pub(super) fn load(path: &Path, dims: &[(u32, u32); 6]) -> Option<Cached> {
     load_at(&root()?, path, dims)
 }
 
-fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 5]) -> Option<Cached> {
+fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 6]) -> Option<Cached> {
     let index = index(root, path)?;
     if !matches!(index.metadata().ok()?.len(), 7 | 64) {
         return None;
@@ -71,6 +72,7 @@ fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 5]) -> Option<Cached> {
     Some(Cached::Images(Box::new(Art {
         main: [image(0)?, image(1)?, image(2)?, image(3)?],
         font13: image(4),
+        button: image(5),
     })))
 }
 
@@ -93,7 +95,9 @@ fn save_at(root: &Path, path: &Path, hash: &str, images: &Art) {
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    for (i, image) in images.main.iter().chain(images.font13.iter()).enumerate() {
+    let extra = [(4, images.font13.as_ref()), (5, images.button.as_ref())];
+    let present = extra.into_iter().filter_map(|(i, image)| Some((i, image?)));
+    for (i, image) in images.main.iter().enumerate().chain(present) {
         let target = dir.join(format!("{i}.rgba"));
         let temporary = dir.join(format!("{i}.{}.tmp", std::process::id()));
         if std::fs::write(&temporary, &image.rgba).is_err()
@@ -125,10 +129,11 @@ mod tests {
         let images = super::Art {
             main: [image(), image(), image(), image()],
             font13: Some(image()),
+            button: Some(image()),
         };
         let root = dir.path().join("cache");
         super::save_at(&root, &exe, &"a".repeat(64), &images);
-        let Some(super::Cached::Images(cached)) = super::load_at(&root, &exe, &[(1, 1); 5]) else {
+        let Some(super::Cached::Images(cached)) = super::load_at(&root, &exe, &[(1, 1); 6]) else {
             panic!("no cached images")
         };
         assert_eq!(&*cached.main[0].rgba, &[1, 2, 3, 255]);
@@ -141,23 +146,28 @@ mod tests {
         let without_font = super::Art {
             main: [image(), image(), image(), image()],
             font13: None,
+            button: Some(image()),
         };
         super::save_at(&root, &fallback, &"b".repeat(64), &without_font);
-        let Some(super::Cached::Images(cached)) = super::load_at(&root, &fallback, &[(1, 1); 5])
+        let Some(super::Cached::Images(cached)) = super::load_at(&root, &fallback, &[(1, 1); 6])
         else {
             panic!("base artwork must remain available without the optional font");
         };
         assert!(cached.font13.is_none());
+        assert_eq!(
+            cached.button.as_ref().map(|image| &*image.rgba),
+            Some(&[1, 2, 3, 255][..])
+        );
         let unsupported = dir.path().join("other.exe");
         std::fs::write(&unsupported, b"unsupported").unwrap();
         super::write_index(&root, &unsupported, "missing");
         assert!(matches!(
-            super::load_at(&root, &unsupported, &[(1, 1); 5]),
+            super::load_at(&root, &unsupported, &[(1, 1); 6]),
             Some(super::Cached::Missing)
         ));
         std::fs::write(&unsupported, b"new version").unwrap();
-        assert!(super::load_at(&root, &unsupported, &[(1, 1); 5]).is_none());
+        assert!(super::load_at(&root, &unsupported, &[(1, 1); 6]).is_none());
         std::fs::write(&exe, b"changed executable").unwrap();
-        assert!(super::load_at(&root, &exe, &[(1, 1); 5]).is_none());
+        assert!(super::load_at(&root, &exe, &[(1, 1); 6]).is_none());
     }
 }

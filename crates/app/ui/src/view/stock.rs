@@ -137,7 +137,7 @@ impl Look {
         style: Option<&TextStyle>,
         (w, h, scale): (f64, f64, f64),
         bare: bool,
-        artwork: Option<&[Arc<Image>; 3]>,
+        (artwork, button): (Option<&[Arc<Image>; 3]>, Option<&Arc<Image>>),
         glyphs: Option<&crate::pictures::Glyphs>,
     ) -> Vec<El> {
         let bg = bare || !wd.hide.background;
@@ -151,7 +151,25 @@ impl Look {
                     } else {
                         rgb(0x5f_5f5f).into()
                     };
-                    parts.push(boxed(w, h, scale, fill, 0x2d_2d2d));
+                    if *on && let Some(button) = button {
+                        parts.push(block(w, h).fill(rgb(0xffffff)).at(0., 0.));
+                        let meta = model::ImageMeta {
+                            size: Some(model::Size {
+                                width: 85.,
+                                height: 16.,
+                            }),
+                            stretch: [true, false],
+                            margins: model::Margins {
+                                left: 5,
+                                right: 5,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        };
+                        parts.push(super::sliced(button, &meta, (w, h), scale));
+                    } else {
+                        parts.push(boxed(w, h, scale, fill, 0x2d_2d2d));
+                    }
                 }
                 // The default font darkens on a lit button; a chosen one keeps its ink.
                 let stock = style.is_none_or(|s| s.font == model::Font::Stock(0));

@@ -138,6 +138,20 @@ fn drawn_page(
         let stock_art = look
             .as_ref()
             .and_then(|look| look.pictures(pictures, device));
+        let button_art = look.as_ref().and_then(|look| match look {
+            stock::Look::Button { on: true, .. } if bare || !wd.hide.background => pictures.frame(
+                model::AssetRef(usize::MAX - 5),
+                "@stock/button",
+                model::ImageMeta {
+                    frames: 3,
+                    axis: model::Orientation::Vertical,
+                    ..Default::default()
+                },
+                0,
+                device,
+            ),
+            _ => None,
+        });
         let stock_glyphs = look.as_ref().and_then(|look| match look {
             stock::Look::Field { .. }
                 if style.is_some_and(|s| s.font == model::Font::Stock(13))
@@ -203,9 +217,12 @@ fn drawn_page(
             stock_art
                 .as_ref()
                 .map(|art| art.each_ref().map(|image| Arc::as_ptr(image) as usize)),
-            stock_glyphs
-                .as_ref()
-                .map(|g| Arc::as_ptr(g).cast::<()>() as usize),
+            (
+                button_art.as_ref().map(|image| Arc::as_ptr(image) as usize),
+                stock_glyphs
+                    .as_ref()
+                    .map(|g| Arc::as_ptr(g).cast::<()>() as usize),
+            ),
             wd.text_y,
             style.map(|s| (s.color, s.align as u8, s.size.map(f32::to_bits))),
             wd.opacity.to_bits(),
@@ -242,7 +259,7 @@ fn drawn_page(
                     style,
                     (w, h, scale),
                     bare,
-                    stock_art.as_ref(),
+                    (stock_art.as_ref(), button_art.as_ref()),
                     stock_glyphs.as_ref(),
                 ));
                 look.size(w, h, scale)
