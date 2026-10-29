@@ -3,24 +3,10 @@
 //! parameters that live with a control's number parameters (`hide_part`,
 //! `move_control`, ...) are written here.
 
-use kontra_script_ui::{Key, KeyRange, MenuItem, Page};
+use kontra_script_ui::{ControlLook, Key, KeyRange, MenuItem, Page};
 use kontra_vm::{Action, HostCall, HostValue, Text};
 
 use crate::Engine;
-
-/// One control as the script left it: what the host builds its widget from.
-#[derive(Clone, Copy, Debug)]
-pub struct ControlLook<'a> {
-    pub value: Option<i64>,
-    /// Number parameters it set, by parameter id.
-    pub pars: &'a [(i32, i32)],
-    /// Text parameters it set, by parameter id.
-    pub texts: &'a [(i32, Text)],
-    pub menu: &'a [MenuItem],
-    /// Moves on every write to its look (not its value, which lives in a
-    /// script cell): a UI redraws the control when this or the value moved.
-    pub generation: u32,
-}
 
 impl Engine {
     /// The keyboard's keys as the scripts left them, by note number.
@@ -45,6 +31,12 @@ impl Engine {
     #[must_use]
     pub fn page(&self, slot: u8) -> Option<&Page> {
         self.ui.page(slot)
+    }
+
+    /// The user clicked control `id` of script `slot` holding `keys`
+    /// (`[shift, alt, control]`); call it before [`Engine::set_control`].
+    pub fn set_click_keys(&mut self, slot: u8, id: i32, keys: [bool; 3]) {
+        self.ui.click(slot, self.control_index_in(slot, id), keys);
     }
 
     /// Script `slot`'s control with UI id `id`, as the script left it.

@@ -482,7 +482,12 @@ pub fn apply(rack: &mut Rack, edit: Edit) {
         Action::Solo(_, on) => return rack.set_solo_mute(slot, on, mute),
         Action::Mute(_, on) => return rack.set_solo_mute(slot, solo, on),
         Action::Remove(_) => return rack.remove(slot),
-        Action::Control { widget, value, .. } => return rack.control(slot, widget, value),
+        Action::Control {
+            widget,
+            value,
+            keys,
+            ..
+        } => return rack.control(slot, widget, value, keys),
         Action::Sound {
             group,
             param,
