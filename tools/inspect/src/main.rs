@@ -15,12 +15,14 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 
 mod load;
+mod play;
 mod routes;
+mod scenario;
 
 /// The engine's sample rate for every subcommand.
 const RATE: u32 = 48_000;
 
-const USAGE: &str = "usage: kontra-inspect load <instrument> [--json FILE]";
+const USAGE: &str = "usage: kontra-inspect load <instrument> [--json FILE] | play <instrument> [--scenario user|FILE] [--json FILE]";
 
 fn main() -> ExitCode {
     match run() {
@@ -41,8 +43,10 @@ fn run() -> Result<()> {
     }
     let mut path = None;
     let mut json = None;
+    let mut scenario = String::from("user");
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--scenario" => scenario = args.next().context("--scenario needs a value")?,
             "--json" => json = Some(PathBuf::from(args.next().context("--json needs a file")?)),
             "--help" | "-h" => {
                 println!("{USAGE}");
@@ -56,6 +60,7 @@ fn run() -> Result<()> {
     let path = path.context(USAGE)?;
     let (report, summary) = match command.as_str() {
         "load" => load::run(&path)?,
+        "play" => play::run(&path, &scenario)?,
         "--help" | "-h" => {
             println!("{USAGE}");
             return Ok(());
