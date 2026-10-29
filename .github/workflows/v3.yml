@@ -101,6 +101,4 @@ jobs:
   ci:
     name: v3 CI
     if: github.event_name == 'push'
-    uses: ./.github/workflows/ci.yml
-    with:
-      release_validation: false
+    uses: ./.github/workflows/v3-verify.yml

@@ -1,38 +1,59 @@
 import unittest
-from notes import clean, render, section
+from unittest.mock import patch
+from notes import fields, pull_body, render, section
+from already_released import already_released
 
 
 class NotesTest(unittest.TestCase):
-    def test_real_titles(self):
-        cases = [
-            ('P9.4: fit both library views inside the rack (#1167)', 'Fit both library views inside the rack'),
-            ('P9.5: shade the Original stock knob ring (#1157)', 'Shade the Original stock knob ring'),
-            ('P9.3: draw picture controls in Vector view (#1151)', 'Draw picture controls in Vector view'),
-            ('P8.4: a part\'s interface draws Original, Vector or KONTRA; the pick and the default kept with the project (#1143)', "A part's interface draws Original, Vector or KONTRA; the pick and the default kept with the project"),
-            ('Correct UVI MultiLFO saw waveform (#1180)', 'Correct UVI MultiLFO saw waveform'),
-            ('Draw live UVI table values (#1176)', 'Draw live UVI table values'),
-            ('Fix UVI key-follow mapper polarity (#1154)', 'Fix UVI key-follow mapper polarity'),
-            ('fix: wait for offline sample windows (#1142)', 'Wait for offline sample windows'),
-        ]
-        for title, expected in cases:
-            with self.subTest(title=title):
-                self.assertEqual(clean(title), expected)
-                number = title.rsplit('(#', 1)[1].rstrip(')')
-                self.assertIn(f'- {expected}. ([#{number}](https://github.com/DerpcatMusic/KONTRA/pull/{number}))',
-                              render([(title, number, ['crates/engine/engine/src/lib.rs'])]))
-        self.assertEqual(clean('P5.53: fix(tools): repair loading (#1234)'), 'Repair loading')
+    def test_fields_and_explicit_areas(self):
+        self.assertEqual(fields('Title\nRelease note: Play more naturally.\nArea: sound\n'),
+                         ('Play more naturally.', 'Sound & playing'))
+        self.assertEqual(fields('release note: none\narea: interface'), ('', 'Interface'))
+        self.assertEqual(fields('no release note here'), ('', None))
+        self.assertEqual(fields('Release note:  \nArea: fix'), ('', 'Fixes'))
+        for area, expected in [('sound', 'Sound & playing'), ('interface', 'Interface'),
+                               ('libraries', 'Libraries & loading'), ('performance', 'Performance'),
+                               ('fix', 'Fixes')]:
+            self.assertEqual(fields(f'Release note: Music.\nArea: {area}')[1], expected)
 
-    def test_sections_and_links(self):
-        entries = [('P9.3: draw picture controls (#1151)', '1151', ['crates/app/ui/src/lib.rs']),
-                   ('Fix filter (#1)', '1', ['crates/dsp/filter/src/lib.rs']),
-                   ('Improve cache speed (#2)', '2', ['crates/engine/src/lib.rs']),
-                   ('Inspect state (#3)', '3', ['tools/inspect/src/main.rs'])]
+    def test_paths(self):
+        cases = [('tools/inspect/src/main.rs', None), ('.github/workflows/x.yml', None),
+                 ('docs/plan.md', None), ('tools/xtask/src/main.rs', None),
+                 ('plugin/src/playtest.rs', None), ('crates/engine/engine/tests/a.rs', None),
+                 ('crates/app/ui/src/lib.rs', 'Interface'), ('plugin/src/editor.rs', 'Interface'),
+                 ('crates/format/kontakt/src/lib.rs', 'Libraries & loading'),
+                 ('crates/engine/stream/src/lib.rs', 'Libraries & loading'),
+                 ('crates/app/library/src/lib.rs', 'Libraries & loading'),
+                 ('crates/engine/engine/src/lib.rs', 'Sound & playing')]
+        for path, expected in cases:
+            with self.subTest(path=path):
+                self.assertEqual(section([path]), expected)
+        self.assertEqual(section(['tools/inspect/src/main.rs', 'crates/app/ui/src/lib.rs']), 'Interface')
+
+    def test_render_uses_body_not_title(self):
+        entries = [('Release note: Find your sounds faster.\nArea: libraries', '1234', ['tools/a.py']),
+                   ('Release note: See the knobs clearly.\n', '1235', ['plugin/src/editor.rs']),
+                   ('Release note: none\nArea: sound', '1236', ['crates/engine/engine/src/lib.rs']),
+                   ('P8.4: internal technical title', '1237', ['crates/app/ui/src/lib.rs']),
+                   ('Release note: Hidden work.', '1238', ['tools/inspect/src/main.rs'])]
         result = render(entries)
-        self.assertIn('- Draw picture controls. ([#1151](https://github.com/DerpcatMusic/KONTRA/pull/1151))', result)
-        self.assertIn('### Sound & playing', result)
-        self.assertIn('### Performance', result)
-        self.assertIn('<summary>Internal: 1 change</summary>', result)
-        self.assertEqual(section('Load a library', ['crates/format/kontakt/src/lib.rs']), 'Libraries & loading')
+        self.assertIn('### Libraries & loading\n\n- Find your sounds faster. ([#1234](https://github.com/DerpcatMusic/KONTRA/pull/1234))', result)
+        self.assertIn('### Interface\n\n- See the knobs clearly. ([#1235](https://github.com/DerpcatMusic/KONTRA/pull/1235))', result)
+        self.assertIn('<summary>Internal: 3 changes</summary>', result)
+        self.assertNotIn('P8.4', result)
+        self.assertNotIn('Hidden work', result)
+
+    def test_only_published_release_at_head_skips_build(self):
+        pages = [[{'tag_name': 'v3.old', 'draft': False}],
+                 [{'tag_name': 'v3.new', 'draft': False}, {'tag_name': 'v3.draft', 'draft': True}]]
+        self.assertTrue(already_released({'v3.new'}, pages))
+        self.assertFalse(already_released({'v3.draft'}, pages))
+        self.assertFalse(already_released({'unrelated'}, pages))
+
+    @patch('notes.subprocess.check_output', return_value='{"body":"Release note: Smoother playback."}')
+    def test_fetches_pr_body(self, run):
+        self.assertEqual(pull_body('42'), 'Release note: Smoother playback.')
+        run.assert_called_once_with(['gh', 'api', 'repos/DerpcatMusic/KONTRA/pulls/42'], text=True)
 
 
 if __name__ == '__main__':
