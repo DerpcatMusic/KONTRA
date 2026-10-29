@@ -1,5 +1,10 @@
 //! KSP's `$ENGINE_PAR_*` names as one table: what each drives in the
 //! engine, through which law, and the text `get_engine_par_disp` answers.
+//!
+//! A known name on a target the instrument lacks reads 0, shows "" and
+//! drops the set, and the script runs on (Kontakt 8.13.1's getter miss
+//! path, 0x1408a4207; `get_engine_par_disp` 0x140785d40 calls the getter
+//! 0x140898570 in text mode). The engine applies that as `Engine::absent`.
 
 use kontra_ir as ir;
 
@@ -81,3 +86,19 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ENGINE_PAR_TUNE", P::Tune),
     ]
 };
+
+#[cfg(test)]
+mod tests {
+    /// A text law joins its parameter by name; a renamed or dropped row
+    /// must not silently lose its text.
+    #[test]
+    fn every_readout_names_a_parameter() {
+        let rows = super::engine_pars();
+        let orphans: Vec<_> = super::readouts()
+            .into_iter()
+            .filter(|(name, _)| !rows.iter().any(|r| r.name == *name && r.readout.is_some()))
+            .map(|(name, _)| name)
+            .collect();
+        assert!(orphans.is_empty(), "{orphans:?}");
+    }
+}

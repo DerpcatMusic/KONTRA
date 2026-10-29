@@ -13,7 +13,7 @@ mod slots;
 
 pub use engine_pars::{EnginePar, EnginePars};
 pub use route::{held_time, route_source};
-pub use script::{Callbacks, CcLink, Controls, LookPars, Recall, Saved, ScriptPlan};
+pub use script::{Callbacks, CcLink, Controls, Holder, LookPars, Recall, Saved, ScriptPlan};
 
 use std::ops::RangeInclusive;
 
@@ -135,6 +135,16 @@ impl Level {
         pan: 0.0,
         tune: 0.0,
     };
+
+    /// `gain` and `pan`, untuned.
+    #[must_use]
+    pub const fn panned(gain: f32, pan: f32) -> Self {
+        Self {
+            gain,
+            pan,
+            tune: 0.0,
+        }
+    }
 }
 
 /// What a group's voices share and a script may change while they play.
@@ -259,6 +269,28 @@ impl Group {
     /// negative target is the modulator's first route.
     pub fn mod_mut(&mut self, slot: i32, target: i32) -> Option<&mut ir::Mod> {
         self.mods.iter_mut().find(|m| addressed(m, slot, target))
+    }
+
+    /// Whether it lacks the LFO, route or modulator `holder` names at
+    /// `slot` (and, for a route, `target`). A modulator the engine does
+    /// not carry still exists: its [`ir::Routes`] keep it.
+    #[must_use]
+    pub fn lacks(&self, holder: Holder, slot: i32, target: i32) -> bool {
+        let kept = |r: &&ir::Routes| i32::from(r.slot) == slot;
+        let routed = || self.routes.iter().find(kept);
+        match holder {
+            Holder::Lfo => self.lfo(slot).is_none() && routed().is_none(),
+            Holder::Route => {
+                !self.mods.iter().any(|m| addressed(m, slot, target))
+                    && routed().is_none_or(|r| {
+                        usize::try_from(target.max(0)).is_ok_and(|t| t >= r.names.len())
+                    })
+            }
+            Holder::Mod => {
+                !self.mods.iter().any(|m| i32::from(m.slot) == slot) && routed().is_none()
+            }
+            _ => false,
+        }
     }
 
     /// The LFO of modulator `slot`.

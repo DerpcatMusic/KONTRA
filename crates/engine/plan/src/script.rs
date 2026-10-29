@@ -3,7 +3,7 @@
 
 use kontra_vm::{Program, Text};
 
-use crate::EnginePars;
+use crate::{EnginePar, EnginePars};
 
 /// A compiled script and where its callbacks start.
 #[derive(Clone, Debug)]
@@ -75,6 +75,37 @@ impl ScriptPlan {
         }
     }
 
+    /// What `par` lives on, so the engine can tell a target the
+    /// instrument lacks.
+    #[must_use]
+    pub fn holder(&self, par: EnginePar) -> Holder {
+        use kontra_ir::KnobTarget as K;
+        match par {
+            EnginePar::Knob(n) => match self.knobs.get(usize::from(n)).map(|k| k.0) {
+                Some(K::Effect(_) | K::Slot(_) | K::Impulse(_)) => Holder::Slot,
+                Some(K::LfoRate | K::LfoSteps | K::LfoWidth | K::LfoWeight(_)) => Holder::Lfo,
+                _ => Holder::Group,
+            },
+            EnginePar::EffectBypass
+            | EnginePar::EffectOutput
+            | EnginePar::EffectDry
+            | EnginePar::SendLevel(_)
+            | EnginePar::Reverb(_)
+            | EnginePar::ReverbNetwork
+            | EnginePar::GainerGain
+            | EnginePar::StereoWidth
+            | EnginePar::StereoPan => Holder::Slot,
+            EnginePar::EffectType | EnginePar::EffectSubtype => Holder::SlotKind,
+            EnginePar::LfoFade => Holder::Lfo,
+            EnginePar::RouteDepth | EnginePar::RouteIntensity => Holder::Route,
+            EnginePar::ModBypass => Holder::Mod,
+            EnginePar::Volume | EnginePar::Pan | EnginePar::Tune | EnginePar::OutputChannel => {
+                Holder::Level
+            }
+            _ => Holder::Group,
+        }
+    }
+
     /// Copies a prepared text array into its cells. Returns false when the resource was not found.
     pub fn load_text_data(&self, base: u32, len: usize, cells: &mut [Text]) -> bool {
         let Some((_, values)) = self.text_data.iter().find(|(b, _)| *b == base) else {
@@ -86,6 +117,25 @@ impl ScriptPlan {
         }
         true
     }
+}
+
+/// What an engine parameter lives on ([`ScriptPlan::holder`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Holder {
+    /// The group or the instrument itself.
+    Group,
+    /// The module in an effect slot.
+    Slot,
+    /// The slot: its type and subtype answer even when it is empty.
+    SlotKind,
+    /// One of the group's LFOs.
+    Lfo,
+    /// One of the group's modulation routes.
+    Route,
+    /// One of the group's modulators.
+    Mod,
+    /// A level or output, of a group, the instrument or a bus.
+    Level,
 }
 
 /// A MIDI controller tied to control `id` (a UI id): its value `v` sets

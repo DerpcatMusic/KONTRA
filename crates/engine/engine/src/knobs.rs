@@ -76,9 +76,7 @@ impl Engine {
         {
             return n;
         }
-        let lfo = usize::try_from(group)
-            .ok()
-            .and_then(|g| self.groups.get_mut(g)?.lfo_mut(slot));
+        let lfo = self.group_mut(group).and_then(|g| g.lfo_mut(slot));
         match lfo.map(|l| l.rate) {
             Some(ir::Rate::Steps { .. }) => next,
             _ => n,
@@ -197,10 +195,7 @@ impl Engine {
             | ir::KnobTarget::LfoSteps
             | ir::KnobTarget::LfoWidth
             | ir::KnobTarget::LfoWeight(_) => {
-                let lfo = self
-                    .groups
-                    .get_mut(usize::try_from(group).ok()?)?
-                    .lfo_mut(slot)?;
+                let lfo = self.group_mut(group)?.lfo_mut(slot)?;
                 match (target, &mut lfo.rate, &mut lfo.wave) {
                     (ir::KnobTarget::LfoRate, ir::Rate::Hz(hz), _) => Some(hz),
                     (ir::KnobTarget::LfoSteps, ir::Rate::Steps { count, .. }, _) => Some(count),

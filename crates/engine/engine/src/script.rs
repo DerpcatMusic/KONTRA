@@ -652,12 +652,11 @@ impl HostApi for Engine {
                 };
                 HostValue::Int(found.map_or(missing, |n| n as i32))
             }
-            // A known parameter on a target the instrument lacks reads 0, shows
-            // "" and takes no set (Kontakt 8.13.1's getter, 0x140898570).
-            Action::GetEnginePar if self.engine_par(int(0)).is_some() => HostValue::Int(
-                self.get_engine_par(int(0), int(1), int(2), int(3))
-                    .unwrap_or(0),
-            ),
+            Action::GetEnginePar
+                if let Some(value) = self.get_engine_par(int(0), int(1), int(2), int(3)) =>
+            {
+                HostValue::Int(value)
+            }
             action @ (Action::GetEngineParDisp | Action::GetEngineParDispExt)
                 if self.par_text(action == Action::GetEngineParDispExt, int, call.text_out) =>
             {
@@ -675,7 +674,7 @@ impl HostApi for Engine {
                 let loaded = (swap && !set)
                     .then(|| self.load_type(int(1), subtype, int(2), int(3), int(4)))
                     .flatten();
-                if !set && loaded.is_none() && par.is_none() {
+                if !set && loaded.is_none() && !self.absent(int(0), int(2), int(3), int(4)) {
                     self.count_unhandled(Action::SetEnginePar);
                 }
                 HostValue::Int(match loaded {
