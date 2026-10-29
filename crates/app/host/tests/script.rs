@@ -216,6 +216,28 @@ fn at_pedal_up_a_script_sees_the_keys_it_held_as_up() {
     assert_eq!(e.active_voices(), 0);
 }
 
+/// `%CC_TOUCHED` marks the controller that changed: Pacific releases its
+/// pedalled notes only when CC 64 is the one (it read 0 before, unanswered).
+#[test]
+fn a_controller_callback_sees_which_controller_was_touched() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(
+        &store,
+        Vec::new(),
+        "on controller
+            message(%CC_TOUCHED[64] & \",\" & %CC_TOUCHED[1])
+        end on",
+    );
+    let cc = |n, value| Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB0, n, value),
+    };
+    level(&mut e, &[cc(64, 0)]);
+    assert_eq!(e.last_message(), "1,0");
+    level(&mut e, &[cc(1, 90)]);
+    assert_eq!(e.last_message(), "0,1");
+}
+
 #[test]
 fn wait_starts_a_note_on_its_exact_sample_at_any_block_size() {
     let source = "on note
