@@ -17,6 +17,9 @@ class NotesTest(unittest.TestCase):
         for title, expected in cases:
             with self.subTest(title=title):
                 self.assertEqual(clean(title), expected)
+                number = title.rsplit('(#', 1)[1].rstrip(')')
+                self.assertIn(f'- {expected}. ([#{number}](https://github.com/DerpcatMusic/KONTRA/pull/{number}))',
+                              render([(title, number, ['crates/engine/engine/src/lib.rs'])]))
         self.assertEqual(clean('P5.53: fix(tools): repair loading (#1234)'), 'Repair loading')
 
     def test_sections_and_links(self):
