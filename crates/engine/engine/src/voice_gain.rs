@@ -528,7 +528,7 @@ fn gain(zone: &Zone, note: &Note, level: Level, modulated: f32) -> [f32; 2] {
 }
 
 /// 1 at the key's press, falling to 0 once it has been held `span_ms`.
-fn held_time(span_ms: u32, held: f32) -> f32 {
+pub(crate) fn held_time(span_ms: u32, held: f32) -> f32 {
     if span_ms == 0 {
         return 1.0;
     }
