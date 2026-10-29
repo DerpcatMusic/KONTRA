@@ -57,7 +57,7 @@ pub fn run(path: &Path, scenario_name: &str, oracle: bool) -> Result<(Value, Str
         })
         .collect();
     let stream = store.client();
-    let mut engine = Engine::new_traced(Arc::clone(&plan), stream.clone(), RATE, 65536);
+    let mut engine = Engine::new_traced(Arc::clone(&plan), stream.clone(), RATE, 262144);
     engine.set_offline_wait(true);
     let mut at = 0u64;
     let mut next = 0usize;
