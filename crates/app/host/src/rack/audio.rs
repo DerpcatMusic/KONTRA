@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use kontra_engine::{Engine, SampleTime, Timed};
+use kontra_engine::{Engine, Play, SampleTime, Timed};
 use kontra_protocol::{Meters, Stats};
 
 use super::{Channels, Command, Event, HostPattern, Mix, OUTPUTS};
@@ -32,6 +32,9 @@ pub struct RackAudio {
     events: Vec<Timed<Event>>,
     master: f32,
     tempo: Option<f32>,
+    /// The host's transport for the next block: running, the song
+    /// position in quarters, the time signature.
+    transport: Option<(Play, f64, (u8, u8))>,
     panic: bool,
     /// Events from [`Command::Play`] for the next block; a fixed capacity.
     played: Vec<Event>,
@@ -57,6 +60,7 @@ impl RackAudio {
             events: Vec::with_capacity(4096),
             master: 1.0,
             tempo: None,
+            transport: None,
             panic: false,
             played: Vec::with_capacity(PLAYED),
             meters: Meters::default(),
@@ -69,6 +73,18 @@ impl RackAudio {
     pub fn settle(&self) {
         // ponytail: a fixed 5 s cap; a disk slower than that drops frames.
         self.stream.settle(std::time::Duration::from_secs(5));
+    }
+
+    /// The host's transport at the start of the next block: whether it
+    /// runs, where it is in quarter notes and its time signature. Scripts
+    /// read it, and hear it start and stop.
+    pub fn set_transport(&mut self, playing: bool, quarters: f64, signature: (u8, u8)) {
+        let play = if playing {
+            Play::Running
+        } else {
+            Play::Stopped
+        };
+        self.transport = Some((play, quarters, signature));
     }
 
     /// The host's tempo from the next block on, in quarter notes per minute;
@@ -144,6 +160,9 @@ impl RackAudio {
             );
             if let Some(bpm) = self.tempo {
                 p.engine.set_tempo(bpm);
+            }
+            if let Some((play, quarters, signature)) = self.transport {
+                p.engine.set_transport(play, quarters, signature);
             }
             let Some(scratch) = self.scratch.get_mut(..frames) else {
                 continue;
