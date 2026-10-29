@@ -112,6 +112,12 @@ pub struct VoiceObservation {
     pub gain: kontra_voice::Gain,
     /// Source frames this voice read as silence because data was unavailable.
     pub missing_frames: u64,
+    /// Current pitch in source frames per output frame.
+    #[cfg(feature = "trace")]
+    pub step: f64,
+    /// Current amplitude envelope stage.
+    #[cfg(feature = "trace")]
+    pub envelope_stage: &'static str,
     /// Peak of the last voice render, before group effects.
     #[cfg(feature = "trace")]
     pub last_peak: f32,
@@ -192,6 +198,10 @@ impl Engine {
                 released: s.released,
                 gain: s.voice.current_gain(),
                 missing_frames: s.voice.missing_frames(),
+                #[cfg(feature = "trace")]
+                step: s.voice.step(),
+                #[cfg(feature = "trace")]
+                envelope_stage: s.voice.envelope_stage(),
                 #[cfg(feature = "trace")]
                 last_peak: s.voice.last_peak(),
             })
