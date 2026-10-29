@@ -78,6 +78,8 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
     diagnostics.extend(instrument.diagnostics);
     // ponytail: a slot that fails to compile is dropped, and the slots after
     // it move up one ($EVENT_PAR_SOURCE then counts from the gap).
+    // Discovery walks the disk, so only a KSP script triggers it, and once.
+    let mut factory_folder = None;
     for (n, script) in instrument.scripts.iter().enumerate() {
         if script.dialect == ir::Dialect::Lua {
             match kontra_lua::compile(&script.source, &lua_modules(script), &script.saved) {
@@ -101,6 +103,9 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 planned.source_folder =
                     crate::script::source_folder(instrument.source_path.as_deref());
                 planned.library_folder = crate::script::folder(instrument.library_path.as_deref());
+                planned.factory_folder = *factory_folder.get_or_insert_with(|| {
+                    factory_folder_of(kontra_library::kontakt::candidates())
+                });
                 planned.links = crate::script::links(&compiled, &script.links);
                 if planned.links.len() < script.links.len() {
                     diagnostics.push(ir::Diagnostic {
@@ -166,8 +171,33 @@ fn line_at(source: &str, at: usize) -> &str {
     source.get(start..end).unwrap_or_default()
 }
 
+/// The folder holding the first installed executable: Kontakt's factory data
+/// folder, as `get_folder($GET_FOLDER_FACTORY_DIR)` reports it.
+fn factory_folder_of(candidates: Vec<std::path::PathBuf>) -> Option<kontra_engine::Text> {
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .and_then(|path| crate::script::folder(path.parent()))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn factory_folder_is_the_first_installed_executables_folder() {
+        let dir = std::env::temp_dir().join(format!("kontra-factory-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("Kontakt 8.exe");
+        std::fs::write(&exe, b"").unwrap();
+        let missing = dir.join("missing/Kontakt 7.exe");
+        let found = super::factory_folder_of(vec![missing.clone(), exe]).unwrap();
+        assert_eq!(
+            found.as_str(),
+            format!("{}/", dir.display()).replace('\\', "/")
+        );
+        assert!(super::factory_folder_of(vec![missing]).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     use std::path::Path;
 
     /// Augmented Orchestra's saved state picks each part's layers

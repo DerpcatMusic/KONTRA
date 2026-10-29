@@ -20,6 +20,8 @@ pub struct ScriptPlan {
     pub source_folder: Option<Text>,
     /// Absolute library folder, when known.
     pub library_folder: Option<Text>,
+    /// The installed sampler's factory data folder, when one was found.
+    pub factory_folder: Option<Text>,
     /// Saved values written after `on init`, before `on persistence_changed`.
     pub restore: Vec<(u32, i64)>,
     pub restore_texts: Vec<(u32, Text)>,
@@ -52,6 +54,8 @@ impl ScriptPlan {
         match kind {
             1 => self.library_folder,
             2 => self.source_folder,
+            // No installation: scripts read an empty path, as the manual allows.
+            3 => Some(self.factory_folder.unwrap_or(Text::EMPTY)),
             _ => None,
         }
     }
