@@ -265,6 +265,27 @@ fn a_picture_font_id_is_a_bitmap_font() {
     assert_eq!(font("$b"), ui::Font::Stock(4));
 }
 
+/// A label with a font but no alignment sets its words from the left;
+/// a button centres them (KSP manual; Pacific's "Mic Mixer" in Kontakt).
+#[test]
+fn a_label_aligns_left_unless_told() {
+    let ui = tree(
+        "on init
+            declare ui_label $l (1, 1)
+            set_control_par(get_ui_id($l), $CONTROL_PAR_FONT_TYPE, 12)
+            declare ui_label $c (1, 1)
+            set_control_par(get_ui_id($c), $CONTROL_PAR_FONT_TYPE, 12)
+            set_control_par(get_ui_id($c), $CONTROL_PAR_TEXT_ALIGNMENT, 1)
+            declare ui_button $b
+            set_control_par(get_ui_id($b), $CONTROL_PAR_FONT_TYPE, 12)
+        end on",
+    );
+    let align = |name| ui.styles[widget(&ui, name).style.unwrap().0].align;
+    assert_eq!(align("$l"), ui::Align::Left);
+    assert_eq!(align("$c"), ui::Align::Center);
+    assert_eq!(align("$b"), ui::Align::Center);
+}
+
 /// `attach_level_meter` puts the channel it shows into the tree; an
 /// unattached meter shows none (ANALOG, Conflux, Morphology, Shreddage).
 #[test]
