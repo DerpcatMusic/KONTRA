@@ -22,6 +22,8 @@ pub struct View {
     pub revision: u64,
     /// The frame between trips to the audio side; `None` while it is there.
     pub(crate) frame: Option<Box<LookFrame>>,
+    /// The library's resources, opened once and kept for later pictures.
+    library: Option<Library>,
 }
 
 /// A KSP script's tree and what keeps it current, or a Lua script's tree.
@@ -43,7 +45,7 @@ impl View {
     ) -> Option<Self> {
         let library = path.map(|p| RefCell::new(Library::open(p)));
         let meta = |p: &str| library.as_ref()?.borrow_mut().meta(p);
-        (0..faces.len().max(pages.len())).find_map(|slot| {
+        let mut view = (0..faces.len().max(pages.len())).find_map(|slot| {
             let at = u8::try_from(slot).ok()?;
             if let Some(Some(face)) = faces.get(slot) {
                 let live = Live::new(face, at, engine, &meta).ok()?;
@@ -70,7 +72,9 @@ impl View {
             }
             let frame = LookFrame::lua(at, &tree);
             Some(Self::new(at, Shown::Lua(tree), frame))
-        })
+        })?;
+        view.library = library.map(RefCell::into_inner);
+        Some(view)
     }
 
     fn new(slot: u8, shown: Shown, frame: Box<LookFrame>) -> Self {
@@ -79,6 +83,7 @@ impl View {
             shown,
             revision: 0,
             frame: Some(frame),
+            library: None,
         }
     }
 
@@ -113,8 +118,8 @@ impl View {
         let Some(face) = faces.get(usize::from(self.slot)).and_then(Option::as_ref) else {
             return;
         };
-        let library = RefCell::new(None);
-        // Opened only if a changed widget shows a picture.
+        let library = RefCell::new(self.library.take());
+        // Opened only if a changed widget shows a picture, then kept.
         let meta = |p: &str| {
             let path = path?;
             let mut l = library.borrow_mut();
@@ -132,6 +137,7 @@ impl View {
             Filled::Overflowed => frame.grown(),
             Filled::No | Filled::Whole => frame,
         });
+        self.library = library.into_inner();
     }
 
     /// The script's own widget behind `widget` on a page a front end built

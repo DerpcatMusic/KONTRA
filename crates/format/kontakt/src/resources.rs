@@ -36,6 +36,15 @@ impl Resources {
     /// Every resource source of the library the instrument at `path` belongs to.
     #[must_use]
     pub fn open(path: &Path) -> Self {
+        Self::open_sharing(path, &mut |_| None)
+    }
+
+    /// [`Resources::open`], taking an archive already open (`shared`)
+    /// rather than opening it and reading its index again.
+    pub(crate) fn open_sharing(
+        path: &Path,
+        shared: &mut dyn FnMut(&Path) -> Option<(File, Archive)>,
+    ) -> Self {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.into());
         let root = root(&path);
         let mut places = vec![root.clone()];
@@ -54,10 +63,13 @@ impl Resources {
                 if named(&p, "Resources") && p.is_dir() {
                     sources.push(Source::Loose(p));
                 } else if ext.as_deref() == Some("nkr") {
-                    let archive = File::open(&p).ok().and_then(|mut f| {
-                        let index = Archive::read_index(&mut f).ok()?;
-                        Some(Source::Nkr(f, index, p.clone()))
-                    });
+                    let archive = shared(&p)
+                        .or_else(|| {
+                            let mut f = File::open(&p).ok()?;
+                            let index = Archive::read_index(&mut f).ok()?;
+                            Some((f, index))
+                        })
+                        .map(|(f, index)| Source::Nkr(f, index, p.clone()));
                     sources.extend(archive);
                 } else if ext.as_deref() == Some("nicnt") {
                     sources.extend(nicnt_table(&p));
@@ -206,8 +218,13 @@ impl Resources {
 
     /// The library's `.nkr` archives.
     pub(crate) fn archives(&self) -> impl Iterator<Item = &Path> {
+        self.opened().map(|(path, _, _)| path)
+    }
+
+    /// The `.nkr` archives open here, with their handles and indexes.
+    pub(crate) fn opened(&self) -> impl Iterator<Item = (&Path, &File, &Archive)> {
         self.sources.iter().filter_map(|s| match s {
-            Source::Nkr(_, _, path) => Some(path.as_path()),
+            Source::Nkr(file, index, path) => Some((path.as_path(), file, index)),
             _ => None,
         })
     }

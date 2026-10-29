@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
 use kontra_ir as ir;
@@ -51,7 +50,11 @@ fn lexical(path: &Path) -> PathBuf {
 }
 
 impl Resolver {
-    pub(crate) fn new(instrument: &Path) -> Result<Self, String> {
+    /// `monolith`: the instrument file's own table, when it is a monolith.
+    pub(crate) fn new(
+        instrument: &Path,
+        monolith: Option<ni_file::file_container::NIFileContainer>,
+    ) -> Result<Self, String> {
         // Canonical, so an empty or `./` parent, `..` or a symlink still
         // contains its candidates.
         let instrument = &instrument.canonicalize().map_err(|e| e.to_string())?;
@@ -62,13 +65,8 @@ impl Resolver {
             .take_while(|a| a.starts_with(&root))
             .map(Path::to_path_buf)
             .collect();
-        let mut monolith = HashMap::new();
-        let mut file = File::open(instrument).map_err(|e| e.to_string())?;
-        let mut magic = [0; 16];
-        if file.read_exact(&mut magic).is_ok() && &magic == b"/\\ NI FC MTD  /\\" {
-            file.rewind().map_err(|e| e.to_string())?;
-            let container = ni_file::file_container::NIFileContainer::read(&mut file)
-                .map_err(|e| e.to_string())?;
+        let mut members = HashMap::new();
+        if let Some(container) = monolith {
             for item in container.items {
                 let location = Location {
                     file: instrument.to_path_buf(),
@@ -76,7 +74,7 @@ impl Resolver {
                     size: Some(item.file_size),
                     keystream: None,
                 };
-                monolith.insert(
+                members.insert(
                     item.filename.replace(['|', '\\'], "/").to_lowercase(),
                     location,
                 );
@@ -85,7 +83,7 @@ impl Resolver {
         Ok(Self {
             root,
             bases,
-            monolith,
+            monolith: members,
             archives: HashMap::new(),
             loose: None,
             key: None,
@@ -165,6 +163,23 @@ impl Resolver {
             (Some(_), Some(_)) => Err(format!("several monolith members are named {base}")),
             _ => Ok(None),
         }
+    }
+
+    /// The archive at `path` if it is open here: its handle duplicated and
+    /// its index, so a second reader neither reopens it nor rereads the index.
+    pub(crate) fn opened(&self, path: &Path) -> Option<(File, Archive)> {
+        let (file, index) = self.archives.get(&path.canonicalize().ok()?)?.as_ref()?;
+        Some((file.try_clone().ok()?, index.clone()))
+    }
+
+    /// Takes an archive another reader opened, unless one is open here.
+    pub(crate) fn adopt(&mut self, path: &Path, file: &File, index: &Archive) {
+        let (Ok(path), Ok(file)) = (path.canonicalize(), file.try_clone()) else {
+            return;
+        };
+        self.archives
+            .entry(path)
+            .or_insert_with(|| Some((file, index.clone())));
     }
 
     fn archive_entry(&mut self, archive: &Path, member: &str) -> Result<Option<Location>, String> {
