@@ -205,7 +205,7 @@ impl Rack {
             meters: MeterCells::default(),
             stats: StatCells::default(),
         });
-        let audio = RackAudio::new(Arc::clone(&channels), store.client(), max_block);
+        let audio = RackAudio::new(Arc::clone(&channels), store.client(), rate, max_block);
         let rack = Self {
             channels,
             rate,
