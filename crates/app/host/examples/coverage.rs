@@ -214,7 +214,7 @@ fn survey(path: &Path, store: &mut Store, report: &Mutex<Report>) {
                 r.calls.entry(a.id()).or_default().1 += u64::from(n);
             }
             if let Some(f) = faults {
-                r.faults.push((name, f));
+                r.faults.push((name, describe(&f, &compiled)));
             }
         }
     }
@@ -226,14 +226,60 @@ fn stem(path: &Path) -> String {
 }
 
 type Counts = Vec<(Action, u32)>;
+type Run = (Counts, Counts, Option<kontra_engine::Faults>);
+
+/// `f` with its first out-of-range array named from `script`'s variables,
+/// and the ops that pushed its first zero divisor.
+fn describe(f: &kontra_engine::Faults, script: &kontra_ksp::Script) -> String {
+    let mut s = format!(
+        "div0 {}, out of range {}, stack {}, texts cut {}, loop limits {}, no coroutine {}, bad code {}",
+        f.divide_by_zero,
+        f.out_of_range,
+        f.stack_overflow,
+        f.texts_cut,
+        f.loop_limits,
+        f.no_coroutine,
+        f.bad_code
+    );
+    let name = |cell: u32, text: bool| {
+        script.variables.iter().find_map(|v| {
+            let (base, len, t) = match v.cells {
+                kontra_ksp::Cells::Int { base, len } | kontra_ksp::Cells::Real { base, len } => {
+                    (base, len, false)
+                }
+                kontra_ksp::Cells::Text { base, len } => (base, len, true),
+                _ => return None,
+            };
+            (t == text && (base..base + len.max(1)).contains(&cell))
+                .then(|| (v.name.to_string(), len))
+        })
+    };
+    if let Some((base, text, index)) = f.first_out_of_range {
+        let array = name(base, text).map_or("?".into(), |(n, len)| format!("{n}[{len}]"));
+        let _ = write!(s, "; first: {array}[{index}]");
+    }
+    if let Some(pc) = f.first_divide_by_zero {
+        // The ops that pushed the divisor, their cells named.
+        let ops: Vec<String> = (pc.saturating_sub(8)..pc)
+            .filter_map(|p| script.program.code.get(p as usize))
+            .map(|op| match op {
+                kontra_engine::Op::Load(n) => {
+                    name(*n, false).map_or_else(|| format!("{op:?}"), |(n, _)| n)
+                }
+                kontra_engine::Op::LoadAt { base, .. } => {
+                    name(*base, false).map_or_else(|| format!("{op:?}"), |(n, _)| format!("{n}[]"))
+                }
+                _ => format!("{op:?}"),
+            })
+            .collect();
+        let _ = write!(s, "; first div0 at code {pc} after {}", ops.join(" "));
+    }
+    s
+}
 
 /// Init, one note on and off: the actions script `slot` calls and leaves
 /// unanswered, and its faults if any. Zones are dropped so nothing loads.
-fn run(
-    ir: &ir::Instrument,
-    slot: usize,
-    store: &mut Store,
-) -> Option<(Counts, Counts, Option<String>)> {
+fn run(ir: &ir::Instrument, slot: usize, store: &mut Store) -> Option<Run> {
     let mut ir = ir.clone();
     let script = ir.scripts.get(slot)?.clone();
     ir.scripts = vec![script];
@@ -282,8 +328,7 @@ fn run(
     let faults = engine
         .script_faults()
         .into_iter()
-        .find(|f| *f != kontra_engine::Faults::default())
-        .map(|f| format!("{f:?}"));
+        .find(|f| *f != kontra_engine::Faults::default());
     Some((engine.action_calls(), engine.unhandled_actions(), faults))
 }
 

@@ -37,6 +37,12 @@ impl Engine {
             *v = value;
         }
         let plan = Arc::clone(&self.plan);
+        // A controller tied to a script control moves it before scripts hear it.
+        for (slot, script) in (0u8..).zip(&plan.scripts) {
+            for link in script.links.iter().filter(|l| l.cc == controller) {
+                self.set_control(slot, link.id, link.value(value));
+            }
+        }
         for (slot, script) in (0u8..).zip(&plan.scripts) {
             let Some(entry) = script.callbacks.controller else {
                 continue;
