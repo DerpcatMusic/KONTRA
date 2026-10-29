@@ -3,6 +3,7 @@
 //! store; everything this cannot carry over is an [`ir::Diagnostic`].
 
 mod access;
+mod clocked;
 mod container;
 mod delays;
 mod drive;
@@ -13,7 +14,6 @@ mod fastlz;
 mod impulse;
 mod laws;
 mod legacy_reverb;
-mod phaser_filter;
 mod resources;
 mod reverb;
 mod samples;

@@ -128,8 +128,6 @@ pub enum EffectParam {
     ModPhase,
     PhaserExponent,
     PhaserFeedback,
-    /// A [`crate::Phaser`]'s allpass corner at the centre of its sweep.
-    PhaserHz,
     TransientAttack,
     TransientSustain,
     TransientGain,
@@ -154,8 +152,6 @@ pub enum EffectParam {
     FilterGain,
     /// A [`crate::Filter`]'s last stage's damping, whatever its stages.
     FilterLastDamping,
-    /// A [`crate::Delay`]'s time in ms (not a synced one), its input and
-    /// feedback matrix cells (row-major, 0..4) and its damping corner.
     /// A [`crate::Cascade`]'s stage 0 Hz, its shifts in octaves, and by
     /// stage its q, limit, peak, morph and wet; its output gain.
     CascadeHz,
@@ -166,6 +162,11 @@ pub enum EffectParam {
     CascadeMorph(u8),
     CascadeWet(u8),
     CascadeGain,
+    /// A [`crate::Clocked`] filter's cutoff and resonance knobs.
+    ClockedCutoff,
+    ClockedResonance,
+    /// A [`crate::Delay`]'s time in ms (not a synced one), its input and
+    /// feedback matrix cells (row-major, 0..4) and its damping corner.
     DelayMs,
     DelayInput(u8),
     DelayLoop(u8),
@@ -196,7 +197,6 @@ impl EffectParam {
             (Self::ModPhase, EffectKind::Phaser(p)) => &mut p.phase,
             (Self::PhaserExponent, EffectKind::Phaser(p)) => &mut p.exponent,
             (Self::PhaserFeedback, EffectKind::Phaser(p)) => &mut p.feedback,
-            (Self::PhaserHz, EffectKind::Phaser(p)) => &mut p.hz,
             (Self::TransientAttack, EffectKind::Transient(t)) => &mut t.attack,
             (Self::TransientSustain, EffectKind::Transient(t)) => &mut t.sustain,
             (Self::TransientGain, EffectKind::Transient(t)) => &mut t.gain_db,
@@ -230,6 +230,8 @@ impl EffectParam {
             (Self::CascadeHz, EffectKind::Cascade(c)) => &mut c.hz,
             (Self::CascadeShift(n), EffectKind::Cascade(c)) => c.shifts.get_mut(usize::from(n))?,
             (Self::CascadeGain, EffectKind::Cascade(c)) => &mut c.gain,
+            (Self::ClockedCutoff, EffectKind::Clocked(c)) => &mut c.cutoff,
+            (Self::ClockedResonance, EffectKind::Clocked(c)) => &mut c.resonance,
             (
                 Self::CascadeQ(n)
                 | Self::CascadeLimit(n)
