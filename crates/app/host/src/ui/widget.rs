@@ -20,7 +20,7 @@ pub(super) fn widget(
     slot: u8,
     d: &Decl<'_>,
     p: &Props<'_>,
-    engine: &Engine,
+    engine: &dyn Looks,
 ) -> ui::Widget {
     let Decl {
         kind: control_kind,
