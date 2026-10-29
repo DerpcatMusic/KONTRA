@@ -74,12 +74,12 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     let mut resolver = Resolver::new(path).map_err(|e| Error::new(path, "samples", e))?;
     let mut impulses = crate::impulse::Impulses::new(chunks, &mut resolver, path);
     let mut criteria = Vec::new();
+    let mut slots = crate::effects::Slots::default();
     for (index, group) in groups.groups.iter().enumerate() {
         let t = translate_group(group, &base, &mut notes)
             .map_err(|e| Error::new(path, "group", format!("{index}: {e}")))?;
         let mut g = t.group;
-        g.inserts =
-            crate::effects::group(group, index, &mut impulses, &mut notes, &mut out.slot_laws);
+        g.inserts = crate::effects::group(group, index, &mut impulses, &mut notes, &mut slots);
         crate::drive::unmoved(&g.inserts, &g.mods, &mut notes);
         // ponytail: a filter a modulator moves passes unfiltered until filters
         // run per voice; its routes are reported.
@@ -98,7 +98,9 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     let racks = crate::effects::program(&program, &mut impulses, &mut notes);
     let buses = racks.buses;
     (out.inserts, out.sends, out.main) = (racks.inserts, racks.sends, racks.main);
-    out.slot_laws.extend(racks.laws);
+    slots.laws.extend(racks.laws.laws);
+    slots.shapes.extend(racks.laws.shapes);
+    (out.slot_laws, out.slot_shapes) = (slots.laws, slots.shapes);
     out.impulses = impulses.out;
     // Responses are samples after the zones' (indices into the same table).
     let responses = impulses.samples;

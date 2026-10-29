@@ -106,6 +106,8 @@ pub enum EffectParam {
     FilterDamping(u8),
     /// A [`crate::Filter`]'s output gain, linear.
     FilterGain,
+    /// A [`crate::Filter`]'s last stage's damping, whatever its stages.
+    FilterLastDamping,
     /// A [`crate::Delay`]'s time in ms (not a synced one), its input and
     /// feedback matrix cells (row-major, 0..4) and its damping corner.
     DelayMs,
@@ -156,6 +158,9 @@ impl EffectParam {
             (Self::FilterHz, EffectKind::Filter(f)) => &mut f.hz,
             (Self::FilterDamping(n), EffectKind::Filter(f)) => f.damping.get_mut(usize::from(n))?,
             (Self::FilterGain, EffectKind::Filter(f)) => &mut f.gain,
+            (Self::FilterLastDamping, EffectKind::Filter(f)) => {
+                f.damping.get_mut(usize::from(f.stages.checked_sub(1)?))?
+            }
             (Self::DelayMs, EffectKind::Delay(d)) => match &mut d.time {
                 crate::DelayTime::Ms(ms) => ms,
                 crate::DelayTime::Beats(_) => return None,
@@ -255,4 +260,32 @@ pub struct SlotLaw {
     pub knob: SlotKnob,
     pub field: EffectParam,
     pub law: crate::Law,
+}
+
+/// Shape `id` a script may switch the filter in slot `slot` of `at` to: its
+/// pass and stages, the slot's knob laws unchanged. The resonance moves to
+/// the new last stage; the others stay critically damped.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SlotShape {
+    pub at: RackAt,
+    pub slot: u8,
+    pub id: i32,
+    pub pass: crate::Pass,
+    pub stages: u8,
+}
+
+impl SlotShape {
+    /// Switches `filter` to this shape.
+    pub fn apply(&self, filter: &mut crate::Filter) {
+        let last = |f: &crate::Filter| usize::from(f.stages).checked_sub(1);
+        let resonance = last(filter).and_then(|n| filter.damping.get(n).copied());
+        filter.pass = self.pass;
+        filter.stages = self.stages;
+        filter.damping = [2.0; 3];
+        if let Some((n, k)) = last(filter).zip(resonance) {
+            if let Some(d) = filter.damping.get_mut(n) {
+                *d = k;
+            }
+        }
+    }
 }

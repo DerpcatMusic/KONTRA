@@ -434,6 +434,7 @@ impl Engine {
         }
         if self.set_level(par, value, group, generic)
             || self.set_knob(par, value, group, slot, generic)
+            || (par == EnginePar::EffectSubtype && self.set_shape(value, group, slot, generic))
             || self.set_effect(par, value, group, slot, generic)
             || self.set_reverb(par, value, group, slot, generic)
         {
