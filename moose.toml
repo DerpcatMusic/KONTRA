@@ -22,7 +22,7 @@ midi2_input = true
 
 # The v3 plugin (kontra-host + kontra-ui) ships beside v2 until the release gate (P8.6).
 [[plugin]]
-name = "KONTRA v3"
+name = "KONTRA"
 bundle_id = "kontra-v3"
 crate = "kontra-plugin"
 category = "instrument"

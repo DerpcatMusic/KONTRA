@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: v3-release
+  cancel-in-progress: false
+  queue: max
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_TARGET_DIR: target
+  MOOSE_REV: bffa4677d0b82119d38566ce7e932dc5c463d497
+
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main' && !github.event.repository.private
+    uses: ./.github/workflows/ci.yml
+    with:
+      release_validation: false
+
+  bundle:
+    if: github.ref == 'refs/heads/main' && !github.event.repository.private
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, name: linux-x86_64}
+          - {os: windows-2025, target: x86_64-pc-windows-msvc, name: windows-x86_64}
+          - {os: macos-15, target: aarch64-apple-darwin, name: macos-arm64}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.99.0
+          targets: ${{ matrix.target }}
+      - name: System libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcb-icccm4-dev libxcursor-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev \
+            libgl1-mesa-dev libvulkan-dev \
+            libasound2-dev libjack-jackd2-dev
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: v3-plugin-${{ matrix.os }}-${{ matrix.target }}
+          cache-on-failure: true
+      - name: Install cargo-moose
+        shell: bash
+        run: cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
+      - name: CLAP and VST3 bundles
+        shell: bash
+        run: cargo moose build --clap --vst3 -p kontra-plugin --target ${{ matrix.target }}
+      - name: Archive bundles
+        shell: bash
+        run: |
+          version=$(python3 tools/version.py v3-nightly)
+          archive="KONTRA-${version}-${{ matrix.name }}.zip"
+          cd "target/bundles/${{ matrix.target }}"
+          test -e KONTRA.clap && test -e KONTRA.vst3
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a -tzip "../../../$archive" KONTRA.clap KONTRA.vst3
+          else
+            zip -qry "../../../$archive" KONTRA.clap KONTRA.vst3
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.name }}
+          path: KONTRA-*.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [verify, bundle]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for tag in $(git tag --points-at HEAD --list 'v3.*'); do
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "Already released as $tag"
+              exit 0
+            fi
+          done
+          version=$(python3 tools/version.py v3-nightly)
+          python3 tools/release/notes.py > notes.md
+          gh release create "v$version" --target "$GITHUB_SHA" --prerelease --title "KONTRA $version" --notes-file notes.md KONTRA-*.zip

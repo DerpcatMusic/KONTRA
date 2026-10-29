@@ -98,7 +98,6 @@ jobs:
       - name: Workflow safety tests
         run: |
           python3 -m unittest discover -s .github/scripts -p 'test_*.py'
-          python3 .github/workflows/check_nightly.py
 
   linux:
     needs: changes

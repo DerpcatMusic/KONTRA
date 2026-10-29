@@ -1,6 +1,6 @@
 name: v3 plugin
 
-# The KONTRA v3 plugin (kontra-plugin, "KONTRA v3", audio.matari.kontra-v3)
+# The KONTRA v3 plugin (kontra-plugin, "KONTRA", audio.matari.kontra-v3)
 # as CLAP and VST3 bundles beside v2's: built on free runners, validated,
 # uploaded as artifacts. Nothing is installed anywhere but the runner.
 
@@ -77,25 +77,27 @@ jobs:
       - name: CLAP and VST3 bundles
         shell: bash
         run: cargo moose build --clap --vst3 -p kontra-plugin --target ${{ matrix.target }}
-      - name: Bundles beside v2's
+      - name: Verify bundles
         shell: bash
         run: |
           ls -la "target/bundles/${{ matrix.target }}"
-          test -e "target/bundles/${{ matrix.target }}/KONTRA v3.clap"
-          test -e "target/bundles/${{ matrix.target }}/KONTRA v3.vst3"
+          test -e "target/bundles/${{ matrix.target }}/KONTRA.clap"
+          test -e "target/bundles/${{ matrix.target }}/KONTRA.vst3"
       - name: clap-validator
         if: runner.os == 'Linux'
         shell: bash
         run: |
           cargo install --locked --git https://github.com/free-audio/clap-validator --tag 0.4.1 clap-validator
-          clap-validator validate "target/bundles/${{ matrix.target }}/KONTRA v3.clap"
+          clap-validator validate "target/bundles/${{ matrix.target }}/KONTRA.clap"
       - name: Plugin tests
         if: runner.os == 'Linux'
-        run: cargo test --locked -p kontra-plugin --lib -- v3_has_its_own_identity input::tests
+        run: |
+          cargo test --locked -p kontra-plugin --lib v3_has_its_own_identity
+          cargo test --locked -p kontra-plugin --lib input::tests
       # A tar keeps the bundles' executable bits; the artifact alone does not.
       - name: Archive bundles
         shell: bash
-        run: tar -cf kontra-v3-bundles.tar -C "target/bundles/${{ matrix.target }}" "KONTRA v3.clap" "KONTRA v3.vst3"
+        run: tar -cf kontra-v3-bundles.tar -C "target/bundles/${{ matrix.target }}" "KONTRA.clap" "KONTRA.vst3"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kontra-v3-${{ matrix.name }}
