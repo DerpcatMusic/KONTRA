@@ -228,7 +228,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("    blend {n} {b:?}");
             }
             for (n, s) in g.shapers.iter().enumerate() {
-                println!("    shaper {n} {:?} len {} mid {:?} end {:?}", s.source, s.table.len(), s.table.get(s.table.len() / 2), s.table.last());
+                println!(
+                    "    shaper {n} {:?} len {} mid {:?} end {:?}",
+                    s.source,
+                    s.table.len(),
+                    s.table.get(s.table.len() / 2),
+                    s.table.last()
+                );
             }
         }
     }
