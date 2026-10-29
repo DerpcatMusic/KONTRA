@@ -1902,3 +1902,58 @@ fn an_inverted_mapped_bend_reads_its_mapper_backwards() {
     assert_eq!(term.input.table, [1.0, 0.5, -1.0]);
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
 }
+
+#[test]
+fn a_wheel_opens_a_phasor_through_its_power_law() {
+    // AO Dancing Bartok: Depth 0, the wheel adds up to 1; out is
+    // `(x + d·y)/√(1 + d²)`, so wet and dry both end at 1/√2.
+    let xml = r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0">
+        <Inserts><Phasor Bypass="0" SyncToHost="0" Speed="0.5" MinFreq="200" MaxFreq="3000" Feedback="0" Depth="0" Spread="1" Order="4" LFOSHape="0">
+          <Connections>
+            <SignalConnection Ratio="1" Source="@MIDI CC 1" Destination="Depth" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+        </Phasor></Inserts>
+        <Keygroups><Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup></Keygroups>
+      </Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let b = &out.buses[1];
+    let tables: Vec<_> = b
+        .mods
+        .iter()
+        .map(|m| {
+            let ir::ModKind::EffectParam {
+                source: ir::Source::Blend(n),
+                param,
+                ..
+            } = *m
+            else {
+                panic!("{m:?}");
+            };
+            let t = &b.blends[usize::from(n)].terms[0].input;
+            assert_eq!(t.source, ir::Source::Controller(1));
+            (param, t.table[0], *t.table.last().unwrap())
+        })
+        .collect();
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    assert_eq!(tables.len(), 2, "{tables:?}");
+    let (wet, dry) = (tables[0], tables[1]);
+    assert_eq!(
+        (wet.0, dry.0),
+        (ir::EffectParam::Output, ir::EffectParam::Dry)
+    );
+    assert!(wet.1 == 0.0 && (wet.2 - half).abs() < 1e-6, "{wet:?}");
+    assert!(
+        dry.1 == 0.0 && (dry.2 - (half - 1.0)).abs() < 1e-6,
+        "{dry:?}"
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .all(|d| d.feature != "modulation Depth")
+    );
+}

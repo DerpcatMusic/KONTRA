@@ -17,12 +17,35 @@ use roxmltree::Node;
 use super::delay::dual_delay;
 use super::digital_eq::{digital_eq, gain_scale};
 use super::reverb::spark_verb;
+mod moved;
 mod shaper;
 mod sweep;
 
 use super::{Library, Translator, db, flag, index_of, matrix, num, source_node};
 use shaper::{diode_clipper, wave_shaper};
 use sweep::{flanger, phasor};
+
+/// An effect's saved parameters, some set to other values (to tabulate
+/// what a connection moving them does: `moved`).
+#[derive(Clone, Copy)]
+pub(super) struct Params<'a, 'input> {
+    pub(super) node: Node<'a, 'input>,
+    set: &'a [(&'static str, f64)],
+}
+
+impl<'a, 'input> Params<'a, 'input> {
+    pub(super) fn of(node: Node<'a, 'input>) -> Self {
+        Self { node, set: &[] }
+    }
+
+    /// `name`'s value, or `default` when the effect has none.
+    pub(super) fn num(&self, name: &str, default: f64) -> Result<f64, String> {
+        match self.set.iter().find(|(n, _)| *n == name) {
+            Some(&(_, v)) => Ok(v),
+            None => num(self.node, name, default),
+        }
+    }
+}
 
 /// Effects a keygroup's voices run themselves (see [`Translator::voice_slots`]).
 const PER_VOICE: [&str; 2] = ["Gain", "ThreeBandShelves"];
@@ -218,7 +241,11 @@ impl<L: Library> Translator<'_, '_, L> {
             if !node.has_tag_name("EffectRack") || flag(node, "Bypass") {
                 let slot = self.slot(node)?;
                 if let Some(b) = self.out.buses.get_mut(at) {
+                    let insert = u8::try_from(b.inserts.len()).map_err(|e| e.to_string())?;
                     b.inserts.push(slot);
+                    if slot.is_some() {
+                        self.moves(node, at, insert)?;
+                    }
                 }
                 continue;
             }
@@ -386,11 +413,11 @@ impl<L: Library> Translator<'_, '_, L> {
         } else if node.has_tag_name("Maximizer") {
             Some(maximizer(node, &mut self.notes)?)
         } else if node.has_tag_name("WaveShaper") {
-            wave_shaper(node, &mut self.notes)?
+            wave_shaper(Params::of(node), &mut self.notes)?
         } else if node.has_tag_name("Flanger") {
-            Some(flanger(node)?)
+            Some(flanger(Params::of(node))?)
         } else if node.has_tag_name("Phasor") {
-            Some(phasor(node, &mut self.notes)?)
+            Some(phasor(Params::of(node), &mut self.notes)?)
         } else if node.has_tag_name("DiodeClipper") {
             Some(diode_clipper(node)?)
         } else if node.has_tag_name("DualDelay") {

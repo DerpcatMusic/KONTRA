@@ -2,7 +2,7 @@
 //! overdrive. Each runs on each voice when it sits in a group rack. [`EffectParam`] names the
 //! effect controls a route can move.
 
-use crate::EffectKind;
+use crate::{Effect, EffectKind};
 
 /// A transfer curve and its amount (the engine's `drive::Curve`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -179,6 +179,10 @@ pub enum EffectParam {
     DelayLowCutHz,
     DelayShelfHz,
     DelayShelfDb,
+    /// The slot's own [`Effect::output`] and [`Effect::dry`] levels, linear
+    /// (moved on a bus's rack: [`Self::add_to`]).
+    Output,
+    Dry,
 }
 
 impl EffectParam {
@@ -264,6 +268,16 @@ impl EffectParam {
             }
             _ => return None,
         })
+    }
+
+    /// As [`Self::add`], on the slot's levels too.
+    pub fn add_to(self, effect: &mut Effect, delta: f32) -> bool {
+        match self {
+            Self::Output => effect.output += delta,
+            Self::Dry => effect.dry += delta,
+            _ => return self.add(&mut effect.kind, delta),
+        }
+        true
     }
 
     /// Adds `delta` to this control of `kind`; false when `kind` has none.
