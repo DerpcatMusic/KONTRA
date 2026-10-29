@@ -74,13 +74,13 @@ fn hf_burst_db(audio: &[f32]) -> f32 {
 const CLICK_DB: f32 = 10.0;
 
 /// What a program's performance left: its failures and, by segment,
-/// (name, peak voices, stolen, peak dBFS, HF burst dB).
+/// (name, peak voices, stolen, peak dBFS, HF burst dB, left/right peak dBFS).
 struct Report {
     name: String,
     load_s: f64,
     hold_ms: f32,
     failed: Vec<String>,
-    segments: Vec<(&'static str, u32, u64, f32, f32)>,
+    segments: Vec<(&'static str, u32, u64, f32, f32, [f32; 2])>,
     ui: touch::Touched,
     diagnostics: (usize, usize, usize, Vec<String>),
 }
@@ -176,6 +176,17 @@ fn swept(
 /// The segment a swept one is compared with: the same notes, no sweep.
 fn plain(segment: &str) -> Option<&str> {
     segment.split_once(" + wheel").map(|s| s.0)
+}
+
+#[test]
+fn correlated_channels_below_full_scale_do_not_clip() {
+    let channels = [vec![0.8_f32], vec![0.8_f32]];
+    let peaks = output_peaks(&channels);
+    assert!(
+        !clips(peaks),
+        "two channels at 0.8 must not clip: {peaks:?}"
+    );
+    assert!(clips(output_peaks(&[vec![1.01], vec![0.0]])));
 }
 
 /// The performance, a segment at a time: (name, [(frame, event)]).
@@ -274,9 +285,22 @@ fn performance() -> Vec<(&'static str, Vec<(usize, In)>)> {
 #[derive(Default)]
 struct Played {
     audio: Vec<f32>,
+    channel_peaks: [f32; 2],
     voices: u32,
     stolen: u64,
     refused: u64,
+}
+
+fn output_peaks(channels: &[Vec<f32>]) -> [f32; 2] {
+    let mut peaks = [0.0f32; 2];
+    for (peak, channel) in peaks.iter_mut().zip(channels) {
+        *peak = channel.iter().fold(0.0f32, |p, x| p.max(x.abs()));
+    }
+    peaks
+}
+
+fn clips(peaks: [f32; 2]) -> bool {
+    peaks.into_iter().any(|peak| peak > 1.0)
 }
 
 fn block(params: &KontraParams, dsp: &mut Dsp, events: &[(usize, In)], last: &Played) -> Played {
@@ -299,6 +323,7 @@ fn block(params: &KontraParams, dsp: &mut Dsp, events: &[(usize, In)], last: &Pl
             .with_process_mode(ProcessMode::Offline);
         <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
     }
+    let channel_peaks = output_peaks(&channels);
     let audio = channels[0]
         .iter()
         .zip(&channels[1])
@@ -311,11 +336,16 @@ fn block(params: &KontraParams, dsp: &mut Dsp, events: &[(usize, In)], last: &Pl
     {
         Some(s) => Played {
             audio,
+            channel_peaks,
             voices: s.voices,
             stolen: s.voices_stolen,
             refused: s.notes_refused + s.dropped,
         },
-        None => Played { audio, ..*last },
+        None => Played {
+            audio,
+            channel_peaks,
+            ..*last
+        },
     }
 }
 
@@ -387,6 +417,7 @@ fn perform(path: PathBuf) -> Report {
             .map(|e| e.0)
             .collect();
         let (mut audio, mut peaks, mut peak_voices) = (Vec::new(), Vec::new(), 0u32);
+        let mut channel_peaks = [0.0f32; 2];
         let mut frame = 0;
         // The segment, then its tail until no voice is left.
         loop {
@@ -400,6 +431,9 @@ fn perform(path: PathBuf) -> Report {
                 Tick.run(&params);
             }
             peaks.push(last.audio.iter().fold(0.0f32, |p, x| p.max(x.abs())));
+            for (peak, value) in channel_peaks.iter_mut().zip(last.channel_peaks) {
+                *peak = peak.max(value);
+            }
             audio.extend_from_slice(&last.audio);
             peak_voices = peak_voices.max(last.voices);
             frame += BLOCK;
@@ -471,17 +505,18 @@ fn perform(path: PathBuf) -> Report {
                 last.refused - refused
             ));
         }
-        let loudest_db = 20.0 * loudest.max(1e-9).log10();
-        if loudest > 1.0 {
+        let channel_db = channel_peaks.map(|p| 20.0 * p.max(1e-9).log10());
+        let loudest_db = channel_db.into_iter().fold(f32::NEG_INFINITY, f32::max);
+        if clips(channel_peaks) {
             fail(format!("{segment}: clips at {loudest_db:+.1} dBFS"));
         }
         let hf = hf_burst_db(&audio);
         let base = plain(segment).and_then(|p| {
             segments
                 .iter()
-                .find(|s: &&(&str, u32, u64, f32, f32)| s.0 == p)
+                .find(|s: &&(&str, u32, u64, f32, f32, [f32; 2])| s.0 == p)
         });
-        if let Some(&(_, _, _, _, base)) = base
+        if let Some(&(_, _, _, _, base, _)) = base
             && hf - base > CLICK_DB
         {
             fail(format!(
@@ -499,7 +534,7 @@ fn perform(path: PathBuf) -> Report {
             "{name}: {segment} ({:.1?}): peak {peak_voices} voices, {steals} stolen, {loudest_db:.1} dBFS, HF burst {hf:.1} dB",
             started.elapsed()
         );
-        segments.push((segment, peak_voices, steals, loudest_db, hf));
+        segments.push((segment, peak_voices, steals, loudest_db, hf, channel_db));
     }
     if let [first, .., again] = onsets[..]
         && (first - again).abs() > 10.0
