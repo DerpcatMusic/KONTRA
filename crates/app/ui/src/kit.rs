@@ -3,106 +3,15 @@
 //! whether the user acted on it this frame. Hover, press and value changes
 //! ease through mui's springs, so motion costs nothing once it settles.
 
-use std::f64::consts::PI;
 use std::ops::RangeInclusive;
 
 use mui::prelude::*;
 
+pub use crate::icon::{Icon, glyph};
+
 use crate::theme::{
     CONTROL, INSET, SMALL, SPACE, TEXT, TIGHT, accent, hairline, lift, quick, secondary,
 };
-
-/// Line icons on a 16-unit square: crisp at any size, no icon font.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Icon {
-    Left,
-    Right,
-    Down,
-    More,
-    Close,
-    Sidebar,
-    Search,
-    Star,
-    Menu,
-    Warning,
-    Stop,
-}
-
-/// `icon` in `ink`, `size` points square.
-pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
-    canvas(move |s| {
-        let u = s.width.min(s.height) / 16.;
-        let (ox, oy) = ((s.width - 16. * u) / 2., (s.height - 16. * u) / 2.);
-        let p = |&(x, y): &(f64, f64)| Point::new(ox + x * u, oy + y * u);
-        let line = |pts: &[(f64, f64)], closed: bool| {
-            Draw::stroke(
-                Path::polyline(pts.iter().map(p), closed),
-                ink.clone(),
-                1.5 * u.max(0.75),
-            )
-        };
-        let shape =
-            |pts: &[(f64, f64)]| Draw::fill(Path::polyline(pts.iter().map(p), true), ink.clone());
-        let dot = |x: f64, y: f64| {
-            shape(&[
-                (x - 1., y - 1.),
-                (x + 1., y - 1.),
-                (x + 1., y + 1.),
-                (x - 1., y + 1.),
-            ])
-        };
-        let round = |cx: f64, cy: f64, r: f64| -> Vec<(f64, f64)> {
-            (0..24)
-                .map(|n| f64::from(n) * PI / 12.)
-                .map(|a| (cx + r * a.cos(), cy + r * a.sin()))
-                .collect()
-        };
-        match icon {
-            Icon::Left => vec![line(&[(10., 4.), (6., 8.), (10., 12.)], false)],
-            Icon::Right => vec![line(&[(6., 4.), (10., 8.), (6., 12.)], false)],
-            Icon::Down => vec![line(&[(4., 6.), (8., 10.), (12., 6.)], false)],
-            Icon::More => vec![dot(3.5, 8.), dot(8., 8.), dot(12.5, 8.)],
-            Icon::Close => vec![
-                line(&[(4.5, 4.5), (11.5, 11.5)], false),
-                line(&[(11.5, 4.5), (4.5, 11.5)], false),
-            ],
-            Icon::Sidebar => vec![
-                line(&[(2.5, 3.5), (13.5, 3.5), (13.5, 12.5), (2.5, 12.5)], true),
-                line(&[(6.5, 3.5), (6.5, 12.5)], false),
-            ],
-            Icon::Search => vec![
-                line(&round(7., 7., 4.), true),
-                line(&[(10., 10.), (13.5, 13.5)], false),
-            ],
-            Icon::Star => {
-                let points: Vec<_> = (0..10)
-                    .map(|n| {
-                        let (r, a) = (
-                            if n % 2 == 0 { 6. } else { 2.6 },
-                            -PI / 2. + f64::from(n) * PI / 5.,
-                        );
-                        (8. + r * a.cos(), 8.6 + r * a.sin())
-                    })
-                    .collect();
-                vec![shape(&points)]
-            }
-            Icon::Menu => [4.5, 8., 11.5]
-                .map(|y| line(&[(3., y), (13., y)], false))
-                .into(),
-            Icon::Warning => vec![
-                line(&[(8., 2.5), (14., 13.), (2., 13.)], true),
-                line(&[(8., 6.5), (8., 9.5)], false),
-                dot(8., 11.3),
-            ],
-            Icon::Stop => vec![
-                line(&round(8., 8., 5.5), true),
-                line(&[(4.2, 11.8), (11.8, 4.2)], false),
-            ],
-        }
-    })
-    .square(size)
-    .shrink(0)
-}
 
 /// The states every flat control shares: the pointing hand, a faint lift on
 /// hover, a deeper one pressed, a 1 px ring for keyboard focus.
@@ -157,7 +66,13 @@ pub fn icon_button(ui: &mut Ui, id: impl Into<Id>, icon: Icon, name: &str, on: b
     let id: Id = id.into();
     let changed = ui.get(id.clone()).activated();
     let lit = on || ui.state(id.clone()).hover > 0.5;
-    let el = stack![glyph(icon, TEXT + TIGHT, ink(lit)).centered()]
+    // Warnings are the one amber on screen.
+    let tint = if icon == Icon::Warning {
+        Fill::from(Role::Warning)
+    } else {
+        ink(lit)
+    };
+    let el = stack![glyph(icon, TEXT + TIGHT, tint).centered()]
         .square(CONTROL)
         .when(on, |e| e.fill(Role::Raised))
         .focusable()
@@ -309,62 +224,130 @@ pub fn knob(
     }
 }
 
-/// A horizontal fader `width` wide: drag anywhere on it, double click for
-/// `default`. Its readout sits beside it, reserved so digits do not shift.
-pub fn fader(
+/// A slider `size` big, vertical when taller than wide: a drag anywhere on
+/// it sweeps `range`, a double click puts back `default`. A range centred
+/// on 0 (pan) fills from the middle; others fill from the start. `name` is
+/// its tooltip.
+pub fn slider(
     ui: &mut Ui,
     id: impl Into<Id>,
-    (name, readout): (&str, &str),
+    name: &str,
     value: &mut f64,
     range: RangeInclusive<f64>,
     default: f64,
-    width: f64,
+    (w, h): (f64, f64),
 ) -> Response {
     let id: Id = id.into();
     let before = *value;
-    ui.drag(id.clone(), value, range.clone(), width, false);
+    let vertical = h > w;
+    ui.drag(id.clone(), value, range.clone(), w.max(h), vertical);
     if ui.double_click(id.clone()) {
         *value = default;
     }
-    let span = range.end() - range.start();
-    let t = if span == 0. {
-        0.
-    } else {
-        ((*value - range.start()) / span).clamp(0., 1.)
+    let (lo, hi) = (*range.start(), *range.end());
+    let at = |v: f64| {
+        if hi == lo {
+            0.
+        } else {
+            ((v - lo) / (hi - lo)).clamp(0., 1.)
+        }
     };
-    let t = ui.tween(id.field("t"), t);
-    let track = canvas(move |s| {
-        let y = s.height / 2.;
-        let x = (s.width - 4.) * t + 2.;
-        let bar = |x0: f64, x1: f64, h: f64| {
+    let t = ui.tween(id.field("t"), at(*value));
+    let from: f64 = if lo == -hi { 0.5 } else { 0. };
+    let hover = ui.state(id.clone()).hover as f32;
+    let el = canvas(move |s| {
+        let rect = |x0: f64, y0: f64, x1: f64, y1: f64| {
             Path::polyline(
-                [(x0, y - h), (x1, y - h), (x1, y + h), (x0, y + h)].map(|(x, y)| Point::new(x, y)),
+                [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(x, y)| Point::new(x, y)),
                 true,
             )
         };
-        vec![
-            Draw::fill(bar(0., s.width, 1.), lift(3)),
-            Draw::fill(bar(0., x, 1.), Fill::from(Color::oklch(0.78, 0., 0.))),
-            Draw::fill(bar(x - 2., x + 2., 6.), Fill::from(Role::Ink)),
-        ]
+        // Along the travel: 0 at the start (left, or bottom), 1 at the end.
+        let (len, mid) = if vertical {
+            (s.height - 4., s.width / 2.)
+        } else {
+            (s.width - 4., s.height / 2.)
+        };
+        let pos = |t: f64| 2. + len * if vertical { 1. - t } else { t };
+        let bar = |a: f64, b: f64, half: f64| {
+            let (a, b) = (pos(a).min(pos(b)), pos(a).max(pos(b)));
+            if vertical {
+                rect(mid - half, a, mid + half, b)
+            } else {
+                rect(a, mid - half, b, mid + half)
+            }
+        };
+        let lit = Fill::from(Color::oklch(0.78 + 0.1 * hover, 0., 0.));
+        let mut draw = vec![
+            Draw::fill(bar(0., 1., 1.), lift(3)),
+            Draw::fill(bar(from.min(t), from.max(t), 1.), lit),
+        ];
+        if from > 0. {
+            draw.push(Draw::fill(
+                bar(0.5 - 0.5 / len, 0.5 + 0.5 / len, 4.),
+                lift(4),
+            ));
+        }
+        let x = pos(t);
+        draw.push(Draw::fill(
+            if vertical {
+                rect(mid - 5., x - 2., mid + 5., x + 2.)
+            } else {
+                rect(x - 2., mid - 5., x + 2., mid + 5.)
+            },
+            Fill::from(Color::oklch(0.85, 0., 0.)),
+        ));
+        draw
     })
-    .w(width)
-    .h(CONTROL)
+    .w(w)
+    .h(h)
     .shrink(0)
     .cursor(Cursor::Hand)
     .focusable()
     .named(name.to_owned())
     .tip(name.to_owned())
     .id(id);
+    Response {
+        el,
+        changed: *value != before,
+    }
+}
+
+/// A number with its icon that a horizontal drag nudges and a double click
+/// resets, for values set once and left: a part's tune.
+pub fn nudge(
+    ui: &mut Ui,
+    id: impl Into<Id>,
+    (icon, name): (Icon, &str),
+    value: &mut f64,
+    range: RangeInclusive<f64>,
+    default: f64,
+    readout: &str,
+) -> Response {
+    let id: Id = id.into();
+    let before = *value;
+    ui.drag(id.clone(), value, range, TEXT * 40., false);
+    if ui.double_click(id.clone()) {
+        *value = default;
+    }
+    let lit = ui.state(id.clone()).hover > 0.5;
     let el = row![
-        track,
+        glyph(icon, TEXT, ink(lit)),
         caption(readout.to_owned())
-            .fill(secondary())
-            .reserve("-00.0 dB")
+            .fill(Role::Ink)
+            .reserve("-00.00"),
     ]
-    .gap(SPACE)
+    .gap(TIGHT)
     .align(Align::Center)
-    .shrink(0);
+    .h(CONTROL)
+    .shrink(0)
+    .cursor(Cursor::ResizeH)
+    .focusable()
+    .named(name.to_owned())
+    .tip(format!(
+        "{name} {readout} · drag to change, double click to reset"
+    ))
+    .id(id);
     Response {
         el,
         changed: *value != before,
@@ -472,11 +455,80 @@ pub fn menu(
     let mut rows = Vec::new();
     while !cells.is_empty() {
         let rest = cells.split_off(columns.clamp(1, cells.len()));
-        rows.push(row(std::mem::replace(&mut cells, rest)).gap(1));
+        rows.push(row(std::mem::replace(&mut cells, rest)).gap(1).shrink(0));
     }
-    let list = col(rows).gap(1).when(columns == 1, |e| e.w(TEXT * 14.));
+    // Floats are sized by the space around their parent; a menu takes its
+    // own height so a long one is never squeezed.
+    let tall = rows.len() as f64 * (CONTROL + 1.);
+    let list = col(rows)
+        .gap(1)
+        .min_h(tall)
+        .when(columns == 1, |e| e.w(TEXT * 16.));
     Response {
         el: popup(id, list),
+        changed: picked,
+    }
+}
+
+/// Opens or closes the popup `id` names on `hit`, and closes it on a click
+/// away or Escape; whether it is open. `open` holds the one open popup.
+pub fn toggle(ui: &Ui, open: &mut Option<String>, id: &str, hit: bool) -> bool {
+    let was = open.as_deref() == Some(id);
+    if hit {
+        *open = (!was).then(|| id.to_owned());
+    } else if was && ui.dismissed(&[id, &format!("{id}-popup")]) {
+        *open = None;
+    }
+    open.as_deref() == Some(id)
+}
+
+/// A dropdown: `icon` and the current `label` with a chevron; clicked, it
+/// floats `items` under itself, a grid when they are many and short. The
+/// index picked comes back, and the pick closes it. `name` is its tooltip.
+pub fn dropdown(
+    ui: &mut Ui,
+    open: &mut Option<String>,
+    id: &str,
+    (icon, label, name): (Option<Icon>, &str, &str),
+    items: &[&str],
+    current: Option<usize>,
+) -> Response<Option<usize>> {
+    let hit = ui.get(id).activated();
+    let shown = toggle(ui, open, id, hit);
+    let mut face = Vec::new();
+    face.extend(icon.map(|i| glyph(i, TEXT, secondary())));
+    face.push(caption(label.to_owned()).fill(Role::Ink).lines(1));
+    face.push(glyph(Icon::Down, TEXT * 0.75, secondary()));
+    let face = row(face)
+        .gap(TIGHT)
+        .align(Align::Center)
+        .pad((TIGHT * 1.5, 0))
+        .h(CONTROL * 0.9)
+        .shrink(0)
+        .stroke(if shown {
+            hairline()
+        } else {
+            Role::Ink.alpha(0.)
+        })
+        .stroke_width(1)
+        .focusable()
+        .a11y(A11y::Button)
+        .named(name.to_owned())
+        .tip(name.to_owned())
+        .id(id.to_owned());
+    let mut el = vec![interactive(face)];
+    let mut picked = None;
+    if shown {
+        let grid = items.len() > 8 && items.iter().all(|i| i.chars().count() <= 4);
+        let m = menu(ui, id, items, if grid { 4 } else { 1 }, current);
+        picked = m.changed;
+        if picked.is_some() {
+            *open = None;
+        }
+        el.push(m.el);
+    }
+    Response {
+        el: row(el).shrink(0),
         changed: picked,
     }
 }

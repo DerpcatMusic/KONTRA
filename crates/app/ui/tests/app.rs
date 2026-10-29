@@ -85,11 +85,22 @@ fn clicks_drive_the_editor_and_idle_costs_no_frames() {
     click(&mut ui, &mut app, "part-0-channel");
     assert_eq!(app.view.menu.as_deref(), Some("part-0-channel"));
     assert_eq!(
-        click(&mut ui, &mut app, "part-0-channel-16"),
+        click(&mut ui, &mut app, "part-0-channel-0"),
         vec![Action::Channel(0, 0)],
-        "the last cell is every channel"
+        "the first cell is every channel"
     );
     assert_eq!(app.view.menu, None, "a pick closes the menu");
+    click(&mut ui, &mut app, "part-0-output");
+    assert_eq!(
+        click(&mut ui, &mut app, "part-0-output-2"),
+        vec![Action::Output(0, 2)]
+    );
+    click(&mut ui, &mut app, "tab-Mixer");
+    assert_eq!(
+        click(&mut ui, &mut app, "mix-0-sm-mute"),
+        vec![Action::Mute(0, true)],
+        "the mixer's strip drives the same part"
+    );
     assert!(
         !frame(&mut ui, &mut app, Input::default()).1,
         "settled: the host draws nothing until something changes"
