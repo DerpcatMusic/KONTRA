@@ -111,6 +111,8 @@ struct Slot {
     factor: f32,
     /// Its group's inserts that run on this voice alone.
     rack: Vec<voice_rack::Unit>,
+    /// Its lagging pitch routes' semitones: where they are, where they go.
+    bend: [f32; 2],
 }
 
 /// Per control, the parameters a script set other than its value.
@@ -222,6 +224,7 @@ impl Engine {
                 fading: false,
                 factor: 1.0,
                 rack: Vec::new(),
+                bend: [0.0; 2],
             })
             .collect();
         let buses = plan.buses.iter().map(|b| BusState::new(b, rate)).collect();
@@ -520,9 +523,10 @@ impl Engine {
                 region.mix = Some(mix);
             }
             let (gain, lag) = self.voice_gain(zone, &n, factor, self.age(self.now, None));
+            let (step, bend) = self.step(zone, &n, self.age(self.now, None));
             let start = VoiceStart {
                 region,
-                step: self.step(zone, &n, self.age(self.now, None)),
+                step: voice_gain::bent(step, bend.semitones),
                 gain,
                 lag,
                 envelope: self.envelope(zone, &n, held_seconds),
@@ -542,6 +546,7 @@ impl Engine {
             slot.released_at = None;
             slot.fading = false;
             slot.factor = factor;
+            slot.bend = [bend.semitones; 2];
             self.start_rack(i, zone, &n, self.age(now, None));
         }
     }
@@ -753,7 +758,7 @@ impl Engine {
             let age = self.age(slot.started, slot.released_at);
             let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age);
             let mix = self.voice_mix(zone, &n, age);
-            let step = self.step(zone, &n, age);
+            let (step, bend) = self.step(zone, &n, age);
             let pitch = cc.is_none_or(|cc| self.pitch_follows(zone, cc));
             self.retune_rack(i, zone, &n, age);
             if let Some(slot) = self.voices.get_mut(i) {
@@ -763,7 +768,8 @@ impl Engine {
                     slot.voice.set_mix(mix);
                 }
                 if pitch {
-                    slot.voice.set_step(step);
+                    slot.bend[1] = bend.semitones;
+                    slot.voice.set_step(voice_gain::bent(step, slot.bend[0]));
                 }
             }
         }

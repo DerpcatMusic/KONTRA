@@ -105,6 +105,7 @@ impl<L: Library> Translator<'_, '_, L> {
                         source,
                         semitones: ratio,
                         depth: 1.0,
+                        tau_ms: 0.0,
                     }
                 } else {
                     // A negative ratio turns the gain down as the value rises.
