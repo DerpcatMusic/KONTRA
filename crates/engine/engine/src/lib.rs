@@ -173,6 +173,8 @@ pub struct Engine {
     /// The instrument's level, pan and tune (a script's group -1); level and
     /// pan move [`Self::output`], after every effect.
     instrument: Level,
+    /// The expression controller's share of the output gain.
+    expression: f32,
     output: kontra_dsp::core::Fader,
     /// The instrument insert rack, on the final mix.
     rack: racks::Rack,
@@ -302,6 +304,7 @@ impl Engine {
                 pan: out.pan,
                 tune: 0.0,
             },
+            expression: 1.0,
             output: kontra_dsp::core::Fader::new(rate, out.volume_tau_ms, out.pan_slew_ms),
             rack,
             sends,

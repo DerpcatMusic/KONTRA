@@ -2066,6 +2066,38 @@ fn a_scripts_group_pan_glides_as_a_one_pole() {
 }
 
 #[test]
+fn a_linear_volume_controller_and_an_expression_controller_scale_the_output() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+    }
+    plan.output.controllers = Some(ir::OutputControllers {
+        volume: 7,
+        pan: 10,
+        top_db: 6.0,
+        power: 1,
+        expression: Some(11),
+    });
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let cc = |n: u8, v: u8| Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB0, n, v),
+    };
+    let mut out = vec![[0.0f32; 2]; 48_000];
+    e.process(&mut out, &[on(60)]);
+    assert!((out[47_999][0] - 0.5).abs() < 1e-4, "{:?}", out[47_999]);
+    e.process(&mut out, &[cc(7, 64), cc(11, 32)]);
+    let gain = 10f32.powf(6.0 / 20.0) * 64.0 / 127.0 * 32.0 / 127.0;
+    assert!(
+        (out[47_999][0] - 0.5 * gain).abs() < 1e-4,
+        "{:?}",
+        out[47_999]
+    );
+}
+
+#[test]
 fn volume_and_pan_controllers_set_the_output_unless_a_script_ignores_them() {
     use kontra_engine::ir;
     let run = |source: &str| {
@@ -2081,6 +2113,8 @@ fn volume_and_pan_controllers_set_the_output_unless_a_script_ignores_them() {
                 volume: 7,
                 pan: 10,
                 top_db: 0.0,
+                power: 3,
+                expression: None,
             }),
             ..ir::Output::UNITY
         };
