@@ -180,7 +180,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
 
 /// A KSP source folder, with a trailing slash, when it fits a text cell.
 pub(crate) fn source_folder(path: Option<&std::path::Path>) -> Option<Text> {
-    let folder = path?.parent()?.to_str()?;
+    let folder = path?.parent()?.to_str()?.replace('\\', "/");
     let path = if folder.ends_with('/') {
         folder.to_owned()
     } else {
