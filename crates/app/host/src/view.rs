@@ -177,6 +177,9 @@ struct Look {
     menu: Vec<MenuItem>,
 }
 
+/// A widget number, whether its array was read, and its preallocated cells.
+type ArrayRead = (u32, bool, Box<[f64]>);
+
 /// What a part's [`Live`] reads of its script, copied out of the engine on
 /// the audio thread ([`LookFrame::fill`]) for the control side to refresh
 /// the tree from. Its ids and cells are sorted.
@@ -192,7 +195,7 @@ pub struct LookFrame {
     widgets: Box<[Option<WidgetLook>]>,
     reads: Vec<u32>,
     texts: Box<[(u32, bool, Text)]>,
-    arrays: Box<[(u32, bool, Box<[f64]>)]>,
+    arrays: Box<[ArrayRead]>,
     /// The script's bitmap fonts from [`FIRST_FONT`] on; `on init` names
     /// them all, so they are copied once.
     fonts: Arc<[String]>,
@@ -304,12 +307,12 @@ impl LookFrame {
             }
         }
         for (n, has, cells) in &self.arrays {
-            if *has && let Some(w) = tree.widgets.get_mut(*n as usize) {
-                if !matches!(&w.value, Some(model::Value::Reals(old)) if old.as_slice() == cells.as_ref())
-                {
-                    w.value = Some(model::Value::Reals(cells.to_vec()));
-                    changed = true;
-                }
+            if *has
+                && let Some(w) = tree.widgets.get_mut(*n as usize)
+                && !matches!(&w.value, Some(model::Value::Reals(old)) if old.as_slice() == cells.as_ref())
+            {
+                w.value = Some(model::Value::Reals(cells.to_vec()));
+                changed = true;
             }
         }
         // Within the room it was made with: every widget fits.
