@@ -222,12 +222,19 @@ fn drawn_page(
             });
             stack(parts).w(w).h(h).opacity(wd.opacity)
         });
-        // A control takes the pointer under its own id (crate::input).
+        // A control takes the pointer under its own id (crate::input), and
+        // hovering it shows its help text (`set_control_help`).
         let el = if crate::input::takes_input(wd) {
-            el.id(crate::input::surface(face, n.0))
+            let el = el
+                .id(crate::input::surface(face, n.0))
                 .focusable()
                 .cursor(Cursor::Hand)
-                .named(wd.name.clone())
+                .named(wd.name.clone());
+            if wd.tooltip.is_empty() {
+                el
+            } else {
+                el.tip(wd.tooltip.clone())
+            }
         } else {
             el
         };
