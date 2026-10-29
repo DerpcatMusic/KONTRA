@@ -190,7 +190,10 @@ mod tests {
         std::fs::write(&exe, b"").unwrap();
         let missing = dir.join("missing/Kontakt 7.exe");
         let found = super::factory_folder_of(vec![missing.clone(), exe]).unwrap();
-        assert_eq!(found.as_str(), format!("{}/", dir.display()));
+        assert_eq!(
+            found.as_str(),
+            format!("{}/", dir.display()).replace('\\', "/")
+        );
         assert!(super::factory_folder_of(vec![missing]).is_none());
         std::fs::remove_dir_all(dir).unwrap();
     }
