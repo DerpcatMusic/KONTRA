@@ -14,20 +14,33 @@ impl<L: Library> Translator<'_, '_, L> {
     /// at `−r` (unit −1, so a script's ratio keeps its sign). ponytail: a
     /// script turning a depth ratio's sign keeps its inversion.
     pub(super) fn depth_scales(&mut self, group: &mut ir::Group, connection: Node, of: ir::Source) {
-        // An LFO read through a table (a gain's `factor`) scales the same way.
-        let of = match of {
-            ir::Source::Shaped(n) => group.shapers.get(usize::from(n)).map_or(of, |t| t.source),
-            of => of,
-        };
-        if !matches!(of, ir::Source::Lfo(_)) {
-            return;
-        }
         let Some(lfo) = source_node(self.program, connection) else {
             return;
         };
+        // An LFO read through a table (a gain's `factor`) scales the same way.
+        let shaped = |s| match s {
+            ir::Source::Shaped(n) => group.shapers.get(usize::from(n)).map_or(s, |t| t.source),
+            s => s,
+        };
+        // A blend's LFO is its terms' (their factors carry its depth).
+        let rated = match of {
+            ir::Source::Blend(n) => group.blends.get(usize::from(n)).and_then(|b| {
+                b.terms
+                    .iter()
+                    .map(|t| shaped(t.input.source))
+                    .find(|s| matches!(s, ir::Source::Lfo(_)))
+            }),
+            s => Some(shaped(s)),
+        };
+        let of = shaped(of);
         // A rate route's own source keeps its rate (no recursion).
-        if connection.attribute("Destination") != Some("Freq") {
-            self.rate_routes(group, lfo, of);
+        if let Some(rated) = rated
+            && connection.attribute("Destination") != Some("Freq")
+        {
+            self.rate_routes(group, lfo, rated);
+        }
+        if !matches!(of, ir::Source::Lfo(_)) {
+            return;
         }
         // ponytail: an Intensity scales the wave around 0, a unipolar LFO's
         // depth its `m`; carried when a library routes one (none does).
@@ -74,11 +87,16 @@ impl<L: Library> Translator<'_, '_, L> {
                     .add(ir::Impact::Audible, "synced LFO rate route", "");
                 continue;
             }
+            // A random wave runs at half the Hz (`modulation::shape`).
+            let top = match group.lfos.get(usize::from(n)) {
+                Some(l) if l.wave == ir::Wave::Random => 10.0,
+                _ => 20.0,
+            };
             self.add_route(group, c, r, |source, depth| ir::ModKind::LfoHz {
                 source,
                 lfo: n,
                 depth,
-                range_hz: [0.0, 20.0],
+                range_hz: [0.0, top],
             });
         }
     }

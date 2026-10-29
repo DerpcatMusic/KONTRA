@@ -378,7 +378,8 @@ pub(super) fn group_source(
 
 /// A bipolar `LFO` or `MultiLFO` ([`multi`]), with no delay or rise, as an LFO
 /// and its signed depth: `Depth·x`. The registry (UVIWorkstation 0x1410f5d00)
-/// names `WaveFormType` Sinus, Square, Triangle, RampUp, RampDown, ... and
+/// names `WaveFormType` Sinus, Square, Triangle, RampUp, RampDown,
+/// AnalogSquare, Random S&H, Chaos Lorenz, Chaos Rossler, User (0x1410f6785) and
 /// `Retrigger` No Retrigger, Retrigger, Legato, Song; a synchronized `Freq` is
 /// the cycle's length in beats (v1). ponytail: `Smooth` is not applied (a
 /// lag on the shape; AO's are under 25 ms on cycles of a beat or more).
@@ -438,6 +439,9 @@ pub(super) fn shape(node: Node, user: bool) -> Option<(ir::Lfo, f32)> {
             2.0 => (ir::Wave::Triangle, 1.0),
             3.0 => (ir::Wave::Saw, -1.0),
             4.0 => (ir::Wave::Saw, 1.0),
+            // Random S&H: a uniform −1..=1 draw each time its 32-bit phase
+            // wraps (0x1410f95b0), once a cycle (the random wave's half cycle).
+            6.0 => (ir::Wave::Random, 1.0),
             // A user table, read through it ([`blend::table`]).
             9.0 if user => (ir::Wave::Saw, 1.0),
             _ => return None,
@@ -456,10 +460,11 @@ pub(super) fn shape(node: Node, user: bool) -> Option<(ir::Lfo, f32)> {
     if freq <= 0.0 || !freq.is_finite() {
         return None;
     }
+    let half = if wave == ir::Wave::Random { 2.0 } else { 1.0 };
     let rate = if flag(node, "SyncToHost") {
-        ir::Rate::Beats(freq)
+        ir::Rate::Beats(freq * half)
     } else {
-        ir::Rate::Hz(freq)
+        ir::Rate::Hz(freq / half)
     };
     let lfo = ir::Lfo {
         wave,

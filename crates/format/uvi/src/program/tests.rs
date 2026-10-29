@@ -1190,7 +1190,7 @@ fn an_lfo_on_an_lfos_freq_moves_its_rate_live() {
             <SignalConnection Ratio="1" Source="$Program/LFO 2" Destination="Freq" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
           </Connections>
         </LFO>
-        <LFO Name="LFO 2" Bypass="0" SyncToHost="0" WaveFormType="0" Freq="20" Depth="0.14" Phase="0" Retrigger="1" Bipolar="1" DelayTime="0" RiseTime="0"/>
+        <LFO Name="LFO 2" Bypass="0" SyncToHost="0" WaveFormType="6" Freq="20" Depth="0.14" Phase="0" Retrigger="1" Bipolar="1" DelayTime="0" RiseTime="0"/>
       </Modulators>
       <Layers><Layer Gain="1" Pan="0"><Keygroups>
         <Keygroup LowKey="0" HighKey="127">
@@ -1223,7 +1223,12 @@ fn an_lfo_on_an_lfos_freq_moves_its_rate_live() {
         panic!("{rates:?}")
     };
     assert!((depth - 0.14).abs() < 1e-6);
-    assert_eq!(g.lfos[usize::from(wobble)].rate, ir::Rate::Hz(20.0));
+    // Random S&H draws once a cycle: the random wave at half the Hz.
+    let wobble = g.lfos[usize::from(wobble)];
+    assert_eq!(
+        (wobble.wave, wobble.rate),
+        (ir::Wave::Random, ir::Rate::Hz(10.0))
+    );
     assert!(
         !out.diagnostics.iter().any(|d| d.feature.contains("Freq")),
         "{:?}",
