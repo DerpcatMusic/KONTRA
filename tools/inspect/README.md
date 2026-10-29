@@ -85,3 +85,20 @@ parameter state are unavailable, rather than reported as unchanged. The audio
 comparison retriggers C4 and measures successive 80 ms stereo RMS windows;
 natural time evolution and other callbacks can change the output, so a change
 is evidence for follow-up rather than proof that the moved control caused it.
+
+`kontra-inspect play INSTRUMENT --scenario user --oracle --json report.json`
+writes the same input events as MIDI at one tick per 48 kHz frame, renders v3,
+and captures a Kontakt `.nki` through `oracle-slot` using its isolated Wine
+prefix. It never uses the live Wine prefix. The comparison reuses
+`tools/oracle/compare.py`, records RMS and peak differences, octave-band levels,
+maximum sample jumps, clipping, and per-CC second-difference energy. Native
+capture timing has millisecond uncertainty; envelope alignment is in 10 ms
+steps, so the narrow CC windows are indicative rather than sample-aligned.
+Native script/voice/route/FX internal values are explicitly unavailable.
+A native UVI capture path is not implemented. A failed or silent oracle writes
+an error/uncomparable status and exits nonzero after writing JSON.
+
+Artifacts (MIDI, v3 and native WAVs, logs) are written under
+`/data/dev/workspace/PluginArtifacts/inspect-oracle`; override the root with
+`KONTRA_INSPECT_ORACLE_DIR`. To locate the existing oracle scripts outside a
+checkout, set `KONTRA_ORACLE_DIR`.
