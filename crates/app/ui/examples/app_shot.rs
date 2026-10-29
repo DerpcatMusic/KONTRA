@@ -67,6 +67,7 @@ impl Shot {
                 ..Default::default()
             })?;
         }
+        self.settle()?;
         Ok(())
     }
 
@@ -96,17 +97,19 @@ fn specimen() -> App {
     };
     App {
         libraries: vec![
-            library("Afflatus Chapter II Brass", Format::Kontakt, &["2 Horns KS", "4 Horns KS", "Solo Trumpet KS", "Tubas Slides"], true),
+            library("Afflatus Chapter II Brass", Format::Kontakt, &["Instruments/2 Horns KS", "Instruments/4 Horns KS", "Instruments/Solo Trumpet KS", "Presets/Warm/Tubas Slides"], true),
             library("ANALOG STRINGS", Format::Kontakt, &["ANALOG STRINGS"], false),
             library("Areia", Format::Kontakt, &["01 Areia - 16 Violins - Core Techniques", "02 Areia - 12 Violas"], false),
             library("Conflux", Format::Kontakt, &["Conflux"], true),
             library("Una Corda", Format::Kontakt, &["Una Corda Cotton", "Una Corda Felt"], false),
             library("Falcon Factory", Format::Uvi, &["Analog Pad", "Glass Keys"], false),
         ],
+        recent: vec![(0, 0), (2, 0), (4, 0)],
         stats: Stats { cpu: 3., voices: 12, ram_mb: 412, disk_mbs: 1.4 },
+        level: 0.4,
         report: vec![
-            "Areia 16 Violins: the convolution reverb's impulse is not in the library; the dry signal plays.".into(),
-            "2 Horns KS: script line 912 calls get_engine_par_disp on an unknown effect; it reads 0.".into(),
+            "Areia 16 Violins: the convolution reverb's impulse is not in the library\nThe library names Hall.wav in its reverb, and no file of that name ships with it; the dry signal plays.".into(),
+            "2 Horns KS: script line 912 asks for an unknown effect's display\nget_engine_par_disp on slot 3 names no effect; Kontakt answers an empty text and so does KONTRA.".into(),
         ],
         folders: vec!["/data/main/Libraries/Kontakt".into(), "/data/main/Libraries/UVI".into()],
         ..App::default()
@@ -115,13 +118,13 @@ fn specimen() -> App {
 
 fn parts() -> Vec<Part> {
     let arts = [
-        "Sustain",
-        "Staccato",
+        "Sustain · close and tree microphones, long release",
+        "Staccato · short, all microphones",
         "Staccatissimo",
-        "Marcato",
+        "Marcato · accented attack with a longer tail",
         "Sforzando",
-        "Swells",
-        "Trills",
+        "Swells · slow and fast, two layers",
+        "Trills · half and whole step",
         "Rips",
         "Falls",
     ];
@@ -130,20 +133,31 @@ fn parts() -> Vec<Part> {
             name: "2 Horns KS".into(),
             library: "Afflatus Chapter II Brass".into(),
             channel: 1,
+            output: 1,
             articulations: arts
                 .iter()
                 .zip(24..)
                 .map(|(a, k)| ((*a).to_owned(), Some(k)))
                 .collect(),
             keys: (36, 84),
+            needs: vec!["A convolution impulse, Hall.wav, the library does not ship.".into()],
+            info: vec![
+                ("File".into(), "/data/main/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2 Horns KS.nki".into()),
+                ("Format".into(), "Kontakt 6 instrument".into()),
+                ("Contents".into(), "1,204 zones · 38 groups · 1,204 samples · 2 buses".into()),
+                ("Scripts".into(), "3 scripts · 212 controls · 9 articulations".into()),
+            ],
+            scripts: vec!["Afflatus Engine".into(), "Keyswitches".into(), "Legato".into()],
             open: true,
             tab: PartTab::Articulations,
+            level: 0.3,
             ..Part::default()
         },
         Part {
             name: "01 Areia - 16 Violins - Core Techniques".into(),
             library: "Areia".into(),
             channel: 2,
+            output: 2,
             volume: -3.5,
             pan: -0.3,
             keys: (55, 100),
@@ -152,6 +166,7 @@ fn parts() -> Vec<Part> {
         Part {
             name: "Una Corda Cotton".into(),
             library: "Una Corda".into(),
+            output: 3,
             keys: (21, 108),
             solo: true,
             ..Part::default()
@@ -187,19 +202,32 @@ fn main() -> Result<(), Box<dyn Error>> {
         s.click("preset-0")?;
         s.app.parts = parts();
         s.save("rack")?;
-        s.click("part-0-more")?;
-        s.save("part-menu")?;
-        s.click("part-0-more")?;
-        s.click("part-0-channel")?;
-        s.save("channel-menu")?;
-        s.click("part-0-channel")?;
+        for menu in [
+            "part-0-channel",
+            "part-0-output",
+            "part-0-velocity",
+            "part-0-needs",
+            "part-0-more",
+        ] {
+            s.click(menu)?;
+            s.save(menu.trim_start_matches("part-0-"))?;
+            s.click(menu)?;
+        }
+        for tab in ["Info", "Scripts", "Mapping"] {
+            s.click(&format!("part-0-tab-{tab}"))?;
+            s.save(&tab.to_lowercase())?;
+        }
+        s.click("part-0-tab-Articulations")?;
+        s.click("tab-Mixer")?;
+        s.save("mixer")?;
+        s.click("tab-Report")?;
+        s.click("report-0")?;
+        s.save("report")?;
+        s.click("tab-Rack")?;
         s.click("app-menu")?;
         s.save("app-menu")?;
         s.click("app-menu-0")?;
         s.save("settings")?;
-        s.click("sheet-close")?;
-        s.click("warnings")?;
-        s.save("report")?;
         s.click("sheet-close")?;
         s.click("browser")?;
         s.save("browser-hidden")?;

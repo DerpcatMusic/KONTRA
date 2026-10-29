@@ -3,7 +3,11 @@
 
 use mui::prelude::*;
 
-use crate::theme::{TEXT, accent, lift};
+use crate::kit::edges;
+use crate::theme::{SMALL, TEXT, TIGHT, accent};
+
+/// The height of one part's band above the keys.
+const BAND: f64 = 3.;
 
 /// What the keybed shows.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -86,8 +90,23 @@ pub fn keyboard(
         events.extend(want.map(|n| (n, true)));
         *playing = want;
     }
+    let octaves: Vec<El> = (keys.range.0..=keys.range.1)
+        .step_by(12)
+        .map(|n| {
+            col![
+                spacer(),
+                caption(note_name(n))
+                    .text_size(SMALL - 2.)
+                    .fill(Color::oklch(0.35, 0., 0.))
+            ]
+            .align(Align::Start)
+            .pad(edges(0., 0., TIGHT, TIGHT))
+            .grow(1)
+            .w(0.)
+        })
+        .collect();
     let keys = keys.clone();
-    let el = canvas(move |s| {
+    let face = canvas(move |s| {
         let rect = |x: f64, y: f64, w: f64, h: f64| {
             Path::polyline(
                 [(x, y), (x + w, y), (x + w, y + h), (x, y + h)].map(|(x, y)| Point::new(x, y)),
@@ -96,43 +115,56 @@ pub fn keyboard(
         };
         let all = layout(keys.range, s.width);
         let held = |n: u8| keys.held.contains(&n);
+        // The part playing a key tints it, the first part listed winning.
+        let tint = |n: u8| {
+            keys.spans
+                .iter()
+                .find(|&&(lo, hi, _)| (lo..=hi).contains(&n))
+                .map(|s| s.2)
+        };
+        // Each part's span as a band above the keys, stacked.
+        let band = (keys.spans.len().min(4) as f64) * BAND;
+        let top = if band > 0. { band + 2. } else { 0. };
         let mut draw = Vec::new();
-        for &(n, x, w) in all.iter().filter(|k| !black(k.0)) {
-            let face = if held(n) {
-                Fill::from(accent())
-            } else {
-                Fill::from(Color::oklch(0.8, 0., 0.))
-            };
-            draw.push(Draw::fill(rect(x + 0.5, 0., w - 1., s.height), face));
-        }
-        for &(n, x, w) in all.iter().filter(|k| black(k.0)) {
-            let face = if held(n) {
-                Fill::from(Color::oklch(0.6, 0., 0.))
-            } else {
-                lift(1)
-            };
-            draw.push(Draw::fill(rect(x, 0., w, s.height * 0.62), face));
-        }
-        // Each part's span as a band across the top, stacked.
-        for (row, &(lo, hi, color)) in keys.spans.iter().enumerate() {
+        for (row, &(lo, hi, color)) in keys.spans.iter().take(4).enumerate() {
             let x0 = all.iter().find(|k| k.0 >= lo).map(|k| k.1);
             let x1 = all.iter().rev().find(|k| k.0 <= hi).map(|k| k.1 + k.2);
             if let (Some(x0), Some(x1)) = (x0, x1) {
                 draw.push(Draw::fill(
-                    rect(x0, row as f64 * 3., x1 - x0, 3.),
+                    rect(x0, row as f64 * BAND, x1 - x0, BAND - 1.),
                     Fill::from(color),
                 ));
             }
         }
+        let h = s.height - top;
+        for &(n, x, w) in all.iter().filter(|k| !black(k.0)) {
+            let face = match (held(n), tint(n)) {
+                (true, _) => accent(),
+                (_, Some(c)) => c.with_lightness(0.92).scale_chroma(0.45),
+                _ => Color::oklch(0.64, 0., 0.),
+            };
+            draw.push(Draw::fill(rect(x + 0.5, top, w - 1., h), Fill::from(face)));
+        }
+        for &(n, x, w) in all.iter().filter(|k| black(k.0)) {
+            let face = match (held(n), tint(n)) {
+                (true, _) => Color::oklch(0.6, 0., 0.),
+                (_, Some(c)) => c.with_lightness(0.32).scale_chroma(0.6),
+                _ => Color::oklch(0.2, 0., 0.),
+            };
+            draw.push(Draw::fill(rect(x, top, w, h * 0.62), Fill::from(face)));
+        }
         draw
     })
     .w(Len::Pct(100.))
-    .h(height)
-    .min_w(TEXT * 20.)
-    .cursor(Cursor::Hand)
-    .tracks_pointer()
-    .named("Keyboard")
-    .id(id.to_owned());
+    .h(height);
+    let el = stack![face, row(octaves).w(Len::Pct(100.)).h(height)]
+        .w(Len::Pct(100.))
+        .h(height)
+        .min_w(TEXT * 20.)
+        .cursor(Cursor::Hand)
+        .tracks_pointer()
+        .named("Keyboard")
+        .id(id.to_owned());
     Response {
         el,
         changed: events,

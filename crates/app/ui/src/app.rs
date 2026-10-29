@@ -1,19 +1,22 @@
-//! The editor: a header, the browser, the rack of parts, the keyboard, and
-//! panels opened on demand. Built from [`crate::kit`] each frame from the
-//! [`App`] the host fills; what the user does comes back as [`Action`]s.
-//!
-//! One primary action per view: in the browser, pick an instrument; in the
-//! rack, play it. Everything informational waits in a tooltip or a panel.
+//! The editor, laid out as v2 laid it out: a header with the engine's load,
+//! the master and the performance switches; the browser; the Rack, Mixer
+//! and Report tabs; the keyboard along the foot. Built from [`crate::kit`]
+//! each frame from the [`App`] the host fills; what the user does comes
+//! back as [`Action`]s. Long words are cut to one line with the rest in a
+//! tooltip, choices are dropdowns, menus and panels float.
 
 mod browser;
+mod mixer;
+mod part;
 mod rack;
+mod report;
 
 use kontra_ui_model::Interface;
 use mui::prelude::*;
 
 use crate::Pictures;
 use crate::keyboard::{self, Keys, note_name};
-use crate::kit::{self, Icon, button, icon_button, latch, rule, section, sheet, strip, vrule};
+use crate::kit::{self, Icon, button, icon_button, latch, rule, section, sheet, strip, tab, vrule};
 use crate::theme::{CONTROL, SIDEBAR, SPACE, TEXT, TIGHT, quick, secondary};
 
 /// Everything the editor shows. The host fills the data; `view` is the
@@ -21,11 +24,15 @@ use crate::theme::{CONTROL, SIDEBAR, SPACE, TEXT, TIGHT, quick, secondary};
 #[derive(Debug, Default)]
 pub struct App {
     pub libraries: Vec<Library>,
+    /// Instruments loaded lately, newest first, as (library, preset).
+    pub recent: Vec<(usize, usize)>,
     pub parts: Vec<Part>,
     pub stats: Stats,
-    /// Master gain in dB.
+    /// Master gain in dB, and the master's level from 0 to 1.
     pub master: f64,
-    /// What did not load or play as the source meant, one line each.
+    pub level: f64,
+    /// What did not load or play as the source meant, one entry each: its
+    /// first line is its summary.
     pub report: Vec<String>,
     pub midi_thru: bool,
     /// The folders the browser scans.
@@ -38,6 +45,7 @@ pub struct App {
 pub struct Library {
     pub name: String,
     pub format: Format,
+    /// Its instruments by path inside the library: `Folder/Name`.
     pub presets: Vec<String>,
     pub starred: bool,
 }
@@ -57,16 +65,31 @@ pub struct Part {
     pub library: String,
     /// MIDI channel 1..=16, or 0 for every channel.
     pub channel: u8,
-    /// Gain in dB, and pan from -1 (left) to 1.
+    /// Stereo output 1..=16, or 0 to let the host pick.
+    pub output: u8,
+    /// Gain in dB, pan from -1 (left) to 1, tune in semitones.
     pub volume: f64,
     pub pan: f64,
+    pub tune: f64,
+    /// Its level from 0 to 1, for the mixer's meter.
+    pub level: f64,
     pub solo: bool,
     pub mute: bool,
+    /// Velocity it plays at: 0 as played, or a fixed one.
+    pub velocity: u8,
     /// The articulations and the key that switches to each.
     pub articulations: Vec<(String, Option<u8>)>,
     pub articulation: usize,
+    /// The one it starts on.
+    pub default_articulation: usize,
     /// The keys it plays.
     pub keys: (u8, u8),
+    /// What it needs to play fully (a missing file, a host feature).
+    pub needs: Vec<String>,
+    /// What the Info tab lists, as (label, value).
+    pub info: Vec<(String, String)>,
+    /// Its scripts' names.
+    pub scripts: Vec<String>,
     /// The library's own interface, when it has one.
     pub face: Option<Face>,
     /// Shown below its header.
@@ -94,9 +117,13 @@ pub enum PartTab {
     #[default]
     Interface,
     Articulations,
+    Mapping,
+    Sound,
+    Info,
+    Scripts,
 }
 
-/// The engine's load, for the header's one readout and its tooltip.
+/// The engine's load, for the header.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stats {
     pub cpu: f64,
@@ -105,34 +132,68 @@ pub struct Stats {
     pub disk_mbs: f64,
 }
 
+/// The main area's tabs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Tab {
+    #[default]
+    Rack,
+    Mixer,
+    Report,
+}
+
+/// Which libraries the browser lists.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Shelf {
+    #[default]
+    All,
+    Favorites,
+    Recent,
+}
+
 /// The editor's own state; its default is a fresh editor.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct View {
+    pub tab: Tab,
     pub browser_hidden: bool,
     pub format: Format,
-    pub starred_only: bool,
+    pub shelf: Shelf,
+    /// Libraries listed Z to A.
+    pub descending: bool,
     pub search: String,
-    /// The library whose presets the browser lists.
+    /// The library whose presets the browser lists, and their search.
     pub library: Option<usize>,
+    pub preset_search: String,
+    /// Preset folders folded shut.
+    pub folded: Vec<String>,
     pub sheet: Option<Sheet>,
     /// The id of the open popup menu.
     pub menu: Option<String>,
+    pub mixer_wide: bool,
+    pub report_search: String,
+    /// The report entry shown whole.
+    pub report_open: Option<usize>,
+    /// The articulation grip being dragged, and the row it started on.
+    pub grip: Option<(String, usize)>,
+    /// Articulations listed without their keys.
+    pub keys_hidden: bool,
     pub keyboard_hidden: bool,
-    /// Octaves the keybed is moved from C0 to C5.
+    /// Octaves the keybed is moved from C-2 to B4.
     pub octave: i8,
     pub playing: Option<u8>,
+    /// The pitch wheel (springs back to 0) and the mod wheel, -1..1 and 0..1.
+    pub pitch: f64,
+    pub modulation: f64,
     /// Which of [`SCALES`] the editor is drawn at.
     pub scale: usize,
 }
 
 /// The editor sizes on offer.
-pub const SCALES: [f64; 3] = [1., 1.25, 1.5];
+pub const SCALES: [f64; 4] = [1., 1.25, 1.5, 2.];
 
 /// A panel opened on demand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Sheet {
     Settings,
-    Report,
     About,
 }
 
@@ -143,6 +204,11 @@ pub enum Action {
         library: usize,
         preset: usize,
     },
+    /// Replace a part's instrument with another of its library's.
+    Switch {
+        part: usize,
+        preset: usize,
+    },
     /// The previous (-1) or next (1) preset of a part's library.
     Step {
         part: usize,
@@ -150,18 +216,35 @@ pub enum Action {
     },
     Volume(usize, f64),
     Pan(usize, f64),
+    Tune(usize, f64),
     Solo(usize, bool),
     Mute(usize, bool),
     Channel(usize, u8),
+    Output(usize, u8),
+    Velocity(usize, u8),
     Articulation(usize, usize),
+    DefaultArticulation(usize, usize),
+    /// Move an articulation from one place in the list to another.
+    MoveArticulation {
+        part: usize,
+        from: usize,
+        to: usize,
+    },
     Duplicate(usize),
     Remove(usize),
     Master(f64),
     Note(u8, bool),
+    Pitch(f64),
+    Modulation(f64),
     Panic,
     MidiThru(bool),
+    Star(usize, bool),
     AddFolder,
     Scale(f64),
+    CopyDiagnostics,
+    ExportReport,
+    LogFolder,
+    Refresh,
 }
 
 /// The editor for `app`, and what the user did.
@@ -177,7 +260,7 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
         middle.push(browser::view(ui, app, &mut out).w(width).shrink(0).clip());
         middle.push(vrule());
     }
-    let mut main = vec![rack::view(ui, app, &mut out).grow(1).min_w(0).min_h(0)];
+    let mut main = vec![main(ui, app, &mut out).grow(1).min_w(0).min_h(0)];
     if let Some(s) = app.view.sheet {
         main.push(sheet_view(ui, app, s, &mut out).centered());
     }
@@ -195,16 +278,30 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     Response { el, changed: out }
 }
 
-/// Opens or closes the popup `id` names on `hit`, and closes it on a click
-/// away or Escape; whether it is open.
-fn toggle_menu(ui: &Ui, view: &mut View, id: &str, hit: bool) -> bool {
-    let open = view.menu.as_deref() == Some(id);
-    if hit {
-        view.menu = (!open).then(|| id.to_owned());
-    } else if open && ui.dismissed(&[id, &format!("{id}-popup")]) {
-        view.menu = None;
+fn main(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
+    let mut tabs = vec![block(SPACE, 1).shrink(0)];
+    for (which, label) in [
+        (Tab::Rack, "Rack"),
+        (Tab::Mixer, "Mixer"),
+        (Tab::Report, "Report"),
+    ] {
+        let t = tab(ui, format!("tab-{label}"), label, app.view.tab == which);
+        if t.changed {
+            app.view.tab = which;
+        }
+        tabs.push(t.el);
     }
-    view.menu.as_deref() == Some(id)
+    let shown = match app.view.tab {
+        Tab::Rack => rack::view(ui, app, out),
+        Tab::Mixer => mixer::view(ui, app, out),
+        Tab::Report => report::view(ui, app, out),
+    };
+    col![
+        row(tabs).gap(TIGHT).shrink(0),
+        shown.grow(1).min_h(0).w(Len::Pct(100.))
+    ]
+    .w(Len::Pct(100.))
+    .h(Len::Pct(100.))
 }
 
 fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
@@ -219,32 +316,51 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         app.view.browser_hidden = !app.view.browser_hidden;
     }
     let s = app.stats;
+    let stat = |label: &str, value: String, widest: &str| {
+        row![section(label), caption(value).reserve(widest)]
+            .gap(TIGHT)
+            .align(Align::Center)
+            .shrink(0)
+    };
     let load = row![
-        section("CPU"),
-        caption(format!("{:.0}%", s.cpu)).reserve("100%")
+        stat("CPU", format!("{:.0}%", s.cpu), "100%"),
+        stat("Voices", s.voices.to_string(), "000"),
+        stat("RAM", format!("{} MB", s.ram_mb), "00000 MB"),
+        stat("Disk", format!("{:.1} MB/s", s.disk_mbs), "000.0 MB/s"),
     ]
-    .gap(TIGHT)
-    .align(Align::Center)
-    .tip(format!(
-        "{} voices · {} MB RAM · {:.1} MB/s from disk",
-        s.voices, s.ram_mb, s.disk_mbs
-    ))
+    .gap(SPACE * 1.5)
+    .shrink(0)
     .id("load");
     let mut master = app.master;
-    let gain = kit::fader(
+    let gain = kit::slider(
         ui,
         "master",
-        ("Master", &db(master)),
+        "Master gain",
         &mut master,
         -60.0..=6.0,
         0.,
-        TEXT * 8.,
+        (TEXT * 7., CONTROL),
     );
     if gain.changed {
         app.master = master;
         out.push(Action::Master(master));
     }
-    let panic = icon_button(ui, "panic", Icon::Stop, "Panic: stop every note", false);
+    let keyboard = icon_button(
+        ui,
+        "keyboard",
+        Icon::Piano,
+        "Keyboard",
+        !app.view.keyboard_hidden,
+    );
+    if keyboard.changed {
+        app.view.keyboard_hidden = !app.view.keyboard_hidden;
+    }
+    let thru = button(ui, "midi-thru", "MIDI Thru", app.midi_thru);
+    if thru.changed {
+        app.midi_thru = !app.midi_thru;
+        out.push(Action::MidiThru(app.midi_thru));
+    }
+    let panic = button(ui, "panic", "Panic", false);
     if panic.changed {
         out.push(Action::Panic);
     }
@@ -253,10 +369,16 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         body("KONTRA").text_weight(Weight::SEMIBOLD),
         spacer(),
         load,
+        spacer(),
         vrule().h(CONTROL * 0.6),
         section("Master"),
         gain.el,
-        panic.el,
+        caption(db(app.master)).reserve("-inf dB"),
+        kit::meter(app.level, TEXT * 4.),
+        vrule().h(CONTROL * 0.6),
+        keyboard.el,
+        thru.el.tip("Pass MIDI through to the host"),
+        panic.el.tip("Stop every note"),
     ];
     if !app.report.is_empty() {
         let n = app.report.len();
@@ -268,18 +390,16 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             false,
         );
         if warn.changed {
-            app.view.sheet = Some(Sheet::Report);
+            app.view.tab = Tab::Report;
         }
         items.push(warn.el);
     }
     let more = icon_button(ui, "app-menu", Icon::Menu, "Menu", false);
-    let mut header = vec![strip(items).grow(1), more.el];
-    if toggle_menu(ui, &mut app.view, "app-menu", more.changed) {
-        let picked = kit::menu(ui, "app-menu", &["Settings", "Report", "About"], 1, None);
+    let mut header = vec![strip(items).grow(1).min_w(0), more.el];
+    if kit::toggle(ui, &mut app.view.menu, "app-menu", more.changed) {
+        let picked = kit::menu(ui, "app-menu", &["Settings", "About"], 1, None);
         if let Some(n) = picked.changed {
-            app.view.sheet = [Sheet::Settings, Sheet::Report, Sheet::About]
-                .get(n)
-                .copied();
+            app.view.sheet = [Sheet::Settings, Sheet::About].get(n).copied();
             app.view.menu = None;
         }
         header.push(picked.el);
@@ -293,7 +413,6 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 fn sheet_view(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -> El {
     let (title, content) = match which {
         Sheet::Settings => ("Settings", settings(ui, app, out)),
-        Sheet::Report => ("Report", report(&app.report)),
         Sheet::About => (
             "About",
             col![
@@ -316,7 +435,7 @@ fn sheet_view(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -
 fn settings(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let thru = latch(
         ui,
-        "midi-thru",
+        "settings-thru",
         if app.midi_thru { "On" } else { "Off" },
         "Pass MIDI through to the host",
         app.midi_thru,
@@ -325,19 +444,20 @@ fn settings(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         app.midi_thru = !app.midi_thru;
         out.push(Action::MidiThru(app.midi_thru));
     }
-    let mut sizes = Vec::new();
-    for (n, s) in SCALES.into_iter().enumerate() {
-        let b = button(
-            ui,
-            format!("scale-{n}"),
-            &format!("{:.0} %", s * 100.),
-            app.view.scale == n,
-        );
-        if b.changed {
-            app.view.scale = n;
-            out.push(Action::Scale(s));
-        }
-        sizes.push(b.el);
+    let labels: Vec<String> = SCALES.iter().map(|s| format!("{:.0}%", s * 100.)).collect();
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let current = refs.get(app.view.scale).copied().unwrap_or("100%");
+    let size = kit::dropdown(
+        ui,
+        &mut app.view.menu,
+        "scale",
+        (None, current, "Editor size"),
+        &refs,
+        Some(app.view.scale),
+    );
+    if let Some(n) = size.changed {
+        app.view.scale = n;
+        out.extend(SCALES.get(n).map(|&s| Action::Scale(s)));
     }
     let add = button(ui, "add-folder", "Add folder…", false);
     if add.changed {
@@ -356,69 +476,48 @@ fn settings(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         row![body(label.to_owned()), spacer(), control].align(Align::Center)
     };
     col![
-        line("MIDI thru", thru.el),
-        line("Size", row(sizes).gap(1)),
-        rule(),
         row![section("Library folders"), spacer(), add.el].align(Align::Center),
         folders,
+        rule(),
+        section("Interface"),
+        line("Size", size.el),
+        rule(),
+        section("MIDI / Output"),
+        line("MIDI thru", thru.el),
     ]
     .gap(SPACE)
 }
 
-fn report(lines: &[String]) -> El {
-    if lines.is_empty() {
-        return caption("Everything loaded as written.").fill(secondary());
-    }
-    col(lines
-        .iter()
-        .map(|l| caption(l.clone()).w(Len::Pct(100.)))
-        .collect::<Vec<_>>())
-    .gap(SPACE)
-    .align(Align::Start)
-    .w(Len::Pct(100.))
-}
-
 fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let v = &mut app.view;
-    let fold = icon_button(
-        ui,
-        "keys-fold",
-        if v.keyboard_hidden {
-            Icon::Right
-        } else {
-            Icon::Down
-        },
-        "Keyboard",
-        !v.keyboard_hidden,
-    );
-    if fold.changed {
-        v.keyboard_hidden = !v.keyboard_hidden;
-    }
     let down = icon_button(ui, "octave-down", Icon::Left, "Octave down", false);
     let up = icon_button(ui, "octave-up", Icon::Right, "Octave up", false);
+    let fold = icon_button(ui, "keys-fold", Icon::Down, "Hide the keyboard", false);
     if down.changed {
-        v.octave = (v.octave - 1).max(-2);
+        v.octave = (v.octave - 1).max(0);
     }
     if up.changed {
-        v.octave = (v.octave + 1).min(4);
+        v.octave = (v.octave + 1).min(5);
     }
-    let low = (24 + 12 * i32::from(v.octave)).clamp(0, 127 - 71) as u8;
-    let range = (low, low + 71);
+    if fold.changed {
+        v.keyboard_hidden = true;
+    }
+    if v.keyboard_hidden {
+        return spacer().h(0);
+    }
+    let low = 12 * v.octave.clamp(0, 5) as u8;
+    let range = (low, low + 83);
     let label = caption(format!("{} – {}", note_name(range.0), note_name(range.1)))
-        .fill(secondary())
-        .tip("Plays every part on its channel, or all of them on Omni")
+        .tip("Every part · the keys play channel 1 or Omni · click a part to focus it")
         .id("keys-range");
     let bar = strip(vec![
-        fold.el,
         section("Keyboard"),
         label,
         spacer(),
         down.el,
         up.el,
+        fold.el,
     ]);
-    if v.keyboard_hidden {
-        return bar;
-    }
     let shown = Keys {
         range,
         held: v.playing.into_iter().collect(),
@@ -429,9 +528,47 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .map(|(n, p)| (p.keys.0, p.keys.1, crate::theme::part_color(n)))
             .collect(),
     };
-    let bed = keyboard::keyboard(ui, "keybed", &shown, &mut app.view.playing, TEXT * 6.);
+    let height = TEXT * 6.;
+    let mut pitch = v.pitch;
+    let bend = kit::slider(
+        ui,
+        "pitch",
+        "Pitch bend",
+        &mut pitch,
+        -1.0..=1.0,
+        0.,
+        (TEXT * 1.5, height),
+    );
+    if !ui.get("pitch").held {
+        pitch = 0.;
+    }
+    if pitch != v.pitch {
+        v.pitch = pitch;
+        out.push(Action::Pitch(pitch));
+    }
+    let mut modulation = v.modulation;
+    let wheel = kit::slider(
+        ui,
+        "modulation",
+        "Modulation",
+        &mut modulation,
+        0.0..=1.0,
+        0.,
+        (TEXT * 1.5, height),
+    );
+    if wheel.changed {
+        v.modulation = modulation;
+        out.push(Action::Modulation(modulation));
+    }
+    let bed = keyboard::keyboard(ui, "keybed", &shown, &mut app.view.playing, height);
     out.extend(bed.changed.into_iter().map(|(n, on)| Action::Note(n, on)));
-    col![bar, row![bed.el].pad(kit::edges(0., SPACE, SPACE, SPACE))].animate_layout_with(quick())
+    col![
+        bar,
+        row![bend.el, wheel.el, bed.el]
+            .gap(TIGHT)
+            .pad(kit::edges(0., SPACE, SPACE, SPACE))
+    ]
+    .animate_layout_with(quick())
 }
 
 /// A gain for a readout.
