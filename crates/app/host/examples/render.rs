@@ -211,12 +211,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let z = zone.parse::<usize>().ok().and_then(|z| plan.zones.get(z));
         if let Some((z, g)) = z.and_then(|z| Some((z, plan.groups.get(z.group as usize)?))) {
             println!(
-                "  zone {zone}: group {} bus {} {:?} envelope {:?}",
+                "  zone {zone}: keys {:?} root {} keytrack {} tune {} group {} bus {} {:?} envelope {:?}",
+                z.keys,
+                z.root,
+                z.keytrack,
+                z.tune,
                 z.group,
                 g.bus,
                 plan.buses.get(g.bus),
                 g.envelope
             );
+            for m in &g.mods {
+                println!("    mod {m:?}");
+            }
+            for (n, b) in g.blends.iter().enumerate() {
+                println!("    blend {n} {b:?}");
+            }
+            for (n, s) in g.shapers.iter().enumerate() {
+                println!("    shaper {n} {:?} len {} mid {:?} end {:?}", s.source, s.table.len(), s.table.get(s.table.len() / 2), s.table.last());
+            }
         }
     }
     let stream = store.client();
