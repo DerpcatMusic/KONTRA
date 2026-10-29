@@ -19,6 +19,23 @@ impl Engine {
         Some((n, value.map(|c| c as usize)))
     }
 
+    /// What saved `value` restores in `cell` of script `slot`. A menu saves
+    /// the index of its selected entry: Afflatus picks its wallpaper by
+    /// `$instr_bckgnd - 1`, entries valued 1..=7, and Hunter Brass saves 5
+    /// for the hunter picture (entry 5, value 6).
+    pub(crate) fn saved_value(&mut self, slot: u8, cell: u32, value: i64) -> i64 {
+        let controls = self
+            .plan
+            .scripts
+            .get(usize::from(slot))
+            .map(|s| &s.controls);
+        let n = controls.and_then(|c| c.cells.iter().position(|&c| c == Some(cell)));
+        let index = usize::try_from(value).ok();
+        n.zip(index)
+            .and_then(|(n, index)| self.ui.pick(slot, n, index))
+            .map_or(value, i64::from)
+    }
+
     /// Index of the control with UI id `id` in script `slot`.
     pub(crate) fn control_index_in(&self, slot: u8, id: i32) -> Option<usize> {
         let controls = &self.plan.scripts.get(usize::from(slot))?.controls;

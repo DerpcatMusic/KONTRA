@@ -21,6 +21,7 @@ mod script_knobs;
 mod skreamer;
 mod translate;
 mod versatile;
+mod wavetable;
 
 pub use container::chunks;
 pub use resources::Resources;

@@ -75,6 +75,8 @@ pub struct Region {
     /// How the sample's channels reach the voice's left and right; `None`
     /// plays mono on both sides and two or more channels as left and right.
     pub mix: Option<Mix>,
+    /// Read as a wavetable instead: `start`, `end` and the loops go unused.
+    pub table: Option<crate::Table>,
 }
 
 /// Consecutive source frames the cursor reads under one mapping.
@@ -299,6 +301,7 @@ mod tests {
             loops,
             reverse,
             mix: None,
+            table: None,
         }
     }
 

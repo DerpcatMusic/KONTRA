@@ -33,6 +33,7 @@ fn zone(store: &mut Store, level: f32, group: u32) -> Zone {
         .unwrap();
     let region = Region {
         mix: None,
+        table: None,
         sample,
         start: 0,
         end: frames,
@@ -318,6 +319,36 @@ fn a_script_reads_its_restored_controls() {
     level(&mut e, &[on(60)]);
     assert_eq!(e.last_message(), "0 0");
     assert_eq!(e.stats().messages, 2);
+}
+
+/// A menu saves the index of its entry, not its value: Afflatus' wallpaper
+/// menu (entries valued 1..=7) saves 5 for its sixth entry, Hunter.
+#[test]
+fn a_saved_menu_restores_the_entry_at_its_index() {
+    let source = "on init
+            declare ui_menu $look
+            add_menu_item($look, \"Default\", 1)
+            add_menu_item($look, \"Hunter\", 6)
+            make_persistent($look)
+            declare ui_menu $read
+            add_menu_item($read, \"Off\", -1)
+            add_menu_item($read, \"Group 0\", 0)
+            make_persistent($read)
+            read_persistent_var($read)
+            declare $at_init
+            $at_init := $read
+        end on
+        on note
+            message($look & \" \" & $at_init & \" \" & $read)
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    let saved = ["$look 1".into(), "$read 0".into()];
+    plan.scripts = vec![kontra_host::script::plan(&script, &saved, &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "6 -1 -1");
 }
 
 #[test]

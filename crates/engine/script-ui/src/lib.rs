@@ -192,6 +192,14 @@ impl Store {
         Some(usize::from(*last))
     }
 
+    /// Selects entry `index` of menu control `n` of script `slot`; its value,
+    /// or `None` past the menu's entries.
+    pub fn pick(&mut self, slot: u8, n: usize, index: usize) -> Option<i32> {
+        let value = self.menus.get(usize::from(slot))?.get(n)?.get(index)?.value;
+        *self.selected.get_mut(usize::from(slot))?.get_mut(n)? = u16::try_from(index).ok()?;
+        Some(value)
+    }
+
     /// The entry menu control `n` of script `slot` last selected.
     #[must_use]
     pub fn selected(&self, slot: u8, n: usize) -> usize {

@@ -30,6 +30,7 @@ fn region(store: &mut Store, name: &str, frames: u64) -> std::io::Result<Region>
     )?;
     Ok(Region {
         mix: None,
+        table: None,
         sample,
         start: 0,
         end: frames,
