@@ -116,7 +116,7 @@ fn chorus(depth: f32, speed: f32, phase: f32, unit: f32) -> ir::Delay {
         time: ir::DelayTime::Ms(20.0),
         depth_ms: kontra_law::Law::Linear {
             lo: 0.0,
-            hi: 75.0 / RATE * 1000.0,
+            hi: 1.5625,
         }
         .eval(depth),
         second_head: true,
