@@ -161,7 +161,7 @@ fn level_par(par: EnginePar) -> Option<LevelPar> {
 
 impl Engine {
     /// What the running script's parameter id `id` changes.
-    fn engine_par(&self, id: i32) -> Option<EnginePar> {
+    pub(crate) fn engine_par(&self, id: i32) -> Option<EnginePar> {
         self.script()?.engine_pars.get(id)
     }
 
