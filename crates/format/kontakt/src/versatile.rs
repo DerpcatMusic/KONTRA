@@ -21,10 +21,13 @@ pub(crate) const DEFAULT: Knobs = [
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5,
 ];
 
-/// Stage 0's corner for cutoff `x`; Kontakt's `6.283` stands in for 2π.
+/// The setter's `6.283` (`0x401921cac083126f`) where 2π belongs.
+const NATIVE_TAU: f64 = f64::from_bits(0x4019_21ca_c083_126f);
+
+/// Stage 0's corner for cutoff `x`, as Hz on an exact 2π.
 fn hz(x: f32) -> f32 {
     let note = x.clamp(0.0, 1.0) * 111.0 + 20.0;
-    440.0 * ((note - 69.0) / 12.0).exp2() * (6.283 / std::f32::consts::TAU)
+    440.0 * ((note - 69.0) / 12.0).exp2() * (NATIVE_TAU / std::f64::consts::TAU) as f32
 }
 
 /// Octaves a shift knob `x` raises the next stage by.

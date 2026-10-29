@@ -36,7 +36,9 @@ const NATIVE: [(f32, [f32; 3], bool, [f32; 64]); 24] = [
 /// Kontakt's Versatile knob laws (docs/re/engine/filt-multi-versatile.md),
 /// as the Kontakt translator applies them.
 fn versatile(cut: f32, res: [f32; 3]) -> CascadeSettings {
-    let hz = 440.0 * ((cut * 111.0 + 20.0 - 69.0) / 12.0).exp2() * (6.283 / std::f32::consts::TAU);
+    let hz = 440.0
+        * ((cut * 111.0 + 20.0 - 69.0) / 12.0).exp2()
+        * (f64::from_bits(0x4019_21ca_c083_126f) / std::f64::consts::TAU) as f32;
     let stage = |r: f32| {
         let q = if r > 0.5 {
             (r - 0.5) * 0.66 + 0.65
