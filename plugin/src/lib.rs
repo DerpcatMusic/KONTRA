@@ -13,6 +13,8 @@ mod editor;
 mod folder;
 mod input;
 mod look;
+#[cfg(test)]
+mod playtest;
 mod readout;
 #[cfg(test)]
 mod tests;
