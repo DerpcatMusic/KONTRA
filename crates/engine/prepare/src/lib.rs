@@ -158,6 +158,11 @@ fn load_samples(
         }
     }
     let used: Vec<_> = used.into_iter().collect();
+    // On fast storage a head of FAST_HEAD bytes per channel starts every
+    // page on time; the law's own 60 KB is sized for spinning disks.
+    let fast = (used.first())
+        .and_then(|(index, _)| instrument.samples.get(*index))
+        .is_some_and(|s| kontra_stream::fast_storage(&s.file));
     let opened = parallel(&used, |(index, _)| match instrument.samples.get(*index) {
         Some(sample) => open(sample),
         None => Err(io::Error::new(
@@ -193,7 +198,7 @@ fn load_samples(
             pin: zones
                 .iter()
                 .map(|&(z, stream)| match stream {
-                    Some(stream) => window(z, sample.frames, fmt, stream),
+                    Some(stream) => window(z, sample.frames, fmt, head(stream, fast)),
                     None => 0..sample.frames,
                 })
                 .collect(),
@@ -230,6 +235,22 @@ fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R>
             .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
             .collect()
     })
+}
+
+/// Head bytes per channel on fast storage (05-STREAM.md §1): the chord
+/// stress (render `KONTRA_CHORDS`, cold page cache) has no late page down to
+/// 4 KiB on Areia and Vista; this keeps 3× that margin.
+const FAST_HEAD: u32 = 12 << 10;
+
+/// The law's stream settings with the head shortened on fast storage.
+fn head(stream: ir::Stream, fast: bool) -> ir::Stream {
+    if !fast {
+        return stream;
+    }
+    ir::Stream {
+        bytes_per_channel: stream.bytes_per_channel.min(FAST_HEAD),
+        ..stream
+    }
 }
 
 /// A streamed zone's resident window, in frames: its head from where it
@@ -438,5 +459,11 @@ mod tests {
         assert_eq!(near.start, 0);
         // A short sample clamps the window.
         assert_eq!(window(&at(0, 0), 500, STEREO_24, DFD), 0..500);
+        // Fast storage: 12 KiB per channel, stereo 24-bit = 4 grains → 4096 frames.
+        assert_eq!(
+            window(&at(0, 0), 1_000_000, STEREO_24, head(DFD, true)),
+            0..4096
+        );
+        assert_eq!(head(DFD, false), DFD);
     }
 }

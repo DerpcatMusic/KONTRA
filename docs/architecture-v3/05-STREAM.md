@@ -44,6 +44,19 @@ start = max(d, 0)                   (the window starts S.Mod before the zone sta
   one copy shared by every instance and every zone that reads the same frames, and a measured
   disk-latency term instead of a fixed 60 KB on fast storage, where on-time starts allow it.
   Target: at most 60% of Kontakt's windows on Areia, Vista and ANALOG with C1/C8 unchanged.
+- **Fast storage: a 12 KiB head (P6.1c, 2026-10-29).** At load, `kontra_stream::fast_storage`
+  times 16 direct (uncached) 4 KiB reads spread over the instrument's first resident sample
+  file, once per device per process. When the lower quartile is at most 1 ms, `P` is
+  `min(P, 12 KiB)`. Otherwise, or when it can't measure (not Linux, no direct reads), the law's
+  `P` holds; Kontakt sized its 60 KB for spinning disks. The S.Mod term is unchanged. Each page
+  is due when its voice reaches it (`Sample::prefetch`), so the I/O thread reads the urgent
+  ones first. Gate: render `KONTRA_CHORDS=1 KONTRA_LIVE=1` (64 steps of 4-note chords, page
+  cache evicted first), three runs each: 0 missing frames on Areia 16 Violins Core and Vista
+  5 Violins. The same test finds no late page down to 4 KiB on Areia and 4 KiB on Vista, and
+  some at 2 KiB, so 12 KiB keeps 3× margin. Pinned (MB, law → fast storage): Areia 16
+  Violins Core 588 → 284, Vista 5 Violins 307 → 77 (RSS +350 → +119 against Kontakt's 857),
+  ANALOG 138.5 → 127, Areia Pads 2205 (whole samples, S.Mod). Not yet measured on a spinning
+  disk: none is mounted on the reference machine.
 - **The budget is never solved by shrinking heads below the law.** Over
   budget, the loader reports which zones exceed it and drops whole
   articulations or mic positions *the user chose to purge*. KONTRA never
