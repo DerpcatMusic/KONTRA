@@ -13,3 +13,6 @@ crossbeam-queue.workspace = true
 kontra-ir = { path = "../../model/ir" }
 ncw = { path = "../../../vendor/ncw" }
 symphonia = { version = "0.5", default-features = false, features = ["flac"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["fs", "std"] }

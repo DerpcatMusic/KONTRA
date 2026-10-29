@@ -379,6 +379,7 @@ impl Store {
             .zip(requests)
             .map(|(plan, r)| {
                 let (pages, _) = plan?;
+                r.source.loaded();
                 let id = SampleId(self.next_id.fetch_add(1, Ordering::Relaxed));
                 let sample = Arc::new(Sample {
                     id,

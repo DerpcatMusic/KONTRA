@@ -61,6 +61,11 @@ struct Opened {
 
 fn opened(sample: &ir::Sample) -> io::Result<Opened> {
     let file = File::open(&sample.file)?;
+    // Preloads read short, scattered ranges: no read-ahead until the
+    // preload is in ([`Region::loaded`]). With it the kernel read 7.3 GB
+    // from disk to pin 3.0 GB of David And Goliath's heads; without, 3.1 GB.
+    #[cfg(unix)]
+    let _ = rustix::fs::fadvise(&file, 0, None, rustix::fs::Advice::Random);
     let len = match sample.len {
         Some(len) => len,
         None => file.metadata()?.len().saturating_sub(sample.offset),
@@ -152,8 +157,11 @@ fn opened(sample: &ir::Sample) -> io::Result<Opened> {
             })
         }
         Layout::Ncw => {
-            // Buffered: the offset table is read four bytes at a time.
-            let buffered = io::BufReader::with_capacity(64 << 10, region.reader());
+            // Buffered: the offset table is read four bytes at a time. 4 KiB
+            // holds the header and the table of a typical sample (4 bytes a
+            // block of 512 frames); a 64 KiB buffer read 1.8 GB more on a
+            // 28,000-sample load than the heads it pinned.
+            let buffered = io::BufReader::with_capacity(4 << 10, region.reader());
             let reader = ncw::NcwReader::read(buffered).map_err(invalid)?;
             let header = reader.header.clone();
             let (rate, frames) = (header.sample_rate, u64::from(header.num_samples));
@@ -220,6 +228,12 @@ impl Region {
             key.apply(self.base + at, head);
         }
         Ok(())
+    }
+
+    /// The preload is in: streaming reads in order, so read-ahead helps again.
+    fn loaded(&self) {
+        #[cfg(unix)]
+        let _ = rustix::fs::fadvise(&*self.file, 0, None, rustix::fs::Advice::Normal);
     }
 
     fn reader(&self) -> RegionReader {
@@ -311,6 +325,10 @@ struct PcmSource {
 }
 
 impl Source for PcmSource {
+    fn loaded(&self) {
+        self.region.loaded();
+    }
+
     fn read(&self, first: u64, out: &mut [u8]) -> io::Result<()> {
         let frame = (self.width * self.channels) as u64;
         let Some(pcm) = self.convert else {
@@ -370,6 +388,10 @@ impl NcwSource {
 }
 
 impl Source for NcwSource {
+    fn loaded(&self) {
+        self.region.loaded();
+    }
+
     fn read(&self, first: u64, out: &mut [u8]) -> io::Result<()> {
         out.fill(0);
         let channels = usize::from(self.packing.header.channels);
@@ -473,6 +495,10 @@ fn flac(e: symphonia::core::errors::Error) -> io::Error {
 }
 
 impl Source for FlacSource {
+    fn loaded(&self) {
+        self.region.loaded();
+    }
+
     fn read(&self, first: u64, out: &mut [u8]) -> io::Result<()> {
         out.fill(0);
         let width = self.encoding.bytes();
