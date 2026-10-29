@@ -6,6 +6,8 @@
 # browser's edge dragged, then idle
 # for a minute.
 # Each step must change the window as it says; idle must cost ~0 CPU.
+# click.sh beside it clicks one library control (Areia's Classic Mix) and
+# wants it drawn with no further input.
 #
 #   tools/kontra-window/drive.sh <kontra-window binary> <instrument> <out dir>
 #
