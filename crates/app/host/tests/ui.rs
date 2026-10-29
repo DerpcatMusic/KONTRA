@@ -309,3 +309,17 @@ fn an_attached_level_meter_shows_its_channel() {
         [Some(0), Some(1), None]
     );
 }
+
+/// A switch fires on mouse down, a button on mouse up (KSP manual, `ui_switch`
+/// and `ui_button` remarks).
+#[test]
+fn a_switch_fires_on_press_and_a_button_on_release() {
+    let ui = tree(
+        "on init
+            declare ui_switch $s
+            declare ui_button $b
+        end on",
+    );
+    assert!(widget(&ui, "$s").activate_on_press);
+    assert!(!widget(&ui, "$b").activate_on_press);
+}
