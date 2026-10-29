@@ -3,6 +3,8 @@
 //! A [`Law`] is evaluated on the control thread when a value arrives, never inside the
 //! sample loop. Law files are TOML (see `README.md`), embedded with [`laws!`].
 
+pub mod kontakt;
+
 mod file;
 mod law;
 mod network;
