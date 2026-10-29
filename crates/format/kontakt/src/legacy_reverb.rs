@@ -15,12 +15,14 @@
 //!   `(stereo + 1)/2`, 0x14470bad0), then ×0.015 (0x144f38664), then a
 //!   low-pass: `x = 0.75·(1 − damping) + 0.25` (0x144714900), corner
 //!   `(e^(6.15x) − 1)·0.0025728 + 0.002` of 22,006 Hz (0x14095b2d0:
-//!   0x144f38a60, 0x144f38620); written out unscaled.
+//!   0x144f38a60, 0x144f38620), detuned by 0.99·0.99878 (0x144f389d0,
+//!   0x144f389e8); written out unscaled.
 //!
-//! ponytail: that low-pass is Kontakt's filter object (+0x1100, vtable
-//! 0x144e95870): a direct-form biquad (kernel 0x140aec040) from an analog
-//! prototype the constructor sets (bilinear 0x1408e4970, cutoff law
-//! 0x14095b2d0). Run here as a one-pole at its corner and reported.
+//! That low-pass (+0x1100, vtable 0x144e95870) is a two-pole Butterworth:
+//! init 0x1408de730 designs a 2-pole, 0-ripple Chebyshev prototype
+//! (0x14082a0b0), set 0x14095b2d0 moves it to the corner by the LP→LP
+//! transform (0x1408e4970) at resonance 0 and unity DC gain. That is the
+//! bilinear Butterworth, −3 dB at the corner.
 
 use kontra_ir as ir;
 
@@ -66,7 +68,7 @@ pub(crate) fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
         damping: 0.35 * (1.0 - colour),
         diffusion: 0.5,
         predelay_ms: predelay_ms.clamp(0.0, 180.0),
-        high_cut_hz: (corner.clamp(0.0, 1.0) + 0.002) * 22_006.0,
+        high_cut_hz: (corner.clamp(0.0, 1.0) + 0.002) * 22_006.0 * 0.988_793,
         low_shelf_db: 0.0,
         stereo,
         modulation_ms: 0.0,
@@ -89,7 +91,7 @@ mod tests {
         assert_eq!(reverb(0.0, [0.0; 4]).damping, 0.35);
         // Damping 0.5: x = 0.625, about 2.6 kHz.
         assert!(
-            (small.high_cut_hz - 2_632.0).abs() < 20.0,
+            (small.high_cut_hz - 2_603.0).abs() < 20.0,
             "{}",
             small.high_cut_hz
         );
