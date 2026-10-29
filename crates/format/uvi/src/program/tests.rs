@@ -1551,3 +1551,41 @@ fn a_mapped_key_follow_on_a_ratio_reads_a_unipolar_mapper_as_it_is() {
     let t = &out.groups[0].blends[0].terms[0].factors[0].input.table;
     assert_eq!((t[0], t[60], t[120]), (0.0, 0.5, 1.0));
 }
+
+#[test]
+fn a_live_macro_on_a_players_gain_scales_it_through_its_bipolar_mapper() {
+    // VWinds' AttacksMapper: brightness (a bipolar macro CC 102 moves) on an
+    // attack player's Gain through a `Min` −1 mapper, closed until the top.
+    let xml = r#"<Program Gain="1">
+      <Modulators><ConstantModulation Name="Macro 1" Bipolar="1" Value="0">
+        <Connections><SignalConnection Ratio="1" Source="@MIDI CC 102" Destination="Value" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/></Connections>
+      </ConstantModulation></Modulators>
+      <Mappers><ControlSignalMapper Name="Mapper 1" Min="-1" Max="1">-1,0 -1,0 1,0</ControlSignalMapper></Mappers>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav">
+            <Connections>
+              <SignalConnection Ratio="1" Source="$Program/Macro 1" Destination="Gain" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            </Connections>
+          </SamplePlayer></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    assert!(g.mods.iter().any(|m| matches!(
+        m.kind,
+        ir::ModKind::Volume { source: ir::Source::Shaped(0), intensity, curve: ir::Curve::Signed, .. }
+            if intensity == 1.0
+    )));
+    assert_eq!(g.shapers[0].table, [0.0, 0.0, 1.0]);
+    let ir::Source::Blend(b) = g.shapers[0].source else {
+        panic!("{:?}", g.shapers[0])
+    };
+    assert_eq!(g.blends[usize::from(b)].base, 0.5);
+    assert_eq!(
+        g.blends[usize::from(b)].terms[0].input.source,
+        ir::Source::Controller(102)
+    );
+}
