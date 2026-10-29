@@ -105,7 +105,7 @@ impl Engine {
                             | ir::ModKind::Attack { .. }
                             | ir::ModKind::Release { .. },
                             ir::Source::HeldTime { span_ms },
-                        ) => Some(voice_gain::held_time(span_ms, held_seconds)),
+                        ) => Some(plan::held_time(span_ms, held_seconds)),
                         (
                             ir::ModKind::LfoPhase { .. } | ir::ModKind::LfoRate { .. },
                             ir::Source::Lfo(_),

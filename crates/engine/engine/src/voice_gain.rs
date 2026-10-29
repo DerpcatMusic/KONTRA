@@ -400,7 +400,7 @@ impl Engine {
             .filter_map(|m| match m.kind {
                 ir::ModKind::SampleStart { source, depth } => {
                     let x = match source {
-                        ir::Source::HeldTime { span_ms } => held_time(span_ms, held),
+                        ir::Source::HeldTime { span_ms } => kontra_plan::held_time(span_ms, held),
                         source => self.source(zone, source, note, Age::START)?,
                     };
                     Some(x * depth)
@@ -437,7 +437,7 @@ impl Engine {
                 _ => continue,
             };
             let x = match source {
-                ir::Source::HeldTime { span_ms } => Some(held_time(span_ms, held)),
+                ir::Source::HeldTime { span_ms } => Some(kontra_plan::held_time(span_ms, held)),
                 // Outside the signed families the law compiler (FUN_140873040)
                 // reads a bipolar source without `frange_bi`: 0..=1.
                 source => self.unit(zone, source, note, Age::START),
@@ -471,7 +471,7 @@ impl Engine {
                         intensity,
                         curve,
                         ..
-                    } => curve.gain(intensity, held_time(ms, held)),
+                    } => curve.gain(intensity, kontra_plan::held_time(ms, held)),
                     _ => 1.0,
                 })
                 .product()
@@ -525,13 +525,4 @@ fn gain(zone: &Zone, note: &Note, level: Level, modulated: f32) -> [f32; 2] {
         (zone.pan + level.pan + modulated + note.expression_pan + note.script_pan as f32 / 1000.0)
             .clamp(-1.0, 1.0);
     [g * (1.0 - pan).min(1.0), g * (1.0 + pan).min(1.0)]
-}
-
-/// 1 at the key's press, falling to 0 once it has been held `span_ms`.
-pub(crate) fn held_time(span_ms: u32, held: f32) -> f32 {
-    if span_ms == 0 {
-        return 1.0;
-    }
-    let t = span_ms as f32;
-    ((t - held * 1000.0) / t).max(0.0)
 }

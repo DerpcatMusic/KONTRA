@@ -68,7 +68,9 @@ fn tree(
     Ok(Some(tree))
 }
 
-fn cells(engine: &Engine, plan: &Plan) -> Vec<(u8, Vec<Option<i64>>, Vec<Option<String>>)> {
+type Cells = (u8, Vec<Option<i64>>, Vec<Option<String>>);
+
+fn cells(engine: &Engine, plan: &Plan) -> Vec<Cells> {
     plan.scripts
         .iter()
         .enumerate()
@@ -89,10 +91,7 @@ fn cells(engine: &Engine, plan: &Plan) -> Vec<(u8, Vec<Option<i64>>, Vec<Option<
         .collect()
 }
 
-fn cell_diff(
-    before: &[(u8, Vec<Option<i64>>, Vec<Option<String>>)],
-    after: &[(u8, Vec<Option<i64>>, Vec<Option<String>>)],
-) -> Vec<Json> {
+fn cell_diff(before: &[Cells], after: &[Cells]) -> Vec<Json> {
     let mut changes = Vec::new();
     for ((slot, a, ta), (_, b, tb)) in before.iter().zip(after) {
         for (index, (from, to)) in a.iter().zip(b).enumerate() {
@@ -239,6 +238,12 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 engine.clear_trace();
                 let before = cells(&engine, &plan);
                 let before_sound = sound(&engine);
+                let (before_groups, before_buses) = engine.inspect_levels();
+                let before_effects: Vec<_> = engine
+                    .inspect_shared_effects()
+                    .iter()
+                    .map(|v| format!("{v:?}"))
+                    .collect();
                 let before_mods: Vec<_> = engine.mods().map(|m| format!("{m:?}")).collect();
                 let before_faults = format!("{:?}", engine.script_faults());
                 let before_unhandled = format!("{:?}", engine.unhandled_actions());
@@ -276,24 +281,43 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 engine.clear_trace();
                 let after = cells(&engine, &plan);
                 let after_sound = sound(&engine);
+                let (after_groups, after_buses) = engine.inspect_levels();
+                let after_effects: Vec<_> = engine
+                    .inspect_shared_effects()
+                    .iter()
+                    .map(|v| format!("{v:?}"))
+                    .collect();
+                let group_levels: Vec<_> = before_groups.iter().zip(&after_groups).enumerate().filter(|(_, (a,b))| a != b).map(|(i,(a,b))| json!({"group":i,"before":format!("{a:?}"),"after":format!("{b:?}")})).collect();
+                let bus_levels: Vec<_> = before_buses
+                    .iter()
+                    .zip(&after_buses)
+                    .enumerate()
+                    .filter(|(_, (a, b))| a != b)
+                    .map(|(i, (a, b))| json!({"bus":i,"before":a,"after":b}))
+                    .collect();
+                let effects: Vec<_> = before_effects
+                    .iter()
+                    .zip(&after_effects)
+                    .enumerate()
+                    .filter(|(_, (a, b))| a != b)
+                    .map(|(i, (a, b))| json!({"index":i,"before":a,"after":b}))
+                    .collect();
                 let after_mods: Vec<_> = engine.mods().map(|m| format!("{m:?}")).collect();
                 let group_changes: Vec<_> = before_sound
                     .iter()
                     .zip(&after_sound)
                     .enumerate()
-                    .filter_map(|(i, (a, b))| {
-                        (a != b).then(|| json!({"group":i,"before":a,"after":b}))
-                    })
+                    .filter(|(_, (a, b))| a != b)
+                    .map(|(i, (a, b))| json!({"group":i,"before":a,"after":b}))
                     .collect();
                 let mod_changes: Vec<_> = before_mods
                     .iter()
                     .zip(&after_mods)
                     .enumerate()
-                    .filter_map(|(i, (a, b))| {
-                        (a != b).then(|| json!({"index":i,"before":a,"after":b}))
-                    })
+                    .filter(|(_, (a, b))| a != b)
+                    .map(|(i, (a, b))| json!({"index":i,"before":a,"after":b}))
                     .collect();
-                moves.push(json!({"value":value,"script_cells_changed":cell_diff(&before,&after), "group_sounds_changed":group_changes,"modulators_changed":mod_changes,"stage_events":events,
+                moves.push(json!({"value":value,"script_cells_changed":cell_diff(&before,&after), "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,
                     "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":format!("{:?}",engine.script_faults()),
                     "unhandled_before":before_unhandled,"unhandled_after":format!("{:?}",engine.unhandled_actions()),"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready}));
             }
