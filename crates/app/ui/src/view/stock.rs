@@ -152,7 +152,7 @@ impl Look {
                         rgb(0x5f_5f5f).into()
                     };
                     if *on && let Some(button) = button {
-                        parts.push(block(w, h).fill(rgb(0xffffff)).at(0., 0.));
+                        parts.push(boxed(w, h, scale, rgb(0xffffff).into(), 0x2d_2d2d));
                         let meta = model::ImageMeta {
                             size: Some(model::Size {
                                 width: 85.,
@@ -166,7 +166,15 @@ impl Look {
                             },
                             ..Default::default()
                         };
-                        parts.push(super::sliced(button, &meta, (w, h), scale));
+                        parts.push(
+                            super::sliced(
+                                button,
+                                &meta,
+                                ((w - 2. * scale).max(0.), (h - 2. * scale).max(0.)),
+                                scale,
+                            )
+                            .at(scale, scale),
+                        );
                     } else {
                         parts.push(boxed(w, h, scale, fill, 0x2d_2d2d));
                     }
