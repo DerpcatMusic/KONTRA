@@ -46,7 +46,7 @@ start = max(d, 0)                   (the window starts S.Mod before the zone sta
   Target: at most 60% of Kontakt's windows on Areia, Vista and ANALOG with C1/C8 unchanged.
 - **Fast storage: a 12 KiB head (P6.1c, 2026-10-29).** At load, `kontra_stream::fast_storage`
   times 16 direct (uncached) 4 KiB reads spread over the instrument's first resident sample
-  file, once per device per process. When the lower quartile is at most 1 ms, `P` is
+  file, on every load. When the lower quartile is at most 1 ms, `P` is
   `min(P, 12 KiB)`. Otherwise, or when it can't measure (not Linux, no direct reads), the law's
   `P` holds; Kontakt sized its 60 KB for spinning disks. The S.Mod term is unchanged. Each page
   is due when its voice reaches it (`Sample::prefetch`), so the I/O thread reads the urgent
