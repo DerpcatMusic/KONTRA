@@ -60,7 +60,9 @@ impl View {
             let mut l = library.borrow_mut();
             l.get_or_insert_with(|| Library::open(path)).meta(p)
         };
-        if frame.filled {
+        // An overflowed frame has stale lists under new generations: the
+        // tree waits for the grown one rather than remember them as seen.
+        if frame.filled && !frame.overflow {
             let changes: Changes = self.live.refresh(face, self.slot, &*frame, &meta);
             if !changes.is_empty() {
                 self.revision += 1;
