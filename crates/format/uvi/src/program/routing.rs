@@ -17,9 +17,12 @@ use roxmltree::Node;
 use super::delay::dual_delay;
 use super::digital_eq::{digital_eq, gain_scale};
 use super::reverb::spark_verb;
-use super::shaper::{diode_clipper, wave_shaper};
-use super::sweep::{flanger, phasor};
+mod shaper;
+mod sweep;
+
 use super::{Library, Translator, db, flag, num};
+use shaper::{diode_clipper, wave_shaper};
+use sweep::{flanger, phasor};
 
 /// Effects a keygroup's voices run themselves (see [`Translator::voice_slots`]).
 const PER_VOICE: [&str; 2] = ["Gain", "ThreeBandShelves"];
