@@ -192,7 +192,7 @@ impl Table {
                 a
             } else {
                 let b = tap(hi);
-                std::array::from_fn(|c| a[c] + (b[c] - a[c]) * blend)
+                [a[0] + (b[0] - a[0]) * blend, a[1] + (b[1] - a[1]) * blend]
             };
         }
         missing
