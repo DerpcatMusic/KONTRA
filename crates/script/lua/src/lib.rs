@@ -20,6 +20,10 @@ use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread, Value, Variadic};
 pub mod alloc;
 mod interrupt;
 mod literal;
+mod save;
+mod ui;
+
+pub use ui::{Ui, Widget};
 
 #[global_allocator]
 static ROUTED: alloc::Routed = alloc::Routed;
@@ -53,6 +57,8 @@ impl Callbacks {
     pub const NOTE: u32 = 1;
     pub const RELEASE: u32 = 2;
     pub const CONTROLLER: u32 = 3;
+    /// The editor moved one of the script's widgets.
+    pub const WIDGET: u32 = 4;
 }
 
 /// A script that loaded once: its source, the modules `require` finds, and
@@ -65,6 +71,8 @@ pub struct Compiled {
     pub callbacks: Callbacks,
     /// Its controls' names ([`Foreign::controls`]).
     controls: Vec<String>,
+    /// The interface the script built as it loaded.
+    pub ui: Ui,
     /// The state that load built, for the first machine (a big program's
     /// state is tens of MB and a second of load).
     built: Mutex<Option<(Lua, Arc<AtomicU32>)>>,
@@ -103,12 +111,14 @@ pub fn compile(
                 .collect()
         })
         .unwrap_or_default();
+    let ui = ui::read(&lua);
     Ok(Compiled {
         source: source.into(),
         modules,
         saved,
         callbacks,
         controls,
+        ui,
         built: Mutex::new(Some((lua, checkpoints))),
     })
 }
@@ -129,17 +139,24 @@ pub struct SampleLoad {
 type Inputs = (Arc<HashMap<String, String>>, Arc<Vec<(String, String)>>);
 
 fn inputs(modules: &[(String, String)], saved: &[String]) -> Inputs {
-    let modules = modules
+    let mut modules: HashMap<String, String> = modules
         .iter()
         .map(|(name, text)| (module_name(name), text.clone()))
         .collect();
-    let saved = saved
+    let saved: Vec<(String, String)> = saved
         .iter()
         .filter_map(|s| s.split_once('='))
         .map(|(name, value)| (name.into(), value.into()))
         .collect();
+    // A project's saved state (`onSave`, see [`STATE`]) over the program's.
+    if let Some((_, state)) = saved.iter().find(|(name, _)| name == STATE) {
+        modules.insert(STATE.into(), format!("return {state}"));
+    }
     (Arc::new(modules), Arc::new(saved))
 }
+
+/// The saved entry, and the module `onLoad` takes, of what `onSave` returned.
+pub const STATE: &str = "__state";
 
 /// Runs a program's load once, off the audio thread (init, then `onLoad`),
 /// and returns the samples it loads; arguments as [`compile`]. A script that
@@ -188,6 +205,7 @@ impl Foreign for Compiled {
         let machine = built
             .map_or_else(|| state(&self.source, &self.modules, &self.saved), Ok)
             .map(|(lua, checkpoints)| LuaMachine {
+                reads: ui::Reads::new(&lua),
                 lua: Some(lua),
                 checkpoints,
                 slots: (0..COROUTINES).map(|_| Slot::default()).collect(),
@@ -289,6 +307,8 @@ struct Slot {
 struct LuaMachine {
     /// `None` when the state could not be built: every callback is refused.
     lua: Option<Lua>,
+    /// The script's widgets, for the editor's looks.
+    reads: Option<ui::Reads>,
     /// The interrupt's count for the current run.
     checkpoints: Arc<AtomicU32>,
     slots: Vec<Slot>,
@@ -300,6 +320,7 @@ impl LuaMachine {
     fn empty() -> Self {
         Self {
             lua: None,
+            reads: None,
             checkpoints: Arc::default(),
             slots: Vec::new(),
             spawned: Vec::new(),
@@ -433,6 +454,32 @@ impl Machine for LuaMachine {
         let set = lua.globals().get::<Function>("__control").ok()?;
         let thread = lua.create_thread(set.bind((id, value)).ok()?).ok()?;
         self.take(thread, context)
+    }
+
+    fn stage_widget(&mut self, n: u32, value: f64) {
+        let _arena = alloc::Scope::audio();
+        if let Some(lua) = &self.lua {
+            let g = lua.globals();
+            // The prelude's widget entry reads these when it starts.
+            let _ = g.raw_set("__widget", i64::from(n) + 1);
+            let _ = g.raw_set("__widget_value", value);
+        }
+    }
+
+    fn widget(&self, n: u32) -> Option<kontra_vm::WidgetLook> {
+        let _arena = alloc::Scope::audio();
+        self.reads.as_ref()?.widget(n)
+    }
+
+    fn widget_text(&self, n: u32, out: &mut Text) -> bool {
+        let _arena = alloc::Scope::audio();
+        self.reads.as_ref().is_some_and(|r| r.text(n, out))
+    }
+
+    fn save_state(&mut self, out: &mut [u8]) -> Option<usize> {
+        let _arena = alloc::Scope::audio();
+        self.checkpoints.store(0, Ordering::Relaxed);
+        save::state(self.lua.as_ref()?, out)
     }
 }
 

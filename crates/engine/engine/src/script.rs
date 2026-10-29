@@ -72,6 +72,8 @@ pub struct Callbacks {
     pub async_complete: Option<u32>,
     /// Every control by UI id, with its own `on ui_control` if it has one.
     pub ui_control: Vec<(i32, Option<u32>)>,
+    /// A front end's own widget moved ([`kontra_vm::Machine::stage_widget`]).
+    pub widget: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

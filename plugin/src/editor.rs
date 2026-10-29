@@ -81,7 +81,7 @@ impl Snapshot {
                 let revision = p.view.as_ref().map_or(0, |v| v.revision);
                 let tree = match same {
                     Some(v) if v.revision == revision => v.tree.clone(),
-                    _ => p.view.as_ref().map(|v| Arc::new(v.live.tree.clone())),
+                    _ => p.view.as_ref().map(|v| Arc::new(v.tree().clone())),
                 };
                 let library = match same {
                     Some(v) if !rescanned => v.library.clone(),

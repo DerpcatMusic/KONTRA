@@ -53,7 +53,7 @@ pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
 pub use kontra_ir as ir;
 pub use kontra_script_ui::{Key, KeyRange, MenuItem, Page};
 pub use kontra_time::SampleTime;
-pub use kontra_vm::{Action, Faults, Foreign, Op, Program, Text};
+pub use kontra_vm::{Action, Faults, Foreign, Op, Program, Text, Vm, WidgetLook};
 pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
 pub use plan::{

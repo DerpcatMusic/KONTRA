@@ -57,7 +57,7 @@ sampler-midi = ["sampler-core"]
 sampler-native = ["sampler-core", "sampler-ir", "sampler-kontakt", "sampler-ksp", "sampler-midi", "sampler-uvi"]
 sampler-perf = ["sampler-core", "sampler-ir", "sampler-kontakt", "sampler-midi", "sampler-uvi"]
 sampler-uvi = ["sampler-core", "sampler-ir", "sampler-kontakt", "sampler-midi", "sampler-parity", "sampler-script", "kontra-ui-model"]
-ui-shots = ["kontra-engine", "kontra-host", "kontra-stream", "kontra-ui", "kontra-ui-model", "mui"]
+ui-shots = ["kontra-engine", "kontra-host", "kontra-lua", "kontra-stream", "kontra-ui", "kontra-ui-model", "mui"]
 kontra-window = ["kontra-host", "kontra-plugin"]
 
 # Target DAG (01-LAYOUT.md §2). Not enforced yet: P8.6 turns these into errors.

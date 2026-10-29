@@ -64,8 +64,10 @@ local widget_meta = {
 			return items[rawget(w, "value")] or ""
 		end
 		if is_kind[key] then
-			return function(_, ...)
-				return widget(key, ...)
+			return function(parent, ...)
+				local w = widget(key, ...)
+				w.__parent = parent
+				return w
 			end
 		end
 		if string.match(key, "^%u") then
@@ -118,6 +120,10 @@ function __control(id, value)
 		c:setValue(value)
 	end
 end
+-- The UI the script builds, for the editor: every widget in the order the
+-- script made it (its index there names it), the page's size, picture and
+-- colour, and whether it asked for a performance view.
+__ui = { widgets = {}, width = 720, height = 480 }
 
 -- After the script's body: each persistent widget takes its saved value and
 -- runs its `changed`, before `onLoad` (lua.uvi.net, Widget::persistent:
@@ -164,6 +170,19 @@ widget = function(kind, name, value, ...)
 	end
 	w.value = value
 	w.items = items
+	if kind == "Knob" or kind == "Slider" or kind == "NumBox" then
+		-- `Knob(name, value, min, max, integer)`: the range by place too.
+		for at, key in ipairs({ "min", "max", "integer" }) do
+			if rawget(w, key) == nil then
+				w[key] = fields[at + 2]
+			end
+		end
+	end
+	if kind == "Image" and w.image == nil and type(name) == "string" then
+		-- `Image{path, ...}`: its first field is its picture.
+		w.image = name
+	end
+	table.insert(__ui.widgets, w)
 	if name ~= nil and __saved[name] ~= nil and kind ~= "Table" then
 		table.insert(saved_widgets, w)
 	end
@@ -171,6 +190,10 @@ widget = function(kind, name, value, ...)
 	local bounds = fields.bounds or {}
 	w.x, w.y = pos[1] or bounds[1] or 0, pos[2] or bounds[2] or 0
 	w.width, w.height = size[1] or bounds[3] or 0, size[2] or bounds[4] or 0
+	w.width_set, w.height_set = (size[1] or bounds[3]) ~= nil, (size[2] or bounds[4]) ~= nil
+	w.setStripImage = function(self, image, steps)
+		self.stripImage, self.stripSteps = image, steps
+	end
 	if kind == "Table" then
 		return table_widget(w, name, fields)
 	end
@@ -194,10 +217,18 @@ for _, kind in ipairs(kinds) do
 		return widget(kind, ...)
 	end
 end
-makePerformanceView = function() end
-setSize = function() end
-setBackground = function() end
-setBackgroundColour = function() end
+makePerformanceView = function()
+	__ui.performance = true
+end
+setSize = function(width, height)
+	__ui.width, __ui.height = tonumber(width) or __ui.width, tonumber(height) or __ui.height
+end
+setBackground = function(path)
+	__ui.background = path
+end
+setBackgroundColour = function(colour)
+	__ui.colour = colour
+end
 -- Enumerations whose values only need to be distinct (`Unit.Seconds`).
 local function enum()
 	local next_value = 0
@@ -773,6 +804,21 @@ __entries = {
 		local e = event(Event.NoteOff)
 		host_call("IgnoreEvent", e.id)
 		onRelease(e)
+	end,
+	-- The editor moved widget `__widget` (its place in `__ui.widgets`) to
+	-- `__widget_value`: its `changed` runs, as a click would. A button's
+	-- value stays a boolean (0 is true in Lua), a menu's an index.
+	[4] = function()
+		local w, v = __ui.widgets[__widget], __widget_value
+		if w == nil or rawget(w, "setValue") == nil then
+			return
+		end
+		if type(w.value) == "boolean" then
+			v = v ~= 0
+		elseif w.kind == "Menu" or rawget(w, "integer") == true then
+			v = math.floor(v + 0.5)
+		end
+		w:setValue(v)
 	end,
 	[3] = function()
 		onController({

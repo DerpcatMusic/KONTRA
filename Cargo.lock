@@ -5706,6 +5706,7 @@ version = "0.0.0"
 dependencies = [
  "kontra-engine",
  "kontra-host",
+ "kontra-lua",
  "kontra-stream",
  "kontra-ui",
  "kontra-ui-model",

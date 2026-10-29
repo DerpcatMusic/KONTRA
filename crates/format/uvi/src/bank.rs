@@ -128,6 +128,24 @@ impl Bank {
     }
 }
 
+impl Bank {
+    /// The member a script's picture path names: `./` and `../` lead up
+    /// from the script's folder, so the path below them first, then the
+    /// member name if it is unique.
+    pub(crate) fn resource(&self, path: &str) -> Option<Vec<u8>> {
+        let path = path.replace('\\', "/");
+        let below = path.trim_start_matches(['.', '/']);
+        let found = self.lookup(below).or_else(|| {
+            let name = below.rsplit('/').next()?.to_lowercase();
+            match self.by_name.get(&name).map(Vec::as_slice) {
+                Some([only]) => Some(*only),
+                _ => None,
+            }
+        })?;
+        self.read(self.directory.files.get(found)?).ok()
+    }
+}
+
 impl crate::program::Library for Bank {
     fn modules(&self) -> Vec<(String, Vec<u8>)> {
         self.directory

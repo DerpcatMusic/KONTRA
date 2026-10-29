@@ -92,6 +92,23 @@ pub fn load_with(
     Ok(unfinished.finish(swaps))
 }
 
+/// The files of the bank a program lies in, for its script's pictures.
+pub struct Resources(Option<bank::Bank>);
+
+impl Resources {
+    /// The bank of the program at `path`; reads nothing when it cannot open.
+    #[must_use]
+    pub fn open(path: &Path) -> Self {
+        Self(split(path).and_then(|(bank, _)| bank::Bank::open(&bank).ok()))
+    }
+
+    /// The file at a script's picture path (`../artwork/knob.png`).
+    #[must_use]
+    pub fn read(&self, path: &str) -> Option<Vec<u8>> {
+        self.0.as_ref()?.resource(path)
+    }
+}
+
 /// The bank a path lies in, and the member inside it (empty: the bank itself).
 fn split(path: &Path) -> Option<(PathBuf, String)> {
     let bank = path
