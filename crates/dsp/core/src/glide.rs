@@ -1,9 +1,8 @@
 //! Levels that move in a straight line to where they were last aimed, so a
 //! change never steps (a stepped gain clicks).
 
-/// A slot's 2×2 gain matrix and its dry and wet levels, gliding 10 ms (or
-/// [`Self::lasting`]) to where its settings put them, as the native engines
-/// ramp their gains.
+/// A slot's 2×2 gain matrix and its dry and wet levels, gliding 10 ms to
+/// where its settings put them, as the native engines ramp their gains.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Levels {
     glide: Glide<6>,
@@ -13,15 +12,9 @@ pub struct Levels {
 impl Levels {
     #[must_use]
     pub const fn new(rate: u32) -> Self {
-        Self::lasting(rate, 10)
-    }
-
-    /// Gliding `ms` milliseconds instead.
-    #[must_use]
-    pub const fn lasting(rate: u32, ms: u32) -> Self {
         Self {
             glide: Glide::new(),
-            frames: rate * ms / 1000,
+            frames: rate / 100,
         }
     }
 
@@ -44,6 +37,48 @@ impl Levels {
         for f in io {
             let [ll, lr, rl, rr, ..] = self.glide.next();
             *f = [ll * f[0] + lr * f[1], rl * f[0] + rr * f[1]];
+        }
+    }
+}
+
+/// An output fader and balance: the gain follows a one-pole, each channel's
+/// balance gain moves at most 1 per `slew` frames.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fader {
+    gain: f32,
+    balance: [f32; 2],
+    coef: f32,
+    step: f32,
+    aimed: bool,
+}
+
+impl Fader {
+    #[must_use]
+    pub fn new(rate: u32, tau_ms: f32, slew_ms: f32) -> Self {
+        let frames = |ms: f32| ms * rate as f32 / 1000.0;
+        Self {
+            gain: 1.0,
+            balance: [1.0; 2],
+            coef: 1.0 - (-1.0 / frames(tau_ms).max(1.0)).exp(),
+            step: 1.0 / frames(slew_ms).max(1.0),
+            aimed: false,
+        }
+    }
+
+    /// `io` at `gain`, its channels at `balance`. The first call lands at once.
+    pub fn process(&mut self, io: &mut [[f32; 2]], gain: f32, balance: [f32; 2]) {
+        if !self.aimed {
+            (self.gain, self.balance, self.aimed) = (gain, balance, true);
+        }
+        if [self.gain, gain] == [1.0; 2] && [self.balance, balance] == [[1.0; 2]; 2] {
+            return;
+        }
+        for f in io {
+            self.gain += (gain - self.gain) * self.coef;
+            for ((b, to), x) in self.balance.iter_mut().zip(balance).zip(f.iter_mut()) {
+                *b += (to - *b).clamp(-self.step, self.step);
+                *x *= *b * self.gain;
+            }
         }
     }
 }
@@ -110,7 +145,21 @@ impl<const N: usize> Glide<N> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Glide, Levels};
+    use super::{Fader, Glide, Levels};
+
+    #[test]
+    fn a_fader_settles_as_a_one_pole_and_its_balance_slews() {
+        let mut f = Fader::new(1000, 10.0, 50.0);
+        f.process(&mut [[1.0; 2]], 1.0, [1.0; 2]);
+        let mut io = [[1.0; 2]; 50];
+        f.process(&mut io, 0.5, [1.0, 0.5]);
+        // The gain is e^-1 of the way left after 10 ms; the right channel
+        // falls 0.02 a frame and lands on 0.5 after 25.
+        let left = (io[9][0] - 0.5) / 0.5;
+        assert!((left - (-1.0f32).exp()).abs() < 0.02, "{left}");
+        let right = |n: usize| io[n][1] / io[n][0];
+        assert!((right(23) - 0.52).abs() < 1e-4 && (right(24) - 0.5).abs() < 1e-6);
+    }
 
     #[test]
     fn it_starts_where_first_aimed_then_glides_in_a_line() {

@@ -110,16 +110,16 @@ impl Engine {
         moved.then_some(mix)
     }
 
-    /// The group's and the instrument's level, combined.
+    /// The group's level, with the instrument's tune (its level and pan
+    /// are the output fader's).
     fn level(&self, zone: &Zone) -> Level {
         let group = self
             .groups
             .get(zone.group as usize)
             .map_or(Level::UNITY, |g| g.level);
         Level {
-            gain: group.gain * self.instrument.gain,
-            pan: group.pan + self.instrument.pan,
             tune: group.tune + self.instrument.tune,
+            ..group
         }
     }
 

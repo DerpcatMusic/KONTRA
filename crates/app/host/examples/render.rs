@@ -368,17 +368,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             body: Event::Ump([word, 0]),
         })
         .collect();
-    // KONTRA_CC="11=127,1=100": controllers sent with the note-on.
-    let mut first: Vec<Timed<Event>> = std::env::var("KONTRA_CC")
+    // KONTRA_CC="11=127,1=100": controllers sent with the note-on;
+    // "7:64@1.5" (or "7=64@1.5") sends one 1.5 s into the render, on its frame.
+    let rides: Vec<(usize, Event)> = std::env::var("KONTRA_CC")
         .unwrap_or_default()
         .split(',')
-        .filter_map(|pair| {
-            let (cc, v) = pair.split_once('=')?;
+        .filter_map(|entry| {
+            let (cc, rest) = entry.split_once(['=', ':'])?;
+            let (v, at) = rest.split_once('@').unwrap_or((rest, "0"));
             let (cc, v): (u32, u32) = (cc.trim().parse().ok()?, v.trim().parse().ok()?);
-            Some(Timed {
-                at: SampleTime(0),
-                body: Event::Ump([0x20B0_0000 | (cc & 127) << 8 | (v & 127), 0]),
-            })
+            let at: f32 = at.trim().parse().ok()?;
+            let word = 0x20B0_0000 | (cc & 127) << 8 | (v & 127);
+            Some(((at * RATE as f32) as usize, Event::Ump([word, 0])))
+        })
+        .collect();
+    let mut first: Vec<Timed<Event>> = (rides.iter().filter(|r| r.0 == 0))
+        .map(|&(_, body)| Timed {
+            at: SampleTime(0),
+            body,
         })
         .collect();
     first.push(on);
@@ -418,6 +425,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             n if n == hold => std::slice::from_ref(&off),
             _ => &[],
         };
+        let now = engine.now().0;
+        let ridden: Vec<Timed<Event>> = (rides.iter())
+            .filter(|r| r.0 > 0 && r.0 / 512 == n)
+            .map(|&(frame, body)| Timed {
+                at: SampleTime(now + (frame % 512) as u64),
+                body,
+            })
+            .chain(input.iter().copied())
+            .collect();
+        let input = ridden.as_slice();
         // A bounce waits for the disk; KONTRA_LIVE=1 plays in real time
         // without waiting, as a host would, so late pages show as missing frames.
         let started = std::time::Instant::now();

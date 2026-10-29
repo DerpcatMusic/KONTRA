@@ -100,6 +100,7 @@ pub fn prepare(
     plan.inserts.clone_from(&instrument.inserts);
     plan.sends.clone_from(&instrument.sends);
     plan.main.clone_from(&instrument.main);
+    plan.output = instrument.output;
     plan.slot_laws.clone_from(&instrument.slot_laws);
     plan.slot_shapes.clone_from(&instrument.slot_shapes);
     plan.impulses = instrument

@@ -65,6 +65,7 @@ pub use transport::Play;
 pub use ui::ControlLook;
 
 use behaviour::Behaviour;
+use buses::BusState;
 use group_masks::GroupMasks;
 use ledger::{Ledger, Note, Origin};
 use queue::{EventQueue, Work};
@@ -110,24 +111,6 @@ struct Slot {
     factor: f32,
     /// Its group's inserts that run on this voice alone.
     rack: Vec<voice_rack::Unit>,
-}
-
-pub(crate) struct BusState {
-    pub(crate) gain: f32,
-    enabled: bool,
-    /// Its rack, on what it carries.
-    rack: racks::Rack,
-    /// -1..=1 balance after the rack.
-    pub(crate) pan: f32,
-    /// Pan and volume changes glide: the balance in a line over 50 ms, the
-    /// volume over 10 ms (measured natively: linear 50 ms; a one-pole of 3.7 ms,
-    /// the same 8 ms from 10 to 90%). An effect's bypass switches at once.
-    balance: kontra_dsp::core::Levels,
-    fader: kontra_dsp::core::Levels,
-    /// Later buses it feeds, and their levels.
-    sends: Box<[ir::BusSend]>,
-    to_main: bool,
-    mix: Box<[[f32; 2]]>,
 }
 
 /// Per control, the parameters a script set other than its value.
@@ -183,8 +166,10 @@ pub struct Engine {
     /// Calls per action the engine does not implement yet, by action id.
     unhandled: Box<[u32]>,
     called: Box<[u32]>,
-    /// The instrument's level, pan and tune (a script's group -1).
+    /// The instrument's level, pan and tune (a script's group -1); level and
+    /// pan move [`Self::output`], after every effect.
     instrument: Level,
+    output: kontra_dsp::core::Fader,
     /// The instrument insert rack, on the final mix.
     rack: racks::Rack,
     /// One single-slot rack per send slot, its input, then the main rack.
@@ -213,6 +198,7 @@ impl Engine {
     /// stolen voices can fade. Not real-time.
     #[must_use]
     pub fn new(plan: Arc<Plan>, stream: StreamClient, rate: u32) -> Self {
+        let out = plan.output;
         let shared: Box<[Group]> = plan.groups.clone().into();
         let rack = racks::Rack::new(&plan.inserts, rate, &[]);
         let sends: Box<[racks::Rack]> = plan
@@ -238,27 +224,7 @@ impl Engine {
                 rack: Vec::new(),
             })
             .collect();
-        let buses = plan
-            .buses
-            .iter()
-            .map(|b| BusState {
-                gain: b.gain,
-                enabled: b.enabled,
-                rack: racks::Rack::routed(
-                    &b.inserts,
-                    rate,
-                    racks::Responses(&[], &[]),
-                    &b.mods,
-                    &b.blends,
-                ),
-                pan: b.pan,
-                balance: kontra_dsp::core::Levels::lasting(rate, 50),
-                fader: kontra_dsp::core::Levels::new(rate),
-                sends: b.sends.clone().into(),
-                to_main: b.to_main,
-                mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
-            })
-            .collect();
+        let buses = plan.buses.iter().map(|b| BusState::new(b, rate)).collect();
         let notes = Ledger::new(plan.notes);
         let capacity = notes.capacity();
         // `$NUM_GROUPS` counts every group, those without zones too (ANALOG
@@ -325,7 +291,12 @@ impl Engine {
             control_pars,
             ui,
             ids: callbacks::Ids::START,
-            instrument: Level::UNITY,
+            instrument: Level {
+                gain: 10f32.powf(out.volume_db / 20.0),
+                pan: out.pan,
+                tune: 0.0,
+            },
+            output: kontra_dsp::core::Fader::new(rate, out.volume_tau_ms, out.pan_slew_ms),
             rack,
             sends,
             taps,
