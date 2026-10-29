@@ -209,8 +209,7 @@ impl<L: Library> Translator<'_, '_, L> {
             ..ir::Group::DEFAULT
         };
         // Per-voice gain and shelves, else a one-pole filter, slot by slot.
-        let (filters, mods) = filters::keygroup(kg);
-        group.mods = mods;
+        let filters = filters::keygroup(kg);
         group.inserts = (0..group.inserts.len().max(filters.len()))
             .map(|n| {
                 let own = group.inserts.get(n).cloned().flatten();
@@ -218,6 +217,7 @@ impl<L: Library> Translator<'_, '_, L> {
             })
             .collect();
         let program = self.program;
+        self.cutoff_routes(&mut group, kg);
         let pans = kg
             .children()
             .filter(|c| c.has_tag_name("Connections"))
@@ -306,7 +306,7 @@ impl<L: Library> Translator<'_, '_, L> {
     /// joins it. A ratio of 0 makes one only in a scripted program.
     /// ponytail: joined connections share one amount; split them if a
     /// script sets two players of a keygroup apart.
-    fn add_route(
+    pub(super) fn add_route(
         &mut self,
         group: &mut ir::Group,
         connection: Node,
@@ -677,7 +677,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 continue;
             }
             if modulation::script_route(self.program, connection).is_some()
-                || filters::freq_route(connection).is_some()
+                || self.routed.contains_key(&connection.id())
                 || gain_route(self.program, connection).is_some()
                 || [PITCH, PAN]
                     .into_iter()

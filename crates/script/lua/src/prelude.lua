@@ -217,13 +217,15 @@ local flags = { Bypass = true, Mute = true, Solo = true, MidiMute = true, Stream
 local containers = { "layers", "keygroups", "inserts", "auxs", "oscillators", "modulations", "eventProcessors", "busRouters" }
 
 -- A connection the engine carries, from the format's `{Source, Destination,
--- Ratio, route key, amount per unit of Ratio}`: setting its Ratio sets its
--- route's amount. One metatable for all keeps a big program's thousands light.
-local fields_at = { Source = 1, Destination = 2, Ratio = 3 }
+-- Ratio, route key, amount per unit of Ratio, Bypass}`: setting its Ratio or
+-- Bypass sets its route's amount (none while bypassed). One metatable for
+-- all keeps a big program's thousands light.
+local fields_at = { Source = 1, Destination = 2, Ratio = 3, Bypass = 6 }
 local connection_definitions = {
 	{ name = "Ratio", id = "Ratio", default = 0, min = -1, max = 1 },
 	{ name = "Source", id = "Source", default = 0, min = 0, max = 1 },
 	{ name = "Destination", id = "Destination", default = 0, min = 0, max = 1 },
+	{ name = "Bypass", id = "Bypass", default = 0, min = 0, max = 1 },
 }
 local Connection = {}
 Connection.__index = function(c, key)
@@ -242,7 +244,13 @@ end
 function Connection.setParameter(c, name, value)
 	if name == "Ratio" and type(value) == "number" then
 		c[3] = value
-		host_call("RouteAmount", c[4], math.floor(value * c[5] * 1e6 + 0.5))
+	elseif name == "Bypass" then
+		c[6] = value == true or (type(value) == "number" and value ~= 0)
+	else
+		return
+	end
+	if c[4] >= 0 then
+		host_call("RouteAmount", c[4], c[6] and 0 or math.floor(c[3] * c[5] * 1e6 + 0.5))
 	end
 end
 

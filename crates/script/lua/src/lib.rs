@@ -623,4 +623,29 @@ mod tests {
             .collect();
         assert_eq!(amounts, [vec![42, 0], vec![42, -125_000]]);
     }
+
+    #[test]
+    fn a_connections_bypass_takes_its_route_amount_away_and_gives_it_back() {
+        // A place holder (key −1) ahead of a bypassed route keeps the order.
+        let tree = "return {params={},db=0,pan=0,layers={{params={},keygroups={
+            {params={},group=0,links={1,2}}}}},
+            connections={{'@VoiceParam Velocity','Freq',0.5,-1,1,false},{'@MIDI CC 1','Freq',0.5,7,1,true}}}";
+        let source = "local c = Program.layers[1].keygroups[1]:getParameterConnections('Freq')
+            assert(c[2]:getParameter('Source') == '@MIDI CC 1' and c[2]:getParameter('Bypass'))
+            c[1]:setParameter('Bypass', true)
+            c[2]:setParameter('Ratio', 0.25)
+            c[2]:setParameter('Bypass', false)
+            c[2]:setParameter('Bypass', true)";
+        let modules = [("__program.lua".to_string(), tree.to_string())];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
+        let amounts: Vec<_> = (log.0.iter())
+            .filter(|(a, _)| *a == Action::RouteAmount)
+            .map(|(_, ints)| ints.clone())
+            .collect();
+        assert_eq!(amounts, [vec![7, 0], vec![7, 250_000], vec![7, 0]]);
+    }
 }
