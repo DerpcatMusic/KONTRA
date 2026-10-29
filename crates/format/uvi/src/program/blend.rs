@@ -152,10 +152,7 @@ pub(super) fn keyed(program: Node, connection: Node, route: Route) -> Option<Rou
                 ..route
             });
         }
-        Some(Timed::Mapped(t)) => {
-            let bend = t.source == ir::Source::PitchBend;
-            (None, term(t, Vec::new()), bend)
-        }
+        Some(Timed::Mapped(t)) => (None, term(t, Vec::new()), matrix::centres(connection)),
         None => {
             let t = ir::Transfer {
                 source: route.source,
