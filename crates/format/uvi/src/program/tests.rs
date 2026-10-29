@@ -1082,17 +1082,45 @@ fn an_aux_eq_past_four_bands_runs_as_eqs_in_series() {
 #[test]
 fn a_keygroup_fade_uses_the_saved_native_curve() {
     let xml = r#"<Program Gain="1"><Layers><Layer Gain="1" Pan="0"><Keygroups>
-      <Keygroup LowKey="40" HighKey="80" LowKeyFade="20" HighKeyFade="20" LowVelocity="1" HighVelocity="127" FadeCurve="2">
+      <Keygroup LowKey="40" HighKey="80" LowKeyFade="20" HighKeyFade="20" LowVelocity="1" HighVelocity="127" LowVelocityFade="20" FadeCurve="2">
         <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
       </Keygroup></Keygroups></Layer></Layers></Program>"#;
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let group = &out.groups[0];
     assert_eq!(group.zones[0].key_fade, (0, 0));
-    let transfer = group.shapers.iter().find(|t| t.source == ir::Source::Key).unwrap();
-    for (key, native) in [(40, 0.0), (45, 0.382_683_46), (50, 0.707_106_77), (60, 1.0), (70, 0.707_106_77), (80, 0.0)] {
+    let transfer = group
+        .shapers
+        .iter()
+        .find(|t| t.source == ir::Source::Key)
+        .unwrap();
+    for (key, native) in [
+        (40, 0.0),
+        (45, 0.382_683_46),
+        (50, 0.707_106_77),
+        (60, 1.0),
+        (70, 0.707_106_77),
+        (80, 0.0),
+    ] {
         assert!((transfer.apply(key as f32 / 127.0) - native).abs() < 1e-6);
     }
+    let velocity = group
+        .shapers
+        .iter()
+        .find(|t| t.source == ir::Source::Velocity)
+        .unwrap();
+    for (v, native) in [(1, 0.0), (6, 0.382_683_46), (11, 0.707_106_77), (21, 1.0)] {
+        assert!((velocity.apply(v as f32 / 127.0) - native).abs() < 1e-6);
+    }
+    let linear = xml.replace("FadeCurve=\"2\"", "FadeCurve=\"1\"");
+    let doc = roxmltree::Document::parse(&linear).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let transfer = out.groups[0]
+        .shapers
+        .iter()
+        .find(|t| t.source == ir::Source::Key)
+        .unwrap();
+    assert!((transfer.apply(45.0 / 127.0) - 0.146_446_62).abs() < 1e-6);
 }
 
 #[test]

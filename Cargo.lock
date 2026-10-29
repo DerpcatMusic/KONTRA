@@ -2458,6 +2458,7 @@ dependencies = [
  "dirs",
  "kontra-format",
  "kontra-ir",
+ "kontra-law",
  "roxmltree",
  "thiserror 2.0.21",
  "uvi-file",
