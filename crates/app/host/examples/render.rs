@@ -343,8 +343,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
     first.push(on);
+    // KONTRA_CHORDS=1: instead of the one note, 64 steps of 4-note chords
+    // 128 ms apart across the keyboard, each held two steps (contracts C2/C8;
+    // with KONTRA_LIVE=1 and a cold page cache, late pages show as missing).
+    let chords = std::env::var_os("KONTRA_CHORDS").is_some();
+    let hold = if chords { 64 * 12 + 24 } else { hold };
+    let keys = |step: usize| (0..4).map(move |i| 36 + ((step * 7 + i * 5) % 60) as u8);
     for n in 0..(hold + 2 * RATE as usize / 512) {
+        let step = n / 12;
+        let chord: Vec<Timed<Event>> = if chords && n % 12 == 0 && step < 64 {
+            let offs = (step.checked_sub(2).into_iter().flat_map(keys)).map(|k| {
+                Event::NoteOff(HostPattern {
+                    key: i32::from(k),
+                    ..pattern
+                })
+            });
+            let ons = keys(step).map(|key| Event::NoteOn {
+                note: HostNote { key, ..host },
+                velocity: velocity.into(),
+                tune: 0.0,
+            });
+            (offs.chain(ons))
+                .map(|body| Timed {
+                    at: SampleTime(0),
+                    body,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let input: &[Timed<Event>] = match n {
+            _ if chords => &chord,
             0 => &first,
             n if n == RATE as usize / 512 => cc.as_slice(),
             n if n == hold => std::slice::from_ref(&off),
