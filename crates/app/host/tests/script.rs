@@ -351,6 +351,42 @@ fn a_saved_menu_restores_the_entry_at_its_index() {
     assert_eq!(e.last_message(), "6 -1 -1");
 }
 
+/// `read_persistent_var` reloads a saved text array at once, mid-init
+/// ("instantly reloads", KSP manual: Areia sets its articulation labels
+/// from one); `get_font_id` numbers pictures past the built-in fonts and
+/// `show_library_tab` does nothing.
+#[test]
+fn a_saved_text_array_reads_back_mid_init_and_fonts_get_ids() {
+    let source = "on init
+            declare !names[2]
+            make_persistent(!names)
+            read_persistent_var(!names)
+            declare @at_init
+            @at_init := !names[1]
+            declare $f
+            declare $g
+            declare $h
+            declare $n
+            $f := get_font_id(\"font_a\")
+            $g := get_font_id(\"font_b\")
+            $h := get_font_id(\"font_a\")
+            $n := get_font_id(\"7\")
+            show_library_tab()
+        end on
+        on note
+            message(@at_init & \" \" & $f & \" \" & $g & \" \" & $h & \" \" & $n)
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    let saved = ["!names Spiccato\nSustained".into()];
+    plan.scripts = vec![kontra_host::script::plan(&script, &saved, &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "Sustained 26 27 26 7");
+    assert_eq!(e.font(0, 27), Some("font_b"));
+}
+
 /// A new menu holds its first entry's value (Kontakt 8.13 oracle: entries
 /// 10, 20, 30 read 10; Mono & Glide's "Off" -1 reads -1).
 #[test]

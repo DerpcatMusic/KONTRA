@@ -502,6 +502,7 @@ mod tests {
                 ints,
                 texts: &[],
                 cells: &mut cells,
+                text_cells: &mut [],
                 text_out: &mut out,
             };
             s.call(0, None, None, &mut c)
