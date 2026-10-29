@@ -17,6 +17,31 @@ fn a_multi_lfo_saw_uses_the_native_two_cycle_wave() {
     assert_eq!(weights[5], 0.0);
 }
 
+#[test]
+fn a_mixed_lfo_uses_the_native_normalization_candidates() {
+    let doc = roxmltree::Document::parse(
+        r#"<MultiLFO SineDepth="1" TriangleDepth="0.5" SawDepth="0.5" NormalizeOutput="1" Freq="1" Retrigger="1"/>"#,
+    )
+    .unwrap();
+    let (lfo, _) = modulation::shape(doc.root_element(), false).unwrap();
+    let ir::Wave::Multi { weights, .. } = lfo.wave else {
+        panic!("expected a mixed wave");
+    };
+    // Native 0x14114a7a0 returns unity; the dense-maximum approximation
+    // incorrectly scales this setting to 0.8261.
+    assert!((weights[0] + 1.0).abs() < 1e-6, "{}", weights[0]);
+
+    let doc = roxmltree::Document::parse(
+        r#"<MultiLFO SineDepth="0.7" TriangleDepth="0.3" SawDepth="0.4" SquareDepth="0.3" NoiseDepth="0.2" PulseWidth="0.4" NormalizeOutput="1" Freq="1" Retrigger="1"/>"#,
+    )
+    .unwrap();
+    let (lfo, _) = modulation::shape(doc.root_element(), false).unwrap();
+    let ir::Wave::Multi { weights, .. } = lfo.wave else {
+        panic!("expected a mixed wave");
+    };
+    assert!((weights[0] + 0.7 * 0.807_960_9).abs() < 1e-6);
+}
+
 /// Every name is a sample of its own, 1000 frames long.
 struct Stub;
 

@@ -549,8 +549,8 @@ fn shape_value(node: Node, user: bool) -> Option<(ir::Lfo, f32)> {
 /// `s·sin 2πp + t·tri + w·(1 − 2·fract(2p)) + q·pulse + n·noise`, the triangle from
 /// +1 at 0 and the pulse high below `PulseWidth`, the noise a new uniform
 /// draw each half cycle, all negated by `Invert`. `NormalizeOutput` divides
-/// by the mix's peak when it passes 1 (0x14114a7a0 evaluates the waves at
-/// their extrema and adds `|n|`); here that is folded into the weights.
+/// by its native candidate peak when it passes 1 (0x14114a7a0); here that is
+/// folded into the weights.
 fn multi(node: Node) -> Option<ir::Wave> {
     let depth = |name| num(node, name, 0.0).ok().map(|d| d as f32);
     let (s, t, w, q, n) = (
@@ -561,34 +561,59 @@ fn multi(node: Node) -> Option<ir::Wave> {
         depth("NoiseDepth")?,
     );
     let width = num(node, "PulseWidth", 0.5).ok()?.clamp(0.0, 1.0) as f32;
-    let at = |p: f32| {
+    let (sd, td, wd, qd, widthd) = (
+        f64::from(s),
+        f64::from(t),
+        f64::from(w),
+        f64::from(q),
+        f64::from(width),
+    );
+    let at = |p: f64| {
         let tri = if p < 0.5 {
             1.0 - 4.0 * p
         } else {
             4.0 * p - 3.0
         };
-        let pulse = if p < width { 1.0 } else { -1.0 };
-        s * (std::f32::consts::TAU * p).sin()
-            + t * tri
-            + w * (1.0 - 2.0 * (2.0 * p).fract())
-            + q * pulse
+        let pulse = if p < widthd { 1.0 } else { -1.0 };
+        let saw = if p < 0.5 {
+            1.0 - 4.0 * p
+        } else {
+            3.0 - 4.0 * p
+        };
+        sd * (std::f64::consts::TAU * p).sin() + td * tri + wd * saw + qd * pulse
     };
-    // Dense phases and both sides of the pulse's edges find the peak.
-    const STEPS: u16 = 4096;
-    let edges = [0.0, width - 1e-6, width, 1.0 - 1e-6];
-    // ponytail: one peak per mix for the thread's life (a bank has a few
-    // dozen); every route through the LFO asks again.
+    // These are the native candidate phases, not the true continuous maximum.
+    let extrema = |numerator: f64| {
+        let phase = (numerator / (std::f64::consts::TAU * sd)).acos() / std::f64::consts::TAU;
+        if phase.is_nan() {
+            0.0
+        } else {
+            phase.clamp(0.0, 1.0)
+        }
+    };
     thread_local! {
         static PEAKS: RefCell<HashMap<[u32; 5], f32>> = RefCell::new(HashMap::new());
     }
     let key = [s, t, w, q, width].map(f32::to_bits);
     let wave = PEAKS.with_borrow_mut(|peaks| {
         *peaks.entry(key).or_insert_with(|| {
-            (0..STEPS)
-                .map(|i| f32::from(i) / f32::from(STEPS))
-                .chain(edges)
-                .map(|p| at(p).abs())
-                .fold(0.0, f32::max)
+            let a = extrema(4.0 * (td + wd));
+            let b = extrema(4.0 * (wd - td));
+            [
+                0.0,
+                1.0 - a,
+                widthd - 0.001,
+                widthd + 0.001,
+                0.499,
+                0.501,
+                b,
+                1.0 - b,
+                0.999,
+                0.0,
+            ]
+            .into_iter()
+            .map(|p| at(p).abs())
+            .fold(0.0, f64::max) as f32
         })
     });
     let peak = wave + n.abs();
