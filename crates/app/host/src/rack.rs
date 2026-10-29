@@ -97,6 +97,8 @@ pub struct Part {
     /// What the engine plays, to measure it again (auto-align); None for
     /// an engine built elsewhere.
     pub plan: Option<Arc<Plan>>,
+    /// How late it sounds at its latest, in ms, once auto-align measured it.
+    pub delay_ms: Option<f32>,
 }
 
 /// What the rack keeps to save a part's scripts.
@@ -253,6 +255,7 @@ impl Rack {
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
         let part_info = Part {
             plan: Some(plan),
+            delay_ms: None,
             path,
             name: loaded.name,
             diagnostics: loaded.diagnostics,
@@ -319,6 +322,13 @@ impl Rack {
             p.solo = solo;
             p.mute = mute;
             self.resend_mix();
+        }
+    }
+
+    /// Records `part`'s measured attack delay (auto-align), saved with it.
+    pub fn set_delay(&mut self, part: usize, ms: f32) {
+        if let Some(Some(p)) = self.parts.get_mut(part) {
+            p.delay_ms = Some(ms);
         }
     }
 

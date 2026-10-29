@@ -67,7 +67,6 @@ pub struct Shared {
     /// The editor's copy of the rack, refreshed by [`Tick`].
     view: Mutex<editor::Snapshot>,
     dirty: std::sync::atomic::AtomicBool,
-    align: Mutex<align::Align>,
     /// The latency to report, in frames; the audio thread reads it.
     latency: AtomicU32,
 }
@@ -176,7 +175,7 @@ impl BackgroundTask for Tick {
                 Request::Ui(edit) => editor::apply(rack, edit),
             }
         }
-        let latency = lock(&p.shared.align).update(p.align.value(), rack);
+        let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
         rack.tick();
         lock(&p.shared.view).refresh(rack, report);
@@ -227,7 +226,6 @@ impl PluginLogic for Kontra {
         };
         let (rack, audio) = Rack::new(rate, store, c.max_block_size);
         *lock(&p.shared.player) = Some(rack.player());
-        *lock(&p.shared.align) = align::Align::default();
         let previous = lock(&p.shared.rack).replace(rack).map(|r| r.save());
         if let Some(saved) = previous.filter(|s| !s.parts.is_empty()) {
             let mut requests = lock(&p.shared.requests);
