@@ -152,29 +152,48 @@ not drawn yet.
 
 ### 5.3 The editor (lane D, 2026-10-29)
 
-v2's look (graphite neutrals, square edges, hairlines, part colours a
-golden angle apart), rebuilt from first principles: one primary action per
-view, fewer controls on screen, details on demand. `kontra-ui::app` draws
-it from a plain `App` the host fills and hands back `Action`s; every piece
-comes from `kit` (button, icon button, tab, latch, knob, fader, field,
-list row, menu, popup, sheet, meter) and `keyboard`. Hover, press, value
-and layout changes ease through mui springs; once they settle the editor
-asks for no frames (`tests/app.rs`), so idle costs nothing.
+v3 looks and works like v2: the same layout, density, features and visual
+language (graphite neutrals, square edges, hairlines, part colours a golden
+angle apart). The user's call (2026-10-29), after a first cut that dropped
+tabs and the mixer: v2's only faults were walls of text, inline rows of
+buttons and nothing that floats. So three things change and nothing else:
 
-| v2 | v3 |
+1. Long text is cut to one line; the rest is its tooltip (articulation
+   names, part names, Info values, report entries, which open in place).
+2. Choices are dropdowns: preset, MIDI channel, output, velocity
+   (Auto/64/127), sort, filter, mixer strip width and output layout, size.
+3. Menus, pickers, what a part needs (a warning icon with a popover),
+   Settings and About float.
+
+`kontra-ui::app` draws it from a plain `App` the host fills and hands back
+`Action`s. Every piece is written once in `kit` (button, icon button, tab,
+latch, knob, slider, nudge, dropdown, field, list row, menu, popup, sheet,
+meter), `icon` and `keyboard`; the rack and the mixer share the pan, solo,
+mute and output controls. Hover, press, value and layout changes ease
+through mui springs; once they settle the editor asks for no frames
+(`tests/app.rs`), so idle costs nothing.
+
+| area | as in v2 |
 |---|---|
-| Rack · Mixer · Report tabs | the rack alone; Report is a panel opened from the header's warning or the menu; Mixer is dropped until a view needs more than each strip's level, pan, solo and mute |
-| header: CPU, voices, RAM, disk, master, keyboard, MIDI thru, Panic, menu | CPU alone (the rest is its tooltip), master, Panic, a warning when something did not load, menu (Settings, Report, About); MIDI thru moves to Settings |
-| browser: two lists with two searches, A–Z, filter, add, collapse, Favorites and Recent rows | one search, Kontakt/UVI, a star filter and one list that drills from libraries into presets; adding a folder moves to Settings, collapsing to the header |
-| part strip: name, preset step, MIDI, output, pan, volume, tune, S, M, more, close | name (library in its tooltip), preset step, channel (a 4×4 grid), volume and pan knobs with their values as tooltips, S, M, more (Duplicate, Remove) |
-| part tabs: Articulations, Mapping, Sound, Info, Scripts, the current articulation, velocity Auto/64/127 | Interface and Articulations, each shown only when the part has one; Info is the name's tooltip; Scripts goes to the Report; Mapping and Sound come back as they are ported |
-| keyboard: range, a hint line, octave, collapse | range (the hint is its tooltip), octave, collapse; each part's span drawn over its keys |
+| header | browser toggle, KONTRA, CPU · VOICES · RAM · DISK, master slider with dB and meter, keyboard toggle, MIDI Thru, Panic, a warning that opens the Report, menu (Settings, About) |
+| main | Rack · Mixer · Report tabs |
+| browser | search, A–Z ▾, filter ▾, add folder, hide; Kontakt / Falcon·UVI with a count; Favorites and Recent; libraries; below, the chosen library's presets search, name, star, count and folder tree |
+| part header | colour edge, fold, name, preset ▾, ‹ ›, channel ▾, output ▾, pan, volume knob and readout, tune (drag), S, M, activity dot, more, × |
+| part tabs | Interface (when it has one), Articulations, Mapping, Sound, Info, Scripts; the current articulation; needs ⚠; velocity ▾ |
+| articulations | count, Keys; rows with a drag grip, colour, name, default, key, more (Make default) |
+| mixer | strip width ▾, outputs ▾; a strip per part: colour, name, kind, pan, fader and meter, dB, S, M, output ▾ |
+| report | Copy diagnostics, Export…, Log folder, Refresh, a filter, a count; one row per entry, opening in place |
+| keyboard | range (the hint line is its tooltip), octave, hide; pitch and mod wheels; keys tinted by the part that plays them, a band per part above, C labels |
 
-Measured with `examples/app_shot` (specimen, release, CPU): first frame
-0.3–0.7 ms, a frame when one is due 0.07–0.33 ms, and 0–46 frames of motion
-after an action. Lines: v2's theme, menu, keyboard, header, browser, rack,
-logs and editor are 12,240; v3's theme, kit, keyboard and app are 1,760,
-tests included.
+Mapping and Sound are tabs with a note until they are ported (next). v2's
+spectrum under the mixer is left out until the engine reports one.
+
+Measured with `examples/app_shot` (specimen, release, CPU, 1180×900): first
+frame 1.0 ms, a frame when one is due 0.2–0.8 ms, and at most 5 frames of
+motion after an action. Side by side with v2 in
+`PluginArtifacts/ui-v3/2026-10-29/side-by-side/`. Lines: v2's theme, menu,
+keyboard, header, browser, rack, mixer, logs and editor are 13,082; v3's
+theme, kit, icon, keyboard and app are 2,836.
 
 ## 6. Auto-align (`app/align`, feature `align`)
 
