@@ -3,12 +3,16 @@
 //! waits on a load, and it hands what the user does back as [`Edit`]s for
 //! the tick to carry out.
 
-use std::sync::Arc;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 
 use kontra_host::rack::{Event, HostNote, HostPattern, Mix, Rack};
+use kontra_host::ui::Library;
 use kontra_protocol::Stats;
-use kontra_ui::app::{Action, App, Part};
+use kontra_ui::app::{Action, App, Face, Part};
+use kontra_ui::{Pictures, layout};
+use kontra_ui_model::Interface;
 use moose::mui::MuiEditor;
 use moose::prelude::*;
 
@@ -18,9 +22,14 @@ use crate::{KontraParams, P, Request, lock};
 const REPORT: usize = 200;
 
 /// One rack part as the editor shows it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 struct PartView {
     slot: usize,
+    /// Which load of the part this is.
+    generation: u64,
+    path: Option<PathBuf>,
+    /// Its library's interface as the part loaded; copied once per load.
+    tree: Option<Arc<Interface>>,
     name: String,
     mix: Mix,
     solo: bool,
@@ -42,11 +51,23 @@ impl Snapshot {
     pub fn refresh(&mut self, rack: &Rack, report: Vec<String>) {
         let meters = rack.meters();
         let level = |slot: usize| meters.parts.get(slot).map_or(0.0, |[l, r]| l.max(*r));
+        let old = std::mem::take(&mut self.parts);
         self.parts = (rack.parts().iter().enumerate())
             .filter_map(|(slot, p)| {
                 let p = p.as_ref()?;
+                let generation = p.script.generation();
+                let tree = match old
+                    .iter()
+                    .find(|v| v.slot == slot && v.generation == generation)
+                {
+                    Some(v) => v.tree.clone(),
+                    None => p.view.as_ref().map(|v| Arc::new(v.live.tree.clone())),
+                };
                 Some(PartView {
                     slot,
+                    generation,
+                    path: p.path.clone(),
+                    tree,
                     name: p.name.clone(),
                     mix: p.mix,
                     solo: p.solo,
@@ -64,14 +85,21 @@ impl Snapshot {
         self.report.drain(..over);
     }
 
-    /// Fills `app` for a frame, keeping each part's own view state.
-    fn fill(&self, app: &mut App) {
+    /// Fills `app` for a frame, keeping each part's own view state; `shown`
+    /// is which load of each part the editor's faces are of.
+    fn fill(&self, app: &mut App, shown: &mut Vec<u64>) {
+        let mut old = std::mem::take(&mut app.parts);
         let parts = self.parts.iter().enumerate().map(|(n, p)| {
-            let (open, tab) = app
-                .parts
-                .get(n)
+            let old = old.get_mut(n);
+            let (open, tab) = old
+                .as_ref()
                 .map_or((true, Default::default()), |old| (old.open, old.tab));
+            let face = match old {
+                Some(old) if shown.get(n) == Some(&p.generation) => old.face.take(),
+                _ => p.tree.as_deref().map(|tree| face(tree, p.path.clone())),
+            };
             Part {
+                face,
                 name: p.name.clone(),
                 channel: p.mix.channel,
                 output: p.mix.output + 1,
@@ -87,6 +115,7 @@ impl Snapshot {
             }
         });
         app.parts = parts.collect();
+        *shown = self.parts.iter().map(|p| p.generation).collect();
         app.level = f64::from(self.level);
         app.stats.cpu = f64::from(self.stats.load) * 100.0;
         app.stats.voices = self.stats.voices;
@@ -94,10 +123,29 @@ impl Snapshot {
     }
 }
 
+/// A library's interface for the editor, laid out, its pictures read from
+/// the library at `path` off the UI thread.
+fn face(tree: &Interface, path: Option<PathBuf>) -> Face {
+    let mut tree = tree.clone();
+    let all = 0..tree.widgets.len();
+    layout::resolve(&mut tree, all);
+    let library = Mutex::new(None);
+    let pictures = Pictures::new(Box::new(move |p: &str| {
+        let path = path.as_deref()?;
+        let mut library = library.lock().ok()?;
+        library.get_or_insert_with(|| Library::open(path)).read(p)
+    }));
+    Face {
+        tree,
+        pictures,
+        gesture: Default::default(),
+    }
+}
+
 /// A user's edit to one rack part, or to the whole rack.
 pub struct Edit {
-    slot: Option<usize>,
-    action: Action,
+    pub(crate) slot: Option<usize>,
+    pub(crate) action: Action,
 }
 
 /// Carries out `edit` on the rack.
@@ -121,6 +169,7 @@ pub fn apply(rack: &mut Rack, edit: Edit) {
         Action::Solo(_, on) => return rack.set_solo_mute(slot, on, mute),
         Action::Mute(_, on) => return rack.set_solo_mute(slot, solo, on),
         Action::Remove(_) => return rack.remove(slot),
+        Action::Control { widget, value, .. } => return rack.control(slot, widget, value),
         _ => return,
     }
     rack.set_mix(slot, m);
@@ -135,7 +184,8 @@ fn part_of(action: &Action) -> Option<usize> {
         | Action::Output(n, _)
         | Action::Solo(n, _)
         | Action::Mute(n, _)
-        | Action::Remove(n) => Some(n),
+        | Action::Remove(n)
+        | Action::Control { part: n, .. } => Some(n),
         _ => None,
     }
 }
@@ -145,10 +195,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let watched = Arc::clone(&params);
     let dropping = Arc::clone(&params);
     let mut app = App::default();
+    let mut shown = Vec::new();
     MuiEditor::new(params, kontra_ui::ui(), (1180, 780), move |ui, bridge| {
         let slots: Vec<usize> = {
             let view = lock(&p.shared.view);
-            view.fill(&mut app);
+            view.fill(&mut app, &mut shown);
             view.parts.iter().map(|v| v.slot).collect()
         };
         app.master = f64::from(p.volume.value());
