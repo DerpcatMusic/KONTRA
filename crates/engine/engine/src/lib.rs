@@ -71,7 +71,7 @@ pub use plan::{
 pub use queue::Timed;
 pub use script::{Callbacks, Controls, LookPars, ScriptPlan};
 #[cfg(feature = "trace")]
-pub use trace::{TraceEvent, VoiceEvent};
+pub use trace::{RouteUnit, RouteValue, TraceEvent, VoiceEvent};
 pub use transport::Play;
 pub use ui::ControlLook;
 
@@ -306,11 +306,7 @@ impl Engine {
         let ui = kontra_script_ui::Store::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
         let mut engine = Self {
             #[cfg(feature = "trace")]
-            trace: _trace_capacity.map(|capacity| trace::Trace {
-                events: Vec::with_capacity(capacity),
-                dropped: 0,
-                next_action: 0,
-            }),
+            trace: _trace_capacity.map(trace::Trace::new),
             now: SampleTime(0),
             rate: rate.max(1),
             tempo: 120.0,
@@ -722,6 +718,10 @@ impl Engine {
                 chaos: slot.chaos.map(|c| c[3]),
                 ..self.age(slot.started, slot.released_at)
             };
+            #[cfg(feature = "trace")]
+            if let (Some(trace), Some(cc)) = (&self.trace, cc) {
+                trace.routes.begin(i, slot.zone, cc);
+            }
             let pan = [slot.pan[0], self.group_pan(zone)];
             let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age, pan[0]);
             let mix = self.voice_mix(zone, &n, age);
@@ -729,6 +729,10 @@ impl Engine {
             let law = self.plan.route_pitch;
             let pitch = cc.is_none_or(|cc| self.pitch_follows(zone, cc));
             self.retune_rack(i, zone, &n, age);
+            #[cfg(feature = "trace")]
+            if let Some(trace) = &self.trace {
+                trace.routes.end();
+            }
             if let Some(slot) = self.voices.get_mut(i) {
                 slot.pan = pan;
                 slot.voice.set_gain(gain);

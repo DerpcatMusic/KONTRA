@@ -72,3 +72,113 @@ pub enum VoiceEvent {
     Cut,
     End,
 }
+
+/// Unit of the exact route contribution used by a voice update.
+#[derive(Clone, Copy, Debug)]
+pub enum RouteUnit {
+    GainMultiplier,
+    Pan,
+    Semitones,
+    CutoffDepth,
+    ResonanceDepth,
+    ResonanceMultiplier,
+    EqDecibels,
+    EffectAmount,
+    MixMultiplier,
+    IntensityMultiplier,
+    PhaseCycles,
+    RateMultiplier,
+}
+
+/// A route value as evaluated in a controller-triggered voice refresh.
+#[derive(Clone, Copy, Debug)]
+pub struct RouteValue {
+    pub frame: u64,
+    pub voice_slot: usize,
+    pub zone: usize,
+    pub controller: u8,
+    pub mod_slot: u16,
+    pub target: u16,
+    pub kind: kontra_ir::ModKind,
+    pub source: Option<f32>,
+    pub value: f32,
+    pub unit: RouteUnit,
+    pub direct_controller_source: bool,
+}
+
+/// A bounded, preallocated route buffer. Interior mutation permits observation
+/// in read-only route evaluators; it is only constructed for an opt-in trace.
+pub struct RouteBuffer {
+    events: Box<[std::cell::Cell<Option<RouteValue>>]>,
+    len: std::cell::Cell<usize>,
+    dropped: std::cell::Cell<u64>,
+    context: std::cell::Cell<Option<(usize, usize, u8)>>,
+}
+
+impl RouteBuffer {
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            events: (0..capacity).map(|_| std::cell::Cell::new(None)).collect(),
+            len: std::cell::Cell::new(0),
+            dropped: std::cell::Cell::new(0),
+            context: std::cell::Cell::new(None),
+        }
+    }
+    pub fn begin(&self, voice: usize, zone: usize, controller: u8) {
+        self.context.set(Some((voice, zone, controller)));
+    }
+    pub fn end(&self) {
+        self.context.set(None);
+    }
+    #[must_use]
+    pub fn controller(&self) -> Option<u8> {
+        self.context.get().map(|x| x.2)
+    }
+    pub fn push(
+        &self,
+        frame: u64,
+        route: &kontra_ir::Mod,
+        source: Option<f32>,
+        value: f32,
+        unit: RouteUnit,
+        direct: bool,
+    ) {
+        let Some((voice_slot, zone, controller)) = self.context.get() else {
+            return;
+        };
+        let at = self.len.get();
+        if let Some(slot) = self.events.get(at) {
+            slot.set(Some(RouteValue {
+                frame,
+                voice_slot,
+                zone,
+                controller,
+                mod_slot: route.slot,
+                target: route.target,
+                kind: route.kind,
+                source,
+                value,
+                unit,
+                direct_controller_source: direct,
+            }));
+            self.len.set(at + 1);
+        } else {
+            self.dropped.set(self.dropped.get().saturating_add(1));
+        }
+    }
+    pub fn iter(&self) -> impl Iterator<Item = RouteValue> + '_ {
+        self.events
+            .get(..self.len.get())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(std::cell::Cell::get)
+    }
+    pub fn clear(&self) {
+        self.len.set(0);
+    }
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.dropped.get()
+    }
+}
