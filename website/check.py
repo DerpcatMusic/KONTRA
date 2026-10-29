@@ -29,15 +29,14 @@ for path in root.glob('*.html'):
     page = Page(path)
     source = path.read_text()
     page.feed(source)
-    if path.name != 'inspector-viewer.html':
-        footer = re.search(r'<footer\b.*?</footer>', source, re.S)
-        assert footer, f'missing shared footer: {path}'
-        footers.append(footer.group())
+    footer = re.search(r'<footer\b.*?</footer>', source, re.S)
+    assert footer, f'missing shared footer: {path}'
+    footers.append(footer.group())
     assert page.headings == 1, f'expected one h1: {path}'
     assert 'main' in page.ids
     pages[path] = page
 assert len(set(footers)) == 1, 'site pages must share the same footer'
-assert {'index.html', 'docs.html', 'features.html', 'roadmap.html', 'inspector.html'} <= {p.name for p in pages}
+assert {'index.html', 'docs.html', 'features.html', 'roadmap.html'} <= {p.name for p in pages}
 for path, page in pages.items():
     for link in page.links:
         parsed = urlsplit(link)
@@ -46,8 +45,6 @@ for path, page in pages.items():
             continue
         assert not parsed.path.startswith('/'), f'project-relative URL required: {link}'
         target = (path.parent / unquote(parsed.path)).resolve() if parsed.path else path
-        if root == Path(__file__).resolve().parent and target == root / 'inspector-viewer.html':
-            continue  # Built directly from the shared tools/library-inspector.html.
         assert target.is_relative_to(root) and target.is_file(), f'broken link: {path.name}: {link}'
         if parsed.fragment:
             assert target in pages and unquote(parsed.fragment) in pages[target].ids, f'broken anchor: {link}'

@@ -252,7 +252,7 @@ mod tests {
     /// 0.5 and at tone 0.2, drive 1, bass 0.8, bright 0.3, mix 0.9.
     #[test]
     fn a_sine_matches_the_native_core() {
-        let bytes = include_bytes!("../../../sampler-core/src/dsp/color/tables/skreamer.f32le");
+        let bytes = include_bytes!("../tests/fixtures/skreamer.f32le");
         let mut curve = [0.0; 256];
         for (c, b) in curve.iter_mut().zip(bytes.as_chunks::<8>().0) {
             *c = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);

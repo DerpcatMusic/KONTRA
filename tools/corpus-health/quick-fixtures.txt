@@ -1,5 +1,0 @@
-# Quick-tier fixture set for the CI corpus-health job (read via CH_QUICK_FILE). Known-bad fixtures stay listed: the baseline holds their expected errors.
-crates/sampler-kontakt/tests/fixtures/kontakt8131-start-options.nki
-crates/sampler-kontakt/tests/fixtures/kontakt8131-volume-law.nki
-crates/sampler-kontakt/tests/fixtures/bindings/Effects-Reverb_RV_SIZE_700000.nki
-tools/kontakt-reference/scenarios/calibration.nki
