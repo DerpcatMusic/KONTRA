@@ -6,6 +6,7 @@ use std::sync::Arc;
 use kontra_engine::{Engine, Play, SampleTime, Timed};
 use kontra_protocol::{Meters, Stats};
 
+use super::hold::{Held, Hold};
 use super::{Channels, Command, Event, HostPattern, Mix, OUTPUTS};
 use kontra_protocol::MAX_PARTS;
 
@@ -16,8 +17,8 @@ struct Playing {
     /// let go at the next block, since their note-offs no longer reach it;
     /// or its hold changed. The frames past the block start to let go at.
     release: Option<u32>,
-    /// Frames every event into it waits (auto-align).
-    hold: u32,
+    /// What each note into it waits (auto-align).
+    held: Held,
     /// Which load it is ([`Command::Install`]).
     generation: u64,
 }
@@ -128,36 +129,33 @@ impl RackAudio {
                 continue;
             };
             let now = p.engine.now();
-            let held = SampleTime(now.0 + u64::from(p.hold));
+            let held = SampleTime(now.0 + u64::from(p.held.hold.max()));
             let channel = p.mix.channel;
             self.events.clear();
             if self.panic {
                 // What sounds ends now; what is held ends as it comes due.
                 self.events
                     .extend(PANIC.map(|body| Timed { at: now, body }));
-                if p.hold > 0 {
+                if held > now {
                     self.events
                         .extend(PANIC.map(|body| Timed { at: held, body }));
                 }
             }
             // What the old channel held lets go before this block's notes.
             if let Some(after) = p.release.take() {
+                p.held.clear();
                 let at = SampleTime(now.0 + u64::from(after));
                 self.events.extend(release().map(|body| Timed { at, body }));
             }
-            self.events
-                .extend(self.played.iter().map(|&body| Timed { at: held, body }));
+            let played = self.played.iter().map(|&body| (0, body));
             let room = self.events.capacity() - self.events.len();
-            self.events.extend(
-                input
-                    .iter()
-                    .filter(|(_, e)| channel == 0 || e.channel().is_none_or(|c| c + 1 == channel))
-                    .take(room)
-                    .map(|&(at, body)| Timed {
-                        at: SampleTime(held.0 + u64::from(at)),
-                        body,
-                    }),
-            );
+            let input = (input.iter().copied())
+                .filter(|(_, e)| channel == 0 || e.channel().is_none_or(|c| c + 1 == channel));
+            self.events
+                .extend(played.chain(input).take(room).map(|(at, body)| Timed {
+                    at: SampleTime(p.held.due(now.0 + u64::from(at), &body)),
+                    body,
+                }));
             if let Some(bpm) = self.tempo {
                 p.engine.set_tempo(bpm);
             }
@@ -237,7 +235,7 @@ impl RackAudio {
                             engine,
                             mix,
                             release: None,
-                            hold: 0,
+                            held: Held::new(Hold::default()),
                             generation,
                         });
                         self.retire(old);
@@ -246,7 +244,7 @@ impl RackAudio {
                             engine,
                             mix,
                             release: None,
-                            hold: 0,
+                            held: Held::new(Hold::default()),
                             generation,
                         }));
                     }
@@ -275,21 +273,22 @@ impl RackAudio {
                 Command::Mix(part, mix) => {
                     if let Some(Some(p)) = self.parts.get_mut(part) {
                         if p.mix.channel != mix.channel {
-                            p.release = p.release.max(Some(p.hold));
+                            p.release = p.release.max(Some(p.held.hold.max()));
                         }
                         p.mix = mix;
                     }
                 }
                 // Notes held under the old hold let go after the later of
                 // the two, so no note-off overtakes its note-on.
-                Command::Hold(part, frames) => {
+                Command::Hold(part, hold) => {
                     if let Some(Some(p)) = self.parts.get_mut(part)
-                        && p.hold != frames
+                        && p.held.hold != hold
                     {
                         // The latest release asked for wins: several changes
                         // may come before one block.
-                        p.release = p.release.max(Some(p.hold.max(frames)));
-                        p.hold = frames;
+                        let longest = p.held.hold.max().max(hold.max());
+                        p.release = p.release.max(Some(longest));
+                        p.held.hold = hold;
                     }
                 }
                 Command::Master(gain) => self.master = gain,
