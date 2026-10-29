@@ -139,8 +139,13 @@ fn rack(
                 effect.kind,
                 ir::EffectKind::Other | ir::EffectKind::OtherWet
             ) {
+                // A parallel one whose wet output is 0 plays its dry level
+                // alone in Kontakt too (Areia's empty convolutions).
+                let silent = effect.kind == ir::EffectKind::OtherWet && effect.output <= 0.0;
                 let (impact, state) = if effect.bypass {
                     (ir::Impact::Cosmetic, "bypassed effect")
+                } else if silent {
+                    (ir::Impact::Cosmetic, "silent effect")
                 } else {
                     (ir::Impact::Audible, "effect")
                 };
