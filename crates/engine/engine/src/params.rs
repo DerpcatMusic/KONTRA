@@ -407,15 +407,12 @@ impl Engine {
     /// Sets the amount of every route named with `#key` to `micros`
     /// millionths ([`kontra_vm::Action::RouteAmount`]).
     pub(crate) fn set_route_amount(&mut self, key: i32, micros: i32) {
-        let word = format!("#{key}");
         let v = micros as f32 / 1e6;
         let mut any = false;
-        for m in self
-            .groups
-            .iter_mut()
-            .flat_map(|g| g.mods.iter_mut())
-            .filter(|m| m.name.split_whitespace().any(|w| w == word))
-        {
+        for (g, m) in self.route_names.of(key) {
+            let Some(m) = self.groups.get_mut(g).and_then(|g| g.mods.get_mut(m)) else {
+                continue;
+            };
             any |= match &mut m.kind {
                 ir::ModKind::Pitch { semitones, .. } => {
                     *semitones = v;
