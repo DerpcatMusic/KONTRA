@@ -1318,3 +1318,55 @@ fn a_program_plays_in_a_part_that_cc_7_10_and_11_move() {
     // Edition mode over the part's Gain, linear 0..10^(6/20).
     assert_eq!(c.top_db, 6.0);
 }
+
+#[test]
+fn a_key_on_a_routes_ratio_scales_it_per_voice() {
+    // VWinds' vibrato pitch: CC 103's route scaled by KeyFollow (bipolar,
+    // read at `(k + 1)/2`) and here by Key at −0.5 (`1 − 0.5·x/127`).
+    let xml = r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav">
+            <Connections>
+              <SignalConnection Ratio="3" Source="@MIDI CC 103" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0">
+                <Connections>
+                  <SignalConnection Ratio="1" Source="@VoiceParam KeyFollow" Destination="Ratio" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                  <SignalConnection Ratio="-0.5" Source="@VoiceParam Key" Destination="Ratio" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                </Connections>
+              </SignalConnection>
+            </Connections>
+          </SamplePlayer></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    assert!(g.mods.iter().any(|m| matches!(
+        m.kind,
+        ir::ModKind::Pitch { source: ir::Source::Blend(0), semitones, .. } if semitones == 3.0
+    )));
+    let term = &g.blends[0].terms[0];
+    assert_eq!(term.input.source, ir::Source::Controller(103));
+    let [follow, key] = &term.factors[..] else {
+        panic!("{:?}", term.factors)
+    };
+    assert_eq!(
+        (follow.input.source, follow.depth, key.depth),
+        (ir::Source::Key, 1.0, -0.5)
+    );
+    let t = &follow.input.table;
+    assert_eq!(
+        (t[0], t[30], t[60], t[120], t[127]),
+        (0.0, 0.125, 0.5, 1.0, 1.0)
+    );
+    assert!((t[75] - (0.25f32.sqrt() + 1.0) / 2.0).abs() < 1e-6);
+    assert_eq!((key.input.table[0], key.input.table[127]), (0.0, 1.0));
+    // At key 60 the bend is 3 × 0.5 × (1 − 0.5·60/127).
+    assert!((key.at(key.input.table[60]) - (1.0 - 0.5 * 60.0 / 127.0)).abs() < 1e-6);
+    assert!(
+        out.diagnostics.iter().all(|d| !d.feature.contains("Pitch")),
+        "{:?}",
+        out.diagnostics
+    );
+}
