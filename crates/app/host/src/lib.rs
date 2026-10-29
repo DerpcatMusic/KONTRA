@@ -9,6 +9,7 @@ pub mod perf_view;
 pub mod persist;
 pub mod rack;
 pub mod script;
+pub mod sound;
 pub mod state;
 pub mod ui;
 pub mod view;
