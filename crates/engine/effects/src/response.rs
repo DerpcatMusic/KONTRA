@@ -36,14 +36,7 @@ pub fn response(sample: &ir::Sample, impulse: &ir::Impulse, rate: u32) -> Result
         }
     }
     if let Some(n) = impulse.normalize {
-        let energy = |c: &[f32]| c.iter().map(|&v| f64::from(v * v)).sum::<f64>();
-        let e = energy(&left).max(energy(&right));
-        if e > f64::from(n.floor) {
-            let gain = (n.energy / e as f32).sqrt().min(n.max_gain);
-            left.iter_mut()
-                .chain(right.iter_mut())
-                .for_each(|v| *v *= gain);
-        }
+        normalize(&mut left, &mut right, n);
     }
     // At most a second of predelay, and never more than a capped response holds.
     let most = (MAX_RESPONSE * u64::from(from) / u64::from(rate.max(1))) as usize;
@@ -63,4 +56,48 @@ pub fn response(sample: &ir::Sample, impulse: &ir::Impulse, rate: u32) -> Result
 pub struct Response {
     pub left: Vec<f32>,
     pub right: Vec<f32>,
+}
+
+fn normalize(left: &mut [f32], right: &mut [f32], n: ir::Normalize) {
+    let energy = |c: &[f32]| c.iter().map(|&v| f64::from(v * v)).sum::<f64>();
+    let (l, r) = (energy(left), energy(right));
+    let e = match n.channels {
+        ir::EnergyChannels::Loudest => l.max(r),
+        ir::EnergyChannels::Mean => (l + r) * 0.5,
+    };
+    if e > f64::from(n.floor) {
+        let gain = (n.energy / e as f32).sqrt().min(n.max_gain);
+        left.iter_mut()
+            .chain(right.iter_mut())
+            .for_each(|v| *v *= gain);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stereo_energy_can_use_the_mean_or_loudest_channel() {
+        let n = ir::Normalize {
+            energy: 1.0,
+            max_gain: 1e5,
+            floor: 0.0,
+            channels: ir::EnergyChannels::Mean,
+        };
+        let (mut left, mut right) = ([1.0, 0.0], [0.0, 0.0]);
+        normalize(&mut left, &mut right, n);
+        assert!((left[0] - std::f32::consts::SQRT_2).abs() < 1e-6);
+        assert_eq!(right, [0.0, 0.0]);
+        let (mut left, mut right) = ([1.0, 0.0], [0.0, 0.0]);
+        normalize(
+            &mut left,
+            &mut right,
+            ir::Normalize {
+                channels: ir::EnergyChannels::Loudest,
+                ..n
+            },
+        );
+        assert_eq!(left, [1.0, 0.0]);
+    }
 }

@@ -114,13 +114,21 @@ pub struct Impulse {
     pub mix: Option<[[f32; 2]; 2]>,
 }
 
-/// Scales a response so its louder channel's energy (sum of squares) is
-/// `energy`, by at most `max_gain`; one at or under `floor` is left alone.
+/// Scales a response's channel energy toward `energy`, by at most `max_gain`;
+/// energy at or under `floor` is left alone.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Normalize {
     pub energy: f32,
     pub max_gain: f32,
     pub floor: f32,
+    pub channels: EnergyChannels,
+}
+
+/// How stereo channel energies are combined when normalizing an impulse.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EnergyChannels {
+    Loudest,
+    Mean,
 }
 
 /// One sample: where its file's bytes are. The codec is read from the file's
