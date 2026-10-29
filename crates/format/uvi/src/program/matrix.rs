@@ -90,10 +90,10 @@ pub(super) fn term(
     let mut amount = num(input, "Ratio", 1.0).ok()? as f32;
     let mut factors = Vec::new();
     for f in children(input).filter(|f| f.attribute("Destination") == Some("Ratio")) {
-        if flag(f, "Inverted") || flag(f, "ConnectionMode") || children(f).next().is_some() {
+        if flag(f, "Inverted") || flag(f, "ConnectionMode") {
             return None;
         }
-        let depth = (num(f, "Ratio", 1.0).ok()? as f32).clamp(-1.0, 1.0);
+        let depth = held_ratio(program, f)?.clamp(-1.0, 1.0);
         let factor = ir::Factor {
             input: transfer(program, f, lfos.as_deref_mut())?,
             depth,
@@ -112,6 +112,21 @@ pub(super) fn term(
         amount,
         factors,
     })
+}
+
+/// A connection's ratio with each connection on it scaling it the same
+/// multiplicative way; None when one of those is live (not a constant).
+fn held_ratio(program: Node, connection: Node) -> Option<f32> {
+    let mut r = num(connection, "Ratio", 1.0).ok()? as f32;
+    for f in children(connection).filter(|f| f.attribute("Destination") == Some("Ratio")) {
+        let input = transfer(program, f, None)?;
+        if flag(f, "Inverted") || flag(f, "ConnectionMode") || input.source != ir::Source::Constant
+        {
+            return None;
+        }
+        r *= scale(held_ratio(program, f)?.clamp(-1.0, 1.0), input.apply(1.0));
+    }
+    Some(r)
 }
 
 /// The multiplier `m` gives at ratio `r`.
