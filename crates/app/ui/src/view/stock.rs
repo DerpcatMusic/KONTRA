@@ -6,6 +6,7 @@
 
 use kontra_ui_model::{self as model, Interface, Kind, Source, TextStyle, Widget};
 use mui::prelude::*;
+use std::sync::Arc;
 
 /// A stock knob's own size: the knob, its title and value boxes. Kontakt
 /// draws it so whatever width and height the script sets.
@@ -35,6 +36,44 @@ pub(super) enum Look {
 }
 
 impl Look {
+    pub(super) fn pictures(
+        &self,
+        store: &mut crate::Pictures,
+        scale: f64,
+    ) -> Option<[Arc<Image>; 3]> {
+        let Self::Knob { turn, .. } = self else {
+            return None;
+        };
+        let meta = |frames| model::ImageMeta {
+            frames,
+            axis: model::Orientation::Horizontal,
+            ..Default::default()
+        };
+        let frame = (usize::from(*turn) * 127 + 500) / 1000;
+        Some([
+            store.frame(
+                model::AssetRef(usize::MAX),
+                "@stock/base",
+                meta(1),
+                0,
+                scale,
+            )?,
+            store.frame(
+                model::AssetRef(usize::MAX - 1),
+                "@stock/cap",
+                meta(128),
+                frame,
+                scale,
+            )?,
+            store.frame(
+                model::AssetRef(usize::MAX - 2),
+                "@stock/light",
+                meta(128),
+                frame,
+                scale,
+            )?,
+        ])
+    }
     /// The stock look of `w` at `t` (0..1 of its range), when Kontakt
     /// draws one: a script button, switch, menu, value edit or knob whose
     /// picture is unset or absent from the library. `shown` is its value
@@ -98,6 +137,8 @@ impl Look {
         style: Option<&TextStyle>,
         (w, h, scale): (f64, f64, f64),
         bare: bool,
+        artwork: Option<&[Arc<Image>; 3]>,
+        glyphs: Option<&crate::pictures::Glyphs>,
     ) -> Vec<El> {
         let bg = bare || !wd.hide.background;
         let ink = |default: u32| style.map_or(rgb(default), |s| super::color(s.color));
@@ -144,9 +185,55 @@ impl Look {
                 parts.extend(arrow(ink, w, h, scale));
                 parts
             }
-            Self::Knob { title, value, turn } => knob(wd, title, value, *turn, scale, bare),
+            Self::Knob { title, value, turn } => {
+                if let Some(art) = artwork.filter(|_| !wd.hide.title && !wd.hide.value) {
+                    bitmap_knob(title, value, scale, art, glyphs)
+                } else {
+                    knob(wd, title, value, *turn, scale, bare)
+                }
+            }
         }
     }
+}
+
+fn bitmap_knob(
+    title: &str,
+    value: &str,
+    s: f64,
+    art: &[Arc<Image>; 3],
+    glyphs: Option<&crate::pictures::Glyphs>,
+) -> Vec<El> {
+    let [base, cap, light] = art;
+    vec![
+        super::image(base, 87. * s, 39. * s),
+        super::image(cap, 25. * s, 29. * s).at(7. * s, 5. * s),
+        super::image(light, 39. * s, 39. * s),
+        stock_words(title, s, glyphs).at(42. * s, 2. * s),
+        stock_words(value, s, glyphs).at(42. * s, 22. * s),
+    ]
+}
+
+fn stock_words(text: &str, scale: f64, glyphs: Option<&crate::pictures::Glyphs>) -> El {
+    let Some(glyphs) = glyphs else {
+        return words(
+            text,
+            rgb(0xfe_fefe),
+            model::Align::Left,
+            45. * scale,
+            14. * scale,
+            scale,
+        );
+    };
+    let mut x = 0.;
+    let mut layers = Vec::new();
+    for c in text.chars() {
+        if let Some(glyph) = glyphs.get(crate::pictures::glyph(c)) {
+            let width = f64::from(glyph.width) * scale;
+            layers.push(super::image(glyph, width, f64::from(glyph.height) * scale).at(x, 0.));
+            x += width;
+        }
+    }
+    stack(layers).w(45. * scale).h(13. * scale).clip()
 }
 
 fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64, bare: bool) -> Vec<El> {

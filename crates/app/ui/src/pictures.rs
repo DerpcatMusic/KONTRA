@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
 use kontra_ui_model::{AssetRef, ImageMeta, Orientation};
+
+mod stock;
 use mui::prelude::{Font, Image};
 
 /// Reads a library-relative path; `None` when there is no such file.
@@ -98,7 +100,12 @@ impl Pictures {
                     decoded.clear();
                     scale = job.scale;
                 }
-                let image = read(&job.path).and_then(|bytes| {
+                let image = (if job.path.starts_with("@stock/") {
+                    stock::read(&job.path)
+                } else {
+                    read(&job.path)
+                })
+                .and_then(|bytes| {
                     let mut h = std::hash::DefaultHasher::new();
                     bytes.hash(&mut h);
                     let axis = job.meta.axis == Orientation::Vertical;

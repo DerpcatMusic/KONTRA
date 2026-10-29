@@ -135,6 +135,12 @@ fn drawn_page(
         let style = item.style;
         let t = item.position;
         let look = item.look;
+        let stock_art = look
+            .as_ref()
+            .and_then(|look| look.pictures(pictures, device));
+        let stock_glyphs = stock_art
+            .as_ref()
+            .and_then(|_| pictures.font(model::AssetRef(usize::MAX - 3), "@stock/font"));
         let stock = item.stock;
         let words = item.words;
         let glyphs = match style.map(|s| &s.font) {
@@ -185,6 +191,12 @@ fn drawn_page(
                 .as_ref()
                 .map(|g| Arc::as_ptr(g).cast::<()>() as usize),
             outline.as_ref().map(Font::id),
+            stock_art
+                .as_ref()
+                .map(|art| art.each_ref().map(|image| Arc::as_ptr(image) as usize)),
+            stock_glyphs
+                .as_ref()
+                .map(|g| Arc::as_ptr(g).cast::<()>() as usize),
             wd.text_y,
             style.map(|s| (s.color, s.align as u8, s.size.map(f32::to_bits))),
             wd.opacity.to_bits(),
@@ -216,7 +228,14 @@ fn drawn_page(
                 parts.push(meter(&wd.colors, o, t, w, h).at(0., 0.));
             }
             let (w, h) = look.as_ref().map_or((w, h), |look| {
-                parts.extend(look.draw(wd, style, (w, h, scale), bare));
+                parts.extend(look.draw(
+                    wd,
+                    style,
+                    (w, h, scale),
+                    bare,
+                    stock_art.as_ref(),
+                    stock_glyphs.as_ref(),
+                ));
                 look.size(w, h, scale)
             });
             stack(parts).w(w).h(h).opacity(wd.opacity)

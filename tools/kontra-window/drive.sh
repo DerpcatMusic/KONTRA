@@ -160,6 +160,16 @@ fi
 # Pacific's unpictured knob: the top ring is lit and the bottom is shadowed.
 # STOCK_ONLY is a short, real-window check for that stock skin.
 if [[ ${STOCK_ONLY:-0} == 1 ]]; then
+    # Compare with a capture made without KONTAKT_STOCK_EXECUTABLE to prove
+    # the installed artwork reached the real editor.
+    if [[ -n ${STOCK_BASELINE:-} ]]; then
+        if python3 -I -c 'import sys; from PIL import Image, ImageChops
+a = Image.open(sys.argv[1]).convert("RGB").crop((180,120,400,220))
+b = Image.open(sys.argv[2]).convert("RGB").crop((180,120,400,220))
+sys.exit(0 if ImageChops.difference(a, b).getbbox() else 1)' "$STOCK_BASELINE" "$out/0-open.png"; then
+            pass "installed Kontakt stock artwork"
+        else miss "installed Kontakt stock artwork"; fi
+    fi
     if python3 -I -c 'import sys; from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB")
 top, bottom = im.getpixel((235, 150))[0], im.getpixel((235, 181))[0]
