@@ -5,14 +5,22 @@ use kontra_ir as ir;
 
 use crate::ledger::Note;
 use kontra_stream::Mix;
-use kontra_voice::{Ahdsr, Gain};
+use kontra_voice::{Ahdsr, Gain, Lag};
 
 use crate::effects::{self, product};
 use crate::modulators::{self, Age};
 use crate::{Control, Engine, Level, Zone};
 
 impl Engine {
-    pub(crate) fn voice_gain(&self, zone: &Zone, note: &Note, factor: f32, age: Age) -> Gain {
+    /// The voice's gain, and the slower gain of its routes that lag (their
+    /// product, at the longest time constant among them).
+    pub(crate) fn voice_gain(
+        &self,
+        zone: &Zone,
+        note: &Note,
+        factor: f32,
+        age: Age,
+    ) -> (Gain, Lag) {
         let channel = note.host.channel;
         let crossfade: f32 = zone
             .crossfades
@@ -24,25 +32,29 @@ impl Engine {
                 )
             })
             .product();
-        let mods: f32 = self.groups.get(zone.group as usize).map_or(1.0, |g| {
-            g.mods
-                .iter()
-                .filter(|m| !m.bypass)
-                .map(|m| match m.kind {
-                    ir::ModKind::Volume {
-                        source,
-                        intensity,
-                        curve,
-                    } => {
-                        // HeldTime is fixed at the voice's start: see `release_counter`.
-                        let intensity = intensity * self.scale(zone, source, note, age);
-                        self.unit(zone, source, note, age)
-                            .map_or(1.0, |x| curve.gain(intensity, x))
-                    }
-                    _ => 1.0,
-                })
-                .product()
-        });
+        // ponytail: one lag per voice, the longest of its routes'; a
+        // route of its own when a group mixes two lags audibly.
+        let (mut mods, mut lagged, mut tau) = (1.0f32, 1.0f32, 0.0f32);
+        let groups = self.groups.get(zone.group as usize);
+        for m in groups.iter().flat_map(|g| &g.mods).filter(|m| !m.bypass) {
+            if let ir::ModKind::Volume {
+                source,
+                intensity,
+                curve,
+                tau_ms,
+            } = m.kind
+            {
+                // HeldTime is fixed at the voice's start: see `release_counter`.
+                let intensity = intensity * self.scale(zone, source, note, age);
+                let g =
+                    (self.unit(zone, source, note, age)).map_or(1.0, |x| curve.gain(intensity, x));
+                if tau_ms > 0.0 {
+                    (lagged, tau) = (lagged * g, tau.max(tau_ms));
+                } else {
+                    mods *= g;
+                }
+            }
+        }
         let pan: f32 = self.groups.get(zone.group as usize).map_or(0.0, |g| {
             g.mods
                 .iter()
@@ -70,7 +82,7 @@ impl Engine {
                 )
             });
         let amp = [[l * g, 0.0], [0.0, r * g]];
-        product(group, amp)
+        (product(group, amp), Lag::new(lagged, tau, self.rate))
     }
 
     /// The zone's channel matrix with its live cells ([`ir::ModKind::Mix`])
@@ -401,6 +413,7 @@ impl Engine {
                         source: ir::Source::HeldTime { span_ms: ms },
                         intensity,
                         curve,
+                        ..
                     } => curve.gain(intensity, held_time(ms, held)),
                     _ => 1.0,
                 })

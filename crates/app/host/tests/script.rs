@@ -334,6 +334,7 @@ fn a_script_finds_a_modulation_by_name_and_drives_it() {
             source: ir::Source::Controller(110),
             intensity: 0.0,
             curve: ir::Curve::Depth { power: 1 },
+            tau_ms: 0.0,
         },
     }];
     let script = kontra_ksp::compile(
@@ -390,6 +391,7 @@ fn route_intensities_follow_kontakts_laws() {
             source: ir::Source::Controller(110),
             intensity: 0.5,
             curve: ir::Curve::Depth { power: 1 },
+            tau_ms: 0.0,
         },
     };
     plan.groups[0].mods = vec![route(1), route(0)];
@@ -455,6 +457,7 @@ fn a_script_sets_the_stages_of_a_routed_ahdsr() {
             source: ir::Source::Envelope(0),
             intensity: 1.0,
             curve: ir::Curve::Depth { power: 1 },
+            tau_ms: 0.0,
         },
     }];
     g.mods.push(ir::Mod {
@@ -874,6 +877,7 @@ fn a_script_sends_a_note_its_modulation_value() {
             source: ir::Source::Script(1),
             intensity: 1.0,
             curve: ir::Curve::Depth { power: 1 },
+            tau_ms: 0.0,
         },
     }];
     let script = kontra_ksp::compile(
@@ -1337,6 +1341,7 @@ fn a_script_modulation_sent_at_init_scales_notes_that_start_later() {
                 source: kontra_engine::ir::Source::Script(1),
                 intensity: 1.0,
                 curve: kontra_engine::ir::Curve::Depth { power: 1 },
+                tau_ms: 0.0,
             },
         }];
     }
@@ -1363,6 +1368,7 @@ fn a_script_modulation_index_keeps_its_value_after_many_others() {
                 source: kontra_engine::ir::Source::Script(20),
                 intensity: 1.0,
                 curve: kontra_engine::ir::Curve::Depth { power: 1 },
+                tau_ms: 0.0,
             },
         }];
     }
@@ -1411,6 +1417,7 @@ fn a_script_modulation_ramps_to_its_value() {
                 source: kontra_engine::ir::Source::Script(1),
                 intensity: 1.0,
                 curve: kontra_engine::ir::Curve::Depth { power: 1 },
+                tau_ms: 0.0,
             },
         }];
     }
@@ -1450,6 +1457,7 @@ fn a_uvi_script_renders_the_same_at_any_block_size() {
                     source: kontra_engine::ir::Source::Script(1),
                     intensity: 1.0,
                     curve: kontra_engine::ir::Curve::Depth { power: 1 },
+                    tau_ms: 0.0,
                 },
             }];
         }

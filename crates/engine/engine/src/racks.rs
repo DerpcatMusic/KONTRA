@@ -290,19 +290,23 @@ impl Engine {
                 bus.rack.follow(&live);
                 bus.rack.process(mix, &mut self.taps, tempo);
                 // A send to an earlier bus would come a span late: none.
-                for send in &bus.sends {
-                    let level = send.level * if send.post_fader { bus.gain } else { 1.0 };
-                    let Some(to) = send.bus.checked_sub(at + 1).and_then(|k| later.get_mut(k))
-                    else {
-                        continue;
-                    };
-                    for (o, m) in to.mix.iter_mut().zip(mix.iter()) {
-                        o[0] += m[0] * level;
-                        o[1] += m[1] * level;
+                // Pre-fader sends, the fader's glide, post-fader sends, the pan.
+                for post in [false, true] {
+                    if post {
+                        bus.fader.matrix(mix, [[bus.gain, 0.0], [0.0, bus.gain]]);
+                    }
+                    for send in bus.sends.iter().filter(|s| s.post_fader == post) {
+                        let Some(to) = send.bus.checked_sub(at + 1).and_then(|k| later.get_mut(k))
+                        else {
+                            continue;
+                        };
+                        for (o, m) in to.mix.iter_mut().zip(mix.iter()) {
+                            o[0] += m[0] * send.level;
+                            o[1] += m[1] * send.level;
+                        }
                     }
                 }
                 bus.balance.matrix(mix, effects::balance(bus.pan));
-                bus.fader.matrix(mix, [[bus.gain, 0.0], [0.0, bus.gain]]);
             }
             if !bus.to_main {
                 continue;
