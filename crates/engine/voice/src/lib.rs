@@ -206,6 +206,13 @@ impl Voice {
         self.region.is_some()
     }
 
+    /// Current amplitude envelope stage, for offline inspection.
+    #[cfg(feature = "trace")]
+    #[must_use]
+    pub fn envelope_stage(&self) -> &'static str {
+        self.env.stage_name()
+    }
+
     /// Peak of this voice's last render call before group effects, when tracing is enabled.
     #[cfg(feature = "trace")]
     #[must_use]

@@ -132,6 +132,7 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
                     json!({
                         "zone":v.zone, "sample":zone_samples.get(v.zone), "position":v.position,
                         "released":v.released, "gain_before_sample_and_fx":v.gain, "last_render_peak_before_group_fx":v.last_peak,
+                        "source_frames_per_output_frame":v.step, "envelope_stage":v.envelope_stage,
                     })
                 })
                 .collect();
@@ -173,7 +174,8 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         .map(|v| {
             json!({"zone":v.zone,
         "sample":zone_samples.get(v.zone), "position":v.position, "released":v.released,
-        "gain_before_sample_and_fx":v.gain, "last_render_peak_before_group_fx":v.last_peak})
+        "gain_before_sample_and_fx":v.gain, "last_render_peak_before_group_fx":v.last_peak,
+        "source_frames_per_output_frame":v.step, "envelope_stage":v.envelope_stage})
         })
         .collect();
     // Five milliseconds around each controller event, using the second

@@ -2099,3 +2099,20 @@ fn release_route_trace_uses_the_key_held_time() {
         .unwrap();
     assert!((source - 0.5).abs() < 0.001, "{source}");
 }
+
+#[cfg(feature = "trace")]
+#[test]
+fn voice_snapshot_reports_the_playing_envelope_and_pitch() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].envelope.release = RATE;
+    let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
+    level(&mut engine, &[on(60, 1.0)]);
+    let before = engine.inspect_voices().next().unwrap();
+    assert_eq!(before.envelope_stage, "sustain");
+    assert!((before.step - 1.0).abs() < 0.0001);
+    level(&mut engine, &[off(60)]);
+    let after = engine.inspect_voices().next().unwrap();
+    assert_eq!(after.envelope_stage, "release");
+    assert!(after.last_peak > 0.0);
+}
