@@ -27,14 +27,14 @@ use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::Node;
 
-use super::num;
+use super::{Params, num};
 
 /// The WaveShaper at `node`; `None` (reported) for a mode not carried.
-pub(super) fn wave_shaper(node: Node, notes: &mut Notes) -> Result<Option<ir::Effect>, String> {
-    let gain = |name| Ok::<_, String>(gain_of(num(node, name, 0.0)?));
+pub(super) fn wave_shaper(p: Params, notes: &mut Notes) -> Result<Option<ir::Effect>, String> {
+    let gain = |name| Ok::<_, String>(gain_of(p.num(name, 0.0)?));
     let input = gain("InputGain")?;
-    let d = (8.0 * num(node, "Amount", 0.0)?.clamp(0.0, 1.0) as f32).exp2();
-    let mode = num(node, "Mode", 0.0)?;
+    let d = (8.0 * p.num("Amount", 0.0)?.clamp(0.0, 1.0) as f32).exp2();
+    let mode = p.num("Mode", 0.0)?;
     let (curve, scale) = match mode as u8 {
         _ if mode.fract() != 0.0 => return unsupported(notes, mode),
         0 => (ir::DriveCurve::Sine(d * FRAC_PI_2 * input), 1.0),
@@ -43,17 +43,17 @@ pub(super) fn wave_shaper(node: Node, notes: &mut Notes) -> Result<Option<ir::Ef
         3 => (ir::DriveCurve::Atan(d * input), 1.0 / (2.0 * d).atan()),
         _ => return unsupported(notes, mode),
     };
-    if num(node, "Knee", 0.0)? != 0.0 {
+    if p.num("Knee", 0.0)? != 0.0 {
         notes.add(ir::Impact::Audible, "WaveShaper Knee", "");
     }
-    let mix = num(node, "Mix", 1.0)?.clamp(0.0, 1.0) as f32;
+    let mix = p.num("Mix", 1.0)?.clamp(0.0, 1.0) as f32;
     // ponytail: UVI's post filter is a one-pole high-pass; the engine's is
     // a second-order Butterworth, within 1 dB above twice the corner.
     let shaper = ir::Shaper {
-        pre_lowpass_hz: Some(num(node, "PreFreq", 20_000.0)? as f32),
+        pre_lowpass_hz: Some(p.num("PreFreq", 20_000.0)? as f32),
         curve,
         lowpass_hz: None,
-        highpass_hz: Some(num(node, "PostFreq", 20.0)? as f32),
+        highpass_hz: Some(p.num("PostFreq", 20.0)? as f32),
     };
     Ok(Some(ir::Effect {
         kind: ir::EffectKind::Shaper(shaper),
@@ -100,7 +100,7 @@ mod tests {
     fn shaper(attrs: &str) -> Option<ir::Effect> {
         let xml = format!("<WaveShaper {attrs}/>");
         let doc = roxmltree::Document::parse(&xml).ok()?;
-        wave_shaper(doc.root_element(), &mut Notes::default()).ok()?
+        wave_shaper(Params::of(doc.root_element()), &mut Notes::default()).ok()?
     }
 
     #[test]
