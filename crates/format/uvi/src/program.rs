@@ -22,6 +22,7 @@ mod lfo_routes;
 mod load;
 mod matrix;
 mod modulation;
+mod provenance;
 mod reverb;
 mod routing;
 mod tree;
@@ -263,6 +264,12 @@ impl<L: Library> Translator<'_, '_, L> {
             start: routing::cycle(kg).into_iter().collect(),
             ..ir::Group::DEFAULT
         };
+        provenance::record(
+            "uvi.keygroup_gain_pan_tune.v1",
+            kg,
+            &(layer, self.base.volume_db, self.base.pan, self.base.tune),
+            &(group.volume_db, group.pan, group.tune),
+        );
         // Per-voice gain and shelves, else a one-pole filter, slot by slot.
         let filters = filters::keygroup(kg);
         group.inserts = (0..group.inserts.len().max(filters.len()))
@@ -470,7 +477,7 @@ impl<L: Library> Translator<'_, '_, L> {
                     },
                 });
             }
-            group.zones.push(ir::Zone {
+            let translated = ir::Zone {
                 mix,
                 sample: index,
                 keys: span.keys.0..=span.keys.1,
@@ -489,7 +496,14 @@ impl<L: Library> Translator<'_, '_, L> {
                 loops: Vec::new(),
                 reverse: flag(player, "Reverse"),
                 slot,
-            });
+            };
+            provenance::record(
+                "uvi.zone_gain_pan_tune.v1",
+                player,
+                &(index, member),
+                &(translated.volume_db, translated.pan, translated.tune),
+            );
+            group.zones.push(translated);
         }
         // Rows past the bundle carry no signal: what moves them is moot.
         for connection in placement.into_iter().flat_map(|m| m.descendants()) {
