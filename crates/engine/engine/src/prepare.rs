@@ -105,13 +105,26 @@ pub fn prepare(
     plan.impulses = instrument
         .impulses
         .iter()
-        .map(|i| match response(instrument, i, rate) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                diagnostics.push(broken("impulse-open", e));
-                None
+        .map(|i| {
+            match instrument
+                .samples
+                .get(i.sample)
+                .ok_or_else(|| "no response sample".to_string())
+                .and_then(|s| response(s, i, rate))
+            {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    diagnostics.push(broken("impulse-open", e));
+                    None
+                }
             }
         })
+        .collect();
+    plan.impulse_laws.clone_from(&instrument.impulses);
+    plan.responses = instrument
+        .responses
+        .iter()
+        .filter_map(|(name, i)| Some((name.clone(), instrument.samples.get(*i)?.clone())))
         .collect();
     plan.polyphony = polyphony;
     plan.voice_groups.clone_from(&instrument.voice_groups);
@@ -213,15 +226,12 @@ fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R>
 const MAX_RESPONSE: u64 = 20 * 192_000;
 
 /// `impulse`'s sample decoded, prepared and at `rate`.
-fn response(
-    instrument: &ir::Instrument,
+/// `sample` prepared as `impulse` says, at `rate`. Not real-time.
+pub(crate) fn response(
+    sample: &ir::Sample,
     impulse: &ir::Impulse,
     rate: u32,
 ) -> Result<Response, String> {
-    let sample = instrument
-        .samples
-        .get(impulse.sample)
-        .ok_or("no response sample")?;
     let (from, frames) =
         kontra_stream::decode(sample, MAX_RESPONSE).map_err(|e| format!("{}: {e}", sample.name))?;
     let (mut left, mut right): (Vec<f32>, Vec<f32>) = frames.iter().map(|f| (f[0], f[1])).unzip();

@@ -101,6 +101,14 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     slots.laws.extend(racks.laws.laws);
     slots.shapes.extend(racks.laws.shapes);
     (out.slot_laws, out.slot_shapes) = (slots.laws, slots.shapes);
+    // A script may load any response of the library's `ir_samples` by name.
+    if out
+        .scripts
+        .iter()
+        .any(|s| s.source.contains("load_ir_sample"))
+    {
+        out.responses = impulses.library();
+    }
     out.impulses = impulses.out;
     // Responses are samples after the zones' (indices into the same table).
     let responses = impulses.samples;
@@ -191,6 +199,9 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     let first = out.samples.len();
     for i in &mut out.impulses {
         i.sample += first;
+    }
+    for (_, sample) in &mut out.responses {
+        *sample += first;
     }
     out.samples.extend(responses);
     out.diagnostics = notes.finish();

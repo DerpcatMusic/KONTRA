@@ -1547,3 +1547,71 @@ fn output_channels_and_disable_logging_are_answered() {
     assert_eq!(e.last_message(), "2");
     assert_eq!(e.stats().actions_unhandled, 0);
 }
+
+/// `load_ir_sample` in init swaps an insert convolution's response for the
+/// library one it names (any extension), prepared as the one it replaces.
+#[test]
+fn a_script_loads_a_library_response_into_a_convolution() {
+    use kontra_engine::{Response, ir};
+    // One frame at half scale, 16-bit stereo at 48 kHz.
+    let half = 16_384i16.to_le_bytes();
+    let mut wav = b"RIFF".to_vec();
+    wav.extend(40u32.to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend([1, 0, 2, 0]);
+    wav.extend(RATE.to_le_bytes());
+    wav.extend((RATE * 4).to_le_bytes());
+    wav.extend([4, 0, 16, 0]);
+    wav.extend(b"data");
+    wav.extend(4u32.to_le_bytes());
+    wav.extend(half.iter().chain(&half));
+    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("half.wav");
+    std::fs::write(&file, wav).unwrap();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Convolution { impulse: 0 },
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.impulses = vec![Some(Response {
+        left: vec![1.0],
+        right: vec![1.0],
+    })];
+    plan.impulse_laws = vec![ir::Impulse {
+        sample: 0,
+        reverse: false,
+        normalize: None,
+        predelay_ms: 0.0,
+        cuts: None,
+        envelope: None,
+        mix: None,
+    }];
+    plan.responses = vec![(
+        "half".into(),
+        ir::Sample {
+            name: "Half.wav".into(),
+            file,
+            offset: 0,
+            len: None,
+            channels: 0,
+            frames: 0,
+            rate: 0,
+            keystream: None,
+        },
+    )];
+    let script = kontra_ksp::compile(
+        "on init
+            load_ir_sample(\"Half.ncw\", 0, $NI_INSERT_BUS)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let l = level(&mut e, &[on(60)]);
+    assert!((l - 0.25).abs() < 1e-3, "{l}");
+    assert_eq!(e.stats().actions_unhandled, 0);
+}
