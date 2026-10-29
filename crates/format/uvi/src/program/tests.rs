@@ -627,15 +627,18 @@ fn a_macro_a_controller_moves_crossfades_its_cells_live() {
                     <SignalConnection Ratio="1" Source="$Program/Macro 6" Destination="Ratio"/>
                   </Connections>
                 </SignalConnection>
+                <SignalConnection Ratio="1" Source="$Program/Script Event Modulation 10" Destination="Ratio" Mapper="Mapper 2"/>
               </Connections>
             </SignalConnection>
           </Connections>
         </ConstantModulation>
         <ConstantModulation Name="Macro 6" Bipolar="0" Value="0.5"/>
+        <ScriptEventModulation Name="Script Event Modulation 10" EventId="14" Bipolar="1"/>
       </ControlSignalSources>
       <Mappers>
         <ControlSignalMapper Name="Mapper 0" Min="0" Max="1">0,0 1,0</ControlSignalMapper>
         <ControlSignalMapper Name="Mapper 1" Min="0" Max="1">0,0 0,5 1,0</ControlSignalMapper>
+        <ControlSignalMapper Name="Mapper 2" Min="0" Max="1">1,0 0,8 0,6 0,2</ControlSignalMapper>
       </Mappers>
       <Layers>
         <Layer Gain="1" Pan="0">
@@ -692,6 +695,12 @@ fn a_macro_a_controller_moves_crossfades_its_cells_live() {
     // Macro 6 holds the bend's ratio at half: 0.6 × 0.5.
     assert_eq!(term.factors[2].input.source, ir::Source::PitchBend);
     assert!((term.factors[2].depth - 0.3).abs() < 1e-6);
+    // A bipolar script modulation reads its mapper at `(x + 1)/2`.
+    assert_eq!(term.factors[3].input.source, ir::Source::Script(14));
+    let half = [0.7, 0.6, 0.4, 0.2];
+    for (got, want) in term.factors[3].input.table.iter().zip(half) {
+        assert!((got - want).abs() < 1e-5, "{:?}", term.factors[3].input.table);
+    }
     // A row past the two-channel bundle and a bypassed matrix move nothing.
     assert!(
         !out.diagnostics
