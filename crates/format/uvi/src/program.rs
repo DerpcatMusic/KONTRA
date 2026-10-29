@@ -67,6 +67,7 @@ pub(crate) fn unfinished<'a, L: Library>(
             voices: num(program, "Polyphony", 64.0)?.clamp(1.0, 1024.0) as u16,
             output: ir::Output {
                 controllers: Some(routing::PART_CONTROLLERS),
+                balance: routing::PART_BALANCE,
                 ..ir::Output::UNITY
             },
             ..ir::Instrument::DEFAULT

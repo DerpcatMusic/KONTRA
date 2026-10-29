@@ -557,8 +557,10 @@ fn effect(kind: ir::EffectKind, output: f32, dry: f32) -> ir::Effect {
 /// (ConnectionMode 1: the controller sets the knob) on the part's Gain
 /// (linear 0..10^(6/20), 0x140ecfce1) and Pan (−1..1, 0x140ed007e), and
 /// `@MIDI CC 11` in Modulation mode at ratio 1 on Gain, `(1 − r) + r·v/127`.
-/// The script MIDI state starts CC 11 at 127. Smoothing is not read yet:
-/// the output's measured glide stands in.
+/// The script MIDI state starts CC 11 at 127. Gain and pan reach the mixer
+/// as signals (per-sample buffers or per-block constants) from the
+/// parameter; no smoother on them is found yet, so the output's measured
+/// glide stands in.
 pub(super) const PART_CONTROLLERS: ir::OutputControllers = ir::OutputControllers {
     volume: 7,
     pan: 10,
@@ -566,6 +568,14 @@ pub(super) const PART_CONTROLLERS: ir::OutputControllers = ir::OutputControllers
     power: 1,
     expression: Some(11),
 };
+
+/// A stereo signal's pan in UVIWorkstation's mixer (0x141352420, the
+/// stereo-to-stereo case of the layout switch at 0x141351ae0, whatever the
+/// element's PanLaw) turns the far channel to `(1 + sin(π/2 + π·|pan|))/2`
+/// via sinf 0x1419ede10. PanLaw (0 by default, never saved by the programs
+/// read) picks only the mono-to-stereo law: 0 is `(1 ∓ sin(π/2·pan))/2`
+/// (0x141353c40), 1 the equal-power `sin(π/4·(1 ∓ pan))` (0x141353820).
+pub(super) const PART_BALANCE: ir::Balance = ir::Balance::Cosine;
 
 #[cfg(test)]
 mod tests {

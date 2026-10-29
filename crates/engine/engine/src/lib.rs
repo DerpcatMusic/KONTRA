@@ -175,6 +175,8 @@ pub struct Engine {
     instrument: Level,
     /// The expression controller's share of the output gain.
     expression: f32,
+    /// How the output's pan turns the far channel down.
+    balance: ir::Balance,
     output: kontra_dsp::core::Fader,
     /// The instrument insert rack, on the final mix.
     rack: racks::Rack,
@@ -305,6 +307,7 @@ impl Engine {
                 tune: 0.0,
             },
             expression: 1.0,
+            balance: out.balance,
             output: kontra_dsp::core::Fader::new(rate, out.volume_tau_ms, out.pan_slew_ms),
             rack,
             sends,
