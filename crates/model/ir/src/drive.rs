@@ -287,6 +287,8 @@ pub enum KnobTarget {
     /// A control whose law depends on the slot's effect: the slot's own
     /// [`SlotLaw`]s map the knob onto its fields.
     Slot(SlotKnob),
+    /// How the addressed convolution's response is prepared.
+    Impulse(crate::ImpulseKnob),
 }
 
 /// A knob whose law the effect in the slot sets.

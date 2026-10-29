@@ -19,7 +19,7 @@ pub use drive::{
 };
 pub use effects::{
     Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
-    IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
+    IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
 };
 pub use mods::{Blend, Curve, Exp2, Factor, ModKind, Term, Transfer};
 pub use output::{Balance, Output, OutputControllers};

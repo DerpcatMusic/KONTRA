@@ -138,6 +138,14 @@ pub fn prepare(
         .iter()
         .filter_map(|(name, i)| Some((name.clone(), instrument.samples.get(*i)?.clone())))
         .collect();
+    // A slot's own response, so a script's knob can prepare it again.
+    for ((name, _), i) in plan.impulse_laws.iter().zip(&instrument.impulses) {
+        if !plan.responses.iter().any(|(n, _)| n == name)
+            && let Some(s) = instrument.samples.get(i.sample)
+        {
+            plan.responses.push((name.clone(), s.clone()));
+        }
+    }
     plan.polyphony = polyphony;
     plan.voice_groups.clone_from(&instrument.voice_groups);
     plan.default_keyswitch = switches.iter().map(|r| *r.start()).min();

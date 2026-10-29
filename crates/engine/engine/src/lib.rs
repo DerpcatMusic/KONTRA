@@ -19,6 +19,7 @@ mod filters;
 mod fx_types;
 mod group_masks;
 mod group_racks;
+mod impulse_knobs;
 mod inspect;
 mod knobs;
 mod ledger;
@@ -134,6 +135,7 @@ pub struct Engine {
     /// Responses scripts loaded while loading (`load_ir_sample`): name,
     /// how prepared, the response. Convolution indices past the plan's.
     loaded: Vec<(String, ir::Impulse, Response)>,
+    init_impulses: Vec<impulse_knobs::InitImpulse>,
     /// Effects scripts asked to load since the host last drained them.
     requests: Vec<fx_types::EffectRequest>,
     stream: StreamClient,
@@ -278,6 +280,7 @@ impl Engine {
             notes,
             plan,
             loaded: Vec::with_capacity(fx_types::REQUESTS),
+            init_impulses: Vec::new(),
             requests: Vec::with_capacity(fx_types::REQUESTS),
             stream,
             voices,

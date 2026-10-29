@@ -33,6 +33,9 @@ impl Engine {
         if let ir::KnobTarget::Slot(knob) = target {
             return self.set_slot_knob(knob, y, group, slot, generic);
         }
+        if let ir::KnobTarget::Impulse(knob) = target {
+            return self.set_impulse_knob(knob, y, slot, generic);
+        }
         let Some(at) = self.knob_mut(target, group, slot, generic) else {
             return false;
         };
@@ -55,7 +58,10 @@ impl Engine {
             let law = &self.script()?.knobs.get(usize::from(n))?.1;
             return Some((law.invert(x) * 1e6).round() as i32);
         }
-        let y = *self.knob_mut(target, group, slot, generic)?;
+        let y = match target {
+            ir::KnobTarget::Impulse(knob) => self.impulse_knob(knob, slot, generic)?,
+            _ => *self.knob_mut(target, group, slot, generic)?,
+        };
         let law = &self.script()?.knobs.get(usize::from(n))?.1;
         Some((law.invert(y) * 1e6).round() as i32)
     }
@@ -186,7 +192,7 @@ impl Engine {
             ir::KnobTarget::Effect(p) => {
                 p.field_mut(&mut self.effect_mut(group, slot, generic)?.kind)
             }
-            ir::KnobTarget::Slot(_) => None,
+            ir::KnobTarget::Slot(_) | ir::KnobTarget::Impulse(_) => None,
             ir::KnobTarget::LfoRate
             | ir::KnobTarget::LfoSteps
             | ir::KnobTarget::LfoWidth
