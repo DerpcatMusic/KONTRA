@@ -235,7 +235,9 @@ fn perform(path: PathBuf) -> Vec<String> {
         slot_types: Vec::new(),
         slot_responses: Vec::new(),
     }]);
+    let started = std::time::Instant::now();
     let (params, mut dsp) = activate(&saved.write());
+    eprintln!("{name}: loaded in {:.1?}", started.elapsed());
     params.align.set_value(true);
     Tick.run(&params);
     let mut failed = Vec::new();
@@ -286,8 +288,9 @@ fn perform(path: PathBuf) -> Vec<String> {
             }
             if frame > end + at(TAIL_S) {
                 fail(format!(
-                    "{segment}: {} voices still on {TAIL_S} s after the last note-off",
-                    last.voices
+                    "{segment}: {} voices still on {TAIL_S} s after the last note-off, at {:.1} dBFS",
+                    last.voices,
+                    20.0 * peaks.last().copied().unwrap_or(0.0).max(1e-9).log10()
                 ));
                 break;
             }
@@ -350,7 +353,10 @@ fn perform(path: PathBuf) -> Vec<String> {
                 "{segment}: {steals} voices stolen at {peak_voices} of {pool}"
             ));
         }
-        println!("{name}: {segment}: peak {peak_voices} voices, {steals} stolen");
+        eprintln!(
+            "{name}: {segment} ({:.1?}): peak {peak_voices} voices, {steals} stolen",
+            started.elapsed()
+        );
     }
     if let [first, .., again] = onsets[..]
         && (first - again).abs() > 10.0
@@ -375,7 +381,12 @@ fn real_performances_sound_on_time_end_and_never_burst() {
         Path::new(UVI).join("VWinds - Flutes/VWinds-C_Flute.ufs/Presets/Flute.uvip"),
     ];
     let mut failed = Vec::new();
-    for path in programs {
+    // KONTRA_PLAYTEST=<part of a path> plays just that program.
+    let only = std::env::var("KONTRA_PLAYTEST").unwrap_or_default();
+    for path in programs
+        .into_iter()
+        .filter(|p| p.to_string_lossy().contains(&only))
+    {
         // A .ufs is a file; the program is inside it.
         if !path.ancestors().any(Path::is_file) {
             eprintln!("skipped: no {}", path.display());
