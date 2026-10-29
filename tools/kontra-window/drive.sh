@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The plugin's real editor under Xvfb, driven with real pointer events:
-# a part tab, the header's library art, the preset field, a library knob
+# a part tab, the header's library art, the browser's library cards, the preset field, a library knob
 # dragged and a switch clicked, a browser row clicked (selects), double-
 # clicked (adds a part) and dragged onto a part (replaces it), then idle.
 # Each step must change the window as it says; idle must cost ~0 CPU.
@@ -17,9 +17,9 @@ interface=${INTERFACE:-458,160}
 preset=${PRESET:-874,114}      # the header's preset field
 knob=${KNOB:-632,804}          # after five wheel steps down
 switch=${SWITCH:-1484,872}
-library=${LIBRARY:-64,624}     # the browser's Una Corda row
-second=${SECOND:-88,920}       # Una Corda Felt
-third=${THIRD:-88,956}         # Una Corda Pure
+library=${LIBRARY:-200,814}     # the browser's Una Corda row
+second=${SECOND:-90,444}       # Una Corda Felt
+third=${THIRD:-94,480}         # Una Corda Pure
 header=${HEADER:-760,114}      # part 0's header, to drop on
 fold=${FOLD:-426,114}          # part 0's fold, so a new part shows below it
 mkdir -p "$out"
@@ -56,6 +56,12 @@ im = Image.open(sys.argv[1]).convert("RGB").crop((205, 46, 420, 92))
 sys.exit(0 if len(set(im.getdata())) > 64 else 1)' "$out/0-open.png"; then
     pass "header: the library's art behind both rows"
 else miss "header: the library's art behind both rows"; fi
+# The browser's libraries are cards on their covers, as v2's were.
+if python3 -I -c 'import sys; from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB").crop((5, 120, 192, 415))
+sys.exit(0 if len(set(im.getdata())) > 256 else 1)' "$out/0-open.png"; then
+    pass "browser: library cards on their covers"
+else miss "browser: library cards on their covers"; fi
 at "$tab"; xdotool click 1; sleep 1.5; shot 1-mapping
 check 0-open 1-mapping "part tab: Mapping opens"
 at "$interface"; xdotool click 1; sleep 1.5; shot 2-interface
@@ -74,7 +80,7 @@ check 5-knob 6-switch "library switch: click flips it"
 at 1000,600; for _ in $(seq 1 10); do xdotool click 4; sleep 0.1; done; sleep 1.5
 
 at "$fold"; xdotool click 1; sleep 1.5
-at "$library"; xdotool click 1; sleep 1.5; shot 7-library
+at "$library"; xdotool click 1; at 1000,600; sleep 1.5; shot 7-library
 at "$second"; xdotool click 1; sleep 3; shot 8-selected
 # A click selects the row; the rack (right of the browser) stays as it was.
 still 7-library 8-selected "browser: a click only selects" 205,30,880,500

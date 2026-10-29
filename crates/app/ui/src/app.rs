@@ -48,6 +48,8 @@ pub struct App {
     /// The libraries' cover pictures; the host gives a store whose worker
     /// reads [`Library::art`] and replaces it when the list changes.
     pub covers: Option<Pictures>,
+    /// The same art as the rack header's banners ([`crate::artwork::banner`]).
+    pub banners: Option<Pictures>,
     /// A load the host has been asked for and not finished.
     // ponytail: one load shown at a time; a list if loads queue up.
     pub loading: Option<Loading>,
