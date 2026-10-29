@@ -209,9 +209,54 @@ fn shaped(
     curve: &ShaperCurve,
 ) -> Option<ir::Source> {
     let n = u8::try_from(shapers.len()).ok()?;
+    // V2's measured Kontakt shaper bow: sign is geometric, so a falling
+    // segment reverses the exponential's direction. See KONTAKT_REFERENCE.
+    let law = match curve {
+        ShaperCurve::Breakpoints(points) if !points.is_empty() => {
+            let points = points
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let direction = points
+                        .get(i + 1)
+                        .map_or(1.0, |next| if next.y < p.y { -1.0 } else { 1.0 });
+                    (p.x, p.y, 17.0 * p.curve * direction)
+                })
+                .collect();
+            Some(kontra_law::Law::Breakpoints(points))
+        }
+        _ => None,
+    };
     shapers.push(ir::Transfer {
         source,
-        table: (0..128).map(|k| curve.evaluate(k as f32 / 127.0)).collect(),
+        table: (0..128)
+            .map(|k| {
+                let x = k as f32 / 127.0;
+                law.as_ref()
+                    .map_or_else(|| curve.evaluate(x), |law| law.eval(x))
+            })
+            .collect(),
     });
     Some(ir::Source::Shaped(n))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ni_file::kontakt::objects::Breakpoint;
+
+    #[test]
+    fn curved_crossfade_keeps_both_layers_near_the_native_midpoint() {
+        let point = |x, y, curve| Breakpoint { x, y, curve };
+        for (a, b, native) in [(1.0, 0.0, 0.663), (0.0, 1.0, 0.664)] {
+            let curve = ShaperCurve::Breakpoints(vec![
+                point(0.332_677_16, a, -0.084_459_46),
+                point(0.667_322_8, b, 0.0),
+            ]);
+            let mut shapers = Vec::new();
+            shaped(&mut shapers, ir::Source::Controller(1), &curve).unwrap();
+            let actual = shapers[0].apply(64.0 / 127.0);
+            assert!((actual - native).abs() < 0.035, "{actual} vs {native}");
+        }
+    }
 }
