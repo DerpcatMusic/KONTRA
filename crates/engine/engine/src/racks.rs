@@ -10,6 +10,7 @@ use kontra_dsp::dynamics::{
     Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
     TransientSettings,
 };
+use kontra_dsp::filter::{Cascade, CascadeSettings, CascadeStage};
 use kontra_dsp::reverb::{Combs, Convolver, Fdn, Network, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
@@ -60,6 +61,18 @@ impl Wet for Limiter {
 impl Wet for Transient {
     fn process(&mut self, io: &mut [[f32; 2]]) {
         Transient::process(self, io);
+    }
+}
+
+impl Wet for Cascade {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Cascade::process(self, io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Cascade(c) = kind {
+            Cascade::set(self, cascade(c));
+        }
     }
 }
 
@@ -474,6 +487,22 @@ fn phaser(p: ir::Phaser, tempo: f32) -> PhaserSettings {
     }
 }
 
+fn cascade(c: ir::Cascade) -> CascadeSettings {
+    let stage = |s: ir::CascadeStage| CascadeStage {
+        q: s.q,
+        limit: s.limit,
+        peak: s.peak,
+        morph: s.morph,
+        wet: s.wet,
+    };
+    CascadeSettings {
+        hz: c.hz,
+        shifts: c.shifts,
+        stages: c.stages.map(stage),
+        gain: c.gain,
+    }
+}
+
 fn settings(r: ir::Reverb) -> Settings {
     Settings {
         seconds: r.seconds,
@@ -527,6 +556,7 @@ pub(crate) fn processor(
             wet(Box::new(ModDelay::new(delay(d, 120.0), rate, max_ms)))
         }
         Some(ir::EffectKind::Phaser(p)) => wet(Box::new(Phaser::new(phaser(p, 120.0), rate))),
+        Some(ir::EffectKind::Cascade(c)) => wet(Box::new(Cascade::new(cascade(c), rate))),
         Some(ir::EffectKind::Shaper(s)) => wet(Box::new(voice_rack::shaper(s, rate))),
         Some(ir::EffectKind::Clipper(c)) => wet(Box::new(Clipper::new(
             Circuit {

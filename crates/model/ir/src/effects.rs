@@ -168,3 +168,32 @@ pub enum VowelSet {
     First,
     Second,
 }
+
+/// Three explicit state-variable stages in series, each morphing from low
+/// through band to high pass and blended into the signal by its wet amount.
+/// The output is normalised by the stages' resonant peaks, then scaled by
+/// `gain`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cascade {
+    /// Stage 0's corner; stage n + 1 sits `shifts[n]` octaves above stage n.
+    pub hz: f32,
+    pub shifts: [f32; 2],
+    pub stages: [CascadeStage; 3],
+    /// Linear, after the normalisation.
+    pub gain: f32,
+}
+
+/// One stage of a [`Cascade`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CascadeStage {
+    /// The resonance: the stage damps by `2 − 2q`.
+    pub q: f32,
+    /// The highest integrator gain (`2π·hz/rate`) the stage runs at.
+    pub limit: f32,
+    /// The stage's resonant peak at full wet, which the normaliser divides out.
+    pub peak: f32,
+    /// 0 low pass, 0.5 band pass, 1 high pass; between them a crossfade.
+    pub morph: f32,
+    /// How much of the stage's output replaces its input.
+    pub wet: f32,
+}

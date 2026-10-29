@@ -19,6 +19,7 @@ mod samples;
 mod script_knobs;
 mod skreamer;
 mod translate;
+mod versatile;
 
 pub use container::chunks;
 pub use resources::Resources;
