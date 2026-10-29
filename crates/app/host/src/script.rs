@@ -111,6 +111,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
     let entry = |kind| script.callback(kind, None);
     let restore = script.restore(saved);
     let knobs = kontra_format_kontakt::script_knobs();
+    let readouts = kontra_format_kontakt::readouts();
     ScriptPlan {
         program: script.program.clone(),
         callbacks: Callbacks {
@@ -144,6 +145,16 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
                 .symbols
                 .iter()
                 .map(|n| engine_par(n).or_else(|| knob(&knobs, n)))
+                .collect(),
+            readouts: script
+                .symbols
+                .iter()
+                .map(|n| {
+                    readouts
+                        .iter()
+                        .find(|(k, _)| *k == n.as_ref())
+                        .map(|(_, r)| r.clone())
+                })
                 .collect(),
         },
         reverb_laws: kontra_format_kontakt::reverb_laws(),
