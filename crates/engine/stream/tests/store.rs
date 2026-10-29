@@ -67,7 +67,7 @@ fn a_prefetched_page_becomes_resident_and_reads_exactly() {
     let sample = store.load(&key, source, 8 * PAGE_FRAMES, &[]).unwrap();
 
     let first = 5 * PAGE_FRAMES + 100;
-    sample.prefetch(&client, first, 300, 0);
+    sample.prefetch(&client, first, 300, 0, 1.0, false);
     let mut out = vec![[0.0; 2]; 300];
     assert!(eventually(
         || sample.read(&client, first, &mut out).missing == 0
@@ -104,7 +104,7 @@ fn a_small_cache_evicts_and_reloads_without_wrong_audio() {
     for round in 0..3 {
         for page in 0..10 {
             let first = page * PAGE_FRAMES;
-            sample.prefetch(&client, first, PAGE_FRAMES, 0);
+            sample.prefetch(&client, first, PAGE_FRAMES, 0, 1.0, false);
             assert!(
                 eventually(|| sample.read(&client, first, &mut out).missing == 0),
                 "round {round} page {page}"
@@ -233,7 +233,7 @@ fn a_six_channel_sample_pins_and_streams_through_its_mix() {
     assert_eq!(out[7], [value(12), value(9)]);
     let late = 3 * PAGE_FRAMES;
     assert!(eventually(|| {
-        sample.prefetch(&client, late, PAGE_FRAMES, 0);
+        sample.prefetch(&client, late, PAGE_FRAMES, 0, 1.0, false);
         sample
             .read_mixed(&client, late, &mut out, Some(&mix))
             .missing

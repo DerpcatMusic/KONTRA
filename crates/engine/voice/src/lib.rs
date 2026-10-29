@@ -179,15 +179,20 @@ impl Voice {
         let mix = region.mix.as_ref();
         let released = self.released;
         let ahead = (LOOKAHEAD * self.step) as usize;
-        region.runs(self.at(0) as i64, ahead, released, |_, run| {
+        let step = self.step;
+        region.runs(self.at(0) as i64, ahead, released, |offset, run| {
             let low = if run.descending {
                 run.first + 1 - run.count as u64
             } else {
                 run.first
             };
-            sample.prefetch(client, low, run.count as u64, now);
-            if let Some((_, partner, n, _, _)) = run.crossfade() {
-                sample.prefetch(client, partner, n as u64, now);
+            // The voice reaches this run `offset` source frames from now.
+            let due = now + (offset as f64 / step) as u64;
+            let count = run.count as u64;
+            sample.prefetch(client, low, count, due, step, run.descending);
+            if let Some((at, partner, n, _, _)) = run.crossfade() {
+                let due = due + (at as f64 / step) as u64;
+                sample.prefetch(client, partner, n as u64, due, step, false);
             }
         });
 
