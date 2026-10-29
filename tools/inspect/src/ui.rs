@@ -327,13 +327,8 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     .filter(|(_, (a, b))| a != b)
                     .map(|(i, (a, b))| json!({"bus":i,"before":a,"after":b}))
                     .collect();
-                let effects: Vec<_> = before_effects
-                    .iter()
-                    .zip(&after_effects)
-                    .enumerate()
-                    .filter(|(_, (a, b))| a != b)
-                    .map(|(i, (a, b))| json!({"index":i,"before":a,"after":b}))
-                    .collect();
+                let effects = (before_effects != after_effects)
+                    .then(|| json!({"before":before_effects,"after":after_effects}));
                 let after_mods: Vec<_> = engine.mods().map(|m| format!("{m:?}")).collect();
                 let group_changes: Vec<_> = before_sound
                     .iter()
