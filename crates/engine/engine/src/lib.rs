@@ -305,6 +305,7 @@ impl Engine {
             trace: _trace_capacity.map(|capacity| trace::Trace {
                 events: Vec::with_capacity(capacity),
                 dropped: 0,
+                next_action: 0,
             }),
             now: SampleTime(0),
             rate: rate.max(1),

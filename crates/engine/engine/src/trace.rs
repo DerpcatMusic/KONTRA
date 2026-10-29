@@ -1,5 +1,5 @@
 //! Bounded opt-in events for offline diagnostics; compiled out of normal builds.
-use kontra_vm::Action;
+use kontra_vm::{Action, Text};
 use kontra_voice::Gain;
 
 /// One event captured by the engine at its sample clock.
@@ -13,15 +13,29 @@ pub enum TraceEvent {
         id: u32,
         resume: bool,
     },
-    /// A script called an engine action. Arguments beyond the first eight are omitted.
+    /// A script called an engine action; extra integer and all text arguments follow.
     Action {
         frame: u64,
         slot: u8,
         callback: u32,
         action: Action,
+        call_id: u64,
         args: [i64; 8],
         len: u8,
-        truncated: bool,
+        integer_count: usize,
+        text_count: usize,
+    },
+    /// An integer argument beyond the fixed inline prefix.
+    ActionInteger {
+        call_id: u64,
+        index: usize,
+        value: i64,
+    },
+    /// A text argument of a script action, including empty text.
+    ActionText {
+        call_id: u64,
+        index: usize,
+        value: Text,
     },
     /// A voice was started, stolen, cut or ended.
     Voice {
@@ -47,6 +61,7 @@ pub enum VoiceEvent {
 pub(crate) struct Trace {
     pub events: Vec<TraceEvent>,
     pub dropped: u64,
+    pub next_action: u64,
 }
 
 impl Trace {
@@ -78,6 +93,7 @@ mod tests {
         let mut trace = Trace {
             events: Vec::with_capacity(1),
             dropped: 0,
+            next_action: 0,
         };
         let event = TraceEvent::Callback {
             frame: 0,

@@ -137,6 +137,7 @@ impl Engine {
         self.trace = Some(crate::trace::Trace {
             events: Vec::with_capacity(capacity),
             dropped: 0,
+            next_action: 0,
         });
     }
 

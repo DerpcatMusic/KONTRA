@@ -17,12 +17,28 @@ pub fn event(e: &TraceEvent, plan: &Plan, samples: &[Option<String>], rate: u32)
             slot,
             callback,
             action,
+            call_id,
             args,
             len,
-            truncated,
+            integer_count,
+            text_count,
         } => json!({"type":"script_action",
             "frame":frame, "script_slot":slot, "callback_id":callback, "action":format!("{action:?}"),
-            "args":args.get(..usize::from(*len)), "arguments_truncated":truncated}),
+            "call_id":call_id, "args":args.get(..usize::from(*len)), "integer_count":integer_count, "text_count":text_count}),
+        TraceEvent::ActionInteger {
+            call_id,
+            index,
+            value,
+        } => {
+            json!({"type":"script_action_integer", "call_id":call_id, "index":index, "value":value})
+        }
+        TraceEvent::ActionText {
+            call_id,
+            index,
+            value,
+        } => {
+            json!({"type":"script_action_text", "call_id":call_id, "index":index, "value":value.as_str()})
+        }
         TraceEvent::Voice {
             frame,
             slot,
