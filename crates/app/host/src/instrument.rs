@@ -54,13 +54,31 @@ pub fn read_saved(
     }
 }
 
-/// The file at `path` as saved values for another instrument (a Kontakt
-/// snapshot), read without that instrument; None for anything else, or a
-/// snapshot this cannot read (its full load then reports why).
+/// Saved script values for an instrument held in another file, which
+/// [`crate::rack::Rack::recall`] can apply to a part playing that file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Preset {
+    pub name: String,
+    /// The instrument file the values are for, absolute, as its IR's
+    /// `source_path` names it.
+    pub base: std::path::PathBuf,
+    /// Saved values by script slot ([`ir::Script::slot`]); an empty slot
+    /// means the base's own, which only a full load reads.
+    pub saved: Vec<Vec<String>>,
+}
+
+/// The file at `path` as a [`Preset`] (a Kontakt snapshot), read without
+/// its base instrument; None for anything else, or a snapshot this cannot
+/// read (its full load then reports why).
 #[must_use]
-pub fn preset(path: &Path) -> Option<kontra_format_kontakt::Preset> {
+pub fn preset(path: &Path) -> Option<Preset> {
     let snapshot = (path.extension()).is_some_and(|e| e.eq_ignore_ascii_case("nksn"));
-    snapshot.then(|| kontra_format_kontakt::preset(path).ok())?
+    let p = snapshot.then(|| kontra_format_kontakt::preset(path).ok())??;
+    Some(Preset {
+        name: p.name,
+        base: p.base,
+        saved: p.saved,
+    })
 }
 
 /// Reads the instrument at `path` for an engine at `rate`.

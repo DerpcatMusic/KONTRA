@@ -191,6 +191,8 @@ pub struct ScriptState {
     pub vars: Vec<crate::persist::Vars>,
     /// By instrument script, the saved values it loaded with.
     pub loaded: Vec<Vec<String>>,
+    /// By instrument script, its script slot ([`ir::Script::slot`]).
+    pub slots: Vec<usize>,
     generation: u64,
     latest: Option<Box<Capture>>,
     asked: bool,
@@ -361,16 +363,6 @@ impl Rack {
         instrument: ir::Instrument,
         path: Option<PathBuf>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let preset = kontra_format_kontakt::Preset {
-            name: instrument.name.clone(),
-            base: instrument.source_path.clone().unwrap_or_default(),
-            saved: (instrument.scripts.iter())
-                .map(|s| s.saved.clone())
-                .collect(),
-        };
-        if instrument.source_path.is_some() && self.recall(part, &preset, path.as_deref()) {
-            return Ok(());
-        }
         self.load_built(part, instrument, path, &[], &[])
     }
 
@@ -387,6 +379,7 @@ impl Rack {
         }
         let saved = instrument.scripts.iter().map(|s| s.saved.clone()).collect();
         let source = instrument.source_path.clone();
+        let slots = instrument.scripts.iter().map(|s| s.slot).collect();
         let mut loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
         let slot_types: Vec<_> = (slot_types.iter().copied())
             .filter(|&(at, slot, ty)| loaded.plan.load_type(at, slot, ty))
@@ -418,6 +411,7 @@ impl Rack {
             script: ScriptState {
                 vars: loaded.persist,
                 loaded: saved,
+                slots,
                 ..ScriptState::default()
             },
         };

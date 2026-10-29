@@ -701,6 +701,7 @@ fn a_lua_state_restored_after_a_wait_saves_as_restored() {
     let instrument = |saved: Vec<String>| ir::Instrument {
         scripts: vec![ir::Script {
             name: "state".into(),
+            slot: 0,
             dialect: ir::Dialect::Lua,
             source: source.into(),
             saved,
@@ -747,6 +748,7 @@ fn snapshot_of(kind: u8, saved: &[&str]) -> kontra_engine::ir::Instrument {
         source_path: Some("a.nki".into()),
         scripts: vec![ir::Script {
             name: "s".into(),
+            slot: 0,
             dialect: ir::Dialect::Ksp,
             source,
             saved: saved.iter().map(|&s| s.to_owned()).collect(),
@@ -778,8 +780,12 @@ fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
         audio.process(BLOCK, &[]);
         let p = rack.parts()[0].as_ref().unwrap();
         let (generation, plan) = (p.script.generation(), p.plan.clone().unwrap());
-        rack.load_ir(0, snapshot_of(kind, &["$knob 42"]), Some("b.nksn".into()))
-            .unwrap();
+        let preset = kontra_host::instrument::Preset {
+            name: "b".into(),
+            base: "a.nki".into(),
+            saved: vec![vec!["$knob 42".into()]],
+        };
+        assert!(rack.recall(0, &preset, Some(std::path::Path::new("b.nksn"))));
         let saved = saved_now(&mut rack, &mut audio);
         let p = rack.parts()[0].as_ref().unwrap();
         assert!(

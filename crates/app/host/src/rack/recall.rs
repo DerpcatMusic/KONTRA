@@ -1,13 +1,13 @@
-//! A preset of the instrument a part already plays (a Kontakt snapshot, or
-//! the instrument file again) recalls into the part instead of loading it
-//! again: its plan, samples and effects stay; only the scripts' saved values
-//! change, the way the scripts asked ([`Recall`]).
+//! A preset of the instrument a part already plays (a Kontakt snapshot)
+//! recalls into the part instead of loading the instrument again: its
+//! plan, samples and effects stay; only the scripts' saved values change,
+//! the way the scripts asked ([`Recall`]).
 
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::instrument::Preset;
 use kontra_engine::{Engine, Plan, Recall, Saved};
-use kontra_format_kontakt::Preset;
 
 use super::{Command, Part, Rack, ScriptState};
 
@@ -15,26 +15,31 @@ impl Rack {
     /// Recalls `preset` into `part` when the part plays the preset's base
     /// file and only KSP scripts; false (nothing done) when it must load. A
     /// Lua script's saved state may pick other samples, so a part with one
-    /// always loads.
-    pub(super) fn recall(&mut self, part: usize, preset: &Preset, path: Option<&Path>) -> bool {
+    /// always loads; so does a preset with no values for a slot that keeps
+    /// some (the base's own apply, which only a load reads).
+    pub fn recall(&mut self, part: usize, preset: &Preset, path: Option<&Path>) -> bool {
         let Some(Some(p)) = self.parts.get_mut(part) else {
             return false;
         };
         let same = p.source.as_deref() == Some(preset.base.as_path());
         let ksp = (p.script.vars.iter()).all(|v| v.widgets.is_empty() && !v.state);
-        let Some(plan) = p.plan.clone().filter(|_| same && ksp) else {
+        let s = &p.script;
+        // The preset's values for instrument script `n`, by its slot.
+        let of = |n: usize| {
+            let slot = s.slots.get(n)?;
+            preset.saved.get(*slot).filter(|v| !v.is_empty())
+        };
+        let complete = (s.vars.iter()).all(|v| v.vars.is_empty() || of(v.script).is_some());
+        let Some(plan) = p.plan.clone().filter(|_| same && ksp && complete) else {
             return false;
         };
-        let saved: Vec<Saved> = (p.script.vars.iter())
-            .map(|v| v.recall(preset.saved.get(v.script).map_or(&[], Vec::as_slice)))
+        let saved: Vec<Saved> = (s.vars.iter())
+            .map(|v| v.recall(of(v.script).map_or(&[], Vec::as_slice)))
             .collect();
         // What a save writes: the preset's values, the loaded ones where it
-        // has none for a slot.
-        let loaded: Vec<Vec<String>> = (p.script.loaded.iter().enumerate())
-            .map(|(n, old)| match preset.saved.get(n) {
-                Some(new) if !new.is_empty() => new.clone(),
-                _ => old.clone(),
-            })
+        // has none (scripts with nothing to save).
+        let loaded: Vec<Vec<String>> = (s.loaded.iter().enumerate())
+            .map(|(n, old)| of(n).unwrap_or(old).clone())
             .collect();
         p.name.clone_from(&preset.name);
         p.path = path.map(Path::to_owned);
