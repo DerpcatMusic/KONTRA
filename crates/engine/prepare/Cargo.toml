@@ -12,3 +12,4 @@ kontra-engine = { path = "../engine" }
 kontra-ir = { path = "../../model/ir" }
 kontra-stream = { path = "../stream" }
 kontra-voice = { path = "../voice" }
+realfft = "3.5"

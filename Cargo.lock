@@ -2588,6 +2588,7 @@ dependencies = [
  "kontra-ir",
  "kontra-stream",
  "kontra-voice",
+ "realfft",
 ]
 
 [[package]]
