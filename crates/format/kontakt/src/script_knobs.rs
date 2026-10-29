@@ -262,6 +262,41 @@ pub(crate) fn filter_knobs(kind: i32, cutoff: f32, resonance: f32, gain: f32) ->
     out
 }
 
+/// Filter shape `kind`'s own resonance laws when its family damps by stages
+/// and pass (SV, 50..=62): every damping and the gain, kept even where
+/// constant, so a switch to it sets them all. Built once; slots share them.
+pub(crate) fn shape_laws(kind: i32) -> std::sync::Arc<[SlotKnob]> {
+    static SV: std::sync::LazyLock<Vec<std::sync::Arc<[SlotKnob]>>> =
+        std::sync::LazyLock::new(|| (50..=62).map(|k| sv_laws(k).into()).collect());
+    let n = usize::try_from(kind - 50).ok();
+    n.and_then(|n| SV.get(n))
+        .cloned()
+        .unwrap_or_else(|| [].into())
+}
+
+fn sv_laws(kind: i32) -> Vec<SlotKnob> {
+    use ir::EffectParam::{FilterDamping, FilterGain};
+    let fields = [
+        FilterDamping(0),
+        FilterDamping(1),
+        FilterDamping(2),
+        FilterGain,
+    ];
+    let table = |field: ir::EffectParam| {
+        let at = |n: u8| {
+            let f = crate::laws::filter(kind, 0.5, f32::from(n) / 64.0, 0.0)?;
+            field.field_mut(&mut ir::EffectKind::Filter(f)).copied()
+        };
+        let values = (0..=64).map(at).collect::<Option<Vec<f32>>>()?;
+        Some((
+            ir::SlotKnob::Resonance,
+            field,
+            ir::Law::Table(values.into()),
+        ))
+    };
+    fields.into_iter().filter_map(table).collect()
+}
+
 /// The Compressor's saved attack and release ms for a knob `x`, `lo + (hi −
 /// lo)·(e^(kx) − 1)/(e^k − 1)`: fitted to the saves Kontakt writes for x = 0,
 /// .1, .25, .5, .75, .9, 1 (probes/knob_save_laws.lua), within 0.01% / 0.02%.

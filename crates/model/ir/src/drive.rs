@@ -262,17 +262,17 @@ pub struct SlotLaw {
     pub law: crate::Law,
 }
 
-/// Shape `id` a script may switch the filter in slot `slot` of `at` to: its
-/// pass, stages and ladder taps, the slot's knob laws unchanged. The resonance moves to
-/// the new last stage; the others stay critically damped.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Shape `id` a script may switch the filter in slot `slot` of `at` to:
+/// its pass, stages, ladder taps and ranges come from `filter`. The
+/// resonance moves to the new last stage, the others stay critically damped.
+#[derive(Clone, Debug, PartialEq)]
 pub struct SlotShape {
     pub at: RackAt,
     pub slot: u8,
     pub id: i32,
-    pub pass: crate::Pass,
-    pub stages: u8,
-    pub ladder: Option<crate::Ladder>,
+    pub filter: crate::Filter,
+    /// The shape's own laws for the slot's knobs; empty when the slot's hold.
+    pub laws: std::sync::Arc<[(SlotKnob, EffectParam, crate::Law)]>,
 }
 
 impl SlotShape {
@@ -280,9 +280,9 @@ impl SlotShape {
     pub fn apply(&self, filter: &mut crate::Filter) {
         let last = |f: &crate::Filter| usize::from(f.stages).checked_sub(1);
         let resonance = last(filter).and_then(|n| filter.damping.get(n).copied());
-        filter.pass = self.pass;
-        filter.stages = self.stages;
-        filter.ladder = self.ladder;
+        let to = &self.filter;
+        (filter.pass, filter.stages, filter.ladder) = (to.pass, to.stages, to.ladder);
+        (filter.octaves, filter.q_octaves) = (to.octaves, to.q_octaves);
         filter.damping = [2.0; 3];
         if let Some((n, k)) = last(filter).zip(resonance)
             && let Some(d) = filter.damping.get_mut(n)
