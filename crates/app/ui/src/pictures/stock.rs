@@ -15,14 +15,15 @@ const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 /// Bound background scanning and hashing; larger executables use the fallback.
 const MAX_EXECUTABLE: u64 = 512 << 20;
 // Bump the disk cache version whenever these fingerprints change.
-const KEYS: [(&str, usize, u32, u32, u32); 4] = [
+const KEYS: [(&str, usize, u32, u32, u32); 5] = [
     ("@stock/base", 2638, 87, 39, 0x0841_8e0a),
     ("@stock/cap", 12945, 3200, 29, 0x5838_2c55),
     ("@stock/light", 37604, 4992, 39, 0x16d9_4b51),
     ("@stock/font", 2363, 1402, 13, 0xc762_083f),
+    ("@stock/font13", 6034, 699, 13, 0xe3d1_56e4),
 ];
 
-static ART: OnceLock<Option<[Image; 4]>> = OnceLock::new();
+static ART: OnceLock<Option<super::cache::Art>> = OnceLock::new();
 
 /// Start discovery, hashing and decoding before the editor's first frame.
 pub(crate) fn prewarm() {
@@ -36,7 +37,12 @@ pub(crate) fn prewarm() {
 
 pub(super) fn frame(path: &str, meta: ImageMeta, n: u32) -> Option<Image> {
     let i = KEYS.iter().position(|(key, ..)| *key == path)?;
-    let image = ART.get_or_init(load).as_ref()?.get(i)?;
+    let art = ART.get_or_init(load).as_ref()?;
+    let image = if i == 4 {
+        art.font13.as_ref()?
+    } else {
+        art.main.get(i)?
+    };
     let frames = meta.frames.max(1);
     let (x, y, width, height) = match meta.axis {
         Orientation::Horizontal => (
@@ -67,13 +73,13 @@ pub(super) fn frame(path: &str, meta: ImageMeta, n: u32) -> Option<Image> {
     Image::rgba(width, height, pixels)
 }
 
-fn load() -> Option<[Image; 4]> {
+fn load() -> Option<super::cache::Art> {
     super::discovery::candidates()
         .into_iter()
         .find_map(|path| load_from(&path))
 }
 
-fn load_from(path: &Path) -> Option<[Image; 4]> {
+fn load_from(path: &Path) -> Option<super::cache::Art> {
     let before = path.metadata().ok()?;
     if !before.is_file() || before.len() > MAX_EXECUTABLE {
         return None;
@@ -85,7 +91,7 @@ fn load_from(path: &Path) -> Option<[Image; 4]> {
         None => {}
     }
     let mut file = std::fs::File::open(path).ok()?;
-    let mut found: [Option<Vec<u8>>; 4] = [None, None, None, None];
+    let mut found: [Option<Vec<u8>>; 5] = [None, None, None, None, None];
     let mut hash = Sha256::new();
     // Keep an overlap large enough for the longest candidate PNG.
     let overlap = 37604;
@@ -131,18 +137,21 @@ fn load_from(path: &Path) -> Option<[Image; 4]> {
     if before.len() != after.len() || before.modified().ok()? != after.modified().ok()? {
         return None;
     }
-    if found.iter().any(Option::is_none) {
+    if found.get(..4)?.iter().any(Option::is_none) {
         super::cache::missing(path);
         return None;
     }
-    let [base, cap, light, font] = found;
+    let [base, cap, light, font, font13] = found;
     let decode = |png: Vec<u8>| super::decode(&png, ImageMeta::default(), 0);
-    let images = [
-        decode(base?)?,
-        decode(cap?)?,
-        decode(light?)?,
-        decode(font?)?,
-    ];
+    let images = super::cache::Art {
+        main: [
+            decode(base?)?,
+            decode(cap?)?,
+            decode(light?)?,
+            decode(font?)?,
+        ],
+        font13: font13.and_then(decode),
+    };
     super::cache::save(path, &format!("{:x}", hash.finalize()), &images);
     Some(images)
 }
