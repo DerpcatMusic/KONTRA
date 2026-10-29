@@ -350,3 +350,22 @@ fn a_resizable_picture_keeps_its_fixed_ends() {
     );
     assert_eq!(cuts(false, (12, 12), (26., 26), 260., 1.), [(0, 26, 260.)]);
 }
+
+#[test]
+fn a_note_names_value_edit_reads_its_note() {
+    let mut w = Widget::new(
+        "$ks",
+        PageRef(0),
+        Rect::new(0, 0, 70, 18),
+        Kind::ValueEdit {
+            range: Range::default(),
+            display: model::Display {
+                ratio: 0.,
+                ..model::Display::default()
+            },
+            arrows: false,
+        },
+    );
+    w.value = Some(model::Value::Integer(12));
+    assert_eq!(readout(&w, model::Source::Ksp { slot: 0 }), "C-1");
+}
