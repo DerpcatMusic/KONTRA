@@ -63,7 +63,15 @@ pub(crate) fn instrument(
         preload: params.dfd_channel_preload_size,
     };
     let mut resources = None;
-    let links = crate::links::links(&program.0.private_data);
+    let (links, others) = crate::links::links(&program.0.private_data);
+    for name in others {
+        let kind = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '_');
+        notes.add(
+            ir::Impact::Audible,
+            &format!("MIDI automation of {kind}"),
+            &name,
+        );
+    }
     for (slot, chunk) in (program.0.children.iter().filter(|c| c.id == SCRIPT)).enumerate() {
         let script = BParScript::try_from(chunk)
             .and_then(|s| s.params())

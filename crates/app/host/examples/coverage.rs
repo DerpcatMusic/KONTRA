@@ -131,11 +131,15 @@ fn survey(path: &Path, store: &mut Store, report: &Mutex<Report>) {
     {
         let Ok(mut r) = report.lock() else { return };
         r.instruments += 1;
-        let gaps = ir
+        let mut gaps: BTreeSet<String> = ir
             .diagnostics
             .iter()
             .map(|d| format!("g:{:?}:{}", d.impact, d.feature))
             .collect();
+        // Features the file carries that the translator answers.
+        if ir.scripts.iter().any(|s| !s.links.is_empty()) {
+            gaps.insert("f:saved MIDI automation".into());
+        }
         r.instruments_seen.push((lib.clone(), hashes, gaps));
         for d in &ir.diagnostics {
             let gap = r
@@ -544,6 +548,7 @@ fn judge(key: &str, status_of: &BTreeMap<u16, &str>) -> (bool, &'static str, Str
             };
             (false, "IR gap", impact.into(), w)
         }
+        "f" => (true, "file", "answered".into(), 1),
         _ => (false, "script", name.into(), 4),
     }
 }
@@ -588,9 +593,17 @@ fn headline(r: &Report, status_of: &BTreeMap<u16, &str>) -> String {
         libraries.values().filter(|&&c| c).count(),
         libraries.len()
     );
+    for (f, (libs, n)) in seen.iter().filter(|(f, _)| f.starts_with("f:")) {
+        let _ = writeln!(
+            s,
+            "File feature `{}`: {n} instruments, {} libraries.\n",
+            &f[2..],
+            libs.len()
+        );
+    }
     let _ = writeln!(
         s,
-        "A feature is a KSP command, a catalog name, a callback a script uses, or a translator (IR) gap. A command is answered when the engine (or the VM) answers every call; a name when the engine or the UI tree acts on it; a callback when the engine runs it. A gap is never answered. An instrument is clean when every feature it uses is answered.\n"
+        "A feature is a KSP command, a catalog name, a callback a script uses, something the instrument file carries (saved MIDI automation), or a translator (IR) gap. A file feature is answered when the translator carries it. A command is answered when the engine (or the VM) answers every call; a name when the engine or the UI tree acts on it; a callback when the engine runs it. A gap is never answered. An instrument is clean when every feature it uses is answered.\n"
     );
     let _ = writeln!(
         s,
