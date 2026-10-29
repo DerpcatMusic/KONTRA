@@ -12,7 +12,7 @@ use kontra_ui_model::{AssetRef, ImageMeta};
 use super::{Action, App, Format, Shelf};
 use crate::Pictures;
 use crate::kit::{self, Icon, field, glyph, icon_button, interactive, list_row, rule, tab};
-use crate::theme::{CONTROL, SPACE, TEXT, TIGHT, secondary};
+use crate::theme::{CONTROL, SIDEBAR, SMALL, SPACE, TEXT, TIGHT, accent, secondary};
 
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let top = libraries(ui, app, out);
@@ -154,20 +154,16 @@ fn library_list(ui: &mut Ui, app: &mut App) -> El {
         return caption(why).fill(secondary()).pad(SPACE * 2.);
     }
     let mut picked = None;
+    let mut covers = app.covers.as_mut();
     let rows: Vec<El> = shown
         .iter()
         .map(|&(n, l)| {
-            let r = list_row(
-                ui,
-                format!("library-{n}"),
-                (&l.name, &l.presets.len().to_string()),
-                None,
-                v.library == Some(n),
-            );
-            if r.changed {
+            let id = format!("library-{n}");
+            if ui.get(id.as_str()).activated() {
                 picked = Some(n);
             }
-            r.el
+            let image = covers.as_deref_mut().and_then(|c| cover(c, n, &l.art));
+            card(id, &l.name, l.presets.len(), image, v.library == Some(n))
         })
         .collect();
     if let Some(n) = picked {
@@ -175,6 +171,62 @@ fn library_list(ui: &mut Ui, app: &mut App) -> El {
         app.view.preset_search.clear();
     }
     col(rows).gap(1).pad(TIGHT).scroll().min_h(0)
+}
+
+/// Widest official browser banner (Afflatus Chapter II Brass, 905x99):
+/// every library card has its shape (v2's).
+const BANNER_RATIO: f64 = 905. / 99.;
+
+/// A library as v2's browser drew it (`src/ui/browser.rs` `source_row`,
+/// the card): its banner across the sidebar under a dark scrim, the name
+/// and preset count in white over it, an accent edge when chosen.
+fn card(id: String, name: &str, count: usize, image: Option<Arc<Image>>, chosen: bool) -> El {
+    let height = (SIDEBAR - 2. * TIGHT) / BANNER_RATIO;
+    let art = match image {
+        Some(image) => block(Len::Pct(100.), height).fill(Fill::Image(image, Fit::Cover)),
+        None => block(Len::Pct(100.), height).fill(Role::Raised),
+    };
+    let scrim = block(Len::Pct(100.), Len::Pct(100.)).fill(Gradient::linear(
+        90.,
+        [
+            (0., Color::srgb(0., 0., 0.).with_alpha(0.88)),
+            (0.65, Color::srgb(0., 0., 0.).with_alpha(0.72)),
+            (1., Color::srgb(0., 0., 0.).with_alpha(0.72)),
+        ],
+    ));
+    let mark = block(2, height).fill(if chosen {
+        Fill::from(accent())
+    } else {
+        Role::Ink.alpha(0.)
+    });
+    let label = row![
+        mark,
+        body(name.to_owned())
+            .text_size(TEXT)
+            .fill(Color::srgb(1., 1., 1.))
+            .lines(1)
+            .min_w(0)
+            .grow(1),
+        caption(count.to_string())
+            .text_size(SMALL * 0.85)
+            .fill(Color::srgb(0.9, 0.9, 0.9))
+            .shrink(0),
+    ]
+    .gap(TIGHT)
+    .align(Align::Center)
+    .pad((SPACE, 0.))
+    .h(Len::Pct(100.));
+    let el = col![stack![art, scrim, label].w(Len::Pct(100.)).h(height).clip()]
+        .pad((TIGHT, TIGHT))
+        .w(Len::Pct(100.))
+        .when(chosen, |e| e.fill(Role::Raised))
+        .focusable()
+        .a11y(A11y::Button)
+        .named(format!("{name}, {count} presets"))
+        .tip(format!("{name}\nShow its presets below"))
+        .id(id)
+        .shrink(0);
+    kit::interactive(el)
 }
 
 fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {

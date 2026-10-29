@@ -85,14 +85,14 @@ fn chip() -> El {
 /// A header row's height: both rows are one, so the artwork lines up.
 const ROW: f64 = CONTROL + 2. * TIGHT;
 /// The artwork behind a part's header, fading out over this width (v2's).
-const BANNER: f64 = TEXT * 36.;
+const BANNER: f64 = crate::artwork::BANNER.0;
 
 /// Part `n`'s library cover, once it has decoded.
 fn art(app: &mut App, n: usize) -> Option<Arc<Image>> {
     let name = &app.parts.get(n)?.library;
     let lib = app.libraries.iter().position(|l| &l.name == name)?;
     let art = &app.libraries.get(lib)?.art;
-    super::browser::cover(app.covers.as_mut()?, lib, art)
+    super::browser::cover(app.banners.as_mut()?, lib, art)
 }
 
 /// Header row `row` (0 or 1) of a part on its library's artwork, as v2
@@ -102,13 +102,12 @@ fn band(content: El, art: Option<Arc<Image>>, row: u8) -> El {
     let y = -f64::from(row) * ROW;
     let mut layers = Vec::new();
     if let Some(img) = art {
+        // v2's light wash over the dimmed banner, fading out quickly.
         let wash = Gradient::linear(
             90.,
             [
-                // Deeper than v2's 0.55: a bright cover (Una Corda's) hid
-                // the tabs under it.
-                (0., Role::Surface.alpha(0.8)),
-                (0.6, Role::Surface.alpha(0.45)),
+                (0., Role::Surface.alpha(0.55)),
+                (0.5, Role::Surface.alpha(0.2)),
                 (1., Role::Surface.alpha(0.)),
             ],
         );
@@ -117,7 +116,7 @@ fn band(content: El, art: Option<Arc<Image>>, row: u8) -> El {
                 .fill(Fill::Image(img, Fit::Cover))
                 .at(0., y),
         );
-        layers.push(block(BANNER, ROW * 2.).fill(wash).at(0., y));
+        layers.push(block(BANNER * 0.75, ROW * 2.).fill(wash).at(0., y));
     }
     layers.push(content.w(Len::Pct(100.)).h(Len::Pct(100.)));
     stack(layers)

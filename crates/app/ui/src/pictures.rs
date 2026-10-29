@@ -47,6 +47,13 @@ impl Pictures {
     /// A store whose worker reads files through `read`.
     #[must_use]
     pub fn new(read: Box<Read>) -> Self {
+        Self::with_look(read, |_| None)
+    }
+
+    /// A store whose worker reads files through `read` and draws each
+    /// picture as `look` makes it (`None` keeps it as it is).
+    #[must_use]
+    pub fn with_look(read: Box<Read>, look: fn(&Image) -> Option<Image>) -> Self {
         let (jobs, inbox) = mpsc::channel::<Job>();
         let (outbox, done) = mpsc::channel::<Done>();
         std::thread::spawn(move || {
@@ -68,6 +75,7 @@ impl Pictures {
                         .entry(h.finish())
                         .or_insert_with(|| {
                             let image = decode(&bytes, job.meta, job.frame)?;
+                            let image = look(&image).unwrap_or(image);
                             at(image, job.scale).map(Arc::new)
                         })
                         .clone()
@@ -269,7 +277,7 @@ fn at(image: Image, scale: f32) -> Option<Image> {
 
 /// `img` at `w` × `h` through a Catmull-Rom filter, widened when it
 /// shrinks, in premultiplied alpha so an edge keeps its colour.
-fn resample(img: &Image, w: u32, h: u32) -> Option<Image> {
+pub(crate) fn resample(img: &Image, w: u32, h: u32) -> Option<Image> {
     let (sw, sh) = (img.width as usize, img.height as usize);
     let (w, h) = (w as usize, h as usize);
     let src: Vec<[f32; 4]> = img
