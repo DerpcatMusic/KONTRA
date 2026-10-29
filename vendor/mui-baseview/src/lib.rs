@@ -30,7 +30,7 @@ use baseview::{
 use keyboard_types::{Key as HostKey, KeyState, KeyboardEvent, Modifiers, NamedKey};
 /// What a [`KeyHook`] is handed.
 pub use mui::host::KeyEvent;
-use mui::host::{Driver, Modifier, NativeKey, Wheel, NOTCH_LINES};
+use mui::host::{Driver, Modifier, NOTCH_LINES, NativeKey, Wheel};
 pub use mui::host::{Shared, View, lock};
 use mui::prelude::{Button, Cursor, Key, Mods, Point};
 use mui::vello::host::{Frame, Host, target_size};
@@ -39,6 +39,7 @@ use mui::vello::kurbo::Affine;
 use raw_window_handle::HasDisplayHandle;
 use raw_window_handle::HasWindowHandle;
 
+mod pace;
 mod timing;
 pub use timing::{
     NATIVE_METRICS, NATIVE_OUTCOMES, NATIVE_TIMING_LIMIT, NativeFrameOutcome, NativeFrameSample,
@@ -281,7 +282,12 @@ pub fn open_floating_threaded<V: View + Send + 'static>(
     let settings = settings(title, size).with_scale_factor_override(scale);
     baseview::ThreadedWindow::create(settings, build(shared, requests, false))
         .and_then(|w| w.show().map(|()| w))
-        .map_err(|e| log(&sink, &format!("mui-baseview: floating window failed ({e})")))
+        .map_err(|e| {
+            log(
+                &sink,
+                &format!("mui-baseview: floating window failed ({e})"),
+            )
+        })
         .ok()
 }
 
@@ -467,6 +473,8 @@ pub struct Handler<V> {
     applied_cursor: Option<MouseCursor>,
     /// The current scene is not on screen yet: paint it.
     unpainted: bool,
+    /// KONTAKTO patch: retry pacing and the frame counts it logs.
+    pace: pace::Pace,
     last_panic: Option<String>,
     /// A screen reader's side; only a real window has one.
     a11y: Option<A11y>,
@@ -542,6 +550,7 @@ impl<V: View> Handler<V> {
             gpu_retry_at: Instant::now(),
             applied_cursor: None,
             unpainted: true,
+            pace: pace::Pace::new(Instant::now()),
             last_panic: None,
             a11y: None,
             parented: false,
@@ -610,6 +619,20 @@ impl<V: View> Handler<V> {
             platform::reanchor_to_superview_top(handle);
         }
         let now = Instant::now();
+        if let Some(c) = self.pace.report(now) {
+            mui::diagnostics::breadcrumb(
+                "mui-baseview",
+                "frames",
+                &format!(
+                    "frames in {}s: presented={} skipped-unpainted={} a11y-redraws={} requested={}",
+                    pace::REPORT.as_secs(),
+                    c.presented,
+                    c.skipped,
+                    c.a11y_redraws,
+                    c.requested
+                ),
+            );
+        }
         let size = self.driver.size();
         if self.requests.redraw.swap(false, Ordering::AcqRel) {
             self.driver.redraw();
@@ -689,7 +712,7 @@ impl<V: View> Handler<V> {
             }
             let a11y = self.a11y.as_mut().map(|(_, ui)| ui);
             if let Some(a11y) = &a11y
-                && a11y.wants_tree()
+                && self.pace.a11y_redraws(a11y.wants_tree())
             {
                 self.driver.redraw();
             }
@@ -729,10 +752,19 @@ impl<V: View> Handler<V> {
             if let Some((_, a11y)) = self.a11y.as_mut()
                 && (fresh || a11y.wants_tree())
             {
+                let wants = a11y.wants_tree();
                 accessibility_update = a11y.prepare(&s.ui);
+                self.pace
+                    .a11y_prepared(wants, accessibility_update.is_some());
+            }
+            if fresh {
+                self.pace.requested();
             }
             self.unpainted |= fresh;
-            if self.unpainted && (self.gpu.is_some() || self.software.is_some()) {
+            if self.unpainted
+                && self.pace.paints(fresh, now)
+                && (self.gpu.is_some() || self.software.is_some())
+            {
                 let scene_at = sample.as_ref().map(|_| Instant::now());
                 let scene = s.ui.scene_snapshot();
                 if let Some(sample) = sample {
@@ -784,6 +816,11 @@ impl<V: View> Handler<V> {
             match result {
                 Ok(presented) => {
                     self.unpainted = false;
+                    if presented {
+                        self.pace.presented();
+                    } else {
+                        self.pace.current();
+                    }
                     if presented && !self.cpu_presented {
                         mui::diagnostics::breadcrumb(
                             "mui-baseview",
@@ -844,14 +881,18 @@ impl<V: View> Handler<V> {
                 }
             }
             match frame {
-                Ok(Frame::Presented(_)) => self.unpainted = false,
+                Ok(Frame::Presented(_)) => {
+                    self.unpainted = false;
+                    self.pace.presented();
+                }
                 Ok(Frame::Current) => {
                     self.unpainted = false;
+                    self.pace.current();
                     if let Some(profiler) = self.driver.profiler_mut() {
                         profiler.discard_pending_presentation();
                     }
                 }
-                Ok(Frame::Skipped) => {}
+                Ok(Frame::Skipped) => self.pace.skipped(now),
                 Ok(Frame::SurfaceLost) => {
                     // SAFETY: the surface comes from this window's live
                     // native handle, and baseview drops the handler that owns

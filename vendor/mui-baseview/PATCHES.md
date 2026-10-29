@@ -87,3 +87,9 @@ checking that generation; an active old cancellation precedes the next creation,
 and a delayed old cancellation cannot clear a reopened parent's identifier. The
 registration mutex is released before user code. The existing serialized hook
 contract does not support synchronously opening another window from that callback.
+
+## Frame pacing and counts (`src/pace.rs`)
+
+- **Capped retries:** a GPU present that returns `Frame::Skipped` (occluded, timeout, outdated) gets one immediate retry, then waits 100 ms unless a new scene arrives. Before this, an unpainted frame snapshotted the scene and acquired a surface every refresh for as long as a host hid the surface.
+- **Stuck accessibility flag:** a tree request that `AccessibilityUi::prepare` cannot answer stops the a11y redraw until one is answered. Upstream `AccessibilityUi` keeps `asked` set when the reader deactivates before the next tick (`Gone` clears `active` only), so `wants_tree()` redraws every frame. **Upstream fix:** clear `asked` in the deactivation handler, or make `wants_tree` require `active` (mui `crates/mui-baseview/src/a11y.rs`).
+- **Session log:** every 10 s with any activity, a `mui-baseview/frames` breadcrumb records presented / skipped-unpainted / a11y-redraws / requested counts.
