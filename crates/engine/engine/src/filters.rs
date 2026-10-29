@@ -155,7 +155,12 @@ impl Engine {
                 mix.fill([0.0; 2]);
             }
         }
-        for slot in self.voices.iter_mut().filter(|s| s.voice.is_active()) {
+        for (_index, slot) in self
+            .voices
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, s)| s.voice.is_active())
+        {
             let zone = self.plan.zones.get(slot.zone);
             let bus = zone.map_or(0, |z| crate::plan::bus(&self.groups, z));
             let chain = self.zone_chain.get(slot.zone).copied().flatten();
@@ -186,6 +191,17 @@ impl Engine {
                     });
             }
             self.stats.missing_frames += slot.voice.missing_frames() - before;
+            #[cfg(feature = "trace")]
+            if !slot.voice.is_active()
+                && let Some(trace) = &mut self.trace
+            {
+                trace.voice(
+                    self.now.0 + len as u64,
+                    _index,
+                    slot,
+                    crate::VoiceEvent::End,
+                );
+            }
         }
         self.mix_chains(len);
     }

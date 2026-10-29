@@ -14,10 +14,12 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail, ensure};
 
+mod bands;
 mod load;
 mod play;
 mod routes;
 mod scenario;
+mod trace_output;
 
 /// The engine's sample rate for every subcommand.
 const RATE: u32 = 48_000;
@@ -78,7 +80,7 @@ fn run() -> Result<()> {
             .and_then(|r| r.get("render_complete"))
             .and_then(serde_json::Value::as_bool)
             != Some(false),
-        "offline render incomplete: see missing frames, timeouts and stream errors in report"
+        "inspection incomplete: see trace overflow, missing frames, timeouts and stream errors in report"
     );
     Ok(())
 }

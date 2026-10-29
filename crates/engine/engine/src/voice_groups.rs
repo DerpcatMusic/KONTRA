@@ -78,7 +78,11 @@ impl Engine {
                 (!(group.prefer_released && s.released), order)
             })
             .map(|(i, _)| i);
-        if let Some(slot) = victim.and_then(|i| self.voices.get_mut(i)) {
+        if let Some((_index, slot)) = victim.and_then(|i| self.voices.get_mut(i).map(|s| (i, s))) {
+            #[cfg(feature = "trace")]
+            if let Some(trace) = &mut self.trace {
+                trace.voice(self.now.0, _index, slot, crate::VoiceEvent::Steal);
+            }
             slot.voice.fade(fade);
             slot.fading = true;
         }

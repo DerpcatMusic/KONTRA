@@ -183,6 +183,31 @@ impl Rack {
         }
     }
 
+    /// Effect configurations with this rack's last applied route amounts.
+    pub(crate) fn inspect_slots(&self) -> Vec<Option<ir::Effect>> {
+        self.slots
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(n, slot)| {
+                let mut effect = slot?;
+                for (m, &amount) in self.mods.iter().zip(self.amounts.iter()) {
+                    if let ir::ModKind::EffectParam { insert, param, .. } = *m
+                        && usize::from(insert) == n
+                    {
+                        param.add_to(&mut effect, amount);
+                    }
+                }
+                Some(effect)
+            })
+            .collect()
+    }
+
+    /// Route values last applied to this rack, for offline inspection.
+    pub(crate) fn route_amounts(&self) -> impl Iterator<Item = (ir::ModKind, f32)> + '_ {
+        self.mods.iter().copied().zip(self.amounts.iter().copied())
+    }
+
     /// What its routes scale send `n`'s level by this span.
     pub(crate) fn send_scale(&self, n: usize) -> f32 {
         self.mods

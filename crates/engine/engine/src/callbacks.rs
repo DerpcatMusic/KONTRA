@@ -39,6 +39,19 @@ impl Engine {
         let mark = self.forward.len();
         if let Some(mut vm) = self.take_vm(slot) {
             if let Some(co) = start(&mut vm, running.context()) {
+                #[cfg(feature = "trace")]
+                if let Some(trace) = &mut self.trace {
+                    trace.push(crate::TraceEvent::Callback {
+                        frame: self.now.0,
+                        slot,
+                        kind: running.callback_type,
+                        id: running.callback_id,
+                        note_id: running.event.map(crate::NoteRef::event_id),
+                        controller: running.controller,
+                        control: running.ui,
+                        resume: false,
+                    });
+                }
                 self.step_script(slot, &mut vm, co);
             }
             self.put_vm(slot, vm);
@@ -154,6 +167,19 @@ impl Engine {
                 slot,
                 ..Running::resumed(vm.context(co).unwrap_or(0))
             };
+            #[cfg(feature = "trace")]
+            if let Some(trace) = &mut self.trace {
+                trace.push(crate::TraceEvent::Callback {
+                    frame: self.now.0,
+                    slot,
+                    kind: self.running.callback_type,
+                    id: self.running.callback_id,
+                    note_id: self.running.event.map(crate::NoteRef::event_id),
+                    controller: self.running.controller,
+                    control: self.running.ui,
+                    resume: true,
+                });
+            }
             self.step_script(slot, &mut vm, co);
             self.put_vm(slot, vm);
         }

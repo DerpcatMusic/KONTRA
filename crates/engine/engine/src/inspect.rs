@@ -120,6 +120,7 @@ pub struct VoiceObservation {
 /// A live EQ route, sampled from the same source and law used by the engine.
 #[derive(Clone, Debug)]
 pub struct EqRouteObservation {
+    pub voice_slot: usize,
     pub zone: usize,
     pub name: String,
     pub insert: u8,
@@ -130,6 +131,38 @@ pub struct EqRouteObservation {
 }
 
 impl Engine {
+    /// Allocate a bounded trace buffer off the audio thread and enable event capture.
+    #[cfg(feature = "trace")]
+    pub fn enable_trace(&mut self, capacity: usize) {
+        self.trace = Some(crate::trace::Trace {
+            events: Vec::with_capacity(capacity),
+            dropped: 0,
+            next_action: 0,
+        });
+    }
+
+    /// Captured events in order since the last clear.
+    #[cfg(feature = "trace")]
+    #[must_use]
+    pub fn trace_events(&self) -> &[crate::TraceEvent] {
+        self.trace.as_ref().map_or(&[], |t| &t.events)
+    }
+
+    /// Total events rejected because the bounded buffer was full.
+    #[cfg(feature = "trace")]
+    #[must_use]
+    pub fn trace_dropped(&self) -> u64 {
+        self.trace.as_ref().map_or(0, |t| t.dropped)
+    }
+
+    /// Clear events between blocks without releasing the allocation.
+    #[cfg(feature = "trace")]
+    pub fn clear_trace(&mut self) {
+        if let Some(t) = &mut self.trace {
+            t.events.clear();
+        }
+    }
+
     /// Enable blocking page waits in every voice for offline rendering only.
     #[cfg(feature = "trace")]
     pub fn set_offline_wait(&mut self, enabled: bool) {
@@ -167,7 +200,12 @@ impl Engine {
     /// Samples active voices' EQ routes without changing the processing path.
     pub fn inspect_eq_routes(&self) -> Vec<EqRouteObservation> {
         let mut result = Vec::new();
-        for slot in self.voices.iter().filter(|s| s.voice.is_active()) {
+        for (voice_slot, slot) in self
+            .voices
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.voice.is_active())
+        {
             let Some((zone, note)) = self
                 .plan
                 .zones
@@ -198,6 +236,7 @@ impl Engine {
                         .voice_bells(zone, insert, note, age)
                         .and_then(|bells| bells.get(usize::from(band)).map(|b| b.gain_db));
                     result.push(EqRouteObservation {
+                        voice_slot,
                         zone: slot.zone,
                         name: m.name.clone(),
                         insert,
@@ -210,5 +249,214 @@ impl Engine {
             }
         }
         result
+    }
+}
+
+/// An active voice's route and the current input observed between spans.
+#[derive(Clone, Debug)]
+pub struct RouteObservation {
+    pub voice_slot: usize,
+    pub zone: usize,
+    pub name: String,
+    pub kind: kontra_ir::ModKind,
+    /// Current raw source; `None` when its source is fixed at note-on or unavailable.
+    pub source: Option<f32>,
+    /// Current source after timed-source intensity scaling.
+    pub routed: Option<f32>,
+}
+
+pub(crate) fn route_source(kind: kontra_ir::ModKind) -> Option<kontra_ir::Source> {
+    use kontra_ir::ModKind;
+    match kind {
+        ModKind::Envelope => None,
+        ModKind::Volume { source, .. }
+        | ModKind::Pitch { source, .. }
+        | ModKind::Pan { source, .. }
+        | ModKind::Cutoff { source, .. }
+        | ModKind::Resonance { source, .. }
+        | ModKind::EqGain { source, .. }
+        | ModKind::SampleStart { source, .. }
+        | ModKind::Attack { source, .. }
+        | ModKind::Release { source, .. }
+        | ModKind::LfoPhase { source, .. }
+        | ModKind::LfoRate { source, .. }
+        | ModKind::LfoHz { source, .. }
+        | ModKind::Intensity { source, .. }
+        | ModKind::LoopShift { source, .. }
+        | ModKind::Mix { source, .. }
+        | ModKind::EffectParam { source, .. }
+        | ModKind::Send { source, .. } => Some(source),
+    }
+}
+
+impl Engine {
+    /// Observe all active routes, including shaped and blended controller inputs.
+    pub fn inspect_routes(&self) -> Vec<RouteObservation> {
+        let mut out = Vec::new();
+        for (voice_slot, slot) in self
+            .voices
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.voice.is_active())
+        {
+            let Some((zone, note)) = self
+                .plan
+                .zones
+                .get(slot.zone)
+                .zip(slot.note.and_then(|n| self.notes.get(n)))
+            else {
+                continue;
+            };
+            let Some(group) = self.groups.get(zone.group as usize) else {
+                continue;
+            };
+            let age = crate::modulators::Age {
+                warp: slot.warp,
+                chaos: slot.chaos.map(|c| c[3]),
+                ..self.age(slot.started, slot.released_at)
+            };
+            for m in group.mods.iter().filter(|m| !m.bypass) {
+                let input = route_source(m.kind);
+                out.push(RouteObservation {
+                    voice_slot,
+                    zone: slot.zone,
+                    name: m.name.clone(),
+                    kind: m.kind,
+                    source: input.and_then(|s| self.source(zone, s, note, age)),
+                    routed: input.and_then(|s| self.routed(zone, s, note, age)),
+                });
+            }
+        }
+        out
+    }
+}
+
+/// One bus route's last applied amount.
+#[derive(Clone, Copy, Debug)]
+pub struct BusRouteObservation {
+    pub bus: usize,
+    pub kind: kontra_ir::ModKind,
+    pub amount: f32,
+}
+
+impl Engine {
+    /// Read bus route amounts as last applied by the rack.
+    pub fn inspect_bus_routes(&self) -> impl Iterator<Item = BusRouteObservation> + '_ {
+        self.buses.iter().enumerate().flat_map(|(bus, state)| {
+            state
+                .rack
+                .route_amounts()
+                .map(move |(kind, amount)| BusRouteObservation { bus, kind, amount })
+        })
+    }
+}
+
+/// Target parameters for one per-voice effect, sampled between spans.
+#[derive(Clone, Copy, Debug)]
+pub struct VoiceEffectObservation {
+    pub voice_slot: usize,
+    pub zone: usize,
+    pub insert: u8,
+    pub target: kontra_ir::EffectKind,
+}
+
+impl Engine {
+    /// Effect targets calculated by the same functions the voice rack uses.
+    pub fn inspect_voice_effects(&self) -> Vec<VoiceEffectObservation> {
+        let mut out = Vec::new();
+        for (voice_slot, slot) in self
+            .voices
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.voice.is_active())
+        {
+            let Some((zone, note)) = self
+                .plan
+                .zones
+                .get(slot.zone)
+                .zip(slot.note.and_then(|n| self.notes.get(n)))
+            else {
+                continue;
+            };
+            let age = crate::modulators::Age {
+                warp: slot.warp,
+                chaos: slot.chaos.map(|c| c[3]),
+                ..self.age(slot.started, slot.released_at)
+            };
+            for unit in &slot.rack {
+                let Some(mut target) = self.voice_effect(zone, unit.insert, note, age) else {
+                    continue;
+                };
+                match &mut target {
+                    kontra_ir::EffectKind::Eq(bells) => {
+                        if let Some(v) = self.voice_bells(zone, unit.insert, note, age) {
+                            *bells = v;
+                        }
+                    }
+                    kontra_ir::EffectKind::Filter(f) => {
+                        if let Some(kontra_ir::EffectKind::Filter(base)) = self
+                            .groups
+                            .get(zone.group as usize)
+                            .and_then(|g| g.inserts.get(usize::from(unit.insert)))
+                            .and_then(Option::as_ref)
+                            .map(|e| e.kind)
+                        {
+                            *f = base;
+                        }
+                        if let Some((hz, damping)) = self.voice_filter(zone, unit.insert, note, age)
+                        {
+                            f.hz = hz;
+                            f.damping = damping;
+                        }
+                    }
+                    _ => {}
+                }
+                out.push(VoiceEffectObservation {
+                    voice_slot,
+                    zone: slot.zone,
+                    insert: unit.insert,
+                    target,
+                });
+            }
+        }
+        out
+    }
+}
+
+/// An instrument, main, send or bus effect after its last route update.
+#[derive(Clone, Copy, Debug)]
+pub struct SharedEffectObservation {
+    pub scope: &'static str,
+    pub owner: usize,
+    pub slot: usize,
+    pub effect: Option<kontra_ir::Effect>,
+}
+
+impl Engine {
+    /// Snapshot shared rack settings, including the last applied bus routes.
+    pub fn inspect_shared_effects(&self) -> Vec<SharedEffectObservation> {
+        let mut out = Vec::new();
+        let mut add = |scope, owner, rack: &crate::racks::Rack| {
+            out.extend(
+                rack.inspect_slots()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(slot, effect)| SharedEffectObservation {
+                        scope,
+                        owner,
+                        slot,
+                        effect,
+                    }),
+            );
+        };
+        add("instrument", 0, &self.rack);
+        add("main", 0, &self.main);
+        for (owner, rack) in self.sends.iter().enumerate() {
+            add("send", owner, rack);
+        }
+        for (owner, bus) in self.buses.iter().enumerate() {
+            add("bus", owner, &bus.rack);
+        }
+        out
     }
 }
