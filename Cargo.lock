@@ -2576,6 +2576,7 @@ dependencies = [
  "moose-clap",
  "moose-test",
  "moose-vst3",
+ "mui-native-dialog",
  "rfd 0.17.2",
 ]
 
