@@ -120,8 +120,9 @@ pub fn page(
             let (w, h) = (r.width * scale, r.height * scale);
             let mut parts = Vec::new();
             let size = style.and_then(|s| s.size).map_or(TEXT, f64::from) * scale;
-            if let (Some((img, _)), Some(a)) = (&picture, art) {
-                parts.push(image(img, a.width * scale, a.height * scale).at(0., 0.));
+            if let (Some((img, meta)), Some(a)) = (&picture, art) {
+                parts
+                    .push(sliced(img, meta, (a.width * scale, a.height * scale), scale).at(0., 0.));
             } else if stock {
                 parts.push(stock::face(wd, t, (w, h), size * 1.25).at(0., 0.));
             }
@@ -368,6 +369,103 @@ fn words_el(
     .pad((2. * scale, 0.))
     .at(0., top);
     stack([el]).w(width).h(height).radius(0.).clip()
+}
+
+/// A picture's frame on a control `w` by `h` points, as Kontakt draws a
+/// resizable one (KSP manual, `$CONTROL_PAR_PICTURE`): its Fixed Top,
+/// Bottom, Left and Right areas stay intact and only the rest stretches,
+/// so a rounded button or a glow keeps its ends. `scale` is points per
+/// picture pixel. A picture without fixed areas along an axis stretches
+/// whole along it.
+fn sliced(
+    img: &Arc<mui::prelude::Image>,
+    meta: &model::ImageMeta,
+    (w, h): (f64, f64),
+    scale: f64,
+) -> El {
+    let m = meta.margins;
+    let own = meta
+        .size
+        .map_or((f64::from(img.width), f64::from(img.height)), |s| {
+            (s.width, s.height)
+        });
+    let across = cuts(
+        meta.stretch[0],
+        (m.left, m.right),
+        (own.0, img.width),
+        w,
+        scale,
+    );
+    let down = cuts(
+        meta.stretch[1],
+        (m.top, m.bottom),
+        (own.1, img.height),
+        h,
+        scale,
+    );
+    if across.len() == 1 && down.len() == 1 {
+        return image(img, w, h);
+    }
+    let mut pieces = Vec::new();
+    let mut y = 0.;
+    for &(sy, sh, dh) in &down {
+        let mut x = 0.;
+        for &(sx, sw, dw) in &across {
+            if let Some(piece) = crop(img, (sx, sy), (sw, sh)) {
+                pieces.push(image(&piece, dw, dh).at(x, y));
+            }
+            x += dw;
+        }
+        y += dh;
+    }
+    stack(pieces).w(w).h(h)
+}
+
+/// One axis of a nine-slice: (decoded start, decoded length, drawn points)
+/// per piece. The fixed ends `lo`/`hi` (picture pixels) keep their size;
+/// a control shorter than both shrinks them alike and drops the middle.
+fn cuts(
+    on: bool,
+    (lo, hi): (u32, u32),
+    (own, decoded): (f64, u32),
+    to: f64,
+    scale: f64,
+) -> Vec<(u32, u32, f64)> {
+    let ends = f64::from(lo + hi);
+    if !on || lo + hi == 0 || ends >= own {
+        return vec![(0, decoded, to)];
+    }
+    let k = f64::from(decoded) / own.max(1.);
+    let (a, b) = (
+        (f64::from(lo) * k).round() as u32,
+        (f64::from(hi) * k).round() as u32,
+    );
+    let mid = decoded.saturating_sub(a + b);
+    let fit = (to / (ends * scale)).min(1.);
+    let (dl, dh) = (f64::from(lo) * scale * fit, f64::from(hi) * scale * fit);
+    vec![
+        (0, a, dl),
+        (a, mid, (to - dl - dh).max(0.)),
+        (a + mid, b, dh),
+    ]
+    .into_iter()
+    .filter(|&(_, n, d)| n > 0 && d > 0.)
+    .collect()
+}
+
+/// The `size` pixels of `img` from `at`.
+fn crop(
+    img: &mui::prelude::Image,
+    (x, y): (u32, u32),
+    (w, h): (u32, u32),
+) -> Option<Arc<mui::prelude::Image>> {
+    let stride = img.width as usize * 4;
+    let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
+    for row in y as usize..(y + h) as usize {
+        let at = row * stride + x as usize * 4;
+        rgba.extend_from_slice(img.rgba.get(at..at + w as usize * 4)?);
+    }
+    mui::prelude::Image::rgba(w, h, rgba).map(Arc::new)
 }
 
 fn image(img: &Arc<mui::prelude::Image>, w: f64, h: f64) -> El {
