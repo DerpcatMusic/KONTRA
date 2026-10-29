@@ -1,6 +1,6 @@
 //! Inventory the v3 instrument model and the plan prepared from it.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -14,6 +14,13 @@ use super::RATE;
 pub fn run(path: &Path) -> Result<(Value, String)> {
     let instrument = kontra_host::instrument::read(path)
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+    // Prepare requests samples referenced by at least one non-purged group.
+    let resident_samples: HashSet<usize> = instrument
+        .groups
+        .iter()
+        .filter(|g| !g.purged)
+        .flat_map(|g| g.zones.iter().map(|z| z.sample))
+        .collect();
     let samples: Vec<_> = instrument
         .samples
         .iter()
@@ -69,6 +76,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         .filter_map(|z| Some((usize::try_from(z.group).ok()?, usize::from(z.member))))
         .collect();
     let mut input_zones = 0usize;
+    let mut unprepared_reasons: BTreeMap<&str, usize> = BTreeMap::new();
     for (group_id, group) in groups.iter_mut().enumerate() {
         if let Some(items) = group.get_mut("zones").and_then(Value::as_array_mut) {
             input_zones += items.len();
@@ -76,7 +84,21 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
                 if let Some(fields) = zone.as_object_mut() {
                     let present = (member < usize::from(u16::MAX))
                         .then(|| prepared.contains(&(group_id, member)));
+                    let reason = match present {
+                        Some(true) => None,
+                        Some(false) => fields
+                            .get("sample")
+                            .and_then(Value::as_u64)
+                            .and_then(|n| usize::try_from(n).ok())
+                            .map(|sample| absent_reason(sample, samples.len(), &resident_samples))
+                            .or(Some("unknown")),
+                        None => Some("unknown"),
+                    };
+                    if let Some(reason) = reason {
+                        *unprepared_reasons.entry(reason).or_default() += 1;
+                    }
                     fields.insert("prepared".into(), json!(present));
+                    fields.insert("unprepared_reason".into(), json!(reason));
                 }
             }
         }
@@ -106,7 +128,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     let unanswered = format!("{:?}", engine.unhandled_actions());
     let faults = format!("{:?}", engine.script_faults());
     let summary = format!(
-        "{}\n  samples: {}; groups: {}; zones: {} translated / {} prepared; scripts: {}; UI models: {}\n  diagnostics: {}; init unanswered: {}; script faults: {}\n  law IDs and callbacks: unavailable (not recorded by the v3 IR)\n",
+        "{}\n  samples: {}; groups: {}; zones: {} translated / {} prepared; scripts: {}; UI models: {}\n  unprepared zones by reason: {unprepared_reasons:?}\n  diagnostics: {}; init unanswered: {}; script faults: {}\n  law IDs and callbacks: unavailable (not recorded by the v3 IR)\n",
         loaded.name,
         samples.len(),
         groups.len(),
@@ -121,9 +143,40 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     Ok((
         json!({"schema_version": 1, "command": "load", "instrument": path,
         "engine": "v3", "result": {"name": loaded.name, "samples": samples, "groups": groups,
-        "translated_zones": input_zones, "prepared_zones": zones, "effects": effects, "scripts": scripts, "ui": ui,
+        "translated_zones": input_zones, "prepared_zones": zones, "unprepared_reasons": unprepared_reasons, "effects": effects, "scripts": scripts, "ui": ui,
         "diagnostics": diagnostics, "init_unanswered": unanswered, "script_faults": faults,
         "laws": null, "unavailable": ["translator law IDs and provenance", "script callbacks", "original-to-runtime script slot mapping", "asset existence"]}}),
         summary,
     ))
+}
+
+/// Mirrors the prepare path's sample admission, without attributing an I/O error
+/// to one of its open/load stages when the plan does not retain that detail.
+fn absent_reason(sample: usize, sample_count: usize, resident: &HashSet<usize>) -> &'static str {
+    if sample >= sample_count {
+        "invalid_sample_index"
+    } else if !resident.contains(&sample) {
+        "sample_only_referenced_by_purged_groups"
+    } else {
+        "resident_sample_unavailable"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absent_zone_reasons_follow_prepare_sample_admission() {
+        let resident = HashSet::from([1]);
+        assert_eq!(
+            absent_reason(0, 2, &resident),
+            "sample_only_referenced_by_purged_groups"
+        );
+        assert_eq!(
+            absent_reason(1, 2, &resident),
+            "resident_sample_unavailable"
+        );
+        assert_eq!(absent_reason(2, 2, &resident), "invalid_sample_index");
+    }
 }
