@@ -7,7 +7,7 @@ description = "KONTRA v3: the plugin shell over kontra-host and kontra-ui (CLAP,
 publish = false
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [lints]
 workspace = true
