@@ -190,20 +190,18 @@ impl Look {
                     && button.is_some()
                     && style.is_none_or(|s| matches!(s.font, model::Font::Stock(0 | 12)))
                 {
-                    // The installed font-12 atlas marks a one-pixel space;
-                    // the stock control advances four pixels for it.
-                    let caption = if style.is_some_and(|s| s.font == model::Font::Stock(12)) {
-                        caption.replace(' ', "    ")
-                    } else {
-                        caption.clone()
-                    };
+                    // The measured stock font advances four pixels for a space.
+                    let space = style
+                        .is_some_and(|s| s.font == model::Font::Stock(12))
+                        .then_some(4.);
                     parts.push(field_words(
-                        &caption,
+                        caption,
                         ink,
                         model::Align::Center,
                         (w, h, scale, device),
                         glyphs,
                         style.map_or(model::Rgba::rgb(DARK), |s| s.color),
+                        space,
                     ));
                 } else {
                     parts.push(words(caption, ink, model::Align::Center, w, h, scale));
@@ -230,6 +228,7 @@ impl Look {
                     (w, h, scale, device),
                     font,
                     color,
+                    None,
                 ));
                 if !wd.hide.value {
                     parts.push(field_words(
@@ -239,6 +238,7 @@ impl Look {
                         (w, h, scale, device),
                         font,
                         color,
+                        None,
                     ));
                 }
                 parts
@@ -271,6 +271,7 @@ fn field_words(
     (w, h, s, device): (f64, f64, f64, f64),
     glyphs: Option<&crate::pictures::Glyphs>,
     color: model::Rgba,
+    space: Option<f64>,
 ) -> El {
     let Some(glyphs) = glyphs else {
         return words(text, ink, align, w, h, s);
@@ -281,10 +282,20 @@ fn field_words(
     {
         return words(text, ink, align, w, h, s);
     }
+    let advance = |c: char, glyph: &Image| {
+        (if c == ' ' {
+            space.unwrap_or(f64::from(glyph.width))
+        } else {
+            f64::from(glyph.width)
+        }) * s
+    };
     let width: f64 = text
         .chars()
-        .filter_map(|c| glyphs.get(crate::pictures::glyph(c)))
-        .map(|glyph| f64::from(glyph.width) * s)
+        .filter_map(|c| {
+            glyphs
+                .get(crate::pictures::glyph(c))
+                .map(|glyph| advance(c, glyph))
+        })
         .sum();
     let mut x = match align {
         model::Align::Left => 7. * s,
@@ -317,7 +328,7 @@ fn field_words(
                     super::image(&Arc::new(image), width, height).at(x, (h - height) / 2. - s),
                 );
             }
-            x += width;
+            x += advance(c, glyph);
         }
     }
     stack(layers).w(w).h(h).clip()
