@@ -66,3 +66,30 @@ impl CombNetwork {
         self.combs_ms.iter().sum::<f32>() / 8000.0
     }
 }
+
+/// Lines of geometric prime lengths read at a swinging delay, mixed by an
+/// unnormalised Hadamard transform, tapped two ways, each through its own
+/// two-band decay filter and a DC blocker, the input added back per channel.
+/// A patch's own values, carried by value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HadamardNetwork {
+    /// 8 or 16.
+    pub lines: u8,
+    /// The longest line over the shortest is `2·(lines/2)^shape`.
+    pub shape: f32,
+    /// Four allpasses per channel ahead of the lines, the first this long,
+    /// each the last ×π/2; off, the input goes straight in.
+    pub diffusers: bool,
+    pub diffuser_ms: f32,
+    /// Decay times below `low_hz` and above `high_hz` over the mid's.
+    pub decay_low: f32,
+    pub decay_high: f32,
+    pub low_hz: f32,
+    pub high_hz: f32,
+    /// A high-pass at `low_hz` in place of the low band's decay.
+    pub low_cut: bool,
+    /// A low-pass at `high_hz` in place of the high band's decay.
+    pub high_cut: bool,
+    /// The lines lose 0.006 dB/s whatever the decay.
+    pub freeze: bool,
+}

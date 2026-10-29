@@ -21,7 +21,9 @@ pub use effects::{
     Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
 };
 pub use mods::{Blend, Factor, ModKind, Term, Transfer};
-pub use reverb::{CombNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar};
+pub use reverb::{
+    CombNetwork, HadamardNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar,
+};
 
 #[derive(Clone, Debug)]
 pub struct Instrument {
