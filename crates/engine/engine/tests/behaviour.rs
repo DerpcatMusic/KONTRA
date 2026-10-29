@@ -2356,7 +2356,7 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         text_data: vec![],
         source_folder: None,
         library_folder: None,
-        factory_folder: Text::EMPTY,
+        factory_folder: None,
         restore: vec![],
         restore_texts: vec![],
         controls: Controls::default(),

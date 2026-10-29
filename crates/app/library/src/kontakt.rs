@@ -45,26 +45,25 @@ pub fn candidates() -> Vec<PathBuf> {
                 home.join(".local/share/bottles/bottles"),
                 home.join(".var/app/com.usebottles.bottles/data/bottles/bottles"),
             ] {
-                if let Ok(prefixes) = std::fs::read_dir(directory) {
-                    roots.extend(
-                        prefixes
-                            .flatten()
-                            .map(|prefix| prefix.path().join("drive_c")),
-                    );
-                }
+                roots.extend(
+                    sorted_entries(&directory)
+                        .into_iter()
+                        .map(|prefix| prefix.join("drive_c")),
+                );
             }
-            if let Ok(entries) = std::fs::read_dir(home) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    if name == ".wine" || !name.to_string_lossy().starts_with(".wine") {
-                        continue;
-                    }
-                    let prefix = entry.path();
-                    roots.push(prefix.join("drive_c"));
-                    if let Ok(slots) = std::fs::read_dir(prefix) {
-                        roots.extend(slots.flatten().map(|slot| slot.path().join("drive_c")));
-                    }
+            for prefix in sorted_entries(&home) {
+                let is_wine = prefix
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(".wine"));
+                if !is_wine {
+                    continue;
                 }
+                roots.push(prefix.join("drive_c"));
+                roots.extend(
+                    sorted_entries(&prefix)
+                        .into_iter()
+                        .map(|slot| slot.join("drive_c")),
+                );
             }
         }
     }
@@ -82,17 +81,22 @@ pub fn candidates() -> Vec<PathBuf> {
 }
 
 fn paths(root: &Path) -> impl Iterator<Item = PathBuf> + '_ {
-    let bundles = root.join("Program Files/Common Files/VST3");
-    let nested = std::fs::read_dir(bundles)
+    let nested = sorted_entries(&root.join("Program Files/Common Files/VST3"))
         .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path().join("Kontakt 8/x64/Kontakt 8.exe"))
-        .collect::<Vec<_>>();
+        .map(|bundle| bundle.join("Kontakt 8/x64/Kontakt 8.exe"));
     WINDOWS
         .iter()
         .map(|relative| root.join(relative))
         .chain(nested)
+}
+
+/// A folder's entries in name order, so discovery picks the same install on every run.
+fn sorted_entries(dir: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|read| read.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    found.sort();
+    found
 }
 
 #[cfg(test)]

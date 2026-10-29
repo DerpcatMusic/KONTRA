@@ -2874,10 +2874,10 @@ fn get_folder_factory_returns_prepared_path_or_empty() {
     )
     .unwrap();
     let store = Store::new(StoreConfig::DEFAULT).unwrap();
-    for expected in ["/factory/", ""] {
+    for (folder, expected) in [(Some("/factory/"), "/factory/"), (None, "")] {
         let mut plan = Plan::new(vec![], 4);
         let mut script_plan = kontra_host::script::plan(&script, &[], &[]);
-        script_plan.factory_folder = kontra_engine::Text::from_str_cut(expected).0;
+        script_plan.factory_folder = folder.map(|f| kontra_engine::Text::from_str_cut(f).0);
         plan.scripts.push(script_plan);
         let engine = Engine::new(Arc::new(plan), store.client(), RATE);
         assert_eq!(engine.last_message(), expected);
