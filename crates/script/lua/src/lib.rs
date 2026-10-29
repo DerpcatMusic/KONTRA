@@ -203,6 +203,10 @@ fn state(
     let libs = StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::COROUTINE | StdLib::BIT;
     let lua = Lua::new_with(libs, LuaOptions::new())?;
     lua.set_memory_limit(MEMORY)?;
+    // Luau seeds `math.random` from the clock; a fixed seed makes a program
+    // play the same on every load, as KSP's `random` does (Behaviour's rng),
+    // so renders can be compared.
+    lua.load("math.randomseed(0x5EED)").exec()?;
     // Installed once and bounding the load too: the caller zeroes the count
     // before each run, so a runaway loop stops the run, not the host.
     let checkpoints = Arc::new(AtomicU32::new(0));
@@ -647,5 +651,17 @@ mod tests {
             .map(|(_, ints)| ints.clone())
             .collect();
         assert_eq!(amounts, [vec![7, 0], vec![7, 250_000], vec![7, 0]]);
+    }
+
+    #[test]
+    fn math_random_draws_the_same_on_every_load() {
+        let draw = || {
+            let modules = Arc::new(HashMap::new());
+            let (lua, _) = state("", &modules, &[]).unwrap();
+            lua.load("return math.random(1, 1000000), math.random()")
+                .eval::<(i64, f64)>()
+                .unwrap()
+        };
+        assert_eq!(draw(), draw());
     }
 }
