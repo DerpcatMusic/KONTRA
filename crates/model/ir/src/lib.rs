@@ -725,8 +725,7 @@ pub struct Filter {
     pub pass: Pass,
     pub hz: f32,
     pub stages: u8,
-    /// A four-pole resonant ladder instead; the last stage's damping `k`
-    /// sets its resonance `1 − k/2`.
+    /// A resonant ladder instead; the last damping `k` sets its resonance `1 − k/2`.
     pub ladder: Option<Ladder>,
     pub damping: [f32; 3],
     pub gain: f32,
@@ -748,9 +747,7 @@ pub enum Ladder {
     /// the input; `fat` lifts the input with the resonance (1 holds the
     /// passband). Its input gain is the filter's gain, made up after.
     Explicit { taps: u8, fat: f32 },
-    /// A two-pole Sallen-Key mixing low (`morph` 1) to high (0), its
-    /// feedback through `m + a P(b m)` with `curve` `[a, b]`; the damping's
-    /// `1 − k/2` is its resonance 0..=1 and the gain drives it (made up after).
+    /// A two-pole Sallen-Key, low (`morph` 1) to high (0), its feedback curve `[a, b]`.
     SallenKey { morph: f32, curve: [f32; 2] },
 }
 
