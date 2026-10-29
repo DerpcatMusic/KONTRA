@@ -11,7 +11,7 @@ use kontra_host::browser::Browser;
 use kontra_host::rack::{Event, HostNote, HostPattern, Mix, Rack};
 use kontra_host::state::SavedView;
 use kontra_host::ui::Library;
-use kontra_protocol::Stats;
+use kontra_protocol::{Load, Stats};
 use kontra_ui::app::{self, Action, App, Face, Part};
 use kontra_ui::{Pictures, layout};
 use kontra_ui_model::Interface;
@@ -440,6 +440,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             view.parts.iter().map(|v| v.slot).collect()
         };
         crate::look::parts(&mut app, &slots, &mut waiting);
+        app.loads = loads(&lock(&p.shared.loads).get(), &slots);
         let faces = app.parts.iter().filter_map(|p| p.face.as_ref());
         let decoding = faces
             .map(|f| &f.pictures)
@@ -516,7 +517,8 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     })
     .changed(move || {
         let s = &watched.shared;
-        s.dirty.swap(false, Ordering::AcqRel) | s.decoding.load(Ordering::Acquire)
+        let loading = lock(&s.loads).get().iter().any(|l| *l != Load::Ready);
+        s.dirty.swap(false, Ordering::AcqRel) | s.decoding.load(Ordering::Acquire) | loading
     })
     // Add folder's picker is owned by the host's window (Windows).
     .on_win32_parent(move |hwnd| owner.shared.folder.set_owner(hwnd))
@@ -557,6 +559,22 @@ fn played(action: &Action) -> Option<Event> {
         Action::Modulation(x) => Event::midi1(0xB0, 1, (x.clamp(0.0, 1.0) * 127.0).round() as u8),
         _ => return None,
     })
+}
+
+/// The parts loading, by the row each shows in (`slots` holds each row's
+/// part); one not in the rack yet takes a row past them.
+fn loads(loads: &[Load], slots: &[usize]) -> Vec<(usize, Load)> {
+    let mut fresh = slots.len();
+    let mut row = |part: usize| {
+        slots.iter().position(|&s| s == part).unwrap_or_else(|| {
+            fresh += 1;
+            fresh - 1
+        })
+    };
+    (loads.iter().enumerate())
+        .filter(|&(_, &l)| l != Load::Ready)
+        .map(|(part, &l)| (row(part), l))
+        .collect()
 }
 
 /// Whether a dropped file is an instrument the rack loads: a Kontakt

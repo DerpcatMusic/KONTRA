@@ -11,7 +11,7 @@ use kontra_engine::{EffectRequest, Engine, Prepared, ir};
 
 use crate::persist::Capture;
 pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan};
-use kontra_protocol::{MAX_PARTS, MeterCells, Meters, Ring, StatCells, Stats};
+use kontra_protocol::{Load, LoadCells, MAX_PARTS, MeterCells, Meters, Ring, StatCells, Stats};
 pub use kontra_stream::{Store, StoreConfig};
 
 mod audio;
@@ -195,6 +195,7 @@ pub struct Rack {
     /// Counts installs, so a capture of a replaced engine is not taken for
     /// its successor's.
     generation: u64,
+    loads: Arc<LoadCells>,
 }
 
 impl Rack {
@@ -220,8 +221,16 @@ impl Rack {
             parts: (0..MAX_PARTS).map(|_| None).collect(),
             pending: std::collections::VecDeque::new(),
             generation: 0,
+            loads: Arc::default(),
         };
         (rack, audio)
+    }
+
+    /// Each part's load as it goes, for an editor to read while a load
+    /// holds the rack.
+    #[must_use]
+    pub fn loads(&self) -> Arc<LoadCells> {
+        Arc::clone(&self.loads)
     }
 
     /// A [`Player`] for this rack.
@@ -257,7 +266,13 @@ impl Rack {
     /// When the file is not an instrument this can read, or `part` is past
     /// the rack.
     pub fn load(&mut self, part: usize, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        self.load_ir(part, crate::instrument::read(path)?, Some(path.to_owned()))
+        self.loads.set(part, Load::Reading);
+        let loaded = crate::instrument::read(path).and_then(|instrument| {
+            self.loads.set(part, Load::Building);
+            self.load_ir(part, instrument, Some(path.to_owned()))
+        });
+        self.loads.set(part, Load::Ready);
+        loaded
     }
 
     /// [`Rack::load`], with each instrument script's saved values replaced
@@ -275,12 +290,17 @@ impl Rack {
         slot_types: &[(ir::RackAt, u8, u16)],
         slot_responses: &[(ir::RackAt, u8, String)],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut instrument = crate::instrument::read_saved(path, scripts)?;
-        for (script, saved) in instrument.scripts.iter_mut().zip(scripts) {
-            script.saved.clone_from(saved);
-        }
-        let path = Some(path.to_owned());
-        self.load_built(part, instrument, path, slot_types, slot_responses)
+        self.loads.set(part, Load::Reading);
+        let loaded = crate::instrument::read_saved(path, scripts).and_then(|mut instrument| {
+            for (script, saved) in instrument.scripts.iter_mut().zip(scripts) {
+                script.saved.clone_from(saved);
+            }
+            self.loads.set(part, Load::Building);
+            let path = Some(path.to_owned());
+            self.load_built(part, instrument, path, slot_types, slot_responses)
+        });
+        self.loads.set(part, Load::Ready);
+        loaded
     }
 
     /// By instrument script, the saved values that bring `part`'s scripts

@@ -48,6 +48,9 @@ pub struct App {
     /// The libraries' cover pictures; the host gives a store whose worker
     /// reads [`Library::art`] and replaces it when the list changes.
     pub covers: Option<Pictures>,
+    /// Parts loading now, as (row, how far): a row past `parts` is a part
+    /// that is not in the rack yet.
+    pub loads: Vec<(usize, kontra_protocol::Load)>,
 }
 
 /// A library in the browser.
