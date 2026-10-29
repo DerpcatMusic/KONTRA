@@ -7,7 +7,12 @@
 //! it (`0x141429650`: `value + r * m`), each of those ratios scaled the
 //! same multiplicative way. The mapper (`0x1411390c0`) reads a bipolar
 //! source at `(x + 1) / 2` of its table, linearly between points, and
-//! scales by `Max` (or `-Min` below zero). It indexes `len - 2` of its
+//! scales by `Max` (or `-Min` below zero). A macro's position on it is its
+//! value, bipolar or not: its knob is 0..=1 (no saved one is negative), and
+//! VWinds' brightness bells are silent at 0 and reach full at CC 8, the
+//! script's "until CCVel == 8 the rest is the peaks from the gain matrix
+//! mappers" (CC 102 → Macro 1 at ratio 1, Value 0), so its release, which
+//! takes the macro back to its Value, falls silent. It indexes `len - 2` of its
 //! in-memory table; read here as `len - 1` of the saved one, assuming a
 //! guard copy of the last point (saved bells peak on their last point, so
 //! it is reachable). A variant crossfade (VWinds' "main brightness") is one
@@ -31,7 +36,7 @@ pub(super) fn held(program: Node, connection: Node, saved: bool) -> Option<f32> 
         return None;
     }
     let (r, table) = cell_law(connection)?;
-    let x = position(source, num(source, "Value", 0.0).ok()? as f32)?;
+    let x = num(source, "Value", 0.0).ok()? as f32;
     Some(scale(r, read(&table, x).unwrap_or(x)))
 }
 
@@ -44,19 +49,17 @@ pub(super) fn live(program: Node, connection: Node, group: &mut ir::Group) -> Op
         return None;
     }
     let (r, table) = cell_law(connection)?;
-    // A bipolar macro is read at `(x + 1) / 2`: the blend sums positions.
-    let half = if flag(source, "Bipolar") { 0.5 } else { 1.0 };
     let mut blend = ir::Blend {
-        base: position(source, num(source, "Value", 0.0).ok()? as f32)?,
+        base: num(source, "Value", 0.0).ok()? as f32,
         terms: Vec::new(),
     };
     for input in inputs(source) {
         if num(input, "Ratio", 1.0).ok()? == 0.0 {
             continue;
         }
-        let mut term = term(program, input, Some(&mut group.lfos))?;
-        term.amount *= half;
-        blend.terms.push(term);
+        blend
+            .terms
+            .push(term(program, input, Some(&mut group.lfos))?);
     }
     let blend = ir::Source::Blend(index_of(&mut group.blends, blend));
     // The cell's factor over the macro's position, at the mapper's points.
@@ -184,7 +187,7 @@ fn ratio(program: Node, connection: Node, keys: bool, macros: bool) -> Option<f3
                 table,
             } if id >= MACROS => {
                 let node = source_node(program, f)?;
-                let x = position(node, num(node, "Value", 0.0).ok()? as f32)?;
+                let x = num(node, "Value", 0.0).ok()? as f32;
                 ir::Transfer {
                     source: ir::Source::Constant,
                     table: vec![read(&table, x).unwrap_or(x)],
@@ -298,15 +301,6 @@ fn read(table: &[f32], x: f32) -> Option<f32> {
     })
 }
 
-/// A macro's `value` as a table position: a bipolar one at `(x + 1) / 2`.
-fn position(source: Node, value: f32) -> Option<f32> {
-    Some(if flag(source, "Bipolar") {
-        (value + 1.0) / 2.0
-    } else {
-        value
-    })
-}
-
 /// The connection's mapper as a table scaled by `Max` (or `-Min` below
 /// zero); empty for none, None for one not found or rounding to integers.
 /// A `Discrete` one reads point `⌊(len − 1)·x⌋` of its in-memory table, not
@@ -401,7 +395,7 @@ pub(super) fn transfer(
             // Its script sends its position ([`live_macro`]).
             ir::Source::Script(id)
         } else if node.has_tag_name("ConstantModulation") && inputs(node).next().is_none() {
-            let x = position(node, num(node, "Value", 0.0).ok()? as f32)?;
+            let x = num(node, "Value", 0.0).ok()? as f32;
             let value = read(&table, x).unwrap_or(x);
             return Some(ir::Transfer {
                 source: ir::Source::Constant,
