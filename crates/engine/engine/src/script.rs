@@ -725,14 +725,26 @@ impl HostApi for Engine {
             Action::ReadPersistentVar => {
                 let whole = |i| u32::try_from(int(i)).unwrap_or(0);
                 let (base, len) = (whole(0), whole(1));
+                let range = base..base.saturating_add(len);
                 let plan = std::sync::Arc::clone(&self.plan);
                 let script = plan.scripts.get(usize::from(self.running.slot));
-                let saved = script.map(|s| s.restore.as_slice());
-                for &(cell, value) in saved.unwrap_or_default() {
-                    if (base..base.saturating_add(len)).contains(&cell)
-                        && let Some(c) = call.cells.get_mut(cell as usize)
-                    {
-                        *c = self.saved_value(self.running.slot, cell, value);
+                if int(2) == 1 {
+                    let saved = script.map(|s| s.restore_texts.as_slice());
+                    for &(cell, text) in saved.unwrap_or_default() {
+                        if range.contains(&cell)
+                            && let Some(t) = call.text_cells.get_mut(cell as usize)
+                        {
+                            *t = text;
+                        }
+                    }
+                } else {
+                    let saved = script.map(|s| s.restore.as_slice());
+                    for &(cell, value) in saved.unwrap_or_default() {
+                        if range.contains(&cell)
+                            && let Some(c) = call.cells.get_mut(cell as usize)
+                        {
+                            *c = self.saved_value(self.running.slot, cell, value);
+                        }
                     }
                 }
                 HostValue::Nothing

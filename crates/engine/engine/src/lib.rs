@@ -63,7 +63,7 @@ pub use plan::{
 pub use queue::Timed;
 pub use script::{Callbacks, Controls, LookPars, ScriptPlan};
 pub use transport::Play;
-pub use ui::ControlLook;
+pub use ui::{ControlLook, FIRST_FONT};
 
 use behaviour::Behaviour;
 use buses::BusState;
@@ -194,6 +194,9 @@ pub struct Engine {
     /// Per script slot, its controls' parameters other than the value.
     control_pars: Box<[ControlPars]>,
     ui: kontra_script_ui::Store,
+    /// The picture names scripts asked a font id for, by script slot, in
+    /// the order asked.
+    fonts: Vec<(u8, Text)>,
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
     /// Shared EQ chains, and each zone's chain.
@@ -309,6 +312,7 @@ impl Engine {
             called: vec![0; kontra_vm::Action::all().len()].into(),
             control_pars,
             ui,
+            fonts: Vec::with_capacity(64),
             ids: callbacks::Ids::START,
             instrument: Level {
                 gain: 10f32.powf(out.volume_db / 20.0),
