@@ -12,6 +12,9 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+/// Bound background scanning and hashing; larger executables use the fallback.
+const MAX_EXECUTABLE: u64 = 512 << 20;
+// Bump the disk cache version whenever these fingerprints change.
 const KEYS: [(&str, usize, u32, u32, u32); 4] = [
     ("@stock/base", 2638, 87, 39, 0x0841_8e0a),
     ("@stock/cap", 12945, 3200, 29, 0x5838_2c55),
@@ -72,12 +75,14 @@ fn load() -> Option<[Image; 4]> {
 
 fn load_from(path: &Path) -> Option<[Image; 4]> {
     let before = path.metadata().ok()?;
-    if !before.is_file() || before.len() > 512 << 20 {
+    if !before.is_file() || before.len() > MAX_EXECUTABLE {
         return None;
     }
     let dims = KEYS.map(|(_, _, w, h, _)| (w, h));
-    if let Some(images) = super::cache::load(path, &dims) {
-        return Some(images);
+    match super::cache::load(path, &dims) {
+        Some(super::cache::Cached::Images(images)) => return Some(*images),
+        Some(super::cache::Cached::Missing) => return None,
+        None => {}
     }
     let mut file = std::fs::File::open(path).ok()?;
     let mut found: [Option<Vec<u8>>; 4] = [None, None, None, None];
@@ -122,6 +127,14 @@ fn load_from(path: &Path) -> Option<[Image; 4]> {
         let keep = carry.len().saturating_sub(overlap);
         carry.drain(..keep);
     }
+    let after = path.metadata().ok()?;
+    if before.len() != after.len() || before.modified().ok()? != after.modified().ok()? {
+        return None;
+    }
+    if found.iter().any(Option::is_none) {
+        super::cache::missing(path);
+        return None;
+    }
     let [base, cap, light, font] = found;
     let decode = |png: Vec<u8>| super::decode(&png, ImageMeta::default(), 0);
     let images = [
@@ -130,10 +143,6 @@ fn load_from(path: &Path) -> Option<[Image; 4]> {
         decode(light?)?,
         decode(font?)?,
     ];
-    let after = path.metadata().ok()?;
-    if before.len() != after.len() || before.modified().ok()? != after.modified().ok()? {
-        return None;
-    }
     super::cache::save(path, &format!("{:x}", hash.finalize()), &images);
     Some(images)
 }

@@ -19,3 +19,4 @@ zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a", features = ["cpu"] }
+tempfile = "3"

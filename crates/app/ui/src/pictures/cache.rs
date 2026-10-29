@@ -18,13 +18,18 @@ fn index(root: &Path, path: &Path) -> Option<PathBuf> {
     Some(root.join(format!("index-{:016x}", h.finish())))
 }
 
-pub(super) fn load(path: &Path, dims: &[(u32, u32); 4]) -> Option<[Image; 4]> {
+pub(super) enum Cached {
+    Images(Box<[Image; 4]>),
+    Missing,
+}
+
+pub(super) fn load(path: &Path, dims: &[(u32, u32); 4]) -> Option<Cached> {
     load_at(&root()?, path, dims)
 }
 
-fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 4]) -> Option<[Image; 4]> {
+fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 4]) -> Option<Cached> {
     let index = index(root, path)?;
-    if index.metadata().ok()?.len() != 64 {
+    if !matches!(index.metadata().ok()?.len(), 7 | 64) {
         return None;
     }
     let mut hash = String::new();
@@ -33,6 +38,9 @@ fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 4]) -> Option<[Image; 4
         .take(65)
         .read_to_string(&mut hash)
         .ok()?;
+    if hash == "missing" {
+        return Some(Cached::Missing);
+    }
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
@@ -55,7 +63,21 @@ fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 4]) -> Option<[Image; 4
         }
         Image::rgba(w, h, data)
     };
-    Some([image(0)?, image(1)?, image(2)?, image(3)?])
+    Some(Cached::Images(Box::new([
+        image(0)?,
+        image(1)?,
+        image(2)?,
+        image(3)?,
+    ])))
+}
+
+/// Record only a complete, stable scan; bump the cache version when fingerprints change.
+pub(super) fn missing(path: &Path) {
+    if let Some(root) = root() {
+        if std::fs::create_dir_all(&root).is_ok() {
+            write_index(&root, path, "missing");
+        }
+    }
 }
 
 pub(super) fn save(path: &Path, hash: &str, images: &[Image; 4]) {
@@ -77,9 +99,13 @@ fn save_at(root: &Path, path: &Path, hash: &str, images: &[Image; 4]) {
             return;
         }
     }
+    write_index(root, path, hash);
+}
+
+fn write_index(root: &Path, path: &Path, value: &str) {
     if let Some(index) = index(root, path) {
         let temporary = index.with_extension(format!("{}.tmp", std::process::id()));
-        if std::fs::write(&temporary, hash).is_ok() {
+        if std::fs::write(&temporary, value).is_ok() {
             let _ = std::fs::rename(temporary, index);
         }
     }
@@ -89,18 +115,27 @@ fn save_at(root: &Path, path: &Path, hash: &str, images: &[Image; 4]) {
 mod tests {
     #[test]
     fn decoded_cache_is_reused_and_invalidated_when_the_executable_changes() {
-        let dir = std::env::temp_dir().join(format!("kontra-stock-cache-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("kontakt.exe");
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("kontakt.exe");
         std::fs::write(&exe, b"first").unwrap();
         let image = || mui::prelude::Image::rgba(1, 1, vec![1, 2, 3, 255]).unwrap();
         let images = [image(), image(), image(), image()];
-        let root = dir.join("cache");
+        let root = dir.path().join("cache");
         super::save_at(&root, &exe, &"a".repeat(64), &images);
-        let cached = super::load_at(&root, &exe, &[(1, 1); 4]).unwrap();
+        let Some(super::Cached::Images(cached)) = super::load_at(&root, &exe, &[(1, 1); 4]) else {
+            panic!("no cached images")
+        };
         assert_eq!(&*cached[0].rgba, &[1, 2, 3, 255]);
+        let unsupported = dir.path().join("other.exe");
+        std::fs::write(&unsupported, b"unsupported").unwrap();
+        super::write_index(&root, &unsupported, "missing");
+        assert!(matches!(
+            super::load_at(&root, &unsupported, &[(1, 1); 4]),
+            Some(super::Cached::Missing)
+        ));
+        std::fs::write(&unsupported, b"new version").unwrap();
+        assert!(super::load_at(&root, &unsupported, &[(1, 1); 4]).is_none());
         std::fs::write(&exe, b"changed executable").unwrap();
         assert!(super::load_at(&root, &exe, &[(1, 1); 4]).is_none());
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

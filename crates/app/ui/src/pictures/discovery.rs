@@ -66,6 +66,7 @@ pub(super) fn candidates() -> Vec<PathBuf> {
             }
         }
     }
+    let mut seen = std::collections::HashSet::new();
     direct
         .into_iter()
         .chain(
@@ -74,6 +75,7 @@ pub(super) fn candidates() -> Vec<PathBuf> {
                 .flat_map(|root| paths(&root).collect::<Vec<_>>()),
         )
         .filter(|path| path.is_file())
+        .filter(|path| seen.insert(path.canonicalize().unwrap_or_else(|_| path.clone())))
         .collect()
 }
 
