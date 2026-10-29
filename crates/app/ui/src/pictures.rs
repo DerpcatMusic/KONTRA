@@ -29,9 +29,14 @@ struct Job {
     path: String,
     meta: ImageMeta,
     scale: f32,
+    /// A picture font: decoded at its own pixels, its glyphs cut by marker.
+    font: bool,
 }
 
-type Done = (AssetRef, u32, f32, Option<Arc<Image>>);
+type Done = (AssetRef, u32, f32, bool, Option<Arc<Image>>);
+
+/// A picture font's 256 glyphs, in Windows-1252 order.
+pub type Glyphs = Arc<[Arc<Image>]>;
 
 /// Set by a worker when a decode arrives, taken by [`arrived`].
 // ponytail: one flag for every store in the process, so one editor's
@@ -51,6 +56,7 @@ pub struct Pictures {
     done: mpsc::Receiver<Done>,
     ready: HashMap<(AssetRef, u32), Option<Arc<Image>>>,
     last: HashMap<AssetRef, Arc<Image>>,
+    fonts: HashMap<AssetRef, Option<Glyphs>>,
     pending: usize,
     /// The scale the frames in `ready` decoded at.
     scale: f32,
@@ -75,7 +81,7 @@ impl Pictures {
             let mut decoded = HashMap::<u64, Option<Arc<Image>>>::new();
             let mut scale = 1.;
             for job in inbox {
-                if job.scale != scale {
+                if !job.font && job.scale != scale {
                     decoded.clear();
                     scale = job.scale;
                 }
@@ -83,18 +89,21 @@ impl Pictures {
                     let mut h = std::hash::DefaultHasher::new();
                     bytes.hash(&mut h);
                     let axis = job.meta.axis == Orientation::Vertical;
-                    (job.frame, job.meta.frames, axis).hash(&mut h);
+                    (job.frame, job.meta.frames, axis, job.font).hash(&mut h);
                     decoded
                         .entry(h.finish())
                         .or_insert_with(|| {
                             let image = decode(&bytes, job.meta, job.frame)?;
+                            if job.font {
+                                return Some(Arc::new(image));
+                            }
                             let image = look(&image).unwrap_or(image);
                             at(image, job.scale).map(Arc::new)
                         })
                         .clone()
                 });
                 if outbox
-                    .send((job.asset, job.frame, job.scale, image))
+                    .send((job.asset, job.frame, job.scale, job.font, image))
                     .is_err()
                 {
                     break;
@@ -107,6 +116,7 @@ impl Pictures {
             done,
             ready: HashMap::new(),
             last: HashMap::new(),
+            fonts: HashMap::new(),
             pending: 0,
             scale: 1.,
         }
@@ -143,6 +153,7 @@ impl Pictures {
                     path: path.to_owned(),
                     meta,
                     scale,
+                    font: false,
                 };
                 if self.jobs.send(job).is_ok() {
                     self.pending += 1;
@@ -156,8 +167,14 @@ impl Pictures {
     /// view should be drawn again.
     pub fn poll(&mut self) -> bool {
         let mut arrived = false;
-        while let Ok((asset, n, scale, image)) = self.done.try_recv() {
+        while let Ok((asset, n, scale, font, image)) = self.done.try_recv() {
             self.pending = self.pending.saturating_sub(1);
+            if font {
+                let glyphs = image.as_deref().and_then(glyphs);
+                arrived |= glyphs.is_some();
+                self.fonts.insert(asset, glyphs);
+                continue;
+            }
             if let Some(image) = &image {
                 self.last.insert(asset, image.clone());
                 arrived = true;
@@ -167,6 +184,28 @@ impl Pictures {
             }
         }
         arrived
+    }
+
+    /// The glyphs of the picture font `asset` at `path`, once decoded; asks
+    /// for them the first time. `None` until then, and for a file that is
+    /// not a picture font.
+    pub fn font(&mut self, asset: AssetRef, path: &str) -> Option<Glyphs> {
+        if let Some(glyphs) = self.fonts.get(&asset) {
+            return glyphs.clone();
+        }
+        self.fonts.insert(asset, None);
+        let job = Job {
+            asset,
+            frame: 0,
+            path: path.to_owned(),
+            meta: ImageMeta::default(),
+            scale: 1.,
+            font: true,
+        };
+        if self.jobs.send(job).is_ok() {
+            self.pending += 1;
+        }
+        None
     }
 
     /// Asked for and not back yet.
@@ -193,6 +232,50 @@ impl std::fmt::Debug for Pictures {
         f.debug_struct("Pictures")
             .field("pending", &self.pending)
             .finish_non_exhaustive()
+    }
+}
+
+/// A Kontakt picture font's glyphs (KSP manual, `get_font_id`; v1's
+/// `src/artwork.rs` `font_frames`): 256 Windows-1252 characters side by
+/// side, a fully red pixel on the top row starting each; that row is not
+/// drawn. `None` when the markers are not 256 from x = 0.
+fn glyphs(image: &Image) -> Option<Glyphs> {
+    let (w, h) = (image.width as usize, image.height as usize);
+    if h < 2 {
+        return None;
+    }
+    let top = image.rgba.get(..w * 4)?.as_chunks::<4>().0;
+    let starts: Vec<usize> = (top.iter().enumerate())
+        .filter(|(_, p)| matches!(p, [255, 0, 0, _]))
+        .map(|(x, _)| x)
+        .collect();
+    if starts.len() != 256 || starts.first() != Some(&0) {
+        return None;
+    }
+    let ends = starts.iter().skip(1).copied().chain([w]);
+    (starts.iter().zip(ends))
+        .map(|(&x0, x1)| {
+            let mut rgba = Vec::with_capacity((x1 - x0) * (h - 1) * 4);
+            for y in 1..h {
+                rgba.extend_from_slice(image.rgba.get((y * w + x0) * 4..(y * w + x1) * 4)?);
+            }
+            Image::rgba((x1 - x0) as u32, (h - 1) as u32, rgba).map(Arc::new)
+        })
+        .collect()
+}
+
+/// The glyph `c` is drawn with: its Windows-1252 byte, the font's question
+/// mark for characters outside that alphabet (v1's `font_glyph`).
+#[must_use]
+pub fn glyph(c: char) -> usize {
+    const EXTENDED: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž',
+        '\u{8f}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}',
+        'ž', 'Ÿ',
+    ];
+    match c as u32 {
+        0..=127 | 160..=255 => c as usize,
+        _ => (EXTENDED.iter().position(|&g| g == c)).map_or(usize::from(b'?'), |n| n + 128),
     }
 }
 
@@ -400,6 +483,34 @@ fn jpeg(bytes: &[u8]) -> Option<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A picture font cut at its red markers: 256 glyphs of their own
+    /// widths, the marker row dropped; characters map by Windows-1252.
+    #[test]
+    fn a_picture_font_cuts_into_its_256_glyphs() {
+        // Glyph n is n % 3 + 1 pixels wide, two rows tall under the markers.
+        let widths: Vec<usize> = (0..256).map(|n| n % 3 + 1).collect();
+        let w: usize = widths.iter().sum();
+        let mut rgba = vec![0u8; w * 3 * 4];
+        let mut x = 0;
+        for width in &widths {
+            if let Some(p) = rgba.get_mut(x * 4..x * 4 + 4) {
+                p.copy_from_slice(&[255, 0, 0, 255]);
+            }
+            x += width;
+        }
+        let font = Image::rgba(w as u32, 3, rgba);
+        let cut = font.as_ref().and_then(glyphs);
+        assert!(cut.is_some(), "a well-formed font is cut");
+        let Some(cut) = cut else { return };
+        assert_eq!(cut.len(), 256);
+        let sizes: Vec<(u32, u32)> = cut.iter().map(|g| (g.width, g.height)).collect();
+        assert_eq!(sizes.get(65), Some(&(3, 2)), "'A' keeps its own width");
+        assert_eq!(
+            (glyph('A'), glyph('€'), glyph('é'), glyph('漢')),
+            (65, 128, 233, 63)
+        );
+    }
 
     #[test]
     fn a_jpeg_decodes_whole_as_a_still() {
