@@ -84,6 +84,8 @@ pub enum Command {
     Hold(usize, Hold),
     /// Read a part's persistent script cells and send them back.
     Capture(Box<Capture>),
+    /// Copy what a part's interface reads of its script and send it back.
+    Look(Box<crate::view::LookFrame>),
     /// The user moved control `id` of script `slot` to `value`.
     Control {
         part: usize,
@@ -102,6 +104,8 @@ pub struct Channels {
     pub requests: Ring<(usize, u64, EffectRequest)>,
     /// Effect units swapped out, to free on the control side.
     pub units: Ring<Box<Option<Prepared>>>,
+    /// Interface reads filled on the audio side ([`Command::Look`]).
+    pub looks: Ring<Box<crate::view::LookFrame>>,
     pub meters: MeterCells,
     pub stats: StatCells,
 }
@@ -197,6 +201,7 @@ impl Rack {
             // An engine queues at most 16 at once.
             requests: Ring::new(16 * MAX_PARTS),
             units: Ring::new(16 * MAX_PARTS),
+            looks: Ring::new(2 * MAX_PARTS),
             meters: MeterCells::default(),
             stats: StatCells::default(),
         });
@@ -486,6 +491,27 @@ impl Rack {
                 generation,
                 unit,
             });
+        }
+        // The interfaces catch up with what their scripts changed, and ask
+        // again: the editor shows each at most one tick late.
+        while let Some(frame) = self.channels.looks.recv() {
+            if let Some(Some(p)) = self.parts.get_mut(frame.part)
+                && p.script.generation == frame.generation
+                && let Some(view) = p.view.as_mut()
+            {
+                view.refresh(&p.faces, p.path.as_deref(), frame);
+            }
+        }
+        let looks: Vec<_> = (self.parts.iter_mut().enumerate())
+            .filter_map(|(n, p)| {
+                let p = p.as_mut()?;
+                let mut frame = p.view.as_mut()?.frame.take()?;
+                (frame.part, frame.generation) = (n, p.script.generation);
+                Some(frame)
+            })
+            .collect();
+        for frame in looks {
+            self.send(Command::Look(frame));
         }
         while let Some(c) = self.channels.captured.recv() {
             if let Some(Some(p)) = self.parts.get_mut(c.part)

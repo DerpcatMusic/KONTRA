@@ -380,7 +380,7 @@ fn auto_align_reports_the_latest_part_and_holds_the_other() {
 }
 
 #[test]
-fn a_library_control_moved_in_the_editor_reaches_its_script() {
+fn a_library_control_moved_in_the_editor_reaches_its_script_and_shows() {
     let Some(path) = library("Una Corda Library/Instruments/Una Corda Felt.nki") else {
         return;
     };
@@ -450,7 +450,24 @@ fn a_library_control_moved_in_the_editor_reaches_its_script() {
         values.iter().any(|v| **v == format!("{var} {to}")),
         "{var} → {to} did not reach the script"
     );
-    println!("widget {widget}: {var} → {to} kept");
+    // And the editor's tree shows it: read back from the running script.
+    let (value, revision) = {
+        let guard = crate::lock(&params.shared.rack);
+        let view = guard.as_ref().unwrap().parts()[0]
+            .as_ref()
+            .unwrap()
+            .view
+            .as_ref()
+            .unwrap();
+        (view.live.tree.widgets[widget].value.clone(), view.revision)
+    };
+    assert_eq!(
+        value,
+        Some(kontra_ui_model::Value::Integer(to as i32)),
+        "the tree shows {var}"
+    );
+    assert!(revision > 0, "the view never refreshed");
+    println!("widget {widget}: {var} → {to} kept and shown (revision {revision})");
 }
 
 #[test]

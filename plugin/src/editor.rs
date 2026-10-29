@@ -30,8 +30,10 @@ struct PartView {
     /// Which load of the part this is.
     generation: u64,
     path: Option<PathBuf>,
-    /// Its library's interface as the part loaded; copied once per load.
+    /// Its library's interface; copied when the part loads and whenever
+    /// its script changes it ([`kontra_host::view::View::revision`]).
     tree: Option<Arc<Interface>>,
+    revision: u64,
     name: String,
     /// Its library's name in the browser, if the browser lists it.
     library: String,
@@ -73,9 +75,10 @@ impl Snapshot {
                 let p = p.as_ref()?;
                 let generation = p.script.generation();
                 let same = (old.iter()).find(|v| v.slot == slot && v.generation == generation);
+                let revision = p.view.as_ref().map_or(0, |v| v.revision);
                 let tree = match same {
-                    Some(v) => v.tree.clone(),
-                    None => p.view.as_ref().map(|v| Arc::new(v.live.tree.clone())),
+                    Some(v) if v.revision == revision => v.tree.clone(),
+                    _ => p.view.as_ref().map(|v| Arc::new(v.live.tree.clone())),
                 };
                 let library = match same {
                     Some(v) if !rescanned => v.library.clone(),
@@ -90,6 +93,7 @@ impl Snapshot {
                     generation,
                     path: p.path.clone(),
                     tree,
+                    revision,
                     name: p.name.clone(),
                     library,
                     mix: p.mix,
@@ -124,8 +128,17 @@ impl Snapshot {
             let (open, tab) = old
                 .as_ref()
                 .map_or((true, Default::default()), |old| (old.open, old.tab));
+            let now = (p.generation, p.revision);
             let face = match old {
-                Some(old) if shown.get(n) == Some(&p.generation) => old.face.take(),
+                Some(old) if shown.get(n) == Some(&now) => old.face.take(),
+                // The script changed its look: a new tree, the same pictures.
+                Some(old) if shown.get(n).is_some_and(|s| s.0 == now.0) => {
+                    let tree = p.tree.as_deref();
+                    old.face.take().zip(tree).map(|(mut f, tree)| {
+                        f.tree = resolved(tree);
+                        f
+                    })
+                }
                 _ => p.tree.as_deref().map(|tree| face(tree, p.path.clone())),
             };
             Part {
@@ -146,7 +159,11 @@ impl Snapshot {
             }
         });
         app.parts = parts.collect();
-        *shown = self.parts.iter().map(|p| p.generation).collect();
+        *shown = self
+            .parts
+            .iter()
+            .map(|p| (p.generation, p.revision))
+            .collect();
         app.level = f64::from(self.level);
         app.stats.cpu = f64::from(self.stats.load) * 100.0;
         app.stats.voices = self.stats.voices;
@@ -157,7 +174,8 @@ impl Snapshot {
 /// Which change of the rack's parts and of the browser the editor shows.
 #[derive(Default)]
 struct Shown {
-    parts: Vec<u64>,
+    /// By part: its load and its interface's revision.
+    parts: Vec<(u64, u64)>,
     browser: u64,
 }
 
@@ -246,9 +264,7 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
 /// A library's interface for the editor, laid out, its pictures read from
 /// the library at `path` off the UI thread.
 fn face(tree: &Interface, path: Option<PathBuf>) -> Face {
-    let mut tree = tree.clone();
-    let all = 0..tree.widgets.len();
-    layout::resolve(&mut tree, all);
+    let tree = resolved(tree);
     let library = Mutex::new(None);
     let pictures = Pictures::new(Box::new(move |p: &str| {
         let path = path.as_deref()?;
@@ -260,6 +276,14 @@ fn face(tree: &Interface, path: Option<PathBuf>) -> Face {
         pictures,
         gesture: Default::default(),
     }
+}
+
+/// `tree` laid out.
+fn resolved(tree: &Interface) -> Interface {
+    let mut tree = tree.clone();
+    let all = 0..tree.widgets.len();
+    layout::resolve(&mut tree, all);
+    tree
 }
 
 /// A user's edit to one rack part, or to the whole rack.
