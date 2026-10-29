@@ -204,6 +204,16 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         .filter_map(|b| b.get("hf_second_difference_energy")?.as_f64())
         .fold(0.0_f64, f64::max);
     let octave_bands = super::bands::octave_levels(&rendered, RATE);
+    let octave_time: Vec<_> = rendered
+        .chunks(RATE as usize)
+        .enumerate()
+        .map(|(n, audio)| {
+            json!({
+                "start_frame": n * RATE as usize, "frames": audio.len(),
+                "bands":super::bands::octave_levels(audio, RATE),
+            })
+        })
+        .collect();
     let stats = engine.stats();
     let wait_timeouts = engine.offline_wait_timeouts() + settle_timeouts;
     let stream_stats = stream.stats();
@@ -225,7 +235,7 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
     Ok((
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
-        "trace":trace,"stage_events":stage_events,"trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands},
+        "trace":trace,"stage_events":stage_events,"trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
         "diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["non-EQ applied route values"]}}),
         summary,
     ))
