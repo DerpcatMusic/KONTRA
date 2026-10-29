@@ -3,6 +3,7 @@
 //! (13-FRESH-CORE.md §2.1): scripts are optional, not where round robin lives.
 
 mod engine_pars;
+pub mod modulation;
 pub mod par_laws;
 mod route;
 mod script;
