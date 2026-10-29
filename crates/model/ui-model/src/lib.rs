@@ -58,6 +58,9 @@ pub struct Interface {
     pub icon_hidden: bool,
     /// A legacy authored NativeUI entry point, consumed by the editor frontend.
     pub native_ui: Option<NativeUi>,
+    /// The keys the source colours on the keyboard, by note, with the
+    /// colour each draws (KSP `set_key_color`).
+    pub keybed: Vec<(u8, Rgba)>,
     pub unsupported: Vec<Unsupported>,
 }
 
