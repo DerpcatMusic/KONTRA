@@ -631,8 +631,9 @@ fn a_step_envelope_bends_pitch_through_a_held_step_table() {
 
 #[test]
 fn a_macro_holds_its_crossfade_cells_where_its_mappers_put_them() {
-    // Bipolar Macro 1 at 0 reads its mappers halfway: variant a's bell is 0
-    // there, b's is 0.5 (between 0.4 and 0.6); c rides at half ratio.
+    // Bipolar Macro 1 at 0 reads its mappers at their start, as a unipolar
+    // one: variant a's bell is 1 there, b's is 0 (dropped); c rides at half
+    // ratio.
     let xml = r#"<Program Gain="1">
       <ControlSignalSources>
         <ConstantModulation Name="Macro 1" Bipolar="1" Value="0"/>
@@ -665,8 +666,8 @@ fn a_macro_holds_its_crossfade_cells_where_its_mappers_put_them() {
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let mixes: Vec<_> = out.groups[0].zones.iter().map(|z| z.mix.clone()).collect();
-    // a is silent and not loaded; b at 0.5; c at 1 - 0.5 + 0.5 * 0.5.
-    assert_eq!(mixes, vec![vec![[0.0, 0.5]], vec![[0.75, 0.0]]]);
+    // a at 1; b is silent and not loaded; c at 1 - 0.5 + 0.5 * 0.
+    assert_eq!(mixes, vec![vec![[1.0, 0.0]], vec![[0.5, 0.0]]]);
     assert_eq!(out.samples.len(), 2);
     assert!(
         !out.diagnostics
@@ -675,9 +676,74 @@ fn a_macro_holds_its_crossfade_cells_where_its_mappers_put_them() {
     );
 }
 
+/// VWinds' release: the script ramps its Release modulation to 1, which
+/// takes the bipolar brightness macro (CC 102 at ratio 1 − mapper·release)
+/// back to its Value 0, where the lowest bell is silent, while the same
+/// modulation drifts the pitch up (Clarinet A: 1.4 semitones). Read at
+/// `(x + 1)/2` the macro rested halfway, on loud bells: the sustain rang on
+/// over its release sample a semitone sharp.
+#[test]
+fn a_released_vwinds_sustain_falls_silent_as_its_pitch_drifts() {
+    let xml = r#"<Program Gain="1">
+      <ControlSignalSources>
+        <ScriptEventModulation Name="Script Event Modulation 1" EventId="2" Bipolar="0"/>
+        <ConstantModulation Name="Macro 1" Bipolar="1" Value="0">
+          <Connections>
+            <SignalConnection Ratio="1" Source="@MIDI CC 102" Destination="Value">
+              <Connections>
+                <SignalConnection Ratio="-1" Source="$Program/Script Event Modulation 1" Destination="Ratio"/>
+              </Connections>
+            </SignalConnection>
+          </Connections>
+        </ConstantModulation>
+      </ControlSignalSources>
+      <Mappers>
+        <ControlSignalMapper Name="Mapper 0" Min="0" Max="1">0,0 1,0 0,0 0,0 0,0</ControlSignalMapper>
+        <ControlSignalMapper Name="Mapper 1" Min="0" Max="1">0,0 0,0 1,0 1,0 0,0</ControlSignalMapper>
+      </Mappers>
+      <Layers>
+        <Layer Gain="1" Pan="0">
+          <Keygroups>
+            <Keygroup LowKey="0" HighKey="127">
+              <Inserts>
+                <GainMatrix Bypass="0" Gain_1_1="1" Gain_2_2="1">
+                  <Connections>
+                    <SignalConnection Ratio="1" Source="$Program/Macro 1" Destination="Gain_1_1" Mapper="Mapper 0"/>
+                    <SignalConnection Ratio="1" Source="$Program/Macro 1" Destination="Gain_2_2" Mapper="Mapper 1"/>
+                  </Connections>
+                </GainMatrix>
+              </Inserts>
+              <Oscillators>
+                <SamplePlayer Bypass="0" SamplePath="./v/*a.wav*b.wav"/>
+              </Oscillators>
+            </Keygroup>
+          </Keygroups>
+        </Layer>
+      </Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    let ir::Source::Blend(b) = g.shapers[0].source else {
+        panic!("{:?}", g.shapers)
+    };
+    let blend = &g.blends[usize::from(b)];
+    // The macro's position at a wind (CC 102) and a release ramp.
+    let macro_at = |wind: f32, release: f32| {
+        let term = &blend.terms[0];
+        let factor = term.factors[0].at(term.factors[0].input.apply(release));
+        blend.base + term.amount * term.input.apply(wind) * factor
+    };
+    let cells = |x: f32| -> Vec<f32> { g.shapers.iter().map(|s| s.apply(x)).collect() };
+    // Played: the wind picks its bell; released, every bell is closed.
+    assert_eq!(cells(macro_at(0.25, 0.0)), [1.0, 0.0]);
+    assert_eq!(cells(macro_at(0.6, 0.0)), [0.0, 1.0]);
+    assert_eq!(cells(macro_at(0.6, 1.0)), [0.0, 0.0]);
+}
+
 #[test]
 fn a_macro_a_controller_moves_crossfades_its_cells_live() {
-    // Macro 1 = 0 + CC 102 × 0.5 (bipolar: position 0.5 + CC × 0.25), its
+    // Macro 1 = 0 + CC 102 × 0.5 (bipolar, read as its value), its
     // ratio scaled by CC 104 through a mapper; the cell reads Mapper 0.
     let xml = r#"<Program Gain="1">
       <ControlSignalSources>
@@ -748,10 +814,10 @@ fn a_macro_a_controller_moves_crossfades_its_cells_live() {
     assert_eq!(g.shapers[0].source, ir::Source::Blend(0));
     assert_eq!(g.shapers[0].table, vec![0.0, 1.0]);
     let blend = &g.blends[0];
-    assert_eq!(blend.base, 0.5);
+    assert_eq!(blend.base, 0.0);
     let term = &blend.terms[0];
     assert_eq!(term.input.source, ir::Source::Controller(102));
-    assert_eq!(term.amount, 0.25);
+    assert_eq!(term.amount, 0.5);
     assert_eq!(term.factors[0].input.source, ir::Source::Controller(104));
     assert_eq!(term.factors[0].input.table, vec![0.0, 0.5, 1.0]);
     // An inverted controller reads its mapper at `1 − x`.
@@ -1776,7 +1842,7 @@ fn a_live_macro_on_a_players_gain_scales_it_through_its_bipolar_mapper() {
     let ir::Source::Blend(b) = g.shapers[0].source else {
         panic!("{:?}", g.shapers[0])
     };
-    assert_eq!(g.blends[usize::from(b)].base, 0.5);
+    assert_eq!(g.blends[usize::from(b)].base, 0.0);
     assert_eq!(
         g.blends[usize::from(b)].terms[0].input.source,
         ir::Source::Controller(102)
