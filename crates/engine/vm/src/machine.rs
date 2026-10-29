@@ -125,9 +125,9 @@ impl Vm {
     }
 
     /// As [`Machine::stage_widget`]; the interpreter has no own widgets.
-    pub fn stage_widget(&mut self, n: u32, value: f64) {
+    pub fn stage_widget(&mut self, n: u32, value: f64, cell: Option<u32>) {
         if let Self::Foreign(m) = self {
-            m.stage_widget(n, value);
+            m.stage_widget(n, value, cell);
         }
     }
 

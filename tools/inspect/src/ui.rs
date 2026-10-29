@@ -283,7 +283,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 engine.clear_trace();
                 if lua {
                     if let Ok(id) = u32::try_from(id) {
-                        engine.set_widget(slot_id, id, value);
+                        engine.set_widget(slot_id, id, value, None);
                     } else {
                         moves.push(json!({"value":value,"error":"negative widget id"}));
                         continue;

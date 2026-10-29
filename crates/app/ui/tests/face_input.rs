@@ -171,7 +171,8 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     assert_eq!(f.value(0), 25.);
     assert!(reset.contains(&Edit {
         widget: WidgetRef(0),
-        value: 25.
+        value: 25.,
+        cell: None,
     }));
     // The wheel down turns it down.
     f.frame(Input {
@@ -199,4 +200,43 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
         f.frame(Input::default());
     }
     assert!(!f.animating, "an untouched face idles");
+}
+
+#[test]
+fn uvi_table_drag_updates_the_crossed_cells() {
+    let mut f = Face::new();
+    f.tree.source = model::Source::FalconLua;
+    let mut table = Widget::new(
+        "curve",
+        PageRef(0),
+        Rect::new(10, 100, 100, 100),
+        Kind::Table {
+            columns: 4,
+            range: Range {
+                min: 0.,
+                max: 1.,
+                default: 0.,
+                step: None,
+            },
+            bipolar: false,
+            cells: vec![0.; 4],
+            steps_shown: None,
+        },
+    );
+    table.value = Some(model::Value::Reals(vec![0.; 4]));
+    f.tree.widgets.push(table);
+    f.frame(Input::default());
+    let mut edits = f.pointer(Point::new(20., 175.), true, Mods::default());
+    edits.extend(f.pointer(Point::new(95., 125.), true, Mods::default()));
+    edits.extend(f.pointer(Point::new(95., 125.), false, Mods::default()));
+    edits.extend(f.frame(Input::default()));
+    let cells: Vec<u32> = edits.iter().filter_map(|e| e.cell).collect();
+    assert!(
+        cells.contains(&0) && cells.contains(&1) && cells.contains(&2) && cells.contains(&3),
+        "{cells:?}"
+    );
+    let Some(model::Value::Reals(values)) = &f.tree.widgets[3].value else {
+        panic!("table value missing")
+    };
+    assert!(values[0] < values[3], "{values:?}");
 }

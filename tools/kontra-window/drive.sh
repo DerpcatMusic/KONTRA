@@ -82,6 +82,12 @@ sys.exit(0 if sum(1 for p in d.getdata() if max(p) > 8) > 100 else 1)' "$UVI_TAB
             else miss "UVI auto-vibrato table draws its bars"; fi
         fi
     fi
+    if [[ ${UVI_TABLE_EDIT:-0} == 1 ]]; then
+        at 820,560; xdotool mousedown 1; sleep 0.2
+        for i in $(seq 1 20); do xdotool mousemove $((820 + i * 26)) $((560 - i * 10)); sleep 0.04; done
+        xdotool mouseup 1; at 1900,1270; sleep 2; shot 3-edited
+        check 2-table 3-edited "UVI table: dragging edits the curve" 385,160,697,305
+    fi
     at 1900,1270; sleep 2
     ticks_table() { local sum=0 t; for t in /proc/"$editor"/task/*; do
         [[ $(<"$t/comm") == cpal* ]] && continue

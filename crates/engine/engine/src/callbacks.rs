@@ -63,10 +63,10 @@ impl Engine {
     }
 
     /// The editor moved widget `n` of script `slot`'s own (Lua) page to `value`.
-    pub fn set_widget(&mut self, slot: u8, n: u32, value: f64) {
+    pub fn set_widget(&mut self, slot: u8, n: u32, value: f64, cell: Option<u32>) {
         let entry = (self.plan.scripts.get(usize::from(slot))).and_then(|s| s.callbacks.widget);
         if let (Some(entry), Some(vm)) = (entry, self.vm_mut(slot)) {
-            vm.stage_widget(n, value);
+            vm.stage_widget(n, value, cell);
             let mut running = Running::new(Kind::UiControl, None);
             running.ui = i32::try_from(n).unwrap_or(i32::MAX);
             self.run_callback(slot, entry, running);
