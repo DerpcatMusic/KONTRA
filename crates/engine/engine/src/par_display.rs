@@ -1,8 +1,8 @@
-//! `get_engine_par_disp`: a knob's text without its unit, as Kontakt 8.13.1
-//! printed it to oracle probes (2026-10-29); pan follows the binary's
-//! formatter at 0x1407b7ac0 (f32, Center inside ±0.0075, else half up).
+//! `get_engine_par_disp`: which [`Readout`] a parameter's knob shows.
 
 use crate::{Engine, engine_pars::EnginePar, params::stage_ms};
+use kontra_ir as ir;
+use kontra_script_ui::readout::{Readout, write};
 use kontra_vm::Text;
 
 impl Engine {
@@ -16,6 +16,12 @@ impl Engine {
             false => self.get_engine_par(n(0), n(at), n(at + 1), n(at + 2)),
         };
         *out = Text::EMPTY;
+        // The reverb's time shows its law's seconds in ms (oracle 2026-10-29).
+        if let Some((ir::ReverbPar::Seconds, s)) =
+            par.zip(raw).and_then(|(p, r)| self.reverb_value(p, r))
+        {
+            return write(Readout::Ms(1000.0 * f64::from(s)), 0.0, out);
+        }
         par.zip(raw).is_some_and(|(p, raw)| display(p, raw, out))
     }
 }
@@ -23,32 +29,18 @@ impl Engine {
 /// Writes the display of `par` at `raw` (0..=1000000); false when unknown.
 pub(crate) fn display(par: EnginePar, raw: i32, out: &mut Text) -> bool {
     let x = f64::from(raw.clamp(0, 1_000_000)) / 1e6;
-    // Gains run 6 dB per doubling of the cubed knob.
-    let db = |top: f64, out: &mut Text| match x > 0.0 {
-        true => out.push_fmt(format_args!("{:.1}", 18.0 * x.log2() + top)),
-        false => out.push("-inf"),
-    };
-    let time = |top: f64, out: &mut Text| match stage_ms(top, x) {
-        ms if ms < 1.0 => out.push_fmt(format_args!("{ms:5.2}")),
-        ms if ms < 1000.0 => out.push_fmt(format_args!("{ms:5.1}")),
-        ms => out.push_fmt(format_args!("{:5.1}k", ms / 1000.0)),
-    };
-    let pan = 2.0 * (x as f32) - 1.0;
-    match par {
-        EnginePar::Volume => db(12.0, out),
-        EnginePar::EffectOutput => db(24.0, out),
-        EnginePar::Sustain => db(0.0, out),
-        EnginePar::Tune => out.push_fmt(format_args!("{:.2}", (2.0 * x - 1.0) * 36.0)),
-        EnginePar::Attack | EnginePar::Hold => time(15_000.0, out),
-        EnginePar::Decay | EnginePar::Release => time(25_000.0, out),
-        EnginePar::Pan if f64::from(pan.abs()) < 0.0075 => out.push("Center"),
-        EnginePar::Pan => {
-            let side = if pan < 0.0 { "L" } else { "R" };
-            out.push_fmt(format_args!("{} {side}", (pan.abs() * 100.0 + 0.5) as i32))
-        }
+    let readout = match par {
+        EnginePar::Volume => Readout::Db(12.0),
+        // The Gainer's gain reads as an output level (oracle 2026-10-29).
+        EnginePar::EffectOutput | EnginePar::GainerGain => Readout::Db(24.0),
+        EnginePar::Sustain => Readout::Db(0.0),
+        EnginePar::Tune => Readout::Tune,
+        EnginePar::Attack | EnginePar::Hold => Readout::Ms(stage_ms(15_000.0, x)),
+        EnginePar::Decay | EnginePar::Release => Readout::Ms(stage_ms(25_000.0, x)),
+        EnginePar::Pan => Readout::Pan,
         _ => return false,
     };
-    true
+    write(readout, x, out)
 }
 
 #[cfg(test)]
@@ -91,6 +83,15 @@ mod tests {
                     (500_000, "6.0"),
                     (750_000, "16.5"),
                     (1_000_000, "24.0"),
+                ],
+            ),
+            (
+                P::GainerGain,
+                &[
+                    (0, "-inf"),
+                    (300_000, "-7.3"),
+                    (400_000, "0.2"),
+                    (900_000, "21.3"),
                 ],
             ),
             (

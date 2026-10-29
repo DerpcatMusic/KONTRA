@@ -51,6 +51,9 @@ pub struct Controls {
     /// By UI id from `first` (every variable has one), the value cell of
     /// each control whose value is a number.
     pub cells: Vec<Option<u32>>,
+    /// By UI id, the steps of each control whose value is an int array (a
+    /// table's): `set_control_par_arr` writes them from its cell on.
+    pub steps: Vec<u32>,
     /// Where the UI-look builtins store what they set.
     pub look: LookPars,
 }
@@ -566,6 +569,13 @@ impl HostApi for Engine {
             }
             Action::ByMarks => HostValue::Int(event::BY_MARKS | (int(0) & !event::BY_MARKS)),
             Action::GetControlPar => HostValue::Int(self.control_par(call.cells, int(0), int(1))),
+            Action::GetControlParArr => {
+                HostValue::Int(self.control_par_at(call.cells, int(0), int(1), int(2)))
+            }
+            Action::SetControlParArr => {
+                self.set_control_par_at(call.cells, int(0), int(1), int(2), int(3));
+                HostValue::Nothing
+            }
             Action::SetControlPar => {
                 self.set_control_par(call.cells, int(0), int(1), int(2));
                 HostValue::Nothing

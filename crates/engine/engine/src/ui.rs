@@ -8,9 +8,6 @@ use kontra_vm::{Action, HostCall, HostValue, Text};
 
 use crate::Engine;
 
-/// The first font id a picture gets; ids below are Kontakt's built-in fonts.
-pub const FIRST_FONT: i32 = 26;
-
 /// One control as the script left it: what the host builds its widget from.
 #[derive(Clone, Copy, Debug)]
 pub struct ControlLook<'a> {
@@ -147,48 +144,11 @@ impl Engine {
     /// `get_font_id`: a bitmap font the host draws from `pictures/<name>`.
     #[must_use]
     pub fn font(&self, slot: u8, id: i32) -> Option<&str> {
-        let n = usize::try_from(id.checked_sub(FIRST_FONT)?).ok()?;
-        let mut names = self.fonts.iter().filter(|(s, _)| *s == slot);
-        names.nth(n).map(|(_, name)| name.as_str())
-    }
-
-    /// `get_font_id(name)`: a number names its own id; an empty name or a
-    /// path the built-in font (0); a picture [`FIRST_FONT`] plus the order it
-    /// was first asked in.
-    // ponytail: the numbering is v2's (sampler-ksp `GetFontId`). Kontakt's
-    // own is unmeasured: its parser (`0x1407ab1b0`, statement 0x2b, `on
-    // init` only) is read, its evaluator not, and an oracle probe stops at
-    // the first picture that is not a font. Scripts only hand the id back
-    // to `$CONTROL_PAR_FONT_TYPE`.
-    fn font_id(&mut self, name: Text) -> i32 {
-        let slot = self.running.slot;
-        let text = name.as_str();
-        if let Ok(id) = text.parse::<i32>() {
-            return id;
-        }
-        if text.is_empty() || text.contains(['/', '\\']) {
-            return 0;
-        }
-        let mine = self.fonts.iter().filter(|(s, _)| *s == slot);
-        let at = mine.clone().position(|(_, n)| n.as_str() == text);
-        let n = at.unwrap_or_else(|| mine.count());
-        if at.is_none() && self.fonts.len() < self.fonts.capacity() {
-            self.fonts.push((slot, name));
-        }
-        FIRST_FONT.saturating_add(i32::try_from(n).unwrap_or(i32::MAX))
+        self.ui.font(slot, id)
     }
 
     /// Answers the menu, control-text, look and keyboard actions; `None` for others.
     pub(crate) fn ui_call(&mut self, call: &mut HostCall<'_>) -> Option<HostValue> {
-        match call.action {
-            Action::GetFontId => {
-                let name = call.texts.first().copied().unwrap_or(Text::EMPTY);
-                return Some(HostValue::Int(self.font_id(name)));
-            }
-            // Opens Kontakt's library browser tab: nothing here shows one.
-            Action::ShowLibraryTab => return Some(HostValue::Nothing),
-            _ => {}
-        }
         let int = |i: usize| call.ints.get(i).map_or(0, |&v| v as i32);
         let (id, a, b) = (int(0), int(1), int(2));
         let slot = self.running.slot;

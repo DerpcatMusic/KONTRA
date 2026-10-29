@@ -10,6 +10,8 @@
 //! and type 0; `set_key_pressed` is ignored, and `get_key_triggerstate`
 //! reads 0, unless `set_key_pressed_support` is on (any nonzero mode).
 
+pub mod readout;
+
 use kontra_vm::{Action, HostCall, HostValue, Text};
 
 /// Keys on the keyboard a script colours and names.
@@ -128,7 +130,12 @@ pub struct Store {
     pages: Box<[Page]>,
     /// Per script slot, by control: moves on every write to its look.
     generations: Box<[Box<[u32]>]>,
+    /// `get_font_id`'s pictures by script slot, in the order first asked.
+    fonts: Vec<(u8, Text)>,
 }
+
+/// The first font id a picture gets; ids below are Kontakt's built-in fonts.
+pub const FIRST_FONT: i32 = 26;
 
 impl Store {
     /// Empty stores for scripts with these control counts.
@@ -148,6 +155,7 @@ impl Store {
             ranges: Vec::new(),
             pages: controls.clone().map(|_| Page::UNSET).collect(),
             generations: controls.map(|n| vec![0; n].into()).collect(),
+            fonts: Vec::with_capacity(64),
         }
     }
 
@@ -324,6 +332,39 @@ impl Store {
     /// Answers the menu, control-text, page and keyboard actions of script
     /// `slot`, whose first argument names control `n` (when it is one);
     /// `None` for others. `look` is `None` when the script has no look ids.
+    /// The picture behind font id `id` of script `slot`.
+    #[must_use]
+    pub fn font(&self, slot: u8, id: i32) -> Option<&str> {
+        let n = usize::try_from(id.checked_sub(FIRST_FONT)?).ok()?;
+        let mut names = self.fonts.iter().filter(|(s, _)| *s == slot);
+        names.nth(n).map(|(_, name)| name.as_str())
+    }
+
+    /// `get_font_id(name)`: a number names its own id; an empty name or a
+    /// path the built-in font (0); a picture [`FIRST_FONT`] plus the order it
+    /// was first asked in.
+    // ponytail: the numbering is v2's (sampler-ksp `GetFontId`). Kontakt's
+    // own is unmeasured: its parser (`0x1407ab1b0`, statement 0x2b, `on
+    // init` only) is read, its evaluator not, and an oracle probe stops at
+    // the first picture that is not a font. Scripts only hand the id back
+    // to `$CONTROL_PAR_FONT_TYPE`.
+    fn font_id(&mut self, slot: u8, name: Text) -> i32 {
+        let text = name.as_str();
+        if let Ok(id) = text.parse::<i32>() {
+            return id;
+        }
+        if text.is_empty() || text.contains(['/', '\\']) {
+            return 0;
+        }
+        let mine = self.fonts.iter().filter(|(s, _)| *s == slot);
+        let at = mine.clone().position(|(_, n)| n.as_str() == text);
+        let n = at.unwrap_or_else(|| mine.count());
+        if at.is_none() && self.fonts.len() < self.fonts.capacity() {
+            self.fonts.push((slot, name));
+        }
+        FIRST_FONT.saturating_add(i32::try_from(n).unwrap_or(i32::MAX))
+    }
+
     pub fn call(
         &mut self,
         slot: u8,
@@ -344,6 +385,18 @@ impl Store {
         };
         let item = |s: &Self| at.and_then(|i| s.menu(slot, n).get(i).copied());
         Some(match call.action {
+            Action::GetFontId => HostValue::Int(self.font_id(slot, text)),
+            // Opens Kontakt's library browser tab: nothing here shows one.
+            Action::ShowLibraryTab => HostValue::Nothing,
+            // Kontakt names its outputs "Out 1", "Out 2", ... and -1 ""
+            // (oracle 2026-10-29); the engine has one stereo pair.
+            Action::OutputChannelName => {
+                let mut name = Text::EMPTY;
+                if (0..2).contains(&int(0)) {
+                    name.push_fmt(format_args!("Out {}", int(0) + 1));
+                }
+                out(name)
+            }
             // ponytail: a menu that grows after init allocates on the audio
             // thread; the manual allows entries only in `on init`.
             Action::AddMenuItem => {

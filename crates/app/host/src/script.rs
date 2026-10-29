@@ -180,16 +180,18 @@ fn data_array(script: &Script, name: &str, bytes: &[u8]) -> Option<(u32, Vec<i64
 fn controls(script: &Script) -> Controls {
     let value_par = symbol(script, CONTROL_VALUE);
     let mut cells = vec![None; script.variables.len()];
+    let mut steps = vec![0; script.variables.len()];
     for c in &script.controls {
-        let value = script
-            .variables
-            .get(c.variable as usize)
-            .and_then(|v| match v.cells {
-                Cells::Int { base, .. } | Cells::Real { base, .. } => Some(base),
-                _ => None,
-            });
+        let (value, len) = match script.variables.get(c.variable as usize).map(|v| v.cells) {
+            Some(Cells::Int { base, len }) => (Some(base), len),
+            Some(Cells::Real { base, .. }) => (Some(base), 0),
+            _ => (None, 0),
+        };
         if let Some(cell) = cells.get_mut(c.variable as usize) {
             *cell = value;
+        }
+        if let Some(n) = steps.get_mut(c.variable as usize) {
+            *n = len;
         }
     }
     Controls {
@@ -198,6 +200,7 @@ fn controls(script: &Script) -> Controls {
         num_items_par: symbol(script, "$CONTROL_PAR_NUM_ITEMS"),
         selected_item_par: symbol(script, "$CONTROL_PAR_SELECTED_ITEM_IDX"),
         cells,
+        steps,
         look: look(script),
     }
 }
