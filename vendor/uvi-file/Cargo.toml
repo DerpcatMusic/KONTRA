@@ -1,0 +1,19 @@
+[package]
+name = "uvi-file"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "UVI file decoders: UFS soundbanks, member encryption, program XML"
+publish = false
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+crc32fast = "1.5"
+flate2 = "1"
+libc = "0.2"
+roxmltree = "=0.21.1"
+sha2 = "0.10.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"

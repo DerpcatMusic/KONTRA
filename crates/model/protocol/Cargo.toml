@@ -1,0 +1,11 @@
+[package]
+name = "kontra-protocol"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+crossbeam-queue.workspace = true

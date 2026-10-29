@@ -1822,24 +1822,36 @@ fn authored_long_resident(frames:usize)->SourceStorage {
     let packs=(0..3).map(|pair|sampler_core::Pcm::new(48000,(0..frames).map(|i|[value(i,pair*2,false),value(i,pair*2+1,false)]).collect()).unwrap()).collect();
     sampler_core::SourceStorageFamily::new_resident(sampler_core::ChannelCount::new(6).unwrap(),packs).unwrap().into()
 }
+// Old: the missing pack held the whole source until data arrived. New: every member
+// of the source keeps its schedule through the stall (silence, counted as dropouts),
+// then resumes aligned with the ordinary reference, with no retrigger and no heap.
 #[test]
-fn a_missing_middle_pack_holds_the_whole_source_and_recovers_without_retrigger_or_heap() {
+fn a_missing_middle_pack_keeps_the_source_on_schedule_and_recovers_without_retrigger_or_heap() {
     let cells=vec![0.,0.,1.,0.,0.,0.,0.,0.,0.,0.,0.,1.];
     let mut authored=instrument(cells.clone(),false);authored.assets[0].residency=ir::AssetResidency::Streamable;
     let (source,packs)=authored_paged_source(N,N,0b101);
     let prepared=prepare(&authored,source);let limits=Limits::for_plan(&prepared,8,16);
     let (cache,worker)=sampler_core::StreamCache::new(24).unwrap();
     let mut actual=Runtime::new(prepared,limits).unwrap().with_stream_cache(cache);actual.set_cold_starts(true);actual.set_stream_horizon(64).unwrap();
+    let mut expected=reference(&cells,false);expected.trigger(input(1901),60,1.).unwrap();
     let held=actual.trigger(input(1901),60,1.).unwrap();
-    let mut out=[[0.;2];64];support::without_heap(||actual.render(&mut out).unwrap());assert!(out.iter().flatten().all(|v|*v==0.));
-    let mut demands=Vec::new();actual.visit_stream_demand(64,|d|{demands.push(d);true}).unwrap();
-    assert!(!demands.is_empty());assert!(demands.iter().all(|d|d.source_frame==0));
+    let mut out=[[0.;2];64];let mut b=[[0.;2];64];
+    support::without_heap(||{actual.render(&mut out).unwrap();expected.render(&mut b).unwrap();});
+    assert!(out.iter().flatten().all(|v|*v==0.));
     assert_eq!((actual.voice_count(),actual.processing_owner_count()),(1,1));
+    assert_eq!(actual.stats().dropout_frames,64,"the stall is counted, not held");
+    let mut demands=Vec::new();actual.visit_stream_demand(64,|d|{demands.push(d);true}).unwrap();
+    assert!(!demands.is_empty());
+    // Every member demands the same scheduled frame: the members stay aligned.
+    assert!(demands.iter().all(|d|d.source_frame==64));
     packs[1].set_ranges(vec![(0,(0..N).map(|i|[value(i,2,false),value(i,3,false)]).collect())]).unwrap();
-    let mut expected=reference(&cells,false);expected.render(&mut [[0.;2];64]).unwrap();expected.trigger(input(1901),60,1.).unwrap();
-    let mut b=[[0.;2];64];
-    for block in 0..12 {support::without_heap(||{actual.render(&mut out).unwrap();expected.render(&mut b).unwrap();});if block>=4 {close(&out,&b);}}
+    for block in 0..12 {
+        support::without_heap(||{actual.render(&mut out).unwrap();expected.render(&mut b).unwrap();});
+        // The first 64 frames are the stall; blocks 2+ are past the 48-frame recovery fade.
+        if block>=2 {close(&out,&b);}
+    }
     assert_eq!((actual.voice_count(),actual.processing_owner_count(),actual.stream_underruns(),actual.nonfinite_frames()),(1,1,0,0));
+    assert_eq!(actual.stats().dropout_frames,64);
     assert!(actual.key_down(held).unwrap());drop(worker);
 }
 #[test]
@@ -1957,8 +1969,11 @@ fn a_ready_wide_member_waits_for_its_siblings_future_runway_before_shared_stages
     assert_eq!((actual.voice_count(),actual.processing_owner_count()),(0,0));drop(worker);
 }
 
+// Old: the wide owner waited for its late member, silencing the ready one too. New: the
+// ready member plays, the late member keeps its schedule in silence (dropouts), and both
+// resume aligned with the ordinary reference.
 #[test]
-fn default_one_cold_admission_waits_for_every_wide_owner_member_then_recovers_without_retrigger() {
+fn default_one_cold_admission_keeps_every_wide_owner_member_on_schedule_then_recovers() {
     let mut cells=vec![0.;12];cells[3]=1.;cells[11]=1.;let mut authored=instrument(cells,false);
     authored.assets[0].residency=ir::AssetResidency::Streamable;authored.assets.push(authored.assets[0].clone());
     let mut second=zone();second.asset=Some(ir::AssetRef(1));authored.zones.push(second);
@@ -1968,16 +1983,23 @@ fn default_one_cold_admission_waits_for_every_wide_owner_member_then_recovers_wi
     let reference=lower_sources(&authored,48000,vec![authored_long_resident(N),authored_long_resident(N)],|_,p|Ok::<_,LowerError>(p)).unwrap();
     let limits=Limits::for_plan(&prepared,8,16);let (cache,worker)=sampler_core::StreamCache::new(24).unwrap();
     let mut actual=Runtime::new(prepared,limits).unwrap().with_stream_cache(cache);actual.set_cold_starts(true);actual.set_stream_horizon(64).unwrap();
-    let mut expected=Runtime::new(reference,limits).unwrap();let held=actual.trigger(input(1904),60,1.).unwrap();
-    let mut a=[[0.;2];64];let mut b=a;support::without_heap(||actual.render(&mut a).unwrap());
-    assert!(a.iter().flatten().all(|v|*v==0.));assert_eq!((actual.voice_count(),actual.processing_owner_count()),(2,1));
+    let mut expected=Runtime::new(reference,limits).unwrap();
+    let held=actual.trigger(input(1904),60,1.).unwrap();expected.trigger(input(1904),60,1.).unwrap();
+    let mut a=[[0.;2];64];let mut b=[[0.;2];64];support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});
+    assert_eq!((actual.voice_count(),actual.processing_owner_count()),(2,1));
+    assert_eq!(actual.stats().dropout_frames,64,"only the late member stalls; the ready one plays");
     let mut before=Vec::new();actual.visit_stream_demand(64,|d|{before.push((d.key.asset,d.source_frame));true}).unwrap();
-    assert!(!before.is_empty());assert!(before.iter().all(|(_,frame)|*frame==0));
+    assert!(!before.is_empty());
+    // Every demanding member sits at the same scheduled frame: the members stay aligned.
+    assert!(before.iter().all(|(_,frame)|*frame==64));
     assert!(first_packs.iter().all(|p|before.iter().any(|(id,_)|*id==p.asset_id())));
-    expected.render(&mut [[0.;2];64]).unwrap();expected.trigger(input(1904),60,1.).unwrap();
     second_packs[1].set_ranges(vec![(0,(0..N).map(|i|[value(i,2,false),value(i,3,false)]).collect())]).unwrap();
-    for block in 0..12 {support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});if block>=4 {close(&a,&b);}}
+    for block in 0..12 {
+        support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});
+        if block>=2 {close(&a,&b);}
+    }
     assert!(actual.key_down(held).unwrap());assert_eq!((actual.voice_count(),actual.processing_owner_count(),actual.nonfinite_frames(),actual.stream_underruns()),(2,1,0,0));
+    assert_eq!(actual.stats().dropout_frames,64);
     actual.note_off_exact(held,None).unwrap();for _ in 0..4 {support::without_heap(||actual.render(&mut a).unwrap());}
     assert_eq!((actual.voice_count(),actual.processing_owner_count()),(0,0));drop(worker);
 }

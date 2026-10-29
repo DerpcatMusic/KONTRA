@@ -1404,6 +1404,16 @@ fn widget_value(
 }
 
 impl V2Core {
+    /// Each recent voice's first non-silent output frame (probe C3).
+    pub fn voice_first_frames(&self) -> Vec<(u64, u64)> {
+        self.parts.iter().flatten().flat_map(|p| p.runtime.voice_first_frames()).collect()
+    }
+
+    /// Voices whose first-frame record was overwritten, all parts (probe C3).
+    pub fn voice_first_frames_dropped(&self) -> usize {
+        self.parts.iter().flatten().map(|p| p.runtime.voice_first_frames_dropped()).sum()
+    }
+
     #[cfg(any(test, feature = "shots"))]
     pub fn scan_runtime_faults(&mut self, part: usize) -> Vec<(usize, sampler_core::Outcome)> {
         let mut out = Vec::new();
@@ -1433,7 +1443,7 @@ impl V2Core {
                 let _ = part.runtime.set_host_value(8 + slot, value);
             }
         }
-        let holding = self.align.holding(transport.playing);
+        let holding = self.align.holding();
         if self.holding && !holding {
             // Flushed callbacks must observe the new snapshot, as at block start.
             self.flush_aligned();
@@ -3380,10 +3390,17 @@ impl Core for V2Core {
                     .saturating_add(p.problems.capacity_drops)
             },
         );
+        let dropout_frames = self
+            .parts
+            .iter()
+            .flatten()
+            .map(|p| p.runtime.stats().dropout_frames)
+            .sum();
         Voices {
             active,
             audible,
             dropouts,
+            dropout_frames,
         }
     }
 
@@ -3589,8 +3606,10 @@ fn stream_policy_for_memory(
         lazy: false,
         head_budget,
         allow_cold_fallback: true,
+        // Cold fallback may raise the head budget to the law heads, but not past
+        // what physical RAM leaves free.
+        physical_limit: available,
         block_frames: super::MAX_BLOCK,
-        max_step: 16.0,
         voices: MAX_VOICES,
         ..Default::default()
     }
@@ -3600,16 +3619,15 @@ fn stream_policy_for_memory(
 /// wins, then the player's setting; one (the audio thread alone) otherwise.
 /// Preserve the legacy stretch path: sampler taps do not certify grains or
 /// pre-roll. Requested latency and service horizon are checked as one pair.
-fn sampler_stream_contract(head: usize, instrument: Option<&ir::Instrument>)
+fn sampler_stream_contract(runway: usize, instrument: Option<&ir::Instrument>)
     -> Result<(u32, Option<u32>), CoreError>
 {
     let invalid = || CoreError::Invalid("streaming horizon exceeds output-frame domain".into());
-    let horizon = head.max(PAGE_FRAMES).checked_add(MAX_BLOCK).ok_or_else(invalid)?;
+    let horizon = runway.max(PAGE_FRAMES).checked_add(MAX_BLOCK).ok_or_else(invalid)?;
     let horizon = u32::try_from(horizon).map_err(|_| invalid())?;
-    let requested = u32::try_from(head).map_err(|_| invalid())?;
-    if requested == 0 { return Err(invalid()); }
+    let requested = u32::try_from(runway).map_err(|_| invalid())?;
     let sampler = instrument.is_some_and(|i| i.groups.iter().all(|g| g.time_stretch.is_none()));
-    Ok((horizon, sampler.then_some(requested)))
+    Ok((horizon, (sampler && requested > 0).then_some(requested)))
 }
 
 fn render_threads(request: &LoadRequest) -> Threads {
@@ -4372,7 +4390,7 @@ impl V2Loader {
         runtime.set_cold_starts(true);
         let streams = cache.is_some();
         let stream_contract = stream.as_ref().map(|s| sampler_stream_contract(
-            s.report.head_frames, instrument.as_deref())).transpose()?;
+            s.report.runway_frames, instrument.as_deref())).transpose()?;
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
             if let Some((horizon, runway)) = stream_contract {
@@ -8423,6 +8441,7 @@ mod tests {
         assert_eq!(core.problems(0).offline_failures, 0);
         eprintln!("KONTAKT_STREAM_PURGE before={before_trim} after={after_trim} freed={freed} reloaded_audible=yes");
     }
+
     #[test]
     #[cfg(feature = "library-access")]
     fn uvi_program_change_callbacks_decode_each_wire_format_at_the_real_product_boundary() {
@@ -9725,6 +9744,101 @@ mod timing_parity_tests {
         assert_eq!(calls, 0, "initial timing plan must remain owned off audio");
     }
     #[test]
+    fn auto_align_holds_a_note_whether_the_transport_stopped_or_plays() {
+        for playing in [false, true] {
+            let mut c = aligned_core();
+            c.begin_block(&BlockInfo {
+                frames: 128,
+                offline: true,
+                transport: super::super::Transport {
+                    playing,
+                    tempo: 120.,
+                    beats: 0.,
+                    signature: (4, 4),
+                },
+                ..Default::default()
+            });
+            let note = HostNote {
+                port: 0,
+                channel: 0,
+                key: 60,
+                id: 17,
+                clap: true,
+            };
+            c.event(
+                0,
+                Event::NoteOn {
+                    note,
+                    velocity: 0.7654321,
+                    tune: 0.123456789,
+                },
+            );
+            for _ in 0..3 {
+                c.render(128);
+            }
+            assert_eq!(
+                c.voices().active,
+                0,
+                "playing={playing}: 384 frames is inside the 480-frame hold"
+            );
+            c.render(128);
+            assert_eq!(
+                c.voices().active,
+                1,
+                "playing={playing}: the note plays once its 480-frame hold has passed"
+            );
+        }
+    }
+
+    #[test]
+    fn held_note_still_plays_when_the_transport_stops_mid_hold() {
+        let mut c = aligned_core();
+        c.begin_block(&BlockInfo {
+            frames: 128,
+            offline: true,
+            transport: super::super::Transport {
+                playing: true,
+                tempo: 120.,
+                beats: 0.,
+                signature: (4, 4),
+            },
+            ..Default::default()
+        });
+        let note = HostNote {
+            port: 0,
+            channel: 0,
+            key: 60,
+            id: 17,
+            clap: true,
+        };
+        c.event(
+            0,
+            Event::NoteOn {
+                note,
+                velocity: 0.7654321,
+                tune: 0.123456789,
+            },
+        );
+        c.render(128);
+        c.update_transport(super::super::Transport {
+            playing: false,
+            tempo: 120.,
+            beats: 0.5,
+            signature: (4, 4),
+        });
+        for _ in 0..2 {
+            c.render(128);
+        }
+        assert_eq!(c.voices().active, 0, "256 frames: still inside the 480-frame hold");
+        c.render(128);
+        assert_eq!(
+            c.voices().active,
+            1,
+            "the note plays at its hold even though the transport stopped while it waited"
+        );
+    }
+
+    #[test]
     fn v1_auto_align_reports_real_hold_and_preserves_host_ownership() {
         let mut c = aligned_core();
         c.begin_block(&BlockInfo {
@@ -9934,7 +10048,9 @@ mod sampler_stream_contract_tests {
     #[test]
     fn both_requested_and_service_horizons_are_checked_without_clamping() {
         let instrument = ir::Instrument::default();
-        assert!(sampler_stream_contract(0, Some(&instrument)).is_err());
+        // Preload 0 gives a zero DFD window (Kontakt computes it so): no runway, same horizon.
+        assert_eq!(sampler_stream_contract(0, Some(&instrument)).unwrap(),
+            ((PAGE_FRAMES + MAX_BLOCK) as u32, None));
         assert!(sampler_stream_contract(usize::MAX, Some(&instrument)).is_err());
         assert!(sampler_stream_contract(u32::MAX as usize, Some(&instrument)).is_err());
         assert_eq!(sampler_stream_contract(1019, Some(&instrument)).unwrap().1, Some(1019));
@@ -9987,19 +10103,6 @@ mod timestamped_transport_contract_tests {
         render_to(&mut core,11936);assert_eq!(cell(&core,0),0);render_to(&mut core,12064);assert_eq!(cell(&core,0),1);
         core.play(0,Event::midi1(0x90,61,100));render_to(&mut core,60000);assert_eq!(cell(&core,0),1);
         render_to(&mut core,60128);assert_eq!(cell(&core,0),2);assert_eq!(core.clock(0),60128);
-    }
-    #[test]
-    fn timestamped_holding_transition_flushes_with_the_new_snapshot_without_a_new_block() {
-        let mut core=core("on init declare $running declare $quarter end on on note $running:=$NI_TRANSPORT_RUNNING $quarter:=$DURATION_QUARTER end on");
-        let mut mix=Mix::default();mix.timing=Arc::new(crate::timing::Plan{on:true,transport_only:true,latency_ms:10.,parts:vec![Arc::new(crate::timing::Holds::of(&crate::timing::Timing{override_ms:Some(0.),..Default::default()},&[],10.))],..Default::default()});core.set_mix(&mix);
-        core.begin_block(&BlockInfo{frames:128,offline:true,transport:super::super::Transport{playing:true,tempo:120.,beats:0.,signature:(4,4)}});
-        assert!(core.holding);core.event(0,Event::midi1(0x90,60,100));core.render(64);
-        assert_eq!(cell(&core,1),0,"the note is still held in the alignment queue");
-        let fuel=core.parts[0].as_ref().unwrap().runtime.behavior_block_fuel();
-        core.update_transport(super::super::Transport{playing:false,tempo:240.,beats:2.,signature:(7,8)});
-        assert!(!core.holding);assert_eq!(cell(&core,0),0);assert_eq!(cell(&core,1),250000);
-        assert_eq!(core.parts[0].as_ref().unwrap().runtime.behavior_block_fuel(),fuel);
-        assert_eq!(core.clock(0),64);assert!(core.host_block);
     }
 }
 

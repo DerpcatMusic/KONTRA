@@ -1,7 +1,7 @@
 //! Port from v1 0cb7a8a0:src/creator.rs; new Kontakt/SFZ export uses v2 IR.
 //! No legacy KONTRA preset or manifest reader/writer.
 pub mod names;
-mod nki;
+pub mod nki;
 pub mod pitch;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -834,6 +834,7 @@ pub fn create(options: &Options, progress: &dyn Fn(&str)) -> Result<Created> {
                     zones: &zones,
                     samples: &files,
                     script: plan.script.as_deref(),
+                    start_routes: &[],
                 },
             )?;
             std::fs::write(

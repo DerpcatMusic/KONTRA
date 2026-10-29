@@ -1,0 +1,24 @@
+[package]
+name = "kontra-engine"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+trace = ["kontra-voice/trace", "dep:kontra-trace"]
+
+[dependencies]
+kontra-events = { path = "../../model/events" }
+kontra-stream = { path = "../stream" }
+kontra-time = { path = "../../base/time" }
+kontra-vm = { path = "../vm" }
+kontra-plan = { path = "../plan" }
+kontra-script-ui = { path = "../script-ui" }
+kontra-ir = { path = "../../model/ir" }
+kontra-voice = { path = "../voice" }
+kontra-dsp = { path = "../../dsp/registry" }
+kontra-effects = { path = "../effects" }
+kontra-trace = { path = "../trace", optional = true }

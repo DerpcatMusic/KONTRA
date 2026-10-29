@@ -44,7 +44,7 @@ mod waveform;
 
 pub use diag::{Error, Kind};
 pub use eval::{Environment, SavedValues, Transport};
-pub use lower::{Coverage, LISTENER_TAG, PGS_TAG, PROPERTY_TAG};
+pub use lower::{Coverage, LISTENER_TAG, PGS_TAG, PROPERTY_TAG, StartOffsets};
 
 pub const PROFILE: &str = "ksp-8.12-v3";
 
@@ -154,6 +154,9 @@ pub struct Script {
     /// `SET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)`: the script plays release
     /// samples, so native release-trigger groups stay silent.
     owns_release_triggers: bool,
+    start_offsets: lower::StartOffsets,
+    /// 1-based line of `start_offsets.unbounded`.
+    unbounded_line: Option<u32>,
 }
 
 impl Script {
@@ -235,6 +238,8 @@ impl Script {
             listener_drivers: self.listener_drivers.clone(),
             programs: self.programs.len(),
             owns_release_triggers: self.owns_release_triggers,
+            start_offsets: self.start_offsets,
+            unbounded_line: self.unbounded_line,
         }
     }
 
@@ -261,6 +266,10 @@ pub struct ScriptView {
     listener_drivers: Vec<(usize, usize)>,
     programs: usize,
     owns_release_triggers: bool,
+    /// The script's `play_note` sample-start offsets, in microseconds.
+    pub start_offsets: lower::StartOffsets,
+    /// 1-based source line of `start_offsets.unbounded`, when it is set.
+    pub unbounded_line: Option<u32>,
 }
 
 impl ScriptView {
@@ -1391,6 +1400,7 @@ fn compile_initialized_inner(
         warnings: Vec::new(),
         scratch: 0,
         modules: Vec::new(),
+        start_offsets: Default::default(),
         inspection: None,
     };
     let mut programs = Vec::new();
@@ -1780,6 +1790,12 @@ fn compile_initialized_inner(
         slot: environment.slot,
         owns_sustain: conditions.contains("NO_SYS_SCRIPT_PEDAL"),
         owns_release_triggers: conditions.contains("NO_SYS_SCRIPT_RLS_TRIG"),
+        start_offsets: unit.start_offsets,
+        unbounded_line: unit.start_offsets.unbounded.map(|span| {
+            diag::Fault { span, builtin: None, message: String::new() }
+                .locate(source)
+                .line
+        }),
         usage: Limits {
             source_bytes: source.len(),
             instructions: limits.instructions - unit.budget,

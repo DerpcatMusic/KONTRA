@@ -1,0 +1,46 @@
+name: v3 task proposal
+description: Propose a new or split task for the v3 refactor (the coordinator adds it to tasks.toml)
+labels: [v3]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        v3 tasks live in `docs/architecture-v3/tasks.toml`; issues are generated from it.
+        This form is for proposing one. Format: docs/architecture-v3/12-WORKFLOW.md §10.
+  - type: input
+    id: title
+    attributes:
+      label: Title
+    validations:
+      required: true
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Phase
+      options: ["0 Guard rails", "1 On-time start", "2 Scripts never stall notes", "3 One script path without transport holds", "4 Base and model crates", "5 DSP families", "6 Engine crates", "7 Script and format crates", "8 App and plugin"]
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal and the doc section it implements
+    validations:
+      required: true
+  - type: textarea
+    id: owns
+    attributes:
+      label: Paths it would own
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: deps
+    attributes:
+      label: Depends on (task ids)
+  - type: textarea
+    id: gate
+    attributes:
+      label: Gate commands and done criteria
+      render: text
+    validations:
+      required: true

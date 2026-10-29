@@ -6,11 +6,94 @@
 //! borrowed recipe exists only while startup constructs its physical ranges.
 use super::{
     ConstantStartHints, Pcm, Range, StreamPolicy, canceled_head, constant_start_window,
-    merge_start_ranges, zone_step,
+    merge_start_ranges, zone_resident, zone_step,
 };
 use sampler_core::Prepared;
 use sampler_ir as ir;
 use std::io;
+
+/// Reachable sample-start offsets of one zone, in source frames past `Playback::start`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct StartRange {
+    /// Furthest offset a source reaches: the zone's S.Mod range, or 0 when no route moves the start.
+    /// Script `play_note` offsets raise it too, converted at the zone's asset rate. Diagnostic only:
+    /// heads come from Kontakt's DFD window, and offsets past S.Mod are ignored at the voice start.
+    pub(super) max_frames: u64,
+    /// The first script `play_note` offset with no static bound, named by script and line.
+    /// Diagnostic only: such an offset is ignored past the zone's S.Mod range.
+    pub(super) unbounded: Option<String>,
+    /// The zone's sample-start routes, in zone order.
+    pub(super) sources: Vec<ir::RouteRef>,
+}
+
+impl StartRange {
+    pub(super) fn of(instrument: &ir::Instrument, zone: &ir::Zone) -> Self {
+        let sources: Vec<ir::RouteRef> = zone
+            .routes
+            .iter()
+            .copied()
+            .filter(|r| {
+                instrument
+                    .routes
+                    .get(r.0)
+                    .is_some_and(|r| r.target == ir::Target::SampleStart)
+            })
+            .collect();
+        let max_frames = if sources.is_empty() {
+            0
+        } else {
+            zone.playback.start_range
+        };
+        Self {
+            max_frames,
+            unbounded: None,
+            sources,
+        }
+    }
+
+    /// Raises the range to a script's largest constant `play_note` offset, rounded
+    /// up to frames at `asset_rate` so the window never ends early.
+    pub(super) fn widen(&mut self, max_micros: u32, asset_rate: u32, unbounded: Option<&str>) {
+        let frames = (u64::from(max_micros) * u64::from(asset_rate)).div_ceil(1_000_000);
+        self.max_frames = self.max_frames.max(frames);
+        self.unbounded = self
+            .unbounded
+            .take()
+            .or_else(|| unbounded.map(str::to_owned));
+    }
+}
+
+/// Every zone's start range with the scripts' `play_note` offsets folded in: the
+/// one function both startup paths read. A script's offset may start any zone's
+/// group, so every zone with an asset takes the largest bound. `rates` is per
+/// logical asset, the rate its `play_note` offsets convert at.
+pub(super) fn zone_start_ranges(
+    instrument: &ir::Instrument,
+    rates: &[u32],
+    scripts: &[sampler_ksp::ScriptView],
+) -> Vec<StartRange> {
+    let max_micros = scripts
+        .iter()
+        .map(|script| script.start_offsets.max_micros)
+        .max()
+        .unwrap_or(0);
+    let unbounded = scripts.iter().enumerate().find_map(|(index, script)| {
+        script
+            .unbounded_line
+            .map(|line| format!("script {index} line {line}"))
+    });
+    instrument
+        .zones
+        .iter()
+        .map(|zone| {
+            let mut range = StartRange::of(instrument, zone);
+            if let Some(asset) = zone.asset {
+                range.widen(max_micros, rates[asset.0], unbounded.as_deref());
+            }
+            range
+        })
+        .collect()
+}
 
 pub(super) struct InitialStartHints<'plan> {
     // Retain the immutable preparation boundary, not a runtime or engine epoch.
@@ -20,6 +103,9 @@ pub(super) struct InitialStartHints<'plan> {
     rate: u32,
     policy: StreamPolicy,
     constant: ConstantStartHints,
+    /// Per-zone preload heads (source frames) this recipe was proved at.
+    heads: Vec<usize>,
+    start_ranges: Vec<StartRange>,
     controllers: Vec<(usize, u32)>,
     pub(super) eligible: usize,
     pub(super) unsupported: usize,
@@ -32,7 +118,8 @@ impl<'plan> InitialStartHints<'plan> {
         prepared: &'plan Prepared,
         assets: &'plan [Pcm],
         rate: u32,
-        head: usize,
+        heads: &[usize],
+        start_ranges: &[StartRange],
         policy: &StreamPolicy,
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> io::Result<Self> {
@@ -64,7 +151,7 @@ impl<'plan> InitialStartHints<'plan> {
             }
         }
         let constant =
-            ConstantStartHints::new(instrument, prepared, assets, rate, head, policy, canceled)?;
+            ConstantStartHints::new(instrument, prepared, assets, rate, heads, policy, canceled)?;
         let mut this = Self {
             _prepared: prepared,
             instrument,
@@ -73,6 +160,8 @@ impl<'plan> InitialStartHints<'plan> {
             policy: *policy,
             eligible: constant.eligible,
             constant,
+            heads: heads.to_vec(),
+            start_ranges: start_ranges.to_vec(),
             controllers: Vec::new(),
             unsupported: 0,
             controller_loops: 0,
@@ -81,12 +170,11 @@ impl<'plan> InitialStartHints<'plan> {
             if canceled() {
                 return Err(canceled_head());
             }
-            if !zone.routes.iter().any(|r| {
-                instrument
-                    .routes
-                    .get(r.0)
-                    .is_some_and(|r| r.target == ir::Target::SampleStart)
-            }) || prepared.constant_start_offset(region).is_some()
+            if !zone_resident(instrument, zone) {
+                continue;
+            }
+            if this.start_ranges[region].sources.is_empty()
+                || prepared.constant_start_offset(region).is_some()
             {
                 continue;
             }
@@ -120,8 +208,14 @@ impl<'plan> InitialStartHints<'plan> {
                 f64::from(pcm.sample_rate()) / f64::from(rate),
                 policy,
             );
-            if constant_start_window(&zone.playback, pcm.frame_count(), offset, step, head)
-                .is_some()
+            if constant_start_window(
+                &zone.playback,
+                pcm.frame_count(),
+                offset,
+                step,
+                heads[region],
+            )
+            .is_some()
             {
                 this.controllers.push((region, offset));
                 this.eligible += 1;
@@ -139,7 +233,6 @@ impl<'plan> InitialStartHints<'plan> {
 
     pub(super) fn ranges(
         &self,
-        head: usize,
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> io::Result<Vec<Vec<Range<usize>>>> {
         // The Constant recipe enforces the original requested horizon, even
@@ -148,7 +241,7 @@ impl<'plan> InitialStartHints<'plan> {
             self.instrument,
             self.assets,
             self.rate,
-            head,
+            &self.heads,
             &self.policy,
             canceled,
         )?;
@@ -168,9 +261,13 @@ impl<'plan> InitialStartHints<'plan> {
                 f64::from(pcm.sample_rate()) / f64::from(self.rate),
                 &self.policy,
             );
-            if let Some(window) =
-                constant_start_window(&zone.playback, pcm.frame_count(), offset, step, head)
-            {
+            if let Some(window) = constant_start_window(
+                &zone.playback,
+                pcm.frame_count(),
+                offset,
+                step,
+                self.heads[region],
+            ) {
                 ranges[asset].push(window);
             }
         }

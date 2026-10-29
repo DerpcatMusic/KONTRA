@@ -1,0 +1,20 @@
+[package]
+name = "kontra-inspect"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+publish = false
+description = "Inspect v3 instrument loads and playback"
+
+[dependencies]
+anyhow = "1"
+hound = "3"
+kontra-engine = { path = "../../crates/engine/engine", features = ["trace"] }
+kontra-lua = { path = "../../crates/script/lua" }
+kontra-ui-model = { path = "../../crates/model/ui-model" }
+kontra-law = { path = "../../crates/base/law" }
+kontra-host = { path = "../../crates/app/host" }
+kontra-stream = { path = "../../crates/engine/stream" }
+serde_json = "1"
+rustfft = "6"

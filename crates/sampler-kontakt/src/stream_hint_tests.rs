@@ -68,7 +68,6 @@ fn hinted_preload_uses_exact_packed_cost_and_preserves_base_when_hints_do_not_fi
             let hints = HintFallback {
                 head_frames: 32,
                 ranges: vec![vec![745..777]],
-                anchors: None,
             };
             let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
                 sources(&assets),
@@ -76,7 +75,6 @@ fn hinted_preload_uses_exact_packed_cost_and_preserves_base_when_hints_do_not_fi
                 vec![vec![0..4096]],
                 Some(vec![vec![0..32]]),
                 Some(hints),
-                None,
                 worker,
                 decoders,
                 false,
@@ -123,104 +121,6 @@ fn hinted_preload_uses_exact_packed_cost_and_preserves_base_when_hints_do_not_fi
 }
 
 #[test]
-fn hinted_minimum_failure_keeps_nonempty_base_anchors() {
-    let assets = vec![Pcm::streamed(48000, 4096).unwrap()];
-    let hinted = |_| {
-        Ok(AttackAnchors {
-            output_frames: 0,
-            ranges: vec![vec![0..32, 745..777]],
-            hint_ranges: Some(vec![vec![745..777]]),
-        })
-    };
-    let base = |_| {
-        Ok(AttackAnchors {
-            output_frames: 0,
-            ranges: vec![vec![0..32]],
-            hint_ranges: None,
-        })
-    };
-    let hints = HintFallback {
-        head_frames: 128,
-        ranges: vec![vec![745..873]],
-        anchors: Some(&hinted),
-    };
-    let (_, worker) = StreamCache::new(4).unwrap();
-    let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
-        sources(&assets),
-        &assets,
-        vec![vec![0..4096]],
-        Some(vec![vec![0..128]]),
-        Some(hints),
-        Some(&base),
-        worker,
-        4,
-        false,
-        400,
-        HashSet::new(),
-        true,
-        &|| false,
-    )
-    .unwrap();
-    assert_eq!(bytes, 256);
-    assert_eq!(streamer.selected_anchor_head_frames(), Some(0));
-    assert_eq!(streamer.selected_hint_head_frames(), None);
-    assert!(assets[0].resident_covers(0..32));
-    assert!(!assets[0].resident_covers(745..777));
-    assert!(streamer.anchor_readiness(&assets).unwrap().complete());
-    assert!(!streamer.onset_readiness(&assets).complete());
-}
-
-#[test]
-fn hinted_shorter_anchor_reports_selected_union_separately_from_requested_coverage() {
-    let assets = vec![Pcm::streamed(48000, 4096).unwrap()];
-    let hinted = |_| {
-        Ok(AttackAnchors {
-            output_frames: 16,
-            ranges: vec![vec![0..16, 745..777]],
-            hint_ranges: Some(vec![vec![745..777]]),
-        })
-    };
-    let hints = HintFallback {
-        head_frames: 128,
-        ranges: vec![vec![745..873]],
-        anchors: Some(&hinted),
-    };
-    let (_, worker) = StreamCache::new(4).unwrap();
-    let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
-        sources(&assets),
-        &assets,
-        vec![vec![0..4096]],
-        Some(vec![vec![0..128]]),
-        Some(hints),
-        None,
-        worker,
-        4,
-        false,
-        512,
-        HashSet::new(),
-        true,
-        &|| false,
-    )
-    .unwrap();
-    assert_eq!(bytes, 384);
-    assert_eq!(streamer.selected_hint_head_frames(), Some(16));
-    let requested = streamer.hint_readiness(&assets).unwrap();
-    assert_eq!((requested.ranges, requested.source_frames), (1, 128));
-    assert_eq!(
-        (requested.covered_ranges, requested.covered_source_frames),
-        (0, 32)
-    );
-    let selected = streamer.selected_hint_readiness(&assets).unwrap();
-    assert_eq!((selected.ranges, selected.source_frames), (1, 32));
-    assert_eq!(
-        (selected.covered_ranges, selected.covered_source_frames),
-        (1, 32)
-    );
-    assert!(streamer.anchor_readiness(&assets).unwrap().complete());
-    assert!(!streamer.onset_readiness(&assets).complete());
-}
-
-#[test]
 fn hinted_source_errors_and_cancellation_never_retry_or_publish() {
     for cancel_read in [false, true] {
         let cancel = Arc::new(AtomicBool::new(false));
@@ -240,7 +140,6 @@ fn hinted_source_errors_and_cancellation_never_retry_or_publish() {
         let hints = HintFallback {
             head_frames: 32,
             ranges: vec![vec![745..777]],
-            anchors: None,
         };
         let error = Streamer::start_with_hint_fallbacks_cancelable(
             sources,
@@ -248,7 +147,6 @@ fn hinted_source_errors_and_cancellation_never_retry_or_publish() {
             vec![vec![0..4096]],
             Some(vec![vec![0..32]]),
             Some(hints),
-            None,
             worker,
             4,
             false,
@@ -300,7 +198,6 @@ fn hinted_admission_deduplicates_aliases_and_preserves_required_and_pinned_sourc
                 vec![],
                 vec![],
             ],
-            anchors: None,
         };
         let result = Streamer::start_with_hint_fallbacks_cancelable(
             sources(&assets),
@@ -320,7 +217,6 @@ fn hinted_admission_deduplicates_aliases_and_preserves_required_and_pinned_sourc
                 vec![0..16],
             ]),
             Some(hints),
-            None,
             worker,
             4,
             false,
@@ -352,7 +248,6 @@ fn hinted_coverage_reports_partial_intersections_without_counting_aliases_twice(
     let hints = HintFallback {
         head_frames: 32,
         ranges: vec![vec![745..777]; 2],
-        anchors: None,
     };
     let (streamer, _) = Streamer::start_with_hint_fallbacks_cancelable(
         sources(&assets),
@@ -360,7 +255,6 @@ fn hinted_coverage_reports_partial_intersections_without_counting_aliases_twice(
         vec![vec![0..4096]; 2],
         Some(vec![vec![0..32]; 2]),
         Some(hints),
-        None,
         worker,
         1,
         false,
@@ -476,15 +370,34 @@ fn hinted_alias_view_order_keeps_physical_recipe_and_distinct_forward_reverse_st
         let proof = make(assets.clone());
         let policy = StreamPolicy {
             headroom: 0.,
-            max_step: 16.,
             ..Default::default()
         };
-        let recipe =
-            ConstantStartHints::new(&instrument, &proof, &assets, 48000, 128, &policy, &|| false)
-                .unwrap();
-        let base = start_ranges_with_offsets(&instrument, &assets, 48000, 128, &policy, false);
+        let recipe = ConstantStartHints::new(
+            &instrument,
+            &proof,
+            &assets,
+            48000,
+            &law_heads(&instrument, 128),
+            &policy,
+            &|| false,
+        )
+        .unwrap();
+        let base = start_ranges(
+            &instrument,
+            &assets,
+            48000,
+            &law_heads(&instrument, 128),
+            &policy,
+        );
         let hints = recipe
-            .ranges(&instrument, &assets, 48000, 128, &policy, &|| false)
+            .ranges(
+                &instrument,
+                &assets,
+                48000,
+                &law_heads(&instrument, 128),
+                &policy,
+                &|| false,
+            )
             .unwrap();
         let mut union = physical_start_ranges(&assets, &base);
         union
@@ -505,14 +418,18 @@ fn hinted_alias_view_order_keeps_physical_recipe_and_distinct_forward_reverse_st
         let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
             HashMap::from([(pcm.asset_id(), source)]),
             &assets,
-            start_ranges(&instrument, &assets, 48000, 128, &policy),
+            start_ranges(
+                &instrument,
+                &assets,
+                48000,
+                &law_heads(&instrument, 128),
+                &policy,
+            ),
             Some(base),
             Some(HintFallback {
                 head_frames: 128,
                 ranges: hints,
-                anchors: None,
             }),
-            None,
             worker,
             4,
             false,
@@ -649,17 +566,34 @@ fn hinted_static_offset_745_matches_resident_pcm_under_reverse_pitch_and_host_pa
             assert_eq!(proof.constant_start_offset(0), Some(745));
             let policy = StreamPolicy {
                 headroom: 0.,
-                max_step: 16.,
                 ..Default::default()
             };
-            let recipe =
-                ConstantStartHints::new(&instrument, &proof, &assets, 48000, 128, &policy, &|| {
-                    false
-                })
-                .unwrap();
-            let base = start_ranges_with_offsets(&instrument, &assets, 48000, 128, &policy, false);
+            let recipe = ConstantStartHints::new(
+                &instrument,
+                &proof,
+                &assets,
+                48000,
+                &law_heads(&instrument, 128),
+                &policy,
+                &|| false,
+            )
+            .unwrap();
+            let base = start_ranges(
+                &instrument,
+                &assets,
+                48000,
+                &law_heads(&instrument, 128),
+                &policy,
+            );
             let hints = recipe
-                .ranges(&instrument, &assets, 48000, 128, &policy, &|| false)
+                .ranges(
+                    &instrument,
+                    &assets,
+                    48000,
+                    &law_heads(&instrument, 128),
+                    &policy,
+                    &|| false,
+                )
                 .unwrap();
             let mut union = base[0].clone();
             union.extend(hints[0].clone());
@@ -669,14 +603,18 @@ fn hinted_static_offset_745_matches_resident_pcm_under_reverse_pitch_and_host_pa
             let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
                 sources(&assets),
                 &assets,
-                start_ranges(&instrument, &assets, 48000, 128, &policy),
+                start_ranges(
+                    &instrument,
+                    &assets,
+                    48000,
+                    &law_heads(&instrument, 128),
+                    &policy,
+                ),
                 Some(base),
                 Some(HintFallback {
                     head_frames: 128,
                     ranges: hints.clone(),
-                    anchors: None,
                 }),
-                None,
                 worker,
                 4,
                 false,
@@ -750,9 +688,7 @@ fn hinted_restore_keeps_selected_physical_recipe_for_all_reload_consumers() {
             Some(HintFallback {
                 head_frames: 32,
                 ranges: vec![vec![745..777]; 2],
-                anchors: None,
             }),
-            None,
             worker,
             1,
             false,
@@ -1016,7 +952,6 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
         let prepared = make(assets[0].clone());
         let policy = StreamPolicy {
             headroom: 0.,
-            max_step: 16.,
             ..Default::default()
         };
         let recipe = ConstantStartHints::new(
@@ -1024,7 +959,9 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
             &prepared,
             &assets,
             48000,
-            128,
+            // Hint-window horizon of 128 source frames: the S.Mod range (180479)
+            // would otherwise make the head span the whole sample and cross the loop.
+            &vec![128; instrument.zones.len()],
             &policy,
             &|| false,
         )
@@ -1032,9 +969,22 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
         assert_eq!(recipe.loop_prefix, 1);
         assert_eq!(recipe.loops, 0);
         let hints = recipe
-            .ranges(&instrument, &assets, 48000, 128, &policy, &|| false)
+            .ranges(
+                &instrument,
+                &assets,
+                48000,
+                &vec![128; instrument.zones.len()],
+                &policy,
+                &|| false,
+            )
             .unwrap();
-        let base = start_ranges_with_offsets(&instrument, &assets, 48000, 128, &policy, false);
+        let base = start_ranges(
+            &instrument,
+            &assets,
+            48000,
+            &law_heads(&instrument, 128),
+            &policy,
+        );
         let mut union = base[0].clone();
         union.extend(hints[0].iter().cloned());
         merge_start_ranges(&mut union);
@@ -1043,14 +993,18 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
         let (streamer, _) = Streamer::start_with_hint_fallbacks_cancelable(
             sources(&assets),
             &assets,
-            start_ranges(&instrument, &assets, 48000, 128, &policy),
+            start_ranges(
+                &instrument,
+                &assets,
+                48000,
+                &law_heads(&instrument, 128),
+                &policy,
+            ),
             Some(base),
             Some(HintFallback {
                 head_frames: 128,
                 ranges: hints,
-                anchors: None,
             }),
-            None,
             worker,
             1,
             false,
@@ -1102,35 +1056,61 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
             &prepared,
             &assets,
             48000,
-            24000,
+            &law_heads(&instrument, 24000),
             &policy,
             &|| false,
         )
         .unwrap();
         assert_eq!(crossing.loop_prefix, 0);
         assert_eq!(crossing.loops, 1);
-        let zero =
-            ConstantStartHints::new(&instrument, &prepared, &assets, 48000, 0, &policy, &|| {
-                false
-            })
-            .unwrap();
+        let zero = ConstantStartHints::new(
+            &instrument,
+            &prepared,
+            &assets,
+            48000,
+            &vec![0; instrument.zones.len()],
+            &policy,
+            &|| false,
+        )
+        .unwrap();
         assert_eq!(zero.loop_prefix, 1);
         assert!(
-            zero.ranges(&instrument, &assets, 48000, 0, &policy, &|| false)
-                .unwrap()[0][0]
+            zero.ranges(
+                &instrument,
+                &assets,
+                48000,
+                &vec![0; instrument.zones.len()],
+                &policy,
+                &|| false
+            )
+            .unwrap()[0][0]
                 .contains(&745)
         );
         assert_eq!(
-            zero.ranges(&instrument, &assets, 48000, 1, &policy, &|| false)
-                .unwrap_err()
-                .kind(),
+            zero.ranges(
+                &instrument,
+                &assets,
+                48000,
+                &law_heads(&instrument, 1),
+                &policy,
+                &|| false
+            )
+            .unwrap_err()
+            .kind(),
             io::ErrorKind::InvalidInput
         );
         let mut short = instrument.clone();
         short.zones[0].playback.end = Some(700);
-        let silent =
-            ConstantStartHints::new(&short, &prepared, &assets, 48000, 128, &policy, &|| false)
-                .unwrap();
+        let silent = ConstantStartHints::new(
+            &short,
+            &prepared,
+            &assets,
+            48000,
+            &law_heads(&short, 128),
+            &policy,
+            &|| false,
+        )
+        .unwrap();
         assert_eq!(
             (silent.eligible, silent.loop_prefix, silent.silent),
             (0, 0, 1)
@@ -1142,7 +1122,7 @@ fn hinted_loop_prefix_uses_prepared_geometry_and_keeps_crossing_windows_omitted(
                 &prepared,
                 &wrong_assets,
                 48000,
-                128,
+                &law_heads(&instrument, 128),
                 &policy,
                 &|| false
             )
@@ -1214,4 +1194,203 @@ fn hinted_empty_optional_source_defers_original_request_per_physical_asset() {
     assert!(assets[0].resident_covers(0..32));
     assert_eq!(assets[1].head_bytes(), 0);
     assert_eq!(streamer.head_budget_status().held_bytes, bytes);
+}
+
+#[test]
+fn purged_second_group_sounds_on_every_chord_after_its_purge_reload() {
+    use sampler_core::{Envelope, Input, Limits, Playback, Prepared, Protocol, Region, Runtime, ScriptInstanceId};
+    // ANALOG-shaped: nine keys, each with a resident group-0 sample and a purged group-1 sample.
+    const KEYS: [u8; 9] = [52, 53, 59, 60, 62, 64, 65, 67, 69];
+    let assets: Vec<Pcm> = (0..KEYS.len() * 2).map(|_| Pcm::streamed(48000, 4096).unwrap()).collect();
+    let preload: Vec<Vec<std::ops::Range<usize>>> = (0..assets.len())
+        .map(|i| if i % 2 == 0 { vec![0..32] } else { vec![] })
+        .collect();
+    let reload: Vec<Vec<std::ops::Range<usize>>> = vec![vec![0..32]; assets.len()];
+    let (_, worker) = StreamCache::new(4).unwrap();
+    let (streamer, _) = Streamer::start_with_reload_cancelable(
+        sources(&assets),
+        &assets,
+        preload,
+        Some(reload),
+        None,
+        None,
+        worker,
+        2,
+        false,
+        1 << 22,
+        HashSet::new(),
+        false,
+        &|| false,
+    )
+    .unwrap();
+    let mut regions = Vec::new();
+    for (k, key) in KEYS.iter().enumerate() {
+        for group in 0..2 {
+            regions.push(Region {
+                sample: k * 2 + group,
+                key_low: *key,
+                key_high: *key,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::default(),
+                playback: Playback::default(),
+            });
+        }
+    }
+    let groups: Vec<Option<u32>> = (0..regions.len()).map(|r| Some((r % 2) as u32)).collect();
+    let plan = Prepared::new(48000, assets.clone(), regions, 32)
+        .unwrap()
+        .with_groups(2, groups)
+        .unwrap()
+        .with_group_purge(vec![false, true])
+        .unwrap()
+        .with_script_instances(vec![vec![]])
+        .unwrap();
+    let limits = Limits::for_plan(&plan, 128, 512);
+    let (cache, _runtime_worker) = StreamCache::new(4).unwrap();
+    let mut runtime = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    let active = runtime.active_plan();
+    let mut out = [[0.; 2]; 32];
+    let input = |chord: usize| Input {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key: KEYS[chord % KEYS.len()],
+        external_id: None,
+    };
+    runtime.trigger(input(0), KEYS[0], 1.).unwrap();
+    assert_eq!(runtime.voice_count(), 1, "purged group is silent before its reload");
+    runtime.render(&mut out).unwrap();
+    runtime.request_group_residency(active, 1, true, ScriptInstanceId(0)).unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    while runtime.residency_progress(active).unwrap().consumed < 1 {
+        runtime.render(&mut out).unwrap();
+        assert!(Instant::now() < until, "residency restore timed out");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    drop(streamer);
+    for chord in 0..64 {
+        let key = KEYS[chord % KEYS.len()];
+        let before = runtime.voice_count();
+        let chord_input = input(chord);
+        runtime.trigger(chord_input, key, 1.).unwrap();
+        assert_eq!(runtime.voice_count() - before, 2, "chord {chord} key {key} voices");
+        runtime.render(&mut out).unwrap();
+        runtime.note_off(chord_input, None).unwrap();
+        runtime.render(&mut out).unwrap();
+    }
+}
+
+#[test]
+fn full_voice_load_at_the_largest_head_never_runs_out_of_pool() {
+    use sampler_core::{Envelope, Input, Limits, Playback, Prepared, Protocol, Region, Runtime};
+    // One long streamed sample, played by a full voice load at the runway horizon:
+    // 20480 frames is the 24-bit stereo runway (61440 bytes / 6 bytes per frame).
+    const VOICES: usize = 16;
+    const RUNWAY: usize = 20480;
+    const FRAMES: usize = 1 << 20;
+    let assets = vec![Pcm::streamed(48000, FRAMES).unwrap()];
+    let instrument = ir::Instrument {
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 75 },
+            pitch: ir::KeyTracking::Tracked { root: 60 },
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        ..Default::default()
+    };
+    let policy = StreamPolicy { voices: VOICES, ..Default::default() };
+    let per_voice = voice_pages(&instrument, &[(48000, FRAMES)], 48000, RUNWAY, &policy);
+    assert!(per_voice > PAGES_PER_VOICE, "the head's reach needs more than the three-page floor");
+    let (cache, worker) = StreamCache::new(VOICES * per_voice).unwrap();
+    let (streamer, _) = Streamer::start_with_reload_cancelable(
+        sources(&assets),
+        &assets,
+        vec![vec![0..RUNWAY]],
+        None,
+        None,
+        None,
+        worker,
+        2,
+        false,
+        1 << 24,
+        HashSet::new(),
+        false,
+        &|| false,
+    )
+    .unwrap();
+    let regions = vec![Region {
+        sample: 0,
+        key_low: 60,
+        key_high: 75,
+        root_key: Some(60),
+        velocity_low: 0.,
+        velocity_high: 1.,
+        gain: 1.,
+        envelope: Envelope::default(),
+        playback: Playback::default(),
+    }];
+    let plan = Prepared::new(48000, assets.clone(), regions, 128).unwrap();
+    let limits = Limits::for_plan(&plan, 128, VOICES);
+    let mut runtime = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    let horizon = u32::try_from(RUNWAY.max(PAGE_FRAMES) + 128).unwrap();
+    runtime.set_stream_horizon(horizon).expect("the pool holds one head reach per voice");
+    let mut out = [[0.; 2]; 32];
+    for key in 0..VOICES as u8 {
+        let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60 + key, external_id: None };
+        runtime.trigger(input, 60 + key, 1.).expect("a full voice load is admitted");
+        runtime.render(&mut out).unwrap();
+    }
+    assert_eq!(runtime.voice_count(), VOICES);
+    drop(streamer);
+}
+
+#[test]
+fn runway_counts_output_frames_at_the_zones_fastest_step() {
+    // A zone pitched an octave up, or sampled at 2x the engine rate, reads two
+    // source frames per output frame: half the guaranteed source frames.
+    const HEAD: usize = 20480;
+    const FRAMES: usize = 1 << 20;
+    let zone = |keys_high: u8, root: u8| ir::Zone {
+        keys: ir::KeyRange { low: 60, high: keys_high },
+        pitch: ir::KeyTracking::Tracked { root },
+        ..ir::Zone::new(ir::AssetRef(0))
+    };
+    let policy = StreamPolicy { headroom: 0.0, ..Default::default() };
+    let runway = |instrument: &ir::Instrument, rate: u32| {
+        runway_frames(instrument, &[(rate, FRAMES)], 48000, &[HEAD], &policy)
+    };
+    // Pitched up: keys 60..=72 over root 60 is a 2x step at source rate 48 kHz.
+    let pitched = ir::Instrument { zones: vec![zone(72, 60)], ..Default::default() };
+    // Sampled at 2x: 96 kHz source, keys 60..=60 on root 60, so a 2x step.
+    let sampled = ir::Instrument { zones: vec![zone(60, 60)], ..Default::default() };
+    for (name, got) in [("pitched up", runway(&pitched, 48000)), ("2x source rate", runway(&sampled, 96000))] {
+        // Source frames guaranteed: HEAD. Output frames: (HEAD - guard) / 2, guard = read_radius(2) + 1.
+        let guard = sampler_core::read_radius(2.0) + 1;
+        assert_eq!(got, (HEAD - guard) / 2, "{name}");
+        assert!(got.abs_diff(HEAD / 2) <= guard, "{name}: {got} is not about head/2");
+    }
+}
+
+#[test]
+fn voice_pages_cover_the_runtime_reach_of_a_96k_asset_at_48k() {
+    // The runtime cursor reads this 96 kHz asset at step 2 (source/engine ratio).
+    // family_reservation_pages is min(full, reservation_reach_pages(horizon, step, legs)).
+    const RUNWAY: usize = 20480;
+    const FRAMES: usize = 1 << 20;
+    let instrument = ir::Instrument {
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Tracked { root: 60 },
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        ..Default::default()
+    };
+    let policy = StreamPolicy::default();
+    let pages = voice_pages(&instrument, &[(96000, FRAMES)], 48000, RUNWAY, &policy);
+    let horizon = u32::try_from(RUNWAY + policy.block_frames.max(HOST_MAX_BLOCK)).unwrap();
+    let runtime = sampler_core::reservation_reach_pages(horizon, 2.0, 1).min(FRAMES.div_ceil(PAGE_FRAMES) + 1);
+    assert!(pages >= runtime, "pool {pages} pages per voice < runtime reach {runtime}");
 }

@@ -36,7 +36,6 @@ impl Hint {
             || c.loops.is_some()
             || c.starvation.is_some()
             || c.fade_in != 0
-            || c.cold_hold
             || c.start_runway != 0
             || c.bounded_demand
         {
@@ -109,9 +108,11 @@ impl CursorKey {
             last,
             starvation,
             misses: _,
+            dropout_frames: _,
+            first_stall: _,
+            unsounded,
             fade_in,
             fade_frames,
-            cold_hold,
             start_runway,
             bounded_demand,
             lead,
@@ -121,8 +122,8 @@ impl CursorKey {
             || wavetable_base.is_some()
             || loops.is_some()
             || starvation.is_some()
+            || unsounded
             || fade_in != 0
-            || cold_hold
             || start_runway != 0
             || bounded_demand
         {
@@ -178,7 +179,9 @@ impl CursorKey {
             misses: 0,
             fade_in: 0,
             fade_frames,
-            cold_hold: false,
+            dropout_frames: 0,
+            first_stall: None,
+            unsounded: false,
             start_runway: 0,
             bounded_demand: false,
             lead,
@@ -632,7 +635,6 @@ mod tests {
             |c: &mut Cursor| c.lead += 1,
             |c: &mut Cursor| c.starvation = Some(0),
             |c: &mut Cursor| c.fade_in = 1,
-            |c: &mut Cursor| c.cold_hold = true,
         ] {
             let mut v = original;
             edit(&mut v.cursor);

@@ -2092,8 +2092,9 @@ impl Lowering<'_> {
     }
     /// One voice modulation program per distinct zone route list.
     fn modulation(&self, plan: Prepared,provider_sources:&HashMap<(usize,ir::ModulatorRef),crate::ProcessingSourceRef>) -> Result<Prepared, LowerError> {
+        let gates: Vec<bool> = self.ir.zones.iter().map(|z| z.playback.script_offset_gate).collect();
         if self.mpe.is_none() && self.ir.source_indices.ahdsrs.is_empty() && self.ir.zones.iter().all(|z| z.routes.is_empty()) {
-            return Ok(plan);
+            return Ok(plan.with_script_offset_gate(gates));
         }
         let mut programs: Vec<ModProgram> = Vec::new();
         let mut providers=Vec::new();
@@ -2134,6 +2135,7 @@ impl Lowering<'_> {
             .map(|z| z.playback.start_range.min(u64::from(u32::MAX)) as u32)
             .collect();
         plan.with_voice_modulation_and_providers(programs, bindings, ranges, native,providers)
+            .map(|plan| plan.with_script_offset_gate(gates))
             .map_err(core(Stage::Modulation, "zones"))
     }
 

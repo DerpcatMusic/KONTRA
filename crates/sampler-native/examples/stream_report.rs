@@ -37,13 +37,12 @@ fn main() {
     };
     let begin = Instant::now();
     // Production (src/sound/v2.rs `Auto`) settings are reachable with env overrides:
-    // HEAD_BUDGET bytes, MAX_STEP, BLOCK_FRAMES, COLD_FALLBACK=1.
+    // HEAD_BUDGET bytes, BLOCK_FRAMES, COLD_FALLBACK=1.
     let env = |name: &str| std::env::var(name).ok();
     let base = sampler_kontakt::StreamPolicy::default();
     let policy = sampler_kontakt::StreamPolicy {
         voices,
         head_budget: env("HEAD_BUDGET").map_or(base.head_budget, |v| v.parse().unwrap()),
-        max_step: env("MAX_STEP").map_or(base.max_step, |v| v.parse().unwrap()),
         block_frames: env("BLOCK_FRAMES").map_or(base.block_frames, |v| v.parse().unwrap()),
         allow_cold_fallback: env("COLD_FALLBACK").map_or(base.allow_cold_fallback, |v| v == "1"),
         // RAM-only (src/sound/v2.rs) keeps whole samples within this budget.
@@ -54,13 +53,13 @@ fn main() {
         .unwrap_or_else(|e| panic!("{e}"));
     let report = streamed.report;
     println!(
-        "loaded in {:.1} s: {} assets; read latency p50 {:.2} ms p95 {:.2} ms p99 {:.2} ms -> heads of {} frames x zone step",
+        "loaded in {:.1} s: {} assets; read latency p50 {:.2} ms p95 {:.2} ms p99 {:.2} ms -> runway {} output frames (the stream horizon is runway + one block)",
         begin.elapsed().as_secs_f64(),
         streamed.assets.len(),
         report.latency_p50.as_secs_f64() * 1e3,
         report.latency_p95.as_secs_f64() * 1e3,
         report.latency_p99.as_secs_f64() * 1e3,
-        report.head_frames,
+        report.runway_frames,
     );
     println!(
         "resident: heads {:.1} MB packed ({:.1} MB as f32 stereo) + page pool {:.1} MB ({} pages); full decode would be {:.1} MB; RSS {}",
@@ -148,8 +147,9 @@ fn main() {
         })
         .collect();
     let mut buffer = [[0.0f32; 2]; 64];
-    // Heads bound only starts; running voices request a page ahead.
-    let horizon = (report.head_frames.max(PAGE_FRAMES) + buffer.len()) as u32;
+    // Production's horizon (`sampler_stream_contract`): the runway plus one host block.
+    const MAX_BLOCK: usize = 128;
+    let horizon = (report.runway_frames.max(PAGE_FRAMES) + MAX_BLOCK) as u32;
     let (mut next, mut times, mut refused, mut purged) = (0, Vec::new(), 0, 0);
     let (mut peak, mut most) = (0.0f32, 0);
     let (mut pending, mut service_errors) = (0, std::collections::BTreeMap::new());

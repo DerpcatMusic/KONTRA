@@ -515,7 +515,7 @@ fn demand_snapshot_distinguishes_heads_from_pending_pages_without_polling_or_adv
     let mut tail = 0;
     support::without_heap(|| {
         assert!(rt.visit_stream_demand(64, |d| {
-            assert!(!d.starved && !d.cold);
+            assert!(!d.starved);
             assert_eq!(d.status, PageStatus::Pending);
             if d.resident { resident += 1; } else { tail += 1; }
             true

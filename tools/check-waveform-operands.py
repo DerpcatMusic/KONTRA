@@ -117,7 +117,7 @@ def main():
         ("crates/sampler-ksp/src/lib.rs", 1368, 1455),
         ("crates/sampler-core/src/ops.rs", 572, 639),
         ("crates/sampler-core/src/ops.rs", 1530, 1541),
-        ("crates/sampler-ui-ir/src/lib.rs", 300, 310),
+        ("crates/model/ui-model/src/lib.rs", 300, 310),
         ("src/plugin.rs", 666, 787),
         ("src/plugin.rs", 1727, 1795),
         ("src/sound/waveform.rs", 26, 95),

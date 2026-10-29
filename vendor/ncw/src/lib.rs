@@ -10,7 +10,7 @@ mod reader;
 pub use self::block::{BlockHeader, ChannelEncoding, SAMPLES_PER_BLOCK, SampleFormat};
 pub use self::error::NcwError;
 pub use self::header::NcwHeader;
-pub use self::reader::NcwReader;
+pub use self::reader::{NcwReader, decode_group, decode_group_fixed};
 
 mod writer;
 pub use writer::{PcmSpec, StereoMode, encode_pcm, encode_pcm_with_template, write_pcm};

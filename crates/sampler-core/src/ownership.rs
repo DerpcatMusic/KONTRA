@@ -820,6 +820,7 @@ impl Runtime {
             .stop(id.0.index);
         self.stolen -= usize::from(v.stolen);
         self.stream_reserved -= v.stream_pages;
+        self.retired_dropout_frames = self.retired_dropout_frames.saturating_add(v.cursor.dropout_frames());
         let generation = self.plans.get_mut(v.plan.0).unwrap();
         generation.samples.unpin(&generation.prepared, v.sample);
         self.voices.remove(id.0);

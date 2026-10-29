@@ -1,0 +1,19 @@
+[package]
+name = "ui-shots"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+description = "The Original view drawn headless on real libraries: timings and screenshots (07-APP.md §5.2)"
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-engine = { path = "../../crates/engine/engine" }
+kontra-host = { path = "../../crates/app/host" }
+kontra-lua = { path = "../../crates/script/lua" }
+kontra-stream = { path = "../../crates/engine/stream" }
+kontra-ui = { path = "../../crates/app/ui" }
+kontra-ui-model = { path = "../../crates/model/ui-model" }
+mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a", features = ["cpu"] }
+png = "0.18"
