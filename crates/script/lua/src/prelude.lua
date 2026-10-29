@@ -314,7 +314,7 @@ local blank_connections = {
 -- The connections on parameter `name`, in order; one list per name.
 function Element.getParameterConnections(self, name)
 	local fields = fields_of(self)
-	local cache = rawget(fields, CONNECTIONS)
+	local cache = fields[CONNECTIONS]
 	if not cache then
 		cache = {}
 		fields[CONNECTIONS] = cache
@@ -324,7 +324,7 @@ function Element.getParameterConnections(self, name)
 		return list
 	end
 	list = {}
-	for _, i in ipairs(rawget(fields, LINKS) or EMPTY) do
+	for _, i in ipairs(fields[LINKS] or EMPTY) do
 		local c = tree.connections and tree.connections[i]
 		if c and c[2] == name then
 			table.insert(list, setmetatable(c, Connection))
@@ -334,12 +334,14 @@ function Element.getParameterConnections(self, name)
 	return list
 end
 
--- What an element's own fields lack: its methods, its containers (made on
--- first use) and its definitions. The proxy's `__index` is its fields, so a
--- field it has is read without a call.
-local function element_index(fields, key)
+local function element_index(e, key)
+	local fields = fields_of(e)
+	local value = fields[key]
+	if value ~= nil then
+		return value
+	end
 	if key == "sends" then
-		return fields.busRouters
+		return e.busRouters
 	end
 	if is_container[key] then
 		local list = {}
@@ -354,8 +356,6 @@ local function element_index(fields, key)
 	end
 	return Element[key] or noop
 end
-
-local fields_meta = { __index = element_index }
 
 function element(node)
 	node = node or {}
@@ -377,10 +377,9 @@ function element(node)
 		displayName = params.DisplayName,
 		[LINKS] = node.links,
 	}
-	setmetatable(fields, fields_meta)
 	local e = newproxy(true)
 	local meta = getmetatable(e)
-	meta.__index = fields
+	meta.__index = element_index
 	meta.__newindex = fields
 	for _, key in ipairs(containers) do
 		local children = node[key]
@@ -395,7 +394,7 @@ function element(node)
 			fields[key] = list
 		end
 	end
-	for _, m in ipairs(rawget(fields, "modulations") or EMPTY) do
+	for _, m in ipairs(fields.modulations or EMPTY) do
 		if m.params.Name then
 			fields.modulations[m.params.Name] = m
 		end
@@ -412,7 +411,7 @@ local function each_bus(e, f)
 	end
 	local fields = fields_of(e)
 	for _, key in ipairs(containers) do
-		for _, child in ipairs(rawget(fields, key) or EMPTY) do
+		for _, child in ipairs(fields[key] or EMPTY) do
 			each_bus(child, f)
 		end
 	end
