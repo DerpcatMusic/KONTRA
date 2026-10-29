@@ -21,7 +21,7 @@ use crate::ledger::{self, Ramp};
 use crate::voice_rack;
 use crate::{Engine, MAX_SPAN, Response, SampleTime};
 
-enum Dsp {
+pub(crate) enum Dsp {
     None,
     Eq(Box<[filters::Stage]>),
     /// An EQ routes move: all its bands, retuned each span.
@@ -32,7 +32,7 @@ enum Dsp {
 
 /// A processor whose span replaces the slot's output; the slot's dry level
 /// mixes the input back.
-trait Wet: Send {
+pub(crate) trait Wet: Send {
     fn process(&mut self, io: &mut [[f32; 2]]);
     /// The slot's settings as scripts left them, at the host's tempo,
     /// before each block. Never allocates.
@@ -313,74 +313,7 @@ impl Rack {
         let dsp = slots
             .iter()
             .enumerate()
-            .map(|(n, slot)| match slot.map(|e| e.kind) {
-                Some(ir::EffectKind::Eq(bells)) if moved(n) => {
-                    Dsp::Bells(Box::new(filters::VoiceEq::new(bells, rate)))
-                }
-                // Built even while bypassed: a script may enable it later.
-                Some(
-                    ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_),
-                ) => {
-                    let live = slot.map(|e| ir::Effect { bypass: false, ..e });
-                    let sections = filters::sections(&[live]);
-                    Dsp::Eq(filters::stages(&sections, rate))
-                }
-                Some(ir::EffectKind::Convolution { impulse }) => {
-                    match impulses.get(usize::from(impulse)) {
-                        Some(r) => wet(Box::new(Convolver::new(&r.left, &r.right))),
-                        None => Dsp::None,
-                    }
-                }
-                Some(ir::EffectKind::Reverb(r)) => match r.network {
-                    Some(ir::Network::Lines(law)) => {
-                        wet(Box::new(Network::new(law, settings(r), rate)))
-                    }
-                    Some(ir::Network::Combs(law)) => {
-                        wet(Box::new(Combs::new(law, settings(r), rate)))
-                    }
-                    None => wet(Box::new(Fdn::new(settings(r), rate))),
-                },
-                Some(ir::EffectKind::Compressor(c)) => {
-                    wet(Box::new(Compressor::new(compressor(c), rate)))
-                }
-                Some(ir::EffectKind::Limiter(l)) => wet(Box::new(Limiter::new(limiter(l), rate))),
-                // ponytail: an echo gets the longest line, so a script or a
-                // tempo can lengthen it; a swept line only what it needs.
-                Some(ir::EffectKind::Delay(d)) => {
-                    let max_ms = match d.time {
-                        ir::DelayTime::Ms(ms) if d.depth_ms > 0.0 => ms,
-                        _ => MAX_MS,
-                    };
-                    wet(Box::new(ModDelay::new(delay(d, 120.0), rate, max_ms)))
-                }
-                Some(ir::EffectKind::Phaser(p)) => {
-                    wet(Box::new(Phaser::new(phaser(p, 120.0), rate)))
-                }
-                Some(ir::EffectKind::Shaper(s)) => wet(Box::new(voice_rack::shaper(s, rate))),
-                Some(ir::EffectKind::Clipper(c)) => wet(Box::new(Clipper::new(
-                    Circuit {
-                        drive: c.drive,
-                        limit: c.limit,
-                        tone_hz: c.tone_hz,
-                        coupling_hz: c.coupling_hz,
-                        saturation: c.saturation,
-                        slope: c.slope,
-                        asymmetry: c.asymmetry,
-                        dc_hz: c.dc_hz,
-                    },
-                    rate,
-                ))),
-                Some(ir::EffectKind::Transient(t)) => wet(Box::new(Transient::new(
-                    TransientSettings {
-                        attack: t.attack,
-                        sustain: t.sustain,
-                        gain_db: t.gain_db,
-                        clip: t.clip,
-                    },
-                    rate,
-                ))),
-                _ => Dsp::None,
-            })
+            .map(|(n, slot)| processor(*slot, moved(n), rate, &impulses))
             .collect();
         Self {
             slots: slots.into(),
@@ -390,6 +323,19 @@ impl Rack {
             amounts: vec![0.0; mods.len()].into(),
             rate,
         }
+    }
+
+    /// Puts `effect` and its processor in slot `n`; the old pair comes back.
+    pub(crate) fn install(
+        &mut self,
+        n: usize,
+        effect: Option<ir::Effect>,
+        dsp: Dsp,
+    ) -> Result<(Option<ir::Effect>, Dsp), Dsp> {
+        let (Some(slot), Some(old)) = (self.slots.get_mut(n), self.dsp.get_mut(n)) else {
+            return Err(dsp);
+        };
+        Ok((std::mem::replace(slot, effect), std::mem::replace(old, dsp)))
     }
 
     /// Reads its routes' sources for the next span.
@@ -540,6 +486,71 @@ fn settings(r: ir::Reverb) -> Settings {
         stereo: r.stereo,
         modulation_ms: r.modulation_ms,
         modulation_hz: r.modulation_hz,
+    }
+}
+
+/// The processor slot `slot` runs; `moved` when routes move it. Not real-time.
+pub(crate) fn processor(
+    slot: Option<ir::Effect>,
+    moved: bool,
+    rate: u32,
+    impulses: &Responses<'_>,
+) -> Dsp {
+    match slot.map(|e| e.kind) {
+        Some(ir::EffectKind::Eq(bells)) if moved => {
+            Dsp::Bells(Box::new(filters::VoiceEq::new(bells, rate)))
+        }
+        // Built even while bypassed: a script may enable it later.
+        Some(ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_)) => {
+            let live = slot.map(|e| ir::Effect { bypass: false, ..e });
+            let sections = filters::sections(&[live]);
+            Dsp::Eq(filters::stages(&sections, rate))
+        }
+        Some(ir::EffectKind::Convolution { impulse }) => match impulses.get(usize::from(impulse)) {
+            Some(r) => wet(Box::new(Convolver::new(&r.left, &r.right))),
+            None => Dsp::None,
+        },
+        Some(ir::EffectKind::Reverb(r)) => match r.network {
+            Some(ir::Network::Lines(law)) => wet(Box::new(Network::new(law, settings(r), rate))),
+            Some(ir::Network::Combs(law)) => wet(Box::new(Combs::new(law, settings(r), rate))),
+            None => wet(Box::new(Fdn::new(settings(r), rate))),
+        },
+        Some(ir::EffectKind::Compressor(c)) => wet(Box::new(Compressor::new(compressor(c), rate))),
+        Some(ir::EffectKind::Limiter(l)) => wet(Box::new(Limiter::new(limiter(l), rate))),
+        // ponytail: an echo gets the longest line, so a script or a
+        // tempo can lengthen it; a swept line only what it needs.
+        Some(ir::EffectKind::Delay(d)) => {
+            let max_ms = match d.time {
+                ir::DelayTime::Ms(ms) if d.depth_ms > 0.0 => ms,
+                _ => MAX_MS,
+            };
+            wet(Box::new(ModDelay::new(delay(d, 120.0), rate, max_ms)))
+        }
+        Some(ir::EffectKind::Phaser(p)) => wet(Box::new(Phaser::new(phaser(p, 120.0), rate))),
+        Some(ir::EffectKind::Shaper(s)) => wet(Box::new(voice_rack::shaper(s, rate))),
+        Some(ir::EffectKind::Clipper(c)) => wet(Box::new(Clipper::new(
+            Circuit {
+                drive: c.drive,
+                limit: c.limit,
+                tone_hz: c.tone_hz,
+                coupling_hz: c.coupling_hz,
+                saturation: c.saturation,
+                slope: c.slope,
+                asymmetry: c.asymmetry,
+                dc_hz: c.dc_hz,
+            },
+            rate,
+        ))),
+        Some(ir::EffectKind::Transient(t)) => wet(Box::new(Transient::new(
+            TransientSettings {
+                attack: t.attack,
+                sustain: t.sustain,
+                gain_db: t.gain_db,
+                clip: t.clip,
+            },
+            rate,
+        ))),
+        _ => Dsp::None,
     }
 }
 

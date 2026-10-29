@@ -50,6 +50,8 @@ pub(crate) struct Behaviour {
     /// Per [`ir::SlotShapes::slots`] entry, the shape index it
     /// last switched to.
     pub(crate) shapes: Vec<Option<u16>>,
+    /// Slots and the [`ir::SlotShapes::types`] entry each was last loaded with.
+    pub(crate) loaded: Vec<(kontra_ir::RackAt, u8, u16)>,
 }
 
 impl Behaviour {
@@ -81,7 +83,9 @@ impl Behaviour {
             rng: 0x9E37_79B9_7F4A_7C15,
             rls_reset: [0; 128],
             shapes: vec![None; plan.slot_shapes.slots.len()],
+            loaded: Vec::with_capacity(crate::fx_types::LOADED.max(plan.loaded.len())),
         };
+        behaviour.loaded.extend_from_slice(&plan.loaded);
         if let Some(key) = plan.default_keyswitch {
             behaviour.press(plan, key);
         }

@@ -75,12 +75,16 @@ impl Engine {
     /// Starts an asynchronous command for the running slot: its `on
     /// async_complete` runs when the queue reaches it. Returns its id.
     pub(crate) fn start_async(&mut self) -> i32 {
-        self.ids.async_last = self.ids.async_last.wrapping_add(1).max(1);
-        let (slot, id) = (self.running.slot, self.ids.async_last);
+        let (slot, id) = (self.running.slot, self.next_async_id());
         if !self.queue.push(self.now, Work::Async { slot, id }) {
             self.stats.events_refused += 1;
         }
         id
+    }
+
+    pub(crate) fn next_async_id(&mut self) -> i32 {
+        self.ids.async_last = self.ids.async_last.wrapping_add(1).max(1);
+        self.ids.async_last
     }
 
     pub(crate) fn async_complete(&mut self, slot: u8, id: i32) {

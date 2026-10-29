@@ -106,11 +106,12 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     slots.shape_slots.extend(racks.laws.shape_slots);
     out.slot_laws = slots.laws;
     if !slots.shape_slots.is_empty() {
-        let shapes = crate::laws::filter_shapes();
-        out.slot_shapes = ir::SlotShapes {
-            shapes,
-            slots: slots.shape_slots,
-        };
+        out.slot_shapes.shapes = crate::laws::filter_shapes();
+        out.slot_shapes.slots = slots.shape_slots;
+    }
+    let loads = |s: &ir::Script| s.source.contains("$ENGINE_PAR_EFFECT_");
+    if out.scripts.iter().any(loads) {
+        out.slot_shapes.types = crate::script_knobs::slot_types();
     }
     // A script may load any response of the library's `ir_samples` by name.
     if out

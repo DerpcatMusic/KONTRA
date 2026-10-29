@@ -174,13 +174,23 @@ impl Engine {
         slot: i32,
         generic: i32,
     ) -> Option<&mut ir::Effect> {
+        self.slot_mut(group, slot, generic)?.as_mut()
+    }
+
+    /// The addressed slot, empty or not.
+    pub(crate) fn slot_mut(
+        &mut self,
+        group: i32,
+        slot: i32,
+        generic: i32,
+    ) -> Option<&mut Option<ir::Effect>> {
         let rack = match (usize::try_from(group), generic) {
             (Ok(g), -1) => &mut self.groups.get_mut(g)?.inserts[..],
             // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0 (one rack per slot), `$NI_MAIN_BUS` 2.
             (Err(_), 1) => &mut self.rack.slots[..],
             (Err(_), 0) => {
                 let send = self.sends.get_mut(usize::try_from(slot).ok()?)?;
-                return send.slots.first_mut()?.as_mut();
+                return send.slots.first_mut();
             }
             (Err(_), 2) => &mut self.main.slots[..],
             // `$NI_BUS_OFFSET + n`: bus n is plan bus n + 1 (0 is the main bus).
@@ -190,7 +200,7 @@ impl Engine {
             }
             _ => return None,
         };
-        rack.get_mut(usize::try_from(slot).ok()?)?.as_mut()
+        rack.get_mut(usize::try_from(slot).ok()?)
     }
 
     /// `set_engine_par` of an effect control; false when not carried.

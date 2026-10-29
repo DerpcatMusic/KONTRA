@@ -316,19 +316,33 @@ pub struct SlotShape {
     pub laws: std::sync::Arc<[(SlotKnob, EffectParam, crate::Law)]>,
 }
 
-/// The filter shapes a script may switch slots to, and the slots that switch.
+/// The filter shapes a script may switch slots to, the slots that switch,
+/// and the effects a script may load into any slot.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SlotShapes {
     pub shapes: Vec<SlotShape>,
     /// Filter slots that may switch to any of [`Self::shapes`].
     pub slots: Vec<(RackAt, u8)>,
+    pub types: Vec<SlotType>,
 }
 
 impl SlotShapes {
     pub const NONE: Self = Self {
         shapes: Vec::new(),
         slots: Vec::new(),
+        types: Vec::new(),
     };
+}
+
+/// An effect a script loads into a slot by the format's type `id` (or a
+/// filter `subtype` of another kind): a new unit's settings, nothing for an
+/// empty slot, and the laws its knobs then move it by.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotType {
+    pub id: i32,
+    pub subtype: bool,
+    pub effect: Option<crate::Effect>,
+    pub laws: std::sync::Arc<[(SlotKnob, EffectParam, crate::Law)]>,
 }
 
 impl SlotShape {
