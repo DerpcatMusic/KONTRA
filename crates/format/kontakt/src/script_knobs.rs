@@ -17,7 +17,7 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     use ir::KnobTarget::{Effect, LfoRate, LfoSteps, LfoWeight, LfoWidth, Slot};
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let mod_hz = ir::Law::Exp { lo: 0.05, hi: 8.0 };
-    vec![
+    let mut rows = vec![
         // The filter in the slot carries these knobs' laws (filter_knobs).
         (
             "$ENGINE_PAR_CUTOFF",
@@ -293,7 +293,9 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
             Slot(ir::SlotKnob::OutputGain),
             lin(0.0, 1.0),
         ),
-    ]
+    ];
+    rows.extend(crate::impulse::script_knobs());
+    rows
 }
 
 /// One field a slot knob moves, and the law it moves it by.

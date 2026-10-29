@@ -151,6 +151,43 @@ pub struct ImpulseCuts {
     pub crossover: Option<f32>,
 }
 
+/// A setting of how a convolution slot's response is prepared, which a
+/// script's knob moves ([`crate::KnobTarget::Impulse`]): the response is
+/// prepared again with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImpulseKnob {
+    PredelayMs,
+    /// The early or late part's low (`high` false) or high cut, in Hz.
+    Cut {
+        late: bool,
+        high: bool,
+    },
+}
+
+impl ImpulseKnob {
+    /// Where the setting lives in `law`. A cut on a response with none
+    /// first gets open cuts (20 Hz and 20 kHz) and no crossover.
+    pub fn field_mut(self, law: &mut crate::Impulse) -> &mut f32 {
+        match self {
+            Self::PredelayMs => &mut law.predelay_ms,
+            Self::Cut { late, high } => {
+                let cuts = law.cuts.get_or_insert(ImpulseCuts {
+                    early: [20.0, 20_000.0],
+                    late: [20.0, 20_000.0],
+                    crossover: None,
+                });
+                let part = if late {
+                    &mut cuts.late
+                } else {
+                    &mut cuts.early
+                };
+                let [low, hi] = part;
+                if high { hi } else { low }
+            }
+        }
+    }
+}
+
 /// A filter whose 0..=1 cutoff and resonance knobs follow a control clock:
 /// every 32 frames the cutoff steps at most `1/(31·resonance + 4)` (within
 /// 1/35..1/4) toward its knob and the resonance 0.015 of the way.
