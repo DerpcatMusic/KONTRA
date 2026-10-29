@@ -6,14 +6,18 @@
 //! dropping [`Dialog`] at plugin teardown cancels an open picker and joins
 //! its worker, so no thread is left running in an unloaded binary.
 //!
-// ponytail: elsewhere rfd has no cancel. On macOS it runs the picker modally
-// on the host's main thread, so the host cannot unload the plugin under it.
-// On Windows the worker thread is left to finish on its own (it holds no
-// plugin state); a host that unloads the binary while the picker is open
-// there is the ceiling. Parent the picker to the editor window if it shows.
+//! Elsewhere it is rfd's, which has no cancel, so it is modal to the host
+//! instead: on macOS rfd runs it on the host's main thread; on Windows it is
+//! owned by the host's window the editor opened in, which stays disabled
+//! while it is open. Either way the host cannot unload the plugin under it.
+//!
+// ponytail: a Windows host that unloads the plugin on its own (not from its
+// window) while the picker is open is the ceiling: the worker is left to
+// finish. Post WM_CLOSE to the picker's thread at teardown if one shows.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
 use crate::lock;
 
@@ -28,9 +32,16 @@ pub struct Dialog {
     job: Mutex<Option<mui_native_dialog::DialogJob>>,
     #[cfg(not(target_os = "linux"))]
     job: Mutex<Option<std::thread::JoinHandle<Option<PathBuf>>>>,
+    /// The host's Win32 window the editor is open in; 0 when none.
+    owner: AtomicIsize,
 }
 
 impl Dialog {
+    /// The host's Win32 window the editor opened in, or `None` as it closes.
+    pub fn set_owner(&self, hwnd: Option<isize>) {
+        self.owner.store(hwnd.unwrap_or(0), Ordering::Release);
+    }
+
     /// Opens the picker at `from`, unless one is open.
     pub fn ask(&self, from: Option<PathBuf>) {
         let mut job = lock(&self.job);
@@ -56,12 +67,16 @@ impl Dialog {
 
     #[cfg(not(target_os = "linux"))]
     fn open(&self, from: Option<PathBuf>) -> Option<std::thread::JoinHandle<Option<PathBuf>>> {
+        let owner = self.owner.load(Ordering::Acquire);
         std::thread::Builder::new()
             .name("kontra-folder-dialog".into())
             .spawn(move || {
                 let mut d = rfd::FileDialog::new().set_title(TITLE);
                 if let Some(from) = from {
                     d = d.set_directory(from);
+                }
+                if cfg!(windows) && owner != 0 {
+                    d = d.set_parent(&moose::mui::ParentWindow::win32(owner));
                 }
                 d.pick_folder()
             })
