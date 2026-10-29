@@ -465,7 +465,7 @@ impl Drop for Store {
 
 /// Reads in flight at once, each on a reader thread of its own: a disk that
 /// seeks can reorder them, and decoding runs on several cores.
-const READERS: usize = 4;
+const READERS: usize = 8;
 
 /// The most pages one read takes: a requested page and the requested pages
 /// right after it in the same sample, so a disk seeks once per run, not once
