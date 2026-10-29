@@ -20,6 +20,7 @@ mod reverb;
 mod samples;
 mod script_knobs;
 mod skreamer;
+mod snapshot;
 mod solid_knobs;
 mod translate;
 mod versatile;
@@ -54,12 +55,19 @@ impl Error {
     }
 }
 
-/// Reads the instrument at `path`.
+/// Reads the instrument at `path`; a snapshot (.nksn) is its base
+/// instrument with the snapshot's saved script values.
 ///
 /// # Errors
 /// When the file is not a Kontakt instrument this can read; a sample that
 /// is missing or unreadable is a diagnostic, not an error.
 pub fn load(path: &Path) -> Result<ir::Instrument, Error> {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
+    {
+        return snapshot::load(path);
+    }
     let chunks = container::chunks(path)?;
-    translate::instrument(path, &chunks)
+    translate::instrument(path, &chunks, &[])
 }

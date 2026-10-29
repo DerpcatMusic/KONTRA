@@ -560,13 +560,13 @@ fn played(action: &Action) -> Option<Event> {
 }
 
 /// Whether a dropped file is an instrument the rack loads: a Kontakt
-/// instrument, or a UVI program inside its bank (`bank.ufs/Name.uvip`).
+/// instrument or snapshot, or a UVI program inside its bank (`bank.ufs/Name.uvip`).
 fn is_instrument(path: &std::path::Path) -> bool {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
-    matches!(ext.as_deref(), Some("nki" | "uvip"))
+    matches!(ext.as_deref(), Some("nki" | "nksn" | "uvip"))
 }
 
 #[cfg(test)]
