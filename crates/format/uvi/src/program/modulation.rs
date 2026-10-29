@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use kontra_ir as ir;
 use roxmltree::Node;
 
-use super::{Library, Translator, flag, index_of, matrix, num, source_node};
+use super::{Library, Translator, blend, flag, index_of, matrix, num, source_node};
 
 impl<L: Library> Translator<'_, '_, L> {
     /// The connections on the `Depth` of the LFO `connection` reads, as
@@ -195,8 +195,8 @@ pub(super) enum Timed {
     /// An LFO its routes reach through a delay and rise ([`rising`]), read
     /// through a table unless it is empty.
     Rising(ir::Lfo, ir::Breakpoints, Vec<f32>),
-    /// A source scaled per voice by its key ([`matrix::keyed`]).
-    Blend(ir::Blend),
+    /// A source read as a blend ([`blend`]).
+    Blend(blend::Blend),
 }
 
 /// The route a connection on `owner`'s `destination` makes, adding `Ratio`
@@ -236,7 +236,7 @@ pub(super) fn reach(
         1.0
     };
     let ratio = matrix::unkeyed_ratio(program, connection)?;
-    let keyed = |r| matrix::keyed(program, connection, r);
+    let keyed = |r| blend::keyed(program, connection, r);
     if connection
         .attribute("Mapper")
         .is_some_and(|m| !m.is_empty())
@@ -281,7 +281,7 @@ pub(super) fn reach(
                     timed: Some(timed),
                     ..fixed(ir::Source::Constant)
                 }
-            } else if let Some(steps) = unipolar(node, sign < 0.0) {
+            } else if let Some(steps) = blend::table(program, node, sign < 0.0) {
                 Route {
                     timed: Some(steps?),
                     ..fixed(ir::Source::Constant)
@@ -339,7 +339,7 @@ pub(super) fn gain_route(program: Node, connection: Node) -> Option<Route> {
 /// `1 + r·x` below zero ([`ir::Curve::Signed`], `r` clamped to ±1): an LFO's
 /// own depth `d` is inside the source, so it enters through `[(1 − d)/2,
 /// (1 + d)/2]`; a rise scales the LFO under that table, so the source is
-/// `(1 + ρ·d·w)/2` (0x1410f9767).
+/// `(1 + ρ·d·w)/2` (0x1410f9767). A mapped bend enters at `(y + 1)/2`.
 pub(super) fn factor(mut r: Route) -> Option<Route> {
     r.ratio = r.ratio.clamp(-1.0, 1.0);
     let d = r.unit;
@@ -352,6 +352,13 @@ pub(super) fn factor(mut r: Route) -> Option<Route> {
         Some(Timed::Lfo(lfo)) => {
             r.timed = Some(Timed::Steps(lfo, table));
             r.unit = 1.0;
+        }
+        Some(Timed::Blend(b)) => r.timed = Some(Timed::Blend(blend::gain(b, r.ratio))),
+        // Through a mapper too ([`matrix::key_factor`]). ponytail: a bipolar macro or
+        // script modulation's mapped routes are read as they are.
+        Some(Timed::Mapped(mut t)) if t.source == ir::Source::PitchBend => {
+            t.table.iter_mut().for_each(|v| *v = (*v + 1.0) / 2.0);
+            r.timed = Some(Timed::Mapped(t));
         }
         timed => r.timed = timed,
     }
@@ -445,7 +452,7 @@ pub(super) fn group_source(
             ir::Source::Shaped(index_of(&mut group.shapers, ir::Transfer { source, table }))
         }
         Some(Timed::Mapped(t)) => ir::Source::Shaped(index_of(&mut group.shapers, t)),
-        Some(Timed::Blend(b)) => ir::Source::Blend(index_of(&mut group.blends, b)),
+        Some(Timed::Blend(b)) => blend::lower(group, b),
     }
 }
 
@@ -458,27 +465,8 @@ pub(super) fn group_source(
 pub(super) fn lfo(node: Node) -> Option<(ir::Lfo, f32)> {
     let still = !flag(node, "DelayTime") && !flag(node, "RiseTime");
     (still && matrix::bipolar(node))
-        .then(|| shape(node))
+        .then(|| shape(node, false))
         .flatten()
-}
-
-/// `None` for a bipolar LFO, else what the route reads of a unipolar one:
-/// the LFO and a table over its wave giving `m = (w + 1)·d/2` (process
-/// 0x1410f9b50, `Depth` `d`). A route takes `m` itself, inverted `1 − m`
-/// (0x141429a80). ponytail: none with a delay or rise (it holds the wave
-/// at −1, then pulls it up from there: 0x1410f8ff0, 0x1410f98a0), which no
-/// library routes; carry it when one does.
-fn unipolar(node: Node, inverted: bool) -> Option<Option<Timed>> {
-    if matrix::bipolar(node) || !node.has_tag_name("LFO") {
-        return None;
-    }
-    let still = !flag(node, "DelayTime") && !flag(node, "RiseTime");
-    Some(still.then(|| shape(node)).flatten().map(|(lfo, d)| {
-        // A negative depth is a rising saw read backwards ([`shape`]).
-        let flip = |v: f32| if inverted { 1.0 - v } else { v };
-        let (lo, hi) = if d < 0.0 { (-d, 0.0) } else { (0.0, d) };
-        Timed::Steps(lfo, vec![flip(lo), flip(hi)])
-    }))
 }
 
 /// [`lfo`], and for one with a `DelayTime` or `RiseTime` the gain its routes
@@ -490,7 +478,7 @@ fn unipolar(node: Node, inverted: bool) -> Option<Option<Timed>> {
 /// every other way shares the delayed one's copy and its rise.
 fn rising(node: Node) -> Option<(ir::Lfo, f32, Option<ir::Breakpoints>)> {
     matrix::bipolar(node).then_some(())?;
-    let (mut lfo, depth) = shape(node)?;
+    let (mut lfo, depth) = shape(node, false)?;
     let seconds = |name| num(node, name, 0.0).ok().map(|t| t.clamp(0.0, 30.0) as f32);
     let (delay, rise) = (seconds("DelayTime")?, seconds("RiseTime")?);
     if delay == 0.0 && rise == 0.0 {
@@ -518,7 +506,7 @@ fn rising(node: Node) -> Option<(ir::Lfo, f32, Option<ir::Breakpoints>)> {
 }
 
 /// [`lfo`] whatever its delay and rise.
-fn shape(node: Node) -> Option<(ir::Lfo, f32)> {
+pub(super) fn shape(node: Node, user: bool) -> Option<(ir::Lfo, f32)> {
     let unset = |name| !flag(node, name);
     if flag(node, "Bypass") || !unset("ManualTrigger") {
         return None;
@@ -530,6 +518,8 @@ fn shape(node: Node) -> Option<(ir::Lfo, f32)> {
             2.0 => (ir::Wave::Triangle, 1.0),
             3.0 => (ir::Wave::Saw, -1.0),
             4.0 => (ir::Wave::Saw, 1.0),
+            // A user table, read through it ([`blend::table`]).
+            9.0 if user => (ir::Wave::Saw, 1.0),
             _ => return None,
         }
     } else if node.has_tag_name("MultiLFO") {

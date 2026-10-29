@@ -1372,3 +1372,122 @@ fn a_key_on_a_routes_ratio_scales_it_per_voice() {
         out.diagnostics
     );
 }
+
+#[test]
+fn a_user_table_lfo_growls_on_every_player_through_its_table_and_depth() {
+    // VWinds' growl: LFO 1 reads its 256-point table, a script modulation
+    // scales its depth, and its routes sit on each player's Gain (ratio
+    // scaled by Key) and Pitch alike.
+    let points: Vec<String> = (0..256)
+        .map(|j| format!("{:.6}", j as f32 / 256.0).replace('.', ","))
+        .collect();
+    let routes = r#"<Connections>
+        <SignalConnection Name="a" Ratio="0.5" Source="$Program/LFO 1" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0">
+          <Connections><SignalConnection Ratio="-1" Source="@VoiceParam Key" Destination="Ratio" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/></Connections>
+        </SignalConnection>
+        <SignalConnection Name="b" Ratio="2" Source="$Program/LFO 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+      </Connections>"#;
+    let xml = format!(
+        r#"<Program Gain="1">
+      <Modulators>
+        <LFO Name="LFO 1" Bypass="0" SyncToHost="0" DelayTime="0" RiseTime="0" Freq="10" Depth="1" Phase="0" WaveFormType="9" Retrigger="1" Bipolar="1">
+          <Connections>
+            <SignalConnection Ratio="1" Source="$Program/Script Event Modulation 7" Destination="Depth" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+          <UserTable>{}</UserTable>
+        </LFO>
+        <ScriptEventModulation Name="Script Event Modulation 7" EventId="12" Bipolar="0"/>
+      </Modulators>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127"><Oscillators>
+          <SamplePlayer Bypass="0" SamplePath="./a.wav">{routes}</SamplePlayer>
+          <SamplePlayer Bypass="0" SamplePath="./b.wav">{routes}</SamplePlayer>
+        </Oscillators></Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#,
+        points.join(" ")
+    );
+    let doc = roxmltree::Document::parse(&xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    let blend = |want: fn(&ir::ModKind) -> Option<ir::Source>| {
+        let source = g.mods.iter().find_map(|m| want(&m.kind)).unwrap();
+        let ir::Source::Blend(n) = source else {
+            panic!("{source:?}")
+        };
+        g.blends[usize::from(n)].clone()
+    };
+    let pitch = blend(|k| match k {
+        ir::ModKind::Pitch {
+            source, semitones, ..
+        } if *semitones == 2.0 => Some(*source),
+        _ => None,
+    });
+    // The saw reads `1 − p`: entry 1 is the table's last point.
+    let growl = &pitch.terms[0];
+    assert_eq!(
+        (growl.input.source, growl.amount, pitch.base),
+        (ir::Source::Lfo(0), 1.0, 0.0)
+    );
+    let t = &growl.input.table;
+    assert_eq!((t.len(), t[0], t[256]), (257, 0.0, 0.0));
+    assert!((t[1] - 255.0 / 256.0).abs() < 1e-5);
+    assert_eq!(growl.factors[0].input.source, ir::Source::Script(12));
+    assert_eq!(growl.factors[0].depth, 1.0);
+    // Gain: `1 − rk + rk·(m + 1)/2` as `1 − r + r·x'`, `x' = 1 − k/2 + (k/2)·m`.
+    let gain = blend(|k| match k {
+        ir::ModKind::Volume {
+            source, intensity, ..
+        } if *intensity == 0.5 => Some(*source),
+        _ => None,
+    });
+    assert_eq!(gain.base, 1.0);
+    let [growl, rest] = &gain.terms[..] else {
+        panic!("{:?}", gain.terms)
+    };
+    assert_eq!(
+        (growl.amount, rest.amount, rest.input.source),
+        (0.5, -0.5, ir::Source::Constant)
+    );
+    assert_eq!((growl.factors.len(), rest.factors.len()), (2, 1));
+    assert_eq!(
+        (rest.factors[0].input.source, rest.factors[0].depth),
+        (ir::Source::Key, -1.0)
+    );
+    // Both players' copies are carried once.
+    assert_eq!(
+        g.mods
+            .iter()
+            .filter(|m| matches!(m.kind, ir::ModKind::Volume { .. }))
+            .count(),
+        1
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .all(|d| !d.feature.starts_with("modulation")),
+        "{:?}",
+        out.diagnostics
+    );
+}
+
+#[test]
+fn a_mapped_bend_on_a_keygroups_gain_enters_at_half_past_its_mapper() {
+    // VWinds' pitch-bend crossfade mappers swing −1..=1: the law takes them at `(y + 1)/2`.
+    let xml = r#"<Program Gain="1">
+      <Mappers><ControlSignalMapper Name="Mapper 1" Min="-1" Max="1">-1,0 1,0 1,0</ControlSignalMapper></Mappers>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Connections>
+            <SignalConnection Ratio="1" Source="@PitchBend" Destination="Gain" Mapper="Mapper 1" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    assert_eq!(g.shapers[0].source, ir::Source::PitchBend);
+    assert_eq!(g.shapers[0].table, [0.0, 1.0, 1.0]);
+}
