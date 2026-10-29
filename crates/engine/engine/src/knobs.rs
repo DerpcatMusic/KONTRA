@@ -121,6 +121,7 @@ impl Engine {
         let n = shape_slot(plan, at, slot)?;
         let on = self.behaviour.shapes.get(n).copied().flatten()?;
         plan.slot_shapes
+            .shapes
             .get(usize::from(on))
             .filter(|s| !s.laws.is_empty())
     }
@@ -133,7 +134,7 @@ impl Engine {
         let Some(at) = rack_at(group, generic) else {
             return false;
         };
-        let shapes = &plan.slot_shapes;
+        let shapes = &plan.slot_shapes.shapes;
         let (Some(at_slot), Some(n)) = (
             shape_slot(&plan, at, slot),
             shapes.iter().position(|s| s.id == id),
@@ -234,10 +235,10 @@ fn laws<'p>(
     own.chain(slots.map(|l| (l.field, &l.law)))
 }
 
-/// The index of slot `slot` of `at` in [`Plan::shape_slots`].
+/// The index of slot `slot` of `at` in [`ir::SlotShapes::slots`].
 fn shape_slot(plan: &Plan, at: ir::RackAt, slot: i32) -> Option<usize> {
     let here = |&(a, s): &(ir::RackAt, u8)| a == at && i32::from(s) == slot;
-    plan.shape_slots.iter().position(here)
+    plan.slot_shapes.slots.iter().position(here)
 }
 
 /// The 0..=1 setting `law` maps to `y`, by bisection; the laws are monotonic.

@@ -155,14 +155,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("sends {:?}", plan.sends);
         let own = plan
             .slot_shapes
+            .shapes
             .iter()
             .filter(|s| !s.laws.is_empty())
             .count();
         println!(
             "slot laws {}, shapes {} ({own} with laws) for {} slots",
             plan.slot_laws.len(),
-            plan.slot_shapes.len(),
-            plan.shape_slots.len()
+            plan.slot_shapes.shapes.len(),
+            plan.slot_shapes.slots.len()
         );
         for (n, b) in plan.buses.iter().enumerate() {
             println!("bus {n} {b:?}");

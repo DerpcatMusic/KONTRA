@@ -750,8 +750,8 @@ fn effect_subtype_switches_a_filter_to_its_slots_shape() {
             ir::Law::Linear { lo: 0.0, hi: 1.0 },
         ),
     ];
-    plan.shape_slots = vec![(ir::RackAt::Group(0), 0)];
-    plan.slot_shapes = vec![ir::SlotShape {
+    plan.slot_shapes.slots = vec![(ir::RackAt::Group(0), 0)];
+    plan.slot_shapes.shapes = vec![ir::SlotShape {
         id: 103,
         filter: ir::Filter {
             pass: ir::Pass::Low,
@@ -766,7 +766,7 @@ fn effect_subtype_switches_a_filter_to_its_slots_shape() {
         laws: Vec::new().into(),
     }];
     // A shape with its own resonance law: the gain falls as it rises.
-    let mut own = plan.slot_shapes[0].clone();
+    let mut own = plan.slot_shapes.shapes[0].clone();
     own.id = 58;
     own.laws = vec![(
         ir::SlotKnob::Resonance,
@@ -774,7 +774,7 @@ fn effect_subtype_switches_a_filter_to_its_slots_shape() {
         ir::Law::Linear { lo: 1.0, hi: 0.0 },
     )]
     .into();
-    plan.slot_shapes.push(own);
+    plan.slot_shapes.shapes.push(own);
     let script = kontra_ksp::compile(
         "on init
             set_engine_par($ENGINE_PAR_RESONANCE, 250000, 0, 0, -1)
@@ -838,8 +838,8 @@ fn effect_subtype_keeps_the_cutoff_setting_through_the_new_law() {
             hi: 2000.0,
         },
     );
-    plan.shape_slots = vec![(ir::RackAt::Group(0), 0)];
-    plan.slot_shapes = vec![ir::SlotShape {
+    plan.slot_shapes.slots = vec![(ir::RackAt::Group(0), 0)];
+    plan.slot_shapes.shapes = vec![ir::SlotShape {
         id: 70,
         filter,
         laws: vec![own].into(),

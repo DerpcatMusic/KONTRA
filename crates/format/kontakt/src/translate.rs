@@ -100,9 +100,13 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     (out.inserts, out.sends, out.main) = (racks.inserts, racks.sends, racks.main);
     slots.laws.extend(racks.laws.laws);
     slots.shape_slots.extend(racks.laws.shape_slots);
-    (out.slot_laws, out.shape_slots) = (slots.laws, slots.shape_slots);
-    if !out.shape_slots.is_empty() {
-        out.slot_shapes = crate::laws::filter_shapes();
+    out.slot_laws = slots.laws;
+    if !slots.shape_slots.is_empty() {
+        let shapes = crate::laws::filter_shapes();
+        out.slot_shapes = ir::SlotShapes {
+            shapes,
+            slots: slots.shape_slots,
+        };
     }
     // A script may load any response of the library's `ir_samples` by name.
     if out
