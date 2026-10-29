@@ -294,7 +294,7 @@ impl Engine {
             behaviour: Behaviour::new(&plan),
             notes,
             plan,
-            loaded: Vec::new(),
+            loaded: Vec::with_capacity(fx_types::REQUESTS),
             requests: Vec::with_capacity(fx_types::REQUESTS),
             stream,
             voices,

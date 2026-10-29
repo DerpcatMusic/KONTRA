@@ -4,13 +4,15 @@
 //! is built off the audio thread: the engine queues an [`EffectRequest`], the
 //! host builds it ([`Prepared::new`]) and hands it to [`Engine::install`],
 //! which swaps it in and only then completes the async id the script waits on.
+//! A library response a script loads into a convolution after `on init`
+//! (`load_ir_sample`) takes the same path, decoded where it is built.
 
 use kontra_ir as ir;
 
 use crate::queue::Work;
 use crate::racks::{self, Dsp, Rack, Responses};
 use crate::script::Kind;
-use crate::{Engine, Plan};
+use crate::{Engine, Plan, Response};
 
 /// Requests the engine holds until the host drains them; more answer as
 /// not loaded.
@@ -24,9 +26,13 @@ pub(crate) const LOADED: usize = 256;
 pub struct EffectRequest {
     pub at: ir::RackAt,
     pub slot: u8,
-    /// What a project saves to load the slot again ([`Plan::load_type`]).
+    /// What a project saves to load the slot again ([`Plan::load_type`]);
+    /// unused for a response.
     pub ty: u16,
     pub effect: Option<ir::Effect>,
+    /// Instead of a type, a library response for the slot's convolution:
+    /// its index in [`Plan::responses`] and how to prepare it.
+    pub response: Option<(u16, ir::Impulse)>,
     script: u8,
     id: i32,
 }
@@ -35,15 +41,31 @@ pub struct EffectRequest {
 pub struct Prepared {
     request: EffectRequest,
     dsp: Dsp,
+    /// A requested response, decoded: its name in the plan, how it was
+    /// prepared, the response.
+    response: Option<(String, ir::Impulse, Response)>,
 }
 
 impl Prepared {
-    /// Builds the processor `request` loads, at `rate`. Not real-time.
+    /// Builds the processor `request` loads, at `rate`, decoding a response
+    /// from `plan`'s. Not real-time.
     #[must_use]
-    pub fn new(request: EffectRequest, rate: u32) -> Self {
-        // Routed, so a script's later knob writes retune it.
-        let dsp = racks::processor(request.effect, true, rate, &Responses(&[], &[]));
-        Self { request, dsp }
+    pub fn new(request: EffectRequest, plan: Option<&Plan>, rate: u32) -> Self {
+        let response = request.response.and_then(|(index, law)| {
+            let (name, sample) = plan?.responses.get(usize::from(index))?;
+            Some((name.clone(), law, crate::response(sample, &law, rate).ok()?))
+        });
+        let dsp = match (&response, request.response) {
+            (Some((_, _, r)), _) => racks::convolver(r),
+            (None, Some(_)) => Dsp::None,
+            // Routed, so a script's later knob writes retune it.
+            (None, None) => racks::processor(request.effect, true, rate, &Responses(&[], &[])),
+        };
+        Self {
+            request,
+            dsp,
+            response,
+        }
     }
 
     #[must_use]
@@ -64,7 +86,46 @@ impl Plan {
         else {
             return false;
         };
-        let n = usize::from(slot);
+        let Some(s) = self.slot_mut(at, slot) else {
+            return false;
+        };
+        *s = effect;
+        self.loaded.retain(|&(a, s, _)| (a, s) != (at, slot));
+        self.loaded.push((at, slot, ty));
+        true
+    }
+
+    /// Loads the library response `name` into the convolution at slot
+    /// `slot` of `at` before the scripts run, prepared as the response it
+    /// replaces, as a recalled project left it. False when it cannot.
+    /// Decodes at `rate`: not real-time.
+    pub fn load_response(&mut self, at: ir::RackAt, slot: u8, name: &str, rate: u32) -> bool {
+        let Some(Some(ir::Effect {
+            kind: ir::EffectKind::Convolution { impulse },
+            ..
+        })) = self.slot_mut(at, slot).map(|s| *s)
+        else {
+            return false;
+        };
+        let Some(&(_, law)) = self.impulse_laws.get(usize::from(impulse)) else {
+            return false;
+        };
+        let found = (self.responses.iter()).find(|(n, _)| n.eq_ignore_ascii_case(name));
+        let Some(r) = found.and_then(|(_, sample)| crate::response(sample, &law, rate).ok()) else {
+            return false;
+        };
+        let Ok(impulse) = u16::try_from(self.impulses.len()) else {
+            return false;
+        };
+        self.impulses.push(Some(r));
+        self.impulse_laws.push((name.to_lowercase(), law));
+        if let Some(Some(e)) = self.slot_mut(at, slot) {
+            e.kind = ir::EffectKind::Convolution { impulse };
+        }
+        true
+    }
+
+    fn slot_mut(&mut self, at: ir::RackAt, slot: u8) -> Option<&mut Option<ir::Effect>> {
         let rack = match at {
             ir::RackAt::Group(g) => self.groups.get_mut(g as usize).map(|g| &mut g.inserts),
             ir::RackAt::Inserts => Some(&mut self.inserts),
@@ -75,13 +136,7 @@ impl Plan {
                 .get_mut(usize::from(b) + 1)
                 .map(|b| &mut b.inserts),
         };
-        let Some(s) = rack.and_then(|r| r.get_mut(n)) else {
-            return false;
-        };
-        *s = effect;
-        self.loaded.retain(|&(a, s, _)| (a, s) != (at, slot));
-        self.loaded.push((at, slot, ty));
-        true
+        rack?.get_mut(usize::from(slot))
     }
 }
 
@@ -111,6 +166,32 @@ impl Engine {
             self.mark_loaded(at, n, ty);
             return Some(-1);
         }
+        self.queue(at, n, ty, effect, None)
+    }
+
+    /// Queues the plan's response `index`, prepared by `law`, for the
+    /// convolution at `slot` of the `generic` rack.
+    pub(crate) fn request_response(
+        &mut self,
+        slot: i32,
+        generic: i32,
+        index: u16,
+        law: ir::Impulse,
+    ) -> Option<i32> {
+        let at = crate::knobs::rack_at(-1, generic)?;
+        self.queue(at, u8::try_from(slot).ok()?, 0, None, Some((index, law)))
+    }
+
+    /// Queues a request: its async id, or `None` when the queue is full or
+    /// the slot is a group's.
+    fn queue(
+        &mut self,
+        at: ir::RackAt,
+        slot: u8,
+        ty: u16,
+        effect: Option<ir::Effect>,
+        response: Option<(u16, ir::Impulse)>,
+    ) -> Option<i32> {
         // ponytail: group inserts run per voice and per chain; they change in
         // `on init` only.
         if matches!(at, ir::RackAt::Group(_)) || self.requests.len() >= REQUESTS {
@@ -119,9 +200,10 @@ impl Engine {
         let (script, id) = (self.running.slot, self.next_async_id());
         self.requests.push(EffectRequest {
             at,
-            slot: n,
+            slot,
             ty,
             effect,
+            response,
             script,
             id,
         });
@@ -136,18 +218,27 @@ impl Engine {
     }
 
     /// Puts `prepared` in its slot and completes the async id its script
-    /// waits on. What it replaces comes back, to be dropped off the audio
-    /// thread. No allocation.
+    /// waits on; one that cannot go in leaves the slot as it was. What it
+    /// replaces comes back, to be dropped off the audio thread. No
+    /// allocation.
     pub fn install(&mut self, prepared: Prepared) -> Prepared {
-        let Prepared { request: r, dsp } = prepared;
-        let Some((rack, n)) = self.rack_slot(r.at, r.slot) else {
-            return Prepared { request: r, dsp };
+        let Prepared {
+            request: r,
+            dsp,
+            mut response,
+        } = prepared;
+        let effect = match r.response {
+            None => Some(r.effect),
+            Some(_) => self.retarget(r.at, r.slot, &mut response).map(Some),
         };
-        let (effect, dsp) = match rack.install(n, r.effect, dsp) {
-            Ok(old) => old,
-            Err(dsp) => return Prepared { request: r, dsp },
+        let swapped = match (effect, self.rack_slot(r.at, r.slot)) {
+            (Some(effect), Some((rack, n))) => rack.install(n, effect, dsp),
+            _ => Err(dsp),
         };
-        self.mark_loaded(r.at, r.slot, r.ty);
+        if swapped.is_ok() && r.response.is_none() {
+            self.mark_loaded(r.at, r.slot, r.ty);
+        }
+        let (effect, dsp) = swapped.unwrap_or_else(|dsp| (r.effect, dsp));
         let work = Work::Async {
             slot: r.script,
             id: r.id,
@@ -158,7 +249,39 @@ impl Engine {
         Prepared {
             request: EffectRequest { effect, ..r },
             dsp,
+            response,
         }
+    }
+
+    /// The convolution at `slot` of `at` playing `response`, which moves
+    /// into the loaded responses unless an equal one is there; `None` when
+    /// the slot is no convolution or there is no room. No allocation.
+    fn retarget(
+        &mut self,
+        at: ir::RackAt,
+        slot: u8,
+        response: &mut Option<(String, ir::Impulse, Response)>,
+    ) -> Option<ir::Effect> {
+        let (rack, n) = self.rack_slot(at, slot)?;
+        let current = (*rack.slots.get(n)?)?;
+        let ir::EffectKind::Convolution { .. } = current.kind else {
+            return None;
+        };
+        let (name, law, _) = response.as_ref()?;
+        let known = (self.loaded.iter()).position(|(m, l, _)| m == name && l == law);
+        let j = match known {
+            Some(j) => j,
+            None if self.loaded.len() < self.loaded.capacity() => {
+                self.loaded.push(response.take()?);
+                self.loaded.len() - 1
+            }
+            None => return None,
+        };
+        let impulse = u16::try_from(self.plan.impulses.len() + j).ok()?;
+        Some(ir::Effect {
+            kind: ir::EffectKind::Convolution { impulse },
+            ..current
+        })
     }
 
     /// The type slot `slot` of `at` was last loaded with.

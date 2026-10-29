@@ -42,6 +42,19 @@ pub struct SavedPart {
     /// Effect types its scripts loaded into slots after `on init`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slot_types: Vec<SlotType>,
+    /// Library responses its scripts loaded into convolutions after
+    /// `on init`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slot_responses: Vec<SlotResponse>,
+}
+
+/// One convolution a script loaded with a library response, by the name
+/// the plan gives it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SlotResponse {
+    pub rack: SavedRack,
+    pub slot: u8,
+    pub name: String,
 }
 
 /// One slot a script loaded with an effect type: the rack, the slot and
@@ -138,6 +151,13 @@ impl Rack {
                             ty,
                         })
                         .collect(),
+                    slot_responses: (p.slot_responses.iter())
+                        .map(|(at, slot, name)| SlotResponse {
+                            rack: (*at).into(),
+                            slot: *slot,
+                            name: name.clone(),
+                        })
+                        .collect(),
                 })
             })
             .collect();
@@ -158,7 +178,10 @@ impl Rack {
             let types: Vec<_> = (p.slot_types.iter())
                 .map(|t| (t.rack.into(), t.slot, t.ty))
                 .collect();
-            match self.load_saved(p.part, &p.path, &p.scripts, &types) {
+            let responses: Vec<_> = (p.slot_responses.iter())
+                .map(|r| (r.rack.into(), r.slot, r.name.clone()))
+                .collect();
+            match self.load_saved(p.part, &p.path, &p.scripts, &types, &responses) {
                 Ok(()) => {
                     self.set_mix(
                         p.part,

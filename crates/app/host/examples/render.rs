@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use kontra_engine::{Engine, Event, HostNote, HostPattern, SampleTime, Timed};
+use kontra_engine::{Engine, Event, HostNote, HostPattern, Plan, Prepared, SampleTime, Timed};
 use kontra_stream::{Store, StoreConfig};
 
 const RATE: u32 = 48_000;
@@ -271,6 +271,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut silent = vec![[0.0f32; 2]; 512];
     for _ in 0..RATE as usize / 4 / 512 {
         engine.process(&mut silent, &[]);
+        install_requests(&mut engine, &plan);
     }
     let before: std::collections::HashMap<_, _> = engine.action_calls().into_iter().collect();
 
@@ -388,6 +389,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let processing = std::time::Instant::now();
         engine.process(&mut block, input);
         busy += processing.elapsed();
+        install_requests(&mut engine, &plan);
         if n == 0 || n == 3 * RATE as usize / 512 {
             let during: Vec<_> = engine
                 .action_calls()
@@ -493,4 +495,14 @@ fn write_wav(path: &std::path::Path, frames: &[[f32; 2]]) -> std::io::Result<()>
         b.extend(s.to_le_bytes());
     }
     std::fs::write(path, b)
+}
+
+/// Builds and installs the effects and responses scripts asked for, between
+/// blocks, as the host's rack does off the audio thread.
+fn install_requests(engine: &mut Engine, plan: &Plan) {
+    let mut asked = Vec::new();
+    engine.drain_requests(|r| asked.push(r));
+    for r in asked {
+        engine.install(Prepared::new(r, Some(plan), RATE));
+    }
 }
