@@ -55,7 +55,7 @@ Not resolved in this pass:
 
 **Laws the core implements** (`cascade.rs` `versatile`):
 
-- Sample-rate constant `k = 2π / rate` (`0x401921cac083126f` is 2π).
+- Sample-rate constant `k = 6.283 / rate` (`0x401921cac083126f` is 6.283, 0.003% under 2π; the kemu vectors need it).
 - Stage 0 note = `clamp01(cutoff) * 111 + 20`. Stage 1 = note + `SHIFTB * 80`, stage 2 = stage 1 +
   `SHIFTC * 80`.
 - Each stage's resonance `r` maps to `q` by a two-segment law (`r * 1.3` below 0.5, a steeper

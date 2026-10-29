@@ -154,6 +154,16 @@ pub enum EffectParam {
     FilterLastDamping,
     /// A [`crate::Delay`]'s time in ms (not a synced one), its input and
     /// feedback matrix cells (row-major, 0..4) and its damping corner.
+    /// A [`crate::Cascade`]'s stage 0 Hz, its shifts in octaves, and by
+    /// stage its q, limit, peak, morph and wet; its output gain.
+    CascadeHz,
+    CascadeShift(u8),
+    CascadeQ(u8),
+    CascadeLimit(u8),
+    CascadePeak(u8),
+    CascadeMorph(u8),
+    CascadeWet(u8),
+    CascadeGain,
     DelayMs,
     DelayInput(u8),
     DelayLoop(u8),
@@ -214,6 +224,26 @@ impl EffectParam {
                 d.feedback.as_flattened_mut().get_mut(usize::from(n))?
             }
             (Self::DelayDampingHz, EffectKind::Delay(d)) => &mut d.damping_hz,
+            (Self::CascadeHz, EffectKind::Cascade(c)) => &mut c.hz,
+            (Self::CascadeShift(n), EffectKind::Cascade(c)) => c.shifts.get_mut(usize::from(n))?,
+            (Self::CascadeGain, EffectKind::Cascade(c)) => &mut c.gain,
+            (
+                Self::CascadeQ(n)
+                | Self::CascadeLimit(n)
+                | Self::CascadePeak(n)
+                | Self::CascadeMorph(n)
+                | Self::CascadeWet(n),
+                EffectKind::Cascade(c),
+            ) => {
+                let s = c.stages.get_mut(usize::from(n))?;
+                match self {
+                    Self::CascadeQ(_) => &mut s.q,
+                    Self::CascadeLimit(_) => &mut s.limit,
+                    Self::CascadePeak(_) => &mut s.peak,
+                    Self::CascadeMorph(_) => &mut s.morph,
+                    _ => &mut s.wet,
+                }
+            }
             _ => return None,
         })
     }
@@ -276,6 +306,14 @@ pub enum SlotKnob {
     DelayFeedback,
     DelayPan,
     DelayDamping,
+    /// A [`crate::Cascade`]'s knobs: by stage its shift (stages 1 and 2),
+    /// resonance (stages 1 and 2; stage 0 is [`Self::Resonance`]), morph and
+    /// wet; its output gain.
+    StageShift(u8),
+    StageResonance(u8),
+    StageMorph(u8),
+    StageWet(u8),
+    OutputGain,
 }
 
 /// The rack a [`SlotLaw`]'s slot is in.
