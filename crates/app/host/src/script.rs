@@ -164,6 +164,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             .iter()
             .filter_map(|(name, bytes)| data_array(script, name, bytes))
             .collect(),
+        source_folder: None,
         text_data: data
             .iter()
             .filter_map(|(name, bytes)| text_data_array(script, name, bytes))
@@ -175,6 +176,18 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             .map(|(cell, text)| (*cell, Text::from_str_cut(text).0))
             .collect(),
     }
+}
+
+/// A KSP source folder, with a trailing slash, when it fits a text cell.
+pub(crate) fn source_folder(path: Option<&std::path::Path>) -> Option<Text> {
+    let folder = path?.parent()?.to_str()?;
+    let path = if folder.ends_with('/') {
+        folder.to_owned()
+    } else {
+        format!("{folder}/")
+    };
+    let (text, cut) = Text::from_str_cut(&path);
+    (!cut).then_some(text)
 }
 
 /// `links` as the engine applies them: each on its control's UI id and
@@ -404,6 +417,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         knobs: Vec::new(),
         data: Vec::new(),
         text_data: Vec::new(),
+        source_folder: None,
         restore: Vec::new(),
         restore_texts: Vec::new(),
         foreign: Some(std::sync::Arc::new(compiled)),
