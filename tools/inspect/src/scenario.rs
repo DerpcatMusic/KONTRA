@@ -98,6 +98,20 @@ pub fn user() -> Vec<Input> {
     out
 }
 
+/// One independent scenario part, with its input clock rebased to zero.
+pub fn user_segment(part: u64) -> Vec<Input> {
+    let start = part * 2 * u64::from(RATE);
+    let end = start + 2 * u64::from(RATE);
+    user()
+        .into_iter()
+        .filter(|e| e.frame >= start && e.frame < end)
+        .map(|mut e| {
+            e.frame -= start;
+            e
+        })
+        .collect()
+}
+
 /// Read `{ "events": [{"frame": 0, "type": "note_on", "key": 60}, ...] }`.
 pub fn file(path: &Path) -> Result<Vec<Input>> {
     let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
@@ -138,6 +152,26 @@ pub fn file(path: &Path) -> Result<Vec<Input>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_segments_rebase_all_events_without_carrying_prior_state() {
+        let all = user();
+        for part in 0..6u64 {
+            let start = part * 2 * u64::from(RATE);
+            let segment = user_segment(part);
+            let expected: Vec<_> = all
+                .iter()
+                .filter(|e| e.frame >= start && e.frame < start + 2 * u64::from(RATE))
+                .map(|e| (e.frame - start, e.description.clone()))
+                .collect();
+            let actual: Vec<_> = segment
+                .iter()
+                .map(|e| (e.frame, e.description.clone()))
+                .collect();
+            assert_eq!(actual, expected);
+            assert_eq!(actual.first().map(|e| e.0), Some(0));
+        }
+    }
 
     #[test]
     fn user_scenario_is_ordered_and_sweeps_both_controllers() {
