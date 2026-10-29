@@ -31,6 +31,8 @@ pub fn page(
     };
     let mut built = 0;
     let (w, h) = (p.size.width * scale, p.size.height * scale);
+    // Pictures decode at the pixels they cover on the device.
+    let device = scale * ui.scale().unwrap_or(1.);
     let mut layers = vec![
         block(w, h)
             .radius(0.)
@@ -51,17 +53,15 @@ pub fn page(
         let b = &p.background;
         let skin = (b.frame, b.origin_y, b.offset_y.max(0));
         for (n, y) in wallpaper(skin, meta.size.map_or(0., |s| s.height), meta.frames) {
-            let Some(img) = pictures.frame(a, path, meta, n) else {
+            let Some(img) = pictures.frame(a, path, meta, n, device) else {
                 continue;
             };
-            layers.push(
-                image(
-                    &img,
-                    f64::from(img.width) * scale,
-                    f64::from(img.height) * scale,
-                )
-                .at(0., y * scale),
-            );
+            // Its own size, whatever pixels it decoded at.
+            let size = meta.size.unwrap_or(model::Size {
+                width: f64::from(img.width),
+                height: f64::from(img.height),
+            });
+            layers.push(image(&img, size.width * scale, size.height * scale).at(0., y * scale));
         }
     }
     let on_page = |r: model::Rect| {
@@ -83,7 +83,7 @@ pub fn page(
         let picture = wd.images.first().and_then(|u| {
             let (path, meta) = image_asset(tree, u.asset)?;
             let f = frame(wd, u, meta.frames as usize);
-            Some((pictures.frame(u.asset, path, meta, f)?, meta))
+            Some((pictures.frame(u.asset, path, meta, f, device)?, meta))
         });
         let art = picture.as_ref().map(|(_, m)| drawn(r, *m));
         let style = wd.style.and_then(|s| tree.styles.get(s.0));
