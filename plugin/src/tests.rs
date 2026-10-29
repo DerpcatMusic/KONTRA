@@ -101,9 +101,15 @@ fn play(params: &KontraParams, dsp: &mut Dsp) -> f32 {
     (audio.iter().map(|x| x * x).sum::<f32>() / audio.len() as f32).sqrt()
 }
 
+/// A real library's instrument under [`KONTAKT`]; a test without it says
+/// so and passes, as CI has no libraries.
 fn library(path: &str) -> Option<PathBuf> {
     let path = Path::new(KONTAKT).join(path);
-    path.exists().then_some(path)
+    if !path.exists() {
+        eprintln!("skipped: no {}", path.display());
+        return None;
+    }
+    Some(path)
 }
 
 /// Lets the commands sent so far reach the audio side and a capture of the
