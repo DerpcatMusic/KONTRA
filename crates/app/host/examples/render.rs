@@ -281,14 +281,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         id: -1,
         clap: true,
     };
-    // KONTRA_VELOCITY=100 KONTRA_HOLD=1.5: the oracle's note (librender2.py plays velocity
-    // 100 for 1440 ticks at 480 PPQ and 120 bpm: 1.5 s); by default velocity 0.8 held 2 s.
-    // Compare against the oracle with both set, or its release lands in the held window.
+    // By default the oracle's note: velocity 100 held 1.5 s (librender2.py: 1440 ticks at
+    // 480 PPQ and 120 bpm), so a comparison never sets its release against a held note.
+    // KONTRA_VELOCITY (1..=127) and KONTRA_HOLD (seconds) override it.
     let env = |name: &str| std::env::var(name).ok()?.parse::<f32>().ok();
-    let velocity = env("KONTRA_VELOCITY").map_or(0.8, |v| v / 127.0);
-    let hold = env("KONTRA_HOLD").map_or(2 * RATE as usize / 512, |s| {
-        (s * RATE as f32) as usize / 512
-    });
+    let velocity = env("KONTRA_VELOCITY").unwrap_or(100.0) / 127.0;
+    let hold_s = env("KONTRA_HOLD").unwrap_or(1.5);
+    let hold = (hold_s * RATE as f32) as usize / 512;
     let on = Timed {
         at: SampleTime(0),
         body: Event::NoteOn {
@@ -429,12 +428,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let s = audio.get(from..to).unwrap_or_default();
         (s.iter().flatten().map(|x| x * x).sum::<f32>() / (2 * s.len().max(1)) as f32).sqrt()
     };
-    let r = RATE as usize;
+    // The last half second held, and 0.1..0.6 s after the key-up.
+    let (r, up) = (RATE as usize, hold * 512);
+    let at = |frame: usize| frame as f32 / RATE as f32;
+    let (held, gone) = (up.saturating_sub(r / 2), up + r / 10);
     println!(
-        "rms 0.5-1 s {:.4}, 1.5-2 s {:.4}, after release 2.1-2.6 s {:.4}",
+        "rms 0.5-1 s {:.4}, {:.1}-{:.1} s {:.4}, after release {:.1}-{:.1} s {:.4}",
         rms(r / 2, r),
-        rms(r * 3 / 2, 2 * r),
-        rms(r * 21 / 10, r * 26 / 10)
+        at(held),
+        at(up),
+        rms(held, up),
+        at(gone),
+        at(gone + r / 2),
+        rms(gone, gone + r / 2)
     );
     println!("peak {peak:.3}, {:?}", engine.stats());
     let seconds = audio.len() as f64 / f64::from(RATE);
