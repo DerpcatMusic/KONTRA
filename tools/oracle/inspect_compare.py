@@ -68,9 +68,18 @@ def main():
     n = int(float(window) * rate)
     native, v3 = native[:, :n], v3[:, :n]
     lag = round(row["env_lag_ms"] * rate / 1000)
+    native_metrics = metrics(native, rate, events, lag)
+    v3_metrics = metrics(v3, rate, events, 0)
+    def delta(a, b):
+        return None if a is None or b is None else a - b
+    diff = {"peak": delta(native_metrics["peak"], v3_metrics["peak"]),
+            "clipped_samples": native_metrics["clipped_samples"] - v3_metrics["clipped_samples"],
+            "max_sample_jump": delta(native_metrics["max_sample_jump"], v3_metrics["max_sample_jump"]),
+            "octave_band_rms_db": [delta(a, b) for a, b in zip(native_metrics["octave_band_rms_dbfs"], v3_metrics["octave_band_rms_dbfs"])],
+            "cc_hf_bursts": [{"frame": a["frame"], "energy": delta(a["energy"], b["energy"])}
+                             for a, b in zip(native_metrics["cc_hf_bursts"], v3_metrics["cc_hf_bursts"])]}
     print(json.dumps({"status": "ok", "comparison": row,
-        "native_metrics": metrics(native, rate, events, lag),
-        "v3_metrics": metrics(v3, rate, events, 0),
+        "native_metrics": native_metrics, "v3_metrics": v3_metrics, "native_minus_v3": diff,
         "octave_centers_hz": [31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000],
         "alignment": "10 ms envelope lag; native capture start has millisecond uncertainty",
         "unavailable": ["native script callbacks and commands", "native voice lifecycle and levels", "native per-route values", "native effect parameters", "native active voice count"]}, allow_nan=False))
