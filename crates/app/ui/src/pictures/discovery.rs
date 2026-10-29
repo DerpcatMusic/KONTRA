@@ -13,8 +13,9 @@ pub(super) fn candidates() -> Vec<PathBuf> {
     }
     let mut roots = Vec::new();
     if cfg!(target_os = "windows") {
-        if let Some(drive) = std::env::var_os("SystemDrive") {
-            roots.push(PathBuf::from(drive).join("\\"));
+        if let Some(mut drive) = std::env::var_os("SystemDrive") {
+            drive.push("\\");
+            roots.push(PathBuf::from(drive));
         }
     } else if cfg!(target_os = "macos") {
         return vec![PathBuf::from(

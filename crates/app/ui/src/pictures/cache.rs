@@ -23,7 +23,16 @@ pub(super) fn load(path: &Path, dims: &[(u32, u32); 4]) -> Option<[Image; 4]> {
 }
 
 fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 4]) -> Option<[Image; 4]> {
-    let hash = std::fs::read_to_string(index(root, path)?).ok()?;
+    let index = index(root, path)?;
+    if index.metadata().ok()?.len() != 64 {
+        return None;
+    }
+    let mut hash = String::new();
+    std::fs::File::open(index)
+        .ok()?
+        .take(65)
+        .read_to_string(&mut hash)
+        .ok()?;
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
