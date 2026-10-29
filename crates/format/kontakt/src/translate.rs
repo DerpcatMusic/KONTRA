@@ -536,6 +536,7 @@ fn translate_group(
     }
     external(
         group,
+        group_index,
         &timed_slots,
         release_counter,
         &mut out,
