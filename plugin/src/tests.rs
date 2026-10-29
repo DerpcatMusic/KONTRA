@@ -8,9 +8,9 @@ use moose::prelude::*;
 
 use crate::{Dsp, Kontra, KontraParams, Tick};
 
-const RATE: f64 = 48_000.0;
-const BLOCK: usize = 512;
-const KONTAKT: &str = "/data/main/Libraries/Kontakt";
+pub(super) const RATE: f64 = 48_000.0;
+pub(super) const BLOCK: usize = 512;
+pub(super) const KONTAKT: &str = "/data/main/Libraries/Kontakt";
 
 #[test]
 fn plugin_contract() {
@@ -33,7 +33,7 @@ fn v3_has_its_own_identity() {
 }
 
 /// A plugin as a host has it after loading `saved` and activating.
-fn activate(saved: &str) -> (KontraParams, Dsp) {
+pub(super) fn activate(saved: &str) -> (KontraParams, Dsp) {
     let params = KontraParams::new();
     *params.saved.write().unwrap() = saved.to_owned();
     params.restore();
