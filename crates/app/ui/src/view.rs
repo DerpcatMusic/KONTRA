@@ -263,6 +263,10 @@ fn readout(w: &model::Widget, source: model::Source) -> String {
         return t.clone();
     }
     match &w.kind {
+        // Ratio 0 ($VALUE_EDIT_MODE_NOTE_NAMES) names the note.
+        Kind::ValueEdit { display, .. } if display.ratio == 0. => {
+            crate::keyboard::note_name(value(w).clamp(0., 127.) as u8)
+        }
         Kind::Knob { display, .. } | Kind::ValueEdit { display, .. } => {
             display.format_value(value(w), true, source)
         }
