@@ -64,7 +64,7 @@ fn opened(sample: &ir::Sample) -> io::Result<Opened> {
     // Preloads read short, scattered ranges: no read-ahead until the
     // preload is in ([`Region::loaded`]). With it the kernel read 7.3 GB
     // from disk to pin 3.0 GB of David And Goliath's heads; without, 3.1 GB.
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     let _ = rustix::fs::fadvise(&file, 0, None, rustix::fs::Advice::Random);
     let len = match sample.len {
         Some(len) => len,
@@ -232,7 +232,7 @@ impl Region {
 
     /// The preload is in: streaming reads in order, so read-ahead helps again.
     fn loaded(&self) {
-        #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         let _ = rustix::fs::fadvise(&*self.file, 0, None, rustix::fs::Advice::Normal);
     }
 
