@@ -478,6 +478,11 @@ impl Machine for LuaMachine {
         self.reads.as_ref()?.widget(n)
     }
 
+    fn widget_cells(&self, n: u32, out: &mut [f64]) -> bool {
+        let _arena = alloc::Scope::audio();
+        self.reads.as_ref().is_some_and(|r| r.cells(n, out))
+    }
+
     fn widget_text(&self, n: u32, out: &mut Text) -> bool {
         let _arena = alloc::Scope::audio();
         self.reads.as_ref().is_some_and(|r| r.text(n, out))

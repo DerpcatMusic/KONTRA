@@ -59,6 +59,10 @@ pub struct Widget {
     pub strip: Option<(String, u32)>,
     /// Hex colours by field: background, text, fill.
     pub colours: [Option<String>; 3],
+    pub cells: Vec<f64>,
+    pub slider_colour: Option<String>,
+    pub inner_edge: Option<bool>,
+    pub fill_style: Option<String>,
     pub font_size: Option<f64>,
     pub font: Option<String>,
     pub align: Option<String>,
@@ -139,6 +143,21 @@ pub(crate) fn read(lua: &Lua) -> Ui {
                 background: text(w, "backgroundImage"),
                 strip,
                 colours: ["backgroundColour", "textColour", "fillColour"].map(|k| text(w, k)),
+                cells: w
+                    .raw_get::<Table>("values")
+                    .map(|t| {
+                        t.sequence_values::<Value>()
+                            .flatten()
+                            .filter_map(|v| number(&v))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                slider_colour: text(w, "sliderColour"),
+                inner_edge: match w.raw_get::<Value>("drawInnerEdge") {
+                    Ok(Value::Boolean(b)) => Some(b),
+                    _ => None,
+                },
+                fill_style: text(w, "fillStyle"),
                 font_size: num(w, "fontSize"),
                 font: text(w, "font"),
                 align: text(w, "align"),
@@ -165,6 +184,7 @@ pub(crate) struct Reads {
     visible: LuaString,
     enabled: LuaString,
     text: LuaString,
+    values: LuaString,
 }
 
 impl Reads {
@@ -181,6 +201,7 @@ impl Reads {
             visible: key("visible")?,
             enabled: key("enabled")?,
             text: key("text")?,
+            values: key("values")?,
         })
     }
 
@@ -197,6 +218,26 @@ impl Reads {
             visible: flag(&self.visible),
             enabled: flag(&self.enabled),
         })
+    }
+
+    /// Copy a table's numeric cells into preallocated storage.
+    pub(crate) fn cells(&self, n: u32, out: &mut [f64]) -> bool {
+        let Some(values) = self
+            .table(n)
+            .and_then(|w| w.raw_get::<Table>(&self.values).ok())
+        else {
+            return false;
+        };
+        for (i, dst) in out.iter_mut().enumerate() {
+            let Ok(v) = values.raw_get::<Value>(i as i64 + 1) else {
+                return false;
+            };
+            let Some(v) = number(&v) else {
+                return false;
+            };
+            *dst = v;
+        }
+        true
     }
 
     /// Widget `n`'s `text` into `out`.
@@ -270,6 +311,30 @@ mod tests {
         moved(&mut m, 2, 1.);
         assert_eq!(m.widget(2).map(|w| w.value), Some(1.));
         assert_eq!(m.widget(0).map(|w| w.visible), Some(false));
+    }
+
+    #[test]
+    fn table_cells_keep_fractional_values_and_follow_script_writes() {
+        let compiled = compile(r#"
+            local t = Table{"curve", 3, 0.25, -1, 1, false, sliderColour="deb25d", drawInnerEdge=false, fillStyle="solid"}
+            t:setValue(2, -0.75)
+            local b = Button{"change"}
+            b.changed = function() t:setValue(3, 0.5) end
+        "#, &[], &[]).unwrap();
+        let t = &compiled.ui.widgets[0];
+        assert_eq!((t.min, t.max, t.integer), (-1., 1., false));
+        assert_eq!(t.cells, [0.25, -0.75, 0.25]);
+        assert_eq!(t.slider_colour.as_deref(), Some("deb25d"));
+        assert_eq!(t.inner_edge, Some(false));
+        let mut machine = compiled.machine();
+        let mut cells = [0.; 3];
+        assert!(machine.widget_cells(0, &mut cells));
+        assert_eq!(cells, [0.25, -0.75, 0.25]);
+        machine.stage_widget(1, 1.);
+        let co = machine.start(Callbacks::WIDGET, 0).expect("start");
+        assert_eq!(machine.run(co, &mut Quiet), Step::Done);
+        assert!(machine.widget_cells(0, &mut cells));
+        assert_eq!(cells, [0.25, -0.75, 0.5]);
     }
 
     #[test]

@@ -94,6 +94,7 @@ local function table_widget(w, name, fields)
 	w.values = values
 	w.size = size
 	w.length = size
+	w.min, w.max, w.integer = tonumber(fields[4]) or 0, tonumber(fields[5]) or 1, fields[6] == true
 	w.setValue = function(self, index, v)
 		self.values[index] = v
 	end
