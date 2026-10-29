@@ -108,6 +108,11 @@ at 1900,1270; sleep 1; shot 6a-original
 at "$look"; xdotool click 1; sleep 1; at "$vector"; xdotool click 1; sleep 2
 at 1900,1270; sleep 1; shot 6b-vector
 check 6a-original 6b-vector "part look: Vector draws without pictures" 205,100,880,500
+# Una Corda's three picture sliders are below the initial viewport.
+at 1000,600; for _ in 1 2 3 4 5; do xdotool click 5; sleep 0.1; done
+sleep 1.5; shot 6bb-vector-controls
+check 6b-vector 6bb-vector-controls "Vector: scroll reaches the picture controls" 205,100,880,500
+at 1000,600; for _ in $(seq 1 10); do xdotool click 4; sleep 0.1; done; sleep 1.5
 at "$look"; xdotool click 1; sleep 1; at "$kontra"; xdotool click 1; sleep 2
 at 1900,1270; sleep 1; shot 6c-kontra
 check 6b-vector 6c-kontra "part look: KONTRA lists the controls" 205,100,880,500
