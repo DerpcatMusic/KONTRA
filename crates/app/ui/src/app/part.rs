@@ -50,10 +50,10 @@ pub(super) fn view(
                 .scroll()
         }
         (PartTab::Articulations, _) => articulations(ui, p, n, v, out),
-        (PartTab::Info, _) => info(p),
+        (PartTab::Info | PartTab::Interface, _) => info(p),
         (PartTab::Scripts, _) => listing("Scripts", &p.scripts, "This instrument runs no scripts."),
         (PartTab::Mapping, _) => super::mapping::view(ui, p, n, v, out),
-        _ => listing("Sound", &[], "The sound editor comes next."),
+        (PartTab::Sound, _) => super::sound::view(ui, p, n, v, out),
     };
     el.w(Len::Pct(100.))
         .pad(kit::edges(TIGHT, SPACE, SPACE, SPACE))
