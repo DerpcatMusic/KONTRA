@@ -1,6 +1,6 @@
 //! What a group modulation moves and by how much.
 
-use crate::{Curve, EffectParam, Source};
+use crate::{EffectParam, Source};
 
 /// What a [`crate::Mod`] does.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -191,5 +191,89 @@ impl Transfer {
                 .unwrap_or(x),
         );
         a + (b - a) * (at - i as f32)
+    }
+}
+
+/// How a volume modulation turns its source into gain.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Curve {
+    /// Linear in dB: `intensity ×` this many dB down at source 0.
+    Decibels(f32),
+    /// `(1 − (1 − x) × intensity)^power`: the source pulls the gain down from
+    /// unity by its depth; power 1 is linear in amplitude.
+    Depth { power: u8 },
+    /// [`Self::Depth`] at power 1 on `x²`; a negative intensity reads `1 − x²`.
+    Squared,
+    /// `1 − x × intensity`: the gain falls from unity as the source rises.
+    Falling,
+    /// [`Self::Depth`] at power 1 for an intensity of 0 or more, and
+    /// `1 + x × intensity` below: the sign of the depth picks whether the
+    /// gain falls as the source falls or as it rises.
+    Signed,
+}
+
+impl Curve {
+    /// Linear gain for source value `x` (0..=1) at `intensity`.
+    #[must_use]
+    pub fn gain(self, intensity: f32, x: f32) -> f32 {
+        let x = x.clamp(0.0, 1.0);
+        match self {
+            Self::Decibels(range) => 10f32.powf(-range * intensity * (1.0 - x) / 20.0),
+            Self::Depth { power } => (1.0 - (1.0 - x) * intensity)
+                .max(0.0)
+                .powi(i32::from(power)),
+            Self::Squared => {
+                let x = if intensity < 0.0 { 1.0 - x * x } else { x * x };
+                (1.0 - (1.0 - x) * intensity.abs()).max(0.0)
+            }
+            Self::Falling => (1.0 - x * intensity).max(0.0),
+            Self::Signed if intensity < 0.0 => (1.0 + x * intensity).max(0.0),
+            Self::Signed => (1.0 - (1.0 - x) * intensity).max(0.0),
+        }
+    }
+}
+
+/// A power of two as a sampler computes it: exactly, or as
+/// `2^n·(1 + f − c·(f − f²))` for `x = n + f` (`f` in 0..1), a quadratic
+/// exact at whole octaves and up to 4.6 cents flat between them for
+/// `c = 0.33971`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Exp2 {
+    Exact,
+    Quadratic { c: f32 },
+}
+
+impl Exp2 {
+    #[must_use]
+    pub fn of(self, x: f64) -> f64 {
+        match self {
+            Self::Exact => x.exp2(),
+            Self::Quadratic { c } => {
+                let n = x.floor();
+                let f = x - n;
+                n.exp2() * (1.0 + f - f64::from(c) * (f - f * f))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Exp2;
+
+    #[test]
+    fn the_quadratic_power_of_two_plays_a_two_semitone_bend_flat() {
+        let law = Exp2::Quadratic { c: 0.33971 };
+        let semitones = |st: f64| 12.0 * law.of(st / 12.0).log2();
+        // Kontakt on a ±2 st route: full bend up and down, a quarter each way.
+        for (st, heard) in [(2.0, 1.954), (-2.0, -1.958), (0.5, 0.480), (-0.5, -0.485)] {
+            assert!(
+                (semitones(st) - heard).abs() < 0.001,
+                "{st}: {}",
+                semitones(st)
+            );
+        }
+        assert_eq!(law.of(1.0), 2.0);
+        assert_eq!(Exp2::Exact.of(-1.0), 0.5);
     }
 }

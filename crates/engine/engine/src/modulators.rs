@@ -69,6 +69,7 @@ impl Engine {
             let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age, pan);
             let mix = self.voice_mix(zone, &n, age);
             let (step, bend) = self.step(zone, &n, age);
+            let law = self.plan.route_pitch;
             self.retune_rack(i, zone, &n, age);
             if let Some(slot) = self.voices.get_mut(i) {
                 slot.voice.set_gain(gain);
@@ -85,7 +86,8 @@ impl Engine {
                 );
                 slot.bend = [at, bend.semitones];
                 slot.pan = [pan, to];
-                slot.voice.set_step(voice_gain::bent(step, at));
+                slot.voice
+                    .set_step(voice_gain::bent(law, step, bend.instant + at));
             }
         }
     }

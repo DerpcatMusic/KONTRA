@@ -17,12 +17,15 @@ use crate::{Control, Engine, Level, Zone};
 pub(crate) struct Bend {
     pub(crate) semitones: f32,
     pub(crate) tau_ms: f32,
+    /// The routes that do not lag.
+    pub(crate) instant: f32,
 }
 
 impl Bend {
     pub(crate) const NONE: Self = Self {
         semitones: 0.0,
         tau_ms: 0.0,
+        instant: 0.0,
     };
 }
 
@@ -38,9 +41,9 @@ pub(crate) fn glide(at: f32, to: f32, tau_ms: f32, frames: f32, rate: u32) -> f3
 /// (measured natively: τ 37.5 ms, as the instrument's volume and pan).
 pub(crate) const GROUP_PAN_TAU_MS: f32 = 37.5;
 
-/// `step` raised by `semitones`.
-pub(crate) fn bent(step: f64, semitones: f32) -> f64 {
-    step * 2f64.powf(f64::from(semitones) / 12.0)
+/// `step` raised by the pitch routes' `semitones`, through `law`.
+pub(crate) fn bent(law: ir::Exp2, step: f64, semitones: f32) -> f64 {
+    step * law.of(f64::from(semitones) / 12.0)
 }
 
 impl Engine {
@@ -326,10 +329,10 @@ impl Engine {
         })
     }
 
-    /// The voice's step without its lagging pitch routes, and those routes:
-    /// the voice glides toward them ([`Bend`]).
+    /// The voice's step without its pitch routes, and those routes: the
+    /// voice glides toward the lagging ones ([`Bend`]).
     pub(crate) fn step(&self, zone: &Zone, note: &Note, age: Age) -> (f64, Bend) {
-        let (mut mods, mut bend) = (0.0f32, Bend::NONE);
+        let mut bend = Bend::NONE;
         let groups = self.groups.get(zone.group as usize);
         for m in groups.iter().flat_map(|g| &g.mods).filter(|m| !m.bypass) {
             if let ir::ModKind::Pitch {
@@ -344,12 +347,11 @@ impl Engine {
                     bend.semitones += st;
                     bend.tau_ms = bend.tau_ms.max(tau_ms);
                 } else {
-                    mods += st;
+                    bend.instant += st;
                 }
             }
         }
-        let semitones = f64::from(mods)
-            + (f64::from(note.key) - f64::from(zone.root)) * zone.keytrack
+        let semitones = (f64::from(note.key) - f64::from(zone.root)) * zone.keytrack
             + zone.tune
             + self.level(zone).tune
             + note.tune

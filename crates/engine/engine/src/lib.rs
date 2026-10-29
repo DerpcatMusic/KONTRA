@@ -533,7 +533,7 @@ impl Engine {
             let (step, bend) = self.step(zone, &n, self.age(self.now, None));
             let start = VoiceStart {
                 region,
-                step: voice_gain::bent(step, bend.semitones),
+                step: voice_gain::bent(self.plan.route_pitch, step, bend.instant + bend.semitones),
                 gain,
                 lag,
                 envelope: self.envelope(zone, &n, held_seconds),
@@ -768,6 +768,7 @@ impl Engine {
             let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age, pan[0]);
             let mix = self.voice_mix(zone, &n, age);
             let (step, bend) = self.step(zone, &n, age);
+            let law = self.plan.route_pitch;
             let pitch = cc.is_none_or(|cc| self.pitch_follows(zone, cc));
             self.retune_rack(i, zone, &n, age);
             if let Some(slot) = self.voices.get_mut(i) {
@@ -779,7 +780,8 @@ impl Engine {
                 }
                 if pitch {
                     slot.bend[1] = bend.semitones;
-                    slot.voice.set_step(voice_gain::bent(step, slot.bend[0]));
+                    slot.voice
+                        .set_step(voice_gain::bent(law, step, bend.instant + slot.bend[0]));
                 }
             }
         }
