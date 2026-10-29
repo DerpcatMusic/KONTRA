@@ -101,9 +101,27 @@ pub struct Delay {
     pub high_shelf: Option<crate::Bell>,
     /// How much shorter the left line runs and longer the right, ms.
     pub spread_ms: f32,
+    pub sync: DelaySync,
     pub rate: Rate,
     /// Cycles the right LFO runs ahead of the left.
     pub phase: f32,
+}
+
+/// A tempo-synced delay time: `count` units of `unit_beats` beats, at most
+/// `max_ms`. With `unit_beats` 0 the delay plays its `time`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DelaySync {
+    pub count: f32,
+    pub unit_beats: f32,
+    pub max_ms: f32,
+}
+
+impl DelaySync {
+    pub const FREE: Self = Self {
+        count: 1.0,
+        unit_beats: 0.0,
+        max_ms: f32::INFINITY,
+    };
 }
 
 /// A phaser in physical units: `stages` first-order allpasses whose corner

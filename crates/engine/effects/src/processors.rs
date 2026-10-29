@@ -242,12 +242,17 @@ fn hz(rate: ir::Rate, tempo: f32) -> f32 {
 }
 
 fn delay(d: ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
-    kontra_dsp::delay::Settings {
-        ms: match d.time {
+    let beat_ms = 60_000.0 / tempo.max(1.0);
+    let ms = if d.sync.unit_beats > 0.0 {
+        (d.sync.count * d.sync.unit_beats * beat_ms).min(d.sync.max_ms)
+    } else {
+        match d.time {
             ir::DelayTime::Ms(ms) => ms,
-            ir::DelayTime::Beats(beats) => beats * 60_000.0 / tempo.max(1.0),
+            ir::DelayTime::Beats(beats) => beats * beat_ms,
         }
-        .clamp(0.0, MAX_MS),
+    };
+    kontra_dsp::delay::Settings {
+        ms: ms.clamp(0.0, MAX_MS),
         depth_ms: d.depth_ms,
         second_head: d.second_head,
         input: d.input,

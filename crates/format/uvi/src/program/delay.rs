@@ -71,6 +71,7 @@ pub(super) fn dual_delay(node: Node, notes: &mut Notes) -> Result<ir::Effect, St
             steep_low_cut: false,
             high_shelf: None,
             spread_ms: 0.0,
+            sync: ir::DelaySync::FREE,
             rate: ir::Rate::Hz(num(node, "ModRate", 1.0)? as f32),
             phase: 0.0,
         }),

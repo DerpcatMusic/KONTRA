@@ -44,6 +44,7 @@ pub(super) fn flanger(p: Params) -> Result<ir::Effect, String> {
         steep_low_cut: false,
         high_shelf: None,
         spread_ms: 0.0,
+        sync: ir::DelaySync::FREE,
         rate: rate(p, f32::INFINITY)?,
         phase: 0.0,
     };

@@ -1511,13 +1511,13 @@ fn an_lfo_on_a_group_waveshaper_retunes_it_every_32_frames() {
 }
 
 #[test]
-fn a_synced_delay_echoes_one_beat_later_at_the_host_tempo() {
+fn a_synced_delay_counts_units_at_the_host_tempo_up_to_its_cap() {
     use kontra_engine::ir;
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
     plan.inserts = vec![Some(ir::Effect {
         kind: ir::EffectKind::Delay(ir::Delay {
-            time: ir::DelayTime::Beats(1.0),
+            time: ir::DelayTime::Ms(500.0),
             depth_ms: 0.0,
             second_head: false,
             input: ir::IDENTITY,
@@ -1528,6 +1528,12 @@ fn a_synced_delay_echoes_one_beat_later_at_the_host_tempo() {
             steep_low_cut: false,
             high_shelf: None,
             spread_ms: 0.0,
+            // Three eighths at 240 BPM (375 ms), held to 250 ms.
+            sync: ir::DelaySync {
+                count: 3.0,
+                unit_beats: 0.5,
+                max_ms: 250.0,
+            },
             rate: ir::Rate::Hz(0.0),
             phase: 0.0,
         }),
@@ -1546,7 +1552,7 @@ fn a_synced_delay_echoes_one_beat_later_at_the_host_tempo() {
         out.extend_from_slice(&buf);
     }
     let first = out.iter().position(|f| f[0].abs() > 1e-6).unwrap();
-    // A quarter note at 240 BPM: 250 ms, within the read's interpolation.
+    // The cap, within the read's interpolation.
     assert!(
         first.abs_diff(RATE as usize / 4) <= 1,
         "first echo at {first}"
