@@ -11,7 +11,7 @@ pub fn event(e: &TraceEvent, plan: &Plan, samples: &[Option<String>], rate: u32)
             id,
             resume,
         } => json!({"type":"callback", "frame":frame,
-            "script_slot":slot, "callback_type":kind, "callback_id":id, "resume":resume}),
+            "script_slot":slot, "callback_type":kind, "callback_name":callback_name(*kind), "callback_id":id, "resume":resume}),
         TraceEvent::Action {
             frame,
             slot,
@@ -59,5 +59,20 @@ pub fn event(e: &TraceEvent, plan: &Plan, samples: &[Option<String>], rate: u32)
                 "pitch_midi_relative_to_root":pitch, "gain":gain,
                 "time_precision": if matches!(event, kontra_engine::VoiceEvent::End) {"render_span_end"} else {"sample"}})
         }
+    }
+}
+
+fn callback_name(kind: u8) -> Option<&'static str> {
+    match kind {
+        1 => Some("note"),
+        2 => Some("release"),
+        3 => Some("controller"),
+        5 => Some("init"),
+        6 => Some("ui_control"),
+        8 => Some("pgs"),
+        12 => Some("listener"),
+        13 => Some("async_complete"),
+        15 => Some("ui_controls"),
+        _ => None,
     }
 }

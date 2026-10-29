@@ -48,3 +48,15 @@ stream counters are included for diagnosis. The wait is enabled only by the
 inspector's trace build and is never enabled for live playback.
 The `audio_fnv1a64` field fingerprints the exact little-endian stereo f32
 output bits, allowing repeat runs to be checked for differences.
+
+Playback JSON `stage_events` is ordered: callback starts/resumes carry script
+slot and callback ID, script actions carry that ID and a unique call ID, and
+additional integer/text arguments follow with the same call ID. Voice starts,
+steals, cuts and ends include slot, zone, sample, pitch step and gain. Voice
+ends are timed to the end of the render span, not the precise sample. The
+bounded engine event buffer is drained between blocks; an overflow is counted
+and makes the report incomplete. `all_routes` gives current source and routed
+source for each active voice, while `bus_routes` gives the last applied bus
+amount. Non-EQ applied per-voice target values are not yet available; `null`
+sources are not zero. Octave-band RMS uses Hann-windowed stereo FFTs and is
+reported for the full output and successive one-second intervals.
