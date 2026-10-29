@@ -7,10 +7,11 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+use kontra_host::browser::Browser;
 use kontra_host::rack::{Event, HostNote, HostPattern, Mix, Rack};
 use kontra_host::ui::Library;
 use kontra_protocol::Stats;
-use kontra_ui::app::{Action, App, Face, Part};
+use kontra_ui::app::{self, Action, App, Face, Part};
 use kontra_ui::{Pictures, layout};
 use kontra_ui_model::Interface;
 use moose::mui::MuiEditor;
@@ -41,6 +42,10 @@ struct PartView {
 #[derive(Debug, Default)]
 pub struct Snapshot {
     parts: Vec<PartView>,
+    /// The browser as lane D's app lists it, and which change of it.
+    libraries: (u64, Arc<Vec<app::Library>>),
+    recent: Vec<(usize, usize)>,
+    folders: Vec<String>,
     level: f32,
     stats: Stats,
     report: Vec<String>,
@@ -48,7 +53,14 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// Copies what the editor shows from `rack`, with this tick's `report`.
-    pub fn refresh(&mut self, rack: &Rack, report: Vec<String>) {
+    pub fn refresh(&mut self, rack: &Rack, browser: &Browser, report: Vec<String>) {
+        if self.libraries.0 != browser.generation {
+            self.libraries = (browser.generation, Arc::new(libraries(browser)));
+            self.recent = browser.recent();
+            self.folders = (browser.prefs.roots.iter())
+                .map(|r| r.path.display().to_string())
+                .collect();
+        }
         let meters = rack.meters();
         let level = |slot: usize| meters.parts.get(slot).map_or(0.0, |[l, r]| l.max(*r));
         let old = std::mem::take(&mut self.parts);
@@ -87,7 +99,14 @@ impl Snapshot {
 
     /// Fills `app` for a frame, keeping each part's own view state; `shown`
     /// is which load of each part the editor's faces are of.
-    fn fill(&self, app: &mut App, shown: &mut Vec<u64>) {
+    fn fill(&self, app: &mut App, shown: &mut Shown) {
+        if shown.browser != self.libraries.0 {
+            app.libraries = self.libraries.1.as_ref().clone();
+            app.recent.clone_from(&self.recent);
+            app.folders.clone_from(&self.folders);
+            shown.browser = self.libraries.0;
+        }
+        let shown = &mut shown.parts;
         let mut old = std::mem::take(&mut app.parts);
         let parts = self.parts.iter().enumerate().map(|(n, p)| {
             let old = old.get_mut(n);
@@ -120,6 +139,56 @@ impl Snapshot {
         app.stats.cpu = f64::from(self.stats.load) * 100.0;
         app.stats.voices = self.stats.voices;
         app.report.clone_from(&self.report);
+    }
+}
+
+/// Which change of the rack's parts and of the browser the editor shows.
+#[derive(Default)]
+struct Shown {
+    parts: Vec<u64>,
+    browser: u64,
+}
+
+/// The catalog as the browser lists it: presets by path inside their
+/// library, without the extension.
+fn libraries(browser: &Browser) -> Vec<app::Library> {
+    (browser.catalog.libraries.iter())
+        .map(|l| app::Library {
+            name: l.name.clone(),
+            format: match l.format {
+                kontra_library::Format::Kontakt => app::Format::Kontakt,
+                kontra_library::Format::Uvi => app::Format::Uvi,
+            },
+            presets: (l.presets.iter())
+                .map(|p| {
+                    let p = p.strip_prefix(&l.dir).unwrap_or(p).with_extension("");
+                    p.to_string_lossy().into_owned()
+                })
+                .collect(),
+            starred: browser.prefs.starred(&l.dir),
+        })
+        .collect()
+}
+
+/// Carries out a browser action: a preset loads into the first free part.
+pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &mut Vec<String>) {
+    match action {
+        Action::Load { library, preset } => {
+            let Some(path) = browser.preset(library, preset) else {
+                return;
+            };
+            let loaded = match rack.free() {
+                Some(part) => rack.load(part, &path),
+                None => Err("every part is in use".into()),
+            };
+            match loaded {
+                Ok(()) => browser.loaded(&path),
+                Err(e) => report.push(format!("{}: {e}", path.display())),
+            }
+        }
+        Action::Star(library, on) => browser.star(library, on),
+        Action::Refresh => browser.rescan(),
+        _ => {}
     }
 }
 
@@ -195,7 +264,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let watched = Arc::clone(&params);
     let dropping = Arc::clone(&params);
     let mut app = App::default();
-    let mut shown = Vec::new();
+    let mut shown = Shown::default();
     MuiEditor::new(params, kontra_ui::ui(), (1180, 780), move |ui, bridge| {
         let slots: Vec<usize> = {
             let view = lock(&p.shared.view);
@@ -215,6 +284,13 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 }
                 continue;
             }
+            if matches!(
+                action,
+                Action::Load { .. } | Action::Star(..) | Action::Refresh
+            ) {
+                p.shared.request(Request::Browse(action));
+                continue;
+            }
             let slot = part_of(&action).and_then(|n| slots.get(n).copied());
             p.shared.request(Request::Ui(Edit { slot, action }));
         }
@@ -223,7 +299,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     .resizable((900, 600))
     .on_files(move |_, _, paths, dropped| {
         let instruments: Vec<_> = paths.iter().filter(|p| is_instrument(p)).cloned().collect();
+        let folders: Vec<_> = paths.iter().filter(|p| p.is_dir()).cloned().collect();
         if dropped {
+            for path in &folders {
+                dropping.shared.request(Request::AddRoot(path.clone()));
+            }
             for path in &instruments {
                 dropping.shared.request(Request::Load {
                     part: None,
@@ -231,7 +311,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 });
             }
         }
-        !instruments.is_empty()
+        !instruments.is_empty() || !folders.is_empty()
     })
     .changed(move || watched.shared.dirty.swap(false, Ordering::AcqRel))
     .into_editor()
