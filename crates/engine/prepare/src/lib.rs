@@ -101,6 +101,7 @@ pub fn prepare(
     plan.sends.clone_from(&instrument.sends);
     plan.main.clone_from(&instrument.main);
     plan.output = instrument.output;
+    plan.route_pitch = instrument.route_pitch;
     plan.slot_laws.clone_from(&instrument.slot_laws);
     plan.slot_shapes.clone_from(&instrument.slot_shapes);
     plan.impulses = instrument

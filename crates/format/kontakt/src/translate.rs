@@ -44,6 +44,11 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         },
         ..ir::Instrument::DEFAULT
     };
+    // Its pitch modulation's 2^x is the quadratic at 0x140832440: the
+    // mantissa `f − 0.33971·(f − f²)` (0x144f39240) on the exponent
+    // `n + 127`. Measured on a ±2 st pitch-bend route: +1 → 1.954 st,
+    // −1 → −1.958, ±¼ → 0.480/−0.485, within 0.02 cents of this.
+    out.route_pitch = ir::Exp2::Quadratic { c: 0.33971 };
     // The instrument's tune applies to every group.
     let base = Base {
         tune: semitones(params.tune) + f64::from(params.transpose),
