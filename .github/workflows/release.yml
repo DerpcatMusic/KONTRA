@@ -14,7 +14,7 @@ on:
 
 concurrency:
   group: v3-release
-  cancel-in-progress: true  # a newer main supersedes a build still running
+  cancel-in-progress: false  # the running release finishes; only the newest waiting one runs next
 
 permissions:
   contents: read
