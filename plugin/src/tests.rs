@@ -235,3 +235,102 @@ fn real_instruments_load_play_save_and_reload() {
     }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
+
+/// One block with `events`; output pairs 0 and 1, each summed to mono.
+fn pairs(params: &KontraParams, dsp: &mut Dsp, events: &[moose::prelude::Event]) -> [Vec<f32>; 2] {
+    let mut list = EventList::with_capacity(16);
+    for &e in events {
+        list.push(e);
+    }
+    let mut channels = vec![vec![0.0f32; BLOCK]; 2 * crate::OUTPUTS];
+    {
+        let mut outs: Vec<&mut [f32]> = channels.iter_mut().map(Vec::as_mut_slice).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outs, BLOCK);
+        let transport = TransportInfo::default();
+        let mut out_events = EventList::with_capacity(16);
+        let mut cx = ProcessContext::new(&transport, RATE, BLOCK, &mut out_events)
+            .with_process_mode(ProcessMode::Offline);
+        <Kontra as PluginLogic>::process(dsp, params, &mut buffer, &list, &mut cx);
+    }
+    let mono = |n: usize| {
+        channels[2 * n]
+            .iter()
+            .zip(&channels[2 * n + 1])
+            .map(|(l, r)| l + r)
+            .collect()
+    };
+    [mono(0), mono(1)]
+}
+
+#[test]
+fn auto_align_reports_the_latest_part_and_holds_the_other() {
+    let (Some(a), Some(b)) = (
+        library("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki"),
+        library("Una Corda Library/Instruments/Una Corda Felt.nki"),
+    ) else {
+        return;
+    };
+    let part = |part: usize, path: PathBuf| SavedPart {
+        part,
+        path,
+        channel: 0,
+        output: u8::try_from(part).unwrap(),
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+    };
+    let saved = Saved::new(vec![part(0, a), part(1, b)]);
+    let (params, mut dsp) = activate(&saved.write());
+    let onsets = |params: &KontraParams, dsp: &mut Dsp| {
+        for _ in 0..(RATE as usize / 4 / BLOCK) {
+            pairs(params, dsp, &[]);
+        }
+        let mut out = [Vec::new(), Vec::new()];
+        let mut events = vec![note(true, 60)];
+        for _ in 0..(RATE as usize / BLOCK) {
+            let [x, y] = pairs(params, dsp, &events);
+            events.clear();
+            out[0].extend(x);
+            out[1].extend(y);
+        }
+        pairs(params, dsp, &[note(false, 60)]);
+        // Long enough for a string release to die away.
+        for _ in 0..(8 * RATE as usize / BLOCK) {
+            pairs(params, dsp, &[]);
+        }
+        out.map(|x| kontra_align::onset_ms(&x, RATE, kontra_align::ONSET_DB).unwrap_or(f32::NAN))
+    };
+    let [a0, b0] = onsets(&params, &mut dsp);
+    assert_eq!(
+        <Kontra as PluginLogic>::latency(&dsp),
+        0,
+        "latency while off"
+    );
+    params.align.set_value(true);
+    let t = std::time::Instant::now();
+    Tick.run(&params);
+    let measured = t.elapsed();
+    pairs(&params, &mut dsp, &[]);
+    let latency = <Kontra as PluginLogic>::latency(&dsp);
+    let ms = latency as f32 * 1000.0 / RATE as f32;
+    let [a1, b1] = onsets(&params, &mut dsp);
+    println!(
+        "off: onsets {a0:.1} / {b0:.1} ms; on: latency {ms:.1} ms, onsets {a1:.1} / {b1:.1} ms; measured in {measured:.1?}"
+    );
+    assert!(latency > 0, "no latency reported");
+    assert!((a1 - b1).abs() < 10.0, "parts not aligned: {a1} vs {b1}");
+    assert!(
+        (a1.max(b1) - a0.max(b0)).abs() < 10.0,
+        "the latest part was held"
+    );
+    params.align.set_value(false);
+    Tick.run(&params);
+    pairs(&params, &mut dsp, &[]);
+    assert_eq!(
+        <Kontra as PluginLogic>::latency(&dsp),
+        0,
+        "latency after off"
+    );
+}
