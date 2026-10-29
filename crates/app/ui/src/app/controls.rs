@@ -75,6 +75,7 @@ pub(super) fn view(
             edits.push(Edit {
                 widget: n,
                 value: v,
+                cell: None,
             });
         }
         cards.push(

@@ -354,7 +354,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         };
         println!("widget {name} (script {slot}, number {n}) := {value}");
-        engine.set_widget(slot, n, value);
+        engine.set_widget(slot, n, value, None);
         for _ in 0..RATE as usize / 4 / 512 {
             engine.process(&mut silent, &[]);
             install_requests(&mut engine, &plan);

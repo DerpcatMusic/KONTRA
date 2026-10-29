@@ -60,10 +60,18 @@ pub(super) fn view(
                 (edits, el)
             };
             input::apply(&mut face.tree, &edits);
-            out.extend(edits.iter().map(|e| Action::Control {
-                part: n,
-                widget: e.widget.0,
-                value: e.value,
+            out.extend(edits.iter().map(|e| match e.cell {
+                Some(cell) => Action::TableCell {
+                    part: n,
+                    widget: e.widget.0,
+                    cell,
+                    value: e.value,
+                },
+                None => Action::Control {
+                    part: n,
+                    widget: e.widget.0,
+                    value: e.value,
+                },
             }));
             el
         }

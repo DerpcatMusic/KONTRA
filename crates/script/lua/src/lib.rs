@@ -463,13 +463,14 @@ impl Machine for LuaMachine {
         self.take(thread, context)
     }
 
-    fn stage_widget(&mut self, n: u32, value: f64) {
+    fn stage_widget(&mut self, n: u32, value: f64, cell: Option<u32>) {
         let _arena = alloc::Scope::audio();
         if let Some(lua) = &self.lua {
             let g = lua.globals();
             // The prelude's widget entry reads these when it starts.
             let _ = g.raw_set("__widget", i64::from(n) + 1);
             let _ = g.raw_set("__widget_value", value);
+            let _ = g.raw_set("__widget_cell", cell.map(|c| i64::from(c) + 1));
         }
     }
 
