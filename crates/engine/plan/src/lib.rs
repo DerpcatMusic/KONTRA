@@ -2,7 +2,13 @@
 //! format translator (02-ENGINE.md §6). Sampler behaviour is data here
 //! (13-FRESH-CORE.md §2.1): scripts are optional, not where round robin lives.
 
-use crate::ScriptPlan;
+mod engine_pars;
+mod script;
+mod slots;
+
+pub use engine_pars::{EnginePar, EnginePars};
+pub use script::{Callbacks, Controls, LookPars, ScriptPlan};
+
 use std::ops::RangeInclusive;
 
 use kontra_ir as ir;
@@ -141,14 +147,14 @@ pub struct Group {
 }
 
 /// The bus `zone`'s group plays into now.
-pub(crate) fn bus(groups: &[Group], zone: &Zone) -> usize {
+pub fn bus(groups: &[Group], zone: &Zone) -> usize {
     groups.get(zone.group as usize).map_or(0, |g| g.bus)
 }
 
 impl Group {
     /// Whether `source` moves with controller `cc`, through its shaper or
     /// any input of its blend.
-    pub(crate) fn reads(&self, source: ir::Source, cc: u8) -> bool {
+    pub fn reads(&self, source: ir::Source, cc: u8) -> bool {
         let blend = |s: ir::Source| match s {
             ir::Source::Blend(n) => self.blends.get(usize::from(n)).is_some_and(|b| {
                 b.terms.iter().any(|t| {
@@ -426,7 +432,7 @@ impl Plan {
 }
 
 /// What drives a route; the amplitude envelope has no source.
-pub(crate) fn source(kind: &ir::ModKind) -> Option<ir::Source> {
+pub fn source(kind: &ir::ModKind) -> Option<ir::Source> {
     use ir::ModKind as K;
     match *kind {
         K::Volume { source, .. }
@@ -453,6 +459,6 @@ pub(crate) fn source(kind: &ir::ModKind) -> Option<ir::Source> {
 /// Whether scripts address `m` by modulator `slot` and `target`. A negative
 /// target is the first route (measured, probes/mod_par_laws.lua: generic
 /// -1 moves route 0 alone).
-pub(crate) fn addressed(m: &ir::Mod, slot: i32, target: i32) -> bool {
+pub fn addressed(m: &ir::Mod, slot: i32, target: i32) -> bool {
     i32::from(m.slot) == slot && i32::from(m.target) == target.max(0)
 }
