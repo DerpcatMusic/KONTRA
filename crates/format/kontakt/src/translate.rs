@@ -100,7 +100,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         criteria.push(t.criteria);
     }
     let racks = crate::effects::program(&program, &mut impulses, &mut notes);
-    let buses = racks.buses;
+    let mut buses = racks.buses;
     (out.inserts, out.sends, out.main) = (racks.inserts, racks.sends, racks.main);
     slots.laws.extend(racks.laws.laws);
     slots.shape_slots.extend(racks.laws.shape_slots);
@@ -112,6 +112,18 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
     }
     let loads = |s: &ir::Script| s.source.contains("$ENGINE_PAR_EFFECT_");
     if out.scripts.iter().any(loads) {
+        // Every Kontakt rack has 8 slots, and a script may load into an
+        // empty one the file does not save.
+        let racks = [&mut out.inserts, &mut out.sends, &mut out.main].into_iter();
+        let groups = out.groups.iter_mut().map(|g| &mut g.inserts);
+        for rack in racks
+            .chain(groups)
+            .chain(buses.iter_mut().map(|b| &mut b.inserts))
+        {
+            if rack.len() < SLOTS {
+                rack.resize(SLOTS, None);
+            }
+        }
         out.slot_shapes.types = crate::script_knobs::slot_types();
         out.slot_shapes.subtypes = std::mem::take(&mut slots.subtypes);
     }
@@ -229,6 +241,8 @@ pub(crate) fn db(linear: f32) -> f32 {
     20.0 * linear.max(1e-6).log10()
 }
 
+/// Slots in each Kontakt effect rack.
+const SLOTS: usize = 8;
 fn semitones(ratio: f32) -> f64 {
     12.0 * f64::from(ratio.max(1e-6)).log2()
 }

@@ -1164,6 +1164,34 @@ fn a_script_reads_back_its_menus_texts_and_keys() {
     assert_eq!(e.keys()[60].color, 4);
 }
 
+/// A menu's `$CONTROL_PAR_VALUE` is its selected index, read and written:
+/// what Kontakt 8.13 answers for this script (oracle probe, 2026-10-29).
+#[test]
+fn a_menu_value_is_its_selected_index() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let e = engine(
+        &store,
+        zones,
+        "on init
+            declare ui_menu $m
+            declare @s
+            add_menu_item($m, \"a\", 10)
+            add_menu_item($m, \"b\", 20)
+            add_menu_item($m, \"c\", 30)
+            add_menu_item($m, \"d\", 20)
+            @s := $m & \" \" & get_control_par(get_ui_id($m), $CONTROL_PAR_VALUE)
+            set_control_par(get_ui_id($m), $CONTROL_PAR_VALUE, 2)
+            @s := @s & \" \" & $m & \" \" & get_control_par(get_ui_id($m), $CONTROL_PAR_VALUE)
+            $m := 20
+            @s := @s & \" \" & get_control_par(get_ui_id($m), $CONTROL_PAR_VALUE)
+            set_control_par(get_ui_id($m), $CONTROL_PAR_VALUE, 7)
+            message(@s & \" \" & $m)
+        end on",
+    );
+    assert_eq!(e.last_message(), "10 0 30 2 1 0");
+}
+
 #[test]
 fn a_script_sets_a_send_level_by_the_volume_law() {
     use kontra_engine::ir;
