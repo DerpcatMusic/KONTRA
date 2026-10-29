@@ -12,9 +12,14 @@
 //!   to left at the feedback;
 //! - out L = 2(1−PAN)·(M + 2·WIDTH·S), out R = 2·PAN·(M − 2·WIDTH·S).
 //!
-//! A synced TIME (units 5 and up) saves beats per unit and a count in TIME
-//! (docs/re/kontakt-bindings, RDL_TIME_UNIT); played as count × beats,
-//! unmeasured, so still reported.
+//!
+//! A synced TIME (KSP units 5 and up) is a count of note values, 1 +
+//! round(11x), at most 2000 ms. Kontakt saves the count in TIME, the beats
+//! per unit after the flags (−1 when free) and the free ms after that.
+//! Oracle at 120 BPM, 2026-10-29: quarter at x = 0, 0.1 → 1, 2 beats; 8th at
+//! 0.5 → 7 eighths; 16th at 0.75 → 9 sixteenths; quarter at 0.5 and 1, and
+//! quarter triplet at 0.5, → 2000 ms. Saves: quarter at 0, 2/11, 1 → counts
+//! 1, 3, 12. Conflux's table writes k/11 for k + 1 units.
 
 use kontra_ir as ir;
 
@@ -25,7 +30,10 @@ use crate::script_knobs::SlotKnob;
 pub(crate) struct Replika {
     /// 0 Modern; Analogue, Tape, Vintage and Diffuse are not run.
     pub mode: i32,
+    /// TIME: ms when free, the count of units when synced.
     pub ms: f32,
+    /// The free ms a synced TIME keeps.
+    pub free_ms: f32,
     pub feedback: f32,
     pub low_cut: f32,
     pub high_cut: f32,
@@ -46,6 +54,7 @@ pub(crate) struct Replika {
 pub(crate) const INIT: Replika = Replika {
     mode: 0,
     ms: 500.0,
+    free_ms: 0.0,
     feedback: 0.46,
     low_cut: 0.0,
     high_cut: 0.95,
@@ -73,6 +82,7 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<Replika> {
     Some(Replika {
         mode: i32::from_le_bytes(public.get(..4)?.try_into().ok()?),
         ms: f(4)?,
+        free_ms: f(51)?,
         feedback: f(8)?,
         low_cut: f(12)?,
         high_cut: f(16)?,
@@ -91,7 +101,6 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<Replika> {
 pub(crate) fn lost(r: Replika) -> impl Iterator<Item = &'static str> {
     [
         (r.depth > 0.0, "Replika modulation"),
-        (r.beats.is_some(), "Replika tempo sync"),
         (!r.stereo && !r.pingpong, "Replika mono mode"),
         (r.pingpong && r.flip, "Replika ping-pong flip"),
     ]
@@ -103,6 +112,46 @@ pub(crate) fn lost(r: Replika) -> impl Iterator<Item = &'static str> {
 const HIGH_CUT_HZ: [f32; 11] = [
     203.0, 2201.0, 4115.0, 6212.0, 8169.0, 10103.0, 11958.0, 13822.0, 15567.0, 16849.0, 22000.0,
 ];
+
+/// The longest TIME, free or synced.
+const MAX_MS: f32 = 2000.0;
+
+/// A synced TIME knob's count of units.
+fn count(x: f32) -> f32 {
+    1.0 + (11.0 * x.clamp(0.0, 1.0)).round()
+}
+
+/// Beats per unit by KSP's `$NI_SYNC_UNIT_*` (0..=4 free; 11 and 14 have no
+/// constant): the saved beats Kontakt writes for units 5, 6, 7, 8, 10, 16
+/// and 20 (docs/re/kontakt-bindings), the rest by their note names.
+const UNIT_BEATS: [(u8, f32); 15] = [
+    (5, 4.0),
+    (6, 8.0 / 3.0),
+    (7, 2.0),
+    (8, 4.0 / 3.0),
+    (9, 1.0),
+    (10, 2.0 / 3.0),
+    (12, 0.5),
+    (13, 1.0 / 3.0),
+    (15, 0.25),
+    (16, 1.0 / 6.0),
+    (17, 0.125),
+    (18, 1.0 / 12.0),
+    (19, 0.0625),
+    (20, 1.0 / 24.0),
+    (21, 1.0 / 64.0),
+];
+
+/// A law that holds each of `steps` from its `x` to the next one's.
+fn steps(steps: impl Iterator<Item = (f32, f32)>) -> ir::Law {
+    let steps: Vec<_> = steps.collect();
+    let ends = steps.windows(2).flat_map(|w| match w {
+        [(a, v), (b, _)] => [(*a, *v, 0.0), (b.next_down(), *v, 0.0)],
+        _ => [(0.0, 0.0, 0.0); 2],
+    });
+    let last = steps.last().map(|&(a, v)| [(a, v, 0.0), (1.0, v, 0.0)]);
+    ir::Law::Breakpoints(ends.chain(last.into_iter().flatten()).collect())
+}
 
 /// The Modern mode's delay; `None` for another mode.
 pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
@@ -127,10 +176,10 @@ pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
         .zip(0u8..)
         .map(|(&hz, n)| (f32::from(n) / 10.0, hz, 0.0));
     Some(ir::Delay {
-        time: match r.beats {
-            Some(beats) => ir::DelayTime::Beats(r.ms.max(0.0) * beats),
-            None => ir::DelayTime::Ms(r.ms.max(0.0)),
-        },
+        time: ir::DelayTime::Ms(match r.beats {
+            Some(_) => r.free_ms.max(0.0),
+            None => r.ms.max(0.0),
+        }),
         depth_ms: 0.0,
         second_head: false,
         input,
@@ -154,6 +203,14 @@ pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
             gain_db: if x < 1.0 { -10.0 } else { 0.0 },
         }),
         spread_ms,
+        sync: ir::DelaySync {
+            count: match r.beats {
+                Some(_) => r.ms.max(1.0),
+                None => count(r.ms / MAX_MS),
+            },
+            unit_beats: r.beats.unwrap_or(0.0),
+            max_ms: MAX_MS,
+        },
         rate: ir::Rate::Hz(0.0),
         phase: 0.0,
     })
@@ -166,8 +223,7 @@ pub(crate) fn knobs(r: Replika) -> Vec<SlotKnob> {
     use ir::SlotKnob as K;
     let cells: Vec<_> = (0..4).map(E::DelayLoop).collect();
     type Knob<'a> = (K, &'a [E], fn(&mut Replika, f32));
-    let knobs: [Knob; 4] = [
-        (K::DelayTime, &[E::DelayMs], |r, x| r.ms = 2000.0 * x),
+    let knobs: [Knob; 3] = [
         (K::DelayFeedback, &cells, |r, x| r.feedback = x),
         (K::DelayLowCut, &[E::DelayLowCutHz], |r, x| r.low_cut = x),
         (
@@ -176,7 +232,31 @@ pub(crate) fn knobs(r: Replika) -> Vec<SlotKnob> {
             |r, x| r.high_cut = x,
         ),
     ];
-    let mut out = Vec::new();
+    // TIME sets both its free ms and its count; the unit picks which plays.
+    let half = 0.5 / 11.0;
+    let counts = (0..12u8).map(|k| {
+        (
+            (f32::from(k) / 11.0 - half).max(0.0),
+            count(f32::from(k) / 11.0),
+        )
+    });
+    // KSP passes the unit constant raw: unit u is the knob at u·1e-6.
+    let free = (0..5u8).map(|u| ((f32::from(u) - 0.5).max(0.0) * 1e-6, 0.0));
+    let synced = UNIT_BEATS
+        .iter()
+        .map(|&(u, b)| ((f32::from(u) - 0.5) * 1e-6, b));
+    let mut out = vec![
+        (
+            K::DelayTime,
+            E::DelayMs,
+            ir::Law::Linear {
+                lo: 0.0,
+                hi: MAX_MS,
+            },
+        ),
+        (K::DelayTime, E::DelayCount, steps(counts)),
+        (K::DelayUnit, E::DelayUnitBeats, steps(free.chain(synced))),
+    ];
     for (knob, fields, set) in knobs {
         out.extend(crate::script_knobs::sampled(knob, fields, &|x| {
             let mut r = r;
@@ -235,5 +315,39 @@ mod tests {
             ([0.5, 0.5], [1.0, 0.0], 0.0)
         );
         assert_eq!(delay(Replika { mode: 2, ..INIT }), None);
+    }
+
+    #[test]
+    fn a_synced_time_counts_note_values_up_to_two_seconds() {
+        // Saved quarter, TIME at 1: twelve units, free ms kept.
+        let q = Replika {
+            ms: 12.0,
+            free_ms: 500.0,
+            beats: Some(1.0),
+            ..INIT
+        };
+        let d = delay(q).expect("modern");
+        assert_eq!(d.time, ir::DelayTime::Ms(500.0));
+        assert_eq!(
+            (d.sync.count, d.sync.unit_beats, d.sync.max_ms),
+            (12.0, 1.0, 2000.0)
+        );
+        assert_eq!(delay(INIT).map(|d| d.sync.unit_beats), Some(0.0));
+        let law = |field| {
+            knobs(INIT)
+                .into_iter()
+                .find(|&(_, f, _)| f == field)
+                .map(|(_, _, law)| law)
+                .expect("law")
+        };
+        let count = law(ir::EffectParam::DelayCount);
+        let counts = [0.0, 0.1, 2.0 / 11.0, 0.5, 0.75, 1.0].map(|x| count.eval(x));
+        assert_eq!(counts, [1.0, 2.0, 3.0, 7.0, 9.0, 12.0]);
+        let unit = law(ir::EffectParam::DelayUnitBeats);
+        let beats = [0.0, 4.0, 5.0, 9.0, 11.0, 12.0, 15.0, 21.0].map(|u| unit.eval(u * 1e-6));
+        assert_eq!(
+            beats,
+            [0.0, 0.0, 4.0, 1.0, 2.0 / 3.0, 0.5, 0.25, 1.0 / 64.0]
+        );
     }
 }

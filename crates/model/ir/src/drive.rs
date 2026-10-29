@@ -179,6 +179,9 @@ pub enum EffectParam {
     DelayLowCutHz,
     DelayShelfHz,
     DelayShelfDb,
+    /// A [`crate::DelaySync`]'s count and beats per unit.
+    DelayCount,
+    DelayUnitBeats,
     /// The slot's own [`Effect::output`] and [`Effect::dry`] levels, linear
     /// (moved on a bus's rack: [`Self::add_to`]).
     Output,
@@ -242,6 +245,8 @@ impl EffectParam {
             }
             (Self::DelayDampingHz, EffectKind::Delay(d)) => &mut d.damping_hz,
             (Self::DelayLowCutHz, EffectKind::Delay(d)) => &mut d.low_cut_hz,
+            (Self::DelayCount, EffectKind::Delay(d)) => &mut d.sync.count,
+            (Self::DelayUnitBeats, EffectKind::Delay(d)) => &mut d.sync.unit_beats,
             (Self::DelayShelfHz, EffectKind::Delay(d)) => &mut d.high_shelf.as_mut()?.hz,
             (Self::DelayShelfDb, EffectKind::Delay(d)) => &mut d.high_shelf.as_mut()?.gain_db,
             (Self::CascadeHz, EffectKind::Cascade(c)) => &mut c.hz,
@@ -345,6 +350,8 @@ pub enum SlotKnob {
     DelayDamping,
     DelayLowCut,
     DelayHighCut,
+    /// A delay's tempo-sync unit (free, or a note value).
+    DelayUnit,
     /// A [`crate::Cascade`]'s knobs: by stage its shift (stages 1 and 2),
     /// resonance (stages 1 and 2; stage 0 is [`Self::Resonance`]), morph and
     /// wet; its output gain.
