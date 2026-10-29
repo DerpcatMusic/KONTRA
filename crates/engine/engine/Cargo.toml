@@ -16,3 +16,4 @@ kontra-script-ui = { path = "../script-ui" }
 kontra-ir = { path = "../../model/ir" }
 kontra-voice = { path = "../voice" }
 kontra-dsp = { path = "../../dsp/registry" }
+kontra-effects = { path = "../effects" }

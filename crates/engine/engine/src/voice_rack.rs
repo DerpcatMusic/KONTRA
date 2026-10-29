@@ -13,9 +13,11 @@
 
 use std::sync::Arc;
 
-use kontra_dsp::drive::{self, Crush, Overdrive, Reduction, Shaper, Voicing};
+use kontra_dsp::drive::{Crush, Overdrive, Reduction, Shaper, Voicing};
 use kontra_dsp::filter::{Formant, Svf, VowelSet, Vowels};
 use kontra_ir as ir;
+
+pub(crate) use kontra_effects::processors::{curve, shaper};
 
 use crate::filters::{VoiceEq, shape};
 use crate::ledger::Note;
@@ -120,28 +122,6 @@ fn vowels(f: ir::Formant) -> Vowels {
             ir::VowelSet::First => VowelSet::First,
             ir::VowelSet::Second => VowelSet::Second,
         },
-    }
-}
-
-/// The waveshaper for `s` at `rate`, in a group rack or a bus rack.
-pub(crate) fn shaper(s: ir::Shaper, rate: u32) -> Shaper {
-    let tone = drive::Tone {
-        pre_lowpass_hz: s.pre_lowpass_hz,
-        lowpass_hz: s.lowpass_hz,
-        highpass_hz: s.highpass_hz,
-    };
-    Shaper::new(curve(s.curve), tone, rate)
-}
-
-pub(crate) fn curve(c: ir::DriveCurve) -> drive::Curve {
-    match c {
-        ir::DriveCurve::Soft(x) => drive::Curve::Soft(x),
-        ir::DriveCurve::Tube(x) => drive::Curve::Tube(x),
-        ir::DriveCurve::Power(x) => drive::Curve::Power(x),
-        ir::DriveCurve::Sine(x) => drive::Curve::Sine(x),
-        ir::DriveCurve::Fold(x) => drive::Curve::Fold(x),
-        ir::DriveCurve::Tanh(x) => drive::Curve::Tanh(x),
-        ir::DriveCurve::Atan(x) => drive::Curve::Atan(x),
     }
 }
 
