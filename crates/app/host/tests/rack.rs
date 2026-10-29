@@ -151,8 +151,12 @@ fn master_solo_and_panic_reach_the_audio_side() {
     assert!(solo < half * 0.5, "solo b kept a: {half} → {solo}");
     rack.panic();
     let [after, _] = play(&mut audio, &[]);
+    // Meters hold the peak since they were last read: the fade-out, then
+    // silence.
+    assert!(rack.meters().master[0] > 1e-3);
+    audio.process(BLOCK, &[]);
     assert!(after.abs() < 1e-4, "panic left sound: {after}");
-    let m = rack.meters().unwrap();
+    let m = rack.meters();
     assert!(m.master[0] < 1e-3);
 }
 
@@ -185,4 +189,33 @@ fn the_audio_side_moves_to_the_audio_thread() {
     send(&audio);
     send(&rack);
     std::thread::spawn(move || drop(audio)).join().unwrap();
+}
+
+#[test]
+fn a_part_moved_to_another_channel_lets_go_of_the_old_channels_notes() {
+    let (mut rack, mut audio) = rack();
+    let a = engine(rack.store_mut(), 0.5);
+    rack.install(0, a, part("a"));
+    rack.set_mix(
+        0,
+        Mix {
+            channel: 1,
+            ..Mix::DEFAULT
+        },
+    );
+    let [held, _] = play(&mut audio, &[(0, note(0))]);
+    assert!(held > 0.1, "{held}");
+    // Its note-off on channel 1 can no longer reach it once it listens on 2.
+    rack.set_mix(
+        0,
+        Mix {
+            channel: 2,
+            ..Mix::DEFAULT
+        },
+    );
+    let [after, _] = play(&mut audio, &[]);
+    assert!(
+        after.abs() < 1e-4,
+        "the channel-1 note still sounds: {after}"
+    );
 }

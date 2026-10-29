@@ -20,7 +20,8 @@ audio thread talks to the rest of the process through three channels.
 ```rust
 // kontra-protocol: the channels and what the UI reads
 pub struct Ring<T>     // SPSC/MPSC, fixed capacity: send() -> Err(value) when full, never blocks
-pub struct Latest<T>   // latest value only, no queue; a slow reader skips values
+pub struct MeterCells  // peak since the last read, plain atomics (publish never waits on a reader)
+pub struct StatCells   // latest stats, plain atomics
 pub struct Meters { master, parts: [[f32; 2]; MAX_PARTS] }
 pub struct Stats  { load, voices, voices_stolen, notes_refused, missing_frames, dropped }
 
@@ -31,9 +32,9 @@ pub enum Retired { Engine(Box<Engine>), .. }   // audio → control, dropped off
 
 - **Commands** are the only way into the engine. When the ring is full, the
   sender gets its value back and retries next tick. The audio side never blocks.
-- **Publications** are latest-value cells (`kontra_protocol::Latest`, a
-  one-slot lock-free queue the writer overwrites). A slow UI skips frames and never builds up a
-  backlog. That removes the UI effect outbox and the 10 Hz `control_tick`
+- **Publications** are plain atomics (`MeterCells`, `StatCells`): the
+  audio thread never waits on a reader, however the reader is scheduled. A
+  slow UI skips frames and never builds up a backlog. That removes the UI effect outbox and the 10 Hz `control_tick`
   drain.
 - **Retirements** carry anything the audio thread lets go of, so it can be
   freed on the control thread.

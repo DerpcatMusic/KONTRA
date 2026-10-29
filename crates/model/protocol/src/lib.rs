@@ -4,7 +4,10 @@
 //!
 //! The payloads are the host's: a command carries a built engine, which is
 //! an engine type this crate must not see (01-LAYOUT.md §2). What the UI
-//! reads is defined here: [`Meters`] and [`Stats`].
+//! reads is defined here: [`Meters`] and [`Stats`], published through
+//! [`MeterCells`] and [`StatCells`].
+
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crossbeam_queue::ArrayQueue;
 
@@ -42,34 +45,6 @@ impl<T> Ring<T> {
     }
 }
 
-/// The latest value one thread publishes for another to read. A slow reader
-/// skips values and never builds a backlog; the writer never waits. For
-/// plain data: the value a publish replaces is dropped by the writer.
-pub struct Latest<T>(ArrayQueue<T>);
-
-impl<T> Latest<T> {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(ArrayQueue::new(1))
-    }
-
-    /// Replaces whatever is unread.
-    pub fn publish(&self, value: T) {
-        drop(self.0.force_push(value));
-    }
-
-    /// The newest value since the last take, if one was published.
-    pub fn take(&self) -> Option<T> {
-        self.0.pop()
-    }
-}
-
-impl<T> Default for Latest<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Parts a rack holds at most; publications carry one entry each.
 pub const MAX_PARTS: usize = 16;
 
@@ -94,6 +69,80 @@ pub struct Stats {
     pub dropped: u64,
 }
 
+/// The audio thread's [`Meters`] for the UI: each level is the highest
+/// published since the UI last took it. Plain atomics, so publishing never
+/// waits on a reader, however it is scheduled.
+#[derive(Default)]
+pub struct MeterCells {
+    master: [AtomicU32; 2],
+    parts: [[AtomicU32; 2]; MAX_PARTS],
+}
+
+impl MeterCells {
+    /// Raises each level to at least `m`'s. Levels are never negative, and
+    /// a non-negative `f32` orders as its bits do.
+    pub fn publish(&self, m: &Meters) {
+        let pairs =
+            std::iter::once((&self.master, &m.master)).chain(self.parts.iter().zip(&m.parts));
+        for (cells, levels) in pairs {
+            for (cell, level) in cells.iter().zip(levels) {
+                cell.fetch_max(level.max(0.0).to_bits(), Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// The levels since the last take, and starts again from silence.
+    pub fn take(&self) -> Meters {
+        let pair = |c: &[AtomicU32; 2]| {
+            c.each_ref()
+                .map(|c| f32::from_bits(c.swap(0, Ordering::Relaxed)))
+        };
+        Meters {
+            master: pair(&self.master),
+            parts: self.parts.each_ref().map(pair),
+        }
+    }
+}
+
+/// The audio thread's latest [`Stats`] for the UI, as plain atomics. A
+/// reader may see one publication's fields mixed with the next's; each
+/// field is whole.
+#[derive(Default)]
+pub struct StatCells {
+    load: AtomicU32,
+    voices: AtomicU32,
+    voices_stolen: AtomicU64,
+    notes_refused: AtomicU64,
+    missing_frames: AtomicU64,
+    dropped: AtomicU64,
+    fresh: AtomicBool,
+}
+
+impl StatCells {
+    pub fn publish(&self, s: &Stats) {
+        self.load.store(s.load.to_bits(), Ordering::Relaxed);
+        self.voices.store(s.voices, Ordering::Relaxed);
+        self.voices_stolen.store(s.voices_stolen, Ordering::Relaxed);
+        self.notes_refused.store(s.notes_refused, Ordering::Relaxed);
+        self.missing_frames
+            .store(s.missing_frames, Ordering::Relaxed);
+        self.dropped.store(s.dropped, Ordering::Relaxed);
+        self.fresh.store(true, Ordering::Release);
+    }
+
+    /// The stats, if published since the last take.
+    pub fn take(&self) -> Option<Stats> {
+        self.fresh.swap(false, Ordering::Acquire).then(|| Stats {
+            load: f32::from_bits(self.load.load(Ordering::Relaxed)),
+            voices: self.voices.load(Ordering::Relaxed),
+            voices_stolen: self.voices_stolen.load(Ordering::Relaxed),
+            notes_refused: self.notes_refused.load(Ordering::Relaxed),
+            missing_frames: self.missing_frames.load(Ordering::Relaxed),
+            dropped: self.dropped.load(Ordering::Relaxed),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,14 +163,29 @@ mod tests {
     }
 
     #[test]
-    fn a_slow_reader_sees_only_the_latest_value() {
-        let cell = Latest::new();
-        assert_eq!(cell.take(), None::<u32>);
-        for n in 0..10 {
-            cell.publish(n);
+    fn meters_hold_the_peak_until_taken_and_stats_the_latest() {
+        let cells = MeterCells::default();
+        let mut m = Meters {
+            master: [0.5, 0.25],
+            ..Meters::default()
+        };
+        m.parts[3] = [0.1, 0.9];
+        cells.publish(&m);
+        m.master = [0.2, 0.75];
+        cells.publish(&m);
+        let got = cells.take();
+        assert_eq!((got.master, got.parts[3]), ([0.5, 0.75], [0.1, 0.9]));
+        assert_eq!(cells.take(), Meters::default());
+        let stats = StatCells::default();
+        assert_eq!(stats.take(), None);
+        for voices in 1..4 {
+            stats.publish(&Stats {
+                voices,
+                ..Stats::default()
+            });
         }
-        assert_eq!(cell.take(), Some(9));
-        assert_eq!(cell.take(), None);
+        assert_eq!(stats.take().map(|s| s.voices), Some(3));
+        assert_eq!(stats.take(), None);
     }
 
     #[test]

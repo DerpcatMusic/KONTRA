@@ -174,6 +174,16 @@ impl PluginLogic for Kontra {
     /// A new rack at the host's rate. The parts of the one it replaces (a
     /// rate change) load again into it on the next tick.
     fn reset(s: &mut Dsp, p: &KontraParams, c: &AudioConfig) {
+        // A reset at the same rate (CLAP's plain reset, a host restarting
+        // its stream) keeps the loaded parts and only ends their notes.
+        if let Some(audio) = &s.audio
+            && s.rate == c.sample_rate
+            && audio.max_block() >= c.max_block_size
+            && let Some(rack) = lock(&p.shared.rack).as_mut()
+        {
+            rack.panic();
+            return;
+        }
         s.rate = c.sample_rate;
         s.gain = db_to_linear(p.volume.value());
         s.input = Vec::with_capacity(EVENTS);
@@ -217,6 +227,8 @@ impl PluginLogic for Kontra {
             return ProcessStatus::Normal;
         };
         s.input.clear();
+        // VST3 hosts give the tempo only here; CLAP may also send events.
+        audio.set_tempo(cx.transport.tempo as f32);
         for e in events.iter() {
             if let EventBody::Transport(t) = e.body {
                 audio.set_tempo(t.tempo as f32);
