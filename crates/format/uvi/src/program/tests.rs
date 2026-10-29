@@ -63,7 +63,8 @@ fn keygroups_become_groups_bundles_place_members_and_silent_layers_are_reported(
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     assert_eq!(out.name, "Synthetic");
-    assert_eq!(out.voices, 4);
+    // 4 UVI voices, each a keygroup's two players.
+    assert_eq!(out.voices, 8);
     // One group per enabled keygroup; the silent layer's keygroup makes none.
     assert_eq!(out.groups.len(), 2);
     let first = &out.groups[0];

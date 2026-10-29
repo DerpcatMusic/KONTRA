@@ -65,7 +65,7 @@ pub(crate) fn unfinished<'a, L: Library>(
                 .or_else(|| program.attribute("Name"))
                 .unwrap_or_default()
                 .into(),
-            voices: num(program, "Polyphony", 64.0)?.clamp(1.0, 1024.0) as u16,
+            voices: (num(program, "Polyphony", 64.0)? * widest(program)).clamp(1.0, 1024.0) as u16,
             output: ir::Output {
                 controllers: Some(routing::PART_CONTROLLERS),
                 balance: routing::PART_BALANCE,
@@ -775,6 +775,17 @@ fn flag(node: Node, name: &str) -> bool {
     node.attribute(name)
         .and_then(|v| v.trim().parse::<f64>().ok())
         .is_some_and(|v| v != 0.0)
+}
+
+/// The most oscillators a keygroup has. A UVI voice is a keygroup's, all of
+/// them (VWinds' Alto Flute 2: 8 voices, a note's sustain 7 players beside
+/// its chiff, air and key click); here each is a zone's voice.
+fn widest(program: Node) -> f64 {
+    let players = |o: Node| o.children().filter(Node::is_element).count();
+    let oscillators = program
+        .descendants()
+        .filter(|n| n.has_tag_name("Oscillators"));
+    oscillators.map(players).max().unwrap_or(1).max(1) as f64
 }
 
 /// A MIDI note or velocity attribute, clamped to 0..=127.
