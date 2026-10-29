@@ -33,6 +33,7 @@ fn zone(store: &mut Store, level: f32, group: u32) -> Zone {
         .unwrap();
     let region = Region {
         mix: None,
+        table: None,
         sample,
         start: 0,
         end: frames,

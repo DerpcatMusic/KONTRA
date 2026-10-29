@@ -12,6 +12,7 @@ mod effects;
 mod mods;
 mod output;
 mod reverb;
+mod wavetable;
 pub use bus::{Bus, BusSend};
 pub use drive::{
     Clipper, Crush, Curve as DriveCurve, EffectParam, KnobTarget, Overdrive, RackAt, Shaper,
@@ -23,6 +24,7 @@ pub use effects::{
 };
 pub use mods::{Blend, Curve, Exp2, Factor, ModKind, Term, Transfer};
 pub use output::{Balance, Output, OutputControllers};
+pub use wavetable::{Side, Warp, WarpShape, Wavetable};
 pub use reverb::{
     CombNetwork, HadamardNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar,
 };
@@ -281,6 +283,8 @@ pub struct Group {
     pub purged: bool,
     /// How much of each zone's sample stays in memory; `None` keeps it whole.
     pub stream: Option<Stream>,
+    /// Its zones are wavetables.
+    pub wavetable: Option<Wavetable>,
     /// Index into [`Instrument::voice_groups`].
     pub voice_group: Option<usize>,
     /// Effects on this group's voices, by slot.
@@ -326,6 +330,7 @@ impl Group {
         bus: 0,
         purged: false,
         stream: None,
+        wavetable: None,
         voice_group: None,
         inserts: Vec::new(),
         envelopes: Vec::new(),

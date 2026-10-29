@@ -28,6 +28,7 @@ fn ramp_region(store: &mut Store, frames: u64, pinned: u64) -> std::io::Result<R
     )?;
     Ok(Region {
         mix: None,
+        table: None,
         sample,
         start: 0,
         end: frames,

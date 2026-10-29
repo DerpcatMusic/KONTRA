@@ -56,6 +56,7 @@ fn render_at(
         .unwrap();
     let region = Region {
         mix: None,
+        table: None,
         sample,
         start: 0,
         end: frames as u64,
