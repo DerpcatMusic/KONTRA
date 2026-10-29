@@ -119,7 +119,8 @@ pub(super) fn gain_scale<'a, 'i>(
     for c in connections {
         if let Some(term) = matrix::term(program, c, None) {
             blend.terms.push(term);
-            carried.push(c);
+            // The term carries its ratio's connections too.
+            carried.extend(std::iter::once(c).chain(matrix::children(c)));
         }
     }
     if blend.terms.is_empty() || bands.gains.is_empty() {

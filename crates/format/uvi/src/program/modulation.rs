@@ -111,7 +111,12 @@ impl<L: Library> Translator<'_, '_, L> {
             let Some(id) = source.attribute("EventId").and_then(|i| i.parse().ok()) else {
                 continue;
             };
-            let ratio = num(connection, "Ratio", 1.0).unwrap_or(1.0) as f32;
+            // A macro held on its ratio scales it (VWinds' release pitch drift).
+            let held = matrix::held_ratio(self.program, connection);
+            let on = held.iter().flat_map(|_| matrix::children(connection));
+            self.carried.extend(on.map(|c| c.id()).collect::<Vec<_>>());
+            let raw = || num(connection, "Ratio", 1.0).unwrap_or(1.0) as f32;
+            let ratio = held.unwrap_or_else(raw);
             let pitch = connection.attribute("Destination") == Some("Pitch");
             let kind = |source| {
                 if pitch {
