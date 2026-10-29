@@ -1,9 +1,11 @@
 //! Sample files as the store reads them: PCM straight from disk, NCW decoded
 //! per block, FLAC decoded per read. Where the bytes are is the format's job ([`ir::Sample`]).
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kontra_ir as ir;
@@ -25,6 +27,51 @@ use crate::{Encoding, SampleFmt, Source};
 /// When the file cannot be opened, or its header names a layout this cannot read.
 pub fn open(sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
     opened(sample).map(|o| (o.source, o.fmt))
+}
+
+/// The files an instrument's samples live in, each opened once: a monolith
+/// or bank holds thousands of samples, and each opening its own handle
+/// opened the file thousands of times per load and kept as many open.
+pub struct Files(HashMap<PathBuf, Arc<File>>);
+
+impl Files {
+    /// Opens each of `paths` once; one that fails is opened again, and its
+    /// error reported, by the sample that asks for it.
+    pub fn new<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Self {
+        let mut files = HashMap::new();
+        for path in paths {
+            if !files.contains_key(path)
+                && let Ok(file) = random_access(path)
+            {
+                files.insert(path.to_path_buf(), Arc::new(file));
+            }
+        }
+        Self(files)
+    }
+
+    /// [`open`], reading through the file's shared handle. Safe from
+    /// several loader threads at once.
+    ///
+    /// # Errors
+    /// As [`open`].
+    pub fn open(&self, sample: &ir::Sample) -> io::Result<(Arc<dyn Source>, SampleFmt)> {
+        let file = match self.0.get(&sample.file) {
+            Some(file) => Arc::clone(file),
+            None => Arc::new(random_access(&sample.file)?),
+        };
+        opened_in(sample, file).map(|o| (o.source, o.fmt))
+    }
+}
+
+/// Opens `path` for a preload's short, scattered reads.
+fn random_access(path: &Path) -> io::Result<File> {
+    let file = File::open(path)?;
+    // Preloads read short, scattered ranges: no read-ahead until the
+    // preload is in ([`Region::loaded`]). With it the kernel read 7.3 GB
+    // from disk to pin 3.0 GB of David And Goliath's heads; without, 3.1 GB.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let _ = rustix::fs::fadvise(&file, 0, None, rustix::fs::Advice::Random);
+    Ok(file)
 }
 
 /// The whole of `sample` as stereo frames, and its rate; for short files
@@ -60,18 +107,16 @@ struct Opened {
 }
 
 fn opened(sample: &ir::Sample) -> io::Result<Opened> {
-    let file = File::open(&sample.file)?;
-    // Preloads read short, scattered ranges: no read-ahead until the
-    // preload is in ([`Region::loaded`]). With it the kernel read 7.3 GB
-    // from disk to pin 3.0 GB of David And Goliath's heads; without, 3.1 GB.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    let _ = rustix::fs::fadvise(&file, 0, None, rustix::fs::Advice::Random);
+    opened_in(sample, Arc::new(random_access(&sample.file)?))
+}
+
+fn opened_in(sample: &ir::Sample, file: Arc<File>) -> io::Result<Opened> {
     let len = match sample.len {
         Some(len) => len,
         None => file.metadata()?.len().saturating_sub(sample.offset),
     };
     let region = Region {
-        file: Arc::new(file),
+        file,
         base: sample.offset,
         len,
         keystream: sample.keystream.clone(),

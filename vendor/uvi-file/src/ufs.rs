@@ -174,6 +174,28 @@ fn same_file(before: &Metadata, after: &Metadata) -> bool {
     before.len() == after.len() && before.modified().ok() == after.modified().ok()
 }
 
+/// A positioned read that leaves no cursor behind, so loader threads share
+/// one handle.
+fn read_pinned(file: &File, offset: u64, bytes: &mut [u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.read_exact_at(bytes, offset)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        let mut done = 0;
+        while done < bytes.len() {
+            match file.seek_read(&mut bytes[done..], offset + done as u64)? {
+                0 => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+                n => done += n,
+            }
+        }
+        Ok(())
+    }
+}
+
 fn read_at(file: &mut File, offset: u64, size: usize) -> Result<Vec<u8>> {
     let mut bytes = vec![0; size];
     read_exact_positioned(file, offset, &mut bytes)?;
@@ -379,6 +401,19 @@ impl Ufs {
         self.path == other.path
             && same_file(&self.snapshot, &other.snapshot)
             && self.header_bytes == other.header_bytes
+    }
+
+    /// Fills `bytes` from `offset` through the pinned handle, once the bank
+    /// on disk is checked to be the one opened. A load reads thousands of
+    /// members and sample headers: one stat each, not an open of the bank
+    /// and a re-read of its header. Positioned, so threads share the handle.
+    pub fn read_exact_at(&self, offset: u64, bytes: &mut [u8]) -> Result<()> {
+        ensure!(
+            same_file(&self.snapshot, &std::fs::metadata(&self.path)?),
+            "UFS bank changed since header snapshot; reload bank"
+        );
+        read_pinned(&self._snapshot_file, offset, bytes)?;
+        self.check_snapshot(&self._snapshot_file)
     }
 
     pub fn check_snapshot(&self, file: &File) -> Result<()> {
@@ -902,10 +937,9 @@ impl Ufs {
             ),
             Protection::Unknown(mode) => bail!("Unsupported UFS member encryption mode {mode}"),
         };
-        let mut file = self.open_snapshot()?;
         let size = usize::try_from(member.size).context("UFS member does not fit address space")?;
-        let mut bytes = read_at(&mut file, member.offset, size)?;
-        self.check_snapshot(&file)?;
+        let mut bytes = vec![0; size];
+        self.read_exact_at(member.offset, &mut bytes)?;
         if let Some(key) = key {
             crypto::transform_blocks(&mut bytes, key, member.offset);
         }

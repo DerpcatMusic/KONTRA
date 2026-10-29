@@ -14,7 +14,7 @@ mod sniff;
 mod source;
 mod store;
 
-pub use file::{decode, open};
+pub use file::{Files, decode, open};
 pub use fmt::{Encoding, MAX_CHANNELS, Mix, SampleFmt};
 pub use probe::fast_storage;
 pub use sample::{PAGE_FRAMES, Read, Sample, SampleId};

@@ -39,16 +39,18 @@ pub(crate) struct Impulses<'a> {
 }
 
 impl<'a> Impulses<'a> {
-    /// `files`: the instrument's other-files table ([`file_tables`]).
+    /// `files`: the instrument's other-files table ([`file_tables`]);
+    /// `resources`: the library's containers if the scripts opened them.
     pub(crate) fn new(
         files: HashMap<u32, String>,
         resolver: &'a mut Resolver,
         path: &'a Path,
+        resources: Option<Resources>,
     ) -> Self {
         Self {
             files,
             resolver,
-            resources: None,
+            resources,
             path,
             out: Vec::new(),
             samples: Vec::new(),
