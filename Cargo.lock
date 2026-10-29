@@ -2490,6 +2490,7 @@ name = "kontra-inspect"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hound",
  "kontra-engine",
  "kontra-host",
  "kontra-lua",
