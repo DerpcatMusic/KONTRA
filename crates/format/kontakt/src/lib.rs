@@ -23,6 +23,7 @@ mod script_knobs;
 mod skreamer;
 mod snapshot;
 mod solid_knobs;
+mod timed;
 mod translate;
 mod versatile;
 mod wavetable;
