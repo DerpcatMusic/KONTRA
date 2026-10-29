@@ -48,6 +48,16 @@ pub struct App {
     /// The libraries' cover pictures; the host gives a store whose worker
     /// reads [`Library::art`] and replaces it when the list changes.
     pub covers: Option<Pictures>,
+    /// A load the host has been asked for and not finished.
+    // ponytail: one load shown at a time; a list if loads queue up.
+    pub loading: Option<Loading>,
+}
+
+/// Where a load lands: a new part, or part `n` it replaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Loading {
+    New,
+    Part(usize),
 }
 
 /// A library in the browser.
@@ -209,6 +219,13 @@ pub struct View {
     pub report_open: Option<usize>,
     /// The articulation grip being dragged, and the row it started on.
     pub grip: Option<(String, usize)>,
+    /// The browser row a click selected, as (library, preset): a click
+    /// selects, a double-click or a drag loads.
+    pub picked: Option<(usize, usize)>,
+    /// When the load under way began, for the loading line's sweep.
+    pub loading_since: Option<std::time::Instant>,
+    /// When that row was clicked, for the second click of a double-click.
+    pub clicked: Option<std::time::Instant>,
     /// The Mapping tab: the group shown (all when none), the group filter,
     /// the cell last picked on the grid (key, velocity) and the zone picked.
     // ponytail: one mapping state for the editor; per part if two open at once matters.
@@ -257,6 +274,12 @@ pub enum Sheet {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Load {
+        library: usize,
+        preset: usize,
+    },
+    /// A browser preset dropped on a part: it plays that instead.
+    Replace {
+        part: usize,
         library: usize,
         preset: usize,
     },
@@ -356,7 +379,7 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     // keyboard keep their height, as v2's dock did.
     let el = col![
         header.shrink(0).fill(Role::Surface),
-        rule(),
+        loading_bar(app),
         row(middle).grow(1).min_h(0).align(Align::Stretch),
         rule(),
         keys(ui, app, &mut out).shrink(0).fill(Role::Surface),
@@ -365,6 +388,40 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     .h(Len::Pct(100.))
     .fill(Role::Background);
     Response { el, changed: out }
+}
+
+/// The line under the header; while a load is under way a segment sweeps
+/// across it (v2's `src/ui/header.rs` `loading_bar`; the rack reports no
+/// fraction read yet, so it always sweeps).
+fn loading_bar(app: &mut App) -> El {
+    if app.loading.is_none() {
+        app.view.loading_since = None;
+        return rule();
+    }
+    let since = *app
+        .view
+        .loading_since
+        .get_or_insert_with(std::time::Instant::now);
+    let phase = (since.elapsed().as_secs_f64() / 1.4).fract();
+    canvas(move |s: Size| {
+        let w = s.width * 0.3;
+        let x = -w + phase * (s.width + w);
+        let bar = |x: f64, w: f64| {
+            Path::polyline(
+                [(x, 0.), (x + w, 0.), (x + w, s.height), (x, s.height)]
+                    .map(|(x, y)| Point::new(x, y)),
+                true,
+            )
+        };
+        vec![
+            Draw::fill(bar(0., s.width), Role::Ink.alpha(0.1)),
+            Draw::fill(bar(x, w), Role::Ink.alpha(0.7)),
+        ]
+    })
+    .w(Len::Pct(100.))
+    .h(1)
+    .shrink(0)
+    .named("Loading")
 }
 
 fn main(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {

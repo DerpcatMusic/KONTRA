@@ -1,13 +1,20 @@
 //! The rack: one header per part, as v2 drew it (preset, channel, output,
 //! pan, volume, tune, solo, mute), its tabs and view below when open.
 
+use std::sync::Arc;
+
 use mui::prelude::*;
 
+use super::browser::Carried;
 use super::{Action, App, Part, PartTab, db, part};
 use crate::kit::{self, Icon, icon_button, knob, latch, nudge, rule, tab};
-use crate::theme::{CONTROL, SIDEBAR, SPACE, TEXT, TIGHT, part_color, secondary};
+use crate::theme::{CONTROL, SIDEBAR, SMALL, SPACE, TEXT, TIGHT, lift, part_color, secondary};
 
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
+    // A preset dropped on free rack space adds a part.
+    if let Some(Carried { library, preset }) = ui.dropped_on::<Carried>("rack") {
+        out.push(Action::Load { library, preset });
+    }
     if app.parts.is_empty() {
         return col![
             spacer(),
@@ -18,7 +25,8 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .gap(SPACE)
         .align(Align::Center)
         .w(Len::Pct(100.))
-        .h(Len::Pct(100.));
+        .h(Len::Pct(100.))
+        .id("rack");
     }
     // What the rack has of the editor's width for a library's view.
     let browser = if app.view.browser_hidden {
@@ -29,16 +37,95 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let room = (app.width - browser - 2. * SPACE).max(0.);
     let mut strips = Vec::new();
     for n in 0..app.parts.len() {
-        strips.push(header(ui, app, n, out));
+        let art = art(app, n);
+        // A preset dropped on a part's header replaces what it plays.
+        let id = format!("part-{n}-band");
+        if let Some(Carried { library, preset }) = ui.dropped_on::<Carried>(id.as_str()) {
+            out.push(Action::Replace {
+                part: n,
+                library,
+                preset,
+            });
+        }
+        let over = ui.get(id.as_str()).drop_target && ui.dragging::<Carried>().is_some();
+        let head = band(header(ui, app, n, out), art.clone(), 0);
+        strips.push(
+            head.when(over, |e| e.stroke(Role::Ink).stroke_width(1))
+                .id(id),
+        );
         if app.parts.get(n).is_some_and(|p| p.open) {
-            strips.push(tabs(ui, app, n, out));
+            strips.push(band(tabs(ui, app, n, out), art, 1));
             if let Some(p) = app.parts.get_mut(n) {
                 strips.push(part::view(ui, p, n, room, &mut app.view, out));
             }
         }
         strips.push(rule());
     }
-    col(strips).scroll().min_h(0).w(Len::Pct(100.))
+    if app.loading == Some(super::Loading::New) {
+        let row = row![block(3, Len::Pct(100.)).fill(lift(3)).shrink(0), chip()]
+            .gap(SPACE)
+            .align(Align::Center);
+        strips.push(band(row, None, 0));
+        strips.push(rule());
+    }
+    strips.push(foot(ui, app, out));
+    col(strips).scroll().min_h(0).w(Len::Pct(100.)).id("rack")
+}
+
+/// v2's load chip: shown until the instrument plays.
+fn chip() -> El {
+    caption("Loading…")
+        .text_size(SMALL - 1.)
+        .fill(secondary())
+        .lines(1)
+        .shrink(0)
+        .named("Loading")
+}
+
+/// A header row's height: both rows are one, so the artwork lines up.
+const ROW: f64 = CONTROL + 2. * TIGHT;
+/// The artwork behind a part's header, fading out over this width (v2's).
+const BANNER: f64 = TEXT * 36.;
+
+/// Part `n`'s library cover, once it has decoded.
+fn art(app: &mut App, n: usize) -> Option<Arc<Image>> {
+    let name = &app.parts.get(n)?.library;
+    let lib = app.libraries.iter().position(|l| &l.name == name)?;
+    let art = &app.libraries.get(lib)?.art;
+    super::browser::cover(app.covers.as_mut()?, lib, art)
+}
+
+/// Header row `row` (0 or 1) of a part on its library's artwork, as v2
+/// drew it: both rows show one two-row image, offset, so the header reads
+/// as one surface; the names sit on a wash that fades out quickly.
+fn band(content: El, art: Option<Arc<Image>>, row: u8) -> El {
+    let y = -f64::from(row) * ROW;
+    let mut layers = Vec::new();
+    if let Some(img) = art {
+        let wash = Gradient::linear(
+            90.,
+            [
+                // Deeper than v2's 0.55: a bright cover (Una Corda's) hid
+                // the tabs under it.
+                (0., Role::Surface.alpha(0.8)),
+                (0.6, Role::Surface.alpha(0.45)),
+                (1., Role::Surface.alpha(0.)),
+            ],
+        );
+        layers.push(
+            block(BANNER, ROW * 2.)
+                .fill(Fill::Image(img, Fit::Cover))
+                .at(0., y),
+        );
+        layers.push(block(BANNER, ROW * 2.).fill(wash).at(0., y));
+    }
+    layers.push(content.w(Len::Pct(100.)).h(Len::Pct(100.)));
+    stack(layers)
+        .w(Len::Pct(100.))
+        .h(ROW)
+        .fill(Role::Surface)
+        .clip()
+        .shrink(0)
 }
 
 /// The pan a part sits at, for its readout: C, or a side and how far.
@@ -160,6 +247,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         .map(|l| l.presets.clone())
         .unwrap_or_default();
     let output = output(ui, app, n, id("output"), out);
+    let loading = app.loading == Some(super::Loading::Part(n));
     let menu = &mut app.view.menu;
     let Some(p) = app.parts.get_mut(n) else {
         return spacer();
@@ -181,16 +269,28 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         .shrink(1)
         .grow(1)
         .tip(format!("{}\n{}", p.name, p.library));
+    let name = match loading {
+        true => row![name, chip()]
+            .gap(SPACE)
+            .align(Align::Center)
+            .grow(1)
+            .min_w(0),
+        false => name,
+    };
     let names: Vec<&str> = presets
         .iter()
         .map(|s| s.rsplit('/').next().unwrap_or(s))
         .collect();
     let current = names.iter().position(|&s| s == p.name);
+    // v2's preset field beside the name: what plays, or what to pick.
+    let shown = current
+        .and_then(|c| names.get(c).copied())
+        .unwrap_or("Select preset…");
     let preset = kit::dropdown(
         ui,
         menu,
         &id("preset"),
-        (None, "", "Presets"),
+        (None, shown, "Preset"),
         &names,
         current,
     );
@@ -282,7 +382,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         edge,
         fold.el,
         name,
-        preset.el,
+        preset.el.w(TEXT * 16.).min_w(CONTROL * 4.).shrink(1),
         prev.el,
         next.el,
         ch.el,
@@ -314,7 +414,6 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         .gap(TIGHT)
         .align(Align::Center)
         .pad(kit::edges(0., SPACE, 0., 0.))
-        .fill(Role::Surface)
         .shrink(0)
 }
 
@@ -403,6 +502,47 @@ fn tabs(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         .gap(TIGHT)
         .align(Align::Center)
         .pad(kit::edges(0., SPACE, 0., 0.))
-        .fill(Role::Surface)
         .shrink(0)
+}
+
+/// Where presets are dropped to be added, and a button that shows the
+/// browser to find one (v2's `src/ui/rack.rs` `foot`).
+fn foot(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
+    let dragging = ui.dragging::<Carried>().is_some();
+    let over = ui.get("rack-drop").drop_target && dragging;
+    if let Some(Carried { library, preset }) = ui.dropped_on::<Carried>("rack-drop") {
+        out.push(Action::Load { library, preset });
+    }
+    if ui.get("rack-drop").activated() {
+        app.view.browser_hidden = false;
+        ui.focus("search");
+    }
+    let text = if dragging {
+        "Drop to add to the rack".to_owned()
+    } else {
+        format!("Add an instrument · {} loaded", app.parts.len())
+    };
+    let ink = if dragging {
+        Fill::from(Role::Ink)
+    } else {
+        secondary()
+    };
+    let el = row![
+        kit::glyph(Icon::Plus, TEXT, ink),
+        caption(text).fill(secondary()).lines(1)
+    ]
+    .gap(SPACE)
+    .align(Align::Center)
+    .justify(Justify::Center)
+    .pad(SPACE)
+    .h(CONTROL + 2. * SPACE)
+    .w(Len::Pct(100.))
+    .when(over, |e| e.stroke(Role::Ink).stroke_width(1))
+    .focusable()
+    .a11y(A11y::Button)
+    .named("Add to rack")
+    .tip("Drop a preset here to add it, or click to search the browser.")
+    .id("rack-drop")
+    .shrink(0);
+    kit::interactive(el)
 }
