@@ -163,7 +163,12 @@ fn drawn_page(
                 if button_art.is_some()
                     && style.is_none_or(|s| matches!(s.font, model::Font::Stock(0 | 12))) =>
             {
-                pictures.font(model::AssetRef(usize::MAX - 4), "@stock/font13")
+                let (id, path) = if style.is_some_and(|s| s.font == model::Font::Stock(12)) {
+                    (usize::MAX - 6, "@stock/font12")
+                } else {
+                    (usize::MAX - 4, "@stock/font13")
+                };
+                pictures.font(model::AssetRef(id), path)
             }
             stock::Look::Knob { .. } if stock_art.is_some() => {
                 pictures.font(model::AssetRef(usize::MAX - 3), "@stock/font")
