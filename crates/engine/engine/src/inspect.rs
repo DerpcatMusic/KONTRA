@@ -87,12 +87,6 @@ impl Engine {
         self.unhandled.get(usize::from(action.id())).copied() == before
     }
 
-    /// A script variable cell, for inspection.
-    #[must_use]
-    pub fn script_cell(&self, n: usize) -> Option<i64> {
-        self.vms.first()?.as_ref()?.cell(n)
-    }
-
     /// Runtime faults of each script slot, counted since load.
     #[must_use]
     pub fn script_faults(&self) -> Vec<kontra_vm::Faults> {
@@ -157,12 +151,6 @@ pub struct EqRouteObservation {
 }
 
 impl Engine {
-    /// Allocate a bounded trace buffer off the audio thread and enable event capture.
-    #[cfg(feature = "trace")]
-    pub fn enable_trace(&mut self, capacity: usize) {
-        self.trace = Some(crate::trace::Trace::new(capacity));
-    }
-
     /// Captured events in order since the last clear.
     #[cfg(feature = "trace")]
     #[must_use]

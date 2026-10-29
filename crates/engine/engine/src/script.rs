@@ -254,32 +254,6 @@ impl Engine {
         self.targets_scratch = hits;
     }
 
-    /// Fades the event's voices to `level` (0 silent, 1 full). A stopping
-    /// fade ends them at silence; any other leaves them playing there, and
-    /// a fade up starts the note's later voices from silence.
-    fn fade(&mut self, id: i32, micros: i32, level: f32, stop: bool) {
-        let frames = micros_to_frames(i64::from(micros), self.rate) as u32;
-        let mut hits = std::mem::take(&mut self.targets_scratch);
-        self.targets(id, &mut hits);
-        for &note in &hits {
-            if let Some(n) = self.notes.get_mut(note) {
-                n.released |= stop;
-                n.fade_in = if level > 0.0 { frames.max(1) } else { 0 };
-            }
-            if stop {
-                self.fade_where(frames, |s| s.note == Some(note));
-            }
-            for slot in self
-                .voices
-                .iter_mut()
-                .filter(|s| s.note == Some(note) && !stop)
-            {
-                slot.voice.fade_to(level, frames);
-            }
-        }
-        self.targets_scratch = hits;
-    }
-
     fn event_par(&self, id: i32, par: i32) -> i32 {
         let Some(n) = NoteRef::from_event_id(id).and_then(|r| self.notes.get(r)) else {
             return 0;
@@ -403,8 +377,7 @@ impl HostApi for Engine {
                 HostValue::Int(current.map_or(0, |n| i32::from(n.velocity_byte)))
             }
             Action::CcNum => HostValue::Int(i32::from(self.running.controller)),
-            // 1 for the controller that changed (KSP manual): the one this
-            // controller callback runs for (Pacific's pedal-up release).
+            // 1 for the controller this controller callback runs for.
             Action::CcTouched => flag(
                 self.running.kind == Kind::Controller
                     && int(0) == i32::from(self.running.controller),
@@ -457,12 +430,16 @@ impl HostApi for Engine {
                 self.script_note_off(int(0));
                 HostValue::Nothing
             }
-            Action::FadeOut => {
-                self.fade(int(0), int(1), 0.0, int(2) != 0);
-                HostValue::Nothing
-            }
-            Action::FadeIn => {
-                self.fade(int(0), int(1), 1.0, false);
+            Action::FadeOut | Action::FadeIn => {
+                let (level, stop) = match call.action {
+                    Action::FadeIn => (1.0, false),
+                    _ => (0.0, int(2) != 0),
+                };
+                let frames = micros_to_frames(i64::from(int(1)), self.rate) as u32;
+                let mut hits = std::mem::take(&mut self.targets_scratch);
+                self.targets(int(0), &mut hits);
+                self.fade_notes(&hits, frames, level, stop);
+                self.targets_scratch = hits;
                 HostValue::Nothing
             }
             Action::ChangeTune | Action::ChangeVol | Action::ChangePan => {
@@ -483,16 +460,13 @@ impl HostApi for Engine {
                 });
                 HostValue::Nothing
             }
-            Action::ChangeNote => {
-                self.set_event_par(int(0), event::NOTE, int(1));
-                HostValue::Nothing
-            }
-            Action::ChangeVelo => {
-                self.set_event_par(int(0), event::VELOCITY, int(1));
-                HostValue::Nothing
-            }
-            Action::SetEventPar => {
-                self.set_event_par(int(0), int(1), int(2));
+            Action::ChangeNote | Action::ChangeVelo | Action::SetEventPar => {
+                let (par, value) = match call.action {
+                    Action::ChangeNote => (event::NOTE, int(1)),
+                    Action::ChangeVelo => (event::VELOCITY, int(1)),
+                    _ => (int(1), int(2)),
+                };
+                self.set_event_par(int(0), par, value);
                 HostValue::Nothing
             }
             Action::GetEventPar => HostValue::Int(self.event_par(int(0), int(1))),

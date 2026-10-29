@@ -105,6 +105,28 @@ impl Engine {
         self.each_voice(pick, |engine, index| _ = engine.fade_voice(index, fade));
     }
 
+    /// Fades the voices of `notes` to `level` (0 silent, 1 full). A stopping
+    /// fade ends them at silence; any other leaves them playing there, and
+    /// a fade up starts the notes' later voices from silence.
+    pub(crate) fn fade_notes(&mut self, notes: &[NoteRef], frames: u32, level: f32, stop: bool) {
+        for &note in notes {
+            if let Some(n) = self.notes.get_mut(note) {
+                n.released |= stop;
+                n.fade_in = if level > 0.0 { frames.max(1) } else { 0 };
+            }
+            if stop {
+                self.fade_where(frames, |s| s.note == Some(note));
+            }
+            for slot in self
+                .voices
+                .iter_mut()
+                .filter(|s| s.note == Some(note) && !stop)
+            {
+                slot.voice.fade_to(level, frames);
+            }
+        }
+    }
+
     /// Steals every playing voice `pick` chooses.
     pub(crate) fn steal_where(&mut self, fade: u32, pick: impl Fn(&Slot) -> bool) {
         self.each_voice(pick, |engine, index| engine.steal(index, fade));
