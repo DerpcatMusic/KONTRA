@@ -141,6 +141,37 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
             Slot(ir::SlotKnob::Release),
             lin(0.0, 1.0),
         ),
+        // Solid Bus Comp: its slot carries the switches' laws (bus_knobs).
+        (
+            "$ENGINE_PAR_SCOMP_THRESHOLD",
+            Slot(ir::SlotKnob::Threshold),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_SCOMP_RATIO",
+            Slot(ir::SlotKnob::Ratio),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_SCOMP_ATTACK",
+            Slot(ir::SlotKnob::Attack),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_SCOMP_RELEASE",
+            Slot(ir::SlotKnob::Release),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_SCOMP_MAKEUP",
+            Effect(E::CompressorMakeup),
+            lin(-5.25, 21.0),
+        ),
+        (
+            "$ENGINE_PAR_SCOMP_MIX",
+            Effect(E::CompressorMix),
+            lin(0.0, 1.0),
+        ),
         (
             "$ENGINE_PAR_FORMANT_TALK",
             Effect(E::FormantTalk),
@@ -380,6 +411,31 @@ pub(crate) fn compressor_knobs(mode: i32, saved: [f32; 4], link: bool) -> Vec<Sl
     out
 }
 
+/// Solid Bus Comp's knobs through [`crate::laws::bus_compressor`], the
+/// others at their saved values. KSP saves a switch (ratio, attack,
+/// release) at position `min(⌊6x⌋, 5)/6` (fx_dynamics_dist_tape.tsv), which
+/// the compressor reads as `⌊5·saved + ½⌋`: measured natively, ratio
+/// positions 3 and 4 both compress 4:1 and position 5 is 5:1. The ratio
+/// also moves the threshold's offset.
+pub(crate) fn bus_knobs(saved: [f32; 6], link: bool) -> Vec<SlotKnob> {
+    use ir::EffectParam::{
+        CompressorAttack, CompressorRatio, CompressorRelease, CompressorThreshold,
+    };
+    use ir::SlotKnob::{Attack, Ratio, Release, Threshold};
+    let comp = |n: usize, x: f32| {
+        let mut knobs = saved;
+        *knobs.get_mut(n)? = x;
+        let c = crate::laws::bus_compressor(knobs, link).0;
+        Some(ir::EffectKind::Compressor(c))
+    };
+    let mut out = sampled(Threshold, &[CompressorThreshold], &|x| comp(0, x));
+    out.extend(switched(Attack, &[CompressorAttack], &|x| comp(2, x)));
+    out.extend(switched(Release, &[CompressorRelease], &|x| comp(3, x)));
+    let ratio = [CompressorRatio, CompressorThreshold];
+    out.extend(switched(Ratio, &ratio, &|x| comp(4, x)));
+    out
+}
+
 /// The 1/2/3-band EQ's saved Hz, octaves and dB for a knob `x`: 20·1000^x
 /// Hz, 1/3 + 8x/3 octaves, −18 + 36x dB, exact at x = 0, .1, .25, .5, .75,
 /// .9, 1 (probes/eq_knob_laws.lua).
@@ -581,24 +637,54 @@ fn sampled(
     build: &dyn Fn(f32) -> Option<ir::EffectKind>,
 ) -> Vec<SlotKnob> {
     const STEPS: u8 = 64;
-    let kinds = (0..=STEPS).map(|n| build(f32::from(n) / f32::from(STEPS)));
-    let Some(mut kinds) = kinds.collect::<Option<Vec<_>>>() else {
-        return Vec::new();
+    let at = (0..=STEPS).map(|n| f32::from(n) / f32::from(STEPS));
+    moving(at, fields, build)
+        .map(|(field, values)| (knob, field, ir::Law::Table(values.into())))
+        .collect()
+}
+
+/// [`sampled`] for a six-position switch at `⌊6x⌋`, `build` given the
+/// saved `k/6`: steps that jump at each k/6 (KSP's knob is in millionths).
+fn switched(
+    knob: ir::SlotKnob,
+    fields: &[ir::EffectParam],
+    build: &dyn Fn(f32) -> Option<ir::EffectKind>,
+) -> Vec<SlotKnob> {
+    let at = (0..6u8).map(|k| f32::from(k) / 6.0);
+    let steps = |values: Vec<f32>| {
+        let ends = values.iter().zip(0..6u8).flat_map(|(&v, k)| {
+            let end = if k == 5 {
+                1.0
+            } else {
+                f32::from(k + 1) / 6.0 - 2e-7
+            };
+            [(f32::from(k) / 6.0, v, 0.0), (end, v, 0.0)]
+        });
+        ir::Law::Breakpoints(ends.collect())
     };
-    let mut out = Vec::new();
-    for &field in fields {
+    moving(at, fields, build)
+        .map(|(field, values)| (knob, field, steps(values)))
+        .collect()
+}
+
+/// Each of `fields` with its values in what `build` makes at `at`, if it
+/// moves.
+fn moving(
+    at: impl Iterator<Item = f32>,
+    fields: &[ir::EffectParam],
+    build: &dyn Fn(f32) -> Option<ir::EffectKind>,
+) -> impl Iterator<Item = (ir::EffectParam, Vec<f32>)> {
+    let kinds = at
+        .map(build)
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default();
+    fields.iter().filter_map(move |&field| {
+        let mut kinds = kinds.clone();
         let values = kinds.iter_mut().map(|k| field.field_mut(k).copied());
-        let Some(values) = values.collect::<Option<Vec<f32>>>() else {
-            continue;
-        };
-        if values
-            .first()
-            .is_some_and(|f| values.iter().any(|v| v != f))
-        {
-            out.push((knob, field, ir::Law::Table(values.into())));
-        }
-    }
-    out
+        let values = values.collect::<Option<Vec<f32>>>()?;
+        let first = values.first()?;
+        values.iter().any(|v| v != first).then_some((field, values))
+    })
 }
 
 #[cfg(test)]
@@ -620,6 +706,28 @@ mod tests {
             let got = law(ir::EffectParam::FilterLastDamping).eval(0.711);
             assert!((got / k - 1.0).abs() < 2e-2, "{kind}: {got} vs {k}");
         }
+    }
+
+    /// Measured natively (KSP writes, a 1 kHz tone 0..−30 dB): ratio knob
+    /// .55 and .7 compress 4:1, .9 compresses 5:1.
+    #[test]
+    fn the_bus_compressor_switches_step_where_kontakt_saves_them() {
+        let saved = [0.3, 0.3, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 0.3];
+        let knobs = bus_knobs(saved, true);
+        let law = |knob, field| {
+            let k = knobs.iter().find(|k| k.0 == knob && k.1 == field);
+            k.map(|k| k.2.clone()).unwrap()
+        };
+        use ir::EffectParam::{CompressorAttack, CompressorRatio, CompressorThreshold};
+        let ratio = law(ir::SlotKnob::Ratio, CompressorRatio);
+        let got = [0.0, 0.2, 0.4, 0.55, 0.7, 0.9, 1.0].map(|x| ratio.eval(x));
+        assert_eq!(got, [1.5, 2.0, 3.0, 4.0, 4.0, 5.0, 5.0]);
+        // The threshold's offset follows the ratio: 4:1 is 1 dB above 3:1.
+        let t = law(ir::SlotKnob::Ratio, CompressorThreshold);
+        assert!((t.eval(0.55) - t.eval(0.4) - 1.0).abs() < 1e-4);
+        // KSP 166666 is still the first position, 166667 the second.
+        let attack = law(ir::SlotKnob::Attack, CompressorAttack);
+        assert_eq!([attack.eval(0.166_666), attack.eval(0.166_667)], [0.1, 0.3]);
     }
 
     #[test]
