@@ -89,23 +89,11 @@ impl Engine {
         let plan = Arc::clone(&self.plan);
         let found = (plan.responses.iter()).position(|(n, _)| n.eq_ignore_ascii_case(stem))?;
         let (_, sample) = plan.responses.get(found)?;
-        let &ir::Effect {
-            kind: ir::EffectKind::Convolution { impulse },
-            ..
-        } = self.effect_mut(-1, slot, generic).map(|e| &*e)?
-        else {
-            return None;
-        };
-        let at = usize::from(impulse);
-        let (playing, law) = match at.checked_sub(plan.impulses.len()) {
-            None => plan.impulse_laws.get(at).map(|(n, law)| (n, *law)),
-            Some(j) => self.loaded.get(j).map(|(n, law, _)| (n, *law)),
-        }
-        .unzip();
-        if playing.is_some_and(|n| n.eq_ignore_ascii_case(stem)) {
+        let (playing, law) = self.playing(slot, generic)?;
+        if playing.map(usize::from) == Some(found) {
             return Some(0);
         }
-        let law = law?;
+        self.init_impulses.retain(|p| (p.0, p.1) != (slot, generic));
         if self.running.kind != crate::script::Kind::Init {
             let index = u16::try_from(found).ok()?;
             return self.request_response(slot, generic, index, law);
@@ -257,6 +245,7 @@ impl Engine {
     /// Rebuilds every rack's processors from its slots as the init callback
     /// left them. Not real-time.
     pub(crate) fn rebuild_racks(&mut self) {
+        self.prepare_init_impulses();
         let rate = self.rate;
         let plan = Arc::clone(&self.plan);
         let racks = std::iter::once(&mut self.rack)

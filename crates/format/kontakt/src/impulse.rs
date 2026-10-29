@@ -226,3 +226,39 @@ impl<'a> Impulses<'a> {
             .collect()
     }
 }
+
+/// The Convolution's script knobs, measured natively: a write rendered
+/// through the response (rig: tools/kontakt-oracle/fxrig.py, set from
+/// `on note`, `generic` 1; a write in `on init` is lost to the preset's
+/// own load). Predelay moves the wet onset `2·(151^x − 1)` ms (x 0.1, .25,
+/// .5, .75, 1 → 1.29, 5.0, 22.6, 84.2, 300 ms, within 0.2 ms); the cuts
+/// are `20·1000^x` Hz (low cut 0, .25, .5 → 20.6, 112, 600 Hz; high-pass
+/// .5, .75 → 634, 3591 Hz, fitted as the second-order Butterworths the
+/// response is shaped with).
+///
+/// ponytail: the length ratios (ER and LR size: Kontakt stretches the
+/// response offline) and Auto Gain, Reverse and the ER/LR boundary (no
+/// corpus script writes them) are not carried.
+pub(crate) fn script_knobs() -> [(&'static str, ir::KnobTarget, ir::Law); 5] {
+    use ir::ImpulseKnob::{Cut, PredelayMs};
+    use ir::KnobTarget::Impulse;
+    let predelay: Vec<f32> = (0..=32)
+        .map(|i| 2.0 * (151f32.powf(i as f32 / 32.0) - 1.0))
+        .collect();
+    let hz = || ir::Law::Exp {
+        lo: 20.0,
+        hi: 20_000.0,
+    };
+    let cut = |late, high| Impulse(Cut { late, high });
+    [
+        (
+            "$ENGINE_PAR_IRC_PREDELAY",
+            Impulse(PredelayMs),
+            ir::Law::Table(predelay.into()),
+        ),
+        ("$ENGINE_PAR_IRC_FREQ_HIGHPASS_ER", cut(false, false), hz()),
+        ("$ENGINE_PAR_IRC_FREQ_LOWPASS_ER", cut(false, true), hz()),
+        ("$ENGINE_PAR_IRC_FREQ_HIGHPASS_LR", cut(true, false), hz()),
+        ("$ENGINE_PAR_IRC_FREQ_LOWPASS_LR", cut(true, true), hz()),
+    ]
+}
