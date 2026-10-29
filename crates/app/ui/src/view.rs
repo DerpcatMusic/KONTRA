@@ -14,7 +14,10 @@ use mui::prelude::*;
 
 use crate::Pictures;
 
+mod plan;
 mod stock;
+
+use plan::cuts;
 
 /// Text size where the source sets none, in source pixels.
 const TEXT: f64 = 11.;
@@ -56,9 +59,10 @@ fn drawn_page(
     (scale, level): (f64, f64),
     bare: bool,
 ) -> (El, usize) {
-    let Some(p) = tree.pages.get(page.0) else {
+    let Some(plan) = plan::page(tree, page, bare) else {
         return (block(0., 0.), 0);
     };
+    let p = plan.source;
     let mut built = 0;
     let (w, h) = (p.size.width * scale, p.size.height * scale);
     // Pictures decode at the pixels they cover on the device.
@@ -95,37 +99,24 @@ fn drawn_page(
             layers.push(image(&img, size.width * scale, size.height * scale).at(0., y * scale));
         }
     }
-    let on_page = |r: model::Rect| {
-        r.width > 0.
-            && r.height > 0.
-            && r.x < p.size.width
-            && r.y < p.size.height
-            && r.x + r.width > 0.
-            && r.y + r.height > 0.
-    };
-    for n in tree.draw_order(page) {
-        let r = tree.page_rect(n);
-        if !tree.visible(n) || !on_page(r) {
-            continue;
-        }
-        let Some(wd) = tree.widgets.get(n.0) else {
-            continue;
-        };
-        let picture = wd.images.first().filter(|_| !bare).and_then(|u| {
-            let (path, meta) = image_asset(tree, u.asset)?;
-            let f = frame(wd, u, meta.frames as usize);
-            Some((pictures.frame(u.asset, path, meta, f, device)?, meta))
+    for item in plan.widgets {
+        let n = item.index;
+        let r = item.rect;
+        let wd = item.source;
+        let picture = item.picture.as_ref().and_then(|p| {
+            Some((
+                pictures.frame(p.use_.asset, p.path, p.meta, p.frame, device)?,
+                p.meta,
+            ))
         });
-        let art = picture.as_ref().map(|(_, m)| drawn(r, *m));
-        let style = wd.style.and_then(|s| tree.styles.get(s.0));
-        let t = position(wd);
-        let look = stock::Look::of(tree, wd, t, readout(wd, tree.source), knob_name(wd), bare);
-        let stock = look.is_none() && stock::shows(tree, wd, bare);
-        let words = if look.is_some() {
-            String::new()
-        } else {
-            caption(wd, tree.source)
-        };
+        let art = picture
+            .as_ref()
+            .and_then(|_| item.picture.as_ref().map(|p| p.size));
+        let style = item.style;
+        let t = item.position;
+        let look = item.look;
+        let stock = item.stock;
+        let words = item.words;
         let glyphs = match style.map(|s| &s.font) {
             Some(&model::Font::Bitmap(a)) if !words.is_empty() => {
                 (tree.assets.get(a.0)).and_then(|asset| pictures.font(a, &asset.path))
@@ -565,38 +556,6 @@ fn sliced(
         y += dh;
     }
     stack(pieces).w(w).h(h)
-}
-
-/// One axis of a nine-slice: (decoded start, decoded length, drawn points)
-/// per piece. The fixed ends `lo`/`hi` (picture pixels) keep their size;
-/// a control shorter than both shrinks them alike and drops the middle.
-fn cuts(
-    on: bool,
-    (lo, hi): (u32, u32),
-    (own, decoded): (f64, u32),
-    to: f64,
-    scale: f64,
-) -> Vec<(u32, u32, f64)> {
-    let ends = f64::from(lo + hi);
-    if !on || lo + hi == 0 || ends >= own {
-        return vec![(0, decoded, to)];
-    }
-    let k = f64::from(decoded) / own.max(1.);
-    let (a, b) = (
-        (f64::from(lo) * k).round() as u32,
-        (f64::from(hi) * k).round() as u32,
-    );
-    let mid = decoded.saturating_sub(a + b);
-    let fit = (to / (ends * scale)).min(1.);
-    let (dl, dh) = (f64::from(lo) * scale * fit, f64::from(hi) * scale * fit);
-    vec![
-        (0, a, dl),
-        (a, mid, (to - dl - dh).max(0.)),
-        (a + mid, b, dh),
-    ]
-    .into_iter()
-    .filter(|&(_, n, d)| n > 0 && d > 0.)
-    .collect()
 }
 
 /// The `size` pixels of `img` from `at`.
