@@ -83,22 +83,24 @@ impl Engine {
     }
 
     /// Fades voice `index` out over `fade` frames, after which it is free.
-    /// From now it counts toward no limit. Every voice the engine or a
-    /// script ends early ends here; `false` if it was not playing.
+    /// From now it counts toward no limit; a fade already running ends at
+    /// the sooner of the two. Every voice the engine or a script ends early
+    /// ends here; `true` the first time only.
     pub(crate) fn fade_voice(&mut self, index: usize, fade: u32) -> bool {
         let Some(slot) = self.voices.get_mut(index) else {
             return false;
         };
-        if !slot.voice.is_active() || slot.fading {
+        if !slot.voice.is_active() {
             return false;
         }
+        let first = !slot.fading;
         #[cfg(feature = "trace")]
         if let Some(trace) = &mut self.trace {
             trace.voice(self.now.0, index, slot, crate::VoiceEvent::Steal);
         }
         slot.voice.fade(fade);
         slot.fading = true;
-        true
+        first
     }
 
     /// Fades every playing voice `pick` chooses; how many it faded.
