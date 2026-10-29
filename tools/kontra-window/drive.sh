@@ -2,7 +2,8 @@
 # The plugin's real editor under Xvfb, driven with real pointer events:
 # the face drawn untouched, a part tab, the header's library art, the browser's library cards, the preset field, a library knob
 # dragged and a switch clicked, a browser row clicked (selects), double-
-# clicked (adds a part) and dragged onto a part (replaces it), then idle
+# clicked (adds a part) and dragged onto a part (replaces it), the
+# browser's edge dragged, then idle
 # for a minute.
 # Each step must change the window as it says; idle must cost ~0 CPU.
 #
@@ -18,9 +19,12 @@ interface=${INTERFACE:-458,160}
 preset=${PRESET:-874,114}      # the header's preset field
 knob=${KNOB:-632,804}          # after five wheel steps down
 switch=${SWITCH:-1484,872}
-library=${LIBRARY:-200,814}     # the browser's Una Corda row
-second=${SECOND:-90,444}       # Una Corda Felt
-third=${THIRD:-94,480}         # Una Corda Pure
+search=${SEARCH:-100,80}       # the browser's search field
+name=${NAME:-Una Corda}        # typed there, so its card comes first
+library=${LIBRARY:-200,260}    # that card
+second=${SECOND:-90,811}       # Una Corda Felt
+third=${THIRD:-94,847}         # Una Corda Pure
+edge=${EDGE:-200,578}          # the edge between libraries and presets
 header=${HEADER:-760,114}      # part 0's header, to drop on
 fold=${FOLD:-426,114}          # part 0's fold, so a new part shows below it
 mkdir -p "$out"
@@ -96,6 +100,7 @@ check 5-knob 6-switch "library switch: click flips it"
 at 1000,600; for _ in $(seq 1 10); do xdotool click 4; sleep 0.1; done; sleep 1.5
 
 at "$fold"; xdotool click 1; sleep 1.5
+at "$search"; xdotool click 1; xdotool type --delay 60 "$name"; sleep 1.5
 # The pointer rests on the card, then a click and no more input: what the
 # click opened must show by itself, not on the next move.
 at "$library"; sleep 1.5; shot 7a-hover
@@ -112,6 +117,12 @@ at "$third"; xdotool mousedown 1; sleep 0.2
 for k in $(seq 1 12); do xdotool mousemove_relative -- 55 -70; sleep 0.04; done
 at "$header"; sleep 0.3; xdotool mouseup 1; sleep 8; shot 11-replaced
 check 10-added 11-replaced "browser: a preset dropped on a part replaces it" 205,40,880,70
+# The edge between the libraries and the presets drags them taller.
+at 1000,600; sleep 1; shot 12-edge
+at "$edge"; xdotool mousedown 1; sleep 0.2
+for _ in $(seq 1 15); do xdotool mousemove_relative -- 0 10; sleep 0.04; done
+xdotool mouseup 1; at 1000,600; sleep 1.5; shot 13-edged
+check 12-edge 13-edged "browser: its edge drags the lists taller" 0,280,198,500
 
 # Idle: the pointer parked, nothing playing, a Kontakt face open. CPU over
 # 60 s (IDLE_S), in % of a core,

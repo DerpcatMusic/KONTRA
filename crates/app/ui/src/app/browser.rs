@@ -18,14 +18,16 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let top = libraries(ui, app, out);
     let bottom = presets(ui, app, out);
     let edge = split(ui, app);
-    let share = shared(app.view.split);
-    col![
-        top.grow(share * 100.).min_h(0),
-        edge,
-        bottom.grow((1. - share) * 100.).min_h(0)
-    ]
-    .h(Len::Pct(100.))
-    .id("browser-column")
+    // The libraries' share of the column as it was laid out last frame: a
+    // share of free space would leave them none, the presets' rows being
+    // longer than the column.
+    let top = match column_height(ui) {
+        Some(h) => top.h(h * shared(app.view.split)).shrink(0),
+        None => top.grow(1).min_h(0),
+    };
+    col![top, edge, bottom.grow(1).min_h(0)]
+        .h(Len::Pct(100.))
+        .id("browser-column")
 }
 
 /// The library list's share of the browser's height, as v2 split it; a
@@ -33,6 +35,13 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 const SPLIT: f64 = 0.55;
 const SPLIT_MIN: f64 = 0.14;
 const SPLIT_MAX: f64 = 0.7;
+
+fn column_height(ui: &Ui) -> Option<f64> {
+    (ui.scene())
+        .and_then(|s| s.surface("browser-column"))
+        .map(|s| s.frame.size.height)
+        .filter(|&h| h > 0.)
+}
 
 fn shared(split: f64) -> f64 {
     if split > 0. {
@@ -48,9 +57,7 @@ fn shared(split: f64) -> f64 {
 fn split(ui: &mut Ui, app: &mut App) -> El {
     let id = "browser-split";
     let r = ui.get(id);
-    let height = (ui.scene())
-        .and_then(|s| s.surface("browser-column"))
-        .map_or(600., |s| s.frame.size.height);
+    let height = column_height(ui).unwrap_or(600.);
     if r.dragged {
         let now = shared(app.view.split) + r.drag_delta.y / height.max(1.);
         app.view.split = now.clamp(SPLIT_MIN, SPLIT_MAX);

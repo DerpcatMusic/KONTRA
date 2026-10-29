@@ -98,6 +98,7 @@ mod tests {
         app.view.browser_hidden = true;
         app.view.octave = -1;
         app.view.scale = 2;
+        app.view.split = 0.3;
         app.parts = vec![kontra_ui::app::Part {
             open: false,
             tab: PartTab::Mapping,
@@ -111,6 +112,7 @@ mod tests {
             (Tab::Mixer, true)
         );
         assert_eq!((again.view.octave, again.view.scale), (-1, 2));
+        assert!((again.view.split - 0.3).abs() < 1e-6, "the browser's split");
         let mut waiting = saved.parts.clone();
         again.parts = vec![kontra_ui::app::Part::default()];
         parts(&mut again, &[0], &mut waiting);
