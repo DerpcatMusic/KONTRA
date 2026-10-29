@@ -279,3 +279,34 @@ fn a_level_meter_lights_with_the_peak_and_idles_when_it_holds() {
     let (_, louder) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 1.));
     assert_eq!(louder, 1);
 }
+
+#[test]
+fn a_script_switch_with_no_picture_draws_kontakts_stock_button() {
+    let mut tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 20.,
+            height: 10.,
+        },
+        ..Page::default()
+    });
+    tree.widgets.push(Widget::new(
+        "$s",
+        PageRef(0),
+        Rect::new(0, 0, 20, 10),
+        Kind::Switch,
+    ));
+    let mut pictures = Pictures::new(Box::new(|_| None));
+    let mut shade = |on: i32| {
+        tree.widgets[0].value = Some(model::Value::Integer(on));
+        let mut ui = crate::ui();
+        let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 0.));
+        paint(&mut ui, el, 20, 10).get(20 * 5 + 2).copied()
+    };
+    // Off: Kontakt's dark grey; on: its light face (measured on Pacific).
+    assert_eq!(shade(0), Some([0x5f, 0x5f, 0x5f, 255]));
+    assert!(shade(1).is_some_and(|p| p[0] > 0xe0));
+}

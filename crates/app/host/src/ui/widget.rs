@@ -93,7 +93,11 @@ pub(super) fn widget(
         ControlKind::Label => ui::Kind::Label,
         ControlKind::ValueEdit => ui::Kind::ValueEdit {
             range: declared(),
-            display: display(),
+            // Ratio 0 ($VALUE_EDIT_MODE_NOTE_NAMES) shows note names.
+            display: ui::Display {
+                ratio: f64::from(param(2).unwrap_or(1)),
+                ..display()
+            },
             arrows: p.int("$CONTROL_PAR_SHOW_ARROWS") != Some(0),
         },
         ControlKind::Table => {
