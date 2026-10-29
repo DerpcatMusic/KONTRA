@@ -11,7 +11,7 @@ use kontra_engine::{Engine, SampleTime, Timed, ir};
 
 use crate::persist::Capture;
 pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression};
-use kontra_protocol::{Latest, MAX_PARTS, Meters, Ring, Stats};
+use kontra_protocol::{MAX_PARTS, MeterCells, Meters, Ring, StatCells, Stats};
 pub use kontra_stream::{Store, StoreConfig};
 
 /// Stereo outputs a rack renders: one pair per part at most.
@@ -73,8 +73,8 @@ pub struct Channels {
     pub commands: Ring<Command>,
     pub retired: Ring<Box<Engine>>,
     pub captured: Ring<Box<Capture>>,
-    pub meters: Latest<Meters>,
-    pub stats: Latest<Stats>,
+    pub meters: MeterCells,
+    pub stats: StatCells,
 }
 
 /// A loaded part as the control thread knows it.
@@ -124,8 +124,8 @@ impl Rack {
             commands: Ring::new(256),
             retired: Ring::new(64),
             captured: Ring::new(2 * MAX_PARTS),
-            meters: Latest::new(),
-            stats: Latest::new(),
+            meters: MeterCells::default(),
+            stats: StatCells::default(),
         });
         let audio = RackAudio::new(Arc::clone(&channels), max_block);
         let rack = Self {
@@ -345,13 +345,13 @@ impl Rack {
         }
     }
 
-    /// The latest meters and stats the audio thread published, if any since
-    /// the last read.
+    /// The highest levels the audio thread published since the last read.
     #[must_use]
-    pub fn meters(&self) -> Option<Meters> {
+    pub fn meters(&self) -> Meters {
         self.channels.meters.take()
     }
 
+    /// The stats the audio thread published last, if any since the last read.
     #[must_use]
     pub fn stats(&self) -> Option<Stats> {
         self.channels.stats.take()
@@ -401,6 +401,9 @@ impl Rack {
 struct Playing {
     engine: Box<Engine>,
     mix: Mix,
+    /// Its channel changed: the notes and pedal it held on the old one are
+    /// let go at the next block, since their note-offs no longer reach it.
+    release: bool,
 }
 
 /// The audio side: renders every part into its output pair.
@@ -436,9 +439,13 @@ impl RackAudio {
         }
     }
 
-    /// The host's tempo for the next block, in quarter notes per minute.
+    /// The host's tempo from the next block on, in quarter notes per minute;
+    /// parts installed later start at it too.
     pub fn set_tempo(&mut self, bpm: f32) {
-        self.tempo = Some(bpm);
+        // A host without a transport reports 0.
+        if bpm.is_finite() && bpm > 0.0 {
+            self.tempo = Some(bpm);
+        }
     }
 
     /// The largest block [`RackAudio::process`] renders at once.
@@ -478,6 +485,10 @@ impl RackAudio {
             if self.panic {
                 self.events
                     .extend(PANIC.map(|body| Timed { at: now, body }));
+            }
+            if std::mem::take(&mut p.release) {
+                self.events
+                    .extend(release().map(|body| Timed { at: now, body }));
             }
             let room = self.events.capacity() - self.events.len();
             self.events.extend(
@@ -519,7 +530,6 @@ impl RackAudio {
                 o[1] += b * self.master;
             }
         }
-        self.tempo = None;
         self.panic = false;
         for o in self.outputs.iter().filter_map(|o| o.get(..frames)) {
             for s in o {
@@ -528,8 +538,8 @@ impl RackAudio {
             }
         }
         stats.dropped = self.dropped;
-        self.channels.meters.publish(self.meters);
-        self.channels.stats.publish(stats);
+        self.channels.meters.publish(&self.meters);
+        self.channels.stats.publish(&stats);
         self.meters = Meters::default();
     }
 
@@ -541,12 +551,27 @@ impl RackAudio {
                 break;
             };
             match command {
-                Command::Install { part, engine, mix } => {
+                Command::Install {
+                    part,
+                    mut engine,
+                    mix,
+                } => {
                     if let Some(slot) = self.parts.get_mut(part) {
-                        let old = slot.replace(Playing { engine, mix });
+                        if let Some(bpm) = self.tempo {
+                            engine.set_tempo(bpm);
+                        }
+                        let old = slot.replace(Playing {
+                            engine,
+                            mix,
+                            release: false,
+                        });
                         self.retire(old);
                     } else {
-                        self.retire(Some(Playing { engine, mix }));
+                        self.retire(Some(Playing {
+                            engine,
+                            mix,
+                            release: false,
+                        }));
                     }
                 }
                 Command::Remove(part) => {
@@ -555,11 +580,12 @@ impl RackAudio {
                 }
                 Command::Mix(part, mix) => {
                     if let Some(Some(p)) = self.parts.get_mut(part) {
+                        p.release |= p.mix.channel != mix.channel;
                         p.mix = mix;
                     }
                 }
                 Command::Master(gain) => self.master = gain,
-                Command::Tempo(bpm) => self.tempo = Some(bpm),
+                Command::Tempo(bpm) => self.set_tempo(bpm),
                 Command::Panic => self.panic = true,
                 Command::Capture(mut c) => {
                     if let Some(Some(p)) = self.parts.get(c.part) {
@@ -604,6 +630,16 @@ const fn wildcard(clap: bool) -> HostPattern {
         id: -1,
         clap,
     }
+}
+
+/// What a part's old channel held: every note let go (CLAP-addressed or
+/// not), and the sustain pedal up on every channel.
+fn release() -> [Event; 18] {
+    let off = |clap| Event::NoteOff(wildcard(clap));
+    std::array::from_fn(|n| match u8::try_from(n) {
+        Ok(ch @ 0..=15) => Event::midi1(0xB0 | ch, 64, 0),
+        _ => off(n == 16),
+    })
 }
 
 /// Every note, CLAP-addressed or not.
