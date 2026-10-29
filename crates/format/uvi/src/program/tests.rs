@@ -222,6 +222,7 @@ fn a_keygroup_one_pole_and_its_velocity_route_reach_the_group() {
     // Inverted: 20 kHz × 1000^(−0.6(1 − v)), so 20 kHz × 1000^−0.6 at
     // velocity 0, rising 0.6 of the range's 9.97 octaves to 20 kHz at 1.
     assert_eq!(f.pass, ir::Pass::Low);
+    assert_eq!(f.ladder, Some(ir::Ladder::OnePole));
     assert_eq!(f.hz, 20_000.0);
     assert!((f.octaves - 1000f32.log2()).abs() < 1e-4);
     assert_eq!(
