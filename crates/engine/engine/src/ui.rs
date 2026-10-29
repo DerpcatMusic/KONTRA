@@ -95,6 +95,14 @@ impl Engine {
         Some(index.map_or(value, |i| i as i64))
     }
 
+    /// Script `slot`'s machine: a Lua page's widgets, the state it saves.
+    pub fn vm(&self, slot: u8) -> Option<&kontra_vm::Vm> {
+        self.vms.get(usize::from(slot))?.as_ref()
+    }
+    pub fn vm_mut(&mut self, slot: u8) -> Option<&mut kontra_vm::Vm> {
+        self.vms.get_mut(usize::from(slot))?.as_mut()
+    }
+
     /// Text cell `n` of script `slot` (a persistent `@` variable, say).
     #[must_use]
     pub fn script_text_in(&self, slot: u8, n: usize) -> Option<Text> {

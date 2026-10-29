@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use kontra_engine::Engine;
+use kontra_host::ui::lua::Page as _;
 use kontra_host::ui::{Library, Live};
 use kontra_stream::{Store, StoreConfig};
 use kontra_ui::{Pictures, view};
@@ -44,6 +45,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut engine = Engine::new(Arc::new(loaded.plan), store.client(), 48_000);
         let load = t.elapsed();
         let mut block = vec![[0f32; 2]; 512];
+        for (slot, page) in loaded.pages.iter().enumerate() {
+            if let Some(page) = page {
+                lua_page(&out, &path, &loaded.name, page, slot as u8, &mut engine)?;
+            }
+        }
         for (slot, face) in loaded.faces.iter().enumerate() {
             let Some(face) = face else { continue };
             let slot = slot as u8;
@@ -281,6 +287,111 @@ fn in_rack(
         std::thread::sleep(Duration::from_millis(1));
     }
     frame(&mut ui, &mut app)?;
+    save(file, w, h, &paint(&ui, w, h)?)
+}
+
+/// A Lua script's page as the engine left it, `<name>-<slot>.png`; then its
+/// first shown knob (or `UI_SHOTS_KNOB`) turned to the top,
+/// `<name>-<slot>-knob.png`.
+fn lua_page(
+    out: &std::path::Path,
+    path: &std::path::Path,
+    name: &str,
+    page: &kontra_lua::Ui,
+    slot: u8,
+    engine: &mut Engine,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use kontra_host::ui::lua;
+    let library = RefCell::new(Library::open(path));
+    let meta = |p: &str| library.borrow_mut().meta(p);
+    let mut tree = lua::tree(page, &meta);
+    let settle = |engine: &mut Engine, tree: &mut kontra_ui_model::Interface| {
+        let mut block = vec![[0f32; 2]; 512];
+        for _ in 0..10 {
+            engine.process(&mut block, &[]);
+        }
+        let mut text = kontra_engine::Text::EMPTY;
+        for n in 0..tree.widgets.len() {
+            if let Some(look) = engine.widget(slot, n as u32) {
+                let words = engine.widget_text(slot, n as u32, &mut text);
+                lua::apply(tree, n, look, words.then(|| text.as_str()));
+            }
+        }
+        kontra_ui::layout::resolve(tree, 0..tree.widgets.len());
+    };
+    settle(engine, &mut tree);
+    let stem = name.replace(['/', ' '], "_");
+    shot(&tree, path, &out.join(format!("{stem}-{slot}.png")))?;
+    // `UI_SHOTS_KNOB=<name>` picks the knob; else the first shown one.
+    let wanted = std::env::var("UI_SHOTS_KNOB").ok();
+    // A shown knob or slider: its number, name and top.
+    let knobs: Vec<(usize, String, f64)> = (tree.widgets.iter().enumerate())
+        .filter(|&(n, _)| tree.visible(WidgetRef(n)))
+        .filter_map(|(n, w)| match w.kind {
+            Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
+                Some((n, w.name.clone(), range.max))
+            }
+            _ => None,
+        })
+        .collect();
+    let names: Vec<&str> = knobs.iter().map(|k| k.1.as_str()).collect();
+    eprintln!("{name}: shown knobs {names:?}");
+    let knob = (knobs.iter()).find(|k| wanted.as_deref().is_none_or(|w| k.1 == w));
+    let mut moved = String::from("null");
+    if let Some((n, knob, top)) = knob {
+        engine.set_widget(slot, *n as u32, *top);
+        settle(engine, &mut tree);
+        let now = tree.widgets.get(*n).map(|w| w.value.clone());
+        moved = format!("{{\"knob\":{knob:?},\"to\":{top},\"now\":{now:?}}}");
+        shot(&tree, path, &out.join(format!("{stem}-{slot}-knob.png")))?;
+    }
+    let shown = (0..tree.widgets.len())
+        .filter(|&n| tree.visible(WidgetRef(n)))
+        .count();
+    println!(
+        "{{\"name\":{name:?},\"slot\":{slot},\"lua\":true,\"widgets\":{},\"shown\":{shown},\"pictures\":{},\"moved\":{moved}}}",
+        tree.widgets.len(),
+        tree.assets.len(),
+    );
+    Ok(())
+}
+
+/// Draws page 0 of `tree` once its pictures are in, and saves it.
+fn shot(
+    tree: &kontra_ui_model::Interface,
+    path: &std::path::Path,
+    file: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(p) = tree.pages.first() else {
+        return Ok(());
+    };
+    let (w, h) = (p.size.width.ceil() as u16, p.size.height.ceil() as u16);
+    let (reader, library) = (path.to_path_buf(), std::sync::Mutex::new(None));
+    let mut pictures = Pictures::new(Box::new(move |p: &str| {
+        let mut library = library.lock().ok()?;
+        library
+            .get_or_insert_with(|| Library::open(&reader))
+            .read(p)
+    }));
+    let mut ui = kontra_ui::ui();
+    let frame = |ui: &mut Ui, pictures: &mut Pictures| {
+        let (el, _) = view::page(ui, 0, tree, PageRef(0), pictures, 1.);
+        ui.frame(
+            el,
+            Some(Size::new(f64::from(w), f64::from(h))),
+            Input::default(),
+            1. / 60.,
+        )
+        .map(|_| ())
+        .map_err(|e| format!("{e:?}"))
+    };
+    frame(&mut ui, &mut pictures)?;
+    while pictures.pending() > 0 {
+        if !pictures.poll() {
+            std::thread::sleep(Duration::from_micros(500));
+        }
+    }
+    frame(&mut ui, &mut pictures)?;
     save(file, w, h, &paint(&ui, w, h)?)
 }
 

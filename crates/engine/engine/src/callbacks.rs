@@ -49,6 +49,17 @@ impl Engine {
         ran
     }
 
+    /// The editor moved widget `n` of script `slot`'s own (Lua) page to `value`.
+    pub fn set_widget(&mut self, slot: u8, n: u32, value: f64) {
+        let entry = (self.plan.scripts.get(usize::from(slot))).and_then(|s| s.callbacks.widget);
+        if let (Some(entry), Some(vm)) = (entry, self.vm_mut(slot)) {
+            vm.stage_widget(n, value);
+            let mut running = Running::new(Kind::UiControl, None);
+            running.ui = i32::try_from(n).unwrap_or(i32::MAX);
+            self.run_callback(slot, entry, running);
+        }
+    }
+
     /// The UI or the host moved control `id` (its UI id) of script `slot` to
     /// `value`: it is stored, then `on ui_controls` runs and then the
     /// control's own `on ui_control`, as in Kontakt; a control without one

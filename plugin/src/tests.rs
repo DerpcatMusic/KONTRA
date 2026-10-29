@@ -408,27 +408,22 @@ fn a_library_control_moved_in_the_editor_reaches_its_script_and_shows() {
         let view = part.view.as_ref().expect("Una Corda has an interface");
         let vars = &part.script.vars[usize::from(view.slot)];
         let saved = rack.saved_scripts(0);
-        view.live
-            .tree
-            .widgets
-            .iter()
-            .enumerate()
-            .find_map(|(n, w)| {
-                let var = vars
-                    .vars
-                    .iter()
-                    .find(|v| v.control == w.source_id && v.len == 1 && !v.real && !v.text)?;
-                let entry = saved
-                    .get(vars.script)?
-                    .iter()
-                    .find(|e| e.split(' ').next() == Some(&*var.name))?;
-                let now: i64 = entry.split(' ').nth(1)?.parse().ok()?;
-                Some((
-                    n,
-                    var.name.to_string(),
-                    if now > 0 { now - 1 } else { now + 1 },
-                ))
-            })
+        view.tree().widgets.iter().enumerate().find_map(|(n, w)| {
+            let var = vars
+                .vars
+                .iter()
+                .find(|v| v.control == w.source_id && v.len == 1 && !v.real && !v.text)?;
+            let entry = saved
+                .get(vars.script)?
+                .iter()
+                .find(|e| e.split(' ').next() == Some(&*var.name))?;
+            let now: i64 = entry.split(' ').nth(1)?.parse().ok()?;
+            Some((
+                n,
+                var.name.to_string(),
+                if now > 0 { now - 1 } else { now + 1 },
+            ))
+        })
     };
     let (widget, var, to) = found.expect("a persistent control with a widget");
     params
@@ -459,7 +454,7 @@ fn a_library_control_moved_in_the_editor_reaches_its_script_and_shows() {
             .view
             .as_ref()
             .unwrap();
-        (view.live.tree.widgets[widget].value.clone(), view.revision)
+        (view.tree().widgets[widget].value.clone(), view.revision)
     };
     assert_eq!(
         value,
@@ -836,5 +831,109 @@ fn an_idle_tick_draws_no_frame() {
     assert!(
         params.shared.dirty.load(Ordering::Acquire),
         "a report drew nothing"
+    );
+}
+
+/// A UVI program's own page: a knob moved in the editor runs the script's
+/// `changed`, the note plays louder or softer, and a reload keeps it.
+fn uvi_knob_moves_the_sound_and_survives_reload(program: &str, knob: &str, to: f64) {
+    let path = Path::new("/data/main/Libraries/UVI").join(program);
+    // The program is a member of its bank, a file.
+    if !path.ancestors().any(Path::is_file) {
+        eprintln!("skipped: no {}", path.display());
+        return;
+    }
+    let part = |path: PathBuf| SavedPart {
+        part: 0,
+        path,
+        channel: 0,
+        output: 0,
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+        delays: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+    };
+    let (params, mut dsp) = activate(&Saved::new(vec![part(path)]).write());
+    settle(&params, &mut dsp);
+    let before = play(&params, &mut dsp);
+    let shown = |params: &KontraParams| {
+        let guard = crate::lock(&params.shared.rack);
+        let part = guard.as_ref()?.parts()[0].as_ref()?;
+        let tree = part.view.as_ref()?.tree();
+        let n = tree.widgets.iter().position(|w| w.name == knob)?;
+        Some((n, tree.widgets[n].value.clone()))
+    };
+    let (widget, _) = shown(&params).unwrap_or_else(|| panic!("{program}: no {knob}"));
+    params
+        .shared
+        .request(crate::Request::Ui(crate::editor::Edit {
+            slot: Some(0),
+            action: kontra_ui::app::Action::Control {
+                part: 0,
+                widget,
+                value: to,
+            },
+        }));
+    settle(&params, &mut dsp);
+    settle(&params, &mut dsp);
+    let after = play(&params, &mut dsp);
+    let db = |a: f32, b: f32| 20. * (b / a.max(1e-9)).log10();
+    assert!(
+        db(before, after).abs() > 1.,
+        "{knob} → {to} moved {:.2} dB",
+        db(before, after)
+    );
+    assert_eq!(
+        shown(&params).and_then(|s| s.1),
+        Some(kontra_ui_model::Value::Real(to))
+    );
+    params.capture();
+    let saved = params.saved.read().unwrap().clone();
+    let entry = format!("{knob}={to}");
+    let state = Saved::read(&saved);
+    assert!(
+        state.parts[0].scripts.iter().flatten().any(|v| *v == entry),
+        "{entry} was not saved"
+    );
+    let (again, mut again_dsp) = activate(&saved);
+    settle(&again, &mut again_dsp);
+    assert_eq!(
+        shown(&again).and_then(|s| s.1),
+        Some(kontra_ui_model::Value::Real(to))
+    );
+    // The live note was the program's second: round robins move on per note.
+    play(&again, &mut again_dsp);
+    let reloaded = play(&again, &mut again_dsp);
+    assert!(
+        db(after, reloaded).abs() < 0.5,
+        "{after:.4} live, {reloaded:.4} reloaded"
+    );
+    println!(
+        "{knob} → {to}: {:+.2} dB, kept on reload ({:+.2} dB)",
+        db(before, after),
+        db(after, reloaded)
+    );
+}
+
+#[test]
+fn a_vwinds_knob_moved_on_its_page_changes_the_sound_and_survives_reload() {
+    uvi_knob_moves_the_sound_and_survives_reload(
+        "VWinds - Clarinets/VWinds-BbClarinet.ufs/Presets/Bb Clarinet.uvip",
+        "Air",
+        127.,
+    );
+}
+
+#[test]
+#[ignore = "Augmented Orchestra takes about a minute to load in debug"]
+fn an_augmented_orchestra_knob_moved_on_its_page_changes_the_sound_and_survives_reload() {
+    uvi_knob_moves_the_sound_and_survives_reload(
+        "UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs/Presets/00 Orchestra/01 Strings/V Strings Bartok.uvip",
+        "PartVolume_0",
+        0.25,
     );
 }

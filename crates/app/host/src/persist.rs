@@ -7,10 +7,15 @@
 //! The engine lives on the audio thread, so the rack sends a [`Capture`]
 //! there; the audio side fills its values in place and sends it back. Text
 //! variables come back the same way, as fixed-size [`Text`].
+//!
+//! A Lua script's persistent widgets are saved the same way, in UVI's form
+//! (`"<name>=<value>"`); its load restores them before `onLoad`.
 
 use std::collections::HashMap;
 
 use kontra_engine::{Engine, Text};
+
+use crate::ui::lua::Page as _;
 use kontra_ksp::{Cells, FIRST_UI_ID, Persistence, Script};
 
 /// One script slot's persistent number variables, and the instrument script
@@ -19,6 +24,10 @@ use kontra_ksp::{Cells, FIRST_UI_ID, Persistence, Script};
 pub struct Vars {
     pub script: usize,
     pub vars: Vec<Var>,
+    /// A Lua script's persistent widgets: name and number.
+    pub widgets: Vec<(Box<str>, u32)>,
+    /// A Lua script: what its `onSave` returns is saved too.
+    pub state: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,7 +70,37 @@ impl Vars {
                 })
             })
             .collect();
-        Self { script, vars }
+        Self {
+            script,
+            vars,
+            widgets: Vec::new(),
+            state: false,
+        }
+    }
+
+    /// The persistent widgets with a value of the page a Lua script built,
+    /// instrument script `script`.
+    #[must_use]
+    pub fn lua(script: usize, page: &kontra_lua::Ui) -> Self {
+        let valued = [
+            "Knob",
+            "Slider",
+            "NumBox",
+            "Menu",
+            "OnOffButton",
+            "MultiStateButton",
+        ];
+        let widgets = (0u32..)
+            .zip(&page.widgets)
+            .filter(|(_, w)| w.persistent && !w.name.is_empty() && valued.contains(&&*w.kind))
+            .map(|(n, w)| (w.name.as_str().into(), n))
+            .collect();
+        Self {
+            script,
+            vars: Vec::new(),
+            widgets,
+            state: true,
+        }
     }
 }
 
@@ -73,7 +112,15 @@ pub struct Capture {
     values: Box<[Option<i64>]>,
     text_cells: Box<[(u8, u32)]>,
     texts: Box<[Option<Text>]>,
+    /// Lua widgets by (slot, number), and their values.
+    widgets: Box<[(u8, u32)]>,
+    widget_values: Box<[Option<f64>]>,
+    /// By Lua slot, room for its `onSave` state and how much it took.
+    states: Box<[State]>,
 }
+
+/// A Lua slot, room for its saved state, and the length it took.
+type State = (u8, Box<[u8]>, Option<usize>);
 
 impl Capture {
     /// Every persistent cell of a part whose script slots are `slots`.
@@ -90,23 +137,43 @@ impl Capture {
                 .collect()
         };
         let (cells, text_cells) = (cells(false), cells(true));
+        let widgets: Box<[(u8, u32)]> = (slots.iter().enumerate())
+            .filter_map(|(slot, v)| Some((u8::try_from(slot).ok()?, v)))
+            .flat_map(|(slot, v)| v.widgets.iter().map(move |&(_, n)| (slot, n)))
+            .collect();
+        let states = (slots.iter().enumerate())
+            .filter(|(_, v)| v.state)
+            .filter_map(|(slot, _)| Some((u8::try_from(slot).ok()?, vec![0; STATE].into(), None)))
+            .collect();
         Box::new(Self {
             part,
             generation,
+            states,
             values: vec![None; cells.len()].into_boxed_slice(),
             texts: vec![None; text_cells.len()].into_boxed_slice(),
+            widget_values: vec![None; widgets.len()].into_boxed_slice(),
             cells,
             text_cells,
+            widgets,
         })
     }
 
     /// Reads the cells from `engine`; runs on the audio thread, in place.
-    pub(crate) fn read(&mut self, engine: &Engine) {
+    // ponytail: `onSave` runs on every capture (each tick); ask for the
+    // state only when a save asks if a script's `onSave` shows up in the
+    // audio time.
+    pub(crate) fn read(&mut self, engine: &mut Engine) {
+        for (slot, room, len) in &mut *self.states {
+            *len = engine.save_state(*slot, room);
+        }
         for (value, &(slot, cell)) in self.values.iter_mut().zip(self.cells.iter()) {
             *value = engine.script_saved_in(slot, cell as usize);
         }
         for (value, &(slot, cell)) in self.texts.iter_mut().zip(self.text_cells.iter()) {
             *value = engine.script_text_in(slot, cell as usize);
+        }
+        for (value, &(slot, n)) in self.widget_values.iter_mut().zip(self.widgets.iter()) {
+            *value = engine.widget(slot, n).map(|w| w.value);
         }
     }
 
@@ -136,6 +203,7 @@ pub fn saved(loaded: &[Vec<String>], slots: &[Vars], capture: &Capture) -> Vec<V
     let read = capture.index();
     let read_text = capture.text_index();
     let mut out = loaded.to_vec();
+    lua_saved(&mut out, slots, capture);
     for (slot, vars) in slots.iter().enumerate() {
         let (Ok(slot), Some(entries)) = (u8::try_from(slot), out.get_mut(vars.script)) else {
             continue;
@@ -181,6 +249,47 @@ pub fn saved(loaded: &[Vec<String>], slots: &[Vars], capture: &Capture) -> Vec<V
     out
 }
 
+/// Room for a Lua script's saved state (Augmented Orchestra's: 336 bytes).
+const STATE: usize = 16 << 10;
+
+/// The Lua widgets of `capture` into `out`, as `name=value` lines, and the
+/// script's `onSave` state as one more.
+fn lua_saved(out: &mut [Vec<String>], slots: &[Vars], capture: &Capture) {
+    let read: HashMap<(u8, u32), Option<f64>> = (capture.widgets.iter().copied())
+        .zip(capture.widget_values.iter().copied())
+        .collect();
+    for (slot, vars) in slots.iter().enumerate() {
+        let (Ok(slot), Some(entries)) = (u8::try_from(slot), out.get_mut(vars.script)) else {
+            continue;
+        };
+        let mut by_name: HashMap<String, usize> = (entries.iter().enumerate())
+            .filter_map(|(n, e)| Some((e.split_once('=')?.0.to_owned(), n)))
+            .collect();
+        let state = (capture.states.iter())
+            .find(|s| s.0 == slot)
+            .and_then(|(_, room, len)| std::str::from_utf8(room.get(..(*len)?)?).ok());
+        let state = state.map(|s| {
+            (
+                kontra_lua::STATE.into(),
+                format!("{}={s}", kontra_lua::STATE),
+            )
+        });
+        let values = (vars.widgets.iter()).filter_map(|(name, n)| {
+            let value = read.get(&(slot, *n)).copied().flatten()?;
+            Some((name.to_string(), format!("{name}={value}")))
+        });
+        for (name, entry) in values.chain(state) {
+            match by_name.get(&name).and_then(|&at| entries.get_mut(at)) {
+                Some(e) => *e = entry,
+                None => {
+                    by_name.insert(name, entries.len());
+                    entries.push(entry);
+                }
+            }
+        }
+    }
+}
+
 /// A cell's value as Kontakt saves it.
 fn text(cell: i64, real: bool) -> String {
     if real {
@@ -200,6 +309,30 @@ fn bare(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lua_pages_persistent_widgets_save_as_name_equals_value() {
+        let page = kontra_lua::compile(
+            r#"Knob{"Air", 64, 0, 127} Knob{"Temp", 1, persistent=false}
+               OnOffButton{"Hold", false} Label{"Says"}"#,
+            &[],
+            &[],
+        )
+        .unwrap()
+        .ui;
+        let vars = Vars::lua(0, &page);
+        assert_eq!(vars.widgets, [("Air".into(), 0), ("Hold".into(), 2)]);
+        let mut capture = Capture::new(0, 0, std::slice::from_ref(&vars));
+        capture.widget_values = [Some(100.), Some(1.)].into();
+        let state = br#"{["ccVel"]=100,}"#;
+        let (_, room, len) = &mut capture.states[0];
+        room[..state.len()].copy_from_slice(state);
+        *len = Some(state.len());
+        let loaded = vec![vec!["Air=64".to_owned(), "Other=3".to_owned()]];
+        let out = saved(&loaded, std::slice::from_ref(&vars), &capture);
+        let state = r#"__state={["ccVel"]=100,}"#;
+        assert_eq!(out, [vec!["Air=100", "Other=3", "Hold=1", state]]);
+    }
 
     #[test]
     fn captured_values_replace_the_loaded_ones_in_kontakts_form() {

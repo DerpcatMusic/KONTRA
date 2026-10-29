@@ -114,6 +114,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
                     (id, script.callback(CallbackKind::UiControl, Some(n)))
                 })
                 .collect(),
+            widget: None,
         },
         coroutines: COROUTINES,
         foreign: None,
@@ -283,6 +284,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
             ui_controls: None,
             async_complete: None,
             ui_control: Vec::new(),
+            widget: Some(kontra_lua::Callbacks::WIDGET),
         },
         coroutines: COROUTINES,
         controls: Controls::default(),
