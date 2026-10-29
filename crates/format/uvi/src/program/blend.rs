@@ -127,14 +127,15 @@ fn depths(program: Node, node: Node) -> Option<(Vec<ir::Factor>, Vec<NodeId>)> {
     ))
 }
 
-/// `route` with the key connections on its ratio ([`matrix::key_factor`])
-/// scaling it per voice: its value as a blend, times each. None when that
+/// `route` with the key connections and live macros on its ratio
+/// ([`matrix::key_factor`], [`matrix::macro_factor`]) scaling it per voice: its value as a blend, times each. None when that
 /// value is not a source through a table, an LFO or a blend.
 pub(super) fn keyed(program: Node, connection: Node, route: Route) -> Option<Route> {
-    let keys: Vec<_> = matrix::children(connection)
+    let mut keys: Vec<_> = matrix::children(connection)
         .filter(|f| f.attribute("Destination") == Some("Ratio"))
         .filter_map(|f| matrix::key_factor(program, f))
         .collect();
+    keys.extend(matrix::macro_factors(program, connection));
     if keys.is_empty() {
         return Some(route);
     }

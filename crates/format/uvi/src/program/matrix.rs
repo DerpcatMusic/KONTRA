@@ -155,22 +155,29 @@ fn read_through(
 /// A connection's ratio with each connection on it scaling it the same
 /// multiplicative way; None when one of those is live (not a constant).
 pub(super) fn held_ratio(program: Node, connection: Node) -> Option<f32> {
-    ratio(program, connection, false)
+    ratio(program, connection, false, false)
 }
 
-/// [`held_ratio`] passing over the key connections [`super::blend::keyed`] carries.
+/// [`held_ratio`] passing over the key and live macro connections
+/// [`super::blend::keyed`] carries.
 pub(super) fn unkeyed_ratio(program: Node, connection: Node) -> Option<f32> {
-    ratio(program, connection, true)
+    ratio(program, connection, true, true)
 }
 
-fn ratio(program: Node, connection: Node, keys: bool) -> Option<f32> {
+/// [`held_ratio`] passing over the live macros ([`macro_factors`]).
+pub(super) fn unmacroed_ratio(program: Node, connection: Node) -> Option<f32> {
+    ratio(program, connection, false, true)
+}
+
+fn ratio(program: Node, connection: Node, keys: bool, macros: bool) -> Option<f32> {
     let mut r = num(connection, "Ratio", 1.0).ok()? as f32;
     for f in children(connection).filter(|f| f.attribute("Destination") == Some("Ratio")) {
-        if keys && key_factor(program, f).is_some() {
+        if keys && key_factor(program, f).is_some() || macros && macro_factor(program, f).is_some()
+        {
             continue;
         }
-        // ponytail: a live macro on a ratio holds its saved value (the
-        // ratio is folded here); a blend factor would carry a script moving it.
+        // A live macro is held at its saved value where nothing carries it
+        // live: on a factor's own ratio, one level down.
         let input = match transfer(program, f, None)? {
             ir::Transfer {
                 source: ir::Source::Script(id),
@@ -227,6 +234,30 @@ pub(super) fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> 
         },
         depth: held_ratio(program, connection)?.clamp(-1.0, 1.0),
     })
+}
+
+/// A live macro on a ratio ([`live_macro`], its script setting it) as the
+/// factor it scales the ratio by, read live through the connection's
+/// mapper and law (VWinds' bend range, Macro 3, set from the script's knob
+/// at `bendAmount/12`). None for any other connection.
+pub(super) fn macro_factor(program: Node, connection: Node) -> Option<ir::Factor> {
+    if flag(connection, "Inverted") || flag(connection, "ConnectionMode") {
+        return None;
+    }
+    let input = transfer(program, connection, None)?;
+    matches!(input.source, ir::Source::Script(id) if id >= MACROS).then_some(())?;
+    Some(ir::Factor {
+        input,
+        depth: held_ratio(program, connection)?.clamp(-1.0, 1.0),
+    })
+}
+
+/// The [`macro_factor`]s on `connection`'s ratio.
+pub(super) fn macro_factors(program: Node, connection: Node) -> Vec<ir::Factor> {
+    children(connection)
+        .filter(|f| f.attribute("Destination") == Some("Ratio"))
+        .filter_map(|f| macro_factor(program, f))
+        .collect()
 }
 
 /// Whether a modulator is bipolar (an LFO is unless it says not).
