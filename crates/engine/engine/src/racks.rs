@@ -333,7 +333,6 @@ impl Engine {
         }
         self.main.process(span, &mut [], tempo);
         let (gain, pan) = (self.instrument.gain * self.expression, self.instrument.pan);
-        let [[l, _], [_, r]] = effects::balance(pan);
-        self.output.process(span, gain, [l, r]);
+        self.output.process(span, gain, self.balance.gains(pan));
     }
 }
