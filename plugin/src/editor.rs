@@ -159,6 +159,10 @@ impl Snapshot {
             }
         });
         app.parts = parts.collect();
+        // What the picture workers decoded since the last frame.
+        for face in app.parts.iter_mut().filter_map(|p| p.face.as_mut()) {
+            face.pictures.poll();
+        }
         *shown = self
             .parts
             .iter()
