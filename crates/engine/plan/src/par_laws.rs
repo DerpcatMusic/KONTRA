@@ -1,10 +1,11 @@
 //! The laws between an engine parameter's 0..=1 setting and what it means:
 //! envelope stage times, the attack curve, and the text its knob shows.
 
+use kontra_ir as ir;
 use kontra_script_ui::readout::{Readout, write};
 use kontra_vm::Text;
 
-use crate::EnginePar;
+use crate::{EnginePar, EnginePars};
 
 /// Attack and hold run 0..=15 s, decay and release 0..=25 s, exponentially
 /// with a 2 ms shift: `exp(ln 2 + (ln(top + 2) − ln 2) × x) − 2` ms.
@@ -42,6 +43,33 @@ pub fn attack_x(shape: f32) -> f64 {
 pub fn stage_x(top_ms: f64, ms: f64) -> f64 {
     let (low, high) = (2f64.ln(), (top_ms + 2.0).ln());
     (((ms + 2.0).ln() - low) / (high - low)).clamp(0.0, 1.0)
+}
+
+/// Writes the text of parameter id `id` at `raw` (0..=1000000): its
+/// translator readout, else the engine's own law; false when unknown.
+pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
+    let x = raw.clamp(0, 1_000_000);
+    let Some(r) = pars.readout(id) else {
+        return pars.get(id).is_some_and(|par| display(par, raw, out));
+    };
+    if let Some(end) = [0, 1_000_000]
+        .iter()
+        .zip(r.ends)
+        .find_map(|(&at, e)| e.filter(|_| x == at))
+    {
+        out.push(end);
+        return true;
+    }
+    let v = f64::from(r.law.eval(x as f32 / 1e6));
+    let readout = match r.form {
+        ir::Form::Padded => Readout::Padded(v),
+        ir::Form::Decimal => Readout::Signed(v),
+        ir::Form::Wide => Readout::Wide(v),
+        ir::Form::Whole => Readout::Whole(v),
+        ir::Form::Ratio => Readout::Ratio(v),
+        ir::Form::Pan => Readout::Pan,
+    };
+    write(readout, v, out)
 }
 
 /// Writes the display of `par` at `raw` (0..=1000000); false when unknown.

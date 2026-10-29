@@ -12,6 +12,7 @@ mod effects;
 mod link;
 mod mods;
 mod output;
+mod readout;
 mod reverb;
 mod route_names;
 mod wavetable;
@@ -27,6 +28,7 @@ pub use effects::{
 pub use link::{CcLink, Linked};
 pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Term, Transfer, Wave};
 pub use output::{Balance, Output, OutputControllers};
+pub use readout::{Form, Readout};
 pub use reverb::{
     CombNetwork, HadamardNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar,
 };

@@ -2610,3 +2610,44 @@ fn a_release_callback_reads_its_notes_polyphonic_variables() {
     );
     assert_eq!(level(&mut e, &[off(62)]), 0.0);
 }
+
+/// What Kontakt 8.13.1 showed for ANALOG STRINGS' parameters at settings
+/// 0, .1, .25, .5, .75 and 1 (oracle probe 2026-10-29, scratch/laneB/disp).
+#[test]
+fn parameter_texts_read_as_kontakt_shows_them() {
+    let cases = [
+        ("CUTOFF", "  8.2| 18.9| 66.4|538.6|  4.4k| 35.5k"),
+        ("RESONANCE", "0.0|10.0|25.0|50.0|75.0|100.0"),
+        ("ATK_CURVE", "-100|-80|-50|0|50|100"),
+        ("BITS", "  1.0|  1.6|  4.0|  8.0| 12.0|Off"),
+        ("FREQUENCY", " 50.0|  4.8k| 12.0k| 24.0k| 36.0k|Off"),
+        ("CH_PHASE", "  0.0|  9.0| 22.5| 45.0| 67.5| 90.0"),
+        ("CH_SPEED", " 0.05| 0.08| 0.18| 0.63|  2.2|  8.0"),
+        ("COMP_ATTACK", "  1.0|  3.4| 10.8| 52.8|232.4|  1.0k"),
+        ("COMP_DECAY", " 50.0| 74.6|135.0|358.7|948.0|  2.5k"),
+        ("FREQ2", " 20.0| 39.9|112.5|632.5|  3.6k| 20.0k"),
+        ("GAIN1", "-18.0|-14.4| -9.0| 0.00|  9.0| 18.0"),
+        ("LFO_DELAY", " 0.00|  2.7| 14.8|139.4|  1.2k| 10.0k"),
+        ("LIM_IN_GAIN", "-24.0|-19.2|-12.0| 0.00| 12.0| 24.0"),
+        ("LIM_RELEASE", " 10.0| 16.7| 34.3|107.7|329.5|  1.0k"),
+        ("RATIO", "1: 1.0|1: 1.4|1: 2.2|1: 5.0|1:11.2|1:25.0"),
+        ("RV_PREDELAY", " 0.00|  1.1|  4.2| 17.1| 56.9|180.0"),
+        ("SHAPE", "-100.0|-80.0|-50.0|0.0|50.0|100.0"),
+        ("STEREO", "mono|-80.0|-50.0|0.0|50.0|100.0"),
+        ("STEREO_PAN", "100 L|80 L|50 L|Center|50 R|100 R"),
+        ("THRESHOLD", "-68.0|-61.5|-51.8|-35.5|-19.2| -3.0"),
+    ];
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    for (name, want) in cases {
+        let shown: Vec<_> = [0, 100_000, 250_000, 500_000, 750_000, 1_000_000]
+            .map(|v| format!("get_engine_par_disp_ext($ENGINE_PAR_{name}, {v}, -1, -1, -1)"))
+            .into();
+        let source = format!(
+            "on init\n declare @t\n @t := {}\nend on\non note\n message(@t)\nend on",
+            shown.join(" & \"|\" & ")
+        );
+        let mut e = engine(&store, Vec::new(), &source);
+        level(&mut e, &[on(60)]);
+        assert_eq!(e.last_message(), want, "{name}");
+    }
+}

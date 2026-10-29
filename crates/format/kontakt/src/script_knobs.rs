@@ -460,9 +460,10 @@ fn own_laws(kind: i32) -> Vec<SlotKnob> {
 
 /// The Compressor's saved attack and release ms for a knob `x`, `lo + (hi −
 /// lo)·(e^(kx) − 1)/(e^k − 1)`: fitted to the saves Kontakt writes for x = 0,
-/// .1, .25, .5, .75, .9, 1 (probes/knob_save_laws.lua), within 0.01% / 0.02%.
-const COMP_ATTACK_MS: [(f32, f32, f32); 2] = [(0.0, 1.0, 5.811), (1.0, 1000.0, 0.0)];
-const COMP_RELEASE_MS: [(f32, f32, f32); 2] = [(0.0, 50.0, 3.874), (1.0, 2500.0, 0.0)];
+/// .1, .25, .5, .75, .9, 1 (probes/knob_save_laws.lua), within 0.01% / 0.02%;
+/// the release k also gives the texts Kontakt shows (readouts.rs).
+pub(crate) const COMP_ATTACK_MS: [(f32, f32, f32); 2] = [(0.0, 1.0, 5.811), (1.0, 1000.0, 0.0)];
+pub(crate) const COMP_RELEASE_MS: [(f32, f32, f32); 2] = [(0.0, 50.0, 3.8734), (1.0, 2500.0, 0.0)];
 
 /// The Compressor's attack and release knobs: the saved ms through
 /// [`crate::laws::compressor`], whose law depends on the mode.
@@ -637,9 +638,11 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
 /// Saved ms for a knob `x`, `lo + (hi − lo)·(e^(kx) − 1)/(e^k − 1)`, fitted
 /// to Kontakt's saves at x = 0, .1, .25, .5, .75, .9, 1 (probes/fx_knob_laws.lua):
 /// the legacy Reverb's predelay 0..180 ms and the Limiter's release
-/// 10..1000 ms, both within 0.01%.
-const REVERB_PREDELAY_MS: [(f32, f32, f32); 2] = [(0.0, 0.0, 4.511), (1.0, 180.0, 0.0)];
-const LIMITER_RELEASE_MS: [(f32, f32, f32); 2] = [(0.0, 10.0, 4.425), (1.0, 1000.0, 0.0)];
+/// 10..1000 ms, both within 0.01%; the release k also gives the texts
+/// Kontakt shows (readouts.rs).
+pub(crate) const REVERB_PREDELAY_MS: [(f32, f32, f32); 2] = [(0.0, 0.0, 4.511), (1.0, 180.0, 0.0)];
+pub(crate) const LIMITER_RELEASE_MS: [(f32, f32, f32); 2] =
+    [(0.0, 10.0, 4.4242), (1.0, 1000.0, 0.0)];
 
 /// The legacy Reverb's knobs through [`crate::legacy_reverb::reverb`]: the
 /// predelay knob through its saved-ms law, the others saved as set.
