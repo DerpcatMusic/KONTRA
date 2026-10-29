@@ -9,12 +9,14 @@
 mod formant;
 mod huovilainen;
 mod ladder;
+mod sallen_key;
 
 pub use formant::{Formant, VowelSet, Vowels};
 pub use huovilainen::Huovilainen;
 pub use kontra_dsp_core::Biquad;
 use kontra_dsp_core::flush;
 pub use ladder::Ladder;
+pub use sallen_key::SallenKey;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pass {
@@ -40,11 +42,12 @@ pub struct Shape {
 }
 
 /// A ladder by tap selector 1..=12: a [`Ladder`], or a [`Huovilainen`]
-/// with its `fat`.
+/// with its `fat`; or a [`SallenKey`] two-pole.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LadderKind {
     ZeroDelay(u8),
     Explicit { taps: u8, fat: f32 },
+    SallenKey { morph: f32, curve: [f32; 2] },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +55,7 @@ enum Kernel {
     ZeroDelay(Ladder),
     // Boxed: its halfband is several times the zero-delay ladder; built at load.
     Explicit(Box<Huovilainen>),
+    SallenKey(SallenKey),
 }
 
 /// The shape's sections at `rate`; the cutoff is held below 0.49 of the rate.
@@ -128,6 +132,9 @@ impl Svf {
                 LadderKind::Explicit { taps, fat } => {
                     Kernel::Explicit(Box::new(Huovilainen::new(taps, fat)))
                 }
+                LadderKind::SallenKey { morph, curve } => {
+                    Kernel::SallenKey(SallenKey::new(morph, curve))
+                }
             }),
         }
     }
@@ -153,6 +160,10 @@ impl Svf {
                     l.process(io, gain);
                 }
                 Kernel::Explicit(l) => {
+                    l.tune(hz, self.rate, r);
+                    l.process(io, gain);
+                }
+                Kernel::SallenKey(l) => {
                     l.tune(hz, self.rate, r);
                     l.process(io, gain);
                 }
@@ -220,6 +231,7 @@ impl Svf {
         self.ladder.as_ref().is_none_or(|l| match l {
             Kernel::ZeroDelay(l) => l.is_silent(),
             Kernel::Explicit(l) => l.is_silent(),
+            Kernel::SallenKey(l) => l.is_silent(),
         }) && self
             .state
             .iter()
@@ -233,6 +245,7 @@ impl Svf {
         match &mut self.ladder {
             Some(Kernel::ZeroDelay(l)) => l.reset(),
             Some(Kernel::Explicit(l)) => l.reset(),
+            Some(Kernel::SallenKey(l)) => l.reset(),
             None => {}
         }
     }
