@@ -48,6 +48,16 @@ pub struct App {
     /// The libraries' cover pictures; the host gives a store whose worker
     /// reads [`Library::art`] and replaces it when the list changes.
     pub covers: Option<Pictures>,
+    /// A load the host has been asked for and not finished.
+    // ponytail: one load shown at a time; a list if loads queue up.
+    pub loading: Option<Loading>,
+}
+
+/// Where a load lands: a new part, or part `n` it replaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Loading {
+    New,
+    Part(usize),
 }
 
 /// A library in the browser.
@@ -209,6 +219,9 @@ pub struct View {
     pub report_open: Option<usize>,
     /// The articulation grip being dragged, and the row it started on.
     pub grip: Option<(String, usize)>,
+    /// The browser row a click selected, as (library, preset): a click
+    /// selects, a double-click or a drag loads.
+    pub picked: Option<(usize, usize)>,
     /// The Mapping tab: the group shown (all when none), the group filter,
     /// the cell last picked on the grid (key, velocity) and the zone picked.
     // ponytail: one mapping state for the editor; per part if two open at once matters.
@@ -257,6 +270,12 @@ pub enum Sheet {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Load {
+        library: usize,
+        preset: usize,
+    },
+    /// A browser preset dropped on a part: it plays that instead.
+    Replace {
+        part: usize,
         library: usize,
         preset: usize,
     },

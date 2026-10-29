@@ -960,3 +960,21 @@ fn a_host_save_during_a_long_load_does_not_wait_for_it() {
     drop(held);
     assert_eq!(*params.saved.read().unwrap(), before);
 }
+
+/// A load asked for shows as loading until the tick carries it out, even
+/// one that fails.
+#[test]
+fn a_load_shows_until_the_tick_is_done_with_it() {
+    let (params, _dsp) = activate("");
+    assert!(!params.shared.loading());
+    params
+        .shared
+        .request(crate::Request::Browse(kontra_ui::app::Action::Replace {
+            part: 0,
+            library: 0,
+            preset: 0,
+        }));
+    assert!(params.shared.loading(), "a replace asked for shows nothing");
+    Tick.run(&params);
+    assert!(!params.shared.loading(), "the tick left it loading");
+}
