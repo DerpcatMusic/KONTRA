@@ -714,6 +714,8 @@ fn a_first_run_lists_v2s_libraries_and_their_presets_play_and_recall() {
         return;
     };
     let dir = std::env::temp_dir().join(format!("kontra-first-run-{}", std::process::id()));
+    // A run that died left its prefs: a first run starts without them.
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("kontra")).unwrap();
     std::fs::copy(&v2, dir.join("kontra").join("settings.json")).unwrap();
     let mut browser = kontra_host::browser::Browser::open(Some(&dir), Some(&dir));
