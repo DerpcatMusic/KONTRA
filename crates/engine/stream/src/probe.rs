@@ -4,9 +4,7 @@
 //! head of 12 KiB per channel still starts every page on time
 //! (05-STREAM.md §1).
 
-use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 /// Reads per probe.
@@ -18,35 +16,13 @@ const READS: u64 = 16;
 /// a quarter of scattered blocks fast.
 const FAST: Duration = Duration::from_millis(1);
 
-/// Whether `file`'s device reads fast, measured once per device per
-/// process. `false` when it can't be measured (another platform, a file
-/// system without direct reads): the law's own preload then holds.
+/// Whether `file`'s device reads fast, measured on each load (16 small
+/// reads: about 2 ms on fast storage). `false` when it can't be measured
+/// (another platform, a file system without direct reads): the law's own
+/// preload then holds.
 #[must_use]
 pub fn fast_storage(file: &Path) -> bool {
-    static SEEN: OnceLock<Mutex<HashMap<u64, bool>>> = OnceLock::new();
-    let Some(device) = device(file) else {
-        return false;
-    };
-    let seen = SEEN.get_or_init(Mutex::default);
-    if let Some(&fast) = seen.lock().ok().as_ref().and_then(|s| s.get(&device)) {
-        return fast;
-    }
-    let fast = quartile_read(file).is_some_and(|t| t <= FAST);
-    if let Ok(mut s) = seen.lock() {
-        s.insert(device, fast);
-    }
-    fast
-}
-
-#[cfg(target_os = "linux")]
-fn device(file: &Path) -> Option<u64> {
-    use std::os::unix::fs::MetadataExt;
-    Some(std::fs::metadata(file).ok()?.dev())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn device(_: &Path) -> Option<u64> {
-    None
+    quartile_read(file).is_some_and(|t| t <= FAST)
 }
 
 /// The lower quartile of [`READS`] 4 KiB direct reads spread over `file`.
