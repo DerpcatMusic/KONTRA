@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use kontra_engine::ir::RackAt;
 
-use crate::rack::{Mix, Rack};
+use crate::rack::{Delays, Mix, Rack};
 
 /// Bumped when a field changes meaning; a state of another version loads
 /// nothing rather than something wrong.
@@ -35,10 +35,10 @@ pub struct SavedPart {
     /// empty for a part saved before scripts were.
     #[serde(default)]
     pub scripts: Vec<Vec<String>>,
-    /// Its attack delay as auto-align measured it, so a reload need not
+    /// Its attack delays as auto-align measured them, so a reload need not
     /// measure again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delay_ms: Option<f32>,
+    pub delays: Option<Delays>,
     /// Effect types its scripts loaded into slots after `on init`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slot_types: Vec<SlotType>,
@@ -130,7 +130,7 @@ impl Rack {
                     solo: p.solo,
                     mute: p.mute,
                     scripts: self.saved_scripts(part),
-                    delay_ms: p.delay_ms,
+                    delays: p.delays.clone(),
                     slot_types: (p.slot_types.iter())
                         .map(|&(at, slot, ty)| SlotType {
                             rack: at.into(),
@@ -171,8 +171,8 @@ impl Rack {
                         },
                     );
                     self.set_solo_mute(p.part, p.solo, p.mute);
-                    if let Some(ms) = p.delay_ms {
-                        self.set_delay(p.part, ms);
+                    if let Some(delays) = p.delays.clone() {
+                        self.set_delays(p.part, delays);
                     }
                 }
                 Err(e) => failed.push((p.part, e.to_string())),
