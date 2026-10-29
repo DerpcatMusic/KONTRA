@@ -389,6 +389,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let p = Arc::clone(&params);
     let watched = Arc::clone(&params);
     let dropping = Arc::clone(&params);
+    let owner = Arc::clone(&params);
     let mut app = App::default();
     let mut shown = Shown::default();
     let mut look = SavedView::default();
@@ -478,6 +479,8 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         !instruments.is_empty() || !folders.is_empty()
     })
     .changed(move || watched.shared.dirty.swap(false, Ordering::AcqRel))
+    // Add folder's picker is owned by the host's window (Windows).
+    .on_win32_parent(move |hwnd| owner.shared.folder.set_owner(hwnd))
     .into_editor()
 }
 
