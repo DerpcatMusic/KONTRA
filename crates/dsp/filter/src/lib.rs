@@ -7,12 +7,14 @@
 //! filter's energy). One shape, two runners: they agree to 1e-5 at a fixed cutoff.
 
 mod cascade;
+mod clocked;
 mod formant;
 mod huovilainen;
 mod ladder;
 mod sallen_key;
 
 pub use cascade::{Cascade, CascadeSettings, CascadeStage};
+pub use clocked::{Clocked, ClockedShape};
 pub use formant::{Formant, VowelSet, Vowels};
 pub use huovilainen::Huovilainen;
 pub use kontra_dsp_core::Biquad;
