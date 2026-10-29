@@ -2651,3 +2651,25 @@ fn parameter_texts_read_as_kontakt_shows_them() {
         assert_eq!(e.last_message(), want, "{name}");
     }
 }
+
+/// A fresh knob, slider or value edit holds its minimum, as Kontakt 8.13.1
+/// read it back in on init (oracle 2026-10-29, scratch/laneB/vedit). CHORUS's
+/// legato velocity split divided by its (2, 4) value edit, 0 before.
+#[test]
+fn a_new_ranged_control_starts_at_its_minimum() {
+    let source = "on init
+            declare ui_value_edit $ve(2, 4, 1)
+            declare ui_value_edit $vn(-9, -3, 1)
+            declare ui_knob $kn(5, 9, 1)
+            declare ui_slider $sl(3, 7)
+            declare @t
+            @t := $ve & \";\" & $vn & \";\" & $kn & \";\" & $sl & \";\" & 100 / $ve
+        end on
+        on note
+            message(@t)
+        end on";
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(&store, Vec::new(), source);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "2;-9;5;3;50");
+}
