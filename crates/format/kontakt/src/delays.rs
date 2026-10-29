@@ -6,7 +6,6 @@
 //! given here at 48 kHz.
 
 use kontra_ir as ir;
-use kontra_law::Law;
 
 /// A saved `unit` above this selects the tempo-synced value (reader flag,
 /// 0x144737708).
