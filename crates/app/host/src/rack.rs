@@ -128,6 +128,9 @@ pub struct Part {
     /// Effect types its scripts loaded into slots after `on init`, as
     /// (rack, slot, type); a reload puts them back before `on init`.
     pub slot_types: Vec<(ir::RackAt, u8, u16)>,
+    /// Library responses its scripts loaded into convolutions after
+    /// `on init`, as (rack, slot, name); put back after the types.
+    pub slot_responses: Vec<(ir::RackAt, u8, String)>,
 }
 
 /// What the rack keeps to save a part's scripts.
@@ -247,7 +250,8 @@ impl Rack {
 
     /// [`Rack::load`], with each instrument script's saved values replaced
     /// by `scripts` (as [`Rack::saved_scripts`] gave them) and the effect
-    /// types its scripts loaded put back in their slots before `on init`.
+    /// types and responses its scripts loaded put back in their slots before
+    /// `on init`.
     ///
     /// # Errors
     /// As [`Rack::load`].
@@ -257,12 +261,14 @@ impl Rack {
         path: &Path,
         scripts: &[Vec<String>],
         slot_types: &[(ir::RackAt, u8, u16)],
+        slot_responses: &[(ir::RackAt, u8, String)],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut instrument = crate::instrument::read(path)?;
         for (script, saved) in instrument.scripts.iter_mut().zip(scripts) {
             script.saved.clone_from(saved);
         }
-        self.load_built(part, instrument, Some(path.to_owned()), slot_types)
+        let path = Some(path.to_owned());
+        self.load_built(part, instrument, path, slot_types, slot_responses)
     }
 
     /// By instrument script, the saved values that bring `part`'s scripts
@@ -289,7 +295,7 @@ impl Rack {
         instrument: ir::Instrument,
         path: Option<PathBuf>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.load_built(part, instrument, path, &[])
+        self.load_built(part, instrument, path, &[], &[])
     }
 
     fn load_built(
@@ -298,6 +304,7 @@ impl Rack {
         instrument: ir::Instrument,
         path: Option<PathBuf>,
         slot_types: &[(ir::RackAt, u8, u16)],
+        slot_responses: &[(ir::RackAt, u8, String)],
     ) -> Result<(), Box<dyn std::error::Error>> {
         if part >= MAX_PARTS {
             return Err(format!("part {part} is past the rack's {MAX_PARTS}").into());
@@ -307,12 +314,17 @@ impl Rack {
         let slot_types: Vec<_> = (slot_types.iter().copied())
             .filter(|&(at, slot, ty)| loaded.plan.load_type(at, slot, ty))
             .collect();
+        let slot_responses: Vec<_> = (slot_responses.iter())
+            .filter(|(at, slot, name)| loaded.plan.load_response(*at, *slot, name, self.rate))
+            .cloned()
+            .collect();
         let plan = Arc::new(loaded.plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
         let view = crate::view::View::of(&loaded.faces, &engine, path.as_deref());
         let part_info = Part {
             view,
             slot_types,
+            slot_responses,
             plan: Some(plan),
             delays: None,
             path,
@@ -451,11 +463,24 @@ impl Rack {
             if p.script.generation != generation {
                 continue;
             }
-            let loaded = (request.at, request.slot, request.ty);
-            p.slot_types
-                .retain(|&(at, slot, _)| (at, slot) != (loaded.0, loaded.1));
-            p.slot_types.push(loaded);
-            let unit = Box::new(Some(Prepared::new(request, self.rate)));
+            let here = (request.at, request.slot);
+            match request.response {
+                None => {
+                    p.slot_types.retain(|&(at, slot, _)| (at, slot) != here);
+                    p.slot_types.push((here.0, here.1, request.ty));
+                    p.slot_responses.retain(|&(at, slot, _)| (at, slot) != here);
+                }
+                Some((index, _)) => {
+                    let plan = p.plan.as_deref();
+                    if let Some((name, _)) = plan.and_then(|q| q.responses.get(usize::from(index)))
+                    {
+                        p.slot_responses.retain(|&(at, slot, _)| (at, slot) != here);
+                        p.slot_responses.push((here.0, here.1, name.clone()));
+                    }
+                }
+            }
+            let unit = Prepared::new(request, p.plan.as_deref(), self.rate);
+            let unit = Box::new(Some(unit));
             self.send(Command::Effect {
                 part,
                 generation,

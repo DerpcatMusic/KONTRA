@@ -687,14 +687,15 @@ impl HostApi for Engine {
                     None => -1,
                 })
             }
-            Action::LoadIrSample
-                if self.load_ir_sample(
-                    call.texts.first().map_or("", Text::as_str),
-                    int(0),
-                    int(1),
-                ) =>
-            {
-                HostValue::Int(0)
+            Action::LoadIrSample => {
+                let name = call.texts.first().map_or("", Text::as_str);
+                match self.load_ir_sample(name, int(0), int(1)) {
+                    Some(answer) => HostValue::Int(answer),
+                    None => {
+                        self.count_unhandled(Action::LoadIrSample);
+                        HostValue::Nothing
+                    }
+                }
             }
             Action::SetController => {
                 self.set_controller(int(0), int(1));

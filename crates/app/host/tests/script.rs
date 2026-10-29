@@ -1656,7 +1656,7 @@ fn a_script_loads_an_effect_type_into_a_slot() {
     assert_eq!(requests.len(), 1);
     assert!(level(&mut e, &[]).abs() < 1e-3, "nothing until installed");
     assert_eq!(e.last_message(), "70 90");
-    let old = e.install(Prepared::new(requests[0], RATE));
+    let old = e.install(Prepared::new(requests[0], None, RATE));
     assert!(old.request().effect.is_some(), "the high-pass comes back");
     assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3);
     assert_eq!(e.last_message(), "-1 1 1");
@@ -1761,11 +1761,12 @@ fn output_channels_and_disable_logging_are_answered() {
     assert_eq!(e.stats().actions_unhandled, 0);
 }
 
-/// `load_ir_sample` in init swaps an insert convolution's response for the
-/// library one it names (any extension), prepared as the one it replaces.
+/// `load_ir_sample` swaps an insert convolution's response for the library
+/// one it names (any extension), prepared as the one it replaces: in init at
+/// once, later through the host and an async id.
 #[test]
 fn a_script_loads_a_library_response_into_a_convolution() {
-    use kontra_engine::{Response, ir};
+    use kontra_engine::{Prepared, Response, ir};
     // One frame at half scale, 16-bit stereo at 48 kHz.
     let half = 16_384i16.to_le_bytes();
     let mut wav = b"RIFF".to_vec();
@@ -1820,14 +1821,49 @@ fn a_script_loads_a_library_response_into_a_convolution() {
     )];
     let script = kontra_ksp::compile(
         "on init
+            declare $id
             load_ir_sample(\"Half.ncw\", 0, $NI_INSERT_BUS)
         end on",
         &[],
     )
     .unwrap();
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let later = kontra_ksp::compile(
+        "on init
+            declare $id
+        end on
+        on note
+            $id := load_ir_sample(\"Half.ncw\", 0, $NI_INSERT_BUS)
+        end on
+        on async_complete
+            message($id & \" \" & $NI_ASYNC_ID)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut resumed = plan.clone();
+    resumed.scripts = vec![kontra_host::script::plan(&later, &[], &[])];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
     let l = level(&mut e, &[on(60)]);
     assert!((l - 0.25).abs() < 1e-3, "{l}");
+    assert_eq!(e.stats().actions_unhandled, 0);
+
+    // After init the host decodes it off the audio thread, and the id
+    // completes once it plays.
+    let resumed = Arc::new(resumed);
+    let mut e = Engine::new(Arc::clone(&resumed), store.client(), RATE);
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+    let mut requests = Vec::new();
+    e.drain_requests(|r| requests.push(r));
+    assert_eq!(requests.len(), 1);
+    assert!(
+        (level(&mut e, &[]) - 0.5).abs() < 1e-3,
+        "nothing until installed"
+    );
+    let old = e.install(Prepared::new(requests[0], Some(&resumed), RATE));
+    assert!(old.request().effect.is_some(), "the room comes back");
+    let l = level(&mut e, &[]);
+    assert!((l - 0.25).abs() < 1e-3, "{l}");
+    assert_eq!(e.last_message(), "1 1");
     assert_eq!(e.stats().actions_unhandled, 0);
 }
