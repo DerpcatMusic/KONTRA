@@ -48,6 +48,9 @@ pub enum HostValue {
     Real(f64),
     /// The text is in [`HostCall::text_out`].
     Text,
+    /// Not done yet: the callback waits this many microseconds, then makes
+    /// the same call again (`wait_async` on a command still running).
+    Wait(u64),
 }
 
 /// The engine side of every non-pure action, implemented once (`kontra-engine`).
@@ -640,6 +643,14 @@ fn execute(
                         })
                     }
                 };
+                if let HostValue::Wait(micros) = value
+                    && !c.no_wait
+                {
+                    c.pc -= 1;
+                    c.loop_count = 0;
+                    c.waits = c.waits.wrapping_add(1);
+                    return Step::Wait(micros);
+                }
                 c.stack.truncate(int_from);
                 c.texts.truncate(text_from);
                 match (returns, value) {

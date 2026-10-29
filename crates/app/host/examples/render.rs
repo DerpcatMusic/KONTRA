@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Optional: the mod wheel moves to this value one second in.
     let wheel: Option<u8> = args.next().and_then(|a| a.to_str()?.parse().ok());
 
-    // KONTRA_SCRIPT_DUMP=<dir> writes each script's source there.
+    // KONTRA_SCRIPT_DUMP=<dir> writes each script's source, data and saved values there.
     if let Some(dir) = std::env::var_os("KONTRA_SCRIPT_DUMP") {
         for (n, s) in kontra_host::instrument::read(&path)?
             .scripts
@@ -43,6 +43,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     bytes,
                 )?;
             }
+            // Its saved persistent values, one per line.
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("{n}-saved.txt")),
+                s.saved.join("\n"),
+            )?;
             let data: Vec<_> = s.data.iter().map(|(name, b)| (name, b.len())).collect();
             println!("  script {n} data files: {data:?}");
         }
@@ -102,6 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
     }
+    let scripts: Vec<String> = ir.scripts.iter().map(|s| s.source.clone()).collect();
     let loaded = kontra_host::instrument::build(ir, RATE, &mut store);
     println!(
         "{}: {} zones, loaded in {:?}",
@@ -272,6 +278,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..RATE as usize / 4 / 512 {
         engine.process(&mut silent, &[]);
         install_requests(&mut engine, &plan);
+    }
+    // KONTRA_CONTROL=name=value,...: each script control (named without its
+    // type prefix) moves there in turn and its callbacks run, as a user's
+    // edit would; its effect loads install over a quarter second.
+    for pair in std::env::var("KONTRA_CONTROL")
+        .iter()
+        .flat_map(|s| s.split(','))
+    {
+        let Some((name, value)) = pair.split_once('=') else {
+            continue;
+        };
+        let Ok(value) = value.parse() else { continue };
+        // Its UI id is the first one plus its variable's index (persist.rs).
+        let found = scripts.iter().enumerate().find_map(|(n, source)| {
+            let compiled = kontra_ksp::compile(source, &[]).ok()?;
+            let bare = |v: &str| v.trim_start_matches(['$', '%', '~', '?', '@', '!']) == name;
+            let at = compiled.variables.iter().position(|v| bare(&v.name))?;
+            Some((
+                u8::try_from(n).ok()?,
+                kontra_ksp::FIRST_UI_ID + i32::try_from(at).ok()?,
+            ))
+        });
+        let Some((slot, id)) = found else {
+            println!("control {name}: no such variable");
+            continue;
+        };
+        println!("control {name} (script {slot}, ui id {id}) := {value}");
+        engine.set_control(slot, id, value);
+        for _ in 0..RATE as usize / 4 / 512 {
+            engine.process(&mut silent, &[]);
+            install_requests(&mut engine, &plan);
+        }
     }
     let before: std::collections::HashMap<_, _> = engine.action_calls().into_iter().collect();
 
@@ -503,6 +541,13 @@ fn install_requests(engine: &mut Engine, plan: &Plan) {
     let mut asked = Vec::new();
     engine.drain_requests(|r| asked.push(r));
     for r in asked {
+        if std::env::var_os("KONTRA_FX").is_some() {
+            let kind = r.effect.as_ref().map(|e| &e.kind);
+            println!(
+                "installs {:?} slot {} type {}: {kind:?}",
+                r.at, r.slot, r.ty
+            );
+        }
         engine.install(Prepared::new(r, Some(plan), RATE));
     }
 }

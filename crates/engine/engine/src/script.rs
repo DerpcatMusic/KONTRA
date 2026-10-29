@@ -615,7 +615,11 @@ impl HostApi for Engine {
             Action::AsyncId => HostValue::Int(self.ids.async_done),
             // ponytail: every asynchronous command here succeeds.
             Action::AsyncExitStatus => HostValue::Int(1),
-            // Commands finish before the queue reaches the next event.
+            // A command still running (an effect type loading off the audio
+            // thread) holds the callback; it looks again each millisecond.
+            Action::WaitAsync if int(0) > 0 && self.ids.running.contains(&int(0)) => {
+                HostValue::Wait(1000)
+            }
             Action::WaitAsync | Action::DisableLogging => HostValue::Nothing,
             Action::NumOutputChannels => HostValue::Int(2), // one stereo pair; Kontakt: its output section (28)
             Action::StopWait => self.stop_wait(int(0), int(1) != 0),

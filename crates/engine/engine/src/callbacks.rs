@@ -86,12 +86,19 @@ impl Engine {
     }
 
     pub(crate) fn next_async_id(&mut self) -> i32 {
-        self.ids.async_last = self.ids.async_last.wrapping_add(1).max(1);
-        self.ids.async_last
+        let id = self.ids.async_last.wrapping_add(1).max(1);
+        self.ids.async_last = id;
+        if let Some(free) = self.ids.running.iter_mut().find(|r| **r == 0) {
+            *free = id;
+        }
+        id
     }
 
     pub(crate) fn async_complete(&mut self, slot: u8, id: i32) {
         self.ids.async_done = id;
+        for r in self.ids.running.iter_mut().filter(|r| **r == id) {
+            *r = 0;
+        }
         let plan = Arc::clone(&self.plan);
         let entry = plan
             .scripts
@@ -290,6 +297,10 @@ pub(crate) struct Ids {
     /// The last asynchronous command started, and `$NI_ASYNC_ID`: the last finished.
     pub(crate) async_last: i32,
     pub(crate) async_done: i32,
+    /// Commands started and not finished (0 a free cell), which
+    /// `wait_async` waits on.
+    // ponytail: past 32 at once, a command is not waited on.
+    pub(crate) running: [i32; 32],
 }
 
 impl Ids {
@@ -297,6 +308,7 @@ impl Ids {
         callbacks: 0,
         async_last: 0,
         async_done: 0,
+        running: [0; 32],
     };
 }
 
