@@ -98,13 +98,13 @@ def continuous_rows(result):
         begin = max(lo, -lag)
         end = min(hi, native.shape[1] - lag, ours.shape[1])
         if end <= begin:
-            yield name, None, None, [None] * len(CENTERS), 'insufficient audio'
+            yield name, '—', None, None, [None] * len(CENTERS), 'insufficient audio'
             continue
         a, b = native[:, begin + lag:end + lag], ours[:, begin:end]
         rms = delta(db(float(np.sqrt(np.mean(a*a)))), db(float(np.sqrt(np.mean(b*b)))))
         peak = delta(db(float(np.max(np.abs(a)))), db(float(np.max(np.abs(b)))))
         bands = [delta(x, y) for x, y in zip(helper.bands(a, compare.RATE), helper.bands(b, compare.RATE))]
-        yield name, rms, peak, bands, None
+        yield name, f"global {oracle['comparison']['env_lag_ms']:+.0f} ms", rms, peak, bands, None
 
 
 def fresh_rows(result):
@@ -114,45 +114,46 @@ def fresh_rows(result):
         r = by_name.get(name, {})
         o = r.get('oracle') or {}
         if not r.get('render_complete') or o.get('status') != 'ok':
-            yield name, None, None, [None]*len(CENTERS), o.get('reason', 'incomplete or unavailable capture')
+            yield name, '—', None, None, [None]*len(CENTERS), o.get('reason', 'incomplete or unavailable capture')
             continue
         cmp = o.get('comparison', {})
         bands = o.get('native_minus_v3', {}).get('octave_band_rms_db', [])
         if len(bands) != len(CENTERS):
-            yield name, None, None, [None]*len(CENTERS), 'invalid band data'
+            yield name, '—', None, None, [None]*len(CENTERS), 'invalid band data'
             continue
-        yield name, cmp.get('level_diff_db'), cmp.get('peak_diff_db'), bands, None
+        onset = f"{o.get('native_onset_ms', '—')}/{o.get('v3_onset_ms', '—')} ms"
+        yield name, onset, cmp.get('level_diff_db'), cmp.get('peak_diff_db'), bands, None
 
 
 def report(run_dir, output, revision):
     lines = ['# Seven-library oracle differences', '',
-             f'Run revision: `{revision}`. Native minus v3 in dB; >1 means absolute difference exceeds 1 dB. '
+             f'Run revision: `{revision}`. Native minus v3 in dB; >1 means absolute unrounded difference exceeds 1 dB, so a displayed +1.0 may be flagged. '
              'Continuous segments use one performance and global envelope alignment; fresh segments use separate '
              'engine/oracle sessions and first-onset alignment (10 ms bins), comparing two seconds after each onset. '
-             'Quiet-band differences may be large even when inaudible. Native internal stages are unavailable.', '']
+             'Alignment shows continuous global native lag or fresh native/v3 onset times. Quiet-band differences may be large even when inaudible. Native internal stages are unavailable.', '']
     failures = []
     for mode, method in (('continuous', continuous_rows), ('fresh', fresh_rows)):
         lines += [f'## {mode.capitalize()}', '',
-                  '| Library | Segment | RMS Δ | RMS flag | Peak Δ | Band Δ (31–16000 Hz) | Band flag | JSON |',
-                  '|---|---|---:|---|---:|---|---|---|']
+                  '| Library | Segment | Alignment | RMS Δ | RMS flag | Peak Δ | Band Δ (31–16000 Hz) | Band flag | JSON |',
+                  '|---|---|---|---:|---|---:|---|---|---|']
         for name in LIBRARIES:
             path = run_dir / mode / (name + '.json')
             result, error = read_report(path)
             if error:
                 failures.append(f'{name} {mode}: {error}')
-                lines.append(f'| {name} | unavailable | — | unknown | — | — | unknown | {error.replace("|", "/")} |')
+                lines.append(f'| {name} | unavailable | — | — | unknown | — | — | unknown | {error.replace("|", "/")} |')
                 continue
             try:
                 rows = list(method(result))
             except (KeyError, OSError, ValueError, AssertionError) as e:
                 failures.append(f'{name} {mode}: {e}')
-                lines.append(f'| {name} | unavailable | — | unknown | — | — | unknown | [{name}.json]({path}) |')
+                lines.append(f'| {name} | unavailable | — | — | unknown | — | — | unknown | [{name}.json]({path}) |')
                 continue
-            for segment, rms, peak, bands, err in rows:
+            for segment, onset, rms, peak, bands, err in rows:
                 if err:
                     failures.append(f'{name} {mode} {segment}: {err}')
                 notes = f' ({err.replace("|", "/")})' if err else ''
-                lines.append(f'| {name} | {segment}{notes} | {formatted(rms)} | {flag([rms])} | {formatted(peak)} | {", ".join(map(formatted,bands))} | {flag(bands)} | [{name}.json]({path}) |')
+                lines.append(f'| {name} | {segment}{notes} | {onset} | {formatted(rms)} | {flag([rms])} | {formatted(peak)} | {", ".join(map(formatted,bands))} | {flag(bands)} | [{name}.json]({path}) |')
         lines.append('')
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text('\n'.join(lines) + '\n')
