@@ -1,7 +1,9 @@
 //! Draws each instrument's Original view headless, the way the editor will,
 //! and says what it cost: first frame, settled, paint, idle, RAM. Saves the
 //! settled page as `<out>/<name>-<slot>.png`.
-//! `cargo run --release -p ui-shots -- [--press <control>] <out dir> <instrument>...`
+//! With `--app`, the page is also drawn where the user meets it, inside an
+//! open part of the rack, and saved as `<out>/<name>-<slot>-app.png`.
+//! `cargo run --release -p ui-shots -- [--press <control>] [--app] <out dir> <instrument>...`
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -25,6 +27,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.drain(i..(i + 2).min(args.len()));
         name.unwrap_or_default()
     });
+    let app = args
+        .iter()
+        .position(|a| a == "--app")
+        .map(|i| args.remove(i));
     let mut args = args.into_iter();
     let out = PathBuf::from(
         args.next()
@@ -198,9 +204,71 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 status("VmHWM:"),
                 file,
             );
+            if app.is_some() {
+                let name = loaded.name.replace(['/', ' '], "_");
+                let file = out.join(format!("{name}-{slot}-app.png"));
+                in_rack(&loaded.name, live.tree.clone(), pictures, &file)?;
+            }
         }
     }
     Ok(())
+}
+
+/// The page inside an open part of the editor, 1180×900, saved to `file`
+/// once its pictures are in.
+fn in_rack(
+    name: &str,
+    tree: kontra_ui_model::Interface,
+    pictures: Pictures,
+    file: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use kontra_ui::app::{self, App, Face, Part, PartTab};
+    let mut app = App {
+        parts: vec![Part {
+            name: name.to_owned(),
+            library: name.to_owned(),
+            channel: 1,
+            output: 1,
+            keys: (21, 108),
+            face: Some(Face { tree, pictures }),
+            open: true,
+            tab: PartTab::Interface,
+            ..Part::default()
+        }],
+        ..App::default()
+    };
+    let (w, h) = (1180u16, 900u16);
+    let mut ui = kontra_ui::ui();
+    let frame = |ui: &mut Ui, app: &mut App| -> Result<bool, Box<dyn std::error::Error>> {
+        let r = app::view(ui, app);
+        let f = ui
+            .frame(
+                r.el,
+                Some(Size::new(f64::from(w), f64::from(h))),
+                Input::default(),
+                1. / 60.,
+            )
+            .map_err(|e| format!("{e:?}"))?;
+        Ok(f.animating)
+    };
+    let pending = |app: &mut App| {
+        app.parts
+            .first_mut()
+            .and_then(|p| p.face.as_mut())
+            .map_or(0, |f| {
+                f.pictures.poll();
+                f.pictures.pending()
+            })
+    };
+    for _ in 0..600 {
+        let moving = frame(&mut ui, &mut app)?;
+        if !moving && pending(&mut app) == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    frame(&mut ui, &mut app)?;
+    save(file, w, h, &paint(&ui, w, h)?)
 }
 
 fn ms(d: Duration) -> f64 {
