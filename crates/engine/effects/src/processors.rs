@@ -328,6 +328,8 @@ pub fn processor(
         Some(ir::EffectKind::Filter(f)) => {
             let mut svf = Svf::new(filters::shape(&f));
             svf.set_cutoff(f.hz, rate);
+            // A script may switch it to any ladder on the audio thread.
+            svf.keep_spare();
             Dsp::Filter(Box::new(svf))
         }
         // Built even while bypassed: a script may enable it later.
