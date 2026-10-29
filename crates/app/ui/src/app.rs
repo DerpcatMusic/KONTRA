@@ -336,7 +336,13 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     );
     let mut middle = Vec::new();
     if width > 0.5 {
-        middle.push(browser::view(ui, app, &mut out).w(width).shrink(0).clip());
+        middle.push(
+            browser::view(ui, app, &mut out)
+                .w(width)
+                .shrink(0)
+                .fill(Role::Surface)
+                .clip(),
+        );
         middle.push(vrule());
     }
     let mut main = vec![main(ui, app, &mut out).grow(1).min_w(0).min_h(0)];
@@ -344,18 +350,20 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
         main.push(sheet_view(ui, app, s, &mut out).centered());
     }
     middle.push(stack(main).grow(1).min_w(0).min_h(0));
+    // v2's two tones: the frame around the work (header, browser, tab
+    // rows, keyboard) one step up on Surface, the work on Background.
     // Only the middle gives way to a short window: the header and the
     // keyboard keep their height, as v2's dock did.
     let el = col![
-        header.shrink(0),
+        header.shrink(0).fill(Role::Surface),
         rule(),
         row(middle).grow(1).min_h(0).align(Align::Stretch),
         rule(),
-        keys(ui, app, &mut out).shrink(0),
+        keys(ui, app, &mut out).shrink(0).fill(Role::Surface),
     ]
     .w(Len::Pct(100.))
     .h(Len::Pct(100.))
-    .fill(crate::theme::lift(0));
+    .fill(Role::Background);
     Response { el, changed: out }
 }
 
@@ -378,7 +386,7 @@ fn main(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         Tab::Report => report::view(ui, app, out),
     };
     col![
-        row(tabs).gap(TIGHT).shrink(0),
+        row(tabs).gap(TIGHT).shrink(0).fill(Role::Surface),
         shown.grow(1).min_h(0).w(Len::Pct(100.))
     ]
     .w(Len::Pct(100.))
