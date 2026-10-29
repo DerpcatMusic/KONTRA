@@ -120,27 +120,54 @@ pub struct Svf {
     state: [[[f64; 2]; 2]; 3],
     rate: f64,
     ladder: Option<Kernel>,
+    /// An explicit ladder's box kept for a switch into one, so the audio
+    /// thread neither allocates nor frees it ([`Self::keep_spare`]).
+    spare: Option<Box<Huovilainen>>,
 }
 
 impl Svf {
     #[must_use]
     pub fn new(shape: Shape) -> Self {
-        Self {
+        let mut svf = Self {
             shape,
             hz: 0.0,
             g: 0.0,
             state: [[[0.0; 2]; 2]; 3],
             rate: 1.0,
-            ladder: shape.ladder.map(|l| match l {
-                LadderKind::ZeroDelay(taps) => Kernel::ZeroDelay(Ladder::new(taps)),
-                LadderKind::Explicit { taps, fat } => {
-                    Kernel::Explicit(Box::new(Huovilainen::new(taps, fat)))
-                }
-                LadderKind::SallenKey { morph, curve } => {
-                    Kernel::SallenKey(SallenKey::new(morph, curve))
-                }
-            }),
+            ladder: None,
+            spare: None,
+        };
+        if let Some(LadderKind::Explicit { taps, fat }) = shape.ladder {
+            svf.spare = Some(Box::new(Huovilainen::new(taps, fat)));
         }
+        let ladder = shape.ladder.and_then(|l| svf.kernel(l));
+        svf.ladder = ladder;
+        svf
+    }
+
+    /// Keeps an explicit ladder's box at hand, off the audio thread, so a
+    /// later [`Self::retune`] can switch to any ladder.
+    pub fn keep_spare(&mut self) {
+        let explicit = matches!(self.ladder, Some(Kernel::Explicit(_)));
+        if !explicit && self.spare.is_none() {
+            self.spare = Some(Box::new(Huovilainen::new(1, 1.0)));
+        }
+    }
+
+    /// A kernel for `kind` without allocating: an explicit ladder takes the
+    /// spare box; `None` without one.
+    fn kernel(&mut self, kind: LadderKind) -> Option<Kernel> {
+        Some(match kind {
+            LadderKind::ZeroDelay(taps) => Kernel::ZeroDelay(Ladder::new(taps)),
+            LadderKind::Explicit { taps, fat } => {
+                let mut b = self.spare.take()?;
+                *b = Huovilainen::new(taps, fat);
+                Kernel::Explicit(b)
+            }
+            LadderKind::SallenKey { morph, curve } => {
+                Kernel::SallenKey(SallenKey::new(morph, curve))
+            }
+        })
     }
 
     /// Moves the cutoff to `hz` at `rate`, held below 0.49 of the rate.
@@ -219,15 +246,31 @@ impl Svf {
         flush(self.state.as_flattened_mut().as_flattened_mut());
     }
 
-    /// Follows `shape` at `rate` without touching the state: cutoff,
-    /// damping, gain, pass and stage count move in place. A different
-    /// ladder is not swapped in (building one may allocate); false then, and
-    /// it keeps its shape.
-    // ponytail: a ladder ↔ ladder or stages ↔ ladder switch needs its kernel
-    // built off the audio thread.
+    /// Follows `shape` at `rate`: cutoff, damping, gain, pass and stage
+    /// count move in place, keeping the state. A different ladder (or none)
+    /// swaps its kernel, starting from silence, without allocating or
+    /// freeing: an explicit ladder needs the spare box, and false without
+    /// one (it keeps its shape then).
     pub fn retune(&mut self, shape: Shape, rate: u32) -> bool {
         if shape.ladder != self.shape.ladder {
-            return false;
+            // The box a switch leaves becomes the spare, not freed here
+            // (only one box ever exists, so the spare is empty then).
+            let old = match self.ladder.take() {
+                Some(Kernel::Explicit(b)) if self.spare.is_none() => {
+                    self.spare = Some(b);
+                    None
+                }
+                other => other,
+            };
+            if let Some(kind) = shape.ladder {
+                match self.kernel(kind) {
+                    Some(k) => self.ladder = Some(k),
+                    None => {
+                        self.ladder = old;
+                        return false;
+                    }
+                }
+            }
         }
         self.shape = shape;
         if shape.hz != self.hz {
@@ -301,6 +344,49 @@ mod tests {
             ladder: None,
             damping: [k; 3],
             gain: 1.0,
+        }
+    }
+
+    /// A switch to another ladder plays as that ladder built fresh, and an
+    /// explicit ladder's box is reused, never built or freed in the switch.
+    #[test]
+    fn a_ladder_switch_plays_the_new_ladder_and_keeps_its_box() {
+        let stages = shape(Pass::Low, 1);
+        let explicit = Shape {
+            ladder: Some(LadderKind::Explicit { taps: 4, fat: 1.0 }),
+            ..stages
+        };
+        let zero_delay = Shape {
+            ladder: Some(LadderKind::ZeroDelay(2)),
+            ..stages
+        };
+        let impulse = |n: usize| if n == 0 { [1.0, -0.5] } else { [0.0; 2] };
+        let play = |svf: &mut Svf| {
+            let mut io: Vec<[f32; 2]> = (0..256).map(impulse).collect();
+            svf.process(&mut io);
+            io
+        };
+        let fresh = |shape: Shape| {
+            let mut svf = Svf::new(shape);
+            svf.set_cutoff(shape.hz, 48_000);
+            play(&mut svf)
+        };
+        let mut plain = Svf::new(stages);
+        plain.set_cutoff(stages.hz, 48_000);
+        assert!(!plain.retune(explicit, 48_000), "no spare box, no switch");
+        let mut svf = Svf::new(stages);
+        svf.set_cutoff(stages.hz, 48_000);
+        svf.keep_spare();
+        let boxed = svf.spare.as_deref().map(std::ptr::from_ref);
+        for shape in [explicit, zero_delay, explicit, stages] {
+            svf.reset();
+            assert!(svf.retune(shape, 48_000));
+            assert_eq!(play(&mut svf), fresh(shape), "{:?}", shape.ladder);
+            let now = match &svf.ladder {
+                Some(Kernel::Explicit(b)) => Some(std::ptr::from_ref(&**b)),
+                _ => svf.spare.as_deref().map(std::ptr::from_ref),
+            };
+            assert_eq!(now, boxed, "the one box moves between ladder and spare");
         }
     }
 
