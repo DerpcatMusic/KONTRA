@@ -77,25 +77,25 @@ pub(super) fn live(program: Node, connection: Node, group: &mut ir::Group) -> Op
 
 /// An additive connection as a blend's term: its source through its
 /// mapper at its ratio, each live connection on that ratio a factor (a
-/// constant one folded in). None for an inverted or multiplicative one, a
+/// constant one folded in). None for a multiplicative one, an inverted bipolar one, a
 /// constant source, or a source not carried; an LFO only with `lfos`.
 pub(super) fn term(
     program: Node,
     input: Node,
     mut lfos: Option<&mut Vec<ir::Lfo>>,
 ) -> Option<ir::Term> {
-    if flag(input, "Inverted") || flag(input, "ConnectionMode") {
+    if flag(input, "ConnectionMode") {
         return None;
     }
     let mut amount = num(input, "Ratio", 1.0).ok()? as f32;
     let mut factors = Vec::new();
     for f in children(input).filter(|f| f.attribute("Destination") == Some("Ratio")) {
-        if flag(f, "Inverted") || flag(f, "ConnectionMode") || children(f).next().is_some() {
+        if flag(f, "ConnectionMode") {
             return None;
         }
-        let depth = (num(f, "Ratio", 1.0).ok()? as f32).clamp(-1.0, 1.0);
+        let depth = held_ratio(program, f)?.clamp(-1.0, 1.0);
         let factor = ir::Factor {
-            input: transfer(program, f, lfos.as_deref_mut())?,
+            input: read_through(program, f, lfos.as_deref_mut())?,
             depth,
         };
         match factor.input.source {
@@ -103,7 +103,7 @@ pub(super) fn term(
             _ => factors.push(factor),
         }
     }
-    let input = transfer(program, input, lfos)?;
+    let input = read_through(program, input, lfos)?;
     if input.source == ir::Source::Constant {
         return None;
     }
@@ -112,6 +112,42 @@ pub(super) fn term(
         amount,
         factors,
     })
+}
+
+/// `connection`'s [`transfer`], an inverted one read at `1 − x`: UVI flips
+/// a unipolar source before its mapper (0x14142ac00: `1 − x`; a bipolar
+/// one `−x`, not carried here).
+fn read_through(
+    program: Node,
+    connection: Node,
+    lfos: Option<&mut Vec<ir::Lfo>>,
+) -> Option<ir::Transfer> {
+    let mut t = transfer(program, connection, lfos)?;
+    if flag(connection, "Inverted") {
+        if !matches!(t.source, ir::Source::Controller(_) | ir::Source::Script(_)) {
+            return None;
+        }
+        if t.table.is_empty() {
+            t.table = vec![0.0, 1.0];
+        }
+        t.table.reverse();
+    }
+    Some(t)
+}
+
+/// A connection's ratio with each connection on it scaling it the same
+/// multiplicative way; None when one of those is live (not a constant).
+fn held_ratio(program: Node, connection: Node) -> Option<f32> {
+    let mut r = num(connection, "Ratio", 1.0).ok()? as f32;
+    for f in children(connection).filter(|f| f.attribute("Destination") == Some("Ratio")) {
+        let input = transfer(program, f, None)?;
+        if flag(f, "Inverted") || flag(f, "ConnectionMode") || input.source != ir::Source::Constant
+        {
+            return None;
+        }
+        r *= scale(held_ratio(program, f)?.clamp(-1.0, 1.0), input.apply(1.0));
+    }
+    Some(r)
 }
 
 /// The multiplier `m` gives at ratio `r`.

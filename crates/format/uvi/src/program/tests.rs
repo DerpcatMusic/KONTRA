@@ -521,10 +521,17 @@ fn a_macro_a_controller_moves_crossfades_its_cells_live() {
             <SignalConnection Ratio="0.5" Source="@MIDI CC 102" Destination="Value">
               <Connections>
                 <SignalConnection Ratio="1" Source="@MIDI CC 104" Destination="Ratio" Mapper="Mapper 1"/>
+                <SignalConnection Ratio="1" Source="@MIDI CC 106" Destination="Ratio" Mapper="Mapper 0" Inverted="1"/>
+                <SignalConnection Ratio="0.6" Source="@PitchBend" Destination="Ratio">
+                  <Connections>
+                    <SignalConnection Ratio="1" Source="$Program/Macro 6" Destination="Ratio"/>
+                  </Connections>
+                </SignalConnection>
               </Connections>
             </SignalConnection>
           </Connections>
         </ConstantModulation>
+        <ConstantModulation Name="Macro 6" Bipolar="0" Value="0.5"/>
       </ControlSignalSources>
       <Mappers>
         <ControlSignalMapper Name="Mapper 0" Min="0" Max="1">0,0 1,0</ControlSignalMapper>
@@ -538,6 +545,12 @@ fn a_macro_a_controller_moves_crossfades_its_cells_live() {
                 <GainMatrix Bypass="0" Gain_1_1="1" Gain_2_2="1">
                   <Connections>
                     <SignalConnection Ratio="1" Source="$Program/Macro 1" Destination="Gain_2_2" Mapper="Mapper 0"/>
+                    <SignalConnection Ratio="1" Source="@MIDI CC 102" Destination="Gain_3_1"/>
+                  </Connections>
+                </GainMatrix>
+                <GainMatrix Bypass="1" Gain_1_1="1">
+                  <Connections>
+                    <SignalConnection Ratio="1" Source="@MIDI CC 102" Destination="Gain_1_1"/>
                   </Connections>
                 </GainMatrix>
               </Inserts>
@@ -573,10 +586,19 @@ fn a_macro_a_controller_moves_crossfades_its_cells_live() {
     assert_eq!(term.amount, 0.25);
     assert_eq!(term.factors[0].input.source, ir::Source::Controller(104));
     assert_eq!(term.factors[0].input.table, vec![0.0, 0.5, 1.0]);
+    // An inverted controller reads its mapper at `1 − x`.
+    assert_eq!(term.factors[1].input.source, ir::Source::Controller(106));
+    assert_eq!(term.factors[1].input.table, vec![1.0, 0.0]);
+    // Macro 6 holds the bend's ratio at half: 0.6 × 0.5.
+    assert_eq!(term.factors[2].input.source, ir::Source::PitchBend);
+    assert!((term.factors[2].depth - 0.3).abs() < 1e-6);
+    // A row past the two-channel bundle and a bypassed matrix move nothing.
     assert!(
         !out.diagnostics
             .iter()
-            .any(|d| d.feature.starts_with("matrix"))
+            .any(|d| d.feature.starts_with("matrix") || d.feature.starts_with("modulation")),
+        "{:?}",
+        out.diagnostics
     );
 }
 
