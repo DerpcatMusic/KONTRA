@@ -78,6 +78,26 @@ fn a_prefetched_page_becomes_resident_and_reads_exactly() {
 }
 
 #[test]
+fn a_run_of_requested_pages_lands_page_by_page() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let (key, source) = ramp(8 * PAGE_FRAMES + 77);
+    let sample = store.load(&key, source, 8 * PAGE_FRAMES + 77, &[]).unwrap();
+
+    // Pages 2..=8 (the last one short) asked for at once: served in one read.
+    let first = 2 * PAGE_FRAMES;
+    let frames = 6 * PAGE_FRAMES + 77;
+    sample.prefetch(&client, first, frames, 0, 1.0, false);
+    let mut out = vec![[0.0; 2]; frames as usize];
+    assert!(eventually(
+        || sample.read(&client, first, &mut out).missing == 0
+    ));
+    for (n, frame) in out.iter().enumerate() {
+        assert_eq!(frame[0], value(first + n as u64), "frame {n}");
+    }
+}
+
+#[test]
 fn reads_past_the_end_are_silence_not_missing() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();

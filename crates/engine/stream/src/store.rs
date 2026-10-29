@@ -463,16 +463,17 @@ impl Drop for Store {
     }
 }
 
-/// The I/O thread: earliest `due` first, one page per read, clock eviction.
-// ponytail: one thread, one page per read, 1 ms poll; coalesce runs and add
-// threads or io_uring when C2 shows dropouts at the reference disk speed.
+/// The I/O thread: earliest `due` first, a run of requested pages per read,
+/// clock eviction.
+// ponytail: one thread, 1 ms poll; add threads or io_uring when C2 shows
+// dropouts at the reference disk speed.
 fn serve(shared: &Shared, registrations: &Receiver<(SampleId, Weak<Sample>)>, slot_bytes: usize) {
     let cache = &shared.cache;
     let mut samples: HashMap<SampleId, Weak<Sample>> = HashMap::new();
     let mut queue = BinaryHeap::new();
     let mut owners: Vec<Option<(Weak<Sample>, usize)>> = vec![None; cache.len()];
     let mut hand = 0;
-    let mut buf = vec![0u8; slot_bytes];
+    let mut buf = vec![0u8; RUN * slot_bytes];
     while !shared.stop.load(Ordering::Relaxed) {
         while let Some(r) = shared.requests.pop() {
             queue.push(Reverse((r.due, r.sample.0, r.page)));
@@ -492,7 +493,13 @@ fn serve(shared: &Shared, registrations: &Receiver<(SampleId, Weak<Sample>)>, sl
     }
 }
 
-/// Reads one requested page into the cache, evicting by clock.
+/// The most pages one read takes: a requested page and the requested pages
+/// right after it in the same sample, so a disk seeks once per run, not once
+/// per page.
+const RUN: usize = 16;
+
+/// Reads a requested page, and the requested pages that follow it, into the
+/// cache in one read, evicting by clock.
 fn serve_page(
     shared: &Shared,
     samples: &HashMap<SampleId, Weak<Sample>>,
@@ -503,27 +510,31 @@ fn serve_page(
     page: u32,
 ) {
     let cache = &shared.cache;
-    {
-        let page = page as usize;
-        let sample = samples.get(&SampleId(id)).and_then(Weak::upgrade);
-        let Some(sample) = sample else { return };
-        let Some(entry) = sample.streamed.get(page) else {
-            return;
-        };
-        if entry.load(Ordering::Relaxed) != REQUESTED {
-            return;
-        }
-        let size = sample.page_frames();
-        let first = page as u64 * size;
-        let len = (size.min(sample.frames - first)) as usize * sample.fmt.bytes_per_frame();
-        let Some(data) = buf.get_mut(..len) else {
-            return;
-        };
-        if sample.source.read(first, data).is_err() {
-            shared.read_errors.fetch_add(1, Ordering::Relaxed);
+    let page = page as usize;
+    let sample = samples.get(&SampleId(id)).and_then(Weak::upgrade);
+    let Some(sample) = sample else { return };
+    let requested =
+        |p: usize| (sample.streamed.get(p)).is_some_and(|e| e.load(Ordering::Relaxed) == REQUESTED);
+    if !requested(page) {
+        return;
+    }
+    let pages = 1 + (1..RUN).take_while(|&k| requested(page + k)).count();
+    let size = sample.page_frames();
+    let first = page as u64 * size;
+    let frame = sample.fmt.bytes_per_frame();
+    let frames = (size * pages as u64).min(sample.frames - first);
+    let Some(data) = buf.get_mut(..frames as usize * frame) else {
+        return;
+    };
+    if sample.source.read(first, data).is_err() {
+        shared.read_errors.fetch_add(1, Ordering::Relaxed);
+        for entry in sample.streamed.iter().skip(page).take(pages) {
             entry.store(ABSENT, Ordering::Relaxed);
-            return;
         }
+        return;
+    }
+    let chunks = data.chunks(size as usize * frame);
+    for (p, (entry, chunk)) in (page..).zip(sample.streamed.iter().skip(page).zip(chunks)) {
         let victim = clock(cache, hand);
         if let Some(Some((old, old_page))) = owners.get_mut(victim as usize).map(Option::take)
             && let Some(old_entry) = old
@@ -538,10 +549,10 @@ fn serve_page(
                 Ordering::Relaxed,
             );
         }
-        cache.write(victim, tag(id, page as u32), data);
+        cache.write(victim, tag(id, p as u32), chunk);
         entry.store(victim + RESIDENT, Ordering::Release);
         if let Some(owner) = owners.get_mut(victim as usize) {
-            *owner = Some((Arc::downgrade(&sample), page));
+            *owner = Some((Arc::downgrade(&sample), p));
         }
         shared.pages_read.fetch_add(1, Ordering::Relaxed);
     }
