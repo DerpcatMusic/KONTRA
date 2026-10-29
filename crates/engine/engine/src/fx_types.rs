@@ -51,28 +51,20 @@ impl Prepared {
     /// from `plan`'s. Not real-time.
     #[must_use]
     pub fn new(request: EffectRequest, plan: Option<&Plan>, rate: u32) -> Self {
-        if let Some((index, law)) = request.response {
-            let response = plan
-                .and_then(|p| p.responses.get(usize::from(index)))
-                .and_then(|(name, sample)| {
-                    let r = crate::response(sample, &law, rate).ok()?;
-                    Some((name.clone(), law, r))
-                });
-            let dsp = response
-                .as_ref()
-                .map_or(Dsp::None, |(_, _, r)| racks::convolver(r));
-            return Self {
-                request,
-                dsp,
-                response,
-            };
-        }
-        // Routed, so a script's later knob writes retune it.
-        let dsp = racks::processor(request.effect, true, rate, &Responses(&[], &[]));
+        let response = request.response.and_then(|(index, law)| {
+            let (name, sample) = plan?.responses.get(usize::from(index))?;
+            Some((name.clone(), law, crate::response(sample, &law, rate).ok()?))
+        });
+        let dsp = match (&response, request.response) {
+            (Some((_, _, r)), _) => racks::convolver(r),
+            (None, Some(_)) => Dsp::None,
+            // Routed, so a script's later knob writes retune it.
+            (None, None) => racks::processor(request.effect, true, rate, &Responses(&[], &[])),
+        };
         Self {
             request,
             dsp,
-            response: None,
+            response,
         }
     }
 
@@ -174,6 +166,32 @@ impl Engine {
             self.mark_loaded(at, n, ty);
             return Some(-1);
         }
+        self.queue(at, n, ty, effect, None)
+    }
+
+    /// Queues the plan's response `index`, prepared by `law`, for the
+    /// convolution at `slot` of the `generic` rack.
+    pub(crate) fn request_response(
+        &mut self,
+        slot: i32,
+        generic: i32,
+        index: u16,
+        law: ir::Impulse,
+    ) -> Option<i32> {
+        let at = crate::knobs::rack_at(-1, generic)?;
+        self.queue(at, u8::try_from(slot).ok()?, 0, None, Some((index, law)))
+    }
+
+    /// Queues a request: its async id, or `None` when the queue is full or
+    /// the slot is a group's.
+    fn queue(
+        &mut self,
+        at: ir::RackAt,
+        slot: u8,
+        ty: u16,
+        effect: Option<ir::Effect>,
+        response: Option<(u16, ir::Impulse)>,
+    ) -> Option<i32> {
         // ponytail: group inserts run per voice and per chain; they change in
         // `on init` only.
         if matches!(at, ir::RackAt::Group(_)) || self.requests.len() >= REQUESTS {
@@ -182,40 +200,10 @@ impl Engine {
         let (script, id) = (self.running.slot, self.next_async_id());
         self.requests.push(EffectRequest {
             at,
-            slot: n,
+            slot,
             ty,
             effect,
-            response: None,
-            script,
-            id,
-        });
-        Some(id)
-    }
-
-    /// Queues the plan's response `index`, prepared by `law`, for the
-    /// convolution at `slot` of the `generic` rack: its async id, or `None`
-    /// when the queue is full or the slot is a group's.
-    pub(crate) fn request_response(
-        &mut self,
-        slot: i32,
-        generic: i32,
-        index: u16,
-        law: ir::Impulse,
-    ) -> Option<i32> {
-        let (at, n) = (
-            crate::knobs::rack_at(-1, generic)?,
-            u8::try_from(slot).ok()?,
-        );
-        if matches!(at, ir::RackAt::Group(_)) || self.requests.len() >= REQUESTS {
-            return None;
-        }
-        let (script, id) = (self.running.slot, self.next_async_id());
-        self.requests.push(EffectRequest {
-            at,
-            slot: n,
-            ty: 0,
-            effect: None,
-            response: Some((index, law)),
+            response,
             script,
             id,
         });
@@ -230,10 +218,9 @@ impl Engine {
     }
 
     /// Puts `prepared` in its slot and completes the async id its script
-    /// waits on. What it replaces comes back, to be dropped off the audio
-    /// thread. No allocation.
-    /// A response that cannot go in leaves the slot as it was, and its id
-    /// still completes.
+    /// waits on; one that cannot go in leaves the slot as it was. What it
+    /// replaces comes back, to be dropped off the audio thread. No
+    /// allocation.
     pub fn install(&mut self, prepared: Prepared) -> Prepared {
         let Prepared {
             request: r,
@@ -248,20 +235,10 @@ impl Engine {
             (Some(effect), Some((rack, n))) => rack.install(n, effect, dsp),
             _ => Err(dsp),
         };
-        let (effect, dsp) = match swapped {
-            Ok(old) => old,
-            Err(dsp) if r.response.is_some() => (r.effect, dsp),
-            Err(dsp) => {
-                return Prepared {
-                    request: r,
-                    dsp,
-                    response,
-                };
-            }
-        };
-        if r.response.is_none() {
+        if swapped.is_ok() && r.response.is_none() {
             self.mark_loaded(r.at, r.slot, r.ty);
         }
+        let (effect, dsp) = swapped.unwrap_or_else(|dsp| (r.effect, dsp));
         let work = Work::Async {
             slot: r.script,
             id: r.id,
