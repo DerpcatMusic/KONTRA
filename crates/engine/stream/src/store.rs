@@ -463,17 +463,75 @@ impl Drop for Store {
     }
 }
 
+/// Reads in flight at once, each on a reader thread of its own: a disk that
+/// seeks can reorder them, and decoding runs on several cores.
+const READERS: usize = 4;
+
+/// The most pages one read takes: a requested page and the requested pages
+/// right after it in the same sample, so a disk seeks once per run, not once
+/// per page.
+const RUN: usize = 16;
+
+/// A run of pages a reader fills.
+struct Read {
+    reader: usize,
+    sample: Arc<Sample>,
+    id: u32,
+    page: usize,
+    /// The run's bytes; `len` of them read.
+    buf: Vec<u8>,
+    len: usize,
+    ok: bool,
+}
+
 /// The I/O thread: earliest `due` first, a run of requested pages per read,
-/// clock eviction.
-// ponytail: one thread, 1 ms poll; add threads or io_uring when C2 shows
-// dropouts at the reference disk speed.
+/// [`READERS`] reads in flight, clock eviction. Only this thread touches the
+/// cache's slots; readers only read.
+// ponytail: a fixed pool of blocking reads; io_uring if a disk needs more
+// in flight than threads give.
 fn serve(shared: &Shared, registrations: &Receiver<(SampleId, Weak<Sample>)>, slot_bytes: usize) {
+    let (done_tx, done) = channel::<Read>();
+    std::thread::scope(|scope| {
+        let mut jobs = Vec::with_capacity(READERS);
+        let mut idle = Vec::with_capacity(READERS);
+        for reader in 0..READERS {
+            let (job_tx, job_rx) = channel::<Read>();
+            let done_tx = done_tx.clone();
+            scope.spawn(move || {
+                for mut read in job_rx {
+                    let data = read.buf.get_mut(..read.len).unwrap_or_default();
+                    read.ok = read
+                        .sample
+                        .source
+                        .read(read.page as u64 * read.sample.page_frames(), data)
+                        .is_ok();
+                    if done_tx.send(read).is_err() {
+                        break;
+                    }
+                }
+            });
+            jobs.push(job_tx);
+            idle.push((reader, vec![0u8; RUN * slot_bytes]));
+        }
+        schedule(shared, registrations, &jobs, &done, idle);
+        // Dropping the job senders ends the readers.
+    });
+}
+
+fn schedule(
+    shared: &Shared,
+    registrations: &Receiver<(SampleId, Weak<Sample>)>,
+    jobs: &[Sender<Read>],
+    done: &Receiver<Read>,
+    mut idle: Vec<(usize, Vec<u8>)>,
+) {
     let cache = &shared.cache;
     let mut samples: HashMap<SampleId, Weak<Sample>> = HashMap::new();
     let mut queue = BinaryHeap::new();
     let mut owners: Vec<Option<(Weak<Sample>, usize)>> = vec![None; cache.len()];
     let mut hand = 0;
-    let mut buf = vec![0u8; RUN * slot_bytes];
+    // Pages being read: the requests for each, settled when it lands.
+    let mut flying: HashMap<(u32, usize), u64> = HashMap::new();
     while !shared.stop.load(Ordering::Relaxed) {
         while let Some(r) = shared.requests.pop() {
             queue.push(Reverse((r.due, r.sample.0, r.page)));
@@ -484,57 +542,127 @@ fn serve(shared: &Shared, registrations: &Receiver<(SampleId, Weak<Sample>)>, sl
             samples.retain(|_, s| s.strong_count() > 0);
             samples.extend(fresh);
         }
-        let Some(Reverse((_, id, page))) = queue.pop() else {
+        while let Ok(read) = done.try_recv() {
+            land(shared, &mut owners, &mut hand, &mut flying, &read);
+            idle.push((read.reader, read.buf));
+        }
+        while let Some((reader, buf)) = idle.pop() {
+            match next_run(shared, &samples, &mut queue, &mut flying, reader, buf) {
+                Ok(read) => {
+                    if let Some(job) = jobs.get(read.reader)
+                        && let Err(e) = job.send(read)
+                    {
+                        // A reader that died: its run is lost, never waited on.
+                        let read = e.0;
+                        land(
+                            shared,
+                            &mut owners,
+                            &mut hand,
+                            &mut flying,
+                            &Read { ok: false, ..read },
+                        );
+                    }
+                }
+                Err(buf) => {
+                    idle.push((reader, buf));
+                    break;
+                }
+            }
+        }
+        if idle.len() < READERS {
+            if let Ok(read) = done.recv_timeout(Duration::from_millis(1)) {
+                land(shared, &mut owners, &mut hand, &mut flying, &read);
+                idle.push((read.reader, read.buf));
+            }
+        } else {
             std::thread::park_timeout(Duration::from_millis(1));
-            continue;
-        };
-        serve_page(shared, &samples, &mut owners, &mut hand, &mut buf, id, page);
-        shared.outstanding.fetch_sub(1, Ordering::AcqRel);
+        }
     }
 }
 
-/// The most pages one read takes: a requested page and the requested pages
-/// right after it in the same sample, so a disk seeks once per run, not once
-/// per page.
-const RUN: usize = 16;
-
-/// Reads a requested page, and the requested pages that follow it, into the
-/// cache in one read, evicting by clock.
-fn serve_page(
+/// The earliest request still to read, with the requested pages after it,
+/// as a run for `reader`; `Err` gives `buf` back when none is left.
+fn next_run(
     shared: &Shared,
     samples: &HashMap<SampleId, Weak<Sample>>,
+    queue: &mut BinaryHeap<Reverse<(u64, u32, u32)>>,
+    flying: &mut HashMap<(u32, usize), u64>,
+    reader: usize,
+    buf: Vec<u8>,
+) -> Result<Read, Vec<u8>> {
+    while let Some(Reverse((_, id, page))) = queue.pop() {
+        let page = page as usize;
+        if let Some(waiting) = flying.get_mut(&(id, page)) {
+            *waiting += 1;
+            continue;
+        }
+        let sample = samples.get(&SampleId(id)).and_then(Weak::upgrade);
+        let requested = |p: usize| {
+            sample
+                .as_ref()
+                .and_then(|s| s.streamed.get(p))
+                .is_some_and(|e| e.load(Ordering::Relaxed) == REQUESTED)
+        };
+        let Some(sample) = sample.as_ref().filter(|_| requested(page)) else {
+            shared.outstanding.fetch_sub(1, Ordering::AcqRel);
+            continue;
+        };
+        let pages = 1
+            + (1..RUN)
+                .take_while(|&k| requested(page + k) && !flying.contains_key(&(id, page + k)))
+                .count();
+        let size = sample.page_frames();
+        let first = page as u64 * size;
+        let frames = (size * pages as u64).min(sample.frames - first);
+        let len = frames as usize * sample.fmt.bytes_per_frame();
+        if len > buf.len() {
+            shared.outstanding.fetch_sub(1, Ordering::AcqRel);
+            continue;
+        }
+        flying.insert((id, page), 1);
+        for p in page + 1..page + pages {
+            flying.insert((id, p), 0);
+        }
+        return Ok(Read {
+            reader,
+            sample: Arc::clone(sample),
+            id,
+            page,
+            buf,
+            len,
+            ok: false,
+        });
+    }
+    Err(buf)
+}
+
+/// Puts a finished run's pages into the cache, evicting by clock, and
+/// settles the requests that waited on them.
+fn land(
+    shared: &Shared,
     owners: &mut [Option<(Weak<Sample>, usize)>],
     hand: &mut usize,
-    buf: &mut [u8],
-    id: u32,
-    page: u32,
+    flying: &mut HashMap<(u32, usize), u64>,
+    read: &Read,
 ) {
     let cache = &shared.cache;
-    let page = page as usize;
-    let sample = samples.get(&SampleId(id)).and_then(Weak::upgrade);
-    let Some(sample) = sample else { return };
-    let requested =
-        |p: usize| (sample.streamed.get(p)).is_some_and(|e| e.load(Ordering::Relaxed) == REQUESTED);
-    if !requested(page) {
-        return;
-    }
-    let pages = 1 + (1..RUN).take_while(|&k| requested(page + k)).count();
-    let size = sample.page_frames();
-    let first = page as u64 * size;
-    let frame = sample.fmt.bytes_per_frame();
-    let frames = (size * pages as u64).min(sample.frames - first);
-    let Some(data) = buf.get_mut(..frames as usize * frame) else {
-        return;
-    };
-    if sample.source.read(first, data).is_err() {
-        shared.read_errors.fetch_add(1, Ordering::Relaxed);
-        for entry in sample.streamed.iter().skip(page).take(pages) {
+    let sample = &read.sample;
+    let size = sample.page_frames() as usize * sample.fmt.bytes_per_frame();
+    let data = read.buf.get(..read.len).unwrap_or_default();
+    let pages = data.len().div_ceil(size.max(1));
+    for (p, chunk) in (read.page..read.page + pages).zip(data.chunks(size.max(1))) {
+        let waiting = flying.remove(&(read.id, p)).unwrap_or(0);
+        shared.outstanding.fetch_sub(waiting, Ordering::AcqRel);
+        let Some(entry) = sample.streamed.get(p) else {
+            continue;
+        };
+        if !read.ok {
+            shared
+                .read_errors
+                .fetch_add(u64::from(p == read.page), Ordering::Relaxed);
             entry.store(ABSENT, Ordering::Relaxed);
+            continue;
         }
-        return;
-    }
-    let chunks = data.chunks(size as usize * frame);
-    for (p, (entry, chunk)) in (page..).zip(sample.streamed.iter().skip(page).zip(chunks)) {
         let victim = clock(cache, hand);
         if let Some(Some((old, old_page))) = owners.get_mut(victim as usize).map(Option::take)
             && let Some(old_entry) = old
@@ -549,10 +677,10 @@ fn serve_page(
                 Ordering::Relaxed,
             );
         }
-        cache.write(victim, tag(id, p as u32), chunk);
+        cache.write(victim, tag(read.id, p as u32), chunk);
         entry.store(victim + RESIDENT, Ordering::Release);
         if let Some(owner) = owners.get_mut(victim as usize) {
-            *owner = Some((Arc::downgrade(&sample), p));
+            *owner = Some((Arc::downgrade(sample), p));
         }
         shared.pages_read.fetch_add(1, Ordering::Relaxed);
     }
