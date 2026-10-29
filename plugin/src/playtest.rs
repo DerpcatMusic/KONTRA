@@ -41,19 +41,30 @@ impl In {
         }
     }
 
+    /// A note, or the sustain pedal, whose pedal-up plays the library's
+    /// pedal noise (Una Corda) as a key plays a note.
     fn is_note(self) -> bool {
         matches!(
             self,
-            In::Midi(EventBody::NoteOn { .. } | EventBody::NoteOff { .. }) | In::Clap(_)
+            In::Midi(
+                EventBody::NoteOn { .. }
+                    | EventBody::NoteOff { .. }
+                    | EventBody::ControlChange { cc: 64, .. }
+            ) | In::Clap(_)
         )
     }
 }
 
 /// The loudest 5 ms of high-frequency energy (the second difference, a
-/// click's signature) over the median 5 ms, in dB.
+/// click's signature) over the 50 ms either side of it, in dB. A click
+/// stands out from its neighbours; a wheel crossfading into brighter
+/// layers does not (Kontakt's own Pacific chord sweep gains +10.9 dB over
+/// the whole segment's median, lane level 2026-10-29). Quiet neighbours
+/// count as the segment's median, so an attack out of silence reads as
+/// loud as it is.
 fn hf_burst_db(audio: &[f32]) -> f32 {
     let n = at(0.005);
-    let mut frames: Vec<f32> = audio
+    let frames: Vec<f32> = audio
         .windows(3)
         .map(|w| (w[2] - 2.0 * w[1] + w[0]).powi(2))
         .collect::<Vec<_>>()
@@ -63,10 +74,55 @@ fn hf_burst_db(audio: &[f32]) -> f32 {
     if frames.is_empty() {
         return 0.0;
     }
-    let loudest = frames.iter().copied().fold(0.0f32, f32::max);
-    frames.sort_by(f32::total_cmp);
-    let median = frames[frames.len() / 2];
-    10.0 * (loudest.max(1e-20) / median.max(1e-20)).log10()
+    let median = |v: &mut Vec<f32>| {
+        v.sort_by(f32::total_cmp);
+        v[v.len() / 2]
+    };
+    let floor = median(&mut frames.clone()).max(1e-20);
+    let reach = 10;
+    let loudest = (0..frames.len())
+        .map(|i| {
+            let around = i.saturating_sub(reach)..(i + reach + 1).min(frames.len());
+            let mut near: Vec<f32> = around.filter(|&j| j != i).map(|j| frames[j]).collect();
+            let local = if near.is_empty() {
+                0.0
+            } else {
+                median(&mut near)
+            };
+            frames[i] / local.max(floor)
+        })
+        .fold(0.0f32, f32::max);
+    10.0 * loudest.max(1e-20).log10()
+}
+
+#[test]
+fn a_click_bursts_but_a_brightening_crossfade_does_not() {
+    let len = at(1.0);
+    let tone = |i: usize, f: f64| (std::f64::consts::TAU * f * i as f64 / RATE).sin();
+    // The wheel from full to 0 and back: the bright layer fades out to the
+    // dark one and back in (the old whole-segment metric read +12 dB).
+    let crossfade: Vec<f32> = (0..len)
+        .map(|i| {
+            let x = (2.0 * i as f64 / len as f64 - 1.0).powi(2);
+            (0.5 * ((1.0 - x) * tone(i, 220.0) + x * tone(i, 3520.0))) as f32
+        })
+        .collect();
+    // The dark layer, with zipper steps in its level every 20 ms.
+    let zipper: Vec<f32> = (0..len)
+        .map(|i| (0.5 * tone(i, 220.0) * (1.0 - 0.1 * ((i / at(0.02)) % 2) as f64)) as f32)
+        .collect();
+    let plain: Vec<f32> = (0..len).map(|i| (0.5 * tone(i, 220.0)) as f32).collect();
+    let base = hf_burst_db(&plain);
+    assert!(
+        hf_burst_db(&crossfade) - base < CLICK_DB,
+        "{}",
+        hf_burst_db(&crossfade) - base
+    );
+    assert!(
+        hf_burst_db(&zipper) - base > CLICK_DB,
+        "{}",
+        hf_burst_db(&zipper) - base
+    );
 }
 
 /// The most a sweep may add to its notes' high-frequency burst before it
@@ -488,19 +544,22 @@ fn perform(path: PathBuf) -> Report {
                 None => fail(format!("{segment}: no onset")),
             }
         }
-        // No late bursts: a jump of 12 dB or more with no note near it (a
-        // controller may move the level, never jump it).
+        // No late bursts: a jump of 12 dB or more to within 20 dB of the
+        // segment's loudest, with no note near it (a controller may move the
+        // level, never jump it; a wind rising out of silence on the wheel,
+        // VWinds -80 to -28 dBFS over ten blocks, is no burst).
         let inputs: Vec<usize> = (events.iter())
             .filter(|e| e.1.is_note())
             .map(|e| e.0)
             .collect();
+        let loudest = peaks.iter().copied().fold(0.0f32, f32::max);
         for (b, w) in peaks.windows(5).enumerate() {
             let (before, now) = (w[..4].iter().copied().fold(0.0, f32::max), w[4]);
             let start = (b + 4) * BLOCK;
             let near = inputs
                 .iter()
                 .any(|&i| i <= start + BLOCK && start <= i + hold);
-            if now > 1e-3 && now > 4.0 * before && !near {
+            if now > 1e-3 && now > 4.0 * before && now > 0.1 * loudest && !near {
                 fail(format!(
                     "{segment}: a burst at {:.3} s",
                     start as f64 / RATE
