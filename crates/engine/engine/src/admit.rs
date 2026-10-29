@@ -105,18 +105,15 @@ impl Engine {
     pub(crate) fn fade_where(&mut self, fade: u32, pick: impl Fn(&Slot) -> bool) -> u64 {
         let mut faded = 0;
         for index in 0..self.voices.len() {
-            if self.voices.get(index).is_some_and(&pick) && self.fade_voice(index, fade) {
-                faded += 1;
-            }
+            let chosen = self.voices.get(index).is_some_and(&pick);
+            faded += u64::from(chosen && self.fade_voice(index, fade));
         }
         faded
     }
 
     /// Steals voice `index` to make room: a counted [`Self::fade_voice`].
     pub(crate) fn steal(&mut self, index: usize, fade: u32) {
-        if self.fade_voice(index, fade) {
-            self.stats.voices_stolen += 1;
-        }
+        self.stats.voices_stolen += u64::from(self.fade_voice(index, fade));
     }
 
     /// Ends notes with no sounding voice and reports them to the host. A key

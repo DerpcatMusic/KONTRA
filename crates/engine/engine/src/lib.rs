@@ -83,9 +83,8 @@ use script::{Kind, Running};
 
 use kontra_effects::MAX_SPAN;
 use kontra_effects::matrix as effects;
-/// A voice the engine ends early (a steal, choke or limit outside a voice
-/// group) fades over this long instead of clicking: Kontakt's instrument
-/// steal fade, 10 ms by default (its Lua API's `voice_stealing_fadeout`).
+/// A voice ended early outside a voice group fades this long, not clicking:
+/// Kontakt's instrument steal fade (Lua API `voice_stealing_fadeout`, 10 ms).
 const FADE_SECONDS: f64 = 0.010;
 
 /// Counters since the engine was created. Each names a refusal or a loss.
