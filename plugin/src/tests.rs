@@ -532,3 +532,144 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
     let back = path(&params).unwrap();
     assert!(back.ends_with("Una Corda Felt.nki"), "{back:?}");
 }
+
+const SHREDDAGE: &str = "Shreddage 3.5 E-Upright 1.0.1 [Impact Soundworks] rutracker.org/Instruments/Shreddage 3.5 E-Upright.nki";
+
+/// Sets Shreddage's console control `name` to `value`, as its UI would,
+/// and lets the scripts and the effects they load settle.
+fn console(params: &KontraParams, dsp: &mut Dsp, name: &str, value: i64) {
+    {
+        let mut guard = crate::lock(&params.shared.rack);
+        let rack = guard.as_mut().unwrap();
+        let part = rack.parts()[0].as_ref().unwrap();
+        let (slot, id) = (part.faces.iter().enumerate())
+            .find_map(|(slot, f)| Some((slot, f.as_ref()?.control_id(name)?)))
+            .unwrap_or_else(|| panic!("no control {name}"));
+        rack.set_control(0, u8::try_from(slot).unwrap(), id, value);
+    }
+    for _ in 0..40 {
+        Tick.run(params);
+        block(params, dsp, &[]);
+    }
+}
+
+/// Shreddage with its first channel's FX slot set to EQ3BAND from its own
+/// console menu, the slot shown, and that band's gain moved; the plugin.
+fn shreddage_eq() -> Option<(KontraParams, Dsp, f32)> {
+    let path = library(SHREDDAGE)?;
+    let saved = Saved::new(vec![SavedPart {
+        part: 0,
+        path,
+        channel: 0,
+        output: 0,
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+        delays: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+    }]);
+    let (params, mut dsp) = activate(&saved.write());
+    settle(&params, &mut dsp);
+    let dry = band(&params, &mut dsp);
+    // The menu's items hold unit ids; 1 is EQ3BAND (`%fx_unit_engine_par`).
+    console(&params, &mut dsp, "$_ChannelFxSlotType0", 1);
+    console(&params, &mut dsp, "$_ChannelFxSlotSelect0", 1);
+    // Edit pane control 5 is the EQ's second band gain (1.45 kHz).
+    console(&params, &mut dsp, "$EditPaneSlider5", 1_000_000);
+    Some((params, dsp, dry))
+}
+
+/// Part 0's effect types loaded after init, as `[(rack, slot, type)]`.
+fn slot_types(params: &KontraParams) -> String {
+    let guard = crate::lock(&params.shared.rack);
+    let part = guard.as_ref().and_then(|r| r.parts()[0].as_ref());
+    format!("{:?}", part.map(|p| &p.slot_types))
+}
+
+#[test]
+fn shreddage_loads_an_eq_from_its_console_and_a_reload_keeps_it() {
+    let Some((live, mut live_dsp, _)) = shreddage_eq() else {
+        return;
+    };
+    let eq = "Some([(Bus(0), 0, 2)])";
+    assert_eq!(slot_types(&live), eq, "the console's menu loads EQ3BAND");
+    settle(&live, &mut live_dsp);
+    live.capture();
+    let first = live.saved.read().unwrap().clone();
+    let (again, mut again_dsp) = activate(&first);
+    settle(&again, &mut again_dsp);
+    assert_eq!(
+        slot_types(&again),
+        eq,
+        "a reload puts it back before on init"
+    );
+    again.capture();
+    let second = again.saved.read().unwrap().clone();
+    let units = |json: &str| {
+        let s = Saved::read(json);
+        (s.parts[0].scripts.iter().flatten())
+            .find(|e| e.starts_with("%_rack_unit_id "))
+            .cloned()
+    };
+    assert!(units(&first).is_some_and(|u| u.starts_with("%_rack_unit_id 1 ")));
+    assert_eq!(
+        units(&first),
+        units(&second),
+        "the console's own record comes back"
+    );
+    assert_eq!(first, second, "re-save after reload is identical");
+}
+
+/// Ignored until a script's knob writes reach an effect loaded after init
+/// (board, lane B, 2026-10-29): today the band moves 0.0 dB.
+#[test]
+#[ignore]
+fn shreddage_eq_band_gain_is_audible_and_survives_reload() {
+    let Some((live, mut live_dsp, dry)) = shreddage_eq() else {
+        return;
+    };
+    let wet = band(&live, &mut live_dsp);
+    assert!(
+        wet - dry > 3.0,
+        "band 2 at full boost moved {:.2} dB",
+        wet - dry
+    );
+    live.capture();
+    let (again, mut again_dsp) = activate(&live.saved.read().unwrap());
+    settle(&again, &mut again_dsp);
+    let reloaded = band(&again, &mut again_dsp);
+    assert!(
+        (reloaded - wet).abs() < 0.5,
+        "{wet:.2} dB live, {reloaded:.2} reloaded"
+    );
+}
+
+/// Six notes of C4 (past Shreddage's round robins): the energy between
+/// about 1 and 2 kHz against all of it, in dB. A round robin moves it a
+/// little; an EQ band there at full boost or cut moves it a lot.
+fn band(params: &KontraParams, dsp: &mut Dsp) -> f32 {
+    let blocks = |s: f64| (s * RATE) as usize / BLOCK;
+    let k = |hz: f64| 1.0 - (-2.0 * std::f64::consts::PI * hz / RATE).exp();
+    let (k1, k2) = (k(1000.0), k(2000.0));
+    let (mut band, mut all, mut y1, mut y2) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for _ in 0..6 {
+        let mut audio = block(params, dsp, &[note(true, 60)]);
+        for _ in 0..blocks(0.75) {
+            audio.extend(block(params, dsp, &[]));
+        }
+        block(params, dsp, &[note(false, 60)]);
+        for _ in 0..blocks(0.5) {
+            block(params, dsp, &[]);
+        }
+        for x in audio.chunks(2).map(|f| f64::from(f[0] + f[1])) {
+            y1 += k1 * (x - y1);
+            y2 += k2 * (x - y2);
+            band += (y2 - y1) * (y2 - y1);
+            all += x * x;
+        }
+    }
+    (10.0 * (band / all.max(1e-12)).log10()) as f32
+}
