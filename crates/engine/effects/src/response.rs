@@ -35,20 +35,13 @@ pub fn response(sample: &ir::Sample, impulse: &ir::Impulse, rate: u32) -> Result
             (*a, *b) = (l[0] * *a + l[1] * *b, r[0] * *a + r[1] * *b);
         }
     }
-    if let Some(n) = impulse.normalize {
-        normalize(&mut left, &mut right, n);
-    }
     // At most a second of predelay, and never more than a capped response holds.
     let most = (MAX_RESPONSE * u64::from(from) / u64::from(rate.max(1))) as usize;
     let delay = ((impulse.predelay_ms.clamp(0.0, 1000.0) * from as f32 * 0.001) as usize).min(most);
     for c in [&mut left, &mut right] {
         c.splice(0..0, std::iter::repeat_n(0.0, delay));
     }
-    let most = MAX_RESPONSE as usize;
-    Ok(Response {
-        left: kontra_dsp::reverb::shape::resample(&left, from, rate, most),
-        right: kontra_dsp::reverb::shape::resample(&right, from, rate, most),
-    })
+    Ok(resample(left, right, from, rate, impulse.normalize))
 }
 
 /// A prepared impulse response.
@@ -56,6 +49,25 @@ pub fn response(sample: &ir::Sample, impulse: &ir::Impulse, rate: u32) -> Result
 pub struct Response {
     pub left: Vec<f32>,
     pub right: Vec<f32>,
+}
+
+fn resample(
+    mut left: Vec<f32>,
+    mut right: Vec<f32>,
+    from: u32,
+    to: u32,
+    normal: Option<ir::Normalize>,
+) -> Response {
+    if let Some(n) = normal.filter(|n| !n.after_resample) {
+        normalize(&mut left, &mut right, n);
+    }
+    let most = MAX_RESPONSE as usize;
+    let mut left = kontra_dsp::reverb::shape::resample(&left, from, to, most);
+    let mut right = kontra_dsp::reverb::shape::resample(&right, from, to, most);
+    if let Some(n) = normal.filter(|n| n.after_resample) {
+        normalize(&mut left, &mut right, n);
+    }
+    Response { left, right }
 }
 
 fn normalize(left: &mut [f32], right: &mut [f32], n: ir::Normalize) {
@@ -78,12 +90,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normalization_can_follow_rate_conversion() {
+        let wave: Vec<f32> = (0..8192)
+            .map(|i| (std::f32::consts::TAU * 1000.0 * i as f32 / 96_000.0).sin())
+            .collect();
+        let n = ir::Normalize {
+            energy: 1.0,
+            max_gain: 1e5,
+            floor: 0.0,
+            channels: ir::EnergyChannels::Mean,
+            after_resample: true,
+        };
+        let after = resample(wave.clone(), wave.clone(), 96_000, 48_000, Some(n));
+        let before = resample(
+            wave.clone(),
+            wave,
+            96_000,
+            48_000,
+            Some(ir::Normalize {
+                after_resample: false,
+                ..n
+            }),
+        );
+        let energy = |x: &[f32]| x.iter().map(|v| v * v).sum::<f32>();
+        assert!((energy(&after.left) - 1.0).abs() < 1e-5);
+        assert!((energy(&before.left) - 0.5).abs() < 0.005);
+    }
+
+    #[test]
     fn stereo_energy_can_use_the_mean_or_loudest_channel() {
         let n = ir::Normalize {
             energy: 1.0,
             max_gain: 1e5,
             floor: 0.0,
             channels: ir::EnergyChannels::Mean,
+            after_resample: true,
         };
         let (mut left, mut right) = ([1.0, 0.0], [0.0, 0.0]);
         normalize(&mut left, &mut right, n);

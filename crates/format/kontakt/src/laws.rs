@@ -146,6 +146,7 @@ pub(crate) const AUTO_GAIN: ir::Normalize = ir::Normalize {
     max_gain: 2.0,
     floor: 0.001,
     channels: ir::EnergyChannels::Loudest,
+    after_resample: false,
 };
 
 /// An AHDSR as breakpoints, for targets other than the amplitude: the same
