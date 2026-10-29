@@ -594,7 +594,8 @@ pub struct Range {
 /// How a numeric value reads as text.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Display {
-    /// Shown value = raw value / `ratio` (KSP display ratio).
+    /// Shown value = raw value / `ratio` (KSP display ratio); a value
+    /// edit's 0 shows note names.
     pub ratio: f64,
     /// Unit suffix or Falcon `Unit` name; empty for none.
     pub unit: String,

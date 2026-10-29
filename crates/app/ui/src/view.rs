@@ -90,7 +90,8 @@ pub fn page(
         });
         let art = picture.as_ref().map(|(_, m)| drawn(r, *m));
         let style = wd.style.and_then(|s| tree.styles.get(s.0));
-        let words = caption(wd);
+        let stock = stock::Look::of(tree, wd, value(wd));
+        let words = if stock.is_some() { "" } else { caption(wd) };
         let lit = match wd.kind {
             Kind::LevelMeter {
                 orientation,
@@ -107,6 +108,7 @@ pub fn page(
             wd.text_y,
             style.map(|s| (s.color, s.align as u8, s.size.map(f32::to_bits))),
             wd.opacity.to_bits(),
+            &stock,
         );
         let el = ui.memo(format!("kontra-ui-{face}-{}", n.0), deps, |_| {
             built += 1;
@@ -121,6 +123,10 @@ pub fn page(
             if let Some((o, t)) = lit {
                 parts.push(meter(&wd.colors, o, t, w, h).at(0., 0.));
             }
+            let (w, h) = stock.as_ref().map_or((w, h), |look| {
+                parts.extend(look.draw(wd, style, (w, h, scale)));
+                look.size(w, h, scale)
+            });
             stack(parts).w(w).h(h).opacity(wd.opacity)
         });
         // A control takes the pointer under its own id (crate::input).
@@ -199,11 +205,7 @@ fn frame(w: &model::Widget, u: &ImageUse, frames: usize) -> usize {
     if let Some(f) = u.frame {
         return f as usize;
     }
-    let value = match w.value {
-        Some(model::Value::Integer(v)) => f64::from(v),
-        Some(model::Value::Real(v)) => v,
-        _ => w.initial_value,
-    };
+    let value = value(w);
     match (&w.kind, u.role) {
         (
             Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. },
@@ -221,6 +223,15 @@ fn frame(w: &model::Widget, u: &ImageUse, frames: usize) -> usize {
             kontakt_picture_frame(value != 0., false, false, frames)
         }
         _ => 0,
+    }
+}
+
+/// The value `w` shows: its own, else the one it starts at.
+fn value(w: &model::Widget) -> f64 {
+    match w.value {
+        Some(model::Value::Integer(v)) => f64::from(v),
+        Some(model::Value::Real(v)) => v,
+        _ => w.initial_value,
     }
 }
 
@@ -322,5 +333,6 @@ fn color(c: model::Rgba) -> Color {
     )
 }
 
+mod stock;
 #[cfg(test)]
 mod tests;
