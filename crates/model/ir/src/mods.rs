@@ -193,3 +193,48 @@ impl Transfer {
         a + (b - a) * (at - i as f32)
     }
 }
+
+/// A power of two as a sampler computes it: exactly, or as
+/// `2^n·(1 + f − c·(f − f²))` for `x = n + f` (`f` in 0..1), a quadratic
+/// exact at whole octaves and up to 4.6 cents flat between them for
+/// `c = 0.33971`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Exp2 {
+    Exact,
+    Quadratic { c: f32 },
+}
+
+impl Exp2 {
+    #[must_use]
+    pub fn of(self, x: f64) -> f64 {
+        match self {
+            Self::Exact => x.exp2(),
+            Self::Quadratic { c } => {
+                let n = x.floor();
+                let f = x - n;
+                n.exp2() * (1.0 + f - f64::from(c) * (f - f * f))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Exp2;
+
+    #[test]
+    fn the_quadratic_power_of_two_plays_a_two_semitone_bend_flat() {
+        let law = Exp2::Quadratic { c: 0.33971 };
+        let semitones = |st: f64| 12.0 * law.of(st / 12.0).log2();
+        // Kontakt on a ±2 st route: full bend up and down, a quarter each way.
+        for (st, heard) in [(2.0, 1.954), (-2.0, -1.958), (0.5, 0.480), (-0.5, -0.485)] {
+            assert!(
+                (semitones(st) - heard).abs() < 0.001,
+                "{st}: {}",
+                semitones(st)
+            );
+        }
+        assert_eq!(law.of(1.0), 2.0);
+        assert_eq!(Exp2::Exact.of(-1.0), 0.5);
+    }
+}

@@ -21,7 +21,7 @@ pub use effects::{
     Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
     IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
 };
-pub use mods::{Blend, Factor, ModKind, Term, Transfer};
+pub use mods::{Blend, Exp2, Factor, ModKind, Term, Transfer};
 pub use output::{Output, OutputControllers};
 pub use reverb::{
     CombNetwork, HadamardNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar,
@@ -48,6 +48,8 @@ pub struct Instrument {
     pub main: Vec<Option<Effect>>,
     /// The fader and pan after every effect.
     pub output: Output,
+    /// How the pitch routes' semitones become a playback ratio.
+    pub route_pitch: Exp2,
     /// Responses [`EffectKind::Convolution`] slots play.
     pub impulses: Vec<Impulse>,
     /// Responses a script may load into a convolution slot by name
@@ -74,6 +76,7 @@ impl Instrument {
         sends: Vec::new(),
         main: Vec::new(),
         output: Output::UNITY,
+        route_pitch: Exp2::Exact,
         impulses: Vec::new(),
         responses: Vec::new(),
         slot_laws: Vec::new(),

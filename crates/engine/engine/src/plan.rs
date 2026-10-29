@@ -351,6 +351,7 @@ pub struct Plan {
     pub main: Vec<Option<ir::Effect>>,
     /// The fader and pan after every effect.
     pub output: ir::Output,
+    pub route_pitch: ir::Exp2,
     /// Convolution responses at the engine's rate, by [`ir::Instrument::impulses`]
     /// index; `None` when unreadable.
     pub impulses: Vec<Option<Response>>,
@@ -410,6 +411,7 @@ impl Plan {
             sends: Vec::new(),
             main: Vec::new(),
             output: ir::Output::UNITY,
+            route_pitch: ir::Exp2::Exact,
             impulses: Vec::new(),
             impulse_laws: Vec::new(),
             responses: Vec::new(),
