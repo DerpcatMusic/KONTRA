@@ -29,22 +29,11 @@ impl Bend {
     };
 }
 
-/// `at` moved `frames` toward `to` as a one-pole of `tau_ms` (0: at once);
-/// there once within 1e-4.
-pub(crate) fn glide(at: f32, to: f32, tau_ms: f32, frames: f32, rate: u32) -> f32 {
-    let tau = tau_ms * rate as f32 / 1000.0;
-    let next = at + (to - at) * (1.0 - (-frames / tau).exp());
-    if (to - next).abs() < 1e-4 { to } else { next }
-}
-
 /// A script's group pan glides as a one-pole of this time constant
 /// (measured natively: τ 37.5 ms, as the instrument's volume and pan).
 pub(crate) const GROUP_PAN_TAU_MS: f32 = 37.5;
 
-/// `step` raised by the pitch routes' `semitones`, through `law`.
-pub(crate) fn bent(law: ir::Exp2, step: f64, semitones: f32) -> f64 {
-    step * law.of(f64::from(semitones) / 12.0)
-}
+pub(crate) use kontra_plan::modulation::{bent, glide};
 
 impl Engine {
     /// The voice's gain, and the slower gain of its routes that lag (their

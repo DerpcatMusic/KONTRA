@@ -185,6 +185,19 @@ pub fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
     v * fade
 }
 
+/// `at` moved `frames` toward `to` as a one-pole of `tau_ms` (0: at once);
+/// there once within 1e-4.
+pub fn glide(at: f32, to: f32, tau_ms: f32, frames: f32, rate: u32) -> f32 {
+    let tau = tau_ms * rate as f32 / 1000.0;
+    let next = at + (to - at) * (1.0 - (-frames / tau).exp());
+    if (to - next).abs() < 1e-4 { to } else { next }
+}
+
+/// `step` raised by the pitch routes' `semitones`, through `law`.
+pub fn bent(law: ir::Exp2, step: f64, semitones: f32) -> f64 {
+    step * law.of(f64::from(semitones) / 12.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
