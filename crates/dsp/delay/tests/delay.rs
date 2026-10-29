@@ -209,3 +209,12 @@ fn a_long_triangle_swept_chain_without_feedback_passes_every_frequency() {
         assert!((peak - 1.0).abs() < 0.01, "{hz} Hz: {peak}");
     }
 }
+
+#[test]
+fn the_polynomial_sine_matches_libm() {
+    for n in -40_000..40_000 {
+        let cycles = f64::from(n) / 9_973.0;
+        let err = (kontra_dsp_delay::sine(cycles) - (std::f64::consts::TAU * cycles).sin()).abs();
+        assert!(err < 1e-7, "{cycles}: {err}");
+    }
+}

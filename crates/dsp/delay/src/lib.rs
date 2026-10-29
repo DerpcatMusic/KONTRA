@@ -38,7 +38,27 @@ pub struct Settings {
 
 /// The LFO at `cycles`: a sine that falls first.
 fn lfo(cycles: f64) -> f32 {
-    -(TAU * cycles).sin() as f32
+    -sine(cycles) as f32
+}
+
+/// `sin(2π·cycles)` from an odd polynomial on the quarter wave (Taylor to
+/// x¹¹, error under 1e-7): a few multiplies where libm's `sin` is the
+/// largest cost of a modulated delay.
+#[must_use]
+pub fn sine(cycles: f64) -> f64 {
+    let mut t = cycles - cycles.round();
+    if t > 0.25 {
+        t = 0.5 - t;
+    } else if t < -0.25 {
+        t = -0.5 - t;
+    }
+    let x = TAU * t;
+    let x2 = x * x;
+    let p = -1.0 / 39_916_800.0 * x2 + 1.0 / 362_880.0;
+    let p = p * x2 - 1.0 / 5_040.0;
+    let p = p * x2 + 1.0 / 120.0;
+    let p = p * x2 - 1.0 / 6.0;
+    x * (p * x2 + 1.0)
 }
 
 /// A triangle at `cycles` that falls first, as [`lfo`].
@@ -123,9 +143,11 @@ impl ModDelay {
         let d = d.max(2.0).min(n.saturating_sub(3) as f32);
         let whole = d as usize;
         let t = d - whole as f32;
+        // `back` is within 1..n and `self.at` below n: one wrap, no division.
         let at = |back: usize| {
+            let i = self.at + n - back;
             self.ring
-                .get((self.at + n - back) % n)
+                .get(if i >= n { i - n } else { i })
                 .and_then(|f| f.get(c))
                 .copied()
                 .unwrap_or(0.0)
@@ -176,7 +198,10 @@ impl ModDelay {
             if let Some(slot) = self.ring.get_mut(self.at) {
                 *slot = line.map(flush);
             }
-            self.at = (self.at + 1) % self.ring.len();
+            self.at += 1;
+            if self.at >= self.ring.len() {
+                self.at = 0;
+            }
             self.cycle = (self.cycle + step).fract();
             *frame = apply(s.output, y);
         }
