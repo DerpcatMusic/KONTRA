@@ -1,0 +1,33 @@
+{ Measured probe (Kontakt 8.13.1, 2026-10-29, ANALOG STRINGS, script slot 1 via
+  scratch librender2.py APPEND_KSP): what set_engine_par answers. Each run
+  mutes the instrument when one condition holds and reads the render.
+    $a  EFFECT_BYPASS from on note                     = -1
+    $i  EFFECT_TYPE from on init                       = -1, no async_complete
+    $b  EFFECT_TYPE NONE from on note                  >= 0
+    $c  EFFECT_TYPE FILTER from on note                >= 0
+    $n  on async_complete runs after $b and $c         > 0
+  Swap CONDITION for: $a = -1, $i = -1, $b >= 0, $c >= 0, $n > 0. }
+on init
+  declare $a := -9
+  declare $b := -9
+  declare $c := -9
+  declare $n := 0
+  declare $done := 0
+  declare $i := -9
+  $i := set_engine_par($ENGINE_PAR_EFFECT_TYPE, $EFFECT_TYPE_NONE, -1, 5, 1)
+end on
+on note
+  if ($done = 0)
+    $done := 1
+    $a := set_engine_par($ENGINE_PAR_EFFECT_BYPASS, 1, -1, 6, 1)
+    $b := set_engine_par($ENGINE_PAR_EFFECT_TYPE, $EFFECT_TYPE_NONE, -1, 6, 1)
+    $c := set_engine_par($ENGINE_PAR_EFFECT_TYPE, $EFFECT_TYPE_FILTER, -1, 6, 1)
+    wait(200000)
+    if (CONDITION)
+      set_engine_par($ENGINE_PAR_VOLUME, 0, -1, -1, -1)
+    end if
+  end if
+end on
+on async_complete
+  inc($n)
+end on
