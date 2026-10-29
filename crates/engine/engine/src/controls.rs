@@ -20,9 +20,9 @@ impl Engine {
     }
 
     /// What saved `value` restores in `cell` of script `slot`. A menu saves
-    /// the index of its selected entry: Afflatus picks its wallpaper by
-    /// `$instr_bckgnd - 1`, entries valued 1..=7, and Hunter Brass saves 5
-    /// for the hunter picture (entry 5, value 6).
+    /// the index of its selected entry and restores that entry's value
+    /// (Kontakt 8.13 oracle, `probes/menu_save_restore.lua`: 30 of 10/20/30
+    /// saves "2" and reads back 30).
     pub(crate) fn saved_value(&mut self, slot: u8, cell: u32, value: i64) -> i64 {
         let controls = self
             .plan
