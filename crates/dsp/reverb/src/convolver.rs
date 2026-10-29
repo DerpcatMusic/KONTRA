@@ -212,8 +212,19 @@ impl Mono {
     }
 }
 
+/// Eight running sums, so the compiler keeps them in one vector register; a
+/// single serial sum can't vectorize (float addition order).
 fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
+    let (a8, a_rest) = a.as_chunks::<8>();
+    let (b8, b_rest) = b.as_chunks::<8>();
+    let mut lanes = [0.0f32; 8];
+    for (x, y) in a8.iter().zip(b8) {
+        for ((l, x), y) in lanes.iter_mut().zip(x).zip(y) {
+            *l += x * y;
+        }
+    }
+    let rest: f32 = a_rest.iter().zip(b_rest).map(|(x, y)| x * y).sum();
+    lanes.iter().sum::<f32>() + rest
 }
 
 /// Stereo convolver: input L is convolved with `left`, input R with `right`.
