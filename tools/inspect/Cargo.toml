@@ -9,7 +9,7 @@ description = "Inspect v3 instrument loads and playback"
 
 [dependencies]
 anyhow = "1"
-kontra-engine = { path = "../../crates/engine/engine" }
+kontra-engine = { path = "../../crates/engine/engine", features = ["trace"] }
 kontra-host = { path = "../../crates/app/host" }
 kontra-stream = { path = "../../crates/engine/stream" }
 serde_json = "1"
