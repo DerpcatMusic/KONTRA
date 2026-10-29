@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
 use kontra_ui_model::{AssetRef, ImageMeta, Orientation};
@@ -31,6 +32,18 @@ struct Job {
 }
 
 type Done = (AssetRef, u32, f32, Option<Arc<Image>>);
+
+/// Set by a worker when a decode arrives, taken by [`arrived`].
+// ponytail: one flag for every store in the process, so one editor's
+// arrival draws another's frame too; per editor if that ever costs.
+static ARRIVED: AtomicBool = AtomicBool::new(false);
+
+/// Whether a picture arrived since the last call: the host's cue to draw a
+/// frame, whose [`Pictures::poll`] takes it. Only an arrival asks for a
+/// frame, so a decode that never comes back costs nothing.
+pub fn arrived() -> bool {
+    ARRIVED.swap(false, Ordering::AcqRel)
+}
 
 /// The decoded frames of one tree's pictures, by asset and frame.
 pub struct Pictures {
@@ -86,6 +99,7 @@ impl Pictures {
                 {
                     break;
                 }
+                ARRIVED.store(true, Ordering::Release);
             }
         });
         Self {
