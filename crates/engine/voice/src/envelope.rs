@@ -127,6 +127,10 @@ impl Envelope {
         self.stage = Stage::Release;
     }
 
+    pub(crate) fn level(&self) -> f32 {
+        self.level
+    }
+
     pub(crate) fn is_off(&self) -> bool {
         self.stage == Stage::Off
     }

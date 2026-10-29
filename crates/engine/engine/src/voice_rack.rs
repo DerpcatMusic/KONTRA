@@ -443,7 +443,13 @@ impl Engine {
 
     /// The bands of the EQ in `insert` of `zone`'s group, each gain moved by
     /// its routes for this note at `age`.
-    fn voice_bells(&self, zone: &Zone, insert: u8, note: &Note, age: Age) -> Option<[ir::Bell; 4]> {
+    pub(crate) fn voice_bells(
+        &self,
+        zone: &Zone,
+        insert: u8,
+        note: &Note,
+        age: Age,
+    ) -> Option<[ir::Bell; 4]> {
         let group = self.groups.get(zone.group as usize)?;
         let effect = group.inserts.get(usize::from(insert))?.as_ref()?;
         let ir::EffectKind::Eq(mut bells) = effect.kind else {

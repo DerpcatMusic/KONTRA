@@ -46,6 +46,7 @@ use kontra_time::Frames;
 use kontra_voice::{Voice, VoiceStart};
 
 pub use fx_types::{EffectRequest, Prepared};
+pub use inspect::{EqRouteObservation, VoiceObservation};
 pub use kontra_effects::response;
 pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
