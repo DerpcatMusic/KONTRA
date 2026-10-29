@@ -203,8 +203,8 @@ fn clamp01(v: f32) -> f32 {
     if v >= 0.0 { v.min(1.0) } else { 0.0 }
 }
 
-/// The allpass coefficient `(1 − f)/(1 + f)` with `f = 0.0543·(e − 1)·0.33
-/// + 0.02`, `e` the series of `e^(3c)` through its sixth power; feedback
+/// The allpass coefficient `(1 − f)/(1 + f)` with
+/// `f = 0.0543·(e − 1)·0.33 + 0.02`, `e` the series of `e^(3c)` through its sixth power; feedback
 /// `0.85·r`. Kontakt's `f` ignores the rate (its corner follows the host's);
 /// here it is held at its 48 kHz corner.
 fn allpass(cutoff: f32, resonance: f32, scale: f32) -> Law {
