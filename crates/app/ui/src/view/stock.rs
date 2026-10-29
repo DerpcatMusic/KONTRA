@@ -182,8 +182,9 @@ impl Look {
                     && button.is_some()
                     && style.is_none_or(|s| matches!(s.font, model::Font::Stock(0 | 12)))
                 {
+                    let caption = caption.replace(' ', "    ");
                     parts.push(field_words(
-                        caption,
+                        &caption,
                         ink,
                         model::Align::Center,
                         (w, h, scale),
