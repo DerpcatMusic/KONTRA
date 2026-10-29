@@ -195,6 +195,14 @@ motion after an action. Side by side with v2 in
 keyboard, header, browser, rack, mixer, logs and editor are 13,082; v3's
 theme, kit, icon, keyboard and app are 2,836.
 
+**The real-window gate.** Headless frames passed while Una Corda's knobs
+were dead in Bitwig. `tools/kontra-window` opens the plugin's own editor
+through moose-standalone, and `tools/kontra-window/drive.sh` runs it under
+Xvfb (CPU renderer, ALSA null output) with real xdotool events: a part tab,
+a library knob drag, a library switch click, then 10 s idle under 5% of a
+core (the audio callback's thread excluded: the null device has no clock).
+Every UI change runs it once; kill Xvfb and the window after.
+
 ## 6. Auto-align (`app/align`, feature `align`)
 
 Target state, implemented by P3.3. Auto-align is per-patch latency

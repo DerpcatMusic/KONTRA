@@ -57,8 +57,11 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Copies what the editor shows from `rack`, with this tick's `report`.
-    pub fn refresh(&mut self, rack: &Rack, browser: &Browser, report: Vec<String>) {
+    /// Copies what the editor shows from `rack`, with this tick's `report`;
+    /// whether any of it changed, so an idle editor draws no frames.
+    pub fn refresh(&mut self, rack: &Rack, browser: &Browser, report: Vec<String>) -> bool {
+        let before = self.shown();
+        let reported = !report.is_empty();
         let rescanned = self.libraries.0 != browser.generation;
         if rescanned {
             self.libraries = (browser.generation, Arc::new(libraries(browser)));
@@ -110,6 +113,33 @@ impl Snapshot {
         self.report.extend(report);
         let over = self.report.len().saturating_sub(REPORT);
         self.report.drain(..over);
+        reported || self.shown() != before
+    }
+
+    /// What a frame draws of this, as it reads on screen: the CPU load in
+    /// whole percent; a part's interface by its load and revision.
+    fn shown(&self) -> impl PartialEq + use<> {
+        let parts: Vec<_> = (self.parts.iter())
+            .map(|p| {
+                let mix = (p.mix, p.solo, p.mute, p.level.to_bits());
+                (
+                    p.slot,
+                    p.generation,
+                    p.revision,
+                    p.name.clone(),
+                    p.library.clone(),
+                    mix,
+                )
+            })
+            .collect();
+        let load = (self.stats.load * 100.).round() as i32;
+        (
+            self.libraries.0,
+            parts,
+            self.level.to_bits(),
+            load,
+            self.stats.voices,
+        )
     }
 
     /// Fills `app` for a frame, keeping each part's own view state; `shown`
@@ -410,6 +440,12 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             view.parts.iter().map(|v| v.slot).collect()
         };
         crate::look::parts(&mut app, &slots, &mut waiting);
+        let faces = app.parts.iter().filter_map(|p| p.face.as_ref());
+        let decoding = faces
+            .map(|f| &f.pictures)
+            .chain(&app.covers)
+            .any(|p| p.pending() > 0);
+        p.shared.decoding.store(decoding, Ordering::Release);
         app.master = f64::from(p.volume.value());
         let response = kontra_ui::app::view(ui, &mut app);
         for action in response.changed {
@@ -478,7 +514,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         }
         !instruments.is_empty() || !folders.is_empty()
     })
-    .changed(move || watched.shared.dirty.swap(false, Ordering::AcqRel))
+    .changed(move || {
+        let s = &watched.shared;
+        s.dirty.swap(false, Ordering::AcqRel) | s.decoding.load(Ordering::Acquire)
+    })
     // Add folder's picker is owned by the host's window (Windows).
     .on_win32_parent(move |hwnd| owner.shared.folder.set_owner(hwnd))
     .into_editor()

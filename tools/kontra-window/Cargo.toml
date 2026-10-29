@@ -1,0 +1,15 @@
+[package]
+name = "kontra-window"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+description = "The plugin's real editor in a real window, standalone: the gate for pointer input (07-APP.md §5.3)"
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-plugin = { path = "../../plugin", default-features = false }
+kontra-host = { path = "../../crates/app/host" }
+moose = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", default-features = false, features = ["mui"] }
+moose-standalone = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", features = ["gui"] }

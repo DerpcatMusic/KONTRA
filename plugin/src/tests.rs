@@ -811,3 +811,30 @@ fn the_same_state_restored_again_loads_nothing_twice() {
         assert_eq!(load(&params), first, "the same state loaded the part again");
     }
 }
+
+/// An idle rack asks the editor for no frames: a tick that changes nothing
+/// it shows leaves it clean, and one that does marks it.
+#[test]
+fn an_idle_tick_draws_no_frame() {
+    use std::sync::atomic::Ordering;
+    let (params, mut dsp) = activate("");
+    settle(&params, &mut dsp);
+    params.shared.dirty.store(false, Ordering::Release);
+    for _ in 0..3 {
+        Tick.run(&params);
+        block(&params, &mut dsp, &[]);
+    }
+    assert!(
+        !params.shared.dirty.load(Ordering::Acquire),
+        "an idle tick asked for a frame"
+    );
+    params.shared.request(crate::Request::Load {
+        part: None,
+        path: PathBuf::from("/no/such.nki"),
+    });
+    Tick.run(&params);
+    assert!(
+        params.shared.dirty.load(Ordering::Acquire),
+        "a report drew nothing"
+    );
+}
