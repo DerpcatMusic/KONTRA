@@ -111,6 +111,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 idle.push(t.elapsed());
             }
             idle.sort();
+            // The face as it loads, for the rack shot: the timing moves below
+            // change what a library shows (ANALOG's knob shows its value).
+            let untouched = live.tree.clone();
             // One shown knob moved: the widgets that frame builds.
             let knob = live.tree.widgets.iter().enumerate().find_map(|(n, w)| {
                 let knob = matches!(w.kind, Kind::Knob { .. } | Kind::Slider { .. });
@@ -207,7 +210,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if app.is_some() {
                 let name = loaded.name.replace(['/', ' '], "_");
                 let file = out.join(format!("{name}-{slot}-app.png"));
-                in_rack(&loaded.name, live.tree.clone(), pictures, &file)?;
+                let tree = if press.is_some() {
+                    live.tree.clone()
+                } else {
+                    untouched
+                };
+                in_rack(&loaded.name, tree, pictures, &file)?;
             }
         }
     }
