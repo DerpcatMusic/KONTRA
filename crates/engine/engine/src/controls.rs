@@ -54,11 +54,8 @@ impl Engine {
         let items = self.menu(self.running.slot, id);
         let menu = par == self.script().map_or(-1, |s| s.controls.value_par) && !items.is_empty();
         let entry = usize::try_from(value).ok().and_then(|n| items.get(n));
-        let value = if menu {
-            entry.map_or(0, |i| i.value)
-        } else {
-            value
-        };
+        let picked = entry.map_or(0, |i| i.value);
+        let value = if menu { picked } else { value };
         match self.control(id, par) {
             Some((_, Some(cell))) => {
                 if let Some(c) = cells.get_mut(cell) {
