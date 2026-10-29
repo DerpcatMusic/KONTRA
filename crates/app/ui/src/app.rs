@@ -213,6 +213,8 @@ pub enum Shelf {
 pub struct View {
     pub tab: Tab,
     pub browser_hidden: bool,
+    /// The library list's share of the browser's height; 0 is the default.
+    pub split: f64,
     pub format: Format,
     pub shelf: Shelf,
     /// Libraries listed Z to A.
