@@ -21,7 +21,7 @@ pub use effects::{
     Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
     IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
 };
-pub use mods::{Blend, Exp2, Factor, ModKind, Term, Transfer};
+pub use mods::{Blend, Curve, Exp2, Factor, ModKind, Term, Transfer};
 pub use output::{Output, OutputControllers};
 pub use reverb::{
     CombNetwork, HadamardNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar,
@@ -498,45 +498,6 @@ impl Source {
         match self {
             Self::Controller(cc) | Self::ControllerFrom { cc, .. } => Some(cc),
             _ => None,
-        }
-    }
-}
-
-/// How a volume modulation turns its source into gain.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Curve {
-    /// Linear in dB: `intensity ×` this many dB down at source 0.
-    Decibels(f32),
-    /// `(1 − (1 − x) × intensity)^power`: the source pulls the gain down from
-    /// unity by its depth; power 1 is linear in amplitude.
-    Depth { power: u8 },
-    /// [`Self::Depth`] at power 1 on `x²`; a negative intensity reads `1 − x²`.
-    Squared,
-    /// `1 − x × intensity`: the gain falls from unity as the source rises.
-    Falling,
-    /// [`Self::Depth`] at power 1 for an intensity of 0 or more, and
-    /// `1 + x × intensity` below: the sign of the depth picks whether the
-    /// gain falls as the source falls or as it rises.
-    Signed,
-}
-
-impl Curve {
-    /// Linear gain for source value `x` (0..=1) at `intensity`.
-    #[must_use]
-    pub fn gain(self, intensity: f32, x: f32) -> f32 {
-        let x = x.clamp(0.0, 1.0);
-        match self {
-            Self::Decibels(range) => 10f32.powf(-range * intensity * (1.0 - x) / 20.0),
-            Self::Depth { power } => (1.0 - (1.0 - x) * intensity)
-                .max(0.0)
-                .powi(i32::from(power)),
-            Self::Squared => {
-                let x = if intensity < 0.0 { 1.0 - x * x } else { x * x };
-                (1.0 - (1.0 - x) * intensity.abs()).max(0.0)
-            }
-            Self::Falling => (1.0 - x * intensity).max(0.0),
-            Self::Signed if intensity < 0.0 => (1.0 + x * intensity).max(0.0),
-            Self::Signed => (1.0 - (1.0 - x) * intensity).max(0.0),
         }
     }
 }
