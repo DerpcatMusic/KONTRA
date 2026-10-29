@@ -5,6 +5,7 @@
 use mui::prelude::*;
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use kontra_ui_model::{AssetRef, ImageMeta};
 
@@ -177,7 +178,7 @@ fn library_list(ui: &mut Ui, app: &mut App) -> El {
 }
 
 fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
-    let picked = &mut app.view.picked;
+    let view = &mut app.view;
     let rows: Vec<El> = app
         .recent
         .iter()
@@ -187,8 +188,14 @@ fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             let name = l.presets.get(preset)?;
             let id = format!("recent-{n}");
             let at = (library, preset);
-            let r = list_row(ui, id.clone(), (name, &l.name), None, *picked == Some(at));
-            pick(ui, &id, picked, at, out);
+            let r = list_row(
+                ui,
+                id.clone(),
+                (name, &l.name),
+                None,
+                view.picked == Some(at),
+            );
+            pick(ui, &id, (&mut view.picked, &mut view.clicked), at, out);
             Some(r.el)
         })
         .collect();
@@ -294,7 +301,7 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
                 None,
                 shown,
             );
-            pick(ui, &id, &mut v.picked, at, out);
+            pick(ui, &id, (&mut v.picked, &mut v.clicked), at, out);
             rows.push(r.el.pad(kit::edges(0., 0., 0., SPACE)));
         }
     }
@@ -333,21 +340,32 @@ pub(super) struct Carried {
     pub preset: usize,
 }
 
+/// mui's double-click window.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
 /// A preset row's pointer, as v2 read it: a click selects it, a
 /// double-click or Enter loads it into a new part, a drag carries it to
 /// the rack (onto a part to replace it, onto free space to add one).
 fn pick(
     ui: &mut Ui,
     id: &str,
-    picked: &mut Option<(usize, usize)>,
+    (picked, clicked): (&mut Option<(usize, usize)>, &mut Option<Instant>),
     (library, preset): (usize, usize),
     out: &mut Vec<Action>,
 ) {
     let r = ui.get(id);
-    if r.double_clicked || r.key_activated {
+    // The second click on the selected row is the double-click: mui's own
+    // flag lives for one input intake, which a real host's release clears
+    // before the next build reads it.
+    let again = r.clicked
+        && *picked == Some((library, preset))
+        && clicked.is_some_and(|t| t.elapsed() < DOUBLE_CLICK);
+    if again || r.key_activated {
+        *clicked = None;
         out.push(Action::Load { library, preset });
     } else if r.clicked {
         *picked = Some((library, preset));
+        *clicked = Some(Instant::now());
     }
     if r.dragged && ui.dragging::<Carried>().is_none() {
         *picked = Some((library, preset));

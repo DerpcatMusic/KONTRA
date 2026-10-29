@@ -146,10 +146,16 @@ impl Snapshot {
     /// is which load of each part the editor's faces are of.
     fn fill(&self, app: &mut App, shown: &mut Shown) {
         if shown.browser != self.libraries.0 {
-            app.libraries = self.libraries.1.as_ref().clone();
+            let fresh = self.libraries.1.as_ref();
+            // A load or a star changes the list, not its art: the covers
+            // decoded so far stay (they are keyed by library and art).
+            let same = (app.libraries.iter().map(|l| &l.art)).eq(fresh.iter().map(|l| &l.art));
+            if app.covers.is_none() || !same {
+                app.covers = Some(Pictures::new(Box::new(cover)));
+            }
+            app.libraries = fresh.clone();
             app.recent.clone_from(&self.recent);
             app.folders.clone_from(&self.folders);
-            app.covers = Some(Pictures::new(Box::new(cover)));
             shown.browser = self.libraries.0;
         }
         if let Some(covers) = &mut app.covers {
@@ -553,7 +559,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     })
     .changed(move || {
         let s = &watched.shared;
-        s.dirty.swap(false, Ordering::AcqRel) | s.decoding.load(Ordering::Acquire)
+        s.dirty.swap(false, Ordering::AcqRel) | s.decoding.load(Ordering::Acquire) | s.loading()
     })
     // Add folder's picker is owned by the host's window (Windows).
     .on_win32_parent(move |hwnd| owner.shared.folder.set_owner(hwnd))

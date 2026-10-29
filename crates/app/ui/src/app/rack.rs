@@ -68,8 +68,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         strips.push(band(row, None, 0));
         strips.push(rule());
     }
-    // Room under the parts, so there is free space to drop on.
-    strips.push(block(Len::Pct(100.), CONTROL * 3.).shrink(0));
+    strips.push(foot(ui, app, out));
     col(strips).scroll().min_h(0).w(Len::Pct(100.)).id("rack")
 }
 
@@ -106,8 +105,10 @@ fn band(content: El, art: Option<Arc<Image>>, row: u8) -> El {
         let wash = Gradient::linear(
             90.,
             [
-                (0., Role::Surface.alpha(0.55)),
-                (0.5, Role::Surface.alpha(0.2)),
+                // Deeper than v2's 0.55: a bright cover (Una Corda's) hid
+                // the tabs under it.
+                (0., Role::Surface.alpha(0.8)),
+                (0.6, Role::Surface.alpha(0.45)),
                 (1., Role::Surface.alpha(0.)),
             ],
         );
@@ -116,7 +117,7 @@ fn band(content: El, art: Option<Arc<Image>>, row: u8) -> El {
                 .fill(Fill::Image(img, Fit::Cover))
                 .at(0., y),
         );
-        layers.push(block(BANNER * 0.75, ROW * 2.).fill(wash).at(0., y));
+        layers.push(block(BANNER, ROW * 2.).fill(wash).at(0., y));
     }
     layers.push(content.w(Len::Pct(100.)).h(Len::Pct(100.)));
     stack(layers)
@@ -502,4 +503,46 @@ fn tabs(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         .align(Align::Center)
         .pad(kit::edges(0., SPACE, 0., 0.))
         .shrink(0)
+}
+
+/// Where presets are dropped to be added, and a button that shows the
+/// browser to find one (v2's `src/ui/rack.rs` `foot`).
+fn foot(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
+    let dragging = ui.dragging::<Carried>().is_some();
+    let over = ui.get("rack-drop").drop_target && dragging;
+    if let Some(Carried { library, preset }) = ui.dropped_on::<Carried>("rack-drop") {
+        out.push(Action::Load { library, preset });
+    }
+    if ui.get("rack-drop").activated() {
+        app.view.browser_hidden = false;
+        ui.focus("search");
+    }
+    let text = if dragging {
+        "Drop to add to the rack".to_owned()
+    } else {
+        format!("Add an instrument · {} loaded", app.parts.len())
+    };
+    let ink = if dragging {
+        Fill::from(Role::Ink)
+    } else {
+        secondary()
+    };
+    let el = row![
+        kit::glyph(Icon::Plus, TEXT, ink),
+        caption(text).fill(secondary()).lines(1)
+    ]
+    .gap(SPACE)
+    .align(Align::Center)
+    .justify(Justify::Center)
+    .pad(SPACE)
+    .h(CONTROL + 2. * SPACE)
+    .w(Len::Pct(100.))
+    .when(over, |e| e.stroke(Role::Ink).stroke_width(1))
+    .focusable()
+    .a11y(A11y::Button)
+    .named("Add to rack")
+    .tip("Drop a preset here to add it, or click to search the browser.")
+    .id("rack-drop")
+    .shrink(0);
+    kit::interactive(el)
 }
