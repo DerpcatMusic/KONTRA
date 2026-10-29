@@ -450,3 +450,25 @@ impl Looks for LookFrame {
         (self.fonts.get(n).filter(|_| slot == self.slot)).map(String::as_str)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copied_table_cells_update_the_live_tree() {
+        let page = kontra_lua::compile(r#"Table{"curve", 2, 0, 0, 1, false}"#, &[], &[])
+            .unwrap()
+            .ui;
+        let mut tree = crate::ui::lua::tree(&page, &|_| None);
+        let mut frame = LookFrame::lua(0, &tree);
+        frame.arrays[0].1 = true;
+        frame.arrays[0].2.copy_from_slice(&[0.25, 0.75]);
+        assert!(frame.apply(&mut tree));
+        assert_eq!(
+            tree.widgets[0].value,
+            Some(model::Value::Reals(vec![0.25, 0.75]))
+        );
+        assert!(!frame.apply(&mut tree));
+    }
+}
