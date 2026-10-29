@@ -16,6 +16,8 @@ mod look;
 mod readout;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod playtest;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock};
