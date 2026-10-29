@@ -207,7 +207,6 @@ impl Voice {
     }
 
     /// Current amplitude envelope stage, for offline inspection.
-    #[cfg(feature = "trace")]
     #[must_use]
     pub fn envelope_stage(&self) -> &'static str {
         self.env.stage_name()

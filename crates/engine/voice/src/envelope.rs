@@ -107,7 +107,6 @@ impl Envelope {
         env
     }
 
-    #[cfg(feature = "trace")]
     pub(crate) fn stage_name(&self) -> &'static str {
         match self.stage {
             Stage::Attack => "attack",

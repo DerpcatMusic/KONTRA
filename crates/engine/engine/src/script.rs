@@ -385,6 +385,12 @@ impl HostApi for Engine {
                 HostValue::Int(current.map_or(0, |n| i32::from(n.velocity_byte)))
             }
             Action::CcNum => HostValue::Int(i32::from(self.running.controller)),
+            // 1 for the controller that changed (KSP manual): the one this
+            // controller callback runs for (Pacific's pedal-up release).
+            Action::CcTouched => flag(
+                self.running.kind == Kind::Controller
+                    && int(0) == i32::from(self.running.controller),
+            ),
             Action::Cc => HostValue::Int(
                 usize::try_from(int(0))
                     .ok()

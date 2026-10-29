@@ -134,6 +134,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
         coroutines: COROUTINES,
         foreign: None,
         hears_own_releases: true,
+        held_release_ends_children: true,
         controls: controls(script),
         engine_pars: EnginePars {
             first: SYMBOL_BASE,
@@ -333,5 +334,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         // host note-off still reaches it. (Augmented Orchestra's arpeggiator
         // releases the held key's notes from `onRelease`.)
         hears_own_releases: false,
+        // A held-back NoteOff keeps the posted note (`_onRelease` posts it).
+        held_release_ends_children: false,
     }
 }
