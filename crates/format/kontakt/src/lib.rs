@@ -73,6 +73,6 @@ pub fn load(path: &Path) -> Result<ir::Instrument, Error> {
     {
         return snapshot::load(path);
     }
-    let (chunks, monolith) = container::opened(path)?;
-    translate::instrument(path, &chunks, monolith, &[])
+    let (chunks, monolith, encrypted) = container::opened(path)?;
+    translate::instrument(path, &chunks, monolith, &[], encrypted)
 }
