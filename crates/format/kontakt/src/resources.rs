@@ -233,6 +233,13 @@ impl Resources {
 /// The library folder of the instrument at absolute `path`: the nearest
 /// ancestor holding `Samples`, a `.nicnt` or `Resources`; else its own folder.
 pub(crate) fn root(path: &Path) -> PathBuf {
+    known_root(path)
+        .or_else(|| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// A root supported by a library marker; no fallback is guessed.
+pub(crate) fn known_root(path: &Path) -> Option<PathBuf> {
     path.ancestors()
         .skip(1)
         .take(DEPTH)
@@ -244,9 +251,7 @@ pub(crate) fn root(path: &Path) -> PathBuf {
                         .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
             })
         })
-        .or_else(|| path.parent())
-        .unwrap_or(Path::new("."))
-        .to_path_buf()
+        .map(Path::to_path_buf)
 }
 
 fn entries(dir: &Path) -> Vec<PathBuf> {

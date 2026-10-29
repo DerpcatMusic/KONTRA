@@ -2810,9 +2810,10 @@ fn load_array_mode_two_restores_text_from_library_data() {
 fn get_folder_patch_returns_prepared_directory() {
     use kontra_engine::ir;
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
-    let source = "on init\n message(get_folder($GET_FOLDER_PATCH_DIR))\nend on";
+    let source = "on init\n message(get_folder($GET_FOLDER_LIBRARY_DIR) & get_folder($GET_FOLDER_PATCH_DIR))\nend on";
     let instrument = ir::Instrument {
         source_path: Some("/library/Instruments/Test.nki".into()),
+        library_path: Some("/library".into()),
         scripts: vec![ir::Script {
             name: "test".into(),
             dialect: ir::Dialect::Ksp,
@@ -2825,6 +2826,6 @@ fn get_folder_patch_returns_prepared_directory() {
     };
     let loaded = kontra_host::instrument::build(instrument, RATE, &mut store);
     let e = Engine::new(Arc::new(loaded.plan), store.client(), RATE);
-    assert_eq!(e.last_message(), "/library/Instruments/");
+    assert_eq!(e.last_message(), "/library//library/Instruments/");
     assert_eq!(e.stats().actions_unhandled, 0);
 }

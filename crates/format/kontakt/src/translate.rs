@@ -44,6 +44,9 @@ pub(crate) fn instrument(
     let mut out = ir::Instrument {
         name: params.name.clone(),
         source_path: std::path::absolute(path).ok(),
+        library_path: std::path::absolute(path)
+            .ok()
+            .and_then(|p| crate::resources::known_root(&p)),
         voices: 256,
         output: ir::Output {
             volume_db: db(params.volume),

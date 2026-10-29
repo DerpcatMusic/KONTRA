@@ -18,6 +18,8 @@ pub struct ScriptPlan {
     pub text_data: Vec<(u32, Vec<Text>)>,
     /// Absolute folder of the instrument file, when known.
     pub source_folder: Option<Text>,
+    /// Absolute library folder, when known.
+    pub library_folder: Option<Text>,
     /// Saved values written after `on init`, before `on persistence_changed`.
     pub restore: Vec<(u32, i64)>,
     pub restore_texts: Vec<(u32, Text)>,
@@ -44,6 +46,16 @@ pub struct ScriptPlan {
 }
 
 impl ScriptPlan {
+    /// A prepared folder by script path kind.
+    #[must_use]
+    pub fn folder(&self, kind: i32) -> Option<Text> {
+        match kind {
+            1 => self.library_folder,
+            2 => self.source_folder,
+            _ => None,
+        }
+    }
+
     /// Copies a prepared numeric array into its cells.
     pub fn load_number_data(&self, base: u32, len: usize, cells: &mut [i64]) {
         if let Some((_, values)) = self.data.iter().find(|(b, _)| *b == base) {
