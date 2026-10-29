@@ -410,12 +410,12 @@ fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Fi
     Some(f)
 }
 
-/// A legacy EQ band's GAIN parameter is stored in dB, −18..=18 (eq-kontakt.md
-/// §1.1), and the band's peak is twice the stored value. A route of depth 1
-/// spans the parameter's whole range.
+/// A legacy EQ band's GAIN is stored in dB, −18..=18, its peak twice that (eq-kontakt.md
+/// §1.1). A route of depth 1 moves the peak 12 dB (Kontakt measured on Afflatus, CC1 to
+/// eqGain1: 17 points within 0.27 dB, and the 3.5 kHz lift at CC1 127 within 1.7 dB).
 pub(crate) const EQ_GAIN_STORED_DB: f32 = 18.0;
 pub(crate) const EQ_GAIN_LIMIT_DB: f32 = 2.0 * EQ_GAIN_STORED_DB;
-pub(crate) const EQ_GAIN_SPAN_DB: f32 = 2.0 * EQ_GAIN_LIMIT_DB;
+pub(crate) const EQ_GAIN_SPAN_DB: f32 = 12.0;
 
 /// The band (0..=2) a legacy EQ's `eqGainN` target moves, N in 1..=3.
 /// The route a modulator's `eqGainN` target makes on EQ `insert`.
@@ -758,6 +758,15 @@ pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> (ir::Compressor, bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_eq_gain_route_moves_its_band_12_db() {
+        let kind = eq_gain(ir::Source::Velocity, 0, "eqGain1", 1.0);
+        assert!(
+            matches!(kind, Some(ir::ModKind::EqGain { depth_db, limit_db, .. })
+            if depth_db == 12.0 && limit_db == 36.0)
+        );
+    }
 
     #[test]
     fn a_filter_switches_to_any_modern_type_with_its_laws() {
