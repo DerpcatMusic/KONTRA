@@ -97,8 +97,9 @@ impl Look {
         wd: &Widget,
         style: Option<&TextStyle>,
         (w, h, scale): (f64, f64, f64),
+        bare: bool,
     ) -> Vec<El> {
-        let bg = !wd.hide.background;
+        let bg = bare || !wd.hide.background;
         let ink = |default: u32| style.map_or(rgb(default), |s| super::color(s.color));
         match self {
             Self::Button { on, caption } => {
@@ -277,7 +278,7 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> Path {
 /// Whether `w` draws a stock fader, text field or table: an unpictured
 /// script one whose background the script has not hidden.
 pub(super) fn shows(tree: &Interface, w: &Widget, bare: bool) -> bool {
-    !w.hide.background
+    (bare || !w.hide.background)
         && (bare || unpictured(tree, w))
         && matches!(
             w.kind,
@@ -300,7 +301,7 @@ fn unpictured(tree: &Interface, w: &Widget) -> bool {
 
 /// `w`'s stock face at `t` (0..1 of its range), `width` by `height`
 /// view points.
-pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64)) -> El {
+pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool) -> El {
     let kind = w.kind.clone();
     let bars: Vec<f64> = match (&w.kind, &w.value) {
         (Kind::Table { range, .. }, Some(model::Value::Integers(v))) => {
@@ -319,8 +320,12 @@ pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64)) -> El {
         };
         let mut d = Vec::new();
         match kind {
-            Kind::Slider { .. } => {
-                let vertical = h > w;
+            Kind::Slider { orientation, .. } => {
+                let vertical = if bare {
+                    matches!(orientation, model::Orientation::Vertical)
+                } else {
+                    h > w
+                };
                 let (len, across) = if vertical { (h, w) } else { (w, h) };
                 let thumb = (across * 0.6).clamp(4., 12.).min(len / 3.);
                 let at = thumb / 2. + t * (len - thumb);

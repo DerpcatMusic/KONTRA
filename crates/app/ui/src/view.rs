@@ -149,6 +149,7 @@ fn drawn_page(
                 &look,
                 stock.then_some(t.to_bits()),
                 wd.hide.background,
+                bare,
             ),
             glyphs
                 .as_ref()
@@ -165,7 +166,7 @@ fn drawn_page(
                 parts
                     .push(sliced(img, meta, (a.width * scale, a.height * scale), scale).at(0., 0.));
             } else if stock {
-                parts.push(stock::face(wd, t, (w, h)).at(0., 0.));
+                parts.push(stock::face(wd, t, (w, h), bare).at(0., 0.));
             }
             if let Some(glyphs) = &glyphs {
                 parts.push(bitmap_words(&words, style, wd, (w, h), scale, glyphs).at(0., 0.));
@@ -176,7 +177,7 @@ fn drawn_page(
                 parts.push(meter(&wd.colors, o, t, w, h).at(0., 0.));
             }
             let (w, h) = look.as_ref().map_or((w, h), |look| {
-                parts.extend(look.draw(wd, style, (w, h, scale)));
+                parts.extend(look.draw(wd, style, (w, h, scale), bare));
                 look.size(w, h, scale)
             });
             stack(parts).w(w).h(h).opacity(wd.opacity)

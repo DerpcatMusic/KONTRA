@@ -459,3 +459,26 @@ fn a_picture_font_label_draws_its_glyphs() {
     // Left-aligned two pixels in: one green pixel per 'A'.
     assert_eq!(px.get(2..4), Some(&[[0, 255, 0, 255]; 2][..]), "{px:?}");
 }
+
+#[test]
+fn vector_draws_a_picture_slider_even_when_its_background_is_hidden() {
+    let (mut tree, wall, knob) = tree();
+    let widget = tree.widgets.first_mut().unwrap();
+    widget.kind = Kind::Slider {
+        range: Range {
+            min: 0.,
+            max: 1.,
+            default: 0.,
+            step: None,
+        },
+        orientation: model::Orientation::Vertical,
+    };
+    widget.hide.background = true;
+    assert!(!stock::shows(&tree, &tree.widgets[0], false));
+    assert!(stock::shows(&tree, &tree.widgets[0], true));
+    let mut ui = crate::ui();
+    let mut pictures = pictures(wall, knob);
+    let (el, _) = vector_page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 0.));
+    let pixels = paint(&mut ui, el, 20, 10);
+    assert!(pixels.iter().any(|p| *p != [128, 128, 128, 255]));
+}
