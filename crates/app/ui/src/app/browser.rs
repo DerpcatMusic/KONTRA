@@ -4,7 +4,12 @@
 
 use mui::prelude::*;
 
+use std::sync::Arc;
+
+use kontra_ui_model::{AssetRef, ImageMeta};
+
 use super::{Action, App, Format, Shelf};
+use crate::Pictures;
 use crate::kit::{self, Icon, field, glyph, icon_button, interactive, list_row, rule, tab};
 use crate::theme::{CONTROL, SPACE, TEXT, TIGHT, secondary};
 
@@ -209,6 +214,7 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     else {
         return col![search.el];
     };
+    let cover = (app.covers.as_mut()).and_then(|c| cover(c, lib, &l.art));
     let star = icon_button(ui, "star", Icon::Star, "Favorite", l.starred);
     if star.changed {
         l.starred = !l.starred;
@@ -299,8 +305,15 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             None => v.folded.push(f),
         }
     }
+    let banner = cover.map(|img| {
+        block(Len::Pct(100.), Len::Auto)
+            .aspect(BANNER)
+            .fill(Fill::Image(img, Fit::Cover))
+            .pad((0., SPACE))
+    });
     col![
         search.el,
+        col(banner),
         row![title, star.el]
             .gap(TIGHT)
             .align(Align::Center)
@@ -311,4 +324,17 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .min_h(0)
             .grow(1),
     ]
+}
+
+/// A library-browser banner's width over its height (Kontakt's 905 × 99).
+const BANNER: f64 = 905. / 99.;
+/// The most cover pictures of one library tried.
+const COVERS: usize = 4;
+
+/// The first of a library's cover pictures that has decoded; asks for the
+/// rest meanwhile.
+fn cover(covers: &mut Pictures, lib: usize, art: &[String]) -> Option<Arc<Image>> {
+    let meta = ImageMeta::default();
+    (art.iter().take(COVERS).enumerate())
+        .find_map(|(k, path)| covers.frame(AssetRef(lib * COVERS + k), path, meta, 0))
 }

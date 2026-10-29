@@ -94,6 +94,7 @@ fn specimen() -> App {
         format,
         presets: presets.iter().map(|p| (*p).to_owned()).collect(),
         starred,
+        art: Vec::new(),
     };
     App {
         libraries: vec![

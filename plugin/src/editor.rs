@@ -3,7 +3,7 @@
 //! waits on a load, and it hands what the user does back as [`Edit`]s for
 //! the tick to carry out.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -119,7 +119,11 @@ impl Snapshot {
             app.libraries = self.libraries.1.as_ref().clone();
             app.recent.clone_from(&self.recent);
             app.folders.clone_from(&self.folders);
+            app.covers = Some(Pictures::new(Box::new(cover)));
             shown.browser = self.libraries.0;
+        }
+        if let Some(covers) = &mut app.covers {
+            covers.poll();
         }
         let shown = &mut shown.parts;
         let mut old = std::mem::take(&mut app.parts);
@@ -200,9 +204,53 @@ fn libraries(browser: &Browser) -> Vec<app::Library> {
                 })
                 .collect(),
             starred: browser.prefs.starred(&l.dir),
+            art: art(&l.art),
         })
         .collect()
 }
+
+/// Pictures the library holds inside a resource container, best first:
+/// its library-browser banner (stored with the dot), then its artwork.
+const HELD: [&str; 2] = [".LibBrowser.png", "MST_artwork.png"];
+
+/// The cover keys of a library's ranked pictures and containers: a PNG's
+/// path, or a container's path, a NUL, and the picture's name inside it.
+/// Any container reads the whole library's, so only the first is asked.
+pub(crate) fn art(paths: &[PathBuf]) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut held = false;
+    for path in paths {
+        let ext = path.extension().map(|e| e.to_ascii_lowercase());
+        let name = path.to_string_lossy();
+        match ext.as_ref().and_then(|e| e.to_str()) {
+            Some("png") => keys.push(name.into_owned()),
+            Some("nicnt" | "nkr") if !held => {
+                held = true;
+                keys.extend(HELD.iter().map(|n| format!("{name}\0{n}")));
+            }
+            // ponytail: JPEG covers (UVI sidecars) need a JPEG decoder in Pictures.
+            _ => {}
+        }
+    }
+    keys
+}
+
+/// The bytes of the cover picture `key` names (see [`art`]).
+pub(crate) fn cover(key: &str) -> Option<Vec<u8>> {
+    match key.split_once('\0') {
+        Some((container, name)) => Library::open(Path::new(container)).read(name),
+        None => {
+            let file = std::fs::File::open(key).ok()?;
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::Read::take(file, COVER_BYTES), &mut bytes)
+                .ok()?;
+            Some(bytes)
+        }
+    }
+}
+
+/// The largest cover file read.
+const COVER_BYTES: u64 = 32 << 20;
 
 /// Carries out a browser action: a preset loads into the first free part.
 pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &mut Vec<String>) {

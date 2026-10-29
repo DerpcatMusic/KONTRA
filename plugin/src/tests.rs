@@ -743,3 +743,20 @@ fn a_first_run_lists_v2s_libraries_and_their_presets_play_and_recall() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
+
+#[test]
+fn a_librarys_cover_reads_from_its_resource_container() {
+    let Some(nicnt) = library("Una Corda Library/Una Corda.nicnt") else {
+        return;
+    };
+    // A second container adds nothing: the first reads the whole library's.
+    let loose = nicnt.with_file_name("cover.png");
+    let keys = crate::editor::art(&[nicnt.clone(), nicnt.with_extension("nkr"), loose.clone()]);
+    assert_eq!(keys.len(), 3, "{keys:?}");
+    assert_eq!(keys.last(), Some(&loose.to_string_lossy().into_owned()));
+    let keys = &keys[..2];
+    for key in keys {
+        let png = crate::editor::cover(key);
+        assert!(png.is_some_and(|b| b.starts_with(b"\x89PNG")), "no {key:?}");
+    }
+}
