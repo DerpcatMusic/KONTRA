@@ -50,6 +50,7 @@ pub fn modulation_shaper(points: &[(f32, f32, f32)]) -> Law {
 mod tests {
     use super::*;
 
+    /// The normalized bipolar mapping agrees with the binary at MIDI endpoints and midpoint.
     #[test]
     fn bipolar_curve_maps_normalized_endpoints_and_midpoint() {
         for (x, expected) in [(0.0, -1.0), (0.5, 0.0), (1.0, 1.0)] {

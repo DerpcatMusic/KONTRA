@@ -6,9 +6,7 @@ use ni_file::kontakt::objects::{InternalModParams, Modulator};
 
 use crate::laws;
 
-/// Routes an envelope (flex, or an AHDSR that is not the amplitude envelope)
-/// or an LFO to volume, pitch, pan and filter cutoff; reports the targets and
-/// shapes not mapped, and in `unmapped` the slots of cutoffs it drops.
+/// Records the selected law and its input and output when tracing is enabled.
 fn trace_timed(
     id: &'static str,
     group: usize,
@@ -25,6 +23,7 @@ fn trace_timed(
     });
 }
 
+/// Routes a timed envelope or LFO and reports unmapped targets and cutoff slots.
 pub(crate) fn timed(
     out: &mut ir::Group,
     p: &InternalModParams,
