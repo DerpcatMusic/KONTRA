@@ -39,7 +39,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             for (name, bytes) in &s.data {
                 std::fs::write(
-                    std::path::Path::new(&dir).join(format!("{n}-{name}.nka")),
+                    // A UVI module's name is a path in its bank.
+                    std::path::Path::new(&dir).join(format!("{n}-{}.nka", name.replace('/', "_"))),
                     bytes,
                 )?;
             }
@@ -279,32 +280,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         engine.process(&mut silent, &[]);
         install_requests(&mut engine, &plan);
     }
-    // KONTRA_CONTROL=name=value,...: each script control (named without its
-    // type prefix) moves there in turn and its callbacks run, as a user's
-    // edit would; its effect loads install over a quarter second.
-    for pair in std::env::var("KONTRA_CONTROL")
+    // KONTRA_CONTROL=name=value,...: each script control (a KSP one named
+    // without its type prefix, a UVI widget or macro by its name) moves there
+    // in turn and its callbacks run, as a user's edit would; its effect loads
+    // install over a quarter second. "name=value@1.5" moves it 1.5 s into
+    // the render instead, at the start of that block.
+    let mut timed_controls = Vec::new();
+    for entry in std::env::var("KONTRA_CONTROL")
         .iter()
         .flat_map(|s| s.split(','))
     {
-        let Some((name, value)) = pair.split_once('=') else {
+        let Some((name, rest)) = entry.split_once('=') else {
             continue;
         };
-        let Ok(value) = value.parse() else { continue };
-        // Its UI id is the first one plus its variable's index (persist.rs).
-        let found = scripts.iter().enumerate().find_map(|(n, source)| {
-            let compiled = kontra_ksp::compile(source, &[]).ok()?;
-            let bare = |v: &str| v.trim_start_matches(['$', '%', '~', '?', '@', '!']) == name;
-            let at = compiled.variables.iter().position(|v| bare(&v.name))?;
-            Some((
-                u8::try_from(n).ok()?,
-                kontra_ksp::FIRST_UI_ID + i32::try_from(at).ok()?,
-            ))
-        });
-        let Some((slot, id)) = found else {
-            println!("control {name}: no such variable");
+        let (value, at) = rest.split_once('@').unwrap_or((rest, "0"));
+        let (Some((slot, id, value)), Ok(at)) =
+            (control(&plan, &scripts, name, value), at.parse::<f32>())
+        else {
+            println!("control {name}: no such control or value {rest}");
             continue;
         };
-        println!("control {name} (script {slot}, ui id {id}) := {value}");
+        if at > 0.0 {
+            timed_controls.push(((at * RATE as f32) as usize / 512, slot, id, value));
+            continue;
+        }
+        println!("control {name} (script {slot}, id {id}) := {value}");
         engine.set_control(slot, id, value);
         for _ in 0..RATE as usize / 4 / 512 {
             engine.process(&mut silent, &[]);
@@ -448,6 +448,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !live {
             stream.settle(std::time::Duration::from_secs(5));
         }
+        for &(_, slot, id, value) in timed_controls.iter().filter(|c| c.0 == n) {
+            engine.set_control(slot, id, value);
+        }
         let processing = std::time::Instant::now();
         engine.process(&mut block, input);
         busy += processing.elapsed();
@@ -557,6 +560,30 @@ fn write_wav(path: &std::path::Path, frames: &[[f32; 2]]) -> std::io::Result<()>
         b.extend(s.to_le_bytes());
     }
     std::fs::write(path, b)
+}
+
+/// Script control `name` and `value` as `Engine::set_control` takes them:
+/// a UVI script's by its name among its controls (the last of that name, a
+/// widget before a macro), its value an `f64`; a KSP one's UI id is the first
+/// one plus its variable's index (persist.rs), its value an integer.
+fn control(plan: &Plan, scripts: &[String], name: &str, value: &str) -> Option<(u8, i32, i64)> {
+    plan.scripts
+        .iter()
+        .zip(scripts)
+        .enumerate()
+        .find_map(|(n, (script, source))| {
+            let slot = u8::try_from(n).ok()?;
+            if let Some(foreign) = &script.foreign {
+                let id = foreign.controls().iter().rposition(|c| c == name)?;
+                let value = value.parse::<f64>().ok()?.to_bits() as i64;
+                return Some((slot, i32::try_from(id).ok()?, value));
+            }
+            let compiled = kontra_ksp::compile(source, &[]).ok()?;
+            let bare = |v: &str| v.trim_start_matches(['$', '%', '~', '?', '@', '!']) == name;
+            let at = compiled.variables.iter().position(|v| bare(&v.name))?;
+            let id = kontra_ksp::FIRST_UI_ID + i32::try_from(at).ok()?;
+            Some((slot, id, value.parse().ok()?))
+        })
 }
 
 /// Builds and installs the effects and responses scripts asked for, between

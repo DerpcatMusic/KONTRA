@@ -72,12 +72,18 @@ pub trait Machine: Send {
     /// like a wait. In the order they were started.
     fn spawned(&mut self) -> Option<(CoId, u64)>;
     fn faults(&self) -> Faults;
+    /// A coroutine that moves control `id` ([`Foreign::controls`]) to
+    /// `value` and runs its callback, as [`Machine::start`].
+    fn control(&mut self, id: i32, value: f64, context: u64) -> Option<CoId>;
 }
 
 /// Compiled code a [`Machine`] runs; each engine makes its own machine.
 pub trait Foreign: Send + Sync + std::fmt::Debug {
     /// Not real-time: builds the language state.
     fn machine(&self) -> Box<dyn Machine>;
+    /// What a user can move ([`Machine::control`]), by name; its index is
+    /// the control's id.
+    fn controls(&self) -> &[String];
 }
 
 /// How a run ended.
