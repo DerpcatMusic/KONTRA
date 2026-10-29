@@ -157,6 +157,14 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
             }).sum();
             Some(json!({"frame": e.frame, "event": e.description, "hf_second_difference_energy": energy}))
         }).collect();
+    // Stable FNV-1a of the exact little-endian stereo f32 sample bits.
+    let mut fingerprint = 0xcbf29ce484222325u64;
+    for sample in rendered.iter().flatten() {
+        for byte in sample.to_bits().to_le_bytes() {
+            fingerprint = (fingerprint ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
+    }
+    let fingerprint = format!("{fingerprint:016x}");
     let loudest_remaining = engine
         .inspect_voices()
         .map(|v| v.last_peak)
@@ -173,7 +181,7 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         && stream_stats.read_errors == 0
         && stream_stats.requests_refused == 0;
     let summary = format!(
-        "{}: scenario {scenario_name}, {} input events\n  peak {peak:.6}, clipped samples {clipped}, max sample jump {jump:.6}\n  {} voices active {:.3} s after last note-off (per-voice last-render peak before group FX in JSON)\n  loudest remaining voice peak {loudest_remaining:.8}; EQ route snapshots: {}; max CC-window HF energy {burst_peak:.8}\n  missing sample frames: {}; offline wait timeouts: {wait_timeouts}; render complete: {complete}\n",
+        "{}: scenario {scenario_name}, {} input events\n  peak {peak:.6}, clipped samples {clipped}, max sample jump {jump:.6}\n  {} voices active {:.3} s after last note-off (per-voice last-render peak before group FX in JSON)\n  loudest remaining voice peak {loudest_remaining:.8}; EQ route snapshots: {}; max CC-window HF energy {burst_peak:.8}\n  missing sample frames: {}; offline wait timeouts: {wait_timeouts}; render complete: {complete}; audio FNV-1a: {fingerprint}\n",
         loaded.name,
         events.len(),
         left.len(),
@@ -185,7 +193,7 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
         "trace":trace,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts},
-        "diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"unavailable":["script callbacks and commands by event","voice lifecycle events","non-EQ route values","octave bands"]}}),
+        "diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["script callbacks and commands by event","voice lifecycle events","non-EQ route values","octave bands"]}}),
         summary,
     ))
 }
