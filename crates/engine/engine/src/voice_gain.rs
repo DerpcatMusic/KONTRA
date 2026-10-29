@@ -29,22 +29,11 @@ impl Bend {
     };
 }
 
-/// `at` moved `frames` toward `to` as a one-pole of `tau_ms` (0: at once);
-/// there once within 1e-4.
-pub(crate) fn glide(at: f32, to: f32, tau_ms: f32, frames: f32, rate: u32) -> f32 {
-    let tau = tau_ms * rate as f32 / 1000.0;
-    let next = at + (to - at) * (1.0 - (-frames / tau).exp());
-    if (to - next).abs() < 1e-4 { to } else { next }
-}
-
 /// A script's group pan glides as a one-pole of this time constant
 /// (measured natively: τ 37.5 ms, as the instrument's volume and pan).
 pub(crate) const GROUP_PAN_TAU_MS: f32 = 37.5;
 
-/// `step` raised by the pitch routes' `semitones`, through `law`.
-pub(crate) fn bent(law: ir::Exp2, step: f64, semitones: f32) -> f64 {
-    step * law.of(f64::from(semitones) / 12.0)
-}
+pub(crate) use kontra_plan::modulation::{bent, glide};
 
 impl Engine {
     /// The voice's gain, and the slower gain of its routes that lag (their
@@ -83,8 +72,10 @@ impl Engine {
             {
                 // HeldTime is fixed at the voice's start: see `release_counter`.
                 let intensity = intensity * self.scale(zone, source, note, age);
-                let g =
-                    (self.unit(zone, source, note, age)).map_or(1.0, |x| curve.gain(intensity, x));
+                let input = self.unit(zone, source, note, age);
+                let g = input.map_or(1.0, |x| curve.gain(intensity, x));
+                #[cfg(feature = "trace")]
+                self.trace_route(zone, m, input, g, crate::RouteUnit::GainMultiplier);
                 if tau_ms > 0.0 {
                     (lagged, tau) = (lagged * g, tau.max(tau_ms));
                 } else {
@@ -98,7 +89,11 @@ impl Engine {
                 .filter(|m| !m.bypass)
                 .filter_map(|m| match m.kind {
                     ir::ModKind::Pan { source, amount } => {
-                        Some(self.routed(zone, source, note, age)? * amount)
+                        let input = self.routed(zone, source, note, age)?;
+                        let value = input * amount;
+                        #[cfg(feature = "trace")]
+                        self.trace_route(zone, m, Some(input), value, crate::RouteUnit::Pan);
+                        Some(value)
                     }
                     _ => None,
                 })
@@ -144,7 +139,11 @@ impl Engine {
                     .get_mut(usize::from(row))
                     .and_then(|r| r.get_mut(usize::from(side)))
             {
-                *cell *= self.source(zone, source, note, age).unwrap_or(1.0);
+                let input = self.source(zone, source, note, age);
+                let value = input.unwrap_or(1.0);
+                #[cfg(feature = "trace")]
+                self.trace_route(zone, m, input, value, crate::RouteUnit::MixMultiplier);
+                *cell *= value;
                 moved = true;
             }
         }
@@ -214,8 +213,11 @@ impl Engine {
                             lfo: l,
                             depth,
                         } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
-                            let x = self.source(zone, source, note, Age::START).unwrap_or(0.0);
-                            lfo.phase += x * depth;
+                            let input = self.source(zone, source, note, Age::START);
+                            let value = input.unwrap_or(0.0) * depth;
+                            #[cfg(feature = "trace")]
+                            self.trace_route(zone, m, input, value, crate::RouteUnit::PhaseCycles);
+                            lfo.phase += value;
                         }
                         ir::ModKind::LfoRate {
                             source,
@@ -224,8 +226,10 @@ impl Engine {
                             octaves,
                             range_hz: [lo, hi],
                         } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
-                            let x = self.source(zone, source, note, Age::START).unwrap_or(0.0);
-                            let f = (x * depth * octaves).exp2();
+                            let input = self.source(zone, source, note, Age::START);
+                            let f = (input.unwrap_or(0.0) * depth * octaves).exp2();
+                            #[cfg(feature = "trace")]
+                            self.trace_route(zone, m, input, f, crate::RouteUnit::RateMultiplier);
                             lfo.rate = match lfo.rate {
                                 ir::Rate::Hz(hz) => ir::Rate::Hz((hz * f).clamp(lo, hi.max(lo))),
                                 ir::Rate::Beats(b) => ir::Rate::Beats(b / f),
@@ -326,7 +330,19 @@ impl Engine {
                         source,
                         of: o,
                         depth,
-                    } if o == of => Some(1.0 - (1.0 - self.unit(zone, source, note, age)?) * depth),
+                    } if o == of => {
+                        let input = self.unit(zone, source, note, age)?;
+                        let value = 1.0 - (1.0 - input) * depth;
+                        #[cfg(feature = "trace")]
+                        self.trace_route(
+                            zone,
+                            m,
+                            Some(input),
+                            value,
+                            crate::RouteUnit::IntensityMultiplier,
+                        );
+                        Some(value)
+                    }
                     _ => None,
                 })
                 .product()
@@ -346,7 +362,10 @@ impl Engine {
                 tau_ms,
             } = m.kind
             {
-                let st = self.routed(zone, source, note, age).unwrap_or(0.0) * semitones * depth;
+                let input = self.routed(zone, source, note, age);
+                let st = input.unwrap_or(0.0) * semitones * depth;
+                #[cfg(feature = "trace")]
+                self.trace_route(zone, m, input, st, crate::RouteUnit::Semitones);
                 if tau_ms > 0.0 {
                     bend.semitones += st;
                     bend.tau_ms = bend.tau_ms.max(tau_ms);
@@ -381,7 +400,10 @@ impl Engine {
                 && let Some(x) = self.source(zone, source, note, Age::START)
                 && let Some(s) = shift.get_mut(usize::from(length))
             {
-                *s += x * depth;
+                let value = x * depth;
+                #[cfg(feature = "trace")]
+                self.trace_route(zone, m, Some(x), value, crate::RouteUnit::LoopFraction);
+                *s += value;
             }
         }
         shift
@@ -403,7 +425,16 @@ impl Engine {
                         ir::Source::HeldTime { span_ms } => kontra_plan::held_time(span_ms, held),
                         source => self.source(zone, source, note, Age::START)?,
                     };
-                    Some(x * depth)
+                    let value = x * depth;
+                    #[cfg(feature = "trace")]
+                    self.trace_route(
+                        zone,
+                        m,
+                        Some(x),
+                        value,
+                        crate::RouteUnit::SampleStartFraction,
+                    );
+                    Some(value)
                 }
                 _ => None,
             })
@@ -446,14 +477,23 @@ impl Engine {
                 continue;
             };
             let x = if intensity < 0.0 { 1.0 - x } else { x };
-            let m = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
+            let multiplier = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
             let ms = *frames as f32 * 1000.0 / rate;
             let ms = if floor_ms > 0.0 {
-                floor_ms * ((ms + floor_ms) / floor_ms).powf(m * m * m) - floor_ms
+                floor_ms * ((ms + floor_ms) / floor_ms).powf(multiplier * multiplier * multiplier)
+                    - floor_ms
             } else {
-                ms * m
+                ms * multiplier
             };
             *frames = (ms.max(0.0) * rate / 1000.0).round() as u32;
+            #[cfg(feature = "trace")]
+            self.trace_route(
+                zone,
+                m,
+                Some(x),
+                *frames as f32,
+                crate::RouteUnit::EnvelopeFrames,
+            );
         }
         e
     }

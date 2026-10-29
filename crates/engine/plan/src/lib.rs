@@ -3,6 +3,7 @@
 //! (13-FRESH-CORE.md §2.1): scripts are optional, not where round robin lives.
 
 mod engine_pars;
+pub mod modulation;
 pub mod par_laws;
 mod route;
 mod script;
@@ -176,6 +177,37 @@ impl Group {
                 .is_some_and(|s| blend(s.source)),
             s => blend(s),
         }
+    }
+
+    /// Whether a timed source can also move through a controller-driven
+    /// intensity, phase or rate route. The direct source uses [`Self::reads`].
+    #[must_use]
+    pub fn reads_modulated(&self, source: ir::Source, cc: u8) -> bool {
+        if self.reads(source, cc) {
+            return true;
+        }
+        self.mods
+            .iter()
+            .filter(|m| !m.bypass)
+            .any(|m| match m.kind {
+                ir::ModKind::Intensity {
+                    source: input, of, ..
+                } if of == source
+                    && matches!(source, ir::Source::Lfo(_) | ir::Source::Envelope(_)) =>
+                {
+                    self.reads(input, cc)
+                }
+                ir::ModKind::LfoPhase {
+                    source: input, lfo, ..
+                }
+                | ir::ModKind::LfoRate {
+                    source: input, lfo, ..
+                }
+                | ir::ModKind::LfoHz {
+                    source: input, lfo, ..
+                } if source == ir::Source::Lfo(lfo) => self.reads(input, cc),
+                _ => false,
+            })
     }
 
     /// Velocity 24 dB down at zero, a gate envelope.
@@ -464,4 +496,44 @@ pub fn source(kind: &ir::ModKind) -> Option<ir::Source> {
 /// -1 moves route 0 alone).
 pub fn addressed(m: &ir::Mod, slot: i32, target: i32) -> bool {
     i32::from(m.slot) == slot && i32::from(m.target) == target.max(0)
+}
+
+#[cfg(test)]
+mod route_dependency_tests {
+    use super::*;
+    #[test]
+    fn timed_source_dependencies_include_intensity_and_lfo_rate() {
+        let mut group = Group::standard();
+        group.mods = vec![
+            ir::Mod {
+                name: "intensity".into(),
+                slot: 1,
+                target: 0,
+                bypass: false,
+                kind: ir::ModKind::Intensity {
+                    source: ir::Source::Controller(1),
+                    of: ir::Source::Lfo(0),
+                    depth: 1.0,
+                },
+            },
+            ir::Mod {
+                name: "rate".into(),
+                slot: 2,
+                target: 0,
+                bypass: false,
+                kind: ir::ModKind::LfoHz {
+                    source: ir::Source::Controller(11),
+                    lfo: 0,
+                    depth: 1.0,
+                    range_hz: [0.0, 4.0],
+                },
+            },
+        ];
+        assert!(group.reads_modulated(ir::Source::Lfo(0), 1));
+        assert!(group.reads_modulated(ir::Source::Lfo(0), 11));
+        assert!(!group.reads_modulated(ir::Source::Lfo(1), 1));
+        assert!(!group.reads_modulated(ir::Source::Controller(2), 1));
+        group.mods[0].bypass = true;
+        assert!(!group.reads_modulated(ir::Source::Lfo(0), 1));
+    }
 }
