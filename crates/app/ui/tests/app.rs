@@ -63,6 +63,7 @@ fn clicks_drive_the_editor_and_idle_costs_no_frames() {
             format: Format::Kontakt,
             presets: vec!["Violins".into()],
             starred: false,
+            art: Vec::new(),
         }],
         ..App::default()
     };
