@@ -135,6 +135,7 @@ pub fn shape(f: &ir::Filter) -> Shape {
         hz: f.hz,
         stages: f.stages,
         ladder: f.ladder.map(|l| match l {
+            ir::Ladder::OnePole => LadderKind::OnePole,
             ir::Ladder::ZeroDelay(taps) => LadderKind::ZeroDelay(taps),
             ir::Ladder::Explicit { taps, fat } => LadderKind::Explicit { taps, fat },
             ir::Ladder::SallenKey { morph, curve } => LadderKind::SallenKey { morph, curve },

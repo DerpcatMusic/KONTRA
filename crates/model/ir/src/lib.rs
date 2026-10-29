@@ -675,7 +675,8 @@ pub struct Filter {
     pub pass: Pass,
     pub hz: f32,
     pub stages: u8,
-    /// A resonant ladder instead; the last damping `k` sets its resonance `1 − k/2`.
+    /// An alternative kernel; for a resonant ladder the last damping `k`
+    /// sets its resonance `1 − k/2`.
     pub ladder: Option<Ladder>,
     pub damping: [f32; 3],
     pub gain: f32,
@@ -687,10 +688,12 @@ pub struct Filter {
     pub q_octaves: f32,
 }
 
-/// A four-pole ladder mixing its taps by selector 1..=12 (low 1..4 poles,
-/// high 1..4, band 2 and 4, then peak and notch, or notch 2 and 4).
+/// Alternative filter kernels. Ladder taps 1..=12 select low 1..4 poles,
+/// high 1..4, band 2 and 4, then peak and notch, or notch 2 and 4.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Ladder {
+    /// A first-order exponential low/high-pass, with no Nyquist zero in its low-pass.
+    OnePole,
     /// Zero-delay (trapezoidal) poles, saturating in the loop.
     ZeroDelay(u8),
     /// Explicit poles with the feedback a sample late and one saturator on

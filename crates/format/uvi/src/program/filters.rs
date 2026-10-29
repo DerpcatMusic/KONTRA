@@ -1,6 +1,7 @@
 //! A keygroup's filters. A `OnePole` (UVIWorkstation's factory names its modes
-//! `lpf_1p` and `hpf_1p`, [ref]) is a one-pole at `Freq` Hz, 20 Hz to
-//! 20 kHz. A connection on `Freq` moves it along that range's log scale:
+//! `lpf_1p` and `hpf_1p`, [ref]) is an exponential one-pole at
+//! `Freq` Hz, 20 Hz to 20 kHz (coefficient [ref], audio [ref]).
+//! A connection on `Freq` moves it along that range's log scale:
 //! `Freq × 1000^(Ratio × s)`, `s` the source (0..=1), `1 − s` when
 //! `Inverted` (the parameter tables pair 20 and 20000, [ref]; v1's
 //! native renders, crates/sampler-uvi/src/modulation.rs). Any source the
@@ -155,6 +156,9 @@ pub(super) fn keygroup(kg: Node) -> Vec<Option<ir::Effect>> {
             octaves: FREQ_OCTAVES,
             q_octaves: 0.0,
         };
+        if node.has_tag_name("OnePole") {
+            filter.ladder = Some(ir::Ladder::OnePole);
+        }
         if node.has_tag_name("XpanderFilter") {
             let q = num(node, "Q", 0.0).unwrap_or(0.0).clamp(0.0, 1.0) as f32;
             let drive = num(node, "Drive", 0.0).unwrap_or(0.0).clamp(-20.0, 20.0) as f32;

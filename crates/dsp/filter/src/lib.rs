@@ -38,24 +38,32 @@ pub struct Shape {
     pub pass: Pass,
     pub hz: f32,
     pub stages: u8,
-    /// A ladder instead of the stages; runs only in [`Svf`] (it is not a set
-    /// of biquads).
+    /// An alternative kernel instead of the stages; runs in [`Svf`].
     pub ladder: Option<LadderKind>,
     pub damping: [f32; 3],
     pub gain: f32,
 }
 
-/// A ladder by tap selector 1..=12: a [`Ladder`], or a [`Huovilainen`]
-/// with its `fat`; or a [`SallenKey`] two-pole.
+/// Alternative filter kernels: a first-order pole, a ladder by tap selector
+/// 1..=12, or a [`SallenKey`] two-pole.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LadderKind {
+    /// An exponential first-order low/high-pass.
+    OnePole,
     ZeroDelay(u8),
-    Explicit { taps: u8, fat: f32 },
-    SallenKey { morph: f32, curve: [f32; 2] },
+    Explicit {
+        taps: u8,
+        fat: f32,
+    },
+    SallenKey {
+        morph: f32,
+        curve: [f32; 2],
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 enum Kernel {
+    OnePole([f64; 2]),
     ZeroDelay(Ladder),
     // Boxed: its halfband is several times the zero-delay ladder; built at load.
     Explicit(Box<Huovilainen>),
@@ -158,6 +166,7 @@ impl Svf {
     /// spare box; `None` without one.
     fn kernel(&mut self, kind: LadderKind) -> Option<Kernel> {
         Some(match kind {
+            LadderKind::OnePole => Kernel::OnePole([0.0; 2]),
             LadderKind::ZeroDelay(taps) => Kernel::ZeroDelay(Ladder::new(taps)),
             LadderKind::Explicit { taps, fat } => {
                 let mut b = self.spare.take()?;
@@ -186,6 +195,22 @@ impl Svf {
             let k = self.shape.damping.get(last).copied().unwrap_or(2.0);
             let (hz, r) = (f64::from(self.hz), 1.0 - f64::from(k) / 2.0);
             match ladder {
+                Kernel::OnePole(state) => {
+                    let a = (-std::f64::consts::TAU * hz / self.rate).exp();
+                    for frame in io {
+                        for (sample, s) in frame.iter_mut().zip(state.iter_mut()) {
+                            let x = f64::from(*sample);
+                            *s += (x - *s) * (1.0 - a);
+                            let y = if self.shape.pass == Pass::High {
+                                x - *s
+                            } else {
+                                *s
+                            };
+                            *sample = (y * gain) as f32;
+                        }
+                    }
+                    flush(state);
+                }
                 Kernel::ZeroDelay(l) => {
                     l.tune(hz, self.rate, r);
                     l.process(io, gain);
@@ -293,6 +318,7 @@ impl Svf {
     #[must_use]
     pub fn is_silent(&self) -> bool {
         self.ladder.as_ref().is_none_or(|l| match l {
+            Kernel::OnePole(state) => state.iter().all(|s| s.abs() < 1e-10),
             Kernel::ZeroDelay(l) => l.is_silent(),
             Kernel::Explicit(l) => l.is_silent(),
             Kernel::SallenKey(l) => l.is_silent(),
@@ -307,6 +333,7 @@ impl Svf {
     pub fn reset(&mut self) {
         self.state = [[[0.0; 2]; 2]; 3];
         match &mut self.ladder {
+            Some(Kernel::OnePole(state)) => *state = [0.0; 2],
             Some(Kernel::ZeroDelay(l)) => l.reset(),
             Some(Kernel::Explicit(l)) => l.reset(),
             Some(Kernel::SallenKey(l)) => l.reset(),
@@ -318,6 +345,30 @@ impl Svf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exponential_one_pole_matches_the_reference_impulse() {
+        for (pass, expected) in [
+            (Pass::Low, [0.480_297_33, 0.249_611_81, 0.129_723_92]),
+            (Pass::High, [0.519_702_7, -0.249_611_81, -0.129_723_92]),
+        ] {
+            let mut filter = Svf::new(Shape {
+                pass,
+                hz: 5000.0,
+                stages: 0,
+                ladder: Some(LadderKind::OnePole),
+                damping: [2.0; 3],
+                gain: 1.0,
+            });
+            filter.set_cutoff(5000.0, 48_000);
+            let mut samples = [[1.0, 0.0], [0.0; 2], [0.0; 2]];
+            filter.process(&mut samples);
+            for (sample, want) in samples.iter().zip(expected) {
+                assert!((sample[0] - want).abs() < 1e-6, "{pass:?}: {sample:?}");
+                assert_eq!(sample[1], 0.0);
+            }
+        }
+    }
 
     /// Steady-state gain of a sine at `hz` through the shape, in dB.
     fn gain_db(shape: &Shape, hz: f64) -> f64 {
