@@ -1,5 +1,6 @@
 use std::io::{Read, Seek, SeekFrom};
 
+use crate::bits::{BLOCK_BYTES, unpack_block};
 use crate::block::{BlockHeader, ChannelEncoding, SAMPLES_PER_BLOCK, SampleFormat};
 use crate::block::{decode_mid_side, read_block};
 use crate::header::NcwHeader;
@@ -250,6 +251,58 @@ pub fn decode_group<R: Read>(
     Ok(())
 }
 
+/// [`decode_group`] into fixed buffers, for a real-time reader: `group` holds
+/// exactly the group's bytes, `out` gets each channel's frames and the frame
+/// count comes back. Allocates nothing. One or two channels only; the legacy
+/// zero-width block is refused.
+pub fn decode_group_fixed(
+    group: &[u8],
+    header: &NcwHeader,
+    format: SampleFormat,
+    index: usize,
+    out: &mut [[i32; SAMPLES_PER_BLOCK]; 2],
+) -> Result<usize, Error> {
+    let channels = header.channels as usize;
+    if !(1..=2).contains(&channels) {
+        return Err(Error::InvalidHeader(
+            "fixed decode takes one or two channels",
+        ));
+    }
+    let mut rest = group;
+    let mut mid_side = false;
+    for (channel, values) in out.iter_mut().take(channels).enumerate() {
+        let block = BlockHeader::read(&mut rest)?;
+        if block.sample_format() != format {
+            return Err(Error::InvalidHeader("sample format changes between blocks"));
+        }
+        if channel == 0 {
+            mid_side = block.channel_encoding() == ChannelEncoding::MidSide;
+        }
+        let bits = block.bits.unsigned_abs() as usize;
+        if bits == 0 || bits > 32 {
+            return Err(Error::UnsupportedBitDepth(block.bits));
+        }
+        let len = bits * SAMPLES_PER_BLOCK / 8;
+        let body = rest.get(..len).ok_or(Error::InvalidHeader("short block"))?;
+        let mut data = [0; BLOCK_BYTES];
+        data[..len].copy_from_slice(body);
+        rest = &rest[len..];
+        unpack_block(
+            &data,
+            bits,
+            (block.bits > 0).then_some(block.base_value),
+            values,
+        );
+    }
+    if mid_side && channels == 2 {
+        let [mid, side] = out;
+        decode_mid_side(mid, side, format);
+    }
+    Ok((header.num_samples as usize)
+        .saturating_sub(index * SAMPLES_PER_BLOCK)
+        .min(SAMPLES_PER_BLOCK))
+}
+
 // Check framing before allocating any decoded sample buffers. Width one is the
 // smallest representation accepted by the legacy reader: 16 header + 64 payload bytes.
 fn validate_offsets(header: &NcwHeader, offsets: &[u32]) -> Result<(), Error> {
@@ -303,5 +356,47 @@ mod workspace_tests {
         assert!(full >= index_bytes + 2 * 512 * 4);
         assert_eq!(reader.decode_block(1).unwrap()[0].len(), 1);
         assert_eq!(reader.workspace_bytes(), full);
+    }
+}
+
+#[cfg(test)]
+mod fixed_tests {
+    use super::*;
+
+    #[test]
+    fn fixed_decode_matches_the_allocating_decoder() {
+        for (channels, mode) in [
+            (1u16, crate::StereoMode::Direct),
+            (2, crate::StereoMode::Auto),
+        ] {
+            let samples: Vec<i32> = (0..1300).map(|i| (i * 7919) % 60_000 - 30_000).collect();
+            let data = crate::encode_pcm(
+                &samples,
+                crate::PcmSpec {
+                    channels,
+                    bits_per_sample: 24,
+                    sample_rate: 48_000,
+                },
+                mode,
+            )
+            .unwrap();
+            let mut reader = NcwReader::read(std::io::Cursor::new(&data)).unwrap();
+            let header = reader.header.clone();
+            let format = reader.sample_format;
+            let offsets = reader.block_offsets.clone();
+            for index in 0..offsets.len() {
+                let expect: Vec<Vec<i32>> = reader.decode_block(index).unwrap().to_vec();
+                let start = (header.data_offset + offsets[index]) as usize;
+                let end = header.data_offset as usize
+                    + offsets.get(index + 1).copied().unwrap_or(header.data_size) as usize;
+                let mut out = [[0; SAMPLES_PER_BLOCK]; 2];
+                let frames =
+                    decode_group_fixed(&data[start..end], &header, format, index, &mut out)
+                        .unwrap();
+                for (c, e) in expect.iter().enumerate() {
+                    assert_eq!(&out[c][..frames], e.as_slice());
+                }
+            }
+        }
     }
 }

@@ -3,6 +3,7 @@
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::ops::Range;
 use std::sync::Arc;
 
 use kontra_ir as ir;
@@ -15,6 +16,7 @@ use symphonia::default::codecs::FlacDecoder;
 use symphonia::default::formats::FlacReader;
 
 use crate::sniff::{Layout, Pcm, sniff};
+use crate::source::Packing;
 use crate::{Encoding, SampleFmt, Source};
 
 /// Opens `sample` for the store: its source and the packed layout it reads as.
@@ -165,10 +167,12 @@ fn opened(sample: &ir::Sample) -> io::Result<Opened> {
                 u8::try_from(header.channels).map_err(|_| unsupported("channels".into()))?;
             let source = NcwSource {
                 region,
-                encoding,
-                format: reader.sample_format,
+                packing: Packing {
+                    header,
+                    format: reader.sample_format,
+                    encoding,
+                },
                 offsets: reader.block_offsets.into(),
-                header,
             };
             Ok(Opened {
                 source: Arc::new(source),
@@ -331,9 +335,7 @@ impl Source for PcmSource {
 /// fetches the bytes of every group it touches in one positional read.
 struct NcwSource {
     region: Region,
-    encoding: Encoding,
-    format: ncw::SampleFormat,
-    header: ncw::NcwHeader,
+    packing: Packing,
     offsets: Box<[u32]>,
 }
 
@@ -345,21 +347,21 @@ impl NcwSource {
             .offsets
             .get(index + 1)
             .copied()
-            .unwrap_or(self.header.data_size);
+            .unwrap_or(self.packing.header.data_size);
         (start <= end).then_some((start, end))
     }
 
     fn write(&self, value: i32, dest: &mut [u8]) {
-        match self.encoding {
+        match self.packing.encoding {
             Encoding::I16 | Encoding::I24 => {
                 let width = dest.len();
                 dest.copy_from_slice(value.to_le_bytes().get(..width).unwrap_or_default());
             }
             Encoding::F32 => {
-                let v = if self.format == ncw::SampleFormat::Float {
+                let v = if self.packing.format == ncw::SampleFormat::Float {
                     f32::from_bits(value as u32)
                 } else {
-                    value as f32 / 2f32.powi(i32::from(self.header.bits_per_sample) - 1)
+                    value as f32 / 2f32.powi(i32::from(self.packing.header.bits_per_sample) - 1)
                 };
                 dest.copy_from_slice(&v.to_le_bytes());
             }
@@ -370,8 +372,8 @@ impl NcwSource {
 impl Source for NcwSource {
     fn read(&self, first: u64, out: &mut [u8]) -> io::Result<()> {
         out.fill(0);
-        let channels = usize::from(self.header.channels);
-        let width = self.encoding.bytes();
+        let channels = usize::from(self.packing.header.channels);
+        let width = self.packing.encoding.bytes();
         let frame = width * channels;
         let frames = (out.len() / frame.max(1)) as u64;
         let per_block = ncw::SAMPLES_PER_BLOCK as u64;
@@ -387,7 +389,7 @@ impl Source for NcwSource {
         };
         let mut bytes = vec![0; (to - from) as usize];
         self.region.read_at(
-            u64::from(self.header.data_offset) + u64::from(from),
+            u64::from(self.packing.header.data_offset) + u64::from(from),
             &mut bytes,
         )?;
         let mut decoded = Vec::new();
@@ -396,8 +398,14 @@ impl Source for NcwSource {
             let mut group = bytes
                 .get((start - from) as usize..(end - from) as usize)
                 .unwrap_or_default();
-            ncw::decode_group(&mut group, &self.header, self.format, index, &mut decoded)
-                .map_err(invalid)?;
+            ncw::decode_group(
+                &mut group,
+                &self.packing.header,
+                self.packing.format,
+                index,
+                &mut decoded,
+            )
+            .map_err(invalid)?;
             // The part of this block the caller asked for, interleaved into `out`.
             let block_first = index as u64 * per_block;
             let skip = first.saturating_sub(block_first) as usize;
@@ -413,6 +421,27 @@ impl Source for NcwSource {
             }
         }
         Ok(())
+    }
+
+    fn packing(&self) -> Option<&Packing> {
+        (self.packing.header.channels <= 2).then_some(&self.packing)
+    }
+
+    fn read_blocks(&self, blocks: Range<usize>) -> io::Result<(Vec<u8>, Vec<u32>)> {
+        let last = blocks.end.saturating_sub(1);
+        let (Some((from, _)), Some((_, to))) = (self.group(blocks.start), self.group(last)) else {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        };
+        let mut bytes = vec![0; (to - from) as usize];
+        self.region.read_at(
+            u64::from(self.packing.header.data_offset) + u64::from(from),
+            &mut bytes,
+        )?;
+        let starts = blocks
+            .map(|i| self.group(i).map_or(0, |(start, _)| start - from))
+            .chain([to - from])
+            .collect();
+        Ok((bytes, starts))
     }
 }
 

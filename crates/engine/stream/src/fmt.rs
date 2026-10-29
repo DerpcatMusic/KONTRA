@@ -69,30 +69,37 @@ impl SampleFmt {
                 }
             }
         };
-        if let Some(mix) = mix {
-            let rows = mix.iter().take(usize::from(self.channels));
-            for (n, frame) in out.iter_mut().enumerate() {
-                let at = (first + n) * frame_bytes;
-                *frame = rows
-                    .clone()
-                    .enumerate()
-                    .fold([0.0; 2], |[l, r], (c, gain)| {
-                        let v = value(at + c * width);
-                        [l + v * gain[0], r + v * gain[1]]
-                    });
-            }
-            return;
-        }
+        let at = |n: usize, c: usize| value((first + n) * frame_bytes + c * width);
+        emit(usize::from(self.channels), at, out, mix);
+    }
+}
+
+/// Writes frame `n` of `out` from `value(n, channel)`. With `mix`, channel
+/// `c` adds `mix[c]` times its value to the outputs; without, mono plays on
+/// both sides and channels past the second are not played.
+pub(crate) fn emit(
+    channels: usize,
+    value: impl Fn(usize, usize) -> f32,
+    out: &mut [[f32; 2]],
+    mix: Option<&Mix>,
+) {
+    if let Some(mix) = mix {
+        let rows = mix.iter().take(channels);
         for (n, frame) in out.iter_mut().enumerate() {
-            let at = (first + n) * frame_bytes;
-            let left = value(at);
-            let right = if self.channels >= 2 {
-                value(at + width)
-            } else {
-                left
-            };
-            *frame = [left, right];
+            *frame = rows
+                .clone()
+                .enumerate()
+                .fold([0.0; 2], |[l, r], (c, gain)| {
+                    let v = value(n, c);
+                    [l + v * gain[0], r + v * gain[1]]
+                });
         }
+        return;
+    }
+    for (n, frame) in out.iter_mut().enumerate() {
+        let left = value(n, 0);
+        let right = if channels >= 2 { value(n, 1) } else { left };
+        *frame = [left, right];
     }
 }
 
