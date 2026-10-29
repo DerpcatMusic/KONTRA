@@ -332,15 +332,19 @@ pub(super) fn gain_route(program: Node, connection: Node) -> Option<Route> {
     if source_node(program, connection).is_some_and(|n| n.has_tag_name("DAHDSR")) {
         return None;
     }
-    factor(route(program, connection, ("Keygroup", "Gain"))?)
+    factor(
+        route(program, connection, ("Keygroup", "Gain"))?,
+        connection,
+    )
 }
 
 /// `r` for a destination the connection law scales by `1 − r + r·x`, or
 /// `1 + r·x` below zero ([`ir::Curve::Signed`], `r` clamped to ±1): an LFO's
 /// own depth `d` is inside the source, so it enters through `[(1 − d)/2,
 /// (1 + d)/2]`; a rise scales the LFO under that table, so the source is
-/// `(1 + ρ·d·w)/2` (0x1410f9767). A mapped bend enters at `(y + 1)/2`.
-pub(super) fn factor(mut r: Route) -> Option<Route> {
+/// `(1 + ρ·d·w)/2` (0x1410f9767). A mapped source enters as
+/// [`matrix::centred`].
+pub(super) fn factor(mut r: Route, connection: Node) -> Option<Route> {
     r.ratio = r.ratio.clamp(-1.0, 1.0);
     let d = r.unit;
     let table = vec![(1.0 - d) / 2.0, (1.0 + d) / 2.0];
@@ -354,10 +358,8 @@ pub(super) fn factor(mut r: Route) -> Option<Route> {
             r.unit = 1.0;
         }
         Some(Timed::Blend(b)) => r.timed = Some(Timed::Blend(blend::gain(b, r.ratio))),
-        // Through a mapper too ([`matrix::key_factor`]). ponytail: a bipolar macro or
-        // script modulation's mapped routes are read as they are.
-        Some(Timed::Mapped(mut t)) if t.source == ir::Source::PitchBend => {
-            t.table.iter_mut().for_each(|v| *v = (*v + 1.0) / 2.0);
+        Some(Timed::Mapped(mut t)) => {
+            t.table = matrix::centred(connection, t.table);
             r.timed = Some(Timed::Mapped(t));
         }
         timed => r.timed = timed,
