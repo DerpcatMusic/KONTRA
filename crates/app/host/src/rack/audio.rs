@@ -18,6 +18,8 @@ struct Playing {
     release: Option<u32>,
     /// Frames every event into it waits (auto-align).
     hold: u32,
+    /// Which load it is ([`Command::Install`]).
+    generation: u64,
 }
 
 /// The audio side: renders every part into its output pair.
@@ -147,6 +149,14 @@ impl RackAudio {
                 continue;
             };
             p.engine.process(scratch, &self.events);
+            let (requests, generation) = (&self.channels.requests, p.generation);
+            let mut lost = 0;
+            p.engine.drain_requests(|r| {
+                if requests.send((n, generation, r)).is_err() {
+                    lost += 1;
+                }
+            });
+            self.dropped += lost;
             let s = p.engine.stats();
             stats.voices += u32::try_from(p.engine.active_voices()).unwrap_or(u32::MAX);
             stats.voices_stolen += s.voices_stolen;
@@ -186,7 +196,10 @@ impl RackAudio {
     fn apply_commands(&mut self) {
         // An install retires the engine it replaces; with no room to retire
         // it, the command waits for the next block rather than free here.
-        while !self.channels.retired.is_full() && !self.channels.captured.is_full() {
+        while !self.channels.retired.is_full()
+            && !self.channels.captured.is_full()
+            && !self.channels.units.is_full()
+        {
             let Some(command) = self.channels.commands.recv() else {
                 break;
             };
@@ -195,6 +208,7 @@ impl RackAudio {
                     part,
                     mut engine,
                     mix,
+                    generation,
                 } => {
                     if let Some(slot) = self.parts.get_mut(part) {
                         if let Some(bpm) = self.tempo {
@@ -205,6 +219,7 @@ impl RackAudio {
                             mix,
                             release: None,
                             hold: 0,
+                            generation,
                         });
                         self.retire(old);
                     } else {
@@ -213,7 +228,25 @@ impl RackAudio {
                             mix,
                             release: None,
                             hold: 0,
+                            generation,
                         }));
+                    }
+                }
+                Command::Effect {
+                    part,
+                    generation,
+                    mut unit,
+                } => {
+                    if let Some(Some(p)) = self.parts.get_mut(part)
+                        && p.generation == generation
+                        && let Some(new) = unit.take()
+                    {
+                        *unit = Some(p.engine.install(new));
+                    }
+                    if let Err(unit) = self.channels.units.send(unit) {
+                        // Checked for room first; if it ever fails, it frees here.
+                        self.dropped += 1;
+                        drop(unit);
                     }
                 }
                 Command::Remove(part) => {

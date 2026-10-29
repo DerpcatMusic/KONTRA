@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use kontra_engine::{Engine, ir};
+use kontra_engine::{EffectRequest, Engine, Prepared, ir};
 
 use crate::persist::Capture;
 pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan};
@@ -51,6 +51,16 @@ pub enum Command {
         part: usize,
         engine: Box<Engine>,
         mix: Mix,
+        /// Which load it is: effect units built for another never go in.
+        generation: u64,
+    },
+    /// Put the effect unit a script asked for into `part`'s slot, if the
+    /// part is still the load that asked; the box comes back holding what
+    /// it replaced, so audio frees nothing.
+    Effect {
+        part: usize,
+        generation: u64,
+        unit: Box<Option<Prepared>>,
     },
     Remove(usize),
     Mix(usize, Mix),
@@ -81,6 +91,10 @@ pub struct Channels {
     pub commands: Ring<Command>,
     pub retired: Ring<Box<Engine>>,
     pub captured: Ring<Box<Capture>>,
+    /// Effect types the parts' scripts asked for: (part, its load, request).
+    pub requests: Ring<(usize, u64, EffectRequest)>,
+    /// Effect units swapped out, to free on the control side.
+    pub units: Ring<Box<Option<Prepared>>>,
     pub meters: MeterCells,
     pub stats: StatCells,
 }
@@ -104,6 +118,9 @@ pub struct Part {
     pub delay_ms: Option<f32>,
     /// Its library's interface, as `on init` left it.
     pub view: Option<crate::view::View>,
+    /// Effect types its scripts loaded into slots after `on init`, as
+    /// (rack, slot, type); a reload puts them back before `on init`.
+    pub slot_types: Vec<(ir::RackAt, u8, u16)>,
 }
 
 /// What the rack keeps to save a part's scripts.
@@ -167,6 +184,9 @@ impl Rack {
             commands: Ring::new(256),
             retired: Ring::new(64),
             captured: Ring::new(2 * MAX_PARTS),
+            // An engine queues at most 16 at once.
+            requests: Ring::new(16 * MAX_PARTS),
+            units: Ring::new(16 * MAX_PARTS),
             meters: MeterCells::default(),
             stats: StatCells::default(),
         });
@@ -219,7 +239,8 @@ impl Rack {
     }
 
     /// [`Rack::load`], with each instrument script's saved values replaced
-    /// by `scripts` (as [`Rack::saved_scripts`] gave them).
+    /// by `scripts` (as [`Rack::saved_scripts`] gave them) and the effect
+    /// types its scripts loaded put back in their slots before `on init`.
     ///
     /// # Errors
     /// As [`Rack::load`].
@@ -228,12 +249,13 @@ impl Rack {
         part: usize,
         path: &Path,
         scripts: &[Vec<String>],
+        slot_types: &[(ir::RackAt, u8, u16)],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut instrument = crate::instrument::read(path)?;
         for (script, saved) in instrument.scripts.iter_mut().zip(scripts) {
             script.saved.clone_from(saved);
         }
-        self.load_ir(part, instrument, Some(path.to_owned()))
+        self.load_built(part, instrument, Some(path.to_owned()), slot_types)
     }
 
     /// By instrument script, the saved values that bring `part`'s scripts
@@ -260,16 +282,30 @@ impl Rack {
         instrument: ir::Instrument,
         path: Option<PathBuf>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.load_built(part, instrument, path, &[])
+    }
+
+    fn load_built(
+        &mut self,
+        part: usize,
+        instrument: ir::Instrument,
+        path: Option<PathBuf>,
+        slot_types: &[(ir::RackAt, u8, u16)],
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if part >= MAX_PARTS {
             return Err(format!("part {part} is past the rack's {MAX_PARTS}").into());
         }
         let saved = instrument.scripts.iter().map(|s| s.saved.clone()).collect();
-        let loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
+        let mut loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
+        let slot_types: Vec<_> = (slot_types.iter().copied())
+            .filter(|&(at, slot, ty)| loaded.plan.load_type(at, slot, ty))
+            .collect();
         let plan = Arc::new(loaded.plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
         let view = crate::view::View::of(&loaded.faces, &engine, path.as_deref());
         let part_info = Part {
             view,
+            slot_types,
             plan: Some(plan),
             delay_ms: None,
             path,
@@ -306,6 +342,7 @@ impl Rack {
             mix,
             ..info
         });
+        let generation = self.generation;
         self.send(Command::Install {
             part,
             engine,
@@ -313,6 +350,7 @@ impl Rack {
                 silent: self.silent(part),
                 ..mix
             },
+            generation,
         });
         self.resend_mix();
     }
@@ -397,6 +435,26 @@ impl Rack {
     /// Call it from the control thread now and then.
     pub fn tick(&mut self) {
         while self.channels.retired.recv().is_some() {}
+        while self.channels.units.recv().is_some() {}
+        // Effect types scripts loaded: built here, off the audio thread.
+        while let Some((part, generation, request)) = self.channels.requests.recv() {
+            let Some(Some(p)) = self.parts.get_mut(part) else {
+                continue;
+            };
+            if p.script.generation != generation {
+                continue;
+            }
+            let loaded = (request.at, request.slot, request.ty);
+            p.slot_types
+                .retain(|&(at, slot, _)| (at, slot) != (loaded.0, loaded.1));
+            p.slot_types.push(loaded);
+            let unit = Box::new(Some(Prepared::new(request, self.rate)));
+            self.send(Command::Effect {
+                part,
+                generation,
+                unit,
+            });
+        }
         while let Some(c) = self.channels.captured.recv() {
             if let Some(Some(p)) = self.parts.get_mut(c.part)
                 && p.script.generation == c.generation
