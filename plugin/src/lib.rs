@@ -10,6 +10,7 @@
 
 mod align;
 mod editor;
+mod folder;
 mod input;
 mod look;
 #[cfg(test)]
@@ -79,6 +80,8 @@ pub struct Shared {
     latency: AtomicU32,
     /// Moves when the host loads a state: the editor reads its view again.
     restored: AtomicU32,
+    /// The "Add folder" dialog while it is open.
+    folder: Mutex<folder::Dialog>,
 }
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
@@ -205,6 +208,9 @@ impl BackgroundTask for Tick {
                 Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
                 Request::AddRoot(path) => browser.add_root(path),
             }
+        }
+        if let Some(path) = folder::picked(&p.shared) {
+            browser.add_root(path);
         }
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
