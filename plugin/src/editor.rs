@@ -204,7 +204,7 @@ fn libraries(browser: &Browser) -> Vec<app::Library> {
                 })
                 .collect(),
             starred: browser.prefs.starred(&l.dir),
-            art: (l.art.iter()).flat_map(|p| art(p)).collect(),
+            art: art(&l.art),
         })
         .collect()
 }
@@ -213,17 +213,26 @@ fn libraries(browser: &Browser) -> Vec<app::Library> {
 /// its library-browser banner (stored with the dot), then its artwork.
 const HELD: [&str; 2] = [".LibBrowser.png", "MST_artwork.png"];
 
-/// The cover keys of the picture or container at `path`: a PNG's path, or
-/// the container's path, a NUL, and the picture's name inside it.
-pub(crate) fn art(path: &Path) -> Vec<String> {
-    let ext = path.extension().map(|e| e.to_ascii_lowercase());
-    let path = path.to_string_lossy();
-    match ext.as_ref().and_then(|e| e.to_str()) {
-        Some("png") => vec![path.into_owned()],
-        Some("nicnt" | "nkr") => HELD.iter().map(|n| format!("{path}\0{n}")).collect(),
-        // ponytail: JPEG covers (UVI sidecars) need a JPEG decoder in Pictures.
-        _ => Vec::new(),
+/// The cover keys of a library's ranked pictures and containers: a PNG's
+/// path, or a container's path, a NUL, and the picture's name inside it.
+/// Any container reads the whole library's, so only the first is asked.
+pub(crate) fn art(paths: &[PathBuf]) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut held = false;
+    for path in paths {
+        let ext = path.extension().map(|e| e.to_ascii_lowercase());
+        let name = path.to_string_lossy();
+        match ext.as_ref().and_then(|e| e.to_str()) {
+            Some("png") => keys.push(name.into_owned()),
+            Some("nicnt" | "nkr") if !held => {
+                held = true;
+                keys.extend(HELD.iter().map(|n| format!("{name}\0{n}")));
+            }
+            // ponytail: JPEG covers (UVI sidecars) need a JPEG decoder in Pictures.
+            _ => {}
+        }
     }
+    keys
 }
 
 /// The bytes of the cover picture `key` names (see [`art`]).
