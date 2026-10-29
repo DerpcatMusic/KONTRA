@@ -101,7 +101,7 @@ fn versatile_matches_the_native_code() {
 fn a_cutoff_jump_glides_without_a_step() {
     let mut c = Cascade::new(versatile(0.2, [0.0; 3]), 48_000);
     let sine = |n: usize| (n as f32 * std::f32::consts::TAU * 1000.0 / 48_000.0).sin();
-    let mut run = |c: &mut Cascade, from: usize, frames: usize| -> Vec<f32> {
+    let run = |c: &mut Cascade, from: usize, frames: usize| -> Vec<f32> {
         (from..from + frames)
             .map(|n| {
                 let mut io = [[sine(n); 2]];
