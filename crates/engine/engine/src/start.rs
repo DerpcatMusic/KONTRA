@@ -99,7 +99,7 @@ impl Engine {
                                 | ir::ModKind::LfoRate { .. }
                         )
                 }) {
-                    let source = inspect::route_source(m.kind)
+                    let source = plan::route_source(m.kind)
                         .and_then(|s| self.source(zone, s, &n, modulators::Age::START));
                     if let Some(trace) = &mut self.trace {
                         trace.push(TraceEvent::RouteOnset {

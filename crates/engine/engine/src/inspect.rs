@@ -265,30 +265,6 @@ pub struct RouteObservation {
     pub routed: Option<f32>,
 }
 
-pub(crate) fn route_source(kind: kontra_ir::ModKind) -> Option<kontra_ir::Source> {
-    use kontra_ir::ModKind;
-    match kind {
-        ModKind::Envelope => None,
-        ModKind::Volume { source, .. }
-        | ModKind::Pitch { source, .. }
-        | ModKind::Pan { source, .. }
-        | ModKind::Cutoff { source, .. }
-        | ModKind::Resonance { source, .. }
-        | ModKind::EqGain { source, .. }
-        | ModKind::SampleStart { source, .. }
-        | ModKind::Attack { source, .. }
-        | ModKind::Release { source, .. }
-        | ModKind::LfoPhase { source, .. }
-        | ModKind::LfoRate { source, .. }
-        | ModKind::LfoHz { source, .. }
-        | ModKind::Intensity { source, .. }
-        | ModKind::LoopShift { source, .. }
-        | ModKind::Mix { source, .. }
-        | ModKind::EffectParam { source, .. }
-        | ModKind::Send { source, .. } => Some(source),
-    }
-}
-
 impl Engine {
     /// Observe all active routes, including shaped and blended controller inputs.
     pub fn inspect_routes(&self) -> Vec<RouteObservation> {
@@ -316,7 +292,7 @@ impl Engine {
                 ..self.age(slot.started, slot.released_at)
             };
             for m in group.mods.iter().filter(|m| !m.bypass) {
-                let input = route_source(m.kind);
+                let input = kontra_plan::route_source(m.kind);
                 out.push(RouteObservation {
                     voice_slot,
                     zone: slot.zone,
