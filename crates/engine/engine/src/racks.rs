@@ -9,7 +9,7 @@ use kontra_dsp::dynamics::{
     Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
     TransientSettings,
 };
-use kontra_dsp::reverb::{Convolver, Fdn, Network, Settings};
+use kontra_dsp::reverb::{Combs, Convolver, Fdn, Network, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
 
@@ -69,6 +69,18 @@ impl Wet for Fdn {
     fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Reverb(r) = kind {
             Fdn::set(self, settings(r));
+        }
+    }
+}
+
+impl Wet for Combs {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Combs::process(self, io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Reverb(r) = kind {
+            Combs::set(self, settings(r));
         }
     }
 }
@@ -300,7 +312,12 @@ impl Rack {
                     }
                 }
                 Some(ir::EffectKind::Reverb(r)) => match r.network {
-                    Some(law) => wet(Box::new(Network::new(law, settings(r), rate))),
+                    Some(ir::Network::Lines(law)) => {
+                        wet(Box::new(Network::new(law, settings(r), rate)))
+                    }
+                    Some(ir::Network::Combs(law)) => {
+                        wet(Box::new(Combs::new(law, settings(r), rate)))
+                    }
                     None => wet(Box::new(Fdn::new(settings(r), rate))),
                 },
                 Some(ir::EffectKind::Compressor(c)) => {

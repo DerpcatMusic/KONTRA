@@ -1,29 +1,37 @@
-//! Kontakt's legacy Reverb (0x15) onto `ir::Reverb`. Natively it is the
-//! classic eight-comb, four-allpass network; here its laws drive the one
-//! feedback-delay reverb.
+//! Kontakt's legacy Reverb (0x15) onto `ir::Reverb` as its own comb
+//! network: Freeverb's tunings, per channel eight combs into four allpasses.
 //!
 //! Saved fields, version 0x50 (v2 sampler-kontakt effects/mod.rs): predelay
 //! ms, size, colour, stereo, damping. Laws from setter case 0x3e of
 //! [ref], reset [ref] and audio [ref]:
-//! - comb feedback `0.3·size + 0.65` over combs of
-//!   25.31..36.67 ms (doubles [ref]..[ref], times 0.001·rate);
-//! - each comb's one-pole keeps `1 − 0.35·(1 − colour)` of the new sample
-//!;
-//! - allpasses at gain 0.5, 5.1..12.6 ms;
-//! - the input low-pass takes `x = 0.75·(1 − damping) + 0.25`,
-//!   corner `(e^(6.15x) − 1)·0.0025728 + 0.002` of 22,006 Hz ([ref]:
-//!   [ref]);
-//! - stereo mixes the channels from mono (0) to apart (1).
+//! - combs of 25.31..36.67 ms (doubles [ref]..[ref]) and
+//!   allpasses of 12.61, 10, 7.73, 5.10 ms ([ref],
+//!   [ref]), each channel's 0.5215 ms longer
+//!, lengths `ms·0.001·rate` truncated;
+//! - comb feedback `0.3·size + 0.65` and its
+//!   one-pole keeping `1 − 0.35·(1 − colour)` of the new sample
+//!; allpass gain 0.5 (`v = buf − g·x`, `buf ← g·v + x`);
+//! - the channels mix toward their mean by `1 − stereo` (the mix reads
+//!   `(stereo + 1)/2`, [ref]), then ×0.015, then a
+//!   low-pass: `x = 0.75·(1 − damping) + 0.25`, corner
+//!   `(e^(6.15x) − 1)·0.0025728 + 0.002` of 22,006 Hz ([ref]:
+//!   [ref]); written out unscaled.
+//!
+//! ponytail: that low-pass is Kontakt's filter object (+0x1100, vtable
+//! [ref]): a direct-form biquad (kernel [ref]) from an analog
+//! prototype the constructor sets (bilinear [ref], cutoff law
+//! [ref]). Run here as a one-pole at its corner and reported.
 
 use kontra_ir as ir;
 
-/// The combs' mean length, ms.
-const COMB_MS: f32 = 31.247;
-/// The feedback-delay lines' mean length at size 1, ms (kontra-dsp-reverb).
-const LINES_MS: f32 = 51.36;
-/// The fdn's damping and diffusion knobs at 1 (kontra-dsp-reverb).
-const FDN_DAMP: f32 = 0.85;
-const FDN_DIFFUSION: f32 = 0.7;
+static COMBS: ir::CombNetwork = ir::CombNetwork {
+    combs_ms: [
+        25.306_122, 26.938_776, 28.956_916, 30.748_299, 32.244_9, 33.809_525, 35.306_12, 36.666_667,
+    ],
+    allpasses_ms: [12.607_71, 10.0, 7.732_426, 5.102_041],
+    spread_ms: 0.521_541_95,
+    input_gain: 0.015,
+};
 
 /// The record's reverb, `None` when a field is missing.
 pub(crate) fn effect(version: u16, public: &[u8]) -> Option<ir::EffectKind> {
@@ -43,14 +51,6 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<(f32, [f32; 4])> {
     Some((f(0)?, [f(1)?, f(2)?, f(3)?, f(4)?]))
 }
 
-/// The native network's wet level over the fdn's at the same laws: input
-/// ×0.015 into the eight combs, their sum through the four
-/// allpasses, written out unscaled. Simulating that network from the
-/// decompile and the fdn on a unit impulse (3 s, 48 kHz) gives tail
-/// amplitudes 0.052..0.068 of the fdn's over size 0..1 and colour 0..1;
-/// this is their geometric mean, within ±1.2 dB of each.
-pub(crate) const WET: f32 = 0.062;
-
 // ponytail: the native lines hold 0x1fff frames, so it drops a predelay past
 // 170 ms at 48 kHz to none; kept as set.
 pub(crate) fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
@@ -59,12 +59,12 @@ pub(crate) fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
     let x = 0.75 * (1.0 - damping) + 0.25;
     let corner = ((6.15 * x).exp() - 1.0) * 0.002_572_831_7;
     ir::Reverb {
-        // 60 dB over the loops a comb runs at that feedback.
-        seconds: 3.0 * COMB_MS * 0.001 / -feedback.log10(),
-        size: COMB_MS / LINES_MS,
-        network: None,
-        damping: 0.35 * (1.0 - colour) / FDN_DAMP,
-        diffusion: 0.5 / FDN_DIFFUSION,
+        // 60 dB over the loops a mean comb runs at that feedback.
+        seconds: 3.0 * COMBS.mean_s() / -feedback.log10(),
+        size: 1.0,
+        network: Some(ir::Network::Combs(&COMBS)),
+        damping: 0.35 * (1.0 - colour),
+        diffusion: 0.5,
         predelay_ms: predelay_ms.clamp(0.0, 180.0),
         high_cut_hz: (corner.clamp(0.0, 1.0) + 0.002) * 22_006.0,
         low_shelf_db: 0.0,
@@ -86,6 +86,7 @@ mod tests {
         assert!((small.seconds - 0.501).abs() < 0.01, "{}", small.seconds);
         assert!((large.seconds - 4.21).abs() < 0.02, "{}", large.seconds);
         assert_eq!(small.damping, 0.0);
+        assert_eq!(reverb(0.0, [0.0; 4]).damping, 0.35);
         // Damping 0.5: x = 0.625, about 2.6 kHz.
         assert!(
             (small.high_cut_hz - 2_632.0).abs() < 20.0,

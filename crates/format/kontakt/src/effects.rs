@@ -346,27 +346,20 @@ fn slot_effect(
             ir::EffectKind::Other
         }),
         bypass: params.bypass,
-        output: if eq {
-            1.0
-        } else if effect.id == 0x15 {
-            params.output_gain * crate::legacy_reverb::WET
-        } else {
-            params.output_gain
-        },
+        output: if eq { 1.0 } else { params.output_gain },
         dry: if parallel || effect.id == 0x13 {
             params.dry_level
         } else {
             0.0
         },
     };
-    // Carried, but not as Kontakt builds it (legacy_reverb.rs).
-    let approximated =
-        (effect.id == 0x15).then_some("legacy: combs and allpasses as an 8-line network");
-    if let Some(what) = approximated.filter(|_| !params.bypass && kind.is_some()) {
+    // Its comb network is Kontakt's; its input low-pass, a biquad there, a
+    // one-pole here (legacy_reverb.rs).
+    if effect.id == 0x15 && !params.bypass && kind.is_some() {
         notes.add(
             ir::Impact::Audible,
-            "approximated reverb",
-            format!("{at}: {what}"),
+            "reverb input filter as a one-pole",
+            format!("{at}: legacy reverb"),
         );
     }
     Some((effect_out, effect.id, kind_id.unwrap_or(-1)))
