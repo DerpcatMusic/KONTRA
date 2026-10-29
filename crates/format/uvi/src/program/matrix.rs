@@ -208,8 +208,8 @@ fn ratio(program: Node, connection: Node, keys: bool, macros: bool) -> Option<f3
 /// key read through a table exact at each MIDI key `x` (VoiceParam evaluate
 /// 0x14138ab10, `x` the note clamped to 0..=127): `Key` `x/127`, `KeyFollow`
 /// `(x/60)² − 1` below 60, else `√((min(x, 120) − 60)/60)`, `LinearKeyFollow`
-/// `(x − 60)/60` within ±1. A bipolar one is read at `(k + 1)/2`, its
-/// mapper's output as [`centred`]. None for any other connection.
+/// `(x − 60)/60` within ±1. A bipolar one is read at `(k + 1)/2` and its
+/// mapper's output is centred too. None for any other connection.
 pub(super) fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> {
     if flag(connection, "Inverted") || flag(connection, "ConnectionMode") {
         return None;
@@ -228,8 +228,20 @@ pub(super) fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> 
         "@VoiceParam LinearKeyFollow" => |x| (((x - 60.0) / 60.0).clamp(-1.0, 1.0) + 1.0) / 2.0,
         _ => return None,
     };
-    let table = centred(connection, mapper(connection)?);
-    let at = |x: f32| read(&table, key(x)).unwrap_or(key(x));
+    let table = mapper(connection)?;
+    // VoiceParameterEnvelope is bipolar for KeyFollow and LinearKeyFollow,
+    // not Key (0x14138a5c0, 0x14138aae4). The multiplicative connection
+    // centres the mapped output according to that source polarity
+    // (0x141429a80), irrespective of the mapper's Min.
+    let bipolar = source != "@VoiceParam Key";
+    let at = |x: f32| {
+        let position = key(x);
+        match read(&table, position) {
+            Some(y) if bipolar => (y + 1.0) / 2.0,
+            Some(y) => y,
+            None => position,
+        }
+    };
     Some(ir::Factor {
         input: ir::Transfer {
             source: ir::Source::Key,

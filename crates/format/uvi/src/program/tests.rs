@@ -1787,8 +1787,9 @@ fn a_mapped_gain_enters_at_half_past_its_mapper_only_when_the_mapper_is_bipolar(
 }
 
 #[test]
-fn a_mapped_key_follow_on_a_ratio_reads_a_unipolar_mapper_as_it_is() {
-    // VWinds' clarinet: KeyFollow through Mapper 28 (`Min` 0) on CC 103's ratio.
+fn a_mapped_key_follow_on_a_ratio_centres_the_mapper_output() {
+    // The binary centres bipolar KeyFollow even through a unipolar mapper:
+    // VWinds' clarinet has this on CC 103's ratio (0x141429a80).
     let xml = r#"<Program Gain="1">
       <Mappers><ControlSignalMapper Name="Mapper 1" Min="0" Max="1">0,0 1,0</ControlSignalMapper></Mappers>
       <Layers><Layer Gain="1" Pan="0"><Keygroups>
@@ -1808,7 +1809,18 @@ fn a_mapped_key_follow_on_a_ratio_reads_a_unipolar_mapper_as_it_is() {
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let t = &out.groups[0].blends[0].terms[0].factors[0].input.table;
-    assert_eq!((t[0], t[60], t[120]), (0.0, 0.5, 1.0));
+    assert_eq!((t[0], t[60], t[120]), (0.5, 0.75, 1.0));
+
+    // The two saved Mapper 28 values surrounding key 49 in Bb Clarinet 2.
+    // The binary evaluator and connection law return 0.61297661 there.
+    let mut points = vec!["0"; 128];
+    points[42] = "0,22258";
+    points[43] = "0,232191";
+    let saved = xml.replace("0,0 1,0", &points.join(" "));
+    let doc = roxmltree::Document::parse(&saved).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let table = &out.groups[0].blends[0].terms[0].factors[0].input.table;
+    assert!((table[49] - 0.612_976_6).abs() < 1e-6);
 }
 
 #[test]
