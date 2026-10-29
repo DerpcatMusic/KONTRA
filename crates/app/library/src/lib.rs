@@ -444,7 +444,7 @@ fn walk(
                 continue;
             }
             match ext(&path).as_str() {
-                "nki" | "nkm" | "uvip" => presets.push(path),
+                "nki" | "nkm" | "nksn" | "uvip" => presets.push(path),
                 "ufs" => bank_presets(&path, cache, programs, issues, presets),
                 "png" | "jpg" | "jpeg" | "nicnt" | "nkr" => art.push(path),
                 _ => {}
