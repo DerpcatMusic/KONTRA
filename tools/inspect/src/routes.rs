@@ -130,6 +130,50 @@ pub fn route(kind: ModKind) -> Value {
     }
 }
 
+/// Concise controller-driven contribution ranges from exact engine records.
+pub fn summary(events: &[Value]) -> String {
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<(u64, String, String), (usize, f64, f64)> = BTreeMap::new();
+    for event in events {
+        if event.get("controller_can_affect").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        let (Some(cc), Some(amount), Some(unit)) = (
+            event.get("controller").and_then(Value::as_u64),
+            event.get("contribution").and_then(Value::as_f64),
+            event.get("unit").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        let name = event
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("slot {} target {}", event["mod_slot"], event["target"]));
+        let entry = groups
+            .entry((cc, name, unit.to_owned()))
+            .or_insert((0, amount, amount));
+        entry.0 += 1;
+        entry.1 = entry.1.min(amount);
+        entry.2 = entry.2.max(amount);
+    }
+    let mut items: Vec<_> = groups.into_iter().collect();
+    items.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(&b.0)));
+    let mut out = String::new();
+    for ((cc, name, unit), (count, min, max)) in items.iter().take(8) {
+        out.push_str(&format!(
+            "  CC{cc} {name}: {min:.4}..{max:.4} {unit} ({count} evaluations)\n"
+        ));
+    }
+    if items.len() > 8 {
+        out.push_str(&format!(
+            "  {} more controller paths in JSON\n",
+            items.len() - 8
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

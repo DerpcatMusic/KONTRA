@@ -50,6 +50,10 @@ impl Engine {
             } else {
                 1.0
             };
+            #[cfg(feature = "trace")]
+            if let Some(trace) = &self.trace {
+                trace.routes.begin_onset(index);
+            }
             let mut region = zone.region.clone();
             if !region.reverse {
                 let script = u64::from(n.offset) * u64::from(zone.sample_rate) / 1_000_000;
@@ -81,8 +85,16 @@ impl Engine {
             };
             let now = self.now;
             let Some(i) = self.free_slot() else {
+                #[cfg(feature = "trace")]
+                if let Some(trace) = &self.trace {
+                    trace.routes.finish_onset(None);
+                }
                 continue;
             };
+            #[cfg(feature = "trace")]
+            if let Some(trace) = &self.trace {
+                trace.routes.finish_onset(Some(i));
+            }
             #[cfg(feature = "trace")]
             if self.trace.is_some()
                 && let Some(group) = self.groups.get(zone.group as usize)
@@ -152,7 +164,17 @@ impl Engine {
             slot.pan = [pan; 2];
             slot.warp = [0.0; modulators::WARPS];
             slot.chaos = [modulators::CHAOS_START; modulators::WARPS];
+            #[cfg(feature = "trace")]
+            slot.pending_trace_cc.set(0);
+            #[cfg(feature = "trace")]
+            if let Some(trace) = &self.trace {
+                trace.routes.begin_onset(index);
+            }
             self.start_rack(i, zone, &n, self.age(now, None));
+            #[cfg(feature = "trace")]
+            if let Some(trace) = &self.trace {
+                trace.routes.finish_onset(Some(i));
+            }
         }
     }
 }

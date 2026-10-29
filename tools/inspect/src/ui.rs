@@ -301,6 +301,10 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                     .iter()
                     .map(|e| super::trace_output::event(e, &plan, &zone_samples, RATE))
                     .collect();
+                let mut route_events: Vec<_> = engine
+                    .trace_route_values()
+                    .map(|v| super::trace_output::route(&v, &plan, &zone_samples))
+                    .collect();
                 engine.clear_trace();
                 let (rms, ready) = render(&mut engine, &plan, &stream, &[]);
                 settled &= ready;
@@ -309,6 +313,11 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                         .trace_events()
                         .iter()
                         .map(|e| super::trace_output::event(e, &plan, &zone_samples, RATE)),
+                );
+                route_events.extend(
+                    engine
+                        .trace_route_values()
+                        .map(|v| super::trace_output::route(&v, &plan, &zone_samples)),
                 );
                 engine.clear_trace();
                 let after = cells(&engine, &plan);
@@ -359,7 +368,7 @@ pub fn run(path: &Path) -> Result<(Json, String)> {
                 if engine.stats().missing_frames > before_missing {
                     errors.push("sample frames missing");
                 }
-                moves.push(json!({"value":value,"errors":errors,"script_cells_changed":cell_diff(&before,&after), "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,
+                moves.push(json!({"value":value,"errors":errors,"script_cells_changed":cell_diff(&before,&after), "group_sounds_changed":group_changes,"group_levels_changed":group_levels,"bus_levels_changed":bus_levels,"shared_effects_changed":effects,"modulators_changed":mod_changes,"stage_events":events,"route_events":route_events,
                     "output":{"before_rms":prior_rms,"after_rms":rms}, "faults_before":before_faults,"faults_after":after_faults,
                     "unhandled_before":before_unhandled,"unhandled_after":after_unhandled,"missing_frames":engine.stats().missing_frames.saturating_sub(before_missing),"settled":ready}));
             }
