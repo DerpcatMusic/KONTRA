@@ -112,7 +112,7 @@ check 6a-original 6b-vector "part look: Vector draws without pictures" 205,100,8
 at 1000,600; for _ in 1 2 3 4 5; do xdotool click 5; sleep 0.1; done
 sleep 1.5; shot 6bb-vector-controls
 # The default Una Corda run must show all three slider faces at their authored positions.
-if [[ ${NAME} == "Una Corda" ]]; then
+if [[ ${name} == "Una Corda" ]]; then
     if python3 -I -c 'import sys; from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB")
 boxes = [(300, 365, 330, 430), (525, 365, 555, 430), (750, 365, 780, 430)]
