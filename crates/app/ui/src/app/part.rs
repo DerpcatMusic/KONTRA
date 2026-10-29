@@ -4,13 +4,21 @@
 use kontra_ui_model::PageRef;
 use mui::prelude::*;
 
-use super::{Action, Part, PartTab, View};
+use super::{Action, FACE_SCALES, Part, PartTab, View};
 use crate::keyboard::note_name;
 use crate::kit::{self, Icon, glyph, icon_button, interactive, latch, section};
 use crate::theme::{CONTROL, SPACE, TEXT, TIGHT, part_color, secondary};
 use crate::view;
 
-pub(super) fn view(ui: &mut Ui, p: &mut Part, n: usize, v: &mut View, out: &mut Vec<Action>) -> El {
+/// `room`: the width the rack has for a library's view, 0 while unknown.
+pub(super) fn view(
+    ui: &mut Ui,
+    p: &mut Part,
+    n: usize,
+    room: f64,
+    v: &mut View,
+    out: &mut Vec<Action>,
+) -> El {
     let tab = match p.tab {
         PartTab::Interface if p.face.is_none() => PartTab::Articulations,
         PartTab::Articulations if p.articulations.is_empty() => PartTab::Info,
@@ -18,8 +26,17 @@ pub(super) fn view(ui: &mut Ui, p: &mut Part, n: usize, v: &mut View, out: &mut 
     };
     let el = match (tab, &mut p.face) {
         (PartTab::Interface, Some(face)) => {
-            let (page, _) = view::page(ui, &face.tree, PageRef(0), &mut face.pictures, 1.);
-            row![spacer(), page, spacer()].pad(SPACE)
+            let wide = face.tree.pages.first().map_or(0., |p| p.size.width);
+            let scale = fit(
+                FACE_SCALES.get(v.face_scale).copied().unwrap_or(0.),
+                room,
+                wide,
+            );
+            let (page, _) = view::page(ui, &face.tree, PageRef(0), &mut face.pictures, scale);
+            // Wider than the rack at a fixed scale, it scrolls sideways.
+            row![spacer(), page.shrink(0), spacer()]
+                .w(Len::Pct(100.))
+                .scroll()
         }
         (PartTab::Articulations, _) => articulations(ui, p, n, v, out),
         (PartTab::Info, _) => info(p),
@@ -29,6 +46,19 @@ pub(super) fn view(ui: &mut Ui, p: &mut Part, n: usize, v: &mut View, out: &mut 
     };
     el.w(Len::Pct(100.))
         .pad(kit::edges(TIGHT, SPACE, SPACE, SPACE))
+}
+
+/// The scale a library's view `wide` source pixels across is drawn at:
+/// `chosen`, or for Fit (0) as wide as `room`, between half and double
+/// size, and 1 while the room is unknown.
+fn fit(chosen: f64, room: f64, wide: f64) -> f64 {
+    if chosen > 0. {
+        chosen
+    } else if room > 0. && wide > 0. {
+        (room / wide).clamp(0.5, 2.)
+    } else {
+        1.
+    }
 }
 
 fn listing(title: &str, lines: &[String], empty: &str) -> El {
@@ -186,4 +216,19 @@ fn articulations(ui: &mut Ui, p: &mut Part, n: usize, v: &mut View, out: &mut Ve
         out.push(Action::MoveArticulation { part: n, from, to });
     }
     col(rows).w(Len::Pct(100.))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit;
+
+    #[test]
+    fn a_library_view_fits_the_rack_or_keeps_its_chosen_scale() {
+        // ANALOG's 730-pixel page in a 900-point rack, then a narrow one.
+        assert!((fit(0., 900., 730.) - 900. / 730.).abs() < 1e-9);
+        assert_eq!(fit(0., 200., 730.), 0.5);
+        assert_eq!(fit(0., 3000., 730.), 2.);
+        assert_eq!(fit(0., 0., 730.), 1., "the room unknown: source size");
+        assert_eq!(fit(1.5, 900., 730.), 1.5, "a fixed scale scrolls instead");
+    }
 }

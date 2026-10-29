@@ -235,6 +235,7 @@ fn in_rack(
             tab: PartTab::Interface,
             ..Part::default()
         }],
+        width: 1180.,
         ..App::default()
     };
     let (w, h) = (1180u16, 900u16);
