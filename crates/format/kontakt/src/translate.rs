@@ -25,7 +25,13 @@ const INTERNAL_MODS: u16 = 0x3b;
 const SCRIPT: u16 = 6;
 const VOICE_GROUPS: u16 = 0x32;
 
-pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Instrument, Error> {
+/// `saved`: a snapshot's persistent values per script slot, in place of the
+/// instrument's own where a slot has some.
+pub(crate) fn instrument(
+    path: &Path,
+    chunks: &KontaktChunks,
+    saved: &[Vec<String>],
+) -> Result<ir::Instrument, Error> {
     let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
     let program = chunks
         .program()
@@ -55,7 +61,7 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
         preload: params.dfd_channel_preload_size,
     };
     let mut resources = None;
-    for chunk in program.0.children.iter().filter(|c| c.id == SCRIPT) {
+    for (slot, chunk) in (program.0.children.iter().filter(|c| c.id == SCRIPT)).enumerate() {
         let script = BParScript::try_from(chunk)
             .and_then(|s| s.params())
             .map_err(decode("script"))?;
@@ -66,7 +72,8 @@ pub(crate) fn instrument(path: &Path, chunks: &KontaktChunks) -> Result<ir::Inst
                 dialect: ir::Dialect::Ksp,
                 data: data_files(&text, path, &mut resources),
                 source: text,
-                saved: script.persistent,
+                saved: (saved.get(slot).filter(|s| !s.is_empty()).cloned())
+                    .unwrap_or(script.persistent),
             }),
             _ => {
                 if let Some(file) = script.textfile_name.filter(|n| !n.is_empty()) {
