@@ -396,11 +396,21 @@ fn words_el(
     );
     let line = size * 1.25;
     let top = text_y.map_or(((height - line) / 2.).max(0.), |y| f64::from(y) * scale);
-    let el = row([text(words.to_owned())
-        .text_size(size)
-        .fill(Fill::from(ink))
-        .lines(1)
-        .min_w(0.)])
+    // Kontakt's factory faces run narrower than ours: a label sized for
+    // them steps down to fit rather than cut its words (v1 `TextFont::fit`).
+    let said = |k: f64| {
+        text(words.to_owned())
+            .text_size(size * k)
+            .fill(Fill::from(ink))
+    };
+    // A candidate that wraps is taller than the line, so it loses.
+    let el = row([fits([
+        said(1.),
+        said(0.9),
+        said(0.8),
+        said(0.75).lines(1).min_w(0.),
+    ])
+    .h(line)])
     .align(Align::Center)
     .justify(match align {
         model::Align::Left => Justify::Start,
