@@ -138,6 +138,132 @@ fn an_ignored_note_plays_its_child_until_released() {
     assert_eq!(e.active_voices(), 0);
 }
 
+/// Una Corda: the script ignores the key's note and plays a child for its
+/// length, then ignores the key's release too (it only tracks its own ids).
+/// The key is up all the same: the child ends (play_note -1), its own
+/// release callback running. It held at full level for good before.
+#[test]
+fn a_child_ends_with_its_key_even_when_the_keys_release_is_ignored() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 72..=72;
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on init
+            declare $child
+        end on
+        on note
+            ignore_event($EVENT_ID)
+            $child := play_note($EVENT_NOTE + 12, $EVENT_VELOCITY, 0, -1)
+        end on
+        on release
+            if ($EVENT_ID # $child)
+                ignore_event($EVENT_ID)
+            else
+                message(\"released \" & $EVENT_NOTE)
+            end if
+        end on",
+    );
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+    assert_eq!(level(&mut e, &[off(60)]), 0.0);
+    assert_eq!(e.last_message(), "released 72");
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// CHORUS and Dolce: `on release` waits a millisecond, then plays its
+/// release sample on `$EVENT_NOTE` and takes the key out of its legato
+/// buffer. Once the ignored key's note left the ledger (a block boundary
+/// within the wait) `$EVENT_NOTE` read 0: the key stayed in the buffer,
+/// and every release after it played a looped sustain held for good.
+#[test]
+fn a_callback_knows_its_event_after_a_wait() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on note
+            ignore_event($EVENT_ID)
+        end on
+        on release
+            wait(100000)
+            message($EVENT_NOTE & \",\" & $EVENT_VELOCITY)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    level(&mut e, &[off(60)]);
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "60,127");
+}
+
+/// Areia: under the sustain pedal the script keeps its own note playing,
+/// and at pedal-up ends each one whose key is up (`%KEY_DOWN` 0: the key,
+/// not its sound, KSP manual). A pedalled key read as still down, and the
+/// note held for good.
+#[test]
+fn at_pedal_up_a_script_sees_the_keys_it_held_as_up() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on init
+            declare $id
+            declare $pedal
+        end on
+        on note
+            ignore_event($EVENT_ID)
+            $id := play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, 0)
+        end on
+        on release
+            if ($pedal = 0)
+                note_off($id)
+            end if
+        end on
+        on controller
+            if ($CC_NUM = 64)
+                $pedal := %CC[64] / 64
+                if ($pedal = 0 and %KEY_DOWN[60] = 0)
+                    note_off($id)
+                end if
+            end if
+        end on",
+    );
+    let pedal = |value| Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB0, 64, value),
+    };
+    assert!((level(&mut e, &[on(60), pedal(127)]) - 0.5).abs() < 1e-3);
+    // Key up under the pedal: still sounding.
+    assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3);
+    assert_eq!(level(&mut e, &[pedal(0)]), 0.0);
+    level(&mut e, &[]);
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// `%CC_TOUCHED` marks the controller that changed: Pacific releases its
+/// pedalled notes only when CC 64 is the one (it read 0 before, unanswered).
+#[test]
+fn a_controller_callback_sees_which_controller_was_touched() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(
+        &store,
+        Vec::new(),
+        "on controller
+            message(%CC_TOUCHED[64] & \",\" & %CC_TOUCHED[1])
+        end on",
+    );
+    let cc = |n, value| Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB0, n, value),
+    };
+    level(&mut e, &[cc(64, 0)]);
+    assert_eq!(e.last_message(), "1,0");
+    level(&mut e, &[cc(1, 90)]);
+    assert_eq!(e.last_message(), "0,1");
+}
+
 #[test]
 fn wait_starts_a_note_on_its_exact_sample_at_any_block_size() {
     let source = "on note

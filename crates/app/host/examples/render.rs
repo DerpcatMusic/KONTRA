@@ -211,12 +211,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let z = zone.parse::<usize>().ok().and_then(|z| plan.zones.get(z));
         if let Some((z, g)) = z.and_then(|z| Some((z, plan.groups.get(z.group as usize)?))) {
             println!(
-                "  zone {zone}: keys {:?} root {} keytrack {} tune {} group {} bus {} {:?} envelope {:?}",
+                "  zone {zone}: keys {:?} root {} keytrack {} tune {} group {} {:?} bus {} {:?} envelope {:?}",
                 z.keys,
                 z.root,
                 z.keytrack,
                 z.tune,
                 z.group,
+                g.name,
                 g.bus,
                 plan.buses.get(g.bus),
                 g.envelope
@@ -418,7 +419,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // KONTRA_CC="11=127,1=100": controllers sent with the note-on;
     // "7:64@1.5" (or "7=64@1.5") sends one 1.5 s into the render, on its frame;
     // "pb:16383@1" is a 14-bit pitch bend.
-    let rides: Vec<(usize, Event)> = std::env::var("KONTRA_CC")
+    let mut rides: Vec<(usize, Event)> = std::env::var("KONTRA_CC")
         .unwrap_or_default()
         .split(',')
         .filter_map(|entry| {
@@ -433,6 +434,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(((at * RATE as f32) as usize, Event::Ump([word, 0])))
         })
         .collect();
+    // KONTRA_REPEATS=62:16:70:45: after the note, 16 notes on key 62, one
+    // every 70 ms from 0.1 s, each 45 ms long (a fast repeat).
+    if let Some([k, count, period, len]) = std::env::var("KONTRA_REPEATS").ok().and_then(|r| {
+        let v: Vec<u32> = r.split(':').filter_map(|x| x.parse().ok()).collect();
+        <[u32; 4]>::try_from(v).ok()
+    }) {
+        let frames = |ms: u32| ms as usize * RATE as usize / 1000;
+        for i in 0..count {
+            let at = frames(100 + i * period);
+            let note = HostNote {
+                key: k as u8,
+                ..host
+            };
+            rides.push((
+                at,
+                Event::NoteOn {
+                    note,
+                    velocity: velocity.into(),
+                    tune: 0.0,
+                },
+            ));
+            let off = HostPattern {
+                key: k as i32,
+                ..pattern
+            };
+            rides.push((at + frames(len), Event::NoteOff(off)));
+        }
+        rides.sort_by_key(|r| r.0);
+    }
     let mut first: Vec<Timed<Event>> = (rides.iter().filter(|r| r.0 == 0))
         .map(|&(_, body)| Timed {
             at: SampleTime(0),
@@ -447,7 +477,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let chords = std::env::var_os("KONTRA_CHORDS").is_some();
     let hold = if chords { 64 * 12 + 24 } else { hold };
     let keys = |step: usize| (0..4).map(move |i| 36 + ((step * 7 + i * 5) % 60) as u8);
-    for n in 0..(hold + 2 * RATE as usize / 512) {
+    // KONTRA_TAIL: seconds rendered after the key-up (2); the voices left
+    // at the end are printed with their state.
+    let tail = env("KONTRA_TAIL").unwrap_or(2.0);
+    let tail_blocks = (tail * RATE as f32 / 512.0) as usize;
+    for n in 0..(hold + tail_blocks) {
         let step = n / 12;
         let chord: Vec<Timed<Event>> = if chords && n % 12 == 0 && step < 64 {
             let offs = (step.checked_sub(2).into_iter().flat_map(keys)).map(|k| {
@@ -537,6 +571,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         audio.extend_from_slice(&block);
     }
+    for v in engine.inspect_voices() {
+        println!("  left: {v:?}");
+    }
     let peak = audio.iter().flatten().fold(0f32, |p, s| p.max(s.abs()));
     let rms = |from: usize, to: usize| {
         let s = audio.get(from..to).unwrap_or_default();
@@ -566,6 +603,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("stream: {:?}", stream.stats());
     println!("all actions: {:?}", engine.unhandled_actions());
     println!("last message: {}", engine.last_message());
+    println!("calls: {:?}", engine.action_calls());
     println!("script faults: {:?}", engine.script_faults());
     println!(
         "script arena spills: {}, memory after render: {}",

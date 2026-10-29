@@ -6,6 +6,7 @@ use kontra_ir as ir;
 
 use crate::plan::{Group, addressed, source};
 use crate::{Engine, EnginePar, Level};
+use kontra_plan::par_laws::{attack_shape, attack_x, stage_ms, stage_x};
 
 /// Effect gains are cubic, unity at this value, so 1_000_000 is +24 dB (v2 sampler-core,
 /// fitted to slots whose saved gains follow their scripts' init writes).
@@ -14,49 +15,11 @@ const UNITY_EFFECT_GAIN: f64 = 396_851.0;
 /// Volume is cubic in the setting, 0 dB at this value, +12 dB at 1_000_000.
 const UNITY_VOLUME: f64 = 629_960.524_947_436_1;
 
-/// Attack and hold run 0..=15 s, decay and release 0..=25 s, exponentially
-/// with a 2 ms shift: `exp(ln 2 + (ln(top + 2) − ln 2) × x) − 2` ms.
-pub(crate) fn stage_ms(top_ms: f64, x: f64) -> f64 {
-    let (low, high) = (2f64.ln(), (top_ms + 2.0).ln());
-    ((low + (high - low) * x).exp() - 2.0).max(0.0)
-}
-
-/// The inverse of [`stage_ms`]: the 0..=1 setting of a stage `ms` long.
-/// The attack curve knob (raw / 500000 − 1: −1 concave ..= 1 convex) as a
-/// segment shape: the law the Kontakt translator applies to stored curves
-/// (format/kontakt/src/laws.rs, docs/re/engine/k-mod-envelopes.md).
-fn attack_shape(x: f64) -> f32 {
-    let c = (x * 2.0 - 1.0).clamp(-1.0, 1.0);
-    let b = f64::from(((1.0 - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
-    let k = if c > 0.0 {
-        (b / (1.0 + b)).ln()
-    } else {
-        ((1.0 + b) / b).ln()
-    };
-    k as f32
-}
-
-/// Inverse of [`attack_shape`], as a 0..=1 knob.
-fn attack_x(shape: f32) -> f64 {
-    let k = f64::from(shape);
-    if k == 0.0 {
-        return 0.5;
-    }
-    let b = 1.0 / k.abs().exp_m1();
-    let c = (1.0 - (b.ln() + 20_000f64.ln()) / 500_000f64.ln()).clamp(0.0, 1.0);
-    0.5 * (1.0 - k.signum() * c)
-}
-
 /// An LFO's fade-in runs 0..=10 s on the stage law (measured,
 /// probes/mod_par_laws.lua: 500_000 saves 139.45 ms, 1_000_000 10 002 ms).
 /// Bus n is `BUS_OFFSET + n` (measured, probes/output_channel.lua).
 pub(crate) const BUS_OFFSET: i32 = 1024;
 const LFO_FADE_TOP_MS: f64 = 10_000.0;
-
-fn stage_x(top_ms: f64, ms: f64) -> f64 {
-    let (low, high) = (2f64.ln(), (top_ms + 2.0).ln());
-    (((ms + 2.0).ln() - low) / (high - low)).clamp(0.0, 1.0)
-}
 
 /// Which of a [`Level`]'s settings a parameter is.
 #[derive(Clone, Copy)]
@@ -693,7 +656,7 @@ fn depth(kind: &mut ir::ModKind) -> Option<&mut f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{attack_shape, attack_x, set_signed, signed, stage_ms, stage_x};
+    use super::{set_signed, signed};
     use kontra_ir as ir;
 
     #[test]
@@ -757,22 +720,5 @@ mod tests {
         assert_eq!(signed(&kind), Some(-0.5));
         assert!(set_signed(&mut kind, -0.25));
         assert!(matches!(kind, ir::ModKind::EffectParam { depth, .. } if depth == -4.0));
-    }
-
-    #[test]
-    fn attack_curve_round_trips() {
-        for x in [0.1, 0.3, 0.5, 0.7, 0.95] {
-            assert!((attack_x(attack_shape(x)) - x).abs() < 1e-4, "{x}");
-        }
-    }
-
-    #[test]
-    fn stage_times_follow_kontakts_shifted_exponential() {
-        assert!(stage_ms(15_000.0, 0.0).abs() < 1e-9);
-        assert!((stage_ms(15_000.0, 1.0) - 15_000.0).abs() < 1e-6);
-        assert!((stage_ms(25_000.0, 0.5) - ((2.0f64 * 25_002.0).sqrt() - 2.0)).abs() < 1e-6);
-        for x in [0.0, 0.25, 0.8, 1.0] {
-            assert!((stage_x(25_000.0, stage_ms(25_000.0, x)) - x).abs() < 1e-9);
-        }
     }
 }

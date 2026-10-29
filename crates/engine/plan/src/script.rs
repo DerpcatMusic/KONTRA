@@ -31,6 +31,10 @@ pub struct ScriptPlan {
     /// callback, as a key-up would (KSP: `note_off` triggers `on release`);
     /// otherwise only the slots after it see the release.
     pub hears_own_releases: bool,
+    /// A key-up this script holds back still ends the notes it played for
+    /// the key's length (KSP `play_note(.., -1)`); otherwise they play on
+    /// until the script ends them (UVI `postEvent`).
+    pub held_release_ends_children: bool,
 }
 
 /// The script's UI controls as the engine sees them: ids, and where values live.

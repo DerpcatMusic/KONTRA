@@ -128,8 +128,16 @@ pub struct VoiceObservation {
     #[cfg(feature = "trace")]
     pub step: f64,
     /// Current amplitude envelope stage.
-    #[cfg(feature = "trace")]
     pub envelope_stage: &'static str,
+    /// Its note's event id (0 once gone), origin (host, child, script),
+    /// and whether the note was released or the pedal holds it: why a
+    /// voice plays on after every key is up.
+    pub id: i32,
+    pub origin: Option<&'static str>,
+    pub note_released: bool,
+    pub pedal_held: bool,
+    /// Fading out after a steal or `fade_out`.
+    pub fading: bool,
     /// Peak of the last voice render, before group effects.
     #[cfg(feature = "trace")]
     pub last_peak: f32,
@@ -204,7 +212,8 @@ impl Engine {
         self.voices
             .iter()
             .filter(|s| s.voice.is_active())
-            .map(|s| VoiceObservation {
+            .map(|s| (s, s.note.and_then(|r| Some((r, self.notes.get(r)?)))))
+            .map(|(s, note)| VoiceObservation {
                 zone: s.zone,
                 position: s.voice.position(),
                 released: s.released,
@@ -212,8 +221,16 @@ impl Engine {
                 missing_frames: s.voice.missing_frames(),
                 #[cfg(feature = "trace")]
                 step: s.voice.step(),
-                #[cfg(feature = "trace")]
                 envelope_stage: s.voice.envelope_stage(),
+                id: note.map_or(0, |(r, _)| r.event_id()),
+                origin: note.map(|(_, n)| match n.origin {
+                    crate::ledger::Origin::Host => "host",
+                    crate::ledger::Origin::Child(_) => "child",
+                    crate::ledger::Origin::Script => "script",
+                }),
+                note_released: note.is_some_and(|(_, n)| n.released),
+                pedal_held: note.is_some_and(|(_, n)| n.pedal_held),
+                fading: s.fading,
                 #[cfg(feature = "trace")]
                 last_peak: s.voice.last_peak(),
             })
