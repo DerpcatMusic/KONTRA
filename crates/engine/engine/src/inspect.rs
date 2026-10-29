@@ -120,6 +120,7 @@ pub struct VoiceObservation {
 /// A live EQ route, sampled from the same source and law used by the engine.
 #[derive(Clone, Debug)]
 pub struct EqRouteObservation {
+    pub voice_slot: usize,
     pub zone: usize,
     pub name: String,
     pub insert: u8,
@@ -198,7 +199,12 @@ impl Engine {
     /// Samples active voices' EQ routes without changing the processing path.
     pub fn inspect_eq_routes(&self) -> Vec<EqRouteObservation> {
         let mut result = Vec::new();
-        for slot in self.voices.iter().filter(|s| s.voice.is_active()) {
+        for (voice_slot, slot) in self
+            .voices
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.voice.is_active())
+        {
             let Some((zone, note)) = self
                 .plan
                 .zones
@@ -229,6 +235,7 @@ impl Engine {
                         .voice_bells(zone, insert, note, age)
                         .and_then(|bells| bells.get(usize::from(band)).map(|b| b.gain_db));
                     result.push(EqRouteObservation {
+                        voice_slot,
                         zone: slot.zone,
                         name: m.name.clone(),
                         insert,
@@ -241,5 +248,84 @@ impl Engine {
             }
         }
         result
+    }
+}
+
+/// An active voice's route and the current input observed between spans.
+#[derive(Clone, Debug)]
+pub struct RouteObservation {
+    pub voice_slot: usize,
+    pub zone: usize,
+    pub name: String,
+    pub kind: kontra_ir::ModKind,
+    /// Current raw source; `None` when its source is fixed at note-on or unavailable.
+    pub source: Option<f32>,
+    /// Current source after timed-source intensity scaling.
+    pub routed: Option<f32>,
+}
+
+fn route_source(kind: kontra_ir::ModKind) -> Option<kontra_ir::Source> {
+    use kontra_ir::ModKind;
+    match kind {
+        ModKind::Envelope => None,
+        ModKind::Volume { source, .. }
+        | ModKind::Pitch { source, .. }
+        | ModKind::Pan { source, .. }
+        | ModKind::Cutoff { source, .. }
+        | ModKind::Resonance { source, .. }
+        | ModKind::EqGain { source, .. }
+        | ModKind::SampleStart { source, .. }
+        | ModKind::Attack { source, .. }
+        | ModKind::Release { source, .. }
+        | ModKind::LfoPhase { source, .. }
+        | ModKind::LfoRate { source, .. }
+        | ModKind::LfoHz { source, .. }
+        | ModKind::Intensity { source, .. }
+        | ModKind::LoopShift { source, .. }
+        | ModKind::Mix { source, .. }
+        | ModKind::EffectParam { source, .. }
+        | ModKind::Send { source, .. } => Some(source),
+    }
+}
+
+impl Engine {
+    /// Observe all active routes, including shaped and blended controller inputs.
+    pub fn inspect_routes(&self) -> Vec<RouteObservation> {
+        let mut out = Vec::new();
+        for (voice_slot, slot) in self
+            .voices
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.voice.is_active())
+        {
+            let Some((zone, note)) = self
+                .plan
+                .zones
+                .get(slot.zone)
+                .zip(slot.note.and_then(|n| self.notes.get(n)))
+            else {
+                continue;
+            };
+            let Some(group) = self.groups.get(zone.group as usize) else {
+                continue;
+            };
+            let age = crate::modulators::Age {
+                warp: slot.warp,
+                chaos: slot.chaos.map(|c| c[3]),
+                ..self.age(slot.started, slot.released_at)
+            };
+            for m in group.mods.iter().filter(|m| !m.bypass) {
+                let input = route_source(m.kind);
+                out.push(RouteObservation {
+                    voice_slot,
+                    zone: slot.zone,
+                    name: m.name.clone(),
+                    kind: m.kind,
+                    source: input.and_then(|s| self.source(zone, s, note, age)),
+                    routed: input.and_then(|s| self.routed(zone, s, note, age)),
+                });
+            }
+        }
+        out
     }
 }

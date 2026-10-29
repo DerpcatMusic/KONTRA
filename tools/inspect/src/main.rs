@@ -14,10 +14,12 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail, ensure};
 
+mod bands;
 mod load;
 mod play;
 mod routes;
 mod scenario;
+mod trace_output;
 
 /// The engine's sample rate for every subcommand.
 const RATE: u32 = 48_000;

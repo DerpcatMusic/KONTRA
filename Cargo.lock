@@ -2492,6 +2492,7 @@ dependencies = [
  "kontra-engine",
  "kontra-host",
  "kontra-stream",
+ "rustfft",
  "serde_json",
 ]
 

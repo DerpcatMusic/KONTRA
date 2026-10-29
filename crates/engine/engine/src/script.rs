@@ -345,7 +345,8 @@ impl HostApi for Engine {
                 action: call.action,
                 args,
                 len: count as u8,
-                truncated: call.ints.len() > count || !call.texts.is_empty(),
+                truncated: call.ints.len() > count
+                    || call.texts.iter().any(|text| !text.as_str().is_empty()),
             });
         }
         if let Some(n) = self.called.get_mut(usize::from(call.action.id())) {

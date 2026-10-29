@@ -1989,3 +1989,39 @@ fn a_controller_moves_a_bus_eq_band_while_it_plays() {
     let db = 20.0 * (cut / open).log10();
     assert!((db - -20.0).abs() < 1.0, "{open} -> {cut}: {db} dB");
 }
+
+#[cfg(feature = "trace")]
+#[test]
+fn bounded_trace_captures_voice_start_steal_and_end_without_changing_audio() {
+    use kontra_engine::{TraceEvent, VoiceEvent};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let plan = Arc::new(Plan::new(vec![zone(&mut store, 0.5)], 1));
+    let mut plain = Engine::new(Arc::clone(&plan), store.client(), RATE);
+    let mut traced = Engine::new_traced(plan, store.client(), RATE, 128);
+    for input in [
+        &[on(60, 1.0)][..],
+        &[on(62, 1.0)][..],
+        &[off(62)][..],
+        &[][..],
+        &[][..],
+        &[][..],
+    ] {
+        let mut a = [[0.0; 2]; 128];
+        let mut b = [[0.0; 2]; 128];
+        plain.process(&mut a, input);
+        traced.process(&mut b, input);
+        assert_eq!(a, b, "tracing changed the rendered samples");
+    }
+    let transitions: Vec<_> = traced
+        .trace_events()
+        .iter()
+        .filter_map(|event| match event {
+            TraceEvent::Voice { event, .. } => Some(*event),
+            _ => None,
+        })
+        .collect();
+    assert!(transitions.contains(&VoiceEvent::Start), "{transitions:?}");
+    assert!(transitions.contains(&VoiceEvent::Steal), "{transitions:?}");
+    assert!(transitions.contains(&VoiceEvent::End), "{transitions:?}");
+    assert_eq!(traced.trace_dropped(), 0);
+}

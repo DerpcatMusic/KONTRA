@@ -48,7 +48,7 @@ use kontra_time::Frames;
 use kontra_voice::{Voice, VoiceStart};
 
 pub use fx_types::{EffectRequest, Prepared};
-pub use inspect::{EqRouteObservation, VoiceObservation};
+pub use inspect::{EqRouteObservation, RouteObservation, VoiceObservation};
 pub use kontra_effects::response;
 pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
@@ -224,6 +224,22 @@ impl Engine {
     /// stolen voices can fade. Not real-time.
     #[must_use]
     pub fn new(plan: Arc<Plan>, stream: StreamClient, rate: u32) -> Self {
+        Self::new_inner(plan, stream, rate, None)
+    }
+
+    /// Create an engine with bounded tracing enabled before its init callbacks.
+    #[cfg(feature = "trace")]
+    #[must_use]
+    pub fn new_traced(plan: Arc<Plan>, stream: StreamClient, rate: u32, capacity: usize) -> Self {
+        Self::new_inner(plan, stream, rate, Some(capacity))
+    }
+
+    fn new_inner(
+        plan: Arc<Plan>,
+        stream: StreamClient,
+        rate: u32,
+        _trace_capacity: Option<usize>,
+    ) -> Self {
         let out = plan.output;
         let shared: Box<[Group]> = plan.groups.clone().into();
         let rack = racks::Rack::new(&plan.inserts, rate, &[]);
@@ -286,7 +302,10 @@ impl Engine {
         let ui = kontra_script_ui::Store::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
         let mut engine = Self {
             #[cfg(feature = "trace")]
-            trace: None,
+            trace: _trace_capacity.map(|capacity| trace::Trace {
+                events: Vec::with_capacity(capacity),
+                dropped: 0,
+            }),
             now: SampleTime(0),
             rate: rate.max(1),
             tempo: 120.0,
@@ -588,7 +607,7 @@ impl Engine {
                     event: VoiceEvent::Start,
                     position: start.region.start as f64,
                     step: start.step,
-                    gain: start.gain,
+                    gain: start.gain.map(|row| row.map(|v| v * start.lag.gain)),
                 });
             }
             slot.voice.start(start);
