@@ -8,6 +8,7 @@
 //! draws what is ready and waits on nothing.
 
 pub mod app;
+pub mod icon;
 pub mod keyboard;
 pub mod kit;
 pub mod layout;
