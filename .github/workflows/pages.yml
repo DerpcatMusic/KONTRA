@@ -5,7 +5,7 @@ on:
   # v3 PRs skip it: the site builds when v3 reaches main.
   pull_request:
     branches: [main]
-    paths: ['website/**', 'tools/corpus-health/**', 'tools/library-inspector.html', 'tools/coverage/**', 'crates/**', 'vendor/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/pages.yml']
+    paths: ['website/**', 'tools/coverage/**', 'crates/**', 'vendor/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/pages.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -22,17 +22,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.99.0
-          targets: wasm32-unknown-emscripten
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: browser-inspector
-          cache-on-failure: true
-      - name: Install Emscripten
-        run: |
-          git clone --depth 1 --branch 6.0.12 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
-          test "$(git -C "$RUNNER_TEMP/emsdk" rev-parse HEAD)" = 35ff8a6d150541276abbc6bae512ca90bcfbe220
-          "$RUNNER_TEMP/emsdk/emsdk" install 6.0.12
-          "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.12
       - name: Check static site
         run: |
           python3 website/check.py
@@ -41,12 +30,8 @@ jobs:
           python3 website/test_build_site.py
       - name: Build site and live compatibility table
         run: python3 website/build_site.py "$RUNNER_TEMP/kontra-site"
-      - name: Build and test browser inspector
-        run: |
-          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
-          python3 website/build_inspector.py "$RUNNER_TEMP/kontra-site"
-          "$EMSDK_NODE" website/test-inspector.mjs "$RUNNER_TEMP/kontra-site"
-          python3 website/check.py "$RUNNER_TEMP/kontra-site"
+      - name: Check built site
+        run: python3 website/check.py "$RUNNER_TEMP/kontra-site"
       - name: Include runtime notices and source bundles
         env:
           TMPDIR: ${{ runner.temp }}

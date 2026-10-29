@@ -97,7 +97,7 @@ mod tests {
         assert!((o.drive - table(1_650.453_5) * 4.0).abs() < 1e-6);
         assert_eq!(o.level, 0.447);
         // Every point of the curve table 0x144f3a100, against v2's dump of it.
-        let bytes = include_bytes!("../../../sampler-core/src/dsp/color/tables/skreamer.f32le");
+        let bytes = include_bytes!("../../../dsp/drive/tests/fixtures/skreamer.f32le");
         for (c, b) in o.curve.iter().zip(bytes.as_chunks::<8>().0) {
             assert_eq!(*c, f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
         }

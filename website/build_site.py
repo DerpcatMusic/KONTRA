@@ -103,9 +103,6 @@ def build(output):
     for pattern in ('*.html', '*.css', '*.js'):
         for source in SITE.glob(pattern):
             shutil.copy2(source, output / source.name)
-    viewer = (ROOT / 'tools/library-inspector.html').read_text()
-    viewer = viewer.replace('<style>', '<style>@font-face {font-family:"Noto Sans";src:url("assets/noto-sans.woff2") format("woff2");font-display:swap;}\n', 1)
-    (output / 'inspector-viewer.html').write_text(viewer)
     page = (SITE / 'features.html').read_text()
     marker = '<!-- compatibility:table -->'
     assert page.count(marker) == 1, 'Compatibility template marker missing or duplicated'
