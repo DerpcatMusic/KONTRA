@@ -145,7 +145,8 @@ struct Coroutine {
     stack: Vec<i64>,
     texts: Vec<Text>,
     frames: Vec<u32>,
-    poly: Box<[i64]>,
+    /// Its note event's polyphonic cells, in [`Instance::polys`].
+    poly: usize,
     loop_count: u32,
     loop_hash: u64,
     /// A host call ran since the last stuck check: state outside the hash moved.
@@ -156,11 +157,31 @@ struct Coroutine {
     no_wait: bool,
 }
 
+/// Note events whose polyphonic cells are kept at once.
+// ponytail: 512 events, the least recently started one's cells are reused;
+// Kontakt keeps 8192. Raise it if held notes lose release state.
+const POLY_EVENTS: usize = 512;
+
+/// One note event's polyphonic cells. Its note callback and its release
+/// callback share them (KSP: "a polyphonic variable retains its value in
+/// the on release callback of the corresponding note").
+struct Poly {
+    /// The low half of the context the callbacks started with: the event.
+    event: u32,
+    cells: Box<[i64]>,
+    /// Busy callbacks using these cells.
+    users: u16,
+    /// When a callback last took these cells; the oldest free ones go first.
+    used: u64,
+}
+
 /// One script's live state: cells, texts and its callback coroutines.
 pub struct Instance {
     cells: Box<[i64]>,
     texts: Box<[Text]>,
     coroutines: Vec<Coroutine>,
+    polys: Box<[Poly]>,
+    starts: u64,
     faults: Faults,
 }
 
@@ -178,7 +199,7 @@ impl Instance {
                 stack: Vec::with_capacity(stack),
                 texts: Vec::with_capacity(stack),
                 frames: Vec::with_capacity(program.max_depth.max(1)),
-                poly: vec![0; program.poly_cells].into(),
+                poly: usize::MAX,
                 loop_count: 0,
                 loop_hash: 0,
                 hosted: false,
@@ -186,10 +207,25 @@ impl Instance {
                 no_wait: false,
             })
             .collect();
+        let events = if program.poly_cells == 0 {
+            0
+        } else {
+            POLY_EVENTS
+        };
+        let polys = (0..events)
+            .map(|_| Poly {
+                event: 0,
+                cells: vec![0; program.poly_cells].into(),
+                users: 0,
+                used: 0,
+            })
+            .collect();
         Self {
             cells: vec![0; program.cells].into(),
             texts: vec![Text::EMPTY; program.text_cells].into(),
             coroutines,
+            polys,
+            starts: 0,
             faults: Faults::default(),
         }
     }
@@ -248,6 +284,7 @@ impl Instance {
             return None;
         };
         let index = u16::try_from(i).ok()?;
+        co.poly = take_poly(&mut self.polys, context as u32, &mut self.starts);
         co.busy = true;
         co.generation = co.generation.wrapping_add(1);
         co.pc = entry;
@@ -255,7 +292,6 @@ impl Instance {
         co.stack.clear();
         co.texts.clear();
         co.frames.clear();
-        co.poly.fill(0);
         co.loop_count = 0;
         co.loop_hash = 0;
         co.hosted = false;
@@ -273,6 +309,9 @@ impl Instance {
             .get_mut(usize::from(co.index))
             .filter(|c| c.generation == co.generation)
         {
+            if c.busy {
+                free_poly(&mut self.polys, c.poly);
+            }
             c.busy = false;
         }
     }
@@ -321,7 +360,9 @@ impl Instance {
             cells,
             texts,
             coroutines,
+            polys,
             faults,
+            ..
         } = self;
         let Some(c) = coroutines
             .get_mut(usize::from(co.index))
@@ -329,11 +370,42 @@ impl Instance {
         else {
             return Step::Done;
         };
-        let step = execute(program, cells, texts, c, faults, host);
+        let poly = polys
+            .get_mut(c.poly)
+            .map_or(&mut [][..], |p| &mut p.cells[..]);
+        let step = execute(program, cells, texts, poly, c, faults, host);
         if step == Step::Done {
             c.busy = false;
+            free_poly(polys, c.poly);
         }
         step
+    }
+}
+
+/// The polyphonic cells for a callback of `event`: the ones its event's
+/// other callbacks use or left, else the oldest free ones, zeroed.
+fn take_poly(polys: &mut [Poly], event: u32, starts: &mut u64) -> usize {
+    *starts += 1;
+    let found = polys.iter().position(|p| p.used != 0 && p.event == event);
+    let at = found.or_else(|| {
+        let free = polys.iter().enumerate().filter(|(_, p)| p.users == 0);
+        free.min_by_key(|(_, p)| p.used).map(|(i, _)| i)
+    });
+    let Some(p) = at.and_then(|i| polys.get_mut(i)) else {
+        return usize::MAX;
+    };
+    if found.is_none() {
+        p.event = event;
+        p.cells.fill(0);
+    }
+    p.users = p.users.saturating_add(1);
+    p.used = *starts;
+    at.unwrap_or(usize::MAX)
+}
+
+fn free_poly(polys: &mut [Poly], at: usize) {
+    if let Some(p) = polys.get_mut(at) {
+        p.users = p.users.saturating_sub(1);
     }
 }
 
@@ -341,6 +413,7 @@ fn execute(
     program: &Program,
     cells: &mut [i64],
     texts: &mut [Text],
+    poly: &mut [i64],
     c: &mut Coroutine,
     faults: &mut Faults,
     host: &mut dyn HostApi,
@@ -440,10 +513,10 @@ fn execute(
                     None => faults.out_of_range += 1,
                 }
             }
-            Op::LoadPoly(n) => push!(c.poly.get(usize::from(n)).copied().unwrap_or(0)),
+            Op::LoadPoly(n) => push!(poly.get(usize::from(n)).copied().unwrap_or(0)),
             Op::StorePoly(n) => {
                 let v = pop!();
-                if let Some(cell) = c.poly.get_mut(usize::from(n)) {
+                if let Some(cell) = poly.get_mut(usize::from(n)) {
                     *cell = v;
                 }
             }
@@ -584,7 +657,7 @@ fn execute(
                 c.loop_count += 1;
                 let mut stuck = false;
                 if c.loop_count >= LOOP_PROBE && c.loop_count.is_power_of_two() {
-                    let hash = state_hash(cells, texts, c);
+                    let hash = state_hash(cells, texts, poly, c);
                     stuck = !std::mem::take(&mut c.hosted) && hash == c.loop_hash;
                     c.loop_hash = hash;
                 }
@@ -695,10 +768,10 @@ fn compare(cmp: Cmp, o: std::cmp::Ordering) -> bool {
 
 /// State a loop iteration can change: if equal at two checkpoints, the loop
 /// can never exit and the limit applies now instead of after ten million turns.
-fn state_hash(cells: &[i64], texts: &[Text], c: &Coroutine) -> u64 {
+fn state_hash(cells: &[i64], texts: &[Text], poly: &[i64], c: &Coroutine) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cells.hash(&mut h);
-    c.poly.hash(&mut h);
+    poly.hash(&mut h);
     c.stack.hash(&mut h);
     for t in texts.iter().chain(&c.texts) {
         t.as_str().hash(&mut h);
