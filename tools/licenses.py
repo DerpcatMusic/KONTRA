@@ -79,8 +79,8 @@ def generate(output):
         shutil.copytree(ROOT / "licenses" / name, output / name, dirs_exist_ok=True)
     support = output / "BUFFR"
     support.mkdir(exist_ok=True)
-    shutil.copyfile(ROOT / "src/support/LICENSE-BUFFR", support / "LICENSE")
-    shutil.copyfile(ROOT / "src/support/SOURCE.md", support / "SOURCE.md")
+    shutil.copyfile(ROOT / "licenses/BUFFR/LICENSE", support / "LICENSE")
+    shutil.copyfile(ROOT / "licenses/BUFFR/SOURCE.md", support / "SOURCE.md")
     sources = output / "sources"
     sources.mkdir(exist_ok=True)
     for crate in data["crates"]:
@@ -111,8 +111,8 @@ def self_test():
         with patch.object(subprocess, "run", cargo_about), patch.object(Path, "read_text", windows_read):
             generate(output)
         assert "\u201cUTF-8\u201d" in (output / "THIRD_PARTY_NOTICES.txt").read_text(encoding="utf-8")
-        assert (output / "BUFFR/LICENSE").read_bytes() == (ROOT / "src/support/LICENSE-BUFFR").read_bytes()
-        assert (output / "BUFFR/SOURCE.md").read_bytes() == (ROOT / "src/support/SOURCE.md").read_bytes()
+        assert (output / "BUFFR/LICENSE").read_bytes() == (ROOT / "licenses/BUFFR/LICENSE").read_bytes()
+        assert (output / "BUFFR/SOURCE.md").read_bytes() == (ROOT / "licenses/BUFFR/SOURCE.md").read_bytes()
     data["licenses"] = []
     try:
         render(data)
