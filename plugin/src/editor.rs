@@ -224,6 +224,10 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
                 return;
             }
             let step = by.unsigned_abs() as usize % count;
+            // A full turn (or a one-preset library) stays: no reload.
+            if step == 0 {
+                return;
+            }
             let preset = if by < 0 {
                 preset + count - step
             } else {

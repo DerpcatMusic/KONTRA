@@ -502,17 +502,26 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
         params.shared.request(crate::Request::Browse(action));
         Tick.run(&params);
     };
-    let (count, first) = {
+    let (presets, felt) = {
         let b = crate::lock(&params.shared.browser);
-        let l = &b.as_ref().unwrap().catalog.libraries[library];
-        (
-            l.presets.len(),
-            l.presets[(preset + 1) % l.presets.len()].clone(),
-        )
+        let presets = b.as_ref().unwrap().catalog.libraries[library]
+            .presets
+            .clone();
+        let felt = presets[preset].clone();
+        (presets, felt)
     };
+    let count = presets.len();
     browse(kontra_ui::app::Action::Step { part: 0, by: 1 });
-    assert_eq!(path(&params).as_ref(), Some(&first), "next of {count}");
+    assert_eq!(path(&params), Some(presets[(preset + 1) % count].clone()));
     browse(kontra_ui::app::Action::Step { part: 0, by: -1 });
+    assert_eq!(path(&params), Some(felt.clone()), "back");
+    browse(kontra_ui::app::Action::Switch { part: 0, preset: 0 });
+    browse(kontra_ui::app::Action::Step { part: 0, by: -1 });
+    assert_eq!(
+        path(&params),
+        presets.last().cloned(),
+        "wraps below the first"
+    );
     browse(kontra_ui::app::Action::Switch { part: 0, preset });
     let back = path(&params).unwrap();
     assert!(back.ends_with("Una Corda Felt.nki"), "{back:?}");
