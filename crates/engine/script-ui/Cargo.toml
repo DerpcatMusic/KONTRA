@@ -1,0 +1,12 @@
+[package]
+name = "kontra-script-ui"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+description = "What scripts write to their controls' look and read back (07-APP.md §5.1)"
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-vm = { path = "../vm" }
