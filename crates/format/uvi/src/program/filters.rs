@@ -3,7 +3,8 @@
 //! 20 kHz. A connection on `Freq` moves it along that range's log scale:
 //! `Freq × 1000^(Ratio × s)`, `s` the source (0..=1), `1 − s` when
 //! `Inverted` (the parameter tables pair 20 and 20000, 0x14258b220; v1's
-//! native renders, crates/sampler-uvi/src/modulation.rs).
+//! native renders, crates/sampler-uvi/src/modulation.rs). Any source the
+//! shared routes carry moves it the same way, `s` bipolar for an LFO.
 //!
 //! An `XpanderFilter` on Algorithm 0 with the soft saturator
 //! (DistortionType 0) is the explicit ladder, its `Freq` on the same range:
@@ -15,7 +16,33 @@
 use kontra_ir as ir;
 use roxmltree::Node;
 
-use super::{flag, num};
+use super::{Library, Translator, flag, modulation, num};
+
+impl<L: Library> Translator<'_, '_, L> {
+    /// The routes on a keygroup's carried filters' `Freq`, as cutoffs. A
+    /// bypassed one moves nothing until a script turns it on.
+    pub(super) fn cutoff_routes(&mut self, group: &mut ir::Group, kg: Node) {
+        let program = self.program;
+        let cutoffs = freq_routes(kg)
+            .into_iter()
+            .filter_map(|(insert, c)| {
+                let tag = c.parent()?.parent()?.tag_name().name();
+                let mut r = modulation::reach(program, c, (tag, "Freq"))?;
+                if flag(c, "Bypass") {
+                    r.ratio = 0.0;
+                }
+                Some((insert, c, r))
+            })
+            .collect::<Vec<_>>();
+        for (insert, c, r) in cutoffs {
+            self.add_route(group, c, r, |source, depth| ir::ModKind::Cutoff {
+                source,
+                insert,
+                depth,
+            });
+        }
+    }
+}
 
 /// Octaves of the `Freq` range a connection's ratio of 1 spans: 20 Hz to 20 kHz.
 const FREQ_OCTAVES: f32 = 9.965_784;
@@ -37,73 +64,42 @@ pub(super) fn carried(node: Node) -> bool {
             .is_some_and(|p| p.has_tag_name("Keygroup"))
 }
 
-/// The route a connection on a carried filter's `Freq` makes: its source,
-/// its ratio, and whether it is inverted. `None` for any other connection.
-pub(super) fn freq_route(connection: Node) -> Option<(ir::Source, f32, bool)> {
-    let filter = connection.parent()?.parent()?;
-    if !carried(filter)
-        || connection.attribute("Destination") != Some("Freq")
-        || flag(connection, "Bypass")
-        || flag(connection, "ConnectionMode")
-        || !connection
-            .attribute("Mapper")
-            .unwrap_or_default()
-            .is_empty()
-        || connection.children().any(|n| n.is_element())
-    {
-        return None;
-    }
-    let source = match connection.attribute("Source")? {
-        "@VoiceParam Velocity" => ir::Source::Velocity,
-        s => ir::Source::Controller(s.strip_prefix("@MIDI CC ")?.trim().parse().ok()?),
-    };
-    let ratio = num(connection, "Ratio", 0.0).ok()? as f32;
-    Some((source, ratio, flag(connection, "Inverted")))
+/// A keygroup's carried filters' connections, each with its filter's slot.
+fn freq_routes<'a, 'i>(kg: Node<'a, 'i>) -> Vec<(u8, Node<'a, 'i>)> {
+    kg.children()
+        .filter(|n| n.has_tag_name("Inserts"))
+        .flat_map(|n| n.children())
+        .filter(Node::is_element)
+        .enumerate()
+        .filter(|(_, node)| carried(*node))
+        .filter_map(|(n, node)| {
+            let insert = u8::try_from(n).ok()?;
+            Some(
+                node.children()
+                    .filter(|c| c.has_tag_name("Connections"))
+                    .flat_map(|c| c.children())
+                    .filter(move |c| c.is_element())
+                    .map(move |c| (insert, c)),
+            )
+        })
+        .flatten()
+        .collect()
 }
 
-/// A keygroup's inserts by slot (a slot not carried passes its input), and
-/// the cutoff routes on them.
-pub(super) fn keygroup(kg: Node) -> (Vec<Option<ir::Effect>>, Vec<ir::Mod>) {
+/// A keygroup's inserts by slot (a slot not carried passes its input).
+pub(super) fn keygroup(kg: Node) -> Vec<Option<ir::Effect>> {
     let mut inserts = Vec::new();
-    let mut mods = Vec::new();
     let slots = kg
         .children()
         .filter(|n| n.has_tag_name("Inserts"))
         .flat_map(|n| n.children())
         .filter(Node::is_element);
-    for (n, node) in slots.enumerate() {
-        let Some(insert) = u8::try_from(n).ok().filter(|_| carried(node)) else {
+    for node in slots {
+        if !carried(node) {
             inserts.push(None);
             continue;
-        };
-        let mut hz = num(node, "Freq", 20_000.0).unwrap_or(20_000.0) as f32;
-        let connections = node
-            .children()
-            .filter(|c| c.has_tag_name("Connections"))
-            .flat_map(|c| c.children());
-        for (source, ratio, inverted) in connections.filter_map(freq_route) {
-            if ratio == 0.0 {
-                continue;
-            }
-            // `1000^(r(1 − s))` is `1000^r` on the base and `−r` on `s`.
-            let depth = if inverted {
-                hz *= 1000f32.powf(ratio);
-                -ratio
-            } else {
-                ratio
-            };
-            mods.push(ir::Mod {
-                name: String::new(),
-                slot: 0,
-                target: 0,
-                bypass: false,
-                kind: ir::ModKind::Cutoff {
-                    source,
-                    insert,
-                    depth,
-                },
-            });
         }
+        let hz = num(node, "Freq", 20_000.0).unwrap_or(20_000.0) as f32;
         let mode = num(node, "Mode", 0.0).unwrap_or(0.0);
         let mut filter = ir::Filter {
             pass: if mode == 1.0 {
@@ -136,5 +132,5 @@ pub(super) fn keygroup(kg: Node) -> (Vec<Option<ir::Effect>>, Vec<ir::Mod>) {
             dry: 0.0,
         }));
     }
-    (inserts, mods)
+    inserts
 }

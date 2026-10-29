@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use roxmltree::{Node, NodeId};
 
-use super::{Library, Translator};
+use super::{Library, Translator, flag};
 
 impl<L: Library> Translator<'_, '_, L> {
     /// The program tree as a Lua module for the script runtime: each element's
@@ -12,32 +12,54 @@ impl<L: Library> Translator<'_, '_, L> {
     /// `keygroups`, `inserts`, ...), each keygroup's engine group (0-based),
     /// the connections the engine carries (`links`, places in the program's
     /// `connections` of `{Source, Destination, Ratio, route key, amount per
-    /// unit of Ratio}`; the route is named `#key`),
+    /// unit of Ratio, Bypass}`; the route is named `#key`; one it does not
+    /// carry, ahead of one it does, holds its place with key −1),
     /// and the program-wide dB and pan every group adds to its layer's and
     /// keygroup's.
     pub(super) fn tree(&self) -> String {
-        // One `{Source, Destination, Ratio, key, unit}` per route and source.
+        // One `{Source, Destination, Ratio, key, unit, Bypass}` per route and
+        // source; a place holder per source, destination and ratio.
         let mut links = HashMap::new();
         let mut shared: Vec<String> = Vec::new();
         let mut index = HashMap::new();
-        for c in self.program.descendants() {
-            let Some(&key) = self.routed.get(&c.id()) else {
+        let lists = self
+            .program
+            .descendants()
+            .filter(|n| n.has_tag_name("Connections"))
+            .filter(|n| {
+                n.parent()
+                    .is_some_and(|o| !o.has_tag_name("SignalConnection"))
+            });
+        for list in lists {
+            let list: Vec<_> = list.children().filter(Node::is_element).collect();
+            let Some(last) = list.iter().rposition(|c| self.routed.contains_key(&c.id())) else {
                 continue;
             };
-            let source = c.attribute("Source").unwrap_or_default();
-            let n = *index.entry((key, source)).or_insert_with(|| {
-                shared.push(format!(
-                    "{{{},{},{},{key},{}}}",
-                    lua_string(source),
-                    lua_string(c.attribute("Destination").unwrap_or_default()),
-                    c.attribute("Ratio")
-                        .and_then(|r| r.trim().parse::<f64>().ok())
-                        .unwrap_or(0.0),
-                    self.units.get(&key).copied().unwrap_or(1.0),
-                ));
-                shared.len()
-            });
-            links.insert(c.id(), n);
+            for c in list.into_iter().take(last + 1) {
+                let key = self.routed.get(&c.id()).map_or(-1, |&k| k as i64);
+                let source = c.attribute("Source").unwrap_or_default();
+                let destination = c.attribute("Destination").unwrap_or_default();
+                let ratio = c
+                    .attribute("Ratio")
+                    .and_then(|r| r.trim().parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let place = (key < 0).then(|| (destination, ratio.to_bits()));
+                let n = *index.entry((key, source, place)).or_insert_with(|| {
+                    shared.push(format!(
+                        "{{{},{},{ratio},{key},{},{}}}",
+                        lua_string(source),
+                        lua_string(destination),
+                        usize::try_from(key)
+                            .ok()
+                            .and_then(|k| self.units.get(&k))
+                            .copied()
+                            .unwrap_or(1.0),
+                        flag(c, "Bypass"),
+                    ));
+                    shared.len()
+                });
+                links.insert(c.id(), n);
+            }
         }
         let mut out = String::from("return ");
         self.lua_node(self.program, &links, &mut out);

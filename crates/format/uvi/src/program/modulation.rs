@@ -160,7 +160,16 @@ pub(super) enum Timed {
 /// read linearly, scaled by `Max`, or `-Min` below zero). `None` for
 /// anything else: a nested or modulated connection, another source, an
 /// inverted unipolar or mapped source (reported).
-pub(super) fn route(
+pub(super) fn route(program: Node, connection: Node, to: (&str, &str)) -> Option<Route> {
+    if flag(connection, "Bypass") {
+        return None;
+    }
+    reach(program, connection, to)
+}
+
+/// [`route`] whether or not the connection is bypassed (a script may turn
+/// it on).
+pub(super) fn reach(
     program: Node,
     connection: Node,
     (owner, destination): (&str, &str),
@@ -168,7 +177,6 @@ pub(super) fn route(
     if !connection.has_tag_name("SignalConnection")
         || !connection.parent()?.parent()?.has_tag_name(owner)
         || connection.attribute("Destination") != Some(destination)
-        || flag(connection, "Bypass")
         || flag(connection, "ConnectionMode")
         || connection.children().any(|n| n.is_element())
     {
@@ -207,12 +215,14 @@ pub(super) fn route(
         },
         s if s.starts_with('$') => {
             let node = source_node(program, connection)?;
-            if node.has_tag_name("AHD") || node.has_tag_name("StepEnvelope") {
+            if ["AHD", "DAHDSR", "StepEnvelope"].contains(&node.tag_name().name()) {
                 if sign < 0.0 {
                     return None;
                 }
                 let timed = if node.has_tag_name("AHD") {
                     Timed::Envelope(ahd(node)?)
+                } else if node.has_tag_name("DAHDSR") {
+                    Timed::Envelope(dahdsr(node)?)
                 } else {
                     let (lfo, table) = steps(node)?;
                     Timed::Steps(lfo, table)
@@ -234,11 +244,24 @@ pub(super) fn route(
                 }
             }
         }
-        _ if sign < 0.0 => return None,
-        "@VoiceParam Velocity" => fixed(ir::Source::Velocity),
-        s => fixed(ir::Source::Controller(
-            s.strip_prefix("@MIDI CC ")?.trim().parse().ok()?,
-        )),
+        s => {
+            let source = match s {
+                "@VoiceParam Velocity" => ir::Source::Velocity,
+                s => ir::Source::Controller(s.strip_prefix("@MIDI CC ")?.trim().parse().ok()?),
+            };
+            if sign > 0.0 {
+                fixed(source)
+            } else {
+                // Inverted, a unipolar source reads `1 − s`.
+                Route {
+                    timed: Some(Timed::Mapped(ir::Transfer {
+                        source,
+                        table: vec![1.0, 0.0],
+                    })),
+                    ..fixed(ir::Source::Constant)
+                }
+            }
+        }
     })
 }
 
@@ -416,6 +439,41 @@ pub(super) fn ahd(node: Node) -> Option<ir::Breakpoints> {
             point("DecayTime", 0.1, 0.0, "DecayCurve")?,
         ],
         sustain: None,
+        loop_from: None,
+        stages: false,
+    })
+}
+
+/// A `DAHDSR` as a modulation source: [`ahd`]'s segments after a `DelayTime`
+/// at 0, the decay falling to `SustainLevel` and held there, then
+/// `ReleaseTime` to 0 (process 0x1410f0570, the same multi-point state as the
+/// AHD's). `None` when velocity scales it (`VelocityAmount`, `VelocitySens`).
+fn dahdsr(node: Node) -> Option<ir::Breakpoints> {
+    if flag(node, "Bypass") || flag(node, "VelocityAmount") || flag(node, "VelocitySens") {
+        return None;
+    }
+    let sustain = num(node, "SustainLevel", 1.0).ok()?.clamp(0.0, 1.0) as f32;
+    let point = |time, level, name: &str| {
+        Some(ir::Breakpoint {
+            ms: (num(node, time, 0.0).ok()?.clamp(0.0, 30.0) * 1000.0) as f32,
+            level,
+            curve: if name.is_empty() {
+                0.0
+            } else {
+                curve(node, name)?
+            },
+        })
+    };
+    Some(ir::Breakpoints {
+        start: 0.0,
+        points: vec![
+            point("DelayTime", 0.0, "")?,
+            point("AttackTime", 1.0, "AttackCurve")?,
+            point("HoldTime", 1.0, "")?,
+            point("DecayTime", sustain, "DecayCurve")?,
+            point("ReleaseTime", 0.0, "ReleaseCurve")?,
+        ],
+        sustain: Some(3),
         loop_from: None,
         stages: false,
     })
