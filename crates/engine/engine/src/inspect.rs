@@ -130,6 +130,37 @@ pub struct EqRouteObservation {
 }
 
 impl Engine {
+    /// Allocate a bounded trace buffer off the audio thread and enable event capture.
+    #[cfg(feature = "trace")]
+    pub fn enable_trace(&mut self, capacity: usize) {
+        self.trace = Some(crate::trace::Trace {
+            events: Vec::with_capacity(capacity),
+            dropped: 0,
+        });
+    }
+
+    /// Captured events in order since the last clear.
+    #[cfg(feature = "trace")]
+    #[must_use]
+    pub fn trace_events(&self) -> &[crate::TraceEvent] {
+        self.trace.as_ref().map_or(&[], |t| &t.events)
+    }
+
+    /// Total events rejected because the bounded buffer was full.
+    #[cfg(feature = "trace")]
+    #[must_use]
+    pub fn trace_dropped(&self) -> u64 {
+        self.trace.as_ref().map_or(0, |t| t.dropped)
+    }
+
+    /// Clear events between blocks without releasing the allocation.
+    #[cfg(feature = "trace")]
+    pub fn clear_trace(&mut self) {
+        if let Some(t) = &mut self.trace {
+            t.events.clear();
+        }
+    }
+
     /// Enable blocking page waits in every voice for offline rendering only.
     #[cfg(feature = "trace")]
     pub fn set_offline_wait(&mut self, enabled: bool) {

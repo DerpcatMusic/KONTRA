@@ -331,6 +331,23 @@ impl Engine {
 
 impl HostApi for Engine {
     fn call(&mut self, mut call: HostCall<'_>) -> HostValue {
+        #[cfg(feature = "trace")]
+        if let Some(trace) = &mut self.trace {
+            let mut args = [0i64; 8];
+            let count = call.ints.len().min(args.len());
+            if let (Some(dst), Some(src)) = (args.get_mut(..count), call.ints.get(..count)) {
+                dst.copy_from_slice(src);
+            }
+            trace.push(crate::TraceEvent::Action {
+                frame: self.now.0,
+                slot: self.running.slot,
+                callback: self.running.callback_id,
+                action: call.action,
+                args,
+                len: count as u8,
+                truncated: call.ints.len() > count || !call.texts.is_empty(),
+            });
+        }
         if let Some(n) = self.called.get_mut(usize::from(call.action.id())) {
             *n += 1;
         }

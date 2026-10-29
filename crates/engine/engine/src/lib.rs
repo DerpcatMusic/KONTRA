@@ -31,6 +31,8 @@ mod queue;
 mod racks;
 
 mod script;
+#[cfg(feature = "trace")]
+mod trace;
 mod transport;
 mod ui;
 mod voice_gain;
@@ -64,6 +66,8 @@ pub use plan::{
 };
 pub use queue::Timed;
 pub use script::{Callbacks, Controls, LookPars, ScriptPlan};
+#[cfg(feature = "trace")]
+pub use trace::{TraceEvent, VoiceEvent};
 pub use transport::Play;
 pub use ui::ControlLook;
 
@@ -128,6 +132,8 @@ struct Slot {
 type ControlPars = Box<[Vec<(i32, i32)>]>;
 
 pub struct Engine {
+    #[cfg(feature = "trace")]
+    trace: Option<trace::Trace>,
     now: SampleTime,
     rate: u32,
     /// Host tempo, quarter notes per minute (tempo-synced LFOs).
@@ -279,6 +285,8 @@ impl Engine {
             .collect();
         let ui = kontra_script_ui::Store::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
         let mut engine = Self {
+            #[cfg(feature = "trace")]
+            trace: None,
             now: SampleTime(0),
             rate: rate.max(1),
             tempo: 120.0,
@@ -571,6 +579,18 @@ impl Engine {
             let Some(slot) = self.voices.get_mut(i) else {
                 continue;
             };
+            #[cfg(feature = "trace")]
+            if let Some(trace) = &mut self.trace {
+                trace.push(TraceEvent::Voice {
+                    frame: now.0,
+                    slot: i,
+                    zone: index,
+                    event: VoiceEvent::Start,
+                    position: start.region.start as f64,
+                    step: start.step,
+                    gain: start.gain,
+                });
+            }
             slot.voice.start(start);
             slot.note = Some(note);
             slot.zone = index;
@@ -602,12 +622,17 @@ impl Engine {
             return;
         }
         let fade = self.fade_frames();
-        if let Some(oldest) = self
+        if let Some((_index, oldest)) = self
             .voices
             .iter_mut()
-            .filter(|s| in_group(s))
-            .min_by_key(|s| (!s.released, s.started))
+            .enumerate()
+            .filter(|(_, s)| in_group(s))
+            .min_by_key(|(_, s)| (!s.released, s.started))
         {
+            #[cfg(feature = "trace")]
+            if let Some(trace) = &mut self.trace {
+                trace.voice(self.now.0, _index, oldest, VoiceEvent::Steal);
+            }
             oldest.voice.fade(fade);
             oldest.fading = true;
         }

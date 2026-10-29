@@ -27,11 +27,16 @@ impl Engine {
             })
             .map(|(r, _)| r)?;
         let fade = self.fade_frames();
-        for slot in self
+        for (_index, slot) in self
             .voices
             .iter_mut()
-            .filter(|s| s.note == Some(victim) && s.voice.is_active() && !s.fading)
+            .enumerate()
+            .filter(|(_, s)| s.note == Some(victim) && s.voice.is_active() && !s.fading)
         {
+            #[cfg(feature = "trace")]
+            if let Some(trace) = &mut self.trace {
+                trace.voice(self.now.0, _index, slot, crate::VoiceEvent::Steal);
+            }
             slot.voice.fade(fade);
             slot.fading = true;
             self.stats.voices_stolen += 1;
@@ -65,6 +70,10 @@ impl Engine {
                         && s.note == note
                         && group(s) == of;
                     if playing(s) && (i == v || sibling) {
+                        #[cfg(feature = "trace")]
+                        if let Some(trace) = &mut self.trace {
+                            trace.voice(self.now.0, i, s, crate::VoiceEvent::Steal);
+                        }
                         s.voice.fade(fade);
                         s.fading = true;
                         self.stats.voices_stolen += 1;
@@ -85,7 +94,14 @@ impl Engine {
                 i
             }
         };
-        self.voices.get_mut(index)?.voice.kill();
+        let slot = self.voices.get_mut(index)?;
+        #[cfg(feature = "trace")]
+        if slot.voice.is_active()
+            && let Some(trace) = &mut self.trace
+        {
+            trace.voice(self.now.0, index, slot, crate::VoiceEvent::Cut);
+        }
+        slot.voice.kill();
         Some(index)
     }
 
