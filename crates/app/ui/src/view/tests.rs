@@ -565,3 +565,25 @@ fn uvi_table_draws_fractional_bars_and_repaints_after_a_script_write() {
     assert_eq!(after.get(5 * 20 + 5), Some(&[255, 0, 0, 255]));
     assert_eq!(after.get(5 * 20 + 15), Some(&[0, 0, 0, 255]));
 }
+
+/// Hovering a script control shows its `set_control_help` text.
+#[test]
+fn hovering_a_control_shows_its_help() {
+    let (mut tree, wall, knob) = tree();
+    if let Some(w) = tree.widgets.first_mut() {
+        w.tooltip = "Filter cutoff".into();
+    }
+    let mut pictures = pictures(wall, knob);
+    let mut ui = crate::ui();
+    let hover = mui::prelude::PointerInput {
+        pos: Some(mui::prelude::Point::new(8., 8.)),
+        ..mui::prelude::PointerInput::default()
+    };
+    let mut tip = None;
+    for dt in [0.016, 0.016, 1.0] {
+        let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (2., 0.));
+        let f = ui.frame(el, Some(ViewSize::new(40., 20.)), hover, dt);
+        tip = f.ok().and_then(|f| f.tip.map(|(t, _)| t));
+    }
+    assert_eq!(tip.as_deref(), Some("Filter cutoff"));
+}
