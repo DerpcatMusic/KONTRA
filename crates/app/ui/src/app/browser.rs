@@ -17,7 +17,61 @@ use crate::theme::{CONTROL, SIDEBAR, SMALL, SPACE, TEXT, TIGHT, accent, secondar
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let top = libraries(ui, app, out);
     let bottom = presets(ui, app, out);
-    col![top.grow(1).min_h(0), rule(), bottom.grow(1).min_h(0)].h(Len::Pct(100.))
+    let edge = split(ui, app);
+    let share = shared(app.view.split);
+    col![
+        top.grow(share * 100.).min_h(0),
+        edge,
+        bottom.grow((1. - share) * 100.).min_h(0)
+    ]
+    .h(Len::Pct(100.))
+    .id("browser-column")
+}
+
+/// The library list's share of the browser's height, as v2 split it; a
+/// split never set (0) is v2's default.
+const SPLIT: f64 = 0.55;
+const SPLIT_MIN: f64 = 0.14;
+const SPLIT_MAX: f64 = 0.7;
+
+fn shared(split: f64) -> f64 {
+    if split > 0. {
+        split.clamp(SPLIT_MIN, SPLIT_MAX)
+    } else {
+        SPLIT
+    }
+}
+
+/// The edge between the libraries and the presets (v2's `src/ui/browser.rs`
+/// `split_divider`): a drag shares out the height, a double click resets
+/// it. A hairline at rest, lit under the hand.
+fn split(ui: &mut Ui, app: &mut App) -> El {
+    let id = "browser-split";
+    let r = ui.get(id);
+    let height = (ui.scene())
+        .and_then(|s| s.surface("browser-column"))
+        .map_or(600., |s| s.frame.size.height);
+    if r.dragged {
+        let now = shared(app.view.split) + r.drag_delta.y / height.max(1.);
+        app.view.split = now.clamp(SPLIT_MIN, SPLIT_MAX);
+    }
+    if r.double_clicked {
+        app.view.split = 0.;
+    }
+    let lit = r.hovered || r.held;
+    col![block(Len::Pct(100.), 1).fill(if lit {
+        Fill::from(accent())
+    } else {
+        Role::Ink.alpha(0.08)
+    })]
+    .justify(Justify::Center)
+    .w(Len::Pct(100.))
+    .h(2. * TIGHT + 1.)
+    .shrink(0)
+    .cursor(Cursor::ResizeV)
+    .tip("Drag to share out the height, double-click to reset")
+    .named("Resize the library list")
+    .id(id)
 }
 
 fn matches(name: &str, search: &str) -> bool {

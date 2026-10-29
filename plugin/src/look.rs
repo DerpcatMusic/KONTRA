@@ -42,6 +42,7 @@ pub fn saved(app: &App, slots: &[usize]) -> SavedView {
         format: index(&FORMATS, &v.format),
         shelf: index(&SHELVES, &v.shelf),
         descending: v.descending,
+        split: v.split as f32,
         parts: (app.parts.iter().zip(slots))
             .map(|(p, &part)| SavedPartView {
                 part,
@@ -67,6 +68,7 @@ pub fn apply(app: &mut App, s: &SavedView) {
         format: pick(&FORMATS, s.format),
         shelf: pick(&SHELVES, s.shelf),
         descending: s.descending,
+        split: f64::from(s.split),
         ..View::default()
     };
 }
