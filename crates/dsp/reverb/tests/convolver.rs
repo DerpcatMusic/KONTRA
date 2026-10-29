@@ -36,8 +36,8 @@ fn run(conv: &mut Convolver, frames: &[[f32; 2]], sizes: &[usize]) -> Vec<[f32; 
 #[test]
 fn matches_naive_convolution() {
     let mut seed = 0x5eed;
-    // Every stage boundary: 64, 1024 and 8192.
-    for taps in [1, 63, 64, 65, 200, 1023, 1025, 3000, 8191, 12_000] {
+    // Every stage boundary: 64, 512, 2048 and 8192.
+    for taps in [1, 63, 64, 65, 200, 511, 513, 2047, 2049, 8191, 12_000] {
         let scale = 1.0 / (taps as f32).sqrt();
         let left = noise(&mut seed, taps, scale);
         let right = noise(&mut seed, taps, scale);
@@ -92,4 +92,48 @@ fn silence_detection_and_reset() {
     let mut zeros = vec![[0.0f32; 2]; 300];
     conv.process(&mut zeros);
     assert!(zeros.iter().all(|f| f[0] == 0.0 && f[1] == 0.0));
+}
+
+/// Bench: a 3 s decaying response over 10 s of noise in 256-frame blocks;
+/// prints ns per stereo frame and the worst error against a direct f64
+/// convolution. `cargo test --release -p kontra-dsp-reverb --test convolver
+/// bench -- --ignored --nocapture`.
+#[test]
+#[ignore = "bench"]
+fn bench() {
+    let mut seed = 0xbe9c;
+    let rate = 48_000;
+    let taps = std::env::var("BENCH_TAPS").map_or(3 * rate, |t| t.parse().unwrap_or(3 * rate));
+    let ir: Vec<f32> = noise(&mut seed, taps, 0.05)
+        .iter()
+        .enumerate()
+        .map(|(n, h)| h * (-6.9 * n as f32 / taps as f32).exp())
+        .collect();
+    let x = noise(&mut seed, 10 * rate, 0.5);
+    let frames: Vec<[f32; 2]> = x.iter().map(|&v| [v, -v]).collect();
+    // The best of five, as the machine is shared; and the slowest block.
+    let (mut ns, mut worst_block) = (f64::MAX, f64::MAX);
+    let mut out = Vec::new();
+    for _ in 0..5 {
+        let mut conv = Convolver::new(&ir, &ir);
+        out = frames.clone();
+        let (started, mut slowest) = (std::time::Instant::now(), 0f64);
+        for block in out.chunks_mut(256) {
+            let t = std::time::Instant::now();
+            conv.process(block);
+            slowest = slowest.max(t.elapsed().as_secs_f64() * 1e6);
+        }
+        ns = ns.min(started.elapsed().as_nanos() as f64 / frames.len() as f64);
+        worst_block = worst_block.min(slowest);
+    }
+    let mut worst = 0f64;
+    for n in (0..frames.len()).step_by(frames.len() / 97) {
+        let direct: f64 = (0..=n.min(ir.len() - 1))
+            .map(|k| f64::from(ir[k]) * f64::from(x[n - k]))
+            .sum();
+        worst = worst.max((f64::from(out[n][0]) - direct).abs());
+    }
+    println!(
+        "{ns:.1} ns/frame, slowest 256-frame block {worst_block:.0} µs, worst error {worst:.2e}"
+    );
 }
