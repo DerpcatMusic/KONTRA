@@ -38,6 +38,8 @@ pub use wavetable::{FormShaper, Side, Warp, WarpShape, Wavetable};
 #[derive(Clone, Debug)]
 pub struct Instrument {
     pub name: String,
+    /// Source file, when this instrument was loaded from a path.
+    pub source_path: Option<std::path::PathBuf>,
     pub samples: Vec<Sample>,
     pub groups: Vec<Group>,
     /// Output buses; group `bus` indexes here. Empty means one main bus.
@@ -77,6 +79,7 @@ impl Instrument {
     /// Nothing yet.
     pub const DEFAULT: Self = Self {
         name: String::new(),
+        source_path: None,
         samples: Vec::new(),
         groups: Vec::new(),
         buses: Vec::new(),
