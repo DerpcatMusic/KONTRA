@@ -63,9 +63,9 @@ pub(crate) fn volume(source: ir::Source) -> ir::Curve {
                 | ir::Source::Script(_)
                 | ir::Source::PitchBend
         ) {
-            1
+            kontra_law::kontakt::CONTROLLER_VOLUME_POWER
         } else {
-            3
+            kontra_law::kontakt::VOICE_VOLUME_POWER
         },
     }
 }

@@ -282,21 +282,10 @@ fn shaped(
     curve: &ShaperCurve,
 ) -> Option<ir::Source> {
     let n = u8::try_from(shapers.len()).ok()?;
-    // V2's measured Kontakt shaper bow: sign is geometric, so a falling
-    // segment reverses the exponential's direction. See KONTAKT_REFERENCE.
     let law = match curve {
         ShaperCurve::Breakpoints(points) if !points.is_empty() => {
-            let points = points
-                .iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    let direction = points
-                        .get(i + 1)
-                        .map_or(1.0, |next| if next.y < p.y { -1.0 } else { 1.0 });
-                    (p.x, p.y, 17.0 * p.curve * direction)
-                })
-                .collect();
-            Some(kontra_law::Law::Breakpoints(points))
+            let points: Vec<_> = points.iter().map(|p| (p.x, p.y, p.curve)).collect();
+            Some(kontra_law::kontakt::modulation_shaper(&points))
         }
         _ => None,
     };
