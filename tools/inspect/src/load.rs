@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use kontra_engine::{Callbacks, Engine};
+use kontra_engine::{Callbacks, Engine, ir::Law};
 use kontra_stream::{Store, StoreConfig};
 use serde_json::{Value, json};
 
@@ -64,6 +64,16 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         "data": s.data.iter().map(|(name, bytes)| json!({"name": name, "bytes": bytes.len()})).collect::<Vec<_>>(),
         "runtime_slot": null, "compile_status": "unknown", "callbacks": null,
     })).collect();
+    let parameter_laws: Vec<_> = instrument
+        .slot_laws
+        .iter()
+        .map(|l| {
+            json!({
+                "rack":format!("{:?}", l.at), "slot":l.slot, "knob":format!("{:?}", l.knob),
+                "field":format!("{:?}", l.field), "law":law(&l.law)
+            })
+        })
+        .collect();
     let effects = json!({"inserts": format!("{:?}", instrument.inserts),
         "sends": format!("{:?}", instrument.sends), "main": format!("{:?}", instrument.main),
         "buses": format!("{:?}", instrument.buses), "slot_laws": format!("{:?}", instrument.slot_laws)});
@@ -95,6 +105,22 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
                 let (entries, count) = callbacks(&script.callbacks);
                 callback_count += count;
                 fields.insert("callbacks".into(), entries);
+                fields.insert(
+                    "knob_laws".into(),
+                    json!(script.knobs.iter().map(|(target, curve)|
+                    json!({"target":format!("{target:?}"), "law":law(curve)})).collect::<Vec<_>>()),
+                );
+                fields.insert(
+                    "reverb_laws".into(),
+                    json!(
+                        script
+                            .reverb_laws
+                            .iter()
+                            .enumerate()
+                            .map(|(index, curve)| json!({"index":index, "law":law(curve)}))
+                            .collect::<Vec<_>>()
+                    ),
+                );
                 fields.insert(
                     "callback_entry_kind".into(),
                     json!(if script.foreign.is_some() {
@@ -226,11 +252,28 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     Ok((
         json!({"schema_version": 1, "command": "load", "instrument": path,
         "engine": "v3", "result": {"name": loaded.name, "samples": samples, "groups": groups,
-        "translated_zones": input_zones, "prepared_zones": zones, "unprepared_reasons": unprepared_reasons, "effects": effects, "scripts": scripts, "ui": ui,
+        "translated_zones": input_zones, "prepared_zones": zones, "unprepared_reasons": unprepared_reasons, "effects": effects, "slot_parameter_laws": parameter_laws, "scripts": scripts, "ui": ui,
         "diagnostics": diagnostics, "init_unanswered": unanswered, "script_faults": faults,
         "laws": null, "compiled_callback_count": callback_count, "script_mapping_available": mapping.is_some(), "unavailable": unavailable}}),
         summary,
     ))
+}
+
+/// The curve as retained in the IR; no translator provenance is inferred.
+fn law(curve: &Law) -> Value {
+    match curve {
+        Law::Linear { lo, hi } => json!({"kind":"linear", "lo":lo, "hi":hi}),
+        Law::Exp { lo, hi } => json!({"kind":"exp", "lo":lo, "hi":hi}),
+        Law::Db { lo, hi } => json!({"kind":"db", "lo":lo, "hi":hi}),
+        Law::Power { lo, hi, exponent } => {
+            json!({"kind":"power", "lo":lo, "hi":hi, "exponent":exponent})
+        }
+        Law::Table(values) => json!({"kind":"table", "values":values.iter().collect::<Vec<_>>() }),
+        Law::Breakpoints(points) => {
+            json!({"kind":"breakpoints", "points":points.iter().map(|(x,y,curve)| json!({"x":x, "y":y, "curve":curve})).collect::<Vec<_>>() })
+        }
+        Law::Formula(id) => match *id {},
+    }
 }
 
 /// Original-to-runtime mapping from the host's preserved original script IDs.
@@ -293,6 +336,26 @@ fn absent_reason(sample: usize, sample_count: usize, resident: &HashSet<usize>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn law_shapes_preserve_parameters_and_points() {
+        assert_eq!(
+            law(&Law::Power {
+                lo: 1.0,
+                hi: 4.0,
+                exponent: 0.5
+            }),
+            json!({"kind":"power", "lo":1.0, "hi":4.0, "exponent":0.5})
+        );
+        assert_eq!(
+            law(&Law::Table(vec![0.0, 2.0].into())),
+            json!({"kind":"table", "values":[0.0, 2.0]})
+        );
+        assert_eq!(
+            law(&Law::Breakpoints(vec![(0.0, 1.0, 0.25)].into())),
+            json!({"kind":"breakpoints", "points":[{"x":0.0,"y":1.0,"curve":0.25}]})
+        );
+    }
 
     #[test]
     fn script_mapping_preserves_gaps_and_rejects_inconsistent_host_data() {

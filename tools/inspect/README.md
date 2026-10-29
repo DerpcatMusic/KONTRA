@@ -23,7 +23,10 @@ callback entries. Entries are bytecode offsets or foreign dispatcher IDs; the
 foreign widget dispatcher is generic and does not prove a script defines every
 widget callback. A null entry means no compiled entry, while zero is a valid
 offset. If host slot data is inconsistent, the mapping and callback inventory
-are reported unavailable. Slot laws and route curves already in the IR are shown.
+are reported unavailable. Slot parameter laws and compiled script knob and reverb laws are structured
+curve data from the IR/plan; the debug slot-law text and route curves are also
+shown. These are available law definitions, not a claim that every translator
+application or law ID was recorded.
 
 `kontra-inspect` does not run the existing v2 `kontra-probe` contracts.
 
