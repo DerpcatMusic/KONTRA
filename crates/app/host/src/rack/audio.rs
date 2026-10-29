@@ -379,6 +379,23 @@ impl RackAudio {
                         p.engine.set_control(slot, id, value);
                     }
                 }
+                Command::ControlText {
+                    part,
+                    slot,
+                    id,
+                    cell,
+                    text,
+                } => {
+                    if let Some(Some(p)) = self.parts.get_mut(part) {
+                        if let Some(vm) = p.engine.vm_mut(slot) {
+                            vm.set_text(cell as usize, *text);
+                        }
+                        p.engine.set_click(slot, id, [false; 3], 0);
+                        p.engine.set_control(slot, id, 0);
+                    }
+                    // Freed on the control side; a full ring frees it here.
+                    let _ = self.channels.typed.send(text);
+                }
                 Command::Widget {
                     part,
                     slot,

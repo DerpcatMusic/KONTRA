@@ -6,7 +6,7 @@
 //! switch flips at the edge its source asks; a table sets the cells the
 //! pointer crosses; a menu floats its items. What the user asked comes back
 //! as [`Edit`]s for the host to write into the engine; the caller shows them
-//! at once with [`apply`].
+//! at once with [`apply`]. A text edit takes typed text the same way.
 
 use kontra_ui_model::{self as model, Interface, Kind, Orientation, PageRef, Sweep, WidgetRef};
 use mui::prelude::*;
@@ -16,22 +16,26 @@ use crate::theme::TEXT;
 
 /// One control set to a value by the user, and the modifier keys held at
 /// the click (a script reads them as `$CONTROL_PAR_KEY_*`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Edit {
     pub widget: WidgetRef,
     /// The zero-based cell of a table; `None` for any other control.
     pub cell: Option<u32>,
     pub value: f64,
     pub keys: model::UiModifiers,
+    /// The text typed into a text edit; `None` for any other control.
+    pub text: Option<String>,
 }
 
 /// A page's gesture in flight: the control pressed and its value then, the
-/// menu floated open, and the number being typed into a value edit.
+/// menu floated open, and what is being typed into a value or text edit.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Gesture {
     press: Option<(usize, f64)>,
     pub menu: Option<usize>,
-    entry: Option<(usize, String)>,
+    /// The control typed into, the text so far, and whether it has been
+    /// selected whole (once the field is on screen).
+    entry: Option<(usize, String, bool)>,
 }
 
 /// The id of widget `n`'s surface on face `face` (a rack part): every
@@ -52,6 +56,7 @@ pub(crate) fn takes_input(w: &model::Widget) -> bool {
                 | Kind::Switch
                 | Kind::Menu { .. }
                 | Kind::Table { .. }
+                | Kind::TextEdit
         )
 }
 
@@ -167,6 +172,7 @@ pub fn read(
             cell,
             value,
             keys,
+            text: None,
         };
         if matches!(w.kind, Kind::Table { .. }) {
             if r.held {
@@ -222,8 +228,7 @@ pub fn read(
                     Kind::ValueEdit { display, .. } if display.ratio != 0. => now / display.ratio,
                     _ => now,
                 };
-                g.entry = Some((n.0, shown.to_string()));
-                ui.focus(format!("{id}-entry"));
+                type_into(ui, g, n.0, &id, shown.to_string());
             }
             if r.released && g.press.is_some_and(|(p, _)| p == n.0) {
                 g.press = None;
@@ -254,6 +259,9 @@ pub fn read(
             }
             Kind::Menu { .. } if r.clicked || r.key_activated => {
                 g.menu = (g.menu != Some(n.0)).then_some(n.0);
+            }
+            Kind::TextEdit if (r.clicked || r.key_activated) && g.entry.is_none() => {
+                type_into(ui, g, n.0, &id, w.text.clone());
             }
             _ => {}
         }
@@ -350,14 +358,22 @@ fn menu(
             cell: None,
             value: f64::from(item.value),
             keys: model::UiModifiers::default(),
+            text: None,
         });
         g.menu = None;
     }
     Some(menu.el)
 }
 
-/// The number being typed into a value edit, in its shown units: Enter
-/// sets it, Escape or a click elsewhere drops it.
+/// Opens typed entry on control `n` (surface `id`), starting from `text`
+/// selected whole, so what the user types replaces it.
+fn type_into(ui: &mut Ui, g: &mut Gesture, n: usize, id: &str, text: String) {
+    ui.focus(format!("{id}-entry"));
+    g.entry = Some((n, text, false));
+}
+
+/// What is being typed into a value edit (a number in its shown units) or
+/// a text edit: Enter sets it, Escape or a click elsewhere drops it.
 fn entry(
     ui: &mut Ui,
     face: usize,
@@ -365,11 +381,8 @@ fn entry(
     g: &mut Gesture,
     edits: &mut Vec<Edit>,
 ) -> Option<El> {
-    let (m, mut text) = g.entry.take()?;
+    let (m, mut text, mut selected) = g.entry.take()?;
     let w = tree.widgets.get(m)?;
-    let Kind::ValueEdit { range, display, .. } = &w.kind else {
-        return None;
-    };
     let id = surface(face, m);
     let field = format!("{id}-entry");
     if ui.dismissed(&[&id, &format!("{id}-popup")])
@@ -377,32 +390,48 @@ fn entry(
     {
         return None;
     }
-    let typed = text_edit(ui, field.as_str(), &mut text, TextOpts::default());
-    if typed.changed.submitted {
-        let ratio = if display.ratio == 0. {
-            1.
-        } else {
-            display.ratio
-        };
-        if let Ok(v) = text.trim().parse::<f64>() {
-            edits.push(Edit {
-                widget: WidgetRef(m),
-                cell: None,
-                value: snap(*range, v * ratio),
-                keys: model::UiModifiers::default(),
-            });
-        }
-        ui.blur();
-        return None;
+    if !selected {
+        let all = SemanticAction::set_selection(field.as_str(), 0, text.chars().count());
+        selected = ui.request_action(all);
     }
-    g.entry = Some((m, text));
-    Some(kit::popup(&id, typed.el.w(TEXT * 6.)))
+    let typed = text_edit(ui, field.as_str(), &mut text, TextOpts::default());
+    if !typed.changed.submitted {
+        g.entry = Some((m, text, selected));
+        // In a row: the popup names its content, and the field keeps its own id.
+        return Some(kit::popup(&id, row![typed.el.w(TEXT * 6.)]));
+    }
+    ui.blur();
+    let set = |value, text| Edit {
+        widget: WidgetRef(m),
+        cell: None,
+        value,
+        keys: model::UiModifiers::default(),
+        text,
+    };
+    match &w.kind {
+        Kind::ValueEdit { range, display, .. } => {
+            let ratio = if display.ratio == 0. {
+                1.
+            } else {
+                display.ratio
+            };
+            let typed = text.trim().parse::<f64>().ok();
+            edits.extend(typed.map(|v| set(snap(*range, v * ratio), None)));
+        }
+        Kind::TextEdit => edits.push(set(0., Some(text))),
+        _ => {}
+    }
+    None
 }
 
 /// Shows `edits` in `tree` at once, before the host's next refresh.
 pub fn apply(tree: &mut Interface, edits: &[Edit]) {
     for e in edits {
         if let Some(w) = tree.widgets.get_mut(e.widget.0) {
+            if let Some(text) = &e.text {
+                w.text.clone_from(text);
+                continue;
+            }
             if let Some(k) = e.cell {
                 match &mut w.value {
                     Some(model::Value::Integers(v)) => {

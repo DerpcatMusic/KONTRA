@@ -348,6 +348,12 @@ pub enum Action {
         value: f64,
         keys: kontra_ui_model::UiModifiers,
     },
+    /// Text the user typed into a library's text edit.
+    ControlText {
+        part: usize,
+        widget: usize,
+        text: String,
+    },
     /// A value of a part's sound, for one group or all of them.
     Sound {
         part: usize,

@@ -1,14 +1,17 @@
 //! A library's own controls played with the pointer, headless: a knob drags
 //! and resets, the wheel turns it, a switch flips, a menu floats its items
 //! and a pick sets the value, a value edit drags its translator's sweep and
-//! reports its release, a table sets the cells a drag crosses.
+//! reports its release, a table sets the cells a drag crosses, a text edit
+//! takes typed text.
 
 use kontra_ui::input::{self, Edit, Gesture};
 use kontra_ui::{Pictures, view};
 use kontra_ui_model::{
     self as model, Interface, Kind, MenuItem, Page, PageRef, Range, Rect, Size, Widget, WidgetRef,
 };
-use mui::prelude::{Buttons, Input, Mods, Point, PointerInput, Size as ViewSize, Ui, Vec2};
+use mui::prelude::{
+    Buttons, Input, Key, KeyPress, Mods, Point, PointerInput, Size as ViewSize, Ui, Vec2,
+};
 
 struct Face {
     ui: Ui,
@@ -93,7 +96,13 @@ impl Face {
             },
         );
         table.value = Some(model::Value::Integers(vec![0; 4]));
-        tree.widgets.extend([knob, switch, menu, edit, table]);
+        let text = Widget::new(
+            "@name",
+            PageRef(0),
+            Rect::new(120, 100, 80, 18),
+            Kind::TextEdit,
+        );
+        tree.widgets.extend([knob, switch, menu, edit, table, text]);
         Self {
             ui: kontra_ui::ui(),
             tree,
@@ -207,6 +216,7 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
             ctrl: true,
             ..Default::default()
         },
+        text: None,
     }));
     // The wheel down turns it down.
     f.frame(Input {
@@ -241,6 +251,21 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     // A click that moves nothing still reports its release.
     let still = f.click(&edit, Mods::default());
     assert_eq!(still.iter().map(|e| e.value).collect::<Vec<_>>(), [5.]);
+    // That was a double click: what is typed replaces the number, Enter sets it.
+    let key = |key| Input {
+        keys: vec![KeyPress {
+            key,
+            mods: Mods::default(),
+        }],
+        ..Default::default()
+    };
+    f.frame(Input {
+        text: "42".into(),
+        ..Default::default()
+    });
+    f.frame(key(Key::Enter));
+    f.frame(Input::default());
+    assert_eq!(f.value(3), 42.);
     // A drag across the table at mid height sets every cell it crosses.
     let table = input::surface(0, 4);
     let mid = f.at(&table);
@@ -256,6 +281,17 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
         f.tree.widgets[4].value,
         Some(model::Value::Integers(vec![50; 4]))
     );
+    // A click on a text edit floats a field; Enter sends what was typed.
+    f.click(&input::surface(0, 5), Mods::default());
+    f.frame(Input {
+        text: "Hi".into(),
+        ..Default::default()
+    });
+    let mut typed = f.frame(key(Key::Enter));
+    typed.extend(f.frame(Input::default()));
+    assert_eq!(typed.len(), 1);
+    assert_eq!(typed[0].text.as_deref(), Some("Hi"));
+    assert_eq!(f.tree.widgets[5].text, "Hi");
     // Then it rests: no frame while nothing moves.
     for _ in 0..30 {
         f.frame(Input::default());

@@ -2756,6 +2756,31 @@ fn a_new_ranged_control_starts_at_its_minimum() {
     assert_eq!(e.last_message(), "2;-9;5;3;50");
 }
 
+/// Text typed into a text edit lands in its variable before its callback
+/// runs, as `Rack::control_text` sends it.
+#[test]
+fn a_text_edit_callback_reads_the_typed_text() {
+    let source = "on init
+            declare ui_text_edit @name
+            message(get_ui_id(@name))
+        end on
+        on ui_control(@name)
+            message(@name)
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let cell = kontra_host::ui::Face::of(&script, &[]).text_cell("@name").unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[]);
+    let id: i32 = e.last_message().parse().unwrap();
+    let typed = kontra_engine::Text::from_str_cut("Hi").0;
+    e.vm_mut(0).unwrap().set_text(cell as usize, typed);
+    e.set_control(0, id, 0);
+    assert_eq!(e.last_message(), "Hi");
+}
+
 /// A click on a table's cell writes that cell, and its callback reads which
 /// one as `$NI_CONTROL_PAR_IDX` (KSP manual, ui_table).
 #[test]

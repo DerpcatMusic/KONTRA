@@ -77,6 +77,7 @@ pub(super) fn view(
                 cell: None,
                 value: v,
                 keys: kontra_ui_model::UiModifiers::default(),
+                text: None,
             });
         }
         cards.push(

@@ -98,6 +98,15 @@ pub enum Command {
         value: i64,
         keys: UiModifiers,
     },
+    /// The user typed `text` into text edit `id` of `part`'s script `slot`,
+    /// whose variable's text lives in `cell`.
+    ControlText {
+        part: usize,
+        slot: u8,
+        id: i32,
+        cell: u32,
+        text: Box<kontra_engine::Text>,
+    },
     /// The user moved widget `n` of script `slot`'s own page to `value`.
     Widget {
         part: usize,
@@ -123,6 +132,8 @@ pub struct Channels {
     pub requests: Ring<(usize, u64, EffectRequest)>,
     /// Effect units swapped out, to free on the control side.
     pub units: Ring<Box<Option<Prepared>>>,
+    /// Typed texts the audio side wrote ([`Command::ControlText`]), to free here.
+    pub typed: Ring<Box<kontra_engine::Text>>,
     /// Interface reads filled on the audio side ([`Command::Look`]).
     pub looks: Ring<Box<crate::view::LookFrame>>,
     pub meters: MeterCells,
@@ -223,6 +234,7 @@ impl Rack {
             requests: Ring::new(16 * MAX_PARTS),
             units: Ring::new(16 * MAX_PARTS),
             looks: Ring::new(2 * MAX_PARTS),
+            typed: Ring::new(16),
             meters: MeterCells::default(),
             stats: StatCells::default(),
         });
@@ -470,6 +482,33 @@ impl Rack {
         }
     }
 
+    /// The user typed `text` into text edit `widget` of `part`'s interface:
+    /// its variable reads it, then its callbacks run.
+    pub fn control_text(&mut self, part: usize, widget: usize, text: &str) {
+        let Some(Some(p)) = self.parts.get(part) else {
+            return;
+        };
+        let Some(view) = p.view.as_ref() else {
+            return;
+        };
+        let Some((slot, id, _)) = view.control(widget, 0.) else {
+            return;
+        };
+        let name = view.tree().widgets.get(widget).map(|w| w.name.as_str());
+        let face = p.faces.get(usize::from(slot)).and_then(Option::as_ref);
+        let Some(cell) = face.zip(name).and_then(|(f, name)| f.text_cell(name)) else {
+            return;
+        };
+        let text = Box::new(kontra_engine::Text::from_str_cut(text).0);
+        self.send(Command::ControlText {
+            part,
+            slot,
+            id,
+            cell,
+            text,
+        });
+    }
+
     /// The user set `param` of `part`'s group `group` (every group when
     /// `None`) to `value`, in the Sound tab's units: the next notes play it.
     pub fn set_sound(
@@ -544,6 +583,7 @@ impl Rack {
     pub fn tick(&mut self) {
         while self.channels.retired.recv().is_some() {}
         while self.channels.units.recv().is_some() {}
+        while self.channels.typed.recv().is_some() {}
         // Effect types scripts loaded: built here, off the audio thread.
         while let Some((part, generation, request)) = self.channels.requests.recv() {
             let Some(Some(p)) = self.parts.get_mut(part) else {
