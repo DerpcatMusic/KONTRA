@@ -118,6 +118,8 @@ pub struct SavedView {
     pub descending: bool,
     /// The browser's library list's share of its height; 0 is the default.
     pub split: f32,
+    /// How a library's view is drawn: Original, Vector, KONTRA.
+    pub look: u8,
     pub parts: Vec<SavedPartView>,
 }
 
@@ -127,6 +129,9 @@ pub struct SavedPartView {
     pub part: usize,
     pub open: bool,
     pub tab: u8,
+    /// Its own look, 1 + the view's index; 0 follows the view's.
+    #[serde(default)]
+    pub look: u8,
 }
 
 impl SavedView {

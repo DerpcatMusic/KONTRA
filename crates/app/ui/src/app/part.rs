@@ -4,7 +4,7 @@
 use kontra_ui_model::PageRef;
 use mui::prelude::*;
 
-use super::{Action, FACE_SCALES, Part, PartTab, View};
+use super::{Action, FACE_SCALES, FaceLook, Part, PartTab, View};
 use crate::keyboard::note_name;
 use crate::kit::{self, Icon, glyph, icon_button, interactive, latch, section};
 use crate::theme::{CONTROL, SPACE, TEXT, TIGHT, part_color, secondary};
@@ -32,24 +32,36 @@ pub(super) fn view(
                 room,
                 wide,
             );
-            let (edits, popup) =
-                input::read(ui, n, &face.tree, PageRef(0), scale, &mut face.gesture);
+            let look = p.look.unwrap_or(v.face_look);
+            let (edits, el) = if look == FaceLook::Kontra {
+                super::controls::view(ui, n, &face.tree, PageRef(0), &mut v.menu)
+            } else {
+                let (edits, popup) =
+                    input::read(ui, n, &face.tree, PageRef(0), scale, &mut face.gesture);
+                let at = (scale, p.level);
+                let draw = if look == FaceLook::Vector {
+                    view::vector_page
+                } else {
+                    view::page
+                };
+                let (page, _) = draw(ui, n, &face.tree, PageRef(0), &mut face.pictures, at);
+                let page = match popup {
+                    Some(menu) => stack![page, menu],
+                    None => page,
+                };
+                // Wider than the rack at a fixed scale, it scrolls sideways.
+                let el = row![spacer(), page.shrink(0), spacer()]
+                    .w(Len::Pct(100.))
+                    .scroll();
+                (edits, el)
+            };
             input::apply(&mut face.tree, &edits);
             out.extend(edits.iter().map(|e| Action::Control {
                 part: n,
                 widget: e.widget.0,
                 value: e.value,
             }));
-            let at = (scale, p.level);
-            let (page, _) = view::page(ui, n, &face.tree, PageRef(0), &mut face.pictures, at);
-            let page = match popup {
-                Some(menu) => stack![page, menu],
-                None => page,
-            };
-            // Wider than the rack at a fixed scale, it scrolls sideways.
-            row![spacer(), page.shrink(0), spacer()]
-                .w(Len::Pct(100.))
-                .scroll()
+            el
         }
         (PartTab::Articulations, _) => articulations(ui, p, n, v, out),
         (PartTab::Info | PartTab::Interface, _) => info(p),
