@@ -165,10 +165,12 @@ impl RackAudio {
             }
             if let Some((play, quarters, signature)) = self.transport {
                 // A held part plays its notes late, so it hears the song
-                // where they land: tempo-synced scripts stay on the grid.
+                // where they land, and its start and stop as late: tempo-
+                // synced scripts stay on the grid.
                 let late = self.tempo.map_or(0.0, |bpm| {
                     f64::from(p.held.hold.max()) / self.rate * f64::from(bpm) / 60.0
                 });
+                let play = p.held.heard(play, now.0, frames as u64);
                 p.engine.set_transport(play, quarters - late, signature);
             }
             let Some(scratch) = self.scratch.get_mut(..frames) else {

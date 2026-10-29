@@ -1,5 +1,7 @@
 //! Auto-align on the audio side: each note held by its own frames.
 
+use kontra_engine::Play;
+
 use super::{Event, HostPattern};
 
 /// The most velocity ranges a [`Hold`] tells apart.
@@ -52,7 +54,17 @@ pub(super) struct Held {
     down: [u128; 16],
     /// The latest due time of a note event while `mono`.
     last: u64,
+    /// Whether the host's transport runs, as the part hears it, and the
+    /// changes it has yet to hear, oldest first, each due its hold after
+    /// the host's.
+    play: Play,
+    next: [(Play, u64); CHANGES],
+    pending: usize,
 }
+
+/// The most transport changes a part waits to hear at once; past it the
+/// latest replaces the last.
+const CHANGES: usize = 8;
 
 impl Held {
     pub fn new(hold: Hold) -> Self {
@@ -61,7 +73,36 @@ impl Held {
             keys: [[0; 128]; 16],
             down: [0; 16],
             last: 0,
+            play: Play::Stopped,
+            next: [(Play::Stopped, 0); CHANGES],
+            pending: 0,
         }
+    }
+
+    /// Whether the transport runs for the block of `frames` at sample `now`,
+    /// the host's `host`: a start or stop is heard a hold later, in the
+    /// block it comes due in, so a note held as long still hears it first.
+    pub fn heard(&mut self, host: Play, now: u64, frames: u64) -> Play {
+        let waiting = self.next.get(..self.pending).unwrap_or_default();
+        if host != waiting.last().map_or(self.play, |n| n.0) {
+            let change = (host, now + u64::from(self.hold.max()));
+            match self.next.get_mut(self.pending) {
+                Some(slot) => {
+                    *slot = change;
+                    self.pending += 1;
+                }
+                None => self.next.last_mut().into_iter().for_each(|l| *l = change),
+            }
+        }
+        let end = now + frames.max(1);
+        while let Some(&(play, at)) = self.next.get(..self.pending).and_then(<[_]>::first)
+            && at < end
+        {
+            self.play = play;
+            self.next.copy_within(1.., 0);
+            self.pending -= 1;
+        }
+        self.play
     }
 
     /// Every note let go: nothing is down.
