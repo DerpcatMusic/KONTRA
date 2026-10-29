@@ -321,6 +321,16 @@ pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Optio
     Some(f)
 }
 
+/// The shapes (id, pass, stages) filter `kind` may switch to with its knob
+/// laws unchanged: the AR family (100..=108, `$FILTER_TYPE_AR_*`,
+/// docs/re/kontakt-bindings/filter-type-ids.tsv) shares one cutoff and
+/// resonance law (filt-ar-daft.md); other kinds switch to nothing here.
+pub(crate) fn filter_shapes(kind: i32) -> impl Iterator<Item = (i32, ir::Pass, u8)> {
+    const AR: std::ops::RangeInclusive<i32> = 100..=108;
+    AR.filter(move |_| AR.contains(&kind))
+        .filter_map(|id| filter_at(id, 0.5, 0.5, 0.0).map(|f| (id, f.pass, f.stages)))
+}
+
 fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Filter> {
     use ir::Pass::{Band, High, Low, Notch};
     let (pass, stages) = match kind {

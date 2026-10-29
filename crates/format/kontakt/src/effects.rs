@@ -95,7 +95,7 @@ fn rack(
     at: &str,
     impulses: &mut Impulses,
     notes: &mut Notes,
-    mut laws: Option<(ir::RackAt, &mut Vec<ir::SlotLaw>)>,
+    mut laws: Option<(ir::RackAt, &mut Slots)>,
 ) -> Vec<Option<ir::Effect>> {
     let mut out: Vec<Option<ir::Effect>> = array
         .items
@@ -112,13 +112,25 @@ fn rack(
                 &mut knobs,
             );
             if let (Some((rack_at, laws)), Ok(slot)) = (laws.as_mut(), u8::try_from(slot)) {
-                laws.extend(knobs.into_iter().map(|(knob, field, law)| ir::SlotLaw {
-                    at: *rack_at,
-                    slot,
-                    knob,
-                    field,
-                    law,
-                }));
+                laws.laws
+                    .extend(knobs.into_iter().map(|(knob, field, law)| ir::SlotLaw {
+                        at: *rack_at,
+                        slot,
+                        knob,
+                        field,
+                        law,
+                    }));
+                if let Some((_, 0x18, kind)) = &effect {
+                    let shapes = crate::laws::filter_shapes(*kind);
+                    laws.shapes
+                        .extend(shapes.map(|(id, pass, stages)| ir::SlotShape {
+                            at: *rack_at,
+                            slot,
+                            id,
+                            pass,
+                            stages,
+                        }));
+                }
             }
             if effect.is_none() {
                 notes.add(
@@ -482,7 +494,7 @@ pub(crate) fn group(
     index: usize,
     impulses: &mut Impulses,
     notes: &mut Notes,
-    laws: &mut Vec<ir::SlotLaw>,
+    laws: &mut Slots,
 ) -> Vec<Option<ir::Effect>> {
     let rack_at = u32::try_from(index)
         .ok()
@@ -513,8 +525,15 @@ pub(crate) struct Racks {
     pub sends: Vec<Option<ir::Effect>>,
     pub main: Vec<Option<ir::Effect>>,
     pub buses: Vec<ir::Bus>,
-    /// The slot laws of these racks.
+    /// The slot laws and shapes of these racks.
+    pub laws: Slots,
+}
+
+/// What a script may change in the racks' slots: knob laws and filter shapes.
+#[derive(Default)]
+pub(crate) struct Slots {
     pub laws: Vec<ir::SlotLaw>,
+    pub shapes: Vec<ir::SlotShape>,
 }
 
 pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut Notes) -> Racks {
@@ -522,7 +541,7 @@ pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut No
     let mut racks = 0;
     let mut instrument = [Vec::new(), Vec::new(), Vec::new()];
     let mut buses: Vec<ir::Bus> = Vec::new();
-    let mut laws = Vec::new();
+    let mut laws = Slots::default();
     for child in &program.0.children {
         let (at, array) = match child.id {
             RACK => {
