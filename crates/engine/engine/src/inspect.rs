@@ -24,6 +24,18 @@ impl Engine {
         self.groups.iter().flat_map(|g| &g.mods)
     }
 
+    /// Current group levels and bus gain, pan and enabled state.
+    #[cfg(feature = "trace")]
+    pub fn inspect_levels(&self) -> (Vec<crate::Level>, Vec<(f32, f32, bool)>) {
+        (
+            self.groups.iter().map(|g| g.level).collect(),
+            self.buses
+                .iter()
+                .map(|b| (b.gain, b.pan, b.enabled))
+                .collect(),
+        )
+    }
+
     /// Groups whose filter runs per voice, and each sounding voice's cutoff.
     pub fn voice_filters(&self) -> (usize, Vec<f32>) {
         self.voice_cutoffs()
