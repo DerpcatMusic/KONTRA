@@ -163,17 +163,13 @@ impl Voice {
     }
 
     /// Ramps the voice's fade gain to `level` (0 silent, 1 full) over
-    /// `frames`, and leaves it playing there.
+    /// `frames`, and leaves it playing there; a voice yet to sound fades up
+    /// from silence.
     pub fn fade_to(&mut self, level: f32, frames: u32) {
-        self.fade.start(level, frames, false);
-    }
-
-    /// Fades in over `frames`: from silence on a voice yet to sound.
-    pub fn fade_in(&mut self, frames: u32) {
-        if self.elapsed == 0 {
+        if self.elapsed == 0 && level > 0.0 {
             self.fade = Fade::SILENT;
         }
-        self.fade_to(1.0, frames);
+        self.fade.start(level, frames, false);
     }
 
     /// Stops at once, without a release.
