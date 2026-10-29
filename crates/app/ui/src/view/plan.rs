@@ -9,6 +9,7 @@ use super::{caption, drawn, frame, image_asset, knob_name, position, readout, st
 /// One page, including the source page's background and its visible controls.
 pub(super) struct Page<'a> {
     pub source: &'a model::Page,
+    pub size: model::Size,
     pub widgets: Vec<Widget<'a>>,
 }
 
@@ -21,7 +22,7 @@ pub(super) struct Picture<'a> {
     pub size: model::Size,
 }
 
-/// One visible widget in page coordinates, in back-to-front order.
+/// One visible widget in scaled view coordinates, in back-to-front order.
 pub(super) struct Widget<'a> {
     pub index: WidgetRef,
     pub source: &'a model::Widget,
@@ -36,7 +37,7 @@ pub(super) struct Widget<'a> {
 
 /// Project `page` from `tree` using its resolved geometry. `bare` selects
 /// the Vector presentation; the same bounds, stacking and visibility apply.
-pub(super) fn page(tree: &Interface, page: PageRef, bare: bool) -> Option<Page<'_>> {
+pub(super) fn page(tree: &Interface, page: PageRef, bare: bool, scale: f64) -> Option<Page<'_>> {
     let source = tree.pages.get(page.0)?;
     let on_page = |r: model::Rect| {
         r.width > 0.
@@ -50,9 +51,9 @@ pub(super) fn page(tree: &Interface, page: PageRef, bare: bool) -> Option<Page<'
         .draw_order(page)
         .into_iter()
         .filter_map(|index| {
-            let rect = tree.page_rect(index);
+            let raw = tree.page_rect(index);
             let w = tree.widgets.get(index.0)?;
-            if !tree.visible(index) || !on_page(rect) {
+            if !tree.visible(index) || !on_page(raw) {
                 return None;
             }
             let picture = w.images.first().filter(|_| !bare).and_then(|use_| {
@@ -62,7 +63,13 @@ pub(super) fn page(tree: &Interface, page: PageRef, bare: bool) -> Option<Page<'
                     path,
                     meta,
                     frame: frame(w, use_, meta.frames as usize),
-                    size: drawn(rect, meta),
+                    size: {
+                        let size = drawn(raw, meta);
+                        model::Size {
+                            width: size.width * scale,
+                            height: size.height * scale,
+                        }
+                    },
                 })
             });
             let style = w.style.and_then(|s| tree.styles.get(s.0));
@@ -84,7 +91,12 @@ pub(super) fn page(tree: &Interface, page: PageRef, bare: bool) -> Option<Page<'
             Some(Widget {
                 index,
                 source: w,
-                rect,
+                rect: model::Rect {
+                    x: raw.x * scale,
+                    y: raw.y * scale,
+                    width: raw.width * scale,
+                    height: raw.height * scale,
+                },
                 picture,
                 style,
                 position,
@@ -94,7 +106,14 @@ pub(super) fn page(tree: &Interface, page: PageRef, bare: bool) -> Option<Page<'
             })
         })
         .collect();
-    Some(Page { source, widgets })
+    Some(Page {
+        source,
+        size: model::Size {
+            width: source.size.width * scale,
+            height: source.size.height * scale,
+        },
+        widgets,
+    })
 }
 
 /// Geometry and ink of a label, in view points. Explicit line breaks keep

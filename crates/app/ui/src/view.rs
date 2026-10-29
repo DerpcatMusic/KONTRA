@@ -60,12 +60,12 @@ fn drawn_page(
     (scale, level): (f64, f64),
     bare: bool,
 ) -> (El, usize) {
-    let Some(plan) = plan::page(tree, page, bare) else {
+    let Some(plan) = plan::page(tree, page, bare, scale) else {
         return (block(0., 0.), 0);
     };
     let p = plan.source;
     let mut built = 0;
-    let (w, h) = (p.size.width * scale, p.size.height * scale);
+    let (w, h) = (plan.size.width, plan.size.height);
     // Pictures decode at the pixels they cover on the device.
     let device = scale * ui.scale().unwrap_or(1.);
     let mut layers = vec![
@@ -172,11 +172,10 @@ fn drawn_page(
         );
         let el = ui.memo(format!("kontra-ui-{face}-{}", n.0), deps, |_| {
             built += 1;
-            let (w, h) = (r.width * scale, r.height * scale);
+            let (w, h) = (r.width, r.height);
             let mut parts = Vec::new();
             if let (Some((img, meta)), Some(a)) = (&picture, art) {
-                parts
-                    .push(sliced(img, meta, (a.width * scale, a.height * scale), scale).at(0., 0.));
+                parts.push(sliced(img, meta, (a.width, a.height), scale).at(0., 0.));
             } else if stock {
                 parts.push(
                     stock::face(
@@ -219,7 +218,7 @@ fn drawn_page(
         } else {
             el
         };
-        layers.push(el.at(r.x * scale, r.y * scale));
+        layers.push(el.at(r.x, r.y));
     }
     (stack(layers).w(w).h(h).radius(0.).clip(), built)
 }
