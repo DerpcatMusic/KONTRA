@@ -567,14 +567,20 @@ impl Engine {
                 continue;
             }
             let channel = n.host.channel;
-            if self.release_callbacks(note) {
+            if let Some(slot) = self.release_callbacks(note) {
                 if let Some(n) = self.notes.get_mut(note) {
                     n.key_up = true;
                 }
                 // The key is up whatever the script does with its event:
                 // a `play_note(.., -1)` child still ends (KSP manual,
                 // play_note), through its own release callbacks.
-                self.end_children(note);
+                let plan = &self.plan.scripts;
+                if plan
+                    .get(usize::from(slot))
+                    .is_some_and(|s| s.held_release_ends_children)
+                {
+                    self.end_children(note);
+                }
                 continue;
             }
             if self
