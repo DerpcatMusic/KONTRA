@@ -40,6 +40,9 @@ const HEADROOM: usize = 8 << 20;
 /// Interrupt checkpoints (calls and loop back-edges) one run may take before
 /// it is stopped: a runaway loop must not hold the audio thread.
 const CHECKPOINTS: u32 = 10_000_000;
+/// Loading and restoring widgets runs off the audio thread and can traverse
+/// large instrument trees; it is bounded independently of callbacks.
+const LOAD_CHECKPOINTS: u32 = 100_000_000;
 /// Callbacks that may run or wait at once.
 const COROUTINES: usize = 64;
 
@@ -248,8 +251,12 @@ fn state(
     // before each run, so a runaway loop stops the run, not the host.
     let checkpoints = Arc::new(AtomicU32::new(0));
     let count = Arc::clone(&checkpoints);
+    let limit = Arc::new(AtomicU32::new(LOAD_CHECKPOINTS));
+    let current_limit = Arc::clone(&limit);
     lua.set_interrupt(move |_| {
-        if count.fetch_add(interrupt::STRIDE, Ordering::Relaxed) > CHECKPOINTS {
+        if count.fetch_add(interrupt::STRIDE, Ordering::Relaxed)
+            > current_limit.load(Ordering::Relaxed)
+        {
             return Err(mlua::Error::runtime("script ran too long"));
         }
         Ok(mlua::VmState::Continue)
@@ -295,6 +302,7 @@ fn state(
     lua.load(PRELUDE).set_name("prelude").exec()?;
     lua.load(source).set_name("script").exec()?;
     globals.get::<Function>("__restore")?.call::<()>(())?;
+    limit.store(CHECKPOINTS, Ordering::Relaxed);
     Ok((lua, checkpoints))
 }
 
@@ -639,6 +647,21 @@ mod tests {
         let actions: Vec<Action> = log.0.iter().map(|c| c.0).collect();
         assert!(actions.contains(&Action::IgnoreEvent), "{actions:?}");
         assert_eq!(log.0.last().map(|c| c.1.clone()), Some(vec![14, 100, 0, 0]));
+    }
+
+    #[test]
+    fn loading_has_a_larger_budget_than_callbacks() {
+        let source =
+            "for i = 1, 12000000 do end\nfunction onNote(e) for i = 1, 12000000 do end end";
+        let compiled = compile(source, &[], &[]).expect("finite load fits the load budget");
+        let mut machine = compiled.machine();
+        let co = machine.start(Callbacks::NOTE, 0).expect("start");
+        let mut host = Log(Vec::new());
+        let _ = machine.run(co, &mut host);
+        assert!(
+            machine.faults().bad_code > 0,
+            "callback must retain its smaller limit"
+        );
     }
 
     #[test]
