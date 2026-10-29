@@ -279,3 +279,53 @@ fn a_level_meter_lights_with_the_peak_and_idles_when_it_holds() {
     let (_, louder) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 1.));
     assert_eq!(louder, 1);
 }
+
+/// A script value edit with no picture draws Kontakt's dark stock field
+/// (Pacific's light font-13 words read on it); hiding its background
+/// leaves the page showing through.
+#[test]
+fn an_unpictured_script_control_draws_its_stock_field() {
+    let mut tree = Interface {
+        source: model::Source::Ksp { slot: 0 },
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 20.,
+            height: 10.,
+        },
+        background: model::Background {
+            color: Some(Rgba::rgb(0xeeeee4)),
+            ..model::Background::default()
+        },
+        ..Page::default()
+    });
+    let mut edit = Widget::new(
+        "$edit",
+        PageRef(0),
+        Rect::new(0, 0, 20, 10),
+        Kind::ValueEdit {
+            range: Range::default(),
+            display: model::Display::default(),
+            arrows: false,
+        },
+    );
+    edit.text = "Transpose".into();
+    edit.value = Some(model::Value::Integer(0));
+    tree.widgets.push(edit);
+    assert_eq!(caption(&tree.widgets[0], tree.source), "Transpose 0");
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(|_| None));
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 0.));
+    let px = paint(&mut ui, el, 20, 10);
+    let dark = px.get(20 + 2).is_some_and(|p| p[0] < 80);
+    assert!(dark, "a stock field under the words");
+    if let Some(w) = tree.widgets.first_mut() {
+        w.hide.background = true;
+    }
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 0.));
+    assert_eq!(
+        paint(&mut ui, el, 20, 10).get(20 + 2),
+        Some(&[0xee, 0xee, 0xe4, 255])
+    );
+}

@@ -14,6 +14,8 @@ use mui::prelude::*;
 
 use crate::Pictures;
 
+mod stock;
+
 /// Text size where the source sets none, in source pixels.
 const TEXT: f64 = 11.;
 
@@ -90,7 +92,12 @@ pub fn page(
         });
         let art = picture.as_ref().map(|(_, m)| drawn(r, *m));
         let style = wd.style.and_then(|s| tree.styles.get(s.0));
-        let words = caption(wd);
+        let stock = picture.is_none() && stock::shows(wd, tree.source);
+        let t = position(wd);
+        let words = caption(wd, tree.source);
+        // Kontakt's stock dial: its name over it, its value under it.
+        let dial = (stock && matches!(wd.kind, Kind::Knob { .. }))
+            .then(|| (knob_name(wd), readout(wd, tree.source)));
         let lit = match wd.kind {
             Kind::LevelMeter {
                 orientation,
@@ -103,7 +110,7 @@ pub fn page(
             [r.x, r.y, r.width, r.height, scale].map(f64::to_bits),
             art.map(|a| [a.width, a.height].map(f64::to_bits)),
             picture.as_ref().map(|(i, _)| Arc::as_ptr(i) as usize),
-            words,
+            (&words, &dial, stock.then_some(t.to_bits())),
             wd.text_y,
             style.map(|s| (s.color, s.align as u8, s.size.map(f32::to_bits))),
             wd.opacity.to_bits(),
@@ -112,11 +119,22 @@ pub fn page(
             built += 1;
             let (w, h) = (r.width * scale, r.height * scale);
             let mut parts = Vec::new();
+            let size = style.and_then(|s| s.size).map_or(TEXT, f64::from) * scale;
             if let (Some((img, _)), Some(a)) = (&picture, art) {
                 parts.push(image(img, a.width * scale, a.height * scale).at(0., 0.));
+            } else if stock {
+                parts.push(stock::face(wd, t, (w, h), size * 1.25).at(0., 0.));
             }
             if !words.is_empty() {
-                parts.push(words_el(words, style, wd, w, h, scale).at(0., 0.));
+                parts.push(words_el(&words, style, wd, (w, h), scale, wd.text_y).at(0., 0.));
+            }
+            if let Some((name, value)) = &dial {
+                let under = Some(((h - size * 1.25) / scale) as i32);
+                for (said, y) in [(name, Some(0)), (value, under)] {
+                    if !said.is_empty() {
+                        parts.push(words_el(said, style, wd, (w, h), scale, y).at(0., 0.));
+                    }
+                }
             }
             if let Some((o, t)) = lit {
                 parts.push(meter(&wd.colors, o, t, w, h).at(0., 0.));
@@ -199,28 +217,67 @@ fn frame(w: &model::Widget, u: &ImageUse, frames: usize) -> usize {
     if let Some(f) = u.frame {
         return f as usize;
     }
-    let value = match w.value {
+    match (&w.kind, u.role) {
+        (Kind::Knob { .. } | Kind::Slider { .. } | Kind::ValueEdit { .. }, Role::Strip) => {
+            (position(w) * frames.saturating_sub(1) as f64).round() as usize
+        }
+        (Kind::Button { .. } | Kind::Switch, Role::Strip) => {
+            kontakt_picture_frame(value(w) != 0., false, false, frames)
+        }
+        _ => 0,
+    }
+}
+
+/// `w`'s value, or its initial one before the script sets it.
+fn value(w: &model::Widget) -> f64 {
+    match w.value {
         Some(model::Value::Integer(v)) => f64::from(v),
         Some(model::Value::Real(v)) => v,
         _ => w.initial_value,
-    };
-    match (&w.kind, u.role) {
-        (
-            Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. },
-            Role::Strip,
-        ) => {
+    }
+}
+
+/// Where `w`'s value lies in its range, 0..1; a switch is 0 or 1.
+fn position(w: &model::Widget) -> f64 {
+    match &w.kind {
+        Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. } => {
             let span = range.max - range.min;
-            let t = if span == 0. {
+            if span == 0. {
                 0.
             } else {
-                ((value - range.min) / span).clamp(0., 1.)
-            };
-            (t * frames.saturating_sub(1) as f64).round() as usize
+                ((value(w) - range.min) / span).clamp(0., 1.)
+            }
         }
-        (Kind::Button { .. } | Kind::Switch, Role::Strip) => {
-            kontakt_picture_frame(value != 0., false, false, frames)
+        _ => f64::from(u8::from(value(w) != 0.)),
+    }
+}
+
+/// `w`'s value as its source shows it: the script's label, else the value
+/// over the display ratio with its unit.
+fn readout(w: &model::Widget, source: model::Source) -> String {
+    if w.hide.value {
+        return String::new();
+    }
+    if let Some(t) = &w.value_text {
+        return t.clone();
+    }
+    match &w.kind {
+        Kind::Knob { display, .. } | Kind::ValueEdit { display, .. } => {
+            display.format_value(value(w), true, source)
         }
-        _ => 0,
+        _ => String::new(),
+    }
+}
+
+/// A stock knob's name: its text, else its variable's.
+fn knob_name(w: &model::Widget) -> String {
+    if w.hide.title {
+        return String::new();
+    }
+    if w.text.is_empty() {
+        w.name.trim_start_matches(['$', '~']).to_owned()
+    } else {
+        w.text.clone()
     }
 }
 
@@ -246,13 +303,21 @@ fn image_asset(tree: &Interface, a: model::AssetRef) -> Option<(&str, model::Ima
     }
 }
 
-/// The words a widget shows: a label's or button's text, a menu's item.
-fn caption(w: &model::Widget) -> &str {
-    if w.hide.title || w.label_in_image() {
-        return "";
+/// The words a widget shows: a label's or button's text, a menu's item,
+/// a value edit's title and value.
+fn caption(w: &model::Widget, source: model::Source) -> String {
+    if w.label_in_image() {
+        return String::new();
+    }
+    if let Kind::ValueEdit { .. } = w.kind {
+        let title = if w.hide.title { "" } else { w.text.trim() };
+        return format!("{title} {}", readout(w, source)).trim().to_owned();
+    }
+    if w.hide.title {
+        return String::new();
     }
     match &w.kind {
-        Kind::Label | Kind::Button { .. } | Kind::Switch | Kind::TextEdit => w.text.as_str(),
+        Kind::Label | Kind::Button { .. } | Kind::Switch | Kind::TextEdit => w.text.clone(),
         Kind::Menu { items } => {
             let at = match w.value {
                 Some(model::Value::Integer(v)) => v,
@@ -261,9 +326,9 @@ fn caption(w: &model::Widget) -> &str {
             items
                 .iter()
                 .find(|i| i.value == at)
-                .map_or("", |i| i.text.as_str())
+                .map_or(String::new(), |i| i.text.clone())
         }
-        _ => "",
+        _ => String::new(),
     }
 }
 
@@ -271,9 +336,9 @@ fn words_el(
     words: &str,
     style: Option<&model::TextStyle>,
     w: &model::Widget,
-    width: f64,
-    height: f64,
+    (width, height): (f64, f64),
     scale: f64,
+    text_y: Option<i32>,
 ) -> El {
     let size = style.and_then(|s| s.size).map_or(TEXT, f64::from) * scale;
     let ink = style.map_or(Color::srgb(1., 1., 1.), |s| color(s.color));
@@ -286,9 +351,7 @@ fn words_el(
         |s| s.align,
     );
     let line = size * 1.25;
-    let top = w
-        .text_y
-        .map_or(((height - line) / 2.).max(0.), |y| f64::from(y) * scale);
+    let top = text_y.map_or(((height - line) / 2.).max(0.), |y| f64::from(y) * scale);
     let el = row([text(words.to_owned())
         .text_size(size)
         .fill(Fill::from(ink))
