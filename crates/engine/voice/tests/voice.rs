@@ -440,3 +440,40 @@ fn offline_render_waits_for_the_interpolation_page_at_the_preload_boundary() {
         assert_eq!(frame[0], (896 + n) as f32 / 65_536.0, "frame {n}");
     }
 }
+
+#[cfg(feature = "trace")]
+#[test]
+fn offline_wait_reports_a_failed_page_as_missing() {
+    struct FailingSource;
+    impl kontra_stream::Source for FailingSource {
+        fn read(&self, _first: u64, _out: &mut [u8]) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::UnexpectedEof.into())
+        }
+    }
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let key = BlobKey {
+        file: "failing-source".into(),
+        offset: 0,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(&key, Arc::new(FailingSource), 4096, &[])
+        .unwrap();
+    let region = Region {
+        mix: None,
+        table: None,
+        sample,
+        start: 0,
+        end: 4096,
+        loops: vec![],
+        reverse: false,
+    };
+    let mut voice = Voice::allocate();
+    voice.set_offline_wait(true);
+    voice.start(start(region, 1.0, Ahdsr::GATE));
+    let mut out = [[0.0; 2]; 128];
+    voice.render(&client, 0, &mut out);
+    assert!(voice.missing_frames() > 0);
+    assert!(client.stats().read_errors > 0);
+}
