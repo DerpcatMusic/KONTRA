@@ -131,18 +131,16 @@ impl Browser {
     /// Recent instruments as (library, preset) in the catalog.
     #[must_use]
     pub fn recent(&self) -> Vec<(usize, usize)> {
-        let libraries = &self.catalog.libraries;
         (self.prefs.recent.iter())
-            .filter_map(|path| {
-                let library = libraries.iter().position(|l| l.presets.contains(path))?;
-                let preset = libraries
-                    .get(library)?
-                    .presets
-                    .iter()
-                    .position(|p| p == path)?;
-                Some((library, preset))
-            })
+            .filter_map(|path| self.find(path))
             .collect()
+    }
+
+    /// Where the catalog lists `path`: (library, preset).
+    #[must_use]
+    pub fn find(&self, path: &Path) -> Option<(usize, usize)> {
+        (self.catalog.libraries.iter().enumerate())
+            .find_map(|(library, l)| Some((library, l.presets.iter().position(|p| p == path)?)))
     }
 
     fn changed(&mut self) {
