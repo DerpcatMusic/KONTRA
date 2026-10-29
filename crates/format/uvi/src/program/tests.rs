@@ -355,6 +355,39 @@ fn a_keygroup_xpander_is_the_explicit_ladder_with_its_taps_q_and_drive() {
 }
 
 #[test]
+fn a_keygroup_ms20_is_the_sallen_key_with_its_morph_q_and_trimmed_curve() {
+    let xml = r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Inserts>
+            <MS20 Name="InsertFX2" Bypass="0" Freq="500" Q="0.4" KeyTracking="0" ResonanceTrim="0.55" ReferenceVoltage="2" Morph="0.25">
+              <Connections>
+                <SignalConnection Ratio="-0.5" Source="@MIDI CC 1" Destination="Freq" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+              </Connections>
+            </MS20>
+          </Inserts>
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    let Some(ir::EffectKind::Filter(f)) = g.inserts[0].map(|e| e.kind) else {
+        panic!("{:?}", g.inserts);
+    };
+    let Some(ir::Ladder::SallenKey { morph, curve }) = f.ladder else {
+        panic!("{:?}", f.ladder);
+    };
+    // Trim 0.55 sits halfway between the sixth and seventh pairs.
+    assert!((morph - 0.25).abs() < 1e-6);
+    assert!((curve[0] - 2.067_022).abs() < 1e-5 && (curve[1] - 1.808_917).abs() < 1e-5);
+    assert!((f.damping[0] - 1.2).abs() < 1e-6 && (f.gain - 2.0).abs() < 1e-6);
+    assert_eq!(g.mods.len(), 1);
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+}
+
+#[test]
 fn an_oscillators_bend_and_controller_pitch_routes_reach_its_group() {
     let xml = r#"<Program Gain="1">
       <Modulators>

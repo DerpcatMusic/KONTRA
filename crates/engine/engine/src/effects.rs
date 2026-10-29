@@ -92,7 +92,8 @@ pub(crate) fn matrix(e: &ir::Effect) -> Gain {
         | ir::EffectKind::Convolution { .. }
         | ir::EffectKind::Reverb(_)
         | ir::EffectKind::Delay(_)
-        | ir::EffectKind::Phaser(_) => [[0.0; 2]; 2],
+        | ir::EffectKind::Phaser(_)
+        | ir::EffectKind::Clipper(_) => [[0.0; 2]; 2],
     };
     let (o, d) = (e.output, e.dry);
     [

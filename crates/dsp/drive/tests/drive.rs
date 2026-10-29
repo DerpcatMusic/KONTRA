@@ -1,4 +1,4 @@
-use kontra_dsp_drive::{Crush, Curve, Reduction, Shaper, Tone};
+use kontra_dsp_drive::{Circuit, Clipper, Crush, Curve, Reduction, Shaper, Tone};
 
 /// Steady-state peak of a sine at `hz` through `s`, in dB.
 fn gain_db(mut s: Shaper, hz: f64, rate: u32) -> f64 {
@@ -52,6 +52,29 @@ fn the_curves_match_v1s_measured_transfer_vectors() {
             "power {x}"
         );
     }
+    let half_pi = std::f32::consts::FRAC_PI_2;
+    for (curve, y) in [
+        (Curve::Sine(half_pi), (0.5 * half_pi).sin()),
+        (Curve::Fold(3.0 * half_pi), (1.5 * half_pi).sin().asin()),
+        (Curve::Tanh(2.0), 1f32.tanh()),
+        (Curve::Atan(2.0), 1f32.atan()),
+    ] {
+        assert!((curve.transfer(0.5) - y).abs() < 1e-6, "{curve:?}");
+    }
+}
+
+#[test]
+fn the_pre_curve_low_pass_is_a_one_pole_without_a_zero_at_nyquist() {
+    let (hz, rate) = (2200.0, 48_000);
+    let tone = Tone {
+        pre_lowpass_hz: Some(hz as f32),
+        ..Tone::NONE
+    };
+    let s = Shaper::new(Curve::Soft(0.0), tone, rate);
+    let c = (-std::f64::consts::TAU * hz / f64::from(rate)).exp();
+    let w = std::f64::consts::TAU * hz / f64::from(rate);
+    let want = 20.0 * ((1.0 - c) / (1.0 - 2.0 * c * w.cos() + c * c).sqrt()).log10();
+    assert!((gain_db(s, hz, rate) - want).abs() < 0.05);
 }
 
 #[test]
@@ -62,6 +85,7 @@ fn a_flat_shaper_passes_the_band_and_its_filters_sit_3_db_down() {
     for (tone, hz) in [
         (
             Tone {
+                pre_lowpass_hz: None,
                 lowpass_hz: Some(2200.0),
                 highpass_hz: None,
             },
@@ -69,6 +93,7 @@ fn a_flat_shaper_passes_the_band_and_its_filters_sit_3_db_down() {
         ),
         (
             Tone {
+                pre_lowpass_hz: None,
                 lowpass_hz: None,
                 highpass_hz: Some(15.0),
             },
@@ -114,6 +139,7 @@ fn the_shaper_is_block_size_free() {
         .map(|n| [((n as f32) * 0.37).sin(), ((n as f32) * 0.11).cos()])
         .collect();
     let tone = Tone {
+        pre_lowpass_hz: None,
         lowpass_hz: Some(3000.0),
         highpass_hz: Some(15.0),
     };
@@ -185,6 +211,7 @@ fn nan_settings_stay_finite_and_reset_replays_the_noise() {
     let mut s = Shaper::new(
         Curve::Tube(f32::NAN),
         Tone {
+            pre_lowpass_hz: None,
             lowpass_hz: Some(f32::NAN),
             highpass_hz: Some(f32::NAN),
         },
@@ -207,4 +234,32 @@ fn nan_settings_stay_finite_and_reset_replays_the_noise() {
     let mut b = vec![[0.0; 2]; 64];
     c.process(&mut b);
     assert_eq!(a, b);
+}
+
+#[test]
+fn the_diode_clipper_passes_small_signals_and_holds_loud_ones_under_a_volt() {
+    let circuit = Circuit {
+        drive: 1.0,
+        limit: 4.5,
+        tone_hz: 20_000.0,
+        coupling_hz: 1.0,
+        saturation: 5.5462e-6,
+        slope: 22.075,
+        asymmetry: 1.0,
+        dc_hz: 1.0,
+    };
+    let peak = |level: f32| {
+        let mut io: Vec<[f32; 2]> = (0..48_000)
+            .map(|i| [(std::f32::consts::TAU * 1000.0 * i as f32 / 48_000.0).sin() * level; 2])
+            .collect();
+        Clipper::new(circuit, 48_000).process(&mut io);
+        io.iter()
+            .skip(24_000)
+            .map(|x| x[0].abs())
+            .fold(0.0, f32::max)
+            / level
+    };
+    assert!((peak(0.01) - 1.0).abs() < 0.05, "{}", peak(0.01));
+    let loud = peak(1.0);
+    assert!((0.3..0.8).contains(&loud), "{loud}");
 }

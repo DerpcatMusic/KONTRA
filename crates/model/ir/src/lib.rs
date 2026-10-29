@@ -13,8 +13,8 @@ mod mods;
 mod reverb;
 pub use bus::{Bus, BusSend};
 pub use drive::{
-    Crush, Curve as DriveCurve, EffectParam, KnobTarget, Overdrive, RackAt, Shaper, SlotKnob,
-    SlotLaw, SlotShape,
+    Clipper, Crush, Curve as DriveCurve, EffectParam, KnobTarget, Overdrive, RackAt, Shaper,
+    SlotKnob, SlotLaw, SlotShape,
 };
 pub use effects::{
     Compressor, Delay, DelayTime, Detector, IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb,
@@ -672,6 +672,8 @@ pub enum EffectKind {
     Crush(Crush),
     /// An overdrive pedal.
     Overdrive(Overdrive),
+    /// A diode clipper circuit (the wet path; `dry` mixes the input back).
+    Clipper(Clipper),
     /// Copies its input to send slot n at `levels[n]` (linear), passing it on.
     Sends([f32; 8]),
     /// The input convolved with [`Instrument::impulses`] at this index (wet).
@@ -723,8 +725,7 @@ pub struct Filter {
     pub pass: Pass,
     pub hz: f32,
     pub stages: u8,
-    /// A four-pole resonant ladder instead; the last stage's damping `k`
-    /// sets its resonance `1 − k/2`.
+    /// A resonant ladder instead; the last damping `k` sets its resonance `1 − k/2`.
     pub ladder: Option<Ladder>,
     pub damping: [f32; 3],
     pub gain: f32,
@@ -746,6 +747,8 @@ pub enum Ladder {
     /// the input; `fat` lifts the input with the resonance (1 holds the
     /// passband). Its input gain is the filter's gain, made up after.
     Explicit { taps: u8, fat: f32 },
+    /// A two-pole Sallen-Key, low (`morph` 1) to high (0), its feedback curve `[a, b]`.
+    SallenKey { morph: f32, curve: [f32; 2] },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

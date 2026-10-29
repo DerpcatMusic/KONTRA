@@ -60,6 +60,7 @@ fn saturation(shape: f32, algorithm: i32, at: &str, notes: &mut Notes) -> Option
         return None;
     }
     Some(ir::EffectKind::Shaper(ir::Shaper {
+        pre_lowpass_hz: None,
         curve: ir::DriveCurve::Soft(shape.clamp(-1.0, 1.0)),
         lowpass_hz: None,
         highpass_hz: None,
@@ -75,6 +76,7 @@ fn distortion(mode: i32, drive: f32, damping: f32) -> Option<ir::EffectKind> {
         _ => return None,
     };
     Some(ir::EffectKind::Shaper(ir::Shaper {
+        pre_lowpass_hz: None,
         curve,
         lowpass_hz: Some(damping_hz(damping)),
         highpass_hz: Some(DC_HZ),

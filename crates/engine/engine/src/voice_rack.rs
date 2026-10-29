@@ -59,18 +59,11 @@ fn lerp(a: ir::EffectKind, b: ir::EffectKind, t: f32) -> ir::EffectKind {
     let mix = |x: f32, y: f32| x + (y - x) * t;
     match (a, b) {
         (ir::EffectKind::Shaper(mut s), ir::EffectKind::Shaper(e)) => {
-            s.curve = match (s.curve, e.curve) {
-                (ir::DriveCurve::Soft(x), ir::DriveCurve::Soft(y)) => {
-                    ir::DriveCurve::Soft(mix(x, y))
-                }
-                (ir::DriveCurve::Tube(x), ir::DriveCurve::Tube(y)) => {
-                    ir::DriveCurve::Tube(mix(x, y))
-                }
-                (ir::DriveCurve::Power(x), ir::DriveCurve::Power(y)) => {
-                    ir::DriveCurve::Power(mix(x, y))
-                }
-                (c, _) => c,
-            };
+            let mut to = e.curve;
+            if std::mem::discriminant(&s.curve) == std::mem::discriminant(&to) {
+                let x = s.curve.amount_mut();
+                *x = mix(*x, *to.amount_mut());
+            }
             ir::EffectKind::Shaper(s)
         }
         (ir::EffectKind::Crush(mut c), ir::EffectKind::Crush(e)) => {
@@ -111,14 +104,7 @@ fn unit(kind: ir::EffectKind, rate: u32) -> Option<Kind> {
         }
         ir::EffectKind::Eq(bells) => Kind::Eq(VoiceEq::new(bells, rate)),
         ir::EffectKind::Formant(f) => Kind::Formant(Formant::new(vowels(f), rate)),
-        ir::EffectKind::Shaper(s) => Kind::Shaper(Shaper::new(
-            curve(s.curve),
-            drive::Tone {
-                lowpass_hz: s.lowpass_hz,
-                highpass_hz: s.highpass_hz,
-            },
-            rate,
-        )),
+        ir::EffectKind::Shaper(s) => Kind::Shaper(shaper(s, rate)),
         ir::EffectKind::Crush(c) => Kind::Crush(Crush::new(reduction(c, rate), 1)),
         ir::EffectKind::Overdrive(o) => Kind::Overdrive(Overdrive::new(voicing(o), rate)),
         _ => return None,
@@ -137,11 +123,25 @@ fn vowels(f: ir::Formant) -> Vowels {
     }
 }
 
-fn curve(c: ir::DriveCurve) -> drive::Curve {
+/// The waveshaper for `s` at `rate`, in a group rack or a bus rack.
+pub(crate) fn shaper(s: ir::Shaper, rate: u32) -> Shaper {
+    let tone = drive::Tone {
+        pre_lowpass_hz: s.pre_lowpass_hz,
+        lowpass_hz: s.lowpass_hz,
+        highpass_hz: s.highpass_hz,
+    };
+    Shaper::new(curve(s.curve), tone, rate)
+}
+
+pub(crate) fn curve(c: ir::DriveCurve) -> drive::Curve {
     match c {
         ir::DriveCurve::Soft(x) => drive::Curve::Soft(x),
         ir::DriveCurve::Tube(x) => drive::Curve::Tube(x),
         ir::DriveCurve::Power(x) => drive::Curve::Power(x),
+        ir::DriveCurve::Sine(x) => drive::Curve::Sine(x),
+        ir::DriveCurve::Fold(x) => drive::Curve::Fold(x),
+        ir::DriveCurve::Tanh(x) => drive::Curve::Tanh(x),
+        ir::DriveCurve::Atan(x) => drive::Curve::Atan(x),
     }
 }
 

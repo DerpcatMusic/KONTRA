@@ -100,10 +100,15 @@ pub struct Delay {
     pub phase: f32,
 }
 
-/// A phaser in physical units: four allpasses whose corner the LFO sweeps,
-/// `hz + spread_hz·(e^(exponent·lfo) − 1)`, around a feedback loop.
+/// A phaser in physical units: `stages` first-order allpasses whose corner
+/// the LFO sweeps, `hz + spread_hz·(e^(exponent·lfo) − 1)`, around a
+/// feedback loop.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Phaser {
+    /// 1..=24.
+    pub stages: u8,
+    /// A triangle LFO instead of a sine (both fall first).
+    pub triangle: bool,
     pub hz: f32,
     pub spread_hz: f32,
     pub exponent: f32,
