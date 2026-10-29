@@ -282,10 +282,10 @@ impl SlotShape {
         filter.pass = self.pass;
         filter.stages = self.stages;
         filter.damping = [2.0; 3];
-        if let Some((n, k)) = last(filter).zip(resonance) {
-            if let Some(d) = filter.damping.get_mut(n) {
-                *d = k;
-            }
+        if let Some((n, k)) = last(filter).zip(resonance)
+            && let Some(d) = filter.damping.get_mut(n)
+        {
+            *d = k;
         }
     }
 }
