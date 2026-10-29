@@ -406,23 +406,12 @@ fn an_effect_type_a_script_loads_is_built_off_audio_swapped_in_and_saved() {
     assert_eq!(saved.parts[0].slot_types.len(), 1, "{json}");
 }
 
-#[test]
-fn a_response_a_script_loads_later_is_decoded_off_audio_swapped_in_and_saved() {
+/// A part whose insert convolves with a unit response until its note-on script
+/// loads the plan's response "half" from `wav`, written as `name`; returns
+/// the rack after that note's block, the convolver still on the unit.
+fn loading_response(wav: &[u8], name: &str) -> (Rack, RackAudio) {
     use kontra_engine::{Response, ir};
-    // One frame at half scale, 16-bit stereo.
-    let half = 16_384i16.to_le_bytes();
-    let mut wav = b"RIFF".to_vec();
-    wav.extend(40u32.to_le_bytes());
-    wav.extend(b"WAVEfmt ");
-    wav.extend(16u32.to_le_bytes());
-    wav.extend([1, 0, 2, 0]);
-    wav.extend(RATE.to_le_bytes());
-    wav.extend((RATE * 4).to_le_bytes());
-    wav.extend([4, 0, 16, 0]);
-    wav.extend(b"data");
-    wav.extend(4u32.to_le_bytes());
-    wav.extend(half.iter().chain(&half));
-    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("rack-half.wav");
+    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     std::fs::write(&file, wav).unwrap();
     let (mut rack, mut audio) = rack();
     let mut plan = plan_of(rack.store_mut(), 0.5);
@@ -479,6 +468,26 @@ fn a_response_a_script_loads_later_is_decoded_off_audio_swapped_in_and_saved() {
     rack.install(0, e, info);
     let [room, _] = play(&mut audio, &[(0, note(0))]);
     assert!((room - 0.5).abs() < 1e-3, "{room}");
+    (rack, audio)
+}
+
+#[test]
+fn a_response_a_script_loads_later_is_decoded_off_audio_swapped_in_and_saved() {
+    use kontra_engine::ir;
+    // One frame at half scale, 16-bit stereo.
+    let half = 16_384i16.to_le_bytes();
+    let mut wav = b"RIFF".to_vec();
+    wav.extend(40u32.to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend([1, 0, 2, 0]);
+    wav.extend(RATE.to_le_bytes());
+    wav.extend((RATE * 4).to_le_bytes());
+    wav.extend([4, 0, 16, 0]);
+    wav.extend(b"data");
+    wav.extend(4u32.to_le_bytes());
+    wav.extend(half.iter().chain(&half));
+    let (mut rack, mut audio) = loading_response(&wav, "rack-half.wav");
     rack.tick();
     let [half, _] = play(&mut audio, &[]);
     assert!(
@@ -493,6 +502,28 @@ fn a_response_a_script_loads_later_is_decoded_off_audio_swapped_in_and_saved() {
     let json = saved.write();
     assert_eq!(kontra_host::state::Saved::read(&json), saved);
     assert_eq!(saved.parts[0].slot_responses[0].name, "half", "{json}");
+    // The file goes bad: a second load fails, the slot and the save keep "half".
+    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("rack-half.wav");
+    std::fs::write(file, b"not a wav").unwrap();
+    play(&mut audio, &[(0, note(0))]);
+    rack.tick();
+    // Two held notes through "half"; the unit room would give 1.0.
+    let [still, _] = play(&mut audio, &[]);
+    assert!((still - 0.5).abs() < 1e-3, "{still}");
+    rack.tick();
+    assert_eq!(rack.save(), saved);
+}
+
+#[test]
+fn a_response_that_fails_to_decode_keeps_the_slot_and_is_not_saved() {
+    let (mut rack, mut audio) = loading_response(b"not a wav", "rack-bad.wav");
+    rack.tick();
+    let [out, _] = play(&mut audio, &[]);
+    assert!((out - 0.5).abs() < 1e-3, "the slot changed: {out}");
+    let p = rack.parts()[0].as_ref().unwrap();
+    assert!(p.slot_responses.is_empty() && p.slot_types.is_empty());
+    rack.tick();
+    assert!(rack.save().parts[0].slot_responses.is_empty());
 }
 
 #[test]
