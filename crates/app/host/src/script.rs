@@ -165,6 +165,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             .filter_map(|(name, bytes)| data_array(script, name, bytes))
             .collect(),
         source_folder: None,
+        library_folder: None,
         text_data: data
             .iter()
             .filter_map(|(name, bytes)| text_data_array(script, name, bytes))
@@ -178,10 +179,16 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
     }
 }
 
-/// A KSP source folder, with a trailing slash, when it fits a text cell.
+/// The folder of a source file, prepared for script access.
 pub(crate) fn source_folder(path: Option<&std::path::Path>) -> Option<Text> {
     let path = std::path::absolute(path?).ok()?;
-    let folder = path.parent()?.to_str()?;
+    folder(path.parent())
+}
+
+/// A folder with a trailing slash, when it fits a text cell.
+pub(crate) fn folder(path: Option<&std::path::Path>) -> Option<Text> {
+    let path = std::path::absolute(path?).ok()?;
+    let folder = path.to_str()?;
     let folder = if std::path::MAIN_SEPARATOR == '\\' {
         folder.replace('\\', "/")
     } else {
@@ -424,6 +431,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         data: Vec::new(),
         text_data: Vec::new(),
         source_folder: None,
+        library_folder: None,
         restore: Vec::new(),
         restore_texts: Vec::new(),
         foreign: Some(std::sync::Arc::new(compiled)),

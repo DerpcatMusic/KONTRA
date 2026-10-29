@@ -587,15 +587,16 @@ impl HostApi for Engine {
                 };
                 HostValue::Int(found.map_or(missing, |g| g as i32))
             }
-            Action::GetFolder
-                if int(0) == 2 && self.script().is_some_and(|s| s.source_folder.is_some()) =>
-            {
-                *call.text_out = self
-                    .script()
-                    .and_then(|s| s.source_folder)
-                    .unwrap_or(Text::EMPTY);
-                HostValue::Text
-            }
+            Action::GetFolder => match self.script().and_then(|s| s.folder(int(0))) {
+                Some(folder) => {
+                    *call.text_out = folder;
+                    HostValue::Text
+                }
+                None => {
+                    self.count_unhandled(Action::GetFolder);
+                    HostValue::Nothing
+                }
+            },
             Action::GroupName => {
                 let name = usize::try_from(int(0))
                     .ok()

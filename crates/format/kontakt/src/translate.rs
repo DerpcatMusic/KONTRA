@@ -33,6 +33,7 @@ pub(crate) fn instrument(
     chunks: &KontaktChunks,
     monolith: Option<ni_file::file_container::NIFileContainer>,
     saved: &[Vec<String>],
+    encrypted: Option<bool>,
 ) -> Result<ir::Instrument, Error> {
     let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
     let program = chunks
@@ -44,6 +45,10 @@ pub(crate) fn instrument(
     let mut out = ir::Instrument {
         name: params.name.clone(),
         source_path: std::path::absolute(path).ok(),
+        library_path: (encrypted == Some(true))
+            .then(|| std::path::absolute(path).ok())
+            .flatten()
+            .and_then(|p| crate::resources::known_root(&p)),
         voices: 256,
         output: ir::Output {
             volume_db: db(params.volume),
