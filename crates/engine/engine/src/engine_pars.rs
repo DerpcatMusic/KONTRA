@@ -33,6 +33,8 @@ pub enum EnginePar {
     StereoPan,
     /// The shape a filter slot switches to ([`ir::SlotShape::id`]).
     EffectSubtype,
+    /// The effect a slot holds; not carried yet, answered asynchronously.
+    EffectType,
     Volume,
     Pan,
     Tune,

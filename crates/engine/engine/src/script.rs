@@ -8,7 +8,7 @@ use kontra_vm::{Action, HostApi, HostCall, HostValue, Program, Text, event};
 
 use crate::ledger::{Note, NoteRef, Origin};
 use crate::queue::Work;
-use crate::{Engine, EnginePars};
+use crate::{Engine, EnginePar, EnginePars};
 
 /// A compiled script and where its callbacks start.
 #[derive(Clone, Debug)]
@@ -724,8 +724,22 @@ impl HostApi for Engine {
             {
                 HostValue::Text
             }
-            Action::SetEnginePar if self.set_engine_par(int(0), int(1), int(2), int(3), int(4)) => {
-                HostValue::Nothing
+            // Kontakt answers −1; an effect type or subtype set outside `on
+            // init` runs asynchronously: its id, then `on async_complete`
+            // (measured, probes/async_engine_par.ksp).
+            Action::SetEnginePar => {
+                if !self.set_engine_par(int(0), int(1), int(2), int(3), int(4)) {
+                    self.count_unhandled(Action::SetEnginePar);
+                }
+                let swap = matches!(
+                    self.engine_par(int(0)),
+                    Some(EnginePar::EffectType | EnginePar::EffectSubtype)
+                );
+                HostValue::Int(if swap && self.running.kind != Kind::Init {
+                    self.start_async()
+                } else {
+                    -1
+                })
             }
             Action::LoadIrSample
                 if self.load_ir_sample(
@@ -773,12 +787,19 @@ impl HostApi for Engine {
                 HostValue::Int(i32::from(live.is_some()))
             }
             other => {
-                self.stats.actions_unhandled += 1;
-                if let Some(n) = self.unhandled.get_mut(usize::from(other.id())) {
-                    *n += 1;
-                }
+                self.count_unhandled(other);
                 HostValue::Nothing
             }
+        }
+    }
+}
+
+impl Engine {
+    /// Counts a call the engine does not carry.
+    fn count_unhandled(&mut self, action: Action) {
+        self.stats.actions_unhandled += 1;
+        if let Some(n) = self.unhandled.get_mut(usize::from(action.id())) {
+            *n += 1;
         }
     }
 }
