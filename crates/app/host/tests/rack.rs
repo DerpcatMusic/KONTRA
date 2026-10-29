@@ -556,3 +556,41 @@ fn the_hosts_transport_reaches_every_parts_scripts() {
         "the running transport did not reach the script: {running}"
     );
 }
+
+#[test]
+fn a_held_part_hears_the_song_position_where_its_notes_land() {
+    let (mut rack, mut audio) = rack();
+    let mut plan = plan_of(rack.store_mut(), 0.5);
+    let script = kontra_ksp::compile(
+        "on note
+            if ($NI_SONG_POSITION < 960 * 4)
+                ignore_event($EVENT_ID)
+            end if
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Box::new(Engine::new(Arc::new(plan), rack.store_mut().client(), RATE));
+    rack.install(0, e, part("a"));
+    // Half a second at 120 bpm: one quarter.
+    rack.set_hold(0, Hold::flat(RATE / 2));
+    audio.set_tempo(120.0);
+    let mut after_hold = |at: f64, input: &[(u32, Event)]| {
+        audio.set_transport(true, at, (4, 4));
+        audio.process(BLOCK, input);
+        for _ in 0..(RATE as usize / 2 / BLOCK + 2) {
+            audio.set_transport(true, at, (4, 4));
+            audio.process(BLOCK, &[]);
+        }
+        level(&audio, 0)
+    };
+    // At 4.5 quarters the held part hears 3.5: the script lets it go.
+    let early = after_hold(4.5, &[(0, note(0))]);
+    assert!(
+        early.abs() < 1e-4,
+        "the held part heard the unshifted song: {early}"
+    );
+    let late = after_hold(5.5, &[(0, note(0))]);
+    assert!(late > 0.1, "the held note never sounded: {late}");
+}
