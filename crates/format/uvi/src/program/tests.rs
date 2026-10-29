@@ -699,7 +699,11 @@ fn a_macro_a_controller_moves_crossfades_its_cells_live() {
     assert_eq!(term.factors[3].input.source, ir::Source::Script(14));
     let half = [0.7, 0.6, 0.4, 0.2];
     for (got, want) in term.factors[3].input.table.iter().zip(half) {
-        assert!((got - want).abs() < 1e-5, "{:?}", term.factors[3].input.table);
+        assert!(
+            (got - want).abs() < 1e-5,
+            "{:?}",
+            term.factors[3].input.table
+        );
     }
     // A row past the two-channel bundle and a bypassed matrix move nothing.
     assert!(
