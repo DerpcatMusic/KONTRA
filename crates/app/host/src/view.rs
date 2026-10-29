@@ -49,7 +49,11 @@ impl View {
                 let frame = LookFrame::new(at, &live, face, engine);
                 return Some(Self::new(at, Shown::Ksp(Box::new(live)), frame));
             }
-            let page = pages.get(slot)?.as_ref()?;
+            // As init left it (pictures it set there), else as it loaded.
+            let now = (engine.vm(at))
+                .and_then(kontra_engine::Vm::own_page)
+                .and_then(|p| p.downcast::<kontra_lua::Ui>().ok());
+            let page = now.as_deref().or(pages.get(slot)?.as_ref())?;
             let mut tree = crate::ui::lua::tree(page, &meta);
             let mut text = Text::EMPTY;
             for (n, w) in (0u32..).zip(0..tree.widgets.len()) {

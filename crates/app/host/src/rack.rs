@@ -275,7 +275,7 @@ impl Rack {
         slot_types: &[(ir::RackAt, u8, u16)],
         slot_responses: &[(ir::RackAt, u8, String)],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut instrument = crate::instrument::read(path)?;
+        let mut instrument = crate::instrument::read_saved(path, scripts)?;
         for (script, saved) in instrument.scripts.iter_mut().zip(scripts) {
             script.saved.clone_from(saved);
         }
@@ -533,6 +533,8 @@ impl Rack {
                 && p.script.generation == c.generation
             {
                 p.script.asked = false;
+                let mut c = c;
+                c.keep(p.script.latest.take());
                 p.script.latest = Some(c);
             }
         }
@@ -549,7 +551,9 @@ impl Rack {
                     return None;
                 }
                 s.asked = true;
-                Some(Capture::new(n, s.generation, &s.vars))
+                let mut c = Capture::new(n, s.generation, &s.vars);
+                c.after(s.latest.as_deref());
+                Some(c)
             })
             .collect();
         for c in ask {
