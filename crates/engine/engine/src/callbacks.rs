@@ -93,13 +93,11 @@ impl Engine {
         let own = script.callbacks.ui_control.iter().find(|(i, _)| *i == id);
         let own = own.and_then(|&(_, own)| own);
         let controls = &script.controls;
-        let cell = (id.checked_sub(controls.first))
-            .and_then(|n| usize::try_from(n).ok())
-            .and_then(|n| controls.cells.get(n).copied().flatten());
+        let n = id.checked_sub(controls.first).and_then(|n| usize::try_from(n).ok());
+        let cell = n.and_then(|n| controls.cells.get(n).copied().flatten());
         if cell.is_none() && own.is_none() {
             return;
         }
-        let n = usize::try_from(id - controls.first).ok();
         let len = n.and_then(|n| controls.steps.get(n)).copied().unwrap_or(0);
         let vm = self.vms.get_mut(usize::from(slot)).and_then(Option::as_mut);
         if let (Some(cell), Some(vm), Some(at)) = (cell, vm, self.ui.click_cell(slot, n, len)) {
