@@ -18,6 +18,7 @@ use mlua::thread::ThreadStatus;
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread, Value, Variadic};
 
 pub mod alloc;
+mod interrupt;
 mod literal;
 
 #[global_allocator]
@@ -213,11 +214,12 @@ fn state(
     let checkpoints = Arc::new(AtomicU32::new(0));
     let count = Arc::clone(&checkpoints);
     lua.set_interrupt(move |_| {
-        if count.fetch_add(1, Ordering::Relaxed) > CHECKPOINTS {
+        if count.fetch_add(interrupt::STRIDE, Ordering::Relaxed) > CHECKPOINTS {
             return Err(mlua::Error::runtime("script ran too long"));
         }
         Ok(mlua::VmState::Continue)
     });
+    interrupt::install(&lua)?;
     let actions = lua.create_table()?;
     for &action in Action::all() {
         actions.set(format!("{action:?}"), action.id())?;
