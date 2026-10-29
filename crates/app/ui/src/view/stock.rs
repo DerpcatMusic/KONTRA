@@ -325,7 +325,8 @@ fn field_words(
                 .and_then(|image| crate::pictures::at_stock(image, device as f32))
             {
                 layers.push(
-                    super::image(&Arc::new(image), width, height).at(x, (h - height) / 2. - s),
+                    super::image(&Arc::new(image), width, height)
+                        .at(x, (h - height) / 2. - if space.is_some() { 0. } else { s }),
                 );
             }
             x += advance(c, glyph);
