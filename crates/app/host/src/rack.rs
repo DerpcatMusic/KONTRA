@@ -99,6 +99,8 @@ pub struct Part {
     pub plan: Option<Arc<Plan>>,
     /// How late it sounds at its latest, in ms, once auto-align measured it.
     pub delay_ms: Option<f32>,
+    /// Its library's interface, as `on init` left it.
+    pub view: Option<crate::view::View>,
 }
 
 /// What the rack keeps to save a part's scripts.
@@ -111,6 +113,15 @@ pub struct ScriptState {
     generation: u64,
     latest: Option<Box<Capture>>,
     asked: bool,
+}
+
+impl ScriptState {
+    /// Moves on every install: a part with the same generation is the same
+    /// load.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
 }
 
 /// Plays events on every part from any thread, straight into the audio
@@ -253,7 +264,9 @@ impl Rack {
         let loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
         let plan = Arc::new(loaded.plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
+        let view = crate::view::View::of(&loaded.faces, &engine, path.as_deref());
         let part_info = Part {
+            view,
             plan: Some(plan),
             delay_ms: None,
             path,
@@ -322,6 +335,17 @@ impl Rack {
             p.solo = solo;
             p.mute = mute;
             self.resend_mix();
+        }
+    }
+
+    /// The user moved `widget` of `part`'s interface to `value`: the
+    /// control's script gets it and runs its callback at the next block.
+    pub fn control(&mut self, part: usize, widget: usize, value: f64) {
+        let Some(Some(p)) = self.parts.get(part) else {
+            return;
+        };
+        if let Some((slot, id, value)) = p.view.as_ref().and_then(|v| v.control(widget, value)) {
+            self.set_control(part, slot, id, value);
         }
     }
 

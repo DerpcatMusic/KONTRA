@@ -61,6 +61,7 @@ fn part(name: &str) -> Part {
         script: Default::default(),
         plan: None,
         delay_ms: None,
+        view: None,
     }
 }
 

@@ -10,3 +10,4 @@ pub mod rack;
 pub mod script;
 pub mod state;
 pub mod ui;
+pub mod view;
