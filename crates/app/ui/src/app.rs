@@ -11,6 +11,7 @@ mod mixer;
 mod part;
 mod rack;
 mod report;
+mod settings;
 mod sound;
 
 pub use sound::{Envelope, Filter, Lower, Param, Pass, Sound};
@@ -20,7 +21,7 @@ use mui::prelude::*;
 
 use crate::Pictures;
 use crate::keyboard::{self, Keys, note_name};
-use crate::kit::{self, Icon, button, icon_button, latch, rule, section, sheet, strip, tab, vrule};
+use crate::kit::{self, Icon, button, icon_button, rule, section, sheet, strip, tab, vrule};
 use crate::theme::{CONTROL, SIDEBAR, SPACE, TEXT, TIGHT, quick, secondary};
 
 /// Everything the editor shows. The host fills the data; `view` is the
@@ -345,6 +346,8 @@ pub enum Action {
     MidiThru(bool),
     Star(usize, bool),
     AddFolder,
+    /// Stop scanning the browser's folder `n`.
+    RemoveFolder(usize),
     Scale(f64),
     CopyDiagnostics,
     ExportReport,
@@ -569,7 +572,7 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 
 fn sheet_view(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -> El {
     let (title, content) = match which {
-        Sheet::Settings => ("Settings", settings(ui, app, out)),
+        Sheet::Settings => ("Settings", settings::view(ui, app, out)),
         Sheet::About => (
             "About",
             col![
@@ -588,79 +591,6 @@ fn sheet_view(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -
         app.view.sheet = None;
     }
     r.el
-}
-
-fn settings(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
-    let thru = latch(
-        ui,
-        "settings-thru",
-        if app.midi_thru { "On" } else { "Off" },
-        "Pass MIDI through to the host",
-        app.midi_thru,
-    );
-    if thru.changed {
-        app.midi_thru = !app.midi_thru;
-        out.push(Action::MidiThru(app.midi_thru));
-    }
-    let labels: Vec<String> = SCALES.iter().map(|s| format!("{:.0}%", s * 100.)).collect();
-    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-    let current = refs.get(app.view.scale).copied().unwrap_or("100%");
-    let size = kit::dropdown(
-        ui,
-        &mut app.view.menu,
-        "scale",
-        (None, current, "Editor size"),
-        &refs,
-        Some(app.view.scale),
-    );
-    if let Some(n) = size.changed {
-        app.view.scale = n;
-        out.extend(SCALES.get(n).map(|&s| Action::Scale(s)));
-    }
-    let faces = ["Fit", "100%", "150%", "200%"];
-    let face = kit::dropdown(
-        ui,
-        &mut app.view.menu,
-        "face-scale",
-        (
-            None,
-            faces.get(app.view.face_scale).copied().unwrap_or("Fit"),
-            "How large a library's own view is drawn",
-        ),
-        &faces,
-        Some(app.view.face_scale),
-    );
-    if let Some(n) = face.changed {
-        app.view.face_scale = n;
-    }
-    let add = button(ui, "add-folder", "Add folder…", false);
-    if add.changed {
-        out.push(Action::AddFolder);
-    }
-    let folders: Vec<El> = app
-        .folders
-        .iter()
-        .map(|f| caption(f.clone()).lines(1).min_w(0).tip(f.clone()))
-        .collect();
-    let folders = col(folders)
-        .gap(TIGHT)
-        .align(Align::Start)
-        .w(Len::Pct(100.));
-    let line = |label: &str, control: El| {
-        row![body(label.to_owned()), spacer(), control].align(Align::Center)
-    };
-    col![
-        row![section("Library folders"), spacer(), add.el].align(Align::Center),
-        folders,
-        rule(),
-        section("Interface"),
-        line("Size", size.el),
-        line("Library view", face.el),
-        rule(),
-        section("MIDI / Output"),
-        line("MIDI thru", thru.el),
-    ]
-    .gap(SPACE)
 }
 
 fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {

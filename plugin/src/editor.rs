@@ -394,6 +394,7 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
         }
         Action::Star(library, on) => browser.star(library, on),
         Action::Refresh => browser.rescan(),
+        Action::RemoveFolder(n) => browser.remove_root(n),
         _ => {}
     }
 }
@@ -599,7 +600,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             }
             if matches!(
                 action,
-                Action::Load { .. } | Action::Star(..) | Action::Refresh
+                Action::Load { .. } | Action::Star(..) | Action::Refresh | Action::RemoveFolder(_)
             ) {
                 p.shared.request(Request::Browse(action));
                 continue;
