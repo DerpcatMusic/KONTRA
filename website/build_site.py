@@ -16,7 +16,7 @@ SITE = Path(__file__).resolve().parent
 ROOT = SITE.parent
 os.environ['KONTRA_COVERAGE_SOURCE_ONLY'] = '1'
 sys.path.insert(0, str(ROOT / 'tools/coverage'))
-import tracker
+import v3_tracker as tracker
 
 REPO = 'https://github.com/DerpcatMusic/KONTRA'
 LABELS = {'done': 'Implemented', 'partial': 'Partial', 'todo': 'Not implemented'}
