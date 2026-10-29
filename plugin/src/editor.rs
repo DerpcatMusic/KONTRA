@@ -188,9 +188,11 @@ impl Snapshot {
         let mut old = std::mem::take(&mut app.parts);
         let parts = self.parts.iter().enumerate().map(|(n, p)| {
             let mut old = old.get_mut(n);
-            let (open, tab) = old
+            let (open, tab, look) = old
                 .as_ref()
-                .map_or((true, Default::default()), |old| (old.open, old.tab));
+                .map_or((true, Default::default(), None), |old| {
+                    (old.open, old.tab, old.look)
+                });
             let now = (p.generation, p.revision);
             let sound_now = (p.generation, p.sounds.0);
             // The editor's own edit shows at once; the rack's copy once it moved.
@@ -224,6 +226,7 @@ impl Snapshot {
                 keys: (0, 127),
                 open,
                 tab,
+                look,
                 sounds,
                 ..Part::default()
             }

@@ -29,7 +29,32 @@ pub fn page(
     tree: &Interface,
     page: PageRef,
     pictures: &mut Pictures,
+    at: (f64, f64),
+) -> (El, usize) {
+    drawn_page(ui, face, tree, page, pictures, at, false)
+}
+
+/// [`page`] without its pictures: each control where it sits, in its
+/// stock look, on the page's colour.
+pub fn vector_page(
+    ui: &mut Ui,
+    face: usize,
+    tree: &Interface,
+    page: PageRef,
+    pictures: &mut Pictures,
+    at: (f64, f64),
+) -> (El, usize) {
+    drawn_page(ui, face, tree, page, pictures, at, true)
+}
+
+fn drawn_page(
+    ui: &mut Ui,
+    face: usize,
+    tree: &Interface,
+    page: PageRef,
+    pictures: &mut Pictures,
     (scale, level): (f64, f64),
+    bare: bool,
 ) -> (El, usize) {
     let Some(p) = tree.pages.get(page.0) else {
         return (block(0., 0.), 0);
@@ -53,6 +78,7 @@ pub fn page(
     if let Some((a, (path, meta))) = p
         .background
         .image
+        .filter(|_| !bare)
         .and_then(|a| Some((a, image_asset(tree, a)?)))
     {
         let b = &p.background;
@@ -85,7 +111,7 @@ pub fn page(
         let Some(wd) = tree.widgets.get(n.0) else {
             continue;
         };
-        let picture = wd.images.first().and_then(|u| {
+        let picture = wd.images.first().filter(|_| !bare).and_then(|u| {
             let (path, meta) = image_asset(tree, u.asset)?;
             let f = frame(wd, u, meta.frames as usize);
             Some((pictures.frame(u.asset, path, meta, f, device)?, meta))
@@ -93,8 +119,8 @@ pub fn page(
         let art = picture.as_ref().map(|(_, m)| drawn(r, *m));
         let style = wd.style.and_then(|s| tree.styles.get(s.0));
         let t = position(wd);
-        let look = stock::Look::of(tree, wd, t, readout(wd, tree.source), knob_name(wd));
-        let stock = look.is_none() && stock::shows(tree, wd);
+        let look = stock::Look::of(tree, wd, t, readout(wd, tree.source), knob_name(wd), bare);
+        let stock = look.is_none() && stock::shows(tree, wd, bare);
         let words = if look.is_some() {
             String::new()
         } else {
@@ -268,7 +294,7 @@ fn position(w: &model::Widget) -> f64 {
 
 /// `w`'s value as its source shows it: the script's label, else the value
 /// over the display ratio with its unit.
-fn readout(w: &model::Widget, source: model::Source) -> String {
+pub(crate) fn readout(w: &model::Widget, source: model::Source) -> String {
     if w.hide.value {
         return String::new();
     }
@@ -288,7 +314,7 @@ fn readout(w: &model::Widget, source: model::Source) -> String {
 }
 
 /// A stock knob's name: its text, else its variable's.
-fn knob_name(w: &model::Widget) -> String {
+pub(crate) fn knob_name(w: &model::Widget) -> String {
     if w.hide.title {
         return String::new();
     }

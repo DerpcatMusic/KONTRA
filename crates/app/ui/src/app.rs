@@ -6,6 +6,7 @@
 //! tooltip, choices are dropdowns, menus and panels float.
 
 mod browser;
+mod controls;
 mod mapping;
 mod mixer;
 mod part;
@@ -131,6 +132,8 @@ pub struct Part {
     /// Shown below its header.
     pub open: bool,
     pub tab: PartTab,
+    /// How its interface is drawn; `None` follows [`View::face_look`].
+    pub look: Option<FaceLook>,
 }
 
 /// One zone of a part's mapping.
@@ -174,6 +177,23 @@ pub enum PartTab {
     Sound,
     Info,
     Scripts,
+}
+
+/// How a part draws its library's interface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FaceLook {
+    /// The library's own pictures, as its sampler draws them.
+    #[default]
+    Original,
+    /// The same controls in the same places, without the pictures.
+    Vector,
+    /// The controls one after another in KONTRA's own look.
+    Kontra,
+}
+
+impl FaceLook {
+    pub const ALL: [Self; 3] = [Self::Original, Self::Vector, Self::Kontra];
+    pub const LABELS: [&str; 3] = ["Original", "Vector", "KONTRA"];
 }
 
 /// The engine's load, for the header.
@@ -267,6 +287,8 @@ pub struct View {
     pub scale: usize,
     /// Which of [`FACE_SCALES`] a library's own view is drawn at.
     pub face_scale: usize,
+    /// How a part that chose none draws its interface.
+    pub face_look: FaceLook,
 }
 
 /// The editor sizes on offer.
