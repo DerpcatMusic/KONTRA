@@ -2642,6 +2642,7 @@ dependencies = [
  "kontra-ui-model",
  "mui",
  "png 0.18.1",
+ "zune-jpeg",
 ]
 
 [[package]]

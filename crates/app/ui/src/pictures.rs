@@ -150,6 +150,9 @@ const LIMIT: usize = 32 << 20;
 /// Frame `n` of a PNG strip of `meta.frames` along `meta.axis`, as RGBA8.
 /// A vertical strip stops decoding at the frame's last row.
 fn decode(bytes: &[u8], meta: ImageMeta, n: u32) -> Option<Image> {
+    if bytes.starts_with(&[0xff, 0xd8]) {
+        return jpeg(bytes);
+    }
     let mut decoder =
         png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: LIMIT });
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
@@ -215,9 +218,42 @@ fn decode(bytes: &[u8], meta: ImageMeta, n: u32) -> Option<Image> {
     Image::rgba(fw as u32, fh as u32, out)
 }
 
+/// A JPEG (a library's cover), whole, as RGBA8: JPEGs are stills.
+fn jpeg(bytes: &[u8]) -> Option<Image> {
+    use zune_jpeg::zune_core::bytestream::ZCursor;
+    use zune_jpeg::zune_core::colorspace::ColorSpace;
+    use zune_jpeg::zune_core::options::DecoderOptions;
+    let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
+    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options);
+    decoder.decode_headers().ok()?;
+    let info = decoder.info()?;
+    let (w, h) = (u32::from(info.width), u32::from(info.height));
+    if usize::from(info.width) * usize::from(info.height) * 4 > LIMIT {
+        return None;
+    }
+    Image::rgba(w, h, decoder.decode().ok()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_jpeg_decodes_whole_as_a_still() {
+        let bytes = include_bytes!("../tests/fixtures/cover.jpg");
+        let image = decode(bytes, ImageMeta::default(), 0);
+        let image = image
+            .as_ref()
+            .map(|i| (i.width, i.height, i.rgba.get(..4).map(<[u8]>::to_vec)));
+        let Some((8, 4, Some(px))) = image else {
+            panic!("{image:?}");
+        };
+        // The red it was saved with, give or take the JPEG's rounding.
+        assert!(
+            px[0] > 180 && px[1] < 70 && px[2] < 50 && px[3] == 255,
+            "{px:?}"
+        );
+    }
 
     pub(crate) fn png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
