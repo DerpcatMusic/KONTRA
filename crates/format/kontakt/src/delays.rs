@@ -99,6 +99,9 @@ pub(crate) fn delay(time: f32, feedback: f32, pan: f32, damping: f32, unit: f32)
         output: ir::IDENTITY,
         damping_hz: corner(1.0 - DELAY_DAMPING * damping),
         low_cut_hz: 0.0,
+        steep_low_cut: false,
+        high_shelf: None,
+        spread_ms: 0.0,
         rate: ir::Rate::Hz(0.0),
         phase: 0.0,
     }
@@ -118,6 +121,9 @@ fn chorus(speed: f32, phase: f32, unit: f32) -> ir::Delay {
         output: ir::IDENTITY,
         damping_hz: corner(CHORUS_SMOOTHING),
         low_cut_hz: 0.0,
+        steep_low_cut: false,
+        high_shelf: None,
+        spread_ms: 0.0,
         rate: rate(speed, unit),
         phase: QUARTER * phase.clamp(0.0, 1.0),
     }
@@ -139,6 +145,9 @@ fn flanger(depth: f32, feedback: f32, speed: f32, phase: f32, colour: f32, unit:
         output: ir::IDENTITY,
         damping_hz: f32::INFINITY,
         low_cut_hz: 0.0,
+        steep_low_cut: false,
+        high_shelf: None,
+        spread_ms: 0.0,
         rate: rate(speed, unit),
         phase: QUARTER * phase.clamp(0.0, 1.0),
     }

@@ -95,6 +95,12 @@ pub struct Delay {
     pub damping_hz: f32,
     /// The heads' one-pole high-pass corner; 0 for none.
     pub low_cut_hz: f32,
+    /// The low cut is a second-order high-pass, Q ½, not the one-pole.
+    pub steep_low_cut: bool,
+    /// A high shelf on the heads, inside the loop (`q` its slope).
+    pub high_shelf: Option<crate::Bell>,
+    /// How much shorter the left line runs and longer the right, ms.
+    pub spread_ms: f32,
     pub rate: Rate,
     /// Cycles the right LFO runs ahead of the left.
     pub phase: f32,

@@ -42,6 +42,9 @@ pub(super) fn flanger(node: Node) -> Result<ir::Effect, String> {
         output: ir::IDENTITY,
         damping_hz: f32::INFINITY,
         low_cut_hz: 0.0,
+        steep_low_cut: false,
+        high_shelf: None,
+        spread_ms: 0.0,
         rate: rate(node, f32::INFINITY)?,
         phase: 0.0,
     };

@@ -255,6 +255,16 @@ fn delay(d: ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
         output: d.output,
         damping_hz: d.damping_hz,
         low_cut_hz: d.low_cut_hz,
+        steep_low_cut: d.steep_low_cut,
+        high_shelf: d
+            .high_shelf
+            .filter(|b| b.gain_db != 0.0)
+            .map(|b| kontra_dsp::delay::Shelf {
+                hz: b.hz,
+                gain_db: b.gain_db,
+                slope: b.q,
+            }),
+        spread_ms: d.spread_ms,
         lfo_hz: hz(d.rate, tempo),
         phase: d.phase,
     }

@@ -1,4 +1,4 @@
-use kontra_dsp_delay::{ModDelay, Phaser, PhaserSettings, Settings};
+use kontra_dsp_delay::{ModDelay, Phaser, PhaserSettings, Settings, Shelf};
 
 const RATE: u32 = 48_000;
 const IDENTITY: [[f32; 2]; 2] = [[1.0, 0.0], [0.0, 1.0]];
@@ -17,6 +17,9 @@ fn echo() -> Settings {
         output: IDENTITY,
         damping_hz: f32::INFINITY,
         low_cut_hz: 0.0,
+        steep_low_cut: false,
+        high_shelf: None,
+        spread_ms: 0.0,
         lfo_hz: 0.0,
         phase: 0.0,
     }
@@ -73,6 +76,36 @@ fn cross_feedback_ping_pongs_and_the_cuts_round_the_repeats() {
 }
 
 #[test]
+fn the_spread_splits_the_lines_and_the_shelf_cuts_only_the_highs() {
+    let mut s = echo();
+    s.feedback = diagonal(0.0);
+    s.spread_ms = 1.0;
+    let mut io = impulse(1000);
+    ModDelay::new(s, RATE, 10.0).process(&mut io);
+    assert!((io[432][0] - 1.0).abs() < 1e-6 && (io[528][1] - 1.0).abs() < 1e-6);
+
+    s.spread_ms = 0.0;
+    s.high_shelf = Some(Shelf {
+        hz: 1000.0,
+        gain_db: -10.0,
+        slope: 0.75,
+    });
+    let mut io = impulse(4000);
+    ModDelay::new(s, RATE, 10.0).process(&mut io);
+    let dc: f32 = io.iter().map(|f| f[0]).sum();
+    let nyquist: f32 = io
+        .iter()
+        .zip([1.0, -1.0].iter().cycle())
+        .map(|(f, s)| f[0] * s)
+        .sum();
+    assert!((dc - 1.0).abs() < 1e-3, "the lows pass: {dc}");
+    assert!(
+        (nyquist.abs() - 10f32.powf(-0.5)).abs() < 0.01,
+        "the highs fall 10 dB: {nyquist}"
+    );
+}
+
+#[test]
 fn a_new_time_glides_without_a_jump() {
     let mut d = ModDelay::new(echo(), RATE, 100.0);
     let mut tone: Vec<[f32; 2]> = (0..4800).map(|i| [(i as f32 * 0.01).sin(); 2]).collect();
@@ -124,6 +157,9 @@ fn legacy_chorus_and_flanger_land_near_the_native_vectors() {
         output: IDENTITY,
         damping_hz: 22_885.0,
         low_cut_hz: 0.0,
+        steep_low_cut: false,
+        high_shelf: None,
+        spread_ms: 0.0,
         lfo_hz: 1.5,
         phase: 0.3 * 0.25,
     };
@@ -148,6 +184,9 @@ fn legacy_chorus_and_flanger_land_near_the_native_vectors() {
         output: IDENTITY,
         damping_hz: f32::INFINITY,
         low_cut_hz: 0.0,
+        steep_low_cut: false,
+        high_shelf: None,
+        spread_ms: 0.0,
         lfo_hz: 0.8,
         phase: 0.4 * 0.25,
     };

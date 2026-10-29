@@ -119,6 +119,27 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
             Slot(ir::SlotKnob::DelayDamping),
             lin(0.0, 1.0),
         ),
+        // Replika (crate::replika).
+        (
+            "$ENGINE_PAR_RDL_TIME",
+            Slot(ir::SlotKnob::DelayTime),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_RDL_FEEDBACK",
+            Slot(ir::SlotKnob::DelayFeedback),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_RDL_LOWCUT",
+            Slot(ir::SlotKnob::DelayLowCut),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_RDL_HIGHCUT",
+            Slot(ir::SlotKnob::DelayHighCut),
+            lin(0.0, 1.0),
+        ),
         // The Limiter: input −24 + 48x dB, release its saved-ms law
         // (probes/fx_knob_laws.lua).
         (
@@ -495,7 +516,7 @@ pub(crate) fn eq_knobs(saved: &[[f32; 3]]) -> Vec<SlotKnob> {
 /// high cut and low shelf 0, stereo 1, output and dry at unity (an insert's;
 /// a send slot's dry starts at 0, the engine's rule); for
 /// `$EFFECT_TYPE_SEND_LEVELS` (11) every level at unity (630000; oracle
-/// probe rvdef, 2026-10-29).
+/// probe rvdef, 2026-10-29); for `$EFFECT_TYPE_REPLIKA` (40) [`crate::replika::INIT`].
 // ponytail: Kontakt carries the filter's cutoff and resonance into a
 // subtype it switches to (oracle: 0.3 and 0.7 stay); a loaded subtype here
 // starts at its defaults. The corpus scripts write both after loading.
@@ -536,11 +557,22 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         ..unit(ir::EffectKind::Reverb(reverb))
     });
     let sends = Some(unit(ir::EffectKind::Sends([1.0; 8])));
+    let replika = crate::replika::delay(crate::replika::INIT).map(|d| ir::Effect {
+        dry: 1.0,
+        ..unit(ir::EffectKind::Delay(d))
+    });
     // ponytail: an empty slot's subtype readback is unmeasured; 0, as for
     // the reverb and send levels.
     vec![
         ty(39, false, 0, reverb, [].into()),
         ty(11, false, 0, sends, [].into()),
+        ty(
+            40,
+            false,
+            0,
+            replika,
+            crate::replika::knobs(crate::replika::INIT).into(),
+        ),
         ty(0, false, 0, None, [].into()),
         ty(7, false, 100, filter, shape_laws(100)),
         ty(24, true, 24, eq, eq_knobs(&saved).into()),
@@ -631,7 +663,7 @@ pub(crate) fn delay_knobs(saved: [f32; 5]) -> Vec<SlotKnob> {
 
 /// Each of `fields` that moves in the effect `build` makes for a knob at 65
 /// settings, as a table.
-fn sampled(
+pub(crate) fn sampled(
     knob: ir::SlotKnob,
     fields: &[ir::EffectParam],
     build: &dyn Fn(f32) -> Option<ir::EffectKind>,
