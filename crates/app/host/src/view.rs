@@ -32,7 +32,7 @@ impl View {
             let slot = u8::try_from(slot).ok()?;
             let face = face.as_ref()?;
             let live = Live::new(face, slot, engine, &meta).ok()?;
-            let frame = LookFrame::new(slot, &live, face, engine, 2);
+            let frame = LookFrame::new(slot, &live, face, engine);
             Some(Self {
                 slot,
                 live,
@@ -62,13 +62,16 @@ impl View {
         };
         // An overflowed frame has stale lists under new generations: the
         // tree waits for the grown one rather than remember them as seen.
-        if frame.filled && !frame.overflow {
+        if frame.state == Filled::Whole {
             let changes: Changes = self.live.refresh(face, self.slot, &*frame, &meta);
             if !changes.is_empty() {
                 self.revision += 1;
             }
         }
-        self.frame = Some(if frame.overflow { frame.grown() } else { frame });
+        self.frame = Some(match frame.state {
+            Filled::Overflowed => frame.grown(),
+            Filled::No | Filled::Whole => frame,
+        });
     }
 
     /// The script control behind `widget`, as (slot, UI id), and `value`
@@ -107,14 +110,28 @@ pub struct LookFrame {
     looks: Box<[Look]>,
     cells: Box<[(u32, Option<i64>)]>,
     page: Option<Page>,
-    filled: bool,
-    /// A list outgrew its room: some look is stale, grow and ask again.
-    overflow: bool,
+    state: Filled,
 }
 
+/// How a [`LookFrame`] came back from the audio side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Filled {
+    /// Not filled: new, or the part was gone or reloaded when it arrived.
+    No,
+    Whole,
+    /// A list outgrew its room: some look is stale, grow and ask again.
+    Overflowed,
+}
+
+/// A new frame's lists hold this many times what the script set so far,
+/// and at least [`MIN_ROOM`]: more room, fewer trips that overflow and
+/// grow, against more memory per control.
+const ROOM: usize = 2;
+const MIN_ROOM: usize = 4;
+
 impl LookFrame {
-    /// A frame for `live`'s reads, with `room` times what `now` holds.
-    fn new(slot: u8, live: &Live, face: &Face, now: &dyn Looks, room: usize) -> Box<Self> {
+    /// A frame for `live`'s reads, with [`ROOM`] times what `now` holds.
+    fn new(slot: u8, live: &Live, face: &Face, now: &dyn Looks) -> Box<Self> {
         let (mut ids, mut cells) = live.reads(face);
         ids.sort_unstable();
         ids.dedup();
@@ -124,7 +141,7 @@ impl LookFrame {
             .into_iter()
             .map(|id| {
                 let l = now.control_look(slot, id);
-                let len = |n: usize| (n * room).max(4);
+                let len = |n: usize| (n * ROOM).max(MIN_ROOM);
                 Look {
                     id,
                     present: false,
@@ -143,14 +160,13 @@ impl LookFrame {
             looks,
             cells: cells.into_iter().map(|c| (c, None)).collect(),
             page: None,
-            filled: false,
-            overflow: false,
+            state: Filled::No,
         })
     }
 
     /// Copies the reads out of `engine`; on the audio thread, in place.
     pub(crate) fn fill(&mut self, engine: &Engine) {
-        self.overflow = false;
+        let mut whole = true;
         for l in &mut *self.looks {
             let Some(c) = engine.control_look(self.slot, l.id) else {
                 l.present = false;
@@ -162,7 +178,7 @@ impl LookFrame {
                 let ok = copy(&mut l.pars, c.pars)
                     & copy(&mut l.texts, c.texts)
                     & copy(&mut l.menu, c.menu);
-                self.overflow |= !ok;
+                whole &= ok;
             }
             l.present = true;
             l.generation = c.generation;
@@ -171,7 +187,11 @@ impl LookFrame {
             *value = engine.script_cell_in(self.slot, *cell as usize);
         }
         self.page = engine.page(self.slot).copied();
-        self.filled = true;
+        self.state = if whole {
+            Filled::Whole
+        } else {
+            Filled::Overflowed
+        };
     }
 
     /// The same reads with twice the room in every list, to ask again.
@@ -190,15 +210,14 @@ impl LookFrame {
         Box::new(Self {
             looks,
             cells: self.cells.clone(),
-            filled: false,
-            overflow: false,
+            state: Filled::No,
             ..*self
         })
     }
 
     /// Not filled: the part was gone or reloaded when it arrived.
     pub(crate) fn unfilled(&mut self) {
-        self.filled = false;
+        self.state = Filled::No;
     }
 }
 
