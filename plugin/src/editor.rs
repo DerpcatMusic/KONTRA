@@ -341,6 +341,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 bridge.drag_gesture(P::Volume, db);
                 continue;
             }
+            if action == Action::AddFolder {
+                crate::folder::ask(&p.shared);
+                continue;
+            }
             if let Some(event) = played(&action) {
                 if let Some(player) = lock(&p.shared.player).as_ref() {
                     player.play(event);
