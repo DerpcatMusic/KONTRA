@@ -7,4 +7,5 @@ pub mod instrument;
 pub mod perf_view;
 pub mod rack;
 pub mod script;
+pub mod state;
 pub mod ui;
