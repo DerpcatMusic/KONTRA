@@ -1,5 +1,8 @@
 //! Modulation routes of a program that the engine carries.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use kontra_ir as ir;
 use roxmltree::Node;
 
@@ -529,12 +532,22 @@ fn multi(node: Node) -> Option<ir::Wave> {
     // Dense phases and both sides of the pulse's edges find the peak.
     const STEPS: u16 = 4096;
     let edges = [0.0, width - 1e-6, width, 1.0 - 1e-6];
-    let peak = (0..STEPS)
-        .map(|i| f32::from(i) / f32::from(STEPS))
-        .chain(edges)
-        .map(|p| at(p).abs())
-        .fold(0.0, f32::max)
-        + n.abs();
+    // ponytail: one peak per mix for the thread's life (a bank has a few
+    // dozen); every route through the LFO asks again.
+    thread_local! {
+        static PEAKS: RefCell<HashMap<[u32; 5], f32>> = RefCell::new(HashMap::new());
+    }
+    let key = [s, t, w, q, width].map(f32::to_bits);
+    let wave = PEAKS.with_borrow_mut(|peaks| {
+        *peaks.entry(key).or_insert_with(|| {
+            (0..STEPS)
+                .map(|i| f32::from(i) / f32::from(STEPS))
+                .chain(edges)
+                .map(|p| at(p).abs())
+                .fold(0.0, f32::max)
+        })
+    });
+    let peak = wave + n.abs();
     if !peak.is_finite() {
         return None;
     }
@@ -673,12 +686,24 @@ pub(super) fn steps(node: Node) -> Option<(ir::Lfo, Vec<f32>)> {
         ir::Rate::Hz(freq / n as f32)
     };
     let last = ENTRIES_PER_STEP * n;
-    let table = (0..=last)
-        .map(|j| {
-            let step = (n * (last - j)).div_euclid(last) % n;
-            levels.get(step).copied().unwrap_or(0.0)
-        })
-        .collect();
+    // ponytail: as `multi`'s peaks, one table per step pattern.
+    thread_local! {
+        static TABLES: RefCell<HashMap<Vec<u32>, Vec<f32>>> = RefCell::new(HashMap::new());
+    }
+    let key = levels.iter().map(|l| l.to_bits()).collect();
+    let table = TABLES.with_borrow_mut(|tables| {
+        tables
+            .entry(key)
+            .or_insert_with(|| {
+                (0..=last)
+                    .map(|j| {
+                        let step = (n * (last - j)).div_euclid(last) % n;
+                        levels.get(step).copied().unwrap_or(0.0)
+                    })
+                    .collect()
+            })
+            .clone()
+    });
     let lfo = ir::Lfo {
         wave: ir::Wave::Saw,
         rate,
