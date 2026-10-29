@@ -4,7 +4,7 @@
 -- millicents, pan in per mille.
 
 -- Calls made while the script loads, before any callback, wait for init.
-local pending = {}
+local pending, pending_routes = {}, {}
 local host_call = function(name, ...)
 	if not __host then
 		table.insert(pending, table.pack(Action[name], ...))
@@ -250,7 +250,14 @@ function Connection.setParameter(c, name, value)
 		return
 	end
 	if c[4] >= 0 then
-		host_call("RouteAmount", c[4], c[6] and 0 or math.floor(c[3] * c[5] * 1e6 + 0.5))
+		local amount = c[6] and 0 or math.floor(c[3] * c[5] * 1e6 + 0.5)
+		if __host then
+			host_call("RouteAmount", c[4], amount)
+		else
+			-- Before init only a route's last amount is kept: AO's knobs set
+			-- the same routes hundreds of times while they load.
+			pending_routes[c[4]] = amount
+		end
 	end
 end
 
@@ -268,80 +275,126 @@ local function definitions(e)
 end
 
 -- Falcon elements are userdata: scripts tell one element from a list of
--- elements by type().
-local function element(node)
-	node = node or {}
-	local fields = {
-		params = {},
-		group = node.group or false,
-		bus = node.bus or false,
-	}
-	local links = node.links or {}
-	local e = newproxy(true)
-	local meta = getmetatable(e)
-	meta.__index = function(_, key)
-		local value = fields[key]
-		if value ~= nil then
-			return value
-		end
-		if key == "parameterDefinitions" then
-			return definitions(fields)
-		end
-		return function() end
+-- elements by type(). Each proxy's metatable holds only the shared `__index`
+-- and its own fields as `__newindex`; methods are shared, containers made on
+-- first use, so a big program's ten thousand elements stay light.
+local EMPTY = {}
+local LINKS, CONNECTIONS = {}, {}
+local is_container = {}
+for _, key in ipairs(containers) do
+	is_container[key] = true
+end
+local function noop() end
+local function fields_of(e)
+	return getmetatable(e).__newindex
+end
+
+local Element = {}
+function Element.getParameter(self, name)
+	return self.params[name]
+end
+function Element.hasParameter(self, name)
+	return self.params[name] ~= nil
+end
+function Element.setParameter(self, name, value)
+	self.params[name] = value
+end
+
+local element
+-- One past an element's connections on a parameter is an element that keeps
+-- what it is set to.
+local blank_connections = {
+	__index = function(l, i)
+		local c = element()
+		c.params.Ratio = 0
+		rawset(l, i, c)
+		return c
+	end,
+}
+-- The connections on parameter `name`, in order; one list per name.
+function Element.getParameterConnections(self, name)
+	local fields = fields_of(self)
+	local cache = fields[CONNECTIONS]
+	if not cache then
+		cache = {}
+		fields[CONNECTIONS] = cache
 	end
-	meta.__newindex = fields
-	for _, key in ipairs(containers) do
+	local list = cache[name]
+	if list then
+		return list
+	end
+	list = {}
+	for _, i in ipairs(fields[LINKS] or EMPTY) do
+		local c = tree.connections and tree.connections[i]
+		if c and c[2] == name then
+			table.insert(list, setmetatable(c, Connection))
+		end
+	end
+	cache[name] = setmetatable(list, blank_connections)
+	return list
+end
+
+local function element_index(e, key)
+	local fields = fields_of(e)
+	local value = fields[key]
+	if value ~= nil then
+		return value
+	end
+	if key == "sends" then
+		return e.busRouters
+	end
+	if is_container[key] then
 		local list = {}
-		for i, child in ipairs(node[key] or {}) do
-			list[i] = element(child)
-			list[i].index = i
-			list[i].parent = e
-		end
-		e[key] = list
+		fields[key] = list
+		return list
 	end
-	e.sends = e.busRouters
-	for _, m in ipairs(e.modulations) do
-		if m.params.Name then
-			e.modulations[m.params.Name] = m
-		end
+	if key == "parameterDefinitions" then
+		return definitions(fields)
 	end
-	for name, text in pairs(node.params or {}) do
+	return Element[key] or noop
+end
+
+function element(node)
+	node = node or {}
+	-- The format's params, converted in place.
+	local params = node.params or {}
+	for name, text in pairs(params) do
 		local n = tonumber(text)
 		if flags[name] then
-			e.params[name] = n ~= nil and n ~= 0
+			params[name] = n ~= nil and n ~= 0
 		else
-			e.params[name] = n or text
+			params[name] = n or text
 		end
 	end
-	e.name = e.params.Name
-	e.displayName = e.params.DisplayName
-	e.getParameter = function(self, name)
-		return self.params[name]
-	end
-	e.hasParameter = function(self, name)
-		return self.params[name] ~= nil
-	end
-	e.setParameter = function(self, name, value)
-		self.params[name] = value
-	end
-	-- The connections on parameter `name`, in order; one past them is an
-	-- element that keeps what it is set to.
-	e.getParameterConnections = function(_, name)
-		local list = {}
-		for _, i in ipairs(links) do
-			local c = tree.connections and tree.connections[i]
-			if c and c[2] == name then
-				table.insert(list, setmetatable(c, Connection))
+	local fields = {
+		params = params,
+		group = node.group or false,
+		bus = node.bus or false,
+		name = params.Name,
+		displayName = params.DisplayName,
+		[LINKS] = node.links,
+	}
+	local e = newproxy(true)
+	local meta = getmetatable(e)
+	meta.__index = element_index
+	meta.__newindex = fields
+	for _, key in ipairs(containers) do
+		local children = node[key]
+		if children and #children > 0 then
+			local list = {}
+			for i, child in ipairs(children) do
+				local c = element(child)
+				c.index = i
+				c.parent = e
+				list[i] = c
 			end
+			fields[key] = list
 		end
-		return setmetatable(list, {
-			__index = function(l, i)
-				local c = element()
-				c.params.Ratio = 0
-				rawset(l, i, c)
-				return c
-			end,
-		})
+	end
+	for _, m in ipairs(fields.modulations or EMPTY) do
+		if m.params.Name then
+			fields.modulations[m.params.Name] = m
+		end
 	end
 	return e
 end
@@ -353,8 +406,9 @@ local function each_bus(e, f)
 	if e.bus then
 		f(e)
 	end
+	local fields = fields_of(e)
 	for _, key in ipairs(containers) do
-		for _, child in ipairs(e[key] or {}) do
+		for _, child in ipairs(fields[key] or EMPTY) do
 			each_bus(child, f)
 		end
 	end
@@ -395,13 +449,15 @@ end
 
 local levels = { Gain = true, Pan = true, Mute = true, Bypass = true }
 
-local function leveled(e)
-	e.setParameter = function(self, name, value)
-		self.params[name] = value
-		if levels[name] then
-			apply_levels()
-		end
+local function set_level(self, name, value)
+	self.params[name] = value
+	if levels[name] then
+		apply_levels()
 	end
+end
+
+local function leveled(e)
+	e.setParameter = set_level
 	return e
 end
 
@@ -636,6 +692,10 @@ __entries = {
 			__host(table.unpack(call, 1, call.n))
 		end
 		pending = {}
+		for route, amount in pairs(pending_routes) do
+			__host(Action.RouteAmount, route, amount)
+		end
+		pending_routes = {}
 		apply_levels()
 		if onInit then
 			onInit()

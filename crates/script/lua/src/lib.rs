@@ -510,7 +510,8 @@ mod tests {
 
     /// Two layers; the second's keygroups made engine groups 3 and 4.
     const TREE: &str = "return {params={DisplayName='Horn'},db=0,pan=0,layers={
-        {params={DisplayName='FX',Gain='1'},bus=1,keygroups={{params={},group=0}}},
+        {params={DisplayName='FX',Gain='1'},bus=1,keygroups={{params={},group=0}},
+         busRouters={{params={Name='Send0',Gain='0.5'}}}},
         {params={DisplayName='Sustain',Gain='0'},bus=2,
          keygroups={{params={Gain='1'},group=3},{params={},group=nil},{params={},group=4}}}},
         auxs={{params={Name='Aux0',Gain='0.5'},bus=3}}}";
@@ -573,6 +574,21 @@ mod tests {
     }
 
     #[test]
+    fn elements_keep_their_shape_when_their_containers_are_made_on_use() {
+        // AO's _Engine/Part sets `layer.sends[i]`; an empty container is one table.
+        let source = "local fx, sustain = Program.layers[1], Program.layers[2]
+            assert(type(fx) == 'userdata' and fx.sends == fx.busRouters)
+            fx.sends[1]:setParameter('Gain', 0.25)
+            assert(fx.busRouters[1]:getParameter('Gain') == 0.25 and fx.busRouters[1].parent == fx)
+            assert(#sustain.sends == 0 and #sustain.inserts == 0)
+            assert(sustain.inserts == sustain.inserts and sustain:noSuchMethod() == nil)
+            local list = sustain:getParameterConnections('Gain')
+            assert(#list == 0 and list[1]:getParameter('Ratio') == 0)
+            assert(sustain:getParameterConnections('Gain') == list)";
+        run(source, Callbacks::INIT);
+    }
+
+    #[test]
     fn a_layers_fader_and_an_auxs_gain_are_bus_volumes() {
         // The fader leaves the groups at their own gain; muting silences them.
         let log = run("", Callbacks::INIT);
@@ -620,12 +636,13 @@ mod tests {
         let mut log = Log(Vec::new());
         assert_eq!(m.run(co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
-        // −0.5 a unit of ratio: at the default 0, then at the saved 0.25.
+        // −0.5 a unit of ratio at the saved 0.25: the default 0 it was built
+        // at was set before init too, so only the last amount reaches the host.
         let amounts: Vec<_> = (log.0.iter())
             .filter(|(a, _)| *a == Action::RouteAmount)
             .map(|(_, ints)| ints.clone())
             .collect();
-        assert_eq!(amounts, [vec![42, 0], vec![42, -125_000]]);
+        assert_eq!(amounts, [vec![42, -125_000]]);
     }
 
     #[test]
@@ -646,6 +663,18 @@ mod tests {
         let mut log = Log(Vec::new());
         assert_eq!(m.run(co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
+        let amounts: Vec<_> = (log.0.iter())
+            .filter(|(a, _)| *a == Action::RouteAmount)
+            .map(|(_, ints)| ints.clone())
+            .collect();
+        // Set while loading: the route's last amount, bypassed, arrives at init.
+        assert_eq!(amounts, [vec![7, 0]]);
+        let live = "function onInit() c[2]:setParameter('Bypass', false) c[2]:setParameter('Bypass', true) end";
+        let source = format!("{source}\n{live}");
+        let mut m = compile(&source, &modules, &[]).unwrap().machine();
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        let mut log = Log(Vec::new());
+        assert_eq!(m.run(co, &mut log), Step::Done);
         let amounts: Vec<_> = (log.0.iter())
             .filter(|(a, _)| *a == Action::RouteAmount)
             .map(|(_, ints)| ints.clone())
