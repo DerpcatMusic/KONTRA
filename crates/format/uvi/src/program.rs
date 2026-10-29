@@ -65,7 +65,7 @@ pub(crate) fn unfinished<'a, L: Library>(
                 .or_else(|| program.attribute("Name"))
                 .unwrap_or_default()
                 .into(),
-            voices: num(program, "Polyphony", 64.0)?.clamp(1.0, 1024.0) as u16,
+            voices: routing::voices(program)?,
             output: ir::Output {
                 controllers: Some(routing::PART_CONTROLLERS),
                 balance: routing::PART_BALANCE,
