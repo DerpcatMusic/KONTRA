@@ -191,9 +191,11 @@ impl Look {
                     && style.is_none_or(|s| matches!(s.font, model::Font::Stock(0 | 12)))
                 {
                     // The measured stock font advances four pixels for a space.
-                    let space = style
-                        .is_some_and(|s| s.font == model::Font::Stock(12))
-                        .then_some(4.);
+                    let metrics = if style.is_some_and(|s| s.font == model::Font::Stock(12)) {
+                        StockMetrics::Button12
+                    } else {
+                        StockMetrics::Field
+                    };
                     parts.push(field_words(
                         caption,
                         ink,
@@ -201,7 +203,7 @@ impl Look {
                         (w, h, scale, device),
                         glyphs,
                         style.map_or(model::Rgba::rgb(DARK), |s| s.color),
-                        space,
+                        metrics,
                     ));
                 } else {
                     parts.push(words(caption, ink, model::Align::Center, w, h, scale));
@@ -228,7 +230,7 @@ impl Look {
                     (w, h, scale, device),
                     font,
                     color,
-                    None,
+                    StockMetrics::Field,
                 ));
                 if !wd.hide.value {
                     parts.push(field_words(
@@ -238,7 +240,7 @@ impl Look {
                         (w, h, scale, device),
                         font,
                         color,
-                        None,
+                        StockMetrics::Field,
                     ));
                 }
                 parts
@@ -264,6 +266,12 @@ impl Look {
     }
 }
 
+#[derive(Clone, Copy)]
+enum StockMetrics {
+    Field,
+    Button12,
+}
+
 fn field_words(
     text: &str,
     ink: Color,
@@ -271,7 +279,7 @@ fn field_words(
     (w, h, s, device): (f64, f64, f64, f64),
     glyphs: Option<&crate::pictures::Glyphs>,
     color: model::Rgba,
-    space: Option<f64>,
+    metrics: StockMetrics,
 ) -> El {
     let Some(glyphs) = glyphs else {
         return words(text, ink, align, w, h, s);
@@ -284,7 +292,10 @@ fn field_words(
     }
     let advance = |c: char, glyph: &Image| {
         (if c == ' ' {
-            space.unwrap_or(f64::from(glyph.width))
+            match metrics {
+                StockMetrics::Field => f64::from(glyph.width),
+                StockMetrics::Button12 => 4.,
+            }
         } else {
             f64::from(glyph.width)
         }) * s
@@ -324,10 +335,14 @@ fn field_words(
             if let Some(image) = Image::rgba(glyph.width, glyph.height, pixels)
                 .and_then(|image| crate::pictures::at_stock(image, device as f32))
             {
-                layers.push(
-                    super::image(&Arc::new(image), width, height)
-                        .at(x, (h - height) / 2. - if space.is_some() { 0. } else { s }),
-                );
+                layers.push(super::image(&Arc::new(image), width, height).at(
+                    x,
+                    (h - height) / 2.
+                        - match metrics {
+                            StockMetrics::Field => s,
+                            StockMetrics::Button12 => 0.,
+                        },
+                ));
             }
             x += advance(c, glyph);
         }

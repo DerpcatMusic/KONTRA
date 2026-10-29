@@ -1,6 +1,6 @@
 //! Optional stock artwork from a user's installed Kontakt executable.
 //!
-//! The four PNGs are identified by dimensions, byte length and CRC-32 from
+//! The PNGs are identified by dimensions, byte length and CRC-32 from
 //! Kontakt 8.13.1. Unknown versions safely use the built-in vector fallback;
 //! no vendor artwork is distributed with KONTRA.
 
