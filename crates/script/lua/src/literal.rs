@@ -56,7 +56,7 @@ impl Reader<'_> {
         {
             self.at += 1;
         }
-        let name = std::str::from_utf8(&self.bytes[start..self.at]).ok()?;
+        let name = std::str::from_utf8(self.bytes.get(start..self.at)?).ok()?;
         name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
             .then_some(name)
     }
@@ -88,7 +88,7 @@ impl Reader<'_> {
         {
             self.at += 1;
         }
-        let text = std::str::from_utf8(&self.bytes[start..self.at]).ok()?;
+        let text = std::str::from_utf8(self.bytes.get(start..self.at)?).ok()?;
         text.parse().ok().map(Value::Number)
     }
 
