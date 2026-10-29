@@ -44,6 +44,11 @@ impl Engine {
     }
 
     pub(crate) fn control_par(&mut self, cells: &[i64], id: i32, par: i32) -> i32 {
+        let keys = self.script().map_or([i32::MIN; 3], |s| s.controls.key_pars);
+        if let Some(key) = keys.iter().position(|&k| k == par && k != i32::MIN) {
+            let n = self.control_index_in(self.running.slot, id);
+            return self.ui.click_key(self.running.slot, n, key);
+        }
         let value = self.control_par_of(cells, id, par);
         let menu_value =
             self.control_par_of(cells, id, self.script().map_or(0, |s| s.controls.value_par));

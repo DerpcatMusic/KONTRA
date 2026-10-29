@@ -274,6 +274,12 @@ fn controls(script: &Script) -> Controls {
         cells,
         steps,
         look: look(script),
+        key_pars: [
+            "$CONTROL_PAR_KEY_SHIFT",
+            "$CONTROL_PAR_KEY_ALT",
+            "$CONTROL_PAR_KEY_CONTROL",
+        ]
+        .map(|name| symbol(script, name)),
     }
 }
 

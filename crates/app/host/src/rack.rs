@@ -13,6 +13,7 @@ use crate::persist::Capture;
 pub use kontra_engine::{Event, HostNote, HostPattern, NoteExpression, Plan};
 use kontra_protocol::{MAX_PARTS, MeterCells, Meters, Ring, StatCells, Stats};
 pub use kontra_stream::{Store, StoreConfig};
+use kontra_ui_model::UiModifiers;
 
 mod audio;
 mod hold;
@@ -86,12 +87,14 @@ pub enum Command {
     Capture(Box<Capture>),
     /// Copy what a part's interface reads of its script and send it back.
     Look(Box<crate::view::LookFrame>),
-    /// The user moved control `id` of script `slot` to `value`.
+    /// The user moved control `id` of script `slot` to `value`, holding
+    /// `keys` at the click.
     Control {
         part: usize,
         slot: u8,
         id: i32,
         value: i64,
+        keys: UiModifiers,
     },
     /// The user moved widget `n` of script `slot`'s own page to `value`.
     Widget {
@@ -428,7 +431,7 @@ impl Rack {
 
     /// The user moved `widget` of `part`'s interface to `value`: the
     /// control's script gets it and runs its callback at the next block.
-    pub fn control(&mut self, part: usize, widget: usize, value: f64) {
+    pub fn control(&mut self, part: usize, widget: usize, value: f64, keys: UiModifiers) {
         let Some(Some(p)) = self.parts.get(part) else {
             return;
         };
@@ -443,7 +446,13 @@ impl Rack {
                 value,
             });
         } else if let Some((slot, id, value)) = view.control(widget, value) {
-            self.set_control(part, slot, id, value);
+            self.send(Command::Control {
+                part,
+                slot,
+                id,
+                value,
+                keys,
+            });
         }
     }
 
@@ -511,6 +520,7 @@ impl Rack {
             slot,
             id,
             value,
+            keys: UiModifiers::default(),
         });
     }
 

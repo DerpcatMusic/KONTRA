@@ -338,11 +338,13 @@ pub enum Action {
     Velocity(usize, u8),
     Articulation(usize, usize),
     /// A library's own control set by the user: the widget of the part's
-    /// interface and its value, for the host to write into the engine.
+    /// interface, its value and the keys held at the click, for the host to
+    /// write into the engine.
     Control {
         part: usize,
         widget: usize,
         value: f64,
+        keys: kontra_ui_model::UiModifiers,
     },
     /// A value of a part's sound, for one group or all of them.
     Sound {

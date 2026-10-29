@@ -64,6 +64,7 @@ pub(super) fn view(
                 part: n,
                 widget: e.widget.0,
                 value: e.value,
+                keys: e.keys,
             }));
             el
         }

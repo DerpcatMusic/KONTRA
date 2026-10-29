@@ -82,6 +82,9 @@ pub struct Controls {
     pub by_cell: Vec<(u32, u32)>,
     /// Where the UI-look builtins store what they set.
     pub look: LookPars,
+    /// The parameter ids that read whether Shift, Alt and Ctrl were held at
+    /// the control's last click; `i32::MIN` when the script never names one.
+    pub key_pars: [i32; 3],
 }
 
 impl Controls {
