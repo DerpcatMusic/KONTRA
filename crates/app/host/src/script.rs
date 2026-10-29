@@ -38,6 +38,7 @@ const ENGINE_PARS: &[(&str, EnginePar)] = {
         ("$ENGINE_PAR_SENDLEVEL_6", P::SendLevel(6)),
         ("$ENGINE_PAR_SENDLEVEL_7", P::SendLevel(7)),
         // RV2_MOD is not carried.
+        ("$ENGINE_PAR_RV2_TYPE", P::ReverbNetwork),
         ("$ENGINE_PAR_RV2_TIME", P::Reverb(R::Seconds)),
         ("$ENGINE_PAR_RV2_SIZE", P::Reverb(R::Size)),
         ("$ENGINE_PAR_RV2_DAMPING", P::Reverb(R::Damping)),
@@ -127,6 +128,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
                 .collect(),
         },
         reverb_laws: kontra_format_kontakt::reverb_laws(),
+        reverb_networks: kontra_format_kontakt::reverb_networks().into(),
         knobs: knobs.iter().map(|(_, t, law)| (*t, law.clone())).collect(),
         data: data
             .iter()
@@ -287,6 +289,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         engine_pars: EnginePars::default(),
         // No reverb parameter ids are bound, so these are never read.
         reverb_laws: std::array::from_fn(|_| kontra_engine::ir::Law::Linear { lo: 0.0, hi: 1.0 }),
+        reverb_networks: Vec::new(),
         knobs: Vec::new(),
         data: Vec::new(),
         restore: Vec::new(),

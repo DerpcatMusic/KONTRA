@@ -561,7 +561,7 @@ fn install_requests(engine: &mut Engine, plan: &Plan) {
         if std::env::var_os("KONTRA_FX").is_some() {
             let kind = r.effect.as_ref().map(|e| &e.kind);
             println!(
-                "installs {:?} slot {} type {}: {kind:?}",
+                "installs {:?} slot {} type {:?}: {kind:?}",
                 r.at, r.slot, r.ty
             );
         }

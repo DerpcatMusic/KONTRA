@@ -215,6 +215,13 @@ pub fn reverb(kind: i32, v: [f32; 9]) -> ir::Reverb {
     }
 }
 
+/// The networks `$ENGINE_PAR_RV2_TYPE` picks: Room (`$NI_REVERB2_TYPE_ROOM`,
+/// 0) and Hall (1), as the saved room type numbers them (both values measured
+/// in Kontakt 8.13.1, ksp_constants.py).
+pub fn reverb_networks() -> [ir::Network; 2] {
+    [ir::Network::Lines(&ROOM), ir::Network::Lines(&HALL)]
+}
+
 /// The reverb's controls as KSP's `$ENGINE_PAR_RV2_*` set them (value ÷ 1e6 is
 /// the knob position), in [`ir::ReverbPar::ALL`] order.
 pub fn reverb_laws() -> [ir::Law; 8] {
