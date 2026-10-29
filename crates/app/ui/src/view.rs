@@ -17,6 +17,7 @@ use crate::Pictures;
 mod plan;
 mod stock;
 
+#[cfg(test)]
 use plan::cuts;
 
 /// Text size where the source sets none, in source pixels.
@@ -490,42 +491,20 @@ fn sliced(
     (w, h): (f64, f64),
     scale: f64,
 ) -> El {
-    let m = meta.margins;
-    let own = meta
-        .size
-        .map_or((f64::from(img.width), f64::from(img.height)), |s| {
-            (s.width, s.height)
-        });
-    let across = cuts(
-        meta.stretch[0],
-        (m.left, m.right),
-        (own.0, img.width),
-        w,
-        scale,
-    );
-    let down = cuts(
-        meta.stretch[1],
-        (m.top, m.bottom),
-        (own.1, img.height),
-        h,
-        scale,
-    );
-    if across.len() == 1 && down.len() == 1 {
-        return image(img, w, h);
-    }
-    let mut pieces = Vec::new();
-    let mut y = 0.;
-    for &(sy, sh, dh) in &down {
-        let mut x = 0.;
-        for &(sx, sw, dw) in &across {
-            if let Some(piece) = crop(img, (sx, sy), (sw, sh)) {
-                pieces.push(image(&piece, dw, dh).at(x, y));
-            }
-            x += dw;
+    match plan::slices(meta, (img.width, img.height), (w, h), scale) {
+        plan::Slices::Whole => image(img, w, h),
+        plan::Slices::Pieces(slices) => {
+            let pieces: Vec<El> = slices
+                .into_iter()
+                .filter_map(|slice| {
+                    let [sx, sy, sw, sh] = slice.source;
+                    let [x, y, width, height] = slice.destination;
+                    Some(image(&crop(img, (sx, sy), (sw, sh))?, width, height).at(x, y))
+                })
+                .collect();
+            stack(pieces).w(w).h(h)
         }
-        y += dh;
     }
-    stack(pieces).w(w).h(h)
 }
 
 /// The `size` pixels of `img` from `at`.

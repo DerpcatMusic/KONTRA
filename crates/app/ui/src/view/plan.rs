@@ -151,6 +151,63 @@ pub(super) fn text(
     }
 }
 
+/// A rectangular source piece and its destination, in view points.
+pub(super) struct Slice {
+    pub source: [u32; 4],
+    pub destination: [f64; 4],
+}
+
+/// The whole picture or its nonempty nine-slice pieces.
+pub(super) enum Slices {
+    Whole,
+    Pieces(Vec<Slice>),
+}
+
+pub(super) fn slices(
+    meta: &model::ImageMeta,
+    decoded: (u32, u32),
+    (width, height): (f64, f64),
+    scale: f64,
+) -> Slices {
+    let own = meta
+        .size
+        .map_or((f64::from(decoded.0), f64::from(decoded.1)), |s| {
+            (s.width, s.height)
+        });
+    let m = meta.margins;
+    let across = cuts(
+        meta.stretch[0],
+        (m.left, m.right),
+        (own.0, decoded.0),
+        width,
+        scale,
+    );
+    let down = cuts(
+        meta.stretch[1],
+        (m.top, m.bottom),
+        (own.1, decoded.1),
+        height,
+        scale,
+    );
+    if across.len() == 1 && down.len() == 1 {
+        return Slices::Whole;
+    }
+    let mut pieces = Vec::new();
+    let mut y = 0.;
+    for &(sy, sh, dh) in &down {
+        let mut x = 0.;
+        for &(sx, sw, dw) in &across {
+            pieces.push(Slice {
+                source: [sx, sy, sw, sh],
+                destination: [x, y, dw, dh],
+            });
+            x += dw;
+        }
+        y += dh;
+    }
+    Slices::Pieces(pieces)
+}
+
 /// One source axis, mapped to decoded pixels and destination points.
 /// Fixed ends keep their size, shrinking together when the destination is
 /// shorter than the two ends.
