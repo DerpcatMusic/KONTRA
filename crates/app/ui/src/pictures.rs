@@ -136,6 +136,14 @@ impl Pictures {
     }
 }
 
+impl std::fmt::Debug for Pictures {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pictures")
+            .field("pending", &self.pending)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Above this a PNG is not a UI picture (v2's bound).
 const LIMIT: usize = 32 << 20;
 

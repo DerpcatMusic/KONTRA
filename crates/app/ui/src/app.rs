@@ -42,6 +42,9 @@ pub struct App {
     /// view fits what the rack has of it. 0 while unknown.
     pub width: f64,
     pub view: View,
+    /// The libraries' cover pictures; the host gives a store whose worker
+    /// reads [`Library::art`] and replaces it when the list changes.
+    pub covers: Option<Pictures>,
 }
 
 /// A library in the browser.
@@ -52,6 +55,9 @@ pub struct Library {
     /// Its instruments by path inside the library: `Folder/Name`.
     pub presets: Vec<String>,
     pub starred: bool,
+    /// Pictures that may be its cover, best first, as the host's cover
+    /// store reads them; the first that decodes is shown.
+    pub art: Vec<String>,
 }
 
 /// Which family of libraries the browser lists.
