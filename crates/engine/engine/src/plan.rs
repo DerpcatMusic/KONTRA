@@ -356,6 +356,12 @@ pub struct Plan {
     /// Convolution responses at the engine's rate, by [`ir::Instrument::impulses`]
     /// index; `None` when unreadable.
     pub impulses: Vec<Option<Response>>,
+    /// Each of [`Self::impulses`]' file (as [`Self::responses`] names it)
+    /// and how it was prepared: a script loading another file into its
+    /// slot keeps that.
+    pub impulse_laws: Vec<(String, ir::Impulse)>,
+    /// Response files a script may load by name ([`ir::Instrument::responses`]).
+    pub responses: Vec<(String, ir::Sample)>,
     /// How [`ir::KnobTarget::Slot`] knobs move the effects they address.
     pub slot_laws: Vec<ir::SlotLaw>,
     /// The filter shapes [`EnginePar::EffectSubtype`] switches slots to.
@@ -404,6 +410,8 @@ impl Plan {
             sends: Vec::new(),
             main: Vec::new(),
             impulses: Vec::new(),
+            impulse_laws: Vec::new(),
+            responses: Vec::new(),
             slot_laws: Vec::new(),
             slot_shapes: Vec::new(),
         }

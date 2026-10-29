@@ -172,6 +172,89 @@ impl Live<'_> {
     }
 }
 
+/// The plan's responses, then those scripts loaded ([`Engine::load_ir_sample`]).
+#[derive(Clone, Copy)]
+pub(crate) struct Responses<'a>(
+    pub(crate) &'a [Option<Response>],
+    pub(crate) &'a [(String, ir::Impulse, Response)],
+);
+
+impl Responses<'_> {
+    fn get(&self, i: usize) -> Option<&Response> {
+        match i.checked_sub(self.0.len()) {
+            None => self.0.get(i)?.as_ref(),
+            Some(j) => self.1.get(j).map(|(_, _, r)| r),
+        }
+    }
+}
+
+impl Engine {
+    /// `load_ir_sample`: the library response `name` (its extension and
+    /// folder dropped) into the convolution at `slot` of the `generic` rack,
+    /// prepared as the response it replaces. Only in the init callback
+    /// (decoding is not real-time, and the racks are rebuilt after it);
+    /// later, reloading the response a slot plays is answered as done.
+    pub(crate) fn load_ir_sample(&mut self, name: &str, slot: i32, generic: i32) -> bool {
+        // Borrowed, matched without case: this may run on the audio thread.
+        let stem = stem(name);
+        let plan = Arc::clone(&self.plan);
+        let Some((_, sample)) = plan
+            .responses
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(stem))
+        else {
+            return false;
+        };
+        let Some(&ir::Effect {
+            kind: ir::EffectKind::Convolution { impulse },
+            ..
+        }) = self.effect_mut(-1, slot, generic).map(|e| &*e)
+        else {
+            return false;
+        };
+        let at = usize::from(impulse);
+        let (playing, law) = match at.checked_sub(plan.impulses.len()) {
+            None => plan.impulse_laws.get(at).map(|(n, law)| (n, *law)),
+            Some(j) => self.loaded.get(j).map(|(n, law, _)| (n, *law)),
+        }
+        .unzip();
+        if playing.is_some_and(|n| n.eq_ignore_ascii_case(stem)) {
+            return true;
+        }
+        let (Some(law), crate::script::Kind::Init) = (law, self.running.kind) else {
+            return false;
+        };
+        let known = self
+            .loaded
+            .iter()
+            .position(|(n, l, _)| n.eq_ignore_ascii_case(stem) && *l == law);
+        let index = match known {
+            Some(j) => j,
+            None => match crate::prepare::response(sample, &law, self.rate) {
+                Ok(r) => {
+                    self.loaded.push((stem.to_lowercase(), law, r));
+                    self.loaded.len() - 1
+                }
+                Err(_) => return false,
+            },
+        };
+        let Ok(index) = u16::try_from(plan.impulses.len() + index) else {
+            return false;
+        };
+        if let Some(e) = self.effect_mut(-1, slot, generic) {
+            e.kind = ir::EffectKind::Convolution { impulse: index };
+        }
+        true
+    }
+}
+
+/// A response file's name as [`Plan::responses`] keys it (there in
+/// lowercase): without its folder and extension.
+pub(crate) fn stem(name: &str) -> &str {
+    let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    file.rsplit_once('.').map_or(file, |(s, _)| s)
+}
+
 impl Rack {
     /// `impulses` are the plan's convolution responses. Not real-time.
     pub(crate) fn new(
@@ -179,14 +262,14 @@ impl Rack {
         rate: u32,
         impulses: &[Option<Response>],
     ) -> Self {
-        Self::routed(slots, rate, impulses, &[], &[])
+        Self::routed(slots, rate, Responses(impulses, &[]), &[], &[])
     }
 
     /// As [`Self::new`], its slots moved by `mods` reading `blends`.
     pub(crate) fn routed(
         slots: &[Option<ir::Effect>],
         rate: u32,
-        impulses: &[Option<Response>],
+        impulses: Responses<'_>,
         mods: &[ir::ModKind],
         blends: &[ir::Blend],
     ) -> Self {
@@ -211,7 +294,7 @@ impl Rack {
                     Dsp::Eq(filters::stages(&sections, rate))
                 }
                 Some(ir::EffectKind::Convolution { impulse }) => {
-                    match impulses.get(usize::from(impulse)).and_then(Option::as_ref) {
+                    match impulses.get(usize::from(impulse)) {
                         Some(r) => wet(Box::new(Convolver::new(&r.left, &r.right))),
                         None => Dsp::None,
                     }
@@ -434,7 +517,8 @@ impl Engine {
                 std::mem::take(&mut rack.mods),
                 std::mem::take(&mut rack.blends),
             );
-            *rack = Rack::routed(&rack.slots, rate, &plan.impulses, &mods, &blends);
+            let impulses = Responses(&plan.impulses, &self.loaded);
+            *rack = Rack::routed(&rack.slots, rate, impulses, &mods, &blends);
         }
     }
 
