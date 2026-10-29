@@ -492,4 +492,28 @@ fn a_preset_picked_in_the_browser_loads_and_plays() {
     assert!(name.is_some(), "nothing loaded");
     assert_eq!(recent, [(library, preset)]);
     assert!(rms > 1e-4, "silent: {rms}");
+    // The part's arrows step through its library, and wrap.
+    let path = |params: &KontraParams| {
+        crate::lock(&params.shared.rack).as_ref().unwrap().parts()[0]
+            .as_ref()
+            .and_then(|p| p.path.clone())
+    };
+    let browse = |action| {
+        params.shared.request(crate::Request::Browse(action));
+        Tick.run(&params);
+    };
+    let (count, first) = {
+        let b = crate::lock(&params.shared.browser);
+        let l = &b.as_ref().unwrap().catalog.libraries[library];
+        (
+            l.presets.len(),
+            l.presets[(preset + 1) % l.presets.len()].clone(),
+        )
+    };
+    browse(kontra_ui::app::Action::Step { part: 0, by: 1 });
+    assert_eq!(path(&params).as_ref(), Some(&first), "next of {count}");
+    browse(kontra_ui::app::Action::Step { part: 0, by: -1 });
+    browse(kontra_ui::app::Action::Switch { part: 0, preset });
+    let back = path(&params).unwrap();
+    assert!(back.ends_with("Una Corda Felt.nki"), "{back:?}");
 }

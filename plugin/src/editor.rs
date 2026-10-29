@@ -32,6 +32,8 @@ struct PartView {
     /// Its library's interface as the part loaded; copied once per load.
     tree: Option<Arc<Interface>>,
     name: String,
+    /// Its library's name in the browser, if the browser lists it.
+    library: String,
     mix: Mix,
     solo: bool,
     mute: bool,
@@ -54,7 +56,8 @@ pub struct Snapshot {
 impl Snapshot {
     /// Copies what the editor shows from `rack`, with this tick's `report`.
     pub fn refresh(&mut self, rack: &Rack, browser: &Browser, report: Vec<String>) {
-        if self.libraries.0 != browser.generation {
+        let rescanned = self.libraries.0 != browser.generation;
+        if rescanned {
             self.libraries = (browser.generation, Arc::new(libraries(browser)));
             self.recent = browser.recent();
             self.folders = (browser.prefs.roots.iter())
@@ -68,12 +71,18 @@ impl Snapshot {
             .filter_map(|(slot, p)| {
                 let p = p.as_ref()?;
                 let generation = p.script.generation();
-                let tree = match old
-                    .iter()
-                    .find(|v| v.slot == slot && v.generation == generation)
-                {
+                let same = (old.iter()).find(|v| v.slot == slot && v.generation == generation);
+                let tree = match same {
                     Some(v) => v.tree.clone(),
                     None => p.view.as_ref().map(|v| Arc::new(v.live.tree.clone())),
+                };
+                let library = match same {
+                    Some(v) if !rescanned => v.library.clone(),
+                    _ => (p.path.as_deref())
+                        .and_then(|path| browser.find(path))
+                        .and_then(|(l, _)| browser.catalog.libraries.get(l))
+                        .map(|l| l.name.clone())
+                        .unwrap_or_default(),
                 };
                 Some(PartView {
                     slot,
@@ -81,6 +90,7 @@ impl Snapshot {
                     path: p.path.clone(),
                     tree,
                     name: p.name.clone(),
+                    library,
                     mix: p.mix,
                     solo: p.solo,
                     mute: p.mute,
@@ -120,6 +130,7 @@ impl Snapshot {
             Part {
                 face,
                 name: p.name.clone(),
+                library: p.library.clone(),
                 channel: p.mix.channel,
                 output: p.mix.output + 1,
                 volume: f64::from(linear_to_db(p.mix.gain)),
@@ -185,6 +196,41 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
                 Ok(()) => browser.loaded(&path),
                 Err(e) => report.push(format!("{}: {e}", path.display())),
             }
+        }
+        // Replaces the part's instrument with another of its library's.
+        Action::Switch { part, preset } => {
+            let library = (rack.parts().get(part).and_then(Option::as_ref))
+                .and_then(|p| browser.find(p.path.as_deref()?));
+            let Some(path) = library.and_then(|(l, _)| browser.preset(l, preset)) else {
+                return;
+            };
+            match rack.load(part, &path) {
+                Ok(()) => browser.loaded(&path),
+                Err(e) => report.push(format!("{}: {e}", path.display())),
+            }
+        }
+        Action::Step { part, by } => {
+            let found = (rack.parts().get(part).and_then(Option::as_ref))
+                .and_then(|p| browser.find(p.path.as_deref()?));
+            let Some((library, preset)) = found else {
+                return;
+            };
+            let count = browser
+                .catalog
+                .libraries
+                .get(library)
+                .map_or(0, |l| l.presets.len());
+            if count == 0 {
+                return;
+            }
+            let step = by.unsigned_abs() as usize % count;
+            let preset = if by < 0 {
+                preset + count - step
+            } else {
+                preset + step
+            } % count;
+            let switch = Action::Switch { part, preset };
+            browse(rack, browser, switch, report);
         }
         Action::Star(library, on) => browser.star(library, on),
         Action::Refresh => browser.rescan(),
@@ -288,6 +334,19 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 action,
                 Action::Load { .. } | Action::Star(..) | Action::Refresh
             ) {
+                p.shared.request(Request::Browse(action));
+                continue;
+            }
+            // The browser's part actions name the rack slot, not the row.
+            let row = |n: usize| slots.get(n).copied();
+            let slotted = match action {
+                Action::Switch { part, preset } => {
+                    row(part).map(|part| Action::Switch { part, preset })
+                }
+                Action::Step { part, by } => row(part).map(|part| Action::Step { part, by }),
+                _ => None,
+            };
+            if let Some(action) = slotted {
                 p.shared.request(Request::Browse(action));
                 continue;
             }
