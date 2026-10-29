@@ -5,7 +5,7 @@
 //! kontra-inspect load <instrument> [--json FILE]
 //! ```
 //!
-//! `<instrument>` is a Kontakt instrument, an SFZ, or a UVI program as
+//! `<instrument>` is a Kontakt instrument or a UVI program as
 //! `bank.ufs/Presets/Name.uvip`. A one-page summary goes to stdout; `--json`
 //! writes everything. Exit 2 on a usage or load error.
 
@@ -34,6 +34,10 @@ fn main() -> ExitCode {
 fn run() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let command = args.next().context(USAGE)?;
+    if matches!(command.as_str(), "--help" | "-h") {
+        println!("{USAGE}");
+        return Ok(());
+    }
     let mut path = None;
     let mut json = None;
     while let Some(a) = args.next() {
@@ -43,6 +47,7 @@ fn run() -> Result<()> {
                 println!("{USAGE}");
                 return Ok(());
             }
+            _ if a.starts_with('-') => bail!("unknown option {a}\n{USAGE}"),
             _ if path.is_none() => path = Some(PathBuf::from(a)),
             _ => bail!("unexpected argument {a}\n{USAGE}"),
         }

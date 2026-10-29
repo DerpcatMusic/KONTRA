@@ -2609,6 +2609,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "kontakto",
+ "kontra-engine",
+ "kontra-host",
+ "kontra-stream",
  "sampler-ir",
  "serde",
  "serde_json",
