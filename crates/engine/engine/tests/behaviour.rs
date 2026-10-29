@@ -983,6 +983,61 @@ fn an_lfo_moved_resonance_changes_the_response_over_time() {
 }
 
 #[test]
+fn a_ladders_resonance_route_scales_its_resonance() {
+    use kontra_engine::ir::{
+        Clock, Effect, EffectKind, Filter, Ladder, Lfo, Mod, ModKind, Pass, Rate, Source, Wave,
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
+    // A four-pole ladder at the sine's 1 kHz, resonance 0.9 (k = 0.2), its
+    // resonance scaled by a square LFO at full depth: (x + 1)/2 is 1 for one
+    // half (the peak rings) and 0 for the other (k = 2, no peak).
+    plan.groups[0].inserts = vec![Some(Effect {
+        kind: EffectKind::Filter(Filter {
+            pass: Pass::Low,
+            hz: 1000.0,
+            stages: 0,
+            ladder: Some(Ladder::Explicit { taps: 4, fat: 0.0 }),
+            damping: [0.2; 3],
+            gain: 1.0,
+            octaves: 0.0,
+            q_octaves: 0.0,
+        }),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.groups[0].lfos = vec![Lfo {
+        wave: Wave::Square { width: 0.5 },
+        rate: Rate::Hz(1.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: Clock::Free,
+    }];
+    plan.groups[0].mods = vec![Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Resonance {
+            source: Source::Lfo(0),
+            insert: 0,
+            depth: 1.0,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0f32; 2]; 48_000];
+    e.process(&mut out, &[on(60, 1.0)]);
+    let window = |from: f32, to: f32| {
+        let (a, b) = ((from * 48_000.0) as usize, (to * 48_000.0) as usize);
+        out[a..b].iter().map(|s| s[0].abs()).fold(0.0, f32::max)
+    };
+    let (first, second) = (window(0.1, 0.4), window(0.6, 0.9));
+    let swing = (first / second).max(second / first);
+    assert!(swing > 2.0, "first {first} second {second}");
+}
+
+#[test]
 fn a_group_formant_shapes_its_voices() {
     use kontra_engine::ir::{Effect, EffectKind, Formant};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
