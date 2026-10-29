@@ -417,8 +417,7 @@ pub(super) fn live_macro(program: Node, node: Node) -> Option<u16> {
         1 + layers().position(|l| l == owner)?
     };
     let n = node.prev_siblings().filter(Node::is_element).count();
-    let id = (n < 128 && owner < 256).then(|| 0x8000 + 128 * owner as u16 + n as u16);
-    id
+    (n < 128 && owner < 256).then(|| MACROS + 128 * owner as u16 + n as u16)
 }
 
 /// A macro's live inputs: connections onto its `Value`.
