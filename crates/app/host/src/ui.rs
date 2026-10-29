@@ -75,6 +75,28 @@ impl Face {
     }
 }
 
+/// What a [`Live`] reads of a running script: the engine itself, or a copy
+/// of those reads made on the audio thread (`crate::view::LookFrame`).
+pub trait Looks {
+    fn control_look(&self, slot: u8, id: i32) -> Option<ControlLook<'_>>;
+    fn script_cell_in(&self, slot: u8, n: usize) -> Option<i64>;
+    fn page(&self, slot: u8) -> Option<&Page>;
+}
+
+impl Looks for Engine {
+    fn control_look(&self, slot: u8, id: i32) -> Option<ControlLook<'_>> {
+        Engine::control_look(self, slot, id)
+    }
+
+    fn script_cell_in(&self, slot: u8, n: usize) -> Option<i64> {
+        Engine::script_cell_in(self, slot, n)
+    }
+
+    fn page(&self, slot: u8) -> Option<&Page> {
+        Engine::page(self, slot)
+    }
+}
+
 /// `$CONTROL_PAR_*_COLOR` properties by colour slot.
 type ColorSlot = fn(&mut ui::Colors) -> &mut Option<ui::Rgba>;
 const COLORS: [(&str, ColorSlot); 10] = [
@@ -329,7 +351,7 @@ const UNTOUCHED: ControlLook<'static> = ControlLook {
     generation: 0,
 };
 
-fn decl<'a>(face: &'a Face, slot: u8, engine: &'a Engine, key: Key) -> Option<Decl<'a>> {
+fn decl<'a>(face: &'a Face, slot: u8, engine: &'a dyn Looks, key: Key) -> Option<Decl<'a>> {
     let view = key.view.and_then(|v| face.view.as_ref()?.controls.get(v));
     let control = key.control.and_then(|n| face.controls.get(n));
     let look = match control {
@@ -358,7 +380,7 @@ struct Seen {
 }
 
 impl Seen {
-    fn of(d: &Decl<'_>, slot: u8, engine: &Engine) -> Self {
+    fn of(d: &Decl<'_>, slot: u8, engine: &dyn Looks) -> Self {
         let cells = match d.cells {
             Cells::Int { base, len } | Cells::Real { base, len } if len > 1 => (base..base + len)
                 .fold(0xcbf2_9ce4_8422_2325_u64, |h, c| {
@@ -394,7 +416,7 @@ pub struct Live {
 pub fn interface(
     face: &Face,
     slot: u8,
-    engine: &Engine,
+    engine: &dyn Looks,
     picture: &dyn Fn(&str) -> Option<ui::ImageMeta>,
 ) -> Result<ui::Interface, ui::Error> {
     Live::new(face, slot, engine, picture).map(|l| l.tree)
@@ -408,7 +430,7 @@ impl Live {
     pub fn new(
         face: &Face,
         slot: u8,
-        engine: &Engine,
+        engine: &dyn Looks,
         picture: &dyn Fn(&str) -> Option<ui::ImageMeta>,
     ) -> Result<Self, ui::Error> {
         let keys = keys(face);
@@ -448,7 +470,7 @@ impl Live {
         &mut self,
         face: &Face,
         slot: u8,
-        engine: &Engine,
+        engine: &dyn Looks,
         picture: &dyn Fn(&str) -> Option<ui::ImageMeta>,
     ) -> Changes {
         let page = engine.page(slot).copied();
@@ -502,6 +524,29 @@ impl Live {
     }
 }
 
+impl Live {
+    /// What [`Live::refresh`] reads: the UI ids of the controls it shows,
+    /// and the script cells of their arrays (a table's steps).
+    #[must_use]
+    pub fn reads(&self, face: &Face) -> (Vec<i32>, Vec<u32>) {
+        let controls = self
+            .keys
+            .iter()
+            .filter_map(|k| Some((k.id, face.controls.get(k.control?)?)));
+        let mut ids = Vec::new();
+        let mut cells = Vec::new();
+        for (id, (_, _, c)) in controls {
+            ids.push(id);
+            if let Cells::Int { base, len } | Cells::Real { base, len } = *c
+                && len > 1
+            {
+                cells.extend(base..base + len);
+            }
+        }
+        (ids, cells)
+    }
+}
+
 /// What one [`Live::refresh`] changed: the page itself, and the widgets it
 /// rebuilt in place.
 #[derive(Debug, Default, PartialEq)]
@@ -522,7 +567,7 @@ fn build(
     bld: &mut Builder<'_>,
     face: &Face,
     slot: u8,
-    engine: &Engine,
+    engine: &dyn Looks,
     decls: &[Decl<'_>],
 ) -> Result<(), ui::Error> {
     if let Some(page) = engine.page(slot) {

@@ -216,6 +216,7 @@ impl RackAudio {
         while !self.channels.retired.is_full()
             && !self.channels.captured.is_full()
             && !self.channels.units.is_full()
+            && !self.channels.looks.is_full()
         {
             let Some(command) = self.channels.commands.recv() else {
                 break;
@@ -312,6 +313,16 @@ impl RackAudio {
                     if let Err(c) = self.channels.captured.send(c) {
                         self.dropped += 1;
                         drop(c);
+                    }
+                }
+                Command::Look(mut frame) => {
+                    match self.parts.get(frame.part) {
+                        Some(Some(p)) if p.generation == frame.generation => frame.fill(&p.engine),
+                        _ => frame.unfilled(),
+                    }
+                    if let Err(frame) = self.channels.looks.send(frame) {
+                        self.dropped += 1;
+                        drop(frame);
                     }
                 }
                 Command::Control {
