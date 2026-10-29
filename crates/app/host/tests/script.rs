@@ -140,8 +140,8 @@ fn an_ignored_note_plays_its_child_until_released() {
 
 /// Una Corda: the script ignores the key's note and plays a child for its
 /// length, then ignores the key's release too (it only tracks its own ids).
-/// The key is up all the same: the child ends (play_note -1), its own
-/// release callback running. It held at full level for good before.
+/// The key is up all the same: the child ends (play_note -1). It held at
+/// full level for good before.
 #[test]
 fn a_child_ends_with_its_key_even_when_the_keys_release_is_ignored() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -1510,6 +1510,88 @@ fn an_ignored_release_still_lifts_the_key() {
     assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3);
     level(&mut e, &[on(61)]);
     assert_eq!(e.last_message(), "down 0");
+}
+
+/// A key's `on release` sees the key up (Pacific clears its held-key list
+/// when `%KEY_DOWN` reads 0 there).
+#[test]
+fn a_release_sees_its_key_up() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on release
+            message(\"down \" & %KEY_DOWN[60])
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    level(&mut e, &[off(60)]);
+    assert_eq!(e.last_message(), "down 0");
+}
+
+/// A script hears its notes end when the engine ends them (Shreddage plays
+/// its sound from a 1 µs trigger note's release), not when it `note_off`s
+/// them itself (Pacific's layers: native Kontakt plays its release once).
+#[test]
+fn a_script_hears_its_notes_end_but_not_its_own_note_offs() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $id := 0
+            declare $timed := 0
+            declare $off := 0
+        end on
+        on note
+            if ($EVENT_NOTE = 60)
+                play_note(61, 100, 0, 1)
+                $id := play_note(62, 100, 0, 0)
+                note_off($id)
+            end if
+        end on
+        on release
+            if ($EVENT_NOTE = 61)
+                inc($timed)
+            end if
+            if ($EVENT_NOTE = 62)
+                inc($off)
+            end if
+            message($timed & \" \" & $off)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "1 0");
+}
+
+/// A note an `on release` plays sounds its release-trigger zones (Pacific
+/// plays its release samples from `on release`, into release groups).
+#[test]
+fn a_note_played_on_release_sounds_its_release_zones() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut tail = zone(&mut store, 0.25, 1);
+    tail.trigger = kontra_engine::Trigger::Release;
+    let zones = vec![zone(&mut store, 0.5, 0), tail];
+    let mut e = engine(
+        &store,
+        zones,
+        "on note
+            disallow_group(1)
+        end on
+        on release
+            ignore_event($EVENT_ID)
+            disallow_group($ALL_GROUPS)
+            allow_group(1)
+            play_note(60, 100, 0, 0)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    // The held voice rings on (its release is ignored) under the tail.
+    let l = level(&mut e, &[off(60)]);
+    assert!((l - 0.75).abs() < 1e-3, "{l}");
 }
 
 /// Level of the reverb tail 0.25 s after a 2 s note, through a reverb in the
