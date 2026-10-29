@@ -79,6 +79,19 @@ impl Engine {
         self.vms.get(usize::from(slot))?.as_ref()?.cell(n)
     }
 
+    /// Cell `n` of script `slot` as a save keeps it: a menu's value as the
+    /// index of its entry, which a restore turns back into the value (see
+    /// `saved_value`); any other cell as it is.
+    #[must_use]
+    pub fn script_saved_in(&self, slot: u8, n: usize) -> Option<i64> {
+        let value = self.script_cell_in(slot, n)?;
+        let controls = &self.plan.scripts.get(usize::from(slot))?.controls;
+        let cell = u32::try_from(n).ok();
+        let control = (controls.cells.iter()).position(|&c| c.is_some() && c == cell);
+        let index = control.and_then(|c| self.ui.saved_index(slot, c, value));
+        Some(index.map_or(value, |i| i as i64))
+    }
+
     /// Text cell `n` of script `slot` (a persistent `@` variable, say).
     #[must_use]
     pub fn script_text_in(&self, slot: u8, n: usize) -> Option<Text> {
