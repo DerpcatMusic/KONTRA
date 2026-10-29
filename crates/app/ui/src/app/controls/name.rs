@@ -45,7 +45,7 @@ fn clean(name: &str) -> String {
     ]
     .iter()
     .find_map(|prefix| {
-        tail.strip_prefix(prefix)
+        last.strip_prefix(prefix)
             .filter(|s| s.chars().next().is_some_and(char::is_uppercase))
     })
     .unwrap_or(tail);
