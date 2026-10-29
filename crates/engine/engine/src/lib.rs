@@ -591,39 +591,6 @@ impl Engine {
         }
     }
 
-    /// An idle voice. At the plan's polyphony the oldest playing voice fades
-    /// (released ones first) and an idle reserve voice takes the new start.
-    fn free_slot(&mut self) -> Option<usize> {
-        if self.playing_voices() >= self.plan.voices {
-            let fade = self.fade_frames();
-            if let Some(victim) = self
-                .voices
-                .iter_mut()
-                .filter(|s| s.voice.is_active() && !s.fading)
-                .min_by_key(|s| (!s.released, s.started))
-            {
-                victim.voice.fade(fade);
-                victim.fading = true;
-                self.stats.voices_stolen += 1;
-            }
-        }
-        let index = match self.voices.iter().position(|s| !s.voice.is_active()) {
-            Some(i) => i,
-            None => {
-                // Even the fade reserve is full: cut the oldest fading voice.
-                let (i, _) = self
-                    .voices
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, s)| (!s.fading, s.started))?;
-                self.stats.voices_cut += 1;
-                i
-            }
-        };
-        self.voices.get_mut(index)?.voice.kill();
-        Some(index)
-    }
-
     fn note_off(&mut self, pattern: HostPattern) {
         let mut hits = std::mem::take(&mut self.hits);
         self.notes.matching(pattern, &mut hits);

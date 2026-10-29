@@ -1,8 +1,9 @@
-//! The note table: a full one makes room instead of refusing a note (a burst of
-//! short notes must never go silent), and notes that went silent leave it.
+//! The note table and the voice pool: a full one makes room instead of
+//! refusing a note (a burst of short notes must never go silent), and notes
+//! that went silent leave it.
 
 use crate::ledger::{Note, NoteRef, Origin};
-use crate::{Engine, Trigger};
+use crate::{Engine, Slot, Trigger};
 
 impl Engine {
     /// Enters `note` in the table. When it is full, the note that matters
@@ -39,6 +40,53 @@ impl Engine {
             self.ended.push(n.host);
         }
         self.notes.insert(note)
+    }
+
+    /// An idle voice. At the plan's polyphony the oldest playing voice fades
+    /// (released ones first), with its note's others in its group when the
+    /// plan steals whole groups, and an idle reserve voice takes the new start.
+    pub(crate) fn free_slot(&mut self) -> Option<usize> {
+        if self.playing_voices() >= self.plan.voices {
+            let fade = self.fade_frames();
+            let plan = self.plan.clone();
+            let group = |s: &Slot| plan.zones.get(s.zone).map(|z| z.group);
+            let playing = |s: &Slot| s.voice.is_active() && !s.fading;
+            let victim = self
+                .voices
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| playing(s))
+                .min_by_key(|(_, s)| (!s.released, s.started))
+                .map(|(i, s)| (i, s.note, group(s)));
+            if let Some((v, note, of)) = victim {
+                for (i, s) in self.voices.iter_mut().enumerate() {
+                    let sibling = plan.steal_whole_groups
+                        && note.is_some()
+                        && s.note == note
+                        && group(s) == of;
+                    if playing(s) && (i == v || sibling) {
+                        s.voice.fade(fade);
+                        s.fading = true;
+                        self.stats.voices_stolen += 1;
+                    }
+                }
+            }
+        }
+        let index = match self.voices.iter().position(|s| !s.voice.is_active()) {
+            Some(i) => i,
+            None => {
+                // Even the fade reserve is full: cut the oldest fading voice.
+                let (i, _) = self
+                    .voices
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, s)| (!s.fading, s.started))?;
+                self.stats.voices_cut += 1;
+                i
+            }
+        };
+        self.voices.get_mut(index)?.voice.kill();
+        Some(index)
     }
 
     /// Ends notes with no sounding voice and reports them to the host. A key

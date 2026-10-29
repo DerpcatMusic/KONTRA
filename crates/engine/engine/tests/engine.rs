@@ -232,6 +232,27 @@ fn a_full_pool_fades_the_oldest_voice_and_counts_it() {
 }
 
 #[test]
+fn a_plan_that_steals_whole_groups_fades_a_notes_every_voice_in_the_group() {
+    // A note sounds two zones of one group: the third voice steals both of the
+    // oldest note's, not half of it.
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let a = region(&mut store, "a", 48_000).unwrap();
+    let b = region(&mut store, "b", 48_000).unwrap();
+    for (whole, stolen, playing) in [(false, 1, 3), (true, 2, 2)] {
+        let mut p = Arc::unwrap_or_clone(plan(vec![zone(a.clone(), 0.0), zone(b.clone(), 0.0)], 3));
+        p.steal_whole_groups = whole;
+        let mut engine = Engine::new(Arc::new(p), store.client(), RATE);
+        render(&mut engine, &[on(0, 60), on(10, 62)], 128, 128);
+        let stats = engine.stats();
+        assert_eq!(
+            (stats.voices_stolen, engine.playing_voices()),
+            (stolen, playing),
+            "whole {whole}"
+        );
+    }
+}
+
+#[test]
 fn a_zone_outside_the_velocity_range_is_silent() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut z = zone(region(&mut store, "soft", 1000).unwrap(), 0.0);

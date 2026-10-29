@@ -50,6 +50,9 @@ pub struct Instrument {
     pub output: Output,
     /// How the pitch routes' semitones become a playback ratio.
     pub route_pitch: Exp2,
+    /// Whether a voice stolen at [`Self::voices`] takes its note's other
+    /// voices in the same group with it: a group's zones sound as one voice.
+    pub steal_whole_groups: bool,
     /// Responses [`EffectKind::Convolution`] slots play.
     pub impulses: Vec<Impulse>,
     /// Responses a script may load into a convolution slot by name
@@ -77,6 +80,7 @@ impl Instrument {
         main: Vec::new(),
         output: Output::UNITY,
         route_pitch: Exp2::Exact,
+        steal_whole_groups: false,
         impulses: Vec::new(),
         responses: Vec::new(),
         slot_laws: Vec::new(),
