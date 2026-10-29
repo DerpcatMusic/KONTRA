@@ -4,8 +4,9 @@
 use std::io;
 use std::sync::Arc;
 
-use kontra_engine::{Engine, Event, HostNote, SampleTime, Timed, prepare};
+use kontra_engine::{Engine, Event, HostNote, SampleTime, Timed};
 use kontra_ir as ir;
+use kontra_prepare::prepare;
 use kontra_stream::{Encoding, MemSource, SampleFmt, Source, Store, StoreConfig};
 
 const RATE: u32 = 48_000;

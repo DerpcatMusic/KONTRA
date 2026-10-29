@@ -3,7 +3,8 @@
 
 use std::path::Path;
 
-use kontra_engine::{Plan, ir, prepare};
+use kontra_engine::{Plan, ir};
+use kontra_prepare::prepare;
 use kontra_stream::Store;
 
 /// A plan ready for [`kontra_engine::Engine::new`], and what did not carry over.

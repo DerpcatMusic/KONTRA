@@ -27,9 +27,9 @@ mod par_display;
 mod params;
 mod pgs;
 mod plan;
-mod prepare;
 mod queue;
 mod racks;
+mod response;
 mod script;
 mod transport;
 mod ui;
@@ -55,8 +55,9 @@ pub use plan::{
     Atom, Bus, Control, Crossfade, Group, Level, Plan, Response, RoundRobin, RrCounter, Trigger,
     Zone,
 };
-pub use prepare::{Open, prepare};
 pub use queue::Timed;
+pub use racks::stem;
+pub use response::response;
 pub use script::{Callbacks, Controls, LookPars, ScriptPlan};
 pub use transport::Play;
 pub use ui::ControlLook;

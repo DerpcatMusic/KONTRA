@@ -2463,6 +2463,7 @@ dependencies = [
  "kontra-ksp",
  "kontra-library",
  "kontra-lua",
+ "kontra-prepare",
  "kontra-protocol",
  "kontra-stream",
  "kontra-ui-model",
@@ -2560,6 +2561,16 @@ dependencies = [
  "moose-clap",
  "moose-test",
  "moose-vst3",
+]
+
+[[package]]
+name = "kontra-prepare"
+version = "0.0.0"
+dependencies = [
+ "kontra-engine",
+ "kontra-ir",
+ "kontra-stream",
+ "kontra-voice",
 ]
 
 [[package]]
