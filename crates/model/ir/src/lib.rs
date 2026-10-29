@@ -21,7 +21,7 @@ pub use effects::{
     Transient,
 };
 pub use mods::{Blend, Factor, ModKind, Term, Transfer};
-pub use reverb::{Law, NETWORK_LINES, ReverbNetwork, ReverbPar};
+pub use reverb::{CombNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar};
 
 #[derive(Clone, Debug)]
 pub struct Instrument {

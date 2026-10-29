@@ -1,6 +1,6 @@
 //! The dynamics and time effects' settings in physical units.
 
-use crate::{Rate, ReverbNetwork};
+use crate::{Network, Rate};
 
 /// A feed-forward compressor in physical units.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -121,7 +121,7 @@ pub struct Reverb {
     /// Delay-line scale, 1 a mid-size room; a network's own size control.
     pub size: f32,
     /// The translator's network; `None` runs the generic eight-line one.
-    pub network: Option<&'static ReverbNetwork>,
+    pub network: Option<Network>,
     /// 0..=1: how much faster the highs die.
     pub damping: f32,
     /// 0..=1: the tail's early density.

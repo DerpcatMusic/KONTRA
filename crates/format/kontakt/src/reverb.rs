@@ -203,7 +203,7 @@ pub fn reverb(kind: i32, v: [f32; 9]) -> ir::Reverb {
     ir::Reverb {
         seconds: seconds.eval(time),
         size: size_law.eval(size),
-        network: Some(if kind == 1 { &*HALL } else { &*ROOM }),
+        network: Some(ir::Network::Lines(if kind == 1 { &*HALL } else { &*ROOM })),
         damping: damping_law.eval(damping),
         diffusion: diffusion_law.eval(diffusion),
         predelay_ms: predelay_law.eval(predelay),
