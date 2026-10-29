@@ -265,7 +265,7 @@ fn level(x: f64) -> (usize, usize, f32) {
         return (last, last, 0.0);
     }
     // An unmoving voice (an infinite period) plays the full cycle too.
-    if !(x < 2047.0) {
+    if x >= 2047.0 || x.is_nan() {
         return (0, 0, 0.0);
     }
     let x = x as f32;
