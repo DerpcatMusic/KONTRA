@@ -480,6 +480,61 @@ fn a_bus_sends_before_its_fader() {
 }
 
 #[test]
+fn a_controller_scales_a_send_level_live() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5)], 8);
+    plan.groups[0].bus = 1;
+    // A silent fader: only the pre-fader send, at 1 − 0.75 + 0.75·CC1, plays.
+    let factor = ir::Factor {
+        input: ir::Transfer {
+            source: ir::Source::Controller(1),
+            table: Vec::new(),
+        },
+        depth: 0.75,
+    };
+    let blend = ir::Blend {
+        base: 0.0,
+        terms: vec![ir::Term {
+            input: ir::Transfer {
+                source: ir::Source::Constant,
+                table: Vec::new(),
+            },
+            amount: 1.0,
+            factors: vec![factor],
+        }],
+    };
+    let bus = |sends, mods, blends| Bus {
+        name: "Bus".into(),
+        gain: 0.0,
+        pan: 0.0,
+        inserts: Vec::new(),
+        sends,
+        to_main: true,
+        enabled: true,
+        mods,
+        blends,
+    };
+    let send = ir::BusSend {
+        bus: 2,
+        level: 1.0,
+        post_fader: false,
+    };
+    let route = ir::ModKind::Send {
+        source: ir::Source::Blend(0),
+        send: 0,
+    };
+    plan.buses.push(bus(vec![send], vec![route], vec![blend]));
+    plan.buses.push(Bus {
+        gain: 1.0,
+        ..bus(Vec::new(), Vec::new(), Vec::new())
+    });
+    let mut e = engine(&store, plan);
+    assert!(close(level(&mut e, &[cc(1, 0), on(60, 1.0)])[0], 0.125));
+    assert!(close(level(&mut e, &[cc(1, 127)])[0], 0.5));
+}
+
+#[test]
 fn a_voice_group_steals_by_its_rule_and_an_exclusive_set_silences_the_others() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut keyed = |key: u8, level: f32, vg: u32| {

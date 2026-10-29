@@ -437,6 +437,7 @@ pub(crate) fn source(kind: &ir::ModKind) -> Option<ir::Source> {
         | K::EqGain { source, .. }
         | K::EffectParam { source, .. }
         | K::Mix { source, .. }
+        | K::Send { source, .. }
         | K::SampleStart { source, .. }
         | K::Attack { source, .. }
         | K::Release { source, .. }

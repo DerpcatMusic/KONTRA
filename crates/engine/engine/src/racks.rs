@@ -173,10 +173,24 @@ impl Rack {
     /// Reads its routes' sources for the next span.
     pub(crate) fn follow(&mut self, live: &Live) {
         for (m, amount) in self.mods.iter().zip(self.amounts.iter_mut()) {
-            if let ir::ModKind::EffectParam { source, depth, .. } = *m {
-                *amount = live.read(source, &self.blends).unwrap_or(0.0) * depth;
-            }
+            *amount = match *m {
+                ir::ModKind::EffectParam { source, depth, .. } => {
+                    live.read(source, &self.blends).unwrap_or(0.0) * depth
+                }
+                ir::ModKind::Send { source, .. } => live.read(source, &self.blends).unwrap_or(1.0),
+                _ => continue,
+            };
         }
+    }
+
+    /// What its routes scale send `n`'s level by this span.
+    pub(crate) fn send_scale(&self, n: usize) -> f32 {
+        self.mods
+            .iter()
+            .zip(self.amounts.iter())
+            .filter(|(m, _)| matches!(m, ir::ModKind::Send { send, .. } if usize::from(*send) == n))
+            .map(|(_, a)| a)
+            .product()
     }
 
     /// Processes `io`; a send slot adds it to `taps` (one buffer per send slot).
@@ -288,14 +302,17 @@ impl Engine {
                     if post {
                         bus.fader.process(mix, bus.gain, [1.0; 2]);
                     }
-                    for send in bus.sends.iter().filter(|s| s.post_fader == post) {
+                    let sends = bus.sends.iter().enumerate();
+                    for (n, send) in sends.filter(|(_, s)| s.post_fader == post) {
                         let Some(to) = send.bus.checked_sub(at + 1).and_then(|k| later.get_mut(k))
                         else {
                             continue;
                         };
+                        // ponytail: a moved level steps once a span; ramp it if a ride zippers.
+                        let level = send.level * bus.rack.send_scale(n);
                         for (o, m) in to.mix.iter_mut().zip(mix.iter()) {
-                            o[0] += m[0] * send.level;
-                            o[1] += m[1] * send.level;
+                            o[0] += m[0] * level;
+                            o[1] += m[1] * level;
                         }
                     }
                 }

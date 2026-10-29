@@ -133,6 +133,9 @@ pub enum ModKind {
         span: f32,
         unipolar: bool,
     },
+    /// Scales the level of send `send` (its index in
+    /// [`Bus::sends`](crate::Bus::sends)) by the live `source`; a bus route.
+    Send { source: Source, send: u8 },
 }
 
 /// A sum of live sources, as a macro knob and what moves it:
