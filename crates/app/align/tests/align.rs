@@ -1,7 +1,7 @@
-//! Auto-align: measured delays, reported latency, holds and the hold queue.
+//! Auto-align: measured delays, reported latency and holds.
 #![cfg(test)]
 
-use kontra_align::{Delay, Holder, Holds, Player, Timing, measure, onset_ms, reported_ms};
+use kontra_align::{Delay, Holds, Player, Step, Timing, measure, onset_ms, reported_ms};
 
 const RATE: f64 = 48_000.0;
 
@@ -13,6 +13,8 @@ fn hz(key: u8) -> f64 {
 /// legato note `legato` ms after its, as a sine at the key's pitch.
 struct Fake {
     first: f64,
+    /// At or below this velocity, first notes sound 200 ms late.
+    soft: u8,
     legato: f64,
     /// Keys sounding: (key, frames from its note-on to its sound).
     on: Vec<(u8, usize, usize)>,
@@ -29,10 +31,14 @@ impl Player for Fake {
     }
     fn articulation(&mut self, _: usize) {}
     /// Releases ring on: a hard cut would click across every partial.
-    fn note(&mut self, key: u8, _: u8, on: bool) {
+    fn note(&mut self, key: u8, velocity: u8, on: bool) {
         if on {
             let ms = if self.on.is_empty() {
-                self.first
+                if velocity <= self.soft {
+                    200.0
+                } else {
+                    self.first
+                }
             } else {
                 self.legato
             };
@@ -58,13 +64,16 @@ impl Player for Fake {
 fn a_patch_is_measured_where_its_attack_and_legato_sound() {
     let mut fake = Fake {
         first: 80.0,
+        soft: 0,
         legato: 200.0,
         on: Vec::new(),
         now: 0,
     };
     let timing = measure(&mut fake, 1, 60);
-    let first = timing.loaded.first[1].unwrap();
-    let legato = timing.loaded.legato[1].unwrap();
+    let [step] = timing.loaded.steps[..] else {
+        panic!("one range: {:?}", timing.loaded);
+    };
+    let (first, legato) = (step.first.unwrap(), step.legato.unwrap());
     assert!((first - 80.0).abs() < 4.0, "first {first}");
     assert!((legato - 200.0).abs() < 25.0, "legato {legato}");
     assert!(timing.loaded.mono());
@@ -73,11 +82,30 @@ fn a_patch_is_measured_where_its_attack_and_legato_sound() {
     assert_eq!(onset_ms(&[0.0; 4800], RATE, -20.0), None);
 }
 
+#[test]
+fn a_softer_layer_that_sounds_later_gets_its_own_velocity_range() {
+    let mut fake = Fake {
+        first: 80.0,
+        soft: 35,
+        legato: 120.0,
+        on: Vec::new(),
+        now: 0,
+    };
+    let steps = measure(&mut fake, 0, 60).loaded.steps;
+    let tops: Vec<u8> = steps.iter().map(|s| s.top).collect();
+    assert_eq!(tops, [35, 127], "{steps:?}");
+    assert!((steps[0].first.unwrap() - 200.0).abs() < 4.0, "{steps:?}");
+    assert!((steps[1].first.unwrap() - 80.0).abs() < 4.0, "{steps:?}");
+}
+
 fn timing(first: f32, legato: f32) -> Timing {
     Timing {
         loaded: Delay {
-            first: [Some(first); 3],
-            legato: [Some(legato); 3],
+            steps: vec![Step {
+                top: 127,
+                first: Some(first),
+                legato: Some(legato),
+            }],
         },
         ..Timing::default()
     }
@@ -118,37 +146,35 @@ fn the_slowest_patch_sets_the_latency_and_the_others_wait_the_difference() {
 }
 
 #[test]
-fn a_missing_bucket_takes_the_nearest_then_the_other_kind() {
+fn a_velocity_takes_its_range_and_a_missing_kind_takes_the_other() {
     let d = Delay {
-        first: [None, None, Some(30.0)],
-        legato: [Some(90.0), None, None],
+        steps: vec![
+            Step {
+                top: 40,
+                first: Some(200.0),
+                legato: None,
+            },
+            Step {
+                top: 100,
+                first: Some(30.0),
+                legato: Some(90.0),
+            },
+        ],
     };
-    assert_eq!(d.ms(false, 40), Some(30.0));
-    assert_eq!(d.ms(true, 120), Some(90.0));
+    assert_eq!(d.ms(true, 20), Some(200.0));
+    assert_eq!(d.ms(false, 41), Some(30.0));
+    assert_eq!(d.ms(true, 127), Some(90.0));
     assert_eq!(Delay::default().ms(true, 1), None);
-}
-
-#[test]
-fn held_events_play_in_order_and_a_legato_never_overtakes() {
-    let mut h = Holder::new(4);
-    // Nothing to wait for: played at once.
-    assert_eq!(h.on(0, 0, 60, 0, false, "now"), Err("now"));
-    // A first note waits 100; a legato after it waits 0 but may not overtake.
-    h.on(10, 0, 60, 100, true, "a on").unwrap();
-    h.on(20, 0, 64, 0, true, "b on").unwrap();
-    h.follow(30, 0, 60, "a off").unwrap();
-    assert_eq!(h.pop_due(109), None);
-    assert_eq!(h.pop_due(110), Some((110, "a on")));
-    assert_eq!(h.pop_due(110), Some((110, "b on")));
-    // The release waits as long as its note-on: 30 + 100.
-    assert_eq!(h.next_due(), Some(130));
-    assert_eq!(h.pop_due(200), Some((130, "a off")));
-    // Full: plays at once, counted.
-    for n in 0..4 {
-        h.hold(0, 10, false, ["0", "1", "2", "3"][n]).unwrap();
-    }
-    assert_eq!(h.hold(0, 10, false, "9"), Err("9"));
-    assert_eq!(h.overflows, 1);
-    h.clear();
-    assert_eq!(h.next_due(), None);
+    let holds = Holds::new(
+        &Timing {
+            loaded: d,
+            ..Timing::default()
+        },
+        200.0,
+        RATE,
+    );
+    assert_eq!(
+        holds.steps(None),
+        [(40, 0, 0), (100, 8160, 5280), (127, 8160, 5280)]
+    );
 }

@@ -143,7 +143,7 @@ fn recall(path: PathBuf) -> Result<String, String> {
         solo: false,
         mute: false,
         scripts: Vec::new(),
-        delay_ms: None,
+        delays: None,
         slot_types: Vec::new(),
     }]);
     let t = std::time::Instant::now();
@@ -282,7 +282,7 @@ fn auto_align_reports_the_latest_part_and_holds_the_other() {
         solo: false,
         mute: false,
         scripts: Vec::new(),
-        delay_ms: None,
+        delays: None,
         slot_types: Vec::new(),
     };
     let saved = Saved::new(vec![part(0, a), part(1, b)]);
@@ -372,7 +372,7 @@ fn a_library_control_moved_in_the_editor_reaches_its_script() {
         solo: false,
         mute: false,
         scripts: Vec::new(),
-        delay_ms: None,
+        delays: None,
         slot_types: Vec::new(),
     }]);
     let (params, mut dsp) = activate(&saved.write());

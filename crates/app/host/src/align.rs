@@ -7,6 +7,8 @@ use std::time::Duration;
 use kontra_engine::{Engine, Event, HostNote, HostPattern, Plan, SampleTime, Timed};
 use kontra_stream::StreamClient;
 
+use crate::rack::Hold;
+
 /// A patch the measurement plays. Each reset starts a fresh engine, so its
 /// scripts begin from `on init` every time.
 pub struct Measured {
@@ -113,4 +115,23 @@ impl kontra_align::Player for Measured {
             left -= n;
         }
     }
+}
+
+/// What each note of a part with `timing` waits against the `reported`
+/// latency (ms), for [`crate::rack::Rack::set_hold`].
+#[must_use]
+pub fn hold(timing: &kontra_align::Timing, reported: f32, rate: f64) -> Hold {
+    let holds = kontra_align::Holds::new(timing, reported, rate);
+    let mut hold = Hold {
+        mono: holds.mono(None),
+        ..Hold::flat(0)
+    };
+    // ponytail: past HOLD_STEPS ranges the last takes the rest.
+    let steps = holds.steps(None);
+    for (n, slot) in hold.steps.iter_mut().enumerate() {
+        if let Some(&step) = steps.get(n).or(steps.last()) {
+            *slot = step;
+        }
+    }
+    hold
 }

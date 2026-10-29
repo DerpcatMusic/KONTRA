@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use kontra_engine::{Engine, Event, HostNote, Plan, Region, Zone};
-use kontra_host::rack::{Mix, Part, Rack, RackAudio};
+use kontra_host::rack::{Hold, Mix, Part, Rack, RackAudio};
 use kontra_stream::{BlobKey, Encoding, MemSource, SampleFmt, Store, StoreConfig};
 
 const RATE: u32 = 48_000;
@@ -66,7 +66,7 @@ fn part(name: &str) -> Part {
         mute: false,
         script: Default::default(),
         plan: None,
-        delay_ms: None,
+        delays: None,
         view: None,
         slot_types: Vec::new(),
     }
@@ -277,7 +277,7 @@ fn a_held_part_sounds_its_hold_later_and_its_notes_still_end() {
     let (mut rack, mut audio) = rack();
     let a = engine(rack.store_mut(), 0.5);
     rack.install(0, a, part("a"));
-    rack.set_hold(0, 3 * BLOCK as u32);
+    rack.set_hold(0, Hold::flat(3 * BLOCK as u32));
     audio.process(BLOCK, &[(0, note(0))]);
     for _ in 0..2 {
         assert!(level(&audio, 0).abs() < 1e-4, "the held note sounds early");
@@ -287,7 +287,7 @@ fn a_held_part_sounds_its_hold_later_and_its_notes_still_end() {
     let [on, _] = play(&mut audio, &[]);
     assert!(on > 0.1, "the held note never sounds: {on}");
     // A shorter hold lets the notes held under the longer one go.
-    rack.set_hold(0, 0);
+    rack.set_hold(0, Hold::flat(0));
     let [off, _] = play(&mut audio, &[]);
     assert!(off.abs() < 1e-4, "a note outlived its hold change: {off}");
 }
@@ -297,16 +297,36 @@ fn hold_changes_before_one_block_keep_the_latest_release() {
     let (mut rack, mut audio) = rack();
     let a = engine(rack.store_mut(), 0.5);
     rack.install(0, a, part("a"));
-    rack.set_hold(0, 8 * BLOCK as u32);
+    rack.set_hold(0, Hold::flat(8 * BLOCK as u32));
     audio.process(BLOCK, &[(0, note(0))]);
     // The note is due at 8 blocks; both changes land before one block.
-    rack.set_hold(0, 0);
-    rack.set_hold(0, 1);
+    rack.set_hold(0, Hold::flat(0));
+    rack.set_hold(0, Hold::flat(1));
     let [off, _] = play(&mut audio, &[]);
     assert!(
         off.abs() < 1e-4,
         "the held note outlived its release: {off}"
     );
+}
+
+#[test]
+fn a_legato_waits_its_own_hold_and_a_legato_script_keeps_the_order() {
+    for mono in [false, true] {
+        let (mut rack, mut audio) = rack();
+        let a = engine(rack.store_mut(), 0.5);
+        rack.install(0, a, part("a"));
+        let hold = Hold {
+            steps: [(127, 6 * BLOCK as u32, 0); 8],
+            mono,
+        };
+        rack.set_hold(0, hold);
+        audio.process(BLOCK, &[(0, note(0))]);
+        // Another key is down: a legato, with no hold of its own.
+        audio.process(BLOCK, &[(0, note(1))]);
+        audio.process(BLOCK, &[]);
+        let sounds = level(&audio, 0) > 0.1;
+        assert_eq!(sounds, !mono, "a legato's onset, mono {mono}");
+    }
 }
 
 /// A DC part whose script loads a high-pass into insert 0 in `on init`

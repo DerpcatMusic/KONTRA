@@ -15,7 +15,14 @@ use kontra_protocol::{MAX_PARTS, MeterCells, Meters, Ring, StatCells, Stats};
 pub use kontra_stream::{Store, StoreConfig};
 
 mod audio;
+mod hold;
 pub use audio::RackAudio;
+pub use hold::{HOLD_STEPS, Hold};
+
+/// A part's attack delays as auto-align measured them, by velocity range
+/// in rising order: its top velocity, then how late a first note and a
+/// legato sound, in ms after the note-on (`None` where nothing was measured).
+pub type Delays = Vec<(u8, Option<f32>, Option<f32>)>;
 
 /// Stereo outputs a rack renders: one pair per part at most.
 pub const OUTPUTS: usize = MAX_PARTS;
@@ -73,8 +80,8 @@ pub enum Command {
     /// Play `Event` on every part at the next block (the editor's keyboard
     /// and wheels).
     Play(Event),
-    /// Hold every event into `part` this many frames: auto-align.
-    Hold(usize, u32),
+    /// How long each note into `part` waits: auto-align.
+    Hold(usize, Hold),
     /// Read a part's persistent script cells and send them back.
     Capture(Box<Capture>),
     /// The user moved control `id` of script `slot` to `value`.
@@ -114,8 +121,8 @@ pub struct Part {
     /// What the engine plays, to measure it again (auto-align); None for
     /// an engine built elsewhere.
     pub plan: Option<Arc<Plan>>,
-    /// How late it sounds at its latest, in ms, once auto-align measured it.
-    pub delay_ms: Option<f32>,
+    /// How late its notes sound, once auto-align measured it.
+    pub delays: Option<Delays>,
     /// Its library's interface, as `on init` left it.
     pub view: Option<crate::view::View>,
     /// Effect types its scripts loaded into slots after `on init`, as
@@ -307,7 +314,7 @@ impl Rack {
             view,
             slot_types,
             plan: Some(plan),
-            delay_ms: None,
+            delays: None,
             path,
             name: loaded.name,
             diagnostics: loaded.diagnostics,
@@ -391,16 +398,16 @@ impl Rack {
     }
 
     /// Records `part`'s measured attack delay (auto-align), saved with it.
-    pub fn set_delay(&mut self, part: usize, ms: f32) {
+    pub fn set_delays(&mut self, part: usize, delays: Delays) {
         if let Some(Some(p)) = self.parts.get_mut(part) {
-            p.delay_ms = Some(ms);
+            p.delays = Some(delays);
         }
     }
 
-    /// Holds every event into `part` by `frames` from the next block on,
+    /// Holds each note into `part` by its `hold` from the next block on,
     /// so it sounds in time with a later part (auto-align).
-    pub fn set_hold(&mut self, part: usize, frames: u32) {
-        self.send(Command::Hold(part, frames));
+    pub fn set_hold(&mut self, part: usize, hold: Hold) {
+        self.send(Command::Hold(part, hold));
     }
 
     pub fn set_master(&mut self, gain: f32) {

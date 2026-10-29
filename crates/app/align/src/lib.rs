@@ -5,7 +5,7 @@
 //! measured once at load ([`measure`], off the audio thread). The slowest
 //! loaded patch sets the plugin's reported latency ([`reported_ms`]), and
 //! every other note is held back by the difference to its own delay
-//! ([`Holds`], [`Holder`]), so layered patches start together and the host's
+//! ([`Holds`]), so layered patches start together and the host's
 //! delay compensation puts every attack on the grid.
 //!
 //! - Holding is the same live and on playback.
@@ -16,68 +16,77 @@
 //!   by a legato script ([`Delay::mono`]): its events never overtake an
 //!   earlier one of the same part, so a legato stays a legato.
 
-mod holder;
 mod onset;
 
-pub use holder::Holder;
 pub use onset::{LEAD_MS, onset_ms, transition_ms};
 
 /// The latest a patch may sound and still be aligned; later counts as this.
 pub const MAX_MS: f32 = 500.0;
 /// Where a note's attack is: its 5 ms loudness first within this of its loudest.
 pub const ONSET_DB: f32 = -20.0;
-/// Velocities measured, one per [`bucket`]: legato speeds follow velocity in
-/// most libraries that have them (≤64 slow, 65–100 medium, 101+ fast).
-pub const VELOCITIES: [u8; 3] = [48, 90, 120];
+/// Velocities every measurement plays. Where two neighbours sound more than
+/// [`STEP_MS`] apart (a softer layer with a slower attack, a script that
+/// picks a slower legato by velocity), more are played between them until
+/// the velocity where it changes is found.
+pub const VELOCITIES: [u8; 5] = [1, 32, 64, 96, 127];
+/// Two velocities sounding this far apart (ms) get a range each.
+pub const STEP_MS: f32 = 10.0;
+/// The most velocity ranges a [`Delay`] keeps.
+pub const MAX_STEPS: usize = 8;
 
-/// The velocity bucket `velocity` falls in.
-#[must_use]
-pub fn bucket(velocity: u8) -> usize {
-    match velocity {
-        0..=64 => 0,
-        65..=100 => 1,
-        _ => 2,
+/// How late notes up to velocity `top` sound, in ms after the note-on, as a
+/// first note and as a legato (another note held); `None` where nothing
+/// could be measured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Step {
+    pub top: u8,
+    pub first: Option<f32>,
+    pub legato: Option<f32>,
+}
+
+impl Step {
+    fn ms(&self, legato: bool) -> Option<f32> {
+        if legato {
+            self.legato.or(self.first)
+        } else {
+            self.first.or(self.legato)
+        }
+    }
+
+    /// Sounds audibly apart from `other`.
+    fn differs(&self, other: &Self) -> bool {
+        let apart = |a: Option<f32>, b: Option<f32>| match (a, b) {
+            (Some(a), Some(b)) => (a - b).abs() > STEP_MS,
+            (a, b) => a.is_some() != b.is_some(),
+        };
+        apart(self.first, other.first) || apart(self.legato, other.legato)
     }
 }
 
-/// How late one articulation sounds, in ms after the note-on, as a first
-/// note and as a legato (another note held), per velocity bucket; `None`
-/// where nothing could be measured.
+/// How late one articulation sounds, by velocity range: steps in rising
+/// `top` order, the last up to 127.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Delay {
-    pub first: [Option<f32>; 3],
-    pub legato: [Option<f32>; 3],
+    pub steps: Vec<Step>,
 }
 
 impl Delay {
-    /// The delay of a note: legato or first at its velocity's bucket, else
-    /// the nearest bucket measured, else the other kind.
+    /// The delay of a note: legato or first at its velocity, else the other
+    /// kind.
     #[must_use]
     pub fn ms(&self, legato: bool, velocity: u8) -> Option<f32> {
-        let near = |row: &[Option<f32>; 3]| {
-            let b = bucket(velocity);
-            (0..3)
-                .flat_map(|d| [b.checked_sub(d), Some(b + d)])
-                .flatten()
-                .find_map(|i| row.get(i).copied().flatten())
-        };
-        let (want, other) = if legato {
-            (&self.legato, &self.first)
-        } else {
-            (&self.first, &self.legato)
-        };
-        near(want).or_else(|| near(other))
+        (self.steps.iter().find(|s| velocity <= s.top))
+            .or(self.steps.last())?
+            .ms(legato)
     }
 
     /// The latest it sounds.
     #[must_use]
     pub fn max(&self) -> Option<f32> {
-        self.first
-            .iter()
-            .chain(&self.legato)
+        (self.steps.iter())
+            .flat_map(|s| [s.first, s.legato])
             .flatten()
-            .copied()
             .reduce(f32::max)
     }
 
@@ -85,8 +94,8 @@ impl Delay {
     /// 15 ms later than a first note.
     #[must_use]
     pub fn mono(&self) -> bool {
-        (self.first.iter().zip(&self.legato))
-            .any(|(f, l)| matches!((f, l), (Some(f), Some(l)) if l - f > 15.0))
+        (self.steps.iter())
+            .any(|s| matches!((s.first, s.legato), (Some(f), Some(l)) if l - f > 15.0))
     }
 }
 
@@ -150,12 +159,16 @@ pub fn reported_ms(latest: impl IntoIterator<Item = f32>) -> f32 {
 }
 
 /// A patch's holds for the audio thread, in frames: per articulation row
-/// (the last is "as loaded"), first note or legato, velocity bucket; and
-/// which rows a legato script plays.
+/// (the last is "as loaded"), by velocity range (top velocity, first note,
+/// legato); and which rows a legato script plays.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Holds {
-    rows: Vec<([[u32; 3]; 2], bool)>,
+    rows: Vec<Row>,
 }
+
+/// One articulation's holds: by velocity range (top velocity, first note,
+/// legato), and whether a legato script plays it.
+type Row = (Vec<(u8, u32, u32)>, bool);
 
 impl Holds {
     /// Holds for a patch with `timing` against the `reported` latency (ms).
@@ -169,25 +182,42 @@ impl Holds {
                     let ms = (reported - timing.own(art, legato, velocity)).max(0.0);
                     (f64::from(ms) * rate / 1000.0).round() as u32
                 };
-                let row = [false, true].map(|legato| VELOCITIES.map(|v| frames(legato, v)));
-                (row, !timing.exclude && timing.delay(art).mono())
+                let mut tops: Vec<u8> = timing.delay(art).steps.iter().map(|s| s.top).collect();
+                if tops.last() != Some(&127) {
+                    tops.push(127);
+                }
+                let steps = (tops.into_iter())
+                    .map(|top| (top, frames(false, top), frames(true, top)))
+                    .collect();
+                (steps, !timing.exclude && timing.delay(art).mono())
             })
             .collect();
         Self { rows }
     }
 
-    fn row(&self, articulation: Option<usize>) -> Option<&([[u32; 3]; 2], bool)> {
+    fn row(&self, articulation: Option<usize>) -> Option<&Row> {
         articulation
             .and_then(|a| self.rows.get(a))
             .or_else(|| self.rows.last())
     }
 
+    /// By velocity range: its top velocity, then how long a first note and
+    /// a legato wait, in frames.
+    #[must_use]
+    pub fn steps(&self, articulation: Option<usize>) -> &[(u8, u32, u32)] {
+        self.row(articulation).map_or(&[], |(steps, _)| steps)
+    }
+
     /// How long a note waits, in frames.
     #[must_use]
     pub fn frames(&self, articulation: Option<usize>, legato: bool, velocity: u8) -> u32 {
-        self.row(articulation)
-            .and_then(|(row, _)| row.get(usize::from(legato))?.get(bucket(velocity)).copied())
-            .unwrap_or(0)
+        let steps = self.steps(articulation);
+        (steps.iter().find(|s| velocity <= s.0))
+            .or(steps.last())
+            .map_or(
+                0,
+                |&(_, first, legato_frames)| if legato { legato_frames } else { first },
+            )
     }
 
     /// A legato script plays the articulation.
@@ -211,7 +241,8 @@ pub trait Player {
 }
 
 /// Measures a patch with `articulations` rows by playing `key` as a first
-/// note and then a legato a third up, at each of [`VELOCITIES`].
+/// note and then a legato a third up, at [`VELOCITIES`] and between them
+/// where they sound apart.
 pub fn measure(player: &mut impl Player, articulations: usize, key: u8) -> Timing {
     let loaded = delay(player, None, key);
     let articulations = (0..articulations)
@@ -224,34 +255,65 @@ pub fn measure(player: &mut impl Player, articulations: usize, key: u8) -> Timin
     }
 }
 
+/// The velocities one articulation plays at most, bisecting included.
+const MAX_TAKES: usize = 24;
+
 fn delay(player: &mut impl Player, articulation: Option<usize>, key: u8) -> Delay {
+    let mut points: Vec<Step> = (VELOCITIES.iter())
+        .map(|&v| take(player, articulation, key, v))
+        .collect();
+    // Bisects every neighbouring pair that sounds apart down to adjacent
+    // velocities: the upper one is where the next range starts.
+    let mut i = 0;
+    while let (Some(&a), Some(&b)) = (points.get(i), points.get(i + 1)) {
+        if points.len() < MAX_TAKES && b.top - a.top > 1 && a.differs(&b) {
+            let mid = a.top + (b.top - a.top) / 2;
+            points.insert(i + 1, take(player, articulation, key, mid));
+        } else {
+            i += 1;
+        }
+    }
+    let mut steps: Vec<Step> = Vec::new();
+    for p in points {
+        let full = steps.len() == MAX_STEPS;
+        match steps.last_mut() {
+            Some(last) if full || !last.differs(&p) => last.top = p.top,
+            Some(last) => {
+                last.top = p.top - 1;
+                steps.push(p);
+            }
+            None => steps.push(p),
+        }
+    }
+    Delay { steps }
+}
+
+/// One velocity's first note and legato: a [`Step`] whose `top` is it.
+fn take(player: &mut impl Player, articulation: Option<usize>, key: u8, velocity: u8) -> Step {
     let rate = player.rate();
     let frames = |ms: f64| (ms * rate / 1000.0) as usize;
     let second = key.saturating_add(4).min(127);
-    let mut d = Delay::default();
-    for (b, &velocity) in VELOCITIES.iter().enumerate() {
-        player.reset();
-        if let Some(a) = articulation {
-            player.articulation(a);
-        }
-        let mut sink = Vec::new();
-        player.render(frames(50.0), &mut sink);
-        let mut first = Vec::new();
-        player.note(key, velocity, true);
-        player.render(frames(1000.0), &mut first);
-        let mut legato = first
-            .get(first.len().saturating_sub(frames(LEAD_MS))..)
-            .unwrap_or_default()
-            .to_vec();
-        player.note(second, velocity, true);
-        player.render(frames(50.0), &mut legato);
-        player.note(key, 0, false);
-        player.render(frames(950.0), &mut legato);
-        player.note(second, 0, false);
-        if let (Some(f), Some(l)) = (d.first.get_mut(b), d.legato.get_mut(b)) {
-            *f = onset_ms(&first, rate, ONSET_DB);
-            *l = transition_ms(&legato, rate, second, ONSET_DB);
-        }
+    player.reset();
+    if let Some(a) = articulation {
+        player.articulation(a);
     }
-    d
+    let mut sink = Vec::new();
+    player.render(frames(50.0), &mut sink);
+    let mut first = Vec::new();
+    player.note(key, velocity, true);
+    player.render(frames(1000.0), &mut first);
+    let mut legato = first
+        .get(first.len().saturating_sub(frames(LEAD_MS))..)
+        .unwrap_or_default()
+        .to_vec();
+    player.note(second, velocity, true);
+    player.render(frames(50.0), &mut legato);
+    player.note(key, 0, false);
+    player.render(frames(950.0), &mut legato);
+    player.note(second, 0, false);
+    Step {
+        top: velocity,
+        first: onset_ms(&first, rate, ONSET_DB),
+        legato: transition_ms(&legato, rate, second, ONSET_DB),
+    }
 }
