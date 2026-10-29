@@ -165,7 +165,8 @@ pub(crate) fn knobs(r: Replika) -> Vec<SlotKnob> {
     use ir::EffectParam as E;
     use ir::SlotKnob as K;
     let cells: Vec<_> = (0..4).map(E::DelayLoop).collect();
-    let knobs: [(K, &[E], fn(&mut Replika, f32)); 4] = [
+    type Knob<'a> = (K, &'a [E], fn(&mut Replika, f32));
+    let knobs: [Knob; 4] = [
         (K::DelayTime, &[E::DelayMs], |r, x| r.ms = 2000.0 * x),
         (K::DelayFeedback, &cells, |r, x| r.feedback = x),
         (K::DelayLowCut, &[E::DelayLowCutHz], |r, x| r.low_cut = x),
