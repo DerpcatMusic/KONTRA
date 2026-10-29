@@ -16,13 +16,27 @@ fn rss_mb() -> u64 {
     kb("VmRSS:") / 1024
 }
 
+/// Bytes this process has read: through read() calls, and from the disk.
+fn io_mb() -> (u64, u64) {
+    let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
+    let field = |key: &str| {
+        io.lines()
+            .find(|l| l.starts_with(key))
+            .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    (field("rchar:") >> 20, field("read_bytes:") >> 20)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     for path in std::env::args().skip(1) {
         let before = rss_mb();
+        let io = io_mb();
         let start = std::time::Instant::now();
         let mut store = Store::new(StoreConfig::DEFAULT)?;
         let ir = kontra_host::instrument::read(path.as_ref())?;
         let read = start.elapsed();
+        let read_io = io_mb();
         let (samples, zones) = (
             ir.samples.len(),
             ir.groups.iter().map(|g| g.zones.len()).sum::<usize>(),
@@ -61,6 +75,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             start.elapsed().as_secs_f64(),
             loaded.plan.zones.len(),
             rss_mb().saturating_sub(before)
+        );
+        let done = io_mb();
+        println!(
+            "  bytes read (calls / disk): format {} / {} MB, samples {} / {} MB",
+            read_io.0 - io.0,
+            read_io.1 - io.1,
+            done.0 - read_io.0,
+            done.1 - read_io.1
         );
     }
     Ok(())

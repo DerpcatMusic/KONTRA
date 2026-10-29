@@ -41,6 +41,9 @@ pub trait Source: Send + Sync {
         None
     }
 
+    /// Its preload is in memory: later reads stream through it in order.
+    fn loaded(&self) {}
+
     /// The stored bytes of blocks `blocks`, and where each block starts in
     /// them (one more entry: the end).
     ///

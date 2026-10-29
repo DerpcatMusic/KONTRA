@@ -121,7 +121,18 @@ cache, so load times are a floor). Renders are bit-identical either way.
 | Afflatus Mega Brass | 5635 MB / 34.3 s | 5355 MB | **3448 MB** / 5.0 s | 61% |
 | Vista 5 Violins | 857 MB / 45.3 s | 475 MB | **348 MB** / 0.4 s | 41% |
 | ANALOG STRINGS | — | 312 MB | **245 MB** / 3.0 s | — |
+| Afflatus David And Goliath | 5109 MB / 17.1 s | 4810 MB (survey 1) | **3109 MB** | 61% |
+| Afflatus 2 Horns KS | 3141 MB / 9.1 s | 2913 MB (survey 1) | **1711 MB** | 54% |
+| Afflatus Solo French Horn KS | 3191 MB / 11.8 s | 2930 MB (survey 1) | **1898 MB** | 59% |
 | Areia 16 Violins Performance Legato | — | 1056 MB | **816 MB** / 1.8 s | — |
+
+**Disk read per load (2026-10-29).** Sample files open with read-ahead off
+until their preload is in (`Source::loaded`), and an NCW header and block
+table read through a 4 KiB buffer (was 64 KiB). Cold page cache, bytes the
+load read from disk against bytes pinned: David And Goliath 7.98 GB → 3.04 GB
+(pinned 2.97 GB; Kontakt reads 4.60 GB), 2 Horns KS 4.46 → 1.64 GB (1.61),
+Vista 0.77 → 0.30 GB (0.31), ANALOG 0.26 → 0.13 GB (0.14). Wall time under a
+machine load average of 25–40 is within noise.
 
 Kontakt also keeps Pads' NCW as stored: it read 2215 MB (the stored size) and
 rose 2473 MB. Decode-on-read cost (perf, Pads held 30 s): about 14 ms of
