@@ -8,7 +8,7 @@ use kontra_dsp::dynamics::{
     Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
     TransientSettings,
 };
-use kontra_dsp::filter::{Cascade, CascadeSettings, CascadeStage, Clocked, ClockedShape};
+use kontra_dsp::filter::{Cascade, CascadeSettings, CascadeStage, Clocked, ClockedShape, Svf};
 use kontra_dsp::reverb::{Combs, Convolver, Fdn, Hadamard, Network, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
@@ -20,6 +20,9 @@ pub enum Dsp {
     Eq(Box<[filters::Stage]>),
     /// An EQ routes move: all its bands, retuned each span.
     Bells(Box<filters::VoiceEq>),
+    /// A filter, following its slot each span (a script may move or
+    /// reshape it).
+    Filter(Box<Svf>),
     /// A wet path (convolver or reverb) and a span of its output.
     Wet(Box<dyn Wet>, Box<[[f32; 2]]>),
 }
@@ -312,8 +315,13 @@ pub fn processor(
         Some(ir::EffectKind::Eq(bells)) if moved => {
             Dsp::Bells(Box::new(filters::VoiceEq::new(bells, rate)))
         }
+        Some(ir::EffectKind::Filter(f)) => {
+            let mut svf = Svf::new(filters::shape(&f));
+            svf.set_cutoff(f.hz, rate);
+            Dsp::Filter(Box::new(svf))
+        }
         // Built even while bypassed: a script may enable it later.
-        Some(ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_)) => {
+        Some(ir::EffectKind::Eq(_) | ir::EffectKind::Formant(_)) => {
             let live = slot.map(|e| ir::Effect { bypass: false, ..e });
             let sections = filters::sections(&[live]);
             Dsp::Eq(filters::stages(&sections, rate))

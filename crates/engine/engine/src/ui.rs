@@ -53,11 +53,22 @@ impl Engine {
         let n = self.control_index_in(slot, id)?;
         let s = usize::from(slot);
         let cell = self.plan.scripts.get(s)?.controls.cells.get(n).copied()?;
+        let menu = self.ui.menu(slot, Some(n));
+        let mut value = cell.and_then(|c| self.script_cell_in(slot, c as usize));
+        // A menu shows the entry it last selected through a value no entry holds.
+        if let Some(v) = value
+            && !menu.is_empty()
+            && !menu.iter().any(|i| i64::from(i.value) == v)
+        {
+            value = menu
+                .get(self.ui.selected(slot, n))
+                .map(|i| i64::from(i.value));
+        }
         Some(ControlLook {
-            value: cell.and_then(|c| self.script_cell_in(slot, c as usize)),
+            value,
             pars: self.control_pars.get(s)?.get(n).map_or(&[], Vec::as_slice),
             texts: self.ui.texts(slot, n),
-            menu: self.ui.menu(slot, Some(n)),
+            menu,
             generation: self.ui.generation(slot, n),
         })
     }
@@ -82,23 +93,30 @@ impl Engine {
     /// `$CONTROL_PAR_NUM_ITEMS`, and `$CONTROL_PAR_SELECTED_ITEM_IDX` or
     /// `$CONTROL_PAR_VALUE` (both the selected index, KSP manual
     /// `add_menu_item`) of a menu whose value is `value`: the first entry
-    /// with it. `None` for other parameters.
-    pub(crate) fn menu_par(&self, id: i32, par: i32, value: i32) -> Option<i32> {
+    /// with it, else the entry it last selected. `None` for other parameters.
+    // ponytail: the selection follows the values the engine sees (reads and
+    // user edits); a script that assigns a matching then an unmatched value
+    // with no read between keeps the selection before both.
+    pub(crate) fn menu_par(&mut self, id: i32, par: i32, value: i32) -> Option<i32> {
         let controls = &self.script()?.controls;
-        let items = self.menu(self.running.slot, id);
-        if items.is_empty() {
+        let (items, par_of) = (controls.num_items_par, controls.selected_item_par);
+        let value_par = controls.value_par;
+        let count = self.menu(self.running.slot, id).len();
+        if count == 0 {
             return None;
         }
-        if par == controls.num_items_par {
-            return i32::try_from(items.len()).ok();
+        if par == items {
+            return i32::try_from(count).ok();
         }
-        if par != controls.selected_item_par && par != controls.value_par {
+        if par != par_of && par != value_par {
             return None;
         }
-        // ponytail: for a value no entry has, Kontakt keeps the last
-        // selection (oracle, 2026-10-29); 0 until selections are tracked.
-        let at = items.iter().position(|i| i.value == value);
-        Some(at.and_then(|n| i32::try_from(n).ok()).unwrap_or(0))
+        let (slot, n) = (
+            self.running.slot,
+            self.control_index_in(self.running.slot, id),
+        );
+        let at = self.ui.select(slot, n, value)?;
+        i32::try_from(at).ok()
     }
 
     /// Answers the menu, control-text, look and keyboard actions; `None` for others.

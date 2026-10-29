@@ -432,7 +432,12 @@ pub(crate) fn eq_knobs(saved: &[[f32; 3]]) -> Vec<SlotKnob> {
 /// 1.45 kHz, 7.5 kHz), gain .5 (0 dB), bandwidth .0625 (0.5 octaves); for
 /// `$FILTER_TYPE_VERSATILE` (19) [`crate::versatile::DEFAULT`]; for
 /// `$FILTER_TYPE_PHASER` (13) and Vowel A and B (14, 15) cutoff and
-/// resonance 0 (Vowel's defaults unmeasured).
+/// resonance 0 (Vowel's defaults unmeasured); for `$EFFECT_TYPE_REVERB2`
+/// (39) Room, time, size, damping, modulation and diffusion .5, predelay,
+/// high cut and low shelf 0, stereo 1, output and dry at unity (an insert's;
+/// a send slot's dry starts at 0, the engine's rule); for
+/// `$EFFECT_TYPE_SEND_LEVELS` (11) every level at unity (630000; oracle
+/// probe rvdef, 2026-10-29).
 // ponytail: Kontakt carries the filter's cutoff and resonance into a
 // subtype it switches to (oracle: 0.3 and 0.7 stay); a loaded subtype here
 // starts at its defaults. The corpus scripts write both after loading.
@@ -467,8 +472,17 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     let versatile = Some(unit(ir::EffectKind::Cascade(crate::versatile::cascade(
         crate::versatile::DEFAULT,
     ))));
-    // ponytail: an empty slot's subtype readback is unmeasured; 0.
+    let reverb = crate::reverb::reverb(0, [0.5, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0]);
+    let reverb = Some(ir::Effect {
+        dry: 1.0,
+        ..unit(ir::EffectKind::Reverb(reverb))
+    });
+    let sends = Some(unit(ir::EffectKind::Sends([1.0; 8])));
+    // ponytail: an empty slot's subtype readback is unmeasured; 0, as for
+    // the reverb and send levels.
     vec![
+        ty(39, false, 0, reverb, [].into()),
+        ty(11, false, 0, sends, [].into()),
         ty(0, false, 0, None, [].into()),
         ty(7, false, 100, filter, shape_laws(100)),
         ty(24, true, 24, eq, eq_knobs(&saved).into()),
@@ -683,6 +697,33 @@ mod tests {
                 .iter()
                 .all(|(k, _, _)| *k != ir::SlotKnob::DelayTime)
         );
+    }
+
+    #[test]
+    fn a_loaded_reverb_and_send_levels_start_where_kontakt_puts_them() {
+        let types = slot_types();
+        let effect = |id: i32| {
+            let found = types.iter().find(|t| t.id == id && !t.subtype);
+            found.and_then(|t| t.effect)
+        };
+        let Some(ir::Effect {
+            kind: ir::EffectKind::Reverb(r),
+            dry,
+            output,
+            ..
+        }) = effect(39)
+        else {
+            panic!("no reverb type");
+        };
+        // RV2_TIME .5: 0.5·e^(3.7·0.5) s; Room; stereo 1.
+        assert!((r.seconds - 0.5 * 1.85f32.exp()).abs() < 1e-4);
+        let [room, _] = crate::reverb_networks();
+        assert_eq!(
+            (r.network, r.stereo, dry, output),
+            (Some(room), 1.0, 1.0, 1.0)
+        );
+        let sends = effect(11).map(|e| e.kind);
+        assert_eq!(sends, Some(ir::EffectKind::Sends([1.0; 8])));
     }
 
     #[test]

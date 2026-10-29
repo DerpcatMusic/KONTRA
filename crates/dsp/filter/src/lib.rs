@@ -219,6 +219,23 @@ impl Svf {
         flush(self.state.as_flattened_mut().as_flattened_mut());
     }
 
+    /// Follows `shape` at `rate` without touching the state: cutoff,
+    /// damping, gain, pass and stage count move in place. A different
+    /// ladder is not swapped in (building one may allocate); false then, and
+    /// it keeps its shape.
+    // ponytail: a ladder ↔ ladder or stages ↔ ladder switch needs its kernel
+    // built off the audio thread.
+    pub fn retune(&mut self, shape: Shape, rate: u32) -> bool {
+        if shape.ladder != self.shape.ladder {
+            return false;
+        }
+        self.shape = shape;
+        if shape.hz != self.hz {
+            self.set_cutoff(shape.hz, rate);
+        }
+        true
+    }
+
     /// Moves the stages' damping `k` (`1/Q`) without touching the state.
     pub fn set_damping(&mut self, damping: [f32; 3]) {
         self.shape.damping = damping;

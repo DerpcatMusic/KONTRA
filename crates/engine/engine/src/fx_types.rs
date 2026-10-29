@@ -168,7 +168,26 @@ impl Engine {
             crate::knobs::rack_at(group, generic)?,
             u8::try_from(slot).ok()?,
         );
-        if self.running.kind == Kind::Init {
+        // A send slot returns only what it makes: its dry level starts at 0
+        // (Kontakt 8.13: a loaded reverb's, measured).
+        let effect = effect.map(|e| match at {
+            ir::RackAt::Sends => ir::Effect { dry: 0.0, ..e },
+            _ => e,
+        });
+        let init = self.running.kind == Kind::Init;
+        // Loading the type a slot holds keeps it as it is (Kontakt 8.13: a
+        // reverb's size stays through a reverb load; measured). A subtype
+        // is held when the slot reads it; a type, by its kind of effect.
+        let kind = |e: &Option<ir::Effect>| e.map(|e| std::mem::discriminant(&e.kind));
+        let holds = kind(self.slot_mut(group, slot, generic)?);
+        let same = match subtype {
+            true => self.subtype(group, slot, generic) == Some(id),
+            false => holds.is_some() && holds == kind(&effect),
+        };
+        if same {
+            return Some(if init { -1 } else { self.start_async() });
+        }
+        if init {
             *self.slot_mut(group, slot, generic)? = effect;
             self.mark_loaded(at, n, ty);
             return Some(-1);

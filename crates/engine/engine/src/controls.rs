@@ -26,7 +26,7 @@ impl Engine {
         (n < controls.cells.len()).then_some(n)
     }
 
-    pub(crate) fn control_par(&self, cells: &[i64], id: i32, par: i32) -> i32 {
+    pub(crate) fn control_par(&mut self, cells: &[i64], id: i32, par: i32) -> i32 {
         let value = self.control_par_of(cells, id, par);
         let menu_value =
             self.control_par_of(cells, id, self.script().map_or(0, |s| s.controls.value_par));

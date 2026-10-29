@@ -1189,11 +1189,15 @@ fn a_menu_value_is_its_selected_index() {
             @s := @s & \" \" & $m & \" \" & get_control_par(get_ui_id($m), $CONTROL_PAR_VALUE)
             $m := 20
             @s := @s & \" \" & get_control_par(get_ui_id($m), $CONTROL_PAR_VALUE)
+            $m := 99
+            @s := @s & \" \" & get_control_par(get_ui_id($m), $CONTROL_PAR_VALUE)
+            @s := @s & \" \" & get_control_par(get_ui_id($m), $CONTROL_PAR_SELECTED_ITEM_IDX)
             set_control_par(get_ui_id($m), $CONTROL_PAR_VALUE, 7)
             message(@s & \" \" & $m)
         end on",
     );
-    assert_eq!(e.last_message(), "10 0 30 2 1 0");
+    // `$m := 99`, which no entry holds, keeps the selection (1), as Kontakt does.
+    assert_eq!(e.last_message(), "10 0 30 2 1 1 1 0");
 }
 
 #[test]
@@ -2142,4 +2146,62 @@ fn volume_and_pan_controllers_set_the_output_unless_a_script_ignores_them() {
     );
     let (saved, ignored) = run("on controller\n  ignore_controller\nend on");
     assert_eq!(saved, ignored);
+}
+
+/// A filter a script loads after `on init` follows the shape a later
+/// subtype write switches it to: the loaded low pass passes the zone's DC,
+/// the high pass it becomes blocks it.
+#[test]
+fn a_loaded_filter_follows_its_subtype() {
+    use kontra_engine::{Prepared, ir};
+    let filter = |pass| ir::Filter {
+        pass,
+        hz: 2000.0,
+        stages: 1,
+        ladder: None,
+        damping: [1.4; 3],
+        gain: 1.0,
+        octaves: 10.0,
+        q_octaves: 0.0,
+    };
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].mods.clear();
+    plan.inserts = vec![None];
+    let effect = Some(ir::Effect {
+        kind: ir::EffectKind::Filter(filter(ir::Pass::Low)),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    });
+    plan.slot_shapes.types = vec![ir::SlotType {
+        id: 7,
+        subtype: false,
+        reads: 0,
+        effect,
+        laws: Vec::new().into(),
+    }];
+    plan.slot_shapes.slots = vec![(ir::RackAt::Inserts, 0)];
+    plan.slot_shapes.shapes = vec![ir::SlotShape {
+        id: 54,
+        filter: filter(ir::Pass::High),
+        laws: Vec::new().into(),
+    }];
+    let script = kontra_ksp::compile(
+        "on note
+            wait_async(set_engine_par($ENGINE_PAR_EFFECT_TYPE, 7, -1, 0, 1))
+            set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, 54, -1, 0, 1)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    let mut requests = Vec::new();
+    e.drain_requests(|r| requests.push(r));
+    e.install(Prepared::new(requests[0], None, RATE));
+    level(&mut e, &[]);
+    let after = level(&mut e, &[]);
+    assert!(after.abs() < 1e-3, "{after}");
 }

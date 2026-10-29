@@ -115,6 +115,8 @@ pub struct LookPars {
 pub struct Store {
     /// Per script slot, by control: its menu entries.
     menus: Box<[Box<[Vec<MenuItem>]>]>,
+    /// Per script slot, by control: the entry a menu last selected.
+    selected: Box<[Box<[u16]>]>,
     /// Per script slot, by control: the text parameters it set.
     texts: Box<[Box<[Texts]>]>,
     keys: Box<[Key]>,
@@ -136,6 +138,7 @@ impl Store {
                 .clone()
                 .map(|n| vec![Vec::new(); n].into())
                 .collect(),
+            selected: controls.clone().map(|n| vec![0; n].into()).collect(),
             texts: controls
                 .clone()
                 .map(|n| vec![Vec::new(); n].into())
@@ -172,6 +175,28 @@ impl Store {
     pub fn menu(&self, slot: u8, n: Option<usize>) -> &[MenuItem] {
         n.and_then(|n| self.menus.get(usize::from(slot))?.get(n))
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// The entry menu control `n` of script `slot` selects at `value`: the
+    /// first entry holding it, else the one it last selected (Kontakt keeps
+    /// its selection through a value no entry has; oracle, #1030). A new
+    /// menu selects its first entry.
+    pub fn select(&mut self, slot: u8, n: Option<usize>, value: i32) -> Option<usize> {
+        let n = n?;
+        let items = self.menus.get(usize::from(slot))?.get(n)?;
+        let found = items.iter().position(|i| i.value == value);
+        let last = self.selected.get_mut(usize::from(slot))?.get_mut(n)?;
+        if let Some(at) = found.and_then(|at| u16::try_from(at).ok()) {
+            *last = at;
+        }
+        Some(usize::from(*last))
+    }
+
+    /// The entry menu control `n` of script `slot` last selected.
+    #[must_use]
+    pub fn selected(&self, slot: u8, n: usize) -> usize {
+        let last = self.selected.get(usize::from(slot)).and_then(|s| s.get(n));
+        last.map_or(0, |&at| usize::from(at))
     }
 
     /// The text parameters control `n` of script `slot` set.

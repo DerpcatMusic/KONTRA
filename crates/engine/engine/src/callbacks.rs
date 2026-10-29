@@ -61,6 +61,10 @@ impl Engine {
         if let (Some(cell), Some(vm)) = (cell, vm) {
             vm.set_cell(cell as usize, value);
         }
+        // A menu the user picks from selects that entry.
+        let n = usize::try_from(id - controls.first).ok();
+        self.ui
+            .select(slot, n, i32::try_from(value).unwrap_or(i32::MIN));
         for (kind, entry) in [
             (Kind::UiControls, script.callbacks.ui_controls),
             (Kind::UiControl, own),
