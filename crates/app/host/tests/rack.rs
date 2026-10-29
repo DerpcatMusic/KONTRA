@@ -40,6 +40,7 @@ fn plan_of(store: &mut Store, level: f32) -> Plan {
         .unwrap();
     let region = Region {
         mix: None,
+        table: None,
         sample,
         start: 0,
         end: frames,

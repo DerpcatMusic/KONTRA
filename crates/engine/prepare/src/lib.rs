@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use kontra_ir as ir;
 use kontra_stream::{BlobKey, LoadRequest, MAX_CHANNELS, Mix, Sample, SampleFmt, Source, Store};
-use kontra_voice::{Ahdsr, Loop, Region};
+use kontra_voice::{Ahdsr, Loop, PERIOD, Read, Region, Shape, Side, Table, Warp};
 
 use kontra_engine::{
     Atom, Bus, Control, Crossfade, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone,
@@ -303,6 +303,43 @@ fn mix(rows: &[[f32; 2]]) -> Option<Mix> {
     })
 }
 
+/// A group's wavetable as its voices read it.
+fn read(w: ir::Wavetable) -> Read {
+    let side = |s| match s {
+        ir::Side::Minus => Side::Minus,
+        ir::Side::Plus => Side::Plus,
+        ir::Side::Both => Side::Both,
+    };
+    let warp = |w: ir::Warp| Warp {
+        shape: match w.shape {
+            ir::WarpShape::Off => Shape::Off,
+            ir::WarpShape::Sync => Shape::Sync,
+            ir::WarpShape::Cosine => Shape::Cosine,
+            ir::WarpShape::Arcsine => Shape::Arcsine,
+            ir::WarpShape::CosineArcsine => Shape::CosineArcsine,
+            ir::WarpShape::Pulse => Shape::Pulse,
+            ir::WarpShape::Skew { reach, side: s } => Shape::Skew {
+                reach,
+                side: side(s),
+            },
+            ir::WarpShape::Flip => Shape::Flip,
+            ir::WarpShape::Mirror => Shape::Mirror,
+            ir::WarpShape::Quantize => Shape::Quantize,
+            ir::WarpShape::Seesaw => Shape::Seesaw,
+            ir::WarpShape::Exp => Shape::Exp,
+            ir::WarpShape::Log => Shape::Log,
+            ir::WarpShape::LogExp => Shape::LogExp,
+            ir::WarpShape::Bend { side: s } => Shape::Bend { side: side(s) },
+        },
+        amount: w.amount,
+    };
+    Read {
+        position: w.position,
+        phase: w.phase,
+        warps: w.warps.map(warp),
+    }
+}
+
 fn zone(
     group: &ir::Group,
     group_id: u32,
@@ -329,8 +366,18 @@ fn zone(
             .collect(),
         reverse: z.reverse,
         mix: mix(&z.mix),
+        table: group
+            .wavetable
+            .and_then(|w| Table::new(z.start, z.end.min(source.frames), read(w))),
     };
-    let mut out = Zone::new(region, z.root, source.rate);
+    // A table plays its cycle at 440 Hz on A4, whatever the zone's root and
+    // the sample's rate.
+    let (root, rate) = if region.table.is_some() {
+        (69, (440.0 * PERIOD) as u32)
+    } else {
+        (z.root, source.rate)
+    };
+    let mut out = Zone::new(region, root, rate);
     out.start_mod = z.start_mod;
     out.slot = z.slot;
     out.keys = z.keys.clone();

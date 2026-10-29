@@ -5,11 +5,13 @@
 //! note is never late and never drifts (rule 4).
 
 mod envelope;
+mod wavetable;
 mod zone;
 
 use kontra_stream::{Mix, StreamClient};
 
 pub use envelope::Ahdsr;
+pub use wavetable::{CYCLE, PERIOD, Read, Shape, Side, Table, Warp, warp};
 pub use zone::{Loop, Region};
 
 use envelope::Envelope;
@@ -220,6 +222,8 @@ impl Voice {
         let released = self.released;
         let ahead = (LOOKAHEAD * self.step) as usize;
         let step = self.step;
+        let table = region.table;
+        let ahead = if table.is_some() { 0 } else { ahead };
         region.runs(self.at(0) as i64, ahead, released, |offset, run| {
             let low = if run.descending {
                 run.first + 1 - run.count as u64
@@ -239,58 +243,21 @@ impl Voice {
         let mut done = 0;
         let mut alive = true;
         while done < out.len() && alive {
-            let fit = (((SCRATCH - 4) as f64 / self.step).floor() as usize).max(1);
-            let n = fit.min(out.len() - done);
-            let lo = self.at(0).floor() as i64 - 1;
-            let span = (self.at(n as u64 - 1).floor() as i64 + 3 - lo) as usize;
-            let (anchor, elapsed, step) = (self.anchor, self.elapsed, self.step);
-            let partner = &mut self.partner;
-            let Some(window) = self.scratch.get_mut(..span.min(SCRATCH)) else {
-                break;
+            let fit = if table.is_some() {
+                SCRATCH
+            } else {
+                (((SCRATCH - 4) as f64 / self.step).floor() as usize).max(1)
             };
-            window.fill([0.0; 2]);
-            let mut missing = 0;
-            region.runs(lo, window.len(), released, |offset, run| {
-                let count = run.count;
-                if let Some(dst) = window.get_mut(offset..offset + count) {
-                    if run.descending {
-                        missing += sample
-                            .read_mixed(client, run.first + 1 - count as u64, dst, mix)
-                            .missing;
-                        dst.reverse();
-                    } else {
-                        missing += sample.read_mixed(client, run.first, dst, mix).missing;
-                        if let Some((at, from, n, fade_start, fade)) = run.crossfade()
-                            && let (Some(blend), Some(head)) =
-                                (partner.get_mut(..n), dst.get_mut(at..at + n))
-                        {
-                            missing += sample.read_mixed(client, from, blend, mix).missing;
-                            let p0 = run.first + at as u64 - fade_start;
-                            for (k, (d, b)) in head.iter_mut().zip(blend.iter()).enumerate() {
-                                let w = (p0 + k as u64) as f32 / fade as f32;
-                                d[0] += (b[0] - d[0]) * w;
-                                d[1] += (b[1] - d[1]) * w;
-                            }
-                        }
-                    }
-                }
-            });
-            self.missing += u64::from(missing);
-
-            let mut filled = 0;
-            for (i, frame) in self.raw.iter_mut().take(n).enumerate() {
-                let x = anchor + (elapsed + i as u64) as f64 * step - lo as f64;
-                let base = x.floor() as usize;
-                let t = (x - base as f64) as f32;
-                let Some(&[y0, y1, y2, y3]) = window.get(base - 1..base + 3) else {
-                    break;
-                };
-                *frame = [
-                    hermite(y0[0], y1[0], y2[0], y3[0], t),
-                    hermite(y0[1], y1[1], y2[1], y3[1], t),
-                ];
-                filled += 1;
-            }
+            let n = fit.min(out.len() - done);
+            let filled = if let Some(table) = &table {
+                let cursor = (self.at(0), self.step);
+                let raw = self.raw.get_mut(..n).unwrap_or_default();
+                let missing = table.render(sample, client, mix, cursor, raw);
+                self.missing += u64::from(missing);
+                raw.len()
+            } else {
+                self.read_window(client, &region, n)
+            };
             let raw = self.raw.get_mut(..filled).unwrap_or_default();
             insert(raw);
             for (frame, &[l, r]) in out.iter_mut().skip(done).zip(raw.iter()) {
@@ -314,7 +281,7 @@ impl Voice {
                 }
             }
             self.elapsed += n as u64;
-            if region.finished(self.at(0), released) {
+            if table.is_none() && region.finished(self.at(0), released) {
                 alive = false;
             }
             done += n;
@@ -322,6 +289,65 @@ impl Voice {
         if alive {
             self.region = Some(region);
         }
+    }
+
+    /// Reads the region about the cursor and interpolates `n` frames into
+    /// `raw`; returns how many it filled.
+    fn read_window(&mut self, client: &StreamClient, region: &Region, n: usize) -> usize {
+        let sample = &region.sample;
+        let mix = region.mix.as_ref();
+        let released = self.released;
+        let lo = self.at(0).floor() as i64 - 1;
+        let span = (self.at(n as u64 - 1).floor() as i64 + 3 - lo) as usize;
+        let (anchor, elapsed, step) = (self.anchor, self.elapsed, self.step);
+        let partner = &mut self.partner;
+        let Some(window) = self.scratch.get_mut(..span.min(SCRATCH)) else {
+            return 0;
+        };
+        window.fill([0.0; 2]);
+        let mut missing = 0;
+        region.runs(lo, window.len(), released, |offset, run| {
+            let count = run.count;
+            if let Some(dst) = window.get_mut(offset..offset + count) {
+                if run.descending {
+                    missing += sample
+                        .read_mixed(client, run.first + 1 - count as u64, dst, mix)
+                        .missing;
+                    dst.reverse();
+                } else {
+                    missing += sample.read_mixed(client, run.first, dst, mix).missing;
+                    if let Some((at, from, n, fade_start, fade)) = run.crossfade()
+                        && let (Some(blend), Some(head)) =
+                            (partner.get_mut(..n), dst.get_mut(at..at + n))
+                    {
+                        missing += sample.read_mixed(client, from, blend, mix).missing;
+                        let p0 = run.first + at as u64 - fade_start;
+                        for (k, (d, b)) in head.iter_mut().zip(blend.iter()).enumerate() {
+                            let w = (p0 + k as u64) as f32 / fade as f32;
+                            d[0] += (b[0] - d[0]) * w;
+                            d[1] += (b[1] - d[1]) * w;
+                        }
+                    }
+                }
+            }
+        });
+        self.missing += u64::from(missing);
+
+        let mut filled = 0;
+        for (i, frame) in self.raw.iter_mut().take(n).enumerate() {
+            let x = anchor + (elapsed + i as u64) as f64 * step - lo as f64;
+            let base = x.floor() as usize;
+            let t = (x - base as f64) as f32;
+            let Some(&[y0, y1, y2, y3]) = window.get(base - 1..base + 3) else {
+                break;
+            };
+            *frame = [
+                hermite(y0[0], y1[0], y2[0], y3[0], t),
+                hermite(y0[1], y1[1], y2[1], y3[1], t),
+            ];
+            filled += 1;
+        }
+        filled
     }
 }
 

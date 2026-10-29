@@ -329,12 +329,15 @@ impl Engine {
             if let Some(init) = script.callbacks.init {
                 engine.run_callback(slot, init, Running::new(Kind::Init, None));
             }
+            let restore: Vec<_> = (script.restore.iter())
+                .map(|&(cell, value)| (cell, engine.saved_value(slot, cell, value)))
+                .collect();
             if let Some(vm) = engine
                 .vms
                 .get_mut(usize::from(slot))
                 .and_then(Option::as_mut)
             {
-                for &(cell, value) in &script.restore {
+                for (cell, value) in restore {
                     vm.set_cell(cell as usize, value);
                 }
                 for &(cell, text) in &script.restore_texts {
