@@ -19,6 +19,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError, RwLock};
 
 use kontra_host::rack::{Event, Rack, RackAudio, Store, StoreConfig};
 use kontra_host::state::Saved;
+use moose::core::LosslessEventRef;
 use moose::prelude::*;
 
 /// Stereo outputs the plugin offers: one per rack part.
@@ -291,7 +292,21 @@ impl PluginLogic for Kontra {
             t.position_beats,
             (t.time_sig_num, t.time_sig_den),
         );
-        for e in events.iter() {
+        for e in events.lossless_iter() {
+            let e = match e {
+                LosslessEventRef::Typed(e) => e,
+                LosslessEventRef::Exact(x) => {
+                    if let Some(event) = input::exact(x) {
+                        if s.input.len() < s.input.capacity() {
+                            s.input.push((x.sample_offset(), event));
+                        }
+                        continue;
+                    }
+                    // Else its typed form, when the host gave one.
+                    let Some(e) = x.fallback() else { continue };
+                    e
+                }
+            };
             if let EventBody::Transport(t) = e.body {
                 audio.set_tempo(t.tempo as f32);
                 audio.set_transport(
