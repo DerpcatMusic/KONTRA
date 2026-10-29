@@ -63,8 +63,8 @@ class Gates(unittest.TestCase):
 
     def test_release_uses_v3_verification(self):
         release = (ROOT / ".github/workflows/release.yml").read_text()
-        self.assertIn("    - cron: '0 3 * * *'", release)
-        self.assertNotIn("  push:", release)
+        self.assertIn("  push:\n    branches: [main]", release)
+        self.assertNotIn("  schedule:", release)
         self.assertIn("uses: ./.github/workflows/v3-verify.yml", release)
         self.assertIn("needs.check.outputs.released == 'false'", release)
         self.assertIn("    needs: [verify, bundle]", release)
