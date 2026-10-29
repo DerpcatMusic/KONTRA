@@ -336,8 +336,15 @@ fn auto_align_reports_the_latest_part_and_holds_the_other() {
     Tick.run(&again);
     let remeasured = t.elapsed();
     pairs(&again, &mut again_dsp, &[]);
-    assert_eq!(<Kontra as PluginLogic>::latency(&again_dsp), latency, "reload latency");
-    assert!(remeasured.as_secs_f32() < 1.0, "the reload measured again: {remeasured:?}");
+    assert_eq!(
+        <Kontra as PluginLogic>::latency(&again_dsp),
+        latency,
+        "reload latency"
+    );
+    assert!(
+        remeasured.as_secs_f32() < 1.0,
+        "the reload measured again: {remeasured:?}"
+    );
     params.align.set_value(false);
     Tick.run(&params);
     pairs(&params, &mut dsp, &[]);
