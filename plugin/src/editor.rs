@@ -5,10 +5,11 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use kontra_host::browser::Browser;
 use kontra_host::rack::{Event, HostNote, HostPattern, Mix, Rack};
+use kontra_host::state::SavedView;
 use kontra_host::ui::Library;
 use kontra_protocol::Stats;
 use kontra_ui::app::{self, Action, App, Face, Part};
@@ -315,12 +316,16 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let dropping = Arc::clone(&params);
     let mut app = App::default();
     let mut shown = Shown::default();
+    let mut look = SavedView::read(&p.look.read().unwrap_or_else(PoisonError::into_inner));
+    crate::look::apply(&mut app, &look);
+    let mut waiting = look.parts.clone();
     MuiEditor::new(params, kontra_ui::ui(), (1180, 780), move |ui, bridge| {
         let slots: Vec<usize> = {
             let view = lock(&p.shared.view);
             view.fill(&mut app, &mut shown);
             view.parts.iter().map(|v| v.slot).collect()
         };
+        crate::look::parts(&mut app, &slots, &mut waiting);
         app.master = f64::from(p.volume.value());
         let response = kontra_ui::app::view(ui, &mut app);
         for action in response.changed {
@@ -356,6 +361,13 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             }
             let slot = part_of(&action).and_then(|n| slots.get(n).copied());
             p.shared.request(Request::Ui(Edit { slot, action }));
+        }
+        // Parts not loaded yet keep how they were saved.
+        let mut now = crate::look::saved(&app, &slots);
+        now.parts.extend_from_slice(&waiting);
+        if now != look {
+            *p.look.write().unwrap_or_else(PoisonError::into_inner) = now.write();
+            look = now;
         }
         response.el
     })

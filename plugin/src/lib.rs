@@ -11,6 +11,7 @@
 mod align;
 mod editor;
 mod input;
+mod look;
 #[cfg(test)]
 mod tests;
 
@@ -50,6 +51,9 @@ pub struct KontraParams {
     /// The rack as JSON ([`Saved`]): parts, presets, mix.
     #[persist = "rack"]
     pub saved: RwLock<String>,
+    /// The editor's view as JSON ([`kontra_host::state::SavedView`]).
+    #[persist = "editor"]
+    pub look: RwLock<String>,
     #[skip]
     pub shared: Shared,
     #[meter]
