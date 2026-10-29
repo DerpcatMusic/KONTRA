@@ -1989,3 +1989,75 @@ fn a_controller_moves_a_bus_eq_band_while_it_plays() {
     let db = 20.0 * (cut / open).log10();
     assert!((db - -20.0).abs() < 1.0, "{open} -> {cut}: {db} dB");
 }
+
+#[cfg(feature = "trace")]
+#[test]
+fn bounded_trace_captures_voice_start_steal_and_end_without_changing_audio() {
+    use kontra_engine::{TraceEvent, VoiceEvent};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let plan = Arc::new(Plan::new(vec![zone(&mut store, 0.5)], 1));
+    let mut plain = Engine::new(Arc::clone(&plan), store.client(), RATE);
+    let mut traced = Engine::new_traced(plan, store.client(), RATE, 128);
+    for input in [
+        &[on(60, 1.0)][..],
+        &[on(62, 1.0)][..],
+        &[off(62)][..],
+        &[][..],
+        &[][..],
+        &[][..],
+    ] {
+        let mut a = [[0.0; 2]; 128];
+        let mut b = [[0.0; 2]; 128];
+        plain.process(&mut a, input);
+        traced.process(&mut b, input);
+        assert_eq!(a, b, "tracing changed the rendered samples");
+    }
+    let transitions: Vec<_> = traced
+        .trace_events()
+        .iter()
+        .filter_map(|event| match event {
+            TraceEvent::Voice { event, .. } => Some(*event),
+            _ => None,
+        })
+        .collect();
+    assert!(transitions.contains(&VoiceEvent::Start), "{transitions:?}");
+    assert!(transitions.contains(&VoiceEvent::Steal), "{transitions:?}");
+    assert!(transitions.contains(&VoiceEvent::End), "{transitions:?}");
+    assert_eq!(traced.trace_dropped(), 0);
+}
+
+#[cfg(feature = "trace")]
+#[test]
+fn note_on_route_trace_keeps_the_controller_value_at_start() {
+    use kontra_engine::TraceEvent;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5);
+    z.start_mod = 1000;
+    let mut plan = Plan::new(vec![z], 8);
+    plan.groups[0].mods = vec![ir::Mod {
+        name: "start".into(),
+        slot: 3,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::SampleStart {
+            source: ir::Source::Controller(1),
+            depth: 1.0,
+        },
+    }];
+    let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
+    level(&mut engine, &[cc(1, 64), on(60, 1.0)]);
+    level(&mut engine, &[cc(1, 127)]);
+    let source = engine
+        .trace_events()
+        .iter()
+        .find_map(|event| match event {
+            TraceEvent::RouteOnset {
+                mod_slot: 3,
+                source,
+                ..
+            } => *source,
+            _ => None,
+        })
+        .unwrap();
+    assert!((source - 64.0 / 127.0).abs() < 0.001, "{source}");
+}

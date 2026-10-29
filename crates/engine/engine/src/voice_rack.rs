@@ -362,7 +362,7 @@ impl Engine {
 
     /// The cutoff in Hz and damping of the filter in `insert` of `zone`'s
     /// group, moved by its routes for this note at `age`.
-    fn voice_filter(
+    pub(crate) fn voice_filter(
         &self,
         zone: &Zone,
         insert: u8,
@@ -409,7 +409,7 @@ impl Engine {
     /// The effect in `insert` of `zone`'s group, its controls moved by their
     /// routes for this note at `age` (a script's change to its base follows
     /// too).
-    fn voice_effect(
+    pub(crate) fn voice_effect(
         &self,
         zone: &Zone,
         insert: u8,

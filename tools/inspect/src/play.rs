@@ -57,12 +57,18 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         })
         .collect();
     let stream = store.client();
-    let mut engine = Engine::new(Arc::clone(&plan), stream.clone(), RATE);
+    let mut engine = Engine::new_traced(Arc::clone(&plan), stream.clone(), RATE, 65536);
     engine.set_offline_wait(true);
     let mut at = 0u64;
     let mut next = 0usize;
     let mut next_tail = last_off;
     let mut trace = Vec::new();
+    let mut stage_events: Vec<Value> = engine
+        .trace_events()
+        .iter()
+        .map(|event| super::trace_output::event(event, &plan, &zone_samples, RATE))
+        .collect();
+    engine.clear_trace();
     let mut missing_blocks = Vec::new();
     let mut settle_timeouts = 0u64;
     let mut peak = 0f32;
@@ -90,6 +96,13 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         let before = engine.stats().missing_frames;
         let stream_before = stream.stats();
         engine.process(&mut audio[..frames], &timed);
+        stage_events.extend(
+            engine
+                .trace_events()
+                .iter()
+                .map(|event| super::trace_output::event(event, &plan, &zone_samples, RATE)),
+        );
+        engine.clear_trace();
         let missed = engine.stats().missing_frames.saturating_sub(before);
         if missed > 0 {
             missing_blocks.push(json!({"start_frame":at, "missing_frames":missed,
@@ -123,10 +136,33 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
                 })
                 .collect();
             let routes: Vec<_> = engine.inspect_eq_routes().iter().map(|r| json!({
-                "zone":r.zone, "name":r.name, "insert":r.insert, "band":r.band,
+                "voice_slot":r.voice_slot, "zone":r.zone, "name":r.name, "insert":r.insert, "band":r.band,
                 "routed_source":r.source, "contribution_db":r.contribution_db, "band_gain_db":r.band_gain_db,
             })).collect();
-            trace.push(json!({"frame":at, "cc1":engine.controller(1), "cc11":engine.controller(11), "voices":voices, "eq_routes":routes}));
+            let all_routes: Vec<_> = engine
+                .inspect_routes()
+                .iter()
+                .map(|r| {
+                    json!({
+                        "voice_slot":r.voice_slot, "zone":r.zone, "name":r.name, "route":super::routes::route(r.kind),
+                        "current_source":r.source, "current_routed_source":r.routed,
+                    })
+                })
+                .collect();
+            let bus_routes: Vec<_> = engine
+                .inspect_bus_routes()
+                .map(|r| {
+                    json!({"bus":r.bus,
+                "route":super::routes::route(r.kind), "last_applied_amount":r.amount})
+                })
+                .collect();
+            let voice_effect_targets: Vec<_> = engine.inspect_voice_effects().iter().map(|v| json!({
+                "voice_slot":v.voice_slot, "zone":v.zone, "insert":v.insert, "target":format!("{:?}",v.target),
+            })).collect();
+            let shared_effects: Vec<_> = engine.inspect_shared_effects().iter().map(|v| json!({
+                "scope":v.scope, "owner":v.owner, "slot":v.slot, "effect":format!("{:?}",v.effect),
+            })).collect();
+            trace.push(json!({"frame":at, "cc1":engine.controller(1), "cc11":engine.controller(11), "voices":voices, "eq_routes":routes, "all_routes":all_routes, "bus_routes":bus_routes, "voice_effect_targets":voice_effect_targets, "shared_effects":shared_effects}));
             if at >= next_tail && at >= last_off {
                 next_tail += u64::from(RATE);
             }
@@ -173,10 +209,23 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
         .iter()
         .filter_map(|b| b.get("hf_second_difference_energy")?.as_f64())
         .fold(0.0_f64, f64::max);
+    let octave_bands = super::bands::octave_levels(&rendered, RATE);
+    let octave_time: Vec<_> = rendered
+        .chunks(RATE as usize)
+        .enumerate()
+        .map(|(n, audio)| {
+            json!({
+                "start_frame": n * RATE as usize, "frames": audio.len(),
+                "bands":super::bands::octave_levels(audio, RATE),
+            })
+        })
+        .collect();
     let stats = engine.stats();
     let wait_timeouts = engine.offline_wait_timeouts() + settle_timeouts;
     let stream_stats = stream.stats();
-    let complete = stats.missing_frames == 0
+    let dropped = engine.trace_dropped();
+    let complete = dropped == 0
+        && stats.missing_frames == 0
         && wait_timeouts == 0
         && stream_stats.read_errors == 0
         && stream_stats.requests_refused == 0;
@@ -192,8 +241,8 @@ pub fn run(path: &Path, scenario_name: &str) -> Result<(Value, String)> {
     Ok((
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
-        "trace":trace,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts},
-        "diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["script callbacks and commands by event","voice lifecycle events","non-EQ route values","octave bands"]}}),
+        "trace":trace,"stage_events":stage_events,"trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
+        "diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["non-EQ applied route values"]}}),
         summary,
     ))
 }

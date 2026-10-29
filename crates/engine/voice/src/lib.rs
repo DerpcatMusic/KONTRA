@@ -232,6 +232,12 @@ impl Voice {
         self.missing
     }
 
+    /// Source frames per output frame at the current pitch.
+    #[must_use]
+    pub fn step(&self) -> f64 {
+        self.step
+    }
+
     /// Frames played so far, in source frames from the region start.
     #[must_use]
     pub fn position(&self) -> f64 {

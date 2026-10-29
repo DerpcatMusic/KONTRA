@@ -8,7 +8,7 @@ publish = false
 workspace = true
 
 [features]
-trace = ["kontra-voice/trace"]
+trace = ["kontra-voice/trace", "dep:kontra-trace"]
 
 [dependencies]
 kontra-events = { path = "../../model/events" }
@@ -21,3 +21,4 @@ kontra-ir = { path = "../../model/ir" }
 kontra-voice = { path = "../voice" }
 kontra-dsp = { path = "../../dsp/registry" }
 kontra-effects = { path = "../effects" }
+kontra-trace = { path = "../trace", optional = true }

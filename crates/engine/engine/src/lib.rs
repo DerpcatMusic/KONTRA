@@ -31,6 +31,9 @@ mod queue;
 mod racks;
 
 mod script;
+mod start;
+#[cfg(feature = "trace")]
+mod trace;
 mod transport;
 mod ui;
 mod voice_gain;
@@ -46,7 +49,10 @@ use kontra_time::Frames;
 use kontra_voice::{Voice, VoiceStart};
 
 pub use fx_types::{EffectRequest, Prepared};
-pub use inspect::{EqRouteObservation, VoiceObservation};
+pub use inspect::{
+    BusRouteObservation, EqRouteObservation, RouteObservation, SharedEffectObservation,
+    VoiceEffectObservation, VoiceObservation,
+};
 pub use kontra_effects::response;
 pub use kontra_effects::stem;
 pub use kontra_events::{Event, HostNote, HostPattern, NoteExpression};
@@ -64,6 +70,8 @@ pub use plan::{
 };
 pub use queue::Timed;
 pub use script::{Callbacks, Controls, LookPars, ScriptPlan};
+#[cfg(feature = "trace")]
+pub use trace::{TraceEvent, VoiceEvent};
 pub use transport::Play;
 pub use ui::ControlLook;
 
@@ -128,6 +136,8 @@ struct Slot {
 type ControlPars = Box<[Vec<(i32, i32)>]>;
 
 pub struct Engine {
+    #[cfg(feature = "trace")]
+    trace: Option<trace::Trace>,
     now: SampleTime,
     rate: u32,
     /// Host tempo, quarter notes per minute (tempo-synced LFOs).
@@ -218,6 +228,22 @@ impl Engine {
     /// stolen voices can fade. Not real-time.
     #[must_use]
     pub fn new(plan: Arc<Plan>, stream: StreamClient, rate: u32) -> Self {
+        Self::new_inner(plan, stream, rate, None)
+    }
+
+    /// Create an engine with bounded tracing enabled before its init callbacks.
+    #[cfg(feature = "trace")]
+    #[must_use]
+    pub fn new_traced(plan: Arc<Plan>, stream: StreamClient, rate: u32, capacity: usize) -> Self {
+        Self::new_inner(plan, stream, rate, Some(capacity))
+    }
+
+    fn new_inner(
+        plan: Arc<Plan>,
+        stream: StreamClient,
+        rate: u32,
+        _trace_capacity: Option<usize>,
+    ) -> Self {
         let out = plan.output;
         let shared: Box<[Group]> = plan.groups.clone().into();
         let rack = racks::Rack::new(&plan.inserts, rate, &[]);
@@ -279,6 +305,12 @@ impl Engine {
             .collect();
         let ui = kontra_script_ui::Store::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
         let mut engine = Self {
+            #[cfg(feature = "trace")]
+            trace: _trace_capacity.map(|capacity| trace::Trace {
+                events: Vec::with_capacity(capacity),
+                dropped: 0,
+                next_action: 0,
+            }),
             now: SampleTime(0),
             rate: rate.max(1),
             tempo: 120.0,
@@ -492,101 +524,6 @@ impl Engine {
 
     /// Starts every zone `accept`s whose rules match the note, all at now.
     /// `attack` steps round-robin counters; release triggers re-read the attack's draw.
-    fn start_zones(&mut self, note: NoteRef, attack: bool, accept: impl Fn(Trigger) -> bool) {
-        let Some(n) = self.notes.get(note).copied() else {
-            return;
-        };
-        let plan = self.plan.clone();
-        let key = usize::from(n.key);
-        if attack && let Some(r) = self.behaviour.rls_reset.get_mut(key) {
-            *r = self.now.0;
-        }
-        let since = self.behaviour.rls_reset.get(key).map_or(n.at.0, |&r| r);
-        let held_seconds = self.now.0.saturating_sub(since) as f32 / self.rate as f32;
-        for (index, zone) in plan.zones.iter().enumerate() {
-            let selected = accept(zone.trigger)
-                && self.masks.allows(note.slot(), zone.group)
-                && self
-                    .groups
-                    .get(zone.group as usize)
-                    .is_none_or(|g| !g.purged)
-                && zone.keys.contains(&n.key)
-                && zone.velocities.contains(&n.velocity_byte)
-                && (n.zone_slot < 0 || n.zone_slot == i32::from(zone.slot))
-                && self
-                    .buses
-                    .get(plan::bus(&self.groups, zone))
-                    .is_some_and(|b| b.enabled);
-            if !selected
-                || !self
-                    .behaviour
-                    .starts(zone, n.host.channel, n.key, n.draw, attack)
-            {
-                continue;
-            }
-            self.choke_by(zone.group, note);
-            self.limit_group(zone.group);
-            if let Some(vg) = zone.voice_group {
-                self.limit_voice_group(vg);
-            }
-            let factor = if zone.trigger == Trigger::Release {
-                10f32.powf(-zone.release_decay_db * held_seconds / 20.0)
-                    * self.release_counter(zone, held_seconds)
-            } else {
-                1.0
-            };
-            let mut region = zone.region.clone();
-            if !region.reverse {
-                let script = u64::from(n.offset) * u64::from(zone.sample_rate) / 1_000_000;
-                let frames = self.start_offset(zone, &n, held_seconds);
-                region.start = region
-                    .start
-                    .saturating_add(script)
-                    .saturating_add_signed(frames)
-                    .min(region.end);
-            }
-            if let [start, length] = self.loop_shift(zone, &n)
-                && (start != 0.0 || length != 0.0)
-                && !region.reverse
-            {
-                region.shift_loops(start, length);
-            }
-            if let Some(mix) = self.voice_mix(zone, &n, self.age(self.now, None)) {
-                region.mix = Some(mix);
-            }
-            let pan = self.group_pan(zone);
-            let (gain, lag) = self.voice_gain(zone, &n, factor, self.age(self.now, None), pan);
-            let (step, bend) = self.step(zone, &n, self.age(self.now, None));
-            let start = VoiceStart {
-                region,
-                step: voice_gain::bent(self.plan.route_pitch, step, bend.instant + bend.semitones),
-                gain,
-                lag,
-                envelope: self.envelope(zone, &n, held_seconds),
-            };
-            let now = self.now;
-            let Some(i) = self.free_slot() else {
-                continue;
-            };
-            let Some(slot) = self.voices.get_mut(i) else {
-                continue;
-            };
-            slot.voice.start(start);
-            slot.note = Some(note);
-            slot.zone = index;
-            slot.started = now;
-            slot.released = false;
-            slot.released_at = None;
-            slot.fading = false;
-            slot.factor = factor;
-            slot.bend = [bend.semitones; 2];
-            slot.pan = [pan; 2];
-            slot.warp = [0.0; modulators::WARPS];
-            slot.chaos = [modulators::CHAOS_START; modulators::WARPS];
-            self.start_rack(i, zone, &n, self.age(now, None));
-        }
-    }
-
     /// Makes room for one more voice in `group` under its polyphony limit.
     fn limit_group(&mut self, group: u32) {
         let Some(&(_, limit)) = self.plan.polyphony.iter().find(|(g, _)| *g == group) else {
@@ -602,12 +539,17 @@ impl Engine {
             return;
         }
         let fade = self.fade_frames();
-        if let Some(oldest) = self
+        if let Some((_index, oldest)) = self
             .voices
             .iter_mut()
-            .filter(|s| in_group(s))
-            .min_by_key(|s| (!s.released, s.started))
+            .enumerate()
+            .filter(|(_, s)| in_group(s))
+            .min_by_key(|(_, s)| (!s.released, s.started))
         {
+            #[cfg(feature = "trace")]
+            if let Some(trace) = &mut self.trace {
+                trace.voice(self.now.0, _index, oldest, VoiceEvent::Steal);
+            }
             oldest.voice.fade(fade);
             oldest.fading = true;
         }
