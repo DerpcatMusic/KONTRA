@@ -178,9 +178,10 @@ fn a_child_ends_with_its_key_even_when_the_keys_release_is_ignored() {
 #[test]
 fn at_pedal_up_a_script_sees_the_keys_it_held_as_up() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
     let mut e = engine(
         &store,
-        vec![zone(&mut store, 0.5, 0)],
+        vec![z],
         "on init
             declare $id
             declare $pedal
