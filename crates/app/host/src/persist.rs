@@ -9,6 +9,8 @@
 //! variables are not read back yet: they keep the values the part loaded
 //! with.
 
+use std::collections::HashMap;
+
 use kontra_engine::Engine;
 use kontra_ksp::{Cells, FIRST_UI_ID, Persistence, Script};
 
@@ -96,39 +98,54 @@ impl Capture {
         }
     }
 
-    /// The value read for `cell` of script `slot`.
-    #[must_use]
-    pub fn value(&self, slot: u8, cell: u32) -> Option<i64> {
-        let at = self.cells.iter().position(|&c| c == (slot, cell))?;
-        self.values.get(at).copied().flatten()
+    /// Where each (slot, cell) was read, for lookups in time linear in the
+    /// cells captured.
+    fn index(&self) -> HashMap<(u8, u32), Option<i64>> {
+        self.cells
+            .iter()
+            .copied()
+            .zip(self.values.iter().copied())
+            .collect()
     }
 }
 
 /// By instrument script, the saved values to load it with: `loaded` (what it
 /// loaded with) with each persistent number variable replaced by its value
-/// in `capture`. Scripts with nothing captured keep `loaded`.
+/// in `capture`. Scripts with nothing captured keep `loaded`. Linear in the
+/// cells and entries: a persistent array may hold a million values.
 #[must_use]
 pub fn saved(loaded: &[Vec<String>], slots: &[Vars], capture: &Capture) -> Vec<Vec<String>> {
+    let read = capture.index();
     let mut out = loaded.to_vec();
     for (slot, vars) in slots.iter().enumerate() {
         let (Ok(slot), Some(entries)) = (u8::try_from(slot), out.get_mut(vars.script)) else {
             continue;
         };
+        let mut by_name: HashMap<String, usize> = (entries.iter().enumerate())
+            .filter_map(|(n, e)| Some((bare(e.split(' ').next()?), n)))
+            .collect();
         for var in &vars.vars {
             let values: Option<Vec<String>> = (var.base..var.base + var.len)
-                .map(|c| capture.value(slot, c).map(|v| text(v, var.real)))
+                .map(|c| {
+                    read.get(&(slot, c))
+                        .copied()
+                        .flatten()
+                        .map(|v| text(v, var.real))
+                })
                 .collect();
             let Some(values) = values else {
                 continue;
             };
             let entry = format!("{} {}", var.name, values.join(" "));
-            let key = bare(&var.name);
-            match entries
-                .iter_mut()
-                .find(|e| e.split(' ').next().map(bare) == Some(key.clone()))
+            match by_name
+                .get(&bare(&var.name))
+                .and_then(|&n| entries.get_mut(n))
             {
                 Some(old) => *old = entry,
-                None => entries.push(entry),
+                None => {
+                    by_name.insert(bare(&var.name), entries.len());
+                    entries.push(entry);
+                }
             }
         }
     }
