@@ -365,7 +365,7 @@ pub struct Plan {
     /// How [`ir::KnobTarget::Slot`] knobs move the effects they address.
     pub slot_laws: Vec<ir::SlotLaw>,
     /// The filter shapes [`EnginePar::EffectSubtype`] switches slots to.
-    pub slot_shapes: Vec<ir::SlotShape>,
+    pub slot_shapes: ir::SlotShapes,
 }
 
 impl Plan {
@@ -413,7 +413,7 @@ impl Plan {
             impulse_laws: Vec::new(),
             responses: Vec::new(),
             slot_laws: Vec::new(),
-            slot_shapes: Vec::new(),
+            slot_shapes: ir::SlotShapes::NONE,
         }
     }
 }

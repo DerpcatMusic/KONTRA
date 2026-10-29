@@ -262,39 +262,40 @@ pub(crate) fn filter_knobs(kind: i32, cutoff: f32, resonance: f32, gain: f32) ->
     out
 }
 
-/// Filter shape `kind`'s own resonance laws when its family damps by stages
-/// and pass (SV, 50..=62): every damping and the gain, kept even where
-/// constant, so a switch to it sets them all. Built once; slots share them.
+/// Filter shape `kind`'s own cutoff and resonance laws: its Hz, and every
+/// damping and the gain, kept even where constant, so a switch to it sets
+/// them all. Built once for [`crate::laws::SWITCHABLE`]; slots share them.
 pub(crate) fn shape_laws(kind: i32) -> std::sync::Arc<[SlotKnob]> {
-    static SV: std::sync::LazyLock<Vec<std::sync::Arc<[SlotKnob]>>> =
-        std::sync::LazyLock::new(|| (50..=62).map(|k| sv_laws(k).into()).collect());
-    let n = usize::try_from(kind - 50).ok();
-    n.and_then(|n| SV.get(n))
-        .cloned()
-        .unwrap_or_else(|| [].into())
+    static LAWS: std::sync::LazyLock<Vec<(i32, std::sync::Arc<[SlotKnob]>)>> =
+        std::sync::LazyLock::new(|| {
+            let ids = crate::laws::SWITCHABLE.into_iter().flatten();
+            ids.map(|k| (k, own_laws(k).into())).collect()
+        });
+    let found = LAWS.iter().find(|(k, _)| *k == kind);
+    found.map_or_else(|| [].into(), |(_, laws)| laws.clone())
 }
 
-fn sv_laws(kind: i32) -> Vec<SlotKnob> {
-    use ir::EffectParam::{FilterDamping, FilterGain};
-    let fields = [
-        FilterDamping(0),
-        FilterDamping(1),
-        FilterDamping(2),
-        FilterGain,
+fn own_laws(kind: i32) -> Vec<SlotKnob> {
+    use ir::EffectParam::{FilterDamping, FilterGain, FilterHz};
+    use ir::SlotKnob::{Cutoff, Resonance};
+    let rows = [
+        (Cutoff, FilterHz),
+        (Resonance, FilterDamping(0)),
+        (Resonance, FilterDamping(1)),
+        (Resonance, FilterDamping(2)),
+        (Resonance, FilterGain),
     ];
-    let table = |field: ir::EffectParam| {
+    let table = |(knob, field): (ir::SlotKnob, ir::EffectParam)| {
         let at = |n: u8| {
-            let f = crate::laws::filter(kind, 0.5, f32::from(n) / 64.0, 0.0)?;
+            let x = f32::from(n) / 64.0;
+            let (u, r) = if knob == Cutoff { (x, 0.5) } else { (0.5, x) };
+            let f = crate::laws::filter(kind, u, r, 0.0)?;
             field.field_mut(&mut ir::EffectKind::Filter(f)).copied()
         };
         let values = (0..=64).map(at).collect::<Option<Vec<f32>>>()?;
-        Some((
-            ir::SlotKnob::Resonance,
-            field,
-            ir::Law::Table(values.into()),
-        ))
+        Some((knob, field, ir::Law::Table(values.into())))
     };
-    fields.into_iter().filter_map(table).collect()
+    rows.into_iter().filter_map(table).collect()
 }
 
 /// The Compressor's saved attack and release ms for a knob `x`, `lo + (hi −

@@ -750,9 +750,8 @@ fn effect_subtype_switches_a_filter_to_its_slots_shape() {
             ir::Law::Linear { lo: 0.0, hi: 1.0 },
         ),
     ];
-    plan.slot_shapes = vec![ir::SlotShape {
-        at: ir::RackAt::Group(0),
-        slot: 0,
+    plan.slot_shapes.slots = vec![(ir::RackAt::Group(0), 0)];
+    plan.slot_shapes.shapes = vec![ir::SlotShape {
         id: 103,
         filter: ir::Filter {
             pass: ir::Pass::Low,
@@ -767,7 +766,7 @@ fn effect_subtype_switches_a_filter_to_its_slots_shape() {
         laws: Vec::new().into(),
     }];
     // A shape with its own resonance law: the gain falls as it rises.
-    let mut own = plan.slot_shapes[0].clone();
+    let mut own = plan.slot_shapes.shapes[0].clone();
     own.id = 58;
     own.laws = vec![(
         ir::SlotKnob::Resonance,
@@ -775,7 +774,7 @@ fn effect_subtype_switches_a_filter_to_its_slots_shape() {
         ir::Law::Linear { lo: 1.0, hi: 0.0 },
     )]
     .into();
-    plan.slot_shapes.push(own);
+    plan.slot_shapes.shapes.push(own);
     let script = kontra_ksp::compile(
         "on init
             set_engine_par($ENGINE_PAR_RESONANCE, 250000, 0, 0, -1)
@@ -794,6 +793,71 @@ fn effect_subtype_switches_a_filter_to_its_slots_shape() {
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let e = Engine::new(Arc::new(plan), store.client(), RATE);
     assert_eq!(e.last_message(), "237500 237500 0 250000 250000 750000");
+}
+
+/// A switch to a shape with its own cutoff law (AR → Daft, say) keeps the
+/// cutoff setting and moves the Hz to the new law.
+#[test]
+fn effect_subtype_keeps_the_cutoff_setting_through_the_new_law() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let filter = ir::Filter {
+        pass: ir::Pass::Low,
+        hz: 300.0,
+        stages: 1,
+        ladder: None,
+        damping: [2.0; 3],
+        gain: 1.0,
+        octaves: 0.0,
+        q_octaves: 0.0,
+    };
+    plan.groups[0].inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Filter(filter),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let hz = |knob, lo, hi| ir::SlotLaw {
+        at: ir::RackAt::Group(0),
+        slot: 0,
+        knob,
+        field: ir::EffectParam::FilterHz,
+        law: ir::Law::Linear { lo, hi },
+    };
+    // The delay-time knob reads the Hz back.
+    plan.slot_laws = vec![
+        hz(ir::SlotKnob::Cutoff, 100.0, 1100.0),
+        hz(ir::SlotKnob::DelayTime, 0.0, 10_000.0),
+    ];
+    let own = (
+        ir::SlotKnob::Cutoff,
+        ir::EffectParam::FilterHz,
+        ir::Law::Linear {
+            lo: 1000.0,
+            hi: 2000.0,
+        },
+    );
+    plan.slot_shapes.slots = vec![(ir::RackAt::Group(0), 0)];
+    plan.slot_shapes.shapes = vec![ir::SlotShape {
+        id: 70,
+        filter,
+        laws: vec![own].into(),
+    }];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_CUTOFF, 500000, 0, 0, -1)
+            declare @s
+            @s := get_engine_par($ENGINE_PAR_DL_TIME, 0, 0, -1) & \" \"
+            set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, 70, 0, 0, -1)
+            message(@s & get_engine_par($ENGINE_PAR_CUTOFF, 0, 0, -1) & \" \" & get_engine_par($ENGINE_PAR_DL_TIME, 0, 0, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "60000 500000 150000");
 }
 
 #[test]

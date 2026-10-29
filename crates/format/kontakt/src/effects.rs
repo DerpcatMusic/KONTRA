@@ -120,15 +120,10 @@ fn rack(
                         field,
                         law,
                     }));
-                if let Some((_, 0x18, kind)) = &effect {
-                    let shapes = crate::laws::filter_shapes(*kind);
-                    laws.shapes.extend(shapes.map(|(id, f)| ir::SlotShape {
-                        at: *rack_at,
-                        slot,
-                        id,
-                        filter: f,
-                        laws: crate::script_knobs::shape_laws(id),
-                    }));
+                if let Some((_, 0x18, kind)) = &effect
+                    && crate::laws::switches(*kind)
+                {
+                    laws.shape_slots.push((*rack_at, slot));
                 }
             }
             if effect.is_none() {
@@ -525,7 +520,8 @@ pub(crate) struct Racks {
 #[derive(Default)]
 pub(crate) struct Slots {
     pub laws: Vec<ir::SlotLaw>,
-    pub shapes: Vec<ir::SlotShape>,
+    /// Filter slots that may switch to [`crate::laws::filter_shapes`].
+    pub shape_slots: Vec<(ir::RackAt, u8)>,
 }
 
 pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut Notes) -> Racks {

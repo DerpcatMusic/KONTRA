@@ -118,26 +118,31 @@ impl Engine {
 
     /// The shape the addressed slot last switched to, when it brings laws.
     fn shape_on<'p>(&self, plan: &'p Plan, at: ir::RackAt, slot: i32) -> Option<&'p ir::SlotShape> {
-        let mut on = plan.slot_shapes.iter().zip(&self.behaviour.shapes);
-        on.find(|(s, on)| **on && s.at == at && i32::from(s.slot) == slot)
-            .map(|(s, _)| s)
+        let n = shape_slot(plan, at, slot)?;
+        let on = self.behaviour.shapes.get(n).copied().flatten()?;
+        plan.slot_shapes
+            .shapes
+            .get(usize::from(on))
             .filter(|s| !s.laws.is_empty())
     }
 
     /// `set_engine_par` of a filter slot's shape `id`; false when the slot
-    /// has no such shape. The resonance keeps its setting through the new
-    /// shape's laws.
+    /// has no such shape. Cutoff and resonance keep their settings through
+    /// the new shape's laws.
     pub(crate) fn set_shape(&mut self, id: i32, group: i32, slot: i32, generic: i32) -> bool {
         let plan = Arc::clone(&self.plan);
         let Some(at) = rack_at(group, generic) else {
             return false;
         };
-        let here = |s: &ir::SlotShape| s.at == at && i32::from(s.slot) == slot;
-        let shapes = &plan.slot_shapes;
-        let Some(n) = shapes.iter().position(|s| here(s) && s.id == id) else {
+        let shapes = &plan.slot_shapes.shapes;
+        let (Some(at_slot), Some(n)) = (
+            shape_slot(&plan, at, slot),
+            shapes.iter().position(|s| s.id == id),
+        ) else {
             return false;
         };
-        let resonance = self.slot_x(ir::SlotKnob::Resonance, group, slot, generic);
+        let knobs = [ir::SlotKnob::Cutoff, ir::SlotKnob::Resonance];
+        let settings = knobs.map(|k| self.slot_x(k, group, slot, generic));
         let Some(ir::EffectKind::Filter(f)) =
             self.effect_mut(group, slot, generic).map(|e| &mut e.kind)
         else {
@@ -146,13 +151,13 @@ impl Engine {
         if let Some(shape) = shapes.get(n) {
             shape.apply(f);
         }
-        for (k, (on, s)) in self.behaviour.shapes.iter_mut().zip(shapes).enumerate() {
-            if here(s) {
-                *on = k == n;
-            }
+        if let Some(on) = self.behaviour.shapes.get_mut(at_slot) {
+            *on = u16::try_from(n).ok();
         }
-        if let Some(x) = resonance {
-            self.set_slot_knob(ir::SlotKnob::Resonance, x, group, slot, generic);
+        for (knob, x) in knobs.into_iter().zip(settings) {
+            if let Some(x) = x {
+                self.set_slot_knob(knob, x, group, slot, generic);
+            }
         }
         self.refresh_all(None);
         true
@@ -228,6 +233,12 @@ fn laws<'p>(
         .filter(move |l| !has && l.at == at && i32::from(l.slot) == slot && l.knob == knob);
     let own = own.map(|(_, f, l)| (*f, l));
     own.chain(slots.map(|l| (l.field, &l.law)))
+}
+
+/// The index of slot `slot` of `at` in [`ir::SlotShapes::slots`].
+fn shape_slot(plan: &Plan, at: ir::RackAt, slot: i32) -> Option<usize> {
+    let here = |&(a, s): &(ir::RackAt, u8)| a == at && i32::from(s) == slot;
+    plan.slot_shapes.slots.iter().position(here)
 }
 
 /// The 0..=1 setting `law` maps to `y`, by bisection; the laws are monotonic.

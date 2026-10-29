@@ -321,21 +321,31 @@ pub(crate) fn filter(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Optio
     Some(f)
 }
 
-/// The shapes filter `kind` may switch to with its knob laws unchanged
-/// (ids: docs/re/kontakt-bindings/filter-type-ids.tsv): within the AR
-/// family (100..=108) and the Daft pair (70, 71), which share one cutoff and
-/// last-stage resonance law (filt-ar-daft.md), the Ladder (30..=41),
-/// whose types differ only in the taps it mixes (filt-ladder-monark.md),
-/// and the SV types (50..=62), which share a cutoff law but damp by stages
-/// and pass, so each brings its own resonance laws
+/// The filter types the module's types switch among (ids:
+/// docs/re/kontakt-bindings/filter-type-ids.tsv): AR (100..=108), Daft (70,
+/// 71), Ladder (30..=41) and SV (50..=62). One filter module stores its type
+/// beside its 0..1 knobs (reader 0x140d00db0), so a switch keeps the knobs and
+/// reads them through the new type's laws
 /// ([`crate::script_knobs::shape_laws`]). Legacy types switch to nothing.
-pub(crate) fn filter_shapes(kind: i32) -> impl Iterator<Item = (i32, ir::Filter)> {
-    let family = [100..=108, 70..=71, 30..=41, 50..=62]
-        .into_iter()
-        .find(|f| f.contains(&kind))
-        .into_iter()
-        .flatten();
-    family.filter_map(|id| filter_at(id, 0.5, 0.5, 0.0).map(|f| (id, f)))
+pub(crate) const SWITCHABLE: [std::ops::RangeInclusive<i32>; 4] =
+    [100..=108, 70..=71, 30..=41, 50..=62];
+
+/// Whether a filter of `kind` may switch to [`filter_shapes`].
+pub(crate) fn switches(kind: i32) -> bool {
+    SWITCHABLE.iter().any(|f| f.contains(&kind))
+}
+
+/// The shapes a [`switches`] filter may switch to.
+pub(crate) fn filter_shapes() -> Vec<ir::SlotShape> {
+    let ids = SWITCHABLE.into_iter().flatten();
+    ids.filter_map(|id| {
+        Some(ir::SlotShape {
+            id,
+            filter: filter_at(id, 0.5, 0.5, 0.0)?,
+            laws: crate::script_knobs::shape_laws(id),
+        })
+    })
+    .collect()
 }
 
 fn filter_at(kind: i32, cutoff: f32, resonance: f32, gain: f32) -> Option<ir::Filter> {
@@ -740,21 +750,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_filter_switches_only_within_its_family() {
-        let ids = |kind| filter_shapes(kind).map(|(id, _)| id).collect::<Vec<_>>();
-        assert_eq!(ids(103), (100..=108).collect::<Vec<_>>());
-        assert_eq!(ids(70), [70, 71]);
-        assert_eq!(ids(52), (50..=62).collect::<Vec<_>>());
-        assert!(ids(6).is_empty());
-        let notch = crate::script_knobs::shape_laws(58);
-        let gain = notch
-            .iter()
-            .find(|l| l.1 == ir::EffectParam::FilterGain)
-            .unwrap();
+    fn a_filter_switches_to_any_modern_type_with_its_laws() {
+        let ids: Vec<i32> = filter_shapes().iter().map(|s| s.id).collect();
+        assert_eq!(ids, SWITCHABLE.into_iter().flatten().collect::<Vec<_>>());
+        assert!(switches(103) && switches(52) && !switches(6));
+        let law = |kind, field| {
+            let laws = crate::script_knobs::shape_laws(kind);
+            laws.iter()
+                .find(|l| l.1 == field)
+                .map(|l| l.2.clone())
+                .unwrap()
+        };
+        let notch = law(58, ir::EffectParam::FilterGain);
         let want = filter(58, 0.5, 0.7, 0.0).unwrap().gain;
-        assert!((gain.2.eval(0.7) - want).abs() < 1e-3);
-        assert!(crate::script_knobs::shape_laws(103).is_empty());
-        let (_, notch) = filter_shapes(31).find(|(id, _)| *id == 41).unwrap();
+        assert!((notch.eval(0.7) - want).abs() < 1e-3);
+        // Daft's cutoff law differs from AR's; each shape brings its own.
+        for kind in [100, 70] {
+            let hz = law(kind, ir::EffectParam::FilterHz).eval(0.375);
+            let want = filter(kind, 0.375, 0.5, 0.0).unwrap().hz;
+            assert!((hz / want - 1.0).abs() < 1e-3, "{kind}: {hz} vs {want}");
+        }
+        let shapes = filter_shapes();
+        let notch = &shapes.iter().find(|s| s.id == 41).unwrap().filter;
         assert_eq!(notch.ladder, Some(ir::Ladder::ZeroDelay(12)));
     }
 

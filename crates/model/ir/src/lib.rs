@@ -14,7 +14,7 @@ mod reverb;
 pub use bus::{Bus, BusSend};
 pub use drive::{
     Clipper, Crush, Curve as DriveCurve, EffectParam, KnobTarget, Overdrive, RackAt, Shaper,
-    SlotKnob, SlotLaw, SlotShape,
+    SlotKnob, SlotLaw, SlotShape, SlotShapes,
 };
 pub use effects::{
     Compressor, Delay, DelayTime, Detector, IDENTITY, ImpulseCuts, Limiter, Matrix, Phaser, Reverb,
@@ -50,7 +50,7 @@ pub struct Instrument {
     /// How [`KnobTarget::Slot`] knobs move the effects they address.
     pub slot_laws: Vec<SlotLaw>,
     /// The filter shapes a script may switch slots to.
-    pub slot_shapes: Vec<SlotShape>,
+    pub slot_shapes: SlotShapes,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -70,7 +70,7 @@ impl Instrument {
         impulses: Vec::new(),
         responses: Vec::new(),
         slot_laws: Vec::new(),
-        slot_shapes: Vec::new(),
+        slot_shapes: SlotShapes::NONE,
         diagnostics: Vec::new(),
     };
 }
