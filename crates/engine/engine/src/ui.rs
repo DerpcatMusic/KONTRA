@@ -68,6 +68,12 @@ impl Engine {
         self.vms.get(usize::from(slot))?.as_ref()?.cell(n)
     }
 
+    /// Text cell `n` of script `slot` (a persistent `@` variable, say).
+    #[must_use]
+    pub fn script_text_in(&self, slot: u8, n: usize) -> Option<Text> {
+        self.vms.get(usize::from(slot))?.as_ref()?.text(n).copied()
+    }
+
     /// Marks control `n` of the running script as changed in look.
     pub(crate) fn touch(&mut self, n: usize) {
         self.ui.touch(self.running.slot, n);
