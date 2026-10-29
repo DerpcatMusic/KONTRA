@@ -162,6 +162,57 @@ pub fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
             Slot(ir::SlotKnob::Release),
             lin(0.0, 1.0),
         ),
+        // Solid G-EQ: its slot carries the bands' laws (solid_knobs).
+        (
+            "$ENGINE_PAR_SEQ_LF_GAIN",
+            Slot(ir::SlotKnob::BandGain(0)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_SEQ_LF_FREQ",
+            Slot(ir::SlotKnob::BandHz(0)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_SEQ_LMF_GAIN",
+            Slot(ir::SlotKnob::BandGain(1)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_SEQ_LMF_FREQ",
+            Slot(ir::SlotKnob::BandHz(1)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_SEQ_LMF_Q",
+            Slot(ir::SlotKnob::BandWidth(1)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_SEQ_HMF_GAIN",
+            Slot(ir::SlotKnob::BandGain(2)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_SEQ_HMF_FREQ",
+            Slot(ir::SlotKnob::BandHz(2)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_SEQ_HMF_Q",
+            Slot(ir::SlotKnob::BandWidth(2)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_SEQ_HF_GAIN",
+            Slot(ir::SlotKnob::BandGain(3)),
+            lin(0.0, 1.0),
+        ),
+        (
+            "$ENGINE_PAR_SEQ_HF_FREQ",
+            Slot(ir::SlotKnob::BandHz(3)),
+            lin(0.0, 1.0),
+        ),
         // Solid Bus Comp: its slot carries the switches' laws (bus_knobs).
         (
             "$ENGINE_PAR_SCOMP_THRESHOLD",

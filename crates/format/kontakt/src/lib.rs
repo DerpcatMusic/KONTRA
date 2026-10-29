@@ -20,6 +20,7 @@ mod reverb;
 mod samples;
 mod script_knobs;
 mod skreamer;
+mod solid_knobs;
 mod translate;
 mod versatile;
 mod wavetable;
