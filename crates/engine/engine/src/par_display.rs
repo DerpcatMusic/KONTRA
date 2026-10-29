@@ -1,6 +1,6 @@
 //! `get_engine_par_disp`: which [`Readout`] a parameter's knob shows.
 
-use crate::{Engine, engine_pars::EnginePar, params::stage_ms};
+use crate::{Engine, EnginePar, params::stage_ms};
 use kontra_ir as ir;
 use kontra_script_ui::readout::{Readout, write};
 use kontra_vm::Text;

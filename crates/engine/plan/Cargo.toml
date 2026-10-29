@@ -1,0 +1,16 @@
+[package]
+name = "kontra-plan"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+description = "What the engine plays: an instrument prepared for it, and its scripts"
+
+[lints]
+workspace = true
+
+[dependencies]
+kontra-effects = { path = "../effects" }
+kontra-ir = { path = "../../model/ir" }
+kontra-script-ui = { path = "../script-ui" }
+kontra-vm = { path = "../vm" }
+kontra-voice = { path = "../voice" }
