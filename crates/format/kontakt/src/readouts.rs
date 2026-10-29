@@ -12,7 +12,7 @@ use crate::script_knobs::{
 /// The readouts of `$ENGINE_PAR_*` names, by name.
 // ponytail: the cutoff law is the one filter measured (ANALOG's); measure
 // each filter kind when a library shows another.
-pub fn readouts() -> Vec<(&'static str, ir::Readout)> {
+pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
     use ir::Form::{Decimal, Padded, Pan, Ratio, Whole, Wide};
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let exp = |lo, hi| ir::Law::Exp { lo, hi };

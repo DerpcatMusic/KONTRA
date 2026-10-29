@@ -8,7 +8,7 @@ use kontra_vm::Text;
 
 impl Engine {
     /// `get_engine_par_disp(par, group, slot, generic)`, or with `ext` its `_ext`
-    /// form, which shows its second argument. False when not carried.
+    /// form, which shows its second argument. False for an unknown parameter.
     pub(crate) fn par_text(&mut self, ext: bool, n: impl Fn(usize) -> i32, out: &mut Text) -> bool {
         let par = self.script().and_then(|s| s.engine_pars.get(n(0)));
         let raw = match ext {
@@ -22,8 +22,10 @@ impl Engine {
         {
             return write(Readout::Padded(1000.0 * f64::from(s)), 0.0, out);
         }
-        self.script()
-            .zip(raw)
-            .is_some_and(|(s, raw)| text(&s.engine_pars, n(0), raw, out))
+        // A known parameter on a missing target shows "" (see GetEnginePar).
+        raw.map_or(par.is_some(), |raw| {
+            self.script()
+                .is_some_and(|s| text(&s.engine_pars, n(0), raw, out))
+        })
     }
 }
