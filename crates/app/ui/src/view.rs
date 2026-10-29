@@ -43,20 +43,26 @@ pub fn page(
             )
             .at(0., 0.),
     ];
-    if let Some(img) = p.background.image.and_then(|a| {
-        let (path, meta) = image_asset(tree, a)?;
-        pictures.frame(a, path, meta, p.background.frame as usize)
-    }) {
-        // The page shows the wallpaper from the header and skin offset down.
-        let y = -(f64::from(p.background.origin_y) + f64::from(p.background.offset_y.max(0)));
-        layers.push(
-            image(
-                &img,
-                f64::from(img.width) * scale,
-                f64::from(img.height) * scale,
-            )
-            .at(0., y * scale),
-        );
+    if let Some((a, (path, meta))) = p
+        .background
+        .image
+        .and_then(|a| Some((a, image_asset(tree, a)?)))
+    {
+        let b = &p.background;
+        let skin = (b.frame, b.origin_y, b.offset_y.max(0));
+        for (n, y) in wallpaper(skin, meta.size.map_or(0., |s| s.height), meta.frames) {
+            let Some(img) = pictures.frame(a, path, meta, n) else {
+                continue;
+            };
+            layers.push(
+                image(
+                    &img,
+                    f64::from(img.width) * scale,
+                    f64::from(img.height) * scale,
+                )
+                .at(0., y * scale),
+            );
+        }
     }
     let on_page = |r: model::Rect| {
         r.width > 0.
@@ -106,6 +112,27 @@ pub fn page(
         layers.push(el.at(r.x * scale, r.y * scale));
     }
     (stack(layers).w(w).h(h).radius(0.).clip(), built)
+}
+
+/// The wallpaper frames a page shows and where each one's top sits on it.
+/// The page starts below the header (`origin`) and the skin offset, which
+/// run through the file across its frames of height `tall`
+/// (`set_skin_offset`), so the page may straddle two frames.
+fn wallpaper(
+    (frame, origin, offset): (u32, u32, i32),
+    tall: f64,
+    frames: u32,
+) -> Vec<(usize, f64)> {
+    let row = f64::from(frame) * tall + f64::from(origin) + f64::from(offset);
+    let first = if tall > 0. {
+        (row / tall).floor() as usize
+    } else {
+        0
+    };
+    (first..first + 2)
+        .filter(|&n| n == first || n < frames as usize)
+        .map(|n| (n, n as f64 * tall - row))
+        .collect()
 }
 
 /// The frame `w` shows of a picture with `frames`: the script's
