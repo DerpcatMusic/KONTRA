@@ -304,7 +304,11 @@ fn lua_page(
     use kontra_host::ui::lua;
     let library = RefCell::new(Library::open(path));
     let meta = |p: &str| library.borrow_mut().meta(p);
-    let mut tree = lua::tree(page, &meta);
+    // As init left it, as the editor reads it.
+    let now = (engine.vm(slot))
+        .and_then(kontra_engine::Vm::own_page)
+        .and_then(|p| p.downcast::<kontra_lua::Ui>().ok());
+    let mut tree = lua::tree(now.as_deref().unwrap_or(page), &meta);
     let settle = |engine: &mut Engine, tree: &mut kontra_ui_model::Interface| {
         let mut block = vec![[0f32; 2]; 512];
         for _ in 0..10 {
@@ -341,7 +345,7 @@ fn lua_page(
     if let Some((n, knob, top)) = knob {
         engine.set_widget(slot, *n as u32, *top);
         settle(engine, &mut tree);
-        let now = tree.widgets.get(*n).map(|w| w.value.clone());
+        let now = tree.widgets.get(*n).and_then(|w| w.value.clone());
         moved = format!("{{\"knob\":{knob:?},\"to\":{top},\"now\":{now:?}}}");
         shot(&tree, path, &out.join(format!("{stem}-{slot}-knob.png")))?;
     }

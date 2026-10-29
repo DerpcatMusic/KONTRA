@@ -28,8 +28,27 @@ pub struct Loaded {
 /// # Errors
 /// When the file is not an instrument this can read.
 pub fn read(path: &Path) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
+    read_saved(path, &[])
+}
+
+/// [`read`], with the scripts' `saved` values (by instrument script) in
+/// place of the file's: a UVI program's load pass then loads the samples
+/// a project's saved menus and state pick.
+///
+/// # Errors
+/// As [`read`].
+pub fn read_saved(
+    path: &Path,
+    saved: &[Vec<String>],
+) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
     if kontra_format_uvi::is_uvi(path) {
-        Ok(kontra_format_uvi::load_with(path, &script_swaps)?)
+        // The load pass runs once per script, in order.
+        let next = std::cell::Cell::new(0);
+        let swaps = |script: &ir::Script| {
+            let n = next.replace(next.get() + 1);
+            script_swaps(script, saved.get(n).unwrap_or(&script.saved))
+        };
+        Ok(kontra_format_uvi::load_with(path, &swaps)?)
     } else {
         Ok(kontra_format_kontakt::load(path)?)
     }
@@ -105,8 +124,8 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
 }
 
 /// The samples a UVI script loads as its program loads, from one run of it.
-fn script_swaps(script: &ir::Script) -> Vec<kontra_format_uvi::Swap> {
-    kontra_lua::sample_loads(&script.source, &lua_modules(script), &script.saved)
+fn script_swaps(script: &ir::Script, saved: &[String]) -> Vec<kontra_format_uvi::Swap> {
+    kontra_lua::sample_loads(&script.source, &lua_modules(script), saved)
         .into_iter()
         .map(|l| kontra_format_uvi::Swap {
             group: l.group,
@@ -132,4 +151,39 @@ fn line_at(source: &str, at: usize) -> &str {
     let start = source[..at].rfind('\n').map_or(0, |i| i + 1);
     let end = source[at..].find('\n').map_or(source.len(), |i| at + i);
     source.get(start..end).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    /// Augmented Orchestra's saved state picks each part's layers
+    /// (`loadedLayer`): a project's state, not the program's, picks the
+    /// samples the load pass puts on the oscillators.
+    #[test]
+    fn a_projects_saved_state_picks_the_samples_a_program_loads() {
+        let path = Path::new(
+            "/data/main/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs/Presets/00 Orchestra/01 Strings/V Strings Bartok.uvip",
+        );
+        if !path.ancestors().any(Path::is_file) {
+            eprintln!("skipped: no {}", path.display());
+            return;
+        }
+        // Zones playing a sample of that articulation.
+        let names = |i: &kontra_engine::ir::Instrument, of: &str| {
+            let zones = i.groups.iter().flat_map(|g| &g.zones);
+            zones
+                .filter(|z| i.samples.get(z.sample).is_some_and(|s| s.name.contains(of)))
+                .count()
+        };
+        let program = super::read(path).unwrap();
+        let mut saved: Vec<Vec<String>> = program.scripts.iter().map(|s| s.saved.clone()).collect();
+        let state = r#"__state={{{["loadedLayer"]="Strings Ensemble/Strings Ensemble Marcato M"},{["loadedLayer"]="Strings Ensemble/Strings Ensemble Marcato ST"}},{{["loadedLayer"]="Strings Ensemble/Strings Ensemble Marcato M"},{["loadedLayer"]="Strings Ensemble/Strings Ensemble Marcato ST"}}}"#;
+        saved[0].push(state.to_owned());
+        let project = super::read_saved(path, &saved).unwrap();
+        let (b, m) = (names(&program, "Bartok"), names(&program, "Marcato"));
+        let (b2, m2) = (names(&project, "Bartok"), names(&project, "Marcato"));
+        println!("program: {b} Bartok, {m} Marcato; project: {b2} Bartok, {m2} Marcato");
+        assert!(b > 0 && b2 < b && m2 > m, "{b}/{m} → {b2}/{m2}");
+    }
 }

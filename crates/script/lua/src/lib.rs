@@ -211,6 +211,7 @@ impl Foreign for Compiled {
                 slots: (0..COROUTINES).map(|_| Slot::default()).collect(),
                 spawned: Vec::with_capacity(COROUTINES),
                 faults: Faults::default(),
+                runs: 0,
             });
         drop(load);
         if let Ok(m) = &machine
@@ -314,6 +315,8 @@ struct LuaMachine {
     slots: Vec<Slot>,
     spawned: Vec<(CoId, u64)>,
     faults: Faults,
+    /// Callbacks started ([`Machine::runs`]).
+    runs: u32,
 }
 
 impl LuaMachine {
@@ -325,6 +328,7 @@ impl LuaMachine {
             slots: Vec::new(),
             spawned: Vec::new(),
             faults: Faults::default(),
+            runs: 0,
         }
     }
 
@@ -340,6 +344,7 @@ impl LuaMachine {
             return None;
         };
         let index = u16::try_from(i).ok()?;
+        self.runs = self.runs.wrapping_add(1);
         slot.generation = slot.generation.wrapping_add(1);
         slot.thread = Some(thread);
         slot.context = context;
@@ -474,6 +479,14 @@ impl Machine for LuaMachine {
     fn widget_text(&self, n: u32, out: &mut Text) -> bool {
         let _arena = alloc::Scope::audio();
         self.reads.as_ref().is_some_and(|r| r.text(n, out))
+    }
+
+    fn own_page(&self) -> Option<Box<dyn std::any::Any + Send>> {
+        Some(Box::new(ui::read(self.lua.as_ref()?)))
+    }
+
+    fn runs(&self) -> u32 {
+        self.runs
     }
 
     fn save_state(&mut self, out: &mut [u8]) -> Option<usize> {

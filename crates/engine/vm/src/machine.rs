@@ -129,6 +129,24 @@ impl Vm {
         }
     }
 
+    /// As [`Machine::runs`].
+    #[must_use]
+    pub fn runs(&self) -> u32 {
+        match self {
+            Self::Code(_) => 0,
+            Self::Foreign(m) => m.runs(),
+        }
+    }
+
+    /// As [`Machine::own_page`].
+    #[must_use]
+    pub fn own_page(&self) -> Option<Box<dyn std::any::Any + Send>> {
+        match self {
+            Self::Code(_) => None,
+            Self::Foreign(m) => m.own_page(),
+        }
+    }
+
     /// As [`Machine::save_state`].
     pub fn save_state(&mut self, out: &mut [u8]) -> Option<usize> {
         match self {
