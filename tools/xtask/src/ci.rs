@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::Command;
 
 const KNOWN: &[&str] = &["--base"];
-const DEFAULT_BASE: &str = "origin/v3";
+const DEFAULT_BASE: &str = "origin/main";
 const DEFAULT_CARGO: &str = "cargo";
 const EDITION: &str = "2024";
 

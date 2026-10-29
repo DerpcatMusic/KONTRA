@@ -21,10 +21,10 @@ for workflow in Path('.github/workflows').glob('*.yml'):
     lines = workflow.read_text().splitlines()
     for i, line in enumerate(lines):
         if re.match(r'\s*queue:', line):
-            assert workflow.name == 'nightly.yml'
+            assert workflow.name == 'release.yml'
             assert lines[i-2:i+1] == [
-                '      group: nightly-publish',
-                '      cancel-in-progress: false',
-                '      queue: max'], 'Only the validated publication queue is supported'
+                '  group: v3-release',
+                '  cancel-in-progress: false',
+                '  queue: max'], 'Only the validated publication queue is supported'
 PYQUEUE
 "$directory/actionlint" -shellcheck= -ignore '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'

@@ -21,12 +21,11 @@ fn plugin_contract() {
     moose_test::assert_corrupt_state_no_crash::<crate::Plugin>();
 }
 
-/// v3 installs beside v2: its own name, CLAP id and VST3 id, so a v2
-/// project never opens v3, nor the other way round.
+/// Preserve the v3 plugin identifiers when changing its display name.
 #[test]
 fn v3_has_its_own_identity() {
     let info = <crate::Plugin as moose::core::plugin::PluginRuntime>::info();
-    assert_eq!(info.name, "KONTRA v3");
+    assert_eq!(info.name, "KONTRA");
     assert_eq!(info.clap_id, "audio.matari.kontra-v3");
     assert_eq!(info.vst3_id, "audio.matari.kontra-v3");
     assert_eq!(&info.fourcc, b"Knt3");

@@ -89,28 +89,11 @@ class Gates(unittest.TestCase):
             self.assertEqual(result.returncode == 0, expected, (release, code, shipping))
 
     def test_snapshot_graph(self):
-        nightly = (ROOT / ".github/workflows/nightly.yml").read_text()
-        self.assertIn("  push:\n    branches: [main]", nightly)
-        self.assertNotIn("schedule:", nightly)
-        self.assertIn("    uses: ./.github/workflows/ci.yml\n    with:\n      release_validation: true", nightly)
-        build = nightly.split("  build:\n", 1)[1].split("\n  macos-universal:\n", 1)[0]
-        self.assertNotIn("needs:", build)
-        self.assertIn("os: ubuntu-22.04, target: x86_64-unknown-linux-gnu", build)
-        self.assertIn("key: nightly-${{ matrix.os }}-${{ matrix.target }}-release", build)
-        self.assertLess(build.index("uses: actions/setup-python@"), build.index("- name: Nightly version"))
-        self.assertIn("python3 .github/scripts/check_glibc.py", build)
-        self.assertIn('echo "KONTRA_NIGHTLY_BUILD=1" >> "$GITHUB_ENV"', build)
-        self.assertIn('::warning::{format}: source provenance is dirty or unknown', build)
-        self.assertIn('::warning::standalone: source provenance is dirty or unknown', build)
-        self.assertNotIn("Dirty Nightly source", build)
-        release = nightly.split("\n  release:\n", 1)[1]
-        self.assertIn("    needs: [verify, build, macos-universal]\n", release)
-        universal = nightly.split("\n  macos-universal:\n", 1)[1].split("\n  release:\n", 1)[0]
-        self.assertIn("    needs: build\n", universal)
-        self.assertIn("package_macos.sh", universal)
-        self.assertIn("          ref: ${{ github.sha }}", nightly)
-        self.assertIn("            ${{ env.STAGE }}.zip.sha256", nightly)
-        self.assertIn("      cancel-in-progress: false", nightly)
+        release = (ROOT / ".github/workflows/release.yml").read_text()
+        self.assertIn("  push:\n    branches: [main]", release)
+        self.assertIn("    needs: [verify, bundle]", release)
+        self.assertIn("cargo moose build --clap --vst3 -p kontra-plugin", release)
+        self.assertIn("gh release create", release)
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
         triggers = ci.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
         self.assertNotIn("  push:", triggers)
