@@ -224,8 +224,6 @@ pub struct View {
     /// The browser row a click selected, as (library, preset): a click
     /// selects, a double-click or a drag loads.
     pub picked: Option<(usize, usize)>,
-    /// When the load under way began, for the loading line's sweep.
-    pub loading_since: Option<std::time::Instant>,
     /// When that row was clicked, for the second click of a double-click.
     pub clicked: Option<std::time::Instant>,
     /// The Mapping tab: the group shown (all when none), the group filter,
@@ -392,38 +390,17 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     Response { el, changed: out }
 }
 
-/// The line under the header; while a load is under way a segment sweeps
-/// across it (v2's `src/ui/header.rs` `loading_bar`; the rack reports no
-/// fraction read yet, so it always sweeps).
-fn loading_bar(app: &mut App) -> El {
+/// The line under the header, lit while a load is under way (v2's
+/// `src/ui/header.rs` `loading_bar`, without its sweep: a sweep needs a
+/// frame every display refresh for as long as the load runs).
+fn loading_bar(app: &App) -> El {
     if app.loading.is_none() {
-        app.view.loading_since = None;
         return rule();
     }
-    let since = *app
-        .view
-        .loading_since
-        .get_or_insert_with(std::time::Instant::now);
-    let phase = (since.elapsed().as_secs_f64() / 1.4).fract();
-    canvas(move |s: Size| {
-        let w = s.width * 0.3;
-        let x = -w + phase * (s.width + w);
-        let bar = |x: f64, w: f64| {
-            Path::polyline(
-                [(x, 0.), (x + w, 0.), (x + w, s.height), (x, s.height)]
-                    .map(|(x, y)| Point::new(x, y)),
-                true,
-            )
-        };
-        vec![
-            Draw::fill(bar(0., s.width), Role::Ink.alpha(0.1)),
-            Draw::fill(bar(x, w), Role::Ink.alpha(0.7)),
-        ]
-    })
-    .w(Len::Pct(100.))
-    .h(1)
-    .shrink(0)
-    .named("Loading")
+    block(Len::Pct(100.), 1)
+        .fill(Role::Ink.alpha(0.7))
+        .shrink(0)
+        .named("Loading")
 }
 
 fn main(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {

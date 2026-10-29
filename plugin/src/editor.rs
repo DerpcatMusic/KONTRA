@@ -530,6 +530,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let mut restored = None;
     // Where the last load the editor asked for lands.
     let mut target = app::Loading::New;
+    let mut buttons = None;
     MuiEditor::new(params, kontra_ui::ui(), (1180, 780), move |ui, bridge| {
         // On opening, and whenever the host loads a state: its view.
         let now = p.shared.restored.load(Ordering::Acquire);
@@ -548,16 +549,13 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         app.master = f64::from(p.volume.value());
         app.loading = p.shared.loading().then_some(target);
         let response = kontra_ui::app::view(ui, &mut app);
-        // After the view: drawing a picture the first time is what asks the
-        // worker for it, so the frame that first shows a face has to count
-        // its requests, or no frame follows to take the decoded pictures.
-        let faces = app.parts.iter().filter_map(|p| p.face.as_ref());
-        let decoding = faces
-            .map(|f| &f.pictures)
-            .chain(&app.covers)
-            .chain(&app.banners)
-            .any(|p| p.pending() > 0);
-        p.shared.decoding.store(decoding, Ordering::Release);
+        // A frame reads its input as it builds, so what a press or release
+        // changes (a switch applied to the face, a row selected) shows in
+        // the frame after it: ask for that one, or it waits for more input.
+        let held = ui.pointer().buttons;
+        if buttons.replace(held) != Some(held) || !response.changed.is_empty() {
+            p.shared.dirty.store(true, Ordering::Release);
+        }
         for action in response.changed {
             let asked = match action {
                 Action::Load { .. } => Some(app::Loading::New),
@@ -646,8 +644,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         !instruments.is_empty() || !folders.is_empty()
     })
     .changed(move || {
-        let s = &watched.shared;
-        s.dirty.swap(false, Ordering::AcqRel) | s.decoding.load(Ordering::Acquire) | s.loading()
+        // Only events draw: a change the tick or the view marked, or a
+        // picture that arrived. Nothing polled (pictures pending, a load
+        // under way) asks for frames, so nothing stuck can spin them.
+        watched.shared.dirty.swap(false, Ordering::AcqRel) | kontra_ui::pictures::arrived()
     })
     // Add folder's picker is owned by the host's window (Windows).
     .on_win32_parent(move |hwnd| owner.shared.folder.set_owner(hwnd))

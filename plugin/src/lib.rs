@@ -76,9 +76,6 @@ pub struct Shared {
     /// The editor's copy of the rack, refreshed by [`Tick`].
     view: Mutex<editor::Snapshot>,
     dirty: std::sync::atomic::AtomicBool,
-    /// Pictures the editor asked for and has not shown yet: it keeps
-    /// drawing until they arrive.
-    decoding: std::sync::atomic::AtomicBool,
     /// Loads asked for and loads carried out: the editor shows one loading
     /// while the first is ahead.
     asked: AtomicU64,
@@ -269,7 +266,9 @@ impl BackgroundTask for Tick {
         if changed && !requests_restoring(p) {
             *p.saved.write().unwrap_or_else(PoisonError::into_inner) = rack.save().write();
         }
-        if lock(&p.shared.view).refresh(rack, browser, report) {
+        // What the requests did shows, whether or not the editor's copy
+        // of the rack noticed (a script's answer to a click).
+        if lock(&p.shared.view).refresh(rack, browser, report) | changed {
             p.shared
                 .dirty
                 .store(true, std::sync::atomic::Ordering::Release);
