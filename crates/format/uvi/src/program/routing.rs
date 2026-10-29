@@ -66,6 +66,29 @@ pub(super) fn carried(node: Node) -> bool {
             || (owner.has_tag_name("Program") && kind))
 }
 
+/// Whether `node` sits on a program aux that no open send reaches at load
+/// (by the name [`Translator::sends_of`] resolves): AO's Feedback aux, its
+/// sends off until a script turns one on.
+pub(super) fn closed(program: Node, node: Node) -> bool {
+    let Some(aux) = node
+        .ancestors()
+        .filter(|a| a.has_tag_name("AuxEffect"))
+        .last()
+    else {
+        return false;
+    };
+    let on_program = aux.parent().and_then(|p| p.parent()) == Some(program);
+    on_program
+        && !program.descendants().any(|s| {
+            s.has_tag_name("BusRouter")
+                && !flag(s, "Bypass")
+                && s.attribute("Destination")
+                    .and_then(|d| d.rsplit('/').next())
+                    == aux.attribute("Name")
+                && num(s, "Gain", 1.0).is_ok_and(|g| g > 0.0)
+        })
+}
+
 fn children<'a, 'input>(
     owner: Node<'a, 'input>,
     container: &'static str,

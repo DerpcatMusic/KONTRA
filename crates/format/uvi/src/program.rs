@@ -668,7 +668,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 && !placing
             {
                 self.notes.add(
-                    ir::Impact::Audible,
+                    self.impact(node),
                     &format!("insert {tag}"),
                     node.attribute("Name").unwrap_or_default(),
                 );
@@ -728,8 +728,17 @@ impl<L: Library> Translator<'_, '_, L> {
             } else {
                 "modulation"
             };
-            self.notes
-                .add(ir::Impact::Audible, &format!("{feature} {dest}"), source);
+            let impact = self.impact(connection);
+            self.notes.add(impact, &format!("{feature} {dest}"), source);
+        }
+    }
+
+    /// Audible, or latent behind an aux closed at load ([`routing::closed`]).
+    fn impact(&self, node: Node) -> ir::Impact {
+        if routing::closed(self.program, node) {
+            ir::Impact::Latent
+        } else {
+            ir::Impact::Audible
         }
     }
 }

@@ -827,6 +827,9 @@ pub struct Diagnostic {
 pub enum Impact {
     /// Nothing audible.
     Cosmetic,
+    /// Audible once a script or control opens what is closed at load (an
+    /// effect on an aux no send reaches).
+    Latent,
     /// Sound differs (a missing effect, a wrong curve).
     Audible,
     /// Notes are missing or wrong.
