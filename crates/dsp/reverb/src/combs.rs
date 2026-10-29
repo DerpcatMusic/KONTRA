@@ -12,21 +12,21 @@ use kontra_dsp_core::Biquad;
 use kontra_law::CombNetwork;
 
 /// A power-of-two ring with one read head `delay` frames behind its write.
-struct Line {
+pub(crate) struct Line {
     buf: Box<[f32]>,
-    delay: usize,
+    pub(crate) delay: usize,
 }
 
 impl Line {
     /// Not real-time: allocates.
-    fn new(delay: usize) -> Self {
+    pub(crate) fn new(delay: usize) -> Self {
         Self {
             buf: vec![0.0; (delay + 1).next_power_of_two()].into(),
             delay,
         }
     }
 
-    fn read(&self, w: usize) -> f32 {
+    pub(crate) fn read(&self, w: usize) -> f32 {
         let mask = self.buf.len() - 1;
         self.buf
             .get(w.wrapping_sub(self.delay) & mask)
@@ -34,7 +34,24 @@ impl Line {
             .unwrap_or(0.0)
     }
 
-    fn write(&mut self, w: usize, v: f32) {
+    /// The value `d` frames behind `w`, linearly between frames; `d` ≥ 1.
+    pub(crate) fn at(&self, w: usize, d: f32) -> f32 {
+        let mask = self.buf.len() - 1;
+        let whole = d as usize;
+        let get = |back: usize| {
+            let i = w.wrapping_sub(back) & mask;
+            self.buf.get(i).copied().unwrap_or(0.0)
+        };
+        let t = d - whole as f32;
+        get(whole) + t * (get(whole + 1) - get(whole))
+    }
+
+    /// Frames the ring can reach back.
+    pub(crate) fn reach(&self) -> usize {
+        self.buf.len() - 1
+    }
+
+    pub(crate) fn write(&mut self, w: usize, v: f32) {
         let mask = self.buf.len() - 1;
         if let Some(s) = self.buf.get_mut(w & mask) {
             *s = v;

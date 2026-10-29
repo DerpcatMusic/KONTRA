@@ -2,7 +2,7 @@
 //! control comes from a [`Law`] the translator supplies, so the engine only
 //! ever sees physical units.
 
-pub use kontra_law::{CombNetwork, Law, NETWORK_LINES, ReverbNetwork};
+pub use kontra_law::{CombNetwork, HadamardNetwork, Law, NETWORK_LINES, ReverbNetwork};
 
 /// A reverb's structure as the translator's law gives it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -11,6 +11,8 @@ pub enum Network {
     Lines(&'static ReverbNetwork),
     /// Damped combs into allpasses.
     Combs(&'static CombNetwork),
+    /// Geometric lines through a Hadamard transform.
+    Hadamard(HadamardNetwork),
 }
 
 use crate::Reverb;
