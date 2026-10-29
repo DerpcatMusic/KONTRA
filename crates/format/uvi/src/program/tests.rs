@@ -1298,6 +1298,25 @@ fn a_macro_a_script_can_set_is_read_live_but_held_on_a_ratio() {
 }
 
 #[test]
+fn chaos_lfos_are_their_attractors() {
+    for (wave, lorenz) in [("7", true), ("8", false)] {
+        let node = format!(
+            r#"<LFO Name="LFO 1" Bypass="0" SyncToHost="0" WaveFormType="{wave}" Freq="4.5" Depth="0.7" Phase="0" Retrigger="0" Bipolar="1" DelayTime="0" RiseTime="0"/>"#
+        );
+        let doc = roxmltree::Document::parse(&node).unwrap();
+        let (lfo, depth) = modulation::lfo(doc.root_element()).expect("carried");
+        let ir::Wave::Chaos { attractor, .. } = lfo.wave else {
+            panic!("{lfo:?}")
+        };
+        assert_eq!(matches!(attractor, ir::Attractor::Lorenz { .. }), lorenz);
+        assert_eq!(
+            (lfo.rate, lfo.clock, depth),
+            (ir::Rate::Hz(4.5), ir::Clock::Free, 0.7)
+        );
+    }
+}
+
+#[test]
 fn an_effect_on_an_aux_no_send_reaches_is_latent() {
     let program = |gain: &str| {
         format!(

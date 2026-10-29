@@ -81,8 +81,12 @@ pub(super) fn cycle(kg: Node) -> Option<(ir::Join, ir::StartRule)> {
 
 /// Latent for `node` on a program aux no open send reaches at load (by the
 /// name [`Translator::sends_of`] resolves: AO's Feedback aux, its sends off
-/// until a script turns one on); else Audible.
+/// until a script turns one on), or for a connection from a bypassed
+/// modulator (it moves nothing until a script turns it on); else Audible.
 pub(super) fn impact(program: Node, node: Node) -> ir::Impact {
+    if super::source_node(program, node).is_some_and(|n| flag(n, "Bypass")) {
+        return ir::Impact::Latent;
+    }
     let aux = node
         .ancestors()
         .filter(|a| a.has_tag_name("AuxEffect"))

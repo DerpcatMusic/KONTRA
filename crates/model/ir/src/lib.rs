@@ -22,7 +22,7 @@ pub use effects::{
     Cascade, CascadeStage, Clocked, ClockedShape, Compressor, Delay, DelayTime, Detector, Formant,
     IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Phaser, Reverb, Transient, VowelSet,
 };
-pub use mods::{Blend, Curve, Exp2, Factor, ModKind, Term, Transfer};
+pub use mods::{Attractor, Blend, Curve, Exp2, Factor, ModKind, Term, Transfer, Wave};
 pub use output::{Balance, Output, OutputControllers};
 pub use reverb::{
     CombNetwork, HadamardNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar,
@@ -398,29 +398,6 @@ pub enum Rate {
     Steps {
         beats: f32,
         count: f32,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Wave {
-    Sine,
-    Triangle,
-    /// Falling.
-    Saw,
-    /// High for `width` of the cycle.
-    Square {
-        width: f32,
-    },
-    /// A new random level each half cycle.
-    Random,
-    /// `−w0·sine + w1·saw(2p) + w2·triangle − w3·pulse(width) + w4·random
-    /// + w5·ramp`, the saw rising twice a cycle, the triangle from −1 and
-    /// the ramp falling once (`1 − 2p`); divided by `max(1, Σ|w|)` when
-    /// `normalize`.
-    Multi {
-        weights: [f32; 6],
-        width: f32,
-        normalize: bool,
     },
 }
 

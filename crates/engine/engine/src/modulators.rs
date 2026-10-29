@@ -21,6 +21,8 @@ pub(crate) struct Age {
     /// Cycles added to the group's first [`WARPS`] LFOs by their live rate
     /// routes ([`ir::ModKind::LfoHz`]), integrated span by span.
     pub warp: [f32; WARPS],
+    /// The voice's chaotic LFOs' levels this span ([`Engine::chaos`]).
+    pub chaos: [f32; WARPS],
 }
 
 /// How many of a group's LFOs a live rate route can move.
@@ -32,6 +34,7 @@ impl Age {
         released: None,
         now: 0.0,
         warp: [0.0; WARPS],
+        chaos: [0.0; WARPS],
     };
 }
 
@@ -44,6 +47,7 @@ impl Engine {
             released: released.map(|r| seconds(SampleTime(r.0.saturating_sub(started.0)))),
             now: seconds(self.now),
             warp: [0.0; WARPS],
+            chaos: [0.0; WARPS],
         }
     }
 
@@ -71,12 +75,14 @@ impl Engine {
             let (Some(n), true, true) = (n, timed, slot.voice.is_active()) else {
                 continue;
             };
-            let age = Age {
-                warp: slot.warp,
-                ..self.age(slot.started, slot.released_at)
-            };
             let rate = self.rate;
             let span = (MAX_SPAN - self.now.0 % MAX_SPAN) as f32 / rate as f32;
+            let chaos = self.chaos(zone, slot.chaos, span);
+            let age = Age {
+                warp: slot.warp,
+                chaos: chaos.map(|c| c[3]),
+                ..self.age(slot.started, slot.released_at)
+            };
             let warp = self.warp(zone, &n, age, span);
             let to = self.group_pan(zone);
             let pan = voice_gain::glide(slot.pan[0], to, GROUP_PAN_TAU_MS, MAX_SPAN as f32, rate);
@@ -101,6 +107,7 @@ impl Engine {
                 slot.bend = [at, bend.semitones];
                 slot.pan = [pan, to];
                 slot.warp = warp;
+                slot.chaos = chaos;
                 slot.voice
                     .set_step(voice_gain::bent(law, step, bend.instant + at));
             }
@@ -137,6 +144,68 @@ impl Engine {
             }
         }
         warp
+    }
+}
+
+impl Engine {
+    /// A voice's chaotic LFOs `span` seconds on: each attractor's state
+    /// (x, y, z) one Euler step further, and its level last.
+    pub(crate) fn chaos(
+        &self,
+        zone: &crate::Zone,
+        mut states: [Chaos; WARPS],
+        span: f32,
+    ) -> [Chaos; WARPS] {
+        let Some(g) = self.groups.get(zone.group as usize) else {
+            return states;
+        };
+        for (state, l) in states.iter_mut().zip(&g.lfos) {
+            *state = chaos_step(l, *state, span, self.tempo);
+        }
+        states
+    }
+}
+
+/// `state` of `l`, a chaotic LFO, `span` seconds on: one Euler step; any
+/// other LFO's as it was.
+pub(crate) fn chaos_step(l: &ir::Lfo, state: Chaos, span: f32, tempo: f32) -> Chaos {
+    let ir::Wave::Chaos {
+        attractor,
+        step,
+        scale,
+    } = l.wave
+    else {
+        return state;
+    };
+    let h = span * hz(l, tempo) * step;
+    let [x, y, z, _] = state;
+    let [x, y, z] = match attractor {
+        ir::Attractor::Lorenz { sigma, rho, beta } => [
+            x + sigma * (y - x) * h,
+            y + (x * (rho - z) - y) * h,
+            z + (x * y - beta * z) * h,
+        ],
+        ir::Attractor::Rossler { a, b, c } => [
+            x - (y + z) * h,
+            y + (x + a * y) * h,
+            z + (b + z * (x - c)) * h,
+        ],
+    };
+    [x, y, z, x * scale]
+}
+
+/// An attractor's state (x, y, z) and its level ([`Engine::chaos`]).
+pub(crate) type Chaos = [f32; 4];
+
+/// Where every attractor starts.
+pub(crate) const CHAOS_START: Chaos = [1.0, 1.0, 1.0, 0.0];
+
+/// An LFO's cycles a second at `tempo`.
+pub(crate) fn hz(l: &ir::Lfo, tempo: f32) -> f32 {
+    match l.rate {
+        ir::Rate::Hz(hz) => hz,
+        ir::Rate::Beats(beats) => tempo / 60.0 / beats.max(1e-3),
+        ir::Rate::Steps { beats, count } => tempo / 60.0 / (beats * count).max(1e-3),
     }
 }
 
@@ -198,11 +267,7 @@ pub(crate) fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
         ir::Clock::Voice => age.held,
         ir::Clock::Free => age.now,
     };
-    let hz = match l.rate {
-        ir::Rate::Hz(hz) => hz,
-        ir::Rate::Beats(beats) => tempo / 60.0 / beats.max(1e-3),
-        ir::Rate::Steps { beats, count } => tempo / 60.0 / (beats * count).max(1e-3),
-    };
+    let hz = hz(l, tempo);
     let cycles = f64::from(l.phase) + f64::from(hz) * f64::from(t);
     let p = cycles.rem_euclid(1.0) as f32;
     let half = (2.0 * cycles).floor();
@@ -221,6 +286,8 @@ pub(crate) fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
         ir::Wave::Saw => 1.0 - 2.0 * p,
         ir::Wave::Square { width } => pulse(width),
         ir::Wave::Random => random(),
+        // Integrated per voice, not a function of time ([`Engine::chaos`]).
+        ir::Wave::Chaos { .. } => 0.0,
         ir::Wave::Multi {
             weights: [w0, w1, w2, w3, w4, w5],
             width,
@@ -256,6 +323,34 @@ pub(crate) fn lfo(l: &ir::Lfo, age: Age, seed: u32, tempo: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lorenz_lfo_wanders_both_lobes_within_its_scale() {
+        let l = ir::Lfo {
+            wave: ir::Wave::Chaos {
+                attractor: ir::Attractor::Lorenz {
+                    sigma: 10.0,
+                    rho: 28.0,
+                    beta: 8.0 / 3.0,
+                },
+                step: 1.0,
+                scale: 0.05,
+            },
+            rate: ir::Rate::Hz(4.5),
+            phase: 0.0,
+            fade_ms: 0.0,
+            clock: ir::Clock::Voice,
+        };
+        let span = MAX_SPAN as f32 / 48_000.0;
+        let mut state = CHAOS_START;
+        let (mut lo, mut hi) = (0f32, 0f32);
+        for _ in 0..3 * 1500 {
+            state = chaos_step(&l, state, span, 120.0);
+            (lo, hi) = (lo.min(state[3]), hi.max(state[3]));
+        }
+        // x swings about ±20 between the two lobes: ±1 at this scale.
+        assert!(lo < -0.6 && hi > 0.6 && lo > -1.2 && hi < 1.2, "{lo} {hi}");
+    }
 
     fn at(held: f32, released: Option<f32>) -> Age {
         Age {

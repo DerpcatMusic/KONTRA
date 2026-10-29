@@ -286,3 +286,42 @@ mod tests {
         assert_eq!(Exp2::Exact.of(-1.0), 0.5);
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Wave {
+    Sine,
+    Triangle,
+    /// Falling.
+    Saw,
+    /// High for `width` of the cycle.
+    Square {
+        width: f32,
+    },
+    /// A new random level each half cycle.
+    Random,
+    /// `−w0·sine + w1·saw(2p) + w2·triangle − w3·pulse(width) + w4·random
+    /// + w5·ramp`, the saw rising twice a cycle, the triangle from −1 and
+    /// the ramp falling once (`1 − 2p`); divided by `max(1, Σ|w|)` when
+    /// `normalize`.
+    Multi {
+        weights: [f32; 6],
+        width: f32,
+        normalize: bool,
+    },
+    /// A chaotic `attractor` from (1, 1, 1), one Euler step a span of
+    /// `step × rate` time units a second; its x times `scale`.
+    Chaos {
+        attractor: Attractor,
+        step: f32,
+        scale: f32,
+    },
+}
+
+/// A chaotic system's equations.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Attractor {
+    /// `x' = σ(y − x)`, `y' = x(ρ − z) − y`, `z' = xy − βz`.
+    Lorenz { sigma: f32, rho: f32, beta: f32 },
+    /// `x' = −y − z`, `y' = x + a·y`, `z' = b + z(x − c)`.
+    Rossler { a: f32, b: f32, c: f32 },
+}

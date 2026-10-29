@@ -118,6 +118,8 @@ struct Slot {
     pan: [f32; 2],
     /// Cycles its LFOs' live rate routes added ([`modulators::Age::warp`]).
     warp: [f32; modulators::WARPS],
+    /// Its chaotic LFOs' states ([`modulators::Chaos`]).
+    chaos: [modulators::Chaos; modulators::WARPS],
 }
 
 /// Per control, the parameters a script set other than its value.
@@ -237,6 +239,7 @@ impl Engine {
                 bend: [0.0; 2],
                 pan: [0.0; 2],
                 warp: [0.0; modulators::WARPS],
+                chaos: [modulators::CHAOS_START; modulators::WARPS],
             })
             .collect();
         let buses = plan.buses.iter().map(|b| BusState::new(b, rate)).collect();
@@ -568,6 +571,7 @@ impl Engine {
             slot.bend = [bend.semitones; 2];
             slot.pan = [pan; 2];
             slot.warp = [0.0; modulators::WARPS];
+            slot.chaos = [modulators::CHAOS_START; modulators::WARPS];
             self.start_rack(i, zone, &n, self.age(now, None));
         }
     }
@@ -745,6 +749,7 @@ impl Engine {
             }
             let age = modulators::Age {
                 warp: slot.warp,
+                chaos: slot.chaos.map(|c| c[3]),
                 ..self.age(slot.started, slot.released_at)
             };
             let pan = [slot.pan[0], self.group_pan(zone)];
