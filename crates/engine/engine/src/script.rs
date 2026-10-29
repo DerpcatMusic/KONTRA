@@ -727,6 +727,15 @@ impl HostApi for Engine {
             Action::SetEnginePar if self.set_engine_par(int(0), int(1), int(2), int(3), int(4)) => {
                 HostValue::Nothing
             }
+            Action::LoadIrSample
+                if self.load_ir_sample(
+                    call.texts.first().map_or("", Text::as_str),
+                    int(0),
+                    int(1),
+                ) =>
+            {
+                HostValue::Int(0)
+            }
             Action::SetController => {
                 self.set_controller(int(0), int(1));
                 HostValue::Nothing

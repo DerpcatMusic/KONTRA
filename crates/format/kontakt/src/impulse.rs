@@ -132,53 +132,15 @@ impl<'a> Impulses<'a> {
         } else {
             None
         };
-        let sample = match self.samples.iter().position(|s| s.name == name) {
-            Some(found) => found,
-            None => {
-                let found = self.resolver.resolve(&name).and_then(|l| match l {
-                    Some(l) => Ok(l),
-                    // A container's own resources (`.nicnt`): the name after `Resources/`.
-                    None => {
-                        let inner = name
-                            .rsplit_once("Resources/")
-                            .map_or(name.as_str(), |(_, n)| n);
-                        let path = self.path;
-                        let resources = self.resources.get_or_insert_with(|| Resources::open(path));
-                        if let Some(found) = resources.locate(inner) {
-                            return Ok(found);
-                        }
-                        let archives: Vec<_> = resources
-                            .archives()
-                            .map(|a| format!("{}/Resources/{inner}", a.display()))
-                            .collect();
-                        archives
-                            .iter()
-                            .find_map(|member| self.resolver.resolve(member).ok().flatten())
-                            .ok_or_else(|| "not found".to_string())
-                    }
-                });
-                let location = match found {
-                    Ok(location) => location,
-                    Err(e) => {
-                        notes.add(
-                            ir::Impact::Audible,
-                            "missing impulse response",
-                            format!("{at}: {name}: {e}"),
-                        );
-                        return None;
-                    }
-                };
-                self.samples.push(ir::Sample {
-                    name,
-                    file: location.file,
-                    offset: location.offset,
-                    len: location.size,
-                    channels: 0,
-                    frames: 0,
-                    rate: 0,
-                    keystream: location.keystream,
-                });
-                self.samples.len() - 1
+        let sample = match self.sample(name) {
+            Ok(sample) => sample,
+            Err((name, e)) => {
+                notes.add(
+                    ir::Impact::Audible,
+                    "missing impulse response",
+                    format!("{at}: {name}: {e}"),
+                );
+                return None;
             }
         };
         self.out.push(ir::Impulse {
@@ -191,5 +153,66 @@ impl<'a> Impulses<'a> {
             mix: None,
         });
         u16::try_from(self.out.len() - 1).ok()
+    }
+
+    /// The response file `name` as an index into [`Self::samples`], added
+    /// on first use: from the resolver, else the library's resources.
+    fn sample(&mut self, name: String) -> Result<usize, (String, String)> {
+        if let Some(found) = self.samples.iter().position(|s| s.name == name) {
+            return Ok(found);
+        }
+        let found = self.resolver.resolve(&name).and_then(|l| match l {
+            Some(l) => Ok(l),
+            // A container's own resources (`.nicnt`): the name after `Resources/`.
+            None => {
+                let inner = name
+                    .rsplit_once("Resources/")
+                    .map_or(name.as_str(), |(_, n)| n);
+                let path = self.path;
+                let resources = self.resources.get_or_insert_with(|| Resources::open(path));
+                if let Some(found) = resources.locate(inner) {
+                    return Ok(found);
+                }
+                let archives: Vec<_> = resources
+                    .archives()
+                    .map(|a| format!("{}/Resources/{inner}", a.display()))
+                    .collect();
+                archives
+                    .iter()
+                    .find_map(|member| self.resolver.resolve(member).ok().flatten())
+                    .ok_or_else(|| "not found".to_string())
+            }
+        });
+        let location = found.map_err(|e| (name.clone(), e.to_string()))?;
+        self.samples.push(ir::Sample {
+            name,
+            file: location.file,
+            offset: location.offset,
+            len: location.size,
+            channels: 0,
+            frames: 0,
+            rate: 0,
+            keystream: location.keystream,
+        });
+        Ok(self.samples.len() - 1)
+    }
+
+    /// The responses in the library's `ir_samples` folder, which a script's
+    /// `load_ir_sample` names, as (lowercase name without extension, index
+    /// into [`Self::samples`]). Only located, not read.
+    pub(crate) fn library(&mut self) -> Vec<(String, usize)> {
+        let path = self.path;
+        let names = self
+            .resources
+            .get_or_insert_with(|| Resources::open(path))
+            .listed("ir_samples");
+        names
+            .into_iter()
+            .filter_map(|n| {
+                let stem = n.rsplit_once('.').map_or(n.as_str(), |(stem, _)| stem);
+                let stem = stem.to_lowercase();
+                Some((stem, self.sample(format!("Resources/ir_samples/{n}")).ok()?))
+            })
+            .collect()
     }
 }

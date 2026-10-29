@@ -44,6 +44,9 @@ pub struct Instrument {
     pub main: Vec<Option<Effect>>,
     /// Responses [`EffectKind::Convolution`] slots play.
     pub impulses: Vec<Impulse>,
+    /// Responses a script may load into a convolution slot by name
+    /// (lowercase, without its extension), by index into [`Self::samples`].
+    pub responses: Vec<(String, usize)>,
     /// How [`KnobTarget::Slot`] knobs move the effects they address.
     pub slot_laws: Vec<SlotLaw>,
     /// The filter shapes a script may switch slots to.
@@ -65,6 +68,7 @@ impl Instrument {
         sends: Vec::new(),
         main: Vec::new(),
         impulses: Vec::new(),
+        responses: Vec::new(),
         slot_laws: Vec::new(),
         slot_shapes: Vec::new(),
         diagnostics: Vec::new(),

@@ -134,6 +134,9 @@ pub struct Engine {
     script_mods: Box<[Option<(u16, ledger::Ramp)>]>,
     ramping_until: u64,
     plan: Arc<Plan>,
+    /// Responses scripts loaded while loading (`load_ir_sample`): name,
+    /// how prepared, the response. Convolution indices past the plan's.
+    loaded: Vec<(String, ir::Impulse, Response)>,
     stream: StreamClient,
     queue: EventQueue,
     notes: Ledger,
@@ -229,7 +232,13 @@ impl Engine {
             .map(|b| BusState {
                 gain: b.gain,
                 enabled: b.enabled,
-                rack: racks::Rack::routed(&b.inserts, rate, &[], &b.mods, &b.blends),
+                rack: racks::Rack::routed(
+                    &b.inserts,
+                    rate,
+                    racks::Responses(&[], &[]),
+                    &b.mods,
+                    &b.blends,
+                ),
                 pan: b.pan,
                 sends: b.sends.clone().into(),
                 to_main: b.to_main,
@@ -278,6 +287,7 @@ impl Engine {
             behaviour: Behaviour::new(&plan),
             notes,
             plan,
+            loaded: Vec::new(),
             stream,
             voices,
             buses,

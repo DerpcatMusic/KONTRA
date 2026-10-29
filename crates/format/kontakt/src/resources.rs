@@ -169,6 +169,41 @@ impl Resources {
         })
     }
 
+    /// The files directly in `Resources/<folder>/` of every source, by name.
+    pub(crate) fn listed(&self, folder: &str) -> Vec<String> {
+        let want = format!("resources/{}/", folder.to_lowercase());
+        let direct = |stored: &str| {
+            let stored = stored.replace(['|', '\\'], "/");
+            let at = stored.to_lowercase().find(&want)? + want.len();
+            let name = stored.get(at..)?;
+            (!name.is_empty() && !name.contains('/')).then(|| name.to_string())
+        };
+        let mut names: Vec<String> = Vec::new();
+        for source in &self.sources {
+            let found: Vec<String> = match source {
+                Source::Loose(dir) => entries(&dir.join(folder))
+                    .iter()
+                    .filter(|p| p.is_file())
+                    .filter_map(|p| Some(p.file_name()?.to_str()?.to_string()))
+                    .collect(),
+                Source::Nicnt(_, table, _) => table
+                    .items
+                    .iter()
+                    .filter_map(|i| direct(&i.filename))
+                    .collect(),
+                Source::Nkr(_, archive, _) => {
+                    archive.members().filter_map(|e| direct(&e.name)).collect()
+                }
+            };
+            for name in found {
+                if !names.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+                    names.push(name);
+                }
+            }
+        }
+        names
+    }
+
     /// The library's `.nkr` archives.
     pub(crate) fn archives(&self) -> impl Iterator<Item = &Path> {
         self.sources.iter().filter_map(|s| match s {
