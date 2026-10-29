@@ -20,7 +20,7 @@ use super::reverb::spark_verb;
 mod shaper;
 mod sweep;
 
-use super::{Library, Translator, db, flag, num};
+use super::{Library, Translator, db, flag, index_of, matrix, num, source_node};
 use shaper::{diode_clipper, wave_shaper};
 use sweep::{flanger, phasor};
 
@@ -294,11 +294,66 @@ impl<L: Library> Translator<'_, '_, L> {
                 .iter()
                 .find(|(n, _)| n.attribute("Name") == Some(target) && !flag(*n, "Bypass"));
             if let Some(&(_, to)) = found {
-                let level = num(send, "Gain", 1.0)?;
+                let (level, factors) = self.send_level(send)?;
                 self.feed(from, to, level, !flag(send, "PreFader"));
+                self.move_send(from, factors);
             }
         }
         Ok(())
+    }
+
+    /// A send's saved level and the live factors its `Gain` connections
+    /// scale it by: the parameter is multiplicative (BusRouter's ctor
+    /// 0x141002450 gives it a MultiplicativeParameterModulation, vtable
+    /// 0x141e37a50: the law at 0x141429a80). A macro folds in at its value;
+    /// a source no bus reads (an LFO, an envelope) stays reported.
+    fn send_level(&mut self, send: Node) -> Result<(f64, Vec<ir::Factor>), String> {
+        let program = self.program;
+        let mut level = num(send, "Gain", 1.0)?;
+        let mut factors = Vec::new();
+        let gains = matrix::children(send).filter(|c| c.attribute("Destination") == Some("Gain"));
+        for c in gains {
+            let Some(f) = matrix::factor(program, c, None) else {
+                continue;
+            };
+            match f.input.source {
+                ir::Source::Constant => {
+                    let held = source_node(program, c)
+                        .is_some_and(|n| n.has_tag_name("ConstantModulation"));
+                    if !held {
+                        continue;
+                    }
+                    level *= f64::from(f.at(f.input.apply(1.0)));
+                }
+                _ => factors.push(f),
+            }
+            self.carried.insert(c.id());
+        }
+        Ok((level, factors))
+    }
+
+    /// Moves the last send of bus `from` by `factors`, as a blend of them.
+    fn move_send(&mut self, from: usize, factors: Vec<ir::Factor>) {
+        let Some(b) = self.out.buses.get_mut(from).filter(|_| !factors.is_empty()) else {
+            return;
+        };
+        let Ok(send) = u8::try_from(b.sends.len().saturating_sub(1)) else {
+            return;
+        };
+        let term = ir::Term {
+            input: ir::Transfer {
+                source: ir::Source::Constant,
+                table: Vec::new(),
+            },
+            amount: 1.0,
+            factors,
+        };
+        let blend = ir::Blend {
+            base: 0.0,
+            terms: vec![term],
+        };
+        let source = ir::Source::Blend(index_of(&mut b.blends, blend));
+        b.mods.push(ir::ModKind::Send { source, send });
     }
 
     /// One insert as a slot; one not carried is empty (its input passes).
