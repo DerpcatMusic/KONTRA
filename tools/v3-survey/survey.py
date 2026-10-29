@@ -2,7 +2,7 @@
 """v3 scoreboard: render every Kontakt and UVI instrument through the v3
 engine and log what plays, what is silent, what fails and what is missing.
 
-Each instrument plays key 60 for 2 s at velocity 100, then at velocity 30
+Each instrument plays key 60 (or, if silent there, 48/72/36/84) for 2 s at velocity 100, then at velocity 30
 (the `render` example of kontra-host, one process per instrument). A run
 writes to <out>/<UTC>-<sha>/:
   results.tsv  one row per instrument
@@ -24,7 +24,8 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = Path('/data/dev/workspace/PluginArtifacts/v3-survey')
 LIBRARIES = [Path('/data/main/Libraries/Kontakt'), Path('/data/main/Libraries/UVI')]
 SILENT = 1e-4
-COLUMNS = ['library', 'instrument', 'status', 'load_s', 'rss_mb', 'rtf', 'zones', 'key_zones',
+KEYS = (60, 48, 72, 36, 84)
+COLUMNS = ['library', 'instrument', 'status', 'key', 'load_s', 'rss_mb', 'rtf', 'zones', 'key_zones',
            'peak', 'peak_v30', 'vel_db', 'rms_sustain', 'rms_release', 'broken', 'audible',
            'cosmetic', 'unanswered', 'script_faults', 'stolen', 'cut', 'refused', 'missing_frames',
            'stream_errors', 'error']
@@ -55,11 +56,11 @@ def number(pattern, text, cast=float, default=None):
     return cast(m.group(1)) if m else default
 
 
-def render(binary, path, velocity, timeout):
+def render(binary, path, velocity, timeout, key=60):
     with tempfile.TemporaryDirectory(dir='/data/dev/workspace/scratch') as tmp:
         env = dict(os.environ, KONTRA_VELOCITY=str(velocity))
         try:
-            p = subprocess.run(['nice', '-n', '19', str(binary), path, '60', f'{tmp}/out.wav'], env=env,
+            p = subprocess.run(['nice', '-n', '19', str(binary), path, str(key), f'{tmp}/out.wav'], env=env,
                                capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return None, 'timeout'
@@ -72,7 +73,13 @@ def render(binary, path, velocity, timeout):
 def survey(binary, library, path, timeout):
     row = dict.fromkeys(COLUMNS, '')
     row.update(library=library, instrument=path)
-    out, error = render(binary, path, 100, timeout)
+    # Key 60 first; an instrument silent there (out of its playable range) is
+    # retried lower and higher, and the key that plays is recorded.
+    for key in KEYS:
+        out, error = render(binary, path, 100, timeout, key)
+        if error or number(r'^peak ([\d.]+)', out, default=0.0) >= SILENT:
+            break
+    row['key'] = key
     if error:
         row.update(status='timeout' if error == 'timeout' else 'failed', error=error)
         return row, [], []
@@ -89,7 +96,7 @@ def survey(binary, library, path, timeout):
         # Engine::process time over audio time, one note at velocity 100 (renders run in parallel at nice 19).
         rtf=number(r'rtf ([\d.]+)', out, default=''),
         zones=number(r': (\d+) zones, loaded', out, int, ''),
-        key_zones=number(r'key 60: (\d+) zones', out, int, ''),
+        key_zones=number(r'key \d+: (\d+) zones', out, int, ''),
         peak=peak,
         rms_sustain=number(r'rms 0\.5-1 s ([\d.]+)', out, default=''),
         rms_release=number(r'after release 2\.1-2\.6 s ([\d.]+)', out, default=''),
@@ -101,7 +108,7 @@ def survey(binary, library, path, timeout):
         missing_frames=number(r'missing_frames: (\d+)', out, int, ''),
         stream_errors=number(r'read_errors: (\d+)', out, int, ''),
         status='silent' if peak < SILENT else 'ok')
-    soft, error = render(binary, path, 30, timeout)
+    soft, error = render(binary, path, 30, timeout, key)
     if not error:
         row['peak_v30'] = number(r'^peak ([\d.]+)', soft, default=0.0)
         if peak >= SILENT and row['peak_v30'] >= SILENT:
