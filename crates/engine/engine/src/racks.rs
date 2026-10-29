@@ -12,7 +12,7 @@ use crate::effects;
 use crate::filters;
 use crate::ledger::{self, Ramp};
 use crate::{Engine, Response, SampleTime};
-pub(crate) use kontra_effects::processors::{Dsp, Responses, apply, convolver, processor};
+pub(crate) use kontra_effects::processors::{Dsp, Responses, convolver, processor};
 use kontra_effects::stem;
 
 pub(crate) struct Rack {
@@ -301,14 +301,15 @@ impl Engine {
                         o[1] += m[1] * level;
                     }
                 }
-                apply(effects::balance(bus.pan), mix);
+                bus.balance.matrix(mix, effects::balance(bus.pan));
+                bus.fader.matrix(mix, [[bus.gain, 0.0], [0.0, bus.gain]]);
             }
             if !bus.to_main {
                 continue;
             }
             for (o, m) in span.iter_mut().zip(bus.mix.iter()) {
-                o[0] += m[0] * bus.gain;
-                o[1] += m[1] * bus.gain;
+                o[0] += m[0];
+                o[1] += m[1];
             }
         }
         self.rack.process(span, &mut self.taps, tempo);

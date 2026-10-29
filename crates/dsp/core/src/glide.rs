@@ -1,8 +1,9 @@
 //! Levels that move in a straight line to where they were last aimed, so a
 //! change never steps (a stepped gain clicks).
 
-/// A slot's 2×2 gain matrix and its dry and wet levels, gliding 10 ms to
-/// where its settings put them, as the native engines ramp their gains.
+/// A slot's 2×2 gain matrix and its dry and wet levels, gliding 10 ms (or
+/// [`Self::lasting`]) to where its settings put them, as the native engines
+/// ramp their gains.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Levels {
     glide: Glide<6>,
@@ -12,9 +13,15 @@ pub struct Levels {
 impl Levels {
     #[must_use]
     pub const fn new(rate: u32) -> Self {
+        Self::lasting(rate, 10)
+    }
+
+    /// Gliding `ms` milliseconds instead.
+    #[must_use]
+    pub const fn lasting(rate: u32, ms: u32) -> Self {
         Self {
             glide: Glide::new(),
-            frames: rate / 100,
+            frames: rate * ms / 1000,
         }
     }
 

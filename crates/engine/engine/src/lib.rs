@@ -119,6 +119,11 @@ pub(crate) struct BusState {
     rack: racks::Rack,
     /// -1..=1 balance after the rack.
     pub(crate) pan: f32,
+    /// Pan and volume changes glide: the balance in a line over 50 ms, the
+    /// volume over 10 ms (measured natively: linear 50 ms; a one-pole of 3.7 ms,
+    /// the same 8 ms from 10 to 90%). An effect's bypass switches at once.
+    balance: kontra_dsp::core::Levels,
+    fader: kontra_dsp::core::Levels,
     /// Later buses it feeds, and their levels.
     sends: Box<[ir::BusSend]>,
     to_main: bool,
@@ -247,6 +252,8 @@ impl Engine {
                     &b.blends,
                 ),
                 pan: b.pan,
+                balance: kontra_dsp::core::Levels::lasting(rate, 50),
+                fader: kontra_dsp::core::Levels::new(rate),
                 sends: b.sends.clone().into(),
                 to_main: b.to_main,
                 mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
