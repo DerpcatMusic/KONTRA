@@ -465,6 +465,7 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .align(Align::Center)
             .shrink(0)
             .tip(tip)
+            .id(format!("stat-{label}"))
     };
     let ram = if s.ram_mb > 0 { s.ram_mb } else { s.samples_mb };
     let load = row![
