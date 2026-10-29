@@ -232,6 +232,9 @@ impl Hadamard {
         for p in &mut self.pre {
             p.delay = pre.min(p.reach());
         }
+        if self.rolloff.is_none() {
+            self.rolled = [0.0; 2];
+        }
         self.rolloff = (s.high_cut_hz < 19_999.0)
             .then(|| (-TAU * s.high_cut_hz.clamp(1.0, 0.49 * rate) / rate).exp());
     }
@@ -299,8 +302,6 @@ impl Hadamard {
                 t.line.write(w, flush(back));
             }
             if let Some(p) = self.rolloff {
-                // ponytail: a plain one-pole; the native rolloff (0x141641310)
-                // is unread, and the corpus leaves it off.
                 for (r, wet) in self.rolled.iter_mut().zip(&mut wet) {
                     *r = flush(*wet + p * (*r - *wet));
                     *wet = *r;
@@ -313,7 +314,9 @@ impl Hadamard {
 }
 
 fn lines(law: &HadamardNetwork) -> usize {
-    if law.lines >= 16 { 16 } else { 8 }
+    usize::from(law.lines)
+        .clamp(2, MAX_LINES)
+        .next_power_of_two()
 }
 
 /// How far, in frames, a line `len` frames long swings.

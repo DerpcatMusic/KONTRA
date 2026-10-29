@@ -54,10 +54,12 @@ fn windows(law: HadamardNetwork, seconds: f32, count: usize) -> Vec<f32> {
 
 #[test]
 fn the_tail_falls_sixty_db_in_its_seconds() {
-    let db = windows(law(1.0), 2.0, 10);
-    // 1 s apart: 30 dB down.
-    let drop = db[2] - db[7];
-    assert!((drop - 30.0).abs() < 3.0, "{db:?}");
+    for lines in [8, 16] {
+        let db = windows(HadamardNetwork { lines, ..law(1.0) }, 2.0, 10);
+        // 1 s apart: 30 dB down.
+        let drop = db[2] - db[7];
+        assert!((drop - 30.0).abs() < 3.0, "{lines}: {db:?}");
+    }
 }
 
 #[test]

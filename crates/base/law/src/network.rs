@@ -73,7 +73,7 @@ impl CombNetwork {
 /// A patch's own values, carried by value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HadamardNetwork {
-    /// 8 or 16.
+    /// A power of two, at most 16.
     pub lines: u8,
     /// The longest line over the shortest is `2·(lines/2)^shape`.
     pub shape: f32,
