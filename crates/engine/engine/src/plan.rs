@@ -366,6 +366,8 @@ pub struct Plan {
     pub slot_laws: Vec<ir::SlotLaw>,
     /// The filter shapes [`EnginePar::EffectSubtype`] switches slots to.
     pub slot_shapes: ir::SlotShapes,
+    /// Slots loaded with a [`ir::SlotShapes::types`] entry ([`Plan::load_type`]).
+    pub loaded: Vec<(ir::RackAt, u8, u16)>,
 }
 
 impl Plan {
@@ -414,6 +416,7 @@ impl Plan {
             responses: Vec::new(),
             slot_laws: Vec::new(),
             slot_shapes: ir::SlotShapes::NONE,
+            loaded: Vec::new(),
         }
     }
 }
