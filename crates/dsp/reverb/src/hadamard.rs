@@ -341,7 +341,12 @@ fn lengths(law: &HadamardNetwork, size: f32, rate: f32) -> [usize; MAX_LINES] {
 
 /// The first prime at or above `n`, at most [`MAX_PRIME`].
 fn next_prime(n: usize) -> usize {
-    let prime = |p: usize| p >= 2 && (2..).take_while(|d| d * d <= p).all(|d| p % d != 0);
+    let prime = |p: usize| {
+        p >= 2
+            && (2..)
+                .take_while(|d| d * d <= p)
+                .all(|d| !p.is_multiple_of(d))
+    };
     (n.max(2)..MAX_PRIME)
         .find(|&p| prime(p))
         .unwrap_or(MAX_PRIME)
