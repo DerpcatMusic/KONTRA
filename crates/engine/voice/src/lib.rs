@@ -26,6 +26,33 @@ const GAIN_SMOOTH: f32 = 0.01;
 /// How each output channel (row) takes each source channel (column).
 pub type Gain = [[f32; 2]; 2];
 
+/// A gain gliding as a one-pole toward `gain`, `coef` of the way each frame
+/// (1: at once).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lag {
+    pub gain: f32,
+    pub coef: f32,
+}
+
+impl Lag {
+    pub const NONE: Self = Self {
+        gain: 1.0,
+        coef: 1.0,
+    };
+
+    /// Toward `gain` with time constant `tau_ms` at `rate`.
+    #[must_use]
+    pub fn new(gain: f32, tau_ms: f32, rate: u32) -> Self {
+        let frames = tau_ms * rate as f32 / 1000.0;
+        let coef = if frames > 1.0 {
+            1.0 - (-1.0 / frames).exp()
+        } else {
+            1.0
+        };
+        Self { gain, coef }
+    }
+}
+
 /// Everything a voice needs to start, resolved by the engine from the plan.
 #[derive(Clone)]
 pub struct VoiceStart {
@@ -33,6 +60,8 @@ pub struct VoiceStart {
     /// Source frames per output frame: pitch and sample-rate ratio together.
     pub step: f64,
     pub gain: Gain,
+    /// A slower gain on top of `gain`: the routes that lag.
+    pub lag: Lag,
     pub envelope: Ahdsr,
 }
 
@@ -45,6 +74,8 @@ pub struct Voice {
     step: f64,
     gain: Gain,
     target: Gain,
+    lagged: f32,
+    lag: Lag,
     env: Envelope,
     scratch: Box<[[f32; 2]]>,
     /// The frames a loop crossfade blends in.
@@ -67,6 +98,8 @@ impl Voice {
             step: 1.0,
             gain: [[0.0; 2]; 2],
             target: [[0.0; 2]; 2],
+            lagged: 1.0,
+            lag: Lag::NONE,
             env: Envelope::new(Ahdsr::GATE),
             scratch: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             partner: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
@@ -85,6 +118,8 @@ impl Voice {
         self.step = clamp_step(start.step);
         self.gain = start.gain;
         self.target = start.gain;
+        self.lagged = start.lag.gain;
+        self.lag = start.lag;
         self.env = Envelope::new(start.envelope);
         self.released = None;
         self.missing = 0;
@@ -118,6 +153,11 @@ impl Voice {
         self.target = gain;
     }
 
+    /// Changes the lagging gain, gliding at its own pace.
+    pub fn set_lag(&mut self, lag: Lag) {
+        self.lag = lag;
+    }
+
     /// Changes the channel matrix (live cells) from the next chunk read.
     ///
     /// ponytail: a step at each refresh, not smoothed like the gain; ramp it
@@ -128,10 +168,10 @@ impl Voice {
         }
     }
 
-    /// The gain the voice is moving to.
+    /// The gain the voice is moving to, its lagging gain included.
     #[must_use]
     pub fn target_gain(&self) -> Gain {
-        self.target
+        self.target.map(|row| row.map(|g| g * self.lag.gain))
     }
 
     #[must_use]
@@ -254,7 +294,8 @@ impl Voice {
             let raw = self.raw.get_mut(..filled).unwrap_or_default();
             insert(raw);
             for (frame, &[l, r]) in out.iter_mut().skip(done).zip(raw.iter()) {
-                let level = self.env.next();
+                self.lagged += (self.lag.gain - self.lagged) * self.lag.coef;
+                let level = self.env.next() * self.lagged;
                 for (g, target) in self
                     .gain
                     .as_flattened_mut()

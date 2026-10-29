@@ -70,6 +70,7 @@ pub(crate) fn external(
                         source,
                         intensity: t.signed_intensity(),
                         curve: laws::volume(raw.unwrap_or(source)),
+                        tau_ms: laws::route_tau_ms(t.lag_ms),
                     }),
                     (Some(source), "pitch", None) => Some(ir::ModKind::Pitch {
                         source,

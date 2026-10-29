@@ -978,6 +978,7 @@ fn velocity_controllers_and_lfos_scale_a_keygroups_gain_by_the_signed_law() {
         source,
         intensity,
         curve: ir::Curve::Signed,
+        tau_ms: 0.0,
     };
     assert_eq!(
         g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
