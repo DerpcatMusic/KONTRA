@@ -2494,6 +2494,7 @@ dependencies = [
  "hound",
  "kontra-engine",
  "kontra-host",
+ "kontra-law",
  "kontra-lua",
  "kontra-stream",
  "kontra-ui-model",

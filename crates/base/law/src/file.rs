@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::Law;
+use crate::{Law, LawId};
 
 /// Errors from parsing a law file.
 #[derive(Debug, thiserror::Error)]
@@ -16,6 +16,8 @@ pub enum LawError {
 /// A parsed law file: the curve and the measurement tolerance it was fitted to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LawSpec {
+    /// Explicit source identifier, absent for anonymous parsed text.
+    pub id: Option<LawId>,
     /// The curve.
     pub law: Law,
     /// Error in dB that a measured response may show against this law and still count as a match.
@@ -25,6 +27,8 @@ pub struct LawSpec {
 /// A law file embedded in the binary by [`laws!`](crate::laws).
 #[derive(Clone, Copy, Debug)]
 pub struct LawSource {
+    /// Identifier of the embedded declaration.
+    pub id: LawId,
     /// Path the file was embedded from, for error messages.
     pub path: &'static str,
     /// Contents of the file.
@@ -34,7 +38,9 @@ pub struct LawSource {
 impl LawSource {
     /// Parses the embedded text.
     pub fn parse(self) -> Result<LawSpec, LawError> {
-        parse(self.text)
+        let mut spec = parse(self.text)?;
+        spec.id = Some(self.id);
+        Ok(spec)
     }
 }
 
@@ -47,6 +53,7 @@ pub fn parse(text: &str) -> Result<LawSpec, LawError> {
         ));
     }
     Ok(LawSpec {
+        id: None,
         law: file.law.into_law()?,
         tolerance_db: file.tolerance_db,
     })
