@@ -84,7 +84,12 @@ pub fn load_with(
             .ok_or_else(|| Error::new(path, "program XML", "no Program element"))?
     };
     let folder = in_bank.rsplit_once('/').map_or("", |(folder, _)| folder);
-    program::translate(root, folder, &bank, swaps).map_err(|e| Error::new(path, "program", e))
+    let unfinished =
+        program::unfinished(root, folder, &bank).map_err(|e| Error::new(path, "program", e))?;
+    // The scripts' load pass builds a script state: the document goes first.
+    drop(doc);
+    drop(text);
+    Ok(unfinished.finish(swaps))
 }
 
 /// The bank a path lies in, and the member inside it (empty: the bank itself).
