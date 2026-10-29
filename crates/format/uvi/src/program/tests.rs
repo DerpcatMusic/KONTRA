@@ -1304,3 +1304,17 @@ fn a_rising_lfo_scales_a_keygroups_gain_through_its_rise() {
         ir::ModKind::Volume { source: ir::Source::Shaped(0), intensity, .. } if *intensity == -1.0
     )));
 }
+
+#[test]
+fn a_program_plays_in_a_part_that_cc_7_10_and_11_move() {
+    let xml = r#"<Program Gain="1"><Layers/></Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let c = out.output.controllers.unwrap();
+    assert_eq!(
+        (c.volume, c.pan, c.power, c.expression),
+        (7, 10, 1, Some(11))
+    );
+    // Edition mode over the part's Gain, linear 0..10^(6/20).
+    assert_eq!(c.top_db, 6.0);
+}

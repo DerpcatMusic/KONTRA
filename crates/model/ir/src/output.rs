@@ -26,11 +26,14 @@ impl Output {
 }
 
 /// The controllers that set the output fader and pan. The volume controller
-/// value v sets the gain `top·(v/127)³` (`top_db` at 127); the pan
-/// controller sets the balance `(v − 63.5)/63.5`.
+/// value v sets the gain `top·(v/127)^power` (`top_db` at 127); the pan
+/// controller sets the balance `(v − 63.5)/63.5`; the expression
+/// controller scales the gain by `v/127` (127 until one arrives).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OutputControllers {
     pub volume: u8,
     pub pan: u8,
     pub top_db: f32,
+    pub power: i32,
+    pub expression: Option<u8>,
 }
