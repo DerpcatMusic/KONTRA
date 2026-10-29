@@ -4,7 +4,6 @@
 
 [allowed]
 corpus-health = ["ni-file", "sampler-core", "sampler-ir", "sampler-kontakt", "sampler-ksp", "sampler-midi", "sampler-parity", "kontra-ui-model", "sampler-uvi"]
-format-census = ["ncw", "ni-file", "sampler-ir", "sampler-kontakt", "sampler-uvi"]
 kontakto = ["buffr-durable-file", "derpcat-flight-recorder", "kontra-events", "moose-clap", "moose-vst3", "mui", "ncw", "ni-file", "sampler-ample", "sampler-core", "sampler-ikmpak", "sampler-ir", "sampler-kontakt", "sampler-ksp", "sampler-midi", "sampler-parity", "kontra-ui-model", "sampler-uvi"]
 kontra-dsp = ["kontra-dsp-core", "kontra-dsp-delay", "kontra-dsp-drive", "kontra-dsp-dynamics", "kontra-dsp-eq", "kontra-dsp-filter", "kontra-dsp-modulators", "kontra-dsp-reverb", "kontra-dsp-spatial", "kontra-params"]
 kontra-dsp-core = ["kontra-law", "kontra-time"]
