@@ -111,7 +111,15 @@ check 6a-original 6b-vector "part look: Vector draws without pictures" 205,100,8
 # Una Corda's three picture sliders are below the initial viewport.
 at 1000,600; for _ in 1 2 3 4 5; do xdotool click 5; sleep 0.1; done
 sleep 1.5; shot 6bb-vector-controls
-check 6b-vector 6bb-vector-controls "Vector: scroll reaches the picture controls" 205,100,880,500
+# The default Una Corda run must show all three slider faces at their authored positions.
+if [[ ${NAME} == "Una Corda" ]]; then
+    if python3 -I -c 'import sys; from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+boxes = [(300, 365, 330, 430), (525, 365, 555, 430), (750, 365, 780, 430)]
+sys.exit(0 if all(sum(1 for p in im.crop(box).getdata() if min(p) > 100) >= 10 for box in boxes) else 1)' "$out/6bb-vector-controls.png"; then
+        pass "Vector: all three picture sliders draw"
+    else miss "Vector: all three picture sliders draw"; fi
+fi
 at 1000,600; for _ in $(seq 1 10); do xdotool click 4; sleep 0.1; done; sleep 1.5
 at "$look"; xdotool click 1; sleep 1; at "$kontra"; xdotool click 1; sleep 2
 at 1900,1270; sleep 1; shot 6c-kontra
