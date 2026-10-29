@@ -99,7 +99,7 @@ def survey(binary, library, path, timeout):
         key_zones=number(r'key \d+: (\d+) zones', out, int, ''),
         peak=peak,
         rms_sustain=number(r'rms 0\.5-1 s ([\d.]+)', out, default=''),
-        rms_release=number(r'after release 2\.1-2\.6 s ([\d.]+)', out, default=''),
+        rms_release=number(r'after release [\d.]+-[\d.]+ s ([\d.]+)', out, default=''),
         broken=impacts['Broken'], audible=impacts['Audible'], cosmetic=impacts['Cosmetic'],
         unanswered=sum(int(n) for _, n in actions), script_faults=faults,
         stolen=number(r'voices_stolen: (\d+)', out, int, ''),

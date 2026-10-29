@@ -4,6 +4,13 @@ The library inspector used to compare KONTRA's parser with itself; every report 
 "native equivalence: unknown". This note describes the two references that replace that:
 Kontakt's own post-load state, and Kontakt's own readers.
 
+**Comparing renders (2026-10-29).** Oracle comparisons assume one note: velocity 100, key-up at
+1.5 s (1440 ticks at 480 PPQ and 120 bpm). The `render` example of kontra-host plays that note by
+default (`KONTRA_VELOCITY` and `KONTRA_HOLD` override it). A different hold sets one engine's release
+against the other's held note. On ANALOG STRINGS that showed as a false +6 dB at 125/250 Hz: its
+sub-octave layer fades on key-up. Loading a probe script into Kontakt changes its sound by itself, so
+compare a probe run against an empty-probe run, never against a probe-free one.
+
 ## 1. Native oracle: what real Kontakt loaded
 
 `tools/kontakt-oracle/dump.py OUT.jsonl A.nki ...` runs Kontakt 8.13.1 standalone under
