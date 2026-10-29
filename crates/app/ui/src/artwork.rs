@@ -24,9 +24,9 @@ pub fn banner(image: &Image) -> Option<Image> {
     const PEAK: f32 = 96.;
     let [w, h] = [BANNER.0, BANNER.1].map(|v| (v * 2.).round() as u32);
     let crop = blur(&cover(image, w, h)?, (h / 24).max(2) as usize, 3)?;
-    let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let luma = |[r, g, b]: [f32; 3]| 0.2126 * r + 0.7152 * g + 0.0722 * b;
     let pixels = crop.rgba.as_chunks::<4>().0;
-    let rgb = |c: &[u8; 4]| [0, 1, 2].map(|k| f32::from(c[k]));
+    let rgb = |&[r, g, b, _]: &[u8; 4]| [r, g, b].map(f32::from);
     let mean = pixels.iter().map(|c| luma(rgb(c))).sum::<f32>() / pixels.len().max(1) as f32;
     let gain = LEVEL / mean.max(1.);
     let rgba: Vec<u8> = (pixels.iter().enumerate())
@@ -94,12 +94,12 @@ fn blur(image: &Image, radius: usize, passes: usize) -> Option<Image> {
                 let mut sum = [0f32; 4];
                 for i in -r..=r {
                     let c = get(i);
-                    (0..4).for_each(|k| sum[k] += c[k]);
+                    sum.iter_mut().zip(c).for_each(|(s, v)| *s += v);
                 }
                 for (i, o) in out.iter_mut().enumerate() {
                     *o = sum.map(|v| v * scale);
                     let (add, drop) = (get(i as isize + r + 1), get(i as isize - r));
-                    (0..4).for_each(|k| sum[k] += add[k] - drop[k]);
+                    (sum.iter_mut().zip(add).zip(drop)).for_each(|((s, a), d)| *s += a - d);
                 }
                 for (i, o) in out.iter().enumerate() {
                     if let Some(p) = px.get_mut(at(line, i)) {
@@ -128,12 +128,9 @@ mod tests {
         assert!(b.is_some(), "no banner");
         let Some(b) = b else { return };
         let px = b.rgba.as_chunks::<4>().0;
-        let Some(first) = px.first() else { return };
-        assert!(
-            first[0] < 140 && first[3] == 255,
-            "white artwork dims: {first:?}"
-        );
-        let end = px.get(b.width as usize - 1).copied().unwrap_or_default();
-        assert_eq!(end[3], 0, "the right end shows the header through");
+        let [r, _, _, a] = px.first().copied().unwrap_or_default();
+        assert!(r < 140 && a == 255, "white artwork dims: {r} {a}");
+        let [_, _, _, a] = px.get(b.width as usize - 1).copied().unwrap_or_default();
+        assert_eq!(a, 0, "the right end shows the header through");
     }
 }
