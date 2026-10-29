@@ -400,3 +400,40 @@ fn a_preset_dragged_onto_a_part_replaces_it_and_onto_free_space_adds_one() {
         "{onto_rack:?}"
     );
 }
+
+/// The edge between the libraries and the presets drags: down gives the
+/// libraries more of the browser's height, and the view keeps the share.
+#[test]
+fn the_browser_split_drags_and_keeps_its_share() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App::default();
+    settle(&mut ui, &mut app);
+    let at = (ui.scene())
+        .and_then(|s| s.surface("browser-split"))
+        .map(|s| s.frame);
+    assert!(at.is_some(), "the browser has a split edge");
+    let Some(f) = at else { return };
+    let (x, y) = (f.x + f.size.width / 2., f.y + f.size.height / 2.);
+    for k in 0..=10 {
+        let pointer = PointerInput {
+            pos: Some(Point::new(x, y + f64::from(k.min(9)) * 10.)),
+            buttons: if k < 10 {
+                Buttons::PRIMARY
+            } else {
+                Buttons::default()
+            },
+            ..Default::default()
+        };
+        let input = Input {
+            pointer,
+            ..Default::default()
+        };
+        frame(&mut ui, &mut app, input);
+    }
+    assert!(app.view.split > 0.55, "dragged down: {}", app.view.split);
+    assert!(
+        app.view.split <= 0.7,
+        "held to v2's bound: {}",
+        app.view.split
+    );
+}

@@ -42,6 +42,7 @@ pub fn saved(app: &App, slots: &[usize]) -> SavedView {
         format: index(&FORMATS, &v.format),
         shelf: index(&SHELVES, &v.shelf),
         descending: v.descending,
+        split: v.split as f32,
         parts: (app.parts.iter().zip(slots))
             .map(|(p, &part)| SavedPartView {
                 part,
@@ -67,6 +68,7 @@ pub fn apply(app: &mut App, s: &SavedView) {
         format: pick(&FORMATS, s.format),
         shelf: pick(&SHELVES, s.shelf),
         descending: s.descending,
+        split: f64::from(s.split),
         ..View::default()
     };
 }
@@ -96,6 +98,7 @@ mod tests {
         app.view.browser_hidden = true;
         app.view.octave = -1;
         app.view.scale = 2;
+        app.view.split = 0.3;
         app.parts = vec![kontra_ui::app::Part {
             open: false,
             tab: PartTab::Mapping,
@@ -109,6 +112,7 @@ mod tests {
             (Tab::Mixer, true)
         );
         assert_eq!((again.view.octave, again.view.scale), (-1, 2));
+        assert!((again.view.split - 0.3).abs() < 1e-6, "the browser's split");
         let mut waiting = saved.parts.clone();
         again.parts = vec![kontra_ui::app::Part::default()];
         parts(&mut again, &[0], &mut waiting);

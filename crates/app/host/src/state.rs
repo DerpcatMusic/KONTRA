@@ -116,6 +116,8 @@ pub struct SavedView {
     pub format: u8,
     pub shelf: u8,
     pub descending: bool,
+    /// The browser's library list's share of its height; 0 is the default.
+    pub split: f32,
     pub parts: Vec<SavedPartView>,
 }
 
