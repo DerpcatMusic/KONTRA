@@ -587,3 +587,36 @@ fn hovering_a_control_shows_its_help() {
     }
     assert_eq!(tip.as_deref(), Some("Filter cutoff"));
 }
+
+#[test]
+fn multiline_labels_draw_each_line_and_keep_empty_rows() {
+    let mut tree = Interface::default();
+    tree.pages.push(Page {
+        size: Size {
+            width: 80.,
+            height: 80.,
+        },
+        ..Default::default()
+    });
+    let mut label = Widget::new("$list", PageRef(0), Rect::new(0, 0, 80, 80), Kind::Label);
+    label.text = "ONE\n\nTWO\n\nTHREE".into();
+    label.text_y = Some(0);
+    tree.widgets.push(label);
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(|_| None));
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 0.));
+    let pixels = paint(&mut ui, el, 80, 80);
+    let ink = |from: usize, to: usize| {
+        pixels
+            .iter()
+            .skip(from * 80)
+            .take((to - from) * 80)
+            .filter(|p| p[0] > 30)
+            .count()
+    };
+    assert!(ink(0, 13) > 5, "first line");
+    assert_eq!(ink(13, 26), 0, "empty line");
+    assert!(ink(26, 39) > 5, "second line");
+    assert_eq!(ink(39, 52), 0, "empty line");
+    assert!(ink(52, 65) > 5, "third line");
+}

@@ -452,6 +452,39 @@ fn words_el(
     };
     let line = size * 1.25;
     let top = text_y.map_or(((height - line) / 2.).max(0.), |y| f64::from(y) * scale);
+    // A script can build a label a line at a time. Keep empty lines: they
+    // set the spacing between the key names on Afflatus' keyswitch page.
+    if words.contains('\n') {
+        // Afflatus' keyswitch labels are 26 source pixels apart with an
+        // empty line between them: 13 pixels at the 11-pixel stock size.
+        let line = size * (13. / 11.);
+        let top = text_y.map_or(0., |y| f64::from(y) * scale);
+        let lines = words
+            .split('\n')
+            .enumerate()
+            .map(|(n, words)| {
+                let el = text(words.trim_end_matches('\r').to_owned())
+                    .text_size(size)
+                    .fill(Fill::from(ink));
+                let el = match font {
+                    Some(font) => el.font(font.clone()),
+                    None => el,
+                };
+                row([el])
+                    .align(Align::Center)
+                    .justify(match align {
+                        model::Align::Left => Justify::Start,
+                        model::Align::Center => Justify::Center,
+                        model::Align::Right => Justify::End,
+                    })
+                    .w(width)
+                    .h(line)
+                    .pad((inset * scale, 0.))
+                    .at(0., top + n as f64 * line)
+            })
+            .collect::<Vec<_>>();
+        return stack(lines).w(width).h(height).radius(0.).clip();
+    }
     // Kontakt's factory faces run narrower than ours: a label sized for
     // them steps down to fit rather than cut its words (v1 `TextFont::fit`).
     let said = |k: f64| {
@@ -583,8 +616,8 @@ fn crop(
 
 /// Words in a library's picture font, as v1 drew them (`src/ui/perf_view.rs`
 /// `bitmap_words`): each glyph its own advance, pixels and alpha, scaled
-/// with the face, never refitted through an outline font; one line.
-// ponytail: one line; break long label text the way v1 did if a library wraps it.
+/// with the face, never refitted through an outline font. Explicit newlines
+/// start another row, including empty rows.
 fn bitmap_words(
     words: &str,
     style: Option<&model::TextStyle>,
@@ -596,7 +629,6 @@ fn bitmap_words(
     let glyph = |c: char| glyphs.get(crate::pictures::glyph(c));
     let advance = |c: char| glyph(c).map_or(0., |g| f64::from(g.width) * scale);
     let line = glyphs.first().map_or(0., |g| f64::from(g.height) * scale);
-    let wide: f64 = words.chars().map(advance).sum();
     let align = style.map_or(
         if matches!(w.kind, Kind::Label) {
             model::Align::Left
@@ -605,20 +637,27 @@ fn bitmap_words(
         },
         |s| s.align,
     );
-    let mut x = match align {
-        model::Align::Left => 2. * scale,
-        model::Align::Center => (width - wide) / 2.,
-        model::Align::Right => width - 2. * scale - wide,
-    };
-    let y = w
+    let multiline = words.contains('\n');
+    let top = w
         .text_y
-        .map_or((height - line) / 2., |y| f64::from(y) * scale);
+        .map_or(if multiline { 0. } else { (height - line) / 2. }, |y| {
+            f64::from(y) * scale
+        });
     let mut layers = Vec::new();
-    for c in words.chars() {
-        let Some(g) = glyph(c) else { continue };
-        let gw = f64::from(g.width) * scale;
-        layers.push(image(g, gw, line).at(x, y));
-        x += gw;
+    for (n, words) in words.split('\n').enumerate() {
+        let wide: f64 = words.chars().map(advance).sum();
+        let mut x = match align {
+            model::Align::Left => 2. * scale,
+            model::Align::Center => (width - wide) / 2.,
+            model::Align::Right => width - 2. * scale - wide,
+        };
+        let y = top + n as f64 * line;
+        for c in words.chars() {
+            let Some(g) = glyph(c) else { continue };
+            let gw = f64::from(g.width) * scale;
+            layers.push(image(g, gw, line).at(x, y));
+            x += gw;
+        }
     }
     stack(layers).w(width).h(height).radius(0.).clip()
 }

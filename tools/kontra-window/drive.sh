@@ -68,6 +68,27 @@ check() { if differ "$1" "$2" "${4:-}"; then pass "$3"; else miss "$3"; fi; }
 still() { if differ "$1" "$2" "${4:-}"; then miss "$3"; else pass "$3"; fi; }
 
 shot 0-open
+# Afflatus' keyswitch page uses add_text_line for its note-name list.
+if [[ ${MULTILINE_ONLY:-0} == 1 ]]; then
+    at "${MULTILINE_TAB:-1652,260}"; xdotool click 1; sleep 3; at 1900,1270; shot 1-keyswitches
+    if [[ -n ${MULTILINE_BEFORE:-} ]]; then
+        if python3 -I -c 'import sys; from PIL import Image, ImageChops
+a, b = (Image.open(p).convert("RGB").crop((805,175,845,408)) for p in sys.argv[1:])
+sys.exit(0 if ImageChops.difference(a,b).getbbox() else 1)' "$MULTILINE_BEFORE" "$out/1-keyswitches.png"; then
+            pass "Afflatus keyswitch names: multiple lines draw"
+        else miss "Afflatus keyswitch names: multiple lines draw"; fi
+    fi
+    ticks_multiline() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    at 1900,1270; sleep 2
+    span=${IDLE_S:-60}; t0=$(ticks_multiline); sleep "$span"; t1=$(ticks_multiline)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
 # Open VWinds' preferences page, where the authored tables live.
 if [[ ${UVI_TABLE_ONLY:-0} == 1 ]]; then
     at "${UVI_PREFS:-1310,944}"; xdotool click 1; sleep 3; shot 1-prefs
