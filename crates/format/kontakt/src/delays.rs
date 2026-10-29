@@ -39,7 +39,7 @@ pub(crate) fn legacy(module: u16, version: u16, public: &[u8]) -> Option<ir::Eff
             let [time, feedback, pan, damping, unit] = saved(version, public)?;
             ir::EffectKind::Delay(delay(time, feedback, pan, damping, unit))
         }
-        0x11 => ir::EffectKind::Delay(chorus(f(1)?, f(2)?, f(3)?)),
+        0x11 => ir::EffectKind::Delay(chorus(f(0)?, f(1)?, f(2)?, f(3)?)),
         0x12 => ir::EffectKind::Delay(flanger(f(0)?, f(1)?, f(2)?, f(3)?, f(4)?, f(5)?)),
         0x14 => ir::EffectKind::Phaser(phaser(f(0)?, f(1)?, f(2)?, f(3)?, f(4)?)),
         _ => return None,
@@ -108,13 +108,17 @@ pub(crate) fn delay(time: f32, feedback: f32, pan: f32, damping: f32, unit: f32)
 }
 
 /// Legacy Chorus: depth, speed, phase, unit. Setter 0x140963970 and audio
-/// 0x140aa0510: the base delay field is never written, so both heads (the
-/// second at half the delay) sit a frame or two back and Depth has no effect
-/// (kemu); each head is smoothed by 0.95. Phase is a quarter cycle.
-fn chorus(speed: f32, phase: f32, unit: f32) -> ir::Delay {
+/// 0x140aa0510: an isolated default preset produces heads at about 20 and
+/// 10 ms (native impulse); the setter scales depth by 75 frames. Each head
+/// is smoothed by 0.95. Phase is a quarter cycle.
+fn chorus(depth: f32, speed: f32, phase: f32, unit: f32) -> ir::Delay {
     ir::Delay {
-        time: ir::DelayTime::Ms(0.0),
-        depth_ms: 0.0,
+        time: ir::DelayTime::Ms(20.0),
+        depth_ms: kontra_law::Law::Linear {
+            lo: 0.0,
+            hi: 1.5625,
+        }
+        .eval(depth),
         second_head: true,
         input: ir::IDENTITY,
         feedback: [[0.0; 2]; 2],
@@ -202,6 +206,17 @@ mod tests {
         assert_eq!(d.time, ir::DelayTime::Beats(1.5));
         assert!((d.damping_hz - 2724.6).abs() < 1.0, "{}", d.damping_hz);
         assert!(legacy(0x10, 0x52, &record(&[3.0; 5])).is_none());
+    }
+
+    #[test]
+    fn chorus_keeps_the_native_two_delay_heads_and_depth() {
+        let Some(ir::EffectKind::Delay(d)) = legacy(0x11, 0x51, &record(&[0.5, 1.0, 0.0, -1.0]))
+        else {
+            panic!()
+        };
+        assert_eq!(d.time, ir::DelayTime::Ms(20.0));
+        assert_eq!(d.depth_ms, 0.78125);
+        assert!(d.second_head);
     }
 
     #[test]
