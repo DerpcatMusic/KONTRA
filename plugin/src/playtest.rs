@@ -544,19 +544,22 @@ fn perform(path: PathBuf) -> Report {
                 None => fail(format!("{segment}: no onset")),
             }
         }
-        // No late bursts: a jump of 12 dB or more with no note near it (a
-        // controller may move the level, never jump it).
+        // No late bursts: a jump of 12 dB or more to within 20 dB of the
+        // segment's loudest, with no note near it (a controller may move the
+        // level, never jump it; a wind rising out of silence on the wheel,
+        // VWinds -80 to -28 dBFS over ten blocks, is no burst).
         let inputs: Vec<usize> = (events.iter())
             .filter(|e| e.1.is_note())
             .map(|e| e.0)
             .collect();
+        let loudest = peaks.iter().copied().fold(0.0f32, f32::max);
         for (b, w) in peaks.windows(5).enumerate() {
             let (before, now) = (w[..4].iter().copied().fold(0.0, f32::max), w[4]);
             let start = (b + 4) * BLOCK;
             let near = inputs
                 .iter()
                 .any(|&i| i <= start + BLOCK && start <= i + hold);
-            if now > 1e-3 && now > 4.0 * before && !near {
+            if now > 1e-3 && now > 4.0 * before && now > 0.1 * loudest && !near {
                 fail(format!(
                     "{segment}: a burst at {:.3} s",
                     start as f64 / RATE
