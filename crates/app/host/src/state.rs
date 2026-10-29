@@ -232,8 +232,11 @@ impl Rack {
         for part in loaded {
             self.remove(part);
         }
+        let loads = self.loads();
+        let to_load = || saved.parts.iter().filter(|p| !kept.contains(&p.part));
+        to_load().for_each(|p| loads.set(p.part, kontra_protocol::Load::Queued));
         let mut failed = Vec::new();
-        for p in saved.parts.iter().filter(|p| !kept.contains(&p.part)) {
+        for p in to_load() {
             let types: Vec<_> = (p.slot_types.iter())
                 .map(|t| (t.rack.into(), t.slot, t.ty))
                 .collect();

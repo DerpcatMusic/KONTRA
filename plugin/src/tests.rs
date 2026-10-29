@@ -834,6 +834,22 @@ fn an_idle_tick_draws_no_frame() {
     );
 }
 
+/// A load the editor asks for shows as queued until a tick carries it out,
+/// and as ready after, whether or not it loaded.
+#[test]
+fn a_requested_load_shows_queued_then_ready() {
+    let (params, mut dsp) = activate("");
+    settle(&params, &mut dsp);
+    let loads = || crate::lock(&params.shared.loads).get();
+    params.shared.request(crate::Request::Load {
+        part: Some(2),
+        path: PathBuf::from("/no/such.nki"),
+    });
+    assert_eq!(loads()[2], kontra_protocol::Load::Queued);
+    Tick.run(&params);
+    assert_eq!(loads()[2], kontra_protocol::Load::Ready);
+}
+
 /// A UVI program's own page: a knob moved in the editor runs the script's
 /// `changed`, the note plays louder or softer, and a reload keeps it.
 fn uvi_knob_moves_the_sound_and_survives_reload(program: &str, knob: &str, to: f64) {

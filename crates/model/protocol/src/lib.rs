@@ -4,10 +4,10 @@
 //!
 //! The payloads are the host's: a command carries a built engine, which is
 //! an engine type this crate must not see (01-LAYOUT.md §2). What the UI
-//! reads is defined here: [`Meters`] and [`Stats`], published through
-//! [`MeterCells`] and [`StatCells`].
+//! reads is defined here: [`Meters`], [`Stats`] and each part's [`Load`],
+//! published through [`MeterCells`], [`StatCells`] and [`LoadCells`].
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use crossbeam_queue::ArrayQueue;
 
@@ -139,6 +139,41 @@ impl StatCells {
             notes_refused: self.notes_refused.load(Ordering::Relaxed),
             missing_frames: self.missing_frames.load(Ordering::Relaxed),
             dropped: self.dropped.load(Ordering::Relaxed),
+        })
+    }
+}
+
+/// Where a part's load is, for the editor to show while the rack is busy
+/// with it: asked for, its file being read, its instrument being built.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Load {
+    #[default]
+    Ready,
+    Queued,
+    Reading,
+    Building,
+}
+
+/// Each part's [`Load`]. Set by whoever loads, read by the editor without
+/// the rack's lock, which a load holds for its whole length.
+#[derive(Default)]
+pub struct LoadCells([AtomicU8; MAX_PARTS]);
+
+impl LoadCells {
+    /// Part `part` is now at `load`; a part past the rack is ignored.
+    pub fn set(&self, part: usize, load: Load) {
+        if let Some(cell) = self.0.get(part) {
+            cell.store(load as u8, Ordering::Release);
+        }
+    }
+
+    /// Each part's load.
+    pub fn get(&self) -> [Load; MAX_PARTS] {
+        self.0.each_ref().map(|c| match c.load(Ordering::Acquire) {
+            1 => Load::Queued,
+            2 => Load::Reading,
+            3 => Load::Building,
+            _ => Load::Ready,
         })
     }
 }

@@ -17,10 +17,11 @@ mod look;
 mod tests;
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use kontra_host::rack::{Event, Rack, RackAudio, Store, StoreConfig};
 use kontra_host::state::Saved;
+use kontra_protocol::{Load, LoadCells};
 use moose::core::LosslessEventRef;
 use moose::prelude::*;
 
@@ -85,6 +86,8 @@ pub struct Shared {
     restored: AtomicU32,
     /// The "Add folder" dialog; dropping it closes an open one.
     folder: folder::Dialog,
+    /// The rack's [`Rack::loads`], for the editor while a load holds it.
+    loads: Mutex<Arc<LoadCells>>,
 }
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
@@ -102,8 +105,23 @@ pub enum Request {
     AddRoot(std::path::PathBuf),
 }
 
+impl Request {
+    /// The part this asks to load into, when it names one.
+    fn part(&self) -> Option<usize> {
+        use kontra_ui::app::Action::{Step, Switch};
+        match self {
+            Request::Load { part, .. } => *part,
+            Request::Browse(Switch { part, .. } | Step { part, .. }) => Some(*part),
+            _ => None,
+        }
+    }
+}
+
 impl Shared {
     pub fn request(&self, r: Request) {
+        if let Some(part) = r.part() {
+            lock(&self.loads).set(part, Load::Queued);
+        }
         lock(&self.requests).push(r);
     }
 }
@@ -199,6 +217,8 @@ impl BackgroundTask for Tick {
         let browser = browser.get_or_insert_with(browse);
         browser.poll();
         for r in requests {
+            // Done, or not a load after all (a full turn, no such preset).
+            let queued = r.part();
             match r {
                 Request::Load { part, path } => {
                     let loaded = match part.or_else(|| rack.free()) {
@@ -217,6 +237,9 @@ impl BackgroundTask for Tick {
                 Request::Ui(edit) => editor::apply(rack, edit),
                 Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
                 Request::AddRoot(path) => browser.add_root(path),
+            }
+            if let Some(part) = queued {
+                rack.loads().set(part, Load::Ready);
             }
         }
         if let Some(path) = p.shared.folder.picked() {
@@ -285,6 +308,7 @@ impl PluginLogic for Kontra {
         };
         let (rack, audio) = Rack::new(rate, store, c.max_block_size);
         *lock(&p.shared.player) = Some(rack.player());
+        *lock(&p.shared.loads) = rack.loads();
         let previous = lock(&p.shared.rack).replace(rack).map(|r| r.save());
         if let Some(saved) = previous.filter(|s| !s.parts.is_empty()) {
             let mut requests = lock(&p.shared.requests);
