@@ -24,8 +24,12 @@ header=${HEADER:-760,114}      # part 0's header, to drop on
 fold=${FOLD:-426,114}          # part 0's fold, so a new part shows below it
 mkdir -p "$out"
 display=:97
+# A server still shutting down holds the display: wait for it to go.
+for _ in $(seq 1 50); do [[ -e /tmp/.X${display#:}-lock ]] || break; sleep 0.2; done
 Xvfb $display -screen 0 1920x1280x24 -nolisten tcp >"$out/xvfb.log" 2>&1 &
 xvfb=$!
+sleep 1
+kill -0 $xvfb 2>/dev/null || { echo "FAIL Xvfb did not start: $(tail -3 "$out/xvfb.log")"; exit 1; }
 "$bin" state "$instrument" "$out/part.state"
 # The ALSA null device: an audio callback (the engine runs in it), no sound.
 DISPLAY=$display WAYLAND_DISPLAY='' MUI_RENDERER=cpu nice -n 19 \
