@@ -500,6 +500,9 @@ mod tests {
         // Shrunk by half, a flat picture stays flat.
         let grey = Image::rgba(4, 4, [90u8, 90, 90, 255].repeat(16));
         let small = grey.and_then(|i| at(i, 0.5));
-        assert_eq!(small.map(|i| i.rgba.to_vec()), Some([90u8, 90, 90, 255].repeat(4)));
+        assert_eq!(
+            small.map(|i| i.rgba.to_vec()),
+            Some([90u8, 90, 90, 255].repeat(4))
+        );
     }
 }
