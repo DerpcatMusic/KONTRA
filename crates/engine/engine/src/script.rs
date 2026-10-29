@@ -358,12 +358,8 @@ impl HostApi for Engine {
                     value,
                 });
             }
-            for (index, &value) in call.texts.iter().enumerate() {
-                trace.push(crate::TraceEvent::ActionText {
-                    call_id,
-                    index,
-                    value,
-                });
+            for (index, value) in call.texts.iter().enumerate() {
+                trace.text(call_id, index, value.as_str());
             }
         }
         if let Some(n) = self.called.get_mut(usize::from(call.action.id())) {

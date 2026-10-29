@@ -40,9 +40,12 @@ pub fn event(e: &TraceEvent, plan: &Plan, samples: &[Option<String>], rate: u32)
         TraceEvent::ActionText {
             call_id,
             index,
+            chunk,
+            len,
             value,
         } => {
-            json!({"type":"script_action_text", "call_id":call_id, "index":index, "value":value.as_str()})
+            let bytes = value.get(..usize::from(*len)).unwrap_or_default();
+            json!({"type":"script_action_text", "call_id":call_id, "index":index, "chunk":chunk, "value":String::from_utf8_lossy(bytes)})
         }
         TraceEvent::RouteOnset {
             frame,

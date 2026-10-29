@@ -1,5 +1,5 @@
 //! Event data for opt-in engine inspection.
-use kontra_vm::{Action, Text};
+use kontra_vm::Action;
 use kontra_voice::Gain;
 
 /// One event captured by the engine at its sample clock.
@@ -34,11 +34,13 @@ pub enum TraceEvent {
         index: usize,
         value: i64,
     },
-    /// A text argument of a script action, including empty text.
+    /// A UTF-8 chunk of a text argument, including empty text.
     ActionText {
         call_id: u64,
         index: usize,
-        value: Text,
+        chunk: usize,
+        len: u8,
+        value: [u8; 96],
     },
     /// Source sampled at voice start for a note-on-only route.
     RouteOnset {

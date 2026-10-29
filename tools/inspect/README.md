@@ -51,7 +51,8 @@ output bits, allowing repeat runs to be checked for differences.
 
 Playback JSON `stage_events` is ordered: callback starts/resumes carry script
 slot and callback ID, script actions carry that ID and a unique call ID, and
-additional integer/text arguments follow with the same call ID. Voice starts,
+additional integer arguments and UTF-8 text chunks follow with the same call ID;
+concatenate each text argument’s chunks by chunk index. Voice starts,
 steals, cuts and ends include slot, zone, sample, pitch step and gain. Voice
 ends are timed to the end of the render span, not the precise sample. The
 bounded engine event buffer is drained between blocks; an overflow is counted
