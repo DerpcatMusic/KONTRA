@@ -349,7 +349,10 @@ local function element_index(e, key)
 		return list
 	end
 	if key == "parameterDefinitions" then
-		return definitions(fields)
+		-- Built once: AO asks one element for them on every knob it makes.
+		local list = definitions(fields)
+		fields.parameterDefinitions = list
+		return list
 	end
 	return Element[key] or noop
 end
