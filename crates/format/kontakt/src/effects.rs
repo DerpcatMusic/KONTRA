@@ -276,8 +276,9 @@ fn slot_effect(
                 .collect::<Option<Vec<_>>>()
                 .and_then(|v| v.try_into().ok())
                 .zip(byte(24))
-                .map(|(knobs, link)| {
-                    let (c, auto) = crate::laws::bus_compressor(knobs, link);
+                .map(|(saved, link)| {
+                    *knobs = crate::script_knobs::bus_knobs(saved, link);
+                    let (c, auto) = crate::laws::bus_compressor(saved, link);
                     if auto {
                         notes.add(impact, "Solid Bus Comp auto release", at.to_owned());
                     }
