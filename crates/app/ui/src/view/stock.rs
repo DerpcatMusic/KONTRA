@@ -178,14 +178,17 @@ impl Look {
                 } else {
                     ink(0xfe_fefe)
                 };
-                if *on && stock && button.is_some() {
+                if *on
+                    && button.is_some()
+                    && style.is_none_or(|s| matches!(s.font, model::Font::Stock(0 | 12)))
+                {
                     parts.push(field_words(
                         caption,
                         ink,
                         model::Align::Center,
                         (w, h, scale),
                         glyphs,
-                        model::Rgba::rgb(DARK),
+                        style.map_or(model::Rgba::rgb(DARK), |s| s.color),
                     ));
                 } else {
                     parts.push(words(caption, ink, model::Align::Center, w, h, scale));
