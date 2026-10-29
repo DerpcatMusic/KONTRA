@@ -210,9 +210,9 @@ fn list(items: &[String]) -> String {
 pub(super) fn row(path: &str, r: &Report) -> String {
     let (t, d) = (&r.ui, &r.diagnostics);
     let segments: Vec<String> = (r.segments.iter())
-        .map(|(s, voices, stolen, peak, hf, channels)| {
-            let [left, right] = channels;
-            format!("{{\"segment\":{},\"voices\":{voices},\"stolen\":{stolen},\"peak_db\":{peak:.1},\"peak_left_db\":{left:.1},\"peak_right_db\":{right:.1},\"hf_db\":{hf:.1}}}", json(s))
+        .map(|s| {
+            let [left, right] = s.channel_db;
+            format!("{{\"segment\":{},\"voices\":{},\"stolen\":{},\"peak_db\":{:.1},\"peak_left_db\":{left:.1},\"peak_right_db\":{right:.1},\"hf_db\":{:.1}}}", json(s.name), s.voices, s.stolen, s.peak_db, s.hf_db)
         })
         .collect();
     format!(

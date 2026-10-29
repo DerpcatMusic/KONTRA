@@ -73,14 +73,22 @@ fn hf_burst_db(audio: &[f32]) -> f32 {
 /// counts as clicking (Afflatus before #1124: +17.7 dB; after: +2.3 dB).
 const CLICK_DB: f32 = 10.0;
 
-/// What a program's performance left: its failures and, by segment,
-/// (name, peak voices, stolen, peak dBFS, HF burst dB, left/right peak dBFS).
+struct Segment {
+    name: &'static str,
+    voices: u32,
+    stolen: u64,
+    peak_db: f32,
+    hf_db: f32,
+    channel_db: [f32; 2],
+}
+
+/// What a program's performance left: its failures and measurements by segment.
 struct Report {
     name: String,
     load_s: f64,
     hold_ms: f32,
     failed: Vec<String>,
-    segments: Vec<(&'static str, u32, u64, f32, f32, [f32; 2])>,
+    segments: Vec<Segment>,
     ui: touch::Touched,
     diagnostics: (usize, usize, usize, Vec<String>),
 }
@@ -511,17 +519,13 @@ fn perform(path: PathBuf) -> Report {
             fail(format!("{segment}: clips at {loudest_db:+.1} dBFS"));
         }
         let hf = hf_burst_db(&audio);
-        let base = plain(segment).and_then(|p| {
-            segments
-                .iter()
-                .find(|s: &&(&str, u32, u64, f32, f32, [f32; 2])| s.0 == p)
-        });
-        if let Some(&(_, _, _, _, base, _)) = base
-            && hf - base > CLICK_DB
+        let base = plain(segment).and_then(|p| segments.iter().find(|s: &&Segment| s.name == p));
+        if let Some(base) = base
+            && hf - base.hf_db > CLICK_DB
         {
             fail(format!(
                 "{segment}: clicks, HF burst {:+.1} dB over the same notes unswept",
-                hf - base
+                hf - base.hf_db
             ));
         }
         let steals = last.stolen - stolen;
@@ -534,7 +538,14 @@ fn perform(path: PathBuf) -> Report {
             "{name}: {segment} ({:.1?}): peak {peak_voices} voices, {steals} stolen, {loudest_db:.1} dBFS, HF burst {hf:.1} dB",
             started.elapsed()
         );
-        segments.push((segment, peak_voices, steals, loudest_db, hf, channel_db));
+        segments.push(Segment {
+            name: segment,
+            voices: peak_voices,
+            stolen: steals,
+            peak_db: loudest_db,
+            hf_db: hf,
+            channel_db,
+        });
     }
     if let [first, .., again] = onsets[..]
         && (first - again).abs() > 10.0
