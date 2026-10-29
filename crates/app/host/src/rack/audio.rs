@@ -33,6 +33,8 @@ pub struct RackAudio {
     events: Vec<Timed<Event>>,
     master: f32,
     tempo: Option<f32>,
+    /// Frames per second.
+    rate: f64,
     /// The host's transport for the next block: running, the song
     /// position in quarters, the time signature.
     transport: Option<(Play, f64, (u8, u8))>,
@@ -47,6 +49,7 @@ impl RackAudio {
     pub(super) fn new(
         channels: Arc<Channels>,
         stream: kontra_stream::StreamClient,
+        rate: u32,
         max_block: usize,
     ) -> Self {
         let block = max_block.max(1);
@@ -61,6 +64,7 @@ impl RackAudio {
             events: Vec::with_capacity(4096),
             master: 1.0,
             tempo: None,
+            rate: f64::from(rate.max(1)),
             transport: None,
             panic: false,
             played: Vec::with_capacity(PLAYED),
@@ -160,7 +164,12 @@ impl RackAudio {
                 p.engine.set_tempo(bpm);
             }
             if let Some((play, quarters, signature)) = self.transport {
-                p.engine.set_transport(play, quarters, signature);
+                // A held part plays its notes late, so it hears the song
+                // where they land: tempo-synced scripts stay on the grid.
+                let late = self.tempo.map_or(0.0, |bpm| {
+                    f64::from(p.held.hold.max()) / self.rate * f64::from(bpm) / 60.0
+                });
+                p.engine.set_transport(play, quarters - late, signature);
             }
             let Some(scratch) = self.scratch.get_mut(..frames) else {
                 continue;
