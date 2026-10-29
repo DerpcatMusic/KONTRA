@@ -658,6 +658,14 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         up.el,
         fold.el,
     ]);
+    // The focused part: the first one open, else the first.
+    let focused = app.parts.iter().find(|p| p.open).or(app.parts.first());
+    let script: Vec<_> = focused
+        .and_then(|p| p.face.as_ref())
+        .map(|f| (f.tree.keybed.iter()).map(|&(n, c)| (n, crate::view::color(c))))
+        .into_iter()
+        .flatten()
+        .collect();
     let shown = Keys {
         range,
         held: v.playing.into_iter().collect(),
@@ -667,12 +675,9 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .enumerate()
             .map(|(n, p)| (p.keys.0, p.keys.1, crate::theme::part_color(n)))
             .collect(),
-        // The focused part's: the first one open, else the first.
-        switches: app
-            .parts
-            .iter()
-            .find(|p| p.open)
-            .or(app.parts.first())
+        // A script that colours its keys shows its own keyswitches.
+        switches: focused
+            .filter(|_| script.is_empty())
             .map(|p| {
                 p.articulations
                     .iter()
@@ -681,6 +686,7 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
                     .collect()
             })
             .unwrap_or_default(),
+        script,
     };
     let height = TEXT * 6.;
     let mut pitch = v.pitch;

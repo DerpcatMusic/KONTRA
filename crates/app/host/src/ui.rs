@@ -10,6 +10,7 @@ use kontra_ksp::{Cells, Control, ControlKind, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 use crate::perf_view::{View, ViewControl};
 
+mod keybed;
 pub mod lua;
 mod picture;
 mod widget;
@@ -84,6 +85,8 @@ pub trait Looks {
     fn page(&self, slot: u8) -> Option<&Page>;
     /// The bitmap font behind font id `id` (`get_font_id`), by picture name.
     fn font(&self, slot: u8, id: i32) -> Option<&str>;
+    /// The keyboard's keys as the scripts left them, by note.
+    fn keys(&self) -> &[kontra_engine::Key];
 }
 
 impl Looks for Engine {
@@ -101,6 +104,10 @@ impl Looks for Engine {
 
     fn font(&self, slot: u8, id: i32) -> Option<&str> {
         Engine::font(self, slot, id)
+    }
+
+    fn keys(&self) -> &[kontra_engine::Key] {
+        Engine::keys(self)
     }
 }
 
@@ -483,6 +490,7 @@ impl Live {
             picture,
         };
         build(&mut bld, face, slot, engine, &decls)?;
+        bld.ui.keybed = keybed::keybed(engine.keys());
         Ok(Self {
             tree: bld.ui,
             keys,
@@ -508,6 +516,11 @@ impl Live {
             self.page = page;
             page
         });
+        let keybed = keybed::keybed(engine.keys());
+        let keys = keybed != self.tree.keybed;
+        if keys {
+            self.tree.keybed = keybed;
+        }
         let mut changed = Vec::new();
         for (n, (&key, seen)) in self.keys.iter().zip(&mut self.seen).enumerate() {
             let Some(d) = decl(face, slot, engine, key) else {
@@ -520,7 +533,10 @@ impl Live {
             }
         }
         if changed.is_empty() && page.is_none() {
-            return Changes::default();
+            return Changes {
+                keys,
+                ..Changes::default()
+            };
         }
         let mut bld = Builder {
             ui: std::mem::take(&mut self.tree),
@@ -549,6 +565,7 @@ impl Live {
         (self.tree, self.assets, self.styles) = (bld.ui, bld.assets, bld.styles);
         Changes {
             page: page.is_some(),
+            keys,
             widgets: out,
         }
     }
@@ -582,6 +599,8 @@ impl Live {
 #[derive(Debug, Default, PartialEq)]
 pub struct Changes {
     pub page: bool,
+    /// The keyboard's script colours.
+    pub keys: bool,
     pub widgets: Vec<ui::WidgetRef>,
 }
 
@@ -589,7 +608,7 @@ impl Changes {
     /// Nothing to repaint.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        !self.page && self.widgets.is_empty()
+        !self.page && !self.keys && self.widgets.is_empty()
     }
 }
 

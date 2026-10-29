@@ -495,7 +495,7 @@ fn image(img: &Arc<mui::prelude::Image>, w: f64, h: f64) -> El {
         .fill(Fill::Image(img.clone(), Fit::Fill))
 }
 
-fn color(c: model::Rgba) -> Color {
+pub(crate) fn color(c: model::Rgba) -> Color {
     Color::srgba(
         f32::from(c.r) / 255.,
         f32::from(c.g) / 255.,

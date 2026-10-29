@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::sync::Arc;
 
-use kontra_engine::{ControlLook, Engine, FIRST_FONT, MenuItem, Page, Text, WidgetLook};
+use kontra_engine::{ControlLook, Engine, FIRST_FONT, Key, MenuItem, Page, Text, WidgetLook};
 use kontra_ui_model as model;
 
 use crate::ui::lua::Page as _;
@@ -199,6 +199,8 @@ pub struct LookFrame {
     /// The script's bitmap fonts from [`FIRST_FONT`] on; `on init` names
     /// them all, so they are copied once.
     fonts: Arc<[String]>,
+    /// The keyboard's keys, by note (a fixed 128: copied in place).
+    keys: Vec<Key>,
     state: Filled,
 }
 
@@ -256,6 +258,7 @@ impl LookFrame {
             fonts: (FIRST_FONT..)
                 .map_while(|id| now.font(slot, id).map(str::to_owned))
                 .collect(),
+            keys: now.keys().to_vec(),
             state: Filled::No,
         })
     }
@@ -291,6 +294,8 @@ impl LookFrame {
                 })
                 .collect(),
             fonts: Arc::from([]),
+            // Room for the engine's 128 keys, though a Lua page shows none.
+            keys: Vec::with_capacity(128),
             state: Filled::No,
         })
     }
@@ -345,6 +350,10 @@ impl LookFrame {
             *value = engine.script_cell_in(self.slot, *cell as usize);
         }
         self.page = engine.page(self.slot).copied();
+        // Same length every trip, so this never allocates.
+        if !copy(&mut self.keys, engine.keys()) {
+            whole = false;
+        }
         // Only what can show: a widget whose parent shows (Augmented
         // Orchestra makes 10,145, about 100 of them shown at once).
         for &n in &self.reads {
@@ -389,6 +398,7 @@ impl LookFrame {
             arrays: self.arrays.clone(),
             texts: self.texts.clone(),
             fonts: Arc::clone(&self.fonts),
+            keys: self.keys.clone(),
             state: Filled::No,
             ..*self
         })
@@ -451,6 +461,10 @@ impl Looks for LookFrame {
     fn font(&self, slot: u8, id: i32) -> Option<&str> {
         let n = usize::try_from(id.checked_sub(FIRST_FONT)?).ok()?;
         (self.fonts.get(n).filter(|_| slot == self.slot)).map(String::as_str)
+    }
+
+    fn keys(&self) -> &[Key] {
+        &self.keys
     }
 }
 
