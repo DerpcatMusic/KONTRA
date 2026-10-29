@@ -22,6 +22,7 @@ mod lfo_routes;
 mod load;
 mod matrix;
 mod modulation;
+mod multi_peak;
 mod provenance;
 mod reverb;
 mod routing;
