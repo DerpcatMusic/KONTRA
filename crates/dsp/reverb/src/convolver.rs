@@ -280,7 +280,7 @@ impl Mono {
 /// Sixteen running sums: four vector registers of independent chains, so the
 /// adds overlap instead of waiting on each other (float addition order keeps
 /// the compiler from splitting one sum itself).
-fn dot(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn dot(a: &[f32], b: &[f32]) -> f32 {
     let (a16, a_rest) = a.as_chunks::<16>();
     let (b16, b_rest) = b.as_chunks::<16>();
     let mut lanes = [0.0f32; 16];

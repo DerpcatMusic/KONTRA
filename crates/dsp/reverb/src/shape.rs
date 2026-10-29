@@ -116,6 +116,9 @@ const PHASES: usize = 512;
 const CUTOFF: f64 = 0.97;
 /// Kaiser β: stopband about 80 dB down.
 const BETA: f64 = 8.0;
+/// The most phases a rational ratio may need for its exact polyphase
+/// filter (44.1 to 48 kHz needs 160); past it, the tabled kernel.
+const MOST_PHASES: usize = 4096;
 
 /// `c` at rate `from` to rate `to`, at most `max` frames, through a
 /// Kaiser-windowed sinc that passes up to [`CUTOFF`] of the lower Nyquist.
@@ -131,17 +134,46 @@ pub fn resample(c: &[f32], from: u32, to: u32, max: usize) -> Vec<f32> {
     let band = CUTOFF * scale;
     let width = HALF as f64 / scale;
     let den = crate::resample::i0(BETA);
+    let kernel = |t: f64| {
+        let u = t.abs() / width;
+        if u >= 1.0 {
+            return 0.0;
+        }
+        let x = std::f64::consts::PI * band * t;
+        let sinc = if t == 0.0 { 1.0 } else { x.sin() / x };
+        band * sinc * crate::resample::i0(BETA * (1.0 - u * u).sqrt()) / den
+    };
+    let frames = ((c.len() as f64 / ratio) as usize).min(max);
+    let g = gcd(from, to);
+    let (up, down) = ((to / g) as usize, (from / g) as usize);
+    if up <= MOST_PHASES {
+        // Output n sits `(n·down mod up)/up` past input `n·down div up`: one
+        // exact row of taps per phase, each output a single dot.
+        let reach = width.ceil() as usize;
+        let len = 2 * reach + 1;
+        let rows: Vec<f32> = (0..up)
+            .flat_map(|p| {
+                let frac = p as f64 / up as f64;
+                (0..len).map(move |j| kernel(frac + reach as f64 - j as f64) as f32)
+            })
+            .collect();
+        let mut padded = vec![0.0; c.len() + len];
+        if let Some(s) = padded.get_mut(reach..reach + c.len()) {
+            s.copy_from_slice(c);
+        }
+        return (0..frames)
+            .map(|n| {
+                let (i, p) = (n * down / up, n * down % up);
+                let (Some(w), Some(k)) = (padded.get(i..i + len), rows.get(p * len..(p + 1) * len))
+                else {
+                    return 0.0;
+                };
+                crate::convolver::dot(w, k)
+            })
+            .collect();
+    }
     let table: Vec<f64> = (0..=(width * PHASES as f64).ceil() as usize + 1)
-        .map(|k| {
-            let t = k as f64 / PHASES as f64;
-            let u = t / width;
-            if u >= 1.0 {
-                return 0.0;
-            }
-            let x = std::f64::consts::PI * band * t;
-            let sinc = if t == 0.0 { 1.0 } else { x.sin() / x };
-            band * sinc * crate::resample::i0(BETA * (1.0 - u * u).sqrt()) / den
-        })
+        .map(|k| kernel(k as f64 / PHASES as f64))
         .collect();
     let tap = |t: f64| {
         let p = t * PHASES as f64;
@@ -151,7 +183,6 @@ pub fn resample(c: &[f32], from: u32, to: u32, max: usize) -> Vec<f32> {
         let b = table.get(k + 1).copied().unwrap_or(0.0);
         a + (b - a) * f
     };
-    let frames = ((c.len() as f64 / ratio) as usize).min(max);
     (0..frames)
         .map(|n| {
             let x = n as f64 * ratio;
@@ -165,4 +196,8 @@ pub fn resample(c: &[f32], from: u32, to: u32, max: usize) -> Vec<f32> {
             }) as f32
         })
         .collect()
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
