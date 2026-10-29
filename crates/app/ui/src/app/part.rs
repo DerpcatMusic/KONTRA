@@ -15,7 +15,7 @@ pub(super) fn view(
     ui: &mut Ui,
     p: &mut Part,
     n: usize,
-    room: f64,
+    room: (f64, f64),
     v: &mut View,
     out: &mut Vec<Action>,
 ) -> El {
@@ -26,11 +26,15 @@ pub(super) fn view(
     };
     let el = match (tab, &mut p.face) {
         (PartTab::Interface, Some(face)) => {
-            let wide = face.tree.pages.first().map_or(0., |p| p.size.width);
+            let size = face
+                .tree
+                .pages
+                .first()
+                .map_or((0., 0.), |p| (p.size.width, p.size.height));
             let scale = fit(
                 FACE_SCALES.get(v.face_scale).copied().unwrap_or(0.),
                 room,
-                wide,
+                size,
             );
             let look = p.look.unwrap_or(v.face_look);
             let (edits, el) = if look == FaceLook::Kontra {
@@ -73,17 +77,22 @@ pub(super) fn view(
         .pad(kit::edges(TIGHT, SPACE, SPACE, SPACE))
 }
 
-/// The scale a library's view `wide` source pixels across is drawn at:
-/// `chosen`, or for Fit (0) as wide as `room`, between half and double
-/// size, and 1 while the room is unknown.
-fn fit(chosen: f64, room: f64, wide: f64) -> f64 {
+/// Fit the full face in the rack viewport, or preserve the selected scale.
+fn fit(chosen: f64, room: (f64, f64), size: (f64, f64)) -> f64 {
     if chosen > 0. {
-        chosen
-    } else if room > 0. && wide > 0. {
-        (room / wide).clamp(0.5, 2.)
+        return chosen;
+    }
+    let width = if room.0 > 0. && size.0 > 0. {
+        room.0 / size.0
     } else {
         1.
-    }
+    };
+    let height = if room.1 > 0. && size.1 > 0. {
+        room.1 / size.1
+    } else {
+        width
+    };
+    width.min(height).clamp(0.5, 2.)
 }
 
 fn listing(title: &str, lines: &[String], empty: &str) -> El {
@@ -249,11 +258,10 @@ mod tests {
 
     #[test]
     fn a_library_view_fits_the_rack_or_keeps_its_chosen_scale() {
-        // ANALOG's 730-pixel page in a 900-point rack, then a narrow one.
-        assert!((fit(0., 900., 730.) - 900. / 730.).abs() < 1e-9);
-        assert_eq!(fit(0., 200., 730.), 0.5);
-        assert_eq!(fit(0., 3000., 730.), 2.);
-        assert_eq!(fit(0., 0., 730.), 1., "the room unknown: source size");
-        assert_eq!(fit(1.5, 900., 730.), 1.5, "a fixed scale scrolls instead");
+        assert!((fit(0., (900., 500.), (730., 700.)) - 500. / 700.).abs() < 1e-9);
+        assert!((fit(0., (900., 1000.), (730., 700.)) - 900. / 730.).abs() < 1e-9);
+        assert_eq!(fit(0., (200., 500.), (730., 700.)), 0.5);
+        assert_eq!(fit(0., (0., 0.), (730., 700.)), 1.);
+        assert_eq!(fit(1.5, (900., 500.), (730., 700.)), 1.5);
     }
 }

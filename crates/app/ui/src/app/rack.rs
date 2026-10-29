@@ -35,6 +35,10 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         SIDEBAR + 1.
     };
     let room = (app.width - browser - 2. * SPACE).max(0.);
+    // Fit one open face inside the rack viewport with its two header rows.
+    let height = ui.scene().and_then(|s| s.surface("rack")).map_or(0., |s| {
+        (s.frame.size.height - 2. * ROW - TIGHT - SPACE).max(0.)
+    });
     let mut strips = Vec::new();
     for n in 0..app.parts.len() {
         let art = art(app, n);
@@ -56,7 +60,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         if app.parts.get(n).is_some_and(|p| p.open) {
             strips.push(band(tabs(ui, app, n, out), art, 1));
             if let Some(p) = app.parts.get_mut(n) {
-                strips.push(part::view(ui, p, n, room, &mut app.view, out));
+                strips.push(part::view(ui, p, n, (room, height), &mut app.view, out));
             }
         }
         strips.push(rule());
