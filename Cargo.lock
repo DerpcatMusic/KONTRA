@@ -2557,6 +2557,7 @@ dependencies = [
  "kontra-host",
  "kontra-protocol",
  "kontra-ui",
+ "kontra-ui-model",
  "moose",
  "moose-clap",
  "moose-test",

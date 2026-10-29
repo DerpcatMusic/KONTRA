@@ -354,3 +354,75 @@ fn auto_align_reports_the_latest_part_and_holds_the_other() {
         "latency after off"
     );
 }
+
+#[test]
+fn a_library_control_moved_in_the_editor_reaches_its_script() {
+    let Some(path) = library("Una Corda Library/Instruments/Una Corda Felt.nki") else {
+        return;
+    };
+    let saved = Saved::new(vec![SavedPart {
+        part: 0,
+        path,
+        channel: 0,
+        output: 0,
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+        delay_ms: None,
+    }]);
+    let (params, mut dsp) = activate(&saved.write());
+    settle(&params, &mut dsp);
+    // The first shown widget of a persistent integer control, and its value.
+    let found = {
+        let guard = crate::lock(&params.shared.rack);
+        let rack = guard.as_ref().unwrap();
+        let part = rack.parts()[0].as_ref().unwrap();
+        let view = part.view.as_ref().expect("Una Corda has an interface");
+        let vars = &part.script.vars[usize::from(view.slot)];
+        let saved = rack.saved_scripts(0);
+        view.live
+            .tree
+            .widgets
+            .iter()
+            .enumerate()
+            .find_map(|(n, w)| {
+                let var = vars
+                    .vars
+                    .iter()
+                    .find(|v| v.control == w.source_id && v.len == 1 && !v.real)?;
+                let entry = saved
+                    .get(vars.script)?
+                    .iter()
+                    .find(|e| e.split(' ').next() == Some(&*var.name))?;
+                let now: i64 = entry.split(' ').nth(1)?.parse().ok()?;
+                Some((
+                    n,
+                    var.name.to_string(),
+                    if now > 0 { now - 1 } else { now + 1 },
+                ))
+            })
+    };
+    let (widget, var, to) = found.expect("a persistent control with a widget");
+    params
+        .shared
+        .request(crate::Request::Ui(crate::editor::Edit {
+            slot: Some(0),
+            action: kontra_ui::app::Action::Control {
+                part: 0,
+                widget,
+                value: to as f64,
+            },
+        }));
+    settle(&params, &mut dsp);
+    settle(&params, &mut dsp);
+    params.capture();
+    let state = Saved::read(&params.saved.read().unwrap());
+    let values: Vec<&String> = state.parts[0].scripts.iter().flatten().collect();
+    assert!(
+        values.iter().any(|v| **v == format!("{var} {to}")),
+        "{var} → {to} did not reach the script"
+    );
+    println!("widget {widget}: {var} → {to} kept");
+}
