@@ -3,7 +3,9 @@
 
 use kontra_ir as ir;
 
-use crate::{Engine, EnginePar};
+use std::sync::Arc;
+
+use crate::{Engine, EnginePar, Plan};
 
 impl Engine {
     /// `set_engine_par` of a knob. False when `par` is not one, or the slot
@@ -49,11 +51,7 @@ impl Engine {
         let n = self.row(n, group, slot);
         let target = self.script()?.knobs.get(usize::from(n))?.0;
         if let ir::KnobTarget::Slot(knob) = target {
-            let law = self.slot_law(knob, group, slot, generic)?;
-            let y = *law
-                .field
-                .field_mut(&mut self.effect_mut(group, slot, generic)?.kind)?;
-            let x = invert(&self.plan.slot_laws.get(law.index)?.law, y);
+            let x = self.slot_x(knob, group, slot, generic)?;
             let law = &self.script()?.knobs.get(usize::from(n))?.1;
             return Some((invert(law, x) * 1e6).round() as i32);
         }
@@ -90,18 +88,15 @@ impl Engine {
         slot: i32,
         generic: i32,
     ) -> bool {
+        let plan = Arc::clone(&self.plan);
+        let Some(at) = rack_at(group, generic) else {
+            return false;
+        };
         let mut hit = false;
-        for index in 0..self.plan.slot_laws.len() {
-            let Some(at) = self.slot_at(index, knob, group, slot, generic) else {
-                continue;
-            };
-            let Some(l) = self.plan.slot_laws.get(at) else {
-                continue;
-            };
-            let (field, y) = (l.field, l.law.eval(x));
+        for (field, law) in laws(&plan, self.shape_on(&plan, at, slot), knob, at, slot) {
             let effect = self.effect_mut(group, slot, generic);
             if let Some(v) = effect.and_then(|e| field.field_mut(&mut e.kind)) {
-                *v = y;
+                *v = law.eval(x);
                 hit = true;
             }
         }
@@ -111,50 +106,56 @@ impl Engine {
         hit
     }
 
+    /// The 0..=1 setting slot knob `knob` holds: its first field back
+    /// through its law.
+    fn slot_x(&mut self, knob: ir::SlotKnob, group: i32, slot: i32, generic: i32) -> Option<f32> {
+        let plan = Arc::clone(&self.plan);
+        let at = rack_at(group, generic)?;
+        let (field, law) = laws(&plan, self.shape_on(&plan, at, slot), knob, at, slot).next()?;
+        let y = *field.field_mut(&mut self.effect_mut(group, slot, generic)?.kind)?;
+        Some(invert(law, y))
+    }
+
+    /// The shape the addressed slot last switched to, when it brings laws.
+    fn shape_on<'p>(&self, plan: &'p Plan, at: ir::RackAt, slot: i32) -> Option<&'p ir::SlotShape> {
+        let mut on = plan.slot_shapes.iter().zip(&self.behaviour.shapes);
+        on.find(|(s, on)| **on && s.at == at && i32::from(s.slot) == slot)
+            .map(|(s, _)| s)
+            .filter(|s| !s.laws.is_empty())
+    }
+
     /// `set_engine_par` of a filter slot's shape `id`; false when the slot
-    /// has no such shape.
+    /// has no such shape. The resonance keeps its setting through the new
+    /// shape's laws.
     pub(crate) fn set_shape(&mut self, id: i32, group: i32, slot: i32, generic: i32) -> bool {
-        let at = rack_at(group, generic);
-        let shapes = &self.plan.slot_shapes;
-        let Some(shape) = shapes
-            .iter()
-            .find(|s| Some(s.at) == at && i32::from(s.slot) == slot && s.id == id)
-            .copied()
-        else {
+        let plan = Arc::clone(&self.plan);
+        let Some(at) = rack_at(group, generic) else {
             return false;
         };
+        let here = |s: &ir::SlotShape| s.at == at && i32::from(s.slot) == slot;
+        let shapes = &plan.slot_shapes;
+        let Some(n) = shapes.iter().position(|s| here(s) && s.id == id) else {
+            return false;
+        };
+        let resonance = self.slot_x(ir::SlotKnob::Resonance, group, slot, generic);
         let Some(ir::EffectKind::Filter(f)) =
             self.effect_mut(group, slot, generic).map(|e| &mut e.kind)
         else {
             return false;
         };
-        shape.apply(f);
+        if let Some(shape) = shapes.get(n) {
+            shape.apply(f);
+        }
+        for (k, (on, s)) in self.behaviour.shapes.iter_mut().zip(shapes).enumerate() {
+            if here(s) {
+                *on = k == n;
+            }
+        }
+        if let Some(x) = resonance {
+            self.set_slot_knob(ir::SlotKnob::Resonance, x, group, slot, generic);
+        }
         self.refresh_all(None);
         true
-    }
-
-    /// The first law of slot knob `knob` at the addressed slot.
-    fn slot_law(&self, knob: ir::SlotKnob, group: i32, slot: i32, generic: i32) -> Option<Found> {
-        (0..self.plan.slot_laws.len()).find_map(|i| {
-            let index = self.slot_at(i, knob, group, slot, generic)?;
-            let field = self.plan.slot_laws.get(index)?.field;
-            Some(Found { index, field })
-        })
-    }
-
-    /// `index` when that slot law is knob `knob` of the addressed slot: a
-    /// group's insert (`generic` −1) or an instrument rack slot.
-    fn slot_at(
-        &self,
-        index: usize,
-        knob: ir::SlotKnob,
-        group: i32,
-        slot: i32,
-        generic: i32,
-    ) -> Option<usize> {
-        let l = self.plan.slot_laws.get(index)?;
-        let at = rack_at(group, generic)?;
-        (l.at == at && i32::from(l.slot) == slot && l.knob == knob).then_some(index)
     }
 
     fn knob_mut(
@@ -209,10 +210,24 @@ fn rack_at(group: i32, generic: i32) -> Option<ir::RackAt> {
     })
 }
 
-/// A slot law found for a knob: its index in the plan and the field it sets.
-struct Found {
-    index: usize,
-    field: ir::EffectParam,
+/// The fields slot knob `knob` of slot `slot` in `at` moves, with their
+/// laws: `shape`'s when it has them, else the slot's.
+fn laws<'p>(
+    plan: &'p Plan,
+    shape: Option<&'p ir::SlotShape>,
+    knob: ir::SlotKnob,
+    at: ir::RackAt,
+    slot: i32,
+) -> impl Iterator<Item = (ir::EffectParam, &'p ir::Law)> {
+    let own = shape.into_iter().flat_map(|s| s.laws.iter());
+    let own = own.filter(move |l| l.0 == knob);
+    let has = own.clone().next().is_some();
+    let slots = plan
+        .slot_laws
+        .iter()
+        .filter(move |l| !has && l.at == at && i32::from(l.slot) == slot && l.knob == knob);
+    let own = own.map(|(_, f, l)| (*f, l));
+    own.chain(slots.map(|l| (l.field, &l.law)))
 }
 
 /// The 0..=1 setting `law` maps to `y`, by bisection; the laws are monotonic.

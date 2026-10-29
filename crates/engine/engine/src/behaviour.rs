@@ -47,6 +47,8 @@ pub(crate) struct Behaviour {
     /// attack, and `reset_rls_trig_counter` (Kontakt's system script runs it
     /// on each note-on that is not a release trigger).
     pub(crate) rls_reset: [u64; 128],
+    /// Per [`Plan::slot_shapes`] entry, whether its slot last switched to it.
+    pub(crate) shapes: Vec<bool>,
 }
 
 impl Behaviour {
@@ -77,6 +79,7 @@ impl Behaviour {
             groups,
             rng: 0x9E37_79B9_7F4A_7C15,
             rls_reset: [0; 128],
+            shapes: vec![false; plan.slot_shapes.len()],
         };
         if let Some(key) = plan.default_keyswitch {
             behaviour.press(plan, key);

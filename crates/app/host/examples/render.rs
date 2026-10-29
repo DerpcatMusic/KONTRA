@@ -153,6 +153,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let plan = &loaded.plan;
         println!("instrument inserts {:?}", plan.inserts);
         println!("sends {:?}", plan.sends);
+        let own = plan
+            .slot_shapes
+            .iter()
+            .filter(|s| !s.laws.is_empty())
+            .count();
+        println!(
+            "slot laws {}, shapes {} ({own} with laws)",
+            plan.slot_laws.len(),
+            plan.slot_shapes.len()
+        );
         for (n, b) in plan.buses.iter().enumerate() {
             println!("bus {n} {b:?}");
         }
