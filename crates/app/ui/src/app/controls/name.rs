@@ -48,7 +48,7 @@ fn clean(name: &str) -> String {
         last.strip_prefix(prefix)
             .filter(|s| s.chars().next().is_some_and(char::is_uppercase))
     })
-    .unwrap_or(tail);
+    .unwrap_or(name);
     let mut out = String::new();
     let mut prev = None;
     for c in tail.chars() {
