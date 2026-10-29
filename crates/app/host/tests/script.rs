@@ -1895,3 +1895,45 @@ fn a_script_loads_a_library_response_into_a_convolution() {
     assert_eq!(e.last_message(), "1 1");
     assert_eq!(e.stats().actions_unhandled, 0);
 }
+
+#[test]
+fn a_bus_pan_glides_in_a_line_over_50_ms() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    for g in &mut plan.groups {
+        g.mods.clear();
+        g.bus = 1;
+    }
+    let bus = plan.buses[0].clone();
+    plan.buses.push(bus);
+    let script = kontra_ksp::compile(
+        "on controller
+            set_engine_par($ENGINE_PAR_PAN, 0, -1, -1, 1024)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    let mut out = vec![[0.0; 2]; 480];
+    e.process(&mut out, &[on(60)]);
+    let [l, r] = out[479];
+    // Hard left in Kontakt 8: R falls 0.2 every 10 ms, L holds.
+    let cc = Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB0, 1, 100),
+    };
+    e.process(&mut out, &[cc]);
+    assert!(
+        (out[479][0] - l).abs() < 1e-4 && (out[479][1] - 0.8 * r).abs() < 1e-3,
+        "{:?} from {l} {r}",
+        out[479]
+    );
+    let mut rest = vec![[0.0; 2]; 1920];
+    e.process(&mut rest, &[]);
+    assert!(
+        rest[1918][1] > 0.0 && rest[1919][1].abs() < 1e-6,
+        "{:?}",
+        &rest[1916..]
+    );
+}
