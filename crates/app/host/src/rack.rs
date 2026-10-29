@@ -476,7 +476,9 @@ impl Rack {
             if let Some(name) = unit.response_name() {
                 p.slot_responses.retain(|&(at, slot, _)| (at, slot) != here);
                 p.slot_responses.push((here.0, here.1, name.to_owned()));
-            } else if !asked {
+            } else if let Some(ty) = ty.filter(|_| !asked) {
+                // None: the slot's own effect built again (a reverb's
+                // network), which saves no type.
                 p.slot_types.retain(|&(at, slot, _)| (at, slot) != here);
                 p.slot_types.push((here.0, here.1, ty));
                 p.slot_responses.retain(|&(at, slot, _)| (at, slot) != here);
