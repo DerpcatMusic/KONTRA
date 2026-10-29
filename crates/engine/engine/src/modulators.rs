@@ -262,6 +262,7 @@ mod tests {
             held,
             released,
             now: held,
+            ..Age::START
         }
     }
 
