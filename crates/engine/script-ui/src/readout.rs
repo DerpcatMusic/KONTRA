@@ -16,6 +16,12 @@ pub enum Readout {
     /// Morphology's routes: depth 100·(2x − 1)³ reads "-0.8" at 0.4; a
     /// route's intensity is 100·x², [`Readout::Padded`]).
     Signed(f64),
+    /// Five places, one decimal (a phase in degrees).
+    Wide(f64),
+    /// A whole number (an attack curve, −100..=100).
+    Whole(f64),
+    /// `1:` and a ratio in four places.
+    Ratio(f64),
     /// ±36 semitones.
     Tune,
     Pan,
@@ -27,10 +33,13 @@ pub fn write(readout: Readout, x: f64, out: &mut Text) -> bool {
     match readout {
         Readout::Db(top) if x > 0.0 => out.push_fmt(format_args!("{:.1}", 18.0 * x.log2() + top)),
         Readout::Db(_) => out.push("-inf"),
-        Readout::Padded(ms) if ms < 1.0 => out.push_fmt(format_args!("{ms:5.2}")),
+        Readout::Padded(ms) if ms.abs() < 1.0 => out.push_fmt(format_args!("{ms:5.2}")),
         Readout::Padded(ms) if ms < 1000.0 => out.push_fmt(format_args!("{ms:5.1}")),
         Readout::Padded(ms) => out.push_fmt(format_args!("{:5.1}k", ms / 1000.0)),
         Readout::Signed(v) => out.push_fmt(format_args!("{v:.1}")),
+        Readout::Wide(v) => out.push_fmt(format_args!("{v:5.1}")),
+        Readout::Whole(v) => out.push_fmt(format_args!("{v:.0}")),
+        Readout::Ratio(v) => out.push_fmt(format_args!("1:{v:4.1}")),
         Readout::Tune => out.push_fmt(format_args!("{:.2}", (2.0 * x - 1.0) * 36.0)),
         Readout::Pan if f64::from(pan.abs()) < 0.0075 => out.push("Center"),
         Readout::Pan => {

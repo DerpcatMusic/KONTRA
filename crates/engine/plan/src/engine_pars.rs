@@ -54,6 +54,8 @@ pub enum EnginePar {
 pub struct EnginePars {
     pub first: i32,
     pub by_id: Box<[Option<EnginePar>]>,
+    /// What id `first + n` shows as text, when the translator gave a law.
+    pub readouts: Box<[Option<ir::Readout>]>,
 }
 
 impl EnginePars {
@@ -62,6 +64,13 @@ impl EnginePars {
     pub fn get(&self, id: i32) -> Option<EnginePar> {
         let n = usize::try_from(id.checked_sub(self.first)?).ok()?;
         self.by_id.get(n).copied().flatten()
+    }
+
+    /// The text law of parameter id `id`.
+    #[must_use]
+    pub fn readout(&self, id: i32) -> Option<&ir::Readout> {
+        let n = usize::try_from(id.checked_sub(self.first)?).ok()?;
+        self.readouts.get(n)?.as_ref()
     }
 }
 
@@ -74,6 +83,7 @@ mod tests {
         let pars = EnginePars {
             first: 100,
             by_id: vec![None, Some(EnginePar::Attack)].into(),
+            readouts: Box::default(),
         };
         assert_eq!(pars.get(101), Some(EnginePar::Attack));
         assert_eq!(pars.get(100), None);

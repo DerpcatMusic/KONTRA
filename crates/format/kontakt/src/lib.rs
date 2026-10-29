@@ -16,6 +16,7 @@ mod laws;
 mod legacy_reverb;
 mod links;
 mod provenance;
+mod readouts;
 mod replika;
 mod resources;
 mod reverb;
@@ -30,6 +31,7 @@ mod versatile;
 mod wavetable;
 
 pub use container::chunks;
+pub use readouts::readouts;
 pub use resources::Resources;
 pub use reverb::{reverb, reverb_laws, reverb_networks};
 pub use script_knobs::script_knobs;
