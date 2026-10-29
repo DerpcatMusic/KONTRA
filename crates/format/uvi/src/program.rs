@@ -316,39 +316,12 @@ impl<L: Library> Translator<'_, '_, L> {
         if r.ratio == 0.0 && self.out.scripts.is_empty() {
             return;
         }
-        let source = match r.timed {
-            None => r.source,
-            Some(modulation::Timed::Lfo(lfo)) => ir::Source::Lfo(index_of(&mut group.lfos, lfo)),
-            Some(modulation::Timed::Rising(lfo, rise)) => {
-                let of = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
-                let source = ir::Source::Envelope(index_of(&mut group.envelopes, rise));
-                let kind = ir::ModKind::Intensity {
-                    source,
-                    of,
-                    depth: 1.0,
-                };
-                if !group.mods.iter().any(|m| m.kind == kind) {
-                    group.mods.push(ir::Mod {
-                        name: String::new(),
-                        slot: 0,
-                        target: 0,
-                        bypass: false,
-                        kind,
-                    });
-                }
-                of
-            }
-            Some(modulation::Timed::Envelope(e)) => {
-                ir::Source::Envelope(index_of(&mut group.envelopes, e))
-            }
-            Some(modulation::Timed::Steps(lfo, table)) => {
-                let source = ir::Source::Lfo(index_of(&mut group.lfos, lfo));
-                ir::Source::Shaped(index_of(&mut group.shapers, ir::Transfer { source, table }))
-            }
-            Some(modulation::Timed::Mapped(t)) => {
-                ir::Source::Shaped(index_of(&mut group.shapers, t))
-            }
-        };
+        let source = modulation::group_source(group, r.source, r.timed);
+        if matches!(source, ir::Source::Lfo(_))
+            && connection.attribute("Destination") != Some("Depth")
+        {
+            self.depth_scales(group, connection, source);
+        }
         let kind = kind(source, r.unit * r.ratio);
         let alike = group.mods.iter().find_map(|m| {
             let key = m.name.strip_prefix('#')?.parse().ok()?;

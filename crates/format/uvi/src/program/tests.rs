@@ -1047,3 +1047,68 @@ fn a_delayed_rising_lfo_reaches_pitch_through_its_rise() {
     assert!((g.lfos[0].phase - 0.25).abs() < 1e-6, "{:?}", g.lfos[0]);
     assert!(!out.diagnostics.iter().any(|d| d.feature.contains("Pitch")));
 }
+
+#[test]
+fn a_controller_on_an_lfos_depth_scales_its_routes_by_the_connection_law() {
+    let xml = r#"<Program Gain="1">
+      <Modulators>
+        <LFO Name="LFO 1" Bypass="0" SyncToHost="0" WaveFormType="0" Freq="5" Depth="1" Phase="0" Retrigger="1" Bipolar="1" DelayTime="0" RiseTime="0">
+          <Connections>
+            <SignalConnection Ratio="1" Source="@MIDI CC 1" Destination="Depth" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            <SignalConnection Ratio="-0.5" Source="@VoiceParam Velocity" Destination="Depth" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            <SignalConnection Ratio="0.4" Source="$Program/LFO 2" Destination="Depth" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+        </LFO>
+        <LFO Name="LFO 2" Bypass="0" SyncToHost="0" WaveFormType="0" Freq="0.5" Depth="0.5" Phase="0" Retrigger="1" Bipolar="1" DelayTime="0" RiseTime="0"/>
+      </Modulators>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav">
+            <Connections>
+              <SignalConnection Ratio="0.5" Source="$Program/LFO 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            </Connections>
+          </SamplePlayer></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    let scales: Vec<_> = g
+        .mods
+        .iter()
+        .filter_map(|m| match m.kind {
+            ir::ModKind::Intensity { source, of, depth } => {
+                Some((source, of, depth, m.name.starts_with('#')))
+            }
+            _ => None,
+        })
+        .collect();
+    let of = ir::Source::Lfo(0);
+    // The wheel: 1 − (1 − x) at ratio 1, named for the script's knob.
+    assert!(
+        scales.contains(&(ir::Source::Controller(1), of, 1.0, true)),
+        "{scales:?}"
+    );
+    // Velocity at −0.5: 1 − 0.5·v, which is Intensity 0.5 on 1 − v.
+    let falling = scales.iter().find(|s| s.2 == 0.5).expect("velocity scale");
+    let ir::Source::Shaped(n) = falling.0 else {
+        panic!("{falling:?}")
+    };
+    assert_eq!(g.shapers[usize::from(n)].source, ir::Source::Velocity);
+    assert_eq!(g.shapers[usize::from(n)].table, [1.0, 0.0]);
+    // LFO 2 (depth 0.5) enters at (0.5·x + 1)/2.
+    let wobble = scales
+        .iter()
+        .find(|s| (s.2 - 0.4).abs() < 1e-6)
+        .expect("LFO scale");
+    let ir::Source::Shaped(n) = wobble.0 else {
+        panic!("{wobble:?}")
+    };
+    assert_eq!(g.shapers[usize::from(n)].table, [0.25, 0.75]);
+    assert!(
+        !out.diagnostics.iter().any(|d| d.feature.contains("Depth")),
+        "{:?}",
+        out.diagnostics
+    );
+}
