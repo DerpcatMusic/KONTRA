@@ -450,6 +450,8 @@ impl Engine {
             || (par == EnginePar::EffectSubtype && self.set_shape(value, group, slot, generic))
             || self.set_effect(par, value, group, slot, generic)
             || self.set_reverb(par, value, group, slot, generic)
+            || (par == EnginePar::ReverbNetwork
+                && self.set_reverb_network(value, group, slot, generic))
         {
             return true;
         }

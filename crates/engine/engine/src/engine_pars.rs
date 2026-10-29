@@ -28,6 +28,8 @@ pub enum EnginePar {
     /// A send-levels slot's level to send slot n.
     SendLevel(u8),
     Reverb(ir::ReverbPar),
+    /// The reverb's network: n is entry n of the script plan's networks.
+    ReverbNetwork,
     GainerGain,
     StereoWidth,
     StereoPan,

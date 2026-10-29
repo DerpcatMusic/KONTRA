@@ -1741,6 +1741,50 @@ fn wait_async_holds_until_the_effect_type_is_installed() {
     assert_eq!(e.last_message(), "after 0");
 }
 
+/// `$ENGINE_PAR_RV2_TYPE` after `on init` builds the reverb again with the
+/// other network (Hall is 1, measured), its controls as the script left them;
+/// it saves no effect type, and the network it already plays asks nothing.
+#[test]
+fn a_reverb_type_change_rebuilds_the_reverb_with_its_network() {
+    use kontra_engine::{Prepared, ir};
+    let [room, hall] = kontra_format_kontakt::reverb_networks();
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Reverb(kontra_format_kontakt::reverb(0, [0.5; 9])),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    let script = kontra_ksp::compile(
+        "on note
+            set_engine_par($ENGINE_PAR_RV2_TIME, 0, -1, 0, $NI_INSERT_BUS)
+            set_engine_par($ENGINE_PAR_RV2_TYPE, $NI_REVERB2_TYPE_HALL, -1, 0, $NI_INSERT_BUS)
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    let mut requests = Vec::new();
+    e.drain_requests(|r| requests.push(r));
+    let [r] = requests[..] else {
+        panic!("{requests:?}");
+    };
+    let Some(ir::EffectKind::Reverb(reverb)) = r.effect.map(|e| e.kind) else {
+        panic!("{r:?}");
+    };
+    assert_ne!(room, hall);
+    assert_eq!(
+        (reverb.network, reverb.seconds, r.ty),
+        (Some(hall), 0.5, None)
+    );
+    e.install(Prepared::new(r, None, RATE));
+    level(&mut e, &[on(62)]);
+    e.drain_requests(|r| panic!("{r:?}"));
+}
+
 /// `stop_wait` as measured in Kontakt (ANALOG, two `wait(10 s)` then
 /// `play_note`, stopped from `on release`): 0 ends only the current wait,
 /// 1 also lets every later wait pass. The first wait's own resume, still

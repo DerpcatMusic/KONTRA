@@ -24,7 +24,7 @@ mod versatile;
 
 pub use container::chunks;
 pub use resources::Resources;
-pub use reverb::{reverb, reverb_laws};
+pub use reverb::{reverb, reverb_laws, reverb_networks};
 pub use script_knobs::script_knobs;
 
 use std::fmt::Display;

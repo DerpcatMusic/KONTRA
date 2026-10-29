@@ -27,8 +27,8 @@ pub struct EffectRequest {
     pub at: ir::RackAt,
     pub slot: u8,
     /// What a project saves to load the slot again ([`Plan::load_type`]);
-    /// unused for a response.
-    pub ty: u16,
+    /// `None` for a response, or for the slot's own effect built again.
+    pub ty: Option<u16>,
     pub effect: Option<ir::Effect>,
     /// Instead of a type, a library response for the slot's convolution:
     /// its index in [`Plan::responses`] and how to prepare it.
@@ -173,7 +173,47 @@ impl Engine {
             self.mark_loaded(at, n, ty);
             return Some(-1);
         }
-        self.queue(at, n, ty, effect, None)
+        self.queue(at, n, Some(ty), effect, None)
+    }
+
+    /// `set_engine_par` of a reverb's network, entry `n` of the script
+    /// plan's. In `on init` the slot changes at once; later the reverb is
+    /// built again off the audio thread with its controls as they are, and
+    /// its tail starts over. False when the slot holds no reverb or there is
+    /// no such network.
+    pub(crate) fn set_reverb_network(
+        &mut self,
+        n: i32,
+        group: i32,
+        slot: i32,
+        generic: i32,
+    ) -> bool {
+        let network = usize::try_from(n)
+            .ok()
+            .and_then(|n| self.script()?.reverb_networks.get(n).copied());
+        let init = self.running.kind == Kind::Init;
+        let Some(slot_now) = self.effect_mut(group, slot, generic) else {
+            return false;
+        };
+        let (Some(network), ir::EffectKind::Reverb(r)) = (network, &mut slot_now.kind) else {
+            return false;
+        };
+        if r.network == Some(network) {
+            return true;
+        }
+        if init {
+            r.network = Some(network);
+            return true;
+        }
+        let mut effect = *slot_now;
+        if let ir::EffectKind::Reverb(r) = &mut effect.kind {
+            r.network = Some(network);
+        }
+        let at = crate::knobs::rack_at(group, generic);
+        let n = u8::try_from(slot).ok();
+        at.zip(n)
+            .and_then(|(at, n)| self.queue(at, n, None, Some(effect), None))
+            .is_some()
     }
 
     /// Queues the plan's response `index`, prepared by `law`, for the
@@ -186,7 +226,7 @@ impl Engine {
         law: ir::Impulse,
     ) -> Option<i32> {
         let at = crate::knobs::rack_at(-1, generic)?;
-        self.queue(at, u8::try_from(slot).ok()?, 0, None, Some((index, law)))
+        self.queue(at, u8::try_from(slot).ok()?, None, None, Some((index, law)))
     }
 
     /// Queues a request: its async id, or `None` when the queue is full or
@@ -195,7 +235,7 @@ impl Engine {
         &mut self,
         at: ir::RackAt,
         slot: u8,
-        ty: u16,
+        ty: Option<u16>,
         effect: Option<ir::Effect>,
         response: Option<(u16, ir::Impulse)>,
     ) -> Option<i32> {
@@ -242,8 +282,8 @@ impl Engine {
             (Some(effect), Some((rack, n))) => rack.install(n, effect, dsp),
             _ => Err(dsp),
         };
-        if swapped.is_ok() && r.response.is_none() {
-            self.mark_loaded(r.at, r.slot, r.ty);
+        if let (true, Some(ty)) = (swapped.is_ok(), r.ty) {
+            self.mark_loaded(r.at, r.slot, ty);
         }
         let (effect, dsp) = swapped.unwrap_or_else(|dsp| (r.effect, dsp));
         let work = Work::Async {

@@ -26,6 +26,8 @@ pub struct ScriptPlan {
     pub engine_pars: EnginePars,
     /// The translator's law for each reverb control, in `ir::ReverbPar::ALL` order.
     pub reverb_laws: [crate::ir::Law; 8],
+    /// The networks [`EnginePar::ReverbNetwork`] picks from, in order.
+    pub reverb_networks: Vec<crate::ir::Network>,
     /// What each [`EnginePar::Knob`] sets, through the translator's law.
     pub knobs: Vec<(crate::ir::KnobTarget, crate::ir::Law)>,
     /// Code in another language, run by its own machine instead of `program`.
