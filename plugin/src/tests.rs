@@ -156,6 +156,7 @@ fn recall(path: PathBuf) -> Result<String, String> {
         scripts: Vec::new(),
         delays: None,
         slot_types: Vec::new(),
+        slot_responses: Vec::new(),
     }]);
     let t = std::time::Instant::now();
     let (live, mut live_dsp) = activate(&saved.write());
@@ -181,10 +182,13 @@ fn recall(path: PathBuf) -> Result<String, String> {
     let second = again.saved.read().unwrap().clone();
     let mut wrong = Vec::new();
     let mut read = Saved::read(&first);
-    let scripts = read
-        .parts
-        .first_mut()
-        .map(|p| std::mem::take(&mut p.scripts));
+    // What the scripts did is theirs, not the mix: values, and the effect
+    // types and responses they loaded after init (the re-save checks those).
+    let scripts = read.parts.first_mut().map(|p| {
+        p.slot_types.clear();
+        p.slot_responses.clear();
+        std::mem::take(&mut p.scripts)
+    });
     let values: Vec<String> = scripts.unwrap_or_default().into_iter().flatten().collect();
     if read != saved {
         wrong.push(format!("the mix saved differs from what loaded: {first}"));
@@ -295,6 +299,7 @@ fn auto_align_reports_the_latest_part_and_holds_the_other() {
         scripts: Vec::new(),
         delays: None,
         slot_types: Vec::new(),
+        slot_responses: Vec::new(),
     };
     let saved = Saved::new(vec![part(0, a), part(1, b)]);
     let (params, mut dsp) = activate(&saved.write());
@@ -385,6 +390,7 @@ fn a_library_control_moved_in_the_editor_reaches_its_script() {
         scripts: Vec::new(),
         delays: None,
         slot_types: Vec::new(),
+        slot_responses: Vec::new(),
     }]);
     let (params, mut dsp) = activate(&saved.write());
     settle(&params, &mut dsp);
