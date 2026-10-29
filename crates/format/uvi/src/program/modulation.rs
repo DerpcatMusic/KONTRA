@@ -244,6 +244,22 @@ pub(super) fn reach(
             unit: sign,
             ..fixed(ir::Source::PitchBend)
         },
+        "@VoiceParam Velocity" => {
+            // The source maps MIDI velocity 1..=127 to 0..=1 (0x14138ab10).
+            // The engine's source is velocity/127, so tabulate the native
+            // value at every MIDI velocity, including zero clamped to one.
+            let table = (0..=127u8)
+                .map(|v| f32::from(v.saturating_sub(1)) / 126.0)
+                .map(|v| if sign < 0.0 { 1.0 - v } else { v })
+                .collect();
+            Route {
+                timed: Some(Timed::Mapped(ir::Transfer {
+                    source: ir::Source::Velocity,
+                    table,
+                })),
+                ..fixed(ir::Source::Constant)
+            }
+        }
         s if s.starts_with('$') => {
             let node = source_node(program, connection)?;
             if ["AHD", "DAHDSR", "StepEnvelope"].contains(&node.tag_name().name()) {
@@ -281,10 +297,7 @@ pub(super) fn reach(
             }
         }
         s => {
-            let source = match s {
-                "@VoiceParam Velocity" => ir::Source::Velocity,
-                s => ir::Source::Controller(s.strip_prefix("@MIDI CC ")?.trim().parse().ok()?),
-            };
+            let source = ir::Source::Controller(s.strip_prefix("@MIDI CC ")?.trim().parse().ok()?);
             if sign > 0.0 {
                 fixed(source)
             } else {
