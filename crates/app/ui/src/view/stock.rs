@@ -169,9 +169,30 @@ impl Look {
                     parts.push(boxed(w, h, scale, rgb(0x3f_3f3f).into(), 0x2c_2c2c));
                 }
                 let ink = ink(0xfe_fefe);
-                parts.push(words(title, ink, model::Align::Left, w, h, scale));
+                // The installed font-13 atlas is 699×13; arrow fields reserve
+                // their right edge for the arrows.
+                let font = glyphs.filter(|_| {
+                    style.is_some_and(|s| s.font == model::Font::Stock(13))
+                        && matches!(wd.kind, Kind::ValueEdit { arrows: true, .. })
+                });
+                let color = style.map_or(model::Rgba::rgb(0xfefefe), |s| s.color);
+                parts.push(field_words(
+                    title,
+                    ink,
+                    model::Align::Left,
+                    (w, h, scale),
+                    font,
+                    color,
+                ));
                 if !wd.hide.value {
-                    parts.push(words(value, ink, model::Align::Right, w, h, scale));
+                    parts.push(field_words(
+                        value,
+                        ink,
+                        model::Align::Right,
+                        (w, h, scale),
+                        font,
+                        color,
+                    ));
                 }
                 parts
             }
@@ -194,6 +215,63 @@ impl Look {
             }
         }
     }
+}
+
+fn field_words(
+    text: &str,
+    ink: Color,
+    align: model::Align,
+    (w, h, s): (f64, f64, f64),
+    glyphs: Option<&crate::pictures::Glyphs>,
+    color: model::Rgba,
+) -> El {
+    let Some(glyphs) = glyphs else {
+        return words(text, ink, align, w, h, s);
+    };
+    if text
+        .chars()
+        .any(|c| c != '?' && crate::pictures::glyph(c) == usize::from(b'?'))
+    {
+        return words(text, ink, align, w, h, s);
+    }
+    let width: f64 = text
+        .chars()
+        .filter_map(|c| glyphs.get(crate::pictures::glyph(c)))
+        .map(|glyph| f64::from(glyph.width) * s)
+        .sum();
+    let mut x = match align {
+        model::Align::Left => 7. * s,
+        model::Align::Center => (w - width) / 2.,
+        model::Align::Right => w - 11. * s - width,
+    };
+    let mut layers = Vec::new();
+    for c in text.chars() {
+        if let Some(glyph) = glyphs.get(crate::pictures::glyph(c)) {
+            let width = f64::from(glyph.width) * s;
+            let height = f64::from(glyph.height) * s;
+            let pixels: Vec<u8> = glyph
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| {
+                    [
+                        color.r,
+                        color.g,
+                        color.b,
+                        ((u16::from(p[3]) * u16::from(color.a)) / 255) as u8,
+                    ]
+                })
+                .collect();
+            if let Some(image) = Image::rgba(glyph.width, glyph.height, pixels) {
+                layers.push(
+                    super::image(&Arc::new(image), width, height).at(x, (h - height) / 2. - s),
+                );
+            }
+            x += width;
+        }
+    }
+    stack(layers).w(w).h(h).clip()
 }
 
 fn bitmap_knob(
