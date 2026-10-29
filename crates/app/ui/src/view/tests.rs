@@ -130,7 +130,7 @@ fn pictures(wall: Vec<u8>, knob: Vec<u8>) -> Pictures {
 fn settle(ui: &mut Ui, tree: &Interface, pictures: &mut Pictures, scale: f64) -> usize {
     let mut built = 0;
     for _ in 0..2000 {
-        let (el, b) = page(ui, tree, PageRef(0), pictures, scale);
+        let (el, b) = page(ui, 0, tree, PageRef(0), pictures, scale);
         assert!(
             ui.frame(
                 el,
@@ -143,7 +143,7 @@ fn settle(ui: &mut Ui, tree: &Interface, pictures: &mut Pictures, scale: f64) ->
         built += b;
         pictures.poll();
         if pictures.pending() == 0 {
-            let (el, b) = page(ui, tree, PageRef(0), pictures, scale);
+            let (el, b) = page(ui, 0, tree, PageRef(0), pictures, scale);
             assert!(
                 ui.frame(
                     el,
@@ -166,13 +166,13 @@ fn a_page_draws_its_wallpaper_from_the_skin_offset_and_a_knob_at_its_value() {
     let mut ui = crate::ui();
     let mut pictures = pictures(wall, knob);
     // The first frame waits on no picture: it is the page colour.
-    let (el, _) = page(&mut ui, &tree, PageRef(0), &mut pictures, 1.);
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, 1.);
     assert_eq!(
         paint(&mut ui, el, 20, 10).first(),
         Some(&[128, 128, 128, 255])
     );
     settle(&mut ui, &tree, &mut pictures, 1.);
-    let (el, _) = page(&mut ui, &tree, PageRef(0), &mut pictures, 1.);
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, 1.);
     let px = paint(&mut ui, el, 20, 10);
     let at = |x: usize, y: usize| px.get(y * 20 + x).copied();
     assert_eq!(
@@ -191,13 +191,13 @@ fn a_page_draws_its_wallpaper_from_the_skin_offset_and_a_knob_at_its_value() {
         w.value = Some(model::Value::Integer(0));
     }
     // The shown frame stands in until the new one is decoded.
-    let (el, _) = page(&mut ui, &tree, PageRef(0), &mut pictures, 1.);
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, 1.);
     assert_eq!(
         paint(&mut ui, el, 20, 10).get(3 * 20 + 3).copied(),
         Some([255; 4])
     );
     settle(&mut ui, &tree, &mut pictures, 1.);
-    let (el, _) = page(&mut ui, &tree, PageRef(0), &mut pictures, 1.);
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, 1.);
     assert_eq!(
         paint(&mut ui, el, 20, 10).get(3 * 20 + 3).copied(),
         Some([0, 0, 255, 255])
