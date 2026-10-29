@@ -12,6 +12,7 @@ on:
       - 'crates/**'
       - 'vendor/**'
       - 'moose.toml'
+      - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/v3-plugin.yml'
   pull_request:
@@ -88,10 +89,15 @@ jobs:
         run: |
           cargo install --locked --git https://github.com/free-audio/clap-validator --tag 0.4.1 clap-validator
           clap-validator validate "target/bundles/${{ matrix.target }}/KONTRA v3.clap"
+      - name: Plugin tests
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p kontra-plugin --lib -- v3_has_its_own_identity input::
+      # A tar keeps the bundles' executable bits; the artifact alone does not.
+      - name: Archive bundles
+        shell: bash
+        run: tar -cf kontra-v3-bundles.tar -C "target/bundles/${{ matrix.target }}" "KONTRA v3.clap" "KONTRA v3.vst3"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kontra-v3-${{ matrix.name }}
-          path: |
-            target/bundles/${{ matrix.target }}/KONTRA v3.clap
-            target/bundles/${{ matrix.target }}/KONTRA v3.vst3
+          path: kontra-v3-bundles.tar
           retention-days: 14
