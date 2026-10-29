@@ -549,8 +549,8 @@ fn shape_value(node: Node, user: bool) -> Option<(ir::Lfo, f32)> {
 /// `s·sin 2πp + t·tri + w·(1 − 2·fract(2p)) + q·pulse + n·noise`, the triangle from
 /// +1 at 0 and the pulse high below `PulseWidth`, the noise a new uniform
 /// draw each half cycle, all negated by `Invert`. `NormalizeOutput` divides
-/// by the mix's peak when it passes 1 (0x14114a7a0 evaluates the waves at
-/// their extrema and adds `|n|`); here that is folded into the weights.
+/// by its native candidate peak when it passes 1 (0x14114a7a0); here that is
+/// folded into the weights.
 fn multi(node: Node) -> Option<ir::Wave> {
     let depth = |name| num(node, name, 0.0).ok().map(|d| d as f32);
     let (s, t, w, q, n) = (
@@ -561,37 +561,7 @@ fn multi(node: Node) -> Option<ir::Wave> {
         depth("NoiseDepth")?,
     );
     let width = num(node, "PulseWidth", 0.5).ok()?.clamp(0.0, 1.0) as f32;
-    let at = |p: f32| {
-        let tri = if p < 0.5 {
-            1.0 - 4.0 * p
-        } else {
-            4.0 * p - 3.0
-        };
-        let pulse = if p < width { 1.0 } else { -1.0 };
-        s * (std::f32::consts::TAU * p).sin()
-            + t * tri
-            + w * (1.0 - 2.0 * (2.0 * p).fract())
-            + q * pulse
-    };
-    // Dense phases and both sides of the pulse's edges find the peak.
-    const STEPS: u16 = 4096;
-    let edges = [0.0, width - 1e-6, width, 1.0 - 1e-6];
-    // ponytail: one peak per mix for the thread's life (a bank has a few
-    // dozen); every route through the LFO asks again.
-    thread_local! {
-        static PEAKS: RefCell<HashMap<[u32; 5], f32>> = RefCell::new(HashMap::new());
-    }
-    let key = [s, t, w, q, width].map(f32::to_bits);
-    let wave = PEAKS.with_borrow_mut(|peaks| {
-        *peaks.entry(key).or_insert_with(|| {
-            (0..STEPS)
-                .map(|i| f32::from(i) / f32::from(STEPS))
-                .chain(edges)
-                .map(|p| at(p).abs())
-                .fold(0.0, f32::max)
-        })
-    });
-    let peak = wave + n.abs();
+    let peak = super::multi_peak::peak(s, t, w, q, width) + n.abs();
     if !peak.is_finite() {
         return None;
     }
