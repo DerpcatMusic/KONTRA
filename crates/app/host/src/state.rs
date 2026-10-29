@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use kontra_engine::ir::RackAt;
+
 use crate::rack::{Mix, Rack};
 
 /// Bumped when a field changes meaning; a state of another version loads
@@ -37,6 +39,52 @@ pub struct SavedPart {
     /// measure again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delay_ms: Option<f32>,
+    /// Effect types its scripts loaded into slots after `on init`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slot_types: Vec<SlotType>,
+}
+
+/// One slot a script loaded with an effect type: the rack, the slot and
+/// the type, as the plan numbers them.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SlotType {
+    pub rack: SavedRack,
+    pub slot: u8,
+    pub ty: u16,
+}
+
+/// [`RackAt`] as a project saves it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SavedRack {
+    Group(u32),
+    Inserts,
+    Sends,
+    Main,
+    Bus(u8),
+}
+
+impl From<RackAt> for SavedRack {
+    fn from(at: RackAt) -> Self {
+        match at {
+            RackAt::Group(g) => Self::Group(g),
+            RackAt::Inserts => Self::Inserts,
+            RackAt::Sends => Self::Sends,
+            RackAt::Main => Self::Main,
+            RackAt::Bus(b) => Self::Bus(b),
+        }
+    }
+}
+
+impl From<SavedRack> for RackAt {
+    fn from(at: SavedRack) -> Self {
+        match at {
+            SavedRack::Group(g) => Self::Group(g),
+            SavedRack::Inserts => Self::Inserts,
+            SavedRack::Sends => Self::Sends,
+            SavedRack::Main => Self::Main,
+            SavedRack::Bus(b) => Self::Bus(b),
+        }
+    }
 }
 
 impl Saved {
@@ -83,6 +131,13 @@ impl Rack {
                     mute: p.mute,
                     scripts: self.saved_scripts(part),
                     delay_ms: p.delay_ms,
+                    slot_types: (p.slot_types.iter())
+                        .map(|&(at, slot, ty)| SlotType {
+                            rack: at.into(),
+                            slot,
+                            ty,
+                        })
+                        .collect(),
                 })
             })
             .collect();
@@ -100,7 +155,10 @@ impl Rack {
         }
         let mut failed = Vec::new();
         for p in &saved.parts {
-            match self.load_saved(p.part, &p.path, &p.scripts) {
+            let types: Vec<_> = (p.slot_types.iter())
+                .map(|t| (t.rack.into(), t.slot, t.ty))
+                .collect();
+            match self.load_saved(p.part, &p.path, &p.scripts, &types) {
                 Ok(()) => {
                     self.set_mix(
                         p.part,
