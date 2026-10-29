@@ -93,6 +93,13 @@ pub enum Command {
         id: i32,
         value: i64,
     },
+    /// The user moved widget `n` of script `slot`'s own page to `value`.
+    Widget {
+        part: usize,
+        slot: u8,
+        n: u32,
+        value: f64,
+    },
 }
 
 /// The channels between [`Rack`] and [`RackAudio`].
@@ -325,7 +332,7 @@ impl Rack {
             .collect();
         let plan = Arc::new(loaded.plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
-        let view = crate::view::View::of(&loaded.faces, &engine, path.as_deref());
+        let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref());
         let part_info = Part {
             view,
             slot_types,
@@ -409,7 +416,17 @@ impl Rack {
         let Some(Some(p)) = self.parts.get(part) else {
             return;
         };
-        if let Some((slot, id, value)) = p.view.as_ref().and_then(|v| v.control(widget, value)) {
+        let Some(view) = p.view.as_ref() else {
+            return;
+        };
+        if let Some((slot, n)) = view.widget(widget) {
+            self.send(Command::Widget {
+                part,
+                slot,
+                n,
+                value,
+            });
+        } else if let Some((slot, id, value)) = view.control(widget, value) {
             self.set_control(part, slot, id, value);
         }
     }
@@ -524,7 +541,11 @@ impl Rack {
         let ask: Vec<_> = (self.parts.iter_mut().enumerate())
             .filter_map(|(n, p)| {
                 let s = &mut p.as_mut()?.script;
-                if s.asked || s.vars.iter().all(|v| v.vars.is_empty()) {
+                if s.asked
+                    || s.vars
+                        .iter()
+                        .all(|v| v.vars.is_empty() && v.widgets.is_empty() && !v.state)
+                {
                     return None;
                 }
                 s.asked = true;

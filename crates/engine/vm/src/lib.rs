@@ -9,6 +9,7 @@
 
 mod action;
 mod machine;
+mod poly;
 mod program;
 mod pure;
 mod text;
@@ -17,6 +18,7 @@ use std::hash::{Hash, Hasher};
 
 pub use action::{Action, event};
 pub use machine::Vm;
+use poly::{POLY_EVENTS, Poly, free_poly, take_poly};
 pub use program::{Cmp, Op, Program, Returns};
 pub use text::{TEXT_CAPACITY, Text};
 
@@ -77,6 +79,32 @@ pub trait Machine: Send {
     /// A coroutine that moves control `id` ([`Foreign::controls`]) to
     /// `value` and runs its callback, as [`Machine::start`].
     fn control(&mut self, id: i32, value: f64, context: u64) -> Option<CoId>;
+    /// The editor moved widget `n` of the front end's own interface (one it
+    /// builds itself, not from controls) to `value`: the next start of its
+    /// widget entry applies it.
+    fn stage_widget(&mut self, _n: u32, _value: f64) {}
+    /// Widget `n` of the front end's own interface as it stands now.
+    fn widget(&self, _n: u32) -> Option<WidgetLook> {
+        None
+    }
+    /// Widget `n`'s text into `out`; false when it has none.
+    fn widget_text(&self, _n: u32, _out: &mut Text) -> bool {
+        false
+    }
+    /// The state the script saves for a project, written into `out` in the
+    /// front end's own form; its length, or `None` when it saves none or
+    /// it does not fit.
+    fn save_state(&mut self, _out: &mut [u8]) -> Option<usize> {
+        None
+    }
+}
+
+/// What the editor redraws of a front end's own widget.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WidgetLook {
+    pub value: f64,
+    pub visible: bool,
+    pub enabled: bool,
 }
 
 /// Compiled code a [`Machine`] runs; each engine makes its own machine.
@@ -155,24 +183,6 @@ struct Coroutine {
     waits: u32,
     /// `stop_wait` with 1: every later wait passes at once.
     no_wait: bool,
-}
-
-/// Note events whose polyphonic cells are kept at once.
-// ponytail: 512 events, the least recently started one's cells are reused;
-// Kontakt keeps 8192. Raise it if held notes lose release state.
-const POLY_EVENTS: usize = 512;
-
-/// One note event's polyphonic cells. Its note callback and its release
-/// callback share them (KSP: "a polyphonic variable retains its value in
-/// the on release callback of the corresponding note").
-struct Poly {
-    /// The low half of the context the callbacks started with: the event.
-    event: u32,
-    cells: Box<[i64]>,
-    /// Busy callbacks using these cells.
-    users: u16,
-    /// When a callback last took these cells; the oldest free ones go first.
-    used: u64,
 }
 
 /// One script's live state: cells, texts and its callback coroutines.
@@ -379,33 +389,6 @@ impl Instance {
             free_poly(polys, c.poly);
         }
         step
-    }
-}
-
-/// The polyphonic cells for a callback of `event`: the ones its event's
-/// other callbacks use or left, else the oldest free ones, zeroed.
-fn take_poly(polys: &mut [Poly], event: u32, starts: &mut u64) -> usize {
-    *starts += 1;
-    let found = polys.iter().position(|p| p.used != 0 && p.event == event);
-    let at = found.or_else(|| {
-        let free = polys.iter().enumerate().filter(|(_, p)| p.users == 0);
-        free.min_by_key(|(_, p)| p.used).map(|(i, _)| i)
-    });
-    let Some(p) = at.and_then(|i| polys.get_mut(i)) else {
-        return usize::MAX;
-    };
-    if found.is_none() {
-        p.event = event;
-        p.cells.fill(0);
-    }
-    p.users = p.users.saturating_add(1);
-    p.used = *starts;
-    at.unwrap_or(usize::MAX)
-}
-
-fn free_poly(polys: &mut [Poly], at: usize) {
-    if let Some(p) = polys.get_mut(at) {
-        p.users = p.users.saturating_sub(1);
     }
 }
 

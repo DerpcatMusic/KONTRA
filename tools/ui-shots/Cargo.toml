@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 kontra-engine = { path = "../../crates/engine/engine" }
 kontra-host = { path = "../../crates/app/host" }
+kontra-lua = { path = "../../crates/script/lua" }
 kontra-stream = { path = "../../crates/engine/stream" }
 kontra-ui = { path = "../../crates/app/ui" }
 kontra-ui-model = { path = "../../crates/model/ui-model" }

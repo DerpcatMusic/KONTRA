@@ -1,24 +1,35 @@
-//! Kontakt pictures: `Resources/pictures/<name>.png` and the `.txt` beside
-//! it that says how the image animates and stretches.
+//! Library pictures. Kontakt's: `Resources/pictures/<name>.png` and the
+//! `.txt` beside it that says how the image animates and stretches. A UVI
+//! script's: a path from its folder inside the program's bank.
 
 use std::path::Path;
 
 use kontra_format_kontakt::Resources;
 use kontra_ui_model as ui;
 
-/// A library's resource files, read by tree path (`Resources/…`).
-pub struct Library(Resources);
+/// A library's resource files, read by tree asset path.
+pub enum Library {
+    Kontakt(Resources),
+    Uvi(Box<kontra_format_uvi::Resources>),
+}
 
 impl Library {
     /// The library the instrument at `path` belongs to.
     #[must_use]
     pub fn open(path: &Path) -> Self {
-        Self(Resources::open(path))
+        if kontra_format_uvi::is_uvi(path) {
+            Self::Uvi(Box::new(kontra_format_uvi::Resources::open(path)))
+        } else {
+            Self::Kontakt(Resources::open(path))
+        }
     }
 
     /// The bytes of the file at a tree asset path.
     pub fn read(&mut self, path: &str) -> Option<Vec<u8>> {
-        self.0.read(path.strip_prefix("Resources/").unwrap_or(path))
+        match self {
+            Self::Kontakt(r) => r.read(path.strip_prefix("Resources/").unwrap_or(path)),
+            Self::Uvi(r) => r.read(path),
+        }
     }
 
     /// The layout of the picture at `path`: its sidecar, and one frame's

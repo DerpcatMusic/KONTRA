@@ -1,45 +1,89 @@
 //! A part's library interface on the control side: the tree the editor
 //! shows, built once the part's `on init` ran, kept current with what the
 //! script changes since ([`LookFrame`]), and how a widget the user moves
-//! reaches the script that owns it.
+//! reaches the script that owns it. A KSP script's tree is built from its
+//! controls; a Lua script's from the page it made ([`crate::ui::lua`]).
 
 use std::cell::RefCell;
 use std::path::Path;
 
-use kontra_engine::{ControlLook, Engine, MenuItem, Page, Text};
+use kontra_engine::{ControlLook, Engine, MenuItem, Page, Text, WidgetLook};
 use kontra_ui_model as model;
 
+use crate::ui::lua::Page as _;
 use crate::ui::{Changes, Face, Library, Live, Looks};
 
 /// The interface of a part's first script with one.
 pub struct View {
     pub slot: u8,
-    pub live: Live,
+    shown: Shown,
     /// Moves whenever [`View::refresh`] changed the tree.
     pub revision: u64,
     /// The frame between trips to the audio side; `None` while it is there.
     pub(crate) frame: Option<Box<LookFrame>>,
 }
 
+/// A KSP script's tree and what keeps it current, or a Lua script's tree.
+enum Shown {
+    Ksp(Box<Live>),
+    Lua(model::Interface),
+}
+
 impl View {
-    /// The view of the first script slot with a face, read from `engine`
-    /// as its `on init` left it; pictures come from the library at `path`.
+    /// The view of the first script slot with a face (KSP) or a page
+    /// (Lua), read from `engine` as its init left it; pictures come from
+    /// the library at `path`.
     #[must_use]
-    pub fn of(faces: &[Option<Face>], engine: &Engine, path: Option<&Path>) -> Option<Self> {
+    pub fn of(
+        faces: &[Option<Face>],
+        pages: &[Option<kontra_lua::Ui>],
+        engine: &Engine,
+        path: Option<&Path>,
+    ) -> Option<Self> {
         let library = path.map(|p| RefCell::new(Library::open(p)));
         let meta = |p: &str| library.as_ref()?.borrow_mut().meta(p);
-        faces.iter().enumerate().find_map(|(slot, face)| {
-            let slot = u8::try_from(slot).ok()?;
-            let face = face.as_ref()?;
-            let live = Live::new(face, slot, engine, &meta).ok()?;
-            let frame = LookFrame::new(slot, &live, face, engine);
-            Some(Self {
-                slot,
-                live,
-                revision: 0,
-                frame: Some(frame),
-            })
+        (0..faces.len().max(pages.len())).find_map(|slot| {
+            let at = u8::try_from(slot).ok()?;
+            if let Some(Some(face)) = faces.get(slot) {
+                let live = Live::new(face, at, engine, &meta).ok()?;
+                let frame = LookFrame::new(at, &live, face, engine);
+                return Some(Self::new(at, Shown::Ksp(Box::new(live)), frame));
+            }
+            let page = pages.get(slot)?.as_ref()?;
+            let mut tree = crate::ui::lua::tree(page, &meta);
+            let mut text = Text::EMPTY;
+            for (n, w) in (0u32..).zip(0..tree.widgets.len()) {
+                let Some(look) = engine.widget(at, n) else {
+                    continue;
+                };
+                let label = tree
+                    .widgets
+                    .get(w)
+                    .is_some_and(|w| w.kind == model::Kind::Label);
+                let words = label && engine.widget_text(at, n, &mut text);
+                crate::ui::lua::apply(&mut tree, w, look, words.then(|| text.as_str()));
+            }
+            let frame = LookFrame::lua(at, &tree);
+            Some(Self::new(at, Shown::Lua(tree), frame))
         })
+    }
+
+    fn new(slot: u8, shown: Shown, frame: Box<LookFrame>) -> Self {
+        Self {
+            slot,
+            shown,
+            revision: 0,
+            frame: Some(frame),
+        }
+    }
+
+    /// The tree the editor shows.
+    #[must_use]
+    pub fn tree(&self) -> &model::Interface {
+        match &self.shown {
+            Shown::Ksp(live) => &live.tree,
+            Shown::Lua(tree) => tree,
+        }
     }
 
     /// Brings the tree up to `frame` (filled on the audio side), and keeps
@@ -50,6 +94,17 @@ impl View {
         path: Option<&Path>,
         frame: Box<LookFrame>,
     ) {
+        let live = match &mut self.shown {
+            Shown::Ksp(live) => live,
+            Shown::Lua(tree) => {
+                let mut frame = frame;
+                if frame.state == Filled::Whole && frame.apply(tree) {
+                    self.revision += 1;
+                }
+                self.frame = Some(frame);
+                return;
+            }
+        };
         let Some(face) = faces.get(usize::from(self.slot)).and_then(Option::as_ref) else {
             return;
         };
@@ -63,7 +118,7 @@ impl View {
         // An overflowed frame has stale lists under new generations: the
         // tree waits for the grown one rather than remember them as seen.
         if frame.state == Filled::Whole {
-            let changes: Changes = self.live.refresh(face, self.slot, &*frame, &meta);
+            let changes: Changes = live.refresh(face, self.slot, &*frame, &meta);
             if !changes.is_empty() {
                 self.revision += 1;
             }
@@ -74,11 +129,22 @@ impl View {
         });
     }
 
+    /// The script's own widget behind `widget` on a page a front end built
+    /// itself (a Lua page), as (slot, its number); None on a control page.
+    #[must_use]
+    pub fn widget(&self, widget: usize) -> Option<(u8, u32)> {
+        let Shown::Lua(_) = self.shown else {
+            return None;
+        };
+        let id = self.tree().widgets.get(widget)?.source_id?;
+        Some((self.slot, u32::try_from(id).ok()?))
+    }
+
     /// The script control behind `widget`, as (slot, UI id), and `value`
     /// as the script's integer; None for a widget no control owns.
     #[must_use]
     pub fn control(&self, widget: usize, value: f64) -> Option<(u8, i32, i64)> {
-        let w = self.live.tree.widgets.get(widget)?;
+        let w = self.tree().widgets.get(widget)?;
         let id = w.source_id?;
         let value = match w.value {
             Some(model::Value::Real(_)) => value.to_bits() as i64,
@@ -110,6 +176,11 @@ pub struct LookFrame {
     looks: Box<[Look]>,
     cells: Box<[(u32, Option<i64>)]>,
     page: Option<Page>,
+    /// A Lua page's widgets by number, as read this trip; the ones read
+    /// (sorted), and the labels' texts.
+    widgets: Box<[Option<WidgetLook>]>,
+    reads: Vec<u32>,
+    texts: Box<[(u32, bool, Text)]>,
     state: Filled,
 }
 
@@ -160,8 +231,48 @@ impl LookFrame {
             looks,
             cells: cells.into_iter().map(|c| (c, None)).collect(),
             page: None,
+            widgets: Box::default(),
+            reads: Vec::new(),
+            texts: Box::default(),
             state: Filled::No,
         })
+    }
+
+    /// A frame for a Lua page's widgets, and its labels' texts.
+    fn lua(slot: u8, tree: &model::Interface) -> Box<Self> {
+        let labels = (tree.widgets.iter().enumerate())
+            .filter(|(_, w)| matches!(w.kind, model::Kind::Label))
+            .filter_map(|(n, _)| Some((u32::try_from(n).ok()?, false, Text::EMPTY)));
+        Box::new(Self {
+            part: 0,
+            generation: 0,
+            slot,
+            looks: Box::default(),
+            cells: Box::default(),
+            page: None,
+            widgets: vec![None; tree.widgets.len()].into(),
+            reads: readable(tree),
+            texts: labels.collect(),
+            state: Filled::No,
+        })
+    }
+
+    /// Brings a Lua page's `tree` to this frame, and picks what the next
+    /// trip reads; whether anything changed.
+    fn apply(&mut self, tree: &mut model::Interface) -> bool {
+        let mut texts = self.texts.iter().filter(|t| t.1).peekable();
+        let mut changed = false;
+        for (n, look) in self.widgets.iter_mut().enumerate() {
+            let text = texts.next_if(|t| t.0 as usize == n).map(|t| t.2.as_str());
+            if let Some(look) = look.take() {
+                changed |= crate::ui::lua::apply(tree, n, look, text);
+            }
+        }
+        // Within the room it was made with: every widget fits.
+        let reads = readable(tree);
+        self.reads.clear();
+        self.reads.extend(reads);
+        changed
     }
 
     /// Copies the reads out of `engine`; on the audio thread, in place.
@@ -187,6 +298,16 @@ impl LookFrame {
             *value = engine.script_cell_in(self.slot, *cell as usize);
         }
         self.page = engine.page(self.slot).copied();
+        // Only what can show: a widget whose parent shows (Augmented
+        // Orchestra makes 10,145, about 100 of them shown at once).
+        for &n in &self.reads {
+            if let Some(look) = self.widgets.get_mut(n as usize) {
+                *look = engine.widget(self.slot, n);
+            }
+        }
+        for (n, has, text) in &mut *self.texts {
+            *has = self.reads.binary_search(n).is_ok() && engine.widget_text(self.slot, *n, text);
+        }
         self.state = if whole {
             Filled::Whole
         } else {
@@ -210,6 +331,9 @@ impl LookFrame {
         Box::new(Self {
             looks,
             cells: self.cells.clone(),
+            widgets: self.widgets.clone(),
+            reads: self.reads.clone(),
+            texts: self.texts.clone(),
             state: Filled::No,
             ..*self
         })
@@ -219,6 +343,18 @@ impl LookFrame {
     pub(crate) fn unfilled(&mut self) {
         self.state = Filled::No;
     }
+}
+
+/// The widgets of a Lua page that can show or change what shows: those
+/// whose parent shows. Sorted.
+fn readable(tree: &model::Interface) -> Vec<u32> {
+    let mut out = Vec::with_capacity(tree.widgets.len());
+    out.extend(
+        (0u32..)
+            .zip(&tree.widgets)
+            .filter_map(|(n, w)| w.parent.is_none_or(|p| tree.visible(p)).then_some(n)),
+    );
+    out
 }
 
 /// `to` as `from`, if it has room; else false and `to` is left as it was.

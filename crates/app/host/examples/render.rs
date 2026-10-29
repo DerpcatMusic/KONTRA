@@ -110,6 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let scripts: Vec<String> = ir.scripts.iter().map(|s| s.source.clone()).collect();
     let loaded = kontra_host::instrument::build(ir, RATE, &mut store);
+    let pages = loaded.pages.clone();
     println!(
         "{}: {} zones, loaded in {:?}",
         loaded.name,
@@ -306,6 +307,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("control {name} (script {slot}, id {id}) := {value}");
         engine.set_control(slot, id, value);
+        for _ in 0..RATE as usize / 4 / 512 {
+            engine.process(&mut silent, &[]);
+            install_requests(&mut engine, &plan);
+        }
+    }
+    // KONTRA_WIDGET=name=value,...: a Lua script's own widget moves there,
+    // as the editor moves it, and its `changed` runs.
+    for pair in std::env::var("KONTRA_WIDGET")
+        .iter()
+        .flat_map(|s| s.split(','))
+    {
+        let Some((name, value)) = pair.split_once('=') else {
+            continue;
+        };
+        let Ok(value) = value.parse::<f64>() else {
+            continue;
+        };
+        let found = pages.iter().enumerate().find_map(|(slot, page)| {
+            let n = page.as_ref()?.widgets.iter().position(|w| w.name == name)?;
+            Some((u8::try_from(slot).ok()?, u32::try_from(n).ok()?))
+        });
+        let Some((slot, n)) = found else {
+            println!("widget {name}: no such widget");
+            continue;
+        };
+        println!("widget {name} (script {slot}, number {n}) := {value}");
+        engine.set_widget(slot, n, value);
         for _ in 0..RATE as usize / 4 / 512 {
             engine.process(&mut silent, &[]);
             install_requests(&mut engine, &plan);

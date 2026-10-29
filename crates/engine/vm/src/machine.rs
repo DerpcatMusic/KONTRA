@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::{CoId, Faults, Foreign, HostApi, Instance, Machine, Program, Step, Text};
+use crate::{CoId, Faults, Foreign, HostApi, Instance, Machine, Program, Step, Text, WidgetLook};
 
 /// One script slot's machine.
 pub enum Vm {
@@ -111,6 +111,36 @@ impl Vm {
     pub fn set_text(&mut self, n: usize, value: Text) {
         if let Self::Code(vm) = self {
             vm.set_text(n, value);
+        }
+    }
+
+    /// As [`Machine::stage_widget`]; the interpreter has no own widgets.
+    pub fn stage_widget(&mut self, n: u32, value: f64) {
+        if let Self::Foreign(m) = self {
+            m.stage_widget(n, value);
+        }
+    }
+
+    #[must_use]
+    pub fn widget(&self, n: u32) -> Option<WidgetLook> {
+        match self {
+            Self::Code(_) => None,
+            Self::Foreign(m) => m.widget(n),
+        }
+    }
+
+    /// As [`Machine::save_state`].
+    pub fn save_state(&mut self, out: &mut [u8]) -> Option<usize> {
+        match self {
+            Self::Code(_) => None,
+            Self::Foreign(m) => m.save_state(out),
+        }
+    }
+
+    pub fn widget_text(&self, n: u32, out: &mut Text) -> bool {
+        match self {
+            Self::Code(_) => false,
+            Self::Foreign(m) => m.widget_text(n, out),
         }
     }
 

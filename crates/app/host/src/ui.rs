@@ -10,6 +10,7 @@ use kontra_ksp::{Cells, Control, ControlKind, FIRST_UI_ID, SYMBOL_BASE, Script};
 
 use crate::perf_view::{View, ViewControl};
 
+pub mod lua;
 mod picture;
 mod widget;
 use kontra_ui_model as ui;

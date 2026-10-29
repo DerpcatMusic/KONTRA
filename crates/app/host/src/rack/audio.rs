@@ -318,8 +318,8 @@ impl RackAudio {
                     }
                 }
                 Command::Capture(mut c) => {
-                    if let Some(Some(p)) = self.parts.get(c.part) {
-                        c.read(&p.engine);
+                    if let Some(Some(p)) = self.parts.get_mut(c.part) {
+                        c.read(&mut p.engine);
                     }
                     if let Err(c) = self.channels.captured.send(c) {
                         self.dropped += 1;
@@ -344,6 +344,16 @@ impl RackAudio {
                 } => {
                     if let Some(Some(p)) = self.parts.get_mut(part) {
                         p.engine.set_control(slot, id, value);
+                    }
+                }
+                Command::Widget {
+                    part,
+                    slot,
+                    n,
+                    value,
+                } => {
+                    if let Some(Some(p)) = self.parts.get_mut(part) {
+                        p.engine.set_widget(slot, n, value);
                     }
                 }
             }
