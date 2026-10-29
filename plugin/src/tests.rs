@@ -96,19 +96,16 @@ fn library(path: &str) -> Option<PathBuf> {
 /// Loads `path` into part 0 through the state, plays, saves, reloads into
 /// a fresh plugin, plays again and saves again.
 fn recall(path: PathBuf) -> Result<String, String> {
-    let saved = Saved {
-        parts: vec![SavedPart {
-            part: 0,
-            path: path.clone(),
-            channel: 0,
-            output: 0,
-            gain: 0.5,
-            pan: 0.25,
-            solo: false,
-            mute: false,
-        }],
-        ..Saved::default()
-    };
+    let saved = Saved::new(vec![SavedPart {
+        part: 0,
+        path: path.clone(),
+        channel: 0,
+        output: 0,
+        gain: 0.5,
+        pan: 0.25,
+        solo: false,
+        mute: false,
+    }]);
     let t = std::time::Instant::now();
     let (live, mut live_dsp) = activate(&saved.write());
     let load = t.elapsed();

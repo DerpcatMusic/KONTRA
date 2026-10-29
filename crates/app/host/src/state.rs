@@ -31,23 +31,23 @@ pub struct SavedPart {
     pub mute: bool,
 }
 
-impl Default for Saved {
-    fn default() -> Self {
+impl Saved {
+    /// The state of a rack holding `parts`.
+    #[must_use]
+    pub fn new(parts: Vec<SavedPart>) -> Self {
         Self {
             version: VERSION,
-            parts: Vec::new(),
+            parts,
         }
     }
-}
 
-impl Saved {
     /// The state in `json`; an empty or foreign state is an empty rack.
     #[must_use]
     pub fn read(json: &str) -> Self {
         serde_json::from_str::<Self>(json)
             .ok()
             .filter(|s| s.version == VERSION)
-            .unwrap_or_default()
+            .unwrap_or_else(|| Self::new(Vec::new()))
     }
 
     #[must_use]
@@ -76,10 +76,7 @@ impl Rack {
                 })
             })
             .collect();
-        Saved {
-            version: VERSION,
-            parts,
-        }
+        Saved::new(parts)
     }
 
     /// Empties the rack and loads `saved` into it, part by part. A part
