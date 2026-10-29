@@ -250,6 +250,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 grain: GRAIN_BYTES,
             }),
             inserts: self.voice_slots(kg)?,
+            start: routing::cycle(kg).into_iter().collect(),
             ..ir::Group::DEFAULT
         };
         // Per-voice gain and shelves, else a one-pole filter, slot by slot.
@@ -363,9 +364,7 @@ impl<L: Library> Translator<'_, '_, L> {
             return;
         }
         let source = modulation::group_source(group, r.source, r.timed);
-        if matches!(source, ir::Source::Lfo(_))
-            && connection.attribute("Destination") != Some("Depth")
-        {
+        if connection.attribute("Destination") != Some("Depth") {
             self.depth_scales(group, connection, source);
         }
         let kind = kind(source, r.unit * r.ratio);
@@ -397,7 +396,7 @@ impl<L: Library> Translator<'_, '_, L> {
             ("LatchTrigger", "latch trigger"),
         ] {
             let value = kg.attribute(name).unwrap_or("0");
-            if value != "0" {
+            if value != "0" && (name != "TriggerRule" || routing::cycle(kg).is_none()) {
                 self.notes.add(ir::Impact::Audible, feature, value);
             }
         }
@@ -647,7 +646,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 && !placing
             {
                 self.notes.add(
-                    ir::Impact::Audible,
+                    routing::impact(self.program, node),
                     &format!("insert {tag}"),
                     node.attribute("Name").unwrap_or_default(),
                 );
@@ -707,8 +706,8 @@ impl<L: Library> Translator<'_, '_, L> {
             } else {
                 "modulation"
             };
-            self.notes
-                .add(ir::Impact::Audible, &format!("{feature} {dest}"), source);
+            let impact = routing::impact(self.program, connection);
+            self.notes.add(impact, &format!("{feature} {dest}"), source);
         }
     }
 }

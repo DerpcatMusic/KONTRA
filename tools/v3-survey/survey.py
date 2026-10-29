@@ -6,7 +6,7 @@ Each instrument plays key 60 (or, if silent there, 48/72/36/84) for 2 s at veloc
 (the `render` example of kontra-host, one process per instrument). A run
 writes to <out>/<UTC>-<sha>/:
   results.tsv  one row per instrument
-  gaps.tsv     every diagnostic, ranked: Broken, then Audible, by instruments
+  gaps.tsv     every diagnostic, ranked: Broken, Audible, Latent (closed at load), by instruments
   actions.tsv  script actions the engine does not answer, by instruments
   summary.md   per library, top gaps, top actions
   diff.md      against the previous run: fixed, regressed, gap counts
@@ -27,7 +27,7 @@ SILENT = 1e-4
 KEYS = (60, 48, 72, 36, 84)
 COLUMNS = ['library', 'instrument', 'status', 'key', 'load_s', 'rss_mb', 'rtf', 'zones', 'key_zones',
            'peak', 'peak_v30', 'vel_db', 'rms_sustain', 'rms_release', 'broken', 'audible',
-           'cosmetic', 'unanswered', 'script_faults', 'stolen', 'cut', 'refused', 'missing_frames',
+           'latent', 'cosmetic', 'unanswered', 'script_faults', 'stolen', 'cut', 'refused', 'missing_frames',
            'stream_errors', 'error']
 
 
@@ -83,7 +83,7 @@ def survey(binary, library, path, timeout):
     if error:
         row.update(status='timeout' if error == 'timeout' else 'failed', error=error)
         return row, [], []
-    gaps = re.findall(r'^  (Broken|Audible|Cosmetic) ([^:\n]+):', out, re.M)
+    gaps = re.findall(r'^  (Broken|Audible|Latent|Cosmetic) ([^:\n]+):', out, re.M)
     actions = re.search(r'^all actions: \[(.*)\]$', out, re.M)
     actions = re.findall(r'\((\w+), (\d+)\)', actions.group(1)) if actions else []
     faults = sum(int(n) for n in re.findall(r'\w+: (\d+)', ' '.join(
@@ -100,7 +100,8 @@ def survey(binary, library, path, timeout):
         peak=peak,
         rms_sustain=number(r'rms 0\.5-1 s ([\d.]+)', out, default=''),
         rms_release=number(r'after release [\d.]+-[\d.]+ s ([\d.]+)', out, default=''),
-        broken=impacts['Broken'], audible=impacts['Audible'], cosmetic=impacts['Cosmetic'],
+        broken=impacts['Broken'], audible=impacts['Audible'], latent=impacts['Latent'],
+        cosmetic=impacts['Cosmetic'],
         unanswered=sum(int(n) for _, n in actions), script_faults=faults,
         stolen=number(r'voices_stolen: (\d+)', out, int, ''),
         cut=number(r'voices_cut: (\d+)', out, int, ''),
@@ -168,7 +169,7 @@ def main():
     rows.sort(key=lambda r: (r['library'], r['instrument']))
     write_tsv(run / 'results.tsv', COLUMNS, rows)
 
-    order = {'Broken': 0, 'Audible': 1, 'Cosmetic': 2}
+    order = {'Broken': 0, 'Audible': 1, 'Latent': 2, 'Cosmetic': 3}
     gaps = sorted(gap_use.items(), key=lambda kv: (order[kv[0][0]], -len(kv[1][0]), kv[0][1]))
     with open(run / 'gaps.tsv', 'w') as f:
         f.write('impact\tfeature\tinstruments\tlibraries\tlibrary names\n')
@@ -199,7 +200,12 @@ def main():
     md += ['', '## Heaviest renders (Engine::process time / audio time, one note)', '', '| Library | Instrument | RTF | Zones |', '|---|---|---|---|']
     md += [f'| {r["library"]} | {Path(r["instrument"]).name} | {r["rtf"]} | {r["zones"]} |' for r in heavy]
     md += ['', '## Top gaps (Broken and Audible, by instruments)', '', '| Impact | Feature | Instruments | Libraries |', '|---|---|---|---|']
-    md += [f'| {i} | {f} | {len(ins)} | {len(libs)} |' for (i, f), (ins, libs) in gaps if i != 'Cosmetic'][:30]
+    md += [f'| {i} | {f} | {len(ins)} | {len(libs)} |' for (i, f), (ins, libs) in gaps if i in ('Broken', 'Audible')][:30]
+    # Closed at load (an effect on an aux no send reaches): audible only once a script opens it.
+    latent = [(f, ins, libs) for (i, f), (ins, libs) in gaps if i == 'Latent']
+    md += ['', f'## Latent gaps (closed at load; {sum(int(r["latent"] or 0) for r in rows)} in {sum(1 for r in rows if r["latent"])} instruments)',
+           '', '| Feature | Instruments | Libraries |', '|---|---|---|']
+    md += [f'| {f} | {len(ins)} | {len(libs)} |' for f, ins, libs in latent]
     md += ['', '## Top unanswered script actions', '', '| Action | Instruments | Libraries |', '|---|---|---|']
     md += [f'| {a} | {len(ins)} | {len(libs)} |' for a, (ins, libs) in actions[:20]]
     failed = [r for r in rows if r['status'] in ('failed', 'timeout', 'silent')]

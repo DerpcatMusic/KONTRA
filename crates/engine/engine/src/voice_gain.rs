@@ -260,6 +260,8 @@ impl Engine {
         let x = match t.source {
             ir::Source::Shaped(_) => return None,
             ir::Source::Blend(_) if !shaper => return None,
+            // A shaper reads an LFO at the depth its Intensity routes give it.
+            s if shaper => self.source(zone, s, note, age)? * self.scale(zone, s, note, age),
             s => self.source(zone, s, note, age)?,
         };
         // An LFO spans the table as `(x + 1)/2`, and pitch bend a table.

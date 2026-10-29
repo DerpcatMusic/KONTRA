@@ -1179,3 +1179,37 @@ fn a_controller_on_an_lfos_depth_scales_its_routes_by_the_connection_law() {
         out.diagnostics
     );
 }
+
+#[test]
+fn an_effect_on_an_aux_no_send_reaches_is_latent() {
+    let program = |gain: &str| {
+        format!(
+            r#"<Program Gain="1">
+      <Layers><Layer Gain="1" Pan="0">
+        <BusRouters><BusRouter Bypass="0" Gain="{gain}" Destination="../../Aux3" PreFader="1"/></BusRouters>
+        <Keygroups><Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav"/></Oscillators>
+        </Keygroup></Keygroups>
+      </Layer></Layers>
+      <Auxs><AuxEffect Name="Aux3" Bypass="0" Gain="1" PreInsert="1">
+        <Inserts><CombFilter Name="InsertFX0" Bypass="0" Freq="40" Q="0.9"/></Inserts>
+      </AuxEffect></Auxs>
+    </Program>"#
+        )
+    };
+    for (gain, impact) in [("0", ir::Impact::Latent), ("0.5", ir::Impact::Audible)] {
+        let xml = program(gain);
+        let doc = roxmltree::Document::parse(&xml).unwrap();
+        let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+        let comb = out
+            .diagnostics
+            .iter()
+            .find(|d| d.feature == "insert CombFilter");
+        assert_eq!(
+            comb.map(|d| d.impact),
+            Some(impact),
+            "{gain}: {:?}",
+            out.diagnostics
+        );
+    }
+}
