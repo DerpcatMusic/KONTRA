@@ -47,6 +47,9 @@ impl<'a> Impulses<'a> {
         path: &'a Path,
         resources: Option<Resources>,
     ) -> Self {
+        for (path, file, index) in resources.iter().flat_map(Resources::opened) {
+            resolver.adopt(path, file, index);
+        }
         Self {
             files,
             resolver,
@@ -180,8 +183,7 @@ impl<'a> Impulses<'a> {
                 let inner = name
                     .rsplit_once("Resources/")
                     .map_or(name.as_str(), |(_, n)| n);
-                let path = self.path;
-                let resources = self.resources.get_or_insert_with(|| Resources::open(path));
+                let resources = self.resources();
                 if let Some(found) = resources.locate(inner) {
                     return Ok(found);
                 }
@@ -209,15 +211,19 @@ impl<'a> Impulses<'a> {
         Ok(self.samples.len() - 1)
     }
 
+    /// The library's containers, opened on first use with the archives the
+    /// resolver already has open.
+    fn resources(&mut self) -> &mut Resources {
+        let (path, resolver) = (self.path, &*self.resolver);
+        self.resources
+            .get_or_insert_with(|| Resources::open_sharing(path, &mut |p| resolver.opened(p)))
+    }
+
     /// The responses in the library's `ir_samples` folder, which a script's
     /// `load_ir_sample` names, as (lowercase name without extension, index
     /// into [`Self::samples`]). Only located, not read.
     pub(crate) fn library(&mut self) -> Vec<(String, usize)> {
-        let path = self.path;
-        let names = self
-            .resources
-            .get_or_insert_with(|| Resources::open(path))
-            .listed("ir_samples");
+        let names = self.resources().listed("ir_samples");
         names
             .into_iter()
             .filter_map(|n| {

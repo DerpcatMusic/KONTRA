@@ -26,8 +26,8 @@ pub(crate) fn load(path: &Path) -> Result<ir::Instrument, Error> {
         .ok_or_else(|| Error::new(path, "snapshot metadata", "missing"))?;
     let names = snapshot_metadata_names(names).map_err(decode("snapshot metadata"))?;
     let base = base(path, &names)?;
-    let base_chunks = container::chunks(&base)?;
-    let mut out = translate::instrument(&base, &base_chunks, &state.persistent)?;
+    let (base_chunks, monolith) = container::opened(&base)?;
+    let mut out = translate::instrument(&base, &base_chunks, monolith, &state.persistent)?;
     if let Some(stem) = path.file_stem() {
         out.name = stem.to_string_lossy().into_owned();
     }

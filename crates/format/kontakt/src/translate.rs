@@ -30,6 +30,7 @@ const VOICE_GROUPS: u16 = 0x32;
 pub(crate) fn instrument(
     path: &Path,
     chunks: &KontaktChunks,
+    monolith: Option<ni_file::file_container::NIFileContainer>,
     saved: &[Vec<String>],
 ) -> Result<ir::Instrument, Error> {
     let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
@@ -87,7 +88,7 @@ pub(crate) fn instrument(
         .find_first(GROUP_LIST)
         .ok_or_else(|| Error::new(path, "group list", "missing"))
         .and_then(|c| GroupList::try_from(c).map_err(decode("group list")))?;
-    let mut resolver = Resolver::new(path).map_err(|e| Error::new(path, "samples", e))?;
+    let mut resolver = Resolver::new(path, monolith).map_err(|e| Error::new(path, "samples", e))?;
     let (table, others) = crate::impulse::file_tables(chunks)
         .transpose()
         .map_err(decode("sample table"))?

@@ -5,6 +5,7 @@ use std::io::{Cursor, Read, Seek};
 use std::path::Path;
 
 use ni_file::NIFile;
+use ni_file::file_container::NIFileContainer;
 use ni_file::kontakt::KontaktChunks;
 use ni_file::kontakt::objects::BPatchHeader;
 use ni_file::nis::schema::{NISObject, PresetChunkItem, Repository};
@@ -21,12 +22,26 @@ const MAX_PRESET: usize = 128 << 20;
 /// # Errors
 /// When the file is not a Kontakt container this reader understands.
 pub fn chunks(path: &Path) -> Result<KontaktChunks, Error> {
-    let mut file = std::fs::File::open(path).map_err(|e| Error::new(path, "open", e))?;
-    let bytes = payload(&mut file, path, 0)?;
-    KontaktChunks::read(Cursor::new(bytes)).map_err(|e| Error::new(path, "Kontakt chunks", e))
+    opened(path).map(|(chunks, _)| chunks)
 }
 
-fn payload<R: Read + Seek>(reader: &mut R, path: &Path, depth: usize) -> Result<Vec<u8>, Error> {
+/// [`chunks`], and the file's own monolith table when it is one: the file
+/// opens once for both.
+pub(crate) fn opened(path: &Path) -> Result<(KontaktChunks, Option<NIFileContainer>), Error> {
+    let mut file = std::fs::File::open(path).map_err(|e| Error::new(path, "open", e))?;
+    let mut monolith = None;
+    let bytes = payload(&mut file, path, 0, &mut monolith)?;
+    let chunks = KontaktChunks::read(Cursor::new(bytes))
+        .map_err(|e| Error::new(path, "Kontakt chunks", e))?;
+    Ok((chunks, monolith))
+}
+
+fn payload<R: Read + Seek>(
+    reader: &mut R,
+    path: &Path,
+    depth: usize,
+    monolith: &mut Option<NIFileContainer>,
+) -> Result<Vec<u8>, Error> {
     if depth > 3 {
         return Err(Error::new(path, "container", "nested too deep"));
     }
@@ -67,7 +82,10 @@ fn payload<R: Read + Seek>(reader: &mut R, path: &Path, depth: usize) -> Result<
             let bytes = container
                 .read_member(reader, preset.index, MAX_PRESET as u64)
                 .map_err(|e| Error::new(path, "monolith preset", e))?;
-            payload(&mut Cursor::new(bytes), path, depth + 1)
+            if depth == 0 {
+                *monolith = Some(container);
+            }
+            payload(&mut Cursor::new(bytes), path, depth + 1, &mut None)
         }
         _ => Err(Error::new(path, "container", "not an instrument")),
     }

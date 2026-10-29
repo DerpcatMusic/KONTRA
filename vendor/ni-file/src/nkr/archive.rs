@@ -19,7 +19,7 @@ pub struct Entry {
     /// The member header was read and `issue`/`valid`/`offset`/`size` are final.
     pub checked: bool,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Archive {
     pub entries: HashMap<String, Entry>,
     // Only case collisions need extra storage; ordinary indexes keep their existing size.
