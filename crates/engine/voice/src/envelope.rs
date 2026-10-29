@@ -107,7 +107,6 @@ impl Envelope {
         env
     }
 
-    #[cfg(feature = "trace")]
     pub(crate) fn stage_name(&self) -> &'static str {
         match self.stage {
             Stage::Attack => "attack",
@@ -145,18 +144,6 @@ impl Envelope {
 
     pub(crate) fn is_off(&self) -> bool {
         self.stage == Stage::Off
-    }
-
-    /// The stage, for inspectors: attack, hold, decay, sustain, release, off.
-    pub(crate) fn stage(&self) -> &'static str {
-        match self.stage {
-            Stage::Attack => "attack",
-            Stage::Hold(_) => "hold",
-            Stage::Decay => "decay",
-            Stage::Sustain => "sustain",
-            Stage::Release => "release",
-            Stage::Off => "off",
-        }
     }
 
     /// The gain for the next frame.

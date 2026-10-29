@@ -20,7 +20,6 @@ mod group_masks;
 mod group_racks;
 mod impulse_knobs;
 mod inspect;
-pub use inspect::VoiceState;
 mod knobs;
 mod ledger;
 mod midi;

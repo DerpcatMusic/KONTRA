@@ -571,7 +571,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         audio.extend_from_slice(&block);
     }
-    for v in engine.voice_states() {
+    for v in engine.inspect_voices() {
         println!("  left: {v:?}");
     }
     let peak = audio.iter().flatten().fold(0f32, |p, s| p.max(s.abs()));
