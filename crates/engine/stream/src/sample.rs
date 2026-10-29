@@ -1,5 +1,6 @@
 //! One loaded sample: pinned pages (the preload law) plus a table of streamed pages.
 
+use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -245,15 +246,27 @@ impl Sample {
     }
 
     /// Audio thread: asks the store for the streamed pages covering
-    /// `first..first + frames`, needed by sample time `due`. Pages already pinned,
-    /// resident or requested cost one load each. A full request ring is counted
-    /// and the page is asked for again on the next call.
-    pub fn prefetch(&self, client: &StreamClient, first: u64, frames: u64, due: u64) {
+    /// `first..first + frames`. The voice reaches the run's start (its end
+    /// when `descending`) at sample time `due` and moves `step` source frames
+    /// per output frame, so each page is due when the voice gets to it: the
+    /// store reads the most urgent first. Pages already pinned, resident or
+    /// requested cost one load each. A full request ring is counted and the
+    /// page is asked for again on the next call.
+    pub fn prefetch(
+        &self,
+        client: &StreamClient,
+        first: u64,
+        frames: u64,
+        due: u64,
+        step: f64,
+        descending: bool,
+    ) {
         let end = first.saturating_add(frames).min(self.frames);
         if first >= end {
             return;
         }
         for page in page_of(first, self.shift)..=page_of(end - 1, self.shift) {
+            let due = page_due(page, self.shift, first..end, due, step, descending);
             if self.pinned.get(page).is_some_and(Option::is_some) {
                 continue;
             }
@@ -277,10 +290,51 @@ impl Sample {
     }
 }
 
+/// When a voice reading `run` (from its start, or its end when
+/// `descending`, at sample time `due`, `step` source frames per output frame)
+/// first needs `page`.
+fn page_due(
+    page: usize,
+    shift: u32,
+    run: Range<u64>,
+    due: u64,
+    step: f64,
+    descending: bool,
+) -> u64 {
+    let lo = ((page as u64) << shift).max(run.start);
+    let hi = (((page as u64 + 1) << shift) - 1).min(run.end.saturating_sub(1));
+    let lead = if descending {
+        run.end.saturating_sub(1).saturating_sub(hi)
+    } else {
+        lo.saturating_sub(run.start)
+    };
+    due.saturating_add((lead as f64 / step.max(1e-3)) as u64)
+}
+
 pub(crate) fn page_of(frame: u64, shift: u32) -> usize {
     (frame >> shift) as usize
 }
 
 pub(crate) fn page_count(frames: u64, shift: u32) -> usize {
     frames.div_ceil(1 << shift) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::page_due;
+
+    #[test]
+    fn a_page_is_due_when_the_voice_reaches_it() {
+        // 1024-frame pages; a run over frames 1000..5000 reached at time 100.
+        let due = |page, step, descending| page_due(page, 10, 1000..5000, 100, step, descending);
+        assert_eq!(due(0, 1.0, false), 100);
+        assert_eq!(due(1, 1.0, false), 100 + 24);
+        assert_eq!(due(4, 1.0, false), 100 + 3096);
+        // Twice the pitch: there twice as soon.
+        assert_eq!(due(4, 2.0, false), 100 + 1548);
+        // Backwards from frame 4999: the last page first.
+        assert_eq!(due(4, 1.0, true), 100);
+        assert_eq!(due(3, 1.0, true), 100 + 904);
+        assert_eq!(due(0, 1.0, true), 100 + 3976);
+    }
 }
