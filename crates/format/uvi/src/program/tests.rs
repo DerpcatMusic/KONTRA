@@ -1182,6 +1182,56 @@ fn a_controller_on_an_lfos_depth_scales_its_routes_by_the_connection_law() {
 }
 
 #[test]
+fn an_lfo_on_an_lfos_freq_moves_its_rate_live() {
+    let xml = r#"<Program Gain="1">
+      <Modulators>
+        <LFO Name="LFO 1" Bypass="0" SyncToHost="0" WaveFormType="0" Freq="12" Depth="1" Phase="0" Retrigger="1" Bipolar="1" DelayTime="0" RiseTime="0">
+          <Connections>
+            <SignalConnection Ratio="1" Source="$Program/LFO 2" Destination="Freq" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+          </Connections>
+        </LFO>
+        <LFO Name="LFO 2" Bypass="0" SyncToHost="0" WaveFormType="0" Freq="20" Depth="0.14" Phase="0" Retrigger="1" Bipolar="1" DelayTime="0" RiseTime="0"/>
+      </Modulators>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer Bypass="0" SamplePath="./a.wav">
+            <Connections>
+              <SignalConnection Ratio="0.5" Source="$Program/LFO 1" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            </Connections>
+          </SamplePlayer></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let g = &out.groups[0];
+    let rates: Vec<_> = g
+        .mods
+        .iter()
+        .filter_map(|m| match m.kind {
+            ir::ModKind::LfoHz {
+                source,
+                lfo,
+                depth,
+                range_hz,
+            } => Some((source, lfo, depth, range_hz)),
+            _ => None,
+        })
+        .collect();
+    // LFO 2 at depth 0.14 adds 0.14 × 20 Hz per unit to LFO 1's rate.
+    let [(ir::Source::Lfo(wobble), 0, depth, [0.0, 20.0])] = rates[..] else {
+        panic!("{rates:?}")
+    };
+    assert!((depth - 0.14).abs() < 1e-6);
+    assert_eq!(g.lfos[usize::from(wobble)].rate, ir::Rate::Hz(20.0));
+    assert!(
+        !out.diagnostics.iter().any(|d| d.feature.contains("Freq")),
+        "{:?}",
+        out.diagnostics
+    );
+}
+
+#[test]
 fn an_effect_on_an_aux_no_send_reaches_is_latent() {
     let program = |gain: &str| {
         format!(

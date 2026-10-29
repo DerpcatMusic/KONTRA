@@ -17,6 +17,7 @@ mod delay;
 mod digital_eq;
 mod filters;
 mod gains;
+mod lfo_routes;
 mod load;
 mod matrix;
 mod modulation;
