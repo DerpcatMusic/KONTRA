@@ -336,6 +336,8 @@ fn slot_effect(
         kind,
         Some(ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_))
     );
+    // The Phaser filter puts out half its allpasses and half its input.
+    let half = effect.id == 0x18 && matches!(kind, Some(ir::EffectKind::Phaser(_)));
     let effect_out = ir::Effect {
         kind: kind.unwrap_or(if parallel {
             ir::EffectKind::OtherWet
@@ -343,8 +345,16 @@ fn slot_effect(
             ir::EffectKind::Other
         }),
         bypass: params.bypass,
-        output: if eq { 1.0 } else { params.output_gain },
-        dry: if parallel || effect.id == 0x13 {
+        output: if eq {
+            1.0
+        } else if half {
+            0.5
+        } else {
+            params.output_gain
+        },
+        dry: if half {
+            0.5
+        } else if parallel || effect.id == 0x13 {
             params.dry_level
         } else {
             0.0
@@ -444,6 +454,13 @@ fn filter(
                 ir::VowelSet::First
             },
         }));
+    }
+    if kind == 13 {
+        *knobs = crate::phaser_filter::knobs();
+        return Some(ir::EffectKind::Phaser(crate::phaser_filter::phaser(
+            f(0)?,
+            f(4)?,
+        )));
     }
     if kind == 19 {
         let mut saved = crate::versatile::DEFAULT;

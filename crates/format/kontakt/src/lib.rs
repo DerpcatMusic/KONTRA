@@ -13,6 +13,7 @@ mod fastlz;
 mod impulse;
 mod laws;
 mod legacy_reverb;
+mod phaser_filter;
 mod resources;
 mod reverb;
 mod samples;
