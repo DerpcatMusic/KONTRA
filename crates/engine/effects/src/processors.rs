@@ -8,7 +8,7 @@ use kontra_dsp::dynamics::{
     Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
     TransientSettings,
 };
-use kontra_dsp::filter::{Cascade, CascadeSettings, CascadeStage};
+use kontra_dsp::filter::{Cascade, CascadeSettings, CascadeStage, Clocked, ClockedShape};
 use kontra_dsp::reverb::{Combs, Convolver, Fdn, Hadamard, Network, Settings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
@@ -65,6 +65,18 @@ impl Wet for Cascade {
     fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Cascade(c) = kind {
             Cascade::set(self, cascade(c));
+        }
+    }
+}
+
+impl Wet for Clocked {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Clocked::process(self, io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Clocked(c) = kind {
+            Clocked::set(self, [c.cutoff, c.resonance]);
         }
     }
 }
@@ -331,6 +343,14 @@ pub fn processor(
         }
         Some(ir::EffectKind::Phaser(p)) => wet(Box::new(Phaser::new(phaser(p, 120.0), rate))),
         Some(ir::EffectKind::Cascade(c)) => wet(Box::new(Cascade::new(cascade(c), rate))),
+        Some(ir::EffectKind::Clocked(c)) => {
+            let shape = match c.shape {
+                ir::ClockedShape::Allpass => ClockedShape::Allpass,
+                ir::ClockedShape::VowelLow => ClockedShape::VowelLow,
+                ir::ClockedShape::VowelHigh => ClockedShape::VowelHigh,
+            };
+            wet(Box::new(Clocked::new(shape, [c.cutoff, c.resonance], rate)))
+        }
         Some(ir::EffectKind::Shaper(s)) => wet(Box::new(shaper(s, rate))),
         Some(ir::EffectKind::Clipper(c)) => wet(Box::new(Clipper::new(
             Circuit {

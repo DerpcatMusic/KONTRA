@@ -151,6 +151,28 @@ pub struct ImpulseCuts {
     pub crossover: Option<f32>,
 }
 
+/// A filter whose 0..=1 cutoff and resonance knobs follow a control clock:
+/// every 32 frames the cutoff steps at most `1/(31·resonance + 4)` (within
+/// 1/35..1/4) toward its knob and the resonance 0.015 of the way.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clocked {
+    pub shape: ClockedShape,
+    pub cutoff: f32,
+    pub resonance: f32,
+}
+
+/// What a [`Clocked`] filter runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockedShape {
+    /// Four first-order allpasses around up to 0.85 of feedback, mixed half
+    /// and half with the input.
+    Allpass,
+    /// Two formant sections in parallel, the low one at unit gain at DC.
+    VowelLow,
+    /// As [`Self::VowelLow`], mirrored: unit gain at Nyquist.
+    VowelHigh,
+}
+
 /// Three resonant band-passes in parallel placed by a vowel table: `talk`
 /// sweeps the vowels, `size` scales the centres, `sharp` narrows and lifts
 /// the bands (each 0..=1); `set` picks the vowels.

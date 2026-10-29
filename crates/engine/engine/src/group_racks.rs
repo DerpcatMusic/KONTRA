@@ -32,6 +32,7 @@ fn wet(kind: ir::EffectKind) -> bool {
             | ir::EffectKind::Limiter(_)
             | ir::EffectKind::Transient(_)
             | ir::EffectKind::Cascade(_)
+            | ir::EffectKind::Clocked(_)
     )
 }
 
