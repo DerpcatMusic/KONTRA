@@ -60,6 +60,7 @@ fn part(name: &str) -> Part {
         mute: false,
         script: Default::default(),
         plan: None,
+        delay_ms: None,
     }
 }
 
