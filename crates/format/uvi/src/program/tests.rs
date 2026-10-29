@@ -321,6 +321,7 @@ fn a_keygroup_xpander_is_the_explicit_ladder_with_its_taps_q_and_drive() {
             <XpanderFilter Name="InsertFX0" Bypass="0" Freq="1008.4754" Q="0.2" KeyTracking="0" Mode="9" DistortionType="0" Drive="-20" Fat="0" Algorithm="0" Oversampling="0">
               <Connections>
                 <SignalConnection Ratio="0.5" Source="@MIDI CC 1" Destination="Freq" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                <SignalConnection Ratio="1.5" Source="@MIDI CC 1" Destination="Q" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
               </Connections>
             </XpanderFilter>
             <XpanderFilter Name="InsertFX1" Bypass="0" Freq="500" Q="0" KeyTracking="0" Mode="3" DistortionType="0" Drive="0" Fat="1" Algorithm="1" Oversampling="0"/>
@@ -342,11 +343,19 @@ fn a_keygroup_xpander_is_the_explicit_ladder_with_its_taps_q_and_drive() {
     assert!((f.gain - 0.1).abs() < 1e-6);
     assert_eq!(
         g.mods.iter().map(|m| m.kind).collect::<Vec<_>>(),
-        [ir::ModKind::Cutoff {
-            source: ir::Source::Controller(1),
-            insert: 0,
-            depth: 0.5,
-        }]
+        [
+            ir::ModKind::Cutoff {
+                source: ir::Source::Controller(1),
+                insert: 0,
+                depth: 0.5,
+            },
+            // Q scales the resonance by the connection law, its ratio clamped.
+            ir::ModKind::Resonance {
+                source: ir::Source::Controller(1),
+                insert: 0,
+                depth: 1.0,
+            }
+        ]
     );
     // Algorithm 1 (the zero-delay ladder) is not carried yet.
     assert!(g.inserts[1].is_none());

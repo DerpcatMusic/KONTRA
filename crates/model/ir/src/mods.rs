@@ -33,6 +33,9 @@ pub enum ModKind {
     },
     /// Moves the resonance of the [`Filter`](crate::Filter) in group insert slot `insert` by
     /// `source × depth × Filter::q_octaves` octaves of Q; that filter runs per voice.
+    /// On a [ladder](crate::Filter::ladder) it scales the resonance `1 − k/2` by
+    /// [`Curve::Signed`](crate::Curve::Signed) at `depth` instead, a bipolar
+    /// source read as `(x + 1)/2`.
     Resonance {
         source: Source,
         insert: u8,

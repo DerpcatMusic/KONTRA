@@ -24,26 +24,43 @@ use roxmltree::Node;
 use super::{Library, Translator, flag, modulation, num};
 
 impl<L: Library> Translator<'_, '_, L> {
-    /// The routes on a keygroup's carried filters' `Freq`, as cutoffs. A
-    /// bypassed one moves nothing until a script turns it on.
+    /// The routes on a keygroup's carried filters' `Freq`, as cutoffs, and
+    /// on their `Q`, as resonance factors. A bypassed one moves nothing
+    /// until a script turns it on. ponytail, unverified: `Q` takes the
+    /// connection law of `Gain` ([`modulation::factor`]); in the Xpander's
+    /// registration "Cutoff" (0x1412bcbe1) and "Q" (0x1412bccf9) share a
+    /// constructor (0x140fffcb0) and differ only in Cutoff's `+0x144 = 10`,
+    /// beside its `UviFreq` mapping, so Q keeps the default law.
     pub(super) fn cutoff_routes(&mut self, group: &mut ir::Group, kg: Node) {
         let program = self.program;
-        let cutoffs = freq_routes(kg)
+        let routes = freq_routes(kg)
             .into_iter()
             .filter_map(|(insert, c)| {
                 let tag = c.parent()?.parent()?.tag_name().name();
-                let mut r = modulation::reach(program, c, (tag, "Freq"))?;
+                let q = c.attribute("Destination") == Some("Q") && tag != "OnePole";
+                let mut r = if q {
+                    modulation::factor(modulation::reach(program, c, (tag, "Q"))?)?
+                } else {
+                    modulation::reach(program, c, (tag, "Freq"))?
+                };
                 if flag(c, "Bypass") {
                     r.ratio = 0.0;
                 }
-                Some((insert, c, r))
+                Some((insert, c, r, q))
             })
             .collect::<Vec<_>>();
-        for (insert, c, r) in cutoffs {
-            self.add_route(group, c, r, |source, depth| ir::ModKind::Cutoff {
-                source,
-                insert,
-                depth,
+        for (insert, c, r, q) in routes {
+            self.add_route(group, c, r, |source, depth| match q {
+                true => ir::ModKind::Resonance {
+                    source,
+                    insert,
+                    depth,
+                },
+                false => ir::ModKind::Cutoff {
+                    source,
+                    insert,
+                    depth,
+                },
             });
         }
     }

@@ -394,7 +394,7 @@ impl Engine {
         let ir::EffectKind::Filter(f) = effect.kind else {
             return None;
         };
-        let (mut octaves, mut q) = (0.0f32, 0.0f32);
+        let (mut octaves, mut q, mut resonance) = (0.0f32, 0.0f32, 1.0f32);
         for m in group.mods.iter().filter(|m| !m.bypass) {
             match m.kind {
                 ir::ModKind::Cutoff {
@@ -408,16 +408,21 @@ impl Engine {
                     source,
                     insert: i,
                     depth,
-                } if i == insert => {
-                    q += self.routed(zone, source, note, age).unwrap_or(0.0) * depth;
-                }
+                } if i == insert => match f.ladder {
+                    Some(_) => {
+                        let depth = depth * self.scale(zone, source, note, age);
+                        let x = self.unit(zone, source, note, age);
+                        resonance *= x.map_or(1.0, |x| ir::Curve::Signed.gain(depth, x));
+                    }
+                    None => q += self.routed(zone, source, note, age).unwrap_or(0.0) * depth,
+                },
                 _ => {}
             }
         }
         let hz = f.hz * (f.octaves * octaves).exp2();
         let damping = f
             .damping
-            .map(|k| (k * (-f.q_octaves * q).exp2()).max(MIN_DAMPING));
+            .map(|k| ((2.0 - (2.0 - k) * resonance) * (-f.q_octaves * q).exp2()).max(MIN_DAMPING));
         Some((hz, damping))
     }
 
