@@ -265,6 +265,30 @@ pub(super) fn reach(
     })
 }
 
+/// A connection on a keygroup's `Gain`, which scales it by `1 − r + r·x`,
+/// or `1 + r·x` below zero ([`ir::Curve::Signed`]; UVIWorkstation
+/// 0x141429a80: the source enters at `(m + 1)/2`, `r` clamped to ±1). An
+/// LFO's own depth `d` is inside `m`, so it enters through `[(1 − d)/2,
+/// (1 + d)/2]`. Not the amplitude DAHDSR ([`Translator::envelope`]) nor a
+/// rising LFO (its rise scales `m`, not the ratio).
+pub(super) fn gain_route(program: Node, connection: Node) -> Option<Route> {
+    if source_node(program, connection).is_some_and(|n| n.has_tag_name("DAHDSR")) {
+        return None;
+    }
+    let mut r = route(program, connection, ("Keygroup", "Gain"))?;
+    r.ratio = r.ratio.clamp(-1.0, 1.0);
+    match r.timed.take() {
+        Some(Timed::Rising(..)) => return None,
+        Some(Timed::Lfo(lfo)) => {
+            let d = r.unit;
+            r.timed = Some(Timed::Steps(lfo, vec![(1.0 - d) / 2.0, (1.0 + d) / 2.0]));
+            r.unit = 1.0;
+        }
+        timed => r.timed = timed,
+    }
+    Some(r)
+}
+
 /// A bipolar `LFO` or `MultiLFO` ([`multi`]), with no delay or rise, as an LFO
 /// and its signed depth: `Depth·x`. The registry (UVIWorkstation 0x1410f5d00)
 /// names `WaveFormType` Sinus, Square, Triangle, RampUp, RampDown, ... and
