@@ -26,9 +26,10 @@ pub struct HostPattern {
 }
 
 impl HostPattern {
+    /// Whether this addresses `note`. Which API carried either does not
+    /// count: a CLAP note ends by a MIDI note-off on its key and channel.
     pub fn matches(self, note: HostNote) -> bool {
-        self.clap == note.clap
-            && (self.port == -1 || self.port == i32::from(note.port))
+        (self.port == -1 || self.port == i32::from(note.port))
             && (self.channel == -1 || self.channel == i32::from(note.channel))
             && (self.key == -1 || self.key == i32::from(note.key))
             && (self.id == -1 || self.id == note.id)

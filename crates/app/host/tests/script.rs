@@ -2371,3 +2371,36 @@ fn a_loaded_filter_follows_its_subtype() {
     let after = level(&mut e, &[]);
     assert!(after.abs() < 1e-3, "{after}");
 }
+
+/// A polyphonic variable keeps its note's value in that note's release
+/// callback, whatever other notes did meanwhile (KSP manual), as CHORUS
+/// keeps the articulation and the id of the note it plays.
+#[test]
+fn a_release_callback_reads_its_notes_polyphonic_variables() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut a = zone(&mut store, 0.5, 0);
+    a.keys = 72..=72;
+    let mut b = zone(&mut store, 0.25, 0);
+    b.keys = 74..=74;
+    let mut e = engine(
+        &store,
+        vec![a, b],
+        "on init
+            declare polyphonic $id
+        end on
+        on note
+            ignore_event($EVENT_ID)
+            $id := play_note($EVENT_NOTE + 12, $EVENT_VELOCITY, 0, 0)
+        end on
+        on release
+            note_off($id)
+        end on",
+    );
+    assert!((level(&mut e, &[on(60), on(62)]) - 0.75).abs() < 1e-3);
+    let after = level(&mut e, &[off(60)]);
+    assert!(
+        (after - 0.25).abs() < 1e-3,
+        "the first note's child still plays: {after}"
+    );
+    assert_eq!(level(&mut e, &[off(62)]), 0.0);
+}
