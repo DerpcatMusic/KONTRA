@@ -574,6 +574,29 @@ mod tests {
         }
     }
 
+    /// UVIWorkstation 4.0.9's own laws: its prelude's 5.1 names, a Table
+    /// read or write outside 1..size (0x1410c0140, 0x1410de650) and an
+    /// oscillator's `sampleInfo` (0x140f3f2a0). VWinds Clarinet A's script
+    /// faulted on each.
+    #[test]
+    fn uvi_compat_names_table_edges_and_sample_info_answer_as_uviworkstation() {
+        let tree = "return {params={},db=0,pan=0,modulations={},layers={{params={},keygroups={
+            {params={},oscillators={{params={SamplePath='./../S/a-vel3.flac',BaseNote='49'}}}}}}}}";
+        let source = "local n = 0
+            for _ in string.gfind('a b', '%a') do n = n + 1 end
+            assert(n == 2 and table.getn({1, 2}) == 2 and math.pow(2, 3) == 8 and math.mod(7, 3) == 1)
+            local t = Table('t', 4, 0.5, 0, 1)
+            t:setValue(0, 9) t:setValue(5, 9) t:setValue(2, 0.75)
+            assert(t:getValue(0) == 0.5 and t:getValue(5) == 0.5 and t:getValue(2) == 0.75)
+            local info = Program.layers[1].keygroups[1].oscillators[1].sampleInfo
+            assert(info.name == 'a-vel3.flac' and info.basenote == 49)";
+        let modules = [("__program.lua".to_string(), tree.to_string())];
+        let mut m = compile(source, &modules, &[]).unwrap().machine();
+        let co = m.start(Callbacks::INIT, 0).expect("init");
+        assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
+    }
+
     #[test]
     fn a_moved_widget_runs_its_changed_and_a_live_macro_sends_its_value() {
         let tree = "return {params={},db=0,pan=0,layers={},modulations={

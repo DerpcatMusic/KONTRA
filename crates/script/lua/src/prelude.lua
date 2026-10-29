@@ -3,6 +3,16 @@
 -- Units at the host: time in microseconds, volume in millidecibels, tune in
 -- millicents, pan in per mille.
 
+-- UVIWorkstation's own prelude ("lua compat", 4.0.9 binary) gives a VM newer
+-- than Lua 5.1 back the 5.1 names its scripts use.
+string.gfind = string.gfind or string.gmatch
+table.getn = table.getn or function(t) return #t end
+math.log10 = math.log10 or function(x) return math.log(x, 10) end
+math.pow = math.pow or function(a, b) return a ^ b end
+math.mod = math.mod or function(a, b) return a % b end
+unpack = unpack or table.unpack
+loadstring = loadstring or load
+
 -- Calls made while the script loads, before any callback, wait for init.
 local pending, pending_routes = {}, {}
 local host_call = function(name, ...)
@@ -95,11 +105,25 @@ local function table_widget(w, name, fields)
 	w.size = size
 	w.length = size
 	w.min, w.max, w.integer = tonumber(fields[4]) or 0, tonumber(fields[5]) or 1, fields[6] == true
+	-- UVIWorkstation 4.0.9: an index outside 1..size reads the widget's own
+	-- value, its default clamped to min..max (0x1410c0140, 0x1410ddbd0), and
+	-- a write there is dropped (0x1410de650).
+	local lo, hi = w.min, w.max
+	local own = math.min(math.max(tonumber(fields[3]) or 0, math.min(lo, hi)), math.max(lo, hi))
+	local function at(index)
+		local i = tonumber(index)
+		i = i and (i < 0 and math.ceil(i) or math.floor(i))
+		return i and i >= 1 and i <= size and i or nil
+	end
 	w.setValue = function(self, index, v)
-		self.values[index] = v
+		local i = at(index)
+		if i then
+			self.values[i] = v
+		end
 	end
 	w.getValue = function(self, index)
-		return self.values[index]
+		local i = at(index)
+		return i and self.values[i] or own
 	end
 	return w
 end
@@ -397,6 +421,16 @@ local function element_index(e, key)
 		local list = {}
 		fields[key] = list
 		return list
+	end
+	-- A sample oscillator's sample, as UVIWorkstation 4.0.9 builds it
+	-- (0x140f3f2a0: name, type, channels, ..., basenote, finetune, loops).
+	-- ponytail: name, basenote and finetune only; the rest when a script reads them.
+	local path = fields.params and fields.params.SamplePath
+	if key == "sampleInfo" and type(path) == "string" and path ~= "" then
+		local p = fields.params
+		local info = { name = string.match(path, "[^/\\]*$"), basenote = p.BaseNote, finetune = p.FineTune }
+		fields.sampleInfo = info
+		return info
 	end
 	if key == "parameterDefinitions" then
 		-- Built once: AO asks one element for them on every knob it makes.
