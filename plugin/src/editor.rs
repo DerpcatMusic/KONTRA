@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use kontra_host::rack::{Mix, Rack};
+use kontra_host::rack::{Event, HostNote, HostPattern, Mix, Rack};
 use kontra_protocol::Stats;
 use kontra_ui::app::{Action, App, Part};
 use moose::mui::MuiEditor;
@@ -143,6 +143,7 @@ fn part_of(action: &Action) -> Option<usize> {
 pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let p = Arc::clone(&params);
     let watched = Arc::clone(&params);
+    let dropping = Arc::clone(&params);
     let mut app = App::default();
     MuiEditor::new(params, kontra_ui::ui(), (1180, 780), move |ui, bridge| {
         let slots: Vec<usize> = {
@@ -157,12 +158,97 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 bridge.drag_gesture(P::Volume, db);
                 continue;
             }
+            if let Some(event) = played(&action) {
+                if let Some(player) = lock(&p.shared.player).as_ref() {
+                    player.play(event);
+                }
+                continue;
+            }
             let slot = part_of(&action).and_then(|n| slots.get(n).copied());
             p.shared.request(Request::Ui(Edit { slot, action }));
         }
         response.el
     })
     .resizable((900, 600))
+    .on_files(move |_, _, paths, dropped| {
+        let instruments: Vec<_> = paths.iter().filter(|p| is_instrument(p)).cloned().collect();
+        if dropped {
+            for path in &instruments {
+                dropping.shared.request(Request::Load {
+                    part: None,
+                    path: path.clone(),
+                });
+            }
+        }
+        !instruments.is_empty()
+    })
     .changed(move || watched.shared.dirty.swap(false, Ordering::AcqRel))
     .into_editor()
+}
+
+/// The port the editor's notes come from: no host port, so a host note-off
+/// never ends a key the editor holds, nor the other way round.
+const EDITOR_PORT: u8 = 255;
+
+/// What the editor's keyboard and wheels play, on channel 1 of every part.
+fn played(action: &Action) -> Option<Event> {
+    Some(match *action {
+        Action::Note(key, true) => Event::NoteOn {
+            note: HostNote {
+                port: EDITOR_PORT,
+                channel: 0,
+                key,
+                id: -1,
+                clap: false,
+            },
+            velocity: 100.0 / 127.0,
+            tune: 0.0,
+        },
+        Action::Note(key, false) => Event::NoteOff(HostPattern {
+            port: i32::from(EDITOR_PORT),
+            channel: 0,
+            key: i32::from(key),
+            id: -1,
+            clap: false,
+        }),
+        // -1..1 onto MIDI 1.0's 14-bit bend, centred on 8192.
+        Action::Pitch(x) => {
+            let x = x.clamp(-1.0, 1.0);
+            let bend = (8192.0 + x * if x < 0.0 { 8192.0 } else { 8191.0 }).round() as u16;
+            Event::midi1(0xE0, (bend & 127) as u8, (bend >> 7) as u8)
+        }
+        Action::Modulation(x) => Event::midi1(0xB0, 1, (x.clamp(0.0, 1.0) * 127.0).round() as u8),
+        _ => return None,
+    })
+}
+
+/// Whether a dropped file is an instrument the rack loads: a Kontakt
+/// instrument, or a UVI program inside its bank (`bank.ufs/Name.uvip`).
+fn is_instrument(path: &std::path::Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    matches!(ext.as_deref(), Some("nki" | "uvip"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_keyboard_and_wheels_play_midi() {
+        let on = played(&Action::Note(60, true));
+        assert!(matches!(on, Some(Event::NoteOn { note, .. }) if note.key == 60));
+        assert!(matches!(played(&Action::Note(60, false)), Some(Event::NoteOff(p)) if p.key == 60));
+        // Centre, top and bottom of the bend.
+        let bend = |x| match played(&Action::Pitch(x)) {
+            Some(Event::Ump([w, _])) => (w >> 8 & 127) | (w & 127) << 7,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!((bend(0.0), bend(1.0), bend(-1.0)), (8192, 16383, 0));
+        assert!(played(&Action::Panic).is_none());
+        assert!(is_instrument(std::path::Path::new("/a/B.NKI")));
+        assert!(!is_instrument(std::path::Path::new("/a/b.wav")));
+    }
 }
