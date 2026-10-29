@@ -60,8 +60,9 @@ pub struct Shared {
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
 pub enum Request {
+    /// Load `path` into `part`, or into the first free part.
     Load {
-        part: usize,
+        part: Option<usize>,
         path: std::path::PathBuf,
     },
     Restore(Saved),
@@ -135,7 +136,11 @@ impl BackgroundTask for Tick {
         for r in requests {
             match r {
                 Request::Load { part, path } => {
-                    if let Err(e) = rack.load(part, &path) {
+                    let loaded = match part.or_else(|| rack.free()) {
+                        Some(part) => rack.load(part, &path),
+                        None => Err("every part is in use".into()),
+                    };
+                    if let Err(e) = loaded {
                         report.push(format!("{}: {e}", path.display()));
                     }
                 }

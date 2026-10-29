@@ -219,3 +219,20 @@ fn a_part_moved_to_another_channel_lets_go_of_the_old_channels_notes() {
         "the channel-1 note still sounds: {after}"
     );
 }
+
+#[test]
+fn played_events_reach_every_part_whatever_its_channel() {
+    let (mut rack, mut audio) = rack();
+    let a = engine(rack.store_mut(), 0.5);
+    rack.install(0, a, part("a"));
+    rack.set_mix(
+        0,
+        Mix {
+            channel: 2,
+            ..Mix::DEFAULT
+        },
+    );
+    rack.play(note(0));
+    let [level, _] = play(&mut audio, &[]);
+    assert!(level > 0.1, "{level}");
+}
