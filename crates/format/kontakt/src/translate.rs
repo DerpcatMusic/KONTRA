@@ -524,6 +524,9 @@ fn timed(
                 source,
                 intensity: t.signed_intensity(),
                 curve: ir::Curve::Depth { power: 1 },
+                // ponytail: an LFO or envelope route's lag is not read (only
+                // controller routes are measured); read it if one is saved.
+                tau_ms: 0.0,
             },
             ("pitch", None) => ir::ModKind::Pitch {
                 source,

@@ -186,6 +186,7 @@ impl Group {
                     source: ir::Source::Velocity,
                     intensity: 1.0,
                     curve: ir::Curve::Decibels(24.0),
+                    tau_ms: 0.0,
                 },
             }],
             envelope: Ahdsr::GATE,

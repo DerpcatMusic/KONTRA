@@ -674,6 +674,7 @@ fn a_shaped_controller_reads_its_start_until_a_message_arrives() {
             source: Source::Shaped(0),
             intensity: 1.0,
             curve: Curve::Depth { power: 1 },
+            tau_ms: 0.0,
         },
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -1113,6 +1114,7 @@ fn timed_modulation_does_not_depend_on_the_block_size() {
             source: Source::Lfo(0),
             intensity: 1.0,
             curve: Curve::Depth { power: 1 },
+            tau_ms: 0.0,
         },
     }];
     let plan = Arc::new(plan);
@@ -1563,6 +1565,7 @@ fn a_pitch_bend_volume_route_reads_the_wheel_from_zero_to_one() {
             source: Source::PitchBend,
             intensity: 1.0,
             curve: Curve::Depth { power: 1 },
+            tau_ms: 0.0,
         },
     }];
     let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
@@ -1579,6 +1582,44 @@ fn a_pitch_bend_volume_route_reads_the_wheel_from_zero_to_one() {
     assert!((rest - 0.5).abs() < 1e-3, "{rest}");
     let up = settled(&mut e, &[bend(0x7F, 0x7F)]);
     assert!((up - 1.0).abs() < 1e-3, "{up}");
+}
+
+#[test]
+fn a_lagging_controller_route_glides_as_a_one_pole() {
+    use kontra_engine::ir::{Curve, Mod, ModKind, Source};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    // Kontakt's lag 120 ms: τ = 120 / ln 100.
+    let tau_ms = 120.0 / 100f32.ln();
+    plan.groups[0].mods = vec![Mod {
+        name: "CC11".into(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind: ModKind::Volume {
+            source: Source::Controller(11),
+            intensity: 1.0,
+            curve: Curve::Depth { power: 1 },
+            tau_ms,
+        },
+    }];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[cc(11, 127), on(60, 1.0)]);
+    let mut out = vec![[0.0; 2]; 9600];
+    e.process(&mut out, &[]);
+    let from = out[9599][0];
+    e.process(&mut out, &[cc(11, 64)]);
+    e.process(&mut out[..4800], &[]);
+    let to = out[4799][0];
+    e.process(&mut out, &[cc(11, 127)]);
+    // Back up: e^-1 of the way left after τ, under 2% after 4τ.
+    let left = |ms: f32| (from - out[(ms * 48.0) as usize][0]) / (from - to);
+    assert!(
+        (left(tau_ms) - (-1.0f32).exp()).abs() < 0.01,
+        "{}",
+        left(tau_ms)
+    );
+    assert!(left(4.0 * tau_ms) < 0.02 && left(0.1) > 0.99, "{from} {to}");
 }
 
 #[test]
@@ -1605,6 +1646,7 @@ fn a_constant_start_phase_route_shifts_a_voices_lfo() {
             source: Source::Lfo(0),
             intensity: 1.0,
             curve: Curve::Depth { power: 1 },
+            tau_ms: 0.0,
         })];
         plan.groups[0].mods.extend(phase_route.map(|depth| {
             route(ModKind::LfoPhase {
@@ -1650,6 +1692,7 @@ fn an_intensity_route_scales_its_lfos_routes() {
                 source: Source::Lfo(0),
                 intensity: 1.0,
                 curve: Curve::Depth { power: 1 },
+                tau_ms: 0.0,
             }),
             route(ModKind::Intensity {
                 source: by,
@@ -1691,6 +1734,7 @@ fn a_velocity_rate_route_speeds_a_voices_lfo() {
                 source: Source::Lfo(0),
                 intensity: 1.0,
                 curve: Curve::Depth { power: 1 },
+                tau_ms: 0.0,
             }),
             route(ModKind::LfoRate {
                 source: Source::Velocity,

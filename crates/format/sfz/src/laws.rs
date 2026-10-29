@@ -83,6 +83,7 @@ pub fn velocity_track(percent: f64) -> Option<ir::Mod> {
             source: ir::Source::Velocity,
             intensity,
             curve: ir::Curve::Squared,
+            tau_ms: 0.0,
         },
     })
 }

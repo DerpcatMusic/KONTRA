@@ -9,11 +9,13 @@ pub enum ModKind {
     Envelope,
     /// `source` scales the level along `curve`; `intensity` is −1..=1 and live.
     /// A bipolar source (an LFO, pitch bend) enters as `(x + 1)/2`: it swings the level
-    /// down from unity and back.
+    /// down from unity and back. The route's gain follows as a one-pole with
+    /// time constant `tau_ms` (0: at once), so a controller ride glides.
     Volume {
         source: Source,
         intensity: f32,
         curve: Curve,
+        tau_ms: f32,
     },
     /// `source × depth × semitones` added to the pitch: `semitones` is the
     /// route's range, `depth` (−1..=1) its live intensity.

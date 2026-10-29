@@ -37,6 +37,14 @@ fn attack_shape(curve: f32) -> f32 {
     k as f32
 }
 
+/// A route's time constant from its saved lag: the lag is the time its gain
+/// takes to settle within 1%, so τ = lag / ln 100. Measured in Kontakt 8.13
+/// on CC1 and CC11 volume routes with lag 120: a one-pole on the gain,
+/// τ 25.4–26.1 ms both ways (oracle, 2 kHz sine zone in the library's group).
+pub(crate) fn route_tau_ms(lag_ms: i16) -> f32 {
+    f32::from(lag_ms.max(0)) / 100f32.ln()
+}
+
 /// The volume law of a modulation source (Kontakt's "family H",
 /// modulation compiler 0x140875ac8/0x140873120): cubed (`fcubic`) for
 /// internal source types 7..=13, plain otherwise. The loader FUN_140cf0420

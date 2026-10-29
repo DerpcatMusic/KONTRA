@@ -116,6 +116,7 @@ impl<L: Library> Translator<'_, '_, L> {
                         } else {
                             ir::Curve::Depth { power: 1 }
                         },
+                        tau_ms: 0.0,
                     }
                 }
             };

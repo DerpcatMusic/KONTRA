@@ -285,6 +285,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 source,
                 intensity,
                 curve: ir::Curve::Signed,
+                tau_ms: 0.0,
             });
         }
         let placement = placement(kg);
