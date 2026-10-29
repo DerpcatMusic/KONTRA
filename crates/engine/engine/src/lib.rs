@@ -16,6 +16,7 @@ mod controls;
 mod effects;
 mod engine_pars;
 mod filters;
+mod group_masks;
 mod group_racks;
 mod inspect;
 mod knobs;
@@ -61,9 +62,10 @@ pub use transport::Play;
 pub use ui::ControlLook;
 
 use behaviour::Behaviour;
+use group_masks::GroupMasks;
 use ledger::{Ledger, Note, Origin};
 use queue::{EventQueue, Work};
-use script::{GroupMasks, Kind, Running};
+use script::{Kind, Running};
 
 /// Frames rendered per inner span; sizes the bus buffers.
 const MAX_SPAN: u64 = 256;
