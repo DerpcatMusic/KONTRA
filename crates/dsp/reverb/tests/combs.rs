@@ -59,3 +59,29 @@ fn full_width_keeps_the_channels_apart_and_none_mixes_them() {
     let [l, r] = tail(1.0, 0.0, [1.0, 0.0], 0..9_600);
     assert!(r > 0.5 * l, "{l} {r}");
 }
+
+/// RMS of the left channel, settled, for a sine at `hz` into a network
+/// whose input low-pass is at `cut`.
+fn through(hz: f64, cut: f32) -> f64 {
+    let mut s = settings(1.0, 1.0);
+    s.high_cut_hz = cut;
+    let mut r = Combs::new(&LAW, s, 48_000);
+    let mut io: Vec<[f32; 2]> = (0..96_000)
+        .map(|n| [(std::f64::consts::TAU * hz * f64::from(n) / 48_000.0).sin() as f32; 2])
+        .collect();
+    r.process(&mut io);
+    (io[48_000..]
+        .iter()
+        .map(|f| f64::from(f[0]).powi(2))
+        .sum::<f64>()
+        / 48_000.0)
+        .sqrt()
+}
+
+#[test]
+fn the_input_low_pass_is_a_two_pole_butterworth() {
+    let db = |hz| 20.0 * (through(hz, 1_000.0) / through(hz, 24_000.0)).log10();
+    assert!((db(1_000.0) + 3.0).abs() < 0.3, "{}", db(1_000.0));
+    // Two octaves past the corner: −24 dB (a one-pole falls only −12).
+    assert!((db(4_000.0) + 24.0).abs() < 1.0, "{}", db(4_000.0));
+}
