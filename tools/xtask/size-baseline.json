@@ -1,5 +1,4 @@
 {
-  "kontakto": 80493,
   "kontra-align": 403,
   "kontra-dsp": 9,
   "kontra-dsp-core": 398,
@@ -37,19 +36,5 @@
   "kontra-ui": 6826,
   "kontra-ui-model": 1431,
   "kontra-vm": 1710,
-  "kontra-voice": 1226,
-  "sampler-ample": 203,
-  "sampler-core": 106441,
-  "sampler-ikmpak": 341,
-  "sampler-ir": 9047,
-  "sampler-kontakt": 24836,
-  "sampler-ksp": 21955,
-  "sampler-midi": 1465,
-  "sampler-native": 3227,
-  "sampler-parity": 140,
-  "sampler-perf": 2266,
-  "sampler-pool": 824,
-  "sampler-script": 249,
-  "sampler-simd": 267,
-  "sampler-uvi": 28552
+  "kontra-voice": 1226
 }
