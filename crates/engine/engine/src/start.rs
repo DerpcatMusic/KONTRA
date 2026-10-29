@@ -159,9 +159,6 @@ impl Engine {
             slot.note = Some(note);
             slot.zone = index;
             slot.started = now;
-            slot.released = false;
-            slot.released_at = None;
-            slot.fading = false;
             slot.factor = factor;
             slot.bend = [bend.semitones; 2];
             slot.pan = [pan; 2];

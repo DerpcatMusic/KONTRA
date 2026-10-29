@@ -477,3 +477,16 @@ fn offline_wait_reports_a_failed_page_as_missing() {
     assert!(voice.missing_frames() > 0);
     assert!(client.stats().read_errors > 0);
 }
+
+/// Key-up, then a steal: the voice ends, counted as ending once, and keeps
+/// the frame it began releasing (its modulators' age).
+#[test]
+fn a_released_voice_that_is_stolen_keeps_its_release_time() {
+    let mut voice = Voice::allocate();
+    voice.key_up(10, false);
+    assert!(voice.is_released());
+    assert!(voice.fade(4));
+    assert!(!voice.fade(2), "a second fade is not a second end");
+    assert!(voice.is_ending() && !voice.is_released());
+    assert_eq!(voice.released_at(), Some(10));
+}

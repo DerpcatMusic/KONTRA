@@ -112,12 +112,6 @@ struct Slot {
     note: Option<NoteRef>,
     zone: usize,
     started: SampleTime,
-    /// Key released.
-    released: bool,
-    /// When the envelope began its release; a one-shot's never does.
-    released_at: Option<SampleTime>,
-    /// Fading out after a steal, choke or group limit; no longer counts as playing.
-    fading: bool,
     /// Extra gain fixed at start (release-trigger decay).
     factor: f32,
     /// Its group's inserts that run on this voice alone.
@@ -268,9 +262,6 @@ impl Engine {
                 note: None,
                 zone: 0,
                 started: SampleTime(0),
-                released_at: None,
-                released: false,
-                fading: false,
                 factor: 1.0,
                 rack: Vec::new(),
                 bend: [0.0; 2],
@@ -414,7 +405,7 @@ impl Engine {
     pub fn playing_voices(&self) -> usize {
         self.voices
             .iter()
-            .filter(|s| s.voice.is_active() && !s.fading)
+            .filter(|s| s.voice.is_active() && !s.voice.is_ending())
             .count()
     }
 
@@ -517,7 +508,7 @@ impl Engine {
         let plan = self.plan.clone();
         let in_group = |s: &Slot| {
             s.voice.is_active()
-                && !s.fading
+                && !s.voice.is_ending()
                 && plan.zones.get(s.zone).is_some_and(|z| z.group == group)
         };
         if self.voices.iter().filter(|s| in_group(s)).count() < usize::from(limit) {
@@ -525,7 +516,7 @@ impl Engine {
         }
         let oldest = (self.voices.iter().enumerate())
             .filter(|(_, s)| in_group(s))
-            .min_by_key(|(_, s)| (!s.released, s.started));
+            .min_by_key(|(_, s)| (!s.voice.is_released(), s.started));
         if let Some((index, _)) = oldest {
             self.steal(index, self.fade_frames());
         }
@@ -603,14 +594,10 @@ impl Engine {
         for slot in self
             .voices
             .iter_mut()
-            .filter(|s| s.note == Some(note) && !s.released)
+            .filter(|s| s.note == Some(note) && !s.voice.is_released())
         {
-            // A one-shot plays to its end marker whatever the key does.
-            if !self.plan.zones.get(slot.zone).is_some_and(|z| z.one_shot) {
-                slot.voice.release();
-                slot.released_at = Some(self.now);
-            }
-            slot.released = true;
+            let one_shot = self.plan.zones.get(slot.zone).is_some_and(|z| z.one_shot);
+            slot.voice.key_up(self.now.0, one_shot);
         }
         if self.plan.release_zones == ReleaseZones::AtRelease
             && self.notes.get(note).map(|n| n.releases) == Some(Releases::OnRelease)
@@ -692,7 +679,7 @@ impl Engine {
             let age = modulators::Age {
                 warp: slot.warp,
                 chaos: slot.chaos.map(|c| c[3]),
-                ..self.age(slot.started, slot.released_at)
+                ..self.age(slot.started, slot.voice.released_at().map(SampleTime))
             };
             #[cfg(feature = "trace")]
             if let (Some(trace), Some(cc)) = (&self.trace, trace_cc) {

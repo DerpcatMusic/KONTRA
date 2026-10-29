@@ -209,7 +209,7 @@ impl Engine {
             .map(|(s, note)| VoiceObservation {
                 zone: s.zone,
                 position: s.voice.position(),
-                released: s.released,
+                released: s.voice.is_released(),
                 gain: s.voice.current_gain(),
                 missing_frames: s.voice.missing_frames(),
                 #[cfg(feature = "trace")]
@@ -223,7 +223,7 @@ impl Engine {
                 }),
                 note_released: note.is_some_and(|(_, n)| n.released),
                 pedal_held: note.is_some_and(|(_, n)| n.pedal_held),
-                fading: s.fading,
+                fading: s.voice.is_ending(),
                 #[cfg(feature = "trace")]
                 last_peak: s.voice.last_peak(),
             })
@@ -252,7 +252,10 @@ impl Engine {
             let age = crate::modulators::Age {
                 warp: slot.warp,
                 chaos: slot.chaos.map(|c| c[3]),
-                ..self.age(slot.started, slot.released_at)
+                ..self.age(
+                    slot.started,
+                    slot.voice.released_at().map(kontra_time::SampleTime),
+                )
             };
             for m in group.mods.iter().filter(|m| !m.bypass) {
                 if let kontra_ir::ModKind::EqGain {
@@ -321,7 +324,10 @@ impl Engine {
             let age = crate::modulators::Age {
                 warp: slot.warp,
                 chaos: slot.chaos.map(|c| c[3]),
-                ..self.age(slot.started, slot.released_at)
+                ..self.age(
+                    slot.started,
+                    slot.voice.released_at().map(kontra_time::SampleTime),
+                )
             };
             for m in group.mods.iter().filter(|m| !m.bypass) {
                 let input = kontra_plan::route_source(m.kind);
@@ -389,7 +395,10 @@ impl Engine {
             let age = crate::modulators::Age {
                 warp: slot.warp,
                 chaos: slot.chaos.map(|c| c[3]),
-                ..self.age(slot.started, slot.released_at)
+                ..self.age(
+                    slot.started,
+                    slot.voice.released_at().map(kontra_time::SampleTime),
+                )
             };
             for unit in &slot.rack {
                 let Some(mut target) = self.voice_effect(zone, unit.insert, note, age) else {

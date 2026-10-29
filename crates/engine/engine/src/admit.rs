@@ -21,7 +21,7 @@ impl Engine {
                 let sounding = self
                     .voices
                     .iter()
-                    .any(|s| s.note == Some(r) && s.voice.is_active() && !s.fading);
+                    .any(|s| s.note == Some(r) && s.voice.is_active() && !s.voice.is_ending());
                 let held = n.origin == Origin::Host && !n.is_up();
                 (sounding || held, !n.released, n.at)
             })
@@ -42,13 +42,13 @@ impl Engine {
             let fade = self.fade_frames();
             let plan = self.plan.clone();
             let group = |s: &Slot| plan.zones.get(s.zone).map(|z| z.group);
-            let playing = |s: &Slot| s.voice.is_active() && !s.fading;
+            let playing = |s: &Slot| s.voice.is_active() && !s.voice.is_ending();
             let victim = self
                 .voices
                 .iter()
                 .enumerate()
                 .filter(|(_, s)| playing(s))
-                .min_by_key(|(_, s)| (!s.released, s.started))
+                .min_by_key(|(_, s)| (!s.voice.is_released(), s.started))
                 .map(|(i, s)| (i, s.note, group(s)));
             if let Some((v, note, of)) = victim {
                 self.steal(v, fade);
@@ -65,7 +65,7 @@ impl Engine {
                     .voices
                     .iter()
                     .enumerate()
-                    .min_by_key(|(_, s)| (!s.fading, s.started))?;
+                    .min_by_key(|(_, s)| (!s.voice.is_ending(), s.started))?;
                 self.stats.voices_cut += 1;
                 i
             }
@@ -87,8 +87,7 @@ impl Engine {
         let Some(slot) = self.voices.get_mut(index).filter(|s| s.voice.is_active()) else {
             return false;
         };
-        slot.voice.fade(fade);
-        !std::mem::replace(&mut slot.fading, true)
+        slot.voice.fade(fade)
     }
 
     /// Calls `act` on each voice `pick` chooses.

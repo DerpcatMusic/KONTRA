@@ -71,6 +71,18 @@ pub struct VoiceStart {
     pub envelope: Ahdsr,
 }
 
+/// Where a voice is between its start and its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Life {
+    /// Its key is down.
+    Held,
+    /// Its key is up; the engine frame its envelope began releasing (a
+    /// one-shot's never does).
+    Released(Option<u64>),
+    /// Fading out to its end: no longer counted as playing.
+    Ending(Option<u64>),
+}
+
 pub struct Voice {
     region: Option<Region>,
     /// Position at `elapsed == 0`; moved only when the step changes, so the
@@ -84,6 +96,7 @@ pub struct Voice {
     lag: Lag,
     env: Envelope,
     fade: Fade,
+    life: Life,
     scratch: Box<[[f32; 2]]>,
     /// The frames a loop crossfade blends in.
     partner: Box<[[f32; 2]]>,
@@ -115,6 +128,7 @@ impl Voice {
             lag: Lag::NONE,
             env: Envelope::new(Ahdsr::GATE),
             fade: Fade::NONE,
+            life: Life::Held,
             scratch: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             partner: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
             raw: vec![[0.0; 2]; SCRATCH].into_boxed_slice(),
@@ -142,6 +156,7 @@ impl Voice {
         self.lag = start.lag;
         self.env = Envelope::new(start.envelope);
         self.fade = Fade::NONE;
+        self.life = Life::Held;
         self.released = None;
         self.missing = 0;
         #[cfg(feature = "trace")]
@@ -156,10 +171,48 @@ impl Voice {
         self.env.release();
     }
 
+    /// Its key went up at engine frame `now`: it releases, unless a
+    /// one-shot, which plays on to its end.
+    pub fn key_up(&mut self, now: u64, one_shot: bool) {
+        let at = (!one_shot).then(|| {
+            self.release();
+            now
+        });
+        self.life = match self.life {
+            Life::Ending(_) => Life::Ending(at),
+            _ => Life::Released(at),
+        };
+    }
+
     /// Fades out over `frames` and ends (a stolen or choked voice): no
     /// click, no tail; a fade already ending it ends at the sooner.
-    pub fn fade(&mut self, frames: u32) {
+    /// `true` the first time only.
+    pub fn fade(&mut self, frames: u32) -> bool {
         self.fade.start(0.0, frames, true);
+        let first = !self.is_ending();
+        self.life = Life::Ending(self.released_at());
+        first
+    }
+
+    /// Its key is up (an ending voice's may still be down).
+    #[must_use]
+    pub fn is_released(&self) -> bool {
+        matches!(self.life, Life::Released(_))
+    }
+
+    /// Fading to its end: it no longer counts as playing.
+    #[must_use]
+    pub fn is_ending(&self) -> bool {
+        matches!(self.life, Life::Ending(_))
+    }
+
+    /// The engine frame its envelope began releasing.
+    #[must_use]
+    pub fn released_at(&self) -> Option<u64> {
+        match self.life {
+            Life::Held => None,
+            Life::Released(at) | Life::Ending(at) => at,
+        }
     }
 
     /// Ramps the voice's fade gain to `level` (0 silent, 1 full) over
