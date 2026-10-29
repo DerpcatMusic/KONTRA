@@ -89,6 +89,15 @@ pub enum ModKind {
         octaves: f32,
         range_hz: [f32; 2],
     },
+    /// Adds `source × depth × (hi − lo)` Hz to the rate of the group's
+    /// free-running (Hz) LFO `lfo`, `source` live: the LFO's phase integrates
+    /// the moving rate, held within `range_hz` `[lo, hi]`.
+    LfoHz {
+        source: Source,
+        lfo: u8,
+        depth: f32,
+        range_hz: [f32; 2],
+    },
     /// Scales every route of the group's timed source `of` (an LFO or an
     /// envelope) by `1 − (1 − x)·depth`, `x` the live `source`, a bipolar one
     /// as `(x + 1)/2`.

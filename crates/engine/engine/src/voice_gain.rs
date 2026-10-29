@@ -237,6 +237,7 @@ impl Engine {
                         _ => {}
                     }
                 }
+                lfo.phase += age.warp.get(usize::from(n)).copied().unwrap_or(0.0);
                 Some(modulators::lfo(&lfo, age, u32::from(note.key), self.tempo))
             }
             ir::Source::Velocity => Some(note.velocity as f32),
@@ -494,6 +495,7 @@ impl Engine {
                     | ir::ModKind::Release { .. }
                     | ir::ModKind::LfoPhase { .. }
                     | ir::ModKind::LfoRate { .. }
+                    | ir::ModKind::LfoHz { .. }
                     | ir::ModKind::LoopShift { .. } => false,
                 })
             })

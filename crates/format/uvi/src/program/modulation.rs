@@ -9,47 +9,6 @@ use roxmltree::Node;
 use super::{Library, Translator, blend, flag, index_of, matrix, num, source_node};
 
 impl<L: Library> Translator<'_, '_, L> {
-    /// The connections on the `Depth` of the LFO `connection` reads, as
-    /// [`ir::ModKind::Intensity`] routes on its group copy `of`: the
-    /// connection law (UVIWorkstation 0x141429a80) scales the depth by
-    /// `1 − r(1 − x)`, or `1 + r·x` below zero, where Intensity reads `1 − x`
-    /// at `−r` (unit −1, so a script's ratio keeps its sign). ponytail: a
-    /// script turning a depth ratio's sign keeps its inversion.
-    pub(super) fn depth_scales(&mut self, group: &mut ir::Group, connection: Node, of: ir::Source) {
-        // An LFO read through a table (a gain's `factor`) scales the same way.
-        let of = match of {
-            ir::Source::Shaped(n) => group.shapers.get(usize::from(n)).map_or(of, |t| t.source),
-            of => of,
-        };
-        if !matches!(of, ir::Source::Lfo(_)) {
-            return;
-        }
-        let Some(lfo) = source_node(self.program, connection) else {
-            return;
-        };
-        // ponytail: an Intensity scales the wave around 0, a unipolar LFO's
-        // depth its `m`; carried when a library routes one (none does).
-        if lfo.has_tag_name("LFO") && !matrix::bipolar(lfo) {
-            self.notes
-                .add(ir::Impact::Audible, "unipolar LFO depth route", "");
-            return;
-        }
-        let owner = lfo.tag_name().name();
-        let depths = lfo
-            .children()
-            .filter(|c| c.has_tag_name("Connections"))
-            .flat_map(|c| c.children())
-            .filter_map(|c| Some((c, depth_route(self.program, c, owner)?)))
-            .collect::<Vec<_>>();
-        for (c, r) in depths {
-            self.add_route(group, c, r, |source, depth| ir::ModKind::Intensity {
-                source,
-                of,
-                depth,
-            });
-        }
-    }
-
     /// The amplitude envelope: the DAHDSR a keygroup connects to its gain.
     pub(super) fn envelope(&mut self, kg: Node) -> Result<Option<ir::Envelope>, String> {
         let Some(connection) = kg.descendants().find(|c| {
@@ -372,52 +331,6 @@ pub(super) fn factor(mut r: Route, connection: Node) -> Option<Route> {
     Some(r)
 }
 
-/// A connection on an LFO's `Depth` ([`Translator::depth_scales`]): its
-/// source on 0..=1, read `1 − x` for a negative ratio, clamped to ±1. An LFO
-/// source enters at `(d·x + 1)/2`, its own depth `d` inside. Not an
-/// envelope or a rising LFO read backwards.
-fn depth_route(program: Node, connection: Node, owner: &str) -> Option<Route> {
-    let mut r = route(program, connection, (owner, "Depth"))?;
-    r.ratio = r.ratio.clamp(-1.0, 1.0);
-    let falling = r.ratio < 0.0;
-    let flip = |t: Vec<f32>| -> Vec<f32> {
-        if falling {
-            t.into_iter().map(|v| 1.0 - v).collect()
-        } else {
-            t
-        }
-    };
-    r.timed = match r.timed.take() {
-        Some(Timed::Lfo(lfo)) => {
-            let d = r.unit;
-            Some(Timed::Steps(
-                lfo,
-                flip(vec![(1.0 - d) / 2.0, (1.0 + d) / 2.0]),
-            ))
-        }
-        Some(Timed::Steps(lfo, table)) => Some(Timed::Steps(lfo, flip(table))),
-        Some(Timed::Mapped(mut t)) => {
-            if t.table.is_empty() {
-                t.table = vec![0.0, 1.0];
-            }
-            t.table = flip(t.table);
-            Some(Timed::Mapped(t))
-        }
-        None if falling => Some(Timed::Mapped(ir::Transfer {
-            source: r.source,
-            table: vec![1.0, 0.0],
-        })),
-        None => None,
-        Some(Timed::Envelope(_) | Timed::Rising(..) | Timed::Blend(_)) if falling => return None,
-        timed => timed,
-    };
-    if r.timed.is_some() {
-        r.source = ir::Source::Constant;
-    }
-    r.unit = if falling { -1.0 } else { 1.0 };
-    Some(r)
-}
-
 /// The source `timed` (or `source`) is in `group`, its modulator copied
 /// onto it: a rising LFO is the LFO under an [`ir::ModKind::Intensity`]
 /// from its rise.
@@ -465,7 +378,8 @@ pub(super) fn group_source(
 
 /// A bipolar `LFO` or `MultiLFO` ([`multi`]), with no delay or rise, as an LFO
 /// and its signed depth: `Depth·x`. The registry (UVIWorkstation 0x1410f5d00)
-/// names `WaveFormType` Sinus, Square, Triangle, RampUp, RampDown, ... and
+/// names `WaveFormType` Sinus, Square, Triangle, RampUp, RampDown,
+/// AnalogSquare, Random S&H, Chaos Lorenz, Chaos Rossler, User (0x1410f6785) and
 /// `Retrigger` No Retrigger, Retrigger, Legato, Song; a synchronized `Freq` is
 /// the cycle's length in beats (v1). ponytail: `Smooth` is not applied (a
 /// lag on the shape; AO's are under 25 ms on cycles of a beat or more).
@@ -525,6 +439,9 @@ pub(super) fn shape(node: Node, user: bool) -> Option<(ir::Lfo, f32)> {
             2.0 => (ir::Wave::Triangle, 1.0),
             3.0 => (ir::Wave::Saw, -1.0),
             4.0 => (ir::Wave::Saw, 1.0),
+            // Random S&H: a uniform −1..=1 draw each time its 32-bit phase
+            // wraps (0x1410f95b0), once a cycle (the random wave's half cycle).
+            6.0 => (ir::Wave::Random, 1.0),
             // A user table, read through it ([`blend::table`]).
             9.0 if user => (ir::Wave::Saw, 1.0),
             _ => return None,
@@ -543,10 +460,11 @@ pub(super) fn shape(node: Node, user: bool) -> Option<(ir::Lfo, f32)> {
     if freq <= 0.0 || !freq.is_finite() {
         return None;
     }
+    let half = if wave == ir::Wave::Random { 2.0 } else { 1.0 };
     let rate = if flag(node, "SyncToHost") {
-        ir::Rate::Beats(freq)
+        ir::Rate::Beats(freq * half)
     } else {
-        ir::Rate::Hz(freq)
+        ir::Rate::Hz(freq / half)
     };
     let lfo = ir::Lfo {
         wave,
