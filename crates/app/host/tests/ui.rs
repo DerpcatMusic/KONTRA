@@ -264,3 +264,27 @@ fn a_picture_font_id_is_a_bitmap_font() {
     assert_eq!(asset.kind, ui::AssetKind::BitmapFont);
     assert_eq!(font("$b"), ui::Font::Stock(4));
 }
+
+/// `attach_level_meter` puts the channel it shows into the tree; an
+/// unattached meter shows none (ANALOG, Conflux, Morphology, Shreddage).
+#[test]
+fn an_attached_level_meter_shows_its_channel() {
+    let ui = tree(
+        "on init
+            make_perfview
+            declare ui_level_meter $left
+            declare ui_level_meter $right
+            declare ui_level_meter $idle
+            attach_level_meter(get_ui_id($left), -1, -1, 0, -1)
+            attach_level_meter(get_ui_id($right), -1, -1, 1, -1)
+        end on",
+    );
+    let channel = |name| match widget(&ui, name).kind {
+        ui::Kind::LevelMeter { channel, .. } => channel,
+        _ => panic!("{name} is no level meter"),
+    };
+    assert_eq!(
+        [channel("$left"), channel("$right"), channel("$idle")],
+        [Some(0), Some(1), None]
+    );
+}

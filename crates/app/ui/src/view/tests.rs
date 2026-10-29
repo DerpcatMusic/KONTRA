@@ -130,7 +130,7 @@ fn pictures(wall: Vec<u8>, knob: Vec<u8>) -> Pictures {
 fn settle(ui: &mut Ui, tree: &Interface, pictures: &mut Pictures, scale: f64) -> usize {
     let mut built = 0;
     for _ in 0..2000 {
-        let (el, b) = page(ui, 0, tree, PageRef(0), pictures, scale);
+        let (el, b) = page(ui, 0, tree, PageRef(0), pictures, (scale, 0.));
         assert!(
             ui.frame(
                 el,
@@ -143,7 +143,7 @@ fn settle(ui: &mut Ui, tree: &Interface, pictures: &mut Pictures, scale: f64) ->
         built += b;
         pictures.poll();
         if pictures.pending() == 0 {
-            let (el, b) = page(ui, 0, tree, PageRef(0), pictures, scale);
+            let (el, b) = page(ui, 0, tree, PageRef(0), pictures, (scale, 0.));
             assert!(
                 ui.frame(
                     el,
@@ -166,13 +166,13 @@ fn a_page_draws_its_wallpaper_from_the_skin_offset_and_a_knob_at_its_value() {
     let mut ui = crate::ui();
     let mut pictures = pictures(wall, knob);
     // The first frame waits on no picture: it is the page colour.
-    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, 1.);
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 0.));
     assert_eq!(
         paint(&mut ui, el, 20, 10).first(),
         Some(&[128, 128, 128, 255])
     );
     settle(&mut ui, &tree, &mut pictures, 1.);
-    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, 1.);
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 0.));
     let px = paint(&mut ui, el, 20, 10);
     let at = |x: usize, y: usize| px.get(y * 20 + x).copied();
     assert_eq!(
@@ -191,13 +191,13 @@ fn a_page_draws_its_wallpaper_from_the_skin_offset_and_a_knob_at_its_value() {
         w.value = Some(model::Value::Integer(0));
     }
     // The shown frame stands in until the new one is decoded.
-    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, 1.);
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 0.));
     assert_eq!(
         paint(&mut ui, el, 20, 10).get(3 * 20 + 3).copied(),
         Some([255; 4])
     );
     settle(&mut ui, &tree, &mut pictures, 1.);
-    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, 1.);
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 0.));
     assert_eq!(
         paint(&mut ui, el, 20, 10).get(3 * 20 + 3).copied(),
         Some([0, 0, 255, 255])
@@ -238,4 +238,44 @@ fn a_skin_offset_runs_through_the_wallpaper_across_its_frames() {
     // A picture state picks the frame; a one-frame file shows only it.
     assert_eq!(wallpaper((1, 0, 0), 500., 2), [(1, 0.)]);
     assert_eq!(wallpaper((0, 68, 0), 569., 1), [(0, -68.)]);
+}
+
+/// An attached level meter lights from the bottom with the part's peak; a
+/// frame at the same level rebuilds nothing, so a silent part draws no new
+/// frames.
+#[test]
+fn a_level_meter_lights_with_the_peak_and_idles_when_it_holds() {
+    let mut tree = Interface::default();
+    tree.pages.push(Page {
+        size: Size {
+            width: 4.,
+            height: 10.,
+        },
+        ..Page::default()
+    });
+    let mut m = Widget::new(
+        "$meter",
+        PageRef(0),
+        Rect::new(0, 0, 4, 10),
+        Kind::LevelMeter {
+            orientation: model::Orientation::Vertical,
+            channel: Some(0),
+        },
+    );
+    m.colors.on = Some(Rgba::rgb(0xff0000));
+    m.colors.off = Some(Rgba::rgb(0x0000ff));
+    tree.widgets.push(m);
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(|_| None));
+    // −30 dB lights half the bar.
+    let half = 10f64.powf(-1.5);
+    let (el, built) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., half));
+    assert_eq!(built, 1);
+    let pix = paint(&mut ui, el, 4, 10);
+    assert_eq!(pix.get(4 * 2), Some(&[0, 0, 255, 255]));
+    assert_eq!(pix.get(4 * 8), Some(&[255, 0, 0, 255]));
+    let (_, again) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., half));
+    assert_eq!(again, 0);
+    let (_, louder) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., 1.));
+    assert_eq!(louder, 1);
 }
