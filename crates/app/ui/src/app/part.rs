@@ -32,14 +32,15 @@ pub(super) fn view(
                 room,
                 wide,
             );
-            let (edits, popup) = input::read(ui, &face.tree, PageRef(0), scale, &mut face.gesture);
+            let (edits, popup) =
+                input::read(ui, n, &face.tree, PageRef(0), scale, &mut face.gesture);
             input::apply(&mut face.tree, &edits);
             out.extend(edits.iter().map(|e| Action::Control {
                 part: n,
                 widget: e.widget.0,
                 value: e.value,
             }));
-            let (page, _) = view::page(ui, &face.tree, PageRef(0), &mut face.pictures, scale);
+            let (page, _) = view::page(ui, n, &face.tree, PageRef(0), &mut face.pictures, scale);
             let page = match popup {
                 Some(menu) => stack![page, menu],
                 None => page,
