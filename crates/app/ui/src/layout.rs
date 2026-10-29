@@ -19,6 +19,7 @@ fn default_size(kind: &Kind) -> (u32, u32) {
         Kind::FileSelector { .. } => (184, 184),
         Kind::LevelMeter {
             orientation: Orientation::Vertical,
+            ..
         } => (8, 92),
         Kind::Panel => (0, 0),
         _ => (85, 18),

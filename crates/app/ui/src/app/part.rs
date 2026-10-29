@@ -40,7 +40,8 @@ pub(super) fn view(
                 widget: e.widget.0,
                 value: e.value,
             }));
-            let (page, _) = view::page(ui, n, &face.tree, PageRef(0), &mut face.pictures, scale);
+            let at = (scale, p.level);
+            let (page, _) = view::page(ui, n, &face.tree, PageRef(0), &mut face.pictures, at);
             let page = match popup {
                 Some(menu) => stack![page, menu],
                 None => page,

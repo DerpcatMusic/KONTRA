@@ -20,7 +20,7 @@ impl Engine {
         if let Some((ir::ReverbPar::Seconds, s)) =
             par.zip(raw).and_then(|(p, r)| self.reverb_value(p, r))
         {
-            return write(Readout::Ms(1000.0 * f64::from(s)), 0.0, out);
+            return write(Readout::Padded(1000.0 * f64::from(s)), 0.0, out);
         }
         par.zip(raw).is_some_and(|(p, raw)| display(p, raw, out))
     }
@@ -35,9 +35,11 @@ pub(crate) fn display(par: EnginePar, raw: i32, out: &mut Text) -> bool {
         EnginePar::EffectOutput | EnginePar::GainerGain => Readout::Db(24.0),
         EnginePar::Sustain => Readout::Db(0.0),
         EnginePar::Tune => Readout::Tune,
-        EnginePar::Attack | EnginePar::Hold => Readout::Ms(stage_ms(15_000.0, x)),
-        EnginePar::Decay | EnginePar::Release => Readout::Ms(stage_ms(25_000.0, x)),
+        EnginePar::Attack | EnginePar::Hold => Readout::Padded(stage_ms(15_000.0, x)),
+        EnginePar::Decay | EnginePar::Release => Readout::Padded(stage_ms(25_000.0, x)),
         EnginePar::Pan => Readout::Pan,
+        EnginePar::RouteIntensity => Readout::Padded(100.0 * x * x),
+        EnginePar::RouteDepth => Readout::Signed(100.0 * (2.0 * x - 1.0).powi(3)),
         _ => return false,
     };
     write(readout, x, out)
@@ -83,6 +85,26 @@ mod tests {
                     (500_000, "6.0"),
                     (750_000, "16.5"),
                     (1_000_000, "24.0"),
+                ],
+            ),
+            (
+                P::RouteIntensity,
+                &[
+                    (0, " 0.00"),
+                    (250_000, "  6.2"),
+                    (500_000, " 25.0"),
+                    (750_000, " 56.2"),
+                    (1_000_000, "100.0"),
+                ],
+            ),
+            (
+                P::RouteDepth,
+                &[
+                    (0, "-100.0"),
+                    (100_000, "-51.2"),
+                    (400_000, "-0.8"),
+                    (500_000, "0.0"),
+                    (750_000, "12.5"),
                 ],
             ),
             (

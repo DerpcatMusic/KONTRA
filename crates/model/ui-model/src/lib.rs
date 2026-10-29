@@ -554,8 +554,11 @@ pub enum Kind {
         view_mode: Option<i32>,
         parallax: [i32; 2],
     },
+    /// `channel`: the output channel it shows (0 left, 1 right; KSP
+    /// `attach_level_meter`); `None` shows nothing.
     LevelMeter {
         orientation: Orientation,
+        channel: Option<u8>,
     },
     /// `base_path`: the folder it opens at (KSP `BASEPATH`); `files`: what it lists;
     /// `column_width`: list column width in pixels.
@@ -1490,6 +1493,7 @@ mod tests {
                 Rect::new(0, 0, 20, 20),
                 Kind::LevelMeter {
                     orientation: Orientation::Vertical,
+                    channel: None,
                 },
             ),
         ];
