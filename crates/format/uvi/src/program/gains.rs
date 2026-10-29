@@ -114,9 +114,8 @@ pub(super) fn own_mix(
             .collect();
     }
     let cells = mix.iter().enumerate().flat_map(|(row, r)| {
-        (0..2)
-            .filter(move |&side| r[side] != 0.0)
-            .map(move |side| (row, side))
+        let on = r.iter().enumerate().filter(|(_, g)| **g != 0.0);
+        on.map(move |(side, _)| (row, side))
     });
     let cells: Vec<_> = cells.collect();
     own.iter()

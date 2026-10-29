@@ -591,53 +591,6 @@ impl Engine {
         }
     }
 
-    /// An idle voice. At the plan's polyphony the oldest playing voice fades
-    /// (released ones first), with its note's others in its group when the
-    /// plan steals whole groups, and an idle reserve voice takes the new start.
-    fn free_slot(&mut self) -> Option<usize> {
-        if self.playing_voices() >= self.plan.voices {
-            let fade = self.fade_frames();
-            let plan = self.plan.clone();
-            let group = |s: &Slot| plan.zones.get(s.zone).map(|z| z.group);
-            let playing = |s: &Slot| s.voice.is_active() && !s.fading;
-            let victim = self
-                .voices
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| playing(s))
-                .min_by_key(|(_, s)| (!s.released, s.started))
-                .map(|(i, s)| (i, s.note, group(s)));
-            if let Some((v, note, of)) = victim {
-                for (i, s) in self.voices.iter_mut().enumerate() {
-                    let sibling = plan.steal_whole_groups
-                        && note.is_some()
-                        && s.note == note
-                        && group(s) == of;
-                    if playing(s) && (i == v || sibling) {
-                        s.voice.fade(fade);
-                        s.fading = true;
-                        self.stats.voices_stolen += 1;
-                    }
-                }
-            }
-        }
-        let index = match self.voices.iter().position(|s| !s.voice.is_active()) {
-            Some(i) => i,
-            None => {
-                // Even the fade reserve is full: cut the oldest fading voice.
-                let (i, _) = self
-                    .voices
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, s)| (!s.fading, s.started))?;
-                self.stats.voices_cut += 1;
-                i
-            }
-        };
-        self.voices.get_mut(index)?.voice.kill();
-        Some(index)
-    }
-
     fn note_off(&mut self, pattern: HostPattern) {
         let mut hits = std::mem::take(&mut self.hits);
         self.notes.matching(pattern, &mut hits);
