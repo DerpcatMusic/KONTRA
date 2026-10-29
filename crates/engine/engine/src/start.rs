@@ -82,6 +82,7 @@ impl Engine {
                 gain,
                 lag,
                 envelope: self.envelope(zone, &n, held_seconds),
+                fade: n.fade.filter(|_| attack),
             };
             let now = self.now;
             let Some(i) = self.free_slot() else {
@@ -153,9 +154,6 @@ impl Engine {
                 });
             }
             slot.voice.start(start);
-            if n.fade_in > 0 {
-                slot.voice.fade_to(1.0, n.fade_in);
-            }
             slot.note = Some(note);
             slot.zone = index;
             slot.started = now;

@@ -3129,4 +3129,12 @@ fn a_fade_out_without_stop_comes_back_with_a_fade_in() {
     );
     let rising = level(&mut e, &[on(63)]);
     assert!(rising > 0.0 && rising < full / 4.0, "{rising} of {full}");
+    // A fade out asked before the note's voices start still happens.
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on note\n fade_out($EVENT_ID, 1000, 0)\nend on",
+    );
+    assert_eq!(level(&mut e, &[on(64)]), 0.0);
 }

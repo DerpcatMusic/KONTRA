@@ -47,7 +47,7 @@ use kontra_plan as plan;
 
 use kontra_stream::StreamClient;
 use kontra_time::Frames;
-use kontra_voice::{Voice, VoiceStart};
+use kontra_voice::{KeyUp, Voice, VoiceStart};
 
 pub use fx_types::{EffectRequest, Prepared};
 pub use inspect::{
@@ -597,7 +597,12 @@ impl Engine {
             .filter(|s| s.note == Some(note) && !s.voice.is_released())
         {
             let one_shot = self.plan.zones.get(slot.zone).is_some_and(|z| z.one_shot);
-            slot.voice.key_up(self.now.0, one_shot);
+            let key_up = if one_shot {
+                KeyUp::PlayOn
+            } else {
+                KeyUp::Release
+            };
+            slot.voice.key_up(self.now.0, key_up);
         }
         if self.plan.release_zones == ReleaseZones::AtRelease
             && self.notes.get(note).map(|n| n.releases) == Some(Releases::OnRelease)
@@ -622,7 +627,7 @@ impl Engine {
         let fade = self.fade_frames();
         let mut hits = std::mem::take(&mut self.hits);
         self.notes.matching(pattern, &mut hits);
-        self.fade_notes(&hits, fade, 0.0, true);
+        self.fade_notes(&hits, fade, kontra_voice::FadeTarget::End);
         self.hits = hits;
     }
 

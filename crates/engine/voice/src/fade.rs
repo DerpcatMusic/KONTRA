@@ -2,6 +2,15 @@
 //! running underneath. A stopping fade ends the voice at silence; any other
 //! holds where it arrives until the next.
 
+/// Where a fade goes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FadeTarget {
+    /// To silence, where the voice ends.
+    End,
+    /// To this gain (0 silent, 1 full), where the voice plays on.
+    Hold(f32),
+}
+
 /// The fade gain and where it is going.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Fade {
@@ -29,15 +38,17 @@ impl Fade {
         ..Self::NONE
     };
 
-    /// Ramps from where it is to `to` over `frames` (at least 2), then ends
-    /// the voice if `stop`. A stopping fade is final: a later one may only
-    /// end it sooner.
-    pub(crate) fn start(&mut self, to: f32, frames: u32, stop: bool) {
+    /// Ramps from where it is to `target` over `frames` (at least 2). An
+    /// ending fade is final: a later one may only end it sooner.
+    pub(crate) fn start(&mut self, target: FadeTarget, frames: u32) {
         let frames = frames.max(2);
+        let (to, stop) = match target {
+            FadeTarget::End => (0.0, true),
+            FadeTarget::Hold(level) => (level.clamp(0.0, 1.0), false),
+        };
         if self.stop && !(stop && frames < self.left) {
             return;
         }
-        let to = to.clamp(0.0, 1.0);
         *self = Self {
             to,
             step: (to - self.level) / frames as f32,
@@ -81,7 +92,7 @@ mod tests {
     #[test]
     fn a_fade_is_a_straight_line_to_its_end() {
         let mut fade = Fade::NONE;
-        fade.start(0.0, 4, true);
+        fade.start(FadeTarget::End, 4);
         assert_eq!(run(&mut fade, 4), [0.75, 0.5, 0.25, 0.0]);
         assert!(fade.ended());
     }
@@ -89,25 +100,25 @@ mod tests {
     #[test]
     fn a_held_fade_comes_back_with_a_fade_in() {
         let mut fade = Fade::NONE;
-        fade.start(0.0, 2, false);
+        fade.start(FadeTarget::Hold(0.0), 2);
         run(&mut fade, 3);
         assert!(!fade.ended());
         assert_eq!(fade.level(), 0.0);
-        fade.start(1.0, 4, false);
+        fade.start(FadeTarget::Hold(1.0), 4);
         assert_eq!(run(&mut fade, 4), [0.25, 0.5, 0.75, 1.0]);
     }
 
     #[test]
     fn a_stopping_fade_only_ever_ends_sooner() {
         let mut fade = Fade::NONE;
-        fade.start(0.0, 10, true);
-        fade.start(0.0, 100, true);
-        fade.start(1.0, 2, false);
+        fade.start(FadeTarget::End, 10);
+        fade.start(FadeTarget::End, 100);
+        fade.start(FadeTarget::Hold(1.0), 2);
         assert!(run(&mut fade, 10).ends_with(&[0.0]));
         assert!(fade.ended());
         let mut fade = Fade::NONE;
-        fade.start(0.0, 100, true);
-        fade.start(0.0, 4, true);
+        fade.start(FadeTarget::End, 100);
+        fade.start(FadeTarget::End, 4);
         run(&mut fade, 4);
         assert!(fade.ended());
     }

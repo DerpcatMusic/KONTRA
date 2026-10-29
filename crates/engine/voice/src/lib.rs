@@ -19,6 +19,7 @@ pub use zone::{Loop, Region};
 
 use envelope::Envelope;
 use fade::Fade;
+pub use fade::FadeTarget;
 
 /// Source frames decoded per inner chunk. Bounds per-voice memory, not pitch.
 const SCRATCH: usize = 512;
@@ -69,6 +70,18 @@ pub struct VoiceStart {
     /// A slower gain on top of `gain`: the routes that lag.
     pub lag: Lag,
     pub envelope: Ahdsr,
+    /// A fade its event asked for before it started; one up to a gain starts
+    /// it from silence.
+    pub fade: Option<(FadeTarget, u32)>,
+}
+
+/// What a voice does when its key goes up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyUp {
+    /// Its envelope releases.
+    Release,
+    /// It plays on to its end (a one-shot).
+    PlayOn,
 }
 
 /// Where a voice is between its start and its end.
@@ -155,8 +168,14 @@ impl Voice {
         self.lagged = start.lag.gain;
         self.lag = start.lag;
         self.env = Envelope::new(start.envelope);
-        self.fade = Fade::NONE;
+        self.fade = match start.fade {
+            Some((FadeTarget::Hold(level), _)) if level > 0.0 => Fade::SILENT,
+            _ => Fade::NONE,
+        };
         self.life = Life::Held;
+        if let Some((target, frames)) = start.fade {
+            self.fade(target, frames);
+        }
         self.released = None;
         self.missing = 0;
         #[cfg(feature = "trace")]
@@ -171,10 +190,9 @@ impl Voice {
         self.env.release();
     }
 
-    /// Its key went up at engine frame `now`: it releases, unless a
-    /// one-shot, which plays on to its end.
-    pub fn key_up(&mut self, now: u64, one_shot: bool) {
-        let at = (!one_shot).then(|| {
+    /// Its key went up at engine frame `now`.
+    pub fn key_up(&mut self, now: u64, key_up: KeyUp) {
+        let at = (key_up == KeyUp::Release).then(|| {
             self.release();
             now
         });
@@ -184,13 +202,15 @@ impl Voice {
         };
     }
 
-    /// Fades out over `frames` and ends (a stolen or choked voice): no
-    /// click, no tail; a fade already ending it ends at the sooner.
-    /// `true` the first time only.
-    pub fn fade(&mut self, frames: u32) -> bool {
-        self.fade.start(0.0, frames, true);
-        let first = !self.is_ending();
-        self.life = Life::Ending(self.released_at());
+    /// Fades over `frames` to `target`; ending (a stolen or choked voice)
+    /// is click-free, and a fade already ending it ends at the sooner.
+    /// `true` when this fade first sets it ending.
+    pub fn fade(&mut self, target: FadeTarget, frames: u32) -> bool {
+        self.fade.start(target, frames);
+        let first = target == FadeTarget::End && !self.is_ending();
+        if target == FadeTarget::End {
+            self.life = Life::Ending(self.released_at());
+        }
         first
     }
 
@@ -213,16 +233,6 @@ impl Voice {
             Life::Held => None,
             Life::Released(at) | Life::Ending(at) => at,
         }
-    }
-
-    /// Ramps the voice's fade gain to `level` (0 silent, 1 full) over
-    /// `frames`, and leaves it playing there; a voice yet to sound fades up
-    /// from silence.
-    pub fn fade_to(&mut self, level: f32, frames: u32) {
-        if self.elapsed == 0 && level > 0.0 {
-            self.fade = Fade::SILENT;
-        }
-        self.fade.start(level, frames, false);
     }
 
     /// Stops at once, without a release.

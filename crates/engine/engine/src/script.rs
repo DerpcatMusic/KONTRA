@@ -5,6 +5,7 @@
 use kontra_events::HostNote;
 use kontra_time::SampleTime;
 use kontra_vm::{Action, HostApi, HostCall, HostValue, Text, event};
+use kontra_voice::FadeTarget;
 
 use crate::ledger::{Note, NoteRef, Origin, Releases};
 use crate::queue::{Exit, Work};
@@ -431,14 +432,15 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             Action::FadeOut | Action::FadeIn => {
-                let (level, stop) = match call.action {
-                    Action::FadeIn => (1.0, false),
-                    _ => (0.0, int(2) != 0),
+                let target = match call.action {
+                    Action::FadeIn => FadeTarget::Hold(1.0),
+                    _ if int(2) != 0 => FadeTarget::End,
+                    _ => FadeTarget::Hold(0.0),
                 };
                 let frames = micros_to_frames(i64::from(int(1)), self.rate) as u32;
                 let mut hits = std::mem::take(&mut self.targets_scratch);
                 self.targets(int(0), &mut hits);
-                self.fade_notes(&hits, frames, level, stop);
+                self.fade_notes(&hits, frames, target);
                 self.targets_scratch = hits;
                 HostValue::Nothing
             }
