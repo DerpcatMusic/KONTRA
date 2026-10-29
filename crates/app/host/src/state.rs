@@ -100,6 +100,46 @@ impl From<SavedRack> for RackAt {
     }
 }
 
+/// The editor's view as a project keeps it: its tab, panels and sizes,
+/// and how each part sits. The numbers index the editor's own lists.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedView {
+    pub tab: u8,
+    pub browser_hidden: bool,
+    pub keyboard_hidden: bool,
+    pub keys_hidden: bool,
+    pub mixer_wide: bool,
+    pub octave: i8,
+    pub scale: u8,
+    pub face_scale: u8,
+    pub format: u8,
+    pub shelf: u8,
+    pub descending: bool,
+    pub parts: Vec<SavedPartView>,
+}
+
+/// One rack part in the editor: unfolded, and its tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedPartView {
+    pub part: usize,
+    pub open: bool,
+    pub tab: u8,
+}
+
+impl SavedView {
+    /// The view in `json`; anything unreadable is a fresh editor.
+    #[must_use]
+    pub fn read(json: &str) -> Self {
+        serde_json::from_str(json).unwrap_or_default()
+    }
+
+    #[must_use]
+    pub fn write(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+}
+
 impl Saved {
     /// The state of a rack holding `parts`.
     #[must_use]
