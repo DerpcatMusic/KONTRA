@@ -261,10 +261,7 @@ impl Engine {
                 // fade_out without stopping, and fade_in, wait for the gain ramp API.
                 n.released = true;
             }
-            for slot in self.voices.iter_mut().filter(|s| s.note == Some(note)) {
-                slot.voice.fade(frames);
-                slot.fading = true;
-            }
+            self.fade_where(frames, |s| s.note == Some(note));
         }
         self.targets_scratch = hits;
     }

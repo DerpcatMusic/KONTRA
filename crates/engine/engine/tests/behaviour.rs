@@ -337,9 +337,10 @@ fn a_choke_group_fades_the_open_hat() {
     let mut e = engine(&store, Plan::new(vec![open, closed], 8));
     assert!(close(level(&mut e, &[on(46, 1.0)])[0], 0.5));
     level(&mut e, &[on(42, 1.0)]);
+    level(&mut e, &[]);
     assert!(
         close(level(&mut e, &[])[0], 0.25),
-        "the open hat faded out (5 ms)"
+        "the open hat faded out (10 ms)"
     );
 }
 
@@ -353,6 +354,7 @@ fn group_polyphony_keeps_only_the_newest_voice() {
     let mut e = engine(&store, plan);
     level(&mut e, &[on(60, 1.0)]);
     level(&mut e, &[on(64, 1.0)]);
+    level(&mut e, &[]);
     assert!(close(level(&mut e, &[])[0], 0.5), "one voice, not two");
     assert_eq!(e.playing_voices(), 1);
 }

@@ -11,7 +11,7 @@ impl Engine {
     pub(crate) fn choke_by(&mut self, group: u32, note: NoteRef) {
         let fade = self.fade_frames();
         let plan = self.plan.clone();
-        self.steal_where(fade, |s| {
+        self.stats.voices_stolen += self.fade_where(fade, |s| {
             s.note != Some(note)
                 && plan
                     .zones
@@ -26,14 +26,15 @@ impl Engine {
         let Some(group) = plan.voice_groups.get(vg as usize) else {
             return;
         };
-        let fade = (group.fade_ms * self.rate as f32 / 1000.0).round().max(1.0) as u32;
+        // A stolen voice fades over its group's time, at least 1 ms (Kontakt).
+        let fade = (group.fade_ms.max(1.0) * self.rate as f32 / 1000.0).round() as u32;
         let voice_group = |s: &Slot| {
             (s.voice.is_active() && !s.fading)
                 .then(|| plan.zones.get(s.zone)?.voice_group)
                 .flatten()
         };
         if let Some(set) = group.exclusive {
-            self.steal_where(fade, |s| {
+            self.stats.voices_stolen += self.fade_where(fade, |s| {
                 let other = voice_group(s)
                     .filter(|&o| o != vg)
                     .and_then(|o| plan.voice_groups.get(o as usize));
