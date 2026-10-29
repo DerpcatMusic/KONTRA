@@ -262,10 +262,9 @@ impl Engine {
         self.targets(id, &mut hits);
         for &note in &hits {
             if !stop {
-                self.each_voice(
-                    |s| s.note == Some(note),
-                    |e, i| e.voices[i].voice.fade_to(0.0, frames),
-                );
+                for slot in self.voices.iter_mut().filter(|s| s.note == Some(note)) {
+                    slot.voice.fade_to(0.0, frames);
+                }
                 continue;
             }
             if let Some(n) = self.notes.get_mut(note) {
@@ -285,10 +284,9 @@ impl Engine {
             if let Some(n) = self.notes.get_mut(note) {
                 n.fade_in = frames;
             }
-            self.each_voice(
-                |s| s.note == Some(note),
-                |e, i| e.voices[i].voice.fade_in(frames),
-            );
+            for slot in self.voices.iter_mut().filter(|s| s.note == Some(note)) {
+                slot.voice.fade_in(frames);
+            }
         }
         self.targets_scratch = hits;
     }
