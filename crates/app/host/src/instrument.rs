@@ -54,6 +54,15 @@ pub fn read_saved(
     }
 }
 
+/// The file at `path` as saved values for another instrument (a Kontakt
+/// snapshot), read without that instrument; None for anything else, or a
+/// snapshot this cannot read (its full load then reports why).
+#[must_use]
+pub fn preset(path: &Path) -> Option<kontra_format_kontakt::Preset> {
+    let snapshot = (path.extension()).is_some_and(|e| e.eq_ignore_ascii_case("nksn"));
+    snapshot.then(|| kontra_format_kontakt::preset(path).ok())?
+}
+
 /// Reads the instrument at `path` for an engine at `rate`.
 ///
 /// # Errors

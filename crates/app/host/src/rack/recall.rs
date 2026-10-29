@@ -6,39 +6,37 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use kontra_engine::{Engine, Plan, Recall, Saved, ir};
+use kontra_engine::{Engine, Plan, Recall, Saved};
+use kontra_format_kontakt::Preset;
 
 use super::{Command, Part, Rack, ScriptState};
 
 impl Rack {
-    /// Recalls `instrument`'s saved values into `part` when the part plays
-    /// the same source file and only KSP scripts; false (nothing done) when
-    /// it must load. A Lua script's saved state may pick other samples, so a
-    /// part with one always loads.
-    pub(super) fn recall(
-        &mut self,
-        part: usize,
-        instrument: &ir::Instrument,
-        path: Option<&Path>,
-    ) -> bool {
+    /// Recalls `preset` into `part` when the part plays the preset's base
+    /// file and only KSP scripts; false (nothing done) when it must load. A
+    /// Lua script's saved state may pick other samples, so a part with one
+    /// always loads.
+    pub(super) fn recall(&mut self, part: usize, preset: &Preset, path: Option<&Path>) -> bool {
         let Some(Some(p)) = self.parts.get_mut(part) else {
             return false;
         };
-        let same = p.source.is_some() && p.source == instrument.source_path;
-        let ksp = (instrument.scripts.iter()).all(|s| s.dialect != ir::Dialect::Lua);
+        let same = p.source.as_deref() == Some(preset.base.as_path());
+        let ksp = (p.script.vars.iter()).all(|v| v.widgets.is_empty() && !v.state);
         let Some(plan) = p.plan.clone().filter(|_| same && ksp) else {
             return false;
         };
         let saved: Vec<Saved> = (p.script.vars.iter())
-            .map(|v| {
-                let script = instrument.scripts.get(v.script);
-                v.recall(script.map_or(&[], |s| s.saved.as_slice()))
+            .map(|v| v.recall(preset.saved.get(v.script).map_or(&[], Vec::as_slice)))
+            .collect();
+        // What a save writes: the preset's values, the loaded ones where it
+        // has none for a slot.
+        let loaded: Vec<Vec<String>> = (p.script.loaded.iter().enumerate())
+            .map(|(n, old)| match preset.saved.get(n) {
+                Some(new) if !new.is_empty() => new.clone(),
+                _ => old.clone(),
             })
             .collect();
-        let loaded = (instrument.scripts.iter())
-            .map(|s| s.saved.clone())
-            .collect();
-        p.name.clone_from(&instrument.name);
+        p.name.clone_from(&preset.name);
         p.path = path.map(Path::to_owned);
         match p.recall {
             Recall::Keep => {

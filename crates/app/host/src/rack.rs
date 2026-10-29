@@ -304,6 +304,13 @@ impl Rack {
     /// When the file is not an instrument this can read, or `part` is past
     /// the rack.
     pub fn load(&mut self, part: usize, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        // A preset of the instrument the part plays recalls into it,
+        // without reading the instrument.
+        if let Some(preset) = crate::instrument::preset(path)
+            && self.recall(part, &preset, Some(path))
+        {
+            return Ok(());
+        }
         self.load_ir(part, crate::instrument::read(path)?, Some(path.to_owned()))
     }
 
@@ -354,7 +361,14 @@ impl Rack {
         instrument: ir::Instrument,
         path: Option<PathBuf>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if self.recall(part, &instrument, path.as_deref()) {
+        let preset = kontra_format_kontakt::Preset {
+            name: instrument.name.clone(),
+            base: instrument.source_path.clone().unwrap_or_default(),
+            saved: (instrument.scripts.iter())
+                .map(|s| s.saved.clone())
+                .collect(),
+        };
+        if instrument.source_path.is_some() && self.recall(part, &preset, path.as_deref()) {
             return Ok(());
         }
         self.load_built(part, instrument, path, &[], &[])

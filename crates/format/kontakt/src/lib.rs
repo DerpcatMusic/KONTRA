@@ -24,6 +24,7 @@ mod samples;
 mod script_knobs;
 mod skreamer;
 mod snapshot;
+pub use snapshot::{Preset, preset};
 mod solid_knobs;
 mod timed;
 mod translate;

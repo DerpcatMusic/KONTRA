@@ -16,7 +16,25 @@ const METADATA: u16 = 0x51;
 /// Directory entries the base search may read before it gives up.
 const BUDGET: usize = 16_384;
 
-pub(crate) fn load(path: &Path) -> Result<ir::Instrument, Error> {
+/// A snapshot as a preset of its base instrument: the base's file and the
+/// saved values per script slot, without reading the base.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Preset {
+    /// The snapshot's own name (its file stem).
+    pub name: String,
+    /// The base instrument, absolute, as its IR's `source_path` names it.
+    pub base: PathBuf,
+    /// Saved persistent values by script slot; an empty slot keeps the
+    /// base's own.
+    pub saved: Vec<Vec<String>>,
+}
+
+/// Reads the snapshot at `path` as a [`Preset`].
+///
+/// # Errors
+/// When the file is not a snapshot this can read, or its base instrument
+/// is not found.
+pub fn preset(path: &Path) -> Result<Preset, Error> {
     let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
     let chunks = container::chunks(path)?;
     let state =
@@ -26,11 +44,25 @@ pub(crate) fn load(path: &Path) -> Result<ir::Instrument, Error> {
         .ok_or_else(|| Error::new(path, "snapshot metadata", "missing"))?;
     let names = snapshot_metadata_names(names).map_err(decode("snapshot metadata"))?;
     let base = base(path, &names)?;
-    let (base_chunks, monolith, encrypted) = container::opened(&base)?;
-    let mut out =
-        translate::instrument(&base, &base_chunks, monolith, &state.persistent, encrypted)?;
-    if let Some(stem) = path.file_stem() {
-        out.name = stem.to_string_lossy().into_owned();
+    Ok(Preset {
+        name: (path.file_stem()).map_or_else(String::new, |s| s.to_string_lossy().into_owned()),
+        base: std::path::absolute(&base).unwrap_or(base),
+        saved: state.persistent,
+    })
+}
+
+pub(crate) fn load(path: &Path) -> Result<ir::Instrument, Error> {
+    let preset = preset(path)?;
+    let (base_chunks, monolith, encrypted) = container::opened(&preset.base)?;
+    let mut out = translate::instrument(
+        &preset.base,
+        &base_chunks,
+        monolith,
+        &preset.saved,
+        encrypted,
+    )?;
+    if !preset.name.is_empty() {
+        out.name = preset.name;
     }
     Ok(out)
 }
