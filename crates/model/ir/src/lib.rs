@@ -12,6 +12,7 @@ mod effects;
 mod mods;
 mod output;
 mod reverb;
+mod route_names;
 mod wavetable;
 pub use bus::{Bus, BusSend};
 pub use drive::{
@@ -27,6 +28,7 @@ pub use output::{Balance, Output, OutputControllers};
 pub use reverb::{
     CombNetwork, HadamardNetwork, Law, NETWORK_LINES, Network, ReverbNetwork, ReverbPar,
 };
+pub use route_names::RouteNames;
 pub use wavetable::{FormShaper, Side, Warp, WarpShape, Wavetable};
 
 #[derive(Clone, Debug)]
