@@ -337,7 +337,7 @@ fn an_until_release_loop_repeats_until_release_then_plays_on() {
 /// frequency for any sample length, and a position halfway cancels them.
 #[test]
 fn a_table_plays_its_cycle_at_the_step_and_morphs_by_position() {
-    use kontra_voice::{CYCLE, PERIOD, Read, Table, Warp};
+    use kontra_voice::{CYCLE, LEVELS, PERIOD, Read, Table, Warp};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
     let frames = 2 * CYCLE;
@@ -360,6 +360,16 @@ fn a_table_plays_its_cycle_at_the_step_and_morphs_by_position() {
             std::slice::from_ref(&(0..frames)),
         )
         .unwrap();
+    // Each cycle's every level is the one cycle.
+    let data: Arc<[i16]> = (0..frames)
+        .map(|n| {
+            let sine = (std::f32::consts::TAU * (n % CYCLE) as f32 / CYCLE as f32).sin();
+            (if n < CYCLE { sine } else { -sine } * 32767.0) as i16
+        })
+        .collect();
+    let spans: Arc<[(u32, u32)]> = (0..2 * LEVELS)
+        .map(|i| (if i < LEVELS { 0 } else { CYCLE as u32 }, CYCLE as u32))
+        .collect();
     let play = |position| {
         let read = Read {
             position,
@@ -368,7 +378,7 @@ fn a_table_plays_its_cycle_at_the_step_and_morphs_by_position() {
         };
         let region = Region {
             mix: None,
-            table: Table::new(0, frames, read),
+            table: Table::new((Arc::clone(&data), 1.0 / 32767.0), Arc::clone(&spans), read),
             sample: Arc::clone(&sample),
             start: 0,
             end: frames,

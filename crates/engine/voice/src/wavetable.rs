@@ -1,9 +1,8 @@
 //! A zone read as a wavetable: whole single cycles of [`CYCLE`] frames, one
 //! after another. A voice plays at the note's frequency whatever the
-//! sample's rate; its position morphs between neighbouring cycles, and two
-//! phase warps bend where in the cycle it reads.
-
-use kontra_stream::{Mix, Sample, StreamClient};
+//! sample's rate, from band-limited copies of each cycle; its position
+//! morphs between neighbouring cycles, and two forms bend where in the
+//! cycle it reads and shape what it read.
 
 /// Frames in one cycle.
 pub const CYCLE: u64 = 2048;
@@ -22,18 +21,36 @@ pub struct Read {
     pub warps: [Warp; 2],
 }
 
-/// One bend of the read phase by `amount`, 0..1.
+/// One form by `amount`, 0..1: a bend of the read phase, then a shaper of
+/// the level read.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Warp {
     pub shape: Shape,
+    pub shaper: Shaper,
     pub amount: f32,
 }
 
 impl Warp {
     pub const OFF: Self = Self {
         shape: Shape::Off,
+        shaper: Shaper::Off,
         amount: 0.0,
     };
+}
+
+/// The model's shapers (`kontra_ir::Shaper` documents each).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shaper {
+    Off,
+    Edges,
+    Window,
+    Saturate,
+    Fold,
+    Blinds(u8),
+    Arch,
+    Peak,
+    Fall,
+    Wrap,
 }
 
 /// Which way a warp leans as its amount rises.
@@ -137,100 +154,167 @@ pub fn warp(w: Warp, p: f32) -> f32 {
     }
 }
 
-/// A zone's cycles and where a voice reads them.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Levels each cycle is kept at, each with fewer harmonics than the last.
+pub const LEVELS: usize = 29;
+/// The longest period in output frames each level plays (Kontakt 8.13's
+/// table at `0x144fd01c0`); level `k` keeps the harmonics up to
+/// `TOP[k] / 2`, so none passes the output's Nyquist.
+pub const TOP: [f32; LEVELS] = [
+    2048.0, 1625.0, 1290.0, 1024.0, 812.0, 645.0, 512.0, 406.0, 322.0, 256.0, 203.0, 161.0, 128.0,
+    101.0, 80.0, 64.0, 50.0, 40.0, 32.0, 25.0, 20.0, 16.0, 12.0, 10.0, 8.0, 6.0, 4.0, 3.0, 2.0,
+];
+/// Frames each level is kept at (`0x144fcffc0`): about four a harmonic.
+pub const SIZE: [u32; LEVELS] = [
+    4096, 4096, 4096, 2048, 2048, 2048, 1024, 1024, 1024, 512, 512, 512, 256, 256, 256, 128, 128,
+    128, 64, 64, 64, 32, 32, 32, 16, 16, 16, 8, 8,
+];
+
+/// A zone's cycles, band-limited, and where a voice reads them.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Table {
-    /// The first cycle's first frame.
-    pub first: u64,
-    /// Whole cycles from `first`; a trailing part cycle is not read.
-    pub cycles: u64,
+    pub cycles: usize,
+    /// Every cycle's levels, as 16-bit steps of `scale`.
+    pub data: std::sync::Arc<[i16]>,
+    pub scale: f32,
+    /// Where in `data` level `k` of cycle `c` lies, at `c * LEVELS + k`:
+    /// its first frame and its length, a power of two.
+    pub spans: std::sync::Arc<[(u32, u32)]>,
     pub read: Read,
 }
 
 impl Table {
-    /// The cycles of `first..end`; `None` under one cycle.
+    /// `None` without a cycle, or unless every cycle has its levels.
     #[must_use]
-    pub fn new(first: u64, end: u64, read: Read) -> Option<Self> {
-        let cycles = end.checked_sub(first)? / CYCLE;
-        (cycles > 0).then_some(Self {
-            first,
+    pub fn new(
+        (data, scale): (std::sync::Arc<[i16]>, f32),
+        spans: std::sync::Arc<[(u32, u32)]>,
+        read: Read,
+    ) -> Option<Self> {
+        let cycles = spans.len() / LEVELS;
+        let fits = spans.iter().all(|&(first, len)| {
+            len.is_power_of_two() && (first as usize).saturating_add(len as usize) <= data.len()
+        });
+        (cycles > 0 && spans.len() == cycles * LEVELS && fits).then_some(Self {
             cycles,
+            data,
+            scale,
+            spans,
             read,
         })
     }
 
     /// Fills `out` from cursor `x` ([`PERIOD`] a cycle since the note
-    /// began), moving `step` a frame: Hermite within each cycle, the two
-    /// cycles about `position` blended. Returns the frames not in memory.
-    // ponytail: two short reads a frame; read whole cycles into the voice
-    // when many wavetable voices cost too much.
-    pub(crate) fn render(
-        &self,
-        sample: &Sample,
-        client: &StreamClient,
-        mix: Option<&Mix>,
-        (x, step): (f64, f64),
-        out: &mut [[f32; 2]],
-    ) -> u32 {
+    /// began), moving `step` a frame, as Kontakt reads (`0x140cd55c0`):
+    /// Hermite within the two levels about the period, blended, then the
+    /// two cycles about `position`; each form's shaper last.
+    pub(crate) fn render(&self, (x, step): (f64, f64), out: &mut [[f32; 2]]) {
         let at = f64::from(self.read.position.clamp(0.0, 1.0)) * (self.cycles - 1) as f64;
-        let lo = at as u64;
-        let hi = (lo + 1).min(self.cycles - 1);
-        let blend = at.fract() as f32;
-        let mut missing = 0;
+        let c0 = at as usize;
+        let c1 = (c0 + 1).min(self.cycles - 1);
+        let morph = at.fract() as f32;
+        let [w1, w2] = self.read.warps;
+        let (l0, l1, blend) = level(PERIOD / (step * sync(w2)));
+        let cycle = |c: usize, q: f32| {
+            let a = self.hermite(c * LEVELS + l0, q);
+            a + (self.hermite(c * LEVELS + l1, q) - a) * blend
+        };
         for (i, frame) in out.iter_mut().enumerate() {
             let cursor = x + i as f64 * step;
             let p = ((cursor / PERIOD) + f64::from(self.read.phase)).fract() as f32;
-            let [w1, w2] = self.read.warps;
-            let read = f64::from(warp(w2, warp(w1, p))) * CYCLE as f64;
-            let mut tap = |cycle: u64| {
-                let (taps, m) = self.taps(sample, client, mix, cycle, read);
-                missing += m;
-                taps
-            };
-            let a = tap(lo);
-            *frame = if hi == lo || blend == 0.0 {
+            let q = warp(w2, warp(w1, p));
+            let a = cycle(c0, q);
+            let s = if morph == 0.0 {
                 a
             } else {
-                let b = tap(hi);
-                [a[0] + (b[0] - a[0]) * blend, a[1] + (b[1] - a[1]) * blend]
+                a + (cycle(c1, q) - a) * morph
             };
+            let s = shape(w2, p, shape(w1, p, s));
+            *frame = [s, s];
         }
-        missing
     }
 
-    /// Cycle `cycle` at fractional frame `read`, wrapping within the cycle.
-    fn taps(
-        &self,
-        sample: &Sample,
-        client: &StreamClient,
-        mix: Option<&Mix>,
-        cycle: u64,
-        read: f64,
-    ) -> ([f32; 2], u32) {
-        let base = self.first + cycle * CYCLE;
-        let start = (read as u64 + CYCLE - 1) % CYCLE;
-        let mut q = [[0.0f32; 2]; 4];
-        let mut missing = 0;
-        if start + 4 <= CYCLE {
-            missing += sample.read_mixed(client, base + start, &mut q, mix).missing;
+    /// The level at `span` read at phase `q`, wrapping within it.
+    fn hermite(&self, span: usize, q: f32) -> f32 {
+        let Some(&(first, len)) = self.spans.get(span) else {
+            return 0.0;
+        };
+        let at = len as f32 * q;
+        let i = at as u32;
+        let tap = |k: u32| {
+            let at = first + (i.wrapping_add(k).wrapping_sub(1) & (len - 1));
+            f32::from(self.data.get(at as usize).copied().unwrap_or(0)) * self.scale
+        };
+        crate::hermite(tap(0), tap(1), tap(2), tap(3), at.fract())
+    }
+}
+
+/// How many cycles a form squeezes into one (`0x140ce8df0`), so its level
+/// choice follows; Kontakt counts only the second form.
+fn sync(w: Warp) -> f64 {
+    match w.shape {
+        Shape::Sync | Shape::Pulse => f64::from(w.amount) * 15.0 + 1.0,
+        _ => 1.0,
+    }
+}
+
+/// The two levels about a period of `x` output frames and the blend
+/// towards the second (`0x140ce7a50`).
+fn level(x: f64) -> (usize, usize, f32) {
+    let last = LEVELS - 1;
+    if x <= 2.0 {
+        return (last, last, 0.0);
+    }
+    // An unmoving voice (an infinite period) plays the full cycle too.
+    if x >= 2047.0 || x.is_nan() {
+        return (0, 0, 0.0);
+    }
+    let x = x as f32;
+    let hi = TOP.partition_point(|&h| h > x).clamp(1, last);
+    let top = |k: usize| TOP.get(k).copied().unwrap_or(2.0);
+    (hi - 1, hi, (top(hi - 1) - x) / (top(hi - 1) - top(hi)))
+}
+
+/// The level `s` a form's shaper leaves at phase `p` (`0x140ce6eb0`).
+#[must_use]
+pub fn shape(w: Warp, p: f32, s: f32) -> f32 {
+    let a = w.amount;
+    let window = |x: f32| {
+        let x = if x > 0.5 { 1.0 - x } else { x };
+        if x > 0.25 {
+            1.0 - (0.5 - x).powi(3) * 32.0
         } else {
-            for (k, tap) in q.iter_mut().enumerate() {
-                let at = base + (start + k as u64) % CYCLE;
-                missing += (sample.read_mixed(client, at, std::slice::from_mut(tap), mix)).missing;
+            x.powi(3) * 32.0
+        }
+    };
+    match w.shaper {
+        Shaper::Off => s,
+        Shaper::Edges if p < 0.25 => window(p + p) * s,
+        Shaper::Edges if p > 0.75 => window(p + p - 1.0) * s,
+        Shaper::Edges => s,
+        Shaper::Window => window(p) * s,
+        Shaper::Saturate => ((a * a * 8.0 + 1.0) * s).clamp(-1.0, 1.0),
+        Shaper::Fold => {
+            let t = (a * a * 3.75 + 0.25) * s + 0.25;
+            ((t - t.round()).abs() - 0.25) * 4.0
+        }
+        Shaper::Blinds(n) => {
+            let odd = (f32::from(n) * 2.0 * p) as i32 % 2 != 0;
+            if odd { (1.0 - a) * s } else { s }
+        }
+        Shaper::Arch => (p * std::f32::consts::PI).sin() * s,
+        Shaper::Peak if p < 0.5 => (p + p) * s,
+        Shaper::Peak => (1.0 - (p - 0.5 + p - 0.5)) * s,
+        Shaper::Fall => (1.0 - p) * s,
+        Shaper::Wrap => {
+            let t = if p >= 0.5 { s + a } else { s - a };
+            if t < -1.0 {
+                t + 2.0
+            } else if t > 1.0 {
+                t - 2.0
+            } else {
+                t
             }
         }
-        let t = read.fract() as f32;
-        let [y0, y1, y2, y3] = q;
-        let frame = std::array::from_fn(|c| {
-            crate::hermite(
-                y0.get(c).copied().unwrap_or(0.0),
-                y1.get(c).copied().unwrap_or(0.0),
-                y2.get(c).copied().unwrap_or(0.0),
-                y3.get(c).copied().unwrap_or(0.0),
-                t,
-            )
-        });
-        (frame, missing)
     }
 }
 
@@ -239,7 +323,7 @@ mod tests {
     use super::*;
 
     /// Kontakt 8.13's phase-form numbers (its routine `0x140567aa0`) as shapes.
-    fn shape(kind: u8) -> Option<Shape> {
+    fn form(kind: u8) -> Option<Shape> {
         let skew = |reach, side| Shape::Skew { reach, side };
         Some(match kind {
             0 => Shape::Off,
@@ -284,7 +368,8 @@ mod tests {
                     continue;
                 };
                 let w = Warp {
-                    shape: shape(kind as u8).unwrap(),
+                    shape: form(kind as u8).unwrap(),
+                    shaper: Shaper::Off,
                     amount: a,
                 };
                 let got = warp(w, p);
@@ -299,16 +384,26 @@ mod tests {
     }
 
     #[test]
-    fn a_part_cycle_is_not_read() {
+    fn a_period_picks_the_levels_about_it() {
+        assert_eq!(level(f64::INFINITY), (0, 0, 0.0));
+        assert_eq!(level(2047.5), (0, 0, 0.0));
+        assert_eq!(level(1.5), (LEVELS - 1, LEVELS - 1, 0.0));
+        assert_eq!(level(1024.0), (2, 3, 1.0));
+        let (lo, hi, blend) = level(183.0);
+        assert_eq!((lo, hi), (10, 11));
+        assert!((blend - 20.0 / 42.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_table_without_every_level_is_refused() {
         let read = Read {
             position: 0.0,
             phase: 0.0,
             warps: [Warp::OFF; 2],
         };
-        assert_eq!(
-            Table::new(0, 3 * CYCLE + 100, read).map(|t| t.cycles),
-            Some(3)
-        );
-        assert!(Table::new(0, 100, read).is_none());
+        let spans: std::sync::Arc<[_]> = vec![(0, 8); LEVELS].into();
+        assert!(Table::new((vec![0; 8].into(), 1.0), spans.clone(), read).is_some());
+        assert!(Table::new((vec![0; 4].into(), 1.0), spans, read).is_none());
+        assert!(Table::new((vec![0; 8].into(), 1.0), vec![(0, 8); 3].into(), read).is_none());
     }
 }

@@ -11,7 +11,9 @@ mod zone;
 use kontra_stream::{Mix, StreamClient};
 
 pub use envelope::Ahdsr;
-pub use wavetable::{CYCLE, PERIOD, Read, Shape, Side, Table, Warp, warp};
+pub use wavetable::{
+    CYCLE, LEVELS, PERIOD, Read, SIZE, Shape, Shaper, Side, TOP, Table, Warp, shape, warp,
+};
 pub use zone::{Loop, Region};
 
 use envelope::Envelope;
@@ -218,11 +220,10 @@ impl Voice {
             return;
         };
         let sample = &region.sample;
-        let mix = region.mix.as_ref();
         let released = self.released;
         let ahead = (LOOKAHEAD * self.step) as usize;
         let step = self.step;
-        let table = region.table;
+        let table = region.table.as_ref();
         let ahead = if table.is_some() { 0 } else { ahead };
         region.runs(self.at(0) as i64, ahead, released, |offset, run| {
             let low = if run.descending {
@@ -249,11 +250,10 @@ impl Voice {
                 (((SCRATCH - 4) as f64 / self.step).floor() as usize).max(1)
             };
             let n = fit.min(out.len() - done);
-            let filled = if let Some(table) = &table {
+            let filled = if let Some(table) = table {
                 let cursor = (self.at(0), self.step);
                 let raw = self.raw.get_mut(..n).unwrap_or_default();
-                let missing = table.render(sample, client, mix, cursor, raw);
-                self.missing += u64::from(missing);
+                table.render(cursor, raw);
                 raw.len()
             } else {
                 self.read_window(client, &region, n)
