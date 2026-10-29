@@ -119,12 +119,13 @@ Live status: the `KONTRA v3` GitHub project and `plan.py ready`.
 
 | Id | Task | Lane | Size | Agent | Deps |
 |---|---|---|---|---|---|
-| P8.1 | Protocol channels replace Shared's 54 fields (draft) | app | L | worker | P7.7 |
-| P8.2 | app/host from src/sound, src/plugin.rs (non-UI), routing, support (draft) | app | L | worker | P8.1 |
+| P8.1 | kontra-protocol: commands in, publications and retirements out | app | M | worker | P7.7 |
+| P8.2 | kontra-host rack: parts, load off the audio thread, routing, master, panic | app | L | worker | P8.1 |
 | P8.3 | app/library and app/align (draft) | app | M | worker | P8.1 |
-| P8.4 | app/ui depends on protocol only (draft) | app | L | worker | P8.2 |
-| P8.5 | plugin/ thin shell; tools moves; final DAG enforcement (draft) | app | M | worker | P8.3, P8.4 |
-| P8.6 | Gate G8: v3 complete, merge to main | coordinator | S | coordinator | P8.5 |
+| P8.4 | app/ui depends on protocol only | app | L | worker | P8.1 |
+| P8.4b | NI Native UI (.nui) into the UI tree | app | L | worker | P8.4 |
+| P8.5 | plugin/: the v3 plugin shell (KONTRA v3) beside v2 | app | M | worker | P8.2, P8.4 |
+| P8.6 | Gate G8: v3 complete, v2 deleted, merge to main | coordinator | S | coordinator | P8.5, P8.4b |
 
 ## Dependency graph
 
@@ -223,6 +224,7 @@ flowchart LR
     P8_2["P8.2"]
     P8_3["P8.3"]
     P8_4["P8.4"]
+    P8_4b["P8.4b"]
     P8_5["P8.5"]
     P8_6["P8.6"]
   end
@@ -335,8 +337,10 @@ flowchart LR
   P7_7 --> P8_1
   P8_1 --> P8_2
   P8_1 --> P8_3
-  P8_2 --> P8_4
-  P8_3 --> P8_5
+  P8_1 --> P8_4
+  P8_4 --> P8_4b
+  P8_2 --> P8_5
   P8_4 --> P8_5
   P8_5 --> P8_6
+  P8_4b --> P8_6
 ```
