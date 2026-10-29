@@ -190,7 +190,13 @@ impl Look {
                     && button.is_some()
                     && style.is_none_or(|s| matches!(s.font, model::Font::Stock(0 | 12)))
                 {
-                    let caption = caption.replace(' ', "    ");
+                    // The installed font-12 atlas marks a one-pixel space;
+                    // the stock control advances four pixels for it.
+                    let caption = if style.is_some_and(|s| s.font == model::Font::Stock(12)) {
+                        caption.replace(' ', "    ")
+                    } else {
+                        caption.clone()
+                    };
                     parts.push(field_words(
                         &caption,
                         ink,
