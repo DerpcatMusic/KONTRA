@@ -285,4 +285,54 @@ mod tests {
         });
         assert!(matches!(off, Some(Event::NoteOffVelocity(p, v)) if p.id == 117 && v == 0.25));
     }
+
+    /// A CLAP note ends by a note-off with a wildcard id, and by a MIDI 1
+    /// note-off (or note-on at velocity 0) on its key and channel.
+    #[test]
+    fn a_clap_note_ends_by_any_note_off_on_its_key() {
+        use moose::core::{EventList, ExactEvent, LosslessEventRef};
+        let decode = |body| {
+            let mut events = EventList::with_capacity(1);
+            events.try_push_exact(ExactEvent::new(0, body)).unwrap();
+            let Some(LosslessEventRef::Exact(e)) = events.lossless_iter().next() else {
+                panic!("no exact event");
+            };
+            exact(e)
+        };
+        let on = decode(ExactEventBody::Note {
+            kind: ExactNoteKind::On,
+            address: ExactNoteAddress::from_raw_signed(0, 2, 60, 117),
+            velocity: 0.75,
+        });
+        let Some(Event::NoteOn { note, .. }) = on else {
+            panic!("{on:?}");
+        };
+        let wildcard = decode(ExactEventBody::Note {
+            kind: ExactNoteKind::Off,
+            address: ExactNoteAddress::from_raw_signed(0, 2, 60, -1),
+            velocity: 0.0,
+        });
+        let midi = |body| event(&HostEvent::new(0, body));
+        let offs = [
+            wildcard,
+            midi(EventBody::NoteOff {
+                group: 0,
+                channel: 2,
+                note: 60,
+                velocity: 0,
+            }),
+            midi(EventBody::NoteOn {
+                group: 0,
+                channel: 2,
+                note: 60,
+                velocity: 0,
+            }),
+        ];
+        for off in offs {
+            let (Some(Event::NoteOff(p)) | Some(Event::NoteOffVelocity(p, _))) = off else {
+                panic!("{off:?}");
+            };
+            assert!(p.matches(note), "{p:?} does not end {note:?}");
+        }
+    }
 }
