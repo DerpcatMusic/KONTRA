@@ -120,10 +120,11 @@ pub struct Zone {
     pub pan: f64,
 }
 
-/// A library's interface and its decoded pictures.
+/// A library's interface, its decoded pictures and the gesture on it.
 pub struct Face {
     pub tree: Interface,
     pub pictures: Pictures,
+    pub gesture: crate::input::Gesture,
 }
 
 impl std::fmt::Debug for Face {
@@ -259,6 +260,13 @@ pub enum Action {
     Output(usize, u8),
     Velocity(usize, u8),
     Articulation(usize, usize),
+    /// A library's own control set by the user: the widget of the part's
+    /// interface and its value, for the host to write into the engine.
+    Control {
+        part: usize,
+        widget: usize,
+        value: f64,
+    },
     /// Play a zone of a part's mapping.
     Audition {
         part: usize,

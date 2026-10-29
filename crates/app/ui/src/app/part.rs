@@ -8,7 +8,7 @@ use super::{Action, FACE_SCALES, Part, PartTab, View};
 use crate::keyboard::note_name;
 use crate::kit::{self, Icon, glyph, icon_button, interactive, latch, section};
 use crate::theme::{CONTROL, SPACE, TEXT, TIGHT, part_color, secondary};
-use crate::view;
+use crate::{input, view};
 
 /// `room`: the width the rack has for a library's view, 0 while unknown.
 pub(super) fn view(
@@ -32,7 +32,18 @@ pub(super) fn view(
                 room,
                 wide,
             );
+            let (edits, popup) = input::read(ui, &face.tree, PageRef(0), scale, &mut face.gesture);
+            input::apply(&mut face.tree, &edits);
+            out.extend(edits.iter().map(|e| Action::Control {
+                part: n,
+                widget: e.widget.0,
+                value: e.value,
+            }));
             let (page, _) = view::page(ui, &face.tree, PageRef(0), &mut face.pictures, scale);
+            let page = match popup {
+                Some(menu) => stack![page, menu],
+                None => page,
+            };
             // Wider than the rack at a fixed scale, it scrolls sideways.
             row![spacer(), page.shrink(0), spacer()]
                 .w(Len::Pct(100.))
