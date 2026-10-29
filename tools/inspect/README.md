@@ -60,3 +60,7 @@ source for each active voice, while `bus_routes` gives the last applied bus
 amount. Non-EQ applied per-voice target values are not yet available; `null`
 sources are not zero. Octave-band RMS uses Hann-windowed stereo FFTs and is
 reported for the full output and successive one-second intervals.
+`voice_effect_targets` are the engine's recomputed target configurations at
+the snapshot, not the instantaneous value of an interpolating effect.
+`shared_effects` shows the current shared rack configurations with the last
+bus route amounts applied. Effect configurations use descriptive debug text.
