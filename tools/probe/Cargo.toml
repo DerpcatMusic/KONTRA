@@ -11,15 +11,8 @@ description = "Playback contracts C1-C10 (docs/architecture-v3/10-TESTING.md)"
 name = "kontra-probe"
 path = "src/main.rs"
 
-[[bin]]
-name = "kontra-inspect"
-path = "src/inspect/main.rs"
-
 [dependencies]
 kontakto = { path = "../.." }
-kontra-engine = { path = "../../crates/engine/engine" }
-kontra-host = { path = "../../crates/app/host" }
-kontra-stream = { path = "../../crates/engine/stream" }
 sampler-ir = { path = "../../crates/sampler-ir" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
