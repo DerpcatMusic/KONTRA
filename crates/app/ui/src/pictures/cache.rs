@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 fn root() -> Option<PathBuf> {
-    Some(dirs::cache_dir()?.join("kontra/stock-art-v1"))
+    Some(dirs::cache_dir()?.join("kontra/stock-art-v2"))
 }
 
 fn index(root: &Path, path: &Path) -> Option<PathBuf> {
@@ -19,15 +19,15 @@ fn index(root: &Path, path: &Path) -> Option<PathBuf> {
 }
 
 pub(super) enum Cached {
-    Images(Box<[Image; 4]>),
+    Images(Box<[Image; 5]>),
     Missing,
 }
 
-pub(super) fn load(path: &Path, dims: &[(u32, u32); 4]) -> Option<Cached> {
+pub(super) fn load(path: &Path, dims: &[(u32, u32); 5]) -> Option<Cached> {
     load_at(&root()?, path, dims)
 }
 
-fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 4]) -> Option<Cached> {
+fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 5]) -> Option<Cached> {
     let index = index(root, path)?;
     if !matches!(index.metadata().ok()?.len(), 7 | 64) {
         return None;
@@ -68,6 +68,7 @@ fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 4]) -> Option<Cached> {
         image(1)?,
         image(2)?,
         image(3)?,
+        image(4)?,
     ])))
 }
 
@@ -80,12 +81,12 @@ pub(super) fn missing(path: &Path) {
     }
 }
 
-pub(super) fn save(path: &Path, hash: &str, images: &[Image; 4]) {
+pub(super) fn save(path: &Path, hash: &str, images: &[Image; 5]) {
     let Some(root) = root() else { return };
     save_at(&root, path, hash, images);
 }
 
-fn save_at(root: &Path, path: &Path, hash: &str, images: &[Image; 4]) {
+fn save_at(root: &Path, path: &Path, hash: &str, images: &[Image; 5]) {
     let dir = root.join(hash);
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -119,10 +120,10 @@ mod tests {
         let exe = dir.path().join("kontakt.exe");
         std::fs::write(&exe, b"first").unwrap();
         let image = || mui::prelude::Image::rgba(1, 1, vec![1, 2, 3, 255]).unwrap();
-        let images = [image(), image(), image(), image()];
+        let images = [image(), image(), image(), image(), image()];
         let root = dir.path().join("cache");
         super::save_at(&root, &exe, &"a".repeat(64), &images);
-        let Some(super::Cached::Images(cached)) = super::load_at(&root, &exe, &[(1, 1); 4]) else {
+        let Some(super::Cached::Images(cached)) = super::load_at(&root, &exe, &[(1, 1); 5]) else {
             panic!("no cached images")
         };
         assert_eq!(&*cached[0].rgba, &[1, 2, 3, 255]);
@@ -130,12 +131,12 @@ mod tests {
         std::fs::write(&unsupported, b"unsupported").unwrap();
         super::write_index(&root, &unsupported, "missing");
         assert!(matches!(
-            super::load_at(&root, &unsupported, &[(1, 1); 4]),
+            super::load_at(&root, &unsupported, &[(1, 1); 5]),
             Some(super::Cached::Missing)
         ));
         std::fs::write(&unsupported, b"new version").unwrap();
-        assert!(super::load_at(&root, &unsupported, &[(1, 1); 4]).is_none());
+        assert!(super::load_at(&root, &unsupported, &[(1, 1); 5]).is_none());
         std::fs::write(&exe, b"changed executable").unwrap();
-        assert!(super::load_at(&root, &exe, &[(1, 1); 4]).is_none());
+        assert!(super::load_at(&root, &exe, &[(1, 1); 5]).is_none());
     }
 }

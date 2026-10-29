@@ -138,9 +138,15 @@ fn drawn_page(
         let stock_art = look
             .as_ref()
             .and_then(|look| look.pictures(pictures, device));
-        let stock_glyphs = stock_art
-            .as_ref()
-            .and_then(|_| pictures.font(model::AssetRef(usize::MAX - 3), "@stock/font"));
+        let stock_glyphs = look.as_ref().and_then(|look| {
+            let field_font = matches!(look, stock::Look::Field { .. })
+                && style.is_some_and(|s| s.font == model::Font::Stock(13));
+            if field_font {
+                pictures.font(model::AssetRef(usize::MAX - 4), "@stock/font13")
+            } else {
+                pictures.font(model::AssetRef(usize::MAX - 3), "@stock/font")
+            }
+        });
         let stock = item.stock;
         let words = item.words;
         let glyphs = match style.map(|s| &s.font) {
