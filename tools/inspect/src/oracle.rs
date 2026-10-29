@@ -150,3 +150,16 @@ pub fn run(path: &Path, events: &[Input], audio: &[[f32; 2]]) -> Result<Value> {
     }
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn uvi_reference_is_reported_unavailable_before_starting_wine() {
+        let err = run(Path::new("example.uvip"), &[], &[]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("UVI native capture is unavailable")
+        );
+    }
+}

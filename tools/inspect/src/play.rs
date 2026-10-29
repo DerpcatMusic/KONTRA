@@ -267,8 +267,16 @@ pub fn run(path: &Path, scenario_name: &str, oracle: bool) -> Result<(Value, Str
             .get("comparison")
             .and_then(|r| r.get("level_diff_db"))
             .and_then(Value::as_f64);
+        let peak_difference = reference
+            .get("comparison")
+            .and_then(|r| r.get("peak_diff_db"))
+            .and_then(Value::as_f64);
+        let native_jump = reference
+            .get("native_metrics")
+            .and_then(|r| r.get("max_sample_jump"))
+            .and_then(Value::as_f64);
         summary.push_str(&format!(
-            "  oracle: {status}; level difference (native minus v3) {difference:?} dB {detail}\n"
+            "  oracle: {status}; native minus v3 RMS {difference:?} dB, peak {peak_difference:?} dB; native max jump {native_jump:?} {detail}\n"
         ));
     }
     Ok((
