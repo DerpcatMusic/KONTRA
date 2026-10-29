@@ -1698,6 +1698,49 @@ fn a_script_loads_an_effect_type_into_a_slot() {
     assert_eq!(e.last_message(), "-1 1 1");
 }
 
+/// `wait_async` holds its callback until the effect type it waits on is
+/// installed, so the knob writes after it reach the new unit (Conflux's FX
+/// menu: subtype, wait, cutoff).
+#[test]
+fn wait_async_holds_until_the_effect_type_is_installed() {
+    use kontra_engine::{Prepared, ir};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].mods.clear();
+    plan.inserts = vec![None];
+    let ty = |id| ir::SlotType {
+        id,
+        subtype: false,
+        reads: id * 10,
+        effect: None,
+        laws: Vec::new().into(),
+    };
+    plan.slot_shapes.types = vec![ty(0), ty(7)];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_EFFECT_TYPE, 7, -1, 0, 1)
+            message(\"init \" & get_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, -1, 0, 1))
+        end on
+        on note
+            wait_async(set_engine_par($ENGINE_PAR_EFFECT_TYPE, 0, -1, 0, 1))
+            message(\"after \" & get_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, -1, 0, 1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "init 70");
+    level(&mut e, &[on(60)]);
+    let mut requests = Vec::new();
+    e.drain_requests(|r| requests.push(r));
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "init 70", "still waiting");
+    e.install(Prepared::new(requests[0], None, RATE));
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "after 0");
+}
+
 /// `stop_wait` as measured in Kontakt (ANALOG, two `wait(10 s)` then
 /// `play_note`, stopped from `on release`): 0 ends only the current wait,
 /// 1 also lets every later wait pass. The first wait's own resume, still

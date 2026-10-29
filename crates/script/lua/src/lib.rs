@@ -465,7 +465,7 @@ fn host_call(host: &mut dyn HostApi, context: u64, args: &[Value]) -> Value {
         HostValue::Nothing => Value::Nil,
         HostValue::Int(i) => Value::Number(f64::from(i)),
         HostValue::Real(r) => Value::Number(r),
-        HostValue::Text => Value::Nil,
+        HostValue::Text | HostValue::Wait(_) => Value::Nil,
     }
 }
 
