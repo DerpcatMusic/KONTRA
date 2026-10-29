@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 anyhow = "1"
+dirs = "5"
 kontra-format = { path = "../common" }
 kontra-ir = { path = "../../model/ir" }
 roxmltree = "=0.21.1"

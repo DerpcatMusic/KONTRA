@@ -5,6 +5,7 @@
 
 mod bank;
 mod header;
+mod keys;
 mod program;
 
 use std::path::{Path, PathBuf};
