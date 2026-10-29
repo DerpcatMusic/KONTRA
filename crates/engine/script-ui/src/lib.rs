@@ -200,6 +200,17 @@ impl Store {
         Some(value)
     }
 
+    /// The entry a save keeps for menu control `n` of script `slot` holding
+    /// `value`: the first entry with that value, else (an assignment no
+    /// entry matched leaves the selection) the last selected. `None` for a
+    /// control without entries.
+    #[must_use]
+    pub fn saved_index(&self, slot: u8, n: usize, value: i64) -> Option<usize> {
+        let entries = self.menus.get(usize::from(slot))?.get(n)?;
+        let found = entries.iter().position(|e| i64::from(e.value) == value);
+        (!entries.is_empty()).then(|| found.unwrap_or_else(|| self.selected(slot, n)))
+    }
+
     /// The entry menu control `n` of script `slot` last selected.
     #[must_use]
     pub fn selected(&self, slot: u8, n: usize) -> usize {
