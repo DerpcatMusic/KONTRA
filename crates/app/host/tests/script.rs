@@ -2768,7 +2768,9 @@ fn a_text_edit_callback_reads_the_typed_text() {
             message(@name)
         end on";
     let script = kontra_ksp::compile(source, &[]).unwrap();
-    let cell = kontra_host::ui::Face::of(&script, &[]).text_cell("@name").unwrap();
+    let cell = kontra_host::ui::Face::of(&script, &[])
+        .text_cell("@name")
+        .unwrap();
     let store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(Vec::new(), 16);
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
