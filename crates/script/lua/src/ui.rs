@@ -60,6 +60,8 @@ pub struct Widget {
     /// Hex colours by field: background, text, fill.
     pub colours: [Option<String>; 3],
     pub font_size: Option<f64>,
+    pub font: Option<String>,
+    pub align: Option<String>,
 }
 
 /// A Lua number or boolean, as a number.
@@ -138,6 +140,8 @@ pub(crate) fn read(lua: &Lua) -> Ui {
                 strip,
                 colours: ["backgroundColour", "textColour", "fillColour"].map(|k| text(w, k)),
                 font_size: num(w, "fontSize"),
+                font: text(w, "font"),
+                align: text(w, "align"),
                 kind,
                 name,
             }
