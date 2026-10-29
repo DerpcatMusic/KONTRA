@@ -83,8 +83,10 @@ impl Engine {
             {
                 // HeldTime is fixed at the voice's start: see `release_counter`.
                 let intensity = intensity * self.scale(zone, source, note, age);
-                let g =
-                    (self.unit(zone, source, note, age)).map_or(1.0, |x| curve.gain(intensity, x));
+                let input = self.unit(zone, source, note, age);
+                let g = input.map_or(1.0, |x| curve.gain(intensity, x));
+                #[cfg(feature = "trace")]
+                self.trace_route(zone, m, input, g, crate::RouteUnit::GainMultiplier);
                 if tau_ms > 0.0 {
                     (lagged, tau) = (lagged * g, tau.max(tau_ms));
                 } else {
@@ -98,7 +100,11 @@ impl Engine {
                 .filter(|m| !m.bypass)
                 .filter_map(|m| match m.kind {
                     ir::ModKind::Pan { source, amount } => {
-                        Some(self.routed(zone, source, note, age)? * amount)
+                        let input = self.routed(zone, source, note, age)?;
+                        let value = input * amount;
+                        #[cfg(feature = "trace")]
+                        self.trace_route(zone, m, Some(input), value, crate::RouteUnit::Pan);
+                        Some(value)
                     }
                     _ => None,
                 })
@@ -144,7 +150,11 @@ impl Engine {
                     .get_mut(usize::from(row))
                     .and_then(|r| r.get_mut(usize::from(side)))
             {
-                *cell *= self.source(zone, source, note, age).unwrap_or(1.0);
+                let input = self.source(zone, source, note, age);
+                let value = input.unwrap_or(1.0);
+                #[cfg(feature = "trace")]
+                self.trace_route(zone, m, input, value, crate::RouteUnit::MixMultiplier);
+                *cell *= value;
                 moved = true;
             }
         }
@@ -214,8 +224,11 @@ impl Engine {
                             lfo: l,
                             depth,
                         } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
-                            let x = self.source(zone, source, note, Age::START).unwrap_or(0.0);
-                            lfo.phase += x * depth;
+                            let input = self.source(zone, source, note, Age::START);
+                            let value = input.unwrap_or(0.0) * depth;
+                            #[cfg(feature = "trace")]
+                            self.trace_route(zone, m, input, value, crate::RouteUnit::PhaseCycles);
+                            lfo.phase += value;
                         }
                         ir::ModKind::LfoRate {
                             source,
@@ -224,8 +237,10 @@ impl Engine {
                             octaves,
                             range_hz: [lo, hi],
                         } if l == n && !matches!(source, ir::Source::Lfo(_)) => {
-                            let x = self.source(zone, source, note, Age::START).unwrap_or(0.0);
-                            let f = (x * depth * octaves).exp2();
+                            let input = self.source(zone, source, note, Age::START);
+                            let f = (input.unwrap_or(0.0) * depth * octaves).exp2();
+                            #[cfg(feature = "trace")]
+                            self.trace_route(zone, m, input, f, crate::RouteUnit::RateMultiplier);
                             lfo.rate = match lfo.rate {
                                 ir::Rate::Hz(hz) => ir::Rate::Hz((hz * f).clamp(lo, hi.max(lo))),
                                 ir::Rate::Beats(b) => ir::Rate::Beats(b / f),
@@ -326,7 +341,19 @@ impl Engine {
                         source,
                         of: o,
                         depth,
-                    } if o == of => Some(1.0 - (1.0 - self.unit(zone, source, note, age)?) * depth),
+                    } if o == of => {
+                        let input = self.unit(zone, source, note, age)?;
+                        let value = 1.0 - (1.0 - input) * depth;
+                        #[cfg(feature = "trace")]
+                        self.trace_route(
+                            zone,
+                            m,
+                            Some(input),
+                            value,
+                            crate::RouteUnit::IntensityMultiplier,
+                        );
+                        Some(value)
+                    }
                     _ => None,
                 })
                 .product()
@@ -346,7 +373,10 @@ impl Engine {
                 tau_ms,
             } = m.kind
             {
-                let st = self.routed(zone, source, note, age).unwrap_or(0.0) * semitones * depth;
+                let input = self.routed(zone, source, note, age);
+                let st = input.unwrap_or(0.0) * semitones * depth;
+                #[cfg(feature = "trace")]
+                self.trace_route(zone, m, input, st, crate::RouteUnit::Semitones);
                 if tau_ms > 0.0 {
                     bend.semitones += st;
                     bend.tau_ms = bend.tau_ms.max(tau_ms);

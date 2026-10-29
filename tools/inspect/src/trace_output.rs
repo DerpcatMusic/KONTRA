@@ -1,5 +1,5 @@
 //! Conversion of fixed-size engine events to the inspector's JSON schema.
-use kontra_engine::{Plan, TraceEvent};
+use kontra_engine::{Plan, RouteUnit, RouteValue, TraceEvent};
 use serde_json::{Value, json};
 
 pub fn event(e: &TraceEvent, plan: &Plan, samples: &[Option<String>], rate: u32) -> Value {
@@ -95,4 +95,44 @@ fn callback_name(kind: u8) -> Option<&'static str> {
         15 => Some("ui_controls"),
         _ => None,
     }
+}
+
+/// A contribution captured in the engine while a controller refreshed a voice.
+pub fn route(value: &RouteValue, plan: &Plan, samples: &[Option<String>]) -> Value {
+    let group = plan
+        .zones
+        .get(value.zone)
+        .and_then(|z| usize::try_from(z.group).ok())
+        .and_then(|i| plan.groups.get(i));
+    let names: Vec<_> = group
+        .into_iter()
+        .flat_map(|g| &g.mods)
+        .filter(|m| {
+            m.slot == value.mod_slot
+                && m.target == value.target
+                && std::mem::discriminant(&m.kind) == std::mem::discriminant(&value.kind)
+        })
+        .map(|m| m.name.as_str())
+        .collect();
+    let name = if names.len() == 1 {
+        names.first().copied()
+    } else {
+        None
+    };
+    let input_domain = match value.unit {
+        RouteUnit::GainMultiplier
+        | RouteUnit::ResonanceMultiplier
+        | RouteUnit::IntensityMultiplier => "unipolar source",
+        RouteUnit::Pan
+        | RouteUnit::Semitones
+        | RouteUnit::CutoffDepth
+        | RouteUnit::ResonanceDepth
+        | RouteUnit::EqDecibels => "intensity-scaled source",
+        _ => "raw source",
+    };
+    json!({"frame":value.frame,"voice_slot":value.voice_slot,"zone":value.zone,"sample":samples.get(value.zone),
+        "controller":value.controller,"direct_controller_source":value.direct_controller_source,
+        "mod_slot":value.mod_slot,"target":value.target,"name":name,"route":super::routes::route(value.kind),
+        "input":value.source,"input_domain":input_domain,"contribution":value.value,"unit":format!("{:?}",value.unit),
+        "meaning":"contribution evaluated in controller-triggered voice refresh; before smoothing, combining and final clamping"})
 }
