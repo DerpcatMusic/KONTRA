@@ -11,17 +11,11 @@ python3 website/build_inspector.py /mnt/Windows11/DEV_WORKSPACE/RunScratch/kontr
 python3 -m http.server 4173 --directory /mnt/Windows11/DEV_WORKSPACE/RunScratch/kontra-site
 ```
 
-The build copies public assets and renders `features.html` with the complete compatibility table and embedded data. JavaScript adds search, sampler/category/status filters, semantic status sorting and 25-row pagination. Without JavaScript, the complete table and source links remain available. Filtered views can be linked with `?sampler=Kontakt` or `?sampler=UVI`, plus `category`, `status` and `q`. The same data is published as `compatibility.json`. The old `/tracker/` URL redirects to the table.
+The build copies public assets and renders `features.html` with the recorded compatibility observations and embedded data. JavaScript adds search, sampler/category/status filters, semantic status sorting and 25-row pagination. Without JavaScript, the recorded observations and source links remain available. Filtered views can be linked with `?sampler=Kontakt` or `?sampler=UVI`, plus `category`, `status` and `q`. The same data is published as `compatibility.json`. The old `/tracker/` URL redirects to the table.
 
 ## Compatibility data
 
-`build_site.py` uses `tools/coverage/tracker.py` to read committed engine probes, modulation targets, the KSP parity ledger, format catalogs, UVI feature records and verification records. Public builds set `KONTRA_COVERAGE_SOURCE_ONLY=1`: private local catalogs cannot refresh or replace committed snapshots. The source commit and commit date identify each publication; row source links are pinned to that exact commit.
-
-- **Implemented:** implemented and verified according to the tracker.
-- **Partial:** incomplete, approximate, unverified, stale probes or a known mismatch. The row retains its notes and verification state.
-- **Not implemented:** recorded as unsupported or absent.
-
-A commit alone does not prove feature completion. Code probes and current source are re-evaluated each build; coverage and verification records still need updating when implementation changes. The table tracks features, not whole-library compatibility, and does not represent a test run against every library. It describes main, which can be ahead of the latest downloadable release.
+`build_site.py` reads the committed `tools/coverage/v3-facts.json` snapshot: the v3 load census, KSP census and Kontakt/UVI law audit. The snapshot records its source and scope. Results are partial, dated 29 October 2026 and may be stale; they do not establish whole-library compatibility. No private library paths or program names are published.
 
 `ROADMAP.md` and `roadmap.html` record the current sampler priorities: Kontakt and UVI/Falcon in parallel; Opus/EastWest, HALion, HISE and other sampler frontends next. Keep those two files synchronized. Historical architecture checkpoints do not override these priorities.
 
