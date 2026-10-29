@@ -47,3 +47,22 @@ pub struct ReverbNetwork {
     /// `glide_s[0]` seconds, the line lengths over `glide_s[1]`.
     pub glide_s: [f32; 2],
 }
+
+/// Parallel damped combs into series allpasses, per channel: the classic
+/// comb network. Each channel's lines are `spread_ms` longer than the
+/// last's; the input is scaled by `input_gain` before the combs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CombNetwork {
+    pub combs_ms: [f32; 8],
+    pub allpasses_ms: [f32; 4],
+    pub spread_ms: f32,
+    pub input_gain: f32,
+}
+
+impl CombNetwork {
+    /// The combs' mean length, s: a reverb's seconds are 60 dB over it.
+    #[must_use]
+    pub fn mean_s(&self) -> f32 {
+        self.combs_ms.iter().sum::<f32>() / 8000.0
+    }
+}
