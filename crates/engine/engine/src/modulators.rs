@@ -1,10 +1,11 @@
 //! Time-varying sources, read from a voice's age: breakpoint envelopes and
-//! LFOs. Evaluated in closed form once per span, so a voice carries no
-//! modulator state and a refresh at any time gives the same value.
+//! LFOs. Evaluated in closed form once per span; a voice carries only the
+//! cycles live rate routes added to its LFOs ([`Age::warp`]).
 
 use kontra_ir as ir;
 use kontra_time::SampleTime;
 
+use crate::ledger::Note;
 use crate::voice_gain::{self, GROUP_PAN_TAU_MS};
 use crate::{Engine, MAX_SPAN};
 
@@ -17,13 +18,20 @@ pub(crate) struct Age {
     pub released: Option<f32>,
     /// Since the engine started (free-running LFOs).
     pub now: f32,
+    /// Cycles added to the group's first [`WARPS`] LFOs by their live rate
+    /// routes ([`ir::ModKind::LfoHz`]), integrated span by span.
+    pub warp: [f32; WARPS],
 }
+
+/// How many of a group's LFOs a live rate route can move.
+pub(crate) const WARPS: usize = 8;
 
 impl Age {
     pub(crate) const START: Self = Self {
         held: 0.0,
         released: None,
         now: 0.0,
+        warp: [0.0; WARPS],
     };
 }
 
@@ -35,6 +43,7 @@ impl Engine {
             held: seconds(SampleTime(self.now.0.saturating_sub(started.0))),
             released: released.map(|r| seconds(SampleTime(r.0.saturating_sub(started.0)))),
             now: seconds(self.now),
+            warp: [0.0; WARPS],
         }
     }
 
@@ -62,8 +71,13 @@ impl Engine {
             let (Some(n), true, true) = (n, timed, slot.voice.is_active()) else {
                 continue;
             };
-            let age = self.age(slot.started, slot.released_at);
+            let age = Age {
+                warp: slot.warp,
+                ..self.age(slot.started, slot.released_at)
+            };
             let rate = self.rate;
+            let span = (MAX_SPAN - self.now.0 % MAX_SPAN) as f32 / rate as f32;
+            let warp = self.warp(zone, &n, age, span);
             let to = self.group_pan(zone);
             let pan = voice_gain::glide(slot.pan[0], to, GROUP_PAN_TAU_MS, MAX_SPAN as f32, rate);
             let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age, pan);
@@ -86,10 +100,43 @@ impl Engine {
                 );
                 slot.bend = [at, bend.semitones];
                 slot.pan = [pan, to];
+                slot.warp = warp;
                 slot.voice
                     .set_step(voice_gain::bent(law, step, bend.instant + at));
             }
         }
+    }
+}
+
+impl Engine {
+    /// `age`'s warps `span` seconds on: each LFO's live rate routes, read
+    /// now, held over the span (the rate steps, the phase stays continuous).
+    fn warp(&self, zone: &crate::Zone, note: &Note, age: Age, span: f32) -> [f32; WARPS] {
+        let mut warp = age.warp;
+        let Some(g) = self.groups.get(zone.group as usize) else {
+            return warp;
+        };
+        // Per LFO: Hz added, and its range once a route reaches it.
+        let mut added = [(0.0, None); WARPS];
+        for m in g.mods.iter().filter(|m| !m.bypass) {
+            if let ir::ModKind::LfoHz {
+                source,
+                lfo,
+                depth,
+                range_hz: [lo, hi],
+            } = m.kind
+                && let Some((hz, range)) = added.get_mut(usize::from(lfo))
+            {
+                *hz += self.source(zone, source, note, age).unwrap_or(0.0) * depth * (hi - lo);
+                *range = Some([lo, hi.max(lo)]);
+            }
+        }
+        for ((w, (hz, range)), lfo) in warp.iter_mut().zip(added).zip(&g.lfos) {
+            if let (Some([lo, hi]), ir::Rate::Hz(f)) = (range, lfo.rate) {
+                *w = (*w + ((f + hz).clamp(lo, hi) - f) * span).rem_euclid(1.0);
+            }
+        }
+        warp
     }
 }
 

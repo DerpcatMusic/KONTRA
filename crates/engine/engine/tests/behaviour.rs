@@ -1817,6 +1817,58 @@ fn a_velocity_rate_route_speeds_a_voices_lfo() {
 }
 
 #[test]
+fn a_live_controller_moves_an_lfos_rate_mid_note() {
+    use kontra_engine::ir::{Clock, Curve, Lfo, Mod, ModKind, Rate, Source, Wave};
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 1.0)], 8);
+    plan.groups[0].lfos = vec![Lfo {
+        wave: Wave::Sine,
+        rate: Rate::Hz(1.0),
+        phase: 0.0,
+        fade_ms: 0.0,
+        clock: Clock::Voice,
+    }];
+    let route = |kind| Mod {
+        name: String::new(),
+        slot: 0,
+        target: 0,
+        bypass: false,
+        kind,
+    };
+    plan.groups[0].mods = vec![
+        route(ModKind::Volume {
+            source: Source::Lfo(0),
+            intensity: 1.0,
+            curve: Curve::Depth { power: 1 },
+            tau_ms: 0.0,
+        }),
+        // The wheel adds up to 2 Hz, the rate held within 0..=2 Hz.
+        route(ModKind::LfoHz {
+            source: Source::Controller(1),
+            lfo: 0,
+            depth: 1.0,
+            range_hz: [0.0, 2.0],
+        }),
+    ];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60, 1.0)]);
+    for _ in 1..47 {
+        level(&mut e, &[]);
+    }
+    // A quarter cycle in at 1 Hz, the wheel goes up: 2 Hz from there.
+    let mut last = level(&mut e, &[cc(1, 127)])[0];
+    for _ in 48..=70 {
+        last = level(&mut e, &[])[0];
+    }
+    // 0.376 s: half a cycle (0.85 had the rate stayed, 0.15 unheld at 3 Hz).
+    let t1 = 47.0 * 256.0 / RATE as f32;
+    let t = (70.0 * 256.0 + 128.0) / RATE as f32;
+    let phase = t1 + 2.0 * (t - t1);
+    let want = (1.0 + (std::f32::consts::TAU * phase).sin()) / 2.0;
+    assert!((last - want).abs() < 0.03, "{last} vs {want}");
+}
+
+#[test]
 fn a_controller_moves_a_bus_eq_band_while_it_plays() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut z = Zone::new(sine(&mut store), 60, RATE);
