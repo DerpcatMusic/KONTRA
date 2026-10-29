@@ -14,7 +14,7 @@ and appends one line to <out>/ledger.tsv.
 
 Build first (once):
   build-slot cargo build --release -p kontra-host --example render --example uvi_programs
-  tools/v3-survey/survey.py [--jobs 4] [--only TEXT] [--libraries DIR ...]
+  tools/v3-survey/survey.py [--jobs 3] [--only TEXT] [--libraries DIR ...]
 """
 import argparse, concurrent.futures as cf, math, os, re, statistics, subprocess, sys, tempfile, time
 from collections import Counter, defaultdict
@@ -59,7 +59,7 @@ def render(binary, path, velocity, timeout):
     with tempfile.TemporaryDirectory(dir='/data/dev/workspace/scratch') as tmp:
         env = dict(os.environ, KONTRA_VELOCITY=str(velocity))
         try:
-            p = subprocess.run([str(binary), path, '60', f'{tmp}/out.wav'], env=env,
+            p = subprocess.run(['nice', '-n', '19', str(binary), path, '60', f'{tmp}/out.wav'], env=env,
                                capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return None, 'timeout'
@@ -126,7 +126,7 @@ def median(values):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--jobs', type=int, default=4)
+    ap.add_argument('--jobs', type=int, default=3, help='parallel renders, each at nice 19 (keep the desktop and DAW responsive)')
     ap.add_argument('--only', help='only instruments whose path contains this')
     ap.add_argument('--libraries', nargs='*', type=Path, default=LIBRARIES)
     ap.add_argument('--out', type=Path, default=OUT)
