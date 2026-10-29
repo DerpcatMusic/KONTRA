@@ -13,9 +13,14 @@ A zone not prepared is not necessarily an error: for example, a saved purged
 group can defer sample loading. See diagnostics and group `purged` state.
 Effect and some model details use Rust debug text; they are descriptive, not a
 stable machine-readable schema. The versioned envelope reserves `null` for
-unavailable data. Translator law IDs and provenance, script callback inventory,
-original-to-runtime script slot mapping, and asset existence are not yet exposed by this path and are explicitly listed
-as unavailable. Script inventory slots are original file slots; UI slots are runtime slots, which can differ after a compile failure. Slot laws and route curves that are already in the IR are shown.
+unavailable data. Translator law IDs and provenance and asset existence are
+not yet exposed by this path and are explicitly listed as unavailable. Script
+inventory includes original and runtime slots, compilation status, and compiled
+callback entries. Entries are bytecode offsets or foreign dispatcher IDs; the
+foreign widget dispatcher is generic and does not prove a script defines every
+widget callback. A null entry means no compiled entry, while zero is a valid
+offset. If host slot data is inconsistent, the mapping and callback inventory
+are reported unavailable. Slot laws and route curves already in the IR are shown.
 
 `kontra-inspect` does not run the existing v2 `kontra-probe` contracts.
 

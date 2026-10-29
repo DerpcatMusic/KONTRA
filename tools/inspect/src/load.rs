@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use kontra_engine::Engine;
+use kontra_engine::{Callbacks, Engine};
 use kontra_stream::{Store, StoreConfig};
 use serde_json::{Value, json};
 
@@ -58,16 +58,53 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
             })
         })
         .collect();
-    let scripts: Vec<_> = instrument.scripts.iter().enumerate().map(|(slot, s)| json!({
+    let mut scripts: Vec<_> = instrument.scripts.iter().enumerate().map(|(slot, s)| json!({
         "original_slot": slot, "name": s.name, "dialect": format!("{:?}", s.dialect),
         "data": s.data.iter().map(|(name, bytes)| json!({"name": name, "bytes": bytes.len()})).collect::<Vec<_>>(),
-        "callbacks": null,
+        "runtime_slot": null, "compile_status": "unknown", "callbacks": null,
     })).collect();
     let effects = json!({"inserts": format!("{:?}", instrument.inserts),
         "sends": format!("{:?}", instrument.sends), "main": format!("{:?}", instrument.main),
         "buses": format!("{:?}", instrument.buses), "slot_laws": format!("{:?}", instrument.slot_laws)});
     let mut store = Store::new(StoreConfig::DEFAULT).context("creating sample store")?;
     let loaded = kontra_host::instrument::build(instrument, RATE, &mut store);
+    let original_slots: Vec<_> = loaded.persist.iter().map(|vars| vars.script).collect();
+    let mapping = script_mapping(scripts.len(), &original_slots, loaded.plan.scripts.len());
+    let mut callback_count = 0usize;
+    for (original, row) in scripts.iter_mut().enumerate() {
+        let runtime = mapping
+            .as_ref()
+            .and_then(|slots| slots.get(original))
+            .copied()
+            .flatten();
+        let compiled = runtime.and_then(|slot| loaded.plan.scripts.get(slot));
+        if let Some(fields) = row.as_object_mut() {
+            fields.insert("runtime_slot".into(), json!(runtime));
+            fields.insert(
+                "compile_status".into(),
+                json!(if compiled.is_some() {
+                    "compiled"
+                } else if mapping.is_some() {
+                    "not_compiled"
+                } else {
+                    "mapping_unavailable"
+                }),
+            );
+            if let Some(script) = compiled {
+                let (entries, count) = callbacks(&script.callbacks);
+                callback_count += count;
+                fields.insert("callbacks".into(), entries);
+                fields.insert(
+                    "callback_entry_kind".into(),
+                    json!(if script.foreign.is_some() {
+                        "foreign_dispatch"
+                    } else {
+                        "bytecode_offset"
+                    }),
+                );
+            }
+        }
+    }
     let zones = loaded.plan.zones.len();
     let prepared: HashSet<_> = loaded
         .plan
@@ -117,18 +154,28 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     let ui: Vec<_> = loaded.faces.iter().zip(&loaded.pages).enumerate().map(|(slot, (face, page))| {
         if let (Some(face), Ok(slot_id)) = (face, u8::try_from(slot)) {
             match kontra_host::ui::interface(face, slot_id, &engine, &|_| None) {
-                Ok(tree) => json!({"runtime_slot": slot, "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| json!({"path": a.path, "kind": format!("{:?}", a.kind), "found": null})).collect::<Vec<_>>(), "unsupported": tree.unsupported.iter().map(|u| format!("{u:?}")).collect::<Vec<_>>()}),
+                Ok(tree) => json!({"runtime_slot": slot, "original_slot": mapping.as_ref().and_then(|_| loaded.persist.get(slot)).map(|p| p.script), "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| json!({"path": a.path, "kind": format!("{:?}", a.kind), "found": null})).collect::<Vec<_>>(), "unsupported": tree.unsupported.iter().map(|u| format!("{u:?}")).collect::<Vec<_>>()}),
                 Err(e) => json!({"runtime_slot": slot, "error": e.to_string()}),
             }
         } else if let Some(page) = page {
             let tree = kontra_host::ui::lua::tree(page, &|_| None);
-            json!({"runtime_slot": slot, "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| json!({"path": a.path, "kind": format!("{:?}", a.kind), "found": null})).collect::<Vec<_>>(), "unsupported": tree.unsupported.iter().map(|u| format!("{u:?}")).collect::<Vec<_>>()})
+            json!({"runtime_slot": slot, "original_slot": mapping.as_ref().and_then(|_| loaded.persist.get(slot)).map(|p| p.script), "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| json!({"path": a.path, "kind": format!("{:?}", a.kind), "found": null})).collect::<Vec<_>>(), "unsupported": tree.unsupported.iter().map(|u| format!("{u:?}")).collect::<Vec<_>>()})
         } else { json!({"runtime_slot": slot, "error": "no UI model"}) }
     }).collect();
+    let callback_count = mapping.as_ref().map(|_| callback_count);
+    let callback_summary =
+        callback_count.map_or_else(|| "unavailable".to_owned(), |n| n.to_string());
+    let mut unavailable = vec!["translator law IDs and provenance", "asset existence"];
+    if mapping.is_none() {
+        unavailable.extend([
+            "original-to-runtime script slot mapping",
+            "script callbacks",
+        ]);
+    }
     let unanswered = format!("{:?}", engine.unhandled_actions());
     let faults = format!("{:?}", engine.script_faults());
     let summary = format!(
-        "{}\n  samples: {}; groups: {}; zones: {} translated / {} prepared; scripts: {}; UI models: {}\n  unprepared zones by reason: {unprepared_reasons:?}\n  diagnostics: {}; init unanswered: {}; script faults: {}\n  law IDs and callbacks: unavailable (not recorded by the v3 IR)\n",
+        "{}\n  samples: {}; groups: {}; zones: {} translated / {} prepared; scripts: {}; UI models: {}\n  unprepared zones by reason: {unprepared_reasons:?}\n  diagnostics: {}; init unanswered: {}; script faults: {}\n  compiled callback/dispatch entries: {callback_summary}; law IDs: unavailable (not recorded by the v3 IR)\n",
         loaded.name,
         samples.len(),
         groups.len(),
@@ -145,9 +192,54 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         "engine": "v3", "result": {"name": loaded.name, "samples": samples, "groups": groups,
         "translated_zones": input_zones, "prepared_zones": zones, "unprepared_reasons": unprepared_reasons, "effects": effects, "scripts": scripts, "ui": ui,
         "diagnostics": diagnostics, "init_unanswered": unanswered, "script_faults": faults,
-        "laws": null, "unavailable": ["translator law IDs and provenance", "script callbacks", "original-to-runtime script slot mapping", "asset existence"]}}),
+        "laws": null, "compiled_callback_count": callback_count, "script_mapping_available": mapping.is_some(), "unavailable": unavailable}}),
         summary,
     ))
+}
+
+/// Original-to-runtime mapping from the host's preserved original script IDs.
+fn script_mapping(
+    original_count: usize,
+    original_slots: &[usize],
+    compiled_count: usize,
+) -> Option<Vec<Option<usize>>> {
+    if original_slots.len() != compiled_count {
+        return None;
+    }
+    let mut result = vec![None; original_count];
+    for (runtime, &original) in original_slots.iter().enumerate() {
+        let target = result.get_mut(original)?;
+        if target.is_some() {
+            return None;
+        }
+        *target = Some(runtime);
+    }
+    Some(result)
+}
+
+/// The compiled engine dispatch entries; null means no entry was compiled.
+fn callbacks(c: &Callbacks) -> (Value, usize) {
+    let entries = [
+        c.init,
+        c.note,
+        c.release,
+        c.controller,
+        c.persistence_changed,
+        c.listener,
+        c.pgs_changed,
+        c.ui_controls,
+        c.async_complete,
+        c.widget,
+    ];
+    let count = entries.iter().filter(|e| e.is_some()).count()
+        + c.ui_control.iter().filter(|(_, e)| e.is_some()).count();
+    (
+        json!({"init":c.init,"note":c.note,"release":c.release,"controller":c.controller,
+        "persistence_changed":c.persistence_changed,"listener":c.listener,"pgs_changed":c.pgs_changed,
+        "ui_controls":c.ui_controls,"async_complete":c.async_complete,"widget_dispatch":c.widget,
+        "ui_control":c.ui_control.iter().map(|(id,entry)| json!({"control_id":id,"entry":entry})).collect::<Vec<_>>()}),
+        count,
+    )
 }
 
 /// Mirrors the prepare path's sample admission, without attributing an I/O error
@@ -165,6 +257,33 @@ fn absent_reason(sample: usize, sample_count: usize, resident: &HashSet<usize>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn script_mapping_preserves_gaps_and_rejects_inconsistent_host_data() {
+        assert_eq!(
+            script_mapping(4, &[0, 2, 3], 3),
+            Some(vec![Some(0), None, Some(1), Some(2)])
+        );
+        assert_eq!(script_mapping(2, &[0, 0], 2), None);
+        assert_eq!(script_mapping(2, &[3], 1), None);
+        assert_eq!(script_mapping(2, &[0], 2), None);
+    }
+
+    #[test]
+    fn callbacks_distinguish_absent_entries_from_zero_offset() {
+        let c = Callbacks {
+            init: Some(0),
+            controller: Some(9),
+            ui_control: vec![(17, None), (18, Some(20))],
+            ..Callbacks::default()
+        };
+        let (value, count) = callbacks(&c);
+        assert_eq!(count, 3);
+        assert_eq!(value["init"], json!(0));
+        assert!(value["note"].is_null());
+        assert!(value["ui_control"][0]["entry"].is_null());
+        assert_eq!(value["ui_control"][1]["entry"], json!(20));
+    }
 
     #[test]
     fn absent_zone_reasons_follow_prepare_sample_admission() {
