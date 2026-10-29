@@ -163,8 +163,12 @@ pub fn reported_ms(latest: impl IntoIterator<Item = f32>) -> f32 {
 /// legato); and which rows a legato script plays.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Holds {
-    rows: Vec<(Vec<(u8, u32, u32)>, bool)>,
+    rows: Vec<Row>,
 }
+
+/// One articulation's holds: by velocity range (top velocity, first note,
+/// legato), and whether a legato script plays it.
+type Row = (Vec<(u8, u32, u32)>, bool);
 
 impl Holds {
     /// Holds for a patch with `timing` against the `reported` latency (ms).
@@ -191,7 +195,7 @@ impl Holds {
         Self { rows }
     }
 
-    fn row(&self, articulation: Option<usize>) -> Option<&(Vec<(u8, u32, u32)>, bool)> {
+    fn row(&self, articulation: Option<usize>) -> Option<&Row> {
         articulation
             .and_then(|a| self.rows.get(a))
             .or_else(|| self.rows.last())
