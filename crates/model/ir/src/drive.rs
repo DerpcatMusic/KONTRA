@@ -128,6 +128,8 @@ pub enum EffectParam {
     ModPhase,
     PhaserExponent,
     PhaserFeedback,
+    /// A [`crate::Phaser`]'s allpass corner at the centre of its sweep.
+    PhaserHz,
     TransientAttack,
     TransientSustain,
     TransientGain,
@@ -194,6 +196,7 @@ impl EffectParam {
             (Self::ModPhase, EffectKind::Phaser(p)) => &mut p.phase,
             (Self::PhaserExponent, EffectKind::Phaser(p)) => &mut p.exponent,
             (Self::PhaserFeedback, EffectKind::Phaser(p)) => &mut p.feedback,
+            (Self::PhaserHz, EffectKind::Phaser(p)) => &mut p.hz,
             (Self::TransientAttack, EffectKind::Transient(t)) => &mut t.attack,
             (Self::TransientSustain, EffectKind::Transient(t)) => &mut t.sustain,
             (Self::TransientGain, EffectKind::Transient(t)) => &mut t.gain_db,

@@ -430,7 +430,11 @@ pub(crate) fn eq_knobs(saved: &[[f32; 3]]) -> Vec<SlotKnob> {
 /// `$EFFECT_TYPE_FILTER` (7) an AR LP2 (100), cutoff and resonance 0; for
 /// `$FILTER_TYPE_EQ3BAND` (24) bands at knobs .3656, .6201 and .858 (250 Hz,
 /// 1.45 kHz, 7.5 kHz), gain .5 (0 dB), bandwidth .0625 (0.5 octaves); for
-/// `$FILTER_TYPE_VERSATILE` (19) [`crate::versatile::DEFAULT`].
+/// `$FILTER_TYPE_VERSATILE` (19) [`crate::versatile::DEFAULT`]; for
+/// `$FILTER_TYPE_PHASER` (13) cutoff and resonance 0.
+// ponytail: Kontakt carries the filter's cutoff and resonance into a
+// subtype it switches to (oracle: 0.3 and 0.7 stay); a loaded subtype here
+// starts at its defaults. The corpus scripts write both after loading.
 pub(crate) fn slot_types() -> Vec<ir::SlotType> {
     let unit = |kind| ir::Effect {
         kind,
@@ -455,6 +459,13 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         laws,
     };
     let eq = Some(unit(ir::EffectKind::Eq(bands)));
+    let phaser = Some(ir::Effect {
+        output: 0.5,
+        dry: 0.5,
+        ..unit(ir::EffectKind::Phaser(crate::phaser_filter::phaser(
+            0.0, 0.0,
+        )))
+    });
     let versatile = Some(unit(ir::EffectKind::Cascade(crate::versatile::cascade(
         crate::versatile::DEFAULT,
     ))));
@@ -464,6 +475,7 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         ty(7, false, 100, filter, shape_laws(100)),
         ty(24, true, 24, eq, eq_knobs(&saved).into()),
         ty(19, true, 19, versatile, crate::versatile::knobs().into()),
+        ty(13, true, 13, phaser, crate::phaser_filter::knobs().into()),
     ]
 }
 
