@@ -112,8 +112,8 @@ impl<'a> Impulses<'a> {
             ]
         };
         let (early, late) = (cut(4, 5), cut(7, 8));
-        // A negative crossover puts CConvolver's fade (0x1419b1e30) before
-        // the first frame, so the late cuts filter all of it.
+        // A negative crossover keeps CConvolver's own split (0x1419b16b0,
+        // run on every response it loads): left as None, the engine finds it.
         let crossover = float(9);
         if early != late && crossover.is_none() {
             lost("impulse response early/late crossover");

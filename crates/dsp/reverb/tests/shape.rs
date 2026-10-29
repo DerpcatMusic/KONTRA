@@ -1,4 +1,4 @@
-use kontra_dsp_reverb::shape::{self, Cuts, cut, envelope};
+use kontra_dsp_reverb::shape::{self, Cuts, cut, envelope, split};
 
 const RATE: u32 = 48_000;
 
@@ -91,4 +91,33 @@ fn a_response_changes_rate_band_limited() {
     assert!(db < -60.0, "30 kHz folded to {db} dB");
     let kept = shape::resample(&sine(10_000.0, 96_000, 96_000), 96_000, 48_000, usize::MAX);
     assert!((20.0 * level(&kept).log10()).abs() < 0.05);
+}
+
+#[test]
+fn the_split_falls_where_the_reflections_give_way_to_a_diffuse_tail() {
+    // Six reflections over 62 ms, then a noise tail decaying 36 dB a second.
+    let mut state = 0x9E37_79B9u32;
+    let mut l: Vec<f32> = (0..RATE as usize)
+        .map(|n| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let noise = state as f32 / 2f32.powi(31) - 1.0;
+            noise * (-(n as f32 / RATE as f32) / 0.12).exp() * 0.2
+        })
+        .collect();
+    for (ms, g) in [
+        (3, 1.0),
+        (11, 0.6),
+        (19, -0.5),
+        (31, 0.4),
+        (47, -0.3),
+        (62, 0.25),
+    ] {
+        l[ms * RATE as usize / 1000] += g;
+    }
+    // The native detector (0x1419b16b0), run on the same response: 3024
+    // frames, just past the last reflection.
+    let at = split([&l, &l], RATE) * RATE as f32;
+    assert!((at - 3024.0).abs() <= 96.0, "{at}");
 }
