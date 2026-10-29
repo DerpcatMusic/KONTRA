@@ -8,7 +8,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use kontra_ui::app::{self, Action, App, Format, Library, Part, PartTab, Stats};
+use kontra_ui::app::{self, Action, App, Format, Library, Part, PartTab, Stats, Zone};
 use mui::prelude::{Buttons, Input, Point, PointerInput, Size, Ui};
 use mui::vello;
 
@@ -148,6 +148,22 @@ fn parts() -> Vec<Part> {
                 ("Scripts".into(), "3 scripts · 212 controls · 9 articulations".into()),
             ],
             scripts: vec!["Afflatus Engine".into(), "Keyswitches".into(), "Legato".into()],
+            groups: arts.iter().map(|a| (*a).to_owned()).take(4).collect(),
+            zones: (0..4usize)
+                .flat_map(|g| {
+                    // Two velocity layers per group, each over three key splits.
+                    (0..6u8).map(move |z| Zone {
+                        group: g,
+                        sample: format!("Horns_{g}_{}_{}.ncw", if z < 3 { "pp" } else { "ff" }, z % 3),
+                        keys: (36 + 16 * (z % 3), 51 + 16 * (z % 3)),
+                        velocities: if z < 3 { (1, 80) } else { (81, 127) },
+                        root: 43 + 16 * (z % 3),
+                        tune: f64::from(z) * 3. - 6.,
+                        volume: -1.5,
+                        ..Zone::default()
+                    })
+                })
+                .collect(),
             open: true,
             tab: PartTab::Articulations,
             level: 0.3,
@@ -217,6 +233,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             s.click(&format!("part-0-tab-{tab}"))?;
             s.save(&tab.to_lowercase())?;
         }
+        s.click("part-0-grid")?;
+        s.save("mapping-picked")?;
         s.click("part-0-tab-Articulations")?;
         s.click("tab-Mixer")?;
         s.save("mixer")?;
