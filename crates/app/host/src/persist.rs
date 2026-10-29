@@ -103,7 +103,7 @@ impl Capture {
     /// Reads the cells from `engine`; runs on the audio thread, in place.
     pub(crate) fn read(&mut self, engine: &Engine) {
         for (value, &(slot, cell)) in self.values.iter_mut().zip(self.cells.iter()) {
-            *value = engine.script_cell_in(slot, cell as usize);
+            *value = engine.script_saved_in(slot, cell as usize);
         }
         for (value, &(slot, cell)) in self.texts.iter_mut().zip(self.text_cells.iter()) {
             *value = engine.script_text_in(slot, cell as usize);
