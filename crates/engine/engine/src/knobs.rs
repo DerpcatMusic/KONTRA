@@ -125,8 +125,8 @@ impl Engine {
     }
 
     /// `set_engine_par` of a filter slot's shape `id`; false when the slot
-    /// has no such shape. The resonance keeps its setting through the new
-    /// shape's laws.
+    /// has no such shape. Cutoff and resonance keep their settings through
+    /// the new shape's laws.
     pub(crate) fn set_shape(&mut self, id: i32, group: i32, slot: i32, generic: i32) -> bool {
         let plan = Arc::clone(&self.plan);
         let Some(at) = rack_at(group, generic) else {
@@ -137,7 +137,8 @@ impl Engine {
         let Some(n) = shapes.iter().position(|s| here(s) && s.id == id) else {
             return false;
         };
-        let resonance = self.slot_x(ir::SlotKnob::Resonance, group, slot, generic);
+        let knobs = [ir::SlotKnob::Cutoff, ir::SlotKnob::Resonance];
+        let settings = knobs.map(|k| self.slot_x(k, group, slot, generic));
         let Some(ir::EffectKind::Filter(f)) =
             self.effect_mut(group, slot, generic).map(|e| &mut e.kind)
         else {
@@ -151,8 +152,10 @@ impl Engine {
                 *on = k == n;
             }
         }
-        if let Some(x) = resonance {
-            self.set_slot_knob(ir::SlotKnob::Resonance, x, group, slot, generic);
+        for (knob, x) in knobs.into_iter().zip(settings) {
+            if let Some(x) = x {
+                self.set_slot_knob(knob, x, group, slot, generic);
+            }
         }
         self.refresh_all(None);
         true
