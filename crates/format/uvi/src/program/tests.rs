@@ -1240,7 +1240,7 @@ fn an_lfo_on_an_lfos_freq_moves_its_rate_live() {
 }
 
 #[test]
-fn a_macro_a_script_can_set_is_read_live_but_held_on_a_ratio() {
+fn a_macro_a_script_can_set_is_read_live_on_a_ratio_too() {
     let xml = r#"<Program Gain="1">
       <ControlSignalSources>
         <ConstantModulation Name="Macro 6" Bypass="0" Bipolar="0" Value="0.5"/>
@@ -1271,30 +1271,45 @@ fn a_macro_a_script_can_set_is_read_live_but_held_on_a_ratio() {
     let doc = roxmltree::Document::parse(xml).unwrap();
     let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
     let g = &out.groups[0];
-    // Macro 7 scales the (user table) LFO's depth live.
-    let live = g
+    // Macro 7 scales the (user table) LFO's depth live, Macro 6 the
+    // wheel's pitch range (2 semitones at full) live: each a factor.
+    let factor_of = |input: ir::Source| {
+        let b = g.blends.iter().find(|b| b.terms[0].input.source == input)?;
+        let [f] = &b.terms[0].factors[..] else {
+            return None;
+        };
+        Some(f.input.source)
+    };
+    let Some(ir::Source::Script(depth)) = factor_of(ir::Source::Controller(1)) else {
+        panic!("{:?}", g.blends)
+    };
+    assert!(depth >= 0x8000, "{depth:#x}");
+    let lfo = g
         .blends
         .iter()
         .flat_map(|b| &b.terms)
         .flat_map(|t| &t.factors);
-    let sources: Vec<_> = live.map(|f| f.input.source).collect();
-    let [ir::Source::Script(id)] = sources[..] else {
-        panic!("{sources:?}")
+    let id = lfo
+        .map(|f| f.input.source)
+        .find(|&s| s != ir::Source::Script(depth));
+    let Some(ir::Source::Script(id)) = id else {
+        panic!("{:?}", g.blends)
     };
-    assert!(id >= 0x8000, "{id:#x}");
-    // The tree the script sees names it; Macro 6 on the wheel's ratio holds 0.5.
+    // The tree the script sees names it.
     assert!(out.scripts[0].data.iter().any(|(name, text)| {
         name == "__program.lua" && String::from_utf8_lossy(text).contains(&format!("mod={id}"))
     }));
     let wheel = g.mods.iter().find_map(|m| match m.kind {
         ir::ModKind::Pitch {
-            source: ir::Source::Controller(1),
+            source: ir::Source::Blend(n),
             semitones,
             ..
-        } => Some(semitones),
+        } if g.blends[usize::from(n)].terms[0].input.source == ir::Source::Controller(1) => {
+            Some(semitones)
+        }
         _ => None,
     });
-    assert_eq!(wheel, Some(1.0));
+    assert_eq!(wheel, Some(2.0));
 }
 
 #[test]

@@ -70,8 +70,10 @@ impl<L: Library> Translator<'_, '_, L> {
             let Some(id) = source.attribute("EventId").and_then(|i| i.parse().ok()) else {
                 continue;
             };
-            // A macro held on its ratio scales it (VWinds' release pitch drift).
-            let held = matrix::held_ratio(self.program, connection);
+            // A macro on its ratio scales it (VWinds' release pitch drift),
+            // a live one as a factor on its source.
+            let macros = matrix::macro_factors(self.program, connection);
+            let held = matrix::unmacroed_ratio(self.program, connection);
             let on = held.iter().flat_map(|_| matrix::children(connection));
             self.carried.extend(on.map(|c| c.id()).collect::<Vec<_>>());
             let raw = || num(connection, "Ratio", 1.0).unwrap_or(1.0) as f32;
@@ -127,6 +129,21 @@ impl<L: Library> Translator<'_, '_, L> {
                     continue;
                 };
                 let source = match &mapped {
+                    _ if !macros.is_empty() => {
+                        let term = ir::Term {
+                            input: mapped.clone().unwrap_or(ir::Transfer {
+                                source: ir::Source::Script(id),
+                                table: Vec::new(),
+                            }),
+                            amount: 1.0,
+                            factors: macros.clone(),
+                        };
+                        let blend = ir::Blend {
+                            base: 0.0,
+                            terms: vec![term],
+                        };
+                        ir::Source::Blend(super::index_of(&mut g.blends, blend))
+                    }
                     Some(t) => ir::Source::Shaped(super::index_of(&mut g.shapers, t.clone())),
                     None => ir::Source::Script(id),
                 };
