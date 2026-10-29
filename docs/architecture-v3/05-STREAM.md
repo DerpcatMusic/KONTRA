@@ -82,8 +82,15 @@ pub struct Blob { preload: Arc<[u8]>, file: FileRef, frames: Frames, fmt: Sample
   load holds its own copy.
 - **Deadline-ordered I/O.** A voice asks for the page it needs after the
   preload, plus a lookahead, tagged with the sample time it is needed by.
-  The `IoService` serves the earliest deadline first. Reads are
-  `pread`/`io_uring` where available, with no mmap on the audio path.
+  The `IoService` serves the earliest deadline first. Each read takes a run
+  of up to 16 requested pages of one sample. Eight reads are in flight on a
+  fixed pool of reader threads; one thread owns the cache and eviction. Reads
+  are `pread`, with no mmap on the audio path. Gate: with every read delayed
+  10 ms (a simulated slow disk, probe → 60 KB), cold `KONTRA_CHORDS=1
+  KONTRA_LIVE=1` on Areia 16 Violins Core (309 voices) misses 25.4M frames
+  with 1 reader, 3.4M with 4, under 1k with 8 and 0 with 16; Vista 0 with 8.
+  The simulation assumes the device serves parallel reads (SSD, network,
+  USB). A single-head disk gains only what reordering gives; not measured.
 - **Two stream buffers per voice**, HISE-style. The voice reads preload,
   then buffer A while B fills, then swaps. Buffer size comes from the law
   (block-independent).
