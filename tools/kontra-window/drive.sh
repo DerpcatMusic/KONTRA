@@ -23,9 +23,13 @@ third=${THIRD:-94,480}         # Una Corda Pure
 header=${HEADER:-760,114}      # part 0's header, to drop on
 fold=${FOLD:-426,114}          # part 0's fold, so a new part shows below it
 mkdir -p "$out"
-display=:97
-# A server still shutting down holds the display: wait for it to go.
-for _ in $(seq 1 50); do [[ -e /tmp/.X${display#:}-lock ]] || break; sleep 0.2; done
+display=${XDISPLAY:-:97}
+# A server still shutting down holds the display for a moment; one still
+# there after that is another harness's: refuse rather than share it.
+for _ in $(seq 1 25); do [[ -e /tmp/.X${display#:}-lock ]] || break; sleep 0.2; done
+if [[ -e /tmp/.X${display#:}-lock ]]; then
+    echo "FAIL display $display is taken (another harness?); set XDISPLAY"; exit 1
+fi
 Xvfb $display -screen 0 1920x1280x24 -nolisten tcp >"$out/xvfb.log" 2>&1 &
 xvfb=$!
 sleep 1

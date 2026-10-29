@@ -832,6 +832,19 @@ fn an_idle_tick_draws_no_frame() {
         params.shared.dirty.load(Ordering::Acquire),
         "a report drew nothing"
     );
+    // A request that changes nothing the editor's copy watches (here a
+    // star on no library) still draws: a script's answer to a click may not.
+    params.shared.dirty.store(false, Ordering::Release);
+    params
+        .shared
+        .request(crate::Request::Browse(kontra_ui::app::Action::Star(
+            0, true,
+        )));
+    Tick.run(&params);
+    assert!(
+        params.shared.dirty.load(Ordering::Acquire),
+        "a request drew nothing"
+    );
 }
 
 /// A UVI program's own page: a knob moved in the editor runs the script's

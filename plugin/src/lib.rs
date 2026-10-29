@@ -269,7 +269,9 @@ impl BackgroundTask for Tick {
         if changed && !requests_restoring(p) {
             *p.saved.write().unwrap_or_else(PoisonError::into_inner) = rack.save().write();
         }
-        if lock(&p.shared.view).refresh(rack, browser, report) {
+        // What the requests did shows, whether or not the editor's copy
+        // of the rack noticed (a script's answer to a click).
+        if lock(&p.shared.view).refresh(rack, browser, report) | changed {
             p.shared
                 .dirty
                 .store(true, std::sync::atomic::Ordering::Release);
