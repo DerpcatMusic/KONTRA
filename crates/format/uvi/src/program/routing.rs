@@ -20,7 +20,7 @@ use super::reverb::spark_verb;
 mod shaper;
 mod sweep;
 
-use super::{Library, Translator, blend, db, flag, matrix, modulation, num, source_node};
+use super::{Library, Translator, db, flag, num};
 use shaper::{diode_clipper, wave_shaper};
 use sweep::{flanger, phasor};
 
@@ -577,38 +577,6 @@ pub(super) const PART_CONTROLLERS: ir::OutputControllers = ir::OutputControllers
 /// (0x141353c40), 1 the equal-power `sin(π/4·(1 ∓ pan))` (0x141353820).
 pub(super) const PART_BALANCE: ir::Balance = ir::Balance::Cosine;
 
-impl<L: Library> Translator<'_, '_, L> {
-    /// A keygroup's gain routes and those its players have alike
-    /// ([`player_gains`]), each as a Volume route on its group.
-    pub(super) fn gain_routes(&mut self, group: &mut ir::Group, kg: Node) {
-        let program = self.program;
-        let mut gains = matrix::children(kg)
-            .filter(|c| c.attribute("Destination") == Some("Gain"))
-            .filter_map(|c| {
-                let r =
-                    modulation::gain_route(program, c).or_else(|| macro_gain(program, c, group));
-                Some((c, r?, Vec::new()))
-            })
-            .collect::<Vec<_>>();
-        gains.extend(player_gains(program, kg, group));
-        for (c, r, twins) in gains {
-            let rides = twins.iter().flat_map(|t| blend::carries(*t, &r));
-            self.carried.extend(rides.collect::<Vec<_>>());
-            self.add_route(group, c, r, |source, intensity| ir::ModKind::Volume {
-                source,
-                intensity,
-                curve: ir::Curve::Signed,
-                tau_ms: 0.0,
-            });
-            if let Some(&key) = self.routed.get(&c.id()) {
-                twins
-                    .iter()
-                    .for_each(|t| _ = self.routed.insert(t.id(), key));
-            }
-        }
-    }
-}
-
 /// The voices a program sounds: `Polyphony` times the most zones a keygroup
 /// makes, one per oscillator or bundle member. A UVI voice is a keygroup's,
 /// all of them (VWinds' Alto Flute 2: 8 voices, a note's 10 sustain zones
@@ -629,66 +597,6 @@ pub(super) fn voices(program: Node) -> Result<u16, String> {
         .filter(|n| n.has_tag_name("Oscillators"));
     let widest = oscillators.map(players).max().unwrap_or(1).max(1) as f64;
     Ok((num(program, "Polyphony", 64.0)? * widest).clamp(1.0, 1024.0) as u16)
-}
-
-/// The connections on the `Gain` of a keygroup's enabled players that every
-/// one of them has alike, each as the route it makes (the keygroup's gain
-/// law, a voice playing one player) and the other players' copies. One that
-/// differs between players (VWinds' pitch-bend crossfade) is not carried.
-pub(super) fn player_gains<'a, 'i>(
-    program: Node,
-    kg: Node<'a, 'i>,
-    group: &mut ir::Group,
-) -> Vec<(Node<'a, 'i>, modulation::Route, Vec<Node<'a, 'i>>)> {
-    let players: Vec<_> = kg
-        .children()
-        .filter(|n| n.has_tag_name("Oscillators"))
-        .flat_map(|o| o.children())
-        .filter(|n| n.has_tag_name("SamplePlayer") && !flag(*n, "Bypass"))
-        .collect();
-    let gains = |p: Node<'a, 'i>| {
-        matrix::children(p).filter(|c| c.attribute("Destination") == Some("Gain"))
-    };
-    let Some((first, rest)) = players.split_first() else {
-        return Vec::new();
-    };
-    gains(*first)
-        .filter_map(|c| {
-            let twin = |p: &Node<'a, 'i>| gains(*p).find(|t| alike(c, *t));
-            let twins = rest.iter().map(twin).collect::<Option<Vec<_>>>()?;
-            let amp = source_node(program, c).is_some_and(|n| n.has_tag_name("DAHDSR"));
-            let r = modulation::route(program, c, ("SamplePlayer", "Gain")).filter(|_| !amp);
-            let r = r.and_then(|r| modulation::factor(r, c));
-            Some((c, r.or_else(|| macro_gain(program, c, group))?, twins))
-        })
-        .collect()
-}
-
-/// A macro's connection on a `Gain` as the factor the law gives it
-/// ([`matrix::live`], VWinds' AttacksMapper), at ratio 1: `1 − 1 + x`.
-fn macro_gain(program: Node, c: Node, group: &mut ir::Group) -> Option<modulation::Route> {
-    Some(modulation::Route {
-        source: matrix::live(program, c, group)?,
-        timed: None,
-        unit: 1.0,
-        ratio: 1.0,
-    })
-}
-
-/// Whether two connections are the same but for their names.
-fn alike(a: Node, b: Node) -> bool {
-    let named = |x: &roxmltree::Attribute| x.name() != "Name";
-    let kids = |n: Node| n.children().filter(Node::is_element).count();
-    a.tag_name() == b.tag_name()
-        && a.attributes()
-            .filter(named)
-            .map(|x| (x.name(), x.value()))
-            .eq(b.attributes().filter(named).map(|x| (x.name(), x.value())))
-        && kids(a) == kids(b)
-        && a.children()
-            .filter(Node::is_element)
-            .zip(b.children().filter(Node::is_element))
-            .all(|(p, q)| alike(p, q))
 }
 
 #[cfg(test)]

@@ -16,6 +16,7 @@ mod blend;
 mod delay;
 mod digital_eq;
 mod filters;
+mod gains;
 mod load;
 mod matrix;
 mod modulation;
@@ -424,6 +425,7 @@ impl<L: Library> Translator<'_, '_, L> {
             self.notes
                 .add(ir::Impact::Audible, "playback options (loops, start)", "");
         }
+        let own = self.own_gains(player, group);
         // The bundle's channel the next member starts at.
         let mut first = 0;
         for path in members {
@@ -438,7 +440,8 @@ impl<L: Library> Translator<'_, '_, L> {
             let channels = first..first + channels;
             first = channels.end;
             let mut routes = Vec::new();
-            let mix = match placement {
+            let width = channels.len();
+            let mut mix = match placement {
                 Some(m) => self.mix(m, channels, group, &mut routes)?,
                 // Unmixed outputs past the second are not heard.
                 None if channels.start >= 2 => continue,
@@ -450,6 +453,9 @@ impl<L: Library> Translator<'_, '_, L> {
             }
             let index = self.sample_index(sample);
             let member = u16::try_from(group.zones.len()).unwrap_or(u16::MAX);
+            group
+                .mods
+                .extend(gains::own_mix(&own, &mut mix, width, member));
             for (source, row, side) in routes {
                 group.mods.push(ir::Mod {
                     name: String::new(),
