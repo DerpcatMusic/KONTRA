@@ -5,12 +5,10 @@
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
 
 use anyhow::{Context, Result, ensure};
 use kontra_ir as ir;
-use uvi_file::access::{Namespaces, recover_content_key};
+use uvi_file::access::Namespaces;
 use uvi_file::ufs::{Directory, Member, Protection, Ufs};
 
 use crate::header;
@@ -33,25 +31,6 @@ pub(crate) struct Bank {
     by_name: HashMap<String, Vec<usize>>,
 }
 
-/// A bank's content key, searched for once per process (about 2 s of CPU)
-/// and kept by path, size and modification time: patches from one bank load
-/// one after another.
-fn content_key(path: &Path, ufs: &Ufs, directory: &Directory) -> Result<u64> {
-    type Keys = Mutex<HashMap<(PathBuf, u64, SystemTime), u64>>;
-    static KEYS: OnceLock<Keys> = OnceLock::new();
-    let meta = std::fs::metadata(path)?;
-    let id = (path.to_path_buf(), meta.len(), meta.modified()?);
-    let keys = KEYS.get_or_init(Keys::default);
-    if let Some(&key) = keys.lock().ok().as_ref().and_then(|k| k.get(&id)) {
-        return Ok(key);
-    }
-    let key = recover_content_key(path, ufs, directory)?;
-    if let Ok(mut k) = keys.lock() {
-        k.insert(id, key);
-    }
-    Ok(key)
-}
-
 impl Bank {
     pub(crate) fn open(path: &Path) -> Result<Self> {
         let ufs = Ufs::open(path)?;
@@ -60,7 +39,7 @@ impl Bank {
             .files
             .iter()
             .any(|m| m.mode == Protection::Content)
-            .then(|| content_key(path, &ufs, &directory))
+            .then(|| crate::keys::content_key(path, &ufs, &directory))
             .transpose()?;
         let (mut by_path, mut by_name) = (HashMap::new(), HashMap::<String, Vec<usize>>::new());
         for (index, member) in directory.files.iter().enumerate() {
