@@ -15,6 +15,7 @@ mod impulse;
 mod laws;
 mod legacy_reverb;
 mod links;
+mod provenance;
 mod replika;
 mod resources;
 mod reverb;
