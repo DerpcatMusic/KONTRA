@@ -21,14 +21,24 @@ impl Engine {
 
     /// Runs slot `slot`'s callback at `entry` now. Notes it let through or
     /// played start before this returns.
-    pub(crate) fn run_callback(&mut self, slot: u8, entry: u32, mut running: Running) -> Running {
+    pub(crate) fn run_callback(&mut self, slot: u8, entry: u32, running: Running) -> Running {
+        self.run_with(slot, running, |vm, context| vm.start(entry, context))
+    }
+
+    /// [`run_callback`](Self::run_callback) on the coroutine `start` takes.
+    fn run_with(
+        &mut self,
+        slot: u8,
+        mut running: Running,
+        start: impl FnOnce(&mut Vm, u64) -> Option<kontra_vm::CoId>,
+    ) -> Running {
         self.ids.callbacks = (self.ids.callbacks + 1) & 0xF_FFFF;
         running.callback_id = self.ids.callbacks;
         running.slot = slot;
         let outer = std::mem::replace(&mut self.running, running);
         let mark = self.forward.len();
         if let Some(mut vm) = self.take_vm(slot) {
-            if let Some(co) = vm.start(entry, running.context()) {
+            if let Some(co) = start(&mut vm, running.context()) {
                 self.step_script(slot, &mut vm, co);
             }
             self.put_vm(slot, vm);
@@ -43,11 +53,19 @@ impl Engine {
     /// `value`: it is stored, then `on ui_controls` runs and then the
     /// control's own `on ui_control`, as in Kontakt; a control without one
     /// still stores and runs `on ui_controls`.
+    /// A foreign script's control (`Foreign::controls`) takes `value` as
+    /// the bits of an `f64` and runs its own callback.
     pub fn set_control(&mut self, slot: u8, id: i32, value: i64) {
         let plan = Arc::clone(&self.plan);
         let Some(script) = plan.scripts.get(usize::from(slot)) else {
             return;
         };
+        if script.foreign.is_some() {
+            let value = f64::from_bits(value as u64);
+            let running = Running::new(Kind::UiControl, None);
+            self.run_with(slot, running, |vm, context| vm.control(id, value, context));
+            return;
+        }
         let own = script.callbacks.ui_control.iter().find(|(i, _)| *i == id);
         let own = own.and_then(|&(_, own)| own);
         let controls = &script.controls;

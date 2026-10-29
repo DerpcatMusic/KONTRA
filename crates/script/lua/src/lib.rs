@@ -63,6 +63,8 @@ pub struct Compiled {
     modules: Arc<HashMap<String, String>>,
     saved: Arc<Vec<(String, String)>>,
     pub callbacks: Callbacks,
+    /// Its controls' names ([`Foreign::controls`]).
+    controls: Vec<String>,
     /// The state that load built, for the first machine (a big program's
     /// state is tens of MB and a second of load).
     built: Mutex<Option<(Lua, Arc<AtomicU32>)>>,
@@ -92,11 +94,21 @@ pub fn compile(
         release: defined("onRelease"),
         controller: defined("onController"),
     };
+    let controls = lua
+        .globals()
+        .get::<Table>("__controls")
+        .map(|t| {
+            (t.sequence_values::<Table>().flatten())
+                .map(|c| c.get::<String>("name").unwrap_or_default())
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(Compiled {
         source: source.into(),
         modules,
         saved,
         callbacks,
+        controls,
         built: Mutex::new(Some((lua, checkpoints))),
     })
 }
@@ -166,6 +178,10 @@ pub fn sample_loads(
 }
 
 impl Foreign for Compiled {
+    fn controls(&self) -> &[String] {
+        &self.controls
+    }
+
     fn machine(&self) -> Box<dyn Machine> {
         let load = alloc::Scope::load();
         let built = self.built.lock().ok().and_then(|mut b| b.take());
@@ -410,6 +426,14 @@ impl Machine for LuaMachine {
     fn faults(&self) -> Faults {
         self.faults
     }
+
+    fn control(&mut self, id: i32, value: f64, context: u64) -> Option<CoId> {
+        let _arena = alloc::Scope::audio();
+        let lua = self.lua.as_ref()?;
+        let set = lua.globals().get::<Function>("__control").ok()?;
+        let thread = lua.create_thread(set.bind((id, value)).ok()?).ok()?;
+        self.take(thread, context)
+    }
 }
 
 /// A Lua number, whichever way the state holds it.
@@ -480,6 +504,35 @@ mod tests {
             self.0.push((call.action, call.ints.to_vec()));
             HostValue::Int(7)
         }
+    }
+
+    #[test]
+    fn a_moved_widget_runs_its_changed_and_a_live_macro_sends_its_value() {
+        let tree = "return {params={},db=0,pan=0,layers={},modulations={
+            {params={Name='Macro 7',Value='0.25',Bipolar='0'},mod=32768}}}";
+        let source = "local m = Program.modulations['Macro 7']
+            local k = Knob('flutter', 0, 0, 1)
+            k.changed = function(s) m:setParameter('Value', s.value) end";
+        let modules = [("__program.lua".to_string(), tree.to_string())];
+        let compiled = compile(source, &modules, &[]).unwrap();
+        assert_eq!(compiled.controls(), ["Macro 7", "flutter"]);
+        let mut m = compiled.machine();
+        let sent = |log: &Log| -> Vec<Vec<i64>> {
+            (log.0.iter())
+                .filter(|(a, _)| *a == Action::SetEventParArr)
+                .map(|(_, ints)| ints.clone())
+                .collect()
+        };
+        // Init sends the saved value; moving the widget sends its own.
+        let mut log = Log(Vec::new());
+        let co = m.start(Callbacks::INIT, 0).expect("init");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(sent(&log), [vec![-1, 30, 250_000, 32768, 0]]);
+        let mut log = Log(Vec::new());
+        let co = m.control(1, 0.5, 0).expect("control");
+        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(m.faults().bad_code, 0);
+        assert_eq!(sent(&log), [vec![-1, 30, 500_000, 32768, 0]]);
     }
 
     #[test]

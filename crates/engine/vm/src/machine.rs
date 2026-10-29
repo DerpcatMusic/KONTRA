@@ -50,6 +50,15 @@ impl Vm {
         }
     }
 
+    /// A foreign machine's control `id` moves to `value` ([`Machine::control`]);
+    /// the interpreter has none.
+    pub fn control(&mut self, id: i32, value: f64, context: u64) -> Option<CoId> {
+        match self {
+            Self::Code(_) => None,
+            Self::Foreign(m) => m.control(id, value, context),
+        }
+    }
+
     /// A foreign machine's waits are never stopped: always epoch 0.
     #[must_use]
     pub fn wait_epoch(&self, co: CoId) -> Option<u32> {
