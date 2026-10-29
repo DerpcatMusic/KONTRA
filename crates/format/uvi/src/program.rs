@@ -20,6 +20,7 @@ mod matrix;
 mod modulation;
 mod reverb;
 mod routing;
+mod shaper;
 mod tree;
 pub use load::Swap;
 

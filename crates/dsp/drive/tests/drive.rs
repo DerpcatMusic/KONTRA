@@ -52,6 +52,29 @@ fn the_curves_match_v1s_measured_transfer_vectors() {
             "power {x}"
         );
     }
+    let half_pi = std::f32::consts::FRAC_PI_2;
+    for (curve, y) in [
+        (Curve::Sine(half_pi), (0.5 * half_pi).sin()),
+        (Curve::Fold(3.0 * half_pi), (1.5 * half_pi).sin().asin()),
+        (Curve::Tanh(2.0), 1f32.tanh()),
+        (Curve::Atan(2.0), 1f32.atan()),
+    ] {
+        assert!((curve.transfer(0.5) - y).abs() < 1e-6, "{curve:?}");
+    }
+}
+
+#[test]
+fn the_pre_curve_low_pass_is_a_one_pole_without_a_zero_at_nyquist() {
+    let (hz, rate) = (2200.0, 48_000);
+    let tone = Tone {
+        pre_lowpass_hz: Some(hz as f32),
+        ..Tone::NONE
+    };
+    let s = Shaper::new(Curve::Soft(0.0), tone, rate);
+    let c = (-std::f64::consts::TAU * hz / f64::from(rate)).exp();
+    let w = std::f64::consts::TAU * hz / f64::from(rate);
+    let want = 20.0 * ((1.0 - c) / (1.0 - 2.0 * c * w.cos() + c * c).sqrt()).log10();
+    assert!((gain_db(s, hz, rate) - want).abs() < 0.05);
 }
 
 #[test]
@@ -62,6 +85,7 @@ fn a_flat_shaper_passes_the_band_and_its_filters_sit_3_db_down() {
     for (tone, hz) in [
         (
             Tone {
+                pre_lowpass_hz: None,
                 lowpass_hz: Some(2200.0),
                 highpass_hz: None,
             },
@@ -69,6 +93,7 @@ fn a_flat_shaper_passes_the_band_and_its_filters_sit_3_db_down() {
         ),
         (
             Tone {
+                pre_lowpass_hz: None,
                 lowpass_hz: None,
                 highpass_hz: Some(15.0),
             },
@@ -114,6 +139,7 @@ fn the_shaper_is_block_size_free() {
         .map(|n| [((n as f32) * 0.37).sin(), ((n as f32) * 0.11).cos()])
         .collect();
     let tone = Tone {
+        pre_lowpass_hz: None,
         lowpass_hz: Some(3000.0),
         highpass_hz: Some(15.0),
     };
@@ -185,6 +211,7 @@ fn nan_settings_stay_finite_and_reset_replays_the_noise() {
     let mut s = Shaper::new(
         Curve::Tube(f32::NAN),
         Tone {
+            pre_lowpass_hz: None,
             lowpass_hz: Some(f32::NAN),
             highpass_hz: Some(f32::NAN),
         },

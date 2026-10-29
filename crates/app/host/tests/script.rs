@@ -246,6 +246,7 @@ fn a_script_switches_on_a_waveshaper_bypassed_at_load() {
     let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
     plan.groups[0].inserts = vec![Some(ir::Effect {
         kind: ir::EffectKind::Shaper(ir::Shaper {
+            pre_lowpass_hz: None,
             curve: ir::DriveCurve::Soft(1.0),
             lowpass_hz: None,
             highpass_hz: None,

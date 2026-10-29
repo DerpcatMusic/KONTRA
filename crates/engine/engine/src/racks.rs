@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use kontra_dsp::delay::{MAX_MS, ModDelay, Phaser, PhaserSettings};
+use kontra_dsp::drive::Shaper;
 use kontra_dsp::dynamics::{
     Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
     TransientSettings,
@@ -17,6 +18,7 @@ use crate::behaviour::Behaviour;
 use crate::effects;
 use crate::filters;
 use crate::ledger::{self, Ramp};
+use crate::voice_rack;
 use crate::{Engine, MAX_SPAN, Response, SampleTime};
 
 enum Dsp {
@@ -117,6 +119,18 @@ impl Wet for Phaser {
     fn set(&mut self, kind: ir::EffectKind, tempo: f32) {
         if let ir::EffectKind::Phaser(p) = kind {
             Phaser::set(self, phaser(p, tempo));
+        }
+    }
+}
+
+impl Wet for Shaper {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Shaper::process(self, io);
+    }
+
+    fn set(&mut self, kind: ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Shaper(s) = kind {
+            self.set_curve(voice_rack::curve(s.curve));
         }
     }
 }
@@ -336,6 +350,7 @@ impl Rack {
                 Some(ir::EffectKind::Phaser(p)) => {
                     wet(Box::new(Phaser::new(phaser(p, 120.0), rate)))
                 }
+                Some(ir::EffectKind::Shaper(s)) => wet(Box::new(voice_rack::shaper(s, rate))),
                 Some(ir::EffectKind::Transient(t)) => wet(Box::new(Transient::new(
                     TransientSettings {
                         attack: t.attack,
@@ -401,10 +416,9 @@ impl Rack {
                     processor.set(kind, tempo);
                     wet.copy_from_slice(io);
                     processor.process(wet);
-                    apply(effects::matrix(&e), io);
                     for (x, w) in io.iter_mut().zip(wet.iter()) {
-                        x[0] += w[0] * e.output;
-                        x[1] += w[1] * e.output;
+                        x[0] = x[0] * e.dry + w[0] * e.output;
+                        x[1] = x[1] * e.dry + w[1] * e.output;
                     }
                     continue;
                 }

@@ -1204,6 +1204,7 @@ fn a_group_waveshaper_clips_each_voice_not_their_sum() {
     let mut plan = Plan::new(zones, 8);
     plan.groups[0].inserts = vec![Some(Effect {
         kind: EffectKind::Shaper(Shaper {
+            pre_lowpass_hz: None,
             curve: DriveCurve::Soft(1.0),
             lowpass_hz: None,
             highpass_hz: None,
@@ -1264,6 +1265,7 @@ fn a_route_moves_a_group_waveshapers_amount_per_voice() {
         let mut plan = Plan::new(vec![Zone::new(sine(&mut store), 60, RATE)], 8);
         plan.groups[0].inserts = vec![Some(Effect {
             kind: EffectKind::Shaper(Shaper {
+                pre_lowpass_hz: None,
                 curve: DriveCurve::Soft(0.0),
                 lowpass_hz: None,
                 highpass_hz: None,
@@ -1350,6 +1352,7 @@ fn an_lfo_on_a_group_waveshaper_retunes_it_every_32_frames() {
     let mut plan = Plan::new(vec![zone(&mut store, 0.1)], 8);
     plan.groups[0].inserts = vec![Some(Effect {
         kind: EffectKind::Shaper(Shaper {
+            pre_lowpass_hz: None,
             curve: DriveCurve::Soft(0.0),
             lowpass_hz: None,
             highpass_hz: None,

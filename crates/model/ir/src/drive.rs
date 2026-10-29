@@ -13,12 +13,38 @@ pub enum Curve {
     Tube(f32),
     /// 0..=1: a power law on small signals.
     Power(f32),
+    /// The drive `d`: `sin(d·x)`.
+    Sine(f32),
+    /// The drive `d`: `asin(sin(d·x))`, a triangle fold.
+    Fold(f32),
+    /// The drive `d`: `tanh(d·x)`.
+    Tanh(f32),
+    /// The drive `d`: `atan(d·x)`.
+    Atan(f32),
 }
 
-/// A curve, then an optional one-pole low-pass and a second-order
-/// Butterworth high-pass.
+impl Curve {
+    /// Its amount or drive.
+    pub fn amount_mut(&mut self) -> &mut f32 {
+        match self {
+            Self::Soft(x)
+            | Self::Tube(x)
+            | Self::Power(x)
+            | Self::Sine(x)
+            | Self::Fold(x)
+            | Self::Tanh(x)
+            | Self::Atan(x) => x,
+        }
+    }
+}
+
+/// An optional one-pole low-pass, a curve, then an optional one-pole
+/// low-pass and a second-order Butterworth high-pass.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shaper {
+    /// The corner of a one-pole low-pass before the curve, pole
+    /// `e^(−2π·hz/rate)` (no zero at Nyquist).
+    pub pre_lowpass_hz: Option<f32>,
     pub curve: Curve,
     pub lowpass_hz: Option<f32>,
     pub highpass_hz: Option<f32>,
@@ -123,9 +149,7 @@ impl EffectParam {
             (Self::FormantTalk, EffectKind::Formant(f)) => &mut f.talk,
             (Self::FormantSharp, EffectKind::Formant(f)) => &mut f.sharp,
             (Self::FormantSize, EffectKind::Formant(f)) => &mut f.size,
-            (Self::ShaperAmount, EffectKind::Shaper(s)) => match &mut s.curve {
-                Curve::Soft(x) | Curve::Tube(x) | Curve::Power(x) => x,
-            },
+            (Self::ShaperAmount, EffectKind::Shaper(s)) => s.curve.amount_mut(),
             (Self::ShaperLowpassHz, EffectKind::Shaper(s)) => s.lowpass_hz.as_mut()?,
             (Self::CrushRate, EffectKind::Crush(c)) => &mut c.rate,
             (Self::CrushBits, EffectKind::Crush(c)) => &mut c.bits,
