@@ -100,9 +100,10 @@ impl Engine {
             return;
         }
         let n = usize::try_from(id - controls.first).ok();
+        let len = n.and_then(|n| controls.steps.get(n)).copied().unwrap_or(0);
         let vm = self.vms.get_mut(usize::from(slot)).and_then(Option::as_mut);
-        if let (Some(cell), Some(vm)) = (cell, vm) {
-            vm.set_cell((cell + self.ui.click_cell(slot, n)) as usize, value);
+        if let (Some(cell), Some(vm), Some(at)) = (cell, vm, self.ui.click_cell(slot, n, len)) {
+            vm.set_cell((cell + at) as usize, value);
         }
         // A menu the user picks from selects that entry.
         self.ui

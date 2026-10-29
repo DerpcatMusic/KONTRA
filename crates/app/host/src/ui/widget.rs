@@ -15,6 +15,16 @@ pub(super) struct Decl<'a> {
     pub(super) look: ControlLook<'a>,
 }
 
+/// Points a knob's drag travels up to sweep its range (Kontakt 8, measured;
+/// scratch/laneJ/drag/FACTS.md).
+const KNOB_SWEEP: f64 = 350.;
+/// Points a slider without `MOUSE_BEHAVIOUR` travels to sweep its range (same).
+const SLIDER_SWEEP: f64 = 172.;
+/// The `MOUSE_BEHAVIOUR` that sweeps a slider in its picture's length (manual).
+const BEHAVIOUR_PER_LENGTH: f64 = 1000.;
+/// Points a value edit's drag travels per unit (same measurement).
+const VALUE_EDIT_PER_UNIT: f64 = 4.;
+
 pub(super) fn widget(
     bld: &mut Builder<'_>,
     slot: u8,
@@ -221,11 +231,11 @@ pub(super) fn widget(
     // ponytail: 172 measured on the stock skin only; a picture may scale it.
     let behaviour = p.int("$CONTROL_PAR_MOUSE_BEHAVIOUR").filter(|&m| m != 0);
     let sweep = match kind {
-        ControlKind::Knob => Some(ui::Sweep::Points(350.)),
-        ControlKind::Slider => Some(behaviour.map_or(ui::Sweep::Points(172.), |m| {
-            ui::Sweep::Lengths(1000. / f64::from(m.unsigned_abs()))
+        ControlKind::Knob => Some(ui::Sweep::Points(KNOB_SWEEP)),
+        ControlKind::Slider => Some(behaviour.map_or(ui::Sweep::Points(SLIDER_SWEEP), |m| {
+            ui::Sweep::Lengths(BEHAVIOUR_PER_LENGTH / f64::from(m.unsigned_abs()))
         })),
-        ControlKind::ValueEdit => Some(ui::Sweep::PerUnit(4.)),
+        ControlKind::ValueEdit => Some(ui::Sweep::PerUnit(VALUE_EDIT_PER_UNIT)),
         _ => None,
     };
     w.drag = sweep.map(|sweep| ui::Drag {

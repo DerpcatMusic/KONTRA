@@ -272,12 +272,12 @@ impl Store {
             .map_or(0, |(.., cell)| cell)
     }
 
-    /// The cell last clicked in control `n` of script `slot`, 0 when the
-    /// last click was elsewhere.
+    /// The cell last clicked in control `n` of script `slot` (0 when the
+    /// last click was elsewhere), if inside its `len` cells (a table's; 0 is one).
     #[must_use]
-    pub fn click_cell(&self, slot: u8, n: Option<usize>) -> u32 {
+    pub fn click_cell(&self, slot: u8, n: Option<usize>, len: u32) -> Option<u32> {
         let clicked = self.click.filter(|&(s, c, ..)| s == slot && Some(c) == n);
-        clicked.map_or(0, |(.., cell)| cell)
+        Some(clicked.map_or(0, |(.., cell)| cell)).filter(|&cell| cell < len.max(1))
     }
 
     /// `$CONTROL_PAR_KEY_SHIFT`, `_ALT` or `_CONTROL` (`key` 0, 1 or 2) of

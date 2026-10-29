@@ -117,23 +117,24 @@ fn range(kind: &Kind) -> Option<model::Range> {
     }
 }
 
-/// `v` inside `range`, on its step.
+/// `v` inside `range`, on its step (still inside when the top is off it).
 fn snap(range: model::Range, v: f64) -> f64 {
-    let v = v.clamp(range.min.min(range.max), range.max.max(range.min));
+    let (lo, hi) = (range.min.min(range.max), range.max.max(range.min));
+    let v = v.clamp(lo, hi);
     range
         .step
         .filter(|s| *s > 0.)
-        .map_or(v, |s| (v / s).round() * s)
+        .map_or(v, |s| ((v / s).round() * s).clamp(lo, hi))
 }
 
-/// How far one arrow key moves a control: a value edit by its step (one,
-/// as its arrows do), anything else by a hundredth of its range or its
-/// step when coarser.
+/// How far one arrow key moves a control: a value edit by its step, or
+/// one unit without one (as its arrows do), anything else by a hundredth
+/// of its range or its step when coarser.
 fn notch(kind: &Kind, range: model::Range) -> f64 {
-    let step = range.step.filter(|s| *s > 0.).unwrap_or(0.);
+    let step = range.step.filter(|s| *s > 0.);
     match kind {
-        Kind::ValueEdit { .. } if step > 0. => step,
-        _ => step.max((range.max - range.min).abs() / 100.),
+        Kind::ValueEdit { .. } => step.unwrap_or(1.),
+        _ => step.unwrap_or(0.).max((range.max - range.min).abs() / 100.),
     }
 }
 
@@ -415,7 +416,7 @@ fn entry(
             } else {
                 display.ratio
             };
-            let typed = text.trim().parse::<f64>().ok();
+            let typed = text.trim().parse::<f64>().ok().filter(|v| v.is_finite());
             edits.extend(typed.map(|v| set(snap(*range, v * ratio), None)));
         }
         Kind::TextEdit => edits.push(set(0., Some(text))),
