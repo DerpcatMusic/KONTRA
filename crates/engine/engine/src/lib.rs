@@ -113,6 +113,8 @@ struct Slot {
     rack: Vec<voice_rack::Unit>,
     /// Its lagging pitch routes' semitones: where they are, where they go.
     bend: [f32; 2],
+    /// Its group's pan, gliding the same way.
+    pan: [f32; 2],
 }
 
 /// Per control, the parameters a script set other than its value.
@@ -225,6 +227,7 @@ impl Engine {
                 factor: 1.0,
                 rack: Vec::new(),
                 bend: [0.0; 2],
+                pan: [0.0; 2],
             })
             .collect();
         let buses = plan.buses.iter().map(|b| BusState::new(b, rate)).collect();
@@ -522,7 +525,8 @@ impl Engine {
             if let Some(mix) = self.voice_mix(zone, &n, self.age(self.now, None)) {
                 region.mix = Some(mix);
             }
-            let (gain, lag) = self.voice_gain(zone, &n, factor, self.age(self.now, None));
+            let pan = self.group_pan(zone);
+            let (gain, lag) = self.voice_gain(zone, &n, factor, self.age(self.now, None), pan);
             let (step, bend) = self.step(zone, &n, self.age(self.now, None));
             let start = VoiceStart {
                 region,
@@ -547,6 +551,7 @@ impl Engine {
             slot.fading = false;
             slot.factor = factor;
             slot.bend = [bend.semitones; 2];
+            slot.pan = [pan; 2];
             self.start_rack(i, zone, &n, self.age(now, None));
         }
     }
@@ -756,12 +761,14 @@ impl Engine {
                 continue;
             }
             let age = self.age(slot.started, slot.released_at);
-            let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age);
+            let pan = [slot.pan[0], self.group_pan(zone)];
+            let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age, pan[0]);
             let mix = self.voice_mix(zone, &n, age);
             let (step, bend) = self.step(zone, &n, age);
             let pitch = cc.is_none_or(|cc| self.pitch_follows(zone, cc));
             self.retune_rack(i, zone, &n, age);
             if let Some(slot) = self.voices.get_mut(i) {
+                slot.pan = pan;
                 slot.voice.set_gain(gain);
                 slot.voice.set_lag(lag);
                 if let Some(mix) = mix {

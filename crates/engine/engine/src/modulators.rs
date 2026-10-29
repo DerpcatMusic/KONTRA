@@ -5,7 +5,8 @@
 use kontra_ir as ir;
 use kontra_time::SampleTime;
 
-use crate::{Engine, MAX_SPAN, voice_gain};
+use crate::voice_gain::{self, GROUP_PAN_TAU_MS};
+use crate::{Engine, MAX_SPAN};
 
 /// When a voice is being read, in seconds.
 #[derive(Clone, Copy, Debug)]
@@ -38,7 +39,7 @@ impl Engine {
     }
 
     /// Re-reads envelopes and LFOs for voices whose group has any, gliding
-    /// voices' lagging pitch, and every voice while a script modulation
+    /// voices' lagging pitch and group pan, and every voice while a script modulation
     /// ramps; once per [`MAX_SPAN`] grid step.
     pub(crate) fn refresh_timed(&mut self) {
         let plan = self.plan.clone();
@@ -50,7 +51,7 @@ impl Engine {
             let Some(zone) = plan.zones.get(slot.zone) else {
                 continue;
             };
-            let gliding = slot.bend[0] != slot.bend[1];
+            let gliding = slot.bend[0] != slot.bend[1] || slot.pan[0] != slot.pan[1];
             let timed = ramping
                 || gliding
                 || self
@@ -62,10 +63,12 @@ impl Engine {
                 continue;
             };
             let age = self.age(slot.started, slot.released_at);
-            let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age);
+            let rate = self.rate;
+            let to = self.group_pan(zone);
+            let pan = voice_gain::glide(slot.pan[0], to, GROUP_PAN_TAU_MS, MAX_SPAN as f32, rate);
+            let (gain, lag) = self.voice_gain(zone, &n, slot.factor, age, pan);
             let mix = self.voice_mix(zone, &n, age);
             let (step, bend) = self.step(zone, &n, age);
-            let rate = self.rate;
             self.retune_rack(i, zone, &n, age);
             if let Some(slot) = self.voices.get_mut(i) {
                 slot.voice.set_gain(gain);
@@ -73,8 +76,15 @@ impl Engine {
                 if let Some(mix) = mix {
                     slot.voice.set_mix(mix);
                 }
-                let at = bend.from(slot.bend[0], MAX_SPAN as f32, rate);
+                let at = voice_gain::glide(
+                    slot.bend[0],
+                    bend.semitones,
+                    bend.tau_ms,
+                    MAX_SPAN as f32,
+                    rate,
+                );
                 slot.bend = [at, bend.semitones];
+                slot.pan = [pan, to];
                 slot.voice.set_step(voice_gain::bent(step, at));
             }
         }
