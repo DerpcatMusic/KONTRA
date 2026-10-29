@@ -179,8 +179,10 @@ pub fn keyboard(
     })
     .w(Len::Pct(100.))
     .h(height);
+    // It takes what its row leaves, beside the wheels, never more.
     let el = stack![face, row(octaves).w(Len::Pct(100.)).h(height)]
-        .w(Len::Pct(100.))
+        .grow(1)
+        .w(0.)
         .h(height)
         .min_w(TEXT * 20.)
         .cursor(Cursor::Hand)

@@ -233,3 +233,44 @@ fn two_open_faces_lay_out_side_by_side() {
         assert!(ui.scene().and_then(|s| s.surface(&id)).is_some(), "{id}");
     }
 }
+
+#[test]
+fn a_small_window_keeps_the_keyboard_in_it() {
+    use kontra_ui_model::{Interface, Page, Size as PageSize};
+    let mut tree = Interface::default();
+    tree.pages.push(Page {
+        size: PageSize {
+            width: 1000.,
+            height: 700.,
+        },
+        ..Page::default()
+    });
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        parts: vec![Part {
+            name: "Strings".into(),
+            face: Some(Face {
+                tree,
+                pictures: kontra_ui::Pictures::new(Box::new(|_| None)),
+                gesture: kontra_ui::input::Gesture::default(),
+            }),
+            open: true,
+            tab: PartTab::Interface,
+            ..Part::default()
+        }],
+        ..App::default()
+    };
+    let window = Size::new(900., 560.);
+    for _ in 0..3 {
+        let r = app::view(&mut ui, &mut app);
+        let laid = ui.frame(r.el, Some(window), Input::default(), 1. / 60.);
+        assert!(laid.is_ok(), "{:?}", laid.err());
+    }
+    assert!((app.width - window.width).abs() < 0.5, "{}", app.width);
+    let bed = ui.scene().and_then(|s| s.layout.frame("keybed"));
+    assert!(bed.is_some(), "no keybed");
+    let Some(bed) = bed else { return };
+    let (x1, y1) = (bed.x + bed.size.width, bed.y + bed.size.height);
+    assert!(bed.x >= 0. && x1 <= window.width + 0.5, "{bed:?}");
+    assert!(bed.y >= 0. && y1 <= window.height + 0.5, "{bed:?}");
+}

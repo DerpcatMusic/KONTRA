@@ -325,6 +325,10 @@ pub enum Action {
 /// The editor for `app`, and what the user did.
 pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     let mut out = Vec::new();
+    // The window's width as last laid out: what a library's view fits.
+    if let Some(s) = ui.scene() {
+        app.width = s.layout.size.width;
+    }
     let header = header(ui, app, &mut out);
     let width = ui.tween(
         "browser-width",
@@ -340,12 +344,14 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
         main.push(sheet_view(ui, app, s, &mut out).centered());
     }
     middle.push(stack(main).grow(1).min_w(0).min_h(0));
+    // Only the middle gives way to a short window: the header and the
+    // keyboard keep their height, as v2's dock did.
     let el = col![
-        header,
+        header.shrink(0),
         rule(),
         row(middle).grow(1).min_h(0).align(Align::Stretch),
         rule(),
-        keys(ui, app, &mut out),
+        keys(ui, app, &mut out).shrink(0),
     ]
     .w(Len::Pct(100.))
     .h(Len::Pct(100.))
