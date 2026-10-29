@@ -488,6 +488,58 @@ fn an_oscillators_bend_and_controller_pitch_routes_reach_its_group() {
 }
 
 #[test]
+fn a_held_macro_on_a_bends_ratio_sets_its_range() {
+    // VWinds: 12 semitones scaled by "Pitch bend amount" (Macro 3 = 1/12);
+    // a controller on the ratio is live, and stays reported.
+    let xml = r#"<Program Gain="1">
+      <ControlSignalSources>
+        <ConstantModulation Name="Macro 3" Bypass="0" Bipolar="0" Value="0.083333336"/>
+      </ControlSignalSources>
+      <Layers><Layer Gain="1" Pan="0"><Keygroups>
+        <Keygroup LowKey="0" HighKey="127">
+          <Oscillators>
+            <SamplePlayer Bypass="0" SamplePath="./a.wav">
+              <Connections>
+                <SignalConnection Ratio="12" Source="@PitchBend" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0">
+                  <Connections>
+                    <SignalConnection Ratio="1" Source="$Program/Macro 3" Destination="Ratio" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                  </Connections>
+                </SignalConnection>
+                <SignalConnection Ratio="2" Source="@PitchBend" Destination="Pitch" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0">
+                  <Connections>
+                    <SignalConnection Ratio="1" Source="@MIDI CC 1" Destination="Ratio" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+                  </Connections>
+                </SignalConnection>
+              </Connections>
+            </SamplePlayer>
+          </Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let out = translate(doc.root_element(), "Presets", &Stub, &|_| Vec::new()).unwrap();
+    let kinds: Vec<_> = out.groups[0].mods.iter().map(|m| m.kind).collect();
+    let [
+        ir::ModKind::Pitch {
+            source: ir::Source::PitchBend,
+            semitones,
+            ..
+        },
+    ] = kinds[..]
+    else {
+        panic!("{kinds:?}");
+    };
+    assert!((semitones - 1.0).abs() < 1e-6, "{semitones}");
+    assert!(
+        out.diagnostics
+            .iter()
+            .any(|d| d.feature == "modulation Pitch"),
+        "{:?}",
+        out.diagnostics
+    );
+}
+
+#[test]
 fn a_layer_ahd_bends_its_oscillators_pitch_through_breakpoints() {
     let xml = r#"<Program Gain="1">
       <Layers><Layer Gain="1" Pan="0">

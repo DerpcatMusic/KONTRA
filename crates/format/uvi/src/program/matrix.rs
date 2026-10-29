@@ -138,7 +138,7 @@ fn read_through(
 
 /// A connection's ratio with each connection on it scaling it the same
 /// multiplicative way; None when one of those is live (not a constant).
-fn held_ratio(program: Node, connection: Node) -> Option<f32> {
+pub(super) fn held_ratio(program: Node, connection: Node) -> Option<f32> {
     let mut r = num(connection, "Ratio", 1.0).ok()? as f32;
     for f in children(connection).filter(|f| f.attribute("Destination") == Some("Ratio")) {
         let input = transfer(program, f, None)?;
