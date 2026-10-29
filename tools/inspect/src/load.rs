@@ -256,7 +256,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         "engine": "v3", "result": {"name": loaded.name, "samples": samples, "groups": groups,
         "translated_zones": input_zones, "prepared_zones": zones, "unprepared_reasons": unprepared_reasons, "effects": effects, "slot_parameter_laws": parameter_laws, "scripts": scripts, "ui": ui,
         "diagnostics": diagnostics, "init_unanswered": unanswered, "script_faults": faults,
-        "laws": null, "law_applications": law_applications.iter().map(|a| json!({"law_id":a.id.0, "location":a.location, "input":a.input, "output":a.output})).collect::<Vec<_>>(), "law_coverage":"partial: Kontakt group/zone gain-pan-tune, group envelopes/release counter, timed envelopes/LFO/flex gate/EQ, external volume/lag/EQ/LFO rate/shapers and saved EQ/filters; UVI keygroup/zone gain-pan-tune, amplitude/AHD envelopes, LFO shape and matrix cell", "compiled_callback_count": callback_count, "script_mapping_available": mapping.is_some(), "unavailable": unavailable}}),
+        "laws": null, "law_applications": law_applications.iter().map(|a| json!({"law_id":a.id.0, "location":a.location, "input":a.input, "output":a.output})).collect::<Vec<_>>(), "law_coverage":"partial: Kontakt group/zone gain-pan-tune, group envelopes/release counter, timed envelopes/LFO/flex gate/EQ, external volume/lag/EQ/LFO rate/shapers and saved EQ/filters; UVI keygroup/zone gain-pan-tune, amplitude/AHD envelopes, LFO shape, matrix cell, filter and key/velocity fades", "compiled_callback_count": callback_count, "script_mapping_available": mapping.is_some(), "unavailable": unavailable}}),
         summary,
     ))
 }

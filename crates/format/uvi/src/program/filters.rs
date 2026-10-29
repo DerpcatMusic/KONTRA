@@ -178,6 +178,7 @@ pub(super) fn keygroup(kg: Node) -> Vec<Option<ir::Effect>> {
             filter.damping = [2.0 * (1.0 - q); 3];
             filter.gain = num(node, "ReferenceVoltage", 1.0).unwrap_or(1.0).max(0.01) as f32;
         }
+        super::provenance::record("uvi.filter.v1", node, &inserts.len(), &filter);
         inserts.push(Some(ir::Effect {
             kind: ir::EffectKind::Filter(filter),
             bypass: false,

@@ -18,7 +18,8 @@ Kontakt group envelopes, release counters, timed envelopes and LFOs, EQ routes,
 volume source curves, route lag, LFO-rate routes, modulation shapers, saved
 filter/EQ parameters and group/zone gain, pan and tuning at translation time.
 For UVI it records keygroup/zone gain, pan and tuning, amplitude and AHD
-envelopes, LFO shapes and matrix cells, identified by XML byte offset and tag.
+envelopes, LFO shapes, matrix cells, filters and key/velocity fades, identified
+by XML byte offset and tag.
 UVI records include the source node attributes and context; cross-node mapper
 inputs are not fully captured. Coverage is
 partial: all other translator law applications are explicitly unavailable. Referenced UI assets are read through the host
