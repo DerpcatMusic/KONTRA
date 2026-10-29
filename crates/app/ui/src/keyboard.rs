@@ -16,8 +16,10 @@ pub struct Keys {
     pub range: (u8, u8),
     /// Notes sounding now.
     pub held: Vec<u8>,
-    /// Each part's key span and colour, drawn over the keys it plays.
+    /// Each part's key span and colour: a light tint over the keys it plays.
     pub spans: Vec<(u8, u8, Color)>,
+    /// The focused part's keyswitches, each in its articulation's colour.
+    pub switches: Vec<(u8, Color)>,
 }
 
 const BLACK: [bool; 12] = [
@@ -115,18 +117,34 @@ pub fn keyboard(
         };
         let all = layout(keys.range, s.width);
         let held = |n: u8| keys.held.contains(&n);
-        // The part playing a key tints it, the first part listed winning.
+        // A keyswitch takes its articulation's colour; a key a part plays
+        // is tinted lightly, the first part listed winning.
+        let switch = |n: u8| keys.switches.iter().find(|s| s.0 == n).map(|s| s.1);
         let tint = |n: u8| {
             keys.spans
                 .iter()
                 .find(|&&(lo, hi, _)| (lo..=hi).contains(&n))
                 .map(|s| s.2)
         };
-        // Each part's span as a band above the keys, stacked.
-        let band = (keys.spans.len().min(4) as f64) * BAND;
+        // Above the keys, stacked: the keyswitches, then each part's span.
+        let switches = (!keys.switches.is_empty()).then_some((0u8, 0u8, accent()));
+        let rows: Vec<(u8, u8, Color)> = switches
+            .into_iter()
+            .chain(keys.spans.iter().copied())
+            .take(4)
+            .collect();
+        let band = rows.len() as f64 * BAND;
         let top = if band > 0. { band + 2. } else { 0. };
         let mut draw = Vec::new();
-        for (row, &(lo, hi, color)) in keys.spans.iter().take(4).enumerate() {
+        if !keys.switches.is_empty() {
+            for &(n, x, w) in &all {
+                if let Some(c) = switch(n) {
+                    draw.push(Draw::fill(rect(x, 0., w, BAND - 1.), Fill::from(c)));
+                }
+            }
+        }
+        let skip = usize::from(!keys.switches.is_empty());
+        for (row, &(lo, hi, color)) in rows.iter().enumerate().skip(skip) {
             let x0 = all.iter().find(|k| k.0 >= lo).map(|k| k.1);
             let x1 = all.iter().rev().find(|k| k.0 <= hi).map(|k| k.1 + k.2);
             if let (Some(x0), Some(x1)) = (x0, x1) {
@@ -138,18 +156,22 @@ pub fn keyboard(
         }
         let h = s.height - top;
         for &(n, x, w) in all.iter().filter(|k| !black(k.0)) {
-            let face = match (held(n), tint(n)) {
-                (true, _) => accent(),
-                (_, Some(c)) => c.with_lightness(0.92).scale_chroma(0.45),
-                _ => Color::oklch(0.64, 0., 0.),
+            let grey = Color::oklch(0.64, 0., 0.);
+            let face = match (held(n), switch(n), tint(n)) {
+                (true, ..) => accent(),
+                (_, Some(c), _) => c.with_lightness(0.9).scale_chroma(0.5),
+                (.., Some(c)) => c.with_lightness(0.68).scale_chroma(0.25),
+                _ => grey,
             };
             draw.push(Draw::fill(rect(x + 0.5, top, w - 1., h), Fill::from(face)));
         }
         for &(n, x, w) in all.iter().filter(|k| black(k.0)) {
-            let face = match (held(n), tint(n)) {
-                (true, _) => Color::oklch(0.6, 0., 0.),
-                (_, Some(c)) => c.with_lightness(0.32).scale_chroma(0.6),
-                _ => Color::oklch(0.2, 0., 0.),
+            let grey = Color::oklch(0.2, 0., 0.);
+            let face = match (held(n), switch(n), tint(n)) {
+                (true, ..) => Color::oklch(0.6, 0., 0.),
+                (_, Some(c), _) => c.with_lightness(0.32).scale_chroma(0.7),
+                (.., Some(c)) => c.with_lightness(0.22).scale_chroma(0.25),
+                _ => grey,
             };
             draw.push(Draw::fill(rect(x, top, w, h * 0.62), Fill::from(face)));
         }

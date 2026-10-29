@@ -527,6 +527,20 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .enumerate()
             .map(|(n, p)| (p.keys.0, p.keys.1, crate::theme::part_color(n)))
             .collect(),
+        // The focused part's: the first one open, else the first.
+        switches: app
+            .parts
+            .iter()
+            .find(|p| p.open)
+            .or(app.parts.first())
+            .map(|p| {
+                p.articulations
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(a, (_, key))| Some(((*key)?, crate::theme::part_color(a))))
+                    .collect()
+            })
+            .unwrap_or_default(),
     };
     let height = TEXT * 6.;
     let mut pitch = v.pitch;
