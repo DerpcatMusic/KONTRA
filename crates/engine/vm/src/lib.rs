@@ -87,6 +87,10 @@ pub trait Machine: Send {
     fn widget(&self, _n: u32) -> Option<WidgetLook> {
         None
     }
+    /// Copy widget `n`'s array cells into preallocated storage.
+    fn widget_cells(&self, _n: u32, _out: &mut [f64]) -> bool {
+        false
+    }
     /// Widget `n`'s text into `out`; false when it has none.
     fn widget_text(&self, _n: u32, _out: &mut Text) -> bool {
         false

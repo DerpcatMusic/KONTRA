@@ -155,6 +155,18 @@ fn drawn_page(
                 &words,
                 &look,
                 stock.then_some(t.to_bits()),
+                match &wd.value {
+                    Some(model::Value::Reals(v)) => {
+                        Some(v.iter().map(|v| v.to_bits()).collect::<Vec<_>>())
+                    }
+                    Some(model::Value::Integers(v)) => {
+                        Some(v.iter().map(|&v| f64::from(v).to_bits()).collect())
+                    }
+                    _ => None,
+                },
+                wd.colors.background,
+                wd.colors.bar,
+                wd.table_inner_edge.map(|edge| edge.visible),
                 wd.hide.background,
                 bare,
             ),
@@ -174,7 +186,16 @@ fn drawn_page(
                 parts
                     .push(sliced(img, meta, (a.width * scale, a.height * scale), scale).at(0., 0.));
             } else if stock {
-                parts.push(stock::face(wd, t, (w, h), bare).at(0., 0.));
+                parts.push(
+                    stock::face(
+                        wd,
+                        t,
+                        (w, h),
+                        bare,
+                        matches!(tree.source, model::Source::FalconLua),
+                    )
+                    .at(0., 0.),
+                );
             }
             if let Some(glyphs) = &glyphs {
                 parts.push(bitmap_words(&words, style, wd, (w, h), scale, glyphs).at(0., 0.));

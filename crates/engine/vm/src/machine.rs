@@ -139,6 +139,14 @@ impl Vm {
         }
     }
 
+    /// Copy an own widget's array cells into preallocated storage.
+    pub fn widget_cells(&self, n: u32, out: &mut [f64]) -> bool {
+        match self {
+            Self::Code(_) => false,
+            Self::Foreign(m) => m.widget_cells(n, out),
+        }
+    }
+
     /// As [`Machine::runs`].
     #[must_use]
     pub fn runs(&self) -> u32 {

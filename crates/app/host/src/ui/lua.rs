@@ -184,6 +184,13 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
                 })
                 .collect(),
         },
+        "Table" => ui::Kind::Table {
+            columns: w.cells.len() as u32,
+            range,
+            bipolar: w.min < 0. && w.max > 0.,
+            cells: w.cells.clone(),
+            steps_shown: None,
+        },
         "Label" => ui::Kind::Label,
         "Image" => ui::Kind::Image,
         // ponytail: tables, XY pads, meters and wave views draw as empty
@@ -208,11 +215,23 @@ fn widget(w: &Widget, n: usize) -> ui::Widget {
     out.opacity = w.alpha.clamp(0., 1.) as f32;
     out.menu_cycle = w.kind == "MultiStateButton";
     out.colors.background = w.colours[0].as_deref().and_then(colour);
-    out.colors.bar = w.colours[2].as_deref().and_then(colour);
+    out.colors.bar = w
+        .slider_colour
+        .as_deref()
+        .or(w.colours[2].as_deref())
+        .and_then(colour);
+    out.table_inner_edge = w.inner_edge.map(|visible| ui::TableInnerEdge {
+        visible,
+        color: None,
+    });
+    out.table_fill = (w.fill_style.as_deref() == Some("solid")).then_some(ui::TableFill::Solid);
     if matches!(out.kind, ui::Kind::Label | ui::Kind::Button { .. }) {
         out.text.clone_from(&w.text);
     }
-    out.value = value_of(&out.kind, w.value);
+    out.value = match out.kind {
+        ui::Kind::Table { .. } => Some(ui::Value::Reals(w.cells.clone())),
+        _ => value_of(&out.kind, w.value),
+    };
     out.initial_value = w.value;
     out.hidden = !w.visible;
     out.enabled = w.enabled;
@@ -310,6 +329,30 @@ impl Page for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_range_cells_and_authored_colours_reach_the_page() {
+        let page = kontra_lua::compile(r#"Table{"pan", 2, -0.5, -1, 1, false, sliderColour="deb25d", backgroundColour="474747", drawInnerEdge=false, fillStyle="solid"}"#, &[], &[]).unwrap().ui;
+        let tree = tree(&page, &|_| None);
+        let w = &tree.widgets[0];
+        let ui::Kind::Table {
+            columns,
+            range,
+            bipolar,
+            ..
+        } = &w.kind
+        else {
+            panic!("not a table")
+        };
+        assert_eq!(
+            (*columns, range.min, range.max, *bipolar),
+            (2, -1., 1., true)
+        );
+        assert_eq!(w.value, Some(ui::Value::Reals(vec![-0.5, -0.5])));
+        assert_eq!(w.colors.bar, Some(ui::Rgba::rgb(0xdeb25d)));
+        assert_eq!(w.colors.background, Some(ui::Rgba::rgb(0x474747)));
+        assert_eq!(w.table_inner_edge.map(|e| e.visible), Some(false));
+    }
 
     #[test]
     fn script_font_properties_survive_to_the_page() {

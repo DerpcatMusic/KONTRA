@@ -192,6 +192,7 @@ pub struct LookFrame {
     widgets: Box<[Option<WidgetLook>]>,
     reads: Vec<u32>,
     texts: Box<[(u32, bool, Text)]>,
+    arrays: Box<[(u32, bool, Box<[f64]>)]>,
     /// The script's bitmap fonts from [`FIRST_FONT`] on; `on init` names
     /// them all, so they are copied once.
     fonts: Arc<[String]>,
@@ -248,6 +249,7 @@ impl LookFrame {
             widgets: Box::default(),
             reads: Vec::new(),
             texts: Box::default(),
+            arrays: Box::default(),
             fonts: (FIRST_FONT..)
                 .map_while(|id| now.font(slot, id).map(str::to_owned))
                 .collect(),
@@ -270,6 +272,21 @@ impl LookFrame {
             widgets: vec![None; tree.widgets.len()].into(),
             reads: readable(tree),
             texts: labels.collect(),
+            arrays: tree
+                .widgets
+                .iter()
+                .enumerate()
+                .filter_map(|(n, w)| {
+                    let model::Kind::Table { cells, .. } = &w.kind else {
+                        return None;
+                    };
+                    Some((
+                        u32::try_from(n).ok()?,
+                        false,
+                        cells.clone().into_boxed_slice(),
+                    ))
+                })
+                .collect(),
             fonts: Arc::from([]),
             state: Filled::No,
         })
@@ -284,6 +301,15 @@ impl LookFrame {
             let text = texts.next_if(|t| t.0 as usize == n).map(|t| t.2.as_str());
             if let Some(look) = look.take() {
                 changed |= crate::ui::lua::apply(tree, n, look, text);
+            }
+        }
+        for (n, has, cells) in &self.arrays {
+            if *has && let Some(w) = tree.widgets.get_mut(*n as usize) {
+                if !matches!(&w.value, Some(model::Value::Reals(old)) if old.as_slice() == cells.as_ref())
+                {
+                    w.value = Some(model::Value::Reals(cells.to_vec()));
+                    changed = true;
+                }
             }
         }
         // Within the room it was made with: every widget fits.
@@ -326,6 +352,12 @@ impl LookFrame {
         for (n, has, text) in &mut *self.texts {
             *has = self.reads.binary_search(n).is_ok() && engine.widget_text(self.slot, *n, text);
         }
+        for (n, has, cells) in &mut *self.arrays {
+            *has = self.reads.binary_search(n).is_ok()
+                && engine
+                    .vm(self.slot)
+                    .is_some_and(|vm| vm.widget_cells(*n, cells));
+        }
         self.state = if whole {
             Filled::Whole
         } else {
@@ -351,6 +383,7 @@ impl LookFrame {
             cells: self.cells.clone(),
             widgets: self.widgets.clone(),
             reads: self.reads.clone(),
+            arrays: self.arrays.clone(),
             texts: self.texts.clone(),
             fonts: Arc::clone(&self.fonts),
             state: Filled::No,
