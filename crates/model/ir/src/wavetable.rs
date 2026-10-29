@@ -1,6 +1,6 @@
 //! A group whose zones are wavetables: single cycles one after another,
 //! played at the note's frequency, morphed by position and read through
-//! two phase warps.
+//! two forms, each a phase warp and a shaper of the level read.
 
 /// Where a group's voices read their table.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -13,10 +13,11 @@ pub struct Wavetable {
     pub warps: [Warp; 2],
 }
 
-/// One bend of the read phase.
+/// One form: a bend of the read phase, then a shaper of what it read.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Warp {
     pub shape: WarpShape,
+    pub shaper: FormShaper,
     /// 0..1.
     pub amount: f32,
 }
@@ -24,8 +25,36 @@ pub struct Warp {
 impl Warp {
     pub const OFF: Self = Self {
         shape: WarpShape::Off,
+        shaper: FormShaper::Off,
         amount: 0.0,
     };
+}
+
+/// How a form shapes the level `s` it read, at the unwarped phase `p` (0..1)
+/// and its amount `a`; applied in order after both phase warps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FormShaper {
+    Off,
+    /// Fades in over the first quarter cycle and out over the last, through
+    /// the window `w` of [`FormShaper::Window`].
+    Edges,
+    /// `w(p)`: `32x³` up to a quarter, `1 − 32(½ − x)³` to the middle, with
+    /// `x` folded about it.
+    Window,
+    /// `(8a² + 1)·s`, clipped to ±1.
+    Saturate,
+    /// Folds `(3.75a² + 0.25)·s` back into ±1 as a triangle.
+    Fold,
+    /// Scales every other one of `2n` slices of the cycle by `1 − a`.
+    Blinds(u8),
+    /// `sin(πp)`.
+    Arch,
+    /// Rises to the middle and falls back, linearly.
+    Peak,
+    /// `1 − p`.
+    Fall,
+    /// Moves `s` by `a` (down in the first half), wrapped into ±1.
+    Wrap,
 }
 
 /// Which way a warp leans as its amount rises: down, up, or down below half

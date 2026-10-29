@@ -6,9 +6,13 @@ use std::io;
 use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 
+mod levels;
+
 use kontra_ir as ir;
-use kontra_stream::{BlobKey, LoadRequest, MAX_CHANNELS, Mix, Sample, SampleFmt, Source, Store};
-use kontra_voice::{Ahdsr, Loop, PERIOD, Read, Region, Shape, Side, Table, Warp};
+use kontra_stream::{
+    BlobKey, LoadRequest, MAX_CHANNELS, Mix, Sample, SampleFmt, Source, Store, StreamClient,
+};
+use kontra_voice::{Ahdsr, Loop, PERIOD, Read, Region, Shape, Shaper, Side, Table, Warp};
 
 use kontra_engine::{
     Atom, Bus, Control, Crossfade, Group, Level, Plan, RoundRobin, RrCounter, Trigger, Zone,
@@ -29,6 +33,7 @@ pub fn prepare(
 ) -> (Plan, Vec<ir::Diagnostic>) {
     let mut diagnostics = Vec::new();
     let loaded = load_samples(instrument, store, open, &mut diagnostics);
+    let client = store.client();
     let mut zones = Vec::new();
     let mut switches: Vec<RangeInclusive<u8>> = Vec::new();
     let mut polyphony = Vec::new();
@@ -51,7 +56,7 @@ pub fn prepare(
             let Some(source) = instrument.samples.get(z.sample) else {
                 continue;
             };
-            let mut zone = zone(group, group_id, z, source, sample, &switches);
+            let mut zone = zone(group, group_id, z, source, sample, (&switches, &client));
             zone.member = u16::try_from(member).unwrap_or(u16::MAX);
             zones.push(zone);
         }
@@ -331,6 +336,18 @@ fn read(w: ir::Wavetable) -> Read {
             ir::WarpShape::LogExp => Shape::LogExp,
             ir::WarpShape::Bend { side: s } => Shape::Bend { side: side(s) },
         },
+        shaper: match w.shaper {
+            ir::FormShaper::Off => Shaper::Off,
+            ir::FormShaper::Edges => Shaper::Edges,
+            ir::FormShaper::Window => Shaper::Window,
+            ir::FormShaper::Saturate => Shaper::Saturate,
+            ir::FormShaper::Fold => Shaper::Fold,
+            ir::FormShaper::Blinds(n) => Shaper::Blinds(n),
+            ir::FormShaper::Arch => Shaper::Arch,
+            ir::FormShaper::Peak => Shaper::Peak,
+            ir::FormShaper::Fall => Shaper::Fall,
+            ir::FormShaper::Wrap => Shaper::Wrap,
+        },
         amount: w.amount,
     };
     Read {
@@ -346,7 +363,7 @@ fn zone(
     z: &ir::Zone,
     source: &ir::Sample,
     sample: &Arc<Sample>,
-    switches: &[RangeInclusive<u8>],
+    (switches, client): (&[RangeInclusive<u8>], &StreamClient),
 ) -> Zone {
     let region = Region {
         sample: Arc::clone(sample),
@@ -366,9 +383,10 @@ fn zone(
             .collect(),
         reverse: z.reverse,
         mix: mix(&z.mix),
-        table: group
-            .wavetable
-            .and_then(|w| Table::new(z.start, z.end.min(source.frames), read(w))),
+        table: group.wavetable.and_then(|w| {
+            let (data, spans) = levels::levels(sample, client, z.start, z.end.min(source.frames))?;
+            Table::new(data, spans, read(w))
+        }),
     };
     // A table plays its cycle at 440 Hz on A4, whatever the zone's root and
     // the sample's rate.
