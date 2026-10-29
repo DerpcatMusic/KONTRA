@@ -2272,6 +2272,7 @@ dependencies = [
 name = "kontra-library"
 version = "0.0.0"
 dependencies = [
+ "dirs",
  "serde",
  "serde_json",
 ]
@@ -2411,6 +2412,7 @@ name = "kontra-ui"
 version = "0.0.0"
 dependencies = [
  "dirs",
+ "kontra-library",
  "kontra-protocol",
  "kontra-ui-model",
  "mui",

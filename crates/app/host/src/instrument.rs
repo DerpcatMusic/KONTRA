@@ -78,6 +78,14 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
     diagnostics.extend(instrument.diagnostics);
     // ponytail: a slot that fails to compile is dropped, and the slots after
     // it move up one ($EVENT_PAR_SOURCE then counts from the gap).
+    let factory_folder = kontra_library::kontakt::candidates()
+        .into_iter()
+        .find(|p| p.is_file())
+        .and_then(|p| {
+            p.parent()
+                .and_then(|parent| crate::script::folder(Some(parent)))
+        })
+        .unwrap_or(kontra_engine::Text::EMPTY);
     for (n, script) in instrument.scripts.iter().enumerate() {
         if script.dialect == ir::Dialect::Lua {
             match kontra_lua::compile(&script.source, &lua_modules(script), &script.saved) {
@@ -101,6 +109,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 planned.source_folder =
                     crate::script::source_folder(instrument.source_path.as_deref());
                 planned.library_folder = crate::script::folder(instrument.library_path.as_deref());
+                planned.factory_folder = factory_folder;
                 planned.links = crate::script::links(&compiled, &script.links);
                 if planned.links.len() < script.links.len() {
                     diagnostics.push(ir::Diagnostic {

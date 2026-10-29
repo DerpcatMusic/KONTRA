@@ -20,6 +20,8 @@ pub struct ScriptPlan {
     pub source_folder: Option<Text>,
     /// Absolute library folder, when known.
     pub library_folder: Option<Text>,
+    /// Prepared factory data directory, empty when no installation exists.
+    pub factory_folder: Text,
     /// Saved values written after `on init`, before `on persistence_changed`.
     pub restore: Vec<(u32, i64)>,
     pub restore_texts: Vec<(u32, Text)>,
@@ -52,6 +54,7 @@ impl ScriptPlan {
         match kind {
             1 => self.library_folder,
             2 => self.source_folder,
+            3 => Some(self.factory_folder),
             _ => None,
         }
     }
