@@ -14,7 +14,7 @@ group can defer sample loading. See diagnostics and group `purged` state.
 Effect and some model details use Rust debug text; they are descriptive, not a
 stable machine-readable schema. The versioned envelope reserves `null` for
 unavailable data. Translator law IDs and provenance, script callback inventory,
-and asset existence are not yet exposed by this path and are explicitly listed
-as unavailable. Slot laws and route curves that are already in the IR are shown.
+original-to-runtime script slot mapping, and asset existence are not yet exposed by this path and are explicitly listed
+as unavailable. Script inventory slots are original file slots; UI slots are runtime slots, which can differ after a compile failure. Slot laws and route curves that are already in the IR are shown.
 
 `kontra-inspect` does not run the existing v2 `kontra-probe` contracts.

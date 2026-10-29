@@ -52,7 +52,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         })
         .collect();
     let scripts: Vec<_> = instrument.scripts.iter().enumerate().map(|(slot, s)| json!({
-        "slot": slot, "name": s.name, "dialect": format!("{:?}", s.dialect),
+        "original_slot": slot, "name": s.name, "dialect": format!("{:?}", s.dialect),
         "data": s.data.iter().map(|(name, bytes)| json!({"name": name, "bytes": bytes.len()})).collect::<Vec<_>>(),
         "callbacks": null,
     })).collect();
@@ -95,13 +95,13 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
     let ui: Vec<_> = loaded.faces.iter().zip(&loaded.pages).enumerate().map(|(slot, (face, page))| {
         if let (Some(face), Ok(slot_id)) = (face, u8::try_from(slot)) {
             match kontra_host::ui::interface(face, slot_id, &engine, &|_| None) {
-                Ok(tree) => json!({"slot": slot, "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| json!({"path": a.path, "kind": format!("{:?}", a.kind), "found": null})).collect::<Vec<_>>(), "unsupported": tree.unsupported.iter().map(|u| format!("{u:?}")).collect::<Vec<_>>()}),
-                Err(e) => json!({"slot": slot, "error": e.to_string()}),
+                Ok(tree) => json!({"runtime_slot": slot, "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| json!({"path": a.path, "kind": format!("{:?}", a.kind), "found": null})).collect::<Vec<_>>(), "unsupported": tree.unsupported.iter().map(|u| format!("{u:?}")).collect::<Vec<_>>()}),
+                Err(e) => json!({"runtime_slot": slot, "error": e.to_string()}),
             }
         } else if let Some(page) = page {
             let tree = kontra_host::ui::lua::tree(page, &|_| None);
-            json!({"slot": slot, "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| json!({"path": a.path, "kind": format!("{:?}", a.kind), "found": null})).collect::<Vec<_>>(), "unsupported": tree.unsupported.iter().map(|u| format!("{u:?}")).collect::<Vec<_>>()})
-        } else { json!({"slot": slot, "error": "no UI model"}) }
+            json!({"runtime_slot": slot, "widgets": tree.widgets.iter().map(|w| json!({"name": w.name, "source_id": w.source_id, "kind": format!("{:?}", w.kind), "hidden": w.hidden, "enabled": w.enabled, "text": w.text, "details": format!("{w:?}")})).collect::<Vec<_>>(), "assets": tree.assets.iter().map(|a| json!({"path": a.path, "kind": format!("{:?}", a.kind), "found": null})).collect::<Vec<_>>(), "unsupported": tree.unsupported.iter().map(|u| format!("{u:?}")).collect::<Vec<_>>()})
+        } else { json!({"runtime_slot": slot, "error": "no UI model"}) }
     }).collect();
     let unanswered = format!("{:?}", engine.unhandled_actions());
     let faults = format!("{:?}", engine.script_faults());
@@ -123,7 +123,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
         "engine": "v3", "result": {"name": loaded.name, "samples": samples, "groups": groups,
         "translated_zones": input_zones, "prepared_zones": zones, "effects": effects, "scripts": scripts, "ui": ui,
         "diagnostics": diagnostics, "init_unanswered": unanswered, "script_faults": faults,
-        "laws": null, "unavailable": ["translator law IDs and provenance", "script callbacks", "asset existence"]}}),
+        "laws": null, "unavailable": ["translator law IDs and provenance", "script callbacks", "original-to-runtime script slot mapping", "asset existence"]}}),
         summary,
     ))
 }
