@@ -315,7 +315,7 @@ struct LuaMachine {
     slots: Vec<Slot>,
     spawned: Vec<(CoId, u64)>,
     faults: Faults,
-    /// Callbacks started ([`Machine::runs`]).
+    /// Runs of a callback or task, each resume one ([`Machine::runs`]).
     runs: u32,
 }
 
@@ -344,7 +344,6 @@ impl LuaMachine {
             return None;
         };
         let index = u16::try_from(i).ok()?;
-        self.runs = self.runs.wrapping_add(1);
         slot.generation = slot.generation.wrapping_add(1);
         slot.thread = Some(thread);
         slot.context = context;
@@ -401,6 +400,9 @@ impl Machine for LuaMachine {
         let Some(thread) = slot.thread.clone() else {
             return Step::Done;
         };
+        // Every resume, not only a start, may change the state: a task that
+        // waited (a layer loading after `wait`) must be seen by the next save.
+        self.runs = self.runs.wrapping_add(1);
         self.checkpoints.store(0, Ordering::Relaxed);
         let resumed = lua.scope(|scope| {
             let call = scope.create_function_mut(|_, args: Variadic<Value>| {
