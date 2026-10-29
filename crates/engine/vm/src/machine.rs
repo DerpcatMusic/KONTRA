@@ -68,6 +68,16 @@ impl Vm {
         }
     }
 
+    /// Whether a running (waiting) callback has a context `matches` takes.
+    /// ponytail: a foreign machine's callbacks are not listed: never.
+    #[must_use]
+    pub fn is_running(&self, matches: impl Fn(u64) -> bool) -> bool {
+        match self {
+            Self::Code(vm) => vm.find(matches).is_some(),
+            Self::Foreign(_) => false,
+        }
+    }
+
     /// `stop_wait` on the callback with this context; the epoch to resume it with.
     pub fn stop_wait(&mut self, matches: impl Fn(u64) -> bool, rest: bool) -> Option<(CoId, u32)> {
         match self {

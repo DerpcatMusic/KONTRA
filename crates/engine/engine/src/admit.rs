@@ -135,6 +135,9 @@ impl Engine {
                 && !waiting
                 // A silent parent stays addressable while a child waits on it.
                 && !self.notes.parents(note)
+                // and its event while a callback for it waits ($EVENT_NOTE
+                // after a `wait` in `on release`).
+                && !self.has_callback(note)
                 && let Some(n) = self.notes.remove(note)
             {
                 self.ended.push(n.host);
@@ -144,5 +147,14 @@ impl Engine {
         for slot in self.voices.iter_mut().filter(|s| !s.voice.is_active()) {
             slot.note = None;
         }
+    }
+
+    /// Whether a script callback started for `note` is still running.
+    fn has_callback(&self, note: NoteRef) -> bool {
+        let id = note.event_id() as u32;
+        self.vms
+            .iter()
+            .flatten()
+            .any(|vm| vm.is_running(|context| context as u32 == id))
     }
 }

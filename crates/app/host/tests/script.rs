@@ -171,6 +171,32 @@ fn a_child_ends_with_its_key_even_when_the_keys_release_is_ignored() {
     assert_eq!(e.active_voices(), 0);
 }
 
+/// CHORUS and Dolce: `on release` waits a millisecond, then plays its
+/// release sample on `$EVENT_NOTE` and takes the key out of its legato
+/// buffer. Once the ignored key's note left the ledger (a block boundary
+/// within the wait) `$EVENT_NOTE` read 0: the key stayed in the buffer,
+/// and every release after it played a looped sustain held for good.
+#[test]
+fn a_callback_knows_its_event_after_a_wait() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on note
+            ignore_event($EVENT_ID)
+        end on
+        on release
+            wait(100000)
+            message($EVENT_NOTE & \",\" & $EVENT_VELOCITY)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    level(&mut e, &[off(60)]);
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "60,127");
+}
+
 /// Areia: under the sustain pedal the script keeps its own note playing,
 /// and at pedal-up ends each one whose key is up (`%KEY_DOWN` 0: the key,
 /// not its sound, KSP manual). A pedalled key read as still down, and the
