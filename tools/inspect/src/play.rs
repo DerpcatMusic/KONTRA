@@ -275,8 +275,12 @@ pub fn run(path: &Path, scenario_name: &str, oracle: bool) -> Result<(Value, Str
             .get("native_metrics")
             .and_then(|r| r.get("max_sample_jump"))
             .and_then(Value::as_f64);
+        let db =
+            |v: Option<f64>| v.map_or_else(|| "unavailable".to_owned(), |x| format!("{x:+.2} dB"));
+        let jump = native_jump.map_or_else(|| "unavailable".to_owned(), |x| format!("{x:.6}"));
         summary.push_str(&format!(
-            "  oracle: {status}; native minus v3 RMS {difference:?} dB, peak {peak_difference:?} dB; native max jump {native_jump:?} {detail}\n"
+            "  oracle: {status}; native minus v3 RMS {}, peak {}; native max jump {jump} {detail}\n",
+            db(difference), db(peak_difference)
         ));
     }
     Ok((
