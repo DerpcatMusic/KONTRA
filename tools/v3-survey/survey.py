@@ -2,7 +2,8 @@
 """v3 scoreboard: render every Kontakt and UVI instrument through the v3
 engine and log what plays, what is silent, what fails and what is missing.
 
-Each instrument plays key 60 (or, if silent there, 48/72/36/84) for 2 s at velocity 100, then at velocity 30
+Each instrument plays key 60 (or, if silent there, 48/72/36/84) for 2 s at velocity 100, then at velocity 30,
+with CC1 and CC11 at 127 sent before the note (recorded in the `cc` column)
 (the `render` example of kontra-host, one process per instrument). A run
 writes to <out>/<UTC>-<sha>/:
   results.tsv  one row per instrument
@@ -34,7 +35,10 @@ BIN = Path('/data/dev/workspace/scratch/survey-bin')
 LIBRARIES = [Path('/data/main/Libraries/Kontakt'), Path('/data/main/Libraries/UVI')]
 SILENT = 1e-4
 KEYS = (60, 48, 72, 36, 84)
-COLUMNS = ['library', 'instrument', 'status', 'key', 'load_s', 'rss_mb', 'rtf', 'zones', 'key_zones',
+# Wheel and expression full with the note-on: a patch whose dynamics ride
+# CC1/CC11 (saved in a "Modwheel" mode) is measured at full, not reported quiet.
+CC = '1=127,11=127'
+COLUMNS = ['library', 'instrument', 'status', 'key', 'cc', 'load_s', 'rss_mb', 'rtf', 'zones', 'key_zones',
            'peak', 'peak_v30', 'vel_db', 'rms_sustain', 'rms_release', 'broken', 'audible',
            'latent', 'cosmetic', 'unanswered', 'script_faults', 'stolen', 'cut', 'refused', 'missing_frames',
            'stream_errors', 'error']
@@ -67,7 +71,7 @@ def number(pattern, text, cast=float, default=None):
 
 def render(binary, path, velocity, timeout, key=60):
     with tempfile.TemporaryDirectory(dir='/data/dev/workspace/scratch') as tmp:
-        env = dict(os.environ, KONTRA_VELOCITY=str(velocity))
+        env = dict(os.environ, KONTRA_VELOCITY=str(velocity), KONTRA_CC=CC)
         try:
             p = subprocess.run(['nice', '-n', '19', str(binary), path, str(key), f'{tmp}/out.wav'], env=env,
                                capture_output=True, text=True, timeout=timeout)
@@ -89,6 +93,7 @@ def survey(binary, library, path, timeout):
         if error or number(r'^peak ([\d.]+)', out, default=0.0) >= SILENT:
             break
     row['key'] = key
+    row['cc'] = CC
     if error:
         row.update(status='timeout' if error == 'timeout' else 'failed', error=error)
         return row, [], []
