@@ -260,6 +260,7 @@ pub fn run(path: &Path, scenario_name: &str, oracle: bool) -> Result<(Value, Str
         trace.len(),
         stats.missing_frames
     );
+    summary.push_str(&super::routes::summary(&route_events));
     if let Some(reference) = &reference {
         let status = reference
             .get("status")
@@ -292,7 +293,7 @@ pub fn run(path: &Path, scenario_name: &str, oracle: bool) -> Result<(Value, Str
     Ok((
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
-        "trace":trace,"stage_events":stage_events,"route_events":route_events,"trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
+        "trace":trace,"stage_events":stage_events,"route_events":route_events,"route_event_semantics":"values evaluated during CC or note-on processing before smoothing, combining and clamping; dependency flags are structural","trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
         "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["non-EQ applied route values"]}}),
         summary,
     ))

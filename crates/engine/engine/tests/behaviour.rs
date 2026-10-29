@@ -2222,6 +2222,18 @@ fn timed_lfo_route_retains_all_ccs_received_before_the_span() {
             range_hz: [1.0, 5.0],
         },
     }];
+    plan.groups[0].mods.push(ir::Mod {
+        name: "rate11".into(),
+        slot: 10,
+        target: 0,
+        bypass: false,
+        kind: ir::ModKind::LfoHz {
+            source: ir::Source::Controller(11),
+            lfo: 0,
+            depth: 0.5,
+            range_hz: [1.0, 5.0],
+        },
+    });
     let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
     level(&mut engine, &[on(60, 1.0)]);
     level(&mut engine, &[cc(1, 64), cc(11, 127)]);
@@ -2233,9 +2245,65 @@ fn timed_lfo_route_retains_all_ccs_received_before_the_span() {
         && v.timed_refresh
         && v.direct_controller_source
         && (v.value - (64.0 / 127.0 * 4.0)).abs() < 1e-5));
+    assert!(routes.iter().any(|v| v.controller == 11
+        && v.timed_refresh
+        && v.direct_controller_source
+        && v.mod_slot == 10
+        && (v.value - 2.0).abs() < 1e-5));
+}
+
+#[cfg(feature = "trace")]
+#[test]
+fn onset_route_trace_records_sample_and_envelope_values() {
+    use kontra_engine::RouteUnit;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5);
+    z.start_mod = 1000;
+    let mut plan = Plan::new(vec![z], 8);
+    plan.groups[0].envelope.attack = 4800;
+    plan.groups[0].mods = vec![
+        ir::Mod {
+            name: "offset".into(),
+            slot: 4,
+            target: 0,
+            bypass: false,
+            kind: ir::ModKind::SampleStart {
+                source: ir::Source::Controller(1),
+                depth: 0.5,
+            },
+        },
+        ir::Mod {
+            name: "attack".into(),
+            slot: 5,
+            target: 0,
+            bypass: false,
+            kind: ir::ModKind::Attack {
+                source: ir::Source::Controller(1),
+                intensity: 1.0,
+                floor_ms: 0.0,
+            },
+        },
+    ];
+    let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 128);
+    level(&mut engine, &[cc(1, 64), on(60, 1.0)]);
+    let routes: Vec<_> = engine
+        .trace_route_values()
+        .filter(|v| v.note_onset && v.controller == 1)
+        .collect();
+    let x = 64.0 / 127.0;
     assert!(
         routes
             .iter()
-            .any(|v| v.controller == 11 && v.timed_refresh && !v.direct_controller_source)
+            .any(|v| matches!(v.unit, RouteUnit::SampleStartFraction)
+                && (v.value - x * 0.5).abs() < 1e-5
+                && v.voice_slot != usize::MAX)
     );
+    assert!(
+        routes
+            .iter()
+            .any(|v| matches!(v.unit, RouteUnit::EnvelopeFrames)
+                && (v.value - (4800.0 * x).round()).abs() < 1.0
+                && v.voice_slot != usize::MAX)
+    );
+    assert_eq!(engine.trace_dropped(), 0);
 }

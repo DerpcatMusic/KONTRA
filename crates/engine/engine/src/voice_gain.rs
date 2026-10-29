@@ -411,7 +411,10 @@ impl Engine {
                 && let Some(x) = self.source(zone, source, note, Age::START)
                 && let Some(s) = shift.get_mut(usize::from(length))
             {
-                *s += x * depth;
+                let value = x * depth;
+                #[cfg(feature = "trace")]
+                self.trace_route(zone, m, Some(x), value, crate::RouteUnit::LoopFraction);
+                *s += value;
             }
         }
         shift
@@ -433,7 +436,16 @@ impl Engine {
                         ir::Source::HeldTime { span_ms } => kontra_plan::held_time(span_ms, held),
                         source => self.source(zone, source, note, Age::START)?,
                     };
-                    Some(x * depth)
+                    let value = x * depth;
+                    #[cfg(feature = "trace")]
+                    self.trace_route(
+                        zone,
+                        m,
+                        Some(x),
+                        value,
+                        crate::RouteUnit::SampleStartFraction,
+                    );
+                    Some(value)
                 }
                 _ => None,
             })
@@ -476,14 +488,23 @@ impl Engine {
                 continue;
             };
             let x = if intensity < 0.0 { 1.0 - x } else { x };
-            let m = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
+            let multiplier = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
             let ms = *frames as f32 * 1000.0 / rate;
             let ms = if floor_ms > 0.0 {
-                floor_ms * ((ms + floor_ms) / floor_ms).powf(m * m * m) - floor_ms
+                floor_ms * ((ms + floor_ms) / floor_ms).powf(multiplier * multiplier * multiplier)
+                    - floor_ms
             } else {
-                ms * m
+                ms * multiplier
             };
             *frames = (ms.max(0.0) * rate / 1000.0).round() as u32;
+            #[cfg(feature = "trace")]
+            self.trace_route(
+                zone,
+                m,
+                Some(x),
+                *frames as f32,
+                crate::RouteUnit::EnvelopeFrames,
+            );
         }
         e
     }
