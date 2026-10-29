@@ -120,7 +120,7 @@ pub(crate) struct BusState {
     /// -1..=1 balance after the rack.
     pub(crate) pan: f32,
     /// Pan and volume changes glide: the balance in a line over 50 ms, the
-    /// volume over 10 ms (Kontakt 8: linear 50 ms; a one-pole of 3.7 ms,
+    /// volume over 10 ms (measured natively: linear 50 ms; a one-pole of 3.7 ms,
     /// the same 8 ms from 10 to 90%). An effect's bypass switches at once.
     balance: kontra_dsp::core::Levels,
     fader: kontra_dsp::core::Levels,
