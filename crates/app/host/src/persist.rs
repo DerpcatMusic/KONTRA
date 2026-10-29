@@ -117,6 +117,10 @@ pub struct Capture {
     widget_values: Box<[Option<f64>]>,
     /// By Lua slot, room for its `onSave` state and how much it took.
     states: Box<[State]>,
+    /// The engine's callback count when the states were last taken, and
+    /// whether this capture took them.
+    seen: Option<u32>,
+    fresh: bool,
 }
 
 /// A Lua slot, room for its saved state, and the length it took.
@@ -149,6 +153,8 @@ impl Capture {
             part,
             generation,
             states,
+            seen: None,
+            fresh: false,
             values: vec![None; cells.len()].into_boxed_slice(),
             texts: vec![None; text_cells.len()].into_boxed_slice(),
             widget_values: vec![None; widgets.len()].into_boxed_slice(),
@@ -159,13 +165,19 @@ impl Capture {
     }
 
     /// Reads the cells from `engine`; runs on the audio thread, in place.
-    // ponytail: `onSave` runs on every capture (each tick); ask for the
-    // state only when a save asks if a script's `onSave` shows up in the
-    // audio time.
+    /// `onSave` runs only when a callback ran since the states were last
+    /// taken: an idle part costs nothing (a host's save cannot wait for
+    /// the audio thread, so the state is kept ready).
     pub(crate) fn read(&mut self, engine: &mut Engine) {
-        for (slot, room, len) in &mut *self.states {
-            *len = engine.save_state(*slot, room);
+        let runs = |slot| engine.vm(slot).map_or(0, kontra_engine::Vm::runs);
+        let now = (self.states.iter()).fold(0u32, |n, s| n.wrapping_add(runs(s.0)));
+        self.fresh = self.seen != Some(now);
+        if self.fresh {
+            for (slot, room, len) in &mut *self.states {
+                *len = engine.save_state(*slot, room);
+            }
         }
+        self.seen = Some(now);
         for (value, &(slot, cell)) in self.values.iter_mut().zip(self.cells.iter()) {
             *value = engine.script_saved_in(slot, cell as usize);
         }
@@ -174,6 +186,18 @@ impl Capture {
         }
         for (value, &(slot, n)) in self.widget_values.iter_mut().zip(self.widgets.iter()) {
             *value = engine.widget(slot, n).map(|w| w.value);
+        }
+    }
+
+    /// Asks only for what changed since `last`, this part's capture before.
+    pub fn after(&mut self, last: Option<&Self>) {
+        self.seen = last.and_then(|l| l.seen);
+    }
+
+    /// Keeps `last`'s states when this capture did not take them.
+    pub fn keep(&mut self, last: Option<Box<Self>>) {
+        if let Some(mut last) = last.filter(|_| !self.fresh) {
+            std::mem::swap(&mut self.states, &mut last.states);
         }
     }
 

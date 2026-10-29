@@ -269,6 +269,25 @@ mod tests {
     }
 
     #[test]
+    fn a_picture_set_in_on_init_shows_on_the_page_read_after_init() {
+        let source = r#"
+            local b = OnOffButton{"B", false}
+            function onInit() b.normalImage = "../art/off.png" setBackground("../art/bg.png") end
+        "#;
+        let compiled = compile(source, &[], &[]).unwrap();
+        assert_eq!(compiled.ui.widgets[0].normal, None);
+        let mut m = compiled.machine();
+        let co = m.start(Callbacks::INIT, 0).expect("start");
+        assert_eq!(m.run(co, &mut Quiet), Step::Done);
+        let page = m
+            .own_page()
+            .and_then(|p| p.downcast::<crate::Ui>().ok())
+            .unwrap();
+        assert_eq!(page.widgets[0].normal.as_deref(), Some("../art/off.png"));
+        assert_eq!(page.background.as_deref(), Some("../art/bg.png"));
+    }
+
+    #[test]
     fn what_on_save_returns_comes_back_to_on_load_after_a_save() {
         let source = r#"
             level = 1
