@@ -470,6 +470,7 @@ impl Live {
         let mut bld = Builder {
             ui: ui::Interface {
                 source: ui::Source::Ksp { slot },
+                laws: kontra_format_kontakt::presentation::LAWS,
                 ..Default::default()
             },
             assets: HashMap::new(),
