@@ -154,6 +154,7 @@ impl Look {
                         rgb(0x5f_5f5f).into()
                     };
                     if *on && let Some(button) = button {
+                        parts.push(block(w, h).fill(rgb(0xff_ffff)));
                         let meta = model::ImageMeta {
                             size: Some(model::Size {
                                 width: 85.,
