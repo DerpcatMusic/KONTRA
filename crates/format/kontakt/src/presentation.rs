@@ -3,7 +3,7 @@
 //! The model carries these values and applies them, but defines none: a
 //! second format supplies its own [`Laws`] without the model knowing it.
 
-use kontra_ui_model::{KindTag, Laws, PaintRanks, PictureFrames};
+use kontra_ui_model::{Formatting, KindTag, Laws, Layering, PaintRanks, PictureFrames};
 
 /// Kontakt's presentation laws.
 ///
@@ -11,13 +11,17 @@ use kontra_ui_model::{KindTag, Laws, PaintRanks, PictureFrames};
 /// pressed, off hover, on hover (NI Kontakt 4 Player Developer Guide §5.4.2).
 /// A short legacy strip retains its off/on fallback; a held pointer wins over
 /// hover. Painting: the documented back-to-front type priority within one Z
-/// layer (KSP Control Parameters).
+/// layer (KSP Control Parameters). Layers are global over the page, not
+/// nested per panel (KSP `$CONTROL_PAR_Z_LAYER`). Readouts use the neutral
+/// ratio law.
 pub const LAWS: Laws = Laws {
     pictures: PictureFrames {
         states: [0, 2, 4, 1, 3, 5],
         short: [0, 1],
     },
     paint: PaintRanks { ranks: RANKS },
+    layering: Layering::Global,
+    formatting: Formatting::NEUTRAL,
 };
 
 /// Documented Kontakt back-to-front type priority within one Z layer, lowest
@@ -53,6 +57,12 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn layers_are_global_and_readouts_are_neutral() {
+        assert_eq!(LAWS.layering, Layering::Global);
+        assert_eq!(LAWS.formatting, Formatting::NEUTRAL);
+    }
 
     #[test]
     fn the_six_picture_states_show_off_on_pressed_and_hover_frames() {
