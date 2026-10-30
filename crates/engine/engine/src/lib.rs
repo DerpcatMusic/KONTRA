@@ -23,7 +23,7 @@ mod inspect;
 mod knobs;
 mod ledger;
 mod midi;
-mod midifile;
+pub mod midifile;
 mod modulators;
 mod par_display;
 mod params;
