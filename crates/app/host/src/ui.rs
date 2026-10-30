@@ -610,7 +610,7 @@ impl Live {
 #[derive(Debug, Default, PartialEq)]
 pub struct Changes {
     pub page: bool,
-    /// The keyboard's script colours.
+    /// The keyboard's script colours or key names.
     pub keys: bool,
     pub widgets: Vec<ui::WidgetRef>,
 }
