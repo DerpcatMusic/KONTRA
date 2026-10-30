@@ -80,7 +80,13 @@ pub fn meta(txt: &str) -> ui::ImageMeta {
     let mut meta = ui::ImageMeta::default();
     for (key, value) in txt.lines().filter_map(|l| l.split_once(':')) {
         let value = value.trim();
-        let yes = value.eq_ignore_ascii_case("yes");
+        // A flag is yes when it starts with yes: Kontakt reads its own
+        // sidecars loosely, and one ships the typo `Horizontal Resizable:
+        // yesm` (Electric Mint's `dropdown_topright`). Read as no, that
+        // picture does not stretch, and `layout` then gives its control the
+        // picture's 32 px width instead of the 171 the script asked for --
+        // which puts the preset menu's arrow under the field beside it.
+        let yes = value.to_ascii_lowercase().starts_with("yes");
         let n = value.parse::<u32>().unwrap_or(0);
         match key.trim() {
             "Has Alpha Channel" => meta.alpha = yes,
@@ -119,5 +125,19 @@ mod tests {
         png.extend(62u32.to_be_bytes());
         png.extend(31u32.to_be_bytes());
         assert_eq!(super::size(&png), Some((62., 31.)));
+    }
+
+    /// Electric Mint's `dropdown_topright` sidecar says `yesm`, and Kontakt
+    /// stretches that picture: its menu keeps the script's 171 px width and
+    /// the arrow sits at the field's right end.
+    #[test]
+    fn a_sidecar_flag_with_trailing_junk_is_still_yes() {
+        let m = super::meta(
+            "Horizontal Resizable: yesm\r\nVertical Resizable: no\r\nHorizontal Animation: yesm\r\n",
+        );
+        assert_eq!(m.stretch, [true, false], "yesm stretches, no does not");
+        assert_eq!(m.axis, super::ui::Orientation::Horizontal);
+        let m = super::meta("Has Alpha Channel: yesm\nHorizontal Resizable: no\n");
+        assert_eq!((m.alpha, m.stretch), (true, [false, false]));
     }
 }
