@@ -17,6 +17,8 @@ pub(crate) trait Real:
     fn of(v: f32) -> Self;
     /// Converts a count, as `n as Self`.
     fn of_count(n: usize) -> Self;
+    /// Converts from f64, rounding when `Self` is narrower.
+    fn of_f64(v: f64) -> Self;
     /// Widens to f64.
     fn to_f64(self) -> f64;
     /// Narrows to f32.
@@ -28,6 +30,11 @@ pub(crate) trait Real:
     fn exp(self) -> Self;
     fn exp2(self) -> Self;
     fn sin(self) -> Self;
+    fn ln(self) -> Self;
+    fn log10(self) -> Self;
+    fn log2(self) -> Self;
+    fn sqrt(self) -> Self;
+    fn cbrt(self) -> Self;
     fn abs(self) -> Self;
     fn clamp(self, lo: Self, hi: Self) -> Self;
     /// π / 2.
@@ -42,6 +49,9 @@ macro_rules! real {
             }
             fn of_count(n: usize) -> Self {
                 n as Self
+            }
+            fn of_f64(v: f64) -> Self {
+                v as Self
             }
             fn to_f64(self) -> f64 {
                 f64::from(self)
@@ -66,6 +76,21 @@ macro_rules! real {
             }
             fn sin(self) -> Self {
                 $t::sin(self)
+            }
+            fn ln(self) -> Self {
+                $t::ln(self)
+            }
+            fn log10(self) -> Self {
+                $t::log10(self)
+            }
+            fn log2(self) -> Self {
+                $t::log2(self)
+            }
+            fn sqrt(self) -> Self {
+                $t::sqrt(self)
+            }
+            fn cbrt(self) -> Self {
+                $t::cbrt(self)
             }
             fn abs(self) -> Self {
                 $t::abs(self)

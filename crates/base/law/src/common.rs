@@ -68,6 +68,27 @@ pub const SQUARE_ROOT: Law = Law::Power {
     exponent: 0.5,
 };
 
+/// Geometric from `from` to `from·ratio`, `from·ratio^x`: a stage time a source moves
+/// between a floor and the stage's own length.
+#[must_use]
+pub const fn geometric(from: f32, ratio: f32) -> Law {
+    Law::ExpAffine {
+        base: ratio,
+        offset: 0.0,
+        factor: 1.0,
+        shift: 0.0,
+        scale: from,
+    }
+}
+
+/// Semitones as a frequency ratio, `2^(st/12)`; its inverse is `12·log2(ratio)`.
+pub const SEMITONE_RATIO: Law = Law::PowIndex {
+    base: 2.0,
+    origin: 0.0,
+    divisor: 12.0,
+    scale: 1.0,
+};
+
 /// A level in dB as linear gain, `10^(dB/20)`.
 pub const DB_GAIN: Law = Law::PowIndex {
     base: 10.0,
@@ -119,6 +140,27 @@ mod tests {
             assert!(
                 got.to_bits().abs_diff(want.to_bits()) <= 1,
                 "{x}: {got} vs {want}"
+            );
+        }
+    }
+
+    /// The inverses replace hand-written `20·log10` and `12·log2` bit for bit.
+    #[test]
+    fn unit_inverses_keep_the_hand_written_rounding() {
+        for n in 1..=200_000 {
+            let g = n as f32 / 10_000.0;
+            assert_eq!(
+                DB_GAIN.inverse(g).map(f32::to_bits),
+                Some((20.0 * g.log10()).to_bits())
+            );
+            let g = f64::from(g);
+            assert_eq!(DB_GAIN.inverse_f64(g), Some(20.0 * g.log10()), "{g}");
+            assert_eq!(SEMITONE_RATIO.inverse_f64(g), Some(12.0 * g.log2()), "{g}");
+            let st = f64::from(n as f32 / 1000.0 - 100.0);
+            assert_eq!(
+                SEMITONE_RATIO.eval_unclamped_f64(st),
+                2f64.powf(st / 12.0),
+                "{st}"
             );
         }
     }

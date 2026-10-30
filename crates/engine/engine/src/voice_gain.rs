@@ -480,8 +480,8 @@ impl Engine {
             let multiplier = 1.0 - (1.0 - x.clamp(0.0, 1.0)) * intensity.abs();
             let ms = *frames as f32 * 1000.0 / rate;
             let ms = if floor_ms > 0.0 {
-                floor_ms * ((ms + floor_ms) / floor_ms).powf(multiplier * multiplier * multiplier)
-                    - floor_ms
+                let span = ir::common::geometric(floor_ms, (ms + floor_ms) / floor_ms);
+                span.eval_unclamped(multiplier * multiplier * multiplier) - floor_ms
             } else {
                 ms * multiplier
             };
