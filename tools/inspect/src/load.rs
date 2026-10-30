@@ -266,6 +266,15 @@ fn law(curve: &Law) -> Value {
     match curve {
         Law::Linear { lo, hi } => json!({"kind":"linear", "lo":lo, "hi":hi}),
         Law::Exp { lo, hi } => json!({"kind":"exp", "lo":lo, "hi":hi}),
+        Law::ExpAffine {
+            base,
+            offset,
+            factor,
+            shift,
+            scale,
+        } => {
+            json!({"kind":"exp_affine", "base":base, "offset":offset, "factor":factor, "shift":shift, "scale":scale})
+        }
         Law::Db { lo, hi } => json!({"kind":"db", "lo":lo, "hi":hi}),
         Law::Power { lo, hi, exponent } => {
             json!({"kind":"power", "lo":lo, "hi":hi, "exponent":exponent})
@@ -346,6 +355,16 @@ mod tests {
         assert_eq!(
             law(&Law::IntegerPower { exponent: 3 }),
             json!({"kind":"integer_power", "exponent":3})
+        );
+        assert_eq!(
+            law(&Law::ExpAffine {
+                base: 10.0,
+                offset: -0.5,
+                factor: 3.0,
+                shift: 0.0,
+                scale: 1.0
+            }),
+            json!({"kind":"exp_affine", "base":10.0, "offset":-0.5, "factor":3.0, "shift":0.0, "scale":1.0})
         );
         assert_eq!(
             law(&Law::Sine { power: 2.0 }),
