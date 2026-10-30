@@ -13,7 +13,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use kontra_host::ui::Missing;
@@ -121,6 +121,39 @@ pub fn start() {
 /// An error: what happened, and the values that say where.
 pub fn error(event: &str, data: &[(&str, &str)]) {
     write_line("error", event, data);
+}
+
+/// A significant state change, at most once a second per event name, so a
+/// drag or a load cannot flood the log. The control side writes these,
+/// never the audio thread.
+pub fn info(event: &str, data: &[(&str, &str)]) {
+    static LAST: [AtomicU64; 4] = [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ];
+    // A slot per event name: two different events never silence each other.
+    let slot = (event.as_bytes().first().copied().unwrap_or(0) as usize) % LAST.len();
+    let now = now_ms();
+    let last = LAST.get(slot).map_or(0, |at| at.load(Ordering::Relaxed));
+    if now.saturating_sub(last) < 1000 {
+        return;
+    }
+    if let Some(at) = LAST.get(slot) {
+        at.store(now, Ordering::Relaxed);
+    }
+    write_line("info", event, data);
+}
+
+/// Milliseconds since the plugin started, for [`info`]'s rate.
+fn now_ms() -> u64 {
+    static AT: OnceLock<std::time::Instant> = OnceLock::new();
+    AT.get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 /// One JSON line, written and flushed now; dropped once the file is full.

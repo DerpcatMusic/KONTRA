@@ -613,6 +613,16 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let mut target = app::Loading::New;
     let mut buttons = None;
     MuiEditor::new(params, kontra_ui::ui(), (1180, 780), move |ui, bridge| {
+        // The one place moose hands out the tick's spawner: with it, every
+        // request the editor makes (a pick, a typed value, a dropped file)
+        // schedules its own tick, so a host that renders no blocks still
+        // carries the edit out and shows it.
+        if p.shared.waker.get().is_none()
+            && let Some(tasks) = bridge.context().and_then(|c| c.tasks::<crate::Tick>())
+        {
+            p.shared
+                .set_waker(Box::new(move || tasks.spawn_coalescing(crate::Tick)));
+        }
         // On opening, and whenever the host loads a state: its view.
         let now = p.shared.restored.load(Ordering::Acquire);
         if restored != Some(now) {
@@ -729,6 +739,12 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         !instruments.is_empty() || !folders.is_empty()
     })
     .changed(move || {
+        // The folder picker answers on its own thread, and the tick reads it:
+        // ask for one while it is open, so the pick is scanned without a
+        // block from the host.
+        if watched.shared.folder.pending() {
+            watched.shared.wake();
+        }
         // Only events draw: a change the tick or the view marked, or a
         // picture that arrived. Nothing polled (pictures pending, a load
         // under way) asks for frames, so nothing stuck can spin them.
