@@ -92,7 +92,7 @@ if [[ ${KSP_TABS_ONLY:-0} == 1 ]]; then
         if python3 -I -c 'import sys; from PIL import Image, ImageChops
 box = tuple(map(int, sys.argv[3].split(",")))
 a, b = (Image.open(p).convert("RGB").crop(box) for p in sys.argv[1:3])
-sys.exit(0 if ImageChops.difference(a, b).getbbox() else 1)' "$KSP_TABS_BEFORE" "$out/0-open.png" "$KSP_TABS_BOX"; then
+sys.exit(0 if ImageChops.difference(a, b).getbbox() else 1)' "$KSP_TABS_BEFORE" "$out/0-open.png" "${KSP_TABS_BOX:-430,190,550,380}"; then
             pass "Kontakt tabbed label changes in the editor"
         else miss "Kontakt tabbed label changes in the editor"; fi
     fi
