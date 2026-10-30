@@ -126,6 +126,22 @@ jobs:
               (cd "$stage" && zip -qry "../$stage.zip" .)
             fi
           fi
+      - name: Verify Windows installation and removal
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'kontra-install-test'
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'KONTRA-nightly-windows-x86_64'
+          & (Join-Path $stage 'install.ps1')
+          $plugins = @('CLAP\KONTRA.clap', 'VST3\KONTRA.vst3')
+          foreach ($plugin in $plugins) {
+            if (-not (Test-Path (Join-Path $env:LOCALAPPDATA "Programs\Common\$plugin"))) { throw "Installation missing $plugin" }
+          }
+          & (Join-Path $stage 'uninstall.ps1')
+          foreach ($plugin in $plugins) {
+            if (Test-Path (Join-Path $env:LOCALAPPDATA "Programs\Common\$plugin")) { throw "Uninstall left $plugin" }
+          }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ runner.os == 'macOS' && 'macos-input' || 'release' }}-${{ matrix.name }}
@@ -210,6 +226,15 @@ jobs:
           cp legal/LICENSES.txt "universal-stage/payload/Library/Application Support/KONTRA/LICENSES.txt"
           source .github/scripts/macos_signing_keychain.sh
           bash .github/scripts/package_macos.sh universal-stage KONTRA-nightly-macos-universal.pkg
+      - name: Preserve signed macOS ZIP download
+        run: |
+          set -euo pipefail
+          mkdir compatibility
+          ditto 'universal-stage/payload/Library/Audio/Plug-Ins/CLAP/KONTRA.clap' compatibility/KONTRA.clap
+          ditto 'universal-stage/payload/Library/Audio/Plug-Ins/VST3/KONTRA.vst3' compatibility/KONTRA.vst3
+          cp legal/LICENSES.txt compatibility/LICENSES.txt
+          printf '%s\n' 'KONTRA universal plug-ins. The signed PKG installer is recommended; otherwise copy these bundles to your plug-in folders and rescan your DAW.' > compatibility/README.txt
+          ditto -c -k --sequesterRsrc compatibility KONTRA-nightly-macos-arm64.zip
       - name: Verify installed universal plugins
         run: |
           set -euo pipefail
@@ -225,6 +250,7 @@ jobs:
           path: |
             KONTRA-nightly-macos-universal.pkg
             KONTRA-nightly-macos-universal.notarization.json
+            KONTRA-nightly-macos-arm64.zip
           if-no-files-found: error
           retention-days: 1
 

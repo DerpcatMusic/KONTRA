@@ -28,6 +28,10 @@ def compose(arm64, x86_64, stage, revision, version):
         shutil.copytree(arm64 / f'KONTRA.{fmt}', bundle)
         plist = bundle / 'Contents/Info.plist'
         info = plistlib.loads(plist.read_bytes())
+        intel = plistlib.loads((x86_64 / f'KONTRA.{fmt}/Contents/Info.plist').read_bytes())
+        for key in ('CFBundleExecutable', 'CFBundleIdentifier'):
+            if intel.get(key) != info.get(key):
+                raise ValueError(f'{fmt}: {key} differs between architectures')
         if info.get('CFBundleExecutable') != 'KONTRA' or not info.get('CFBundleIdentifier'):
             raise ValueError(f'{fmt}: invalid bundle identity')
         info['CFBundleVersion'] = info['CFBundleShortVersionString'] = version.split('-', 1)[0]

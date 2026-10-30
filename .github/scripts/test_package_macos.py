@@ -28,6 +28,10 @@ class PackageTests(unittest.TestCase):
                 package_macos.compose(root / 'arm64', root / 'x86_64', root / 'stage', 'abc', '3.0.0-nightly.20261030.1')
                 for name in package_macos.BUNDLES.values():
                     self.assertEqual((root / 'stage/payload' / name / 'Contents/MacOS/KONTRA').read_bytes(), b'universal')
+                intel_plist = root / 'x86_64/KONTRA.clap/Contents/Info.plist'
+                intel_plist.write_bytes(plistlib.dumps({'CFBundleExecutable': 'KONTRA', 'CFBundleIdentifier': 'wrong'}))
+                with self.assertRaisesRegex(ValueError, 'CFBundleIdentifier differs'):
+                    package_macos.compose(root / 'arm64', root / 'x86_64', root / 'mismatch', 'abc', '3.0.0')
                 with self.assertRaisesRegex(ValueError, 'revision mismatch'):
                     package_macos.compose(root / 'arm64', root / 'x86_64', root / 'other', 'wrong', '3.0.0')
 
