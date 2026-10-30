@@ -142,6 +142,15 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                         detail: script.name.clone(),
                     });
                 }
+                // Kontakt plays release triggers from its own script unless a
+                // slot switches it off; the script then plays into those groups.
+                if compiled
+                    .conditions
+                    .iter()
+                    .any(|c| c == "NO_SYS_SCRIPT_RLS_TRIG")
+                {
+                    plan.release_zones = kontra_engine::ReleaseZones::WithNote;
+                }
                 plan.scripts.push(planned);
                 faces.push(Some(crate::ui::Face::of(&compiled, &script.data)));
                 pages.push(None);

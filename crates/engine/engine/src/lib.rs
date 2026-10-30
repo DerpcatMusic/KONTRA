@@ -66,8 +66,8 @@ pub use kontra_vm::{Action, Faults, Foreign, Op, Program, Text, Vm, WidgetLook};
 pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
 pub use plan::{
-    Atom, Bus, Control, Crossfade, Group, Level, Plan, Response, RoundRobin, RrCounter, Trigger,
-    Zone,
+    Atom, Bus, Control, Crossfade, Group, Level, Plan, ReleaseZones, Response, RoundRobin,
+    RrCounter, Trigger, Zone,
 };
 pub use queue::Timed;
 pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
@@ -612,7 +612,9 @@ impl Engine {
             }
             slot.released = true;
         }
-        if self.notes.get(note).map(|n| n.releases) == Some(Releases::OnRelease) {
+        if self.plan.release_zones == ReleaseZones::AtRelease
+            && self.notes.get(note).map(|n| n.releases) == Some(Releases::OnRelease)
+        {
             self.start_zones(note, false, |trigger| trigger == Trigger::Release);
         }
         self.end_children(note);
