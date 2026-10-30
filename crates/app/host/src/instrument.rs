@@ -130,6 +130,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 planned.source_folder =
                     crate::script::source_folder(instrument.source_path.as_deref());
                 planned.library_folder = crate::script::folder(instrument.library_path.as_deref());
+                planned.files = Some(std::sync::Arc::new(crate::rack::DiskFiles));
                 planned.factory_folder = *factory_folder.get_or_insert_with(|| {
                     factory_folder_of(kontra_library::kontakt::candidates())
                 });

@@ -35,6 +35,11 @@ pub struct ScriptPlan {
     pub knobs: Vec<(kontra_ir::KnobTarget, kontra_ir::Law)>,
     /// Code in another language, run by its own machine instead of `program`.
     pub foreign: Option<std::sync::Arc<dyn kontra_vm::Foreign>>,
+    /// Reads the array files the script names by path while it initialises.
+    pub files: Option<std::sync::Arc<dyn crate::files::Files>>,
+    /// The script's arrays: first cell, whether they are text cells, and
+    /// name. An array file holds the name of the array it fills.
+    pub arrays: Vec<(u32, bool, Box<str>)>,
     /// The release of a note this script played runs its own release
     /// callback, as a key-up would (KSP: `note_off` triggers `on release`);
     /// otherwise only the slots after it see the release.

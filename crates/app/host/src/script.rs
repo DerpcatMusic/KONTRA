@@ -104,6 +104,19 @@ pub fn runs(kind: CallbackKind) -> bool {
     )
 }
 
+/// The script's arrays, by first cell, for the array files it names.
+fn arrays(script: &Script) -> Vec<(u32, bool, Box<str>)> {
+    let array = |v: &kontra_ksp::Variable| match v.cells {
+        Cells::Int { base, .. } | Cells::Real { base, .. } => Some((base, false)),
+        Cells::Text { base, .. } => Some((base, true)),
+        _ => None,
+    };
+    (script.variables.iter())
+        .filter(|v| v.name.starts_with(['%', '?', '!']))
+        .filter_map(|v| array(v).map(|(base, text)| (base, text, v.name.clone())))
+        .collect()
+}
+
 /// The engine's view of `script` with `saved` persistent values restored and
 /// the library `data` files it loads. UI metadata stays with the caller.
 #[must_use]
@@ -135,6 +148,8 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
         },
         coroutines: COROUTINES,
         foreign: None,
+        files: None,
+        arrays: arrays(script),
         hears_own_releases: true,
         held_release_ends_children: true,
         links: Vec::new(),
@@ -437,6 +452,8 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         restore: Vec::new(),
         restore_texts: Vec::new(),
         foreign: Some(std::sync::Arc::new(compiled)),
+        files: None,
+        arrays: Vec::new(),
         // A UVI script never sees the notes it plays. In UVIWorkstation's
         // built-in Lua (0x1425676a0) `releaseVoice` and a `playNote` duration
         // post a NoteOff with `postEvent`, which only appends to the
