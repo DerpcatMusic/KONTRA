@@ -9,7 +9,7 @@
 
 use kontra_ir as ir;
 
-use crate::queue::{Exit, Work};
+use crate::queue::Exit;
 use crate::racks::{self, Dsp, Rack, Responses};
 use crate::script::Kind;
 use crate::{Engine, Plan, Response};
@@ -248,14 +248,7 @@ impl Engine {
             Exit::Failed
         };
         let (effect, dsp) = swapped.unwrap_or_else(|dsp| (r.effect, dsp));
-        let work = Work::Async {
-            slot: r.script,
-            id: r.id,
-            exit,
-        };
-        if !self.queue.push(self.now, work) {
-            self.stats.events_refused += 1;
-        }
+        self.queue_async(r.script, r.id, exit);
         Prepared {
             request: EffectRequest { effect, ..r },
             dsp,

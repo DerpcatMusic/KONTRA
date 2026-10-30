@@ -125,10 +125,23 @@ impl Engine {
     /// `exit`. Returns its id.
     pub(crate) fn start_async(&mut self, exit: Exit) -> i32 {
         let (slot, id) = (self.running.slot, self.next_async_id());
+        self.queue_async(slot, id, exit);
+        id
+    }
+
+    /// Queues the completion of command `id`. A full queue drops it, and the
+    /// command no longer counts as running, so no `wait_async` waits on it.
+    pub(crate) fn queue_async(&mut self, slot: u8, id: i32, exit: Exit) {
         if !self.queue.push(self.now, Work::Async { slot, id, exit }) {
             self.stats.events_refused += 1;
+            self.finish_async(id);
         }
-        id
+    }
+
+    fn finish_async(&mut self, id: i32) {
+        for r in self.ids.running.iter_mut().filter(|r| **r == id) {
+            *r = 0;
+        }
     }
 
     pub(crate) fn next_async_id(&mut self) -> i32 {
@@ -143,9 +156,7 @@ impl Engine {
     pub(crate) fn async_complete(&mut self, slot: u8, id: i32, exit: Exit) {
         self.ids.async_exit = exit;
         self.ids.async_done = id;
-        for r in self.ids.running.iter_mut().filter(|r| **r == id) {
-            *r = 0;
-        }
+        self.finish_async(id);
         let plan = Arc::clone(&self.plan);
         let entry = plan
             .scripts
