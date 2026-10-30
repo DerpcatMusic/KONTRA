@@ -808,13 +808,14 @@ fn a_snapshot_recalls_into_the_loaded_instrument_as_its_type_asks() {
 /// KSP manual (`save_array_str`, `load_array_str`): after `on init` both run
 /// asynchronously, then `on async_complete`; the file holds the array's
 /// name and its values, and a file naming another array loads nothing.
-/// Saves go to the user's data folder, never into the library; a save that
+/// Saves go to the rack's save folder, never into the library; a save that
 /// cannot be written reports 0. Only regular files no larger than a
 /// script resource are read.
 #[test]
 fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
     use kontra_engine::ir;
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("array-files");
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("dir.nka")).unwrap();
     std::fs::write(dir.join("other.nka"), "%other\n7\n7\n7\n").unwrap();
     // Valid values, then (sparse) padding past the ceiling.
@@ -825,7 +826,7 @@ fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
     (huge.unwrap())
         .set_len(kontra_format_kontakt::RESOURCE_LIMIT + 1)
         .unwrap();
-    let saves = dirs::data_dir().unwrap().join("kontra/arrays");
+    let saves = dir.join("saves");
     let mine = saves.join(dir.strip_prefix("/").unwrap_or(&dir));
     std::fs::create_dir_all(&mine).unwrap();
     // A file where a save needs a folder: that save cannot be written.
@@ -881,6 +882,7 @@ fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
         ..ir::Instrument::DEFAULT
     };
     let (mut rack, mut audio) = rack();
+    rack.set_saves(saves.clone());
     rack.load_ir(0, instrument, None).unwrap();
     audio.process(BLOCK, &[(0, note(0))]);
     for _ in 0..16 {
@@ -889,14 +891,6 @@ fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
     }
     let saved = saved_now(&mut rack, &mut audio);
     let written = std::fs::read_to_string(mine.join("a.nka"));
-    // Leave the data folder as it was: the files, then every folder this
-    // test made that is now empty.
-    let _ = std::fs::remove_file(mine.join("a.nka"));
-    let _ = std::fs::remove_file(mine.join("blocked.nka"));
-    let mut empty = Some(mine.as_path());
-    while let Some(d) = empty.filter(|d| d.starts_with(&saves)) {
-        empty = std::fs::remove_dir(d).ok().and(d.parent());
-    }
     assert_eq!(written.unwrap(), "%a\n1\n2\n3\n");
     assert!(
         !dir.join("a.nka").exists(),
@@ -926,4 +920,50 @@ fn an_install_fades_out_the_engine_it_replaces() {
     let [after, _] = play(&mut audio, &[]);
     assert!(after.abs() < 1e-6, "{after}");
     rack.tick();
+}
+
+/// A rack with no save folder (a test, a tool) writes nothing: a script's
+/// save reports 0 and no file appears anywhere.
+#[test]
+fn a_rack_without_a_save_folder_writes_nothing() {
+    use kontra_engine::ir;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-saves");
+    let at = dir.join("a.nka");
+    let source = format!(
+        "on init
+            declare %a[1] := (4)
+            declare $id
+            declare $status := 9
+            make_persistent($status)
+        end on
+        on note
+            $id := save_array_str(%a, \"{}\")
+        end on
+        on async_complete
+            $status := $NI_ASYNC_EXIT_STATUS
+        end on",
+        at.display()
+    );
+    let instrument = ir::Instrument {
+        scripts: vec![ir::Script {
+            name: "s".into(),
+            slot: 0,
+            dialect: ir::Dialect::Ksp,
+            source,
+            saved: Vec::new(),
+            data: Vec::new(),
+            links: Vec::new(),
+        }],
+        ..ir::Instrument::DEFAULT
+    };
+    let (mut rack, mut audio) = rack();
+    rack.load_ir(0, instrument, None).unwrap();
+    audio.process(BLOCK, &[(0, note(0))]);
+    for _ in 0..4 {
+        rack.tick();
+        audio.process(BLOCK, &[]);
+    }
+    let saved = saved_now(&mut rack, &mut audio);
+    assert!(saved.contains(&"$status 0".to_owned()), "{saved:?}");
+    assert!(!at.exists(), "nothing written next to the path");
 }
