@@ -5,6 +5,21 @@ use mui_scene::A11y;
 use std::time::Duration;
 const HALF_CARET_PERIOD: f64 = 0.625;
 impl Ui {
+    /// Seconds of frame time so far: the sum of every frame's `dt`.
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+
+    /// Asks for a frame `secs` from now even if nothing else moves: a held
+    /// control that repeats, a meter that falls. The earliest request wins.
+    pub fn repaint_in(&mut self, secs: f64) {
+        let at = self.time + secs.max(0.);
+        self.wake = Some(match self.wake {
+            Some(w) if w > self.time => w.min(at),
+            _ => at,
+        });
+    }
+
     /// Delay until the next timer-dependent visual change. Input/model changes
     /// still invalidate immediately, and `Frame::animating` requests an animation
     /// frame. Hosts should use the earlier of their own deadline and this one.
@@ -37,7 +52,8 @@ impl Ui {
             .wheel_turned
             .map(|at| crate::host::WHEEL_ROLL - (self.time - at))
             .filter(|left| *left > 0.);
-        [tip, caret, roll]
+        let wake = self.wake.map(|at| at - self.time).filter(|left| *left > 0.);
+        [tip, caret, roll, wake]
             .into_iter()
             .flatten()
             .reduce(f64::min)

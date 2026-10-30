@@ -248,6 +248,7 @@ fn in_rack(
                 tree,
                 pictures,
                 gesture: kontra_ui::input::Gesture::default(),
+                meters: Default::default(),
             }),
             open: true,
             tab: PartTab::Interface,
