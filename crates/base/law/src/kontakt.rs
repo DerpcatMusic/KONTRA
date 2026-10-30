@@ -121,18 +121,38 @@ pub const LEGACY_RESONANCE_LOSS: [Law; 3] = [
 /// knob's end, before the 0..=1 clamp: `(e^(6.15 u) − 1) · this`.
 const LEGACY_CUTOFF_SLOPE: f32 = 0.002_572_831_7;
 
-/// The legacy filters' cutoff knob to Hz, `21759.5 · ((e^(6.15 u) − 1) · 0.0025728 + 0.002)`:
-/// one exponential segment, flat once the series passes 1 near u = 0.97
-/// (`docs/re/engine/filt-legacy.md`).
-pub static LEGACY_CUTOFF_HZ: LazyLock<Law> = LazyLock::new(|| {
+/// The legacy setters' exp series to Hz, `span · ((e^(6.15 u) − 1) · 0.0025728 + 0.002)`
+/// with the series clamped to 1: one exponential segment, flat once the series passes 1
+/// near u = 0.97 (`docs/re/engine/filt-legacy.md`).
+#[must_use]
+pub fn legacy_exp_series(span_hz: f32) -> Law {
     let curve = (1.0 / LEGACY_CUTOFF_SLOPE).ln_1p();
-    let (lo, hi) = (21_759.5 * 0.002, 21_759.5 * 1.002);
+    let (lo, hi) = (span_hz * 0.002, span_hz * 1.002);
     Law::Breakpoints(std::sync::Arc::from([
         (0.0, lo, curve),
         (curve / 6.15, hi, 0.0),
         (1.0, hi, 0.0),
     ]))
-});
+}
+
+/// The legacy filters' cutoff knob to Hz: [`legacy_exp_series`] over 21 759.5 Hz.
+pub static LEGACY_CUTOFF_HZ: LazyLock<Law> = LazyLock::new(|| legacy_exp_series(21_759.5));
+
+/// The legacy reverb's damping-derived position to its high cut: [`legacy_exp_series`] over
+/// `22006 · 0.988793` Hz.
+pub static LEGACY_REVERB_HIGH_CUT_HZ: LazyLock<Law> =
+    LazyLock::new(|| legacy_exp_series(22_006.0 * 0.988_793));
+
+/// The feedback compressor's ratio to its knee start `max(r, 2)^0.2 · 0.70394 − 0.67251`
+/// (ratio law 0x141a91d10); evaluate at the ratio, at least 2.
+pub const FEEDBACK_THRESHOLD: Law = Law::Power {
+    lo: -0.672_507_3,
+    hi: 0.703_942_9 - 0.672_507_3,
+    exponent: 0.2,
+};
+
+/// The feedback compressor's ratio to its knee width factor (0x141a91d10).
+pub const FEEDBACK_KNEE: Law = Law::Formula(FormulaId::FeedbackKnee);
 
 /// Saved modulation-shaper points as an evaluator law.
 ///
@@ -208,6 +228,32 @@ mod tests {
                     10f32.powf(-drop * r / 20.0).to_bits()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn feedback_compressor_laws_match_the_fitted_forms() {
+        for n in 0..=19_000 {
+            let r = 1.0 + n as f32 / 1000.0;
+            let threshold = r.max(2.0).powf(0.2) * 0.703_942_9 - 0.672_507_3;
+            let got = FEEDBACK_THRESHOLD.eval_unclamped(r.max(2.0));
+            assert!((got - threshold).abs() < 1e-6, "{r}: {got} vs {threshold}");
+            let knee = 3.601_805_4 / r + 0.840_284_1 - 1.440_552_4 / (r.sqrt() * r) + 0.05;
+            assert_eq!(FEEDBACK_KNEE.eval_unclamped(r).to_bits(), knee.to_bits());
+        }
+    }
+
+    #[test]
+    fn legacy_reverb_high_cut_matches_the_exp_series() {
+        for n in 0..=10_000 {
+            let x = n as f32 / 10_000.0;
+            let corner = ((6.15 * x).exp() - 1.0) * LEGACY_CUTOFF_SLOPE;
+            let original = (corner.clamp(0.0, 1.0) + 0.002) * 22_006.0 * 0.988_793;
+            let got = LEGACY_REVERB_HIGH_CUT_HZ.eval(x);
+            assert!(
+                (got / original - 1.0).abs() < 2e-5,
+                "{x}: {got} vs {original}"
+            );
         }
     }
 

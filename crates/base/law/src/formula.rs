@@ -14,6 +14,9 @@ pub enum FormulaId {
     /// the level ratio `(1/f − 1)²`, `f` the knob's quadratic ease-in/out clamped to
     /// 0.001..=0.999 (Kontakt 0x140ae5a10).
     FlexShape,
+    /// A feedback compressor's ratio `r` to its knee factor
+    /// `3.6018/r + 0.8903 − 1.4406/r^1.5` (Kontakt ratio law 0x141a91d10).
+    FeedbackKnee,
 }
 
 impl FormulaId {
@@ -27,6 +30,7 @@ impl FormulaId {
         match self {
             Self::AttackShape => T::of(attack_shape(x.to_f64())),
             Self::FlexShape => T::of(flex_ratio(x.to_f32()).ln()),
+            Self::FeedbackKnee => T::of(feedback_knee(x.to_f32())),
         }
     }
 
@@ -34,7 +38,7 @@ impl FormulaId {
     pub(crate) fn inverse(self, y: f64) -> Option<f64> {
         match self {
             Self::AttackShape => Some(attack_curve(y)),
-            Self::FlexShape => None,
+            Self::FlexShape | Self::FeedbackKnee => None,
         }
     }
 }
@@ -58,6 +62,10 @@ fn attack_curve(shape: f64) -> f64 {
     let b = 1.0 / shape.abs().exp_m1();
     let c = (1.0 - (b.ln() + 20_000f64.ln()) / 500_000f64.ln()).clamp(0.0, 1.0);
     -shape.signum() * c
+}
+
+fn feedback_knee(r: f32) -> f32 {
+    3.601_805_4 / r + 0.840_284_1 - 1.440_552_4 / (r.sqrt() * r) + 0.05
 }
 
 fn flex_ratio(c: f32) -> f32 {
