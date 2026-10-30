@@ -3129,15 +3129,15 @@ fn a_fade_out_without_stop_comes_back_with_a_fade_in() {
     );
     let rising = level(&mut e, &[on(63)]);
     assert!(rising > 0.0 && rising < full / 4.0, "{rising} of {full}");
-    // A fade out asked before the note's voices start still happens.
-    let zones = vec![zone(&mut store, 0.5, 0)];
-    let mut e = engine(
-        &store,
-        zones,
-        "on note\n fade_out($EVENT_ID, 1000, 0)\nend on",
-    );
-    let mut out = vec![[0.0; 2]; 48];
-    e.process(&mut out, &[on(64)]);
-    assert!(out[0][0] > 0.0, "the attack sounds, then fades");
-    assert_eq!(out[47][0], 0.0, "silent at the fade's end");
+    // A fade out asked before the note's voices start still happens, holding
+    // or stopping.
+    for stop in [0, 1] {
+        let zones = vec![zone(&mut store, 0.5, 0)];
+        let script = format!("on note\n fade_out($EVENT_ID, 1000, {stop})\nend on");
+        let mut e = engine(&store, zones, &script);
+        let mut out = vec![[0.0; 2]; 48];
+        e.process(&mut out, &[on(64)]);
+        assert!(out[0][0] > 0.0, "the attack sounds, then fades ({stop})");
+        assert_eq!(out[47][0], 0.0, "silent at the fade's end ({stop})");
+    }
 }

@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use kontra_time::SampleTime;
 use kontra_vm::{HostValue, Step, Vm};
+use kontra_voice::FadeTarget;
 
 use crate::ledger::{NoteRef, Releases};
 use crate::queue::{Exit, Work};
@@ -354,7 +355,12 @@ impl Engine {
                 Trigger::Legato => held > 0,
                 Trigger::Release => scripted,
             });
-            if !scripted && self.notes.get(note).map(|n| n.releases) == Some(Releases::AtStart) {
+            let Some(n) = self.notes.get_mut(note) else {
+                continue;
+            };
+            // A stopping fade asked before it started ends it: no release follows.
+            n.released |= n.fade.is_some_and(|(target, _)| target == FadeTarget::End);
+            if !scripted && n.releases == Releases::AtStart {
                 self.start_zones(note, false, |trigger| trigger == Trigger::Release);
             }
             self.behaviour.advance();
