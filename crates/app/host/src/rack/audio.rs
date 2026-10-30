@@ -248,6 +248,7 @@ impl RackAudio {
             && !self.channels.units.is_full()
             && !self.channels.typed.is_full()
             && !self.channels.looks.is_full()
+            && !self.channels.recalled.is_full()
         {
             let Some(command) = self.channels.commands.recv() else {
                 break;
@@ -296,6 +297,22 @@ impl RackAudio {
                         // Checked for room first; if it ever fails, it frees here.
                         self.dropped += 1;
                         drop(unit);
+                    }
+                }
+                Command::Recall {
+                    part,
+                    generation,
+                    saved,
+                } => {
+                    if let Some(Some(p)) = self.parts.get_mut(part)
+                        && p.generation == generation
+                    {
+                        p.engine.recall(&saved);
+                    }
+                    if let Err(saved) = self.channels.recalled.send(saved) {
+                        // Checked for room first; if it ever fails, it frees here.
+                        self.dropped += 1;
+                        drop(saved);
                     }
                 }
                 Command::Remove(part) => {

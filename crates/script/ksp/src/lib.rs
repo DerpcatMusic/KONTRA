@@ -17,7 +17,7 @@ use std::fmt;
 pub use builtins::{Arg, Builtin, Ret, Sig};
 pub use consts::{FIRST_UI_ID, SYMBOL_BASE, int as constant};
 use kontra_vm::Program;
-pub use persist::Restore;
+pub use persist::{Restore, restore};
 
 /// Compiles a script. `conditions` are the `SET_CONDITION` symbols already set
 /// (Kontakt's system-script switches).

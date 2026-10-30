@@ -102,7 +102,33 @@ impl Vars {
             state: true,
         }
     }
+
+    /// What `saved` (in Kontakt's form) writes into these variables' cells,
+    /// for a recall into the running engine. Entries naming no persistent
+    /// variable write nothing.
+    #[must_use]
+    pub fn recall(&self, saved: &[String]) -> kontra_engine::Saved {
+        let restore = kontra_ksp::restore(saved, |key| {
+            let var = (self.vars.iter())
+                .find(|v| v.name.trim_start_matches(SIGILS).eq_ignore_ascii_case(key))?;
+            let (base, len) = (var.base, var.len);
+            Some(match (var.text, var.real) {
+                (true, _) => Cells::Text { base, len },
+                (false, true) => Cells::Real { base, len },
+                (false, false) => Cells::Int { base, len },
+            })
+        });
+        kontra_engine::Saved {
+            ints: restore.ints,
+            texts: (restore.texts.iter())
+                .map(|(cell, text)| (*cell, Text::from_str_cut(text).0))
+                .collect(),
+        }
+    }
 }
+
+/// The type marks a KSP variable name starts with.
+const SIGILS: [char; 6] = ['$', '%', '~', '?', '@', '!'];
 
 /// Cells for the audio side to read out of one part's engine.
 pub struct Capture {

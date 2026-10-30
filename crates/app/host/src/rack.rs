@@ -17,6 +17,7 @@ use kontra_ui_model::UiModifiers;
 
 mod audio;
 mod hold;
+mod recall;
 pub use audio::RackAudio;
 pub use hold::{HOLD_STEPS, Hold};
 
@@ -85,6 +86,13 @@ pub enum Command {
     Hold(usize, Hold),
     /// Read a part's persistent script cells and send them back.
     Capture(Box<Capture>),
+    /// Recall saved values (by script slot) into `part`'s running scripts,
+    /// if the part is still that load; the box comes back to be freed.
+    Recall {
+        part: usize,
+        generation: u64,
+        saved: Box<[kontra_engine::Saved]>,
+    },
     /// Copy what a part's interface reads of its script and send it back.
     Look(Box<crate::view::LookFrame>),
     /// The user moved control `id` of script `slot` to `value`, holding
@@ -128,6 +136,8 @@ pub struct Channels {
     pub commands: Ring<Command>,
     pub retired: Ring<Box<Engine>>,
     pub captured: Ring<Box<Capture>>,
+    /// Saved values recalled into a part, to free on the control side.
+    pub recalled: Ring<Box<[kontra_engine::Saved]>>,
     /// Effect types the parts' scripts asked for: (part, its load, request).
     pub requests: Ring<(usize, u64, EffectRequest)>,
     /// Effect units swapped out, to free on the control side.
@@ -144,6 +154,11 @@ pub struct Channels {
 pub struct Part {
     /// The instrument file, or None for one built in memory.
     pub path: Option<PathBuf>,
+    /// The instrument file its IR was read from (a snapshot's base
+    /// instrument): a preset of the same source recalls into this part.
+    pub source: Option<PathBuf>,
+    /// What a recall does to its scripts, as they asked in `on init`.
+    pub recall: kontra_engine::Recall,
     pub name: String,
     pub diagnostics: Vec<ir::Diagnostic>,
     /// By script slot, what its UI tree is built from.
@@ -176,6 +191,8 @@ pub struct ScriptState {
     pub vars: Vec<crate::persist::Vars>,
     /// By instrument script, the saved values it loaded with.
     pub loaded: Vec<Vec<String>>,
+    /// By instrument script, its script slot ([`ir::Script::slot`]).
+    pub slots: Vec<usize>,
     generation: u64,
     latest: Option<Box<Capture>>,
     asked: bool,
@@ -230,6 +247,7 @@ impl Rack {
             commands: Ring::new(256),
             retired: Ring::new(64),
             captured: Ring::new(2 * MAX_PARTS),
+            recalled: Ring::new(2 * MAX_PARTS),
             // An engine queues at most 16 at once.
             requests: Ring::new(16 * MAX_PARTS),
             units: Ring::new(16 * MAX_PARTS),
@@ -288,6 +306,13 @@ impl Rack {
     /// When the file is not an instrument this can read, or `part` is past
     /// the rack.
     pub fn load(&mut self, part: usize, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        // A preset of the instrument the part plays recalls into it,
+        // without reading the instrument.
+        if let Some(preset) = crate::instrument::preset(path)
+            && self.recall(part, &preset, Some(path))
+        {
+            return Ok(());
+        }
         self.load_ir(part, crate::instrument::read(path)?, Some(path.to_owned()))
     }
 
@@ -353,6 +378,8 @@ impl Rack {
             return Err(format!("part {part} is past the rack's {MAX_PARTS}").into());
         }
         let saved = instrument.scripts.iter().map(|s| s.saved.clone()).collect();
+        let source = instrument.source_path.clone();
+        let slots = instrument.scripts.iter().map(|s| s.slot).collect();
         let mut loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
         let slot_types: Vec<_> = (slot_types.iter().copied())
             .filter(|&(at, slot, ty)| loaded.plan.load_type(at, slot, ty))
@@ -366,6 +393,8 @@ impl Rack {
         let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, path.as_deref());
         let sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
         let part_info = Part {
+            source,
+            recall: engine.recall_law(),
             view,
             sounds,
             slot_types,
@@ -382,6 +411,7 @@ impl Rack {
             script: ScriptState {
                 vars: loaded.persist,
                 loaded: saved,
+                slots,
                 ..ScriptState::default()
             },
         };
@@ -584,6 +614,7 @@ impl Rack {
         while self.channels.retired.recv().is_some() {}
         while self.channels.units.recv().is_some() {}
         while self.channels.typed.recv().is_some() {}
+        while self.channels.recalled.recv().is_some() {}
         // Effect types scripts loaded: built here, off the audio thread.
         while let Some((part, generation, request)) = self.channels.requests.recv() {
             let Some(Some(p)) = self.parts.get_mut(part) else {

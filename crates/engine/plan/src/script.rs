@@ -177,3 +177,35 @@ mod tests {
         );
     }
 }
+
+/// What recalling saved values (a preset of the loaded instrument) does to
+/// its scripts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recall {
+    /// `init` runs again on a fresh state, then the values land, then the
+    /// persistence-changed callback runs.
+    Restart,
+    /// The scripts keep their state: the values land, then the
+    /// persistence-changed callback runs.
+    Keep,
+}
+
+impl Recall {
+    /// The law a script's snapshot type picks: even types run `init` again,
+    /// odd ones keep the state (KSP manual, `set_snapshot_type`).
+    #[must_use]
+    pub fn of_type(kind: i64) -> Self {
+        if kind & 1 == 0 {
+            Self::Restart
+        } else {
+            Self::Keep
+        }
+    }
+}
+
+/// One script slot's saved values, as cell writes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Saved {
+    pub ints: Vec<(u32, i64)>,
+    pub texts: Vec<(u32, Text)>,
+}
