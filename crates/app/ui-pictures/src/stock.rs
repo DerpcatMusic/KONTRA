@@ -28,6 +28,10 @@ const KEYS: [(&str, usize, u32, u32, u32); 8] = [
 
 static ART: OnceLock<Option<super::cache::Art>> = OnceLock::new();
 
+pub(super) fn outline() -> Option<Vec<u8>> {
+    ART.get_or_init(load).as_ref()?.outline.clone()
+}
+
 /// Start discovery, hashing and decoding before the editor's first frame.
 pub fn prewarm() {
     static START: OnceLock<()> = OnceLock::new();
@@ -138,6 +142,7 @@ fn load_from(path: &Path) -> Option<super::cache::Art> {
         let keep = carry.len().saturating_sub(overlap);
         carry.drain(..keep);
     }
+    let outline = super::outline::extract(&mut file);
     let after = path.metadata().ok()?;
     if before.len() != after.len() || before.modified().ok()? != after.modified().ok()? {
         return None;
@@ -159,6 +164,7 @@ fn load_from(path: &Path) -> Option<super::cache::Art> {
         button: button.and_then(decode),
         font12: font12.and_then(decode),
         field: field.and_then(decode),
+        outline,
     };
     super::cache::save(path, &format!("{:x}", hash.finalize()), &images);
     Some(images)

@@ -21,6 +21,7 @@ use kontra_ui_model::{AssetRef, ImageMeta, Orientation};
 
 mod cache;
 mod discovery;
+mod outline;
 pub mod stock;
 use mui::prelude::{Font, Image};
 
@@ -91,7 +92,11 @@ impl Pictures {
             let mut scale = 1.;
             for job in inbox {
                 if job.outline {
-                    let font = read(&job.path).and_then(|bytes| Font::new(bytes).ok());
+                    let bytes = match job.path.as_str() {
+                        "@stock/raldo" => stock::outline(),
+                        _ => read(&job.path),
+                    };
+                    let font = bytes.and_then(|bytes| Font::new(bytes).ok());
                     if outbox.send(Done::Outline(job.asset, font)).is_err() {
                         break;
                     }
