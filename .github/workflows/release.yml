@@ -55,7 +55,7 @@ jobs:
     uses: ./.github/workflows/v3-verify.yml
 
   bundle:
-    needs: check
+    needs: [check, licenses]
     if: needs.check.outputs.released == 'false'
     strategy:
       fail-fast: false
@@ -98,6 +98,11 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: runner.os != 'macOS'
+        with:
+          name: release-legal
+          path: legal
       - name: Stage and archive bundles
         shell: bash
         run: |
@@ -111,6 +116,7 @@ jobs:
             ditto -c -k --keepParent "$stage" "$stage.zip"
           else
             python3 .github/scripts/stage_nightly.py --platform "${{ matrix.name }}" --stage "$stage" --bundles "$bundles"
+            cp legal/LICENSES.txt "$stage/LICENSES.txt"
             if [ "$RUNNER_OS" = Linux ]; then
               python3 .github/scripts/check_glibc.py "$stage/KONTRA.clap" "$stage/KONTRA.vst3/Contents/x86_64-linux/KONTRA.so"
             fi
@@ -238,9 +244,6 @@ jobs:
         with:
           pattern: release-*
           merge-multiple: true
-      - name: Add notices to plugin downloads
-        run: |
-          for z in KONTRA-nightly-linux-*.zip KONTRA-nightly-windows-*.zip; do zip -qj "$z" LICENSES.txt; done
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
