@@ -2,6 +2,8 @@
 //! design in docs/architecture-v3/03-DSP.md. Formats load their laws into
 //! [`Settings`] and [`PhaserSettings`]. Both put out the wet signal only.
 
+pub mod chorus;
+
 use std::f64::consts::TAU;
 
 use kontra_dsp_core::{Biquad, Side, high_pass, shelf};
