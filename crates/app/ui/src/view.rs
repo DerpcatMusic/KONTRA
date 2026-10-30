@@ -138,12 +138,37 @@ fn drawn_page(
         let stock_art = look
             .as_ref()
             .and_then(|look| look.pictures(pictures, device));
+        let button_art = look.as_ref().and_then(|look| match look {
+            stock::Look::Button { on: true, .. } if bare || !wd.hide.background => pictures.frame(
+                model::AssetRef(usize::MAX - 5),
+                "@stock/button",
+                model::ImageMeta {
+                    frames: 3,
+                    axis: model::Orientation::Vertical,
+                    ..Default::default()
+                },
+                0,
+                device,
+            ),
+            _ => None,
+        });
         let stock_glyphs = look.as_ref().and_then(|look| match look {
             stock::Look::Field { .. }
                 if style.is_some_and(|s| s.font == model::Font::Stock(13))
                     && matches!(wd.kind, Kind::ValueEdit { arrows: true, .. }) =>
             {
                 pictures.font(model::AssetRef(usize::MAX - 4), "@stock/font13")
+            }
+            stock::Look::Button { on: true, .. }
+                if button_art.is_some()
+                    && style.is_none_or(|s| matches!(s.font, model::Font::Stock(0 | 12))) =>
+            {
+                let (id, path) = if style.is_some_and(|s| s.font == model::Font::Stock(12)) {
+                    (usize::MAX - 6, "@stock/font12")
+                } else {
+                    (usize::MAX - 4, "@stock/font13")
+                };
+                pictures.font(model::AssetRef(id), path)
             }
             stock::Look::Knob { .. } if stock_art.is_some() => {
                 pictures.font(model::AssetRef(usize::MAX - 3), "@stock/font")
@@ -174,7 +199,7 @@ fn drawn_page(
         };
         let deps = (
             lit.map(|(o, t)| (o as u8, t.to_bits())),
-            [r.x, r.y, r.width, r.height, scale].map(f64::to_bits),
+            [r.x, r.y, r.width, r.height, scale, device].map(f64::to_bits),
             art.map(|a| [a.width, a.height].map(f64::to_bits)),
             picture.as_ref().map(|(i, _)| Arc::as_ptr(i) as usize),
             (
@@ -203,9 +228,12 @@ fn drawn_page(
             stock_art
                 .as_ref()
                 .map(|art| art.each_ref().map(|image| Arc::as_ptr(image) as usize)),
-            stock_glyphs
-                .as_ref()
-                .map(|g| Arc::as_ptr(g).cast::<()>() as usize),
+            (
+                button_art.as_ref().map(|image| Arc::as_ptr(image) as usize),
+                stock_glyphs
+                    .as_ref()
+                    .map(|g| Arc::as_ptr(g).cast::<()>() as usize),
+            ),
             wd.text_y,
             style.map(|s| (s.color, s.align as u8, s.size.map(f32::to_bits))),
             wd.opacity.to_bits(),
@@ -240,9 +268,9 @@ fn drawn_page(
                 parts.extend(look.draw(
                     wd,
                     style,
-                    (w, h, scale),
+                    (w, h, scale, device),
                     bare,
-                    stock_art.as_ref(),
+                    (stock_art.as_ref(), button_art.as_ref()),
                     stock_glyphs.as_ref(),
                 ));
                 look.size(w, h, scale)
