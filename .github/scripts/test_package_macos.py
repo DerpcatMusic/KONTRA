@@ -1,4 +1,5 @@
 import tempfile
+import plistlib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +18,7 @@ class PackageTests(unittest.TestCase):
                     binary = source / f'KONTRA.{fmt}/Contents/MacOS/KONTRA'
                     binary.parent.mkdir(parents=True)
                     binary.write_bytes(b'binary')
+                    (binary.parent.parent / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable': 'KONTRA', 'CFBundleIdentifier': 'audio.matari.kontra'}))
             def output(command, **_):
                 return 'arm64\n' if '/arm64/' in str(command[-1]) else 'x86_64\n'
             def run(command, **_):

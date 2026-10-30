@@ -2,6 +2,7 @@
 """Compose same-revision arm64 and Intel plugin bundles into an installer payload."""
 import argparse
 import json
+import plistlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -25,6 +26,13 @@ def compose(arm64, x86_64, stage, revision, version):
     for fmt, destination in BUNDLES.items():
         bundle = payload / destination
         shutil.copytree(arm64 / f'KONTRA.{fmt}', bundle)
+        plist = bundle / 'Contents/Info.plist'
+        info = plistlib.loads(plist.read_bytes())
+        if info.get('CFBundleExecutable') != 'KONTRA' or not info.get('CFBundleIdentifier'):
+            raise ValueError(f'{fmt}: invalid bundle identity')
+        info['CFBundleVersion'] = info['CFBundleShortVersionString'] = version.split('-', 1)[0]
+        info['KONTRAVersion'] = version
+        plist.write_bytes(plistlib.dumps(info, sort_keys=False))
         binary = bundle / 'Contents/MacOS/KONTRA'
         subprocess.run(['lipo', '-create', str(arm64 / f'KONTRA.{fmt}/Contents/MacOS/KONTRA'),
                         str(x86_64 / f'KONTRA.{fmt}/Contents/MacOS/KONTRA'),

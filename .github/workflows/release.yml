@@ -204,6 +204,15 @@ jobs:
           cp legal/LICENSES.txt "universal-stage/payload/Library/Application Support/KONTRA/LICENSES.txt"
           source .github/scripts/macos_signing_keychain.sh
           bash .github/scripts/package_macos.sh universal-stage KONTRA-nightly-macos-universal.pkg
+      - name: Verify installed universal plugins
+        run: |
+          set -euo pipefail
+          sudo installer -pkg KONTRA-nightly-macos-universal.pkg -target /
+          for bundle in /Library/Audio/Plug-Ins/CLAP/KONTRA.clap /Library/Audio/Plug-Ins/VST3/KONTRA.vst3; do
+            lipo "$bundle/Contents/MacOS/KONTRA" -verify_arch arm64 x86_64
+            codesign --verify --deep --strict --all-architectures "$bundle"
+          done
+          test -s '/Library/Application Support/KONTRA/LICENSES.txt'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-macos-universal
