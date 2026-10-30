@@ -342,4 +342,16 @@ fn script_key_colours_reach_the_keybed() {
         [(36, ui::Rgba::rgb(0xDA918F)), (37, ui::Rgba::rgb(0x782F2D))]
     );
     assert_eq!(ui.key_names, [(36, "Legato".to_owned())]);
+    assert_eq!(
+        ui.key_pressed, None,
+        "Kontakt shows the keys played by default"
+    );
+    let ui = tree(
+        "on init
+            make_perfview
+            set_key_pressed_support(1)
+            set_key_pressed(40, 1)
+        end on",
+    );
+    assert_eq!(ui.key_pressed, Some(vec![40]));
 }

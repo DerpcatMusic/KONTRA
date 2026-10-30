@@ -64,6 +64,9 @@ pub struct Interface {
     /// The keys the source names, by note (KSP `set_key_name`): shown when
     /// the pointer is over them.
     pub key_names: Vec<(u8, String)>,
+    /// Set when the source shows only the keys it presses (KSP
+    /// `set_key_pressed_support`): those keys, in place of the keys played.
+    pub key_pressed: Option<Vec<u8>>,
     pub unsupported: Vec<Unsupported>,
 }
 

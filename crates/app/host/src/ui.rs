@@ -96,6 +96,8 @@ pub trait Looks {
     fn font(&self, slot: u8, id: i32) -> Option<&str>;
     /// The keyboard's keys as the scripts left them, by note.
     fn keys(&self) -> &[kontra_engine::Key];
+    /// Whether the keyboard shows only the keys scripts press.
+    fn pressed_support(&self) -> bool;
 }
 
 impl Looks for Engine {
@@ -117,6 +119,10 @@ impl Looks for Engine {
 
     fn keys(&self) -> &[kontra_engine::Key] {
         Engine::keys(self)
+    }
+
+    fn pressed_support(&self) -> bool {
+        Engine::key_pressed_support(self)
     }
 }
 
@@ -501,6 +507,7 @@ impl Live {
         build(&mut bld, face, slot, engine, &decls)?;
         bld.ui.keybed = keybed::keybed(engine.keys());
         bld.ui.key_names = keybed::names(engine.keys());
+        bld.ui.key_pressed = keybed::pressed(engine.keys(), engine.pressed_support());
         Ok(Self {
             tree: bld.ui,
             keys,
@@ -527,10 +534,14 @@ impl Live {
             page
         });
         let (keybed, names) = (keybed::keybed(engine.keys()), keybed::names(engine.keys()));
-        let keys = keybed != self.tree.keybed || names != self.tree.key_names;
+        let pressed = keybed::pressed(engine.keys(), engine.pressed_support());
+        let keys = keybed != self.tree.keybed
+            || names != self.tree.key_names
+            || pressed != self.tree.key_pressed;
         if keys {
             self.tree.keybed = keybed;
             self.tree.key_names = names;
+            self.tree.key_pressed = pressed;
         }
         let mut changed = Vec::new();
         for (n, (&key, seen)) in self.keys.iter().zip(&mut self.seen).enumerate() {
@@ -610,7 +621,7 @@ impl Live {
 #[derive(Debug, Default, PartialEq)]
 pub struct Changes {
     pub page: bool,
-    /// The keyboard's script colours or key names.
+    /// The keyboard's script colours, key names or pressed keys.
     pub keys: bool,
     pub widgets: Vec<ui::WidgetRef>,
 }
