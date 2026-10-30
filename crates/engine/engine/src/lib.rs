@@ -379,7 +379,8 @@ impl Engine {
             if let Some(init) = script.callbacks.init {
                 engine.run_callback(slot, init, Running::new(Kind::Init, None));
             }
-            engine.restore(slot, &script.restore, &script.restore_texts);
+            engine.write_saved(slot, &script.restore, &script.restore_texts);
+            engine.persistence_changed(slot);
         }
         engine.building = false;
         engine.rebuild_racks();

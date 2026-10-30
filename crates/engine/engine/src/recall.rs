@@ -25,9 +25,8 @@ impl Engine {
             self.write_saved(slot, &values.ints, &values.texts);
         }
         let old = std::mem::replace(&mut self.recalled, saved);
-        for slot in (0u8..).take(self.recalled.len()) {
-            self.persistence_changed(slot);
-        }
+        let slots = (0u8..).take(self.recalled.len());
+        slots.for_each(|slot| self.persistence_changed(slot));
         old
     }
 
@@ -70,13 +69,8 @@ impl Engine {
     }
 
     /// Writes saved values into slot `slot`'s cells (a menu's saved entry
-    /// back to its value), then runs its persistence-changed callback.
-    pub(crate) fn restore(&mut self, slot: u8, ints: &[(u32, i64)], texts: &[(u32, Text)]) {
-        self.write_saved(slot, ints, texts);
-        self.persistence_changed(slot);
-    }
-
-    fn write_saved(&mut self, slot: u8, ints: &[(u32, i64)], texts: &[(u32, Text)]) {
+    /// back to its value).
+    pub(crate) fn write_saved(&mut self, slot: u8, ints: &[(u32, i64)], texts: &[(u32, Text)]) {
         for &(cell, value) in ints {
             let value = self.saved_value(slot, cell, value);
             if let Some(vm) = self.vm_mut(slot) {
@@ -90,7 +84,7 @@ impl Engine {
         }
     }
 
-    fn persistence_changed(&mut self, slot: u8) {
+    pub(crate) fn persistence_changed(&mut self, slot: u8) {
         let script = self.plan.scripts.get(usize::from(slot));
         if let Some(changed) = script.and_then(|s| s.callbacks.persistence_changed) {
             self.run_callback(slot, changed, Running::new(Kind::Init, None));
