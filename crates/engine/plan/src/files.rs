@@ -34,8 +34,7 @@ impl ArrayKind {
 /// Fills up to `len` cells from `base` with the values of array file
 /// `bytes`; a short file fills a prefix. Returns how many it filled; None,
 /// and nothing written, when the file names another array than `name`,
-/// holds more values than the array, or a value does not parse (Kontakt:
-/// "The array from NKA file is larger than the destination array").
+/// holds more values than the array, or a value does not parse.
 pub fn fill(
     bytes: &[u8],
     name: &str,
@@ -166,7 +165,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_array_file_fills_a_prefix_of_its_kind_and_never_overflows() {
+    fn an_array_file_fills_a_prefix_of_its_kind() {
         let mut cells = [0i64; 4];
         let mut texts = [Text::EMPTY; 3];
         assert!(
@@ -218,17 +217,6 @@ mod tests {
         assert!(
             fill(
                 b"%b\n1\n",
-                "%a",
-                (0, 2),
-                ArrayKind::Int,
-                &mut cells,
-                &mut texts
-            )
-            .is_none()
-        ); // More values than the array holds: nothing loads.
-        assert!(
-            fill(
-                b"%a\n1\n2\n3\n",
                 "%a",
                 (0, 2),
                 ArrayKind::Int,

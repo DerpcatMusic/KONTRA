@@ -3237,12 +3237,14 @@ fn a_file_dialog_array_is_cancelled_and_completes_with_failure() {
             $save := save_array(%preset, 0)
         end on
         on async_complete
-            $done := $done * 10 + $NI_ASYNC_EXIT_STATUS
+            $done := $done * 100 + $NI_ASYNC_ID * 10 + $NI_ASYNC_EXIT_STATUS
             message($load & \" \" & $save & \" \" & $NI_ASYNC_ID & \" \" & $done & \" \" & %preset[0] & %preset[1])
         end on",
     );
     level(&mut e, &[on(60)]);
-    assert_eq!(e.last_message(), "1 2 2 0 78");
+    // Both completed, in order: id 1 (load) status 0, then id 2 (save)
+    // status 0.
+    assert_eq!(e.last_message(), "1 2 2 1020 78");
     assert!(
         e.unhandled_actions().is_empty(),
         "{:?}",
