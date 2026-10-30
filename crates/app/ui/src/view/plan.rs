@@ -446,3 +446,25 @@ mod tests {
         assert_eq!(frame(&[WidgetRef(0)]), Some(2));
     }
 }
+
+/// Whether a stock label fits inside the same inset used by the text fallback.
+pub(super) fn label_fits(
+    text: &str,
+    glyphs: &crate::pictures::Glyphs,
+    width: f64,
+    scale: f64,
+) -> bool {
+    let advance: f64 = text
+        .chars()
+        .map(|c| {
+            if c == ' ' {
+                4.
+            } else {
+                glyphs
+                    .get(crate::pictures::glyph(c))
+                    .map_or(0., |g| f64::from(g.width))
+            }
+        })
+        .sum();
+    advance * scale <= (width - 14. * scale).max(0.)
+}
