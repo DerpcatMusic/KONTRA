@@ -2150,6 +2150,7 @@ dependencies = [
  "kontra-ir",
  "kontra-ledger",
  "kontra-plan",
+ "kontra-racks",
  "kontra-script-ui",
  "kontra-stream",
  "kontra-time",
@@ -2394,6 +2395,19 @@ name = "kontra-protocol"
 version = "0.0.0"
 dependencies = [
  "crossbeam-queue",
+]
+
+[[package]]
+name = "kontra-racks"
+version = "0.0.0"
+dependencies = [
+ "kontra-behaviour",
+ "kontra-dsp",
+ "kontra-effects",
+ "kontra-ir",
+ "kontra-ledger",
+ "kontra-plan",
+ "kontra-time",
 ]
 
 [[package]]

@@ -17,7 +17,8 @@
 
 use kontra_ir as ir;
 
-use crate::plan::Group;
+use kontra_plan::Group;
+
 use crate::voice_rack::Unit;
 
 /// A kind with a wet path a voice matrix cannot carry.
@@ -38,7 +39,7 @@ fn wet(kind: ir::EffectKind) -> bool {
 
 /// The first slot the group's sum runs, when an active wet slot sits at or
 /// after it.
-pub(crate) fn split(group: &Group, units: &[Unit]) -> Option<usize> {
+pub fn split(group: &Group, units: &[Unit]) -> Option<usize> {
     let from = units
         .iter()
         .map(|u| usize::from(u.insert) + 1)
@@ -54,7 +55,7 @@ pub(crate) fn split(group: &Group, units: &[Unit]) -> Option<usize> {
 }
 
 /// The group's slots from `from` on; earlier ones are empty.
-pub(crate) fn slots(group: &Group, from: usize) -> Vec<Option<ir::Effect>> {
+pub fn slots(group: &Group, from: usize) -> Vec<Option<ir::Effect>> {
     group
         .inserts
         .iter()

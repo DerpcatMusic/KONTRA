@@ -18,6 +18,7 @@ kontra-time = { path = "../../base/time" }
 kontra-vm = { path = "../vm" }
 kontra-behaviour = { path = "../behaviour" }
 kontra-ledger = { path = "../ledger" }
+kontra-racks = { path = "../racks" }
 kontra-plan = { path = "../plan" }
 kontra-script-ui = { path = "../script-ui" }
 kontra-ir = { path = "../../model/ir" }

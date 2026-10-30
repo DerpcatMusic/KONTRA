@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use kontra_ir as ir;
 
-pub(crate) use kontra_effects::summed::{Stage, VoiceEq, run, sections, shape, stages};
+pub(crate) use kontra_effects::summed::{Stage, run, sections, stages};
 
 use crate::racks::Rack;
 use crate::{Engine, MAX_SPAN, group_racks};

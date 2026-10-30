@@ -15,7 +15,6 @@ mod controls;
 
 mod filters;
 mod fx_types;
-mod group_racks;
 mod impulse_knobs;
 mod inspect;
 mod knobs;
@@ -41,6 +40,7 @@ mod voice_rack;
 use std::sync::Arc;
 
 use kontra_ledger::{group_masks, ledger, queue};
+use kontra_racks::group_racks;
 
 use kontra_plan as plan;
 
