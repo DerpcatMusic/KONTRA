@@ -46,13 +46,13 @@ pub fn catalog() -> Vec<Named> {
         n(
             "common::SQUARE",
             &common::SQUARE,
-            "Kontakt probe mod_par_laws.lua",
+            "measured only: probe mod_par_laws.lua",
             unit,
         ),
         n(
             "common::SIGNED_CUBE",
             &common::SIGNED_CUBE,
-            "Kontakt probe mod_par_laws.lua",
+            "measured only: probe mod_par_laws.lua",
             unit,
         ),
         n(
@@ -76,7 +76,7 @@ pub fn catalog() -> Vec<Named> {
         n(
             "common::STAGE_10S",
             &common::STAGE_10S,
-            "Kontakt probe mod_par_laws.lua",
+            "measured only: probe mod_par_laws.lua",
             unit,
         ),
         n(
@@ -142,13 +142,13 @@ pub fn catalog() -> Vec<Named> {
         n(
             "kontakt::REPLIKA_LOW_CUT",
             &kontakt::REPLIKA_LOW_CUT,
-            UNVERIFIED,
+            "measured only: kemu run, k-replika-binding.md",
             unit,
         ),
         n(
             "kontakt::VERSATILE_GAIN",
             &kontakt::VERSATILE_GAIN,
-            UNVERIFIED,
+            "measured only: filt-multi-versatile.md",
             unit,
         ),
         n(
@@ -178,13 +178,13 @@ pub fn catalog() -> Vec<Named> {
         n(
             "kontakt::LEGACY_RESONANCE_Q",
             &kontakt::LEGACY_RESONANCE_Q,
-            UNVERIFIED,
+            "measured only: LP4 peaks filt-legacy.md",
             unit,
         ),
         n(
             "kontakt::LEGACY_RESONANCE_LOSS[2]",
             &kontakt::LEGACY_RESONANCE_LOSS[2],
-            UNVERIFIED,
+            "measured only: LP4 peaks filt-legacy.md",
             unit,
         ),
         n(
