@@ -73,7 +73,7 @@ impl Rack {
         let plan = Arc::new(plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
         let pages: Vec<Option<kontra_lua::Ui>> = old.faces.iter().map(|_| None).collect();
-        let library = crate::ui::Library::open_any([old.path.clone(), old.source.clone()]);
+        let library = crate::ui::open_any([old.path.clone(), old.source.clone()]);
         let view = crate::view::View::of(&old.faces, &pages, &engine, library);
         let info = Part {
             recall: engine.recall_law(),

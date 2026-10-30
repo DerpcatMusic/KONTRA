@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use kontra_host::ui::{Library, Loader, Missing};
+use kontra_host::ui::{Library, Loader, Missing, found, open_any};
 
 fn instrument() -> Option<PathBuf> {
     const LIBRARY: &str = "Armory/VSTs/Kontakt1/Native Instruments Session Guitarist Electric Mint 1.1.0/Session Guitarist - Electric Mint Library/Instruments";
@@ -105,15 +105,15 @@ fn the_first_path_with_resources_is_the_library() {
         return;
     };
     let missing = std::env::temp_dir().join("kontra-nowhere/Some.nki");
-    let library = Library::open_any([None, Some(missing.clone())]);
+    let library = open_any([None, Some(missing.clone())]);
     assert!(library.is_none(), "{missing:?} has no library");
-    let library = Library::open_any([Some(missing), None, Some(path.clone())])
-        .expect("the instrument's library");
-    assert!(library.found());
+    let library =
+        open_any([Some(missing), None, Some(path.clone())]).expect("the instrument's library");
+    assert!(found(&library));
     let mut library = library;
     assert!(
         library.read("Resources/pictures/bg-images.png").is_some(),
         "{path:?}"
     );
-    assert!(Library::open(&path).found());
+    assert!(found(&Library::open(&path)));
 }
