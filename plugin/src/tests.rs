@@ -1297,9 +1297,9 @@ fn harness_pictures(path: &Path) -> (usize, usize) {
 }
 
 /// The editor's own face for part 0, once its pictures are in.
-fn editor_pictures(params: &KontraParams, mut dsp: &mut Dsp) -> (usize, usize) {
-    settle(params, &mut dsp);
-    settle(params, &mut dsp);
+fn editor_pictures(params: &KontraParams, dsp: &mut Dsp) -> (usize, usize) {
+    settle(params, dsp);
+    settle(params, dsp);
     let mut app = kontra_ui::app::App::default();
     let mut shown = crate::editor::Shown::default();
     {
@@ -1426,7 +1426,7 @@ fn the_pages_pictures_fit_the_renderers_atlas() {
     for device in [1.0f64, 2.0] {
         let mut ui = kontra_ui::ui();
         ui.set_scale(Some(device));
-        let mut draw = |ui: &mut mui::prelude::Ui, face: &mut kontra_ui::app::Face| {
+        let draw = |ui: &mut mui::prelude::Ui, face: &mut kontra_ui::app::Face| {
             let (el, _) = kontra_ui::view::page(
                 ui,
                 0,
