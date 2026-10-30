@@ -66,6 +66,15 @@ impl Face {
         Some(FIRST_UI_ID + i32::try_from(control.variable).ok()?)
     }
 
+    /// The first text cell of the control declared as `name` (`@field`).
+    #[must_use]
+    pub fn text_cell(&self, name: &str) -> Option<u32> {
+        self.controls.iter().find_map(|(_, n, cells)| match cells {
+            Cells::Text { base, .. } if n.eq_ignore_ascii_case(name) => Some(*base),
+            _ => None,
+        })
+    }
+
     /// The name of parameter id `par`: a symbol, or a look parameter the
     /// script never named (`script::look_par`).
     fn par_name(&self, par: i32) -> Option<&str> {

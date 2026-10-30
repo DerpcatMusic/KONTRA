@@ -567,6 +567,7 @@ impl HostApi for Engine {
             }
             Action::CallbackType => HostValue::Int(i32::from(self.running.callback_type)),
             Action::UiIdVar => HostValue::Int(self.running.ui),
+            Action::ControlParIdx => HostValue::Int(self.ui.last_cell(self.running.slot) as i32),
             Action::ResetRlsTrigCounter => self.reset_rls_trig_counter(int(0)),
             Action::CallbackId => HostValue::Int(self.running.callback_id as i32),
             Action::EventParAt => HostValue::Int(
