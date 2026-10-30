@@ -10,15 +10,22 @@
 #   - Electric Mint asking for more script calls than the agreed ceiling;
 #   - a render that does not complete, drops sample frames, or clips;
 #   - a UI whose controls are not where they are drawn (layer 1 and 2);
-#   - a page that does not LOOK like Kontakt's (layer 3). A geometry check cannot
+#   - a page that no longer looks like the reviewed one (layer 3: a golden
+#     regression check -- NOT a Kontakt capture; there is no headless Kontakt
+#     render on this machine, so this catches a page that changes, not a page
+#     that was wrong to begin with). A geometry check cannot
 #     see a picture that resolved to nothing -- it still has a rect -- which is
 #     how a missing graphic shipped once. If no reference capture exists the
 #     gate fails: ALLOW_NO_PIXEL_REF=1 is a logged admission that layer 3 is off.
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-TARGET=${CARGO_TARGET_DIR:-/tmp/opencode/kv3-target}
-EMINT=${EMINT:-/home/dracula/Armory/VSTs/Kontakt1/Native Instruments Session Guitarist Electric Mint 1.1.0/Session Guitarist - Electric Mint Library/Instruments/Electric Mint.nki}
+# /tmp is a 16 GB tmpfs on this machine; a release build of the workspace does
+# not fit beside three lanes. Keep the target on real disk.
+TARGET=${CARGO_TARGET_DIR:-/var/tmp/tgt-int}
+# $HOME rather than an absolute path: the gate is run from a checkout, and a
+# committed home directory names whoever ran it last.
+EMINT=${EMINT:-$HOME/Armory/VSTs/Kontakt1/Native Instruments Session Guitarist Electric Mint 1.1.0/Session Guitarist - Electric Mint Library/Instruments/Electric Mint.nki}
 # Ceilings, not goals: they must only ever come down.
 MAX_UNHANDLED=${MAX_UNHANDLED:-55}
 MAX_INIT_UNANSWERED=${MAX_INIT_UNANSWERED:-51}
@@ -53,7 +60,11 @@ run_tests() {
 }
 
 echo "== layer 0/1: tests =="
-for c in kontra-engine kontra-host kontra-ui mui kontra-native-host; do run_tests "$c"; done
+# kontra-plugin and kontra-ui-pictures are here because the plugin is what
+# ships: a page that renders in the harness and not in the host is exactly how
+# the wallpaper went missing (a 7952-row picture became 15904 at the live 2x
+# device scale, past the renderer's 8192-pixel atlas, and was dropped silently).
+for c in kontra-engine kontra-host kontra-ui mui kontra-native-host kontra-plugin kontra-ui-pictures; do run_tests "$c"; done
 if [ -d crates/dsp/delay ]; then run_tests kontra-dsp-delay; fi
 
 echo "== build =="
@@ -122,21 +133,21 @@ if [ -n "$REF" ] && [ -f "$REF" ]; then
         SHOT=$(ls "$SHOTS"/*.png 2>/dev/null | head -1)
         if [ -n "$SHOT" ]; then
             if OUT=$(python3 "$REPO/tools/pixel-diff.py" "$REF" "$SHOT" --scale --max-pct "$MAX_PIXEL_PCT" --out /tmp/opencode/verify-pixel 2>&1); then
-                ok "pixel diff vs Kontakt" "$(printf '%s\n' "$OUT" | grep -o 'differing.*%' | head -1)"
+                ok "pixel diff vs golden" "$(printf '%s\n' "$OUT" | grep -o 'differing.*%' | head -1)"
             else
-                bad "pixel diff vs Kontakt" "$(printf '%s\n' "$OUT" | grep -oE '[0-9.]+% differs, ceiling [0-9.]+%' | head -1)"
+                bad "pixel diff vs golden" "$(printf '%s\n' "$OUT" | grep -oE '[0-9.]+% differs, ceiling [0-9.]+%' | head -1)"
                 printf '%s\n' "$OUT" | grep -E '^ +[0-9]+ px' | head -5 | sed 's/^/      /'
             fi
         else
-            bad "pixel diff vs Kontakt" "ui-shots produced no png"
+            bad "pixel diff vs golden" "ui-shots produced no png"
         fi
     else
-        bad "pixel diff vs Kontakt" "see /tmp/opencode/verify-shots.log"
+        bad "pixel diff vs golden" "see /tmp/opencode/verify-shots.log"
     fi
 elif [ "${ALLOW_NO_PIXEL_REF:-0}" = "1" ]; then
-    row "pixel diff vs Kontakt" "OFF (ALLOW_NO_PIXEL_REF=1)"
+    row "pixel diff vs golden" "OFF (ALLOW_NO_PIXEL_REF=1)"
 else
-    bad "pixel diff vs Kontakt" "no reference capture in tools/kontakt-reference/"
+    bad "pixel diff vs golden" "no golden in tools/kontakt-reference/"
 fi
 
 echo

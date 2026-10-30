@@ -27,7 +27,7 @@ exec bwrap \
   --symlink usr/sbin /sbin \
   --symlink usr/lib /lib \
   --symlink usr/lib64 /lib64 \
-  --bind /home/dracula /home/dracula \
+  --bind "$HOME" "$HOME" \
   --tmpfs /tmp \
   --bind "$REPO" "$REPO" \
   --dir /tmp/.X11-unix \
