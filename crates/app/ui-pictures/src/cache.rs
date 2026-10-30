@@ -119,12 +119,15 @@ fn save_at(root: &Path, path: &Path, hash: &str, images: &Art) {
             return;
         }
     }
-    if let Some(font) = &images.outline {
-        let target = dir.join("outline.ttf");
-        let temporary = dir.join(format!("outline.{}.tmp", std::process::id()));
-        if std::fs::write(&temporary, font).is_err() || std::fs::rename(temporary, target).is_err()
-        {
-            return;
+    for (i, font) in images.outline.iter().enumerate() {
+        if let Some(font) = font {
+            let target = dir.join(format!("outline-{i}.ttf"));
+            let temporary = dir.join(format!("outline-{i}.{}.tmp", std::process::id()));
+            if std::fs::write(&temporary, font).is_err()
+                || std::fs::rename(temporary, target).is_err()
+            {
+                return;
+            }
         }
     }
     write_index(root, path, hash);
