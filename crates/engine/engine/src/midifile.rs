@@ -31,19 +31,28 @@ pub const PAR_TRACK_NR: i32 = 203;
 /// as well. Events arrive in tick order within one track.
 fn pair_notes(events: &mut [Event]) {
     let mut open: Vec<(u8, u8, usize)> = Vec::new();
-    for i in 0..events.len() {
-        let status = events[i].status & 0xf0;
-        let channel = events[i].status & 0x0f;
-        let key = events[i].d1;
-        let ends = status == 0x80 || (status == 0x90 && events[i].d2 == 0);
+    // Lengths are collected first and written afterwards: nothing in this walk
+    // reads `len`, so the write order cannot change which note an off pairs
+    // with. It keeps the loop over an immutable borrow.
+    let mut lengths: Vec<(usize, u32)> = Vec::new();
+    for (i, event) in events.iter().enumerate() {
+        let status = event.status & 0xf0;
+        let channel = event.status & 0x0f;
+        let key = event.d1;
+        let ends = status == 0x80 || (status == 0x90 && event.d2 == 0);
         if ends {
             if let Some(at) = open.iter().rposition(|&(c, k, _)| c == channel && k == key) {
                 let (_, _, on) = open.remove(at);
-                let len = events[i].tick.saturating_sub(events[on].tick);
-                events[on].len = len;
+                let on_tick = events.get(on).map_or(event.tick, |e| e.tick);
+                lengths.push((on, event.tick.saturating_sub(on_tick)));
             }
         } else if status == 0x90 {
             open.push((channel, key, i));
+        }
+    }
+    for (on, len) in lengths {
+        if let Some(slot) = events.get_mut(on) {
+            slot.len = len;
         }
     }
 }
@@ -76,31 +85,52 @@ pub struct MidiFile {
     division: u16,
 }
 
+/// Big-endian `u16` at `at`, or `None` when the slice ends first.
+fn be_u16(bytes: &[u8], at: usize) -> Option<u16> {
+    let field: [u8; 2] = bytes.get(at..at.checked_add(2)?)?.try_into().ok()?;
+    Some(u16::from_be_bytes(field))
+}
+
+/// Big-endian `u32` at `at`, or `None` when the slice ends first.
+fn be_u32(bytes: &[u8], at: usize) -> Option<u32> {
+    let field: [u8; 4] = bytes.get(at..at.checked_add(4)?)?.try_into().ok()?;
+    Some(u32::from_be_bytes(field))
+}
+
 impl MidiFile {
     /// Parses a standard MIDI file. Returns `None` when the header or a track
     /// chunk is malformed; a file with no channel events parses as empty.
     pub fn parse(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 14 || &bytes[0..4] != b"MThd" {
+        if bytes.get(..4)? != b"MThd" {
             return None;
         }
-        let header = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
-        let tracks = u16::from_be_bytes([bytes[10], bytes[11]]);
-        let division = u16::from_be_bytes([bytes[12], bytes[13]]);
+        let header = be_u32(bytes, 4)? as usize;
+        let tracks = be_u16(bytes, 10)?;
+        let division = be_u16(bytes, 12)?;
         if division == 0 || division & 0x8000 != 0 {
             // SMPTE division is not what these libraries use; refuse rather than guess.
             return None;
         }
         let mut events = Vec::new();
         let mut length = 0;
-        let mut at = 8 + header;
+        let mut at = 8usize.saturating_add(header);
         let mut track = 0usize;
-        while at + 8 <= bytes.len() && &bytes[at..at + 4] == b"MTrk" {
-            let len = u32::from_be_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]])
-                as usize;
-            let end = at.saturating_add(8).saturating_add(len).min(bytes.len());
+        while let Some(chunk) = bytes.get(at..) {
+            if chunk.get(..4) != Some(b"MTrk".as_slice()) {
+                break;
+            }
+            let Some(len) = be_u32(chunk, 4) else {
+                break;
+            };
+            let end = at.saturating_add(8).saturating_add(len as usize).min(bytes.len());
+            let Some(body) = bytes.get(at.saturating_add(8)..end) else {
+                break;
+            };
             let from = events.len();
-            read_track(&bytes[at + 8..end], track, &mut events, &mut length);
-            pair_notes(&mut events[from..]);
+            read_track(body, track, &mut events, &mut length);
+            if let Some(added) = events.get_mut(from..) {
+                pair_notes(added);
+            }
             at = end;
             track += 1;
         }
@@ -177,11 +207,12 @@ impl MidiFile {
 
     /// Next active event at or after the cursor.
     fn next_active(&self, from: usize) -> usize {
-        let mut i = from.min(self.events.len());
-        while i < self.events.len() && !self.events[i].active {
-            i += 1;
-        }
-        i
+        let from = from.min(self.events.len());
+        self.events
+            .iter()
+            .skip(from)
+            .position(|e| e.active)
+            .map_or(self.events.len(), |offset| from + offset)
     }
 
     /// `mf_insert_event`: activates an event; returns its id (its index).
@@ -275,8 +306,7 @@ impl MidiFile {
 
 fn var_len(bytes: &[u8], at: &mut usize) -> u32 {
     let mut value = 0u32;
-    while *at < bytes.len() {
-        let b = bytes[*at];
+    while let Some(&b) = bytes.get(*at) {
         *at += 1;
         value = (value << 7) | u32::from(b & 0x7f);
         if b & 0x80 == 0 {
@@ -294,10 +324,10 @@ fn read_track(bytes: &[u8], track: usize, out: &mut Vec<Event>, length: &mut u32
     while at < bytes.len() {
         let delta = var_len(bytes, &mut at);
         tick = tick.saturating_add(delta);
-        if at >= bytes.len() {
+        let Some(&byte) = bytes.get(at) else {
             break;
-        }
-        let mut status = bytes[at];
+        };
+        let mut status = byte;
         if status == 0xff || status == 0xf0 || status == 0xf7 {
             at += 1;
             if status != 0xf7 && at < bytes.len() {
@@ -318,11 +348,13 @@ fn read_track(bytes: &[u8], track: usize, out: &mut Vec<Event>, length: &mut u32
         }
         let high = status & 0xf0;
         let count = if high == 0xc0 || high == 0xd0 { 1 } else { 2 };
-        if at + count > bytes.len() {
+        let Some(data) = bytes.get(at..at.saturating_add(count)) else {
             break;
-        }
-        let d1 = bytes[at];
-        let d2 = if count > 1 { bytes[at + 1] } else { 0 };
+        };
+        let Some(&d1) = data.first() else {
+            break;
+        };
+        let d2 = data.get(1).copied().unwrap_or(0);
         at += count;
         out.push(Event { tick, status, d1, d2, track, len: 0, active: true });
         *length = (*length).max(tick);
