@@ -21,6 +21,13 @@
 use kontra_ir as ir;
 use kontra_law::Law;
 
+/// MIDI's largest key; changing it changes the normalized key source range.
+const MIDI_KEY_MAX: u8 = 127;
+/// Native key-follow neutral note at 0x14138ab10; changing it moves the pivot.
+const KEY_FOLLOW_CENTER: u8 = 60;
+/// Native key-follow upper limit at 0x14138ab10; changing it moves saturation.
+const KEY_FOLLOW_MAX: u8 = 120;
+
 // UVI VoiceParam key and lower KeyFollow branches, 0x14138ab10.
 const KEY_SOURCE: Law = Law::Linear { lo: 0.0, hi: 1.0 };
 const LOWER_KEY_FOLLOW: Law = Law::Power {
@@ -230,16 +237,20 @@ pub(super) fn key_factor(program: Node, connection: Node) -> Option<ir::Factor> 
     }
     let source = connection.attribute("Source")?;
     let key: fn(f32) -> f32 = match source {
-        "@VoiceParam Key" => |x| KEY_SOURCE.eval(x / 127.0),
+        "@VoiceParam Key" => |x| KEY_SOURCE.eval(x / f32::from(MIDI_KEY_MAX)),
         "@VoiceParam KeyFollow" => |x| {
-            let k = if x < 60.0 {
-                LOWER_KEY_FOLLOW.eval(x / 60.0)
+            let center = f32::from(KEY_FOLLOW_CENTER);
+            let k = if x < center {
+                LOWER_KEY_FOLLOW.eval(x / center)
             } else {
-                UPPER_KEY_FOLLOW.eval((x.min(120.0) - 60.0) / 60.0)
+                UPPER_KEY_FOLLOW.eval((x.min(f32::from(KEY_FOLLOW_MAX)) - center) / center)
             };
             (k + 1.0) / 2.0
         },
-        "@VoiceParam LinearKeyFollow" => |x| (((x - 60.0) / 60.0).clamp(-1.0, 1.0) + 1.0) / 2.0,
+        "@VoiceParam LinearKeyFollow" => |x| {
+            let center = f32::from(KEY_FOLLOW_CENTER);
+            (((x - center) / center).clamp(-1.0, 1.0) + 1.0) / 2.0
+        },
         _ => return None,
     };
     let table = mapper(connection)?;
@@ -505,23 +516,31 @@ pub(super) fn children<'a, 'input>(
 
 #[cfg(test)]
 mod tests {
-    use super::{KEY_SOURCE, LOWER_KEY_FOLLOW, UPPER_KEY_FOLLOW};
+    use super::{
+        KEY_FOLLOW_CENTER, KEY_FOLLOW_MAX, KEY_SOURCE, LOWER_KEY_FOLLOW, MIDI_KEY_MAX,
+        UPPER_KEY_FOLLOW,
+    };
 
     #[test]
     fn key_source_preserves_all_midi_values() {
-        for key in 0..=127 {
+        for key in 0..=MIDI_KEY_MAX {
             let x = key as f32;
-            assert_eq!(KEY_SOURCE.eval(x / 127.0), x / 127.0, "key {key}");
+            assert_eq!(
+                KEY_SOURCE.eval(x / f32::from(MIDI_KEY_MAX)),
+                x / f32::from(MIDI_KEY_MAX),
+                "key {key}"
+            );
         }
     }
 
     #[test]
     fn lower_key_follow_preserves_all_midi_values() {
-        for key in 0..60 {
+        for key in 0..KEY_FOLLOW_CENTER {
             let x = key as f32;
+            let center = f32::from(KEY_FOLLOW_CENTER);
             assert_eq!(
-                LOWER_KEY_FOLLOW.eval(x / 60.0),
-                (x / 60.0).powi(2) - 1.0,
+                LOWER_KEY_FOLLOW.eval(x / center),
+                (x / center).powi(2) - 1.0,
                 "key {key}"
             );
         }
@@ -529,11 +548,13 @@ mod tests {
 
     #[test]
     fn upper_key_follow_preserves_all_midi_values() {
-        for key in 60..=127 {
+        for key in KEY_FOLLOW_CENTER..=MIDI_KEY_MAX {
             let x = key as f32;
+            let center = f32::from(KEY_FOLLOW_CENTER);
+            let limit = f32::from(KEY_FOLLOW_MAX);
             assert_eq!(
-                UPPER_KEY_FOLLOW.eval((x.min(120.0) - 60.0) / 60.0),
-                ((x.min(120.0) - 60.0) / 60.0).sqrt(),
+                UPPER_KEY_FOLLOW.eval((x.min(limit) - center) / center),
+                ((x.min(limit) - center) / center).sqrt(),
                 "key {key}"
             );
         }
