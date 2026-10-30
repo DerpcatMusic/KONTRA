@@ -315,47 +315,59 @@ fn performance(by: i8) -> Vec<(&'static str, Vec<(usize, In)>)> {
 }
 
 /// Plays silence until no voice is left and the effects' tail (a reverb, a
-/// delay's next repeat) has stayed quiet for 0.1 s, so it never reads as the
-/// next segment's onset; at most 5 s.
-fn ring_out(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) {
+/// delay's next repeat) has stayed quiet in both channels for 0.1 s, so it
+/// never reads as the next segment's onset; at most 5 s. Whether it got there.
+fn ring_out(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) -> bool {
     let mut quiet = 0;
-    for _ in 0..at(5.0) / BLOCK {
-        quiet = if last.voices == 0 && last.audio.iter().all(|x| x.abs() < 1e-4) {
+    for b in 0..at(5.0) / BLOCK {
+        quiet = if last.voices == 0 && last.channel_peaks.iter().all(|&p| p < 1e-4) {
             quiet + BLOCK
         } else {
             0
         };
         if quiet >= at(0.1) {
-            return;
+            return true;
+        }
+        if b % 10 == 0 {
+            Tick.run(params);
         }
         *last = block(params, dsp, &[], last);
     }
+    false
 }
 
 /// The octave shift that brings the scenario's probe and repeated keys (C4,
 /// D4) where the program plays: a bass's, a tuba's or a script's range may
 /// end below them. Measured: a short note on each, per octave, the first
-/// octave where both start a voice.
+/// octave where both start a voice (more voices than before the note-on).
+/// A tail that never rings out leaves the scenario where it was.
 fn octave_shift(params: &KontraParams, dsp: &mut Dsp, last: &mut Played) -> i8 {
     let mut sounds = |key: u8| {
+        let before = last.voices;
         *last = block(params, dsp, &[(0, on(key))], last);
-        let mut sounded = last.voices > 0;
+        let mut sounded = last.voices > before;
         for _ in 0..at(0.1) / BLOCK {
             *last = block(params, dsp, &[], last);
-            sounded |= last.voices > 0;
+            sounded |= last.voices > before;
         }
+        Tick.run(params);
         *last = block(params, dsp, &[(0, off(key))], last);
-        ring_out(params, dsp, last);
-        sounded
+        ring_out(params, dsp, last).then_some(sounded)
     };
-    [0, -12, 12, -24, 24]
-        .into_iter()
-        .find(|&by| {
-            [60u8, 62]
-                .iter()
-                .all(|k| sounds(k.saturating_add_signed(by)))
-        })
-        .unwrap_or(0)
+    for by in [0, -12, 12, -24, 24] {
+        let mut all = true;
+        for key in [60u8, 62] {
+            match sounds(key.saturating_add_signed(by)) {
+                Some(true) => {}
+                Some(false) => all = false,
+                None => return 0,
+            }
+        }
+        if all {
+            return by;
+        }
+    }
+    0
 }
 
 fn performance_at_c4() -> Vec<(&'static str, Vec<(usize, In)>)> {
@@ -618,7 +630,7 @@ fn perform(path: PathBuf) -> Report {
                 break;
             }
         }
-        ring_out(&params, &mut dsp, &mut last);
+        _ = ring_out(&params, &mut dsp, &mut last);
         if starts.is_empty() {
             continue;
         }
