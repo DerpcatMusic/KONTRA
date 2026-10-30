@@ -8,7 +8,7 @@ use std::sync::Arc;
 use kontra_time::SampleTime;
 use kontra_vm::{HostValue, Step, Vm};
 
-use crate::ledger::NoteRef;
+use crate::ledger::{NoteRef, Releases};
 use crate::queue::Work;
 use crate::script::{Kind, Running, ScriptPlan, micros_to_frames};
 use crate::{Engine, Trigger};
@@ -343,7 +343,11 @@ impl Engine {
                 Trigger::Legato => held > 0,
                 Trigger::Release => false,
             });
-            if self.notes.get(note).is_some_and(|n| n.from_release) {
+            if self
+                .notes
+                .get(note)
+                .is_some_and(|n| n.releases == Releases::AtStart)
+            {
                 self.start_zones(note, false, |trigger| trigger == Trigger::Release);
             }
             self.behaviour.advance();

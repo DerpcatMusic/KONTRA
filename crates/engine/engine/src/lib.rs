@@ -78,7 +78,7 @@ pub use transport::Play;
 use behaviour::Behaviour;
 use buses::BusState;
 use group_masks::GroupMasks;
-use ledger::{Ledger, Note, Origin};
+use ledger::{Ledger, Note, Origin, Releases};
 use queue::{EventQueue, Work};
 use script::{Kind, Running};
 
@@ -602,7 +602,13 @@ impl Engine {
             }
             slot.released = true;
         }
-        self.start_zones(note, false, |trigger| trigger == Trigger::Release);
+        if self
+            .notes
+            .get(note)
+            .is_some_and(|n| n.releases == Releases::OnRelease)
+        {
+            self.start_zones(note, false, |trigger| trigger == Trigger::Release);
+        }
         self.end_children(note);
     }
 

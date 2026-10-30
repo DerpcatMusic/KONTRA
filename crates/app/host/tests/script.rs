@@ -1594,6 +1594,32 @@ fn a_note_played_on_release_sounds_its_release_zones() {
     assert!((l - 0.75).abs() < 1e-3, "{l}");
 }
 
+/// A timed note an `on release` plays is that release's own sound: the key's
+/// release sounds the release zones once, and the note neither starts them
+/// nor sounds them again when its time ends (Afflatus's release notes;
+/// native Kontakt plays one release sample, at key-up).
+#[test]
+fn a_timed_note_played_on_release_sounds_no_second_release() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut tail = zone(&mut store, 0.25, 1);
+    tail.trigger = kontra_engine::Trigger::Release;
+    let zones = vec![zone(&mut store, 0.5, 0), tail];
+    let mut e = engine(
+        &store,
+        zones,
+        "on release
+            disallow_group($ALL_GROUPS)
+            allow_group(1)
+            play_note(60, 100, 0, 50000)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    let at_key_up = level(&mut e, &[off(60)]);
+    assert!((at_key_up - 0.25).abs() < 1e-3, "{at_key_up}");
+    let after_its_time = level(&mut e, &[]);
+    assert!((after_its_time - 0.25).abs() < 1e-3, "{after_its_time}");
+}
+
 /// Level of the reverb tail 0.25 s after a 2 s note, through a reverb in the
 /// instrument insert whose time is 0.5 s unless `script` moves it.
 fn reverb_tail(script: &str) -> f32 {
