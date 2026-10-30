@@ -8,7 +8,6 @@ use kontra_vm::Text;
 
 use crate::{EnginePar, EnginePars};
 
-
 pub use kontra_ir::common::{
     ATTACK_CURVE, BIPOLAR, CUBE, LFO_FADE_IN, SIGNED_CUBE, SQUARE, STAGE_10S, STAGE_15S, STAGE_25S,
 };
