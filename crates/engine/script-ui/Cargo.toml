@@ -10,4 +10,5 @@ description = "What scripts write to their controls' look and read back (07-APP.
 workspace = true
 
 [dependencies]
+kontra-law = { path = "../../base/law" }
 kontra-vm = { path = "../vm" }
