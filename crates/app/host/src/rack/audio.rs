@@ -675,14 +675,26 @@ impl RackAudio {
         }
     }
 
+    /// Takes the audio side for one host block. A refusal is a block the host
+    /// asked for that comes out silent, and counts in [`RackAudio::missed`].
+    pub fn take_block(&mut self) -> Option<Loan<'_>> {
+        // Cloned before the loan, which borrows the whole handle; an atomic
+        // count, no allocation.
+        let channels = Arc::clone(&self.channels);
+        let taken = self.take();
+        if taken.is_none() {
+            channels.missed.fetch_add(1, Relaxed);
+        }
+        taken
+    }
+
     /// Renders one block, and carries out the commands queued for it.
     ///
     /// A block the control tick has the state for renders nothing: the
     /// output pairs keep what the last block left, and the count in
     /// [`RackAudio::missed`] says so.
     pub fn process(&mut self, frames: usize, input: &[(u32, Event)]) {
-        let Some(mut side) = self.take() else {
-            self.channels.missed.fetch_add(1, Relaxed);
+        let Some(mut side) = self.take_block() else {
             return;
         };
         side.process(frames, input);
@@ -797,4 +809,29 @@ const PANIC: [Event; 2] = [Event::Choke(wildcard(true)), Event::Choke(wildcard(f
 fn pan_gains(gain: f32, pan: f32) -> (f32, f32) {
     let pan = pan.clamp(-1.0, 1.0);
     (gain * (1.0 - pan).min(1.0), gain * (1.0 + pan).min(1.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rack::{Rack, Store, StoreConfig};
+
+    /// A block the host asked for while the other side holds the audio side
+    /// comes out silent. `take_block` is what counts it, so the counter the
+    /// `block_missed` line reads moves on every path that renders a block.
+    #[test]
+    fn a_block_that_finds_the_side_taken_counts_as_missed() {
+        let store = Store::new(StoreConfig::DEFAULT).expect("a store");
+        let (_rack, mut audio) = Rack::new(48_000, store, 128);
+        let mut control = audio.control();
+        let held = control.take().expect("the side starts free");
+        assert_eq!(audio.missed(), 0);
+        assert!(audio.take_block().is_none(), "the side is not free");
+        assert_eq!(audio.missed(), 1, "a silent block went uncounted");
+        audio.process(128, &[]);
+        assert_eq!(audio.missed(), 2);
+        drop(held);
+        audio.process(128, &[]);
+        assert_eq!(audio.missed(), 2, "a rendered block counted as missed");
+    }
 }

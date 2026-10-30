@@ -62,7 +62,23 @@ type Texts = Vec<(i32, Text)>;
 
 /// A control's string array parameters, by parameter id and array index
 /// (`set_control_par_str_arr`).
-type TextArrays = Vec<(i32, i32, Text)>;
+#[derive(Clone, Copy, Debug)]
+struct TextArrayEntry {
+    slot: u8,
+    /// The control's index in its script, as [`Store`] addresses it.
+    control: usize,
+    par: i32,
+    index: i32,
+    text: Text,
+}
+
+/// String array elements every script and control together may hold. A
+/// control's string array is one picture per cursor, or the strings a stepped
+/// control shows (`$CONTROL_PAR_NKS_STR_VALUES`): dozens at most. The pool is
+/// made this large when the store is built, so a note or control callback that
+/// sets an element cannot grow it, and reading one back is a scan of fixed
+/// bound.
+const TEXT_ARRAYS: usize = 256;
 
 /// The script's page as it set it: size, wallpaper, colour, title.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -139,9 +155,12 @@ pub struct Store {
     selected: Box<[Box<[u16]>]>,
     /// Per script slot, by control: the text parameters it set.
     texts: Box<[Box<[Texts]>]>,
-    /// Per script slot, by control: the string array parameters it set, by
-    /// (parameter id, index), in the order set.
-    text_arrays: Box<[Box<[TextArrays]>]>,
+    /// The string array parameters scripts set, by slot, control, parameter
+    /// id and index, in the order set. One pool, room made before rendering.
+    text_arrays: Vec<TextArrayEntry>,
+    /// Elements set while the pool was full: refused, and counted rather than
+    /// dropped in silence.
+    text_arrays_full: u32,
     keys: Box<[Key]>,
     /// `set_key_pressed_support`: on, the keyboard shows only the keys
     /// scripts press; off (the default), it shows the keys played.
@@ -197,10 +216,8 @@ impl Store {
                 .clone()
                 .map(|n| vec![Vec::new(); n].into())
                 .collect(),
-            text_arrays: controls
-                .clone()
-                .map(|n| vec![Vec::new(); n].into())
-                .collect(),
+            text_arrays: Vec::with_capacity(TEXT_ARRAYS),
+            text_arrays_full: 0,
             keys: vec![Key::UNTOUCHED; KEYS].into(),
             pressed_support: false,
             ranges: Vec::new(),
@@ -288,14 +305,20 @@ impl Store {
             .map_or(&[], Vec::as_slice)
     }
 
-    /// The string array parameters control `n` of script `slot` set, by
-    /// (parameter id, index), in the order set.
-    #[must_use]
-    pub fn text_arrays(&self, slot: u8, n: usize) -> &[(i32, i32, Text)] {
+    /// The string array elements control `n` of script `slot` set, in the
+    /// order set, as (parameter id, index, text).
+    pub fn text_arrays(&self, slot: u8, n: usize) -> impl Iterator<Item = (i32, i32, Text)> + '_ {
         self.text_arrays
-            .get(usize::from(slot))
-            .and_then(|t| t.get(n))
-            .map_or(&[], Vec::as_slice)
+            .iter()
+            .filter(move |e| e.slot == slot && e.control == n)
+            .map(|e| (e.par, e.index, e.text))
+    }
+
+    /// String array elements set while the pool was full: they are not kept,
+    /// so the host can say so rather than lose them in silence.
+    #[must_use]
+    pub fn text_arrays_full(&self) -> u32 {
+        self.text_arrays_full
     }
 
     /// Element `index` of string array parameter `par` of control `n` of
@@ -303,9 +326,9 @@ impl Store {
     /// script never set it).
     #[must_use]
     pub fn text_array(&self, slot: u8, n: usize, par: i32, index: i32) -> Text {
-        (self.text_arrays(slot, n).iter())
-            .find(|(p, i, _)| *p == par && *i == index)
-            .map_or(Text::EMPTY, |&(.., t)| t)
+        (self.text_arrays.iter())
+            .find(|e| e.slot == slot && e.control == n && e.par == par && e.index == index)
+            .map_or(Text::EMPTY, |e| e.text)
     }
 
     /// The user clicked cell `cell` (0 but in a table) of control `n` of
@@ -412,27 +435,37 @@ impl Store {
         let Some(n) = n else {
             return;
         };
-        let Some(arrays) = self
-            .text_arrays
-            .get_mut(usize::from(slot))
-            .and_then(|a| a.get_mut(n))
-        else {
+        // A control record exists for every control the script declared.
+        if self
+            .generations
+            .get(usize::from(slot))
+            .is_none_or(|g| n >= g.len())
+        {
             return;
-        };
-        let changed = match arrays.iter_mut().find(|(p, i, _)| *p == par && *i == index) {
-            Some(entry) => {
-                let changed = entry.2.as_str() != text.as_str();
-                entry.2 = text;
-                changed
-            }
-            None => {
-                arrays.push((par, index, text));
-                true
-            }
-        };
-        if changed {
-            self.touch(slot, n);
         }
+        let found = (self.text_arrays.iter())
+            .position(|e| e.slot == slot && e.control == n && e.par == par && e.index == index);
+        if let Some(entry) = found.and_then(|i| self.text_arrays.get_mut(i)) {
+            let changed = entry.text.as_str() != text.as_str();
+            entry.text = text;
+            if changed {
+                self.touch(slot, n);
+            }
+            return;
+        }
+        // The pool was made with this room: filling it cannot allocate.
+        if self.text_arrays.len() < self.text_arrays.capacity() {
+            self.text_arrays.push(TextArrayEntry {
+                slot,
+                control: n,
+                par,
+                index,
+                text,
+            });
+            self.touch(slot, n);
+            return;
+        }
+        self.text_arrays_full = self.text_arrays_full.saturating_add(1);
     }
 
     fn menu_mut(&mut self, slot: u8, n: Option<usize>) -> Option<&mut Vec<MenuItem>> {
@@ -598,6 +631,13 @@ impl Store {
             // (`$CONTROL_PAR_NKS_STR_VALUES`). The element is kept on the
             // control record whatever the parameter means to a host, so
             // `get_control_par_str_arr` reads it back.
+            //
+            // Kept, but not drawn: `Engine::control_look` hands out a control's
+            // number parameters, its texts and its menu, not its string
+            // arrays, so a cursor picture named here is not on screen. It is
+            // not counted as unanswered either: the engine carries the write
+            // out (Electric Mint sets 23 of these in `on init`), and the gap
+            // is the renderer's, which needs the arrays in `ControlLook`.
             Action::SetControlParStrArr => {
                 self.set_text_array(slot, n, (int(1), int(2)), text);
                 HostValue::Nothing
@@ -697,6 +737,41 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A callback may set an element the script did not set at init. The pool
+    /// is made whole when the store is built, so that costs no allocation, and
+    /// an element past it is counted rather than lost in silence.
+    #[test]
+    fn string_array_elements_fill_the_room_the_store_was_built_with() {
+        let mut s = Store::new([1].into_iter());
+        let capacity = s.text_arrays.capacity();
+        assert_eq!(capacity, TEXT_ARRAYS);
+        for i in 0..TEXT_ARRAYS {
+            s.set_text_array(0, Some(0), (7, i as i32), Text::from_str_cut("x").0);
+        }
+        assert_eq!(s.text_arrays.capacity(), capacity, "setting grew the pool");
+        assert_eq!(s.text_arrays_full(), 0);
+        assert_eq!(s.text_array(0, 0, 7, 0).as_str(), "x");
+        assert_eq!(s.text_arrays(0, 0).count(), TEXT_ARRAYS);
+        // Past the room: refused, counted, the rest untouched.
+        s.set_text_array(
+            0,
+            Some(0),
+            (7, TEXT_ARRAYS as i32),
+            Text::from_str_cut("over").0,
+        );
+        assert_eq!(s.text_arrays_full(), 1);
+        assert_eq!(s.text_arrays.capacity(), capacity);
+        assert_eq!(s.text_array(0, 0, 7, TEXT_ARRAYS as i32).as_str(), "");
+        // Replacing an element already kept is not a refusal.
+        s.set_text_array(0, Some(0), (7, 3), Text::from_str_cut("y").0);
+        assert_eq!(s.text_array(0, 0, 7, 3).as_str(), "y");
+        assert_eq!(s.text_arrays_full(), 1, "a replace counted as a refusal");
+        // A control the script never declared stores nothing, as before.
+        s.set_text_array(0, Some(99), (7, 0), Text::from_str_cut("z").0);
+        assert_eq!(s.text_arrays(0, 99).count(), 0);
+        assert_eq!(s.text_arrays_full(), 1);
+    }
 
     /// Kontakt 8's answers to `get_key_triggerstate(60), (61), (62)` after
     /// each sequence (oracle probe, 2026-10-29).

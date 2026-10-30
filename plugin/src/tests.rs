@@ -378,27 +378,6 @@ fn auto_align_reports_the_latest_part_and_holds_the_other() {
     );
 }
 
-/// Electric Mint, whose Sound Preset menu was reported as "picking an entry
-/// does nothing": it lives outside the corpus root, so its path is the env
-/// override the rack's own pick test uses.
-fn emint() -> Option<PathBuf> {
-    const LIBRARY: &str = "Armory/VSTs/Kontakt1/Native Instruments Session Guitarist Electric Mint 1.1.0/Session Guitarist - Electric Mint Library/Instruments";
-    let path = std::env::var_os("KONTRA_EMINT").map_or_else(
-        || {
-            std::env::var_os("HOME")
-                .map_or_else(|| PathBuf::from("/home"), PathBuf::from)
-                .join(LIBRARY)
-                .join("Electric Mint.nki")
-        },
-        PathBuf::from,
-    );
-    if !path.exists() {
-        eprintln!("skipped: no {}", path.display());
-        return None;
-    }
-    Some(path)
-}
-
 /// The preset menu and the name field on the plate, from the view the editor
 /// draws.
 fn emint_menu(params: &KontraParams) -> (usize, usize) {
@@ -432,22 +411,10 @@ fn emint_menu(params: &KontraParams) -> (usize, usize) {
 /// of the engine, so a page that shows the pick is the engine's own value.
 #[test]
 fn a_menu_pick_applies_and_shows_with_no_block_at_all() {
-    let Some(path) = emint() else { return };
-    let saved = Saved::new(vec![SavedPart {
-        part: 0,
-        path,
-        channel: 0,
-        output: 0,
-        gain: 1.0,
-        pan: 0.0,
-        solo: false,
-        mute: false,
-        scripts: Vec::new(),
-        delays: None,
-        slot_types: Vec::new(),
-        slot_responses: Vec::new(),
-    }]);
-    let (params, _dsp) = activate(&saved.write());
+    let Some(path) = instrument("Electric Mint.nki") else {
+        return;
+    };
+    let (params, _dsp) = activate(&one_part(&path));
     let (menu, field) = emint_menu(&params);
     let (was, was_text, items) = {
         let guard = crate::lock(&params.shared.rack);
@@ -1315,15 +1282,21 @@ fn editor_pictures(params: &KontraParams, dsp: &mut Dsp) -> (usize, usize) {
 /// An instrument under the Kontakt libraries this machine has, if present.
 fn instrument(name: &str) -> Option<PathBuf> {
     const LIBRARY: &str = "Armory/VSTs/Kontakt1/Native Instruments Session Guitarist Electric Mint 1.1.0/Session Guitarist - Electric Mint Library/Instruments";
+    // A library outside the corpus root names its instrument's path in
+    // `KONTRA_EMINT`, the override the rack's own pick test uses.
+    let named = std::env::var_os("KONTRA_EMINT").map(PathBuf::from);
     let dirs = [
         PathBuf::from(KONTAKT),
         std::env::var_os("HOME")
             .map_or_else(|| PathBuf::from("/home"), PathBuf::from)
             .join(LIBRARY),
     ];
-    for dir in dirs {
-        let path = dir.join(name);
-        if path.exists() {
+    for path in named.into_iter().chain(dirs.iter().map(|d| d.join(name))) {
+        if path
+            .file_name()
+            .is_some_and(|f| f == std::ffi::OsStr::new(name))
+            && path.exists()
+        {
             return Some(path);
         }
     }

@@ -294,7 +294,8 @@ pub struct RouteObservation {
     pub zone: usize,
     pub name: String,
     pub kind: kontra_ir::ModKind,
-    /// Current raw source; `None` if the source cannot be observed.
+    /// The source read as the route's `invert` flag sets it
+    /// (`$MOD_TARGET_INVERT_SOURCE`); `None` if the source cannot be observed.
     pub source: Option<f32>,
     /// Current source after timed-source intensity scaling.
     pub routed: Option<f32>,

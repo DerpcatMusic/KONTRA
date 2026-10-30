@@ -21,8 +21,6 @@ pub struct Rack {
     /// Routes moving the slots ([`ir::Bus::mods`]), the blends they read,
     /// and each route's amount for this span.
     mods: Box<[ir::ModKind]>,
-    /// Whether each route reads its source mirrored (`ir::Mod::invert`).
-    inverts: Box<[bool]>,
     blends: Box<[ir::Blend]>,
     amounts: Box<[f32]>,
     /// Each slot's levels, gliding where its settings move.
@@ -80,16 +78,17 @@ impl Live<'_> {
 impl Rack {
     /// `impulses` are the plan's convolution responses. Not real-time.
     pub fn new(slots: &[Option<ir::Effect>], rate: u32, impulses: &[Option<Response>]) -> Self {
-        Self::routed(slots, rate, Responses(impulses, &[]), &[], &[], &[])
+        Self::routed(slots, rate, Responses(impulses, &[]), &[], &[])
     }
 
-    /// As [`Self::new`], its slots moved by `mods` reading `blends`.
+    /// As [`Self::new`], its slots moved by `mods` reading `blends`. A route's
+    /// `invert` flag is not read here: the single mirroring law lives in
+    /// `voice_gain::inverted`, where a route is read per voice.
     pub fn routed(
         slots: &[Option<ir::Effect>],
         rate: u32,
         impulses: Responses<'_>,
         mods: &[ir::ModKind],
-        inverts: &[bool],
         blends: &[ir::Blend],
     ) -> Self {
         let moved = |n: usize| {
@@ -106,7 +105,6 @@ impl Rack {
             slots: slots.into(),
             dsp,
             mods: mods.into(),
-            inverts: inverts.into(),
             blends: blends.into(),
             amounts: vec![0.0; mods.len()].into(),
             levels: vec![Levels::new(rate); slots.len()].into(),
@@ -116,12 +114,11 @@ impl Rack {
 
     /// Rebuilds its processors from its slots and routes. Not real-time.
     pub fn rebuild(&mut self, rate: u32, impulses: Responses<'_>) {
-        let (mods, inverts, blends) = (
+        let (mods, blends) = (
             std::mem::take(&mut self.mods),
-            std::mem::take(&mut self.inverts),
             std::mem::take(&mut self.blends),
         );
-        *self = Self::routed(&self.slots, rate, impulses, &mods, &inverts, &blends);
+        *self = Self::routed(&self.slots, rate, impulses, &mods, &blends);
     }
 
     /// Puts `effect` and its processor in slot `n`; the old pair comes back.
@@ -143,27 +140,11 @@ impl Rack {
             let Some(m) = self.mods.get(n).copied() else {
                 break;
             };
-            let invert = self.inverts.get(n).copied().unwrap_or(false);
-            // A mirrored route reads its source as `1 - x`, or `-x` when the
-            // source is bipolar (the same reading `Engine::unit` normalises).
-            let mirror = |x: f32, source: ir::Source| {
-                if !invert {
-                    return x;
-                }
-                match source {
-                    ir::Source::Lfo(_) | ir::Source::PitchBend => -x,
-                    _ => 1.0 - x,
-                }
-            };
             let amount = match m {
                 ir::ModKind::EffectParam { source, depth, .. } => {
-                    let x = live.read(source, &self.blends).unwrap_or(0.0);
-                    mirror(x, source) * depth
+                    live.read(source, &self.blends).unwrap_or(0.0) * depth
                 }
-                ir::ModKind::Send { source, .. } => {
-                    let x = live.read(source, &self.blends).unwrap_or(1.0);
-                    mirror(x, source)
-                }
+                ir::ModKind::Send { source, .. } => live.read(source, &self.blends).unwrap_or(1.0),
                 _ => continue,
             };
             if let Some(a) = self.amounts.get_mut(n) {

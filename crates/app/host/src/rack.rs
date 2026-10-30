@@ -731,8 +731,12 @@ impl Rack {
         if self.idle() {
             // The host is not rendering: carry the commands out here, and
             // take what that fills, so an edit made now shows now rather
-            // than at a block that never comes.
+            // than at a block that never comes. A command the ring refused
+            // goes in again at the start of each pass: the pass before it
+            // drained the ring, and a command left in `pending` behind one
+            // that is only now sent would otherwise wait for another tick.
             for _ in 0..PASSES {
+                self.resend();
                 let ran = self.drive();
                 if ran == 0 {
                     break;

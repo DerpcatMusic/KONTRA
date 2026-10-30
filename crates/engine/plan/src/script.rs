@@ -98,7 +98,10 @@ impl ScriptPlan {
             EnginePar::EffectType | EnginePar::EffectSubtype => Holder::SlotKind,
             EnginePar::LfoFade => Holder::Lfo,
             EnginePar::RouteDepth | EnginePar::RouteIntensity => Holder::Route,
-            EnginePar::ModBypass => Holder::Mod,
+            // Both live on a modulator: `ModBypass` reads and writes one, and
+            // `ModInvertSource` reads a route's flag, which is where
+            // `get_engine_par` finds it.
+            EnginePar::ModBypass | EnginePar::ModInvertSource => Holder::Mod,
             EnginePar::Volume | EnginePar::Pan | EnginePar::Tune | EnginePar::OutputChannel => {
                 Holder::Level
             }
