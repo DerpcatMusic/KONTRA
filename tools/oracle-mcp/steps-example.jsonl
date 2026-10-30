@@ -1,0 +1,8 @@
+{"tool": "oracle_up", "arguments": {}, "comment": "launch Kontakt on :77 (openbox, DXVK on lavapipe)", "checks": {"state": "up", "pids.kontakt": {"min": 1}}}
+{"tool": "oracle_load", "arguments": {"nki": "/home/dracula/Armory/VSTs/Kontakt1/Native Instruments Session Guitarist Electric Mint 1.1.0/Session Guitarist - Electric Mint Library/Instruments/Electric Mint.nki"}, "comment": "an instrument page, not the browser", "checks": {"page.instrument_page": true}}
+{"tool": "oracle_shot", "arguments": {}, "comment": "window crop + texture stats", "checks": {"mode": "instrument"}}
+{"tool": "oracle_click", "arguments": {"x": 722, "y": 570}, "comment": "the Amps & FX tab", "checks": {"changed": {"min": 1000}}}
+{"tool": "oracle_render", "arguments": {"notes": [{"start_s": 0.1, "length_s": 0.8, "key": 60, "velocity": 100}], "seconds": 2}, "comment": "a note list instead of a MIDI file", "checks": {"peak": {"min": 0.0001}}}
+{"tool": "oracle_mem", "arguments": {"addr": "exe", "length": 32}, "comment": "the PE header of the live process", "checks": {"length": 32}}
+{"tool": "oracle_status", "arguments": {}}
+{"tool": "oracle_down", "arguments": {}, "comment": "stop only what this server started", "checks": {"state": "down"}}
