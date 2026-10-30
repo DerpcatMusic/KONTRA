@@ -49,6 +49,16 @@ pub(crate) enum Origin {
     Script,
 }
 
+/// What a note's release sounds: its release-trigger zones once released, or,
+/// for a note a release callback plays (that release's own sound), with its
+/// start when it plays the whole sample and never when it is timed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Releases {
+    OnRelease,
+    AtStart,
+    Never,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Note {
     pub(crate) host: HostNote,
@@ -78,8 +88,8 @@ pub(crate) struct Note {
     pub(crate) started: bool,
     /// A script ignored the event: it starts no voices.
     pub(crate) ignored: bool,
-    /// Played by a release callback: starts its release-trigger zones too.
-    pub(crate) from_release: bool,
+    /// What its release sounds.
+    pub(crate) releases: Releases,
     /// Its player ended it with `note_off`: only the slots after hear it.
     pub(crate) noted_off: bool,
     /// Script tuning, millicents.
@@ -132,7 +142,7 @@ impl Note {
             key_up: false,
             started: false,
             ignored: false,
-            from_release: false,
+            releases: Releases::OnRelease,
             noted_off: false,
             script_tune: 0,
             script_volume: 0,

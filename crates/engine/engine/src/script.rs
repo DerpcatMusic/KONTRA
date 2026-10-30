@@ -6,7 +6,7 @@ use kontra_events::HostNote;
 use kontra_time::SampleTime;
 use kontra_vm::{Action, HostApi, HostCall, HostValue, Text, event};
 
-use crate::ledger::{Note, NoteRef, Origin};
+use crate::ledger::{Note, NoteRef, Origin, Releases};
 use crate::queue::Work;
 use crate::{Engine, EnginePar};
 
@@ -182,13 +182,16 @@ impl Engine {
         // sample; a positive duration is a note-off after that long.
         // Once the starting note is released (its release callback), -1 has
         // nothing left to wait for and the sample plays out.
-        // A release callback stays one across its waits; what it plays
-        // sounds its release zones (Pacific's release samples).
+        // A release callback stays one across its waits.
         let ending = self.running.callback_type == Running::new(Kind::Release, None).callback_type
             || parent
                 .and_then(|p| self.notes.get(p))
                 .is_some_and(|n| n.released);
-        note.from_release = ending;
+        note.releases = match (ending, duration > 0) {
+            (false, _) => Releases::OnRelease,
+            (true, false) => Releases::AtStart,
+            (true, true) => Releases::Never,
+        };
         note.origin = match (duration, parent) {
             (-1, Some(p)) if !ending => Origin::Child(p),
             _ => Origin::Script,
