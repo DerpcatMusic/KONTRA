@@ -283,6 +283,14 @@ fn law(curve: &Law) -> Value {
         } => {
             json!({"kind":"exp2_index", "origin":origin, "divisor":divisor, "offset":offset, "scale":scale})
         }
+        Law::PowIndex {
+            base,
+            origin,
+            divisor,
+            scale,
+        } => {
+            json!({"kind":"pow_index", "base":base, "origin":origin, "divisor":divisor, "scale":scale})
+        }
         Law::Db { lo, hi } => json!({"kind":"db", "lo":lo, "hi":hi}),
         Law::Power { lo, hi, exponent } => {
             json!({"kind":"power", "lo":lo, "hi":hi, "exponent":exponent})

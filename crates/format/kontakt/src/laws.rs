@@ -2,7 +2,7 @@
 //! names the evidence it rests on; the IR and engine never see the vendor.
 
 use kontra_ir as ir;
-use kontra_law::kontakt::{UNIT_CUBIC, UNIT_FIFTH};
+use kontra_law::kontakt::{FILTER_NOTE_HZ, UNIT_CUBIC, UNIT_FIFTH};
 use ni_file::kontakt::objects::{EnvelopeAhdsr, EnvelopeFlex, Lfo};
 
 /// Kontakt's decay and release: the kernel runs its state from 1.075 down to
@@ -450,7 +450,7 @@ pub(crate) fn eq_band_index(param: &str) -> Option<u8> {
 /// (AR, Daft, Pro-53) play as state-variable stages; measure
 /// against Kontakt to add the loss where a library needs it.
 fn note(f: &mut ir::Filter, n: f32, per_unit: f32, r: f32) {
-    f.hz = 440.0 * 2f32.powf((n.min(160.0) - 69.0) / 12.0);
+    f.hz = FILTER_NOTE_HZ.eval_unclamped(n.min(160.0));
     f.octaves = per_unit / 12.0;
     if let Some(last) = f.damping.get_mut(usize::from(f.stages).saturating_sub(1)) {
         *last = (2.0 * (1.0 - r) * (1.0 - r)).max(MIN_DAMPING);
@@ -493,7 +493,7 @@ fn legacy(f: &mut ir::Filter, u: f32, r: f32) {
 /// states; damping stops at 0.01 instead.
 fn sv(f: &mut ir::Filter, u: f32, r: f32) {
     let note = (115.0 * u + 20.0).min(160.0);
-    f.hz = 440.0 * 2f32.powf((note - 69.0) / 12.0);
+    f.hz = FILTER_NOTE_HZ.eval_unclamped(note);
     f.octaves = 115.0 / 12.0;
     if f.stages == 0 {
         return;

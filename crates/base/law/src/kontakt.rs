@@ -26,6 +26,14 @@ pub const VOICE_VOLUME: Law = Law::Power {
 /// Maps normalized input to a bipolar value (0x14071a840 on 0..=1).
 pub const BIPOLAR: Law = Law::Linear { lo: -1.0, hi: 1.0 };
 
+/// Note-to-frequency cutoff law; see `docs/re/engine/filt-sv.md`.
+pub const FILTER_NOTE_HZ: Law = Law::PowIndex {
+    base: 2.0,
+    origin: 69.0,
+    divisor: 12.0,
+    scale: 440.0,
+};
+
 /// Cubic sustain and state-variable filter resonance mappings; see
 /// `docs/re/engine/k-mod-envelopes.md` and `filt-sv.md`.
 pub const UNIT_CUBIC: Law = Law::IntegerPower { exponent: 3 };
@@ -86,6 +94,18 @@ pub fn modulation_shaper(points: &[(f32, f32, f32)]) -> Law {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filter_note_law_preserves_the_original_float_calculation() {
+        for i in 0..=16000 {
+            let note = i as f32 / 100.0;
+            let original = 440.0 * 2f32.powf((note - 69.0) / 12.0);
+            assert_eq!(
+                FILTER_NOTE_HZ.eval_unclamped(note).to_bits(),
+                original.to_bits()
+            );
+        }
+    }
 
     /// The normalized bipolar mapping agrees with native endpoints and midpoint.
     #[test]

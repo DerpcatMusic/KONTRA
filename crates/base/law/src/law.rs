@@ -25,6 +25,13 @@ pub enum Law {
         offset: f32,
         scale: f32,
     },
+    /// `scale · base^((x - origin) / divisor)` in source units.
+    PowIndex {
+        base: f32,
+        origin: f32,
+        divisor: f32,
+        scale: f32,
+    },
     /// Linear in decibels from `lo` to `hi`, evaluated as linear gain.
     Db { lo: f32, hi: f32 },
     /// `lo + (hi − lo) · x^exponent`: a power taper (a reverb damping knob: `x^¼`).
@@ -97,6 +104,12 @@ impl Law {
                 offset,
                 scale,
             } => scale * ((x - origin) / divisor + offset).exp2(),
+            Self::PowIndex {
+                base,
+                origin,
+                divisor,
+                scale,
+            } => scale * base.powf((x - origin) / divisor),
             Self::Db { lo, hi } => 10f32.powf((lo * (1.0 - x) + hi * x) / 20.0),
             Self::Power { lo, hi, exponent } => lo + (hi - lo) * x.powf(*exponent),
             Self::IntegerPower { exponent } => x.powi(*exponent),
