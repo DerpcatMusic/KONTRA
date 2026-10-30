@@ -58,8 +58,9 @@ pub const UNIT_FIFTH: Law = Law::IntegerPower {
     bipolar: false,
 };
 
-/// Replika Modern's low-cut knob to Hz, `10·100^x`. Unverified in the binary: measured by the
-/// native oracle (`docs/re/engine/k-replika-binding.md`). Zero is bypassed by the translator.
+/// Replika Modern's low-cut knob to Hz, `10·100^x`. Measured only (no binary constant): the
+/// binary's setter run under kemu (`docs/re/engine/k-replika-binding.md`). Zero is bypassed by
+/// the translator.
 pub const REPLIKA_LOW_CUT: Law = Law::ExpAffine {
     base: 100.0,
     offset: 0.0,
@@ -68,7 +69,7 @@ pub const REPLIKA_LOW_CUT: Law = Law::ExpAffine {
     scale: 10.0,
 };
 
-/// The Versatile filter's gain knob to `10^((g − 0.5)·3)`. Unverified in the binary: its setter
+/// The Versatile filter's gain knob to `10^((g − 0.5)·3)`. Measured only: its setter
 /// is not located (`docs/re/engine/filt-multi-versatile.md`).
 pub const VERSATILE_GAIN: Law = Law::ExpAffine {
     base: 10.0,
@@ -110,7 +111,7 @@ pub const LADDER_GAIN: Law = Law::ExpAffine {
 };
 
 /// The legacy filters' resonance knob to the sharpest stage's Q gain, `e^(6.4 r)`. Fitted to
-/// the measured LP4 peaks, so unverified in the binary: native resonance is a feedback path
+/// the measured LP4 peaks, so measured only: native resonance is a feedback path
 /// with no closed law (`docs/re/engine/filt-legacy.md`).
 pub const LEGACY_RESONANCE_Q: Law = Law::Exp {
     lo: 1.0,
