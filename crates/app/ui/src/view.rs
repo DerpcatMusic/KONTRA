@@ -195,6 +195,11 @@ fn drawn_page(
                 .assets
                 .get(a.0)
                 .and_then(|asset| pictures.outline_font(a, &asset.path)),
+            Some(&model::Font::Stock(14))
+                if matches!(tree.source, model::Source::Ksp { .. }) && !words.is_empty() =>
+            {
+                pictures.outline_font(model::AssetRef(usize::MAX - 9), "@stock/pragmatica")
+            }
             _ => None,
         };
         let lit = match wd.kind {
@@ -420,7 +425,13 @@ fn words_el(
     scale: f64,
     font: Option<&Font>,
 ) -> El {
-    let geometry = plan::text(words, style, w, height, scale);
+    let native_style = style.cloned().map(|mut style| {
+        if font.is_some() && style.font == model::Font::Stock(14) {
+            style.size = Some(10.);
+        }
+        style
+    });
+    let geometry = plan::text(words, native_style.as_ref(), w, height, scale);
     let size = geometry.size;
     let ink = geometry.color.map_or(Color::srgb(1., 1., 1.), color);
     let align = geometry.align;

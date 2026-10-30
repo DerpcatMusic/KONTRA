@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 fn root() -> Option<PathBuf> {
-    Some(dirs::cache_dir()?.join("kontra/stock-art-v5"))
+    Some(dirs::cache_dir()?.join("kontra/stock-art-v6"))
 }
 
 fn index(root: &Path, path: &Path) -> Option<PathBuf> {
@@ -24,6 +24,7 @@ pub(super) struct Art {
     pub(super) button: Option<Image>,
     pub(super) font12: Option<Image>,
     pub(super) field: Option<Image>,
+    pub(super) outline: Option<Vec<u8>>,
 }
 
 pub(super) enum Cached {
@@ -77,6 +78,7 @@ fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 8]) -> Option<Cached> {
         button: image(5),
         font12: image(6),
         field: image(7),
+        outline: super::outline::read(&dir.join("outline.ttf")),
     })))
 }
 
@@ -115,6 +117,14 @@ fn save_at(root: &Path, path: &Path, hash: &str, images: &Art) {
             return;
         }
     }
+    if let Some(font) = &images.outline {
+        let target = dir.join("outline.ttf");
+        let temporary = dir.join(format!("outline.{}.tmp", std::process::id()));
+        if std::fs::write(&temporary, font).is_err() || std::fs::rename(temporary, target).is_err()
+        {
+            return;
+        }
+    }
     write_index(root, path, hash);
 }
 
@@ -141,6 +151,7 @@ mod tests {
             button: Some(image()),
             font12: Some(image()),
             field: Some(image()),
+            outline: None,
         };
         let root = dir.path().join("cache");
         super::save_at(&root, &exe, &"a".repeat(64), &images);
@@ -168,6 +179,7 @@ mod tests {
             button: Some(image()),
             font12: Some(image()),
             field: None,
+            outline: None,
         };
         super::save_at(&root, &fallback, &"b".repeat(64), &without_font);
         let Some(super::Cached::Images(cached)) = super::load_at(&root, &fallback, &[(1, 1); 8])
