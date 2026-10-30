@@ -67,7 +67,7 @@ pub use kontra_voice::{Ahdsr, Loop, Region};
 pub use ledger::NoteRef;
 pub use plan::{
     Atom, Bus, Control, Crossfade, Group, Level, Plan, ReleaseZones, Response, RoundRobin,
-    RrCounter, Trigger, Zone,
+    RrCounter, SustainPedal, Trigger, Zone,
 };
 pub use queue::Timed;
 pub use script::{Callbacks, CcLink, Controls, LookPars, ScriptPlan};
@@ -488,6 +488,13 @@ impl Engine {
 
     fn note_on(&mut self, host: HostNote, velocity: f64, tune: f64) {
         self.behaviour.play(&self.plan, host.key, host.channel);
+        // A script that plays its own release notes: the key going down
+        // starts its release-trigger counter, not the notes it plays.
+        if self.plan.release_zones == ReleaseZones::WithNote
+            && let Some(r) = self.behaviour.rls_reset.get_mut(usize::from(host.key))
+        {
+            *r = self.now.0;
+        }
         let draw = self.behaviour.draw(host.key);
         let Some(note) = self.admit(Note::new(host, velocity, tune, self.now, draw)) else {
             self.stats.notes_refused += 1;

@@ -10,9 +10,9 @@ use kontra_host::align::{Measured, hold};
 use kontra_host::rack::{Delays, Hold, Plan, Rack};
 use kontra_protocol::MAX_PARTS;
 
-/// The note the measurement plays.
-// ponytail: one probe key; a patch silent on C4 measures as on time.
-const PROBE_KEY: u8 = 60;
+/// The notes the measurement tries, in order: C4, then the octaves around
+/// it, so a bass or a tuba silent on C4 measures where it plays.
+const PROBE_KEYS: [u8; 5] = [60, 48, 72, 36, 84];
 
 /// Measures the parts not measured yet and sends each its holds; with `on`
 /// false, nothing is held. The latency to report, in frames.
@@ -68,6 +68,10 @@ pub fn update(on: bool, rack: &mut Rack) -> u32 {
 // follow the engine's keyswitch if a library needs it.
 fn measure(plan: Arc<Plan>, rack: &mut Rack) -> Delays {
     let mut player = Measured::new(plan, rack.store_mut().client(), rack.rate(), Vec::new());
-    let d = kontra_align::measure(&mut player, 0, PROBE_KEY).loaded;
+    let sounds = |d: &Delay| d.steps.iter().any(|s| s.first.or(s.legato).is_some());
+    let d = (PROBE_KEYS.iter())
+        .map(|&key| kontra_align::measure(&mut player, 0, key).loaded)
+        .find(sounds)
+        .unwrap_or_default();
     d.steps.iter().map(|s| (s.top, s.first, s.legato)).collect()
 }
