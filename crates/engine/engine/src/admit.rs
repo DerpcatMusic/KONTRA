@@ -3,7 +3,6 @@
 //! that went silent leave it.
 
 use crate::ledger::{Note, NoteRef, Origin};
-use crate::queue::Work;
 use crate::{Engine, Slot, Trigger};
 use kontra_voice::FadeTarget;
 
@@ -120,20 +119,25 @@ impl Engine {
                     n.fade = Some((target, frames));
                 }
             }
-            // Ending it ends the notes played for its length (`notes` may be the
-            // scratch list, so they are queued straight from the ledger).
-            let children = self
-                .notes
-                .live()
-                .filter(|(_, n)| n.origin == Origin::Child(note));
-            for (child, _) in children.filter(|_| target == FadeTarget::End) {
-                if !self.queue.push(self.now, Work::Release(child)) {
-                    self.stats.events_refused += 1;
-                }
-            }
             for slot in self.voices.iter_mut().filter(|s| s.note == Some(note)) {
                 slot.voice.fade(target, frames);
             }
+        }
+        if target == FadeTarget::End {
+            // Ending a note ends the notes played for its length: one pass, into
+            // a list of its own (`notes` may be the shared scratch).
+            let mut children = std::mem::take(&mut self.children_scratch);
+            let ledger = &self.notes;
+            ledger.select(&mut children, |n| match n.origin {
+                Origin::Child(p) => ledger
+                    .get(p)
+                    .is_some_and(|p| matches!(p.fade, Some((FadeTarget::End, _)))),
+                _ => false,
+            });
+            for &child in &children {
+                self.queue_end(child);
+            }
+            self.children_scratch = children;
         }
     }
 

@@ -175,6 +175,8 @@ pub struct Engine {
     masks: GroupMasks,
     /// Scratch for script event targets (an action may run inside a ledger query).
     targets_scratch: Vec<NoteRef>,
+    /// The notes a stopping fade ends with their parent.
+    children_scratch: Vec<NoteRef>,
     /// Latest controller values on any channel, as scripts read them.
     cc_values: [u8; 130],
     last_message: Text,
@@ -334,6 +336,7 @@ impl Engine {
             stop_waits: Vec::with_capacity(16),
             masks: GroupMasks::new(capacity, groups),
             targets_scratch: Vec::with_capacity(capacity),
+            children_scratch: Vec::with_capacity(capacity),
             cc_values: [0; 130],
             last_message: Text::EMPTY,
             recall: Recall::Restart,
