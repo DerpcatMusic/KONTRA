@@ -2148,6 +2148,7 @@ dependencies = [
  "kontra-effects",
  "kontra-events",
  "kontra-ir",
+ "kontra-ledger",
  "kontra-plan",
  "kontra-script-ui",
  "kontra-stream",
@@ -2276,6 +2277,19 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "toml",
+]
+
+[[package]]
+name = "kontra-ledger"
+version = "0.0.0"
+dependencies = [
+ "kontra-behaviour",
+ "kontra-events",
+ "kontra-ir",
+ "kontra-plan",
+ "kontra-time",
+ "kontra-vm",
+ "kontra-voice",
 ]
 
 [[package]]

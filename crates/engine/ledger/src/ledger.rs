@@ -19,17 +19,17 @@ pub struct NoteRef {
 
 impl NoteRef {
     /// The note's slot in the ledger, for tables kept beside it.
-    pub(crate) fn slot(self) -> usize {
+    pub fn slot(self) -> usize {
         self.index as usize
     }
 
     /// The script-visible event id: positive, unique among live notes, and
     /// stale once the note ends. Ledgers hold at most 65536 notes.
-    pub(crate) fn event_id(self) -> i32 {
+    pub fn event_id(self) -> i32 {
         (((self.generation & GENERATIONS) << 16) | (self.index & 0xFFFF)) as i32
     }
 
-    pub(crate) fn from_event_id(id: i32) -> Option<Self> {
+    pub fn from_event_id(id: i32) -> Option<Self> {
         let id = u32::try_from(id).ok().filter(|&id| id >> 16 != 0)?;
         Some(Self {
             index: id & 0xFFFF,
@@ -40,7 +40,7 @@ impl NoteRef {
 
 /// Where a note came from and how it ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Origin {
+pub enum Origin {
     /// A host note: released by its note-off.
     Host,
     /// A script note released with its parent (`play_note` duration -1).
@@ -53,74 +53,74 @@ pub(crate) enum Origin {
 /// for a note a release callback plays (that release's own sound), with its
 /// start when it plays the whole sample and never when it is timed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Releases {
+pub enum Releases {
     OnRelease,
     AtStart,
     Never,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Note {
-    pub(crate) host: HostNote,
-    pub(crate) origin: Origin,
+pub struct Note {
+    pub host: HostNote,
+    pub origin: Origin,
     /// The key that sounds (a script may move it before the note starts).
-    pub(crate) key: u8,
+    pub key: u8,
     /// 0..=1.
-    pub(crate) velocity: f64,
+    pub velocity: f64,
     /// MIDI velocity 1..=127, what zones and crossfades select on.
-    pub(crate) velocity_byte: u8,
-    pub(crate) at: SampleTime,
+    pub velocity_byte: u8,
+    pub at: SampleTime,
     /// The round-robin draw of the attack; release triggers reuse it.
-    pub(crate) draw: RrDraw,
+    pub draw: RrDraw,
     /// Initial tuning from the host, semitones.
-    pub(crate) tune: f64,
-    pub(crate) expression_tune: f64,
-    pub(crate) expression_gain: f32,
-    pub(crate) expression_pan: f32,
+    pub tune: f64,
+    pub expression_tune: f64,
+    pub expression_gain: f32,
+    pub expression_pan: f32,
     /// Key released while the sustain pedal was down.
-    pub(crate) pedal_held: bool,
+    pub pedal_held: bool,
     /// Key released (directly or by the pedal coming up).
-    pub(crate) released: bool,
+    pub released: bool,
     /// Key up, but a release callback ignored it: the voices play on.
-    pub(crate) key_up: bool,
+    pub key_up: bool,
     /// Voices started (or the note was ignored): later script changes move
     /// sounding voices instead of choosing zones.
-    pub(crate) started: bool,
+    pub started: bool,
     /// A script ignored the event: it starts no voices.
-    pub(crate) ignored: bool,
+    pub ignored: bool,
     /// What its release sounds.
-    pub(crate) releases: Releases,
+    pub releases: Releases,
     /// Its player ended it with `note_off`: only the slots after hear it.
-    pub(crate) noted_off: bool,
+    pub noted_off: bool,
     /// The last fade a script asked of it (target, frames): its attack
     /// voices yet to start begin with it.
-    pub(crate) fade: Option<(kontra_voice::FadeTarget, u32)>,
+    pub fade: Option<(kontra_voice::FadeTarget, u32)>,
     /// Script tuning, millicents.
-    pub(crate) script_tune: i32,
+    pub script_tune: i32,
     /// Script volume, millidecibels.
-    pub(crate) script_volume: i32,
+    pub script_volume: i32,
     /// Script pan, per mille.
-    pub(crate) script_pan: i32,
+    pub script_pan: i32,
     /// Sample start offset a script asked for, microseconds.
-    pub(crate) offset: u32,
+    pub offset: u32,
     /// `EVENT_PAR_0..3`, free for the script.
-    pub(crate) custom: [i32; 4],
+    pub custom: [i32; 4],
     /// The zone slot the note starts; -1 for any.
-    pub(crate) zone_slot: i32,
+    pub zone_slot: i32,
     /// "From script" modulator values, `(index, value)`, ±1 000 000.
     // ponytail: four indices per note; a ring when a library sends more.
-    pub(crate) mod_values: [Option<(u16, Ramp)>; 4],
+    pub mod_values: [Option<(u16, Ramp)>; 4],
     /// The first script slot that sees the note: 0 for a host note, one past
     /// the slot that played it.
-    pub(crate) first: u8,
+    pub first: u8,
     /// Script slots whose note callback has let it through.
-    pub(crate) pass: u8,
+    pub pass: u8,
     /// Event marks (`set_event_mark`), one bit each.
-    pub(crate) marks: u32,
+    pub marks: u32,
 }
 
 impl Note {
-    pub(crate) fn new(
+    pub fn new(
         host: HostNote,
         velocity: f64,
         tune: f64,
@@ -162,18 +162,18 @@ impl Note {
     }
 
     /// The key went up, whether or not its release was ignored.
-    pub(crate) fn is_up(&self) -> bool {
+    pub fn is_up(&self) -> bool {
         self.released || self.key_up
     }
 
     /// The value sent this note for "from script" modulator `index`, at `now`.
-    pub(crate) fn mod_value(&self, index: u16, now: SampleTime) -> Option<i32> {
+    pub fn mod_value(&self, index: u16, now: SampleTime) -> Option<i32> {
         ramp_at(&self.mod_values, index, now)
     }
 
     /// Moves `index` to `value` over `frames` from `now`, starting where it
     /// is (`from` when this note was never sent it).
-    pub(crate) fn set_mod_value(
+    pub fn set_mod_value(
         &mut self,
         index: u16,
         value: i32,
@@ -188,7 +188,7 @@ impl Note {
 /// A script modulation value moving linearly from `from` to `to` over
 /// `frames` from `start`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Ramp {
+pub struct Ramp {
     from: i32,
     to: i32,
     start: u64,
@@ -209,7 +209,7 @@ impl Ramp {
 /// One resting ramp for each "from script" index the plan's routes read, so
 /// every index a route reads keeps its value however many a script sends,
 /// and [`SPARE_RAMPS`] free ones that keep values only scripts read back.
-pub(crate) fn script_ramps(plan: &crate::Plan) -> Box<[Option<(u16, Ramp)>]> {
+pub fn script_ramps(plan: &kontra_plan::Plan) -> Box<[Option<(u16, Ramp)>]> {
     use kontra_ir::Source;
     let blends = plan.buses.iter().flat_map(|b| &b.blends);
     let inputs = blends
@@ -224,7 +224,7 @@ pub(crate) fn script_ramps(plan: &crate::Plan) -> Box<[Option<(u16, Ramp)>]> {
         );
     let routes = (plan.groups.iter().flat_map(|g| &g.mods).map(|m| &m.kind))
         .chain(plan.buses.iter().flat_map(|b| &b.mods));
-    let mut indices: Vec<u16> = (routes.filter_map(crate::plan::source))
+    let mut indices: Vec<u16> = (routes.filter_map(kontra_plan::source))
         .chain(inputs)
         .filter_map(|s| match s {
             Source::Script(i) => Some(i),
@@ -252,7 +252,7 @@ pub(crate) fn script_ramps(plan: &crate::Plan) -> Box<[Option<(u16, Ramp)>]> {
 const SPARE_RAMPS: usize = 8;
 
 /// The value of `index` among `ramps` at `now`.
-pub(crate) fn ramp_at(ramps: &[Option<(u16, Ramp)>], index: u16, now: SampleTime) -> Option<i32> {
+pub fn ramp_at(ramps: &[Option<(u16, Ramp)>], index: u16, now: SampleTime) -> Option<i32> {
     ramps
         .iter()
         .flatten()
@@ -262,7 +262,7 @@ pub(crate) fn ramp_at(ramps: &[Option<(u16, Ramp)>], index: u16, now: SampleTime
 
 /// Starts `index` towards `to` over `frames` from where it is at `now`
 /// (`from` when absent), in a free slot or the one it holds.
-pub(crate) fn set_ramp(
+pub fn set_ramp(
     ramps: &mut [Option<(u16, Ramp)>],
     index: u16,
     to: i32,
@@ -290,12 +290,12 @@ struct Entry {
 }
 
 /// Fixed capacity. Queries fill a caller's list up to its capacity and never allocate.
-pub(crate) struct Ledger {
+pub struct Ledger {
     entries: Vec<Entry>,
 }
 
 impl Ledger {
-    pub(crate) fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             entries: (0..capacity)
                 .map(|_| Entry {
@@ -306,11 +306,11 @@ impl Ledger {
         }
     }
 
-    pub(crate) fn capacity(&self) -> usize {
+    pub fn capacity(&self) -> usize {
         self.entries.len()
     }
 
-    pub(crate) fn insert(&mut self, note: Note) -> Option<NoteRef> {
+    pub fn insert(&mut self, note: Note) -> Option<NoteRef> {
         let (index, entry) = self
             .entries
             .iter_mut()
@@ -325,7 +325,7 @@ impl Ledger {
         })
     }
 
-    pub(crate) fn get(&self, r: NoteRef) -> Option<&Note> {
+    pub fn get(&self, r: NoteRef) -> Option<&Note> {
         self.entries
             .get(r.index as usize)
             .filter(|e| e.generation == r.generation)?
@@ -333,7 +333,7 @@ impl Ledger {
             .as_ref()
     }
 
-    pub(crate) fn get_mut(&mut self, r: NoteRef) -> Option<&mut Note> {
+    pub fn get_mut(&mut self, r: NoteRef) -> Option<&mut Note> {
         self.entries
             .get_mut(r.index as usize)
             .filter(|e| e.generation == r.generation)?
@@ -341,7 +341,7 @@ impl Ledger {
             .as_mut()
     }
 
-    pub(crate) fn remove(&mut self, r: NoteRef) -> Option<Note> {
+    pub fn remove(&mut self, r: NoteRef) -> Option<Note> {
         self.entries
             .get_mut(r.index as usize)
             .filter(|e| e.generation == r.generation)?
@@ -350,7 +350,7 @@ impl Ledger {
     }
 
     /// Whether a live note is released with `parent`.
-    pub(crate) fn parents(&self, parent: NoteRef) -> bool {
+    pub fn parents(&self, parent: NoteRef) -> bool {
         let child = Origin::Child(parent);
         self.entries
             .iter()
@@ -358,7 +358,7 @@ impl Ledger {
     }
 
     /// Fills `out` with the live notes `keep` accepts, oldest slot first.
-    pub(crate) fn select(&self, out: &mut Vec<NoteRef>, keep: impl Fn(&Note) -> bool) {
+    pub fn select(&self, out: &mut Vec<NoteRef>, keep: impl Fn(&Note) -> bool) {
         out.clear();
         for (index, e) in self.entries.iter().enumerate() {
             if out.len() == out.capacity() {
@@ -375,7 +375,7 @@ impl Ledger {
 
     /// The first child of `parent` from slot `from` on, not yet released:
     /// walked a slot at a time, so the walk may release and insert notes.
-    pub(crate) fn next_child(&self, parent: NoteRef, from: usize) -> Option<NoteRef> {
+    pub fn next_child(&self, parent: NoteRef, from: usize) -> Option<NoteRef> {
         let mut entries = self.entries.get(from..)?.iter().enumerate();
         entries.find_map(|(offset, e)| {
             let n = e.note.as_ref()?;
@@ -388,13 +388,13 @@ impl Ledger {
 
     /// Marks every live note released: a pending end of one then starts no
     /// release zones and runs no release callback.
-    pub(crate) fn release_all(&mut self) {
+    pub fn release_all(&mut self) {
         let notes = self.entries.iter_mut().filter_map(|e| e.note.as_mut());
         notes.for_each(|n| n.released = true);
     }
 
     /// Every live note with its reference.
-    pub(crate) fn live(&self) -> impl Iterator<Item = (NoteRef, &Note)> {
+    pub fn live(&self) -> impl Iterator<Item = (NoteRef, &Note)> {
         self.entries.iter().enumerate().filter_map(|(index, e)| {
             let r = NoteRef {
                 index: index as u32,
@@ -404,7 +404,7 @@ impl Ledger {
         })
     }
 
-    pub(crate) fn count(&self, keep: impl Fn(&Note) -> bool) -> usize {
+    pub fn count(&self, keep: impl Fn(&Note) -> bool) -> usize {
         self.entries
             .iter()
             .filter(|e| e.note.as_ref().is_some_and(&keep))
@@ -412,7 +412,7 @@ impl Ledger {
     }
 
     /// Host notes the pattern addresses; script notes answer only to the script.
-    pub(crate) fn matching(&self, pattern: HostPattern, out: &mut Vec<NoteRef>) {
+    pub fn matching(&self, pattern: HostPattern, out: &mut Vec<NoteRef>) {
         self.select(out, |n| n.origin == Origin::Host && pattern.matches(n.host));
     }
 }

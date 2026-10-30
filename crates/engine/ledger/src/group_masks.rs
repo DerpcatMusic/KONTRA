@@ -1,14 +1,14 @@
 //! Which groups each note may play: one bit row per ledger slot.
 
 /// Which groups each note may play, one bit row per ledger slot.
-pub(crate) struct GroupMasks {
+pub struct GroupMasks {
     words: usize,
-    pub(crate) groups: usize,
+    pub groups: usize,
     bits: Box<[u64]>,
 }
 
 impl GroupMasks {
-    pub(crate) fn new(notes: usize, groups: usize) -> Self {
+    pub fn new(notes: usize, groups: usize) -> Self {
         let words = groups.div_ceil(64).max(1);
         Self {
             words,
@@ -24,11 +24,11 @@ impl GroupMasks {
             .unwrap_or_default()
     }
 
-    pub(crate) fn reset(&mut self, slot: usize) {
+    pub fn reset(&mut self, slot: usize) {
         self.row(slot).fill(u64::MAX);
     }
 
-    pub(crate) fn copy(&mut self, from: usize, to: usize) {
+    pub fn copy(&mut self, from: usize, to: usize) {
         let (from, to) = (from * self.words, to * self.words);
         if from + self.words <= self.bits.len() && to + self.words <= self.bits.len() {
             self.bits.copy_within(from..from + self.words, to);
@@ -36,7 +36,7 @@ impl GroupMasks {
     }
 
     /// A group past the last addresses every group.
-    pub(crate) fn set(&mut self, slot: usize, group: i32, allowed: bool) {
+    pub fn set(&mut self, slot: usize, group: i32, allowed: bool) {
         let all = usize::try_from(group).map_or(true, |g| g >= self.groups);
         let row = self.row(slot);
         if all {
@@ -54,7 +54,7 @@ impl GroupMasks {
         }
     }
 
-    pub(crate) fn allows(&self, slot: usize, group: u32) -> bool {
+    pub fn allows(&self, slot: usize, group: u32) -> bool {
         let g = group as usize;
         self.bits
             .get(slot * self.words + g / 64)
