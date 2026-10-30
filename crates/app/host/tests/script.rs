@@ -3164,3 +3164,33 @@ fn a_stopping_fade_ends_the_notes_played_for_its_length() {
     );
     assert_eq!(level(&mut e, &[on(60)]), 0.0);
 }
+
+/// KSP manual (`set_snapshot_type`): "Loading a snapshot always resets
+/// Kontakt's audio engine". A reset fades every voice and ends every
+/// callback waiting to go on, so nothing of the old preset plays on.
+#[test]
+fn a_reset_ends_the_callbacks_waiting_to_go_on() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $n
+        end on
+        on note
+            while (1 = 1)
+                wait(10000)
+                inc($n)
+                message($n)
+            end while
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    let before = e.last_message().to_owned();
+    assert_ne!(before, "", "the callback waits and goes on");
+    e.reset();
+    assert_eq!(level(&mut e, &[]), 0.0, "its voice faded out");
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), before, "the loop went on after the reset");
+}

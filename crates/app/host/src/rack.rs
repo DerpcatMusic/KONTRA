@@ -151,8 +151,9 @@ pub struct Channels {
     pub requests: Ring<(usize, u64, EffectRequest)>,
     /// Array files the parts' scripts asked for: (part, its load, request).
     pub files: Ring<(usize, u64, kontra_engine::files::FileRequest)>,
-    /// Answered file requests: a save's values to write, the rest to free.
-    pub filed: Ring<Box<kontra_engine::files::FileReply>>,
+    /// Answered file requests, by part and load: a save's values to write,
+    /// the rest to free.
+    pub filed: Ring<(usize, u64, Box<kontra_engine::files::FileReply>)>,
     /// Effect units swapped out, to free on the control side.
     pub units: Ring<Box<Option<Prepared>>>,
     /// Typed texts the audio side wrote ([`Command::ControlText`]), to free here.
