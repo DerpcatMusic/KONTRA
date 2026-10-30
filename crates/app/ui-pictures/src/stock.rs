@@ -15,7 +15,7 @@ const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 /// Bound background scanning and hashing; larger executables use the fallback.
 const MAX_EXECUTABLE: u64 = 512 << 20;
 // Bump the disk cache version whenever these fingerprints change.
-const KEYS: [(&str, usize, u32, u32, u32); 7] = [
+const KEYS: [(&str, usize, u32, u32, u32); 8] = [
     ("@stock/base", 2638, 87, 39, 0x0841_8e0a),
     ("@stock/cap", 12945, 3200, 29, 0x5838_2c55),
     ("@stock/light", 37604, 4992, 39, 0x16d9_4b51),
@@ -23,6 +23,7 @@ const KEYS: [(&str, usize, u32, u32, u32); 7] = [
     ("@stock/font13", 6034, 699, 13, 0xe3d1_56e4),
     ("@stock/button", 1972, 85, 48, 0x5d01_a62f),
     ("@stock/font12", 7148, 697, 13, 0x99cf_b085),
+    ("@stock/field", 209, 85, 16, 0x90fa_263c),
 ];
 
 static ART: OnceLock<Option<super::cache::Art>> = OnceLock::new();
@@ -44,6 +45,7 @@ pub(super) fn frame(path: &str, meta: ImageMeta, n: u32) -> Option<Image> {
         4 => art.font13.as_ref()?,
         5 => art.button.as_ref()?,
         6 => art.font12.as_ref()?,
+        7 => art.field.as_ref()?,
         _ => art.main.get(i)?,
     };
     let frames = meta.frames.max(1);
@@ -94,7 +96,7 @@ fn load_from(path: &Path) -> Option<super::cache::Art> {
         None => {}
     }
     let mut file = std::fs::File::open(path).ok()?;
-    let mut found: [Option<Vec<u8>>; 7] = [None, None, None, None, None, None, None];
+    let mut found: [Option<Vec<u8>>; 8] = [None, None, None, None, None, None, None, None];
     let mut hash = Sha256::new();
     // Keep an overlap large enough for the longest candidate PNG.
     let overlap = 37604;
@@ -144,7 +146,7 @@ fn load_from(path: &Path) -> Option<super::cache::Art> {
         super::cache::missing(path);
         return None;
     }
-    let [base, cap, light, font, font13, button, font12] = found;
+    let [base, cap, light, font, font13, button, font12, field] = found;
     let decode = |png: Vec<u8>| super::decode(&png, ImageMeta::default(), 0);
     let images = super::cache::Art {
         main: [
@@ -156,6 +158,7 @@ fn load_from(path: &Path) -> Option<super::cache::Art> {
         font13: font13.and_then(decode),
         button: button.and_then(decode),
         font12: font12.and_then(decode),
+        field: field.and_then(decode),
     };
     super::cache::save(path, &format!("{:x}", hash.finalize()), &images);
     Some(images)

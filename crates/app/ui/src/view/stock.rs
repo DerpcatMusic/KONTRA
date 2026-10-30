@@ -32,6 +32,7 @@ pub(super) enum Look {
         title: String,
         value: String,
         turn: u16,
+        frame: u8,
     },
 }
 
@@ -41,7 +42,7 @@ impl Look {
         store: &mut crate::Pictures,
         scale: f64,
     ) -> Option<[Arc<Image>; 3]> {
-        let Self::Knob { turn, .. } = self else {
+        let Self::Knob { frame, .. } = self else {
             return None;
         };
         let meta = |frames| model::ImageMeta {
@@ -49,7 +50,7 @@ impl Look {
             axis: model::Orientation::Horizontal,
             ..Default::default()
         };
-        let frame = (usize::from(*turn) * 127 + 500) / 1000;
+        let frame = usize::from(*frame);
         Some([
             store.frame(
                 model::AssetRef(usize::MAX),
@@ -116,6 +117,7 @@ impl Look {
                     _ => shown,
                 },
                 turn: (t * 1000.) as u16,
+                frame: (t * 127.).round() as u8,
             },
             _ => return None,
         })
@@ -213,7 +215,11 @@ impl Look {
             Self::Field { title, value } => {
                 let mut parts = Vec::new();
                 if bg {
-                    parts.push(boxed(w, h, scale, rgb(0x3f_3f3f).into(), 0x2c_2c2c));
+                    if let Some(field) = button.and_then(|image| field_skin(image, w, h, scale)) {
+                        parts.push(super::image(&field, w, h));
+                    } else {
+                        parts.push(boxed(w, h, scale, rgb(0x3f_3f3f).into(), 0x2c_2c2c));
+                    }
                 }
                 let ink = ink(0xfe_fefe);
                 // The installed font-13 atlas is 699×13; arrow fields reserve
@@ -255,7 +261,9 @@ impl Look {
                 parts.extend(arrow(ink, w, h, scale));
                 parts
             }
-            Self::Knob { title, value, turn } => {
+            Self::Knob {
+                title, value, turn, ..
+            } => {
                 if let Some(art) = artwork.filter(|_| !wd.hide.title && !wd.hide.value) {
                     bitmap_knob(title, value, scale, art, glyphs)
                 } else {
@@ -348,6 +356,38 @@ fn field_words(
         }
     }
     stack(layers).w(w).h(h).clip()
+}
+
+/// Resize fixed borders and the centre into one texture, avoiding filtering seams.
+fn field_skin(image: &Image, width: f64, height: f64, scale: f64) -> Option<Arc<Image>> {
+    let factor = f64::from(image.width) / 85.;
+    let w = (width / scale * factor).round() as u32;
+    let h = (height / scale * factor).round() as u32;
+    if w == 0 || h == 0 || w > 4096 || h > 4096 {
+        return None;
+    }
+    let axis = |p: u32, src: u32, dst: u32, edge: u32| {
+        let edge = edge.min(src / 2).min(dst / 2);
+        if p < edge {
+            p
+        } else if p >= dst - edge {
+            src - (dst - p)
+        } else {
+            edge + (u64::from(p - edge) * u64::from(src - edge * 2) / u64::from(dst - edge * 2))
+                as u32
+        }
+    };
+    let (xedge, yedge) = ((4. * factor).round() as u32, (3. * factor).round() as u32);
+    let mut pixels = Vec::with_capacity(w as usize * h as usize * 4);
+    for y in 0..h {
+        let sy = axis(y, image.height, h, yedge);
+        for x in 0..w {
+            let sx = axis(x, image.width, w, xedge);
+            let at = (sy as usize * image.width as usize + sx as usize) * 4;
+            pixels.extend_from_slice(image.rgba.get(at..at + 4)?);
+        }
+    }
+    Image::rgba(w, h, pixels).map(Arc::new)
 }
 
 fn bitmap_knob(

@@ -150,6 +150,13 @@ fn drawn_page(
                 0,
                 device,
             ),
+            stock::Look::Field { .. } if bare || !wd.hide.background => pictures.frame(
+                model::AssetRef(usize::MAX - 7),
+                "@stock/field",
+                model::ImageMeta::default(),
+                0,
+                device,
+            ),
             _ => None,
         });
         let stock_glyphs = look.as_ref().and_then(|look| match look {
