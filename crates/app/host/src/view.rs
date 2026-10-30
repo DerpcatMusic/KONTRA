@@ -189,6 +189,8 @@ pub struct LookFrame {
     slot: u8,
     looks: Box<[Look]>,
     cells: Box<[(u32, Option<i64>)]>,
+    /// Text cells (`@` controls), copied in place.
+    strings: Box<[(u32, Text)]>,
     page: Option<Page>,
     /// A Lua page's widgets by number, as read this trip; the ones read
     /// (sorted), and the labels' texts.
@@ -224,7 +226,9 @@ const MIN_ROOM: usize = 4;
 impl LookFrame {
     /// A frame for `live`'s reads, with [`ROOM`] times what `now` holds.
     fn new(slot: u8, live: &Live, face: &Face, now: &dyn Looks) -> Box<Self> {
-        let (mut ids, mut cells) = live.reads(face);
+        let (mut ids, mut cells, mut strings) = live.reads(face);
+        strings.sort_unstable();
+        strings.dedup();
         ids.sort_unstable();
         ids.dedup();
         cells.sort_unstable();
@@ -251,6 +255,7 @@ impl LookFrame {
             slot,
             looks,
             cells: cells.into_iter().map(|c| (c, None)).collect(),
+            strings: strings.into_iter().map(|c| (c, Text::EMPTY)).collect(),
             page: None,
             widgets: Box::default(),
             reads: Vec::new(),
@@ -276,6 +281,7 @@ impl LookFrame {
             slot,
             looks: Box::default(),
             cells: Box::default(),
+            strings: Box::default(),
             page: None,
             widgets: vec![None; tree.widgets.len()].into(),
             reads: readable(tree),
@@ -352,6 +358,13 @@ impl LookFrame {
         for (cell, value) in &mut *self.cells {
             *value = engine.script_cell_in(self.slot, *cell as usize);
         }
+        for (cell, text) in &mut *self.strings {
+            let vm = engine.vm(self.slot);
+            *text = vm
+                .and_then(|vm| vm.text(*cell as usize))
+                .copied()
+                .unwrap_or(Text::EMPTY);
+        }
         self.page = engine.page(self.slot).copied();
         // Same length every trip, so this never allocates.
         if !copy(&mut self.keys, engine.keys()) {
@@ -397,6 +410,7 @@ impl LookFrame {
         Box::new(Self {
             looks,
             cells: self.cells.clone(),
+            strings: self.strings.clone(),
             widgets: self.widgets.clone(),
             reads: self.reads.clone(),
             arrays: self.arrays.clone(),
@@ -456,6 +470,12 @@ impl Looks for LookFrame {
         let n = u32::try_from(n).ok().filter(|_| slot == self.slot)?;
         let at = self.cells.binary_search_by_key(&n, |c| c.0).ok()?;
         self.cells.get(at)?.1
+    }
+
+    fn script_text_in(&self, slot: u8, n: usize) -> Option<&str> {
+        let n = u32::try_from(n).ok().filter(|_| slot == self.slot)?;
+        let at = self.strings.binary_search_by_key(&n, |c| c.0).ok()?;
+        Some(self.strings.get(at)?.1.as_str())
     }
 
     fn page(&self, slot: u8) -> Option<&Page> {

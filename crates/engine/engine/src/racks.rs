@@ -343,6 +343,9 @@ impl Engine {
                 }
                 let [[l, _], [_, r]] = effects::balance(bus.pan);
                 bus.balance.process(mix, 1.0, [l, r]);
+                for m in mix.iter() {
+                    bus.peak = [bus.peak[0].max(m[0].abs()), bus.peak[1].max(m[1].abs())];
+                }
             }
             if !bus.to_main {
                 continue;

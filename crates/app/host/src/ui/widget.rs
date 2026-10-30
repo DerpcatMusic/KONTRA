@@ -108,7 +108,8 @@ pub(super) fn widget(
                 ratio: f64::from(param(2).unwrap_or(1)),
                 ..display()
             },
-            arrows: p.int("$CONTROL_PAR_SHOW_ARROWS") != Some(0),
+            // Off until the script sets it (Kontakt 8.13, measured).
+            arrows: p.int("$CONTROL_PAR_SHOW_ARROWS").is_some_and(|on| on != 0),
         },
         ControlKind::Table => {
             // declare ui_table %t[columns](width, height, range); negative is bipolar.
@@ -154,6 +155,13 @@ pub(super) fn widget(
                 ui::Orientation::Horizontal
             },
             channel: p.int("level_meter").and_then(|c| u8::try_from(c).ok()),
+            // attach_level_meter(id, group, slot, channel, generic): with no
+            // group, a generic of 0..15 is that instrument bus.
+            bus: (p.int("level_meter_group") == Some(-1))
+                .then(|| p.int("level_meter_generic"))
+                .flatten()
+                .and_then(|b| u8::try_from(b).ok())
+                .filter(|&b| usize::from(b) < kontra_protocol::BUSES),
         },
         ControlKind::FileSelector => ui::Kind::FileSelector {
             base_path: p.text("$CONTROL_PAR_BASEPATH").map(Into::into),
@@ -271,6 +279,14 @@ pub(super) fn widget(
         },
         Into::into,
     );
+    // A text edit shows its variable once the script or the user wrote it.
+    if let Cells::Text { base, .. } = cells
+        && let Some(text) = engine
+            .script_text_in(slot, base as usize)
+            .filter(|t| !t.is_empty())
+    {
+        w.text = text.into();
+    }
     w.tooltip = p.text("$CONTROL_PAR_HELP").unwrap_or_default().into();
     w.automation = ui::Automation {
         name: p.text("$CONTROL_PAR_AUTOMATION_NAME").map(Into::into),

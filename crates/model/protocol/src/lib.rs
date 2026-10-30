@@ -48,11 +48,16 @@ impl<T> Ring<T> {
 /// Parts a rack holds at most; publications carry one entry each.
 pub const MAX_PARTS: usize = 16;
 
-/// Peak levels since the last publication, 0..1 (above 1 clips).
+/// Instrument buses a part's meters can read.
+pub const BUSES: usize = 16;
+
+/// Peak levels since the last publication, 0..1 (above 1 clips): the
+/// master's, each part's output's and each part's instrument buses'.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Meters {
     pub master: [f32; 2],
     pub parts: [[f32; 2]; MAX_PARTS],
+    pub buses: [[[f32; 2]; BUSES]; MAX_PARTS],
 }
 
 /// What the engine is doing, for the header and the report.
@@ -79,14 +84,16 @@ pub struct Stats {
 pub struct MeterCells {
     master: [AtomicU32; 2],
     parts: [[AtomicU32; 2]; MAX_PARTS],
+    buses: [[[AtomicU32; 2]; BUSES]; MAX_PARTS],
 }
 
 impl MeterCells {
     /// Raises each level to at least `m`'s. Levels are never negative, and
     /// a non-negative `f32` orders as its bits do.
     pub fn publish(&self, m: &Meters) {
-        let pairs =
-            std::iter::once((&self.master, &m.master)).chain(self.parts.iter().zip(&m.parts));
+        let pairs = std::iter::once((&self.master, &m.master))
+            .chain(self.parts.iter().zip(&m.parts))
+            .chain(self.buses.iter().flatten().zip(m.buses.iter().flatten()));
         for (cells, levels) in pairs {
             for (cell, level) in cells.iter().zip(levels) {
                 cell.fetch_max(level.max(0.0).to_bits(), Ordering::Relaxed);
@@ -103,6 +110,7 @@ impl MeterCells {
         Meters {
             master: pair(&self.master),
             parts: self.parts.each_ref().map(pair),
+            buses: self.buses.each_ref().map(|b| b.each_ref().map(pair)),
         }
     }
 }
