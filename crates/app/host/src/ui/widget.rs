@@ -279,6 +279,14 @@ pub(super) fn widget(
         },
         Into::into,
     );
+    // A text edit shows its variable once the script or the user wrote it.
+    if let Cells::Text { base, .. } = cells
+        && let Some(text) = engine
+            .script_text_in(slot, base as usize)
+            .filter(|t| !t.is_empty())
+    {
+        w.text = text.into();
+    }
     w.tooltip = p.text("$CONTROL_PAR_HELP").unwrap_or_default().into();
     w.automation = ui::Automation {
         name: p.text("$CONTROL_PAR_AUTOMATION_NAME").map(Into::into),

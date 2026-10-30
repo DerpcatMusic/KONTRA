@@ -91,6 +91,8 @@ impl Face {
 pub trait Looks {
     fn control_look(&self, slot: u8, id: i32) -> Option<ControlLook<'_>>;
     fn script_cell_in(&self, slot: u8, n: usize) -> Option<i64>;
+    /// Text cell `n` of script `slot` (an `@` control's variable).
+    fn script_text_in(&self, slot: u8, n: usize) -> Option<&str>;
     fn page(&self, slot: u8) -> Option<&Page>;
     /// The bitmap font behind font id `id` (`get_font_id`), by picture name.
     fn font(&self, slot: u8, id: i32) -> Option<&str>;
@@ -107,6 +109,10 @@ impl Looks for Engine {
 
     fn script_cell_in(&self, slot: u8, n: usize) -> Option<i64> {
         Engine::script_cell_in(self, slot, n)
+    }
+
+    fn script_text_in(&self, slot: u8, n: usize) -> Option<&str> {
+        Some(self.vm(slot)?.text(n)?.as_str())
     }
 
     fn page(&self, slot: u8) -> Option<&Page> {
@@ -429,7 +435,7 @@ fn decl<'a>(face: &'a Face, slot: u8, engine: &'a dyn Looks, key: Key) -> Option
 struct Seen {
     generation: u32,
     value: Option<i64>,
-    /// A hash of an array control's cells (a table's steps).
+    /// A hash of an array control's cells (a table's steps) or its text.
     cells: u64,
 }
 
@@ -440,6 +446,12 @@ impl Seen {
                 .fold(0xcbf2_9ce4_8422_2325_u64, |h, c| {
                     let v = engine.script_cell_in(slot, c as usize).unwrap_or(0) as u64;
                     (h ^ v).wrapping_mul(0x100_0000_01b3)
+                }),
+            Cells::Text { base, .. } => (engine.script_text_in(slot, base as usize))
+                .unwrap_or_default()
+                .bytes()
+                .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+                    (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
                 }),
             _ => 0,
         };
@@ -599,22 +611,24 @@ impl Live {
     /// What [`Live::refresh`] reads: the UI ids of the controls it shows,
     /// and the script cells of their arrays (a table's steps).
     #[must_use]
-    pub fn reads(&self, face: &Face) -> (Vec<i32>, Vec<u32>) {
+    pub fn reads(&self, face: &Face) -> (Vec<i32>, Vec<u32>, Vec<u32>) {
         let controls = self
             .keys
             .iter()
             .filter_map(|k| Some((k.id, face.controls.get(k.control?)?)));
         let mut ids = Vec::new();
-        let mut cells = Vec::new();
+        let (mut cells, mut texts) = (Vec::new(), Vec::new());
         for (id, (_, _, c)) in controls {
             ids.push(id);
-            if let Cells::Int { base, len } | Cells::Real { base, len } = *c
-                && len > 1
-            {
-                cells.extend(base..base + len);
+            match *c {
+                Cells::Int { base, len } | Cells::Real { base, len } if len > 1 => {
+                    cells.extend(base..base + len);
+                }
+                Cells::Text { base, .. } => texts.push(base),
+                _ => {}
             }
         }
-        (ids, cells)
+        (ids, cells, texts)
     }
 }
 
