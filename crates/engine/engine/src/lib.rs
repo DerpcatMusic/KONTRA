@@ -134,9 +134,6 @@ struct Slot {
     pending_trace_cc: std::cell::Cell<u128>,
 }
 
-/// Per control, the parameters a script set other than its value.
-type ControlPars = Box<[Vec<(i32, i32)>]>;
-
 pub struct Engine {
     #[cfg(feature = "trace")]
     trace: Option<trace::Trace>,
@@ -207,8 +204,6 @@ pub struct Engine {
     taps: Box<[Box<[[f32; 2]]>]>,
     main: racks::Rack,
     ids: callbacks::Ids,
-    /// Per script slot, its controls' parameters other than the value.
-    control_pars: Box<[ControlPars]>,
     ui: kontra_script_ui::Store,
     /// The picture names scripts asked a font id for, by script slot, in
     /// the order asked.
@@ -304,11 +299,6 @@ impl Engine {
             })
             .collect();
         let timers = vec![[None; 2]; plan.scripts.len()].into();
-        let control_pars = plan
-            .scripts
-            .iter()
-            .map(|s| vec![Vec::new(); s.controls.cells.len()].into())
-            .collect();
         let ui = kontra_script_ui::Store::new(plan.scripts.iter().map(|s| s.controls.cells.len()));
         let mut engine = Self {
             #[cfg(feature = "trace")]
@@ -353,7 +343,6 @@ impl Engine {
             recall: Recall::Restart,
             unhandled: vec![0; kontra_vm::Action::all().len()].into(),
             called: vec![0; kontra_vm::Action::all().len()].into(),
-            control_pars,
             ui,
             ids: callbacks::Ids::START,
             instrument: Level {
