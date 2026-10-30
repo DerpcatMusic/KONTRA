@@ -378,6 +378,166 @@ fn auto_align_reports_the_latest_part_and_holds_the_other() {
     );
 }
 
+/// Electric Mint, whose Sound Preset menu was reported as "picking an entry
+/// does nothing": it lives outside the corpus root, so its path is the env
+/// override the rack's own pick test uses.
+fn emint() -> Option<PathBuf> {
+    const LIBRARY: &str = "Armory/VSTs/Kontakt1/Native Instruments Session Guitarist Electric Mint 1.1.0/Session Guitarist - Electric Mint Library/Instruments";
+    let path = std::env::var_os("KONTRA_EMINT").map_or_else(
+        || {
+            std::env::var_os("HOME")
+                .map_or_else(|| PathBuf::from("/home"), PathBuf::from)
+                .join(LIBRARY)
+                .join("Electric Mint.nki")
+        },
+        PathBuf::from,
+    );
+    if !path.exists() {
+        eprintln!("skipped: no {}", path.display());
+        return None;
+    }
+    Some(path)
+}
+
+/// The preset menu and the name field on the plate, from the view the editor
+/// draws.
+fn emint_menu(params: &KontraParams) -> (usize, usize) {
+    let guard = crate::lock(&params.shared.rack);
+    let part = guard.as_ref().unwrap().parts()[0].as_ref().unwrap();
+    let tree = part.view.as_ref().expect("an interface").tree();
+    let menu = (tree.widgets.iter().enumerate())
+        .filter(
+            |(_, w)| matches!(&w.kind, kontra_ui_model::Kind::Menu { items } if items.len() > 20),
+        )
+        .max_by_key(|(_, w)| match &w.kind {
+            kontra_ui_model::Kind::Menu { items } => items.len(),
+            _ => 0,
+        })
+        .map(|(n, _)| n)
+        .expect("the preset menu");
+    let edit = (tree.widgets.iter().enumerate())
+        .find(|(_, w)| matches!(w.kind, kontra_ui_model::Kind::TextEdit) && w.rect.y < 60.)
+        .map(|(n, _)| n)
+        .expect("the name field");
+    (menu, edit)
+}
+
+/// A pick from the preset menu, applied with no audio process call at all:
+/// the state a stopped host leaves the plugin in.
+///
+/// The commands the editor sends are carried out by the audio side inside
+/// `process`; a host that renders nothing never calls it, so before the fix
+/// the pick sat in the ring and the page kept the old value. The control
+/// tick carries them out itself then, and the frame it reads back comes out
+/// of the engine, so a page that shows the pick is the engine's own value.
+#[test]
+fn a_menu_pick_applies_and_shows_with_no_block_at_all() {
+    let Some(path) = emint() else { return };
+    let saved = Saved::new(vec![SavedPart {
+        part: 0,
+        path,
+        channel: 0,
+        output: 0,
+        gain: 1.0,
+        pan: 0.0,
+        solo: false,
+        mute: false,
+        scripts: Vec::new(),
+        delays: None,
+        slot_types: Vec::new(),
+        slot_responses: Vec::new(),
+    }]);
+    let (params, _dsp) = activate(&saved.write());
+    let (menu, field) = emint_menu(&params);
+    let (was, was_text, items) = {
+        let guard = crate::lock(&params.shared.rack);
+        let tree = guard.as_ref().unwrap().parts()[0]
+            .as_ref()
+            .unwrap()
+            .view
+            .as_ref()
+            .unwrap()
+            .tree();
+        let kontra_ui_model::Kind::Menu { items } = &tree.widgets[menu].kind else {
+            panic!("not a menu");
+        };
+        (
+            tree.widgets[menu].value.clone(),
+            tree.widgets[field].text.clone(),
+            items.clone(),
+        )
+    };
+    let shown: Vec<_> = (items.iter())
+        .filter(|i| i.visible && !i.text.trim_start().starts_with('-'))
+        .collect();
+    let current =
+        (shown.iter()).position(|i| Some(kontra_ui_model::Value::Integer(i.value)) == was);
+    let picked = shown[current.map_or(6, |n| (n + 12) % shown.len())].clone();
+
+    params
+        .shared
+        .request(crate::Request::Ui(crate::editor::Edit {
+            slot: Some(0),
+            action: kontra_ui::app::Action::Control {
+                part: 0,
+                widget: menu,
+                value: f64::from(picked.value),
+                cell: None,
+                keys: Default::default(),
+            },
+        }));
+    // The tick, and only the tick: no block is rendered, before or after.
+    Tick.run(&params);
+
+    let guard = crate::lock(&params.shared.rack);
+    let rack = guard.as_ref().unwrap();
+    assert!(
+        rack.stats().is_none(),
+        "no block was rendered, so nothing published stats"
+    );
+    let tree = rack.parts()[0]
+        .as_ref()
+        .unwrap()
+        .view
+        .as_ref()
+        .unwrap()
+        .tree();
+    assert_eq!(
+        tree.widgets[menu].value,
+        Some(kontra_ui_model::Value::Integer(picked.value)),
+        "the script kept {picked:?} (it was {was:?})"
+    );
+    assert_eq!(
+        tree.widgets[field].text.trim(),
+        picked.text.trim(),
+        "the name field did not follow (it was {was_text:?})"
+    );
+}
+
+/// A request asks for the tick that carries it out: with the editor open,
+/// nothing waits for an audio callback that may never come.
+#[test]
+fn a_request_asks_for_the_tick_that_carries_it_out() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let params = KontraParams::new();
+    let woken = Arc::new(AtomicUsize::new(0));
+    let w = Arc::clone(&woken);
+    params.shared.set_waker(Box::new(move || {
+        w.fetch_add(1, Ordering::Relaxed);
+    }));
+    params
+        .shared
+        .request(crate::Request::Ui(crate::editor::Edit {
+            slot: None,
+            action: kontra_ui::app::Action::Panic,
+        }));
+    assert_eq!(
+        woken.load(Ordering::Relaxed),
+        1,
+        "a request schedules a control tick"
+    );
+}
+
 #[test]
 fn a_library_control_moved_in_the_editor_reaches_its_script_and_shows() {
     let Some(path) = library("Una Corda Library/Instruments/Una Corda Felt.nki") else {
