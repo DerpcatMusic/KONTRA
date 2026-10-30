@@ -195,11 +195,6 @@ fn drawn_page(
                 .assets
                 .get(a.0)
                 .and_then(|asset| pictures.outline_font(a, &asset.path)),
-            Some(&model::Font::Stock(23))
-                if matches!(tree.source, model::Source::Ksp { .. }) && !words.is_empty() =>
-            {
-                pictures.outline_font(model::AssetRef(usize::MAX - 8), "@stock/outline")
-            }
             _ => None,
         };
         let lit = match wd.kind {
@@ -426,11 +421,7 @@ fn words_el(
     font: Option<&Font>,
 ) -> El {
     let geometry = plan::text(words, style, w, height, scale);
-    let size = if font.is_some() && style.is_some_and(|s| s.font == model::Font::Stock(23)) {
-        12. * scale
-    } else {
-        geometry.size
-    };
+    let size = geometry.size;
     let ink = geometry.color.map_or(Color::srgb(1., 1., 1.), color);
     let align = geometry.align;
     let line = geometry.line;

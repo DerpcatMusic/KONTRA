@@ -215,22 +215,8 @@ impl Look {
             Self::Field { title, value } => {
                 let mut parts = Vec::new();
                 if bg {
-                    if let Some(field) = button {
-                        let meta = model::ImageMeta {
-                            size: Some(model::Size {
-                                width: 85.,
-                                height: 16.,
-                            }),
-                            stretch: [true, true],
-                            margins: model::Margins {
-                                left: 4,
-                                right: 4,
-                                top: 3,
-                                bottom: 3,
-                            },
-                            ..Default::default()
-                        };
-                        parts.push(super::sliced(field, &meta, (w, h), scale));
+                    if let Some(field) = button.and_then(|image| field_skin(image, w, h, scale)) {
+                        parts.push(super::image(&field, w, h));
                     } else {
                         parts.push(boxed(w, h, scale, rgb(0x3f_3f3f).into(), 0x2c_2c2c));
                     }
@@ -372,6 +358,38 @@ fn field_words(
     stack(layers).w(w).h(h).clip()
 }
 
+/// Resize fixed borders and the centre into one texture, avoiding filtering seams.
+fn field_skin(image: &Image, width: f64, height: f64, scale: f64) -> Option<Arc<Image>> {
+    let factor = f64::from(image.width) / 85.;
+    let w = (width / scale * factor).round() as u32;
+    let h = (height / scale * factor).round() as u32;
+    if w == 0 || h == 0 || w > 4096 || h > 4096 {
+        return None;
+    }
+    let axis = |p: u32, src: u32, dst: u32, edge: u32| {
+        let edge = edge.min(src / 2).min(dst / 2);
+        if p < edge {
+            p
+        } else if p >= dst - edge {
+            src - (dst - p)
+        } else {
+            edge + (u64::from(p - edge) * u64::from(src - edge * 2) / u64::from(dst - edge * 2))
+                as u32
+        }
+    };
+    let (xedge, yedge) = ((4. * factor).round() as u32, (3. * factor).round() as u32);
+    let mut pixels = Vec::with_capacity(w as usize * h as usize * 4);
+    for y in 0..h {
+        let sy = axis(y, image.height, h, yedge);
+        for x in 0..w {
+            let sx = axis(x, image.width, w, xedge);
+            let at = (sy as usize * image.width as usize + sx as usize) * 4;
+            pixels.extend_from_slice(image.rgba.get(at..at + 4)?);
+        }
+    }
+    Image::rgba(w, h, pixels).map(Arc::new)
+}
+
 fn bitmap_knob(
     title: &str,
     value: &str,
@@ -382,7 +400,7 @@ fn bitmap_knob(
     let [base, cap, light] = art;
     vec![
         super::image(base, 87. * s, 39. * s).at(0., 0.),
-        super::image(cap, 25. * s, 29. * s).at(8. * s, 8. * s),
+        super::image(cap, 25. * s, 29. * s).at(7. * s, 7. * s),
         super::image(light, 39. * s, 39. * s).at(0., 0.),
         stock_words(title, s, glyphs).at(42. * s, 2. * s),
         stock_words(value, s, glyphs).at(42. * s, 22. * s),

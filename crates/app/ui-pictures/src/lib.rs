@@ -91,12 +91,7 @@ impl Pictures {
             let mut scale = 1.;
             for job in inbox {
                 if job.outline {
-                    let bytes = if job.path == "@stock/outline" {
-                        stock::outline()
-                    } else {
-                        read(&job.path)
-                    };
-                    let font = bytes.and_then(|bytes| Font::new(bytes).ok());
+                    let font = read(&job.path).and_then(|bytes| Font::new(bytes).ok());
                     if outbox.send(Done::Outline(job.asset, font)).is_err() {
                         break;
                     }
