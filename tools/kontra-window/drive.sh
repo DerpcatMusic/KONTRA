@@ -86,6 +86,27 @@ if [[ ${PRESSED_ONLY:-0} == 1 ]]; then
     if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
     exit $fail
 fi
+# Compare a tabbed label to its pre-change real-window capture.
+if [[ ${KSP_TABS_ONLY:-0} == 1 ]]; then
+    if [[ -n ${KSP_TABS_BEFORE:-} ]]; then
+        if python3 -I -c 'import sys; from PIL import Image, ImageChops
+box = tuple(map(int, sys.argv[3].split(",")))
+a, b = (Image.open(p).convert("RGB").crop(box) for p in sys.argv[1:3])
+sys.exit(0 if ImageChops.difference(a, b).getbbox() else 1)' "$KSP_TABS_BEFORE" "$out/0-open.png" "$KSP_TABS_BOX"; then
+            pass "Kontakt tabbed label changes in the editor"
+        else miss "Kontakt tabbed label changes in the editor"; fi
+    fi
+    ticks_tabs() { local sum=0 t; for t in /proc/"$editor"/task/*; do
+        [[ $(<"$t/comm") == cpal* ]] && continue
+        sum=$((sum + $(awk '{print $14 + $15}' "$t/stat")))
+    done; echo "$sum"; }
+    at 1900,1270; sleep 2
+    span=${IDLE_S:-60}; t0=$(ticks_tabs); sleep "$span"; t1=$(ticks_tabs)
+    idle=$(( (t1 - t0) * 100 / $(getconf CLK_TCK) / span ))
+    echo "idle CPU: ${idle}% of a core over ${span} s"
+    if (( idle > 5 )); then miss "idle CPU"; else pass "idle CPU"; fi
+    exit $fail
+fi
 # Afflatus' keyswitch page uses add_text_line for its note-name list.
 if [[ ${MULTILINE_ONLY:-0} == 1 ]]; then
     at "${MULTILINE_TAB:-1652,260}"; xdotool click 1; sleep 3; at 1900,1270; shot 1-keyswitches
