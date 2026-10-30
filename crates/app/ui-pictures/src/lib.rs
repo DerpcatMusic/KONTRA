@@ -21,7 +21,7 @@ use kontra_ui_model::{AssetRef, ImageMeta, Orientation};
 
 mod cache;
 mod discovery;
-pub(crate) mod stock;
+pub mod stock;
 use mui::prelude::{Font, Image};
 
 /// Reads a library-relative path; `None` when there is no such file.
@@ -436,7 +436,7 @@ fn at(image: Image, scale: f32) -> Option<Image> {
 
 /// Integer-enlarge stock sprites without interpolating; the painter then
 /// downsamples to the snapped device rectangle. Shrinking uses the area filter.
-pub(crate) fn at_stock(image: Image, scale: f32) -> Option<Image> {
+pub fn at_stock(image: Image, scale: f32) -> Option<Image> {
     if scale <= 1. {
         return at(image, scale);
     }
@@ -460,7 +460,7 @@ pub(crate) fn at_stock(image: Image, scale: f32) -> Option<Image> {
 
 /// `img` at `w` × `h` through a Catmull-Rom filter, widened when it
 /// shrinks, in premultiplied alpha so an edge keeps its colour.
-pub(crate) fn resample(img: &Image, w: u32, h: u32) -> Option<Image> {
+pub fn resample(img: &Image, w: u32, h: u32) -> Option<Image> {
     let (sw, sh) = (img.width as usize, img.height as usize);
     let (w, h) = (w as usize, h as usize);
     let src: Vec<[f32; 4]> = img
@@ -575,7 +575,7 @@ mod tests {
     #[test]
     fn outline_font_is_read_once_off_thread_and_missing_fonts_settle() {
         let mut pictures = Pictures::new(Box::new(|path| {
-            (path == "font.ttf").then(|| crate::theme::NOTO_SANS.to_vec())
+            (path == "font.ttf").then(|| include_bytes!("../../../../assets/NotoSans.ttf").to_vec())
         }));
         assert!(pictures.outline_font(AssetRef(0), "font.ttf").is_none());
         assert!(pictures.outline_font(AssetRef(1), "missing.ttf").is_none());
