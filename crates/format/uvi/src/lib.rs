@@ -6,6 +6,7 @@
 mod bank;
 mod header;
 mod keys;
+pub mod presentation;
 mod program;
 
 use std::path::{Path, PathBuf};

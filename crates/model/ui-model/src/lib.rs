@@ -50,8 +50,8 @@ pub struct Interface {
     pub widgets: Vec<Widget>,
     /// Authored back-to-front traversal; `None` uses the source's default order.
     pub paint_order: Option<Vec<WidgetRef>>,
-    /// The presentation laws its format owns: picture frames and paint
-    /// ranks. The model applies them but defines none.
+    /// The presentation laws its format owns: picture frames, paint ranks,
+    /// layering and readouts. The model applies them but defines none.
     pub laws: Laws,
     pub assets: Vec<Asset>,
     pub styles: Vec<TextStyle>,
@@ -807,6 +807,72 @@ pub struct Laws {
     pub pictures: PictureFrames,
     /// How kinds rank in paint order within one Z layer.
     pub paint: PaintRanks,
+    /// Whether the page is one global layer or nests each panel's contents.
+    pub layering: Layering,
+    /// How a control's value becomes readout text.
+    pub formatting: Formatting,
+}
+
+/// How widgets on a page stack.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Layering {
+    /// Siblings order by Z then declaration order; a panel draws its
+    /// contents straight after itself.
+    #[default]
+    Nested,
+    /// One global Z layer for the page, ordered by [`Laws::paint`].
+    Global,
+}
+
+/// How a format turns a control's value into its readout text.
+#[derive(Clone, Copy, Debug)]
+pub struct Formatting {
+    /// The format's readout renderer: `(display, raw value, integer) -> text`.
+    pub render: fn(&Display, f64, bool) -> String,
+}
+
+impl PartialEq for Formatting {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::fn_addr_eq(self.render, other.render)
+    }
+}
+
+impl Eq for Formatting {}
+
+impl Default for Formatting {
+    /// The neutral readout: the value over its display ratio, at most two
+    /// decimals, then the unit.
+    fn default() -> Self {
+        Self::NEUTRAL
+    }
+}
+
+impl Formatting {
+    /// The neutral readout law: value over the display ratio, then the unit.
+    pub const NEUTRAL: Self = Self { render: ratio_text };
+
+    /// `display`'s control at `value` as text.
+    #[must_use]
+    pub fn text(&self, display: &Display, value: f64, integer: bool) -> String {
+        (self.render)(display, value, integer)
+    }
+}
+
+/// The neutral readout law: value over the display ratio, then the unit.
+fn ratio_text(display: &Display, value: f64, _integer: bool) -> String {
+    let value = value
+        / if display.ratio == 0. {
+            1.
+        } else {
+            display.ratio
+        };
+    let number = if value.fract() == 0. {
+        format!("{value}")
+    } else {
+        format!("{value:.2}")
+    };
+    format!("{number} {}", display.unit).trim().to_owned()
 }
 
 /// A numeric value range, in the control's own units.
@@ -839,49 +905,10 @@ impl Default for Display {
 }
 
 impl Display {
-    /// Formats a readout only; the raw value and edit conversion remain unchanged.
-    pub fn format_value(&self, value: f64, integer: bool, source: Source) -> String {
-        if source == Source::FalconLua {
-            // Port v1 4bffbb18:src/ui/uvi_instrument.rs::unit_text/number_text.
-            let number = |value: f64, integer: bool| {
-                if integer {
-                    format!("{value:.0}")
-                } else {
-                    format!("{value:.3}")
-                        .trim_end_matches('0')
-                        .trim_end_matches('.')
-                        .to_owned()
-                }
-            };
-            let (value, suffix) = match self.unit.as_str() {
-                "Percent" => (value, "%"),
-                "PercentNormalized" => (value * 100., "%"),
-                "Seconds" if value.abs() < 1. => (value * 1000., "ms"),
-                "Seconds" => (value, "s"),
-                "MilliSeconds" if value.abs() > 1000. => (value / 1000., "s"),
-                "MilliSeconds" => (value, "ms"),
-                "Hertz" if value.abs() > 1000. => (value / 1000., "kHz"),
-                "Hertz" => (value, "Hz"),
-                "Decibels" => (value, "dB"),
-                "LinearGain" if value <= 0. => return "-inf dB".into(),
-                "LinearGain" => (20. * value.log10(), "dB"),
-                "Pan" if value == 0. => return "Center".into(),
-                "SemiTones" => (value, "st"),
-                // shortcut: v1 leaves these units numeric; calibrate with native readouts before extending.
-                "" | "Generic" | "UviFilter" | "Pan" | "Megabyte" | "Cents" | "MidiKey" => {
-                    return number(value, integer);
-                }
-                suffix => (value, suffix),
-            };
-            return format!("{} {suffix}", number(value + 0., false));
-        }
-        let value = value / if self.ratio == 0. { 1. } else { self.ratio };
-        let number = if value.fract() == 0. {
-            format!("{value}")
-        } else {
-            format!("{value:.2}")
-        };
-        format!("{number} {}", self.unit).trim().to_owned()
+    /// Formats a readout only; the raw value and edit conversion remain
+    /// unchanged. `formatting` is the format's readout law.
+    pub fn format_value(&self, value: f64, integer: bool, formatting: &Formatting) -> String {
+        formatting.text(self, value, integer)
     }
 }
 
@@ -1305,10 +1332,10 @@ impl Interface {
         rect
     }
 
-    /// `page`'s widgets back to front. A source with global layers orders by
-    /// widget type, then declaration order (KSP Control Parameters,
-    /// `$CONTROL_PAR_Z_LAYER`); the type order is the format's
-    /// [`Laws::paint`]. Native graphs order siblings and draw each panel's
+    /// `page`'s widgets back to front. A [`Layering::Global`] format orders
+    /// the whole page by widget type, then declaration order (KSP Control
+    /// Parameters, `$CONTROL_PAR_Z_LAYER`); the type order is [`Laws::paint`].
+    /// A [`Layering::Nested`] format orders siblings and draws each panel's
     /// contents straight after the panel.
     /// Requires a [validated](Self::validate) interface.
     pub fn draw_order(&self, page: PageRef) -> Vec<WidgetRef> {
@@ -1319,7 +1346,7 @@ impl Interface {
                 .filter(|w| self.widgets.get(w.0).is_some_and(|w| w.page == page))
                 .collect();
         }
-        if matches!(self.source, Source::Ksp { .. } | Source::PerformanceView) {
+        if self.laws.layering == Layering::Global {
             let mut out: Vec<_> = self
                 .widgets
                 .iter()
@@ -1503,34 +1530,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn source_display_conventions_do_not_change_ksp_ratio_or_suffix() {
+    fn the_neutral_readout_law_formats_over_the_display_ratio() {
+        let formatting = Formatting::default();
         let display = Display {
             ratio: 100.,
             unit: "dB".into(),
         };
-        assert_eq!(
-            display.format_value(123., true, Source::Ksp { slot: 2 }),
-            "1.23 dB"
-        );
-        assert_eq!(
-            display.format_value(123., false, Source::Generated),
-            "1.23 dB"
-        );
+        assert_eq!(display.format_value(123., true, &formatting), "1.23 dB");
+        assert_eq!(display.format_value(123., false, &formatting), "1.23 dB");
         assert_eq!(
             Display {
                 ratio: 0.,
                 unit: String::new()
             }
-            .format_value(1.125, false, Source::Ksp { slot: 0 }),
+            .format_value(1.125, false, &formatting),
             "1.12"
         );
+    }
+
+    /// A format can replace the readout law wholesale; the model does not
+    /// need to know the format or its table.
+    fn hex_text(_display: &Display, value: f64, _integer: bool) -> String {
+        format!("#{value:.0}")
+    }
+
+    #[test]
+    fn a_second_formats_readout_law_is_used() {
+        let laws = Laws {
+            formatting: Formatting { render: hex_text },
+            ..Laws::default()
+        };
         assert_eq!(
-            Display::default().format_value(1.125, false, Source::FalconLua),
-            "1.125"
+            Display::default().format_value(7., true, &laws.formatting),
+            "#7"
         );
         assert_eq!(
-            Display::default().format_value(1.6, true, Source::FalconLua),
-            "2"
+            Display::default().format_value(7., true, &Formatting::default()),
+            "7"
         );
     }
 
@@ -1614,6 +1650,7 @@ mod tests {
     #[test]
     fn ksp_child_z_layer_crosses_parent_boundaries() {
         let mut ui = sample();
+        ui.laws.layering = Layering::Global;
         ui.widgets[1].z = 5;
         ui.widgets[2].z = 2;
         assert_eq!(
@@ -1650,6 +1687,33 @@ mod tests {
                     (KindTag::Menu, 3),
                 ],
             },
+            layering: Layering::Global,
+            ..Laws::default()
+        }
+    }
+
+    #[test]
+    fn layering_is_the_laws_not_the_source() {
+        let mut ui = sample();
+        for source in [
+            Source::Generated,
+            Source::Ksp { slot: 0 },
+            Source::PerformanceView,
+            Source::FalconLua,
+        ] {
+            ui.source = source;
+            ui.laws.layering = Layering::Global;
+            assert_eq!(
+                ui.draw_order(PageRef(0)),
+                [WidgetRef(2), WidgetRef(1), WidgetRef(0)],
+                "global layers for {source:?}"
+            );
+            ui.laws.layering = Layering::Nested;
+            assert_eq!(
+                ui.draw_order(PageRef(0)),
+                [WidgetRef(2), WidgetRef(0), WidgetRef(1)],
+                "nested layers for {source:?}"
+            );
         }
     }
 

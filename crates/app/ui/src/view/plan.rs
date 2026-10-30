@@ -97,7 +97,7 @@ pub(super) fn page<'a>(
                 tree,
                 w,
                 position,
-                readout(w, tree.source),
+                readout(w, &tree.laws),
                 knob_name(w),
                 bare,
             );
@@ -105,7 +105,7 @@ pub(super) fn page<'a>(
             let words = if look.is_some() {
                 String::new()
             } else {
-                caption(w, tree.source)
+                caption(w, tree.source, &tree.laws)
             };
             Some(Widget {
                 index,
@@ -194,13 +194,13 @@ fn drawn(r: model::Rect, m: model::ImageMeta) -> model::Size {
 
 /// The words a widget shows: a label's or button's text, a menu's item,
 /// a value edit's title and value.
-pub(super) fn caption(w: &model::Widget, source: model::Source) -> String {
+pub(super) fn caption(w: &model::Widget, source: model::Source, laws: &model::Laws) -> String {
     if w.label_in_image() {
         return String::new();
     }
     if let Kind::ValueEdit { .. } = w.kind {
         let title = if w.hide.title { "" } else { w.text.trim() };
-        return format!("{title} {}", readout(w, source)).trim().to_owned();
+        return format!("{title} {}", readout(w, laws)).trim().to_owned();
     }
     if w.hide.title {
         return String::new();
@@ -454,12 +454,13 @@ mod tests {
         let mut tree = Interface {
             source: model::Source::Ksp { slot: 0 },
             // The measured Kontakt strip this KSP control uses: off, on,
-            // off pressed, on pressed, off hover, on hover.
+            // off pressed, on pressed, off hover, on hover; global layers.
             laws: model::Laws {
                 pictures: model::PictureFrames {
                     states: [0, 2, 4, 1, 3, 5],
                     short: [0, 1],
                 },
+                layering: model::Layering::Global,
                 ..model::Laws::default()
             },
             ..Default::default()
