@@ -44,7 +44,8 @@ struct PartView {
     mix: Mix,
     solo: bool,
     mute: bool,
-    level: [f32; 2],
+    /// Its output's peaks, then each instrument bus's.
+    level: Vec<[f32; 2]>,
 }
 
 /// The rack as the editor last saw it.
@@ -79,7 +80,11 @@ impl Snapshot {
             self.new_parts = (browser.prefs.next_channel, browser.prefs.own_output);
         }
         let meters = rack.meters();
-        let level = |slot: usize| meters.parts.get(slot).copied().unwrap_or_default();
+        let level = |slot: usize| {
+            let out = meters.parts.get(slot).copied().unwrap_or_default();
+            let buses = meters.buses.get(slot).into_iter().flatten().copied();
+            std::iter::once(out).chain(buses).collect()
+        };
         let old = std::mem::take(&mut self.parts);
         self.parts = (rack.parts().iter().enumerate())
             .filter_map(|(slot, p)| {
@@ -135,7 +140,15 @@ impl Snapshot {
     fn shown(&self) -> impl PartialEq + use<> {
         let parts: Vec<_> = (self.parts.iter())
             .map(|p| {
-                let mix = (p.mix, p.solo, p.mute, p.level.map(f32::to_bits));
+                let mix = (
+                    p.mix,
+                    p.solo,
+                    p.mute,
+                    p.level
+                        .iter()
+                        .map(|l| l.map(f32::to_bits))
+                        .collect::<Vec<_>>(),
+                );
                 (
                     p.slot,
                     p.generation,
@@ -220,7 +233,7 @@ impl Snapshot {
                 output: p.mix.output + 1,
                 volume: f64::from(linear_to_db(p.mix.gain)),
                 pan: f64::from(p.mix.pan),
-                level: p.level.map(f64::from),
+                level: p.level.iter().map(|l| l.map(f64::from)).collect(),
                 solo: p.solo,
                 mute: p.mute,
                 keys: (0, 127),

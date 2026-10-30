@@ -581,10 +581,12 @@ pub enum Kind {
         parallax: [i32; 2],
     },
     /// `channel`: the output channel it shows (0 left, 1 right; KSP
-    /// `attach_level_meter`); `None` shows nothing.
+    /// `attach_level_meter`); `None` shows nothing. `bus`: the instrument bus
+    /// it reads, `None` the part's output.
     LevelMeter {
         orientation: Orientation,
         channel: Option<u8>,
+        bus: Option<u8>,
     },
     /// `base_path`: the folder it opens at (KSP `BASEPATH`); `files`: what it lists;
     /// `column_width`: list column width in pixels.
@@ -1521,6 +1523,7 @@ mod tests {
                 Kind::LevelMeter {
                     orientation: Orientation::Vertical,
                     channel: None,
+                    bus: None,
                 },
             ),
         ];

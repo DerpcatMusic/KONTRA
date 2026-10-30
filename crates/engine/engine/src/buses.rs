@@ -20,6 +20,8 @@ pub(crate) struct BusState {
     pub(crate) sends: Box<[ir::BusSend]>,
     pub(crate) to_main: bool,
     pub(crate) mix: Box<[[f32; 2]]>,
+    /// Its output's left and right peaks since they were last taken.
+    pub(crate) peak: [f32; 2],
 }
 
 impl BusState {
@@ -40,11 +42,21 @@ impl BusState {
             sends: b.sends.clone().into(),
             to_main: b.to_main,
             mix: vec![[0.0; 2]; MAX_SPAN as usize].into(),
+            peak: [0.0; 2],
         }
     }
 }
 
 impl Engine {
+    /// Instrument bus `n`'s output peaks since the last take (silence when
+    /// it has none), and starts again from silence.
+    pub fn take_bus_peak(&mut self, n: usize) -> [f32; 2] {
+        // Plan bus 0 is the main bus; instrument bus n is plan bus n + 1.
+        self.buses
+            .get_mut(n + 1)
+            .map_or([0.0; 2], |b| std::mem::take(&mut b.peak))
+    }
+
     pub fn set_bus_gain(&mut self, bus: usize, gain: f32) {
         if let Some(b) = self.buses.get_mut(bus) {
             b.gain = gain;

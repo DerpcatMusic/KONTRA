@@ -112,7 +112,7 @@ fn channel(ui: &mut Ui, app: &mut App, n: usize, w: f64, out: &mut Vec<Action>) 
         p.volume = value;
         out.push(Action::Volume(n, value));
     }
-    let t = p.level[0].max(p.level[1]).clamp(0., 1.);
+    let t = p.level.first().map_or(0., |[l, r]| l.max(*r)).clamp(0., 1.);
     let meter = col![
         block(3, 0).grow(1. - t),
         block(3, 0).grow(t).fill(Fill::from(part_color(n)))
