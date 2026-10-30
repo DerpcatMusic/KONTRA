@@ -298,14 +298,19 @@ fn drawn_page(
     (stack(layers).w(w).h(h).radius(0.).clip(), built)
 }
 
-/// How much of a level meter a peak lights: −60 dB to 0 dB, in steps of a
-/// hundredth so a frame redraws only when the bar moves.
-// ponytail: the scale is ours (Kontakt's meter law is unmeasured), and both
-// channels show the part's peak; per-channel and per-bus peaks when a
-// library needs them apart.
+/// How much of a level meter a peak lights: `1 + log2(peak) / 9`, linear in
+/// dB from −54.2 dB (nine octaves down) to 0 dB, as Kontakt 8.13 maps it
+/// (decoded from its binary); in steps of a hundredth so a frame redraws only
+/// when the bar moves.
+// ponytail: no ballistics yet (Kontakt rises at once and falls 0.4 of the gap
+// a GUI tick; the tick period is undecoded), and both channels show the
+// part's peak; per-channel and per-bus peaks when a library needs them apart.
 fn lit(peak: f64) -> f64 {
-    let db = 20. * peak.max(1e-9).log10();
-    ((db + 60.) / 60.).clamp(0., 1.).mul_add(100., 0.).round() / 100.
+    (1. + peak.max(1e-9).log2() / 9.)
+        .clamp(0., 1.)
+        .mul_add(100., 0.)
+        .round()
+        / 100.
 }
 
 /// A level meter lit to `t`: its OFF colour behind, its ON colour lit,
