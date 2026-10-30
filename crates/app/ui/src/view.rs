@@ -15,6 +15,7 @@ use crate::meter::Shown;
 
 mod plan;
 mod stock;
+mod wave;
 
 use plan::caption;
 #[cfg(test)]
@@ -248,6 +249,7 @@ fn drawn_page(
                 wd.table_inner_edge.map(|edge| edge.visible),
                 wd.hide.background,
                 bare,
+                (wd.waveform.as_ref()).map(|v| (v.cursor_us, v.length_us, v.peaks.clone())),
             ),
             glyphs
                 .as_ref()
@@ -302,6 +304,11 @@ fn drawn_page(
                 parts.push(bitmap_words(&words, style, wd, (w, h), scale, glyphs).at(0., 0.));
             } else if !words.is_empty() {
                 parts.push(words_el(&words, style, wd, (w, h), scale, outline.as_ref()).at(0., 0.));
+            }
+            if let Some(wave) =
+                (wd.waveform.as_ref()).and_then(|v| wave::draw(v, &wd.colors, (w, h, scale)))
+            {
+                parts.push(wave.at(0., 0.));
             }
             if let Some((o, t)) = lit {
                 parts.push(meter(&wd.colors, o, t, (w, h, scale)).at(0., 0.));

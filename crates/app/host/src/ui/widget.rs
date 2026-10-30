@@ -199,13 +199,16 @@ pub(super) fn widget(
         _ => look.value.map(|v| ui::Value::Integer(v as i32)),
     };
     if matches!(kind, ControlKind::Waveform | ControlKind::Wavetable) {
+        // The cursor starts at the sample's start (Kontakt 8 oracle); -1 hides it.
         w.waveform = p.int("$CONTROL_PAR_WT_ZONE").map(|zone| ui::Waveform {
             zone,
-            flags: 0,
-            cursor_us: 0,
+            flags: p.int("wf_flags").unwrap_or(0) as u32,
+            cursor_us: p.int("wf_cursor").map_or(0, i64::from),
             table: vec![],
             highlighted: None,
             midi_start_note: 60,
+            peaks: vec![],
+            length_us: 0,
         });
     }
     w.z = p.int("$CONTROL_PAR_Z_LAYER").unwrap_or(0);

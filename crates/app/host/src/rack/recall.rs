@@ -63,7 +63,7 @@ impl Rack {
     /// Starts a new engine for `part` on a copy of `plan` with `saved` as its
     /// restored values: `on init` runs again, nothing is read or prepared.
     fn restart(&mut self, part: usize, plan: &Plan, saved: Vec<Saved>, loaded: Vec<Vec<String>>) {
-        let Some(old) = self.parts.get_mut(part).and_then(Option::take) else {
+        let Some(mut old) = self.parts.get_mut(part).and_then(Option::take) else {
             return;
         };
         let mut plan = plan.clone();
@@ -73,7 +73,9 @@ impl Rack {
         let plan = Arc::new(plan);
         let engine = Engine::new(Arc::clone(&plan), self.store.client(), self.rate);
         let pages: Vec<Option<kontra_lua::Ui>> = old.faces.iter().map(|_| None).collect();
-        let view = crate::view::View::of(&old.faces, &pages, &engine, old.path.as_deref());
+        let waves =
+            (old.view.as_mut()).map_or_else(Default::default, |v| std::mem::take(&mut v.waves));
+        let view = crate::view::View::of(&old.faces, &pages, &engine, old.path.as_deref(), waves);
         let info = Part {
             recall: engine.recall_law(),
             sounds: crate::sound::Sounds::new(self.rate, engine.group_sounds()),

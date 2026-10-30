@@ -152,10 +152,20 @@ impl Engine {
     }
 
     fn event_par(&self, id: i32, par: i32) -> i32 {
-        let Some(n) = NoteRef::from_event_id(id).and_then(|r| self.notes.get(r)) else {
+        let note = NoteRef::from_event_id(id);
+        let Some(n) = note.and_then(|r| self.notes.get(r)) else {
             return 0;
         };
+        // Only a voice carries a zone: the note's first sounding one.
+        let voice = (self.voices.iter())
+            .find(|s| s.note == note && s.voice.is_active())
+            .and_then(|s| Some((s, self.plan.zones.get(s.zone)?)));
         match par {
+            event::ZONE_ID => voice.map_or(-1, |(_, z)| z.id as i32),
+            event::PLAY_POS => voice.map_or(0, |(s, z)| {
+                let frames = z.region.start as f64 + s.voice.position();
+                (frames * 1e6 / f64::from(z.sample_rate.max(1))) as i32
+            }),
             0..=event::CUSTOM_LAST => n.custom.get(par as usize).copied().unwrap_or(0),
             event::VOLUME => n.script_volume,
             event::TUNE => n.script_tune,
