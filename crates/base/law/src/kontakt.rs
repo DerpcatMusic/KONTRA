@@ -59,7 +59,7 @@ pub const UNIT_FIFTH: Law = Law::IntegerPower {
 };
 
 /// Replika Modern's low-cut knob to Hz, `10·100^x`. Measured only (no binary constant): the
-/// native oracle (`docs/re/engine/k-replika-binding.md`). Zero is bypassed by the translator.
+/// binary's setter run under kemu (`docs/re/engine/k-replika-binding.md`). Zero is bypassed by the translator.
 pub const REPLIKA_LOW_CUT: Law = Law::ExpAffine {
     base: 100.0,
     offset: 0.0,

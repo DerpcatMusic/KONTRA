@@ -142,7 +142,7 @@ pub fn catalog() -> Vec<Named> {
         n(
             "kontakt::REPLIKA_LOW_CUT",
             &kontakt::REPLIKA_LOW_CUT,
-            "measured only: native oracle k-replika-binding.md",
+            "measured only: kemu run, k-replika-binding.md",
             unit,
         ),
         n(
